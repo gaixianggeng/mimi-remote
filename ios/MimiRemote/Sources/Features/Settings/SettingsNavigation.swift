@@ -19,6 +19,7 @@ enum SettingsDestination: Hashable {
     case termsOfUse
     case thirdPartyNotices
     case managedConnection
+    case addComputer
     case speedTest
     case tailcat
 }
@@ -30,6 +31,16 @@ final class SettingsNavigationState: ObservableObject {
     @Published var profileRenamePresentation = ConnectionProfileRenamePresentationState()
     let connectionDraft = ConnectionSettingsDraft()
     let transientPreferences = SettingsTransientPreferences()
+}
+
+/// 回退线路（Tailscale/局域网/HTTPS）的一次探测结果。Tailcat 的探测历史由
+/// TailcatExperimentController 持久化，这里只承载非 Tailcat 线路的会话内展示。
+struct FallbackRouteProbe: Equatable {
+    let checkedAt: Date
+    let pathKind: TailscaleNetworkPathResponse.Kind?
+    let relayRegion: String?
+    let httpMillis: Int?
+    let succeeded: Bool
 }
 
 /// 仅保留当前工作台内的连接表单草稿；输入不触发会话外壳重绘，旋转也不会重置访问码。
@@ -48,6 +59,9 @@ final class ConnectionSettingsDraft: ObservableObject {
     @Published var localError: String?
     @Published var copyingConnectionProfileID: String?
     @Published var copiedConnectionProfileID: String?
+    // 设备首页线路行的探测状态放草稿里，Section 重建或旋转都不丢。
+    @Published var isProbingRoute = false
+    @Published var fallbackRouteProbe: FallbackRouteProbe?
     var copyConnectionTask: Task<Void, Never>?
     var copyFeedbackTask: Task<Void, Never>?
 
@@ -134,6 +148,8 @@ struct SettingsDestinationView: View {
             ThirdPartyNoticesView()
         case .managedConnection:
             ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
+        case .addComputer:
+            AddComputerView(qrScannerPresentation: qrScannerPresentation, navigation: navigation)
         case .speedTest:
             ConnectionSpeedTestView(transientPreferences: navigation.transientPreferences)
         case .tailcat:

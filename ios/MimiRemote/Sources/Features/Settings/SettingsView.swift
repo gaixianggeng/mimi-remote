@@ -4,6 +4,8 @@ import SwiftUI
 /// 各自决定行高与图标尺寸，导致真机滚动时出现不一致的视觉节奏。
 enum SettingsLayoutMetrics {
     static let standardRowHeight: CGFloat = 52
+    /// 设备 Tab 的当前电脑主行：名称 20pt + 副标题，比普通行高一档。
+    static let deviceRowHeight: CGFloat = 64
     static let accessibilityRowHeight: CGFloat = 76
     static let rowHorizontalInset: CGFloat = 16
     static let iconSlot: CGFloat = 28
@@ -538,6 +540,8 @@ struct SettingsValueLabel: View {
     var value: String? = nil
     let systemImage: String
     var valueTint: Color? = nil
+    /// 动作行（点了就执行，不导航）用强调色标题区分于导航行，与列表里的按钮惯例一致。
+    var titleTint: Color? = nil
     var symbolPointSize: CGFloat = SettingsLayoutMetrics.symbolPointSize
 
     var body: some View {
@@ -583,7 +587,7 @@ struct SettingsValueLabel: View {
     private func titleText(tokens: ThemeTokens) -> some View {
         Text(title)
             .settingsTitleFont()
-            .foregroundStyle(tokens.primaryText)
+            .foregroundStyle(titleTint ?? tokens.primaryText)
             .fixedSize(horizontal: false, vertical: true)
             .layoutPriority(1)
     }
