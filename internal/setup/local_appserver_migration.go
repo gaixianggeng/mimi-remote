@@ -13,6 +13,9 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
+// resolveMigrationCodexBin 是迁移预检使用的 Codex 路径解析器；测试可替换。
+var resolveMigrationCodexBin = ResolveCodexBin
+
 // MigrateAppServerToSharedLocal replaces the former managed WebSocket upstream
 // with Codex's standard control socket. On macOS it also rewrites the loopback
 // SSH default that older setups wrote automatically. The resident is initialized
@@ -96,6 +99,12 @@ func MigrateAppServerToSharedLocalWithPreflight(
 	codexBin := strings.TrimSpace(runtimeConfig.Codex.Bin)
 	if codexBin == "" {
 		codexBin = defaultCodexBin()
+	}
+	// 老安装的 codex.bin 可能已失效（桌面 App 移动或卸载）。start/serve 要到迁移之后才修复
+	// codex.bin，这里先用同一套回退解析器找到当前可用的 Codex，避免迁移预检在修复前误失败；
+	// 配置里的路径仍由随后的修复步骤原子写回。
+	if resolved, err := resolveMigrationCodexBin(codexBin); err == nil {
+		codexBin = resolved
 	}
 	if preflight == nil {
 		return fmt.Errorf("共享本机 App Server preflight 未配置")

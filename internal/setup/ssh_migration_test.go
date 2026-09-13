@@ -106,6 +106,9 @@ func TestMigrateAppServerToSharedLocalPreservesUnknownFields(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	previousResolver := resolveMigrationCodexBin
+	resolveMigrationCodexBin = func(configured string) (string, error) { return configured, nil }
+	t.Cleanup(func() { resolveMigrationCodexBin = previousResolver })
 	previous := localAppServerPreflight
 	var gotBin string
 	localAppServerPreflight = func(_ context.Context, bin string, env map[string]string) error {
@@ -202,6 +205,9 @@ func TestMigrateAppServerToSharedLocalRewritesMacLoopbackSSHDefault(t *testing.T
 			if err := os.WriteFile(path, original, 0o600); err != nil {
 				t.Fatal(err)
 			}
+			previousResolver := resolveMigrationCodexBin
+			resolveMigrationCodexBin = func(configured string) (string, error) { return configured, nil }
+			t.Cleanup(func() { resolveMigrationCodexBin = previousResolver })
 			previous := localAppServerPreflight
 			var gotBin string
 			localAppServerPreflight = func(_ context.Context, bin string, env map[string]string) error {
@@ -297,5 +303,125 @@ func TestMigrateAppServerToSharedLocalLoopbackSSHPreflightFailureKeepsSSH(t *tes
 	}
 	if !bytes.Equal(stored, original) {
 		t.Fatalf("预检失败不能改写旧 SSH 配置：%s", stored)
+	}
+}
+
+func TestMigrateAppServerToSharedLocalResolvesStaleCodexBinBeforePreflight(t *testing.T) {
+	if !config.SupportsSharedLocalAppServer() {
+		t.Skip("shared local App Server migration only applies to macOS and Linux")
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{"codex":{"bin":"/Applications/Old.app/Contents/Resources/codex"},"app_server":{"transport":"ws","managed":true,"listen":"ws://127.0.0.1:4222"}}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previousResolver := resolveMigrationCodexBin
+	resolveMigrationCodexBin = func(configured string) (string, error) {
+		if configured != "/Applications/Old.app/Contents/Resources/codex" {
+			t.Fatalf("解析器应收到配置中的旧路径，got %q", configured)
+		}
+		return "/opt/homebrew/bin/codex", nil
+	}
+	t.Cleanup(func() { resolveMigrationCodexBin = previousResolver })
+	previous := localAppServerPreflight
+	var gotBin string
+	localAppServerPreflight = func(_ context.Context, bin string, _ map[string]string) error {
+		gotBin = bin
+		return nil
+	}
+	t.Cleanup(func() { localAppServerPreflight = previous })
+
+	if err := MigrateAppServerToSharedLocal(context.Background(), path); err != nil {
+		t.Fatal(err)
+	}
+	if gotBin != "/opt/homebrew/bin/codex" {
+		t.Fatalf("迁移预检应使用回退解析后的 Codex 路径，got %q", gotBin)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(stored, []byte(`"transport": "local"`)) || !bytes.Contains(stored, []byte(`"/Applications/Old.app/Contents/Resources/codex"`)) {
+		t.Fatalf("迁移只改 transport，codex.bin 留给启动修复步骤：%s", stored)
+	}
+}
+
+func TestMigrateAppServerToSSHConvertsLocalWhenTargetRequested(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{"future":{"keep":true},"app_server":{"transport":"local","auto_title":true,"approval_broker":true}}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := sshPreflight
+	var gotTarget string
+	sshPreflight = func(_ context.Context, transport *appserver.SSHTransport) error {
+		gotTarget = transport.Target()
+		return nil
+	}
+	t.Cleanup(func() { sshPreflight = previous })
+
+	if err := MigrateAppServerToSSH(context.Background(), path, "deploy@build-host"); err != nil {
+		t.Fatal(err)
+	}
+	if gotTarget != "deploy@build-host" {
+		t.Fatalf("应对显式 target 做 SSH 预检，got %q", gotTarget)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`"transport": "ssh"`, `"ssh_target": "deploy@build-host"`, `"approval_broker": true`, `"auto_title": true`, `"future"`} {
+		if !bytes.Contains(stored, []byte(expected)) {
+			t.Fatalf("local 切换到 SSH 后缺少 %s：%s", expected, stored)
+		}
+	}
+	cfg, err := config.LoadForDoctor(path)
+	if err != nil || cfg.AppServer.Transport != "ssh" || cfg.AppServer.SSHTarget != "deploy@build-host" {
+		t.Fatalf("切换后的配置必须可加载为 ssh：cfg=%+v err=%v", cfg.AppServer, err)
+	}
+}
+
+func TestMigrateAppServerToSSHLeavesLocalWithoutRequestedTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{"app_server":{"transport":"local","auto_title":true}}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := sshPreflight
+	sshPreflight = func(context.Context, *appserver.SSHTransport) error {
+		t.Fatal("没有显式 target 时不应做 SSH 预检")
+		return nil
+	}
+	t.Cleanup(func() { sshPreflight = previous })
+	if err := MigrateAppServerToSSH(context.Background(), path, ""); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, original) {
+		t.Fatalf("没有 target 的 local 配置不应被改写：%s", stored)
+	}
+}
+
+func TestMigrateAppServerToSSHLocalConversionPreflightFailureKeepsLocal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{"app_server":{"transport":"local","auto_title":true}}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := sshPreflight
+	sshPreflight = func(context.Context, *appserver.SSHTransport) error { return errors.New("host unreachable") }
+	t.Cleanup(func() { sshPreflight = previous })
+	if err := MigrateAppServerToSSH(context.Background(), path, "deploy@build-host"); err == nil {
+		t.Fatal("SSH 预检失败时不能把 local 改成 ssh")
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, original) {
+		t.Fatalf("预检失败不能改写配置：%s", stored)
 	}
 }

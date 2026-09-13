@@ -22,7 +22,8 @@ var sshPreflight = func(ctx context.Context, transport *appserver.SSHTransport) 
 	return transport.EnsureReady(ctx)
 }
 
-// MigrateAppServerToSSH 把旧 managed WebSocket 配置一次性改写为 SSH 配置。
+// MigrateAppServerToSSH 把旧 managed WebSocket 配置一次性改写为 SSH 配置；显式给出
+// target 时也把默认的本机 local 配置切到远端 SSH。
 // 它只在 SSH 预检成功后提交，提交使用原始 bytes 做 CAS，并保留根对象和
 // app_server 中未识别的字段。shared_fallback、Unix/Desktop IPC 残留由 config
 // 统一拒绝，不能通过这里恢复。
@@ -73,7 +74,13 @@ func MigrateAppServerToSSH(ctx context.Context, configPath string, requestedTarg
 	if transportName == "ssh" && !legacy {
 		return nil
 	}
-	if transportName != "" && transportName != "ws" {
+	// 默认的本机 local 只在显式给出 SSH target 时才切到远端 SSH；没有 target 的 local 保持不变，
+	// 这样 macOS 用户不必 setup --force（会轮换配对 Token）就能启用高级远端模式。
+	convertsLocal := transportName == "local" && !legacy
+	if convertsLocal && strings.TrimSpace(requestedTarget) == "" {
+		return nil
+	}
+	if !convertsLocal && transportName != "" && transportName != "ws" {
 		return fmt.Errorf("旧 app_server.transport=%q 不能自动迁移；请执行 agentd setup --force，并先关闭旧 Desktop/stdio 实验运行时", transportName)
 	}
 	if managed, ok := rawBool(appServer["managed"]); ok && !managed {
