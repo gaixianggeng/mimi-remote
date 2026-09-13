@@ -250,6 +250,7 @@ struct InitialConnectionSettingsSections: View {
     /// 手动表单只在添加电脑页渲染；设备首页上的扫码/重新配对回落到手动时，由外壳把那一页推出来。
     var onRequestManualConnection: (() -> Void)? = nil
     /// 快照容器要的是确定的静态画面：探测结果带时间戳、spinner 取决于网络耗时，都不能进基线。
+    /// 同时关掉进入页面时的连接状态核实，快照里的状态就是传入的状态。
     var probesRouteAutomatically = true
 
     var body: some View {
@@ -289,6 +290,19 @@ struct InitialConnectionSettingsSections: View {
         .task(id: appStore.activeConnectionProfileID) {
             await autoRefreshRouteProbeIfNeeded()
         }
+        .task(id: appStore.activeHostScope) {
+            await preflightConnectionIfNeeded()
+        }
+    }
+
+    /// 设备首页是用户看连接状态的地方，进入时重新核实，而不是展示上一次探测留下的结论。
+    /// connectionStatus 只由主动探测写入：冷启动首个 preflight 在隧道建好前几乎必然失败，
+    /// 之后真实会话链路连上了也没人改回来。已经是 .connected 时 preflightConnection 直接返回，
+    /// 不产生网络请求；正在探测时由 AppStore 内部互斥去重。
+    private func preflightConnectionIfNeeded() async {
+        guard probesRouteAutomatically, mode == .deviceHome,
+              appStore.isConfigured, !appStore.requiresRePairing else { return }
+        _ = await appStore.preflightConnection()
     }
 
     /// 切到这台电脑就该直接看到延迟，不必先点刷新；30 秒内已有结果就不重复打扰网络。
@@ -314,12 +328,12 @@ struct InitialConnectionSettingsSections: View {
 
         if let current = model.current {
             currentComputerSection(current, tokens: tokens)
+            notificationsSection
             otherComputersSection(model.others, ownsPresentation: false)
-            addComputerEntrySection(tokens: tokens)
         } else if !model.others.isEmpty {
+            notificationsSection
             // 忘记当前电脑后仍会留下已保存的其它电脑；此时由这一组承接确认弹窗。
             otherComputersSection(model.others, ownsPresentation: true)
-            addComputerEntrySection(tokens: tokens)
         } else {
             addComputerSection(tokens: tokens)
 
@@ -409,6 +423,7 @@ struct InitialConnectionSettingsSections: View {
         return draft.fallbackRouteProbe.map { !$0.succeeded } ?? false
     }
 
+    /// 首页线路行只写「直连/中转 · 延迟」，保证放进一行；HTTP 耗时、DERP 区域和探测时间在「连接方式」页。
     private var routeProbeSummary: String {
         guard routeProbeBelongsToActiveProfile else {
             return L10n.text("ui.route_not_probed")
@@ -417,23 +432,12 @@ struct InitialConnectionSettingsSections: View {
             guard let diagnostic = tailcatController.lastDiagnostic else {
                 return L10n.text("ui.route_not_probed")
             }
-            return ConnectionRouteFormatting.compactSummary(diagnostic)
+            return ConnectionRouteFormatting.briefSummary(diagnostic)
         }
         guard let probe = draft.fallbackRouteProbe else {
             return L10n.text("ui.route_not_probed")
         }
-        var parts: [String] = []
-        if !probe.succeeded {
-            parts.append(L10n.text("ui.route_probe_failed"))
-        }
-        if let pathText = ConnectionRouteFormatting.pathText(probe.pathKind, region: probe.relayRegion) {
-            parts.append(pathText)
-        }
-        if let httpMillis = probe.httpMillis {
-            parts.append(ConnectionRouteFormatting.httpText(httpMillis))
-        }
-        parts.append(ConnectionRouteFormatting.timeText(probe.checkedAt))
-        return parts.joined(separator: " · ")
+        return ConnectionRouteFormatting.briefSummary(probe)
     }
 
     /// Tailcat 走 disco-ping + health 计时（controller 持久化历史）；
@@ -477,36 +481,49 @@ struct InitialConnectionSettingsSections: View {
         )
     }
 
-    /// 其它电脑只需要名称、系统和一个明确的「连接」动作，不重复整张状态卡。
+    /// 消息提醒绑定的是某一台电脑，和电脑管理放在同一个 Tab；单独成组，不混进当前电脑卡片。
+    /// 一台电脑都没存过时没有可绑定的对象，这一组不出现。
+    private var notificationsSection: some View {
+        Section {
+            NavigationLink(value: SettingsDestination.lockScreenApproval) {
+                ConnectionRowLabel(
+                    title: L10n.text("ui.push_lock_screen_approval"),
+                    value: L10n.text("ui.default_off"),
+                    systemImage: "lock.iphone"
+                )
+            }
+            .settingsStandardListRow()
+            .accessibilityIdentifier("settings.lockScreenApproval")
+        }
+    }
+
+    /// 其它电脑和添加电脑回答的是同一个问题：「还能连哪台」。合成一组：已保存的电脑在上，
+    /// 末行是添加电脑，像 Wi-Fi 列表末尾的「其他…」。已经存过电脑时添加是低频操作，
+    /// 首页只留一个入口；扫码、粘贴、安装说明和手动地址都在添加电脑页。
+    /// 切换前先验证、扫码失败保留当前电脑这类机制说明不再常驻脚注。
     @ViewBuilder
     private func otherComputersSection(
         _ items: [ConnectionProfileSettingsItem],
         ownsPresentation: Bool
     ) -> some View {
-        if !items.isEmpty {
-            let header = Text("\(L10n.text("ui.other_computers")) · \(items.count)")
-                .settingsSectionHeaderStyle()
+        let header = Text(L10n.text("ui.other_computers"))
+            .settingsSectionHeaderStyle()
 
-            // 「只连一台、切换前先验证」解释的是切换行为，跟着切换所在的分组走。
-            let footer = Text(L10n.text("ui.only_one_mac_is_connected_at_a_time"))
-                .settingsSectionFooterStyle()
-
-            if ownsPresentation {
-                connectionPresentationSection {
-                    ForEach(items) { otherComputerRow($0) }
-                } header: {
-                    header
-                } footer: {
-                    footer
-                }
-            } else {
-                Section {
-                    ForEach(items) { otherComputerRow($0) }
-                } header: {
-                    header
-                } footer: {
-                    footer
-                }
+        if ownsPresentation {
+            connectionPresentationSection {
+                ForEach(items) { otherComputerRow($0) }
+                addComputerEntryRow
+            } header: {
+                header
+            } footer: {
+                EmptyView()
+            }
+        } else {
+            Section {
+                ForEach(items) { otherComputerRow($0) }
+                addComputerEntryRow
+            } header: {
+                header
             }
         }
     }
@@ -532,7 +549,7 @@ struct InitialConnectionSettingsSections: View {
                     )
                     .font(themeStore.uiFont(size: profileDetailPointSize))
 
-                    if isConnectionTesting {
+                    if isDisplayingConnectionProgress {
                         ProgressView()
                             .controlSize(.small)
                     }
@@ -586,7 +603,8 @@ struct InitialConnectionSettingsSections: View {
                     }
                     .frame(minHeight: 44)
                 } else {
-                    Button(L10n.text("ui.connect")) {
+                    // 列表里只连一台：点它是把当前电脑换成这台，文案直说「切换」。
+                    Button(L10n.text("ui.switch_computer")) {
                         Task { await switchConnectionProfile(id: item.id) }
                     }
                     .font(themeStore.uiFont(size: profileDetailPointSize, weight: .semibold))
@@ -608,20 +626,41 @@ struct InitialConnectionSettingsSections: View {
         .accessibilityIdentifier("settings.profile.\(item.id)")
     }
 
+    /// 卡片上的状态要跟用户的实际体验一致。connectionStatus 是最近一次探测的结论，冷启动
+    /// 首个探测几乎必然失败并遗留 .failed；预热窗口内这只是过程，显示为「连接中」。
+    /// 会话列表和电脑切换菜单用的是同一条判断。
+    private var displayedConnectionStatus: ConnectionStatus {
+        if case .connected = appStore.connectionStatus {
+            return appStore.connectionStatus
+        }
+        if sessionStore.isEstablishingConnection {
+            return .testing
+        }
+        return appStore.connectionStatus
+    }
+
+    /// 卡片主行的 spinner 跟随展示状态；表单提交门禁（isConnectionTesting）仍只看真实探测态。
+    private var isDisplayingConnectionProgress: Bool {
+        if case .testing = displayedConnectionStatus {
+            return true
+        }
+        return false
+    }
+
     /// 系统状态文案带电脑名（「已连接 Mimi Mac 助手」）；卡片主行上一行就是电脑名，这里只留状态词。
     private var compactConnectionStatusTitle: String {
-        if case .connected = appStore.connectionStatus {
+        if case .connected = displayedConnectionStatus {
             return L10n.text("ui.connected")
         }
-        return appStore.connectionStatus.title
+        return displayedConnectionStatus.title
     }
 
     private func computerGlyph(_ item: ConnectionProfileSettingsItem) -> some View {
-        // 保留平台轮廓帮助识别电脑；只统一颜色，避免丢失 Mac、Windows 和 Linux 的区别。
+        // 平台图标用品牌原色：彩虹苹果、四色 Windows、黑白橙 Tux 一眼就能分出电脑，
+        // 比染成次级文字色更容易识别。只有未知平台的通用电脑轮廓继承次级墨色。
         HostPlatformGlyph(
             kind: item.profile.hostPlatform.iconKind,
-            size: SettingsLayoutMetrics.symbolPointSize,
-            monochrome: true
+            size: SettingsLayoutMetrics.symbolPointSize
         )
         .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
         .frame(width: SettingsLayoutMetrics.iconSlot, height: SettingsLayoutMetrics.iconSlot)
@@ -735,59 +774,17 @@ struct InitialConnectionSettingsSections: View {
             : (appStore.savedFallbackConnectionRoute?.title ?? "Tailscale")
     }
 
-    /// 添加电脑回到第一层：位置靠下但完整可见，不藏在导航栏加号里。
-    /// 扫码直接开相机（presenter 就挂在这一页）；安装说明、粘贴和手动地址在二层。
-    private func addComputerEntrySection(tokens: ThemeTokens) -> some View {
-        Section {
-            // 扫码是唯一主按钮；粘贴是它旁边的次级图标按钮，两者同一行等高。
-            ConnectionPrimaryActionsLayout(layoutDirection: layoutDirection) {
-                Button(action: beginScanningHost) {
-                    ConnectionActionLabel(
-                        title: L10n.text("ui.scan_qr_code_on_computer"),
-                        systemImage: "qrcode.viewfinder"
-                    )
-                    .frame(maxHeight: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(tokens.primaryAction)
-                .controlSize(.large)
-                .accessibilityIdentifier("settings.connection.scanQRCode")
-                .foregroundStyle(tokens.primaryActionForeground)
-
-                Button(action: pasteConnectionInfo) {
-                    Image(systemName: "clipboard")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .tint(tokens.secondaryText)
-                .controlSize(.regular)
-                .accessibilityLabel(L10n.text("ui.paste_connection_info"))
-                .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
-                .help(L10n.text("ui.paste_connection_info"))
-                .accessibilityIdentifier("settings.connection.pasteConnectionInfo")
-            }
-            .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
-            // 不覆盖 buttonBorderShape：沿用系统给 bordered 按钮的默认外形，
-            // 和连接诊断、手动连接里的按钮保持同一套圆角。
-            .padding(.top, SettingsLayoutMetrics.rowHorizontalInset)
-            .padding(.bottom, 8)
-            .listRowSeparator(.hidden)
-
-            NavigationLink(value: SettingsDestination.addComputer) {
-                ConnectionRowLabel(
-                    title: L10n.text("ui.other_add_methods"),
-                    systemImage: "plus.app"
-                )
-            }
-            .settingsStandardListRow()
-            .accessibilityIdentifier("settings.connection.otherAddMethods")
-        } header: {
-            Text(L10n.text("ui.add_mac"))
-                .settingsSectionHeaderStyle()
-        } footer: {
-            Text(L10n.text("ui.add_computer_scan_hint"))
-                .settingsSectionFooterStyle()
+    /// 设备首页的添加入口：一行推进添加电脑页，那一页再给扫码主按钮和粘贴。
+    private var addComputerEntryRow: some View {
+        NavigationLink(value: SettingsDestination.addComputer) {
+            ConnectionRowLabel(
+                title: L10n.text("ui.add_mac"),
+                value: L10n.text("ui.add_computer_entry_value"),
+                systemImage: "plus.circle"
+            )
         }
+        .settingsStandardListRow()
+        .accessibilityIdentifier("settings.connection.otherAddMethods")
     }
 
     /// 首页只说明上一次诊断的结论和时间，不让旧结果冒充当前在线状态。
@@ -1351,7 +1348,7 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private var statusColor: Color {
-        switch appStore.connectionStatus {
+        switch displayedConnectionStatus {
         case .connected:
             return themeStore.tokens(for: colorScheme).success
         case .failed:
@@ -1364,6 +1361,11 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private var displayErrorMessage: String? {
+        // 预热窗口内卡片显示「连接中」，不能同时贴一条上一轮探测留下的过期错误；
+        // 表单自己的错误（localError）不受影响。
+        if localError == nil, sessionStore.isEstablishingConnection {
+            return nil
+        }
         guard let raw = appStore.lastError ?? localError else {
             return nil
         }

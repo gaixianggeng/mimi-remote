@@ -1214,6 +1214,7 @@ final class AppStore: ObservableObject {
                 connectionStatus = .idle
                 return false
             }
+            let probeSnapshot = captureConnectionProbeSnapshot()
             connectionStatus = .testing
             lastError = nil
             do {
@@ -1221,7 +1222,7 @@ final class AppStore: ObservableObject {
                 return true
             } catch {
                 if Task.isCancelled || error is CancellationError {
-                    connectionStatus = .idle
+                    restoreConnectionStatusAfterCancelledProbe(probeSnapshot)
                     return false
                 }
                 let message = L10n.text("ui.the_native_assistant_was_detected_but_the_automatic")
@@ -1231,6 +1232,7 @@ final class AppStore: ObservableObject {
             }
         }
 
+        let probeSnapshot = captureConnectionProbeSnapshot()
         connectionStatus = .testing
         lastError = nil
 
@@ -1295,7 +1297,7 @@ final class AppStore: ObservableObject {
                 return true
             } catch {
                 if Task.isCancelled || error is CancellationError {
-                    connectionStatus = .idle
+                    restoreConnectionStatusAfterCancelledProbe(probeSnapshot)
                     return false
                 }
                 // loopback 可能运行着另一个用户配置；本机 Token 不匹配时继续尝试档案地址，
@@ -1314,7 +1316,7 @@ final class AppStore: ObservableObject {
                 return true
             } catch {
                 if Task.isCancelled || error is CancellationError {
-                    connectionStatus = .idle
+                    restoreConnectionStatusAfterCancelledProbe(probeSnapshot)
                     return false
                 }
                 // 兼容尚未实现同机配对接口的旧 agentd；保留已配置路由的真实错误，

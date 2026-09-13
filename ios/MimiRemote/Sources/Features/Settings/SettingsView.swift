@@ -336,16 +336,6 @@ struct SettingsView: View {
             .listRowBackground(tokens.settingsGroupBackground)
 
             Section {
-                NavigationLink(value: SettingsDestination.lockScreenApproval) {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.push_lock_screen_approval"),
-                        value: L10n.text("ui.default_off"),
-                        systemImage: "lock.iphone"
-                    )
-                }
-                .settingsStandardListRow()
-                .accessibilityIdentifier("settings.lockScreenApproval")
-
                 NavigationLink(value: SettingsDestination.diagnostics) {
                     SettingsValueLabel(
                         title: L10n.text("ui.diagnosis_and_support"),

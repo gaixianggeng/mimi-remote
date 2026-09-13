@@ -42637,6 +42637,27 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "直连" } }
       }
     },
+    "ui.add_computer_entry_value": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scan or paste a link" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫码或粘贴链接" } }
+      }
+    },
+    "ui.switch_computer": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Switch" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "切换" } }
+      }
+    },
+    "ui.route_path_relay": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Relay" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "中转" } }
+      }
+    },
     "ui.route_http_latency_value": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

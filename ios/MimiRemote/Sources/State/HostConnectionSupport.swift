@@ -378,6 +378,12 @@ enum ActiveConnectionRoute: Equatable {
     }
 }
 
+/// 探测开始前的展示状态；探测被取消时原样放回，不把「没做完」写成「未连接」。
+struct ConnectionProbeSnapshot: Equatable {
+    let status: ConnectionStatus
+    let lastError: String?
+}
+
 struct PreparedHostLease: Equatable {
     let endpoint: String
     let installationID: String

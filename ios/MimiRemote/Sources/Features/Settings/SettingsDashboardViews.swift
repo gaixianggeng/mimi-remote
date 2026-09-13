@@ -15,7 +15,8 @@ struct ConnectionSettingsView: View {
     // 扫码回落到手动连接时推出添加电脑页；用 isPresented 形式不依赖所在的是哪条导航栈。
     @State private var isPresentingAddComputerForManualConnection = false
     var isDevicesTab = false
-    /// 快照测试传 false：线路行保持「未检测」，不让网络耗时和时间戳进基线。
+    /// 快照测试传 false：线路行保持「未检测」，也不在进入页面时重新探测连接状态，
+    /// 不让网络耗时、时间戳和探测结果进基线。
     var probesRouteAutomatically = true
 
     init(

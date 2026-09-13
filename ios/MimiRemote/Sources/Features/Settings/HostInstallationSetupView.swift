@@ -410,24 +410,71 @@ enum ConnectionRouteFormatting {
         }
     }
 
-    static func pathText(_ kind: TailscaleNetworkPathResponse.Kind?, region: String?) -> String? {
+    static func httpText(_ millis: Int) -> String {
+        L10n.format("ui.route_http_latency_value", String(millis))
+    }
+
+    static func latencyText(_ millis: Int) -> String {
+        "\(millis) ms"
+    }
+
+    /// 设备首页只区分直连和中转：DERP 与 Peer Relay 的差别属于诊断细节，留给「连接方式」页。
+    static func briefPathText(_ path: String) -> String {
+        switch path {
+        case "direct":
+            return L10n.text("ui.route_path_direct")
+        case "peer-relay", "derp":
+            return L10n.text("ui.route_path_relay")
+        default:
+            return L10n.text("ui.tailscale_path_unknown")
+        }
+    }
+
+    static func briefPathText(_ kind: TailscaleNetworkPathResponse.Kind?) -> String? {
         switch kind {
         case .direct:
             return L10n.text("ui.route_path_direct")
-        case .peerRelay:
-            return L10n.text("ui.tailscale_path_peer_relay")
-        case .derp:
-            return L10n.text("ui.tailscale_path_derp") + (region.map { " (\($0))" } ?? "")
+        case .peerRelay, .derp:
+            return L10n.text("ui.route_path_relay")
         case .notTailscale, .unknown, .unavailable, nil:
             return nil
         }
     }
 
-    static func httpText(_ millis: Int) -> String {
-        L10n.format("ui.route_http_latency_value", String(millis))
+    /// 首页线路行必须放进一行，只答两件事：直连还是中转、多少毫秒。
+    /// 路径通但 HTTP 失败仍要写出来，不能只靠着色（VoiceOver 读不到颜色）。
+    static func briefSummary(_ diagnostic: TailcatPathDiagnostic) -> String {
+        guard diagnostic.succeeded else {
+            return L10n.text("ui.route_probe_failed")
+        }
+        var parts = [briefPathText(diagnostic.path)]
+        if diagnostic.requestSucceeded == false {
+            parts.append(L10n.text("ui.tailcat_request_failed"))
+        } else if let millis = diagnostic.latencyMillis ?? diagnostic.requestLatencyMillis {
+            parts.append(latencyText(millis))
+        }
+        return parts.joined(separator: " · ")
     }
 
-    /// Tailcat 探测：路径 · 延迟 · HTTP 耗时 · 时间。数字只代表探测那一刻。
+    /// 回退线路没有 disco 延迟，毫秒数取 health 请求耗时；路径判断不出来时只给毫秒。
+    static func briefSummary(_ probe: FallbackRouteProbe) -> String {
+        guard probe.succeeded else {
+            return L10n.text("ui.route_probe_failed")
+        }
+        var parts: [String] = []
+        if let pathText = briefPathText(probe.pathKind) {
+            parts.append(pathText)
+        }
+        if let millis = probe.httpMillis {
+            parts.append(latencyText(millis))
+        }
+        guard !parts.isEmpty else {
+            return L10n.text("ui.tailscale_path_unknown")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// 「连接方式」页的完整摘要：路径 · 延迟 · HTTP 耗时 · 时间。数字只代表探测那一刻。
     static func compactSummary(_ diagnostic: TailcatPathDiagnostic) -> String {
         var parts: [String] = []
         if diagnostic.succeeded {

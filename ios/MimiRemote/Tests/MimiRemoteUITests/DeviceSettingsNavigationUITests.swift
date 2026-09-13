@@ -91,7 +91,8 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
     }
 
     func testLockScreenApprovalSettingsRemainReachableAcrossRotation() throws {
-        openMe()
+        // 消息提醒在设备页，排在当前电脑和其他电脑之间。
+        openDevices()
         let entry = element("settings.lockScreenApproval")
         scrollTo(entry)
         entry.tap()
@@ -101,12 +102,7 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         XCTAssertTrue(detail.waitForExistence(timeout: 10))
         XCUIDevice.shared.orientation = .portrait
         XCTAssertTrue(detail.waitForExistence(timeout: 10))
-        app.navigationBars.buttons.firstMatch.tap()
-        let diagnostics = element("settings.diagnostics")
-        scrollTo(diagnostics)
-        diagnostics.tap()
-        XCTAssertTrue(app.navigationBars.buttons.firstMatch.waitForExistence(timeout: 8))
-        app.navigationBars.buttons.firstMatch.tap()
+        returnToDeviceHome()
         XCTAssertTrue(entry.waitForExistence(timeout: 8))
     }
 
@@ -208,6 +204,8 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
     }
 
     func testScannerSurvivesRotationAndCanBeCancelled() throws {
+        // 设备首页只留添加入口；扫码主按钮在添加电脑页。
+        openAddComputer()
         let scan = element("settings.connection.scanQRCode")
         scrollTo(scan)
         scan.tap()
@@ -220,6 +218,9 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         XCTAssertTrue(close.waitForExistence(timeout: 10))
         capture("scanner-landscape")
         close.tap()
+        XCTAssertTrue(element("settings.addComputer.page").waitForExistence(timeout: 10))
+        XCUIDevice.shared.orientation = .portrait
+        returnToDeviceHome()
         assertDeviceNavigation()
     }
 
@@ -270,7 +271,7 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         else { tab("me").tap() }
     }
 
-    /// 添加电脑组在设备首页第一层的最下方；粘贴、安装说明和手动地址在「其他添加方式」二层。
+    /// 添加电脑是「其他电脑」组的末行；扫码、粘贴、安装说明和手动地址都在添加电脑页。
     private func openAddComputer() {
         let entry = element("settings.connection.otherAddMethods")
         scrollTo(entry)
