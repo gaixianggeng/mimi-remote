@@ -336,6 +336,39 @@ func TestResolveClaudeBinDoesNotPreferUnparseableVersion(t *testing.T) {
 	}
 }
 
+func TestResolveClaudeBinSkipsCandidatesThatFailToLaunch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("本测试使用 Unix 可执行脚本模拟 Claude CLI")
+	}
+	home := t.TempDir()
+	pathDir := filepath.Join(t.TempDir(), "bin")
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", pathDir)
+	broken := filepath.Join(home, "broken", "claude")
+	working := filepath.Join(pathDir, "claude")
+	// 模拟 npm shim 找不到 node 之类的启动失败：文件存在但 --version 非零退出。
+	for _, path := range []string{working, broken} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeExecutableFixture(t, path, "exit 127\n")
+	}
+	environment := claudeCommandEnvironment(nil)
+
+	if resolved, err := resolveClaudeBin(context.Background(), broken, environment); err == nil {
+		t.Fatalf("没有任何候选能启动时不得持久化路径：%+v", resolved)
+	}
+
+	writeClaudeCLIFixture(t, working, "2.1.100 (Claude Code)", true)
+	resolved, err := resolveClaudeBin(context.Background(), broken, environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.path != working || resolved.version != "2.1.100" {
+		t.Fatalf("启动失败的已配置候选应被跳过：%+v", resolved)
+	}
+}
+
 func TestParseClaudeActivationPreferenceRejectsUnknownValue(t *testing.T) {
 	if _, err := ParseClaudeActivationPreference("sometimes"); err == nil {
 		t.Fatal("未知 Claude 启用策略必须拒绝")
