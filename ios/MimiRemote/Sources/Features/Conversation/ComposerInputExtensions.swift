@@ -422,15 +422,17 @@ extension ComposerView {
     // 不改变“无需先点开开关即可操作”的默认形态。
     var composerContextControlsRow: some View {
         HStack(spacing: 8) {
-            ScrollView(.horizontal) {
-                HStack(spacing: 8) {
-                    skillPickerButton
-                    if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
-                        permissionMenu
-                    }
+            // 放得下就不套 ScrollView。UIScrollView 默认 delaysContentTouches，会把
+            // 权限菜单与 Skill 的触摸按下推迟约 150ms，而系统菜单又要等抬手才呈现，
+            // 于是权限入口每次点击都比同排的模型、选项按钮慢一拍（gh-408）。
+            // 只有内容确实溢出（辅助功能字号、极窄分屏）时才退回横向滚动。
+            ViewThatFits(in: .horizontal) {
+                composerContextControls
+                ScrollView(.horizontal) {
+                    composerContextControls
                 }
+                .scrollIndicators(.hidden)
             }
-            .scrollIndicators(.hidden)
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if canCollapseIPadComposer {
@@ -447,6 +449,15 @@ extension ComposerView {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var composerContextControls: some View {
+        HStack(spacing: 8) {
+            skillPickerButton
+            if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
+                permissionMenu
+            }
+        }
     }
 
     /// iPad 收起态是独立的一行卡片，不保留 iPad 完整 Composer 的工具栏。
