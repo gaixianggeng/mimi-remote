@@ -83,6 +83,7 @@ sequenceDiagram
 - bridge 先从 Claude JSONL 播种完整历史，再追加尚未 flush 的实时 turn；`thread/read` 和 `thread/turns/list` 不会因为本进程出现新 turn 而丢掉旧历史。
 - `thread/turns/list` 按 `itemsView` 返回：`summary` 只保留用户与助手文本，工具过程由 `thread/items/list` 按 turn 分页补齐，和 Codex 首屏走同一条路；`full` 或省略时仍带全部 item。裁剪只在请求带 `itemsListAvailable: true` 时生效，这个字段由 agentd 网关写入，表示网关会转发 `thread/items/list`；新 bridge 配旧 agentd 时没有这个字段，bridge 照旧回完整 item。此前 bridge 无视 `itemsView`，一个 18 MB 会话的首页要 400–650 KB，移动端经中继打开明显更慢。
 - bridge 的协议输入输出是逐行 JSON；`agentd` 不把整段上下文重新拼成额外提示词。
+- `model/list` 的目录来自 Claude CLI 的 SDK initialize，进程级缓存 10 分钟并单飞；发现失败时优先返回上一次成功的目录，15 秒内不重复起 CLI；bridge 启动时后台预热一次，避免首个请求在 CLI 冷启动期间超时回退成无版本别名。主列表与 Claude 桌面版一致：每个模型家族只展示最新版本（Fable、Opus、Sonnet、Haiku 各一行，按此强弱顺序），`default` 别名不单独占一行，它解析出的模型被标记为默认选中；旧版本和同解析的别名仍在响应里但标 `hidden`，客户端不展示。识别不出家族的条目（第三方/未来命名）一律保持可见，不折叠。
 - Claude Code 登录态和可恢复历史由用户本机 Claude Code 环境管理，不上传到 Mimi Remote 服务器。
 - 会话名优先取 Claude 自己写进 transcript 的 `custom-title` / `ai-title`；从 App 新建的会话没有这类记录，由 `agentd` 的自动标题任务（见 `auto-thread-titles.md`）通过 bridge socket 的匿名内部连接调用 `thread/read` / `thread/name/set` 写回，标题文本仍由 Codex 临时线程生成。
 
