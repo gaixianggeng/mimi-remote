@@ -30,10 +30,26 @@ extension SessionStore {
                 : nil
         })
         var next = workspaceDirectorySessionIDsByKey
-        next[key] = replacing ? pageIDs : next[key, default: []].union(pageIDs)
+        // 整页覆盖只能替换服务端查到的部分；本设备刚创建的会话可能晚于这页请求发出，
+        // 不并回去就会在下一轮全局发现后被过滤掉。
+        let created = workspaceCreatedSessionIDsByKey[key] ?? []
+        next[key] = replacing ? pageIDs.union(created) : next[key, default: []].union(pageIDs)
         if next != workspaceDirectorySessionIDsByKey {
             workspaceDirectorySessionIDsByKey = next
         }
+    }
+
+    /// 创建成功时用服务端确认的工作区和 runtime 登记归属。除了并入目录登记，还单独
+    /// 记住"本设备创建"，让稍后落地的旧首屏页不能把它冲掉。
+    func recordWorkspaceCreatedSession(
+        _ session: AgentSession,
+        in workspace: AgentWorkspace,
+        runtimeProvider: String
+    ) {
+        guard isCurrentWorkspaceIdentity(workspace) else { return }
+        let key = workspaceDirectoryScopeKey(for: workspace, runtimeProvider: runtimeProvider)
+        workspaceCreatedSessionIDsByKey[key, default: []].insert(session.id)
+        recordWorkspaceDirectorySessionPage([session], in: workspace, runtimeProvider: runtimeProvider, replacing: false)
     }
 
     func workspaceForDirectoryScopedSession(_ item: AgentSession) -> AgentWorkspace? {
@@ -79,6 +95,7 @@ extension SessionStore {
     }
 
     func removeWorkspaceDirectorySessionScopes(workspaceID: String) {
+        workspaceCreatedSessionIDsByKey = workspaceCreatedSessionIDsByKey.filter { $0.key.workspaceID != workspaceID }
         let next = workspaceDirectorySessionIDsByKey.filter { $0.key.workspaceID != workspaceID }
         if next != workspaceDirectorySessionIDsByKey {
             workspaceDirectorySessionIDsByKey = next
@@ -87,6 +104,8 @@ extension SessionStore {
 
     func removeWorkspaceDirectorySessionIDs(_ sessionIDs: Set<SessionID>) {
         guard !sessionIDs.isEmpty else { return }
+        // 全局发现完整遍历后撤权的会话已经不存在，"本设备创建"的记忆也一起清掉。
+        workspaceCreatedSessionIDsByKey = workspaceCreatedSessionIDsByKey.mapValues { $0.subtracting(sessionIDs) }
         let next = workspaceDirectorySessionIDsByKey.mapValues { $0.subtracting(sessionIDs) }
         if next != workspaceDirectorySessionIDsByKey {
             workspaceDirectorySessionIDsByKey = next

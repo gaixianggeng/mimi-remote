@@ -164,6 +164,7 @@ pub struct ClaudeBridgeBuilder {
     history_refresh_interval: Duration,
     sessions_dir_override: Option<PathBuf>,
     foreign_session_policy: Option<ForeignSessionPolicy>,
+    warm_model_catalog: bool,
 }
 
 impl Default for ClaudeBridgeBuilder {
@@ -180,6 +181,7 @@ impl Default for ClaudeBridgeBuilder {
             history_refresh_interval: DEFAULT_HISTORY_REFRESH_INTERVAL,
             sessions_dir_override: None,
             foreign_session_policy: None,
+            warm_model_catalog: false,
         }
     }
 }
@@ -244,6 +246,13 @@ impl ClaudeBridgeBuilder {
         self
     }
 
+    /// 启动后在后台预热 CLI 模型目录。生产入口打开；测试默认关闭，避免每个
+    /// 测试 bridge 都拉起一个 CLI 查询。
+    pub fn warm_model_catalog(mut self, enabled: bool) -> Self {
+        self.warm_model_catalog = enabled;
+        self
+    }
+
     /// Populate fields from environment variables. Reads:
     /// - `CLAUDE_BRIDGE_CLAUDE_BIN` for the agent binary path
     /// - `CODEX_HOME` for the index directory
@@ -301,6 +310,11 @@ impl ClaudeBridgeBuilder {
             max_processes,
             idle_ttl,
         ));
+
+        if self.warm_model_catalog {
+            let pool = Arc::clone(&pool);
+            tokio::spawn(async move { pool.warm_model_catalog().await });
+        }
 
         let hydrator = match self.projects_dir_override {
             Some(dir) => ClaudeHydrator::with_override_dir(dir),

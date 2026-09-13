@@ -4,10 +4,11 @@
 
 新建 Codex 会话发送第一条用户请求后，由 Mac 端自动生成简短标题并持久化到 app-server。移动端应尽快看到标题，但标题生成不能阻塞正常对话，也不能把 Codex 凭据下放到 iPhone / iPad。
 
-MVP 只覆盖通过 Mimi Remote 新建的 Codex 会话：
+覆盖通过 Mimi Remote 新建的 Codex 和 Claude 会话：
 
 - `thread/start` 新建后，首个成功转发的 `turn/start` 或任务 `thread/queue/add` 触发一次；
-- `thread/resume`、历史线程、Claude 实验通道不触发；
+- `thread/resume`、历史线程不触发；
+- Claude 会话：Claude 桌面 / 终端自己会把 `custom-title` / `ai-title` 写进 transcript，bridge 读作会话名；只有从 App 新建、由 bridge `claude -p` 驱动的会话没有标题，因此同样走这条链路。标题文本仍由 Codex 临时线程生成（bridge 没有 ephemeral 线程，也不该为标题起一个真实 Claude 会话），写回前的 `thread/read` 和 `thread/name/set` 改走 bridge socket 的匿名内部连接；
 - 用户或其他客户端已经设置名称时不覆盖；
 - 失败时保留移动端现有的首条消息预览，不影响 Turn 生命周期。
 
@@ -92,10 +93,13 @@ export AGENTD_APP_SERVER_AUTO_TITLE=false
 
 日志只记录脱敏后的 thread token 和失败分类（取消、超时、生成失败），不记录原始 Prompt、模型输出、标题或本地路径。
 
+`app_server.auto_title` / `AGENTD_APP_SERVER_AUTO_TITLE` 同时控制 Codex 与 Claude 两条 runtime，没有单独的 Claude 开关。
+
 ## 风险与优化
 
 - **额度成本：**每个新 Codex 会话增加一次低推理请求。当前用串行、输入上限、一次性触发和开关控制；后续只有在真实使用量需要时才增加配额感知或批处理。
 - **手动改名竞态：**协议没有 CAS，仍存在第二次读取与写回之间的极短窗口。若 Codex 后续提供版本号或条件写接口，应替换为原子写。
 - **连接中断：**标题已持久化但补发 notification 失败时，当前 UI 可能暂时保留预览；下次列表刷新会得到正式名称，不重试模型请求。
 - **协议漂移：**实现依赖公开的 `thread/read`、`thread/start`、`turn/start.outputSchema`、`item/completed`、`turn/completed` 和 `thread/name/set`。升级固定 Codex 协议基线时必须运行协议快照和 Go 测试。
-- **扩展范围：**暂不为恢复的无标题历史会话补标题，也不覆盖 Claude。只有真实用户反馈表明需要时，再设计显式“重新生成标题”操作。
+- **扩展范围：**暂不为恢复的无标题历史会话补标题。只有真实用户反馈表明需要时，再设计显式“重新生成标题”操作。
+- **Claude 依赖 Codex 生成：**Claude 会话的标题文本由 Codex 临时线程生成。Codex 不可用（未登录、app-server 不可达）或 bridge 不可用时跳过本次任务，会话保持无标题、列表继续显示首条消息预览，不影响对话。写回后即使 Claude 之后写入自己的 `ai-title`，bridge 也只在会话名仍等于上一次扫描到的 transcript 标题时才跟随更新，不会覆盖已写回的自动标题。

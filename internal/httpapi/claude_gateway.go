@@ -542,6 +542,10 @@ func copyClientFramesToClaudeBridge(client *websocket.Conn, stdin io.Writer, cli
 		if monitor != nil {
 			monitor.recordForward("client_to_upstream", len(payload), len(compacted), policyDuration, time.Since(writeStart), compacted)
 		}
+		// 与 Codex 网关同一触发点：首条成功写给 bridge 的 turn/start 消费新线程的
+		// 标题资格。标题写回走 bridge 的独立匿名连接，这里只负责给发起会话的
+		// 移动端补发 thread/name/updated。
+		policy.router.scheduleAutoThreadTitleFromMessage(compacted, policy, autoThreadTitleClientNotifier(client, clientWriteMu))
 	}
 }
 
