@@ -55,6 +55,15 @@ func TestSupportsThreadItemsList(t *testing.T) {
 	}
 }
 
+func TestIsComparableRejectsPrereleaseAndUnparsedVersions(t *testing.T) {
+	if !IsComparable("2.1.270") || !IsComparable("v0.2.8") {
+		t.Fatal("正式三段式版本应可参与比较")
+	}
+	if IsComparable("2.1.270-beta.1") || IsComparable("2.1") || IsComparable("") {
+		t.Fatal("预发布、缺段或空版本不得参与择优比较")
+	}
+}
+
 func TestInstallHintUsesMonorepo(t *testing.T) {
 	if !strings.Contains(InstallHint, BridgeRepository) {
 		t.Fatalf("安装提示未指向 Mimi Remote monorepo：%s", InstallHint)

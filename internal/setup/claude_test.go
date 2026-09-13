@@ -201,6 +201,141 @@ func TestConfigureClaudeRestoreWritesExactPreviousState(t *testing.T) {
 	}
 }
 
+func TestConfigureClaudeReplacesStaleConfiguredClaudeBin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("本测试使用 Unix 可执行脚本模拟 Claude CLI")
+	}
+	// 夹具里已配置的 CLI 是 2.1.220；官方安装器的 ~/.local/bin/claude 更新。
+	configPath := writeClaudeConfigurationFixture(t, 0, false)
+	newer := filepath.Join(os.Getenv("HOME"), ".local", "bin", "claude")
+	writeClaudeCLIFixture(t, newer, "2.1.270 (Claude Code)", true)
+
+	result, err := ConfigureClaude(
+		context.Background(),
+		configPath,
+		ClaudeActivationAuto,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Enabled || !result.Available || !result.RestartRequired {
+		t.Fatalf("发现更新的 CLI 时应启用并要求重启：%+v", result)
+	}
+	if result.ClaudeBin != newer || result.ClaudeVersion != "2.1.270" {
+		t.Fatalf("应改用版本最高的候选：bin=%q version=%q", result.ClaudeBin, result.ClaudeVersion)
+	}
+	document := readClaudeConfigurationFixture(t, configPath)
+	claude := document["claude"].(map[string]any)
+	env := claude["env"].(map[string]any)
+	if env[claudeBinaryEnvKey] != newer || env["FUTURE_ENV"] != "keep" {
+		t.Fatalf("陈旧路径应被替换且其他 env 字段保留：%v", env)
+	}
+	if claude["future_option"] != "keep" || document["future_top_level"] == nil {
+		t.Fatalf("未知配置字段不应丢失：%v", document)
+	}
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("配置权限必须保持 0600，实际 %v", info.Mode().Perm())
+	}
+
+	again, err := ConfigureClaude(
+		context.Background(),
+		configPath,
+		ClaudeActivationAuto,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Changed || again.RestartRequired || again.ClaudeBin != newer {
+		t.Fatalf("已是最新候选时下次启动不应再改配置：%+v", again)
+	}
+}
+
+func TestResolveClaudeBinPrefersHighestVersionAcrossCandidates(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("本测试使用 Unix 可执行脚本模拟 Claude CLI")
+	}
+	home := t.TempDir()
+	pathDir := filepath.Join(t.TempDir(), "homebrew-bin")
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", pathDir)
+	brew := filepath.Join(pathDir, "claude")
+	native := filepath.Join(home, ".local", "bin", "claude")
+	npm := filepath.Join(home, ".npm-global", "bin", "claude")
+	writeClaudeCLIFixture(t, brew, "2.1.224 (Claude Code)", true)
+	writeClaudeCLIFixture(t, native, "2.1.270 (Claude Code)", true)
+	writeClaudeCLIFixture(t, npm, "2.1.224 (Claude Code)", true)
+	environment := claudeCommandEnvironment(nil)
+
+	// 已配置路径已不可用：回退到候选，并在候选里择优而不是取 PATH 上的第一个。
+	resolved, err := resolveClaudeBin(context.Background(), filepath.Join(home, "gone", "claude"), environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.path != native || resolved.version != "2.1.270" {
+		t.Fatalf("应选择版本最高的候选：%+v", resolved)
+	}
+
+	// 已配置路径落后于其他候选时同样被替换。
+	resolved, err = resolveClaudeBin(context.Background(), brew, environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.path != native {
+		t.Fatalf("已配置的旧版本不应继续优先：%+v", resolved)
+	}
+
+	// 同版本按候选顺序：已配置值仍排在 PATH 与默认安装位置之前。
+	if err := os.Remove(native); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err = resolveClaudeBin(context.Background(), npm, environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.path != npm || resolved.version != "2.1.224" {
+		t.Fatalf("同版本时应保留已配置路径：%+v", resolved)
+	}
+}
+
+func TestResolveClaudeBinDoesNotPreferUnparseableVersion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("本测试使用 Unix 可执行脚本模拟 Claude CLI")
+	}
+	home := t.TempDir()
+	pathDir := filepath.Join(t.TempDir(), "bin")
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", pathDir)
+	configured := filepath.Join(home, "configured", "claude")
+	onPath := filepath.Join(pathDir, "claude")
+	writeClaudeCLIFixture(t, configured, "claude dev build", true)
+	writeClaudeCLIFixture(t, onPath, "2.1.100 (Claude Code)", true)
+	environment := claudeCommandEnvironment(nil)
+
+	resolved, err := resolveClaudeBin(context.Background(), configured, environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.path != onPath || resolved.version != "2.1.100" {
+		t.Fatalf("版本无法解析的候选不得胜过可解析的候选：%+v", resolved)
+	}
+
+	// 全部候选都无法解析时退回第一个可启动候选，版本留空交给上层报告 claude_version_unknown。
+	writeClaudeCLIFixture(t, onPath, "nightly", true)
+	resolved, err = resolveClaudeBin(context.Background(), configured, environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.path != configured || resolved.version != "" {
+		t.Fatalf("全部无法解析时应退回首个候选且不伪造版本：%+v", resolved)
+	}
+}
+
 func TestParseClaudeActivationPreferenceRejectsUnknownValue(t *testing.T) {
 	if _, err := ParseClaudeActivationPreference("sometimes"); err == nil {
 		t.Fatal("未知 Claude 启用策略必须拒绝")
@@ -286,15 +421,15 @@ func TestProbeClaudeAuthStatusDoesNotTurnSignalExitIntoSignedOut(t *testing.T) {
 func writeClaudeConfigurationFixture(t *testing.T, authExit int, enabled bool) string {
 	t.Helper()
 	root := t.TempDir()
+	// CLI 择优会扫描 $HOME 下的默认安装位置和 PATH；隔离两者，避免开发机上真实安装的
+	// claude 版本更高而抢过夹具。夹具脚本只用 shell 内建命令，保留系统目录仅为兜底。
+	t.Setenv("HOME", root)
+	t.Setenv("PATH", filepath.Join(root, "bin")+string(os.PathListSeparator)+"/usr/bin:/bin")
 	bridge := filepath.Join(root, "alleycat-claude-bridge")
 	claude := filepath.Join(root, "claude")
 	// 测试夹具跟随 agentd 的最低兼容版本，避免能力门禁升级后测试仍伪装成旧 bridge。
 	writeExecutableFixture(t, bridge, "printf 'alleycat-claude-bridge "+claudebridge.MinimumVersion+"\\n'\n")
-	loggedIn := "true"
-	if authExit != 0 {
-		loggedIn = "false"
-	}
-	writeExecutableFixture(t, claude, "if [ \"$1\" = \"auth\" ]; then printf '%s\\n' '{\"loggedIn\":"+loggedIn+"}'; exit "+strconv.Itoa(authExit)+"; fi\nprintf 'claude 2.1.220\\n'\n")
+	writeClaudeCLIFixture(t, claude, "claude 2.1.220", authExit == 0)
 	configPath := filepath.Join(root, "config.json")
 	document := map[string]any{
 		"auth": map[string]any{"token": "0123456789abcdef0123456789abcdef"},
@@ -312,6 +447,22 @@ func writeClaudeConfigurationFixture(t *testing.T, authExit int, enabled bool) s
 	}
 	writeClaudeDocument(t, configPath, document)
 	return configPath
+}
+
+// writeClaudeCLIFixture 写一个假 Claude CLI：--version 原样打印 versionLine，
+// auth status 按 loggedIn 返回 Claude CLI 约定的 JSON 与退出码。
+func writeClaudeCLIFixture(t *testing.T, path string, versionLine string, loggedIn bool) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	authExit := 0
+	if !loggedIn {
+		authExit = 1
+	}
+	writeExecutableFixture(t, path,
+		"if [ \"$1\" = \"auth\" ]; then printf '%s\\n' '{\"loggedIn\":"+strconv.FormatBool(loggedIn)+"}'; exit "+strconv.Itoa(authExit)+"; fi\n"+
+			"printf '%s\\n' '"+versionLine+"'\n")
 }
 
 func writeExecutableFixture(t *testing.T, path string, body string) {
