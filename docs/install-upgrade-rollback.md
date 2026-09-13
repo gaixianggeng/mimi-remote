@@ -151,7 +151,7 @@ agentd doctor
 “当前用户目录”不是 macOS TCC 的单一授权边界。[Apple 的“文件与文件夹”说明](https://support.apple.com/guide/mac-help/mchld5a35146/mac)明确将 Desktop、Documents、Downloads 作为分别管理的位置；Home 顶层可读不代表这些目录已获授权。[Apple 的“隐私与安全性”说明](https://support.apple.com/guide/mac-help/mchl211c911f/mac)则把 Mail、Messages、Safari、Time Machine 等其他 App 数据归入“完全磁盘访问”的范围。因此：
 
 - 只处理普通项目：在首次启动时分别允许系统弹出的 Desktop、Documents、Downloads 权限即可；
-- 需要人不在电脑前也能访问整个 Home 或其他 App 数据：在“系统设置 → 隐私与安全性 → 完全磁盘访问”中添加稳定签名的 `/opt/homebrew/opt/mimi-remote/bin/agentd`；
+- 需要人不在电脑前也能访问整个 Home、照片图库或其他 App 数据：在“系统设置 → 隐私与安全性 → 完全磁盘访问”中添加稳定签名的 agentd。Mac App 安装版位于 `/Applications/Mimi Remote Mac.app/Contents/Resources/agentd`，Homebrew 版位于 `/opt/homebrew/opt/mimi-remote/bin/agentd`。照片图库（`.photoslibrary`）不属于“文件与文件夹”，只能通过完全磁盘访问放行；移动端预览会话里从“照片”拖入的图片失败时，提示会直接指向这一步；
 - 不能通过程序自动点击或绕过这个设置，也不应使用 `tccutil reset` 作为重启步骤，它会清除已有授权。
 
 可直接打开对应设置页，然后点击 `+`；文件选择器中按 `Command-Shift-G` 输入上述绝对路径：

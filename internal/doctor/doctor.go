@@ -28,6 +28,7 @@ type Checker struct {
 	fileAccessMu               sync.RWMutex
 	fileAccessPreflightStarted bool
 	fileAccessPreflight        Check
+	fileAccessRequestedDomains map[string]bool
 }
 
 type doctorSSHTransport interface {

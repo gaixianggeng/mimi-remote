@@ -110,6 +110,104 @@ enum AgentAPIError: LocalizedError, CredentialInvalidatingError {
     }
 }
 
+/// agentd `/api/files/read` 的稳定错误码。HTTP 状态保持兼容旧客户端，新客户端按 code 区分
+/// “越界 / 缺失 / macOS 隐私拒绝 / 普通读取失败”，不再把所有 403 覆盖成同一句提示。
+enum FileAccessErrorCode: String, Decodable {
+    case pathOutsideScope = "path_outside_scope"
+    case fileAccessDenied = "file_access_denied"
+    case fileNotFound = "file_not_found"
+    case fileReadFailed = "file_read_failed"
+}
+
+enum FilePermissionDomain: String, Decodable {
+    case desktop
+    case documents
+    case downloads
+    case photosLibrary = "photos_library"
+    case other
+}
+
+struct FileAccessAPIError: LocalizedError, Equatable {
+    let status: Int
+    let message: String
+    let code: FileAccessErrorCode
+    let permissionDomain: FilePermissionDomain?
+    let action: String?
+
+    var errorDescription: String? {
+        L10n.format("ui.http_error_status_message", status, message)
+    }
+
+    static func decode(status: Int, data: Data) -> FileAccessAPIError? {
+        struct Payload: Decodable {
+            let error: String
+            let code: FileAccessErrorCode
+            let permissionDomain: FilePermissionDomain?
+            let action: String?
+
+            enum CodingKeys: String, CodingKey {
+                case error
+                case code
+                case permissionDomain = "permission_domain"
+                case action
+            }
+        }
+
+        guard let payload = try? JSONDecoder().decode(Payload.self, from: data) else {
+            return nil
+        }
+        return FileAccessAPIError(
+            status: status,
+            message: payload.error,
+            code: payload.code,
+            permissionDomain: payload.permissionDomain,
+            action: payload.action
+        )
+    }
+}
+
+enum FilePreviewErrorPresentation {
+    static func message(for error: Error) -> String {
+        if let fileError = error as? FileAccessAPIError {
+            return message(for: fileError)
+        }
+        if case AgentAPIError.server(let status, _) = error, status == 404 || status == 405 {
+            return L10n.text("ui.the_current_agentd_version_does_not_support_file")
+        }
+        if case AgentAPIError.server(let status, _) = error, status == 403 {
+            return L10n.text("ui.the_file_is_not_within_authorization_or_is")
+        }
+        if case AgentAPIError.server(let status, _) = error, status == 413 {
+            return L10n.text("ui.the_file_is_too_large_and_preview_is")
+        }
+        return error.localizedDescription
+    }
+
+    private static func message(for error: FileAccessAPIError) -> String {
+        switch error.code {
+        case .pathOutsideScope:
+            return L10n.text("ui.file_preview_path_outside_scope")
+        case .fileNotFound:
+            return L10n.text("ui.file_preview_file_not_found")
+        case .fileReadFailed:
+            return L10n.text("ui.file_preview_file_read_failed")
+        case .fileAccessDenied:
+            switch error.permissionDomain {
+            case .desktop:
+                return L10n.text("ui.file_preview_allow_desktop_on_mac")
+            case .documents:
+                return L10n.text("ui.file_preview_allow_documents_on_mac")
+            case .downloads:
+                return L10n.text("ui.file_preview_allow_downloads_on_mac")
+            case .photosLibrary:
+                return L10n.text("ui.file_preview_allow_photos_library_on_mac")
+            case .other, nil:
+                return L10n.text("ui.file_preview_check_file_permissions_on_mac")
+            }
+        }
+    }
+}
+
 struct EndpointTransportAssessment: Equatable {
     enum Status: Equatable {
         case empty
@@ -635,6 +733,11 @@ struct AgentAPIClient {
         }
         guard (200..<300).contains(http.statusCode) else {
             let message = decodeError(data)
+            // 新版 agentd 会给文件读取失败附带稳定 code；先保留结构化信息，避免 403 被鉴权逻辑吞掉。
+            if path == "/api/files/read",
+               let fileError = FileAccessAPIError.decode(status: http.statusCode, data: data) {
+                throw fileError
+            }
             if AgentAPIError.isCredentialRejection(
                 status: http.statusCode,
                 message: message,

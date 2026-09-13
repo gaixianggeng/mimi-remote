@@ -2,12 +2,14 @@ package httpapi
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -72,6 +74,23 @@ func TestFileReadRejectsOutsidePathWithoutLeakingDetails(t *testing.T) {
 	if strings.Contains(rec.Body.String(), outside) {
 		t.Fatalf("拒绝响应不应泄漏外部路径：%s", rec.Body.String())
 	}
+	body := decodeJSON(t, rec)
+	if body["code"] != fileReadCodePathOutsideScope || body["error"] == nil {
+		t.Fatalf("越界响应应保留 error 并返回稳定 code：%v", body)
+	}
+}
+
+func TestFileReadReportsMissingFileInsideScope(t *testing.T) {
+	server := newTestServer(t)
+	missing := filepath.Join(configuredProjectPath(t, server.handler), "missing.md")
+	rec, _ := readPreviewFile(t, server.handler, missing)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("授权范围内缺失文件应为旧客户端保留 403，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	if body["code"] != fileReadCodeNotFound || body["error"] == nil {
+		t.Fatalf("缺失响应应保留 error 并返回稳定 code：%v", body)
+	}
 }
 
 func TestFileReadReportsPermissionDeniedWithActionableGuidance(t *testing.T) {
@@ -94,15 +113,138 @@ func TestFileReadReportsPermissionDeniedWithActionableGuidance(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "不在允许范围内") {
 		t.Fatalf("授权路径的权限拒绝不应报成 allowlist 问题：%s", rec.Body.String())
 	}
+	// decodeJSON 会读空 recorder body，文本断言必须先取快照。
+	bodyText := rec.Body.String()
+	body := decodeJSON(t, rec)
+	if body["code"] != fileReadCodeAccessDenied || body["error"] == nil {
+		t.Fatalf("权限拒绝应保留 error 并返回稳定 code：%v", body)
+	}
 	if runtime.GOOS == "darwin" {
-		if !strings.Contains(rec.Body.String(), "完全磁盘访问") {
-			t.Fatalf("macOS 权限拒绝应引导用户授予完全磁盘访问：%s", rec.Body.String())
+		// 0o000 触发的是 EACCES：普通 POSIX 权限，不是 TCC，不能误导用户去开完全磁盘访问。
+		if strings.Contains(bodyText, "完全磁盘访问") || body["permission_domain"] != nil {
+			t.Fatalf("普通文件权限拒绝不能误导用户授予完全磁盘访问：%s", bodyText)
 		}
 		return
 	}
-	if strings.Contains(rec.Body.String(), "完全磁盘访问") ||
-		!strings.Contains(rec.Body.String(), "运行用户") {
-		t.Fatalf("非 macOS 权限拒绝应提示检查服务运行用户权限：%s", rec.Body.String())
+	if strings.Contains(bodyText, "完全磁盘访问") ||
+		!strings.Contains(bodyText, "运行用户") {
+		t.Fatalf("非 macOS 权限拒绝应提示检查服务运行用户权限：%s", bodyText)
+	}
+}
+
+func TestFileAccessDeniedMessageMatchesMacPermissionDomain(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS 文件夹授权提示只在 macOS 生效")
+	}
+	documents := fileAccessDeniedMessage("documents")
+	if !strings.Contains(documents, "文稿") || !strings.Contains(documents, "文件与文件夹") || !strings.Contains(documents, "agentd") {
+		t.Fatalf("文稿权限提示应指向文件与文件夹并点名 agentd：%s", documents)
+	}
+	photos := fileAccessDeniedMessage("photos_library")
+	if !strings.Contains(photos, "照片图库") || !strings.Contains(photos, "完全磁盘访问") || !strings.Contains(photos, "Mimi Remote Mac.app") {
+		t.Fatalf("照片图库权限提示应指向完全磁盘访问并说明 agentd 位置：%s", photos)
+	}
+	other := fileAccessDeniedMessage("")
+	if strings.Contains(other, "完全磁盘访问") {
+		t.Fatalf("非标准目录的权限拒绝不应引导完全磁盘访问：%s", other)
+	}
+}
+
+func TestFileReadReportsUnexpectedResolverFailure(t *testing.T) {
+	server := newTestServer(t)
+	projectDir := configuredProjectPath(t, server.handler)
+	path := filepath.Join(projectDir, strings.Repeat("x", 5000))
+	rec, _ := readPreviewFile(t, server.handler, path)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("非 ENOENT/EPERM 解析错误应返回 500，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	if body["code"] != fileReadCodeReadFailed || body["error"] == nil {
+		t.Fatalf("未知读取错误应返回 file_read_failed：%v", body)
+	}
+}
+
+func TestPhotosDerivativeResolverPreservesCandidateErrorsAndRejectsEscape(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	target := filepath.Join(home, "Pictures", "Photos Library.photoslibrary", "resources", "derivatives", "2", "image.jpeg")
+	pictures := filepath.Join(home, "Pictures")
+	original := evalFileSymlinks
+	t.Cleanup(func() { evalFileSymlinks = original })
+
+	for _, wantErr := range []error{syscall.EPERM, syscall.ENOENT} {
+		evalFileSymlinks = func(path string) (string, error) {
+			if path == target {
+				return "", wantErr
+			}
+			return path, nil
+		}
+		if _, candidate, err := resolveAllowedPhotosDerivativeImagePath(target); !candidate || !errors.Is(err, wantErr) {
+			t.Fatalf("合法照片 derivatives 候选应保留 %v：candidate=%v err=%v", wantErr, candidate, err)
+		}
+	}
+
+	escape := filepath.Join(t.TempDir(), "escaped.jpeg")
+	evalFileSymlinks = func(path string) (string, error) {
+		if path == target {
+			return escape, nil
+		}
+		if path == pictures {
+			return pictures, nil
+		}
+		return path, nil
+	}
+	if resolved, candidate, err := resolveAllowedPhotosDerivativeImagePath(target); !candidate || err != nil || resolved != "" {
+		t.Fatalf("成功解析到 Pictures 外时必须拒绝：resolved=%q candidate=%v err=%v", resolved, candidate, err)
+	}
+}
+
+func TestFileReadPhotosLibraryEPERMReportsPhotosPermissionDomain(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("照片图库权限域只在 macOS 生效")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	target := filepath.Join(home, "Pictures", "Photos Library.photoslibrary", "resources", "derivatives", "2", "image.jpeg")
+	original := evalFileSymlinks
+	t.Cleanup(func() { evalFileSymlinks = original })
+	evalFileSymlinks = func(path string) (string, error) {
+		if path == target {
+			return "", &os.PathError{Op: "lstat", Path: path, Err: syscall.EPERM}
+		}
+		return path, nil
+	}
+	server := newTestServer(t)
+	rec, _ := readPreviewFile(t, server.handler, target)
+	bodyText := rec.Body.String()
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("照片图库被 TCC 拒绝应返回 403，got=%d body=%s", rec.Code, bodyText)
+	}
+	body := decodeJSON(t, rec)
+	if body["code"] != fileReadCodeAccessDenied || body["permission_domain"] != "photos_library" || body["action"] != "allow_on_mac" {
+		t.Fatalf("照片图库 EPERM 应带 photos_library 权限域与 Mac 授权动作：%v", body)
+	}
+	if !strings.Contains(bodyText, "完全磁盘访问") {
+		t.Fatalf("照片图库权限拒绝应引导完全磁盘访问：%s", bodyText)
+	}
+}
+
+func TestFileReadOnlyTreatsEPERMAsMacOSTCCCandidate(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("TCC 候选仅适用于 macOS")
+	}
+	if !isMacOSTCCPermissionCandidate(syscall.EPERM) {
+		t.Fatal("EPERM 应视为 macOS TCC 候选")
+	}
+	if isMacOSTCCPermissionCandidate(syscall.EACCES) {
+		t.Fatal("EACCES 是普通文件权限错误，不能触发 TCC 探测")
+	}
+	rec := httptest.NewRecorder()
+	(&Router{}).writeFileReadError(rec, "/no/path/leak", syscall.EACCES)
+	body := decodeJSON(t, rec)
+	if body["code"] != fileReadCodeAccessDenied || body["permission_domain"] != nil || body["action"] != nil {
+		t.Fatalf("EACCES 不应携带权限域或 Mac 授权动作：%v", body)
 	}
 }
 

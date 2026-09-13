@@ -11718,6 +11718,142 @@
         }
       }
     },
+    "ui.file_preview_allow_desktop_on_mac": {
+      "comment": "File preview error shown when macOS blocks Desktop access for agentd.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS blocked access to the Desktop folder. On your Mac, allow the system prompt; if no prompt appears or it was denied before, enable agentd under System Settings → Privacy & Security → Files & Folders (or Full Disk Access), then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 拒绝了对“桌面”文件夹的访问。请在 Mac 上允许系统弹出的提示；如果没有提示或之前拒绝过，请在“系统设置 → 隐私与安全性 → 文件与文件夹”或“完全磁盘访问”中为 agentd 开启，然后重试。"
+          }
+        }
+      }
+    },
+    "ui.file_preview_allow_documents_on_mac": {
+      "comment": "File preview error shown when macOS blocks Documents access for agentd.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS blocked access to the Documents folder. On your Mac, allow the system prompt; if no prompt appears or it was denied before, enable agentd under System Settings → Privacy & Security → Files & Folders (or Full Disk Access), then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 拒绝了对“文稿”文件夹的访问。请在 Mac 上允许系统弹出的提示；如果没有提示或之前拒绝过，请在“系统设置 → 隐私与安全性 → 文件与文件夹”或“完全磁盘访问”中为 agentd 开启，然后重试。"
+          }
+        }
+      }
+    },
+    "ui.file_preview_allow_downloads_on_mac": {
+      "comment": "File preview error shown when macOS blocks Downloads access for agentd.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS blocked access to the Downloads folder. On your Mac, allow the system prompt; if no prompt appears or it was denied before, enable agentd under System Settings → Privacy & Security → Files & Folders (or Full Disk Access), then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 拒绝了对“下载”文件夹的访问。请在 Mac 上允许系统弹出的提示；如果没有提示或之前拒绝过，请在“系统设置 → 隐私与安全性 → 文件与文件夹”或“完全磁盘访问”中为 agentd 开启，然后重试。"
+          }
+        }
+      }
+    },
+    "ui.file_preview_allow_photos_library_on_mac": {
+      "comment": "File preview error shown for the Photos Library, whose permissions differ from the Pictures folder.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This image is inside the macOS Photos Library, which uses different permissions from the Pictures folder. On your Mac, add agentd to System Settings → Privacy & Security → Full Disk Access (the app install keeps agentd inside Mimi Remote Mac.app; Homebrew installs use /opt/homebrew/opt/mimi-remote/bin/agentd), then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这张图片位于 macOS 照片图库，它与“图片”文件夹使用不同的权限。请在 Mac 的“系统设置 → 隐私与安全性 → 完全磁盘访问”中添加 agentd（App 安装版位于 Mimi Remote Mac.app 内，Homebrew 版为 /opt/homebrew/opt/mimi-remote/bin/agentd），然后重试。"
+          }
+        }
+      }
+    },
+    "ui.file_preview_check_file_permissions_on_mac": {
+      "comment": "File preview error shown when POSIX permissions block access outside a standard protected directory.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to read this file. On your Mac, check the read permissions for the file and its parent folder, then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取该文件。请在 Mac 上检查文件及其父级目录的读取权限，然后重试。"
+          }
+        }
+      }
+    },
+    "ui.file_preview_file_not_found": {
+      "comment": "File preview error shown when the requested file no longer exists.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file no longer exists or has moved. Refresh and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该文件已不存在或已移动。请刷新后重试。"
+          }
+        }
+      }
+    },
+    "ui.file_preview_file_read_failed": {
+      "comment": "File preview error shown when agentd cannot read the file for an unspecified reason.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to read this file. Please try again later."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取该文件。请稍后重试。"
+          }
+        }
+      }
+    },
+    "ui.file_preview_path_outside_scope": {
+      "comment": "File preview error shown when the requested path is outside Mimi’s allowed folders.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file is outside Mimi’s allowed folders. On your Mac, add an appropriate parent folder to Mimi’s allowed folders, then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该文件不在 Mimi 的授权范围内。请在 Mac 上将合适的父级目录加入 Mimi 的授权范围，然后重试。"
+          }
+        }
+      }
+    },
     "ui.file_upload_capability_negotiation_failed": {
       "comment": "Shown when file upload capability negotiation is missing, inconsistent, or unknown.",
       "localizations": {

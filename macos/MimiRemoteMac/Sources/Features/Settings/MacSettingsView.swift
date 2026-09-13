@@ -52,7 +52,7 @@ struct MacSettingsView: View {
                 Button("打开完全磁盘访问权限设置…") {
                     store.openFullDiskAccessSettings()
                 }
-                Text("只有 agentd 需要读取 macOS 保护的目录时，才需要授予完全磁盘访问权限。")
+                Text("只有 agentd 需要读取 macOS 保护的目录（例如“照片”图库里拖入会话的图片）时，才需要授予完全磁盘访问权限。在列表中添加 Mimi Remote Mac.app/Contents/Resources/agentd。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
