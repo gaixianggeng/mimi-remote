@@ -94,6 +94,9 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testHostChangeDuringModelLookupCancelsCapturedSubmission \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCapturedGuidedSendAfterSelectingAnotherSessionUsesBackgroundSocketUntilACK \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testForegroundGuidedSendACKAfterNavigationStillSettlesOriginalEcho \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testReenteringCreatingSessionBlocksSecondSendUntilRemoteIdentityArrives \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testBackgroundGuidanceWriterConflictDoesNotDisableSelectedSession \
+  -only-testing:MimiRemoteTests/GuidanceSendLifecycleTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAuthoritativeFirstPageReadsFreshIndexIncludingExternalUnarchive \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAuthoritativeEmptyIndexFallsBackToHistoryScan \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testExternalArchiveDoesNotPermanentlyDisableDirectoryIndex \

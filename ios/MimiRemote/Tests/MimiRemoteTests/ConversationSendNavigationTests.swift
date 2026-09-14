@@ -3,6 +3,127 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testReenteringCreatingSessionBlocksSecondSendUntilRemoteIdentityArrives() async throws {
+        let project = makeProject(id: "proj_creating_reentry")
+        let gate = TurnSubmissionClientGate()
+        let client = TurnSubmissionGateClient(projects: [project], sessions: [], gate: gate)
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+        await store.refreshAll(autoAttach: false)
+        _ = await store.createSession(projectID: project.id, prompt: "", resume: nil)
+        let firstSend = Task {
+            await store.sendTurn(CodexAppServerTurnPayload(prompt: "首条消息"))
+        }
+        await gate.waitForModelRequest()
+        await gate.resolveModels([])
+        await gate.waitForCreateRequestCount(1)
+        let placeholder = try XCTUnwrap(store.selectedSession)
+        XCTAssertTrue(store.isLoading)
+
+        store.returnToSessionList()
+        _ = await store.createSession(projectID: project.id, prompt: "", resume: nil)
+        XCTAssertTrue(store.canSendInSelectedSession, "新草稿不受原会话创建等待影响")
+        await store.selectSession(placeholder)
+        XCTAssertFalse(store.isLoading)
+        XCTAssertFalse(store.canSendInSelectedSession)
+        let didSendSecond = await store.sendTurn(CodexAppServerTurnPayload(prompt: "等待中的第二条"))
+        XCTAssertFalse(didSendSecond, "不能接受发往尚无真实 ID 的会话的后续消息")
+        XCTAssertTrue(store.queuedTurns(sessionID: placeholder.id).isEmpty)
+
+        let created = makeSession(
+            id: "sess_created_after_reentry",
+            projectID: project.id,
+            title: "首条消息",
+            status: "running",
+            source: "codex",
+            activeTurnID: "turn-created-first"
+        )
+        await gate.resolveCreate(.success(try makeCreateSessionResponse(session: created)))
+        let didSendFirst = await firstSend.value
+        XCTAssertTrue(didSendFirst)
+        XCTAssertEqual(store.selectedSessionID, created.id, "重入的占位应切换为同一会话的真实身份")
+        XCTAssertTrue(store.canSendInSelectedSession)
+        XCTAssertFalse(store.sessions.contains { $0.id == placeholder.id })
+
+        let didSendAfterCreation = await store.sendTurn(CodexAppServerTurnPayload(prompt: "创建后的第二条"))
+        XCTAssertTrue(didSendAfterCreation)
+        XCTAssertEqual(store.queuedTurns(sessionID: created.id).map(\.previewText), ["创建后的第二条"])
+        XCTAssertTrue(store.queuedTurns(sessionID: placeholder.id).isEmpty)
+        let requests = await gate.createRequests()
+        XCTAssertEqual(requests.count, 1)
+    }
+
+    func testBackgroundGuidanceWriterConflictDoesNotDisableSelectedSession() async throws {
+        // 同时覆盖建连失败与发送后的 RPC 拒绝，两者必须把冲突登记给原会话。
+        for rejectsAfterDispatch in [false, true] {
+            let project = makeProject(id: "proj_guided_writer_conflict")
+            let original = makeSession(
+                id: "sess_guided_writer_original", projectID: project.id, title: "原会话",
+                status: "running", source: "codex", activeTurnID: "turn-writer-original"
+            )
+            let other = makeSession(
+                id: "sess_guided_writer_other", projectID: project.id, title: "另一会话",
+                status: "running", source: "codex", activeTurnID: "turn-writer-other"
+            )
+            let appStore = makeIsolatedAppStore()
+            appStore.token = "test-token"
+            let conversationStore = ConversationStore()
+            var sockets: [MockWebSocketClient] = []
+            let store = SessionStore(
+                appStore: appStore, conversationStore: conversationStore, logStore: LogStore(),
+                clientFactory: {
+                    MockSessionStoreClient(projects: [project], sessions: [original, other], messagesResult: [])
+                },
+                webSocketFactory: {
+                    let socket = MockWebSocketClient()
+                    sockets.append(socket)
+                    return socket
+                }
+            )
+            await store.refreshAll(autoAttach: false)
+            store.takeOverSession(original)
+            await store.selectSession(original)
+            let submissionContext = store.captureTurnSubmissionContext()
+            store.takeOverSession(other)
+            await store.selectSession(other)
+            let otherSocket = try XCTUnwrap(sockets.last)
+            otherSocket.emitStatus(.connected)
+            try await waitForWebSocketStatus(.connected, store: store)
+            store.setErrorMessage("当前会话原有提示")
+            let didSend = await store.sendTurn(
+                CodexAppServerTurnPayload(prompt: "后台引导冲突"),
+                runningDelivery: .guided,
+                submissionContext: submissionContext
+            )
+            XCTAssertTrue(didSend)
+            let backgroundSocket = try XCTUnwrap(sockets.last)
+            XCTAssertFalse(backgroundSocket === otherSocket)
+            let conflict = "-32600: thread already has an active writer"
+            if rejectsAfterDispatch {
+                backgroundSocket.emitStatus(.connected)
+                try await waitForSentGuidanceCount(1, socket: backgroundSocket)
+                let clientID = try XCTUnwrap(backgroundSocket.sentGuidance.first?.clientMessageID)
+                backgroundSocket.onTurnSendOutcome?(clientID, .rejected(message: conflict))
+            } else {
+                backgroundSocket.emitStatus(.failed(conflict))
+            }
+            try await waitForMessageStatus(
+                .failed, content: "后台引导冲突", sessionID: original.id, conversationStore: conversationStore
+            )
+            XCTAssertTrue(store.hasActiveWriterConflict(sessionID: original.id))
+            XCTAssertFalse(store.hasActiveWriterConflict(sessionID: other.id))
+            XCTAssertTrue(store.canSendInSelectedSession)
+            XCTAssertEqual(store.selectedSessionID, other.id)
+            XCTAssertEqual(store.errorMessage, "当前会话原有提示")
+            XCTAssertNil(store.pendingGuidanceBySessionID[original.id])
+        }
+    }
+
     func testCapturedGuidedSendAfterSelectingAnotherSessionUsesBackgroundSocketUntilACK() async throws {
         let project = makeProject(id: "proj_guided_navigation")
         let original = makeSession(

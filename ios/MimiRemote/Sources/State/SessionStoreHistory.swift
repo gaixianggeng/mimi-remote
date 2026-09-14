@@ -256,8 +256,12 @@ extension SessionStore {
                 }
             }
 
+            // 用户重入同一个占位时，身份迁移应跟随当前选择；仍停在其他会话时不抢回页面。
+            let completionSelectionLease = resume == nil && optimisticSessionID != nil
+                && selectedSessionID == optimisticSessionID
+                ? currentSelectionLease() : optimisticSelectionLease
             let responseSelectionLease: SessionSelectionLease?
-            if let optimisticSessionID, let optimisticSelectionLease {
+            if let optimisticSessionID, let optimisticSelectionLease = completionSelectionLease {
                 if optimisticSessionID == responseSession.id {
                     responseSelectionLease = isSelectionLeaseCurrent(optimisticSelectionLease)
                         ? optimisticSelectionLease

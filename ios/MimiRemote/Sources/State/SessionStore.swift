@@ -1820,10 +1820,6 @@ final class SessionStore: ObservableObject {
         return controlState(for: session).isControllable
     }
 
-    var canSendInSelectedSession: Bool {
-        canControlSession(selectedSession) && selectedQuotaNotice?.blocksSending != true
-    }
-
     var selectedQuotaNotice: CodexQuotaNotice? {
         CodexQuotaNotice.make(rateLimit: selectedSession?.rateLimit, errorMessage: errorMessage)
     }
