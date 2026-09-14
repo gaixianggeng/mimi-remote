@@ -142,6 +142,7 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
         .environmentObject(fixture.sessionStore)
         .environmentObject(fixture.themeStore)
         .environmentObject(fixture.tailcatController)
+        .environmentObject(fixture.lockScreenApprovalStore)
         .environment(\.colorScheme, colorScheme)
         .environment(\.dynamicTypeSize, dynamicTypeSize)
         .frame(width: width, height: height)
@@ -214,6 +215,11 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
             sessionStore: sessionStore,
             themeStore: ThemeStore(defaults: themeDefaults),
             tailcatController: tailcatController,
+            lockScreenApprovalStore: LockScreenApprovalStore(
+                defaults: defaults,
+                ticketStore: PushTicketStore(keychain: keychain),
+                identityStore: PushInstallationIdentityStore(keychain: keychain)
+            ),
             qrScannerPresentation: ConnectionQRCodeScannerPresentation()
         )
     }
@@ -253,5 +259,6 @@ private struct Fixture {
     let sessionStore: SessionStore
     let themeStore: ThemeStore
     let tailcatController: TailcatExperimentController
+    let lockScreenApprovalStore: LockScreenApprovalStore
     let qrScannerPresentation: ConnectionQRCodeScannerPresentation
 }

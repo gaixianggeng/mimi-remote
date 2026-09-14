@@ -179,6 +179,7 @@ struct InitialConnectionSettingsSections: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var tailcatController: TailcatExperimentController
+    @EnvironmentObject private var lockScreenApprovalStore: LockScreenApprovalStore
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @ScaledMetric(relativeTo: .body) private var profileTitlePointSize = 17.0
     @ScaledMetric(relativeTo: .subheadline) private var profileDetailPointSize = 15.0
@@ -483,12 +484,15 @@ struct InitialConnectionSettingsSections: View {
 
     /// 消息提醒绑定的是某一台电脑，和电脑管理放在同一个 Tab；单独成组，不混进当前电脑卡片。
     /// 一台电脑都没存过时没有可绑定的对象，这一组不出现。
+    /// 右侧状态与详情页开关同一口径：只看当前电脑是否已开启，不再写死「默认关闭」。
     private var notificationsSection: some View {
-        Section {
+        let isEnabled = lockScreenApprovalStore.isEnabled(for: appStore.activeConnectionProfileID)
+
+        return Section {
             NavigationLink(value: SettingsDestination.lockScreenApproval) {
                 ConnectionRowLabel(
                     title: L10n.text("ui.push_lock_screen_approval"),
-                    value: L10n.text("ui.default_off"),
+                    value: L10n.text(isEnabled ? "ui.push_status_on" : "ui.push_status_off"),
                     systemImage: "lock.iphone"
                 )
             }
