@@ -1891,12 +1891,6 @@ final class SessionStore: ObservableObject {
         return hasActiveWriterConflict(sessionID: selectedSessionID)
     }
 
-    /// 冲突卡会整块替换输入框。Claude 被 Mac 持有时，持有方说明和接管入口都在输入框托盘里，
-    /// 冲突卡的分叉对只读会话又不可用，所以持有态优先保留输入框。
-    var selectedSessionShowsWriterConflictCard: Bool {
-        selectedSessionHasActiveWriterConflict && selectedOwnershipNotice == nil
-    }
-
     func hasActiveWriterConflict(sessionID: SessionID) -> Bool {
         activeWriterConflictLeases.contains(
             HostSessionLease(hostScope: appStore.activeHostScope, sessionID: sessionID)
