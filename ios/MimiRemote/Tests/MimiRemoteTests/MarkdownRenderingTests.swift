@@ -125,6 +125,67 @@ final class MarkdownRenderingTests: XCTestCase {
         XCTAssertFalse(ConversationMarkdownPresentation.containsLink(in: "这里讨论的是 ]( 两个 Markdown 符号"))
     }
 
+    func testUserMessagePresentationHidesAmbientBrowserContextAndRequestMarker() {
+        let content = """
+        <in-app-browser-context
+        source="ambient-ui-state">
+        This block is automatically supplied ambient UI state, not part of the user's request.
+        # In app browser:
+        - The user has the in-app browser open with 1 tab.
+        - Current URL: https://chatgpt.com/c/example
+        </in-app-browser-context>
+
+        ## My request:
+        帮我整理一下最近两天合并的代码。
+        """
+
+        XCTAssertEqual(
+            ConversationUserMessagePresentation.displayContent(from: content),
+            "帮我整理一下最近两天合并的代码。"
+        )
+        XCTAssertTrue(isVisibleAppServerUserMessageText(content))
+        XCTAssertFalse(isVisibleAppServerUserMessageText("""
+        <in-app-browser-context source="ambient-ui-state">
+        only ambient state
+        </in-app-browser-context>
+        """))
+    }
+
+    func testUserMessagePresentationPreservesRegularText() {
+        for content in [
+            "用户确实想讨论 <in-app-browser-context> 这个标签。",
+            "<in-app-browser-context> 这个标签是什么意思？",
+            "<in-app-browser-context-example>示例</in-app-browser-context-example>",
+            "<in-app-browser-context source=\"ambient-ui-state\">未闭合的示例",
+            "<in-app-browser-context>普通示例</in-app-browser-context>\n请求",
+            "```xml\n<in-app-browser-context source=\"ambient-ui-state\">状态</in-app-browser-context>\n```",
+        ] {
+            XCTAssertEqual(ConversationUserMessagePresentation.displayContent(from: content), content)
+            XCTAssertTrue(isVisibleAppServerUserMessageText(content))
+        }
+    }
+
+    func testBrowserContextHistoryPreservesImagesAndOriginalPayload() async throws {
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        let context = "<in-app-browser-context source=\"ambient-ui-state\">状态</in-app-browser-context>"
+        for request in ["", "\n\n## My request:\n检查图片"] {
+            let original = context + request
+            let projected = await runtime.historyMessage(
+                from: ["type": .string("userMessage"), "id": .string("image-request"), "content": .array([
+                    .object(["type": .string("text"), "text": .string(original)]),
+                    .object(["type": .string("image"), "url": .string("https://example.com/image.png")]),
+                ])],
+                sessionID: "test-session", turnID: "test-turn", timelineOrdinal: 0,
+                isInjectedUserMessage: false, startedAt: nil, completedAt: nil,
+                estimatedAt: nil, turnIsInProgress: false, snapshotReadAt: Date()
+            )
+            let message = try XCTUnwrap(projected)
+            XCTAssertEqual(message.content, original)
+            XCTAssertEqual(message.turnPayload?.input.count, 2)
+            XCTAssertEqual(ConversationUserMessagePresentation.displayContent(from: original), request.isEmpty ? "" : "检查图片")
+        }
+    }
+
     func testCrossSessionOriginUsesStrongLegacyHandoffSignature() {
         let generated = """
         [https://linear.app/example](https://linear.app/example) 继续处理。
