@@ -11724,13 +11724,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "macOS blocked access to the Desktop folder. On your Mac, allow the system prompt; if no prompt appears or it was denied before, enable agentd under System Settings → Privacy & Security → Files & Folders (or Full Disk Access), then retry."
+            "value": "macOS blocked access to the Desktop folder. On your Mac, allow the system prompt; if no prompt appears or it was denied before, enable Mimi Remote Mac (or agentd for Homebrew installs) under System Settings → Privacy & Security → Files & Folders, then retry."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "macOS 拒绝了对“桌面”文件夹的访问。请在 Mac 上允许系统弹出的提示；如果没有提示或之前拒绝过，请在“系统设置 → 隐私与安全性 → 文件与文件夹”或“完全磁盘访问”中为 agentd 开启，然后重试。"
+            "value": "macOS 拒绝了对“桌面”文件夹的访问。请在 Mac 上允许系统弹出的提示；如果没有提示或之前拒绝过，请在“系统设置 → 隐私与安全性 → 文件与文件夹”中为 Mimi Remote Mac 开启（Homebrew 安装请为 agentd 开启），然后重试。"
           }
         }
       }
@@ -11741,13 +11741,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "macOS blocked access to the Documents folder. On your Mac, allow the system prompt; if no prompt appears or it was denied before, enable agentd under System Settings → Privacy & Security → Files & Folders (or Full Disk Access), then retry."
+            "value": "macOS blocked access to the Documents folder. On your Mac, allow the system prompt; if no prompt appears or it was denied before, enable Mimi Remote Mac (or agentd for Homebrew installs) under System Settings → Privacy & Security → Files & Folders, then retry."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "macOS 拒绝了对“文稿”文件夹的访问。请在 Mac 上允许系统弹出的提示；如果没有提示或之前拒绝过，请在“系统设置 → 隐私与安全性 → 文件与文件夹”或“完全磁盘访问”中为 agentd 开启，然后重试。"
+            "value": "macOS 拒绝了对“文稿”文件夹的访问。请在 Mac 上允许系统弹出的提示；如果没有提示或之前拒绝过，请在“系统设置 → 隐私与安全性 → 文件与文件夹”中为 Mimi Remote Mac 开启（Homebrew 安装请为 agentd 开启），然后重试。"
           }
         }
       }
@@ -11758,13 +11758,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "macOS blocked access to the Downloads folder. On your Mac, allow the system prompt; if no prompt appears or it was denied before, enable agentd under System Settings → Privacy & Security → Files & Folders (or Full Disk Access), then retry."
+            "value": "macOS blocked access to the Downloads folder. On your Mac, allow the system prompt; if no prompt appears or it was denied before, enable Mimi Remote Mac (or agentd for Homebrew installs) under System Settings → Privacy & Security → Files & Folders, then retry."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "macOS 拒绝了对“下载”文件夹的访问。请在 Mac 上允许系统弹出的提示；如果没有提示或之前拒绝过，请在“系统设置 → 隐私与安全性 → 文件与文件夹”或“完全磁盘访问”中为 agentd 开启，然后重试。"
+            "value": "macOS 拒绝了对“下载”文件夹的访问。请在 Mac 上允许系统弹出的提示；如果没有提示或之前拒绝过，请在“系统设置 → 隐私与安全性 → 文件与文件夹”中为 Mimi Remote Mac 开启（Homebrew 安装请为 agentd 开启），然后重试。"
           }
         }
       }
@@ -11775,13 +11775,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This image is inside the macOS Photos Library, which uses different permissions from the Pictures folder. On your Mac, add agentd to System Settings → Privacy & Security → Full Disk Access (the app install keeps agentd inside Mimi Remote Mac.app; Homebrew installs use /opt/homebrew/opt/mimi-remote/bin/agentd), then retry."
+            "value": "This image is in the macOS Photos Library, which uses different permissions from the Pictures folder. On your Mac, open Mimi Remote Mac Settings → File Access and click Allow Photos Access, then retry. For Homebrew installs, add agentd under Full Disk Access."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "这张图片位于 macOS 照片图库，它与“图片”文件夹使用不同的权限。请在 Mac 的“系统设置 → 隐私与安全性 → 完全磁盘访问”中添加 agentd（App 安装版位于 Mimi Remote Mac.app 内，Homebrew 版为 /opt/homebrew/opt/mimi-remote/bin/agentd），然后重试。"
+            "value": "这张图片位于 macOS 照片图库，它与“图片”文件夹使用不同的权限。请在 Mac 上打开 Mimi Remote Mac 的“设置 → 文件访问”，点“允许访问照片”，然后重试。Homebrew 安装请在“完全磁盘访问”中添加 agentd。"
           }
         }
       }

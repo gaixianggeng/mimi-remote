@@ -32,6 +32,7 @@
 		AD199C3299AE46CEBBFBD8F4 /* MenuRuntimePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14C8D785FAF772A76606A4A /* MenuRuntimePresentationTests.swift */; };
 		B0007C75D28B779DE9DE6270 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08DE170A943EDB5164E2CD95 /* PairingView.swift */; };
 		B4E72BE5C26B15E8255D9F2B /* HealthClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FF645CF76E8BD94261F54A9 /* HealthClient.swift */; };
+		D20BE2303A9CADF1E53D1ACF /* AgentdSupervisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AE25E5AEC2D1798E2848DB9 /* AgentdSupervisor.swift */; };
 		D336EA8131545784B5D56A67 /* AppUpdateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8A55B52C00DCCF1CB58B745 /* AppUpdateView.swift */; };
 		D888FADCD970DD7E91DBFF45 /* AgentCommandClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38BFD44EAEE64300C32946C4 /* AgentCommandClient.swift */; };
 		DE712EF3822095AC7465834A /* MacSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B8B42F16AE872A2164A2C14 /* MacSettingsView.swift */; };
@@ -61,6 +62,7 @@
 		08DE170A943EDB5164E2CD95 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		0B8B42F16AE872A2164A2C14 /* MacSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSettingsView.swift; sourceTree = "<group>"; };
 		14513EDAFE3A09C6F7A08CC1 /* ExperimentPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExperimentPresentationTests.swift; sourceTree = "<group>"; };
+		1AE25E5AEC2D1798E2848DB9 /* AgentdSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentdSupervisor.swift; sourceTree = "<group>"; };
 		252E87DED48E48439FF3A75F /* BrandColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandColors.swift; sourceTree = "<group>"; };
 		38BFD44EAEE64300C32946C4 /* AgentCommandClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCommandClient.swift; sourceTree = "<group>"; };
 		3C59B0505460DB90B25BDCDE /* AppUpdateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateTests.swift; sourceTree = "<group>"; };
@@ -233,6 +235,7 @@
 		C99BB8B5F433D41956D51A80 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				1AE25E5AEC2D1798E2848DB9 /* AgentdSupervisor.swift */,
 				0665418B45A53032B38134E3 /* MimiRemoteMacApp.swift */,
 			);
 			path = App;
@@ -397,6 +400,7 @@
 				D888FADCD970DD7E91DBFF45 /* AgentCommandClient.swift in Sources */,
 				7DA4ACD2AA9E502238AC5228 /* AgentLogClient.swift in Sources */,
 				E315A720A10E9DC2DEC52514 /* AgentModels.swift in Sources */,
+				D20BE2303A9CADF1E53D1ACF /* AgentdSupervisor.swift in Sources */,
 				E69A1AE53A6D6F073F9718B0 /* AppUpdateStore.swift in Sources */,
 				D336EA8131545784B5D56A67 /* AppUpdateView.swift in Sources */,
 				1A8CB50439D0E08A8514EA5B /* BrandColors.swift in Sources */,

@@ -183,19 +183,33 @@ codesign --verify --strict --verbose=2 "$BRIDGE_PATH"
 codesign --verify --strict --verbose=2 "$TAILCAT_PATH"
 plutil -lint "$LAUNCH_AGENT_PATH" >/dev/null
 
-if plutil -extract NSPhotoLibraryUsageDescription raw -o - "$INFO_PLIST_PATH" >/dev/null 2>&1; then
-  echo "Mac 安装包校验失败：App 仍包含已移除的照片图库用途说明。" >&2
+# 主 App 通过 agentd supervisor 承担隐私授权责任：LaunchAgent 只能启动主可执行文件的
+# supervisor 模式，不能再直接启动裸 agentd。
+launch_bundle_program="$(plutil -extract BundleProgram raw -o - "$LAUNCH_AGENT_PATH" 2>/dev/null || true)"
+launch_argument_zero="$(plutil -extract ProgramArguments.0 raw -o - "$LAUNCH_AGENT_PATH" 2>/dev/null || true)"
+launch_argument_one="$(plutil -extract ProgramArguments.1 raw -o - "$LAUNCH_AGENT_PATH" 2>/dev/null || true)"
+if [[ "$launch_bundle_program" != "Contents/MacOS/Mimi Remote Mac" \
+      || "$launch_argument_zero" != "Mimi Remote Mac" \
+      || "$launch_argument_one" != "--agentd-supervisor" ]] \
+    || plutil -extract ProgramArguments.2 raw -o - "$LAUNCH_AGENT_PATH" >/dev/null 2>&1; then
+  echo "Mac 安装包校验失败：LaunchAgent 必须只通过主 App 的 agentd supervisor 启动后台服务。" >&2
   exit 1
 fi
 
-photos_entitlement="com.apple.security.personal-information.photos-library"
-for binary_path in "$APP_PATH" "$AGENT_PATH"; do
-  signed_entitlements="$(codesign -d --entitlements - --xml "$binary_path" 2>/dev/null || true)"
-  if grep -Fq "$photos_entitlement" <<<"$signed_entitlements"; then
-    echo "Mac 安装包校验失败：${binary_path} 仍包含已移除的照片图库 entitlement。" >&2
+for usage_key in NSPhotoLibraryUsageDescription NSDesktopFolderUsageDescription NSDocumentsFolderUsageDescription NSDownloadsFolderUsageDescription; do
+  usage_description="$(plutil -extract "$usage_key" raw -o - "$INFO_PLIST_PATH" 2>/dev/null || true)"
+  if [[ -z "$usage_description" ]]; then
+    echo "Mac 安装包校验失败：Info.plist 缺少非空的 ${usage_key}。" >&2
     exit 1
   fi
 done
+
+photos_entitlement="com.apple.security.personal-information.photos-library"
+signed_app_entitlements="$(codesign -d --entitlements - --xml "$APP_PATH" 2>/dev/null || true)"
+if ! grep -Fq "$photos_entitlement" <<<"$signed_app_entitlements"; then
+  echo "Mac 安装包校验失败：主 App 签名缺少照片图库 entitlement，无法申请照片权限。" >&2
+  exit 1
+fi
 
 # 运行时按 Info.plist 的 CFBundleExecutable 解析 TCC 责任进程；最终 Release 包仍只应
 # 包含这个主程序，避免把 Debug/Preview dylib 或其他未预期入口带进安装产物。

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
@@ -139,14 +140,27 @@ func TestFileAccessDeniedMessageMatchesMacPermissionDomain(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS 文件夹授权提示只在 macOS 生效")
 	}
+	t.Setenv(doctor.MacAppTCCOwnerEnv, "")
 	documents := fileAccessDeniedMessage("documents")
-	if !strings.Contains(documents, "文稿") || !strings.Contains(documents, "文件与文件夹") || !strings.Contains(documents, "agentd") {
-		t.Fatalf("文稿权限提示应指向文件与文件夹并点名 agentd：%s", documents)
+	if !strings.Contains(documents, "文稿") || !strings.Contains(documents, "文件与文件夹") || !strings.Contains(documents, "为 agentd 开启") {
+		t.Fatalf("独立 agentd 的文稿权限提示应指向文件与文件夹并点名 agentd：%s", documents)
 	}
 	photos := fileAccessDeniedMessage("photos_library")
-	if !strings.Contains(photos, "照片图库") || !strings.Contains(photos, "完全磁盘访问") || !strings.Contains(photos, "Mimi Remote Mac.app") {
-		t.Fatalf("照片图库权限提示应指向完全磁盘访问并说明 agentd 位置：%s", photos)
+	if !strings.Contains(photos, "照片图库") || !strings.Contains(photos, "完全磁盘访问") || !strings.Contains(photos, "/opt/homebrew/opt/mimi-remote/bin/agentd") {
+		t.Fatalf("独立 agentd 的照片图库提示应指向完全磁盘访问并给出 agentd 路径：%s", photos)
 	}
+
+	// App 安装版由 Mimi Remote Mac supervisor 托管：授权主体是主 App，照片在 App 设置里申请。
+	t.Setenv(doctor.MacAppTCCOwnerEnv, "com.gaixianggeng.mimi.mac")
+	appDocuments := fileAccessDeniedMessage("documents")
+	if !strings.Contains(appDocuments, "为 Mimi Remote Mac 开启") || strings.Contains(appDocuments, "为 agentd 开启") {
+		t.Fatalf("App 托管时文件夹权限应记在 Mimi Remote Mac 名下：%s", appDocuments)
+	}
+	appPhotos := fileAccessDeniedMessage("photos_library")
+	if !strings.Contains(appPhotos, "允许访问照片") || strings.Contains(appPhotos, "完全磁盘访问") {
+		t.Fatalf("App 托管时照片图库应引导到 Mimi Remote Mac 设置，而不是完全磁盘访问：%s", appPhotos)
+	}
+	t.Setenv(doctor.MacAppTCCOwnerEnv, "")
 	other := fileAccessDeniedMessage("")
 	if strings.Contains(other, "完全磁盘访问") {
 		t.Fatalf("非标准目录的权限拒绝不应引导完全磁盘访问：%s", other)
@@ -218,6 +232,7 @@ func TestFileReadPhotosLibraryEPERMReportsPhotosPermissionDomain(t *testing.T) {
 		}
 		return path, nil
 	}
+	t.Setenv(doctor.MacAppTCCOwnerEnv, "")
 	server := newTestServer(t)
 	rec, _ := readPreviewFile(t, server.handler, target)
 	bodyText := rec.Body.String()

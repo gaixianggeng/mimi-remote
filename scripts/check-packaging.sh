@@ -193,11 +193,28 @@ grep -Fq 'com.gaixianggeng.mimi.mac.tailcat' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有为内嵌 Tailcat 设置稳定签名 identifier。"
 grep -Fq 'for binary_path in "$AGENT_PATH" "$BRIDGE_PATH" "$TAILCAT_PATH"' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有在公证前直接校验内嵌二进制签名。"
-! grep -Fq 'com.apple.security.personal-information.photos-library' \
+# 照片图库权限曾随 Codex shared daemon supervisor 一起移除；现在由 agentd supervisor 让主 App
+# 承担隐私授权责任，照片权限必须由主 App 声明并申请。
+grep -Fq 'com.apple.security.personal-information.photos-library' \
   macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements \
-  || fail "Mac App 仍声明已移除的照片图库 entitlement。"
-! grep -Fq 'NSPhotoLibraryUsageDescription' macos/MimiRemoteMac/Resources/Info.plist \
-  || fail "Mac App 仍声明已移除的照片图库用途说明。"
+  || fail "Mac App 缺少 Hardened Runtime 照片图库 entitlement，agentd supervisor 无法承接照片权限。"
+grep -Fq 'NSPhotoLibraryUsageDescription' macos/MimiRemoteMac/Resources/Info.plist \
+  || fail "Mac App 缺少照片图库用途说明。"
+grep -Fq '<string>Contents/MacOS/Mimi Remote Mac</string>' \
+  macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist \
+  || fail "LaunchAgent 没有通过 Mimi Remote Mac 主进程启动 agentd supervisor。"
+grep -Fq -- '<string>--agentd-supervisor</string>' \
+  macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist \
+  || fail "LaunchAgent 缺少严格的 agentd supervisor 入口参数。"
+! grep -Fq '<string>Contents/Resources/agentd</string>' \
+  macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist \
+  || fail "LaunchAgent 仍直接启动裸 agentd，主 App 无法承担隐私授权责任。"
+grep -Fq 'POSIX_SPAWN_START_SUSPENDED' macos/MimiRemoteMac/Sources/App/AgentdSupervisor.swift \
+  || fail "agentd supervisor 没有在执行前暂停子进程以完成运行态签名校验。"
+grep -Fq 'POSIX_SPAWN_SETSIGDEF' macos/MimiRemoteMac/Sources/App/AgentdSupervisor.swift \
+  || fail "agentd supervisor 没有为子进程恢复默认终止信号处置。"
+grep -Fq 'agentd-supervisor-v1' macos/MimiRemoteMac/Sources/Infrastructure/ServiceManagementClient.swift \
+  || fail "LaunchAgent 定义变化后没有强制已安装的机器重新登记。"
 [[ ! -e macos/MimiRemoteMac/Sources/App/CodexDaemonSupervisor.swift ]] \
   || fail "Mac App 仍包含已移除的 Codex shared daemon supervisor。"
 grep -Fq -- 'CommandLine.arguments.contains("--codex-daemon-supervisor")' macos/MimiRemoteMac/Sources/App/MimiRemoteMacApp.swift \

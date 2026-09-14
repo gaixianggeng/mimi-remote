@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict/>
+<dict>
+	<!-- Hardened Runtime 下读取“照片”图库必须声明该资源访问项；授权仍由用户在系统弹窗中确认。 -->
+	<key>com.apple.security.personal-information.photos-library</key>
+	<true/>
+</dict>
 </plist>

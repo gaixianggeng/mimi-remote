@@ -150,8 +150,11 @@ agentd doctor
 
 “当前用户目录”不是 macOS TCC 的单一授权边界。[Apple 的“文件与文件夹”说明](https://support.apple.com/guide/mac-help/mchld5a35146/mac)明确将 Desktop、Documents、Downloads 作为分别管理的位置；Home 顶层可读不代表这些目录已获授权。[Apple 的“隐私与安全性”说明](https://support.apple.com/guide/mac-help/mchl211c911f/mac)则把 Mail、Messages、Safari、Time Machine 等其他 App 数据归入“完全磁盘访问”的范围。因此：
 
+授权记在谁名下取决于安装方式。Mac App 安装版的 LaunchAgent 启动的是主 App 的 `--agentd-supervisor` 模式，由它拉起包内 agentd 并常驻等待，所以 agentd、它启动的 Codex resident 和 Claude bridge 都沿责任链使用 **Mimi Remote Mac** 的授权；系统弹窗和设置列表里显示的也是 Mimi Remote Mac。Homebrew 版没有 App 外壳，授权主体仍是 agentd 本身。
+
 - 只处理普通项目：在首次启动时分别允许系统弹出的 Desktop、Documents、Downloads 权限即可；
-- 需要人不在电脑前也能访问整个 Home、照片图库或其他 App 数据：在“系统设置 → 隐私与安全性 → 完全磁盘访问”中添加稳定签名的 agentd。Mac App 安装版位于 `/Applications/Mimi Remote Mac.app/Contents/Resources/agentd`，Homebrew 版位于 `/opt/homebrew/opt/mimi-remote/bin/agentd`。照片图库（`.photoslibrary`）不属于“文件与文件夹”，只能通过完全磁盘访问放行；移动端预览会话里从“照片”拖入的图片失败时，提示会直接指向这一步；
+- 预览会话里从“照片”拖入的图片：照片图库（`.photoslibrary`）不属于“文件与文件夹”。Mac App 安装版在菜单栏 App 的“设置 → 文件访问”中点“允许访问照片”，之前拒绝过则点“打开照片隐私设置”开启 Mimi Remote Mac；Homebrew 版只能在“完全磁盘访问”中添加 `/opt/homebrew/opt/mimi-remote/bin/agentd`；
+- 需要人不在电脑前也能访问整个 Home 或其他 App 数据：在“系统设置 → 隐私与安全性 → 完全磁盘访问”中添加 Mimi Remote Mac（Homebrew 版添加 `/opt/homebrew/opt/mimi-remote/bin/agentd`）。从旧版本升级到 supervisor 版本后，之前授予裸 agentd 的完全磁盘访问不再生效，需要改为授予 Mimi Remote Mac；
 - 不能通过程序自动点击或绕过这个设置，也不应使用 `tccutil reset` 作为重启步骤，它会清除已有授权。
 
 可直接打开对应设置页，然后点击 `+`；文件选择器中按 `Command-Shift-G` 输入上述绝对路径：

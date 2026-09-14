@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Security
 import ServiceManagement
@@ -111,6 +112,12 @@ extension ServiceManagementClient {
 
     private static let agentPlistName = "\(agentLabel).plist"
 
+    static let supervisorBundleProgram = "Contents/MacOS/Mimi Remote Mac"
+    static let supervisorProgramArguments = ["Mimi Remote Mac", AgentdSupervisorInvocation.flag]
+    /// LaunchAgent 定义变化时追加到登记版本号，强制已安装的机器注销并重新登记，
+    /// 否则 SMAppService 会沿用旧 BundleProgram 继续直接启动裸 agentd。
+    static let agentLaunchDefinitionRevision = "agentd-supervisor-v1"
+
     /// 解析 `launchctl print gui/<uid>/<label>` 的输出。只有 job 存在、当前没有
     /// 运行中的进程，且 launchd 已经至少重试过一次或记录了异常退出码时，才判定为
     /// “拉起失败循环”。正在运行（有 pid）或刚刚首次派生的 job 都返回 nil，避免把
@@ -199,13 +206,27 @@ extension ServiceManagementClient {
               ),
               let dictionary = propertyList as? [String: Any],
               let bundleProgram = dictionary["BundleProgram"] as? String,
-              !bundleProgram.isEmpty
+              bundleProgram == supervisorBundleProgram,
+              let programArguments = dictionary["ProgramArguments"] as? [String],
+              programArguments == supervisorProgramArguments
         else {
             return "App 包内的 LaunchAgent 配置无效，请重新安装正式版本。"
         }
 
-        let executableURL = bundleURL.appending(path: bundleProgram, directoryHint: .notDirectory)
-        guard fileManager.isExecutableFile(atPath: executableURL.path) else {
+        let supervisorURL = bundleURL.appending(path: bundleProgram, directoryHint: .notDirectory)
+        guard fileManager.isExecutableFile(atPath: supervisorURL.path) else {
+            return "App 包内缺少后台服务入口，请重新安装正式版本。"
+        }
+        let executableURL = bundleURL.appending(
+            path: AgentdSupervisorCommand.agentdRelativePath,
+            directoryHint: .notDirectory
+        )
+        // supervisor 只接受普通文件：符号链接会让签名检查与实际执行的文件不一致。
+        var fileInfo = stat()
+        guard lstat(executableURL.path, &fileInfo) == 0,
+              (fileInfo.st_mode & S_IFMT) == S_IFREG,
+              fileManager.isExecutableFile(atPath: executableURL.path)
+        else {
             return "App 包内缺少可执行的 agentd，请重新安装正式版本。"
         }
 
@@ -235,7 +256,7 @@ extension ServiceManagementClient {
     }
 
     /// 直接通过 Security.framework 读取签名身份，不启动 shell，也不依赖用户 PATH。
-    private static func codeSigningIdentity(at url: URL) -> CodeSigningIdentity? {
+    static func codeSigningIdentity(at url: URL) -> CodeSigningIdentity? {
         var staticCode: SecStaticCode?
         guard SecStaticCodeCreateWithPath(
             url as CFURL,
@@ -286,7 +307,7 @@ extension ServiceManagementClient {
         else {
             return nil
         }
-        return "\(version)+\(build)"
+        return "\(version)+\(build)+\(agentLaunchDefinitionRevision)"
     }
 
     @MainActor
