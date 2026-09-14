@@ -26,13 +26,32 @@ extension SessionStore {
         permissionSelection: ComposerPermissionSelectionSnapshot? = nil,
         initialGoalObjective: String? = nil,
         replacingLocalDraft localDraft: AgentSession? = nil,
+        submissionContext suppliedSubmissionContext: TurnSubmissionContext? = nil,
         ifCurrent expectedSelectionLease: SessionSelectionLease? = nil
     ) async -> Bool {
-        let createIntent = expectedSelectionLease ?? reserveSelectionIntent()
+        let createIntent = expectedSelectionLease
+            ?? suppliedSubmissionContext?.selectionLease
+            ?? reserveSelectionIntent()
+        let hostScope = suppliedSubmissionContext?.hostScope ?? createIntent.hostScope
+        guard appStore.activeHostScope == hostScope else { return false }
+        let submissionContext = suppliedSubmissionContext ?? TurnSubmissionContext(
+            hostScope: hostScope,
+            selectionLease: createIntent,
+            projectID: projectID,
+            session: localDraft ?? resume
+        )
         // 空会话只执行 thread/start，没有 turn/start；提前拉 model/list 既不会影响线程创建，
         // 还会在远程链路上平白增加一次串行往返。只有真正要发送首轮输入时才解析模型。
-        let payload = payload.isEmpty ? payload : await payloadResolvingRequiredModel(payload)
-        if !payload.isEmpty, let notice = selectedQuotaNotice, notice.blocksSending {
+        let payload = payload.isEmpty
+            ? payload
+            : await payloadResolvingRequiredModel(payload, submissionContext: submissionContext)
+        guard appStore.activeHostScope == hostScope else { return false }
+        if !payload.isEmpty,
+           let notice = CodexQuotaNotice.make(
+               rateLimit: submissionContext.session?.rateLimit,
+               errorMessage: errorMessage
+           ),
+           notice.blocksSending {
             if isSelectionLeaseCurrent(createIntent) {
                 setErrorMessage(notice.message)
             }
@@ -56,9 +75,7 @@ extension SessionStore {
         let requestedLocalDraft = localDraft
         let localDraft = requestedLocalDraft.flatMap { draft -> AgentSession? in
             guard draft.isLocalDraft,
-                  draft.projectID == projectID,
-                  isSelectionLeaseCurrent(createIntent),
-                  sessionsByID[draft.id]?.isLocalDraft == true else {
+                  draft.projectID == projectID else {
                 return nil
             }
             return draft
@@ -66,8 +83,6 @@ extension SessionStore {
         if requestedLocalDraft != nil, localDraft == nil {
             return false
         }
-        isLoading = true
-        defer { isLoading = false }
         let prompt = payload.previewText
         let optimisticSessionID = localDraft?.id ?? optimisticSessionID(
             projectID: projectID,
@@ -94,7 +109,8 @@ extension SessionStore {
             registeredPermissionBoundaryClientMessageID = clientMessageID
         }
         defer {
-            if let registeredPermissionBoundaryClientMessageID {
+            if appStore.activeHostScope == hostScope,
+               let registeredPermissionBoundaryClientMessageID {
                 _ = mutateAndPersistQueuedTurns {
                     guard let location = pendingPermissionTurnBoundaryLocation(
                         clientMessageID: registeredPermissionBoundaryClientMessageID
@@ -137,7 +153,22 @@ extension SessionStore {
             }
         }
 
+        let creationLoadingLease = optimisticSelectionLease ?? createIntent
+        if isSelectionLeaseCurrent(creationLoadingLease) {
+            sessionCreationLoadingLease = creationLoadingLease
+            isLoading = true
+        }
+        defer {
+            // 旧请求的 ACK 不能清除用户切换后启动的新请求的 loading。
+            if appStore.activeHostScope == hostScope,
+               sessionCreationLoadingLease == creationLoadingLease {
+                sessionCreationLoadingLease = nil
+                isLoading = false
+            }
+        }
+
         do {
+            guard appStore.activeHostScope == hostScope else { return false }
             let client = try clientFactory()
             let response = try await client.createSession(CreateSessionRequest(
                 projectID: projectID,
@@ -151,6 +182,7 @@ extension SessionStore {
                 resumeID: resume?.resumeID ?? "",
                 clientMessageID: clientMessageID
             ))
+            guard appStore.activeHostScope == hostScope else { return false }
             let responseSession = self.session(response.session, in: workspace)
             let queuesInitialInput = response.requiresQueuedInitialInput == true
             if let clientMessageID {
@@ -269,6 +301,7 @@ extension SessionStore {
                 // 保持未加载状态，当前首轮直接连接事件流，后续刷新或重新进入再做权威对账。
                 didLoadInitialHistory = false
             }
+            guard appStore.activeHostScope == hostScope else { return false }
             if !prompt.isEmpty, !queuesInitialInput {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: responseSession.id, status: .sent)
@@ -312,6 +345,7 @@ extension SessionStore {
             registeredPermissionBoundaryClientMessageID = nil
             return true
         } catch {
+            guard appStore.activeHostScope == hostScope else { return false }
             if case CodexAppServerSessionRuntimeError.activeTurnConflict(
                 let authoritativeSession,
                 let activeTurnID

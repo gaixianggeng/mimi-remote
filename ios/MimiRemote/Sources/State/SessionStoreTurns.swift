@@ -121,19 +121,32 @@ extension SessionStore {
         setErrorMessage(nil)
     }
 
-    func refreshAppServerModelOptions(force: Bool = false) async {
+    func refreshAppServerModelOptions(
+        force: Bool = false,
+        expectedHostScope: HostScope? = nil
+    ) async {
+        let hostScope = expectedHostScope ?? appStore.activeHostScope
+        guard appStore.activeHostScope == hostScope else {
+            return
+        }
         if isRefreshingAppServerModels {
             return
         }
 
         isRefreshingAppServerModels = true
-        defer { isRefreshingAppServerModels = false }
+        defer {
+            if appStore.activeHostScope == hostScope { isRefreshingAppServerModels = false }
+        }
         var didRefreshRuntimeAvailability = false
         do {
             let client = try clientFactory()
             // Claude 卡片以 config.channels 的真实可用性为准，不能依赖 model/list 是否成功。
             // 即使模型列表处于 5 分钟缓存期，也要重新读取轻量 channel 元数据。
-            isClaudeRuntimeChannelAvailable = (try? await client.runtimeChannelAvailable(runtimeProvider: "claude")) == true
+            let isClaudeRuntimeChannelAvailable = (try? await client.runtimeChannelAvailable(
+                runtimeProvider: "claude"
+            )) == true
+            guard appStore.activeHostScope == hostScope else { return }
+            self.isClaudeRuntimeChannelAvailable = isClaudeRuntimeChannelAvailable
             didRefreshRuntimeAvailability = true
             if !force,
                let appServerModelOptionsLastRefresh,
@@ -143,6 +156,7 @@ extension SessionStore {
                 return
             }
             let options = try await client.modelOptions()
+            guard appStore.activeHostScope == hostScope else { return }
             appServerModelOptionsLastRefresh = Date()
             if !options.isEmpty || force {
                 appServerModelOptions = options
@@ -151,6 +165,7 @@ extension SessionStore {
                 setStatusMessage(options.isEmpty ? L10n.text("ui.app_server_model_list_not_found_continue_using") : L10n.text("ui.model_list_refreshed"))
             }
         } catch {
+            guard appStore.activeHostScope == hostScope else { return }
             if !didRefreshRuntimeAvailability {
                 isClaudeRuntimeChannelAvailable = false
             }
@@ -208,9 +223,17 @@ extension SessionStore {
         }
     }
 
-    func payloadResolvingRequiredModel(_ payload: CodexAppServerTurnPayload) async -> CodexAppServerTurnPayload {
+    func payloadResolvingRequiredModel(
+        _ payload: CodexAppServerTurnPayload,
+        submissionContext: TurnSubmissionContext? = nil
+    ) async -> CodexAppServerTurnPayload {
         var resolved = payload
-        let lockedRuntimeProvider = selectedSessionRuntimeProviderForTurn()
+        let lockedRuntimeProvider: String?
+        if let submissionContext {
+            lockedRuntimeProvider = runtimeProviderForTurn(session: submissionContext.session)
+        } else {
+            lockedRuntimeProvider = selectedSessionRuntimeProviderForTurn()
+        }
         if let lockedRuntimeProvider {
             let requestedRuntimeProvider = Self.normalizedRuntimeProvider(resolved.options.runtimeProvider)
             if requestedRuntimeProvider != lockedRuntimeProvider {
@@ -231,7 +254,7 @@ extension SessionStore {
             return resolved
         }
         if appServerModelOptions.isEmpty {
-            await refreshAppServerModelOptions()
+            await refreshAppServerModelOptions(expectedHostScope: submissionContext?.hostScope)
         }
         let allOptions = appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : appServerModelOptions
         let targetRuntimeProvider = lockedRuntimeProvider ?? Self.explicitRuntimeProvider(resolved.options.runtimeProvider)
@@ -302,13 +325,7 @@ extension SessionStore {
     }
 
     func selectedSessionRuntimeProviderForTurn() -> String? {
-        guard let session = selectedSession else {
-            return nil
-        }
-        if session.source == "local", session.runtimeProvider == nil {
-            return nil
-        }
-        return Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
+        runtimeProviderForTurn(session: selectedSession)
     }
 
     static func explicitRuntimeProvider(_ rawValue: String?) -> String? {
@@ -768,9 +785,13 @@ extension SessionStore {
         objective: String,
         tokenBudget: Int64? = nil,
         runningDelivery: RunningTurnDelivery = .queued,
-        permissionSelection: ComposerPermissionSelectionSnapshot? = nil
+        permissionSelection: ComposerPermissionSelectionSnapshot? = nil,
+        submissionContext suppliedSubmissionContext: TurnSubmissionContext? = nil
     ) async -> Bool {
-        if let session = selectedSession,
+        let submissionContext = suppliedSubmissionContext ?? captureTurnSubmissionContext()
+        guard isSubmissionHostCurrent(submissionContext) else { return false }
+        let targetSession = submissionContext.session
+        if let session = targetSession,
            isProtocolReadOnlySession(session) {
             threadGoalErrorMessage = L10n.text("ui.read_only")
             return false
@@ -785,21 +806,22 @@ extension SessionStore {
             return false
         }
         threadGoalErrorMessage = nil
-        if let notice = selectedQuotaNotice, notice.blocksSending {
+        if let notice = CodexQuotaNotice.make(rateLimit: targetSession?.rateLimit, errorMessage: errorMessage),
+           notice.blocksSending {
             setErrorMessage(notice.message)
             return false
         }
 
-        let selectedSessionHasQueuedTurns = selectedSession.map {
+        let selectedSessionHasQueuedTurns = targetSession.map {
             queuedRunningTurnsBySessionID[$0.id]?.isEmpty == false
         } ?? false
-        let selectedSessionHasPendingPermissionBoundary = selectedSession.map {
+        let selectedSessionHasPendingPermissionBoundary = targetSession.map {
             pendingPermissionTurnBoundariesBySessionID[$0.id]?.isEmpty == false
         } ?? false
-        let selectedSessionAwaitsAcceptedTurnStart = selectedSession.map {
+        let selectedSessionAwaitsAcceptedTurnStart = targetSession.map {
             queuedTurnAwaitingStartSessionIDs.contains($0.id)
         } ?? false
-        if let session = selectedSession,
+        if let session = targetSession,
            session.isRunning || (runningDelivery == .queued
                 && (selectedSessionHasQueuedTurns
                     || selectedSessionHasPendingPermissionBoundary
@@ -811,7 +833,8 @@ extension SessionStore {
                     payload,
                     runningDelivery: .queued,
                     queuedIntent: .goal(objective: normalizedObjective, tokenBudget: tokenBudget),
-                    permissionSelection: permissionSelection
+                    permissionSelection: permissionSelection,
+                    submissionContext: submissionContext
                 )
                 if sent {
                     setStatusMessage(L10n.text("ui.the_target_task_has_been_added_to_be"))
@@ -824,14 +847,16 @@ extension SessionStore {
                     threadID: session.id,
                     objective: normalizedObjective,
                     status: .active,
-                    tokenBudget: tokenBudget
+                    tokenBudget: tokenBudget,
+                    expectedHostScope: submissionContext.hostScope
                   ) else {
                 return false
             }
             let sent = await sendTurn(
                 payload,
                 runningDelivery: .guided,
-                permissionSelection: permissionSelection
+                permissionSelection: permissionSelection,
+                submissionContext: submissionContext
             )
             if sent {
                 setStatusMessage(L10n.text("ui.the_target_task_has_been_started"))
@@ -839,9 +864,9 @@ extension SessionStore {
             return sent
         }
 
-        let localDraft = selectedSession?.isLocalDraft == true ? selectedSession : nil
-        let resume = localDraft == nil ? selectedSession : nil
-        let projectID = localDraft?.projectID ?? resume?.projectID ?? selectedProjectID
+        let localDraft = targetSession?.isLocalDraft == true ? targetSession : nil
+        let resume = localDraft == nil ? targetSession : nil
+        let projectID = localDraft?.projectID ?? resume?.projectID ?? submissionContext.projectID
         guard let projectID else {
             setErrorMessage(L10n.text("ui.please_select_the_project_first"))
             return false
@@ -853,7 +878,9 @@ extension SessionStore {
             clientMessageID: UUID().uuidString,
             permissionSelection: permissionSelection,
             initialGoalObjective: normalizedObjective,
-            replacingLocalDraft: localDraft
+            replacingLocalDraft: localDraft,
+            submissionContext: submissionContext,
+            ifCurrent: submissionContext.selectionLease
         )
         if started {
             setStatusMessage(L10n.text("ui.the_target_task_has_been_started"))
@@ -875,44 +902,54 @@ extension SessionStore {
         _ payload: CodexAppServerTurnPayload,
         runningDelivery: RunningTurnDelivery = .queued,
         queuedIntent: QueuedTurnIntent? = nil,
-        permissionSelection: ComposerPermissionSelectionSnapshot? = nil
+        permissionSelection: ComposerPermissionSelectionSnapshot? = nil,
+        submissionContext suppliedSubmissionContext: TurnSubmissionContext? = nil
     ) async -> Bool {
+        let submissionContext = suppliedSubmissionContext ?? captureTurnSubmissionContext()
+        guard isSubmissionHostCurrent(submissionContext) else { return false }
+        let targetSession = submissionContext.session
         guard !payload.isEmpty else {
             return false
         }
-        if let session = selectedSession,
+        if let session = targetSession,
            isProtocolReadOnlySession(session) {
             setErrorMessage(L10n.text("ui.read_only"))
             return false
         }
-        if let notice = selectedQuotaNotice, notice.blocksSending {
+        if let notice = CodexQuotaNotice.make(rateLimit: targetSession?.rateLimit, errorMessage: errorMessage),
+           notice.blocksSending {
             setErrorMessage(notice.message)
             return false
         }
-        let payload = runningDelivery == .queued ? await payloadResolvingRequiredModel(payload) : payload
+        let payload = runningDelivery == .queued
+            ? await payloadResolvingRequiredModel(payload, submissionContext: submissionContext)
+            : payload
+        guard isSubmissionHostCurrent(submissionContext) else { return false }
         let prompt = payload.previewText
 
-        if let localDraft = selectedSession, localDraft.isLocalDraft {
+        if let localDraft = targetSession, localDraft.isLocalDraft {
             return await createSession(
                 projectID: localDraft.projectID,
                 payload: payload,
                 resume: nil,
                 clientMessageID: UUID().uuidString,
                 permissionSelection: permissionSelection,
-                replacingLocalDraft: localDraft
+                replacingLocalDraft: localDraft,
+                submissionContext: submissionContext,
+                ifCurrent: submissionContext.selectionLease
             )
         }
 
-        let selectedSessionHasQueuedTurns = selectedSession.map {
+        let selectedSessionHasQueuedTurns = targetSession.map {
             queuedRunningTurnsBySessionID[$0.id]?.isEmpty == false
         } ?? false
-        let selectedSessionHasPendingPermissionBoundary = selectedSession.map {
+        let selectedSessionHasPendingPermissionBoundary = targetSession.map {
             pendingPermissionTurnBoundariesBySessionID[$0.id]?.isEmpty == false
         } ?? false
-        let selectedSessionAwaitsAcceptedTurnStart = selectedSession.map {
+        let selectedSessionAwaitsAcceptedTurnStart = targetSession.map {
             queuedTurnAwaitingStartSessionIDs.contains($0.id)
         } ?? false
-        if let session = selectedSession,
+        if let session = targetSession,
            session.isRunning || (runningDelivery == .queued
                 && (selectedSessionHasQueuedTurns
                     || selectedSessionHasPendingPermissionBoundary
@@ -962,9 +999,8 @@ extension SessionStore {
                 return true
             }
 
-            guard let socket = readyWebSocket(for: session) else {
-                return false
-            }
+            let foregroundSocket = selectedSessionID == session.id ? readyWebSocket(for: session) : nil
+            if selectedSessionID == session.id, foregroundSocket == nil { return false }
             conversationStore.appendLocalUser(
                 prompt,
                 sessionID: session.id,
@@ -988,22 +1024,43 @@ extension SessionStore {
                 clientMessageID: clientMessageID,
                 sessionID: session.id
             )
-            let didAcceptLocally = socket.sendGuidance(payload, clientMessageID: clientMessageID, expectedTurnID: activeTurnID)
-            guard didAcceptLocally else {
-                conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
-                clearSessionListProjection(sessionID: session.id, clientMessageID: clientMessageID)
-                clearSessionRecentActivityProjection(sessionID: session.id, clientMessageID: clientMessageID)
-                clearForegroundActivity(sessionID: session.id)
-                setErrorMessage(L10n.text("ui.sending_failed_websocket_not_connected"))
-                return false
+            if let foregroundSocket {
+                trackSubmittedGuidance(
+                    payload,
+                    sessionID: session.id,
+                    clientMessageID: clientMessageID,
+                    expectedTurnID: activeTurnID,
+                    hostScope: submissionContext.hostScope
+                )
+                let didAcceptLocally = foregroundSocket.sendGuidance(
+                    payload,
+                    clientMessageID: clientMessageID,
+                    expectedTurnID: activeTurnID
+                )
+                guard didAcceptLocally else {
+                    _ = failPendingGuidance(
+                        clientMessageID: clientMessageID,
+                        sessionID: session.id,
+                        message: L10n.text("ui.sending_failed_websocket_not_connected")
+                    )
+                    return false
+                }
+                freshEmptyHistorySignatureBySessionID.removeValue(forKey: session.id)
+                return true
             }
-            // 只有后端通道接受首个 turn 后才解除 fresh-empty 保护；本地发送失败时 thread 仍无 rollout。
-            freshEmptyHistorySignatureBySessionID.removeValue(forKey: session.id)
-            return true
+            // 点击后若已切到其他页面，复用会话级后台连接把 guided 消息送到原 thread；
+            // 该临时项只保活到 ACK，既不改当前选择，也不会进入可自动重发的持久队列。
+            return stagePendingGuidance(
+                payload,
+                sessionID: session.id,
+                clientMessageID: clientMessageID,
+                expectedTurnID: activeTurnID,
+                hostScope: submissionContext.hostScope
+            )
         }
 
-        let resume = selectedSession
-        let projectID = resume?.projectID ?? selectedProjectID
+        let resume = targetSession
+        let projectID = resume?.projectID ?? submissionContext.projectID
         guard let projectID else {
             setErrorMessage(L10n.text("ui.please_select_the_project_first"))
             return false
@@ -1013,7 +1070,9 @@ extension SessionStore {
             payload: payload,
             resume: resume,
             clientMessageID: UUID().uuidString,
-            permissionSelection: permissionSelection
+            permissionSelection: permissionSelection,
+            submissionContext: submissionContext,
+            ifCurrent: submissionContext.selectionLease
         )
     }
 
@@ -1554,8 +1613,11 @@ extension SessionStore {
         threadID: SessionID,
         objective: String?,
         status: ThreadGoalStatus?,
-        tokenBudget: Int64?
+        tokenBudget: Int64?,
+        expectedHostScope: HostScope? = nil
     ) async -> Bool {
+        let hostScope = expectedHostScope ?? appStore.activeHostScope
+        guard appStore.activeHostScope == hostScope else { return false }
         if let session = sessionsByID[threadID],
            isProtocolReadOnlySession(session) {
             threadGoalErrorMessage = L10n.text("ui.read_only")
@@ -1572,7 +1634,9 @@ extension SessionStore {
         }
         isUpdatingThreadGoal = true
         threadGoalErrorMessage = nil
-        defer { isUpdatingThreadGoal = false }
+        defer {
+            if appStore.activeHostScope == hostScope { isUpdatingThreadGoal = false }
+        }
         do {
             let goal = try await clientFactory().setThreadGoal(
                 threadID: threadID,
@@ -1580,6 +1644,7 @@ extension SessionStore {
                 status: status,
                 tokenBudget: tokenBudget
             )
+            guard appStore.activeHostScope == hostScope else { return false }
             if let status, status != .complete {
                 clearLocalCompletedGoalMark(goal, sessionID: threadID)
             }
@@ -1587,6 +1652,7 @@ extension SessionStore {
             setStatusMessage(L10n.text("ui.goal_updated"))
             return true
         } catch {
+            guard appStore.activeHostScope == hostScope else { return false }
             threadGoalErrorMessage = error.localizedDescription
             setErrorMessage(error.localizedDescription)
             return false
