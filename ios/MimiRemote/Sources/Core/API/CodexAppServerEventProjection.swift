@@ -7,13 +7,18 @@ func isVisibleAppServerUserMessageText(_ text: String) -> Bool {
     guard !trimmed.isEmpty, trimmed != "[Request interrupted by user]" else {
         return false
     }
+    let visibleText = ConversationUserMessagePresentation.displayContent(from: trimmed)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !visibleText.isEmpty else {
+        return false
+    }
     let hiddenPrefixes = [
         "<subagent_notification>",
         "<turn_aborted>",
         "<environment_context>",
         "<codex_internal_context>"
     ]
-    return !hiddenPrefixes.contains { trimmed.hasPrefix($0) }
+    return !hiddenPrefixes.contains { visibleText.hasPrefix($0) }
 }
 
 // 通知事件、上下文投影、历史消息转换和 server request 映射保持纯内部实现。
@@ -1453,7 +1458,10 @@ extension CodexAppServerSessionRuntime {
             guard !text.isEmpty || hasRichInput else {
                 return nil
             }
-            guard text.isEmpty || isVisibleUserHistoryMessage(text) else {
+            // 自动环境文本可以为空，但不能因此丢弃同一消息中的图片或文件。
+            let hasAttachmentOnlyRequest = hasRichInput
+                && ConversationUserMessagePresentation.displayContent(from: text).isEmpty
+            guard text.isEmpty || hasAttachmentOnlyRequest || isVisibleUserHistoryMessage(text) else {
                 return nil
             }
             let turnPayload = hasRichInput ? CodexAppServerTurnPayload(input: inputs) : nil
