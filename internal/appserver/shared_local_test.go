@@ -389,8 +389,10 @@ func TestStartResidentCommandConnectsStdioToNullDevice(t *testing.T) {
 	}
 	root := t.TempDir()
 	marker := filepath.Join(root, "resident-stdio")
-	// 结果写到 fd 3，避免重定向本身改变被检查的 fd 1/2。
-	script := `exec 3>"$MIMI_RESIDENT_STDIO_MARKER"; if [ -d /proc/$$/fd ]; then readlink /proc/$$/fd/1 >&3; readlink /proc/$$/fd/2 >&3; else lsof -a -p $$ -d 1,2 -Fn | sed -n 's/^n//p' >&3; fi; sleep 1`
+	// dash（Ubuntu 的 /bin/sh）会先在父 shell 上应用 `cmd >&3` 的重定向再 fork，直接
+	// readlink /proc/$$/fd/1 会读到被临时改写的 fd。命令替换在子 shell 里运行，父 shell 的
+	// fd 1/2 保持原样，读完再统一写到 fd 3。
+	script := `exec 3>"$MIMI_RESIDENT_STDIO_MARKER"; if [ -d /proc/$$/fd ]; then out=$(readlink /proc/$$/fd/1); err=$(readlink /proc/$$/fd/2); else out=$(lsof -a -p $$ -d 1 -Fn | sed -n 's/^n//p'); err=$(lsof -a -p $$ -d 2 -Fn | sed -n 's/^n//p'); fi; printf '%s\n%s\n' "$out" "$err" >&3; sleep 1`
 	if err := startResidentCommand("/bin/sh", []string{"-c", script}, map[string]string{
 		"HOME":                       root,
 		"MIMI_RESIDENT_STDIO_MARKER": marker,

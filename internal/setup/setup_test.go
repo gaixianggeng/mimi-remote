@@ -20,6 +20,9 @@ import (
 func TestMain(m *testing.M) {
 	sshPreflight = func(context.Context, *appserver.SSHTransport) error { return nil }
 	localAppServerPreflight = func(context.Context, string, map[string]string) error { return nil }
+	// CI 机器上没有 Codex。迁移与 doctor 修复共用的解析器默认原样返回配置路径，
+	// 需要覆盖回退解析行为的用例自行替换。
+	resolveMigrationCodexBin = func(configured string) (string, error) { return configured, nil }
 	os.Exit(m.Run())
 }
 
