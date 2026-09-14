@@ -795,10 +795,15 @@ final class HostStore {
             if !services.isAgentRegistrationCurrent() {
                 // Apple 要求 LaunchAgent 的 plist 或可执行文件更新后重新注册。
                 // 先于状态命令处理，才能修复旧签名约束在进程启动前直接 SIGKILL 的升级。
+                //
+                // 这里必须保留一次自动换代：LaunchAgent 定义本身变化时（例如 BundleProgram 从裸
+                // agentd 改为主 App supervisor），第一次登记会被 BTM 复用到带旧 Launch Constraint
+                // 的记录上，launchd 立即报 Constraint Violation。BTM 随后生成新记录，但 launchd
+                // 已提交的任务仍指向作废记录，只有再注销、再登记一次才会换到新记录。
                 lifecycle = .starting
                 do {
                     try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
-                    try await registerMacAgentAndWaitForReady(allowAutomaticRepair: false)
+                    try await registerMacAgentAndWaitForReady(allowAutomaticRepair: true)
                 } catch {
                     fail(error)
                 }

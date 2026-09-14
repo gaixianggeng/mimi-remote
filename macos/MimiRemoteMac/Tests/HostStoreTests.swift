@@ -1645,6 +1645,48 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.owner, .macApp)
     }
 
+    /// 2026-09-14 本机实测：LaunchAgent 从裸 agentd 改为主 App supervisor 后，版本变更路径的
+    /// 第一次登记落到带旧 Launch Constraint 的 BTM 记录上，launchd 一直报找不到程序。
+    /// 必须自动再换代一次，而不是停在失败循环里等用户重启 App。
+    func testStaleRegistrationRevisionRepairsLaunchConstraintFailureOnce() async {
+        let events = EventRecorder()
+        let registrationAttempts = CallCounter()
+        var registrationState = ServiceRegistrationState.enabled
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            isAgentRegistrationCurrent: { false },
+            markAgentRegistrationCurrent: { events.append("mark-registration") },
+            status: {
+                registrationAttempts.current >= 2 ? Self.readyStatus : Self.stoppedStatus
+            },
+            registerAgent: {
+                let attempt = registrationAttempts.increment()
+                events.append("register-\(attempt)")
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                events.append("unregister-mac")
+                registrationState = .notRegistered
+            },
+            agentLaunchFailure: {
+                registrationAttempts.current == 1
+                    ? "launchd 无法启动 agentd，已连续尝试 2 次，最近退出码 78"
+                    : nil
+            },
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, [
+            "unregister-mac", "register-1", "unregister-mac", "register-2", "mark-registration",
+        ])
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertNil(store.lastError)
+    }
+
     func testBootstrapReusesEnabledAgentWhenRegistrationRevisionIsCurrent() async {
         let events = EventRecorder()
         let store = makeStore(
