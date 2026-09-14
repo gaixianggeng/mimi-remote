@@ -45,6 +45,7 @@ struct ComposerView: View {
     @State var presentedPendingUserInput: PendingUserInputPresentation?
     @State var pendingUserInputFormState = PendingUserInputFormState()
     @State var isGoalStatusExpanded = false
+    @State var isClaudeTakeoverConfirmationPresented = false
     @State var attachmentErrorMessage: String?
     @State var isVoicePressActive = false
     @State var isVoiceTranscribing = false
@@ -850,11 +851,17 @@ struct ComposerView: View {
     var composerStatusTray: some View {
         let visibleGoal = selectedVisibleThreadGoal
         let usageNotice = selectedComposerUsageNotice
-        if sessionStore.selectedSessionControlNotice != nil ||
+        let ownershipNotice = sessionStore.selectedOwnershipNotice
+        // Claude 被 Mac 持有本身就是只读的原因；运行中的持有会话同时满足「仅观察」，
+        // 只保留信息更完整的持有态，不叠两枚 chip。
+        let sessionControlNotice = ownershipNotice == nil ? sessionStore.selectedSessionControlNotice : nil
+        if ownershipNotice != nil ||
+            sessionControlNotice != nil ||
             usageNotice != nil ||
             visibleGoal != nil {
             ComposerStatusTray(
-                sessionControlNotice: sessionStore.selectedSessionControlNotice,
+                sessionControlNotice: sessionControlNotice,
+                ownershipNotice: ownershipNotice,
                 // 阻断额度已经由 Conversation 顶部唯一状态区展示，Composer 不再重复一份。
                 quotaNotice: nil,
                 usage: usageNotice,
@@ -867,6 +874,9 @@ struct ComposerView: View {
                 allowsTakeOver: sessionStore.selectedSessionAllowsTakeOver,
                 onTakeOver: {
                     sessionStore.takeOverSelectedSession()
+                },
+                onTakeOverHeldSession: {
+                    isClaudeTakeoverConfirmationPresented = true
                 },
                 onRefreshUsage: {
                     Task {
@@ -896,6 +906,27 @@ struct ComposerView: View {
                 }
             )
             .environmentObject(themeStore)
+            // 只在出现持有态时探测一次主机是否支持 thread/takeover，老主机不出现接管按钮。
+            .task(id: ownershipNotice?.sessionID) {
+                guard let sessionID = ownershipNotice?.sessionID else {
+                    return
+                }
+                await sessionStore.refreshClaudeTakeoverSupportIfNeeded(sessionID: sessionID)
+            }
+            // 接管会结束 Mac 上的一个进程，必须二次确认；失败后按钮保留可重试。
+            .confirmationDialog(
+                L10n.text("ui.take_over_claude_session_confirm_title"),
+                isPresented: $isClaudeTakeoverConfirmationPresented,
+                titleVisibility: .visible,
+                presenting: ownershipNotice
+            ) { notice in
+                Button(L10n.text("ui.take_over_claude_session_confirm_action"), role: .destructive) {
+                    let sessionID = notice.sessionID
+                    Task { await sessionStore.takeOverHeldClaudeSession(sessionID: sessionID) }
+                }
+            } message: { notice in
+                Text(notice.takeOverConfirmationMessage)
+            }
             .transition(
                 reduceMotion || isPhoneComposer
                     ? .opacity

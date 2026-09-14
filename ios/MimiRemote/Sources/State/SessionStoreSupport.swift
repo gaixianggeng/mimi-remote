@@ -960,6 +960,11 @@ struct SessionOwnershipNotice: Equatable {
         L10n.format("ui.session_owned_elsewhere_message", owner.displayName)
     }
 
+    /// 接管确认要点名真正会被结束的持有方：桌面版持有时不能说成"终端里的会话"。
+    var takeOverConfirmationMessage: String {
+        L10n.format("ui.take_over_claude_session_confirm_message", owner.displayName)
+    }
+
     var isBusy: Bool {
         owner.isBusy
     }
