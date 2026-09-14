@@ -91,8 +91,18 @@ struct ForegroundResumeTracker: Equatable {
     /// 产生 lastOutcome 时的活动连接档案。恢复失败只对那一台 Mac 成立：用户随后切到
     /// 另一台并连上后，不能再拿旧失败去拦截新 Mac 的通知。
     private(set) var lastOutcomeProfileID: String?
+    /// 由启动前台恢复的同一个场景回调登记的前台状态。闸门必须读这个镜像，不能直接读
+    /// 环境里的 scenePhase：场景刚激活的那一帧 body 已经看到 active，而启动恢复的
+    /// onChange 还没执行，直接读环境值会让闸门在恢复开始前提前放行一次，随后又被
+    /// 恢复关门取消，同一条通知因此被处理两次。
+    private(set) var sceneActive = false
 
     var isInFlight: Bool { inFlightGeneration != nil }
+
+    /// 与 begin() 在同一个场景回调里调用：先登记前台状态，再开始恢复。
+    mutating func observeScene(active: Bool) {
+        sceneActive = active
+    }
 
     /// 开始一次新的恢复；返回它的代次，结束时必须带回同一个值。
     mutating func begin() -> UInt64 {

@@ -34,8 +34,9 @@ struct LockScreenApprovalDelivery: Equatable, Identifiable {
 }
 
 /// 一次投递处理完的结论。只有 `handled` 才会把通知从收件箱消费掉；
-/// `retryLater` 表示这次没有拿到可用连接（恢复失败、任务被取消），通知留在收件箱，
-/// 下一次前台恢复成功后再试，而不是静默丢掉用户的点击。
+/// `retryLater` 表示这次还没开始导航就拿不到可用连接（恢复失败、任务被取消），通知留在
+/// 收件箱，下一次前台恢复成功后再试，而不是静默丢掉用户的点击。一旦路由或选择已经切向
+/// 目标会话，就只能返回 `handled`，否则同一次点击会在下次闸门打开时被重放。
 enum NotificationDeliveryOutcome: Equatable, Sendable {
     case handled
     case retryLater
@@ -76,9 +77,10 @@ final class LockScreenApprovalInbox: ObservableObject {
         // SwiftUI 用 pending 作为 task id。网络操作前清空它会取消正在执行的
         // 通知路由；完成后再消费，同时保留执行期间新收到的通知。
         let outcome = await handler(delivery)
-        // 再次进入后台会取消路由；恢复失败也只是“这次没打开”。两种情况都保留通知，
-        // 供下一次前台恢复继续处理。
-        guard !Task.isCancelled, outcome == .handled else { return }
+        // 处理方是唯一裁判：它已经把用户带到目标会话就必须消费，哪怕任务在途中被场景
+        // 切换或新一轮前台恢复取消。否则下一次闸门打开会把同一次点击当成新点击重放，
+        // 把已经离开的用户再次拉回详情。只有处理方判定“这次尚未开始导航”才以 retryLater 保留。
+        guard outcome == .handled else { return }
         consume(delivery)
     }
 }

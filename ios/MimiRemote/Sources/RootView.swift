@@ -29,6 +29,9 @@ struct RootView: View {
     @State private var foregroundResume = ForegroundResumeTracker()
     /// 恢复失败的提示每条通知只弹一次；用户反复切前后台不该被同一条通知反复打断。
     @State private var lastResumeFailureAlertDeliveryID: String?
+    /// 每条锁屏/消息通知第一次尝试打开时预留的导航意图，按投递记住。它只服务于
+    /// “这次还没开始导航”的重试：用户在两次尝试之间去过别处，重试就必须让路。
+    @State private var approvalDeliveryIntents: [String: SessionSelectionLease] = [:]
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -69,6 +72,8 @@ struct RootView: View {
         }
         .task {
             restoreActiveHostNavigationIfNeeded()
+            // 冷启动时场景可能已经激活而 onChange 不再触发；先把当前前台状态登记进闸门镜像。
+            foregroundResume.observeScene(active: scenePhase == .active)
             defer { hasCompletedInitialBootstrap = true }
             // 预热窗口必须早于 Tailcat 选路和第一次 preflight：冷启动的首个探测在隧道
             // 建好之前几乎必然失败，而那只是过程，不能让首屏先渲染成运行时不可用。
@@ -151,11 +156,13 @@ struct RootView: View {
                 outcome: "open",
                 correlation: reference
             )
-            // 闸门关闭（切后台、开始新一轮恢复）会改变 task id 并取消这里；
-            // handler 以 retryLater 保留通知，下一次闸门打开再处理。
+            // 闸门关闭（切后台、开始新一轮恢复）会改变 task id 并取消这里；只有还没开始
+            // 导航的 handler 才以 retryLater 保留通知，下一次闸门打开再处理。已经切向目标
+            // 会话的必须消费，否则同一次点击会被重放（见 processPending）。
             await notificationResponseAdapter.approvalInbox.processPending { delivery in
                 await handleLockScreenApproval(delivery)
             }
+            pruneApprovalDeliveryIntents()
         }
         .task(id: notificationRouteTaskID) {
             guard let route = notificationResponseAdapter.pendingRoute else {
@@ -180,7 +187,9 @@ struct RootView: View {
             // 在任何 await 之前占住导航意图：之后用户真实去往别处会推进代次，
             // 通知加载完成时就提交不了了，而自动刷新的租约推进不算在内。
             let intent = sessionStore.reserveSelectionIntent()
-            await handleNotificationRoute(
+            // 上面的 consume 已经改变了本任务的 id，SwiftUI 随即取消这里；导航一旦开始就要
+            // 在不受取消影响的任务里跑完，否则历史加载会被砍断，详情停在空白页。
+            await openNotificationRouteDetached(
                 route,
                 ifCurrent: intent,
                 reference: NotificationRouteDiagnostics.shortReference(
@@ -201,6 +210,9 @@ struct RootView: View {
             await sessionStore.pollSelectedProjectSessionsWhileVisible()
         }
         .onChange(of: scenePhase) { _, phase in
+            // 先登记前台状态再决定是否恢复：闸门读的是这份镜像，保证“场景已激活”和
+            // “恢复进行中”在同一次回调里一起生效，中间没有可被提前放行的帧。
+            foregroundResume.observeScene(active: phase == .active)
             foregroundResumeTask?.cancel()
             foregroundResumeTask = nil
             if phase == .background {
@@ -285,7 +297,7 @@ struct RootView: View {
     private var notificationRoutingGate: NotificationRoutingGate {
         NotificationRoutingGate(
             bootstrapped: hasCompletedInitialBootstrap,
-            sceneActive: scenePhase == .active,
+            sceneActive: foregroundResume.sceneActive,
             foregroundResumeInFlight: foregroundResume.isInFlight
         )
     }
@@ -420,13 +432,24 @@ struct RootView: View {
         return .handled
     }
 
-    /// 点开通知本身。顺序有讲究：先看恢复是否失败（失败就提示并保留通知），再在任何
-    /// await 之前占住导航意图，然后尝试本机快路径；只有本机解析不到时才走网络定位。
+    /// 点开通知本身。顺序有讲究：先按投递取回或预留导航意图（重试时用户已去别处就让路），
+    /// 再看恢复是否失败（失败就提示并保留通知），然后在任何导航副作用之前处理完取消，
+    /// 最后才切路由并打开；只有本机解析不到时才走网络定位。
     private func openLockScreenApprovalDetails(
         _ delivery: LockScreenApprovalDelivery
     ) async -> NotificationDeliveryOutcome {
         let notification = delivery.notification
         let reference = NotificationRouteDiagnostics.shortReference(notification.actionID)
+        let localSession = localNotificationSession(for: notification, reference: reference)
+        // 用户在等待期间点进会话 B 会推进代次，旧通知 A 完成时就提交不了导航；
+        // 这一步必须早于 sourceClient / 定位请求等所有 await。
+        guard let intent = approvalDeliveryIntent(
+            for: delivery,
+            target: localSession?.id,
+            reference: reference
+        ) else {
+            return .handled
+        }
         // 恢复失败只对发生失败的那台 Mac 生效；用户切到别的 Mac 后不再用旧结论拦通知。
         if let resumeOutcome = foregroundResume.outcome(forActiveProfileID: appStore.activeConnectionProfileID),
            resumeOutcome.blocksNotificationRouting {
@@ -443,10 +466,10 @@ struct RootView: View {
             return .retryLater
         }
         lastResumeFailureAlertDeliveryID = nil
-        // 用户在等待期间点进会话 B 会推进代次，旧通知 A 完成时就提交不了导航；
-        // 这一步必须早于 sourceClient / 定位请求等所有 await。
-        let intent = sessionStore.reserveSelectionIntent()
-        let localSession = localNotificationSession(for: notification, reference: reference)
+        // 闸门已保证恢复不在进行中；这里只是复用同一结果，避免与恢复链路并行。
+        // 必须早于任何导航副作用：路由一旦切向目标，就不能再以 retryLater 让这条通知重放。
+        await foregroundResumeTask?.value
+        guard !Task.isCancelled else { return .retryLater }
         let previousRoute = workbenchRoute
         var targetRoute: WorkbenchRestorationRoute?
         if let localSession {
@@ -456,9 +479,6 @@ struct RootView: View {
             targetRoute = route
             setWorkbenchRoute(route)
         }
-        // 闸门已保证恢复不在进行中；这里只是复用同一结果，避免与恢复链路并行。
-        await foregroundResumeTask?.value
-        guard !Task.isCancelled else { return .retryLater }
         if let localSession {
             let route = SessionNotificationRoute.current(
                 profileID: appStore.notificationRoutingProfileID,
@@ -466,7 +486,7 @@ struct RootView: View {
                 sessionID: localSession.id,
                 runtimeProvider: localSession.runtimeProvider
             )
-            let outcome = await handleNotificationRoute(route, ifCurrent: intent, reference: reference)
+            let outcome = await openNotificationRouteDetached(route, ifCurrent: intent, reference: reference)
             if outcome != .opened,
                let targetRoute,
                workbenchRoute == targetRoute,
@@ -478,9 +498,73 @@ struct RootView: View {
         }
         return await openLockScreenApprovalDetailsFromServer(
             notification,
+            deliveryID: delivery.id,
             intent: intent,
             reference: reference
         )
+    }
+
+    /// 首次尝试时预留导航意图并按投递记住；同一投递再次进来（恢复失败或尚未导航就被取消）
+    /// 时，先看用户在两次尝试之间有没有明确去过别处：去过就丢弃这条通知，不能把人拉回去。
+    /// 自动推进的代次（列表刷新、身份替换）不算用户导航，此时沿用或重新预留即可。
+    private func approvalDeliveryIntent(
+        for delivery: LockScreenApprovalDelivery,
+        target: SessionID?,
+        reference: String?
+    ) -> SessionSelectionLease? {
+        if let earlier = approvalDeliveryIntents[delivery.id] {
+            if sessionStore.notificationIntentSuperseded(since: earlier, target: target) {
+                NotificationRouteDiagnostics.record(
+                    stage: NotificationRouteDiagnostics.Stage.sessionOpen,
+                    outcome: "superseded",
+                    reason: "user_navigated_before_retry",
+                    correlation: reference
+                )
+                approvalDeliveryIntents[delivery.id] = nil
+                return nil
+            }
+            if let target,
+               let commit = sessionStore.lastSelectionCommit,
+               commit.sequence > earlier.generation,
+               case .notification = commit.reason,
+               commit.sessionID == target {
+                // 上一次尝试已经打开了这条通知，只是它还在收尾时闸门就重开了；
+                // 不再重复打开，直接消费。
+                NotificationRouteDiagnostics.record(
+                    stage: NotificationRouteDiagnostics.Stage.sessionOpen,
+                    outcome: "superseded",
+                    reason: "already_opened_by_earlier_attempt",
+                    correlation: reference
+                )
+                approvalDeliveryIntents[delivery.id] = nil
+                return nil
+            }
+            if sessionStore.isSelectionLeaseCurrent(earlier) {
+                return earlier
+            }
+        }
+        let intent = sessionStore.reserveSelectionIntent()
+        approvalDeliveryIntents[delivery.id] = intent
+        return intent
+    }
+
+    /// 已消费的投递不再需要记住意图；只保留仍在收件箱里等待重试的那一条。
+    private func pruneApprovalDeliveryIntents() {
+        let pendingID = notificationResponseAdapter.approvalInbox.pending?.id
+        approvalDeliveryIntents = approvalDeliveryIntents.filter { $0.key == pendingID }
+    }
+
+    /// 导航一旦开始就要跑完。路由任务的 id 绑着闸门状态，场景抖动或新一轮前台恢复会取消它；
+    /// 若让取消传播进历史加载，详情会停在空白页，处理结论也会被误判成“没打开”。
+    @discardableResult
+    private func openNotificationRouteDetached(
+        _ route: SessionNotificationRoute,
+        ifCurrent lease: SessionSelectionLease,
+        reference: String?
+    ) async -> SessionNotificationOpenOutcome {
+        await Task { @MainActor in
+            await handleNotificationRoute(route, ifCurrent: lease, reference: reference)
+        }.value
     }
 
     /// 同一台 Mac 且本地缓存能按会话标签唯一命中时，不必等网络定位。
@@ -507,6 +591,7 @@ struct RootView: View {
 
     private func openLockScreenApprovalDetailsFromServer(
         _ notification: LockScreenApprovalNotification,
+        deliveryID: String,
         intent: SessionSelectionLease,
         reference: String?
     ) async -> NotificationDeliveryOutcome {
@@ -518,6 +603,7 @@ struct RootView: View {
                 // Tailcat 档案由 sourceClient 内部完成切换：旧意图绑定的是切换前的 HostScope，
                 // 而切换自身的 invalidation 提交不是用户导航，这里直接重新预留。
                 selectionIntent = sessionStore.reserveSelectionIntent()
+                approvalDeliveryIntents[deliveryID] = selectionIntent
                 NotificationRouteDiagnostics.record(
                     stage: NotificationRouteDiagnostics.Stage.sourceClient,
                     outcome: "switched_host",
@@ -543,6 +629,7 @@ struct RootView: View {
                 // 切换后立刻预留：bootstrap 最长可等数十秒，其间用户打开别的会话必须能淘汰这条通知；
                 // bootstrap 自己的自动选择不算用户导航，结束后按提交原因区分。
                 selectionIntent = sessionStore.reserveSelectionIntent()
+                approvalDeliveryIntents[deliveryID] = selectionIntent
                 await sessionStore.bootstrap()
                 if !sessionStore.isSelectionLeaseCurrent(selectionIntent) {
                     if case .userOpen? = sessionStore.lastSelectionCommit?.reason {
@@ -555,6 +642,7 @@ struct RootView: View {
                         return .handled
                     }
                     selectionIntent = sessionStore.reserveSelectionIntent()
+                    approvalDeliveryIntents[deliveryID] = selectionIntent
                 }
             }
             // project_resolve 的命中规则由 SessionStore 记录；解析不到不再当成“来源档案不可用”，
@@ -575,7 +663,7 @@ struct RootView: View {
                 sessionID: destination.threadID,
                 runtimeProvider: destination.runtime
             )
-            await handleNotificationRoute(route, ifCurrent: selectionIntent, reference: reference)
+            await openNotificationRouteDetached(route, ifCurrent: selectionIntent, reference: reference)
             return .handled
         } catch {
             // 真取消（切后台、新通知顶替）静默保留；合成的 CancellationError（凭据代次
