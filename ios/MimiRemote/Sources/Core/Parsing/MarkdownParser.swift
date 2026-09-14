@@ -1,6 +1,57 @@
 import Foundation
 import Markdown
 
+enum ConversationUserMessagePresentation {
+    private static let browserContextClosingTag = "</in-app-browser-context>"
+    private static let requestMarkers = [
+        "## my request:",
+        "## my request：",
+        "## my request for codex:",
+        "## my request for codex：",
+    ]
+
+    /// 浏览器会把环境状态拼到用户 prompt 前面，但这段协议文本不是用户请求。
+    /// 只清洗展示值，原始 message.content 仍用于复制和后续协议处理。
+    static func displayContent(from content: String) -> String {
+        let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 只消费已知的自动注入格式；相似标签、普通提问和残缺内容必须无损保留。
+        guard let openingTag = trimmedContent.range(
+            of: #"\A<in-app-browser-context\s+source\s*=\s*(?:"ambient-ui-state"|'ambient-ui-state')\s*>"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) else {
+            return content
+        }
+
+        guard let closingTag = trimmedContent.range(
+            of: browserContextClosingTag, options: .caseInsensitive,
+            range: openingTag.upperBound..<trimmedContent.endIndex
+        ) else {
+            return content
+        }
+
+        let visibleContent = String(trimmedContent[closingTag.upperBound...])
+        return removingRequestMarker(from: visibleContent)
+    }
+
+    private static func removingRequestMarker(from content: String) -> String {
+        var lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        while let first = lines.first,
+              first.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.removeFirst()
+        }
+
+        if let first = lines.first {
+            let marker = first.trimmingCharacters(in: .whitespacesAndNewlines)
+            if requestMarkers.contains(where: { marker.caseInsensitiveCompare($0) == .orderedSame }) {
+                lines.removeFirst()
+            }
+        }
+
+        return lines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 enum ConversationMarkdownPresentation {
     static func containsLink(in content: String) -> Bool {
         // 用户普通消息继续沿用原有 Text 渲染；仅真正包含 Markdown 链接语法时进入富文本路径。

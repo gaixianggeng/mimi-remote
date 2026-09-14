@@ -159,14 +159,14 @@ struct ConversationMessageContent: View {
             fontScale: themeStore.fontScale,
             tokens: tokens
         )
+        let presentationContent = message.role == .user
+            ? ConversationUserMessagePresentation.displayContent(from: message.content)
+            : (message.role == .assistant ? ConversationMarkdownPresentation.displayContent(from: message.content) : message.content)
         if shouldRenderUserImages {
             userImageContent(style: style)
         } else if shouldRenderStructuredUserPayload {
             structuredUserContent(style: style)
         } else if shouldRenderMarkdownMessage {
-            let presentationContent = message.role == .assistant
-                ? ConversationMarkdownPresentation.displayContent(from: message.content)
-                : message.content
             let plan = MessageRenderPlanCache.shared.plan(for: message, rendering: presentationContent)
             let references = fileReferences
             if references.isEmpty {
@@ -186,7 +186,7 @@ struct ConversationMessageContent: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
         } else {
-            Text(message.content)
+            Text(presentationContent)
                 .font(themeStore.uiFont(.body))
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -301,7 +301,11 @@ struct ConversationMessageContent: View {
             return false
         }
         return message.role == .assistant
-            || (message.role == .user && ConversationMarkdownPresentation.containsLink(in: message.content))
+            || (message.role == .user && ConversationMarkdownPresentation.containsLink(in: userDisplayContent))
+    }
+
+    private var userDisplayContent: String {
+        ConversationUserMessagePresentation.displayContent(from: message.content)
     }
 
     private var shouldRenderUserImages: Bool {
@@ -348,7 +352,8 @@ struct ConversationMessageContent: View {
         for item in payloadSkillItems + payloadMentionItems + payloadFileItems {
             text = text.replacingOccurrences(of: item.previewText, with: "")
         }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ConversationUserMessagePresentation.displayContent(from: text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     @ViewBuilder
@@ -415,7 +420,7 @@ struct ConversationMessageContent: View {
         guard message.turnPayload == nil || payloadImageItems.isEmpty else {
             return []
         }
-        return ConversationFileReferenceDetector.imageReferences(in: message.content)
+        return ConversationFileReferenceDetector.imageReferences(in: userDisplayContent)
     }
 
     private var userImageSources: [ConversationImageSource] {
@@ -437,7 +442,7 @@ struct ConversationMessageContent: View {
         guard let payload = message.turnPayload else {
             return ""
         }
-        return payload.input.compactMap { item in
+        let text = payload.input.compactMap { item in
             if case .text(let text, _) = item {
                 return text.trimmingCharacters(in: .whitespacesAndNewlines)
             }
@@ -445,10 +450,11 @@ struct ConversationMessageContent: View {
         }
         .filter { !$0.isEmpty }
         .joined(separator: "\n")
+        return ConversationUserMessagePresentation.displayContent(from: text)
     }
 
     private var contentTextWithoutImagePaths: String {
-        var text = message.content
+        var text = userDisplayContent
         for reference in contentImageReferences {
             let fileURL = URL(fileURLWithPath: reference.path).absoluteString
             let variants = [
