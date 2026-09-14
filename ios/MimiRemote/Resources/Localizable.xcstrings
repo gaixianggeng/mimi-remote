@@ -8863,23 +8863,6 @@
         }
       }
     },
-    "ui.default_off": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Off by default"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "默认关闭"
-          }
-        }
-      }
-    },
     "ui.default_option": {
       "comment": "Default option in a picker.",
       "localizations": {
@@ -21827,6 +21810,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "未开启"
+          }
+        }
+      }
+    },
+    "ui.push_status_on": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已开启"
           }
         }
       }
