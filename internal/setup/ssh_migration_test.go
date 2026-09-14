@@ -425,3 +425,56 @@ func TestMigrateAppServerToSSHLocalConversionPreflightFailureKeepsLocal(t *testi
 		t.Fatalf("预检失败不能改写配置：%s", stored)
 	}
 }
+
+func TestMigrateAppServerToSSHPinsOnlyExplicitTargets(t *testing.T) {
+	explicit := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(explicit, []byte(`{"app_server":{"transport":"local","auto_title":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAppServerToSSH(context.Background(), explicit, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadForDoctor(explicit)
+	if err != nil || cfg.AppServer.Transport != "ssh" || !cfg.AppServer.PinTransport {
+		t.Fatalf("显式 target 切换后必须固定 transport：cfg=%+v err=%v", cfg.AppServer, err)
+	}
+
+	legacy := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(legacy, []byte(`{"app_server":{"transport":"ws","managed":true,"listen":"ws://127.0.0.1:4222"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAppServerToSSH(context.Background(), legacy, ""); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.LoadForDoctor(legacy)
+	if err != nil || cfg.AppServer.Transport != "ssh" || cfg.AppServer.PinTransport {
+		t.Fatalf("按默认值升级的旧配置不能被固定：cfg=%+v err=%v", cfg.AppServer, err)
+	}
+}
+
+func TestMigrateAppServerToSharedLocalRespectsPinnedLoopbackSSH(t *testing.T) {
+	if !config.SupportsSharedLocalAppServer() {
+		t.Skip("shared local App Server migration only applies to macOS and Linux")
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{"app_server":{"transport":"ssh","ssh_target":"127.0.0.1","pin_transport":true,"auto_title":true}}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := localAppServerPreflight
+	localAppServerPreflight = func(context.Context, string, map[string]string) error {
+		t.Fatal("被固定的 SSH 配置不应触发本机预检")
+		return nil
+	}
+	t.Cleanup(func() { localAppServerPreflight = previous })
+	if err := MigrateAppServerToSharedLocal(context.Background(), path); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, original) {
+		t.Fatalf("用户显式固定的本机 SSH 不得被自动迁移：%s", stored)
+	}
+}

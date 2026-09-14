@@ -77,6 +77,10 @@ func MigrateAppServerToSharedLocalWithPreflight(
 	if transportName == "local" && !legacy {
 		return nil
 	}
+	// 用户显式固定的 transport（agentd up --app-server-ssh-target …）不属于历史默认值。
+	if pinned, ok := rawBool(appServer["pin_transport"]); ok && pinned && !legacy {
+		return nil
+	}
 	// 显式 SSH target 是受支持的远端模式，不能被默认迁移覆盖。macOS 旧版 setup
 	// 自动写入的裸 127.0.0.1 不代表用户选择，直连预检通过后改为 local。
 	migrateLoopbackSSH := !legacy && migratesLoopbackSSHToSharedLocal(transportName, rawString(appServer["ssh_target"]))

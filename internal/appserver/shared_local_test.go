@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -319,5 +320,101 @@ func startSharedLocalTestServer(t *testing.T, socket string) func() {
 	return func() {
 		_ = server.Close()
 		_ = os.Remove(socket)
+	}
+}
+
+func TestSharedLocalTransportEnsureReadyTimesOutWithoutDeadline(t *testing.T) {
+	codexHome := shortSharedLocalCodexHome(t)
+	socket := filepath.Join(codexHome, sharedLocalSocketDir, sharedLocalSocketName)
+	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	// 握手成功但永远不回应 initialize：没有总超时的 probe 会在这里永久阻塞。
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		conn, upgradeErr := upgrader.Upgrade(w, request, nil)
+		if upgradeErr != nil {
+			return
+		}
+		defer conn.Close()
+		<-release
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		close(release)
+		_ = server.Close()
+		_ = os.Remove(socket)
+	})
+
+	previous := sharedLocalDefaultReadyTimeout
+	sharedLocalDefaultReadyTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { sharedLocalDefaultReadyTimeout = previous })
+
+	transport, err := NewSharedLocalTransport(SharedLocalOptions{CodexBin: "codex", Env: map[string]string{"CODEX_HOME": codexHome}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started atomic.Int32
+	transport.startOnce = func(context.Context, SharedLocalOptions) error {
+		started.Add(1)
+		return nil
+	}
+	begin := time.Now()
+	err = transport.EnsureReady(context.Background())
+	elapsed := time.Since(begin)
+	if err == nil {
+		t.Fatal("不回应 initialize 的 socket 必须在总超时内失败")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("EnsureReady 应受默认总超时约束，实际耗时 %v", elapsed)
+	}
+	if !strings.Contains(err.Error(), "仍存在") {
+		t.Fatalf("已有 socket 的初始化超时应报告为无法连接现有 socket：%v", err)
+	}
+	if started.Load() != 0 {
+		t.Fatal("已有 socket 时不得再启动第二个 resident")
+	}
+}
+
+func TestStartResidentCommandConnectsStdioToNullDevice(t *testing.T) {
+	if _, err := os.Stat("/proc/self/fd"); err != nil {
+		if _, lookErr := exec.LookPath("lsof"); lookErr != nil {
+			t.Skip("需要 /proc 或 lsof 才能检查子进程的标准输出去向")
+		}
+	}
+	root := t.TempDir()
+	marker := filepath.Join(root, "resident-stdio")
+	// 结果写到 fd 3，避免重定向本身改变被检查的 fd 1/2。
+	script := `exec 3>"$MIMI_RESIDENT_STDIO_MARKER"; if [ -d /proc/$$/fd ]; then readlink /proc/$$/fd/1 >&3; readlink /proc/$$/fd/2 >&3; else lsof -a -p $$ -d 1,2 -Fn | sed -n 's/^n//p' >&3; fi; sleep 1`
+	if err := startResidentCommand("/bin/sh", []string{"-c", script}, map[string]string{
+		"HOME":                       root,
+		"MIMI_RESIDENT_STDIO_MARKER": marker,
+		"PATH":                       os.Getenv("PATH"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var contents []byte
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		var readErr error
+		contents, readErr = os.ReadFile(marker)
+		if readErr == nil && len(strings.Fields(string(contents))) >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	targets := strings.Fields(string(contents))
+	if len(targets) < 2 {
+		t.Fatalf("未能读取 resident 的 stdout/stderr 去向：%q", contents)
+	}
+	for _, target := range targets {
+		if target != "/dev/null" {
+			// 管道意味着 resident 仍依赖启动它的进程；agentd 退出后写日志会得到 EPIPE。
+			t.Fatalf("resident 的标准输出必须直连空设备而不是父进程管道，got %q", targets)
+		}
 	}
 }

@@ -139,6 +139,8 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			Transport: config.DefaultAppServerTransport(),
 			SSHTarget: appServerSSHTarget,
 			AutoTitle: true,
+			// 显式给出的 target（即使是 127.0.0.1）是用户选择，后台启动的自动迁移不得改回 local。
+			PinTransport: requestedSSHTarget != "",
 		}
 	} else if useSharedLocalAppServer {
 		codexEnv := map[string]string{"TERM": "xterm-256color"}

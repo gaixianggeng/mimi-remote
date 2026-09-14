@@ -137,6 +137,9 @@ type AppServerConfig struct {
 	SSHTarget string `json:"ssh_target,omitempty"`
 	// AutoTitle 只在 Mac 端通过本机 app-server 生成标题，移动端不接触 provider 凭据。
 	AutoTitle bool `json:"auto_title"`
+	// PinTransport 记录 transport 是用户显式选择的结果（例如 --app-server-ssh-target）。
+	// 启动时的自动迁移只改写历史默认值，不得覆盖被固定的选择。
+	PinTransport bool `json:"pin_transport,omitempty"`
 	// ApprovalBroker 让具名 gateway 会话的上游连接在移动端退到后台后有界存活，
 	// 使 agentd 仍能接住待审批请求。默认关闭：它改变了 gateway 的连接生命周期，
 	// 需要先在真机上验证后台/锁屏路径再放开。

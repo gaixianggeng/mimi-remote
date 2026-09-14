@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -25,6 +24,11 @@ const (
 	sharedLocalHandshakeURL = "ws://localhost/rpc"
 	sharedLocalStartGrace   = 250 * time.Millisecond
 )
+
+// sharedLocalDefaultReadyTimeout 是调用方没有给 deadline 时 EnsureReady 的总上限。
+// initializeWebSocket 只在 context 带 deadline 时才设置读写 deadline，没有这层兜底，
+// 握手成功却不回应 initialize 的 socket 会让首次 probe 永远阻塞。
+var sharedLocalDefaultReadyTimeout = 20 * time.Second
 
 type SharedLocalOptions struct {
 	CodexBin string
@@ -147,6 +151,11 @@ func (t *SharedLocalTransport) EnsureReady(ctx context.Context) error {
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, sharedLocalDefaultReadyTimeout)
+		defer cancel()
 	}
 	t.ensureMu.Lock()
 	defer t.ensureMu.Unlock()
@@ -418,10 +427,12 @@ func startResidentCommand(bin string, args []string, extraEnv map[string]string)
 	// later when it resolves thread/list workspace filters.
 	cmd.Dir = workingDirectory
 	cmd.Env = buildManagedEnv(extraEnv)
-	cmd.Stdout = io.Discard
-	// resident outlives agentd. It must not retain a pipe whose reader
-	// disappears on gateway restart, otherwise a later log write can hit EPIPE.
-	cmd.Stderr = io.Discard
+	// resident outlives agentd. os/exec turns any non-*os.File writer (including
+	// io.Discard) into a pipe drained by a goroutine in this process, so a later
+	// log write after agentd exits would hit EPIPE. nil connects the child to the
+	// null device directly and keeps it independent of the launcher's lifetime.
+	cmd.Stdout = nil
+	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("启动共享 Codex App Server 失败：%w", err)
 	}

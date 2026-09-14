@@ -110,6 +110,11 @@ func MigrateAppServerToSSH(ctx context.Context, configPath string, requestedTarg
 	targetRaw, _ := json.Marshal(target)
 	appServer["transport"] = transportRaw
 	appServer["ssh_target"] = targetRaw
+	if strings.TrimSpace(requestedTarget) != "" {
+		// 显式 target 是用户选择：固定住，避免之后不带参数的后台启动把回环 target 当成旧默认值迁走。
+		pinRaw, _ := json.Marshal(true)
+		appServer["pin_transport"] = pinRaw
+	}
 	encodedAppServer, err := json.Marshal(appServer)
 	if err != nil {
 		return fmt.Errorf("编码 app_server 配置失败：%w", err)

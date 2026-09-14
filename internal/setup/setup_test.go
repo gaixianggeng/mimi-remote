@@ -130,6 +130,54 @@ func TestRunUsesAppServerSSHTargetFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunPinsExplicitLoopbackSSHTargetAgainstAutoMigration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 使用本机受管 WebSocket，不读取 SSH target")
+	}
+	clearSetupEnv(t)
+	t.Setenv("AGENTD_APP_SERVER_SSH_TARGET", "127.0.0.1")
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	if _, err := Run(context.Background(), Options{
+		ConfigPath: cfgPath,
+		ScanRoot:   t.TempDir(),
+		Listen:     "127.0.0.1:8787",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTD_APP_SERVER_SSH_TARGET", "")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AppServer.Transport != "ssh" || cfg.AppServer.SSHTarget != "127.0.0.1" || !cfg.AppServer.PinTransport {
+		t.Fatalf("显式回环 target 必须写入 ssh 并固定：%+v", cfg.AppServer)
+	}
+	if !config.SupportsSharedLocalAppServer() {
+		return
+	}
+	// 后台 serve 不带命令行参数：自动迁移必须尊重这次显式选择。
+	previous := localAppServerPreflight
+	localAppServerPreflight = func(context.Context, string, map[string]string) error {
+		t.Fatal("固定的显式 SSH 不应触发本机迁移预检")
+		return nil
+	}
+	t.Cleanup(func() { localAppServerPreflight = previous })
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAppServerToSharedLocal(context.Background(), cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("显式固定的 SSH 配置在后台启动时被改写：%s", after)
+	}
+}
+
 func assertDefaultSetupResultAppServer(t *testing.T, result Result) {
 	t.Helper()
 	if config.SupportsManagedAppServer() || config.SupportsSharedLocalAppServer() {

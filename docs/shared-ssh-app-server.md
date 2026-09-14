@@ -48,7 +48,7 @@ agentd 直接连接标准 control socket。socket 缺失时由 agentd 启动 `co
 
 `ssh_target` 是传给 OpenSSH 的单个目标参数。它可以是主机名、`user@host`，或 `~/.ssh/config` 中的 Host 别名。目标必须登录运行共享 App Server 的同一个用户，并使用同一个默认 `~/.codex`。
 
-首次 `setup` / `up` 可以用命令行参数或环境变量指定目标。命令行参数优先；成功预检后，目标会写入配置，后台服务不需要继承安装终端的环境变量：
+首次 `setup` / `up` 可以用命令行参数或环境变量指定目标。命令行参数优先；成功预检后，目标连同 `pin_transport: true` 一起写入配置，后台服务不需要继承安装终端的环境变量，之后不带参数的自动迁移也不会把显式选择的本机回环 target 改回 `local`。已经是 `local` 的配置用同样的命令即可切到 SSH，不需要 `setup --force`：
 
 ```bash
 agentd up --app-server-ssh-target user@mac-host
@@ -96,7 +96,7 @@ agentd 或单条 Mimi WebSocket 退出时只关闭自己的连接或对应 SSH p
 
 ## macOS 文件访问权限
 
-本机模式下 resident 由 agentd 启动，继承 agentd（Mac App 内嵌 LaunchAgent 或 Homebrew 服务）的 macOS 隐私授权。SSH 模式下 resident 是 sshd 的子进程，会继承“远程登录”附带的完全磁盘访问。因此从 SSH 切到本机模式后，照片图库、Mail、Safari 等“完全磁盘访问”范围内的目录可能从可读变为需要授权；桌面、文稿、下载仍按首次访问时的系统提示授权。需要无人值守访问受保护目录时，按[安装、升级与回滚](install-upgrade-rollback.md)为 agentd 授予完全磁盘访问。
+本机模式下 resident 由 agentd 启动，继承 agentd（Mac App 内嵌 LaunchAgent 或 Homebrew 服务）的 macOS 隐私授权。SSH 模式下 resident 是 sshd 的子进程；若“远程登录”里开启了“允许远程用户完全访问磁盘”（macOS 默认勾选），它会继承 sshd 的完全磁盘访问。因此从 SSH 切到本机模式后，照片图库、Mail、Safari 等“完全磁盘访问”范围内的目录可能从可读变为需要授权；桌面、文稿、下载仍按首次访问时的系统提示授权。需要无人值守访问受保护目录时，按[安装、升级与回滚](install-upgrade-rollback.md)为 agentd 授予完全磁盘访问。
 
 ## 会话和消息规则
 
