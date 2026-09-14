@@ -351,19 +351,19 @@ func (c *Checker) appServerGatewayCheck(ctx context.Context) Check {
 		return Check{Name: "app-server", OK: true, Message: "Codex app-server 使用共享 SSH proxy"}
 	case "ws":
 		if !config.SupportsManagedAppServer() || !c.cfg.AppServer.Managed {
-			return Check{Name: "app-server", OK: false, Message: "app-server WebSocket 模式无效", Fix: "Windows 使用受管 loopback WebSocket；Linux 使用 local，macOS 使用 ssh"}
+			return Check{Name: "app-server", OK: false, Message: "app-server WebSocket 模式无效", Fix: "Windows 使用受管 loopback WebSocket；macOS 与 Linux 使用 local"}
 		}
 		if !isLoopbackListen(c.cfg.AppServer.Listen) {
 			return Check{Name: "app-server", OK: false, Message: "app-server WebSocket 不在 loopback", Fix: "将 app_server.listen 设置为 ws://127.0.0.1:<port>"}
 		}
 		return Check{Name: "app-server", OK: true, Message: "Codex app-server 使用本机受管 WebSocket"}
 	case "local":
-		if runtime.GOOS != "linux" {
-			return Check{Name: "app-server", OK: false, Message: "共享本机 App Server 模式无效", Fix: "local transport 只支持 Linux"}
+		if !config.SupportsSharedLocalAppServer() {
+			return Check{Name: "app-server", OK: false, Message: "共享本机 App Server 模式无效", Fix: "local transport 只支持 macOS 与 Linux"}
 		}
 		return Check{Name: "app-server", OK: true, Message: "Codex app-server 使用共享本机 control socket"}
 	default:
-		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "macOS 使用 ssh，Linux 使用 local，Windows 使用受管 ws"}
+		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "macOS 与 Linux 使用 local，Windows 使用受管 ws；远端主机才使用 ssh"}
 	}
 }
 

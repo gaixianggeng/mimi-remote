@@ -11,7 +11,6 @@
 		0CA331176F893C656E0CCDA1 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DA7DA1200E8FF88D5E0DDF2 /* DiagnosticsView.swift */; };
 		11399EBAD3569F1EA7DC3A55 /* MenuBarWindowPlacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95CEFC2080963A6433B43217 /* MenuBarWindowPlacementTests.swift */; };
 		1A8CB50439D0E08A8514EA5B /* BrandColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 252E87DED48E48439FF3A75F /* BrandColors.swift */; };
-		24DB015A7182EFD4401ABED1 /* SystemPrivacySettingsClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9C3D35758B7D2B2638A2334 /* SystemPrivacySettingsClient.swift */; };
 		28EBD25B9A113B0FD13FE90E /* AppUpdateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C59B0505460DB90B25BDCDE /* AppUpdateTests.swift */; };
 		2D3D7AD1F48F6D665E50089E /* AgentModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9B97C2451CBB1E2B78D009C /* AgentModelsTests.swift */; };
 		2D88E2B17C680EC02E71EAB5 /* HostStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01F22A0DD397F37B0B0E8849 /* HostStoreTests.swift */; };
@@ -36,6 +35,7 @@
 		D336EA8131545784B5D56A67 /* AppUpdateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8A55B52C00DCCF1CB58B745 /* AppUpdateView.swift */; };
 		D888FADCD970DD7E91DBFF45 /* AgentCommandClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38BFD44EAEE64300C32946C4 /* AgentCommandClient.swift */; };
 		DE712EF3822095AC7465834A /* MacSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B8B42F16AE872A2164A2C14 /* MacSettingsView.swift */; };
+		E1BE3D2E8D8A4F2E50236DC3 /* SystemPrivacySettingsClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C3BE1BEFF7B67CA613F386C /* SystemPrivacySettingsClient.swift */; };
 		E315A720A10E9DC2DEC52514 /* AgentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC7976BAA1C4222A9CE0CF24 /* AgentModels.swift */; };
 		E69A1AE53A6D6F073F9718B0 /* AppUpdateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD370321E5A2003E97312162 /* AppUpdateStore.swift */; };
 		EB40EB38AC0DD1E7C9C3B21E /* MenuRuntimePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B78765A951C28D21B18CCFAF /* MenuRuntimePresentation.swift */; };
@@ -73,6 +73,7 @@
 		56099ADC68FDE1F3D89FEACF /* ExperimentPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExperimentPresentation.swift; sourceTree = "<group>"; };
 		63E0418360C87C9E75E7C24A /* MimiRemoteMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MimiRemoteMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6A7026C81DC36F9303474CE6 /* HomebrewServiceClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomebrewServiceClient.swift; sourceTree = "<group>"; };
+		6C3BE1BEFF7B67CA613F386C /* SystemPrivacySettingsClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemPrivacySettingsClient.swift; sourceTree = "<group>"; };
 		6FF645CF76E8BD94261F54A9 /* HealthClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthClient.swift; sourceTree = "<group>"; };
 		7280BD1DDAD2AA31F8F8C8AC /* ProcessEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessEnvironment.swift; sourceTree = "<group>"; };
 		8BE4D38858D995BC12D0856A /* QRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeView.swift; sourceTree = "<group>"; };
@@ -84,7 +85,6 @@
 		A8A55B52C00DCCF1CB58B745 /* AppUpdateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateView.swift; sourceTree = "<group>"; };
 		B78765A951C28D21B18CCFAF /* MenuRuntimePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuRuntimePresentation.swift; sourceTree = "<group>"; };
 		C187C502CDCBC251CB35D863 /* MimiRemoteMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MimiRemoteMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		C9C3D35758B7D2B2638A2334 /* SystemPrivacySettingsClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemPrivacySettingsClient.swift; sourceTree = "<group>"; };
 		CC34FFFDD49F996F5FB064A2 /* AgentLogClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentLogClient.swift; sourceTree = "<group>"; };
 		DC7976BAA1C4222A9CE0CF24 /* AgentModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentModels.swift; sourceTree = "<group>"; };
 		DD370321E5A2003E97312162 /* AppUpdateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateStore.swift; sourceTree = "<group>"; };
@@ -271,10 +271,10 @@
 				CC34FFFDD49F996F5FB064A2 /* AgentLogClient.swift */,
 				6FF645CF76E8BD94261F54A9 /* HealthClient.swift */,
 				6A7026C81DC36F9303474CE6 /* HomebrewServiceClient.swift */,
-				C9C3D35758B7D2B2638A2334 /* SystemPrivacySettingsClient.swift */,
 				7280BD1DDAD2AA31F8F8C8AC /* ProcessEnvironment.swift */,
 				4970FED3A0AD33401F1DFE86 /* ProcessExecutor.swift */,
 				0431AEFF2D4E005613D17105 /* ServiceManagementClient.swift */,
+				6C3BE1BEFF7B67CA613F386C /* SystemPrivacySettingsClient.swift */,
 			);
 			path = Infrastructure;
 			sourceTree = "<group>";
@@ -414,12 +414,12 @@
 				F496A4E680E86AEC0F3AB5E9 /* MimiRemoteMacApp.swift in Sources */,
 				73569A6C33D94DEE3D9141F3 /* OnboardingView.swift in Sources */,
 				B0007C75D28B779DE9DE6270 /* PairingView.swift in Sources */,
-				24DB015A7182EFD4401ABED1 /* SystemPrivacySettingsClient.swift in Sources */,
 				43BD61177935A8FEB6E85133 /* ProcessEnvironment.swift in Sources */,
 				76C0C8E2D63AABBC7AA2C4ED /* ProcessExecutor.swift in Sources */,
 				9190117090B67A3342D6120D /* QRCodeView.swift in Sources */,
 				3753BB1F5923C410265B44D3 /* ServiceManagementClient.swift in Sources */,
 				9381140D2855654A9E07746E /* StatusComponents.swift in Sources */,
+				E1BE3D2E8D8A4F2E50236DC3 /* SystemPrivacySettingsClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

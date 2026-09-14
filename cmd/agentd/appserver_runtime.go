@@ -76,7 +76,7 @@ func prepareAgentAppServerRuntime(cfg config.Config) (*agentAppServerRuntime, er
 		result.routerOptions.AppServerSSH = process
 		result.managedWS = process
 	default:
-		return nil, fmt.Errorf("当前 iPad 链路只支持 app_server.transport=ssh；Linux 另支持共享 local，Windows 另支持受管 ws")
+		return nil, fmt.Errorf("当前 iPad 链路只支持 app_server.transport=ssh；macOS 与 Linux 另支持共享 local，Windows 另支持受管 ws")
 	}
 	return result, nil
 }
@@ -117,7 +117,7 @@ func shutdownServeResources(
 	if apiRouter != nil {
 		apiRouter.Shutdown()
 	}
-	// SSH and Linux local residents are shared and preserved. The managed
+	// SSH and shared local residents are preserved across restarts. The managed
 	// WebSocket process is owned by agentd and stopped on Windows.
 	return appServerRuntime.shutdown()
 }
