@@ -1966,6 +1966,7 @@ final class SessionStore: ObservableObject {
             owner: owner,
             canTakeOver: claudeTakeoverSupport?.scope == appStore.activeHostScope
                 && claudeTakeoverSupport?.supported == true
+                && owner.status == "idle"
                 && !claudeTakeoverIsBlocked(for: session),
             isTakingOver: claudeTakeoverInFlightSessionID == session.id,
             failureMessage: claudeTakeoverFailure(for: session)?.message

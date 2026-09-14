@@ -958,7 +958,10 @@ struct SessionOwnershipNotice: Equatable {
     }
 
     var message: String {
-        failureMessage ?? L10n.format("ui.session_owned_elsewhere_message", owner.displayName)
+        if let failureMessage { return failureMessage }
+        if owner.isBusy { return L10n.text("ui.take_over_claude_wait_until_idle") }
+        if owner.status != "idle" { return L10n.text("ui.take_over_claude_state_unknown") }
+        return L10n.format("ui.session_owned_elsewhere_message", owner.displayName)
     }
 
     /// 接管确认要点名真正会被结束的持有方：桌面版持有时不能说成"终端里的会话"。

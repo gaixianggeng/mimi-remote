@@ -1004,9 +1004,11 @@ actor CodexAppServerSessionRuntime {
         _ = try await sendRecoveringFromStaleInitialization(builder.threadCompactStart(threadID: threadID))
     }
 
-    /// #451：Claude channel 只在 bridge >= 0.2.11 时声明 thread/takeover；按方法表判断，不猜版本。
+    /// 必须由主机声明只接管空闲会话；旧主机的方法同名，但可能中断正在执行的任务。
     func supportsThreadTakeover() async throws -> Bool {
-        runtimeSupportsMethod("thread/takeover", in: try await ensureConfig())
+        let config = try await ensureConfig()
+        return runtimeSupportsMethod("thread/takeover", in: config)
+            && runtimeGatewayChannel(in: config)?.capabilities?["idle_takeover"] == true
     }
 
     /// 结束 Mac 上持有该会话的 claude 进程后同 id 续聊。cwd 与 turn/start 同源，取自会话上下文。

@@ -726,7 +726,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let notice = SessionOwnershipNotice(sessionID: held.id, owner: owner)
         XCTAssertTrue(notice.isBusy)
         XCTAssertEqual(notice.title, L10n.text("ui.session_owned_elsewhere_title"))
-        XCTAssertTrue(notice.message.contains(owner.displayName))
+        XCTAssertEqual(notice.message, L10n.text("ui.take_over_claude_wait_until_idle"))
 
         thread["claudeOwner"] = nil
         thread["canAcceptDirectInput"] = .bool(true)

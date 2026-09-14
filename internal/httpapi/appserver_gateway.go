@@ -262,6 +262,7 @@ type appServerBridgeMetadata struct {
 }
 
 type appServerChannelCapability struct {
+	IdleTakeover     bool `json:"idle_takeover,omitempty"`
 	Streaming        bool `json:"streaming"`
 	History          bool `json:"history"`
 	ApprovalRequests bool `json:"approval_requests"`
@@ -581,6 +582,7 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 				ApprovalRequests: true,
 				FileDiffs:        true,
 				RateLimits:       claudeRateLimitsAvailable,
+				IdleTakeover:     probe.Healthy && claudebridge.SupportsThreadTakeover(probe.Version),
 			},
 			Policy: appServerChannelPolicy{
 				ApprovalPolicies: []string{"on-request"},

@@ -12,9 +12,10 @@ struct ClaudeTakeoverFailureNotice {
     let holderPIDs: Set<Int>
     let message: String
     let blocksRetry: Bool
+    let waitsForIdle: Bool
 }
 
-// #451：Claude 会话被 Mac 上的终端 / Claude 桌面持有时，从这台设备硬接管：bridge 结束
+// #451：Claude 会话被 Mac 上的终端 / Claude 桌面持有时，等当前轮完成后从这台设备接管：bridge 结束
 // Mac 侧进程后同 id 续聊。这里只负责发起请求、放开输入和走既有 takenOver 控制态。
 extension SessionStore {
     /// 冲突卡会整块替换输入框。Claude 被 Mac 持有时，持有方说明和接管入口都在输入框托盘里，
@@ -64,6 +65,7 @@ extension SessionStore {
               failure.scope == appStore.activeHostScope else {
             return nil
         }
+        if failure.waitsForIdle, session.claudeOwner?.status == "idle" { return nil }
         if let pid = session.claudeOwner?.pid, !failure.holderPIDs.contains(pid) {
             return nil
         }
@@ -87,20 +89,30 @@ extension SessionStore {
             takeOverSession(session)
             return true
         }
-        guard claudeTakeoverInFlightSessionID == nil, !claudeTakeoverIsBlocked(for: session) else {
+        guard session.claudeOwner?.status == "idle",
+              claudeTakeoverInFlightSessionID == nil, !claudeTakeoverIsBlocked(for: session) else {
             return false
         }
         claudeTakeoverInFlightSessionID = session.id
         defer { claudeTakeoverInFlightSessionID = nil }
 
+        let scope = appStore.activeHostScope
         let lease: ProjectsGitHostLease
         do {
             lease = try captureProjectsGitHostLease()
         } catch {
-            setStatusMessage(L10n.format("ui.take_over_failed_value", error.localizedDescription))
+            recordClaudeTakeoverFailure(error, session: session, scope: scope)
             return false
         }
         do {
+            // 旧主机只支持强制中断式接管，不能让过期确认框或直接调用绕过能力门禁。
+            guard try await lease.client.sessionSupportsThreadTakeover(sessionID: session.id) else {
+                try requireCurrentProjectsGitHost(lease)
+                recordClaudeTakeoverFailure(AgentAPIError.invalidResponse, session: session, scope: lease.scope,
+                                           message: L10n.text("ui.take_over_claude_upgrade_required"))
+                return false
+            }
+            try requireCurrentProjectsGitHost(lease)
             let result = try await lease.client.takeOverThread(threadID: session.id)
             try requireCurrentProjectsGitHost(lease)
             claudeTakeoverFailures[session.id] = nil
@@ -122,25 +134,44 @@ extension SessionStore {
             guard (try? requireCurrentProjectsGitHost(lease)) != nil else {
                 return false
             }
-            let failure = CodexAppServerThreadTakeoverResult.failure(from: error)
-            let message = claudeTakeoverFailureMessage(error)
-            var holderPIDs: Set<Int> = []
-            if let pid = session.claudeOwner?.pid { holderPIDs.insert(pid) }
-            if let pid = failure?.holderPID { holderPIDs.insert(pid) }
-            // 同时绑定请求时和服务端返回的持有方，避免自动重启后再次发起杀进程。
-            claudeTakeoverFailures[session.id] = ClaudeTakeoverFailureNotice(
-                scope: lease.scope, holderPIDs: holderPIDs, message: message,
-                blocksRetry: failure?.retryable == false
-            )
-            setStatusMessage(message)
+            recordClaudeTakeoverFailure(error, session: session, scope: lease.scope)
             return false
         }
+    }
+
+    private func recordClaudeTakeoverFailure(_ error: Error, session: AgentSession, scope: HostScope, message: String? = nil) {
+        let failure = CodexAppServerThreadTakeoverResult.failure(from: error)
+        let message = message ?? claudeTakeoverFailureMessage(error)
+        var holderPIDs: Set<Int> = []
+        if let pid = session.claudeOwner?.pid { holderPIDs.insert(pid) }
+        if let pid = failure?.holderPID { holderPIDs.insert(pid) }
+        let waitsForIdle = failure?.reason == "holder_busy" || failure?.reason == "holder_state_unknown"
+        if waitsForIdle, let owner = session.claudeOwner {
+            // 服务端拒绝说明客户端的 idle 已过期；等待后续权威刷新重新报告 idle。
+            updateSession(session.id) { current in
+                current.claudeOwner = ClaudeSessionOwner(
+                    entrypoint: owner.entrypoint, kind: owner.kind,
+                    status: failure?.reason == "holder_busy" ? "busy" : nil,
+                    pid: failure?.holderPID ?? owner.pid
+                )
+            }
+        }
+        // 同时绑定请求时和服务端返回的持有方，避免自动重启后再次发起杀进程。
+        claudeTakeoverFailures[session.id] = ClaudeTakeoverFailureNotice(
+            scope: scope, holderPIDs: holderPIDs, message: message,
+            blocksRetry: failure?.retryable == false, waitsForIdle: waitsForIdle
+        )
+        setStatusMessage(message)
     }
 
     /// bridge 的结构化失败原因映射成可操作的提示；其余错误保留原文。
     func claudeTakeoverFailureMessage(_ error: Error) -> String {
         if let failure = CodexAppServerThreadTakeoverResult.failure(from: error) {
             switch failure.reason {
+            case "holder_busy":
+                return L10n.text("ui.take_over_claude_wait_until_idle")
+            case "holder_state_unknown":
+                return L10n.text("ui.take_over_claude_state_unknown")
             case "holder_respawned":
                 return L10n.text("ui.take_over_claude_failed_respawned")
             case "takeover_timeout":

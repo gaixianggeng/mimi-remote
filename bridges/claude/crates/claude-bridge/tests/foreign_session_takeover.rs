@@ -90,7 +90,7 @@ fn write_registry_record(
         "cwd": CWD,
         "entrypoint": "cli",
         "kind": "interactive",
-        "status": "busy",
+        "status": "idle",
         "version": "2.1.270",
         "messagingSocketPath": "/tmp/cc-socks/ignored.sock"
     });
@@ -257,6 +257,107 @@ async fn takeover(writer: &mut Writer, reader: &mut Reader, id: i64) -> Value {
         json!({"threadId": SESSION_ID, "cwd": CWD, "excludeTurns": true}),
     )
     .await
+}
+
+fn set_holder_status(path: &Path, status: Option<&str>) {
+    let mut record: Value =
+        serde_json::from_slice(&std::fs::read(path).expect("read record")).expect("record");
+    record["status"] = json!(status);
+    std::fs::write(path, record.to_string()).expect("update status");
+}
+
+#[tokio::test]
+async fn takeover_waits_for_all_holders_to_be_idle_and_rechecks_each_request() {
+    let fixture = fixture();
+    let idle = Holder::spawn("");
+    let working = Holder::spawn("");
+    write_registry_record(&fixture.sessions_dir, idle.pid, SESSION_ID, Some(now_ms()));
+    let record = write_registry_record(
+        &fixture.sessions_dir,
+        working.pid,
+        SESSION_ID,
+        Some(now_ms()),
+    );
+    let bridge = build_bridge(&fixture, ForeignSessionPolicy::Guard, fast_timeouts()).await;
+    let (mut writer, mut reader) = attach(&bridge, "idle-only").await;
+    // 客户端看到 idle 后，Mac 又开始处理；服务端不能沿用 thread/read 的旧状态。
+    let _ = request(
+        &mut writer,
+        &mut reader,
+        1,
+        "thread/read",
+        json!({"threadId":SESSION_ID,"includeTurns":false}),
+    )
+    .await;
+    for (index, status) in [Some("busy"), Some("shell"), None, Some("unknown")]
+        .iter()
+        .enumerate()
+    {
+        set_holder_status(&record, *status);
+        let refused = takeover(&mut writer, &mut reader, index as i64 + 2).await;
+        let reason = if matches!(status, Some("busy") | Some("shell")) {
+            "holder_busy"
+        } else {
+            "holder_state_unknown"
+        };
+        assert_eq!(
+            refused["error"]["data"]["reason"],
+            json!(reason),
+            "{refused}"
+        );
+        assert_eq!(refused["error"]["data"]["retryable"], json!(true));
+        assert!(
+            idle.still_running(Duration::from_millis(20)),
+            "任一持有方未空闲时不能结束其他持有方"
+        );
+        assert!(working.still_running(Duration::from_millis(20)));
+        assert!(bridge.pool().is_empty().await);
+    }
+    set_holder_status(&record, Some("idle"));
+    let taken = takeover(&mut writer, &mut reader, 9).await;
+    assert!(taken.get("error").is_none(), "{taken}");
+    assert_eq!(
+        taken["result"]["thread"]["canAcceptDirectInput"],
+        json!(true)
+    );
+    assert_eq!(
+        idle.exit_signal(Duration::from_secs(2)),
+        Some(libc_sigint())
+    );
+    assert_eq!(
+        working.exit_signal(Duration::from_secs(2)),
+        Some(libc_sigint())
+    );
+}
+
+#[tokio::test]
+async fn takeover_does_not_send_sigterm_if_holder_starts_work_after_sigint() {
+    let fixture = fixture();
+    let holder = Holder::spawn("trap '' INT");
+    let record = write_registry_record(
+        &fixture.sessions_dir,
+        holder.pid,
+        SESSION_ID,
+        Some(now_ms()),
+    );
+    let bridge = build_bridge(&fixture, ForeignSessionPolicy::Guard, fast_timeouts()).await;
+    let (mut writer, mut reader) = attach(&bridge, "busy-before-term").await;
+    let update = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        set_holder_status(&record, Some("busy"));
+    });
+    let refused = takeover(&mut writer, &mut reader, 1).await;
+    update.await.expect("status update");
+    assert_eq!(
+        refused["error"]["data"]["reason"],
+        json!("holder_busy"),
+        "{refused}"
+    );
+    assert!(
+        holder.still_running(Duration::from_millis(100)),
+        "不能用 SIGTERM 中断新一轮"
+    );
+    holder.force_kill();
 }
 
 #[tokio::test]

@@ -8,7 +8,12 @@ final class ClaudeTakeoverTests: XCTestCase {
         var items: [MockWebSocketClient] = []
     }
 
+    private final class ClientFailureSwitch {
+        var shouldFail = false
+    }
+
     private struct HeldStore {
+        let clientFailure: ClientFailureSwitch
         let store: SessionStore
         let client: MockSessionStoreClient
         let appStore: AppStore
@@ -242,6 +247,95 @@ final class ClaudeTakeoverTests: XCTestCase {
         XCTAssertEqual(fixture.store.selectedOwnershipNotice?.canTakeOver, false, "旧 agentd / 旧 bridge 不声明方法时按钮不出现")
     }
 
+    func testBusyAndUnknownOwnersStayReadOnlyUntilIdle() async throws {
+        let fixture = await makeHeldStore(id: "claude_wait_idle", supportsTakeover: true)
+        await fixture.store.refreshClaudeTakeoverSupportIfNeeded(sessionID: fixture.held.id)
+        var calls = 0
+        fixture.client.takeOverThreadHandler = { _ in
+            calls += 1
+            return CodexAppServerThreadTakeoverResult(released: true, canAcceptDirectInput: true)
+        }
+        let statuses: [String?] = ["busy", "shell", nil, "unknown"]
+        for status in statuses {
+            fixture.store.updateSession(fixture.held.id) { current in
+                current.claudeOwner = ClaudeSessionOwner(entrypoint: "cli", kind: "interactive", status: status, pid: 4242)
+            }
+            XCTAssertEqual(fixture.store.selectedOwnershipNotice?.canTakeOver, false)
+            let taken = await fixture.store.takeOverHeldClaudeSession(sessionID: fixture.held.id)
+            XCTAssertFalse(taken)
+            XCTAssertEqual(calls, 0)
+        }
+        fixture.store.updateSession(fixture.held.id) { current in
+            current.claudeOwner = fixture.held.claudeOwner
+        }
+        XCTAssertEqual(fixture.store.selectedOwnershipNotice?.canTakeOver, true)
+        XCTAssertEqual(calls, 0, "完成后等待用户手动操作，不自动接管")
+        let taken = await fixture.store.takeOverHeldClaudeSession(sessionID: fixture.held.id)
+        XCTAssertTrue(taken)
+        XCTAssertEqual(calls, 1)
+    }
+
+    func testServerBusyRejectionDoesNotPermanentlyBlockTakeover() async throws {
+        let fixture = await makeHeldStore(id: "claude_stale_idle", supportsTakeover: true)
+        await fixture.store.refreshClaudeTakeoverSupportIfNeeded(sessionID: fixture.held.id)
+        fixture.client.takeOverThreadHandler = { _ in
+            throw Self.takeoverError(reason: "holder_busy", retryable: true, holderPID: 4242)
+        }
+        let taken = await fixture.store.takeOverHeldClaudeSession(sessionID: fixture.held.id)
+        XCTAssertFalse(taken)
+        XCTAssertEqual(fixture.store.selectedOwnershipNotice?.message, L10n.text("ui.take_over_claude_wait_until_idle"))
+        XCTAssertFalse(fixture.store.claudeTakeoverIsBlocked(for: fixture.held))
+        XCTAssertFalse(fixture.store.selectedSession?.allowsDirectInput ?? true)
+        XCTAssertEqual(fixture.store.selectedOwnershipNotice?.canTakeOver, false)
+        fixture.store.updateSession(fixture.held.id) { current in current.claudeOwner = fixture.held.claudeOwner }
+        XCTAssertEqual(fixture.store.selectedOwnershipNotice?.canTakeOver, true)
+        XCTAssertNil(fixture.store.selectedOwnershipNotice?.failureMessage)
+    }
+
+    func testOldHostCannotBeInvokedThroughStaleConfirmation() async throws {
+        let fixture = await makeHeldStore(id: "claude_old_takeover", supportsTakeover: false)
+        var calls = 0
+        fixture.client.takeOverThreadHandler = { _ in
+            calls += 1
+            throw AgentAPIError.invalidResponse
+        }
+        let taken = await fixture.store.takeOverHeldClaudeSession(sessionID: fixture.held.id)
+        XCTAssertFalse(taken)
+        XCTAssertEqual(calls, 0)
+        XCTAssertEqual(fixture.store.selectedOwnershipNotice?.message, L10n.text("ui.take_over_claude_upgrade_required"))
+    }
+
+    func testClientConstructionFailureIsVisibleAfterReturning() async throws {
+        let fixture = await makeHeldStore(id: "claude_client_failure", supportsTakeover: true)
+        fixture.clientFailure.shouldFail = true
+        let taken = await fixture.store.takeOverHeldClaudeSession(sessionID: fixture.held.id)
+        XCTAssertFalse(taken)
+        fixture.store.setStatusMessage(nil)
+        fixture.store.setSelectedSessionID(nil)
+        fixture.store.setSelectedSessionID(fixture.held.id)
+        XCTAssertNotNil(fixture.store.selectedOwnershipNotice?.failureMessage)
+        XCTAssertFalse(fixture.store.claudeTakeoverIsBlocked(for: fixture.held))
+    }
+
+    func testRuntimeRequiresIdleTakeoverCapabilityInAdditionToMethod() async throws {
+        let capabilities: [Bool?] = [nil, false, true]
+        for capability in capabilities {
+            let base = makeDirectAppServerConfig(project: makeProject(id: "takeover-capability"))
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(base)) as? [String: Any])
+            var channel: [String: Any] = [
+                "id": "claude", "runtime_id": "claude", "title": "Claude", "provider": "anthropic",
+                "type": "claude_code_bridge", "gateway_ws_url": "ws://localhost:8787/claude",
+                "gateway_available": true, "managed": false, "methods": ["thread/takeover"]
+            ]
+            if let capability { channel["capabilities"] = ["idle_takeover": capability] }
+            object["channels"] = [channel]
+            let config = try JSONDecoder().decode(CodexAppServerConfigResponse.self, from: JSONSerialization.data(withJSONObject: object))
+            let runtime = CodexAppServerSessionRuntime(endpoint: "http://localhost:8787", token: "test-token", runtimeProvider: "claude", configProvider: { config })
+            let supported = try await runtime.supportsThreadTakeover()
+            XCTAssertEqual(supported, capability == true)
+        }
+    }
+
     // MARK: - Fixtures
 
     private static func takeoverError(reason: String, retryable: Bool, holderPID: Int) -> Error {
@@ -268,12 +362,13 @@ final class ClaudeTakeoverTests: XCTestCase {
             runtimeProvider: "claude"
         )
         held.canAcceptDirectInput = false
-        held.claudeOwner = ClaudeSessionOwner(entrypoint: "cli", kind: "interactive", status: "busy", pid: 4242)
+        held.claudeOwner = ClaudeSessionOwner(entrypoint: "cli", kind: "interactive", status: "idle", pid: 4242)
         let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [held], messagesResult: [])
         client.sessionSupportsThreadTakeoverResult = supportsTakeover
         let sockets = SocketRecorder()
+        let clientFailure = ClientFailureSwitch()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -282,7 +377,10 @@ final class ClaudeTakeoverTests: XCTestCase {
                 workspaces: [AgentWorkspace(project: project)],
                 endpoint: appStore.endpoint
             ),
-            clientFactory: { client },
+            clientFactory: {
+                if clientFailure.shouldFail { throw AgentAPIError.invalidResponse }
+                return client
+            },
             webSocketFactory: {
                 let socket = MockWebSocketClient()
                 sockets.items.append(socket)
@@ -290,6 +388,6 @@ final class ClaudeTakeoverTests: XCTestCase {
             }
         )
         _ = await store.bootstrap(restoring: SessionRestoreSnapshot(endpoint: appStore.endpoint, session: held))
-        return HeldStore(store: store, client: client, appStore: appStore, held: held, sockets: sockets)
+        return HeldStore(clientFailure: clientFailure, store: store, client: client, appStore: appStore, held: held, sockets: sockets)
     }
 }
