@@ -7,6 +7,84 @@ import XCTest
 /// 上层 SessionStore 测试会注入 mock API；这里专门拦截真实 URLSession 请求，
 /// 以便后端路由、鉴权、字段名或危险操作确认参数发生漂移时立即失败。
 final class AgentAPIClientRequestTests: XCTestCase {
+    func testStructuredFileAccessErrorKeepsPermissionMetadata() throws {
+        let data = Data(#"{"error":"operation not permitted","code":"file_access_denied","permission_domain":"documents","action":"allow_on_mac"}"#.utf8)
+
+        let error = try XCTUnwrap(FileAccessAPIError.decode(status: 403, data: data))
+
+        XCTAssertEqual(error.status, 403)
+        XCTAssertEqual(error.message, "operation not permitted")
+        XCTAssertEqual(error.code, .fileAccessDenied)
+        XCTAssertEqual(error.permissionDomain, .documents)
+        XCTAssertEqual(error.action, "allow_on_mac")
+    }
+
+    func testReadFileThrowsStructuredFileAccessError() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StructuredFileErrorURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let client = AgentAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "file-error-token",
+            session: session
+        )
+
+        do {
+            _ = try await client.readFile(path: "/Users/demo/Documents/example.md")
+            XCTFail("结构化文件权限响应必须抛出 FileAccessAPIError")
+        } catch let error as FileAccessAPIError {
+            XCTAssertEqual(error.code, .fileAccessDenied)
+            XCTAssertEqual(error.permissionDomain, .documents)
+            XCTAssertEqual(error.action, "allow_on_mac")
+        } catch {
+            XCTFail("应返回 FileAccessAPIError，实际为：\(error)")
+        }
+    }
+
+    func testLegacyServerErrorIsNotDecodedAsStructuredFileError() {
+        let data = Data(#"{"error":"路径不在允许范围内或不可访问"}"#.utf8)
+
+        XCTAssertNil(FileAccessAPIError.decode(status: 403, data: data))
+        XCTAssertEqual(
+            FilePreviewErrorPresentation.message(for: AgentAPIError.server(status: 403, message: "legacy")),
+            L10n.text("ui.the_file_is_not_within_authorization_or_is")
+        )
+    }
+
+    func testFilePreviewErrorPresentationDistinguishesStructuredFailures() {
+        func fileError(_ code: FileAccessErrorCode, _ domain: FilePermissionDomain?, status: Int = 403) -> FileAccessAPIError {
+            FileAccessAPIError(status: status, message: "denied", code: code, permissionDomain: domain, action: nil)
+        }
+
+        XCTAssertEqual(
+            FilePreviewErrorPresentation.message(for: fileError(.fileAccessDenied, .documents)),
+            L10n.text("ui.file_preview_allow_documents_on_mac")
+        )
+        let photosGuidance = FilePreviewErrorPresentation.message(for: fileError(.fileAccessDenied, .photosLibrary))
+        XCTAssertEqual(photosGuidance, L10n.text("ui.file_preview_allow_photos_library_on_mac"))
+        XCTAssertTrue(photosGuidance.contains("agentd"))
+        XCTAssertEqual(
+            FilePreviewErrorPresentation.message(for: fileError(.fileAccessDenied, .other)),
+            L10n.text("ui.file_preview_check_file_permissions_on_mac")
+        )
+        let hostNeutral = FilePreviewErrorPresentation.message(for: fileError(.fileAccessDenied, nil))
+        XCTAssertEqual(hostNeutral, L10n.text("ui.file_preview_check_file_permissions_on_host"))
+        XCTAssertFalse(hostNeutral.contains("Mac"), "没有权限域时宿主可能是 Linux 或 Windows，提示不能指向 Mac")
+        XCTAssertEqual(
+            FilePreviewErrorPresentation.message(for: fileError(.fileNotFound, nil)),
+            L10n.text("ui.file_preview_file_not_found")
+        )
+        XCTAssertEqual(
+            FilePreviewErrorPresentation.message(for: fileError(.fileReadFailed, nil, status: 500)),
+            L10n.text("ui.file_preview_file_read_failed")
+        )
+        XCTAssertEqual(
+            FilePreviewErrorPresentation.message(for: fileError(.pathOutsideScope, nil)),
+            L10n.text("ui.file_preview_path_outside_scope")
+        )
+    }
+
     func testEveryRESTRequestMatchesAgentDContract() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [AgentAPIRequestStubURLProtocol.self]
@@ -538,4 +616,32 @@ private final class AgentAPIRequestStubURLProtocol: URLProtocol {
         }
         return data
     }
+}
+
+private final class StructuredFileErrorURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                url: url,
+                statusCode: 403,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+              )
+        else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(
+            self,
+            didLoad: Data(#"{"error":"operation not permitted","code":"file_access_denied","permission_domain":"documents","action":"allow_on_mac"}"#.utf8)
+        )
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

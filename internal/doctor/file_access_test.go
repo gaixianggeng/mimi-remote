@@ -4,7 +4,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
@@ -107,5 +111,131 @@ func TestProbeDirectoryAccessAllowsEmptyAndReportsMissingDirectory(t *testing.T)
 	missing := filepath.Join(t.TempDir(), "missing")
 	if err := probeDirectoryAccess(missing); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("缺失目录应保留 os.ErrNotExist：%v", err)
+	}
+}
+
+func TestRequestFileAccessProbesStandardDomainOnceAndUpdatesWarning(t *testing.T) {
+	home := t.TempDir()
+	checker := &Checker{}
+	called := make(chan string, 2)
+	var calls atomic.Int32
+	probe := func(path string) error {
+		calls.Add(1)
+		called <- path
+		return os.ErrPermission
+	}
+
+	domain, ok := checker.requestFileAccess(filepath.Join(home, "Documents", "report.md"), home, probe)
+	if !ok || domain != "documents" {
+		t.Fatalf("Documents 应映射到 documents 权限域：domain=%q ok=%v", domain, ok)
+	}
+	if _, ok := checker.requestFileAccess(filepath.Join(home, "Documents", "other.md"), home, probe); !ok {
+		t.Fatal("同一权限域的后续请求仍应返回权限域")
+	}
+	select {
+	case path := <-called:
+		if path != filepath.Join(home, "Documents") {
+			t.Fatalf("应探测 Documents 根目录，got=%s", path)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未执行异步目录探测")
+	}
+	updated := false
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		if check := checker.fileAccessPreflightCheck(); check.Name != "" {
+			if check.OK || check.Level != "warning" || !strings.Contains(check.Message, "文稿") || strings.Contains(check.Message, "documents") {
+				t.Fatalf("权限拒绝应更新 warning-only doctor check：%+v", check)
+			}
+			updated = true
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !updated {
+		t.Fatal("异步权限拒绝未更新 doctor check")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("同一权限域只应探测一次，got=%d", calls.Load())
+	}
+}
+
+func TestStartupPreflightSuccessDoesNotOverwriteOnDemandFailure(t *testing.T) {
+	checker := &Checker{
+		fileAccessRequestedDomains: map[string]bool{"documents": true},
+		fileAccessPreflight: Check{
+			Name:    fileAccessPreflightName,
+			OK:      false,
+			Level:   "warning",
+			Message: "macOS 拒绝访问“文稿”文件夹",
+		},
+	}
+	checker.mergeStartupFileAccessPreflight(Check{
+		Name:    fileAccessPreflightName,
+		OK:      true,
+		Message: "启动预检成功",
+	})
+	check := checker.fileAccessPreflightCheck()
+	if check.OK || !strings.Contains(check.Message, "文稿") {
+		t.Fatalf("启动成功不能覆盖按需权限失败：%+v", check)
+	}
+}
+
+func TestStandardFileAccessPermissionDomainDoesNotExpandArbitraryPaths(t *testing.T) {
+	home := t.TempDir()
+	for path, want := range map[string]string{
+		filepath.Join(home, "Desktop", "a.txt"):                                               "desktop",
+		filepath.Join(home, "Downloads", "a.zip"):                                             "downloads",
+		filepath.Join(home, "Pictures", "Photos Library.photoslibrary", "resources", "a.jpg"): "photos_library",
+	} {
+		domain, ok := standardFileAccessPermissionDomain(path, home)
+		if !ok || domain.name != want {
+			t.Fatalf("标准目录映射错误 path=%s domain=%+v", path, domain)
+		}
+	}
+	if _, ok := standardFileAccessPermissionDomain(filepath.Join(home, "code", "secret"), home); ok {
+		t.Fatal("普通目录不能自动扩大成权限域")
+	}
+	if _, ok := standardFileAccessPermissionDomain(filepath.Join(home, "Pictures", "a.jpg"), home); ok {
+		t.Fatal("普通 Pictures 不是 macOS 文件与文件夹标准权限域")
+	}
+	libraryPath := filepath.Join(home, "Pictures", "Photos Library.photoslibrary", "resources", "a.jpg")
+	domain, _ := standardFileAccessPermissionDomain(libraryPath, home)
+	if domain.path != filepath.Join(home, "Pictures", "Photos Library.photoslibrary") {
+		t.Fatalf("照片图库必须探测 bundle 根，got=%s", domain.path)
+	}
+	customLibrary := filepath.Join(home, "Pictures", "Archives", "家庭影集.photoslibrary")
+	domain, ok := standardFileAccessPermissionDomain(filepath.Join(customLibrary, "resources", "derivatives", "a.jpg"), home)
+	if !ok || domain.name != "photos_library" || domain.path != customLibrary {
+		t.Fatalf("自定义图库应识别并探测实际 bundle 根：domain=%+v ok=%v", domain, ok)
+	}
+	outsideLibrary := filepath.Join(t.TempDir(), "Outside.photoslibrary", "resources", "a.jpg")
+	if _, ok := standardFileAccessPermissionDomain(outsideLibrary, home); ok {
+		t.Fatal("Pictures 外的 .photoslibrary 不能扩大为照片图库权限域")
+	}
+}
+
+func TestFileAccessPreflightFixNamesTheActualTCCOwner(t *testing.T) {
+	t.Setenv(MacAppTCCOwnerEnv, "")
+	standalone := fileAccessPreflightFix()
+	if !strings.Contains(standalone, "稳定签名的 agentd") || strings.Contains(standalone, "Mimi Remote Mac") {
+		t.Fatalf("独立 agentd 的修复提示应点名 agentd：%s", standalone)
+	}
+	t.Setenv(MacAppTCCOwnerEnv, "com.gaixianggeng.mimi.mac")
+	if runtime.GOOS != "darwin" {
+		if FileAccessPermissionsOwnedByMacApp() {
+			t.Fatal("非 macOS 不存在 Mimi Remote Mac supervisor")
+		}
+		return
+	}
+	if !FileAccessPermissionsOwnedByMacApp() {
+		t.Fatal("supervisor 注入的标识应被识别")
+	}
+	app := fileAccessPreflightFix()
+	if !strings.Contains(app, "Mimi Remote Mac") || strings.Contains(app, "稳定签名的 agentd") {
+		t.Fatalf("App 托管时修复提示应点名 Mimi Remote Mac：%s", app)
+	}
+	t.Setenv(MacAppTCCOwnerEnv, "com.example.other")
+	if FileAccessPermissionsOwnedByMacApp() {
+		t.Fatal("其他标识不能冒充 Mimi Remote Mac 授权主体")
 	}
 }

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import MimiRemoteMac
@@ -701,12 +702,15 @@ final class HostStoreTests: XCTestCase {
             directoryHint: .isDirectory
         )
         let resourcesURL = bundleURL.appending(path: "Contents/Resources", directoryHint: .isDirectory)
+        let macOSURL = bundleURL.appending(path: "Contents/MacOS", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: launchAgentsURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: macOSURL, withIntermediateDirectories: true)
 
         let propertyList: [String: Any] = [
             "Label": "com.gaixianggeng.mimi.mac.agentd",
-            "BundleProgram": "Contents/Resources/agentd",
+            "BundleProgram": "Contents/MacOS/Mimi Remote Mac",
+            "ProgramArguments": ["Mimi Remote Mac", "--agentd-supervisor"],
         ]
         let propertyListData = try PropertyListSerialization.data(
             fromPropertyList: propertyList,
@@ -720,6 +724,9 @@ final class HostStoreTests: XCTestCase {
         let executableURL = resourcesURL.appending(path: "agentd")
         try Data().write(to: executableURL)
         try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+        let supervisorURL = macOSURL.appending(path: "Mimi Remote Mac")
+        try Data().write(to: supervisorURL)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: supervisorURL.path)
 
         let signingIdentity: (URL) -> CodeSigningIdentity? = { url in
             if url == bundleURL {
@@ -770,6 +777,244 @@ final class HostStoreTests: XCTestCase {
                 }
             )?.contains("签名团队不一致") == true
         )
+
+        // 旧定义直接启动裸 agentd，主 App 无法承担隐私授权责任，必须视为无效安装。
+        for legacyDefinition in [
+            ["BundleProgram": "Contents/Resources/agentd", "ProgramArguments": ["agentd", "serve"]],
+            ["BundleProgram": "Contents/MacOS/Mimi Remote Mac", "ProgramArguments": ["Mimi Remote Mac", "--agentd-supervisor", "extra"]],
+        ] as [[String: Any]] {
+            var invalidPropertyList = propertyList
+            invalidPropertyList.merge(legacyDefinition) { _, new in new }
+            try PropertyListSerialization.data(
+                fromPropertyList: invalidPropertyList,
+                format: .xml,
+                options: 0
+            ).write(to: launchAgentsURL.appending(path: "com.gaixianggeng.mimi.mac.agentd.plist"))
+            XCTAssertTrue(
+                ServiceManagementClient.validateAgentConfiguration(
+                    bundleURL: bundleURL,
+                    signingIdentityProvider: signingIdentity
+                )?.contains("配置无效") == true,
+                "\(legacyDefinition)"
+            )
+        }
+    }
+
+    func testAgentdSupervisorOnlyAcceptsExactInvocationAndBuildsFixedCommand() {
+        XCTAssertTrue(AgentdSupervisorInvocation.matches(["app", "--agentd-supervisor"]))
+        XCTAssertFalse(AgentdSupervisorInvocation.matches(["app", "--agentd-supervisor", "extra"]))
+        XCTAssertFalse(AgentdSupervisorInvocation.matches(["app", "--other"]))
+        XCTAssertTrue(AgentdSupervisorInvocation.isRequested(["app", "--other", "--agentd-supervisor"]))
+        XCTAssertFalse(AgentdSupervisorInvocation.isRequested(["--agentd-supervisor"]))
+
+        let command = AgentdSupervisorCommand.fixed(
+            bundleURL: URL(fileURLWithPath: "/Applications/Mimi Remote Mac.app"),
+            homeDirectoryURL: URL(fileURLWithPath: "/Users/tester")
+        )
+        XCTAssertEqual(
+            command.executableURL.path,
+            "/Applications/Mimi Remote Mac.app/Contents/Resources/agentd"
+        )
+        XCTAssertEqual(command.arguments, [
+            "/Applications/Mimi Remote Mac.app/Contents/Resources/agentd",
+            "serve",
+            "--log-file",
+            "/Users/tester/Library/Logs/mimi-remote/agentd.log",
+        ])
+    }
+
+    func testAgentLaunchDefinitionMatchesBundledPlist() throws {
+        // 仓库里的 LaunchAgent 与校验器、supervisor 入口必须保持同一份定义。
+        let plistURL = URL(filePath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist")
+        let data = try Data(contentsOf: plistURL)
+        let dictionary = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+        XCTAssertEqual(dictionary["BundleProgram"] as? String, ServiceManagementClient.supervisorBundleProgram)
+        XCTAssertEqual(dictionary["ProgramArguments"] as? [String], ServiceManagementClient.supervisorProgramArguments)
+    }
+
+    func testAgentdSupervisorMapsChildExitAndSignalStatus() {
+        XCTAssertEqual(AgentdSupervisor.exitCode(forWaitStatus: 7 << 8), 7)
+        XCTAssertEqual(AgentdSupervisor.exitCode(forWaitStatus: SIGTERM), 128 + SIGTERM)
+        XCTAssertEqual(AgentdSupervisor.exitCode(forWaitStatus: SIGINT), 128 + SIGINT)
+    }
+
+    func testAgentdSupervisorKillsSuspendedChildWhenSignalArrivesBeforeAttach() {
+        let events = EventRecorder()
+        let relay = AgentdSupervisorSignalRelay(
+            installSystemSignals: false,
+            signalSender: { pid, signalNumber in
+                events.append("\(pid):\(signalNumber)")
+            }
+        )
+
+        relay.receive(SIGTERM)
+        XCTAssertEqual(relay.attach(childPID: 42), SIGTERM)
+        XCTAssertEqual(events.values, ["42:\(SIGKILL)"])
+
+        relay.receive(SIGINT)
+        XCTAssertEqual(events.values, ["42:\(SIGKILL)", "42:\(SIGINT)"])
+        relay.detach(childPID: 42)
+        relay.receive(SIGHUP)
+        XCTAssertEqual(events.values, ["42:\(SIGKILL)", "42:\(SIGINT)"])
+    }
+
+    func testAgentdSupervisorBuildsMinimalTrustedEnvironment() {
+        let environment = AgentdSupervisorEnvironment.sanitized(
+            homeDirectory: "/Users/tester",
+            temporaryDirectory: "/var/folders/trusted/T/",
+            userName: "tester",
+            shell: "/bin/zsh",
+            parentEnvironment: [
+                "SSH_AUTH_SOCK": "/private/tmp/ssh-agent.sock",
+                "LANG": "zh_CN.UTF-8",
+                "AGENTD_BROWSE_ROOTS": "/",
+                "AGENTD_DEV_INSECURE": "1",
+                "NODE_OPTIONS": "--require=/tmp/inject.js",
+                "CLAUDE_BRIDGE_CLAUDE_BIN": "/tmp/fake-claude",
+                "MIMI_REMOTE_TCC_OWNER": "com.example.spoofed",
+            ]
+        )
+        XCTAssertEqual(environment, [
+            "HOME=/Users/tester",
+            "PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "TMPDIR=/var/folders/trusted/T/",
+            "USER=tester",
+            "LOGNAME=tester",
+            "SHELL=/bin/zsh",
+            "MIMI_REMOTE_TCC_OWNER=com.gaixianggeng.mimi.mac",
+            "SSH_AUTH_SOCK=/private/tmp/ssh-agent.sock",
+            "LANG=zh_CN.UTF-8",
+        ])
+        for forbiddenKey in [
+            "AGENTD_BROWSE_ROOTS",
+            "AGENTD_DEV_INSECURE",
+            "NODE_OPTIONS",
+            "CLAUDE_BRIDGE_CLAUDE_BIN",
+        ] {
+            XCTAssertFalse(environment.contains { $0.hasPrefix("\(forbiddenKey)=") })
+        }
+    }
+
+    func testAgentdSupervisorRejectsSymlinkedAgentd() throws {
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory.appending(
+            path: "mimi-supervisor-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        defer { try? fileManager.removeItem(at: directory) }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executableURL = directory.appending(path: "real-agentd")
+        try Data().write(to: executableURL)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+        let symlinkURL = directory.appending(path: "agentd")
+        try fileManager.createSymbolicLink(at: symlinkURL, withDestinationURL: executableURL)
+
+        let identity: (URL) -> CodeSigningIdentity? = { _ in
+            CodeSigningIdentity(
+                identifier: "com.gaixianggeng.mimi.mac.agentd",
+                teamIdentifier: "9HZ89R58PZ"
+            )
+        }
+        XCTAssertTrue(AgentdSupervisor.validateAgentd(
+            at: executableURL,
+            teamIdentifier: "9HZ89R58PZ",
+            identityProvider: identity
+        ))
+        XCTAssertFalse(AgentdSupervisor.validateAgentd(
+            at: symlinkURL,
+            teamIdentifier: "9HZ89R58PZ",
+            identityProvider: identity
+        ))
+        XCTAssertFalse(AgentdSupervisor.validateAgentd(
+            at: executableURL,
+            teamIdentifier: "OTHERTEAM",
+            identityProvider: identity
+        ))
+    }
+
+    func testPhotosAccessRequestsOnlyWhenUndeterminedAndOpensSettingsAfterDenial() async {
+        let events = EventRecorder()
+        var current: PhotosAccessState = .notDetermined
+        let privacy = SystemPrivacySettingsClient(
+            openFullDiskAccessSettings: { events.append("fda") },
+            photosAccessState: { current },
+            requestPhotosAccess: {
+                events.append("request")
+                current = .authorized
+                return .authorized
+            },
+            openPhotosPrivacySettings: { events.append("settings") }
+        )
+        let store = makeStore(configExists: true, systemPrivacySettings: privacy)
+
+        store.refreshPhotosAccess()
+        XCTAssertEqual(store.photosAccess, .notDetermined)
+        await store.requestPhotosAccess()
+        XCTAssertEqual(store.photosAccess, .authorized)
+        XCTAssertEqual(events.values, ["request"])
+
+        // 已允许时不再重复请求。
+        await store.requestPhotosAccess()
+        XCTAssertEqual(events.values, ["request"])
+
+        // 拒绝后系统不会再弹框，只能打开隐私设置。
+        current = .denied
+        await store.requestPhotosAccess()
+        XCTAssertEqual(store.photosAccess, .denied)
+        XCTAssertEqual(events.values, ["request", "settings"])
+    }
+
+    func testFileAccessPresentationFollowsTheServiceThatReadsFiles() {
+        // App 托管：照片状态与操作来自 Mimi Remote Mac 的授权。
+        let appUndetermined = FileAccessSettingsPresentation.make(owner: .macApp, photosAccess: .notDetermined)
+        XCTAssertEqual(appUndetermined.photosStatus, "尚未请求")
+        XCTAssertEqual(appUndetermined.photosAction, .requestPhotosAccess)
+        XCTAssertEqual(
+            FileAccessSettingsPresentation.make(owner: .macApp, photosAccess: .denied).photosAction,
+            .openPhotosPrivacySettings
+        )
+        XCTAssertNil(FileAccessSettingsPresentation.make(owner: .macApp, photosAccess: .authorized).photosAction)
+        XCTAssertTrue(appUndetermined.fullDiskAccessCaption.contains("Mimi Remote Mac"))
+
+        // Homebrew：无论 App 自己的照片授权是什么，都不展示“已允许”或照片授权操作。
+        for appState in [PhotosAccessState.notDetermined, .authorized, .limited, .denied, .restricted] {
+            let homebrew = FileAccessSettingsPresentation.make(owner: .homebrew, photosAccess: appState)
+            XCTAssertNil(homebrew.photosAction, "\(appState)")
+            XCTAssertNotEqual(homebrew.photosStatus, appState.title, "\(appState)")
+            XCTAssertEqual(homebrew.photosStatus, "由完全磁盘访问控制")
+            XCTAssertTrue(homebrew.photosCaption.contains("完全磁盘访问"))
+            XCTAssertTrue(homebrew.fullDiskAccessCaption.contains(FileAccessSettingsPresentation.homebrewAgentdPath))
+        }
+    }
+
+    func testHomebrewOwnerNeverRequestsAppPhotosAuthorization() async {
+        let events = EventRecorder()
+        let privacy = SystemPrivacySettingsClient(
+            openFullDiskAccessSettings: { events.append("fda") },
+            photosAccessState: { .notDetermined },
+            requestPhotosAccess: {
+                events.append("request")
+                return .authorized
+            },
+            openPhotosPrivacySettings: { events.append("settings") }
+        )
+        let store = makeStore(
+            configExists: true,
+            homebrewLoaded: true,
+            status: { Self.readyStatus },
+            systemPrivacySettings: privacy
+        )
+        await store.bootstrap()
+        XCTAssertEqual(store.owner, .homebrew)
+
+        await store.requestPhotosAccess()
+
+        XCTAssertEqual(events.values, ["fda"])
     }
 
     func testBootstrapRequiresSetupWhenConfigIsMissing() async {
@@ -1448,6 +1693,48 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.owner, .macApp)
     }
 
+    /// 2026-09-14 本机实测：LaunchAgent 从裸 agentd 改为主 App supervisor 后，版本变更路径的
+    /// 第一次登记落到带旧 Launch Constraint 的 BTM 记录上，launchd 一直报找不到程序。
+    /// 必须自动再换代一次，而不是停在失败循环里等用户重启 App。
+    func testStaleRegistrationRevisionRepairsLaunchConstraintFailureOnce() async {
+        let events = EventRecorder()
+        let registrationAttempts = CallCounter()
+        var registrationState = ServiceRegistrationState.enabled
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            isAgentRegistrationCurrent: { false },
+            markAgentRegistrationCurrent: { events.append("mark-registration") },
+            status: {
+                registrationAttempts.current >= 2 ? Self.readyStatus : Self.stoppedStatus
+            },
+            registerAgent: {
+                let attempt = registrationAttempts.increment()
+                events.append("register-\(attempt)")
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                events.append("unregister-mac")
+                registrationState = .notRegistered
+            },
+            agentLaunchFailure: {
+                registrationAttempts.current == 1
+                    ? "launchd 无法启动 agentd，已连续尝试 2 次，最近退出码 78"
+                    : nil
+            },
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, [
+            "unregister-mac", "register-1", "unregister-mac", "register-2", "mark-registration",
+        ])
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertNil(store.lastError)
+    }
+
     func testBootstrapReusesEnabledAgentWhenRegistrationRevisionIsCurrent() async {
         let events = EventRecorder()
         let store = makeStore(
@@ -1615,6 +1902,7 @@ final class HostStoreTests: XCTestCase {
             )
         },
         healthCheck: @escaping @Sendable (String) async -> Bool = { _ in true },
+        systemPrivacySettings: SystemPrivacySettingsClient = .noop,
         terminateApplication: @escaping @MainActor () -> Void = {}
     ) -> HostStore {
         let readyStatus = Self.readyStatus
@@ -1661,6 +1949,7 @@ final class HostStoreTests: XCTestCase {
                 reveal: {},
                 fileURL: URL(filePath: "/tmp/mimi-remote-agentd-test.log")
             ),
+            systemPrivacySettings: systemPrivacySettings,
             terminateApplication: terminateApplication
         )
     }
