@@ -352,6 +352,8 @@ final class SessionStore: ObservableObject {
     var webSocket: (any SessionWebSocketClient)?
     var connectedSessionID: String?
     var connectedHostScope: HostScope?
+    // Socket 退役后仍保留故障所属会话，防止把另一会话的连接结果用于当前页面。
+    var webSocketStatusLease: HostSessionLease?
     var connectedCredentialFingerprint: String?
     // iPad 同时保留父会话与一个子会话阅读区；子会话使用独立只读订阅，
     // 不复用 selectedSession 的前台 socket，避免切换右栏时断开父会话。
@@ -1983,18 +1985,5 @@ final class SessionStore: ObservableObject {
         return historySavingsNoticesBySessionID[selectedSessionID]
     }
 
-    func isLoadingEarlierHistory(sessionID: SessionID?) -> Bool {
-        guard let sessionID else {
-            return false
-        }
-        return loadingEarlierHistorySessionIDs.contains(sessionID)
-    }
-
-    func historyLoadProgress(sessionID: SessionID?) -> HistoryLoadProgress? {
-        guard let sessionID else {
-            return nil
-        }
-        return historyLoadProgressBySessionID[sessionID]
-    }
 
 }

@@ -141,10 +141,35 @@ final class ConversationLiveStatusTests: XCTestCase {
         let waiting = try XCTUnwrap(makeStatus(session: session(status: "waiting_for_approval"), messages: [], runtimeActivity: snapshot))
         XCTAssertFalse(waiting.isWarning(at: later), "等用户审批时长时间无事件是正常的")
 
-        let offline = try XCTUnwrap(makeStatus(messages: [], runtimeActivity: snapshot, webSocketStatus: .connecting))
+        let offline = try XCTUnwrap(makeStatus(messages: [], runtimeActivity: snapshot, readiness: .reconnecting))
         XCTAssertTrue(offline.isWarning(at: start))
         XCTAssertFalse(offline.animates)
         XCTAssertTrue(offline.text(at: start).hasSuffix(L10n.text("ui.live_status_reconnecting")))
+    }
+
+    func testPreparationStagesDoNotReuseOldTurnStatisticsOrWarn() throws {
+        let old = Date(timeIntervalSince1970: 1)
+        let now = old.addingTimeInterval(600)
+        for readiness in [ConversationReadiness.sending, .loadingHistory, .connecting] {
+            let status = try XCTUnwrap(makeStatus(
+                session: session(status: readiness == .sending ? "history" : "running"),
+                messages: [],
+                runtimeActivity: RuntimeActivitySnapshot(turnStartedAt: old, lastActivityAt: old),
+                readiness: readiness
+            ))
+            XCTAssertEqual(status.text(at: now), readiness.title)
+            XCTAssertFalse(status.isWarning(at: now))
+            XCTAssertTrue(status.animates)
+        }
+        for readiness in [ConversationReadiness.disconnected, .failed, .unavailable(.credentialsInvalid)] {
+            let status = try XCTUnwrap(makeStatus(messages: [], readiness: readiness))
+            XCTAssertEqual(status.text(at: now), readiness.title)
+            XCTAssertTrue(status.isWarning(at: now))
+            XCTAssertFalse(status.animates)
+        }
+        let observing = try XCTUnwrap(makeStatus(messages: [], readiness: .observing))
+        XCTAssertFalse(observing.isWarning(at: now))
+        XCTAssertFalse(observing.animates)
     }
 
     func testColdOpenPrefersEarlierUserMessageOfCurrentTurn() throws {
@@ -246,7 +271,7 @@ final class ConversationLiveStatusTests: XCTestCase {
         foregroundActivity: SessionForegroundActivity? = nil,
         runtimeActivity: RuntimeActivitySnapshot? = nil,
         tokenCounter: TurnOutputTokenCounter? = nil,
-        webSocketStatus: WebSocketStatus = .connected
+        readiness: ConversationReadiness = .live
     ) -> ConversationLiveStatus? {
         ConversationLiveStatus.make(
             session: session ?? self.session(),
@@ -254,7 +279,7 @@ final class ConversationLiveStatusTests: XCTestCase {
             foregroundActivity: foregroundActivity,
             runtimeActivity: runtimeActivity,
             tokenCounter: tokenCounter,
-            webSocketStatus: webSocketStatus
+            readiness: readiness
         )
     }
 }

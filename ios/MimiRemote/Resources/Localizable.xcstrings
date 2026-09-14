@@ -15351,6 +15351,13 @@
         }
       }
     },
+    "ui.live_status_restoring_history" : {
+      "comment" : "Conversation is restoring its history before attaching live events.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Restoring conversation…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在恢复会话…" } }
+      }
+    },
     "ui.live_status_reconnecting": {
       "comment": "Conversation live status while reconnecting to the host.",
       "localizations": {

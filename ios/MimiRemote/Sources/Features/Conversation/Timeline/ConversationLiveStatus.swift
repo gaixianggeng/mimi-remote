@@ -40,17 +40,11 @@ struct ConversationLiveStatus: Equatable {
         }
     }
 
-    enum Connection: Equatable {
-        case connected
-        case reconnecting
-        case disconnected
-    }
-
     let phase: Phase
     let startedAt: Date?
     let lastActivityAt: Date?
     let outputTokens: Int?
-    let connection: Connection
+    let readiness: ConversationReadiness
 
     /// 连接正常但超过该时长没有任何 runtime 事件时转为警示态，与导航栏副标题同一阈值。
     static let staleThreshold = RuntimeActivityDisplay.staleThreshold
@@ -61,9 +55,9 @@ struct ConversationLiveStatus: Equatable {
         foregroundActivity: SessionForegroundActivity?,
         runtimeActivity: RuntimeActivitySnapshot?,
         tokenCounter: TurnOutputTokenCounter?,
-        webSocketStatus: WebSocketStatus
+        readiness: ConversationReadiness
     ) -> ConversationLiveStatus? {
-        guard let session, session.isRunning else {
+        guard let session, session.isRunning || readiness == .sending else {
             return nil
         }
         let phase = phase(session: session, messages: messages, foregroundActivity: foregroundActivity)
@@ -78,7 +72,7 @@ struct ConversationLiveStatus: Equatable {
             ),
             lastActivityAt: runtimeActivity?.lastActivityAt,
             outputTokens: tokenCounter?.displayOutputTokens(activeTurnID: session.activeTurnID),
-            connection: connection(for: webSocketStatus)
+            readiness: readiness
         )
     }
 
@@ -161,27 +155,17 @@ struct ConversationLiveStatus: Equatable {
         }
     }
 
-    private static func connection(for status: WebSocketStatus) -> Connection {
-        switch status {
-        case .connected:
-            return .connected
-        case .connecting:
-            return .reconnecting
-        case .disconnected, .failed, .terminated:
-            return .disconnected
-        }
-    }
-
     func idleDuration(at now: Date) -> TimeInterval? {
         lastActivityAt.map { max(0, now.timeIntervalSince($0)) }
     }
 
     func isWarning(at now: Date) -> Bool {
-        connection != .connected || isStale(at: now)
+        readiness.isWarning || isStale(at: now)
     }
 
     /// 等审批、等输入时是在等用户，长时间没有事件是正常的，不算停滞。
     func isStale(at now: Date) -> Bool {
+        guard readiness == .live else { return false }
         switch phase {
         case .waitingForApproval, .waitingForInput:
             return false
@@ -190,12 +174,14 @@ struct ConversationLiveStatus: Equatable {
         }
     }
 
-    /// 断线时无法确认仍在运行，动画停下；其余情况（包括长时间无事件）继续转动。
+    /// 正常准备阶段也有进度；只读观察与连接故障不伪装成正在实时接收。
     var animates: Bool {
-        connection == .connected
+        readiness.animates
     }
 
     func text(at now: Date) -> String {
+        // 创建、恢复历史和建立订阅时不展示缓存中上一轮的时长与 Token。
+        if let title = readiness.title { return title }
         var parts: [String] = []
         if let startedAt {
             parts.append(ConversationWorkGroup.durationText(max(0, now.timeIntervalSince(startedAt))))
@@ -203,19 +189,12 @@ struct ConversationLiveStatus: Equatable {
         if let outputTokens {
             parts.append(L10n.format("ui.live_status_tokens_value", Self.compactTokenCount(outputTokens)))
         }
-        switch connection {
-        case .connected:
-            parts.append(phase.title)
-            if isStale(at: now), let idle = idleDuration(at: now) {
-                parts.append(L10n.format(
-                    "ui.live_status_no_new_events_value",
-                    ConversationWorkGroup.durationText(idle)
-                ))
-            }
-        case .reconnecting:
-            parts.append(L10n.text("ui.live_status_reconnecting"))
-        case .disconnected:
-            parts.append(L10n.text("ui.live_status_disconnected"))
+        parts.append(phase.title)
+        if isStale(at: now), let idle = idleDuration(at: now) {
+            parts.append(L10n.format(
+                "ui.live_status_no_new_events_value",
+                ConversationWorkGroup.durationText(idle)
+            ))
         }
         return parts.joined(separator: " · ")
     }

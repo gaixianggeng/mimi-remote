@@ -99,14 +99,15 @@ struct ConversationTimelineView: View {
             messages: messages
         )
         let isHistoryLoading = sessionStore.historyLoadProgress(sessionID: displayedSessionID) != nil
-        let liveStatus = displayedSessionID.flatMap { sessionID in
-            ConversationLiveStatus.make(
-                session: sessionStore.sessionsByID[sessionID],
+        let liveStatus = displayedSessionID.flatMap { sessionID -> ConversationLiveStatus? in
+            guard let session = sessionStore.sessionsByID[sessionID] else { return nil }
+            return ConversationLiveStatus.make(
+                session: session,
                 messages: messages,
                 foregroundActivity: sessionStore.foregroundActivity(for: sessionID),
                 runtimeActivity: sessionStore.runtimeActivitySnapshot(for: sessionID),
                 tokenCounter: sessionStore.turnOutputTokensBySessionID[sessionID],
-                webSocketStatus: sessionStore.webSocketStatus
+                readiness: sessionStore.conversationReadiness(for: session)
             )
         }
         let isLoadingEarlierHistory = sessionStore.isLoadingEarlierHistory(sessionID: displayedSessionID)

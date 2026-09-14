@@ -362,6 +362,9 @@ extension SessionStore {
         connectedSessionID = session.id
         connectedHostScope = hostScope
         connectedCredentialFingerprint = credentialFingerprint
+        webSocketStatusLease = eventLease
+        // 先同步发布建连阶段，再启动异步订阅；避免本轮身份已切换而状态还属于旧连接。
+        setWebSocketStatus(.connecting)
         conversationStore.resetLiveTranscript(sessionID: session.id)
         syncRuntimeActivity(with: session)
         runtimeEventFlushTasks[eventLease]?.cancel()
@@ -589,6 +592,7 @@ extension SessionStore {
     }
 
     func disconnectWebSocket(cancelReconnect: Bool = true) {
+        webSocketStatusLease = nil
         if cancelReconnect {
             cancelWebSocketReconnect(resetAttempts: true)
         }
