@@ -13,7 +13,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
-// resolveMigrationCodexBin 是迁移预检使用的 Codex 路径解析器；测试可替换。
+// resolveMigrationCodexBin 是迁移使用的 Codex 路径解析器，与 doctor 修复相同；测试可替换。
 var resolveMigrationCodexBin = ResolveCodexBin
 
 // MigrateAppServerToSharedLocal replaces the former managed WebSocket upstream
@@ -100,15 +100,12 @@ func MigrateAppServerToSharedLocalWithPreflight(
 	if err := json.Unmarshal(original, &runtimeConfig); err != nil {
 		return fmt.Errorf("解析 Codex 配置失败：%w", err)
 	}
-	codexBin := strings.TrimSpace(runtimeConfig.Codex.Bin)
-	if codexBin == "" {
-		codexBin = defaultCodexBin()
-	}
-	// 老安装的 codex.bin 可能已失效（桌面 App 移动或卸载）。start/serve 要到迁移之后才修复
-	// codex.bin，这里先用同一套回退解析器找到当前可用的 Codex，避免迁移预检在修复前误失败；
-	// 配置里的路径仍由随后的修复步骤原子写回。
-	if resolved, err := resolveMigrationCodexBin(codexBin); err == nil {
-		codexBin = resolved
+	// 老安装的 codex.bin 可能已失效（桌面 App 移动或卸载），而 start/serve 的路径修复排在
+	// 迁移之后。这里复用 doctor 修复同一个解析与写回逻辑：用回退解析出的路径做预检，
+	// 修好的 codex.bin 和新 transport 进入同一次原子提交，不留"transport 已改、路径还坏"的中间态。
+	codexBin, _, err := applyResolvedCodexBin(document, resolveMigrationCodexBin)
+	if err != nil {
+		return fmt.Errorf("共享本机 App Server 预检失败，原配置未修改：%w", err)
 	}
 	if preflight == nil {
 		return fmt.Errorf("共享本机 App Server preflight 未配置")

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
@@ -341,8 +342,44 @@ func TestMigrateAppServerToSharedLocalResolvesStaleCodexBinBeforePreflight(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(stored, []byte(`"transport": "local"`)) || !bytes.Contains(stored, []byte(`"/Applications/Old.app/Contents/Resources/codex"`)) {
-		t.Fatalf("迁移只改 transport，codex.bin 留给启动修复步骤：%s", stored)
+	if !bytes.Contains(stored, []byte(`"transport": "local"`)) || !bytes.Contains(stored, []byte(`"bin": "/opt/homebrew/bin/codex"`)) {
+		t.Fatalf("迁移应把修好的 codex.bin 与新 transport 放进同一次提交：%s", stored)
+	}
+	if bytes.Contains(stored, []byte(`Old.app`)) {
+		t.Fatalf("失效的旧路径不应残留：%s", stored)
+	}
+	if bytes.Contains(stored, []byte(`"listen"`)) {
+		t.Fatalf("旧 managed 字段应被删除：%s", stored)
+	}
+}
+
+func TestMigrateAppServerToSharedLocalFailsBeforeWritingWhenNoCodexResolves(t *testing.T) {
+	if !config.SupportsSharedLocalAppServer() {
+		t.Skip("shared local App Server migration only applies to macOS and Linux")
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{"codex":{"bin":"/missing/codex"},"app_server":{"transport":"ws","managed":true,"listen":"ws://127.0.0.1:4222"}}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previousResolver := resolveMigrationCodexBin
+	resolveMigrationCodexBin = func(string) (string, error) { return "", errors.New("no codex anywhere") }
+	t.Cleanup(func() { resolveMigrationCodexBin = previousResolver })
+	previous := localAppServerPreflight
+	localAppServerPreflight = func(context.Context, string, map[string]string) error {
+		t.Fatal("解析不到 Codex 时不应进入预检")
+		return nil
+	}
+	t.Cleanup(func() { localAppServerPreflight = previous })
+	if err := MigrateAppServerToSharedLocal(context.Background(), path); err == nil || !strings.Contains(err.Error(), "no codex anywhere") {
+		t.Fatalf("找不到 Codex 时应返回解析错误，got %v", err)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, original) {
+		t.Fatalf("解析失败不能改写配置：%s", stored)
 	}
 }
 
