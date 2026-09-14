@@ -15,6 +15,9 @@ struct SessionContextSnapshot: Codable, Hashable {
     var sources: [SessionContextSource]
     var subagents: [SessionContextSubagent]
     var updatedAt: Date?
+    /// 仅随实时 `thread/tokenUsage/updated` 传递的数值用量，供本轮 token 计数使用；
+    /// 不在 CodingKeys 中，不进入持久化。
+    var tokenUsage: AppServerTokenUsageSample?
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
