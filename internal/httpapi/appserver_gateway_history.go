@@ -295,6 +295,13 @@ func gatewayHistoryBudgetKey(threadID string, method string, itemsView string) s
 }
 
 func gatewayHistoryBudgetSubject(request appServerGatewayPendingHistoryRequest) string {
+	if request.method == "thread/items/list" {
+		// 首页会逐回合补齐 items。不同回合不能共用六次请求预算，否则十回合的
+		// 小首页也必然等待 15 秒；全局响应字节预算仍限制跨回合的总下行量。
+		// filterFingerprint 在 items 请求中保存 turnId；不包含 cursor，防止换页绕过限制。
+		encoded, _ := json.Marshal([]string{strings.TrimSpace(request.threadID), request.filterFingerprint})
+		return string(encoded)
+	}
 	if threadID := strings.TrimSpace(request.threadID); threadID != "" {
 		return threadID
 	}
