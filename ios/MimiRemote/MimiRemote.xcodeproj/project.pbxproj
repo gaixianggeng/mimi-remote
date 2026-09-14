@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D2FB93E7A0367E66B84AF7CD /* NewSessionBufferedReplyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29EDD5D8A884DB855281E9ED /* NewSessionBufferedReplyTests.swift */; };
 		0209F743D168F03B03894AB0 /* FileAttachmentModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F55F20982430C816BB70A7F5 /* FileAttachmentModelsTests.swift */; };
 		037B9C95E0087324B0B93B82 /* CodexAppServerApprovalProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D536A7DD9FA51261421A61A /* CodexAppServerApprovalProjection.swift */; };
 		038DE2248E14CF16EC1AAB30 /* SessionContextModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E033E7A8267D3C3494835305 /* SessionContextModels.swift */; };
@@ -469,6 +470,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		29EDD5D8A884DB855281E9ED /* NewSessionBufferedReplyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewSessionBufferedReplyTests.swift; sourceTree = "<group>"; };
 		001126768C40E81F1BDA0FCC /* LockScreenApprovalNotification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LockScreenApprovalNotification.swift; sourceTree = "<group>"; };
 		00BF9FE4AEE49C6DD13873AA /* testComposerStatusTrayCrowdedCompactWidth.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testComposerStatusTrayCrowdedCompactWidth.1.png; sourceTree = "<group>"; };
 		023D47371A66B1C8E92BB3D4 /* testSessionLibraryDensityAndAccessibilityLayouts.iphone-390-light.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testSessionLibraryDensityAndAccessibilityLayouts.iphone-390-light.png"; sourceTree = "<group>"; };
@@ -1104,6 +1106,7 @@
 				4CAF352234E74EEAF7B023AE /* ManagedPairingContractTests.swift */,
 				24B74985F9E77EEE70BC1856 /* MarkdownRenderingTests.swift */,
 				81FDFD00533B31F16F861BFB /* MimiInteractionFeedbackTests.swift */,
+				29EDD5D8A884DB855281E9ED /* NewSessionBufferedReplyTests.swift */,
 				61B287032A29ABBC9D670E94 /* NewSessionPresentationSourceTests.swift */,
 				2634F66872F219ECD4FA35A7 /* NotificationContentRewriterTests.swift */,
 				1DFDA1FF6067F862CB347130 /* NotificationRouteResolutionTests.swift */,
@@ -2086,6 +2089,7 @@
 				7FCF7AE789CFBC4E2148BCD3 /* ManagedPairingContractTests.swift in Sources */,
 				4DDCF6949E6DDCC9ABEBE709 /* MarkdownRenderingTests.swift in Sources */,
 				20D78099D1CE0CC7A660BFA1 /* MimiInteractionFeedbackTests.swift in Sources */,
+				D2FB93E7A0367E66B84AF7CD /* NewSessionBufferedReplyTests.swift in Sources */,
 				B3BE80D2693D4982B46A4924 /* NewSessionPresentationSourceTests.swift in Sources */,
 				E4429CCC374AF56E1F5D19C2 /* NotificationContentRewriterTests.swift in Sources */,
 				536DB48A289800FFCCF45A69 /* NotificationRouteResolutionTests.swift in Sources */,

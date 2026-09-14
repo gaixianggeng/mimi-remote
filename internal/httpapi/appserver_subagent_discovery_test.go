@@ -70,11 +70,11 @@ func TestAuthorizedProjectsByGitCommonDirUsesUniquePrimaryProject(t *testing.T) 
 	defer cancel()
 
 	projectByCommonDir := policy.authorizedProjectsByGitCommonDir(ctx)
-	got, ok := projectForGlobalThread(ctx, gatewayScope{
-		id:       workspaceIDForRealPath(externalWorktree),
-		realPath: externalWorktree,
-		browse:   true,
-	}, projectByCommonDir)
+	commonDir, ok := gitCommonDirectory(ctx, externalWorktree)
+	if !ok {
+		t.Fatal("外部 Worktree 应能解析 Git 共享目录")
+	}
+	got, ok := projectByCommonDir[commonDir]
 	if !ok || got.ID != "root" {
 		t.Fatalf("同仓多个 Project 必须稳定映射到唯一主工作树项目，got=%+v ok=%v", got, ok)
 	}
