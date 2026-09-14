@@ -96,7 +96,7 @@ agentd 或单条 Mimi WebSocket 退出时只关闭自己的连接或对应 SSH p
 
 ## macOS 文件访问权限
 
-本机模式下 resident 由 agentd 启动，继承 agentd（Mac App 内嵌 LaunchAgent 或 Homebrew 服务）的 macOS 隐私授权。SSH 模式下 resident 是 sshd 的子进程；若“远程登录”里开启了“允许远程用户完全访问磁盘”（macOS 默认勾选），它会继承 sshd 的完全磁盘访问。因此从 SSH 切到本机模式后，照片图库、Mail、Safari 等“完全磁盘访问”范围内的目录可能从可读变为需要授权；桌面、文稿、下载仍按首次访问时的系统提示授权。需要无人值守访问受保护目录时，按[安装、升级与回滚](install-upgrade-rollback.md)为 agentd 授予完全磁盘访问。
+本机模式下 resident 由 agentd 启动并继承它的 macOS 隐私授权：Mac App 安装版的 agentd 由主 App 的 supervisor 拉起，授权主体是 Mimi Remote Mac（照片图库在 App 的“设置 → 文件访问”中允许）；Homebrew 版的授权主体是 agentd 本身。SSH 模式下 resident 是 sshd 的子进程；若“远程登录”里开启了“允许远程用户完全访问磁盘”（macOS 默认勾选），它会继承 sshd 的完全磁盘访问。因此从 SSH 切到本机模式后，照片图库、Mail、Safari 等“完全磁盘访问”范围内的目录可能从可读变为需要授权；桌面、文稿、下载仍按首次访问时的系统提示授权。需要无人值守访问受保护目录时，按[安装、升级与回滚](install-upgrade-rollback.md)为 Mimi Remote Mac（Homebrew 版为 agentd）授予完全磁盘访问。
 
 ## 会话和消息规则
 

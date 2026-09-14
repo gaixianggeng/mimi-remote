@@ -5,13 +5,11 @@
 	<key>Label</key>
 	<string>com.gaixianggeng.mimi.mac.agentd</string>
 	<key>BundleProgram</key>
-	<string>Contents/Resources/agentd</string>
+	<string>Contents/MacOS/Mimi Remote Mac</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>agentd</string>
-		<string>serve</string>
-		<string>--log-file</string>
-		<string>~/Library/Logs/mimi-remote/agentd.log</string>
+		<string>Mimi Remote Mac</string>
+		<string>--agentd-supervisor</string>
 	</array>
 	<key>EnvironmentVariables</key>
 	<dict>

@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+
+	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 )
 
 // pathAccessDeniedMessage 区分“路径不在 allowlist / 不存在”与“OS 拒绝访问”。
@@ -22,7 +24,10 @@ func pathAccessDeniedMessage(err error) (string, bool) {
 		return "", false
 	}
 	if runtime.GOOS == "darwin" {
-		return "agentd 无法访问该路径：可能是 macOS 隐私保护目录（如“照片”图库）。请在 系统设置 → 隐私与安全性 → 完全磁盘访问 中允许 agentd（或 Mimi Remote），并重启应用后重试。", true
+		if doctor.FileAccessPermissionsOwnedByMacApp() {
+			return "agentd 无法访问该路径：可能是 macOS 隐私保护目录。“照片”图库请在 Mac 上打开 Mimi Remote Mac 的 设置 → 文件访问 允许；其他受保护目录请在 系统设置 → 隐私与安全性 → 完全磁盘访问 中添加 Mimi Remote Mac，然后重试。", true
+		}
+		return "agentd 无法访问该路径：可能是 macOS 隐私保护目录（如“照片”图库）。请在 系统设置 → 隐私与安全性 → 完全磁盘访问 中添加 agentd，然后重启服务后重试。", true
 	}
 	return "agentd 无法访问该路径：操作系统拒绝了读取权限。请检查 agentd 运行用户对该路径及其父目录的读取权限，并重启服务后重试。", true
 }
@@ -289,15 +294,23 @@ func isMacOSTCCPermissionCandidate(err error) bool {
 	return runtime.GOOS == "darwin" && errors.Is(err, syscall.EPERM)
 }
 
-// fileAccessDeniedMessage 按权限域给出可执行提示。当前 TCC 主体是后台服务 agentd 本身
-// （App 安装版位于 Mimi Remote Mac.app 内，Homebrew 版为独立二进制），照片图库不属于
-// “文件与文件夹”，只能通过完全磁盘访问放行。
+// fileAccessDeniedMessage 按权限域给出可执行提示。App 安装版由 Mimi Remote Mac supervisor
+// 托管，隐私授权主体是主 App：照片图库在 App 设置里申请，文件夹权限也记在 App 名下。
+// Homebrew / 开发版的主体仍是 agentd，照片图库不属于“文件与文件夹”，只能靠完全磁盘访问放行。
 func fileAccessDeniedMessage(domain string) string {
 	if runtime.GOOS != "darwin" {
 		return "agentd 无法访问该路径：操作系统拒绝了读取权限。请检查 agentd 运行用户对该路径及其父目录的读取权限，并重启服务后重试。"
 	}
+	ownedByApp := doctor.FileAccessPermissionsOwnedByMacApp()
 	if domain == "photos_library" {
-		return "agentd 无法访问照片图库：它与“图片”文件夹使用不同的权限。请在 Mac 的 系统设置 → 隐私与安全性 → 完全磁盘访问 中添加 agentd（App 安装版位于 Mimi Remote Mac.app 内，Homebrew 版为 /opt/homebrew/opt/mimi-remote/bin/agentd），然后重试。"
+		if ownedByApp {
+			return "agentd 无法访问照片图库：它与“图片”文件夹使用不同的权限。请在 Mac 上打开 Mimi Remote Mac 的 设置 → 文件访问，点“允许访问照片”；之前拒绝过时点“打开照片隐私设置”开启 Mimi Remote Mac，然后重试。"
+		}
+		return "agentd 无法访问照片图库：它与“图片”文件夹使用不同的权限。请在 Mac 的 系统设置 → 隐私与安全性 → 完全磁盘访问 中添加 /opt/homebrew/opt/mimi-remote/bin/agentd，然后重试。"
+	}
+	owner := "agentd"
+	if ownedByApp {
+		owner = "Mimi Remote Mac"
 	}
 	labels := map[string]string{
 		"desktop":   "桌面",
@@ -305,7 +318,7 @@ func fileAccessDeniedMessage(domain string) string {
 		"downloads": "下载",
 	}
 	if label, ok := labels[domain]; ok {
-		return "agentd 无法访问“" + label + "”文件夹。请在 Mac 上允许系统弹出的访问提示；如果没有提示或之前拒绝过，请在 系统设置 → 隐私与安全性 → 文件与文件夹 或 完全磁盘访问 中为 agentd 开启，然后重试。"
+		return "agentd 无法访问“" + label + "”文件夹。请在 Mac 上允许系统弹出的访问提示；如果没有提示或之前拒绝过，请在 系统设置 → 隐私与安全性 → 文件与文件夹 或 完全磁盘访问 中为 " + owner + " 开启，然后重试。"
 	}
 	return "agentd 无法读取该文件。请检查该文件及父目录的读取权限后重试。"
 }

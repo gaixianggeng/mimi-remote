@@ -31,8 +31,16 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>允许 Mimi Remote Mac 读取你在 iPhone 或 iPad 上打开的桌面文件。</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>允许 Mimi Remote Mac 读取你在 iPhone 或 iPad 上打开的文稿文件。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>允许 Mimi Remote Mac 读取你在 iPhone 或 iPad 上打开的下载文件。</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>允许 Mimi Remote Mac 读取会话中引用的“照片”图库图片，以便在 iPhone 或 iPad 上预览。Mimi 不会修改或上传你的照片。</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>允许 Mimi Remote Mac 在本机和私有网络中启动并检查远程开发服务。</string>
 </dict>

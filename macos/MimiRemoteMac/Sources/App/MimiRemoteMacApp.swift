@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import SwiftUI
 
 /// Mimi Remote Mac 只运行菜单栏 App；后台 Codex App Server 由 agentd 托管。
@@ -10,6 +11,14 @@ enum MimiRemoteMacMain {
         // 这里只退出，绝不恢复已移除的共享 daemon，也不误开第二个菜单栏 App。
         if CommandLine.arguments.contains("--codex-daemon-supervisor") {
             return
+        }
+        // LaunchAgent 以 supervisor 模式启动主可执行文件：必须早于任何 UI、隔离副本提示和
+        // Store 初始化，只接受唯一的固定参数，任何多余参数都按用法错误退出。
+        if AgentdSupervisorInvocation.isRequested(CommandLine.arguments) {
+            guard AgentdSupervisorInvocation.matches(CommandLine.arguments) else {
+                Darwin.exit(EX_USAGE)
+            }
+            Darwin.exit(AgentdSupervisor.run())
         }
         if let error = ServiceManagementClient.installationLocationError() {
             // 必须先于 Store/bootstrap：隔离副本连登录项和已有服务的注销都不能执行。

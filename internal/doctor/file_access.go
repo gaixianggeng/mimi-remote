@@ -16,6 +16,17 @@ import (
 
 const fileAccessPreflightName = "file-access-preflight"
 
+// MacAppTCCOwnerEnv 由 Mimi Remote Mac 的 agentd supervisor 注入。它只决定权限提示指向谁：
+// App 安装版的隐私授权主体是 Mimi Remote Mac，Homebrew / 开发版仍是 agentd 本身。
+const MacAppTCCOwnerEnv = "MIMI_REMOTE_TCC_OWNER"
+
+const macAppBundleIdentifier = "com.gaixianggeng.mimi.mac"
+
+// FileAccessPermissionsOwnedByMacApp 报告当前进程是否由 Mimi Remote Mac supervisor 托管。
+func FileAccessPermissionsOwnedByMacApp() bool {
+	return runtime.GOOS == "darwin" && strings.TrimSpace(os.Getenv(MacAppTCCOwnerEnv)) == macAppBundleIdentifier
+}
+
 type fileAccessTarget struct {
 	path          string
 	missingIsOkay bool
@@ -297,5 +308,8 @@ func userHomeDir() string {
 }
 
 func fileAccessPreflightFix() string {
-	return "请允许 macOS 文件夹提示；需要无人值守访问整个 Home 或其他 App 数据时，在系统设置 → 隐私与安全性 → 完全磁盘访问中添加稳定签名的 agentd"
+	if FileAccessPermissionsOwnedByMacApp() {
+		return "请允许 macOS 为 Mimi Remote Mac 弹出的文件夹提示；“照片”图库在 Mimi Remote Mac 的 设置 → 文件访问 中允许；需要无人值守访问其他 App 数据时，在系统设置 → 隐私与安全性 → 完全磁盘访问中添加 Mimi Remote Mac"
+	}
+	return "请允许 macOS 文件夹提示；需要无人值守访问整个 Home、照片图库或其他 App 数据时，在系统设置 → 隐私与安全性 → 完全磁盘访问中添加稳定签名的 agentd"
 }

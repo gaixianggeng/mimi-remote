@@ -25,6 +25,7 @@ final class HostStore {
     private(set) var isUpdatingTailcat = false
     private(set) var tailcatError: String?
     private(set) var tailcatNotice: String?
+    private(set) var photosAccess: PhotosAccessState = .notDetermined
     /// 启动阶段的补充说明，例如覆盖安装后正在重新登记后台服务。只在
     /// `.starting` 期间有值，进入其它生命周期状态时清空。
     private(set) var startingDetail: String?
@@ -522,6 +523,24 @@ final class HostStore {
 
     func openFullDiskAccessSettings() {
         systemPrivacySettings.openFullDiskAccessSettings()
+    }
+
+    func refreshPhotosAccess() {
+        photosAccess = systemPrivacySettings.photosAccessState()
+    }
+
+    /// 首次请求弹出系统授权框；用户之前拒绝过时系统不会再弹，只能引导到隐私设置里手动开启。
+    func requestPhotosAccess() async {
+        let current = systemPrivacySettings.photosAccessState()
+        switch current {
+        case .notDetermined:
+            photosAccess = await systemPrivacySettings.requestPhotosAccess()
+        case .denied, .restricted:
+            photosAccess = current
+            systemPrivacySettings.openPhotosPrivacySettings()
+        case .authorized, .limited:
+            photosAccess = current
+        }
     }
 
     func setLaunchAtLogin(_ enabled: Bool) async {

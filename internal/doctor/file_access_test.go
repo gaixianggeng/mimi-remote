@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -210,5 +211,31 @@ func TestStandardFileAccessPermissionDomainDoesNotExpandArbitraryPaths(t *testin
 	outsideLibrary := filepath.Join(t.TempDir(), "Outside.photoslibrary", "resources", "a.jpg")
 	if _, ok := standardFileAccessPermissionDomain(outsideLibrary, home); ok {
 		t.Fatal("Pictures 外的 .photoslibrary 不能扩大为照片图库权限域")
+	}
+}
+
+func TestFileAccessPreflightFixNamesTheActualTCCOwner(t *testing.T) {
+	t.Setenv(MacAppTCCOwnerEnv, "")
+	standalone := fileAccessPreflightFix()
+	if !strings.Contains(standalone, "稳定签名的 agentd") || strings.Contains(standalone, "Mimi Remote Mac") {
+		t.Fatalf("独立 agentd 的修复提示应点名 agentd：%s", standalone)
+	}
+	t.Setenv(MacAppTCCOwnerEnv, "com.gaixianggeng.mimi.mac")
+	if runtime.GOOS != "darwin" {
+		if FileAccessPermissionsOwnedByMacApp() {
+			t.Fatal("非 macOS 不存在 Mimi Remote Mac supervisor")
+		}
+		return
+	}
+	if !FileAccessPermissionsOwnedByMacApp() {
+		t.Fatal("supervisor 注入的标识应被识别")
+	}
+	app := fileAccessPreflightFix()
+	if !strings.Contains(app, "Mimi Remote Mac") || strings.Contains(app, "稳定签名的 agentd") {
+		t.Fatalf("App 托管时修复提示应点名 Mimi Remote Mac：%s", app)
+	}
+	t.Setenv(MacAppTCCOwnerEnv, "com.example.other")
+	if FileAccessPermissionsOwnedByMacApp() {
+		t.Fatal("其他标识不能冒充 Mimi Remote Mac 授权主体")
 	}
 }

@@ -49,12 +49,31 @@ struct MacSettingsView: View {
             }
 
             Section("文件访问") {
+                LabeledContent("照片图库", value: store.photosAccess.title)
+                switch store.photosAccess {
+                case .notDetermined:
+                    Button("允许访问照片…") {
+                        Task { await store.requestPhotosAccess() }
+                    }
+                case .denied, .restricted:
+                    Button("打开照片隐私设置…") {
+                        Task { await store.requestPhotosAccess() }
+                    }
+                case .authorized, .limited:
+                    EmptyView()
+                }
+                Text(photosAccessCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Button("打开完全磁盘访问权限设置…") {
                     store.openFullDiskAccessSettings()
                 }
-                Text("只有 agentd 需要读取 macOS 保护的目录（例如“照片”图库里拖入会话的图片）时，才需要授予完全磁盘访问权限。在列表中添加 Mimi Remote Mac.app/Contents/Resources/agentd。")
+                Text(fullDiskAccessCaption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            .onAppear {
+                store.refreshPhotosAccess()
             }
 
             Section("隐私") {
@@ -74,6 +93,20 @@ struct MacSettingsView: View {
         } message: {
             Text("切换期间移动设备会短暂断开；Homebrew 启动失败时会自动恢复 App 服务。")
         }
+    }
+
+    private var photosAccessCaption: String {
+        if store.owner == .homebrew {
+            return "当前由 Homebrew 运行 agentd，这里的照片权限不会作用于它；需要预览“照片”里的图片时，请在“完全磁盘访问”中添加 agentd。"
+        }
+        return "在 Mac 上把“照片”里的图片拖进会话后，iPhone 或 iPad 预览这些图片需要该权限。Mimi 不会修改或上传照片。"
+    }
+
+    private var fullDiskAccessCaption: String {
+        if store.owner == .homebrew {
+            return "Homebrew 版需要在列表中添加 /opt/homebrew/opt/mimi-remote/bin/agentd。"
+        }
+        return "只有需要读取 Mail、Safari 等其他 App 的数据时，才需要在“完全磁盘访问”中添加 Mimi Remote Mac。桌面、文稿和下载会在首次访问时由系统单独询问。"
     }
 
     private var ownerTitle: String {
