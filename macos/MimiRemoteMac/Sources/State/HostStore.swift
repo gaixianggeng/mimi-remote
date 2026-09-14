@@ -25,6 +25,7 @@ final class HostStore {
     private(set) var isUpdatingTailcat = false
     private(set) var tailcatError: String?
     private(set) var tailcatNotice: String?
+    private(set) var photosAccess: PhotosAccessState = .notDetermined
     /// 启动阶段的补充说明，例如覆盖安装后正在重新登记后台服务。只在
     /// `.starting` 期间有值，进入其它生命周期状态时清空。
     private(set) var startingDetail: String?
@@ -524,6 +525,29 @@ final class HostStore {
         systemPrivacySettings.openFullDiskAccessSettings()
     }
 
+    func refreshPhotosAccess() {
+        photosAccess = systemPrivacySettings.photosAccessState()
+    }
+
+    /// 首次请求弹出系统授权框；用户之前拒绝过时系统不会再弹，只能引导到隐私设置里手动开启。
+    /// Homebrew 运行的 agentd 不继承 App 的照片授权，只能打开完全磁盘访问设置。
+    func requestPhotosAccess() async {
+        guard owner != .homebrew else {
+            systemPrivacySettings.openFullDiskAccessSettings()
+            return
+        }
+        let current = systemPrivacySettings.photosAccessState()
+        switch current {
+        case .notDetermined:
+            photosAccess = await systemPrivacySettings.requestPhotosAccess()
+        case .denied, .restricted:
+            photosAccess = current
+            systemPrivacySettings.openPhotosPrivacySettings()
+        case .authorized, .limited:
+            photosAccess = current
+        }
+    }
+
     func setLaunchAtLogin(_ enabled: Bool) async {
         do {
             if enabled {
@@ -776,10 +800,15 @@ final class HostStore {
             if !services.isAgentRegistrationCurrent() {
                 // Apple 要求 LaunchAgent 的 plist 或可执行文件更新后重新注册。
                 // 先于状态命令处理，才能修复旧签名约束在进程启动前直接 SIGKILL 的升级。
+                //
+                // 这里必须保留一次自动换代：LaunchAgent 定义本身变化时（例如 BundleProgram 从裸
+                // agentd 改为主 App supervisor），第一次登记会被 BTM 复用到带旧 Launch Constraint
+                // 的记录上，launchd 立即报 Constraint Violation。BTM 随后生成新记录，但 launchd
+                // 已提交的任务仍指向作废记录，只有再注销、再登记一次才会换到新记录。
                 lifecycle = .starting
                 do {
                     try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
-                    try await registerMacAgentAndWaitForReady(allowAutomaticRepair: false)
+                    try await registerMacAgentAndWaitForReady(allowAutomaticRepair: true)
                 } catch {
                     fail(error)
                 }

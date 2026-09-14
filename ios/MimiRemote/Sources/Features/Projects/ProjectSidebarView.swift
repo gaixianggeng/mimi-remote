@@ -1045,16 +1045,7 @@ struct OpenWorkspaceSheet: View {
     }
 
     private func userFacingPreviewError(_ error: Error) -> String {
-        if case AgentAPIError.server(let status, _) = error, status == 404 || status == 405 {
-            return L10n.text("ui.the_current_agentd_version_does_not_support_file")
-        }
-        if case AgentAPIError.server(let status, _) = error, status == 403 {
-            return L10n.text("ui.the_file_is_not_within_authorization_or_is")
-        }
-        if case AgentAPIError.server(let status, _) = error, status == 413 {
-            return L10n.text("ui.the_file_is_too_large_and_preview_is")
-        }
-        return error.localizedDescription
+        FilePreviewErrorPresentation.message(for: error)
     }
 
     private func open(path: String) async {

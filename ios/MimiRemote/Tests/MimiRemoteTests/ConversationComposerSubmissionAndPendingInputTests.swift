@@ -906,6 +906,21 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
         )
     }
 
+    /// Claude 被 Mac 持有时和 Codex 的「仅观察」同处输入框托盘：接管按钮收在展开态里。
+    /// 主机不支持接管时展开仍有下文（谁持有、对方退出后可继续），所以 disclosure 恒在。
+    func testClaudeOwnershipLivesInTrayAndAlwaysOffersDisclosure() {
+        let owner = ClaudeSessionOwner(entrypoint: "claude-desktop", kind: "interactive", status: "idle", pid: 4242)
+        XCTAssertTrue(
+            makeTray(ownershipNotice: SessionOwnershipNotice(sessionID: "held", owner: owner, canTakeOver: true))
+                .hasExpandableDetail
+        )
+        XCTAssertTrue(
+            makeTray(ownershipNotice: SessionOwnershipNotice(sessionID: "held", owner: owner, canTakeOver: false))
+                .hasExpandableDetail,
+            "不支持接管的主机也要能展开看到持有方说明"
+        )
+    }
+
     /// 「仅观察」展开前后没有更多内容时，不应该展示无效的 disclosure。
     func testStatusTrayOnlyOffersDisclosureWhenExpandingRevealsSomething() {
         XCTAssertFalse(
@@ -1093,6 +1108,7 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
 
     private func makeTray(
         sessionControlNotice: String? = nil,
+        ownershipNotice: SessionOwnershipNotice? = nil,
         quotaNotice: CodexQuotaNotice? = nil,
         usage: CodexUsageDisplaySummary? = nil,
         goal: ThreadGoal? = nil,
@@ -1100,6 +1116,7 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
     ) -> ComposerStatusTray {
         ComposerStatusTray(
             sessionControlNotice: sessionControlNotice,
+            ownershipNotice: ownershipNotice,
             quotaNotice: quotaNotice,
             usage: usage,
             goal: goal,

@@ -16,6 +16,17 @@ import (
 
 const fileAccessPreflightName = "file-access-preflight"
 
+// MacAppTCCOwnerEnv 由 Mimi Remote Mac 的 agentd supervisor 注入。它只决定权限提示指向谁：
+// App 安装版的隐私授权主体是 Mimi Remote Mac，Homebrew / 开发版仍是 agentd 本身。
+const MacAppTCCOwnerEnv = "MIMI_REMOTE_TCC_OWNER"
+
+const macAppBundleIdentifier = "com.gaixianggeng.mimi.mac"
+
+// FileAccessPermissionsOwnedByMacApp 报告当前进程是否由 Mimi Remote Mac supervisor 托管。
+func FileAccessPermissionsOwnedByMacApp() bool {
+	return runtime.GOOS == "darwin" && strings.TrimSpace(os.Getenv(MacAppTCCOwnerEnv)) == macAppBundleIdentifier
+}
+
 type fileAccessTarget struct {
 	path          string
 	missingIsOkay bool
@@ -24,6 +35,12 @@ type fileAccessTarget struct {
 type fileAccessFailure struct {
 	path string
 	err  error
+}
+
+type fileAccessPermissionDomain struct {
+	name  string
+	label string
+	path  string
 }
 
 // StartFileAccessPreflight 必须在 serve 的其他运行时组件之前调用。探测放在单独 goroutine：
@@ -49,9 +66,7 @@ func (c *Checker) StartFileAccessPreflight() {
 
 	go func() {
 		check, failures := runFileAccessPreflight(c.cfg, c.registry, userHomeDir(), true)
-		c.fileAccessMu.Lock()
-		c.fileAccessPreflight = check
-		c.fileAccessMu.Unlock()
+		c.mergeStartupFileAccessPreflight(check)
 
 		if len(failures) == 0 {
 			log.Printf("agentd startup file access preflight ok: %s", check.Message)
@@ -63,10 +78,110 @@ func (c *Checker) StartFileAccessPreflight() {
 	}()
 }
 
+func (c *Checker) mergeStartupFileAccessPreflight(check Check) {
+	c.fileAccessMu.Lock()
+	defer c.fileAccessMu.Unlock()
+	// 按需探测已经确认的失败比启动预检成功更新、更接近真实读取。
+	// 无论两个 goroutine 谁先完成，启动结果都不能覆盖该失败。
+	for _, failed := range c.fileAccessRequestedDomains {
+		if failed {
+			return
+		}
+	}
+	c.fileAccessPreflight = check
+}
+
 func (c *Checker) fileAccessPreflightCheck() Check {
 	c.fileAccessMu.RLock()
 	defer c.fileAccessMu.RUnlock()
 	return c.fileAccessPreflight
+}
+
+// RequestFileAccess 在文件读取已被 macOS 拒绝后，异步探测对应的标准目录。
+// 探测只用于触发系统文件夹授权提示并把结果写进 doctor，不会修改 browse_roots，
+// 也不会开放远程授权入口。返回的权限域名用于客户端提示；第二个返回值表示已触发探测。
+func (c *Checker) RequestFileAccess(path string) (string, bool) {
+	if c == nil || runtime.GOOS != "darwin" {
+		return "", false
+	}
+	domain, ok := c.requestFileAccess(path, userHomeDir(), probeDirectoryAccess)
+	if !ok {
+		return "other", false
+	}
+	return domain, true
+}
+
+func (c *Checker) requestFileAccess(path string, home string, probe func(string) error) (string, bool) {
+	domain, ok := standardFileAccessPermissionDomain(path, home)
+	if !ok {
+		return "", false
+	}
+	c.fileAccessMu.Lock()
+	if c.fileAccessRequestedDomains == nil {
+		c.fileAccessRequestedDomains = make(map[string]bool)
+	}
+	if _, exists := c.fileAccessRequestedDomains[domain.name]; exists {
+		c.fileAccessMu.Unlock()
+		return domain.name, true
+	}
+	// false 表示已触发且尚未确认失败；map 键本身负责进程内去重。
+	c.fileAccessRequestedDomains[domain.name] = false
+	c.fileAccessMu.Unlock()
+
+	go func() {
+		err := probe(domain.path)
+		c.fileAccessMu.Lock()
+		defer c.fileAccessMu.Unlock()
+		if err == nil {
+			return
+		}
+		c.fileAccessRequestedDomains[domain.name] = true
+		c.fileAccessPreflightStarted = true
+		c.fileAccessPreflight = Check{
+			Name:    fileAccessPreflightName,
+			OK:      false,
+			Level:   "warning",
+			Message: fmt.Sprintf("macOS 拒绝访问%s", domain.label),
+			Fix:     fileAccessPreflightFix(),
+		}
+		log.Printf("agentd on-demand file access probe blocked domain=%q error=%v", domain.name, err)
+	}()
+	return domain.name, true
+}
+
+// standardFileAccessPermissionDomain 只识别 macOS 分别管理的标准位置：桌面、文稿、下载，
+// 以及 Pictures 下的 .photoslibrary bundle。普通目录不会被扩大成权限域。
+func standardFileAccessPermissionDomain(path string, home string) (fileAccessPermissionDomain, bool) {
+	abs, err := filepath.Abs(strings.TrimSpace(path))
+	if err != nil || strings.TrimSpace(home) == "" {
+		return fileAccessPermissionDomain{}, false
+	}
+	picturesRoot := filepath.Join(home, "Pictures")
+	if relative, err := filepath.Rel(picturesRoot, abs); err == nil &&
+		relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		parts := strings.Split(filepath.Clean(relative), string(os.PathSeparator))
+		for index, part := range parts {
+			if strings.HasSuffix(strings.ToLower(part), ".photoslibrary") {
+				bundleRoot := filepath.Join(append([]string{picturesRoot}, parts[:index+1]...)...)
+				return fileAccessPermissionDomain{name: "photos_library", label: "照片图库", path: bundleRoot}, true
+			}
+		}
+	}
+	for _, candidate := range []struct {
+		name  string
+		label string
+		dir   string
+	}{
+		{name: "desktop", label: "“桌面”文件夹", dir: "Desktop"},
+		{name: "documents", label: "“文稿”文件夹", dir: "Documents"},
+		{name: "downloads", label: "“下载”文件夹", dir: "Downloads"},
+	} {
+		root := filepath.Join(home, candidate.dir)
+		if pathContains(root, abs) {
+			return fileAccessPermissionDomain{name: candidate.name, label: candidate.label, path: root}, true
+		}
+	}
+	return fileAccessPermissionDomain{}, false
 }
 
 func runFileAccessPreflight(cfg config.Config, registry *projects.Registry, home string, darwin bool) (Check, []fileAccessFailure) {
@@ -193,5 +308,8 @@ func userHomeDir() string {
 }
 
 func fileAccessPreflightFix() string {
-	return "请允许 macOS 文件夹提示；需要无人值守访问整个 Home 或其他 App 数据时，在系统设置 → 隐私与安全性 → 完全磁盘访问中添加稳定签名的 agentd"
+	if FileAccessPermissionsOwnedByMacApp() {
+		return "请允许 macOS 为 Mimi Remote Mac 弹出的文件夹提示；“照片”图库在 Mimi Remote Mac 的 设置 → 文件访问 中允许；需要无人值守访问其他 App 数据时，在系统设置 → 隐私与安全性 → 完全磁盘访问中添加 Mimi Remote Mac"
+	}
+	return "请允许 macOS 文件夹提示；需要无人值守访问整个 Home、照片图库或其他 App 数据时，在系统设置 → 隐私与安全性 → 完全磁盘访问中添加稳定签名的 agentd"
 }

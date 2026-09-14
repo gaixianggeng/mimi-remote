@@ -9,6 +9,12 @@ struct ClaudeTakeoverSupport: Equatable {
 // #451：Claude 会话被 Mac 上的终端 / Claude 桌面持有时，从这台设备硬接管：bridge 结束
 // Mac 侧进程后同 id 续聊。这里只负责发起请求、放开输入和走既有 takenOver 控制态。
 extension SessionStore {
+    /// 冲突卡会整块替换输入框。Claude 被 Mac 持有时，持有方说明和接管入口都在输入框托盘里，
+    /// 冲突卡的分叉对只读会话又不可用，所以持有态优先保留输入框。
+    var selectedSessionShowsWriterConflictCard: Bool {
+        selectedSessionHasActiveWriterConflict && selectedOwnershipNotice == nil
+    }
+
     func refreshClaudeTakeoverSupportIfNeeded(sessionID: SessionID) async {
         guard let session = sessions.first(where: { $0.id == sessionID }) else {
             return
