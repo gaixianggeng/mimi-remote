@@ -31,7 +31,7 @@ import (
 
 func TestMain(m *testing.M) {
 	var cleanup func()
-	if runtime.GOOS == "linux" {
+	if config.SupportsSharedLocalAppServer() {
 		dir, err := os.MkdirTemp("", "agentd-main-codex-")
 		if err != nil {
 			panic(err)
@@ -1706,7 +1706,7 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 		return
 	}
 	wantTransport := "ssh"
-	if runtime.GOOS == "linux" {
+	if config.SupportsSharedLocalAppServer() {
 		wantTransport = "local"
 	}
 	if afterAppServer["transport"] != wantTransport || (wantTransport == "ssh" && afterAppServer["ssh_target"] != "127.0.0.1") {
@@ -1784,9 +1784,9 @@ func TestRunDoctorFixMissingConfigStillUsesFullSetup(t *testing.T) {
 		if cfg.AppServer.Transport != "ws" || !cfg.AppServer.Managed || cfg.AppServer.Listen == "" {
 			t.Fatalf("Windows 完整 setup 应生成受管 WS 配置：%+v", cfg.AppServer)
 		}
-	} else if runtime.GOOS == "linux" {
+	} else if config.SupportsSharedLocalAppServer() {
 		if cfg.AppServer != config.DefaultSharedLocalAppServerConfig() {
-			t.Fatalf("Linux 完整 setup 应生成共享本机配置：%+v", cfg.AppServer)
+			t.Fatalf("macOS 与 Linux 完整 setup 应生成共享本机配置：%+v", cfg.AppServer)
 		}
 	} else if cfg.AppServer.SSHTarget == "" {
 		t.Fatalf("完整 setup 应生成 SSH target：%+v", cfg)
@@ -2293,7 +2293,7 @@ func assertMainLegacyConfigPreserved(t *testing.T, fixture mainLegacyConfigFixtu
 	}
 	if migratesSSH && !config.SupportsManagedAppServer() {
 		wantTransport := "ssh"
-		if runtime.GOOS == "linux" {
+		if config.SupportsSharedLocalAppServer() {
 			wantTransport = "local"
 		}
 		if appServer["transport"] != wantTransport || (wantTransport == "ssh" && appServer["ssh_target"] != "127.0.0.1") {

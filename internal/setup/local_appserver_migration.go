@@ -5,14 +5,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
-// MigrateAppServerToSharedLocal replaces the Linux-only managed WebSocket
-// upstream with Codex's standard control socket. The resident is initialized
+// resolveMigrationCodexBin 是迁移使用的 Codex 路径解析器，与 doctor 修复相同；测试可替换。
+var resolveMigrationCodexBin = ResolveCodexBin
+
+// MigrateAppServerToSharedLocal replaces the former managed WebSocket upstream
+// with Codex's standard control socket. On macOS it also rewrites the loopback
+// SSH default that older setups wrote automatically. The resident is initialized
 // before the existing file is changed, and the final write uses byte-level CAS.
 func MigrateAppServerToSharedLocal(ctx context.Context, configPath string) error {
 	return MigrateAppServerToSharedLocalWithPreflight(ctx, configPath, localAppServerPreflight)
@@ -71,11 +77,17 @@ func MigrateAppServerToSharedLocalWithPreflight(
 	if transportName == "local" && !legacy {
 		return nil
 	}
-	// Linux 的显式 SSH target 是受支持的高级模式，不能被默认迁移覆盖。
-	if (transportName == "ssh" || transportName == "") && !legacy {
+	// 用户显式固定的 transport（agentd up --app-server-ssh-target …）不属于历史默认值。
+	if pinned, ok := rawBool(appServer["pin_transport"]); ok && pinned && !legacy {
 		return nil
 	}
-	if transportName != "" && transportName != "ws" {
+	// 显式 SSH target 是受支持的远端模式，不能被默认迁移覆盖。macOS 旧版 setup
+	// 自动写入的裸 127.0.0.1 不代表用户选择，直连预检通过后改为 local。
+	migrateLoopbackSSH := !legacy && migratesLoopbackSSHToSharedLocal(transportName, rawString(appServer["ssh_target"]))
+	if (transportName == "ssh" || transportName == "") && !legacy && !migrateLoopbackSSH {
+		return nil
+	}
+	if !migrateLoopbackSSH && transportName != "" && transportName != "ws" {
 		return fmt.Errorf("旧 app_server.transport=%q 不能自动迁移；请执行 agentd setup --force", transportName)
 	}
 	if managed, ok := rawBool(appServer["managed"]); ok && !managed {
@@ -88,9 +100,12 @@ func MigrateAppServerToSharedLocalWithPreflight(
 	if err := json.Unmarshal(original, &runtimeConfig); err != nil {
 		return fmt.Errorf("解析 Codex 配置失败：%w", err)
 	}
-	codexBin := strings.TrimSpace(runtimeConfig.Codex.Bin)
-	if codexBin == "" {
-		codexBin = defaultCodexBin()
+	// 老安装的 codex.bin 可能已失效（桌面 App 移动或卸载），而 start/serve 的路径修复排在
+	// 迁移之后。这里复用 doctor 修复同一个解析与写回逻辑：用回退解析出的路径做预检，
+	// 修好的 codex.bin 和新 transport 进入同一次原子提交，不留"transport 已改、路径还坏"的中间态。
+	codexBin, _, err := applyResolvedCodexBin(document, resolveMigrationCodexBin)
+	if err != nil {
+		return fmt.Errorf("共享本机 App Server 预检失败，原配置未修改：%w", err)
 	}
 	if preflight == nil {
 		return fmt.Errorf("共享本机 App Server preflight 未配置")
@@ -130,4 +145,22 @@ func MigrateAppServerToSharedLocalWithPreflight(
 		}
 		return nil
 	})
+}
+
+// migratesLoopbackSSHToSharedLocal 只把 macOS 上无用户名的本机回环 SSH target 视为
+// 旧默认值。带用户名的 target 会改变运行身份，远端主机则是明确的高级选择，二者都保留。
+func migratesLoopbackSSHToSharedLocal(transportName string, sshTarget string) bool {
+	if runtime.GOOS != "darwin" || transportName != "ssh" {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(sshTarget))
+	if value == "" || strings.Contains(value, "@") {
+		return value == ""
+	}
+	value = strings.Trim(value, "[]")
+	if value == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(value)
+	return ip != nil && ip.IsLoopback()
 }

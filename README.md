@@ -190,7 +190,7 @@ codex app-server --help
 agentd up
 ```
 
-Before the first start, enable Remote Login and make sure `ssh 127.0.0.1 true` succeeds without a password prompt. `agentd` supplies common Homebrew, npm, and mise paths when it checks Codex through a non-interactive SSH session; `agentd doctor` reports any remaining runtime-path problem. `agentd up` creates private local configuration, connects through localhost SSH to the shared Unix App Server, waits for a real protocol initialization, and prints a short-lived pairing QR code. It prefers Tailscale when available; otherwise it enables same-LAN access and publishes the current private LAN address. See [Shared SSH App Server](docs/shared-ssh-app-server.md) for Desktop setup and runtime boundaries.
+Remote Login and SSH keys are not required. `agentd up` creates private local configuration, attaches to `~/.codex/app-server-control/app-server-control.sock` (starting one resident Codex App Server in its own session if the socket is absent), waits for a real protocol initialization, and prints a short-lived pairing QR code. Restarting `agentd` does not stop that resident, and `codex --remote unix://` opens the same backend from a terminal. Only Codex Desktop needs an SSH host pointing at `127.0.0.1` to join the shared runtime; an explicit `AGENTD_APP_SERVER_SSH_TARGET` remains available for remote-host deployments. It prefers Tailscale when available; otherwise it enables same-LAN access and publishes the current private LAN address. See [Shared App Server](docs/shared-ssh-app-server.md) for Desktop setup and runtime boundaries.
 
 Useful commands:
 

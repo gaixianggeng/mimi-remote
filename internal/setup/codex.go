@@ -98,40 +98,10 @@ func platformCodexCandidates() []string {
 	return candidates
 }
 
-// RepairCodexBin 只更新 codex.bin，并保留 auth、projects 及未来新增字段。
-// 写入复用私有文件的原子替换逻辑，避免修复中断后留下半份配置或放宽权限。
-func RepairCodexBin(configPath string) (string, bool, error) {
-	return repairCodexBin(configPath, ResolveCodexBin, nil)
-}
-
-func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig configWriter) (string, bool, error) {
-	cfgPath, err := resolveConfigPath(configPath)
-	if err != nil {
-		return "", false, err
-	}
-	info, err := os.Lstat(cfgPath)
-	if err != nil {
-		return "", false, fmt.Errorf("读取配置文件状态失败：%w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return "", false, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
-	}
-
-	original, err := os.ReadFile(cfgPath)
-	if err != nil {
-		return "", false, fmt.Errorf("读取配置文件失败：%w", err)
-	}
-	if err := config.RejectLegacyAppServerConfiguration(original); err != nil {
-		return "", false, err
-	}
-	document := map[string]json.RawMessage{}
-	if err := json.Unmarshal(original, &document); err != nil {
-		return "", false, fmt.Errorf("解析配置文件失败：%w", err)
-	}
-	if document == nil {
-		return "", false, fmt.Errorf("配置文件必须是 JSON object")
-	}
-
+// applyResolvedCodexBin 用共享的回退解析器确定当前可用的 Codex 路径，与配置不同时写回
+// document 的 codex.bin。doctor 修复与 transport 迁移都只经由这里维护该字段：迁移可以把
+// 修好的路径和新 transport 放进同一次原子提交，而不必各自实现一份解析与写回。
+func applyResolvedCodexBin(document map[string]json.RawMessage, resolve codexBinResolver) (string, bool, error) {
 	codex := map[string]json.RawMessage{}
 	if rawCodex, ok := document["codex"]; ok && string(rawCodex) != "null" {
 		if err := json.Unmarshal(rawCodex, &codex); err != nil {
@@ -170,6 +140,50 @@ func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig con
 		return "", false, fmt.Errorf("编码 codex 配置失败：%w", err)
 	}
 	document["codex"] = encodedCodex
+	return resolved, true, nil
+}
+
+// RepairCodexBin 只更新 codex.bin，并保留 auth、projects 及未来新增字段。
+// 写入复用私有文件的原子替换逻辑，避免修复中断后留下半份配置或放宽权限。
+func RepairCodexBin(configPath string) (string, bool, error) {
+	return repairCodexBin(configPath, ResolveCodexBin, nil)
+}
+
+func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig configWriter) (string, bool, error) {
+	cfgPath, err := resolveConfigPath(configPath)
+	if err != nil {
+		return "", false, err
+	}
+	info, err := os.Lstat(cfgPath)
+	if err != nil {
+		return "", false, fmt.Errorf("读取配置文件状态失败：%w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", false, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
+	}
+
+	original, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return "", false, fmt.Errorf("读取配置文件失败：%w", err)
+	}
+	if err := config.RejectLegacyAppServerConfiguration(original); err != nil {
+		return "", false, err
+	}
+	document := map[string]json.RawMessage{}
+	if err := json.Unmarshal(original, &document); err != nil {
+		return "", false, fmt.Errorf("解析配置文件失败：%w", err)
+	}
+	if document == nil {
+		return "", false, fmt.Errorf("配置文件必须是 JSON object")
+	}
+
+	resolved, changed, err := applyResolvedCodexBin(document, resolve)
+	if err != nil {
+		return "", false, err
+	}
+	if !changed {
+		return resolved, false, nil
+	}
 	updated, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		return "", false, fmt.Errorf("编码配置文件失败：%w", err)

@@ -74,15 +74,20 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	if err != nil {
 		return Result{}, err
 	}
+	requestedSSHTarget := strings.TrimSpace(options.AppServerSSHTarget)
+	if requestedSSHTarget == "" {
+		requestedSSHTarget = strings.TrimSpace(os.Getenv("AGENTD_APP_SERVER_SSH_TARGET"))
+	}
 	if configExisted && !options.Force {
 		// 已有配置时默认只读取配对信息，避免误覆盖用户已经绑定到 iPad 的 token。
-		// 旧版 managed WS 配置必须先完成 SSH 预检和原子迁移，不能让 Pair
-		// 继续把失效 transport 当成当前配置。
-		if runtime.GOOS == "darwin" {
-			if err := MigrateAppServerToSSH(ctx, cfgPath, options.AppServerSSHTarget); err != nil {
+		// 旧版 managed WS 配置必须先完成预检和原子迁移，不能让 Pair 继续把失效
+		// transport 当成当前配置。macOS 显式给出 SSH target 时保持 SSH；否则和
+		// Linux 一样迁移到共享本机 control socket。
+		if runtime.GOOS == "darwin" && requestedSSHTarget != "" {
+			if err := MigrateAppServerToSSH(ctx, cfgPath, requestedSSHTarget); err != nil {
 				return Result{}, err
 			}
-		} else if runtime.GOOS == "linux" {
+		} else if config.SupportsSharedLocalAppServer() {
 			if err := MigrateAppServerToSharedLocalWithPreflight(ctx, cfgPath, sharedLocalPreflight); err != nil {
 				return Result{}, err
 			}
@@ -100,10 +105,6 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		if err != nil {
 			return Result{}, fmt.Errorf("读取原配置快照失败：%w", err)
 		}
-	}
-	requestedSSHTarget := strings.TrimSpace(options.AppServerSSHTarget)
-	if requestedSSHTarget == "" {
-		requestedSSHTarget = strings.TrimSpace(os.Getenv("AGENTD_APP_SERVER_SSH_TARGET"))
 	}
 	useManagedLocalAppServer := setupUsesManagedLocalAppServer(requestedSSHTarget)
 	useSharedLocalAppServer := setupUsesSharedLocalAppServer(requestedSSHTarget)
@@ -138,11 +139,13 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			Transport: config.DefaultAppServerTransport(),
 			SSHTarget: appServerSSHTarget,
 			AutoTitle: true,
+			// 显式给出的 target（即使是 127.0.0.1）是用户选择，后台启动的自动迁移不得改回 local。
+			PinTransport: requestedSSHTarget != "",
 		}
 	} else if useSharedLocalAppServer {
 		codexEnv := map[string]string{"TERM": "xterm-256color"}
 		if err := sharedLocalPreflight(ctx, codexBin, codexEnv); err != nil {
-			return Result{}, fmt.Errorf("Linux 本机 App Server 预检失败，配置未修改：%w", err)
+			return Result{}, fmt.Errorf("本机 App Server 预检失败，配置未修改：%w", err)
 		}
 	}
 

@@ -18,9 +18,9 @@ Mimi Remote 的目标是让 iPhone / iPad 安全连接用户自己的 Mac，在�
 iPhone / iPad SwiftUI App
   -> 宿主的 Tailscale 或同一局域网 Endpoint:8787
   -> agentd Bearer 鉴权、工作区授权和 JSON-RPC 安全校验
-  -> Linux：与本机终端共享的 Unix control socket Codex App Server
+  -> macOS / Linux：与本机终端和 Codex Desktop 共享的 Unix control socket Codex App Server
   -> Windows：agentd 托管的 loopback WebSocket Codex App Server
-     或 macOS：localhost SSH -> codex app-server proxy -> 共享 Unix App Server
+     或显式远端 SSH target：ssh -> codex app-server proxy -> 远端共享 Unix App Server
   -> 本机 Codex 凭证、线程状态和项目目录
 ```
 

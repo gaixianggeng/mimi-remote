@@ -20,6 +20,9 @@ import (
 func TestMain(m *testing.M) {
 	sshPreflight = func(context.Context, *appserver.SSHTransport) error { return nil }
 	localAppServerPreflight = func(context.Context, string, map[string]string) error { return nil }
+	// CI 机器上没有 Codex。迁移与 doctor 修复共用的解析器默认原样返回配置路径，
+	// 需要覆盖回退解析行为的用例自行替换。
+	resolveMigrationCodexBin = func(configured string) (string, error) { return configured, nil }
 	os.Exit(m.Run())
 }
 
@@ -130,9 +133,57 @@ func TestRunUsesAppServerSSHTargetFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunPinsExplicitLoopbackSSHTargetAgainstAutoMigration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 使用本机受管 WebSocket，不读取 SSH target")
+	}
+	clearSetupEnv(t)
+	t.Setenv("AGENTD_APP_SERVER_SSH_TARGET", "127.0.0.1")
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	if _, err := Run(context.Background(), Options{
+		ConfigPath: cfgPath,
+		ScanRoot:   t.TempDir(),
+		Listen:     "127.0.0.1:8787",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTD_APP_SERVER_SSH_TARGET", "")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AppServer.Transport != "ssh" || cfg.AppServer.SSHTarget != "127.0.0.1" || !cfg.AppServer.PinTransport {
+		t.Fatalf("显式回环 target 必须写入 ssh 并固定：%+v", cfg.AppServer)
+	}
+	if !config.SupportsSharedLocalAppServer() {
+		return
+	}
+	// 后台 serve 不带命令行参数：自动迁移必须尊重这次显式选择。
+	previous := localAppServerPreflight
+	localAppServerPreflight = func(context.Context, string, map[string]string) error {
+		t.Fatal("固定的显式 SSH 不应触发本机迁移预检")
+		return nil
+	}
+	t.Cleanup(func() { localAppServerPreflight = previous })
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateAppServerToSharedLocal(context.Background(), cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("显式固定的 SSH 配置在后台启动时被改写：%s", after)
+	}
+}
+
 func assertDefaultSetupResultAppServer(t *testing.T, result Result) {
 	t.Helper()
-	if config.SupportsManagedAppServer() || runtime.GOOS == "linux" {
+	if config.SupportsManagedAppServer() || config.SupportsSharedLocalAppServer() {
 		if result.AppServerSSHTarget != "" {
 			t.Fatalf("本机 App Server setup 不应持久化 SSH target：%q", result.AppServerSSHTarget)
 		}
@@ -145,9 +196,9 @@ func assertDefaultSetupResultAppServer(t *testing.T, result Result) {
 
 func assertDefaultSetupConfigAppServer(t *testing.T, cfg config.Config) {
 	t.Helper()
-	if runtime.GOOS == "linux" {
+	if config.SupportsSharedLocalAppServer() {
 		if cfg.AppServer != config.DefaultSharedLocalAppServerConfig() {
-			t.Fatalf("Linux setup 应默认启用共享本机 App Server：%+v", cfg.AppServer)
+			t.Fatalf("macOS 与 Linux setup 应默认启用共享本机 App Server：%+v", cfg.AppServer)
 		}
 		return
 	}

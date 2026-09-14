@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -26,6 +25,11 @@ const (
 	sharedLocalStartGrace   = 250 * time.Millisecond
 )
 
+// sharedLocalDefaultReadyTimeout 是调用方没有给 deadline 时 EnsureReady 的总上限。
+// initializeWebSocket 只在 context 带 deadline 时才设置读写 deadline，没有这层兜底，
+// 握手成功却不回应 initialize 的 socket 会让首次 probe 永远阻塞。
+var sharedLocalDefaultReadyTimeout = 20 * time.Second
+
 type SharedLocalOptions struct {
 	CodexBin string
 	Env      map[string]string
@@ -41,9 +45,16 @@ type SharedLocalTransport struct {
 	startOnce func(context.Context, SharedLocalOptions) error
 }
 
+// SupportsSharedLocalTransport reports whether this host can attach to Codex's
+// standard Unix control socket directly. macOS and Linux share the same socket
+// with local terminal clients and with Codex Desktop's SSH-host proxy.
+func SupportsSharedLocalTransport() bool {
+	return runtime.GOOS == "linux" || runtime.GOOS == "darwin"
+}
+
 func NewSharedLocalTransport(options SharedLocalOptions) (*SharedLocalTransport, error) {
-	if runtime.GOOS != "linux" {
-		return nil, errors.New("共享本机 App Server 目前只支持 Linux")
+	if !SupportsSharedLocalTransport() {
+		return nil, errors.New("共享本机 App Server 只支持 macOS 与 Linux 本机宿主")
 	}
 	socket, err := SharedLocalSocketPath(options.Env)
 	if err != nil {
@@ -140,6 +151,11 @@ func (t *SharedLocalTransport) EnsureReady(ctx context.Context) error {
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, sharedLocalDefaultReadyTimeout)
+		defer cancel()
 	}
 	t.ensureMu.Lock()
 	defer t.ensureMu.Unlock()
@@ -403,17 +419,20 @@ func startResidentCommand(bin string, args []string, extraEnv map[string]string)
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(context.Background(), bin, args...)
+	launchBin, launchArgs := residentLaunchCommand(bin, args)
+	cmd := exec.CommandContext(context.Background(), launchBin, launchArgs...)
 	configureSharedLocalCommand(cmd)
 	// The installer may invoke agentd from a temporary extraction directory.
 	// The resident server outlives that directory, and Codex needs a valid cwd
 	// later when it resolves thread/list workspace filters.
 	cmd.Dir = workingDirectory
 	cmd.Env = buildManagedEnv(extraEnv)
-	cmd.Stdout = io.Discard
-	// resident outlives agentd. It must not retain a pipe whose reader
-	// disappears on gateway restart, otherwise a later log write can hit EPIPE.
-	cmd.Stderr = io.Discard
+	// resident outlives agentd. os/exec turns any non-*os.File writer (including
+	// io.Discard) into a pipe drained by a goroutine in this process, so a later
+	// log write after agentd exits would hit EPIPE. nil connects the child to the
+	// null device directly and keeps it independent of the launcher's lifetime.
+	cmd.Stdout = nil
+	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("启动共享 Codex App Server 失败：%w", err)
 	}

@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package appserver
 
@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -182,8 +183,12 @@ func TestStartResidentCommandUsesStableHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(string(contents)); got != home {
-		t.Fatalf("resident cwd = %q, want stable HOME %q", got, home)
+	wantHome := home
+	if canonical, evalErr := filepath.EvalSymlinks(home); evalErr == nil {
+		wantHome = canonical
+	}
+	if got := strings.TrimSpace(string(contents)); got != wantHome {
+		t.Fatalf("resident cwd = %q, want stable HOME %q", got, wantHome)
 	}
 }
 
@@ -276,6 +281,10 @@ func shortSharedLocalCodexHome(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	// macOS 的 /tmp 是 /private/tmp 的符号链接；socket 路径按规范路径比较。
+	if canonical, evalErr := filepath.EvalSymlinks(root); evalErr == nil {
+		root = canonical
+	}
 	path := filepath.Join(root, "c")
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
@@ -311,5 +320,103 @@ func startSharedLocalTestServer(t *testing.T, socket string) func() {
 	return func() {
 		_ = server.Close()
 		_ = os.Remove(socket)
+	}
+}
+
+func TestSharedLocalTransportEnsureReadyTimesOutWithoutDeadline(t *testing.T) {
+	codexHome := shortSharedLocalCodexHome(t)
+	socket := filepath.Join(codexHome, sharedLocalSocketDir, sharedLocalSocketName)
+	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	// 握手成功但永远不回应 initialize：没有总超时的 probe 会在这里永久阻塞。
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		conn, upgradeErr := upgrader.Upgrade(w, request, nil)
+		if upgradeErr != nil {
+			return
+		}
+		defer conn.Close()
+		<-release
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		close(release)
+		_ = server.Close()
+		_ = os.Remove(socket)
+	})
+
+	previous := sharedLocalDefaultReadyTimeout
+	sharedLocalDefaultReadyTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { sharedLocalDefaultReadyTimeout = previous })
+
+	transport, err := NewSharedLocalTransport(SharedLocalOptions{CodexBin: "codex", Env: map[string]string{"CODEX_HOME": codexHome}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started atomic.Int32
+	transport.startOnce = func(context.Context, SharedLocalOptions) error {
+		started.Add(1)
+		return nil
+	}
+	begin := time.Now()
+	err = transport.EnsureReady(context.Background())
+	elapsed := time.Since(begin)
+	if err == nil {
+		t.Fatal("不回应 initialize 的 socket 必须在总超时内失败")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("EnsureReady 应受默认总超时约束，实际耗时 %v", elapsed)
+	}
+	if !strings.Contains(err.Error(), "仍存在") {
+		t.Fatalf("已有 socket 的初始化超时应报告为无法连接现有 socket：%v", err)
+	}
+	if started.Load() != 0 {
+		t.Fatal("已有 socket 时不得再启动第二个 resident")
+	}
+}
+
+func TestStartResidentCommandConnectsStdioToNullDevice(t *testing.T) {
+	if _, err := os.Stat("/proc/self/fd"); err != nil {
+		if _, lookErr := exec.LookPath("lsof"); lookErr != nil {
+			t.Skip("需要 /proc 或 lsof 才能检查子进程的标准输出去向")
+		}
+	}
+	root := t.TempDir()
+	marker := filepath.Join(root, "resident-stdio")
+	// dash（Ubuntu 的 /bin/sh）会先在父 shell 上应用 `cmd >&3` 的重定向再 fork，直接
+	// readlink /proc/$$/fd/1 会读到被临时改写的 fd。命令替换在子 shell 里运行，父 shell 的
+	// fd 1/2 保持原样，读完再统一写到 fd 3。
+	script := `exec 3>"$MIMI_RESIDENT_STDIO_MARKER"; if [ -d /proc/$$/fd ]; then out=$(readlink /proc/$$/fd/1); err=$(readlink /proc/$$/fd/2); else out=$(lsof -a -p $$ -d 1 -Fn | sed -n 's/^n//p'); err=$(lsof -a -p $$ -d 2 -Fn | sed -n 's/^n//p'); fi; printf '%s\n%s\n' "$out" "$err" >&3; sleep 1`
+	if err := startResidentCommand("/bin/sh", []string{"-c", script}, map[string]string{
+		"HOME":                       root,
+		"MIMI_RESIDENT_STDIO_MARKER": marker,
+		"PATH":                       os.Getenv("PATH"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var contents []byte
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		var readErr error
+		contents, readErr = os.ReadFile(marker)
+		if readErr == nil && len(strings.Fields(string(contents))) >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	targets := strings.Fields(string(contents))
+	if len(targets) < 2 {
+		t.Fatalf("未能读取 resident 的 stdout/stderr 去向：%q", contents)
+	}
+	for _, target := range targets {
+		if target != "/dev/null" {
+			// 管道意味着 resident 仍依赖启动它的进程；agentd 退出后写日志会得到 EPIPE。
+			t.Fatalf("resident 的标准输出必须直连空设备而不是父进程管道，got %q", targets)
+		}
 	}
 }
