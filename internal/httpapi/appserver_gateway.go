@@ -137,6 +137,10 @@ var (
 	appServerGatewayHistoryBudgetMaxRequests      = 6
 	appServerGatewayHistoryBudgetMaxRequestBytes  = int64(64 << 10)
 	appServerGatewayHistoryBudgetMaxResponseBytes = int64(8 << 20)
+	// 一页 full 历史最多返回 20 个 turn，每个 turn 仍可各取 6 页 items；同时给
+	// thread/items/list 保留线程级上限，防止轮换伪造 turnId 绕过请求保护。
+	appServerGatewayHistoryItemsAggregateMaxRequests     = appServerGatewayThreadTurnsFullMaxLimit * appServerGatewayHistoryBudgetMaxRequests
+	appServerGatewayHistoryItemsAggregateMaxRequestBytes = appServerGatewayHistoryBudgetMaxRequestBytes
 	// 5 Mbps 链路下单次 5 MiB payload 理论约需 8.4 秒；15 秒窗口保留协议和弱网余量。
 	// 8 MiB 总预算继续限制同一窗口内的重复大响应，避免放宽单次 cap 后独占链路。
 	appServerGatewayHistoryGlobalMaxResponseBytes int64 = 8 << 20

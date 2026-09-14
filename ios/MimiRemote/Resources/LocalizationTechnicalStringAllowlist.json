@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "items": [
     {
+      "value": "## my request：",
+      "reason": "Matches an injected browser-context protocol marker and is not displayed as product UI."
+    },
+    {
+      "value": "## my request for codex：",
+      "reason": "Matches an injected browser-context protocol marker and is not displayed as product UI."
+    },
+    {
       "value": "不支持",
       "reason": "Matches an upstream app-server compatibility error and is not displayed as product UI."
     },
