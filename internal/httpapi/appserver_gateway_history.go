@@ -58,6 +58,17 @@ func (p *appServerGatewayPolicy) reserveHistoryRequest(id *json.RawMessage, meth
 	if p.historyBudgets == nil {
 		p.historyBudgets = map[string]appServerGatewayHistoryBudget{}
 	}
+	aggregateKey, aggregateBudget, aggregateErr := p.checkHistoryItemsAggregateBudgetLocked(
+		id,
+		pending,
+		now,
+		requestBytes,
+	)
+	if aggregateErr != nil {
+		p.releaseHistoryInflight(pending)
+		p.recordHistoryRateLimited(pending.method)
+		return aggregateErr
+	}
 	budget := p.historyBudgets[budgetKey]
 	if budget.windowStarted.IsZero() || now.Sub(budget.windowStarted) >= appServerGatewayHistoryBudgetWindow {
 		budget = appServerGatewayHistoryBudget{windowStarted: now}
@@ -120,9 +131,69 @@ func (p *appServerGatewayPolicy) reserveHistoryRequest(id *json.RawMessage, meth
 	budget.requests++
 	budget.requestBytes += int64(requestBytes)
 	p.historyBudgets[budgetKey] = budget
+	if aggregateKey != "" {
+		aggregateBudget.requests++
+		aggregateBudget.requestBytes += int64(requestBytes)
+		p.historyBudgets[aggregateKey] = aggregateBudget
+	}
 	pending.createdAt = now
 	p.pendingHistory[key] = pending
 	return nil
+}
+
+func (p *appServerGatewayPolicy) checkHistoryItemsAggregateBudgetLocked(
+	id *json.RawMessage,
+	request appServerGatewayPendingHistoryRequest,
+	now time.Time,
+	requestBytes int,
+) (string, appServerGatewayHistoryBudget, *appServerGatewayPolicyError) {
+	if request.method != "thread/items/list" {
+		return "", appServerGatewayHistoryBudget{}, nil
+	}
+	key := gatewayHistoryBudgetKey(strings.TrimSpace(request.threadID), request.method, "itemsAggregate")
+	budget := p.historyBudgets[key]
+	if budget.windowStarted.IsZero() || now.Sub(budget.windowStarted) >= appServerGatewayHistoryBudgetWindow {
+		budget = appServerGatewayHistoryBudget{windowStarted: now}
+	}
+	extra := map[string]any{"scope": "thread", "budget": "items_aggregate"}
+	if budget.blockedUntil.After(now) {
+		p.historyBudgets[key] = budget
+		return "", budget, gatewayHistoryBudgetPolicyError(
+			id,
+			"thread/items/list 同一 thread 正在临时限流，请稍后重试",
+			"history_budget_limited",
+			budget.blockedUntil.Sub(now),
+			request,
+			extra,
+		)
+	}
+	if appServerGatewayHistoryItemsAggregateMaxRequests > 0 &&
+		budget.requests >= appServerGatewayHistoryItemsAggregateMaxRequests {
+		budget.blockedUntil = now.Add(appServerGatewayHistoryBudgetWindow)
+		p.historyBudgets[key] = budget
+		return "", budget, gatewayHistoryBudgetPolicyError(
+			id,
+			"thread/items/list 同一 thread 请求过于频繁，请稍后重试",
+			"history_budget_limited",
+			appServerGatewayHistoryBudgetWindow,
+			request,
+			extra,
+		)
+	}
+	if appServerGatewayHistoryItemsAggregateMaxRequestBytes > 0 &&
+		budget.requestBytes+int64(requestBytes) > appServerGatewayHistoryItemsAggregateMaxRequestBytes {
+		budget.blockedUntil = now.Add(appServerGatewayHistoryBudgetWindow)
+		p.historyBudgets[key] = budget
+		return "", budget, gatewayHistoryBudgetPolicyError(
+			id,
+			"thread/items/list 同一 thread 请求字节预算已用尽，请稍后重试",
+			"history_budget_limited",
+			appServerGatewayHistoryBudgetWindow,
+			request,
+			extra,
+		)
+	}
+	return key, budget, nil
 }
 
 func gatewayHistoryRequestFromParams(method string, params map[string]any) (appServerGatewayPendingHistoryRequest, bool) {
