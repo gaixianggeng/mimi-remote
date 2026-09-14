@@ -530,7 +530,12 @@ final class HostStore {
     }
 
     /// 首次请求弹出系统授权框；用户之前拒绝过时系统不会再弹，只能引导到隐私设置里手动开启。
+    /// Homebrew 运行的 agentd 不继承 App 的照片授权，只能打开完全磁盘访问设置。
     func requestPhotosAccess() async {
+        guard owner != .homebrew else {
+            systemPrivacySettings.openFullDiskAccessSettings()
+            return
+        }
         let current = systemPrivacySettings.photosAccessState()
         switch current {
         case .notDetermined:

@@ -969,6 +969,54 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(events.values, ["request", "settings"])
     }
 
+    func testFileAccessPresentationFollowsTheServiceThatReadsFiles() {
+        // App 托管：照片状态与操作来自 Mimi Remote Mac 的授权。
+        let appUndetermined = FileAccessSettingsPresentation.make(owner: .macApp, photosAccess: .notDetermined)
+        XCTAssertEqual(appUndetermined.photosStatus, "尚未请求")
+        XCTAssertEqual(appUndetermined.photosAction, .requestPhotosAccess)
+        XCTAssertEqual(
+            FileAccessSettingsPresentation.make(owner: .macApp, photosAccess: .denied).photosAction,
+            .openPhotosPrivacySettings
+        )
+        XCTAssertNil(FileAccessSettingsPresentation.make(owner: .macApp, photosAccess: .authorized).photosAction)
+        XCTAssertTrue(appUndetermined.fullDiskAccessCaption.contains("Mimi Remote Mac"))
+
+        // Homebrew：无论 App 自己的照片授权是什么，都不展示“已允许”或照片授权操作。
+        for appState in [PhotosAccessState.notDetermined, .authorized, .limited, .denied, .restricted] {
+            let homebrew = FileAccessSettingsPresentation.make(owner: .homebrew, photosAccess: appState)
+            XCTAssertNil(homebrew.photosAction, "\(appState)")
+            XCTAssertNotEqual(homebrew.photosStatus, appState.title, "\(appState)")
+            XCTAssertEqual(homebrew.photosStatus, "由完全磁盘访问控制")
+            XCTAssertTrue(homebrew.photosCaption.contains("完全磁盘访问"))
+            XCTAssertTrue(homebrew.fullDiskAccessCaption.contains(FileAccessSettingsPresentation.homebrewAgentdPath))
+        }
+    }
+
+    func testHomebrewOwnerNeverRequestsAppPhotosAuthorization() async {
+        let events = EventRecorder()
+        let privacy = SystemPrivacySettingsClient(
+            openFullDiskAccessSettings: { events.append("fda") },
+            photosAccessState: { .notDetermined },
+            requestPhotosAccess: {
+                events.append("request")
+                return .authorized
+            },
+            openPhotosPrivacySettings: { events.append("settings") }
+        )
+        let store = makeStore(
+            configExists: true,
+            homebrewLoaded: true,
+            status: { Self.readyStatus },
+            systemPrivacySettings: privacy
+        )
+        await store.bootstrap()
+        XCTAssertEqual(store.owner, .homebrew)
+
+        await store.requestPhotosAccess()
+
+        XCTAssertEqual(events.values, ["fda"])
+    }
+
     func testBootstrapRequiresSetupWhenConfigIsMissing() async {
         let store = makeStore(configExists: false)
 
