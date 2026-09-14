@@ -129,6 +129,28 @@ final class ClaudeTakeoverTests: XCTestCase {
         XCTAssertEqual(fixture.store.selectedOwnershipNotice?.canTakeOver, true)
     }
 
+    func testRefusalReasonSurvivesLeavingConversationAndStatusReplacement() async throws {
+        let fixture = await makeHeldStore(id: "claude_held_return", supportsTakeover: true)
+        fixture.client.takeOverThreadHandler = { _ in
+            throw Self.takeoverError(reason: "holder_unverified", retryable: false, holderPID: 4242)
+        }
+        await fixture.store.refreshClaudeTakeoverSupportIfNeeded(sessionID: fixture.held.id)
+        _ = await fixture.store.takeOverHeldClaudeSession(sessionID: fixture.held.id)
+
+        fixture.store.setSelectedSessionID(nil)
+        fixture.store.setStatusMessage(nil)
+        fixture.store.setSelectedSessionID(fixture.held.id)
+        let notice = try XCTUnwrap(fixture.store.selectedOwnershipNotice)
+        XCTAssertFalse(notice.canTakeOver)
+        XCTAssertEqual(notice.message, L10n.text("ui.take_over_claude_failed_unverified"))
+
+        fixture.store.updateSession(fixture.held.id) { current in
+            current.claudeOwner = ClaudeSessionOwner(entrypoint: "cli", kind: "interactive", status: "idle", pid: 9999)
+        }
+        XCTAssertNil(fixture.store.selectedOwnershipNotice?.failureMessage)
+        XCTAssertEqual(fixture.store.selectedOwnershipNotice?.canTakeOver, true)
+    }
+
     func testRetryableTimeoutKeepsButtonArmed() async throws {
         let fixture = await makeHeldStore(id: "claude_held_timeout", supportsTakeover: true)
         fixture.client.takeOverThreadHandler = { _ in
@@ -140,7 +162,14 @@ final class ClaudeTakeoverTests: XCTestCase {
 
         XCTAssertFalse(didTakeOver)
         XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.take_over_claude_failed_timeout"))
+        XCTAssertEqual(fixture.store.selectedOwnershipNotice?.message, L10n.text("ui.take_over_claude_failed_timeout"))
+        fixture.client.takeOverThreadHandler = { _ in
+            CodexAppServerThreadTakeoverResult(released: true, holderEntrypoint: "cli", signal: "SIGINT", canAcceptDirectInput: true)
+        }
         XCTAssertEqual(fixture.store.selectedOwnershipNotice?.canTakeOver, true, "可重试的超时不应收起按钮")
+        let retried = await fixture.store.takeOverHeldClaudeSession(sessionID: fixture.held.id)
+        XCTAssertTrue(retried)
+        XCTAssertNil(fixture.store.claudeTakeoverFailures[fixture.held.id])
     }
 
     func testSignalFailureExplainsPossiblePartialInterruption() async throws {

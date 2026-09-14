@@ -6,6 +6,14 @@ struct ClaudeTakeoverSupport: Equatable {
     let supported: Bool
 }
 
+/// 失败原因和禁用条件一起保留，返回会话后仍能解释为什么不能接管。
+struct ClaudeTakeoverFailureNotice {
+    let scope: HostScope
+    let holderPIDs: Set<Int>
+    let message: String
+    let blocksRetry: Bool
+}
+
 // #451：Claude 会话被 Mac 上的终端 / Claude 桌面持有时，从这台设备硬接管：bridge 结束
 // Mac 侧进程后同 id 续聊。这里只负责发起请求、放开输入和走既有 takenOver 控制态。
 extension SessionStore {
@@ -48,14 +56,18 @@ extension SessionStore {
     /// 重启新进程，反复接管就是一个由用户点击驱动的杀进程循环。持有方换成别的 pid
     /// （用户在 Mac 上关掉后重新打开）时自然解除。
     func claudeTakeoverIsBlocked(for session: AgentSession) -> Bool {
-        guard let blocked = claudeTakeoverBlockedHolderPIDs[session.id], !blocked.isEmpty else {
-            return false
+        claudeTakeoverFailure(for: session)?.blocksRetry == true
+    }
+
+    func claudeTakeoverFailure(for session: AgentSession) -> ClaudeTakeoverFailureNotice? {
+        guard let failure = claudeTakeoverFailures[session.id],
+              failure.scope == appStore.activeHostScope else {
+            return nil
         }
-        guard let pid = session.claudeOwner?.pid else {
-            // 持有方身份未知时保守禁用，宁可让用户去 Mac 上处理。
-            return true
+        if let pid = session.claudeOwner?.pid, !failure.holderPIDs.contains(pid) {
+            return nil
         }
-        return blocked.contains(pid)
+        return failure
     }
 
     @discardableResult
@@ -91,7 +103,7 @@ extension SessionStore {
         do {
             let result = try await lease.client.takeOverThread(threadID: session.id)
             try requireCurrentProjectsGitHost(lease)
-            claudeTakeoverBlockedHolderPIDs[session.id] = nil
+            claudeTakeoverFailures[session.id] = nil
             updateSession(session.id) { current in
                 current.canAcceptDirectInput = result.canAcceptDirectInput ?? true
                 current.claudeOwner = nil
@@ -110,29 +122,19 @@ extension SessionStore {
             guard (try? requireCurrentProjectsGitHost(lease)) != nil else {
                 return false
             }
-            if let failure = CodexAppServerThreadTakeoverResult.failure(from: error), !failure.retryable {
-                recordClaudeTakeoverRefusal(session: session, failure: failure)
-            }
-            setStatusMessage(claudeTakeoverFailureMessage(error))
+            let failure = CodexAppServerThreadTakeoverResult.failure(from: error)
+            let message = claudeTakeoverFailureMessage(error)
+            var holderPIDs: Set<Int> = []
+            if let pid = session.claudeOwner?.pid { holderPIDs.insert(pid) }
+            if let pid = failure?.holderPID { holderPIDs.insert(pid) }
+            // 同时绑定请求时和服务端返回的持有方，避免自动重启后再次发起杀进程。
+            claudeTakeoverFailures[session.id] = ClaudeTakeoverFailureNotice(
+                scope: lease.scope, holderPIDs: holderPIDs, message: message,
+                blocksRetry: failure?.retryable == false
+            )
+            setStatusMessage(message)
             return false
         }
-    }
-
-    private func recordClaudeTakeoverRefusal(session: AgentSession, failure: CodexAppServerThreadTakeoverFailure) {
-        var blocked = claudeTakeoverBlockedHolderPIDs[session.id] ?? []
-        // 同时记住提示条上现在显示的持有方和 bridge 指认的那个：holder_respawned 时后者是
-        // 新认领者，刷新前提示条还显示旧 pid，两个都不能再点。
-        if let pid = session.claudeOwner?.pid {
-            blocked.insert(pid)
-        }
-        if let pid = failure.holderPID {
-            blocked.insert(pid)
-        }
-        if blocked.isEmpty {
-            // 双方都没给 pid：只能按会话整体禁用，直到持有方换成一个可辨认的新 pid。
-            blocked.insert(-1)
-        }
-        claudeTakeoverBlockedHolderPIDs[session.id] = blocked
     }
 
     /// bridge 的结构化失败原因映射成可操作的提示；其余错误保留原文。

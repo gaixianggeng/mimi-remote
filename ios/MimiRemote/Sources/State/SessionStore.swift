@@ -96,7 +96,7 @@ final class SessionStore: ObservableObject {
     @Published var claudeTakeoverSupport: ClaudeTakeoverSupport?
     @Published var claudeTakeoverInFlightSessionID: SessionID?
     /// 接管被 bridge 明确拒绝（不可重试）后，对同一持有方不再提供按钮，避免反复结束重启的进程。
-    @Published var claudeTakeoverBlockedHolderPIDs: [SessionID: Set<Int>] = [:]
+    @Published var claudeTakeoverFailures: [SessionID: ClaudeTakeoverFailureNotice] = [:]
     // 首屏搜索覆盖 300ms 防抖和实际请求；与分页 loading 分离，避免“继续搜索”误占空态。
     @Published var isSearchingRemoteSessionResults = false
     @Published var isLoadingMoreSessionSearchResults = false
@@ -1967,7 +1967,8 @@ final class SessionStore: ObservableObject {
             canTakeOver: claudeTakeoverSupport?.scope == appStore.activeHostScope
                 && claudeTakeoverSupport?.supported == true
                 && !claudeTakeoverIsBlocked(for: session),
-            isTakingOver: claudeTakeoverInFlightSessionID == session.id
+            isTakingOver: claudeTakeoverInFlightSessionID == session.id,
+            failureMessage: claudeTakeoverFailure(for: session)?.message
         )
     }
 
