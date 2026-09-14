@@ -189,6 +189,21 @@ final class ClaudeTakeoverTests: XCTestCase {
         XCTAssertTrue(terminal.takeOverConfirmationMessage.contains(L10n.text("ui.claude_owner_terminal")))
     }
 
+    /// 接管入口在输入框托盘里；即便持有态叠上写入冲突，也不能让冲突卡把输入框连同接管一起换掉。
+    func testOwnershipKeepsComposerWhenWriterConflictIsRecorded() async throws {
+        let fixture = await makeHeldStore(id: "claude_held_conflict", supportsTakeover: true)
+        fixture.store.setActiveWriterConflict(true, sessionID: fixture.held.id)
+
+        XCTAssertTrue(fixture.store.selectedSessionHasActiveWriterConflict)
+        XCTAssertNotNil(fixture.store.selectedOwnershipNotice)
+        XCTAssertFalse(fixture.store.selectedSessionShowsWriterConflictCard, "持有态要保留输入框托盘里的接管入口")
+
+        fixture.store.updateSession(fixture.held.id) { current in
+            current.claudeOwner = nil
+        }
+        XCTAssertTrue(fixture.store.selectedSessionShowsWriterConflictCard, "没有持有方时冲突卡照常出现")
+    }
+
     func testUnsupportedHostHidesTakeoverButton() async throws {
         let fixture = await makeHeldStore(id: "claude_held_unsupported", supportsTakeover: false)
 

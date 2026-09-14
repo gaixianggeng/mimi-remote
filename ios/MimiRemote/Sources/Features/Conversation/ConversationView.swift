@@ -82,7 +82,7 @@ struct ConversationView: View {
                 HStack {
                     Spacer(minLength: 0)
                     Group {
-                        if sessionStore.selectedSessionHasActiveWriterConflict {
+                        if sessionStore.selectedSessionShowsWriterConflictCard {
                             WriterConflictCard(
                                 sourceIsRunning: sessionStore.selectedSession?.isRunning == true,
                                 availability: sessionStore.selectedWriterConflictForkAvailability,
