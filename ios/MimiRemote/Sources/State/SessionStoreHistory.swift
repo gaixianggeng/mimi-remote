@@ -83,10 +83,6 @@ extension SessionStore {
         if requestedLocalDraft != nil, localDraft == nil {
             return false
         }
-        isLoading = true
-        defer {
-            if appStore.activeHostScope == hostScope { isLoading = false }
-        }
         let prompt = payload.previewText
         let optimisticSessionID = localDraft?.id ?? optimisticSessionID(
             projectID: projectID,
@@ -154,6 +150,20 @@ extension SessionStore {
             } else if resume == nil {
                 // 新建空会话同样属于用户最近操作；没有消息投影时单独建立排序保护。
                 setSessionRecentActivityProjection(sessionID: optimisticSessionID, clientMessageID: nil)
+            }
+        }
+
+        let creationLoadingLease = optimisticSelectionLease ?? createIntent
+        if isSelectionLeaseCurrent(creationLoadingLease) {
+            sessionCreationLoadingLease = creationLoadingLease
+            isLoading = true
+        }
+        defer {
+            // 旧请求的 ACK 不能清除用户切换后启动的新请求的 loading。
+            if appStore.activeHostScope == hostScope,
+               sessionCreationLoadingLease == creationLoadingLease {
+                sessionCreationLoadingLease = nil
+                isLoading = false
             }
         }
 

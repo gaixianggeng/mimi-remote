@@ -999,9 +999,8 @@ extension SessionStore {
                 return true
             }
 
-            guard let socket = readyWebSocket(for: session) else {
-                return false
-            }
+            let foregroundSocket = selectedSessionID == session.id ? readyWebSocket(for: session) : nil
+            if selectedSessionID == session.id, foregroundSocket == nil { return false }
             conversationStore.appendLocalUser(
                 prompt,
                 sessionID: session.id,
@@ -1025,18 +1024,39 @@ extension SessionStore {
                 clientMessageID: clientMessageID,
                 sessionID: session.id
             )
-            let didAcceptLocally = socket.sendGuidance(payload, clientMessageID: clientMessageID, expectedTurnID: activeTurnID)
-            guard didAcceptLocally else {
-                conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
-                clearSessionListProjection(sessionID: session.id, clientMessageID: clientMessageID)
-                clearSessionRecentActivityProjection(sessionID: session.id, clientMessageID: clientMessageID)
-                clearForegroundActivity(sessionID: session.id)
-                setErrorMessage(L10n.text("ui.sending_failed_websocket_not_connected"))
-                return false
+            if let foregroundSocket {
+                trackSubmittedGuidance(
+                    payload,
+                    sessionID: session.id,
+                    clientMessageID: clientMessageID,
+                    expectedTurnID: activeTurnID,
+                    hostScope: submissionContext.hostScope
+                )
+                let didAcceptLocally = foregroundSocket.sendGuidance(
+                    payload,
+                    clientMessageID: clientMessageID,
+                    expectedTurnID: activeTurnID
+                )
+                guard didAcceptLocally else {
+                    _ = failPendingGuidance(
+                        clientMessageID: clientMessageID,
+                        sessionID: session.id,
+                        message: L10n.text("ui.sending_failed_websocket_not_connected")
+                    )
+                    return false
+                }
+                freshEmptyHistorySignatureBySessionID.removeValue(forKey: session.id)
+                return true
             }
-            // 只有后端通道接受首个 turn 后才解除 fresh-empty 保护；本地发送失败时 thread 仍无 rollout。
-            freshEmptyHistorySignatureBySessionID.removeValue(forKey: session.id)
-            return true
+            // 点击后若已切到其他页面，复用会话级后台连接把 guided 消息送到原 thread；
+            // 该临时项只保活到 ACK，既不改当前选择，也不会进入可自动重发的持久队列。
+            return stagePendingGuidance(
+                payload,
+                sessionID: session.id,
+                clientMessageID: clientMessageID,
+                expectedTurnID: activeTurnID,
+                hostScope: submissionContext.hostScope
+            )
         }
 
         let resume = targetSession

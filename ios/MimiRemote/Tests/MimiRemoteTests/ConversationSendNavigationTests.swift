@@ -3,6 +3,166 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testCapturedGuidedSendAfterSelectingAnotherSessionUsesBackgroundSocketUntilACK() async throws {
+        let project = makeProject(id: "proj_guided_navigation")
+        let original = makeSession(
+            id: "sess_guided_original",
+            projectID: project.id,
+            title: "原会话",
+            status: "running",
+            source: "codex",
+            activeTurnID: "turn-guided-original"
+        )
+        let other = makeSession(
+            id: "sess_guided_other",
+            projectID: project.id,
+            title: "另一会话",
+            status: "running",
+            source: "codex",
+            activeTurnID: "turn-guided-other"
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: {
+                MockSessionStoreClient(projects: [project], sessions: [original, other], messagesResult: [])
+            },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(original)
+        await store.selectSession(original)
+        let originalSocket = try XCTUnwrap(sockets.first)
+        originalSocket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        let submissionContext = store.captureTurnSubmissionContext()
+
+        store.takeOverSession(other)
+        await store.selectSession(other)
+        XCTAssertEqual(sockets.count, 2)
+        let otherSocket = try XCTUnwrap(sockets.dropFirst().first)
+        otherSocket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        let didSend = await store.sendTurn(
+            CodexAppServerTurnPayload(prompt: "切页后的引导"),
+            runningDelivery: .guided,
+            submissionContext: submissionContext
+        )
+
+        XCTAssertTrue(didSend)
+        XCTAssertEqual(store.selectedSessionID, other.id)
+        XCTAssertEqual(sockets.count, 3)
+        XCTAssertEqual(otherSocket.disconnectCallCount, 0)
+        let backgroundSocket = try XCTUnwrap(sockets.dropFirst(2).first)
+        backgroundSocket.emitStatus(.connected)
+        try await waitForSentGuidanceCount(1, socket: backgroundSocket)
+        let firstClientMessageID = try XCTUnwrap(backgroundSocket.sentGuidance.first?.clientMessageID)
+        XCTAssertEqual(backgroundSocket.sentGuidance.first?.payload.textPrompt, "切页后的引导")
+        XCTAssertEqual(backgroundSocket.sentGuidance.first?.expectedTurnID, "turn-guided-original")
+
+        backgroundSocket.onTurnSendOutcome?(firstClientMessageID, .guidanceAccepted)
+        try await waitForMessageStatus(
+            .sent,
+            content: "切页后的引导",
+            sessionID: original.id,
+            conversationStore: conversationStore
+        )
+        XCTAssertEqual(backgroundSocket.disconnectCallCount, 1)
+        XCTAssertEqual(store.selectedSessionID, other.id)
+
+        let didSendUncertain = await store.sendTurn(
+            CodexAppServerTurnPayload(prompt: "断连后的引导"),
+            runningDelivery: .guided,
+            submissionContext: submissionContext
+        )
+        XCTAssertTrue(didSendUncertain)
+        XCTAssertEqual(sockets.count, 4)
+        let disconnectedSocket = try XCTUnwrap(sockets.dropFirst(3).first)
+        disconnectedSocket.emitStatus(.connected)
+        try await waitForSentGuidanceCount(1, socket: disconnectedSocket)
+        disconnectedSocket.emitStatus(.disconnected)
+        try await waitForMessageStatus(
+            .uncertain,
+            content: "断连后的引导",
+            sessionID: original.id,
+            conversationStore: conversationStore
+        )
+        XCTAssertEqual(disconnectedSocket.sentGuidance.count, 1, "未知结果不能自动重发")
+        XCTAssertEqual(store.selectedSessionID, other.id)
+    }
+
+    func testForegroundGuidedSendACKAfterNavigationStillSettlesOriginalEcho() async throws {
+        let project = makeProject(id: "proj_guided_foreground_ack")
+        let original = makeSession(
+            id: "sess_guided_foreground_original",
+            projectID: project.id,
+            title: "原会话",
+            status: "running",
+            source: "codex",
+            activeTurnID: "turn-guided-foreground"
+        )
+        let other = makeSession(
+            id: "sess_guided_foreground_other",
+            projectID: project.id,
+            title: "另一会话",
+            status: "completed",
+            source: "codex",
+            resumeID: "thread-guided-other"
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: {
+                MockSessionStoreClient(projects: [project], sessions: [original, other], messagesResult: [])
+            },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(original)
+        await store.selectSession(original)
+        let originalSocket = try XCTUnwrap(sockets.first)
+        originalSocket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        let didSend = await store.sendTurn(
+            CodexAppServerTurnPayload(prompt: "前台已提交"),
+            runningDelivery: .guided
+        )
+        XCTAssertTrue(didSend)
+        let clientMessageID = try XCTUnwrap(originalSocket.sentGuidance.first?.clientMessageID)
+
+        await store.selectSession(other)
+        XCTAssertEqual(originalSocket.disconnectCallCount, 1)
+        originalSocket.onTurnSendOutcome?(clientMessageID, .guidanceAccepted)
+
+        try await waitForMessageStatus(
+            .sent,
+            content: "前台已提交",
+            sessionID: original.id,
+            conversationStore: conversationStore
+        )
+        XCTAssertEqual(store.selectedSessionID, other.id)
+    }
+
     func testRunningQueuedSendDuringModelLookupSurvivesReturnToList() async throws {
         let project = makeProject(id: "proj_send_navigation_running")
         let running = makeSession(
@@ -146,19 +306,37 @@ extension ConversationDataFlowTests {
         await gate.waitForModelRequest()
         await gate.resolveModels([])
         await gate.waitForCreateRequestCount(1)
+        XCTAssertTrue(store.isLoading)
         await store.selectSession(other)
+        XCTAssertFalse(store.isLoading)
+
+        let otherSendTask = Task {
+            await store.sendTurn(CodexAppServerTurnPayload(prompt: "继续另一会话"))
+        }
+        await gate.waitForCreateRequestCount(2)
+        XCTAssertTrue(store.isLoading)
 
         var resumed = original
         resumed.status = "running"
-        await gate.resolveCreate(.success(try makeCreateSessionResponse(session: resumed)))
+        await gate.resolveCreate(.success(try makeCreateSessionResponse(session: resumed)), at: 0)
 
         let didSend = await sendTask.value
         XCTAssertTrue(didSend)
         XCTAssertEqual(store.selectedSessionID, other.id)
+        XCTAssertTrue(store.isLoading, "A 的迟到 ACK 不能清除 B 的创建 loading")
+
+        var otherResumed = other
+        otherResumed.status = "running"
+        await gate.resolveCreate(.success(try makeCreateSessionResponse(session: otherResumed)), at: 1)
+        let didSendOther = await otherSendTask.value
+        XCTAssertTrue(didSendOther)
+        XCTAssertFalse(store.isLoading)
         let requests = await gate.createRequests()
-        XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests.first?.resumeID, "thread-original")
-        XCTAssertEqual(requests.first?.prompt, "继续原会话")
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests[0].resumeID, "thread-original")
+        XCTAssertEqual(requests[0].prompt, "继续原会话")
+        XCTAssertEqual(requests[1].resumeID, "thread-other")
+        XCTAssertEqual(requests[1].prompt, "继续另一会话")
     }
 
     func testHostChangeDuringModelLookupCancelsCapturedSubmission() async throws {
@@ -196,6 +374,31 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(didSend)
         XCTAssertEqual(createRequestCount, 0)
     }
+}
+
+@MainActor
+private func waitForSentGuidanceCount(_ expected: Int, socket: MockWebSocketClient) async throws {
+    for _ in 0..<80 {
+        if socket.sentGuidance.count == expected { return }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTFail("guided 数量未在超时前变为 \(expected)，当前为 \(socket.sentGuidance.count)")
+}
+
+@MainActor
+private func waitForMessageStatus(
+    _ expected: MessageSendStatus,
+    content: String,
+    sessionID: SessionID,
+    conversationStore: ConversationStore
+) async throws {
+    for _ in 0..<80 {
+        if conversationStore.messages(for: sessionID).contains(where: {
+            $0.content == content && $0.sendStatus == expected
+        }) { return }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTFail("消息 \(content) 未在超时前变为 \(expected)")
 }
 
 private actor TurnSubmissionClientGate {

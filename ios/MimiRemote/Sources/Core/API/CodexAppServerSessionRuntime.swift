@@ -255,6 +255,8 @@ actor CodexAppServerSessionRuntime {
     var turnStartTasksBySessionID: [
         SessionID: (token: UUID, task: Task<CodexAppServerTurnStartOutcome, Error>)
     ] = [:]
+    // guidance 可并发提交到同一 active turn；计数保护所有已提交请求，避免页面退订取消共享 resume。
+    var turnSteerSubmissionCountsBySessionID: [SessionID: Int] = [:]
     var serverQueueSubmissionSessionIDs: Set<SessionID> = []
     var threadPermissionUpdateTasks: [SessionID: (token: UUID, task: Task<Void, Error>)] = [:]
     // turn/interrupt 的 RPC ACK 与 turn/completed 通知是两条独立链路。通知若落在连接切换窗口，
@@ -1037,7 +1039,7 @@ actor CodexAppServerSessionRuntime {
         let existingConnection = connection
         let lease = replaceThreadSubscriptionLease(sessionID: threadID, wantsEvents: false)
         // 页面离开只撤销观察意图，不能取消已经提交的发送。发送可能仍在等待权限更新、
-        // thread/resume、turn/start 或共享队列 ACK；发送结束后会按这代 false lease 补做退订。
+        // thread/resume、turn/start、turn/steer 或共享队列 ACK；结束后按 false lease 补做退订。
         guard !hasTurnSubmissionInFlight(sessionID: threadID) else {
             return nil
         }
@@ -2542,6 +2544,8 @@ actor CodexAppServerSessionRuntime {
         guard context.activeTurnID == expectedTurnID else {
             throw CodexAppServerSessionRuntimeError.missingActiveTurn(sessionID)
         }
+        turnSteerSubmissionCountsBySessionID[sessionID, default: 0] += 1
+        defer { finishTurnSteerSubmission(sessionID: sessionID) }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context))
         var didRetryAfterStaleInitialization = false
         while true {
@@ -2580,7 +2584,20 @@ actor CodexAppServerSessionRuntime {
     func hasTurnSubmissionInFlight(sessionID: SessionID) -> Bool {
         turnStartTasksBySessionID[sessionID] != nil
             || sessionsStartingTurn.contains(sessionID)
+            || turnSteerSubmissionCountsBySessionID[sessionID] != nil
             || serverQueueSubmissionSessionIDs.contains(sessionID)
+    }
+
+    func finishTurnSteerSubmission(sessionID: SessionID) {
+        guard let count = turnSteerSubmissionCountsBySessionID[sessionID] else {
+            return
+        }
+        if count > 1 {
+            turnSteerSubmissionCountsBySessionID[sessionID] = count - 1
+        } else {
+            turnSteerSubmissionCountsBySessionID.removeValue(forKey: sessionID)
+        }
+        scheduleThreadUnsubscribeAfterSubmissionIfNeeded(sessionID: sessionID)
     }
 
     func scheduleThreadUnsubscribeAfterSubmissionIfNeeded(sessionID: SessionID) {

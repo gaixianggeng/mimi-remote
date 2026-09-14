@@ -11,7 +11,9 @@ private struct RuntimeSendLifecycleFixture {
 }
 
 private func makeRuntimeSendLifecycleFixture(
-    suffix: String
+    suffix: String,
+    activeTurnID: TurnID? = nil,
+    connectsForEvents: Bool = true
 ) async throws -> RuntimeSendLifecycleFixture {
     let project = AgentProject(
         id: "proj_send_lifecycle_\(suffix)",
@@ -19,12 +21,17 @@ private func makeRuntimeSendLifecycleFixture(
         path: "/tmp/send-lifecycle-\(suffix)"
     )
     let threadID = "thr_send_lifecycle_\(suffix)"
-    let threadJSON = appServerThreadJSON(
-        id: threadID,
-        cwd: project.path,
-        source: "appServer",
-        updatedAt: 1_780_500_000
-    )
+    let threadJSON: String
+    if let activeTurnID {
+        threadJSON = #"{"id":"\#(threadID)","sessionId":"\#(threadID)","preview":"guidance","ephemeral":false,"modelProvider":"openai","createdAt":1780499990,"updatedAt":1780500000,"status":{"type":"active"},"cwd":"\#(project.path)","source":"appServer","threadSource":"user","turns":[{"id":"\#(activeTurnID)","status":"inProgress","items":[]}]}"#
+    } else {
+        threadJSON = appServerThreadJSON(
+            id: threadID,
+            cwd: project.path,
+            source: "appServer",
+            updatedAt: 1_780_500_000
+        )
+    }
     let transportPool = FakeCodexAppServerTransportPool()
     let runtime = CodexAppServerSessionRuntime(
         endpoint: "http://127.0.0.1:8787",
@@ -35,7 +42,7 @@ private func makeRuntimeSendLifecycleFixture(
                 project: project,
                 allowedMethods: [
                     "initialize", "initialized", "thread/list", "thread/resume",
-                    "thread/unsubscribe", "turn/start"
+                    "thread/unsubscribe", "turn/start", "turn/steer"
                 ]
             )
         }
@@ -60,7 +67,9 @@ private func makeRuntimeSendLifecycleFixture(
     _ = try await pageTask.value
 
     let events = await runtime.attachEvents(sessionID: threadID)
-    try await runtime.connectForEvents(sessionID: threadID)
+    if connectsForEvents {
+        try await runtime.connectForEvents(sessionID: threadID)
+    }
     return RuntimeSendLifecycleFixture(
         runtime: runtime,
         transport: transport,
@@ -138,6 +147,48 @@ private func acknowledgeRuntimeUnsubscribe(
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testSteerTurnSurvivesLastObserverLeavingWhileThreadResumeIsPending() async throws {
+        let activeTurnID = "turn_guidance_active"
+        let fixture = try await makeRuntimeSendLifecycleFixture(
+            suffix: "steer_resume_pending",
+            activeTurnID: activeTurnID,
+            connectsForEvents: false
+        )
+        let beforeSend = await fixture.transport.sentMessages().count
+        let steerTask = Task {
+            try await fixture.runtime.steerTurn(
+                sessionID: fixture.threadID,
+                payload: CodexAppServerTurnPayload(prompt: "补充指导"),
+                clientMessageID: "message-steer-resume-pending",
+                expectedTurnID: activeTurnID
+            )
+        }
+        let resume = try await waitForFakeAppServerRequest(
+            fixture.transport,
+            method: "thread/resume",
+            after: beforeSend
+        )
+
+        fixture.events.cancel()
+        try await waitForRuntimeSendObserverDetach(fixture)
+        let resumeStillPending = await fixture.runtime.threadResumeTasksBySessionID[fixture.threadID] != nil
+        XCTAssertTrue(resumeStillPending, "主动离开页面不能取消 guidance 正在等待的 thread/resume")
+
+        acknowledgeRuntimeSendResume(resume, fixture: fixture)
+        let steer = try await waitForFakeAppServerRequest(
+            fixture.transport,
+            method: "turn/steer",
+            after: beforeSend
+        )
+        let beforeSteerAcknowledgement = await fixture.transport.sentMessages().count
+        transportResponse(fixture.transport, id: steer.id, result: #"{}"#)
+        try await steerTask.value
+        try await acknowledgeRuntimeUnsubscribe(
+            after: beforeSteerAcknowledgement,
+            fixture: fixture
+        )
+    }
+
     func testStartTurnSurvivesLastObserverLeavingWhileThreadResumeIsPending() async throws {
         let fixture = try await makeRuntimeSendLifecycleFixture(suffix: "resume_pending")
         let beforeSend = await fixture.transport.sentMessages().count

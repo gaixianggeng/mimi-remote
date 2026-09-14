@@ -83,6 +83,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSteerTurnSurvivesLastObserverLeavingWhileThreadResumeIsPending \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStartTurnSurvivesLastObserverLeavingWhileThreadResumeIsPending \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStartTurnSurvivesLastObserverLeavingWhileTurnStartAcknowledgementIsPending \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStartTurnDeferredUnsubscribeDoesNotOverrideObserverReentry \
@@ -91,6 +92,8 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLocalDraftSendSurvivesDiscardAndKeepsNewDraftSelectedAfterCreateACK \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testContinuationCreateACKDoesNotReplaceNewSessionSelection \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testHostChangeDuringModelLookupCancelsCapturedSubmission \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCapturedGuidedSendAfterSelectingAnotherSessionUsesBackgroundSocketUntilACK \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testForegroundGuidedSendACKAfterNavigationStillSettlesOriginalEcho \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAuthoritativeFirstPageReadsFreshIndexIncludingExternalUnarchive \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAuthoritativeEmptyIndexFallsBackToHistoryScan \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testExternalArchiveDoesNotPermanentlyDisableDirectoryIndex \
