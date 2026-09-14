@@ -29736,13 +29736,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This ends the session in the terminal on your Mac (anything still running is interrupted; the saved conversation is kept), then continues here."
+            "value": "This ends the session in %@ on your Mac (anything still running is interrupted; the saved conversation is kept), then continues here."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "会结束 Mac 上终端里的该会话（正在执行的内容会被中断，已落盘的对话保留），然后在这里继续。"
+            "value": "会让 Mac 上的%@退出该会话（正在执行的内容会被中断，已落盘的对话保留），然后在这里继续。"
           }
         }
       }

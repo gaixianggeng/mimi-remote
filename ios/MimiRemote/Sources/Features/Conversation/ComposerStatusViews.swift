@@ -361,6 +361,9 @@ struct ComposerStatusTray: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     let sessionControlNotice: String?
+    /// Claude 会话被 Mac 上的终端 / 桌面版持有。和 Codex 的「仅观察」同处一个位置，
+    /// 两者同时存在时由调用方只传这一个，避免同一个只读原因出现两枚 chip。
+    var ownershipNotice: SessionOwnershipNotice? = nil
     let quotaNotice: CodexQuotaNotice?
     let usage: CodexUsageDisplaySummary?
     let goal: ThreadGoal?
@@ -371,6 +374,8 @@ struct ComposerStatusTray: View {
     let isRefreshDisabled: Bool
     let allowsTakeOver: Bool
     let onTakeOver: () -> Void
+    /// 接管 Claude 会话会结束 Mac 上的进程，调用方负责二次确认。
+    var onTakeOverHeldSession: () -> Void = {}
     let onRefreshUsage: () -> Void
     let onEditGoal: () -> Void
     let onTogglePauseGoal: () -> Void
@@ -444,7 +449,9 @@ struct ComposerStatusTray: View {
         HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
-                    if sessionControlNotice != nil {
+                    if let ownershipNotice {
+                        collapsedChip(title: ownershipNotice.title, systemImage: "desktopcomputer", tint: tokens.secondaryText, tokens: tokens)
+                    } else if sessionControlNotice != nil {
                         collapsedChip(title: L10n.text("ui.observe"), systemImage: "eye", tint: tokens.secondaryText, tokens: tokens)
                     }
                     if quotaNotice != nil {
@@ -504,13 +511,14 @@ struct ComposerStatusTray: View {
     }
 
     private var hasStatusModules: Bool {
-        sessionControlNotice != nil || quotaNotice != nil || usage != nil
+        ownershipNotice != nil || sessionControlNotice != nil || quotaNotice != nil || usage != nil
     }
 
     /// 展开只为真正的次级内容或操作保留：目标详情、额度完整文案和刷新入口，
     /// 以及观察态中可执行的接管操作。不可接管的只读观察没有下文，继续隐藏 disclosure。
+    /// Claude 持有态即使主机不支持接管也有下文：谁持有、对方退出后可在此继续。
     var hasExpandableDetail: Bool {
-        goal != nil || quotaNotice != nil || usage != nil ||
+        goal != nil || quotaNotice != nil || usage != nil || ownershipNotice != nil ||
             (sessionControlNotice != nil && allowsTakeOver)
     }
 
@@ -603,7 +611,9 @@ struct ComposerStatusTray: View {
 
     @ViewBuilder
     private func statusModuleContent(tokens: ThemeTokens) -> some View {
-        if let sessionControlNotice {
+        if let ownershipNotice {
+            ownershipSegment(ownershipNotice, tokens: tokens)
+        } else if let sessionControlNotice {
             observingSegment(sessionControlNotice, tokens: tokens)
         }
         if let quotaNotice {
@@ -633,6 +643,54 @@ struct ComposerStatusTray: View {
                     .font(themeStore.uiFont(.caption, weight: .semibold))
                     .foregroundStyle(tokens.accent)
                     .accessibilityHint(notice)
+                }
+            }
+        }
+    }
+
+    /// 与 `observingSegment` 同一套结构和「接管」按钮；多出的一行说明谁持有、为什么只读，
+    /// 主机不支持接管时这行就是展开后的全部下文。
+    private func ownershipSegment(_ notice: SessionOwnershipNotice, tokens: ThemeTokens) -> some View {
+        traySegment(tokens: tokens, minWidth: 132, layoutPriority: 1) {
+            HStack(spacing: 7) {
+                segmentIcon("desktopcomputer", tint: tokens.secondaryText)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(notice.title)
+                            .font(themeStore.uiFont(.caption, weight: .semibold))
+                            .foregroundStyle(tokens.primaryText)
+                        if notice.isBusy {
+                            Text(L10n.text("ui.session_owned_elsewhere_busy"))
+                                .font(themeStore.uiFont(.caption2, weight: .medium))
+                                .foregroundStyle(tokens.accent)
+                        }
+                    }
+                    .lineLimit(1)
+                    Text(notice.message)
+                        .font(themeStore.uiFont(.caption2, weight: .medium))
+                        .foregroundStyle(tokens.secondaryText)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, 6)
+                if notice.canTakeOver {
+                    Button(action: onTakeOverHeldSession) {
+                        Group {
+                            if notice.isTakingOver {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Text(L10n.text("ui.take_over"))
+                            }
+                        }
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.accent)
+                    .disabled(notice.isTakingOver)
+                    .accessibilityHint(notice.message)
                 }
             }
         }

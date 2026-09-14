@@ -12,7 +12,6 @@ struct ConversationView: View {
     // 纯提案算术会把横屏详情列的宽度重复扣除侧栏而误入紧凑分支。
     // 内容真实排版宽度才是唯一可信来源，提案算术只用于测量到达前的首帧。
     @State private var measuredContentWidth: CGFloat?
-    @State private var isClaudeTakeoverConfirmationPresented = false
     private let initialGoalStatusExpanded: Bool
 
     init(initialGoalStatusExpanded: Bool = false) {
@@ -28,7 +27,6 @@ struct ConversationView: View {
             runtimeActivitySnapshot: sessionStore.selectedRuntimeActivitySnapshot,
             historySavingsNotice: sessionStore.selectedHistorySavingsNotice,
             quotaNotice: sessionStore.selectedQuotaNotice,
-            ownershipNotice: sessionStore.selectedOwnershipNotice,
             webSocketStatus: sessionStore.webSocketStatus,
             // writer 冲突在输入区提供唯一恢复入口；顶部不再重复一条泛化错误。
             // 预热窗口只压住连接探测的失败：那一轮还会自动重试，冷启动直接恢复到会话页时
@@ -84,7 +82,7 @@ struct ConversationView: View {
                 HStack {
                     Spacer(minLength: 0)
                     Group {
-                        if sessionStore.selectedSessionHasActiveWriterConflict {
+                        if sessionStore.selectedSessionShowsWriterConflictCard {
                             WriterConflictCard(
                                 sourceIsRunning: sessionStore.selectedSession?.isRunning == true,
                                 availability: sessionStore.selectedWriterConflictForkAvailability,
@@ -163,8 +161,7 @@ struct ConversationView: View {
     private func topStatusStrip(model: ConversationScreenModel, layout: ConversationLayout) -> some View {
         if model.errorMessage != nil
             || model.historySavingsNotice != nil
-            || model.quotaNotice != nil
-            || model.ownershipNotice != nil {
+            || model.quotaNotice != nil {
             statusStripContainer(model: model)
                 .padding(.horizontal, layout.horizontalInset)
                 .padding(.top, 10)
@@ -175,9 +172,6 @@ struct ConversationView: View {
     private func statusStripContainer(model: ConversationScreenModel) -> some View {
         let message = model.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
         return VStack(spacing: 8) {
-            if let notice = model.ownershipNotice {
-                ownershipBanner(notice)
-            }
             if let notice = model.historySavingsNotice {
                 historySavingsBanner(notice)
             }
@@ -242,86 +236,6 @@ struct ConversationView: View {
                 .foregroundStyle(tokens.primaryText)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    /// 会话正被 Mac 上其他 Claude 进程持有：解释为什么这里只读，持有方退出后即可继续。
-    private func ownershipBanner(_ notice: SessionOwnershipNotice) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        return HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "desktopcomputer")
-                .font(themeStore.uiFont(.body, weight: .semibold))
-                .foregroundStyle(tokens.accent)
-                .frame(width: 22, height: 22)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(notice.title)
-                        .font(themeStore.uiFont(.caption, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                    if notice.isBusy {
-                        Text(L10n.text("ui.session_owned_elsewhere_busy"))
-                            .font(themeStore.uiFont(.caption2, weight: .medium))
-                            .foregroundStyle(tokens.accent)
-                    }
-                }
-                Text(notice.message)
-                    .font(themeStore.uiFont(.caption2, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-            }
-            .lineLimit(3)
-            .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            if notice.canTakeOver {
-                claudeTakeoverButton(notice)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tokens.elevatedSurface)
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(tokens.border, lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .accessibilityElement(children: .contain)
-        .task(id: notice.sessionID) {
-            await sessionStore.refreshClaudeTakeoverSupportIfNeeded(sessionID: notice.sessionID)
-        }
-    }
-
-    /// 接管会结束 Mac 上的一个进程，必须二次确认；进行中显示进度并禁用，失败后按钮保留可重试。
-    private func claudeTakeoverButton(_ notice: SessionOwnershipNotice) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        return Button {
-            isClaudeTakeoverConfirmationPresented = true
-        } label: {
-            if notice.isTakingOver {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(minWidth: 44, minHeight: 44)
-            } else {
-                Text(L10n.text("ui.take_over_to_ipad"))
-                    .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(tokens.accent)
-                    .lineLimit(1)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
-            }
-        }
-        .buttonStyle(.borderless)
-        .disabled(notice.isTakingOver)
-        .confirmationDialog(
-            L10n.text("ui.take_over_claude_session_confirm_title"),
-            isPresented: $isClaudeTakeoverConfirmationPresented,
-            titleVisibility: .visible
-        ) {
-            Button(L10n.text("ui.take_over_claude_session_confirm_action"), role: .destructive) {
-                let sessionID = notice.sessionID
-                Task { await sessionStore.takeOverHeldClaudeSession(sessionID: sessionID) }
-            }
-        } message: {
-            Text(L10n.text("ui.take_over_claude_session_confirm_message"))
         }
     }
 
