@@ -143,12 +143,13 @@ enum DataURLImageDecoder {
     static func cachedImage(
         cacheKey: String,
         profileID: String = "legacy",
-        maxPixelSize: Int
+        maxPixelSize: Int,
+        fromFile: Bool = false
     ) -> UIImage? {
         let boundedPixelSize = max(1, maxPixelSize)
         return cache.object(
             forKey: Self.resolvedCacheKey(
-                kind: "data",
+                kind: fromFile ? "file" : "data",
                 profileID: profileID,
                 cacheKey: cacheKey,
                 maxPixelSize: boundedPixelSize

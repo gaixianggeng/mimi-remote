@@ -5,6 +5,56 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testImagePresentationWaitsForScrollingAndReentryUsesCachedHeight() async throws {
+        DataURLImageDecoder.removeAllCachedImagesForTesting()
+        let appStore = makeIsolatedAppStore()
+        let sessionStore = SessionStore(appStore: appStore, conversationStore: ConversationStore(), logStore: LogStore())
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 200, height: 400)).image { context in
+            UIColor.systemBlue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 200, height: 400))
+        }
+        let data = try XCTUnwrap(image.pngData())
+        let source = ConversationImageSource.markdown("data:image/png;base64,\(data.base64EncodedString())")
+        let state = ScrollMediaTestState()
+        let host = UIHostingController(rootView: ScrollMediaTestView(state: state, source: source, sessionStore: sessionStore))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        host.view.layoutIfNeeded()
+        let deadline = Date().addingTimeInterval(3)
+        while DataURLImageDecoder.cachedImage(cacheKey: source.id, profileID: sessionStore.mediaProfileScope, maxPixelSize: 1_600) == nil,
+              Date() < deadline {
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        XCTAssertNotNil(DataURLImageDecoder.cachedImage(cacheKey: source.id, profileID: sessionStore.mediaProfileScope, maxPixelSize: 1_600))
+        for _ in 0..<4 {
+            host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        XCTAssertEqual(state.height, 120, accuracy: 1, "解码结束不能改变手势中的行高")
+        XCTAssertEqual(state.layoutChanges, 0)
+
+        state.scrolling = false
+        for _ in 0..<12 where state.height < 280 {
+            host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        XCTAssertEqual(state.height, 288, accuracy: 1)
+        XCTAssertEqual(state.layoutChanges, 1, "只在真正改变高度前请求保位")
+
+        let reentry = ScrollMediaTestState()
+        let secondHost = UIHostingController(rootView: ScrollMediaTestView(state: reentry, source: source, sessionStore: sessionStore))
+        window.rootViewController = secondHost
+        for _ in 0..<4 {
+            secondHost.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        XCTAssertEqual(reentry.height, 288, accuracy: 1, "缓存图片重新出现时不能退回加载占位")
+        XCTAssertEqual(reentry.layoutChanges, 0)
+    }
+
     func testHistoryAnchorIgnoresDisappearedFrameStillInsideViewport() throws {
         let coordinator = ConversationHistoryScrollCoordinator()
         let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
@@ -138,22 +188,17 @@ extension ConversationDataFlowTests {
 
         let baselineContentHeight = scrollView.contentSize.height
         XCTAssertGreaterThan(distanceFromBottom(scrollView), 200)
+        XCTAssertNil(selectedAnchor, "普通滚动结束不得创建持续修正的阅读锚点")
 
         let loadTask = Task {
             await sessionStore.loadEarlierHistoryForSelectedSession()
         }
-        for _ in 0..<12 where selectedAnchor == nil {
-            host.view.layoutIfNeeded()
-            try await Task.sleep(nanoseconds: 16_000_000)
-        }
-        let anchor = try XCTUnwrap(selectedAnchor, "加载历史前必须选中一条真实可见消息")
-        let anchorID = anchor.id
-        let baselineAnchorMinY = anchor.frame.minY
         await client.waitForHistoryRequestCount(2)
         for _ in 0..<4 {
             host.view.layoutIfNeeded()
             try await Task.sleep(nanoseconds: 16_000_000)
         }
+        XCTAssertNil(selectedAnchor, "网络等待期间不应提前持有可能过期的锚点")
         client.resolveHistoryRequest(
             at: 1,
             with: HistoryMessagesPage(
@@ -162,6 +207,13 @@ extension ConversationDataFlowTests {
             )
         )
         await loadTask.value
+        for _ in 0..<12 where selectedAnchor == nil {
+            host.view.layoutIfNeeded()
+            try await Task.sleep(nanoseconds: 16_000_000)
+        }
+        let anchor = try XCTUnwrap(selectedAnchor, "发布历史投影前必须选中一条真实可见消息")
+        let anchorID = anchor.id
+        let baselineAnchorMinY = anchor.frame.minY
 
         let deadline = Date().addingTimeInterval(3)
         var latestContentHeight = baselineContentHeight
@@ -207,4 +259,33 @@ extension ConversationDataFlowTests {
         }
     }
 
+}
+
+@MainActor
+private final class ScrollMediaTestState: ObservableObject {
+    @Published var scrolling = true
+    var height: CGFloat = 0
+    var layoutChanges = 0
+}
+
+private struct ScrollMediaTestView: View {
+    @ObservedObject var state: ScrollMediaTestState
+    let source: ConversationImageSource
+    let sessionStore: SessionStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ConversationImagePreview(
+                source: source, title: nil,
+                style: .make(role: .assistant, colorScheme: .light),
+                showsCaption: false, contentSizedMaxWidth: 300
+            )
+            .environmentObject(sessionStore)
+            .environment(\.conversationTimelineIsScrolling, state.scrolling)
+            .environment(\.conversationMediaLayoutWillChange, { state.layoutChanges += 1 })
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { state.height = $0 }
+            Spacer(minLength: 0)
+        }
+        .frame(width: 300)
+    }
 }

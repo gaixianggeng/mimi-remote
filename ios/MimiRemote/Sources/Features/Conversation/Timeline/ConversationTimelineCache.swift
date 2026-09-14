@@ -4,6 +4,7 @@ struct ConversationTimelineSnapshot {
     let items: [ConversationTimelineItem]
     let itemIDs: [String]
     let tailItemID: String?
+    var revision = 0
 
     static let empty = ConversationTimelineSnapshot(items: [], itemIDs: [], tailItemID: nil)
 }
@@ -11,11 +12,18 @@ struct ConversationTimelineSnapshot {
 final class ConversationTimelineItemCache {
     private var keys: [ConversationTimelineCacheKey] = []
     private var cachedSnapshot = ConversationTimelineSnapshot.empty
+    private var scope: ScopedSessionID?
 
     func snapshot(
         from messages: [ConversationMessage],
-        suspendingUpdates: Bool = false
+        suspendingUpdates: Bool = false,
+        scope nextScope: ScopedSessionID? = nil,
+        willUpdate: () -> Void = {}
     ) -> ConversationTimelineSnapshot {
+        if scope != nextScope {
+            removeAll()
+            scope = nextScope
+        }
         // 用户正在拖动/减速时保留同一份 List 快照。流式输出仍进入 Store，
         // 但不在每个 delta 上重建整条长时间线；滚动结束后一次性追上最新状态。
         if suspendingUpdates, !cachedSnapshot.items.isEmpty {
@@ -26,17 +34,22 @@ final class ConversationTimelineItemCache {
         guard nextKeys != keys else {
             return cachedSnapshot
         }
+        // 先捕获旧列表的阅读位置，再发布新投影；Store 的 mutation 回调可能早于解除冻结。
+        if !cachedSnapshot.items.isEmpty {
+            willUpdate()
+        }
         let nextItems = ConversationTimelineItemBuilder.items(from: messages)
         keys = nextKeys
         cachedSnapshot = ConversationTimelineSnapshot(
             items: nextItems,
             itemIDs: nextItems.map(\.id),
-            tailItemID: nextItems.last?.id
+            tailItemID: nextItems.last?.id,
+            revision: cachedSnapshot.revision + 1
         )
         return cachedSnapshot
     }
 
-    func removeAll() {
+    private func removeAll() {
         keys.removeAll()
         cachedSnapshot = .empty
     }
