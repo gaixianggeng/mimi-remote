@@ -68,10 +68,9 @@ final class AgentAPIClientRequestTests: XCTestCase {
             FilePreviewErrorPresentation.message(for: fileError(.fileAccessDenied, .other)),
             L10n.text("ui.file_preview_check_file_permissions_on_mac")
         )
-        XCTAssertEqual(
-            FilePreviewErrorPresentation.message(for: fileError(.fileAccessDenied, nil)),
-            L10n.text("ui.file_preview_check_file_permissions_on_mac")
-        )
+        let hostNeutral = FilePreviewErrorPresentation.message(for: fileError(.fileAccessDenied, nil))
+        XCTAssertEqual(hostNeutral, L10n.text("ui.file_preview_check_file_permissions_on_host"))
+        XCTAssertFalse(hostNeutral.contains("Mac"), "没有权限域时宿主可能是 Linux 或 Windows，提示不能指向 Mac")
         XCTAssertEqual(
             FilePreviewErrorPresentation.message(for: fileError(.fileNotFound, nil)),
             L10n.text("ui.file_preview_file_not_found")

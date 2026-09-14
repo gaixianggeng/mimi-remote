@@ -185,26 +185,71 @@ func (r *Router) resolveReadableFilePath(raw string) (fileReadResolvedPath, erro
 	return fileReadResolvedPath{}, errFilePathOutsideScope
 }
 
+// filePathLexicallyInScope 只用于给读取失败分类，不授予任何访问。目标缺失或被 macOS
+// 拒绝时 gateway resolver 无法 EvalSymlinks，这里用"原始绝对路径"和"最近可解析祖先
+// canonical 化后的路径"两种写法，与 gateway 相同的三类授权根比较：项目、托管 worktree、
+// browse root（含其 canonical 目标，覆盖符号链接形式配置的根）。
 func (r *Router) filePathLexicallyInScope(raw string) bool {
 	abs, err := filepath.Abs(strings.TrimSpace(raw))
 	if err != nil {
 		return false
 	}
-	if r.projects != nil {
-		for _, project := range r.projects.List() {
-			projectAbs, _ := filepath.Abs(project.Path)
-			if realPathWithin(project.RealPath, abs) || realPathWithin(projectAbs, abs) {
+	candidates := []string{filepath.Clean(abs)}
+	if canonical, ok := canonicalizeExistingPathPrefix(abs); ok && canonical != candidates[0] {
+		candidates = append(candidates, canonical)
+	}
+	for _, candidate := range candidates {
+		if r.projects != nil {
+			for _, project := range r.projects.List() {
+				projectAbs, _ := filepath.Abs(project.Path)
+				if realPathWithin(project.RealPath, candidate) || realPathWithin(projectAbs, candidate) {
+					return true
+				}
+			}
+		}
+		// 只读查找，不推进 LastUsedAt、不登记 pending use：分类错误不是一次真实访问。
+		if _, ok := r.managedWorktreeForPathFromMemory(candidate); ok {
+			return true
+		}
+		if _, ok := r.managedWorktreeForPathFromRegistry(candidate); ok {
+			return true
+		}
+		for _, root := range r.cfg.BrowseRoots {
+			rootAbs, err := filepath.Abs(strings.TrimSpace(root))
+			if err != nil {
+				continue
+			}
+			if realPathWithin(rootAbs, candidate) {
+				return true
+			}
+			if realRoot, err := filepath.EvalSymlinks(rootAbs); err == nil && realPathWithin(realRoot, candidate) {
 				return true
 			}
 		}
 	}
-	for _, root := range r.cfg.BrowseRoots {
-		rootAbs, err := filepath.Abs(strings.TrimSpace(root))
-		if err == nil && realPathWithin(rootAbs, abs) {
-			return true
-		}
-	}
 	return false
+}
+
+// canonicalizeExistingPathPrefix 解析路径中最近一个存在的祖先，再拼回尚不存在的后缀。
+// 文件已删除时，这让 "/link-root/sub/missing.md" 能与 gateway 使用的 canonical 根比较。
+func canonicalizeExistingPathPrefix(abs string) (string, bool) {
+	current := filepath.Clean(abs)
+	suffix := []string{}
+	for {
+		if realPath, err := filepath.EvalSymlinks(current); err == nil {
+			parts := []string{realPath}
+			for index := len(suffix) - 1; index >= 0; index-- {
+				parts = append(parts, suffix[index])
+			}
+			return filepath.Join(parts...), true
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", false
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
 }
 
 func (r *Router) writeFileReadError(w http.ResponseWriter, path string, err error) {

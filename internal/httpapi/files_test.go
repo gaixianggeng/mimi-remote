@@ -11,6 +11,9 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
 func readPreviewFile(t *testing.T, handler http.Handler, path string) (*httptest.ResponseRecorder, map[string]any) {
@@ -444,5 +447,64 @@ func TestFileReadRejectsLargeFile(t *testing.T) {
 	rec, _ := readPreviewFile(t, server.handler, filePath)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("超限文件应被拒绝，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestFileReadReportsMissingFileUnderSymlinkedBrowseRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 创建符号链接需要额外权限")
+	}
+	realRoot := t.TempDir()
+	linkParent := t.TempDir()
+	linkRoot := filepath.Join(linkParent, "browse-link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.BrowseRoots = []string{linkRoot}
+	})
+	canonicalRoot, err := filepath.EvalSymlinks(realRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 目录浏览返回的是 canonical 路径；文件在预览前被删掉时应报缺失而不是越界。
+	missing := filepath.Join(canonicalRoot, "docs", "gone.md")
+	rec, _ := readPreviewFile(t, server.handler, missing)
+	body := decodeJSON(t, rec)
+	if rec.Code != http.StatusForbidden || body["code"] != fileReadCodeNotFound {
+		t.Fatalf("符号链接 browse root 下的缺失文件应返回 file_not_found，got=%d body=%v", rec.Code, body)
+	}
+	outside := filepath.Join(t.TempDir(), "gone.md")
+	rec, _ = readPreviewFile(t, server.handler, outside)
+	body = decodeJSON(t, rec)
+	if body["code"] != fileReadCodePathOutsideScope {
+		t.Fatalf("授权根之外的缺失文件仍应返回 path_outside_scope，got=%v", body)
+	}
+}
+
+func TestFileReadReportsMissingFileInManagedWorktree(t *testing.T) {
+	worktreesRoot := t.TempDir()
+	checkout := filepath.Join(worktreesRoot, "checkouts", "repo", "review")
+	if err := os.MkdirAll(checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	canonicalCheckout, err := filepath.EvalSymlinks(checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectDir := t.TempDir()
+	writeManagedWorktreeRegistryForTest(t, worktreesRoot, managedWorktree{
+		Path:        canonicalCheckout,
+		RootProject: projects.Project{ID: "repo", Name: "Repo", Path: projectDir, RealPath: projectDir},
+	})
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.WorktreesRoot = worktreesRoot
+		cfg.Projects = []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: projectDir}}
+	})
+	missing := filepath.Join(canonicalCheckout, "notes", "deleted.md")
+	rec, _ := readPreviewFile(t, server.handler, missing)
+	body := decodeJSON(t, rec)
+	if rec.Code != http.StatusForbidden || body["code"] != fileReadCodeNotFound {
+		t.Fatalf("已登记托管 worktree 内的缺失文件应返回 file_not_found，got=%d body=%v", rec.Code, body)
 	}
 }

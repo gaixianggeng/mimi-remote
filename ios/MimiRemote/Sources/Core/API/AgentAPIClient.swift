@@ -201,8 +201,12 @@ enum FilePreviewErrorPresentation {
                 return L10n.text("ui.file_preview_allow_downloads_on_mac")
             case .photosLibrary:
                 return L10n.text("ui.file_preview_allow_photos_library_on_mac")
-            case .other, nil:
+            case .other:
+                // 只有 macOS 宿主会给出 other：EPERM 落在标准目录之外。
                 return L10n.text("ui.file_preview_check_file_permissions_on_mac")
+            case nil:
+                // Linux / Windows 宿主与 macOS 上的普通 POSIX 权限拒绝都不带权限域，不能提 Mac。
+                return L10n.text("ui.file_preview_check_file_permissions_on_host")
             }
         }
     }

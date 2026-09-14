@@ -11786,6 +11786,23 @@
         }
       }
     },
+    "ui.file_preview_check_file_permissions_on_host": {
+      "comment": "File preview error shown when the host operating system denies read access without a macOS permission domain (Linux, Windows, or ordinary POSIX permissions).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to read this file. On the computer running agentd, check that its user can read the file and its parent folders, then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取该文件。请在运行 agentd 的电脑上，检查其运行用户对该文件及父级目录的读取权限，然后重试。"
+          }
+        }
+      }
+    },
     "ui.file_preview_check_file_permissions_on_mac": {
       "comment": "File preview error shown when POSIX permissions block access outside a standard protected directory.",
       "localizations": {
