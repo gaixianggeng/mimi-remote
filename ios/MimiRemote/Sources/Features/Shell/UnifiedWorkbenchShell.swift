@@ -1517,6 +1517,10 @@ struct UnifiedWorkbenchShell: View {
             usesCompactNavigation: layout.usesCompactNavigation,
             selectedSessionID: sessionStore.selectedSessionID
         )
+        // 忽略 SwiftUI 对相同 path/tab 的回写；真实交互在视觉事务内撤销旧通知。
+        if nextState != navigationState || effect != nil {
+            sessionStore.notificationNavigation.observe(event)
+        }
         return WorkbenchNavigationCommit(state: nextState, effect: effect)
     }
 

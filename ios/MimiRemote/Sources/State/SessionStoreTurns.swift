@@ -408,6 +408,7 @@ extension SessionStore {
     }
 
     func returnToSessionList() {
+        notificationNavigation.userNavigated()
         let previousSession = selectedSession
         let wasAlreadyOnList = selectedSessionID == nil
             && errorMessage == nil
@@ -446,8 +447,10 @@ extension SessionStore {
     /// 除“用户已明确去往别处”（.superseded）外，打不开都必须给出提示，并在每个决策点留下阶段诊断。
     func openSessionFromNotification(
         _ route: SessionNotificationRoute,
-        ifCurrent expectedLease: SessionSelectionLease? = nil
+        ifCurrent expectedLease: SessionSelectionLease? = nil,
+        navigationIntent: UUID? = nil
     ) async -> SessionNotificationOpenOutcome {
+        let navigationIntent = navigationIntent ?? notificationNavigation.accept()
         let startedAt = Date()
         let correlation = NotificationRouteDiagnostics.shortReference(route.sessionID)
         func finish(_ outcome: SessionNotificationOpenOutcome, reason: String) -> SessionNotificationOpenOutcome {
@@ -466,6 +469,10 @@ extension SessionStore {
             return finish(.unavailable(message: message), reason: reason)
         }
 
+        guard !Task.isCancelled, notificationNavigation.isCurrent(navigationIntent),
+              !notificationNavigation.hasCommitted(navigationIntent) else {
+            return finish(.superseded, reason: "notification_replaced")
+        }
         // 调用方在发网络请求前预留的意图若已过期，只有用户可见的导航才让通知让路；
         // 代次被自动推进时重新预留即可。nil 视为“现在预留”。
         if let expectedLease,
@@ -536,11 +543,20 @@ extension SessionStore {
         }
         intent = currentIntent
 
-        let didSelect = await selectSession(
-            targetSession,
-            reason: .notification,
-            ifCurrent: intent
-        )
+        guard !Task.isCancelled, notificationNavigation.isCurrent(navigationIntent) else {
+            return finish(.superseded, reason: "notification_replaced_before_select")
+        }
+        // 解析仍跟随调用方取消。仅选择提交及其后的历史加载独立完成；任务真正执行时
+        // 再检查导航权并原子领取，防止排队期间的新点击或同一投递重入。
+        let selectionResult = await Task { @MainActor () -> Bool? in
+            guard self.notificationNavigation.isCurrent(navigationIntent),
+                  let currentIntent = self.notificationIntentAfterAwait(intent, target: targetSession.id),
+                  self.notificationNavigation.claim(navigationIntent) else { return nil }
+            return await self.selectSession(targetSession, reason: .notification, ifCurrent: currentIntent)
+        }.value
+        guard let didSelect = selectionResult else {
+            return finish(.superseded, reason: "notification_already_claimed")
+        }
         guard route.profileID == appStore.notificationRoutingProfileID else {
             return finish(notificationProfileSwitchOutcome(for: route), reason: "profile_switched_during_select")
         }
@@ -619,6 +635,7 @@ extension SessionStore {
         reason: SessionSelectionCommit.Reason = .userOpen,
         ifCurrent expectedLease: SessionSelectionLease? = nil
     ) async -> Bool {
+        if case .userOpen = reason { notificationNavigation.userNavigated() }
         let previousSession = selectedSession
         let session = sessionForExplicitSelection(candidate)
         let wasNoOpSelection = isNoOpHistorySelection(session)

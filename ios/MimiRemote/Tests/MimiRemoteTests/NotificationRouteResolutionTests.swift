@@ -494,6 +494,152 @@ final class NotificationRouteResolutionTests: XCTestCase {
         XCTAssertEqual(NotificationRouteDiagnostics.entries().last?.reason, "target_missing")
     }
 
+    func testNewestNotificationWinsWhenOlderReadReturnsFirst() async {
+        await assertNewestNotificationWins(olderReturnsFirst: true)
+    }
+
+    func testNewestNotificationWinsWhenNewerReadReturnsFirst() async {
+        await assertNewestNotificationWins(olderReturnsFirst: false)
+    }
+
+    private func assertNewestNotificationWins(olderReturnsFirst: Bool) async {
+        let project = makeProject(id: "notification-order")
+        let a = makeSession(id: "notice-a", projectID: project.id, title: "A", status: "history", source: "codex")
+        let b = makeSession(id: "notice-b", projectID: project.id, title: "B", status: "history", source: "codex")
+        let client = OrderedNotificationReadClient(project: project, targets: [a, b])
+        let store = makeStore(client: client)
+        store.projects = [project]
+        store.recentWorkspaces = [AgentWorkspace(project: project)]
+        let adapter = SessionNotificationResponseAdapter()
+        adapter.approvalInbox.navigationOwnership = store.notificationNavigation
+        func enqueue(_ session: AgentSession) -> (SessionNotificationRoute, UUID) {
+            let route = SessionNotificationRoute.current(profileID: store.appStore.notificationRoutingProfileID,
+                projectID: project.id, sessionID: session.id, runtimeProvider: "codex")
+            adapter.receive(userInfo: route.userInfo)
+            return (route, adapter.pendingRouteIntent!)
+        }
+        let (routeA, intentA) = enqueue(a)
+        let taskA = Task { await store.openSessionFromNotification(routeA, navigationIntent: intentA) }
+        await client.waitForRead(a.id)
+        let (routeB, intentB) = enqueue(b)
+        let taskB = Task { await store.openSessionFromNotification(routeB, navigationIntent: intentB) }
+        await client.waitForRead(b.id)
+        if olderReturnsFirst {
+            client.release(a.id)
+            let outcome = await taskA.value
+            XCTAssertEqual(outcome, .superseded)
+            XCTAssertNil(store.selectedSessionID, "B 已入队后，A 即使先返回也不能提交")
+            client.release(b.id)
+        } else {
+            client.release(b.id)
+            _ = await taskB.value
+            client.release(a.id)
+        }
+        let outcomeA = await taskA.value
+        let outcomeB = await taskB.value
+        XCTAssertEqual(outcomeA, .superseded)
+        XCTAssertEqual(outcomeB, .opened)
+        XCTAssertEqual(store.selectedSessionID, b.id)
+    }
+
+    func testInboxIntentExistsBeforeGateAndUserNavigationRevokesIt() async throws {
+        let project = makeProject(id: "notification-gate")
+        let target = makeSession(id: "notice-gate", projectID: project.id, title: "A", status: "history", source: "codex")
+        for event in [WorkbenchNavigationEvent.open(.sessions, source: nil), .compactTabChanged(.devices)] {
+            let store = makeStore(client: MockSessionStoreClient(projects: [project], sessions: []))
+            store.sessions = [target]
+            store.recentWorkspaces = [AgentWorkspace(project: project)]
+            let inbox = LockScreenApprovalInbox()
+            inbox.navigationOwnership = store.notificationNavigation
+            inbox.receive(userInfo: payload(overrides: [:]), actionIdentifier: "com.apple.UNNotificationDefaultActionIdentifier")
+            let delivery = try XCTUnwrap(inbox.pending)
+            XCTAssertTrue(store.notificationNavigation.isCurrent(delivery.navigationIntent))
+            // 闸门还未放行。视觉导航在同步事务中就撤销通知，不依赖延迟的选择副作用。
+            store.notificationNavigation.observe(event)
+            let route = SessionNotificationRoute.current(profileID: store.appStore.notificationRoutingProfileID,
+                projectID: project.id, sessionID: target.id)
+            let outcome = await store.openSessionFromNotification(route, navigationIntent: delivery.navigationIntent)
+            XCTAssertEqual(outcome, .superseded)
+            XCTAssertNil(store.selectedSessionID)
+        }
+    }
+
+    func testReturnDuringAutomaticRestorationCannotBeOverwrittenByNotification() async {
+        let project = makeProject(id: "notification-return")
+        let target = makeSession(id: "notice-return", projectID: project.id, title: "A", status: "history", source: "codex")
+        let store = makeStore(client: MockSessionStoreClient(projects: [project], sessions: []))
+        store.sessions = [target]
+        store.recentWorkspaces = [AgentWorkspace(project: project)]
+        let intent = store.notificationNavigation.accept()
+        _ = store.commitSelection(projectID: project.id, sessionID: nil, reason: .restoration)
+        XCTAssertTrue(store.notificationNavigation.isCurrent(intent), "自身暖恢复不会丢通知")
+        store.returnToSessionList()
+        // 模拟后续 bootstrap 自动推进租约，不能复活已撤销的点击。
+        store.reserveSelectionIntent()
+        let route = SessionNotificationRoute.current(profileID: store.appStore.notificationRoutingProfileID,
+            projectID: project.id, sessionID: target.id)
+        let outcome = await store.openSessionFromNotification(route, navigationIntent: intent)
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertNil(store.selectedSessionID)
+    }
+
+    func testSameDeliveryCanOnlyCommitSelectionOnce() async {
+        let project = makeProject(id: "notification-once")
+        let target = makeSession(id: "notice-once", projectID: project.id, title: "A", status: "history", source: "codex")
+        let store = makeStore(client: MockSessionStoreClient(projects: [project], sessions: []))
+        store.sessions = [target]
+        store.recentWorkspaces = [AgentWorkspace(project: project)]
+        let intent = store.notificationNavigation.accept()
+        let route = SessionNotificationRoute.current(profileID: store.appStore.notificationRoutingProfileID,
+            projectID: project.id, sessionID: target.id)
+        let first = await store.openSessionFromNotification(route, navigationIntent: intent)
+        let committedSequence = store.lastSelectionCommit?.sequence
+        let second = await store.openSessionFromNotification(route, navigationIntent: intent)
+        XCTAssertEqual(first, .opened)
+        XCTAssertEqual(second, .superseded)
+        XCTAssertEqual(store.lastSelectionCommit?.sequence, committedSequence)
+    }
+
+    func testCommittedHistorySurvivesParentCancellationAndDuplicateDelivery() async {
+        await assertHistoryCancellation(leaveSession: false)
+    }
+
+    func testLeavingDuringCommittedHistoryDoesNotReconnectOldSession() async {
+        await assertHistoryCancellation(leaveSession: true)
+    }
+
+    private func assertHistoryCancellation(leaveSession: Bool) async {
+        let project = makeProject(id: "notification-history")
+        let target = makeSession(id: "notice-history", projectID: project.id, title: "A", status: "history", source: "codex")
+        let client = OrderedNotificationReadClient(project: project, targets: [target])
+        client.blockHistory = true
+        let store = makeStore(client: client)
+        store.sessions = [target]
+        store.recentWorkspaces = [AgentWorkspace(project: project)]
+        let intent = store.notificationNavigation.accept()
+        let route = SessionNotificationRoute.current(profileID: store.appStore.notificationRoutingProfileID,
+            projectID: project.id, sessionID: target.id)
+        let task = Task { await store.openSessionFromNotification(route, navigationIntent: intent) }
+        await client.waitForHistory()
+        let commit = store.lastSelectionCommit?.sequence
+        task.cancel()
+        let duplicate = await store.openSessionFromNotification(route, navigationIntent: intent)
+        XCTAssertEqual(duplicate, .superseded)
+        XCTAssertEqual(store.lastSelectionCommit?.sequence, commit)
+        if leaveSession { store.returnToSessionList() }
+        client.releaseHistory()
+        let outcome = await task.value
+        if leaveSession {
+            XCTAssertEqual(outcome, .superseded)
+            XCTAssertNil(store.selectedSessionID)
+            XCTAssertNil(store.connectedSessionID)
+        } else {
+            XCTAssertEqual(outcome, .opened)
+            XCTAssertTrue(store.conversationStore.hasLoadedHistory(sessionID: target.id))
+            XCTAssertEqual(store.selectedSessionID, target.id)
+        }
+    }
+
     // MARK: - Runtime 路由登记
 
     func testRoutingClientRememberRuntimeRouteNeverDowngradesClaude() {
@@ -710,4 +856,64 @@ private final class BlockingNotificationReadClient: SessionStoreAPIClient {
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
         []
     }
+}
+
+/// 每个目标的首次查询独立挂起，后续历史查询直接返回，精确控制 A/B 完成顺序。
+@MainActor
+private final class OrderedNotificationReadClient: SessionStoreAPIClient {
+    let project: AgentProject
+    let targets: [String: AgentSession]
+    var reads: [String: CheckedContinuation<SessionResponse, Error>] = [:]
+    var waiters: [String: CheckedContinuation<Void, Never>] = [:]
+    var started: Set<String> = []
+    var blockHistory = false
+    private var historyStarted = false
+    private var historyWaiter: CheckedContinuation<Void, Never>?
+    private var historyContinuation: CheckedContinuation<Void, Never>?
+
+    init(project: AgentProject, targets: [AgentSession]) {
+        self.project = project
+        self.targets = Dictionary(uniqueKeysWithValues: targets.map { ($0.id, $0) })
+    }
+    func projects() async throws -> [AgentProject] { [project] }
+    func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] { [] }
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        guard let target = targets[id] else { throw MockError.unimplemented }
+        if started.contains(id) { return SessionResponse(session: target) }
+        started.insert(id)
+        return try await withCheckedThrowingContinuation { continuation in
+            reads[id] = continuation
+            waiters.removeValue(forKey: id)?.resume()
+        }
+    }
+    func waitForRead(_ id: String) async {
+        if started.contains(id) { return }
+        await withCheckedContinuation { waiters[id] = $0 }
+    }
+    func release(_ id: String) {
+        reads.removeValue(forKey: id)?.resume(returning: SessionResponse(session: targets[id]!))
+    }
+    func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
+        if blockHistory {
+            await withCheckedContinuation { continuation in
+                historyContinuation = continuation
+                historyStarted = true
+                historyWaiter?.resume()
+                historyWaiter = nil
+            }
+        }
+        try Task.checkCancellation()
+        return []
+    }
+    func waitForHistory() async {
+        if historyStarted { return }
+        await withCheckedContinuation { historyWaiter = $0 }
+    }
+    func releaseHistory() {
+        blockHistory = false
+        historyContinuation?.resume()
+        historyContinuation = nil
+    }
+    func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse { throw MockError.unimplemented }
+    func stopSession(id: String) async throws { throw MockError.unimplemented }
 }

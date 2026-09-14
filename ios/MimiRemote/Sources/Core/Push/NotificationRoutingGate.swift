@@ -132,3 +132,39 @@ struct ForegroundResumeTracker: Equatable {
         return lastOutcome
     }
 }
+
+/// 通知导航权独立于列表刷新产生的 selection lease。只有新点击或用户导航能撤销它，
+/// 自动 bootstrap / host 暖恢复不能重建或撤销用户尚未处理的点击。
+@MainActor
+final class NotificationNavigationOwnership {
+    private var current: UUID?
+    private var committed = false
+
+    func accept(_ intent: UUID = UUID()) -> UUID {
+        current = intent
+        committed = false
+        return intent
+    }
+
+    func isCurrent(_ intent: UUID) -> Bool { current == intent }
+
+    func hasCommitted(_ intent: UUID) -> Bool { isCurrent(intent) && committed }
+
+    func userNavigated() { current = nil }
+
+    func observe(_ event: WorkbenchNavigationEvent) {
+        switch event {
+        case .open, .compactPathChanged, .compactTabChanged:
+            userNavigated()
+        case .synchronize, .selectionCommitted, .sessionSelectionFinished:
+            break
+        }
+    }
+
+    /// 在 MainActor 上紧贴选择提交执行，同一投递重入也只能提交一次。
+    func claim(_ intent: UUID) -> Bool {
+        guard isCurrent(intent), !committed else { return false }
+        committed = true
+        return true
+    }
+}

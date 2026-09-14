@@ -7,6 +7,7 @@ import UIKit
 
 /// 一次锁屏交互。decision 为空表示用户点了通知本身，也就是「查看详情」。
 struct LockScreenApprovalDelivery: Equatable, Identifiable {
+    let navigationIntent = UUID()
     let notification: LockScreenApprovalNotification
     let decision: LockScreenApprovalDecision?
     /// 系统回调给出的真实 UNNotificationRequest.identifier。
@@ -14,7 +15,7 @@ struct LockScreenApprovalDelivery: Equatable, Identifiable {
     let requestIdentifier: String?
 
 	var id: String {
-		notification.approvalIdentifier + "|" + (decision?.rawValue ?? "open")
+		notification.approvalIdentifier + "|" + (decision?.rawValue ?? "open") + "|" + navigationIntent.uuidString
 	}
 
 	init?(
@@ -47,6 +48,7 @@ enum NotificationDeliveryOutcome: Equatable, Sendable {
 @MainActor
 final class LockScreenApprovalInbox: ObservableObject {
     @Published private(set) var pending: LockScreenApprovalDelivery?
+    var navigationOwnership = NotificationNavigationOwnership()
 
 	@discardableResult
 	func receive(
@@ -61,6 +63,9 @@ final class LockScreenApprovalInbox: ObservableObject {
 		) else {
 			return false
 		}
+        if delivery.decision == nil, delivery.notification.event != .resolved {
+            _ = navigationOwnership.accept(delivery.navigationIntent)
+        }
 		pending = delivery
 		return true
     }

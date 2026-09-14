@@ -357,6 +357,7 @@ final class SessionStore: ObservableObject {
     var relatedSessionSocket: (any SessionWebSocketClient)?
     var relatedSessionSocketID: SessionID?
     var relatedSessionSocketGeneration = 0
+    let notificationNavigation = NotificationNavigationOwnership()
     var selectionGeneration: UInt64 = 0
     var webSocketConnectionGeneration = 0
     /// 单调递增的重连租约。attempt 会在 reset 后从 1 重新开始，不能单独作为异步任务身份。

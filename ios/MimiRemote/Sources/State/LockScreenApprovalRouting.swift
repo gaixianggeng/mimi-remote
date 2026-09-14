@@ -32,7 +32,8 @@ enum LockScreenApprovalRouting {
 		for notification: LockScreenApprovalNotification,
 		appStore: AppStore,
         sessionStore: SessionStore,
-        recoverRouteFromBackground: Bool = true
+        recoverRouteFromBackground: Bool = true,
+        navigationIntent: UUID? = nil
 	) async throws -> (profileID: String, client: AgentAPIClient) {
 		guard let profileID = localProfileID(
 			for: notification,
@@ -44,7 +45,7 @@ enum LockScreenApprovalRouting {
             // 同一设备身份不能同时启动两套 Tailcat 引擎。用户点击通知时复用
             // 现有主机切换与恢复流程，不另建会抢占 DERP 连接的临时代理。
             if appStore.activeConnectionProfileID != profileID {
-                _ = try await sessionStore.switchConnectionProfile(id: profileID)
+                _ = try await sessionStore.switchConnectionProfile(id: profileID, notificationIntent: navigationIntent)
             } else if recoverRouteFromBackground {
                 guard let controller = sessionStore.tailcatExperimentController,
                       await controller.recoverRouteFromForeground(
