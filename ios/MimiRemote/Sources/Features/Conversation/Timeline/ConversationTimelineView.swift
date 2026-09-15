@@ -760,6 +760,8 @@ struct ConversationTimelineView: View {
                     scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: offset), animated: false)
                 case let .item(id):
                     proxy.scrollTo(id, anchor: .bottom)
+                case let .anchorItem(id):
+                    proxy.scrollTo(id, anchor: .top)
                 }
             }
             if command.animated && !reduceMotion {

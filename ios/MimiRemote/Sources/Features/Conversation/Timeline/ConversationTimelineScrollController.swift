@@ -16,6 +16,7 @@ enum ConversationTimelineScrollTarget: Hashable {
     case tail
     case offset(CGFloat)
     case item(String)
+    case anchorItem(String)
 }
 
 struct ConversationTimelineScrollCommand {
@@ -62,6 +63,7 @@ final class ConversationTimelineScrollController {
     @ObservationIgnored private var attemptedInitialPosition = false
     @ObservationIgnored private var inputGeneration = 0
     @ObservationIgnored private var anchor: ConversationTimelineViewport.Anchor?
+    @ObservationIgnored private var anchorFallbackItemID: String?
     @ObservationIgnored private var pending: Pending?
     @ObservationIgnored private var pendingTask: Task<Void, Never>?
     @ObservationIgnored private var anchorExpirationTask: Task<Void, Never>?
@@ -139,7 +141,7 @@ final class ConversationTimelineScrollController {
                 pending = .tail(animated: snapshot.changes.contains(.localSubmission), reason: .snapshot)
             }
         case .readingHistory:
-            captureAnchor()
+            captureAnchor(restoringRows: snapshot.changes.contains(.historyPrepend) ? snapshot.rows : nil)
         }
         return true
     }
@@ -198,9 +200,17 @@ final class ConversationTimelineScrollController {
                 ancestor = candidate.superview
             }
         }
-        // 首屏仍由 SwiftUI 完成交接；已可读后只消费真实尺寸变化，不观察 offset 回写。
-        guard isReadable, !isInteracting, let current = viewport.metrics,
-              metrics.map({ LayoutKey($0) != LayoutKey(current) }) ?? true else { return }
+        guard isReadable, !isInteracting, let current = viewport.metrics else { return }
+        if mode == .readingHistory, let anchor, viewport.correctedOffset(for: anchor) != nil {
+            // 按行 ID 找回消息后，重新绑定可能只改变可见 cell、不改变总高度。
+            // 此时就在原生布局内完成精校，不等待下一拍 SwiftUI 几何通知。
+            metrics = current
+            pending = .anchor
+            applyPending()
+            return
+        }
+        // 首屏仍由 SwiftUI 完成交接；普通布局只消费尺寸变化，不观察 offset 回写。
+        guard metrics.map({ LayoutKey($0) != LayoutKey(current) }) ?? true else { return }
         metrics = current
         respondToLayoutChange()
     }
@@ -360,9 +370,18 @@ final class ConversationTimelineScrollController {
         appliedCommands.removeAll(keepingCapacity: true)
     }
 
-    private func captureAnchor(expires: Bool = true) {
+    private func captureAnchor(expires: Bool = true, restoringRows: [ConversationTimelineItem]? = nil) {
         anchor = viewport.captureVisibleAnchor()
-        guard anchor != nil else { return }
+        guard let anchor else { return }
+        if let restoringRows {
+            // 以旧视口的候选顺序寻找新快照中的行，不让新页顺序或总高度决定阅读位置。
+            for candidate in anchor.candidates {
+                if let row = restoringRows.first(where: { $0.anchorMessageIDs.contains(candidate.id) }) {
+                    anchorFallbackItemID = row.id
+                    break
+                }
+            }
+        }
         pending = .anchor
         ConversationScrollDiagnostics.shared.record("anchor_begin", "generation=\(inputGeneration)")
         guard expires else { return }
@@ -383,6 +402,7 @@ final class ConversationTimelineScrollController {
     private func releaseAnchor() {
         if anchor != nil { ConversationScrollDiagnostics.shared.record("anchor_end") }
         anchor = nil
+        anchorFallbackItemID = nil
         viewport.releaseAnchor()
         anchorExpirationTask?.cancel()
         anchorExpirationTask = nil
@@ -403,11 +423,11 @@ final class ConversationTimelineScrollController {
             guard !Task.isCancelled, let self,
                   self.epoch == expectedEpoch, self.inputGeneration == expectedInput else { return }
             self.pendingTask = nil
-            self.applyPending()
+            self.applyPending(allowProxyScroll: true)
         }
     }
 
-    private func applyPending() {
+    private func applyPending(allowProxyScroll: Bool = false) {
         guard isActive, !isInteracting, !viewport.isUserScrolling,
               let pending, let execute, let scope,
               let current = metrics ?? viewport.metrics, current.contentHeight > 0 else { return }
@@ -421,14 +441,26 @@ final class ConversationTimelineScrollController {
             animated = shouldAnimate
             reason = mode == .initialPositioning ? .initial : source
         case .anchor:
-            guard mode == .readingHistory, let anchor,
-                  let offset = viewport.correctedOffset(for: anchor),
-                  let native = viewport.metrics else { self.pending = nil; return }
-            guard abs(offset - native.contentOffsetY) >= 0.5 else { self.pending = nil; return }
-            target = .offset((offset * 2).rounded() / 2)
+            guard mode == .readingHistory, let anchor else { self.pending = nil; return }
+            if let offset = viewport.correctedOffset(for: anchor), let native = viewport.metrics {
+                guard abs(offset - native.contentOffsetY) >= 0.5 else { self.pending = nil; return }
+                target = .offset((offset * 2).rounded() / 2)
+            } else if let itemID = anchorFallbackItemID {
+                // ScrollViewProxy 不能在 UIViewRepresentable 的更新/布局回调内使用。
+                // 仍复用本控制器的合并任务，等本轮 SwiftUI 更新结束后再找回行。
+                guard allowProxyScroll else { schedulePending(); return }
+                // 整页前插可能回收所有旧候选。只按稳定行 ID 找回一次，等消息原生
+                // 标记重新绑定后再精确保位，避免 contentSize 估算引入新的反馈循环。
+                anchorFallbackItemID = nil
+                target = .anchorItem(itemID)
+            } else {
+                self.pending = nil
+                return
+            }
             animated = false
             reason = .historyAnchor
         case let .item(id):
+            guard allowProxyScroll else { schedulePending(); return }
             target = .item(id)
             animated = false
             reason = .expansion
@@ -452,6 +484,8 @@ final class ConversationTimelineScrollController {
             ConversationScrollDiagnostics.shared.record("scroll_anchor", "from=\(Int(viewport.metrics?.contentOffsetY ?? current.contentOffsetY)) to=\(Int(offset)) generation=\(inputGeneration)")
         case .item:
             ConversationScrollDiagnostics.shared.record("scroll_expansion")
+        case .anchorItem:
+            ConversationScrollDiagnostics.shared.record("scroll_anchor_item")
         }
         execute(ConversationTimelineScrollCommand(target: target, animated: animated))
         // List 本来已在尾部时 scrollTo 不一定产生新回调；已有几何也必须能完成交接。

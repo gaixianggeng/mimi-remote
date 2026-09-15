@@ -69,6 +69,77 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(rig.controller.viewport.correctedOffset(for: anchor)), 460)
     }
 
+    func testPrependingHistoryKeepsPositionWhenVisibleCellsAreRecycled() async throws {
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        rig.controller.beginLoadingEarlierHistory()
+        rig.report(offset: 0)
+        let marker = rig.addMarker(y: 100, id: rig.messages[0].id)
+        rig.publish(changes: .historyPrepend)
+        // 顶部插入整页后，List 可能先回收所有旧可见 cell，再按新 offset 实例化它们。
+        marker.removeFromSuperview()
+        rig.report(offset: 0, height: 5_000)
+        await drain()
+        XCTAssertEqual(rig.commands.map(\.target), [.anchorItem(rig.snapshot.rowIDs[0])])
+        // 模拟 scrollTo 重新实例化旧消息。之后只按它的实际 frame 纠正位置。
+        _ = rig.addMarker(y: 3_100, id: rig.messages[0].id)
+        await drain()
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 3_000, accuracy: 0.5)
+        XCTAssertTrue(rig.commands.allSatisfy { $0.target != .tail })
+
+        // 同一布局的 offset 回写不能把用户下一次上滑拉回去。
+        rig.controller.phaseChanged(.tracking)
+        rig.report(offset: 2_800, height: 5_000)
+        rig.controller.phaseChanged(.idle)
+        let commandCount = rig.commands.count
+        rig.report(offset: 2_800, height: 5_000)
+        await drain()
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 2_800)
+        XCTAssertEqual(rig.commands.count, commandCount)
+    }
+
+    func testReusedNativeMarkerCannotStandInForAnOldMessage() throws {
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        let marker = rig.addMarker()
+        let anchor = try XCTUnwrap(rig.controller.viewport.captureVisibleAnchor())
+        rig.controller.viewport.bindAnchorView([UUID()], marker)
+        XCTAssertNil(rig.controller.viewport.correctedOffset(for: anchor))
+    }
+
+    func testHiddenNativeCellCannotStandInForAnOldMessage() throws {
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        let marker = rig.addMarker()
+        let anchor = try XCTUnwrap(rig.controller.viewport.captureVisibleAnchor())
+        let hiddenCell = UIView(frame: marker.frame)
+        rig.scrollView.addSubview(hiddenCell)
+        hiddenCell.addSubview(marker)
+        hiddenCell.isHidden = true
+        XCTAssertTrue(marker.isDescendant(of: rig.scrollView))
+        XCTAssertNil(rig.controller.viewport.correctedOffset(for: anchor))
+    }
+
+    func testRebindingSharedMarkerKeepsMessagesAlreadyMovedToAnotherView() throws {
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        let shared = rig.addMarker()
+        let retainedID = UUID()
+        rig.controller.viewport.bindAnchorView([rig.markerID, retainedID], shared)
+        rig.controller.recordAnchorFrame([rig.markerID, retainedID], shared.convert(shared.bounds, to: nil))
+        let anchor = try XCTUnwrap(rig.controller.viewport.captureVisibleAnchor())
+        let inner = rig.addMarker(y: 1_360)
+        rig.scrollView.contentSize.height += 60
+        rig.controller.viewport.bindAnchorView([rig.markerID], inner)
+        // 旧外层随后复用，只能撤销仍归它所有的 UUID，不能抹掉已迁入内层的绑定。
+        rig.controller.viewport.bindAnchorView([retainedID], shared)
+        XCTAssertEqual(try XCTUnwrap(rig.controller.viewport.correctedOffset(for: anchor)), 1_260)
+    }
+
     func testPreservationExpiresWithoutFurtherScrollWrites() async throws {
         let rig = ScrollRig()
         let window = try mount(rig.scrollView)
@@ -338,7 +409,7 @@ private final class ScrollRig {
             switch command.target {
             case .tail: scrollView.contentOffset.y = scrollView.contentSize.height - scrollView.bounds.height
             case let .offset(offset): scrollView.contentOffset.y = offset
-            case .item: break
+            case .item, .anchorItem: break
             }
             controller.geometryChanged(
                 metrics(offset: scrollView.contentOffset.y, height: scrollView.contentSize.height),
@@ -361,10 +432,10 @@ private final class ScrollRig {
     }
 
     @discardableResult
-    func addMarker(y: CGFloat = 1_300) -> UIView {
+    func addMarker(y: CGFloat = 1_300, id explicitID: UUID? = nil) -> UIView {
         let marker = UIView(frame: CGRect(x: 0, y: y, width: 300, height: 40))
         scrollView.addSubview(marker)
-        let id = y == 1_300 ? markerID : UUID()
+        let id = explicitID ?? (y == 1_300 ? markerID : UUID())
         controller.viewport.bindAnchorView([id], marker)
         controller.recordAnchorFrame([id], marker.convert(marker.bounds, to: nil))
         return marker

@@ -50,6 +50,11 @@ final class ConversationTimelineViewport {
     }
 
     func bindAnchorView(_ messageIDs: [UUID], _ view: UIView) {
+        // List 会复用同一个原生标记展示另一条消息。旧 UUID 不能继续读取这块
+        // UIView 的新 frame；保留空注册，避免退回异步缓存的旧几何。
+        for (id, registered) in views where registered.value === view && !messageIDs.contains(id) {
+            views[id] = WeakView(value: nil)
+        }
         for id in messageIDs {
             views[id] = WeakView(value: view)
 #if DEBUG
@@ -150,6 +155,13 @@ final class ConversationTimelineViewport {
         if let registered = views[id] {
             guard let view = registered.value, let scrollView,
                   view.isDescendant(of: scrollView), !view.bounds.isEmpty else { return nil }
+            // List 会把已回收的 cell 隐藏后继续留在层级里。它的 frame 已不代表
+            // 对应消息，不能用来抵消前插，也不能回退到旧的异步几何。
+            var ancestor: UIView? = view
+            while let current = ancestor, current !== scrollView {
+                guard !current.isHidden, current.alpha > 0.01 else { return nil }
+                ancestor = current.superview
+            }
             return view.convert(view.bounds, to: nil)
         }
         return frames[id]

@@ -16,6 +16,28 @@ final class ConversationTimelineRuntimeRegressionTests: XCTestCase {
         try await assertRuntimeTimelineUserResults(provider: .claude)
     }
 
+    func testCodexLoadingEarlierHistoryKeepsTopMessageInPlace() async throws {
+        try await assertLoadingEarlierHistoryKeepsTopMessageInPlace(provider: .codex)
+    }
+
+    func testClaudeLoadingEarlierHistoryKeepsTopMessageInPlace() async throws {
+        try await assertLoadingEarlierHistoryKeepsTopMessageInPlace(provider: .claude)
+    }
+
+    func testCodexLoadingEarlierHistoryKeepsTopMessageInPlaceWhenMorePagesRemain() async throws {
+        try await assertLoadingEarlierHistoryKeepsTopMessageInPlace(
+            provider: .codex,
+            pageHasMoreBefore: true
+        )
+    }
+
+    func testClaudeLoadingEarlierHistoryKeepsTopMessageInPlaceWhenMorePagesRemain() async throws {
+        try await assertLoadingEarlierHistoryKeepsTopMessageInPlace(
+            provider: .claude,
+            pageHasMoreBefore: true
+        )
+    }
+
     private func assertRuntimeTimelineUserResults(provider: TimelineRuntimeProviderFixture) async throws {
         ConversationScrollDiagnostics.shared.start()
         defer { ConversationScrollDiagnostics.shared.stop() }
@@ -114,7 +136,204 @@ final class ConversationTimelineRuntimeRegressionTests: XCTestCase {
         )
     }
 
-    private func makeFixture(provider: TimelineRuntimeProviderFixture) throws -> TimelineRuntimeFixture {
+    private func assertLoadingEarlierHistoryKeepsTopMessageInPlace(
+        provider: TimelineRuntimeProviderFixture,
+        pageHasMoreBefore: Bool = false
+    ) async throws {
+        ConversationScrollDiagnostics.shared.start()
+        let commandRecorder = TimelineRuntimeCommandRecorder()
+        ConversationTimelineScrollController.testingCommandObserver = { commandRecorder.append($0) }
+        defer {
+            ConversationScrollDiagnostics.shared.stop()
+            ConversationTimelineScrollController.testingCommandObserver = nil
+            ConversationTimelineViewport.testingSelectionObserver = nil
+            ConversationTimelineViewport.testingViewObserver = nil
+        }
+        let fixture = try makeFixture(provider: provider, hasEarlierHistory: true)
+        defer { fixture.tearDown() }
+
+        let scrollView = try await waitForFirstReadableTail(in: fixture.host.view, provider: provider)
+        let originalMessage = try XCTUnwrap(
+            fixture.conversationStore.messages(for: fixture.primarySessionID).first {
+                $0.timelineOrdinal == 0
+            }
+        )
+        await scrollToTopAsUser(scrollView)
+        for _ in 0..<16 {
+            fixture.host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        let originalView = try XCTUnwrap(
+            fixture.markerViews.object(forKey: originalMessage.id as NSUUID),
+            "\(provider.label) 顶部第一条原消息必须已实例化"
+        )
+        let visibleFrame = scrollView.convert(scrollView.bounds, to: nil)
+        let baselineFrame = originalView.convert(originalView.bounds, to: nil)
+        XCTAssertTrue(isViewEffectivelyVisible(originalView, within: scrollView))
+        XCTAssertTrue(baselineFrame.intersects(visibleFrame))
+        XCTAssertTrue(fixture.sessionStore.canLoadEarlierHistory(sessionID: fixture.primarySessionID))
+
+        var selectedAnchor: (id: UUID, frame: CGRect)?
+        ConversationTimelineViewport.testingSelectionObserver = { selectedAnchor = ($0, $1) }
+        let loadTask = Task { @MainActor in
+            await fixture.sessionStore.loadEarlierHistory(sessionID: fixture.primarySessionID)
+        }
+        await fixture.client.waitForHistoryRequestCount(1)
+        XCTAssertTrue(fixture.sessionStore.isLoadingEarlierHistory(sessionID: fixture.primarySessionID))
+        XCTAssertNotNil(fixture.sessionStore.historyLoadProgress(sessionID: fixture.primarySessionID))
+
+        // 加载按钮只建立阅读意图。锚点必须在旧页真正发布时捕获，不能依赖 250ms 临时事务。
+        for _ in 0..<24 {
+            fixture.host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        XCTAssertNil(selectedAnchor, "\(provider.label) 网络等待期间不应提前捕获分页锚点")
+        XCTAssertEqual(
+            originalView.convert(originalView.bounds, to: nil).minY,
+            baselineFrame.minY,
+            accuracy: 6
+        )
+
+        fixture.client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(
+                messages: fixture.messages(range: -60..<0, lineCount: 3),
+                previousCursor: pageHasMoreBefore ? "timeline-runtime-\(provider.rawValue)-oldest" : nil,
+                hasMoreBefore: pageHasMoreBefore
+            )
+        )
+        await loadTask.value
+
+        let deadline = Date().addingTimeInterval(4)
+        var preservedFrame: CGRect?
+        repeat {
+            fixture.host.view.layoutIfNeeded()
+            if selectedAnchor != nil,
+               let currentView = fixture.markerViews.object(forKey: originalMessage.id as NSUUID),
+               isViewEffectivelyVisible(currentView, within: scrollView) {
+                let frame = currentView.convert(currentView.bounds, to: nil)
+                if abs(frame.minY - baselineFrame.minY) <= 6 {
+                    preservedFrame = frame
+                    break
+                }
+            }
+            try await Task.sleep(for: .milliseconds(16))
+        } while Date() < deadline
+
+        let currentOriginalView = fixture.markerViews.object(forKey: originalMessage.id as NSUUID)
+        let currentOriginalState: String
+        if let currentOriginalView {
+            currentOriginalState = "descendant=\(currentOriginalView.isDescendant(of: scrollView)) "
+                + "minY=\(currentOriginalView.convert(currentOriginalView.bounds, to: nil).minY)"
+        } else {
+            currentOriginalState = "nativeView=nil"
+        }
+        let selectedAnchorState = selectedAnchor.map {
+            "id=\($0.id.uuidString) frame=\($0.frame)"
+        } ?? "nil"
+        let currentMessages = fixture.conversationStore.messages(for: fixture.primarySessionID)
+        let originalIndex = currentMessages.firstIndex { $0.id == originalMessage.id }
+        let leadingOrdinals = currentMessages.prefix(8).map {
+            String(describing: $0.timelineOrdinal)
+        }.joined(separator: ",")
+        var ancestorDescriptions: [String] = []
+        var nearestCell: UICollectionViewCell?
+        var ancestor = currentOriginalView
+        while let view = ancestor {
+            if nearestCell == nil, let cell = view as? UICollectionViewCell {
+                nearestCell = cell
+            }
+            ancestorDescriptions.append(
+                "\(String(describing: type(of: view))) hidden=\(view.isHidden) alpha=\(view.alpha) frame=\(view.frame)"
+            )
+            if view === scrollView { break }
+            ancestor = view.superview
+        }
+        let nearestCellState: String
+        if let nearestCell, let collectionView = scrollView as? UICollectionView {
+            nearestCellState = "\(String(describing: type(of: nearestCell))) "
+                + "inVisibleCells=\(collectionView.visibleCells.contains { $0 === nearestCell })"
+        } else {
+            nearestCellState = "nil-or-scrollView-not-UICollectionView"
+        }
+        let failureEvidence = """
+        selectedAnchor=\(selectedAnchorState)
+        originalID=\(originalMessage.id.uuidString) baselineFrame=\(baselineFrame)
+        currentOriginal=\(currentOriginalState)
+        storeOriginalIndex=\(originalIndex.map(String.init) ?? "nil") messageCount=\(currentMessages.count) leadingOrdinals=\(leadingOrdinals)
+        originalAncestorChain:
+        \(ancestorDescriptions.joined(separator: "\n"))
+        nearestCollectionCell=\(nearestCellState)
+        nativeScroll=offset:\(scrollView.contentOffset.y) height:\(scrollView.contentSize.height) minimum:\(-scrollView.adjustedContentInset.top)
+        diagnostics:
+        \(ConversationScrollDiagnostics.shared.export())
+        """
+        let finalFrame = try XCTUnwrap(
+            preservedFrame,
+            "\(provider.label) 前插多个屏幕的历史后，原消息仍须留在原屏幕位置\n\(failureEvidence)"
+        )
+        XCTAssertEqual(finalFrame.minY, baselineFrame.minY, accuracy: 6)
+        XCTAssertNotNil(selectedAnchor, "\(provider.label) 发布 prepend 前必须捕获可见消息")
+        for _ in 0..<20 {
+            fixture.host.view.layoutIfNeeded()
+            let currentView = try XCTUnwrap(
+                fixture.markerViews.object(forKey: originalMessage.id as NSUUID),
+                "\(provider.label) prepend 稳定期间原消息不能被回收"
+            )
+            XCTAssertTrue(isViewEffectivelyVisible(currentView, within: scrollView))
+            XCTAssertEqual(
+                currentView.convert(currentView.bounds, to: nil).minY,
+                baselineFrame.minY,
+                accuracy: 6,
+                "\(provider.label) prepend 后原消息必须连续稳定 20 帧"
+            )
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        var anchorItemCountByInput: [Int: Int] = [:]
+        for record in commandRecorder.records where record.scope.sessionID == fixture.primarySessionID {
+            if case .anchorItem = record.target {
+                anchorItemCountByInput[record.inputGeneration, default: 0] += 1
+            }
+        }
+        XCTAssertTrue(
+            anchorItemCountByInput.values.allSatisfy { $0 <= 1 },
+            "\(provider.label) 每个分页输入最多只能执行一次 row bootstrap：\(anchorItemCountByInput)"
+        )
+        XCTAssertFalse(fixture.sessionStore.isLoadingEarlierHistory(sessionID: fixture.primarySessionID))
+        XCTAssertEqual(
+            fixture.sessionStore.canLoadEarlierHistory(sessionID: fixture.primarySessionID),
+            pageHasMoreBefore
+        )
+
+        let oldestMessage = try XCTUnwrap(
+            fixture.conversationStore.messages(for: fixture.primarySessionID).first {
+                $0.timelineOrdinal == -60
+            }
+        )
+        let offsetBeforeManualScroll = scrollView.contentOffset.y
+        await scrollToTopAsUser(scrollView)
+        var oldestFrame: CGRect?
+        let scrollDeadline = Date().addingTimeInterval(4)
+        repeat {
+            fixture.host.view.layoutIfNeeded()
+            if let view = fixture.markerViews.object(forKey: oldestMessage.id as NSUUID),
+               isViewEffectivelyVisible(view, within: scrollView) {
+                let frame = view.convert(view.bounds, to: nil)
+                if frame.intersects(scrollView.convert(scrollView.bounds, to: nil)) {
+                    oldestFrame = frame
+                    break
+                }
+            }
+            try await Task.sleep(for: .milliseconds(16))
+        } while Date() < scrollDeadline
+        XCTAssertLessThan(scrollView.contentOffset.y, offsetBeforeManualScroll - 200)
+        XCTAssertNotNil(oldestFrame, "\(provider.label) 用户继续上滑后必须能看到新加载的旧消息")
+    }
+
+    private func makeFixture(
+        provider: TimelineRuntimeProviderFixture,
+        hasEarlierHistory: Bool = false
+    ) throws -> TimelineRuntimeFixture {
         let appStore = makeIsolatedAppStore()
         let conversationStore = ConversationStore()
         conversationStore.activate(profileID: appStore.activeHostScope.profileID)
@@ -146,17 +365,36 @@ final class ConversationTimelineRuntimeRegressionTests: XCTestCase {
             primarySessionID: primarySessionID,
             replacementSessionID: replacementSessionID,
             conversationStore: conversationStore,
-            sessionStore: sessionStore
+            sessionStore: sessionStore,
+            client: client
         )
         conversationStore.setHistory(fixture.messages(range: 0..<72, lineCount: 3), sessionID: primarySessionID)
         conversationStore.setHistory(fixture.messages(range: 100..<172, lineCount: 3), sessionID: replacementSessionID)
         sessionStore.historyLoadedQualityBySessionID[primarySessionID] = .full
         sessionStore.historyLoadedQualityBySessionID[replacementSessionID] = .full
+        if hasEarlierHistory {
+            let cursor = "timeline-runtime-\(provider.rawValue)-older"
+            sessionStore.historyPreviousCursorBySessionID[primarySessionID] = cursor
+            sessionStore.historyHasMoreBeforeBySessionID[primarySessionID] = true
+            sessionStore.historySeenPreviousCursorsBySessionID[primarySessionID] = [cursor]
+        }
         ConversationTimelineViewport.testingViewObserver = { [weak fixture] id, view in
             fixture?.markerViews.setObject(view, forKey: id as NSUUID)
         }
         fixture.mount()
         return fixture
+    }
+
+    private func scrollToTopAsUser(_ scrollView: UIScrollView) async {
+        let minimumOffsetY = -scrollView.adjustedContentInset.top
+        scrollView.delegate?.scrollViewWillBeginDragging?(scrollView)
+        await Task.yield()
+        scrollView.setContentOffset(
+            CGPoint(x: scrollView.contentOffset.x, y: minimumOffsetY),
+            animated: false
+        )
+        scrollView.delegate?.scrollViewDidScroll?(scrollView)
+        scrollView.delegate?.scrollViewDidEndDragging?(scrollView, willDecelerate: false)
     }
 
     private func waitForFirstReadableTail(
@@ -388,6 +626,8 @@ final class ConversationTimelineRuntimeRegressionTests: XCTestCase {
                 target = "offset:\((value * 2).rounded() / 2)"
             case let .item(id):
                 target = "item:\(id)"
+            case let .anchorItem(id):
+                target = "anchor_item:\(id)"
             }
             let fingerprint = [
                 record.scope.profileID, record.scope.sessionID,
@@ -446,6 +686,7 @@ private final class TimelineRuntimeFixture {
     let replacementSessionID: SessionID
     let conversationStore: ConversationStore
     let sessionStore: SessionStore
+    let client: OrderedHistoryPageClient
     let host: UIHostingController<AnyView>
     private let themeSuiteName: String
     private let themeDefaults: UserDefaults
@@ -456,13 +697,15 @@ private final class TimelineRuntimeFixture {
         primarySessionID: SessionID,
         replacementSessionID: SessionID,
         conversationStore: ConversationStore,
-        sessionStore: SessionStore
+        sessionStore: SessionStore,
+        client: OrderedHistoryPageClient
     ) {
         self.provider = provider
         self.primarySessionID = primarySessionID
         self.replacementSessionID = replacementSessionID
         self.conversationStore = conversationStore
         self.sessionStore = sessionStore
+        self.client = client
         themeSuiteName = "TimelineRuntimeRegressionTests.\(provider.rawValue).\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: themeSuiteName) else {
             fatalError("无法创建时间线测试 UserDefaults")
