@@ -83,11 +83,15 @@ struct ConversationTimelineSnapshot {
 final class ConversationTimelineItemCache {
     private var keys: [ConversationTimelineCacheKey] = []
     private var cachedSnapshot = ConversationTimelineSnapshot.empty
+    private var cachedProvider: ConversationTimelineProvider?
+    private var cachedShowsDetailedTranscript = false
     private var deliveredVersions = ConversationTimelineSourceVersions()
     private var presentationRevision = 0
 
     func snapshot(
         from source: ConversationTimelineSourceSnapshot,
+        provider: ConversationTimelineProvider = .codex,
+        showsDetailedTranscript: Bool = false,
         suspendingUpdates: Bool = false
     ) -> ConversationTimelineSnapshot {
         let scopeChanged = cachedSnapshot.scope != source.scope
@@ -99,16 +103,22 @@ final class ConversationTimelineItemCache {
 
         let nextKeys = source.messages.map { ConversationTimelineCacheKey(message: $0) }
         let sourceChanged = source.versions != deliveredVersions
-        guard scopeChanged || sourceChanged || nextKeys != keys else {
+        let providerChanged = cachedProvider.map { $0 != provider } ?? false
+        let detailModeChanged = cachedShowsDetailedTranscript != showsDetailedTranscript
+        guard scopeChanged || sourceChanged || providerChanged || detailModeChanged || nextKeys != keys else {
             return cachedSnapshot
         }
 
         let previousKeys = keys
-        let rowsChanged = scopeChanged || nextKeys != previousKeys
+        let rowsChanged = scopeChanged || providerChanged || detailModeChanged || nextKeys != previousKeys
         // 来源原因可能变化，但可渲染字段没有变化（例如折叠命令的隐藏输出进度）。
         // 此时仍发布新 revision/reasons，但复用原投影，避免无意义地重建整条时间线。
         let nextRows = rowsChanged
-            ? ConversationTimelineItemBuilder.items(from: source.messages)
+            ? ConversationTimelineItemBuilder.items(
+                from: source.messages,
+                provider: provider,
+                showsDetailedTranscript: showsDetailedTranscript
+            )
             : cachedSnapshot.rows
         let nextRowIDs = rowsChanged ? nextRows.map(\.id) : cachedSnapshot.rowIDs
         let reasons: ConversationTimelineChangeReasons
@@ -122,6 +132,9 @@ final class ConversationTimelineItemCache {
         } else {
             reasons = source.versions.changes(since: deliveredVersions)
         }
+        let presentationReasons = providerChanged || detailModeChanged
+            ? reasons.union(.historyReplacement)
+            : reasons
         let lastMessage = source.messages.last
         let tail = lastMessage.map { message in
             ConversationTimelineTailDescriptor(
@@ -136,6 +149,8 @@ final class ConversationTimelineItemCache {
         }
 
         keys = nextKeys
+        cachedProvider = provider
+        cachedShowsDetailedTranscript = showsDetailedTranscript
         deliveredVersions = source.versions
         presentationRevision = scopeChanged ? 1 : presentationRevision + 1
         cachedSnapshot = ConversationTimelineSnapshot(
@@ -143,7 +158,7 @@ final class ConversationTimelineItemCache {
             rows: nextRows,
             rowIDs: nextRowIDs,
             tail: tail,
-            changes: reasons.isEmpty && nextKeys != previousKeys ? .live : reasons,
+            changes: presentationReasons.isEmpty && rowsChanged ? .live : presentationReasons,
             revision: presentationRevision
         )
         return cachedSnapshot
@@ -152,6 +167,8 @@ final class ConversationTimelineItemCache {
     /// 纯 builder/cache 测试入口。业务 UI 应使用带 Store 来源版本的重载。
     func snapshot(
         from messages: [ConversationMessage],
+        provider: ConversationTimelineProvider = .codex,
+        showsDetailedTranscript: Bool = false,
         suspendingUpdates: Bool = false,
         scope: ScopedSessionID? = nil
     ) -> ConversationTimelineSnapshot {
@@ -162,6 +179,8 @@ final class ConversationTimelineItemCache {
                 messages: messages,
                 versions: .init()
             ),
+            provider: provider,
+            showsDetailedTranscript: showsDetailedTranscript,
             suspendingUpdates: suspendingUpdates
         )
     }

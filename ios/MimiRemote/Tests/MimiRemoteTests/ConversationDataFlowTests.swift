@@ -1745,7 +1745,7 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(Set([first, second]).count, 2)
     }
 
-    func testTimelineBuilderCollapsesProcessMessagesBeforeCompletedAssistant() throws {
+    func testTimelineBuilderKeepsActivitiesBeforeCompletedAssistant() throws {
         let base = Date(timeIntervalSince1970: 1_000)
         let user = ConversationMessage(
             stableID: "user-1",
@@ -1781,7 +1781,7 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .confirmed
         )
 
-        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [user, command, diff, assistant]))
+        let items = ConversationTimelineItemBuilder.items(from: [user, command, diff, assistant])
 
         XCTAssertEqual(items.count, 4)
         if case .message(let first) = items[0] {
@@ -1789,10 +1789,10 @@ final class ConversationDataFlowTests: XCTestCase {
         } else {
             XCTFail("用户消息不应被折叠")
         }
-        guard case .activityBatch(let visibleCommands) = items[1] else {
-            return XCTFail("真实命令应进入活动批次")
+        guard case .activity(let visibleCommand) = items[1] else {
+            return XCTFail("真实命令应保持独立活动行")
         }
-        XCTAssertEqual(visibleCommands.messages.first?.content, "命令：xcodebuild test")
+        XCTAssertEqual(visibleCommand.content, "命令：xcodebuild test")
         guard case .activity(let visibleDiff) = items[2] else {
             return XCTFail("文件变更应作为独立进度行")
         }
@@ -1805,7 +1805,7 @@ final class ConversationDataFlowTests: XCTestCase {
         }
     }
 
-    func testTimelineBuilderKeepsProcessGroupSeparateFromDifferentTurn() {
+    func testTimelineBuilderKeepsActivitySeparateFromDifferentTurn() {
         let base = Date(timeIntervalSince1970: 1_500)
         let command = ConversationMessage(
             stableID: "cmd-other-turn",
@@ -1825,11 +1825,11 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .confirmed
         )
 
-        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [command, assistant]))
+        let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
 
         XCTAssertEqual(items.count, 2)
-        if case .activityBatch(let activity) = items[0] {
-            XCTAssertEqual(activity.messages.first?.turnID, "turn-a")
+        if case .activity(let activity) = items[0] {
+            XCTAssertEqual(activity.turnID, "turn-a")
         } else {
             XCTFail("过程消息应保持独立，不得并入另一个 turn 的 assistant")
         }
@@ -1840,7 +1840,7 @@ final class ConversationDataFlowTests: XCTestCase {
         }
     }
 
-    func testTimelineBuilderKeepsLateProcessMessagesInSourceOrder() throws {
+    func testTimelineBuilderKeepsLateActivitiesInSourceOrder() throws {
         let base = Date(timeIntervalSince1970: 1_700)
         let user = ConversationMessage(
             stableID: "user-late-process",
@@ -1867,7 +1867,7 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .confirmed
         )
 
-        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [user, assistant, diff]))
+        let items = ConversationTimelineItemBuilder.items(from: [user, assistant, diff])
 
         XCTAssertEqual(items.count, 3)
         if case .message(let first) = items[0] {
@@ -1886,7 +1886,7 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(visibleDiff.content, "文件变更：README.md modified")
     }
 
-    func testTimelineBuilderCollapsesProcessMessagesWhileAssistantIsStreaming() {
+    func testTimelineBuilderKeepsActivityVisibleWhileAssistantIsStreaming() {
         let base = Date(timeIntervalSince1970: 2_000)
         let command = ConversationMessage(
             stableID: "cmd-streaming",
@@ -1906,21 +1906,20 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .sending
         )
 
-        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [command, assistant]))
+        let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
 
         XCTAssertEqual(items.count, 2)
-        guard case .activityBatch(let visibleCommands) = items[0] else {
-            return XCTFail("运行中的真实命令应进入活动批次")
+        guard case .activity(let visibleCommand) = items[0] else {
+            return XCTFail("运行中的真实命令应保持独立活动行")
         }
-        XCTAssertEqual(visibleCommands.messages.first?.kind, .commandSummary)
-        XCTAssertEqual(visibleCommands.status, .running)
+        XCTAssertEqual(visibleCommand.kind, .commandSummary)
         guard case .message(let streamingAssistant) = items[1] else {
             return XCTFail("assistant streaming 内容仍应直接展示")
         }
         XCTAssertEqual(streamingAssistant.sendStatus, .sending)
     }
 
-    func testTimelineBuilderCoalescesConsecutiveCommandsAndKeepsStableID() throws {
+    func testTimelineBuilderGroupsAdjacentExplorationAndKeepsStableID() throws {
         let base = Date(timeIntervalSince1970: 2_100)
         let read = ConversationMessage(
             stableID: "read-active",
@@ -1979,27 +1978,32 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .confirmed
         )
 
-        let activeItems = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [read, search, build]))
-        XCTAssertEqual(activeItems.count, 1)
+        let activeItems = ConversationTimelineItemBuilder.items(from: [read, search, build])
+        XCTAssertEqual(activeItems.count, 2)
         let activeGroup: ConversationActivityBatch
         if case .activityBatch(let group) = activeItems[0] {
             activeGroup = group
         } else {
             return XCTFail("连续命令应合并为单行活动进度")
         }
-        XCTAssertEqual(activeGroup.messages.count, 3)
-        XCTAssertEqual(activeGroup.kind, .execution, "混合探索和真实执行时使用更稳妥的执行语义")
+        XCTAssertEqual(activeGroup.messages.count, 2)
+        XCTAssertEqual(activeGroup.kind, .exploration)
         XCTAssertEqual(activeGroup.status, .running)
+        guard case .activity(let visibleBuild) = activeItems[1] else {
+            return XCTFail("普通执行命令不能并入探索摘要")
+        }
+        XCTAssertEqual(visibleBuild.stableID, "build-active")
 
-        let completedItems = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [read, search, build, assistant]))
+        let completedItems = ConversationTimelineItemBuilder.items(from: [read, search, build, assistant])
         guard case .activityBatch(let completedGroup) = completedItems[0] else {
             return XCTFail("完成后仍应保留活动进度行")
         }
         XCTAssertEqual(completedGroup.id, activeGroup.id)
         XCTAssertEqual(completedGroup.status, .completed)
+        XCTAssertEqual(completedItems.count, 3)
     }
 
-    func testTimelineBuilderCompactsCommandBurstsAroundCommentary() {
+    func testTimelineBuilderKeepsExecutionCommandsAroundCommentary() {
         let turnID = "turn-command-bursts"
         func command(_ index: Int) -> ConversationMessage {
             ConversationMessage(
@@ -2030,23 +2034,18 @@ final class ConversationDataFlowTests: XCTestCase {
         )
         let messages = Array((0..<12).map(command)) + [commentary] + Array((12..<20).map(command))
 
-        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: messages))
+        let items = ConversationTimelineItemBuilder.items(from: messages)
 
-        XCTAssertEqual(items.count, 3, "20 条命令只应形成 commentary 前后的两个稳定活动批次")
-        guard case .activityBatch(let firstBatch) = items[0],
-              case .message(let visibleCommentary) = items[1],
-              case .activityBatch(let secondBatch) = items[2]
-        else {
-            return XCTFail("命令批次与 commentary 必须保持原始顺序")
+        XCTAssertEqual(items.count, 21, "普通执行命令必须逐条保留")
+        guard case .message(let visibleCommentary) = items[12] else {
+            return XCTFail("commentary 必须保持原始顺序")
         }
-        XCTAssertEqual(firstBatch.messages.count, 12)
-        XCTAssertEqual(firstBatch.status, .completed)
+        XCTAssertTrue(items[..<12].allSatisfy { if case .activity = $0 { return true }; return false })
         XCTAssertEqual(visibleCommentary.kind, .commentary)
-        XCTAssertEqual(secondBatch.messages.count, 8)
-        XCTAssertEqual(secondBatch.status, .running)
+        XCTAssertTrue(items[13...].allSatisfy { if case .activity = $0 { return true }; return false })
     }
 
-    func testCommentaryClosesPreviousCommandBatchWhileTurnContinues() {
+    func testCommentaryPreservesPreviousCommandBoundaryWhileTurnContinues() {
         let turnID = "turn-commentary-boundary"
         let command = ConversationMessage(
             stableID: "command-before-commentary",
@@ -2074,13 +2073,12 @@ final class ConversationDataFlowTests: XCTestCase {
             turnLifecycle: .inProgress
         )
 
-        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [command, commentary]))
+        let items = ConversationTimelineItemBuilder.items(from: [command, commentary])
 
         XCTAssertEqual(items.count, 2)
-        guard case .activityBatch(let batch) = items[0], case .message = items[1] else {
+        guard case .activity = items[0], case .message = items[1] else {
             return XCTFail("commentary 必须保留在批次后方")
         }
-        XCTAssertEqual(batch.status, .completed)
     }
 
     func testActivityBatchUsesWeakFailureUntilTurnFails() {
@@ -2098,7 +2096,7 @@ final class ConversationDataFlowTests: XCTestCase {
                 status: "failed",
                 command: "missing-command",
                 exitCode: 127,
-                commandPresentationKind: .execution
+                commandPresentationKind: .exploration
             ),
             turnLifecycle: .inProgress
         )
@@ -2115,12 +2113,12 @@ final class ConversationDataFlowTests: XCTestCase {
                 status: "completed",
                 command: "working-command",
                 exitCode: 0,
-                commandPresentationKind: .execution
+                commandPresentationKind: .exploration
             ),
             turnLifecycle: .inProgress
         )
 
-        let runningItems = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [first, second]))
+        let runningItems = ConversationTimelineItemBuilder.items(from: [first, second])
         guard case .activityBatch(let runningBatch) = runningItems.first else {
             return XCTFail("恢复过程应显示为活动批次")
         }
@@ -2132,7 +2130,7 @@ final class ConversationDataFlowTests: XCTestCase {
             next.turnLifecycle = .completed
             return next
         }
-        guard case .activityBatch(let completedBatch) = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: completedMessages)).first else {
+        guard case .activityBatch(let completedBatch) = ConversationTimelineItemBuilder.items(from: completedMessages).first else {
             return XCTFail("恢复成功后仍应保留活动批次")
         }
         XCTAssertEqual(completedBatch.id, runningBatch.id)
@@ -2144,7 +2142,7 @@ final class ConversationDataFlowTests: XCTestCase {
             next.turnLifecycle = .failed
             return next
         }
-        guard case .activityBatch(let failedBatch) = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: failedMessages)).first else {
+        guard case .activityBatch(let failedBatch) = ConversationTimelineItemBuilder.items(from: failedMessages).first else {
             return XCTFail("turn 失败后仍应保留活动批次")
         }
         XCTAssertEqual(failedBatch.status, .failed)
@@ -2154,7 +2152,7 @@ final class ConversationDataFlowTests: XCTestCase {
             next.turnLifecycle = .interrupted
             return next
         }
-        guard case .activityBatch(let interruptedBatch) = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: interruptedMessages)).first else {
+        guard case .activityBatch(let interruptedBatch) = ConversationTimelineItemBuilder.items(from: interruptedMessages).first else {
             return XCTFail("turn 中断后仍应保留活动批次")
         }
         XCTAssertEqual(interruptedBatch.status, .interrupted)
@@ -2260,16 +2258,16 @@ final class ConversationDataFlowTests: XCTestCase {
             )
         )
 
-        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [first, second]))
+        let items = ConversationTimelineItemBuilder.items(from: [first, second])
 
         XCTAssertEqual(items.count, 2)
-        guard case .activityBatch(let firstGroup) = items[0],
-              case .activityBatch(let secondGroup) = items[1]
+        guard case .activity(let firstGroup) = items[0],
+              case .activity(let secondGroup) = items[1]
         else {
             return XCTFail("不同 turn 的探索必须保留各自的时间线身份")
         }
-        XCTAssertEqual(firstGroup.messages.map(\.turnID), ["turn-a"])
-        XCTAssertEqual(secondGroup.messages.map(\.turnID), ["turn-b"])
+        XCTAssertEqual(firstGroup.turnID, "turn-a")
+        XCTAssertEqual(secondGroup.turnID, "turn-b")
         XCTAssertNotEqual(firstGroup.id, secondGroup.id)
     }
 
@@ -2294,7 +2292,7 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .confirmed
         )
 
-        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [pending, submitted]))
+        let items = ConversationTimelineItemBuilder.items(from: [pending, submitted])
 
         XCTAssertEqual(items.count, 2)
         guard case .message(let visiblePending) = items[0] else {
@@ -2336,14 +2334,14 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .sending
         )
 
-        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [command, approval, assistant]))
+        let items = ConversationTimelineItemBuilder.items(from: [command, approval, assistant])
 
         // 命令、审批和 streaming assistant 都直接可见；审批仍然保留交互卡片。
         XCTAssertEqual(items.count, 3)
-        guard case .activityBatch(let visibleCommands) = items[0] else {
-            return XCTFail("运行中的命令应进入活动批次")
+        guard case .activity(let visibleCommand) = items[0] else {
+            return XCTFail("运行中的命令应保持独立活动行")
         }
-        XCTAssertEqual(visibleCommands.messages.first?.kind, .commandSummary)
+        XCTAssertEqual(visibleCommand.kind, .commandSummary)
         guard case .message(let visibleApproval) = items[1] else {
             return XCTFail("运行中的审批必须保持可见可操作")
         }
@@ -2354,7 +2352,7 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(streamingAssistant.sendStatus, .sending)
     }
 
-    func testTimelineBuilderCollapsesProcessMessagesButKeepsFailedAssistantVisible() {
+    func testTimelineBuilderKeepsActivityAndFailedAssistantVisible() {
         let base = Date(timeIntervalSince1970: 2_500)
         let command = ConversationMessage(
             stableID: "cmd-failed",
@@ -2374,21 +2372,20 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .failed
         )
 
-        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [command, assistant]))
+        let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
 
         XCTAssertEqual(items.count, 2)
-        guard case .activityBatch(let failedCommands) = items[0] else {
-            return XCTFail("失败回合的命令仍应保留在活动批次")
+        guard case .activity(let failedCommand) = items[0] else {
+            return XCTFail("失败回合的命令仍应保留独立活动行")
         }
-        XCTAssertEqual(failedCommands.messages.first?.kind, .commandSummary)
-        XCTAssertEqual(failedCommands.status, .failed)
+        XCTAssertEqual(failedCommand.kind, .commandSummary)
         guard case .message(let failedAssistant) = items[1] else {
             return XCTFail("失败 assistant 必须直接可见")
         }
         XCTAssertEqual(failedAssistant.sendStatus, .failed)
     }
 
-    func testTimelineBuilderDoesNotHideErrorMessagesInsideProcessedGroup() {
+    func testTimelineBuilderKeepsErrorMessagesVisible() {
         let base = Date(timeIntervalSince1970: 3_000)
         let error = ConversationMessage(
             stableID: "error-1",
@@ -2406,7 +2403,7 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .confirmed
         )
 
-        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [error, assistant]))
+        let items = ConversationTimelineItemBuilder.items(from: [error, assistant])
 
         XCTAssertEqual(items.count, 2)
         if case .message(let first) = items[0] {
@@ -3856,30 +3853,6 @@ final class ConversationDataFlowTests: XCTestCase {
 
         sessionStore.removeComposerModelSelection(for: scope)
         XCTAssertNil(sessionStore.composerModelSelection(for: scope))
-    }
-
-    /// 这些旧回归专注验证第一遍 activity/process 聚合；外层 work-group 语义由
-    /// ConversationProcessGrouperTests 单独覆盖。展开 entry 后可继续锁住原有细节。
-    private func flattenWorkGroups(
-        _ items: [ConversationTimelineItem]
-    ) -> [ConversationTimelineItem] {
-        items.flatMap { item in
-            guard case .workGroup(let group) = item else {
-                return [item]
-            }
-            return group.entries.map { entry in
-                switch entry {
-                case .commentary(let message):
-                    return .message(message)
-                case .activity(let message):
-                    return .activity(message)
-                case .activityBatch(let batch):
-                    return .activityBatch(batch)
-                case .processGroup(let process):
-                    return .processGroup(process)
-                }
-            }
-        }
     }
 
 }

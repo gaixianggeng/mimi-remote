@@ -7,6 +7,8 @@ struct ConversationActivityBatchRow: View, Equatable {
     @Environment(\.colorScheme) private var colorScheme
     let group: ConversationActivityBatch
     let layout: ConversationLayout
+    let provider: ConversationTimelineProvider
+    let showsDetailedTranscript: Bool
     let isExpanded: Bool
     let expandedActivityIDs: Set<String>
     let toggleGroup: () -> Void
@@ -16,6 +18,8 @@ struct ConversationActivityBatchRow: View, Equatable {
     init(
         group: ConversationActivityBatch,
         layout: ConversationLayout,
+        provider: ConversationTimelineProvider = .codex,
+        showsDetailedTranscript: Bool = false,
         isExpanded: Bool,
         expandedActivityIDs: Set<String>,
         toggleGroup: @escaping () -> Void,
@@ -24,6 +28,8 @@ struct ConversationActivityBatchRow: View, Equatable {
     ) {
         self.group = group
         self.layout = layout
+        self.provider = provider
+        self.showsDetailedTranscript = showsDetailedTranscript
         self.isExpanded = isExpanded
         self.expandedActivityIDs = expandedActivityIDs
         self.toggleGroup = toggleGroup
@@ -39,6 +45,8 @@ struct ConversationActivityBatchRow: View, Equatable {
               lhs.group.latestDetail == rhs.group.latestDetail,
               lhs.group.failedCount == rhs.group.failedCount,
               lhs.layout == rhs.layout,
+              lhs.provider == rhs.provider,
+              lhs.showsDetailedTranscript == rhs.showsDetailedTranscript,
               lhs.isExpanded == rhs.isExpanded,
               lhs.expandedActivityIDs == rhs.expandedActivityIDs
         else {
@@ -66,7 +74,9 @@ struct ConversationActivityBatchRow: View, Equatable {
                             ConversationActivityRow(
                                 message: message,
                                 layout: layout,
-                                isExpanded: expandedActivityIDs.contains(
+                                provider: provider,
+                                showsDetailedTranscript: showsDetailedTranscript,
+                                isExpanded: showsDetailedTranscript || expandedActivityIDs.contains(
                                     ConversationTimelineItem.activityID(for: message)
                                 ),
                                 toggle: { toggleActivity(message) }
@@ -186,6 +196,8 @@ struct ConversationActivityRow: View, Equatable {
     @State private var historyOutputError: String?
     let message: ConversationMessage
     let layout: ConversationLayout
+    let provider: ConversationTimelineProvider
+    let showsDetailedTranscript: Bool
     let isExpanded: Bool
     let toggle: () -> Void
 
@@ -194,6 +206,8 @@ struct ConversationActivityRow: View, Equatable {
             && lhs.message.renderFingerprint == rhs.message.renderFingerprint
             && lhs.message.activityPayload == rhs.message.activityPayload
             && lhs.layout == rhs.layout
+            && lhs.provider == rhs.provider
+            && lhs.showsDetailedTranscript == rhs.showsDetailedTranscript
             && lhs.isExpanded == rhs.isExpanded
     }
 
@@ -215,7 +229,7 @@ struct ConversationActivityRow: View, Equatable {
     @ViewBuilder
     private var rowSurface: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if hasExpandableDetails {
+            if hasExpandableDetails, !showsDetailedTranscript {
                 Button(action: toggle) {
                     rowContent
                 }
@@ -239,7 +253,7 @@ struct ConversationActivityRow: View, Equatable {
         HStack(alignment: isReasoning ? .top : .firstTextBaseline, spacing: 8) {
             activityMarker
 
-            if isReasoning {
+            if isReasoning, provider == .codex {
                 Text(reasoningText)
                     .font(themeStore.uiFont(size: activityTitleSize))
                     .italic()
@@ -265,7 +279,7 @@ struct ConversationActivityRow: View, Equatable {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if hasExpandableDetails {
+            if hasExpandableDetails, !showsDetailedTranscript {
                 Image(systemName: "chevron.right")
                     .font(themeStore.uiFont(.caption2, weight: .semibold))
                     .foregroundStyle(tokens.secondaryText.opacity(0.75))
@@ -302,12 +316,12 @@ struct ConversationActivityRow: View, Equatable {
                 if !status.isEmpty {
                     activityDetailLine(L10n.text("ui.status"), value: status)
                 }
-                if let output = payload.outputPreview?.conversationActivityTrimmedNonEmpty {
-                    Text(output)
+                if let detailText = fullDetailText, !isReasoning || provider == .claude {
+                    Text(detailText)
                         .font(themeStore.uiFont(.caption2).monospaced())
                         .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(8)
                         .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
                 }
                 if let historyOutputID = payload.historyOutputID {
                     Button {
@@ -408,8 +422,9 @@ struct ConversationActivityRow: View, Equatable {
     }
 
     private var reasoningText: String {
-        ConversationActivityPayload.plainProgressText(
-            message.activityPayload?.subtitle?.conversationActivityTrimmedNonEmpty ?? message.content
+        ConversationActivityPresentationText.reasoningText(
+            for: message,
+            isExpanded: isExpanded
         )
     }
 
@@ -447,21 +462,43 @@ struct ConversationActivityRow: View, Equatable {
         case .editFile:
             return payload.filePaths.isEmpty ? payload.displayStatusText : payload.filePaths.prefix(4).joined(separator: ", ")
         case .runCommand:
-            if let exitCode = payload.exitCode, exitCode != 0 {
-                return L10n.format("ui.exit_code_value", exitCode)
+            let exit = payload.exitCode.flatMap { code in
+                code == 0 ? nil : L10n.format("ui.exit_code_value", code)
             }
-            return payload.cwd
+            return compactActivityDetail(
+                provider == .claude ? payload.displayStatusText : exit,
+                payload.cwd,
+                compactOutputPreview
+            )
         case .toolCall:
-            return [
+            let status = provider == .claude
+                ? payload.displayStatusText
+                : (payload.displayStatusText == L10n.text("ui.completed_status") ? nil : payload.displayStatusText)
+            return compactActivityDetail(
                 payload.subtitle?.conversationActivityTrimmedNonEmpty,
-                payload.displayStatusText == L10n.text("ui.completed_status") ? nil : payload.displayStatusText,
-            ]
-                .compactMap { $0 }
-                .joined(separator: " · ")
-                .conversationActivityTrimmedNonEmpty
-        case .thinking, .plan, .error:
+                status,
+                compactOutputPreview
+            )
+        case .thinking:
+            return provider == .claude ? nil : payload.subtitle.map(ConversationActivityPayload.plainProgressText)
+        case .plan, .error:
             return payload.subtitle.map(ConversationActivityPayload.plainProgressText)
         }
+    }
+
+    private func compactActivityDetail(_ values: String?...) -> String? {
+        values
+            .compactMap { $0?.conversationActivityTrimmedNonEmpty }
+            .joined(separator: " · ")
+            .conversationActivityTrimmedNonEmpty
+    }
+
+    private var compactOutputPreview: String? {
+        ConversationActivityPresentationText.compactPreview(for: message)
+    }
+
+    private var fullDetailText: String? {
+        ConversationActivityPresentationText.fullDetail(for: message)
     }
 
     private var interactionDetail: String? {
@@ -477,7 +514,12 @@ struct ConversationActivityRow: View, Equatable {
 
     private var hasExpandableDetails: Bool {
         if isReasoning {
-            return reasoningText.count > 160 || reasoningText.filter { $0 == "\n" }.count >= 3
+            if provider == .claude {
+                return fullDetailText != nil
+            }
+            let summary = ConversationActivityPresentationText.reasoningText(for: message, isExpanded: false)
+            let full = ConversationActivityPresentationText.reasoningText(for: message, isExpanded: true)
+            return full != summary || summary.count > 160 || summary.filter { $0 == "\n" }.count >= 3
         }
         guard let payload = message.activityPayload else {
             return false
@@ -485,7 +527,8 @@ struct ConversationActivityRow: View, Equatable {
         return payload.command?.conversationActivityTrimmedNonEmpty != nil ||
             payload.cwd?.conversationActivityTrimmedNonEmpty != nil ||
             !payload.filePaths.isEmpty ||
-            payload.outputPreview?.conversationActivityTrimmedNonEmpty != nil
+            fullDetailText != nil ||
+            payload.historyOutputID != nil
     }
 
     private var isRunning: Bool {
@@ -501,7 +544,10 @@ struct ConversationActivityRow: View, Equatable {
     }
 
     private var activityAccessibilityDescription: String {
-        message.activityPayload?.accessibilityDescription ?? [
+        if isReasoning, provider == .codex, isExpanded {
+            return reasoningText
+        }
+        return message.activityPayload?.accessibilityDescription ?? [
             activityTitle,
             activityDetail,
         ]
@@ -591,6 +637,48 @@ enum ProcessedActivitySymbol {
         case .error:
             return "exclamationmark.triangle"
         }
+    }
+}
+
+enum ConversationActivityPresentationText {
+    static func reasoningText(for message: ConversationMessage, isExpanded: Bool) -> String {
+        let payload = message.activityPayload
+        let source: String
+        if isExpanded {
+            source = fullDetail(for: message)
+                ?? payload?.subtitle?.conversationActivityTrimmedNonEmpty
+                ?? message.content
+        } else {
+            source = payload?.subtitle?.conversationActivityTrimmedNonEmpty
+                ?? message.content
+        }
+        return ConversationActivityPayload.plainProgressText(source)
+    }
+
+    static func compactPreview(for message: ConversationMessage, limit: Int = 140) -> String? {
+        guard let preview = message.activityPayload?.outputPreview?.conversationActivityTrimmedNonEmpty,
+              let firstLine = preview.split(separator: "\n", omittingEmptySubsequences: true).first else {
+            return nil
+        }
+        let value = String(firstLine)
+        guard value.count > limit else { return value }
+        return String(value.prefix(max(0, limit - 1))) + "…"
+    }
+
+    static func fullDetail(for message: ConversationMessage) -> String? {
+        guard let payload = message.activityPayload else {
+            return nil
+        }
+        let content = message.content.conversationActivityTrimmedNonEmpty
+        if payload.category == .thinking {
+            return content ?? payload.subtitle?.conversationActivityTrimmedNonEmpty
+        }
+        if let content,
+           content != payload.summaryText.trimmingCharacters(in: .whitespacesAndNewlines) {
+            return content
+        }
+        // 旧 history 只把 summaryText 写进 content；此时仍保留已有短预览。
+        return payload.outputPreview?.conversationActivityTrimmedNonEmpty
     }
 }
 

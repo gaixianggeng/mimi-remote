@@ -394,13 +394,13 @@ final class ConversationScrollStabilityTests: XCTestCase {
 
     func testExpansionKeepsItsItemTargetThroughoutLayoutAnimation() async {
         let rig = ScrollRig()
-        let input = rig.controller.expansionChanged("work-group", isExpanded: true)
+        let input = rig.controller.expansionChanged("activity-batch", isExpanded: true)
         await drain()
         for height in stride(from: 2_100, through: 2_500, by: 100) {
             rig.report(offset: 1_200, height: CGFloat(height))
         }
         XCTAssertFalse(rig.commands.isEmpty)
-        XCTAssertTrue(rig.commands.allSatisfy { $0.target == .item("work-group") })
+        XCTAssertTrue(rig.commands.allSatisfy { $0.target == .item("activity-batch") })
         rig.controller.expansionCompleted(input)
         let count = rig.commands.count
         await drain()
@@ -414,7 +414,7 @@ final class ConversationScrollStabilityTests: XCTestCase {
         rig.scrollView.contentOffset.y = 600
         rig.controller.beginLoadingEarlierHistory()
         let marker = rig.addMarker(y: 700)
-        let input = rig.controller.expansionChanged("work-group", isExpanded: true)
+        let input = rig.controller.expansionChanged("activity-batch", isExpanded: true)
         await drain()
         try await Task.sleep(for: .milliseconds(350))
         marker.frame.origin.y += 60
@@ -436,7 +436,7 @@ final class ConversationScrollStabilityTests: XCTestCase {
         rig.scrollView.contentOffset.y = 600
         rig.controller.beginLoadingEarlierHistory()
         let marker = rig.addMarker(y: 700)
-        rig.controller.expansionChanged("work-group", isExpanded: true, isAnimated: false)
+        rig.controller.expansionChanged("activity-batch", isExpanded: true, isAnimated: false)
         marker.frame.origin.y += 60
         await drain()
         XCTAssertEqual(rig.scrollView.contentOffset.y, 660)
