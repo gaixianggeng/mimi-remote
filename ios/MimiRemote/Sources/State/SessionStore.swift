@@ -360,6 +360,7 @@ final class SessionStore: ObservableObject {
     var relatedSessionSocket: (any SessionWebSocketClient)?
     var relatedSessionSocketID: SessionID?
     var relatedSessionSocketGeneration = 0
+    let notificationNavigation = NotificationNavigationOwnership()
     var sessionCreationLoadingLease: SessionSelectionLease?
     var selectionGeneration: UInt64 = 0 {
         didSet { clearSessionCreationLoading() }

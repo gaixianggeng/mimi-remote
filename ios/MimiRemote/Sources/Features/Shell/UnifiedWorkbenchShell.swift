@@ -1284,14 +1284,15 @@ struct UnifiedWorkbenchShell: View {
     private func open(
         _ destination: AppDestination,
         source: WorkbenchRootPage? = nil,
-        layout: WorkbenchLayout
+        layout: WorkbenchLayout,
+        origin: WorkbenchNavigationOrigin = .user
     ) {
         if case .subagent = destination {
             // 由 openRelatedSubagent 先保存展示元数据。
         } else if selectedRelatedSubagent != nil {
             closeRelatedSubagent(keepInspectorVisible: false)
         }
-        applyNavigation(.open(destination, source: source), layout: layout)
+        applyNavigation(.open(destination, source: source), layout: layout, origin: origin)
     }
 
     private func openSession(
@@ -1355,13 +1356,18 @@ struct UnifiedWorkbenchShell: View {
                         .subagent(parentID: parentID, childID: relation.id),
                         source: navigationState.route.rootPage
                     ),
-                    layout: layout
+                    layout: layout,
+                    origin: .layoutSynchronization
                 )
                 return
             }
             if navigationState.selection == .me || navigationState.selection == .devices {
                 let tab: CompactWorkbenchTab = navigationState.selection == .devices ? .devices : .me
-                applyNavigation(.compactTabChanged(tab), layout: layout)
+                applyNavigation(
+                    .compactTabChanged(tab),
+                    layout: layout,
+                    origin: .layoutSynchronization
+                )
             } else {
                 synchronizeNavigation(for: layout)
             }
@@ -1374,7 +1380,11 @@ struct UnifiedWorkbenchShell: View {
         }
 
         if navigationState.compactSelectedTab.isGlobalSettings {
-            open(navigationState.compactSelectedTab.destination, layout: layout)
+            open(
+                navigationState.compactSelectedTab.destination,
+                layout: layout,
+                origin: .layoutSynchronization
+            )
         } else {
             synchronizeNavigation(for: layout)
         }
@@ -1474,9 +1484,10 @@ struct UnifiedWorkbenchShell: View {
     private func applyNavigation(
         _ event: WorkbenchNavigationEvent,
         layout: WorkbenchLayout,
-        preferredSession: AgentSession? = nil
+        preferredSession: AgentSession? = nil,
+        origin: WorkbenchNavigationOrigin = .user
     ) {
-        let commit = makeNavigationCommit(event, layout: layout)
+        let commit = makeNavigationCommit(event, layout: layout, origin: origin)
         commitVisualNavigation(commit)
         commitNavigationSideEffects(
             commit,
@@ -1509,7 +1520,8 @@ struct UnifiedWorkbenchShell: View {
 
     private func makeNavigationCommit(
         _ event: WorkbenchNavigationEvent,
-        layout: WorkbenchLayout
+        layout: WorkbenchLayout,
+        origin: WorkbenchNavigationOrigin = .user
     ) -> WorkbenchNavigationCommit {
         var nextState = navigationState
         let effect = nextState.reduce(
@@ -1517,6 +1529,10 @@ struct UnifiedWorkbenchShell: View {
             usesCompactNavigation: layout.usesCompactNavigation,
             selectedSessionID: sessionStore.selectedSessionID
         )
+        // 忽略 SwiftUI 对相同 path/tab 的回写；真实交互在视觉事务内撤销旧通知。
+        if nextState != navigationState || effect != nil {
+            sessionStore.notificationNavigation.observe(event, origin: origin)
+        }
         return WorkbenchNavigationCommit(state: nextState, effect: effect)
     }
 

@@ -74,11 +74,19 @@ extension SessionStore {
     }
 
     @discardableResult
-    func switchConnectionProfile(id: String) async throws -> Bool {
+    func switchConnectionProfile(id: String, notificationIntent: UUID? = nil) async throws -> Bool {
+        if let notificationIntent {
+            guard notificationNavigation.isCurrent(notificationIntent) else { throw CancellationError() }
+        } else {
+            notificationNavigation.userNavigated()
+        }
         HostSwitchSignpost.event("host_switch_tap")
         // 快速入口只执行 version + config 和一次可复用 initialize。验证或提交失败时，
         // commitPreparedConnection 不会运行，当前 Mac 的页面和 WebSocket 保持不变。
-        return try await performPreparedConnectionChange(switchTargetProfileID: id) {
+        return try await performPreparedConnectionChange(
+            switchTargetProfileID: id,
+            isNavigationCurrent: { notificationIntent.map(self.notificationNavigation.isCurrent) ?? true }
+        ) {
             if let controller = self.tailcatExperimentController {
                 return try await controller.prepareConnectionProfileSwitch(
                     id: id,
@@ -203,6 +211,7 @@ extension SessionStore {
     @discardableResult
     func performPreparedConnectionChange(
         switchTargetProfileID: String? = nil,
+        isNavigationCurrent: () -> Bool = { true },
         _ prepare: @escaping () async throws -> PreparedConnectionSettings
     ) async throws -> Bool {
         let operationGeneration = try beginPreparedConnectionChange()
@@ -238,6 +247,7 @@ extension SessionStore {
                 throw CancellationError()
             }
             try await tailcatExperimentController?.stagePreparedRouteIfNeeded(prepared, appStore: appStore)
+            guard isNavigationCurrent() else { throw CancellationError() }
             let committed = try await commitPreparedConnection(prepared)
             await tailcatExperimentController?.commitPreparedRouteIfNeeded(prepared, appStore: appStore)
             preparedCandidate = nil

@@ -263,6 +263,9 @@ final class LockScreenApprovalTests: XCTestCase {
         XCTAssertNil(inbox.pending)
     }
 
+    /// 切回后台会真取消路由任务。处理方还没开始导航时以 retryLater 保留通知，供下次恢复
+    /// 继续打开；保留与否由处理方的结论决定，收件箱不再自己看任务是否被取消
+    /// （已导航的情况见 testHandledDeliveryIsConsumedEvenWhenTaskWasCancelled）。
     @MainActor
     func testInboxCancelledRoutingPreservesPendingNotification() async throws {
         let inbox = LockScreenApprovalInbox()
@@ -272,11 +275,12 @@ final class LockScreenApprovalTests: XCTestCase {
             await inbox.processPending { _ in
                 withUnsafeCurrentTask { $0?.cancel() }
                 await Task.yield()
+                guard !Task.isCancelled else { return .retryLater }
                 return .handled
             }
         }
         await task.value
-        XCTAssertEqual(inbox.pending, delivery, "切回后台后仍须保留通知，供下次恢复继续打开")
+        XCTAssertEqual(inbox.pending, delivery, "切回后台后尚未导航的通知仍须保留，供下次恢复继续打开")
     }
 
     @MainActor
@@ -695,6 +699,25 @@ extension LockScreenApprovalTests {
         await task.value
         XCTAssertEqual(inbox.pending, second, "真取消保留通知")
         XCTAssertNil(secondMessage, "真取消不弹提示")
+    }
+
+    /// 处理方已经把用户带到目标会话（返回 handled）时，任务哪怕在途中被场景切换或
+    /// 新一轮前台恢复取消，也必须消费；否则下一次闸门打开会把同一次点击重放，
+    /// 把已经离开的用户再次拉回详情。
+    @MainActor
+    func testHandledDeliveryIsConsumedEvenWhenTaskWasCancelled() async throws {
+        let inbox = LockScreenApprovalInbox()
+        inbox.receive(userInfo: payload(), actionIdentifier: UNNotificationDefaultActionIdentifier)
+        XCTAssertNotNil(inbox.pending)
+        let task = Task { @MainActor in
+            await inbox.processPending { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                XCTAssertTrue(Task.isCancelled)
+                return .handled
+            }
+        }
+        await task.value
+        XCTAssertNil(inbox.pending, "已导航的通知即使任务被取消也要消费，不能留到下次重放")
     }
 
     func testPushActionRouteResponseDecodesWithAndWithoutNewFields() throws {

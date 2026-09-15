@@ -318,6 +318,37 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(fixture.store.sessions.contains(where: { $0.id == fixture.session.id }))
     }
 
+    func testUserNavigationInvalidatesNotificationProfileChangeBeforeCommit() async throws {
+        let fixture = try await makeConnectedProfileFixture(testName: "NotificationNavigationCancel")
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let gate = PreparedConnectionGate()
+        let navigation = fixture.store.notificationNavigation
+        let intent = navigation.accept()
+        let prepared = PreparedConnectionSettings(
+            endpoint: "http://127.0.0.1:8788", token: "test-token-b",
+            profileTarget: .existingProfile(id: "mac-b")
+        )
+        let task = Task { @MainActor in
+            try await fixture.store.performPreparedConnectionChange(
+                isNavigationCurrent: { navigation.isCurrent(intent) }
+            ) {
+                await gate.wait()
+                return prepared
+            }
+        }
+        await gate.waitUntilStarted()
+        fixture.store.returnToSessionList()
+        await gate.release()
+        do {
+            _ = try await task.value
+            XCTFail("返回列表后，旧通知不得提交准备中的电脑切换")
+        } catch is CancellationError {
+            // 等待期间的手动操作撤销通知导航权。
+        }
+        XCTAssertEqual(fixture.appStore.activeConnectionProfileID, "mac-a")
+        XCTAssertNil(fixture.store.selectedSessionID)
+    }
+
     func testBackgroundInvalidatesPendingProfileChangeBeforeCommit() async throws {
         let fixture = try await makeConnectedProfileFixture(testName: "BackgroundCancel")
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
