@@ -17,6 +17,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/harnessclient"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
@@ -122,6 +123,7 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 		checks = append(checks, c.codexAppServerCheck(ctx))
 	}
 	checks = append(checks, c.claudeBridgeCheck(ctx))
+	checks = append(checks, c.deepSeekCheck(ctx))
 	if check := c.appServerGatewayCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
 	}
@@ -414,6 +416,39 @@ func (c *Checker) codexAppServerCheck(ctx context.Context) Check {
 		return Check{Name: "codex-app-server", OK: false, Message: "SSH proxy 无法完成 app-server initialize", Fix: "运行 agentd logs 查看 SSH proxy 错误"}
 	}
 	return Check{Name: "codex-app-server", OK: true, Message: fmt.Sprintf("远程 Codex %s 与 SSH proxy initialize 可用", version)}
+}
+
+// deepSeekCheck 校验 Harness 服务接入配置与可达性。
+//
+// 它只做连接与控制面调用，不触发任何模型推理，也不读取或输出访问凭据。
+func (c *Checker) deepSeekCheck(ctx context.Context) Check {
+	if !c.cfg.DeepSeek.Enabled {
+		return Check{Name: "deepseek-harness", OK: true, Message: "DeepSeek Harness 通道未启用"}
+	}
+	baseURL, err := config.NormalizeDeepSeekBaseURL(c.cfg.DeepSeek.BaseURL)
+	if err != nil {
+		return Check{Name: "deepseek-harness", OK: false, Message: err.Error(), Fix: "在 config.json 的 deepseek.base_url 填写 Harness 服务地址"}
+	}
+	if baseURL == "" {
+		return Check{Name: "deepseek-harness", OK: false, Message: "deepseek.base_url 为空", Fix: "填写 Harness 服务地址，例如 http://127.0.0.1:5173"}
+	}
+	token, err := harnessclient.ReadTokenFile(c.cfg.DeepSeek.TokenFile)
+	if err != nil {
+		return Check{Name: "deepseek-harness", OK: false, Message: err.Error(), Fix: "把 Harness 启动 token 写入一个 0600 文件，并把路径配到 deepseek.token_file"}
+	}
+	client, err := harnessclient.New(harnessclient.Config{BaseURL: baseURL, AccessToken: token})
+	if err != nil {
+		return Check{Name: "deepseek-harness", OK: false, Message: err.Error(), Fix: "检查 deepseek.base_url 是否是完整的 HTTP(S) 地址"}
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := client.Authenticate(runCtx); err != nil {
+		return Check{Name: "deepseek-harness", OK: false, Message: "无法用 token 换取服务 Cookie：" + err.Error(), Fix: "确认 Harness 已启动，且 deepseek.token_file 是本次启动的 token"}
+	}
+	if err := client.Ping(runCtx, 3*time.Second); err != nil {
+		return Check{Name: "deepseek-harness", OK: false, Message: "Harness 控制面不可用：" + err.Error(), Fix: "确认 Harness 服务仍在运行；模型与供应商配置由 Harness 自己管理"}
+	}
+	return Check{Name: "deepseek-harness", OK: true, Message: "Harness 服务可达，认证与模型目录查询正常"}
 }
 
 func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {

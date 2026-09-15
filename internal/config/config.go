@@ -18,6 +18,9 @@ import (
 const (
 	AppName                           = "mimi-remote"
 	DefaultClaudeMaxConcurrentBridges = 3
+	// DefaultDeepSeekMaxConcurrentSessions 限制同时打开的 Harness 会话订阅数。
+	// Harness 每个订阅都会持有一条 remote.mux 连接，必须设上限。
+	DefaultDeepSeekMaxConcurrentSessions = 2
 )
 
 var ErrLegacyAppServerConfiguration = errors.New("legacy Codex Desktop sharing configuration")
@@ -32,6 +35,7 @@ type Config struct {
 	Voice         VoiceConfig      `json:"voice"`
 	Codex         CodexConfig      `json:"codex"`
 	Claude        ClaudeConfig     `json:"claude"`
+	DeepSeek      DeepSeekConfig   `json:"deepseek"`
 	Push          PushConfig       `json:"push"`
 	Tailcat       TailcatConfig    `json:"tailcat"`
 	Session       SessionConfig    `json:"session"`
@@ -83,6 +87,23 @@ type ClaudeConfig struct {
 	Args                 []string          `json:"args,omitempty"`
 	Env                  map[string]string `json:"env,omitempty"`
 	MaxConcurrentBridges int               `json:"max_concurrent_bridges"`
+}
+
+// DeepSeekConfig 配置 DeepSeek Harness 服务接入。默认关闭。
+//
+// Harness 是独立运行的本地服务，模型供应商、endpoint、密钥、套餐与推理参数都由
+// Harness 自己管理。agentd 只连接它的服务接口，不负责安装、启动或配置它，
+// 也不维护供应商配置。
+type DeepSeekConfig struct {
+	Enabled bool `json:"enabled"`
+	// BaseURL 是 Harness 服务的 origin。明文 HTTP 只允许回环地址：
+	// 启动 token 会在认证请求的查询串里出现，不能走可被旁听的网络。
+	BaseURL string `json:"base_url,omitempty"`
+	// TokenFile 只保存 Harness 启动 token 的路径。凭据本身不写进主配置、
+	// 不进日志、不下发给移动端。
+	TokenFile string `json:"token_file,omitempty"`
+	// MaxConcurrentSessions 限制同时打开的会话订阅数。
+	MaxConcurrentSessions int `json:"max_concurrent_sessions,omitempty"`
 }
 
 // TailcatConfig 只保存实验开关和安装期覆盖项。连接地址、节点私钥和
@@ -144,6 +165,57 @@ type AppServerConfig struct {
 	// 使 agentd 仍能接住待审批请求。默认关闭：它改变了 gateway 的连接生命周期，
 	// 需要先在真机上验证后台/锁屏路径再放开。
 	ApprovalBroker bool `json:"approval_broker,omitempty"`
+}
+
+// NormalizeDeepSeekBaseURL 校验并规范化 Harness 服务地址。
+//
+// 明文 HTTP 只允许回环地址：认证把启动 token 放在查询串里，一旦走明文网络就等于
+// 泄露访问凭据。远端部署必须用 HTTPS。
+func NormalizeDeepSeekBaseURL(raw string) (string, error) {
+	value := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if value == "" {
+		return "", nil
+	}
+	if len(value) > 2048 {
+		return "", fmt.Errorf("deepseek.base_url 最多 2048 个字符")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("deepseek.base_url 必须是完整的 HTTP(S) URL")
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("deepseek.base_url 不能包含用户名或密码")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("deepseek.base_url 不能包含查询串或片段")
+	}
+	if trimmed := strings.Trim(parsed.Path, "/"); trimmed != "" {
+		return "", fmt.Errorf("deepseek.base_url 只写到 origin，不要带路径")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http":
+		if !isLoopbackHost(parsed.Hostname()) {
+			return "", fmt.Errorf("deepseek.base_url 使用明文 HTTP 时必须是回环地址")
+		}
+	case "https":
+	default:
+		return "", fmt.Errorf("deepseek.base_url 只允许 http 或 https")
+	}
+	parsed.Path = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
+}
+
+// isLoopbackHost 判定主机名是否是本机回环。只看主机名，不看端口。
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 type VoiceConfig struct {
@@ -332,6 +404,11 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 		// override is applied below and continues to fail validation.
 		cfg.Claude.MaxConcurrentBridges = DefaultClaudeMaxConcurrentBridges
 	}
+	if cfg.DeepSeek.MaxConcurrentSessions == 0 {
+		// 手工只写 enabled 时并发字段会缺省为零值。恰好为零按默认处理，
+		// 负值仍然非法，环境变量覆盖发生在下面并继续参与校验。
+		cfg.DeepSeek.MaxConcurrentSessions = DefaultDeepSeekMaxConcurrentSessions
+	}
 
 	cfg.Runtime.Type = normalizeRuntimeType(cfg.Runtime.Type)
 	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
@@ -459,6 +536,13 @@ func DefaultClaudeConfig() ClaudeConfig {
 	}
 }
 
+func DefaultDeepSeekConfig() DeepSeekConfig {
+	return DeepSeekConfig{
+		Enabled:               false,
+		MaxConcurrentSessions: DefaultDeepSeekMaxConcurrentSessions,
+	}
+}
+
 func defaults() Config {
 	return Config{
 		Listen: "127.0.0.1:8787",
@@ -480,7 +564,8 @@ func defaults() Config {
 				"TERM": "xterm-256color",
 			},
 		},
-		Claude: DefaultClaudeConfig(),
+		Claude:   DefaultClaudeConfig(),
+		DeepSeek: DefaultDeepSeekConfig(),
 		Session: SessionConfig{
 			OutputBufferBytes: 128 * 1024,
 		},
@@ -527,6 +612,20 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("AGENTD_CLAUDE_MAX_CONCURRENT_BRIDGES"); v != "" {
 		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
 			cfg.Claude.MaxConcurrentBridges = n
+		}
+	}
+	if v := os.Getenv("AGENTD_DEEPSEEK_ENABLED"); v != "" {
+		cfg.DeepSeek.Enabled = truthy(v)
+	}
+	if v := os.Getenv("AGENTD_DEEPSEEK_BASE_URL"); v != "" {
+		cfg.DeepSeek.BaseURL = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("AGENTD_DEEPSEEK_TOKEN_FILE"); v != "" {
+		cfg.DeepSeek.TokenFile = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("AGENTD_DEEPSEEK_MAX_CONCURRENT_SESSIONS"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			cfg.DeepSeek.MaxConcurrentSessions = n
 		}
 	}
 	if v := os.Getenv("AGENTD_APP_SERVER_SSH_TARGET"); v != "" {
@@ -751,6 +850,21 @@ func (c Config) Validate() error {
 	}
 	if c.Claude.Enabled && c.Claude.MaxConcurrentBridges <= 0 {
 		return fmt.Errorf("claude.max_concurrent_bridges 必须大于 0")
+	}
+	if _, err := NormalizeDeepSeekBaseURL(c.DeepSeek.BaseURL); err != nil {
+		return err
+	}
+	if c.DeepSeek.Enabled {
+		if strings.TrimSpace(c.DeepSeek.BaseURL) == "" {
+			return fmt.Errorf("deepseek.base_url 不能为空")
+		}
+		// 凭据只从文件读取：主配置不进日志、不随安装包分发，不适合放 token。
+		if strings.TrimSpace(c.DeepSeek.TokenFile) == "" {
+			return fmt.Errorf("deepseek.token_file 不能为空")
+		}
+		if c.DeepSeek.MaxConcurrentSessions <= 0 {
+			return fmt.Errorf("deepseek.max_concurrent_sessions 必须大于 0")
+		}
 	}
 	if _, err := NormalizeTailcatDERPMapURL(c.Tailcat.DERPMapURL); err != nil {
 		return err
