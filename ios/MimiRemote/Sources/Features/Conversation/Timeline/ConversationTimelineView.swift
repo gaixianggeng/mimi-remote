@@ -54,6 +54,14 @@ struct ConversationTimelineView: View {
         explicitSessionID ?? sessionStore.selectedSessionID
     }
 
+    private var isHistoryPreparingInitialPresentation: Bool {
+        guard let sessionID = displayedSessionID else { return false }
+        // 首页请求完成不代表行结构稳定；Item 补齐还会替换摘要并重新分组。
+        // summary（降级或失败）同样可以展示，不能要求 full 才解除遮罩。
+        return sessionStore.historyLoadProgress(sessionID: sessionID) != nil
+            || sessionStore.historyLoadedQualityBySessionID[sessionID] == .enriching
+    }
+
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let hostProfileID = sessionStore.mediaProfileScope
@@ -161,10 +169,6 @@ struct ConversationTimelineView: View {
                                     if !isPreservingHistoryScroll {
                                         hasUserDetachedFromTail = false
                                     }
-                                    confirmTimelinePresentationIfReady(
-                                        timelineListIdentity,
-                                        hasTimelineContent: !timelineItems.isEmpty
-                                    )
                                 } else if visibleTailSentinelIdentity == timelineListIdentity {
                                     visibleTailSentinelIdentity = nil
                                 }
@@ -232,13 +236,6 @@ struct ConversationTimelineView: View {
                         )
                     }
                     isTimelineNearBottom = metrics.isNearBottom
-                    if isUserScrollingTimeline,
-                       !metrics.isNearBottom,
-                       historyScrollCoordinator.activeGeneration == nil {
-                        // 懒布局可能在手势中补齐行高。先保存当前可见锚点，等 idle
-                        // 后再统一修正，不能在拖动帧内写回 contentOffset。
-                        beginVisibleHistoryAnchorPreservation()
-                    }
                     if metrics.isNearBottom, !hasUserDetachedFromTail {
                         shouldFollowMessageTail = true
                         hasUnseenTailMessage = false
@@ -257,7 +254,6 @@ struct ConversationTimelineView: View {
                     isUserScrollingTimeline = shouldSuspend
                     guard shouldSuspend else {
                         userScrollStartOffsetY = nil
-                        queueHistoryAnchorCorrection()
                         return
                     }
                     userScrollStartOffsetY = latestTimelineMetrics?.contentOffsetY
@@ -267,7 +263,7 @@ struct ConversationTimelineView: View {
                     shouldFollowMessageTail = false
                     tailScrollCoordinator.userScrollAwayGeneration += 1
                     cancelPendingTailScrollAttempts()
-                    historyScrollCoordinator.pausePreservation()
+                    cancelHistoryAnchorPreservation()
                 }
 
                 if shouldShowReturnToTailButton(timelineItems: timelineItems) {
@@ -283,11 +279,17 @@ struct ConversationTimelineView: View {
 
                 if !isTimelineReadable {
                     // List 必须先进入视图层级才能获得真实高度并执行 scrollTo。用真实画布
-                    // 覆盖这段布局窗口；尾部哨兵确认可见后整块移除，不展示顶部或中间位置。
+                    // 覆盖首轮历史补齐和尾部布局窗口，不展示顶部或中间位置。
                     ConversationTimelineStabilizingCover(
                         backgroundColor: UIColor(tokens.conversationCanvasBackground)
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay {
+                        ProgressView(L10n.text("ui.loading_session_records"))
+                            .font(themeStore.uiFont(.caption))
+                            .tint(workbenchSecondaryText)
+                            .foregroundStyle(workbenchSecondaryText)
+                    }
                 }
             }
             .onChange(of: displayedSessionID) { _, newID in
@@ -484,13 +486,18 @@ struct ConversationTimelineView: View {
                     force: false
                 )
             }
-            .task(id: timelineListIdentity) {
+            .task(id: ConversationTimelinePresentationTaskID(
+                listIdentity: timelineListIdentity,
+                tailItemID: isTimelineReadable ? nil : timelineSnapshot.tailItemID,
+                isHistoryPreparing: isHistoryPreparingInitialPresentation
+            )) {
                 guard !timelineItems.isEmpty,
+                      !isHistoryPreparingInitialPresentation,
                       presentedTimelineIdentity != timelineListIdentity else {
                     return
                 }
-                // List 尚不可见时在首轮布局内贴底。尾部哨兵确认可见后再放开正文，
-                // 不需要延迟 900ms 后制造一次用户可见的重锚。
+                // 补齐结束后才交接可读画面。尾行改变会重启定位，但同一条流式正文的
+                // 每次变化不能取消任务，否则持续输出会让首屏一直无法显示。
                 let expectedSessionID = displayedSessionID
                 let expectedTailItemID = timelineItems.last?.id
                 await Task.yield()
@@ -505,12 +512,14 @@ struct ConversationTimelineView: View {
                 var attempt = 0
                 while true {
                     guard !Task.isCancelled,
+                          !isHistoryPreparingInitialPresentation,
                           displayedSessionID == expectedSessionID,
                           currentTimelineTailItemID() == expectedTailItemID,
                           initialTailScrollAttemptedIdentity == timelineListIdentity,
                           presentedTimelineIdentity != timelineListIdentity else {
                         return
                     }
+                    let previousMetrics = latestTimelineMetrics
                     forceScrollToTimelineTail(
                         timelineItems: timelineItems,
                         proxy: proxy,
@@ -527,7 +536,8 @@ struct ConversationTimelineView: View {
                     }
                     confirmTimelinePresentationIfReady(
                         timelineListIdentity,
-                        hasTimelineContent: true
+                        hasTimelineContent: true,
+                        previousMetrics: previousMetrics
                     )
                 }
             }
@@ -997,6 +1007,15 @@ struct ConversationTimelineView: View {
         hasTimelineContent && didAttemptInitialTailScroll && isTailSentinelVisible
     }
 
+    static func isInitialTailLayoutStable(
+        previous: ConversationTimelineScrollMetrics?,
+        current: ConversationTimelineScrollMetrics?
+    ) -> Bool {
+        guard let previous, let current else { return false }
+        return previous == current
+            && abs(current.maximumOffsetY - current.contentOffsetY) <= 4
+    }
+
     private var loadEarlierRow: some View {
         HStack {
             Spacer()
@@ -1336,13 +1355,15 @@ struct ConversationTimelineView: View {
     private func queueHistoryAnchorCorrection() {
         guard !isUserScrollingTimeline else {
             // 几何回调和 phase 回调不是同一条 SwiftUI 通知链。用户重新开始手势
-            // 时只暂停补偿，保留锚点供下一个 idle 帧统一修正。
+            // 后旧锚点已失效，不能在 idle 时把用户拉回手势前的位置。
+            historyScrollCoordinator.cancelPreservation()
             return
         }
         historyScrollCoordinator.scheduleCorrection(
             displayedSessionID: displayedSessionID
         ) { correction in
             guard !self.isUserScrollingTimeline else {
+                self.historyScrollCoordinator.cancelPreservation()
                 return
             }
             applyHistoryAnchorCorrection(correction)
@@ -1374,15 +1395,20 @@ struct ConversationTimelineView: View {
 
     private func confirmTimelinePresentationIfReady(
         _ identity: ConversationTimelineListIdentity,
-        hasTimelineContent: Bool
+        hasTimelineContent: Bool,
+        previousMetrics: ConversationTimelineScrollMetrics?
     ) {
-        guard Self.shouldPresentStabilizedTimeline(
+        guard !Task.isCancelled,
+              !isHistoryPreparingInitialPresentation,
+              Self.isInitialTailLayoutStable(previous: previousMetrics, current: latestTimelineMetrics),
+              Self.shouldPresentStabilizedTimeline(
             hasTimelineContent: hasTimelineContent,
             didAttemptInitialTailScroll: initialTailScrollAttemptedIdentity == identity,
             isTailSentinelVisible: visibleTailSentinelIdentity == identity
         ) else {
             return
         }
+        ConversationScrollDiagnostics.shared.record("initial_present", "height=\(Int(latestTimelineMetrics?.contentHeight ?? 0))")
         presentedTimelineIdentity = identity
     }
 }
@@ -1391,6 +1417,12 @@ private struct ConversationTimelineListIdentity: Hashable {
     let scope: ScopedSessionID
     let hasTimelineContent: Bool
     let presentationGeneration: Int
+}
+
+private struct ConversationTimelinePresentationTaskID: Hashable {
+    let listIdentity: ConversationTimelineListIdentity
+    let tailItemID: String?
+    let isHistoryPreparing: Bool
 }
 
 private struct ConversationTimelineObservedChange<Value: Equatable>: Equatable {
@@ -1654,13 +1686,8 @@ final class ConversationHistoryScrollCoordinator {
     func setInteractionActive(_ active: Bool) {
         interactionActive = active
         if active {
-            pausePreservation()
+            cancelPreservation()
         }
-    }
-
-    func pausePreservation() {
-        correctionTask?.cancel()
-        correctionTask = nil
     }
 
     func setContentOffsetY(_ offsetY: CGFloat) {

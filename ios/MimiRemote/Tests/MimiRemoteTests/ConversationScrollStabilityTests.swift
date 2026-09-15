@@ -114,7 +114,7 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(writes, 0)
     }
 
-    func testInteractionPausesQueuedAnchorCorrectionUntilIdle() async throws {
+    func testInteractionDiscardsOldAnchorEvenAfterReturningToIdle() async throws {
         let coordinator = ConversationHistoryScrollCoordinator()
         let anchorID = UUID()
         let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
@@ -135,7 +135,7 @@ final class ConversationScrollStabilityTests: XCTestCase {
             await Task.yield()
         }
 
-        XCTAssertEqual(coordinator.activeGeneration, generation)
+        XCTAssertNil(coordinator.activeGeneration)
         XCTAssertEqual(writes, 0)
 
         coordinator.setInteractionActive(false)
@@ -148,7 +148,15 @@ final class ConversationScrollStabilityTests: XCTestCase {
         for _ in 0..<3 {
             await Task.yield()
         }
-        XCTAssertEqual(writes, 1)
+        XCTAssertEqual(writes, 0, "手势后的阅读位置不能被旧事务拉回")
+    }
+
+    func testInitialPresentationRequiresStableGeometryAtTheActualTail() {
+        let tail = metrics(offset: 1_200)
+        XCTAssertFalse(ConversationTimelineView.isInitialTailLayoutStable(previous: nil, current: tail))
+        XCTAssertFalse(ConversationTimelineView.isInitialTailLayoutStable(previous: metrics(offset: 1_100), current: tail))
+        XCTAssertFalse(ConversationTimelineView.isInitialTailLayoutStable(previous: metrics(offset: 1_100), current: metrics(offset: 1_100)))
+        XCTAssertTrue(ConversationTimelineView.isInitialTailLayoutStable(previous: tail, current: tail))
     }
 
     func testDiagnosticsAreOptInBoundedAndLazy() {

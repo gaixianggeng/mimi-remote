@@ -5,6 +5,118 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testInitialTimelineWaitsForItemEnrichmentAndDoesNotCoverLaterRefresh() async throws {
+        let sessionID = "initial-presentation"
+        let appStore = makeIsolatedAppStore()
+        let client = OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: []))
+        let conversationStore = ConversationStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
+        let sessionStore = SessionStore(
+            appStore: appStore, conversationStore: conversationStore, logStore: LogStore(),
+            clientFactory: { client }
+        )
+        sessionStore.selectedSessionID = sessionID
+        func messages(_ range: Range<Int>) -> [CodexHistoryMessage] {
+            range.map { index in
+                CodexHistoryMessage(
+                    id: "initial-\(index)", role: index.isMultiple(of: 2) ? "user" : "assistant",
+                    content: String(repeating: "第 \(index) 条历史内容。\n", count: 1 + index % 8),
+                    createdAt: Date(timeIntervalSince1970: Double(index)),
+                    turnID: "initial-turn", itemID: "initial-item-\(index)", timelineOrdinal: Int64(index)
+                )
+            }
+        }
+        conversationStore.setHistory(messages(0..<14), sessionID: sessionID)
+        sessionStore.historyLoadedQualityBySessionID[sessionID] = .enriching
+        let continuation = HistoryTurnItemsContinuation(
+            turnID: "initial-turn", turn: ["id": .string("initial-turn"), "status": .string("completed")],
+            turnIndex: 0, itemOffset: 0, cursor: nil, pageLimit: 50,
+            threadIsActive: false, isLatestTurn: true, hasVisibleUserMessageBefore: false
+        )
+        sessionStore.appendHistoryItemEnrichment(
+            page: HistoryMessagesPage(messages: [], itemContinuations: [continuation]), sessionID: sessionID
+        )
+        let themeSuiteName = "InitialPresentationTests.\(UUID().uuidString)"
+        let themeDefaults = try XCTUnwrap(UserDefaults(suiteName: themeSuiteName))
+        let host = UIHostingController(rootView: ConversationView()
+            .environmentObject(sessionStore)
+            .environmentObject(conversationStore)
+            .environmentObject(ThemeStore(defaults: themeDefaults)))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 420, height: 820)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            themeDefaults.removePersistentDomain(forName: themeSuiteName)
+        }
+        host.view.frame = window.bounds
+
+        for pageIndex in 0..<3 {
+            await client.waitForHistoryItemRequestCount(pageIndex + 1)
+            // 模拟网络分批返回；即使这一批已经贴底，首轮补齐期间也不能暴露正文。
+            for _ in 0..<8 {
+                host.view.layoutIfNeeded()
+                try await Task.sleep(for: .milliseconds(16))
+                XCTAssertTrue(conversationTimelineIsStabilizing(in: host.view))
+            }
+            let requested = client.requestedItemContinuations[pageIndex]
+            let pageMessages = messages((pageIndex * 50)..<((pageIndex + 1) * 50))
+            client.resolveHistoryItemRequest(at: pageIndex, with: HistoryTurnItemsPage(
+                messages: pageMessages,
+                itemIDs: Set(pageMessages.compactMap(\.itemID)),
+                continuation: pageIndex < 2
+                    ? requested.continuing(cursor: "page-\(pageIndex + 1)", loadedItemCount: 50, hasVisibleUserMessage: true)
+                    : nil
+            ))
+        }
+        let scrollView = try await waitForConversationTimelineAtBottom(in: host.view, timeout: 8)
+        XCTAssertEqual(sessionStore.historyLoadedQualityBySessionID[sessionID], .full)
+        XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view), "投影尾行改变后，首次定位任务必须自行重新开始")
+        XCTAssertLessThanOrEqual(distanceFromBottom(scrollView), 4)
+
+        // 已交接的画面不能因下一轮后台刷新再次被遮住。
+        sessionStore.historyLoadedQualityBySessionID[sessionID] = .enriching
+        for _ in 0..<8 {
+            host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(16))
+            XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view))
+        }
+
+        // 切换到另一会话必须重新等待；失败降级为 summary 也要能显示已有内容。
+        let degradedSessionID = "initial-presentation-degraded"
+        conversationStore.setHistory(messages(0..<20), sessionID: degradedSessionID)
+        sessionStore.historyLoadedQualityBySessionID[degradedSessionID] = .enriching
+        sessionStore.selectedSessionID = degradedSessionID
+        for _ in 0..<8 {
+            host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(16))
+            XCTAssertTrue(conversationTimelineIsStabilizing(in: host.view))
+        }
+        sessionStore.historyLoadedQualityBySessionID[degradedSessionID] = .summary
+        let degradedScrollView = try await waitForConversationTimelineAtBottom(in: host.view, timeout: 8)
+        XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view))
+        XCTAssertLessThanOrEqual(distanceFromBottom(degradedScrollView), 4)
+
+        // 打开仍在输出的会话时，不能因每个正文版本都取消定位而一直显示加载态。
+        let streamingSessionID = "initial-presentation-streaming"
+        sessionStore.selectedSessionID = streamingSessionID
+        var becameReadableDuringStreaming = false
+        for index in 0..<40 {
+            conversationStore.setHistory([CodexHistoryMessage(
+                id: "streaming-tail", role: "assistant", content: "持续输出 \(index)",
+                createdAt: Date(timeIntervalSince1970: 1), turnID: "streaming-turn", itemID: "streaming-item"
+            )], sessionID: streamingSessionID)
+            host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(16))
+            if !conversationTimelineIsStabilizing(in: host.view) {
+                becameReadableDuringStreaming = true
+            }
+        }
+        XCTAssertTrue(becameReadableDuringStreaming, "不能等流式回复结束才显示首屏")
+    }
+
     func testImagePresentationWaitsForScrollingAndReentryUsesCachedHeight() async throws {
         DataURLImageDecoder.removeAllCachedImagesForTesting()
         let appStore = makeIsolatedAppStore()
