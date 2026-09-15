@@ -103,6 +103,9 @@ final class ConversationTimelineScrollController {
         } else if revision == snapshot.revision {
             return false
         }
+        // idle 解冻可能先发布一份仅 revision 变化的快照，不能抹掉尚未执行的用户请求。
+        let requestedTail: Bool
+        if case .tail(_, .user) = pending { requestedTail = true } else { requestedTail = false }
         let firstContent = !hasContent && !snapshot.rows.isEmpty
         let structureChanged = rowIDs != snapshot.rowIDs
         let assistantTextChanged = snapshot.tail?.role == .assistant
@@ -117,6 +120,9 @@ final class ConversationTimelineScrollController {
         if firstContent {
             // 空占位与正文是不同 List；即使 scope 相同，旧 List 的布局回调也必须失效。
             epoch += 1
+            isInteracting = false
+            interactionStartOffset = nil
+            ownsAnimation = false
             viewport.reset()
             execute = nil
             mode = .initialPositioning
@@ -126,7 +132,8 @@ final class ConversationTimelineScrollController {
             metrics = nil
         } else if snapshot.changes.contains(.localSubmission) {
             // 来源层保留明确发送意图，即使同一批次的尾消息已经变成 assistant 也不能丢失。
-            mode = .followingTail
+            // 首屏尚未交接时仍须完成初始定位，不能跳过解除正文遮罩的唯一入口。
+            mode = isReadable ? .followingTail : .initialPositioning
         }
         if liveTailChanged, mode == .readingHistory {
             hasUnseenTail = true
@@ -137,7 +144,9 @@ final class ConversationTimelineScrollController {
             pending = .tail(animated: false, reason: .initial)
         case .followingTail:
             // 折叠命令的 stdout/status 更新不一定改变布局；真实行高变化由 geometry 接口报告。
-            if visibleTailChanged || snapshot.changes.containsHistoryChange || snapshot.changes.contains(.localSubmission) {
+            if requestedTail {
+                pending = .tail(animated: true, reason: .user)
+            } else if visibleTailChanged || snapshot.changes.containsHistoryChange || snapshot.changes.contains(.localSubmission) {
                 pending = .tail(animated: snapshot.changes.contains(.localSubmission), reason: .snapshot)
             }
         case .readingHistory:
@@ -242,7 +251,7 @@ final class ConversationTimelineScrollController {
         guard isActive, expectedEpoch == nil || expectedEpoch == epoch else { return }
         ConversationScrollDiagnostics.shared.record("phase", "\(phase)")
         let userDriven = Self.isUserDriven(phase) || (phase == .animating && !ownsAnimation)
-        if userDriven, !isInteracting {
+        if userDriven, !isInteracting || phase == .tracking {
             isInteracting = true
             interactionStartOffset = metrics?.contentOffsetY ?? viewport.metrics?.contentOffsetY
             if phase == .animating { mode = .readingHistory }
@@ -258,6 +267,12 @@ final class ConversationTimelineScrollController {
             if wasInteracting, reachedTail {
                 if isReadable { mode = .followingTail }
                 hasUnseenTail = false
+            }
+            // 惯性中的显式点击等手势结束后执行；新 tracking 会在上方取消旧请求。
+            if case .tail(_, .user) = pending {
+                mode = isReadable ? .followingTail : .initialPositioning
+                hasUnseenTail = false
+                schedulePending()
             }
         }
     }
@@ -292,9 +307,10 @@ final class ConversationTimelineScrollController {
         guard isActive, hasContent else { return }
         ConversationScrollDiagnostics.shared.record("return_tail")
         beginInput()
-        mode = .followingTail
-        hasUnseenTail = false
         pending = .tail(animated: true, reason: .user)
+        guard !isInteracting else { return }
+        mode = isReadable ? .followingTail : .initialPositioning
+        hasUnseenTail = false
         schedulePending()
     }
 

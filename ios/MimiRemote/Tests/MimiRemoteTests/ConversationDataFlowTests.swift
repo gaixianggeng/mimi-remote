@@ -641,7 +641,7 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertNotEqual(refreshed.rowIDs, suspended.rowIDs)
     }
 
-    func testConversationTimelineInitialPositioningYieldsOnlyToExplicitUserScrollOrSubmission() {
+    func testConversationTimelineInitialPositioningYieldsOnlyToExplicitUserScrollOrSubmission() async {
         let scope = ScopedSessionID(profileID: "timeline-controller", sessionID: "initial-position")
         let controller = ConversationTimelineScrollController()
         _ = controller.prepare(timelineSnapshot(
@@ -656,6 +656,11 @@ final class ConversationDataFlowTests: XCTestCase {
         )
         XCTAssertEqual(controller.mode, .initialPositioning, "旧 List 几何不能取消新会话首屏定位")
 
+        controller.connect(epoch: controller.epoch) { _ in }
+        controller.geometryChanged(timelineMetrics(offset: 1_000, nearBottom: true), epoch: controller.epoch)
+        controller.tailVisibilityChanged(true, epoch: controller.epoch)
+        for _ in 0..<8 { await Task.yield() }
+        XCTAssertTrue(controller.isReadable, "正文可交互前必须完成首屏交接")
         controller.phaseChanged(.tracking)
         controller.geometryChanged(
             timelineMetrics(offset: 160, nearBottom: false),
@@ -773,8 +778,10 @@ final class ConversationDataFlowTests: XCTestCase {
             changes: .historyReplacement,
             message: ConversationMessage(role: .assistant, content: "初始历史")
         ))
+        controller.connect(epoch: controller.epoch) { _ in }
         controller.geometryChanged(timelineMetrics(offset: 1_000, nearBottom: true), epoch: controller.epoch)
-        controller.returnToTail()
+        controller.tailVisibilityChanged(true, epoch: controller.epoch)
+        XCTAssertTrue(controller.isReadable)
         XCTAssertEqual(controller.mode, .followingTail)
         return controller
     }

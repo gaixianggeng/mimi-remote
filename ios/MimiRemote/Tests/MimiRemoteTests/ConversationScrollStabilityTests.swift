@@ -268,6 +268,120 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertFalse(controller.isReadable)
     }
 
+    func testFirstContentEndsInteractionOwnedByEmptyListAndBecomesReadable() async {
+        let rig = ScrollRig(connect: false, startsEmpty: true)
+        let emptyEpoch = rig.controller.epoch
+        rig.controller.phaseChanged(.tracking, epoch: emptyEpoch)
+        XCTAssertTrue(rig.controller.isInteracting)
+
+        rig.messages = [ConversationMessage(role: .assistant, content: "首批历史")]
+        rig.publish(changes: .historyReplacement)
+        XCTAssertGreaterThan(rig.controller.epoch, emptyEpoch)
+        XCTAssertFalse(rig.controller.isInteracting, "新 List 不得继承已经失效的手势")
+        rig.controller.phaseChanged(.idle, epoch: emptyEpoch)
+        rig.controller.bind(scrollView: rig.scrollView, epoch: rig.controller.epoch)
+        rig.connect()
+        rig.report(offset: 0)
+        rig.controller.tailVisibilityChanged(true, epoch: rig.controller.epoch)
+        await drain()
+
+        XCTAssertTrue(rig.controller.isReadable)
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
+        let cache = ConversationTimelineItemCache()
+        _ = cache.snapshot(from: rig.messages, scope: rig.scope)
+        let next = cache.snapshot(
+            from: rig.messages + [ConversationMessage(role: .assistant, content: "后续补齐")],
+            suspendingUpdates: rig.controller.isInteracting, scope: rig.scope
+        )
+        XCTAssertEqual(next.rows.count, 2, "首屏之后的投影不能继续冻结")
+    }
+
+    func testSubmissionBeforeInitialHandoffStillRequiresAndCompletesReadableTail() async {
+        for includesAssistantUpdate in [false, true] {
+            let rig = ScrollRig(connect: false)
+            rig.messages.append(ConversationMessage(clientMessageID: "submission", role: .user, content: "继续"))
+            if includesAssistantUpdate {
+                rig.messages.append(ConversationMessage(role: .assistant, content: "已开始回复"))
+            }
+            rig.publish(changes: [.localSubmission, .live])
+            XCTAssertFalse(rig.controller.isReadable, "发送意图不能提前揭开未定位的正文")
+            rig.connect()
+            rig.report(offset: 0)
+            XCTAssertFalse(rig.controller.isReadable, "还需要尾部哨兵确认")
+            rig.controller.tailVisibilityChanged(true, epoch: rig.controller.epoch)
+            await drain()
+            XCTAssertTrue(rig.controller.isReadable, "本地发送不能跳过可读性交接入口")
+            XCTAssertEqual(rig.controller.mode, .followingTail)
+            XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
+        }
+    }
+
+    func testReturnToTailBeforeInitialHandoffDoesNotStrandTheCover() async {
+        let rig = ScrollRig(connect: false)
+        rig.controller.returnToTail()
+        XCTAssertFalse(rig.controller.isReadable)
+        rig.connect()
+        rig.report(offset: 0)
+        rig.controller.tailVisibilityChanged(true, epoch: rig.controller.epoch)
+        await drain()
+        XCTAssertTrue(rig.controller.isReadable)
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
+    }
+
+    func testReturnToTailDuringDecelerationRunsOnceAfterIdleWithoutOtherUpdates() async {
+        let rig = ScrollRig()
+        XCTAssertTrue(rig.controller.isReadable)
+        rig.controller.phaseChanged(.tracking)
+        rig.report(offset: 600)
+        rig.controller.phaseChanged(.decelerating)
+        rig.controller.returnToTail()
+        await drain()
+        XCTAssertTrue(rig.commands.isEmpty, "显式请求也不能在当前手势内抢写位置")
+        XCTAssertEqual(rig.controller.mode, .readingHistory, "请求尚未执行时不能提前隐藏按钮")
+        rig.report(offset: 500)
+        rig.controller.phaseChanged(.idle)
+        await drain()
+        XCTAssertEqual(rig.commands.map(\.target), [.tail])
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
+        XCTAssertEqual(rig.controller.mode, .followingTail)
+        rig.controller.phaseChanged(.idle)
+        await drain()
+        XCTAssertEqual(rig.commands.count, 1)
+    }
+
+    func testNewGestureCancelsReturnToTailQueuedDuringDeceleration() async {
+        for startsBeforeIdle in [false, true] {
+            let rig = ScrollRig()
+            rig.controller.phaseChanged(.tracking)
+            rig.report(offset: 600)
+            rig.controller.phaseChanged(.decelerating)
+            rig.controller.returnToTail()
+            if !startsBeforeIdle { rig.controller.phaseChanged(.idle) }
+            // 新手势既可能中断旧惯性，也可能抢在 idle 后的合并任务之前到来。
+            rig.controller.phaseChanged(.tracking)
+            rig.report(offset: 450)
+            rig.controller.phaseChanged(.idle)
+            await drain()
+            XCTAssertTrue(rig.commands.isEmpty)
+            XCTAssertEqual(rig.controller.mode, .readingHistory)
+            XCTAssertEqual(rig.scrollView.contentOffset.y, 450, accuracy: 0.5)
+        }
+    }
+
+    func testThawedMetadataSnapshotDoesNotDiscardExplicitReturnToTail() async {
+        let rig = ScrollRig()
+        rig.controller.phaseChanged(.tracking)
+        rig.report(offset: 600)
+        rig.controller.phaseChanged(.decelerating)
+        rig.controller.returnToTail()
+        rig.controller.phaseChanged(.idle)
+        // 隐藏输出等来源更新只提高 revision，不改变 rows 或总高度。
+        rig.publish(changes: .live)
+        await drain()
+        XCTAssertEqual(rig.commands.map(\.target), [.tail])
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
+    }
+
     func testInitialPresentationCompletesWhenCommandDoesNotChangeGeometry() async {
         let rig = ScrollRig(connect: false)
         rig.report(offset: 1_200)
@@ -371,16 +485,17 @@ private final class ScrollRig {
     let controller = ConversationTimelineScrollController()
     let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
     var scope = ScopedSessionID(profileID: "profile", sessionID: "session")
-    let messages = [ConversationMessage(role: .assistant, content: "first")]
+    var messages = [ConversationMessage(role: .assistant, content: "first")]
     let markerID = UUID()
     var commands: [ConversationTimelineScrollCommand] = []
     private var revision = 0
     private(set) var snapshot = ConversationTimelineSnapshot.empty
 
-    init(connect shouldConnect: Bool = true) {
+    init(connect shouldConnect: Bool = true, startsEmpty: Bool = false) {
         scrollView.contentInsetAdjustmentBehavior = .never
         scrollView.contentSize = CGSize(width: 400, height: 2_000)
         scrollView.contentOffset.y = 1_200
+        if startsEmpty { messages = [] }
         publish(changes: .historyReplacement)
         controller.bind(scrollView: scrollView, epoch: controller.epoch)
         if shouldConnect {
