@@ -2,13 +2,17 @@
 
 日期：2026-09-15。关联 [#492](https://github.com/gaixianggeng/mimi-remote/issues/492)、[#491](https://github.com/gaixianggeng/mimi-remote/issues/491)。本文交付调研和隔离实验，不声明已完成产品接入。
 
+范围说明：本文已按 #492 在 2026-09-15 确认的范围更新。模型供应商、模型 endpoint、密钥、套餐、推理参数和模型调用均由 Harness 管理，供应商实调与编码效果对比不属于 #492 的验收项，也不是接入前置条件。早期版本中“先验证真实套餐，再决定接入”的结论已撤回；接口事实和隔离实验结果继续有效。
+
 ## 目标与结论
 
-**建议继续一次火山套餐实调，再决定是否实现正式 Runtime。** Harness 已具备原生会话接入所需的主要服务端能力。火山也已提供官方 Harness 插件。当前最大的缺口是已确认属于 Coding Plan 的凭据、真实工具调用兼容性，以及同条件编码效果证据。
+**接入判断以 Harness 的公开服务契约与 agentd 侧的适配成本为依据。** Harness 已具备原生会话接入所需的主要服务端能力。协议差异集中在字段、事件和反向交互转换，不能只替换服务地址。
 
-本机已验证：安装启动、Cookie 认证、官方模型目录、流式输出、真实文件读取、多轮工具结果回传、双客户端订阅、断线后重放追问、首答胜出、历史恢复、已观察请求的重试去重、沙箱拒绝与审批拒绝、会话中断。模型全部由本地固定响应模拟器提供，**真实模型调用为 0**。两位观察者是协议客户端，不是已接入的 Mimi App 或实际浏览器页面。
+本机已验证：安装启动、Cookie 认证、模型目录、流式输出、真实文件读取、多轮工具结果回传、双客户端订阅、断线后重放追问、首答胜出、历史恢复、已观察请求的重试去重、沙箱拒绝与审批拒绝、会话中断。模型全部由本地固定响应模拟器提供，**真实模型调用为 0**。两位观察者是协议客户端，不是已接入的 Mimi App 或实际浏览器页面。
 
-正式接入应沿用 `Mimi → agentd → Harness → 火山 Coding Plan`。事件转换、运行进程和凭据都留在 Mac 宿主。现有 Codex/Claude 生产代码及配置未改动。
+接入边界为 `Mimi → Mac 上的 agentd → Harness 服务`。Mimi 接入的是 Harness 的服务接口；若展示模型列表或允许选择模型，只消费 Harness 返回的元数据并转发选择，不维护自己的供应商配置。事件转换、运行进程和凭据都留在 Mac 宿主。现有 Codex/Claude 生产代码及配置未改动。
+
+当前缺口集中在 agentd 转发通路、完整运行状态恢复和实际双端共享会话，而不是供应商侧凭据或套餐。
 
 ## 方案
 
@@ -32,7 +36,9 @@
 
 上游仍明确标注开发者预览、可能破坏兼容性。对外包导出、生成的 Remote 接口和公开文档可以作为版本内契约；Cordis 实例、pending Map、Web UI 内部状态和日志内部格式不能当稳定跨版本 API。[Harness 发布源码](https://github.com/deepseek-ai/deepseek-harness/tree/fb2c4b9e698e30edb738bca4cf0618587db7d203)、[官方安全说明](https://github.com/deepseek-ai/deepseek-harness/blob/fb2c4b9e698e30edb738bca4cf0618587db7d203/SAFETY.md)。
 
-### 2. 火山 Coding Plan 路径
+### 2. 附加参考：供应商 Coding Plan 路径
+
+本节记录固定版本下观察到的供应商插件事实，供 Harness 宿主配置参考。**供应商选择、端点和密钥由 Harness 管理，不是 Mimi 的职责，也不属于 #492 的验收范围。**
 
 火山文档现在明确列有 [DeepSeek Harness 接入页](https://docs.volcengine.com/docs/82379/2637930?lang=zh)。Issue 原入口 `2188958` 当前是 OpenCode 接入页。实际配置以[官方插件 README](https://github.com/volcengine/ark-cli/blob/a5b260b46c03dc4ae7ee221eda77bb572fc61665/dsh-plugins/ark-plan-api/README.md)和[固定 patch](https://github.com/volcengine/ark-cli/blob/a5b260b46c03dc4ae7ee221eda77bb572fc61665/dsh-plugins/ark-plan-api/cordis.patch.yml)核对。
 
@@ -46,11 +52,11 @@
 | 不能混用的路线 | `ark-cn` 的 `/api/v3/compatible` 是后付费，不是 Coding Plan |
 | 另一个兼容入口 | `/api/coding/v3` 用于 OpenAI Chat Completions 自定义接入；本次优先沿用官方 Anthropic 插件 |
 
-插件同时加载 Agent Plan、国内/海外 Coding Plan 和后付费目录。**模型出现在目录不等于账户有权限或额度**；Mimi 首版应明确选择 `ark-coding-plan-cn`，不能按模型名称自动切换付费路线。没有查到旧模型正式停售证据，本文不把目录中的 V4 推断为 V3.2 已下线。
+插件同时加载 Agent Plan、国内/海外 Coding Plan 和后付费目录。**模型出现在目录不等于账户有权限或额度**；因此 Mimi 不应按模型名称推断付费路线，也不应替 Harness 决定 provider。没有查到旧模型正式停售证据，本文不把目录中的 V4 推断为 V3.2 已下线。
 
 官方插件声明支持工具调用和流式传输，但该版本未给 V4 配置 `reasoningEfforts`。因此不能声称 Harness 已能通过官方插件选择推理档位。Harness 的 OpenAI 自定义路线另有 `reasoning_effort`、`thinkingFormat: deepseek`、`supportsDeveloperRole`、`maxTokensField` 等兼容开关；这些不能机械套用到 Anthropic Messages 路线。[固定 provider 文档](https://github.com/deepseek-ai/deepseek-harness/blob/fb2c4b9e698e30edb738bca4cf0618587db7d203/docs/user/guide/providers.md)。
 
-本机发现的 DeepSeek 环境配置不能确认为 Coding Plan，未使用其密钥。真实验证须先确认套餐有效和 Key 归属，再固定 provider/model。可在控制台记录调用前后套餐用量；官方 `arkcli usage plan --product coding-plan` 通过 `GetCodingPlanUsage` 查询额度。arkcli 识别 SSO、AK/SK 和 APIKey profile，可见范围取决于登录身份或 Key 绑定身份，不能假定未知来源的推理 Key 有查询权限。一次极小调用若未改变展示百分比，也不能仅凭此认定未计费。[火山额度查询说明](https://github.com/volcengine/ark-cli/blob/a5b260b46c03dc4ae7ee221eda77bb572fc61665/skills/arkcli-usage/references/arkcli-usage-plan.md)。
+本机发现的 DeepSeek 环境配置不能确认为 Coding Plan，本轮未使用其密钥，也未发起任何真实模型调用。若后续确需核对套餐用量，可在控制台记录调用前后用量，官方 `arkcli usage plan --product coding-plan` 通过 `GetCodingPlanUsage` 查询额度。arkcli 识别 SSO、AK/SK 和 APIKey profile，可见范围取决于登录身份或 Key 绑定身份，不能假定未知来源的推理 Key 有查询权限。一次极小调用若未改变展示百分比，也不能仅凭此认定未计费。[火山额度查询说明](https://github.com/volcengine/ark-cli/blob/a5b260b46c03dc4ae7ee221eda77bb572fc61665/skills/arkcli-usage/references/arkcli-usage-plan.md)。以上仅为宿主侧参考，Mimi 不承担该核对。
 
 ### 3. Mimi 能力映射
 
@@ -143,7 +149,7 @@ Mimi 已有的 project/browse_roots 授权、真实路径解析、thread ownersh
 
 前一个多轮任务恰好 3 次模型请求；整个实验共 7 次带工具的模拟请求。自动标题可能另有本地模拟请求，不计入这 7 次。日志包含本机路径、启动 token、会话标识和原始帧，只保留本机；公开提交仅保留程序与脱敏结论。
 
-以下仍未验证：真实套餐鉴权和额度归属、真实推理参数、火山工具结果/流式兼容性、实际编码质量；实际 Web 页面与 Mimi App 共同操作；并发首次重复提交、异步附件竞争、steer、历史缺口修复、完整 control 基线及宿主重启恢复。上游已有测试仅作源码证据，本轮没有执行上游全量测试或产品 iOS/Go 回归。
+以下仍未验证：实际 Web 页面与 Mimi App 共同操作；并发首次重复提交、异步附件竞争、steer、历史缺口修复、完整 control 基线及宿主重启恢复。供应商侧的真实鉴权、推理参数、工具结果/流式兼容性与编码质量同样未验证，但属于宿主配置范围，不是 #492 的验收项。上游已有测试仅作源码证据，本轮没有执行上游全量测试或产品 iOS/Go 回归。
 
 ### 隔离复现步骤
 
@@ -179,18 +185,18 @@ shasum -a 256 "$task_cache/runtime/package-lock.json"
 
 预期为 10 条 `PASS`，进程随后退出，结果保存在 `$task_cache/logs/smoke-summary.json`。未来重新解析依赖可能产生不同锁文件；保留本轮锁文件才能重建本轮完整依赖。脚本会拒绝关键组件版本不一致，而不是静默使用新版本。
 
-### 下一次真实套餐验证
+### 附：供应商侧验证（可选，不在本 Issue 范围）
 
-先取得已确认的本机 Coding Plan 配置位置。新建另一份隔离状态，只选择 `ark-coding-plan-cn/deepseek-v4-pro`，不使用生产代码作为输入。用一个公开合成小项目运行“读取缺陷测试 → 修改纯函数 → 运行测试”的受控任务，再补一个多文件修改任务。记录固定 prompt、仓库 hash、模型和插件版本、推理选项、测试通过率、人工介入次数、耗时、请求数和套餐用量。
+若后续单独启动供应商侧验证，可复用本节方法。该验证不由 Mimi 承担，也不阻塞 agentd 适配。新建一份隔离状态，只选择一个已确认归属的 Coding Plan provider/model，不使用生产代码作为输入。用一个公开合成小项目运行“读取缺陷测试 → 修改纯函数 → 运行测试”的受控任务，再补一个多文件修改任务。记录固定 prompt、仓库 hash、模型和插件版本、推理选项、测试通过率、人工介入次数、耗时、请求数和套餐用量。
 
-同一个任务内验证：至少一次完整流式回复与多轮 tool_use/tool_result；审批拒绝和追问应答；断开客户端后恢复。若要比较 OpenCode，应使用同一火山模型、任务、权限、上下文预算和重复次数。Harness 系统提示与工具结构不同，结果只能说明该配置下的样本表现，不能推广为品牌优劣。
+同一个任务内验证：至少一次完整流式回复与多轮 tool_use/tool_result；审批拒绝和追问应答；断开客户端后恢复。若要比较 OpenCode，应使用同一模型、任务、权限、上下文预算和重复次数。Harness 系统提示与工具结构不同，结果只能说明该配置下的样本表现，不能推广为品牌优劣。
 
 ## 风险与成本判断
 
-**主要维护成本是两个变化源：Harness 的 Remote/事件协议，以及火山 provider 插件。** 需要一个固定版本组合、上述定向实验和按能力降级。主包升级不能自动放宽权限或继承新增方法。当前还没有稳定兼容期承诺，不适合不经验证自动升级。
+**主要维护成本是 Harness 的 Remote/事件协议变化。** 宿主侧还需要维持一个固定的插件组合与锁文件，因为只固定主包不足以保证运行时一致。需要一个固定版本组合、上述定向实验和按能力降级。主包升级不能自动放宽权限或继承新增方法。当前还没有稳定兼容期承诺，不适合不经验证自动升级。
 
-对小团队的工作量判断为**中等到偏高**：模型配置已有官方插件，额外成本较小；agentd 事件归一、iOS 二元路由拆除、审批与重连状态对齐是主要工作。尚未做真实原生适配，不能可靠承诺人日。先完成真实套餐验证，可避免在编码效果尚无证据时投入跨栈改造。
+对小团队的工作量判断为**中等到偏高**：agentd 事件归一、iOS 二元路由拆除、审批与重连状态对齐是主要工作，模型接入本身由 Harness 侧插件承担。尚未做真实原生适配，不能可靠承诺人日。
 
 OpenCode 同样是额外本地服务，公开提供 OpenAPI 3.1、HTTP/SSE 和 Basic Auth；不是比 Harness 多一个进程。它的优势是另一种较直接的服务接口，代价是重新适配会话和事件语义。本轮没有运行 OpenCode，也没有同条件效果数据，不据此推荐替换。[OpenCode 官方服务接口](https://opencode.ai/docs/server/)。
 
-最终决策：保留 Harness 为可接入候选，继续真实套餐验证；不立即承诺正式 Runtime、发布或可恢复宿主崩溃。若真实验证不通过，先记录具体 provider/参数/协议失败，再决定是否缩小能力或暂缓。
+接入判断：保留 Harness 为可接入候选，以服务契约和适配成本为依据推进最小 agentd 适配通路；不立即承诺正式 Runtime、发布或可恢复宿主崩溃。供应商侧验证不构成该判断的前置条件。
