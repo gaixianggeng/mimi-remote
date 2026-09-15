@@ -333,6 +333,29 @@ func TestAuthenticateRequiresToken(t *testing.T) {
 	}
 }
 
+// 认证把 token 放在 query 上，而 net/http 会把完整 URL 包进传输错误；
+// 连接失败时错误信息不得回带 token。
+func TestAuthenticateNeverLeaksTokenInTransportError(t *testing.T) {
+	const token = "startup-token-should-not-leak"
+
+	// 借一个真实端口再关掉，保证是"连不上"而不是地址非法。
+	probe := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	baseURL := probe.URL
+	probe.Close()
+
+	client, err := New(Config{BaseURL: baseURL, AccessToken: token})
+	if err != nil {
+		t.Fatalf("构造客户端失败：%v", err)
+	}
+	err = client.Authenticate(context.Background())
+	if err == nil {
+		t.Fatal("不可达服务应返回错误")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("认证错误不得包含 token：%v", err)
+	}
+}
+
 // 报文外壳必须是 client-request + payload.args，否则 Harness 会判 gateway/bad-request。
 func TestCallUsesConnectionEnvelope(t *testing.T) {
 	fake := newFakeHarness(t)

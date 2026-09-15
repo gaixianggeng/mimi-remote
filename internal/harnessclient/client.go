@@ -97,6 +97,26 @@ func (c *Client) httpClient() *http.Client {
 	return &http.Client{Timeout: DefaultCallTimeout}
 }
 
+// sanitizeTransportError 收敛传输层错误，避免凭据随错误向外扩散。
+//
+// net/http 会把完整请求 URL 包进 *url.Error，而认证请求恰好把启动 token 放在
+// query 上，原样返回会让 token 出现在日志、doctor 输出和上层错误信息里。
+// 这里先剥掉 URL 包装，再对残留的 secret 做一次兜底替换。
+func sanitizeTransportError(err error, secret string) error {
+	if err == nil {
+		return nil
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Err != nil {
+		err = urlErr.Err
+	}
+	message := err.Error()
+	if secret != "" && strings.Contains(message, secret) {
+		return errors.New(strings.ReplaceAll(message, secret, "***"))
+	}
+	return err
+}
+
 // Authenticate 用启动 token 换取绑定 hostname+port 的 Cookie。
 //
 // token 只在这里出现一次，不写日志也不返回给调用方；换到的 Cookie 留在内存。
@@ -123,7 +143,7 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("harnessclient: 认证请求失败：%w", err)
+		return fmt.Errorf("harnessclient: 认证请求失败：%w", sanitizeTransportError(err, token))
 	}
 	defer func() { _ = response.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<16))
