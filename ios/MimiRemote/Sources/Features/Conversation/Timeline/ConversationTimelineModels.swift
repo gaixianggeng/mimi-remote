@@ -187,7 +187,7 @@ struct ConversationWorkGroup: Identifiable, Equatable {
         }
     }
 
-    private static func durationText(_ duration: TimeInterval) -> String {
+    static func durationText(_ duration: TimeInterval) -> String {
         let seconds = max(0, Int(duration.rounded(.down)))
         if seconds >= 3_600 {
             return "\(seconds / 3_600)h \((seconds % 3_600) / 60)m"

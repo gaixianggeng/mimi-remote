@@ -1249,21 +1249,30 @@ struct CodexAppServerEventProjector {
         guard !parts.isEmpty else {
             return nil
         }
-        return .sessionContext(
-            SessionContextSnapshot(
-                sessionID: metadata.sessionID,
-                threadID: metadata.sessionID,
-                tasks: [SessionContextTask(
-                    id: "token-usage",
-                    kind: "token_usage",
-                    title: L10n.text("ui.token_usage"),
-                    subtitle: parts.joined(separator: " · "),
-                    status: "updated"
-                )],
-                updatedAt: Date()
-            ),
-            metadata
+        var context = SessionContextSnapshot(
+            sessionID: metadata.sessionID,
+            threadID: metadata.sessionID,
+            tasks: [SessionContextTask(
+                id: "token-usage",
+                kind: "token_usage",
+                title: L10n.text("ui.token_usage"),
+                subtitle: parts.joined(separator: " · "),
+                status: "updated"
+            )],
+            updatedAt: Date()
         )
+        let breakdown = { (object: [String: CodexAppServerJSONValue]) in
+            AppServerTokenUsageSample.Breakdown(
+                inputTokens: firstInt(in: object, keys: ["inputTokens"]),
+                outputTokens: firstInt(in: object, keys: ["outputTokens"]),
+                totalTokens: firstInt(in: object, keys: ["totalTokens"])
+            )
+        }
+        context.tokenUsage = AppServerTokenUsageSample(
+            total: breakdown(total),
+            last: usage["last"]?.objectValue.map(breakdown)
+        )
+        return .sessionContext(context, metadata)
     }
 
     private func mcpProgressContextEvent(

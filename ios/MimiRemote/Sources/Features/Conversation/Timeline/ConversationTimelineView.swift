@@ -39,6 +39,7 @@ struct ConversationTimelineView: View {
 
     private let messageTailFollowThreshold: CGFloat = 120
     private static let timelineTailSentinelID = "__conversation_timeline_safe_tail__"
+    private static let timelineLiveStatusRowID = "__conversation_timeline_live_status__"
     static let stabilizingCoverAccessibilityIdentifier = "conversation.timeline.stabilizing-cover"
 
     init(
@@ -98,6 +99,17 @@ struct ConversationTimelineView: View {
             messages: messages
         )
         let isHistoryLoading = sessionStore.historyLoadProgress(sessionID: displayedSessionID) != nil
+        let liveStatus = displayedSessionID.flatMap { sessionID -> ConversationLiveStatus? in
+            guard let session = sessionStore.sessionsByID[sessionID] else { return nil }
+            return ConversationLiveStatus.make(
+                session: session,
+                messages: messages,
+                foregroundActivity: sessionStore.foregroundActivity(for: sessionID),
+                runtimeActivity: sessionStore.runtimeActivitySnapshot(for: sessionID),
+                tokenCounter: sessionStore.turnOutputTokensBySessionID[sessionID],
+                readiness: sessionStore.conversationReadiness(for: session)
+            )
+        }
         let isLoadingEarlierHistory = sessionStore.isLoadingEarlierHistory(sessionID: displayedSessionID)
         let shouldShowInlineHistoryLoading = Self.shouldShowInlineHistoryLoading(
             timelineItemsAreEmpty: timelineItems.isEmpty,
@@ -131,8 +143,18 @@ struct ConversationTimelineView: View {
                                     item,
                                     activeUserDeliveryMessageID: activeUserDeliveryMessageID,
                                     crossSessionOriginMessageID: crossSessionOriginMessageID,
+                                    showsLiveStatus: liveStatus != nil,
                                     proxy: proxy
                                 )
+                            }
+                            if let liveStatus {
+                                // 独立于 timelineItems 的尾部行：不参与条目 ID、历史锚点与分组投影，
+                                // 贴底跟随仍以下方哨兵为准，出现/消失只表现为内容高度变化。
+                                ConversationLiveStatusRow(status: liveStatus, layout: layout)
+                                    .id(Self.timelineLiveStatusRowID)
+                                    .listRowSeparator(.hidden)
+                                    .listRowInsets(layout.messageRowInsets)
+                                    .listRowBackground(Color.clear)
                             }
                             if shouldShowInlineHistoryLoading {
                                 historyLoadingRow
@@ -548,12 +570,14 @@ struct ConversationTimelineView: View {
         _ item: ConversationTimelineItem,
         activeUserDeliveryMessageID: UUID?,
         crossSessionOriginMessageID: UUID?,
+        showsLiveStatus: Bool,
         proxy: ScrollViewProxy
     ) -> some View {
         timelineRow(
             item,
             activeUserDeliveryMessageID: activeUserDeliveryMessageID,
             crossSessionOriginMessageID: crossSessionOriginMessageID,
+            showsLiveStatus: showsLiveStatus,
             proxy: proxy
         )
         .modifier(ConversationHistoryAnchorGeometryModifier(
@@ -590,6 +614,7 @@ struct ConversationTimelineView: View {
         _ item: ConversationTimelineItem,
         activeUserDeliveryMessageID: UUID?,
         crossSessionOriginMessageID: UUID?,
+        showsLiveStatus: Bool,
         proxy: ScrollViewProxy
     ) -> some View {
         switch item {
@@ -666,6 +691,7 @@ struct ConversationTimelineView: View {
                 group: group,
                 layout: layout,
                 isExpanded: isExpanded,
+                defersRunningProgressToLiveStatus: showsLiveStatus,
                 toggleGroup: {
                     toggleWorkGroup(
                         group: group,
