@@ -357,7 +357,10 @@ final class SessionStore: ObservableObject {
     var relatedSessionSocket: (any SessionWebSocketClient)?
     var relatedSessionSocketID: SessionID?
     var relatedSessionSocketGeneration = 0
-    var selectionGeneration: UInt64 = 0
+    var sessionCreationLoadingLease: SessionSelectionLease?
+    var selectionGeneration: UInt64 = 0 {
+        didSet { clearSessionCreationLoading() }
+    }
     var webSocketConnectionGeneration = 0
     /// 单调递增的重连租约。attempt 会在 reset 后从 1 重新开始，不能单独作为异步任务身份。
     var webSocketReconnectGeneration: UInt64 = 0
@@ -414,6 +417,7 @@ final class SessionStore: ObservableObject {
     var recentActivityProjectionBySessionID: [SessionID: SessionRecentActivityProjection] = [:]
     // 队列订阅不依赖当前页面；用户切到其他会话后，原 thread 仍能在完成时继续 FIFO 派发。
     var queuedSessionSockets: [SessionID: any SessionWebSocketClient] = [:]
+    var pendingGuidanceBySessionID: [SessionID: [PendingGuidanceSubmission]] = [:]
     var queuedSessionSocketGenerationByID: [SessionID: Int] = [:]
     var queuedSessionCredentialFingerprintByID: [SessionID: String] = [:]
     var queuedSessionReadyIDs: Set<SessionID> = []
@@ -1814,10 +1818,6 @@ final class SessionStore: ObservableObject {
             return true
         }
         return controlState(for: session).isControllable
-    }
-
-    var canSendInSelectedSession: Bool {
-        canControlSession(selectedSession) && selectedQuotaNotice?.blocksSending != true
     }
 
     var selectedQuotaNotice: CodexQuotaNotice? {

@@ -50,7 +50,10 @@ extension CodexAppServerSessionRuntime {
         guard serverQueueSubmissionSessionIDs.insert(sessionID).inserted else {
             throw CodexAppServerSessionRuntimeError.serverQueueSubmissionInFlight(sessionID)
         }
-        defer { serverQueueSubmissionSessionIDs.remove(sessionID) }
+        defer {
+            serverQueueSubmissionSessionIDs.remove(sessionID)
+            scheduleThreadUnsubscribeAfterSubmissionIfNeeded(sessionID: sessionID)
+        }
 
         let config = try await ensureConfig()
         let requiredMethods = [
