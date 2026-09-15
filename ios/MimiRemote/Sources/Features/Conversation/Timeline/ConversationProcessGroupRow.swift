@@ -8,6 +8,9 @@ struct ConversationWorkGroupRow<Content: View>: View {
     let group: ConversationWorkGroup
     let layout: ConversationLayout
     let isExpanded: Bool
+    /// 时间线尾部状态行已经承担“仍在运行”的动画和计时时，运行中的分组头只保留静态标题，
+    /// 避免同屏出现两个转圈和两个同步走的秒表。
+    var defersRunningProgressToLiveStatus = false
     let toggleGroup: () -> Void
     @ViewBuilder let content: () -> Content
 
@@ -52,13 +55,15 @@ struct ConversationWorkGroupRow<Content: View>: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 8) {
-            if group.status != .completed {
+            if group.status != .completed, !defersRunningMarker {
                 statusMarker
             }
 
             HStack(alignment: .center, spacing: 6) {
                 Group {
-                    if group.status == .running {
+                    if defersRunningMarker {
+                        Text(L10n.text("ui.work_in_progress"))
+                    } else if group.status == .running {
                         // 只让运行中的标题按秒刷新；终态行保持静态，避免历史 List 无意义重绘。
                         SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { context in
                             Text(group.title(at: context.date))
@@ -115,6 +120,10 @@ struct ConversationWorkGroupRow<Content: View>: View {
                 .foregroundStyle(Color.red)
                 .frame(width: 14, height: 18)
         }
+    }
+
+    private var defersRunningMarker: Bool {
+        defersRunningProgressToLiveStatus && group.status == .running
     }
 
     private var groupTransition: AnyTransition {

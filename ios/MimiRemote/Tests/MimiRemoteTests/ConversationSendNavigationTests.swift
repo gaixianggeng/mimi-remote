@@ -3,6 +3,80 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testHostSwitchSettlesPendingGuidanceInOriginalProfile() async throws {
+        for awaitingAcknowledgement in [false, true] {
+            let suite = "ConversationDataFlowTests.GuidanceHostSwitch.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let profiles = [
+                ConnectionProfile(id: "mac-a", displayName: "Mac A", endpoint: "http://127.0.0.1:8787", lastSuccessfulAt: nil),
+                ConnectionProfile(id: "mac-b", displayName: "Mac B", endpoint: "http://127.0.0.1:8788", lastSuccessfulAt: nil)
+            ]
+            defaults.set(try JSONEncoder().encode(profiles), forKey: "agentd.connectionProfiles.v1")
+            defaults.set("mac-a", forKey: "agentd.activeConnectionProfileID.v1")
+            let keychain = TestKeychainOperations()
+            keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+            keychain.setData(Data("token-b".utf8), account: "agentd-profile.mac-b")
+            let appStore = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+            let project = makeProject(id: "proj_guidance_host")
+            let session = makeSession(
+                id: "same-session", projectID: project.id, title: "原会话",
+                status: "running", source: "codex", activeTurnID: "turn-original"
+            )
+            let conversationStore = ConversationStore()
+            let socket = MockWebSocketClient()
+            let store = SessionStore(
+                appStore: appStore, conversationStore: conversationStore, logStore: LogStore(),
+                clientFactory: { MockSessionStoreClient(projects: [project], sessions: [session]) },
+                webSocketFactory: { socket }
+            )
+            await store.refreshAll(autoAttach: false)
+            store.takeOverSession(session)
+            await store.selectSession(session)
+            store.returnToSessionList()
+            _ = try XCTUnwrap(store.sessionsByID[session.id], "先打开原会话，再切到后台发送")
+            XCTAssertTrue(appStore.isConfigured)
+            XCTAssertNotNil(appStore.authenticatedCredentialFingerprint)
+            let clientID = "same-client-message"
+            // 两台电脑刻意复用相同 ID，验证旧发送结果不会写入当前电脑。
+            conversationStore.activate(profileID: "mac-b")
+            conversationStore.appendLocalUser("新电脑的消息", sessionID: session.id, clientMessageID: clientID)
+            conversationStore.activate(profileID: "mac-a")
+            conversationStore.appendLocalUser("旧电脑的引导", sessionID: session.id, clientMessageID: clientID)
+            XCTAssertTrue(store.stagePendingGuidance(
+                CodexAppServerTurnPayload(prompt: "旧电脑的引导"), sessionID: session.id,
+                clientMessageID: clientID, expectedTurnID: "turn-original", hostScope: appStore.activeHostScope
+            ))
+            if awaitingAcknowledgement {
+                socket.emitStatus(.connected)
+                try await waitForSentGuidanceCount(1, socket: socket)
+            }
+            let lateAccepted = socket.onSendAccepted
+            XCTAssertEqual(store.pendingGuidanceBySessionID[session.id]?.first?.state,
+                           awaitingAcknowledgement ? .awaitingAcknowledgement : .waitingForSocket)
+
+            _ = try await store.commitPreparedConnection(PreparedConnectionSettings(
+                endpoint: profiles[1].endpoint, token: "token-b", profileTarget: .existingProfile(id: "mac-b")
+            ))
+            XCTAssertTrue(store.pendingGuidanceBySessionID.isEmpty)
+            XCTAssertTrue(store.queuedSessionSockets.isEmpty)
+            XCTAssertEqual(conversationStore.messages(for: session.id).first?.content, "新电脑的消息")
+            XCTAssertEqual(conversationStore.messages(for: session.id).first?.sendStatus, .sending)
+            lateAccepted?(clientID)
+            await Task.yield()
+            XCTAssertEqual(conversationStore.messages(for: session.id).first?.sendStatus, .sending)
+
+            _ = try await store.commitPreparedConnection(PreparedConnectionSettings(
+                endpoint: profiles[0].endpoint, token: "token-a", profileTarget: .existingProfile(id: "mac-a")
+            ))
+            let oldMessage = try XCTUnwrap(conversationStore.messages(for: session.id).first { $0.clientMessageID == clientID })
+            XCTAssertEqual(oldMessage.content, "旧电脑的引导")
+            XCTAssertEqual(oldMessage.sendStatus,
+                           awaitingAcknowledgement ? .uncertain : .failed)
+            XCTAssertEqual(socket.sentGuidance.count, awaitingAcknowledgement ? 1 : 0, "切换电脑不得自动重发结果不确定的引导")
+        }
+    }
+
     func testReenteringCreatingSessionBlocksSecondSendUntilRemoteIdentityArrives() async throws {
         let project = makeProject(id: "proj_creating_reentry")
         let gate = TurnSubmissionClientGate()
@@ -31,6 +105,7 @@ extension ConversationDataFlowTests {
         await store.selectSession(placeholder)
         XCTAssertFalse(store.isLoading)
         XCTAssertFalse(store.canSendInSelectedSession)
+        XCTAssertEqual(store.conversationReadiness(for: placeholder), .sending, "重入创建中的会话应继续显示发送阶段")
         let didSendSecond = await store.sendTurn(CodexAppServerTurnPayload(prompt: "等待中的第二条"))
         XCTAssertFalse(didSendSecond, "不能接受发往尚无真实 ID 的会话的后续消息")
         XCTAssertTrue(store.queuedTurns(sessionID: placeholder.id).isEmpty)
@@ -122,6 +197,110 @@ extension ConversationDataFlowTests {
             XCTAssertEqual(store.errorMessage, "当前会话原有提示")
             XCTAssertNil(store.pendingGuidanceBySessionID[original.id])
         }
+    }
+
+    func testFirstSendPublishesPreparationBeforeAcknowledgementAndLiveSubscription() async throws {
+        let project = makeProject(id: "proj_live_preparation")
+        let gate = TurnSubmissionClientGate()
+        let client = TurnSubmissionGateClient(projects: [project], sessions: [], gate: gate)
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let socket = MockWebSocketClient()
+        let store = SessionStore(
+            appStore: appStore, conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { client }, webSocketFactory: { socket }
+        )
+        await store.refreshAll(autoAttach: false)
+        let didCreateDraft = await store.createSession(projectID: project.id, prompt: "", resume: nil)
+        XCTAssertTrue(didCreateDraft)
+        let send = Task { await store.sendTurn(CodexAppServerTurnPayload(prompt: "验证首发")) }
+        await gate.waitForModelRequest()
+        await gate.resolveModels([])
+        await gate.waitForCreateRequestCount(1)
+        let pending = try XCTUnwrap(store.selectedSession)
+        XCTAssertEqual(store.conversationReadiness(for: pending), .sending)
+        XCTAssertTrue(socket.connectedSessionIDs.isEmpty, "ACK 前不把临时 ID 发送到订阅接口")
+
+        let created = makeSession(
+            id: "sess_live_preparation", projectID: project.id, title: "验证首发",
+            status: "running", source: "codex", activeTurnID: "turn-live-preparation"
+        )
+        await gate.resolveCreate(.success(try makeCreateSessionResponse(session: created)))
+        let didSend = await send.value
+        XCTAssertTrue(didSend)
+        XCTAssertEqual(store.conversationReadiness(for: created), .connecting)
+        XCTAssertEqual(store.webSocketStatus, .connecting, "订阅开始必须同步退出旧的 disconnected 状态")
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        XCTAssertEqual(store.conversationReadiness(for: created), .live)
+        let requests = await gate.createRequests()
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(store.conversationStore.messages(for: created.id).filter { $0.role == .user }.count, 1)
+        store.returnToSessionList()
+        XCTAssertNil(store.selectedSessionID)
+    }
+
+    func testReopenShowsHistoryThenConnectionWithoutInventingNetworkFailure() async throws {
+        let project = makeProject(id: "proj_live_reopen")
+        let running = makeSession(
+            id: "sess_live_reopen", projectID: project.id, title: "重入",
+            status: "running", source: "codex", activeTurnID: "turn-live-reopen"
+        )
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [running]))
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let socket = MockWebSocketClient()
+        let store = SessionStore(
+            appStore: appStore, conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { client }, webSocketFactory: { socket },
+            webSocketReconnectDelayNanoseconds: { _ in 60_000_000_000 }
+        )
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        let firstOpen = Task { await store.selectSession(running) }
+        await client.waitForHistoryRequestCount(1)
+        XCTAssertEqual(store.conversationReadiness(for: running), .loadingHistory)
+        client.resolveHistoryRequest(at: 0, with: HistoryMessagesPage(messages: [
+            CodexHistoryMessage(id: "rollout:101", role: "assistant", content: "已有正文", createdAt: Date(timeIntervalSince1970: 10))
+        ]))
+        let didOpen = await firstOpen.value
+        XCTAssertTrue(didOpen)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        XCTAssertEqual(store.conversationReadiness(for: running), .live)
+        store.returnToSessionList()
+        XCTAssertEqual(store.webSocketStatus, .disconnected)
+
+        // 过期缓存确保重入确实经过异步历史读取，覆盖用户遇到的等待窗口。
+        store.historyFirstPageCacheByKey.removeAll()
+        store.historyLoadedSignatureBySessionID.removeValue(forKey: running.id)
+        let reopened = Task { await store.selectSession(running) }
+        await client.waitForHistoryRequestCount(2)
+        XCTAssertEqual(store.conversationReadiness(for: running), .loadingHistory)
+        XCTAssertEqual(socket.connectedSessionIDs.count, 1)
+        store.networkReachabilityStatus = .unsatisfied
+        XCTAssertEqual(store.conversationReadiness(for: running), .disconnected)
+        store.networkReachabilityStatus = .satisfied
+        store.connectionTermination = .credentialsInvalid
+        XCTAssertEqual(store.conversationReadiness(for: running), .unavailable(.credentialsInvalid))
+        store.connectionTermination = nil
+        XCTAssertEqual(store.conversationReadiness(for: running), .loadingHistory)
+        client.resolveHistoryRequest(at: 1, with: HistoryMessagesPage(messages: [
+            CodexHistoryMessage(id: "rollout:101", role: "assistant", content: "已有正文", createdAt: Date(timeIntervalSince1970: 10)),
+            CodexHistoryMessage(id: "rollout:102", role: "assistant", content: "离开期间的新正文", createdAt: Date(timeIntervalSince1970: 20))
+        ]))
+        let didReopen = await reopened.value
+        XCTAssertTrue(didReopen)
+        XCTAssertEqual(store.conversationReadiness(for: running), .connecting)
+        XCTAssertEqual(socket.replayBufferedEventsByConnect, [false, false], "快照之后不重复回放旧正文")
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        XCTAssertEqual(store.conversationReadiness(for: running), .live)
+        XCTAssertEqual(store.conversationStore.messages(for: running.id).map(\.content), ["已有正文", "离开期间的新正文"])
+        socket.emitStatus(.failed("test failure"))
+        try await waitForWebSocketStatus(.connecting, store: store)
+        XCTAssertEqual(store.conversationReadiness(for: running), .reconnecting)
+        store.returnToSessionList()
     }
 
     func testCapturedGuidedSendAfterSelectingAnotherSessionUsesBackgroundSocketUntilACK() async throws {
@@ -445,6 +624,8 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(didSend)
         XCTAssertEqual(store.selectedSessionID, other.id)
         XCTAssertTrue(store.isLoading, "A 的迟到 ACK 不能清除 B 的创建 loading")
+        XCTAssertEqual(store.conversationReadiness(for: other), .sending)
+        XCTAssertNotEqual(store.conversationReadiness(for: original), .sending)
 
         var otherResumed = other
         otherResumed.status = "running"

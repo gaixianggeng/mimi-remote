@@ -362,6 +362,9 @@ extension SessionStore {
         connectedSessionID = session.id
         connectedHostScope = hostScope
         connectedCredentialFingerprint = credentialFingerprint
+        webSocketStatusLease = eventLease
+        // 先同步发布建连阶段，再启动异步订阅；避免本轮身份已切换而状态还属于旧连接。
+        setWebSocketStatus(.connecting)
         conversationStore.resetLiveTranscript(sessionID: session.id)
         syncRuntimeActivity(with: session)
         runtimeEventFlushTasks[eventLease]?.cancel()
@@ -589,6 +592,7 @@ extension SessionStore {
     }
 
     func disconnectWebSocket(cancelReconnect: Bool = true) {
+        webSocketStatusLease = nil
         if cancelReconnect {
             cancelWebSocketReconnect(resetAttempts: true)
         }
@@ -1484,6 +1488,10 @@ extension SessionStore {
         case .turnStarted(let metadata):
             let sessionID = metadata.sessionID ?? fallbackSessionID
             recordRuntimeActivity(sessionID: sessionID, turnStartedAt: metadata.createdAt ?? now, activityAt: now)
+            turnOutputTokensBySessionID[sessionID] = .started(
+                turnID: metadata.turnID,
+                previous: turnOutputTokensBySessionID[sessionID]
+            )
         case .assistantDelta(_, let metadata),
              .messageCompleted(_, let metadata),
              .processItemCompleted(_, _, let metadata),
@@ -1512,7 +1520,20 @@ extension SessionStore {
             syncRuntimeActivity(with: session)
         case .sessionRow(let row, _):
             syncRuntimeActivity(with: AgentSession(row: row))
-        case .sessionContext, .permissionProfileUpdated, .goalUpdated, .goalCleared, .unknown:
+        case .sessionContext(let context, let metadata):
+            guard let sample = context.tokenUsage else {
+                return
+            }
+            let sessionID = metadata.sessionID ?? fallbackSessionID
+            let next = TurnOutputTokenCounter.applying(
+                sample,
+                turnID: metadata.turnID,
+                to: turnOutputTokensBySessionID[sessionID]
+            )
+            if turnOutputTokensBySessionID[sessionID] != next {
+                turnOutputTokensBySessionID[sessionID] = next
+            }
+        case .permissionProfileUpdated, .goalUpdated, .goalCleared, .unknown:
             return
         }
     }
@@ -2762,6 +2783,7 @@ extension SessionStore {
         reloadSessionReminders()
         foregroundActivityBySessionID = [:]
         runtimeActivityBySessionID = [:]
+        turnOutputTokensBySessionID = [:]
         locallyCompletedSessionIDs = []
         locallyCompletedGoalThreadIDs = []
         runtimeEventFlushTasks.values.forEach { $0.cancel() }
