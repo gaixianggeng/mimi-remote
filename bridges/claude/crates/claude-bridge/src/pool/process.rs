@@ -830,7 +830,39 @@ impl ClaudeProcessHandle {
     }
 }
 
+/// 沙箱姿态。默认跟随本机 Claude Code，`strict` 保留旧的 fail-closed 覆盖。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SandboxPolicy {
+    /// 不覆盖 Claude Code 自己的沙箱设置：app 内会话与 Mac 上终端 / 桌面跑
+    /// 同一个 CLI 的行为一致。
+    #[default]
+    Inherit,
+    /// 强制开启沙箱、沙箱不可用即失败，并且不允许任何命令出沙箱。
+    Strict,
+}
+
+impl SandboxPolicy {
+    pub(crate) const ENV_KEY: &'static str = "CLAUDE_BRIDGE_SANDBOX_POLICY";
+
+    pub(crate) fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "strict" => Self::Strict,
+            _ => Self::Inherit,
+        }
+    }
+
+    fn from_env() -> Self {
+        std::env::var(Self::ENV_KEY)
+            .map(|value| Self::parse(&value))
+            .unwrap_or_default()
+    }
+}
+
 fn apply_platform_security_args(args: &mut Vec<OsString>) {
+    apply_platform_security_args_with(args, SandboxPolicy::from_env());
+}
+
+fn apply_platform_security_args_with(args: &mut Vec<OsString>, policy: SandboxPolicy) {
     if cfg!(windows) {
         // Claude Code does not support its Bash sandbox on native Windows.
         // Do not silently run a shell outside the sandbox: disable the shell
@@ -838,6 +870,17 @@ fn apply_platform_security_args(args: &mut Vec<OsString>) {
         args.push("--disallowedTools".into());
         args.push("Bash".into());
         args.push("PowerShell".into());
+        return;
+    }
+    if policy == SandboxPolicy::Inherit {
+        // 默认不覆盖 Claude Code 自己的沙箱设置。旧版本在这里把
+        // `allowUnsandboxedCommands` 钉成 false，CLI 会连"申请出沙箱"这个动作
+        // 一起关掉（并在系统提示里告诉模型该参数无效）：沙箱挡住的命令
+        // （`git push` / `git fetch` 这类要出网的）不会退回审批，而是直接失败，
+        // 用户在 app 上批准了也只是批准"在沙箱里再跑一次"。
+        // 跟随 CLI 默认后，沙箱拒绝会让模型带 `dangerouslyDisableSandbox` 重试，
+        // 重试是一次新的工具调用，照样经 `--permission-prompt-tool stdio` 弹到
+        // iOS 审批卡，由用户决定要不要在沙箱外执行。
         return;
     }
     // Use a temporary override so the bridge never edits project or user
@@ -1115,21 +1158,48 @@ mod tests {
     use super::*;
     use crate::pool::claude_protocol::SystemInit;
 
+    fn platform_security_args(policy: SandboxPolicy) -> Vec<String> {
+        let mut args = Vec::new();
+        apply_platform_security_args_with(&mut args, policy);
+        args.into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
     #[test]
     fn platform_security_never_runs_an_unsandboxed_windows_shell() {
-        let mut args = Vec::new();
-        apply_platform_security_args(&mut args);
-        let args: Vec<String> = args
-            .into_iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
+        let args = platform_security_args(SandboxPolicy::Inherit);
         if cfg!(windows) {
             assert_eq!(args, ["--disallowedTools", "Bash", "PowerShell"]);
         } else {
-            assert_eq!(args.first().map(String::as_str), Some("--settings"));
-            assert!(
-                args.get(1)
-                    .is_some_and(|settings| { settings.contains(r#""failIfUnavailable":true"#) })
+            // 默认跟随本机 Claude Code 的沙箱设置，不再覆盖它：沙箱挡住的命令
+            // 才能带 dangerouslyDisableSandbox 退回审批，而不是直接失败。
+            assert!(args.is_empty(), "unexpected sandbox override: {args:?}");
+        }
+    }
+
+    #[test]
+    fn strict_sandbox_policy_keeps_the_fail_closed_override() {
+        let args = platform_security_args(SandboxPolicy::Strict);
+        if cfg!(windows) {
+            assert_eq!(args, ["--disallowedTools", "Bash", "PowerShell"]);
+            return;
+        }
+        assert_eq!(args.first().map(String::as_str), Some("--settings"));
+        let settings = args.get(1).expect("settings payload");
+        assert!(settings.contains(r#""failIfUnavailable":true"#));
+        assert!(settings.contains(r#""allowUnsandboxedCommands":false"#));
+    }
+
+    #[test]
+    fn sandbox_policy_only_opts_into_strict_explicitly() {
+        assert_eq!(SandboxPolicy::parse("strict"), SandboxPolicy::Strict);
+        assert_eq!(SandboxPolicy::parse("  STRICT  "), SandboxPolicy::Strict);
+        for value in ["", "inherit", "default", "off", "1"] {
+            assert_eq!(
+                SandboxPolicy::parse(value),
+                SandboxPolicy::Inherit,
+                "unexpected policy for {value:?}"
             );
         }
     }

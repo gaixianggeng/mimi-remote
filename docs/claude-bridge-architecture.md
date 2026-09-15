@@ -76,7 +76,8 @@ sequenceDiagram
 - thread、cwd、项目、`browse_roots` 和 managed Worktree 继续使用同一套授权投影。
 - 审批反向 RPC 必须与待处理请求匹配；未知反向请求 fail closed。
 - Claude channel 只声明 `read-only` 和 `workspace-write` sandbox，不声明移动端 `danger-full-access`。
-- 网络默认关闭，不开放 `bypass permissions`，不提供任意 SSH 或 Shell 入口。
+- 不开放 `bypass permissions`，不提供任意 SSH 或 Shell 入口。
+- `0.2.12` 起 bridge 不再覆盖 Claude Code 自己的沙箱设置（非 Windows）：app 内会话与同一台 Mac 上终端、Claude 桌面跑同一个 CLI 的沙箱边界一致。沙箱挡住的命令由模型带 `dangerouslyDisableSandbox` 重试，重试是一次新的工具调用，照样经 `--permission-prompt-tool stdio` 弹成 iOS 审批卡，由用户决定是否在沙箱外执行。旧行为是把 `sandbox.allowUnsandboxedCommands` 钉成 `false`，CLI 会连"申请出沙箱"这个动作一起关掉（并在系统提示里告诉模型该参数无效），于是 `git push` / `git fetch` 这类要出网的命令批准了也只能失败，用户批准的其实只是"在沙箱里再跑一次"。需要旧姿态时设 `claude.env.CLAUDE_BRIDGE_SANDBOX_POLICY=strict`，bridge 会重新下发 `{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"autoAllowBashIfSandboxed":false}}`。Windows 没有 Bash 沙箱，仍然整体禁用 `Bash` / `PowerShell`，不受该开关影响。
 
 ### 状态与上下文
 
