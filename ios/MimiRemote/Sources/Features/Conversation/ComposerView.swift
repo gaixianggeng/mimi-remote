@@ -394,6 +394,8 @@ struct ComposerView: View {
             return submitGoalDraft()
         }
         let submittedDraftScope = activeComposerDraftScope
+        // 点击时就固定目标；Task 开始执行前，返回手势可能已经清空当前会话。
+        let submissionContext = sessionStore.captureTurnSubmissionContext()
         let options = preparedTurnOptionsForSubmit()
         guard let submitted = composerState.takeDraftForSubmit(isLoading: sessionStore.isLoading, turnOptionsOverride: options) else {
             return false
@@ -403,21 +405,19 @@ struct ComposerView: View {
         let runningDelivery = runningTurnDeliveryForSubmit
         cancelVoiceInteraction(clearStatus: false)
         clearVoiceTransientStatus()
-        Task {
+        Task { @MainActor in
             let accepted = await sessionStore.sendTurn(
                 submitted.payload,
                 runningDelivery: runningDelivery,
-                permissionSelection: submitted.permissionSelection
+                permissionSelection: submitted.permissionSelection,
+                submissionContext: submissionContext
             )
+            guard submissionContext.hostScope == sessionStore.appStore.activeHostScope else { return }
             if !accepted {
-                await MainActor.run {
-                    restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
-                }
+                restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
             } else {
-                await MainActor.run {
-                    guidedFollowUpEnabled = false
-                    resetComposerSendModeAfterSubmit()
-                }
+                guidedFollowUpEnabled = false
+                resetComposerSendModeAfterSubmit()
             }
         }
         return true
@@ -430,6 +430,7 @@ struct ComposerView: View {
         // 防止 app-server 沿用上一轮规划协作状态。
         options.collaborationMode = .default
         let submittedDraftScope = activeComposerDraftScope
+        let submissionContext = sessionStore.captureTurnSubmissionContext()
         guard let submitted = composerState.takeDraftForSubmit(
             isLoading: sessionStore.isLoading || sessionStore.isUpdatingThreadGoal,
             turnOptionsOverride: options
@@ -447,22 +448,20 @@ struct ComposerView: View {
         let runningDelivery = runningTurnDeliveryForSubmit
         cancelVoiceInteraction(clearStatus: false)
         clearVoiceTransientStatus()
-        Task {
+        Task { @MainActor in
             let accepted = await sessionStore.startGoalTurn(
                 payload: submitted.payload,
                 objective: objective,
                 runningDelivery: runningDelivery,
-                permissionSelection: submitted.permissionSelection
+                permissionSelection: submitted.permissionSelection,
+                submissionContext: submissionContext
             )
+            guard submissionContext.hostScope == sessionStore.appStore.activeHostScope else { return }
             if !accepted {
-                await MainActor.run {
-                    restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
-                }
+                restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
             } else {
-                await MainActor.run {
-                    guidedFollowUpEnabled = false
-                    resetComposerSendModeAfterSubmit()
-                }
+                guidedFollowUpEnabled = false
+                resetComposerSendModeAfterSubmit()
             }
         }
         return true
@@ -630,20 +629,24 @@ struct ComposerView: View {
     @MainActor
     func restoreSubmittedDraft(_ submitted: SubmittedComposerDraft, originalScope: ComposerDraftScopeKey) {
         let restoreScope = submittedDraftRestoreScope(originalScope: originalScope)
+        // 页面可能已经销毁，不能仅依赖 @State 的 onChange 保存失败草稿；同时保留
+        // 用户重入后编辑的新草稿，避免旧页面的迟到回调覆盖它。
+        guard sessionStore.composerDraft(for: restoreScope).isEmpty else { return }
         if restoreScope == activeComposerDraftScope {
             guard composerState.canRestore(submitted) else {
                 return
             }
             composerState.restore(submitted)
-        } else {
-            sessionStore.saveComposerDraft(ComposerDraftSnapshot(submitted: submitted), for: restoreScope)
         }
+        sessionStore.saveComposerDraft(ComposerDraftSnapshot(submitted: submitted), for: restoreScope)
     }
 
     func submittedDraftRestoreScope(originalScope: ComposerDraftScopeKey) -> ComposerDraftScopeKey {
         // 新建会话提交时会先进入 local:<project>:<client_message_id> 乐观会话；
         // 如果创建失败，草稿应回到这个用户正在看的失败会话，而不是藏回项目入口。
-        if case .session(let sessionID) = activeComposerDraftScope,
+        if case .newSession(let projectID) = originalScope,
+           projectID == sessionStore.selectedProjectID,
+           case .session(let sessionID) = activeComposerDraftScope,
            sessionID.hasPrefix("local:") || sessionStore.selectedSession?.source == "local" {
             return activeComposerDraftScope
         }
