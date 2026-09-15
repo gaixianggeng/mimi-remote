@@ -16,7 +16,7 @@ struct ConversationTimelineView: View {
     // 在会话切换、本地提交或用户主动“回到底部”后，旧 List 的滚动几何可能还会
     // 回报上一个会话的 offset。锁住跟随直到用户明确上翻，避免这份过期几何把
     // 新会话的首帧尾部定位提前关掉。
-    @State private var isTailFollowLocked = false
+    @State private var isTailFollowLocked = true
     @State private var isTimelineNearBottom = true
     @State private var hasUnseenTailMessage = false
     @State private var isPreservingHistoryScroll = false
@@ -52,14 +52,6 @@ struct ConversationTimelineView: View {
 
     private var displayedSessionID: SessionID? {
         explicitSessionID ?? sessionStore.selectedSessionID
-    }
-
-    private var isHistoryPreparingInitialPresentation: Bool {
-        guard let sessionID = displayedSessionID else { return false }
-        // 首页请求完成不代表行结构稳定；Item 补齐还会替换摘要并重新分组。
-        // summary（降级或失败）同样可以展示，不能要求 full 才解除遮罩。
-        return sessionStore.historyLoadProgress(sessionID: sessionID) != nil
-            || sessionStore.historyLoadedQualityBySessionID[sessionID] == .enriching
     }
 
     var body: some View {
@@ -218,28 +210,24 @@ struct ConversationTimelineView: View {
                         cancelPendingTailScrollAttempts()
                     }
                     latestTimelineMetrics = metrics
-                    // 仅内容增高、视口本身未移动时继续贴尾。这样 Markdown/媒体异步展开
-                    // 可以跟随，但用户正在上翻时不会被同一帧的布局变化抢回底部。
+                    // 首次补齐会让 List 在改行高的同一帧保留旧的顶部行，先退后再由
+                    // 下一拍 scrollTo 拉回。原本贴尾时直接按此刻 UIKit 尺寸保住底部，
+                    // 不能把“offset 已变化”当成用户上翻，也不能等异步重锚再修正。
+                    var followedTailInLayout = false
                     if abs(oldMetrics.contentHeight - metrics.contentHeight) >= 0.5,
-                       abs(oldMetrics.contentOffsetY - metrics.contentOffsetY) < 0.5,
-                       shouldFollowMessageTail,
+                       (shouldFollowMessageTail || isTailFollowLocked),
                        !hasUserDetachedFromTail,
                        !isUserScrollingTimeline,
                        !isPreservingHistoryScroll {
-                        queueTailScrollAttempts(
-                            timelineItems: timelineItems,
-                            proxy: proxy,
-                            sessionID: displayedSessionID,
-                            expectedTailItemID: timelineItems.last?.id,
-                            animatedFirstAttempt: false,
-                            force: true
-                        )
+                        followedTailInLayout = historyScrollCoordinator.followTailAfterContentSizeChange()
                     }
-                    isTimelineNearBottom = metrics.isNearBottom
-                    if metrics.isNearBottom, !hasUserDetachedFromTail {
+                    isTimelineNearBottom = followedTailInLayout || metrics.isNearBottom
+                    if isTimelineNearBottom, !hasUserDetachedFromTail {
                         shouldFollowMessageTail = true
                         hasUnseenTailMessage = false
-                        historyScrollCoordinator.cancelPreservation()
+                        if !historyScrollCoordinator.isPreservingTail {
+                            historyScrollCoordinator.cancelPreservation()
+                        }
                     } else if !isTailFollowLocked {
                         shouldFollowMessageTail = false
                     }
@@ -247,7 +235,10 @@ struct ConversationTimelineView: View {
                 .onScrollPhaseChange { _, newPhase in
                     ConversationScrollDiagnostics.shared.record("phase", "\(newPhase)")
                     let shouldSuspend = Self.shouldSuspendTimelineUpdates(for: newPhase)
-                    historyScrollCoordinator.setInteractionActive(shouldSuspend)
+                    // 系统“点状态栏回顶部”和主动 scrollTo 都可能处于 animating；
+                    // 原生动画期间不做尺寸补偿，也不把首次贴尾锁延续到这次显式移动。
+                    historyScrollCoordinator.setInteractionActive(shouldSuspend || newPhase == .animating)
+                    if newPhase == .animating { isTailFollowLocked = false }
                     guard shouldSuspend != isUserScrollingTimeline else {
                         return
                     }
@@ -279,17 +270,11 @@ struct ConversationTimelineView: View {
 
                 if !isTimelineReadable {
                     // List 必须先进入视图层级才能获得真实高度并执行 scrollTo。用真实画布
-                    // 覆盖首轮历史补齐和尾部布局窗口，不展示顶部或中间位置。
+                    // 只覆盖首次尾部布局窗口，不等待后台网络补齐。
                     ConversationTimelineStabilizingCover(
                         backgroundColor: UIColor(tokens.conversationCanvasBackground)
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay {
-                        ProgressView(L10n.text("ui.loading_session_records"))
-                            .font(themeStore.uiFont(.caption))
-                            .tint(workbenchSecondaryText)
-                            .foregroundStyle(workbenchSecondaryText)
-                    }
                 }
             }
             .onChange(of: displayedSessionID) { _, newID in
@@ -488,15 +473,13 @@ struct ConversationTimelineView: View {
             }
             .task(id: ConversationTimelinePresentationTaskID(
                 listIdentity: timelineListIdentity,
-                tailItemID: isTimelineReadable ? nil : timelineSnapshot.tailItemID,
-                isHistoryPreparing: isHistoryPreparingInitialPresentation
+                tailItemID: isTimelineReadable ? nil : timelineSnapshot.tailItemID
             )) {
                 guard !timelineItems.isEmpty,
-                      !isHistoryPreparingInitialPresentation,
                       presentedTimelineIdentity != timelineListIdentity else {
                     return
                 }
-                // 补齐结束后才交接可读画面。尾行改变会重启定位，但同一条流式正文的
+                // 有可读内容就开始定位，不能等所有后台请求结束。尾行改变会重启定位，但同一条流式正文的
                 // 每次变化不能取消任务，否则持续输出会让首屏一直无法显示。
                 let expectedSessionID = displayedSessionID
                 let expectedTailItemID = timelineItems.last?.id
@@ -512,7 +495,6 @@ struct ConversationTimelineView: View {
                 var attempt = 0
                 while true {
                     guard !Task.isCancelled,
-                          !isHistoryPreparingInitialPresentation,
                           displayedSessionID == expectedSessionID,
                           currentTimelineTailItemID() == expectedTailItemID,
                           initialTailScrollAttemptedIdentity == timelineListIdentity,
@@ -1346,6 +1328,10 @@ struct ConversationTimelineView: View {
         else {
             return
         }
+        if !hasUserDetachedFromTail, shouldFollowMessageTail || isTailFollowLocked {
+            historyScrollCoordinator.beginPreservingTail(sessionID: displayedSessionID)
+            return
+        }
         _ = historyScrollCoordinator.beginPreservingVisible(
             sessionID: displayedSessionID,
             allowsNearBottom: hasUserDetachedFromTail
@@ -1399,7 +1385,6 @@ struct ConversationTimelineView: View {
         previousMetrics: ConversationTimelineScrollMetrics?
     ) {
         guard !Task.isCancelled,
-              !isHistoryPreparingInitialPresentation,
               Self.isInitialTailLayoutStable(previous: previousMetrics, current: latestTimelineMetrics),
               Self.shouldPresentStabilizedTimeline(
             hasTimelineContent: hasTimelineContent,
@@ -1422,7 +1407,6 @@ private struct ConversationTimelineListIdentity: Hashable {
 private struct ConversationTimelinePresentationTaskID: Hashable {
     let listIdentity: ConversationTimelineListIdentity
     let tailItemID: String?
-    let isHistoryPreparing: Bool
 }
 
 private struct ConversationTimelineObservedChange<Value: Equatable>: Equatable {
@@ -1614,6 +1598,7 @@ final class ConversationHistoryScrollCoordinator {
         let generation: Int
         let sessionID: SessionID?
         let candidates: [(id: UUID, frame: CGRect)]
+        let followsTail: Bool
     }
 
     private struct WeakView {
@@ -1630,6 +1615,11 @@ final class ConversationHistoryScrollCoordinator {
     private var correctionTask: Task<Void, Never>?
     private var expirationTask: Task<Void, Never>?
     private var interactionActive = false
+    private var isApplyingOffset = false
+    private var tailSizeObservation: NSKeyValueObservation?
+    private var tailOffsetObservation: NSKeyValueObservation?
+
+    var isPreservingTail: Bool { activeAnchor?.followsTail == true }
 
     var activeGeneration: Int? {
         activeAnchor?.generation
@@ -1680,6 +1670,10 @@ final class ConversationHistoryScrollCoordinator {
     }
 
     func bind(scrollView: UIScrollView) {
+        if self.scrollView !== scrollView {
+            // 旧 List 的布局回调不能修正刚绑定的新会话。
+            cancelPreservation()
+        }
         self.scrollView = scrollView
     }
 
@@ -1690,24 +1684,64 @@ final class ConversationHistoryScrollCoordinator {
         }
     }
 
-    func setContentOffsetY(_ offsetY: CGFloat) {
+    func followTailAfterContentSizeChange() -> Bool {
+        guard let scrollView else { return false }
+        let minimum = -scrollView.adjustedContentInset.top
+        let maximum = max(minimum, scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom)
+        return setContentOffsetY(maximum, event: "scroll_tail_layout")
+    }
+
+    @discardableResult
+    func setContentOffsetY(_ offsetY: CGFloat, event: StaticString = "scroll_anchor") -> Bool {
         guard !interactionActive,
               let scrollView,
               !scrollView.isTracking,
               !scrollView.isDragging,
               !scrollView.isDecelerating else {
-            return
+            return false
         }
         let target = CGPoint(x: scrollView.contentOffset.x, y: offsetY)
         guard abs(target.y - scrollView.contentOffset.y) >= 0.5 else {
-            return
+            return true
         }
-        ConversationScrollDiagnostics.shared.record("scroll_anchor", "from=\(Int(scrollView.contentOffset.y)) to=\(Int(offsetY))")
+        ConversationScrollDiagnostics.shared.record(event, "from=\(Int(scrollView.contentOffset.y)) to=\(Int(offsetY))")
+        isApplyingOffset = true
+        defer { isApplyingOffset = false }
         scrollView.setContentOffset(target, animated: false)
+        return true
     }
 
     func update(metrics newMetrics: ConversationTimelineScrollMetrics) {
         metrics = newMetrics
+    }
+
+    func beginPreservingTail(sessionID: SessionID?) {
+        cancelPreservation()
+        guard let scrollView, !interactionActive else { return }
+        generation += 1
+        activeAnchor = ActiveAnchor(generation: generation, sessionID: sessionID, candidates: [], followsTail: true)
+        // SwiftUI 的 geometry 通知晚于 UIKit 改尺寸。只在本次投影提交窗口同步监听
+        // 尺寸与偏移，保证 List 的旧行保位也在绘制前完成修正；手势和超时立即撤销。
+        tailSizeObservation = scrollView.observe(\.contentSize, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.preserveTailDuringNativeLayout() }
+        }
+        tailOffsetObservation = scrollView.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.preserveTailDuringNativeLayout() }
+        }
+        scheduleExpiration(generation: generation)
+    }
+
+    private func preserveTailDuringNativeLayout() {
+        guard isPreservingTail, !isApplyingOffset else { return }
+        _ = followTailAfterContentSizeChange()
+    }
+
+    private func scheduleExpiration(generation: Int) {
+        expirationTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            self?.cancelPreservation(expectedGeneration: generation)
+        }
     }
 
     func beginPreservingVisible(sessionID: SessionID?, allowsNearBottom: Bool = false) -> Int? {
@@ -1741,16 +1775,12 @@ final class ConversationHistoryScrollCoordinator {
         activeAnchor = ActiveAnchor(
             generation: generation,
             sessionID: sessionID,
-            candidates: candidates
+            candidates: candidates,
+            followsTail: false
         )
         ConversationScrollDiagnostics.shared.record("anchor_begin", "generation=\(generation) candidates=\(candidates.count)")
-        let expectedGeneration = generation
         // 只覆盖本次 List 布局提交窗口。超时仅撤销锚点，不做延迟滚动或固定次数重试。
-        expirationTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            self?.cancelPreservation(expectedGeneration: expectedGeneration)
-        }
+        scheduleExpiration(generation: generation)
 #if DEBUG
         Self.testingSelectionObserver?(first.id, first.frame)
 #endif
@@ -1794,7 +1824,7 @@ final class ConversationHistoryScrollCoordinator {
         displayedSessionID: SessionID?,
         apply: @escaping @MainActor (ConversationHistoryAnchorCorrection) -> Void
     ) {
-        guard !interactionActive else {
+        guard !interactionActive, !isPreservingTail else {
             return
         }
         guard let generation = expectedGeneration ?? activeAnchor?.generation,
@@ -1828,6 +1858,8 @@ final class ConversationHistoryScrollCoordinator {
             }
         }
         activeAnchor = nil
+        tailSizeObservation = nil
+        tailOffsetObservation = nil
         correctionTask?.cancel()
         correctionTask = nil
         expirationTask?.cancel()

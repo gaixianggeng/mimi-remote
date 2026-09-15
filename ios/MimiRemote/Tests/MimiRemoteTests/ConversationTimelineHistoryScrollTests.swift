@@ -5,7 +5,9 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
-    func testInitialTimelineWaitsForItemEnrichmentAndDoesNotCoverLaterRefresh() async throws {
+    func testInitialTimelineRemainsReadableWhileItemEnrichmentIsPending() async throws {
+        ConversationScrollDiagnostics.shared.start()
+        defer { ConversationScrollDiagnostics.shared.stop() }
         let sessionID = "initial-presentation"
         let appStore = makeIsolatedAppStore()
         let client = OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: []))
@@ -52,14 +54,18 @@ extension ConversationDataFlowTests {
             themeDefaults.removePersistentDomain(forName: themeSuiteName)
         }
         host.view.frame = window.bounds
+        let initialScrollView = try await waitForConversationTimelineAtBottom(in: host.view, timeout: 8)
+        XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view), "已有首屏不能被未完成的网络请求遮住")
+        XCTAssertLessThanOrEqual(distanceFromBottom(initialScrollView), 4)
+        var visibleTailDistances: [CGFloat] = []
 
         for pageIndex in 0..<3 {
             await client.waitForHistoryItemRequestCount(pageIndex + 1)
-            // 模拟网络分批返回；即使这一批已经贴底，首轮补齐期间也不能暴露正文。
+            // 网络迟迟未返回时也必须能阅读已有正文，不要求返回列表再进入。
             for _ in 0..<8 {
                 host.view.layoutIfNeeded()
                 try await Task.sleep(for: .milliseconds(16))
-                XCTAssertTrue(conversationTimelineIsStabilizing(in: host.view))
+                XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view))
             }
             let requested = client.requestedItemContinuations[pageIndex]
             let pageMessages = messages((pageIndex * 50)..<((pageIndex + 1) * 50))
@@ -70,11 +76,26 @@ extension ConversationDataFlowTests {
                     ? requested.continuing(cursor: "page-\(pageIndex + 1)", loadedItemCount: 50, hasVisibleUserMessage: true)
                     : nil
             ))
+            for _ in 0..<8 {
+                try await Task.sleep(for: .milliseconds(16))
+                host.view.layoutIfNeeded()
+                if let scrollView = conversationTimelineScrollView(in: host.view),
+                   !conversationTimelineIsStabilizing(in: host.view) {
+                    visibleTailDistances.append(distanceFromBottom(scrollView))
+                }
+            }
+        }
+        for _ in 0..<100 where sessionStore.historyItemEnrichmentBySessionID[sessionID] != nil {
+            await Task.yield()
         }
         let scrollView = try await waitForConversationTimelineAtBottom(in: host.view, timeout: 8)
         XCTAssertEqual(sessionStore.historyLoadedQualityBySessionID[sessionID], .full)
         XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view), "投影尾行改变后，首次定位任务必须自行重新开始")
         XCTAssertLessThanOrEqual(distanceFromBottom(scrollView), 4)
+        XCTAssertLessThanOrEqual(
+            visibleTailDistances.max() ?? .infinity, 4,
+            "首轮分批补齐的可读画面必须持续贴底\n\(ConversationScrollDiagnostics.shared.export())"
+        )
 
         // 已交接的画面不能因下一轮后台刷新再次被遮住。
         sessionStore.historyLoadedQualityBySessionID[sessionID] = .enriching
@@ -84,15 +105,16 @@ extension ConversationDataFlowTests {
             XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view))
         }
 
-        // 切换到另一会话必须重新等待；失败降级为 summary 也要能显示已有内容。
+        // 切换到另一会话后，即使补齐未结束也要显示已有内容。
         let degradedSessionID = "initial-presentation-degraded"
         conversationStore.setHistory(messages(0..<20), sessionID: degradedSessionID)
         sessionStore.historyLoadedQualityBySessionID[degradedSessionID] = .enriching
         sessionStore.selectedSessionID = degradedSessionID
+        _ = try await waitForConversationTimelineAtBottom(in: host.view, timeout: 8)
         for _ in 0..<8 {
             host.view.layoutIfNeeded()
             try await Task.sleep(for: .milliseconds(16))
-            XCTAssertTrue(conversationTimelineIsStabilizing(in: host.view))
+            XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view))
         }
         sessionStore.historyLoadedQualityBySessionID[degradedSessionID] = .summary
         let degradedScrollView = try await waitForConversationTimelineAtBottom(in: host.view, timeout: 8)

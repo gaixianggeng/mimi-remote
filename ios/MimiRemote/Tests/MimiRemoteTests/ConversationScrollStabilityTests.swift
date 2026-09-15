@@ -159,6 +159,64 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertTrue(ConversationTimelineView.isInitialTailLayoutStable(previous: tail, current: tail))
     }
 
+    func testTailLayoutCorrectionUsesCurrentSizeAndDoesNotWriteDuringInteraction() {
+        let coordinator = ConversationHistoryScrollCoordinator()
+        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+        scrollView.contentSize.height = 2_000
+        scrollView.contentOffset.y = 900
+        coordinator.bind(scrollView: scrollView)
+        coordinator.update(metrics: metrics(offset: 1_200))
+        // Store 发布后原生尺寸已经变大，SwiftUI metrics 仍可能对应上一帧。
+        scrollView.contentSize.height = 2_400
+        XCTAssertTrue(coordinator.followTailAfterContentSizeChange())
+        XCTAssertEqual(scrollView.contentOffset.y, 1_600)
+        coordinator.setInteractionActive(true)
+        scrollView.contentOffset.y = 1_100
+        scrollView.contentSize.height = 2_800
+        XCTAssertFalse(coordinator.followTailAfterContentSizeChange())
+        XCTAssertEqual(scrollView.contentOffset.y, 1_100, "不能修正用户手势中的位置")
+    }
+
+    func testTailTransactionCorrectsNativeChangesBeforeReturningFromLayout() {
+        let coordinator = ConversationHistoryScrollCoordinator()
+        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+        scrollView.contentSize.height = 2_000
+        scrollView.contentOffset.y = 1_200
+        coordinator.bind(scrollView: scrollView)
+        coordinator.beginPreservingTail(sessionID: "initial")
+        scrollView.contentSize.height = 2_600
+        XCTAssertEqual(scrollView.contentOffset.y, 1_800, "不能等下一拍 SwiftUI geometry 回调才贴底")
+        scrollView.contentOffset.y = 1_000
+        XCTAssertEqual(scrollView.contentOffset.y, 1_800, "List 随后的旧行保位也不能抢走尾部")
+        coordinator.setInteractionActive(true)
+        XCTAssertFalse(coordinator.isPreservingTail)
+        scrollView.contentOffset.y = 900
+        scrollView.contentSize.height = 3_000
+        XCTAssertEqual(scrollView.contentOffset.y, 900, "手势开始后立即撤销原生监听")
+    }
+
+    func testTailTransactionExpiresAndCannotWriteIntoReplacementList() async throws {
+        let coordinator = ConversationHistoryScrollCoordinator()
+        let first = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+        first.contentSize.height = 2_000
+        first.contentOffset.y = 1_200
+        coordinator.bind(scrollView: first)
+        coordinator.beginPreservingTail(sessionID: "first")
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertFalse(coordinator.isPreservingTail)
+        first.contentSize.height = 2_600
+        XCTAssertEqual(first.contentOffset.y, 1_200, "事务结束后不能继续监听并写回位置")
+
+        coordinator.beginPreservingTail(sessionID: "first")
+        let second = UIScrollView(frame: first.frame)
+        second.contentSize.height = 3_000
+        second.contentOffset.y = 300
+        coordinator.bind(scrollView: second)
+        XCTAssertFalse(coordinator.isPreservingTail)
+        first.contentSize.height = 3_400
+        XCTAssertEqual(second.contentOffset.y, 300, "旧 List 的回调不能写入新 List")
+    }
+
     func testDiagnosticsAreOptInBoundedAndLazy() {
         let trace = ConversationScrollDiagnostics()
         var evaluated = false
