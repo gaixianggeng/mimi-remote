@@ -3,10 +3,18 @@ import Foundation
 /// 预览只控制紧凑行的长度。已收到的正文保存在现有 content 中，展开时不再读取截断预览。
 enum ConversationActivityDetailText {
     static func toolInput(from item: [String: CodexAppServerJSONValue]) -> String? {
-        guard ["mcpToolCall", "dynamicToolCall"].contains(item["type"]?.stringValue ?? ""),
-              let arguments = item["arguments"], arguments != .null,
-              arguments.objectValue?.isEmpty != true else { return nil }
-        return formattedJSON(arguments)
+        switch item["type"]?.stringValue {
+        case "mcpToolCall", "dynamicToolCall":
+            guard let arguments = item["arguments"], arguments != .null,
+                  arguments.objectValue?.isEmpty != true else { return nil }
+            return formattedJSON(arguments)
+        case "collabAgentToolCall":
+            return nonempty(item["prompt"]?.stringValue)
+        case "webSearch":
+            return nonempty(item["query"]?.stringValue)
+        default:
+            return nil
+        }
     }
 
     static func output(from item: [String: CodexAppServerJSONValue]) -> String? {
@@ -55,13 +63,18 @@ enum ConversationActivityDetailText {
                ["image", "image_url", "inputImage", "audio"].contains(type) {
                 return nil
             }
-            if let text = nonempty(object["text"]?.stringValue) { return text }
+            if ["text", "inputText"].contains(object["type"]?.stringValue ?? ""),
+               let text = nonempty(object["text"]?.stringValue) { return text }
             let resultKeys = ["content", "contentItems", "structuredContent"]
             if resultKeys.contains(where: { object[$0] != nil }) {
                 // MCP 可同时提供可读文本和结构化结果；纯媒体容器则不能回退为 base64 JSON。
                 var parts: [String] = []
                 for key in resultKeys {
-                    if let part = render(object[key]), !parts.contains(part) { parts.append(part) }
+                    // structuredContent 是任意业务 JSON；同名 text/content/type 字段不代表协议包装。
+                    let part = key == "structuredContent" ? object[key].flatMap { value in
+                        value == .null ? nil : formattedJSON(value)
+                    } : render(object[key])
+                    if let part, !parts.contains(part) { parts.append(part) }
                 }
                 return joined(parts)
             }

@@ -172,6 +172,60 @@ final class ConversationActivityDetailProjectionTests: XCTestCase {
         XCTAssertEqual(restored.content, result.content)
     }
 
+    func testMCPStructuredBusinessFieldsSurviveLiveAndHistoryProjection() async throws {
+        let results: [CodexAppServerJSONValue] = [
+            .object(["text": .string("查询完成"), "rows": .array([.object(["id": .string("record-1")])]), "nextCursor": .string("page-2")]),
+            .object(["content": .string("业务正文"), "count": .int(3)]),
+            .object(["message": .string("业务消息"), "rows": .array([.int(1), .int(2)])]),
+            .object(["type": .string("image"), "assetID": .string("business-asset")]),
+            .object(["contentItems": .array([.object([
+                "text": .string("嵌套正文"), "metadata": .object(["type": .string("audio"), "id": .string("nested-record")])
+            ])])])
+        ]
+        for structured in results {
+            let item: [String: CodexAppServerJSONValue] = [
+                "type": .string("mcpToolCall"), "id": .string("structured-business"),
+                "server": .string("sample"), "tool": .string("lookup"), "status": .string("completed"),
+                "result": .object(["content": .array([]), "structuredContent": structured])
+            ]
+            var projector = CodexAppServerEventProjector()
+            let live = try message(from: projector.project(notification(item)))
+            let restored = try await history(item)
+            XCTAssertEqual(live.content, restored.content)
+            // 详细正文仍能还原为原始业务对象，不能因键名碰巧相同就只剩摘要。
+            let decoded = try JSONDecoder().decode(CodexAppServerJSONValue.self, from: Data(live.content.utf8))
+            XCTAssertEqual(decoded, structured)
+        }
+    }
+
+    func testNativeSubagentPromptAndWebSearchQueryRemainInDetailedRecords() async throws {
+        let prompt = "检查第一项\n" + String(repeating: "继续检查\n", count: 250) + "PROMPT-END"
+        let query = "exact query with QUERY-END"
+        let subagent: [String: CodexAppServerJSONValue] = [
+            "type": .string("collabAgentToolCall"), "id": .string("native-subagent"), "tool": .string("spawn_agent"),
+            "status": .string("completed"), "prompt": .string(prompt),
+            "receiverThreadIds": .array([.string("child-details")]),
+            "agentsStates": .object(["child-details": .object(["status": .string("completed"), "message": .string("Review finished")])])
+        ]
+        let search: [String: CodexAppServerJSONValue] = [
+            "type": .string("webSearch"), "id": .string("native-search"), "query": .string(query)
+        ]
+        for (item, input) in [(subagent, prompt), (search, query)] {
+            var projector = CodexAppServerEventProjector()
+            let live = try message(from: projector.project(notification(item)))
+            let restored = try await history(item)
+            XCTAssertEqual(live.content, restored.content)
+            XCTAssertTrue(live.content.contains(input))
+            let payload = try XCTUnwrap(restored.activityPayload)
+            XCTAssertFalse(payload.displayTitle.contains(input))
+            XCTAssertFalse(payload.outputPreview?.contains(input) == true)
+        }
+        let restoredSubagent = try await history(subagent)
+        XCTAssertTrue(restoredSubagent.content.contains("Review finished"))
+        let restoredSearch = try await history(search)
+        XCTAssertEqual(restoredSearch.activityPayload?.displayTitle, L10n.text("ui.web_search"))
+    }
+
     func testExternalHistoryOutputKeepsPreviewAndItsFullOutputReference() async throws {
         var item = command(output: "Stored preview")
         item["historyOutputRef"] = .string("agentd-history-output://details")

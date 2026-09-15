@@ -8,10 +8,10 @@
 //!
 //! The translator owns three book-keeping tables:
 //!
-//! - `open_message_items: HashMap<u32, OpenItem>` — keyed by `content_block.index`
+//! - `open_message_items` — keyed by `(parent_tool_use_id, content_block.index)`
 //!   of the *parent* assistant message, holds the codex `item_id` we minted at
 //!   `content_block_start` for text blocks.
-//! - `open_thinking_items: HashMap<u32, OpenItem>` — same shape for `thinking`
+//! - `open_thinking_items` — same shape for `thinking`
 //!   blocks.
 //! - `open_tool_calls: HashMap<tool_use_id, OpenToolCall>` — pairs each
 //!   `tool_use` `content_block` with the later `user.message.content[
@@ -66,14 +66,13 @@ pub struct EventTranslatorState {
     turn_id: String,
     user_interrupt_requested: bool,
 
-    /// Open text content blocks keyed by their `content_block.index`.
-    open_message_items: HashMap<u32, OpenItem>,
-    /// Open thinking content blocks keyed by their `content_block.index`.
-    open_thinking_items: HashMap<u32, OpenItem>,
+    // 每条子 Agent 消息流都从 index 0 开始；正文缓存必须与工具缓存一样按 parent 隔离。
+    open_message_items: HashMap<(Option<String>, u32), OpenItem>,
+    open_thinking_items: HashMap<(Option<String>, u32), OpenItem>,
     /// 当前每条 Claude assistant 流的 message id 与首个文本/思考块位置。
     ///
     /// live item 必须复用 disk replay 基于 `message.id` 生成的身份；parent
-    /// 只用于隔离嵌套 Agent 的独立消息流，不改变既有 content block 索引键。
+    /// 用于隔离嵌套 Agent 的独立消息流，与正文和工具缓存使用相同的 parent。
     active_assistant_messages: HashMap<Option<String>, ActiveAssistantMessage>,
     /// Open `tool_use` content blocks keyed by `tool_use_id` (Anthropic's
     /// `toolu_*`). Carries everything we need to resolve the matching
@@ -419,7 +418,7 @@ impl EventTranslatorState {
                     .assistant_block_item_id(parent, index, AssistantBlockKind::Text)
                     .unwrap_or_else(new_item_id);
                 self.open_message_items.insert(
-                    index,
+                    (parent.map(str::to_string), index),
                     OpenItem {
                         item_id: item_id.clone(),
                         accumulated: String::new(),
@@ -441,7 +440,7 @@ impl EventTranslatorState {
                     .assistant_block_item_id(parent, index, AssistantBlockKind::Thinking)
                     .unwrap_or_else(new_item_id);
                 self.open_thinking_items.insert(
-                    index,
+                    (parent.map(str::to_string), index),
                     OpenItem {
                         item_id: item_id.clone(),
                         accumulated: thinking,
@@ -516,7 +515,10 @@ impl EventTranslatorState {
     ) -> Vec<ServerNotification> {
         match delta {
             ContentBlockDelta::TextDelta { text } => {
-                let Some(item) = self.open_message_items.get_mut(&index) else {
+                let Some(item) = self
+                    .open_message_items
+                    .get_mut(&(parent.map(str::to_string), index))
+                else {
                     return Vec::new();
                 };
                 item.accumulated.push_str(&text);
@@ -531,7 +533,10 @@ impl EventTranslatorState {
                 )]
             }
             ContentBlockDelta::ThinkingDelta { thinking } => {
-                let Some(item) = self.open_thinking_items.get_mut(&index) else {
+                let Some(item) = self
+                    .open_thinking_items
+                    .get_mut(&(parent.map(str::to_string), index))
+                else {
                     return Vec::new();
                 };
                 item.accumulated.push_str(&thinking);
@@ -659,7 +664,8 @@ impl EventTranslatorState {
         parent: Option<&str>,
     ) -> Vec<ServerNotification> {
         // Text block close: emit item/completed AgentMessage.
-        if let Some(item) = self.open_message_items.remove(&index) {
+        let block_key = (parent.map(str::to_string), index);
+        if let Some(item) = self.open_message_items.remove(&block_key) {
             return vec![self.item_completed_with(
                 ThreadItem::AgentMessage {
                     id: item.item_id,
@@ -671,7 +677,7 @@ impl EventTranslatorState {
             )];
         }
         // Thinking block close: emit item/completed Reasoning.
-        if let Some(item) = self.open_thinking_items.remove(&index) {
+        if let Some(item) = self.open_thinking_items.remove(&block_key) {
             return vec![self.item_completed_with(
                 ThreadItem::Reasoning {
                     id: item.item_id,
@@ -884,7 +890,8 @@ impl EventTranslatorState {
             }
             CodexToolKind::Dynamic { namespace, tool } => {
                 let parsed_input = call.arguments();
-                let content_items = build_dynamic_content_items(raw_content, tool_use_result);
+                let content_items =
+                    build_dynamic_content_items(&inline_content, raw_content, tool_use_result);
                 vec![self.item_completed_with(
                     ThreadItem::DynamicToolCall {
                         id: call.item_id.clone(),
@@ -964,7 +971,11 @@ impl EventTranslatorState {
                         } else {
                             DynamicToolCallStatus::Completed
                         },
-                        content_items: build_dynamic_content_items(raw_content, tool_use_result),
+                        content_items: build_dynamic_content_items(
+                            &inline_content,
+                            raw_content,
+                            tool_use_result,
+                        ),
                         success: Some(!is_error),
                         duration_ms: None,
                     },
@@ -1007,7 +1018,11 @@ impl EventTranslatorState {
                         } else {
                             DynamicToolCallStatus::Completed
                         },
-                        content_items: build_dynamic_content_items(raw_content, tool_use_result),
+                        content_items: build_dynamic_content_items(
+                            &inline_content,
+                            raw_content,
+                            tool_use_result,
+                        ),
                         success: Some(!is_error),
                         duration_ms: None,
                     },
@@ -1986,6 +2001,7 @@ fn mcp_result_split(
 }
 
 fn build_dynamic_content_items(
+    inline_content: &str,
     raw_content: Option<&Value>,
     tool_use_result: Option<&Value>,
 ) -> Option<Vec<Value>> {
@@ -1998,6 +2014,13 @@ fn build_dynamic_content_items(
     if let Some(extra) = tool_use_result {
         out.extend(crate::translate::items::normalize_dynamic_tool_call_output(
             extra,
+        ));
+    }
+    // 异常收口没有 tool_result，断流/中断原因只存在 inline_content 中。
+    // 正常结果已有结构化内容时不重复追加文本；媒体结果也不能回退成 base64 JSON。
+    if raw_content.is_none() && tool_use_result.is_none() && !inline_content.is_empty() {
+        out.extend(crate::translate::items::normalize_dynamic_tool_call_output(
+            &Value::String(inline_content.to_string()),
         ));
     }
     (!out.is_empty()).then_some(out)
@@ -2509,6 +2532,134 @@ mod tests {
             },
         }));
         assert!(Uuid::parse_str(started_item_id(&started)).is_ok());
+    }
+
+    #[test]
+    fn interleaved_parent_blocks_keep_their_deltas_and_completions() {
+        for thinking in [false, true] {
+            let mut s = state();
+            let streams = [
+                (None, "root"),
+                (Some("parent-a"), "a"),
+                (Some("parent-b"), "b"),
+            ];
+            for (parent, label) in streams {
+                if let Some(parent) = parent {
+                    s.subagent_parents.insert(parent.into(), parent.into());
+                }
+                s.start_assistant_message(parent.map(str::to_string), &json!({"id": label}));
+                s.translate_block_start(
+                    0,
+                    if thinking {
+                        ContentBlock::Thinking {
+                            thinking: String::new(),
+                            signature: None,
+                        }
+                    } else {
+                        ContentBlock::Text {
+                            text: String::new(),
+                        }
+                    },
+                    parent,
+                );
+            }
+            for (parent, label) in streams {
+                let expected_id = format!(
+                    "{}_{label}",
+                    if thinking { "reasoning" } else { "assistant" }
+                );
+                let delta = if thinking {
+                    ContentBlockDelta::ThinkingDelta {
+                        thinking: label.into(),
+                    }
+                } else {
+                    ContentBlockDelta::TextDelta { text: label.into() }
+                };
+                let events = s.translate_block_delta(0, delta, parent);
+                assert_eq!(events.len(), 1);
+                match &events[0] {
+                    ServerNotification::AgentMessageDelta(event) => {
+                        assert!(!thinking);
+                        assert_eq!(event.item_id, expected_id);
+                        assert_eq!(event.parent_item_id.as_deref(), parent);
+                        assert_eq!(event.delta, label);
+                    }
+                    ServerNotification::ReasoningTextDelta(event) => {
+                        assert!(thinking);
+                        assert_eq!(event.item_id, expected_id);
+                        assert_eq!(event.parent_item_id.as_deref(), parent);
+                        assert_eq!(event.delta, label);
+                    }
+                    event => panic!("unexpected delta: {event:?}"),
+                }
+            }
+            for (parent, label) in streams {
+                let events = s.translate_block_stop(0, parent);
+                assert_eq!(events.len(), 1);
+                let ServerNotification::ItemCompleted(event) = &events[0] else {
+                    panic!("expected completion: {:?}", events[0]);
+                };
+                assert_eq!(event.parent_item_id.as_deref(), parent);
+                match &event.item {
+                    ThreadItem::AgentMessage { id, text, .. } => {
+                        assert!(!thinking);
+                        assert_eq!(id, &format!("assistant_{label}"));
+                        assert_eq!(text, label);
+                    }
+                    ThreadItem::Reasoning { id, content, .. } => {
+                        assert!(thinking);
+                        assert_eq!(id, &format!("reasoning_{label}"));
+                        assert_eq!(content, &[label.to_string()]);
+                    }
+                    item => panic!("unexpected completed item: {item:?}"),
+                }
+                assert!(s.translate_block_stop(0, parent).is_empty());
+            }
+            assert!(s.abort_open_items("already completed").is_empty());
+        }
+    }
+
+    #[test]
+    fn aborted_dynamic_tools_keep_the_inline_failure_reason() {
+        for tool in ["WebFetch", "WebSearch", "TaskCreate", "TaskUpdate"] {
+            let mut s = state();
+            let input = json!({"query": "sample", "subject": "sample", "taskId": "1"});
+            s.translate_block_start(
+                0,
+                ContentBlock::ToolUse {
+                    id: "tool-aborted".into(),
+                    name: tool.into(),
+                    input: input.clone(),
+                },
+                None,
+            );
+            s.translate_block_stop(0, None);
+            let events = s.abort_open_items("probe-disconnected\nstream ended before tool_result");
+            assert_eq!(events.len(), 1, "{tool}");
+            let ServerNotification::ItemCompleted(event) = &events[0] else {
+                panic!("expected completion: {:?}", events[0]);
+            };
+            let ThreadItem::DynamicToolCall {
+                status,
+                content_items,
+                success,
+                arguments,
+                ..
+            } = &event.item
+            else {
+                panic!("expected dynamic tool: {:?}", event.item);
+            };
+            assert_eq!(*status, DynamicToolCallStatus::Failed);
+            assert_eq!(*success, Some(false));
+            assert_eq!(*arguments, input);
+            assert_eq!(
+                content_items.as_ref().unwrap(),
+                &vec![json!({
+                    "type": "inputText", "text": "probe-disconnected\nstream ended before tool_result"
+                })]
+            );
+            assert!(s.abort_open_items("must not complete twice").is_empty());
+        }
     }
 
     #[test]
@@ -3527,7 +3678,7 @@ mod tests {
             "url": "https://example.com/result",
             "title": "Result"
         }]);
-        let content_items = build_dynamic_content_items(Some(&result), None).unwrap();
+        let content_items = build_dynamic_content_items("", Some(&result), None).unwrap();
         assert_eq!(content_items[0]["type"], "inputText");
         assert!(
             content_items[0]["text"]
