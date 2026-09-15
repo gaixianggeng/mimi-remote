@@ -9112,6 +9112,74 @@
         }
       }
     },
+    "ui.detailed_transcript": {
+      "comment": "Toggle title that shows every received activity and its complete readable details in source order.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detailed transcript"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "详细记录"
+          }
+        }
+      }
+    },
+    "ui.detailed_transcript_hint": {
+      "comment": "Accessibility hint for the detailed transcript toggle.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows complete reasoning, activity details, and output in the received order."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按接收顺序显示完整推理、活动详情和输出。"
+          }
+        }
+      }
+    },
+    "ui.tool_input": {
+      "comment": "Label before the complete input parameters of a tool call.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tool input"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工具输入"
+          }
+        }
+      }
+    },
+    "ui.tool_output": {
+      "comment": "Label before the complete result of a tool call.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tool output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工具结果"
+          }
+        }
+      }
+    },
     "ui.deletions_will_still_be_checked_by_agentd_against": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

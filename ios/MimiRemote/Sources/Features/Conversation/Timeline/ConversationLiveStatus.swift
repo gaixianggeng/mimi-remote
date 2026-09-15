@@ -184,7 +184,7 @@ struct ConversationLiveStatus: Equatable {
         if let title = readiness.title { return title }
         var parts: [String] = []
         if let startedAt {
-            parts.append(ConversationWorkGroup.durationText(max(0, now.timeIntervalSince(startedAt))))
+            parts.append(ConversationTimelineDurationText.format(max(0, now.timeIntervalSince(startedAt))))
         }
         if let outputTokens {
             parts.append(L10n.format("ui.live_status_tokens_value", Self.compactTokenCount(outputTokens)))
@@ -193,7 +193,7 @@ struct ConversationLiveStatus: Equatable {
         if isStale(at: now), let idle = idleDuration(at: now) {
             parts.append(L10n.format(
                 "ui.live_status_no_new_events_value",
-                ConversationWorkGroup.durationText(idle)
+                ConversationTimelineDurationText.format(idle)
             ))
         }
         return parts.joined(separator: " · ")

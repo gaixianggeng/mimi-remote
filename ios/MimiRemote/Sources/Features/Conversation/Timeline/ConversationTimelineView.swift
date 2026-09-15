@@ -11,12 +11,12 @@ struct ConversationTimelineView: View {
     let explicitSessionID: SessionID?
     let allowsTopUnderlap: Bool
     @State private var expandedActivityIDs: Set<String> = []
+    @State private var collapsedDefaultActivityIDs: Set<String> = []
     @State private var expandedActivityGroupIDs: Set<String> = []
-    // nil 表示跟随状态默认值；显式 true/false 都是用户 override，状态切换时优先保留。
-    @State private var workGroupExpansionOverrides: [String: Bool] = [:]
     @State private var timelineItemCache = ConversationTimelineItemCache()
     @State private var presentedSnapshot = ConversationTimelineSnapshot.empty
     @State private var scrollController = ConversationTimelineScrollController()
+    @State private var showsDetailedTranscript = false
 
     private let messageTailFollowThreshold: CGFloat = 120
     private static let timelineTailSentinelID = "__conversation_timeline_safe_tail__"
@@ -41,6 +41,10 @@ struct ConversationTimelineView: View {
         let tokens = themeStore.tokens(for: colorScheme)
         let source = conversationStore.timelineSource(for: displayedSessionID ?? "__none__")
         let scope = source.scope
+        let displayedSession = displayedSessionID.flatMap { sessionStore.sessionsByID[$0] }
+        let timelineProvider = ConversationTimelineProvider(
+            runtimeProvider: displayedSession?.runtimeProvider ?? displayedSession?.source
+        )
         // body 只读来源与已发布列表；投影、旧位置捕获和发布在同一个 onChange 中完成。
         let timelineSnapshot = presentedSnapshot.scope == scope ? presentedSnapshot : .empty
         let timelineItems = timelineSnapshot.rows
@@ -52,17 +56,19 @@ struct ConversationTimelineView: View {
         let incomingIdentity = ConversationTimelineSnapshotIdentity(
             scope: scope,
             revision: source.revision,
-            isInteracting: scrollController.isInteracting
+            isInteracting: scrollController.isInteracting,
+            provider: timelineProvider,
+            showsDetailedTranscript: showsDetailedTranscript
         )
         let isTimelineReadable = timelineItems.isEmpty || scrollController.isReadable
         let activeUserDeliveryMessageID = Self.activeUserDeliveryMessageID(in: source.messages)
         let crossSessionOriginMessageID = Self.crossSessionOriginMessageID(
-            session: displayedSessionID.flatMap { sessionStore.sessionsByID[$0] },
+            session: displayedSession,
             messages: source.messages
         )
         let isHistoryLoading = sessionStore.historyLoadProgress(sessionID: displayedSessionID) != nil
         let liveStatus = displayedSessionID.flatMap { sessionID -> ConversationLiveStatus? in
-            guard let session = sessionStore.sessionsByID[sessionID] else { return nil }
+            guard let session = displayedSession else { return nil }
             return ConversationLiveStatus.make(
                 session: session,
                 messages: source.messages,
@@ -103,9 +109,9 @@ struct ConversationTimelineView: View {
                             ForEach(timelineItems) { item in
                                 timelineListRow(
                                     item,
+                                    provider: timelineProvider,
                                     activeUserDeliveryMessageID: activeUserDeliveryMessageID,
-                                    crossSessionOriginMessageID: crossSessionOriginMessageID,
-                                    showsLiveStatus: liveStatus != nil
+                                    crossSessionOriginMessageID: crossSessionOriginMessageID
                                 )
                             }
                             if let liveStatus {
@@ -185,6 +191,16 @@ struct ConversationTimelineView: View {
                 .onScrollPhaseChange { _, phase in
                     scrollController.phaseChanged(phase, epoch: timelineListIdentity.presentationGeneration)
                 }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if !timelineItems.isEmpty {
+                        HStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            detailedTranscriptControl
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                    }
+                }
 
                 if shouldShowReturnToTailButton(timelineItems: timelineItems) {
                     ConversationReturnToTailButton(
@@ -207,13 +223,13 @@ struct ConversationTimelineView: View {
                 }
             }
             .onChange(of: incomingIdentity, initial: true) { _, _ in
-                publishTimelineSource(source)
+                publishTimelineSource(source, provider: timelineProvider)
             }
             .onChange(of: timelineListIdentity, initial: true) { _, identity in
                 connectScrollCommands(proxy: proxy, epoch: identity.presentationGeneration)
             }
             .onAppear {
-                publishTimelineSource(source)
+                publishTimelineSource(source, provider: timelineProvider)
             }
             .environment(\.conversationMediaLayoutWillChange, scrollController.mediaLayoutWillChange)
             .environment(\.conversationBindAnchorView, anchorViewBinder())
@@ -227,15 +243,15 @@ struct ConversationTimelineView: View {
     @ViewBuilder
     private func timelineListRow(
         _ item: ConversationTimelineItem,
+        provider: ConversationTimelineProvider,
         activeUserDeliveryMessageID: UUID?,
-        crossSessionOriginMessageID: UUID?,
-        showsLiveStatus: Bool
+        crossSessionOriginMessageID: UUID?
     ) -> some View {
         timelineRow(
             item,
+            provider: provider,
             activeUserDeliveryMessageID: activeUserDeliveryMessageID,
-            crossSessionOriginMessageID: crossSessionOriginMessageID,
-            showsLiveStatus: showsLiveStatus
+            crossSessionOriginMessageID: crossSessionOriginMessageID
         )
         .modifier(ConversationHistoryAnchorGeometryModifier(
             // List 只实例化视口附近的少量 cell。持续量这些真实行，才能在派生行 ID
@@ -259,20 +275,15 @@ struct ConversationTimelineView: View {
             return [message.id]
         case .activityBatch(let group):
             return expandedActivityGroupIDs.contains(group.id) ? [] : group.messages.map(\.id)
-        case .processGroup(let group):
-            return expandedActivityGroupIDs.contains(group.id) ? [] : [group.header.id] + group.activities.map(\.id)
-        case .workGroup(let group):
-            let isExpanded = workGroupExpansionOverrides[group.id] ?? group.defaultIsExpanded
-            return isExpanded ? [] : group.entries.flatMap(\.anchorMessageIDs)
         }
     }
 
     @ViewBuilder
     private func timelineRow(
         _ item: ConversationTimelineItem,
+        provider: ConversationTimelineProvider,
         activeUserDeliveryMessageID: UUID?,
-        crossSessionOriginMessageID: UUID?,
-        showsLiveStatus: Bool
+        crossSessionOriginMessageID: UUID?
     ) -> some View {
         switch item {
         case .message(let message):
@@ -295,12 +306,20 @@ struct ConversationTimelineView: View {
             )
                 .equatable()
         case .activity(let message):
+            let itemID = ConversationTimelineItem.activityID(for: message)
             ConversationActivityRow(
                 message: message,
                 layout: layout,
-                isExpanded: expandedActivityIDs.contains(item.id),
+                provider: provider,
+                showsDetailedTranscript: showsDetailedTranscript,
+                isExpanded: isActivityExpanded(message, itemID: itemID, provider: provider),
                 toggle: {
-                    toggleActivityDetails(itemID: item.id, scrollAnchorID: item.id)
+                    toggleActivityDetails(
+                        message: message,
+                        itemID: itemID,
+                        scrollAnchorID: itemID,
+                        provider: provider
+                    )
                 }
             )
                 .equatable()
@@ -308,170 +327,63 @@ struct ConversationTimelineView: View {
             ConversationActivityBatchRow(
                 group: group,
                 layout: layout,
-                isExpanded: expandedActivityGroupIDs.contains(group.id),
+                provider: provider,
+                showsDetailedTranscript: showsDetailedTranscript,
+                isExpanded: showsDetailedTranscript || expandedActivityGroupIDs.contains(group.id),
                 expandedActivityIDs: expandedActivityIDs,
                 toggleGroup: {
                     toggleActivityGroup(groupID: group.id)
                 },
                 toggleActivity: { message in
                     toggleActivityDetails(
+                        message: message,
                         itemID: ConversationTimelineItem.activityID(for: message),
-                        scrollAnchorID: group.id
+                        scrollAnchorID: group.id,
+                        provider: provider
                     )
                 },
                 recordAnchorGeometry: anchorFrameRecorder()
             )
                 .equatable()
-        case .processGroup(let group):
-            ConversationProcessGroupRow(
-                group: group,
-                layout: layout,
-                isExpanded: expandedActivityGroupIDs.contains(group.id),
-                expandedActivityIDs: expandedActivityIDs,
-                toggleGroup: {
-                    toggleActivityGroup(groupID: group.id)
-                },
-                toggleActivity: { message in
-                    toggleActivityDetails(
-                        itemID: ConversationTimelineItem.activityID(for: message),
-                        scrollAnchorID: group.id
-                    )
-                },
-                recordAnchorGeometry: anchorFrameRecorder()
-            )
-            .equatable()
-        case .workGroup(let group):
-            let isExpanded = workGroupExpansionOverrides[group.id] ?? group.defaultIsExpanded
-            ConversationWorkGroupRow(
-                group: group,
-                layout: layout,
-                isExpanded: isExpanded,
-                defersRunningProgressToLiveStatus: showsLiveStatus,
-                toggleGroup: {
-                    toggleWorkGroup(
-                        group: group,
-                        isCurrentlyExpanded: isExpanded
-                    )
-                }
-            ) {
-                ForEach(group.entries) { entry in
-                    workGroupEntryRow(
-                        entry,
-                        activeUserDeliveryMessageID: activeUserDeliveryMessageID,
-                        outerGroupID: group.id
-                    )
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func workGroupEntryRow(
-        _ entry: ConversationWorkGroupEntry,
-        activeUserDeliveryMessageID: UUID?,
-        outerGroupID: String
-    ) -> some View {
-        switch entry {
-        case .commentary(let message):
-            MessageRow(
-                message: message,
-                themeVersion: themeStore.themeVersion,
-                layout: layout,
-                showsActiveDeliveryStatus: message.id == activeUserDeliveryMessageID,
-                showsCrossSessionOrigin: false,
-                skills: sessionStore.capabilityList?.skills ?? [],
-                retry: { message in
-                    Task { await sessionStore.retryFailedUserMessage(message) }
-                },
-                stop: {
-                    sessionStore.interruptSelectedTurn()
-                },
-                previewFile: { path in
-                    try await sessionStore.previewFile(path: path)
-                }
-            )
-            .equatable()
-            .modifier(ConversationHistoryAnchorGeometryModifier(
-                isEnabled: true,
-                messageIDs: [message.id],
-                action: anchorFrameRecorder(),
-                bindView: anchorViewBinder()
-            ))
-        case .activity(let message):
-            ConversationActivityRow(
-                message: message,
-                layout: layout,
-                isExpanded: expandedActivityIDs.contains(entry.id),
-                toggle: {
-                    toggleActivityDetails(
-                        itemID: entry.id,
-                        scrollAnchorID: outerGroupID
-                    )
-                }
-            )
-            .equatable()
-            .modifier(ConversationHistoryAnchorGeometryModifier(
-                isEnabled: true,
-                messageIDs: [message.id],
-                action: anchorFrameRecorder(),
-                bindView: anchorViewBinder()
-            ))
-        case .activityBatch(let group):
-            ConversationActivityBatchRow(
-                group: group,
-                layout: layout,
-                isExpanded: expandedActivityGroupIDs.contains(group.id),
-                expandedActivityIDs: expandedActivityIDs,
-                toggleGroup: {
-                    toggleActivityGroup(
-                        groupID: group.id,
-                        scrollAnchorID: outerGroupID
-                    )
-                },
-                toggleActivity: { message in
-                    toggleActivityDetails(
-                        itemID: ConversationTimelineItem.activityID(for: message),
-                        scrollAnchorID: outerGroupID
-                    )
-                },
-                recordAnchorGeometry: anchorFrameRecorder()
-            )
-            .equatable()
-        case .processGroup(let group):
-            ConversationProcessGroupRow(
-                group: group,
-                layout: layout,
-                isExpanded: expandedActivityGroupIDs.contains(group.id),
-                expandedActivityIDs: expandedActivityIDs,
-                toggleGroup: {
-                    toggleActivityGroup(
-                        groupID: group.id,
-                        scrollAnchorID: outerGroupID
-                    )
-                },
-                toggleActivity: { message in
-                    toggleActivityDetails(
-                        itemID: ConversationTimelineItem.activityID(for: message),
-                        scrollAnchorID: outerGroupID
-                    )
-                },
-                recordAnchorGeometry: anchorFrameRecorder()
-            )
-            .equatable()
         }
     }
 
     private func toggleActivityDetails(
+        message: ConversationMessage,
         itemID: String,
-        scrollAnchorID: String
+        scrollAnchorID: String,
+        provider: ConversationTimelineProvider
     ) {
-        let isExpanding = !expandedActivityIDs.contains(itemID)
+        guard !showsDetailedTranscript else { return }
+        let isExpanding = !isActivityExpanded(message, itemID: itemID, provider: provider)
         scrollController.expansionChanged(scrollAnchorID, isExpanded: isExpanding, isAnimated: false)
         if isExpanding {
+            collapsedDefaultActivityIDs.remove(itemID)
             expandedActivityIDs.insert(itemID)
         } else {
             expandedActivityIDs.remove(itemID)
+            if activityIsExpandedByDefault(message, provider: provider) {
+                collapsedDefaultActivityIDs.insert(itemID)
+            }
         }
+    }
+
+    private func isActivityExpanded(
+        _ message: ConversationMessage,
+        itemID: String,
+        provider: ConversationTimelineProvider
+    ) -> Bool {
+        if showsDetailedTranscript { return true }
+        if collapsedDefaultActivityIDs.contains(itemID) { return false }
+        return expandedActivityIDs.contains(itemID)
+            || activityIsExpandedByDefault(message, provider: provider)
+    }
+
+    private func activityIsExpandedByDefault(
+        _ message: ConversationMessage,
+        provider: ConversationTimelineProvider
+    ) -> Bool {
+        provider == .codex && message.activityPayload?.category == .editFile
     }
 
     private func toggleActivityGroup(
@@ -490,24 +402,6 @@ struct ConversationTimelineView: View {
             } else {
                 expandedActivityGroupIDs.remove(groupID)
             }
-        } completion: {
-            if isAnimated { scrollController.expansionCompleted(input) }
-        }
-    }
-
-    private func toggleWorkGroup(
-        group: ConversationWorkGroup,
-        isCurrentlyExpanded: Bool
-    ) {
-        let isExpanding = !isCurrentlyExpanded
-        let isAnimated = !accessibilityReduceMotion
-        let input = scrollController.expansionChanged(group.id, isExpanded: isExpanding, isAnimated: isAnimated)
-        withAnimation(
-            accessibilityReduceMotion ? nil : .spring(response: 0.32, dampingFraction: 1),
-            completionCriteria: .removed
-        ) {
-            // 不删除等于默认值的 override：用户选择必须在 running→terminal 后继续优先。
-            workGroupExpansionOverrides[group.id] = isExpanding
         } completion: {
             if isAnimated { scrollController.expansionCompleted(input) }
         }
@@ -743,16 +637,56 @@ struct ConversationTimelineView: View {
         themeStore.tokens(for: colorScheme).secondaryText
     }
 
-    private func publishTimelineSource(_ source: ConversationTimelineSourceSnapshot) {
+    private var detailedTranscriptControl: some View {
+        Button {
+            showsDetailedTranscript.toggle()
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "text.page")
+                Text(L10n.text("ui.detailed_transcript"))
+                    .lineLimit(1)
+                if showsDetailedTranscript {
+                    Image(systemName: "checkmark")
+                }
+            }
+            .font(themeStore.uiFont(.footnote, weight: .medium))
+            .foregroundStyle(
+                showsDetailedTranscript
+                    ? themeStore.tokens(for: colorScheme).accent
+                    : workbenchSecondaryText
+            )
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .background(themeStore.tokens(for: colorScheme).elevatedSurface, in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(themeStore.tokens(for: colorScheme).border.opacity(0.7), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.06), radius: 5, y: 2)
+        .accessibilityValue(
+            showsDetailedTranscript ? L10n.text("ui.selected") : L10n.text("ui.not_selected")
+        )
+        .accessibilityHint(L10n.text("ui.detailed_transcript_hint"))
+    }
+
+    private func publishTimelineSource(
+        _ source: ConversationTimelineSourceSnapshot,
+        provider: ConversationTimelineProvider
+    ) {
         let snapshot = timelineItemCache.snapshot(
             from: source,
+            provider: provider,
+            showsDetailedTranscript: showsDetailedTranscript,
             suspendingUpdates: scrollController.isInteracting
         )
         guard scrollController.prepare(snapshot) else { return }
         if presentedSnapshot.scope != snapshot.scope {
             expandedActivityIDs.removeAll()
+            collapsedDefaultActivityIDs.removeAll()
             expandedActivityGroupIDs.removeAll()
-            workGroupExpansionOverrides.removeAll()
         }
         if !snapshot.rows.isEmpty, presentedSnapshot.rows.isEmpty || presentedSnapshot.scope != snapshot.scope {
             HostSwitchSignpost.event("first_text_visible")
@@ -837,6 +771,8 @@ private struct ConversationTimelineSnapshotIdentity: Equatable {
     let scope: ScopedSessionID
     let revision: UInt64
     let isInteracting: Bool
+    let provider: ConversationTimelineProvider
+    let showsDetailedTranscript: Bool
 }
 
 struct ConversationHistoryAnchorGeometryModifier: ViewModifier {

@@ -225,7 +225,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.messages(for: sessionID).filter { $0.content == "继续检查。" }.count, 4)
     }
 
-    func testExplicitTurnLifecycleControlsProcessCompletionStyle() throws {
+    func testExplicitTurnLifecycleDoesNotCollapseOrReorderActivityRows() throws {
         let turnID = "turn-explicit-lifecycle"
         let reasoning = ConversationMessage(
             turnID: turnID,
@@ -263,16 +263,15 @@ extension ConversationDataFlowTests {
         )
 
         let runningItems = ConversationTimelineItemBuilder.items(from: [reasoning, command, final])
-        guard case .workGroup(let runningWorkGroup) = runningItems.first,
-              case .processGroup(let runningGroup) = runningWorkGroup.entries.first else {
-            return XCTFail("相邻 reasoning/command 应组成过程组")
+        XCTAssertEqual(runningItems.count, 3)
+        guard case .activity(let runningReasoning) = runningItems[0],
+              case .activity(let runningCommand) = runningItems[1],
+              case .message(let runningFinal) = runningItems[2] else {
+            return XCTFail("运行中的 reasoning、命令和 final 应逐条显示")
         }
-        XCTAssertEqual(runningGroup.status, .running, "内层过程组继续反映显式 turn lifecycle")
-        XCTAssertEqual(
-            runningWorkGroup.status,
-            .running,
-            "final 开始 streaming 时显式 inProgress 仍应保持外层展开，等待 completed lifecycle 再收口"
-        )
+        XCTAssertEqual(runningReasoning.itemID, "reasoning")
+        XCTAssertEqual(runningCommand.itemID, "command")
+        XCTAssertEqual(runningFinal.itemID, "final")
 
         let completedMessages = [reasoning, command, final].map { message -> ConversationMessage in
             var next = message
@@ -280,12 +279,7 @@ extension ConversationDataFlowTests {
             return next
         }
         let completedItems = ConversationTimelineItemBuilder.items(from: completedMessages)
-        guard case .workGroup(let completedWorkGroup) = completedItems.first,
-              case .processGroup(let completedGroup) = completedWorkGroup.entries.first else {
-            return XCTFail("完成后仍应保留同一个过程组")
-        }
-        XCTAssertEqual(completedGroup.status, .completed)
-        XCTAssertEqual(completedWorkGroup.status, .completed)
+        XCTAssertEqual(completedItems.map(\.id), runningItems.map(\.id))
 
         let legacyMessages = [reasoning, command, final].map { message -> ConversationMessage in
             var next = message
@@ -293,14 +287,7 @@ extension ConversationDataFlowTests {
             return next
         }
         let legacyItems = ConversationTimelineItemBuilder.items(from: legacyMessages)
-        guard case .workGroup(let legacyWorkGroup) = legacyItems.first else {
-            return XCTFail("旧 runtime 输入仍应保留外层工作组")
-        }
-        XCTAssertEqual(
-            legacyWorkGroup.status,
-            .completed,
-            "缺少 lifecycle 的旧 runtime 仍应由 final 兜底完成，不能永久停在运行态"
-        )
+        XCTAssertEqual(legacyItems.map(\.id), runningItems.map(\.id))
     }
 
     func testOrderingConflictFallsBackToFirstSeenSlotsInsteadOfTimestamps() {
@@ -881,7 +868,7 @@ extension ConversationDataFlowTests {
         return window
     }
 
-    func testDirectRuntimeMapsThreadReadProcessItemsForTimelineCollapse() async throws {
+    func testDirectRuntimeMapsThreadReadActivitiesInSourceOrder() async throws {
         let project = AgentProject(id: "proj_processed_history", name: "Processed", path: "/tmp/processed")
         let transport = FakeCodexAppServerTransport()
         let runtime = CodexAppServerSessionRuntime(
@@ -933,7 +920,7 @@ extension ConversationDataFlowTests {
         conversationStore.setHistory(messages, sessionID: "thr_processed")
         let items = ConversationTimelineItemBuilder.items(from: conversationStore.messages(for: "thr_processed"))
 
-        XCTAssertEqual(items.count, 5)
+        XCTAssertEqual(items.count, 6)
         guard case .message(let commentary) = items[1] else {
             return XCTFail("commentary 应保持完整正文")
         }
@@ -944,13 +931,15 @@ extension ConversationDataFlowTests {
         }
         XCTAssertEqual(plan.kind, .plan)
         XCTAssertEqual(plan.content, "让子 agent 生成一个短笑话。")
-        guard case .workGroup(let workGroup) = items[3],
-              case .processGroup(let processGroup) = workGroup.entries.first else {
-            return XCTFail("真实 reasoning 与后续命令应合并为可折叠阶段")
+        guard case .activity(let reasoning) = items[3] else {
+            return XCTFail("reasoning 应保留独立可读入口")
         }
-        XCTAssertEqual(processGroup.header.itemID, "reasoning_processed")
-        XCTAssertEqual(processGroup.activities.map(\.itemID), ["cmd_processed"])
-        guard case .message(let final) = items[4] else {
+        XCTAssertEqual(reasoning.itemID, "reasoning_processed")
+        guard case .activity(let command) = items[4] else {
+            return XCTFail("普通命令应保持独立紧凑行")
+        }
+        XCTAssertEqual(command.itemID, "cmd_processed")
+        guard case .message(let final) = items[5] else {
             return XCTFail("最终 assistant 应保持独立展开")
         }
         XCTAssertEqual(final.role, .assistant)
