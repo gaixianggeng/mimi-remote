@@ -287,7 +287,6 @@ struct ComposerView: View {
                 return
             }
             clampModelSelectionToSelectedSessionRuntime()
-            clampPermissionSelectionToSelectedSessionRuntime()
         }
         .onChange(of: modelOptionsForMenu) { _, _ in
             // model/list 刷新后能力元数据可能变化；立即清理当前模型已不支持的推理强度。
@@ -331,7 +330,6 @@ struct ComposerView: View {
             restorePendingUserInputFormStateFromCache()
             synchronizePendingUserInputPresentation(previous: nil, current: pendingUserInputSelectionIdentity)
             clampModelSelectionToSelectedSessionRuntime()
-            clampPermissionSelectionToSelectedSessionRuntime()
         }
         .task {
             await prepareComposer()

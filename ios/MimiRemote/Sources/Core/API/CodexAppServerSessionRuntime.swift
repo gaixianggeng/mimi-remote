@@ -2353,8 +2353,7 @@ actor CodexAppServerSessionRuntime {
         clientMessageID: ClientMessageID?
     ) async throws -> CodexAppServerTurnStartOutcome {
         var payload = payload
-        // 与 thread/start 一样，以当前通道为准，避免旧草稿缺少 provider 时
-        // 把 Codex 完全访问预设带进 Claude 的 turn/start。
+        // 与 thread/start 一样，以实际连接通道为准，归一化旧草稿的审批参数。
         payload.options = runtimeScopedThreadOptions(payload.options)
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
@@ -2631,10 +2630,7 @@ actor CodexAppServerSessionRuntime {
         )
     }
 
-    // thread/start、thread/resume 的 options 必须按本 runtime 的通道策略先降级再发送：
-    // Claude 通道不接受 dangerFullAccess，.default 草稿直接上桥会被 gateway 拒绝，
-    // 会话恢复就会陷入确定性失败的重连循环。runtime 连接的 gateway 由自身 runtimeProvider
-    // 决定，所以这里强制以 actor 的 runtime 为准，而不是相信 payload 里的残留值。
+    // 实际 gateway 由 actor 的 runtimeProvider 决定，不能相信草稿中残留的通道。
     func runtimeScopedThreadOptions(_ options: CodexAppServerTurnOptions) -> CodexAppServerTurnOptions {
         var scoped = options
         scoped.runtimeProvider = runtimeProvider

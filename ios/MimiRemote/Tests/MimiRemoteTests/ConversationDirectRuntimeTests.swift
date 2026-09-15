@@ -1642,10 +1642,8 @@ extension ConversationDataFlowTests {
         socket.disconnect()
     }
 
-    // 回归：Claude 通道的 thread/start / thread/resume 必须先按 runtime 策略把 .default 草稿的
-    // dangerFullAccess 降级为 workspace-write。旧行为原样携带 danger-full-access，gateway 以
-    // -32080 拒绝 resume，事件订阅进入确定性失败的重连死循环，Claude 会话永远打不开。
-    func testClaudeRuntimeThreadStartAndResumeDowngradeSandboxToWorkspaceWrite() async throws {
+    // 完全访问必须在新建与恢复时保持一致，不能被旧的 Claude 降级逻辑覆盖。
+    func testClaudeRuntimeThreadStartAndResumePreserveFullAccess() async throws {
         let project = AgentProject(id: "proj_claude_sandbox", name: "Claude Sandbox", path: "/tmp/claude-sandbox")
         let transport = FakeCodexAppServerTransport()
         let runtime = CodexAppServerSessionRuntime(
@@ -1676,8 +1674,8 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(threadStart.method, "thread/start")
         XCTAssertEqual(
             threadStart.params?.objectValue?["sandbox"]?.stringValue,
-            "workspace-write",
-            "Claude 通道 thread/start 不应携带 danger-full-access"
+            "danger-full-access",
+            "Claude 通道 thread/start 应保持用户的完全访问选择"
         )
         transport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thr_claude_sandbox","sessionId":"thr_claude_sandbox","preview":"","ephemeral":false,"modelProvider":"anthropic","createdAt":1780490700,"updatedAt":1780490701,"status":{"type":"idle"},"path":null,"cwd":"/tmp/claude-sandbox","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Claude 会话","turns":[]}}}"#)
 
@@ -1693,8 +1691,8 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(resume.params?.objectValue?["threadId"]?.stringValue, "thr_claude_sandbox")
         XCTAssertEqual(
             resume.params?.objectValue?["sandbox"]?.stringValue,
-            "workspace-write",
-            "Claude 通道 thread/resume 不应携带 danger-full-access（gateway 会 -32080 拒绝并造成重连死循环）"
+            "danger-full-access",
+            "Claude 通道 thread/resume 应保持完全访问"
         )
         transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"result":{"thread":{"id":"thr_claude_sandbox","sessionId":"thr_claude_sandbox","preview":"","ephemeral":false,"modelProvider":"anthropic","createdAt":1780490700,"updatedAt":1780490702,"status":{"type":"idle"},"path":null,"cwd":"/tmp/claude-sandbox","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Claude 会话","turns":[]}}}"#)
 

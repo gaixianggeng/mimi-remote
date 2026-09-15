@@ -90,6 +90,14 @@ fn claude_permission_mode(params: &p::TurnStartParams) -> &'static str {
     if params.sandbox_policy.as_ref().is_some_and(is_read_only) {
         return "plan";
     }
+    // 只有显式完全访问和 never 配对才取消审批，孤立的 never 不能提升普通档位。
+    if matches!(params.approval_policy, Some(p::AskForApproval::Never))
+        && params.sandbox_policy.as_ref().is_some_and(|policy| {
+            policy.get("type").and_then(serde_json::Value::as_str) == Some("dangerFullAccess")
+        })
+    {
+        return "bypassPermissions";
+    }
     // 新版客户端用 on-request + auto_review 表示自动审批；旧的 on-failure
     // 已从 Codex 协议移除，不能再作为 Claude 自动权限模式的触发条件。
     if matches!(params.approval_policy, Some(p::AskForApproval::OnRequest))
@@ -120,6 +128,22 @@ fn is_read_only(value: &serde_json::Value) -> bool {
             .is_some_and(is_read_only),
         _ => false,
     }
+}
+
+// 多条连接可同时发送同一会话。把进程换代、权限设置和 turn 准入放在同一临界区，
+// 防止输掉准入竞争的请求先改变胜出轮次的权限或杀掉它的进程。
+static TURN_START_GATES: LazyLock<SyncMutex<HashMap<String, Weak<AsyncMutex<()>>>>> =
+    LazyLock::new(|| SyncMutex::new(HashMap::new()));
+
+fn turn_start_gate(thread_id: &str) -> Arc<AsyncMutex<()>> {
+    let mut gates = TURN_START_GATES.lock().unwrap();
+    gates.retain(|_, gate| gate.strong_count() > 0);
+    if let Some(gate) = gates.get(thread_id).and_then(Weak::upgrade) {
+        return gate;
+    }
+    let gate = Arc::new(AsyncMutex::new(()));
+    gates.insert(thread_id.to_string(), Arc::downgrade(&gate));
+    gate
 }
 
 /// Per-thread active-turn registry. Claude only allows one active turn per
@@ -243,8 +267,8 @@ impl TurnError {
     }
 }
 
-/// 普通 cold acquire 交给 runtime setter 应用本轮配置；只有旧 generation
-/// 在 setter 阶段发生 transport failure 后，恢复 acquire 才能把配置放进 argv。
+/// 普通冷启动仍用 runtime setter 应用 effort；完全访问必须在启动时取消沙箱。
+/// 故障恢复或权限边界切换时，把本轮配置直接放进新进程 argv。
 #[derive(Debug, Clone, Copy)]
 enum TurnProcessAcquire {
     Normal,
@@ -262,6 +286,8 @@ pub async fn handle_turn_start(
     state: &Arc<ConnectionState>,
     params: p::TurnStartParams,
 ) -> Result<p::TurnStartResponse, TurnError> {
+    let start_gate = turn_start_gate(&params.thread_id);
+    let _start_guard = start_gate.lock().await;
     let envelope = translate_user_input(&params.input)
         .map_err(|e| TurnError::InputTranslation(e.to_string()))?;
 
@@ -280,6 +306,26 @@ pub async fn handle_turn_start(
         });
     }
 
+    let permission_mode = claude_permission_mode(&params);
+    if handle.uses_full_access() != (permission_mode == "bypassPermissions") {
+        // 先拒绝进行中的轮次，再替换进程。仅 set_permission_mode 无法撤销启动时的
+        // sandbox / disallowedTools；用同一会话恢复才能同时兑现授权与收权。
+        state
+            .claude_pool()
+            .release_if_same(&params.thread_id, &handle)
+            .await;
+        drop(admission);
+        (handle, admission) = acquire_turn_process(
+            state,
+            &params,
+            TurnProcessAcquire::Recovery {
+                effort_level: params.effort.map(native_effort_level),
+                permission_mode,
+            },
+        )
+        .await?;
+    }
+
     // App 可以绕过显式 thread/resume 直接开始 turn。此时也要先把 JSONL
     // 历史播种进共享内存日志，保证后续 thread/read 返回完整会话而非仅本轮。
     if state.thread_log(&params.thread_id).is_empty()
@@ -294,7 +340,6 @@ pub async fn handle_turn_start(
     let normalized_model_override = params.model.as_deref().map(normalize_claude_model_id);
     let model_override = normalized_model_override.as_deref();
     let effort_override = params.effort.map(native_effort_level);
-    let permission_mode = claude_permission_mode(&params);
     // Start lifecycle observation before the first control write. A process
     // can lose stdin during runtime overrides, before a turn exists.
     let mut driver = ensure_event_driver(state, &params.thread_id, &handle);
@@ -499,7 +544,11 @@ async fn acquire_turn_process(
     let defaults = state.defaults();
     let model = normalize_claude_model(params.model.clone().or_else(|| defaults.model.clone()));
     let (effort_level, permission_mode) = match acquire_mode {
-        TurnProcessAcquire::Normal => (None, None),
+        TurnProcessAcquire::Normal => (
+            None,
+            (claude_permission_mode(params) == "bypassPermissions")
+                .then(|| "bypassPermissions".to_string()),
+        ),
         TurnProcessAcquire::Recovery {
             effort_level,
             permission_mode,
@@ -1683,7 +1732,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_modes_follow_the_three_safe_presets() {
+    fn permission_modes_follow_explicit_presets() {
         let mut params = p::TurnStartParams::default();
         assert_eq!(claude_permission_mode(&params), "default");
 
@@ -1704,6 +1753,14 @@ mod tests {
 
         params.approval_policy = Some(p::AskForApproval::Never);
         assert_eq!(claude_permission_mode(&params), "default");
+
+        params.sandbox_policy = Some(serde_json::json!({"type": "dangerFullAccess"}));
+        assert_eq!(claude_permission_mode(&params), "bypassPermissions");
+        params.approval_policy = Some(p::AskForApproval::OnRequest);
+        assert_eq!(claude_permission_mode(&params), "auto");
+        params.approval_policy = Some(p::AskForApproval::Never);
+        params.collaboration_mode = Some(serde_json::json!({"mode": "plan"}));
+        assert_eq!(claude_permission_mode(&params), "plan");
     }
 
     #[test]

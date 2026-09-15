@@ -263,6 +263,200 @@ async fn duplicate_resume_control_exit_recovers_with_spawn_time_overrides() {
     let _ = timeout(STEP_TIMEOUT, bridge_task).await;
 }
 
+#[tokio::test]
+async fn full_access_switch_restarts_same_session_and_restores_sandbox() {
+    let _guard = TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let fixture = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    let argv_log = fixture.path().join("argv.jsonl");
+    let turn_log = fixture.path().join("turns.log");
+    let _argv = EnvRestore::set("FAKE_CLAUDE_ARGV_LOG", &argv_log);
+    let _turns = EnvRestore::set("FAKE_CLAUDE_TURN_LOG", &turn_log);
+    let pool = Arc::new(ClaudePool::new(fake_claude_path()));
+    let codex_home = TempDir::new().unwrap();
+    let index = ThreadIndex::open_and_hydrate(codex_home.path())
+        .await
+        .unwrap();
+    let (client, bridge) = tokio::io::duplex(64 * 1024);
+    let (bridge_reader, bridge_writer) = tokio::io::split(bridge);
+    let bridge_pool = pool.clone();
+    let bridge_index: Arc<dyn ThreadIndexHandle> = index.clone();
+    let home_path = codex_home.path().to_path_buf();
+    let task = tokio::spawn(async move {
+        run_connection(
+            bridge_reader,
+            bridge_writer,
+            bridge_pool,
+            bridge_index,
+            home_path,
+        )
+        .await
+    });
+    let (reader, mut writer) = tokio::io::split(client);
+    let mut reader = BufReader::new(reader);
+    send(
+        &mut writer,
+        1,
+        "initialize",
+        json!({"clientInfo":{"name":"full-access","version":"1"}}),
+    )
+    .await;
+    let _ = await_response(&mut reader, 1).await;
+    send(&mut writer, 2, "thread/start", json!({"cwd":cwd.path()})).await;
+    let started = await_response(&mut reader, 2).await;
+    let thread_id = started["result"]["thread"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // fake 不写 Claude transcript，模拟真实 CLI 在首轮后留下的历史文件。
+    let transcript = index
+        .lookup(&thread_id)
+        .await
+        .unwrap()
+        .metadata
+        .claude_session_path;
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "").unwrap();
+
+    for (offset, sandbox, policy, reviewer) in [
+        (0, "dangerFullAccess", "never", "user"),
+        (1, "dangerFullAccess", "never", "user"),
+        (2, "readOnly", "on-request", "user"),
+        (3, "workspaceWrite", "on-request", "auto_review"),
+        (4, "dangerFullAccess", "never", "user"),
+    ] {
+        let id = 3 + offset;
+        send(&mut writer, id, "turn/start", json!({
+            "threadId":thread_id, "input":[{"type":"text","text":format!("turn-{offset}")}],
+            "sandboxPolicy":{"type":sandbox}, "approvalPolicy":policy, "approvalsReviewer":reviewer,
+        })).await;
+        let frames = collect_turn(&mut reader, id).await;
+        let response = frames
+            .iter()
+            .find(|f| f["id"].as_u64() == Some(id))
+            .unwrap();
+        assert!(response.get("error").is_none(), "{response:#?}");
+        let complete = frames
+            .iter()
+            .find(|f| f["method"] == "turn/completed")
+            .unwrap();
+        assert_eq!(complete["params"]["turn"]["status"], "completed");
+        let handle = pool.get(&thread_id).await.unwrap();
+        assert_eq!(handle.uses_full_access(), sandbox == "dangerFullAccess");
+        let (_, _, mode) = handle.runtime_snapshot().await;
+        assert_eq!(
+            mode.as_deref(),
+            Some(match sandbox {
+                "dangerFullAccess" => "bypassPermissions",
+                "readOnly" => "plan",
+                _ => "auto",
+            })
+        );
+    }
+    let argv = read_argv_log(&argv_log);
+    assert_eq!(
+        argv.len(),
+        3,
+        "只在进出完全访问时换代，普通档位沿用控制协议"
+    );
+    for position in [0, 2] {
+        assert!(has_arg_pair(
+            &argv[position],
+            "--permission-mode",
+            "bypassPermissions"
+        ));
+        assert!(has_arg_pair(
+            &argv[position],
+            "--settings",
+            r#"{"sandbox":{"enabled":false}}"#
+        ));
+        assert!(!argv[position].iter().any(|a| a == "--disallowedTools"));
+    }
+    assert!(has_arg_pair(&argv[1], "--permission-mode", "plan"));
+    for generation in &argv {
+        assert!(has_arg_pair(generation, "--resume", &thread_id));
+        assert!(has_arg_pair(
+            generation,
+            "--permission-prompt-tool",
+            "stdio"
+        ));
+    }
+    if cfg!(windows) {
+        assert!(argv[1].iter().any(|a| a == "--disallowedTools"));
+    } else {
+        let settings_index = argv[1].iter().position(|a| a == "--settings").unwrap();
+        let settings: Value = serde_json::from_str(&argv[1][settings_index + 1]).unwrap();
+        assert_eq!(settings["sandbox"]["enabled"], true);
+        assert_eq!(settings["sandbox"]["failIfUnavailable"], true);
+    }
+    assert_eq!(
+        std::fs::read_to_string(turn_log).unwrap(),
+        "turn-0\nturn-1\nturn-2\nturn-3\nturn-4\n"
+    );
+    drop(writer);
+    drop(reader);
+    let _ = timeout(STEP_TIMEOUT, task).await;
+}
+
+#[tokio::test]
+async fn concurrent_permission_selections_cannot_change_the_accepted_turn() {
+    use alleycat_claude_bridge::handlers::{
+        thread::handle_thread_start,
+        turn::{TurnError, handle_turn_start},
+    };
+    use alleycat_claude_bridge::state::ConnectionState;
+    let _guard = TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let fixture = TempDir::new().unwrap();
+    let script = fixture.path().join("slow.jsonl");
+    std::fs::write(&script, "{\"type\":\"sleep\",\"ms\":1000}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n").unwrap();
+    let _script = EnvRestore::set("FAKE_CLAUDE_SCRIPT", &script);
+    let pool = Arc::new(ClaudePool::new(fake_claude_path()));
+    let index = ThreadIndex::open_and_hydrate(fixture.path()).await.unwrap();
+    let (state, _rx) = ConnectionState::for_test(pool.clone(), index, Default::default());
+    let started = handle_thread_start(
+        &state,
+        serde_json::from_value(json!({"cwd":fixture.path()})).unwrap(),
+    )
+    .await
+    .unwrap();
+    let thread_id = started.thread.id;
+    let full = serde_json::from_value(json!({"threadId":thread_id,
+        "input":[{"type":"text","text":"full"}], "approvalPolicy":"never",
+        "sandboxPolicy":{"type":"dangerFullAccess"}}))
+    .unwrap();
+    let limited = serde_json::from_value(json!({"threadId":thread_id,
+        "input":[{"type":"text","text":"limited"}], "approvalPolicy":"on-request",
+        "sandboxPolicy":{"type":"readOnly"}}))
+    .unwrap();
+    let (full_result, limited_result) = tokio::join!(
+        handle_turn_start(&state, full),
+        handle_turn_start(&state, limited)
+    );
+    let expected_full = match (&full_result, &limited_result) {
+        (Ok(_), Err(TurnError::AlreadyActive { .. })) => true,
+        (Err(TurnError::AlreadyActive { .. }), Ok(_)) => false,
+        _ => panic!("同一会话必须只有一轮胜出：{full_result:?}, {limited_result:?}"),
+    };
+    let handle = pool.get(&thread_id).await.unwrap();
+    assert_eq!(handle.uses_full_access(), expected_full);
+    let (_, _, mode) = handle.runtime_snapshot().await;
+    assert_eq!(
+        mode.as_deref(),
+        Some(if expected_full {
+            "bypassPermissions"
+        } else {
+            "plan"
+        })
+    );
+    pool.release(&thread_id).await;
+}
+
 async fn send<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     id: u64,

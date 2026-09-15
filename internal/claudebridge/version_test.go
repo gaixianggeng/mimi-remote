@@ -84,3 +84,14 @@ func TestInstallHintUsesMonorepo(t *testing.T) {
 		t.Fatalf("安装提示不应继续依赖独立 Alleycat fork：%s", InstallHint)
 	}
 }
+
+func TestSupportsFullAccess(t *testing.T) {
+	for _, version := range []string{"", "0.2.12", "0.2.13-beta.1"} {
+		if SupportsFullAccess(version) {
+			t.Fatalf("旧版或未知版本不能声明完全访问：%q", version)
+		}
+	}
+	if !SupportsFullAccess("0.2.13") || !SupportsFullAccess("1.0.0") {
+		t.Fatal("正式版应支持完全访问")
+	}
+}

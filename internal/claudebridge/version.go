@@ -24,6 +24,8 @@ const (
 	// 续聊。旧 bridge 会回 method not found，所以 channel 只对达标版本声明该方法，iOS 据此
 	// 决定是否显示"在此设备上接管"。
 	ThreadTakeoverVersion = "0.2.11"
+	// 旧 bridge 会把完全访问映射回 default，不能对它宣称免审批已生效。
+	FullAccessVersion = "0.2.13"
 	// Claude bridge 与 agentd 同仓维护，安装提示只指向主仓库，避免两套 revision 和 Release 漂移。
 	BridgeRepository = "https://github.com/gaixianggeng/mimi-remote.git"
 	InstallHint      = "cargo install --git " + BridgeRepository + " --locked --force --bin alleycat-claude-bridge alleycat-claude-bridge"
@@ -53,6 +55,10 @@ func SupportsThreadItemsList(version string) bool {
 // SupportsThreadTakeover 只在 bridge 真能结束别处持有方并同 id 续聊时为真。
 func SupportsThreadTakeover(version string) bool {
 	return Compare(version, ThreadTakeoverVersion) >= 0
+}
+
+func SupportsFullAccess(version string) bool {
+	return Compare(version, FullAccessVersion) >= 0
 }
 
 // IsComparable 只对正式三段式版本为真；预发布或无法解析的版本不能参与择优排序。
