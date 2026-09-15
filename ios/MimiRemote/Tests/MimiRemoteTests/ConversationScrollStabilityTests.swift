@@ -1,26 +1,31 @@
+import SwiftUI
 import UIKit
 import XCTest
 @testable import MimiRemote
 
 @MainActor
 final class ConversationScrollStabilityTests: XCTestCase {
-    func testProjectionCapturesOldViewportOnlyWhenPublishingAChangedSnapshot() {
-        let cache = ConversationTimelineItemCache()
-        let first = ConversationMessage(role: .user, content: "first")
-        let second = ConversationMessage(role: .assistant, content: "second")
+    func testProjectionCapturesOldViewportOnlyWhenPublishingAChangedSnapshot() throws {
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        rig.controller.beginLoadingEarlierHistory()
+        rig.addMarker()
         var captures = 0
-        let initial = cache.snapshot(from: [first], willUpdate: { captures += 1 })
+        ConversationTimelineViewport.testingSelectionObserver = { _, _ in captures += 1 }
+        defer { ConversationTimelineViewport.testingSelectionObserver = nil }
+        XCTAssertFalse(rig.controller.prepare(rig.snapshot))
         XCTAssertEqual(captures, 0)
-        _ = cache.snapshot(from: [first], willUpdate: { captures += 1 })
-        let frozen = cache.snapshot(from: [first, second], suspendingUpdates: true, willUpdate: { captures += 1 })
-        XCTAssertEqual(captures, 0, "无变化或拖动冻结期间不得建锚")
-        XCTAssertEqual(frozen.revision, initial.revision)
-        let updated = cache.snapshot(from: [first, second]) {
-            XCTAssertEqual(cache.tailItemID, initial.tailItemID, "必须先捕获旧投影，再提交新投影")
-            captures += 1
-        }
+        let cache = ConversationTimelineItemCache()
+        let first = cache.snapshot(from: rig.messages, scope: rig.scope)
+        let frozen = cache.snapshot(
+            from: rig.messages + [ConversationMessage(role: .assistant, content: "next")],
+            suspendingUpdates: true, scope: rig.scope
+        )
+        XCTAssertEqual(frozen.revision, first.revision)
+        XCTAssertEqual(captures, 0, "冻结列表不能捕获下一版布局")
+        rig.publish(changes: .historyEnrichment)
         XCTAssertEqual(captures, 1)
-        XCTAssertEqual(updated.revision, initial.revision + 1)
     }
 
     func testFrozenProjectionCannotLeakAcrossSessionOrProfile() {
@@ -28,193 +33,234 @@ final class ConversationScrollStabilityTests: XCTestCase {
         let old = ConversationMessage(role: .user, content: "old")
         let next = ConversationMessage(role: .assistant, content: "next")
         _ = cache.snapshot(from: [old], scope: ScopedSessionID(profileID: "a", sessionID: "one"))
-        var captures = 0
         let changed = cache.snapshot(
             from: [next], suspendingUpdates: true,
-            scope: ScopedSessionID(profileID: "b", sessionID: "two"),
-            willUpdate: { captures += 1 }
+            scope: ScopedSessionID(profileID: "b", sessionID: "two")
         )
-        XCTAssertEqual(changed.items.count, 1)
-        XCTAssertEqual(changed.tailItemID, ConversationTimelineItemBuilder.items(from: [next]).last?.id)
-        XCTAssertEqual(captures, 0, "不能用旧会话的可见锚点修正新会话")
+        XCTAssertEqual(changed.rows.count, 1)
+        XCTAssertEqual(changed.tail?.messageID, next.id)
+        XCTAssertEqual(changed.scope?.profileID, "b")
     }
 
     func testPrunedSummaryFallsBackToSurvivingVisibleMessage() throws {
-        let coordinator = ConversationHistoryScrollCoordinator()
-        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
-        let window = try mount(scrollView)
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
         defer { window.isHidden = true }
-        coordinator.bind(scrollView: scrollView)
-        let summaryID = UUID()
-        let survivingID = UUID()
-        let summary = UIView(frame: CGRect(x: 0, y: 80, width: 300, height: 40))
-        let surviving = UIView(frame: CGRect(x: 0, y: 160, width: 300, height: 40))
-        scrollView.addSubview(summary)
-        scrollView.addSubview(surviving)
-        coordinator.bindAnchorView([summaryID], summary)
-        coordinator.bindAnchorView([survivingID], surviving)
-        coordinator.updateAnchorFrame([summaryID], summary.frame)
-        coordinator.updateAnchorFrame([survivingID], surviving.frame)
-        coordinator.update(metrics: metrics(offset: 0))
-        let baseline = surviving.convert(surviving.bounds, to: nil).minY
-        let generation = try XCTUnwrap(coordinator.beginPreservingVisible(sessionID: "session"))
+        let summary = rig.addMarker(y: 1_280)
+        let surviving = rig.addMarker(y: 1_360)
+        let anchor = try XCTUnwrap(rig.controller.viewport.captureVisibleAnchor())
+        XCTAssertEqual(anchor.candidates.count, 2)
         summary.removeFromSuperview()
         surviving.frame.origin.y += 60
-        let correction = try XCTUnwrap(coordinator.correction(expectedGeneration: generation, displayedSessionID: "session"))
-        XCTAssertEqual(correction.baselineAnchorMinY, baseline)
-        XCTAssertEqual(correction.currentAnchorMinY, baseline + 60)
-        XCTAssertNil(coordinator.correction(expectedGeneration: generation, displayedSessionID: "other"))
-        coordinator.cancelPreservation()
+        rig.scrollView.contentSize.height += 60
+        XCTAssertEqual(try XCTUnwrap(rig.controller.viewport.correctedOffset(for: anchor)), 1_260)
     }
 
     func testCorrectionSamplesLiveOffsetAndFrameTogether() throws {
-        let coordinator = ConversationHistoryScrollCoordinator()
-        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
-        let window = try mount(scrollView)
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
         defer { window.isHidden = true }
-        scrollView.contentSize = CGSize(width: 400, height: 2_000)
-        scrollView.contentOffset.y = 400
-        let marker = UIView(frame: CGRect(x: 0, y: 500, width: 300, height: 40))
-        scrollView.addSubview(marker)
-        let id = UUID()
-        coordinator.bind(scrollView: scrollView)
-        coordinator.bindAnchorView([id], marker)
-        coordinator.updateAnchorFrame([id], CGRect(x: 0, y: 100, width: 300, height: 40))
-        coordinator.update(metrics: metrics(offset: 400))
-        let generation = try XCTUnwrap(coordinator.beginPreservingVisible(sessionID: "session"))
-
-        // List 已自行补偿 60pt，但 SwiftUI 的 offset/frame 通知仍是旧值。
+        rig.scrollView.contentOffset.y = 400
+        let marker = rig.addMarker(y: 500)
+        let anchor = try XCTUnwrap(rig.controller.viewport.captureVisibleAnchor())
+        // List 已自行补偿 60pt，SwiftUI 尚未报告新 offset/frame。只读同一 UIKit 时刻。
         marker.frame.origin.y += 60
-        scrollView.contentOffset.y += 60
-        let correction = try XCTUnwrap(coordinator.correction(expectedGeneration: generation, displayedSessionID: "session"))
-        XCTAssertEqual(correction.metrics.contentOffsetY, 460)
-        XCTAssertEqual(correction.currentAnchorMinY, correction.baselineAnchorMinY)
-        let target = ConversationTimelineView.historyPreservedOffset(
-            currentOffsetY: correction.metrics.contentOffsetY,
-            currentAnchorMinY: correction.currentAnchorMinY,
-            baselineAnchorMinY: correction.baselineAnchorMinY,
-            minimumOffsetY: correction.metrics.minimumOffsetY,
-            maximumOffsetY: correction.metrics.maximumOffsetY
-        )
-        XCTAssertEqual(target, 460, "不得重复补偿 List 已完成的位移")
-        coordinator.cancelPreservation()
+        rig.scrollView.contentOffset.y += 60
+        XCTAssertEqual(try XCTUnwrap(rig.controller.viewport.correctedOffset(for: anchor)), 460)
     }
 
     func testPreservationExpiresWithoutFurtherScrollWrites() async throws {
-        let coordinator = ConversationHistoryScrollCoordinator()
-        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
-        coordinator.bind(scrollView: scrollView)
-        coordinator.updateAnchorFrame([UUID()], CGRect(x: 0, y: 80, width: 300, height: 40))
-        XCTAssertNotNil(coordinator.beginPreservingVisible(sessionID: "session"))
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        rig.controller.beginLoadingEarlierHistory()
+        let marker = rig.addMarker()
+        rig.publish(changes: .historyEnrichment)
+        await drain()
+        rig.commands.removeAll()
         try await Task.sleep(for: .milliseconds(350))
-        XCTAssertNil(coordinator.activeGeneration)
-        var writes = 0
-        coordinator.scheduleCorrection(displayedSessionID: "session") { _ in writes += 1 }
-        await Task.yield()
-        XCTAssertEqual(writes, 0)
+        marker.frame.origin.y += 60
+        rig.controller.recordAnchorFrame([rig.markerID], marker.convert(marker.bounds, to: nil))
+        await drain()
+        XCTAssertTrue(rig.commands.isEmpty, "过期事务不得因随后布局再次写入")
     }
 
     func testInteractionDiscardsOldAnchorEvenAfterReturningToIdle() async throws {
-        let coordinator = ConversationHistoryScrollCoordinator()
-        let anchorID = UUID()
-        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
-        coordinator.bind(scrollView: scrollView)
-        coordinator.updateAnchorFrame([anchorID], CGRect(x: 0, y: 80, width: 300, height: 40))
-        coordinator.update(metrics: metrics(offset: 0))
-        let generation = try XCTUnwrap(coordinator.beginPreservingVisible(sessionID: "session"))
-
-        var writes = 0
-        coordinator.scheduleCorrection(
-            expectedGeneration: generation,
-            displayedSessionID: "session"
-        ) { _ in
-            writes += 1
-        }
-        coordinator.setInteractionActive(true)
-        for _ in 0..<3 {
-            await Task.yield()
-        }
-
-        XCTAssertNil(coordinator.activeGeneration)
-        XCTAssertEqual(writes, 0)
-
-        coordinator.setInteractionActive(false)
-        coordinator.scheduleCorrection(
-            expectedGeneration: generation,
-            displayedSessionID: "session"
-        ) { _ in
-            writes += 1
-        }
-        for _ in 0..<3 {
-            await Task.yield()
-        }
-        XCTAssertEqual(writes, 0, "手势后的阅读位置不能被旧事务拉回")
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        rig.controller.beginLoadingEarlierHistory()
+        let marker = rig.addMarker()
+        rig.publish(changes: .historyEnrichment)
+        marker.frame.origin.y += 60
+        rig.controller.phaseChanged(.tracking)
+        rig.report(offset: 600)
+        rig.controller.phaseChanged(.decelerating)
+        await drain()
+        XCTAssertTrue(rig.commands.isEmpty)
+        rig.controller.phaseChanged(.idle)
+        rig.controller.recordAnchorFrame([rig.markerID], marker.convert(marker.bounds, to: nil))
+        await drain()
+        XCTAssertTrue(rig.commands.isEmpty, "手势后的阅读位置不能被旧事务拉回")
+        XCTAssertEqual(rig.controller.mode, .readingHistory)
     }
 
-    func testInitialPresentationRequiresStableGeometryAtTheActualTail() {
-        let tail = metrics(offset: 1_200)
-        XCTAssertFalse(ConversationTimelineView.isInitialTailLayoutStable(previous: nil, current: tail))
-        XCTAssertFalse(ConversationTimelineView.isInitialTailLayoutStable(previous: metrics(offset: 1_100), current: tail))
-        XCTAssertFalse(ConversationTimelineView.isInitialTailLayoutStable(previous: metrics(offset: 1_100), current: metrics(offset: 1_100)))
-        XCTAssertTrue(ConversationTimelineView.isInitialTailLayoutStable(previous: tail, current: tail))
+    func testInitialPresentationRequiresActualTailButNotCompletedHistoryLoading() {
+        let rig = ScrollRig(connect: false)
+        XCTAssertFalse(rig.controller.isReadable)
+        rig.controller.tailVisibilityChanged(true, epoch: rig.controller.epoch)
+        XCTAssertFalse(rig.controller.isReadable, "尚未执行首次定位不能揭开正文")
+        rig.connect()
+        rig.report(offset: 1_100)
+        // writer 模拟 scrollTo 到实际尾部，并反馈执行结果。
+        XCTAssertTrue(rig.controller.isReadable)
+        XCTAssertEqual(rig.controller.mode, .followingTail)
+        rig.publish(changes: .historyEnrichment)
+        XCTAssertTrue(rig.controller.isReadable, "后续历史补齐不重新遮罩")
     }
 
     func testTailLayoutCorrectionUsesCurrentSizeAndDoesNotWriteDuringInteraction() {
-        let coordinator = ConversationHistoryScrollCoordinator()
-        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
-        scrollView.contentSize.height = 2_000
-        scrollView.contentOffset.y = 900
-        coordinator.bind(scrollView: scrollView)
-        coordinator.update(metrics: metrics(offset: 1_200))
-        // Store 发布后原生尺寸已经变大，SwiftUI metrics 仍可能对应上一帧。
-        scrollView.contentSize.height = 2_400
-        XCTAssertTrue(coordinator.followTailAfterContentSizeChange())
-        XCTAssertEqual(scrollView.contentOffset.y, 1_600)
-        coordinator.setInteractionActive(true)
-        scrollView.contentOffset.y = 1_100
-        scrollView.contentSize.height = 2_800
-        XCTAssertFalse(coordinator.followTailAfterContentSizeChange())
-        XCTAssertEqual(scrollView.contentOffset.y, 1_100, "不能修正用户手势中的位置")
+        let rig = ScrollRig()
+        rig.report(offset: 1_200, height: 2_400)
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 1_600)
+        XCTAssertEqual(rig.commands.count, 1)
+        rig.controller.phaseChanged(.tracking)
+        rig.report(offset: 1_100, height: 2_800)
+        XCTAssertEqual(rig.commands.count, 1)
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 1_100, "不能修正用户手势中的位置")
     }
 
-    func testTailTransactionCorrectsNativeChangesBeforeReturningFromLayout() {
-        let coordinator = ConversationHistoryScrollCoordinator()
-        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
-        scrollView.contentSize.height = 2_000
-        scrollView.contentOffset.y = 1_200
-        coordinator.bind(scrollView: scrollView)
-        coordinator.beginPreservingTail(sessionID: "initial")
-        scrollView.contentSize.height = 2_600
-        XCTAssertEqual(scrollView.contentOffset.y, 1_800, "不能等下一拍 SwiftUI geometry 回调才贴底")
-        scrollView.contentOffset.y = 1_000
-        XCTAssertEqual(scrollView.contentOffset.y, 1_800, "List 随后的旧行保位也不能抢走尾部")
-        coordinator.setInteractionActive(true)
-        XCTAssertFalse(coordinator.isPreservingTail)
-        scrollView.contentOffset.y = 900
-        scrollView.contentSize.height = 3_000
-        XCTAssertEqual(scrollView.contentOffset.y, 900, "手势开始后立即撤销原生监听")
+    func testRepeatedNativeOffsetFeedbackDoesNotCreateNewTailCommands() {
+        let rig = ScrollRig()
+        let marker = rig.addMarker()
+        rig.report(offset: 1_200, height: 2_600)
+        XCTAssertEqual(rig.commands.count, 1)
+        // 复现日志中的系统回写：同一尺寸下反复把偏移减去 40pt。
+        for _ in 0..<200 {
+            rig.report(offset: 1_760, height: 2_600)
+            rig.controller.anchorViewDidLayout([rig.markerID], view: marker, epoch: rig.controller.epoch)
+            rig.report(offset: 1_800, height: 2_600)
+        }
+        XCTAssertEqual(rig.commands.count, 1, "offset 是执行结果，不得变成新滚动输入")
     }
 
-    func testTailTransactionExpiresAndCannotWriteIntoReplacementList() async throws {
-        let coordinator = ConversationHistoryScrollCoordinator()
-        let first = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
-        first.contentSize.height = 2_000
-        first.contentOffset.y = 1_200
-        coordinator.bind(scrollView: first)
-        coordinator.beginPreservingTail(sessionID: "first")
+    func testOldScopeCallbacksCannotWriteIntoReplacementList() async {
+        let rig = ScrollRig()
+        let oldEpoch = rig.controller.epoch
+        rig.publish(changes: .live)
+        rig.scope = ScopedSessionID(profileID: "profile", sessionID: "replacement")
+        rig.publish(changes: .historyReplacement)
+        rig.commands.removeAll()
+        rig.controller.geometryChanged(rig.metrics(offset: 300, height: 3_000), epoch: oldEpoch)
+        rig.controller.tailVisibilityChanged(true, epoch: oldEpoch)
+        rig.controller.phaseChanged(.tracking, epoch: oldEpoch)
+        rig.controller.connect(epoch: oldEpoch) { _ in XCTFail("旧 executor 不得重新接线") }
+        await drain()
+        XCTAssertTrue(rig.commands.isEmpty)
+        XCTAssertFalse(rig.controller.isInteracting)
+        XCTAssertFalse(rig.controller.isReadable)
+        XCTAssertEqual(rig.controller.scope, rig.scope)
+    }
+
+    func testInitialCommandDoesNotRequireNativeTailCellToExist() async {
+        let controller = ConversationTimelineScrollController()
+        let snapshot = ConversationTimelineItemCache().snapshot(
+            from: [ConversationMessage(role: .assistant, content: "first")],
+            scope: ScopedSessionID(profileID: "profile", sessionID: "first")
+        )
+        controller.prepare(snapshot)
+        var commands: [ConversationTimelineScrollCommand] = []
+        controller.connect(epoch: controller.epoch) { commands.append($0) }
+        controller.geometryChanged(
+            ConversationTimelineScrollMetrics(
+                isNearBottom: false, contentOffsetY: 0, contentHeight: 2_000,
+                minimumOffsetY: 0, maximumOffsetY: 1_200
+            ), epoch: controller.epoch
+        )
+        await drain()
+        XCTAssertNil(controller.viewport.scrollView)
+        XCTAssertEqual(commands.map(\.target), [.tail])
+    }
+
+    func testEmptyListCallbacksCannotAffectFirstContentList() {
+        let controller = ConversationTimelineScrollController()
+        let cache = ConversationTimelineItemCache()
+        let scope = ScopedSessionID(profileID: "", sessionID: "cold-session")
+        controller.prepare(cache.snapshot(from: [], scope: scope))
+        let emptyEpoch = controller.epoch
+        controller.prepare(cache.snapshot(from: [ConversationMessage(role: .assistant, content: "first")], scope: scope))
+        XCTAssertGreaterThan(controller.epoch, emptyEpoch)
+        controller.phaseChanged(.tracking, epoch: emptyEpoch)
+        controller.connect(epoch: emptyEpoch) { _ in XCTFail("空 List 不能为正文执行滚动") }
+        controller.tailVisibilityChanged(true, epoch: emptyEpoch)
+        XCTAssertFalse(controller.isInteracting)
+        XCTAssertFalse(controller.isReadable)
+    }
+
+    func testInitialPresentationCompletesWhenCommandDoesNotChangeGeometry() async {
+        let rig = ScrollRig(connect: false)
+        rig.report(offset: 1_200)
+        rig.controller.tailVisibilityChanged(true, epoch: rig.controller.epoch)
+        XCTAssertFalse(rig.controller.isReadable)
+        rig.controller.connect(epoch: rig.controller.epoch) { _ in }
+        await drain()
+        XCTAssertTrue(rig.controller.isReadable, "无变化的 scrollTo 不会再报告 geometry，仍须交接首屏")
+    }
+
+    func testExpansionKeepsItsItemTargetThroughoutLayoutAnimation() async {
+        let rig = ScrollRig()
+        let input = rig.controller.expansionChanged("work-group", isExpanded: true)
+        await drain()
+        for height in stride(from: 2_100, through: 2_500, by: 100) {
+            rig.report(offset: 1_200, height: CGFloat(height))
+        }
+        XCTAssertFalse(rig.commands.isEmpty)
+        XCTAssertTrue(rig.commands.allSatisfy { $0.target == .item("work-group") })
+        rig.controller.expansionCompleted(input)
+        let count = rig.commands.count
+        await drain()
+        XCTAssertEqual(rig.commands.count, count)
+    }
+
+    func testHistoryExpansionAnchorSurvivesUntilAnimationCompletion() async throws {
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        rig.scrollView.contentOffset.y = 600
+        rig.controller.beginLoadingEarlierHistory()
+        let marker = rig.addMarker(y: 700)
+        let input = rig.controller.expansionChanged("work-group", isExpanded: true)
+        await drain()
         try await Task.sleep(for: .milliseconds(350))
-        XCTAssertFalse(coordinator.isPreservingTail)
-        first.contentSize.height = 2_600
-        XCTAssertEqual(first.contentOffset.y, 1_200, "事务结束后不能继续监听并写回位置")
+        marker.frame.origin.y += 60
+        rig.controller.recordAnchorFrame([UUID()], CGRect(x: 0, y: 500, width: 10, height: 10))
+        await drain()
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 660)
+        rig.controller.expansionCompleted(input)
+        let count = rig.commands.count
+        marker.frame.origin.y += 60
+        rig.controller.recordAnchorFrame([UUID()], CGRect(x: 0, y: 500, width: 10, height: 10))
+        await drain()
+        XCTAssertEqual(rig.commands.count, count, "动画完成后结束锚点，不持续持有旧阅读位置")
+    }
 
-        coordinator.beginPreservingTail(sessionID: "first")
-        let second = UIScrollView(frame: first.frame)
-        second.contentSize.height = 3_000
-        second.contentOffset.y = 300
-        coordinator.bind(scrollView: second)
-        XCTAssertFalse(coordinator.isPreservingTail)
-        first.contentSize.height = 3_400
-        XCTAssertEqual(second.contentOffset.y, 300, "旧 List 的回调不能写入新 List")
+    func testNonAnimatedExpansionPreservesNextLayoutAndThenExpires() async throws {
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        rig.scrollView.contentOffset.y = 600
+        rig.controller.beginLoadingEarlierHistory()
+        let marker = rig.addMarker(y: 700)
+        rig.controller.expansionChanged("work-group", isExpanded: true, isAnimated: false)
+        marker.frame.origin.y += 60
+        await drain()
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 660)
+        try await Task.sleep(for: .milliseconds(350))
+        let count = rig.commands.count
+        marker.frame.origin.y += 60
+        rig.controller.recordAnchorFrame([UUID()], CGRect(x: 0, y: 500, width: 10, height: 10))
+        await drain()
+        XCTAssertEqual(rig.commands.count, count)
     }
 
     func testDiagnosticsAreOptInBoundedAndLazy() {
@@ -233,8 +279,8 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(trace.export(), exported)
     }
 
-    private func metrics(offset: CGFloat) -> ConversationTimelineScrollMetrics {
-        ConversationTimelineScrollMetrics(isNearBottom: false, contentOffsetY: offset, contentHeight: 2_000, minimumOffsetY: 0, maximumOffsetY: 1_200)
+    private func drain() async {
+        for _ in 0..<8 { await Task.yield() }
     }
 
     private func mount(_ scrollView: UIScrollView) throws -> UIWindow {
@@ -246,5 +292,81 @@ final class ConversationScrollStabilityTests: XCTestCase {
         window.makeKeyAndVisible()
         controller.view.layoutIfNeeded()
         return window
+    }
+}
+
+@MainActor
+private final class ScrollRig {
+    let controller = ConversationTimelineScrollController()
+    let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+    var scope = ScopedSessionID(profileID: "profile", sessionID: "session")
+    let messages = [ConversationMessage(role: .assistant, content: "first")]
+    let markerID = UUID()
+    var commands: [ConversationTimelineScrollCommand] = []
+    private var revision = 0
+    private(set) var snapshot = ConversationTimelineSnapshot.empty
+
+    init(connect shouldConnect: Bool = true) {
+        scrollView.contentInsetAdjustmentBehavior = .never
+        scrollView.contentSize = CGSize(width: 400, height: 2_000)
+        scrollView.contentOffset.y = 1_200
+        publish(changes: .historyReplacement)
+        controller.bind(scrollView: scrollView, epoch: controller.epoch)
+        if shouldConnect {
+            connect()
+            report(offset: 1_200)
+            controller.tailVisibilityChanged(true, epoch: controller.epoch)
+            commands.removeAll()
+        }
+    }
+
+    func publish(changes: ConversationTimelineChangeReasons) {
+        revision += 1
+        let rows = ConversationTimelineItemBuilder.items(from: messages)
+        snapshot = ConversationTimelineSnapshot(
+            scope: scope, rows: rows, rowIDs: rows.map(\.id), tail: nil,
+            changes: changes, revision: revision
+        )
+        controller.prepare(snapshot)
+        controller.snapshotWasPublished()
+    }
+
+    func connect() {
+        controller.connect(epoch: controller.epoch) { [weak self] command in
+            guard let self else { return }
+            commands.append(command)
+            switch command.target {
+            case .tail: scrollView.contentOffset.y = scrollView.contentSize.height - scrollView.bounds.height
+            case let .offset(offset): scrollView.contentOffset.y = offset
+            case .item: break
+            }
+            controller.geometryChanged(
+                metrics(offset: scrollView.contentOffset.y, height: scrollView.contentSize.height),
+                epoch: controller.epoch
+            )
+        }
+    }
+
+    func report(offset: CGFloat, height: CGFloat = 2_000) {
+        scrollView.contentSize.height = height
+        scrollView.contentOffset.y = offset
+        controller.geometryChanged(metrics(offset: offset, height: height), epoch: controller.epoch)
+    }
+
+    func metrics(offset: CGFloat, height: CGFloat) -> ConversationTimelineScrollMetrics {
+        ConversationTimelineScrollMetrics(
+            isNearBottom: height - 800 - offset <= 120,
+            contentOffsetY: offset, contentHeight: height, minimumOffsetY: 0, maximumOffsetY: height - 800
+        )
+    }
+
+    @discardableResult
+    func addMarker(y: CGFloat = 1_300) -> UIView {
+        let marker = UIView(frame: CGRect(x: 0, y: y, width: 300, height: 40))
+        scrollView.addSubview(marker)
+        let id = y == 1_300 ? markerID : UUID()
+        controller.viewport.bindAnchorView([id], marker)
+        controller.recordAnchorFrame([id], marker.convert(marker.bounds, to: nil))
+        return marker
     }
 }

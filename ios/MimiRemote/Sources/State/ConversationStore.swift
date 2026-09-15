@@ -5,22 +5,6 @@ enum ConversationHistoryTimelineMutationKind: Equatable {
     case enrichment
 }
 
-struct ConversationHistoryTimelineMutation: Equatable {
-    let generation: UInt64
-    let kind: ConversationHistoryTimelineMutationKind
-    let includesLiveChange: Bool
-
-    init(
-        generation: UInt64,
-        kind: ConversationHistoryTimelineMutationKind,
-        includesLiveChange: Bool = false
-    ) {
-        self.generation = generation
-        self.kind = kind
-        self.includesLiveChange = includesLiveChange
-    }
-}
-
 @MainActor
 final class ConversationStore: ObservableObject {
     @Published private var activeProfileID = ""
@@ -39,8 +23,7 @@ final class ConversationStore: ObservableObject {
     private var pendingAssistantDeltasBySessionID: [ScopedSessionID: PendingAssistantDelta] = [:]
     private var assistantDeltaFlushTasks: [ScopedSessionID: Task<Void, Never>] = [:]
     private(set) var turnLifecycleBySessionID: [ScopedSessionID: [TurnID: ConversationTurnLifecycle]] = [:]
-    private var historyTimelineMutationBySessionID: [ScopedSessionID: ConversationHistoryTimelineMutation] = [:]
-    private var historyTimelineMutationGeneration: UInt64 = 0
+    private let timelineSourceTracker = ConversationTimelineSourceTracker()
     private var sessionAccessTickBySessionID: [ScopedSessionID: UInt64] = [:]
     private var retainedByteCountBySessionID: [ScopedSessionID: Int] = [:]
     private var totalRetainedByteCount = 0
@@ -190,15 +173,17 @@ final class ConversationStore: ObservableObject {
         return messagesByScopedSessionID[scopedSessionID(for: sessionID)] ?? []
     }
 
-    func hasLoadedHistory(sessionID: String) -> Bool {
-        loadedHistorySessionIDs.contains(scopedSessionID(for: sessionID))
+    /// 同一次 MainActor 读取中返回权威消息及其来源版本，避免 UI 分别观察多套状态。
+    func timelineSource(for sessionID: SessionID) -> ConversationTimelineSourceSnapshot {
+        let scope = scopedSessionID(for: sessionID)
+        return timelineSourceTracker.snapshot(
+            scope: scope,
+            messages: messagesByScopedSessionID[scope] ?? []
+        )
     }
 
-    func historyTimelineMutation(for sessionID: String?) -> ConversationHistoryTimelineMutation? {
-        guard let sessionID else {
-            return nil
-        }
-        return historyTimelineMutationBySessionID[scopedSessionID(for: sessionID)]
+    func hasLoadedHistory(sessionID: String) -> Bool {
+        loadedHistorySessionIDs.contains(scopedSessionID(for: sessionID))
     }
 
     func hasLocallyUnreconciledUserDelivery(sessionID: String) -> Bool {
@@ -268,7 +253,7 @@ final class ConversationStore: ObservableObject {
         timelineMutationKind: ConversationHistoryTimelineMutationKind? = nil
     ) {
         let scopedSessionID = scopedSessionID(for: sessionID)
-        let includesLiveChange = flushPendingAssistantDelta(sessionID: sessionID)
+        _ = flushPendingAssistantDelta(sessionID: sessionID)
         let converted = projectedHistoryMessages(history, sessionID: sessionID)
         for message in converted {
             if let stableID = message.stableID {
@@ -299,17 +284,13 @@ final class ConversationStore: ObservableObject {
             touchConversationSession(scopedSessionID)
             return
         }
-        // 历史分页的来源必须在 @Published 消息写回前记录。时间线在同一轮渲染中
-        // 才能识别这是历史补齐，而不是实时新消息，并阻止错误的尾部跟随。
-        if let timelineMutationKind {
-            historyTimelineMutationGeneration &+= 1
-            historyTimelineMutationBySessionID[scopedSessionID] = ConversationHistoryTimelineMutation(
-                generation: historyTimelineMutationGeneration,
-                kind: timelineMutationKind,
-                includesLiveChange: includesLiveChange
-            )
+        let changeReason: ConversationTimelineChangeReasons
+        switch timelineMutationKind {
+        case .prepend: changeReason = .historyPrepend
+        case .enrichment: changeReason = .historyEnrichment
+        case nil: changeReason = .historyReplacement
         }
-        setMessages(merged, sessionID: sessionID)
+        setMessages(merged, sessionID: sessionID, changeReasons: changeReason)
         loadedHistorySessionIDs.insert(scopedSessionID)
     }
 
@@ -355,7 +336,7 @@ final class ConversationStore: ObservableObject {
         }
         // 首屏 full/summary 历史是当前会话的 canonical 快照。替换上一轮历史投影，
         // 但保留尚未进入 thread/read 的本地发送、审批、补充信息等运行态消息。
-        setMessages(snapshot, sessionID: sessionID)
+        setMessages(snapshot, sessionID: sessionID, changeReasons: .historyReplacement)
         loadedHistorySessionIDs.insert(scopedSessionID)
     }
 
@@ -401,7 +382,9 @@ final class ConversationStore: ObservableObject {
                 turnPayload: turnPayload,
                 userDelivery: userDelivery
             ),
-            sessionID: sessionID
+            sessionID: sessionID,
+            // 沿用旧强制贴尾边界：只有带 clientMessageID 的新本地提交才表达用户意图。
+            changeReasons: clientMessageID == nil ? .live : [.live, .localSubmission]
         )
     }
 
@@ -550,10 +533,18 @@ final class ConversationStore: ObservableObject {
             target[targetIndex].content = message.content
             target[targetIndex].sendStatus = message.sendStatus
             target[targetIndex].turnPayload = target[targetIndex].turnPayload ?? message.turnPayload
-            replaceMessagesWithoutEquivalenceCheck(target, sessionID: targetSessionID)
+            replaceMessagesWithoutEquivalenceCheck(
+                target,
+                sessionID: targetSessionID,
+                changeReasons: [.live, .localSubmission]
+            )
         } else {
             target.append(message)
-            setMessages(target, sessionID: targetSessionID)
+            setMessages(
+                target,
+                sessionID: targetSessionID,
+                changeReasons: [.live, .localSubmission]
+            )
         }
 
         if source.isEmpty {
@@ -893,7 +884,11 @@ final class ConversationStore: ObservableObject {
         turnLifecycleBySessionID[scopedSessionID(for: sessionID)]?[turnID]
     }
 
-    private func append(_ message: ConversationMessage, sessionID: String) {
+    private func append(
+        _ message: ConversationMessage,
+        sessionID: String,
+        changeReasons: ConversationTimelineChangeReasons = .live
+    ) {
         let scopedSessionID = scopedSessionID(for: sessionID)
         var message = message
         if let turnID = message.turnID, message.turnLifecycle == nil {
@@ -904,7 +899,12 @@ final class ConversationStore: ObservableObject {
         }
         var list = messagesByScopedSessionID[scopedSessionID] ?? []
         list.append(message)
-        appendMessageWithIndex(message, list: list, sessionID: sessionID)
+        appendMessageWithIndex(
+            message,
+            list: list,
+            sessionID: sessionID,
+            changeReasons: changeReasons
+        )
     }
 
     private func shouldAccept(metadata: AgentEventMetadata, sessionID: String) -> Bool {
@@ -1111,14 +1111,25 @@ final class ConversationStore: ObservableObject {
         return true
     }
 
-    private func appendMessageWithIndex(_ message: ConversationMessage, list: [ConversationMessage], sessionID: String) {
-        appendMessageWithIndex(message, list: list, scopedSessionID: scopedSessionID(for: sessionID))
+    private func appendMessageWithIndex(
+        _ message: ConversationMessage,
+        list: [ConversationMessage],
+        sessionID: String,
+        changeReasons: ConversationTimelineChangeReasons = .live
+    ) {
+        appendMessageWithIndex(
+            message,
+            list: list,
+            scopedSessionID: scopedSessionID(for: sessionID),
+            changeReasons: changeReasons
+        )
     }
 
     private func appendMessageWithIndex(
         _ message: ConversationMessage,
         list: [ConversationMessage],
-        scopedSessionID: ScopedSessionID
+        scopedSessionID: ScopedSessionID,
+        changeReasons: ConversationTimelineChangeReasons = .live
     ) {
         // 新消息只增加自身成本；不要为了更新缓存预算重新扫描整段会话和历史大附件。
         let retainedByteDelta = estimatedRetainedByteCount(of: message)
@@ -1134,7 +1145,8 @@ final class ConversationStore: ObservableObject {
                 reordered,
                 scopedSessionID: scopedSessionID,
                 rebuildIndexes: true,
-                retainedByteDelta: retainedByteDelta
+                retainedByteDelta: retainedByteDelta,
+                changeReasons: changeReasons
             )
             return
         }
@@ -1142,7 +1154,8 @@ final class ConversationStore: ObservableObject {
             list,
             scopedSessionID: scopedSessionID,
             rebuildIndexes: false,
-            retainedByteDelta: retainedByteDelta
+            retainedByteDelta: retainedByteDelta,
+            changeReasons: changeReasons
         )
         indexMessage(message, at: list.count - 1, scopedSessionID: scopedSessionID)
     }
@@ -1167,15 +1180,26 @@ final class ConversationStore: ObservableObject {
     }
 
     @discardableResult
-    private func setMessages(_ list: [ConversationMessage], sessionID: String, rebuildIndexes: Bool = true) -> Bool {
-        setMessages(list, scopedSessionID: scopedSessionID(for: sessionID), rebuildIndexes: rebuildIndexes)
+    private func setMessages(
+        _ list: [ConversationMessage],
+        sessionID: String,
+        rebuildIndexes: Bool = true,
+        changeReasons: ConversationTimelineChangeReasons = .live
+    ) -> Bool {
+        setMessages(
+            list,
+            scopedSessionID: scopedSessionID(for: sessionID),
+            rebuildIndexes: rebuildIndexes,
+            changeReasons: changeReasons
+        )
     }
 
     @discardableResult
     private func setMessages(
         _ list: [ConversationMessage],
         scopedSessionID: ScopedSessionID,
-        rebuildIndexes: Bool = true
+        rebuildIndexes: Bool = true,
+        changeReasons: ConversationTimelineChangeReasons = .live
     ) -> Bool {
         let current = messagesByScopedSessionID[scopedSessionID]
         let messagesChanged = !areMessagesEquivalent(current, list)
@@ -1198,6 +1222,9 @@ final class ConversationStore: ObservableObject {
             clearConversationSessionState(scopedSessionID: evictedSessionID, messages: evictedMessages)
         }
 
+        if messagesChanged {
+            timelineSourceTracker.record(changeReasons, for: scopedSessionID)
+        }
         // 单次写回 @Published 字典，避免一次新增消息又逐个删除旧 session 造成多次 UI 发布。
         messagesByScopedSessionID = nextMessagesBySessionID
         if rebuildIndexes {
@@ -1210,13 +1237,15 @@ final class ConversationStore: ObservableObject {
         _ list: [ConversationMessage],
         sessionID: String,
         rebuildIndexes: Bool = true,
-        retainedByteDelta: Int? = nil
+        retainedByteDelta: Int? = nil,
+        changeReasons: ConversationTimelineChangeReasons = .live
     ) {
         replaceMessagesWithoutEquivalenceCheck(
             list,
             scopedSessionID: scopedSessionID(for: sessionID),
             rebuildIndexes: rebuildIndexes,
-            retainedByteDelta: retainedByteDelta
+            retainedByteDelta: retainedByteDelta,
+            changeReasons: changeReasons
         )
     }
 
@@ -1224,7 +1253,8 @@ final class ConversationStore: ObservableObject {
         _ list: [ConversationMessage],
         scopedSessionID: ScopedSessionID,
         rebuildIndexes: Bool = true,
-        retainedByteDelta: Int? = nil
+        retainedByteDelta: Int? = nil,
+        changeReasons: ConversationTimelineChangeReasons = .live
     ) {
         touchConversationSession(scopedSessionID)
         if let retainedByteDelta,
@@ -1247,6 +1277,7 @@ final class ConversationStore: ObservableObject {
             let evictedMessages = nextMessagesBySessionID.removeValue(forKey: evictedSessionID) ?? []
             clearConversationSessionState(scopedSessionID: evictedSessionID, messages: evictedMessages)
         }
+        timelineSourceTracker.record(changeReasons, for: scopedSessionID)
         messagesByScopedSessionID = nextMessagesBySessionID
         if rebuildIndexes {
             rebuildMessageIndexes(for: scopedSessionID, messages: list)
@@ -1324,7 +1355,7 @@ final class ConversationStore: ObservableObject {
         messageIndexByClientMessageIDBySessionID.removeValue(forKey: scopedSessionID)
         messageIndexByUUIDBySessionID.removeValue(forKey: scopedSessionID)
         historyProjectionCacheBySessionID.removeValue(forKey: scopedSessionID)
-        historyTimelineMutationBySessionID.removeValue(forKey: scopedSessionID)
+        timelineSourceTracker.remove(scopedSessionID)
         pendingAssistantDeltasBySessionID.removeValue(forKey: scopedSessionID)
         assistantDeltaFlushTasks[scopedSessionID]?.cancel()
         assistantDeltaFlushTasks.removeValue(forKey: scopedSessionID)

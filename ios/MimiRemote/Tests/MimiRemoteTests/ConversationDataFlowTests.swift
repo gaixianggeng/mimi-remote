@@ -467,38 +467,44 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(streaming.contentRevision, 2)
     }
 
-    func testConversationTimelineForcesTailFollowOnlyForLocalUserSubmissions() {
+    func testConversationTimelineLocalSubmissionReturnsToTailButOtherUpdatesKeepReadingPosition() {
+        let scope = ScopedSessionID(profileID: "timeline-controller", sessionID: "local-submission")
         let localSubmission = ConversationMessage(
             clientMessageID: "client-tail",
             role: .user,
             content: "继续修复滚动",
             sendStatus: .sending
         )
-        XCTAssertTrue(ConversationTimelineView.shouldForceTailFollow(forNewTailMessage: localSubmission))
+        let localController = makeTimelineControllerReadingHistory(scope: scope)
+        _ = localController.prepare(timelineSnapshot(
+            scope: scope,
+            revision: 2,
+            changes: .localSubmission,
+            message: localSubmission
+        ))
+        XCTAssertEqual(localController.mode, .followingTail)
 
-        let replayedHistoryUser = ConversationMessage(
-            role: .user,
-            content: "历史里的旧问题",
-            sendStatus: .confirmed
-        )
-        XCTAssertFalse(ConversationTimelineView.shouldForceTailFollow(forNewTailMessage: replayedHistoryUser))
-
-        let assistantReply = ConversationMessage(
-            clientMessageID: "client-ignored",
-            role: .assistant,
-            content: "收到",
-            sendStatus: .sending
-        )
-        XCTAssertFalse(ConversationTimelineView.shouldForceTailFollow(forNewTailMessage: assistantReply))
-
-        let processSummary = ConversationMessage(
-            clientMessageID: "client-process",
-            role: .user,
-            kind: .commandSummary,
-            content: "命令：go test ./...",
-            sendStatus: .sent
-        )
-        XCTAssertFalse(ConversationTimelineView.shouldForceTailFollow(forNewTailMessage: processSummary))
+        let passiveUpdates: [(ConversationMessage, ConversationTimelineChangeReasons)] = [
+            (ConversationMessage(role: .user, content: "历史里的旧问题", sendStatus: .confirmed), .historyReplacement),
+            (ConversationMessage(clientMessageID: "client-ignored", role: .assistant, content: "收到", sendStatus: .sending), .live),
+            (ConversationMessage(
+                clientMessageID: "client-process",
+                role: .user,
+                kind: .commandSummary,
+                content: "命令：go test ./...",
+                sendStatus: .sent
+            ), .live)
+        ]
+        for (index, update) in passiveUpdates.enumerated() {
+            let controller = makeTimelineControllerReadingHistory(scope: scope)
+            _ = controller.prepare(timelineSnapshot(
+                scope: scope,
+                revision: 2 + index,
+                changes: update.1,
+                message: update.0
+            ))
+            XCTAssertEqual(controller.mode, .readingHistory, "非本地提交不能把阅读者拉回尾部")
+        }
     }
 
     func testConversationTimelineInlineHistoryLoadingConditions() {
@@ -547,7 +553,9 @@ final class ConversationDataFlowTests: XCTestCase {
         )
     }
 
-    func testConversationTimelineDoesNotRescrollForEveryBatchedCommand() {
+    func testConversationTimelineBatchedRuntimeUpdatesStayDetachedWhileReadingHistory() {
+        let scope = ScopedSessionID(profileID: "timeline-controller", sessionID: "batched-updates")
+        let controller = makeTimelineControllerReadingHistory(scope: scope)
         let command = ConversationMessage(
             role: .system,
             kind: .commandSummary,
@@ -561,16 +569,30 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .sending
         )
 
-        XCTAssertFalse(ConversationTimelineView.shouldScheduleTailFollowForNewTailMessage(command))
-        XCTAssertTrue(ConversationTimelineView.shouldScheduleTailFollowForNewTailMessage(commentary))
+        _ = controller.prepare(timelineSnapshot(scope: scope, revision: 2, changes: .live, message: command))
+        XCTAssertEqual(controller.mode, .readingHistory)
+        XCTAssertTrue(controller.hasUnseenTail)
+        _ = controller.prepare(timelineSnapshot(scope: scope, revision: 3, changes: .live, message: commentary))
+        XCTAssertEqual(controller.mode, .readingHistory)
+        XCTAssertTrue(controller.hasUnseenTail)
     }
 
-    func testConversationTimelineSuspendsProjectionOnlyForUserDrivenScrollPhases() {
-        XCTAssertTrue(ConversationTimelineView.shouldSuspendTimelineUpdates(for: .tracking))
-        XCTAssertTrue(ConversationTimelineView.shouldSuspendTimelineUpdates(for: .interacting))
-        XCTAssertTrue(ConversationTimelineView.shouldSuspendTimelineUpdates(for: .decelerating))
-        XCTAssertFalse(ConversationTimelineView.shouldSuspendTimelineUpdates(for: .animating))
-        XCTAssertFalse(ConversationTimelineView.shouldSuspendTimelineUpdates(for: .idle))
+    func testConversationTimelineControllerTracksUserDrivenScrollPhases() {
+        let phases: [ScrollPhase] = [.tracking, .interacting, .decelerating, .animating]
+        for phase in phases {
+            let controller = ConversationTimelineScrollController()
+            let scope = ScopedSessionID(profileID: "timeline-controller", sessionID: "phase-\(phase)")
+            _ = controller.prepare(timelineSnapshot(
+                scope: scope,
+                revision: 1,
+                changes: .historyReplacement,
+                message: ConversationMessage(role: .assistant, content: "初始")
+            ))
+            controller.phaseChanged(phase)
+            XCTAssertTrue(controller.isInteracting, "\(phase) 期间必须冻结投影与自动滚动")
+            controller.phaseChanged(.idle)
+            XCTAssertFalse(controller.isInteracting)
+        }
     }
 
     func testConversationTimelineCacheCatchesUpAfterUserScrollingStops() {
@@ -582,146 +604,183 @@ final class ConversationDataFlowTests: XCTestCase {
         let suspended = cache.snapshot(from: [first, second], suspendingUpdates: true)
         let refreshed = cache.snapshot(from: [first, second])
 
-        XCTAssertEqual(initial.itemIDs, suspended.itemIDs)
-        XCTAssertEqual(suspended.items.count, 1)
-        XCTAssertEqual(refreshed.items.count, 2)
-        XCTAssertNotEqual(refreshed.itemIDs, suspended.itemIDs)
+        XCTAssertEqual(initial.rowIDs, suspended.rowIDs)
+        XCTAssertEqual(suspended.rows.count, 1)
+        XCTAssertEqual(refreshed.rows.count, 2)
+        XCTAssertNotEqual(refreshed.rowIDs, suspended.rowIDs)
     }
 
-    func testConversationTimelineAllowsInitialTailAttemptButRespectsUserScrollAway() {
-        XCTAssertTrue(ConversationTimelineView.shouldAttemptTailScroll(
-            force: false,
-            shouldFollowMessageTail: false,
-            forceNextMessageTailScroll: true,
-            isTailFollowLocked: false,
-            isTimelineNearBottom: false
+    func testConversationTimelineInitialPositioningYieldsOnlyToExplicitUserScrollOrSubmission() {
+        let scope = ScopedSessionID(profileID: "timeline-controller", sessionID: "initial-position")
+        let controller = ConversationTimelineScrollController()
+        _ = controller.prepare(timelineSnapshot(
+            scope: scope,
+            revision: 1,
+            changes: .historyReplacement,
+            message: ConversationMessage(role: .assistant, content: "初始历史")
         ))
+        controller.geometryChanged(
+            timelineMetrics(offset: 200, nearBottom: false),
+            epoch: controller.epoch
+        )
+        XCTAssertEqual(controller.mode, .initialPositioning, "旧 List 几何不能取消新会话首屏定位")
 
-        XCTAssertTrue(ConversationTimelineView.shouldAttemptTailScroll(
-            force: false,
-            shouldFollowMessageTail: false,
-            forceNextMessageTailScroll: false,
-            isTailFollowLocked: false,
-            isTimelineNearBottom: true
+        controller.phaseChanged(.tracking)
+        controller.geometryChanged(
+            timelineMetrics(offset: 160, nearBottom: false),
+            epoch: controller.epoch
+        )
+        controller.phaseChanged(.idle)
+        XCTAssertEqual(controller.mode, .readingHistory, "明确上翻后必须停止尾随")
+
+        _ = controller.prepare(timelineSnapshot(
+            scope: scope,
+            revision: 2,
+            changes: .live,
+            message: ConversationMessage(role: .assistant, content: "后台回复")
         ))
-
-        XCTAssertFalse(ConversationTimelineView.shouldAttemptTailScroll(
-            force: false,
-            shouldFollowMessageTail: false,
-            forceNextMessageTailScroll: false,
-            isTailFollowLocked: false,
-            isTimelineNearBottom: false
+        XCTAssertEqual(controller.mode, .readingHistory)
+        _ = controller.prepare(timelineSnapshot(
+            scope: scope,
+            revision: 3,
+            changes: .localSubmission,
+            message: ConversationMessage(clientMessageID: "local", role: .user, content: "继续")
         ))
-
-        XCTAssertTrue(ConversationTimelineView.shouldAttemptTailScroll(
-            force: true,
-            shouldFollowMessageTail: false,
-            forceNextMessageTailScroll: false,
-            isTailFollowLocked: false,
-            isTimelineNearBottom: false
-        ))
-
-        // 切换会话时要防住旧 List 的 geometry 回调：即使它先报“不在底部”，
-        // 也要继续执行尾部重锚，直到用户明确上翻。
-        XCTAssertTrue(ConversationTimelineView.shouldAttemptTailScroll(
-            force: false,
-            shouldFollowMessageTail: false,
-            forceNextMessageTailScroll: false,
-            isTailFollowLocked: true,
-            isTimelineNearBottom: false
-        ))
-
-        for distanceFromTail in [20, 60, 119] {
-            XCTAssertFalse(
-                ConversationTimelineView.shouldAttemptTailScroll(
-                    force: true,
-                    shouldFollowMessageTail: true,
-                    forceNextMessageTailScroll: true,
-                    isTailFollowLocked: true,
-                    isTimelineNearBottom: distanceFromTail < 120,
-                    hasUserDetachedFromTail: true
-                ),
-                "用户离尾 \(distanceFromTail)pt 后，任何自动或 force 请求都不能越过 latch"
-            )
-        }
+        XCTAssertEqual(controller.mode, .followingTail, "用户本地提交必须显式回到最新上下文")
     }
 
-    func testConversationTimelineDoesNotDetachForTailTapOrMicroDrag() {
-        let tail = ConversationTimelineScrollMetrics(
-            isNearBottom: true,
-            contentOffsetY: 1_000,
-            contentHeight: 1_800,
-            minimumOffsetY: -20,
-            maximumOffsetY: 1_000
+    func testConversationTimelineControllerDoesNotDetachForTailTapOrMicroDrag() {
+        let scope = ScopedSessionID(profileID: "timeline-controller", sessionID: "detach-threshold")
+        let lightTouchController = makeTimelineFollowingTail(scope: scope)
+        lightTouchController.phaseChanged(.tracking)
+        lightTouchController.geometryChanged(
+            timelineMetrics(offset: 999.75, nearBottom: true),
+            epoch: lightTouchController.epoch
         )
-        let lightTouch = ConversationTimelineScrollMetrics(
-            isNearBottom: true,
-            contentOffsetY: 999.75,
-            contentHeight: 1_800,
-            minimumOffsetY: -20,
-            maximumOffsetY: 1_000
-        )
-        XCTAssertFalse(ConversationTimelineView.shouldDetachFromTailForUserScroll(
-            interactionStartOffsetY: tail.contentOffsetY,
-            newMetrics: tail,
-            isUserScrolling: true
-        ))
-        XCTAssertFalse(ConversationTimelineView.shouldDetachFromTailForUserScroll(
-            interactionStartOffsetY: tail.contentOffsetY,
-            newMetrics: lightTouch,
-            isUserScrolling: true
-        ))
+        lightTouchController.phaseChanged(.idle)
+        XCTAssertEqual(lightTouchController.mode, .followingTail)
 
         for distanceFromTail in [20.0, 60.0, 119.0] {
-            let historicalPosition = ConversationTimelineScrollMetrics(
-                isNearBottom: distanceFromTail < 120,
-                contentOffsetY: tail.contentOffsetY - distanceFromTail,
-                contentHeight: 1_800,
-                minimumOffsetY: -20,
-                maximumOffsetY: 1_000
+            let controller = makeTimelineFollowingTail(scope: scope)
+            controller.phaseChanged(.tracking)
+            controller.geometryChanged(
+                timelineMetrics(offset: 1_000 - distanceFromTail, nearBottom: distanceFromTail < 120),
+                epoch: controller.epoch
             )
-            XCTAssertTrue(ConversationTimelineView.shouldDetachFromTailForUserScroll(
-                interactionStartOffsetY: tail.contentOffsetY,
-                newMetrics: historicalPosition,
-                isUserScrolling: true
-            ), "用户主动上翻 \(distanceFromTail)pt 后必须锁定阅读位置")
-            XCTAssertFalse(ConversationTimelineView.shouldDetachFromTailForUserScroll(
-                interactionStartOffsetY: tail.contentOffsetY,
-                newMetrics: historicalPosition,
-                isUserScrolling: false
-            ))
+            controller.phaseChanged(.idle)
+            XCTAssertEqual(controller.mode, .readingHistory, "用户主动上翻 \(distanceFromTail)pt 后必须锁定阅读位置")
         }
+
+        let passiveGeometryController = makeTimelineFollowingTail(scope: scope)
+        passiveGeometryController.geometryChanged(
+            timelineMetrics(offset: 880, nearBottom: false),
+            epoch: passiveGeometryController.epoch
+        )
+        XCTAssertEqual(passiveGeometryController.mode, .followingTail, "没有手势时不能把布局位移解释为用户上翻")
     }
 
-    func testMixedHistoryAndLiveMutationIsNotClassifiedAsPureHistory() {
-        XCTAssertTrue(ConversationTimelineView.isHistoricalTimelineChange(
-            previousGeneration: 10,
-            currentGeneration: 11,
-            currentIncludesLiveChange: false
-        ))
-        XCTAssertFalse(ConversationTimelineView.isHistoricalTimelineChange(
-            previousGeneration: 10,
-            currentGeneration: 11,
-            currentIncludesLiveChange: true
-        ))
+    func testMixedHistoryAndLiveSnapshotPreservesBothReasons() {
+        let snapshot = timelineSnapshot(
+            scope: ScopedSessionID(profileID: "timeline-controller", sessionID: "mixed"),
+            revision: 1,
+            changes: [.historyPrepend, .live],
+            message: ConversationMessage(role: .assistant, content: "实时与历史同批发布")
+        )
+        XCTAssertTrue(snapshot.changes.contains(.historyPrepend))
+        XCTAssertTrue(snapshot.changes.contains(.live))
+        XCTAssertTrue(snapshot.changes.containsHistoryChange)
     }
 
-    func testConversationTimelineOnlyRevealsAfterTailSentinelIsVisible() {
-        XCTAssertFalse(ConversationTimelineView.shouldPresentStabilizedTimeline(
-            hasTimelineContent: true,
-            didAttemptInitialTailScroll: true,
-            isTailSentinelVisible: false
+    func testConversationTimelineRevealsOnlyAfterInitialCommandAndTailVisibilityAgree() {
+        let scope = ScopedSessionID(profileID: "timeline-controller", sessionID: "readable")
+        let controller = ConversationTimelineScrollController()
+        _ = controller.prepare(timelineSnapshot(
+            scope: scope,
+            revision: 1,
+            changes: .historyReplacement,
+            message: ConversationMessage(role: .assistant, content: "长历史尾部")
         ))
-        XCTAssertFalse(ConversationTimelineView.shouldPresentStabilizedTimeline(
-            hasTimelineContent: true,
-            didAttemptInitialTailScroll: false,
-            isTailSentinelVisible: true
+        controller.geometryChanged(timelineMetrics(offset: 1_000, nearBottom: true), epoch: controller.epoch)
+        XCTAssertFalse(controller.isReadable, "只有几何贴底还不能提前揭开正文")
+        controller.tailVisibilityChanged(true, epoch: controller.epoch)
+        XCTAssertFalse(controller.isReadable, "尚未实际执行初始命令时不能把 sentinel 当成完成")
+
+        let positioned = ConversationTimelineScrollController()
+        _ = positioned.prepare(timelineSnapshot(
+            scope: scope,
+            revision: 1,
+            changes: .historyReplacement,
+            message: ConversationMessage(role: .assistant, content: "长历史尾部")
         ))
-        XCTAssertTrue(ConversationTimelineView.shouldPresentStabilizedTimeline(
-            hasTimelineContent: true,
-            didAttemptInitialTailScroll: true,
-            isTailSentinelVisible: true
+        var commands: [ConversationTimelineScrollCommand] = []
+        positioned.connect(epoch: positioned.epoch) { commands.append($0) }
+        positioned.geometryChanged(timelineMetrics(offset: 1_000, nearBottom: true), epoch: positioned.epoch)
+        XCTAssertEqual(commands.map(\.target), [.tail])
+        XCTAssertFalse(positioned.isReadable, "命令执行后仍需确认真实 sentinel 可见")
+        positioned.tailVisibilityChanged(true, epoch: positioned.epoch)
+        XCTAssertTrue(positioned.isReadable)
+    }
+
+    private func makeTimelineControllerReadingHistory(
+        scope: ScopedSessionID
+    ) -> ConversationTimelineScrollController {
+        let controller = makeTimelineFollowingTail(scope: scope)
+        controller.phaseChanged(.tracking)
+        controller.geometryChanged(timelineMetrics(offset: 900, nearBottom: false), epoch: controller.epoch)
+        controller.phaseChanged(.idle)
+        XCTAssertEqual(controller.mode, .readingHistory)
+        return controller
+    }
+
+    private func makeTimelineFollowingTail(
+        scope: ScopedSessionID
+    ) -> ConversationTimelineScrollController {
+        let controller = ConversationTimelineScrollController()
+        _ = controller.prepare(timelineSnapshot(
+            scope: scope,
+            revision: 1,
+            changes: .historyReplacement,
+            message: ConversationMessage(role: .assistant, content: "初始历史")
         ))
+        controller.geometryChanged(timelineMetrics(offset: 1_000, nearBottom: true), epoch: controller.epoch)
+        controller.returnToTail()
+        XCTAssertEqual(controller.mode, .followingTail)
+        return controller
+    }
+
+    private func timelineSnapshot(
+        scope: ScopedSessionID,
+        revision: Int,
+        changes: ConversationTimelineChangeReasons,
+        message: ConversationMessage
+    ) -> ConversationTimelineSnapshot {
+        let rows = ConversationTimelineItemBuilder.items(from: [message])
+        return ConversationTimelineSnapshot(
+            scope: scope,
+            rows: rows,
+            rowIDs: rows.map(\.id),
+            tail: ConversationTimelineTailDescriptor(
+                rowID: rows.last?.id,
+                messageID: message.id,
+                clientMessageID: message.clientMessageID,
+                renderFingerprint: message.renderFingerprint,
+                role: message.role,
+                kind: message.kind,
+                sendStatus: message.sendStatus
+            ),
+            changes: changes,
+            revision: revision
+        )
+    }
+
+    private func timelineMetrics(offset: CGFloat, nearBottom: Bool) -> ConversationTimelineScrollMetrics {
+        ConversationTimelineScrollMetrics(
+            isNearBottom: nearBottom,
+            contentOffsetY: offset,
+            contentHeight: 1_800,
+            minimumOffsetY: -20,
+            maximumOffsetY: 1_000
+        )
     }
 
     func testConversationTimelineStartsAtTailAfterSwitchingFromScrolledSession() async throws {

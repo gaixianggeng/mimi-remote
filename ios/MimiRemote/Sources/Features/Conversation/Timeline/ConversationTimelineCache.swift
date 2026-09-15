@@ -1,61 +1,169 @@
 import Foundation
 
-struct ConversationTimelineSnapshot {
-    let items: [ConversationTimelineItem]
-    let itemIDs: [String]
-    let tailItemID: String?
-    var revision = 0
+struct ConversationTimelineChangeReasons: OptionSet, Equatable {
+    let rawValue: UInt8
 
-    static let empty = ConversationTimelineSnapshot(items: [], itemIDs: [], tailItemID: nil)
+    static let live = Self(rawValue: 1 << 0)
+    static let historyPrepend = Self(rawValue: 1 << 1)
+    static let historyEnrichment = Self(rawValue: 1 << 2)
+    static let historyReplacement = Self(rawValue: 1 << 3)
+    static let localSubmission = Self(rawValue: 1 << 4)
+
+    var containsHistoryChange: Bool {
+        !intersection([.historyPrepend, .historyEnrichment, .historyReplacement]).isEmpty
+    }
+}
+
+struct ConversationTimelineSourceVersions: Equatable {
+    var lifetime: UInt64 = 0
+    var revision: UInt64 = 0
+    var live: UInt64 = 0
+    var historyPrepend: UInt64 = 0
+    var historyEnrichment: UInt64 = 0
+    var historyReplacement: UInt64 = 0
+    var localSubmission: UInt64 = 0
+
+    mutating func record(_ reasons: ConversationTimelineChangeReasons, revision: UInt64) {
+        self.revision = revision
+        if reasons.contains(.live) { live = revision }
+        if reasons.contains(.historyPrepend) { historyPrepend = revision }
+        if reasons.contains(.historyEnrichment) { historyEnrichment = revision }
+        if reasons.contains(.historyReplacement) { historyReplacement = revision }
+        if reasons.contains(.localSubmission) { localSubmission = revision }
+    }
+
+    func changes(since previous: Self) -> ConversationTimelineChangeReasons {
+        var reasons: ConversationTimelineChangeReasons = []
+        if live > previous.live { reasons.insert(.live) }
+        if historyPrepend > previous.historyPrepend { reasons.insert(.historyPrepend) }
+        if historyEnrichment > previous.historyEnrichment { reasons.insert(.historyEnrichment) }
+        if historyReplacement > previous.historyReplacement { reasons.insert(.historyReplacement) }
+        if localSubmission > previous.localSubmission { reasons.insert(.localSubmission) }
+        return reasons
+    }
+}
+
+struct ConversationTimelineSourceSnapshot {
+    let scope: ScopedSessionID
+    let messages: [ConversationMessage]
+    let versions: ConversationTimelineSourceVersions
+
+    var revision: UInt64 { versions.revision }
+}
+
+struct ConversationTimelineTailDescriptor: Equatable {
+    let rowID: String?
+    let messageID: UUID
+    let clientMessageID: ClientMessageID?
+    let renderFingerprint: ConversationMessageRenderFingerprint
+    let role: ConversationMessage.Role
+    let kind: MessageKind
+    let sendStatus: MessageSendStatus
+}
+
+struct ConversationTimelineSnapshot {
+    let scope: ScopedSessionID?
+    let rows: [ConversationTimelineItem]
+    let rowIDs: [String]
+    let tail: ConversationTimelineTailDescriptor?
+    let changes: ConversationTimelineChangeReasons
+    let revision: Int
+
+    static let empty = ConversationTimelineSnapshot(
+        scope: nil,
+        rows: [],
+        rowIDs: [],
+        tail: nil,
+        changes: [],
+        revision: 0
+    )
+
 }
 
 final class ConversationTimelineItemCache {
     private var keys: [ConversationTimelineCacheKey] = []
     private var cachedSnapshot = ConversationTimelineSnapshot.empty
-    private var scope: ScopedSessionID?
+    private var deliveredVersions = ConversationTimelineSourceVersions()
+    private var presentationRevision = 0
 
     func snapshot(
-        from messages: [ConversationMessage],
-        suspendingUpdates: Bool = false,
-        scope nextScope: ScopedSessionID? = nil,
-        willUpdate: () -> Void = {}
+        from source: ConversationTimelineSourceSnapshot,
+        suspendingUpdates: Bool = false
     ) -> ConversationTimelineSnapshot {
-        if scope != nextScope {
-            removeAll()
-            scope = nextScope
-        }
-        // 用户正在拖动/减速时保留同一份 List 快照。流式输出仍进入 Store，
-        // 但不在每个 delta 上重建整条长时间线；滚动结束后一次性追上最新状态。
-        if suspendingUpdates, !cachedSnapshot.items.isEmpty {
+        let scopeChanged = cachedSnapshot.scope != source.scope
+        // 用户正在拖动/减速时保留同一份展示快照。Store 的各类来源版本继续累积，
+        // 解冻后再以最后一次已展示版本为基准合并原因，因此 history + live 不会丢失。
+        if suspendingUpdates, !scopeChanged, !cachedSnapshot.rows.isEmpty {
             return cachedSnapshot
         }
 
-        let nextKeys = messages.map { ConversationTimelineCacheKey(message: $0) }
-        guard nextKeys != keys else {
+        let nextKeys = source.messages.map { ConversationTimelineCacheKey(message: $0) }
+        let sourceChanged = source.versions != deliveredVersions
+        guard scopeChanged || sourceChanged || nextKeys != keys else {
             return cachedSnapshot
         }
-        // 先捕获旧列表的阅读位置，再发布新投影；Store 的 mutation 回调可能早于解除冻结。
-        if !cachedSnapshot.items.isEmpty {
-            willUpdate()
+
+        let previousKeys = keys
+        let rowsChanged = scopeChanged || nextKeys != previousKeys
+        // 来源原因可能变化，但可渲染字段没有变化（例如折叠命令的隐藏输出进度）。
+        // 此时仍发布新 revision/reasons，但复用原投影，避免无意义地重建整条时间线。
+        let nextRows = rowsChanged
+            ? ConversationTimelineItemBuilder.items(from: source.messages)
+            : cachedSnapshot.rows
+        let nextRowIDs = rowsChanged ? nextRows.map(\.id) : cachedSnapshot.rowIDs
+        let reasons: ConversationTimelineChangeReasons
+        if scopeChanged {
+            reasons = source.versions.changes(since: .init())
+        } else if deliveredVersions.lifetime != 0,
+                  source.versions.lifetime != deliveredVersions.lifetime {
+            // scope 清理后会开始新的生命周期。即使冻结期间已立即写入 live，
+            // lifetime 仍能保留“旧列表已被替换”的事实，并与新原因叠加。
+            reasons = source.versions.changes(since: deliveredVersions).union(.historyReplacement)
+        } else {
+            reasons = source.versions.changes(since: deliveredVersions)
         }
-        let nextItems = ConversationTimelineItemBuilder.items(from: messages)
+        let lastMessage = source.messages.last
+        let tail = lastMessage.map { message in
+            ConversationTimelineTailDescriptor(
+                rowID: nextRows.last?.id,
+                messageID: message.id,
+                clientMessageID: message.clientMessageID,
+                renderFingerprint: message.renderFingerprint,
+                role: message.role,
+                kind: message.kind,
+                sendStatus: message.sendStatus
+            )
+        }
+
         keys = nextKeys
+        deliveredVersions = source.versions
+        presentationRevision = scopeChanged ? 1 : presentationRevision + 1
         cachedSnapshot = ConversationTimelineSnapshot(
-            items: nextItems,
-            itemIDs: nextItems.map(\.id),
-            tailItemID: nextItems.last?.id,
-            revision: cachedSnapshot.revision + 1
+            scope: source.scope,
+            rows: nextRows,
+            rowIDs: nextRowIDs,
+            tail: tail,
+            changes: reasons.isEmpty && nextKeys != previousKeys ? .live : reasons,
+            revision: presentationRevision
         )
         return cachedSnapshot
     }
 
-    private func removeAll() {
-        keys.removeAll()
-        cachedSnapshot = .empty
-    }
-
-    var tailItemID: String? {
-        cachedSnapshot.tailItemID
+    /// 纯 builder/cache 测试入口。业务 UI 应使用带 Store 来源版本的重载。
+    func snapshot(
+        from messages: [ConversationMessage],
+        suspendingUpdates: Bool = false,
+        scope: ScopedSessionID? = nil
+    ) -> ConversationTimelineSnapshot {
+        let resolvedScope = scope ?? ScopedSessionID(profileID: "", sessionID: "")
+        return snapshot(
+            from: ConversationTimelineSourceSnapshot(
+                scope: resolvedScope,
+                messages: messages,
+                versions: .init()
+            ),
+            suspendingUpdates: suspendingUpdates
+        )
     }
 }
 
@@ -76,6 +184,7 @@ private struct ConversationTimelineCacheKey: Equatable {
     let activityPayload: ConversationActivityPayload?
     let timelineOrdinal: Int64?
     let turnLifecycle: ConversationTurnLifecycle?
+    let userDelivery: UserMessageDelivery?
     let isTimestampFallback: Bool
 
     init(message: ConversationMessage) {
@@ -95,6 +204,7 @@ private struct ConversationTimelineCacheKey: Equatable {
         self.activityPayload = message.activityPayload
         // lifecycle 会直接改变外层组的运行/终态和默认展开状态，必须使缓存失效。
         self.turnLifecycle = message.turnLifecycle
+        self.userDelivery = message.userDelivery
         // Builder 信任 canonical timeline 的输入顺序；ordinal 本身不在这里排序，
         // 但 reducer 修正序位时它是消息投影的一部分，补齐可避免缓存保留过期快照。
         self.timelineOrdinal = message.timelineOrdinal

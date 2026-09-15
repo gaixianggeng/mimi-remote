@@ -58,6 +58,29 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view), "已有首屏不能被未完成的网络请求遮住")
         XCTAssertLessThanOrEqual(distanceFromBottom(initialScrollView), 4)
         var visibleTailDistances: [CGFloat] = []
+        for _ in 0..<20 {
+            host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(16))
+            XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view))
+            visibleTailDistances.append(distanceFromBottom(initialScrollView))
+        }
+        assertNoRepeatedProgrammaticScrollWrite(
+            ConversationScrollDiagnostics.shared.export(),
+            context: "首屏布局不能反复写回同一结果"
+        )
+        let initialWritesAtQuietStart = programmaticScrollWrites(
+            in: ConversationScrollDiagnostics.shared.export()
+        ).count
+        for _ in 0..<8 {
+            host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(16))
+            visibleTailDistances.append(distanceFromBottom(initialScrollView))
+        }
+        XCTAssertEqual(
+            programmaticScrollWrites(in: ConversationScrollDiagnostics.shared.export()).count,
+            initialWritesAtQuietStart,
+            "首屏外部输入停止后必须至少连续 100ms 零程序写"
+        )
 
         for pageIndex in 0..<3 {
             await client.waitForHistoryItemRequestCount(pageIndex + 1)
@@ -67,6 +90,8 @@ extension ConversationDataFlowTests {
                 try await Task.sleep(for: .milliseconds(16))
                 XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view))
             }
+            // 每批网络输入使用独立诊断代次，避免把两批合法的相同目标误判为反馈环。
+            ConversationScrollDiagnostics.shared.start()
             let requested = client.requestedItemContinuations[pageIndex]
             let pageMessages = messages((pageIndex * 50)..<((pageIndex + 1) * 50))
             client.resolveHistoryItemRequest(at: pageIndex, with: HistoryTurnItemsPage(
@@ -76,7 +101,8 @@ extension ConversationDataFlowTests {
                     ? requested.continuing(cursor: "page-\(pageIndex + 1)", loadedItemCount: 50, hasVisibleUserMessage: true)
                     : nil
             ))
-            for _ in 0..<8 {
+            // 覆盖现有 250ms 原生布局事务，并要求外部输入停止后自行进入静默。
+            for _ in 0..<20 {
                 try await Task.sleep(for: .milliseconds(16))
                 host.view.layoutIfNeeded()
                 if let scrollView = conversationTimelineScrollView(in: host.view),
@@ -84,6 +110,26 @@ extension ConversationDataFlowTests {
                     visibleTailDistances.append(distanceFromBottom(scrollView))
                 }
             }
+            assertNoRepeatedProgrammaticScrollWrite(
+                ConversationScrollDiagnostics.shared.export(),
+                context: "第 \(pageIndex + 1) 批补齐不能反复写回同一布局结果"
+            )
+            let writesAtQuietStart = programmaticScrollWrites(
+                in: ConversationScrollDiagnostics.shared.export()
+            ).count
+            for _ in 0..<8 {
+                host.view.layoutIfNeeded()
+                try await Task.sleep(for: .milliseconds(16))
+                XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view))
+                if let scrollView = conversationTimelineScrollView(in: host.view) {
+                    visibleTailDistances.append(distanceFromBottom(scrollView))
+                }
+            }
+            XCTAssertEqual(
+                programmaticScrollWrites(in: ConversationScrollDiagnostics.shared.export()).count,
+                writesAtQuietStart,
+                "外部输入停止后必须至少连续 100ms 零程序写"
+            )
         }
         for _ in 0..<100 where sessionStore.historyItemEnrichmentBySessionID[sessionID] != nil {
             await Task.yield()
@@ -96,7 +142,6 @@ extension ConversationDataFlowTests {
             visibleTailDistances.max() ?? .infinity, 4,
             "首轮分批补齐的可读画面必须持续贴底\n\(ConversationScrollDiagnostics.shared.export())"
         )
-
         // 已交接的画面不能因下一轮后台刷新再次被遮住。
         sessionStore.historyLoadedQualityBySessionID[sessionID] = .enriching
         for _ in 0..<8 {
@@ -190,44 +235,45 @@ extension ConversationDataFlowTests {
     }
 
     func testHistoryAnchorIgnoresDisappearedFrameStillInsideViewport() throws {
-        let coordinator = ConversationHistoryScrollCoordinator()
+        let viewport = ConversationTimelineViewport()
         let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
-        coordinator.bind(scrollView: scrollView)
+        viewport.bind(scrollView)
         let disappearedID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let visibleID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
-        coordinator.updateAnchorFrame([disappearedID], CGRect(x: 0, y: 40, width: 300, height: 40))
-        coordinator.updateAnchorFrame([visibleID], CGRect(x: 0, y: 100, width: 300, height: 40))
-        coordinator.updateAnchorFrame([disappearedID], .null)
+        viewport.updateAnchorFrame([disappearedID], CGRect(x: 0, y: 40, width: 300, height: 40))
+        viewport.updateAnchorFrame([visibleID], CGRect(x: 0, y: 100, width: 300, height: 40))
+        viewport.updateAnchorFrame([disappearedID], .null)
 
-        _ = try XCTUnwrap(coordinator.beginPreservingVisible(sessionID: "session"))
-        XCTAssertEqual(coordinator.activeAnchorMessageID, visibleID)
+        let anchor = try XCTUnwrap(viewport.captureVisibleAnchor())
+        XCTAssertEqual(anchor.candidates.first?.id, visibleID)
     }
 
     func testHistoryAnchorSelectionIsStableWhenCollapsedMessagesShareFrame() throws {
-        let coordinator = ConversationHistoryScrollCoordinator()
+        let viewport = ConversationTimelineViewport()
         let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
-        coordinator.bind(scrollView: scrollView)
+        viewport.bind(scrollView)
         let laterID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
         let earlierID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let sharedFrame = CGRect(x: 0, y: 80, width: 300, height: 60)
-        coordinator.updateAnchorFrame([laterID, earlierID], sharedFrame)
+        // 故意让正文首项 UUID 较大；应按正文顺序，而不是 UUID 排序。
+        viewport.updateAnchorFrame([laterID, earlierID], sharedFrame)
 
-        _ = try XCTUnwrap(coordinator.beginPreservingVisible(sessionID: "session"))
-        XCTAssertEqual(coordinator.activeAnchorMessageID, earlierID)
-        coordinator.cancelPreservation()
-        _ = try XCTUnwrap(coordinator.beginPreservingVisible(sessionID: "session"))
-        XCTAssertEqual(coordinator.activeAnchorMessageID, earlierID)
+        let first = try XCTUnwrap(viewport.captureVisibleAnchor())
+        XCTAssertEqual(first.candidates.first?.id, laterID)
+        viewport.releaseAnchor()
+        let second = try XCTUnwrap(viewport.captureVisibleAnchor())
+        XCTAssertEqual(second.candidates.first?.id, laterID)
     }
 
-    func testHistoryAnchorCanBeginBeforeFirstScrollMetricsCallback() throws {
-        let coordinator = ConversationHistoryScrollCoordinator()
+    func testHistoryAnchorCanCaptureWithoutGeometryCallback() throws {
+        let viewport = ConversationTimelineViewport()
         let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
-        coordinator.bind(scrollView: scrollView)
+        viewport.bind(scrollView)
         let visibleID = UUID()
-        coordinator.updateAnchorFrame([visibleID], CGRect(x: 0, y: 80, width: 300, height: 40))
+        viewport.updateAnchorFrame([visibleID], CGRect(x: 0, y: 80, width: 300, height: 40))
 
-        XCTAssertNotNil(coordinator.beginPreservingVisible(sessionID: "session"))
-        XCTAssertEqual(coordinator.activeAnchorMessageID, visibleID)
+        let anchor = try XCTUnwrap(viewport.captureVisibleAnchor())
+        XCTAssertEqual(anchor.candidates.first?.id, visibleID)
     }
 
     func testHistoricalPrependKeepsCurrentViewportPosition() async throws {
@@ -277,12 +323,12 @@ extension ConversationDataFlowTests {
             .environmentObject(themeStore)
             .environment(\.colorScheme, .light)
         let host = UIHostingController(rootView: view)
-        var measuredFrames: [UUID: CGRect] = [:]
+        let markerViews = NSMapTable<NSUUID, UIView>.strongToWeakObjects()
         var selectedAnchor: (id: UUID, frame: CGRect)?
-        ConversationHistoryScrollCoordinator.testingFrameObserver = { messageID, frame in
-            measuredFrames[messageID] = frame
+        ConversationTimelineViewport.testingViewObserver = { messageID, view in
+            markerViews.setObject(view, forKey: messageID as NSUUID)
         }
-        ConversationHistoryScrollCoordinator.testingSelectionObserver = { messageID, frame in
+        ConversationTimelineViewport.testingSelectionObserver = { messageID, frame in
             selectedAnchor = (messageID, frame)
         }
         let windowScene = try XCTUnwrap(
@@ -293,8 +339,8 @@ extension ConversationDataFlowTests {
         window.rootViewController = host
         window.makeKeyAndVisible()
         defer {
-            ConversationHistoryScrollCoordinator.testingFrameObserver = nil
-            ConversationHistoryScrollCoordinator.testingSelectionObserver = nil
+            ConversationTimelineViewport.testingViewObserver = nil
+            ConversationTimelineViewport.testingSelectionObserver = nil
             window.isHidden = true
             themeDefaults.removePersistentDomain(forName: themeSuiteName)
         }
@@ -366,11 +412,12 @@ extension ConversationDataFlowTests {
             host.view.layoutIfNeeded()
             try await Task.sleep(nanoseconds: 16_000_000)
         }
-        let currentAnchorFrame = try XCTUnwrap(
-            measuredFrames[anchorID],
+        let currentAnchorView = try XCTUnwrap(
+            markerViews.object(forKey: anchorID as NSUUID),
             "prepend 后原始消息 UUID 对应的锚点必须仍存在"
         )
-        let currentAnchorMinY = currentAnchorFrame.minY
+        XCTAssertTrue(currentAnchorView.isDescendant(of: scrollView))
+        let currentAnchorMinY = currentAnchorView.convert(currentAnchorView.bounds, to: nil).minY
         XCTAssertEqual(
             currentAnchorMinY,
             baselineAnchorMinY,
@@ -390,6 +437,38 @@ extension ConversationDataFlowTests {
                 itemID: "history-viewport-item-\(index)",
                 timelineOrdinal: Int64(index)
             )
+        }
+    }
+
+    private func assertNoRepeatedProgrammaticScrollWrite(
+        _ trace: String,
+        context: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        var occurrenceByWrite: [String: Int] = [:]
+        for entry in programmaticScrollWrites(in: trace) {
+            guard let eventRange = entry.range(of: " scroll_") else { continue }
+            // 时间戳不是写入身份。保留事件及纯数值 detail，使现有诊断也能抓到
+            // UIKit 把同一布局反复改回旧 offset 后，协调器重复写回同一目标的反馈环。
+            let fingerprint = String(entry[eventRange.upperBound...])
+            occurrenceByWrite[fingerprint, default: 0] += 1
+        }
+        let repeated = occurrenceByWrite.filter { $0.value > 1 }
+        XCTAssertTrue(
+            repeated.isEmpty,
+            "\(context)：\(repeated)\n\(trace)",
+            file: file,
+            line: line
+        )
+    }
+
+    private func programmaticScrollWrites(in trace: String) -> [String] {
+        trace.split(separator: "\n").compactMap { entry in
+            guard entry.contains(" scroll_"), entry.contains(" from="), entry.contains(" to=") else {
+                return nil
+            }
+            return String(entry)
         }
     }
 
