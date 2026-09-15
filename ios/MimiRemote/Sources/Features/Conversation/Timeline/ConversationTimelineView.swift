@@ -232,6 +232,13 @@ struct ConversationTimelineView: View {
                         )
                     }
                     isTimelineNearBottom = metrics.isNearBottom
+                    if isUserScrollingTimeline,
+                       !metrics.isNearBottom,
+                       historyScrollCoordinator.activeGeneration == nil {
+                        // 懒布局可能在手势中补齐行高。先保存当前可见锚点，等 idle
+                        // 后再统一修正，不能在拖动帧内写回 contentOffset。
+                        beginVisibleHistoryAnchorPreservation()
+                    }
                     if metrics.isNearBottom, !hasUserDetachedFromTail {
                         shouldFollowMessageTail = true
                         hasUnseenTailMessage = false
@@ -250,6 +257,7 @@ struct ConversationTimelineView: View {
                     isUserScrollingTimeline = shouldSuspend
                     guard shouldSuspend else {
                         userScrollStartOffsetY = nil
+                        queueHistoryAnchorCorrection()
                         return
                     }
                     userScrollStartOffsetY = latestTimelineMetrics?.contentOffsetY
@@ -259,7 +267,7 @@ struct ConversationTimelineView: View {
                     shouldFollowMessageTail = false
                     tailScrollCoordinator.userScrollAwayGeneration += 1
                     cancelPendingTailScrollAttempts()
-                    cancelHistoryAnchorPreservation()
+                    historyScrollCoordinator.pausePreservation()
                 }
 
                 if shouldShowReturnToTailButton(timelineItems: timelineItems) {
@@ -1328,15 +1336,13 @@ struct ConversationTimelineView: View {
     private func queueHistoryAnchorCorrection() {
         guard !isUserScrollingTimeline else {
             // 几何回调和 phase 回调不是同一条 SwiftUI 通知链。用户重新开始手势
-            // 时，丢弃已经排队的补偿，避免迟到的布局回调抢写 contentOffset。
-            historyScrollCoordinator.cancelPreservation()
+            // 时只暂停补偿，保留锚点供下一个 idle 帧统一修正。
             return
         }
         historyScrollCoordinator.scheduleCorrection(
             displayedSessionID: displayedSessionID
         ) { correction in
             guard !self.isUserScrollingTimeline else {
-                self.historyScrollCoordinator.cancelPreservation()
                 return
             }
             applyHistoryAnchorCorrection(correction)
@@ -1648,8 +1654,13 @@ final class ConversationHistoryScrollCoordinator {
     func setInteractionActive(_ active: Bool) {
         interactionActive = active
         if active {
-            cancelPreservation()
+            pausePreservation()
         }
+    }
+
+    func pausePreservation() {
+        correctionTask?.cancel()
+        correctionTask = nil
     }
 
     func setContentOffsetY(_ offsetY: CGFloat) {
