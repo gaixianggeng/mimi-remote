@@ -114,6 +114,30 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(writes, 0)
     }
 
+    func testInteractionCancelsQueuedAnchorCorrectionBeforeItCanWrite() async throws {
+        let coordinator = ConversationHistoryScrollCoordinator()
+        let anchorID = UUID()
+        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+        coordinator.bind(scrollView: scrollView)
+        coordinator.updateAnchorFrame([anchorID], CGRect(x: 0, y: 80, width: 300, height: 40))
+        let generation = try XCTUnwrap(coordinator.beginPreservingVisible(sessionID: "session"))
+
+        var writes = 0
+        coordinator.scheduleCorrection(
+            expectedGeneration: generation,
+            displayedSessionID: "session"
+        ) { _ in
+            writes += 1
+        }
+        coordinator.setInteractionActive(true)
+        for _ in 0..<3 {
+            await Task.yield()
+        }
+
+        XCTAssertNil(coordinator.activeGeneration)
+        XCTAssertEqual(writes, 0)
+    }
+
     func testDiagnosticsAreOptInBoundedAndLazy() {
         let trace = ConversationScrollDiagnostics()
         var evaluated = false

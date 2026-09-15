@@ -243,6 +243,7 @@ struct ConversationTimelineView: View {
                 .onScrollPhaseChange { _, newPhase in
                     ConversationScrollDiagnostics.shared.record("phase", "\(newPhase)")
                     let shouldSuspend = Self.shouldSuspendTimelineUpdates(for: newPhase)
+                    historyScrollCoordinator.setInteractionActive(shouldSuspend)
                     guard shouldSuspend != isUserScrollingTimeline else {
                         return
                     }
@@ -1325,9 +1326,19 @@ struct ConversationTimelineView: View {
     }
 
     private func queueHistoryAnchorCorrection() {
+        guard !isUserScrollingTimeline else {
+            // 几何回调和 phase 回调不是同一条 SwiftUI 通知链。用户重新开始手势
+            // 时，丢弃已经排队的补偿，避免迟到的布局回调抢写 contentOffset。
+            historyScrollCoordinator.cancelPreservation()
+            return
+        }
         historyScrollCoordinator.scheduleCorrection(
             displayedSessionID: displayedSessionID
         ) { correction in
+            guard !self.isUserScrollingTimeline else {
+                self.historyScrollCoordinator.cancelPreservation()
+                return
+            }
             applyHistoryAnchorCorrection(correction)
         }
     }
@@ -1580,6 +1591,7 @@ final class ConversationHistoryScrollCoordinator {
     private var generation = 0
     private var correctionTask: Task<Void, Never>?
     private var expirationTask: Task<Void, Never>?
+    private var interactionActive = false
 
     var activeGeneration: Int? {
         activeAnchor?.generation
@@ -1633,8 +1645,19 @@ final class ConversationHistoryScrollCoordinator {
         self.scrollView = scrollView
     }
 
+    func setInteractionActive(_ active: Bool) {
+        interactionActive = active
+        if active {
+            cancelPreservation()
+        }
+    }
+
     func setContentOffsetY(_ offsetY: CGFloat) {
-        guard let scrollView, !scrollView.isTracking, !scrollView.isDragging, !scrollView.isDecelerating else {
+        guard !interactionActive,
+              let scrollView,
+              !scrollView.isTracking,
+              !scrollView.isDragging,
+              !scrollView.isDecelerating else {
             return
         }
         let target = CGPoint(x: scrollView.contentOffset.x, y: offsetY)
@@ -1733,6 +1756,9 @@ final class ConversationHistoryScrollCoordinator {
         displayedSessionID: SessionID?,
         apply: @escaping @MainActor (ConversationHistoryAnchorCorrection) -> Void
     ) {
+        guard !interactionActive else {
+            return
+        }
         guard let generation = expectedGeneration ?? activeAnchor?.generation,
               activeAnchor?.generation == generation else {
             return
@@ -1772,6 +1798,7 @@ final class ConversationHistoryScrollCoordinator {
 
     func reset() {
         cancelPreservation()
+        interactionActive = false
         anchorFrameByMessageID.removeAll()
         visibleAnchorMessageIDs.removeAll()
         anchorViews.removeAll()
