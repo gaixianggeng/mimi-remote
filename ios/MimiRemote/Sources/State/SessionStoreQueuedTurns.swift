@@ -1414,7 +1414,7 @@ extension SessionStore {
                 status: .failed
             )
             clearForegroundActivity(sessionID: sessionID)
-            setErrorMessage(L10n.format("ui.sending_failed_value", message))
+            setErrorMessage(L10n.format("ui.sending_failed_value", message), sessionID: sessionID)
         case .uncertain(let message):
             if handleQueuedSendFailure(
                 clientMessageID: clientMessageID,

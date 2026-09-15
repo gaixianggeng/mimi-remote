@@ -76,6 +76,8 @@ extension SessionStore {
             }
         }
         if ownsStatus, webSocketReconnectAttemptBySessionID[session.id] != nil { return .reconnecting }
+        // 重入创建中的占位时，页面 loading 租约已释放，但远端身份仍在等待首发确认。
+        if isAwaitingSessionCreation(session) { return .sending }
         if let lease = sessionCreationLoadingLease,
            lease.sessionID == session.id, isSelectionLeaseCurrent(lease) {
             return .sending

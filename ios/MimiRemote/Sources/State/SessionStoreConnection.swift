@@ -2555,14 +2555,20 @@ extension SessionStore {
         case connectionProbe
     }
 
-    func setErrorMessage(_ value: String?, origin: SessionErrorOrigin = .userAction) {
+    func setErrorMessage(
+        _ value: String?,
+        origin: SessionErrorOrigin = .userAction,
+        sessionID: SessionID? = nil
+    ) {
         // active writer 既可能在连接阶段返回，也可能在已连接后的
         // thread/resume / turn/start 发送回调中返回。统一在用户错误出口映射，
         // 避免不同传输路径泄漏原始 -32600 协议错误。
         let activeWriterConflict = value.map(Self.isCodexActiveWriterConflict) == true
-        if activeWriterConflict, let selectedSessionID {
-            setActiveWriterConflict(true, sessionID: selectedSessionID)
+        if activeWriterConflict, let errorSessionID = sessionID ?? selectedSessionID {
+            setActiveWriterConflict(true, sessionID: errorSessionID)
         }
+        // 后台提交的业务错误属于原会话，不能借当前选择误禁用另一个会话或覆盖其提示。
+        guard sessionID == nil || sessionID == selectedSessionID else { return }
         let userFacingValue: String?
         if activeWriterConflict {
             userFacingValue = L10n.text("ui.codex_active_writer_conflict")

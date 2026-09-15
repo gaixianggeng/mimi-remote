@@ -24,6 +24,23 @@ struct PendingGuidanceSubmission {
 }
 
 extension SessionStore {
+    var canSendInSelectedSession: Bool {
+        canControlSession(selectedSession)
+            && !isAwaitingSessionCreation(selectedSession)
+            && selectedQuotaNotice?.blocksSending != true
+    }
+
+    func isAwaitingSessionCreation(_ session: AgentSession?) -> Bool {
+        guard let session else { return false }
+        let current = sessionsByID[session.id] ?? session
+        // running 的 local 占位尚无可派发的远端 ID；切页只解除页面 loading，
+        // 不能让重入占位的后续消息进入一个随后会被删除的临时队列。
+        return current.id.hasPrefix("local:")
+            && current.source == Self.optimisticSessionSource
+            && current.resumeID == nil
+            && current.isRunning
+    }
+
     func clearSessionCreationLoading() {
         // 创建请求可以后台完成，但切换选择后不能继续禁用新会话的输入框。
         guard let lease = sessionCreationLoadingLease else { return }
@@ -203,7 +220,7 @@ extension SessionStore {
         clearSessionListProjection(sessionID: sessionID, clientMessageID: clientMessageID)
         clearSessionRecentActivityProjection(sessionID: sessionID, clientMessageID: clientMessageID)
         clearForegroundActivity(sessionID: sessionID)
-        setErrorMessage(L10n.format("ui.sending_failed_value", message))
+        setErrorMessage(L10n.format("ui.sending_failed_value", message), sessionID: sessionID)
         stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
         return true
     }

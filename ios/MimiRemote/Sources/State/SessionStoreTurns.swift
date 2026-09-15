@@ -677,8 +677,8 @@ extension SessionStore {
         }
         conversationStore.retainSessionCache(sessionID: session.id)
         logStore.retainSessionCache(sessionID: session.id)
-        if session.isLocalDraft {
-            // 草稿只存在本机内存；选中时不读历史、不订阅 WebSocket。
+        if session.isLocalDraft || isAwaitingSessionCreation(session) {
+            // 草稿和创建中的占位都没有远端 ID；重入只展示本地内容，等待创建结果接替身份。
             disconnectWebSocket()
             return true
         }
@@ -791,6 +791,7 @@ extension SessionStore {
         let submissionContext = suppliedSubmissionContext ?? captureTurnSubmissionContext()
         guard isSubmissionHostCurrent(submissionContext) else { return false }
         let targetSession = submissionContext.session
+        guard !isAwaitingSessionCreation(targetSession) else { return false }
         if let session = targetSession,
            isProtocolReadOnlySession(session) {
             threadGoalErrorMessage = L10n.text("ui.read_only")
@@ -908,6 +909,7 @@ extension SessionStore {
         let submissionContext = suppliedSubmissionContext ?? captureTurnSubmissionContext()
         guard isSubmissionHostCurrent(submissionContext) else { return false }
         let targetSession = submissionContext.session
+        guard !isAwaitingSessionCreation(targetSession) else { return false }
         guard !payload.isEmpty else {
             return false
         }
@@ -925,6 +927,7 @@ extension SessionStore {
             ? await payloadResolvingRequiredModel(payload, submissionContext: submissionContext)
             : payload
         guard isSubmissionHostCurrent(submissionContext) else { return false }
+        guard !isAwaitingSessionCreation(targetSession) else { return false }
         let prompt = payload.previewText
 
         if let localDraft = targetSession, localDraft.isLocalDraft {
