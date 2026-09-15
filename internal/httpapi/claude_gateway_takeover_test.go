@@ -15,14 +15,15 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// #451：thread/takeover 只对 0.2.11 起的 bridge 声明；旧 bridge 会回 method not found，
+// #451：thread/takeover 只对 0.2.12 起的 bridge 声明；旧 bridge 不保证只接管空闲会话，
 // iOS 据 channel methods 决定是否显示"在此设备上接管"。
 func TestAppServerConfigDeclaresClaudeTakeoverOnlyForBridgeThatSupportsIt(t *testing.T) {
 	cases := []struct {
 		version string
 		want    bool
 	}{
-		{version: "alleycat-claude-bridge 0.2.11", want: true},
+		{version: "alleycat-claude-bridge 0.2.12", want: true},
+		{version: "alleycat-claude-bridge 0.2.11", want: false},
 		{version: "alleycat-claude-bridge 0.2.10", want: false},
 	}
 	for _, tc := range cases {
@@ -38,6 +39,10 @@ func TestAppServerConfigDeclaresClaudeTakeoverOnlyForBridgeThatSupportsIt(t *tes
 		claude := body["channels"].([]any)[1].(map[string]any)
 		if claude["gateway_available"] != true {
 			t.Fatalf("%s 满足最低版本，gateway 应可用：%v", tc.version, claude)
+		}
+		capabilities := claude["capabilities"].(map[string]any)
+		if (capabilities["idle_takeover"] == true) != tc.want {
+			t.Fatalf("idle_takeover capability disagrees with bridge version %s", tc.version)
 		}
 		methods := claude["methods"].([]any)
 		if got := containsAnyString(methods, "thread/takeover"); got != tc.want {

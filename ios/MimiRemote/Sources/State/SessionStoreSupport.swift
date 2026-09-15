@@ -951,13 +951,17 @@ struct SessionOwnershipNotice: Equatable {
     /// 当前主机的 Claude channel 声明了 thread/takeover 时才提供"在此设备上接管"。
     var canTakeOver = false
     var isTakingOver = false
+    var failureMessage: String?
 
     var title: String {
         L10n.text("ui.session_owned_elsewhere_title")
     }
 
     var message: String {
-        L10n.format("ui.session_owned_elsewhere_message", owner.displayName)
+        if let failureMessage { return failureMessage }
+        if owner.isBusy { return L10n.text("ui.take_over_claude_wait_until_idle") }
+        if owner.status != "idle" { return L10n.text("ui.take_over_claude_state_unknown") }
+        return L10n.format("ui.session_owned_elsewhere_message", owner.displayName)
     }
 
     /// 接管确认要点名真正会被结束的持有方：桌面版持有时不能说成"终端里的会话"。
