@@ -95,6 +95,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testFirstSendPublishesPreparationBeforeAcknowledgementAndLiveSubscription \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testReopenShowsHistoryThenConnectionWithoutInventingNetworkFailure \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testHostChangeDuringModelLookupCancelsCapturedSubmission \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testHostSwitchSettlesPendingGuidanceInOriginalProfile \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCapturedGuidedSendAfterSelectingAnotherSessionUsesBackgroundSocketUntilACK \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testForegroundGuidedSendACKAfterNavigationStillSettlesOriginalEcho \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testReenteringCreatingSessionBlocksSecondSendUntilRemoteIdentityArrives \

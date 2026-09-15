@@ -3,6 +3,80 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testHostSwitchSettlesPendingGuidanceInOriginalProfile() async throws {
+        for awaitingAcknowledgement in [false, true] {
+            let suite = "ConversationDataFlowTests.GuidanceHostSwitch.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let profiles = [
+                ConnectionProfile(id: "mac-a", displayName: "Mac A", endpoint: "http://127.0.0.1:8787", lastSuccessfulAt: nil),
+                ConnectionProfile(id: "mac-b", displayName: "Mac B", endpoint: "http://127.0.0.1:8788", lastSuccessfulAt: nil)
+            ]
+            defaults.set(try JSONEncoder().encode(profiles), forKey: "agentd.connectionProfiles.v1")
+            defaults.set("mac-a", forKey: "agentd.activeConnectionProfileID.v1")
+            let keychain = TestKeychainOperations()
+            keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+            keychain.setData(Data("token-b".utf8), account: "agentd-profile.mac-b")
+            let appStore = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+            let project = makeProject(id: "proj_guidance_host")
+            let session = makeSession(
+                id: "same-session", projectID: project.id, title: "原会话",
+                status: "running", source: "codex", activeTurnID: "turn-original"
+            )
+            let conversationStore = ConversationStore()
+            let socket = MockWebSocketClient()
+            let store = SessionStore(
+                appStore: appStore, conversationStore: conversationStore, logStore: LogStore(),
+                clientFactory: { MockSessionStoreClient(projects: [project], sessions: [session]) },
+                webSocketFactory: { socket }
+            )
+            await store.refreshAll(autoAttach: false)
+            store.takeOverSession(session)
+            await store.selectSession(session)
+            store.returnToSessionList()
+            _ = try XCTUnwrap(store.sessionsByID[session.id], "先打开原会话，再切到后台发送")
+            XCTAssertTrue(appStore.isConfigured)
+            XCTAssertNotNil(appStore.authenticatedCredentialFingerprint)
+            let clientID = "same-client-message"
+            // 两台电脑刻意复用相同 ID，验证旧发送结果不会写入当前电脑。
+            conversationStore.activate(profileID: "mac-b")
+            conversationStore.appendLocalUser("新电脑的消息", sessionID: session.id, clientMessageID: clientID)
+            conversationStore.activate(profileID: "mac-a")
+            conversationStore.appendLocalUser("旧电脑的引导", sessionID: session.id, clientMessageID: clientID)
+            XCTAssertTrue(store.stagePendingGuidance(
+                CodexAppServerTurnPayload(prompt: "旧电脑的引导"), sessionID: session.id,
+                clientMessageID: clientID, expectedTurnID: "turn-original", hostScope: appStore.activeHostScope
+            ))
+            if awaitingAcknowledgement {
+                socket.emitStatus(.connected)
+                try await waitForSentGuidanceCount(1, socket: socket)
+            }
+            let lateAccepted = socket.onSendAccepted
+            XCTAssertEqual(store.pendingGuidanceBySessionID[session.id]?.first?.state,
+                           awaitingAcknowledgement ? .awaitingAcknowledgement : .waitingForSocket)
+
+            _ = try await store.commitPreparedConnection(PreparedConnectionSettings(
+                endpoint: profiles[1].endpoint, token: "token-b", profileTarget: .existingProfile(id: "mac-b")
+            ))
+            XCTAssertTrue(store.pendingGuidanceBySessionID.isEmpty)
+            XCTAssertTrue(store.queuedSessionSockets.isEmpty)
+            XCTAssertEqual(conversationStore.messages(for: session.id).first?.content, "新电脑的消息")
+            XCTAssertEqual(conversationStore.messages(for: session.id).first?.sendStatus, .sending)
+            lateAccepted?(clientID)
+            await Task.yield()
+            XCTAssertEqual(conversationStore.messages(for: session.id).first?.sendStatus, .sending)
+
+            _ = try await store.commitPreparedConnection(PreparedConnectionSettings(
+                endpoint: profiles[0].endpoint, token: "token-a", profileTarget: .existingProfile(id: "mac-a")
+            ))
+            let oldMessage = try XCTUnwrap(conversationStore.messages(for: session.id).first { $0.clientMessageID == clientID })
+            XCTAssertEqual(oldMessage.content, "旧电脑的引导")
+            XCTAssertEqual(oldMessage.sendStatus,
+                           awaitingAcknowledgement ? .uncertain : .failed)
+            XCTAssertEqual(socket.sentGuidance.count, awaitingAcknowledgement ? 1 : 0, "切换电脑不得自动重发结果不确定的引导")
+        }
+    }
+
     func testReenteringCreatingSessionBlocksSecondSendUntilRemoteIdentityArrives() async throws {
         let project = makeProject(id: "proj_creating_reentry")
         let gate = TurnSubmissionClientGate()

@@ -54,8 +54,7 @@ struct TurnOutputTokenCounter: Equatable, Sendable {
         )
         if let turnID, let currentTurnID = next.turnID, turnID != currentTurnID {
             if next.observedTurnStart {
-                // 已经进入新一轮后才到达的旧轮用量：只刷新判重基线，不计入本轮。
-                next.lastTotal = sample.total
+                // 旧轮样本不能覆盖当前轮的判重基线，否则当前用量重放时会再次累加。
                 return next
             }
             next = TurnOutputTokenCounter(

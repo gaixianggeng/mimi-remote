@@ -39,6 +39,10 @@ final class ConversationLiveStatusTests: XCTestCase {
 
         counter = TurnOutputTokenCounter.applying(sample(total: 99, last: 99), turnID: "turn-1", to: counter)
         XCTAssertEqual(counter.displayOutputTokens(activeTurnID: "turn-2"), 400, "迟到的上一轮用量不计入本轮")
+        counter = TurnOutputTokenCounter.applying(sample(total: 400, last: 400), turnID: "turn-2", to: counter)
+        XCTAssertEqual(counter.displayOutputTokens(activeTurnID: "turn-2"), 400, "旧轮事件之后重放当前用量不能再次计数")
+        counter = TurnOutputTokenCounter.applying(sample(total: 700, last: 300), turnID: "turn-2", to: counter)
+        XCTAssertEqual(counter.displayOutputTokens(activeTurnID: "turn-2"), 700)
     }
 
     func testCountIsHiddenWithoutObservedTurnStartOrForAnotherTurn() {
@@ -53,6 +57,7 @@ final class ConversationLiveStatusTests: XCTestCase {
     func testLegacyUsageWithoutLastFallsBackToTotalDelta() {
         var counter = TurnOutputTokenCounter.started(turnID: "turn-1", previous: nil)
         counter = TurnOutputTokenCounter.applying(sample(total: 100, last: nil), turnID: "turn-1", to: counter)
+        counter = TurnOutputTokenCounter.applying(sample(total: 50, last: nil), turnID: "turn-old", to: counter)
         counter = TurnOutputTokenCounter.applying(sample(total: 350, last: nil), turnID: "turn-1", to: counter)
         XCTAssertEqual(counter.displayOutputTokens(activeTurnID: "turn-1"), 250)
     }
