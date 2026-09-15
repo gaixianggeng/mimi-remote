@@ -457,6 +457,240 @@ async fn concurrent_permission_selections_cannot_change_the_accepted_turn() {
     pool.release(&thread_id).await;
 }
 
+#[tokio::test]
+async fn permission_switch_preserves_pending_wakeup_and_cron_processes() {
+    use alleycat_claude_bridge::handlers::{
+        thread::handle_thread_start,
+        turn::{TurnError, handle_turn_start},
+    };
+    use alleycat_claude_bridge::state::ConnectionState;
+    let _guard = TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    for tool in ["ScheduleWakeup", "CronCreate"] {
+        let fixture = TempDir::new().unwrap();
+        let script = fixture.path().join("background.jsonl");
+        let turn_log = fixture.path().join("turns.log");
+        std::fs::write(
+            &script,
+            format!(
+                "{}\n{}\n",
+                json!({"type":"assistant", "session_id":"$SESSION", "uuid":"background-assistant", "message":{"content":[{"type":"tool_use",
+                "id":"background-tool", "name":tool, "input":{}}]}}),
+                json!({"type":"result", "subtype":"success", "is_error":false, "session_id":"$SESSION", "uuid":"background-result"})
+            ),
+        )
+        .unwrap();
+        let _script = EnvRestore::set("FAKE_CLAUDE_SCRIPT", &script);
+        let _log = EnvRestore::set("FAKE_CLAUDE_TURN_LOG", &turn_log);
+        let pool = Arc::new(ClaudePool::new(fake_claude_path()));
+        let index = ThreadIndex::open_and_hydrate(fixture.path()).await.unwrap();
+        let (state, _rx) = ConnectionState::for_test(pool.clone(), index, Default::default());
+        let thread_id = handle_thread_start(
+            &state,
+            serde_json::from_value(json!({"cwd":fixture.path()})).unwrap(),
+        )
+        .await
+        .unwrap()
+        .thread
+        .id;
+        let first = handle_turn_start(
+            &state,
+            serde_json::from_value(json!({"threadId":thread_id,
+            "input":[{"type":"text", "text":"schedule"}]}))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        timeout(STEP_TIMEOUT, async {
+            loop {
+                if state.thread_log(&thread_id).iter().any(|t| {
+                    t.id == first.turn.id && t.status == alleycat_codex_proto::TurnStatus::Completed
+                }) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let original = pool.get(&thread_id).await.unwrap();
+        let error = handle_turn_start(
+            &state,
+            serde_json::from_value(json!({"threadId":thread_id,
+            "input":[{"type":"text", "text":"switch"}], "approvalPolicy":"never",
+            "sandboxPolicy":{"type":"dangerFullAccess"}}))
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, TurnError::BackgroundWorkPending { .. }),
+            "{error:?}"
+        );
+        assert_eq!(error.rpc_data().unwrap()["accepted"], false);
+        assert!(Arc::ptr_eq(&original, &pool.get(&thread_id).await.unwrap()));
+        assert!(!original.has_exited());
+        assert_eq!(std::fs::read_to_string(&turn_log).unwrap(), "schedule\n");
+        pool.release(&thread_id).await;
+    }
+}
+
+#[tokio::test]
+async fn concurrent_prestart_resume_cannot_insert_ordinary_process_during_full_access_switch() {
+    use alleycat_claude_bridge::handlers::{
+        thread::{handle_thread_resume, handle_thread_start},
+        turn::handle_turn_start,
+    };
+    use alleycat_claude_bridge::state::ConnectionState;
+    let _guard = TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let fixture = TempDir::new().unwrap();
+    let _home = support::ClaudeHomeFixture::new();
+    let argv_log = fixture.path().join("argv.jsonl");
+    let _argv = EnvRestore::set("FAKE_CLAUDE_ARGV_LOG", &argv_log);
+    let launcher = Arc::new(ShutdownBarrierLauncher::default());
+    let pool = Arc::new(ClaudePool::with_launcher(
+        fake_claude_path(),
+        launcher.clone(),
+        Default::default(),
+    ));
+    let index = ThreadIndex::open_and_hydrate(fixture.path()).await.unwrap();
+    let (state, _rx) = ConnectionState::for_test(pool.clone(), index.clone(), Default::default());
+    let thread_id = handle_thread_start(
+        &state,
+        serde_json::from_value(json!({
+        "cwd":fixture.path(), "model":"sonnet"}))
+        .unwrap(),
+    )
+    .await
+    .unwrap()
+    .thread
+    .id;
+    let transcript = index
+        .lookup(&thread_id)
+        .await
+        .unwrap()
+        .metadata
+        .claude_session_path;
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "").unwrap();
+    let original = pool.get(&thread_id).await.unwrap();
+    original.wait_for_init(STEP_TIMEOUT).await.unwrap();
+    assert!(!original.uses_full_access());
+    let switch_state = state.clone();
+    let full = serde_json::from_value(json!({"threadId":thread_id,
+        "input":[{"type":"text", "text":"full"}], "approvalPolicy":"never",
+        "sandboxPolicy":{"type":"dangerFullAccess"}}))
+    .unwrap();
+    let switch = tokio::spawn(async move { handle_turn_start(&switch_state, full).await });
+    // 精确停在 pool 已移除旧 generation、shutdown 尚未返回的窗口。
+    timeout(STEP_TIMEOUT, launcher.entered.notified())
+        .await
+        .unwrap();
+    assert!(pool.get(&thread_id).await.is_none());
+    let resume_state = state.clone();
+    let params = serde_json::from_value(json!({"threadId":thread_id, "model":"sonnet"})).unwrap();
+    let mut resume = tokio::spawn(async move { handle_thread_resume(&resume_state, params).await });
+    let premature = timeout(Duration::from_millis(100), &mut resume).await;
+    launcher.release.notify_one();
+    assert!(
+        premature.is_err(),
+        "resume 必须等待换代完成，不能在空隙插入普通进程"
+    );
+    timeout(STEP_TIMEOUT, switch)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    timeout(STEP_TIMEOUT, resume)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let current = pool.get(&thread_id).await.unwrap();
+    assert!(current.uses_full_access());
+    assert_ne!(current.generation(), original.generation());
+    let argv = read_argv_log(&argv_log);
+    assert_eq!(argv.len(), 2);
+    assert!(has_arg_pair(
+        &argv[1],
+        "--permission-mode",
+        "bypassPermissions"
+    ));
+    assert!(has_arg_pair(
+        &argv[1],
+        "--settings",
+        r#"{"sandbox":{"enabled":false}}"#
+    ));
+    pool.release(&thread_id).await;
+}
+
+// 只延迟第一个进程的 shutdown，不改生产代码中的调度与进程池。
+#[derive(Default)]
+struct ShutdownBarrierLauncher {
+    first: std::sync::atomic::AtomicBool,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl alleycat_bridge_core::ProcessLauncher for ShutdownBarrierLauncher {
+    fn launch(
+        &self,
+        spec: alleycat_bridge_core::ProcessSpec,
+    ) -> futures::future::BoxFuture<'_, std::io::Result<Box<dyn alleycat_bridge_core::ChildProcess>>>
+    {
+        Box::pin(async move {
+            let child = alleycat_bridge_core::LocalLauncher.launch(spec).await?;
+            if self.first.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Ok(child);
+            }
+            Ok(Box::new(ShutdownBarrierChild {
+                child,
+                entered: self.entered.clone(),
+                release: self.release.clone(),
+            })
+                as Box<dyn alleycat_bridge_core::ChildProcess>)
+        })
+    }
+}
+
+struct ShutdownBarrierChild {
+    child: Box<dyn alleycat_bridge_core::ChildProcess>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl alleycat_bridge_core::ChildProcess for ShutdownBarrierChild {
+    fn take_stdin(&mut self) -> Option<alleycat_bridge_core::ChildStdin> {
+        self.child.take_stdin()
+    }
+    fn take_stdout(&mut self) -> Option<alleycat_bridge_core::ChildStdout> {
+        self.child.take_stdout()
+    }
+    fn take_stderr(&mut self) -> Option<alleycat_bridge_core::ChildStderr> {
+        self.child.take_stderr()
+    }
+    fn id(&self) -> Option<u32> {
+        self.child.id()
+    }
+    fn wait(
+        &mut self,
+    ) -> futures::future::BoxFuture<'_, std::io::Result<std::process::ExitStatus>> {
+        self.child.wait()
+    }
+    fn kill(&mut self) -> futures::future::BoxFuture<'_, std::io::Result<()>> {
+        Box::pin(async move {
+            self.entered.notify_one();
+            self.release.notified().await;
+            self.child.kill().await
+        })
+    }
+}
+
 async fn send<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     id: u64,

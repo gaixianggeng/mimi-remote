@@ -131,12 +131,12 @@ fn is_read_only(value: &serde_json::Value) -> bool {
 }
 
 // 多条连接可同时发送同一会话。把进程换代、权限设置和 turn 准入放在同一临界区，
-// 防止输掉准入竞争的请求先改变胜出轮次的权限或杀掉它的进程。
-static TURN_START_GATES: LazyLock<SyncMutex<HashMap<String, Weak<AsyncMutex<()>>>>> =
+// resume / rollback 的预启动也使用同一把锁，避免在换代期间插入权限不匹配的进程。
+static THREAD_PROCESS_GATES: LazyLock<SyncMutex<HashMap<String, Weak<AsyncMutex<()>>>>> =
     LazyLock::new(|| SyncMutex::new(HashMap::new()));
 
-fn turn_start_gate(thread_id: &str) -> Arc<AsyncMutex<()>> {
-    let mut gates = TURN_START_GATES.lock().unwrap();
+pub(super) fn thread_process_gate(thread_id: &str) -> Arc<AsyncMutex<()>> {
+    let mut gates = THREAD_PROCESS_GATES.lock().unwrap();
     gates.retain(|_, gate| gate.strong_count() > 0);
     if let Some(gate) = gates.get(thread_id).and_then(Weak::upgrade) {
         return gate;
@@ -169,6 +169,9 @@ struct EventDriverRegistration {
 }
 
 enum EventDriverCommand {
+    CheckPermissionChange {
+        ready: oneshot::Sender<Result<(), TurnError>>,
+    },
     BeginTurn {
         state: Arc<ConnectionState>,
         turn_id: String,
@@ -206,6 +209,10 @@ pub enum TurnError {
         thread_id: String,
         active_turn_id: String,
     },
+    #[error(
+        "cannot change permissions while background tasks are pending; stop /loop or cancel scheduled tasks using the current permission mode first"
+    )]
+    BackgroundWorkPending { thread_id: String },
     #[error("claude rpc error: {0}")]
     ClaudeRpc(String),
     #[error("review/start is not implemented in claude-bridge v1")]
@@ -227,6 +234,7 @@ impl TurnError {
             | TurnError::InputTranslation(_)
             | TurnError::ModelRejected { .. }
             | TurnError::AlreadyActive { .. }
+            | TurnError::BackgroundWorkPending { .. }
             | TurnError::OwnedElsewhere { .. } => p::error_codes::INVALID_PARAMS,
             TurnError::ReviewUnsupported => p::error_codes::METHOD_NOT_FOUND,
             TurnError::ClaudeRpc(_) => p::error_codes::INTERNAL_ERROR,
@@ -251,6 +259,12 @@ impl TurnError {
                 "reason": "active_turn",
                 "threadId": thread_id,
                 "activeTurnId": active_turn_id,
+                "retryable": false,
+            })),
+            TurnError::BackgroundWorkPending { thread_id } => Some(serde_json::json!({
+                "accepted": false,
+                "reason": "background_work_pending",
+                "threadId": thread_id,
                 "retryable": false,
             })),
             // 持有方退出后同一请求就能成功，所以标 retryable；客户端据此提示
@@ -286,7 +300,7 @@ pub async fn handle_turn_start(
     state: &Arc<ConnectionState>,
     params: p::TurnStartParams,
 ) -> Result<p::TurnStartResponse, TurnError> {
-    let start_gate = turn_start_gate(&params.thread_id);
+    let start_gate = thread_process_gate(&params.thread_id);
     let _start_guard = start_gate.lock().await;
     let envelope = translate_user_input(&params.input)
         .map_err(|e| TurnError::InputTranslation(e.to_string()))?;
@@ -308,8 +322,11 @@ pub async fn handle_turn_start(
 
     let permission_mode = claude_permission_mode(&params);
     if handle.uses_full_access() != (permission_mode == "bypassPermissions") {
-        // 先拒绝进行中的轮次，再替换进程。仅 set_permission_mode 无法撤销启动时的
-        // sandbox / disallowedTools；用同一会话恢复才能同时兑现授权与收权。
+        // result 不代表后台任务已结束。向常驻 driver 查询后再换代，避免杀掉
+        // 等待 ScheduleWakeup 的 /loop；同档位仍能发送消息取消这些任务。
+        let driver = ensure_event_driver(state, &params.thread_id, &handle);
+        check_permission_change(&driver).await?;
+        // set_permission_mode 无法撤销启动时的 sandbox / disallowedTools。
         state
             .claude_pool()
             .release_if_same(&params.thread_id, &handle)
@@ -894,7 +911,14 @@ struct BackgroundWork {
 
 impl BackgroundWork {
     fn observe(&mut self, payload: &ClaudeOutbound) {
-        for (id, name) in background_tool_uses(payload) {
+        for (id, name, stop) in background_tool_uses(payload) {
+            // 流式 tool_use 起始帧的 input 可能为空，完整 assistant 帧才带 stop。
+            // 先处理取消再去重，确保停止 /loop 后能释放待唤醒状态。
+            if name == "ScheduleWakeup" && stop {
+                self.pending_wakeups = 0;
+                self.seen_tool_uses.insert(id);
+                continue;
+            }
             if !self.seen_tool_uses.insert(id) {
                 continue;
             }
@@ -920,7 +944,7 @@ impl BackgroundWork {
     }
 }
 
-fn background_tool_uses(payload: &ClaudeOutbound) -> Vec<(String, String)> {
+fn background_tool_uses(payload: &ClaudeOutbound) -> Vec<(String, String, bool)> {
     use crate::pool::claude_protocol::{ContentBlock, RawAnthropicEvent};
 
     match payload {
@@ -943,14 +967,26 @@ fn background_tool_uses(payload: &ClaudeOutbound) -> Vec<(String, String)> {
                         .get("name")
                         .and_then(serde_json::Value::as_str)?
                         .to_string(),
+                    block
+                        .get("input")
+                        .and_then(|input| input.get("stop"))
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
                 ))
             })
             .collect(),
         ClaudeOutbound::StreamEvent(env) => match &env.event {
             RawAnthropicEvent::ContentBlockStart {
-                content_block: ContentBlock::ToolUse { id, name, .. },
+                content_block: ContentBlock::ToolUse { id, name, input },
                 ..
-            } => vec![(id.clone(), name.clone())],
+            } => vec![(
+                id.clone(),
+                name.clone(),
+                input
+                    .get("stop")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            )],
             _ => Vec::new(),
         },
         _ => Vec::new(),
@@ -1026,6 +1062,18 @@ async fn begin_driver_turn(
     })?
 }
 
+async fn check_permission_change(
+    driver: &mpsc::UnboundedSender<EventDriverCommand>,
+) -> Result<(), TurnError> {
+    let (ready, response) = oneshot::channel();
+    driver
+        .send(EventDriverCommand::CheckPermissionChange { ready })
+        .map_err(|_| TurnError::ClaudeRpc("permission check event driver is unavailable".into()))?;
+    response
+        .await
+        .map_err(|_| TurnError::ClaudeRpc("permission check event driver stopped".into()))?
+}
+
 async fn run_event_driver(mut args: EventDriverArgs) {
     let mut current: Option<DrivenTurn> = None;
     let mut background = BackgroundWork::default();
@@ -1043,6 +1091,19 @@ async fn run_event_driver(mut args: EventDriverArgs) {
             biased;
             command = args.commands_rx.recv() => {
                 match command {
+                    Some(EventDriverCommand::CheckPermissionChange { ready }) => {
+                        let result = if let Some(active) = current.as_ref() {
+                            Err(TurnError::AlreadyActive {
+                                thread_id: args.thread_id.clone(),
+                                active_turn_id: active.turn_id.clone(),
+                            })
+                        } else if background.has_pending() {
+                            Err(TurnError::BackgroundWorkPending { thread_id: args.thread_id.clone() })
+                        } else {
+                            Ok(())
+                        };
+                        let _ = ready.send(result);
+                    }
                     Some(EventDriverCommand::BeginTurn {
                         state,
                         turn_id,
@@ -1865,6 +1926,57 @@ mod tests {
         assert!(active_turn_interrupt_requested(&thread_id, "tu1"));
         clear_active_turn(&thread_id);
         assert!(active_turn(&thread_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn permission_change_waits_for_background_cancellation_after_completed_turn() {
+        let state = dummy_state().await;
+        let thread_id = Uuid::now_v7().to_string();
+        let (writer_tx, _writer_rx) = mpsc::unbounded_channel();
+        let (events, _events_rx) = broadcast::channel(32);
+        let handle = Arc::new(ClaudeProcessHandle::__test_dangling(
+            writer_tx,
+            events.clone(),
+            PathBuf::from("/tmp"),
+        ));
+        let driver = ensure_event_driver(&state, &thread_id, &handle);
+        for (turn_id, stop) in [("schedule", false), ("cancel", true)] {
+            begin_driver_turn(
+                &driver,
+                state.clone(),
+                turn_id,
+                1,
+                state.session().begin_turn(),
+            )
+            .await
+            .unwrap();
+            state.record_turn_started(&thread_id, turn_id.into(), 1);
+            // 流式起始帧没有 input；最终帧使用同一工具 ID 补全 stop。
+            for value in [
+                json!({"type":"stream_event", "session_id":"test", "uuid":turn_id,
+                    "event":{"type":"content_block_start", "index":0,
+                        "content_block":{"type":"tool_use", "id":turn_id, "name":"ScheduleWakeup", "input":{}}}}),
+                json!({"type":"assistant", "session_id":"test", "uuid":turn_id,
+                    "message":{"content":[{"type":"tool_use", "id":turn_id,
+                        "name":"ScheduleWakeup", "input":{"stop":stop}}]}}),
+            ] {
+                events
+                    .send(ClaudeEvent::new(serde_json::from_value(value).unwrap()))
+                    .unwrap();
+            }
+            emit_successful_text_turn(&events, "done", turn_id);
+            wait_for_completed_turn(&state, &thread_id, turn_id).await;
+            let result = check_permission_change(&driver).await;
+            if stop {
+                assert!(result.is_ok());
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(TurnError::BackgroundWorkPending { .. })
+                ));
+            }
+        }
+        handle.shutdown().await;
     }
 
     #[tokio::test]

@@ -2692,6 +2692,11 @@ actor CodexAppServerSessionRuntime {
         // 被动监听/重连不能把 Mimi 的安全默认重新写进已有 Codex Thread；否则 Windows
         // managed permission profiles 会把原来的 :danger-full-access 静默改成 :workspace。
         passiveResumeOptions.preservesThreadPermissionSettings = runtimeProvider == "codex"
+        if runtimeProvider == "claude" {
+            // Claude 的被动恢复只连接会话，不应用下一轮的权限。使用普通参数让
+            // 仍受支持的旧 bridge 可以连接；显式完全访问仍在 turn/start 检查版本。
+            ComposerPermissionMode.requestApproval.apply(to: &passiveResumeOptions)
+        }
         let scopedPassiveResumeOptions = runtimeScopedThreadOptions(passiveResumeOptions)
         let result: CodexAppServerJSONValue?
         do {

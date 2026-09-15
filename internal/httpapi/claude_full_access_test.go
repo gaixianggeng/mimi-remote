@@ -43,3 +43,32 @@ func TestClaudeFullAccessRejectsOldBridgeWithUpgradeHint(t *testing.T) {
 		t.Fatalf("旧 bridge 必须明确提示升级：%v", err)
 	}
 }
+
+func TestOldClaudeBridgeAcceptsPassiveResumeAndOrdinaryTurns(t *testing.T) {
+	cfg, registry, _, _, cwd := appServerGatewayBaseFixture(t)
+	cfg.Claude = config.ClaudeConfig{Enabled: true, BridgeBin: writeTestBridgeWithVersion(t, "0.2.12")}
+	router := &Router{cfg: cfg, projects: registry}
+	_, err := router.validateGatewayPolicyParams("claude", "thread/resume", map[string]any{
+		"threadId": "test-thread", "cwd": cwd, "approvalPolicy": "on-request", "sandbox": "workspace-write",
+	})
+	if err != nil {
+		t.Fatalf("旧 bridge 应允许普通被动恢复：%v", err)
+	}
+	for _, sandbox := range []string{"readOnly", "workspaceWrite", "dangerFullAccess"} {
+		policy := "on-request"
+		if sandbox == "dangerFullAccess" {
+			policy = "never"
+		}
+		_, err := router.validateGatewayPolicyParams("claude", "turn/start", map[string]any{
+			"threadId": "test-thread", "cwd": cwd, "approvalPolicy": policy,
+			"sandboxPolicy": map[string]any{"type": sandbox},
+		})
+		if sandbox == "dangerFullAccess" {
+			if err == nil || !strings.Contains(err.Error(), "0.2.13") {
+				t.Fatalf("显式完全访问仍应要求升级：%v", err)
+			}
+		} else if err != nil {
+			t.Fatalf("普通权限 %s 不应要求升级：%v", sandbox, err)
+		}
+	}
+}
