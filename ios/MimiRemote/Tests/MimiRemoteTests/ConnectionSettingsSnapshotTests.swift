@@ -138,6 +138,8 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
             qrScannerPresentation: fixture.qrScannerPresentation,
             probesRouteAutomatically: false
         )
+        // 偏好使用独立存储，避免模拟器里上次手动选择污染视觉基线。
+        .defaultAppStorage(fixture.defaults)
         .environmentObject(fixture.appStore)
         .environmentObject(fixture.sessionStore)
         .environmentObject(fixture.themeStore)
@@ -211,6 +213,7 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
         let themeDefaults = UserDefaults(suiteName: themeSuiteName)!
         themeDefaults.removePersistentDomain(forName: themeSuiteName)
         return Fixture(
+            defaults: defaults,
             appStore: appStore,
             sessionStore: sessionStore,
             themeStore: ThemeStore(defaults: themeDefaults),
@@ -255,6 +258,7 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
 @MainActor
 private struct Fixture {
+    let defaults: UserDefaults
     let appStore: AppStore
     let sessionStore: SessionStore
     let themeStore: ThemeStore

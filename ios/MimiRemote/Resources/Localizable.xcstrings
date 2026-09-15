@@ -20720,6 +20720,42 @@
         }
       }
     },
+    "ui.preferred_runtime": {
+      "comment": "Label for choosing which runtime workspace session lists prefer by default.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prefer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "优先使用"
+          }
+        }
+      }
+    },
+    "ui.preferred_runtime_description": {
+      "comment": "Explains the preferred workspace runtime and its fallback behavior.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Workspaces show sessions from this runtime by default. If Claude Code isn't supported, Codex is used automatically."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区默认展示该类型的会话。不支持 Claude Code 时自动使用 Codex。"
+          }
+        }
+      }
+    },
     "ui.preference": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "extractionState": "stale",
