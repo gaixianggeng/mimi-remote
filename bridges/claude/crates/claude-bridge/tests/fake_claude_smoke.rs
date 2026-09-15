@@ -71,6 +71,7 @@ async fn fake_claude_emits_system_init_then_replies_to_user_envelope() {
         append_system_prompt: None,
         resume: false,
         bypass_permissions: true,
+        sandbox_policy: Default::default(),
     })
     .await
     .expect("spawn fake-claude");

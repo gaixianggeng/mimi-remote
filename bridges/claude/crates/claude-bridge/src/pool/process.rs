@@ -96,6 +96,9 @@ pub struct ClaudeSpawnConfig {
     /// surfaces a codex `item/{...}/requestApproval` to the connected client.
     /// Default flipped in [`super::PoolPolicy`] / `host.toml`.
     pub bypass_permissions: bool,
+    /// 沙箱姿态。由 bridge 启动时解析一次（见 [`SandboxPolicy::from_env`]）后
+    /// 经 [`super::PoolPolicy`] 传进来，不在每次 spawn 时再读环境变量。
+    pub sandbox_policy: SandboxPolicy,
 }
 
 #[derive(Debug, Error)]
@@ -323,6 +326,7 @@ impl ClaudeProcessHandle {
             append_system_prompt,
             resume,
             bypass_permissions,
+            sandbox_policy,
         } = config;
 
         let mut args: Vec<OsString> = Vec::new();
@@ -333,7 +337,7 @@ impl ClaudeProcessHandle {
         args.push("stream-json".into());
         args.push("--include-partial-messages".into());
         args.push("--verbose".into());
-        apply_platform_security_args(&mut args);
+        apply_platform_security_args(&mut args, sandbox_policy);
         if bypass_permissions {
             args.push("--dangerously-skip-permissions".into());
         } else {
@@ -830,7 +834,80 @@ impl ClaudeProcessHandle {
     }
 }
 
-fn apply_platform_security_args(args: &mut Vec<OsString>) {
+/// 沙箱姿态。默认 [`SandboxPolicy::Guarded`]：仍然强制开启沙箱并在沙箱不可用
+/// 时失败，只把"能不能申请出沙箱"交还给 Claude Code 的默认值。
+///
+/// 这层地板不能省。agentd 对 Claude 通道下发的是 `workspaceWrite` +
+/// `writableRoots=[cwd]` + `networkAccess=false`（`sanitizedGatewaySandboxPolicy`），
+/// 而 bridge 只把这些参数映射成 `--permission-mode` 的 `plan/default/auto`
+/// （`handlers::turn::claude_permission_mode`），并不逐条兑现可写根与网络开关：
+/// 真正在执行层兑现它们的正是这里强制打开的 Bash 沙箱。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SandboxPolicy {
+    /// 默认。强制沙箱 + 沙箱不可用即失败 + 沙箱内命令照常逐条审批，但允许模型
+    /// 在被沙箱拒绝后带 `dangerouslyDisableSandbox` 重试，重试作为一次新的工具
+    /// 调用回到权限判定（无匹配 allow rule 时即 iOS 审批卡）。
+    #[default]
+    Guarded,
+    /// 旧的 fail-closed 姿态：同上，但完全不允许任何命令出沙箱。
+    Strict,
+    /// 不下发任何覆盖，完全跟随本机 Claude Code 的有效配置。上面那层地板随之
+    /// 消失（本机把沙箱关掉时 app 内会话也没有沙箱），只在明确要求与本机终端
+    /// 完全一致时使用。
+    Inherit,
+}
+
+impl SandboxPolicy {
+    pub const ENV_KEY: &'static str = "CLAUDE_BRIDGE_SANDBOX_POLICY";
+
+    /// 只接受显式取值。未知非空值一律是配置错误，不静默放宽，也不静默收紧——
+    /// 这个开关的唯一用途就是调整执行边界，拼错必须能被发现。
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "guarded" | "default" => Ok(Self::Guarded),
+            "strict" => Ok(Self::Strict),
+            "inherit" => Ok(Self::Inherit),
+            other => Err(format!(
+                "{key}={other:?} 不是有效取值；只接受 guarded（默认）、strict 或 inherit",
+                key = Self::ENV_KEY
+            )),
+        }
+    }
+
+    /// 读取并校验环境变量。取值非法时返回 `Err`，由 bridge 启动时 fail closed。
+    pub fn from_env() -> Result<Self, String> {
+        match std::env::var(Self::ENV_KEY) {
+            Ok(value) => Self::parse(&value),
+            Err(std::env::VarError::NotPresent) => Ok(Self::default()),
+            Err(std::env::VarError::NotUnicode(_)) => Err(format!(
+                "{key} 不是有效的 UTF-8；只接受 guarded（默认）、strict 或 inherit",
+                key = Self::ENV_KEY
+            )),
+        }
+    }
+
+    fn settings_override(self) -> Option<serde_json::Value> {
+        let allow_unsandboxed = match self {
+            // 旧版本把这里钉成 false，CLI 会连"申请出沙箱"这个动作一起关掉，并在
+            // 系统提示里告诉模型该参数无效：沙箱挡住的命令（`git push` /
+            // `git fetch` 这类要出网的）不会退回审批，而是直接失败，用户在 app 上
+            // 批准了也只是批准"在沙箱里再跑一次"。
+            Self::Guarded => true,
+            Self::Strict => false,
+            Self::Inherit => return None,
+        };
+        Some(serde_json::json!({
+            "sandbox": {
+                "enabled": true,
+                "failIfUnavailable": true,
+                "allowUnsandboxedCommands": allow_unsandboxed,
+                "autoAllowBashIfSandboxed": false
+            }
+        }))
+    }
+}
+
+fn apply_platform_security_args(args: &mut Vec<OsString>, policy: SandboxPolicy) {
     if cfg!(windows) {
         // Claude Code does not support its Bash sandbox on native Windows.
         // Do not silently run a shell outside the sandbox: disable the shell
@@ -840,21 +917,13 @@ fn apply_platform_security_args(args: &mut Vec<OsString>) {
         args.push("PowerShell".into());
         return;
     }
+    let Some(settings) = policy.settings_override() else {
+        return;
+    };
     // Use a temporary override so the bridge never edits project or user
     // settings. If the platform sandbox is unavailable, fail closed.
     args.push("--settings".into());
-    args.push(
-        serde_json::json!({
-            "sandbox": {
-                "enabled": true,
-                "failIfUnavailable": true,
-                "allowUnsandboxedCommands": false,
-                "autoAllowBashIfSandboxed": false
-            }
-        })
-        .to_string()
-        .into(),
-    );
+    args.push(settings.to_string().into());
 }
 
 fn effort_control_is_globally_unsupported(error: &ClaudeProcessError) -> bool {
@@ -1115,23 +1184,92 @@ mod tests {
     use super::*;
     use crate::pool::claude_protocol::SystemInit;
 
+    fn platform_security_args(policy: SandboxPolicy) -> Vec<String> {
+        let mut args = Vec::new();
+        apply_platform_security_args(&mut args, policy);
+        args.into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn sandbox_settings(policy: SandboxPolicy) -> String {
+        let args = platform_security_args(policy);
+        assert_eq!(args.first().map(String::as_str), Some("--settings"));
+        args.get(1).expect("settings payload").clone()
+    }
+
     #[test]
     fn platform_security_never_runs_an_unsandboxed_windows_shell() {
-        let mut args = Vec::new();
-        apply_platform_security_args(&mut args);
-        let args: Vec<String> = args
-            .into_iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        if cfg!(windows) {
-            assert_eq!(args, ["--disallowedTools", "Bash", "PowerShell"]);
-        } else {
-            assert_eq!(args.first().map(String::as_str), Some("--settings"));
-            assert!(
-                args.get(1)
-                    .is_some_and(|settings| { settings.contains(r#""failIfUnavailable":true"#) })
+        for policy in [
+            SandboxPolicy::Guarded,
+            SandboxPolicy::Strict,
+            SandboxPolicy::Inherit,
+        ] {
+            let args = platform_security_args(policy);
+            if cfg!(windows) {
+                assert_eq!(args, ["--disallowedTools", "Bash", "PowerShell"]);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn default_policy_keeps_the_sandbox_floor_and_only_reopens_the_escape_hatch() {
+        // agentd 下发的 workspaceWrite + writableRoots + networkAccess=false 在
+        // 执行层就是靠这层强制沙箱兑现的，修 git 不能把它一起撤掉。
+        let settings = sandbox_settings(SandboxPolicy::Guarded);
+        assert!(settings.contains(r#""enabled":true"#));
+        assert!(settings.contains(r#""failIfUnavailable":true"#));
+        assert!(settings.contains(r#""autoAllowBashIfSandboxed":false"#));
+        // 唯一放开的一项：被沙箱拒绝后可以带 dangerouslyDisableSandbox 重试。
+        assert!(settings.contains(r#""allowUnsandboxedCommands":true"#));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn strict_policy_keeps_the_fail_closed_override() {
+        let settings = sandbox_settings(SandboxPolicy::Strict);
+        assert!(settings.contains(r#""enabled":true"#));
+        assert!(settings.contains(r#""failIfUnavailable":true"#));
+        assert!(settings.contains(r#""allowUnsandboxedCommands":false"#));
+        assert!(settings.contains(r#""autoAllowBashIfSandboxed":false"#));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn inherit_policy_sends_no_override_at_all() {
+        assert!(platform_security_args(SandboxPolicy::Inherit).is_empty());
+    }
+
+    #[test]
+    fn sandbox_policy_rejects_unknown_values_instead_of_loosening() {
+        assert_eq!(SandboxPolicy::parse("strict"), Ok(SandboxPolicy::Strict));
+        assert_eq!(
+            SandboxPolicy::parse("  STRICT  "),
+            Ok(SandboxPolicy::Strict)
+        );
+        assert_eq!(SandboxPolicy::parse("inherit"), Ok(SandboxPolicy::Inherit));
+        for value in ["", "  ", "guarded", "default"] {
+            assert_eq!(
+                SandboxPolicy::parse(value),
+                Ok(SandboxPolicy::Guarded),
+                "unexpected policy for {value:?}"
             );
         }
+        // 拼错回退开关不能静默按默认策略跑起来。
+        for value in ["strcit", "off", "legacy", "1"] {
+            let error = SandboxPolicy::parse(value).expect_err("must reject");
+            assert!(error.contains(SandboxPolicy::ENV_KEY), "{error}");
+        }
+    }
+
+    #[test]
+    fn default_sandbox_policy_is_guarded() {
+        assert_eq!(SandboxPolicy::default(), SandboxPolicy::Guarded);
+        assert_eq!(
+            crate::pool::PoolPolicy::default().sandbox_policy,
+            SandboxPolicy::Guarded
+        );
     }
 
     #[test]

@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 pub use claude_protocol::*;
 pub use process::{
-    ClaudeProcessError, ClaudeProcessHandle, ClaudeSpawnConfig, DEFAULT_INIT_TIMEOUT,
+    ClaudeProcessError, ClaudeProcessHandle, ClaudeSpawnConfig, DEFAULT_INIT_TIMEOUT, SandboxPolicy,
 };
 
 /// Pool-wide spawn policy. New fields go here so the per-thread
@@ -49,6 +49,8 @@ pub struct PoolPolicy {
     /// the bridge bridges every `can_use_tool` control_request to a codex
     /// `requestApproval` request on the connected client.
     pub bypass_permissions: bool,
+    /// 每个 claude 子进程的沙箱姿态，由 bridge 启动时解析一次后固定下来。
+    pub sandbox_policy: SandboxPolicy,
 }
 
 /// Thread-safe pool of claude processes.
@@ -444,6 +446,7 @@ impl ClaudePool {
             append_system_prompt,
             resume,
             bypass_permissions: self.policy.bypass_permissions,
+            sandbox_policy: self.policy.sandbox_policy,
         };
         let handle = ClaudeProcessHandle::launch_with(Arc::clone(&self.launcher), config)
             .await
