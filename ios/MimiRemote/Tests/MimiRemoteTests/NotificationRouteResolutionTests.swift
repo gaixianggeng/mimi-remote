@@ -555,13 +555,43 @@ final class NotificationRouteResolutionTests: XCTestCase {
             let delivery = try XCTUnwrap(inbox.pending)
             XCTAssertTrue(store.notificationNavigation.isCurrent(delivery.navigationIntent))
             // 闸门还未放行。视觉导航在同步事务中就撤销通知，不依赖延迟的选择副作用。
-            store.notificationNavigation.observe(event)
+            store.notificationNavigation.observe(event, origin: .user)
             let route = SessionNotificationRoute.current(profileID: store.appStore.notificationRoutingProfileID,
                 projectID: project.id, sessionID: target.id)
             let outcome = await store.openSessionFromNotification(route, navigationIntent: delivery.navigationIntent)
             XCTAssertEqual(outcome, .superseded)
             XCTAssertNil(store.selectedSessionID)
         }
+    }
+
+    /// iPad 旋转或分屏会让 Shell 程序化重放当前 Tab / selection；等待闸门的通知不能因此被丢弃。
+    func testLayoutSynchronizationDoesNotRevokePendingNotification() async throws {
+        let project = makeProject(id: "notification-layout")
+        let target = makeSession(id: "notice-layout", projectID: project.id, title: "A", status: "history", source: "codex")
+        let events: [WorkbenchNavigationEvent] = [
+            .compactTabChanged(.me),
+            .compactTabChanged(.devices),
+            .open(.me, source: nil)
+        ]
+        let store = makeStore(client: MockSessionStoreClient(projects: [project], sessions: []))
+        store.sessions = [target]
+        store.recentWorkspaces = [AgentWorkspace(project: project)]
+        let inbox = LockScreenApprovalInbox()
+        inbox.navigationOwnership = store.notificationNavigation
+        inbox.receive(userInfo: payload(overrides: [:]), actionIdentifier: "com.apple.UNNotificationDefaultActionIdentifier")
+        let delivery = try XCTUnwrap(inbox.pending)
+        for event in events {
+            store.notificationNavigation.observe(event, origin: .layoutSynchronization)
+            XCTAssertTrue(
+                store.notificationNavigation.isCurrent(delivery.navigationIntent),
+                "布局同步重放 \(event) 不能撤销尚未打开的通知"
+            )
+        }
+        let route = SessionNotificationRoute.current(profileID: store.appStore.notificationRoutingProfileID,
+            projectID: project.id, sessionID: target.id)
+        let outcome = await store.openSessionFromNotification(route, navigationIntent: delivery.navigationIntent)
+        XCTAssertEqual(outcome, .opened)
+        XCTAssertEqual(store.selectedSessionID, target.id)
     }
 
     func testReturnDuringAutomaticRestorationCannotBeOverwrittenByNotification() async {

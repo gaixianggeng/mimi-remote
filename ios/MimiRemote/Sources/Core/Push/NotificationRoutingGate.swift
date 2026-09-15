@@ -152,7 +152,10 @@ final class NotificationNavigationOwnership {
 
     func userNavigated() { current = nil }
 
-    func observe(_ event: WorkbenchNavigationEvent) {
+    /// 只有用户自己的导航能撤销通知：布局同步会用同样的事件重放当前 Tab 与 selection，
+    /// 把它当成用户导航会让还在等 bootstrap、前台恢复或选路的通知被判为过期而静默丢弃。
+    func observe(_ event: WorkbenchNavigationEvent, origin: WorkbenchNavigationOrigin) {
+        guard origin == .user else { return }
         switch event {
         case .open, .compactPathChanged, .compactTabChanged:
             userNavigated()
