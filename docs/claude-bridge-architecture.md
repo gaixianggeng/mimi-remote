@@ -77,7 +77,11 @@ sequenceDiagram
 - 审批反向 RPC 必须与待处理请求匹配；未知反向请求 fail closed。
 - Claude channel 只声明 `read-only` 和 `workspace-write` sandbox，不声明移动端 `danger-full-access`。
 - 不开放 `bypass permissions`，不提供任意 SSH 或 Shell 入口。
-- `0.2.12` 起 bridge 不再覆盖 Claude Code 自己的沙箱设置（非 Windows）：app 内会话与同一台 Mac 上终端、Claude 桌面跑同一个 CLI 的沙箱边界一致。沙箱挡住的命令由模型带 `dangerouslyDisableSandbox` 重试，重试是一次新的工具调用，照样经 `--permission-prompt-tool stdio` 弹成 iOS 审批卡，由用户决定是否在沙箱外执行。旧行为是把 `sandbox.allowUnsandboxedCommands` 钉成 `false`，CLI 会连"申请出沙箱"这个动作一起关掉（并在系统提示里告诉模型该参数无效），于是 `git push` / `git fetch` 这类要出网的命令批准了也只能失败，用户批准的其实只是"在沙箱里再跑一次"。需要旧姿态时设 `claude.env.CLAUDE_BRIDGE_SANDBOX_POLICY=strict`，bridge 会重新下发 `{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"autoAllowBashIfSandboxed":false}}`。Windows 没有 Bash 沙箱，仍然整体禁用 `Bash` / `PowerShell`，不受该开关影响。
+- 非 Windows 下 bridge 给每个 claude 子进程下发一份临时 `--settings`，不改项目或用户配置文件。这份覆盖是执行边界的地板：agentd 对 Claude 通道下发的是 `workspaceWrite` + `writableRoots=[cwd]` + `networkAccess=false`，而 bridge 只把这些参数映射成 `--permission-mode` 的 `plan` / `default` / `auto`，并不逐条兑现可写根与网络开关——真正在执行层兑现它们的就是这里强制打开的 Bash 沙箱，因此 `sandbox.enabled` 与 `failIfUnavailable` 必须保持 `true`。
+- `0.2.12` 起这份覆盖只放开一项：`sandbox.allowUnsandboxedCommands` 从 `false` 改回 CLI 默认的 `true`。此前钉成 `false` 时，CLI 会连"申请出沙箱"这个动作一起关掉（并在系统提示里告诉模型该参数无效），于是 `git push` / `git fetch` 这类要出网的命令批准了也只能失败——用户批准的其实只是"在沙箱里再跑一次"。放开后，被沙箱拒绝的命令由模型带 `dangerouslyDisableSandbox` 重试，重试是一次新的工具调用，重新回到 CLI 的权限判定。`autoAllowBashIfSandboxed` 仍然显式保持 `false`（CLI 默认是 `true`），所以沙箱内命令也照常逐条审批。
+- **审批不是无条件的**：只有 CLI 没有提前批准的调用才会经 `--permission-prompt-tool stdio` 变成 iOS 审批卡。用户在审批卡上选"始终允许"时，bridge 会把 `addRules` 写进 `localSettings`（见 `approval::eligible_local_permission_updates`），此后匹配该规则的调用——包括带 `dangerouslyDisableSandbox` 的那次重试——不再产生新的审批卡；`auto` 权限档下 CLI 分类器也可能自行放行。文档和 UI 都不应表述为"每次越界都必须手机确认"。
+- `claude.env.CLAUDE_BRIDGE_SANDBOX_POLICY` 控制这份覆盖，只接受三个值：`guarded`（缺省，如上）、`strict`（回到 `allowUnsandboxedCommands=false` 的旧姿态）、`inherit`（完全不下发覆盖，跟随本机 Claude Code 有效配置——本机关掉沙箱时 app 内会话也没有沙箱，上面那层地板随之消失，只在明确要求与本机终端完全一致时使用）。非空未知取值（例如把 `strict` 拼错）不会静默回落成缺省策略，bridge 直接启动失败并在错误里点名该变量。改值后必须让常驻 bridge 与它的 claude 子进程整体换代才生效：supervisor 对存活进程直接复用，不会重新比对传入环境，单纯让 App 重连不会应用新策略。
+- Windows 没有 Bash 沙箱，仍然整体禁用 `Bash` / `PowerShell`，不受该开关影响。
 
 ### 状态与上下文
 

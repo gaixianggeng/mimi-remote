@@ -23,7 +23,7 @@ use crate::index::{
     ClaudeHistoryRefresher, ClaudeHydrator, DEFAULT_HISTORY_REFRESH_INTERVAL,
     open_index_and_hydrate,
 };
-use crate::pool::{ClaudePool, PoolPolicy};
+use crate::pool::{ClaudePool, PoolPolicy, SandboxPolicy};
 use crate::state::{ConnectionState, ThreadDefaults};
 use crate::takeover::TakeoverTimeouts;
 
@@ -161,6 +161,9 @@ pub struct ClaudeBridgeBuilder {
     pool_capacity: Option<usize>,
     idle_ttl: Option<Duration>,
     bypass_permissions: bool,
+    /// `None` 表示还没读过环境变量；`Some(Err(_))` 表示读到了非法取值，留到
+    /// `build()` 里 fail closed，不静默回落成宽松策略。
+    sandbox_policy: Option<Result<SandboxPolicy, String>>,
     trust_persisted_cwd: bool,
     /// Override for the claude `projects/` directory (test hook). `None`
     /// uses [`crate::index::claude_projects_dir`].
@@ -181,6 +184,7 @@ impl Default for ClaudeBridgeBuilder {
             pool_capacity: None,
             idle_ttl: None,
             bypass_permissions: PoolPolicy::default().bypass_permissions,
+            sandbox_policy: None,
             trust_persisted_cwd: false,
             projects_dir_override: None,
             history_refresh_interval: DEFAULT_HISTORY_REFRESH_INTERVAL,
@@ -220,6 +224,13 @@ impl ClaudeBridgeBuilder {
 
     pub fn bypass_permissions(mut self, b: bool) -> Self {
         self.bypass_permissions = b;
+        self
+    }
+
+    /// 子进程沙箱姿态；不设置时读 `CLAUDE_BRIDGE_SANDBOX_POLICY`，缺省为
+    /// [`SandboxPolicy::Guarded`]。
+    pub fn sandbox_policy(mut self, policy: SandboxPolicy) -> Self {
+        self.sandbox_policy = Some(Ok(policy));
         self
     }
 
@@ -270,6 +281,9 @@ impl ClaudeBridgeBuilder {
     /// - `CODEX_HOME` for the index directory
     /// - `CLAUDE_BRIDGE_BYPASS_PERMISSIONS` (`1`/`true`/`yes`/`on` enables;
     ///   anything else disables) for the pool-wide bypass flag
+    /// - `CLAUDE_BRIDGE_SANDBOX_POLICY` (`guarded` / `strict` / `inherit`) for
+    ///   the child sandbox posture; an unknown value fails `build()` instead of
+    ///   silently loosening the boundary
     ///
     /// Builder-set values stay; env vars only fill in fields the caller
     /// hasn't already set explicitly.
@@ -288,6 +302,9 @@ impl ClaudeBridgeBuilder {
             && let Ok(value) = std::env::var(ForeignSessionPolicy::ENV_KEY)
         {
             self.foreign_session_policy = Some(ForeignSessionPolicy::parse(&value));
+        }
+        if self.sandbox_policy.is_none() {
+            self.sandbox_policy = Some(SandboxPolicy::from_env());
         }
         if let Ok(value) = std::env::var("CLAUDE_BRIDGE_BYPASS_PERMISSIONS") {
             self.bypass_permissions = matches!(
@@ -308,8 +325,17 @@ impl ClaudeBridgeBuilder {
             tracing::warn!(?codex_home, %err, "failed to ensure codex_home; continuing");
         }
 
+        // 拼错 `CLAUDE_BRIDGE_SANDBOX_POLICY` 必须启动失败：这个开关唯一的用途
+        // 就是调整执行边界，静默按默认策略跑起来等于悄悄放宽用户以为已经收紧的
+        // 边界。
+        let sandbox_policy = match self.sandbox_policy.unwrap_or(Ok(SandboxPolicy::default())) {
+            Ok(policy) => policy,
+            Err(message) => anyhow::bail!(message),
+        };
+        tracing::info!(?sandbox_policy, "claude child sandbox policy resolved");
         let policy = PoolPolicy {
             bypass_permissions: self.bypass_permissions,
+            sandbox_policy,
         };
         let max_processes = self
             .pool_capacity
@@ -725,5 +751,39 @@ fn turn_to_rpc(err: handlers::turn::TurnError) -> JsonRpcError {
         code: err.rpc_code(),
         message: err.to_string(),
         data,
+    }
+}
+
+#[cfg(test)]
+mod sandbox_policy_tests {
+    use super::*;
+
+    /// 回退开关拼错时必须启动失败。静默按默认策略跑起来，等于悄悄放宽了用户
+    /// 以为已经收紧的执行边界。
+    #[tokio::test]
+    async fn invalid_sandbox_policy_fails_startup_instead_of_running_loose() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let mut builder = ClaudeBridge::builder().codex_home(codex_home.path());
+        builder.sandbox_policy = Some(SandboxPolicy::parse("strcit"));
+        let error = builder
+            .build()
+            .await
+            .expect_err("invalid policy must fail closed");
+        let message = error.to_string();
+        assert!(message.contains(SandboxPolicy::ENV_KEY), "{message}");
+        assert!(message.contains("strcit"), "{message}");
+    }
+
+    /// 校验通过的取值会一路带到进程池策略，而不是停在 builder 里。
+    #[tokio::test]
+    async fn resolved_sandbox_policy_reaches_the_pool() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let bridge = ClaudeBridge::builder()
+            .codex_home(codex_home.path())
+            .sandbox_policy(SandboxPolicy::Strict)
+            .build()
+            .await
+            .expect("build");
+        assert_eq!(bridge.pool.policy().sandbox_policy, SandboxPolicy::Strict);
     }
 }
