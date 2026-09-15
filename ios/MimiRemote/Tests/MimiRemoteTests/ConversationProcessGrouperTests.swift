@@ -208,13 +208,13 @@ final class ConversationProcessGrouperTests: XCTestCase {
         let snapshot = cache.snapshot(from: messages)
 
         // 每个 turn 线性投影成一个 work group + 一个 final，没有跨 turn 吞并。
-        XCTAssertEqual(snapshot.items.count, 1_000)
-        XCTAssertEqual(snapshot.items.filter {
+        XCTAssertEqual(snapshot.rows.count, 1_000)
+        XCTAssertEqual(snapshot.rows.filter {
             if case .workGroup = $0 { return true }
             return false
         }.count, 500)
-        XCTAssertEqual(snapshot.tailItemID, snapshot.items.last?.id)
-        XCTAssertEqual(cache.tailItemID, snapshot.tailItemID)
+        XCTAssertEqual(snapshot.tail?.rowID, snapshot.rows.last?.id)
+        XCTAssertEqual(cache.snapshot(from: messages).tail?.rowID, snapshot.tail?.rowID)
     }
 
     func testResolvedInteractionCanJoinGroupButPendingInteractionEndsIt() {
@@ -766,16 +766,16 @@ final class ConversationProcessGrouperTests: XCTestCase {
         command.turnLifecycle = .inProgress
         command.timelineOrdinal = 1
         let cache = ConversationTimelineItemCache()
-        let running = try workGroup(in: cache.snapshot(from: [command]).items, at: 0)
+        let running = try workGroup(in: cache.snapshot(from: [command]).rows, at: 0)
 
         command.turnLifecycle = .completed
-        let completed = try workGroup(in: cache.snapshot(from: [command]).items, at: 0)
+        let completed = try workGroup(in: cache.snapshot(from: [command]).rows, at: 0)
         XCTAssertEqual(running.status, .running)
         XCTAssertEqual(completed.status, .completed)
 
         command.timelineOrdinal = 2
         let ordinalSnapshot = cache.snapshot(from: [command])
-        guard case .workGroup(let ordinalGroup) = ordinalSnapshot.items.first,
+        guard case .workGroup(let ordinalGroup) = ordinalSnapshot.rows.first,
               case .activityBatch(let batch) = ordinalGroup.entries.first else {
             return XCTFail("ordinal 更新后应重建同一语义快照")
         }

@@ -1,6 +1,30 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.record_conversation_scroll": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Record conversation scrolling" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "记录对话滚动" } }
+      }
+    },
+    "ui.stop_and_copy_scroll_trace": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Stop and copy scroll log" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "停止并复制滚动日志" } }
+      }
+    },
+    "ui.scroll_trace_copied": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scroll log copied" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已复制滚动日志" } }
+      }
+    },
+    "ui.scroll_trace_help": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Start recording, reproduce the jump, then return here to copy the log. Keeps the latest 800 events in memory. No message content, file paths, or session identifiers are recorded." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开启后复现跳动，再回到这里复制日志。仅在内存保留最近 800 条记录，不记录消息内容、文件路径或会话标识。" } }
+      }
+    },
     "push.message.body.completed.titled": {
       "comment": "Rendered on-device by the notification service extension from the local title cache; the push service never sees session titles. Used when the notification title already names the session.",
       "localizations": {

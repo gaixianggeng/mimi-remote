@@ -61,6 +61,8 @@ echo "==> iOS conversation regressions"
 #   exactly-once、审批/中断、Host 隔离和 fake smoke；其余大集合不无条件进入 PR Gate。
 # - FileAttachmentModelsTests：文件上传、capability 状态矩阵、内部上下文编解码和旧服务端兼容。
 # - ConversationProcessGrouperTests：过程组边界、commentary 前后保留和 source order。
+# - ConversationScrollStabilityTests：首屏可读交接、手势取消、阅读锚点和显式回到底部。
+# - ConversationTimelineRuntimeRegressionTests：原生 List 在 Codex/Claude 更新及历史前插后的视口。
 # - SessionListLifecycleCoordinatorTests：滚动冻结、idle 重排和完成/失败 Haptic exactly-once。
 # - SessionListPresentationTests：会话摘要、分支身份、时间格式和紧凑行数策略。
 # - ConversationSnapshotTests：用户气泡/助手文档流、复杂 Markdown、图片和过程组的关键视觉回归。
@@ -159,6 +161,8 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testMarkHistorySessionUnreadPersistsCompletionWatermark \
   -only-testing:MimiRemoteTests/WorkspacePullRefreshTests/testPullRefreshPublishesSessionsWithoutRequestingWorkspaceGitSummaries \
   -only-testing:MimiRemoteTests/ConversationProcessGrouperTests \
+  -only-testing:MimiRemoteTests/ConversationScrollStabilityTests \
+  -only-testing:MimiRemoteTests/ConversationTimelineRuntimeRegressionTests \
   -only-testing:MimiRemoteTests/SessionListLifecycleCoordinatorTests \
   -only-testing:MimiRemoteTests/SessionListPresentationTests \
   -only-testing:MimiRemoteTests/TokenUsageCardSnapshotTests \

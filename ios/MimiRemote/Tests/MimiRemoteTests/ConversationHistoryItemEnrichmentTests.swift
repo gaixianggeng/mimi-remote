@@ -138,9 +138,12 @@ extension ConversationDataFlowTests {
             [5_000_000, 5_000_001]
         )
         XCTAssertEqual(conversationStore.historyMergeInvocationCountForTesting, 3)
+        let source = conversationStore.timelineSource(for: sessionID)
+        XCTAssertEqual(source.revision, 3)
+        XCTAssertEqual(source.versions.historyEnrichment, source.revision)
         XCTAssertEqual(
-            conversationStore.historyTimelineMutation(for: sessionID)?.generation,
-            3
+            ConversationTimelineItemCache().snapshot(from: source).changes,
+            .historyEnrichment
         )
         XCTAssertEqual(store.historyLoadedQualityBySessionID[sessionID], .full)
     }
