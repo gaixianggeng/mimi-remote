@@ -548,7 +548,7 @@ extension ConversationDataFlowTests {
         )
     }
 
-    func testAnnotatedHistoryMutationAdvancesOnlyWhenTimelineChanges() throws {
+    func testHistorySourceVersionsAdvanceOnlyWhenTimelineChanges() {
         let sessionID = "history-mutation-generation"
         let store = ConversationStore()
         store.activate(profileID: "history-mutation-profile")
@@ -562,11 +562,12 @@ extension ConversationDataFlowTests {
         )
 
         store.setHistory([latest], sessionID: sessionID, timelineMutationKind: .enrichment)
-        let firstMutation = try XCTUnwrap(store.historyTimelineMutation(for: sessionID))
-        XCTAssertEqual(firstMutation.kind, .enrichment)
+        let firstSource = store.timelineSource(for: sessionID)
+        XCTAssertGreaterThan(firstSource.versions.historyEnrichment, 0)
+        XCTAssertEqual(firstSource.versions.historyEnrichment, firstSource.revision)
 
         store.setHistory([latest], sessionID: sessionID, timelineMutationKind: .enrichment)
-        XCTAssertEqual(store.historyTimelineMutation(for: sessionID), firstMutation)
+        XCTAssertEqual(store.timelineSource(for: sessionID).versions, firstSource.versions)
 
         let earlier = CodexHistoryMessage(
             id: "history:earlier",
@@ -581,9 +582,9 @@ extension ConversationDataFlowTests {
             sessionID: sessionID,
             timelineMutationKind: .prepend
         )
-        let secondMutation = try XCTUnwrap(store.historyTimelineMutation(for: sessionID))
-        XCTAssertEqual(secondMutation.kind, .prepend)
-        XCTAssertGreaterThan(secondMutation.generation, firstMutation.generation)
+        let secondSource = store.timelineSource(for: sessionID)
+        XCTAssertEqual(secondSource.versions.historyPrepend, secondSource.revision)
+        XCTAssertGreaterThan(secondSource.revision, firstSource.revision)
     }
 
     func testHistoryMergeDoesNotOverwriteNewerLiveContentOrTerminalState() throws {
@@ -673,7 +674,7 @@ extension ConversationDataFlowTests {
         }
     }
 
-    func testSetHistoryMarksMutationMixedWhenItFlushesPendingLiveDelta() throws {
+    func testSetHistorySourceReasonsIncludePendingLiveDelta() {
         let store = ConversationStore()
         let sessionID = "history-and-pending-live"
         let metadata = AgentEventMetadata(
@@ -717,40 +718,41 @@ extension ConversationDataFlowTests {
             )
         ], sessionID: sessionID, timelineMutationKind: .prepend)
 
-        XCTAssertTrue(try XCTUnwrap(store.historyTimelineMutation(for: sessionID)).includesLiveChange)
+        let snapshot = ConversationTimelineItemCache().snapshot(
+            from: store.timelineSource(for: sessionID)
+        )
+        XCTAssertTrue(snapshot.changes.contains(.historyPrepend))
+        XCTAssertTrue(snapshot.changes.contains(.live))
         XCTAssertTrue(store.messages(for: sessionID).contains { $0.content == "实时增量继续输出" })
     }
 
-    func testHistoricalTimelineGenerationSeparatesHistoryFromLiveUpdates() {
-        XCTAssertTrue(
-            ConversationTimelineView.isHistoricalTimelineChange(
-                previousGeneration: nil,
-                currentGeneration: 1
-            )
-        )
-        XCTAssertTrue(
-            ConversationTimelineView.isHistoricalTimelineChange(
-                previousGeneration: 1,
-                currentGeneration: 2
-            )
-        )
-        XCTAssertFalse(
-            ConversationTimelineView.isHistoricalTimelineChange(
-                previousGeneration: 2,
-                currentGeneration: 2
-            )
-        )
-        XCTAssertFalse(
-            ConversationTimelineView.isHistoricalTimelineChange(
-                previousGeneration: nil,
-                currentGeneration: nil
-            )
-        )
+    func testTimelineSnapshotReasonsSeparateHistoryFromLiveUpdates() {
+        let store = ConversationStore()
+        let scope = ScopedSessionID(profileID: "timeline-reasons", sessionID: "thread")
+        store.activate(profileID: scope.profileID)
+        let cache = ConversationTimelineItemCache()
+        store.replaceHistorySnapshot([
+            CodexHistoryMessage(id: "new", role: "assistant", content: "较新", createdAt: Date(timeIntervalSince1970: 2))
+        ], sessionID: scope.sessionID)
+        let initial = cache.snapshot(from: store.timelineSource(for: scope.sessionID))
+        XCTAssertEqual(initial.changes, .historyReplacement)
+
+        store.setHistory([
+            CodexHistoryMessage(id: "old", role: "user", content: "更早", createdAt: Date(timeIntervalSince1970: 1))
+        ], sessionID: scope.sessionID, timelineMutationKind: .prepend)
+        let historical = cache.snapshot(from: store.timelineSource(for: scope.sessionID))
+        XCTAssertTrue(historical.changes.contains(.historyPrepend))
+        XCTAssertFalse(historical.changes.contains(.live))
+
+        store.appendUser("继续", sessionID: scope.sessionID)
+        let live = cache.snapshot(from: store.timelineSource(for: scope.sessionID))
+        XCTAssertEqual(live.changes, .live)
+        XCTAssertFalse(live.changes.containsHistoryChange)
     }
 
     func testHistoryPreservedOffsetKeepsAnchorAtOriginalScreenPosition() {
         XCTAssertEqual(
-            ConversationTimelineView.historyPreservedOffset(
+            ConversationTimelineViewport.preservedOffset(
                 currentOffsetY: 400,
                 currentAnchorMinY: 150,
                 baselineAnchorMinY: 90,
@@ -761,7 +763,7 @@ extension ConversationDataFlowTests {
             accuracy: 0.001
         )
         XCTAssertEqual(
-            ConversationTimelineView.historyPreservedOffset(
+            ConversationTimelineViewport.preservedOffset(
                 currentOffsetY: 1_180,
                 currentAnchorMinY: 160,
                 baselineAnchorMinY: 90,
@@ -773,78 +775,110 @@ extension ConversationDataFlowTests {
         )
     }
 
-    func testHistoryScrollCoordinatorCoalescesAndCancelsCorrections() async throws {
-        let coordinator = ConversationHistoryScrollCoordinator()
+    func testHistoryScrollControllerCoalescesAndCancelsAnchorCommands() async throws {
+        let controller = ConversationTimelineScrollController()
+        let scope = ScopedSessionID(profileID: "timeline-controller", sessionID: "session")
+        func snapshot(revision: Int, changes: ConversationTimelineChangeReasons) -> ConversationTimelineSnapshot {
+            let message = ConversationMessage(role: .assistant, content: "历史 \(revision)")
+            let rows = ConversationTimelineItemBuilder.items(from: [message])
+            return ConversationTimelineSnapshot(
+                scope: scope,
+                rows: rows,
+                rowIDs: rows.map(\.id),
+                tail: ConversationTimelineTailDescriptor(
+                    rowID: rows.last?.id,
+                    messageID: message.id,
+                    clientMessageID: nil,
+                    renderFingerprint: message.renderFingerprint,
+                    role: message.role,
+                    kind: message.kind,
+                    sendStatus: message.sendStatus
+                ),
+                changes: changes,
+                revision: revision
+            )
+        }
         let anchorID = UUID()
         let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
-        coordinator.bind(scrollView: scrollView)
-        coordinator.updateAnchorFrame([anchorID], CGRect(x: 0, y: 90, width: 300, height: 40))
-        let generation = try XCTUnwrap(coordinator.beginPreservingVisible(sessionID: "session"))
-        coordinator.update(metrics: ConversationTimelineScrollMetrics(
+        let window = try mountHistoryViewport(scrollView)
+        defer { window.isHidden = true }
+        scrollView.contentSize = CGSize(width: 400, height: 1_800)
+        scrollView.contentOffset.y = 500
+        _ = controller.prepare(snapshot(revision: 1, changes: .historyReplacement))
+        let epoch = controller.epoch
+        controller.bind(scrollView: scrollView, epoch: epoch)
+        var commands: [ConversationTimelineScrollCommand] = []
+        controller.connect(epoch: epoch) { commands.append($0) }
+        controller.geometryChanged(ConversationTimelineScrollMetrics(
+            isNearBottom: false,
+            contentOffsetY: 500,
+            contentHeight: 1_800,
+            minimumOffsetY: -20,
+            maximumOffsetY: 1_200
+        ), epoch: epoch)
+        commands.removeAll()
+        controller.phaseChanged(.tracking)
+        scrollView.contentOffset.y = 400
+        controller.geometryChanged(ConversationTimelineScrollMetrics(
             isNearBottom: false,
             contentOffsetY: 400,
             contentHeight: 1_800,
             minimumOffsetY: -20,
             maximumOffsetY: 1_200
-        ))
-        coordinator.updateAnchorFrame([anchorID], CGRect(x: 0, y: 150, width: 300, height: 40))
+        ), epoch: epoch)
+        controller.phaseChanged(.idle)
+        XCTAssertEqual(controller.mode, .readingHistory)
+        controller.viewport.updateAnchorFrame([anchorID], CGRect(x: 0, y: 90, width: 300, height: 40))
 
-        var corrections: [ConversationHistoryAnchorCorrection] = []
+        _ = controller.prepare(snapshot(revision: 2, changes: .historyPrepend))
+        controller.snapshotWasPublished()
         for _ in 0..<3 {
-            coordinator.scheduleCorrection(
-                expectedGeneration: generation,
-                displayedSessionID: "session"
-            ) { correction in
-                corrections.append(correction)
-            }
+            controller.recordAnchorFrame([anchorID], CGRect(x: 0, y: 150, width: 300, height: 40))
         }
         for _ in 0..<4 {
             await Task.yield()
         }
 
-        XCTAssertEqual(corrections.count, 1)
-        XCTAssertEqual(corrections.first?.baselineAnchorMinY, 90)
-        XCTAssertEqual(corrections.first?.currentAnchorMinY, 150)
+        XCTAssertEqual(commands.count, 1)
+        XCTAssertEqual(try XCTUnwrap(commands.first).target, .offset(460))
 
-        coordinator.updateAnchorFrame([anchorID], CGRect(x: 0, y: 180, width: 300, height: 40))
-        coordinator.scheduleCorrection(
-            expectedGeneration: generation,
-            displayedSessionID: "session"
-        ) { correction in
-            corrections.append(correction)
-        }
-        coordinator.cancelPreservation()
+        controller.phaseChanged(.tracking)
+        controller.recordAnchorFrame([anchorID], CGRect(x: 0, y: 180, width: 300, height: 40))
         for _ in 0..<4 {
             await Task.yield()
         }
 
-        XCTAssertEqual(corrections.count, 1, "取消阅读锚点后，迟到布局不得再次写入 offset")
+        XCTAssertEqual(commands.count, 1, "手势取消阅读锚点后，迟到布局不得再次写入 offset")
     }
 
-    func testHistoryScrollCoordinatorUsesVisibleRawMessageAndIgnoresUnrelatedHeightGrowth() throws {
-        let coordinator = ConversationHistoryScrollCoordinator()
+    func testHistoryViewportUsesVisibleRawMessageAndIgnoresUnrelatedHeightGrowth() throws {
+        let viewport = ConversationTimelineViewport()
         let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
-        coordinator.bind(scrollView: scrollView)
+        let window = try mountHistoryViewport(scrollView)
+        defer { window.isHidden = true }
+        scrollView.contentSize = CGSize(width: 400, height: 3_000)
+        scrollView.contentOffset.y = 400
+        viewport.bind(scrollView)
         let staleID = UUID()
         let visibleID = UUID()
-        coordinator.updateAnchorFrame([staleID], CGRect(x: 0, y: -900, width: 300, height: 40))
-        coordinator.updateAnchorFrame([visibleID], CGRect(x: 0, y: 80, width: 300, height: 40))
-        let generation = try XCTUnwrap(coordinator.beginPreservingVisible(sessionID: "session"))
-        XCTAssertEqual(coordinator.activeAnchorMessageID, visibleID)
+        viewport.updateAnchorFrame([staleID], CGRect(x: 0, y: -900, width: 300, height: 40))
+        viewport.updateAnchorFrame([visibleID], CGRect(x: 0, y: 80, width: 300, height: 40))
+        let anchor = try XCTUnwrap(viewport.captureVisibleAnchor())
+        XCTAssertEqual(anchor.candidates.first?.id, visibleID)
 
-        coordinator.update(metrics: ConversationTimelineScrollMetrics(
-            isNearBottom: false,
-            contentOffsetY: 400,
-            contentHeight: 3_000,
-            minimumOffsetY: -20,
-            maximumOffsetY: 2_200
-        ))
-        let correction = try XCTUnwrap(coordinator.correction(
-            expectedGeneration: generation,
-            displayedSessionID: "session"
-        ))
-        XCTAssertEqual(correction.baselineAnchorMinY, 80)
-        XCTAssertEqual(correction.currentAnchorMinY, 80)
+        XCTAssertEqual(try XCTUnwrap(viewport.correctedOffset(for: anchor)), 400)
+    }
+
+    private func mountHistoryViewport(_ scrollView: UIScrollView) throws -> UIWindow {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        let host = UIViewController()
+        scrollView.contentInsetAdjustmentBehavior = .never
+        host.view.addSubview(scrollView)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        host.view.layoutIfNeeded()
+        return window
     }
 
     func testDirectRuntimeMapsThreadReadProcessItemsForTimelineCollapse() async throws {

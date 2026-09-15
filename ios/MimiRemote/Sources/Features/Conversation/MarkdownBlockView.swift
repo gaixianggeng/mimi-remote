@@ -425,12 +425,21 @@ struct ConversationImagePreview: View {
 
 private struct ConversationImagePreviewContent: View {
     @EnvironmentObject private var sessionStore: SessionStore
+    @Environment(\.conversationTimelineIsScrolling) private var isTimelineScrolling
+    @Environment(\.conversationMediaLayoutWillChange) private var mediaLayoutWillChange
     @State private var embeddedImage: UIImage?
     @State private var localImage: UIImage?
     @State private var localFileURL: URL?
     @State private var quickLookURL: URL?
     @State private var isLoadingLocalImage = false
     @State private var loadError: String?
+    @State private var pendingResult: ImageLoadResult?
+
+    private struct ImageLoadResult {
+        let image: UIImage?
+        var fileURL: URL?
+        var error: String?
+    }
 
     let profileID: String
     let source: ConversationImageSource
@@ -479,10 +488,24 @@ private struct ConversationImagePreviewContent: View {
                 profileID: profileID,
                 maxPixelSize: 1_600
             )
-        case .localPath, .historyMedia, .unsupported:
+        case .localPath, .historyMedia:
+            cachedImage = DataURLImageDecoder.cachedImage(
+                cacheKey: source.id,
+                profileID: profileID,
+                maxPixelSize: 1_600,
+                fromFile: true
+            )
+        case .unsupported:
             cachedImage = nil
         }
-        _embeddedImage = State(initialValue: cachedImage)
+        switch source {
+        case .localPath, .historyMedia:
+            _localImage = State(initialValue: cachedImage)
+        default:
+            _embeddedImage = State(initialValue: cachedImage)
+        }
+        // 冷加载首帧直接使用占位，缓存命中首帧直接显示图片，避免复用行先闪错误卡再变高。
+        _isLoadingLocalImage = State(initialValue: cachedImage == nil)
     }
 
     var body: some View {
@@ -500,6 +523,9 @@ private struct ConversationImagePreviewContent: View {
         .quickLookPreview($quickLookURL)
         .task(id: mediaRequestIdentity) {
             await loadSourceIfNeeded()
+        }
+        .onChange(of: isTimelineScrolling) { _, scrolling in
+            if !scrolling { publishPendingImage() }
         }
     }
 
@@ -528,12 +554,6 @@ private struct ConversationImagePreviewContent: View {
             }
         case .localPath(let path):
             localImageContent(path: path)
-                .task(id: MediaRequestIdentity(
-                    profileID: profileID,
-                    resourceID: "local:\(path)"
-                )) {
-                    await loadLocalImage(path: path)
-                }
         case .historyMedia(let id):
             historyMediaContent(id: id)
         case .unsupported(let value):
@@ -552,12 +572,9 @@ private struct ConversationImagePreviewContent: View {
                 profileID: profileID,
                 maxPixelSize: 1_600
             ) {
-                embeddedImage = cached
-                isLoadingLocalImage = false
+                if embeddedImage == nil { acceptImageResult(ImageLoadResult(image: cached)) }
                 return
             }
-            embeddedImage = nil
-            isLoadingLocalImage = true
             HostSwitchSignpost.event("first_media_request")
             let image = await DataURLImageDecoder.image(
                 from: value,
@@ -571,8 +588,7 @@ private struct ConversationImagePreviewContent: View {
             else {
                 return
             }
-            embeddedImage = image
-            isLoadingLocalImage = false
+            acceptImageResult(ImageLoadResult(image: image))
             if image != nil {
                 HostSwitchSignpost.event("first_media_decoded")
             }
@@ -583,12 +599,9 @@ private struct ConversationImagePreviewContent: View {
                 profileID: profileID,
                 maxPixelSize: 1_600
             ) {
-                embeddedImage = cached
-                isLoadingLocalImage = false
+                if embeddedImage == nil { acceptImageResult(ImageLoadResult(image: cached)) }
                 return
             }
-            embeddedImage = nil
-            isLoadingLocalImage = true
             HostSwitchSignpost.event("first_media_request")
             let image = await RemoteURLImageLoader.image(
                 from: url,
@@ -602,21 +615,17 @@ private struct ConversationImagePreviewContent: View {
             else {
                 return
             }
-            embeddedImage = image
-            isLoadingLocalImage = false
+            acceptImageResult(ImageLoadResult(
+                image: image,
+                error: image == nil ? L10n.text("ui.image_loading_failed") : nil
+            ))
             if image != nil {
                 HostSwitchSignpost.event("first_media_decoded")
-            } else {
-                loadError = L10n.text("ui.image_loading_failed")
             }
-        case .historyMedia(let id):
-            embeddedImage = nil
-            isLoadingLocalImage = false
-            // history-media 默认接口返回 1600px 内的派生图；只在图片进入可见区域时加载。
-            await loadHistoryMedia(id: id)
-        case .localPath, .unsupported:
-            embeddedImage = nil
-            isLoadingLocalImage = false
+        case .localPath, .historyMedia:
+            await loadFileImage()
+        case .unsupported:
+            break
         }
     }
 
@@ -655,7 +664,7 @@ private struct ConversationImagePreviewContent: View {
             } else {
                 Button {
                     Task {
-                        await loadHistoryMedia(id: id)
+                        await loadFileImage()
                     }
                 } label: {
                     fallback(loadError == nil ? L10n.text("ui.historical_images_not_loaded") : L10n.text("ui.failed_to_load_historical_images"), detail: loadError ?? L10n.text("ui.click_to_load"))
@@ -766,90 +775,97 @@ private struct ConversationImagePreviewContent: View {
     }
 
     @MainActor
-    private func loadLocalImage(path: String) async {
-        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetPath.isEmpty else {
-            loadError = L10n.text("ui.the_local_path_is_empty_and_the_image")
+    private func loadFileImage() async {
+        let isHistory: Bool
+        let target: String
+        switch source {
+        case .localPath(let path):
+            target = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            isHistory = false
+        case .historyMedia(let id):
+            target = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            isHistory = true
+        default:
             return
         }
-
-        localImage = nil
-        localFileURL = nil
+        guard !target.isEmpty else {
+            acceptImageResult(ImageLoadResult(image: nil, error: L10n.text(isHistory
+                ? "ui.the_historical_image_id_is_empty_and_cannot"
+                : "ui.the_local_path_is_empty_and_the_image")))
+            return
+        }
+        // 命中解码缓存时保留图像与行高，但仍走授权预览接口取得 QuickLook URL。
+        // 不把本机路径当作 iPad 文件，也不跳过主机边界或历史缓存过期检查。
+        if localImage == nil {
+            mediaLayoutWillChange()
+            isLoadingLocalImage = true
+        }
         loadError = nil
-        isLoadingLocalImage = true
-        defer { isLoadingLocalImage = false }
-
+        ConversationScrollDiagnostics.shared.record("media_request", "history=\(isHistory) cached=\(localImage != nil)")
         do {
-            // 本机路径只代表 Mac/agentd 可读文件，iPad 端必须走 agentd 的授权文件读取接口；
-            // 这样既能内嵌展示，也不会绕过后端的 projects/browse_roots 边界检查。
             HostSwitchSignpost.event("first_media_request")
-            let url = try await sessionStore.previewFile(path: targetPath)
+            let url: URL
+            if isHistory {
+                url = try await sessionStore.previewHistoryMedia(id: target)
+            } else {
+                url = try await sessionStore.previewFile(path: target)
+            }
             guard !Task.isCancelled, sessionStore.mediaProfileScope == profileID else {
                 return
             }
-            guard let image = await DataURLImageDecoder.image(
+            let image = await DataURLImageDecoder.image(
                 fromFileURL: url,
-                cacheKey: "local:\(targetPath)",
+                cacheKey: source.id,
                 profileID: profileID,
                 maxPixelSize: 1_600
-            ) else {
-                loadError = L10n.text("ui.the_file_was_read_but_could_not_be")
-                return
-            }
+            )
             guard !Task.isCancelled, sessionStore.mediaProfileScope == profileID else {
                 return
             }
-            localFileURL = url
-            localImage = image
-            HostSwitchSignpost.event("first_media_decoded")
+            acceptImageResult(ImageLoadResult(
+                image: image,
+                fileURL: image == nil ? nil : url,
+                error: image == nil ? L10n.text(isHistory
+                    ? "ui.historical_pictures_were_read_but_could_not_be"
+                    : "ui.the_file_was_read_but_could_not_be") : nil
+            ))
+            if image != nil { HostSwitchSignpost.event("first_media_decoded") }
         } catch is CancellationError {
             return
         } catch {
-            loadError = userFacingPreviewError(error)
+            guard !Task.isCancelled, sessionStore.mediaProfileScope == profileID else { return }
+            acceptImageResult(ImageLoadResult(
+                image: nil,
+                error: isHistory ? userFacingHistoryMediaError(error) : userFacingPreviewError(error)
+            ))
         }
     }
 
-    @MainActor
-    private func loadHistoryMedia(id: String) async {
-        let targetID = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetID.isEmpty else {
-            loadError = L10n.text("ui.the_historical_image_id_is_empty_and_cannot")
-            return
-        }
+    private func acceptImageResult(_ result: ImageLoadResult) {
+        pendingResult = result
+        ConversationScrollDiagnostics.shared.record("media_ready", "deferred=\(isTimelineScrolling) decoded=\(result.image != nil)")
+        publishPendingImage()
+    }
 
-        localImage = nil
-        localFileURL = nil
-        loadError = nil
-        isLoadingLocalImage = true
-        defer { isLoadingLocalImage = false }
-
-        do {
-            // 历史图片首屏只保留短 ID；用户点按时再从 agentd 短期缓存取回原始二进制。
-            HostSwitchSignpost.event("first_media_request")
-            let url = try await sessionStore.previewHistoryMedia(id: targetID)
-            guard !Task.isCancelled, sessionStore.mediaProfileScope == profileID else {
-                return
-            }
-            guard let image = await DataURLImageDecoder.image(
-                fromFileURL: url,
-                cacheKey: "historyMedia:\(targetID)",
-                profileID: profileID,
-                maxPixelSize: 1_600
-            ) else {
-                loadError = L10n.text("ui.historical_pictures_were_read_but_could_not_be")
-                return
-            }
-            guard !Task.isCancelled, sessionStore.mediaProfileScope == profileID else {
-                return
-            }
-            localFileURL = url
-            localImage = image
-            HostSwitchSignpost.event("first_media_decoded")
-        } catch is CancellationError {
-            return
-        } catch {
-            loadError = userFacingHistoryMediaError(error)
+    private func publishPendingImage() {
+        guard !isTimelineScrolling, let result = pendingResult,
+              sessionStore.mediaProfileScope == profileID else { return }
+        // 图片任务不受 List 投影冻结约束。将高度变化推迟到手势结束，并在改变状态前建锚。
+        let previousImage = localImage ?? embeddedImage
+        if previousImage == nil || previousImage?.size != result.image?.size {
+            mediaLayoutWillChange()
         }
+        switch source {
+        case .localPath, .historyMedia:
+            localImage = result.image
+            localFileURL = result.fileURL
+        default:
+            embeddedImage = result.image
+        }
+        isLoadingLocalImage = false
+        loadError = result.error
+        pendingResult = nil
+        ConversationScrollDiagnostics.shared.record("media_present", "width=\(Int(result.image?.size.width ?? 0)) height=\(Int(result.image?.size.height ?? 0))")
     }
 
     private func userFacingPreviewError(_ error: Error) -> String {
