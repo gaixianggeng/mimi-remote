@@ -15273,6 +15273,234 @@
         }
       }
     },
+    "ui.live_status_calling_tools": {
+      "comment": "Conversation live status phase while a tool call is running.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running tools…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在调用工具…"
+          }
+        }
+      }
+    },
+    "ui.live_status_disconnected": {
+      "comment": "Conversation live status when the connection is lost and running state cannot be confirmed.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disconnected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接已断开"
+          }
+        }
+      }
+    },
+    "ui.live_status_editing_files": {
+      "comment": "Conversation live status phase while files are being edited.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Editing files…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在编辑文件…"
+          }
+        }
+      }
+    },
+    "ui.live_status_exploring": {
+      "comment": "Conversation live status phase while read-only exploration commands run.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exploring…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在探索…"
+          }
+        }
+      }
+    },
+    "ui.live_status_no_new_events_value": {
+      "comment": "Conversation live status suffix when no runtime events arrived for a while. The value is a compact duration such as 2m 5s.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No new events for %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 无新事件"
+          }
+        }
+      }
+    },
+    "ui.live_status_planning": {
+      "comment": "Conversation live status phase while the agent updates its plan.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Planning…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在规划…"
+          }
+        }
+      }
+    },
+    "ui.live_status_restoring_history" : {
+      "comment" : "Conversation is restoring its history before attaching live events.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Restoring conversation…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在恢复会话…" } }
+      }
+    },
+    "ui.live_status_reconnecting": {
+      "comment": "Conversation live status while reconnecting to the host.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconnecting…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在重连…"
+          }
+        }
+      }
+    },
+    "ui.live_status_replying": {
+      "comment": "Conversation live status phase while the assistant reply is streaming.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replying…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在回复…"
+          }
+        }
+      }
+    },
+    "ui.live_status_running_command": {
+      "comment": "Conversation live status phase while a command is running.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running commands…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在运行命令…"
+          }
+        }
+      }
+    },
+    "ui.live_status_thinking": {
+      "comment": "Conversation live status phase while the agent is thinking.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考中…"
+          }
+        }
+      }
+    },
+    "ui.live_status_tokens_value": {
+      "comment": "Conversation live status segment with this turn's output tokens. The value is a compact count such as 3.1k.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ tokens"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ tokens"
+          }
+        }
+      }
+    },
+    "ui.live_status_waiting_for_approval": {
+      "comment": "Conversation live status phase while waiting for the user to approve an action.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for approval"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待审批"
+          }
+        }
+      }
+    },
+    "ui.live_status_waiting_for_input": {
+      "comment": "Conversation live status phase while waiting for the user to answer a question.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for your input"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待你的输入"
+          }
+        }
+      }
+    },
     "ui.load_full_history": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

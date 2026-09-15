@@ -263,7 +263,17 @@ extension SessionStore {
                 message: L10n.text("ui.sending_failed_websocket_not_connected")
             )
         }
-        // Host 已提交切换时只丢弃旧 transient；上面的 HostScope guard 禁止改写新 namespace。
+        // 切电脑后当前 namespace 已改变；剩余项必须按捕获的 Profile 回写旧消息，
+        // 不能留下永久 sending，也不能污染新电脑中相同 session/clientMessageID 的消息。
+        for (sessionID, items) in pendingGuidanceBySessionID {
+            for item in items {
+                conversationStore.updateSendStatus(
+                    clientMessageID: item.clientMessageID,
+                    scopedSessionID: ScopedSessionID(profileID: item.hostScope.profileID, sessionID: sessionID),
+                    status: item.state == .waitingForSocket ? .failed : .uncertain
+                )
+            }
+        }
         pendingGuidanceBySessionID.removeAll()
     }
 }

@@ -106,6 +106,36 @@ final class NotificationRoutingGateTests: XCTestCase {
         XCTAssertEqual(ForegroundResumeOutcome.tailcatUnavailable.diagnosticReason, "tailcat_unavailable")
     }
 
+    /// 场景激活的那一帧，环境里的 scenePhase 已经是 active，而启动前台恢复的回调还没执行。
+    /// 闸门读的是恢复 tracker 里由同一个回调登记的镜像，因此在恢复开始前不会提前放行。
+    func testGateWaitsForSceneActivationObservedWithResume() {
+        var tracker = ForegroundResumeTracker()
+        XCTAssertFalse(tracker.sceneActive, "未登记前视为不在前台")
+        XCTAssertEqual(gate(for: tracker).closedReason, .inactive)
+
+        tracker.observeScene(active: true)
+        let generation = tracker.begin()
+        XCTAssertEqual(
+            gate(for: tracker).closedReason,
+            .resumeInFlight,
+            "激活与恢复开始在同一回调登记，中间没有可提前放行的帧"
+        )
+
+        tracker.finish(generation: generation, outcome: .completed)
+        XCTAssertTrue(gate(for: tracker).isReady)
+
+        tracker.observeScene(active: false)
+        XCTAssertEqual(gate(for: tracker).closedReason, .inactive)
+    }
+
+    private func gate(for tracker: ForegroundResumeTracker) -> NotificationRoutingGate {
+        NotificationRoutingGate(
+            bootstrapped: true,
+            sceneActive: tracker.sceneActive,
+            foregroundResumeInFlight: tracker.isInFlight
+        )
+    }
+
     func testResumeFailureIsScopedToTheProfileItHappenedOn() {
         var tracker = ForegroundResumeTracker()
         let generation = tracker.begin()

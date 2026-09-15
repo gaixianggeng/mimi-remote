@@ -120,6 +120,14 @@ enum WorkbenchNavigationEvent: Equatable {
     case sessionSelectionFinished(SessionID)
 }
 
+/// 导航事件是谁发起的。旋转、分屏或窗口缩放改变布局时，Shell 会程序化重放当前 Tab 与
+/// selection：它和用户点击产生同样的事件，却不代表用户放弃了刚点开的通知，因此必须区分
+/// 出来，不能用它撤销通知导航权。
+enum WorkbenchNavigationOrigin: Equatable {
+    case user
+    case layoutSynchronization
+}
+
 /// 工作台导航的纯状态机。所有入口先在副本上归并，再一次性写回 SwiftUI，避免多个
 /// `onChange` 在同一帧互相改写 selection、route 和 NavigationStack path。
 struct WorkbenchNavigationState: Equatable {

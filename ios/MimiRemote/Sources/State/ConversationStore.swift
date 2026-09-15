@@ -390,8 +390,13 @@ final class ConversationStore: ObservableObject {
 
     @discardableResult
     func updateSendStatus(clientMessageID: ClientMessageID, sessionID: String, status: MessageSendStatus) -> Bool {
-        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)],
-              let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID) else {
+        updateSendStatus(clientMessageID: clientMessageID, scopedSessionID: scopedSessionID(for: sessionID), status: status)
+    }
+
+    @discardableResult
+    func updateSendStatus(clientMessageID: ClientMessageID, scopedSessionID: ScopedSessionID, status: MessageSendStatus) -> Bool {
+        guard var list = messagesByScopedSessionID[scopedSessionID],
+              let index = messageIndexByClientMessageIDBySessionID[scopedSessionID]?[clientMessageID] else {
             return false
         }
         guard shouldTransitionSendStatus(from: list[index].sendStatus, to: status) else {
@@ -399,7 +404,7 @@ final class ConversationStore: ObservableObject {
         }
         list[index].sendStatus = status
         list[index].updatedAt = Date()
-        replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
+        replaceMessagesWithoutEquivalenceCheck(list, scopedSessionID: scopedSessionID, rebuildIndexes: false)
         return true
     }
 

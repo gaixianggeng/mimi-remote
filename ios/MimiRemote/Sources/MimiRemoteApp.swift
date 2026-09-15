@@ -105,6 +105,8 @@ struct SessionNotificationRoute: Equatable, Hashable {
 @MainActor
 final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @Published private(set) var pendingRoute: SessionNotificationRoute?
+    private(set) var pendingRouteIntent: UUID?
+    var navigationOwnership: NotificationNavigationOwnership { approvalInbox.navigationOwnership }
     /// 锁屏审批走独立收件箱：它的动作要提交决策，而不是打开某个会话。
 	let approvalInbox = LockScreenApprovalInbox()
 	var handleApprovalAction: ((LockScreenApprovalDelivery) async -> Void)?
@@ -126,12 +128,14 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
         guard let route = SessionNotificationRoute(userInfo: userInfo) else {
             return false
         }
+        pendingRouteIntent = navigationOwnership.accept()
         pendingRoute = route
         return true
     }
 
     func consume(_ route: SessionNotificationRoute) {
         guard pendingRoute == route else { return }
+        pendingRouteIntent = nil
         pendingRoute = nil
     }
 
@@ -323,6 +327,7 @@ struct MimiRemoteApp: App {
             workspaceAppearanceStore: workspaceAppearanceStore,
             tailcatExperimentController: tailcatExperimentController
         )
+        notificationResponseAdapter.approvalInbox.navigationOwnership = sessionStore.notificationNavigation
         _appStore = StateObject(wrappedValue: appStore)
         _conversationStore = StateObject(wrappedValue: conversationStore)
         _logStore = StateObject(wrappedValue: logStore)

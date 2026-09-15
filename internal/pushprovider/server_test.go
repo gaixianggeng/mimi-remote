@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -313,7 +314,15 @@ func TestProviderRejectsTamperedAndRevokedTickets(t *testing.T) {
 	_, httpServer := newTestServer(t, fake)
 	ticket := issueTestTicket(t, httpServer.URL)
 
-	tampered := ticket[:len(ticket)-2] + "AA"
+	parts := strings.Split(ticket, ".")
+	sealed, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(sealed) == 0 {
+		t.Fatalf("签发的 Ticket 密文无效：%v", err)
+	}
+	// 固定替换编码末尾可能与原值相同；翻转实际密文字节，保证确实发生篡改。
+	sealed[len(sealed)-1] ^= 1
+	parts[2] = base64.RawURLEncoding.EncodeToString(sealed)
+	tampered := strings.Join(parts, ".")
 	status, _ := postJSON(t, httpServer.URL+"/v1/notify", approvalBody(tampered, nil))
 	if status != http.StatusUnauthorized {
 		t.Fatalf("篡改的 Ticket 应被拒绝，got=%d", status)
