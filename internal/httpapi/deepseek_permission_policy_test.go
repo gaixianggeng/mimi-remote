@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/harnessclient"
 )
 
 // 本文件覆盖 DeepSeek Harness 的权限档位。
@@ -119,5 +120,87 @@ func TestDeepSeekChannelDeclaresOnlyEnforceableSandboxMode(t *testing.T) {
 	approvals, _ := policy["approval_policies"].([]any)
 	if len(approvals) != 1 || approvals[0] != "on-request" {
 		t.Fatalf("审批仍由用户逐次应答，档位应只有 on-request：%+v", approvals)
+	}
+}
+
+// 回归：带 callId 的审批不得靠"只有一个会话在跑"去认领。
+//
+// Harness 的 $events 是宿主级通道，别的会话（Harness Web、子 Agent）的审批同样会
+// 送到这里。callId 带了却查不到映射，是"这次工具调用不在本连接订阅的会话里"的
+// 正向证据；此时退回单例推断，就会把别人的审批卡片挂到用户的会话上，用户以为在
+// 批准自己的操作，实际放行的是别人的。追问（载荷只有 questions）没有任何方向性
+// 证据，才允许在唯一活跃会话上兜底。
+func TestDeepSeekAttributeWaterfallRequiresEvidenceForApprovals(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		request     harnessclient.WaterfallRequest
+		callThreads map[string]string
+		activeTurns map[string]int
+		want        string
+	}{
+		{
+			name:        "帧自带的会话标识优先",
+			request:     harnessclient.WaterfallRequest{Event: harnessclient.WaterfallApprovalRequest, ThreadID: "thread-hint"},
+			callThreads: map[string]string{"call-1": "thread-a"},
+			activeTurns: map[string]int{"thread-a": 1},
+			want:        "thread-hint",
+		},
+		{
+			name: "callId 有映射时按映射归属，不受活跃会话数影响",
+			request: harnessclient.WaterfallRequest{
+				Event: harnessclient.WaterfallApprovalRequest,
+				Request: harnessclient.WaterfallPayload{
+					CallID: "call-1",
+				},
+			},
+			callThreads: map[string]string{"call-1": "thread-b"},
+			activeTurns: map[string]int{"thread-a": 1, "thread-b": 1},
+			want:        "thread-b",
+		},
+		{
+			name: "callId 带了却查不到时必须放弃，不得认领唯一活跃会话",
+			request: harnessclient.WaterfallRequest{
+				Event: harnessclient.WaterfallApprovalRequest,
+				Request: harnessclient.WaterfallPayload{
+					CallID: "call-elsewhere",
+				},
+			},
+			callThreads: map[string]string{"call-1": "thread-a"},
+			activeTurns: map[string]int{"thread-a": 1},
+			want:        "",
+		},
+		{
+			name:        "追问没有 callId 时才允许单例兜底",
+			request:     harnessclient.WaterfallRequest{Event: harnessclient.WaterfallUserQuestions},
+			activeTurns: map[string]int{"thread-a": 1},
+			want:        "thread-a",
+		},
+		{
+			name:        "多个活跃会话时无从兜底",
+			request:     harnessclient.WaterfallRequest{Event: harnessclient.WaterfallUserQuestions},
+			activeTurns: map[string]int{"thread-a": 1, "thread-b": 1},
+			want:        "",
+		},
+		{
+			name:    "没有活跃会话时无从兜底",
+			request: harnessclient.WaterfallRequest{Event: harnessclient.WaterfallUserQuestions},
+			want:    "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := &deepSeekGatewayConn{
+				callThreads: tc.callThreads,
+				activeTurns: tc.activeTurns,
+			}
+			if conn.callThreads == nil {
+				conn.callThreads = map[string]string{}
+			}
+			if conn.activeTurns == nil {
+				conn.activeTurns = map[string]int{}
+			}
+			if got := conn.attributeWaterfall(tc.request); got != tc.want {
+				t.Fatalf("归属结果应为 %q，得到 %q", tc.want, got)
+			}
+		})
 	}
 }

@@ -133,8 +133,11 @@ type deepSeekGatewayConn struct {
 	follows  map[string]*deepSeekFollow
 	// callThreads 把工具调用的 callId 映射到会话。Harness 的审批 waterfall 是宿主级
 	// 通道，实测帧里不带会话标识；callId 是唯一能把审批归回会话的实测字段。
+	// 这个映射同时是最强的反向证据：callId 带了却查不到，说明这次调用不属于本连接
+	// 订阅的会话，此时不允许再靠下面的 activeTurns 认领。
 	callThreads map[string]string
-	// activeTurns 记录每个会话是否有未结束的 turn，作为审批归属的次级判据。
+	// activeTurns 记录每个会话是否有未结束的 turn。只用于完全没有 callId 的交互
+	// （追问）在唯一活跃会话上兜底，见 attributeWaterfall。
 	activeTurns map[string]int
 	// waterfalls 记录已下发的反向请求，用于把 cancel 与客户端应答对回 Harness 的 eventId。
 	waterfalls map[string]deepSeekPendingWaterfall

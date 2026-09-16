@@ -182,9 +182,15 @@ func (c *deepSeekGatewayConn) dispatchWaterfall(ctx context.Context, request har
 	threadID := c.attributeWaterfall(request)
 	if threadID == "" {
 		// 归属不明时不下发：把审批挂到错误会话上，用户会在一个无关的会话里看到
-		// 卡片，应答还会被 Harness 拒绝。宁可记诊断。
-		log.Printf("deepseek gateway 交互请求无法归属会话，已忽略 event=%s",
-			sanitizeGatewayDiagnostic(request.Event))
+		// 卡片，还会照着那张卡片放行别人的操作。宁可记诊断。
+		// callId 单独记一下，现场才能区分"上游没给方向性证据"（absent）与
+		// "证据指向本连接没订阅的会话"（unknown）——两者的处置完全不同。
+		callIDPresence := "absent"
+		if strings.TrimSpace(request.Request.CallID) != "" {
+			callIDPresence = "unknown"
+		}
+		log.Printf("deepseek gateway 交互请求无法归属会话，已忽略 event=%s callId=%s",
+			sanitizeGatewayDiagnostic(request.Event), callIDPresence)
 		return
 	}
 	translated, ok := translateDeepSeekWaterfall(threadID, request)
@@ -226,10 +232,20 @@ func (c *deepSeekGatewayConn) dropWaterfall(eventID string) {
 
 // attributeWaterfall 判断一条交互请求属于哪个会话。
 //
-// 三级判据，全部基于实测字段，取不到就返回空串让调用方跳过：
-//  1. 帧里直接带了会话标识（不同版本可能补上）；
-//  2. callId 在该连接的 tool/call 记录里出现过；
-//  3. 恰好只有一个会话有未结束的 turn。
+// 判据分两类，因为两条 waterfall 携带的证据不同：
+//
+//  1. 正向证据：帧里直接带了会话标识（不同版本可能补上），或 callId 在本连接的
+//     tool/call 记录里出现过。
+//  2. 无证据时的兜底：恰好只有一个会话有未结束的 turn。
+//
+// 关键是第 2 条什么时候才允许用。Harness 的 $events 是宿主级通道，别的会话
+// （Harness Web、子 Agent）的审批同样会送到这里，因此"只有一个会话在跑"并不
+// 蕴含"这条交互是我的"。callId 带了却查不到映射，恰恰是"这次工具调用不在本连接
+// 订阅的会话里"的正向证据——此时再按第 2 条认领，就会把别人的审批卡片挂到用户的
+// 会话上：用户以为在批准自己会话的操作，实际放行的是别的会话的。
+//
+// 所以第 2 条只在完全没有 callId 时生效（追问的载荷只有 questions，没有任何
+// 方向性证据），有 callId 就对它负责。
 func (c *deepSeekGatewayConn) attributeWaterfall(request harnessclient.WaterfallRequest) string {
 	if hint := request.ThreadHint(); hint != "" {
 		return hint
@@ -240,6 +256,7 @@ func (c *deepSeekGatewayConn) attributeWaterfall(request harnessclient.Waterfall
 		if threadID, ok := c.callThreads[callID]; ok {
 			return threadID
 		}
+		return ""
 	}
 	if len(c.activeTurns) == 1 {
 		for threadID, count := range c.activeTurns {
