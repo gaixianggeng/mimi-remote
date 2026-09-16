@@ -2,105 +2,165 @@ import XCTest
 @testable import MimiRemote
 
 final class ConversationTimelineProviderPresentationTests: XCTestCase {
-    func testCodexKeepsNarrativeOrderAndGroupsOnlyAdjacentExploration() throws {
-        let turnID = "codex-turn"
-        let messages = [
-            makeMessage(id: "commentary", turnID: turnID, role: .assistant, kind: .commentary, content: "先检查文件。"),
-            makeActivity(id: "thinking", turnID: turnID, category: .thinking, title: "分析实现", content: "分析实现"),
-            makeActivity(id: "read", turnID: turnID, category: .runCommand, title: "读取文件", commandKind: .exploration),
-            makeActivity(id: "search", turnID: turnID, category: .runCommand, title: "搜索调用", commandKind: .exploration),
-            makeActivity(id: "build", turnID: turnID, category: .runCommand, title: "运行构建", commandKind: .execution),
-            makeActivity(id: "file", turnID: turnID, category: .editFile, title: "修改文件", content: "@@ -1 +1 @@\n-old\n+new"),
-            makeActivity(id: "tool", turnID: turnID, category: .toolCall, title: "调用工具", content: "tool result"),
-            makeMessage(id: "final", turnID: turnID, role: .assistant, kind: .message, content: "已完成。"),
-        ]
-
-        let items = ConversationTimelineItemBuilder.items(from: messages, provider: .codex)
-
-        XCTAssertEqual(items.count, 7)
-        XCTAssertEqual(try message(in: items[0]).stableID, "commentary")
-        XCTAssertEqual(try activity(in: items[1]).stableID, "thinking")
-        XCTAssertEqual(try batch(in: items[2]).messages.compactMap(\.stableID), ["read", "search"])
-        XCTAssertEqual(try activity(in: items[3]).stableID, "build")
-        XCTAssertEqual(try activity(in: items[4]).stableID, "file")
-        XCTAssertEqual(try activity(in: items[5]).stableID, "tool")
-        XCTAssertEqual(try message(in: items[6]).stableID, "final")
+    func testDefaultProvidersCollapseProcessAndKeepFinalAndFileEntry() throws {
+        let narrative = makeMessage(id: "progress", turnID: "turn", role: .assistant, kind: .commentary, content: "检查中")
+        let read = makeActivity(id: "read", turnID: "turn", category: .runCommand, title: "读取", commandKind: .exploration)
+        let edit = makeActivity(id: "edit", turnID: "turn", category: .editFile, title: "修改", content: "full patch")
+        let final = makeMessage(id: "final", turnID: "turn", role: .assistant, kind: .message, content: "完成")
+        for provider in [ConversationTimelineProvider.codex, .claude] {
+            let rows = ConversationTimelineItemBuilder.items(from: [narrative, read, edit, final], provider: provider)
+            XCTAssertEqual(rows.count, 3)
+            let process = try group(in: rows[0])
+            XCTAssertEqual(process.messages.map(\.id), [narrative.id, read.id, edit.id])
+            XCTAssertFalse(process.isExpanded)
+            XCTAssertEqual(try message(in: rows[1]).id, final.id)
+            guard case .fileChanges(let files) = rows[2] else { return XCTFail("需要单一文件结果入口") }
+            XCTAssertEqual(files.messageIDs, [edit.id])
+            XCTAssertEqual(files.firstActivityID, ConversationTimelineItem.activityID(for: edit))
+        }
     }
 
-    func testCodexDetailedTranscriptShowsEveryExplorationActivitySeparately() throws {
-        let activities = [
-            makeActivity(id: "read", turnID: "turn", category: .runCommand, title: "读取", commandKind: .exploration),
-            makeActivity(id: "list", turnID: "turn", category: .runCommand, title: "列出", commandKind: .exploration),
-            makeActivity(id: "search", turnID: "turn", category: .runCommand, title: "搜索", commandKind: .exploration),
-        ]
-
-        let items = ConversationTimelineItemBuilder.items(
-            from: activities,
-            provider: .codex,
-            showsDetailedTranscript: true
-        )
-
-        XCTAssertEqual(try items.map { try activity(in: $0) }.compactMap(\.stableID), ["read", "list", "search"])
+    func testExpandedProcessKeepsNarrativeOrderWithoutAnotherBatchLevel() throws {
+        let first = makeActivity(id: "read", turnID: "turn", category: .runCommand, title: "读取", commandKind: .exploration)
+        let progress = makeMessage(id: "progress", turnID: "turn", role: .assistant, kind: .commentary, content: "继续")
+        let second = makeActivity(id: "search", turnID: "turn", category: .runCommand, title: "搜索", commandKind: .exploration)
+        for provider in [ConversationTimelineProvider.codex, .claude] {
+            let rows = ConversationTimelineItemBuilder.items(from: [first, progress, second], provider: provider,
+                                                            expandedProcessMessageIDs: [first.id])
+            XCTAssertEqual(rows.count, 4)
+            XCTAssertTrue(try group(in: rows[0]).isExpanded)
+            XCTAssertEqual(try activity(in: rows[1]).id, first.id)
+            guard case .processMessage(let visibleProgress) = rows[2] else { return XCTFail("说明保持原始位置") }
+            XCTAssertEqual(visibleProgress.id, progress.id)
+            XCTAssertEqual(try activity(in: rows[3]).id, second.id)
+        }
     }
 
-    func testClaudeKeepsThinkingAndEveryToolCallAsSeparateRows() throws {
-        let messages = [
-            makeActivity(id: "thinking-1", turnID: "claude-turn", category: .thinking, title: "思考一", content: "思考一"),
-            makeActivity(id: "tool-1", turnID: "claude-turn", category: .toolCall, title: "Read", content: "result one"),
-            makeActivity(id: "thinking-2", turnID: "claude-turn", category: .thinking, title: "思考二", content: "思考二"),
-            makeActivity(id: "tool-2", turnID: "claude-turn", category: .toolCall, title: "Read", content: "result two"),
-        ]
-
-        let items = ConversationTimelineItemBuilder.items(from: messages, provider: .claude)
-
-        XCTAssertEqual(try items.map { try activity(in: $0) }.compactMap(\.stableID), [
-            "thinking-1", "tool-1", "thinking-2", "tool-2",
-        ])
-    }
-
-    func testProviderChangeReprojectsSameScopeAsHistoryReplacement() throws {
-        let messages = [
-            makeActivity(id: "read", turnID: "turn", category: .runCommand, title: "读取", commandKind: .exploration),
-            makeActivity(id: "search", turnID: "turn", category: .runCommand, title: "搜索", commandKind: .exploration),
-        ]
-        let source = ConversationTimelineSourceSnapshot(
-            scope: ScopedSessionID(profileID: "profile", sessionID: "session"),
-            messages: messages,
-            versions: .init()
-        )
+    func testDetailedModeRestoresManualExpansionAndPreservesEveryAnchor() throws {
+        let first = makeActivity(id: "a", turnID: "a", category: .toolCall, title: "读取")
+        let second = makeActivity(id: "b", turnID: "b", category: .toolCall, title: "搜索")
         let cache = ConversationTimelineItemCache()
+        let manual = cache.snapshot(from: [first, second], expandedProcessMessageIDs: [first.id])
+        let detailed = cache.snapshot(from: [first, second], showsDetailedTranscript: true, expandedProcessMessageIDs: [first.id])
+        let restored = cache.snapshot(from: [first, second], expandedProcessMessageIDs: [first.id])
+        XCTAssertEqual(manual.rows.count, 3)
+        XCTAssertEqual(detailed.rows.count, 4)
+        XCTAssertEqual(restored.rows, manual.rows)
+        XCTAssertTrue(detailed.changes.contains(.presentation))
+        XCTAssertTrue(restored.changes.contains(.historyReplacement))
+        for snapshot in [manual, detailed, restored] {
+            XCTAssertEqual(snapshot.rows.flatMap(\.anchorMessageIDs).sorted(by: { $0.uuidString < $1.uuidString }),
+                           [first.id, second.id].sorted(by: { $0.uuidString < $1.uuidString }))
+        }
+    }
 
-        let codex = cache.snapshot(from: source, provider: .codex)
-        let claude = cache.snapshot(from: source, provider: .claude)
-
-        XCTAssertEqual(codex.rows.count, 1)
-        XCTAssertEqual(claude.rows.count, 2)
+    func testProviderChangePreservesSharedDefaultHierarchy() {
+        let read = makeActivity(id: "read", turnID: "turn", category: .runCommand, title: "读取")
+        let cache = ConversationTimelineItemCache()
+        let codex = cache.snapshot(from: [read], provider: .codex)
+        let claude = cache.snapshot(from: [read], provider: .claude)
+        XCTAssertEqual(codex.rows, claude.rows)
         XCTAssertTrue(claude.changes.contains(.historyReplacement))
-        XCTAssertEqual(Set(claude.rows.flatMap(\.anchorMessageIDs)), Set(messages.map(\.id)))
     }
 
-    func testDetailedModeReprojectsAsHistoryReplacementAndKeepsAnchors() {
-        let messages = [
-            makeActivity(id: "read", turnID: "turn", category: .runCommand, title: "读取", commandKind: .exploration),
-            makeActivity(id: "search", turnID: "turn", category: .runCommand, title: "搜索", commandKind: .exploration),
-        ]
-        let source = ConversationTimelineSourceSnapshot(
-            scope: ScopedSessionID(profileID: "profile", sessionID: "session"),
-            messages: messages,
-            versions: .init()
-        )
-        let cache = ConversationTimelineItemCache()
+    func testManualExpansionSurvivesCompletionAndEarlierHistoryPrepend() throws {
+        var original = makeActivity(id: "running", turnID: "turn", category: .toolCall, title: "执行")
+        original.turnLifecycle = .inProgress
+        let before = ConversationTimelineItemBuilder.items(from: [original], expandedProcessMessageIDs: [original.id])
+        original.turnLifecycle = .completed
+        let completed = ConversationTimelineItemBuilder.items(from: [original], expandedProcessMessageIDs: [original.id])
+        XCTAssertEqual(before.map(\.id), completed.map(\.id))
+        let earlier = makeActivity(id: "earlier", turnID: "turn", category: .thinking, title: "检查")
+        let prepended = ConversationTimelineItemBuilder.items(from: [earlier, original], expandedProcessMessageIDs: [original.id])
+        XCTAssertTrue(try group(in: prepended[0]).isExpanded)
+        XCTAssertEqual(prepended.dropFirst().map(\.stableAnchorMessageID), [earlier.id, original.id])
+    }
 
-        _ = cache.snapshot(from: source, provider: .codex)
-        let detailed = cache.snapshot(
-            from: source,
-            provider: .codex,
-            showsDetailedTranscript: true
-        )
+    func testUnknownTextAndPendingInteractionsStayOutsideProcess() throws {
+        let first = makeActivity(id: "first", turnID: "same", category: .toolCall, title: "第一步")
+        let pending = makeMessage(id: "approval", turnID: "same", role: .system, kind: .approval, content: "是否批准？")
+        let second = makeActivity(id: "second", turnID: "same", category: .toolCall, title: "第二步")
+        let unknown = makeMessage(id: "unknown", turnID: "same", role: .assistant, kind: .message, content: "不可猜测成过程")
+        let input = makeMessage(id: "input", turnID: "same", role: .system, kind: .userInput, content: "请选择")
+        let error = makeMessage(id: "error", turnID: "same", role: .system, kind: .error, content: "连接失败")
+        let user = makeMessage(id: "user", turnID: "same", role: .user, kind: .message, content: "继续")
+        let third = makeActivity(id: "third", turnID: "same", category: .thinking, title: "继续检查")
+        let rows = ConversationTimelineItemBuilder.items(from: [first, pending, second, unknown, input, error, user, third])
+        XCTAssertEqual(rows.count, 8)
+        XCTAssertEqual(try group(in: rows[0]).messages.map(\.id), [first.id])
+        XCTAssertEqual(try group(in: rows[2]).messages.map(\.id), [second.id])
+        for (index, expected) in [(1, pending), (3, unknown), (4, input), (5, error), (6, user)] {
+            XCTAssertEqual(try message(in: rows[index]).id, expected.id)
+        }
+        XCTAssertEqual(try group(in: rows[7]).messages.map(\.id), [third.id])
+    }
 
-        XCTAssertEqual(detailed.rows.count, 2)
-        XCTAssertTrue(detailed.changes.contains(.historyReplacement))
-        XCTAssertEqual(Set(detailed.rows.flatMap(\.anchorMessageIDs)), Set(messages.map(\.id)))
+    func testPlainAnswerHasNoEmptyProcessAndLegacyHistoryOnlyGroupsKnownSegments() throws {
+        let answer = makeMessage(id: "answer", turnID: "", role: .assistant, kind: .message, content: "你好")
+        XCTAssertEqual(ConversationTimelineItemBuilder.items(from: [answer]).count, 1)
+        var progress = makeMessage(id: "progress", turnID: "", role: .assistant, kind: .commentary, content: "检查")
+        var command = makeActivity(id: "cmd", turnID: "", category: .runCommand, title: "命令")
+        progress.turnID = nil
+        command.turnID = nil
+        let user = makeMessage(id: "user", turnID: "", role: .user, kind: .message, content: "另一个问题")
+        let rows = ConversationTimelineItemBuilder.items(from: [progress, command, answer, user, progress])
+        XCTAssertEqual(rows.count, 4)
+        XCTAssertEqual(try group(in: rows[0]).messages.count, 2)
+        XCTAssertEqual(try group(in: rows[3]).messages.count, 1)
+    }
+
+    func testFileEntrySurvivesMissingFinalAndTargetsOnlyThisTurn() throws {
+        let first = makeActivity(id: "edit-a", turnID: "a", category: .editFile, title: "修改 A")
+        let user = makeMessage(id: "user", turnID: "b", role: .user, kind: .message, content: "下一轮")
+        let second = makeActivity(id: "edit-b", turnID: "b", category: .editFile, title: "修改 B")
+        let final = makeMessage(id: "final", turnID: "b", role: .assistant, kind: .message, content: "完成")
+        let rows = ConversationTimelineItemBuilder.items(from: [first, user, second, final])
+        let links = rows.compactMap { item -> ConversationFileChanges? in
+            if case .fileChanges(let files) = item { return files }; return nil
+        }
+        XCTAssertEqual(links.map(\.messageIDs), [[first.id], [second.id]])
+        let expanded = ConversationTimelineItemBuilder.items(from: [first, user, second, final], expandedProcessMessageIDs: Set(links[1].messageIDs))
+        XCTAssertTrue(expanded.map(\.id).contains(links[1].firstActivityID))
+        XCTAssertFalse(try group(in: expanded[0]).isExpanded)
+    }
+
+    func testTranscriptPreferenceIsTemporaryAndScopedToComputerAndSession() {
+        let a = ScopedSessionID(profileID: "computer-a", sessionID: "same")
+        let b = ScopedSessionID(profileID: "computer-b", sessionID: "same")
+        var presentation = ConversationTranscriptPresentation()
+        XCTAssertFalse(presentation.isEnabled(for: a))
+        presentation.setEnabled(true, for: a)
+        XCTAssertTrue(presentation.isEnabled(for: a))
+        XCTAssertFalse(presentation.isEnabled(for: b))
+        XCTAssertFalse(presentation.isEnabled(for: nil))
+        presentation.reset()
+        XCTAssertFalse(presentation.isEnabled(for: a))
+    }
+
+    func testLegacyFileEntryStaysBeforeFollowingKnownTurn() throws {
+        var legacy = makeActivity(id: "legacy-edit", turnID: "", category: .editFile, title: "旧修改")
+        legacy.turnID = nil
+        let next = makeActivity(id: "next", turnID: "next", category: .runCommand, title: "下一轮")
+        let rows = ConversationTimelineItemBuilder.items(from: [legacy, next])
+        XCTAssertEqual(rows.count, 3)
+        XCTAssertEqual(try group(in: rows[0]).messages.map(\.id), [legacy.id])
+        guard case .fileChanges(let files) = rows[1] else { return XCTFail("旧文件入口必须留在旧过程之后") }
+        XCTAssertEqual(files.messageIDs, [legacy.id])
+        XCTAssertEqual(try group(in: rows[2]).turnID, "next")
+    }
+
+    @MainActor
+    func testLiveStatusDoesNotAttachToPreviousTurnAfterNewUserInput() {
+        let old = makeActivity(id: "old", turnID: "old", category: .toolCall, title: "之前")
+        let user = makeMessage(id: "user", turnID: "new", role: .user, kind: .message, content: "新请求")
+        let messages = [old, user]
+        XCTAssertNil(ConversationTimelineView.liveProcessID(in: ConversationTimelineItemBuilder.items(from: messages),
+                                                           messages: messages, activeTurnID: "new"))
+        var next = makeActivity(id: "new", turnID: "new", category: .toolCall, title: "运行")
+        next.turnLifecycle = .inProgress
+        let active = messages + [next]
+        let rows = ConversationTimelineItemBuilder.items(from: active)
+        XCTAssertEqual(ConversationTimelineView.liveProcessID(in: rows, messages: active, activeTurnID: "new"), rows.last?.id)
     }
 
     func testExpandedDetailUsesFullContentAndOldHistoryFallsBackToPreview() {
@@ -178,7 +238,9 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(running.first?.id, failed.first?.id, "用户展开状态依赖稳定 activity ID")
-        let failedMessage = try activity(in: XCTUnwrap(failed.first))
+        let failedGroup = try group(in: XCTUnwrap(failed.first))
+        XCTAssertEqual(failedGroup.failedCount, 1)
+        let failedMessage = try XCTUnwrap(failedGroup.messages.first)
         XCTAssertTrue(failedMessage.activityPayload?.isFailure == true)
         XCTAssertEqual(ConversationActivityPresentationText.fullDetail(for: failedMessage), "permission denied")
     }
@@ -269,8 +331,8 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         return message
     }
 
-    private func batch(in item: ConversationTimelineItem) throws -> ConversationActivityBatch {
-        guard case .activityBatch(let group) = item else { throw TestError.expectedBatch }
+    private func group(in item: ConversationTimelineItem) throws -> ConversationProcessGroup {
+        guard case .processGroup(let group) = item else { throw TestError.expectedBatch }
         return group
     }
 

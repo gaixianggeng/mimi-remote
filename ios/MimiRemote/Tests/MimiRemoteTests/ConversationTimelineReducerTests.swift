@@ -263,14 +263,12 @@ extension ConversationDataFlowTests {
         )
 
         let runningItems = ConversationTimelineItemBuilder.items(from: [reasoning, command, final])
-        XCTAssertEqual(runningItems.count, 3)
-        guard case .activity(let runningReasoning) = runningItems[0],
-              case .activity(let runningCommand) = runningItems[1],
-              case .message(let runningFinal) = runningItems[2] else {
-            return XCTFail("运行中的 reasoning、命令和 final 应逐条显示")
+        XCTAssertEqual(runningItems.count, 2)
+        guard case .processGroup(let process) = runningItems[0], case .message(let runningFinal) = runningItems[1] else {
+            return XCTFail("运行态过程折叠，final 独立可见")
         }
-        XCTAssertEqual(runningReasoning.itemID, "reasoning")
-        XCTAssertEqual(runningCommand.itemID, "command")
+        XCTAssertEqual(process.lifecycle, .inProgress)
+        XCTAssertEqual(process.messages.compactMap(\.itemID), ["reasoning", "command"])
         XCTAssertEqual(runningFinal.itemID, "final")
 
         let completedMessages = [reasoning, command, final].map { message -> ConversationMessage in
@@ -918,30 +916,18 @@ extension ConversationDataFlowTests {
 
         let conversationStore = ConversationStore()
         conversationStore.setHistory(messages, sessionID: "thr_processed")
-        let items = ConversationTimelineItemBuilder.items(from: conversationStore.messages(for: "thr_processed"))
-
-        XCTAssertEqual(items.count, 6)
-        guard case .message(let commentary) = items[1] else {
-            return XCTFail("commentary 应保持完整正文")
+        let items = ConversationTimelineItemBuilder.items(from: conversationStore.messages(for: "thr_processed"), showsDetailedTranscript: true)
+        XCTAssertEqual(items.count, 7)
+        guard case .processGroup = items[1], case .processMessage(let commentary) = items[2],
+              case .activity(let plan) = items[3], case .activity(let reasoning) = items[4],
+              case .activity(let command) = items[5], case .message(let final) = items[6] else {
+            return XCTFail("展开后必须保持历史说明、计划、思考、工具、答复的原始顺序")
         }
         XCTAssertEqual(commentary.itemID, "commentary_processed")
-        XCTAssertEqual(commentary.kind, .commentary)
-        guard case .message(let plan) = items[2] else {
-            return XCTFail("plan 应保留在服务端 source order 中")
-        }
         XCTAssertEqual(plan.kind, .plan)
         XCTAssertEqual(plan.content, "让子 agent 生成一个短笑话。")
-        guard case .activity(let reasoning) = items[3] else {
-            return XCTFail("reasoning 应保留独立可读入口")
-        }
         XCTAssertEqual(reasoning.itemID, "reasoning_processed")
-        guard case .activity(let command) = items[4] else {
-            return XCTFail("普通命令应保持独立紧凑行")
-        }
         XCTAssertEqual(command.itemID, "cmd_processed")
-        guard case .message(let final) = items[5] else {
-            return XCTFail("最终 assistant 应保持独立展开")
-        }
         XCTAssertEqual(final.role, .assistant)
         XCTAssertEqual(final.content, "程序员相亲，对方问：你会浪漫吗？")
     }

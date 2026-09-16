@@ -15,7 +15,9 @@ enum ConversationTimelineProvider: String, Equatable {
 enum ConversationTimelineItem: Identifiable, Equatable {
     case message(ConversationMessage)
     case activity(ConversationMessage)
-    case activityBatch(ConversationActivityBatch)
+    case processGroup(ConversationProcessGroup)
+    case processMessage(ConversationMessage)
+    case fileChanges(ConversationFileChanges)
 
     var id: String {
         switch self {
@@ -23,8 +25,19 @@ enum ConversationTimelineItem: Identifiable, Equatable {
             return "message:\(message.id.uuidString)"
         case .activity(let message):
             return Self.activityID(for: message)
-        case .activityBatch(let group):
+        case .processGroup(let group):
             return group.id
+        case .processMessage(let message):
+            return "message:\(message.id.uuidString)"
+        case .fileChanges(let changes):
+            return changes.id
+        }
+    }
+
+    var isProcessStep: Bool {
+        switch self {
+        case .processMessage, .activity: true
+        default: false
         }
     }
 
@@ -35,10 +48,12 @@ enum ConversationTimelineItem: Identifiable, Equatable {
     /// 视口锚点使用原始消息 ID，不依赖会随分组重建而变化的派生行 ID。
     var anchorMessageIDs: [UUID] {
         switch self {
-        case .message(let message), .activity(let message):
+        case .message(let message), .activity(let message), .processMessage(let message):
             return [message.id]
-        case .activityBatch(let group):
-            return group.messages.map(\.id)
+        case .processGroup(let group):
+            return group.isExpanded ? [] : group.messages.map(\.id)
+        case .fileChanges:
+            return []
         }
     }
 
@@ -60,82 +75,44 @@ enum ConversationTimelineDurationText {
     }
 }
 
-enum ConversationActivityGroupStatus: Equatable {
-    case running
-    case completed
-    case interrupted
-    case failed
+/// 过程只保存原始消息的展示投影；展开后仍输出独立 List 行，避免长过程变成一个巨型 cell。
+struct ConversationProcessGroup: Identifiable, Equatable {
+    let messages: [ConversationMessage]
+    let lifecycle: ConversationTurnLifecycle
+    let isExpanded: Bool
 
-    static func resolve(
-        turnLifecycle: ConversationTurnLifecycle,
-        activities: [ConversationMessage],
-        keepsRunningWhileTurnIsActive: Bool
-    ) -> ConversationActivityGroupStatus {
-        switch turnLifecycle {
-        case .failed:
-            return .failed
-        case .interrupted:
-            return .interrupted
-        case .completed:
-            return .completed
-        case .inProgress:
-            if keepsRunningWhileTurnIsActive || activities.contains(where: { $0.activityPayload?.isInProgress == true }) {
-                return .running
-            }
-            return .completed
-        case .unknown:
-            if activities.contains(where: { $0.activityPayload?.isInProgress == true }) {
-                return .running
-            }
-            // 旧 gateway 的实时命令可能没有结构化 payload；仅在它仍是尾部活动时保留运行态。
-            if keepsRunningWhileTurnIsActive,
-               activities.contains(where: { $0.activityPayload == nil }) {
-                return .running
-            }
-            return .completed
+    var id: String { "process:\(messages[0].id.uuidString)" }
+    var turnID: TurnID? { messages.first?.turnID }
+    var failedCount: Int { messages.count { $0.activityPayload?.isFailure == true } }
+    var fileMessageIDs: [UUID] {
+        messages.filter { $0.kind == .fileChangeSummary || $0.activityPayload?.category == .editFile }.map(\.id)
+    }
+    var title: String {
+        switch lifecycle {
+        case .failed: L10n.text("ui.process_failed")
+        case .interrupted: L10n.text("ui.process_interrupted")
+        case .inProgress: L10n.text("ui.view_process")
+        case .completed, .unknown: L10n.text("ui.view_process")
         }
     }
 }
 
-struct ConversationActivityBatch: Identifiable, Equatable {
-    let id: String
-    let messages: [ConversationMessage]
-    let kind: ConversationCommandPresentationKind
-    let status: ConversationActivityGroupStatus
+struct ConversationFileChanges: Identifiable, Equatable {
+    let messageIDs: [UUID]
+    var id: String { "file-changes:\(messageIDs[0].uuidString)" }
+    var firstActivityID: String { "activity:\(messageIDs[0].uuidString)" }
+}
 
-    var title: String {
-        switch status {
-        case .running:
-            return kind == .exploration
-                ? L10n.plural("ui.items_being_explored_count", count: messages.count)
-                : L10n.plural("ui.items_being_executed_count", count: messages.count)
-        case .completed:
-            return kind == .exploration
-                ? L10n.plural("ui.items_explored_count", count: messages.count)
-                : L10n.plural("ui.items_executed_count", count: messages.count)
-        case .interrupted:
-            return L10n.plural("ui.items_execution_interrupted_count", count: messages.count)
-        case .failed:
-            return L10n.plural("ui.items_execution_failed_count", count: messages.count)
-        }
+struct ConversationTranscriptPresentation: Equatable {
+    private(set) var enabledScope: ScopedSessionID?
+
+    func isEnabled(for scope: ScopedSessionID?) -> Bool {
+        scope != nil && enabledScope == scope
     }
 
-    var latestDetail: String? {
-        guard let title = messages.last?.activityPayload?.displayTitle else {
-            return nil
-        }
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+    mutating func setEnabled(_ enabled: Bool, for scope: ScopedSessionID?) {
+        enabledScope = enabled ? scope : nil
     }
 
-    var failedCount: Int {
-        messages.count(where: { $0.activityPayload?.isFailure == true })
-    }
-
-    var failureDetail: String? {
-        guard failedCount > 0, status != .failed else {
-            return nil
-        }
-        return L10n.plural("ui.items_unsuccessful_count", count: failedCount)
-    }
+    mutating func reset() { enabledScope = nil }
 }

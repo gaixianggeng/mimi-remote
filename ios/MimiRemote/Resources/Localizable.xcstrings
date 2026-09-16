@@ -1,6 +1,86 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.view_process": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View process"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看过程"
+          }
+        }
+      }
+    },
+    "ui.process_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failed · View process"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "执行失败 · 查看过程"
+          }
+        }
+      }
+    },
+    "ui.process_interrupted": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interrupted · View process"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已中断 · 查看过程"
+          }
+        }
+      }
+    },
+    "ui.process_disclosure_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show or hide progress and tool activity for this turn"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开或收起本轮进度与工具活动"
+          }
+        }
+      }
+    },
+    "ui.view_file_changes": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View file changes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看文件改动"
+          }
+        }
+      }
+    },
     "ui.record_conversation_scroll": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Record conversation scrolling" } },

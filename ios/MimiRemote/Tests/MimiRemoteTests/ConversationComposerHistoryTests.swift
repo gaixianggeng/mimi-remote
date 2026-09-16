@@ -1702,20 +1702,20 @@ extension ConversationDataFlowTests {
             )
         ], sessionID: sessionID)
 
-        let items = ConversationTimelineItemBuilder.items(from: store.messages(for: sessionID))
+        let items = ConversationTimelineItemBuilder.items(from: store.messages(for: sessionID), showsDetailedTranscript: true)
 
-        XCTAssertEqual(items.count, 4)
-        guard case .message(let commentary) = items[1] else {
-            return XCTFail("history commentary 应作为完整正文放在最终 assistant 前")
+        XCTAssertEqual(items.count, 5)
+        guard case .processGroup = items[1], case .processMessage(let commentary) = items[2] else {
+            return XCTFail("展开后的 history commentary 应作为完整正文放在最终 assistant 前")
         }
         XCTAssertEqual(commentary.kind, .commentary)
         XCTAssertEqual(commentary.content, "我先调用一个子 agent。")
-        guard case .message(let plan) = items[2] else {
+        guard case .processMessage(let plan) = items[3] else {
             return XCTFail("计划卡应保留在服务端输入顺序中的原始位置")
         }
         XCTAssertEqual(plan.kind, .plan)
         XCTAssertEqual(plan.content, "让子 agent 生成一个短笑话。")
-        guard case .message(let final) = items[3] else {
+        guard case .message(let final) = items[4] else {
             return XCTFail("最终 assistant 应保持独立展开")
         }
         XCTAssertEqual(final.role, .assistant)

@@ -179,14 +179,14 @@ struct ConversationLiveStatus: Equatable {
         readiness.animates
     }
 
-    func text(at now: Date) -> String {
+    func text(at now: Date, includesTokens: Bool = true) -> String {
         // 创建、恢复历史和建立订阅时不展示缓存中上一轮的时长与 Token。
         if let title = readiness.title { return title }
         var parts: [String] = []
         if let startedAt {
             parts.append(ConversationTimelineDurationText.format(max(0, now.timeIntervalSince(startedAt))))
         }
-        if let outputTokens {
+        if includesTokens, let outputTokens {
             parts.append(L10n.format("ui.live_status_tokens_value", Self.compactTokenCount(outputTokens)))
         }
         parts.append(phase.title)

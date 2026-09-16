@@ -75,6 +75,7 @@ final class ConversationTimelineScrollController {
         case tail(animated: Bool, reason: ConversationTimelineScrollReason)
         case anchor
         case item(String)
+        case revealItem(String)
     }
 
     private struct LayoutKey: Hashable {
@@ -135,7 +136,11 @@ final class ConversationTimelineScrollController {
             // 首屏尚未交接时仍须完成初始定位，不能跳过解除正文遮罩的唯一入口。
             mode = isReadable ? .followingTail : .initialPositioning
         }
-        if liveTailChanged, mode == .readingHistory {
+        if snapshot.changes.contains(.presentation), isReadable {
+            // 用户改变展开层级时固定阅读位置，即使之前贴底也不跳到新增内容末尾。
+            mode = .readingHistory
+        }
+        if liveTailChanged, !snapshot.changes.contains(.presentation), mode == .readingHistory {
             hasUnseenTail = true
         }
         guard hasContent, !isInteracting else { return true }
@@ -150,7 +155,7 @@ final class ConversationTimelineScrollController {
                 pending = .tail(animated: snapshot.changes.contains(.localSubmission), reason: .snapshot)
             }
         case .readingHistory:
-            captureAnchor(restoringRows: snapshot.changes.contains(.historyPrepend) ? snapshot.rows : nil)
+            captureAnchor(restoringRows: snapshot.changes.containsHistoryChange ? snapshot.rows : nil)
         }
         return true
     }
@@ -343,6 +348,14 @@ final class ConversationTimelineScrollController {
         expansion = nil
     }
 
+    func revealItem(_ id: String) {
+        guard isActive, hasContent else { return }
+        beginInput()
+        mode = .readingHistory
+        pending = .revealItem(id)
+        schedulePending()
+    }
+
     func beginLoadingEarlierHistory() {
         mode = .readingHistory
         beginInput()
@@ -475,6 +488,11 @@ final class ConversationTimelineScrollController {
             }
             animated = false
             reason = .historyAnchor
+        case let .revealItem(id):
+            guard allowProxyScroll else { schedulePending(); return }
+            target = .anchorItem(id)
+            animated = false
+            reason = .user
         case let .item(id):
             guard allowProxyScroll else { schedulePending(); return }
             target = .item(id)

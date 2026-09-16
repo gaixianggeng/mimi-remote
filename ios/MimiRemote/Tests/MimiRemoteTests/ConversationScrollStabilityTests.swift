@@ -5,6 +5,35 @@ import XCTest
 
 @MainActor
 final class ConversationScrollStabilityTests: XCTestCase {
+    func testPresentationChangePreservesReadingPositionEvenWhenPreviouslyFollowingTail() async throws {
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        let marker = rig.addMarker(id: rig.messages[0].id)
+        XCTAssertEqual(rig.controller.mode, .followingTail)
+        rig.publish(changes: [.presentation, .historyReplacement])
+        marker.frame.origin.y += 240
+        rig.report(offset: 1_200, height: 2_600)
+        await drain()
+        XCTAssertEqual(rig.controller.mode, .readingHistory)
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 1_440, accuracy: 0.5)
+        XCTAssertTrue(rig.commands.allSatisfy { $0.target != .tail })
+    }
+
+    func testFileRevealTargetsActivityAndStopsTailFollowing() async throws {
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        rig.controller.revealItem("activity:file-change")
+        await drain()
+        XCTAssertEqual(rig.commands.map(\.target), [.anchorItem("activity:file-change")])
+        XCTAssertEqual(rig.controller.mode, .readingHistory)
+        rig.publish(changes: .live)
+        rig.report(offset: 900, height: 2_400)
+        await drain()
+        XCTAssertTrue(rig.commands.allSatisfy { $0.target != .tail })
+    }
+
     func testProjectionCapturesOldViewportOnlyWhenPublishingAChangedSnapshot() throws {
         let rig = ScrollRig()
         let window = try mount(rig.scrollView)

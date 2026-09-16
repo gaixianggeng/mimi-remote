@@ -5,6 +5,47 @@ import XCTest
 
 @MainActor
 final class ConversationTimelineProviderPresentationSnapshotTests: SimplifiedChineseSnapshotTestCase {
+    func testThreeLayerConversationAcrossLayouts() async throws {
+        for (name, width, detailed, scheme) in [
+            ("phone-default", 390.0, false, ColorScheme.light),
+            ("phone-detailed-dark", 390.0, true, ColorScheme.dark),
+            ("ipad-default", 820.0, false, ColorScheme.light)
+        ] {
+            try await assertStabilizedConversationSnapshot(
+                of: processConversation(width: width, detailed: detailed, scheme: scheme),
+                size: CGSize(width: width, height: 640), named: name
+            )
+        }
+    }
+
+    private func processConversation(width: CGFloat, detailed: Bool, scheme: ColorScheme) -> some View {
+        let dependencies = makeDependencies()
+        let store = dependencies.sessionStore.conversationStore
+        let date = Date(timeIntervalSince1970: 1_782_879_660)
+        let messages = [
+            CodexHistoryMessage(role: "user", content: "简化会话展示，并保留完整过程。", createdAt: date, turnID: "turn"),
+            CodexHistoryMessage(role: "assistant", kind: .commentary, content: "已检查会话结构，开始调整过程入口。", createdAt: date, turnID: "turn"),
+            CodexHistoryMessage(role: "system", kind: .commandSummary, content: "所有定向测试通过。", activityPayload: ConversationActivityPayload(
+                category: .runCommand, displayTitle: "验证会话展示", status: "completed", outputPreview: "测试通过"
+            ), createdAt: date, turnID: "turn"),
+            CodexHistoryMessage(role: "system", kind: .fileChangeSummary, content: "@@ -1 +1 @@\n-显示全部过程\n+按需展开过程", activityPayload: ConversationActivityPayload(
+                category: .editFile, displayTitle: "修改 ConversationView.swift", status: "completed", filePaths: ["ConversationView.swift"]
+            ), createdAt: date, turnID: "turn"),
+            CodexHistoryMessage(role: "assistant", content: "已完成会话展示调整。\n\n默认保留答复，点击过程入口可查看每一步。", createdAt: date, turnID: "turn")
+        ]
+        store.setHistory(messages, sessionID: "snapshot-process")
+        dependencies.sessionStore.selectedSessionID = "snapshot-process"
+        return ConversationTimelineView(layout: ConversationLayout(
+            containerWidth: width, horizontalSizeClass: width < 600 ? .compact : .regular
+        ))
+        .environmentObject(dependencies.sessionStore)
+        .environmentObject(store)
+        .environmentObject(dependencies.themeStore)
+        .environment(\.conversationDetailedTranscript, .constant(detailed))
+        .environment(\.colorScheme, scheme)
+        .frame(width: width, height: 640)
+    }
+
     func testCodexCompactAndDetailedActivityRows() {
         assertSnapshot(
             of: activityRows(provider: .codex),

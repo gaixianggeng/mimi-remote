@@ -11,12 +11,14 @@ struct ConversationTimelineView: View {
     let explicitSessionID: SessionID?
     let allowsTopUnderlap: Bool
     @State private var expandedActivityIDs: Set<String> = []
-    @State private var collapsedDefaultActivityIDs: Set<String> = []
-    @State private var expandedActivityGroupIDs: Set<String> = []
+    @State private var expandedProcessMessageIDs: Set<UUID> = []
+    @State private var pendingFileActivityID: String?
     @State private var timelineItemCache = ConversationTimelineItemCache()
     @State private var presentedSnapshot = ConversationTimelineSnapshot.empty
     @State private var scrollController = ConversationTimelineScrollController()
-    @State private var showsDetailedTranscript = false
+    @Environment(\.conversationDetailedTranscript) private var detailedTranscript
+
+    private var showsDetailedTranscript: Bool { detailedTranscript.wrappedValue }
 
     private let messageTailFollowThreshold: CGFloat = 120
     private static let timelineTailSentinelID = "__conversation_timeline_safe_tail__"
@@ -58,7 +60,8 @@ struct ConversationTimelineView: View {
             revision: source.revision,
             isInteracting: scrollController.isInteracting,
             provider: timelineProvider,
-            showsDetailedTranscript: showsDetailedTranscript
+            showsDetailedTranscript: showsDetailedTranscript,
+            expandedProcessMessageIDs: expandedProcessMessageIDs
         )
         let isTimelineReadable = timelineItems.isEmpty || scrollController.isReadable
         let activeUserDeliveryMessageID = Self.activeUserDeliveryMessageID(in: source.messages)
@@ -77,6 +80,9 @@ struct ConversationTimelineView: View {
                 tokenCounter: sessionStore.turnOutputTokensBySessionID[sessionID],
                 readiness: sessionStore.conversationReadiness(for: session)
             )
+        }
+        let liveProcessID = liveStatus.flatMap { _ in
+            Self.liveProcessID(in: timelineItems, messages: source.messages, activeTurnID: displayedSession?.activeTurnID)
         }
         let isLoadingEarlierHistory = sessionStore.isLoadingEarlierHistory(sessionID: displayedSessionID)
         let shouldShowInlineHistoryLoading = Self.shouldShowInlineHistoryLoading(
@@ -110,11 +116,12 @@ struct ConversationTimelineView: View {
                                 timelineListRow(
                                     item,
                                     provider: timelineProvider,
+                                    liveStatus: item.id == liveProcessID ? liveStatus : nil,
                                     activeUserDeliveryMessageID: activeUserDeliveryMessageID,
                                     crossSessionOriginMessageID: crossSessionOriginMessageID
                                 )
                             }
-                            if let liveStatus {
+                            if let liveStatus, liveProcessID == nil {
                                 // 独立于 timelineItems 的尾部行：不参与条目 ID、历史锚点与分组投影，
                                 // 贴底跟随仍以下方哨兵为准，出现/消失只表现为内容高度变化。
                                 ConversationLiveStatusRow(status: liveStatus, layout: layout)
@@ -191,16 +198,7 @@ struct ConversationTimelineView: View {
                 .onScrollPhaseChange { _, phase in
                     scrollController.phaseChanged(phase, epoch: timelineListIdentity.presentationGeneration)
                 }
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    if !timelineItems.isEmpty {
-                        HStack(spacing: 0) {
-                            Spacer(minLength: 0)
-                            detailedTranscriptControl
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                    }
-                }
+
 
                 if shouldShowReturnToTailButton(timelineItems: timelineItems) {
                     ConversationReturnToTailButton(
@@ -244,12 +242,14 @@ struct ConversationTimelineView: View {
     private func timelineListRow(
         _ item: ConversationTimelineItem,
         provider: ConversationTimelineProvider,
+        liveStatus: ConversationLiveStatus?,
         activeUserDeliveryMessageID: UUID?,
         crossSessionOriginMessageID: UUID?
     ) -> some View {
         timelineRow(
             item,
             provider: provider,
+            liveStatus: liveStatus,
             activeUserDeliveryMessageID: activeUserDeliveryMessageID,
             crossSessionOriginMessageID: crossSessionOriginMessageID
         )
@@ -270,23 +270,19 @@ struct ConversationTimelineView: View {
     }
 
     private func outerAnchorMessageIDs(for item: ConversationTimelineItem) -> [UUID] {
-        switch item {
-        case .message(let message), .activity(let message):
-            return [message.id]
-        case .activityBatch(let group):
-            return expandedActivityGroupIDs.contains(group.id) ? [] : group.messages.map(\.id)
-        }
+        item.anchorMessageIDs
     }
 
     @ViewBuilder
     private func timelineRow(
         _ item: ConversationTimelineItem,
         provider: ConversationTimelineProvider,
+        liveStatus: ConversationLiveStatus?,
         activeUserDeliveryMessageID: UUID?,
         crossSessionOriginMessageID: UUID?
     ) -> some View {
         switch item {
-        case .message(let message):
+        case .message(let message), .processMessage(let message):
             MessageRow(
                 message: message,
                 themeVersion: themeStore.themeVersion,
@@ -305,6 +301,7 @@ struct ConversationTimelineView: View {
                 }
             )
                 .equatable()
+                .padding(.leading, item.isProcessStep ? 12 : 0)
         case .activity(let message):
             let itemID = ConversationTimelineItem.activityID(for: message)
             ConversationActivityRow(
@@ -312,99 +309,77 @@ struct ConversationTimelineView: View {
                 layout: layout,
                 provider: provider,
                 showsDetailedTranscript: showsDetailedTranscript,
-                isExpanded: isActivityExpanded(message, itemID: itemID, provider: provider),
+                isExpanded: showsDetailedTranscript || expandedActivityIDs.contains(itemID),
                 toggle: {
-                    toggleActivityDetails(
-                        message: message,
-                        itemID: itemID,
-                        scrollAnchorID: itemID,
-                        provider: provider
-                    )
+                    toggleActivityDetails(itemID: itemID)
                 }
             )
                 .equatable()
-        case .activityBatch(let group):
-            ConversationActivityBatchRow(
-                group: group,
-                layout: layout,
-                provider: provider,
+                .padding(.leading, 12)
+        case .processGroup(let group):
+            ConversationProcessGroupRow(
+                group: group, layout: layout, liveStatus: liveStatus,
                 showsDetailedTranscript: showsDetailedTranscript,
-                isExpanded: showsDetailedTranscript || expandedActivityGroupIDs.contains(group.id),
-                expandedActivityIDs: expandedActivityIDs,
-                toggleGroup: {
-                    toggleActivityGroup(groupID: group.id)
-                },
-                toggleActivity: { message in
-                    toggleActivityDetails(
-                        message: message,
-                        itemID: ConversationTimelineItem.activityID(for: message),
-                        scrollAnchorID: group.id,
-                        provider: provider
-                    )
-                },
-                recordAnchorGeometry: anchorFrameRecorder()
+                toggle: { toggleProcess(group) }
             )
-                .equatable()
+            .equatable()
+        case .fileChanges(let changes):
+            Button {
+                showFileChanges(changes)
+            } label: {
+                Label(L10n.text("ui.view_file_changes"), systemImage: "doc.text.magnifyingglass")
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
+                    .foregroundStyle(workbenchSecondaryText)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("conversation.fileChanges.\(changes.id)")
         }
     }
 
-    private func toggleActivityDetails(
-        message: ConversationMessage,
-        itemID: String,
-        scrollAnchorID: String,
-        provider: ConversationTimelineProvider
-    ) {
+    private func toggleActivityDetails(itemID: String) {
         guard !showsDetailedTranscript else { return }
-        let isExpanding = !isActivityExpanded(message, itemID: itemID, provider: provider)
-        scrollController.expansionChanged(scrollAnchorID, isExpanded: isExpanding, isAnimated: false)
-        if isExpanding {
-            collapsedDefaultActivityIDs.remove(itemID)
-            expandedActivityIDs.insert(itemID)
+        let expanding = !expandedActivityIDs.contains(itemID)
+        scrollController.expansionChanged(itemID, isExpanded: expanding, isAnimated: false)
+        if expanding { expandedActivityIDs.insert(itemID) } else { expandedActivityIDs.remove(itemID) }
+    }
+
+    private func toggleProcess(_ group: ConversationProcessGroup) {
+        guard !showsDetailedTranscript else { return }
+        if group.isExpanded {
+            expandedProcessMessageIDs.subtract(group.messages.map(\.id))
+        } else if let anchor = group.messages.first?.id {
+            expandedProcessMessageIDs.insert(anchor)
+        }
+    }
+
+    private func showFileChanges(_ changes: ConversationFileChanges) {
+        let allChangesVisible = changes.messageIDs.allSatisfy {
+            presentedSnapshot.rowIDs.contains("activity:\($0.uuidString)")
+        }
+        if allChangesVisible {
+            scrollController.revealItem(changes.firstActivityID)
         } else {
-            expandedActivityIDs.remove(itemID)
-            if activityIsExpandedByDefault(message, provider: provider) {
-                collapsedDefaultActivityIDs.insert(itemID)
-            }
+            pendingFileActivityID = changes.firstActivityID
+            expandedProcessMessageIDs.formUnion(changes.messageIDs)
         }
     }
 
-    private func isActivityExpanded(
-        _ message: ConversationMessage,
-        itemID: String,
-        provider: ConversationTimelineProvider
-    ) -> Bool {
-        if showsDetailedTranscript { return true }
-        if collapsedDefaultActivityIDs.contains(itemID) { return false }
-        return expandedActivityIDs.contains(itemID)
-            || activityIsExpandedByDefault(message, provider: provider)
-    }
-
-    private func activityIsExpandedByDefault(
-        _ message: ConversationMessage,
-        provider: ConversationTimelineProvider
-    ) -> Bool {
-        provider == .codex && message.activityPayload?.category == .editFile
-    }
-
-    private func toggleActivityGroup(
-        groupID: String,
-        scrollAnchorID: String? = nil
-    ) {
-        let isExpanding = !expandedActivityGroupIDs.contains(groupID)
-        let isAnimated = !accessibilityReduceMotion
-        let input = scrollController.expansionChanged(scrollAnchorID ?? groupID, isExpanded: isExpanding, isAnimated: isAnimated)
-        withAnimation(
-            accessibilityReduceMotion ? nil : .spring(response: 0.32, dampingFraction: 1),
-            completionCriteria: .removed
-        ) {
-            if isExpanding {
-                expandedActivityGroupIDs.insert(groupID)
-            } else {
-                expandedActivityGroupIDs.remove(groupID)
-            }
-        } completion: {
-            if isAnimated { scrollController.expansionCompleted(input) }
-        }
+    /// 只把当前轮、最后一个用户输入之后的过程标题用于实时状态，不能点亮上一轮历史。
+    static func liveProcessID(
+        in rows: [ConversationTimelineItem], messages: [ConversationMessage], activeTurnID: TurnID?
+    ) -> String? {
+        let currentMessages = messages.suffix(from: messages.lastIndex(where: { $0.role == .user }) ?? messages.startIndex)
+        let currentIDs = Set(currentMessages.map(\.id))
+        return rows.reversed().compactMap { item -> ConversationProcessGroup? in
+            if case .processGroup(let group) = item { return group }
+            return nil
+        }.first { group in
+            (activeTurnID == nil || group.turnID == activeTurnID)
+                && group.lifecycle != .failed && group.lifecycle != .interrupted
+                && group.messages.contains { currentIDs.contains($0.id) }
+        }?.id
     }
 
     private static func activeUserDeliveryMessageID(in messages: [ConversationMessage]) -> UUID? {
@@ -637,41 +612,6 @@ struct ConversationTimelineView: View {
         themeStore.tokens(for: colorScheme).secondaryText
     }
 
-    private var detailedTranscriptControl: some View {
-        Button {
-            showsDetailedTranscript.toggle()
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "text.page")
-                Text(L10n.text("ui.detailed_transcript"))
-                    .lineLimit(1)
-                if showsDetailedTranscript {
-                    Image(systemName: "checkmark")
-                }
-            }
-            .font(themeStore.uiFont(.footnote, weight: .medium))
-            .foregroundStyle(
-                showsDetailedTranscript
-                    ? themeStore.tokens(for: colorScheme).accent
-                    : workbenchSecondaryText
-            )
-            .padding(.horizontal, 12)
-            .frame(minHeight: 44)
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .background(themeStore.tokens(for: colorScheme).elevatedSurface, in: Capsule())
-        .overlay {
-            Capsule()
-                .strokeBorder(themeStore.tokens(for: colorScheme).border.opacity(0.7), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.06), radius: 5, y: 2)
-        .accessibilityValue(
-            showsDetailedTranscript ? L10n.text("ui.selected") : L10n.text("ui.not_selected")
-        )
-        .accessibilityHint(L10n.text("ui.detailed_transcript_hint"))
-    }
-
     private func publishTimelineSource(
         _ source: ConversationTimelineSourceSnapshot,
         provider: ConversationTimelineProvider
@@ -680,13 +620,14 @@ struct ConversationTimelineView: View {
             from: source,
             provider: provider,
             showsDetailedTranscript: showsDetailedTranscript,
+            expandedProcessMessageIDs: presentedSnapshot.scope == source.scope ? expandedProcessMessageIDs : [],
             suspendingUpdates: scrollController.isInteracting
         )
         guard scrollController.prepare(snapshot) else { return }
         if presentedSnapshot.scope != snapshot.scope {
             expandedActivityIDs.removeAll()
-            collapsedDefaultActivityIDs.removeAll()
-            expandedActivityGroupIDs.removeAll()
+            expandedProcessMessageIDs.removeAll()
+            pendingFileActivityID = nil
         }
         if !snapshot.rows.isEmpty, presentedSnapshot.rows.isEmpty || presentedSnapshot.scope != snapshot.scope {
             HostSwitchSignpost.event("first_text_visible")
@@ -697,6 +638,10 @@ struct ConversationTimelineView: View {
             "revision=\(snapshot.revision) rows=\(snapshot.rows.count) changes=\(snapshot.changes.rawValue)"
         )
         scrollController.snapshotWasPublished()
+        if let target = pendingFileActivityID, snapshot.rowIDs.contains(target) {
+            pendingFileActivityID = nil
+            scrollController.revealItem(target)
+        }
     }
 
     private func connectScrollCommands(proxy: ScrollViewProxy, epoch: Int) {
@@ -773,6 +718,7 @@ private struct ConversationTimelineSnapshotIdentity: Equatable {
     let isInteracting: Bool
     let provider: ConversationTimelineProvider
     let showsDetailedTranscript: Bool
+    let expandedProcessMessageIDs: Set<UUID>
 }
 
 struct ConversationHistoryAnchorGeometryModifier: ViewModifier {

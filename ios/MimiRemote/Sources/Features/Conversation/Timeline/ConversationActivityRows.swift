@@ -1,185 +1,78 @@
 import QuickLook
 import SwiftUI
 
-struct ConversationActivityBatchRow: View, Equatable {
+/// 结果层只保留一个轻量入口；状态刷新不比较隐藏的完整工具输出。
+struct ConversationProcessGroupRow: View, Equatable {
     @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @Environment(\.colorScheme) private var colorScheme
-    let group: ConversationActivityBatch
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let group: ConversationProcessGroup
     let layout: ConversationLayout
-    let provider: ConversationTimelineProvider
+    let liveStatus: ConversationLiveStatus?
     let showsDetailedTranscript: Bool
-    let isExpanded: Bool
-    let expandedActivityIDs: Set<String>
-    let toggleGroup: () -> Void
-    let toggleActivity: (ConversationMessage) -> Void
-    let recordAnchorGeometry: ([UUID], CGRect) -> Void
+    let toggle: () -> Void
 
-    init(
-        group: ConversationActivityBatch,
-        layout: ConversationLayout,
-        provider: ConversationTimelineProvider = .codex,
-        showsDetailedTranscript: Bool = false,
-        isExpanded: Bool,
-        expandedActivityIDs: Set<String>,
-        toggleGroup: @escaping () -> Void,
-        toggleActivity: @escaping (ConversationMessage) -> Void,
-        recordAnchorGeometry: @escaping ([UUID], CGRect) -> Void = { _, _ in }
-    ) {
-        self.group = group
-        self.layout = layout
-        self.provider = provider
-        self.showsDetailedTranscript = showsDetailedTranscript
-        self.isExpanded = isExpanded
-        self.expandedActivityIDs = expandedActivityIDs
-        self.toggleGroup = toggleGroup
-        self.toggleActivity = toggleActivity
-        self.recordAnchorGeometry = recordAnchorGeometry
-    }
-
-    static func == (lhs: ConversationActivityBatchRow, rhs: ConversationActivityBatchRow) -> Bool {
-        guard lhs.group.id == rhs.group.id,
-              lhs.group.kind == rhs.group.kind,
-              lhs.group.status == rhs.group.status,
-              lhs.group.messages.count == rhs.group.messages.count,
-              lhs.group.latestDetail == rhs.group.latestDetail,
-              lhs.group.failedCount == rhs.group.failedCount,
-              lhs.layout == rhs.layout,
-              lhs.provider == rhs.provider,
-              lhs.showsDetailedTranscript == rhs.showsDetailedTranscript,
-              lhs.isExpanded == rhs.isExpanded,
-              lhs.expandedActivityIDs == rhs.expandedActivityIDs
-        else {
-            return false
-        }
-        // 折叠时忽略 stdout/stderr 摘要变化，避免终端增量驱动整行重绘；
-        // 用户主动展开后再比较完整消息，让诊断详情保持实时。
-        return !lhs.isExpanded || lhs.group.messages == rhs.group.messages
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.group.id == rhs.group.id
+            && lhs.group.isExpanded == rhs.group.isExpanded
+            && lhs.group.lifecycle == rhs.group.lifecycle
+            && lhs.group.failedCount == rhs.group.failedCount
+            && lhs.layout == rhs.layout
+            && lhs.liveStatus == rhs.liveStatus
+            && lhs.showsDetailedTranscript == rhs.showsDetailedTranscript
     }
 
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 2) {
-                Button(action: toggleGroup) {
-                    header
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(summaryText)
-                .accessibilityValue(accessibilityValue)
-                .accessibilityHint(isExpanded ? L10n.text("ui.collapse_this_stage_of_activities") : L10n.text("ui.expand_this_stage_of_activities"))
-
-                if isExpanded {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(group.messages) { message in
-                            ConversationActivityRow(
-                                message: message,
-                                layout: layout,
-                                provider: provider,
-                                showsDetailedTranscript: showsDetailedTranscript,
-                                isExpanded: showsDetailedTranscript || expandedActivityIDs.contains(
-                                    ConversationTimelineItem.activityID(for: message)
-                                ),
-                                toggle: { toggleActivity(message) }
-                            )
-                            .equatable()
-                            .padding(.leading, 20)
-                            .modifier(ConversationHistoryAnchorGeometryModifier(
-                                isEnabled: true,
-                                messageIDs: [message.id],
-                                action: recordAnchorGeometry
-                            ))
-                        }
+            Button(action: toggle) {
+                if let liveStatus {
+                    SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { context in
+                        header(text: liveStatus.text(at: context.date, includesTokens: false),
+                               warning: liveStatus.isWarning(at: context.date))
                     }
-                    .transition(activityTransition)
+                } else {
+                    header(text: group.title, warning: group.lifecycle == .failed || group.failedCount > 0)
                 }
             }
+            .buttonStyle(.plain)
+            .disabled(showsDetailedTranscript)
+            .accessibilityValue(group.isExpanded ? L10n.text("ui.expanded") : L10n.text("ui.collected"))
+            .accessibilityHint(L10n.text("ui.process_disclosure_hint"))
+            .accessibilityIdentifier("conversation.process.\(group.id)")
             .frame(maxWidth: layout.assistantBubbleMaxWidth, alignment: .leading)
-
             Spacer(minLength: layout.messageSideSpacer)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 2)
-        .modifier(ConversationHistoryAnchorGeometryModifier(
-            isEnabled: !isExpanded,
-            messageIDs: group.messages.map(\.id),
-            action: recordAnchorGeometry
-        ))
     }
 
-    private var header: some View {
-        HStack(alignment: .center, spacing: 8) {
-            statusMarker
-
-            Text(summaryText)
+    private func header(text: String, warning: Bool) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return HStack(spacing: 8) {
+            if let liveStatus {
+                ConversationLiveStatusGlyph(tint: warning ? tokens.warning : tokens.accent,
+                                            animates: liveStatus.animates && !reduceMotion)
+                    .frame(width: 16, height: 18)
+            }
+            Text(text)
                 .font(themeStore.uiFont(size: 14, weight: .medium))
-                .foregroundStyle(headerTint)
+                .monospacedDigit()
                 .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            Image(systemName: "chevron.right")
-                .font(themeStore.uiFont(.caption2, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText.opacity(0.76))
-                .frame(width: 18, height: 18)
-                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            if group.failedCount > 0 {
+                Text(L10n.plural("ui.items_unsuccessful_count", count: group.failedCount))
+                    .font(themeStore.uiFont(.caption))
+                    .lineLimit(1)
+            }
+            if !showsDetailedTranscript {
+                Image(systemName: "chevron.right")
+                    .font(themeStore.uiFont(.caption2, weight: .semibold))
+                    .rotationEffect(.degrees(group.isExpanded ? 90 : 0))
+            }
+            Spacer(minLength: 0)
         }
+        .foregroundStyle(warning ? tokens.warning : tokens.secondaryText)
         .frame(minHeight: 44)
         .contentShape(Rectangle())
-    }
-
-    @ViewBuilder
-    private var statusMarker: some View {
-        switch group.status {
-        case .running:
-            ProgressView()
-                .controlSize(.mini)
-                .tint(tokens.accent)
-                .frame(width: 14, height: 18)
-        case .completed:
-            Image(systemName: "circle.fill")
-                .font(themeStore.uiFont(size: 5, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText)
-                .frame(width: 14, height: 18)
-        case .interrupted:
-            Image(systemName: "stop.circle.fill")
-                .font(themeStore.uiFont(size: 11, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText)
-                .frame(width: 14, height: 18)
-        case .failed:
-            Image(systemName: "exclamationmark.circle.fill")
-                .font(themeStore.uiFont(size: 11, weight: .semibold))
-                .foregroundStyle(Color.red)
-                .frame(width: 14, height: 18)
-        }
-    }
-
-    private var summaryText: String {
-        [group.title, group.latestDetail, group.failureDetail]
-            .compactMap { $0 }
-            .joined(separator: " · ")
-    }
-
-    private var accessibilityValue: String {
-        let state = isExpanded ? L10n.text("ui.expanded") : L10n.text("ui.collected")
-        return L10n.format(
-            "ui.value_contains_value",
-            state,
-            L10n.plural("ui.activities_count", count: group.messages.count)
-        )
-    }
-
-    private var activityTransition: AnyTransition {
-        accessibilityReduceMotion
-            ? .opacity
-            : .opacity.combined(with: .move(edge: .top))
-    }
-
-    private var headerTint: Color {
-        group.status == .failed ? .red : tokens.secondaryText
-    }
-
-    private var tokens: ThemeTokens {
-        themeStore.tokens(for: colorScheme)
+        .accessibilityElement(children: .combine)
     }
 }
 
