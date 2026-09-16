@@ -400,23 +400,26 @@ extension ConversationDataFlowTests {
             (.fullAccess, .never, "user", .dangerFullAccess)
         ]
 
-        for testCase in cases {
-            var composerState = ComposerState()
-            composerState.draft = "权限矩阵 \(testCase.mode.rawValue)"
-            composerState.applyPermissionMode(testCase.mode)
-            composerState.turnOptions.networkAccess = true
+        for runtime in ["codex", "claude"] {
+            for testCase in cases {
+                var composerState = ComposerState()
+                composerState.turnOptions.runtimeProvider = runtime
+                composerState.draft = "权限矩阵 \(testCase.mode.rawValue)"
+                composerState.applyPermissionMode(testCase.mode)
+                composerState.turnOptions.networkAccess = true
 
-            let submitted = try XCTUnwrap(composerState.takeDraftForSubmit(
-                isLoading: false,
-                turnOptionsOverride: composerState.turnOptions.sanitizedForStandardComposer()
-            ))
-            let options = submitted.payload.options
-            XCTAssertEqual(options.approvalPolicy, testCase.policy, "mode=\(testCase.mode)")
-            XCTAssertEqual(options.approvalsReviewer, testCase.reviewer, "mode=\(testCase.mode)")
-            XCTAssertEqual(options.sandboxMode, testCase.sandbox, "mode=\(testCase.mode)")
-            // 移动端所有权限预设都不打开 networkAccess，避免一次发送把网络权限带进 app-server。
-            XCTAssertFalse(options.networkAccess, "mode=\(testCase.mode)")
-            XCTAssertEqual(options.collaborationMode, .default, "mode=\(testCase.mode)")
+                let submitted = try XCTUnwrap(composerState.takeDraftForSubmit(
+                    isLoading: false,
+                    turnOptionsOverride: composerState.turnOptions.sanitizedForStandardComposer()
+                ))
+                let options = submitted.payload.options.sanitizedForRuntimePolicy()
+                XCTAssertEqual(options.approvalPolicy, testCase.policy, "mode=\(testCase.mode)")
+                XCTAssertEqual(options.approvalsReviewer, testCase.reviewer, "mode=\(testCase.mode)")
+                XCTAssertEqual(options.sandboxMode, testCase.sandbox, "mode=\(testCase.mode)")
+                // 移动端所有权限预设都不打开 networkAccess，避免一次发送把网络权限带进 app-server。
+                XCTAssertFalse(options.networkAccess, "mode=\(testCase.mode)")
+                XCTAssertEqual(options.collaborationMode, .default, "mode=\(testCase.mode)")
+            }
         }
     }
 

@@ -37,6 +37,8 @@ struct UnifiedWorkbenchShell: View {
     @State private var didApplyDebugLaunchRoute = false
     @State private var selectedRelatedSubagent: SessionContextSubagent?
     @State private var relatedSubagentParentID: SessionID?
+    @AppStorage(WorkspaceSessionRuntimeChoice.preferenceKey)
+    private var preferredWorkspaceRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
     @State private var workspaceRuntimeSelection = WorkspaceRuntimeSelectionState()
 
     var body: some View {
@@ -101,7 +103,10 @@ struct UnifiedWorkbenchShell: View {
             }
             .onChange(of: appStore.activeHostScope.profileID) { _, _ in
                 synchronizeSidebarLifecycle()
-                workspaceRuntimeSelection.resetForHostChange()
+                workspaceRuntimeSelection.reset()
+            }
+            .onChange(of: preferredWorkspaceRuntimeRawValue) { _, _ in
+                workspaceRuntimeSelection.reset()
             }
             .onChange(of: layout.usesCompactNavigation) { _, usesCompactNavigation in
                 lastCompactNavigation = usesCompactNavigation
@@ -1011,7 +1016,15 @@ struct UnifiedWorkbenchShell: View {
                 // 选择会话和切换路由由同一个入口发起，避免 selectedSessionID 的回调再次 open。
                 openSession(session, source: .workspaces, layout: layout)
             },
-            selectedRuntime: $workspaceRuntimeSelection.selectedRuntime
+            selectedRuntime: Binding(
+                get: {
+                    workspaceRuntimeSelection.resolvedRuntime(
+                        preferredRuntime: .stored(preferredWorkspaceRuntimeRawValue),
+                        claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
+                    )
+                },
+                set: { workspaceRuntimeSelection.manualRuntime = $0 }
+            )
         )
     }
 

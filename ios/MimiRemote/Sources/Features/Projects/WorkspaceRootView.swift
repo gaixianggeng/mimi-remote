@@ -383,11 +383,6 @@ struct WorkspaceRootView: View {
             pagerTransitionState.update(pagePosition: nil)
             synchronizeSelection()
         }
-        .onChange(of: sessionStore.hasClaudeRuntimeChannel) { _, isAvailable in
-            if !isAvailable, selectedSessionRuntime == .claude {
-                selectedSessionRuntime = .codex
-            }
-        }
         .sheet(isPresented: $isPresentingOpenWorkspace) {
             OpenWorkspaceSheet { workspaceID in
                 // 工作区页使用本地浏览选择；Sheet 成功打开目录后要显式切到新工作区，

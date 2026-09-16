@@ -922,9 +922,8 @@ done
 	}
 }
 
-// 回归：iPad 老版本/默认草稿会在 thread/resume 和 turn/start 上携带 dangerFullAccess。
-// gateway 必须改写降级后转发，而不是硬拒——硬拒会让会话恢复陷入确定性失败的重连死循环。
-func TestClaudeGatewayCoercesDangerSandboxOnResumeAndTurn(t *testing.T) {
+// 显式完全访问必须贯穿恢复和发送，不能在中间层静默降级。
+func TestClaudeGatewayPreservesFullAccessOnResumeAndTurn(t *testing.T) {
 	receivedPath := filepath.Join(t.TempDir(), "received.jsonl")
 	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
 while IFS= read -r line; do
@@ -936,6 +935,9 @@ while IFS= read -r line; do
   esac
 done
 `, receivedPath))
+	if err := os.WriteFile(bridge+".version", []byte("0.2.13"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
 	handler, projectDir := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
 		cfg.Claude.Enabled = true
@@ -966,11 +968,8 @@ done
 	}
 	resumeFrame := readTestFileLineEventually(t, receivedPath, `"thread/resume"`)
 	resumeParams := decodeGatewayParamsForTest(t, resumeFrame)
-	if resumeParams["sandbox"] != "workspace-write" {
-		t.Fatalf("Claude thread/resume 的危险 sandbox 应被改写为 workspace-write：%s", resumeFrame)
-	}
-	if bytes.Contains(resumeFrame, []byte("danger-full-access")) {
-		t.Fatalf("Claude thread/resume 不应把 danger-full-access 透传给 bridge：%s", resumeFrame)
+	if resumeParams["sandbox"] != "danger-full-access" || resumeParams["approvalPolicy"] != "never" {
+		t.Fatalf("Claude thread/resume 应保留完全访问并归一化为免审批：%s", resumeFrame)
 	}
 
 	turnPayload := fmt.Sprintf(
@@ -983,8 +982,8 @@ done
 	turnFrame := readTestFileLineEventually(t, receivedPath, `"turn/start"`)
 	turnParams := decodeGatewayParamsForTest(t, turnFrame)
 	sandboxPolicy, _ := turnParams["sandboxPolicy"].(map[string]any)
-	if sandboxPolicy["type"] != "workspaceWrite" || sandboxPolicy["networkAccess"] != false {
-		t.Fatalf("Claude turn/start 的危险 sandboxPolicy 应被改写为 workspaceWrite：%s", turnFrame)
+	if sandboxPolicy["type"] != "dangerFullAccess" || turnParams["approvalPolicy"] != "never" {
+		t.Fatalf("Claude turn/start 应保留完全访问：%s", turnFrame)
 	}
 }
 
@@ -1020,7 +1019,7 @@ sleep 1
 	}
 }
 
-func TestClaudeGatewaySanitizersForceClaudeWorkspaceWrite(t *testing.T) {
+func TestClaudeGatewaySanitizersPreserveExplicitFullAccess(t *testing.T) {
 	threadParams := sanitizedGatewayThreadParams("claude", "thread/start", map[string]any{
 		"cwd":            "/tmp/repo",
 		"model":          "claude-explicit",
@@ -1029,16 +1028,16 @@ func TestClaudeGatewaySanitizersForceClaudeWorkspaceWrite(t *testing.T) {
 		"sandbox":        "danger-full-access",
 	})
 	assertGatewayParamsOnly(t, threadParams, "cwd", "approvalPolicy", "approvalsReviewer", "sandbox")
-	if threadParams["sandbox"] != "workspace-write" {
-		t.Fatalf("Claude thread sanitizer 应把危险 sandbox 压到 workspace-write：%v", threadParams)
+	if threadParams["sandbox"] != "danger-full-access" || threadParams["approvalPolicy"] != "never" {
+		t.Fatalf("Claude thread sanitizer 应保留完全访问：%v", threadParams)
 	}
 
 	turnSandbox := sanitizedGatewaySandboxPolicy("claude", map[string]any{
 		"type":          "dangerFullAccess",
 		"networkAccess": true,
 	}, "/tmp/repo")
-	if turnSandbox["type"] != "workspaceWrite" || turnSandbox["networkAccess"] != false {
-		t.Fatalf("Claude turn sanitizer 应做 defense-in-depth 降权：%v", turnSandbox)
+	if turnSandbox["type"] != "dangerFullAccess" || len(turnSandbox) != 1 {
+		t.Fatalf("完全访问应使用无额外字段的 dangerFullAccess：%v", turnSandbox)
 	}
 }
 

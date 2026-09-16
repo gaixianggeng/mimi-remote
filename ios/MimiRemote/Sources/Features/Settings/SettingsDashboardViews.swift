@@ -7,6 +7,8 @@ struct ConnectionSettingsView: View {
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @EnvironmentObject private var themeStore: ThemeStore
+    @AppStorage(WorkspaceSessionRuntimeChoice.preferenceKey)
+    private var preferredRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     // 重命名 sheet 与扫码 Cover 同样必须由当前显示的连接页持有：紧凑布局把这一页
     // push 进导航栈后，设置根层已经不在被呈现的层级里，挂在那里的 presenter 不会呈现。
@@ -44,6 +46,42 @@ struct ConnectionSettingsView: View {
                 onRequestManualConnection: { isPresentingAddComputerForManualConnection = true },
                 probesRouteAutomatically: probesRouteAutomatically
             )
+
+            if isDevicesTab || showsAddComputerEntry {
+                Section {
+                    Menu {
+                        Picker(L10n.text("ui.preferred_runtime"), selection: preferredRuntimeBinding) {
+                            Text(L10n.text("ui.runtime_default"))
+                                .tag(WorkspaceSessionRuntimeChoice.codex)
+                            Text(L10n.text("ui.runtime_optional"))
+                                .tag(WorkspaceSessionRuntimeChoice.claude)
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            SettingsValueLabel(
+                                title: L10n.text("ui.preferred_runtime"),
+                                value: preferredRuntimeTitle,
+                                systemImage: "sparkles"
+                            )
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption)
+                                .foregroundStyle(tokens.tertiaryText)
+                                .accessibilityHidden(true)
+                        }
+                        // 菜单覆盖完整设置行，标题和留白也能直接打开选项。
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .settingsRow()
+                    .accessibilityLabel(L10n.text("ui.preferred_runtime"))
+                    .accessibilityValue(preferredRuntimeTitle)
+                    .accessibilityIdentifier("settings.preferredRuntime")
+                } footer: {
+                    Text(L10n.text("ui.preferred_runtime_description"))
+                        .settingsSectionFooterStyle()
+                }
+                .listRowBackground(tokens.settingsGroupBackground)
+            }
         }
         .navigationDestination(isPresented: $isPresentingAddComputerForManualConnection) {
             AddComputerView(qrScannerPresentation: qrScannerPresentation, navigation: navigation)
@@ -103,6 +141,18 @@ struct ConnectionSettingsView: View {
     private var showsAddComputerEntry: Bool {
         let model = appStore.connectionProfileSettingsModel
         return model.current != nil || !model.others.isEmpty
+    }
+
+    private var preferredRuntimeTitle: String {
+        L10n.text(WorkspaceSessionRuntimeChoice.stored(preferredRuntimeRawValue) == .claude
+            ? "ui.runtime_optional" : "ui.runtime_default")
+    }
+
+    private var preferredRuntimeBinding: Binding<WorkspaceSessionRuntimeChoice> {
+        Binding(
+            get: { .stored(preferredRuntimeRawValue) },
+            set: { preferredRuntimeRawValue = $0.rawValue }
+        )
     }
 
     private var profileRenameRouteBinding: Binding<ConnectionProfileRenameRoute?> {

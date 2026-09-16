@@ -5,6 +5,12 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
     case codex
     case claude
 
+    static let preferenceKey = "workspace.preferredRuntime"
+
+    static func stored(_ rawValue: String?) -> Self {
+        rawValue.flatMap(Self.init(rawValue:)) ?? .codex
+    }
+
     var id: String { rawValue }
 
     var runtimeProvider: String {

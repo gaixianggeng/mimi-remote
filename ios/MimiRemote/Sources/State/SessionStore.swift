@@ -886,23 +886,6 @@ final class SessionStore: ObservableObject {
         composerModelSelectionCache.remove(scope: scope)
     }
 
-    func saveComposerPermissionSelection(
-        _ snapshot: ComposerPermissionSelectionSnapshot,
-        for scope: ComposerDraftScopeKey
-    ) {
-        composerPermissionSelectionCache.save(snapshot, for: scope)
-    }
-
-    func composerPermissionSelection(
-        for scope: ComposerDraftScopeKey
-    ) -> ComposerPermissionSelectionSnapshot? {
-        composerPermissionSelectionCache.snapshot(for: scope)
-    }
-
-    func removeComposerPermissionSelection(for scope: ComposerDraftScopeKey) {
-        composerPermissionSelectionCache.remove(scope: scope)
-    }
-
     func pendingPermissionTurnBoundary(for sessionID: SessionID) -> PendingPermissionTurnBoundary? {
         pendingPermissionTurnBoundariesBySessionID[sessionID]?.first
     }

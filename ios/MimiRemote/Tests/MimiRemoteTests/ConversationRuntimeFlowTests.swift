@@ -2069,7 +2069,8 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(createPayload.turnOptions.runtimeProvider, "claude")
         XCTAssertEqual(createPayload.turnOptions.model, "claude-sonnet")
         XCTAssertEqual(createPayload.turnOptions.modelProvider, "anthropic")
-        XCTAssertEqual(createPayload.turnOptions.sandboxMode, .workspaceWrite)
+        XCTAssertEqual(createPayload.turnOptions.sandboxMode, .dangerFullAccess)
+        XCTAssertEqual(createPayload.turnOptions.approvalPolicy, .never)
         XCTAssertEqual(createPayload.turnOptions.networkAccess, false)
     }
 
@@ -2214,7 +2215,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.modelOptionsCallCount, 1)
     }
 
-    func testExplicitClaudeModelClampsDangerFullAccessBeforeCreate() async throws {
+    func testExplicitClaudeModelPreservesFullAccessBeforeCreate() async throws {
         let project = makeProject(id: "proj_explicit_claude_clamp")
         let created = makeSession(id: "sess_explicit_claude_clamp", projectID: project.id, title: "Claude Clamp", status: "running", source: "claude", runtimeProvider: "claude")
         let client = MockSessionStoreClient(
@@ -2253,7 +2254,8 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(createPayload.turnOptions.runtimeProvider, "claude")
         XCTAssertEqual(createPayload.turnOptions.model, "sonnet")
         XCTAssertEqual(createPayload.turnOptions.modelProvider, "anthropic")
-        XCTAssertEqual(createPayload.turnOptions.sandboxMode, .workspaceWrite)
+        XCTAssertEqual(createPayload.turnOptions.sandboxMode, .dangerFullAccess)
+        XCTAssertEqual(createPayload.turnOptions.approvalPolicy, .never)
         XCTAssertEqual(createPayload.turnOptions.networkAccess, false)
         XCTAssertEqual(client.modelOptionsCallCount, 1)
     }
