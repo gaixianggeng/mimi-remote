@@ -194,18 +194,8 @@ func (c *deepSeekGatewayConn) dispatchWaterfall(ctx context.Context, request har
 		return
 	}
 	requestID := nextDeepSeekServerRequestID()
-	rawID, err := deepSeekRawID(requestID)
-	if err != nil {
-		return
-	}
-	params, err := deepSeekParamsJSON(translated.Params)
-	if err != nil {
-		return
-	}
-	if err := c.policy.rememberPendingServerRequest(rawID, translated.Method, params); err != nil {
-		log.Printf("deepseek gateway 登记交互请求失败 err=%v", err)
-		return
-	}
+	// 先登记再下发：客户端应答与事件读协程并发，先写出去再登记会留下一个
+	// "应答比登记先到"的窗口，那条应答会被当成迟到应答丢弃。
 	c.mu.Lock()
 	c.waterfalls[request.EventID] = deepSeekPendingWaterfall{
 		requestID: requestID,
@@ -214,9 +204,24 @@ func (c *deepSeekGatewayConn) dispatchWaterfall(ctx context.Context, request har
 		eventID:   request.EventID,
 	}
 	c.mu.Unlock()
-	if err := c.writeDeepSeekRequest(requestID, translated.Method, translated.Params); err != nil {
+	// 反向请求的 pending 由 policy 在出站方向上登记（forwardDeepSeekFrame →
+	// observeUpstreamFrame），这里不再自己 rememberPendingServerRequest，
+	// 否则同一件事记两份，policy 侧那份会覆盖本地的记账。
+	delivered, err := c.forwardDeepSeekRequest(requestID, translated.Method, translated.Params)
+	if err != nil {
 		log.Printf("deepseek gateway 下发交互请求失败 err=%v", err)
 	}
+	if !delivered {
+		// 没送到就不能留在待应答表里：否则客户端若应答了，会去解一条它从未见过的请求。
+		c.dropWaterfall(request.EventID)
+	}
+}
+
+// dropWaterfall 撤销一条未能送达的交互请求登记。
+func (c *deepSeekGatewayConn) dropWaterfall(eventID string) {
+	c.mu.Lock()
+	delete(c.waterfalls, eventID)
+	c.mu.Unlock()
 }
 
 // attributeWaterfall 判断一条交互请求属于哪个会话。
@@ -377,17 +382,9 @@ func deepSeekRawID(id int64) (*json.RawMessage, error) {
 	return &message, nil
 }
 
-func deepSeekParamsJSON(params map[string]any) (json.RawMessage, error) {
-	raw, err := json.Marshal(params)
-	if err != nil {
-		return nil, err
-	}
-	return json.RawMessage(raw), nil
-}
-
-// writeDeepSeekRequest 下发一条带 id 的反向请求。
-func (c *deepSeekGatewayConn) writeDeepSeekRequest(id int64, method string, params map[string]any) error {
-	return c.writeDeepSeekPayload(map[string]any{
+// forwardDeepSeekRequest 下发一条带 id 的反向请求，并报告它是否真的到了客户端。
+func (c *deepSeekGatewayConn) forwardDeepSeekRequest(id int64, method string, params map[string]any) (bool, error) {
+	return c.forwardDeepSeekPayload(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"method":  method,

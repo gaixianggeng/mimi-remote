@@ -174,6 +174,17 @@ const deepSeekSearchLocalResultCap = 50
 // 优先用 Harness 的会话检索；部署未开启检索索引时 Harness 返回 gateway/internal，
 // 这时退化为按 session/list 的标题与轮次摘要做本地包含匹配。降级而不是报错：索引是
 // 宿主侧的可选配置，缺它不应该让搜索入口整体不可用。
+//
+// 两条硬约束决定了这里必须先把会话摘要补齐：
+//
+//   - Harness 的检索结果只有 {sessionId, snippet}，**不带 cwd**；而 iOS 的
+//     threadSearchPage 逐行要求 {thread: {…含 cwd…}, snippet}，缺任一项会抛
+//     invalidResponse 让整页搜索失败。
+//   - cwd 同时是结果授权的唯一依据。检索索引覆盖本机全部会话，而 thread/search
+//     请求里没有 cwd，请求侧无从比对；只有把 cwd 补回去，policy 的响应侧裁剪
+//     （sanitizeThreadSearchResponse）才能按 projects/browse_roots 判归属。
+//
+// 拿不到摘要的命中直接丢弃：补不出 cwd 就无法证明它属于授权工作区，fail closed。
 func (c *deepSeekGatewayConn) handleThreadSearch(ctx context.Context, frame *appServerGatewayFrame, params map[string]any) error {
 	query := firstNonEmpty(
 		gatewayParamString(params, "searchTerm"),
@@ -182,20 +193,31 @@ func (c *deepSeekGatewayConn) handleThreadSearch(ctx context.Context, frame *app
 	if query == "" {
 		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "thread/search.searchTerm 不能为空")
 	}
-	result, err := c.harness.SearchSessions(ctx, query)
-	if err == nil {
-		rows := make([]any, 0, len(result.Items))
-		for _, item := range result.Items {
-			rows = append(rows, deepSeekSearchThreadWire(item))
-		}
-		return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(rows, 0))
-	}
-	log.Printf("deepseek gateway 会话检索不可用，退化为本地匹配 err=%v", sanitizeGatewayDiagnostic(err.Error()))
-
-	sessions, listErr := c.harness.ListSessions(ctx, harnessclient.SessionListRequest{})
-	if listErr != nil {
+	sessions, err := c.harness.ListSessions(ctx, harnessclient.SessionListRequest{})
+	if err != nil {
 		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "读取 Harness 会话列表失败")
 	}
+	byID := make(map[string]harnessclient.SessionSummary, len(sessions))
+	for _, session := range sessions {
+		byID[session.SessionID] = session
+	}
+
+	if result, searchErr := c.harness.SearchSessions(ctx, query); searchErr == nil {
+		rows := make([]any, 0, len(result.Items))
+		for _, item := range result.Items {
+			session, ok := byID[item.SessionID]
+			if !ok {
+				continue
+			}
+			if row, ok := deepSeekSearchRowWire(session, item.Snippet); ok {
+				rows = append(rows, row)
+			}
+		}
+		return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(rows, 0))
+	} else {
+		log.Printf("deepseek gateway 会话检索不可用，退化为本地匹配 err=%v", sanitizeGatewayDiagnostic(searchErr.Error()))
+	}
+
 	needle := strings.ToLower(query)
 	rows := make([]any, 0, 16)
 	for _, session := range sessions {
@@ -206,11 +228,9 @@ func (c *deepSeekGatewayConn) handleThreadSearch(ctx context.Context, frame *app
 		if !strings.Contains(haystack, needle) {
 			continue
 		}
-		row := deepSeekThreadWire(session, nil, false)
-		if snippet != "" {
-			row["preview"] = snippet
+		if row, ok := deepSeekSearchRowWire(session, snippet); ok {
+			rows = append(rows, row)
 		}
-		rows = append(rows, row)
 		if len(rows) >= deepSeekSearchLocalResultCap {
 			break
 		}

@@ -190,17 +190,23 @@ func deepSeekTurnWire(bucket deepSeekTurnBucket, includeItems bool) map[string]a
 	return turn
 }
 
-// deepSeekSearchThreadWire 把搜索结果投影成 thread 行。搜索不返回 cwd，
-// 目录授权由 gateway 在请求侧完成。
-func deepSeekSearchThreadWire(item harnessclient.SessionSearchItem) map[string]any {
-	thread := map[string]any{
-		"id":     item.SessionID,
-		"status": "notLoaded",
+// deepSeekSearchRowWire 投影一行搜索结果。
+//
+// 形状必须是 {thread: {...}, snippet}：iOS 的 threadSearchPage 逐行解这两个键，
+// 缺任一项会抛 invalidResponse 让整页搜索失败。
+//
+// thread 里必须带 cwd，它同时承担两件事：iOS 据此确定会话归属目录；
+// policy 的响应侧裁剪（sanitizeThreadSearchResponse）以它为唯一判据决定这行
+// 能不能下发。Harness 的检索结果本身不带 cwd，因此调用方要先从 session/list
+// 的摘要把它补回来——补不出 cwd 的行如实丢弃，而不是塞一个默认目录。
+func deepSeekSearchRowWire(session harnessclient.SessionSummary, snippet string) (map[string]any, bool) {
+	if strings.TrimSpace(session.SessionID) == "" || strings.TrimSpace(session.CWD) == "" {
+		return nil, false
 	}
-	if snippet := strings.TrimSpace(item.Snippet); snippet != "" {
-		thread["preview"] = snippet
-	}
-	return thread
+	return map[string]any{
+		"thread":  deepSeekThreadWire(session, nil, false),
+		"snippet": snippet,
+	}, true
 }
 
 func deepSeekTurnOutlinePreview(outline []harnessclient.SessionTurnOutline) string {

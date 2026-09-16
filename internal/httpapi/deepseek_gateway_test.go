@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -902,6 +903,248 @@ func TestDeepSeekGatewayServesAppServerMethodsAgainstHarness(t *testing.T) {
 	}
 	if !harness.sawAuthHandshake() {
 		t.Fatal("应完成一次 token 换 Cookie 的认证握手")
+	}
+}
+
+// 回归：thread/start 成功之后，同一个连接必须能立刻继续发消息、读历史、中断。
+//
+// 这是产品必经路径，而它曾经是断的：适配层把翻译后的响应直接写回移动端，没有经过
+// appServerGatewayPolicy 的响应侧处理，于是 thread/start 返回的新线程从未被登记进
+// 授权表，紧随其后的 turn/start 被判成"未授权 thread"。用户看到的现象是
+// 「会话建好了，但发不出第一条消息」，而且不是网络错误，重试也不会好。
+//
+// 这里刻意不预置任何授权记录，只走真实的 create → prompt → read → interrupt 链。
+func TestDeepSeekGatewayAuthorizesCreatedThreadForTurns(t *testing.T) {
+	harness := newFakeDeepSeekHarness(t)
+	harness.handle(harnessclient.MethodSessionList, func(json.RawMessage) (any, *harnessclient.RemoteError) {
+		return map[string]any{"items": []any{}}, nil
+	})
+	harness.handle(harnessclient.MethodSessionCreate, func(json.RawMessage) (any, *harnessclient.RemoteError) {
+		return map[string]any{"sessionId": "s-new", "agentPreset": "default"}, nil
+	})
+
+	// 订阅连接要由测试自己持有，才能在 prompt 之后推一条属于本次投递的 turn/start。
+	//
+	// onOpen 会完全接管开场帧（handleOpen 见到它就 return），所以两个 endpoint 都要
+	// 自己回：漏掉 $events 的 ready，网关会停在「等 clientId」上，整条连接报事件流不可用。
+	var mu sync.Mutex
+	var followConn *websocket.Conn
+	var prompts []map[string]any
+	harness.onOpen = func(conn *websocket.Conn, open map[string]any) error {
+		switch endpoint, _ := open["endpoint"].(string); endpoint {
+		case harnessclient.EndpointEvents:
+			return writeDeepSeekMuxValue(conn, "", map[string]any{
+				"type":     "ready",
+				"clientId": "client-fixture",
+			})
+		case harnessclient.MethodSessionFollow:
+			mu.Lock()
+			followConn = conn
+			mu.Unlock()
+			// 空快照：新会话还没有任何轮次。
+			return writeDeepSeekMuxValue(conn, "", map[string]any{
+				"type":    "snapshot",
+				"cursor":  12,
+				"header":  map[string]any{"id": "s-new"},
+				"records": []any{},
+			})
+		}
+		return nil
+	}
+	harness.handle(harnessclient.MethodSessionPrompt, func(args json.RawMessage) (any, *harnessclient.RemoteError) {
+		// prompt 的参数是 {"request": {...}}，与 harnessclient.Prompt 的信封一致。
+		var envelope struct {
+			Request map[string]any `json:"request"`
+		}
+		if err := json.Unmarshal(args, &envelope); err != nil {
+			return nil, &harnessclient.RemoteError{Code: "gateway/bad-request", Message: err.Error()}
+		}
+		mu.Lock()
+		prompts = append(prompts, envelope.Request)
+		conn := followConn
+		mu.Unlock()
+		// 真实 Harness 在收到投递后才把新轮次写进会话日志，这里照此回放。
+		if conn != nil {
+			_ = writeDeepSeekMuxValue(conn, "", map[string]any{
+				"type": "event",
+				"event": map[string]any{
+					"type": "turn/start",
+					"seq":  13,
+					"data": map[string]any{"turn": 2},
+				},
+			})
+		}
+		return map[string]any{"accepted": true}, nil
+	})
+	harness.handle(harnessclient.MethodSessionCancel, func(json.RawMessage) (any, *harnessclient.RemoteError) {
+		return map[string]any{"accepted": true}, nil
+	})
+
+	harnessServer := harness.serve()
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.DeepSeek.Enabled = true
+		cfg.DeepSeek.BaseURL = harnessServer.URL
+		cfg.DeepSeek.TokenFile = writeDeepSeekTestTokenFile(t, harness.token)
+	})
+	workspace := server.router.cfg.Projects[0].Path
+
+	httpServer := httptest.NewServer(server.handler)
+	defer httpServer.Close()
+
+	conn := dialDeepSeekGateway(t, httpServer.URL)
+	defer conn.Close()
+
+	callDeepSeekGateway(t, conn, 1, "initialize", map[string]any{})
+
+	start := callDeepSeekGateway(t, conn, 2, "thread/start", map[string]any{"cwd": workspace})
+	thread, _ := start["thread"].(map[string]any)
+	if thread == nil || thread["id"] != "s-new" {
+		t.Fatalf("thread/start 应答不符：%+v", start)
+	}
+
+	// 关键断言：不预置授权，也要能对刚创建的线程发消息。
+	turn := callDeepSeekGateway(t, conn, 3, "turn/start", map[string]any{
+		"threadId":            "s-new",
+		"cwd":                 workspace,
+		"clientUserMessageId": "msg-1",
+		"input":               []any{map[string]any{"type": "text", "text": "你好"}},
+	})
+	turnInfo, _ := turn["turn"].(map[string]any)
+	if turnInfo == nil {
+		t.Fatalf("turn/start 应答缺少 turn：%+v", turn)
+	}
+	if turnInfo["id"] != "t2" {
+		t.Fatalf("turn id 应来自本次投递对应的 turn/start 事件：%+v", turnInfo)
+	}
+
+	mu.Lock()
+	delivered := append([]map[string]any(nil), prompts...)
+	mu.Unlock()
+	if len(delivered) != 1 {
+		t.Fatalf("应恰好投递一次 prompt，得到 %d 次", len(delivered))
+	}
+	if delivered[0]["sessionId"] != "s-new" {
+		t.Fatalf("prompt 应投递到新建会话：%+v", delivered[0])
+	}
+	if delivered[0]["requestId"] != "msg-1" {
+		t.Fatalf("prompt 的 requestId 必须复用客户端 clientUserMessageId：%+v", delivered[0])
+	}
+
+	// 历史回读与中断同样依赖该线程已授权。
+	if _, err := callDeepSeekGatewayNoFatal(conn, 4, "thread/turns/list", map[string]any{
+		"threadId": "s-new",
+	}); err != nil {
+		t.Fatalf("新建线程应可读历史：%v", err)
+	}
+	callDeepSeekGateway(t, conn, 5, "turn/interrupt", map[string]any{"threadId": "s-new"})
+}
+
+// 回归：thread/search 的结果必须带 cwd 与 snippet。
+//
+// 两个独立问题都落在这个形状上：iOS 的 threadSearchPage 逐行要求
+// {thread: {…cwd…}, snippet}，缺任一项会抛 invalidResponse 让整页搜索失败；
+// 而 cwd 同时是 policy 裁剪搜索结果的唯一判据——Harness 的检索结果不带 cwd，
+// 请求侧也没有 cwd 可比。缺了它，未授权工作区的会话摘要会直接下发到移动端。
+func TestDeepSeekGatewaySearchRowsCarryCWDAndTrimUnauthorized(t *testing.T) {
+	harness := newFakeDeepSeekHarness(t)
+	harness.handle(harnessclient.MethodSessionList, func(json.RawMessage) (any, *harnessclient.RemoteError) {
+		return map[string]any{"items": []any{
+			map[string]any{
+				"sessionId": "s-inside",
+				"cwd":       harness.workspace,
+				"updatedAt": 1700000000000,
+				"projections": map[string]any{
+					"values": map[string]any{"title": "授权会话"},
+				},
+			},
+			map[string]any{"sessionId": "s-outside", "cwd": "/elsewhere", "updatedAt": 1700000000001},
+		}}, nil
+	})
+	// 检索索引覆盖本机全部会话，命中里会同时出现授权与未授权的会话。
+	harness.handle(harnessclient.MethodSessionSearch, func(json.RawMessage) (any, *harnessclient.RemoteError) {
+		return map[string]any{"items": []any{
+			map[string]any{"sessionId": "s-inside", "snippet": "命中片段"},
+			map[string]any{"sessionId": "s-outside", "snippet": "越权命中"},
+			map[string]any{"sessionId": "s-unknown", "snippet": "列表里没有的会话"},
+		}}, nil
+	})
+
+	harnessServer := harness.serve()
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.DeepSeek.Enabled = true
+		cfg.DeepSeek.BaseURL = harnessServer.URL
+		cfg.DeepSeek.TokenFile = writeDeepSeekTestTokenFile(t, harness.token)
+	})
+	harness.setWorkspace(server.router.cfg.Projects[0].Path)
+
+	httpServer := httptest.NewServer(server.handler)
+	defer httpServer.Close()
+
+	conn := dialDeepSeekGateway(t, httpServer.URL)
+	defer conn.Close()
+
+	callDeepSeekGateway(t, conn, 1, "initialize", map[string]any{})
+	result := callDeepSeekGateway(t, conn, 2, "thread/search", map[string]any{"searchTerm": "命中"})
+
+	rows, _ := result["data"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("只应留下授权工作区内的命中，得到 %d 条：%+v", len(rows), rows)
+	}
+	row, _ := rows[0].(map[string]any)
+	if row["snippet"] != "命中片段" {
+		t.Fatalf("搜索结果行必须带 snippet：%+v", row)
+	}
+	thread, ok := row["thread"].(map[string]any)
+	if !ok {
+		t.Fatalf("搜索结果行必须以 thread 承载会话，否则 iOS 会整页判为无效：%+v", row)
+	}
+	if thread["id"] != "s-inside" {
+		t.Fatalf("命中会话不符：%+v", thread)
+	}
+	if thread["cwd"] != server.router.cfg.Projects[0].Path {
+		t.Fatalf("thread 必须带 cwd，否则无法证明归属且 iOS 会丢弃该行：%+v", thread)
+	}
+	if _, present := result["nextCursor"]; !present {
+		t.Fatalf("分页结果必须带 nextCursor 键：%+v", result)
+	}
+}
+
+// callDeepSeekGatewayNoFatal 与 callDeepSeekGateway 同路，但把拒绝也返回给调用方。
+func callDeepSeekGatewayNoFatal(conn *websocket.Conn, id int, method string, params map[string]any) (map[string]any, error) {
+	payload, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  method,
+		"params":  params,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+		return nil, err
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		return nil, err
+	}
+	for {
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			return nil, err
+		}
+		var frame map[string]any
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			continue
+		}
+		gotID, ok := frame["id"].(float64)
+		if !ok || gotID != float64(id) {
+			continue
+		}
+		if rawError, present := frame["error"].(map[string]any); present {
+			message, _ := rawError["message"].(string)
+			return nil, fmt.Errorf("%s 被拒绝：%s", method, message)
+		}
+		result, _ := frame["result"].(map[string]any)
+		return result, nil
 	}
 }
 

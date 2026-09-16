@@ -375,9 +375,46 @@ func (c *deepSeekGatewayConn) writeDeepSeekError(id any, code int, message strin
 }
 
 func (c *deepSeekGatewayConn) writeDeepSeekPayload(payload map[string]any) error {
+	_, err := c.forwardDeepSeekPayload(payload)
+	return err
+}
+
+// forwardDeepSeekPayload 与 writeDeepSeekPayload 同路，只是把"是否真的到了客户端"也报出来。
+// 反向请求需要这个区分：被 policy 丢弃的请求不能留在本地待应答表里，
+// 否则客户端应答时会去解一条从未送达的请求。
+func (c *deepSeekGatewayConn) forwardDeepSeekPayload(payload map[string]any) (bool, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return writeWebSocketFrame(c.client, &c.writeMu, websocket.TextMessage, raw)
+	return c.forwardDeepSeekFrame(raw)
+}
+
+// forwardDeepSeekFrame 把一条出站帧先交给 appServerGatewayPolicy，再按它的结论下发。
+//
+// 出站方向必须过 policy，否则适配层会绕开三件只有这里能完成的事：
+//
+//   - thread/start、thread/list、thread/read 的成功响应要把 thread 登记进授权表。
+//     本地翻译不会替它登记，于是「新建会话成功」之后紧接着的 turn/start 会被判成
+//     未授权 thread，用户看到的正是"会话建好了却发不出消息"。
+//   - thread/search 的响应要按 projects/browse_roots 裁剪。Harness 的检索结果不带
+//     cwd，请求侧也没有 cwd 可比，结果授权只能在响应侧完成。
+//   - 反向请求要登记 pending，通知要过下行门禁与内联图改写。
+//
+// 与 Codex / Claude 两条网关同语义：policy 说 drop 就不下发，说 error 就回错误帧。
+func (c *deepSeekGatewayConn) forwardDeepSeekFrame(raw []byte) (bool, error) {
+	forwarded, forward, policyErr := c.policy.observeUpstreamFrame(websocket.TextMessage, raw)
+	if policyErr != nil {
+		if !writeGatewayPolicyError(c.client, &c.writeMu, policyErr) {
+			return false, errors.New("deepseek gateway: 策略错误帧下发失败")
+		}
+		return false, nil
+	}
+	if !forward {
+		return false, nil
+	}
+	if err := writeWebSocketFrame(c.client, &c.writeMu, websocket.TextMessage, forwarded); err != nil {
+		return false, err
+	}
+	return true, nil
 }
