@@ -284,28 +284,39 @@ impl ConnectionState {
         pids
     }
 
-    /// 某个 thread 是否正被本机其他 Claude 进程持有。进程池里已有该 thread 的
-    /// 进程时一定是我们自己持有，直接返回 None，不读登记目录。
+    /// 进程池有旧进程不代表仍独占会话：桌面端可以再次打开同一个 session。
+    /// 发现外部持有方后保留只读，并让旧进程下次发送前从磁盘重新恢复上下文。
     pub async fn foreign_owner(&self, thread_id: &str) -> Option<ForeignSessionOwner> {
         if !self.foreign_sessions.is_enabled() {
             return None;
         }
-        if self.claude_pool().get(thread_id).await.is_some() {
-            return None;
-        }
-        self.foreign_sessions
+        let owner = self
+            .foreign_sessions
             .owner_of(thread_id, &self.own_child_pids().await)
-            .await
+            .await;
+        if owner.is_some()
+            && let Some(handle) = self.claude_pool().get(thread_id).await
+        {
+            handle.require_resume();
+        }
+        owner
     }
 
-    /// 列表路径用：一次扫描，按 session id 查持有方。调用方自行跳过进程池里的 thread。
+    /// 列表路径用：一次扫描，自己的子进程按 pid 排除，不按会话排除。
     pub async fn foreign_owners(&self) -> HashMap<String, ForeignSessionOwner> {
         if !self.foreign_sessions.is_enabled() {
             return HashMap::new();
         }
-        self.foreign_sessions
+        let owners = self
+            .foreign_sessions
             .owners(&self.own_child_pids().await)
-            .await
+            .await;
+        for thread_id in owners.keys() {
+            if let Some(handle) = self.claude_pool().get(thread_id).await {
+                handle.require_resume();
+            }
+        }
+        owners
     }
 
     pub fn launcher(&self) -> Option<&Arc<dyn ProcessLauncher>> {

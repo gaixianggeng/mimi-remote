@@ -56,13 +56,13 @@ func TestSupportsThreadItemsList(t *testing.T) {
 }
 
 func TestSupportsThreadTakeover(t *testing.T) {
-	if SupportsThreadTakeover("0.2.10") {
+	if SupportsThreadTakeover("0.2.10") || SupportsThreadTakeover("0.2.11") {
 		t.Fatal("0.2.10 没有 thread/takeover，不应声明能力")
 	}
-	if !SupportsThreadTakeover("0.2.11") || !SupportsThreadTakeover("1.0.0") {
-		t.Fatal("0.2.11 及更高版本应声明 thread/takeover")
+	if !SupportsThreadTakeover("0.2.14") || !SupportsThreadTakeover("1.0.0") {
+		t.Fatal("0.2.14 及更高版本应声明 thread/takeover")
 	}
-	if SupportsThreadTakeover("0.2.11-beta.1") || SupportsThreadTakeover("") {
+	if SupportsThreadTakeover("0.2.14-beta.1") || SupportsThreadTakeover("") {
 		t.Fatal("预发布或缺失版本不能通过能力门禁")
 	}
 }

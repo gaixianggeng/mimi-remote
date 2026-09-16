@@ -669,7 +669,7 @@ struct ComposerStatusTray: View {
                     Text(notice.message)
                         .font(themeStore.uiFont(.caption2, weight: .medium))
                         .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(3)
+                        .lineLimit(notice.failureMessage == nil ? 3 : nil)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.vertical, 6)

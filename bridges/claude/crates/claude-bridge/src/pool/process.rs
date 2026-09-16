@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use alleycat_bridge_core::{
@@ -204,6 +205,8 @@ pub struct ClaudeProcessHandle {
     /// Stable identity for this process instance. A thread can own several
     /// generations over its lifetime after crash recovery.
     generation: String,
+    // 外部进程续聊后，本进程内存中的 leaf 已过期；即使对方自然退出也不能直接复用。
+    requires_resume: AtomicBool,
     pid: Option<u32>,
     /// Sender end of the writer mpsc — closing this is the signal to the
     /// writer task to drop claude's stdin (which makes claude exit cleanly).
@@ -460,6 +463,7 @@ impl ClaudeProcessHandle {
             claude_bin,
             thread_id,
             generation,
+            requires_resume: AtomicBool::new(false),
             pid,
             writer_tx,
             events_tx,
@@ -495,6 +499,14 @@ impl ClaudeProcessHandle {
     /// Stable identity for this child-process generation.
     pub fn generation(&self) -> &str {
         &self.generation
+    }
+
+    pub(crate) fn require_resume(&self) {
+        self.requires_resume.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn requires_resume(&self) -> bool {
+        self.requires_resume.load(Ordering::Acquire)
     }
 
     /// OS process id (when the spawn surfaced one).
@@ -1101,6 +1113,7 @@ impl ClaudeProcessHandle {
             claude_bin: PathBuf::from("/dev/null"),
             thread_id: "test-thread".into(),
             generation: "test-generation".into(),
+            requires_resume: AtomicBool::new(false),
             pid: None,
             writer_tx,
             events_tx,

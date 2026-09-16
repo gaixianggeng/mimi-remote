@@ -169,7 +169,7 @@ struct EventDriverRegistration {
 }
 
 enum EventDriverCommand {
-    CheckPermissionChange {
+    CheckProcessReplacement {
         ready: oneshot::Sender<Result<(), TurnError>>,
     },
     BeginTurn {
@@ -210,7 +210,7 @@ pub enum TurnError {
         active_turn_id: String,
     },
     #[error(
-        "cannot change permissions while background tasks are pending; stop /loop or cancel scheduled tasks using the current permission mode first"
+        "cannot replace the Claude process while background tasks are pending; stop /loop or cancel scheduled tasks first"
     )]
     BackgroundWorkPending { thread_id: String },
     #[error("claude rpc error: {0}")]
@@ -321,12 +321,14 @@ pub async fn handle_turn_start(
     }
 
     let permission_mode = claude_permission_mode(&params);
-    if handle.uses_full_access() != (permission_mode == "bypassPermissions") {
-        // result 不代表后台任务已结束。向常驻 driver 查询后再换代，避免杀掉
-        // 等待 ScheduleWakeup 的 /loop；同档位仍能发送消息取消这些任务。
+    if handle.requires_resume()
+        || handle.uses_full_access() != (permission_mode == "bypassPermissions")
+    {
+        // result 不代表后台任务已结束。向常驻 driver 查询后再换代，
+        // 避免中断尚未完成的 /loop 或延迟任务。
         let driver = ensure_event_driver(state, &params.thread_id, &handle);
-        check_permission_change(&driver).await?;
-        // set_permission_mode 无法撤销启动时的 sandbox / disallowedTools。
+        check_process_replacement(&driver).await?;
+        // 权限边界变化或桌面端续聊都需要换代；旧进程不会重新加载磁盘上的新 leaf。
         state
             .claude_pool()
             .release_if_same(&params.thread_id, &handle)
@@ -536,6 +538,13 @@ async fn acquire_turn_process(
     params: &p::TurnStartParams,
     acquire_mode: TurnProcessAcquire,
 ) -> Result<(Arc<ClaudeProcessHandle>, crate::pool::ProcessAdmission), TurnError> {
+    // 先检查当前持有方，再复用进程。手机接管留下的空闲进程不能绕过桌面端保护。
+    if let Some(owner) = state.foreign_owner(&params.thread_id).await {
+        return Err(TurnError::OwnedElsewhere {
+            thread_id: params.thread_id.clone(),
+            owner: owner.to_json(),
+        });
+    }
     if let Some(reserved) = state
         .claude_pool()
         .get_with_admission(&params.thread_id)
@@ -549,14 +558,6 @@ async fn acquire_turn_process(
         .lookup(&params.thread_id)
         .await
         .ok_or_else(|| TurnError::ThreadNotLoaded(params.thread_id.clone()))?;
-    // 进程池里没有这个 thread 的进程，而本机别的 Claude 进程正持有它：拒绝起第二个
-    // 进程。thread/resume 已把会话标成只读，这里是绕过 resume 直接 turn/start 的兜底。
-    if let Some(owner) = state.foreign_owner(&params.thread_id).await {
-        return Err(TurnError::OwnedElsewhere {
-            thread_id: params.thread_id.clone(),
-            owner: owner.to_json(),
-        });
-    }
     let cwd = resume_cwd_or_fallback(&entry.cwd, &params.thread_id, state.trust_persisted_cwd());
     let defaults = state.defaults();
     let model = normalize_claude_model(params.model.clone().or_else(|| defaults.model.clone()));
@@ -1062,16 +1063,18 @@ async fn begin_driver_turn(
     })?
 }
 
-async fn check_permission_change(
+async fn check_process_replacement(
     driver: &mpsc::UnboundedSender<EventDriverCommand>,
 ) -> Result<(), TurnError> {
     let (ready, response) = oneshot::channel();
     driver
-        .send(EventDriverCommand::CheckPermissionChange { ready })
-        .map_err(|_| TurnError::ClaudeRpc("permission check event driver is unavailable".into()))?;
-    response
-        .await
-        .map_err(|_| TurnError::ClaudeRpc("permission check event driver stopped".into()))?
+        .send(EventDriverCommand::CheckProcessReplacement { ready })
+        .map_err(|_| {
+            TurnError::ClaudeRpc("process replacement check event driver is unavailable".into())
+        })?;
+    response.await.map_err(|_| {
+        TurnError::ClaudeRpc("process replacement check event driver stopped".into())
+    })?
 }
 
 async fn run_event_driver(mut args: EventDriverArgs) {
@@ -1091,7 +1094,7 @@ async fn run_event_driver(mut args: EventDriverArgs) {
             biased;
             command = args.commands_rx.recv() => {
                 match command {
-                    Some(EventDriverCommand::CheckPermissionChange { ready }) => {
+                    Some(EventDriverCommand::CheckProcessReplacement { ready }) => {
                         let result = if let Some(active) = current.as_ref() {
                             Err(TurnError::AlreadyActive {
                                 thread_id: args.thread_id.clone(),
@@ -1966,7 +1969,7 @@ mod tests {
             }
             emit_successful_text_turn(&events, "done", turn_id);
             wait_for_completed_turn(&state, &thread_id, turn_id).await;
-            let result = check_permission_change(&driver).await;
+            let result = check_process_replacement(&driver).await;
             if stop {
                 assert!(result.is_ok());
             } else {
