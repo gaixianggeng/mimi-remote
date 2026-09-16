@@ -1093,25 +1093,31 @@ impl EventTranslatorState {
                     .get("taskId")
                     .and_then(Value::as_str)
                     .map(str::to_string);
-                let new_status = input
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .map(parse_todo_status);
+                let raw_status = input.get("status").and_then(Value::as_str);
                 let Some(task_id) = task_id else {
                     return Vec::new();
                 };
-                let Some(new_status) = new_status else {
+                let Some(raw_status) = raw_status else {
                     return Vec::new();
                 };
-                let mut found = false;
-                for (id, step) in self.todo_steps.iter_mut() {
-                    if id == &task_id {
-                        step.status = new_status;
-                        found = true;
-                        break;
+                // Claude 用 `deleted` 表示移除任务，历史重建（ClaudeTaskHistoryProjection）
+                // 同样按删除处理；实时清单必须一致，否则恢复同一会话后任务会重新出现。
+                if raw_status == "deleted" {
+                    let before = self.todo_steps.len();
+                    self.todo_steps.retain(|(id, _)| id != &task_id);
+                    self.todo_steps.len() != before
+                } else {
+                    let new_status = parse_todo_status(raw_status);
+                    let mut found = false;
+                    for (id, step) in self.todo_steps.iter_mut() {
+                        if id == &task_id {
+                            step.status = new_status;
+                            found = true;
+                            break;
+                        }
                     }
+                    found
                 }
-                found
             }
             _ => false,
         };
@@ -1455,7 +1461,8 @@ fn extract_bash_command(input_buf: &str) -> String {
 
 /// Map claude's TaskUpdate status string ("pending" | "in_progress" |
 /// "completed") to the codex `TurnPlanStepStatus` enum. Unknown values
-/// stay Pending — the bridge never invents new statuses.
+/// stay Pending — the bridge never invents new statuses. The `deleted`
+/// status is not a step status; callers remove the step before mapping.
 fn parse_todo_status(status: &str) -> TurnPlanStepStatus {
     match status {
         "in_progress" => TurnPlanStepStatus::InProgress,
@@ -4080,6 +4087,59 @@ mod tests {
                         if items[0]["text"] == "Task created"
                 )
         )));
+    }
+
+    #[test]
+    fn task_update_deleted_removes_step_from_live_plan() {
+        let mut s = state();
+        for task_id in ["task-1", "task-2"] {
+            run_tool_lifecycle(
+                &mut s,
+                task_id,
+                "TaskCreate",
+                &format!(r#"{{"subject":"{task_id} subject"}}"#),
+                &format!(r#"{{"id":"{task_id}"}}"#),
+                false,
+            );
+        }
+        let deleted = run_tool_lifecycle(
+            &mut s,
+            "toolu_delete",
+            "TaskUpdate",
+            r#"{"taskId":"task-1","status":"deleted"}"#,
+            "{}",
+            false,
+        );
+        let plan = deleted
+            .iter()
+            .find_map(|n| match n {
+                ServerNotification::TurnPlanUpdated(n) => Some(n),
+                _ => None,
+            })
+            .expect("TurnPlanUpdated after deleting a task");
+        assert_eq!(
+            plan.plan.len(),
+            1,
+            "deleted task must leave the live plan: {:?}",
+            plan.plan
+        );
+        assert_eq!(plan.plan[0].step, "task-2 subject");
+
+        // 重复删除或删除不存在的任务都不产生可观察变化。
+        let orphan = run_tool_lifecycle(
+            &mut s,
+            "toolu_delete_orphan",
+            "TaskUpdate",
+            r#"{"taskId":"task-1","status":"deleted"}"#,
+            "{}",
+            false,
+        );
+        assert!(
+            !orphan
+                .iter()
+                .any(|n| matches!(n, ServerNotification::TurnPlanUpdated(_))),
+            "deleting a missing task must not emit"
+        );
     }
 
     #[test]

@@ -268,6 +268,68 @@ final class ConversationActivityDetailProjectionTests: XCTestCase {
         }
     }
 
+    func testAnthropicSourceMediaPayloadsAreOmittedWithoutDroppingBusinessFields() async throws {
+        let payload = Data("anthropic-media-payload".utf8).base64EncodedString()
+        let media: CodexAppServerJSONValue = .object([
+            "blocks": .array([
+                .object([
+                    "type": .string("image"),
+                    "source": .object([
+                        "type": .string("base64"), "media_type": .string("image/png"), "data": .string(payload)
+                    ])
+                ]),
+                .object([
+                    "type": .string("audio"),
+                    "source": .object([
+                        "type": .string("base64"), "media_type": .string("audio/wav"), "data": .string(payload)
+                    ])
+                ]),
+                // 外层没有媒体 data，source 也不是 base64 —— 属于业务对象，必须原样保留。
+                .object([
+                    "type": .string("image"),
+                    "source": .object([
+                        "type": .string("url"), "url": .string("https://example.com/image.png"),
+                        "caption": .string("Keep caption")
+                    ])
+                ]),
+                // 内层 type 同名但载荷不是 base64，不能被误判为媒体。
+                .object([
+                    "type": .string("image"),
+                    "source": .object([
+                        "type": .string("base64"), "media_type": .string("image/png"),
+                        "data": .string("ordinary-business-value")
+                    ])
+                ])
+            ]),
+            "cursor": .string("next-page")
+        ])
+        let marker = CodexAppServerJSONValue.string(L10n.text("ui.media_data_omitted"))
+        // 同时覆盖 MCP structuredContent 与没有已知包装字段的普通 JSON 回退。
+        for result in [CodexAppServerJSONValue.object(["content": .array([]), "structuredContent": media]), media] {
+            let item: [String: CodexAppServerJSONValue] = [
+                "type": .string("mcpToolCall"), "id": .string("anthropic-media"), "server": .string("sample"),
+                "tool": .string("lookup"), "status": .string("completed"), "result": result
+            ]
+            var projector = CodexAppServerEventProjector()
+            let live = try message(from: projector.project(notification(item)))
+            let restored = try await history(item)
+            XCTAssertEqual(live.content, restored.content)
+            XCTAssertFalse(live.content.contains(payload))
+            let displayed = try JSONDecoder().decode(CodexAppServerJSONValue.self, from: Data(live.content.utf8))
+            let blocks = try XCTUnwrap(displayed["blocks"]?.arrayValue)
+            let original = try XCTUnwrap(media["blocks"]?.arrayValue)
+            XCTAssertEqual(blocks.count, 4)
+            for index in 0..<2 {
+                XCTAssertEqual(blocks[index]["source"]?["data"], marker)
+                XCTAssertEqual(blocks[index]["source"]?["media_type"], original[index]["source"]?["media_type"])
+                XCTAssertEqual(blocks[index]["source"]?["type"], original[index]["source"]?["type"])
+            }
+            XCTAssertEqual(blocks[2], original[2])
+            XCTAssertEqual(blocks[3], original[3])
+            XCTAssertEqual(displayed["cursor"], media["cursor"])
+        }
+    }
+
     func testExternalHistoryOutputKeepsPreviewAndItsFullOutputReference() async throws {
         var item = command(output: "Stored preview")
         item["historyOutputRef"] = .string("agentd-history-output://details")
@@ -288,6 +350,12 @@ final class ConversationActivityDetailProjectionTests: XCTestCase {
         XCTAssertEqual(tasks.count, 1)
         XCTAssertEqual(tasks.first?.title, "Run tests")
         XCTAssertEqual(tasks.first?.status, "completed")
+        // Claude 的 deleted 状态必须从重建清单里移除任务；实时轮次计划由桥接层保持同一语义。
+        let deleted = task(tool: "TaskUpdate", args: ["taskId": .string("7"), "status": .string("deleted")])
+        let removedTurn: [String: CodexAppServerJSONValue] = [
+            "items": .array([create, deleted].map(CodexAppServerJSONValue.object))
+        ]
+        XCTAssertTrue(ClaudeTaskHistoryProjection.tasks(in: [removedTurn]).isEmpty)
         let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
         let context = await runtime.contextTasks(from: ["turns": .array([.object(turn)])])
         XCTAssertEqual(context.map(\.id), ["claude-task:7"])

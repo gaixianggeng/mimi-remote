@@ -104,14 +104,21 @@ enum ConversationActivityDetailText {
             return .array(values.map(displayJSON))
         case .object(let object):
             var displayed = object.mapValues(displayJSON)
-            if let type = object["type"]?.stringValue, ["image", "audio"].contains(type),
-               let payload = object["data"]?.stringValue, !payload.isEmpty {
-                let mime = object["mimeType"]?.stringValue ?? ""
-                // MIME 可确认协议媒体；缺失 MIME 时，要求载荷符合标准 base64，避免裁掉普通业务文本。
-                if mime.hasPrefix(type + "/") || (mime.isEmpty
-                    && payload.utf8.count.isMultiple(of: 4)
-                    && payload.range(of: "^[A-Za-z0-9+/]+={0,2}$", options: .regularExpression) != nil) {
+            if let type = object["type"]?.stringValue, ["image", "audio"].contains(type) {
+                if isMediaPayload(type: type, mime: object["mimeType"]?.stringValue, payload: object["data"]?.stringValue) {
                     displayed["data"] = .string(L10n.text("ui.media_data_omitted"))
+                }
+                // Anthropic 媒体把载荷放在 source 包装里，外层对象自身没有 data；只递归无法命中，
+                // 因为 source.type 是 base64 而不是 image/audio。
+                let source = object["source"]?.objectValue
+                // source 包装还可能携带普通业务文本，必须确认编码与载荷有效。
+                if source?["type"]?.stringValue == "base64",
+                   let payload = source?["data"]?.stringValue,
+                   Data(base64Encoded: payload) != nil,
+                   isMediaPayload(type: type, mime: source?["media_type"]?.stringValue, payload: payload) {
+                    var displayedSource = displayed["source"]?.objectValue ?? [String: CodexAppServerJSONValue]()
+                    displayedSource["data"] = .string(L10n.text("ui.media_data_omitted"))
+                    displayed["source"] = .object(displayedSource)
                 }
             }
             return .object(displayed)
@@ -124,6 +131,14 @@ enum ConversationActivityDetailText {
         default:
             return value
         }
+    }
+
+    /// MIME 可确认协议媒体；缺失 MIME 时，要求载荷符合标准 base64，避免裁掉普通业务文本。
+    private static func isMediaPayload(type: String, mime: String?, payload: String?) -> Bool {
+        guard let payload, !payload.isEmpty else { return false }
+        if let mime, !mime.isEmpty { return mime.hasPrefix(type + "/") }
+        return payload.utf8.count.isMultiple(of: 4)
+            && payload.range(of: "^[A-Za-z0-9+/]+={0,2}$", options: .regularExpression) != nil
     }
 
     private static func strings(_ value: CodexAppServerJSONValue?) -> [String] {
