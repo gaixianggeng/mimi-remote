@@ -100,10 +100,10 @@ func (s *Stream) Ready(ctx context.Context, timeout time.Duration) (string, erro
 }
 
 // Waterfall 把 waterfall 帧解码成结构化交互请求。
-func (frame StreamValue) Waterfall() (waterfallFrame, error) {
-	var decoded waterfallFrame
+func (frame StreamValue) Waterfall() (WaterfallRequest, error) {
+	var decoded WaterfallRequest
 	if err := json.Unmarshal(frame.Raw, &decoded); err != nil {
-		return waterfallFrame{}, fmt.Errorf("harnessclient: 解析 waterfall 帧失败：%w", err)
+		return WaterfallRequest{}, fmt.Errorf("harnessclient: 解析 waterfall 帧失败：%w", err)
 	}
 	return decoded, nil
 }

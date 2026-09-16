@@ -160,20 +160,23 @@ type StreamValue struct {
 	Raw json.RawMessage
 }
 
-// waterfallFrame 是需要客户端应答的交互请求。审批与用户追问共用这一层信封，
-// 用 event 字段区分。
-type waterfallFrame struct {
-	Type    string `json:"type"`
-	EventID string `json:"eventId"`
-	Event   string `json:"event"`
-	Request struct {
-		// 审批
-		ToolName      string `json:"toolName,omitempty"`
-		RequestID     string `json:"requestId,omitempty"`
-		Justification string `json:"justification,omitempty"`
-		// 用户追问
-		Questions []Question `json:"questions,omitempty"`
-	} `json:"request"`
+// WaterfallRequest 是需要客户端应答的交互请求。审批与用户追问共用这一层信封，
+// 用 Event 字段区分。上层据此合成 app-server 的反向请求。
+type WaterfallRequest struct {
+	Type    string           `json:"type"`
+	EventID string           `json:"eventId"`
+	Event   string           `json:"event"`
+	Request WaterfallPayload `json:"request"`
+}
+
+// WaterfallPayload 是交互请求的载荷。审批只填工具名与理由，追问带结构化问题。
+type WaterfallPayload struct {
+	// 审批
+	ToolName      string `json:"toolName,omitempty"`
+	CallID        string `json:"callId,omitempty"`
+	Justification string `json:"reason,omitempty"`
+	// 用户追问
+	Questions []Question `json:"questions,omitempty"`
 }
 
 // Question 是结构化追问。答案必须按 id 回填，不能把自然语言回复伪装成答案。
