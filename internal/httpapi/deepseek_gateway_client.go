@@ -378,7 +378,16 @@ func (c *deepSeekGatewayConn) handleTurnStart(ctx context.Context, frame *appSer
 	if requestID == "" {
 		requestID = harnessclient.NewRequestID()
 	}
-	follow.drainTurnStarts()
+	// 模型与推理档位必须先落到会话上再投递，否则这一轮用的还是上一个模型。
+	// 拒绝时直接回错误帧，不投递：让用户看到"选择没生效"比投递出去再让回答风格
+	// 不一致更容易发现。
+	if err := c.applyDeepSeekModelSelection(ctx, threadID, params); err != nil {
+		var selectionErr *deepSeekModelSelectionError
+		if errors.As(err, &selectionErr) {
+			return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, selectionErr.Error())
+		}
+		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "无法把模型选择交给 Harness，请稍后重试")
+	}
 	if err := c.harness.Prompt(ctx, harnessclient.PromptRequest{
 		SessionID: threadID,
 		RequestID: requestID,
@@ -388,10 +397,11 @@ func (c *deepSeekGatewayConn) handleTurnStart(ctx context.Context, frame *appSer
 		log.Printf("deepseek gateway 投递输入失败 err=%v", sanitizeGatewayDiagnostic(err.Error()))
 		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "向 Harness 投递输入失败")
 	}
-	// 等 Harness 把 turn 编号发出来，把真实 turn id 回给客户端。等不到就不带 id
-	// 回应——编一个 turn 号会让客户端的中断对账与 active 清理指向错误的 turn。
+	// 等 Harness 把这次投递自己的 turn 编号写进会话日志，把真实 turn id 回给客户端。
+	// 等不到就不带 id 回应——编一个 turn 号会让客户端的中断对账与 active 清理指向
+	// 错误的 turn。
 	turn := map[string]any{"status": "inProgress"}
-	if number, ok := follow.awaitTurnStart(ctx, deepSeekTurnStartAckTimeout); ok {
+	if number, ok := follow.awaitTurnForRequest(ctx, requestID, deepSeekTurnStartAckTimeout); ok {
 		turn["id"] = deepSeekTurnID(number)
 	}
 	return c.writeDeepSeekResult(frame.ID, map[string]any{"turn": turn})
@@ -510,7 +520,7 @@ func (c *deepSeekGatewayConn) deepSeekTurnPage(
 // deepSeekMaxHistoryFetchPages 限制一次请求最多向前取几页记录。
 const deepSeekMaxHistoryFetchPages = 8
 
-// deepSeekTurnStartAckTimeout 是等待 Harness 报出 turn 编号的时间。
+// deepSeekTurnStartAckTimeout 是等待本次投递对应的 turn 落进会话日志的时间。
 const deepSeekTurnStartAckTimeout = 5 * time.Second
 
 // deepSeekOffsetCursorPrefix 是本层偏移游标的出处标记。

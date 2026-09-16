@@ -134,10 +134,15 @@ type CreateSessionResult struct {
 }
 
 // SelectModelRequest 只转发模型选择，不维护供应商配置。
+//
+// ReasoningEffort 是可选的推理档位，取值必须是该模型目录里声明过的档位 id。留空表示
+// 不改动档位，由 Harness 用它自己的默认值——因此这里的空串不是"某个档位"，不能被补成
+// 一个猜测值。
 type SelectModelRequest struct {
-	SessionID string `json:"sessionId"`
-	Provider  string `json:"provider"`
-	Model     string `json:"model"`
+	SessionID       string `json:"sessionId"`
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 }
 
 // FollowRequest 订阅一个会话。assistantStream 打开直播输出片段。

@@ -1446,8 +1446,17 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
 	}
 	// 默认模型必须交给 app-server 按账号 rollout 决定；gateway 只透传用户显式选择的 model。
-	if effort, ok := gatewayStringParam(safe, "effort"); !ok || strings.TrimSpace(effort) == "" {
-		safe["effort"] = defaultCodexReasoningEffort
+	//
+	// 同理不替 DeepSeek 补推理档位。defaultCodexReasoningEffort 是 Codex 的档位名，
+	// Harness 的模型各自声明自己的档位集合，把 Codex 的默认值写进去就是凭空多一个约束。
+	// 更关键的是它会让"档位到底是不是客户端选的"变得无法判断：DeepSeek 网关要把 effort
+	// 落到 Harness 目录声明的档位上（applyDeepSeekModelSelection），一个被 gateway 塞
+	// 进来的默认值会让每一次正常发送都带上一个客户端没要求过的档位，于是要么拒绝掉这些
+	// 发送，要么把用户的选择静默换成别的档位。
+	if normalizeAppServerRuntimeID(runtimeID) != "deepseek" {
+		if effort, ok := gatewayStringParam(safe, "effort"); !ok || strings.TrimSpace(effort) == "" {
+			safe["effort"] = defaultCodexReasoningEffort
+		}
 	}
 	return safe
 }
