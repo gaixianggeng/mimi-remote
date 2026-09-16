@@ -105,13 +105,17 @@ type Router struct {
 	claudeObservers        map[string]*claudeApprovalObserver
 	// claudeObserverEpochs 让前台 attach 与断线 observer 安装共享同一个代际门。
 	// 新连接先递增代际，旧 handler 随后到达时就不能再发布 observer。
-	claudeObserverEpochs          map[string]uint64
-	gatewayHistoryBudgetMu        sync.Mutex
-	gatewayHistoryGlobalBudget    appServerGatewayHistoryBudget
-	claudeMu                      sync.Mutex
-	claudeProbe                   appServerBridgeProbe
-	activeClaudeBridge            int
-	claudeBridge                  *claudeBridgeSupervisor
+	claudeObserverEpochs       map[string]uint64
+	gatewayHistoryBudgetMu     sync.Mutex
+	gatewayHistoryGlobalBudget appServerGatewayHistoryBudget
+	claudeMu                   sync.Mutex
+	claudeProbe                appServerBridgeProbe
+	activeClaudeBridge         int
+	claudeBridge               *claudeBridgeSupervisor
+	// DeepSeek Harness（#498）的会话订阅计数。每个订阅都在 Harness 上持有一条
+	// remote.mux 连接，因此必须设上限；上限取 cfg.DeepSeek.MaxConcurrentSessions。
+	deepSeekMu                    sync.Mutex
+	activeDeepSeekSession         int
 	tailcat                       tailcatSidecar
 	managedPairing                managedPairingService
 	tailcatLocalToken             string

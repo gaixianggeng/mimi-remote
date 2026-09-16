@@ -602,6 +602,34 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			Policy:       claudeSpec.Policy,
 		})
 	}
+	if r.cfg.DeepSeek.Enabled {
+		deepSeekSpec, _ := appServerRuntimeSpecFor(appServerRuntimeDeepSeekID)
+		status := appServerDeepSeekStatusFor(r.cfg.DeepSeek)
+		channels = append(channels, appServerChannel{
+			ID:               deepSeekSpec.ID,
+			RuntimeID:        deepSeekSpec.ID,
+			Title:            "DeepSeek Harness",
+			Provider:         "deepseek",
+			Type:             "deepseek_harness_service",
+			Protocol:         "app_server_jsonrpc_ws",
+			GatewayWSURL:     r.appServerGatewayURLForRuntime(req, deepSeekSpec.ID),
+			GatewayAvailable: status.Healthy,
+			Managed:          false,
+			Experimental:     deepSeekSpec.Experimental,
+			Lifecycle:        "per_connection",
+			// 只给状态与修复建议，不给本机服务地址：channel 会下发到移动端，
+			// 本机 endpoint 与 token 路径不属于移动端需要知道的运行态。
+			Bridge: &appServerBridgeMetadata{
+				Name:    "deepseek-harness",
+				Status:  status.Status,
+				Healthy: status.Healthy,
+				Fix:     status.Fix,
+			},
+			Methods:      appServerAllowedMethodListForRuntime(deepSeekSpec.ID),
+			Capabilities: deepSeekSpec.Capabilities,
+			Policy:       deepSeekSpec.Policy,
+		})
+	}
 	return channels
 }
 
@@ -626,10 +654,12 @@ func (r *Router) appServerGatewayWS(w http.ResponseWriter, req *http.Request) {
 	}
 	runtimeID := normalizeAppServerRuntimeID(req.URL.Query().Get("runtime"))
 	switch runtimeID {
-	case "codex":
+	case appServerRuntimeCodexID:
 		r.appServerCodexGatewayWS(w, req)
-	case "claude":
+	case appServerRuntimeClaudeID:
 		r.appServerClaudeGatewayWS(w, req)
+	case appServerRuntimeDeepSeekID:
+		r.appServerDeepSeekGatewayWS(w, req)
 	default:
 		writeError(w, http.StatusBadRequest, "未知 app-server runtime："+runtimeID)
 	}

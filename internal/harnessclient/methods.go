@@ -147,6 +147,43 @@ type FollowRequest struct {
 	AssistantStream bool           `json:"assistantStream,omitempty"`
 }
 
+// FollowSnapshot 是 follow 的开场快照。
+//
+// Cursor 是本次订阅的日志切点，也是 session/page 必填的 throughSeq：分页只能读到
+// 这个切点之前，否则会读到订阅开始之后、尚未经事件流下发的记录。
+type FollowSnapshot struct {
+	Header struct {
+		ID          string `json:"id"`
+		CWD         string `json:"cwd,omitempty"`
+		CreatedAt   int64  `json:"createdAt,omitempty"`
+		AgentPreset string `json:"agentPreset,omitempty"`
+		IsSeeded    bool   `json:"isSeeded,omitempty"`
+	} `json:"header"`
+	Cursor  int64                  `json:"cursor"`
+	Records []SessionHistoryRecord `json:"records,omitempty"`
+	HasMore bool                   `json:"hasMore,omitempty"`
+}
+
+// SessionAssistantStreamFrame 是直播输出片段的三态信封。
+//
+// start 与 chunk 带 turn/step，end 不带；上层必须用 start 记下 (turn, step) 才能给
+// 增量找到与持久消息相同的 item 标识。
+type SessionAssistantStreamFrame struct {
+	Type      string          `json:"type"`
+	AttemptID string          `json:"attemptId,omitempty"`
+	Revision  int64           `json:"revision,omitempty"`
+	Index     int64           `json:"index,omitempty"`
+	Time      int64           `json:"time,omitempty"`
+	Turn      int64           `json:"turn,omitempty"`
+	Step      int64           `json:"step,omitempty"`
+	Chunk     json.RawMessage `json:"chunk,omitempty"`
+	Outcome   *struct {
+		Kind      string `json:"kind,omitempty"`
+		EventType string `json:"eventType,omitempty"`
+		Seq       int64  `json:"seq,omitempty"`
+	} `json:"outcome,omitempty"`
+}
+
 // PromptContent 是一条输入内容。首版只开放纯文本：图片与文件附件需要额外的
 // 上传回执与媒体边界校验，未验证前不下发。
 type PromptContent struct {
@@ -182,9 +219,27 @@ type PageRequest struct {
 }
 
 // SessionHistoryRecord 是历史页里的一条持久事件记录。
+//
+// session/page 明确返回 {type, event} 信封；follow 的开场 snapshot 的 records[] 是否
+// 同形未取得实测证据，因此同一个类型同时容纳两种形态，由 Wire() 归一。
 type SessionHistoryRecord struct {
 	Type  string           `json:"type"`
 	Event SessionWireEvent `json:"event"`
+	// 下面三个字段只在 snapshot 直接给出裸事件时需要。
+	Seq  int64           `json:"seq"`
+	Time int64           `json:"time"`
+	Data json.RawMessage `json:"data"`
+}
+
+// Wire 把记录归一成持久事件。
+//
+// 归一而不是二选一：上层按事件类型翻译，不该关心这一页是分页接口给的还是
+// 开场快照给的。两种形态都不成立时返回零值，调用方按未知事件跳过。
+func (r SessionHistoryRecord) Wire() SessionWireEvent {
+	if strings.TrimSpace(r.Event.Type) != "" {
+		return r.Event
+	}
+	return SessionWireEvent{Type: r.Type, Seq: r.Seq, Time: r.Time, Data: r.Data}
 }
 
 // SessionWireEvent 是持久事件信封。data 结构由 type 决定，交给上层按类型解码。

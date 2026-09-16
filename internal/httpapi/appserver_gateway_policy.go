@@ -1385,7 +1385,12 @@ func sanitizedGatewayInitialTurnsPage(page map[string]any) map[string]any {
 }
 
 func sanitizedGatewayThreadSandbox(runtimeID string, params map[string]any) string {
-	if normalizeAppServerRuntimeID(runtimeID) == "claude" {
+	switch normalizeAppServerRuntimeID(runtimeID) {
+	case "claude", "deepseek":
+		// 这两条 runtime 都没有 Codex 那套完全访问语义：Claude bridge 只到
+		// workspace-write，Harness 侧根本没有沙盒参数（沙盒由它自己管理）。
+		// 因此这里只保留用户明确声明的只读，其余一律压回 workspace-write，
+		// 不沿用下面的 danger-full-access 默认值。
 		if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "readonly" {
 			return "read-only"
 		}

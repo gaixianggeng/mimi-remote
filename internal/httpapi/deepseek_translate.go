@@ -48,12 +48,21 @@ const (
 	deepSeekEventUserMessage      = "user/message"
 	deepSeekEventAssistantMessage = "assistant/message"
 	deepSeekEventSessionTitle     = "session/title"
+	// deepSeekEventToolCall 只用于建立 callId → 会话的相关性，不产出可见 item。
+	deepSeekEventToolCall = "tool/call"
 )
 
 // Harness assistant-stream chunk 的判别值（实测）。
 const (
 	deepSeekChunkTextDelta  = "text-delta"
 	deepSeekStreamBlockText = "text"
+)
+
+// assistant-stream 帧的三态。只有 start 带 turn/step，chunk 靠它定位。
+const (
+	deepSeekStreamFrameStart = "start"
+	deepSeekStreamFrameChunk = "chunk"
+	deepSeekStreamFrameEnd   = "end"
 )
 
 // Mimi item 类型。只使用已确认会被渲染的类型。
@@ -108,6 +117,14 @@ type deepSeekMessageData struct {
 // deepSeekTitleData 是 session/title 的 data。
 type deepSeekTitleData struct {
 	Title string `json:"title"`
+}
+
+// deepSeekToolCallData 是 tool/call 的 data。只取实测存在的 callId：
+// 审批 waterfall 不带会话标识，callId 是唯一能把两者对上的字段。
+type deepSeekToolCallData struct {
+	CallID string `json:"callId,omitempty"`
+	Turn   int64  `json:"turn,omitempty"`
+	Step   int64  `json:"step,omitempty"`
 }
 
 // deepSeekStreamChunk 是 assistant-stream chunk 的载荷。实测判别字段是 Type。

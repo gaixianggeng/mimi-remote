@@ -22,6 +22,7 @@ package harnessclient
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Remote 方法名。这里只登记 #498 首版声明给移动端的子集，与
@@ -162,11 +163,45 @@ type StreamValue struct {
 
 // WaterfallRequest 是需要客户端应答的交互请求。审批与用户追问共用这一层信封，
 // 用 Event 字段区分。上层据此合成 app-server 的反向请求。
+//
+// 会话归属：waterfall 是宿主级通道，实测帧里没有会话字段；这里仍把可能出现的
+// 候选键保留下来。取不到时上层必须按"未知归属"处理并跳过，不能猜一个会话塞进去。
 type WaterfallRequest struct {
 	Type    string           `json:"type"`
 	EventID string           `json:"eventId"`
 	Event   string           `json:"event"`
 	Request WaterfallPayload `json:"request"`
+	// 候选的会话标识键，任一命中即采用。
+	SessionID string `json:"sessionId,omitempty"`
+	ThreadID  string `json:"threadId,omitempty"`
+	// Session 与 Address 是嵌套形态的候选。
+	Session *struct {
+		SessionID string `json:"sessionId,omitempty"`
+		ID        string `json:"id,omitempty"`
+	} `json:"session,omitempty"`
+	Address *struct {
+		SessionID string `json:"sessionId,omitempty"`
+	} `json:"address,omitempty"`
+}
+
+// ThreadHint 返回 waterfall 帧里能确认的会话标识，取不到时为空串。
+func (w WaterfallRequest) ThreadHint() string {
+	for _, candidate := range []string{w.ThreadID, w.SessionID} {
+		if strings.TrimSpace(candidate) != "" {
+			return strings.TrimSpace(candidate)
+		}
+	}
+	if w.Session != nil {
+		for _, candidate := range []string{w.Session.SessionID, w.Session.ID} {
+			if strings.TrimSpace(candidate) != "" {
+				return strings.TrimSpace(candidate)
+			}
+		}
+	}
+	if w.Address != nil && strings.TrimSpace(w.Address.SessionID) != "" {
+		return strings.TrimSpace(w.Address.SessionID)
+	}
+	return ""
 }
 
 // WaterfallPayload 是交互请求的载荷。审批只填工具名与理由，追问带结构化问题。

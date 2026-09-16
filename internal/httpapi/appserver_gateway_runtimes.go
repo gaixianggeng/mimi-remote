@@ -88,9 +88,9 @@ var appServerRuntimeSpecs = map[string]appServerRuntimeSpec{
 		},
 		Experimental: true,
 	},
-	// DeepSeek Harness（#498）此时只登记方法边界，尚未声明 channel，也不会出现在
-	// GET app-server config 的 channels 里：agentd 侧的转发适配还没有实现，提前暴露
-	// 会让客户端看到一个选得中但用不了的运行时。适配通路落地后再补 channel 声明。
+	// DeepSeek Harness（#498）：方法边界取自 #492 已实测的控制面能力，网关装配见
+	// deepseek_gateway.go。channel 只在 deepseek.enabled 时声明，未启用时不会出现在
+	// GET app-server config 的 channels 里。
 	appServerRuntimeDeepSeekID: {
 		ID: appServerRuntimeDeepSeekID,
 		Aliases: []string{
