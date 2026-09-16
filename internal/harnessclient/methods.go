@@ -27,30 +27,110 @@ func newRequestID() string {
 // NewRequestID 供上层在重试时复用同一个标识。
 func NewRequestID() string { return newRequestID() }
 
-// SessionAddress 定位一个会话。
+// SessionAddress 定位一个会话。subagent 形态首版不开放。
 type SessionAddress struct {
 	Kind      string `json:"kind"`
 	SessionID string `json:"sessionId"`
 }
 
-// SessionSummary 是会话列表/搜索结果里的一项。
+// SessionListRequest 是 session/list 的参数。
+//
+// wire 参数名是 "_request" 而不是 "request"：Harness 侧该参数在实现里未被使用，
+// 生成代码保留了带下划线的形参名，网关按描述符逐字校验参数名与个数
+// （多一个或少一个都报 gateway/arguments-invalid），因此这里必须原样保留下划线。
+type SessionListRequest struct {
+	Cursor string `json:"cursor,omitempty"`
+}
+
+// SessionSummary 是会话列表里的一项。
+//
+// Harness 的 session/list 不按目录过滤（请求体里没有 cwd），返回的是本机可见的
+// 全部会话，因此按授权工作区裁剪是 agentd 的责任，不能指望上游过滤。
 type SessionSummary struct {
 	SessionID string `json:"sessionId"`
-	Title     string `json:"title,omitempty"`
-	CWD       string `json:"cwd,omitempty"`
-	UpdatedAt string `json:"updatedAt,omitempty"`
+	// UpdatedAt 是毫秒时间戳，用于 Mimi 侧排序与"最近"展示。
+	UpdatedAt int64 `json:"updatedAt"`
+	// Running 表示该会话的 Agent 当前是否在跑，映射到 thread 的 active 状态。
+	Running bool `json:"running"`
+	// Blank 表示还没有任何轮次，Mimi 侧据此隐藏空会话。
+	Blank bool `json:"blank"`
+	CWD   string `json:"cwd,omitempty"`
+	// Projections 是可选投影；冷会话也可能带标题与轮次大纲。
+	Projections *SessionProjectionHints `json:"projections,omitempty"`
+}
+
+// SessionProjectionHints 是列表行携带的投影快照。values 字段集与 Harness 版本相关，
+// 只声明 Mimi 真正消费的部分。
+type SessionProjectionHints struct {
+	AsOfSeq int64                  `json:"asOfSeq"`
+	Values  SessionProjectionValue `json:"values"`
+}
+
+// SessionProjectionValue 只建模已确认存在的投影键。
+type SessionProjectionValue struct {
+	// Title 是 Harness 自己生成的会话标题，映射到 thread 名称。
+	Title string `json:"title,omitempty"`
+	// TurnOutline 是逐轮的首末摘录，用作会话预览。
+	TurnOutline []SessionTurnOutline `json:"turnOutline,omitempty"`
+	// ModelSelection 记录该会话已用/待用的模型选择。
+	ModelSelection *SessionModelSelectionState `json:"modelSelection,omitempty"`
+}
+
+// SessionTurnOutline 是一轮的摘要摘录。
+type SessionTurnOutline struct {
+	Prompt   string `json:"prompt,omitempty"`
+	Response string `json:"response,omitempty"`
+	Seq      int64  `json:"seq"`
+	Turn     int64  `json:"turn"`
+}
+
+// SessionModelSelectionState 是会话的模型选择投影。
+type SessionModelSelectionState struct {
+	LastUsed *ModelSelection `json:"lastUsed,omitempty"`
+	Next     *ModelSelection `json:"next,omitempty"`
+}
+
+// ModelSelection 是一次完整的模型选择。
+type ModelSelection struct {
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+}
+
+// SessionListResult 是 session/list 的响应体。
+type SessionListResult struct {
+	Items []SessionSummary `json:"items"`
+}
+
+// SessionSearchRequest 是 session/search 的参数。
+type SessionSearchRequest struct {
+	Query string `json:"query"`
+}
+
+// SessionSearchItem 是搜索结果的一项。
+type SessionSearchItem struct {
+	SessionID string `json:"sessionId"`
+	Snippet   string `json:"snippet"`
+}
+
+// SessionSearchResult 是 session/search 的响应体。
+type SessionSearchResult struct {
+	Items   []SessionSearchItem `json:"items"`
+	HasMore bool                `json:"hasMore"`
 }
 
 // CreateSessionRequest 新建会话。cwd 必须已经过 agentd 的工作区授权。
 type CreateSessionRequest struct {
 	CWD         string `json:"cwd,omitempty"`
 	WorkspaceID string `json:"workspaceId,omitempty"`
+	SessionID   string `json:"sessionId,omitempty"`
 	AgentPreset string `json:"agentPreset,omitempty"`
 }
 
 // CreateSessionResult 返回新会话标识。
 type CreateSessionResult struct {
-	SessionID string `json:"sessionId"`
+	SessionID   string `json:"sessionId"`
+	AgentPreset string `json:"agentPreset,omitempty"`
 }
 
 // SelectModelRequest 只转发模型选择，不维护供应商配置。
@@ -63,10 +143,12 @@ type SelectModelRequest struct {
 // FollowRequest 订阅一个会话。assistantStream 打开直播输出片段。
 type FollowRequest struct {
 	Address         SessionAddress `json:"address"`
+	MaxMessages     int            `json:"maxMessages,omitempty"`
 	AssistantStream bool           `json:"assistantStream,omitempty"`
 }
 
-// PromptContent 是一条输入内容。
+// PromptContent 是一条输入内容。首版只开放纯文本：图片与文件附件需要额外的
+// 上传回执与媒体边界校验，未验证前不下发。
 type PromptContent struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
@@ -88,54 +170,104 @@ type CancelRequest struct {
 	SessionID string `json:"sessionId"`
 }
 
+// PageRequest 取会话的一页历史。
+//
+// ThroughSeq 是必填：它必须是本次 follow 开场 snapshot 给出的 cursor，
+// 表示"读到哪个日志切点"。省略会被网关判为输入非法。
+type PageRequest struct {
+	Address     SessionAddress `json:"address"`
+	ThroughSeq  int64          `json:"throughSeq"`
+	BeforeSeq   int64          `json:"beforeSeq,omitempty"`
+	MaxMessages int            `json:"maxMessages,omitempty"`
+}
+
+// SessionHistoryRecord 是历史页里的一条持久事件记录。
+type SessionHistoryRecord struct {
+	Type  string           `json:"type"`
+	Event SessionWireEvent `json:"event"`
+}
+
+// SessionWireEvent 是持久事件信封。data 结构由 type 决定，交给上层按类型解码。
+type SessionWireEvent struct {
+	Type string          `json:"type"`
+	Seq  int64           `json:"seq"`
+	Time int64           `json:"time"`
+	Data json.RawMessage `json:"data,omitempty"`
+	// Ignorable 标记该事件可被不认识它的消费者安全跳过。
+	Ignorable bool `json:"ignorable,omitempty"`
+}
+
+// SessionPageResult 是 session/page 的响应体。
+type SessionPageResult struct {
+	Records []SessionHistoryRecord `json:"records"`
+	HasMore bool                   `json:"hasMore"`
+}
+
 // ModelEntry 是模型目录里的一项。Mimi 只消费并转发，不判断供应商归属。
 type ModelEntry struct {
-	ID            string `json:"id"`
-	Name          string `json:"name,omitempty"`
-	ContextWindow int64  `json:"contextWindow,omitempty"`
-	MaxTokens     int64  `json:"maxTokens,omitempty"`
+	ID          string         `json:"id"`
+	Name        string         `json:"name,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Reasoning   *ModelReasoning `json:"reasoning,omitempty"`
+}
+
+// ModelReasoning 是该模型真正声明的推理档位。
+type ModelReasoning struct {
+	Efforts       []ModelReasoningEffort `json:"efforts,omitempty"`
+	DefaultEffort string                 `json:"defaultEffort,omitempty"`
+}
+
+// ModelReasoningEffort 是一个可选的推理档位。
+type ModelReasoningEffort struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // ModelCatalogGroup 是按 provider 分组的目录。
 type ModelCatalogGroup struct {
 	ID     string       `json:"id"`
-	Title  string       `json:"title,omitempty"`
+	Name   string       `json:"name,omitempty"`
 	Models []ModelEntry `json:"models"`
+}
+
+// ModelCatalogFailure 是某个 provider 目录加载失败的记录。
+type ModelCatalogFailure struct {
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // ModelCatalogResult 是模型目录响应。
 type ModelCatalogResult struct {
-	Groups []ModelCatalogGroup `json:"groups"`
-}
-
-// PageRequest 取会话的一页历史。
-type PageRequest struct {
-	SessionID string `json:"sessionId"`
-	Cursor    string `json:"cursor,omitempty"`
-	Limit     int    `json:"limit,omitempty"`
+	Default           ModelSelection        `json:"default"`
+	RoutableProviders []string              `json:"routableProviders,omitempty"`
+	Groups            []ModelCatalogGroup   `json:"groups"`
+	Failures          []ModelCatalogFailure `json:"failures,omitempty"`
 }
 
 // ListSessions 列出持久会话。列表不会因为被读取而激活全部 Agent，
 // 因此这里必须由上层按授权工作区裁剪。
-func (c *Client) ListSessions(ctx context.Context, query any) ([]SessionSummary, error) {
-	var result struct {
-		Sessions []SessionSummary `json:"sessions"`
-	}
-	if err := c.Call(ctx, MethodSessionList, query, &result); err != nil {
+func (c *Client) ListSessions(ctx context.Context, request SessionListRequest) ([]SessionSummary, error) {
+	// 参数名必须是 "_request"，见 SessionListRequest 的说明。
+	var result SessionListResult
+	if err := c.Call(ctx, MethodSessionList, map[string]any{"_request": request}, &result); err != nil {
 		return nil, err
 	}
-	return result.Sessions, nil
+	return result.Items, nil
 }
 
-// SearchSessions 按关键词搜索会话。
-func (c *Client) SearchSessions(ctx context.Context, query any) ([]SessionSummary, error) {
-	var result struct {
-		Sessions []SessionSummary `json:"sessions"`
+// SearchSessions 按关键词搜索会话内容。
+//
+// 该能力依赖部署侧的会话检索索引（session-query）配置；未开启时 Harness 返回
+// gateway/internal，上层必须降级而不是把它当成致命错误。
+func (c *Client) SearchSessions(ctx context.Context, query string) (SessionSearchResult, error) {
+	var result SessionSearchResult
+	args := map[string]any{"request": SessionSearchRequest{Query: query}}
+	if err := c.Call(ctx, MethodSessionSearch, args, &result); err != nil {
+		return SessionSearchResult{}, err
 	}
-	if err := c.Call(ctx, MethodSessionSearch, query, &result); err != nil {
-		return nil, err
-	}
-	return result.Sessions, nil
+	return result, nil
 }
 
 // CreateSession 新建会话。
@@ -151,12 +283,12 @@ func (c *Client) CreateSession(ctx context.Context, request CreateSessionRequest
 	return result, nil
 }
 
-// PageSession 取一页历史。返回的游标由上层透传，不要自行解析。
-func (c *Client) PageSession(ctx context.Context, request PageRequest) (json.RawMessage, error) {
-	var result json.RawMessage
+// PageSession 取一页历史。ThroughSeq 必须来自 follow 开场 snapshot 的 cursor。
+func (c *Client) PageSession(ctx context.Context, request PageRequest) (SessionPageResult, error) {
+	var result SessionPageResult
 	args := map[string]any{"request": request}
 	if err := c.Call(ctx, MethodSessionPage, args, &result); err != nil {
-		return nil, err
+		return SessionPageResult{}, err
 	}
 	return result, nil
 }
@@ -190,6 +322,14 @@ func (c *Client) Prompt(ctx context.Context, request PromptRequest) error {
 	if len(request.Content) == 0 {
 		return errors.New("harnessclient: prompt 内容不能为空")
 	}
+	for _, part := range request.Content {
+		if part.Type != "text" {
+			return fmt.Errorf("harnessclient: 首版只支持 text 输入，收到 %q", part.Type)
+		}
+		if strings.TrimSpace(part.Text) == "" {
+			return errors.New("harnessclient: text 输入不能为空白")
+		}
+	}
 	args := map[string]any{"request": request}
 	return c.Call(ctx, MethodSessionPrompt, args, nil)
 }
@@ -203,6 +343,7 @@ func (c *Client) Cancel(ctx context.Context, sessionID string) error {
 // ModelCatalog 取模型目录。
 func (c *Client) ModelCatalog(ctx context.Context) (ModelCatalogResult, error) {
 	var result ModelCatalogResult
+	// 该方法描述符里没有参数，必须传空对象而不是省略。
 	if err := c.Call(ctx, MethodSessionModelCatalog, map[string]any{}, &result); err != nil {
 		return ModelCatalogResult{}, err
 	}
