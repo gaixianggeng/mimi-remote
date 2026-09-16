@@ -154,7 +154,7 @@ is_documentation_path() {
 
 is_control_path() {
   case "$1" in
-    .github/*|scripts/*|packaging/*|config/*|.goreleaser.yml|.gitignore|.editorconfig|.xcodebuildmcp/*)
+    .github/*|scripts/*|packaging/*|config/*|config.example.json|.goreleaser.yml|.gitignore|.editorconfig|.xcodebuildmcp/*)
       return 0
       ;;
   esac
@@ -229,6 +229,7 @@ shell_paths=()
 yaml_paths=()
 ruby_paths=()
 python_paths=()
+json_paths=()
 powershell_paths=()
 go_packages=()
 go_requires_full=false
@@ -441,6 +442,11 @@ for path in "${changed_paths[@]:-}"; do
     *.yml|*.yaml)
       [[ -f "$path" ]] && yaml_paths+=("$path")
       ;;
+    # 只收根目录的配置模板。iOS 与 contracts 下的 JSON 是产品数据，各自被所在
+    # 语言栈的构建或协议检查覆盖，不在这里做语法预检。
+    config.example.json)
+      [[ -f "$path" ]] && json_paths+=("$path")
+      ;;
   esac
 
   if [[ "$path_is_documentation" == false ]] && \
@@ -517,6 +523,15 @@ if [[ "${#python_paths[@]}" -gt 0 ]]; then
     python_command+=" $(shell_quote "$path")"
   done
   add_check "变更的 Python 脚本先做无产物语法检查" "$python_command" "all"
+fi
+
+if [[ "${#json_paths[@]}" -gt 0 ]]; then
+  command -v python3 >/dev/null 2>&1 || fail "JSON 语法检查需要 python3。"
+  json_command="python3 -c 'import json, pathlib, sys; [json.loads(pathlib.Path(path).read_text()) for path in sys.argv[1:]]'"
+  for path in "${json_paths[@]}"; do
+    json_command+=" $(shell_quote "$path")"
+  done
+  add_check "变更的 JSON 配置模板先做语法解析" "$json_command" "all"
 fi
 
 if [[ "$docs_scope" == true ]]; then
