@@ -267,6 +267,55 @@ fn set_holder_status(path: &Path, status: Option<&str>) {
 }
 
 #[tokio::test]
+async fn loaded_process_does_not_bypass_busy_or_unknown_takeover_guards() {
+    let fixture = fixture();
+    let bridge = build_bridge(&fixture, ForeignSessionPolicy::Guard, fast_timeouts()).await;
+    let old = bridge
+        .pool()
+        .acquire_for_resume(SESSION_ID.into(), fixture._dir.path(), None, None)
+        .await
+        .expect("previous mobile process");
+    write_registry_record(
+        &fixture.sessions_dir,
+        old.pid().unwrap(),
+        SESSION_ID,
+        Some(now_ms()),
+    );
+    let desktop = Holder::spawn("");
+    let record = write_registry_record(
+        &fixture.sessions_dir,
+        desktop.pid,
+        SESSION_ID,
+        Some(now_ms()),
+    );
+    let (mut writer, mut reader) = attach(&bridge, "loaded-takeover").await;
+    for (index, status) in [Some("busy"), Some("shell"), None].iter().enumerate() {
+        set_holder_status(&record, *status);
+        let refused = takeover(&mut writer, &mut reader, index as i64 + 1).await;
+        let reason = if status.is_some() {
+            "holder_busy"
+        } else {
+            "holder_state_unknown"
+        };
+        assert_eq!(refused["error"]["data"]["reason"], reason, "{refused}");
+        assert!(desktop.still_running(Duration::from_millis(20)));
+        assert!(Arc::ptr_eq(
+            &bridge.pool().get(SESSION_ID).await.unwrap(),
+            &old
+        ));
+    }
+    set_holder_status(&record, Some("idle"));
+    let taken = takeover(&mut writer, &mut reader, 4).await;
+    assert_eq!(taken["result"]["takeover"]["released"], true, "{taken}");
+    assert_eq!(taken["result"]["thread"]["canAcceptDirectInput"], true);
+    assert_eq!(
+        desktop.exit_signal(Duration::from_secs(2)),
+        Some(libc_sigint())
+    );
+    bridge.pool().release(SESSION_ID).await;
+}
+
+#[tokio::test]
 async fn takeover_waits_for_all_holders_to_be_idle_and_rechecks_each_request() {
     let fixture = fixture();
     let idle = Holder::spawn("");
