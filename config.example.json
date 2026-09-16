@@ -32,6 +32,12 @@
       "CLAUDE_BRIDGE_BYPASS_PERMISSIONS": "false"
     }
   },
+  "deepseek": {
+    "enabled": false,
+    "base_url": "http://127.0.0.1:5173",
+    "token_file": "/Users/you/.config/mimi-remote/deepseek.token",
+    "max_concurrent_sessions": 2
+  },
   "session": {
     "output_buffer_bytes": 131072
   },
