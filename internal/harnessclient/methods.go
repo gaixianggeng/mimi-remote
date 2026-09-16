@@ -53,7 +53,7 @@ type SessionSummary struct {
 	// Running 表示该会话的 Agent 当前是否在跑，映射到 thread 的 active 状态。
 	Running bool `json:"running"`
 	// Blank 表示还没有任何轮次，Mimi 侧据此隐藏空会话。
-	Blank bool `json:"blank"`
+	Blank bool   `json:"blank"`
 	CWD   string `json:"cwd,omitempty"`
 	// Projections 是可选投影；冷会话也可能带标题与轮次大纲。
 	Projections *SessionProjectionHints `json:"projections,omitempty"`
@@ -205,9 +205,9 @@ type SessionPageResult struct {
 
 // ModelEntry 是模型目录里的一项。Mimi 只消费并转发，不判断供应商归属。
 type ModelEntry struct {
-	ID          string         `json:"id"`
-	Name        string         `json:"name,omitempty"`
-	Description string         `json:"description,omitempty"`
+	ID          string          `json:"id"`
+	Name        string          `json:"name,omitempty"`
+	Description string          `json:"description,omitempty"`
 	Reasoning   *ModelReasoning `json:"reasoning,omitempty"`
 }
 

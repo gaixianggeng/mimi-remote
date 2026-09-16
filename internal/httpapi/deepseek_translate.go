@@ -90,9 +90,9 @@ type deepSeekContentBlock struct {
 // deepSeekMessageData 是 user/message 与 assistant/message 的 data。
 type deepSeekMessageData struct {
 	Message *struct {
-		ID      string                  `json:"id"`
-		Role    string                  `json:"role"`
-		Content []deepSeekContentBlock  `json:"content"`
+		ID      string                 `json:"id"`
+		Role    string                 `json:"role"`
+		Content []deepSeekContentBlock `json:"content"`
 	} `json:"message,omitempty"`
 	// user/message 把消息字段直接放在 data 上。
 	ID      string                 `json:"id,omitempty"`
