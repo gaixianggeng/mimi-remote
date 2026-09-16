@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -79,9 +80,10 @@ func TestDeepSeekCheckFailsClosed(t *testing.T) {
 	token := "startup-token-fixture"
 
 	cases := []struct {
-		name string
-		cfg  func(t *testing.T) config.Config
-		want string
+		name          string
+		skipOnWindows bool
+		cfg           func(t *testing.T) config.Config
+		want          string
 	}{
 		{
 			name: "missing base url",
@@ -120,6 +122,9 @@ func TestDeepSeekCheckFailsClosed(t *testing.T) {
 		},
 		{
 			name: "world readable token file",
+			// Windows 没有 POSIX 权限位，ReadTokenFile 按设计跳过权限校验，
+			// 依赖文件所在目录的 ACL；这条断言只对类 Unix 平台成立。
+			skipOnWindows: true,
 			cfg: func(t *testing.T) config.Config {
 				path := filepath.Join(t.TempDir(), "loose.token")
 				if err := os.WriteFile(path, []byte(token+"\n"), 0o644); err != nil {
@@ -137,6 +142,9 @@ func TestDeepSeekCheckFailsClosed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.skipOnWindows && runtime.GOOS == "windows" {
+				t.Skip("Windows 无 POSIX 权限位，该断言不适用")
+			}
 			checker := &Checker{cfg: tc.cfg(t)}
 			check := checker.deepSeekCheck(context.Background())
 			if check.OK {
