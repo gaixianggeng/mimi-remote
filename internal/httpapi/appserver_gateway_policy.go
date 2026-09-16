@@ -1359,6 +1359,7 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 		} else {
 			safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
 			workspaceWrite = normalizePolicyValue(safe["sandbox"].(string)) == "workspacewrite"
+			fullAccess = normalizePolicyValue(safe["sandbox"].(string)) == "dangerfullaccess"
 		}
 		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
 	}
@@ -1386,6 +1387,9 @@ func sanitizedGatewayInitialTurnsPage(page map[string]any) map[string]any {
 
 func sanitizedGatewayThreadSandbox(runtimeID string, params map[string]any) string {
 	if normalizeAppServerRuntimeID(runtimeID) == "claude" {
+		if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "dangerfullaccess" {
+			return "danger-full-access"
+		}
 		if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "readonly" {
 			return "read-only"
 		}
@@ -1428,6 +1432,7 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 			safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
 			sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
 			workspaceWrite = normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
+			fullAccess = normalizePolicyValue(sandboxPolicy["type"].(string)) == "dangerfullaccess"
 		}
 		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
 	}
@@ -1676,6 +1681,9 @@ func sanitizedGatewaySandboxPolicy(runtimeID string, raw any, cwd string) map[st
 	sandboxType, _ := gatewayStringParam(sandbox, "type")
 	normalizedType := normalizePolicyValue(sandboxType)
 	if normalizeAppServerRuntimeID(runtimeID) == "claude" {
+		if normalizedType == "dangerfullaccess" {
+			return map[string]any{"type": "dangerFullAccess"}
+		}
 		if normalizedType == "readonly" {
 			return map[string]any{
 				"type":          "readOnly",

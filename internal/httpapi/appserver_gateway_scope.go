@@ -18,6 +18,7 @@ import (
 	"github.com/gorilla/websocket"
 	_ "golang.org/x/image/webp"
 
+	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
@@ -55,15 +56,16 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 		return validated, fmt.Errorf("approvalPolicy=never 不允许通过 config 使用")
 	}
 	if hasApprovalPolicyNever(params) && !gatewayAllowsNoApproval(runtimeID, method, params) {
-		return validated, fmt.Errorf("approvalPolicy=never 只允许 Codex 显式完全访问使用")
+		return validated, fmt.Errorf("approvalPolicy=never 只允许显式完全访问使用")
 	}
 	if hasDangerousConfigSandbox(params["config"]) {
 		return validated, fmt.Errorf("dangerFullAccess 不允许通过 config 使用")
 	}
-	// Claude runtime 不在这里硬拒 dangerFullAccess：老客户端/默认草稿会在 thread/resume 上带全量沙盒，
-	// 硬拒会让会话恢复进入确定性失败的重连死循环。rewriteGatewaySafeDefaults 的
-	// sanitizedGatewayThreadSandbox / sanitizedGatewaySandboxPolicy 会把 Claude 的沙盒强制压回
-	// workspace-write/read-only，所有 Claude 允许的方法都在改写覆盖范围内。
+	if runtimeID == "claude" && gatewayAllowsNoApproval(runtimeID, method, params) {
+		if probe := r.claudeBridgeProbe(); !probe.Healthy || !claudebridge.SupportsFullAccess(probe.Version) {
+			return validated, fmt.Errorf("Claude 完全访问需要 bridge >= %s，请更新 Mimi Remote Mac 或 Claude bridge", claudebridge.FullAccessVersion)
+		}
+	}
 	if hasNetworkAccessEnabled(params) {
 		return validated, fmt.Errorf("networkAccess=true 不允许远程使用")
 	}
@@ -654,10 +656,11 @@ func hasApprovalPolicyNever(value any) bool {
 }
 
 func gatewayAllowsNoApproval(runtimeID string, method string, params map[string]any) bool {
-	if normalizeAppServerRuntimeID(runtimeID) != "codex" {
+	runtimeID = normalizeAppServerRuntimeID(runtimeID)
+	if runtimeID != "codex" && runtimeID != "claude" {
 		return false
 	}
-	if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok {
+	if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok && runtimeID == "codex" {
 		return strings.EqualFold(strings.TrimSpace(profileID), ":danger-full-access")
 	}
 	switch method {
