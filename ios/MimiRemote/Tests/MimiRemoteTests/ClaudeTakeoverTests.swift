@@ -381,7 +381,160 @@ final class ClaudeTakeoverTests: XCTestCase {
         XCTAssertTrue(projected.allowsDirectInput)
     }
 
+    func testTakeoverRefusalSurvivesRuntimeRateLimitReplayUntilAuthoritativeIdle() async throws {
+        for reason in ["holder_busy", "holder_state_unknown"] {
+            let fixture = await makeHeldStore(id: "claude_refusal_\(reason)", supportsTakeover: true)
+            await fixture.store.refreshClaudeTakeoverSupportIfNeeded(sessionID: fixture.held.id)
+            let (runtime, transport, _) = makeTakeoverRuntime(session: fixture.held)
+            await runtime.rememberForkedSession(fixture.held)
+            fixture.client.takeOverThreadHandler = { try await runtime.takeOverThread(sessionID: $0) }
+            let task = Task { await fixture.store.takeOverHeldClaudeSession(fixture.held) }
+            try await initializeTakeoverRuntime(transport)
+            let request = try await waitForFakeAppServerRequest(transport, method: "thread/takeover")
+            let response = CodexAppServerResponse(id: request.id, result: nil, error: CodexAppServerError(
+                code: -32602, message: "takeover refused", data: .object([
+                    "accepted": .bool(false), "reason": .string(reason), "retryable": .bool(true),
+                    "claudeOwner": .object(["pid": .int(4242)])
+                ])
+            ))
+            transport.enqueue(String(decoding: try JSONEncoder().encode(response), as: UTF8.self))
+            let taken = await task.value
+            XCTAssertFalse(taken)
+            fixture.store.upsert(try await replayRuntimeSession(runtime, id: fixture.held.id))
+            let rejected = try XCTUnwrap(fixture.store.selectedSession)
+            XCTAssertEqual(rejected.claudeOwner?.status, reason == "holder_busy" ? "busy" : nil)
+            XCTAssertNotNil(fixture.store.claudeTakeoverFailure(for: rejected))
+            XCTAssertFalse(fixture.store.selectedOwnershipNotice?.canTakeOver ?? true)
+
+            // 真正的 thread/read 更新 owner 后才解除等待，额度事件本身不能解除。
+            try await readAuthoritativeOwner(runtime, transport: transport, session: fixture.held, status: "idle")
+            fixture.store.upsert(try await replayRuntimeSession(runtime, id: fixture.held.id))
+            XCTAssertNil(fixture.store.claudeTakeoverFailure(for: try XCTUnwrap(fixture.store.selectedSession)))
+            XCTAssertTrue(fixture.store.selectedOwnershipNotice?.canTakeOver ?? false)
+            await runtime.shutdownForHostSwitch()
+        }
+    }
+
+    func testSuccessfulTakeoverClearsRuntimeOwnerWithoutDependingOnReconnect() async throws {
+        for leavePage in [false, true] {
+            let fixture = await makeHeldStore(id: "claude_success_replay", supportsTakeover: true)
+            let (runtime, transport, _) = makeTakeoverRuntime(session: fixture.held)
+            await runtime.rememberForkedSession(fixture.held)
+            fixture.client.takeOverThreadHandler = { try await runtime.takeOverThread(sessionID: $0) }
+            let task = Task { await fixture.store.takeOverHeldClaudeSession(fixture.held) }
+            try await initializeTakeoverRuntime(transport)
+            let request = try await waitForFakeAppServerRequest(transport, method: "thread/takeover")
+            if leavePage {
+                fixture.store.setSelectedSessionID(nil)
+            } else {
+                // 同一页面已有连接时 connectWebSocket 会早退，不会重新 resume。
+                fixture.store.connectedSessionID = fixture.held.id
+                fixture.store.connectedHostScope = fixture.appStore.activeHostScope
+                fixture.store.setWebSocketStatus(.connected)
+            }
+            let socketsBefore = fixture.sockets.items.count
+            transportResponse(transport, id: request.id, result: ownerResult(fixture.held, status: nil))
+            let taken = await task.value
+            XCTAssertTrue(taken)
+            XCTAssertEqual(fixture.sockets.items.count, socketsBefore)
+            let replayed = try await replayRuntimeSession(runtime, id: fixture.held.id)
+            fixture.store.upsert(replayed)
+            fixture.store.setSelectedSessionID(fixture.held.id)
+            XCTAssertTrue(replayed.allowsDirectInput)
+            XCTAssertNil(replayed.claudeOwner)
+            XCTAssertNil(fixture.store.selectedOwnershipNotice)
+            await runtime.shutdownForHostSwitch()
+        }
+    }
+
+    func testInFlightHistoryPagePreservesNewAuthoritativeOwnership() async throws {
+        let changes: [(String?, String?)] = [("busy", "idle"), ("idle", "busy"), ("busy", nil), (nil, "busy")]
+        for cached in [false, true] {
+            for (oldStatus, newStatus) in changes {
+                let fixture = await makeHeldStore(id: "claude_history_race", supportsTakeover: true)
+                let (runtime, transport, project) = makeTakeoverRuntime(session: fixture.held)
+                if cached {
+                    var initial = fixture.held
+                    initial.canAcceptDirectInput = oldStatus == nil
+                    initial.claudeOwner = oldStatus.map { ClaudeSessionOwner(entrypoint: "cli", kind: "interactive", status: $0, pid: 4242) }
+                    await runtime.rememberForkedSession(initial)
+                }
+                let page = Task {
+                    try await runtime.messagesPageFromTurnPages(
+                        sessionID: fixture.held.id, before: nil, limit: 20, loadMode: .economy,
+                        projects: [project], canHydrateTurnItems: false, recoveringInterruptedTurnID: nil
+                    )
+                }
+                try await initializeTakeoverRuntime(transport)
+                if !cached {
+                    let read = try await waitForFakeAppServerRequest(transport, method: "thread/read")
+                    transportResponse(transport, id: read.id, result: ownerResult(fixture.held, status: oldStatus))
+                }
+                let turns = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+                // 保持分页 RPC 挂起，让更新的权威快照先落入 Runtime，再返回旧分页。
+                try await readAuthoritativeOwner(runtime, transport: transport, session: fixture.held, status: newStatus)
+                transportResponse(transport, id: turns.id, result: #"{"data":[],"nextCursor":null}"#)
+                _ = try await page.value
+                let replayed = try await replayRuntimeSession(runtime, id: fixture.held.id)
+                XCTAssertEqual(replayed.canAcceptDirectInput, newStatus == nil)
+                XCTAssertEqual(replayed.claudeOwner?.status, newStatus)
+                XCTAssertEqual(replayed.claudeOwner == nil, newStatus == nil)
+                await runtime.shutdownForHostSwitch()
+            }
+        }
+    }
+
     // MARK: - Fixtures
+
+    private func makeTakeoverRuntime(session: AgentSession) -> (CodexAppServerSessionRuntime, FakeCodexAppServerTransport, AgentProject) {
+        let project = AgentProject(id: session.projectID, name: "Takeover", path: session.dir)
+        let transport = FakeCodexAppServerTransport()
+        let config = makeDirectAppServerConfig(project: project, channels: [makeClaudeChannelMetadata(methods: [
+            "initialize", "initialized", "thread/read", "thread/turns/list", "thread/takeover"
+        ])])
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://localhost:8787", token: "test-token", runtimeProvider: "claude",
+            transportFactory: { transport }, configProvider: { config }
+        )
+        return (runtime, transport, project)
+    }
+
+    private func initializeTakeoverRuntime(_ transport: FakeCodexAppServerTransport) async throws {
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake"}"#)
+    }
+
+    private func ownerResult(_ session: AgentSession, status: String?) -> String {
+        let owner: CodexAppServerJSONValue = status.map { .object([
+            "entrypoint": .string("cli"), "kind": .string("interactive"), "status": .string($0), "pid": .int(4242)
+        ]) } ?? .null
+        let result = CodexAppServerJSONValue.object(["thread": .object([
+            "id": .string(session.id), "cwd": .string(session.dir), "name": .string("Held"),
+            "status": .object(["type": .string("idle")]), "canAcceptDirectInput": .bool(status == nil),
+            "claudeOwner": owner
+        ])])
+        return String(decoding: try! JSONEncoder().encode(result), as: UTF8.self)
+    }
+
+    private func readAuthoritativeOwner(
+        _ runtime: CodexAppServerSessionRuntime, transport: FakeCodexAppServerTransport,
+        session: AgentSession, status: String?
+    ) async throws {
+        let cursor = await transport.sentMessages().count
+        let read = Task { try await runtime.session(id: session.id, afterSeq: nil) }
+        let request = try await waitForFakeAppServerRequest(transport, method: "thread/read", after: cursor)
+        transportResponse(transport, id: request.id, result: ownerResult(session, status: status))
+        _ = try await read.value
+    }
+
+    private func replayRuntimeSession(_ runtime: CodexAppServerSessionRuntime, id: String) async throws -> AgentSession {
+        await runtime.applyAccountRateLimit(try JSONDecoder().decode(RateLimitSummary.self, from: Data("{}".utf8)))
+        let events = await runtime.bufferedEvents(sessionID: id, replayPolicy: .stateOnly)
+        return try XCTUnwrap(events.compactMap { event -> AgentSession? in
+            if case .session(let session) = event { return session }
+            return nil
+        }.last)
+    }
 
     private static func takeoverError(reason: String, retryable: Bool, holderPID: Int) -> Error {
         CodexAppServerConnectionError.appServer(CodexAppServerError(

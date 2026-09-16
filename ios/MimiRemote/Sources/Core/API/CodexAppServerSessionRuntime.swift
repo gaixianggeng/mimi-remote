@@ -1021,13 +1021,37 @@ actor CodexAppServerSessionRuntime {
         let builder = CodexAppServerRequestBuilder(
             allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context)
         )
-        let result = try await sendRecoveringFromStaleInitialization(
-            try builder.threadTakeover(threadID: sessionID, cwd: context.cwd)
-        )
+        let result: CodexAppServerJSONValue?
+        do {
+            result = try await sendRecoveringFromStaleInitialization(
+                try builder.threadTakeover(threadID: sessionID, cwd: context.cwd)
+            )
+        } catch {
+            if let failure = CodexAppServerThreadTakeoverResult.failure(from: error),
+               failure.reason == "holder_busy" || failure.reason == "holder_state_unknown" {
+                // 拒绝结果也是权威持有态；只改 Store 会被额度重放中的旧 idle 覆盖。
+                _ = withUpdatedSession(sessionID) { session in
+                    let owner = session.claudeOwner ?? context.session.claudeOwner
+                    session.canAcceptDirectInput = false
+                    session.claudeOwner = ClaudeSessionOwner(
+                        entrypoint: owner?.entrypoint, kind: owner?.kind,
+                        status: failure.reason == "holder_busy" ? "busy" : nil,
+                        pid: failure.holderPID ?? owner?.pid
+                    )
+                }
+            }
+            throw error
+        }
+        let takeover = CodexAppServerThreadTakeoverResult(result: result)
+        // 已在线的页面可能跳过重连，切走的页面也不会立即 resume；先同步缓存及事件。
+        _ = withUpdatedSession(sessionID) { session in
+            session.canAcceptDirectInput = takeover.canAcceptDirectInput ?? true
+            session.claudeOwner = nil
+        }
         // 接管前这条连接可能已按只读 resume 过；下一次订阅必须真的重新 thread/resume，
         // 让 bridge 回权威的可写状态，而不是被"已 resume"缓存短路。
         threadsResumedOnConnection.remove(sessionID)
-        return CodexAppServerThreadTakeoverResult(result: result)
+        return takeover
     }
 
     @discardableResult
@@ -1273,6 +1297,13 @@ actor CodexAppServerSessionRuntime {
         )
         guard let object = result?.objectValue else {
             throw AgentAPIError.invalidResponse
+        }
+        if runtimeProvider == "claude" {
+            // turns/list 不携带持有态。等待期间 read/resume/接管可能更新它；只使用
+            // 返回后的缓存，不能让请求前的 metadata 把新的只读状态或解除结果写回去。
+            let cachedThread = historyThreadShell(sessionID: sessionID, projects: projects)
+            thread["canAcceptDirectInput"] = cachedThread["canAcceptDirectInput"]
+            thread["claudeOwner"] = cachedThread["claudeOwner"]
         }
         let validatedPage = try Self.validatedHistoryTurnsPage(object)
         let rawTurns = validatedPage.turns
