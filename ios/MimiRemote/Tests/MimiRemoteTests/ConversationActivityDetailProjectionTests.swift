@@ -226,6 +226,48 @@ final class ConversationActivityDetailProjectionTests: XCTestCase {
         XCTAssertEqual(restoredSearch.activityPayload?.displayTitle, L10n.text("ui.web_search"))
     }
 
+    func testNestedMediaPayloadsAreOmittedWithoutDroppingBusinessFields() async throws {
+        let payload = Data("binary-media-payload".utf8).base64EncodedString()
+        let media: CodexAppServerJSONValue = .object([
+            "preview": .object(["type": .string("image"), "data": .string(payload), "caption": .string("Keep caption")]),
+            "attachments": .array([
+                .object(["type": .string("audio"), "mimeType": .string("audio/wav"), "data": .string(payload)]),
+                .object(["type": .string("image_url"), "image_url": .object(["url": .string("data:image/png;base64," + payload)])]),
+                .object(["type": .string("inputImage"), "imageUrl": .string("data:image/png;base64," + payload)])
+            ]),
+            "business": .object([
+                "type": .string("image"), "data": .string("ordinary-business-value"),
+                "content": .string("Keep content"), "message": .string("Keep message"),
+                "nested": .object(["type": .string("audio"), "id": .string("business-id")]),
+                "url": .string("https://example.com/image.png")
+            ]),
+            "cursor": .string("next-page")
+        ])
+        let marker = CodexAppServerJSONValue.string(L10n.text("ui.media_data_omitted"))
+        // 同时覆盖 MCP structuredContent 与没有已知包装字段的普通 JSON 回退。
+        for result in [CodexAppServerJSONValue.object(["content": .array([]), "structuredContent": media]), media] {
+            let item: [String: CodexAppServerJSONValue] = [
+                "type": .string("mcpToolCall"), "id": .string("nested-media"), "server": .string("sample"),
+                "tool": .string("lookup"), "status": .string("completed"), "result": result
+            ]
+            var projector = CodexAppServerEventProjector()
+            let live = try message(from: projector.project(notification(item)))
+            let restored = try await history(item)
+            XCTAssertEqual(live.content, restored.content)
+            XCTAssertFalse(live.content.contains(payload))
+            let displayed = try JSONDecoder().decode(CodexAppServerJSONValue.self, from: Data(live.content.utf8))
+            XCTAssertEqual(displayed["preview"]?["data"], marker)
+            XCTAssertEqual(displayed["preview"]?["caption"], media["preview"]?["caption"])
+            let attachments = try XCTUnwrap(displayed["attachments"]?.arrayValue)
+            XCTAssertEqual(attachments.count, 3)
+            XCTAssertEqual(attachments[0]["data"], marker)
+            XCTAssertEqual(attachments[1]["image_url"]?["url"], marker)
+            XCTAssertEqual(attachments[2]["imageUrl"], marker)
+            XCTAssertEqual(displayed["business"], media["business"])
+            XCTAssertEqual(displayed["cursor"], media["cursor"])
+        }
+    }
+
     func testExternalHistoryOutputKeepsPreviewAndItsFullOutputReference() async throws {
         var item = command(output: "Stored preview")
         item["historyOutputRef"] = .string("agentd-history-output://details")

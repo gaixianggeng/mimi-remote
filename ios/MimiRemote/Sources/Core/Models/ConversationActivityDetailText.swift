@@ -93,8 +93,37 @@ enum ConversationActivityDetailText {
     private static func formattedJSON(_ value: CodexAppServerJSONValue) -> String? {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        guard let data = try? encoder.encode(value) else { return nil }
+        guard let data = try? encoder.encode(displayJSON(value)) else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    /// 只替换可识别的媒体载荷，保留对象、数组和业务字段；不能把 type 同名当作删除整个对象的依据。
+    private static func displayJSON(_ value: CodexAppServerJSONValue) -> CodexAppServerJSONValue {
+        switch value {
+        case .array(let values):
+            return .array(values.map(displayJSON))
+        case .object(let object):
+            var displayed = object.mapValues(displayJSON)
+            if let type = object["type"]?.stringValue, ["image", "audio"].contains(type),
+               let payload = object["data"]?.stringValue, !payload.isEmpty {
+                let mime = object["mimeType"]?.stringValue ?? ""
+                // MIME 可确认协议媒体；缺失 MIME 时，要求载荷符合标准 base64，避免裁掉普通业务文本。
+                if mime.hasPrefix(type + "/") || (mime.isEmpty
+                    && payload.utf8.count.isMultiple(of: 4)
+                    && payload.range(of: "^[A-Za-z0-9+/]+={0,2}$", options: .regularExpression) != nil) {
+                    displayed["data"] = .string(L10n.text("ui.media_data_omitted"))
+                }
+            }
+            return .object(displayed)
+        case .string(let text):
+            if (text.hasPrefix("data:image/") || text.hasPrefix("data:audio/")),
+               text.contains(";base64,") {
+                return .string(L10n.text("ui.media_data_omitted"))
+            }
+            return value
+        default:
+            return value
+        }
     }
 
     private static func strings(_ value: CodexAppServerJSONValue?) -> [String] {

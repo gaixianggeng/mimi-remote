@@ -13828,6 +13828,16 @@
         }
       }
     },
+    "ui.media_data_omitted": {
+      "localizations": {
+        "en": {
+          "stringUnit": { "state": "translated", "value": "[Media data omitted]" }
+        },
+        "zh-Hans": {
+          "stringUnit": { "state": "translated", "value": "[媒体数据已省略]" }
+        }
+      }
+    },
     "ui.image_data_cannot_be_decoded": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
