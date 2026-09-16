@@ -50,7 +50,7 @@ func TestDeepSeekTurnPageKeepsPagingWhileHistoryRemains(t *testing.T) {
 	})
 	conn := newDeepSeekHistoryConn(t, harness)
 
-	follow := &deepSeekFollow{threadID: "s-1", turnStarts: make(chan int64, 1)}
+	follow := &deepSeekFollow{threadID: "s-1", updated: make(chan struct{}, 1)}
 	follow.note([]harnessclient.SessionWireEvent{
 		{Type: deepSeekEventTurnStart, Seq: 1, Data: json.RawMessage(`{"turn":1}`)},
 	})
@@ -84,7 +84,7 @@ func TestDeepSeekTurnPageStopsAtSessionStart(t *testing.T) {
 	})
 	conn := newDeepSeekHistoryConn(t, harness)
 
-	follow := &deepSeekFollow{threadID: "s-1", turnStarts: make(chan int64, 1)}
+	follow := &deepSeekFollow{threadID: "s-1", updated: make(chan struct{}, 1)}
 	follow.note([]harnessclient.SessionWireEvent{
 		{Type: deepSeekEventTurnStart, Seq: 1, Data: json.RawMessage(`{"turn":1}`)},
 	})
@@ -162,7 +162,7 @@ func TestDeepSeekEnsureTurnRecordsPagesBackForTruncatedTurn(t *testing.T) {
 	})
 	conn := newDeepSeekHistoryConn(t, harness)
 
-	follow := &deepSeekFollow{threadID: "s-1", turnStarts: make(chan int64, 1)}
+	follow := &deepSeekFollow{threadID: "s-1", updated: make(chan struct{}, 1)}
 	follow.note([]harnessclient.SessionWireEvent{
 		{Type: deepSeekEventTurnEnd, Seq: 100, Data: json.RawMessage(`{"turn":3,"reason":{"kind":"completed"}}`)},
 	})

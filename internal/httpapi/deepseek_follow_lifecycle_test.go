@@ -37,9 +37,9 @@ func TestDeepSeekFollowStreamClosureTearsDownAndReleasesSlot(t *testing.T) {
 		t.Fatalf("订阅会话失败：%v", err)
 	}
 	follow := &deepSeekFollow{
-		threadID:   "s-closed",
-		stream:     stream,
-		turnStarts: make(chan int64, 1),
+		threadID: "s-closed",
+		stream:   stream,
+		updated:  make(chan struct{}, 1),
 	}
 	conn.follows = map[string]*deepSeekFollow{"s-closed": follow}
 	done := make(chan string, 8)

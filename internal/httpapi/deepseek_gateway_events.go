@@ -113,15 +113,10 @@ func (c *deepSeekGatewayConn) handleDurableEvent(follow *deepSeekFollow, frame h
 	}
 	// 缓存必须包含直播期间到达的记录：客户端随后用 items/list 补历史时，
 	// 这一段只能从本地缓存拿，Harness 的分页只到订阅切点为止。
+	// 投递对账所需的 user/message 也在其中，因此 note 之后等待者即可自行取用，
+	// 不需要在这里额外分发 turn 编号。
 	follow.note([]harnessclient.SessionWireEvent{event})
 	c.noteEventContext(follow.threadID, event)
-	if event.Type == deepSeekEventTurnStart {
-		// 把真实 turn 编号交给等待 turn/start 应答的请求，避免编造 turn id。
-		var data deepSeekTurnData
-		if json.Unmarshal(event.Data, &data) == nil {
-			follow.noteTurnStart(data.Turn)
-		}
-	}
 
 	for _, notification := range translateDeepSeekDurableEvent(follow.threadID, event) {
 		if err := c.writeDeepSeekNotification(notification.Method, notification.Params); err != nil {

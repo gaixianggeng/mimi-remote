@@ -41,42 +41,75 @@ type deepSeekFollow struct {
 	// assistant/message 相同的 (turn, step) 上，否则同一条消息在直播间与历史回读会
 	// 得到两个 item id，Mimi 原位覆盖失效并显示重复气泡。
 	attempts map[string]deepSeekStreamAttempt
-	// turnStarts 把新出现的 turn 编号交给等待 turn/start 应答的请求。
-	// 带缓冲：事件可能早于 prompt 的响应到达。
-	turnStarts chan int64
+	// updated 在缓存并入新记录后发一个信号，供等待"本次投递对应的 turn"的请求唤醒。
+	// 带缓冲且非阻塞：没有人在等的时候信号必须能丢掉，否则会阻塞事件读协程。
+	updated chan struct{}
 }
 
-// noteTurnStart 记下 Harness 报出的新 turn 编号。
-func (f *deepSeekFollow) noteTurnStart(turn int64) {
+// signalUpdated 通知等待者缓存又变了。非阻塞，调用方不必关心有没有人在等。
+func (f *deepSeekFollow) signalUpdated() {
 	select {
-	case f.turnStarts <- turn:
+	case f.updated <- struct{}{}:
 	default:
-		// 缓冲满说明没人在等；丢掉比阻塞事件读协程安全。
 	}
 }
 
-// drainTurnStarts 清掉历史编号，避免把上一轮的编号当成本次的。
-func (f *deepSeekFollow) drainTurnStarts() {
-	for {
-		select {
-		case <-f.turnStarts:
-		default:
-			return
+// turnForRequest 返回到目前为止"本次投递"对应的 turn 编号。
+//
+// 判据是 user/message 的 source.rpcId —— 协议文档把它定为 prompt 的 requestId，
+// Harness 自己也用它做消息去重。turn 号不在 user/message 上（实测只有 assistant/message
+// 与 step/* 明确带 turn），所以按记录顺序把它归入所属的 turn 桶，取桶的 turn。
+// 顺序切分沿用 deepSeekSplitTurns 的同一套口径，不引入第二种说法。
+//
+// 只认 requestId 相同的那条消息：别的会话、别的端、同会话里排队的前一次投递都拿不到，
+// 因此不会出现"把别人的 turn 编号当成本次的"。
+func (f *deepSeekFollow) turnForRequest(requestID string) (int64, bool) {
+	if strings.TrimSpace(requestID) == "" {
+		return 0, false
+	}
+	for _, bucket := range deepSeekSplitTurns(f.snapshot()) {
+		for _, record := range bucket.Records {
+			if record.Type != deepSeekEventUserMessage {
+				continue
+			}
+			var data deepSeekMessageData
+			if json.Unmarshal(record.Data, &data) != nil || data.Source == nil {
+				continue
+			}
+			if data.Source.RPCID == requestID {
+				return bucket.Turn, true
+			}
 		}
 	}
+	return 0, false
 }
 
-// awaitTurnStart 等待下一个 turn 编号。
-func (f *deepSeekFollow) awaitTurnStart(ctx context.Context, timeout time.Duration) (int64, bool) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case turn := <-f.turnStarts:
-		return turn, true
-	case <-timer.C:
-		return 0, false
-	case <-ctx.Done():
-		return 0, false
+// awaitTurnForRequest 等到本次投递自己的 turn 出现。
+//
+// 超时或连接结束时返回 false，调用方必须按"拿不到 turn id"处理，不能退回到"等下一个
+// 出现的 turn"：那会在多端或排队场景下把另一轮的编号回给客户端，而客户端的乐观消息绑定、
+// 中断对账与 active 清理都以这个 id 为准。
+func (f *deepSeekFollow) awaitTurnForRequest(
+	ctx context.Context,
+	requestID string,
+	timeout time.Duration,
+) (int64, bool) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		// 先查缓存再等信号：投递可能早在进入等待之前就已经落到日志里了。
+		if turn, ok := f.turnForRequest(requestID); ok {
+			return turn, true
+		}
+		select {
+		case <-f.updated:
+		case <-deadline.C:
+			// 信号与超时可能同时就绪，超时前再看一眼缓存，避免丢掉已经到达的 turn。
+			turn, ok := f.turnForRequest(requestID)
+			return turn, ok
+		case <-ctx.Done():
+			return 0, false
+		}
 	}
 }
 
@@ -154,11 +187,12 @@ func (f *deepSeekFollow) hasSnapshot() bool {
 	return f.throughSeq > 0
 }
 
-// note 把新记录并入缓存。
+// note 把新记录并入缓存，并唤醒等待本次投递对应 turn 的请求。
 func (f *deepSeekFollow) note(records []harnessclient.SessionWireEvent) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.noteLocked(records)
+	f.mu.Unlock()
+	f.signalUpdated()
 }
 
 func (f *deepSeekFollow) noteLocked(records []harnessclient.SessionWireEvent) {

@@ -963,7 +963,9 @@ func TestDeepSeekGatewayAuthorizesCreatedThreadForTurns(t *testing.T) {
 		prompts = append(prompts, envelope.Request)
 		conn := followConn
 		mu.Unlock()
-		// 真实 Harness 在收到投递后才把新轮次写进会话日志，这里照此回放。
+		// 真实 Harness 在收到投递后才把新轮次写进会话日志，这里照此回放：
+		// turn/start 开出轮次，user/message 把 source.rpcId 记成 prompt 的 requestId。
+		// 后者是"这一轮属于哪次投递"的唯一判据，缺了它本次 ACK 拿不到 turn id。
 		if conn != nil {
 			_ = writeDeepSeekMuxValue(conn, "", map[string]any{
 				"type": "event",
@@ -971,6 +973,19 @@ func TestDeepSeekGatewayAuthorizesCreatedThreadForTurns(t *testing.T) {
 					"type": "turn/start",
 					"seq":  13,
 					"data": map[string]any{"turn": 2},
+				},
+			})
+			_ = writeDeepSeekMuxValue(conn, "", map[string]any{
+				"type": "event",
+				"event": map[string]any{
+					"type": "user/message",
+					"seq":  14,
+					"data": map[string]any{
+						"id":      "um-1",
+						"role":    "user",
+						"content": []any{map[string]any{"type": "text", "text": "你好"}},
+						"source":  map[string]any{"kind": "user", "rpcId": envelope.Request["requestId"]},
+					},
 				},
 			})
 		}

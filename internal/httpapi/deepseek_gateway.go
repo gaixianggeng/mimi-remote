@@ -324,7 +324,7 @@ func (c *deepSeekGatewayConn) ensureFollow(ctx context.Context, threadID string)
 		c.router.releaseDeepSeekSession()
 		return nil, err
 	}
-	follow := &deepSeekFollow{threadID: threadID, stream: stream, turnStarts: make(chan int64, 8)}
+	follow := &deepSeekFollow{threadID: threadID, stream: stream, updated: make(chan struct{}, 1)}
 	if err := follow.awaitSnapshot(ctx); err != nil {
 		stream.Close()
 		c.router.releaseDeepSeekSession()
