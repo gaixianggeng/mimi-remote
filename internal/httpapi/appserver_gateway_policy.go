@@ -1398,13 +1398,11 @@ func sanitizedGatewayThreadSandbox(runtimeID string, params map[string]any) stri
 		}
 		return "workspace-write"
 	case "deepseek":
-		// Harness 没有 Codex 那套完全访问语义：沙盒由 Harness 自己管理，agentd 不
-		// 转发沙盒参数。因此只保留用户明确声明的只读，其余一律压回 workspace-write，
-		// 不沿用下面的 danger-full-access 默认值。
-		if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "readonly" {
-			return "read-only"
-		}
-		return "workspace-write"
+		// Harness 的沙盒由 Harness 自己管理，agentd 不转发也不可能施加沙盒参数
+		// （validateDeepSeekPermissionParams 只放行完全访问）。这里如实回完全访问：
+		// 既不能沿用下面的 Codex 默认值，也不能像先前那样压成 workspace-write——
+		// 那会在改写结果里造出一个没有人执行的约束，与"只读"是同一种谎。
+		return "danger-full-access"
 	}
 	if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "readonly" {
 		return "read-only"

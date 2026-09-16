@@ -115,9 +115,13 @@ var appServerRuntimeSpecs = map[string]appServerRuntimeSpec{
 		},
 		Policy: appServerChannelPolicy{
 			ApprovalPolicies: []string{"on-request"},
-			SandboxModes:     []string{"read-only", "workspace-write"},
-			NetworkAccess:    false,
-			CWDScope:         "agentd_allowlist",
+			// 只声明能被兑现的档位。Harness 自己维护会话权限（session/list 的
+			// projections.permissions 只是只读投影，协议里没有设置入口），agentd
+			// 转发不了也施加不了只读与工作区写限制，因此不声明它们——声明一个
+			// 做不到的开关，等于让用户以为有保护。网关侧同时只放行完全访问。
+			SandboxModes:  []string{"danger-full-access"},
+			NetworkAccess: false,
+			CWDScope:      "agentd_allowlist",
 		},
 		Experimental: true,
 	},
