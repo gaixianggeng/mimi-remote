@@ -62,7 +62,9 @@ var appServerRuntimeSpecs = map[string]appServerRuntimeSpec{
 			RateLimits:       true,
 		},
 		Policy: appServerChannelPolicy{
-			ApprovalPolicies: []string{"on-request"},
+			// Codex 侧 never 与 danger-full-access 是一组：完全访问必须免审批，
+			// 否则危险档位会被审批卡住（#496）。
+			ApprovalPolicies: []string{"on-request", "never"},
 			SandboxModes:     []string{"read-only", "workspace-write", "danger-full-access"},
 			NetworkAccess:    false,
 			CWDScope:         "agentd_allowlist",

@@ -896,19 +896,24 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
 
     func sanitizedForRuntimePolicy() -> CodexAppServerTurnOptions {
         var sanitized = self
+        // 两条通道的完全访问都表示显式免审批；旧草稿的 on-request 在发送前归一化。
+        // 被动恢复仍继承会话设置，不能因为全局默认变化而提升现有会话权限。
+        if !sanitized.preservesThreadPermissionSettings,
+           sanitized.permissionProfileID == ":danger-full-access"
+            || (sanitized.permissionProfileID?.isEmpty != false && sanitized.sandboxMode == .dangerFullAccess) {
+            sanitized.approvalPolicy = .never
+            sanitized.approvalsReviewer = "user"
+        }
         guard sanitized.runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "claude" else {
-            // Desktop 的完全访问始终是 never/user。旧草稿曾为旧网关保存 on-request，
-            // 必须在发送和确认前统一，不能等网关改写后仍匹配旧审批策略。
-            if !sanitized.preservesThreadPermissionSettings,
-               sanitized.permissionProfileID == ":danger-full-access"
-                || (sanitized.permissionProfileID?.isEmpty != false && sanitized.sandboxMode == .dangerFullAccess) {
-                sanitized.approvalPolicy = .never
-                sanitized.approvalsReviewer = "user"
-            }
             return sanitized
         }
-        // Claude 只开放 default / plan / auto 三档安全映射。旧草稿或高级 JSON 即使携带
-        // fullAccess/never，也必须在移动端和 gateway 两端同时降级，绝不映射 bypassPermissions。
+        if sanitized.preservesThreadPermissionSettings {
+            return sanitized
+        }
+        if sanitized.sandboxMode == .dangerFullAccess {
+            sanitized.networkAccess = false
+            return sanitized
+        }
         let reviewer = sanitized.approvalsReviewer.trimmingCharacters(in: .whitespacesAndNewlines)
         if sanitized.sandboxMode == .readOnly {
             sanitized.approvalPolicy = .onRequest

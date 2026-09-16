@@ -563,6 +563,9 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		probe := r.claudeBridgeProbe()
 		claudeRateLimitsAvailable := probe.Healthy && claudebridge.IsSupported(probe.Version)
 		claudeMethods := appServerAllowedMethodListForRuntime(claudeSpec.ID)
+		// 完全访问只在 bridge 版本支持时声明；登记表给的是可靠基线，
+		// 这里按探测结果上调。
+		claudeFullAccessAvailable := probe.Healthy && claudebridge.SupportsFullAccess(probe.Version)
 		if !claudeRateLimitsAvailable {
 			claudeMethods = removeAppServerMethod(claudeMethods, "account/rateLimits/read")
 		}
@@ -575,6 +578,15 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		// RateLimits 的登记基线是 false，实际是否可用由 bridge 探测决定。
 		claudeCapabilities := claudeSpec.Capabilities
 		claudeCapabilities.RateLimits = claudeRateLimitsAvailable
+		// 权限档位同样以登记表为基线，只在 bridge 支持完全访问时上调；显式复制切片，
+		// 避免 append 写回登记表的底层数组而影响后续请求。
+		claudePolicy := claudeSpec.Policy
+		claudePolicy.ApprovalPolicies = append([]string{}, claudePolicy.ApprovalPolicies...)
+		claudePolicy.SandboxModes = append([]string{}, claudePolicy.SandboxModes...)
+		if claudeFullAccessAvailable {
+			claudePolicy.ApprovalPolicies = append(claudePolicy.ApprovalPolicies, "never")
+			claudePolicy.SandboxModes = append(claudePolicy.SandboxModes, "danger-full-access")
+		}
 		channels = append(channels, appServerChannel{
 			ID:               claudeSpec.ID,
 			RuntimeID:        claudeSpec.ID,
@@ -599,7 +611,7 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			},
 			Methods:      claudeMethods,
 			Capabilities: claudeCapabilities,
-			Policy:       claudeSpec.Policy,
+			Policy:       claudePolicy,
 		})
 	}
 	if r.cfg.DeepSeek.Enabled {

@@ -1359,6 +1359,7 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 		} else {
 			safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
 			workspaceWrite = normalizePolicyValue(safe["sandbox"].(string)) == "workspacewrite"
+			fullAccess = normalizePolicyValue(safe["sandbox"].(string)) == "dangerfullaccess"
 		}
 		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
 	}
@@ -1386,10 +1387,19 @@ func sanitizedGatewayInitialTurnsPage(page map[string]any) map[string]any {
 
 func sanitizedGatewayThreadSandbox(runtimeID string, params map[string]any) string {
 	switch normalizeAppServerRuntimeID(runtimeID) {
-	case "claude", "deepseek":
-		// 这两条 runtime 都没有 Codex 那套完全访问语义：Claude bridge 只到
-		// workspace-write，Harness 侧根本没有沙盒参数（沙盒由它自己管理）。
-		// 因此这里只保留用户明确声明的只读，其余一律压回 workspace-write，
+	case "claude":
+		// bridge 支持完全访问时原样下发；是否真的可用由 channel 的 SandboxModes
+		// 与 bridge 版本探测表达，压缩层不做版本判断。
+		if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "dangerfullaccess" {
+			return "danger-full-access"
+		}
+		if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "readonly" {
+			return "read-only"
+		}
+		return "workspace-write"
+	case "deepseek":
+		// Harness 没有 Codex 那套完全访问语义：沙盒由 Harness 自己管理，agentd 不
+		// 转发沙盒参数。因此只保留用户明确声明的只读，其余一律压回 workspace-write，
 		// 不沿用下面的 danger-full-access 默认值。
 		if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "readonly" {
 			return "read-only"
@@ -1433,6 +1443,7 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 			safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
 			sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
 			workspaceWrite = normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
+			fullAccess = normalizePolicyValue(sandboxPolicy["type"].(string)) == "dangerfullaccess"
 		}
 		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
 	}
@@ -1681,6 +1692,9 @@ func sanitizedGatewaySandboxPolicy(runtimeID string, raw any, cwd string) map[st
 	sandboxType, _ := gatewayStringParam(sandbox, "type")
 	normalizedType := normalizePolicyValue(sandboxType)
 	if normalizeAppServerRuntimeID(runtimeID) == "claude" {
+		if normalizedType == "dangerfullaccess" {
+			return map[string]any{"type": "dangerFullAccess"}
+		}
 		if normalizedType == "readonly" {
 			return map[string]any{
 				"type":          "readOnly",
