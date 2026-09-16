@@ -1625,7 +1625,16 @@ actor CodexAppServerSessionRuntime {
                 // prepareRelatedSession 会先 thread/read，再走 turns/list；缓存壳层必须保留
                 // parent 与 source-only subAgent 身份，否则分页历史会因缺 metadata 而错误 fail-open。
                 "parentThreadId": cached.parentThreadID.map { .string($0) } ?? .null,
-                "threadSource": cached.isSubagentThread ? .string("subagent") : .null
+                "threadSource": cached.isSubagentThread ? .string("subagent") : .null,
+                // 分页历史不重新读取持有方。缓存壳必须保留只读及其原因，否则额度更新
+                // 再推送整条会话时会把提示清掉，直到下一次权威快照才恢复。
+                "canAcceptDirectInput": cached.canAcceptDirectInput.map { .bool($0) } ?? .null,
+                "claudeOwner": cached.claudeOwner.map { owner in .object([
+                    "entrypoint": owner.entrypoint.map { .string($0) } ?? .null,
+                    "kind": owner.kind.map { .string($0) } ?? .null,
+                    "status": owner.status.map { .string($0) } ?? .null,
+                    "pid": owner.pid.map { .int(Int64($0)) } ?? .null
+                ]) } ?? .null
             ]
         }
         let project = projects.first

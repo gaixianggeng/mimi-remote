@@ -336,6 +336,51 @@ final class ClaudeTakeoverTests: XCTestCase {
         }
     }
 
+    func testHistoryReloadAndRateLimitReplayPreserveOwnershipAfterReopening() async throws {
+        let fixture = await makeHeldStore(id: "claude_history_reopen", supportsTakeover: true)
+        await fixture.store.refreshClaudeTakeoverSupportIfNeeded(sessionID: fixture.held.id)
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://localhost:8787", token: "test-token", runtimeProvider: "claude"
+        )
+        let limits = try JSONDecoder().decode(RateLimitSummary.self, from: Data("{}".utf8))
+
+        for status: String? in ["busy", "shell", nil, "idle"] {
+            var held = fixture.held
+            held.claudeOwner = ClaudeSessionOwner(entrypoint: "cli", kind: "interactive", status: status, pid: 4242)
+            fixture.store.upsert(held)
+            await runtime.rememberForkedSession(held)
+            fixture.store.setSelectedSessionID(nil)
+
+            // 重入会复用历史缓存壳；随后额度刷新会把壳投影后的整条会话重新推给 Store。
+            let shell = await runtime.historyThreadShell(sessionID: held.id, projects: [])
+            _ = await runtime.contextForHistoryThread(shell, sessionID: held.id, projects: [])
+            await runtime.applyAccountRateLimit(limits)
+            let events = await runtime.bufferedEvents(sessionID: held.id, replayPolicy: .stateOnly)
+            let replayed = try XCTUnwrap(events.compactMap { event -> AgentSession? in
+                if case .session(let session) = event { return session }
+                return nil
+            }.last)
+            fixture.store.upsert(replayed)
+            fixture.store.setSelectedSessionID(held.id)
+
+            let notice = try XCTUnwrap(fixture.store.selectedOwnershipNotice)
+            XCTAssertEqual(notice.owner, held.claudeOwner)
+            XCTAssertEqual(notice.canTakeOver, status == "idle")
+            XCTAssertFalse(try XCTUnwrap(fixture.store.selectedSession).allowsDirectInput)
+        }
+
+        // 权威快照明确解除持有后，后续缓存重建也不能复活旧提示。
+        var released = fixture.held
+        released.canAcceptDirectInput = true
+        released.claudeOwner = nil
+        await runtime.rememberForkedSession(released)
+        let shell = await runtime.historyThreadShell(sessionID: released.id, projects: [])
+        let projected = try await runtime.agentSession(from: shell, projects: [], fallbackProject: nil)
+        fixture.store.upsert(projected)
+        XCTAssertNil(fixture.store.selectedOwnershipNotice)
+        XCTAssertTrue(projected.allowsDirectInput)
+    }
+
     // MARK: - Fixtures
 
     private static func takeoverError(reason: String, retryable: Bool, holderPID: Int) -> Error {
