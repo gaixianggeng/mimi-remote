@@ -485,17 +485,26 @@ func (c *deepSeekGatewayConn) deepSeekTurnPage(
 		ordered = append(ordered, buckets[index])
 	}
 	if offset >= len(ordered) {
-		return nil, 0, nil
+		// 缓存里没有这一页了。宿主历史还没读完时不能收尾：客户端收到 null 游标就
+		// 认为会话到此为止，把游标留在原地，下一次请求会继续向前取。
+		if follow.atStart() {
+			return nil, 0, nil
+		}
+		return nil, offset, nil
 	}
 	end := offset + limit
 	if end > len(ordered) {
 		end = len(ordered)
 	}
 	page := ordered[offset:end]
-	if end >= len(ordered) {
-		return page, 0, nil
+	// 缓存读完不等于宿主历史读完：订阅开场快照只覆盖到 cursor 切点为止，更早的轮次
+	// 还在 Harness 上，也可能落在一次请求的取页上限之外。只有确实读到了会话开头才
+	// 收尾，否则必须继续给游标——在这里回 null，客户端会把缓存边界当成会话开头，
+	// 更早的轮次再也翻不出来，而且不报错，只是历史看起来变短了。
+	if end < len(ordered) || !follow.atStart() {
+		return page, end, nil
 	}
-	return page, end, nil
+	return page, 0, nil
 }
 
 // deepSeekMaxHistoryFetchPages 限制一次请求最多向前取几页记录。

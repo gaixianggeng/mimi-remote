@@ -172,18 +172,22 @@ func deepSeekThreadWire(summary harnessclient.SessionSummary, buckets []deepSeek
 	return thread
 }
 
-// deepSeekTurnWire 投影一个 turn。itemsView 如实反映本页确实带了 items。
+// deepSeekTurnWire 投影一个 turn。itemsView 如实反映本页是否带了这一轮的完整 items。
+//
+// 只有确实见过这个 turn 的 turn/start 才敢标 full：iOS 见到 full 就不再请求
+// items/list，一个被分页切掉开头的 turn 会因此以"只有 turn/end、没有正文"的样子
+// 定稿——它看起来是完整的一轮，实际少了一整轮内容，而且不报错。
 func deepSeekTurnWire(bucket deepSeekTurnBucket, includeItems bool) map[string]any {
 	turn := map[string]any{
 		"id":     deepSeekTurnID(bucket.Turn),
 		"status": deepSeekTurnStatusFor(bucket),
 	}
-	if includeItems {
+	if includeItems && bucket.Started {
 		items := deepSeekTurnItems(bucket)
 		turn["items"] = toDeepSeekAnySlice(items)
-		// items 已随本页完整给出，标记 full；否则 iOS 会再逐页请求 items/list。
 		turn["itemsView"] = "full"
 	} else {
+		// summary 让 iOS 继续逐 turn 请求 items/list，那条路径会把缺的历史补回来。
 		turn["items"] = []any{}
 		turn["itemsView"] = "summary"
 	}
@@ -316,7 +320,7 @@ func toDeepSeekAnySlice(items []map[string]any) []any {
 	return values
 }
 
-// ensureTurnRecords 保证缓存里含有指定 turn 的记录。
+// ensureTurnRecords 保证缓存里含有指定 turn 的完整记录。
 //
 // 分页只能向前：从缓存里最老的 seq 继续向 Harness 取，直到拿到这个 turn 或确认已经
 // 到会话开头。maxDeepSeekHistoryPages 给出上限，避免一个很旧的 turn 把连接拖在一次
@@ -324,7 +328,9 @@ func toDeepSeekAnySlice(items []map[string]any) []any {
 func (c *deepSeekGatewayConn) ensureTurnRecords(ctx context.Context, follow *deepSeekFollow, turn int64) (deepSeekTurnBucket, error) {
 	const maxDeepSeekHistoryPages = 8
 
-	if bucket, ok := deepSeekTurnByNumber(follow.snapshot(), turn); ok {
+	// 缓存里有这个 turn 还不够：桶可能被分页切掉了开头（Started=false），那里面只剩
+	// 一条 turn/end，内容整个缺着。当成答案返回会把"少了整整一轮正文"的 turn 定稿。
+	if bucket, ok := deepSeekTurnByNumber(follow.snapshot(), turn); ok && bucket.Started {
 		return bucket, nil
 	}
 	if follow.atStart() {
@@ -344,7 +350,7 @@ func (c *deepSeekGatewayConn) ensureTurnRecords(ctx context.Context, follow *dee
 			break
 		}
 		follow.note(records)
-		if bucket, ok := deepSeekTurnByNumber(follow.snapshot(), turn); ok {
+		if bucket, ok := deepSeekTurnByNumber(follow.snapshot(), turn); ok && bucket.Started {
 			return bucket, nil
 		}
 		if !hasMore {
@@ -352,6 +358,8 @@ func (c *deepSeekGatewayConn) ensureTurnRecords(ctx context.Context, follow *dee
 			break
 		}
 	}
+	// 补不全就如实报"取不到"，让客户端重试。把残缺的桶当答案返回，用户会以为这一轮
+	// 本来就没有内容。
 	return deepSeekTurnBucket{}, errDeepSeekThreadUnknown
 }
 

@@ -219,6 +219,10 @@ type deepSeekTurnBucket struct {
 	Records []harnessclient.SessionWireEvent
 	Ended   bool
 	Reason  string
+	// Started 表示本桶确实见到过这个 turn 的 turn/start。为 false 说明该轮的开头
+	// 还在缓存边界之外——分页把它切掉了，于是桶里只剩一条 turn/end（或一条对不上的
+	// turn/end）。这种桶的 Records 不是这一轮的完整记录，任何人都不能按"完整"处置它。
+	Started bool
 }
 
 // deepSeekSplitTurns 按 turn/start 与 turn/end 的顺序把记录切成 turn。
@@ -237,7 +241,7 @@ func deepSeekSplitTurns(records []harnessclient.SessionWireEvent) []deepSeekTurn
 			}
 			// 上一轮没有 turn/end 就遇到新的 turn/start（例如进程被中断），
 			// 上一个桶自然收尾，不会把两轮的记录混在一起。
-			buckets = append(buckets, deepSeekTurnBucket{Turn: data.Turn})
+			buckets = append(buckets, deepSeekTurnBucket{Turn: data.Turn, Started: true})
 			current = &buckets[len(buckets)-1]
 			current.Records = append(current.Records, record)
 		case deepSeekEventTurnEnd:
@@ -247,7 +251,8 @@ func deepSeekSplitTurns(records []harnessclient.SessionWireEvent) []deepSeekTurn
 			}
 			if current == nil || current.Turn != data.Turn {
 				// 没有见过的 turn 的结束事件：单独成一个只有结束的桶，
-				// 保证状态能反映出来，而不是被静默丢弃。
+				// 保证状态能反映出来，而不是被静默丢弃。这个桶没有 turn/start，
+				// 即 Started 保持 false——它的记录不完整，不能按完整处置。
 				buckets = append(buckets, deepSeekTurnBucket{Turn: data.Turn, Ended: true})
 				current = &buckets[len(buckets)-1]
 			} else {
