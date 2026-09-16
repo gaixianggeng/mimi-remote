@@ -1138,12 +1138,14 @@ func assertStabilizedConversationSnapshot<Content: View>(
     of view: Content,
     size: CGSize,
     precision: Float = 0.98,
+    contrast: UIAccessibilityContrast? = nil,
     named: String? = nil,
     file: StaticString = #filePath,
     testName: String = #function,
     line: UInt = #line
 ) async throws {
     let host = UIHostingController(rootView: view)
+    if let contrast { host.traitOverrides.accessibilityContrast = contrast }
     let windowScene = try XCTUnwrap(
         UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
     )

@@ -12,8 +12,8 @@
 //! | `Read`                                           | `ThreadItem::CommandExecution` (read action)         |
 //! | `Grep`                                           | `ThreadItem::CommandExecution` (search action)       |
 //! | `Glob` / `LS`                                    | `ThreadItem::CommandExecution` (list_files action)   |
-//! | `WebSearch`                                      | `ThreadItem::WebSearch`                              |
-//! | `TaskCreate` / `TaskUpdate`                      | `turn/plan/updated` (no item)                        |
+//! | `WebSearch`                                      | `DynamicToolCall { namespace:"claude" }`            |
+//! | `TaskCreate` / `TaskUpdate`                      | `DynamicToolCall` + `turn/plan/updated`              |
 //! | anything else (`WebFetch`, `TodoWrite`, `ToolSearch`, ...) | `DynamicToolCall { namespace:"claude", tool:name }` |
 //!
 //! Matching is case-sensitive — claude's tool names are PascalCase with stable
@@ -58,11 +58,12 @@ pub enum CodexToolKind {
     /// `list_files` command action.
     ExplorationList,
 
-    /// Claude `WebSearch` — codex `ThreadItem::WebSearch`.
+    /// Claude `WebSearch` — translated as `DynamicToolCall` because codex's
+    /// dedicated `WebSearch` item has no result or status fields.
     WebSearch,
 
-    /// Claude `TaskCreate` / `TaskUpdate` — codex `turn/plan/updated`
-    /// notification. Bridge maintains a per-turn `taskId → step` map.
+    /// Claude `TaskCreate` / `TaskUpdate` — a dynamic item preserves the raw
+    /// call while `turn/plan/updated` keeps the live plan UI current.
     TodoUpdate,
 
     /// Anything else. `namespace` is always `Some("claude")` so codex clients

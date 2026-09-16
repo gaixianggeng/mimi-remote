@@ -591,163 +591,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             .frame(width: 1024, height: 900)
     }
 
-    private func makeExpandedProcessGroup() -> some View {
-        let themeStore = makeThemeStore()
-        let turnID = "snapshot-process-group"
-        let reasoning = ConversationMessage(
-            stableID: "snapshot-process-reasoning",
-            turnID: turnID,
-            role: .system,
-            kind: .reasoningSummary,
-            content: "Planning backend migration testing with Docker",
-            createdAt: snapshotMessageDate,
-            sendStatus: .confirmed,
-            activityPayload: ConversationActivityPayload(
-                category: .thinking,
-                displayTitle: "推理摘要",
-                subtitle: "Planning backend migration testing with Docker"
-            )
-        )
-        let command = ConversationMessage(
-            stableID: "snapshot-process-command",
-            turnID: turnID,
-            role: .system,
-            kind: .commandSummary,
-            content: "命令：docker compose run --rm api go test ./...",
-            createdAt: snapshotMessageDate.addingTimeInterval(1),
-            sendStatus: .confirmed,
-            activityPayload: ConversationActivityPayload(
-                category: .runCommand,
-                displayTitle: "运行后端迁移测试",
-                status: "completed",
-                command: "docker compose run --rm api go test ./...",
-                cwd: "/Users/me/code/chat-archive",
-                exitCode: 0
-            )
-        )
-        let file = ConversationMessage(
-            stableID: "snapshot-process-file",
-            turnID: turnID,
-            role: .system,
-            kind: .fileChangeSummary,
-            content: "文件变更：internal/config/config_test.go modified",
-            createdAt: snapshotMessageDate.addingTimeInterval(2),
-            sendStatus: .confirmed,
-            activityPayload: ConversationActivityPayload(
-                category: .editFile,
-                displayTitle: "修改 config_test.go",
-                status: "completed",
-                filePaths: ["internal/config/config_test.go"]
-            )
-        )
-        let group = ConversationProcessGroup(
-            id: "snapshot-process-group",
-            turnID: turnID,
-            header: reasoning,
-            activities: [command, file],
-            status: .completed
-        )
-        let layout = ConversationLayout(containerWidth: 820, horizontalSizeClass: .regular)
-
-        return VStack {
-            ConversationProcessGroupRow(
-                group: group,
-                layout: layout,
-                isExpanded: true,
-                expandedActivityIDs: [],
-                toggleGroup: {},
-                toggleActivity: { _ in }
-            )
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 24)
-        .environmentObject(themeStore)
-            .environment(\.colorScheme, .light)
-        .background(themeStore.tokens(for: .light).background)
-        .frame(width: 820, height: 260)
-    }
-
-    private func makeWorkGroup(isExpanded: Bool) -> some View {
-        let themeStore = makeThemeStore()
-        let turnID = "snapshot-work-group"
-        let commentary = ConversationMessage(
-            stableID: "snapshot-work-commentary",
-            turnID: turnID,
-            role: .assistant,
-            kind: .commentary,
-            content: "我会先检查当前实现，再运行测试确认行为。",
-            createdAt: snapshotMessageDate,
-            sendStatus: .confirmed,
-            turnLifecycle: .completed
-        )
-        let command = ConversationMessage(
-            stableID: "snapshot-work-command",
-            turnID: turnID,
-            role: .system,
-            kind: .commandSummary,
-            content: "命令：xcodebuild test",
-            createdAt: snapshotMessageDate.addingTimeInterval(3),
-            sendStatus: .confirmed,
-            activityPayload: ConversationActivityPayload(
-                category: .runCommand,
-                displayTitle: "运行 iOS 单元测试",
-                status: "completed",
-                command: "xcodebuild test",
-                exitCode: 0
-            ),
-            turnLifecycle: .completed
-        )
-        let batch = ConversationActivityBatch(
-            id: "snapshot-work-batch",
-            messages: [command],
-            kind: .execution,
-            status: .completed
-        )
-        let group = ConversationWorkGroup(
-            id: "snapshot-work-group",
-            turnID: turnID,
-            entries: [
-                .commentary(commentary),
-                .activityBatch(batch)
-            ],
-            status: .completed,
-            startedAt: snapshotMessageDate,
-            endedAt: snapshotMessageDate.addingTimeInterval(74)
-        )
-        let layout = ConversationLayout(containerWidth: 820, horizontalSizeClass: .regular)
-
-        return VStack {
-            ConversationWorkGroupRow(
-                group: group,
-                layout: layout,
-                isExpanded: isExpanded,
-                toggleGroup: {}
-            ) {
-                Text(commentary.content)
-                    .font(themeStore.uiFont(size: 14))
-                    .foregroundStyle(themeStore.tokens(for: .light).primaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                ConversationActivityBatchRow(
-                    group: batch,
-                    layout: layout,
-                    isExpanded: false,
-                    expandedActivityIDs: [],
-                    toggleGroup: {},
-                    toggleActivity: { _ in }
-                )
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 24)
-        .environmentObject(themeStore)
-        .environment(\.colorScheme, .light)
-        .background(themeStore.tokens(for: .light).background)
-        .frame(width: 820, height: isExpanded ? 260 : 110)
-    }
-
     private func makeCommentaryAndTrailingProcessConversation() -> some View {
         let sessionID = "snapshot-commentary"
         let turnID = "turn-commentary"
@@ -927,16 +770,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testCrossSessionContinuationHidesInternalAddresses() {
-        assertSnapshot(
+    func testCrossSessionContinuationHidesInternalAddresses() async throws {
+        try await assertStabilizedConversationSnapshot(
             of: makeCrossSessionContinuationConversation(),
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 1024, height: 768)
-                )
-            )
+            size: CGSize(width: 1024, height: 768)
         )
     }
 
@@ -1010,28 +847,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testExpandedProcessGroupRendering() {
-        assertSnapshot(
-            of: makeExpandedProcessGroup(),
-            as: .image(precision: 0.98, layout: .fixed(width: 820, height: 260))
-        )
-    }
-
-    func testCollapsedWorkGroupRendering() {
-        assertSnapshot(
-            of: makeWorkGroup(isExpanded: false),
-            as: .image(precision: 0.98, layout: .fixed(width: 820, height: 110))
-        )
-    }
-
-    func testExpandedWorkGroupRendering() {
-        assertSnapshot(
-            of: makeWorkGroup(isExpanded: true),
-            as: .image(precision: 0.98, layout: .fixed(width: 820, height: 260))
-        )
-    }
-
-    func testCommentaryAndTrailingProcessRendering() async throws {
+    func testCommentaryAndTrailingActivitiesRendering() async throws {
         try await assertStabilizedConversationSnapshot(
             of: makeCommentaryAndTrailingProcessConversation(),
             size: CGSize(width: 430, height: 900)
@@ -1164,61 +980,43 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testComposerStatusTrayCrowdedState() async {
+    func testComposerStatusTrayCrowdedState() async throws {
         let view = await makeComposerStatusTrayCrowdedView(width: 1024, height: 768)
 
-        assertSnapshot(
+        try await assertStabilizedConversationSnapshot(
             of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 1024, height: 768)
-                )
-            )
+            size: CGSize(width: 1024, height: 768)
         )
     }
 
-    func testComposerStatusTrayIPadMiniPortraitWidth() async {
+    func testComposerStatusTrayIPadMiniPortraitWidth() async throws {
         let view = await makeComposerStatusTrayCrowdedView(
             width: 744,
             height: 1133,
             usesCompactIPadDefault: true
         )
 
-        assertSnapshot(
+        try await assertStabilizedConversationSnapshot(
             of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 744, height: 1133)
-                )
-            )
+            size: CGSize(width: 744, height: 1133)
         )
     }
 
-    func testComposerSurfaceIPadMiniIncreasedContrast() async {
+    func testComposerSurfaceIPadMiniIncreasedContrast() async throws {
         let view = await makeComposerStatusTrayCrowdedView(
             width: 744,
             height: 1133,
             usesCompactIPadDefault: true
         )
 
-        assertSnapshot(
+        try await assertStabilizedConversationSnapshot(
             of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 744, height: 1133),
-                    traits: UITraitCollection(accessibilityContrast: .high)
-                )
-            )
+            size: CGSize(width: 744, height: 1133),
+            contrast: .high
         )
     }
 
-    func testComposerStatusTrayIPadMiniLandscapeDetailWidth() async {
+    func testComposerStatusTrayIPadMiniLandscapeDetailWidth() async throws {
         // 横屏回归：1133pt 整窗减去约 300pt 侧栏后，detail 列约 832pt。
         // Composer 按内容测量宽度必须用标准指标（快捷行、按钮文字标签都在），
         // 不允许被 safe area 提案算术把宽度算小而退化成紧凑布局。
@@ -1230,64 +1028,40 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             usesCompactIPadDefault: true
         )
 
-        assertSnapshot(
+        try await assertStabilizedConversationSnapshot(
             of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 832, height: 744)
-                )
-            )
+            size: CGSize(width: 832, height: 744)
         )
     }
 
-    func testComposerStatusTrayIPadMiniSplitViewWidth() async {
+    func testComposerStatusTrayIPadMiniSplitViewWidth() async throws {
         let view = await makeComposerStatusTrayCrowdedView(
             width: 375,
             height: 744,
             usesCompactIPadDefault: true
         )
 
-        assertSnapshot(
+        try await assertStabilizedConversationSnapshot(
             of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 375, height: 744)
-                )
-            )
+            size: CGSize(width: 375, height: 744)
         )
     }
 
-    func testComposerStatusTrayCrowdedCompactWidth() async {
+    func testComposerStatusTrayCrowdedCompactWidth() async throws {
         let view = await makeComposerStatusTrayCrowdedView(width: 420, height: 768)
 
-        assertSnapshot(
+        try await assertStabilizedConversationSnapshot(
             of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 420, height: 768)
-                )
-            )
+            size: CGSize(width: 420, height: 768)
         )
     }
 
-    func testComposerStatusTrayExtremelyNarrowCompactWidth() async {
+    func testComposerStatusTrayExtremelyNarrowCompactWidth() async throws {
         let view = await makeComposerStatusTrayCrowdedView(width: 320, height: 700)
 
-        assertSnapshot(
+        try await assertStabilizedConversationSnapshot(
             of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 320, height: 700)
-                )
-            )
+            size: CGSize(width: 320, height: 700)
         )
     }
 
@@ -1341,38 +1115,26 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testComposerStatusTrayExpandedCrowdedState() async {
+    func testComposerStatusTrayExpandedCrowdedState() async throws {
         let view = await makeComposerStatusTrayCrowdedView(width: 420, height: 768, goalExpanded: true)
 
-        assertSnapshot(
+        try await assertStabilizedConversationSnapshot(
             of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 420, height: 768)
-                )
-            )
+            size: CGSize(width: 420, height: 768)
         )
     }
 
-    func testComposerStatusTrayExpandedWideState() async {
+    func testComposerStatusTrayExpandedWideState() async throws {
         // iPad 宽屏展开态必须继续和输入卡共用整条 composer 轨道，防止状态栏退回旧的 680pt 上限。
         let view = await makeComposerStatusTrayCrowdedView(width: 1024, height: 768, goalExpanded: true)
 
-        assertSnapshot(
+        try await assertStabilizedConversationSnapshot(
             of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 1024, height: 768)
-                )
-            )
+            size: CGSize(width: 1024, height: 768)
         )
     }
 
-    func testCompletedGoalStatusTrayRemainsVisibleAfterTurnFinishes() async {
+    func testCompletedGoalStatusTrayRemainsVisibleAfterTurnFinishes() async throws {
         let view = await makeComposerStatusTrayCrowdedView(
             width: 744,
             height: 768,
@@ -1381,15 +1143,9 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             sessionStatus: SessionStatus.completed.rawValue
         )
 
-        assertSnapshot(
+        try await assertStabilizedConversationSnapshot(
             of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(
-                    precision: 0.98,
-                    layout: .fixed(width: 744, height: 768)
-                )
-            )
+            size: CGSize(width: 744, height: 768)
         )
     }
 

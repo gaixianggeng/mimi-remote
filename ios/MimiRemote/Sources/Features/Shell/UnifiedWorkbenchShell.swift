@@ -31,6 +31,7 @@ struct UnifiedWorkbenchShell: View {
     @State private var sheetPresentationState = WorkbenchSheetPresentationState()
     @State private var inspectorPresentationState = InspectorPresentationState()
     @State private var sessionActionPresentation: SessionActionPresentation?
+    @State private var transcriptPresentation = ConversationTranscriptPresentation()
     @State private var notificationVisibilitySceneID = UUID()
     @State private var navigationBindingScheduler = WorkbenchNavigationBindingScheduler()
     @StateObject private var sidebarHighlightCoordinator = SessionSidebarHighlightCoordinator()
@@ -139,7 +140,11 @@ struct UnifiedWorkbenchShell: View {
             .onChange(of: visibleSessionNotificationRoute(layout: layout)) { _, route in
                 updateVisibleSessionNotificationRoute(route)
             }
+            .onChange(of: visibleTranscriptScope(layout: layout)) { _, _ in
+                transcriptPresentation.reset()
+            }
             .onDisappear {
+                transcriptPresentation.reset()
                 updateVisibleSessionNotificationRoute(nil)
             }
         }
@@ -198,6 +203,12 @@ struct UnifiedWorkbenchShell: View {
                 .zoom(sourceID: sourceID, in: presentationNamespace)
             )
         }
+    }
+
+    private func visibleTranscriptScope(layout: WorkbenchLayout) -> ScopedSessionID? {
+        // 通知可见性还受前后台和弹层影响；详细记录只随会话导航或电脑切换重置。
+        navigationState.visibleSessionID(usesCompactNavigation: layout.usesCompactNavigation)
+            .map { sessionStore.conversationStore.scopedSessionID(for: $0) }
     }
 
     private func visibleSessionNotificationRoute(
@@ -1028,6 +1039,13 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
+    private func detailedTranscriptMenuToggle(_ selection: Binding<Bool>) -> some View {
+        Toggle(isOn: selection) {
+            Label(L10n.text("ui.detailed_transcript"), systemImage: "text.page")
+        }
+        .accessibilityIdentifier("conversation.detailedTranscript")
+    }
+
     private func sessionDetail(
         destinationSessionID: SessionID? = nil,
         layout: WorkbenchLayout,
@@ -1041,6 +1059,11 @@ struct UnifiedWorkbenchShell: View {
             selectedSessionID: sessionStore.selectedSessionID
         )
         let detailSession = detailSessionID.flatMap { sessionStore.sessionsByID[$0] }
+        let transcriptScope = detailSessionID.map { sessionStore.conversationStore.scopedSessionID(for: $0) }
+        let detailedTranscript = Binding(
+            get: { transcriptPresentation.isEnabled(for: transcriptScope) },
+            set: { transcriptPresentation.setEnabled($0, for: transcriptScope) }
+        )
         let detailTitle = detailSession?.title
             ?? (canPresentSessionDetail ? sessionStore.selectedSession?.title : nil)
             ?? L10n.text("ui.session")
@@ -1059,6 +1082,7 @@ struct UnifiedWorkbenchShell: View {
                     .accessibilityHidden(true)
             }
         }
+        .environment(\.conversationDetailedTranscript, detailedTranscript)
         .navigationTitle(detailTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -1110,6 +1134,7 @@ struct UnifiedWorkbenchShell: View {
                 workbenchChromeToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         CurrentSessionRefreshMenuButton()
+                        detailedTranscriptMenuToggle(detailedTranscript)
 
                         Button {
                             toggleInspector(layout: layout)
@@ -1141,6 +1166,7 @@ struct UnifiedWorkbenchShell: View {
                     workbenchChromeToolbarItem(placement: .topBarTrailing) {
                         Menu {
                             CurrentSessionRefreshMenuButton()
+                            detailedTranscriptMenuToggle(detailedTranscript)
                             Divider()
                             SessionActionMenuContent(
                                 session: session,
