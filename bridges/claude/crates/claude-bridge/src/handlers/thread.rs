@@ -305,6 +305,8 @@ async fn resume_thread(
     params: p::ThreadResumeParams,
     acquire: ResumeAcquire,
 ) -> Result<p::ThreadResumeResponse, ThreadError> {
+    let process_gate = super::turn::thread_process_gate(&params.thread_id);
+    let _process_guard = process_gate.lock().await;
     let entry = state
         .thread_index()
         .lookup(&params.thread_id)
@@ -660,6 +662,8 @@ pub async fn handle_thread_rollback(
             "numTurns must be >= 1".to_string(),
         ));
     }
+    let process_gate = super::turn::thread_process_gate(&params.thread_id);
+    let _process_guard = process_gate.lock().await;
     let entry = state
         .thread_index()
         .lookup(&params.thread_id)

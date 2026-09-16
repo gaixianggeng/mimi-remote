@@ -6,7 +6,7 @@ import SwiftUI
 extension ComposerView {
     func applyDefaultPermissionMode() {
         let stored = ComposerPermissionMode.stored(defaultPermissionModeID)
-        composerState.applyPermissionMode(safePermissionMode(stored))
+        composerState.applyPermissionMode(stored)
         sessionStore.saveComposerPermissionSelection(
             composerState.permissionSelectionSnapshot(),
             for: activeComposerDraftScope
@@ -27,13 +27,9 @@ extension ComposerView {
     }
 
     func setPermissionMode(_ mode: ComposerPermissionMode) {
-        let safeMode = safePermissionMode(mode)
-        // Claude 的安全降级只影响当前会话，不覆盖用户为 Codex 保存的“完全访问”默认值。
-        if selectedSessionRuntimeProviderForModelMenu != "claude" {
-            defaultPermissionModeID = safeMode.rawValue
-        }
+        defaultPermissionModeID = mode.rawValue
         composerState.applyPermissionMode(
-            safeMode,
+            mode,
             sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
         )
         sessionStore.saveComposerPermissionSelection(
@@ -120,34 +116,7 @@ extension ComposerView {
     }
 
     var availablePermissionModes: [ComposerPermissionMode] {
-        if selectedSessionRuntimeProviderForModelMenu == "claude" {
-            return [.requestApproval, .readOnly, .autoApprove]
-        }
-        return ComposerPermissionMode.allCases
-    }
-
-    func safePermissionMode(_ mode: ComposerPermissionMode) -> ComposerPermissionMode {
-        // Claude 不支持“完全访问”，也不持久化自己的默认；当共享默认落在 fullAccess 时，
-        // 降级到“自动批准低风险操作”作为 Claude 的安全默认，而不是每轮都请求审批。
-        // autoApprove 仍是安全档（workspaceWrite + auto_review），绝不映射 bypassPermissions。
-        selectedSessionRuntimeProviderForModelMenu == "claude" && mode == .fullAccess
-            ? .autoApprove
-            : mode
-    }
-
-    func clampPermissionSelectionToSelectedSessionRuntime() {
-        let safeMode = safePermissionMode(composerState.permissionMode)
-        guard safeMode != composerState.permissionMode else {
-            return
-        }
-        composerState.applyPermissionMode(
-            safeMode,
-            sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
-        )
-        sessionStore.saveComposerPermissionSelection(
-            composerState.permissionSelectionSnapshot(),
-            for: activeComposerDraftScope
-        )
+        ComposerPermissionMode.allCases
     }
 }
 import UIKit

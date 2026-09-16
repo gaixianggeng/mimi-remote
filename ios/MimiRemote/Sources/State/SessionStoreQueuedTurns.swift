@@ -387,7 +387,8 @@ extension SessionStore {
     func ensureQueuedSessionMonitoring(sessionID: SessionID) {
         guard queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false
                 || queuedTurnAwaitingStartSessionIDs.contains(sessionID)
-                || queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] != nil,
+                || queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] != nil
+                || pendingGuidanceBySessionID[sessionID]?.isEmpty == false,
               connectionTermination == nil,
               !appStore.requiresRePairing,
               appStore.isConfigured,
@@ -429,14 +430,19 @@ extension SessionStore {
                 switch status {
                 case .connected:
                     self?.queuedSessionReadyIDs.insert(sessionID)
+                    if let self, let currentSocket = self.queuedSessionSockets[sessionID] {
+                        self.dispatchPendingGuidance(sessionID: sessionID, socket: currentSocket)
+                    }
                     self?.dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
                 case .failed(let message):
                     self?.queuedSessionReadyIDs.remove(sessionID)
+                    _ = self?.failPendingGuidanceConnection(sessionID: sessionID, message: message)
                     self?.setStatusMessage(L10n.format("ui.failed_to_connect_to_queue_to_be_sent", message))
                     self?.scheduleQueuedSessionReconnect(sessionID: sessionID, generation: generation)
                 case .terminated(let reason):
                     guard let self else { return }
                     self.queuedSessionReadyIDs.remove(sessionID)
+                    _ = self.failPendingGuidanceConnection(sessionID: sessionID, message: reason.message)
                     let socketFingerprint = self.queuedSessionCredentialFingerprintByID[sessionID]
                     if reason == .credentialsInvalid,
                        !self.appStore.isCurrentCredentialFingerprint(socketFingerprint) {
@@ -446,6 +452,10 @@ extension SessionStore {
                     self.terminateConnection(reason)
                 case .disconnected:
                     self?.queuedSessionReadyIDs.remove(sessionID)
+                    _ = self?.failPendingGuidanceConnection(
+                        sessionID: sessionID,
+                        message: L10n.text("ui.sending_failed_websocket_not_connected")
+                    )
                     self?.scheduleQueuedSessionReconnect(sessionID: sessionID, generation: generation)
                 case .connecting:
                     break
@@ -464,6 +474,9 @@ extension SessionStore {
             Task { @MainActor in
                 guard self?.isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation) == true,
                       let clientMessageID else { return }
+                if self?.acceptPendingGuidance(clientMessageID: clientMessageID, sessionID: sessionID) == true {
+                    return
+                }
                 _ = self?.handleQueuedSendAccepted(clientMessageID: clientMessageID, sessionID: sessionID)
             }
         }
@@ -471,6 +484,13 @@ extension SessionStore {
             Task { @MainActor in
                 guard self?.isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation) == true,
                       let clientMessageID else { return }
+                if self?.failPendingGuidance(
+                    clientMessageID: clientMessageID,
+                    sessionID: sessionID,
+                    message: message
+                ) == true {
+                    return
+                }
                 _ = self?.handleQueuedSendFailure(
                     clientMessageID: clientMessageID,
                     sessionID: sessionID,
@@ -490,11 +510,17 @@ extension SessionStore {
                 guard isCurrentConnection else {
                     return
                 }
+                let wasPendingGuidance = clientMessageID.map {
+                    self.finishPendingGuidance(clientMessageID: $0, sessionID: sessionID)
+                } ?? false
                 self.handleTurnSendOutcome(
                     clientMessageID: clientMessageID,
                     sessionID: sessionID,
                     outcome: outcome
                 )
+                if wasPendingGuidance {
+                    self.stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
+                }
             }
         }
         socket.onApprovalDecisionFailure = { _, _ in }
@@ -522,14 +548,21 @@ extension SessionStore {
     func stopQueuedSessionMonitoringIfIdle(sessionID: SessionID) {
         guard queuedRunningTurnsBySessionID[sessionID]?.isEmpty != false,
               !queuedTurnAwaitingStartSessionIDs.contains(sessionID),
-              queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] == nil else { return }
+              queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] == nil,
+              pendingGuidanceBySessionID[sessionID]?.isEmpty != false else { return }
         guard queuedSessionSockets[sessionID] != nil || queuedSessionReconnectTasks[sessionID] != nil else {
             return
         }
         stopQueuedSessionMonitoring(sessionID: sessionID)
     }
 
-    func stopQueuedSessionMonitoring(sessionID: SessionID) {
+    func stopQueuedSessionMonitoring(
+        sessionID: SessionID,
+        preservingPendingGuidance: Bool = true
+    ) {
+        // 用户重入原会话时允许前台连接接管展示，但已经提交的 steer 必须由旧连接等到 ACK。
+        guard !preservingPendingGuidance
+                || pendingGuidanceBySessionID[sessionID]?.isEmpty != false else { return }
         markDispatchingQueuedTurnsNeedsConfirmation(
             sessionID: sessionID,
             message: L10n.text("ui.the_connection_has_been_interrupted_sending_results_requires")
@@ -569,9 +602,10 @@ extension SessionStore {
     }
 
     func stopAllQueuedSessionMonitoring() {
+        failAllPendingGuidance()
         let sessionIDs = Set(queuedSessionSockets.keys).union(queuedSessionReconnectTasks.keys)
         for sessionID in sessionIDs {
-            stopQueuedSessionMonitoring(sessionID: sessionID)
+            stopQueuedSessionMonitoring(sessionID: sessionID, preservingPendingGuidance: false)
         }
     }
 
@@ -1380,7 +1414,7 @@ extension SessionStore {
                 status: .failed
             )
             clearForegroundActivity(sessionID: sessionID)
-            setErrorMessage(L10n.format("ui.sending_failed_value", message))
+            setErrorMessage(L10n.format("ui.sending_failed_value", message), sessionID: sessionID)
         case .uncertain(let message):
             if handleQueuedSendFailure(
                 clientMessageID: clientMessageID,

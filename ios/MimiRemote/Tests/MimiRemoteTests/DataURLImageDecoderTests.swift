@@ -109,6 +109,9 @@ final class DataURLImageDecoderTests: XCTestCase {
 
         XCTAssertLessThanOrEqual(max(decoded.size.width, decoded.size.height), 100)
         XCTAssertTrue(decoded === second)
+        XCTAssertTrue(decoded === DataURLImageDecoder.cachedImage(cacheKey: "file-preview", maxPixelSize: 100, fromFile: true))
+        XCTAssertNil(DataURLImageDecoder.cachedImage(cacheKey: "file-preview", maxPixelSize: 100))
+        XCTAssertNil(DataURLImageDecoder.cachedImage(cacheKey: "file-preview", profileID: "another-host", maxPixelSize: 100, fromFile: true))
     }
 
     func testFileImageDecoderScopesSamePathByProfile() async throws {

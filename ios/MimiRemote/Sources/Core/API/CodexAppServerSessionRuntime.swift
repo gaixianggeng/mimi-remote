@@ -255,6 +255,8 @@ actor CodexAppServerSessionRuntime {
     var turnStartTasksBySessionID: [
         SessionID: (token: UUID, task: Task<CodexAppServerTurnStartOutcome, Error>)
     ] = [:]
+    // guidance 可并发提交到同一 active turn；计数保护所有已提交请求，避免页面退订取消共享 resume。
+    var turnSteerSubmissionCountsBySessionID: [SessionID: Int] = [:]
     var serverQueueSubmissionSessionIDs: Set<SessionID> = []
     var threadPermissionUpdateTasks: [SessionID: (token: UUID, task: Task<Void, Error>)] = [:]
     // turn/interrupt 的 RPC ACK 与 turn/completed 通知是两条独立链路。通知若落在连接切换窗口，
@@ -1038,6 +1040,11 @@ actor CodexAppServerSessionRuntime {
             || threadUnsubscribeRetryTasksBySessionID[threadID] != nil
         let existingConnection = connection
         let lease = replaceThreadSubscriptionLease(sessionID: threadID, wantsEvents: false)
+        // 页面离开只撤销观察意图，不能取消已经提交的发送。发送可能仍在等待权限更新、
+        // thread/resume、turn/start、turn/steer 或共享队列 ACK；结束后按 false lease 补做退订。
+        guard !hasTurnSubmissionInFlight(sessionID: threadID) else {
+            return nil
+        }
         cancelThreadResumeTask(sessionID: threadID)
         // 在 RPC 发出前先清本地标记。若用户随即重新打开，新的 connectForEvents 必须真的
         // 发送 thread/resume，而不能被旧的“已 resume”缓存短路。
@@ -1048,7 +1055,8 @@ actor CodexAppServerSessionRuntime {
             return .notSubscribed
         }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
-        guard threadSubscriptionLeaseBySessionID[threadID] == lease else {
+        guard threadSubscriptionLeaseBySessionID[threadID] == lease,
+              !hasTurnSubmissionInFlight(sessionID: threadID) else {
             return nil
         }
         let result: CodexAppServerJSONValue?
@@ -1064,6 +1072,9 @@ actor CodexAppServerSessionRuntime {
                 else {
                     return nil
                 }
+                // readiness 检查也会挂起；期间新提交的发送仍然优先于页面清理。
+                guard threadSubscriptionLeaseBySessionID[threadID] == lease,
+                      !hasTurnSubmissionInFlight(sessionID: threadID) else { return nil }
                 result = try await existingConnection.send(request)
             } else {
                 result = try await sendRecoveringFromStaleInitialization(request)
@@ -2200,6 +2211,7 @@ actor CodexAppServerSessionRuntime {
         token: UUID
     ) async -> Bool {
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease,
+              !hasTurnSubmissionInFlight(sessionID: sessionID),
               eventMailboxesBySessionID[sessionID]?.isEmpty != false,
               connection === retryConnection,
               await retryConnection.isReadyForRequests()
@@ -2209,7 +2221,8 @@ actor CodexAppServerSessionRuntime {
         }
         do {
             let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
-            guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
+            guard threadSubscriptionLeaseBySessionID[sessionID] == lease,
+                  !hasTurnSubmissionInFlight(sessionID: sessionID) else {
                 return true
             }
             _ = try await retryConnection.send(builder.threadUnsubscribe(threadID: sessionID))
@@ -2342,8 +2355,7 @@ actor CodexAppServerSessionRuntime {
         clientMessageID: ClientMessageID?
     ) async throws -> CodexAppServerTurnStartOutcome {
         var payload = payload
-        // 与 thread/start 一样，以当前通道为准，避免旧草稿缺少 provider 时
-        // 把 Codex 完全访问预设带进 Claude 的 turn/start。
+        // 与 thread/start 一样，以实际连接通道为准，归一化旧草稿的审批参数。
         payload.options = runtimeScopedThreadOptions(payload.options)
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
@@ -2533,6 +2545,8 @@ actor CodexAppServerSessionRuntime {
         guard context.activeTurnID == expectedTurnID else {
             throw CodexAppServerSessionRuntimeError.missingActiveTurn(sessionID)
         }
+        turnSteerSubmissionCountsBySessionID[sessionID, default: 0] += 1
+        defer { finishTurnSteerSubmission(sessionID: sessionID) }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context))
         var didRetryAfterStaleInitialization = false
         while true {
@@ -2565,12 +2579,60 @@ actor CodexAppServerSessionRuntime {
             return
         }
         turnStartTasksBySessionID.removeValue(forKey: sessionID)
+        scheduleThreadUnsubscribeAfterSubmissionIfNeeded(sessionID: sessionID)
     }
 
-    // thread/start、thread/resume 的 options 必须按本 runtime 的通道策略先降级再发送：
-    // Claude 通道不接受 dangerFullAccess，.default 草稿直接上桥会被 gateway 拒绝，
-    // 会话恢复就会陷入确定性失败的重连循环。runtime 连接的 gateway 由自身 runtimeProvider
-    // 决定，所以这里强制以 actor 的 runtime 为准，而不是相信 payload 里的残留值。
+    func hasTurnSubmissionInFlight(sessionID: SessionID) -> Bool {
+        turnStartTasksBySessionID[sessionID] != nil
+            || sessionsStartingTurn.contains(sessionID)
+            || turnSteerSubmissionCountsBySessionID[sessionID] != nil
+            || serverQueueSubmissionSessionIDs.contains(sessionID)
+    }
+
+    func finishTurnSteerSubmission(sessionID: SessionID) {
+        guard let count = turnSteerSubmissionCountsBySessionID[sessionID] else {
+            return
+        }
+        if count > 1 {
+            turnSteerSubmissionCountsBySessionID[sessionID] = count - 1
+        } else {
+            turnSteerSubmissionCountsBySessionID.removeValue(forKey: sessionID)
+        }
+        scheduleThreadUnsubscribeAfterSubmissionIfNeeded(sessionID: sessionID)
+    }
+
+    func scheduleThreadUnsubscribeAfterSubmissionIfNeeded(sessionID: SessionID) {
+        guard !hasTurnSubmissionInFlight(sessionID: sessionID),
+              let lease = threadSubscriptionLeaseBySessionID[sessionID],
+              !lease.wantsEvents,
+              eventMailboxesBySessionID[sessionID]?.isEmpty != false else {
+            return
+        }
+        Task { [weak self] in
+            await self?.unsubscribeAfterTurnSubmissionIfNeeded(
+                sessionID: sessionID,
+                lease: lease
+            )
+        }
+    }
+
+    func unsubscribeAfterTurnSubmissionIfNeeded(
+        sessionID: SessionID,
+        lease: CodexAppServerThreadSubscriptionLease
+    ) async {
+        guard !hasTurnSubmissionInFlight(sessionID: sessionID),
+              threadSubscriptionLeaseBySessionID[sessionID] == lease,
+              !lease.wantsEvents,
+              eventMailboxesBySessionID[sessionID]?.isEmpty != false else {
+            return
+        }
+        _ = try? await unsubscribeThread(
+            threadID: sessionID,
+            usingExistingConnectionOnly: true
+        )
+    }
+
+    // 实际 gateway 由 actor 的 runtimeProvider 决定，不能相信草稿中残留的通道。
     func runtimeScopedThreadOptions(_ options: CodexAppServerTurnOptions) -> CodexAppServerTurnOptions {
         var scoped = options
         scoped.runtimeProvider = runtimeProvider
@@ -2632,6 +2694,11 @@ actor CodexAppServerSessionRuntime {
         // 被动监听/重连不能把 Mimi 的安全默认重新写进已有 Codex Thread；否则 Windows
         // managed permission profiles 会把原来的 :danger-full-access 静默改成 :workspace。
         passiveResumeOptions.preservesThreadPermissionSettings = runtimeProvider == "codex"
+        if runtimeProvider == "claude" {
+            // Claude 的被动恢复只连接会话，不应用下一轮的权限。使用普通参数让
+            // 仍受支持的旧 bridge 可以连接；显式完全访问仍在 turn/start 检查版本。
+            ComposerPermissionMode.requestApproval.apply(to: &passiveResumeOptions)
+        }
         let scopedPassiveResumeOptions = runtimeScopedThreadOptions(passiveResumeOptions)
         let result: CodexAppServerJSONValue?
         do {

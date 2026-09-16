@@ -200,46 +200,74 @@ extension SessionStore {
                 guard let clientMessageID else {
                     return
                 }
-                guard self?.isCurrentWebSocketConnection(
+                guard let self else { return }
+                let isCurrentConnection = self.isCurrentWebSocketConnection(
                     sessionID: session.id,
                     generation: connectionGeneration,
                     hostScope: hostScope
-                ) == true else {
+                )
+                let isPendingGuidance = self.hasPendingGuidance(
+                    clientMessageID: clientMessageID,
+                    sessionID: session.id,
+                    hostScope: hostScope
+                )
+                guard isCurrentConnection || isPendingGuidance else {
                     return
                 }
-                if self?.handleQueuedSendAccepted(
+                if isPendingGuidance,
+                   self.acceptPendingGuidance(clientMessageID: clientMessageID, sessionID: session.id) {
+                    return
+                }
+                if self.handleQueuedSendAccepted(
                     clientMessageID: clientMessageID,
                     sessionID: session.id
-                ) == true {
+                ) {
                     return
                 }
-                self?.conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .sent)
-                self?.conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: session.id)
+                self.conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .sent)
+                self.conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: session.id)
             }
         }
         socket.onSendFailure = { [weak self] clientMessageID, message in
             Task { @MainActor in
-                guard self?.isCurrentWebSocketConnection(
+                guard let self else { return }
+                let isCurrentConnection = self.isCurrentWebSocketConnection(
                     sessionID: session.id,
                     generation: connectionGeneration,
                     hostScope: hostScope
-                ) == true else {
+                )
+                let isPendingGuidance = clientMessageID.map {
+                    self.hasPendingGuidance(
+                        clientMessageID: $0,
+                        sessionID: session.id,
+                        hostScope: hostScope
+                    )
+                } ?? false
+                guard isCurrentConnection || isPendingGuidance else {
                     return
                 }
                 if let clientMessageID {
-                    if self?.handleQueuedSendFailure(
+                    if isPendingGuidance,
+                       self.failPendingGuidance(
+                           clientMessageID: clientMessageID,
+                           sessionID: session.id,
+                           message: message
+                       ) {
+                        return
+                    }
+                    if self.handleQueuedSendFailure(
                         clientMessageID: clientMessageID,
                         sessionID: session.id,
                         message: message
-                    ) == true {
+                    ) {
                         return
                     }
-                    guard self?.conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed) == true else {
+                    guard self.conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed) else {
                         return
                     }
                 }
-                self?.clearForegroundActivity(sessionID: session.id)
-                self?.setErrorMessage(L10n.format("ui.sending_failed_value", message))
+                self.clearForegroundActivity(sessionID: session.id)
+                self.setErrorMessage(L10n.format("ui.sending_failed_value", message))
             }
         }
         socket.onTurnSendOutcome = { [weak self] clientMessageID, outcome in
@@ -252,15 +280,31 @@ extension SessionStore {
                     generation: connectionGeneration,
                     hostScope: hostScope
                 )
-                // 旧连接的 ACK 只能在当前连接仍有效时对账；Host 已切换或普通旧回调全部丢弃。
-                guard isCurrentConnection else {
+                let isPendingGuidance = clientMessageID.map {
+                    self.hasPendingGuidance(
+                        clientMessageID: $0,
+                        sessionID: session.id,
+                        hostScope: hostScope
+                    )
+                } ?? false
+                // 仅放行同 HostScope、同 client ID 的已提交 guidance；普通旧连接回调仍丢弃。
+                guard isCurrentConnection || isPendingGuidance else {
                     return
+                }
+                if isPendingGuidance, let clientMessageID {
+                    _ = self.finishPendingGuidance(
+                        clientMessageID: clientMessageID,
+                        sessionID: session.id
+                    )
                 }
                 self.handleTurnSendOutcome(
                     clientMessageID: clientMessageID,
                     sessionID: session.id,
                     outcome: outcome
                 )
+                if isPendingGuidance {
+                    self.stopQueuedSessionMonitoringIfIdle(sessionID: session.id)
+                }
             }
         }
         socket.onApprovalDecisionFailure = { [weak self] approvalID, message in
@@ -318,6 +362,9 @@ extension SessionStore {
         connectedSessionID = session.id
         connectedHostScope = hostScope
         connectedCredentialFingerprint = credentialFingerprint
+        webSocketStatusLease = eventLease
+        // 先同步发布建连阶段，再启动异步订阅；避免本轮身份已切换而状态还属于旧连接。
+        setWebSocketStatus(.connecting)
         conversationStore.resetLiveTranscript(sessionID: session.id)
         syncRuntimeActivity(with: session)
         runtimeEventFlushTasks[eventLease]?.cancel()
@@ -545,6 +592,7 @@ extension SessionStore {
     }
 
     func disconnectWebSocket(cancelReconnect: Bool = true) {
+        webSocketStatusLease = nil
         if cancelReconnect {
             cancelWebSocketReconnect(resetAttempts: true)
         }
@@ -1440,6 +1488,10 @@ extension SessionStore {
         case .turnStarted(let metadata):
             let sessionID = metadata.sessionID ?? fallbackSessionID
             recordRuntimeActivity(sessionID: sessionID, turnStartedAt: metadata.createdAt ?? now, activityAt: now)
+            turnOutputTokensBySessionID[sessionID] = .started(
+                turnID: metadata.turnID,
+                previous: turnOutputTokensBySessionID[sessionID]
+            )
         case .assistantDelta(_, let metadata),
              .messageCompleted(_, let metadata),
              .processItemCompleted(_, _, let metadata),
@@ -1468,7 +1520,20 @@ extension SessionStore {
             syncRuntimeActivity(with: session)
         case .sessionRow(let row, _):
             syncRuntimeActivity(with: AgentSession(row: row))
-        case .sessionContext, .permissionProfileUpdated, .goalUpdated, .goalCleared, .unknown:
+        case .sessionContext(let context, let metadata):
+            guard let sample = context.tokenUsage else {
+                return
+            }
+            let sessionID = metadata.sessionID ?? fallbackSessionID
+            let next = TurnOutputTokenCounter.applying(
+                sample,
+                turnID: metadata.turnID,
+                to: turnOutputTokensBySessionID[sessionID]
+            )
+            if turnOutputTokensBySessionID[sessionID] != next {
+                turnOutputTokensBySessionID[sessionID] = next
+            }
+        case .permissionProfileUpdated, .goalUpdated, .goalCleared, .unknown:
             return
         }
     }
@@ -2490,14 +2555,20 @@ extension SessionStore {
         case connectionProbe
     }
 
-    func setErrorMessage(_ value: String?, origin: SessionErrorOrigin = .userAction) {
+    func setErrorMessage(
+        _ value: String?,
+        origin: SessionErrorOrigin = .userAction,
+        sessionID: SessionID? = nil
+    ) {
         // active writer 既可能在连接阶段返回，也可能在已连接后的
         // thread/resume / turn/start 发送回调中返回。统一在用户错误出口映射，
         // 避免不同传输路径泄漏原始 -32600 协议错误。
         let activeWriterConflict = value.map(Self.isCodexActiveWriterConflict) == true
-        if activeWriterConflict, let selectedSessionID {
-            setActiveWriterConflict(true, sessionID: selectedSessionID)
+        if activeWriterConflict, let errorSessionID = sessionID ?? selectedSessionID {
+            setActiveWriterConflict(true, sessionID: errorSessionID)
         }
+        // 后台提交的业务错误属于原会话，不能借当前选择误禁用另一个会话或覆盖其提示。
+        guard sessionID == nil || sessionID == selectedSessionID else { return }
         let userFacingValue: String?
         if activeWriterConflict {
             userFacingValue = L10n.text("ui.codex_active_writer_conflict")
@@ -2712,6 +2783,7 @@ extension SessionStore {
         reloadSessionReminders()
         foregroundActivityBySessionID = [:]
         runtimeActivityBySessionID = [:]
+        turnOutputTokensBySessionID = [:]
         locallyCompletedSessionIDs = []
         locallyCompletedGoalThreadIDs = []
         runtimeEventFlushTasks.values.forEach { $0.cancel() }

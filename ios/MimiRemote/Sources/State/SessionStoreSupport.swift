@@ -790,6 +790,7 @@ struct SessionControlStateStore {
     }
 
     func remove(profileID: String) {
+        removePermissionSelections(profileID: profileID)
         guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
             return
         }

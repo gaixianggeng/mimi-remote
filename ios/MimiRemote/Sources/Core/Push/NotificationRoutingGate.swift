@@ -91,8 +91,18 @@ struct ForegroundResumeTracker: Equatable {
     /// 产生 lastOutcome 时的活动连接档案。恢复失败只对那一台 Mac 成立：用户随后切到
     /// 另一台并连上后，不能再拿旧失败去拦截新 Mac 的通知。
     private(set) var lastOutcomeProfileID: String?
+    /// 由启动前台恢复的同一个场景回调登记的前台状态。闸门必须读这个镜像，不能直接读
+    /// 环境里的 scenePhase：场景刚激活的那一帧 body 已经看到 active，而启动恢复的
+    /// onChange 还没执行，直接读环境值会让闸门在恢复开始前提前放行一次，随后又被
+    /// 恢复关门取消，同一条通知因此被处理两次。
+    private(set) var sceneActive = false
 
     var isInFlight: Bool { inFlightGeneration != nil }
+
+    /// 与 begin() 在同一个场景回调里调用：先登记前台状态，再开始恢复。
+    mutating func observeScene(active: Bool) {
+        sceneActive = active
+    }
 
     /// 开始一次新的恢复；返回它的代次，结束时必须带回同一个值。
     mutating func begin() -> UInt64 {
@@ -120,5 +130,44 @@ struct ForegroundResumeTracker: Equatable {
     func outcome(forActiveProfileID profileID: String?) -> ForegroundResumeOutcome? {
         guard lastOutcomeProfileID == profileID else { return nil }
         return lastOutcome
+    }
+}
+
+/// 通知导航权独立于列表刷新产生的 selection lease。只有新点击或用户导航能撤销它，
+/// 自动 bootstrap / host 暖恢复不能重建或撤销用户尚未处理的点击。
+@MainActor
+final class NotificationNavigationOwnership {
+    private var current: UUID?
+    private var committed = false
+
+    func accept(_ intent: UUID = UUID()) -> UUID {
+        current = intent
+        committed = false
+        return intent
+    }
+
+    func isCurrent(_ intent: UUID) -> Bool { current == intent }
+
+    func hasCommitted(_ intent: UUID) -> Bool { isCurrent(intent) && committed }
+
+    func userNavigated() { current = nil }
+
+    /// 只有用户自己的导航能撤销通知：布局同步会用同样的事件重放当前 Tab 与 selection，
+    /// 把它当成用户导航会让还在等 bootstrap、前台恢复或选路的通知被判为过期而静默丢弃。
+    func observe(_ event: WorkbenchNavigationEvent, origin: WorkbenchNavigationOrigin) {
+        guard origin == .user else { return }
+        switch event {
+        case .open, .compactPathChanged, .compactTabChanged:
+            userNavigated()
+        case .synchronize, .selectionCommitted, .sessionSelectionFinished:
+            break
+        }
+    }
+
+    /// 在 MainActor 上紧贴选择提交执行，同一投递重入也只能提交一次。
+    func claim(_ intent: UUID) -> Bool {
+        guard isCurrent(intent), !committed else { return false }
+        committed = true
+        return true
     }
 }

@@ -1352,6 +1352,12 @@ struct AdvancedDevelopmentSettingsView: View {
                         : L10n.text("ui.turn_on_to_use_advanced_operating_options_and")
                 )
             }
+            if developerModeEnabled {
+                ConversationScrollDiagnosticsSection()
+            }
+        }
+        .onChange(of: developerModeEnabled) { _, enabled in
+            if !enabled { ConversationScrollDiagnostics.shared.stop() }
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()

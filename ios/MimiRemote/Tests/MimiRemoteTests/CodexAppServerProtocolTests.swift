@@ -585,11 +585,12 @@ final class CodexAppServerProtocolTests: XCTestCase {
         ))
     }
 
-    func testSanitizedForRuntimePolicyDowngradesClaudeFullAccess() {
+    func testSanitizedForRuntimePolicyPreservesClaudeFullAccess() {
         var options = CodexAppServerTurnOptions.default
         options.runtimeProvider = "claude"
         let sanitized = options.sanitizedForRuntimePolicy()
-        XCTAssertEqual(sanitized.sandboxMode, .workspaceWrite)
+        XCTAssertEqual(sanitized.sandboxMode, .dangerFullAccess)
+        XCTAssertEqual(sanitized.approvalPolicy, .never)
         XCTAssertFalse(sanitized.networkAccess)
 
         var codexOptions = CodexAppServerTurnOptions.default

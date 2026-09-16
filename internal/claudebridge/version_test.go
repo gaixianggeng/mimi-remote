@@ -59,10 +59,10 @@ func TestSupportsThreadTakeover(t *testing.T) {
 	if SupportsThreadTakeover("0.2.10") || SupportsThreadTakeover("0.2.11") {
 		t.Fatal("0.2.10 没有 thread/takeover，不应声明能力")
 	}
-	if !SupportsThreadTakeover("0.2.12") || !SupportsThreadTakeover("1.0.0") {
-		t.Fatal("0.2.12 及更高版本应声明 thread/takeover")
+	if !SupportsThreadTakeover("0.2.14") || !SupportsThreadTakeover("1.0.0") {
+		t.Fatal("0.2.14 及更高版本应声明 thread/takeover")
 	}
-	if SupportsThreadTakeover("0.2.12-beta.1") || SupportsThreadTakeover("") {
+	if SupportsThreadTakeover("0.2.14-beta.1") || SupportsThreadTakeover("") {
 		t.Fatal("预发布或缺失版本不能通过能力门禁")
 	}
 }
@@ -82,5 +82,16 @@ func TestInstallHintUsesMonorepo(t *testing.T) {
 	}
 	if strings.Contains(InstallHint, "gaixianggeng/alleycat") {
 		t.Fatalf("安装提示不应继续依赖独立 Alleycat fork：%s", InstallHint)
+	}
+}
+
+func TestSupportsFullAccess(t *testing.T) {
+	for _, version := range []string{"", "0.2.12", "0.2.13-beta.1"} {
+		if SupportsFullAccess(version) {
+			t.Fatalf("旧版或未知版本不能声明完全访问：%q", version)
+		}
+	}
+	if !SupportsFullAccess("0.2.13") || !SupportsFullAccess("1.0.0") {
+		t.Fatal("正式版应支持完全访问")
 	}
 }

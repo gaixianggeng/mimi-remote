@@ -3,11 +3,74 @@ import XCTest
 
 final class WorkspaceStripPresentationTests: XCTestCase {
     func testWorkspaceRuntimeSelectionResetsForHostChange() {
-        var state = WorkspaceRuntimeSelectionState(selectedRuntime: .claude)
+        var state = WorkspaceRuntimeSelectionState(manualRuntime: .codex)
 
-        state.resetForHostChange()
+        state.reset()
 
-        XCTAssertEqual(state.selectedRuntime, .codex)
+        XCTAssertEqual(
+            state.resolvedRuntime(preferredRuntime: .claude, claudeChannelAvailable: true),
+            .claude
+        )
+    }
+
+    func testWorkspaceRuntimePreferenceDefaultsAndStoredChoices() {
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.stored(nil), .codex)
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.stored("unknown"), .codex)
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.stored("codex"), .codex)
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.stored("claude"), .claude)
+
+        let state = WorkspaceRuntimeSelectionState()
+        for preferredRuntime in WorkspaceSessionRuntimeChoice.allCases {
+            XCTAssertEqual(
+                state.resolvedRuntime(preferredRuntime: preferredRuntime, claudeChannelAvailable: true),
+                preferredRuntime
+            )
+        }
+    }
+
+    func testWorkspaceRuntimePreferenceRecoversAfterCapabilityArrives() {
+        let state = WorkspaceRuntimeSelectionState()
+
+        XCTAssertEqual(
+            state.resolvedRuntime(preferredRuntime: .claude, claudeChannelAvailable: false),
+            .codex
+        )
+        XCTAssertEqual(
+            state.resolvedRuntime(preferredRuntime: .claude, claudeChannelAvailable: true),
+            .claude,
+            "启动或切换电脑时能力晚到，仍应恢复 Claude 偏好"
+        )
+    }
+
+    func testWorkspaceManualChoiceSurvivesCapabilityRefreshUntilPreferenceChanges() {
+        var state = WorkspaceRuntimeSelectionState(manualRuntime: .codex)
+
+        for isAvailable in [false, true, false, true] {
+            XCTAssertEqual(
+                state.resolvedRuntime(preferredRuntime: .claude, claudeChannelAvailable: isAvailable),
+                .codex,
+                "能力刷新不能覆盖用户手动切换"
+            )
+        }
+
+        state.reset()
+        XCTAssertEqual(
+            state.resolvedRuntime(preferredRuntime: .claude, claudeChannelAvailable: true),
+            .claude
+        )
+    }
+
+    func testWorkspaceManualClaudeChoiceFallsBackWithoutLosingSelection() {
+        let state = WorkspaceRuntimeSelectionState(manualRuntime: .claude)
+
+        XCTAssertEqual(
+            state.resolvedRuntime(preferredRuntime: .codex, claudeChannelAvailable: false),
+            .codex
+        )
+        XCTAssertEqual(
+            state.resolvedRuntime(preferredRuntime: .codex, claudeChannelAvailable: true),
+            .claude
+        )
     }
 
     func testBottomTabBarMappingUsesDeviceSizeClassAndSystemGeneration() {

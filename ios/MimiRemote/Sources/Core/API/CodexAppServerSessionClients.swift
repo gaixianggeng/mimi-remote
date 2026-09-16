@@ -792,7 +792,19 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
 
     @discardableResult
     func sendGuidance(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?, expectedTurnID: TurnID) -> Bool {
-        activeClient?.sendGuidance(payload, clientMessageID: clientMessageID, expectedTurnID: expectedTurnID) ?? false
+        guard let activeClient else {
+            return false
+        }
+        // guidance 已提交后可能随页面切换释放 wrapper。把本次 generation 的结果处理器
+        // 直接交给底层 Task，避免弱转发链随 wrapper 消失，同时保留 Store 自己的 host/generation 校验。
+        return activeClient.sendGuidance(
+            payload,
+            clientMessageID: clientMessageID,
+            expectedTurnID: expectedTurnID,
+            acceptedHandler: onSendAccepted,
+            failureHandler: onSendFailure,
+            outcomeHandler: onTurnSendOutcome
+        )
     }
 
     @discardableResult
@@ -1073,16 +1085,32 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
 
     @discardableResult
     func sendGuidance(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?, expectedTurnID: TurnID) -> Bool {
+        sendGuidance(
+            payload,
+            clientMessageID: clientMessageID,
+            expectedTurnID: expectedTurnID,
+            acceptedHandler: onSendAccepted,
+            failureHandler: onSendFailure,
+            outcomeHandler: onTurnSendOutcome
+        )
+    }
+
+    @discardableResult
+    fileprivate func sendGuidance(
+        _ payload: CodexAppServerTurnPayload,
+        clientMessageID: ClientMessageID?,
+        expectedTurnID: TurnID,
+        acceptedHandler: ((ClientMessageID?) -> Void)?,
+        failureHandler: ((ClientMessageID?, String) -> Void)?,
+        outcomeHandler: ((ClientMessageID?, TurnSendOutcome) -> Void)?
+    ) -> Bool {
         guard let sessionID else {
-            onSendFailure?(clientMessageID, L10n.text("ui.direct_websocket_not_connected"))
+            failureHandler?(clientMessageID, L10n.text("ui.direct_websocket_not_connected"))
             return false
         }
         guard !payload.isEmpty else {
             return true
         }
-        let acceptedHandler = onSendAccepted
-        let failureHandler = onSendFailure
-        let outcomeHandler = onTurnSendOutcome
         Task { [runtime, sessionID] in
             do {
                 try await runtime.steerTurn(

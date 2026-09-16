@@ -538,7 +538,7 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			RateLimits:       true,
 		},
 		Policy: appServerChannelPolicy{
-			ApprovalPolicies: []string{"on-request"},
+			ApprovalPolicies: []string{"on-request", "never"},
 			SandboxModes:     []string{"read-only", "workspace-write", "danger-full-access"},
 			NetworkAccess:    false,
 			CWDScope:         "agentd_allowlist",
@@ -548,6 +548,12 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		probe := r.claudeBridgeProbe()
 		claudeRateLimitsAvailable := probe.Healthy && claudebridge.IsSupported(probe.Version)
 		claudeMethods := appServerAllowedMethodListForRuntime("claude")
+		claudeApprovalPolicies := []string{"on-request"}
+		claudeSandboxModes := []string{"read-only", "workspace-write"}
+		if probe.Healthy && claudebridge.SupportsFullAccess(probe.Version) {
+			claudeApprovalPolicies = append(claudeApprovalPolicies, "never")
+			claudeSandboxModes = append(claudeSandboxModes, "danger-full-access")
+		}
 		if !claudeRateLimitsAvailable {
 			claudeMethods = removeAppServerMethod(claudeMethods, "account/rateLimits/read")
 		}
@@ -589,8 +595,8 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 				IdleTakeover:     probe.Healthy && claudebridge.SupportsThreadTakeover(probe.Version),
 			},
 			Policy: appServerChannelPolicy{
-				ApprovalPolicies: []string{"on-request"},
-				SandboxModes:     []string{"read-only", "workspace-write"},
+				ApprovalPolicies: claudeApprovalPolicies,
+				SandboxModes:     claudeSandboxModes,
 				NetworkAccess:    false,
 				CWDScope:         "agentd_allowlist",
 			},
