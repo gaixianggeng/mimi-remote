@@ -38,10 +38,51 @@ func (c *deepSeekGatewayConn) readFollow(ctx context.Context, follow *deepSeekFo
 			return
 		case frame, ok := <-follow.stream.Frames():
 			if !ok {
+				// 上游断流。三件事都必须做，缺一件都会留下一个"看起来还活着"的连接：
+				//
+				//   - 摘掉订阅：留在 follows 里的话，ensureFollow 会把这条不再产帧的
+				//     订阅继续交给后续请求，历史读不完、turn/start 等不到编号，而调用方
+				//     看到的是"没有错误、也没有结果"。
+				//   - 归还名额：否则每断一次订阅就少一个可用并发数，最后表现为一个明明
+				//     可用却连不上的运行时。
+				//   - 结束连接：会话订阅断线后没有别人会重新订阅，只有断开才能走到
+				//     客户端重连并重新订阅这条既有恢复路径。
+				c.forgetFollow(follow)
+				c.reportFollowStreamClosed()
 				return
 			}
 			c.handleFollowFrame(ctx, follow, frame)
 		}
+	}
+}
+
+// forgetFollow 摘掉一条断掉的会话订阅并归还它占用的名额。
+func (c *deepSeekGatewayConn) forgetFollow(follow *deepSeekFollow) {
+	c.mu.Lock()
+	current, ok := c.follows[follow.threadID]
+	if !ok || current != follow {
+		// 已经不是登记中的那一条：连接正在关闭（close 已清空 follows 并归还名额），
+		// 或同一 thread 已经重新订阅过。这两种情况下名额都不该由这里归还。
+		c.mu.Unlock()
+		return
+	}
+	delete(c.follows, follow.threadID)
+	c.mu.Unlock()
+
+	follow.stream.Close()
+	c.router.releaseDeepSeekSession()
+}
+
+// reportFollowStreamClosed 让一条断掉的会话订阅结束整条连接。
+//
+// 非阻塞：done 满说明已经有人报过退出原因，serve 会照着退出，这里不必等。
+func (c *deepSeekGatewayConn) reportFollowStreamClosed() {
+	if c.done == nil {
+		return
+	}
+	select {
+	case c.done <- "follow_stream_closed":
+	default:
 	}
 }
 

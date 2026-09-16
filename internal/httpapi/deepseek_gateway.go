@@ -127,6 +127,11 @@ type deepSeekGatewayConn struct {
 
 	writeMu sync.Mutex
 
+	// done 把读协程的退出原因交回 serve。与另外两条网关同语义：任何一条上游流断掉
+	// 都结束整条连接。会话订阅断线后没人会重新订阅，留着连接只会让客户端一直看一个
+	// 收不到帧的会话；断开连接才能走到"客户端重连并重新订阅"这条既有恢复路径。
+	done chan<- string
+
 	mu sync.Mutex
 	// clientID 是 $events ready 帧给出的应答标识，审批回传必需。
 	clientID string
@@ -245,7 +250,10 @@ func (c *deepSeekGatewayConn) serve(ctx context.Context, events *harnessclient.S
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	done := make(chan string, 4)
+	done := make(chan string, 8)
+	// 会话订阅的读协程也要能报告退出原因，因此先把 done 挂到连接上；必须在启动
+	// 任何一条会建立订阅的协程之前完成。
+	c.done = done
 	configureGatewayReadConn(c.client)
 
 	go func() { done <- c.readEvents(ctx, events) }()
