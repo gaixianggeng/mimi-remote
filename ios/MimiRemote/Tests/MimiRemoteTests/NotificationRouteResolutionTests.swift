@@ -375,6 +375,243 @@ final class NotificationRouteResolutionTests: XCTestCase {
         XCTAssertEqual(NotificationRouteDiagnostics.entries().last?.outcome, "opened")
     }
 
+    func testCodexRunningNotificationBypassesUnchangedHistoryCacheAndReconcilesCompletedTurn() async throws {
+        try await assertRunningNotificationBypassesHistoryCache(runtimeProvider: "codex")
+    }
+
+    func testClaudeRunningNotificationBypassesUnchangedHistoryCacheAndReconcilesCompletedTurn() async throws {
+        try await assertRunningNotificationBypassesHistoryCache(runtimeProvider: "claude")
+    }
+
+    func testNotificationReconcilesCompletedTurnWithoutVisibleMessages() async throws {
+        let project = makeProject(id: "proj_notification_empty_completed_turn")
+        let session = makeSession(
+            id: "thread-notification-empty-completed-turn",
+            projectID: project.id,
+            title: "无可见消息的完成轮次",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex",
+            activeTurnID: "turn-empty-completed"
+        )
+        let client = NotificationHistorySequenceClient(
+            project: project,
+            session: session,
+            historyResults: [
+                .success(notificationHistoryPage(turns: [("turn-empty-completed", .inProgress)])),
+                .success(notificationHistoryPage(
+                    turns: [("turn-empty-completed", .completed)],
+                    visibleTurnIDs: []
+                )),
+            ]
+        )
+        let store = makeStore(client: client)
+        prepareNotificationHistoryStore(store, project: project, session: session)
+        let didLoadCachedHistory = await store.loadHistory(for: session)
+        XCTAssertTrue(didLoadCachedHistory)
+
+        let outcome = await store.openSessionFromNotification(notificationRoute(for: session, store: store))
+
+        XCTAssertEqual(outcome, .opened)
+        XCTAssertEqual(client.historyRequestCount, 2)
+        XCTAssertNil(store.selectedSession?.activeTurnID)
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
+    }
+
+    func testNotificationDoesNotCompleteWhenLaterEmptyTurnIsNotTerminal() async throws {
+        for laterLifecycle in [ConversationTurnLifecycle.inProgress, .unknown] {
+            let suffix = laterLifecycle.rawValue
+            let project = makeProject(id: "proj_notification_empty_later_\(suffix)")
+            let session = makeSession(
+                id: "thread-notification-empty-later-\(suffix)",
+                projectID: project.id,
+                title: "后续无可见消息轮次",
+                status: "running",
+                source: "codex",
+                runtimeProvider: "codex",
+                activeTurnID: "turn-previous"
+            )
+            let client = NotificationHistorySequenceClient(
+                project: project,
+                session: session,
+                historyResults: [
+                    .success(notificationHistoryPage(turns: [("turn-previous", .inProgress)])),
+                    .success(notificationHistoryPage(
+                        turns: [
+                            ("turn-previous", .completed),
+                            ("turn-empty-later", laterLifecycle),
+                        ],
+                        visibleTurnIDs: ["turn-previous"]
+                    )),
+                ]
+            )
+            let store = makeStore(client: client)
+            prepareNotificationHistoryStore(store, project: project, session: session)
+            let didLoadCachedHistory = await store.loadHistory(for: session)
+            XCTAssertTrue(didLoadCachedHistory)
+
+            let outcome = await store.openSessionFromNotification(notificationRoute(for: session, store: store))
+
+            XCTAssertEqual(outcome, .opened)
+            XCTAssertEqual(client.historyRequestCount, 2)
+            XCTAssertEqual(
+                store.selectedSession?.activeTurnID,
+                "turn-previous",
+                "后续 \(laterLifecycle.rawValue) 空轮次存在时不能释放旧 activeTurnID"
+            )
+            XCTAssertEqual(store.selectedSession?.status, SessionStatus.running.rawValue)
+        }
+    }
+
+    func testNotificationTerminalHistoryDoesNotClearNewerActiveTurn() async throws {
+        let project = makeProject(id: "proj_notification_newer_turn")
+        let session = makeSession(
+            id: "thread-notification-newer-turn",
+            projectID: project.id,
+            title: "新一轮仍在运行",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex",
+            activeTurnID: "turn-new"
+        )
+        let client = NotificationHistorySequenceClient(
+            project: project,
+            session: session,
+            historyResults: [
+                .success(notificationHistoryPage(turns: [("turn-new", .inProgress)])),
+                .success(notificationHistoryPage(turns: [
+                    ("turn-old", .completed),
+                    ("turn-new", .inProgress),
+                ])),
+            ]
+        )
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+        prepareNotificationHistoryStore(store, project: project, session: session)
+        let didSelect = await store.selectSession(session)
+        XCTAssertTrue(didSelect)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        let didQueue = await store.sendTurn(CodexAppServerTurnPayload(prompt: "等待新一轮完成"))
+        XCTAssertTrue(didQueue)
+        XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn-new")
+        XCTAssertTrue(socket.sentTurns.isEmpty)
+
+        let outcome = await store.openSessionFromNotification(notificationRoute(for: session, store: store))
+
+        XCTAssertEqual(outcome, .opened)
+        XCTAssertEqual(client.historyRequestCount, 2)
+        XCTAssertEqual(store.selectedSession?.activeTurnID, "turn-new")
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.running.rawValue)
+        XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn-new")
+        XCTAssertEqual(store.selectedQueuedTurns.first?.dispatchState, .waiting)
+        XCTAssertTrue(socket.sentTurns.isEmpty, "旧完成不能越过新 active turn 的队列约束")
+    }
+
+    func testNotificationHistoryFailureKeepsRunningStateAndNextOpenRetriesAuthoritativeRead() async throws {
+        let project = makeProject(id: "proj_notification_history_retry")
+        let session = makeSession(
+            id: "thread-notification-history-retry",
+            projectID: project.id,
+            title: "失败后重试",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex",
+            activeTurnID: "turn-retry"
+        )
+        let client = NotificationHistorySequenceClient(
+            project: project,
+            session: session,
+            historyResults: [
+                .success(notificationHistoryPage(turns: [("turn-retry", .inProgress)])),
+                .failure(AgentAPIError.server(status: 503, message: "temporarily unavailable")),
+                .success(notificationHistoryPage(turns: [("turn-retry", .completed)])),
+            ]
+        )
+        let store = makeStore(client: client)
+        prepareNotificationHistoryStore(store, project: project, session: session)
+        let didLoadCachedHistory = await store.loadHistory(for: session)
+        XCTAssertTrue(didLoadCachedHistory)
+
+        let route = notificationRoute(for: session, store: store)
+        let failedRefreshOutcome = await store.openSessionFromNotification(route)
+
+        XCTAssertEqual(failedRefreshOutcome, .opened)
+        XCTAssertEqual(client.historyRequestCount, 2)
+        XCTAssertEqual(store.selectedSession?.activeTurnID, "turn-retry", "网络失败不能伪造完成")
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.running.rawValue)
+
+        let retryOutcome = await store.openSessionFromNotification(route)
+
+        XCTAssertEqual(retryOutcome, .opened)
+        XCTAssertEqual(client.historyRequestCount, 3, "同一已选会话再次从通知打开也必须补查")
+        XCTAssertNil(store.selectedSession?.activeTurnID)
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
+    }
+
+    func testNotificationReplacesOlderBypassHistoryJobAndIgnoresItsLateSnapshot() async throws {
+        let project = makeProject(id: "proj_notification_replaces_history_job")
+        let session = makeSession(
+            id: "thread-notification-replaces-history-job",
+            projectID: project.id,
+            title: "通知换代历史请求",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex",
+            activeTurnID: "turn-current"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [session])
+        )
+        let store = makeStore(client: client)
+        prepareNotificationHistoryStore(store, project: project, session: session)
+
+        let olderHistoryTask = Task {
+            await store.loadHistory(
+                for: session,
+                quiet: true,
+                force: true,
+                reason: .manualFull
+            )
+        }
+        await client.waitForHistoryRequestCount(1)
+
+        let notificationTask = Task {
+            await store.openSessionFromNotification(notificationRoute(for: session, store: store))
+        }
+        await client.waitForHistoryRequestCount(2)
+        client.resolveHistoryRequest(
+            at: 1,
+            with: notificationHistoryPage(turns: [("turn-current", .completed)])
+        )
+
+        let outcome = await notificationTask.value
+        XCTAssertEqual(outcome, .opened)
+        XCTAssertEqual(client.requestedMessageLimits.count, 2)
+        XCTAssertNil(store.selectedSession?.activeTurnID)
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
+
+        client.resolveHistoryRequest(
+            at: 0,
+            with: notificationHistoryPage(turns: [("turn-current", .inProgress)])
+        )
+        _ = await olderHistoryTask.value
+        XCTAssertNil(store.selectedSession?.activeTurnID, "被通知换代的旧快照迟到后不能复活当前轮次")
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
+    }
+
     func testAutomaticGenerationBumpDuringRefreshDoesNotSupersede() async {
         let project = makeProject(id: "proj_auto_bump")
         let target = makeSession(id: "thread-auto-bump", projectID: project.id, title: "目标", status: "history", source: "codex")
@@ -705,6 +942,100 @@ final class NotificationRouteResolutionTests: XCTestCase {
         )
     }
 
+    private func assertRunningNotificationBypassesHistoryCache(runtimeProvider: String) async throws {
+        let project = makeProject(id: "proj_notification_\(runtimeProvider)_terminal")
+        let session = makeSession(
+            id: "thread-notification-\(runtimeProvider)-terminal",
+            projectID: project.id,
+            title: "\(runtimeProvider) 完成通知",
+            status: "running",
+            source: runtimeProvider,
+            runtimeProvider: runtimeProvider,
+            activeTurnID: "turn-active"
+        )
+        let client = NotificationHistorySequenceClient(
+            project: project,
+            session: session,
+            historyResults: [
+                .success(notificationHistoryPage(turns: [("turn-active", .inProgress)])),
+                .success(notificationHistoryPage(turns: [("turn-active", .completed)])),
+            ]
+        )
+        let store = makeStore(client: client)
+        prepareNotificationHistoryStore(store, project: project, session: session)
+
+        let didLoadInitialHistory = await store.loadHistory(for: session)
+        let didReuseInitialHistory = await store.loadHistory(for: session)
+        XCTAssertTrue(didLoadInitialHistory)
+        XCTAssertTrue(didReuseInitialHistory)
+        XCTAssertEqual(client.historyRequestCount, 1, "相同签名的普通历史加载应复用缓存")
+
+        let outcome = await store.openSessionFromNotification(notificationRoute(for: session, store: store))
+
+        XCTAssertEqual(outcome, .opened)
+        XCTAssertEqual(client.historyRequestCount, 2, "通知打开必须越过相同签名及近期首屏缓存")
+        XCTAssertNil(store.selectedSession?.activeTurnID)
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
+        XCTAssertTrue(store.canSendInSelectedSession, "终态对账后应允许继续输入")
+    }
+
+    private func prepareNotificationHistoryStore(
+        _ store: SessionStore,
+        project: AgentProject,
+        session: AgentSession
+    ) {
+        store.appStore.token = "test-token"
+        store.projects = [project]
+        store.sidebarProjects = [project]
+        store.recentWorkspaces = [AgentWorkspace(project: project)]
+        store.sessions = [session]
+        store.takeOverSession(session)
+    }
+
+    private func notificationRoute(for session: AgentSession, store: SessionStore) -> SessionNotificationRoute {
+        SessionNotificationRoute.current(
+            profileID: store.appStore.notificationRoutingProfileID,
+            projectID: session.projectID,
+            sessionID: session.id,
+            runtimeProvider: session.runtimeProvider ?? session.source
+        )
+    }
+
+    private func notificationHistoryPage(
+        turns: [(TurnID, ConversationTurnLifecycle)],
+        visibleTurnIDs: Set<TurnID>? = nil
+    ) -> HistoryMessagesPage {
+        let visibleTurns = visibleTurnIDs.map { allowed in
+            turns.filter { allowed.contains($0.0) }
+        } ?? turns
+        return HistoryMessagesPage(
+            messages: visibleTurns.enumerated().flatMap { index, turn in
+                let timestamp = TimeInterval(index * 2)
+                return [
+                    CodexHistoryMessage(
+                        id: "history-user-\(turn.0)",
+                        role: "user",
+                        content: "第 \(index + 1) 轮",
+                        createdAt: Date(timeIntervalSince1970: timestamp + 1),
+                        turnID: turn.0,
+                        itemID: "history-user-item-\(turn.0)",
+                        turnLifecycle: turn.1
+                    ),
+                    CodexHistoryMessage(
+                        id: "history-assistant-\(turn.0)",
+                        role: "assistant",
+                        content: turn.1.isTerminal ? "已完成" : "处理中",
+                        createdAt: Date(timeIntervalSince1970: timestamp + 2),
+                        turnID: turn.0,
+                        itemID: "history-assistant-item-\(turn.0)",
+                        turnLifecycle: turn.1
+                    ),
+                ]
+            },
+            turnStates: turns.map { HistoryTurnState(id: $0.0, lifecycle: $0.1) }
+        )
+    }
+
     private func payload(overrides: [String: Any]) -> [AnyHashable: Any] {
         var mimi: [String: Any] = [
             "version": 1,
@@ -753,6 +1084,76 @@ final class NotificationRouteResolutionTests: XCTestCase {
         }
         XCTFail("4 位标签空间只有 65536，必然存在碰撞")
         return ("collide-a", "collide-b")
+    }
+}
+
+/// 依次返回缓存快照、权威快照或网络错误，验证通知打开不会复用旧历史。
+private final class NotificationHistorySequenceClient: SessionStoreAPIClient {
+    private let project: AgentProject
+    private let sessionResult: AgentSession
+    private let lock = NSLock()
+    private var historyResults: [Result<HistoryMessagesPage, Error>]
+    private var historyRequestCountStorage = 0
+
+    var historyRequestCount: Int {
+        lock.withLock { historyRequestCountStorage }
+    }
+
+    init(
+        project: AgentProject,
+        session: AgentSession,
+        historyResults: [Result<HistoryMessagesPage, Error>]
+    ) {
+        self.project = project
+        self.sessionResult = session
+        self.historyResults = historyResults
+    }
+
+    func projects() async throws -> [AgentProject] {
+        [project]
+    }
+
+    func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
+        [sessionResult]
+    }
+
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        SessionResponse(session: sessionResult)
+    }
+
+    func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func stopSession(id: String) async throws {
+        throw MockError.unimplemented
+    }
+
+    func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
+        try nextHistoryResult().get().messages
+    }
+
+    func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
+        try nextHistoryResult().get()
+    }
+
+    func messagesPage(
+        sessionID: String,
+        before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode
+    ) async throws -> HistoryMessagesPage {
+        try nextHistoryResult().get()
+    }
+
+    private func nextHistoryResult() -> Result<HistoryMessagesPage, Error> {
+        lock.withLock {
+            historyRequestCountStorage += 1
+            guard !historyResults.isEmpty else {
+                return .failure(MockError.unimplemented)
+            }
+            return historyResults.removeFirst()
+        }
     }
 }
 
