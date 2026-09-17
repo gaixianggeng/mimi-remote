@@ -2,6 +2,122 @@ import XCTest
 @testable import MimiRemote
 
 final class ConversationTimelineProviderPresentationTests: XCTestCase {
+    func testActiveTurnExpandsBothProvidersUntilSessionFinishes() throws {
+        var read = makeActivity(id: "read", turnID: "turn", category: .runCommand, title: "读取")
+        read.turnLifecycle = .inProgress
+        var final = makeMessage(id: "final", turnID: "turn", role: .assistant, kind: .message, content: "完成说明")
+        final.turnLifecycle = .inProgress
+        for provider in [ConversationTimelineProvider.codex, .claude] {
+            let cache = ConversationTimelineItemCache()
+            let running = cache.snapshot(from: [read, final], provider: provider, activeTurn: .init(id: "turn"))
+            XCTAssertEqual(running.rows.count, 3)
+            XCTAssertTrue(try group(in: running.rows[0]).isExpanded, "final 已确认也要等本轮结束")
+            XCTAssertEqual(try activity(in: running.rows[1]).id, read.id)
+            // 会话状态可以先于消息 lifecycle 更新；没有新消息也必须重建投影。
+            let finished = cache.snapshot(from: [read, final], provider: provider)
+            XCTAssertEqual(finished.rows.count, 2)
+            XCTAssertFalse(try group(in: finished.rows[0]).isExpanded)
+            XCTAssertEqual(try message(in: finished.rows[1]).id, final.id)
+            XCTAssertTrue(finished.changes.contains(.live))
+            XCTAssertTrue(finished.changes.contains(.historyReplacement))
+            XCTAssertFalse(finished.changes.contains(.presentation), "自动收起不能打断贴底跟随")
+        }
+    }
+
+    func testExplicitCompletionCollapsesBeforeSessionStatusCatchesUp() throws {
+        var process = makeActivity(id: "read", turnID: "turn", category: .toolCall, title: "读取")
+        process.turnLifecycle = .inProgress
+        let cache = ConversationTimelineItemCache()
+        _ = cache.snapshot(from: [process], activeTurn: .init(id: "turn"))
+        process.turnLifecycle = .completed
+        let finished = cache.snapshot(from: [process], activeTurn: .init(id: "turn"))
+        XCTAssertFalse(try group(in: finished.rows[0]).isExpanded)
+        XCTAssertTrue(finished.changes.contains(.historyReplacement))
+    }
+
+    func testAutomaticExpansionOnlyTouchesLatestUserTurn() throws {
+        var old = makeActivity(id: "old", turnID: "old", category: .toolCall, title: "旧过程")
+        old.turnLifecycle = .inProgress
+        var user = makeMessage(id: "user", turnID: "new", role: .user, kind: .message, content: "继续")
+        user.turnLifecycle = nil
+        var current = makeActivity(id: "new", turnID: "new", category: .toolCall, title: "新过程")
+        current.turnLifecycle = .inProgress
+        let rows = ConversationTimelineItemBuilder.items(from: [old, user, current], activeTurn: .init(id: "new"))
+        XCTAssertFalse(try group(in: rows[0]).isExpanded)
+        XCTAssertTrue(try group(in: rows[2]).isExpanded)
+        let nextTurn = ConversationTimelineItemBuilder.items(from: [old, user, current], activeTurn: .init(id: "next"))
+        XCTAssertFalse(try group(in: nextTurn[2]).isExpanded)
+        let sending = ConversationTimelineItemBuilder.items(from: [old, user], activeTurn: .init(id: nil))
+        XCTAssertFalse(try group(in: sending[0]).isExpanded)
+    }
+
+    func testManualCollapseSurvivesLiveUpdatesAndDetailedMode() throws {
+        var first = makeActivity(id: "first", turnID: "turn", category: .thinking, title: "思考")
+        first.turnLifecycle = .inProgress
+        var next = makeActivity(id: "next", turnID: "turn", category: .toolCall, title: "读取")
+        next.turnLifecycle = .inProgress
+        let cache = ConversationTimelineItemCache()
+        _ = cache.snapshot(from: [first], activeTurn: .init(id: "turn"))
+        let collapsed = cache.snapshot(from: [first], collapsedProcessMessageIDs: [first.id], activeTurn: .init(id: "turn"))
+        XCTAssertFalse(try group(in: collapsed.rows[0]).isExpanded)
+        XCTAssertTrue(collapsed.changes.contains(.presentation))
+        let detailed = cache.snapshot(from: [first, next], showsDetailedTranscript: true,
+                                      collapsedProcessMessageIDs: [first.id], activeTurn: .init(id: "turn"))
+        XCTAssertTrue(try group(in: detailed.rows[0]).isExpanded)
+        let restored = cache.snapshot(from: [first, next], collapsedProcessMessageIDs: [first.id], activeTurn: .init(id: "turn"))
+        XCTAssertFalse(try group(in: restored.rows[0]).isExpanded)
+        let manuallyReopened = cache.snapshot(from: [first, next], expandedProcessMessageIDs: [first.id])
+        XCTAssertTrue(try group(in: manuallyReopened.rows[0]).isExpanded, "手动重开后完成仍保持展开")
+    }
+
+    func testWaitingInteractionsAndErrorsRemainVisibleAcrossAutomaticCollapse() throws {
+        var process = makeActivity(id: "read", turnID: "turn", category: .toolCall, title: "读取")
+        process.turnLifecycle = .inProgress
+        for kind in [MessageKind.approval, .userInput, .error] {
+            var prompt = makeMessage(id: "prompt", turnID: "turn", role: .system, kind: kind, content: "需要你处理")
+            prompt.turnLifecycle = nil
+            let active = ConversationTimelineItemBuilder.items(from: [process, prompt], activeTurn: .init(id: "turn"))
+            XCTAssertTrue(try group(in: active[0]).isExpanded)
+            XCTAssertEqual(try message(in: XCTUnwrap(active.last)).id, prompt.id)
+            let finished = ConversationTimelineItemBuilder.items(from: [process, prompt])
+            XCTAssertEqual(try message(in: XCTUnwrap(finished.last)).id, prompt.id)
+        }
+        for lifecycle in [ConversationTurnLifecycle.failed, .interrupted] {
+            process.turnLifecycle = lifecycle
+            let rows = ConversationTimelineItemBuilder.items(from: [process], activeTurn: .init(id: "turn"))
+            XCTAssertEqual(try group(in: rows[0]).lifecycle, lifecycle)
+            XCTAssertFalse(try group(in: rows[0]).isExpanded)
+        }
+    }
+
+    func testLegacyActiveProcessStaysOpenWhileFinalTextArrives() throws {
+        var process = makeActivity(id: "legacy", turnID: "", category: .toolCall, title: "读取")
+        process.turnID = nil
+        process.turnLifecycle = nil
+        var final = makeMessage(id: "final", turnID: "", role: .assistant, kind: .message, content: "答复")
+        final.turnID = nil
+        final.turnLifecycle = nil
+        let active = ConversationTimelineItemBuilder.items(from: [process, final], activeTurn: .init(id: nil))
+        XCTAssertTrue(try group(in: active[0]).isExpanded)
+        let finished = ConversationTimelineItemBuilder.items(from: [process, final])
+        XCTAssertFalse(try group(in: finished[0]).isExpanded)
+    }
+
+    func testAutomaticCompletionWaitsForScrollInteractionAndPreservesManualState() throws {
+        var process = makeActivity(id: "read", turnID: "turn", category: .toolCall, title: "读取")
+        process.turnLifecycle = .inProgress
+        let cache = ConversationTimelineItemCache()
+        let running = cache.snapshot(from: [process], activeTurn: .init(id: "turn"))
+        let frozen = cache.snapshot(from: [process], suspendingUpdates: true)
+        XCTAssertEqual(frozen.revision, running.revision)
+        XCTAssertTrue(try group(in: frozen.rows[0]).isExpanded)
+        let finished = cache.snapshot(from: [process])
+        XCTAssertFalse(try group(in: finished.rows[0]).isExpanded)
+        let pinned = cache.snapshot(from: [process], expandedProcessMessageIDs: [process.id], activeTurn: .init(id: "turn"))
+        let pinnedFinished = cache.snapshot(from: [process], expandedProcessMessageIDs: [process.id])
+        XCTAssertEqual(pinned.rows, pinnedFinished.rows)
+    }
+
     func testDefaultProvidersCollapseProcessAndKeepFinalAndFileEntry() throws {
         let narrative = makeMessage(id: "progress", turnID: "turn", role: .assistant, kind: .commentary, content: "检查中")
         let read = makeActivity(id: "read", turnID: "turn", category: .runCommand, title: "读取", commandKind: .exploration)

@@ -103,6 +103,11 @@ struct ConversationFileChanges: Identifiable, Equatable {
     var firstActivityID: String { "activity:\(messageIDs[0].uuidString)" }
 }
 
+/// 非 nil 表示会话仍在执行（包括等审批/输入）；旧运行时可以没有 turnID。
+struct ConversationTimelineActiveTurn: Equatable {
+    let id: TurnID?
+}
+
 struct ConversationTranscriptPresentation: Equatable {
     private(set) var enabledScope: ScopedSessionID?
 

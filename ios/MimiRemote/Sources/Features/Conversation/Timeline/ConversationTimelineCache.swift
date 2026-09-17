@@ -87,6 +87,8 @@ final class ConversationTimelineItemCache {
     private var cachedProvider: ConversationTimelineProvider?
     private var cachedShowsDetailedTranscript = false
     private var cachedExpandedProcessMessageIDs: Set<UUID> = []
+    private var cachedCollapsedProcessMessageIDs: Set<UUID> = []
+    private var cachedActiveTurn: ConversationTimelineActiveTurn?
     private var deliveredVersions = ConversationTimelineSourceVersions()
     private var presentationRevision = 0
 
@@ -95,6 +97,8 @@ final class ConversationTimelineItemCache {
         provider: ConversationTimelineProvider = .codex,
         showsDetailedTranscript: Bool = false,
         expandedProcessMessageIDs: Set<UUID> = [],
+        collapsedProcessMessageIDs: Set<UUID> = [],
+        activeTurn: ConversationTimelineActiveTurn? = nil,
         suspendingUpdates: Bool = false
     ) -> ConversationTimelineSnapshot {
         let scopeChanged = cachedSnapshot.scope != source.scope
@@ -109,12 +113,14 @@ final class ConversationTimelineItemCache {
         let providerChanged = cachedProvider.map { $0 != provider } ?? false
         let detailModeChanged = cachedShowsDetailedTranscript != showsDetailedTranscript
         let expansionChanged = cachedExpandedProcessMessageIDs != expandedProcessMessageIDs
-        guard scopeChanged || sourceChanged || providerChanged || detailModeChanged || expansionChanged || nextKeys != keys else {
+            || cachedCollapsedProcessMessageIDs != collapsedProcessMessageIDs
+        let activeTurnChanged = cachedActiveTurn != activeTurn
+        guard scopeChanged || sourceChanged || providerChanged || detailModeChanged || expansionChanged || activeTurnChanged || nextKeys != keys else {
             return cachedSnapshot
         }
 
         let previousKeys = keys
-        let rowsChanged = scopeChanged || providerChanged || detailModeChanged || expansionChanged || nextKeys != previousKeys
+        let rowsChanged = scopeChanged || providerChanged || detailModeChanged || expansionChanged || activeTurnChanged || nextKeys != previousKeys
         // 来源原因可能变化，但可渲染字段没有变化（例如折叠命令的隐藏输出进度）。
         // 此时仍发布新 revision/reasons，但复用原投影，避免无意义地重建整条时间线。
         let nextRows = rowsChanged
@@ -122,7 +128,9 @@ final class ConversationTimelineItemCache {
                 from: source.messages,
                 provider: provider,
                 showsDetailedTranscript: showsDetailedTranscript,
-                expandedProcessMessageIDs: expandedProcessMessageIDs
+                expandedProcessMessageIDs: expandedProcessMessageIDs,
+                collapsedProcessMessageIDs: collapsedProcessMessageIDs,
+                activeTurn: activeTurn
             )
             : cachedSnapshot.rows
         let nextRowIDs = rowsChanged ? nextRows.map(\.id) : cachedSnapshot.rowIDs
@@ -141,6 +149,20 @@ final class ConversationTimelineItemCache {
         if detailModeChanged || expansionChanged {
             presentationReasons.formUnion([.historyReplacement, .presentation])
         }
+        if activeTurnChanged { presentationReasons.insert(.live) }
+        if rowsChanged, !scopeChanged {
+            let collapsedGroupIDs = Set(nextRows.compactMap { row -> String? in
+                guard case .processGroup(let group) = row, !group.isExpanded else { return nil }
+                return group.id
+            })
+            if cachedSnapshot.rows.contains(where: { row in
+                guard case .processGroup(let group) = row else { return false }
+                return group.isExpanded && collapsedGroupIDs.contains(group.id)
+            }) {
+                // 自动收起会移除过程子行：读历史时映射到同消息的过程标题，贴底时继续跟随结果。
+                presentationReasons.insert(.historyReplacement)
+            }
+        }
         let lastMessage = source.messages.last
         let tail = lastMessage.map { message in
             ConversationTimelineTailDescriptor(
@@ -158,6 +180,8 @@ final class ConversationTimelineItemCache {
         cachedProvider = provider
         cachedShowsDetailedTranscript = showsDetailedTranscript
         cachedExpandedProcessMessageIDs = expandedProcessMessageIDs
+        cachedCollapsedProcessMessageIDs = collapsedProcessMessageIDs
+        cachedActiveTurn = activeTurn
         deliveredVersions = source.versions
         presentationRevision = scopeChanged ? 1 : presentationRevision + 1
         cachedSnapshot = ConversationTimelineSnapshot(
@@ -177,6 +201,8 @@ final class ConversationTimelineItemCache {
         provider: ConversationTimelineProvider = .codex,
         showsDetailedTranscript: Bool = false,
         expandedProcessMessageIDs: Set<UUID> = [],
+        collapsedProcessMessageIDs: Set<UUID> = [],
+        activeTurn: ConversationTimelineActiveTurn? = nil,
         suspendingUpdates: Bool = false,
         scope: ScopedSessionID? = nil
     ) -> ConversationTimelineSnapshot {
@@ -190,6 +216,8 @@ final class ConversationTimelineItemCache {
             provider: provider,
             showsDetailedTranscript: showsDetailedTranscript,
             expandedProcessMessageIDs: expandedProcessMessageIDs,
+            collapsedProcessMessageIDs: collapsedProcessMessageIDs,
+            activeTurn: activeTurn,
             suspendingUpdates: suspendingUpdates
         )
     }
