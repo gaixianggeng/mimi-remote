@@ -289,7 +289,7 @@ final class AppServerRuntimeRouteStore {
     private var runtimeBySessionID: [SessionID: String] = [:]
 
     func remember(_ session: AgentSession) {
-        remember(session.runtimeProvider ?? session.source, for: session.id)
+        remember(runtimeProvider: session.runtimeProvider, source: session.source, for: session.id)
     }
 
     func remember(_ sessions: [AgentSession]) {
@@ -303,6 +303,17 @@ final class AppServerRuntimeRouteStore {
         lock.lock()
         runtimeBySessionID[sessionID] = runtime.isEmpty ? "codex" : runtime
         lock.unlock()
+    }
+
+    func remember(runtimeProvider: String?, source: String?, for sessionID: SessionID) {
+        if let explicit = runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines), !explicit.isEmpty {
+            // 显式 provider 即使未知也要保留，让后续请求安全失败，不能误投到 Codex。
+            remember(explicit, for: sessionID)
+            return
+        }
+        let sourceRuntime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(source)
+        let knownRuntimes: Set<String> = ["codex", "claude", "deepseek"]
+        remember(knownRuntimes.contains(sourceRuntime) ? sourceRuntime : "codex", for: sessionID)
     }
 
     func runtimeProvider(for sessionID: SessionID) -> String? {
@@ -321,11 +332,13 @@ final class AppServerRuntimeRouteStore {
 final class AppServerRuntimeBundle {
     let codex: CodexAppServerSessionRuntime
     let claude: CodexAppServerSessionRuntime
+    let deepseek: CodexAppServerSessionRuntime?
     let routes = AppServerRuntimeRouteStore()
 
     init(endpoint: String, token: String) {
         codex = CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "codex")
         claude = CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "claude")
+        deepseek = CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "deepseek")
     }
 
     /// 快速切换已经拿到 config，候选 Runtime 必须复用它，不能在提交后再次请求
@@ -351,19 +364,43 @@ final class AppServerRuntimeBundle {
             requestTimeout: requestTimeout,
             configProvider: configProvider
         )
+        deepseek = CodexAppServerSessionRuntime(
+            endpoint: endpoint,
+            token: token,
+            runtimeProvider: "deepseek",
+            requestTimeout: requestTimeout,
+            configProvider: configProvider
+        )
     }
 
-    init(codexRuntime: CodexAppServerSessionRuntime, claudeRuntime: CodexAppServerSessionRuntime) {
+    init(
+        codexRuntime: CodexAppServerSessionRuntime,
+        claudeRuntime: CodexAppServerSessionRuntime,
+        deepseekRuntime: CodexAppServerSessionRuntime? = nil
+    ) {
         codex = codexRuntime
         claude = claudeRuntime
+        deepseek = deepseekRuntime
     }
 
-    func runtime(for provider: String?) -> CodexAppServerSessionRuntime {
-        CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider) == "claude" ? claude : codex
+    func runtime(for provider: String?) throws -> CodexAppServerSessionRuntime {
+        switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider) {
+        case "codex":
+            return codex
+        case "claude":
+            return claude
+        case "deepseek":
+            guard let deepseek else {
+                throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+            }
+            return deepseek
+        default:
+            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+        }
     }
 
-    func runtime(forSessionID sessionID: SessionID) -> CodexAppServerSessionRuntime {
-        runtime(for: routes.runtimeProvider(for: sessionID))
+    func runtime(forSessionID sessionID: SessionID) throws -> CodexAppServerSessionRuntime {
+        try runtime(for: routes.runtimeProvider(for: sessionID))
     }
 
     func prepareForHostActivation() async throws {
@@ -373,11 +410,12 @@ final class AppServerRuntimeBundle {
     func shutdownForHostSwitch() async {
         await codex.shutdownForHostSwitch()
         await claude.shutdownForHostSwitch()
+        await deepseek?.shutdownForHostSwitch()
     }
 }
 
-/// Codex 与 Claude 共用一个路由 facade，但列表请求始终显式落到单一 Runtime。
-/// 不在客户端合并两条 opaque cursor 流，避免重新引入跨 Runtime 排序状态机。
+/// 各 Runtime 共用一个路由 facade，但列表请求始终显式落到单一 Runtime。
+/// 不在客户端合并多条 opaque cursor 流，避免重新引入跨 Runtime 排序状态机。
 final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient {
     private let bundle: AppServerRuntimeBundle
     private let codexClient: CodexAppServerSessionAPIClient
@@ -425,20 +463,41 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {
-        var options = try await bundle.codex.modelOptions()
-        if try await bundle.codex.channelAvailable(runtimeProvider: "claude") {
-            do {
-                options.append(contentsOf: try await bundle.claude.modelOptions())
-            } catch {
-                // Claude 是 experimental runtime；模型列表失败不能拖垮 Codex 主路径。
-                // config/channel metadata 会继续暴露 bridge 状态，菜单这里优先保持可用。
-                print("Claude model/list unavailable: \(error.localizedDescription)")
+        var options: [CodexAppServerModelOption] = []
+        var codexError: Error?
+        do {
+            options = try await bundle.codex.modelOptions()
+        } catch {
+            codexError = error
+        }
+        let secondaryRuntimes: [(provider: String, runtime: CodexAppServerSessionRuntime?)] = [
+            ("claude", bundle.claude),
+            ("deepseek", bundle.deepseek)
+        ]
+        var secondarySucceeded = false
+        for secondary in secondaryRuntimes {
+            guard let runtime = secondary.runtime else { continue }
+            guard (try? await runtime.channelAvailable(runtimeProvider: secondary.provider)) == true else {
+                continue
             }
+            do {
+                options.append(contentsOf: try await runtime.modelOptions())
+                secondarySucceeded = true
+            } catch {
+                // 次要 Runtime 的模型列表失败不能拖垮 Codex 主路径。
+                // config/channel metadata 会继续暴露 bridge 状态，菜单这里优先保持可用。
+                print("\(secondary.provider) model/list unavailable: \(error.localizedDescription)")
+            }
+        }
+        if !secondarySucceeded, options.isEmpty, let codexError {
+            throw codexError
         }
         var seen: Set<String> = []
         return options.filter { option in
-            guard !seen.contains(option.id) else { return false }
-            seen.insert(option.id)
+            let runtime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(option.runtimeProvider)
+            let key = [runtime, option.provider ?? "", option.model].joined(separator: "\u{1F}")
+            guard !seen.contains(key) else { return false }
+            seen.insert(key)
             return true
         }
     }
@@ -547,12 +606,12 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         return page
     }
 
-    /// 搜索的分页由 Codex 的 thread/search 独占驱动：只有首页会额外查一次 Claude，
-    /// 并把结果拼在后面。Claude 没有 thread/search，它走 thread/list + searchTerm，
-    /// 按单页返回。这样既让 Claude 会话可搜到，也不需要把两条游标流编进一个复合
+    /// 搜索的分页由 Codex 的 thread/search 独占驱动：只有首页会额外查询其他 Runtime，
+    /// 并把结果拼在后面。Claude 没有 thread/search，它走 thread/list + searchTerm；
+    /// DeepSeek 直接走 thread/search。这样不需要把多条游标流编进一个复合
     /// cursor（那会重新引入跨 Runtime 的分页状态机）。
     ///
-    /// 代价说明：Claude 的搜索结果限于首页 limit 条。搜索场景下用户通常继续收窄
+    /// 代价说明：次要 Runtime 的搜索结果限于首页 limit 条。搜索场景下用户通常继续收窄
     /// 关键词而不是翻页；真出现「Claude 结果翻不动」再升级为按 runtime 分段。
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {
         let codexPage = try await codexClient.searchSessions(query: query, cursor: cursor, limit: limit)
@@ -560,16 +619,18 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         guard cursor == nil else {
             return codexPage
         }
-        // Claude 搜索是增强项：bridge 未启用或不健康时不能连带让 Codex 搜索失败。
-        guard let claudePage = try? await bundle.claude.globalThreadListSearchPage(
-            query: query,
-            limit: limit
-        ), !claudePage.results.isEmpty else {
-            return codexPage
+        var merged = codexPage.results
+        var existingIDs = Set(merged.map(\.session.id))
+        if let claudePage = try? await bundle.claude.globalThreadListSearchPage(query: query, limit: limit) {
+            bundle.routes.remember(claudePage.sessions)
+            merged.append(contentsOf: claudePage.results.filter { existingIDs.insert($0.session.id).inserted })
         }
-        bundle.routes.remember(claudePage.sessions)
-        let existingIDs = Set(codexPage.results.map(\.session.id))
-        let merged = codexPage.results + claudePage.results.filter { !existingIDs.contains($0.session.id) }
+        if let deepseek = bundle.deepseek,
+           (try? await deepseek.channelAvailable(runtimeProvider: "deepseek")) == true,
+           let deepseekPage = try? await deepseek.searchSessions(query: query, cursor: nil, limit: limit) {
+            bundle.routes.remember(deepseekPage.sessions)
+            merged.append(contentsOf: deepseekPage.results.filter { existingIDs.insert($0.session.id).inserted })
+        }
         return ThreadSearchPage(
             results: merged,
             nextCursor: codexPage.nextCursor,
@@ -583,17 +644,12 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         return response
     }
 
-    /// 只有明确的 codex / claude 才写入路由表。`remember` 会把 nil 与未知值归一成 codex，
-    /// 那会把已记住的 Claude 会话改写成 Codex，随后的 thread/read 就落到错误的 Runtime；
-    /// 因此未知值一律不动已有路由，codex 也只在调用方明确断言时才覆盖。
+    /// 空值不覆盖已有路由；显式未知值保留到路由表并在使用时安全失败，不能误投到 Codex。
     func rememberRuntimeRoute(_ runtimeProvider: String?, forSessionID sessionID: SessionID) {
         guard let raw = runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return
         }
         let normalized = CodexAppServerSessionRuntime.normalizedRuntimeProvider(raw)
-        guard normalized == "codex" || normalized == "claude" else {
-            return
-        }
         bundle.routes.remember(normalized, for: sessionID)
     }
 
@@ -603,13 +659,13 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
 
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {
         if let sessionID {
-            return await bundle.runtime(forSessionID: sessionID).refreshRateLimit()
+            return try await bundle.runtime(forSessionID: sessionID).refreshRateLimit()
         }
         return await bundle.codex.refreshRateLimit()
     }
 
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
-        await bundle.runtime(for: runtimeProvider).refreshRateLimit()
+        try await bundle.runtime(for: runtimeProvider).refreshRateLimit()
     }
 
     func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch {
@@ -639,7 +695,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
-        let runtime = bundle.runtime(for: payload.turnOptions.runtimeProvider)
+        let runtime = try bundle.runtime(for: payload.turnOptions.runtimeProvider)
         let response = try await runtime.createSession(payload)
         bundle.routes.remember(response.session)
         return response
@@ -764,7 +820,15 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     }
 
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
-        let runtime = bundle.runtime(forSessionID: sessionID)
+        let runtime: CodexAppServerSessionRuntime
+        do {
+            runtime = try bundle.runtime(forSessionID: sessionID)
+        } catch {
+            activeClient?.disconnect()
+            activeClient = nil
+            onStatus?(.failed(error.localizedDescription))
+            return
+        }
         // “单活”边界是当前 Mac，而不是 Runtime provider。同一台 Mac 上当前会话与后台
         // 排队会话可能分别属于 Codex/Claude；两者各复用一条共享连接，不能互相退役。
         // 切换 Mac、进入后台或凭据失效时仍由 AppServerRuntimeBundle 整体关闭。
@@ -859,7 +923,7 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         case .session(let session):
             bundle.routes.remember(session)
         case .sessionRow(let row, _):
-            bundle.routes.remember(row.runtimeProvider ?? row.source, for: row.id)
+            bundle.routes.remember(runtimeProvider: row.runtimeProvider, source: row.source, for: row.id)
         default:
             break
         }

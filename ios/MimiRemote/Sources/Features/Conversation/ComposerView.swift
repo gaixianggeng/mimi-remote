@@ -286,6 +286,7 @@ struct ComposerView: View {
             guard activeComposerDraftScope == currentComposerDraftScope else {
                 return
             }
+            enforceComposerTurnSettingsPolicy()
             clampModelSelectionToSelectedSessionRuntime()
         }
         .onChange(of: modelOptionsForMenu) { _, _ in
@@ -499,6 +500,10 @@ struct ComposerView: View {
     }
 
     func enforceComposerTurnSettingsPolicy() {
+        if !RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+            // Harness 不消费 collaboration/goal 参数；恢复旧草稿时必须回到普通发送。
+            setSendMode(.standard)
+        }
         guard !composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
             return
         }
@@ -670,7 +675,8 @@ struct ComposerView: View {
         }
         return session.isRunning &&
             composerState.sendMode == .standard &&
-            sessionStore.canControlSession(session)
+            sessionStore.canControlSession(session) &&
+            !RuntimeFeatureSupport.isDeepSeek(composerRuntimeProvider)
     }
 
     var canUseGuidedFollowUp: Bool {
@@ -1406,10 +1412,12 @@ struct ComposerView: View {
         Menu {
             if composerTurnSettingsPolicy == .unavailable {
                 Section {
-                    Button(action: {}) {
-                        Label(L10n.text("ui.planning_mode"), systemImage: "list.clipboard")
+                    if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+                        Button(action: {}) {
+                            Label(L10n.text("ui.planning_mode"), systemImage: "list.clipboard")
+                        }
+                        .disabled(true)
                     }
-                    .disabled(true)
 
                     Text(ComposerTurnSettingsPolicy.unavailableMenuNotice)
                 }
@@ -1418,22 +1426,26 @@ struct ComposerView: View {
             if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
                 runSettingsMenu
 
-                Divider()
+                if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+                    Divider()
 
-                Button {
-                    setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
-                } label: {
-                    Label(composerState.isPlanModeSelected ? L10n.text("ui.turn_off_planning_mode") : L10n.text("ui.planning_mode"), systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
+                    Button {
+                        setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
+                    } label: {
+                        Label(composerState.isPlanModeSelected ? L10n.text("ui.turn_off_planning_mode") : L10n.text("ui.planning_mode"), systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
+                    }
+                    .accessibilityIdentifier("composer.mode.plan")
                 }
-                .accessibilityIdentifier("composer.mode.plan")
             }
 
-            Button {
-                setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
-            } label: {
-                Label(composerState.isGoalModeSelected ? L10n.text("ui.close_target_task") : L10n.text("ui.target_task"), systemImage: composerState.isGoalModeSelected ? "checkmark" : "target")
+            if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+                Button {
+                    setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
+                } label: {
+                    Label(composerState.isGoalModeSelected ? L10n.text("ui.close_target_task") : L10n.text("ui.target_task"), systemImage: composerState.isGoalModeSelected ? "checkmark" : "target")
+                }
+                .accessibilityIdentifier("composer.mode.goal")
             }
-            .accessibilityIdentifier("composer.mode.goal")
 
             if foldsRunningFollowUpDeliveryIntoOptions {
                 Divider()
@@ -1511,10 +1523,13 @@ struct ComposerView: View {
             hiddenKeyboardShortcut(L10n.text("ui.open_the_references_panel"), key: "k", modifiers: [.command, .shift]) {
                 showsAddContentPanel = true
             }
-            hiddenKeyboardShortcut(L10n.text("ui.switch_target_mission_mode"), key: "g", modifiers: [.command, .shift]) {
-                setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
+            if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+                hiddenKeyboardShortcut(L10n.text("ui.switch_target_mission_mode"), key: "g", modifiers: [.command, .shift]) {
+                    setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
+                }
             }
-            if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
+            if composerTurnSettingsPolicy.allowsTurnSettingsEditing,
+               RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
                 hiddenKeyboardShortcut(L10n.text("ui.switch_planning_mode"), key: "p", modifiers: [.command, .shift]) {
                     setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
                 }
@@ -1585,8 +1600,11 @@ struct ComposerView: View {
     }
 
     var enabledSkillShortcuts: [SkillCapability] {
+        guard RuntimeFeatureSupport.supportsSkills(for: composerRuntimeProvider) else {
+            return []
+        }
         // 菜单直接消费 agentd capabilities，避免写死技能短语；排序后截断，保证菜单稳定且不拖慢 body。
-        (sessionStore.capabilityList?.skills ?? [])
+        return (sessionStore.capabilityList?.skills ?? [])
             .filter(\.enabled)
             .sorted { lhs, rhs in
                 lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
@@ -1594,7 +1612,10 @@ struct ComposerView: View {
     }
 
     var installedPluginShortcuts: [CodexPluginCapability] {
-        (sessionStore.capabilityList?.plugins ?? [])
+        guard RuntimeFeatureSupport.supportsSkills(for: composerRuntimeProvider) else {
+            return []
+        }
+        return (sessionStore.capabilityList?.plugins ?? [])
             .sorted { lhs, rhs in
                 if lhs.enabled != rhs.enabled {
                     return lhs.enabled && !rhs.enabled
@@ -1638,6 +1659,11 @@ struct ComposerView: View {
     }
 
     func setSendMode(_ mode: ComposerSendMode) {
+        guard mode == .standard
+            || RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider)
+        else {
+            return
+        }
         guard mode != .plan || composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
             return
         }

@@ -8915,6 +8915,54 @@
         }
       }
     },
+    "ui.deepseek_models_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The DeepSeek model catalog is unavailable. Refresh and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 模型目录不可用，请刷新后重试"
+          }
+        }
+      }
+    },
+    "ui.deepseek_requires_full_access": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek supports Full Access only. Select it explicitly in the permissions menu; Harness still requests approvals."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 仅支持完全访问，请在权限菜单中明确选择；审批仍由 Harness 发起"
+          }
+        }
+      }
+    },
+    "ui.deepseek_text_only": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek currently supports text input only."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 当前仅支持文本输入"
+          }
+        }
+      }
+    },
     "ui.decision_sent": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "extractionState": "stale",

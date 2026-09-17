@@ -576,7 +576,7 @@ actor CodexAppServerSessionRuntime {
             return ThreadSearchPage(results: [])
         }
         let config = try await ensureConfig()
-        guard config.policy.allowedMethods.contains("thread/search") else {
+        guard runtimeSupportsMethod("thread/search", in: config) else {
             throw CodexAppServerSessionRuntimeError.threadSearchUnavailable
         }
         let projects = config.projects
@@ -830,6 +830,7 @@ actor CodexAppServerSessionRuntime {
     }
 
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        let config = try await ensureConfig()
         let baseProjects = try await projects()
         let projectPath = payload.projectPath?.trimmingCharacters(in: .whitespacesAndNewlines)
         let project: AgentProject
@@ -861,45 +862,58 @@ actor CodexAppServerSessionRuntime {
         // 所以这里必须保持主线兼容行为，不能让纯 Codex 用户回归。
         if !usesSharedServerQueue {
             threadOptions.model = nil
-            threadOptions.modelProvider = nil
+            // DeepSeek Harness 用 modelProvider 选择具体后端；thread/start 必须保留它。
+            // Codex/Claude 继续遵守旧 app-server 对线程级模型字段的兼容约束。
+            if runtimeProvider != "deepseek" {
+                threadOptions.modelProvider = nil
+            }
         }
         threadOptions = runtimeScopedThreadOptions(threadOptions)
+        let resumeID = payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 旧 Codex/Claude config 的方法清单可能不完整，不能据此关闭既有 resume 链路。
+        // 只有 DeepSeek 明确以 channel methods 声明能力，并提供 turns/list 替代协议。
+        let supportsThreadResume = runtimeProvider != "deepseek"
+            || runtimeSupportsMethod("thread/resume", in: config)
+        let usesThreadResume = !resumeID.isEmpty && supportsThreadResume
         let spec: CodexAppServerRequestSpec
-        if payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if resumeID.isEmpty {
             spec = usesSharedServerQueue
                 ? try builder.threadStartForSharedQueue(cwd: project.path, options: threadOptions)
                 : (projectPath?.isEmpty == false
                     ? try builder.threadStart(cwd: project.path, options: threadOptions)
                     : try builder.threadStart(projectID: payload.projectID, options: threadOptions))
+        } else if !supportsThreadResume {
+            // DeepSeek 不实现 thread/resume。thread/read 会恢复 gateway 侧 Harness 绑定，
+            // 随后的 turns/list/turn/start 继续沿用同一条连接。
+            spec = builder.threadRead(threadID: resumeID, includeTurns: false)
         } else {
             spec = usesSharedServerQueue
                 ? try builder.threadResumePreservingSharedState(
-                    threadID: payload.resumeID,
+                    threadID: resumeID,
                     cwd: project.path
                 )
                 : (projectPath?.isEmpty == false
-                    ? try builder.threadResume(threadID: payload.resumeID, cwd: project.path, options: threadOptions)
-                    : try builder.threadResume(threadID: payload.resumeID, projectID: payload.projectID, options: threadOptions))
+                    ? try builder.threadResume(threadID: resumeID, cwd: project.path, options: threadOptions)
+                    : try builder.threadResume(threadID: resumeID, projectID: payload.projectID, options: threadOptions))
         }
 
         let result: CodexAppServerJSONValue?
         do {
             result = try await sendRecoveringFromStaleInitialization(spec, timeout: longRunningRequestTimeout)
         } catch {
-            guard !payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  shouldFallbackFromInitialTurnsPage(error) else {
+            guard usesThreadResume, shouldFallbackFromInitialTurnsPage(error) else {
                 throw error
             }
             // idle 历史会话的发送会通过 createSession(resume:) 进入这里；发送链路必须允许
             // initialTurnsPage 因响应过大或版本不兼容而降级，否则 turn/start 永远不会发出。
             let fallback = usesSharedServerQueue
                 ? try builder.threadResumePreservingSharedState(
-                    threadID: payload.resumeID,
+                    threadID: resumeID,
                     cwd: project.path,
                     includeInitialTurnsPage: false
                 )
                 : try builder.threadResume(
-                    threadID: payload.resumeID,
+                    threadID: resumeID,
                     cwd: project.path,
                     options: threadOptions,
                     includeInitialTurnsPage: false
@@ -1235,7 +1249,7 @@ actor CodexAppServerSessionRuntime {
         // 首屏只依赖 thread/turns/list。能不能逐 Turn 补 Item 由每个 Turn 自己的 itemsView
         // 决定（见 messagesPageFromTurnPages）：已经带回完整 items 的 runtime 无需补齐，
         // 不能因为缺少 thread/items/list 就把整个 full 首屏判死。
-        guard config.policy.allowedMethods.contains("thread/turns/list") else {
+        guard runtimeSupportsMethod("thread/turns/list", in: config) else {
             throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable("thread/turns/list")
         }
         return try await messagesPageFromTurnPages(
@@ -1253,7 +1267,7 @@ actor CodexAppServerSessionRuntime {
     /// legacy 路径的 limit 是 message 数，不具备“完整一个 turn”的增量合并语义。
     func latestTurnHistoryPage(sessionID: SessionID) async throws -> HistoryMessagesPage? {
         let config = try await ensureConfig()
-        guard config.policy.allowedMethods.contains("thread/turns/list") else {
+        guard runtimeSupportsMethod("thread/turns/list", in: config) else {
             throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable("thread/turns/list")
         }
         return try await messagesPageFromTurnPages(
@@ -2729,6 +2743,26 @@ actor CodexAppServerSessionRuntime {
         builder: CodexAppServerRequestBuilder,
         connection: CodexAppServerConnection
     ) async throws {
+        let config = try await ensureConfig()
+        if runtimeProvider == "deepseek", !runtimeSupportsMethod("thread/resume", in: config) {
+            guard runtimeSupportsMethod("thread/turns/list", in: config) else {
+                throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable("thread/turns/list")
+            }
+            // DeepSeek 的 gateway 没有 thread/resume。一次最新 Turn 查询既验证线程仍可读，
+            // 也让当前 Harness 连接重新建立 follow，之后审批和增量事件仍走同一连接。
+            _ = try await connection.send(
+                builder.threadTurnsList(
+                    threadID: sessionID,
+                    limit: 1,
+                    sortDirection: "desc",
+                    itemsView: "summary"
+                ),
+                timeout: longRunningRequestTimeout
+            )
+            try Task.checkCancellation()
+            threadsResumedOnConnection.insert(sessionID)
+            return
+        }
         let usesSharedServerQueue = try await turnDeliveryMode() == .sharedServerQueue
         var passiveResumeOptions = CodexAppServerTurnOptions.default
         // 被动监听/重连不能把 Mimi 的安全默认重新写进已有 Codex Thread；否则 Windows
@@ -3161,6 +3195,8 @@ actor CodexAppServerSessionRuntime {
             return "codex"
         case "claude", "anthropic", "claude_code", "claude-code", "claude_code_bridge", "claude-code-bridge":
             return "claude"
+        case "deepseek", "deepseek_harness", "deepseek-harness", "deepseek_harness_service", "deepseek-harness-service", "dsh":
+            return "deepseek"
         default:
             return value
         }

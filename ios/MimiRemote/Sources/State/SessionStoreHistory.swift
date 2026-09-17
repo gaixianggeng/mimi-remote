@@ -46,6 +46,10 @@ extension SessionStore {
             ? payload
             : await payloadResolvingRequiredModel(payload, submissionContext: submissionContext)
         guard appStore.activeHostScope == hostScope else { return false }
+        if !payload.isEmpty, let error = RuntimeFeatureSupport.submissionError(for: payload) {
+            if isSelectionLeaseCurrent(createIntent) { setErrorMessage(error) }
+            return false
+        }
         if !payload.isEmpty,
            let notice = CodexQuotaNotice.make(
                rateLimit: submissionContext.session?.rateLimit,

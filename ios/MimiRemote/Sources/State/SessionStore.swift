@@ -162,7 +162,8 @@ final class SessionStore: ObservableObject {
     @Published var appServerPermissionProfiles: [CodexAppServerPermissionProfileSummary] = []
     @Published var activePermissionProfileBySessionID: [SessionID: CodexAppServerActivePermissionProfile] = [:]
     @Published var isRefreshingPermissionProfiles = false
-    @Published var isClaudeRuntimeChannelAvailable = false
+    @Published var availableRuntimeProviders: Set<String> = ["codex"]
+    var isClaudeRuntimeChannelAvailable: Bool { availableRuntimeProviders.contains("claude") }
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
     /// 账号维度的累计用量。与活动历史分开保存：服务端可以给出 lifetime 却不给日粒度历史。
     @Published var accountTokenUsage: AccountTokenUsageSnapshot?

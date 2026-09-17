@@ -3,12 +3,17 @@ import Foundation
 enum ConversationTimelineProvider: String, Equatable {
     case codex
     case claude
+    case deepseek
 
     init(runtimeProvider: String?) {
-        let normalized = runtimeProvider?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        self = normalized == Self.claude.rawValue ? .claude : .codex
+        switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) {
+        case Self.claude.rawValue:
+            self = .claude
+        case Self.deepseek.rawValue:
+            self = .deepseek
+        default:
+            self = .codex
+        }
     }
 }
 

@@ -2,9 +2,10 @@ import SwiftUI
 
 /// Runtime 的品牌标记。资源一律保持权利人发布的原件，不裁切、不改绘、不改色；
 /// 两个标记的画布留白不同，差异只在显示侧按实测比例抹平。
-enum RuntimeBrandMark {
+enum RuntimeBrandMark: Equatable {
     case openAI
     case claude
+    case deepSeek
 
     var assetName: String {
         switch self {
@@ -12,6 +13,8 @@ enum RuntimeBrandMark {
             return "OpenAIMonoblossom"
         case .claude:
             return "Claude"
+        case .deepSeek:
+            return "terminal.fill"
         }
     }
 
@@ -25,6 +28,8 @@ enum RuntimeBrandMark {
         case .openAI:
             return 969.0 / 1442.0
         case .claude:
+            return 1
+        case .deepSeek:
             return 1
         }
     }
@@ -40,14 +45,24 @@ struct RuntimeBrandMarkIcon: View {
     var body: some View {
         let inkSize = size / mark.inkRatio
 
-        Image(mark.assetName)
-            .resizable()
-            // 标记带各自的品牌配色（Claude 的橙、OpenAI 的黑白双版），
-            // 模板着色会把它们抹平成同一个色块。
-            .renderingMode(.original)
-            .scaledToFit()
-            .frame(width: inkSize, height: inkSize)
-            .frame(width: size, height: size)
-            .accessibilityHidden(true)
+        Group {
+            if mark == .deepSeek {
+                // 首版没有引入新的第三方品牌资产；使用中性的 Runtime 图标，避免伪造品牌标记。
+                Image(systemName: mark.assetName)
+                    .resizable()
+                    .symbolRenderingMode(.hierarchical)
+                    .scaledToFit()
+            } else {
+                Image(mark.assetName)
+                    .resizable()
+                    // 标记带各自的品牌配色（Claude 的橙、OpenAI 的黑白双版），
+                    // 模板着色会把它们抹平成同一个色块。
+                    .renderingMode(.original)
+                    .scaledToFit()
+            }
+        }
+        .frame(width: inkSize, height: inkSize)
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 }

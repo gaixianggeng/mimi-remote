@@ -51,10 +51,10 @@ struct ConnectionSettingsView: View {
                 Section {
                     Menu {
                         Picker(L10n.text("ui.preferred_runtime"), selection: preferredRuntimeBinding) {
-                            Text(L10n.text("ui.runtime_default"))
-                                .tag(WorkspaceSessionRuntimeChoice.codex)
-                            Text(L10n.text("ui.runtime_optional"))
-                                .tag(WorkspaceSessionRuntimeChoice.claude)
+                            ForEach(WorkspaceSessionRuntimeChoice.allCases) { runtime in
+                                Text(runtime.listTitle)
+                                    .tag(runtime)
+                            }
                         }
                     } label: {
                         HStack(spacing: 8) {
@@ -144,8 +144,7 @@ struct ConnectionSettingsView: View {
     }
 
     private var preferredRuntimeTitle: String {
-        L10n.text(WorkspaceSessionRuntimeChoice.stored(preferredRuntimeRawValue) == .claude
-            ? "ui.runtime_optional" : "ui.runtime_default")
+        WorkspaceSessionRuntimeChoice.stored(preferredRuntimeRawValue).listTitle
     }
 
     private var preferredRuntimeBinding: Binding<WorkspaceSessionRuntimeChoice> {

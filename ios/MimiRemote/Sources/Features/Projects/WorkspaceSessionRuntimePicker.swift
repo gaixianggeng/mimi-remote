@@ -4,6 +4,7 @@ import SwiftUI
 enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
     case codex
     case claude
+    case deepseek
 
     static let preferenceKey = "workspace.preferredRuntime"
 
@@ -13,14 +14,7 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var runtimeProvider: String {
-        switch self {
-        case .codex:
-            return "codex"
-        case .claude:
-            return "claude"
-        }
-    }
+    var runtimeProvider: String { rawValue }
 
     var listTitle: String {
         switch self {
@@ -28,6 +22,8 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
             return L10n.text("ui.runtime_default")
         case .claude:
             return L10n.text("ui.runtime_claude_short")
+        case .deepseek:
+            return "DeepSeek"
         }
     }
 
@@ -37,6 +33,8 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
             return L10n.text("ui.create_a_new_codex_session")
         case .claude:
             return L10n.text("ui.create_a_new_claude_code_session")
+        case .deepseek:
+            return "Create a new DeepSeek Harness session"
         }
     }
 
@@ -46,6 +44,16 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
             return .openAI
         case .claude:
             return .claude
+        case .deepseek:
+            return .deepSeek
+        }
+    }
+
+    var actionSystemImage: String {
+        switch self {
+        case .codex: "plus.circle"
+        case .claude: "sparkles"
+        case .deepseek: "terminal.fill"
         }
     }
 
@@ -57,11 +65,17 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
             return L10n.text("ui.runtime_subtitle_codex")
         case .claude:
             return L10n.text("ui.runtime_subtitle_claude")
+        case .deepseek:
+            return "DeepSeek Harness"
         }
     }
 
-    static func available(claudeChannelAvailable: Bool) -> [Self] {
-        claudeChannelAvailable ? [.codex, .claude] : [.codex]
+    static func available(runtimeProviders: Set<String>) -> [Self] {
+        allCases.filter { $0 == .codex || runtimeProviders.contains($0.runtimeProvider) }
+    }
+
+    func isAvailable(in runtimeProviders: Set<String>) -> Bool {
+        self == .codex || runtimeProviders.contains(runtimeProvider)
     }
 }
 
@@ -73,7 +87,7 @@ struct WorkspaceRuntimeMenuPicker: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @Binding var selection: WorkspaceSessionRuntimeChoice
-    let claudeChannelAvailable: Bool
+    let availableRuntimeProviders: Set<String>
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -93,7 +107,7 @@ struct WorkspaceRuntimeMenuPicker: View {
                         }
                     }
                 }
-                .disabled(choice == .claude && !claudeChannelAvailable)
+                .disabled(!choice.isAvailable(in: availableRuntimeProviders))
             }
         } label: {
             HStack(spacing: 6) {
@@ -129,7 +143,7 @@ struct WorkspaceRuntimePicker: View {
     @Namespace private var selectionNamespace
 
     @Binding var selection: WorkspaceSessionRuntimeChoice
-    let claudeChannelAvailable: Bool
+    let availableRuntimeProviders: Set<String>
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -137,7 +151,7 @@ struct WorkspaceRuntimePicker: View {
         HStack(spacing: 0) {
             ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
                 let isSelected = selection == choice
-                let isAvailable = choice != .claude || claudeChannelAvailable
+                let isAvailable = choice.isAvailable(in: availableRuntimeProviders)
 
                 Button {
                     guard isAvailable else { return }
@@ -245,7 +259,7 @@ struct WorkspaceRuntimePopoverPicker: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @Binding var selection: WorkspaceSessionRuntimeChoice
-    let claudeChannelAvailable: Bool
+    let availableRuntimeProviders: Set<String>
 
     @State private var isPresented = false
 
@@ -287,7 +301,7 @@ struct WorkspaceRuntimePopoverPicker: View {
             // 始终列出全部 Runtime；不可用的那个保留为禁用行，
             // 直接隐藏会让「为什么没有 Claude」变成一个无处可查的问题。
             ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
-                let isAvailable = choice != .claude || claudeChannelAvailable
+                let isAvailable = choice.isAvailable(in: availableRuntimeProviders)
 
                 Button {
                     selection = choice

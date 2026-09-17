@@ -2172,13 +2172,13 @@ extension ConversationDataFlowTests {
     // 回归：新建草稿必须保留入口选择的 runtime，直到首条消息真正创建远端会话。
     func testWorkspaceSessionRuntimeChoicesExposeClaudeProviderOnlyWhenAvailable() {
         XCTAssertEqual(
-            WorkspaceSessionRuntimeChoice.available(claudeChannelAvailable: false),
+            WorkspaceSessionRuntimeChoice.available(runtimeProviders: ["codex"]),
             [.codex],
             "Claude 通道不可用时，工作区入口只能创建 Codex 会话"
         )
         XCTAssertEqual(
-            WorkspaceSessionRuntimeChoice.available(claudeChannelAvailable: true),
-            [.codex, .claude],
+            WorkspaceSessionRuntimeChoice.available(runtimeProviders: ["codex", "claude", "deepseek"]),
+            [.codex, .claude, .deepseek],
             "Claude 通道可用时，工作区入口必须显式暴露 Claude 会话动作"
         )
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.runtimeProvider, "codex")

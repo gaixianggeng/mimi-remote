@@ -142,11 +142,14 @@ extension SessionStore {
             let client = try clientFactory()
             // Claude 卡片以 config.channels 的真实可用性为准，不能依赖 model/list 是否成功。
             // 即使模型列表处于 5 分钟缓存期，也要重新读取轻量 channel 元数据。
-            let isClaudeRuntimeChannelAvailable = (try? await client.runtimeChannelAvailable(
-                runtimeProvider: "claude"
-            )) == true
+            var availableRuntimeProviders: Set<String> = ["codex"]
+            for provider in RuntimeFeatureSupport.runtimeProviders where provider != "codex" {
+                if (try? await client.runtimeChannelAvailable(runtimeProvider: provider)) == true {
+                    availableRuntimeProviders.insert(provider)
+                }
+            }
             guard appStore.activeHostScope == hostScope else { return }
-            self.isClaudeRuntimeChannelAvailable = isClaudeRuntimeChannelAvailable
+            self.availableRuntimeProviders = availableRuntimeProviders
             didRefreshRuntimeAvailability = true
             if !force,
                let appServerModelOptionsLastRefresh,
@@ -167,7 +170,7 @@ extension SessionStore {
         } catch {
             guard appStore.activeHostScope == hostScope else { return }
             if !didRefreshRuntimeAvailability {
-                isClaudeRuntimeChannelAvailable = false
+                availableRuntimeProviders = ["codex"]
             }
             appServerModelOptionsLastRefresh = Date()
             if force {
@@ -266,6 +269,13 @@ extension SessionStore {
             candidateOptions = CodexAppServerModelOption.builtInClaudeFallback
         } else if options.isEmpty, targetRuntimeProvider == "codex" {
             candidateOptions = CodexAppServerModelOption.builtInFallback
+        } else if let targetRuntimeProvider, targetRuntimeProvider != "codex", targetRuntimeProvider != "claude" {
+            // 第三方目录不可用时不能拿 GPT 作为兜底，也不能继续发送旧的跨通道模型。
+            candidateOptions = options
+            if options.isEmpty {
+                resolved.options.model = nil
+                resolved.options.modelProvider = nil
+            }
         } else {
             candidateOptions = options.isEmpty ? allOptions : options
         }
@@ -274,11 +284,15 @@ extension SessionStore {
            !requestedModel.isEmpty,
            let matched = candidateOptions.first(where: {
                $0.model.caseInsensitiveCompare(requestedModel) == .orderedSame
+                   && (!RuntimeFeatureSupport.isDeepSeek(targetRuntimeProvider)
+                       || resolved.options.modelProvider == nil
+                       || $0.provider == resolved.options.modelProvider)
            }) {
             // 目录命中后使用服务端返回的 canonical id/provider，避免旧草稿或跨渠道残留
             // 把不可识别 UUID/alias 直接送进 turn/start。
             resolved.options.model = matched.model
             resolved.options.modelProvider = matched.provider
+            resolveHarnessReasoningEffort(&resolved.options, model: matched)
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
             return resolved
         }
@@ -295,8 +309,21 @@ extension SessionStore {
         }
         resolved.options.model = selected.model
         resolved.options.modelProvider = selected.provider
+        resolveHarnessReasoningEffort(&resolved.options, model: selected)
         resolved.options = resolved.options.sanitizedForRuntimePolicy()
         return resolved
+    }
+
+    private func resolveHarnessReasoningEffort(
+        _ options: inout CodexAppServerTurnOptions,
+        model: CodexAppServerModelOption
+    ) {
+        guard RuntimeFeatureSupport.isDeepSeek(options.runtimeProvider) else { return }
+        // 跨模型切换不继承目录未声明的档位，避免把 Codex 的默认档位送到 Harness。
+        if let effort = options.reasoningEffort,
+           model.supportedReasoningEfforts.contains(effort.rawValue) { return }
+        options.reasoningEffort = model.defaultReasoningEffort
+            .flatMap(CodexAppServerReasoningEffort.init(rawValue:))
     }
 
     func updateSelectedThreadPermissionsForNextTurn(_ options: CodexAppServerTurnOptions) {
@@ -337,6 +364,10 @@ extension SessionStore {
 
     static func normalizedRuntimeProvider(_ rawValue: String?) -> String {
         CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue)
+    }
+
+    func isRuntimeAvailable(_ provider: String) -> Bool {
+        availableRuntimeProviders.contains(Self.normalizedRuntimeProvider(provider))
     }
 
     static func payloadRuntimeProvider(_ normalizedRuntimeProvider: String) -> String? {
@@ -945,6 +976,10 @@ extension SessionStore {
             : payload
         guard isSubmissionHostCurrent(submissionContext) else { return false }
         guard !isAwaitingSessionCreation(targetSession) else { return false }
+        if let error = RuntimeFeatureSupport.submissionError(for: payload) {
+            setErrorMessage(error)
+            return false
+        }
         let prompt = payload.previewText
 
         if let localDraft = targetSession, localDraft.isLocalDraft {

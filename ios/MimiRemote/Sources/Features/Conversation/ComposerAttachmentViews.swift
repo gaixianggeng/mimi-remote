@@ -441,6 +441,8 @@ struct AddContentPanel: View {
     let showsPermissionSettings: Bool
     let permissionModes: [ComposerPermissionMode]
     let selectedPermissionMode: ComposerPermissionMode
+    let showsAttachmentActions: Bool
+    let showsSkillActions: Bool
     let showsCameraAction: Bool
     let selectedSkillPaths: Set<String>
     let onPickFile: () -> Void
@@ -598,54 +600,58 @@ struct AddContentPanel: View {
 
     private func standardRootActions(tokens: ThemeTokens) -> some View {
         VStack(spacing: 0) {
-            LazyVGrid(columns: sourceActionColumns, spacing: 8) {
-                sourceActionButton(
-                    title: L10n.text("ui.file"),
-                    subtitle: L10n.text("ui.select_pdf_text_or_source_file"),
-                    systemImage: "paperclip",
-                    accessibilityIdentifier: "composer.addContent.file",
-                    tokens: tokens,
-                    action: onPickFile
-                )
-                if showsCameraAction {
+            if showsAttachmentActions {
+                LazyVGrid(columns: sourceActionColumns, spacing: 8) {
                     sourceActionButton(
-                        title: L10n.text("ui.camera"),
-                        subtitle: L10n.text("ui.take_a_photo_to_attach_to_the_message"),
-                        systemImage: "camera",
-                        accessibilityIdentifier: "composer.addContent.camera",
+                        title: L10n.text("ui.file"),
+                        subtitle: L10n.text("ui.select_pdf_text_or_source_file"),
+                        systemImage: "paperclip",
+                        accessibilityIdentifier: "composer.addContent.file",
                         tokens: tokens,
-                        action: onCapturePhoto
+                        action: onPickFile
+                    )
+                    if showsCameraAction {
+                        sourceActionButton(
+                            title: L10n.text("ui.camera"),
+                            subtitle: L10n.text("ui.take_a_photo_to_attach_to_the_message"),
+                            systemImage: "camera",
+                            accessibilityIdentifier: "composer.addContent.camera",
+                            tokens: tokens,
+                            action: onCapturePhoto
+                        )
+                    }
+                    sourceActionButton(
+                        title: L10n.text("ui.pictures"),
+                        subtitle: L10n.text("ui.select_from_photo_gallery_multiple_selections_possible"),
+                        systemImage: "photo.on.rectangle.angled",
+                        accessibilityIdentifier: "composer.addContent.photos",
+                        tokens: tokens,
+                        action: onPickPhotos
                     )
                 }
-                sourceActionButton(
-                    title: L10n.text("ui.pictures"),
-                    subtitle: L10n.text("ui.select_from_photo_gallery_multiple_selections_possible"),
-                    systemImage: "photo.on.rectangle.angled",
-                    accessibilityIdentifier: "composer.addContent.photos",
-                    tokens: tokens,
-                    action: onPickPhotos
-                )
+
+                Divider()
+                    .padding(.vertical, 6)
             }
 
-            Divider()
-                .padding(.vertical, 6)
-
-            compactListActionButton(
-                title: L10n.text("ui.plugin"),
-                subtitle: pluginShortcuts.isEmpty ? L10n.text("ui.view_installed_codex_plugins") : L10n.plural("ui.plugins_installed_count", count: pluginShortcuts.count),
-                systemImage: "at",
-                tokens: tokens
-            ) {
-                page = .plugins
-            }
-            compactListActionButton(
-                title: "Skill",
-                subtitle: skillShortcuts.isEmpty ? L10n.text("ui.add_structured_workflow") : L10n.plural("ui.skills_available_count", count: skillShortcuts.count),
-                systemImage: "wand.and.stars",
-                accessibilityIdentifier: "composer.addContent.skills",
-                tokens: tokens
-            ) {
-                page = .skills
+            if showsSkillActions {
+                compactListActionButton(
+                    title: L10n.text("ui.plugin"),
+                    subtitle: pluginShortcuts.isEmpty ? L10n.text("ui.view_installed_codex_plugins") : L10n.plural("ui.plugins_installed_count", count: pluginShortcuts.count),
+                    systemImage: "at",
+                    tokens: tokens
+                ) {
+                    page = .plugins
+                }
+                compactListActionButton(
+                    title: "Skill",
+                    subtitle: skillShortcuts.isEmpty ? L10n.text("ui.add_structured_workflow") : L10n.plural("ui.skills_available_count", count: skillShortcuts.count),
+                    systemImage: "wand.and.stars",
+                    accessibilityIdentifier: "composer.addContent.skills",
+                    tokens: tokens
+                ) {
+                    page = .skills
+                }
             }
             if showsPermissionSettings {
                 compactListActionButton(
@@ -670,53 +676,57 @@ struct AddContentPanel: View {
 
     private func accessibleRootActions(tokens: ThemeTokens) -> some View {
         VStack(spacing: 0) {
-            accessibleListActionButton(
-                title: L10n.text("ui.file"),
-                subtitle: L10n.text("ui.select_pdf_text_or_source_file"),
-                systemImage: "paperclip",
-                showsDisclosure: false,
-                accessibilityIdentifier: "composer.addContent.file",
-                tokens: tokens,
-                action: onPickFile
-            )
-            if showsCameraAction {
+            if showsAttachmentActions {
                 accessibleListActionButton(
-                    title: L10n.text("ui.camera"),
-                    subtitle: L10n.text("ui.take_a_photo_to_attach_to_the_message"),
-                    systemImage: "camera",
+                    title: L10n.text("ui.file"),
+                    subtitle: L10n.text("ui.select_pdf_text_or_source_file"),
+                    systemImage: "paperclip",
                     showsDisclosure: false,
-                    accessibilityIdentifier: "composer.addContent.camera",
+                    accessibilityIdentifier: "composer.addContent.file",
                     tokens: tokens,
-                    action: onCapturePhoto
+                    action: onPickFile
                 )
+                if showsCameraAction {
+                    accessibleListActionButton(
+                        title: L10n.text("ui.camera"),
+                        subtitle: L10n.text("ui.take_a_photo_to_attach_to_the_message"),
+                        systemImage: "camera",
+                        showsDisclosure: false,
+                        accessibilityIdentifier: "composer.addContent.camera",
+                        tokens: tokens,
+                        action: onCapturePhoto
+                    )
+                }
+                accessibleListActionButton(
+                    title: L10n.text("ui.pictures"),
+                    subtitle: L10n.text("ui.select_from_photo_gallery_multiple_selections_possible"),
+                    systemImage: "photo.on.rectangle.angled",
+                    showsDisclosure: false,
+                    accessibilityIdentifier: "composer.addContent.photos",
+                    tokens: tokens,
+                    action: onPickPhotos
+                )
+                Divider()
+                    .padding(.vertical, 6)
             }
-            accessibleListActionButton(
-                title: L10n.text("ui.pictures"),
-                subtitle: L10n.text("ui.select_from_photo_gallery_multiple_selections_possible"),
-                systemImage: "photo.on.rectangle.angled",
-                showsDisclosure: false,
-                accessibilityIdentifier: "composer.addContent.photos",
-                tokens: tokens,
-                action: onPickPhotos
-            )
-            Divider()
-                .padding(.vertical, 6)
-            accessibleListActionButton(
-                title: L10n.text("ui.plugin"),
-                subtitle: pluginShortcuts.isEmpty ? L10n.text("ui.view_installed_codex_plugins") : L10n.plural("ui.plugins_installed_count", count: pluginShortcuts.count),
-                systemImage: "at",
-                tokens: tokens
-            ) {
-                page = .plugins
-            }
-            accessibleListActionButton(
-                title: "Skill",
-                subtitle: skillShortcuts.isEmpty ? L10n.text("ui.add_structured_workflow") : L10n.plural("ui.skills_available_count", count: skillShortcuts.count),
-                systemImage: "wand.and.stars",
-                accessibilityIdentifier: "composer.addContent.skills",
-                tokens: tokens
-            ) {
-                page = .skills
+            if showsSkillActions {
+                accessibleListActionButton(
+                    title: L10n.text("ui.plugin"),
+                    subtitle: pluginShortcuts.isEmpty ? L10n.text("ui.view_installed_codex_plugins") : L10n.plural("ui.plugins_installed_count", count: pluginShortcuts.count),
+                    systemImage: "at",
+                    tokens: tokens
+                ) {
+                    page = .plugins
+                }
+                accessibleListActionButton(
+                    title: "Skill",
+                    subtitle: skillShortcuts.isEmpty ? L10n.text("ui.add_structured_workflow") : L10n.plural("ui.skills_available_count", count: skillShortcuts.count),
+                    systemImage: "wand.and.stars",
+                    accessibilityIdentifier: "composer.addContent.skills",
+                    tokens: tokens
+                ) {
+                    page = .skills
+                }
             }
             if showsPermissionSettings {
                 accessibleListActionButton(
@@ -1110,8 +1120,9 @@ struct AddContentPanel: View {
     private var standardRootPanelHeight: CGFloat {
         // `.height` 只负责 iPhone 上 Popover 的 Sheet 退化；原生 Popover 本身由
         // `.presentationSizing(.fitted)` 按真实内容测量，二者都不会再撑到旧的 512pt。
-        let listActionCount = showsPermissionSettings ? 4 : 3
-        return 32 + 80 + 13 + CGFloat(listActionCount * 56)
+        let listActionCount = (showsSkillActions ? 2 : 0) + (showsPermissionSettings ? 1 : 0) + 1
+        let attachmentActionsHeight: CGFloat = showsAttachmentActions ? 93 : 0
+        return 32 + attachmentActionsHeight + CGFloat(listActionCount * 56)
     }
 
     private static let shortcuts = [

@@ -224,7 +224,7 @@ extension ComposerView {
         if scoped.isEmpty, runtimeProvider == "codex" {
             return CodexAppServerModelOption.builtInFallback
         }
-        return scoped.isEmpty ? options : scoped
+        return scoped
     }
 
     var selectedModelSummaryTitle: String {
@@ -299,7 +299,7 @@ extension ComposerView {
             )
         }
         let unsupportedEffort = composerState.turnOptions.reasoningEffort != normalizedEffort
-        let unsupportedServiceTier = runtimeProvider == "claude"
+        let unsupportedServiceTier = runtimeProvider != "codex"
             && composerState.turnOptions.serviceTier?
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
 
@@ -314,7 +314,7 @@ extension ComposerView {
             } else if unsupportedEffort {
                 options.reasoningEffort = normalizedEffort
             }
-            if runtimeProvider == "claude" {
+            if runtimeProvider != "codex" {
                 options.serviceTier = nil
             }
         }

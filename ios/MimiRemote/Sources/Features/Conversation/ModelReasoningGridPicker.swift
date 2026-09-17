@@ -9,6 +9,7 @@ struct ModelReasoningGridSelection: Equatable {
 enum ModelReasoningGridKind: Equatable {
     case codex
     case claude
+    case deepSeek
 }
 
 enum ModelReasoningGridMetrics {
@@ -140,12 +141,15 @@ enum ModelReasoningGridCatalog {
             !$0.hidden &&
                 CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeProvider) == normalizedRuntime
         }
-        let fallbackOptions = normalizedRuntime == "claude"
-            ? CodexAppServerModelOption.builtInClaudeFallback
-            : CodexAppServerModelOption.builtInFallback
+        let fallbackOptions: [CodexAppServerModelOption]
+        switch normalizedRuntime {
+        case "claude": fallbackOptions = CodexAppServerModelOption.builtInClaudeFallback
+        case "deepseek": fallbackOptions = []
+        default: fallbackOptions = CodexAppServerModelOption.builtInFallback
+        }
         let candidates = runtimeOptions.isEmpty ? fallbackOptions : runtimeOptions
 
-        if normalizedRuntime != "claude", let astra = candidates.first(where: {
+        if normalizedRuntime == "codex", let astra = candidates.first(where: {
             $0.model.caseInsensitiveCompare("gpt-6-astra") == .orderedSame
         }) {
             return astra
@@ -162,7 +166,11 @@ enum ModelReasoningGridCatalog {
         layout: ModelReasoningGridLayout
     ) -> CodexAppServerReasoningEffort? {
         let normalizedRuntime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
-        let preferred: CodexAppServerReasoningEffort = normalizedRuntime == "claude" ? .high : .medium
+        let preferred: CodexAppServerReasoningEffort? = switch normalizedRuntime {
+        case "claude": .high
+        case "deepseek": nil
+        default: .medium
+        }
         return normalizedVisibleEffort(
             option: option,
             current: preferred,
@@ -194,17 +202,27 @@ enum ModelReasoningGridCatalog {
         let runtime = runtimeProvider?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        let kind: ModelReasoningGridKind = runtime == "claude" ? .claude : .codex
-        let fallbackOptions = kind == .claude
-            ? CodexAppServerModelOption.builtInClaudeFallback
-            : CodexAppServerModelOption.builtInFallback
+        let kind: ModelReasoningGridKind
+        let fallbackOptions: [CodexAppServerModelOption]
+        switch runtime {
+        case "claude":
+            kind = .claude
+            fallbackOptions = CodexAppServerModelOption.builtInClaudeFallback
+        case "deepseek":
+            kind = .deepSeek
+            fallbackOptions = []
+        default:
+            kind = .codex
+            fallbackOptions = CodexAppServerModelOption.builtInFallback
+        }
         let source = visible.isEmpty ? fallbackOptions : visible
+        let models = Array(source.prefix(maximumModelCount))
 
         // 模型顺序完全沿用 model/list；能力策略只负责决定横向四列，不重排模型。
         return ModelReasoningGridLayout(
             kind: kind,
-            models: Array(source.prefix(maximumModelCount)),
-            efforts: standardEfforts(for: kind),
+            models: models,
+            efforts: standardEfforts(for: kind, options: models),
             showsFastMode: kind == .codex
         )
     }
@@ -212,7 +230,20 @@ enum ModelReasoningGridCatalog {
     static func standardEfforts(
         for kind: ModelReasoningGridKind
     ) -> [CodexAppServerReasoningEffort] {
-        kind == .claude ? claudeStandardEfforts : codexStandardEfforts
+        switch kind {
+        case .codex: codexStandardEfforts
+        case .claude: claudeStandardEfforts
+        case .deepSeek: []
+        }
+    }
+
+    static func standardEfforts(
+        for kind: ModelReasoningGridKind,
+        options: [CodexAppServerModelOption]
+    ) -> [CodexAppServerReasoningEffort] {
+        guard kind == .deepSeek else { return standardEfforts(for: kind) }
+        let declared = Set(options.flatMap(\.supportedReasoningEfforts))
+        return CodexAppServerReasoningEffort.allCases.filter { declared.contains($0.rawValue) }
     }
 
     static func standardEfforts(
@@ -318,11 +349,11 @@ enum ModelReasoningGridCatalog {
         option: CodexAppServerModelOption,
         kind: ModelReasoningGridKind? = nil
     ) -> Bool {
-        let isClaude = kind == .claude || option.runtimeProvider?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() == "claude"
-        if isClaude {
-            // Claude 的空数组明确表示该模型不支持原生 reasoning effort。
+        let normalizedRuntime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(option.runtimeProvider)
+        let requiresDeclaredEfforts = kind == .claude || kind == .deepSeek
+            || normalizedRuntime == "claude" || normalizedRuntime == "deepseek"
+        if requiresDeclaredEfforts {
+            // 非 Codex runtime 的空数组明确表示该模型不支持原生 reasoning effort。
             return option.supportedReasoningEfforts.contains(effort.rawValue)
         }
         // Codex 旧服务未返回元数据时，使用本地标准策略向后兼容。
@@ -391,7 +422,7 @@ enum ModelReasoningGridCatalog {
         turnOptions.modelProvider = preservesServerDefault ? nil : option.provider
         turnOptions.reasoningEffort = effort
 
-        if CodexAppServerSessionRuntime.normalizedRuntimeProvider(turnOptions.runtimeProvider) == "claude" {
+        if CodexAppServerSessionRuntime.normalizedRuntimeProvider(turnOptions.runtimeProvider) != "codex" {
             turnOptions.serviceTier = nil
         }
     }
@@ -404,7 +435,7 @@ enum ModelReasoningGridCatalog {
         _ serviceTier: String?,
         runtimeProvider: String?
     ) -> String? {
-        guard CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) != "claude",
+        guard CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "codex",
               serviceTier == "priority"
         else {
             return nil
