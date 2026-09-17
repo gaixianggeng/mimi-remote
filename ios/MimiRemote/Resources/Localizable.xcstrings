@@ -1,6 +1,23 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.search_runtime_unavailable": {
+      "comment": "A search may succeed for one runtime while another fails. Keep the available results visible.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ search is temporarily unavailable. Results may be incomplete."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 搜索暂不可用，结果可能不完整。"
+          }
+        }
+      }
+    },
     "ui.view_process": {
       "localizations": {
         "en": {

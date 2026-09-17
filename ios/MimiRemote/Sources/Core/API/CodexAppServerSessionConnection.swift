@@ -158,6 +158,7 @@ extension CodexAppServerSessionRuntime {
         threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
         threadResumeTasksBySessionID.removeAll(keepingCapacity: true)
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
+        deepSeekThreadsObservedOnConnection.removeAll(keepingCapacity: true)
         connection = prepared.connection
         notificationPumpTask = Task { [weak self, notifications = prepared.notifications, installedConnection = prepared.connection] in
             for await notification in notifications { await self?.handle(notification) }
@@ -180,6 +181,7 @@ extension CodexAppServerSessionRuntime {
         cancelThreadResumeTasks(for: endedConnection)
         connection = nil
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
+        deepSeekThreadsObservedOnConnection.removeAll(keepingCapacity: true)
         threadUnsubscribeRetryTasksBySessionID.values.forEach { $0.task.cancel() }
         threadUnsubscribeRetryTasksBySessionID.removeAll(keepingCapacity: true)
         let affected = clearAllPendingServerRequests()

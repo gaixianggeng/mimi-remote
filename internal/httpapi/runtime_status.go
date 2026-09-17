@@ -408,6 +408,14 @@ func (r *Router) codexRuntimeStartTime() *time.Time {
 func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse {
 	codexResult := make(chan runtimeAccountStatus, 1)
 	claudeResult := make(chan runtimeAccountStatus, 1)
+	deepSeekResult := make(chan runtimeAccountStatus, 1)
+	if r.cfg.DeepSeek.Enabled {
+		go func() {
+			probeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+			defer cancel()
+			deepSeekResult <- r.probeDeepSeekRuntime(probeCtx)
+		}()
+	}
 	go func() {
 		probeCtx, cancel := context.WithTimeout(ctx, codexRuntimeProbeTimeout)
 		defer cancel()
@@ -422,13 +430,17 @@ func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse
 	codex := <-codexResult
 	claude := <-claudeResult
 	checkedAt := time.Now().UTC()
-	return runtimeStatusResponse{
+	response := runtimeStatusResponse{
 		CheckedAt: &checkedAt,
 		Runtimes: []runtimeAccountStatus{
 			codex,
 			claude,
 		},
 	}
+	if r.cfg.DeepSeek.Enabled {
+		response.Runtimes = append(response.Runtimes, <-deepSeekResult)
+	}
+	return response
 }
 
 func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
@@ -443,7 +455,7 @@ func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
 		claude.State = runtimeStateDisabled
 		claude.Reason = "disabled"
 	}
-	return runtimeStatusResponse{
+	response := runtimeStatusResponse{
 		Runtimes: []runtimeAccountStatus{
 			{
 				ID:        "codex",
@@ -457,6 +469,13 @@ func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
 			claude,
 		},
 	}
+	if r.cfg.DeepSeek.Enabled {
+		response.Runtimes = append(response.Runtimes, runtimeAccountStatus{
+			ID: "deepseek", Title: "DeepSeek Harness", Enabled: true,
+			State: runtimeStateUnavailable, Reason: "refresh_in_progress",
+		})
+	}
+	return response
 }
 
 func runtimeStatusLoopbackRequest(req *http.Request) bool {

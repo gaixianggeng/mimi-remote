@@ -614,27 +614,57 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     /// 代价说明：次要 Runtime 的搜索结果限于首页 limit 条。搜索场景下用户通常继续收窄
     /// 关键词而不是翻页；真出现「Claude 结果翻不动」再升级为按 runtime 分段。
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {
-        let codexPage = try await codexClient.searchSessions(query: query, cursor: cursor, limit: limit)
-        bundle.routes.remember(codexPage.sessions)
-        guard cursor == nil else {
-            return codexPage
+        if cursor != nil {
+            let page = try await codexClient.searchSessions(query: query, cursor: cursor, limit: limit)
+            bundle.routes.remember(page.sessions)
+            return page
         }
-        var merged = codexPage.results
-        var existingIDs = Set(merged.map(\.session.id))
-        if let claudePage = try? await bundle.claude.globalThreadListSearchPage(query: query, limit: limit) {
-            bundle.routes.remember(claudePage.sessions)
-            merged.append(contentsOf: claudePage.results.filter { existingIDs.insert($0.session.id).inserted })
+
+        // 首页各 runtime 独立失败；Codex 的搜索故障不能阻断仍可用的 Harness。
+        // 游标仍只归 Codex 所有，不把失败通道的游标伪装成另一条分页流。
+        var codexPage: ThreadSearchPage?
+        var pages: [ThreadSearchPage] = []
+        var unavailable: [String] = []
+        var firstError: Error?
+        do {
+            let page = try await codexClient.searchSessions(query: query, cursor: nil, limit: limit)
+            codexPage = page
+            pages.append(page)
+        } catch {
+            try Task.checkCancellation()
+            firstError = error
+            unavailable.append("codex")
         }
-        if let deepseek = bundle.deepseek,
-           (try? await deepseek.channelAvailable(runtimeProvider: "deepseek")) == true,
-           let deepseekPage = try? await deepseek.searchSessions(query: query, cursor: nil, limit: limit) {
-            bundle.routes.remember(deepseekPage.sessions)
-            merged.append(contentsOf: deepseekPage.results.filter { existingIDs.insert($0.session.id).inserted })
+        let secondaryRuntimes: [(String, CodexAppServerSessionRuntime?)] = [
+            ("claude", bundle.claude), ("deepseek", bundle.deepseek)
+        ]
+        for (provider, runtime) in secondaryRuntimes {
+            try Task.checkCancellation()
+            guard let runtime else { continue }
+            do {
+                guard try await runtime.channelAvailable(runtimeProvider: provider) else { continue }
+                let page = provider == "claude"
+                    ? try await runtime.globalThreadListSearchPage(query: query, limit: limit)
+                    : try await runtime.searchSessions(query: query, cursor: nil, limit: limit)
+                pages.append(page)
+            } catch {
+                try Task.checkCancellation()
+                if firstError == nil { firstError = error }
+                unavailable.append(provider)
+            }
+        }
+        if pages.isEmpty, let firstError { throw firstError }
+        var merged: [ThreadSearchResult] = []
+        var existingIDs: Set<SessionID> = []
+        for page in pages {
+            bundle.routes.remember(page.sessions)
+            merged.append(contentsOf: page.results.filter { existingIDs.insert($0.session.id).inserted })
         }
         return ThreadSearchPage(
             results: merged,
-            nextCursor: codexPage.nextCursor,
-            backwardsCursor: codexPage.backwardsCursor
+            nextCursor: codexPage?.nextCursor,
+            backwardsCursor: codexPage?.backwardsCursor,
+            unavailableRuntimeProviders: unavailable
         )
     }
 

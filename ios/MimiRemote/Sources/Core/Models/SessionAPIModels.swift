@@ -58,6 +58,7 @@ struct ThreadSearchPage: Equatable {
     let results: [ThreadSearchResult]
     let nextCursor: String?
     let backwardsCursor: String?
+    let unavailableRuntimeProviders: [String]
 
     var sessions: [AgentSession] {
         results.map(\.session)
@@ -66,11 +67,13 @@ struct ThreadSearchPage: Equatable {
     init(
         results: [ThreadSearchResult],
         nextCursor: String? = nil,
-        backwardsCursor: String? = nil
+        backwardsCursor: String? = nil,
+        unavailableRuntimeProviders: [String] = []
     ) {
         self.results = results
         self.nextCursor = nextCursor
         self.backwardsCursor = backwardsCursor
+        self.unavailableRuntimeProviders = unavailableRuntimeProviders
     }
 }
 

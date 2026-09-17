@@ -255,7 +255,8 @@ func deepSeekModelListWire(catalog harnessclient.ModelCatalogResult) []any {
 					}
 					efforts = append(efforts, entry)
 				}
-				row["reasoningEfforts"] = efforts
+				// 使用 Mimi model/list 的标准字段，避免 iOS 目录解析丢失真实档位。
+				row["supportedReasoningEfforts"] = efforts
 				if model.Reasoning.DefaultEffort != "" {
 					row["defaultReasoningEffort"] = model.Reasoning.DefaultEffort
 				}

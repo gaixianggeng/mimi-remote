@@ -236,9 +236,11 @@ var appServerDeepSeekAllowedMethods = map[string]struct{}{
 	"thread/read":       {},
 	"thread/turns/list": {},
 	"thread/items/list": {},
-	"turn/start":        {},
-	"turn/interrupt":    {},
-	"model/list":        {},
+	// 本地解除移动端的 follow 观察租约；Harness 没有对应 RPC，不向上游透传。
+	"thread/unsubscribe": {},
+	"turn/start":         {},
+	"turn/interrupt":     {},
+	"model/list":         {},
 }
 
 type appServerConfigResponse struct {

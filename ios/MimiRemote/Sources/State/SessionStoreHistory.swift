@@ -3499,6 +3499,7 @@ extension SessionStore {
         sessionSearchLoadingCursor = nil
         remoteSessionSearchSnippetByID = [:]
         remoteSessionSearchResults = []
+        remoteSessionSearchNotice = nil
         sessionSearchNextCursor = nil
         sessionSearchHasMore = false
         isSearchingRemoteSessionResults = false
@@ -3521,6 +3522,13 @@ extension SessionStore {
         replacing: Bool,
         requestedCursor: String?
     ) {
+        if replacing || !page.unavailableRuntimeProviders.isEmpty {
+            let providers = page.unavailableRuntimeProviders.map {
+                $0 == "deepseek" ? "DeepSeek" : $0.capitalized
+            }
+            remoteSessionSearchNotice = providers.isEmpty ? nil
+                : L10n.format("ui.search_runtime_unavailable", providers.joined(separator: ", "))
+        }
         var sessionsByID: [SessionID: AgentSession] = [:]
         var snippetsByID: [SessionID: String] = replacing ? [:] : remoteSessionSearchSnippetByID
         if !replacing {

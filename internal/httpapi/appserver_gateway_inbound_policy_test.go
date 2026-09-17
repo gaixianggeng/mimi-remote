@@ -315,11 +315,11 @@ func TestClaudeGatewayFiltersReplayEnvelopeByThreadAuthorization(t *testing.T) {
 // MIM-246：受控全局发现要经过完整的 validateClientFrame 入口才算数。
 // 只测 observeUpstreamFrame / validateThreadCapability 会漏掉更早的 scope 校验
 // （appserver_gateway_scope.go 的 allowsControlledGlobalList），那一层曾经只放行
-// codex，导致 Claude 的无 cwd thread/list 在到达能力校验之前就被拒。
-func TestGatewayAllowsControlledGlobalThreadListWithoutCWDForBothRuntimes(t *testing.T) {
+// codex，后来接入的 Claude / DeepSeek 无 cwd thread/list 会在到达能力校验之前被拒。
+func TestGatewayAllowsControlledGlobalThreadListWithoutCWDForSupportedRuntimes(t *testing.T) {
 	globalList := []byte(`{"id":1,"method":"thread/list","params":{"limit":50,"sortKey":"updated_at","sortDirection":"desc","archived":false}}`)
 
-	for _, runtimeID := range []string{"codex", "claude"} {
+	for _, runtimeID := range []string{appServerRuntimeCodexID, appServerRuntimeClaudeID, appServerRuntimeDeepSeekID} {
 		t.Run(runtimeID, func(t *testing.T) {
 			policy, _ := newInboundPolicyForTest(t, runtimeID)
 			if _, err := policy.validateClientFrame(websocket.TextMessage, globalList); err != nil {
@@ -332,7 +332,7 @@ func TestGatewayAllowsControlledGlobalThreadListWithoutCWDForBothRuntimes(t *tes
 func TestGatewayStillRequiresCWDForNonGlobalListMethods(t *testing.T) {
 	// 例外只针对 thread/list：其余需要 cwd 的方法不得被顺带放开。
 	start := []byte(`{"id":2,"method":"thread/start","params":{"input":"hi"}}`)
-	for _, runtimeID := range []string{"codex", "claude"} {
+	for _, runtimeID := range []string{appServerRuntimeCodexID, appServerRuntimeClaudeID, appServerRuntimeDeepSeekID} {
 		t.Run(runtimeID, func(t *testing.T) {
 			policy, _ := newInboundPolicyForTest(t, runtimeID)
 			if _, err := policy.validateClientFrame(websocket.TextMessage, start); err == nil {

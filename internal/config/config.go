@@ -96,6 +96,9 @@ type ClaudeConfig struct {
 // 也不维护供应商配置。
 type DeepSeekConfig struct {
 	Enabled bool `json:"enabled"`
+	// AutoDiscover 只在用户选择自动发现连接时设置。手动粘贴的连接即使也使用
+	// 受管 token 文件，refresh 也不能把它替换为另一个本机 LaunchAgent 服务。
+	AutoDiscover bool `json:"auto_discover,omitempty"`
 	// BaseURL 是 Harness 服务的 origin。明文 HTTP 只允许回环地址：
 	// 启动 token 会在认证请求的查询串里出现，不能走可被旁听的网络。
 	BaseURL string `json:"base_url,omitempty"`

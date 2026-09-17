@@ -29,6 +29,9 @@ type deepSeekFollow struct {
 	// activityKnown 在注册前初始化，注册后由连接的 c.mu 保护。
 	// 截断快照没有任何 turn 边界时，无法证明空闲，必须保留订阅等待实时边界。
 	activityKnown bool
+	// observed 由连接的 c.mu 保护。只有移动端明确建立事件观察且历史首读成功后才为真；
+	// 普通 start/read/turns 请求不能隐式 pin 住有限的 Harness follow 名额。
+	observed bool
 
 	mu sync.Mutex
 	// throughSeq 是订阅开场时 Harness 给出的日志切点。分页必须停在这里，

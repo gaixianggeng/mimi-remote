@@ -109,6 +109,8 @@ func (c *deepSeekGatewayConn) dispatchClientRequest(ctx context.Context, frame *
 		return c.handleThreadTurnsList(ctx, frame, params)
 	case "thread/items/list":
 		return c.handleThreadItemsList(ctx, frame, params)
+	case "thread/unsubscribe":
+		return c.handleThreadUnsubscribe(frame, params)
 	case "turn/start":
 		return c.handleTurnStart(ctx, frame, params)
 	case "turn/interrupt":
@@ -128,10 +130,14 @@ func (c *deepSeekGatewayConn) dispatchClientRequest(ctx context.Context, frame *
 // 作为一份稳定列表按偏移分页：把上游游标直接透传会让"下一页"丢掉被裁掉的空档，
 // 客户端看到的页大小与游标语义就不再一致。
 func (c *deepSeekGatewayConn) handleThreadList(ctx context.Context, frame *appServerGatewayFrame, params map[string]any) error {
-	cwd, _ := gatewayStringParam(params, "cwd")
-	scope, ok := c.router.gatewayScopeForPath(cwd)
-	if !ok {
-		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "thread/list.cwd 必须来自 projects allowlist 或 browse_roots")
+	cwd, hasCWD := gatewayStringParam(params, "cwd")
+	var requestedScope gatewayScope
+	if hasCWD {
+		var ok bool
+		requestedScope, ok = c.router.gatewayScopeForPath(cwd)
+		if !ok {
+			return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "thread/list.cwd 必须来自 projects allowlist 或 browse_roots")
+		}
 	}
 	sessions, err := c.harness.ListSessions(ctx, harnessclient.SessionListRequest{})
 	if err != nil {
@@ -143,8 +149,16 @@ func (c *deepSeekGatewayConn) handleThreadList(ctx context.Context, frame *appSe
 			// 没有 cwd 的会话无法证明属于授权工作区，fail closed。
 			continue
 		}
-		if !gatewayScopeContainsPath(scope, session.CWD) {
-			continue
+		if hasCWD {
+			if !gatewayScopeContainsPath(requestedScope, session.CWD) {
+				continue
+			}
+		} else {
+			// 无 cwd 只代表受控全局发现，不代表全局授权。逐行重新映射授权作用域，
+			// 不能把另一个本机会话的 cwd 借列表响应泄露给移动端。
+			if _, ok := c.router.gatewayScopeForPath(session.CWD); !ok {
+				continue
+			}
 		}
 		if session.Blank {
 			// 还没有任何轮次的会话在 Mimi 里是空会话，列表不展示。
@@ -316,15 +330,35 @@ func (c *deepSeekGatewayConn) handleThreadTurnsList(ctx context.Context, frame *
 	if err != nil {
 		return c.deepSeekFollowError(frame, err)
 	}
-	buckets, nextOffset, hasMore, err := c.deepSeekTurnPage(ctx, follow, params)
+	buckets, nextCursor, hasMore, err := c.deepSeekTurnPage(ctx, follow, params)
 	if err != nil {
+		if errors.Is(err, errDeepSeekTurnPageCursor) {
+			return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "thread/turns/list.cursor 已失效，请从第一页重试")
+		}
+		if errors.Is(err, errDeepSeekHistoryPagingStalled) {
+			return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "读取 Harness 会话历史失败")
+		}
 		return c.deepSeekFollowError(frame, err)
+	}
+	if observe, _ := gatewayBoolParam(params, "_mimi_observe"); observe && !c.markFollowObserved(follow) {
+		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "DeepSeek 会话观察已失效，请重新连接")
 	}
 	rows := make([]any, 0, len(buckets))
 	for _, bucket := range buckets {
 		rows = append(rows, deepSeekTurnWire(bucket, true))
 	}
-	return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(rows, nextOffset, hasMore))
+	return c.writeDeepSeekResult(frame.ID, deepSeekPageResultWithCursor(rows, nextCursor, hasMore))
+}
+
+// handleThreadUnsubscribe 只解除移动端观察租约。Harness 没有 unsubscribe RPC；立即关闭
+// follow 会让 active/pending 状态丢失，也会让短暂页面切换产生不必要的重新订阅。
+func (c *deepSeekGatewayConn) handleThreadUnsubscribe(frame *appServerGatewayFrame, params map[string]any) error {
+	threadID := gatewayParamString(params, "threadId")
+	if threadID == "" {
+		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "thread/unsubscribe.threadId 不能为空")
+	}
+	c.unobserveFollow(threadID)
+	return c.writeDeepSeekResult(frame.ID, map[string]any{"status": "unsubscribed"})
 }
 
 // handleThreadItemsList 返回一个 turn 的 item。
@@ -457,9 +491,10 @@ func (c *deepSeekGatewayConn) findSession(ctx context.Context, threadID string) 
 	return harnessclient.SessionSummary{}, errDeepSeekThreadUnknown
 }
 
-// deepSeekTurnPage 取一页 turn。offset 由本层游标给出，向前翻页时才向 Harness 取记录。
+// deepSeekTurnPage 取一页 turn。游标同时记录 turn 位置、订阅切点和已读到的最老 seq；
+// 向前翻页时才向 Harness 取记录。
 //
-// 返回值里的 hasMore 与 nextOffset 是两件事，必须分开表达：nextOffset 是"下一页从缓存
+// 返回值里的 hasMore 与 nextCursor 是两件事，必须分开表达：nextCursor 是"下一页从缓存
 // 的哪里开始"，hasMore 是"宿主历史还没读完"。混用会丢掉一种形态——缓存里还没有可投影的
 // turn（offset 为 0）、但更早的轮次仍在 Harness 上时，用 0 既表示"从头开始"又表示
 // "没有下一页"，客户端只会看到 nextCursor=null 并认定会话到此为止。
@@ -467,8 +502,30 @@ func (c *deepSeekGatewayConn) deepSeekTurnPage(
 	ctx context.Context,
 	follow *deepSeekFollow,
 	params map[string]any,
-) ([]deepSeekTurnBucket, int, bool, error) {
-	offset, _ := deepSeekOffsetCursor(gatewayCursorParam(params))
+) ([]deepSeekTurnBucket, string, bool, error) {
+	direction := strings.TrimSpace(gatewayParamString(params, "sortDirection"))
+	if direction == "" {
+		direction = "desc"
+	}
+	if direction != "asc" && direction != "desc" {
+		return nil, "", false, errDeepSeekTurnPageCursor
+	}
+	cursor, err := parseDeepSeekTurnPageCursor(gatewayCursorParam(params), direction, follow)
+	if err != nil {
+		return nil, "", false, err
+	}
+	offset := cursor.Offset
+	if cursor.AnchorSet {
+		var ok bool
+		offset, ok = deepSeekTurnOffsetAfter(follow.snapshot(), cursor.AnchorTurn, direction)
+		if !ok {
+			return nil, "", false, errDeepSeekTurnPageCursor
+		}
+	} else if offset > len(deepSeekSplitTurns(follow.snapshot())) {
+		// 旧版 offset 游标也只能指向已投影过的缓存边界。拒绝伪造的大偏移，
+		// 同时避免 offset+limit 的整数溢出把下一页定位到错误位置。
+		return nil, "", false, errDeepSeekTurnPageCursor
+	}
 	limit := deepSeekTurnListLimit(params)
 	if limit <= 0 {
 		limit = 40
@@ -476,18 +533,20 @@ func (c *deepSeekGatewayConn) deepSeekTurnPage(
 	// 向前翻页需要的记录可能还没有从 Harness 取过；取到 offset+limit 个 turn 为止。
 	for page := 0; page < deepSeekMaxHistoryFetchPages; page++ {
 		buckets := deepSeekSplitTurns(follow.snapshot())
-		if len(buckets) >= offset+limit || follow.atStart() {
+		// desc 从最近一轮开始，缓存够一页就能返回；asc 的第一页必须先读到会话
+		// 开头，否则会把中间切片误报成“最早一页”。
+		if (direction == "desc" && len(buckets) >= offset+limit) || follow.atStart() {
 			break
 		}
 		before := follow.oldestCachedSeq()
-		if before <= 0 {
-			break
-		}
 		records, hasMore, err := c.fetchDeepSeekHistoryPage(ctx, follow, before, deepSeekHistoryPageSize)
 		if err != nil {
-			return nil, 0, false, err
+			return nil, "", false, err
 		}
 		if len(records) == 0 {
+			if hasMore {
+				return nil, "", false, errDeepSeekHistoryPagingStalled
+			}
 			follow.markReachedStart()
 			break
 		}
@@ -496,12 +555,30 @@ func (c *deepSeekGatewayConn) deepSeekTurnPage(
 			follow.markReachedStart()
 			break
 		}
+		after := follow.oldestCachedSeq()
+		if (before > 0 && after >= before) || (before <= 0 && after <= 0) {
+			// hasMore=true 却没有越过 beforeSeq 时，继续请求只会反复读同一页。
+			// 返回错误比制造无限的新游标更安全，也不会触发 iOS 的重复游标保护。
+			return nil, "", false, errDeepSeekHistoryPagingStalled
+		}
 	}
-	// 缓存与 Mimi 一样按时间正序展示；下游请求的是 desc（最近的在前）。
-	buckets := deepSeekSplitTurns(follow.snapshot())
-	ordered := make([]deepSeekTurnBucket, 0, len(buckets))
-	for index := len(buckets) - 1; index >= 0; index-- {
-		ordered = append(ordered, buckets[index])
+	// asc 在确认会话开头前只能回空页和进度游标。一次请求的 8 页上限不能成为
+	// 伪造“最早一页”的理由；客户端会携新游标继续推进，不会命中重复游标保护。
+	if direction == "asc" && !follow.atStart() {
+		cursor.Offset = offset
+		cursor.OldestSeq = follow.oldestCachedSeq()
+		return nil, cursor.encode(), true, nil
+	}
+
+	// 缓存按时间正序保存，按请求方向投影。
+	records := follow.snapshot()
+	ordered := deepSeekTurnsOrdered(records, direction)
+	if cursor.AnchorSet {
+		var ok bool
+		offset, ok = deepSeekTurnOffsetAfter(records, cursor.AnchorTurn, direction)
+		if !ok {
+			return nil, "", false, errDeepSeekTurnPageCursor
+		}
 	}
 	if offset >= len(ordered) {
 		// 缓存里没有这一页了。宿主历史还没读完时不能收尾：客户端收到 null 游标就
@@ -511,9 +588,11 @@ func (c *deepSeekGatewayConn) deepSeekTurnPage(
 		// 落在一条尚未结束的长 turn 中间）。那不是"没有下一页"，只是"还没有可返回的
 		// turn"，同样必须继续给游标。
 		if follow.atStart() {
-			return nil, 0, false, nil
+			return nil, "", false, nil
 		}
-		return nil, offset, true, nil
+		cursor.Offset = offset
+		cursor.OldestSeq = follow.oldestCachedSeq()
+		return nil, cursor.encode(), true, nil
 	}
 	end := offset + limit
 	if end > len(ordered) {
@@ -525,19 +604,118 @@ func (c *deepSeekGatewayConn) deepSeekTurnPage(
 	// 收尾，否则必须继续给游标——在这里回 null，客户端会把缓存边界当成会话开头，
 	// 更早的轮次再也翻不出来，而且不报错，只是历史看起来变短了。
 	if end < len(ordered) || !follow.atStart() {
-		return page, end, true, nil
+		cursor.Offset = end
+		cursor.AnchorTurn = page[len(page)-1].Turn
+		cursor.AnchorSet = true
+		cursor.OldestSeq = follow.oldestCachedSeq()
+		return page, cursor.encode(), true, nil
 	}
-	return page, 0, false, nil
+	return page, "", false, nil
 }
 
 // deepSeekMaxHistoryFetchPages 限制一次请求最多向前取几页记录。
 const deepSeekMaxHistoryFetchPages = 8
+
+var (
+	errDeepSeekTurnPageCursor       = errors.New("deepseek gateway: turn 分页游标无效")
+	errDeepSeekHistoryPagingStalled = errors.New("deepseek gateway: Harness 历史分页没有前进")
+)
 
 // deepSeekTurnStartAckTimeout 是等待本次投递对应的 turn 落进会话日志的时间。
 const deepSeekTurnStartAckTimeout = 5 * time.Second
 
 // deepSeekOffsetCursorPrefix 是本层偏移游标的出处标记。
 const deepSeekOffsetCursorPrefix = "ds-offset:"
+
+const deepSeekTurnPageCursorPrefix = "ds-turn-v1:"
+
+// deepSeekTurnPageCursor 把 turn 位置与上游读取进度绑定到同一个 opaque cursor。
+// AnchorTurn 用于在直播新增 turn 后重新定位，避免纯 offset 因列表头插入而重复或跳页。
+type deepSeekTurnPageCursor struct {
+	Direction  string
+	Offset     int
+	ThroughSeq int64
+	OldestSeq  int64
+	AnchorTurn int64
+	AnchorSet  bool
+}
+
+func parseDeepSeekTurnPageCursor(raw, direction string, follow *deepSeekFollow) (deepSeekTurnPageCursor, error) {
+	cursor := deepSeekTurnPageCursor{
+		Direction: direction, ThroughSeq: follow.through(), OldestSeq: follow.oldestCachedSeq(),
+	}
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return cursor, nil
+	}
+	// 兼容已经发给旧版 iOS 的 offset 游标；它没有排序和快照信息，只能用于原有 desc 语义。
+	if offset, ok := deepSeekOffsetCursor(value); ok {
+		if direction != "desc" {
+			return deepSeekTurnPageCursor{}, errDeepSeekTurnPageCursor
+		}
+		cursor.Offset = offset
+		return cursor, nil
+	}
+	if !strings.HasPrefix(value, deepSeekTurnPageCursorPrefix) {
+		return deepSeekTurnPageCursor{}, errDeepSeekTurnPageCursor
+	}
+	parts := strings.Split(strings.TrimPrefix(value, deepSeekTurnPageCursorPrefix), ":")
+	if len(parts) != 5 || parts[0] != direction {
+		return deepSeekTurnPageCursor{}, errDeepSeekTurnPageCursor
+	}
+	offset, offsetErr := strconv.Atoi(parts[1])
+	through, throughErr := strconv.ParseInt(parts[2], 10, 64)
+	oldest, oldestErr := strconv.ParseInt(parts[3], 10, 64)
+	anchor, anchorErr := strconv.ParseInt(parts[4], 10, 64)
+	if offsetErr != nil || throughErr != nil || oldestErr != nil || anchorErr != nil ||
+		offset < 0 || through < 0 || oldest < 0 || anchor < -1 {
+		return deepSeekTurnPageCursor{}, errDeepSeekTurnPageCursor
+	}
+	// throughSeq 变化说明旧 follow 已被回收并重新订阅；缓存比游标更新时可以继续，
+	// 缓存反而更短则无法证明 offset 仍指向同一位置，必须让客户端从第一页重试。
+	if through != follow.through() || (oldest > 0 && follow.oldestCachedSeq() > oldest) {
+		return deepSeekTurnPageCursor{}, errDeepSeekTurnPageCursor
+	}
+	return deepSeekTurnPageCursor{
+		Direction: direction, Offset: offset, ThroughSeq: through, OldestSeq: oldest,
+		AnchorTurn: anchor, AnchorSet: anchor >= 0,
+	}, nil
+}
+
+func (c deepSeekTurnPageCursor) encode() string {
+	anchor := int64(-1)
+	if c.AnchorSet {
+		anchor = c.AnchorTurn
+	}
+	return deepSeekTurnPageCursorPrefix + strings.Join([]string{
+		c.Direction,
+		strconv.Itoa(c.Offset),
+		strconv.FormatInt(c.ThroughSeq, 10),
+		strconv.FormatInt(c.OldestSeq, 10),
+		strconv.FormatInt(anchor, 10),
+	}, ":")
+}
+
+func deepSeekTurnsOrdered(records []harnessclient.SessionWireEvent, direction string) []deepSeekTurnBucket {
+	buckets := deepSeekSplitTurns(records)
+	if direction == "asc" {
+		return buckets
+	}
+	ordered := make([]deepSeekTurnBucket, 0, len(buckets))
+	for index := len(buckets) - 1; index >= 0; index-- {
+		ordered = append(ordered, buckets[index])
+	}
+	return ordered
+}
+
+func deepSeekTurnOffsetAfter(records []harnessclient.SessionWireEvent, turn int64, direction string) (int, bool) {
+	for index, bucket := range deepSeekTurnsOrdered(records, direction) {
+		if bucket.Turn == turn {
+			return index + 1, true
+		}
+	}
+	return 0, false
+}
 
 // deepSeekPageResult 组装一页结果。
 //
@@ -551,6 +729,17 @@ func deepSeekPageResult(rows []any, nextOffset int, hasMore bool) map[string]any
 	var next any
 	if hasMore {
 		next = deepSeekOffsetCursorPrefix + strconv.Itoa(nextOffset)
+	}
+	return map[string]any{
+		"data":       rows,
+		"nextCursor": next,
+	}
+}
+
+func deepSeekPageResultWithCursor(rows []any, nextCursor string, hasMore bool) map[string]any {
+	var next any
+	if hasMore {
+		next = nextCursor
 	}
 	return map[string]any{
 		"data":       rows,

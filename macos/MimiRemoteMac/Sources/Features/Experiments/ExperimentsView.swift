@@ -61,6 +61,8 @@ struct ExperimentsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            DeepSeekExperimentSection(store: store)
+
             Section("Tailcat") {
                 Toggle("启用 Tailcat 实验通道", isOn: Binding(
                     get: { store.tailcatEnabled },

@@ -1,0 +1,21 @@
+{
+  "data": [
+    {
+      "id": "harness-model",
+      "provider": "provider-a",
+      "displayName": "Harness Model",
+      "description": "Contract fixture",
+      "supportedReasoningEfforts": [
+        {"id": "low", "name": "Low"},
+        {"id": "high", "name": "High"}
+      ],
+      "defaultReasoningEffort": "high"
+    },
+    {
+      "id": "harness-plain",
+      "provider": "provider-b",
+      "displayName": "Plain Model"
+    }
+  ],
+  "nextCursor": null
+}

@@ -425,7 +425,7 @@ func TestDeepSeekModelListWireFlattensGroupsAndReasoning(t *testing.T) {
 	if row["displayName"] != "V4 Pro" {
 		t.Fatalf("displayName = %v", row["displayName"])
 	}
-	efforts, _ := row["reasoningEfforts"].([]any)
+	efforts, _ := row["supportedReasoningEfforts"].([]any)
 	if len(efforts) != 1 || row["defaultReasoningEffort"] != "high" {
 		t.Fatalf("推理档位未转发：%+v", row)
 	}
@@ -442,7 +442,7 @@ func TestDeepSeekModelListWireFlattensGroupsAndReasoning(t *testing.T) {
 	if row["displayName"] != "Group Name" {
 		t.Fatalf("缺少模型名时应回退到分组名：%+v", row)
 	}
-	if _, present := row["reasoningEfforts"]; present {
+	if _, present := row["supportedReasoningEfforts"]; present {
 		t.Fatalf("没有推理档位时不应凭空生成：%+v", row)
 	}
 }
@@ -852,10 +852,15 @@ func TestDeepSeekGatewayServesAppServerMethodsAgainstHarness(t *testing.T) {
 		}
 	})
 
-	t.Run("thread/list requires a cwd", func(t *testing.T) {
-		code, _ := callDeepSeekGatewayError(t, conn, 4, "thread/list", map[string]any{})
-		if code == 0 {
-			t.Fatal("缺少 cwd 的 thread/list 必须被拒绝")
+	t.Run("thread/list without cwd uses controlled global discovery", func(t *testing.T) {
+		result := callDeepSeekGateway(t, conn, 4, "thread/list", map[string]any{})
+		rows, _ := result["data"].([]any)
+		if len(rows) != 1 {
+			t.Fatalf("全局发现仍只能返回授权会话：%+v", rows)
+		}
+		row, _ := rows[0].(map[string]any)
+		if row["id"] != "s-visible" {
+			t.Fatalf("全局发现返回了未授权会话：%+v", row)
 		}
 	})
 

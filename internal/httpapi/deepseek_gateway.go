@@ -353,6 +353,29 @@ func (c *deepSeekGatewayConn) followFor(threadID string) (*deepSeekFollow, bool)
 	return follow, ok
 }
 
+// markFollowObserved 在连接锁内把已成功首读的 follow 变成观察租约。
+// 返回 false 表示该 follow 已被并发摘除，调用方不能向移动端确认观察成功。
+func (c *deepSeekGatewayConn) markFollowObserved(follow *deepSeekFollow) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	current, ok := c.follows[follow.threadID]
+	if !ok || current != follow {
+		return false
+	}
+	follow.observed = true
+	return true
+}
+
+// unobserveFollow 幂等解除观察租约。follow 本身保留在缓存里；运行中 turn、待处理
+// 交互和普通 LRU 规则继续决定何时能回收，避免 detach 触发无谓的上游重订阅。
+func (c *deepSeekGatewayConn) unobserveFollow(threadID string) {
+	c.mu.Lock()
+	if follow := c.follows[threadID]; follow != nil {
+		follow.observed = false
+	}
+	c.mu.Unlock()
+}
+
 // ensureFollow 取得会话订阅，必要时新建并等到开场快照。
 //
 // 历史与实时事件都必须先有订阅：snapshot 给出的 cursor 是 session/page 的必填参数，
@@ -442,7 +465,7 @@ func (c *deepSeekGatewayConn) reclaimIdleFollow() bool {
 	var victim *deepSeekFollow
 	var victimUsed time.Time
 	for threadID, follow := range c.follows {
-		if !follow.activityKnown || c.activeTurns[threadID] > 0 || c.followHasPendingInteractionLocked(threadID) {
+		if follow.observed || !follow.activityKnown || c.activeTurns[threadID] > 0 || c.followHasPendingInteractionLocked(threadID) {
 			continue
 		}
 		used := follow.lastUsedAt()
@@ -464,6 +487,17 @@ func (c *deepSeekGatewayConn) reclaimIdleFollow() bool {
 	victim.markReleased()
 	victim.stream.Close()
 	c.router.releaseDeepSeekSession()
+	// 订阅名额和客户端的连接级 binding 必须一起失效。此通知不是 turn 结束，
+	// 不复用 thread/closed，以免清理仍由 Harness 持有的会话事实。
+	if err := c.writeDeepSeekNotification("_mimi/deepseekFollow/invalidated", map[string]any{
+		"threadId": victim.threadID,
+		"reason":   "idle",
+	}); err != nil {
+		select {
+		case c.done <- "follow_invalidation_failed":
+		default:
+		}
+	}
 	log.Printf("deepseek gateway 会话订阅已达上限，回收最久未使用的空闲订阅 thread=%s",
 		sanitizeGatewayDiagnostic(victim.threadID))
 	return true

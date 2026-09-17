@@ -207,6 +207,9 @@ actor CodexAppServerSessionRuntime {
     // app-server 只向「在当前 gateway 连接上 resume/start 过」的 thread 推送 turn 事件；记录本连接已
     // 经绑定的 thread，断线重连后这个集合随新连接清空，确保再次发送时会先补一次 thread/resume。
     var threadsResumedOnConnection: Set<SessionID> = []
+    // DeepSeek 的普通 follow 与页面观察 pin 是两层状态。thread/start/read 只能证明前者；
+    // connectForEvents 必须等带 _mimi_observe 的 turns/list 成功后才能宣布 connected。
+    var deepSeekThreadsObservedOnConnection: Set<SessionID> = []
     // actor 会在 await thread/resume 时重入；同一连接、同一 thread 的并发监听和发送必须等待同一任务，
     // 否则 gateway 会拒绝重复历史请求，进一步放大上游高负载。
     var threadResumeTasksBySessionID: [SessionID: CodexAppServerThreadResumeTask] = [:]
@@ -1002,6 +1005,7 @@ actor CodexAppServerSessionRuntime {
             cancelThreadUnsubscribeRetryTask(sessionID: id)
             cancelThreadResumeTask(sessionID: id)
             threadsResumedOnConnection.remove(id)
+            deepSeekThreadsObservedOnConnection.remove(id)
             finishAttachedEventStreams(sessionID: id)
         }
     }
@@ -1074,6 +1078,7 @@ actor CodexAppServerSessionRuntime {
         usingExistingConnectionOnly: Bool = false
     ) async throws -> CodexAppServerThreadUnsubscribeStatus? {
         let hadResumeBinding = threadsResumedOnConnection.contains(threadID)
+            || deepSeekThreadsObservedOnConnection.contains(threadID)
             || threadResumeTasksBySessionID[threadID] != nil
             || threadUnsubscribeRetryTasksBySessionID[threadID] != nil
         let existingConnection = connection
@@ -1087,6 +1092,7 @@ actor CodexAppServerSessionRuntime {
         // 在 RPC 发出前先清本地标记。若用户随即重新打开，新的 connectForEvents 必须真的
         // 发送 thread/resume，而不能被旧的“已 resume”缓存短路。
         threadsResumedOnConnection.remove(threadID)
+        deepSeekThreadsObservedOnConnection.remove(threadID)
         guard hadResumeBinding else {
             // 独立模式查看空闲历史时从未订阅上游。不要发送多余 unsubscribe，
             // 也不要让一次纯文件读取触发额外的写入路径。
@@ -2179,7 +2185,16 @@ actor CodexAppServerSessionRuntime {
             return
         }
         // 运行中的 thread 需要 resume 建立 live listener；thread/read/list 只能做 hydration。
-        try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
+        try await ensureThreadResumedOnConnection(
+            sessionID: sessionID,
+            cwd: context.cwd,
+            builder: builder,
+            connection: connection,
+            requiresEventObservation: true
+        )
+        guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
+            throw CancellationError()
+        }
         // 目标状态是增强信息，不应该卡住实时事件连接。旧 app-server 可能不支持 thread/goal/get，
         // 慢链路也可能延迟响应；后台刷新即可，连接状态先进入 connected。
         Task {
@@ -2360,11 +2375,13 @@ actor CodexAppServerSessionRuntime {
             return
         }
         threadsResumedOnConnection.remove(sessionID)
+        deepSeekThreadsObservedOnConnection.remove(sessionID)
         try await ensureThreadResumedOnConnection(
             sessionID: sessionID,
             cwd: context.cwd,
             builder: builder,
-            connection: connection
+            connection: connection,
+            requiresEventObservation: true
         )
     }
 
@@ -2712,14 +2729,31 @@ actor CodexAppServerSessionRuntime {
         sessionID: SessionID,
         cwd: String,
         builder: CodexAppServerRequestBuilder,
-        connection: CodexAppServerConnection
+        connection: CodexAppServerConnection,
+        requiresEventObservation: Bool = false
     ) async throws {
-        guard !threadsResumedOnConnection.contains(sessionID) else {
+        let needsDeepSeekObservation = runtimeProvider == "deepseek" && requiresEventObservation
+        if !threadsResumedOnConnection.contains(sessionID) {
+            deepSeekThreadsObservedOnConnection.remove(sessionID)
+        }
+        let needsResume = !threadsResumedOnConnection.contains(sessionID)
+        let needsObservationPin = needsDeepSeekObservation
+            && !deepSeekThreadsObservedOnConnection.contains(sessionID)
+        guard needsResume || needsObservationPin else {
             return
         }
         if let existing = threadResumeTasksBySessionID[sessionID] {
             if existing.connection === connection {
-                return try await existing.task.value
+                try await existing.task.value
+                clearThreadResumeTask(
+                    sessionID: sessionID,
+                    connection: connection,
+                    token: existing.token
+                )
+                if !needsDeepSeekObservation
+                    || deepSeekThreadsObservedOnConnection.contains(sessionID) {
+                    return
+                }
             }
             // 理论上连接替换路径会统一清理；这里再做代次防线，避免旧任务迟到后把新连接误标为已 resume。
             existing.task.cancel()
@@ -2732,7 +2766,8 @@ actor CodexAppServerSessionRuntime {
                 sessionID: sessionID,
                 cwd: cwd,
                 builder: builder,
-                connection: connection
+                connection: connection,
+                observeEvents: needsDeepSeekObservation
             )
         }
         threadResumeTasksBySessionID[sessionID] = CodexAppServerThreadResumeTask(
@@ -2753,25 +2788,57 @@ actor CodexAppServerSessionRuntime {
         sessionID: SessionID,
         cwd: String,
         builder: CodexAppServerRequestBuilder,
-        connection: CodexAppServerConnection
+        connection: CodexAppServerConnection,
+        observeEvents: Bool = false
     ) async throws {
         let config = try await ensureConfig()
         if runtimeProvider == "deepseek", !runtimeSupportsMethod("thread/resume", in: config) {
             guard runtimeSupportsMethod("thread/turns/list", in: config) else {
                 throw CodexAppServerSessionRuntimeError.paginatedHistoryUnavailable("thread/turns/list")
             }
+            let expectedActiveTurnID = contextsBySessionID[sessionID]?.activeTurnID
             // DeepSeek 的 gateway 没有 thread/resume。一次最新 Turn 查询既验证线程仍可读，
             // 也让当前 Harness 连接重新建立 follow，之后审批和增量事件仍走同一连接。
-            _ = try await connection.send(
-                builder.threadTurnsList(
-                    threadID: sessionID,
-                    limit: 1,
-                    sortDirection: "desc",
-                    itemsView: "summary"
-                ),
-                timeout: longRunningRequestTimeout
+            let result: CodexAppServerJSONValue?
+            do {
+                result = try await connection.send(
+                    deepSeekThreadTurnsList(
+                        builder: builder,
+                        threadID: sessionID,
+                        limit: 1,
+                        sortDirection: "desc",
+                        itemsView: "summary",
+                        observeEvents: observeEvents
+                    ),
+                    timeout: longRunningRequestTimeout
+                )
+            } catch {
+                // 最后一个观察者离开会取消这条只读 follow 请求，并紧接着发送 unsubscribe。
+                // 连接层按通用写请求报告 outcomeUnknown；这里以订阅任务的取消意图为准。
+                try Task.checkCancellation()
+                throw error
+            }
+            try Task.checkCancellation()
+            guard let object = result?.objectValue else {
+                throw AgentAPIError.invalidResponse
+            }
+            let firstPage = try Self.validatedHistoryTurnsPage(object)
+            let turns = await deepSeekTurnsForFollowReconciliation(
+                sessionID: sessionID,
+                expectedActiveTurnID: expectedActiveTurnID,
+                firstPage: firstPage,
+                builder: builder,
+                connection: connection
             )
             try Task.checkCancellation()
+            reconcileDeepSeekFollowSnapshot(
+                sessionID: sessionID,
+                turns: turns,
+                expectedActiveTurnID: expectedActiveTurnID
+            )
+            if observeEvents {
+                deepSeekThreadsObservedOnConnection.insert(sessionID)
+            }
             threadsResumedOnConnection.insert(sessionID)
             return
         }
@@ -2847,6 +2914,127 @@ actor CodexAppServerSessionRuntime {
         }
         try Task.checkCancellation()
         threadsResumedOnConnection.insert(sessionID)
+    }
+
+    func deepSeekThreadTurnsList(
+        builder: CodexAppServerRequestBuilder,
+        threadID: SessionID,
+        cursor: String? = nil,
+        limit: Int,
+        sortDirection: String,
+        itemsView: String,
+        observeEvents: Bool
+    ) -> CodexAppServerRequestSpec {
+        let request = builder.threadTurnsList(
+            threadID: threadID,
+            cursor: cursor,
+            limit: limit,
+            sortDirection: sortDirection,
+            itemsView: itemsView
+        )
+        guard observeEvents else { return request }
+        var params = request.params?.objectValue ?? [:]
+        params["_mimi_observe"] = .bool(true)
+        return CodexAppServerRequestSpec(method: request.method, params: .object(params))
+    }
+
+    func deepSeekTurnsForFollowReconciliation(
+        sessionID: SessionID,
+        expectedActiveTurnID: TurnID?,
+        firstPage: (turns: [[String: CodexAppServerJSONValue]], nextCursor: String?),
+        builder: CodexAppServerRequestBuilder,
+        connection: CodexAppServerConnection
+    ) async -> [[String: CodexAppServerJSONValue]] {
+        var descendingTurns = firstPage.turns
+        var nextCursor = firstPage.nextCursor
+        var visitedCursors: Set<String> = []
+        var remainingPages = 5
+
+        // 首次 limit=1 负责建 follow；只有本地确实记着 active turn 且首页没带回它时，
+        // 才沿 opaque cursor 有界追查。失败、重复 cursor 或超界都保持未知，不猜终态。
+        while let expectedActiveTurnID,
+              !descendingTurns.contains(where: { $0["id"]?.stringValue == expectedActiveTurnID }),
+              let cursor = nextCursor,
+              remainingPages > 0,
+              visitedCursors.insert(cursor).inserted,
+              contextsBySessionID[sessionID]?.activeTurnID == expectedActiveTurnID {
+            remainingPages -= 1
+            let result: CodexAppServerJSONValue?
+            do {
+                result = try await connection.send(
+                    builder.threadTurnsList(
+                        threadID: sessionID,
+                        cursor: cursor,
+                        limit: 20,
+                        sortDirection: "desc",
+                        itemsView: "summary"
+                    ),
+                    timeout: longRunningRequestTimeout
+                )
+                try Task.checkCancellation()
+            } catch {
+                break
+            }
+            guard let object = result?.objectValue,
+                  let page = try? Self.validatedHistoryTurnsPage(object) else {
+                break
+            }
+            descendingTurns.append(contentsOf: page.turns)
+            nextCursor = page.nextCursor
+        }
+        return Array(descendingTurns.reversed())
+    }
+
+    func reconcileDeepSeekFollowSnapshot(
+        sessionID: SessionID,
+        turns: [[String: CodexAppServerJSONValue]],
+        expectedActiveTurnID: TurnID?
+    ) {
+        // turns/list 挂起期间实时通知可能已经把状态推进到更新一轮。只对仍等于请求前
+        // 快照的状态做对账，禁止迟到的 limit=1 结果清掉或覆盖新 active turn。
+        guard contextsBySessionID[sessionID]?.activeTurnID == expectedActiveTurnID else {
+            return
+        }
+        if let recoveredTerminalTurn = recoverCompletedActiveTurnFromLatestTurnsPage(
+            sessionID: sessionID,
+            turns: turns,
+            recoveringInterruptedTurnID: expectedActiveTurnID
+        ) {
+            emit(.turnCompleted(
+                metadata(threadID: sessionID, turnID: recoveredTerminalTurn.turnID)
+                    .withTurnLifecycle(recoveredTerminalTurn.lifecycle)
+            ))
+            return
+        }
+
+        // limit=1 可能已经看到另一入口启动的新 turn，却看不到旧 active turn 的终态。
+        // 此时只采用明确的新 active，不猜测旧 turn 已完成，也不发旧 completion。
+        guard let authoritativeActiveTurnID = turns.last(where: {
+            isActiveHistoryStatus($0["status"])
+        })?["id"]?.stringValue,
+              authoritativeActiveTurnID != expectedActiveTurnID
+        else {
+            return
+        }
+        var thread = historyThreadShell(
+            sessionID: sessionID,
+            projects: (try? projectsFromCache()) ?? []
+        )
+        thread["turns"] = .array(turns.map { .object($0) })
+        guard let session = try? agentSession(
+            from: thread,
+            projects: (try? projectsFromCache()) ?? [],
+            fallbackProject: nil,
+            forceRunning: true
+        ) else {
+            return
+        }
+        contextsBySessionID[sessionID] = CodexAppServerSessionContext(
+            session: session,
+            cwd: session.dir,
+            activeTurnID: authoritativeActiveTurnID
+        )
+        emit(.session(session))
     }
 
     func emitActivePermissionProfile(from result: CodexAppServerJSONValue?, threadID: SessionID) {
@@ -3285,9 +3473,9 @@ actor CodexAppServerSessionRuntime {
             return
         }
         eventMailboxesBySessionID.removeValue(forKey: sessionID)
-        // Claude bridge 没有 thread/unsubscribe 协议。保持它原有的连接生命周期，
-        // 避免页面离开时向 gateway 发送必然被策略拒绝的 Codex 专用请求。
-        guard runtimeProvider == "codex" else {
+        // Claude bridge 没有 thread/unsubscribe 协议，且保留既有常驻连接语义。
+        // DeepSeek gateway 本地消费标准 unsubscribe，用它释放页面观察 pin，而不要求 Harness 支持。
+        guard runtimeProvider == "codex" || runtimeProvider == "deepseek" else {
             return
         }
         // 页面和后台队列可能同时观察同一 thread。只有最后一个主动观察者离开时才释放
@@ -3358,6 +3546,7 @@ actor CodexAppServerSessionRuntime {
         cancelThreadResumeTasks(for: stale)
         connection = nil
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
+        deepSeekThreadsObservedOnConnection.removeAll(keepingCapacity: true)
         let affected = clearAllPendingServerRequests()
         for sessionID in affected.approvalSessionIDs {
             emitApprovalResolved(sessionID: sessionID)
@@ -3500,11 +3689,26 @@ actor CodexAppServerSessionRuntime {
             }
         }
         threadsResumedOnConnection.remove(threadID)
+        deepSeekThreadsObservedOnConnection.remove(threadID)
     }
 
     func handle(_ notification: CodexAppServerNotification) {
         if notification.method == "_mimi/serverRequestResponse/rejected" {
             // 另一入口已抢先响应或拒绝时，不复活本地卡片；等待 resolved/terminal 收敛即可。
+            return
+        }
+        if notification.method == "_mimi/deepseekFollow/invalidated" {
+            guard runtimeProvider == "deepseek" else { return }
+            let params = notification.params?.objectValue ?? [:]
+            guard let threadID = firstString(
+                in: params,
+                keys: ["threadId", "threadID", "thread_id"]
+            ) else { return }
+            // Go 不会回收带观察 pin 的 follow；此通知只可能属于未观察的空闲 binding。
+            // 清掉两层本地认知，后续发送或重新观察都会先建立符合当前用途的新绑定。
+            cancelThreadResumeTask(sessionID: threadID)
+            threadsResumedOnConnection.remove(threadID)
+            deepSeekThreadsObservedOnConnection.remove(threadID)
             return
         }
         if notification.method == "_mimi/claudeReplayCursor/reset",

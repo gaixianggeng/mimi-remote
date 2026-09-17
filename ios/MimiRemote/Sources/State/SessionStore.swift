@@ -100,6 +100,7 @@ final class SessionStore: ObservableObject {
     // 首屏搜索覆盖 300ms 防抖和实际请求；与分页 loading 分离，避免“继续搜索”误占空态。
     @Published var isSearchingRemoteSessionResults = false
     @Published var isLoadingMoreSessionSearchResults = false
+    @Published var remoteSessionSearchNotice: String?
     @Published var pinnedSessionIDs: Set<SessionID> = []
     @Published var archivedSessionIDs: Set<SessionID> = []
     /// UI 只通过 `isSessionArchiveMutationPending` 查询当前 Profile；这里保留完整作用域，

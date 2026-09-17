@@ -236,7 +236,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 			}
 		}
 		if method == "thread/turns/list" {
-			if err := validateGatewayThreadTurnsListParams(params); err != nil {
+			if err := validateGatewayThreadTurnsListParams(p.runtimeID, params); err != nil {
 				return err
 			}
 			if err := p.rememberPendingThreadRequest(frame.ID, appServerGatewayPendingThreadRequest{
@@ -915,6 +915,9 @@ func sanitizedGatewayReviewStartParams(params map[string]any) map[string]any {
 
 func sanitizedGatewayThreadTurnsListParams(runtimeID string, params map[string]any) map[string]any {
 	safe := copyGatewayParams(params, "threadId", "cursor", "sortDirection", "itemsView")
+	if normalizeAppServerRuntimeID(runtimeID) == appServerRuntimeDeepSeekID {
+		copyGatewayParam(safe, params, "_mimi_observe")
+	}
 	limit := int64(appServerGatewayThreadTurnsDefaultLimit)
 	if value, ok := params["limit"]; ok && value != nil {
 		if parsed, parsedOK := gatewayJSONNumberInt64(value); parsedOK {
@@ -1207,7 +1210,15 @@ func validateGatewayThreadResumeParams(params map[string]any) error {
 	return nil
 }
 
-func validateGatewayThreadTurnsListParams(params map[string]any) error {
+func validateGatewayThreadTurnsListParams(runtimeID string, params map[string]any) error {
+	if value, ok := params["_mimi_observe"]; ok {
+		if normalizeAppServerRuntimeID(runtimeID) != appServerRuntimeDeepSeekID {
+			return fmt.Errorf("thread/turns/list._mimi_observe 只允许 DeepSeek runtime 使用")
+		}
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("thread/turns/list._mimi_observe 必须是布尔值")
+		}
+	}
 	if value, ok := params["limit"]; ok {
 		if value != nil && !gatewayPositiveJSONNumber(value) {
 			return fmt.Errorf("thread/turns/list.limit 必须是正整数")

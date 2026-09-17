@@ -95,7 +95,8 @@ func TestAppServerDeepSeekMethodsExcludeUnverifiedCapabilities(t *testing.T) {
 	}
 	required := []string{
 		"thread/list", "thread/search", "thread/start", "thread/read",
-		"thread/turns/list", "thread/items/list", "turn/start", "turn/interrupt", "model/list",
+		"thread/turns/list", "thread/items/list", "thread/unsubscribe",
+		"turn/start", "turn/interrupt", "model/list",
 	}
 	for _, method := range required {
 		if _, ok := appServerDeepSeekAllowedMethods[method]; !ok {

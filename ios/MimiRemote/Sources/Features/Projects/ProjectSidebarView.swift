@@ -151,6 +151,15 @@ struct ProjectSidebarView: View {
                     }
                 }
 
+                if showsSessions && sessionStore.isSessionSearchActive,
+                   let notice = sessionStore.remoteSessionSearchNotice {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(tokens.secondaryText)
+                        .sidebarListRow()
+                        .accessibilityIdentifier("sidebar.search.partialFailure")
+                }
+
                 // 远端搜索是跨项目分页，只放一个全局入口；0 项目/0 可见命中时也能继续翻页。
                 if showsSessions && sessionStore.isSessionSearchActive && sessionStore.sessionSearchHasMore {
                     sidebarSearchLoadMoreRow(tokens: tokens)

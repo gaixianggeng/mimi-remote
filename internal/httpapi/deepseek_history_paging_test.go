@@ -40,10 +40,15 @@ func TestDeepSeekTurnPageKeepsPagingWhileHistoryRemains(t *testing.T) {
 	harness := newFakeDeepSeekHarness(t)
 	// 上游一直说"还有更早的记录"，但页里没有任何 turn/start，因此缓存里的 turn 数
 	// 不会增长——这正是"一次请求的取页上限用尽，而宿主历史仍未读完"的形态。
+	seq := int64(1999)
+	pageCalls := 0
 	harness.handle(harnessclient.MethodSessionPage, func(json.RawMessage) (any, *harnessclient.RemoteError) {
+		pageCalls++
+		current := seq
+		seq--
 		return map[string]any{
 			"records": []any{
-				map[string]any{"type": "step/start", "seq": 0, "data": map[string]any{"turn": 1, "step": 1}},
+				map[string]any{"type": "step/start", "seq": current, "data": map[string]any{"turn": 1, "step": 1}},
 			},
 			"hasMore": true,
 		}, nil
@@ -52,7 +57,7 @@ func TestDeepSeekTurnPageKeepsPagingWhileHistoryRemains(t *testing.T) {
 
 	follow := &deepSeekFollow{threadID: "s-1", updated: make(chan struct{}, 1)}
 	follow.note([]harnessclient.SessionWireEvent{
-		{Type: deepSeekEventTurnStart, Seq: 1, Data: json.RawMessage(`{"turn":1}`)},
+		{Type: deepSeekEventTurnStart, Seq: 2000, Data: json.RawMessage(`{"turn":1}`)},
 	})
 	// 刻意不调 markReachedStart：开场快照声明 hasMore，即还有更早的记录。
 
@@ -63,19 +68,35 @@ func TestDeepSeekTurnPageKeepsPagingWhileHistoryRemains(t *testing.T) {
 	if len(page) != 1 {
 		t.Fatalf("应返回缓存里的那一轮：%+v", page)
 	}
-	if next == 0 {
+	if next == "" {
 		t.Fatal("宿主历史还没读完时不得收尾：客户端会把缓存边界当成会话开头")
 	}
 	if !hasMore {
 		t.Fatal("宿主历史还没读完时必须报告还有下一页")
 	}
 	// 走真实的出参路径，确认这个偏移量确实变成了一个可回传的游标而不是 null。
-	cursor, _ := deepSeekPageResult(nil, next, hasMore)["nextCursor"].(string)
+	cursor, _ := deepSeekPageResultWithCursor(nil, next, hasMore)["nextCursor"].(string)
 	if cursor == "" {
-		t.Fatalf("下一页游标必须可被回传：%d", next)
+		t.Fatalf("下一页游标必须可被回传：%q", next)
 	}
-	if offset, ok := deepSeekOffsetCursor(cursor); !ok || offset != next {
-		t.Fatalf("游标必须能解析回同一个偏移：%q => %d, %v", cursor, offset, ok)
+	parsed, err := parseDeepSeekTurnPageCursor(cursor, "desc", follow)
+	if err != nil || parsed.Offset != 1 || parsed.OldestSeq >= 2000 {
+		t.Fatalf("游标必须保留 turn 位置与上游进度：%q => %+v, %v", cursor, parsed, err)
+	}
+
+	// 下一次仍没有新 turn 时，turn offset 不变，但最老 seq 已继续前进；游标必须变化，
+	// 否则 iOS 会把它判成上游重复 cursor 并停止翻页。
+	secondPage, second, secondHasMore, err := conn.deepSeekTurnPage(context.Background(), follow, map[string]any{
+		"cursor": cursor,
+	})
+	if err != nil {
+		t.Fatalf("继续取页失败：%v", err)
+	}
+	if len(secondPage) != 0 || !secondHasMore || second == "" || second == cursor {
+		t.Fatalf("无新 turn 时也必须体现读取进度：page=%+v cursor=%q first=%q hasMore=%v", secondPage, second, cursor, secondHasMore)
+	}
+	if pageCalls != 2*deepSeekMaxHistoryFetchPages {
+		t.Fatalf("每次请求都必须遵守内部取页上限：calls=%d", pageCalls)
 	}
 }
 
@@ -100,13 +121,13 @@ func TestDeepSeekTurnPageStopsAtSessionStart(t *testing.T) {
 	if len(page) != 1 {
 		t.Fatalf("应返回缓存里的那一轮：%+v", page)
 	}
-	if next != 0 {
-		t.Fatalf("读到会话开头就应收尾，得到游标 %d", next)
+	if next != "" {
+		t.Fatalf("读到会话开头就应收尾，得到游标 %q", next)
 	}
 	if hasMore {
 		t.Fatal("读到会话开头后不得再报告还有下一页")
 	}
-	if _, present := deepSeekPageResult(nil, next, hasMore)["nextCursor"]; !present {
+	if _, present := deepSeekPageResultWithCursor(nil, next, hasMore)["nextCursor"]; !present {
 		t.Fatal("分页结果必须带 nextCursor 键（可为 null）")
 	}
 }

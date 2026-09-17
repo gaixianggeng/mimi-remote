@@ -60,6 +60,9 @@ func TestDeepSeekDefaultsAreDisabled(t *testing.T) {
 	if cfg.Enabled {
 		t.Fatal("DeepSeek 必须默认关闭")
 	}
+	if cfg.AutoDiscover {
+		t.Fatal("DeepSeek 默认不能自动改写手动连接")
+	}
 	if cfg.MaxConcurrentSessions != DefaultDeepSeekMaxConcurrentSessions {
 		t.Fatalf("并发上限默认值不符：%d", cfg.MaxConcurrentSessions)
 	}
