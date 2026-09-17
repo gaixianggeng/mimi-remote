@@ -686,7 +686,8 @@ extension SessionStore {
         if case .userOpen = reason { notificationNavigation.userNavigated() }
         let previousSession = selectedSession
         let session = sessionForExplicitSelection(candidate)
-        let wasNoOpSelection = isNoOpHistorySelection(session)
+        let isNotificationOpen = reason == .notification
+        let wasNoOpSelection = !isNotificationOpen && isNoOpHistorySelection(session)
         guard let selectionLease = commitSelection(
             projectID: session.projectID,
             sessionID: session.id,
@@ -737,7 +738,32 @@ extension SessionStore {
         }
 #endif
 
-        if session.isRunning && canControlSession(session) {
+        if isNotificationOpen {
+            // 推送与实时事件走不同链路。通知到达时本地签名可能还停在上一轮，
+            // 必须为通知目标重新取首屏，不能依赖挂起前所选会话的前台恢复。
+            if let previousJob = historyLoadJobsBySessionID[session.id] {
+                // 即使旧请求已绕过缓存，也可能早于这次通知；它不能代表通知后的快照。
+                cancelHistoryLoadJob(previousJob, sessionID: session.id)
+            }
+            let didRefreshHistory = await loadHistory(
+                for: session,
+                quiet: true,
+                showsProgress: true,
+                force: true,
+                reason: .authoritativeReopen
+            )
+            guard isSelectionLeaseCurrent(selectionLease),
+                  let refreshed = selectedSession else { return false }
+            if refreshed.isRunning && !canControlSession(refreshed) {
+                disconnectWebSocket()
+            } else {
+                connectWebSocket(
+                    refreshed,
+                    replayBufferedEvents: !didRefreshHistory,
+                    allowNonRunning: true
+                )
+            }
+        } else if session.isRunning && canControlSession(session) {
             // 重新点回运行会话时，离开期间的输出先用 thread/read 快照一次性补齐；
             // 随后的 WebSocket 只回放状态级 backlog，避免消息区把旧 delta 逐条直播。
             let didRefreshHistory = await loadHistory(for: session)

@@ -8,6 +8,67 @@ import XCTest
 /// fixture 只写入脱敏的本地历史，不连接真实 runtime，也不依赖某个滚动策略布尔函数。
 @MainActor
 final class ConversationTimelineRuntimeRegressionTests: XCTestCase {
+    func testActiveProcessCollapsesWhenOnlySessionStatusChanges() async throws {
+        for provider in [TimelineRuntimeProviderFixture.codex, .claude] {
+            let fixture = try makeFixture(provider: provider)
+            defer {
+                fixture.tearDown()
+                ConversationTimelineViewport.testingViewObserver = nil
+            }
+            _ = try await waitForFirstReadableTail(in: fixture.host.view, provider: provider)
+            let steps: [CodexHistoryMessage] = (0..<2).map { (index: Int) -> CodexHistoryMessage in
+                let timestamp = Date(timeIntervalSince1970: Double(2_000 + index))
+                let ordinal = Int64(2_000 + index)
+                return CodexHistoryMessage(
+                    id: "live-process-\(index)", role: "assistant", kind: .commentary,
+                    content: index == 0 ? "检查配置" : "读取代码",
+                    createdAt: timestamp, turnID: "live-turn",
+                    timelineOrdinal: ordinal, turnLifecycle: .inProgress
+                )
+            }
+            fixture.sessionStore.sessions[0].status = "running"
+            fixture.sessionStore.sessions[0].activeTurnID = "live-turn"
+            fixture.conversationStore.setHistory(steps, sessionID: fixture.primarySessionID)
+            let source = fixture.conversationStore.timelineSource(for: fixture.primarySessionID)
+            let first = try XCTUnwrap(source.messages.first { $0.stableID == steps[0].id })
+            let second = try XCTUnwrap(source.messages.first { $0.stableID == steps[1].id })
+            let expandedDeadline = Date().addingTimeInterval(5)
+            var hasSeparateRows = false
+            repeat {
+                fixture.host.view.layoutIfNeeded()
+                if let firstView = fixture.markerViews.object(forKey: first.id as NSUUID),
+                   let secondView = fixture.markerViews.object(forKey: second.id as NSUUID),
+                   firstView.window != nil, secondView.window != nil {
+                    hasSeparateRows = firstView !== secondView
+                }
+                if hasSeparateRows { break }
+                try await Task.sleep(for: .milliseconds(16))
+            } while Date() < expandedDeadline
+            XCTAssertTrue(hasSeparateRows, "\(provider.label) 当前轮的两个过程步骤应各自显示")
+
+            // 不写入新消息，专门验证会话从 running 变为 idle 能触发 UI 重投影。
+            fixture.sessionStore.sessions[0].status = "idle"
+            let collapsedDeadline = Date().addingTimeInterval(5)
+            var hasSharedSummary = false
+            repeat {
+                fixture.host.view.layoutIfNeeded()
+                if let firstView = fixture.markerViews.object(forKey: first.id as NSUUID),
+                   let secondView = fixture.markerViews.object(forKey: second.id as NSUUID),
+                   firstView.window != nil, secondView.window != nil {
+                    hasSharedSummary = firstView === secondView
+                }
+                if hasSharedSummary { break }
+                try await Task.sleep(for: .milliseconds(16))
+            } while Date() < collapsedDeadline
+            XCTAssertTrue(hasSharedSummary, "\(provider.label) 结束后两个步骤只共享同一个过程总览")
+            XCTAssertEqual(fixture.conversationStore.timelineSource(for: fixture.primarySessionID).revision, source.revision)
+            let scrollView = try XCTUnwrap(conversationTimelineScrollView(in: fixture.host.view))
+            try await assertReadableFramesStayAtTail(in: fixture.host.view, frameCount: 8,
+                                                     provider: provider, context: "过程自动收起")
+            XCTAssertLessThanOrEqual(distanceFromBottom(scrollView), 4)
+        }
+    }
+
     func testCodexTimelineKeepsReadableViewportAcrossRuntimeUpdates() async throws {
         try await assertRuntimeTimelineUserResults(provider: .codex)
     }

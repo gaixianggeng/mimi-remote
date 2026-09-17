@@ -717,15 +717,27 @@ extension SessionStore {
         quiet: Bool,
         successStatusMessage: String?
     ) async -> Bool {
+        let hostScope = appStore.activeHostScope
         do {
             let result = try await job.task.value
-            return finishHistoryLoadJob(
+            let ownsJob = historyLoadJobsBySessionID[session.id]?.token == job.token
+            let didLoad = finishHistoryLoadJob(
                 job,
                 result: result,
                 sessionID: session.id,
                 quiet: quiet,
                 successStatusMessage: successStatusMessage
             )
+            if didLoad, ownsJob, job.cachePolicy == .bypass {
+                // Runtime 的补偿事件可能投递给正在退役的订阅。使用本次有效的新快照
+                // 直接校准 Store，避免正文已补齐却仍握着旧 activeTurnID。
+                await reconcileTurnCompletionFromHistoryPage(
+                    result.page,
+                    sessionID: session.id,
+                    hostScope: hostScope
+                )
+            }
+            return didLoad
         } catch {
             return await failHistoryLoadJob(job, session: session, error: error, quiet: quiet)
         }

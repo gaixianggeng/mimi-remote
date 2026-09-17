@@ -137,6 +137,8 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/LockScreenApprovalRoutingTests \
   -only-testing:MimiRemoteTests/NotificationRoutingGateTests \
   -only-testing:MimiRemoteTests/NotificationRouteResolutionTests \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCompletionAwaitingReducerDoesNotOverwriteNewerActiveTurn \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testPagedHistoryRetainsInvisibleTurnStatesForCompletionRecovery \
   -only-testing:MimiRemoteTests/NotificationTitleCacheTests \
   -only-testing:MimiRemoteTests/NotificationContentRewriterTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreReplaysDirectAppServerEventStreamFixture \

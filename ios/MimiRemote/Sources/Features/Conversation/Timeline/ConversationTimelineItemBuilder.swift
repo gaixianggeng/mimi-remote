@@ -5,9 +5,13 @@ struct ConversationTimelineItemBuilder {
         from messages: [ConversationMessage],
         provider: ConversationTimelineProvider = .codex,
         showsDetailedTranscript: Bool = false,
-        expandedProcessMessageIDs: Set<UUID> = []
+        expandedProcessMessageIDs: Set<UUID> = [],
+        collapsedProcessMessageIDs: Set<UUID> = [],
+        activeTurn: ConversationTimelineActiveTurn? = nil
     ) -> [ConversationTimelineItem] {
         let lifecycles = effectiveTurnLifecycles(in: messages)
+        let latestUserIndex = messages.lastIndex { $0.role == .user } ?? messages.startIndex
+        let completedTurnIDs = Set(messages.filter { $0.turnLifecycle == .completed }.compactMap(\.turnID))
         var result: [ConversationTimelineItem] = []
         var pendingFileIDs: [UUID] = []
         var pendingFileTurnID: TurnID?
@@ -34,6 +38,7 @@ struct ConversationTimelineItemBuilder {
                 continue
             }
 
+            let processStartIndex = index
             var children: [ConversationMessage] = []
             while index < messages.endIndex, isProcessMessage(messages[index]),
                   messages[index].turnID == message.turnID {
@@ -43,7 +48,19 @@ struct ConversationTimelineItemBuilder {
             let lifecycle = message.turnID.flatMap { lifecycles[$0] }
                 ?? fallbackTurnLifecycle(for: children, nextIndex: index, messages: messages)
             // 用原始消息记录手动展开意图：历史前插改变首项和派生组 ID 时，原有展开仍有效。
-            let expanded = showsDetailedTranscript || children.contains { expandedProcessMessageIDs.contains($0.id) }
+            // 自动展开只属于当前轮，不写入手动意图；收到完成状态后自然恢复折叠。
+            // final 文本可能先于 turn 完成到达，不能仅因答复已确认而提前收起。
+            let automaticallyExpanded = activeTurn.map { turn in
+                processStartIndex >= latestUserIndex
+                    && (turn.id == nil || message.turnID == nil || message.turnID == turn.id)
+                    // 旧过程事件可缺失轮次 ID；借用当前轮次时也必须尊重它的完成状态。
+                    && !completedTurnIDs.contains(message.turnID ?? turn.id ?? "")
+                    && !children.contains { $0.turnLifecycle == .completed }
+                    && lifecycle != .failed && lifecycle != .interrupted
+            } ?? false
+            let expanded = showsDetailedTranscript
+                || children.contains { expandedProcessMessageIDs.contains($0.id) }
+                || (automaticallyExpanded && !children.contains { collapsedProcessMessageIDs.contains($0.id) })
             let group = ConversationProcessGroup(messages: children, lifecycle: lifecycle, isExpanded: expanded)
             result.append(.processGroup(group))
             if expanded {

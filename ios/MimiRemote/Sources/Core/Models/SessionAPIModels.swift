@@ -293,6 +293,12 @@ struct HistoryTurnItemsPage: Equatable {
     let continuation: HistoryTurnItemsContinuation?
 }
 
+/// 与可见消息分开保留轮次事实；空轮次或被过滤的内部消息也必须参与终态校准。
+struct HistoryTurnState: Equatable {
+    let id: TurnID
+    let lifecycle: ConversationTurnLifecycle
+}
+
 struct HistoryMessagesPage: Equatable {
     enum LoadMode: String, Equatable, Hashable {
         case full
@@ -309,6 +315,7 @@ struct HistoryMessagesPage: Equatable {
     let authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>]
     let itemContinuations: [HistoryTurnItemsContinuation]
     let latestForkableTurnID: TurnID?
+    let turnStates: [HistoryTurnState]
 
     init(response: MessagesResponse) {
         self.messages = response.messages
@@ -321,6 +328,7 @@ struct HistoryMessagesPage: Equatable {
         self.authoritativeCompletedTurnItems = [:]
         self.itemContinuations = []
         self.latestForkableTurnID = nil
+        self.turnStates = []
     }
 
     init(
@@ -333,7 +341,8 @@ struct HistoryMessagesPage: Equatable {
         notice: String? = nil,
         authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:],
         itemContinuations: [HistoryTurnItemsContinuation] = [],
-        latestForkableTurnID: TurnID? = nil
+        latestForkableTurnID: TurnID? = nil,
+        turnStates: [HistoryTurnState] = []
     ) {
         self.messages = messages
         self.previousCursor = previousCursor
@@ -345,6 +354,7 @@ struct HistoryMessagesPage: Equatable {
         self.authoritativeCompletedTurnItems = authoritativeCompletedTurnItems
         self.itemContinuations = itemContinuations
         self.latestForkableTurnID = latestForkableTurnID
+        self.turnStates = turnStates
     }
 }
 

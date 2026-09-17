@@ -5,6 +5,46 @@ import XCTest
 
 @MainActor
 final class ConversationScrollStabilityTests: XCTestCase {
+    func testAutomaticProcessCollapseKeepsFollowingFinalAnswer() async throws {
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        rig.messages = [ConversationMessage(turnID: "turn", role: .assistant, kind: .commentary,
+                                            content: "检查中", turnLifecycle: .inProgress)]
+        rig.publish(changes: .live, activeTurn: .init(id: "turn"))
+        rig.report(offset: 1_200)
+        await drain()
+        rig.commands.removeAll()
+        rig.publish(changes: [.live, .historyReplacement])
+        rig.report(offset: 1_200, height: 1_600)
+        await drain()
+        XCTAssertEqual(rig.controller.mode, .followingTail)
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 800, accuracy: 0.5)
+        XCTAssertTrue(rig.commands.contains { $0.target == .tail })
+    }
+
+    func testAutomaticProcessCollapseMapsReadingAnchorToSummary() async throws {
+        let rig = ScrollRig()
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        let process = ConversationMessage(turnID: "turn", role: .assistant, kind: .commentary,
+                                          content: "检查中", turnLifecycle: .inProgress)
+        rig.messages = [process]
+        rig.publish(changes: .live, activeTurn: .init(id: "turn"))
+        rig.report(offset: 1_200)
+        await drain()
+        rig.controller.beginLoadingEarlierHistory()
+        let marker = rig.addMarker(id: process.id)
+        rig.commands.removeAll()
+        rig.publish(changes: [.live, .historyReplacement])
+        marker.removeFromSuperview()
+        rig.report(offset: 1_200, height: 1_800)
+        await drain()
+        XCTAssertEqual(rig.controller.mode, .readingHistory)
+        XCTAssertTrue(rig.commands.contains { $0.target == .anchorItem("process:\(process.id.uuidString)") })
+        XCTAssertTrue(rig.commands.allSatisfy { $0.target != .tail })
+    }
+
     func testPresentationChangePreservesReadingPositionEvenWhenPreviouslyFollowingTail() async throws {
         let rig = ScrollRig()
         let window = try mount(rig.scrollView)
@@ -535,9 +575,9 @@ private final class ScrollRig {
         }
     }
 
-    func publish(changes: ConversationTimelineChangeReasons) {
+    func publish(changes: ConversationTimelineChangeReasons, activeTurn: ConversationTimelineActiveTurn? = nil) {
         revision += 1
-        let rows = ConversationTimelineItemBuilder.items(from: messages)
+        let rows = ConversationTimelineItemBuilder.items(from: messages, activeTurn: activeTurn)
         snapshot = ConversationTimelineSnapshot(
             scope: scope, rows: rows, rowIDs: rows.map(\.id), tail: nil,
             changes: changes, revision: revision
