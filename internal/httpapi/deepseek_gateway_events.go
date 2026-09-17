@@ -74,6 +74,7 @@ func (c *deepSeekGatewayConn) forgetFollow(follow *deepSeekFollow) {
 		return
 	}
 	delete(c.follows, follow.threadID)
+	delete(c.activeTurns, follow.threadID)
 	c.mu.Unlock()
 
 	follow.stream.Close()
@@ -141,18 +142,22 @@ func (c *deepSeekGatewayConn) handleDurableEvent(follow *deepSeekFollow, frame h
 // 用它区分"运行中的会话"与"只是被浏览过"。
 func (c *deepSeekGatewayConn) noteEventContext(threadID string, event harnessclient.SessionWireEvent) {
 	switch event.Type {
-	case deepSeekEventTurnStart:
+	case deepSeekEventTurnStart, deepSeekEventTurnEnd:
+		var data struct {
+			Turn *int64 `json:"turn"`
+		}
+		valid := json.Unmarshal(event.Data, &data) == nil && data.Turn != nil && *data.Turn >= 0
 		c.mu.Lock()
-		c.activeTurns[threadID]++
-		c.mu.Unlock()
-	case deepSeekEventTurnEnd:
-		c.mu.Lock()
-		// 只有归零才删除：同一个会话可以排着多轮，turn 计数不为零就说明还有轮次在跑，
-		// 而回收空闲订阅的判据正是它。
-		if count := c.activeTurns[threadID]; count > 1 {
-			c.activeTurns[threadID] = count - 1
-		} else {
-			delete(c.activeTurns, threadID)
+		if follow := c.follows[threadID]; follow != nil {
+			follow.activityKnown = valid
+		}
+		if valid {
+			// 与快照采用同一串行 turn 投影，重复 start 不累加成永远无法归零的计数。
+			if event.Type == deepSeekEventTurnStart {
+				c.activeTurns[threadID] = 1
+			} else {
+				delete(c.activeTurns, threadID)
+			}
 		}
 		c.mu.Unlock()
 	case deepSeekEventToolCall:
@@ -242,6 +247,12 @@ const (
 
 // dispatchWaterfall 把一条交互请求向下发，送不到时暂存。
 func (c *deepSeekGatewayConn) dispatchWaterfall(ctx context.Context, request harnessclient.WaterfallRequest) {
+	c.interactionMu.Lock()
+	defer c.interactionMu.Unlock()
+	if c.interactionIsTerminal(request.EventID) || c.interactionIsDelivered(request.EventID) {
+		return
+	}
+
 	threadID, evidence := c.attributeWaterfall(request)
 	if threadID == "" {
 		// 没有方向性证据时不猜一个会话塞进去，而是暂存等关联信息补齐。
@@ -252,7 +263,12 @@ func (c *deepSeekGatewayConn) dispatchWaterfall(ctx context.Context, request har
 		c.holdInteraction(request, "")
 		return
 	}
-	if c.deliverWaterfall(request, threadID, evidence) == deepSeekDeferred {
+	switch c.deliverWaterfall(request, threadID, evidence) {
+	case deepSeekDelivered, deepSeekDropped:
+		// 同一个 eventId 可能先因无法归属进入暂存，随后又从另一条流重投。
+		// 成功下发或永久放弃后必须一并清掉旧暂存，避免定时重试再生成一张卡片。
+		c.forgetPendingInteraction(request.EventID)
+	case deepSeekDeferred:
 		c.holdInteraction(request, evidence)
 	}
 }
@@ -261,13 +277,29 @@ func (c *deepSeekGatewayConn) dispatchWaterfall(ctx context.Context, request har
 //
 // evidence 只用于诊断：它区分"上游直接给了会话身份"与"靠 callId 关联"，现场排查
 // 归属问题时要能看出这条卡片是凭什么认领的。未送达时由调用方决定暂存还是放弃。
+// 调用方必须持有 interactionMu，覆盖有效性检查、登记和实际写帧。
 func (c *deepSeekGatewayConn) deliverWaterfall(
 	request harnessclient.WaterfallRequest,
 	threadID string,
 	evidence string,
 ) deepSeekDeliveryStatus {
+	if c.interactionIsTerminal(request.EventID) {
+		return deepSeekDropped
+	}
+	if c.interactionIsDelivered(request.EventID) {
+		return deepSeekDelivered
+	}
+	c.mu.Lock()
+	held, waiting := c.pendingInteractions[strings.TrimSpace(request.EventID)]
+	c.mu.Unlock()
+	if waiting && !time.Now().Before(held.expiresAt) {
+		// 另一条流直接重投也必须遵守首次暂存的期限，不能绕过 retry 的过期检查。
+		c.markInteractionTerminal(request.EventID)
+		return deepSeekDropped
+	}
 	translated, ok := translateDeepSeekWaterfall(threadID, request)
 	if !ok {
+		c.markInteractionTerminal(request.EventID)
 		log.Printf("deepseek gateway 暂不支持的交互已忽略 event=%s",
 			sanitizeGatewayDiagnostic(request.Event))
 		return deepSeekDropped
@@ -297,6 +329,7 @@ func (c *deepSeekGatewayConn) deliverWaterfall(
 	c.dropWaterfall(request.EventID)
 	if c.isClosed() {
 		// 连接正在关闭，暂存没有意义。
+		c.markInteractionTerminal(request.EventID)
 		return deepSeekDropped
 	}
 	// 送不到还有一种常见原因：策略层按会话授权丢掉了它——本连接还没打开过这个会话。
@@ -324,10 +357,14 @@ func (c *deepSeekGatewayConn) deliverWaterfall(
 // 等待窗口有界：超过 deepSeekInteractionHoldTimeout 仍未送达就丢弃并记诊断。
 // 期间不做任何"替其他会话作答"的动作——不发 unavailable、不发 rejected，
 // 因为那等于替一个我们根本不知道的会话做决定。
+// 调用方必须持有 interactionMu。
 func (c *deepSeekGatewayConn) holdInteraction(request harnessclient.WaterfallRequest, evidence string) {
 	eventID := strings.TrimSpace(request.EventID)
 	if eventID == "" {
 		// 没有 eventId 既无法应答也无法按 cancel 撤销，暂存没有意义。
+		return
+	}
+	if c.interactionIsTerminal(eventID) || c.interactionIsDelivered(eventID) {
 		return
 	}
 	log.Printf("deepseek gateway 交互请求暂存等待送达 event=%s evidence=%s callId=%s",
@@ -379,6 +416,12 @@ func (c *deepSeekGatewayConn) scheduleInteractionRetry() {
 // 串行化后每个触发点要么自己完成一轮，要么发现已有轮次在跑而跳过；被跳过的触发点
 // 所代表的关联信息，要么已被在跑的那轮看到，要么由该轮结束后的下一次轮询接住。
 func (c *deepSeekGatewayConn) retryPendingInteractions() {
+	c.retryPendingInteractionsAfterSnapshot(nil)
+}
+
+// retryPendingInteractionsAfterSnapshot 允许测试在“已复制待重试项、尚未登记下发”这一
+// 精确切点同步 cancel。生产调用不传 hook；参数只用于确定性覆盖这条并发时序。
+func (c *deepSeekGatewayConn) retryPendingInteractionsAfterSnapshot(afterSnapshot func()) {
 	if !c.retryMu.TryLock() {
 		return
 	}
@@ -388,48 +431,66 @@ func (c *deepSeekGatewayConn) retryPendingInteractions() {
 	}
 
 	c.mu.Lock()
-	pending := make([]deepSeekPendingInteraction, 0, len(c.pendingInteractions))
-	for _, entry := range c.pendingInteractions {
-		pending = append(pending, entry)
+	pending := make([]string, 0, len(c.pendingInteractions))
+	for eventID := range c.pendingInteractions {
+		pending = append(pending, eventID)
 	}
 	c.mu.Unlock()
 	if len(pending) == 0 {
 		return
 	}
+	if afterSnapshot != nil {
+		afterSnapshot()
+	}
 
-	now := time.Now()
 	remaining := 0
-	for _, entry := range pending {
-		eventID := strings.TrimSpace(entry.request.EventID)
-		threadID, evidence := c.attributeWaterfall(entry.request)
-		if threadID == "" {
-			if now.Before(entry.expiresAt) {
-				remaining++
-				continue
-			}
-			c.forgetPendingInteraction(eventID)
-			log.Printf("deepseek gateway 交互请求在等待窗口内未能归属，已丢弃 event=%s callId=%s",
-				sanitizeGatewayDiagnostic(entry.request.Event), deepSeekCallIDPresence(entry.request))
-			continue
-		}
-		switch c.deliverWaterfall(entry.request, threadID, evidence) {
-		case deepSeekDelivered, deepSeekDropped:
-			// 已送达（登记待应答）或永久放弃（不支持/连接关闭），都不再保留暂存。
-			c.forgetPendingInteraction(eventID)
-		case deepSeekDeferred:
-			// 归属已知但仍无从送达（会话尚未授权/打开）。保留原到期时间继续等，
-			// 不因为一次未送达就重开等待窗口——重开会把"等待 2 分钟"退化成"永远等"。
-			if now.Before(entry.expiresAt) {
-				remaining++
-				continue
-			}
-			c.forgetPendingInteraction(eventID)
-			log.Printf("deepseek gateway 交互请求在等待窗口内未能送达，已丢弃 event=%s callId=%s",
-				sanitizeGatewayDiagnostic(entry.request.Event), deepSeekCallIDPresence(entry.request))
+	for _, eventID := range pending {
+		if c.retryPendingInteraction(eventID) {
+			remaining++
 		}
 	}
 	if remaining > 0 && !c.isClosed() {
 		c.scheduleInteractionRetry()
+	}
+}
+
+// retryPendingInteraction 在交互生命周期锁内重新读取暂存项并完成一次状态转换。
+// cancel 若先取得锁会删除暂存项，本次重试随即失效；下发若先取得锁，则 cancel 会在
+// 请求写出并登记后撤销客户端卡片。两种顺序都不会留下“取消后复活”的请求。
+func (c *deepSeekGatewayConn) retryPendingInteraction(eventID string) bool {
+	c.interactionMu.Lock()
+	defer c.interactionMu.Unlock()
+
+	c.mu.Lock()
+	entry, ok := c.pendingInteractions[strings.TrimSpace(eventID)]
+	c.mu.Unlock()
+	if !ok {
+		return false
+	}
+	if !time.Now().Before(entry.expiresAt) {
+		c.forgetPendingInteraction(eventID)
+		c.markInteractionTerminal(eventID)
+		log.Printf("deepseek gateway 交互请求等待送达已过期，已丢弃 event=%s callId=%s",
+			sanitizeGatewayDiagnostic(entry.request.Event), deepSeekCallIDPresence(entry.request))
+		return false
+	}
+
+	threadID, evidence := c.attributeWaterfall(entry.request)
+	if threadID == "" {
+		return true
+	}
+
+	switch c.deliverWaterfall(entry.request, threadID, evidence) {
+	case deepSeekDelivered, deepSeekDropped:
+		// 已送达（登记待应答）或永久放弃（不支持/连接关闭），都不再保留暂存。
+		c.forgetPendingInteraction(eventID)
+		return false
+	case deepSeekDeferred:
+		// 归属已知但仍无从送达（会话尚未授权/打开）。保留原到期时间继续等，
+		// 不因为一次未送达就重开等待窗口——重开会把“等待 2 分钟”退化成“永远等”。
+		return true
+	default:
+		return false
 	}
 }
 
@@ -498,6 +559,10 @@ const (
 
 // resolveCancelledWaterfall 通知移动端某条交互请求已作废（其它端先应答了）。
 func (c *deepSeekGatewayConn) resolveCancelledWaterfall(eventID string) {
+	c.interactionMu.Lock()
+	defer c.interactionMu.Unlock()
+	c.markInteractionTerminal(eventID)
+
 	c.mu.Lock()
 	pending, ok := c.waterfalls[eventID]
 	if ok {
@@ -523,15 +588,78 @@ func (c *deepSeekGatewayConn) resolveCancelledWaterfall(eventID string) {
 
 // takeWaterfall 取出一条待应答的交互请求。
 func (c *deepSeekGatewayConn) takeWaterfall(requestID int64) (deepSeekPendingWaterfall, bool) {
+	c.interactionMu.Lock()
+	defer c.interactionMu.Unlock()
+
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	for eventID, pending := range c.waterfalls {
 		if pending.requestID == requestID {
 			delete(c.waterfalls, eventID)
+			c.mu.Unlock()
+			c.markInteractionTerminal(eventID)
 			return pending, true
 		}
 	}
+	c.mu.Unlock()
 	return deepSeekPendingWaterfall{}, false
+}
+
+const (
+	// 终态只需覆盖上游重投和双流乱序窗口；同时限制条数，避免长连接无限增长。
+	deepSeekInteractionTerminalTTL = 10 * time.Minute
+	deepSeekInteractionTerminalMax = 64
+)
+
+// interactionIsDelivered 报告 eventId 是否已经登记成客户端可见的待应答卡片。
+// 调用方必须持有 interactionMu，保证检查和后续状态转换之间没有 cancel 窗口。
+func (c *deepSeekGatewayConn) interactionIsDelivered(eventID string) bool {
+	c.mu.Lock()
+	_, ok := c.waterfalls[strings.TrimSpace(eventID)]
+	c.mu.Unlock()
+	return ok
+}
+
+// interactionIsTerminal 报告 eventId 是否已经取消、完成、过期或永久放弃。
+// 调用方必须持有 interactionMu。
+func (c *deepSeekGatewayConn) interactionIsTerminal(eventID string) bool {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" || c.terminalInteractions == nil {
+		return false
+	}
+	terminalAt, ok := c.terminalInteractions[eventID]
+	if ok && time.Since(terminalAt) >= deepSeekInteractionTerminalTTL {
+		delete(c.terminalInteractions, eventID)
+		return false
+	}
+	return ok
+}
+
+// markInteractionTerminal 以时间和数量双重边界保存终态，阻止同一 eventId 经另一条流复活。
+// 调用方必须持有 interactionMu。
+func (c *deepSeekGatewayConn) markInteractionTerminal(eventID string) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return
+	}
+	if c.terminalInteractions == nil {
+		c.terminalInteractions = map[string]time.Time{}
+	}
+	now := time.Now()
+	var oldestID string
+	var oldestAt time.Time
+	for id, terminalAt := range c.terminalInteractions {
+		if now.Sub(terminalAt) >= deepSeekInteractionTerminalTTL {
+			delete(c.terminalInteractions, id)
+			continue
+		}
+		if oldestID == "" || terminalAt.Before(oldestAt) {
+			oldestID, oldestAt = id, terminalAt
+		}
+	}
+	if _, exists := c.terminalInteractions[eventID]; !exists && len(c.terminalInteractions) >= deepSeekInteractionTerminalMax {
+		delete(c.terminalInteractions, oldestID)
+	}
+	c.terminalInteractions[eventID] = now
 }
 
 // respondWaterfall 把移动端应答翻译成 Harness 的 outcome 并回传。

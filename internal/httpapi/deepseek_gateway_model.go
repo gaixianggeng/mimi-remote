@@ -127,6 +127,7 @@ type deepSeekSelection struct {
 // 记录不在缓存里（例如更早的轮次已被切掉）时返回 false，由调用方继续走目录。
 func deepSeekSessionSelection(records []harnessclient.SessionWireEvent) (deepSeekSelection, bool) {
 	var lastUsed *deepSeekSelection
+	var pending *deepSeekSelection
 	for _, record := range records {
 		switch record.Type {
 		case deepSeekEventModelSelection:
@@ -140,21 +141,48 @@ func deepSeekSessionSelection(records []harnessclient.SessionWireEvent) (deepSee
 				Effort:   strings.TrimSpace(data.ReasoningEffort),
 			}
 			if selection.Provider != "" && selection.Model != "" {
-				// pending 一旦出现就是最新的意图，后到的 request/header 不再覆盖它。
-				return selection, true
+				// 后一条 model/selection 会替换前一条 pending，不能在第一次命中时返回。
+				pending = &selection
 			}
 		case deepSeekEventRequestHeader:
-			var data deepSeekRequestHeaderData
+			var data struct {
+				Header struct {
+					Config struct {
+						Provider        string          `json:"provider"`
+						Model           string          `json:"model"`
+						ReasoningEffort json.RawMessage `json:"reasoningEffort"`
+					} `json:"config"`
+				} `json:"header"`
+			}
 			if json.Unmarshal(record.Data, &data) != nil {
 				continue
 			}
 			config := data.Header.Config
-			// 不取 request/header 里的档位（可能是数字，且这里只需要 provider+model）。
-			lastUsed = &deepSeekSelection{
+			selection := deepSeekSelection{
 				Provider: strings.TrimSpace(config.Provider),
 				Model:    strings.TrimSpace(config.Model),
 			}
+			// Harness 的投影用 String(...) 规范化实际档位；保留该字段才能准确判断
+			// pending 是否已被这次请求消费。字段缺失时与未指定档位等价。
+			if len(config.ReasoningEffort) > 0 && string(config.ReasoningEffort) != "null" {
+				var effort any
+				if json.Unmarshal(config.ReasoningEffort, &effort) == nil {
+					selection.Effort = strings.TrimSpace(fmt.Sprint(effort))
+				}
+			}
+			if selection.Provider == "" || selection.Model == "" {
+				continue
+			}
+			lastUsed = &selection
+			// Harness 只在实际使用的完整选择等于 pending 时消费它。否则 pending
+			// 仍表示下一次请求的选择，优先级继续高于刚观察到的 lastUsed。
+			if pending != nil && *pending == selection {
+				pending = nil
+			}
 		}
+	}
+	if pending != nil {
+		return *pending, true
 	}
 	if lastUsed != nil && lastUsed.Provider != "" && lastUsed.Model != "" {
 		return *lastUsed, true

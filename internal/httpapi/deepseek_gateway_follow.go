@@ -26,6 +26,9 @@ import (
 type deepSeekFollow struct {
 	threadID string
 	stream   *harnessclient.Stream
+	// activityKnown 在注册前初始化，注册后由连接的 c.mu 保护。
+	// 截断快照没有任何 turn 边界时，无法证明空闲，必须保留订阅等待实时边界。
+	activityKnown bool
 
 	mu sync.Mutex
 	// throughSeq 是订阅开场时 Harness 给出的日志切点。分页必须停在这里，
@@ -205,6 +208,33 @@ func (f *deepSeekFollow) awaitSnapshot(ctx context.Context) error {
 	f.reachedStart = !snapshot.HasMore
 	f.mu.Unlock()
 	return nil
+}
+
+// snapshotActivity 按升序恢复切点上的 turn 状态。Harness 的会话 turn 串行，
+// 与它的 foldConsumedWork 一样，最近的 start/end 边界决定当前是否仍有一轮未结束。
+// 完整空历史能证明空闲；只有中间片段、没有边界的截断历史则不能。
+func (f *deepSeekFollow) snapshotActivity() (active int, known bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	known = f.reachedStart
+	for _, event := range f.records {
+		if event.Type != deepSeekEventTurnStart && event.Type != deepSeekEventTurnEnd {
+			continue
+		}
+		var data struct {
+			Turn *int64 `json:"turn"`
+		}
+		if json.Unmarshal(event.Data, &data) != nil || data.Turn == nil || *data.Turn < 0 {
+			known = false
+			continue
+		}
+		known = true
+		active = 0
+		if event.Type == deepSeekEventTurnStart {
+			active = 1
+		}
+	}
+	return active, known
 }
 
 // through 返回分页切点。

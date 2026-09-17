@@ -136,6 +136,8 @@ type deepSeekGatewayConn struct {
 	// retryMu 串行化 retryPendingInteractions：关联信息补齐、客户端打开会话、轮询定时器
 	// 可能同时触发重试，串行化保证同一条暂存交互不会被并发下发两次（重复卡片）。
 	retryMu sync.Mutex
+	// interactionMu 将有效性检查、下发登记和取消串行化，保证撤卡不会先于请求送达。
+	interactionMu sync.Mutex
 	// clientID 是 $events ready 帧给出的应答标识，审批回传必需。
 	clientID string
 	follows  map[string]*deepSeekFollow
@@ -143,7 +145,8 @@ type deepSeekGatewayConn struct {
 	// 通道；会话标识由帧上的 agentId 给出，callId 映射是复核用的次选判据——只有本
 	// 连接真的在会话事件里见过这次调用才成立。
 	callThreads map[string]string
-	// activeTurns 记录每个会话还有几轮在跑。用于判断一条订阅能不能被回收成空闲，
+	// activeTurns 记录会话当前是否有未结束的 turn（Harness 在同一会话内串行运行）。
+	// 用于判断一条订阅能不能被回收成空闲，
 	// 不再参与交互归属（那件事只能靠帧上的身份字段或 callId，不能靠推断）。
 	activeTurns map[string]int
 	// waterfalls 记录已下发的反向请求，用于把 cancel 与客户端应答对回 Harness 的 eventId。
@@ -151,6 +154,9 @@ type deepSeekGatewayConn struct {
 	// pendingInteractions 暂存尚未送达客户端的交互请求（归属未知，或归属已知但本连接
 	// 还没获得该会话授权），按 eventId 索引。见 holdInteraction 与 retryPendingInteractions。
 	pendingInteractions map[string]deepSeekPendingInteraction
+	// terminalInteractions 由 interactionMu 保护，有界保留已取消/完成/过期事件，
+	// 避免另一条流迟到的同 eventId 请求重新生成卡片。
+	terminalInteractions map[string]time.Time
 	// threadProviders 记住客户端在 thread/start 上声明的供应商。iOS 端只在会话创建时
 	// 带 modelProvider，后续 turn/start 只带 model，而模型目录不保证 model id 全局唯一，
 	// 所以这份声明要留着。见 rememberDeepSeekThreadProvider。
@@ -249,17 +255,18 @@ func (r *Router) appServerDeepSeekGatewayWS(w http.ResponseWriter, req *http.Req
 	defer events.Close()
 
 	conn := &deepSeekGatewayConn{
-		router:              r,
-		client:              client,
-		harness:             harness,
-		clientID:            clientID,
-		follows:             map[string]*deepSeekFollow{},
-		callThreads:         map[string]string{},
-		activeTurns:         map[string]int{},
-		waterfalls:          map[string]deepSeekPendingWaterfall{},
-		pendingInteractions: map[string]deepSeekPendingInteraction{},
-		threadProviders:     map[string]string{},
-		policy:              newAppServerGatewayPolicy(r, appServerRuntimeDeepSeekID),
+		router:               r,
+		client:               client,
+		harness:              harness,
+		clientID:             clientID,
+		follows:              map[string]*deepSeekFollow{},
+		callThreads:          map[string]string{},
+		activeTurns:          map[string]int{},
+		terminalInteractions: map[string]time.Time{},
+		waterfalls:           map[string]deepSeekPendingWaterfall{},
+		pendingInteractions:  map[string]deepSeekPendingInteraction{},
+		threadProviders:      map[string]string{},
+		policy:               newAppServerGatewayPolicy(r, appServerRuntimeDeepSeekID),
 	}
 	conn.serve(ctx, events)
 }
@@ -389,6 +396,11 @@ func (c *deepSeekGatewayConn) ensureFollow(ctx context.Context, threadID string)
 		return existing, nil
 	}
 	c.follows[threadID] = follow
+	// 快照与实时流共享切点：先恢复运行态再公开订阅，读协程随后只消费切点后的事件。
+	// 否则另一个请求会在实时 turn/start 尚未到达时把正在运行的会话误当成空闲。
+	active, known := follow.snapshotActivity()
+	follow.activityKnown = known
+	c.activeTurns[threadID] = active
 	c.mu.Unlock()
 
 	// 这个会话现在可用了：暂存的交互里可能正好有属于它的。重连后的顺序必然如此
@@ -430,7 +442,7 @@ func (c *deepSeekGatewayConn) reclaimIdleFollow() bool {
 	var victim *deepSeekFollow
 	var victimUsed time.Time
 	for threadID, follow := range c.follows {
-		if c.activeTurns[threadID] > 0 || c.followHasPendingInteractionLocked(threadID) {
+		if !follow.activityKnown || c.activeTurns[threadID] > 0 || c.followHasPendingInteractionLocked(threadID) {
 			continue
 		}
 		used := follow.lastUsedAt()
@@ -444,6 +456,7 @@ func (c *deepSeekGatewayConn) reclaimIdleFollow() bool {
 		return false
 	}
 	delete(c.follows, victim.threadID)
+	delete(c.activeTurns, victim.threadID)
 	c.mu.Unlock()
 
 	// 标记为本地主动释放：读协程据此区分"上游断流"与"被回收"，前者要结束整条连接，
