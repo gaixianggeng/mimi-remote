@@ -164,13 +164,21 @@ type StreamValue struct {
 // WaterfallRequest 是需要客户端应答的交互请求。审批与用户追问共用这一层信封，
 // 用 Event 字段区分。上层据此合成 app-server 的反向请求。
 //
-// 会话归属：waterfall 是宿主级通道，实测帧里没有会话字段；这里仍把可能出现的
-// 候选键保留下来。取不到时上层必须按"未知归属"处理并跳过，不能猜一个会话塞进去。
+// 会话归属：waterfall 走的是宿主级通道，但它**不是**无身份的。api-gateway
+// 0.1.5-rc.2 构造帧时固定填 agentId（见 stream-protocol.ts 的 RemoteEventInvocationFrame：
+// agentId 是必填字段，startRemoteEvent 对空值直接抛错），而 Harness 的身份设计是
+// "agent 的注册表 id 等于其会话 id"（.agents/notes/implemented/simplification/
+// 2026-06-20-unify-agent-and-session-id），因此 agentId 就是会话标识。
+//
+// 这一条把归属从推断变成了核事实。此前没有解析该字段，才不得不用 callId 映射乃至
+// "唯一活跃会话"这类旁证去猜；那些旁证仍然保留为次选，但不再是唯一依据。
 type WaterfallRequest struct {
 	Type    string           `json:"type"`
 	EventID string           `json:"eventId"`
 	Event   string           `json:"event"`
 	Request WaterfallPayload `json:"request"`
+	// AgentID 是帧里的 Agent 身份，等于会话 id。生产帧必然存在。
+	AgentID string `json:"agentId,omitempty"`
 	// 候选的会话标识键，任一命中即采用。
 	SessionID string `json:"sessionId,omitempty"`
 	ThreadID  string `json:"threadId,omitempty"`
@@ -185,8 +193,12 @@ type WaterfallRequest struct {
 }
 
 // ThreadHint 返回 waterfall 帧里能确认的会话标识，取不到时为空串。
+//
+// agentId 排在最前：它是协议保证存在的字段，也是唯一由上游直接给出的会话标识。
+// 其余候选键是不同版本/不同形态的兼容入口，取不到时上层必须按"未知归属"处理，
+// 不能猜一个会话塞进去。
 func (w WaterfallRequest) ThreadHint() string {
-	for _, candidate := range []string{w.ThreadID, w.SessionID} {
+	for _, candidate := range []string{w.AgentID, w.ThreadID, w.SessionID} {
 		if strings.TrimSpace(candidate) != "" {
 			return strings.TrimSpace(candidate)
 		}

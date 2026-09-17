@@ -133,20 +133,52 @@ type deepSeekGatewayConn struct {
 	done chan<- string
 
 	mu sync.Mutex
+	// retryMu 串行化 retryPendingInteractions：关联信息补齐、客户端打开会话、轮询定时器
+	// 可能同时触发重试，串行化保证同一条暂存交互不会被并发下发两次（重复卡片）。
+	retryMu sync.Mutex
 	// clientID 是 $events ready 帧给出的应答标识，审批回传必需。
 	clientID string
 	follows  map[string]*deepSeekFollow
 	// callThreads 把工具调用的 callId 映射到会话。Harness 的审批 waterfall 是宿主级
-	// 通道，实测帧里不带会话标识；callId 是唯一能把审批归回会话的实测字段。
-	// 这个映射同时是最强的反向证据：callId 带了却查不到，说明这次调用不属于本连接
-	// 订阅的会话，此时不允许再靠下面的 activeTurns 认领。
+	// 通道；会话标识由帧上的 agentId 给出，callId 映射是复核用的次选判据——只有本
+	// 连接真的在会话事件里见过这次调用才成立。
 	callThreads map[string]string
-	// activeTurns 记录每个会话是否有未结束的 turn。只用于完全没有 callId 的交互
-	// （追问）在唯一活跃会话上兜底，见 attributeWaterfall。
+	// activeTurns 记录每个会话还有几轮在跑。用于判断一条订阅能不能被回收成空闲，
+	// 不再参与交互归属（那件事只能靠帧上的身份字段或 callId，不能靠推断）。
 	activeTurns map[string]int
 	// waterfalls 记录已下发的反向请求，用于把 cancel 与客户端应答对回 Harness 的 eventId。
 	waterfalls map[string]deepSeekPendingWaterfall
-	closed     bool
+	// pendingInteractions 暂存尚未送达客户端的交互请求（归属未知，或归属已知但本连接
+	// 还没获得该会话授权），按 eventId 索引。见 holdInteraction 与 retryPendingInteractions。
+	pendingInteractions map[string]deepSeekPendingInteraction
+	// threadProviders 记住客户端在 thread/start 上声明的供应商。iOS 端只在会话创建时
+	// 带 modelProvider，后续 turn/start 只带 model，而模型目录不保证 model id 全局唯一，
+	// 所以这份声明要留着。见 rememberDeepSeekThreadProvider。
+	threadProviders map[string]string
+	closed          bool
+}
+
+// deepSeekInteractionHoldTimeout 是一条交互请求在本地等待"能送达"的上限。
+//
+// 取值比 Harness 侧会话订阅超时宽得多：这里等的是"客户端打开那个会话"这类人工动作，
+// 窗口太短等于把可恢复的审批变成永久丢失。等待期间不替任何会话作答。
+const deepSeekInteractionHoldTimeout = 2 * time.Minute
+
+// deepSeekInteractionRetryInterval 是暂存重试的间隔。
+//
+// 用有界轮询而不是单一事件钩子，因为能让一条交互重新可送达的触发点不止一个：
+// 会话订阅建立、callId 落表、客户端打开会话（策略层随之授权）先后顺序不定，
+// 没有一个事件能把它们全部覆盖。
+const deepSeekInteractionRetryInterval = 3 * time.Second
+
+// deepSeekInteractionHoldMax 限制暂存条数，避免上游连续推送把内存撑大。
+const deepSeekInteractionHoldMax = 8
+
+// deepSeekPendingInteraction 是一条已接住、等送达的交互请求。
+type deepSeekPendingInteraction struct {
+	request harnessclient.WaterfallRequest
+	// expiresAt 固定不变：反复重试不应该把等待窗口无限延长。
+	expiresAt time.Time
 }
 
 // deepSeekPendingWaterfall 是一次已下发、等待应答的反向请求。
@@ -217,15 +249,17 @@ func (r *Router) appServerDeepSeekGatewayWS(w http.ResponseWriter, req *http.Req
 	defer events.Close()
 
 	conn := &deepSeekGatewayConn{
-		router:      r,
-		client:      client,
-		harness:     harness,
-		clientID:    clientID,
-		follows:     map[string]*deepSeekFollow{},
-		callThreads: map[string]string{},
-		activeTurns: map[string]int{},
-		waterfalls:  map[string]deepSeekPendingWaterfall{},
-		policy:      newAppServerGatewayPolicy(r, appServerRuntimeDeepSeekID),
+		router:              r,
+		client:              client,
+		harness:             harness,
+		clientID:            clientID,
+		follows:             map[string]*deepSeekFollow{},
+		callThreads:         map[string]string{},
+		activeTurns:         map[string]int{},
+		waterfalls:          map[string]deepSeekPendingWaterfall{},
+		pendingInteractions: map[string]deepSeekPendingInteraction{},
+		threadProviders:     map[string]string{},
+		policy:              newAppServerGatewayPolicy(r, appServerRuntimeDeepSeekID),
 	}
 	conn.serve(ctx, events)
 }
@@ -283,9 +317,11 @@ func (c *deepSeekGatewayConn) close() {
 		follows = append(follows, follow)
 	}
 	c.follows = map[string]*deepSeekFollow{}
+	c.pendingInteractions = map[string]deepSeekPendingInteraction{}
 	c.mu.Unlock()
 
 	for _, follow := range follows {
+		follow.markReleased()
 		follow.stream.Close()
 		c.router.releaseDeepSeekSession()
 	}
@@ -297,11 +333,16 @@ func (c *deepSeekGatewayConn) isClosed() bool {
 	return c.closed
 }
 
-// followFor 返回已经建立的会话订阅。
+// followFor 返回已经建立的会话订阅，并记录一次使用。
 func (c *deepSeekGatewayConn) followFor(threadID string) (*deepSeekFollow, bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	follow, ok := c.follows[threadID]
+	c.mu.Unlock()
+	if ok {
+		// 正在被访问的会话不能是"最久未使用"的那条，否则下一个会话一打开就会把它
+		// 回收掉。使用时间在这里刷新，回收判据才有意义。
+		follow.touch()
+	}
 	return follow, ok
 }
 
@@ -316,7 +357,7 @@ func (c *deepSeekGatewayConn) ensureFollow(ctx context.Context, threadID string)
 	if follow, ok := c.followFor(threadID); ok {
 		return follow, nil
 	}
-	if !c.router.acquireDeepSeekSession() {
+	if !c.acquireSessionSlot() {
 		return nil, errDeepSeekSessionLimit
 	}
 	stream, err := c.harness.FollowSession(ctx, threadID, true)
@@ -330,6 +371,7 @@ func (c *deepSeekGatewayConn) ensureFollow(ctx context.Context, threadID string)
 		c.router.releaseDeepSeekSession()
 		return nil, err
 	}
+	follow.touch()
 
 	// 注册与启动读协程必须在同一临界区里完成：先注册再启动，读协程才能看到自己
 	// 所属的 follow；反过来会让先到的帧落到一个未注册的 follow 上。
@@ -349,8 +391,87 @@ func (c *deepSeekGatewayConn) ensureFollow(ctx context.Context, threadID string)
 	c.follows[threadID] = follow
 	c.mu.Unlock()
 
+	// 这个会话现在可用了：暂存的交互里可能正好有属于它的。重连后的顺序必然如此
+	// ——$events 上的挂起交互先到，会话订阅随后才由客户端请求建立——不主动重试一次，
+	// 那条审批就要一直等到下一次轮询。
+	c.retryPendingInteractions()
+
 	go c.readFollow(ctx, follow)
 	return follow, nil
+}
+
+// acquireSessionSlot 申请一个会话订阅名额，必要时先回收一条空闲订阅。
+func (c *deepSeekGatewayConn) acquireSessionSlot() bool {
+	if c.router.acquireDeepSeekSession() {
+		return true
+	}
+	if !c.reclaimIdleFollow() {
+		return false
+	}
+	// 回收与申请之间有窗口，别的连接可能把刚归还的名额拿走；再试一次，失败就如实
+	// 报上限，不循环等待。
+	return c.router.acquireDeepSeekSession()
+}
+
+// reclaimIdleFollow 摘掉一条空闲订阅并归还它的名额。
+//
+// 只在上游断流或整条连接关闭时释放名额的话，"先后浏览三个会话"就会在第三个上失败：
+// 前两条订阅既没有运行中的 turn、也没有等用户决定的交互，却一直占着名额。错误文案里的
+// "稍后重试"在这里没有帮助——等待本身不会释放任何资源。
+//
+// 回收对象限定为"空闲"订阅：没有运行中的 turn、也没有已下发或暂存中的交互。运行中或
+// 正在等用户决定的会话绝不能被回收，否则用户会丢掉进行中的状态。空闲订阅之间淘汰最近
+// 使用时间最久的一条。被回收的会话若再次被访问，ensureFollow 会重新订阅一次，代价是
+// 一次开场快照往返。
+//
+// 单纯把 deepseek.max_concurrent_sessions 调大只会把问题往后推，这里要的是生命周期。
+func (c *deepSeekGatewayConn) reclaimIdleFollow() bool {
+	c.mu.Lock()
+	var victim *deepSeekFollow
+	var victimUsed time.Time
+	for threadID, follow := range c.follows {
+		if c.activeTurns[threadID] > 0 || c.followHasPendingInteractionLocked(threadID) {
+			continue
+		}
+		used := follow.lastUsedAt()
+		if victim == nil || used.Before(victimUsed) {
+			victim = follow
+			victimUsed = used
+		}
+	}
+	if victim == nil {
+		c.mu.Unlock()
+		return false
+	}
+	delete(c.follows, victim.threadID)
+	c.mu.Unlock()
+
+	// 标记为本地主动释放：读协程据此区分"上游断流"与"被回收"，前者要结束整条连接，
+	// 后者不能——回收一条空闲订阅不该掐掉客户端正在用的连接。
+	victim.markReleased()
+	victim.stream.Close()
+	c.router.releaseDeepSeekSession()
+	log.Printf("deepseek gateway 会话订阅已达上限，回收最久未使用的空闲订阅 thread=%s",
+		sanitizeGatewayDiagnostic(victim.threadID))
+	return true
+}
+
+// followHasPendingInteractionLocked 报告某个会话是否还有等用户决定的交互。
+//
+// 调用方必须已持有 c.mu。尚未归属的暂存交互按帧里的身份字段判断会落在哪个会话上，
+// 判不出时一律视为"可能属于它"——宁可少回收一条，也不能让一张待答卡片消失。
+func (c *deepSeekGatewayConn) followHasPendingInteractionLocked(threadID string) bool {
+	for _, pending := range c.waterfalls {
+		if pending.threadID == threadID {
+			return true
+		}
+	}
+	for _, held := range c.pendingInteractions {
+		if hint := held.request.ThreadHint(); hint == "" || hint == threadID {
+			return true
+		}
+	}
+	return false
 }
 
 var errDeepSeekSessionLimit = errors.New("deepseek gateway: Harness 会话并发数已达上限")

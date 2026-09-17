@@ -146,14 +146,20 @@
 
 ### 1.6 反向交互与应答
 
-两条 waterfall：
+两条 waterfall。会话归属由帧上的 `agentId` 给出——`#492` 隔离实验捕获的原始帧里
+（`logs/smoke-frames.json`），审批与追问都带 `agentId`，值就是 `session-<会话 id>`，
+与 `session/create` 返回的 `sessionId`、`session/list` 里的条目一致：
 
 ```json
-{ "type": "waterfall", "event": "approval/request", "eventId": "",
+{ "type": "waterfall", "event": "approval/request", "eventId": "", "agentId": "session-…",
   "request": { "toolName": "write", "callId": "", "reason": "" } }
-{ "type": "waterfall", "event": "user-questions/request", "eventId": "",
+{ "type": "waterfall", "event": "user-questions/request", "eventId": "", "agentId": "session-…",
   "request": { "questions": [{ "id": "", "question": "", "options": [{ "label": "" }] }] } }
 ```
+
+> 更正：早前按"waterfall 帧不带会话标识"实现，把 `callId` 反查（乃至"唯一活跃会话"
+> 兜底）当成归属依据，是不完整的。`agentId` 是实测存在的会话标识，是主判据；`callId`
+> 只在 `agentId` 缺失时作复核用。两者都取不到时适配层暂存等待（有界），不猜测。
 
 应答走 `POST /api/$events/result`，参数为 `{clientId, eventId, outcome}`：
 
@@ -193,7 +199,7 @@
 - `thread/list` / `thread/search` / `thread/turns/list` 的结果是 `{data: [...], nextCursor}`；**`nextCursor` 键必须存在**（可为 `null`），`thread/turns/list` 缺失该键会整页判为无效响应。
 - `thread/start` 结果必须给 `result.thread.id`；`turn/start` 结果必须给 `result.turn.id`——否则中断对账、active 清理与消息去重都会退化。
 - **`turn/start` 的 `result.turn.id` 只能绑定本次请求对应的 turn。** 判据是 `user/message` 的 `source.rpcId` 等于本次 prompt 的 `requestId`（也就是客户端传的 `clientUserMessageId`），turn 号按记录顺序归入该消息所属的 turn 桶。`turn/start` 事件本身不带 requestId，因此"等下一个出现的 turn 编号"在多端（Harness Web 页面、子 Agent）或排队投递的场景下会把别人的轮次回给客户端；等不到就不带 `id` 应答，而不是编一个。
-- **`turn/start` 的 `model` 与 `effort` 必须落到会话上。** Harness 侧只有 `session/selectModel` 能改会话的模型选择，而 `provider` 是它的必填项、Mimi 的 iOS 端又只在 `thread/start` 上带 provider，所以 provider 必须从 `session/modelCatalog` 按模型 id 查出来，不能按模型名推断供应商。模型不在目录里、或 `effort` 不在该模型声明的 `reasoning.efforts` 里时一律回绝，不回退到 Harness 的默认模型。
+- **`turn/start` 的 `model` 与 `effort` 必须落到会话上。** Harness 侧只有 `session/selectModel` 能改会话的模型选择，而 `provider` 是它的必填项。Mimi 的 iOS 端只在 `thread/start` 上带 `modelProvider`，后续 `turn/start` 只带 `model`。provider 的确定不能按模型名推断，只能按证据强度逐层取：本次请求带的 `modelProvider` → 会话自记的选择（`model/selection`、`request/header`）→ 会话创建时记下的 `modelProvider` → 目录唯一命中；同名模型出现在多个 provider 下且都无证据时拒绝并列出候选，而不是替用户挑一个。模型不在目录里、或 `effort` 不在该模型声明的 `reasoning.efforts` 里时一律回绝，不回退到 Harness 的默认模型。
 - `item/started` / `item/completed` 的通知体是 `{item: {type, id, ...}, threadId, turnId}`。`type` 是唯一判别字段，未识别的类型整条丢弃。
 - `item/agentMessage/delta` 通知体是 `{threadId, turnId, itemId, delta}`，取自 `assistant-stream` 的 `chunk.text`。
 - `userMessage` 项必须带 `clientId`（回显 prompt 的 requestId），且通知需带 `clientUserMessageId`，否则 iOS 整条丢弃该消息。
@@ -210,3 +216,4 @@
 4. `session/search` 的成功结果形状（本机部署未开启索引，只验证了参数正确）。
 5. Mimi App 与 Harness Web 页面同时操作同一会话的行为。
 6. `session/selectModel` 的真实执行结果。参数与结果形状来自生成描述符（源码级），本机没有实跑过：网关在每次带模型选择的 `turn/start` 上都会调用它，失败按 fail-closed 回错误帧而不是继续投递。若真实部署的行为与描述符不符，表现会是"带模型选择的发送被拒"，而不是静默用了别的模型。
+7. `model/selection` 事件的形状与会话选择投影口径（`pending ?? lastUsed`）。本机只确认 `request/header` 出现在持久事件里，`model/selection` 是按源码（model-selection-projection.ts）实现的、未经运行时回放验证。它只作为"无 provider 时读出会话当前选择"的辅助依据，取不到时会退回目录唯一命中或拒绝，不会据此选错供应商。

@@ -1316,6 +1316,17 @@ func sanitizedGatewayInitializeParams(params map[string]any) map[string]any {
 
 func sanitizedGatewayThreadParams(runtimeID string, method string, params map[string]any) map[string]any {
 	safe := copyGatewayParams(params, "cwd", "serviceTier", "personality")
+	if normalizeAppServerRuntimeID(runtimeID) == appServerRuntimeDeepSeekID {
+		// DeepSeek 适配层要用 provider 提示把客户端的模型选择落到正确的供应商分组上
+		// （见 deepSeekCatalogLookup）。Mimi 的 iOS 端只在 thread/start 上带这个字段，
+		// 而它是"同一个模型 id 出现在多个 provider 下"时唯一的方向性证据：模型目录按
+		// provider 逐个列举，没有任何机制保证 model id 全局唯一，丢掉提示就只能在多个
+		// 命中项里取第一个，用户会被选到另一条计费路线上。
+		//
+		// 只对 deepseek 放行：Codex / Claude 的 modelProvider 语义由各自的 app-server
+		// 决定，不在本条网关的验证范围内，不扩大它们的参数面。
+		copyGatewayParam(safe, params, "modelProvider")
+	}
 	if method == "thread/resume" || method == "thread/fork" {
 		copyGatewayParam(safe, params, "threadId")
 	}
@@ -1418,6 +1429,12 @@ func sanitizedGatewayThreadSandbox(runtimeID string, params map[string]any) stri
 
 func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd string) map[string]any {
 	safe := copyGatewayParams(params, "threadId", "cwd", "input", "clientUserMessageId", "model", "serviceTier", "effort", "summary", "personality")
+	if normalizeAppServerRuntimeID(runtimeID) == appServerRuntimeDeepSeekID {
+		// 与 thread/start 同一个理由：provider 是模型身份的一半，缺了它就无法在
+		// 同名模型下选对供应商（见 deepSeekCatalogLookup）。客户端在 turn/start 上
+		// 也带了就照收；只有 thread/start 带过的情况由适配层按会话记住。
+		copyGatewayParam(safe, params, "modelProvider")
+	}
 	if collaborationMode, ok := sanitizedGatewayCollaborationMode(params["collaborationMode"]); ok {
 		safe["collaborationMode"] = collaborationMode
 	}

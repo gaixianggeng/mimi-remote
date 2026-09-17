@@ -44,6 +44,40 @@ type deepSeekFollow struct {
 	// updated 在缓存并入新记录后发一个信号，供等待"本次投递对应的 turn"的请求唤醒。
 	// 带缓冲且非阻塞：没有人在等的时候信号必须能丢掉，否则会阻塞事件读协程。
 	updated chan struct{}
+	// lastUsed 是这条订阅最近一次被用到的时刻（被请求取用，或收到事件）。
+	// 名额不足时按它淘汰最久未使用的空闲订阅，见 reclaimIdleFollow。
+	lastUsed time.Time
+	// released 表示这条订阅是本地主动释放的（名额回收、或整条连接关闭），
+	// 不是上游断流。两者要区别对待：上游断流必须结束整条连接，主动释放不能。
+	released bool
+}
+
+// touch 记录一次使用。
+func (f *deepSeekFollow) touch() {
+	f.mu.Lock()
+	f.lastUsed = time.Now()
+	f.mu.Unlock()
+}
+
+// lastUsedAt 返回最近一次使用时间。
+func (f *deepSeekFollow) lastUsedAt() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastUsed
+}
+
+// markReleased 标记这条订阅由本地主动释放。
+func (f *deepSeekFollow) markReleased() {
+	f.mu.Lock()
+	f.released = true
+	f.mu.Unlock()
+}
+
+// isReleased 报告这条订阅是否由本地主动释放。
+func (f *deepSeekFollow) isReleased() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.released
 }
 
 // signalUpdated 通知等待者缓存又变了。非阻塞，调用方不必关心有没有人在等。

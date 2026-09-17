@@ -56,7 +56,7 @@ func TestDeepSeekTurnPageKeepsPagingWhileHistoryRemains(t *testing.T) {
 	})
 	// 刻意不调 markReachedStart：开场快照声明 hasMore，即还有更早的记录。
 
-	page, next, err := conn.deepSeekTurnPage(context.Background(), follow, map[string]any{})
+	page, next, hasMore, err := conn.deepSeekTurnPage(context.Background(), follow, map[string]any{})
 	if err != nil {
 		t.Fatalf("取页失败：%v", err)
 	}
@@ -66,8 +66,11 @@ func TestDeepSeekTurnPageKeepsPagingWhileHistoryRemains(t *testing.T) {
 	if next == 0 {
 		t.Fatal("宿主历史还没读完时不得收尾：客户端会把缓存边界当成会话开头")
 	}
+	if !hasMore {
+		t.Fatal("宿主历史还没读完时必须报告还有下一页")
+	}
 	// 走真实的出参路径，确认这个偏移量确实变成了一个可回传的游标而不是 null。
-	cursor, _ := deepSeekPageResult(nil, next)["nextCursor"].(string)
+	cursor, _ := deepSeekPageResult(nil, next, hasMore)["nextCursor"].(string)
 	if cursor == "" {
 		t.Fatalf("下一页游标必须可被回传：%d", next)
 	}
@@ -90,7 +93,7 @@ func TestDeepSeekTurnPageStopsAtSessionStart(t *testing.T) {
 	})
 	follow.markReachedStart()
 
-	page, next, err := conn.deepSeekTurnPage(context.Background(), follow, map[string]any{})
+	page, next, hasMore, err := conn.deepSeekTurnPage(context.Background(), follow, map[string]any{})
 	if err != nil {
 		t.Fatalf("取页失败：%v", err)
 	}
@@ -100,7 +103,10 @@ func TestDeepSeekTurnPageStopsAtSessionStart(t *testing.T) {
 	if next != 0 {
 		t.Fatalf("读到会话开头就应收尾，得到游标 %d", next)
 	}
-	if _, present := deepSeekPageResult(nil, next)["nextCursor"]; !present {
+	if hasMore {
+		t.Fatal("读到会话开头后不得再报告还有下一页")
+	}
+	if _, present := deepSeekPageResult(nil, next, hasMore)["nextCursor"]; !present {
 		t.Fatal("分页结果必须带 nextCursor 键（可为 null）")
 	}
 }

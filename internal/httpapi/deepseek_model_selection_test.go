@@ -57,25 +57,32 @@ func TestDeepSeekCatalogLookupOnlyTrustsCatalog(t *testing.T) {
 		providerHint string
 		wantProvider string
 		wantOK       bool
+		wantCandi    int
 	}{
-		{name: "唯一命中", modelID: "deepseek-v4", wantProvider: "volc", wantOK: true},
-		{name: "大小写不敏感", modelID: "DeepSeek-V4", wantProvider: "volc", wantOK: true},
-		{name: "按提示取分组", modelID: "deepseek-v4", providerHint: "backup", wantProvider: "backup", wantOK: true},
-		{name: "提示大小写不敏感", modelID: "deepseek-v4", providerHint: "BACKUP", wantProvider: "backup", wantOK: true},
-		// 客户端点名了供应商却指不到：不能退回到"第一个同 id 的分组"，那会让用户
-		// 选的供应商被悄悄换掉。
-		{name: "提示指不到分组", modelID: "deepseek-v4", providerHint: "nope", wantOK: false},
-		{name: "提示的分组里没有这个模型", modelID: "deepseek-plain", providerHint: "backup", wantOK: false},
-		{name: "目录里没有的模型", modelID: "gpt-6-astra", wantOK: false},
-		{name: "空模型 id", modelID: "", wantOK: false},
-		{name: "只有空白", modelID: "   ", wantOK: false},
+		{name: "按提示取分组", modelID: "deepseek-v4", providerHint: "volc", wantProvider: "volc", wantOK: true, wantCandi: 1},
+		{name: "大小写不敏感", modelID: "DeepSeek-V4", providerHint: "VOLC", wantProvider: "volc", wantOK: true, wantCandi: 1},
+		// 同名模型出现在两个 provider 下：没有任何依据时不得替用户挑一个。
+		// 模型目录按 provider 逐个列举，没有机制保证 model id 全局唯一，取第一个命中项
+		// 就是"界面选 A、实际跑 B"，而 A/B 可能是不同的计费路线。
+		{name: "同名模型多 provider 时必须报歧义", modelID: "deepseek-v4", wantOK: false, wantCandi: 2},
+		{name: "目录里唯一的模型可以直接使用", modelID: "deepseek-plain", wantProvider: "volc", wantOK: true, wantCandi: 1},
+		// 客户端点名了供应商却指不到：不能退回到别的分组，那会让用户选的供应商被悄悄换掉。
+		{name: "提示指不到分组", modelID: "deepseek-v4", providerHint: "nope", wantOK: false, wantCandi: 0},
+		{name: "提示的分组里没有这个模型", modelID: "deepseek-plain", providerHint: "backup", wantOK: false, wantCandi: 0},
+		{name: "目录里没有的模型", modelID: "gpt-6-astra", wantOK: false, wantCandi: 0},
+		{name: "空模型 id", modelID: "", wantOK: false, wantCandi: 0},
+		{name: "只有空白", modelID: "   ", wantOK: false, wantCandi: 0},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			match, ok := deepSeekCatalogLookup(catalog, test.modelID, test.providerHint)
+			match, candidates, ok := deepSeekCatalogLookup(catalog, test.modelID, test.providerHint)
 			if ok != test.wantOK {
 				t.Fatalf("lookup(%q, %q) ok=%v, want %v", test.modelID, test.providerHint, ok, test.wantOK)
+			}
+			if len(candidates) != test.wantCandi {
+				t.Fatalf("lookup(%q, %q) 候选数=%d, want %d（候选=%v）",
+					test.modelID, test.providerHint, len(candidates), test.wantCandi, candidates)
 			}
 			if ok && match.Provider != test.wantProvider {
 				t.Fatalf("provider=%q, want %q", match.Provider, test.wantProvider)
@@ -87,11 +94,12 @@ func TestDeepSeekCatalogLookupOnlyTrustsCatalog(t *testing.T) {
 // 推理档位只下发目录声明过的值；声明了却不匹配就拒绝，没有声明就不下发。
 func TestDeepSeekCatalogEffortOnlyForwardsDeclaredEffort(t *testing.T) {
 	catalog := deepSeekCatalogFixture()
-	reasoning, ok := deepSeekCatalogLookup(catalog, "deepseek-v4", "")
+	// 显式点名分组：deepseek-v4 在 volc 与 backup 下都存在，不给提示就是歧义。
+	reasoning, _, ok := deepSeekCatalogLookup(catalog, "deepseek-v4", "volc")
 	if !ok {
-		t.Fatal("前置条件：目录里应有 deepseek-v4")
+		t.Fatal("前置条件：volc 下应有 deepseek-v4")
 	}
-	plain, ok := deepSeekCatalogLookup(catalog, "deepseek-plain", "")
+	plain, _, ok := deepSeekCatalogLookup(catalog, "deepseek-plain", "volc")
 	if !ok {
 		t.Fatal("前置条件：目录里应有 deepseek-plain")
 	}

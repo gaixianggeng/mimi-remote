@@ -4,6 +4,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/harnessclient"
@@ -123,66 +124,84 @@ func TestDeepSeekChannelDeclaresOnlyEnforceableSandboxMode(t *testing.T) {
 	}
 }
 
-// 回归：带 callId 的审批不得靠"只有一个会话在跑"去认领。
+// 回归：交互归属只能靠帧里的身份字段或 callId 映射，不得靠"只有一个会话在跑"推断。
 //
-// Harness 的 $events 是宿主级通道，别的会话（Harness Web、子 Agent）的审批同样会
-// 送到这里。callId 带了却查不到映射，是"这次工具调用不在本连接订阅的会话里"的
-// 正向证据；此时退回单例推断，就会把别人的审批卡片挂到用户的会话上，用户以为在
-// 批准自己的操作，实际放行的是别人的。追问（载荷只有 questions）没有任何方向性
-// 证据，才允许在唯一活跃会话上兜底。
-func TestDeepSeekAttributeWaterfallRequiresEvidenceForApprovals(t *testing.T) {
+// Harness 的 $events 是宿主级通道，别的会话（Harness Web、子 Agent）的交互同样会送到
+// 这里。"只有一个会话在跑"不蕴含"这条交互是我的"：按单例认领会把别人的卡片挂到用户的
+// 会话上，用户在那个上下文里点"允许"，放行的却是另一个会话的工具调用；追问更糟——用户
+// 填的答案会被送回发起方。
+//
+// 生产帧必然带 agentId（api-gateway 的 RemoteEventInvocationFrame 把它定为必填，
+// startRemoteEvent 对空值直接抛错），而 Harness 的身份设计是"agent 的注册表 id 等于其
+// 会话 id"，所以主判据是帧里的身份字段。取不到证据时返回空串，由调用方暂存等待，
+// 不再猜测。
+func TestDeepSeekAttributeWaterfallRequiresEvidence(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		request     harnessclient.WaterfallRequest
-		callThreads map[string]string
-		activeTurns map[string]int
-		want        string
+		name         string
+		request      harnessclient.WaterfallRequest
+		callThreads  map[string]string
+		activeTurns  map[string]int
+		want         string
+		wantEvidence string
 	}{
 		{
-			name:        "帧自带的会话标识优先",
-			request:     harnessclient.WaterfallRequest{Event: harnessclient.WaterfallApprovalRequest, ThreadID: "thread-hint"},
-			callThreads: map[string]string{"call-1": "thread-a"},
-			activeTurns: map[string]int{"thread-a": 1},
-			want:        "thread-hint",
-		},
-		{
-			name: "callId 有映射时按映射归属，不受活跃会话数影响",
+			name: "agentId 是主判据，压过 callId 映射",
 			request: harnessclient.WaterfallRequest{
-				Event: harnessclient.WaterfallApprovalRequest,
-				Request: harnessclient.WaterfallPayload{
-					CallID: "call-1",
-				},
+				Event:   harnessclient.WaterfallApprovalRequest,
+				AgentID: "thread-agent",
+				Request: harnessclient.WaterfallPayload{CallID: "call-1"},
 			},
-			callThreads: map[string]string{"call-1": "thread-b"},
-			activeTurns: map[string]int{"thread-a": 1, "thread-b": 1},
-			want:        "thread-b",
+			callThreads:  map[string]string{"call-1": "thread-a"},
+			activeTurns:  map[string]int{"thread-a": 1},
+			want:         "thread-agent",
+			wantEvidence: deepSeekEvidenceAgent,
 		},
 		{
-			name: "callId 带了却查不到时必须放弃，不得认领唯一活跃会话",
+			name: "没有 agentId 时用帧里其它会话标识",
 			request: harnessclient.WaterfallRequest{
-				Event: harnessclient.WaterfallApprovalRequest,
-				Request: harnessclient.WaterfallPayload{
-					CallID: "call-elsewhere",
-				},
+				Event:    harnessclient.WaterfallApprovalRequest,
+				ThreadID: "thread-hint",
+			},
+			callThreads:  map[string]string{"call-1": "thread-a"},
+			activeTurns:  map[string]int{"thread-a": 1},
+			want:         "thread-hint",
+			wantEvidence: deepSeekEvidenceHint,
+		},
+		{
+			name: "两者都缺时按 callId 映射复核",
+			request: harnessclient.WaterfallRequest{
+				Event:   harnessclient.WaterfallApprovalRequest,
+				Request: harnessclient.WaterfallPayload{CallID: "call-1"},
+			},
+			callThreads:  map[string]string{"call-1": "thread-b"},
+			activeTurns:  map[string]int{"thread-a": 1, "thread-b": 1},
+			want:         "thread-b",
+			wantEvidence: deepSeekEvidenceCall,
+		},
+		{
+			name: "callId 查不到映射时不得认领唯一活跃会话",
+			request: harnessclient.WaterfallRequest{
+				Event:   harnessclient.WaterfallApprovalRequest,
+				Request: harnessclient.WaterfallPayload{CallID: "call-elsewhere"},
 			},
 			callThreads: map[string]string{"call-1": "thread-a"},
 			activeTurns: map[string]int{"thread-a": 1},
 			want:        "",
 		},
 		{
-			name:        "追问没有 callId 时才允许单例兜底",
+			name:        "追问没有 agentId 时同样不得靠唯一活跃会话兜底",
 			request:     harnessclient.WaterfallRequest{Event: harnessclient.WaterfallUserQuestions},
 			activeTurns: map[string]int{"thread-a": 1},
-			want:        "thread-a",
+			want:        "",
 		},
 		{
-			name:        "多个活跃会话时无从兜底",
+			name:        "多个活跃会话时更没有依据",
 			request:     harnessclient.WaterfallRequest{Event: harnessclient.WaterfallUserQuestions},
 			activeTurns: map[string]int{"thread-a": 1, "thread-b": 1},
 			want:        "",
 		},
 		{
-			name:    "没有活跃会话时无从兜底",
+			name:    "没有活跃会话时没有依据",
 			request: harnessclient.WaterfallRequest{Event: harnessclient.WaterfallUserQuestions},
 			want:    "",
 		},
@@ -198,9 +217,66 @@ func TestDeepSeekAttributeWaterfallRequiresEvidenceForApprovals(t *testing.T) {
 			if conn.activeTurns == nil {
 				conn.activeTurns = map[string]int{}
 			}
-			if got := conn.attributeWaterfall(tc.request); got != tc.want {
+			got, evidence := conn.attributeWaterfall(tc.request)
+			if got != tc.want {
 				t.Fatalf("归属结果应为 %q，得到 %q", tc.want, got)
 			}
+			if evidence != tc.wantEvidence {
+				t.Fatalf("归属依据应为 %q，得到 %q", tc.wantEvidence, evidence)
+			}
 		})
+	}
+}
+
+// 回归：暂存的交互必须在有证据前保留、到期被清理，且未归属时绝不擅自下发。
+//
+// 这是审查 Finding 2 的状态机不变式：approval 的 callId → 会话映射由会话订阅上的
+// tool/call 事件建立，审批却来自另一条 $events 连接，两者没有可靠的到达顺序——waterfall
+// 先到、tool/call 后到是正常时序。因此拿不到归属时应该暂存而不是丢弃，超时按诊断清理，
+// 反复重试既不能过早丢弃、也不能刷新到期时间：前者让卡片永久消失，后者把"等 2 分钟"
+// 退化成"永远等"。
+func TestDeepSeekHoldInteractionPreservesUntilEvidenceOrExpiry(t *testing.T) {
+	conn := &deepSeekGatewayConn{
+		callThreads:         map[string]string{},
+		activeTurns:         map[string]int{},
+		waterfalls:          map[string]deepSeekPendingWaterfall{},
+		pendingInteractions: map[string]deepSeekPendingInteraction{},
+	}
+
+	unattributed := deepSeekPendingInteraction{
+		request: harnessclient.WaterfallRequest{
+			Event:   harnessclient.WaterfallApprovalRequest,
+			EventID: "evt-pending",
+			Request: harnessclient.WaterfallPayload{CallID: "call-missing"},
+		},
+		expiresAt: time.Now().Add(50 * time.Millisecond),
+	}
+	expired := deepSeekPendingInteraction{
+		request: harnessclient.WaterfallRequest{
+			Event:   harnessclient.WaterfallUserQuestions,
+			EventID: "evt-expired",
+		},
+		expiresAt: time.Now().Add(-time.Second),
+	}
+	conn.pendingInteractions[unattributed.request.EventID] = unattributed
+	conn.pendingInteractions[expired.request.EventID] = expired
+
+	conn.retryPendingInteractions()
+
+	// 未过期但无证据：保留原条目与原到期时间，不丢弃、不刷新。
+	kept, ok := conn.pendingInteractions[unattributed.request.EventID]
+	if !ok {
+		t.Fatalf("无证据且未过期的交互不应被丢弃，否则审批会因为到达顺序永久丢失")
+	}
+	if !kept.expiresAt.Equal(unattributed.expiresAt) {
+		t.Fatalf("暂存重试不得刷新到期时间：want %v，got %v", unattributed.expiresAt, kept.expiresAt)
+	}
+	// 已过等待窗口：按诊断清理，不做任何应答动作。
+	if _, ok := conn.pendingInteractions[expired.request.EventID]; ok {
+		t.Fatalf("超出等待窗口的交互应被清理")
+	}
+	// 没有可归属的交互，绝不能下发待应答卡片。
+	if len(conn.waterfalls) != 0 {
+		t.Fatalf("未归属的交互不得被下发，waterfalls=%d", len(conn.waterfalls))
 	}
 }

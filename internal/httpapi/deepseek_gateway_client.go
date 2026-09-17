@@ -163,7 +163,7 @@ func (c *deepSeekGatewayConn) handleThreadList(ctx context.Context, frame *appSe
 	for _, session := range page {
 		rows = append(rows, deepSeekThreadWire(session, nil, false))
 	}
-	return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(rows, nextOffset))
+	return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(rows, nextOffset, nextOffset > 0))
 }
 
 // deepSeekSearchLocalResultCap 限制本地兜底搜索返回的行数。
@@ -213,7 +213,7 @@ func (c *deepSeekGatewayConn) handleThreadSearch(ctx context.Context, frame *app
 				rows = append(rows, row)
 			}
 		}
-		return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(rows, 0))
+		return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(rows, 0, false))
 	} else {
 		log.Printf("deepseek gateway 会话检索不可用，退化为本地匹配 err=%v", sanitizeGatewayDiagnostic(searchErr.Error()))
 	}
@@ -235,7 +235,7 @@ func (c *deepSeekGatewayConn) handleThreadSearch(ctx context.Context, frame *app
 			break
 		}
 	}
-	return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(rows, 0))
+	return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(rows, 0, false))
 }
 
 // deepSeekSearchHaystack 拼出参与本地匹配的文本与可展示的命中摘要。
@@ -272,6 +272,9 @@ func (c *deepSeekGatewayConn) handleThreadStart(ctx context.Context, frame *appS
 		log.Printf("deepseek gateway 订阅新会话失败 err=%v", sanitizeGatewayDiagnostic(err.Error()))
 		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "订阅 Harness 会话失败")
 	}
+	// 记住客户端在这次创建里声明的供应商：后续 turn/start 只带 model，而模型目录不保证
+	// model id 全局唯一，这份声明是选出正确供应商的依据之一。
+	c.rememberDeepSeekThreadProvider(created.SessionID, params)
 	thread := map[string]any{
 		"id":     created.SessionID,
 		"cwd":    cwd,
@@ -313,7 +316,7 @@ func (c *deepSeekGatewayConn) handleThreadTurnsList(ctx context.Context, frame *
 	if err != nil {
 		return c.deepSeekFollowError(frame, err)
 	}
-	buckets, nextOffset, err := c.deepSeekTurnPage(ctx, follow, params)
+	buckets, nextOffset, hasMore, err := c.deepSeekTurnPage(ctx, follow, params)
 	if err != nil {
 		return c.deepSeekFollowError(frame, err)
 	}
@@ -321,7 +324,7 @@ func (c *deepSeekGatewayConn) handleThreadTurnsList(ctx context.Context, frame *
 	for _, bucket := range buckets {
 		rows = append(rows, deepSeekTurnWire(bucket, true))
 	}
-	return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(rows, nextOffset))
+	return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(rows, nextOffset, hasMore))
 }
 
 // handleThreadItemsList 返回一个 turn 的 item。
@@ -354,7 +357,7 @@ func (c *deepSeekGatewayConn) handleThreadItemsList(ctx context.Context, frame *
 		})
 	}
 	// item 页一次给完：记录已经在本地缓存里，继续分页只会把同一条记录再要一遍。
-	return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(rows, 0))
+	return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(rows, 0, false))
 }
 
 // handleTurnStart 投递一次输入。
@@ -427,7 +430,8 @@ func (c *deepSeekGatewayConn) handleModelList(ctx context.Context, frame *appSer
 		log.Printf("deepseek gateway 读取模型目录失败 err=%v", sanitizeGatewayDiagnostic(err.Error()))
 		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "读取 Harness 模型目录失败")
 	}
-	return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(deepSeekModelListWire(catalog), 0))
+	// 模型目录一次给完，没有下一页。
+	return c.writeDeepSeekResult(frame.ID, deepSeekPageResult(deepSeekModelListWire(catalog), 0, false))
 }
 
 // deepSeekFollowError 把订阅与历史读取的失败翻译成固定文案。
@@ -454,11 +458,16 @@ func (c *deepSeekGatewayConn) findSession(ctx context.Context, threadID string) 
 }
 
 // deepSeekTurnPage 取一页 turn。offset 由本层游标给出，向前翻页时才向 Harness 取记录。
+//
+// 返回值里的 hasMore 与 nextOffset 是两件事，必须分开表达：nextOffset 是"下一页从缓存
+// 的哪里开始"，hasMore 是"宿主历史还没读完"。混用会丢掉一种形态——缓存里还没有可投影的
+// turn（offset 为 0）、但更早的轮次仍在 Harness 上时，用 0 既表示"从头开始"又表示
+// "没有下一页"，客户端只会看到 nextCursor=null 并认定会话到此为止。
 func (c *deepSeekGatewayConn) deepSeekTurnPage(
 	ctx context.Context,
 	follow *deepSeekFollow,
 	params map[string]any,
-) ([]deepSeekTurnBucket, int, error) {
+) ([]deepSeekTurnBucket, int, bool, error) {
 	offset, _ := deepSeekOffsetCursor(gatewayCursorParam(params))
 	limit := deepSeekTurnListLimit(params)
 	if limit <= 0 {
@@ -476,7 +485,7 @@ func (c *deepSeekGatewayConn) deepSeekTurnPage(
 		}
 		records, hasMore, err := c.fetchDeepSeekHistoryPage(ctx, follow, before, deepSeekHistoryPageSize)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, false, err
 		}
 		if len(records) == 0 {
 			follow.markReachedStart()
@@ -497,10 +506,14 @@ func (c *deepSeekGatewayConn) deepSeekTurnPage(
 	if offset >= len(ordered) {
 		// 缓存里没有这一页了。宿主历史还没读完时不能收尾：客户端收到 null 游标就
 		// 认为会话到此为止，把游标留在原地，下一次请求会继续向前取。
+		//
+		// 这里也包括 offset 恰好为 0 的情形（缓存里还没有可投影的 turn，例如历史切点
+		// 落在一条尚未结束的长 turn 中间）。那不是"没有下一页"，只是"还没有可返回的
+		// turn"，同样必须继续给游标。
 		if follow.atStart() {
-			return nil, 0, nil
+			return nil, 0, false, nil
 		}
-		return nil, offset, nil
+		return nil, offset, true, nil
 	}
 	end := offset + limit
 	if end > len(ordered) {
@@ -512,9 +525,9 @@ func (c *deepSeekGatewayConn) deepSeekTurnPage(
 	// 收尾，否则必须继续给游标——在这里回 null，客户端会把缓存边界当成会话开头，
 	// 更早的轮次再也翻不出来，而且不报错，只是历史看起来变短了。
 	if end < len(ordered) || !follow.atStart() {
-		return page, end, nil
+		return page, end, true, nil
 	}
-	return page, 0, nil
+	return page, 0, false, nil
 }
 
 // deepSeekMaxHistoryFetchPages 限制一次请求最多向前取几页记录。
@@ -526,11 +539,17 @@ const deepSeekTurnStartAckTimeout = 5 * time.Second
 // deepSeekOffsetCursorPrefix 是本层偏移游标的出处标记。
 const deepSeekOffsetCursorPrefix = "ds-offset:"
 
-func deepSeekPageResult(rows []any, nextOffset int) map[string]any {
-	// nextCursor 键必须存在（可为 null）：thread/turns/list 缺这个键会让 iOS
-	// 把整页判为无效响应，而不是"没有下一页"。
+// deepSeekPageResult 组装一页结果。
+//
+// nextCursor 键必须存在（可为 null）：thread/turns/list 缺这个键会让 iOS 把整页判为
+// 无效响应，而不是"没有下一页"。
+//
+// 游标是否给出只取决于 hasMore，与偏移量的大小无关。让偏移量兼任"还有没有下一页"
+// 会在零偏移上出错：缓存里还没有可投影的 turn、而宿主历史尚未读完时，偏移量正是 0，
+// 于是"继续向前取"被表达成了"没有下一页"，客户端认定会话到此为止。
+func deepSeekPageResult(rows []any, nextOffset int, hasMore bool) map[string]any {
 	var next any
-	if nextOffset > 0 {
+	if hasMore {
 		next = deepSeekOffsetCursorPrefix + strconv.Itoa(nextOffset)
 	}
 	return map[string]any{

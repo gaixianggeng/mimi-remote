@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -62,22 +63,27 @@ type deepSeekCatalogMatch struct {
 // turn/start 通常只带 model。供应商由模型名反推会把用户选到另一条计费路线上，因此这里只认
 // 目录给的事实。
 //
-// providerHint 给了就按它取分组，指不到就返回 false——同一个 id 可能出现在多个 provider 下，
-// 客户端明确说了用哪一个却落到另一个，是"界面选 A、实际跑 B"的另一种形态，不能靠"第一个
-// 命中项"糊过去。没给提示（Mimi 的 iOS 端把 provider 放在 thread/start 上）才取第一个命中项。
+// 没有 providerHint 时**不取第一个命中项**：模型目录按 provider 逐个列举
+// （buildModelCatalog 遍历全部 provider），没有任何机制保证 model id 全局唯一。同一个 id
+// 出现在多个 provider 下时，候选会原样返回，由调用方决定是拒绝还是另有依据。
+//
+// 返回值：providerHint 给出时只在那个分组里找，找到即 ok；没给出时要求唯一命中，
+// 多个命中返回候选列表且 ok 为 false。
 func deepSeekCatalogLookup(
 	catalog harnessclient.ModelCatalogResult,
 	modelID string,
 	providerHint string,
-) (deepSeekCatalogMatch, bool) {
+) (deepSeekCatalogMatch, []string, bool) {
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
-		return deepSeekCatalogMatch{}, false
+		return deepSeekCatalogMatch{}, nil, false
 	}
 	providerHint = strings.TrimSpace(providerHint)
-	var fallback *deepSeekCatalogMatch
+	var candidates []string
+	var unique deepSeekCatalogMatch
 	for _, group := range catalog.Groups {
-		if providerHint != "" && !strings.EqualFold(strings.TrimSpace(group.ID), providerHint) {
+		groupID := strings.TrimSpace(group.ID)
+		if providerHint != "" && !strings.EqualFold(groupID, providerHint) {
 			continue
 		}
 		for _, model := range group.Models {
@@ -86,17 +92,74 @@ func deepSeekCatalogLookup(
 			}
 			match := deepSeekCatalogMatch{Provider: group.ID, Model: model}
 			if providerHint != "" {
-				return match, true
+				return match, []string{groupID}, true
 			}
-			if fallback == nil {
-				fallback = &match
+			candidates = append(candidates, groupID)
+			unique = match
+		}
+	}
+	if providerHint != "" {
+		// 提示指不到这个模型：交由调用方按"该 provider 未声明它"处理，不换一个 provider
+		// 顶上——那正是用户明确指定供应商时要避免的事。
+		return deepSeekCatalogMatch{}, nil, false
+	}
+	if len(candidates) != 1 {
+		return deepSeekCatalogMatch{}, candidates, false
+	}
+	return unique, candidates, true
+}
+
+// deepSeekSelection 是会话自身记录下来的模型选择。
+type deepSeekSelection struct {
+	Provider string
+	Model    string
+	Effort   string
+}
+
+// deepSeekSessionSelection 从会话自己的持久记录里读出当前的模型选择。
+//
+// 依据 Harness 自己的投影口径（model-selection-projection.ts）：`model/selection` 事件
+// 表达"下一次请求要用什么"，`request/header` 记录"上一次请求实际用了什么"，
+// 有效值 = pending ?? lastUsed。两者都是会话内的观察事实，可以核对，不是推断。
+//
+// 这条依据的用处：客户端只给了模型 id、没给 provider 时，如果这个模型正是会话当前在用的
+// 那个，那么它用的 provider 就是唯一正确的答案——不需要再去目录里挑。
+// 记录不在缓存里（例如更早的轮次已被切掉）时返回 false，由调用方继续走目录。
+func deepSeekSessionSelection(records []harnessclient.SessionWireEvent) (deepSeekSelection, bool) {
+	var lastUsed *deepSeekSelection
+	for _, record := range records {
+		switch record.Type {
+		case deepSeekEventModelSelection:
+			var data deepSeekModelSelectionData
+			if json.Unmarshal(record.Data, &data) != nil {
+				continue
+			}
+			selection := deepSeekSelection{
+				Provider: strings.TrimSpace(data.Provider),
+				Model:    strings.TrimSpace(data.Model),
+				Effort:   strings.TrimSpace(data.ReasoningEffort),
+			}
+			if selection.Provider != "" && selection.Model != "" {
+				// pending 一旦出现就是最新的意图，后到的 request/header 不再覆盖它。
+				return selection, true
+			}
+		case deepSeekEventRequestHeader:
+			var data deepSeekRequestHeaderData
+			if json.Unmarshal(record.Data, &data) != nil {
+				continue
+			}
+			config := data.Header.Config
+			// 不取 request/header 里的档位（可能是数字，且这里只需要 provider+model）。
+			lastUsed = &deepSeekSelection{
+				Provider: strings.TrimSpace(config.Provider),
+				Model:    strings.TrimSpace(config.Model),
 			}
 		}
 	}
-	if fallback == nil {
-		return deepSeekCatalogMatch{}, false
+	if lastUsed != nil && lastUsed.Provider != "" && lastUsed.Model != "" {
+		return *lastUsed, true
 	}
-	return *fallback, true
+	return deepSeekSelection{}, false
 }
 
 // deepSeekCatalogEffort 决定把哪个推理档位交给 Harness。
@@ -153,11 +216,10 @@ func deepSeekCatalogEffort(model harnessclient.ModelEntry, requested string) (st
 // 必须在 session/prompt 之前调用：选择是"下一轮用哪个模型"，prompt 之后再改只会作用到
 // 再下一轮，而客户端拿到的却是这一轮的 turn id。
 //
-// 只在 turn/start 上处理，不需要在 thread/start 上再做一次：policy 的
-// sanitizedGatewayThreadParams 不把 model/modelProvider 带过运行时边界，适配层根本看不到
-// 它们，因此那里不存在"声明了却被丢掉"的情况。带输入的新会话由客户端把 thread/start 与
-// 首条 turn/start 一起发；空会话则在这条会话的第一次 turn/start 上把选择落下，用户看到的
-// 选择与实际执行的模型仍是一致的。
+// 只在 turn/start 上落地选择：model 本身不过 thread/start 的参数边界（那里只放行
+// cwd/serviceTier/personality/modelProvider），因此新会话的模型仍然在这条会话的第一次
+// turn/start 上落下。modelProvider 是例外——iOS 端把它放在 thread/start 上，而它是
+// 同名模型下选对供应商的依据，所以那条字段能过来并在 threadProviders 里记住。
 //
 // 刻意不缓存"上次已经选过同一个模型"来省掉这两次调用。Harness 的会话选择不是本连接独占
 // 的状态（Harness Web 页面同样能改），靠本地单例推断出的一致会在这个连接不知情时失效，
@@ -186,10 +248,9 @@ func (c *deepSeekGatewayConn) applyDeepSeekModelSelection(
 		log.Printf("deepseek gateway 读取模型目录失败 err=%v", sanitizeGatewayDiagnostic(err.Error()))
 		return errors.New("deepseek gateway: 读取 Harness 模型目录失败")
 	}
-	match, ok := deepSeekCatalogLookup(catalog, requested.Model, requested.Provider)
-	if !ok {
-		return &deepSeekModelSelectionError{message: fmt.Sprintf(
-			"Harness 模型目录里没有模型 %s，请重新选择模型", requested.Model)}
+	match, err := c.resolveDeepSeekModel(catalog, threadID, requested)
+	if err != nil {
+		return err
 	}
 	effort, err := deepSeekCatalogEffort(match.Model, requested.Effort)
 	if err != nil {
@@ -215,4 +276,84 @@ func (c *deepSeekGatewayConn) applyDeepSeekModelSelection(
 		return errors.New("deepseek gateway: 转发模型选择失败")
 	}
 	return nil
+}
+
+// resolveDeepSeekModel 决定一次模型选择落在哪个 provider 的哪个条目上。
+//
+// provider 是 session/selectModel 的必填项，而客户端可能只给模型 id。判据按证据强度
+// 排序，每一层都是可核对的事实；都给不出结论时拒绝，绝不"取第一个"或"猜一个供应商"：
+//
+//  1. 本次请求声明的 provider。逐请求、最直接。它指不到这个模型就拒绝——用户明确指定了
+//     供应商，换一个顶上正是要避免的"界面选 A、实际跑 B"。
+//  2. 会话自己的持久选择（model/selection、request/header）。模型 id 与本次要求一致时，
+//     会话当前用的 provider 就是唯一正确答案。这是观察事实。
+//  3. 会话创建时客户端声明的 provider（thread/start 上的 modelProvider）。
+//  4. 目录里唯一命中。多个 provider 都声明同一个 id 时拒绝并列出候选，不做选择——
+//     模型目录按 provider 逐个列举，没有任何机制保证 model id 全局唯一，选错就是选错
+//     供应商与计费路线。
+func (c *deepSeekGatewayConn) resolveDeepSeekModel(
+	catalog harnessclient.ModelCatalogResult,
+	threadID string,
+	requested deepSeekRequestedSelection,
+) (deepSeekCatalogMatch, error) {
+	if requested.Provider != "" {
+		match, providers, ok := deepSeekCatalogLookup(catalog, requested.Model, requested.Provider)
+		if !ok || len(providers) == 0 {
+			return deepSeekCatalogMatch{}, &deepSeekModelSelectionError{message: fmt.Sprintf(
+				"供应商 %s 没有声明模型 %s，请重新选择模型", requested.Provider, requested.Model)}
+		}
+		return match, nil
+	}
+	if follow, ok := c.followFor(threadID); ok {
+		if selection, ok := deepSeekSessionSelection(follow.snapshot()); ok &&
+			strings.EqualFold(selection.Model, requested.Model) {
+			if match, _, found := deepSeekCatalogLookup(catalog, requested.Model, selection.Provider); found {
+				return match, nil
+			}
+		}
+	}
+	if remembered := c.deepSeekThreadProvider(threadID); remembered != "" {
+		if match, _, ok := deepSeekCatalogLookup(catalog, requested.Model, remembered); ok {
+			return match, nil
+		}
+	}
+	match, candidates, ok := deepSeekCatalogLookup(catalog, requested.Model, "")
+	if ok {
+		return match, nil
+	}
+	if len(candidates) > 1 {
+		return deepSeekCatalogMatch{}, &deepSeekModelSelectionError{message: fmt.Sprintf(
+			"模型 %s 在多个供应商下存在（%s），请先选定供应商再发送",
+			requested.Model, strings.Join(candidates, "、"))}
+	}
+	return deepSeekCatalogMatch{}, &deepSeekModelSelectionError{message: fmt.Sprintf(
+		"Harness 模型目录里没有模型 %s，请重新选择模型", requested.Model)}
+}
+
+// rememberDeepSeekThreadProvider 记住客户端在 thread/start 上声明的供应商。
+//
+// 只在新建会话时记录：iOS 端只在 thread/start 上带 modelProvider，而后续每条 turn/start
+// 只带 model。不记住它的话，"同名模型出现在多个 provider 下"时就没有客户端依据可用。
+func (c *deepSeekGatewayConn) rememberDeepSeekThreadProvider(threadID string, params map[string]any) {
+	provider, ok := gatewayStringParam(params, "modelProvider")
+	if !ok {
+		return
+	}
+	provider = strings.TrimSpace(provider)
+	if provider == "" || strings.TrimSpace(threadID) == "" {
+		return
+	}
+	c.mu.Lock()
+	if c.threadProviders == nil {
+		c.threadProviders = map[string]string{}
+	}
+	c.threadProviders[threadID] = provider
+	c.mu.Unlock()
+}
+
+// deepSeekThreadProvider 返回会话创建时声明的供应商。
+func (c *deepSeekGatewayConn) deepSeekThreadProvider(threadID string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.threadProviders[threadID]
 }

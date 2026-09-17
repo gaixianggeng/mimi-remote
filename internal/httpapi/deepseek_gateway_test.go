@@ -311,7 +311,7 @@ func TestDeepSeekTurnNumberRejectsMalformedIdentifiers(t *testing.T) {
 // 分页结果必须始终带 nextCursor 键（可为 null）：缺键会让 iOS 把整页判为无效响应。
 func TestDeepSeekPageResultAlwaysCarriesNextCursorKey(t *testing.T) {
 	for _, nextOffset := range []int{0, 40} {
-		raw, err := json.Marshal(deepSeekPageResult([]any{map[string]any{"id": "t1"}}, nextOffset))
+		raw, err := json.Marshal(deepSeekPageResult([]any{map[string]any{"id": "t1"}}, nextOffset, nextOffset > 0))
 		if err != nil {
 			t.Fatalf("序列化失败：%v", err)
 		}

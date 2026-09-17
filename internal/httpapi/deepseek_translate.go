@@ -50,6 +50,10 @@ const (
 	deepSeekEventSessionTitle     = "session/title"
 	// deepSeekEventToolCall 只用于建立 callId → 会话的相关性，不产出可见 item。
 	deepSeekEventToolCall = "tool/call"
+	// deepSeekEventModelSelection 是会话记录的"下一次请求用哪个模型"（含 provider）。
+	deepSeekEventModelSelection = "model/selection"
+	// deepSeekEventRequestHeader 记录一次请求实际使用的 provider/model。
+	deepSeekEventRequestHeader = "request/header"
 )
 
 // Harness assistant-stream chunk 的判别值（实测）。
@@ -120,11 +124,33 @@ type deepSeekTitleData struct {
 }
 
 // deepSeekToolCallData 是 tool/call 的 data。只取实测存在的 callId：
-// 审批 waterfall 不带会话标识，callId 是唯一能把两者对上的字段。
+// 交互 waterfall 的会话标识由帧上的 agentId 给出，callId 是复核用的次选判据。
 type deepSeekToolCallData struct {
 	CallID string `json:"callId,omitempty"`
 	Turn   int64  `json:"turn,omitempty"`
 	Step   int64  `json:"step,omitempty"`
+}
+
+// deepSeekModelSelectionData 是 model/selection 的 data：会话记录下来的
+// "下一次请求用哪个模型"。provider 与 model 都是必填（schema 里 min(1)）。
+type deepSeekModelSelectionData struct {
+	Provider        string `json:"provider,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+}
+
+// deepSeekRequestHeaderData 是 request/header 的 data：一次请求实际使用的模型配置。
+//
+// 只取 provider 与 model。刻意不解析 reasoningEffort：Harness 的模型选择投影对它做的是
+// `String(...)`，说明该字段可能是数字，而这里用不到它——一个类型不匹配会让整个记录解码
+// 失败，连带丢掉本可用的 provider 依据。
+type deepSeekRequestHeaderData struct {
+	Header struct {
+		Config struct {
+			Provider string `json:"provider,omitempty"`
+			Model    string `json:"model,omitempty"`
+		} `json:"config"`
+	} `json:"header"`
 }
 
 // deepSeekStreamChunk 是 assistant-stream chunk 的载荷。实测判别字段是 Type。
