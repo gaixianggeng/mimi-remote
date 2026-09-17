@@ -1,10 +1,8 @@
 //! `thread/takeover`：结束正持有某会话的本机 Claude 进程（终端 `claude`、Claude 桌面
 //! 内置 Claude Code），让 bridge 以同一个 session id 续聊。
 //!
-//! 实测 Claude Code 2.1.270：交互式进程收到 SIGINT 后，无论空闲还是正在生成都会
-//! 立即干净退出并删除 `~/.claude/sessions/<pid>.json`；SIGTERM 只作兜底。被打断的
-//! 会话用同 id `--resume` 单链续上（CLI 自己会补一对 "Continue from where you left
-//! off" / "No response requested"）。
+//! 只在所有外部持有方明确 idle 时接管；busy / shell 和未知状态均不发信号。
+//! 每次请求和 SIGTERM 兜底前重新读取登记，避免沿用客户端的空闲快照。
 //!
 //! 发信号的前提缺一不可：登记了该 sessionId、pid 存活、不是进程池子进程、进程启动
 //! 时间与登记 `startedAt` 吻合（防 pid 被别的进程复用）。任一持有方核实不了就整体
@@ -73,6 +71,10 @@ impl TakeoverOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TakeoverError {
+    #[error("holder pid {} is still processing a turn", .0.pid)]
+    HolderBusy(ForeignSessionOwner),
+    #[error("holder pid {} has no confirmed idle state", .0.pid)]
+    HolderStateUnknown(ForeignSessionOwner),
     #[error("holder pid {} cannot be verified against its session registration", .0.pid)]
     HolderUnverified(ForeignSessionOwner),
     #[error("failed to signal holder pid {}: {message}", holder.pid)]
@@ -89,6 +91,8 @@ pub enum TakeoverError {
 impl TakeoverError {
     pub fn reason(&self) -> &'static str {
         match self {
+            TakeoverError::HolderBusy(_) => "holder_busy",
+            TakeoverError::HolderStateUnknown(_) => "holder_state_unknown",
             TakeoverError::HolderUnverified(_) => "holder_unverified",
             TakeoverError::SignalFailed { .. } => "signal_failed",
             TakeoverError::Timeout(_) => "takeover_timeout",
@@ -96,15 +100,21 @@ impl TakeoverError {
         }
     }
 
-    /// 只有超时值得原样重试：持有方可能只是退出得慢。其余情况重试只会重复发信号
-    /// 或再次拒绝。
+    /// 等待当前轮完成、状态更新或退出后可以手动重试，不自动排队接管。
     pub fn retryable(&self) -> bool {
-        matches!(self, TakeoverError::Timeout(_))
+        matches!(
+            self,
+            TakeoverError::Timeout(_)
+                | TakeoverError::HolderBusy(_)
+                | TakeoverError::HolderStateUnknown(_)
+        )
     }
 
     pub fn holder(&self) -> &ForeignSessionOwner {
         match self {
-            TakeoverError::HolderUnverified(holder)
+            TakeoverError::HolderBusy(holder)
+            | TakeoverError::HolderStateUnknown(holder)
+            | TakeoverError::HolderUnverified(holder)
             | TakeoverError::Timeout(holder)
             | TakeoverError::Respawned(holder) => holder,
             TakeoverError::SignalFailed { holder, .. } => holder,
@@ -123,10 +133,8 @@ pub async fn release_foreign_holders(
     if holders.is_empty() {
         return Ok(TakeoverOutcome::NoHolder);
     }
-    // 先全部核实再发信号：任一核实不了就一个都不动。
-    for holder in &holders {
-        verify_holder(holder)?;
-    }
+    // 多个持有方必须全部空闲并通过身份校验，不能先结束空闲者再发现另一个仍在忙。
+    verify_idle_holders(&holders)?;
 
     let mut signal = ProcessSignal::Interrupt;
     for holder in &holders {
@@ -134,8 +142,17 @@ pub async fn release_foreign_holders(
     }
     let mut survivors = wait_for_exit(&holders, timeouts.interrupt_grace).await;
     if !survivors.is_empty() {
+        // SIGINT 等待期间可能开始了新一轮；SIGTERM 前再查全部持有方，不能用旧状态强杀。
+        let current = registry.holders_of(session_id, own_pids).await;
+        verify_idle_holders(&current)?;
         signal = ProcessSignal::Terminate;
         for holder in &survivors {
+            if !current
+                .iter()
+                .any(|owner| owner.pid == holder.pid && owner.started_at_ms == holder.started_at_ms)
+            {
+                return Err(TakeoverError::HolderUnverified(holder.clone()));
+            }
             send(holder, signal)?;
         }
         survivors = wait_for_exit(&survivors, timeouts.terminate_grace).await;
@@ -157,6 +174,19 @@ pub async fn release_foreign_holders(
         return Err(TakeoverError::Respawned(newcomer));
     }
     Ok(TakeoverOutcome::Released { holders, signal })
+}
+
+fn verify_idle_holders(holders: &[ForeignSessionOwner]) -> Result<(), TakeoverError> {
+    for holder in holders {
+        if holder.is_busy() {
+            return Err(TakeoverError::HolderBusy(holder.clone()));
+        }
+        if holder.status.as_deref() != Some("idle") {
+            return Err(TakeoverError::HolderStateUnknown(holder.clone()));
+        }
+        verify_holder(holder)?;
+    }
+    Ok(())
 }
 
 /// 登记文件是 Claude 进程自己写的，进程崩溃时可能残留；pid 之后被别的程序复用就会
@@ -226,9 +256,19 @@ mod tests {
     }
 
     #[test]
-    fn errors_map_to_stable_reasons_and_only_timeout_is_retryable() {
+    fn errors_map_to_stable_reasons_and_waiting_is_retryable() {
         let holder = owner(4242, None);
         let cases = [
+            (
+                TakeoverError::HolderBusy(holder.clone()),
+                "holder_busy",
+                true,
+            ),
+            (
+                TakeoverError::HolderStateUnknown(holder.clone()),
+                "holder_state_unknown",
+                true,
+            ),
             (
                 TakeoverError::HolderUnverified(holder.clone()),
                 "holder_unverified",

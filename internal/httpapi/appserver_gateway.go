@@ -290,6 +290,7 @@ type appServerBridgeMetadata struct {
 }
 
 type appServerChannelCapability struct {
+	IdleTakeover     bool `json:"idle_takeover,omitempty"`
 	Streaming        bool `json:"streaming"`
 	History          bool `json:"history"`
 	ApprovalRequests bool `json:"approval_requests"`
@@ -578,6 +579,8 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		// RateLimits 的登记基线是 false，实际是否可用由 bridge 探测决定。
 		claudeCapabilities := claudeSpec.Capabilities
 		claudeCapabilities.RateLimits = claudeRateLimitsAvailable
+		// 手动接管（#482）同样由 bridge 探测决定，登记表只给不依赖探测的基线。
+		claudeCapabilities.IdleTakeover = probe.Healthy && claudebridge.SupportsThreadTakeover(probe.Version)
 		// 权限档位同样以登记表为基线，只在 bridge 支持完全访问时上调；显式复制切片，
 		// 避免 append 写回登记表的底层数组而影响后续请求。
 		claudePolicy := claudeSpec.Policy

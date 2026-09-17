@@ -210,7 +210,9 @@ pub async fn handle_thread_resume(
     state: &Arc<ConnectionState>,
     params: p::ThreadResumeParams,
 ) -> Result<p::ThreadResumeResponse, ThreadError> {
-    resume_thread(state, params, ResumeAcquire::Guarded).await
+    let process_gate = super::turn::thread_process_gate(&params.thread_id);
+    let _process_guard = process_gate.lock().await;
+    resume_thread(state, params).await
 }
 
 // ============================================================================
@@ -218,12 +220,15 @@ pub async fn handle_thread_resume(
 // ============================================================================
 
 /// 结束本机别处持有该会话的 Claude 进程，然后以同 id 续聊。找不到持有方、
-/// 探测策略关闭、或进程池已经持有时，等价于普通 resume。
+/// 探测策略关闭时，等价于普通 resume。池内旧进程不代表外部持有方已经退出。
 pub async fn handle_thread_takeover(
     state: &Arc<ConnectionState>,
     params: p::ThreadTakeoverParams,
 ) -> Result<p::ThreadTakeoverResponse, ThreadError> {
     let thread_id = params.thread_id.clone();
+    // 与发送、恢复共用锁，避免外部持有方退出后、旧上下文标记失效前插入新一轮。
+    let process_gate = super::turn::thread_process_gate(&thread_id);
+    let _process_guard = process_gate.lock().await;
     // 先确认索引里有这个会话；不为一个不存在的 id 去动任何进程。
     state
         .thread_index()
@@ -231,22 +236,25 @@ pub async fn handle_thread_takeover(
         .await
         .ok_or_else(|| ThreadError::NotFound(thread_id.clone()))?;
 
-    let outcome = if state.claude_pool().get(&thread_id).await.is_some() {
-        TakeoverOutcome::NoHolder
-    } else {
-        let own_pids = state.own_child_pids().await;
-        release_foreign_holders(
-            state.foreign_sessions(),
-            &thread_id,
-            &own_pids,
-            state.takeover_timeouts(),
-        )
-        .await
-        .map_err(|source| ThreadError::Takeover {
-            thread_id: thread_id.clone(),
-            source: Box::new(source),
-        })?
-    };
+    let own_pids = state.own_child_pids().await;
+    let outcome = release_foreign_holders(
+        state.foreign_sessions(),
+        &thread_id,
+        &own_pids,
+        state.takeover_timeouts(),
+    )
+    .await;
+    // 直接接管也可能是第一次发现桌面端续聊。失败后对方可能自然退出，
+    // 因此成功或失败都要记住旧进程的上下文已失效。
+    if !matches!(&outcome, Ok(TakeoverOutcome::NoHolder))
+        && let Some(handle) = state.claude_pool().get(&thread_id).await
+    {
+        handle.require_resume();
+    }
+    let outcome = outcome.map_err(|source| ThreadError::Takeover {
+        thread_id: thread_id.clone(),
+        source: Box::new(source),
+    })?;
     let takeover = match &outcome {
         TakeoverOutcome::NoHolder => {
             tracing::info!(
@@ -282,31 +290,16 @@ pub async fn handle_thread_takeover(
             additional: params.additional,
             ..Default::default()
         },
-        ResumeAcquire::AfterTakeover,
     )
     .await?;
     Ok(p::ThreadTakeoverResponse { resume, takeover })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResumeAcquire {
-    /// 普通 resume：先探测别处持有，本地空配置时推迟起进程到首个 turn。
-    Guarded,
-    /// 接管刚结束持有方：不再探测，但起进程仍按普通规则推迟到首个 turn。
-    /// 实测过反例：接管时就起一个不带模型的进程，首个 turn/start 带着模型来，bridge 只能
-    /// 给活进程发 `/model` 切换，CLI 把这条本地命令的回显写出来时 turn 还没登记，被当成
-    /// autonomous turn，用户的 turn/start 随即以 active_turn 被拒。推迟到首个 turn 起进程
-    /// 就能直接带 `--model`，没有这个窗口。
-    AfterTakeover,
-}
-
+// 调用方持有 thread_process_gate；接管后的恢复也要复查新出现的外部持有方。
 async fn resume_thread(
     state: &Arc<ConnectionState>,
     params: p::ThreadResumeParams,
-    acquire: ResumeAcquire,
 ) -> Result<p::ThreadResumeResponse, ThreadError> {
-    let process_gate = super::turn::thread_process_gate(&params.thread_id);
-    let _process_guard = process_gate.lock().await;
     let entry = state
         .thread_index()
         .lookup(&params.thread_id)
@@ -321,10 +314,7 @@ async fn resume_thread(
     // 会话正被本机其他 Claude 进程（终端 / Claude 桌面）持有时不起第二个进程：
     // 两个进程会让 transcript 从同一个 leaf 分叉，第二个还会把持有方正在做的事
     // 重做一遍。这里按只读返回并附持有方摘要，持有方退出后同 id 正常续聊。
-    let foreign_owner = match acquire {
-        ResumeAcquire::Guarded => state.foreign_owner(&params.thread_id).await,
-        ResumeAcquire::AfterTakeover => None,
-    };
+    let foreign_owner = state.foreign_owner(&params.thread_id).await;
     if let Some(owner) = &foreign_owner {
         tracing::info!(
             thread_id = %params.thread_id,
@@ -826,7 +816,7 @@ pub async fn handle_thread_list(
             let mut t = crate::index::entry_to_thread_with_git_info(&entry, Some(git_info));
             let is_loaded = loaded.contains(&t.id);
             apply_live_thread_status(&mut t, is_loaded);
-            if !is_loaded && let Some(owner) = foreign_owners.get(&t.id) {
+            if let Some(owner) = foreign_owners.get(&t.id) {
                 mark_owned_elsewhere(&mut t, owner);
             }
             t

@@ -767,12 +767,17 @@ struct CodexAppServerEventProjector {
                 deltaKeys: ["delta", "text"],
                 bufferSuffix: "reasoning-summary-\(summaryIndex)",
                 kind: .reasoningSummary,
-                activityCategory: .thinking,
-                usesDistinctBufferItemID: true
+                activityCategory: .thinking
             )
         case "item/reasoning/summaryPartAdded":
             // 这是新分段边界，本身没有可展示文本；后续 summaryTextDelta 会带 index。
             return nil
+        case "item/reasoning/textDelta":
+            return streamedSystemMessageEvent(
+                params: params, metadata: metadata, deltaKeys: ["delta", "text"],
+                bufferSuffix: "reasoning-content-\(firstInt(in: params, keys: ["contentIndex"]) ?? 0)",
+                kind: .reasoningSummary, activityCategory: .thinking
+            )
         case "thread/tokenUsage/updated":
             return tokenUsageContextEvent(params: params, metadata: metadata)
         case "thread/compacted":
@@ -809,9 +814,6 @@ struct CodexAppServerEventProjector {
             let event = completedUserMessageEvent(params: params, metadata: metadata)
                 ?? completedAgentMessageEvent(params: params, metadata: metadata)
                 ?? completedImageItemEvent(params: params, metadata: metadata)
-                // collabAgentToolCall 的 receiverThreadIds 是子会话关系的唯一可信来源。
-                // 必须先于通用工具活动投影处理，否则它会被 processItemCompleted 吞掉。
-                ?? collabSubagentContextEvent(params: params, metadata: metadata)
                 ?? completedProcessItemEvent(params: params, metadata: metadata)
                 ?? itemContextEvent(params: params, metadata: metadata)
             if let itemID = metadata.itemID {
@@ -1132,8 +1134,7 @@ struct CodexAppServerEventProjector {
         deltaKeys: [String],
         bufferSuffix: String,
         kind: MessageKind,
-        activityCategory: ConversationActivityCategory? = nil,
-        usesDistinctBufferItemID: Bool = false
+        activityCategory: ConversationActivityCategory? = nil
     ) -> AgentEvent? {
         guard let delta = firstString(in: params, keys: deltaKeys), !delta.isEmpty else {
             return nil
@@ -1145,8 +1146,21 @@ struct CodexAppServerEventProjector {
             suffix: bufferSuffix
         )
         streamedTextByKey[key, default: ""].append(contentsOf: delta)
-        guard let next = streamedTextByKey[key] else {
-            return nil
+        // summary parts 属于同一 item；累计正文复用完成事件的身份，避免展开后重复显示分段和终稿。
+        let next: String
+        if activityCategory == .thinking {
+            next = streamedTextByKey.filter {
+                $0.key.sessionID == key.sessionID && $0.key.turnID == key.turnID
+                    && $0.key.itemID == key.itemID && $0.key.suffix.hasPrefix("reasoning-")
+            }.sorted {
+                let left = ($0.key.suffix.hasPrefix("reasoning-summary-") ? 0 : 1,
+                            Int($0.key.suffix.split(separator: "-").last ?? "0") ?? 0)
+                let right = ($1.key.suffix.hasPrefix("reasoning-summary-") ? 0 : 1,
+                             Int($1.key.suffix.split(separator: "-").last ?? "0") ?? 0)
+                return left < right
+            }.map(\.value).joined(separator: "\n\n")
+        } else {
+            next = streamedTextByKey[key] ?? ""
         }
         let payload = activityCategory.map { category in
             ConversationActivityPayload(
@@ -1158,9 +1172,7 @@ struct CodexAppServerEventProjector {
         }
         return systemNoticeEvent(
             text: next,
-            itemID: usesDistinctBufferItemID
-                ? "\(metadata.itemID ?? "reasoning"):\(bufferSuffix)"
-                : (metadata.itemID ?? bufferSuffix),
+            itemID: metadata.itemID ?? bufferSuffix,
             kind: kind,
             metadata: metadata,
             activityPayload: payload
@@ -1333,7 +1345,7 @@ struct CodexAppServerEventProjector {
         else {
             return nil
         }
-        let content = payload.summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = payload.detailText(from: item)
         guard !content.isEmpty else {
             return nil
         }
@@ -1354,14 +1366,16 @@ struct CodexAppServerEventProjector {
             revision: metadata.revision ?? 0,
             sendStatus: .confirmed
         )
-        let context = contextTask(from: item, fallbackStatus: firstString(in: params, keys: ["status"])).map { task in
-            SessionContextSnapshot(
-                sessionID: metadata.sessionID,
-                threadID: metadata.sessionID,
-                tasks: [task],
-                updatedAt: Date()
-            )
-        }
+        let task = contextTask(from: item, fallbackStatus: firstString(in: params, keys: ["status"]))
+        let subagents = contextSubagents(from: item, parentThreadID: metadata.sessionID)
+        // 工具结果与子 Agent 关系一起交付，不能为了更新侧栏而吞掉时间线的完成正文。
+        let context = SessionContextSnapshot(
+            sessionID: metadata.sessionID,
+            threadID: metadata.sessionID,
+            tasks: task.map { [$0] } ?? [],
+            subagents: subagents,
+            updatedAt: Date()
+        )
         return .processItemCompleted(message, context, metadata)
     }
 
@@ -1432,28 +1446,6 @@ struct CodexAppServerEventProjector {
         )
     }
 
-    private func collabSubagentContextEvent(
-        params: [String: CodexAppServerJSONValue],
-        metadata: AgentEventMetadata
-    ) -> AgentEvent? {
-        guard let item = params["item"]?.objectValue else {
-            return nil
-        }
-        let subagents = contextSubagents(from: item, parentThreadID: metadata.sessionID)
-        guard !subagents.isEmpty else {
-            return nil
-        }
-        return .sessionContext(
-            SessionContextSnapshot(
-                sessionID: metadata.sessionID,
-                threadID: metadata.sessionID,
-                subagents: subagents,
-                updatedAt: Date()
-            ),
-            metadata
-        )
-    }
-
     private func contextSubagents(
         from item: [String: CodexAppServerJSONValue],
         parentThreadID: SessionID?
@@ -1516,6 +1508,8 @@ struct CodexAppServerEventProjector {
                 status: status
             )
         case "dynamicToolCall":
+            // 任务清单有独立投影，工具调用本身仅保留在时间线，避免重复任务。
+            guard !ClaudeTaskHistoryProjection.isTaskMutation(item) else { return nil }
             let namespace = firstString(in: item, keys: ["namespace"])
             let tool = firstString(in: item, keys: ["tool"]) ?? L10n.text("ui.dynamic_tools")
             let title = [namespace, tool].compactMap { $0 }.joined(separator: ".")

@@ -20,10 +20,8 @@ const (
 	// 终端 / Claude 桌面的活进程持有时不再另起 claude 进程，按只读返回并附 claudeOwner。
 	// agentd 不按它做门禁（字段可选、旧版本静默缺失），常量只记录能力起点。
 	ForeignSessionGuardVersion = "0.2.10"
-	// 0.2.11 起 bridge 提供 thread/takeover：结束本机别处持有该会话的 claude 进程后同 id
-	// 续聊。旧 bridge 会回 method not found，所以 channel 只对达标版本声明该方法，iOS 据此
-	// 决定是否显示"在此设备上接管"。
-	ThreadTakeoverVersion = "0.2.11"
+	// 0.2.14 起接管只结束明确空闲的持有方；旧版会中断执行中的任务，不再声明接管能力。
+	ThreadTakeoverVersion = "0.2.14"
 	// 旧 bridge 会把完全访问映射回 default，不能对它宣称免审批已生效。
 	FullAccessVersion = "0.2.13"
 	// Claude bridge 与 agentd 同仓维护，安装提示只指向主仓库，避免两套 revision 和 Release 漂移。

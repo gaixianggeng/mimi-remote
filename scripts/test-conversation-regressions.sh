@@ -60,12 +60,12 @@ echo "==> iOS conversation regressions"
 # - ConversationDataFlowTests 的精确方法：只保留配对后的会话、流式事件、恢复、
 #   exactly-once、审批/中断、Host 隔离和 fake smoke；其余大集合不无条件进入 PR Gate。
 # - FileAttachmentModelsTests：文件上传、capability 状态矩阵、内部上下文编解码和旧服务端兼容。
-# - ConversationProcessGrouperTests：过程组边界、commentary 前后保留和 source order。
+# - ConversationTimelineProviderPresentationTests：Codex/Claude 默认与详细记录投影、锚点和全文入口。
 # - ConversationScrollStabilityTests：首屏可读交接、手势取消、阅读锚点和显式回到底部。
 # - ConversationTimelineRuntimeRegressionTests：原生 List 在 Codex/Claude 更新及历史前插后的视口。
 # - SessionListLifecycleCoordinatorTests：滚动冻结、idle 重排和完成/失败 Haptic exactly-once。
 # - SessionListPresentationTests：会话摘要、分支身份、时间格式和紧凑行数策略。
-# - ConversationSnapshotTests：用户气泡/助手文档流、复杂 Markdown、图片和过程组的关键视觉回归。
+# - ConversationSnapshotTests：用户气泡/助手文档流、复杂 Markdown、图片和活动行的关键视觉回归。
 # - MarkdownRenderingTests：proposed_plan 流式和完整渲染。
 # - PairingLinkTests：Endpoint allowlist、ATS 传输策略、Host capability 隔离和 stale lease。
 # - DoctorDiagnosticsTests：结构化 Doctor 响应、HTTP 错误和向后兼容。
@@ -83,6 +83,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/AgentAPIClientRequestTests \
   -only-testing:MimiRemoteTests/CameraAttachmentTests \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
+  -only-testing:MimiRemoteTests/ClaudeTakeoverTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSteerTurnSurvivesLastObserverLeavingWhileThreadResumeIsPending \
@@ -160,7 +161,8 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchivedSessionMustUnarchiveRemotelyBeforePinning \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testMarkHistorySessionUnreadPersistsCompletionWatermark \
   -only-testing:MimiRemoteTests/WorkspacePullRefreshTests/testPullRefreshPublishesSessionsWithoutRequestingWorkspaceGitSummaries \
-  -only-testing:MimiRemoteTests/ConversationProcessGrouperTests \
+  -only-testing:MimiRemoteTests/ConversationTimelineProviderPresentationTests \
+  -only-testing:MimiRemoteTests/ConversationActivityDetailProjectionTests \
   -only-testing:MimiRemoteTests/ConversationScrollStabilityTests \
   -only-testing:MimiRemoteTests/ConversationTimelineRuntimeRegressionTests \
   -only-testing:MimiRemoteTests/SessionListLifecycleCoordinatorTests \
@@ -176,8 +178,8 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testUnavailableUserImageGalleryRemainsLegibleInLightTheme \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testSessionRuntimeBadgesInConversationList \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testProjectSessionDashboard \
-  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testCommentaryAndTrailingProcessRendering \
-  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testExpandedProcessGroupRendering \
+  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testCommentaryAndTrailingActivitiesRendering \
+  -only-testing:MimiRemoteTests/ConversationTimelineProviderPresentationSnapshotTests \
   -only-testing:MimiRemoteTests/MarkdownRenderingTests \
   -only-testing:MimiRemoteTests/PairingLinkTests \
   -only-testing:MimiRemoteTests/DoctorDiagnosticsTests \

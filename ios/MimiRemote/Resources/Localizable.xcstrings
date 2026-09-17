@@ -1,6 +1,86 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.view_process": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View process"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看过程"
+          }
+        }
+      }
+    },
+    "ui.process_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failed · View process"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "执行失败 · 查看过程"
+          }
+        }
+      }
+    },
+    "ui.process_interrupted": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interrupted · View process"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已中断 · 查看过程"
+          }
+        }
+      }
+    },
+    "ui.process_disclosure_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show or hide progress and tool activity for this turn"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开或收起本轮进度与工具活动"
+          }
+        }
+      }
+    },
+    "ui.view_file_changes": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View file changes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看文件改动"
+          }
+        }
+      }
+    },
     "ui.record_conversation_scroll": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Record conversation scrolling" } },
@@ -9112,6 +9192,74 @@
         }
       }
     },
+    "ui.detailed_transcript": {
+      "comment": "Toggle title that shows every received activity and its complete readable details in source order.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detailed transcript"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "详细记录"
+          }
+        }
+      }
+    },
+    "ui.detailed_transcript_hint": {
+      "comment": "Accessibility hint for the detailed transcript toggle.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows complete reasoning, activity details, and output in the received order."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按接收顺序显示完整推理、活动详情和输出。"
+          }
+        }
+      }
+    },
+    "ui.tool_input": {
+      "comment": "Label before the complete input parameters of a tool call.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tool input"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工具输入"
+          }
+        }
+      }
+    },
+    "ui.tool_output": {
+      "comment": "Label before the complete result of a tool call.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tool output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工具结果"
+          }
+        }
+      }
+    },
     "ui.deletions_will_still_be_checked_by_agentd_against": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -13757,6 +13905,16 @@
             "state": "translated",
             "value": "图片内容为空"
           }
+        }
+      }
+    },
+    "ui.media_data_omitted": {
+      "localizations": {
+        "en": {
+          "stringUnit": { "state": "translated", "value": "[Media data omitted]" }
+        },
+        "zh-Hans": {
+          "stringUnit": { "state": "translated", "value": "[媒体数据已省略]" }
         }
       }
     },
@@ -30086,6 +30244,57 @@
         }
       }
     },
+    "ui.take_over_claude_wait_until_idle": {
+      "comment": "User-facing Claude takeover status.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your Mac is processing this turn. You can take over when it finishes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac 正在处理，当前一轮完成后可接管。"
+          }
+        }
+      }
+    },
+    "ui.take_over_claude_state_unknown": {
+      "comment": "User-facing Claude takeover status.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not confirm that the session on your Mac is idle. Refresh and try again later."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂时无法确认 Mac 是否已空闲，请稍后刷新再试。"
+          }
+        }
+      }
+    },
+    "ui.take_over_claude_upgrade_required": {
+      "comment": "User-facing Claude takeover status.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update Mimi Remote Mac to take over only when the session is idle."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请更新 Mimi Remote Mac 后再接管；当前主机不支持仅在空闲时接管。"
+          }
+        }
+      }
+    },
     "ui.take_over_claude_failed_respawned": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -30143,13 +30352,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Could not verify the process holding this session on your Mac, so nothing was changed."
+            "value": "Could not verify the process holding this session on your Mac. Takeover stopped; check the session on your Mac before trying again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "无法确认 Mac 上持有该会话的进程，已放弃接管，未做任何改动。"
+            "value": "无法确认 Mac 上持有该会话的进程，已停止接管；请先在 Mac 上确认会话状态。"
           }
         }
       }
@@ -30177,13 +30386,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This ends the session in %@ on your Mac (anything still running is interrupted; the saved conversation is kept), then continues here."
+            "value": "This closes the idle session in %@ on your Mac and continues it here. The saved conversation is kept. If processing has resumed, wait for it to finish and try again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "会让 Mac 上的%@退出该会话（正在执行的内容会被中断，已落盘的对话保留），然后在这里继续。"
+            "value": "会让 Mac 上的%@退出空闲会话，然后在这里继续，已保存的对话保留。如果 Mac 已开始新一轮处理，请等完成后再接管。"
           }
         }
       }

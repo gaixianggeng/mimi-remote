@@ -24,7 +24,7 @@ struct ConversationLiveStatusRow: View {
                     )
                     .frame(width: 16, height: 18)
 
-                    Text(status.text(at: context.date))
+                    Text(status.text(at: context.date, includesTokens: false))
                         .font(themeStore.uiFont(size: 14, weight: .medium))
                         .monospacedDigit()
                         .foregroundStyle(isWarning ? tokens.warning : tokens.secondaryText)
@@ -33,7 +33,7 @@ struct ConversationLiveStatusRow: View {
                         .contentTransition(.identity)
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(status.text(at: context.date))
+                .accessibilityLabel(status.text(at: context.date, includesTokens: false))
             }
             .frame(minHeight: 32, alignment: .leading)
             .frame(maxWidth: layout.assistantBubbleMaxWidth, alignment: .leading)

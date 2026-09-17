@@ -1242,7 +1242,8 @@ extension CodexAppServerSessionRuntime {
 
     func contextTasks(from thread: [String: CodexAppServerJSONValue]) -> [SessionContextTask] {
         let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue) ?? []
-        var tasks: [SessionContextTask] = []
+        var tasks = Array(ClaudeTaskHistoryProjection.tasks(in: turns).prefix(8))
+        if tasks.count == 8 { return tasks }
         for turn in turns.reversed() {
             let items = turn["items"]?.arrayValue?.compactMap(\.objectValue) ?? []
             for item in items.reversed() {
@@ -1284,6 +1285,7 @@ extension CodexAppServerSessionRuntime {
                 status: status
             )
         case "dynamicToolCall":
+            guard !ClaudeTaskHistoryProjection.isTaskMutation(item) else { return nil }
             let title = nonEmpty(item["tool"]?.stringValue, item["name"]?.stringValue, L10n.text("ui.dynamic_tools")) ?? L10n.text("ui.dynamic_tools")
             let subtitle = nonEmpty(item["pluginId"]?.stringValue, item["namespace"]?.stringValue)
             return SessionContextTask(
@@ -1514,7 +1516,7 @@ extension CodexAppServerSessionRuntime {
             guard let payload = ConversationActivityPayload(item: item) else {
                 return nil
             }
-            let content = payload.summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let content = payload.detailText(from: item)
             guard !content.isEmpty else {
                 return nil
             }
@@ -1523,7 +1525,7 @@ extension CodexAppServerSessionRuntime {
             guard let payload = ConversationActivityPayload(item: item) else {
                 return nil
             }
-            let content = payload.summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let content = payload.detailText(from: item)
             guard !content.isEmpty else {
                 return nil
             }
@@ -1532,17 +1534,17 @@ extension CodexAppServerSessionRuntime {
             guard let payload = ConversationActivityPayload(item: item) else {
                 return nil
             }
-            return CodexHistoryMessage(id: messageID, role: "system", kind: payload.messageKind, content: payload.summaryText, activityPayload: payload, createdAt: processCreatedAt, updatedAt: liveSnapshotUpdatedAt, turnID: turnID, itemID: itemID, timelineOrdinal: timelineOrdinal, isTimestampFallback: processTimestampIsFallback)
+            return CodexHistoryMessage(id: messageID, role: "system", kind: payload.messageKind, content: payload.detailText(from: item), activityPayload: payload, createdAt: processCreatedAt, updatedAt: liveSnapshotUpdatedAt, turnID: turnID, itemID: itemID, timelineOrdinal: timelineOrdinal, isTimestampFallback: processTimestampIsFallback)
         case "fileChange":
             guard let payload = ConversationActivityPayload(item: item) else {
                 return nil
             }
-            return CodexHistoryMessage(id: messageID, role: "system", kind: payload.messageKind, content: payload.summaryText, activityPayload: payload, createdAt: processCreatedAt, updatedAt: liveSnapshotUpdatedAt, turnID: turnID, itemID: itemID, timelineOrdinal: timelineOrdinal, isTimestampFallback: processTimestampIsFallback)
+            return CodexHistoryMessage(id: messageID, role: "system", kind: payload.messageKind, content: payload.detailText(from: item), activityPayload: payload, createdAt: processCreatedAt, updatedAt: liveSnapshotUpdatedAt, turnID: turnID, itemID: itemID, timelineOrdinal: timelineOrdinal, isTimestampFallback: processTimestampIsFallback)
         case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch":
             guard let payload = ConversationActivityPayload(item: item) else {
                 return nil
             }
-            return CodexHistoryMessage(id: messageID, role: "system", kind: payload.messageKind, content: payload.summaryText, activityPayload: payload, createdAt: processCreatedAt, updatedAt: liveSnapshotUpdatedAt, turnID: turnID, itemID: itemID, timelineOrdinal: timelineOrdinal, isTimestampFallback: processTimestampIsFallback)
+            return CodexHistoryMessage(id: messageID, role: "system", kind: payload.messageKind, content: payload.detailText(from: item), activityPayload: payload, createdAt: processCreatedAt, updatedAt: liveSnapshotUpdatedAt, turnID: turnID, itemID: itemID, timelineOrdinal: timelineOrdinal, isTimestampFallback: processTimestampIsFallback)
         default:
             return nil
         }
