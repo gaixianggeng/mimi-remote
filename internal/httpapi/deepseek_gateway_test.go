@@ -796,7 +796,16 @@ func TestDeepSeekGatewayServesAppServerMethodsAgainstHarness(t *testing.T) {
 		}}, nil
 	})
 	harness.handle(harnessclient.MethodSessionCreate, func(args json.RawMessage) (any, *harnessclient.RemoteError) {
-		return map[string]any{"sessionId": "s-created", "agentPreset": "default"}, nil
+		var request struct {
+			Request map[string]any `json:"request"`
+		}
+		if err := json.Unmarshal(args, &request); err != nil {
+			t.Errorf("解析创建请求失败：%v", err)
+		}
+		if _, supplied := request.Request["agentPreset"]; supplied {
+			t.Error("未选择预设时必须省略 agentPreset，交给 Harness 使用其配置默认值")
+		}
+		return map[string]any{"sessionId": "s-created", "agentPreset": "host-default"}, nil
 	})
 	harnessServer := harness.serve()
 
@@ -1056,7 +1065,7 @@ func TestDeepSeekGatewayAuthorizesCreatedThreadForTurns(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("新建线程应可读历史：%v", err)
 	}
-	callDeepSeekGateway(t, conn, 5, "turn/interrupt", map[string]any{"threadId": "s-new"})
+	callDeepSeekGateway(t, conn, 5, "turn/interrupt", map[string]any{"threadId": "s-new", "turnId": "t2"})
 }
 
 // 回归：thread/search 的结果必须带 cwd 与 snippet。

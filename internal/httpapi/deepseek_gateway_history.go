@@ -324,11 +324,9 @@ func toDeepSeekAnySlice(items []map[string]any) []any {
 // ensureTurnRecords 保证缓存里含有指定 turn 的完整记录。
 //
 // 分页只能向前：从缓存里最老的 seq 继续向 Harness 取，直到拿到这个 turn 或确认已经
-// 到会话开头。maxDeepSeekHistoryPages 给出上限，避免一个很旧的 turn 把连接拖在一次
+// 到会话开头。deepSeekMaxHistoryFetchPages 给出上限，避免一个很旧的 turn 把连接拖在一次
 // 请求里无限翻页。
 func (c *deepSeekGatewayConn) ensureTurnRecords(ctx context.Context, follow *deepSeekFollow, turn int64) (deepSeekTurnBucket, error) {
-	const maxDeepSeekHistoryPages = 8
-
 	// 缓存里有这个 turn 还不够：桶可能被分页切掉了开头（Started=false），那里面只剩
 	// 一条 turn/end，内容整个缺着。当成答案返回会把"少了整整一轮正文"的 turn 定稿。
 	if bucket, ok := deepSeekTurnByNumber(follow.snapshot(), turn); ok && bucket.Started {
@@ -337,31 +335,43 @@ func (c *deepSeekGatewayConn) ensureTurnRecords(ctx context.Context, follow *dee
 	if follow.atStart() {
 		return deepSeekTurnBucket{}, errDeepSeekThreadUnknown
 	}
-	for page := 0; page < maxDeepSeekHistoryPages; page++ {
-		before := follow.oldestCachedSeq()
-		if before <= 0 {
-			return deepSeekTurnBucket{}, errDeepSeekThreadUnknown
-		}
-		records, hasMore, err := c.fetchDeepSeekHistoryPage(ctx, follow, before, deepSeekHistoryPageSize)
-		if err != nil {
+	for page := 0; page < deepSeekMaxHistoryFetchPages; page++ {
+		if err := c.readEarlierDeepSeekHistory(ctx, follow); err != nil {
 			return deepSeekTurnBucket{}, err
 		}
-		if len(records) == 0 {
-			follow.markReachedStart()
-			break
-		}
-		follow.note(records)
 		if bucket, ok := deepSeekTurnByNumber(follow.snapshot(), turn); ok && bucket.Started {
 			return bucket, nil
 		}
-		if !hasMore {
-			follow.markReachedStart()
+		if follow.atStart() {
 			break
 		}
 	}
 	// 补不全就如实报"取不到"，让客户端重试。把残缺的桶当答案返回，用户会以为这一轮
 	// 本来就没有内容。
 	return deepSeekTurnBucket{}, errDeepSeekThreadUnknown
+}
+
+// readEarlierDeepSeekHistory 统一维护缓存的读取进度与结束标记。
+// hasMore=true 的空页或重复页不能被认作会话开头，否则另一条读取路径也会丢失历史。
+func (c *deepSeekGatewayConn) readEarlierDeepSeekHistory(ctx context.Context, follow *deepSeekFollow) error {
+	before := follow.oldestCachedSeq()
+	records, hasMore, err := c.fetchDeepSeekHistoryPage(ctx, follow, before, deepSeekHistoryPageSize)
+	if err != nil {
+		return err
+	}
+	if len(records) == 0 && hasMore {
+		return errDeepSeekHistoryPagingStalled
+	}
+	follow.note(records)
+	if !hasMore {
+		follow.markReachedStart()
+		return nil
+	}
+	after := follow.oldestCachedSeq()
+	if (before > 0 && after >= before) || (before <= 0 && after <= 0) {
+		return errDeepSeekHistoryPagingStalled
+	}
+	return nil
 }
 
 // deepSeekHistoryPageSize 是内部翻页的固定页大小，与移动端请求的 limit 无关。

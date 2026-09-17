@@ -84,10 +84,22 @@ func TestDeepSeekDuplicateDeliveredInteractionIsIgnored(t *testing.T) {
 		t.Fatalf("重复 eventId 不得再次下发卡片：%s", payload)
 	}
 
-	// 客户端应答取走卡片后进入终态；上游重投仍不得复活。
-	if _, ok := conn.takeWaterfall(firstID); !ok {
+	// 回传进行中仍挡住重复卡片，但只有上游确认后才进入终态。
+	pending, ok := conn.beginWaterfallResponse(firstID)
+	if !ok {
 		t.Fatal("首次下发的审批应可由客户端完成")
 	}
+	if conn.interactionIsTerminal(request.EventID) {
+		t.Fatal("回传尚未确认时不得提前标成终态")
+	}
+	if _, duplicate := conn.beginWaterfallResponse(firstID); duplicate {
+		t.Fatal("进行中的同一应答不得再次回传")
+	}
+	conn.dispatchWaterfall(t.Context(), request)
+	if len(conn.waterfalls) != 1 || conn.waterfalls[request.EventID].requestID != firstID {
+		t.Fatal("回传进行中重投必须保留原交互")
+	}
+	conn.completeWaterfallResponse(pending)
 	conn.dispatchWaterfall(t.Context(), request)
 	if _, ok := conn.waterfalls[request.EventID]; ok {
 		t.Fatal("已经完成的 eventId 不得重新登记")

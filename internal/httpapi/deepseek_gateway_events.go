@@ -586,22 +586,31 @@ func (c *deepSeekGatewayConn) resolveCancelledWaterfall(eventID string) {
 	}
 }
 
-// takeWaterfall 取出一条待应答的交互请求。
-func (c *deepSeekGatewayConn) takeWaterfall(requestID int64) (deepSeekPendingWaterfall, bool) {
+// beginWaterfallResponse 认领一次回传，保留待处理记录直到上游确认或取消。
+func (c *deepSeekGatewayConn) beginWaterfallResponse(requestID int64) (deepSeekPendingWaterfall, bool) {
 	c.interactionMu.Lock()
 	defer c.interactionMu.Unlock()
 
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	for eventID, pending := range c.waterfalls {
-		if pending.requestID == requestID {
-			delete(c.waterfalls, eventID)
-			c.mu.Unlock()
-			c.markInteractionTerminal(eventID)
+		if pending.requestID == requestID && !pending.responding {
+			pending.responding = true
+			c.waterfalls[eventID] = pending
 			return pending, true
 		}
 	}
-	c.mu.Unlock()
 	return deepSeekPendingWaterfall{}, false
+}
+
+func (c *deepSeekGatewayConn) completeWaterfallResponse(pending deepSeekPendingWaterfall) {
+	c.interactionMu.Lock()
+	defer c.interactionMu.Unlock()
+
+	c.mu.Lock()
+	delete(c.waterfalls, pending.eventID)
+	c.mu.Unlock()
+	c.markInteractionTerminal(pending.eventID)
 }
 
 const (

@@ -194,6 +194,8 @@ type deepSeekPendingWaterfall struct {
 	method    string
 	threadID  string
 	eventID   string
+	// responding 只阻止重复回传；收到客户端应答不等于 Harness 已接受。
+	responding bool
 }
 
 func (r *Router) appServerDeepSeekGatewayWS(w http.ResponseWriter, req *http.Request) {

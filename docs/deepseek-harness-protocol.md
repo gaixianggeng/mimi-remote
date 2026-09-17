@@ -198,12 +198,14 @@
 
 - `thread/list` / `thread/search` / `thread/turns/list` 的结果是 `{data: [...], nextCursor}`；**`nextCursor` 键必须存在**（可为 `null`），`thread/turns/list` 缺失该键会整页判为无效响应。
 - `thread/start` 结果必须给 `result.thread.id`；`turn/start` 结果必须给 `result.turn.id`——否则中断对账、active 清理与消息去重都会退化。
+- `turn/interrupt` 必须带有效 `turnId`，且与 follow 快照及实时事件中最近的运行轮次一致；已结束、已变化或无法确认的目标一律拒绝。Harness 只提供会话级 `session/cancel`，不支持原子条件取消，因此校验与取消之间仍可能被其他客户端切换轮次；当前能力不保证严格只取消指定 turn。
 - **`turn/start` 的 `result.turn.id` 只能绑定本次请求对应的 turn。** 判据是 `user/message` 的 `source.rpcId` 等于本次 prompt 的 `requestId`（也就是客户端传的 `clientUserMessageId`），turn 号按记录顺序归入该消息所属的 turn 桶。`turn/start` 事件本身不带 requestId，因此"等下一个出现的 turn 编号"在多端（Harness Web 页面、子 Agent）或排队投递的场景下会把别人的轮次回给客户端；等不到就不带 `id` 应答，而不是编一个。
 - **`turn/start` 的 `model` 与 `effort` 必须落到会话上。** Harness 侧只有 `session/selectModel` 能改会话的模型选择，而 `provider` 是它的必填项。Mimi 的 iOS 端只在 `thread/start` 上带 `modelProvider`，后续 `turn/start` 只带 `model`。provider 的确定不能按模型名推断，只能按证据强度逐层取：本次请求带的 `modelProvider` → 会话自记的选择（`model/selection`、`request/header`）→ 会话创建时记下的 `modelProvider` → 目录唯一命中；同名模型出现在多个 provider 下且都无证据时拒绝并列出候选，而不是替用户挑一个。模型不在目录里、或 `effort` 不在该模型声明的 `reasoning.efforts` 里时一律回绝，不回退到 Harness 的默认模型。
 - `item/started` / `item/completed` 的通知体是 `{item: {type, id, ...}, threadId, turnId}`。`type` 是唯一判别字段，未识别的类型整条丢弃。
 - `item/agentMessage/delta` 通知体是 `{threadId, turnId, itemId, delta}`，取自 `assistant-stream` 的 `chunk.text`。
 - `userMessage` 项必须带 `clientId`（回显 prompt 的 requestId），且通知需带 `clientUserMessageId`，否则 iOS 整条丢弃该消息。
 - 反向请求 `item/commandExecution/requestApproval` / `item/fileChange/requestApproval` / `item/fileRead/requestApproval` 的应答是 `{"decision": "<枚举>"}`；`item/tool/requestUserInput` 的应答是 `{"answers": {"<questionId>": {"answers": ["..."]}}}`。
+- 收到移动端应答只代表开始回传。Harness 确认成功或发送取消后才终结交互；HTTP 回传失败会结束当前网关连接，由重新订阅获取仍 pending 的交互。结果未知时不自动重发，已被 Harness 接受的决定不会因本地未收到确认而主动重试。
 - `serverRequest/resolved` 用于清除挂起卡片，通知体为 `{threadId, requestId}`。
 
 ## 三、尚未验证

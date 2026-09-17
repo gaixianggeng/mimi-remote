@@ -19,9 +19,6 @@ import (
 // appServerDeepSeekAllowedMethods 里，cwd 必须命中工作区授权，危险沙盒参数已被压回。
 // 因此这里只负责"翻译"，不重复做权限判断。
 
-// appServerDeepSeekRootAgentPreset 是新建 Harness 会话时使用的预设。
-const appServerDeepSeekRootAgentPreset = "default"
-
 // readClientFrames 读移动端帧直到连接结束。
 func (c *deepSeekGatewayConn) readClientFrames(ctx context.Context) string {
 	for {
@@ -37,6 +34,9 @@ func (c *deepSeekGatewayConn) readClientFrames(ctx context.Context) string {
 			continue
 		}
 		if err := c.handleClientFrame(ctx, rewritten); err != nil {
+			if errors.Is(err, errDeepSeekInteractionResponseFailed) {
+				return "interaction_response_failed"
+			}
 			log.Printf("deepseek gateway 处理客户端帧失败 err=%v", err)
 		}
 	}
@@ -65,25 +65,29 @@ func (c *deepSeekGatewayConn) handleClientResponse(ctx context.Context, frame *a
 	if !ok {
 		return nil
 	}
-	pending, ok := c.takeWaterfall(id)
+	pending, ok := c.beginWaterfallResponse(id)
 	if !ok {
 		// 迟到应答或不属于本连接的应答：空操作，不是错误。
 		return nil
 	}
+	var responseErr error
 	if len(frame.Result) == 0 {
 		// 客户端明确回了 error：按不可用回传，不能让 Harness 一直等。
-		return c.harness.ResolveApproval(ctx, c.clientID, pending.eventID, harnessclient.OutcomeUnavailable)
+		responseErr = c.harness.ResolveApproval(ctx, c.clientID, pending.eventID, harnessclient.OutcomeUnavailable)
+	} else {
+		responseErr = c.respondWaterfall(ctx, pending, frame.Result)
 	}
-	if err := c.respondWaterfall(ctx, pending, frame.Result); err != nil {
-		log.Printf("deepseek gateway 回传交互应答失败 event=%s err=%v",
-			sanitizeGatewayDiagnostic(pending.eventID), err)
-		return nil
+	if responseErr != nil {
+		log.Printf("deepseek gateway 回传交互应答失败 err=%v", sanitizeGatewayDiagnostic(responseErr.Error()))
+		// policy 已消费客户端应答，当前连接不能直接复用原卡片。结束连接后由 Harness
+		// 重投仍 pending 的交互；结果未知时不自动重发，避免重复执行已接受的决定。
+		return errDeepSeekInteractionResponseFailed
 	}
-	if rawID, err := deepSeekRawID(pending.requestID); err == nil {
-		c.policy.forgetPending(rawID)
-	}
+	c.completeWaterfallResponse(pending)
 	return nil
 }
+
+var errDeepSeekInteractionResponseFailed = errors.New("deepseek gateway: 交互应答回传失败，需要重连")
 
 // dispatchClientRequest 按方法分派。
 func (c *deepSeekGatewayConn) dispatchClientRequest(ctx context.Context, frame *appServerGatewayFrame) error {
@@ -274,10 +278,8 @@ func deepSeekSearchHaystack(session harnessclient.SessionSummary) (string, strin
 // handleThreadStart 新建会话。
 func (c *deepSeekGatewayConn) handleThreadStart(ctx context.Context, frame *appServerGatewayFrame, params map[string]any) error {
 	cwd, _ := gatewayStringParam(params, "cwd")
-	created, err := c.harness.CreateSession(ctx, harnessclient.CreateSessionRequest{
-		CWD:         cwd,
-		AgentPreset: appServerDeepSeekRootAgentPreset,
-	})
+	// 省略预设，由 Harness 解析其配置的默认值；"default" 不是通用的预设 ID。
+	created, err := c.harness.CreateSession(ctx, harnessclient.CreateSessionRequest{CWD: cwd})
 	if err != nil {
 		log.Printf("deepseek gateway 新建会话失败 err=%v", sanitizeGatewayDiagnostic(err.Error()))
 		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "在 Harness 上新建会话失败")
@@ -450,6 +452,20 @@ func (c *deepSeekGatewayConn) handleTurnInterrupt(ctx context.Context, frame *ap
 	if threadID == "" {
 		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "turn/interrupt.threadId 不能为空")
 	}
+	turn, ok := deepSeekTurnNumber(gatewayParamString(params, "turnId"))
+	if !ok || turn < 0 {
+		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "turn/interrupt.turnId 无效")
+	}
+	follow, err := c.ensureFollow(ctx, threadID)
+	if err != nil {
+		return c.deepSeekFollowError(frame, err)
+	}
+	current, running, known := follow.currentTurn()
+	if !known || !running || current != turn {
+		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "目标轮次已结束、已变化或尚未确认，请刷新会话后重试")
+	}
+	// Harness 只提供会话级 Cancel。此检查拒绝已知过期的目标，但上游不支持把
+	// turnId 与取消原子提交，因此不能保证检查之后另一客户端不会切换轮次。
 	if err := c.harness.Cancel(ctx, threadID); err != nil {
 		log.Printf("deepseek gateway 取消轮次失败 err=%v", sanitizeGatewayDiagnostic(err.Error()))
 		return c.writeDeepSeekError(frame.ID, appServerPolicyErrorCode, "取消 Harness 轮次失败")
@@ -538,28 +554,8 @@ func (c *deepSeekGatewayConn) deepSeekTurnPage(
 		if (direction == "desc" && len(buckets) >= offset+limit) || follow.atStart() {
 			break
 		}
-		before := follow.oldestCachedSeq()
-		records, hasMore, err := c.fetchDeepSeekHistoryPage(ctx, follow, before, deepSeekHistoryPageSize)
-		if err != nil {
+		if err := c.readEarlierDeepSeekHistory(ctx, follow); err != nil {
 			return nil, "", false, err
-		}
-		if len(records) == 0 {
-			if hasMore {
-				return nil, "", false, errDeepSeekHistoryPagingStalled
-			}
-			follow.markReachedStart()
-			break
-		}
-		follow.note(records)
-		if !hasMore {
-			follow.markReachedStart()
-			break
-		}
-		after := follow.oldestCachedSeq()
-		if (before > 0 && after >= before) || (before <= 0 && after <= 0) {
-			// hasMore=true 却没有越过 beforeSeq 时，继续请求只会反复读同一页。
-			// 返回错误比制造无限的新游标更安全，也不会触发 iOS 的重复游标保护。
-			return nil, "", false, errDeepSeekHistoryPagingStalled
 		}
 	}
 	// asc 在确认会话开头前只能回空页和进度游标。一次请求的 8 页上限不能成为

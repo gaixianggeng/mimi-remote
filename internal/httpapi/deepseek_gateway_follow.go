@@ -217,6 +217,15 @@ func (f *deepSeekFollow) awaitSnapshot(ctx context.Context) error {
 // 与它的 foldConsumedWork 一样，最近的 start/end 边界决定当前是否仍有一轮未结束。
 // 完整空历史能证明空闲；只有中间片段、没有边界的截断历史则不能。
 func (f *deepSeekFollow) snapshotActivity() (active int, known bool) {
+	_, running, known := f.currentTurn()
+	if running {
+		active = 1
+	}
+	return active, known
+}
+
+// currentTurn 让订阅回收与中断校验共用最近一个有效 turn 边界，不另存轮次副本。
+func (f *deepSeekFollow) currentTurn() (turn int64, running bool, known bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	known = f.reachedStart
@@ -232,12 +241,10 @@ func (f *deepSeekFollow) snapshotActivity() (active int, known bool) {
 			continue
 		}
 		known = true
-		active = 0
-		if event.Type == deepSeekEventTurnStart {
-			active = 1
-		}
+		turn = *data.Turn
+		running = event.Type == deepSeekEventTurnStart
 	}
-	return active, known
+	return turn, running, known
 }
 
 // through 返回分页切点。
