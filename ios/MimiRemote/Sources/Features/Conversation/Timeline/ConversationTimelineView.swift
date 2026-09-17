@@ -12,6 +12,7 @@ struct ConversationTimelineView: View {
     let allowsTopUnderlap: Bool
     @State private var expandedActivityIDs: Set<String> = []
     @State private var expandedProcessMessageIDs: Set<UUID> = []
+    @State private var collapsedProcessMessageIDs: Set<UUID> = []
     @State private var pendingFileActivityID: String?
     @State private var timelineItemCache = ConversationTimelineItemCache()
     @State private var presentedSnapshot = ConversationTimelineSnapshot.empty
@@ -55,14 +56,6 @@ struct ConversationTimelineView: View {
             hasTimelineContent: !timelineItems.isEmpty,
             presentationGeneration: scrollController.epoch
         )
-        let incomingIdentity = ConversationTimelineSnapshotIdentity(
-            scope: scope,
-            revision: source.revision,
-            isInteracting: scrollController.isInteracting,
-            provider: timelineProvider,
-            showsDetailedTranscript: showsDetailedTranscript,
-            expandedProcessMessageIDs: expandedProcessMessageIDs
-        )
         let isTimelineReadable = timelineItems.isEmpty || scrollController.isReadable
         let activeUserDeliveryMessageID = Self.activeUserDeliveryMessageID(in: source.messages)
         let crossSessionOriginMessageID = Self.crossSessionOriginMessageID(
@@ -84,6 +77,17 @@ struct ConversationTimelineView: View {
         let liveProcessID = liveStatus.flatMap { _ in
             Self.liveProcessID(in: timelineItems, messages: source.messages, activeTurnID: displayedSession?.activeTurnID)
         }
+        let activeTurn = liveStatus.map { _ in ConversationTimelineActiveTurn(id: displayedSession?.activeTurnID) }
+        let incomingIdentity = ConversationTimelineSnapshotIdentity(
+            scope: scope,
+            revision: source.revision,
+            isInteracting: scrollController.isInteracting,
+            provider: timelineProvider,
+            showsDetailedTranscript: showsDetailedTranscript,
+            expandedProcessMessageIDs: expandedProcessMessageIDs,
+            collapsedProcessMessageIDs: collapsedProcessMessageIDs,
+            activeTurn: activeTurn
+        )
         let isLoadingEarlierHistory = sessionStore.isLoadingEarlierHistory(sessionID: displayedSessionID)
         let shouldShowInlineHistoryLoading = Self.shouldShowInlineHistoryLoading(
             timelineItemsAreEmpty: timelineItems.isEmpty,
@@ -221,13 +225,13 @@ struct ConversationTimelineView: View {
                 }
             }
             .onChange(of: incomingIdentity, initial: true) { _, _ in
-                publishTimelineSource(source, provider: timelineProvider)
+                publishTimelineSource(source, provider: timelineProvider, activeTurn: activeTurn)
             }
             .onChange(of: timelineListIdentity, initial: true) { _, identity in
                 connectScrollCommands(proxy: proxy, epoch: identity.presentationGeneration)
             }
             .onAppear {
-                publishTimelineSource(source, provider: timelineProvider)
+                publishTimelineSource(source, provider: timelineProvider, activeTurn: activeTurn)
             }
             .environment(\.conversationMediaLayoutWillChange, scrollController.mediaLayoutWillChange)
             .environment(\.conversationBindAnchorView, anchorViewBinder())
@@ -341,6 +345,14 @@ struct ConversationTimelineView: View {
     private func toggleActivityDetails(itemID: String) {
         guard !showsDetailedTranscript else { return }
         let expanding = !expandedActivityIDs.contains(itemID)
+        if expanding {
+            // 用户进入单项详情后保留所属过程，避免完成事件打断正在阅读的内容。
+            for case .processGroup(let group) in presentedSnapshot.rows
+                where group.messages.contains(where: { ConversationTimelineItem.activityID(for: $0) == itemID }) {
+                expandedProcessMessageIDs.formUnion(group.messages.map(\.id))
+                collapsedProcessMessageIDs.subtract(group.messages.map(\.id))
+            }
+        }
         scrollController.expansionChanged(itemID, isExpanded: expanding, isAnimated: false)
         if expanding { expandedActivityIDs.insert(itemID) } else { expandedActivityIDs.remove(itemID) }
     }
@@ -349,20 +361,31 @@ struct ConversationTimelineView: View {
         guard !showsDetailedTranscript else { return }
         if group.isExpanded {
             expandedProcessMessageIDs.subtract(group.messages.map(\.id))
+            collapsedProcessMessageIDs.formUnion(group.messages.map(\.id))
         } else if let anchor = group.messages.first?.id {
             expandedProcessMessageIDs.insert(anchor)
+            collapsedProcessMessageIDs.subtract(group.messages.map(\.id))
         }
     }
 
     private func showFileChanges(_ changes: ConversationFileChanges) {
+        let previousExpanded = expandedProcessMessageIDs
+        let previousCollapsed = collapsedProcessMessageIDs
+        expandedProcessMessageIDs.formUnion(changes.messageIDs)
+        for case .processGroup(let group) in presentedSnapshot.rows
+            where group.messages.contains(where: { changes.messageIDs.contains($0.id) }) {
+            collapsedProcessMessageIDs.subtract(group.messages.map(\.id))
+        }
         let allChangesVisible = changes.messageIDs.allSatisfy {
             presentedSnapshot.rowIDs.contains("activity:\($0.uuidString)")
         }
-        if allChangesVisible {
+        let presentationChanged = previousExpanded != expandedProcessMessageIDs
+            || previousCollapsed != collapsedProcessMessageIDs
+        if allChangesVisible, !presentationChanged {
             scrollController.revealItem(changes.firstActivityID)
         } else {
+            // 保留过程本身也会发布快照，定位必须在那之后执行，不能被 prepare 取消。
             pendingFileActivityID = changes.firstActivityID
-            expandedProcessMessageIDs.formUnion(changes.messageIDs)
         }
     }
 
@@ -614,19 +637,23 @@ struct ConversationTimelineView: View {
 
     private func publishTimelineSource(
         _ source: ConversationTimelineSourceSnapshot,
-        provider: ConversationTimelineProvider
+        provider: ConversationTimelineProvider,
+        activeTurn: ConversationTimelineActiveTurn?
     ) {
         let snapshot = timelineItemCache.snapshot(
             from: source,
             provider: provider,
             showsDetailedTranscript: showsDetailedTranscript,
             expandedProcessMessageIDs: presentedSnapshot.scope == source.scope ? expandedProcessMessageIDs : [],
+            collapsedProcessMessageIDs: presentedSnapshot.scope == source.scope ? collapsedProcessMessageIDs : [],
+            activeTurn: activeTurn,
             suspendingUpdates: scrollController.isInteracting
         )
         guard scrollController.prepare(snapshot) else { return }
         if presentedSnapshot.scope != snapshot.scope {
             expandedActivityIDs.removeAll()
             expandedProcessMessageIDs.removeAll()
+            collapsedProcessMessageIDs.removeAll()
             pendingFileActivityID = nil
         }
         if !snapshot.rows.isEmpty, presentedSnapshot.rows.isEmpty || presentedSnapshot.scope != snapshot.scope {
@@ -719,6 +746,8 @@ private struct ConversationTimelineSnapshotIdentity: Equatable {
     let provider: ConversationTimelineProvider
     let showsDetailedTranscript: Bool
     let expandedProcessMessageIDs: Set<UUID>
+    let collapsedProcessMessageIDs: Set<UUID>
+    let activeTurn: ConversationTimelineActiveTurn?
 }
 
 struct ConversationHistoryAnchorGeometryModifier: ViewModifier {
