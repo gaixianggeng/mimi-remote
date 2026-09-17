@@ -103,6 +103,36 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         XCTAssertFalse(try group(in: finished[0]).isExpanded)
     }
 
+    func testKnownActiveTurnExpandsMissingMessageTurnIDAndRespectsCompletion() throws {
+        var old = makeActivity(id: "old", turnID: "", category: .toolCall, title: "旧过程")
+        old.turnID = nil
+        old.turnLifecycle = nil
+        var user = makeMessage(id: "user", turnID: "turn", role: .user, kind: .message, content: "继续")
+        user.turnLifecycle = nil
+        var process = makeActivity(id: "current", turnID: "", category: .toolCall, title: "读取")
+        process.turnID = nil
+        process.turnLifecycle = nil
+        var final = makeMessage(id: "final", turnID: "turn", role: .assistant, kind: .message, content: "答复")
+        final.turnLifecycle = .inProgress
+        for provider in [ConversationTimelineProvider.codex, .claude] {
+            let cache = ConversationTimelineItemCache()
+            let messages = [old, user, process, final]
+            let active = cache.snapshot(from: messages, provider: provider, activeTurn: .init(id: "turn"))
+            XCTAssertFalse(try group(in: active.rows[0]).isExpanded, "历史过程不能借用当前轮次展开")
+            XCTAssertTrue(try group(in: active.rows[2]).isExpanded, "会话有 ID、过程无 ID 也要自动展开")
+            let manual = cache.snapshot(from: messages, provider: provider,
+                                        collapsedProcessMessageIDs: [process.id], activeTurn: .init(id: "turn"))
+            XCTAssertFalse(try group(in: manual.rows[2]).isExpanded)
+            let finished = cache.snapshot(from: messages, provider: provider)
+            XCTAssertFalse(try group(in: finished.rows[2]).isExpanded)
+            var completedFinal = final
+            completedFinal.turnLifecycle = .completed
+            let completed = cache.snapshot(from: [old, user, process, completedFinal], provider: provider,
+                                           activeTurn: .init(id: "turn"))
+            XCTAssertFalse(try group(in: completed.rows[2]).isExpanded, "完成消息先到时不能等待会话状态更新")
+        }
+    }
+
     func testAutomaticCompletionWaitsForScrollInteractionAndPreservesManualState() throws {
         var process = makeActivity(id: "read", turnID: "turn", category: .toolCall, title: "读取")
         process.turnLifecycle = .inProgress

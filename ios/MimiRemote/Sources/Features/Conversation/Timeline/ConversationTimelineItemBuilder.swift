@@ -52,8 +52,9 @@ struct ConversationTimelineItemBuilder {
             // final 文本可能先于 turn 完成到达，不能仅因答复已确认而提前收起。
             let automaticallyExpanded = activeTurn.map { turn in
                 processStartIndex >= latestUserIndex
-                    && (turn.id == nil || message.turnID == turn.id)
-                    && !completedTurnIDs.contains(message.turnID ?? "")
+                    && (turn.id == nil || message.turnID == nil || message.turnID == turn.id)
+                    // 旧过程事件可缺失轮次 ID；借用当前轮次时也必须尊重它的完成状态。
+                    && !completedTurnIDs.contains(message.turnID ?? turn.id ?? "")
                     && !children.contains { $0.turnLifecycle == .completed }
                     && lifecycle != .failed && lifecycle != .interrupted
             } ?? false
