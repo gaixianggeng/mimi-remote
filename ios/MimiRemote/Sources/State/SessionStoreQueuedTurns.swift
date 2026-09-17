@@ -182,6 +182,38 @@ extension SessionStore {
         return lifecycles.contains(.completed) ? .completed : nil
     }
 
+    func reconcileTurnCompletionFromHistoryPage(
+        _ page: HistoryMessagesPage,
+        sessionID: SessionID,
+        hostScope: HostScope
+    ) async {
+        guard let turnID = sessionsByID[sessionID]?.activeTurnID,
+              shouldReconcileTurnCompletion(sessionID: sessionID, expectedTurnID: turnID, hostScope: hostScope),
+              let turnIndex = page.turnStates.lastIndex(where: { $0.id == turnID }),
+              page.turnStates[turnIndex].lifecycle.isTerminal
+        else { return }
+        // 同页若已有更新但尚未确认结束的轮次，旧轮次的终态不能放行下一条输入。
+        // 必须看原始轮次事实，不能从可见消息推断：新轮次可能尚未产生任何 Item。
+        guard page.turnStates.dropFirst(turnIndex + 1).allSatisfy({ $0.lifecycle.isTerminal }) else {
+            return
+        }
+        await applyRuntimeEvent(
+            .turnCompleted(AgentEventMetadata(
+                seq: page.snapshotSeq,
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: nil,
+                messageID: nil,
+                clientMessageID: nil,
+                revision: nil,
+                createdAt: nil,
+                turnLifecycle: page.turnStates[turnIndex].lifecycle
+            )),
+            lease: HostSessionLease(hostScope: hostScope, sessionID: sessionID),
+            sendsNotification: false
+        )
+    }
+
     func cancelTurnCompletionReconciliation(sessionID: SessionID) {
         turnCompletionReconciliationJobsBySessionID.removeValue(forKey: sessionID)?.task.cancel()
     }

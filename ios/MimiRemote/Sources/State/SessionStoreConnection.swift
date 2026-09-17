@@ -902,7 +902,7 @@ extension SessionStore {
         }
     }
 
-    func applyRuntimeEvent(_ event: AgentEvent, lease: HostSessionLease) async {
+    func applyRuntimeEvent(_ event: AgentEvent, lease: HostSessionLease, sendsNotification: Bool = true) async {
         guard appStore.activeHostScope == lease.hostScope else { return }
         let sessionID = lease.sessionID
         let replayAckSocket = replayBoundarySocket(for: event, fallbackSessionID: sessionID)
@@ -949,6 +949,10 @@ extension SessionStore {
             outputIdleClearDelay: foregroundOutputIdleClearDelay
         )
         guard appStore.activeHostScope == lease.hostScope else { return }
+        // reducer 的 actor 跳转期间可能已收到新轮次。落地前重新校验，确保旧完成
+        // 既不会清新 activeTurnID，也不会单独把新轮次的状态覆写为 completed。
+        if case .turnCompleted(let metadata) = event,
+           shouldIgnoreStaleTurnCompletion(metadata, fallbackSessionID: sessionID) { return }
         applyEventReducerOutput(output)
         if case .turnCompleted(let metadata) = event {
             scheduleMissingAssistantReplyBackfillIfNeeded(
@@ -1065,7 +1069,7 @@ extension SessionStore {
             }
             scheduleDeferredFullHistoryReloadAfterTurnCompletion(sessionID: id)
         }
-        guard appStore.activeHostScope == lease.hostScope else { return }
+        guard appStore.activeHostScope == lease.hostScope, sendsNotification else { return }
         await scheduleRuntimeNotificationIfNeeded(
             runtimeNotification,
             hostScope: lease.hostScope

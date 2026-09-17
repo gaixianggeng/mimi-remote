@@ -1405,7 +1405,19 @@ actor CodexAppServerSessionRuntime {
             ),
             authoritativeCompletedTurnItems: [:],
             itemContinuations: itemContinuations,
-            latestForkableTurnID: Self.latestForkableTurnID(fromTurns: chronologicalTurns)
+            latestForkableTurnID: Self.latestForkableTurnID(fromTurns: chronologicalTurns),
+            turnStates: chronologicalTurns.compactMap { turn in
+                guard let id = turn["id"]?.stringValue else { return nil }
+                let completedAt = firstDate(in: turn, keys: ["completedAt", "completed_at"])
+                return HistoryTurnState(
+                    id: id,
+                    lifecycle: historyTurnLifecycle(
+                        turn,
+                        isInProgress: completedAt == nil && isActiveHistoryStatus(turn["status"]),
+                        completedAt: completedAt
+                    )
+                )
+            }
         )
     }
 
