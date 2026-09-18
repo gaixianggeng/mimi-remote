@@ -2185,6 +2185,11 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.runtimeProvider, "claude")
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.brandMark.assetName, "OpenAIMonoblossom")
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.brandMark.assetName, "Claude")
+        XCTAssertEqual(
+            WorkspaceSessionRuntimeChoice.deepseek.brandMark.assetName,
+            "DeepSeek",
+            "DeepSeek 必须用自己的品牌标记，不能退回中性的终端 SF Symbol"
+        )
     }
 
     func testSessionRuntimePresentationNormalizesKnownRuntimeAliases() {

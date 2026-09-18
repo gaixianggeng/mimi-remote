@@ -11,7 +11,7 @@ final class DeepSeekRuntimePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.kind, .deepSeek)
         XCTAssertEqual(presentation.title, "DeepSeek")
         XCTAssertEqual(presentation.brandMark, .deepSeek)
-        XCTAssertEqual(presentation.brandMark.assetName, "terminal.fill")
+        XCTAssertEqual(presentation.brandMark.assetName, "DeepSeek")
     }
 
     func testDeepSeekHarnessAliasesUseDedicatedPresentation() {
