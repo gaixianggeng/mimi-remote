@@ -27,9 +27,16 @@ func notificationsByMethod(notifications []deepSeekNotification, method string) 
 	return matched
 }
 
+// liveEvent 是 translateDeepSeekDurableEvent 的测试封装：夹具里的记录统一归属 turn 1。
+// 真实调用方按记录落在哪个 turn 桶里解析归属，夹具不重复那套切分。
+// 需要断言"归属未知"时直接调用 translateDeepSeekDurableEvent 并传 0。
+func liveEvent(threadID string, event harnessclient.SessionWireEvent) []deepSeekNotification {
+	return translateDeepSeekDurableEvent(threadID, event, 1)
+}
+
 // turn/start 与 turn/end 必须翻译成 Mimi 的 turn 生命周期通知，且带 turn.id。
 func TestDeepSeekTurnLifecycleTranslatesToTurnNotifications(t *testing.T) {
-	started := translateDeepSeekDurableEvent("s-1", durableEvent(t, "turn/start", map[string]any{"turn": 3}))
+	started := liveEvent("s-1", durableEvent(t, "turn/start", map[string]any{"turn": 3}))
 	if len(started) != 1 || started[0].Method != "turn/started" {
 		t.Fatalf("turn/start 翻译不符：%#v", started)
 	}
@@ -50,7 +57,7 @@ func TestDeepSeekTurnLifecycleTranslatesToTurnNotifications(t *testing.T) {
 		{"failed", "failed"},
 	}
 	for _, tc := range cases {
-		notifications := translateDeepSeekDurableEvent("s-1", durableEvent(t, "turn/end", map[string]any{
+		notifications := liveEvent("s-1", durableEvent(t, "turn/end", map[string]any{
 			"turn":   3,
 			"reason": map[string]any{"kind": tc.reason},
 		}))
@@ -66,7 +73,7 @@ func TestDeepSeekTurnLifecycleTranslatesToTurnNotifications(t *testing.T) {
 
 // user/message 必须回显 prompt 的 requestId，否则刷新历史后消息会重复。
 func TestDeepSeekUserMessageCarriesClientMessageID(t *testing.T) {
-	notifications := translateDeepSeekDurableEvent("s-1", durableEvent(t, "user/message", map[string]any{
+	notifications := liveEvent("s-1", durableEvent(t, "user/message", map[string]any{
 		"id":      "msg-user-1",
 		"role":    "user",
 		"content": []map[string]any{{"type": "text", "text": "跑一下夹具"}},
@@ -91,7 +98,7 @@ func TestDeepSeekUserMessageCarriesClientMessageID(t *testing.T) {
 
 // 注入上下文（source.kind != "user"）必须翻译成 systemContext，不能进用户气泡。
 func TestDeepSeekInjectedContextBecomesSystemContext(t *testing.T) {
-	notifications := translateDeepSeekDurableEvent("s-1", durableEvent(t, "user/message", map[string]any{
+	notifications := liveEvent("s-1", durableEvent(t, "user/message", map[string]any{
 		"id":      "ctx-1",
 		"role":    "user",
 		"content": []map[string]any{{"type": "text", "text": "<system-reminder>加载 AGENTS.md"}},
@@ -118,7 +125,7 @@ func TestDeepSeekInjectedContextBecomesSystemContext(t *testing.T) {
 
 // assistant/message 的 item id 用 (turn, step) 合成，不使用 message.id。
 func TestDeepSeekAssistantMessageUsesTurnStepItemID(t *testing.T) {
-	notifications := translateDeepSeekDurableEvent("s-1", durableEvent(t, "assistant/message", map[string]any{
+	notifications := liveEvent("s-1", durableEvent(t, "assistant/message", map[string]any{
 		"turn": 2,
 		"step": 1,
 		"message": map[string]any{
@@ -152,7 +159,7 @@ func TestDeepSeekStreamingAndCommittedShareItemID(t *testing.T) {
 	if len(streamed) != 1 || streamed[0].Method != "item/agentMessage/delta" {
 		t.Fatalf("text-delta 翻译不符：%#v", streamed)
 	}
-	committed := translateDeepSeekDurableEvent("s-1", durableEvent(t, "assistant/message", map[string]any{
+	committed := liveEvent("s-1", durableEvent(t, "assistant/message", map[string]any{
 		"turn": 2,
 		"step": 1,
 		"message": map[string]any{
@@ -193,7 +200,7 @@ func TestDeepSeekAssistantChunkIgnoresNonTextFrames(t *testing.T) {
 
 // 标题事件映射到 thread/name/updated。
 func TestDeepSeekSessionTitleBecomesThreadNameUpdated(t *testing.T) {
-	notifications := translateDeepSeekDurableEvent("s-1", durableEvent(t, "session/title", map[string]any{
+	notifications := liveEvent("s-1", durableEvent(t, "session/title", map[string]any{
 		"title":       "夹具会话",
 		"source":      map[string]any{"kind": "llm"},
 		"messageSeqs": []int{1, 2},
@@ -209,7 +216,7 @@ func TestDeepSeekSessionTitleBecomesThreadNameUpdated(t *testing.T) {
 // 未知事件必须被安全跳过，不能因为上游加了新事件就让连接失败。
 func TestDeepSeekUnknownEventIsSkipped(t *testing.T) {
 	for _, eventType := range []string{"step/start", "step/end", "request/context", "approval/asked", "brand/new/event"} {
-		if notifications := translateDeepSeekDurableEvent("s-1", durableEvent(t, eventType, map[string]any{"turn": 1})); notifications != nil {
+		if notifications := liveEvent("s-1", durableEvent(t, eventType, map[string]any{"turn": 1})); notifications != nil {
 			t.Fatalf("事件 %s 不应产生通知：%#v", eventType, notifications)
 		}
 	}
@@ -296,8 +303,135 @@ func TestDeepSeekMalformedEventsAreDropped(t *testing.T) {
 		{Type: "session/title", Data: json.RawMessage(`{"title":""}`)},
 	}
 	for _, event := range malformed {
-		if notifications := translateDeepSeekDurableEvent("s-1", event); notifications != nil {
+		if notifications := liveEvent("s-1", event); notifications != nil {
 			t.Fatalf("畸形事件 %s 不应产生通知：%#v", event.Type, notifications)
 		}
 	}
 }
+
+func mustDeepSeekJSON(t *testing.T, data map[string]any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("构造事件数据失败：%v", err)
+	}
+	return raw
+}
+
+// 历史与直播必须对同一条记录给出同一套标识（turn + item id）与同一个时间。
+//
+// 这是"刷新历史后同一条消息显示两次"的直接防线：客户端把 (turnId, itemId) 合成消息标识，
+// 直播缺 turn 归属就会拿到不带 turn 的标识，而与它同源的历史消息带 turn——两条标识不同，
+// 客户端只能当成两条消息。时间同理：历史 item 不带时间时客户端会退化成 epoch，
+// 界面上显示成 01/01 08:00。
+func TestDeepSeekHistoryAndLiveAgreeOnIdentityAndTime(t *testing.T) {
+	const (
+		turnTime    = int64(1_789_726_449_233)
+		messageTime = int64(1_789_726_449_254)
+		rpcID       = "req-abc"
+	)
+	records := []harnessclient.SessionWireEvent{
+		{Type: deepSeekEventTurnStart, Seq: 5, Time: turnTime, Data: mustDeepSeekJSON(t, map[string]any{"turn": 1})},
+		{Type: deepSeekEventUserMessage, Seq: 9, Time: messageTime, Data: mustDeepSeekJSON(t, map[string]any{
+			"id":      "msg-user-1",
+			"role":    "user",
+			"content": []map[string]any{{"type": "text", "text": "跑一下夹具"}},
+			"source":  map[string]any{"kind": "user", "rpcId": rpcID},
+		})},
+		{Type: deepSeekEventUserMessage, Seq: 10, Time: messageTime, Data: mustDeepSeekJSON(t, map[string]any{
+			"id":      "ctx-1",
+			"role":    "user",
+			"content": []map[string]any{{"type": "text", "text": "<system-reminder>加载 AGENTS.md"}},
+			"source":  map[string]any{"kind": "agent-instructions", "form": "instructions"},
+		})},
+	}
+
+	buckets := deepSeekSplitTurns(records)
+	if len(buckets) != 1 || !buckets[0].Started {
+		t.Fatalf("切分结果不符：%#v", buckets)
+	}
+	turnWire := deepSeekTurnWire(buckets[0], true)
+	if turnWire["startedAt"] != turnTime {
+		t.Fatalf("turn 必须带上记录时间：%#v", turnWire)
+	}
+	if _, ok := turnWire["completedAt"]; ok {
+		t.Fatalf("没有 turn/end 就不应写 completedAt：%#v", turnWire)
+	}
+
+	history := deepSeekTurnItems(buckets[0])
+	if len(history) != 2 {
+		t.Fatalf("历史 item 数量不符：%#v", history)
+	}
+
+	var live []map[string]any
+	for _, record := range records {
+		turn, ok := deepSeekTurnForRecordSeq(records, record.Seq)
+		if !ok {
+			t.Fatalf("记录 seq=%d 应能归属到所在 turn", record.Seq)
+		}
+		for _, notification := range translateDeepSeekDurableEvent("s-1", record, turn) {
+			if notification.Method != "item/completed" {
+				continue
+			}
+			if notification.Params["turnId"] != "t1" {
+				t.Fatalf("直播必须带 turn 归属：%#v", notification.Params)
+			}
+			item, _ := notification.Params["item"].(map[string]any)
+			live = append(live, item)
+		}
+	}
+	if len(live) != len(history) {
+		t.Fatalf("直播 item 数量不符：%#v", live)
+	}
+	for index := range history {
+		if history[index]["id"] != live[index]["id"] {
+			t.Fatalf("第 %d 条标识不一致：历史 %v vs 直播 %v", index, history[index]["id"], live[index]["id"])
+		}
+		if history[index]["createdAt"] != messageTime || live[index]["createdAt"] != messageTime {
+			t.Fatalf("第 %d 条时间不一致：历史 %#v vs 直播 %#v",
+				index, history[index]["createdAt"], live[index]["createdAt"])
+		}
+	}
+}
+
+// 归属未知时不能编造 turn：宁可让客户端按"归属未知"处理，也不要给出错误的 turn 编号。
+func TestDeepSeekLiveOmitsTurnWhenAttributionUnknown(t *testing.T) {
+	userMessage := map[string]any{
+		"id":      "msg-user-1",
+		"role":    "user",
+		"content": []map[string]any{{"type": "text", "text": "跑一下夹具"}},
+		"source":  map[string]any{"kind": "user", "rpcId": "req-abc"},
+	}
+	event := harnessclient.SessionWireEvent{
+		Type: deepSeekEventUserMessage,
+		Seq:  9,
+		Time: 1_789_726_449_254,
+		Data: mustDeepSeekJSON(t, userMessage),
+	}
+
+	notifications := translateDeepSeekDurableEvent("s-1", event, 0)
+	if len(notifications) != 1 {
+		t.Fatalf("user/message 翻译不符：%#v", notifications)
+	}
+	if _, ok := notifications[0].Params["turnId"]; ok {
+		t.Fatalf("归属未知时不应带 turnId：%#v", notifications[0].Params)
+	}
+
+	// 记录落在被分页切掉开头的桶里（只有 turn/end）时同样不能归属。
+	truncated := []harnessclient.SessionWireEvent{
+		{Type: deepSeekEventTurnEnd, Seq: 4, Time: 1, Data: mustDeepSeekJSON(t, map[string]any{"turn": 1})},
+		event,
+	}
+	if turn, ok := deepSeekTurnForRecordSeq(truncated, event.Seq); ok {
+		t.Fatalf("残缺桶不能用于归属，却给出了 turn=%d", turn)
+	}
+
+	// 记录没带时间时不写 createdAt，让客户端按"无时间"处理，而不是当成 1970 的真时间。
+	withoutTime := event
+	withoutTime.Time = 0
+	item, _ := translateDeepSeekDurableEvent("s-1", withoutTime, 1)[0].Params["item"].(map[string]any)
+	if _, ok := item["createdAt"]; ok {
+		t.Fatalf("没有记录时间时不应写 createdAt：%#v", item)
+	}
+}
+

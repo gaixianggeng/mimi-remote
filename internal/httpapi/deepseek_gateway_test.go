@@ -378,7 +378,7 @@ func TestDeepSeekPromptJoinConcatenatesTextParts(t *testing.T) {
 // 用户消息必须回显 clientId，否则 iOS 会整条丢弃乐观消息的对账依据。
 func TestDeepSeekUserMessageItemEchoesClientID(t *testing.T) {
 	item, ok := deepSeekUserMessageItem(json.RawMessage(
-		`{"id":"msg-1","content":[{"type":"text","text":"hi"}],"source":{"rpcId":"rpc-9"}}`))
+		`{"id":"msg-1","content":[{"type":"text","text":"hi"}],"source":{"rpcId":"rpc-9"}}`), 1_789_726_449_254)
 	if !ok {
 		t.Fatal("合法用户消息应能投影")
 	}
@@ -390,10 +390,10 @@ func TestDeepSeekUserMessageItemEchoesClientID(t *testing.T) {
 	}
 
 	// 没有 id 的记录无法建立稳定 item，必须跳过。
-	if _, ok := deepSeekUserMessageItem(json.RawMessage(`{"content":[{"type":"text","text":"hi"}]}`)); ok {
+	if _, ok := deepSeekUserMessageItem(json.RawMessage(`{"content":[{"type":"text","text":"hi"}]}`), 0); ok {
 		t.Fatal("缺少 id 的用户消息不应被投影")
 	}
-	if _, ok := deepSeekUserMessageItem(json.RawMessage(`{"id":"msg-2","content":[]}`)); ok {
+	if _, ok := deepSeekUserMessageItem(json.RawMessage(`{"id":"msg-2","content":[]}`), 0); ok {
 		t.Fatal("没有正文的用户消息不应被投影")
 	}
 }
@@ -402,7 +402,7 @@ func TestDeepSeekUserMessageItemEchoesClientID(t *testing.T) {
 func TestDeepSeekInjectedContextHistoryItemStaysSystemSide(t *testing.T) {
 	item, ok := deepSeekUserMessageItem(json.RawMessage(
 		`{"id":"ctx-1","content":[{"type":"text","text":"<system-reminder>\n加载 AGENTS.md"}],` +
-			`"source":{"kind":"agent-instructions","form":"instructions","rpcId":"rpc-9"}}`))
+			`"source":{"kind":"agent-instructions","form":"instructions","rpcId":"rpc-9"}}`), 1_789_726_449_254)
 	if !ok {
 		t.Fatal("带正文的注入上下文应能投影")
 	}
@@ -425,14 +425,14 @@ func TestDeepSeekInjectedContextHistoryItemStaysSystemSide(t *testing.T) {
 
 	// 真实用户消息（source.kind="user"）仍走用户气泡，不能被分流规则误伤。
 	user, ok := deepSeekUserMessageItem(json.RawMessage(
-		`{"id":"msg-3","content":[{"type":"text","text":"继续推进"}],"source":{"kind":"user","rpcId":"rpc-10"}}`))
+		`{"id":"msg-3","content":[{"type":"text","text":"继续推进"}],"source":{"kind":"user","rpcId":"rpc-10"}}`), 0)
 	if !ok || user["type"] != deepSeekItemUserMessage || user["clientId"] != "rpc-10" {
 		t.Fatalf("真实用户消息不应被分流：%+v", user)
 	}
 
 	// 没有正文的注入记录不能落成空上下文行。
 	if _, ok := deepSeekUserMessageItem(json.RawMessage(
-		`{"id":"ctx-2","content":[],"source":{"kind":"skill-catalog"}}`)); ok {
+		`{"id":"ctx-2","content":[],"source":{"kind":"skill-catalog"}}`), 0); ok {
 		t.Fatal("没有正文的注入上下文不应被投影")
 	}
 }

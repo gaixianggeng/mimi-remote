@@ -128,7 +128,17 @@ func (c *deepSeekGatewayConn) handleDurableEvent(follow *deepSeekFollow, frame h
 	follow.note([]harnessclient.SessionWireEvent{event})
 	c.noteEventContext(follow.threadID, event)
 
-	for _, notification := range translateDeepSeekDurableEvent(follow.threadID, event) {
+	// turn 归属必须在 note 之后取：判定依据是"这条记录落在哪个 turn 桶里"，而切分用的
+	// 是本会话的记录序列。user/message 与注入上下文自身不带 turn 字段，这里给出的归属
+	// 与历史路径（deepSeekTurnItems 按桶投影）是同一套口径，两边因此得到相同的消息标识。
+	// 只有消息类记录会缺 turn 字段：其余事件自带定位或不需要归属，省掉这次切分。
+	var turn int64
+	switch event.Type {
+	case deepSeekEventUserMessage, deepSeekEventAssistantMessage:
+		turn, _ = deepSeekTurnForRecordSeq(follow.snapshot(), event.Seq)
+	}
+
+	for _, notification := range translateDeepSeekDurableEvent(follow.threadID, event, turn) {
 		if err := c.writeDeepSeekNotification(notification.Method, notification.Params); err != nil {
 			return
 		}

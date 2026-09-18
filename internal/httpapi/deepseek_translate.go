@@ -172,7 +172,12 @@ type deepSeekStreamChunk struct {
 //
 // 不翻译的事件返回 nil：未知事件必须被安全跳过，不能因为上游加了新事件名就让
 // 整条连接失败。
-func translateDeepSeekDurableEvent(threadID string, event harnessclient.SessionWireEvent) []deepSeekNotification {
+//
+// turn 是这条记录所属的 turn 编号，取不到时为 0。user/message 与注入上下文的记录里
+// 都没有 turn 字段（实测只有 assistant/message 与 step/* 带），因此由调用方按顺序切分
+// 给出——历史路径用的是同一套切分，两边必须一致，否则同一条消息在历史与直播里会得到
+// 不同的 (turn, item) 标识，客户端会把它显示成两条。
+func translateDeepSeekDurableEvent(threadID string, event harnessclient.SessionWireEvent, turn int64) []deepSeekNotification {
 	switch event.Type {
 	case deepSeekEventTurnStart:
 		var data deepSeekTurnData
@@ -219,18 +224,17 @@ func translateDeepSeekDurableEvent(threadID string, event harnessclient.SessionW
 		// 用户消息区分开。这类内容不能进用户气泡：单独翻译成 systemContext，交给客户端
 		// 按 system 侧的折叠上下文渲染。历史路径（deepSeekUserMessageItem）必须同样分流。
 		if sourceKind := deepSeekInjectedSourceKind(data.Source); sourceKind != "" {
-			item, ok := deepSeekSystemContextItem(data, sourceKind)
+			item, ok := deepSeekSystemContextItem(data, sourceKind, event.Time)
 			if !ok {
 				// 没有正文的注入记录没有可展示内容，落成空行反而会被当成故障。
 				return nil
 			}
-			return []deepSeekNotification{{
-				Method: "item/completed",
-				Params: map[string]any{
-					"threadId": threadID,
-					"item":     item,
-				},
-			}}
+			params := map[string]any{
+				"threadId": threadID,
+				"item":     item,
+			}
+			deepSeekAttachTurnID(params, turn)
+			return []deepSeekNotification{{Method: "item/completed", Params: params}}
 		}
 		// source.rpcId 是 prompt 的 requestId；回显它客户端才能把乐观提交的消息
 		// 与持久消息对上，否则刷新历史后同一条消息会显示两次。
@@ -243,6 +247,7 @@ func translateDeepSeekDurableEvent(threadID string, event harnessclient.SessionW
 			"id":      "u:" + data.ID,
 			"content": deepSeekUserContent(data.Content),
 		}
+		deepSeekAttachItemTime(item, event.Time)
 		params := map[string]any{
 			"threadId": threadID,
 			"item":     item,
@@ -251,6 +256,7 @@ func translateDeepSeekDurableEvent(threadID string, event harnessclient.SessionW
 			item["clientId"] = clientMessageID
 			params["clientUserMessageId"] = clientMessageID
 		}
+		deepSeekAttachTurnID(params, turn)
 		return []deepSeekNotification{{Method: "item/completed", Params: params}}
 
 	case deepSeekEventAssistantMessage:
@@ -269,18 +275,25 @@ func translateDeepSeekDurableEvent(threadID string, event harnessclient.SessionW
 			// 空正文的 assistant 记录没有可展示内容，Mimi 也会丢弃它。
 			return nil
 		}
-		return []deepSeekNotification{{
-			Method: "item/completed",
-			Params: map[string]any{
-				"threadId": threadID,
-				"turnId":   deepSeekTurnID(data.Turn),
-				"item": map[string]any{
-					"type": deepSeekItemAgentMessage,
-					"id":   deepSeekMessageItemID(data.Turn, data.Step),
-					"text": text,
-				},
-			},
-		}}
+		// 记录自带 turn 优先；缺失时退回调用方解析出的归属，而不是合成 "t0"。
+		effectiveTurn := data.Turn
+		if effectiveTurn == 0 {
+			effectiveTurn = turn
+		}
+		item := map[string]any{
+			"type": deepSeekItemAgentMessage,
+			"id":   deepSeekMessageItemID(effectiveTurn, data.Step),
+			"text": text,
+		}
+		deepSeekAttachItemTime(item, event.Time)
+		params := map[string]any{
+			"threadId": threadID,
+			"item":     item,
+		}
+		if effectiveTurn > 0 {
+			params["turnId"] = deepSeekTurnID(effectiveTurn)
+		}
+		return []deepSeekNotification{{Method: "item/completed", Params: params}}
 
 	case deepSeekEventSessionTitle:
 		var data deepSeekTitleData
@@ -296,6 +309,18 @@ func translateDeepSeekDurableEvent(threadID string, event harnessclient.SessionW
 		}}
 	}
 	return nil
+}
+
+// deepSeekAttachTurnID 给通知参数补上 turn 归属。
+//
+// 客户端把 (turnId, itemId) 合成消息标识，并与本地乐观气泡的 turnID 绑定。缺这个字段时
+// 直播消息拿到的是不带 turn 的标识，而历史消息带 turn：两者不是同一条消息，刷新后同一
+// 个气泡会出现两次，注入上下文也会被拆成"历史一组、直播一组"。取不到 turn 时不写字段，
+// 让客户端按"归属未知"处理，而不是编一个编号。
+func deepSeekAttachTurnID(params map[string]any, turn int64) {
+	if turn > 0 {
+		params["turnId"] = deepSeekTurnID(turn)
+	}
 }
 
 // translateDeepSeekAssistantChunk 把一片直播输出翻译成正文增量通知。
@@ -422,7 +447,7 @@ func deepSeekInjectedSourceKind(source *deepSeekMessageSource) string {
 
 // deepSeekSystemContextItem 把注入上下文投影成 systemContext item，直播与历史共用同一形状。
 // 正文为空时不可展示：调用方拿到 false 应整条丢弃，不要留一个没有内容的上下文行。
-func deepSeekSystemContextItem(data deepSeekMessageData, sourceKind string) (map[string]any, bool) {
+func deepSeekSystemContextItem(data deepSeekMessageData, sourceKind string, time int64) (map[string]any, bool) {
 	text := deepSeekTextContent(data.Content)
 	if text == "" {
 		return nil, false
@@ -438,6 +463,7 @@ func deepSeekSystemContextItem(data deepSeekMessageData, sourceKind string) (map
 			item["sourceForm"] = form
 		}
 	}
+	deepSeekAttachItemTime(item, time)
 	return item, true
 }
 

@@ -331,6 +331,12 @@ type deepSeekTurnBucket struct {
 	// 还在缓存边界之外——分页把它切掉了，于是桶里只剩一条 turn/end（或一条对不上的
 	// turn/end）。这种桶的 Records 不是这一轮的完整记录，任何人都不能按"完整"处置它。
 	Started bool
+	// StartedAt / EndedAt 是 turn/start 与 turn/end 记录自带的时间（毫秒）。
+	// Harness 的 item 记录不带时间，turns/list 又不给 turn 起止时间，客户端只能把这些
+	// item 兜底成"没有时间"——实测会退化成 epoch 并显示成 01/01 08:00。因此这里必须把
+	// 记录时间透传上去，它是历史唯一可用的时间来源。
+	StartedAt int64
+	EndedAt   int64
 }
 
 // deepSeekSplitTurns 按 turn/start 与 turn/end 的顺序把记录切成 turn。
@@ -349,7 +355,7 @@ func deepSeekSplitTurns(records []harnessclient.SessionWireEvent) []deepSeekTurn
 			}
 			// 上一轮没有 turn/end 就遇到新的 turn/start（例如进程被中断），
 			// 上一个桶自然收尾，不会把两轮的记录混在一起。
-			buckets = append(buckets, deepSeekTurnBucket{Turn: data.Turn, Started: true})
+			buckets = append(buckets, deepSeekTurnBucket{Turn: data.Turn, Started: true, StartedAt: record.Time})
 			current = &buckets[len(buckets)-1]
 			current.Records = append(current.Records, record)
 		case deepSeekEventTurnEnd:
@@ -361,10 +367,11 @@ func deepSeekSplitTurns(records []harnessclient.SessionWireEvent) []deepSeekTurn
 				// 没有见过的 turn 的结束事件：单独成一个只有结束的桶，
 				// 保证状态能反映出来，而不是被静默丢弃。这个桶没有 turn/start，
 				// 即 Started 保持 false——它的记录不完整，不能按完整处置。
-				buckets = append(buckets, deepSeekTurnBucket{Turn: data.Turn, Ended: true})
+				buckets = append(buckets, deepSeekTurnBucket{Turn: data.Turn, Ended: true, EndedAt: record.Time})
 				current = &buckets[len(buckets)-1]
 			} else {
 				current.Ended = true
+				current.EndedAt = record.Time
 			}
 			if data.Reason != nil {
 				current.Reason = data.Reason.Kind
@@ -388,6 +395,32 @@ func deepSeekTurnByNumber(records []harnessclient.SessionWireEvent, turn int64) 
 		}
 	}
 	return deepSeekTurnBucket{}, false
+}
+
+// deepSeekTurnForRecordSeq 找到包含指定 seq 的 turn。
+//
+// 直播路径的 user/message 与注入上下文记录里都没有 turn 字段（实测只有
+// assistant/message 与 step/* 带）。历史路径靠"记录落在哪个 turn 桶里"来定 turn 归属，
+// 因此直播也必须用同一套顺序切分口径——两边口径不一致会让同一条记录在历史里带上 turn、
+// 在直播里不带，客户端按 (turn, item) 合成的消息标识就对不上，同一条消息会显示两次。
+//
+// Started 为 false 的桶不能用来归属：那段记录被分页切掉了开头，把记录算进一个残缺的
+// turn 会给出错误的 turn 编号。取不到时如实返回 false，由调用方按"归属未知"处理。
+func deepSeekTurnForRecordSeq(records []harnessclient.SessionWireEvent, seq int64) (int64, bool) {
+	if seq <= 0 {
+		return 0, false
+	}
+	for _, bucket := range deepSeekSplitTurns(records) {
+		if !bucket.Started {
+			continue
+		}
+		for _, record := range bucket.Records {
+			if record.Seq == seq {
+				return bucket.Turn, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // errDeepSeekThreadUnknown 表示请求指向的会话不在授权范围内或不存在。

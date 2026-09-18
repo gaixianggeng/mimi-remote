@@ -67,17 +67,21 @@ func deepSeekTurnStatusFor(bucket deepSeekTurnBucket) string {
 // 首版只产出 userMessage、agentMessage 与 systemContext：工具调用的名称与参数 schema
 // 未验证，映射成 commandExecution 或 fileChange 等于虚构语义（见 PR #499 的"刻意不做"）。
 // systemContext 承载 Harness 注入的上下文，与直播路径共用 deepSeekSystemContextItem。
+//
+// item 一律带上记录自带的 time（毫秒）。Harness 的 item 里没有时间字段，历史页也只在
+// turn 层给起止时间；不把记录时间透传出去，客户端就只能把整段历史兜底成"没有时间"，
+// 实测退化成 epoch 并显示成 01/01 08:00，同一条消息也无法与直播副本按时间对齐。
 func deepSeekTurnItems(bucket deepSeekTurnBucket) []map[string]any {
 	items := make([]map[string]any, 0, len(bucket.Records))
 	for _, record := range bucket.Records {
 		switch record.Type {
 		case deepSeekEventUserMessage:
-			item, ok := deepSeekUserMessageItem(record.Data)
+			item, ok := deepSeekUserMessageItem(record.Data, record.Time)
 			if ok {
 				items = append(items, item)
 			}
 		case deepSeekEventAssistantMessage:
-			item, ok := deepSeekAgentMessageItem(bucket.Turn, record.Data)
+			item, ok := deepSeekAgentMessageItem(bucket.Turn, record.Data, record.Time)
 			if ok {
 				items = append(items, item)
 			}
@@ -90,13 +94,13 @@ func deepSeekTurnItems(bucket deepSeekTurnBucket) []map[string]any {
 //
 // Harness 注入的上下文同样落在 user/message 里，只有 source.kind 能把它与真实用户消息
 // 区分开。历史必须与直播给出同一套语义，否则刷新历史后这些内容会重新回到用户气泡。
-func deepSeekUserMessageItem(data json.RawMessage) (map[string]any, bool) {
+func deepSeekUserMessageItem(data json.RawMessage, time int64) (map[string]any, bool) {
 	var decoded deepSeekMessageData
 	if json.Unmarshal(data, &decoded) != nil || strings.TrimSpace(decoded.ID) == "" {
 		return nil, false
 	}
 	if sourceKind := deepSeekInjectedSourceKind(decoded.Source); sourceKind != "" {
-		return deepSeekSystemContextItem(decoded, sourceKind)
+		return deepSeekSystemContextItem(decoded, sourceKind, time)
 	}
 	content := deepSeekUserContent(decoded.Content)
 	if len(content) == 0 {
@@ -110,6 +114,7 @@ func deepSeekUserMessageItem(data json.RawMessage) (map[string]any, bool) {
 	if decoded.Source != nil && strings.TrimSpace(decoded.Source.RPCID) != "" {
 		item["clientId"] = decoded.Source.RPCID
 	}
+	deepSeekAttachItemTime(item, time)
 	return item, true
 }
 
@@ -118,7 +123,7 @@ func deepSeekUserMessageItem(data json.RawMessage) (map[string]any, bool) {
 // item id 用 (turn, step) 合成，与直播增量用的是同一套：直播路径的 (turn, step) 来自
 // assistant-stream.start，历史路径来自 assistant/message，两者实测都存在。id 一致，
 // Mimim 的原位覆盖才成立，否则刷新历史会出现重复气泡。
-func deepSeekAgentMessageItem(turn int64, data json.RawMessage) (map[string]any, bool) {
+func deepSeekAgentMessageItem(turn int64, data json.RawMessage, time int64) (map[string]any, bool) {
 	var decoded deepSeekMessageData
 	if json.Unmarshal(data, &decoded) != nil {
 		return nil, false
@@ -135,11 +140,25 @@ func deepSeekAgentMessageItem(turn int64, data json.RawMessage) (map[string]any,
 	if decoded.Turn != 0 {
 		effectiveTurn = decoded.Turn
 	}
-	return map[string]any{
+	item := map[string]any{
 		"type": deepSeekItemAgentMessage,
 		"id":   deepSeekMessageItemID(effectiveTurn, decoded.Step),
 		"text": text,
-	}, true
+	}
+	deepSeekAttachItemTime(item, time)
+	return item, true
+}
+
+// deepSeekAttachItemTime 把记录时间写进 item。
+//
+// 键名沿用 Mimi 历史读取点认得的 createdAt；单位是 Harness 原样的毫秒，
+// 客户端按数量级同时接受秒与毫秒，不做换算以免引入 1000 倍偏差。
+// time 为 0 表示记录没带时间：此时不写字段，让客户端按"无时间"处理，
+// 而不是塞一个 1970 让它看起来像真时间。
+func deepSeekAttachItemTime(item map[string]any, time int64) {
+	if time > 0 {
+		item["createdAt"] = time
+	}
 }
 
 // deepSeekThreadWire 把一个会话摘要与它的 turn 桶投影成 Mimi 的 thread。
@@ -184,10 +203,20 @@ func deepSeekThreadWire(summary harnessclient.SessionSummary, buckets []deepSeek
 // 只有确实见过这个 turn 的 turn/start 才敢标 full：iOS 见到 full 就不再请求
 // items/list，一个被分页切掉开头的 turn 会因此以"只有 turn/end、没有正文"的样子
 // 定稿——它看起来是完整的一轮，实际少了一整轮内容，而且不报错。
+//
+// startedAt / completedAt 取记录自带的时间（毫秒）。客户端读 turn 级时间作为 item 的
+// 兜底：缺它时整轮历史会退化成"没有时间"，实测显示成 01/01 08:00。两个字段都只是
+// 有则给出，缺一部分就少写一部分，不补 0。
 func deepSeekTurnWire(bucket deepSeekTurnBucket, includeItems bool) map[string]any {
 	turn := map[string]any{
 		"id":     deepSeekTurnID(bucket.Turn),
 		"status": deepSeekTurnStatusFor(bucket),
+	}
+	if bucket.StartedAt > 0 {
+		turn["startedAt"] = bucket.StartedAt
+	}
+	if bucket.EndedAt > 0 {
+		turn["completedAt"] = bucket.EndedAt
 	}
 	if includeItems && bucket.Started {
 		items := deepSeekTurnItems(bucket)
