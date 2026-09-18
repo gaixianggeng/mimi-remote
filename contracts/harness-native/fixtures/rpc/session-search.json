@@ -1,8 +1,13 @@
 {
   "$fixture": "harness-native/rpc/session-search",
-  "provenance": "upstream-source",
+  "provenance": "upstream-source + live-confirmed-error",
   "source": "packages/api/session-controller/src/list.ts#search (blob 4aa369c3), types.ts (blob f03d8d1b)",
   "harnessVersion": "0.1.6-alpha.2",
+  "liveConfirmedOn": {
+    "harnessVersion": "0.1.5-rc.2",
+    "observation": "请求 {request:{query:'h00'}} 实测返回 HTTP 200 + gateway/internal，message 为 'session search failed: SessionQueryError: session search is disabled: this deployment configures the session-query index with openAt \"never\"'。",
+    "conclusion": "0.1.5-rc.2 的降级文案与 0.1.6-alpha.2 不同（disabled + openAt vs unavailable + 未挂载 provider），因此只能按 code 降级，绝不能按文案匹配。"
+  },
   "notes": [
     "search 的 wire 参数名是 'request'（无下划线），与 list 不同。",
     "依赖部署侧的 sessionQuery provider；未挂载时返回 gateway/internal，必须按 code 降级而不是按文案。",

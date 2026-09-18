@@ -1,156 +1,208 @@
 {
-  "$fixture": "harness-native/stream/follow-frames",
-  "provenance": "upstream-source",
-  "source": "packages/api/session-controller/src/types.ts#SessionFollowFrame (blob f03d8d1b), src/client/transport.ts (blob f13f24f7 tree)",
-  "harnessVersion": "0.1.6-alpha.2",
-  "notes": [
-    "session/follow 是流方法，只能经 WS 载体打开。",
-    "首帧必须是 snapshot；后续帧是 {type:'event'} 持久事件或 {type:'assistant-stream'} 直播片段。",
-    "snapshot.cursor 是本次订阅的 inclusive 日志切点，也是 session/page 必填的 throughSeq。",
-    "opt-in assistantStream 后 snapshot 必须带 assistantStream 基线，否则客户端必须报 gateway/internal。"
-  ],
-  "request": {
-    "type": "client-request",
-    "rpcId": "rpc-fixture-0601",
-    "method": "session/follow",
-    "payload": {
-      "args": {
-        "request": {
-          "address": {
-            "kind": "session",
-            "sessionId": "session-fixture-0001"
-          },
-          "maxMessages": 50,
-          "assistantStream": true
-        }
-      }
-    }
+  "provenance": {
+    "level": "live-capture",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.1.5-rc.2",
+    "upstreamTag": "dsh-v0.1.5-rc.2",
+    "profile": "web",
+    "transport": "http://127.0.0.1 loopback, cookie session after GET /?token=",
+    "modelFixture": "@deepseek-ai/dsh-llm-mock-server (scriptable OpenAI-compatible SSE)",
+    "capturedAt": "2026-09-18T18:18:26.439Z"
   },
-  "frames": {
-    "snapshot": {
-      "type": "item",
-      "streamId": "stream-fixture-0001",
+  "note": "session/follow 流：打开帧 snapshot（含 header/cursor/records/projections/assistantStream），随后是 event 增量帧。",
+  "observations": [
+    {
+      "label": "snapshot",
       "value": {
         "type": "snapshot",
         "header": {
           "version": 3,
-          "id": "session-fixture-0001",
-          "createdAt": 1788900000000,
-          "cwd": "/fixture/workspace/demo-project",
+          "id": "h00-id-0001",
+          "createdAt": 1789755457813,
+          "cwd": "/h00/workspace",
           "isSeeded": false,
-          "agentPreset": "preset-fixture"
+          "agentPreset": "standard"
         },
-        "cursor": 42,
+        "cursor": 2,
         "records": [
           {
             "type": "event",
             "event": {
-              "type": "turn/start",
-              "seq": 40,
-              "time": 1789000000000,
+              "type": "permission/preset",
+              "seq": 0,
+              "time": 1789755457906,
               "data": {
-                "turn": 1
+                "preset": "workspace-write"
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "sandbox/mode",
+              "seq": 1,
+              "time": 1789755457907,
+              "data": {
+                "mode": "workspace-write"
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "approval/policy",
+              "seq": 2,
+              "time": 1789755457907,
+              "data": {
+                "policy": "<string:7>"
               }
             }
           }
         ],
-        "hasMore": true,
+        "hasMore": false,
         "projections": {
-          "asOfSeq": 42,
+          "asOfSeq": 2,
           "values": {
-            "title": "Fixture session title",
+            "title": null,
+            "goal": null,
+            "tokenUsage": {
+              "uncachedInputTokens": 0,
+              "outputTokens": 0,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0
+            },
+            "contextPressure": {},
+            "contextBreakdown": {
+              "systemTokens": 0,
+              "toolsTokens": 0,
+              "messageTokens": 0
+            },
+            "sessionStats": {
+              "turns": 0,
+              "steps": 0,
+              "llmMs": 0,
+              "toolMs": 0,
+              "ttftMs": 0,
+              "ttftSteps": 0,
+              "decodeMs": 0,
+              "decodeTokens": 0
+            },
+            "turnOutline": [],
+            "agentPreset": "standard",
+            "subagentCatalog": [],
+            "subagentTiming": {
+              "settledMs": 0
+            },
+            "subagent": null,
+            "permissions": {
+              "options": [
+                {
+                  "value": "<string:7>",
+                  "name": "h00-name"
+                },
+                {
+                  "value": "<string:8>",
+                  "name": "h00-name"
+                },
+                {
+                  "value": "<string:8>",
+                  "name": "h00-name"
+                }
+              ],
+              "currentValue": "<string:8>"
+            },
+            "modelSelection": {
+              "lastUsed": null,
+              "next": null
+            },
             "sessionListMetadata": {
-              "blank": false,
-              "lastPromptAt": 1789000000000
+              "blank": true,
+              "lastPromptAt": null
+            },
+            "imageLimits": {
+              "maxImageBytes": 20971520,
+              "maxImagesPerMessage": 20,
+              "maxMessageImageBytes": 209715200,
+              "maxImagePixels": 64000000,
+              "maxImageDimension": 8192,
+              "mediaTypes": [
+                "<string:7>",
+                "<string:8>",
+                "<string:8>",
+                "<string:7>"
+              ]
+            },
+            "inbox": {
+              "next-turn": [],
+              "next-step": []
+            },
+            "todos": null,
+            "plan": {
+              "active": false,
+              "pending": false
             }
           }
         },
         "assistantStream": {
-          "revision": 7,
-          "activeAttempt": {
-            "attemptId": "attempt-fixture-0001",
-            "startedAfterSeq": 40,
-            "turn": 1,
-            "step": 0,
-            "nextIndex": 3,
-            "stream": []
+          "revision": 0
+        }
+      }
+    },
+    {
+      "label": "snapshot.header",
+      "value": {
+        "version": 3,
+        "id": "h00-id-0001",
+        "createdAt": 1789755457906,
+        "cwd": "/h00/workspace",
+        "isSeeded": false
+      }
+    },
+    {
+      "label": "event.model/selection",
+      "value": {
+        "type": "event",
+        "event": {
+          "type": "model/selection",
+          "seq": 3,
+          "time": 1789755458641,
+          "data": {
+            "provider": "h00-loopback",
+            "model": "h00-mock-model"
           }
         }
       }
     },
-    "snapshotWithoutAssistantBaseline": {
-      "why": "opt-in 了 assistantStream 却缺基线，客户端必须报错而不是静默降级。",
-      "type": "item",
-      "streamId": "stream-fixture-0001",
-      "value": {
-        "type": "snapshot",
-        "header": {
-          "version": 3,
-          "id": "session-fixture-0001",
-          "createdAt": 1788900000000,
-          "isSeeded": false
-        },
-        "cursor": 42,
-        "records": [],
-        "hasMore": false,
-        "projections": {
-          "asOfSeq": 42,
-          "values": {}
-        }
-      },
-      "expectedError": {
-        "code": "gateway/internal",
-        "message": "session assistant stream omitted its opted-in opening baseline"
-      }
-    },
-    "durableEvent": {
-      "type": "item",
-      "streamId": "stream-fixture-0001",
+    {
+      "label": "event.turn/start",
       "value": {
         "type": "event",
         "event": {
-          "type": "assistant/message",
-          "seq": 43,
-          "time": 1789000001000,
+          "type": "turn/start",
+          "seq": 5,
+          "time": 1789755460187,
           "data": {
-            "message": {
-              "id": "msg-fixture-0002",
-              "role": "assistant",
-              "content": [
-                {
-                  "type": "text",
-                  "text": "fixture response text"
-                }
-              ]
-            },
-            "step": 0,
             "turn": 1
           }
         }
       }
     },
-    "assistantStream": {
-      "type": "item",
-      "streamId": "stream-fixture-0001",
+    {
+      "label": "request",
       "value": {
-        "type": "assistant-stream",
-        "frame": {
-          "type": "chunk",
-          "attemptId": "attempt-fixture-0001",
-          "revision": 8,
-          "index": 3,
-          "time": 1789000001200,
-          "chunk": {
-            "type": "text-delta",
-            "text": "fixture"
-          }
+        "request": {
+          "address": {
+            "kind": "session",
+            "sessionId": "h00-session-0001"
+          },
+          "assistantStream": true,
+          "maxMessages": 200
         }
       }
+    },
+    {
+      "label": "cursorNote",
+      "value": "snapshot.cursor 是日志切点，必须回传给 session/page 的 throughSeq。"
     }
-  },
-  "orderingRules": [
-    "先开 follow 拿 opening snapshot，再按它的 cursor 读历史；snapshot 建立期间缓冲该代次 live 帧，按原生顺序交接，避免历史与直播间留缝。",
-    "throughSeq 属于这一代 snapshot，不能混用上一代游标。",
-    "durable 记录以 (host, runtime, session, native seq) 去重，保留原生消息/工具身份。"
   ]
 }

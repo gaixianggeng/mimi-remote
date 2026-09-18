@@ -1,150 +1,1175 @@
 {
-  "$fixture": "harness-native/rpc/session-page",
-  "provenance": "upstream-source",
-  "source": "packages/api/session-controller/src/index.ts#page (blob f13f24f7), types.ts#SessionPageRequest/SessionPage (blob f03d8d1b)",
-  "harnessVersion": "0.1.6-alpha.2",
-  "notes": [
-    "wire 参数名是 'request'。",
-    "throughSeq 必填，取值必须是本次 follow 开场 snapshot 给出的 cursor（inclusive 日志切点）。",
-    "address 是判别联合：{kind:'session',sessionId} 或 {kind:'subagent',parentSessionId,childSessionId,mode}。首版只开放 session 形态。",
-    "records 每项是 {type:'event', event:SessionWireEvent}。",
-    "客户端按 50 条一页 loadOlder、200 条一页 loadThrough 推进；页无进展必须终止而不是继续。"
-  ],
-  "cases": {
-    "request": {
-      "type": "client-request",
-      "rpcId": "rpc-fixture-0401",
-      "method": "session/page",
-      "payload": {
-        "args": {
-          "request": {
-            "address": {
-              "kind": "session",
-              "sessionId": "session-fixture-0001"
-            },
-            "throughSeq": 42,
-            "beforeSeq": 42,
-            "maxMessages": 50
-          }
+  "provenance": {
+    "level": "live-capture",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.1.5-rc.2",
+    "upstreamTag": "dsh-v0.1.5-rc.2",
+    "profile": "web",
+    "transport": "http://127.0.0.1 loopback, cookie session after GET /?token=",
+    "modelFixture": "@deepseek-ai/dsh-llm-mock-server (scriptable OpenAI-compatible SSE)",
+    "capturedAt": "2026-09-18T18:18:26.439Z"
+  },
+  "note": "session/page 的真实请求与结果。throughSeq 必须取自对应 follow 打开帧的 cursor，传 0 只会得到 seq 0。",
+  "observations": [
+    {
+      "label": "request",
+      "value": {
+        "request": {
+          "address": {
+            "kind": "session",
+            "sessionId": "h00-session-0001"
+          },
+          "throughSeq": 18,
+          "maxMessages": 100
         }
       }
     },
-    "success": {
-      "type": "server-response",
-      "rpcId": "rpc-fixture-0401",
-      "result": {
-        "ok": true,
-        "value": {
-          "records": [
-            {
-              "type": "event",
-              "event": {
-                "type": "user/message",
-                "seq": 41,
-                "time": 1789000000000,
-                "data": {
-                  "id": "msg-fixture-0001",
-                  "role": "user",
-                  "content": [
-                    {
-                      "type": "text",
-                      "text": "fixture prompt text"
-                    }
-                  ],
-                  "source": {
-                    "kind": "user",
-                    "rpcId": "req-fixture-0001"
-                  }
-                }
+    {
+      "label": "result",
+      "value": {
+        "records": [
+          {
+            "type": "event",
+            "event": {
+              "type": "permission/preset",
+              "seq": 0,
+              "time": 1789755158627,
+              "data": {
+                "preset": "workspace-write"
               }
-            },
-            {
-              "type": "event",
-              "event": {
-                "type": "assistant/message",
-                "seq": 42,
-                "time": 1789000001000,
-                "data": {
-                  "message": {
-                    "id": "msg-fixture-0002",
-                    "role": "assistant",
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "sandbox/mode",
+              "seq": 1,
+              "time": 1789755158628,
+              "data": {
+                "mode": "workspace-write"
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "approval/policy",
+              "seq": 2,
+              "time": 1789755158628,
+              "data": {
+                "policy": "<string:7>"
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "agent/inbox/spliced",
+              "seq": 3,
+              "time": 1789755158629,
+              "data": {
+                "target": "<str:9>",
+                "start": 0,
+                "inserted": [
+                  {
                     "content": [
                       {
                         "type": "text",
-                        "text": "fixture response text"
+                        "text": "H00 回环正文"
                       }
                     ],
                     "source": {
-                      "kind": "assistant"
-                    }
-                  },
-                  "step": 0,
-                  "turn": 1,
-                  "usage": {
-                    "inputTokens": 1,
-                    "outputTokens": 2,
-                    "totalTokens": 3
+                      "kind": "user"
+                    },
+                    "role": "user",
+                    "id": "h00-id-0001"
                   }
+                ]
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "turn/start",
+              "seq": 4,
+              "time": 1789755158630,
+              "data": {
+                "turn": 1
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "agent/inbox/spliced",
+              "seq": 5,
+              "time": 1789755158630,
+              "data": {
+                "target": "<str:9>",
+                "start": 0,
+                "removedCount": 1,
+                "inserted": []
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "step/start",
+              "seq": 6,
+              "time": 1789755158663,
+              "data": {
+                "turn": 1,
+                "step": 1
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "system/message",
+              "seq": 7,
+              "time": 1789755158664,
+              "data": {
+                "turn": 1,
+                "step": 1,
+                "message": {
+                  "role": "system",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "H00 回环正文"
+                    }
+                  ],
+                  "source": {
+                    "kind": "plugin",
+                    "plugin": "<str:30>"
+                  },
+                  "id": "h00-id-0001"
+                }
+              },
+              "surfaceOp": "<string:7>"
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "user/message",
+              "seq": 8,
+              "time": 1789755158664,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "H00 回环正文"
+                  }
+                ],
+                "source": {
+                  "kind": "user"
+                },
+                "role": "user",
+                "id": "h00-id-0001"
+              },
+              "surfaceOp": "<string:7>"
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "user/message",
+              "seq": 9,
+              "time": 1789755158665,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "H00 回环正文"
+                  }
+                ],
+                "source": {
+                  "kind": "plugin",
+                  "plugin": "<str:30>",
+                  "form": "<str:8>",
+                  "sections": [
+                    {
+                      "name": "h00-name",
+                      "text": "H00 回环正文"
+                    },
+                    {
+                      "name": "h00-name",
+                      "text": "H00 回环正文"
+                    }
+                  ]
+                },
+                "role": "user",
+                "id": "h00-id-0001"
+              },
+              "surfaceOp": "<string:7>"
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "user/message",
+              "seq": 10,
+              "time": 1789755158665,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "H00 回环正文"
+                  }
+                ],
+                "source": {
+                  "kind": "skill-catalog",
+                  "form": "<str:7>",
+                  "entries": [
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述"
+                    }
+                  ]
+                },
+                "role": "user",
+                "id": "h00-id-0001"
+              },
+              "surfaceOp": "<string:7>"
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "request/header",
+              "seq": 11,
+              "time": 1789755158666,
+              "data": {
+                "header": {
+                  "config": {
+                    "provider": "h00-loopback",
+                    "model": "h00-mock-model",
+                    "maxTokens": 4096
+                  },
+                  "adapterDefaults": {
+                    "maxTokens": true
+                  },
+                  "tools": [
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "command": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "description": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "timeoutMs": {
+                            "type": "number",
+                            "description": "H00 回环描述"
+                          },
+                          "workdir": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "run_in_background": {
+                            "type": "boolean",
+                            "description": "H00 回环描述"
+                          },
+                          "sandbox_permissions": {
+                            "type": "string",
+                            "description": "H00 回环描述",
+                            "enum": [
+                              "<string:8>",
+                              "<string:8>"
+                            ]
+                          },
+                          "justification": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>",
+                          "<string:8>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "objective": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "max_goal_rounds": {
+                            "type": "number",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "file_path": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "old_string": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "new_string": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "replace_all": {
+                            "type": "boolean",
+                            "description": "H00 回环描述"
+                          },
+                          "sandbox_permissions": {
+                            "type": "string",
+                            "description": "H00 回环描述",
+                            "enum": [
+                              "<string:8>",
+                              "<string:8>"
+                            ]
+                          },
+                          "justification": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>",
+                          "<string:8>",
+                          "<string:8>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "plan": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {}
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "pattern": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "path": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "pattern": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "path": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "include": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "agent_id": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "job_id": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "reason": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {}
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "job_id": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "wait": {
+                            "type": "boolean",
+                            "description": "H00 回环描述"
+                          },
+                          "timeout_ms": {
+                            "type": "number",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "scope": {
+                            "type": "string",
+                            "description": "H00 回环描述",
+                            "enum": [
+                              "<string:7>",
+                              "<string:8>"
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "objective": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "maxRounds": {
+                            "type": "number",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "file_path": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "offset": {
+                            "type": "number",
+                            "description": "H00 回环描述"
+                          },
+                          "limit": {
+                            "type": "number",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "file_path": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "agent_id": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "message": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>",
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "description": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "prompt": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "run_in_background": {
+                            "type": "boolean",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:8>",
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "description": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "prompt": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "run_in_background": {
+                            "type": "boolean",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:8>",
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "todos": {
+                            "type": "array",
+                            "description": "H00 回环描述",
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "content": {
+                                  "type": "string",
+                                  "description": "H00 回环描述"
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "description": "H00 回环描述",
+                                  "enum": [
+                                    "<string:7>",
+                                    "<string:8>",
+                                    "<string:7>"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "<string:7>",
+                                "<string:7>"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "goal_id": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "revision": {
+                            "type": "number",
+                            "description": "H00 回环描述"
+                          },
+                          "action": {
+                            "type": "string",
+                            "description": "H00 回环描述",
+                            "enum": [
+                              "<string:7>",
+                              "<string:7>",
+                              "<string:7>",
+                              "<string:7>",
+                              "<string:7>"
+                            ]
+                          },
+                          "objective": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "max_goal_rounds": {
+                            "type": "number",
+                            "description": "H00 回环描述"
+                          },
+                          "blocked_reason": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>",
+                          "<string:7>",
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "url": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "queries": {
+                            "type": "array",
+                            "description": "H00 回环描述",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "script": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "meta": {
+                            "type": "object",
+                            "description": "H00 回环描述",
+                            "additionalProperties": true,
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "description": "H00 回环描述"
+                              },
+                              "description": {
+                                "type": "string",
+                                "description": "H00 回环描述"
+                              },
+                              "whenToUse": {
+                                "type": "string",
+                                "description": "H00 回环描述"
+                              },
+                              "phases": {
+                                "type": "array",
+                                "description": "H00 回环描述",
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": true,
+                                  "properties": {
+                                    "title": {
+                                      "type": "string",
+                                      "description": "H00 回环描述"
+                                    },
+                                    "detail": {
+                                      "type": "string",
+                                      "description": "H00 回环描述"
+                                    },
+                                    "provider": {
+                                      "type": "string",
+                                      "description": "H00 回环描述"
+                                    },
+                                    "model": {
+                                      "type": "string",
+                                      "description": "H00 回环描述"
+                                    }
+                                  },
+                                  "required": [
+                                    "<string:7>"
+                                  ]
+                                }
+                              }
+                            },
+                            "required": [
+                              "<string:7>",
+                              "<string:8>"
+                            ]
+                          },
+                          "args": {
+                            "type": "object",
+                            "description": "H00 回环描述",
+                            "additionalProperties": true
+                          }
+                        },
+                        "required": [
+                          "<string:7>",
+                          "<string:7>"
+                        ]
+                      }
+                    },
+                    {
+                      "name": "h00-name",
+                      "description": "H00 回环描述",
+                      "parameters": {
+                        "type": "object",
+                        "properties": {
+                          "file_path": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "content": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          },
+                          "sandbox_permissions": {
+                            "type": "string",
+                            "description": "H00 回环描述",
+                            "enum": [
+                              "<string:8>",
+                              "<string:8>"
+                            ]
+                          },
+                          "justification": {
+                            "type": "string",
+                            "description": "H00 回环描述"
+                          }
+                        },
+                        "required": [
+                          "<string:7>",
+                          "<string:7>"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                "reason": "initial"
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "request/context",
+              "seq": 12,
+              "time": 1789755158666,
+              "data": {
+                "provider": "h00-loopback",
+                "model": "h00-mock-model",
+                "contextWindow": 32768
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "session/title",
+              "seq": 13,
+              "time": 1789755158667,
+              "data": {
+                "title": "H00 回环会话",
+                "messageSeqs": [
+                  8
+                ],
+                "source": {
+                  "kind": "fallback"
                 }
               }
             }
-          ],
-          "hasMore": true
-        }
-      }
-    },
-    "emptyPage": {
-      "why": "空页是确定的终止条件，不是'继续试'的信号。",
-      "type": "server-response",
-      "rpcId": "rpc-fixture-0401",
-      "result": {
-        "ok": true,
-        "value": {
-          "records": [],
-          "hasMore": false
-        }
-      }
-    },
-    "error": {
-      "type": "server-response",
-      "rpcId": "rpc-fixture-0401",
-      "result": {
-        "ok": false,
-        "error": {
-          "code": "gateway/arguments-invalid",
-          "message": "session/page requires throughSeq",
-          "details": {
-            "endpoint": "session/page",
-            "field": "request.throughSeq"
-          }
-        }
-      }
-    },
-    "negativeMissingThroughSeq": {
-      "request": {
-        "type": "client-request",
-        "rpcId": "rpc-fixture-0402",
-        "method": "session/page",
-        "payload": {
-          "args": {
-            "request": {
-              "address": {
-                "kind": "session",
-                "sessionId": "session-fixture-0001"
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "session/title-llm-request",
+              "seq": 14,
+              "time": 1789755158668,
+              "data": {
+                "titleProvider": "<string:8>",
+                "messageSeqs": [
+                  8
+                ],
+                "route": {
+                  "provider": "h00-loopback",
+                  "model": "h00-mock-model"
+                },
+                "system": "H00 回环系统提示",
+                "messages": [
+                  {
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "H00 回环正文"
+                      }
+                    ],
+                    "source": {
+                      "kind": "plugin",
+                      "plugin": "<str:21>"
+                    },
+                    "role": "user",
+                    "id": "h00-id-0001"
+                  }
+                ],
+                "maxTokens": 64
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "assistant/message",
+              "seq": 15,
+              "time": 1789755158735,
+              "data": {
+                "turn": 1,
+                "step": 1,
+                "message": {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "type": "reasoning",
+                      "text": "H00 回环正文"
+                    },
+                    {
+                      "type": "text",
+                      "text": "H00 回环正文"
+                    }
+                  ],
+                  "source": {
+                    "kind": "model",
+                    "provider": "h00-loopback",
+                    "model": "h00-mock-model",
+                    "replayState": {
+                      "response": {
+                        "kind": "pi-ai",
+                        "version": 2,
+                        "api": "openai-completions",
+                        "provider": "h00-loopback",
+                        "model": "h00-mock-model",
+                        "stopReason": "<string:7>"
+                      },
+                      "blocks": [
+                        {
+                          "type": "reasoning",
+                          "thinkingSignature": "h00-thinking-signature"
+                        },
+                        {
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  },
+                  "id": "h00-id-0001"
+                },
+                "usage": {
+                  "inputTokens": 3,
+                  "outputTokens": 9,
+                  "totalTokens": 12
+                },
+                "stream": [
+                  {
+                    "type": "chunk",
+                    "time": 1789755158733,
+                    "chunk": {
+                      "type": "block-start",
+                      "index": 0,
+                      "blockType": "<str:9>"
+                    }
+                  },
+                  {
+                    "type": "reasoning-chunks",
+                    "time0": 1789755158733,
+                    "index": 0,
+                    "dt": [
+                      1,
+                      0
+                    ],
+                    "texts": [
+                      "<string:7>",
+                      "<string:7>",
+                      "<string:7>"
+                    ]
+                  },
+                  {
+                    "type": "chunk",
+                    "time": 1789755158734,
+                    "chunk": {
+                      "type": "block-start",
+                      "index": 1,
+                      "blockType": "<str:4>"
+                    }
+                  },
+                  {
+                    "type": "text-chunks",
+                    "time0": 1789755158734,
+                    "index": 1,
+                    "dt": [
+                      0,
+                      0
+                    ],
+                    "texts": [
+                      "<string:7>",
+                      "<string:7>",
+                      "<string:7>"
+                    ]
+                  },
+                  {
+                    "type": "chunk",
+                    "time": 1789755158734,
+                    "chunk": {
+                      "type": "block-end",
+                      "index": 0,
+                      "block": {
+                        "type": "reasoning",
+                        "text": "H00 回环正文"
+                      }
+                    }
+                  },
+                  {
+                    "type": "chunk",
+                    "time": 1789755158734,
+                    "chunk": {
+                      "type": "block-end",
+                      "index": 1,
+                      "block": {
+                        "type": "text",
+                        "text": "H00 回环正文"
+                      }
+                    }
+                  },
+                  {
+                    "type": "chunk",
+                    "time": 1789755158734,
+                    "chunk": {
+                      "type": "usage",
+                      "usage": {
+                        "inputTokens": 3,
+                        "outputTokens": 9,
+                        "totalTokens": 12
+                      }
+                    }
+                  },
+                  {
+                    "type": "chunk",
+                    "time": 1789755158734,
+                    "chunk": {
+                      "type": "finish",
+                      "reason": {
+                        "kind": "stop"
+                      },
+                      "replayState": {
+                        "response": {
+                          "kind": "pi-ai",
+                          "version": 2,
+                          "api": "openai-completions",
+                          "provider": "h00-loopback",
+                          "model": "h00-mock-model",
+                          "stopReason": "<string:7>"
+                        },
+                        "blocks": [
+                          {
+                            "type": "reasoning",
+                            "thinkingSignature": "h00-thinking-signature"
+                          },
+                          {
+                            "type": "text"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
               },
-              "maxMessages": 50
+              "surfaceOp": "<string:7>"
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "step/end",
+              "seq": 16,
+              "time": 1789755158736,
+              "data": {
+                "turn": 1,
+                "step": 1
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "turn/end",
+              "seq": 17,
+              "time": 1789755158736,
+              "data": {
+                "turn": 1,
+                "reason": {
+                  "kind": "completed"
+                }
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "session/end-seed",
+              "seq": 18,
+              "time": 1789755175994,
+              "data": {}
             }
           }
-        }
-      },
-      "expectedErrorCode": "gateway/arguments-invalid"
+        ],
+        "hasMore": false
+      }
     },
-    "terminationRules": [
-      "空页：终止。",
-      "重复页（首尾 seq 与上一页相同）：终止并报进展缺失。",
-      "无进展页：终止。",
-      "越界游标：明确错误。",
-      "不得用先前未展示的消息条数伪造上游进度。"
-    ]
-  }
+    {
+      "label": "cursorNote",
+      "value": "throughSeq 是 follow 打开帧 cursor 的闭区间日志切点；缺失时只能读到最早一条记录。"
+    }
+  ]
 }

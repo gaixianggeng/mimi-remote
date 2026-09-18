@@ -3,6 +3,11 @@
   "provenance": "upstream-source",
   "source": "packages/api/gateway/src/stream-protocol.ts#parseRemoteEventResult (blob 142598863), packages/api/gateway/src/client/remote-events.ts",
   "harnessVersion": "0.1.6-alpha.2",
+  "liveCaptureGap": {
+    "status": "not-captured",
+    "reason": "本次实跑没有触发审批或选择题，$events 上只观测到 api-session/added|status|activity 三类广播事件，因此本夹具全部为源码级。",
+    "nextStep": "H04 起若需要审批/选择题的真实帧，必须先让一次真实工具调用进入 ask 策略并保持 $events 连接在线。"
+  },
   "notes": [
     "应答走 POST /api/$events/result，body 仍是 client-request 外壳，payload.args 是 RemoteEventResult。",
     "args 的键必须恰好是 clientId、eventId、outcome 三个，多一个少一个都判非法。",

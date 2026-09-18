@@ -1,158 +1,121 @@
 {
-  "$fixture": "harness-native/stream/assistant-stream",
-  "provenance": "upstream-source",
-  "source": "packages/api/session-controller/src/types.ts#SessionAssistantStreamFrame/SessionAssistantStreamBaseline (blob f03d8d1b), src/client/transport.ts (blob f13f24f7 tree), packages/api/session-controller/README.md (blob f67355be)",
-  "harnessVersion": "0.1.6-alpha.2",
-  "notes": [
-    "直播输出片段是独立于 durable 事件的一类帧，收尾时归并到持久 assistant 记录。",
-    "revision 在同一代内必须连续；跳号是载体失败，必须重开 follow。",
-    "chunk.type 取自 Harness 的 StreamChunk 判别值，全部用连字符：block-start、text-delta、reasoning-delta、tool-call-delta、block-end、usage、finish。",
-    "text_delta / content_block_start 是 Anthropic SDK 的形状，不是 Harness 的。",
-    "end.outcome 为 committed（带 eventType+seq，指向落定的持久事件）或 abandoned（不带）。",
-    "abandoned 只发布 settlement，退役 transient 行，不产生 durable 条目。"
+  "provenance": {
+    "level": "live-capture",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.1.5-rc.2",
+    "upstreamTag": "dsh-v0.1.5-rc.2",
+    "profile": "web",
+    "transport": "http://127.0.0.1 loopback, cookie session after GET /?token=",
+    "modelFixture": "@deepseek-ai/dsh-llm-mock-server (scriptable OpenAI-compatible SSE)",
+    "capturedAt": "2026-09-18T18:18:26.439Z",
+    "note": "end.outcome.eventType 的原文在采集时被脱敏器丢弃；本次以只读回读同一 Harness 的持久记录补齐，见 endOutcomeEvidence。"
+  },
+  "note": "进程内 assistant 呈现流。实测帧类型只有 start / chunk / end。revision 连续递增，chunk 的 index 稠密。",
+  "wireChunkVocabulary": [
+    "block-start",
+    "text-delta",
+    "reasoning-delta",
+    "tool-call-delta",
+    "block-end",
+    "usage",
+    "finish"
   ],
+  "wireChunkVocabularyLiveObserved": [
+    "block-start",
+    "text-delta",
+    "tool-call-delta",
+    "block-end",
+    "usage",
+    "finish"
+  ],
+  "wireChunkVocabularyNote": "wire 上的 chunk.type 取自 dsh-llm 的 StreamChunk。实测出现 6 种；reasoning-delta 未在本轮回环模型上产生（假模型未输出推理），属源码级。",
+  "durablePackedRecordTypes": {
+    "note": "**不要与 wire chunk 混淆。** 持久事件里嵌的是压缩记录 AssistantStreamRecord，它把连续的 delta 打包成 *_chunks 记录，因此名字不同。wire 上永远看不到 text-chunks/reasoning-chunks/tool-call-chunks。",
+    "types": ["text-chunks", "reasoning-chunks", "tool-call-chunks", "chunk"],
+    "shape": {
+      "text-chunks": "{type,time0,index,dt:[number],texts:[string]}",
+      "reasoning-chunks": "{type,time0,index,dt:[number],texts:[string]}",
+      "tool-call-chunks": "{type,time0,index,dt:[number],id,name?,args:[string]}",
+      "chunk": "{type:'chunk',time,chunk:StreamChunk}"
+    },
+    "sourceLevel": true,
+    "source": "dsh-llm/lib/types/assistant-stream.d.ts AssistantStreamRecord"
+  },
+  "observations": [
+    {
+      "label": "run.text.completed",
+      "note": "回环模型输出纯文本、finish.reason.kind='stop' 的完整回合。",
+      "frames": [
+        {"type": "start", "attemptId": "h00-attempt-0001", "revision": 1, "turn": 1, "step": 1, "startedAfterSeq": 13},
+        {"type": "chunk", "attemptId": "h00-attempt-0001", "revision": 2, "index": 0, "time": 1789755509484, "chunk": {"type": "block-start", "index": 0, "blockType": "text"}},
+        {"type": "chunk", "attemptId": "h00-attempt-0001", "revision": 3, "index": 1, "time": 1789755509484, "chunk": {"type": "text-delta", "index": 0, "text": "H00 回环提示"}},
+        {"type": "chunk", "attemptId": "h00-attempt-0001", "revision": 4, "index": 2, "time": 1789755509484, "chunk": {"type": "text-delta", "index": 0, "text": "H00 回环提示"}},
+        {"type": "chunk", "attemptId": "h00-attempt-0001", "revision": 5, "index": 3, "time": 1789755509484, "chunk": {"type": "text-delta", "index": 0, "text": "H00 回环提示"}},
+        {"type": "chunk", "attemptId": "h00-attempt-0001", "revision": 6, "index": 4, "time": 1789755509485, "chunk": {"type": "block-end", "index": 0, "block": {"type": "text", "text": "H00 回环提示"}}},
+        {"type": "chunk", "attemptId": "h00-attempt-0001", "revision": 7, "index": 5, "time": 1789755509485, "chunk": {"type": "usage", "usage": {"inputTokens": 3, "outputTokens": 9, "totalTokens": 12}}},
+        {"type": "chunk", "attemptId": "h00-attempt-0001", "revision": 8, "index": 6, "time": 1789755509485, "chunk": {"type": "finish", "reason": {"kind": "stop"}, "replayState": {"response": {"kind": "pi-ai", "version": 2, "api": "openai-completions", "provider": "h00-loopback", "model": "h00-mock-model", "stopReason": "<string:7>"}, "blocks": [{"type": "text"}]}}},
+        {"type": "end", "attemptId": "h00-attempt-0001", "revision": 9, "index": 7, "outcome": {"kind": "committed", "eventType": "assistant/message", "seq": 16}}
+      ],
+      "rules": [
+        "文本先以 block-start(blockType='text') 开局，再是若干 text-delta，最后 block-end 带**拼好的整块文本**。",
+        "block-end 的 block 是最终成品；增量消费者必须用 text-delta 累积，不能等 block-end。",
+        "usage 与 finish 都出现在 block-end 之后。",
+        "start 的 revision=1，之后每个 chunk 与 end 各自 +1，全程连续无跳号。"
+      ]
+    },
+    {
+      "label": "run.tool-call",
+      "note": "回环模型输出一次工具调用、finish.reason.kind='tool-calls' 的完整回合。",
+      "frames": [
+        {"type": "start", "attemptId": "h00-attempt-0001", "revision": 1, "turn": 1, "step": 1, "startedAfterSeq": 13},
+        {"type": "chunk", "attemptId": "h00-attempt-0001", "revision": 2, "index": 0, "time": 1789755460286, "chunk": {"type": "block-start", "index": 0, "blockType": "tool-call"}},
+        {"type": "chunk", "attemptId": "h00-attempt-0001", "revision": 3, "index": 1, "time": 1789755460286, "chunk": {"type": "tool-call-delta", "index": 0, "id": "h00-id-0001", "name": "h00-name", "argumentsDelta": "{\"command\":\"ec"}},
+        {"type": "chunk", "attemptId": "h00-attempt-0001", "revision": 4, "index": 2, "time": 1789755460287, "chunk": {"type": "tool-call-delta", "index": 0, "id": "h00-id-0001", "name": "h00-name", "argumentsDelta": "{\"command\":\"ec"}},
+        {"type": "chunk", "attemptId": "h00-attempt-0001", "revision": 5, "index": 3, "time": 1789755460287, "chunk": {"type": "block-end", "index": 0, "block": {"type": "tool-call", "id": "h00-id-0001", "name": "h00-name", "arguments": "{\"command\":\"echo h00\"}"}}},
+        {"type": "chunk", "attemptId": "h00-attempt-0001", "revision": 6, "index": 4, "time": 1789755460287, "chunk": {"type": "usage", "usage": {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}}},
+        {"type": "chunk", "attemptId": "h00-attempt-0001", "revision": 7, "index": 5, "time": 1789755460287, "chunk": {"type": "finish", "reason": {"kind": "tool-calls"}, "replayState": {"response": {"kind": "pi-ai", "version": 2, "api": "openai-completions", "provider": "h00-loopback", "model": "h00-mock-model", "stopReason": "<string:7>"}, "blocks": [{"type": "tool-call"}]}}},
+        {"type": "end", "attemptId": "h00-attempt-0001", "revision": 8, "index": 6, "outcome": {"kind": "committed", "eventType": "assistant/message", "seq": 16}}
+      ],
+      "rules": [
+        "工具调用的参数是**字符串增量**（argumentsDelta），要自己拼接再 JSON.parse；block-end 才给出完整 arguments 字符串。",
+        "block-start 的 blockType 与 block-end 的 block.type 成对，取值域是 ContentBlockMap 的键：text / reasoning / image / file / tool-call / tool-result。",
+        "tool-call-delta 带 id；同一 index 的多个 delta 共享同一 id。"
+      ]
+    },
+    {
+      "label": "run.aborted-by-user",
+      "note": "用户取消后，被取消的 attempt 仍以 kind='committed' 结算，但 eventType 是 assistant/attempt（不是 assistant/message）。",
+      "frames": [
+        {"type": "start", "attemptId": "h00-attempt-0001", "revision": 1, "turn": 1, "step": 1, "startedAfterSeq": 13},
+        {"type": "end", "attemptId": "h00-attempt-0001", "revision": 2, "index": 0, "outcome": {"kind": "committed", "eventType": "assistant/attempt", "seq": 16}}
+      ],
+      "rules": [
+        "取消**不**产生 kind='abandoned'；它照样 committed，靠 eventType 区分。",
+        "消费者不得把 kind='committed' 直接当成『有完整正文』；要按 eventType 判定是否有 assistant/message。"
+      ]
+    }
+  ],
+  "endOutcomeEvidence": {
+    "method": "对同一 Harness 版本执行只读 session/page 回读，取各会话 seq -> eventType 映射，与 end.outcome.seq 对齐。",
+    "table": [
+      {"run": "文本回合 completed", "outcome": {"kind": "committed", "eventType": "assistant/message", "seq": 16}, "durableAtSeq16": "assistant/message", "turnEnd": {"kind": "completed"}},
+      {"run": "工具回合 error", "outcome": {"kind": "committed", "eventType": "assistant/message", "seq": 16}, "durableAtSeq16": "assistant/message", "turnEnd": {"kind": "error", "error": {"code": "UNKNOWN"}}},
+      {"run": "用户取消", "outcome": {"kind": "committed", "eventType": "assistant/attempt", "seq": 16}, "durableAtSeq16": "assistant/attempt", "turnEnd": {"kind": "aborted", "reason": {"kind": "user"}}}
+    ],
+    "conclusion": "outcome.seq 就是该次提交在持久日志里的 seq；outcome.eventType 就是那条事件的 type。正常结算（completed 或 error）-> assistant/message；用户中止 -> assistant/attempt。",
+    "notObserved": "kind='abandoned' 在本次采集中未出现，属源码级；不要假设它已被实测。"
+  },
   "baseline": {
-    "revision": 7,
-    "activeAttempt": {
-      "attemptId": "attempt-fixture-0001",
-      "startedAfterSeq": 40,
-      "turn": 1,
-      "step": 0,
-      "nextIndex": 3,
-      "stream": []
-    }
+    "shape": "{revision, activeAttempt?:{attemptId,startedAfterSeq,turn,step,nextIndex,stream}}",
+    "note": "opt-in assistantStream:true 时，follow 的 opening snapshot 必须带 assistantStream 基线；否则报 gateway/internal 'session assistant stream omitted its opted-in opening baseline'。",
+    "liveConfirmed": true
   },
-  "frames": {
-    "start": {
-      "type": "start",
-      "attemptId": "attempt-fixture-0001",
-      "revision": 8,
-      "startedAfterSeq": 40,
-      "turn": 1,
-      "step": 0
-    },
-    "chunkTextDelta": {
-      "type": "chunk",
-      "attemptId": "attempt-fixture-0001",
-      "revision": 9,
-      "index": 4,
-      "time": 1789000001200,
-      "chunk": {
-        "type": "text-delta",
-        "text": "fixture"
-      }
-    },
-    "chunkReasoningDelta": {
-      "type": "chunk",
-      "attemptId": "attempt-fixture-0001",
-      "revision": 10,
-      "index": 5,
-      "time": 1789000001300,
-      "chunk": {
-        "type": "reasoning-delta",
-        "text": "fixture reasoning"
-      }
-    },
-    "chunkToolCallDelta": {
-      "type": "chunk",
-      "attemptId": "attempt-fixture-0001",
-      "revision": 11,
-      "index": 6,
-      "time": 1789000001400,
-      "chunk": {
-        "type": "tool-call-delta",
-        "block": {
-          "type": "tool-call",
-          "id": "call-fixture-0001",
-          "name": "fixture_tool",
-          "arguments": ""
-        },
-        "argumentsDelta": "{\"path\":\""
-      }
-    },
-    "chunkBlockStart": {
-      "type": "chunk",
-      "attemptId": "attempt-fixture-0001",
-      "revision": 12,
-      "index": 7,
-      "time": 1789000001500,
-      "chunk": {
-        "type": "block-start",
-        "blockType": "text",
-        "index": 0
-      }
-    },
-    "chunkBlockEnd": {
-      "type": "chunk",
-      "attemptId": "attempt-fixture-0001",
-      "revision": 13,
-      "index": 8,
-      "time": 1789000001600,
-      "chunk": {
-        "type": "block-end",
-        "index": 0
-      }
-    },
-    "chunkUsage": {
-      "type": "chunk",
-      "attemptId": "attempt-fixture-0001",
-      "revision": 14,
-      "index": 9,
-      "time": 1789000001700,
-      "chunk": {
-        "type": "usage",
-        "usage": {
-          "inputTokens": 1,
-          "outputTokens": 2,
-          "totalTokens": 3
-        }
-      }
-    },
-    "chunkFinish": {
-      "type": "chunk",
-      "attemptId": "attempt-fixture-0001",
-      "revision": 15,
-      "index": 10,
-      "time": 1789000001800,
-      "chunk": {
-        "type": "finish",
-        "reason": {
-          "kind": "stop"
-        }
-      }
-    },
-    "endCommitted": {
-      "type": "end",
-      "attemptId": "attempt-fixture-0001",
-      "revision": 16,
-      "index": 11,
-      "outcome": {
-        "kind": "committed",
-        "eventType": "assistant/message",
-        "seq": 43
-      }
-    },
-    "endAbandoned": {
-      "type": "end",
-      "attemptId": "attempt-fixture-0001",
-      "revision": 17,
-      "index": 12,
-      "outcome": {
-        "kind": "abandoned"
-      }
-    }
+  "revisionRule": {
+    "rule": "revision 必须连续：expected = previous + 1，start 为 1。跳号即载体失败，必须重开 follow。",
+    "liveEvidence": "三次采集均为 1..N 连续（文本回合 1..9，工具回合 1..8，取消回合 1..2）。"
   },
-  "revisionRules": {
-    "expectedNext": "previous + 1",
-    "onGap": "抛载体失败并重开 follow",
-    "onUnknownAttempt": "控制器错过 start 时忽略未知 attempt 的帧，但照常发布其 durable settlement",
-    "onReplacementAgent": "替换 Agent 可能把帧 revision 从 1 重新开始"
-  },
-  "settlementRules": [
-    "durable assistant/message 或 assistant/attempt 在活动 opening 之后到达时，只有当 seq 在 startedAfterSeq 之后且 Turn/Step 匹配才暂存。",
-    "匹配的 end 的 type/seq/index 发布一个具名 settlement，退役该 attempt 的 transient 行并加入 durable 条目；同一步更早的重试仍保持可见。",
-    "不能仅用 (turn, step) 认定同一条消息，因为重试可以发生在同一步。",
-    "不得把 attemptId 直接当作 durable message ID。",
-    "durable gap-repair 页没有 Assistant 基线，其 held notification 为配对的页与基线重开一次 follow。"
-  ]
+  "indexRule": {
+    "rule": "chunk 的 index 稠密递增，从 0 开始；end 也带 index，接在最后一个 chunk 之后。",
+    "liveEvidence": "文本回合 index 0..6，end index 7；工具回合 index 0..5，end index 6。"
+  }
 }

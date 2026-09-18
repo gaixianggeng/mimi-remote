@@ -1,141 +1,99 @@
 {
-  "$fixture": "harness-native/stream/control-frames",
-  "provenance": "upstream-source",
-  "source": "packages/api/session-controller/src/control.ts (blob 3fb8d003 @0.1.6-alpha.2 / 9bdd5a05 @0.1.5-rc.2), src/types.ts#SessionControlFrame",
-  "harnessVersion": "0.1.6-alpha.2 (primary) — 与 0.1.5-rc.2 存在结构差异",
-  "notes": [
-    "session/control 是流方法，只能经 WS 载体打开；当作普通 RPC 调用会得到 gateway/signature-invalid。",
-    "control 只传 signal，没有业务参数，args 是空对象。",
-    "每一代控制流恰好以一个 baseline 开头，之后是替换帧。",
-    "baseline 表示的是进程内状态：Host 重启后无法重建 jobs。它不能当作全部持久会话列表。"
-  ],
-  "open": {
-    "type": "open",
-    "streamId": "stream-fixture-0003",
-    "endpoint": "session/control",
-    "payload": {
-      "args": {}
-    }
+  "provenance": {
+    "level": "live-capture",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.1.5-rc.2",
+    "upstreamTag": "dsh-v0.1.5-rc.2",
+    "profile": "web",
+    "transport": "http://127.0.0.1 loopback, cookie session after GET /?token=",
+    "modelFixture": "@deepseek-ai/dsh-llm-mock-server (scriptable OpenAI-compatible SSE)",
+    "capturedAt": "2026-09-18T18:18:26.439Z"
   },
-  "frames": {
-    "baseline": {
-      "type": "item",
-      "streamId": "stream-fixture-0003",
+  "note": "session/control 无参数流：先 baseline，再 projection/queue 增量。baseline 携带 queues/jobs/projections 三个字典。",
+  "observations": [
+    {
+      "label": "baseline",
       "value": {
         "type": "baseline",
         "value": {
-          "jobs": {
-            "session-fixture-0001": [
-              {
-                "id": "job-fixture-0001",
-                "kind": "fixture-job-kind",
-                "label": "fixture job label",
-                "status": "running",
-                "startedAt": 1789000000000
-              }
-            ]
-          },
-          "projections": {
-            "session-fixture-0001": {
-              "asOfSeq": 42,
-              "values": {
-                "title": "Fixture session title",
-                "sessionListMetadata": {
-                  "blank": false,
-                  "lastPromptAt": 1789000000000
-                }
-              }
-            }
-          }
+          "queues": {},
+          "jobs": {},
+          "projections": {}
         }
       }
     },
-    "projection": {
-      "type": "item",
-      "streamId": "stream-fixture-0003",
-      "value": {
-        "type": "projection",
-        "sessionId": "session-fixture-0001",
-        "key": "title",
-        "value": "Updated fixture title",
-        "seq": 46
-      }
-    },
-    "jobs": {
-      "type": "item",
-      "streamId": "stream-fixture-0003",
-      "value": {
-        "type": "jobs",
-        "sessionId": "session-fixture-0001",
-        "jobs": []
-      }
-    }
-  },
-  "jobStatusDomain": [
-    "running",
-    "stopping",
-    "completed",
-    "killed",
-    "failed"
-  ],
-  "versionDifference": {
-    "severity": "breaking",
-    "at_0_1_5_rc_2": {
-      "baselineValueKeys": [
+    {
+      "label": "baselineTopLevelKeys",
+      "value": [
         "queues",
         "jobs",
         "projections"
-      ],
-      "extraFrame": {
+      ]
+    },
+    {
+      "label": "projection.first",
+      "value": {
+        "type": "projection",
+        "sessionId": "h00-session-0001",
+        "key": "<str:11>",
+        "value": {
+          "options": [
+            {
+              "value": "<string:7>",
+              "name": "h00-name"
+            },
+            {
+              "value": "<string:8>",
+              "name": "h00-name"
+            },
+            {
+              "value": "<string:8>",
+              "name": "h00-name"
+            }
+          ],
+          "currentValue": "<string:8>"
+        },
+        "seq": 0
+      }
+    },
+    {
+      "label": "queue.first",
+      "value": {
         "type": "queue",
-        "sessionId": "session-fixture-0001",
+        "sessionId": "h00-session-0001",
         "items": [
           {
-            "id": "msg-fixture-0009",
-            "placement": "queued",
-            "rpcId": "req-fixture-0009",
+            "id": "h00-id-0001",
+            "placement": "<str:6>",
+            "rpcId": "h00-rpc-0001",
             "message": {
-              "id": "msg-fixture-0009",
-              "content": []
+              "id": "h00-id-0001",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "H00 回环正文"
+                }
+              ]
             }
           }
         ]
-      },
-      "placementDomain": [
-        "queued",
-        "steering",
-        "context"
-      ]
+      }
     },
-    "at_0_1_6_alpha_2": {
-      "baselineValueKeys": [
-        "jobs",
-        "projections"
-      ],
-      "extraFrame": null,
-      "removedType": "SessionQueuedItem"
+    {
+      "label": "queue.drained",
+      "value": {
+        "type": "queue",
+        "sessionId": "h00-session-0001",
+        "items": []
+      }
     },
-    "consequence": "控制流解析器必须按版本选择帧结构；未知帧类型必须跳过而不是整条流失败，但队列相关能力不得假设存在。",
-    "openQuestion": "用户实际安装的 Harness 版本尚未核对，因此本契约暂以 0.1.6-alpha.2 为主，H11 前必须按真实安装版本复核。"
-  },
-  "directoryInvalidation": {
-    "available": "partial",
-    "emits": [
-      "projection 变化（订阅 sessionProjections.onChanged）",
-      "jobs 变化（jobs.onJobsChanged）",
-      "session/created 且该会话有 jobs 时"
-    ],
-    "doesNotEmit": [
-      "api-session/added",
-      "api-session/removed",
-      "无 jobs 的新建会话"
-    ],
-    "conclusion": "控制流不能作为新建会话的可靠发现通道。",
-    "requiredFallback": {
-      "rule": "仅列表可见且 App 前台时，每 5 秒最多发起一次合并后的 session/list 请求。",
-      "backgroundBehavior": "后台或页面离开立即停止。",
-      "controlBehavior": "control 有变化时及时触发，不必等定时器。",
-      "status": "本方案的产品参数，可经测量调整，不是 Harness 保证。"
+    {
+      "label": "versionNote",
+      "value": "0.1.5-rc.2 的 baseline 含 queues，且 queue 帧类型存在；上游 0.1.6-alpha.2 已移除 queues 与 queue 帧。以本机实测版本为准。"
+    },
+    {
+      "label": "controlHasNoSessionArgument",
+      "value": "control() 只有 signal 形参，wire 上无参数；它不是按会话订阅，而是覆盖本机全部会话。"
     }
-  }
+  ]
 }

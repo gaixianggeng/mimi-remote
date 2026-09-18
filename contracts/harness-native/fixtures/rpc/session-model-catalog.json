@@ -1,101 +1,383 @@
 {
-  "$fixture": "harness-native/rpc/session-model-catalog",
-  "provenance": "upstream-source",
-  "source": "packages/api/session-controller/src/index.ts#modelCatalog (blob f13f24f7), types.ts#ModelCatalog (blob f03d8d1b)",
-  "harnessVersion": "0.1.6-alpha.2",
-  "notes": [
-    "modelCatalog() 没有参数，也没有 signal：args 必须是空对象 {}，不能省略 payload.args，也不能传任何键。",
-    "分组字段是 name；模型只带展示与推理档位，不带 contextWindow/maxTokens。",
-    "failures 是逐 provider 的目录加载失败，不是整体失败；有 failures 仍然 ok=true。",
-    "Mimi 只消费并转发，不按模型名推断供应商。"
-  ],
-  "cases": {
-    "request": {
-      "type": "client-request",
-      "rpcId": "rpc-fixture-0201",
-      "method": "session/modelCatalog",
-      "payload": {
-        "args": {}
-      }
+  "provenance": {
+    "level": "live-capture",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.1.5-rc.2",
+    "upstreamTag": "dsh-v0.1.5-rc.2",
+    "profile": "web",
+    "transport": "http://127.0.0.1 loopback, cookie session after GET /?token=",
+    "modelFixture": "@deepseek-ai/dsh-llm-mock-server (scriptable OpenAI-compatible SSE)",
+    "capturedAt": "2026-09-18T18:18:26.439Z"
+  },
+  "note": "session/modelCatalog 无参数调用；真实返回 default/groups/routableProviders/failures。",
+  "observations": [
+    {
+      "label": "request",
+      "value": {},
+      "wireNote": "modelCatalog() 只有一个 signal 形参，被 typert 排除，因此 args 为空对象。"
     },
-    "success": {
-      "type": "server-response",
-      "rpcId": "rpc-fixture-0201",
-      "result": {
-        "ok": true,
-        "value": {
-          "default": {
-            "provider": "provider-fixture-a",
-            "model": "model-fixture-1",
-            "reasoningEffort": "high"
+    {
+      "label": "result",
+      "value": {
+        "items": [
+          {
+            "sessionId": "h00-session-0001",
+            "updatedAt": 1789755158624,
+            "running": false,
+            "blank": false,
+            "cwd": "/h00/workspace"
           },
-          "routableProviders": [
-            "provider-fixture-a",
-            "provider-fixture-b"
-          ],
-          "groups": [
-            {
-              "id": "provider-fixture-a",
-              "name": "Fixture Provider A",
-              "models": [
-                {
-                  "id": "model-fixture-1",
-                  "name": "Fixture Model 1",
-                  "description": "fixture model",
-                  "reasoning": {
-                    "efforts": [
-                      {
-                        "id": "low",
-                        "name": "Low"
-                      },
-                      {
-                        "id": "high",
-                        "name": "High"
-                      }
-                    ],
-                    "defaultEffort": "high"
+          {
+            "sessionId": "h00-session-0001",
+            "updatedAt": 1789754923916,
+            "running": false,
+            "blank": true,
+            "cwd": "/h00/workspace",
+            "projections": {
+              "asOfSeq": 3,
+              "values": {
+                "title": null,
+                "goal": null,
+                "tokenUsage": {
+                  "uncachedInputTokens": 0,
+                  "outputTokens": 0,
+                  "cacheReadTokens": 0,
+                  "cacheWriteTokens": 0
+                },
+                "contextPressure": {},
+                "contextBreakdown": {
+                  "systemTokens": 0,
+                  "toolsTokens": 0,
+                  "messageTokens": 0
+                },
+                "sessionStats": {
+                  "turns": 0,
+                  "steps": 0,
+                  "llmMs": 0,
+                  "toolMs": 0,
+                  "ttftMs": 0,
+                  "ttftSteps": 0,
+                  "decodeMs": 0,
+                  "decodeTokens": 0
+                },
+                "turnOutline": [],
+                "subagentCatalog": [],
+                "subagentTiming": {
+                  "settledMs": 0
+                },
+                "subagent": null,
+                "permissions": {
+                  "options": [
+                    {
+                      "value": "<string:7>",
+                      "name": "h00-name"
+                    },
+                    {
+                      "value": "<string:8>",
+                      "name": "h00-name"
+                    },
+                    {
+                      "value": "<string:8>",
+                      "name": "h00-name"
+                    }
+                  ],
+                  "currentValue": "<string:8>"
+                },
+                "modelSelection": {
+                  "lastUsed": null,
+                  "next": {
+                    "provider": "h00-loopback",
+                    "model": "h00-mock-model"
                   }
+                },
+                "sessionListMetadata": {
+                  "blank": true,
+                  "lastPromptAt": null
+                },
+                "imageLimits": {
+                  "maxImageBytes": 20971520,
+                  "maxImagesPerMessage": 20,
+                  "maxMessageImageBytes": 209715200,
+                  "maxImagePixels": 64000000,
+                  "maxImageDimension": 8192,
+                  "mediaTypes": [
+                    "<string:7>",
+                    "<string:8>",
+                    "<string:8>",
+                    "<string:7>"
+                  ]
+                },
+                "inbox": {
+                  "next-turn": [],
+                  "next-step": []
                 }
-              ]
+              }
             }
-          ],
-          "failures": [
-            {
-              "id": "provider-fixture-b",
-              "name": "Fixture Provider B",
-              "message": "fixture catalog lookup failed"
+          },
+          {
+            "sessionId": "h00-session-0001",
+            "updatedAt": 1789754897946,
+            "running": false,
+            "blank": true,
+            "cwd": "/h00/workspace",
+            "projections": {
+              "asOfSeq": 3,
+              "values": {
+                "title": null,
+                "goal": null,
+                "tokenUsage": {
+                  "uncachedInputTokens": 0,
+                  "outputTokens": 0,
+                  "cacheReadTokens": 0,
+                  "cacheWriteTokens": 0
+                },
+                "contextPressure": {},
+                "contextBreakdown": {
+                  "systemTokens": 0,
+                  "toolsTokens": 0,
+                  "messageTokens": 0
+                },
+                "sessionStats": {
+                  "turns": 0,
+                  "steps": 0,
+                  "llmMs": 0,
+                  "toolMs": 0,
+                  "ttftMs": 0,
+                  "ttftSteps": 0,
+                  "decodeMs": 0,
+                  "decodeTokens": 0
+                },
+                "turnOutline": [],
+                "subagentCatalog": [],
+                "subagentTiming": {
+                  "settledMs": 0
+                },
+                "subagent": null,
+                "permissions": {
+                  "options": [
+                    {
+                      "value": "<string:7>",
+                      "name": "h00-name"
+                    },
+                    {
+                      "value": "<string:8>",
+                      "name": "h00-name"
+                    },
+                    {
+                      "value": "<string:8>",
+                      "name": "h00-name"
+                    }
+                  ],
+                  "currentValue": "<string:8>"
+                },
+                "modelSelection": {
+                  "lastUsed": null,
+                  "next": {
+                    "provider": "h00-loopback",
+                    "model": "h00-mock-model"
+                  }
+                },
+                "sessionListMetadata": {
+                  "blank": true,
+                  "lastPromptAt": null
+                },
+                "imageLimits": {
+                  "maxImageBytes": 20971520,
+                  "maxImagesPerMessage": 20,
+                  "maxMessageImageBytes": 209715200,
+                  "maxImagePixels": 64000000,
+                  "maxImageDimension": 8192,
+                  "mediaTypes": [
+                    "<string:7>",
+                    "<string:8>",
+                    "<string:8>",
+                    "<string:7>"
+                  ]
+                },
+                "inbox": {
+                  "next-turn": [],
+                  "next-step": []
+                }
+              }
             }
-          ]
-        }
+          },
+          {
+            "sessionId": "h00-session-0001",
+            "updatedAt": 1789754855205,
+            "running": false,
+            "blank": true,
+            "cwd": "/h00/workspace",
+            "projections": {
+              "asOfSeq": 3,
+              "values": {
+                "title": null,
+                "goal": null,
+                "tokenUsage": {
+                  "uncachedInputTokens": 0,
+                  "outputTokens": 0,
+                  "cacheReadTokens": 0,
+                  "cacheWriteTokens": 0
+                },
+                "contextPressure": {},
+                "contextBreakdown": {
+                  "systemTokens": 0,
+                  "toolsTokens": 0,
+                  "messageTokens": 0
+                },
+                "sessionStats": {
+                  "turns": 0,
+                  "steps": 0,
+                  "llmMs": 0,
+                  "toolMs": 0,
+                  "ttftMs": 0,
+                  "ttftSteps": 0,
+                  "decodeMs": 0,
+                  "decodeTokens": 0
+                },
+                "turnOutline": [],
+                "subagentCatalog": [],
+                "subagentTiming": {
+                  "settledMs": 0
+                },
+                "subagent": null,
+                "permissions": {
+                  "options": [
+                    {
+                      "value": "<string:7>",
+                      "name": "h00-name"
+                    },
+                    {
+                      "value": "<string:8>",
+                      "name": "h00-name"
+                    },
+                    {
+                      "value": "<string:8>",
+                      "name": "h00-name"
+                    }
+                  ],
+                  "currentValue": "<string:8>"
+                },
+                "modelSelection": {
+                  "lastUsed": null,
+                  "next": {
+                    "provider": "h00-loopback",
+                    "model": "h00-mock-model"
+                  }
+                },
+                "sessionListMetadata": {
+                  "blank": true,
+                  "lastPromptAt": null
+                },
+                "imageLimits": {
+                  "maxImageBytes": 20971520,
+                  "maxImagesPerMessage": 20,
+                  "maxMessageImageBytes": 209715200,
+                  "maxImagePixels": 64000000,
+                  "maxImageDimension": 8192,
+                  "mediaTypes": [
+                    "<string:7>",
+                    "<string:8>",
+                    "<string:8>",
+                    "<string:7>"
+                  ]
+                },
+                "inbox": {
+                  "next-turn": [],
+                  "next-step": []
+                }
+              }
+            }
+          },
+          {
+            "sessionId": "h00-session-0001",
+            "updatedAt": 1789754842704,
+            "running": false,
+            "blank": true,
+            "cwd": "/h00/workspace",
+            "projections": {
+              "asOfSeq": 2,
+              "values": {
+                "title": null,
+                "goal": null,
+                "tokenUsage": {
+                  "uncachedInputTokens": 0,
+                  "outputTokens": 0,
+                  "cacheReadTokens": 0,
+                  "cacheWriteTokens": 0
+                },
+                "contextPressure": {},
+                "contextBreakdown": {
+                  "systemTokens": 0,
+                  "toolsTokens": 0,
+                  "messageTokens": 0
+                },
+                "sessionStats": {
+                  "turns": 0,
+                  "steps": 0,
+                  "llmMs": 0,
+                  "toolMs": 0,
+                  "ttftMs": 0,
+                  "ttftSteps": 0,
+                  "decodeMs": 0,
+                  "decodeTokens": 0
+                },
+                "turnOutline": [],
+                "subagentCatalog": [],
+                "subagentTiming": {
+                  "settledMs": 0
+                },
+                "subagent": null,
+                "permissions": {
+                  "options": [
+                    {
+                      "value": "<string:7>",
+                      "name": "h00-name"
+                    },
+                    {
+                      "value": "<string:8>",
+                      "name": "h00-name"
+                    },
+                    {
+                      "value": "<string:8>",
+                      "name": "h00-name"
+                    }
+                  ],
+                  "currentValue": "<string:8>"
+                },
+                "modelSelection": {
+                  "lastUsed": null,
+                  "next": null
+                },
+                "sessionListMetadata": {
+                  "blank": true,
+                  "lastPromptAt": null
+                },
+                "imageLimits": {
+                  "maxImageBytes": 20971520,
+                  "maxImagesPerMessage": 20,
+                  "maxMessageImageBytes": 209715200,
+                  "maxImagePixels": 64000000,
+                  "maxImageDimension": 8192,
+                  "mediaTypes": [
+                    "<string:7>",
+                    "<string:8>",
+                    "<string:8>",
+                    "<string:7>"
+                  ]
+                },
+                "inbox": {
+                  "next-turn": [],
+                  "next-step": []
+                }
+              }
+            }
+          }
+        ]
       }
     },
-    "error": {
-      "type": "server-response",
-      "rpcId": "rpc-fixture-0201",
-      "result": {
-        "ok": false,
-        "error": {
-          "code": "gateway/arguments-invalid",
-          "message": "session/modelCatalog received arguments but declares none",
-          "details": {
-            "endpoint": "session/modelCatalog"
-          }
-        }
-      }
-    },
-    "negativeAnyArgument": {
-      "why": "modelCatalog 声明零参数，传任何键都必须失败。",
-      "request": {
-        "type": "client-request",
-        "rpcId": "rpc-fixture-0202",
-        "method": "session/modelCatalog",
-        "payload": {
-          "args": {
-            "request": {}
-          }
-        }
-      },
-      "expectedErrorCode": "gateway/arguments-invalid"
+    {
+      "label": "note",
+      "value": "routableProviders 含本机回环路由 h00-loopback，证明 llm-pi-ai 的手写路由会进入目录。"
     }
-  }
+  ]
 }
