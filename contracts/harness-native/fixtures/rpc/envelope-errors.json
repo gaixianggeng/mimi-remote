@@ -1,0 +1,123 @@
+{
+  "$fixture": "harness-native/rpc/envelope-errors",
+  "provenance": "upstream-source",
+  "source": "packages/client/connection/src/rpc-host.ts#rpcFetchHandler (blob d74734e1), rpc-schema.ts (blob dc919a81), packages/api/gateway/src/remote-error-codes.ts (blob 22f94749)",
+  "harnessVersion": "0.1.6-alpha.2",
+  "notes": [
+    "这是 agentd 中继必须逐条复刻的入站校验层：状态码、content-type、外壳、方法路径一致性、endpoint 段合法性。",
+    "业务错误一律 HTTP 200 + result.ok=false。只有处理函数抛异常才是 500。",
+    "错误对象固定三个字段 code/message/details；details 是必需对象，不是可选的 data。"
+  ],
+  "transportRules": [
+    {
+      "condition": "非 POST，或路径段含空串、'.'、'..'、或不匹配 ^[A-Za-z0-9_$.-]+$",
+      "status": 404,
+      "body": "not found"
+    },
+    {
+      "condition": "Content-Type 不是 application/json",
+      "status": 415,
+      "body": "content type must be application/json"
+    },
+    {
+      "condition": "body 不是合法 JSON",
+      "status": 400,
+      "body": "body is not JSON"
+    },
+    {
+      "condition": "外壳不匹配 {type:'client-request',rpcId,method,payload}",
+      "status": 200,
+      "result": {
+        "ok": false,
+        "error": {
+          "code": "gateway/bad-request",
+          "message": "invalid client-request message",
+          "details": {
+            "issues": []
+          }
+        }
+      }
+    },
+    {
+      "condition": "body.method 与 URL endpoint 不一致",
+      "status": 200,
+      "result": {
+        "ok": false,
+        "error": {
+          "code": "gateway/bad-request",
+          "message": "method \"session/page\" does not match endpoint \"session/list\"",
+          "details": {
+            "issues": []
+          }
+        }
+      }
+    },
+    {
+      "condition": "处理函数抛异常",
+      "status": 500,
+      "body": "handler failure: <message>"
+    }
+  ],
+  "gatewayErrorCodes": [
+    "gateway/ambiguous-endpoint",
+    "gateway/arguments-invalid",
+    "gateway/binding-invalid",
+    "gateway/context-failed",
+    "gateway/context-not-found",
+    "gateway/context-unavailable",
+    "gateway/definition-unavailable",
+    "gateway/input-invalid",
+    "gateway/invocation-unavailable",
+    "gateway/lookup-failed",
+    "gateway/lookup-not-found",
+    "gateway/lookup-unavailable",
+    "gateway/method-unavailable",
+    "gateway/provider-mismatch",
+    "gateway/result-invalid",
+    "gateway/service-unavailable",
+    "gateway/signature-invalid",
+    "gateway/bad-request",
+    "gateway/cancelled",
+    "gateway/internal"
+  ],
+  "gatewayFaultDetails": {
+    "shape": {
+      "endpoint": "canonical <namespace>/<method>",
+      "field": "affected wire field, optional"
+    }
+  },
+  "sessionErrorCodes": [
+    "session/model-unavailable",
+    "session/conflict",
+    "session/writer-held",
+    "session/agent-busy",
+    "session/invalid-time-zone",
+    "session/workspace-attach-failed",
+    "agent-preset/conflict",
+    "session/attachment-invalid",
+    "session/queue-item-not-found",
+    "session/steer-unavailable",
+    "session/title-invalid",
+    "session/fork-unavailable",
+    "subagent/not-found",
+    "subagent/catalog-diagnostic"
+  ],
+  "canonicalErrorEnvelope": {
+    "type": "server-response",
+    "rpcId": "rpc-fixture-0001",
+    "result": {
+      "ok": false,
+      "error": {
+        "code": "gateway/internal",
+        "message": "fixture failure message",
+        "details": {}
+      }
+    }
+  },
+  "criticalDefectNote": {
+    "repoDefect": "internal/harnessclient/protocol.go 的 RemoteError 把 details 映射到 json tag \"data\"。",
+    "consequence": "上游返回的 details 永远不会被解析，结构化错误信息（endpoint/field/sessionId 等）在 agentd 侧丢失。",
+    "fixOwner": "H02",
+    "fix": "把 json tag 改为 details，并保留 code/message 的容错读取。"
+  }
+}

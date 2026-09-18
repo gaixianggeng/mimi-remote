@@ -1,0 +1,100 @@
+{
+  "$fixture": "harness-native/stream/mux-carrier",
+  "provenance": "upstream-source",
+  "source": "packages/api/gateway/src/stream-protocol.ts (blob 142598863)",
+  "harnessVersion": "0.1.6-alpha.2",
+  "notes": [
+    "所有 Remote 流共用一条 WebSocket：/api/remote.mux。",
+    "客户端用 open 帧声明一条逻辑订阅，用 cancel 帧取消。",
+    "服务端每帧都带 type 判别值：item / error / end。payload 在 item 的 value 里。"
+  ],
+  "route": "/api/remote.mux",
+  "clientMessages": {
+    "open": {
+      "type": "open",
+      "streamId": "stream-fixture-0001",
+      "endpoint": "session/follow",
+      "payload": {
+        "args": {
+          "request": {
+            "address": {
+              "kind": "session",
+              "sessionId": "session-fixture-0001"
+            },
+            "assistantStream": true
+          }
+        }
+      }
+    },
+    "cancel": {
+      "type": "cancel",
+      "streamId": "stream-fixture-0001"
+    }
+  },
+  "clientMessageExactKeys": {
+    "open": [
+      "type",
+      "streamId",
+      "endpoint",
+      "payload"
+    ],
+    "cancel": [
+      "type",
+      "streamId"
+    ]
+  },
+  "serverMessages": {
+    "item": {
+      "type": "item",
+      "streamId": "stream-fixture-0001",
+      "value": {
+        "type": "snapshot",
+        "cursor": 42
+      }
+    },
+    "error": {
+      "type": "error",
+      "streamId": "stream-fixture-0001",
+      "error": {
+        "code": "gateway/internal",
+        "message": "fixture stream failure",
+        "details": {}
+      }
+    },
+    "end": {
+      "type": "end",
+      "streamId": "stream-fixture-0001"
+    }
+  },
+  "serverMessageExactKeys": {
+    "item": [
+      "type",
+      "streamId",
+      "value"
+    ],
+    "itemWithoutValue": [
+      "type",
+      "streamId"
+    ],
+    "error": [
+      "type",
+      "streamId",
+      "error"
+    ],
+    "end": [
+      "type",
+      "streamId"
+    ]
+  },
+  "streamFailureShape": {
+    "code": "string",
+    "message": "string",
+    "details": "object"
+  },
+  "criticalDefectNote": {
+    "repoDefect": "internal/harnessclient/protocol.go 的 muxFrame 只解 {streamId, value}，完全忽略服务端的 type 判别值；events.go 的 readLoop 也不区分 item/error/end。",
+    "consequence": "type='error' 与 type='end' 的帧没有 value，会被当成空 value 的帧推入 frames 通道。上层用 Until 等待条件时只会超时，看不到流级错误；流正常结束也无法与静默区分。",
+    "fixOwner": "H03",
+    "fix": "按 type 判别：item 取 value 并解析；error 映射为带 code/message/details 的流错误；end 关闭该 streamId 的订阅。单帧 JSON 解析失败仍可跳过，但结构合法的 error/end 不得被丢弃。"
+  }
+}

@@ -1,0 +1,154 @@
+{
+  "$fixture": "harness-native/rpc/session-list",
+  "provenance": "upstream-source",
+  "source": "packages/api/session-controller/src/index.ts#list (blob f13f24f7), types.ts#SessionListValue (blob f03d8d1b), packages/client/connection/src/rpc-host.ts (blob d74734e1)",
+  "harnessVersion": "0.1.6-alpha.2",
+  "notes": [
+    "wire 参数名是 '_request'（带下划线），来自 @Remote('list') list(_request: SessionListRequest, signal)。",
+    "typert 生成器 analyzer.ts:1140 用 parameter.name.text 作为 wire 键；signal 是取消参数，不进入 wire。",
+    "session/list 请求体里没有 cwd，返回本机可见的全部会话；按授权工作区裁剪是 agentd 的责任。",
+    "上游 list() 不消费 cursor：它读全部会话并按 updatedAt 倒序返回，没有服务端分页。"
+  ],
+  "http": {
+    "method": "POST",
+    "path": "/api/session/list",
+    "contentType": "application/json",
+    "cookieRequired": true
+  },
+  "cases": {
+    "request": {
+      "type": "client-request",
+      "rpcId": "rpc-fixture-0001",
+      "method": "session/list",
+      "payload": {
+        "args": {
+          "_request": {}
+        }
+      }
+    },
+    "requestWithCursor": {
+      "type": "client-request",
+      "rpcId": "rpc-fixture-0002",
+      "method": "session/list",
+      "payload": {
+        "args": {
+          "_request": {
+            "cursor": "cursor-fixture-0001"
+          }
+        }
+      }
+    },
+    "success": {
+      "type": "server-response",
+      "rpcId": "rpc-fixture-0001",
+      "result": {
+        "ok": true,
+        "value": {
+          "items": [
+            {
+              "sessionId": "session-fixture-0001",
+              "updatedAt": 1789000000000,
+              "running": true,
+              "blank": false,
+              "cwd": "/fixture/workspace/demo-project",
+              "projections": {
+                "asOfSeq": 42,
+                "values": {
+                  "title": "Fixture session title",
+                  "turnOutline": [
+                    {
+                      "prompt": "fixture prompt",
+                      "response": "fixture response",
+                      "seq": 12,
+                      "turn": 1
+                    }
+                  ],
+                  "modelSelection": {
+                    "lastUsed": {
+                      "provider": "provider-fixture-a",
+                      "model": "model-fixture-1",
+                      "reasoningEffort": "high"
+                    },
+                    "next": null
+                  },
+                  "sessionListMetadata": {
+                    "blank": false,
+                    "lastPromptAt": 1789000000000
+                  }
+                }
+              }
+            },
+            {
+              "sessionId": "session-fixture-0002",
+              "updatedAt": 1788999000000,
+              "running": false,
+              "blank": true,
+              "parentSessionId": "session-fixture-0001",
+              "origin": "subagent",
+              "cwd": "/fixture/workspace/demo-project"
+            }
+          ]
+        }
+      }
+    },
+    "error": {
+      "type": "server-response",
+      "rpcId": "rpc-fixture-0001",
+      "result": {
+        "ok": false,
+        "error": {
+          "code": "gateway/arguments-invalid",
+          "message": "session/list arguments do not match the generated descriptor",
+          "details": {
+            "endpoint": "session/list",
+            "field": "request"
+          }
+        }
+      }
+    },
+    "negativeWrongArgsKey": {
+      "why": "用 'request' 代替 '_request' 必须失败；这是最容易写错的 wire 事实。",
+      "request": {
+        "type": "client-request",
+        "rpcId": "rpc-fixture-0003",
+        "method": "session/list",
+        "payload": {
+          "args": {
+            "request": {}
+          }
+        }
+      },
+      "expectedErrorCode": "gateway/arguments-invalid"
+    },
+    "negativeExtraArgKey": {
+      "why": "多一个键同样失败：网关按描述符逐字校验参数名与个数。",
+      "request": {
+        "type": "client-request",
+        "rpcId": "rpc-fixture-0004",
+        "method": "session/list",
+        "payload": {
+          "args": {
+            "_request": {},
+            "cwd": "/fixture/workspace/demo-project"
+          }
+        }
+      },
+      "expectedErrorCode": "gateway/arguments-invalid"
+    },
+    "negativeMethodPathMismatch": {
+      "why": "body.method 必须等于 URL endpoint，否则 gateway/bad-request，HTTP 仍是 200。",
+      "path": "/api/session/list",
+      "request": {
+        "type": "client-request",
+        "rpcId": "rpc-fixture-0005",
+        "method": "session/page",
+        "payload": {
+          "args": {
+            "_request": {}
+          }
+        }
+      },
+      "expectedErrorCode": "gateway/bad-request"
+    }
+  }
+}

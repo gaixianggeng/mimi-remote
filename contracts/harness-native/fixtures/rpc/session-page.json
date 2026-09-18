@@ -1,0 +1,150 @@
+{
+  "$fixture": "harness-native/rpc/session-page",
+  "provenance": "upstream-source",
+  "source": "packages/api/session-controller/src/index.ts#page (blob f13f24f7), types.ts#SessionPageRequest/SessionPage (blob f03d8d1b)",
+  "harnessVersion": "0.1.6-alpha.2",
+  "notes": [
+    "wire 参数名是 'request'。",
+    "throughSeq 必填，取值必须是本次 follow 开场 snapshot 给出的 cursor（inclusive 日志切点）。",
+    "address 是判别联合：{kind:'session',sessionId} 或 {kind:'subagent',parentSessionId,childSessionId,mode}。首版只开放 session 形态。",
+    "records 每项是 {type:'event', event:SessionWireEvent}。",
+    "客户端按 50 条一页 loadOlder、200 条一页 loadThrough 推进；页无进展必须终止而不是继续。"
+  ],
+  "cases": {
+    "request": {
+      "type": "client-request",
+      "rpcId": "rpc-fixture-0401",
+      "method": "session/page",
+      "payload": {
+        "args": {
+          "request": {
+            "address": {
+              "kind": "session",
+              "sessionId": "session-fixture-0001"
+            },
+            "throughSeq": 42,
+            "beforeSeq": 42,
+            "maxMessages": 50
+          }
+        }
+      }
+    },
+    "success": {
+      "type": "server-response",
+      "rpcId": "rpc-fixture-0401",
+      "result": {
+        "ok": true,
+        "value": {
+          "records": [
+            {
+              "type": "event",
+              "event": {
+                "type": "user/message",
+                "seq": 41,
+                "time": 1789000000000,
+                "data": {
+                  "id": "msg-fixture-0001",
+                  "role": "user",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "fixture prompt text"
+                    }
+                  ],
+                  "source": {
+                    "kind": "user",
+                    "rpcId": "req-fixture-0001"
+                  }
+                }
+              }
+            },
+            {
+              "type": "event",
+              "event": {
+                "type": "assistant/message",
+                "seq": 42,
+                "time": 1789000001000,
+                "data": {
+                  "message": {
+                    "id": "msg-fixture-0002",
+                    "role": "assistant",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "fixture response text"
+                      }
+                    ],
+                    "source": {
+                      "kind": "assistant"
+                    }
+                  },
+                  "step": 0,
+                  "turn": 1,
+                  "usage": {
+                    "inputTokens": 1,
+                    "outputTokens": 2,
+                    "totalTokens": 3
+                  }
+                }
+              }
+            }
+          ],
+          "hasMore": true
+        }
+      }
+    },
+    "emptyPage": {
+      "why": "空页是确定的终止条件，不是'继续试'的信号。",
+      "type": "server-response",
+      "rpcId": "rpc-fixture-0401",
+      "result": {
+        "ok": true,
+        "value": {
+          "records": [],
+          "hasMore": false
+        }
+      }
+    },
+    "error": {
+      "type": "server-response",
+      "rpcId": "rpc-fixture-0401",
+      "result": {
+        "ok": false,
+        "error": {
+          "code": "gateway/arguments-invalid",
+          "message": "session/page requires throughSeq",
+          "details": {
+            "endpoint": "session/page",
+            "field": "request.throughSeq"
+          }
+        }
+      }
+    },
+    "negativeMissingThroughSeq": {
+      "request": {
+        "type": "client-request",
+        "rpcId": "rpc-fixture-0402",
+        "method": "session/page",
+        "payload": {
+          "args": {
+            "request": {
+              "address": {
+                "kind": "session",
+                "sessionId": "session-fixture-0001"
+              },
+              "maxMessages": 50
+            }
+          }
+        }
+      },
+      "expectedErrorCode": "gateway/arguments-invalid"
+    },
+    "terminationRules": [
+      "空页：终止。",
+      "重复页（首尾 seq 与上一页相同）：终止并报进展缺失。",
+      "无进展页：终止。",
+      "越界游标：明确错误。",
+      "不得用先前未展示的消息条数伪造上游进度。"
+    ]
+  }
+}

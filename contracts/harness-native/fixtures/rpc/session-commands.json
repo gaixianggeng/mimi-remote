@@ -1,0 +1,221 @@
+{
+  "$fixture": "harness-native/rpc/session-commands",
+  "provenance": "upstream-source",
+  "source": "packages/api/session-controller/src/index.ts (blob f13f24f7), types.ts (blob f03d8d1b)",
+  "harnessVersion": "0.1.6-alpha.2",
+  "notes": [
+    "这四个方法的 wire 参数名都是 'request'。",
+    "prompt 的 requestId 是幂等标识：Harness 按 requestId 去重，重试必须复用同一个值。",
+    "prompt 的 mode 只有 'queue' 与 'steer'；首版只开放 queue。",
+    "prompt 的 content 至少一个非空白 text 或附件，否则在 resolve Agent 之前就被拒。",
+    "create 是唯一直接创建 Agent 的操作之一；省略 agentPreset 由 Harness 决定默认值。",
+    "cancel 只有会话级语义，没有 turn 级原子条件取消。"
+  ],
+  "methods": {
+    "session/create": {
+      "argsKey": "request",
+      "request": {
+        "type": "client-request",
+        "rpcId": "rpc-fixture-0301",
+        "method": "session/create",
+        "payload": {
+          "args": {
+            "request": {
+              "cwd": "/fixture/workspace/demo-project"
+            }
+          }
+        }
+      },
+      "requestWithIdentity": {
+        "type": "client-request",
+        "rpcId": "rpc-fixture-0302",
+        "method": "session/create",
+        "payload": {
+          "args": {
+            "request": {
+              "workspaceId": "workspace-fixture-0001",
+              "cwd": "/fixture/workspace/demo-project",
+              "sessionId": "session-fixture-0009",
+              "agentPreset": "preset-fixture"
+            }
+          }
+        }
+      },
+      "success": {
+        "type": "server-response",
+        "rpcId": "rpc-fixture-0301",
+        "result": {
+          "ok": true,
+          "value": {
+            "sessionId": "session-fixture-0009",
+            "agentPreset": "preset-fixture"
+          }
+        }
+      },
+      "error": {
+        "type": "server-response",
+        "rpcId": "rpc-fixture-0301",
+        "result": {
+          "ok": false,
+          "error": {
+            "code": "session/conflict",
+            "message": "session already exists at a different cwd",
+            "details": {
+              "sessionId": "session-fixture-0009",
+              "requestedCwd": "/fixture/workspace/demo-project",
+              "existingCwd": "/fixture/workspace/other-project"
+            }
+          }
+        }
+      }
+    },
+    "session/selectModel": {
+      "argsKey": "request",
+      "request": {
+        "type": "client-request",
+        "rpcId": "rpc-fixture-0311",
+        "method": "session/selectModel",
+        "payload": {
+          "args": {
+            "request": {
+              "sessionId": "session-fixture-0001",
+              "provider": "provider-fixture-a",
+              "model": "model-fixture-1",
+              "reasoningEffort": "high"
+            }
+          }
+        }
+      },
+      "success": {
+        "type": "server-response",
+        "rpcId": "rpc-fixture-0311",
+        "result": {
+          "ok": true,
+          "value": {
+            "selected": {
+              "provider": "provider-fixture-a",
+              "model": "model-fixture-1",
+              "reasoningEffort": "high"
+            }
+          }
+        }
+      },
+      "error": {
+        "type": "server-response",
+        "rpcId": "rpc-fixture-0311",
+        "result": {
+          "ok": false,
+          "error": {
+            "code": "session/model-unavailable",
+            "message": "requested model route is not routable",
+            "details": {
+              "provider": "provider-fixture-a",
+              "model": "model-fixture-1"
+            }
+          }
+        }
+      },
+      "rules": [
+        "provider 是必填项；不能按模型名推断供应商。",
+        "reasoningEffort 留空表示不改动档位，不是'某个档位'，不得补成猜测值。",
+        "模型不在目录、或档位不在该模型声明的 efforts 里时一律回绝，不回退到默认模型。"
+      ]
+    },
+    "session/prompt": {
+      "argsKey": "request",
+      "request": {
+        "type": "client-request",
+        "rpcId": "rpc-fixture-0321",
+        "method": "session/prompt",
+        "payload": {
+          "args": {
+            "request": {
+              "requestId": "req-fixture-0001",
+              "sessionId": "session-fixture-0001",
+              "mode": "queue",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "fixture prompt text"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "success": {
+        "type": "server-response",
+        "rpcId": "rpc-fixture-0321",
+        "result": {
+          "ok": true,
+          "value": {
+            "accepted": true
+          }
+        }
+      },
+      "error": {
+        "type": "server-response",
+        "rpcId": "rpc-fixture-0321",
+        "result": {
+          "ok": false,
+          "error": {
+            "code": "session/agent-busy",
+            "message": "agent cannot accept this prompt now",
+            "details": {
+              "reason": "fixture reason"
+            }
+          }
+        }
+      },
+      "rules": [
+        "accepted=true 只表示上游已接收，不表示生成完成；响应未知不等于未执行。",
+        "重试必须复用同一个 requestId；上游按 requestId 去重，返回原始接受结果而不重复插入消息。",
+        "不得因超时或重连盲目重发。"
+      ]
+    },
+    "session/cancel": {
+      "argsKey": "request",
+      "request": {
+        "type": "client-request",
+        "rpcId": "rpc-fixture-0331",
+        "method": "session/cancel",
+        "payload": {
+          "args": {
+            "request": {
+              "sessionId": "session-fixture-0001"
+            }
+          }
+        }
+      },
+      "success": {
+        "type": "server-response",
+        "rpcId": "rpc-fixture-0331",
+        "result": {
+          "ok": true,
+          "value": {
+            "accepted": true
+          }
+        }
+      },
+      "error": {
+        "type": "server-response",
+        "rpcId": "rpc-fixture-0331",
+        "result": {
+          "ok": false,
+          "error": {
+            "code": "session/writer-held",
+            "message": "another writer holds this session",
+            "details": {
+              "sessionId": "session-fixture-0001"
+            }
+          }
+        }
+      },
+      "rules": [
+        "只有会话级 cancel；没有原子条件取消。",
+        "中继可加 X-Mimi-Expected-Turn 前置校验，但校验与取消之间仍有竞态，不得宣传为严格 turn 级条件取消。",
+        "session/writer-held 在 0.1.5-rc.2 不存在，错误映射必须容忍未知 code。"
+      ]
+    }
+  }
+}

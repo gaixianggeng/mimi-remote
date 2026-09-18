@@ -1,0 +1,118 @@
+{
+  "$fixture": "harness-native/stream/events-interaction",
+  "provenance": "upstream-source + repo-recorded",
+  "source": "packages/api/gateway/src/stream-protocol.ts#RemoteEventInvocationFrame/RemoteEventReadyFrame/RemoteEventCancellationFrame (blob 142598863)；docs/deepseek-harness-protocol.md 记录的 #492 实测审批与追问帧",
+  "harnessVersion": "0.1.6-alpha.2",
+  "notes": [
+    "$events 是宿主级交互来源，只能经 WS 载体打开，endpoint 字面量是 '$events'，args 是空对象。",
+    "waterfall 帧的 agentId 是必填字段（类型 RemoteEventAgentId，非空）。Harness 的身份设计是 agent 注册表 id 等于会话 id，所以 agentId 就是会话标识。",
+    "因此会话归属是核事实，不是推断：不得再用 callId 反查或'唯一活跃会话'兜底作为主判据。",
+    "ready 帧带 host.home；agentd 不得把该字段下发移动端。"
+  ],
+  "open": {
+    "type": "open",
+    "streamId": "stream-fixture-0002",
+    "endpoint": "$events",
+    "payload": {
+      "args": {}
+    }
+  },
+  "frames": {
+    "ready": {
+      "type": "item",
+      "streamId": "stream-fixture-0002",
+      "value": {
+        "type": "ready",
+        "clientId": "client-fixture-0001",
+        "host": {
+          "home": "/fixture/home"
+        }
+      }
+    },
+    "waterfallApproval": {
+      "type": "item",
+      "streamId": "stream-fixture-0002",
+      "value": {
+        "type": "waterfall",
+        "event": "approval/request",
+        "eventId": "evt-fixture-0001",
+        "agentId": "session-fixture-0001",
+        "request": {
+          "toolName": "write",
+          "callId": "call-fixture-0001",
+          "reason": "fixture approval reason"
+        }
+      }
+    },
+    "waterfallQuestions": {
+      "type": "item",
+      "streamId": "stream-fixture-0002",
+      "value": {
+        "type": "waterfall",
+        "event": "user-questions/request",
+        "eventId": "evt-fixture-0002",
+        "agentId": "session-fixture-0001",
+        "request": {
+          "questions": [
+            {
+              "id": "question-fixture-0001",
+              "question": "fixture question",
+              "options": [
+                {
+                  "label": "option-fixture-a"
+                },
+                {
+                  "label": "option-fixture-b"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "emit": {
+      "type": "item",
+      "streamId": "stream-fixture-0002",
+      "value": {
+        "type": "emit",
+        "event": "fixture/event-name",
+        "args": []
+      }
+    },
+    "cancel": {
+      "type": "item",
+      "streamId": "stream-fixture-0002",
+      "value": {
+        "type": "cancel",
+        "eventId": "evt-fixture-0001"
+      }
+    }
+  },
+  "waterfallEvents": [
+    "approval/request",
+    "user-questions/request"
+  ],
+  "interactionStateMachine": {
+    "states": [
+      "pending",
+      "submitting",
+      "resolved",
+      "externallyCancelled",
+      "responseUnknown"
+    ],
+    "rules": [
+      "只有明确成功或同 eventId 的上游 cancel/终态证据才能移除。",
+      "HTTP 失败不先清掉 UI；响应丢失时不能自动再次放行。",
+      "重连重投同 eventId 更新原卡片，不新增副本。",
+      "旧连接 clientId 不得用于新连接回传。",
+      "已授权且 pending 的请求不能因为用户两分钟没打开页面而被静默标成已解决。",
+      "未知归属事件只可有界等待取证；容量/证据异常必须显式诊断，不能自动回答 unavailable/rejected 来替用户决定。",
+      "运行时在进入前台后建立独立 $events 观察，不依附某个对话页面。"
+    ]
+  },
+  "negativeCases": [
+    "waterfall 帧缺 agentId 时必须按未知归属处理，不得认领唯一活跃会话。",
+    "不得把 callId 反查当作主判据。",
+    "不得把 host.home 透出到移动端或日志。"
+  ]
+}

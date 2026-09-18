@@ -1,0 +1,193 @@
+{
+  "$fixture": "harness-native/stream/durable-events",
+  "provenance": "repo-recorded + upstream-source",
+  "source": "docs/deepseek-harness-protocol.md (repo, PR #499) 记录的 #492 实测事件清单；packages/api/session-controller/src/types.ts#SessionWireEvent (blob f03d8d1b) 冻结信封",
+  "harnessVersion": "0.1.6-alpha.2 (envelope) / 0.1.5-rc.2 (recorded event set)",
+  "notes": [
+    "每条持久事件信封固定为 {type, seq, time, data, ignorable?, sourceEventSeqs?, surfaceOp?}。",
+    "time 是毫秒。记录没带时间时不写字段，而不是补 0。",
+    "turn 与 step 在 Harness 里是数字，不是字符串 id；适配层必须据此合成稳定字符串标识。",
+    "user/message 与注入上下文的记录里没有 turn 字段，归属只能按'记录落在哪个 turn 桶里'顺序解析。"
+  ],
+  "envelope": {
+    "type": "string",
+    "seq": 43,
+    "time": 1789000000000,
+    "data": {},
+    "ignorable": true,
+    "sourceEventSeqs": [],
+    "surfaceOp": "append"
+  },
+  "eventTypes": [
+    "turn/start",
+    "turn/end",
+    "step/start",
+    "step/end",
+    "user/message",
+    "assistant/message",
+    "tool/call",
+    "tool/result",
+    "session/title",
+    "session/title-llm-request",
+    "system/message",
+    "agent/inbox/spliced",
+    "approval/asked",
+    "approval/decided",
+    "request/header",
+    "request/context",
+    "model/selection"
+  ],
+  "samples": {
+    "turn/start": {
+      "type": "turn/start",
+      "seq": 40,
+      "time": 1789000000000,
+      "data": {
+        "turn": 1
+      }
+    },
+    "turn/end": {
+      "type": "turn/end",
+      "seq": 50,
+      "time": 1789000010000,
+      "data": {
+        "turn": 1,
+        "reason": {
+          "kind": "completed"
+        }
+      }
+    },
+    "step/start": {
+      "type": "step/start",
+      "seq": 41,
+      "time": 1789000000100,
+      "data": {
+        "turn": 1,
+        "step": 0
+      }
+    },
+    "user/message": {
+      "type": "user/message",
+      "seq": 41,
+      "time": 1789000000200,
+      "data": {
+        "id": "msg-fixture-0001",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture prompt text"
+          }
+        ],
+        "source": {
+          "kind": "user",
+          "rpcId": "req-fixture-0001"
+        }
+      }
+    },
+    "user/message-injected-context": {
+      "why": "source.kind 不是 'user' 时是 Harness 注入的上下文（agent-instructions、skill-catalog、plugin 等）。它同样是 role='user'，只有 source.kind 能区分。",
+      "type": "user/message",
+      "seq": 39,
+      "time": 1789000000000,
+      "data": {
+        "id": "msg-fixture-0003",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "fixture injected context"
+          }
+        ],
+        "source": {
+          "kind": "agent-instructions"
+        }
+      }
+    },
+    "assistant/message": {
+      "type": "assistant/message",
+      "seq": 43,
+      "time": 1789000001000,
+      "data": {
+        "message": {
+          "id": "msg-fixture-0002",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "fixture response text"
+            }
+          ],
+          "source": {
+            "kind": "assistant"
+          }
+        },
+        "step": 0,
+        "turn": 1,
+        "usage": {
+          "inputTokens": 1,
+          "outputTokens": 2,
+          "totalTokens": 3
+        }
+      }
+    },
+    "tool/call": {
+      "type": "tool/call",
+      "seq": 44,
+      "time": 1789000002000,
+      "data": {
+        "callId": "call-fixture-0001",
+        "name": "fixture_tool",
+        "arguments": "{\"path\":\"/fixture/workspace/demo-project\"}",
+        "step": 0,
+        "turn": 1
+      }
+    },
+    "tool/result": {
+      "type": "tool/result",
+      "seq": 45,
+      "time": 1789000003000,
+      "data": {
+        "message": {
+          "id": "msg-fixture-0004",
+          "role": "tool",
+          "content": [
+            {
+              "type": "text",
+              "text": "fixture tool output"
+            }
+          ]
+        },
+        "meta": {
+          "path": "/fixture/workspace/demo-project/file.txt",
+          "lines": 3,
+          "offset": 1,
+          "totalLines": 3
+        },
+        "step": 0,
+        "turn": 1
+      }
+    },
+    "session/title": {
+      "type": "session/title",
+      "seq": 46,
+      "time": 1789000004000,
+      "data": {
+        "title": "Fixture session title",
+        "source": {
+          "kind": "llm"
+        },
+        "messageSeqs": [
+          41
+        ]
+      }
+    }
+  },
+  "projectionRules": [
+    "结构化工具保持通用工具条目，不把所有工具伪装成 shell command。",
+    "未知非安全事件可保留诊断并跳过展示；已知事件结构错误不能假成功。",
+    "注入上下文与真实用户消息必须投影成同一套 systemContext 形状：{type:'systemContext', id:'c:<记录 id>', text, sourceKind, sourceForm?}，不带 clientId。",
+    "正文为空时整条丢弃，避免留下没有内容的上下文行。",
+    "source.kind 缺失（更早的记录）仍按用户消息处理。"
+  ]
+}

@@ -1,0 +1,156 @@
+{
+  "$fixture": "harness-native/stream/follow-frames",
+  "provenance": "upstream-source",
+  "source": "packages/api/session-controller/src/types.ts#SessionFollowFrame (blob f03d8d1b), src/client/transport.ts (blob f13f24f7 tree)",
+  "harnessVersion": "0.1.6-alpha.2",
+  "notes": [
+    "session/follow 是流方法，只能经 WS 载体打开。",
+    "首帧必须是 snapshot；后续帧是 {type:'event'} 持久事件或 {type:'assistant-stream'} 直播片段。",
+    "snapshot.cursor 是本次订阅的 inclusive 日志切点，也是 session/page 必填的 throughSeq。",
+    "opt-in assistantStream 后 snapshot 必须带 assistantStream 基线，否则客户端必须报 gateway/internal。"
+  ],
+  "request": {
+    "type": "client-request",
+    "rpcId": "rpc-fixture-0601",
+    "method": "session/follow",
+    "payload": {
+      "args": {
+        "request": {
+          "address": {
+            "kind": "session",
+            "sessionId": "session-fixture-0001"
+          },
+          "maxMessages": 50,
+          "assistantStream": true
+        }
+      }
+    }
+  },
+  "frames": {
+    "snapshot": {
+      "type": "item",
+      "streamId": "stream-fixture-0001",
+      "value": {
+        "type": "snapshot",
+        "header": {
+          "version": 3,
+          "id": "session-fixture-0001",
+          "createdAt": 1788900000000,
+          "cwd": "/fixture/workspace/demo-project",
+          "isSeeded": false,
+          "agentPreset": "preset-fixture"
+        },
+        "cursor": 42,
+        "records": [
+          {
+            "type": "event",
+            "event": {
+              "type": "turn/start",
+              "seq": 40,
+              "time": 1789000000000,
+              "data": {
+                "turn": 1
+              }
+            }
+          }
+        ],
+        "hasMore": true,
+        "projections": {
+          "asOfSeq": 42,
+          "values": {
+            "title": "Fixture session title",
+            "sessionListMetadata": {
+              "blank": false,
+              "lastPromptAt": 1789000000000
+            }
+          }
+        },
+        "assistantStream": {
+          "revision": 7,
+          "activeAttempt": {
+            "attemptId": "attempt-fixture-0001",
+            "startedAfterSeq": 40,
+            "turn": 1,
+            "step": 0,
+            "nextIndex": 3,
+            "stream": []
+          }
+        }
+      }
+    },
+    "snapshotWithoutAssistantBaseline": {
+      "why": "opt-in 了 assistantStream 却缺基线，客户端必须报错而不是静默降级。",
+      "type": "item",
+      "streamId": "stream-fixture-0001",
+      "value": {
+        "type": "snapshot",
+        "header": {
+          "version": 3,
+          "id": "session-fixture-0001",
+          "createdAt": 1788900000000,
+          "isSeeded": false
+        },
+        "cursor": 42,
+        "records": [],
+        "hasMore": false,
+        "projections": {
+          "asOfSeq": 42,
+          "values": {}
+        }
+      },
+      "expectedError": {
+        "code": "gateway/internal",
+        "message": "session assistant stream omitted its opted-in opening baseline"
+      }
+    },
+    "durableEvent": {
+      "type": "item",
+      "streamId": "stream-fixture-0001",
+      "value": {
+        "type": "event",
+        "event": {
+          "type": "assistant/message",
+          "seq": 43,
+          "time": 1789000001000,
+          "data": {
+            "message": {
+              "id": "msg-fixture-0002",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "fixture response text"
+                }
+              ]
+            },
+            "step": 0,
+            "turn": 1
+          }
+        }
+      }
+    },
+    "assistantStream": {
+      "type": "item",
+      "streamId": "stream-fixture-0001",
+      "value": {
+        "type": "assistant-stream",
+        "frame": {
+          "type": "chunk",
+          "attemptId": "attempt-fixture-0001",
+          "revision": 8,
+          "index": 3,
+          "time": 1789000001200,
+          "chunk": {
+            "type": "text-delta",
+            "text": "fixture"
+          }
+        }
+      }
+    }
+  },
+  "orderingRules": [
+    "先开 follow 拿 opening snapshot，再按它的 cursor 读历史；snapshot 建立期间缓冲该代次 live 帧，按原生顺序交接，避免历史与直播间留缝。",
+    "throughSeq 属于这一代 snapshot，不能混用上一代游标。",
+    "durable 记录以 (host, runtime, session, native seq) 去重，保留原生消息/工具身份。"
+  ]
+}

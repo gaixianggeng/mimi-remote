@@ -1,0 +1,86 @@
+{
+  "$fixture": "harness-native/rpc/session-search",
+  "provenance": "upstream-source",
+  "source": "packages/api/session-controller/src/list.ts#search (blob 4aa369c3), types.ts (blob f03d8d1b)",
+  "harnessVersion": "0.1.6-alpha.2",
+  "notes": [
+    "search 的 wire 参数名是 'request'（无下划线），与 list 不同。",
+    "依赖部署侧的 sessionQuery provider；未挂载时返回 gateway/internal，必须按 code 降级而不是按文案。",
+    "上限：20 条结果、snippet 240 个 Unicode 码点、query 500 个 UTF-16 码元、query 不得含 NUL。",
+    "空 query 与超长 query 都是 gateway/bad-request，在 provider 调用之前就被拒。"
+  ],
+  "cases": {
+    "request": {
+      "type": "client-request",
+      "rpcId": "rpc-fixture-0101",
+      "method": "session/search",
+      "payload": {
+        "args": {
+          "request": {
+            "query": "fixture query"
+          }
+        }
+      }
+    },
+    "success": {
+      "type": "server-response",
+      "rpcId": "rpc-fixture-0101",
+      "result": {
+        "ok": true,
+        "value": {
+          "items": [
+            {
+              "sessionId": "session-fixture-0001",
+              "snippet": "fixture snippet text"
+            }
+          ],
+          "hasMore": false
+        }
+      }
+    },
+    "error": {
+      "type": "server-response",
+      "rpcId": "rpc-fixture-0101",
+      "result": {
+        "ok": false,
+        "error": {
+          "code": "gateway/internal",
+          "message": "session search is unavailable: this deployment does not mount @deepseek-ai/dsh-session-query",
+          "details": {}
+        }
+      }
+    },
+    "errorAborted": {
+      "type": "server-response",
+      "rpcId": "rpc-fixture-0101",
+      "result": {
+        "ok": false,
+        "error": {
+          "code": "gateway/cancelled",
+          "message": "session search was aborted",
+          "details": {}
+        }
+      }
+    },
+    "negativeEmptyQuery": {
+      "request": {
+        "type": "client-request",
+        "rpcId": "rpc-fixture-0102",
+        "method": "session/search",
+        "payload": {
+          "args": {
+            "request": {
+              "query": "   "
+            }
+          }
+        }
+      },
+      "expectedErrorCode": "gateway/bad-request",
+      "expectedMessage": "session search query must not be empty"
+    },
+    "degradationRule": {
+      "rule": "收到 gateway/internal 且 message 表明检索不可用时，把 search 标记为能力不可用并隐藏入口，不当作致命错误。",
+      "forbidden": "不得按 message 文案匹配版本差异；只认 code + 一次性的可用性探测结果。"
+    }
+  }
+}

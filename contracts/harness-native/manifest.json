@@ -1,0 +1,204 @@
+{
+  "contract": "harness-native",
+  "version": 1,
+  "status": "frozen-pending-live-capture",
+  "frozenBy": "H00",
+  "frozenAt": "2026-09-19",
+  "baselines": {
+    "mimiRepo": {
+      "pr": 499,
+      "issue": 498,
+      "branch": "codex/gh-498-harness-runtime",
+      "head": "7f43f594df3920598e6a7fa4e84f49ab3c62d87c",
+      "base": "3a46e00cfa08b2c0af27ea485bf76ac296a49a64",
+      "note": "H01-H13 的实施基线。本地 main 工作树位于 base，不含本 PR 的 34 个提交。"
+    },
+    "harnessUpstream": {
+      "repo": "https://github.com/deepseek-ai/deepseek-harness",
+      "verifiedCommit": "ddefc45fbc7f8e46dd73185e68295696d1297887",
+      "verifiedTag": "dsh-v0.1.6-alpha.2",
+      "verifiedPackageVersion": "0.1.6-alpha.2",
+      "previouslyRecordedVersion": "0.1.5-rc.2",
+      "previouslyRecordedCommit": "fb2c4b9e698e30edb738bca4cf0618587db7d203",
+      "previouslyRecordedTag": "dsh-v0.1.5-rc.2",
+      "npmPublished": true
+    },
+    "userInstalledHarness": {
+      "version": null,
+      "status": "unknown",
+      "reason": "本机未安装、未运行任何 Harness。无二进制、无配置目录、无监听端口。用户手机上的构建版本同样未核对。",
+      "consequence": "本契约中所有 wire 事实均为上游源码级冻结，未经本机安装版本实跑复核。"
+    },
+    "userInstalledAgentd": {
+      "distribution": "released macOS app bundle, bundled agentd",
+      "appVersion": "0.1.0",
+      "appBuild": 1,
+      "runtimeType": "codex_app_server",
+      "harnessSupport": false,
+      "harnessStrings": 0,
+      "note": "发行版 Mac App 内置 agentd，二进制内不含任何 harness/deepseek 符号。"
+    }
+  },
+  "provenance": {
+    "levels": ["live-capture", "upstream-source", "repo-recorded"],
+    "default": "upstream-source",
+    "liveCapture": {
+      "status": "blocked",
+      "blocker": "本机无可运行的 Harness 安装；在隔离目录内 npm/pnpm 安装均被沙箱拒绝（CODEBUDDY_BROKER_DENY / SIGKILL），未取得真实帧。",
+      "unblock": "由负责人在具备 Harness 运行条件的环境执行 scripts/harness-native-probe.mjs，或提供正在运行的 Harness origin 与启动 token 供只读探测。"
+    }
+  },
+  "upstreamBlobs": {
+    "ddefc45fbc7f8e46dd73185e68295696d1297887": {
+      "packages/api/session-controller/README.md": "f67355be0cb9737ebc67bf589528878bccc26e6d",
+      "packages/api/session-controller/src/index.ts": "f13f24f7dc94f78451d93ecd02150aa45518aca6",
+      "packages/api/session-controller/src/types.ts": "f03d8d1b656653ff4c85e273b77d721847052842",
+      "packages/api/session-controller/src/control.ts": "3fb8d0032e9a11168a995ef8450cbb76f6b6b9d1",
+      "packages/api/session-controller/src/list.ts": "4aa369c378f32d8d747510bd864bbbe96a09ab04",
+      "packages/api/gateway/src/stream-protocol.ts": "142598863ec569193504373b5c6137e76e84b6fa",
+      "packages/api/gateway/src/remote-error-codes.ts": "22f94749f52eb816debaaf74b9320ed7958f4319",
+      "packages/client/connection/src/rpc-host.ts": "d74734e1326bd84553aac811218070cd9a7c6da3",
+      "packages/client/connection/src/rpc-schema.ts": "dc919a8187f45670abcdbfefed4342faf5b9036a",
+      "packages/client/connection/src/rpc.ts": "9474d72c36e73888ef2351fe7bd602e03d7c8b7e",
+      "packages/typert/generator/src/analyzer.ts": "eebf7fbc29a45fcc3dcdb6df7a84e9c2b22daf1c"
+    },
+    "fb2c4b9e698e30edb738bca4cf0618587db7d203": {
+      "packages/api/session-controller/src/types.ts": "60f7a93e56a0f31b73cad8f9626ffb43a2cb90f6",
+      "packages/api/session-controller/src/control.ts": "9bdd5a05bff21864b963fa408963d2fa82be8c8f"
+    }
+  },
+  "wire": {
+    "http": {
+      "rpcRoute": "POST /api/<method>",
+      "streamRoute": "WS /api/remote.mux",
+      "auth": {
+        "handshake": "GET /?token=<process-token>",
+        "handshakeStatus": 303,
+        "credential": "Set-Cookie bound to hostname+port",
+        "authorizationHeaderAccepted": false,
+        "unauthenticatedStatus": 401
+      },
+      "requestEnvelope": {
+        "type": "client-request",
+        "rpcId": "string",
+        "method": "string (must equal URL endpoint)",
+        "payload": "unknown; Typert Remote uses {args: object}"
+      },
+      "responseEnvelope": {
+        "type": "server-response",
+        "rpcId": "string",
+        "result": "{ok:true,value} | {ok:false,error:{code,message,details}}"
+      },
+      "statusCodes": {
+        "businessError": 200,
+        "notFound": 404,
+        "nonJsonBody": 400,
+        "wrongContentType": 415,
+        "handlerThrew": 500
+      },
+      "endpointSegmentPattern": "^[A-Za-z0-9_$.-]+$",
+      "contentTypeRequired": "application/json"
+    },
+    "stream": {
+      "clientMessage": {
+        "open": {"type": "open", "streamId": "string", "endpoint": "string", "payload": "object"},
+        "cancel": {"type": "cancel", "streamId": "string"}
+      },
+      "serverMessage": {
+        "item": {"type": "item", "streamId": "string", "value": "unknown"},
+        "error": {"type": "error", "streamId": "string", "error": {"code": "string", "message": "string", "details": "object"}},
+        "end": {"type": "end", "streamId": "string"}
+      },
+      "internalEndpoints": {"events": "$events", "eventsResult": "$events/result"}
+    },
+    "methods": [
+      {"method": "session/list", "argsKey": "_request", "kind": "rpc", "request": "SessionListRequest", "value": "SessionListValue"},
+      {"method": "session/search", "argsKey": "request", "kind": "rpc", "request": "SessionSearchRequest", "value": "SessionSearchValue"},
+      {"method": "session/create", "argsKey": "request", "kind": "rpc", "request": "SessionCreateRequest", "value": "SessionCreateValue"},
+      {"method": "session/selectModel", "argsKey": "request", "kind": "rpc", "request": "SessionSelectModelRequest", "value": "SessionSelectModelValue"},
+      {"method": "session/modelCatalog", "argsKey": null, "kind": "rpc", "request": null, "value": "ModelCatalog"},
+      {"method": "session/page", "argsKey": "request", "kind": "rpc", "request": "SessionPageRequest", "value": "SessionPage"},
+      {"method": "session/prompt", "argsKey": "request", "kind": "rpc", "request": "SessionPromptRequest", "value": "SessionPromptValue"},
+      {"method": "session/cancel", "argsKey": "request", "kind": "rpc", "request": "SessionCancelRequest", "value": "SessionCancelValue"},
+      {"method": "session/follow", "argsKey": "request", "kind": "stream", "request": "SessionFollowRequest", "value": "SessionFollowFrame"},
+      {"method": "session/control", "argsKey": null, "kind": "stream", "request": null, "value": "SessionControlFrame"},
+      {"method": "$events", "argsKey": null, "kind": "stream", "request": null, "value": "RemoteEventDownlinkFrame"},
+      {"method": "$events/result", "argsKey": null, "kind": "rpc", "request": "RemoteEventResult", "value": null}
+    ]
+  },
+  "versionSensitivity": [
+    {
+      "area": "session/control baseline",
+      "at_0_1_5_rc_2": "SessionControlBaseline = {queues, jobs, projections}; frame union includes {type:'queue', sessionId, items:SessionQueuedItem[]}",
+      "at_0_1_6_alpha_2": "SessionControlBaseline = {jobs, projections}; 'queue' frame and SessionQueuedItem removed",
+      "impact": "控制流帧结构随版本变化，不能跨版本复用同一个解析器。"
+    },
+    {
+      "area": "session/search unavailable message",
+      "at_0_1_5_rc_2": "未启用索引时 gateway/internal，文案为 'session search is disabled: ... openAt \"never\"'",
+      "at_0_1_6_alpha_2": "未挂载 sessionQuery provider 时 gateway/internal，文案为 'session search is unavailable: this deployment does not mount @deepseek-ai/dsh-session-query'",
+      "impact": "降级判断必须按 code 而不是按文案。"
+    },
+    {
+      "area": "error vocabulary",
+      "at_0_1_5_rc_2": "无 session/writer-held",
+      "at_0_1_6_alpha_2": "新增 session/writer-held {sessionId}",
+      "impact": "错误映射表需要按版本容忍未知 code。"
+    },
+    {
+      "area": "session/updateQueue",
+      "at_0_1_5_rc_2": "同步，仅作用于 live Agent",
+      "at_0_1_6_alpha_2": "返回 Promise，会先 resume 冷会话",
+      "impact": "语义变化，非 wire 形状变化。"
+    }
+  ],
+  "recovery": {
+    "followBeforePage": true,
+    "pageThroughSeqSource": "follow opening snapshot cursor",
+    "assistantStreamRevision": "contiguous; expected = previous + 1; gap requires reopen",
+    "assistantStreamBaseline": "snapshot.assistantStream {revision, activeAttempt?{attemptId,startedAfterSeq,turn,step,nextIndex,stream}}",
+    "assistantStreamOmittedWhenOptedIn": "gateway/internal 'session assistant stream omitted its opted-in opening baseline'",
+    "controlBaselineScope": "process-local; cannot reconstruct jobs after Host restart",
+    "directoryInvalidation": {
+      "available": "partial",
+      "detail": "session/control 广播 projection 变化与 jobs 变化；未订阅 api-session/added|removed，新建会话不保证产生控制帧。",
+      "fallbackRequired": true,
+      "fallback": "仅列表可见且 App 前台时，每 5 秒最多一次合并后的 session/list 请求。"
+    }
+  },
+  "fixtures": {
+    "root": "contracts/harness-native/fixtures",
+    "desensitization": "全部 cwd/sessionId/eventId/clientId/attemptId/rpcId 均为 fixture 前缀的虚构值，不含真实主机、路径、会话或凭据。",
+    "files": [
+      "fixtures/rpc/session-list.json",
+      "fixtures/rpc/session-search.json",
+      "fixtures/rpc/session-model-catalog.json",
+      "fixtures/rpc/session-create.json",
+      "fixtures/rpc/session-select-model.json",
+      "fixtures/rpc/session-prompt.json",
+      "fixtures/rpc/session-cancel.json",
+      "fixtures/rpc/session-page.json",
+      "fixtures/rpc/events-result.json",
+      "fixtures/rpc/envelope-errors.json",
+      "fixtures/stream/mux-carrier.json",
+      "fixtures/stream/follow-frames.json",
+      "fixtures/stream/assistant-stream.json",
+      "fixtures/stream/durable-events.json",
+      "fixtures/stream/events-interaction.json",
+      "fixtures/stream/control-frames.json",
+      "fixtures/recovery/recovery-semantics.json"
+    ]
+  },
+  "negativeCasesRequired": [
+    "session/list 用 'request' 而非 '_request' 传参必须被上游拒绝（gateway/arguments-invalid）",
+    "session/modelCatalog 传任何参数必须被拒绝",
+    "URL endpoint 与 body.method 不一致必须被拒绝（gateway/bad-request）",
+    "endpoint 含空段或 '.'/'..' 必须 404",
+    "无 Cookie 的 /api/* 必须 401",
+    "错误对象必须读 details 而非 data",
+    "WS 帧 type 为 error/end 时不得当成空 item 静默丢弃",
+    "assistant-stream revision 跳号必须重开 follow",
+    "opt-in assistantStream 却缺 opening baseline 必须报 gateway/internal",
+    "waterfall 帧缺 agentId 时不得认领唯一活跃会话"
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "$fixture": "harness-native/recovery/recovery-semantics",
+  "provenance": "upstream-source + repo-recorded",
+  "source": "packages/api/session-controller/src/client/transport.ts (blob f13f24f7 tree), src/control.ts (blob 3fb8d003), packages/api/session-controller/README.md (blob f67355be)",
+  "harnessVersion": "0.1.6-alpha.2",
+  "notes": [
+    "本文件冻结恢复语义与连接代次规则。退避参数是方案拟定值，标注为待实测校准，不得当作 Harness 保证。",
+    "每个 host/runtime 只有一个连接生命周期负责人。"
+  ],
+  "connectionGeneration": {
+    "owner": "HarnessSessionRuntime（每 host 一个）",
+    "invalidatedBy": [
+      "物理断线后的重连",
+      "Host 重启",
+      "撤权",
+      "通道/认证/事件 ready 失败"
+    ],
+    "rules": [
+      "每个回调携带 host/runtime/connection generation；会话相关回调还校验 session ID。",
+      "旧代次 HTTP、WS、Task 回调不能覆盖新主机或新连接。",
+      "宿主重启后重新建立代次，不能沿用旧 revision、clientId 或 pending 表。",
+      "页面释放不能销毁仍在进行的提交结果处理器。"
+    ]
+  },
+  "reconnectSequence": [
+    "确认通道/认证/事件 ready（$events ready 帧给出新的 clientId）。",
+    "目录重新读取（session/list）。",
+    "活会话重新 follow：先拿 opening snapshot，再按 cursor 对账历史。",
+    "pending 交互以 Harness 重投（同 eventId）或撤销（同 eventId 的 cancel）恢复。",
+    "控制流每代完整 baseline 仅替换它负责的进程态；不能用旧 baseline 覆盖新列表或 durable 状态。"
+  ],
+  "halfOpenDetection": {
+    "rule": "连接不能'看起来正常却永远无帧'。",
+    "mechanism": "心跳用传输层确认（WS ping/pong 与读期限），不要求模型持续产出。",
+    "failureTransition": "检测到半开即转为明确的 reconnecting/failed，不能以'模型暂时没输出'当作网络失活。",
+    "repoReference": "internal/harnessclient/events.go 已有 pingLoop + SetReadDeadline + PongHandler 的读期限续期实现。"
+  },
+  "backoff": {
+    "status": "proposed-not-measured",
+    "base": "1s",
+    "factor": 2,
+    "max": "30s",
+    "jitter": "full jitter，取值 [0, current)",
+    "backgroundBehavior": "后台暂停退避，进入前台立即重试一次。",
+    "stopConditions": [
+      "权限失败不重试",
+      "结构不兼容不重试",
+      "数据连续性无法修复时报 continuity error，不无休止重试"
+    ],
+    "onlyPhysicalDisconnectReconnects": true
+  },
+  "assistantStreamRecovery": {
+    "revisionGap": "重开 follow",
+    "missingBaselineWhenOptedIn": {
+      "code": "gateway/internal",
+      "message": "session assistant stream omitted its opted-in opening baseline"
+    },
+    "unknownAttemptFrames": "控制器错过 start 时忽略未知 attempt 的帧，但照常发布其 durable settlement",
+    "replacementAgentRevisionRestart": "替换 Agent 可能把帧 revision 从 1 重新开始"
+  },
+  "durableGap": {
+    "rule": "只做有界补齐；修不好报 continuity error。",
+    "forbidden": "一边重复 reopen 一边伪装实时。",
+    "pageTermination": [
+      "空页终止",
+      "重复页终止",
+      "无进展终止",
+      "越界游标明确错误"
+    ]
+  },
+  "hostRestart": {
+    "generationInvalidated": true,
+    "controlBaselineUsable": false,
+    "controlBaselineReason": "控制基线表示进程内状态，Host 重启后无法重建 jobs。",
+    "pendingInteractions": "不继承过期 pending；由新的 $events 代次重建。",
+    "sessionAndProjection": "真实会话与投影从持久层重建。"
+  },
+  "resourceLimits": {
+    "queueFull": "返回可恢复的明确错误，不得默默丢正文或驱逐正在观察的会话。",
+    "subscriptionQuotaFull": "返回可恢复的明确错误。",
+    "disconnect": "一次性释放资源。",
+    "revocation": "关闭受影响连接。",
+    "errors": "保留可诊断 code/category，脱敏私密文案。"
+  },
+  "appLifecycle": {
+    "background": "不承诺实时 UI 更新；后台不误取消 Agent。",
+    "foregroundReturn": "自动恢复列表/当前会话/pending。",
+    "noPushSystem": true
+  }
+}
