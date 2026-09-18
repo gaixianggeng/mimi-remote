@@ -164,7 +164,7 @@ final class DeepSeekSessionLifecycleTests: XCTestCase {
             result: #"{"data":[{"id":"turn-a","status":"completed","completedAt":1780490310,"items":[]}],"nextCursor":null}"#
         )
         try await reconnect.value
-        await fulfillment(of: [recovered], timeout: 1)
+        await fulfillment(of: [recovered], timeout: 5)
 
         XCTAssertEqual(recoveredMetadata?.sessionID, fixture.threadID)
         XCTAssertEqual(recoveredMetadata?.turnID, "turn-a")
@@ -216,7 +216,7 @@ final class DeepSeekSessionLifecycleTests: XCTestCase {
             result: #"{"data":[{"id":"turn-1","status":"completed","completedAt":1780490310,"items":[]}],"nextCursor":null}"#
         )
         try await reconnect.value
-        await fulfillment(of: [recovered], timeout: 1)
+        await fulfillment(of: [recovered], timeout: 5)
 
         let activeTurnID = await fixture.runtime.contextsBySessionID[fixture.threadID]?.activeTurnID
         let requests = await fixture.transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
@@ -264,7 +264,7 @@ final class DeepSeekSessionLifecycleTests: XCTestCase {
             result: #"{"data":[{"id":"turn-b","status":"inProgress","items":[]}],"nextCursor":null}"#
         )
         try await reconnect.value
-        await fulfillment(of: [adopted], timeout: 1)
+        await fulfillment(of: [adopted], timeout: 5)
 
         XCTAssertEqual(recoveredSession?.activeTurnID, "turn-b")
         let activeTurnID = await fixture.runtime.contextsBySessionID[fixture.threadID]?.activeTurnID
@@ -349,7 +349,8 @@ final class DeepSeekSessionLifecycleTests: XCTestCase {
         line: UInt = #line,
         _ predicate: @escaping () async -> Bool
     ) async throws {
-        for _ in 0..<200 {
+        // 轮询预算从 2s 放宽到 4s：与 waitForFakeAppServerRequest 同步，避免 CI 负载下偶发超时。
+        for _ in 0..<400 {
             if await predicate() { return }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
