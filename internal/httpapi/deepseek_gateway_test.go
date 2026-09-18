@@ -401,7 +401,7 @@ func TestDeepSeekUserMessageItemEchoesClientID(t *testing.T) {
 // 注入的上下文在历史里同样不能进用户气泡，否则刷新历史会把它重新渲染成用户消息。
 func TestDeepSeekInjectedContextHistoryItemStaysSystemSide(t *testing.T) {
 	item, ok := deepSeekUserMessageItem(json.RawMessage(
-		`{"id":"ctx-1","content":[{"type":"text","text":"<system-reminder>\n加载 AGENTS.md"}],` +
+		`{"id":"ctx-1","content":[{"type":"text","text":"<system-reminder>\n加载 AGENTS.md"}],`+
 			`"source":{"kind":"agent-instructions","form":"instructions","rpcId":"rpc-9"}}`), 1_789_726_449_254)
 	if !ok {
 		t.Fatal("带正文的注入上下文应能投影")
