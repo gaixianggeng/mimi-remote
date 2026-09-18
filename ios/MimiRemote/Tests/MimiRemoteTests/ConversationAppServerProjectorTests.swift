@@ -171,7 +171,7 @@ extension ConversationDataFlowTests {
     }
 
     // 历史分页与实时链路必须给出同一个 system 侧语义；真实用户消息不受分流影响。
-    func testHarnessInjectedContextHistoryStaysOnSystemSide() throws {
+    func testHarnessInjectedContextHistoryStaysOnSystemSide() async throws {
         let runtime = CodexAppServerSessionRuntime(
             endpoint: "http://127.0.0.1:8787",
             token: "test",
@@ -210,7 +210,7 @@ extension ConversationDataFlowTests {
             ]),
         ]
 
-        let messages = runtime.historyMessages(
+        let messages = await runtime.historyMessages(
             from: thread,
             sessionID: "thr_context_history",
             snapshotReadAt: Date(timeIntervalSince1970: 1_789_716_000)
