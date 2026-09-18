@@ -140,4 +140,88 @@ extension ConversationDataFlowTests {
             XCTAssertEqual(session.title, expectedTitle)
         }
     }
+
+    // DSH 注入的上下文（工作区指令/技能目录/运行时快照）在 Harness 里同样是 role="user"，
+    // 但必须落在 system 侧折叠行，不能复用 userMessage 语义渲染成右侧用户气泡。
+    func testHarnessInjectedContextProjectsAsSystemActivity() throws {
+        var projector = CodexAppServerEventProjector()
+
+        let injected = try decodeAppServerNotification(
+            #"{"method":"item/completed","params":{"threadId":"thr_context","turnId":"turn_context","item":{"type":"systemContext","id":"ctx_instructions","text":"<system-reminder>\n加载 AGENTS.md","sourceKind":"agent-instructions","sourceForm":"instructions"}}}"#
+        )
+        guard case .processItemCompleted(let message, _, _) = try XCTUnwrap(projector.project(injected)) else {
+            return XCTFail("注入上下文应投影为可见过程行")
+        }
+        XCTAssertEqual(message.role, .system)
+        XCTAssertNotEqual(message.role, .user)
+        XCTAssertEqual(message.kind, .context)
+        XCTAssertEqual(message.activityPayload?.category, .context)
+        XCTAssertEqual(message.activityPayload?.displayTitle, L10n.text("ui.context_workspace_instructions"))
+        XCTAssertEqual(message.content, "<system-reminder>\n加载 AGENTS.md")
+
+        // 拿不到明确来源时回退通用文案，不把内部 kind 枚举名直接暴露给用户。
+        let unknownSource = try decodeAppServerNotification(
+            #"{"method":"item/completed","params":{"threadId":"thr_context","turnId":"turn_context","item":{"type":"systemContext","id":"ctx_future","text":"未来注入内容","sourceKind":"future-kind"}}}"#
+        )
+        guard case .processItemCompleted(let fallback, _, _) = try XCTUnwrap(projector.project(unknownSource)) else {
+            return XCTFail("未知来源的注入上下文仍应可见")
+        }
+        XCTAssertEqual(fallback.activityPayload?.displayTitle, L10n.text("ui.context"))
+        XCTAssertEqual(fallback.content, "未来注入内容")
+    }
+
+    // 历史分页与实时链路必须给出同一个 system 侧语义；真实用户消息不受分流影响。
+    func testHarnessInjectedContextHistoryStaysOnSystemSide() throws {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test",
+            runtimeProvider: "deepseek"
+        )
+        let thread: [String: CodexAppServerJSONValue] = [
+            "id": .string("thr_context_history"),
+            "turns": .array([
+                .object([
+                    "id": .string("turn_context"),
+                    "status": .string("completed"),
+                    "items": .array([
+                        .object([
+                            "type": .string("systemContext"),
+                            "id": .string("ctx_instructions"),
+                            "text": .string("<system-reminder>\n加载 AGENTS.md"),
+                            "sourceKind": .string("agent-instructions"),
+                            "sourceForm": .string("instructions"),
+                        ]),
+                        .object([
+                            "type": .string("userMessage"),
+                            "id": .string("user_real"),
+                            "content": .array([
+                                .object(["type": .string("text"), "text": .string("继续推进")])
+                            ]),
+                        ]),
+                        .object([
+                            "type": .string("systemContext"),
+                            "id": .string("ctx_snapshot"),
+                            "text": .string("Current runtime context. 该快照取代更早的运行时快照。"),
+                            "sourceKind": .string("plugin"),
+                            "sourceForm": .string("snapshot"),
+                        ]),
+                    ]),
+                ])
+            ]),
+        ]
+
+        let messages = runtime.historyMessages(
+            from: thread,
+            sessionID: "thr_context_history",
+            snapshotReadAt: Date(timeIntervalSince1970: 1_789_716_000)
+        )
+
+        XCTAssertEqual(messages.map(\.role), ["system", "user", "system"])
+        XCTAssertEqual(messages.map(\.kind), [.context, .message, .context])
+        XCTAssertEqual(messages[0].activityPayload?.displayTitle, L10n.text("ui.context_workspace_instructions"))
+        XCTAssertEqual(messages[2].activityPayload?.displayTitle, L10n.text("ui.context_runtime_context"))
+        XCTAssertEqual(messages[1].content, "继续推进")
+        XCTAssertNil(messages[1].userDelivery)
+        XCTAssertNil(messages[1].activityPayload)
+    }
 }

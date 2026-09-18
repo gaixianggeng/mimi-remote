@@ -398,6 +398,45 @@ func TestDeepSeekUserMessageItemEchoesClientID(t *testing.T) {
 	}
 }
 
+// 注入的上下文在历史里同样不能进用户气泡，否则刷新历史会把它重新渲染成用户消息。
+func TestDeepSeekInjectedContextHistoryItemStaysSystemSide(t *testing.T) {
+	item, ok := deepSeekUserMessageItem(json.RawMessage(
+		`{"id":"ctx-1","content":[{"type":"text","text":"<system-reminder>\n加载 AGENTS.md"}],` +
+			`"source":{"kind":"agent-instructions","form":"instructions","rpcId":"rpc-9"}}`))
+	if !ok {
+		t.Fatal("带正文的注入上下文应能投影")
+	}
+	if item["type"] != deepSeekItemSystemContext || item["id"] != "c:ctx-1" {
+		t.Fatalf("注入上下文历史 item 不符：%+v", item)
+	}
+	if item["sourceKind"] != "agent-instructions" || item["sourceForm"] != "instructions" {
+		t.Fatalf("source 元数据未透传：%+v", item)
+	}
+	if item["text"] != "<system-reminder>\n加载 AGENTS.md" {
+		t.Fatalf("注入上下文应使用 text 形状：%+v", item)
+	}
+	// 注入记录不对应乐观提交的用户消息，不能带 clientId 参与对账。
+	if _, ok := item["clientId"]; ok {
+		t.Fatalf("注入上下文不应带 clientId：%+v", item)
+	}
+	if _, ok := item["content"]; ok {
+		t.Fatalf("注入上下文不应使用用户消息的 content 形状：%+v", item)
+	}
+
+	// 真实用户消息（source.kind="user"）仍走用户气泡，不能被分流规则误伤。
+	user, ok := deepSeekUserMessageItem(json.RawMessage(
+		`{"id":"msg-3","content":[{"type":"text","text":"继续推进"}],"source":{"kind":"user","rpcId":"rpc-10"}}`))
+	if !ok || user["type"] != deepSeekItemUserMessage || user["clientId"] != "rpc-10" {
+		t.Fatalf("真实用户消息不应被分流：%+v", user)
+	}
+
+	// 没有正文的注入记录不能落成空上下文行。
+	if _, ok := deepSeekUserMessageItem(json.RawMessage(
+		`{"id":"ctx-2","content":[],"source":{"kind":"skill-catalog"}}`)); ok {
+		t.Fatal("没有正文的注入上下文不应被投影")
+	}
+}
+
 // 模型目录只转发 Harness 自己声明的模型与推理档位，不替用户推断供应商。
 func TestDeepSeekModelListWireFlattensGroupsAndReasoning(t *testing.T) {
 	rows := deepSeekModelListWire(harnessclient.ModelCatalogResult{

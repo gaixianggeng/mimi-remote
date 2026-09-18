@@ -77,7 +77,7 @@ struct ConversationTimelineItemBuilder {
     private static func isProcessMessage(_ message: ConversationMessage) -> Bool {
         guard message.role != .user else { return false }
         switch message.kind {
-        case .commentary, .plan, .reasoningSummary, .commandSummary, .fileChangeSummary:
+        case .commentary, .plan, .reasoningSummary, .commandSummary, .fileChangeSummary, .context:
             return true
         case .approval, .userInput:
             return isResolvedInteractionMessage(message)
@@ -89,7 +89,7 @@ struct ConversationTimelineItemBuilder {
 
     private static func isActivityMessage(_ message: ConversationMessage) -> Bool {
         switch message.kind {
-        case .reasoningSummary, .commandSummary, .fileChangeSummary: true
+        case .reasoningSummary, .commandSummary, .fileChangeSummary, .context: true
         default: message.activityPayload != nil
         }
     }

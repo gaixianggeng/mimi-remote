@@ -74,6 +74,10 @@ const deepSeekItemUserMessage = "userMessage"
 
 const deepSeekItemAgentMessage = "agentMessage"
 
+// deepSeekItemSystemContext 是 Harness 注入上下文（工作区指令/技能目录/运行时快照等）在
+// Mimi 端的 item 类型：它不能落在用户气泡里，而应作为 system 侧的折叠上下文呈现。
+const deepSeekItemSystemContext = "systemContext"
+
 // deepSeekTurnData 是 turn/start 与 turn/end 的 data。
 type deepSeekTurnData struct {
 	Turn   int64 `json:"turn"`
@@ -100,6 +104,14 @@ type deepSeekContentBlock struct {
 	} `json:"content,omitempty"`
 }
 
+// deepSeekMessageSource 是 user/message 的 source：kind 区分真实用户消息与 Harness
+// 注入的上下文（工作区指令/技能目录/运行时快照等），rpcId 是 prompt 的 requestId。
+type deepSeekMessageSource struct {
+	Kind  string `json:"kind"`
+	Form  string `json:"form"`
+	RPCID string `json:"rpcId"`
+}
+
 // deepSeekMessageData 是 user/message 与 assistant/message 的 data。
 type deepSeekMessageData struct {
 	Message *struct {
@@ -110,12 +122,9 @@ type deepSeekMessageData struct {
 	// user/message 把消息字段直接放在 data 上。
 	ID      string                 `json:"id,omitempty"`
 	Content []deepSeekContentBlock `json:"content,omitempty"`
-	Source  *struct {
-		Kind  string `json:"kind"`
-		RPCID string `json:"rpcId"`
-	} `json:"source,omitempty"`
-	Turn int64 `json:"turn,omitempty"`
-	Step int64 `json:"step,omitempty"`
+	Source  *deepSeekMessageSource `json:"source,omitempty"`
+	Turn    int64                  `json:"turn,omitempty"`
+	Step    int64                  `json:"step,omitempty"`
 }
 
 // deepSeekTitleData 是 session/title 的 data。
@@ -206,6 +215,23 @@ func translateDeepSeekDurableEvent(threadID string, event harnessclient.SessionW
 		if json.Unmarshal(event.Data, &data) != nil || strings.TrimSpace(data.ID) == "" {
 			return nil
 		}
+		// Harness 里注入的上下文同样以 role="user" 存储，只有 source.kind 能把它与真实
+		// 用户消息区分开。这类内容不能进用户气泡：单独翻译成 systemContext，交给客户端
+		// 按 system 侧的折叠上下文渲染。历史路径（deepSeekUserMessageItem）必须同样分流。
+		if sourceKind := deepSeekInjectedSourceKind(data.Source); sourceKind != "" {
+			item, ok := deepSeekSystemContextItem(data, sourceKind)
+			if !ok {
+				// 没有正文的注入记录没有可展示内容，落成空行反而会被当成故障。
+				return nil
+			}
+			return []deepSeekNotification{{
+				Method: "item/completed",
+				Params: map[string]any{
+					"threadId": threadID,
+					"item":     item,
+				},
+			}}
+		}
 		// source.rpcId 是 prompt 的 requestId；回显它客户端才能把乐观提交的消息
 		// 与持久消息对上，否则刷新历史后同一条消息会显示两次。
 		clientMessageID := ""
@@ -238,7 +264,7 @@ func translateDeepSeekDurableEvent(threadID string, event harnessclient.SessionW
 		} else {
 			content = data.Content
 		}
-		text := deepSeekAssistantText(content)
+		text := deepSeekTextContent(content)
 		if strings.TrimSpace(text) == "" {
 			// 空正文的 assistant 记录没有可展示内容，Mimi 也会丢弃它。
 			return nil
@@ -369,8 +395,8 @@ func deepSeekTurnStatus(reasonKind string) string {
 	}
 }
 
-// deepSeekAssistantText 拼接 assistant 消息里的文本块。
-func deepSeekAssistantText(blocks []deepSeekContentBlock) string {
+// deepSeekTextContent 把文本内容块拼成一段纯文本并去掉首尾空白。
+func deepSeekTextContent(blocks []deepSeekContentBlock) string {
 	var builder strings.Builder
 	for _, block := range blocks {
 		if block.Type != deepSeekStreamBlockText {
@@ -379,6 +405,40 @@ func deepSeekAssistantText(blocks []deepSeekContentBlock) string {
 		builder.WriteString(block.Text)
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+// deepSeekInjectedSourceKind 返回 Harness 注入来源的 kind；真实用户消息返回空串。
+// source 整体缺失时也返回空串：老记录没有这个字段，只能按用户消息处理。
+func deepSeekInjectedSourceKind(source *deepSeekMessageSource) string {
+	if source == nil {
+		return ""
+	}
+	kind := strings.TrimSpace(source.Kind)
+	if kind == "" || kind == "user" {
+		return ""
+	}
+	return kind
+}
+
+// deepSeekSystemContextItem 把注入上下文投影成 systemContext item，直播与历史共用同一形状。
+// 正文为空时不可展示：调用方拿到 false 应整条丢弃，不要留一个没有内容的上下文行。
+func deepSeekSystemContextItem(data deepSeekMessageData, sourceKind string) (map[string]any, bool) {
+	text := deepSeekTextContent(data.Content)
+	if text == "" {
+		return nil, false
+	}
+	item := map[string]any{
+		"type":       deepSeekItemSystemContext,
+		"id":         "c:" + data.ID,
+		"text":       text,
+		"sourceKind": sourceKind,
+	}
+	if data.Source != nil {
+		if form := strings.TrimSpace(data.Source.Form); form != "" {
+			item["sourceForm"] = form
+		}
+	}
+	return item, true
 }
 
 // deepSeekUserContent 把用户消息内容块转成 Mimi 的 userMessage content。

@@ -89,6 +89,33 @@ func TestDeepSeekUserMessageCarriesClientMessageID(t *testing.T) {
 	}
 }
 
+// 注入上下文（source.kind != "user"）必须翻译成 systemContext，不能进用户气泡。
+func TestDeepSeekInjectedContextBecomesSystemContext(t *testing.T) {
+	notifications := translateDeepSeekDurableEvent("s-1", durableEvent(t, "user/message", map[string]any{
+		"id":      "ctx-1",
+		"role":    "user",
+		"content": []map[string]any{{"type": "text", "text": "<system-reminder>加载 AGENTS.md"}},
+		"source":  map[string]any{"kind": "agent-instructions", "form": "instructions"},
+	}))
+	if len(notifications) != 1 || notifications[0].Method != "item/completed" {
+		t.Fatalf("注入上下文翻译不符：%#v", notifications)
+	}
+	item, _ := notifications[0].Params["item"].(map[string]any)
+	if item["type"] != deepSeekItemSystemContext || item["id"] != "c:ctx-1" {
+		t.Fatalf("systemContext item 形状不符：%#v", item)
+	}
+	if item["sourceKind"] != "agent-instructions" || item["sourceForm"] != "instructions" {
+		t.Fatalf("source 元数据未透传：%#v", item)
+	}
+	if item["text"] != "<system-reminder>加载 AGENTS.md" {
+		t.Fatalf("正文不符：%#v", item)
+	}
+	// 注入消息不对应任何乐观提交的用户消息，因此不能带 clientUserMessageId。
+	if _, ok := notifications[0].Params["clientUserMessageId"]; ok {
+		t.Fatalf("注入上下文不应带 clientUserMessageId：%#v", notifications[0].Params)
+	}
+}
+
 // assistant/message 的 item id 用 (turn, step) 合成，不使用 message.id。
 func TestDeepSeekAssistantMessageUsesTurnStepItemID(t *testing.T) {
 	notifications := translateDeepSeekDurableEvent("s-1", durableEvent(t, "assistant/message", map[string]any{

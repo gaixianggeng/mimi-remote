@@ -204,6 +204,7 @@
 - `item/started` / `item/completed` 的通知体是 `{item: {type, id, ...}, threadId, turnId}`。`type` 是唯一判别字段，未识别的类型整条丢弃。
 - `item/agentMessage/delta` 通知体是 `{threadId, turnId, itemId, delta}`，取自 `assistant-stream` 的 `chunk.text`。
 - `userMessage` 项必须带 `clientId`（回显 prompt 的 requestId），且通知需带 `clientUserMessageId`，否则 iOS 整条丢弃该消息。
+- `user/message` 记录的 `source.kind` 不是 `user` 时是 Harness 注入的上下文（工作区指令 `agent-instructions`、技能目录 `skill-catalog`、运行时快照/通知 `plugin` 等）。这类记录在 Harness 里同样是 `role="user"`，只有 `source.kind` 能把它与真实用户消息区分开，因此**直播与历史必须投影成同一套 `systemContext` 形状**：`{type: "systemContext", id: "c:<记录 id>", text, sourceKind, sourceForm?}`，不带 `clientId` / `clientUserMessageId`；iOS 把它渲染为 system 侧可折叠上下文，而不是右侧用户气泡。正文为空时整条丢弃，避免留下没有内容的上下文行。`source.kind` 缺失（更早的记录）仍按用户消息处理。
 - 反向请求 `item/commandExecution/requestApproval` / `item/fileChange/requestApproval` / `item/fileRead/requestApproval` 的应答是 `{"decision": "<枚举>"}`；`item/tool/requestUserInput` 的应答是 `{"answers": {"<questionId>": {"answers": ["..."]}}}`。
 - 收到移动端应答只代表开始回传。Harness 确认成功或发送取消后才终结交互；HTTP 回传失败会结束当前网关连接，由重新订阅获取仍 pending 的交互。结果未知时不自动重发，已被 Harness 接受的决定不会因本地未收到确认而主动重试。
 - `serverRequest/resolved` 用于清除挂起卡片，通知体为 `{threadId, requestId}`。

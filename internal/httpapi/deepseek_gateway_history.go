@@ -64,8 +64,9 @@ func deepSeekTurnStatusFor(bucket deepSeekTurnBucket) string {
 
 // deepSeekTurnItems 把一个 turn 的记录投影成 Mimi item。
 //
-// 首版只产出 userMessage 与 agentMessage：工具调用的名称与参数 schema 未验证，
-// 映射成 commandExecution 或 fileChange 等于虚构语义（见 PR #499 的"刻意不做"）。
+// 首版只产出 userMessage、agentMessage 与 systemContext：工具调用的名称与参数 schema
+// 未验证，映射成 commandExecution 或 fileChange 等于虚构语义（见 PR #499 的"刻意不做"）。
+// systemContext 承载 Harness 注入的上下文，与直播路径共用 deepSeekSystemContextItem。
 func deepSeekTurnItems(bucket deepSeekTurnBucket) []map[string]any {
 	items := make([]map[string]any, 0, len(bucket.Records))
 	for _, record := range bucket.Records {
@@ -86,10 +87,16 @@ func deepSeekTurnItems(bucket deepSeekTurnBucket) []map[string]any {
 }
 
 // deepSeekUserMessageItem 投影一条用户消息。clientId 必须回显，否则 iOS 会整条丢弃。
+//
+// Harness 注入的上下文同样落在 user/message 里，只有 source.kind 能把它与真实用户消息
+// 区分开。历史必须与直播给出同一套语义，否则刷新历史后这些内容会重新回到用户气泡。
 func deepSeekUserMessageItem(data json.RawMessage) (map[string]any, bool) {
 	var decoded deepSeekMessageData
 	if json.Unmarshal(data, &decoded) != nil || strings.TrimSpace(decoded.ID) == "" {
 		return nil, false
+	}
+	if sourceKind := deepSeekInjectedSourceKind(decoded.Source); sourceKind != "" {
+		return deepSeekSystemContextItem(decoded, sourceKind)
 	}
 	content := deepSeekUserContent(decoded.Content)
 	if len(content) == 0 {
@@ -120,7 +127,7 @@ func deepSeekAgentMessageItem(turn int64, data json.RawMessage) (map[string]any,
 	if decoded.Message != nil {
 		content = decoded.Message.Content
 	}
-	text := deepSeekAssistantText(content)
+	text := deepSeekTextContent(content)
 	if text == "" {
 		return nil, false
 	}
