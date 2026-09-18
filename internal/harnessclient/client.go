@@ -35,6 +35,9 @@ type Config struct {
 	HTTPClient *http.Client
 	// Dialer 可选，用于注入测试用 WebSocket 拨号器。
 	Dialer *websocket.Dialer
+	// streamIdle 覆盖事件流的读空闲上限，仅用于测试把「对端静默」缩短到可等待的量级。
+	// 不导出：这是测试钩子，不是对外配置项。
+	streamIdle time.Duration
 }
 
 // ErrNotAuthenticated 表示尚未完成 token 换 Cookie。

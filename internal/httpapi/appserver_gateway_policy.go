@@ -1329,10 +1329,11 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 	safe := copyGatewayParams(params, "cwd", "serviceTier", "personality")
 	if normalizeAppServerRuntimeID(runtimeID) == appServerRuntimeDeepSeekID {
 		// DeepSeek 适配层要用 provider 提示把客户端的模型选择落到正确的供应商分组上
-		// （见 deepSeekCatalogLookup）。Mimi 的 iOS 端只在 thread/start 上带这个字段，
-		// 而它是"同一个模型 id 出现在多个 provider 下"时唯一的方向性证据：模型目录按
-		// provider 逐个列举，没有任何机制保证 model id 全局唯一，丢掉提示就只能在多个
-		// 命中项里取第一个，用户会被选到另一条计费路线上。
+		// （见 deepSeekCatalogLookup）。线程级请求上的这一份只是证据之一：iOS 端在
+		// DeepSeek 运行时下每条 turn/start 也带 modelProvider（见 sanitizedGatewayTurnParams），
+		// 但服务端默认选择被保留时客户端会置空，届时线程级这份就是最后的客户端依据。
+		// 模型目录按 provider 逐个列举，没有任何机制保证 model id 全局唯一，丢掉提示就只
+		// 能在多个命中项里取第一个，用户会被选到另一条计费路线上。
 		//
 		// 只对 deepseek 放行：Codex / Claude 的 modelProvider 语义由各自的 app-server
 		// 决定，不在本条网关的验证范围内，不扩大它们的参数面。

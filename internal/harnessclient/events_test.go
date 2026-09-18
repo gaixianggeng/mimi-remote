@@ -411,3 +411,93 @@ func streamDone(conn *websocket.Conn) <-chan struct{} {
 	}()
 	return done
 }
+
+// authenticatedClientWithIdle 与 authenticatedClient 同构，额外把读空闲上限调小，
+// 让「对端静默」这类用例不必真的等 90 秒。
+func authenticatedClientWithIdle(t *testing.T, fake *fakeHarness, baseURL string, idle time.Duration) *Client {
+	t.Helper()
+	client, err := New(Config{BaseURL: baseURL, AccessToken: fake.token, streamIdle: idle})
+	if err != nil {
+		t.Fatalf("构造客户端失败：%v", err)
+	}
+	if err := client.Authenticate(context.Background()); err != nil {
+		t.Fatalf("认证失败：%v", err)
+	}
+	return client
+}
+
+// 对端静默（不回 pong、也不发任何帧）时订阅必须结束。
+//
+// 这是半开链路的形态：不设读期限的话 readLoop 会永久阻塞在 ReadMessage 上，
+// Frames 永不关闭，上层的重连路径也就永远不会被触发。
+func TestStreamEndsWhenPeerGoesSilent(t *testing.T) {
+	fake := newFakeHarness(t)
+	fake.onMuxOpen(func(conn *websocket.Conn, _ map[string]any) error {
+		// 关键：屏蔽默认 ping 处理器的自动 pong，否则服务端会替我们保活，
+		// 读期限一直被续期，就构造不出静默。
+		conn.SetPingHandler(func(string) error { return nil })
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return nil
+			}
+		}
+	})
+	server := fake.serve()
+	client := authenticatedClientWithIdle(t, fake, server.URL, 300*time.Millisecond)
+
+	stream, err := client.SubscribeEvents(context.Background())
+	if err != nil {
+		t.Fatalf("订阅失败：%v", err)
+	}
+	defer stream.Close()
+
+	select {
+	case <-stream.Done():
+	case <-time.After(testWait):
+		t.Fatal("对端静默后订阅应当结束，而不是一直阻塞在读上")
+	}
+	assertFramesClosed(t, stream)
+}
+
+// 对端直接断开时，订阅必须整体结束：Done 与 Frames 都要关闭。
+//
+// 只关 Frames 会漏掉一个一直跑的 ping ticker 和一条没关的连接。
+func TestStreamEndsWhenPeerClosesConnection(t *testing.T) {
+	fake := newFakeHarness(t)
+	fake.onMuxOpen(func(*websocket.Conn, map[string]any) error {
+		// 立即返回，serveMuxStream 的 defer 会关掉这条连接。
+		return nil
+	})
+	server := fake.serve()
+	client := authenticatedClient(t, fake, server.URL)
+
+	stream, err := client.SubscribeEvents(context.Background())
+	if err != nil {
+		t.Fatalf("订阅失败：%v", err)
+	}
+	defer stream.Close()
+
+	select {
+	case <-stream.Done():
+	case <-time.After(testWait):
+		t.Fatal("对端断开后 Done 应当关闭，否则 ping 协程与连接都会泄漏")
+	}
+	assertFramesClosed(t, stream)
+}
+
+// assertFramesClosed 断言订阅结束后 Frames 也已关闭，上层才等得到「订阅结束」
+// 而不是靠自己的超时。
+func assertFramesClosed(t *testing.T, stream *Stream) {
+	t.Helper()
+	deadline := time.After(testWait)
+	for {
+		select {
+		case _, ok := <-stream.Frames():
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("订阅结束后 Frames 应当关闭")
+		}
+	}
+}

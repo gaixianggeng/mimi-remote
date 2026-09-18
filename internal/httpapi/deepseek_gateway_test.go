@@ -1621,3 +1621,53 @@ func writeDeepSeekMuxValue(conn *websocket.Conn, streamID string, value any) err
 	}
 	return conn.WriteMessage(websocket.TextMessage, raw)
 }
+
+// ---------------------------------------------------------------- 连接收尾
+
+// 连接收尾必须释放 policy 持有的托管 worktree pending use。
+//
+// Codex（appserver_gateway_websocket.go 的 defer policy.close()）与 Claude
+// （claude_gateway.go 的 defer）两条网关都在收尾路径上调了 policy.close()，DeepSeek
+// 曾经漏掉：一个订阅了托管 worktree 的连接断开后 pending-use 计数不归零，该 worktree
+// 在 agent 进程存活期间一直被认为"有网关在用"，清理动作看不到它。
+func TestDeepSeekGatewayCloseReleasesManagedWorktreePendingUse(t *testing.T) {
+	fixture := newWorktreeCleanupFixture(t, 1)
+	target := fixture.worktrees[0]
+
+	policy := newManagedWorktreeGatewayPolicyForTest(fixture.router)
+	policy.runtimeID = appServerRuntimeDeepSeekID
+
+	pendingCount := func() int {
+		fixture.router.managedWorktreeCleanupMu.Lock()
+		defer fixture.router.managedWorktreeCleanupMu.Unlock()
+		return fixture.router.managedWorktreePendingUses[target.Path]
+	}
+
+	request := []byte(fmt.Sprintf(`{"id":1,"method":"thread/start","params":{"cwd":%q}}`, target.Path))
+	if _, policyErr := policy.validateClientFrame(websocket.TextMessage, request); policyErr != nil {
+		t.Fatalf("托管 worktree 上的 thread/start 应建立 pending lease：%s", policyErr.message)
+	}
+	if got := pendingCount(); got != 1 {
+		t.Fatalf("thread/start 应占用一个 pending lease，got=%d", got)
+	}
+
+	conn := &deepSeekGatewayConn{
+		router:  fixture.router,
+		policy:  policy,
+		follows: map[string]*deepSeekFollow{},
+	}
+	conn.close()
+
+	if got := pendingCount(); got != 0 {
+		t.Fatalf("DeepSeek 网关收尾必须释放 policy 的 pending lease，got=%d", got)
+	}
+	if !policy.isClosed() {
+		t.Fatal("DeepSeek 网关收尾必须关闭 policy")
+	}
+
+	// policy.close() 幂等：并发收尾（读协程与订阅释放同时走到）不得重复扣减。
+	conn.close()
+	if got := pendingCount(); got != 0 {
+		t.Fatalf("重复收尾不得把 pending-use 扣成负数，got=%d", got)
+	}
+}

@@ -20,8 +20,12 @@ import (
 const (
 	eventsPingPeriod = 30 * time.Second
 	eventsWriteWait  = 10 * time.Second
-	eventsPongWait   = 90 * time.Second
-	eventsReadLimit  = 32 << 20
+	// eventsReadIdle 是读空闲上限：这么久没收到任何帧（含 pong）就判定链路已死。
+	//
+	// 读侧必须真的能超时退出。只写 ping 不设读期限的话，Harness 挂死或链路变成
+	// 半开时 readLoop 会永久阻塞在 ReadMessage 上：Frames 不关闭，上层也就不会重连。
+	eventsReadIdle  = 90 * time.Second
+	eventsReadLimit = 32 << 20
 )
 
 // Stream 是一条 remote.mux 订阅。一个 Stream 对应一个 endpoint，例如 $events 或
@@ -34,6 +38,8 @@ type Stream struct {
 	conn      *websocket.Conn
 	closeOnce sync.Once
 	closed    chan struct{}
+	// readIdle 是这条订阅的读空闲上限。正常取 eventsReadIdle，测试会调小。
+	readIdle time.Duration
 }
 
 // StreamID 是这个订阅的编号，同一条连接上唯一。
@@ -149,6 +155,16 @@ func (c *Client) OpenStream(ctx context.Context, endpoint string, args any) (*St
 		return nil, fmt.Errorf("harnessclient: 连接事件流失败：%w", err)
 	}
 	conn.SetReadLimit(eventsReadLimit)
+	readIdle := c.config.streamIdle
+	if readIdle <= 0 {
+		readIdle = eventsReadIdle
+	}
+	// 读期限由「读到任何帧」与「收到 pong」两条路径共同续期：前者保证业务帧密集时
+	// 不会误判，后者保证对端只回 pong、不发业务帧时也活着。
+	_ = conn.SetReadDeadline(time.Now().Add(readIdle))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(readIdle))
+	})
 
 	stream := &Stream{
 		streamID: newStreamID(endpoint),
@@ -156,6 +172,7 @@ func (c *Client) OpenStream(ctx context.Context, endpoint string, args any) (*St
 		frames:   make(chan StreamValue, 256),
 		conn:     conn,
 		closed:   make(chan struct{}),
+		readIdle: readIdle,
 	}
 
 	frame := openFrame{Type: "open", StreamID: stream.streamID, Endpoint: endpoint}
@@ -171,10 +188,17 @@ func (c *Client) OpenStream(ctx context.Context, endpoint string, args any) (*St
 }
 
 func (s *Stream) readLoop() {
+	// 读侧退出即整条订阅失效：先关 Frames 让上层立刻看到订阅结束，
+	// 再 Close 掉连接与 ping 协程。缺了后半步会漏掉一个一直跑的 ticker 和一条没关的连接。
+	defer s.Close()
 	defer close(s.frames)
 	for {
 		_, raw, err := s.conn.ReadMessage()
 		if err != nil {
+			return
+		}
+		// 读到东西就续期，避免把「帧很密但一直没有 pong」的健康连接判定为死链。
+		if err := s.conn.SetReadDeadline(time.Now().Add(s.readIdle)); err != nil {
 			return
 		}
 		var frame muxFrame
@@ -211,6 +235,9 @@ func (s *Stream) pingLoop() {
 		case <-ticker.C:
 			_ = s.conn.SetWriteDeadline(time.Now().Add(eventsWriteWait))
 			if err := s.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				// ping 写不出去说明链路已断。必须把连接关掉：只退出本协程的话，
+				// readLoop 会永远留在阻塞读上，上层等不到订阅结束也就不会重连。
+				s.Close()
 				return
 			}
 		case <-s.closed:

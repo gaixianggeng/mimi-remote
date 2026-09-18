@@ -409,8 +409,9 @@ func TestDeepSeekTurnStartForwardsModelSelectionBeforePrompt(t *testing.T) {
 	if selection["sessionId"] != "s-new" {
 		t.Fatalf("选择必须落在本次会话上：%+v", selection)
 	}
-	// provider 只能来自目录：移动端的 turn/start 只带 model，猜一个供应商会把用户
-	// 选到另一条计费路线上。
+	// provider 只能来自目录：这条请求的 turn/start 没带 modelProvider，会话也没有可用
+	// 的 provider 依据，此时目录里恰好只有一个 provider 声明该模型才允许继续——把它
+	// 猜成别的供应商会把用户选到另一条计费路线上。
 	if selection["provider"] != "volc" {
 		t.Fatalf("provider 必须取自模型目录：%+v", selection)
 	}
@@ -552,5 +553,76 @@ func TestDeepSeekTurnStartWithoutSelectionSkipsModelRPCs(t *testing.T) {
 	}
 	if order := fixture.callOrder(); len(order) != 1 || order[0] != "prompt" {
 		t.Fatalf("应只投递一次：%v", order)
+	}
+}
+
+// 回归（PR 评审：provider 未随请求携带）：没有任何 provider 依据时，同名模型出现在多个
+// provider 下必须拒绝并列出候选，绝不能取"目录里第一个命中项"。
+//
+// 目录层面的 TestDeepSeekCatalogLookupOnlyTrustsCatalog 只断言 lookup 返回 ok=false；
+// 这里断言用户看得见的结论——选择被拒绝、原因可操作（点名候选供应商），因此用户知道
+// 要改哪一项，而不是被静默地送到另一条计费路线上。
+func TestDeepSeekRejectsAmbiguousModelWithoutProviderEvidence(t *testing.T) {
+	// deepseek-v4 同时出现在 volc 与 backup 下；deepseek-plain 只在 volc 下。
+	catalog := deepSeekCatalogFixture()
+
+	conn := &deepSeekGatewayConn{threadProviders: map[string]string{}}
+	_, err := conn.resolveDeepSeekModel(catalog, "session-ambiguous",
+		deepSeekRequestedSelection{Model: "deepseek-v4"})
+
+	var selectionErr *deepSeekModelSelectionError
+	if !errors.As(err, &selectionErr) {
+		t.Fatalf("歧义模型必须按可操作的模型选择错误拒绝，got %v", err)
+	}
+	for _, want := range []string{"volc", "backup", "请先选定供应商"} {
+		if !strings.Contains(selectionErr.message, want) {
+			t.Fatalf("拒绝原因应包含 %q 以便用户重选，实际：%s", want, selectionErr.message)
+		}
+	}
+}
+
+// 与上一条互补：三条"有依据"的路径都必须能落地，其中前两条来自客户端携带的提示。
+//
+// 这条是评审 Finding 的正面形态——提示不是必需的，但一旦存在就必须被用上：本次
+// turn/start 自带的 provider 优先级最高，其次是线程创建时记住的那份，两者都缺时才轮到
+// 目录里唯一命中的条目。
+func TestDeepSeekResolvesProviderFromRequestOrThreadEvidence(t *testing.T) {
+	catalog := deepSeekCatalogFixture()
+	for _, tc := range []struct {
+		name       string
+		requested  deepSeekRequestedSelection
+		remembered map[string]string
+		want       string
+	}{
+		{
+			name:      "本次 turn/start 自带的 provider 是第一判据",
+			requested: deepSeekRequestedSelection{Model: "deepseek-v4", Provider: "backup"},
+			want:      "backup",
+		},
+		{
+			name:       "本次没带时用线程创建时声明的 provider",
+			requested:  deepSeekRequestedSelection{Model: "deepseek-v4"},
+			remembered: map[string]string{"session-1": "backup"},
+			want:       "backup",
+		},
+		{
+			name:      "都没有依据时目录里唯一命中仍可直接使用",
+			requested: deepSeekRequestedSelection{Model: "deepseek-plain"},
+			want:      "volc",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := &deepSeekGatewayConn{threadProviders: tc.remembered}
+			match, err := conn.resolveDeepSeekModel(catalog, "session-1", tc.requested)
+			if err != nil {
+				t.Fatalf("有依据的选择不应被拒绝：%v", err)
+			}
+			if match.Provider != tc.want {
+				t.Fatalf("provider 应为 %q，得到 %q", tc.want, match.Provider)
+			}
+			if match.Model.ID != tc.requested.Model {
+				t.Fatalf("model 应为 %q，得到 %q", tc.requested.Model, match.Model.ID)
+			}
+		})
 	}
 }

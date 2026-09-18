@@ -157,9 +157,10 @@ type deepSeekGatewayConn struct {
 	// terminalInteractions 由 interactionMu 保护，有界保留已取消/完成/过期事件，
 	// 避免另一条流迟到的同 eventId 请求重新生成卡片。
 	terminalInteractions map[string]time.Time
-	// threadProviders 记住客户端在 thread/start 上声明的供应商。iOS 端只在会话创建时
-	// 带 modelProvider，后续 turn/start 只带 model，而模型目录不保证 model id 全局唯一，
-	// 所以这份声明要留着。见 rememberDeepSeekThreadProvider。
+	// threadProviders 记住客户端在 thread/start 上声明的供应商。DeepSeek 运行时下客户端的
+	// 每条 turn/start 也带 modelProvider（见 iOS 的 SessionAPIModels.turnParams），所以这份
+	// 记忆不是唯一证据，而是该字段缺失时的兜底；模型目录不保证 model id 全局唯一，
+	// 有依据就必须留着。见 rememberDeepSeekThreadProvider。
 	threadProviders map[string]string
 	closed          bool
 }
@@ -333,6 +334,19 @@ func (c *deepSeekGatewayConn) close() {
 		follow.markReleased()
 		follow.stream.Close()
 		c.router.releaseDeepSeekSession()
+	}
+
+	// 与 Codex / Claude 两条网关同语义：连接收尾必须关闭 policy。
+	//
+	// policy 持有两类只有它自己能还的东西：托管 worktree 的 pending use（客户端断连时
+	// 一个仍在等待响应的 thread/start 已经把它加上去了，见 validateGatewayClientFrame 的
+	// gatewayMethodNeedsManagedPendingUse 分支）与 mimi task 动态声明。上面按订阅归还的是
+	// deepSeekSession 名额，与这两者无关——没有任何 follow 的连接同样会持有它们，
+	// 只靠订阅路径覆盖不到。
+	// 漏掉这一步会让计数在 agent 进程存活期间不归零，那个托管 worktree 因此一直删不掉。
+	// policy.close() 自身幂等（p.closed 保护），并发收尾不会重复释放。
+	if c.policy != nil {
+		c.policy.close()
 	}
 }
 

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -278,5 +279,79 @@ func TestDeepSeekHoldInteractionPreservesUntilEvidenceOrExpiry(t *testing.T) {
 	// 没有可归属的交互，绝不能下发待应答卡片。
 	if len(conn.waterfalls) != 0 {
 		t.Fatalf("未归属的交互不得被下发，waterfalls=%d", len(conn.waterfalls))
+	}
+}
+
+// 回归（PR 评审：未匹配的 waterfall 被永久忽略）：审批先到、tool/call 后到是正常时序，
+// 关联信息补齐的那一刻必须真的把卡片发出去。
+//
+// 上一条只钉住"没有证据时保留、过期时清理"。评审指出的失败模式比这更进一步：暂存之后
+// 再无人回访，Harness 一直等应答、turn 卡死。因此这里跑完整个闭环——暂存 → tool/call
+// 落表 → 自动重试 → 卡片到达客户端，并核对卡片挂在正确的会话上。
+func TestDeepSeekHeldInteractionDeliveredWhenCallContextArrives(t *testing.T) {
+	const eventID = "event-late-context"
+	serverConn, clientConn := deepSeekCancelTestWebSocketPair(t)
+	policy, projectDir := newInboundPolicyForTest(t, appServerRuntimeDeepSeekID)
+	// 反向请求要过下行授权门禁（inboundServerRequestAllowed 按 threadId 查授权表），
+	// 先把这条会话登记成已授权，否则测的是门禁而不是重试闭环。
+	policy.allowThread(appServerGatewayAllowedThread{
+		id: "thread-late", runtimeID: appServerRuntimeDeepSeekID, cwd: projectDir, scopeID: "project",
+	})
+	conn := &deepSeekGatewayConn{
+		client:              serverConn,
+		policy:              policy,
+		callThreads:         map[string]string{},
+		follows:             map[string]*deepSeekFollow{},
+		waterfalls:          map[string]deepSeekPendingWaterfall{},
+		pendingInteractions: map[string]deepSeekPendingInteraction{},
+	}
+
+	// 审批来自 $events：帧里没有 agentId，callId 在本连接的会话事件里也还没出现过，
+	// 此刻没有任何方向性证据可用。
+	request := harnessclient.WaterfallRequest{
+		Type:    "waterfall",
+		EventID: eventID,
+		Event:   harnessclient.WaterfallApprovalRequest,
+		Request: harnessclient.WaterfallPayload{ToolName: "write", CallID: "call-late"},
+	}
+	conn.dispatchWaterfall(t.Context(), request)
+	if _, ok := conn.pendingInteractions[eventID]; !ok {
+		t.Fatal("拿不到归属的审批必须暂存，否则审批会因到达顺序永久丢失")
+	}
+	if _, ok := conn.waterfalls[eventID]; ok {
+		t.Fatal("还没有归属依据时不得下发卡片")
+	}
+
+	// 会话订阅随后补上工具调用：映射一落表就必须回访暂存项并下发，不需要等轮询定时器。
+	conn.noteEventContext("thread-late", harnessclient.SessionWireEvent{
+		Type: deepSeekEventToolCall,
+		Data: json.RawMessage(`{"callId":"call-late","turn":1,"step":1}`),
+	})
+
+	if _, ok := conn.pendingInteractions[eventID]; ok {
+		t.Fatal("关联信息补齐后暂存项应被消费")
+	}
+	pending, ok := conn.waterfalls[eventID]
+	if !ok {
+		t.Fatal("关联信息补齐后审批卡片必须真的下发，否则 Harness 会一直等应答")
+	}
+	if pending.threadID != "thread-late" {
+		t.Fatalf("卡片应挂到提供 callId 映射的会话，得到 %q", pending.threadID)
+	}
+	if pending.method != "item/commandExecution/requestApproval" {
+		t.Fatalf("下发的应是审批请求，得到 %q", pending.method)
+	}
+	if err := clientConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := clientConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("客户端应收到一张审批卡片：%v", err)
+	}
+	if !strings.Contains(string(raw), `"item/commandExecution/requestApproval"`) {
+		t.Fatalf("下发的帧应是审批请求：%s", raw)
+	}
+	if !strings.Contains(string(raw), `"thread-late"`) {
+		t.Fatalf("审批请求应带上归属会话：%s", raw)
 	}
 }

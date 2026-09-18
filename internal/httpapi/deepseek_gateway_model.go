@@ -29,8 +29,9 @@ type deepSeekRequestedSelection struct {
 
 // deepSeekTurnSelectionParams 取出本次请求声明的模型选择。
 //
-// modelProvider 只有部分客户端会带（Mimi 的 iOS 端把 provider 放在 thread/start 上），
-// 因此它是提示而不是必需项，缺失时由模型目录补齐。
+// modelProvider 不是所有客户端都会带：Mimi 的 iOS 端在 DeepSeek 运行时的每条 turn/start 上
+// 都带它（SessionAPIModels.turnParams），并在 thread/start 上另带一份；别的客户端可能一条都
+// 不带。因此它是提示而不是必需项，缺失时由会话记录与模型目录补齐（见 resolveDeepSeekModel）。
 func deepSeekTurnSelectionParams(params map[string]any) deepSeekRequestedSelection {
 	model, _ := gatewayStringParam(params, "model")
 	provider, _ := gatewayStringParam(params, "modelProvider")
@@ -360,8 +361,9 @@ func (c *deepSeekGatewayConn) resolveDeepSeekModel(
 
 // rememberDeepSeekThreadProvider 记住客户端在 thread/start 上声明的供应商。
 //
-// 只在新建会话时记录：iOS 端只在 thread/start 上带 modelProvider，而后续每条 turn/start
-// 只带 model。不记住它的话，"同名模型出现在多个 provider 下"时就没有客户端依据可用。
+// 只在新建会话时记录：iOS 端在 thread/start 上带 modelProvider，而 turn/start 上也可能
+// 缺失（服务端默认选择被保留时客户端会把它置空）。不记住它的话，"同名模型出现在多个
+// provider 下"且本次请求没带提示时就没有客户端依据可用，只能拒绝。
 func (c *deepSeekGatewayConn) rememberDeepSeekThreadProvider(threadID string, params map[string]any) {
 	provider, ok := gatewayStringParam(params, "modelProvider")
 	if !ok {

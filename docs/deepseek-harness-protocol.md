@@ -122,7 +122,11 @@
 
 `chunk` 是 SSE 形状的真实片段，实测出现过的字段路径：
 
-- `chunk.type`：片段类型（`text_delta`、`content_block_start` 等）
+- `chunk.type`：片段类型，即 Harness `StreamChunk` 联合体的判别值——`block-start`、`text-delta`、
+  `reasoning-delta`、`tool-call-delta`、`block-end`、`usage`、`finish`。
+  **全部用连字符（`text-delta`），不是下划线的 `text_delta`**；`text_delta` / `content_block_start`
+  是 Anthropic SDK 的形状，不是 Harness 的。判别值取自 `@deepseek-ai/dsh-llm` 的
+  `lib/types/assistant-stream.js` 与 `dsh-api-session-controller` 导出的 `StreamChunk` 类型。
 - `chunk.text`：**文本增量本体**
 - `chunk.block.{type,id,name,text,arguments}`、`chunk.blockType`、`chunk.index`
 - `chunk.argumentsDelta`（工具参数增量）
