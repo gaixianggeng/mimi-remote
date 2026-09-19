@@ -1701,7 +1701,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.selectedSession?.pendingApproval?.id, "approval-1")
         XCTAssertTrue(store.isApprovalDecisionPending(approval))
 
-        sockets[0].onControlFailure?("interrupt failed")
+        sockets[0].emitControlFailure(ControlCommandFailure(kind: .other, message: "interrupt failed"))
         try await Task.sleep(nanoseconds: 20_000_000)
         XCTAssertTrue(store.isApprovalDecisionPending(approval))
 

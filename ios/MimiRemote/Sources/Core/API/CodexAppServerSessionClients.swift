@@ -750,7 +750,7 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
     var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
-    var onControlFailure: ((String) -> Void)?
+    var onControlFailure: ((ControlCommandFailure) -> Void)?
 
     private let bundle: AppServerRuntimeBundle
     private var activeClient: CodexAppServerSessionWebSocketClient?
@@ -849,8 +849,8 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         client.onUserInputResponseFailure = { [weak self] requestID, message, expired in
             self?.onUserInputResponseFailure?(requestID, message, expired)
         }
-        client.onControlFailure = { [weak self] message in
-            self?.onControlFailure?(message)
+        client.onControlFailure = { [weak self] failure in
+            self?.onControlFailure?(failure)
         }
     }
 
@@ -875,7 +875,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
     var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
-    var onControlFailure: ((String) -> Void)?
+    var onControlFailure: ((ControlCommandFailure) -> Void)?
 
     private let runtime: CodexAppServerSessionRuntime
     private var sessionID: SessionID?
@@ -1170,7 +1170,10 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     @discardableResult
     func sendCtrlC(expectedTurnID: TurnID) -> Bool {
         guard let sessionID else {
-            onControlFailure?(L10n.text("ui.direct_websocket_not_connected"))
+            onControlFailure?(ControlCommandFailure(
+                kind: .other,
+                message: L10n.text("ui.direct_websocket_not_connected")
+            ))
             return false
         }
         let failureHandler = onControlFailure
@@ -1181,8 +1184,10 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
                     expectedTurnID: expectedTurnID
                 )
             } catch {
+                // 远端已经不认识这个 turn 时，重试不会成功；调用方要据此收敛本地运行态。
+                let failure = ControlCommandFailure.classify(error)
                 await MainActor.run {
-                    failureHandler?(error.localizedDescription)
+                    failureHandler?(failure)
                 }
             }
         }

@@ -343,19 +343,29 @@ extension SessionStore {
                 self?.setErrorMessage(L10n.format("ui.failed_to_send_supplementary_information_value", message))
             }
         }
-        socket.onControlFailure = { [weak self] message in
+        socket.onControlFailure = { [weak self] failure in
             Task { @MainActor in
-                guard self?.isCurrentWebSocketConnection(
+                guard let self, self.isCurrentWebSocketConnection(
                     sessionID: session.id,
                     generation: connectionGeneration,
                     hostScope: hostScope
-                ) == true else {
+                ) else {
                     return
                 }
-                if self?.statusMessage == L10n.text("ui.stopping_current_reply") {
-                    self?.setStatusMessage(nil)
+                // 远端已经不认识这条控制命令的目标（thread / turn 不存在，或该轮次已经结束）。
+                // 本地不会再收到匹配的 turn/completed，必须自己收敛运行态；只弹一条错误会让
+                // 会话永久停在执行中并保留停止控件（gh-509）。
+                if failure.isStaleTarget {
+                    await self.convergeStaleControlTarget(
+                        sessionID: session.id,
+                        hostScope: hostScope
+                    )
+                    return
                 }
-                self?.setErrorMessage(L10n.format("ui.failed_to_send_control_command_value", message))
+                if self.statusMessage == L10n.text("ui.stopping_current_reply") {
+                    self.setStatusMessage(nil)
+                }
+                self.setErrorMessage(L10n.format("ui.failed_to_send_control_command_value", failure.message))
             }
         }
         webSocket = socket
@@ -547,6 +557,35 @@ extension SessionStore {
         return lowerMessage.contains("already has an active writer")
             || lowerMessage.contains("external_thread_active")
             || (lowerMessage.contains("thread is active") && lowerMessage.contains("codex desktop"))
+    }
+
+    /// 控制命令的目标在远端已经不存在：thread / turn 被回收，或者该轮次已经结束。
+    ///
+    /// 本地不会再等到匹配的 turn/completed，所以复用同一条收敛路径，让 active turn、前台活动、
+    /// 待办卡片和流式消息一起收口，而不是只清一个字段。只收敛运行态：对话历史、已发送消息和
+    /// 待发送队列都不删除（gh-509）。
+    func convergeStaleControlTarget(sessionID: SessionID, hostScope: HostScope) async {
+        guard let turnID = sessionsByID[sessionID]?.activeTurnID else {
+            // 本地已经没有活跃轮次，只剩可能残留的停止提示需要收掉。
+            if statusMessage == L10n.text("ui.stopping_current_reply") {
+                setStatusMessage(nil)
+            }
+            return
+        }
+        await applyRuntimeEvent(
+            .turnCompleted(AgentEventMetadata(
+                seq: nil,
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: nil,
+                messageID: nil,
+                clientMessageID: nil,
+                revision: nil,
+                createdAt: nil,
+                turnLifecycle: .interrupted
+            )),
+            lease: HostSessionLease(hostScope: hostScope, sessionID: sessionID)
+        )
     }
 
     @discardableResult
