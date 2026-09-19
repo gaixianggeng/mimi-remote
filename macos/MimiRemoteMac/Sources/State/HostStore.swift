@@ -25,6 +25,8 @@ final class HostStore {
     private(set) var isUpdatingTailcat = false
     private(set) var tailcatError: String?
     private(set) var tailcatNotice: String?
+    private(set) var isUpdatingLAN = false
+    private(set) var lanError: String?
     private(set) var photosAccess: PhotosAccessState = .notDetermined
     /// 启动阶段的补充说明，例如覆盖安装后正在重新登记后台服务。只在
     /// `.starting` 期间有值，进入其它生命周期状态时清空。
@@ -46,6 +48,19 @@ final class HostStore {
 
     var canChangeClaude: Bool {
         owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
+    }
+
+    var lanEnabled: Bool {
+        status?.networkStatus?.allowLAN ?? false
+    }
+
+    var canChangeLAN: Bool {
+        owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
+    }
+
+    var lanStatusTitle: String {
+        if isUpdatingLAN { return "正在更新" }
+        return lanEnabled ? "已开启" : "已关闭"
     }
 
     var tailcatEnabled: Bool {
@@ -553,6 +568,46 @@ final class HostStore {
         } catch {
             lastError = error.localizedDescription
             launchesAtLogin = services.mainAppStatus() == .enabled
+        }
+    }
+
+    func setLANEnabled(_ enabled: Bool) async {
+        guard !isBusy, owner == .macApp else {
+            lanError = "请先启动并接管 Mimi Remote Mac 服务。"
+            return
+        }
+        isBusy = true
+        isUpdatingLAN = true
+        lanError = nil
+        defer {
+            isUpdatingLAN = false
+            isBusy = false
+        }
+
+        do {
+            let result = try await agent.setLANAccess(enabled)
+            if result.restartRequired {
+                do {
+                    try await reloadMacAgentForConfigurationChange()
+                } catch {
+                    let updateError = error
+                    // 配置已写入但服务未能加载时恢复用户修改前的网络边界，
+                    // 避免 UI 显示关闭而 resident agentd 仍保持扩大监听。
+                    _ = try? await agent.setLANAccess(!enabled)
+                    try? await reloadMacAgentForConfigurationChange()
+                    lanError = "更新局域网设置失败：\(updateError.localizedDescription)。已尝试恢复修改前设置。"
+                    await refreshMacAgentStatus()
+                    return
+                }
+            }
+            await refreshMacAgentStatus()
+            if !enabled, pairingNetwork == .localNetwork {
+                pairing = nil
+                pairingNetwork = .tailscale
+            }
+        } catch {
+            lanError = error.localizedDescription
+            await refreshMacAgentStatus()
         }
     }
 
