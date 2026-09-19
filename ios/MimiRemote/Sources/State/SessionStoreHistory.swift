@@ -1268,13 +1268,15 @@ extension SessionStore {
         sessionID: SessionID,
         limit: Int,
         loadMode: HistoryMessagesPage.LoadMode,
-        cachePolicy: HistoryFirstPageCachePolicy
+        cachePolicy: HistoryFirstPageCachePolicy,
+        prefersSummaryFirst: Bool = false
     ) async throws -> HistoryFirstPageResult {
         let key = HistoryFirstPageRequestKey(
             profileID: appStore.activeHostScope.profileID,
             sessionID: sessionID,
             limit: limit,
-            loadMode: loadMode
+            loadMode: loadMode,
+            prefersSummaryFirst: prefersSummaryFirst
         )
         if cachePolicy == .reuseRecent,
            let cached = historyFirstPageCacheByKey[key],
@@ -1297,7 +1299,8 @@ extension SessionStore {
                 sessionID: sessionID,
                 before: nil,
                 limit: limit,
-                loadMode: loadMode
+                loadMode: loadMode,
+                prefersSummaryFirst: prefersSummaryFirst
             )
         }
         historyFirstPageInFlightByKey[key] = HistoryFirstPageInFlight(token: token, task: task)
