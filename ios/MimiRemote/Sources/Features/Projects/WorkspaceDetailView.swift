@@ -36,7 +36,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     let hasInitialSessionContent: Bool
     let canLoadMoreSessions: Bool
     @Binding var selectedRuntime: WorkspaceSessionRuntimeChoice
-    let claudeChannelAvailable: Bool
+    let availableRuntimeProviders: Set<String>
     let currentDate: () -> Date
     let onRefreshSessions: () -> Void
     let onLoadMoreSessions: () async -> Void
@@ -408,7 +408,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         HStack(spacing: 12) {
             WorkspaceRuntimePopoverPicker(
                 selection: $selectedRuntime,
-                claudeChannelAvailable: claudeChannelAvailable
+                availableRuntimeProviders: availableRuntimeProviders
             )
 
             Spacer(minLength: 8)

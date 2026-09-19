@@ -100,6 +100,7 @@ final class SessionStore: ObservableObject {
     // 首屏搜索覆盖 300ms 防抖和实际请求；与分页 loading 分离，避免“继续搜索”误占空态。
     @Published var isSearchingRemoteSessionResults = false
     @Published var isLoadingMoreSessionSearchResults = false
+    @Published var remoteSessionSearchNotice: String?
     @Published var pinnedSessionIDs: Set<SessionID> = []
     @Published var archivedSessionIDs: Set<SessionID> = []
     /// UI 只通过 `isSessionArchiveMutationPending` 查询当前 Profile；这里保留完整作用域，
@@ -162,7 +163,8 @@ final class SessionStore: ObservableObject {
     @Published var appServerPermissionProfiles: [CodexAppServerPermissionProfileSummary] = []
     @Published var activePermissionProfileBySessionID: [SessionID: CodexAppServerActivePermissionProfile] = [:]
     @Published var isRefreshingPermissionProfiles = false
-    @Published var isClaudeRuntimeChannelAvailable = false
+    @Published var availableRuntimeProviders: Set<String> = ["codex"]
+    var isClaudeRuntimeChannelAvailable: Bool { availableRuntimeProviders.contains("claude") }
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
     /// 账号维度的累计用量。与活动历史分开保存：服务端可以给出 lifetime 却不给日粒度历史。
     @Published var accountTokenUsage: AccountTokenUsageSnapshot?

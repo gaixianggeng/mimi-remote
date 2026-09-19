@@ -209,6 +209,15 @@ struct SessionListView: View {
                     .listRowSeparator(.hidden)
             }
 
+            if sessionStore.isSessionSearchActive, let notice = sessionStore.remoteSessionSearchNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(tokens.secondaryText)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .accessibilityIdentifier("sessions.search.partialFailure")
+            }
+
             // Gateway 过滤后当前页可能没有可见结果但仍给出 nextCursor，入口必须独立于空态展示。
             if sessionStore.isSessionSearchActive && sessionStore.sessionSearchHasMore {
                 Button {

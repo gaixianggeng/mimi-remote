@@ -1918,7 +1918,7 @@ final class ConversationStore: ObservableObject {
 
     private func processMessageMergeKind(for kind: MessageKind) -> String? {
         switch kind {
-        case .reasoningSummary, .plan, .commandSummary, .fileChangeSummary:
+        case .reasoningSummary, .plan, .commandSummary, .fileChangeSummary, .context:
             return kind.rawValue
         case .message, .commentary, .approval, .userInput, .warning, .error:
             return nil

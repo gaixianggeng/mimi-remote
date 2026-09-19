@@ -25,6 +25,12 @@ struct AgentCommandClient: Sendable {
     var resetTailcat: @Sendable () async throws -> TailcatStatus = {
         throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
     }
+    var configureDeepSeek: @Sendable (
+        _ action: DeepSeekConfigurationAction,
+        _ startupURL: String?
+    ) async throws -> DeepSeekConfigurationResult = { _, _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 DeepSeek 配置。")
+    }
     var version: @Sendable () async throws -> String
 }
 
@@ -51,14 +57,16 @@ extension AgentCommandClient {
             arguments: [String],
             allowFailure: Bool = false,
             timeout: Duration = .seconds(15),
-            forceKillAfterTimeout: Bool = false
+            forceKillAfterTimeout: Bool = false,
+            standardInput: Data? = nil
         ) async throws -> CommandResult {
             let result = try await executor.run(
                 executable: binary,
                 arguments: arguments,
                 timeout: timeout,
                 environment: environment,
-                forceKillAfterTimeout: forceKillAfterTimeout
+                forceKillAfterTimeout: forceKillAfterTimeout,
+                standardInput: standardInput
             )
             if result.status != 0 && !allowFailure {
                 throw AgentClientError.commandFailed(
@@ -195,12 +203,32 @@ extension AgentCommandClient {
                     timeout: .seconds(15)
                 ))
             },
+            configureDeepSeek: { action, startupURL in
+                let binary = try requireEmbeddedBinary()
+                let arguments = deepSeekConfigurationArguments(action: action, hasStartupURL: startupURL != nil)
+                return try decode(DeepSeekConfigurationResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: arguments,
+                    timeout: .seconds(20),
+                    forceKillAfterTimeout: true,
+                    standardInput: startupURL.map { Data($0.utf8) }
+                ))
+            },
             version: {
                 let binary = try requireEmbeddedBinary()
                 let result = try await execute(binary: binary, arguments: ["version"])
                 return result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         )
+    }
+
+    static func deepSeekConfigurationArguments(
+        action: DeepSeekConfigurationAction,
+        hasStartupURL: Bool
+    ) -> [String] {
+        var arguments = ["runtime", "--deepseek", action.rawValue, "--json"]
+        if hasStartupURL { arguments.append("--deepseek-url-stdin") }
+        return arguments
     }
 
     static func setupArguments(workspaceRoot: URL, browseRoot: URL) -> [String] {

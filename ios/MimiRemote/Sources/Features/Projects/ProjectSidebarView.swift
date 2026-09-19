@@ -104,7 +104,7 @@ struct ProjectSidebarView: View {
                         isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
                         showsDisclosure: showsSessions,
                         showsSessionActions: showsSessions,
-                        claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
+                        availableRuntimeProviders: sessionStore.availableRuntimeProviders,
                         themeRenderKey: themeRenderKey,
                         onToggle: {
                             Task {
@@ -116,11 +116,13 @@ struct ProjectSidebarView: View {
                                 }
                             }
                         },
-                        onNewSession: {
-                            Task { await sessionStore.startNewSession(in: project) }
-                        },
-                        onNewClaudeSession: {
-                            Task { await sessionStore.startNewSession(in: project, runtimeProvider: "claude") }
+                        onNewSession: { runtime in
+                            Task {
+                                await sessionStore.startNewSession(
+                                    in: project,
+                                    runtimeProvider: runtime.runtimeProvider
+                                )
+                            }
                         },
                         onCreateWorktree: {
                             worktreeCreateProject = project
@@ -147,6 +149,15 @@ struct ProjectSidebarView: View {
                             themeRenderKey: themeRenderKey
                         )
                     }
+                }
+
+                if showsSessions && sessionStore.isSessionSearchActive,
+                   let notice = sessionStore.remoteSessionSearchNotice {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(tokens.secondaryText)
+                        .sidebarListRow()
+                        .accessibilityIdentifier("sidebar.search.partialFailure")
                 }
 
                 // 远端搜索是跨项目分页，只放一个全局入口；0 项目/0 可见命中时也能继续翻页。
@@ -347,16 +358,18 @@ struct ProjectSidebarView: View {
     private func sidebarNewSessionMenu(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
         if let project = primarySessionProject(projects: projects) {
             Menu {
-                Button {
-                    Task { await sessionStore.startNewSession(in: project) }
-                } label: {
-                    Label(L10n.text("ui.create_a_new_codex_session"), systemImage: "plus.circle")
-                }
-                if sessionStore.hasClaudeRuntimeChannel {
+                ForEach(WorkspaceSessionRuntimeChoice.available(
+                    runtimeProviders: sessionStore.availableRuntimeProviders
+                )) { runtime in
                     Button {
-                        Task { await sessionStore.startNewSession(in: project, runtimeProvider: "claude") }
+                        Task {
+                            await sessionStore.startNewSession(
+                                in: project,
+                                runtimeProvider: runtime.runtimeProvider
+                            )
+                        }
                     } label: {
-                        Label(L10n.text("ui.create_a_new_claude_code_session"), systemImage: "sparkles")
+                        Label(runtime.title, systemImage: runtime.actionSystemImage)
                     }
                 }
             } label: {
@@ -1490,11 +1503,10 @@ private struct ProjectRow: View, Equatable {
     let isUnavailable: Bool
     let showsDisclosure: Bool
     let showsSessionActions: Bool
-    let claudeChannelAvailable: Bool
+    let availableRuntimeProviders: Set<String>
     let themeRenderKey: SidebarThemeRenderKey
     let onToggle: () -> Void
-    let onNewSession: () -> Void
-    let onNewClaudeSession: () -> Void
+    let onNewSession: (WorkspaceSessionRuntimeChoice) -> Void
     let onCreateWorktree: () -> Void
     let onManageWorktrees: () -> Void
     let onRetry: () -> Void
@@ -1509,7 +1521,7 @@ private struct ProjectRow: View, Equatable {
             && lhs.isUnavailable == rhs.isUnavailable
             && lhs.showsDisclosure == rhs.showsDisclosure
             && lhs.showsSessionActions == rhs.showsSessionActions
-            && lhs.claudeChannelAvailable == rhs.claudeChannelAvailable
+            && lhs.availableRuntimeProviders == rhs.availableRuntimeProviders
             // 主题切换只通过轻量 key 打破行缓存，避免移除 .equatable() 导致长列表回退。
             && lhs.themeRenderKey == rhs.themeRenderKey
     }
@@ -1557,13 +1569,13 @@ private struct ProjectRow: View, Equatable {
             Menu {
                 if showsSessionActions {
                     // 会话在创建瞬间就绑定 runtime，事后无法切换通道；菜单里保留显式通道选择。
-                    Button(action: onNewSession) {
-                        Label(L10n.text("ui.create_a_new_codex_session"), systemImage: "plus.circle")
-                    }
-                    .disabled(isUnavailable)
-                    if claudeChannelAvailable {
-                        Button(action: onNewClaudeSession) {
-                            Label(L10n.text("ui.create_a_new_claude_code_session"), systemImage: "sparkles")
+                    ForEach(WorkspaceSessionRuntimeChoice.available(
+                        runtimeProviders: availableRuntimeProviders
+                    )) { runtime in
+                        Button {
+                            onNewSession(runtime)
+                        } label: {
+                            Label(runtime.title, systemImage: runtime.actionSystemImage)
                         }
                         .disabled(isUnavailable)
                     }

@@ -101,7 +101,7 @@ struct NewSessionSheet: View {
         .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
             synchronizeWorkspaceSelection()
         }
-        .onChange(of: sessionStore.hasClaudeRuntimeChannel) { _, _ in
+        .onChange(of: sessionStore.availableRuntimeProviders) { _, _ in
             normalizeRuntimeSelection()
         }
         .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
@@ -152,7 +152,7 @@ struct NewSessionSheet: View {
 
     private func runtimeSection(tokens: ThemeTokens) -> some View {
         let choices = WorkspaceSessionRuntimeChoice.available(
-            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
+            runtimeProviders: sessionStore.availableRuntimeProviders
         )
 
         return VStack(alignment: .leading, spacing: 12) {
@@ -174,14 +174,12 @@ struct NewSessionSheet: View {
                 .accessibilityIdentifier("newSession.runtime")
             } else {
                 HStack(spacing: 12) {
-                    Image(systemName: "terminal.fill")
-                        .font(themeStore.uiFont(size: 16, weight: .semibold))
-                        .foregroundStyle(tokens.primaryAction)
+                    RuntimeBrandMarkIcon(mark: choices[0].brandMark, size: 16)
                         .frame(width: 36, height: 36)
                         .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Codex")
+                        Text(runtimeTitle(for: choices[0]))
                             .font(themeStore.uiFont(.body, weight: .semibold))
                             .foregroundStyle(tokens.primaryText)
                         Text(L10n.text("ui.the_only_runtime_currently_available"))
@@ -262,7 +260,11 @@ struct NewSessionSheet: View {
     }
 
     private func runtimeTitle(for choice: WorkspaceSessionRuntimeChoice) -> String {
-        choice == .codex ? "Codex" : "Claude Code"
+        switch choice {
+        case .codex: "Codex"
+        case .claude: "Claude Code"
+        case .deepseek: "DeepSeek Harness"
+        }
     }
 
     private func compactWorkspacePath(_ path: String) -> String {
@@ -306,7 +308,7 @@ struct NewSessionSheet: View {
 
     private func normalizeRuntimeSelection() {
         let choices = WorkspaceSessionRuntimeChoice.available(
-            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
+            runtimeProviders: sessionStore.availableRuntimeProviders
         )
         guard choices.contains(where: { $0.rawValue == lastRuntimeID }) else {
             lastRuntimeID = choices.first?.rawValue ?? WorkspaceSessionRuntimeChoice.codex.rawValue
@@ -320,7 +322,7 @@ struct NewSessionSheet: View {
         creationErrorMessage = nil
         defer { isCreating = false }
         let choices = WorkspaceSessionRuntimeChoice.available(
-            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
+            runtimeProviders: sessionStore.availableRuntimeProviders
         )
         // 创建前再次按当前通道能力校验，避免 Sheet 打开期间通道状态变化造成错误路由。
         let choice = choices.first(where: { $0.rawValue == lastRuntimeID }) ?? .codex

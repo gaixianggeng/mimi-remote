@@ -1,0 +1,164 @@
+{
+  "$fixture": "harness-native/rpc/events-result",
+  "provenance": "upstream-source",
+  "source": "packages/api/gateway/src/stream-protocol.ts#parseRemoteEventResult (blob 142598863), packages/api/gateway/src/client/remote-events.ts",
+  "harnessVersion": "0.1.6-alpha.2",
+  "liveCaptureGap": {
+    "status": "not-captured",
+    "reason": "本次实跑没有触发审批或选择题，$events 上只观测到 api-session/added|status|activity 三类广播事件，因此本夹具全部为源码级。",
+    "nextStep": "H04 起若需要审批/选择题的真实帧，必须先让一次真实工具调用进入 ask 策略并保持 $events 连接在线。"
+  },
+  "notes": [
+    "应答走 POST /api/$events/result，body 仍是 client-request 外壳，payload.args 是 RemoteEventResult。",
+    "args 的键必须恰好是 clientId、eventId、outcome 三个，多一个少一个都判非法。",
+    "outcome 有三个 kind：next、result、rejected。仓库旧文档写'只有 result 一种'是不完整的：那是 #492 审批路径的观测结果，不是 wire 的能力边界。",
+    "clientId 只是关联值，不是凭据；不能单独凭它授权。断线或撤权使旧绑定失效。"
+  ],
+  "cases": {
+    "approvalRequest": {
+      "type": "client-request",
+      "rpcId": "rpc-fixture-0501",
+      "method": "$events/result",
+      "payload": {
+        "args": {
+          "clientId": "client-fixture-0001",
+          "eventId": "evt-fixture-0001",
+          "outcome": {
+            "kind": "result",
+            "value": "allowed-once"
+          }
+        }
+      }
+    },
+    "approvalRejected": {
+      "type": "client-request",
+      "rpcId": "rpc-fixture-0502",
+      "method": "$events/result",
+      "payload": {
+        "args": {
+          "clientId": "client-fixture-0001",
+          "eventId": "evt-fixture-0001",
+          "outcome": {
+            "kind": "result",
+            "value": "rejected"
+          }
+        }
+      }
+    },
+    "questionsAnswer": {
+      "type": "client-request",
+      "rpcId": "rpc-fixture-0503",
+      "method": "$events/result",
+      "payload": {
+        "args": {
+          "clientId": "client-fixture-0001",
+          "eventId": "evt-fixture-0002",
+          "outcome": {
+            "kind": "result",
+            "value": {
+              "answers": [
+                {
+                  "id": "question-fixture-0001",
+                  "selected": [
+                    "option-fixture-a"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "outcomeNext": {
+      "why": "链式 waterfall 的中间确认；只带 kind。",
+      "type": "client-request",
+      "rpcId": "rpc-fixture-0504",
+      "method": "$events/result",
+      "payload": {
+        "args": {
+          "clientId": "client-fixture-0001",
+          "eventId": "evt-fixture-0003",
+          "outcome": {
+            "kind": "next"
+          }
+        }
+      }
+    },
+    "outcomeRejected": {
+      "why": "客户端拒绝处理该 waterfall，携带结构化错误；与审批业务结论 'rejected' 是两件事，不得混用。",
+      "type": "client-request",
+      "rpcId": "rpc-fixture-0505",
+      "method": "$events/result",
+      "payload": {
+        "args": {
+          "clientId": "client-fixture-0001",
+          "eventId": "evt-fixture-0004",
+          "outcome": {
+            "kind": "rejected",
+            "error": {
+              "name": "Error",
+              "message": "fixture rejection message",
+              "code": "fixture/rejection-code",
+              "details": {}
+            }
+          }
+        }
+      }
+    },
+    "success": {
+      "type": "server-response",
+      "rpcId": "rpc-fixture-0501",
+      "result": {
+        "ok": true,
+        "value": {}
+      }
+    },
+    "errorUnknownEvent": {
+      "type": "server-response",
+      "rpcId": "rpc-fixture-0501",
+      "result": {
+        "ok": false,
+        "error": {
+          "code": "gateway/lookup-not-found",
+          "message": "no pending remote event matches this correlation",
+          "details": {
+            "endpoint": "$events/result"
+          }
+        }
+      }
+    },
+    "negativeExtraKey": {
+      "why": "parseRemoteEventResult 用 exactKeys 校验三个键；多一个键即 'invalid Remote event result'。",
+      "request": {
+        "type": "client-request",
+        "rpcId": "rpc-fixture-0506",
+        "method": "$events/result",
+        "payload": {
+          "args": {
+            "clientId": "client-fixture-0001",
+            "eventId": "evt-fixture-0001",
+            "outcome": {
+              "kind": "result",
+              "value": "allowed-once"
+            },
+            "sessionId": "session-fixture-0001"
+          }
+        }
+      },
+      "expectedFailure": "invalid Remote event result"
+    },
+    "approvalValueDomain": [
+      "allowed-once",
+      "rejected",
+      "cancelled",
+      "unavailable"
+    ],
+    "rules": [
+      "首个有效应答生效，其他端收到同 eventId 的 cancel，迟到应答是空操作而不是错误。",
+      "断线重连后新客户端会重投同一个 eventId；重投必须更新原卡片而不是新增副本。",
+      "旧连接的 clientId 不得用于新连接回传。",
+      "只展示上游支持的回答：允许、拒绝、真实 question/options。不得生成'永久允许''整个会话允许'而实际发送一次性结果。",
+      "已授权且 pending 的请求不能因为用户没打开页面而被静默标成已解决。"
+    ]
+  }
+}

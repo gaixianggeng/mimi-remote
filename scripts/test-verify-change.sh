@@ -132,6 +132,20 @@ assert_not_contains "$go_output" "ios-dev.sh build-for-testing"
 go_fixture_output="$(assert_plan go_fixture internal/httpapi/testdata/request.json)"
 assert_contains "$go_fixture_output" "go test ./internal/httpapi -count=1"
 
+# contracts/harness-native 是 H00 新增的 Go/iOS 共享契约根。补映射前它整个落在
+# unknown_paths，导致任何检查执行前就 fail-closed 退出。
+harness_fixture_output="$(assert_plan harness_fixture contracts/harness-native/fixtures/stream/mux-carrier.json)"
+assert_contains "$harness_fixture_output" "bash ./scripts/check-harness-native-contract.sh"
+assert_contains "$harness_fixture_output" "PR Gate scope：go=true, ios=true"
+assert_contains "$harness_fixture_output" "自动高风险信号：检测到 Go/iOS 共享协议路径"
+assert_not_contains "$harness_fixture_output" "没有验证映射"
+# 与 contracts/mimi-protocol 同样由专用契约检查覆盖，quick 不再重复一次全仓 Go test。
+assert_not_contains "$harness_fixture_output" "Go 受影响范围使用完整回归"
+
+harness_manifest_output="$(assert_plan harness_manifest contracts/harness-native/manifest.json)"
+assert_contains "$harness_manifest_output" "bash ./scripts/check-harness-native-contract.sh"
+assert_not_contains "$harness_manifest_output" "没有验证映射"
+
 rust_leaf_output="$(assert_plan rust_leaf bridges/claude/crates/claude-bridge/src/lib.rs)"
 assert_contains "$rust_leaf_output" "-p alleycat-claude-bridge"
 assert_not_contains "$rust_leaf_output" "-p alleycat-bridge-core"

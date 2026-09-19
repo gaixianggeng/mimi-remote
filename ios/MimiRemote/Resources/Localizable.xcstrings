@@ -1,6 +1,23 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.search_runtime_unavailable": {
+      "comment": "A search may succeed for one runtime while another fails. Keep the available results visible.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ search is temporarily unavailable. Results may be incomplete."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 搜索暂不可用，结果可能不完整。"
+          }
+        }
+      }
+    },
     "ui.view_process": {
       "localizations": {
         "en": {
@@ -8911,6 +8928,54 @@
           "stringUnit": {
             "state": "translated",
             "value": "已选择 Debug 工作区 %@"
+          }
+        }
+      }
+    },
+    "ui.deepseek_models_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The DeepSeek model catalog is unavailable. Refresh and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 模型目录不可用，请刷新后重试"
+          }
+        }
+      }
+    },
+    "ui.deepseek_requires_full_access": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek supports Full Access only. Select it explicitly in the permissions menu; Harness still requests approvals."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 仅支持完全访问，请在权限菜单中明确选择；审批仍由 Harness 发起"
+          }
+        }
+      }
+    },
+    "ui.deepseek_text_only": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek currently supports text input only."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 当前仅支持文本输入"
           }
         }
       }
@@ -20446,6 +20511,91 @@
           "stringUnit": {
             "state": "translated",
             "value": "已置顶 %@"
+          }
+        }
+      }
+    },
+    "ui.context": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Context"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上下文"
+          }
+        }
+      }
+    },
+    "ui.context_runtime_context": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Runtime context"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行时上下文"
+          }
+        }
+      }
+    },
+    "ui.context_skill_catalog": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skill catalog"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "技能目录"
+          }
+        }
+      }
+    },
+    "ui.context_system_notice": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System notice"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统通知"
+          }
+        }
+      }
+    },
+    "ui.context_workspace_instructions": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Workspace instructions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区指令"
           }
         }
       }

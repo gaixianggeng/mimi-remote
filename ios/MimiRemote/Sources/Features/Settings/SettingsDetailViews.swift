@@ -1216,7 +1216,7 @@ struct DefaultModelSettingsView: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let runtimes = DefaultModelRuntime.allCases
+        let runtimes = displayedRuntimes
 
         Form {
             // 两个 runtime 各自一段，不再用分段控件互相遮挡：
@@ -1251,8 +1251,14 @@ struct DefaultModelSettingsView: View {
     }
 
     private func normalizeStoredEfforts() {
-        for runtime in DefaultModelRuntime.allCases {
+        for runtime in displayedRuntimes {
             normalizeStoredEffort(for: runtime)
+        }
+    }
+
+    private var displayedRuntimes: [DefaultModelRuntime] {
+        DefaultModelRuntime.allCases.filter {
+            $0 != .deepseek || sessionStore.isRuntimeAvailable($0.rawValue)
         }
     }
 
@@ -1463,6 +1469,8 @@ private extension DefaultModelRuntime {
             return "Codex"
         case .claude:
             return "Claude Code"
+        case .deepseek:
+            return "DeepSeek Harness"
         }
     }
 }

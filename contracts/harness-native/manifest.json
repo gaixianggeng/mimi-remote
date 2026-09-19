@@ -1,0 +1,327 @@
+{
+  "contract": "harness-native",
+  "version": 1,
+  "status": "frozen",
+  "frozenBy": "H00",
+  "frozenAt": "2026-09-19",
+  "baselines": {
+    "mimiRepo": {
+      "pr": 499,
+      "issue": 498,
+      "branch": "codex/gh-498-harness-runtime",
+      "head": "7f43f594df3920598e6a7fa4e84f49ab3c62d87c",
+      "base": "3a46e00cfa08b2c0af27ea485bf76ac296a49a64",
+      "note": "H01-H13 的实施基线。本地 main 工作树位于 base，不含本 PR 的 34 个提交。"
+    },
+    "harnessUpstream": {
+      "repo": "https://github.com/deepseek-ai/deepseek-harness",
+      "sourceReadCommit": "ddefc45fbc7f8e46dd73185e68295696d1297887",
+      "sourceReadTag": "dsh-v0.1.6-alpha.2",
+      "sourceReadPackageVersion": "0.1.6-alpha.2",
+      "liveCapturedPackage": "@deepseek-ai/dsh",
+      "liveCapturedVersion": "0.1.5-rc.2",
+      "liveCapturedNpmDistTag": "latest",
+      "liveCapturedTag": "dsh-v0.1.5-rc.2",
+      "liveCapturedCommit": "fb2c4b9e698e30edb738bca4cf0618587db7d203",
+      "note": "源码阅读取自 alpha 分支（含更新实现），实跑取自 npm latest。两者存在已知差异，见 versionSensitivity。契约以实跑版本为准，源码仅用于解释成因。"
+    },
+    "userInstalledHarness": {
+      "version": null,
+      "status": "unknown",
+      "reason": "本机未安装、未运行用户的 Harness。用户手机上的 App 构建版本同样未核对。",
+      "mitigation": "H00 改为在隔离目录内安装并运行一个独立 Harness（见 liveCaptureEnvironment），未触碰用户环境。"
+    },
+    "userInstalledAgentd": {
+      "distribution": "released macOS app bundle, bundled agentd",
+      "appVersion": "0.1.0",
+      "appBuild": 1,
+      "runtimeType": "codex_app_server",
+      "harnessSupport": false,
+      "harnessStrings": 0,
+      "note": "发行版 Mac App 内置 agentd，二进制内不含任何 harness/deepseek 符号。"
+    }
+  },
+  "provenance": {
+    "levels": ["live-capture", "upstream-source", "repo-recorded"],
+    "default": "live-capture",
+    "liveCapture": {
+      "status": "succeeded",
+      "harnessPackage": "@deepseek-ai/dsh",
+      "harnessVersion": "0.1.5-rc.2",
+      "profile": "web",
+      "isolatedHome": "独立的 DSH_HOME，位于本机研究缓存目录，非用户 Harness 环境。",
+      "modelFixture": "@deepseek-ai/dsh-llm-mock-server（上游自带的可编排 OpenAI 兼容 SSE 假模型），经 Node 原生类型剥离直接运行。",
+      "modelRoute": "llm-pi-ai 手写路由 h00-loopback -> http://127.0.0.1:<port>/v1，无任何真实供应商凭据。",
+      "captured": [
+        "envelope 正负例与真实错误码",
+        "session/list 空表与含真实会话两种结果",
+        "session/modelCatalog 完整结果",
+        "session/create、selectModel、prompt、cancel 的成功返回",
+        "session/page 一次完整真实回合的持久记录",
+        "session/control 的 baseline/projection/queue 帧",
+        "$events 的 ready/emit 帧与真实事件名",
+        "session/follow 的 snapshot/event/assistant-stream 帧",
+        "assistant-stream 三个完整回合（纯文本 / 工具调用 / 用户取消）的全部 chunk 与 end 帧",
+        "取消路径与重连待重投基线",
+        "end.outcome.eventType 的语义（用只读回读的持久记录对齐 seq 后钉死）"
+      ]
+    }
+  },
+  "liveCaptureEnvironment": {
+    "isolation": "全程在独立 DSH_HOME 与独立端口上运行；未安装、未重启、未升级用户任何 Harness，未做任何真实供应商调用。",
+    "installMethod": "npm（非项目默认的 pnpm）。",
+    "criticalPrerequisite": {
+      "symptom": "session/create 报 gateway/internal『agent-presets: refusing to compose an unscoped context』；关闭 agent-presets 后 prompt 报 session/agent-busy『file-upload: operation requires the Agent's own scope』。",
+      "rootCause": "npm 的扁平化安装产生了多份 @deepseek-ai/dsh-scope 物理副本：dsh-agent-loop 解析到 dsh-base 内嵌副本，dsh-agent-presets 解析到 dsh 内嵌副本。dsh-scope 用 Symbol 作 scope 键，两份模块实例导致 Symbol 身份不一致，scopeOf() 恒返回 undefined。",
+      "fix": "把全部内嵌副本折叠为指向同一目录的符号链接，使进程内只有一个 dsh-scope 模块实例。",
+      "classification": "安装方式导致的本地环境问题，不是上游缺陷。但它会让任何『隔离装一个 Harness 就能采集』的做法直接失败，后续任务复现时必须先满足该前提。"
+    },
+    "otherPrerequisites": [
+      "session/create 需要 cwd 或 workspaceId 二者之一；实测 cwd 单传可用，同时传两者会被 gateway/bad-request 拒绝。",
+      "llm-pi-ai 的手写路由对无凭据本地服务仍需 Authorization 头或 apiKeyEnv 占位，否则请求会被 OpenAI 兼容实现拒绝。",
+      "agent-default-model 设置节可用于把默认模型指向回环路由，使 CLI 与 web 两条路径都能走到假模型。"
+    ]
+  },
+  "upstreamBlobs": {
+    "ddefc45fbc7f8e46dd73185e68295696d1297887": {
+      "packages/api/session-controller/README.md": "f67355be0cb9737ebc67bf589528878bccc26e6d",
+      "packages/api/session-controller/src/index.ts": "f13f24f7dc94f78451d93ecd02150aa45518aca6",
+      "packages/api/session-controller/src/types.ts": "f03d8d1b656653ff4c85e273b77d721847052842",
+      "packages/api/session-controller/src/control.ts": "3fb8d0032e9a11168a995ef8450cbb76f6b6b9d1",
+      "packages/api/session-controller/src/list.ts": "4aa369c378f32d8d747510bd864bbbe96a09ab04",
+      "packages/api/gateway/src/stream-protocol.ts": "142598863ec569193504373b5c6137e76e84b6fa",
+      "packages/api/gateway/src/remote-error-codes.ts": "22f94749f52eb816debaaf74b9320ed7958f4319",
+      "packages/client/connection/src/rpc-host.ts": "d74734e1326bd84553aac811218070cd9a7c6da3",
+      "packages/client/connection/src/rpc-schema.ts": "dc919a8187f45670abcdbfefed4342faf5b9036a",
+      "packages/client/connection/src/rpc.ts": "9474d72c36e73888ef2351fe7bd602e03d7c8b7e",
+      "packages/typert/generator/src/analyzer.ts": "eebf7fbc29a45fcc3dcdb6df7a84e9c2b22daf1c",
+      "packages/test-support/llm-mock-server/src/index.ts": "b07a2bb09b0c9b33bd36ef671935b00433d9fc48"
+    },
+    "fb2c4b9e698e30edb738bca4cf0618587db7d203": {
+      "packages/api/session-controller/src/types.ts": "60f7a93e56a0f31b73cad8f9626ffb43a2cb90f6",
+      "packages/api/session-controller/src/control.ts": "9bdd5a05bff21864b963fa408963d2fa82be8c8f"
+    }
+  },
+  "wire": {
+    "http": {
+      "rpcRoute": "POST /api/<method>",
+      "streamRoute": "WS /api/remote.mux",
+      "auth": {
+        "handshake": "GET /?token=<process-token>",
+        "handshakeStatus": 303,
+        "credential": "Set-Cookie bound to hostname+port",
+        "authorizationHeaderAccepted": false,
+        "unauthenticatedStatus": 401,
+        "unauthenticatedVerifiedLive": true
+      },
+      "requestEnvelope": {
+        "type": "client-request",
+        "rpcId": "string",
+        "method": "string (must equal URL endpoint)",
+        "payload": "{args: object}；args 的键必须逐字等于 Remote 方法的形参名"
+      },
+      "responseEnvelope": {
+        "type": "server-response",
+        "rpcId": "string",
+        "result": "{ok:true,value} | {ok:false,error:{code,message,details}}"
+      },
+      "statusCodes": {
+        "businessError": 200,
+        "notFound": 404,
+        "nonJsonBody": 400,
+        "wrongContentType": 415,
+        "handlerThrew": 500
+      },
+      "endpointSegmentPattern": "^[A-Za-z0-9_$.-]+$",
+      "contentTypeRequired": "application/json",
+      "unknownMethodBody": "not found（纯文本，不是 envelope）"
+    },
+    "stream": {
+      "clientMessage": {
+        "open": {"type": "open", "streamId": "string", "endpoint": "string", "payload": "object"},
+        "cancel": {"type": "cancel", "streamId": "string"}
+      },
+      "serverMessage": {
+        "item": {"type": "item", "streamId": "string", "value": "unknown"},
+        "error": {"type": "error", "streamId": "string", "error": {"code": "string", "message": "string", "details": "object"}},
+        "end": {"type": "end", "streamId": "string"}
+      },
+      "internalEndpoints": {"events": "$events", "eventsResult": "$events/result"}
+    },
+    "methods": [
+      {"method": "session/list", "argsKey": "_request", "kind": "rpc", "request": "SessionListRequest", "value": "SessionListValue", "argsKeyLiveVerified": true},
+      {"method": "session/search", "argsKey": "request", "kind": "rpc", "request": "SessionSearchRequest", "value": "SessionSearchValue"},
+      {"method": "session/create", "argsKey": "request", "kind": "rpc", "request": "SessionCreateRequest", "value": "SessionCreateValue", "liveVerified": true},
+      {"method": "session/selectModel", "argsKey": "request", "kind": "rpc", "request": "SessionSelectModelRequest", "value": "SessionSelectModelValue", "liveVerified": true},
+      {"method": "session/modelCatalog", "argsKey": null, "kind": "rpc", "request": null, "value": "ModelCatalog", "liveVerified": true},
+      {"method": "session/page", "argsKey": "request", "kind": "rpc", "request": "SessionPageRequest", "value": "SessionPage", "liveVerified": true},
+      {"method": "session/prompt", "argsKey": "request", "kind": "rpc", "request": "SessionPromptRequest", "value": "SessionPromptValue", "liveVerified": true},
+      {"method": "session/cancel", "argsKey": "request", "kind": "rpc", "request": "SessionCancelRequest", "value": "SessionCancelValue", "liveVerified": true},
+      {"method": "session/follow", "argsKey": "request", "kind": "stream", "request": "SessionFollowRequest", "value": "SessionFollowFrame", "liveVerified": true},
+      {"method": "session/control", "argsKey": null, "kind": "stream", "request": null, "value": "SessionControlFrame", "liveVerified": true},
+      {"method": "$events", "argsKey": null, "kind": "stream", "request": null, "value": "RemoteEventDownlinkFrame", "liveVerified": true},
+      {"method": "$events/result", "argsKey": null, "kind": "rpc", "request": "RemoteEventResult", "value": null},
+      {"method": "workspace/create", "argsKey": "request", "kind": "rpc", "request": "WorkspaceCreateRequest", "value": "WorkspaceCreateValue", "liveVerified": true}
+    ],
+    "argumentBindingRule": {
+      "rule": "wire 上的 args 键是 Typert 生成器取 Remote 方法形参名得到的（wire = parameter.name.text）。",
+      "signalExcluded": "名为 signal 的形参不进入 wire。因此 session/modelCatalog 与 session/control 的 args 必须是空对象。",
+      "liveEvidence": "session/list 传 request 实测返回 gateway/arguments-invalid，文案为『args fields do not match the descriptor: missing \"_request\"』；改传 _request 即成功。"
+    }
+  },
+  "versionSensitivity": [
+    {
+      "area": "session/control baseline 与 queue 帧",
+      "at_0_1_5_rc_2": "SessionControlBaseline = {queues, jobs, projections}；帧联合含 {type:'queue', sessionId, items:[{id, placement, rpcId, message}]}",
+      "at_0_1_6_alpha_2": "SessionControlBaseline = {jobs, projections}；queue 帧与 SessionQueuedItem 被移除",
+      "impact": "控制流帧结构随版本变化，不能跨版本复用同一个解析器。",
+      "liveConfirmed": true,
+      "liveEvidence": "0.1.5-rc.2 实测 baseline 顶层键恰为 queues,jobs,projections，并观测到两条 queue 帧（入队与排空）。"
+    },
+    {
+      "area": "session/search 降级文案",
+      "at_0_1_5_rc_2": "gateway/internal，文案为 'session search is disabled: this deployment configures the session-query index with openAt \"never\"'",
+      "at_0_1_6_alpha_2": "未挂载 sessionQuery provider 时 gateway/internal，文案为 'session search is unavailable: this deployment does not mount @deepseek-ai/dsh-session-query'",
+      "impact": "降级判断必须按 code 而不是按文案。",
+      "liveConfirmed": true,
+      "liveEvidence": "0.1.5-rc.2 实测文案与左侧记录逐字一致。"
+    },
+    {
+      "area": "error vocabulary",
+      "at_0_1_5_rc_2": "无 session/writer-held",
+      "at_0_1_6_alpha_2": "新增 session/writer-held {sessionId}",
+      "impact": "错误映射表需要按版本容忍未知 code。"
+    },
+    {
+      "area": "session/updateQueue",
+      "at_0_1_5_rc_2": "同步，仅作用于 live Agent",
+      "at_0_1_6_alpha_2": "返回 Promise，会先 resume 冷会话",
+      "impact": "语义变化，非 wire 形状变化。"
+    },
+    {
+      "area": "session/create 的 agentPreset",
+      "at_0_1_5_rc_2": "装配了 agent 名册时返回 {sessionId, agentPreset}",
+      "impact": "agentPreset 是可选字段，客户端不得假设其存在。",
+      "liveConfirmed": true
+    }
+  ],
+  "assistantStream": {
+    "wireChunkVocabulary": ["block-start", "text-delta", "reasoning-delta", "tool-call-delta", "block-end", "usage", "finish"],
+    "wireChunkVocabularyLiveObserved": ["block-start", "text-delta", "tool-call-delta", "block-end", "usage", "finish"],
+    "reasoningDeltaUnobserved": true,
+    "durablePackedRecordTypes": ["text-chunks", "reasoning-chunks", "tool-call-chunks", "chunk"],
+    "twoVocabulariesWarning": "wire chunk 是 StreamChunk（text-delta）；持久事件内嵌的是压缩记录 AssistantStreamRecord（text-chunks，带 dt[]/texts[]）。wire 上永远看不到 *_chunks。",
+    "blockPairing": "block-start.blockType 与 block-end.block.type 成对，取值域为 ContentBlockMap 键：text/reasoning/image/file/tool-call/tool-result。",
+    "textAccumulation": "正文必须按 text-delta 累积，不能等 block-end；工具参数是 argumentsDelta 字符串增量，需自行拼接后 JSON.parse。",
+    "endOutcome": {
+      "shape": "{kind:'committed', eventType, seq}",
+      "seqMeaning": "该次提交在持久日志里的 seq。",
+      "eventTypeRule": "正常结算（turn/end 为 completed 或 error）-> assistant/message；用户中止（turn/end 为 aborted）-> assistant/attempt。",
+      "cancelIsNotAbandoned": "用户取消不产生 kind:'abandoned'，它照样 committed，只能靠 eventType 区分。消费者不得把 kind:'committed' 当成『有完整正文』。",
+      "liveConfirmed": true,
+      "evidence": "只读 session/page 回读三个真实会话：completed->assistant/message@seq16；error->assistant/message@seq16；aborted(user)->assistant/attempt@seq16。",
+      "abandonedUnobserved": true
+    },
+    "revisionRule": "连续，expected = previous + 1，start 为 1；跳号必须重开 follow。",
+    "indexRule": "chunk.index 稠密递增（从 0），end 也带 index，接在最后一个 chunk 之后。"
+  },
+  "recovery": {
+    "followBeforePage": true,
+    "pageThroughSeqSource": "follow opening snapshot cursor",
+    "pageThroughSeqLiveEvidence": "throughSeq 传 0 时只读到 seq 0 一条记录；传 999999（远超当前 cursor）返回空 records；回传 snapshot.cursor 后读到完整记录（实测 19/20 条）。",
+    "assistantStreamRevision": "contiguous; expected = previous + 1; gap requires reopen",
+    "assistantStreamBaseline": "snapshot.assistantStream {revision, activeAttempt?{attemptId,startedAfterSeq,turn,step,nextIndex,stream}}",
+    "assistantStreamBaselineLiveVerified": true,
+    "assistantStreamOmittedWhenOptedIn": "gateway/internal 'session assistant stream omitted its opted-in opening baseline'",
+    "turnEndReasonsObserved": [
+      {"kind": "completed"},
+      {"kind": "error", "error": {"message": "string", "code": "string"}},
+      {"kind": "aborted", "reason": {"kind": "user"}}
+    ],
+    "controlBaselineScope": "process-local；Host 重启后无法重建 jobs。",
+    "directoryInvalidation": {
+      "available": "partial",
+      "detail": "$events 实测广播 api-session/added、api-session/status、api-session/activity；session/control 广播 projection 与 queue/jobs 变化，但不订阅 api-session/added。",
+      "liveConfirmed": true,
+      "openQuestion": "本次只证明发起创建的那条连接会收到 api-session/added；它是否会推给另一条 $events 连接尚未验证。",
+      "fallbackRequired": true,
+      "fallback": "仅列表可见且 App 前台时，每 5 秒最多一次合并后的 session/list 请求。"
+    }
+  },
+  "fixtures": {
+    "root": "contracts/harness-native/fixtures",
+    "desensitization": "协议常量（类型名、事件名、枚举值、键名、工具名、模型与供应方名）原样保留；用户数据（会话标识、路径、正文、工具参数、标题）替换为虚构夹具值。未登记字符串降级为 <string:N> 形式。",
+    "digestAlgorithm": "sha256",
+    "digestNote": "H00 采集版本为 @deepseek-ai/dsh 0.1.5-rc.2（npm dist-tag latest，tag dsh-v0.1.5-rc.2）。逐文件 SHA-256 见 fixtureDigests；任一夹具被改写都必须同步更新摘要。",
+    "files": [
+      "fixtures/rpc/session-list.json",
+      "fixtures/rpc/session-search.json",
+      "fixtures/rpc/session-model-catalog.json",
+      "fixtures/rpc/session-commands.json",
+      "fixtures/rpc/session-page.json",
+      "fixtures/rpc/envelope-errors.json",
+      "fixtures/rpc/events-result.json",
+      "fixtures/stream/mux-carrier.json",
+      "fixtures/stream/follow-frames.json",
+      "fixtures/stream/assistant-stream.json",
+      "fixtures/stream/durable-events.json",
+      "fixtures/stream/events-interaction.json",
+      "fixtures/stream/control-frames.json",
+      "fixtures/recovery/recovery-semantics.json"
+    ]
+  },
+  "fixtureDigests": {
+    "fixtures/rpc/session-list.json": "998b3130c36f0fefb8b88d5ab788e341ccebb60bd60ad84242fceecdf3b40c56",
+    "fixtures/rpc/session-search.json": "6c67c238e0625a46c2ae3115a5b1fb51f9162acd7e10532520aeceb9442c8439",
+    "fixtures/rpc/session-model-catalog.json": "5f16814be615380a28b6f873456db8154ded0a7b57d4c5dcc2ad369ee0abfadc",
+    "fixtures/rpc/session-commands.json": "4ce8bab803635defe8a763d764df771d92ac0b69a4b51985543f6715c2c367f7",
+    "fixtures/rpc/session-page.json": "aba6f31647e02479a42e56c37bd0d9359e839968524a6244eca3562c3acff184",
+    "fixtures/rpc/envelope-errors.json": "f37a5a97256751b84b16bdb6995f2be877930ca2a37fba69328f388777a73319",
+    "fixtures/rpc/events-result.json": "2ca174b3d2183c5a141cdbbb32d224adb7427573ad720ce7ab460d84104299ce",
+    "fixtures/stream/mux-carrier.json": "c81c4965766593c51979e6d398bccb3a34fad10531957b4eb159868f7223af92",
+    "fixtures/stream/follow-frames.json": "0ed185ce83536a289c2cc27945231717ebb398ca8842593c74fdd2b31d475aac",
+    "fixtures/stream/assistant-stream.json": "0797c10222574d70896d97debe423d0e19ca17114e2d69445553f7d97b11263c",
+    "fixtures/stream/durable-events.json": "d07fb3393ee2a2969aa870b923d5019eb4a2fe7761920c975de16e748a5f489e",
+    "fixtures/stream/events-interaction.json": "3af7b060e462e842a4e571bcbd9273fd4d535c8b018cec5feb17788b7d73e619",
+    "fixtures/stream/control-frames.json": "27bd9abcf07720185593d89ef6066b3e971655b8062c8060e52b64e0ed8f769b",
+    "fixtures/recovery/recovery-semantics.json": "5d53be0008f046dcb4e31f1e660410bcf892f977d60b05620ce16d185bcafc82"
+  },
+  "negativeCasesRequired": [
+    {"case": "session/list 用 'request' 而非 '_request' 传参必须被拒绝", "expected": "gateway/arguments-invalid", "liveConfirmed": true},
+    {"case": "session/modelCatalog 传任何参数必须被拒绝", "expected": "gateway/arguments-invalid", "liveConfirmed": true},
+    {"case": "未知方法必须 404 且响应体为纯文本 not found", "expected": "HTTP 404", "liveConfirmed": true},
+    {"case": "无 Cookie 的 /api/* 必须 401", "expected": "HTTP 401", "liveConfirmed": true},
+    {"case": "session/create 同时传 workspaceId 与 cwd 必须被拒绝", "expected": "gateway/bad-request", "liveConfirmed": false},
+    {"case": "URL endpoint 与 body.method 不一致必须被拒绝", "expected": "gateway/bad-request", "liveConfirmed": false},
+    {"case": "endpoint 含空段或 '.'/'..' 必须 404", "expected": "HTTP 404", "liveConfirmed": false},
+    {"case": "错误对象必须读 details 而非 data", "expected": "details 携带结构化细节", "liveConfirmed": true},
+    {"case": "WS 帧 type 为 error/end 时不得当成空 item 静默丢弃", "expected": "按判别式分支", "liveConfirmed": false},
+    {"case": "assistant-stream revision 跳号必须重开 follow", "expected": "重开", "liveConfirmed": false},
+    {"case": "opt-in assistantStream 却缺 opening baseline 必须报 gateway/internal", "expected": "gateway/internal", "liveConfirmed": false},
+    {"case": "waterfall 帧缺 agentId 时不得认领唯一活跃会话", "expected": "不认领", "liveConfirmed": false},
+    {"case": "wire chunk.type 不得出现 *_chunks（那是持久压缩记录的名字）", "expected": "按 StreamChunk 词表分支", "liveConfirmed": true},
+    {"case": "用户取消的回合 outcome 仍是 committed，不得据此当作有完整正文", "expected": "按 eventType 区分 assistant/attempt", "liveConfirmed": true},
+    {"case": "正文不得等 block-end 才渲染，必须按 text-delta 累积", "expected": "增量累积", "liveConfirmed": true},
+    {"case": "session/page 的 throughSeq 不得写死或猜值，必须取自本次 follow 的 snapshot.cursor", "expected": "取自 snapshot.cursor", "liveConfirmed": true}
+  ],
+  "gateA": {
+    "decision": "approved",
+    "date": "2026-09-19",
+    "option": "A",
+    "approvedBy": "负责人",
+    "terms": [
+      "接受依据 0.1.5-rc.2 实跑采集的冻结契约。",
+      "审批/选择题帧不补采；H03 按源码形状实现 $events waterfall 与 $events/result，并在 Gate B 用负向测试覆盖。",
+      "审批帧形状属源码级，实施者不得当作已实测事实；依赖它的代码必须有『形状不符即拒绝』路径，不得静默降级。"
+    ],
+    "releasedTasks": ["H01"]
+  },
+  "notProven": [
+    "审批请求/应答帧（$events waterfall）未在本次采集出现，形状仍为源码级。本轮回环模型无法触发需要人机应答的工具调用。",
+    "assistant-stream 的 kind:'abandoned' 未观测，只按源码处理。",
+    "reasoning-delta 未观测（假模型未输出推理）。",
+    "Host 重启后的 ready/close 语义未单独验证。",
+    "跨连接（另一条 $events）是否收到 api-session/added 未验证。",
+    "用户手机上 App 的构建版本未核对。"
+  ]
+}

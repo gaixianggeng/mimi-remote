@@ -1823,7 +1823,7 @@ func TestGatewayThreadTurnsListMarksItemsListAvailableForClaude(t *testing.T) {
 		"itemsView":          "summary",
 		"itemsListAvailable": false,
 	}
-	if err := validateGatewayThreadTurnsListParams(params); err != nil {
+	if err := validateGatewayThreadTurnsListParams(appServerRuntimeClaudeID, params); err != nil {
 		t.Fatalf("thread/turns/list 合法参数不应被拒绝：%v", err)
 	}
 

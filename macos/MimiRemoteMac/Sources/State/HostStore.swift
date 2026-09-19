@@ -21,6 +21,9 @@ final class HostStore {
     private(set) var claudeConfiguration: ClaudeConfigurationResult?
     private(set) var isUpdatingClaude = false
     private(set) var claudeError: String?
+    private(set) var deepSeekConfiguration: DeepSeekConfigurationResult?
+    private(set) var isUpdatingDeepSeek = false
+    private(set) var deepSeekError: String?
     private(set) var tailcatStatus: TailcatStatus?
     private(set) var isUpdatingTailcat = false
     private(set) var tailcatError: String?
@@ -82,8 +85,12 @@ final class HostStore {
 
     var experimentMenuStatusText: String? {
         guard owner == .macApp else { return "不可管理" }
-        if isUpdatingClaude || isUpdatingTailcat { return "正在更新" }
-        let enabled = [claudeEnabled ? "Claude" : nil, tailcatEnabled ? "Tailcat" : nil].compactMap { $0 }
+        if isUpdatingClaude || isUpdatingTailcat || isUpdatingDeepSeek { return "正在更新" }
+        let enabled = [
+            claudeEnabled ? "Claude" : nil,
+            deepSeekEnabled ? "DeepSeek" : nil,
+            tailcatEnabled ? "Tailcat" : nil,
+        ].compactMap { $0 }
         return enabled.isEmpty ? nil : enabled.joined(separator: "、") + " 已启用"
     }
 
@@ -214,7 +221,8 @@ final class HostStore {
             }
             await enableLoginLaunchBestEffort()
             let reloadClaudeConfiguration = await reconcileClaudeConfigurationAtLaunch()
-            await startMacAgentIfNeeded(reloadConfiguration: reloadClaudeConfiguration)
+            let reloadDeepSeekConfiguration = await reconcileDeepSeekConfigurationAtLaunch()
+            await startMacAgentIfNeeded(reloadConfiguration: reloadClaudeConfiguration || reloadDeepSeekConfiguration)
         }
         if owner == .macApp, runtimeStatusNeedsFollowUp {
             // App 启动时就把服务端占位快照追到可展示结果，用户第一次展开
@@ -600,6 +608,103 @@ final class HostStore {
             }
         } catch {
             claudeError = error.localizedDescription
+        }
+    }
+
+    var deepSeekEnabled: Bool {
+        deepSeekConfiguration?.enabled ?? deepSeekRuntime?.enabled ?? false
+    }
+
+    var canChangeDeepSeek: Bool {
+        owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
+    }
+
+    private var deepSeekRuntime: AgentRuntimeStatus? {
+        status?.runtimeStatus?.runtimes.first { $0.id.caseInsensitiveCompare("deepseek") == .orderedSame }
+    }
+
+    var deepSeekStatusTitle: String {
+        if isUpdatingDeepSeek { return "正在检查" }
+        if deepSeekError != nil { return "需要处理" }
+        if !deepSeekEnabled {
+            return deepSeekConfiguration?.discovered == true ? "发现运行中的服务" : "未启用"
+        }
+        guard let runtime = deepSeekRuntime else { return "等待服务加载" }
+        if runtime.reason == "refresh_in_progress" { return "正在检查" }
+        switch runtime.state {
+        case .available, .connected: return "已连接"
+        case .signedOut: return "需要更新启动链接"
+        case .disabled: return "等待服务加载"
+        case .unavailable: return "暂不可用"
+        }
+    }
+
+    var deepSeekStatusDetail: String {
+        if owner != .macApp { return "先由 Mimi Remote Mac 接管服务，再配置 DeepSeek。" }
+        if let deepSeekError { return deepSeekError }
+        if deepSeekEnabled, deepSeekRuntime?.reason == "refresh_in_progress" {
+            return "正在确认 agentd 与 Harness 的连接。"
+        }
+        if deepSeekEnabled, deepSeekRuntime?.state == .unavailable {
+            return "Harness 暂不可用。确认它仍在运行后，点击重新检测。"
+        }
+        return deepSeekConfiguration?.message ?? "自动检测本机运行中的 Harness 后台服务。"
+    }
+
+    func inspectDeepSeek() async {
+        guard owner == .macApp, !isUpdatingDeepSeek, !isBusy else { return }
+        isUpdatingDeepSeek = true
+        defer { isUpdatingDeepSeek = false }
+        do {
+            let result = try await agent.configureDeepSeek(.inspect, nil)
+            deepSeekConfiguration = result
+            deepSeekError = result.enabled && !result.available ? result.message : nil
+        } catch {
+            deepSeekError = error.localizedDescription
+        }
+    }
+
+    func configureDeepSeek(_ action: DeepSeekConfigurationAction, startupURL: String? = nil) async {
+        guard canChangeDeepSeek, !isUpdatingDeepSeek else { return }
+        isBusy = true
+        isUpdatingDeepSeek = true
+        deepSeekError = nil
+        defer {
+            isUpdatingDeepSeek = false
+            isBusy = false
+        }
+        do {
+            let result = try await agent.configureDeepSeek(action, startupURL)
+            deepSeekConfiguration = result
+            // 最新的直接检查失败优先于 runtime-status 的旧缓存，避免仍显示“已连接”。
+            deepSeekError = result.enabled && !result.available ? result.message : nil
+            if result.restartRequired {
+                do {
+                    try await reloadMacAgentForConfigurationChange()
+                } catch {
+                    // 配置已提交但服务未加载时必须明确区分，不能把预检成功显示为已连接。
+                    deepSeekError = "配置已保存，但 agentd 重新加载失败。请重试启动服务。\(error.localizedDescription)"
+                    fail(error)
+                    return
+                }
+            }
+            await refreshMacAgentStatus()
+            if runtimeStatusNeedsFollowUp { scheduleRuntimeStatusFollowUp() }
+        } catch {
+            deepSeekError = error.localizedDescription
+        }
+    }
+
+    private func reconcileDeepSeekConfigurationAtLaunch() async -> Bool {
+        do {
+            // 只刷新已启用的托管连接。检测到 Harness 不代表用户同意自动启用。
+            let result = try await agent.configureDeepSeek(.refresh, nil)
+            deepSeekConfiguration = result
+            deepSeekError = result.enabled && !result.available ? result.message : nil
+            return result.restartRequired
+        } catch {
+            deepSeekError = "DeepSeek 自动检测失败：\(error.localizedDescription)"
+            return false
         }
     }
 

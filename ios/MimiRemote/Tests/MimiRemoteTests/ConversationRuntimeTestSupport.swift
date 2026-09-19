@@ -468,7 +468,9 @@ func waitForFakeAppServerRequest(
     file: StaticString = #filePath,
     line: UInt = #line
 ) async throws -> CodexAppServerRequest {
-    for _ in 0..<200 {
+    // 轮询预算从 2s 放宽到 4s：CI 负载下 DeepSeek observe/follow 链路偶发超时，
+    // 与产品逻辑无关（见 DeepSeekSessionLifecycleTests 两个用例的 CI 抖动）。
+    for _ in 0..<400 {
         let messages = await transport.sentMessages()
         if startIndex < messages.count {
             for text in messages[startIndex...] {

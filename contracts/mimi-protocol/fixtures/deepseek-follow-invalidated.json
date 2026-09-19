@@ -1,0 +1,5 @@
+{
+  "jsonrpc": "2.0",
+  "method": "_mimi/deepseekFollow/invalidated",
+  "params": {"threadId": "session-a", "reason": "idle"}
+}

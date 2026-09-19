@@ -1901,6 +1901,14 @@ final class HostStoreTests: XCTestCase {
                 error: nil
             )
         },
+        configureDeepSeek: @escaping @Sendable (
+            DeepSeekConfigurationAction, String?
+        ) async throws -> DeepSeekConfigurationResult = { _, _ in
+            DeepSeekConfigurationResult(
+                enabled: false, available: false, discovered: false,
+                baseURL: nil, message: "未发现服务", restartRequired: false
+            )
+        },
         healthCheck: @escaping @Sendable (String) async -> Bool = { _ in true },
         systemPrivacySettings: SystemPrivacySettingsClient = .noop,
         terminateApplication: @escaping @MainActor () -> Void = {}
@@ -1918,6 +1926,7 @@ final class HostStoreTests: XCTestCase {
             pair: pair ?? { _ in Self.pairing },
             tailcatStatus: tailcatStatus,
             configureTailcatDERPMap: configureTailcatDERPMap,
+            configureDeepSeek: configureDeepSeek,
             version: { readyStatus.version }
         )
         let services = ServiceManagementClient(

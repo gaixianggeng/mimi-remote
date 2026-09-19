@@ -120,8 +120,9 @@ extension SessionStore {
         hostScope: HostScope,
         generation: Int
     ) async {
-        let includesClaude = (try? await client.runtimeChannelAvailable(runtimeProvider: "claude")) == true
-        for runtimeProvider in includesClaude ? ["codex", "claude"] : ["codex"] {
+        for runtimeProvider in RuntimeFeatureSupport.runtimeProviders {
+            if runtimeProvider != "codex",
+               (try? await client.runtimeChannelAvailable(runtimeProvider: runtimeProvider)) != true { continue }
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
             let result = await sessionLibraryPage(
                 workspace: workspace,

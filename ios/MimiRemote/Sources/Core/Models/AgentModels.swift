@@ -1710,6 +1710,8 @@ enum MessageRole: String, Codable, Hashable {
 enum MessageKind: String, Codable, Hashable {
     case message
     case commentary
+    // Harness 注入的上下文（工作区指令/技能目录/运行时快照等），system 侧的折叠内容。
+    case context = "context"
     case plan
     case reasoningSummary = "reasoning_summary"
     case commandSummary = "command_summary"
@@ -1742,6 +1744,8 @@ enum ConversationActivityCategory: String, Codable, Hashable {
     case editFile = "edit_file"
     case toolCall = "tool_call"
     case error
+    // Harness 注入上下文，非工具/思考类，展示为 system 侧可折叠条目。
+    case context = "context"
 }
 
 /// 命令在主时间线中的展示语义。协议能明确给出只读动作时展示为探索，
@@ -1967,8 +1971,33 @@ struct ConversationActivityPayload: Codable, Hashable {
                 toolPresentationKind: presentation.kind
             )
 
+        case "systemContext":
+            let sourceKind = Self.firstString(in: item, keys: ["sourceKind"])?.trimmedNonEmpty
+            let sourceForm = Self.firstString(in: item, keys: ["sourceForm"])?.trimmedNonEmpty
+            let text = Self.firstString(in: item, keys: ["text"])?.trimmedNonEmpty
+            self.init(
+                category: .context,
+                displayTitle: Self.contextDisplayTitle(sourceKind: sourceKind, sourceForm: sourceForm),
+                subtitle: text
+            )
+
         default:
             return nil
+        }
+    }
+
+    /// 把 Harness 注入上下文（systemContext 的 sourceKind/sourceForm）映射到稳定的用户可见标题。
+    /// 拿不到明确来源时回退到通用「上下文」，不要泄漏内部 kind 枚举名。
+    static func contextDisplayTitle(sourceKind: String?, sourceForm: String?) -> String {
+        switch sourceKind {
+        case "agent-instructions":
+            return L10n.text("ui.context_workspace_instructions")
+        case "skill-catalog":
+            return L10n.text("ui.context_skill_catalog")
+        case "plugin":
+            return sourceForm == "notice" ? L10n.text("ui.context_system_notice") : L10n.text("ui.context_runtime_context")
+        default:
+            return L10n.text("ui.context")
         }
     }
 
@@ -1984,6 +2013,8 @@ struct ConversationActivityPayload: Codable, Hashable {
             return .fileChangeSummary
         case .error:
             return .error
+        case .context:
+            return .context
         }
     }
 
@@ -1998,6 +2029,8 @@ struct ConversationActivityPayload: Codable, Hashable {
         case .toolCall:
             return toolSummaryText
         case .error:
+            return subtitle ?? displayTitle
+        case .context:
             return subtitle ?? displayTitle
         }
     }
