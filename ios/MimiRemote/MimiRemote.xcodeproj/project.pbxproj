@@ -101,6 +101,7 @@
 		391A66E7F197E57DBA1239DF /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 6C892E2BB83F2EE5FDD6EDA4 /* Localizable.xcstrings */; };
 		3942D0F45FDBA6578D875940 /* testCompletedGoalStatusTrayRemainsVisibleAfterTurnFinishes.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 2EBD11FEEFA3EA7C03993BE1 /* testCompletedGoalStatusTrayRemainsVisibleAfterTurnFinishes.1.png */; };
 		39BC098D3DD6A3AB3EA13BCA /* SessionStoreHistoryItemEnrichment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B21C203D451C1F559CD1327 /* SessionStoreHistoryItemEnrichment.swift */; };
+		3A23BEDFA84EBB2D6F548D41 /* HarnessNativeRoutingSeamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CD0035558A54BA51E9FC673 /* HarnessNativeRoutingSeamTests.swift */; };
 		3AA6DA50C95E3E7A2D9899EC /* ManagedConnectionStoreKitClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7557CAF6E405B0327D0B7E9 /* ManagedConnectionStoreKitClientTests.swift */; };
 		3B0E963BB2856F7CDD36EB67 /* MessageStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9CAFB1927C976C000C9E026 /* MessageStore.swift */; };
 		3B7C6F8101AC352585369923 /* SettingsChoiceRowSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ADF7C1BCDC8114BB0CC589D /* SettingsChoiceRowSnapshotTests.swift */; platformFilters = (ios, ); };
@@ -146,6 +147,7 @@
 		55C47BB6B9F792685CF30178 /* CarStatusSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F194D291F4AC7CA28CE52FD /* CarStatusSnapshot.swift */; };
 		55D43B731CFE9C5246B02D1C /* testComposerStatusTrayCrowdedState.1.png in Resources */ = {isa = PBXBuildFile; fileRef = E4C85188C13516219753D4ED /* testComposerStatusTrayCrowdedState.1.png */; };
 		55D520C10E168BFEA7E4A619 /* LegalDocumentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B546C68F6A4EDDA47CD25FD7 /* LegalDocumentView.swift */; };
+		570F7C6B4BCA5CFB28027D07 /* HarnessSessionWebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 631F9153EA8E12A1BB76BE0A /* HarnessSessionWebSocketClient.swift */; };
 		591899A939FF966D858CA1B2 /* ConversationStoreTimelineSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = D49F8ED744FFAB23E4EF8C96 /* ConversationStoreTimelineSource.swift */; };
 		594989D4A8EF0493E3127965 /* ConversationTimelineHistoryScrollTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C732DD4062EFC36827E1937A /* ConversationTimelineHistoryScrollTests.swift */; };
 		599CFC31A5F3C5F8390CB71F /* testDisconnectedStateCarriesWarningInsideCard.disconnected-compact.png in Resources */ = {isa = PBXBuildFile; fileRef = A4AAC3D3BED6B94860B6595F /* testDisconnectedStateCarriesWarningInsideCard.disconnected-compact.png */; };
@@ -264,6 +266,7 @@
 		989EAAF180B2EC736E7D8725 /* DeviceSettingsNavigationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF8D7333529B1DA4AEEADE91 /* DeviceSettingsNavigationUITests.swift */; };
 		989F7144D36711010C69FAD9 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 6C892E2BB83F2EE5FDD6EDA4 /* Localizable.xcstrings */; };
 		9928E62AE42C8C038223B3EC /* testComposerStatusTrayExtremelyNarrowCompactWidth.1.png in Resources */ = {isa = PBXBuildFile; fileRef = CEE63E1F88F94DC3D0C543CF /* testComposerStatusTrayExtremelyNarrowCompactWidth.1.png */; };
+		9968EED6771E4057CB4D1D0A /* HarnessSessionAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5DF2866E537A15747CC729B /* HarnessSessionAPIClient.swift */; };
 		999E3BF5F93437E385730F0B /* testUnconfiguredConnectionSettingsOnWideWidth.unconfigured-wide.png in Resources */ = {isa = PBXBuildFile; fileRef = 16CB0D7EC045B12FA456084E /* testUnconfiguredConnectionSettingsOnWideWidth.unconfigured-wide.png */; };
 		9B897FC15CC75C70A0DC5444 /* TokenUsageCardSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 620EE3CCFD6A92164C8F272F /* TokenUsageCardSnapshotTests.swift */; platformFilters = (ios, ); };
 		9B9483D073425EF469DF701D /* testUnconfiguredConnectionSettingsOnWideWidthInDarkAppearance.unconfigured-wide-dark.png in Resources */ = {isa = PBXBuildFile; fileRef = 06541D01185FB619F3F3FFF7 /* testUnconfiguredConnectionSettingsOnWideWidthInDarkAppearance.unconfigured-wide-dark.png */; };
@@ -540,6 +543,7 @@
 		1A5F1AC89A52C27FEFBAD3D3 /* SharedSSHAppServerQueueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedSSHAppServerQueueTests.swift; sourceTree = "<group>"; };
 		1B21C203D451C1F559CD1327 /* SessionStoreHistoryItemEnrichment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreHistoryItemEnrichment.swift; sourceTree = "<group>"; };
 		1C6FA730D92E0B37BC0393F0 /* ConversationActivityRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationActivityRows.swift; sourceTree = "<group>"; };
+		1CD0035558A54BA51E9FC673 /* HarnessNativeRoutingSeamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessNativeRoutingSeamTests.swift; sourceTree = "<group>"; };
 		1DFDA1FF6067F862CB347130 /* NotificationRouteResolutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRouteResolutionTests.swift; sourceTree = "<group>"; };
 		1E0B093A7A3A0D3BABBF9965 /* UnifiedWorkbenchShell+CompactNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UnifiedWorkbenchShell+CompactNavigation.swift"; sourceTree = "<group>"; };
 		1F4C7F055E8F17853BC7CB04 /* testModelPickerAdaptiveWidthAndAccessibilityLayouts.iphone-390-dark.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testModelPickerAdaptiveWidthAndAccessibilityLayouts.iphone-390-dark.png"; sourceTree = "<group>"; };
@@ -672,6 +676,7 @@
 		61B287032A29ABBC9D670E94 /* NewSessionPresentationSourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewSessionPresentationSourceTests.swift; sourceTree = "<group>"; };
 		620EE3CCFD6A92164C8F272F /* TokenUsageCardSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenUsageCardSnapshotTests.swift; sourceTree = "<group>"; };
 		62EF5C12067114B2EBC4FE68 /* testSessionLibraryDensityAndAccessibilityLayouts.ipad-pro-1366-dark-contrast.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testSessionLibraryDensityAndAccessibilityLayouts.ipad-pro-1366-dark-contrast.png"; sourceTree = "<group>"; };
+		631F9153EA8E12A1BB76BE0A /* HarnessSessionWebSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessSessionWebSocketClient.swift; sourceTree = "<group>"; };
 		640F92290AC3DAED201E1CD0 /* ProjectSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSidebarView.swift; sourceTree = "<group>"; };
 		64E9EA7D6A93EB6697C0B874 /* ComposerTextEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerTextEditor.swift; sourceTree = "<group>"; };
 		657215B4124C9FDDEA161D2C /* AppleVoiceStartupWatchdogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleVoiceStartupWatchdogTests.swift; sourceTree = "<group>"; };
@@ -910,6 +915,7 @@
 		F42F1AE013A0593C1CEF7217 /* testMultipleUnavailableConnectionsAtAccessibilitySize.multiple-unavailable-accessibility.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testMultipleUnavailableConnectionsAtAccessibilitySize.multiple-unavailable-accessibility.png"; sourceTree = "<group>"; };
 		F496EBE1E6484F4DF9EC8186 /* ManagedConnectionDeviceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedConnectionDeviceStore.swift; sourceTree = "<group>"; };
 		F55F20982430C816BB70A7F5 /* FileAttachmentModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileAttachmentModelsTests.swift; sourceTree = "<group>"; };
+		F5DF2866E537A15747CC729B /* HarnessSessionAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessSessionAPIClient.swift; sourceTree = "<group>"; };
 		F5EC542E43C2955804F35E34 /* ConversationHistoryItemEnrichmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationHistoryItemEnrichmentTests.swift; sourceTree = "<group>"; };
 		F5EF45DF782D873112FB24F1 /* MimiRemoteUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = MimiRemoteUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F7A631C01496AAA7C083AA6B /* testModelPickerAdaptiveWidthAndAccessibilityLayouts.ipad-popover-420.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testModelPickerAdaptiveWidthAndAccessibilityLayouts.ipad-popover-420.png"; sourceTree = "<group>"; };
@@ -1173,6 +1179,7 @@
 				D231C6876074429C2374261A /* ForkOnWriterConflictProtocolTests.swift */,
 				2C2FCF65A5A23A9D87948F4F /* GitQuickPublishTests.swift */,
 				3277FB115FDF832D6D8AE168 /* GuidanceSendLifecycleTests.swift */,
+				1CD0035558A54BA51E9FC673 /* HarnessNativeRoutingSeamTests.swift */,
 				7738DFB157CF0073926DF5BF /* HostStatusStoreTests.swift */,
 				053D35545CB6F6F836EAADBA /* HostWarmSnapshotTests.swift */,
 				8AA53A2531C62C2974077C88 /* LocalizationTests.swift */,
@@ -1308,6 +1315,8 @@
 				DD3F9E8A8ED2FD8317FB92F2 /* CodexAppServerThreadOwnership.swift */,
 				BBA6E082051A620B6BDFFED5 /* CodexAppServerTransport.swift */,
 				5399A4FAF6DD4671B317B47E /* CodexAppServerTurnStartObservation.swift */,
+				F5DF2866E537A15747CC729B /* HarnessSessionAPIClient.swift */,
+				631F9153EA8E12A1BB76BE0A /* HarnessSessionWebSocketClient.swift */,
 				FD7E14A8B39BFA1C4D7C4D88 /* ManagedConnectionDeviceAPIClient.swift */,
 				BFC8F89BF1B2CDD9984B85B7 /* ManagedConnectionEntitlementAPIClient.swift */,
 				0F61AFF194ED42377F56DF80 /* ManagedConnectionEventAPIClient.swift */,
@@ -1910,9 +1919,9 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				125BCE4367937D9DC555C549 /* MimiRemote */,
 				E69A8F2B366D13420F896D9A /* MimiCarStatusWidgetExtension */,
 				22CB7C5ED4DDFD9D2BA0A103 /* MimiNotificationServiceExtension */,
-				125BCE4367937D9DC555C549 /* MimiRemote */,
 				6ED3D6FBDCB329C9EB84804C /* MimiRemoteTests */,
 				6EA37D042F071F4E5E66275B /* MimiRemoteUITests */,
 			);
@@ -2176,6 +2185,7 @@
 				4F73A8B4B40F3F7259B734B6 /* ForkOnWriterConflictProtocolTests.swift in Sources */,
 				4B4DDB0179C0326DBC0BBA00 /* GitQuickPublishTests.swift in Sources */,
 				ACCB28358577180D5E7F6370 /* GuidanceSendLifecycleTests.swift in Sources */,
+				3A23BEDFA84EBB2D6F548D41 /* HarnessNativeRoutingSeamTests.swift in Sources */,
 				35F3BC829540D91C8D44EE03 /* HostStatusStoreTests.swift in Sources */,
 				F0DC6138A242D45D79253F8B /* HostWarmSnapshotTests.swift in Sources */,
 				E4A6ECBFD5B621FB6A30299A /* LocalizationTests.swift in Sources */,
@@ -2323,6 +2333,8 @@
 				2D6CA662D1D655CE6BE05CF0 /* FileUploadStore.swift in Sources */,
 				BC8113C02839555625D96A97 /* FloatingSidebarPresentation.swift in Sources */,
 				980F0CA2DAD75C9AE4857810 /* GitQuickPublishView.swift in Sources */,
+				9968EED6771E4057CB4D1D0A /* HarnessSessionAPIClient.swift in Sources */,
+				570F7C6B4BCA5CFB28027D07 /* HarnessSessionWebSocketClient.swift in Sources */,
 				6A99B633759290C04D57A7B6 /* HostConnectionSupport.swift in Sources */,
 				D502C332F16B48F95CAAA518 /* HostInstallationSetupView.swift in Sources */,
 				10823423F48BC5168353950D /* HostScope.swift in Sources */,

@@ -330,15 +330,27 @@ final class AppServerRuntimeRouteStore {
 }
 
 final class AppServerRuntimeBundle {
+    /// 原生通道承接的 runtime ID。沿用既有 `deepseek`，不新建 `deepseek-native`，
+    /// 以免切断既有路由、收藏与通知身份。
+    static let nativeRuntimeProvider = "deepseek"
+
     let codex: CodexAppServerSessionRuntime
     let claude: CodexAppServerSessionRuntime
+    /// 仅在**未**注入原生客户端时构造。注入后 `deepseek` 不再经过 Codex actor，
+    /// 从根上避免「拿 Codex actor 假装 native」。
     let deepseek: CodexAppServerSessionRuntime?
+    /// 原生 Harness 接缝。默认 `nil`：开发期沿用既有 app-server 路径，行为不变。
+    let harness: HarnessSessionClient?
     let routes = AppServerRuntimeRouteStore()
 
-    init(endpoint: String, token: String) {
+    init(endpoint: String, token: String, harnessFactory: HarnessSessionClientFactory? = nil) {
         codex = CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "codex")
         claude = CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "claude")
-        deepseek = CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "deepseek")
+        let native = harnessFactory?(endpoint, token)
+        harness = native
+        deepseek = native == nil
+            ? CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "deepseek")
+            : nil
     }
 
     /// 快速切换已经拿到 config，候选 Runtime 必须复用它，不能在提交后再次请求
@@ -347,7 +359,8 @@ final class AppServerRuntimeBundle {
         endpoint: String,
         token: String,
         requestTimeout: TimeInterval,
-        preparedConfig: CodexAppServerConfigResponse
+        preparedConfig: CodexAppServerConfigResponse,
+        harnessFactory: HarnessSessionClientFactory? = nil
     ) {
         let configProvider = { preparedConfig }
         codex = CodexAppServerSessionRuntime(
@@ -364,27 +377,51 @@ final class AppServerRuntimeBundle {
             requestTimeout: requestTimeout,
             configProvider: configProvider
         )
-        deepseek = CodexAppServerSessionRuntime(
-            endpoint: endpoint,
-            token: token,
-            runtimeProvider: "deepseek",
-            requestTimeout: requestTimeout,
-            configProvider: configProvider
-        )
+        let native = harnessFactory?(endpoint, token)
+        harness = native
+        deepseek = native == nil
+            ? CodexAppServerSessionRuntime(
+                endpoint: endpoint,
+                token: token,
+                runtimeProvider: "deepseek",
+                requestTimeout: requestTimeout,
+                configProvider: configProvider
+            )
+            : nil
     }
 
     init(
         codexRuntime: CodexAppServerSessionRuntime,
         claudeRuntime: CodexAppServerSessionRuntime,
-        deepseekRuntime: CodexAppServerSessionRuntime? = nil
+        deepseekRuntime: CodexAppServerSessionRuntime? = nil,
+        harness: HarnessSessionClient? = nil
     ) {
         codex = codexRuntime
         claude = claudeRuntime
-        deepseek = deepseekRuntime
+        self.harness = harness
+        // 两者同时给出时以原生为准：Codex actor 不得与原生通道并存来「兜底」。
+        self.deepseek = harness == nil ? deepseekRuntime : nil
+    }
+
+    /// 该 provider 是否由原生客户端承接；不是则返回 `nil`。
+    func nativeClient(for provider: String?) -> HarnessSessionClient? {
+        guard let harness else { return nil }
+        let normalized = CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider)
+        return normalized == Self.nativeRuntimeProvider ? harness : nil
+    }
+
+    func nativeClient(forSessionID sessionID: SessionID) -> HarnessSessionClient? {
+        nativeClient(for: routes.runtimeProvider(for: sessionID))
     }
 
     func runtime(for provider: String?) throws -> CodexAppServerSessionRuntime {
-        switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider) {
+        let normalized = CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider)
+        if harness != nil, normalized == Self.nativeRuntimeProvider {
+            // 原生通道激活时不得回退到 Codex actor 假装 native。调用方必须改走
+            // nativeClient(for:)；这里显式失败，让误用立刻暴露而不是静默走错协议。
+            throw HarnessNativeUnavailableError.routedNatively(runtimeProvider: normalized)
+        }
+        switch normalized {
         case "codex":
             return codex
         case "claude":
@@ -476,12 +513,20 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         ]
         var secondarySucceeded = false
         for secondary in secondaryRuntimes {
-            guard let runtime = secondary.runtime else { continue }
-            guard (try? await runtime.channelAvailable(runtimeProvider: secondary.provider)) == true else {
-                continue
-            }
             do {
-                options.append(contentsOf: try await runtime.modelOptions())
+                let secondaryOptions: [CodexAppServerModelOption]
+                if let native = bundle.nativeClient(for: secondary.provider) {
+                    // 原生通道：Codex 上游不可用时依然能独立进入准备流程并给出模型目录。
+                    guard try await native.channelAvailable() else { continue }
+                    secondaryOptions = try await native.modelOptions()
+                } else {
+                    guard let runtime = secondary.runtime else { continue }
+                    guard (try? await runtime.channelAvailable(runtimeProvider: secondary.provider)) == true else {
+                        continue
+                    }
+                    secondaryOptions = try await runtime.modelOptions()
+                }
+                options.append(contentsOf: secondaryOptions)
                 secondarySucceeded = true
             } catch {
                 // 次要 Runtime 的模型列表失败不能拖垮 Codex 主路径。
@@ -507,7 +552,10 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
-        try await bundle.codex.channelAvailable(runtimeProvider: runtimeProvider)
+        if let native = bundle.nativeClient(for: runtimeProvider) {
+            return try await native.channelAvailable()
+        }
+        return try await bundle.codex.channelAvailable(runtimeProvider: runtimeProvider)
     }
 
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
@@ -541,6 +589,17 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         limit: Int?,
         consistency: SessionListConsistency
     ) async throws -> SessionsPage {
+        // 原生通道承接的 runtime 直接走原生客户端，不经 Codex wire。
+        if let native = bundle.nativeClient(for: runtimeProvider) {
+            let page = try await native.sessionsPage(
+                projectID: projectID,
+                cursor: cursor,
+                limit: limit,
+                consistency: consistency
+            )
+            bundle.routes.remember(page.sessions)
+            return page
+        }
         let page = try await bundle.runtime(for: runtimeProvider).sessionsPage(
             projectID: projectID,
             cursor: cursor,
@@ -578,6 +637,16 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         limit: Int?,
         consistency: SessionListConsistency
     ) async throws -> SessionsPage {
+        if let native = bundle.nativeClient(for: runtimeProvider) {
+            let page = try await native.sessionsPage(
+                workspace: workspace,
+                cursor: cursor,
+                limit: limit,
+                consistency: consistency
+            )
+            bundle.routes.remember(page.sessions)
+            return page
+        }
         let page = try await bundle.runtime(for: runtimeProvider).sessionsPage(
             workspace: workspace,
             cursor: cursor,
@@ -600,6 +669,11 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         cursor: String?,
         limit: Int?
     ) async throws -> SessionsPage {
+        if let native = bundle.nativeClient(for: runtimeProvider) {
+            let page = try await native.controlledGlobalSessionsPage(cursor: cursor, limit: limit)
+            bundle.routes.remember(page.sessions)
+            return page
+        }
         let page = try await bundle.runtime(for: runtimeProvider)
             .controlledGlobalSessionsPage(cursor: cursor, limit: limit)
         bundle.routes.remember(page.sessions)
@@ -640,12 +714,19 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         ]
         for (provider, runtime) in secondaryRuntimes {
             try Task.checkCancellation()
-            guard let runtime else { continue }
             do {
-                guard try await runtime.channelAvailable(runtimeProvider: provider) else { continue }
-                let page = provider == "claude"
-                    ? try await runtime.globalThreadListSearchPage(query: query, limit: limit)
-                    : try await runtime.searchSessions(query: query, cursor: nil, limit: limit)
+                let page: ThreadSearchPage
+                if let native = bundle.nativeClient(for: provider) {
+                    // 原生通道与 Codex wire 完全无关：它失败只把自己记成 unavailable。
+                    guard try await native.channelAvailable() else { continue }
+                    page = try await native.searchSessions(query: query, cursor: nil, limit: limit)
+                } else {
+                    guard let runtime else { continue }
+                    guard try await runtime.channelAvailable(runtimeProvider: provider) else { continue }
+                    page = provider == "claude"
+                        ? try await runtime.globalThreadListSearchPage(query: query, limit: limit)
+                        : try await runtime.searchSessions(query: query, cursor: nil, limit: limit)
+                }
                 pages.append(page)
             } catch {
                 try Task.checkCancellation()
@@ -669,6 +750,11 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        if let native = bundle.nativeClient(forSessionID: id) {
+            let response = try await native.session(id: id, afterSeq: afterSeq)
+            bundle.routes.remember(response.session)
+            return response
+        }
         let response = try await bundle.runtime(forSessionID: id).session(id: id, afterSeq: afterSeq)
         bundle.routes.remember(response.session)
         return response
@@ -839,7 +925,8 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     var onControlFailure: ((String) -> Void)?
 
     private let bundle: AppServerRuntimeBundle
-    private var activeClient: CodexAppServerSessionWebSocketClient?
+    /// 面向既有协议而不是具体 Codex 类型：原生 Harness 事件客户端可以并列接入。
+    private var activeClient: (any SessionWebSocketClient)?
 
     init(bundle: AppServerRuntimeBundle) {
         self.bundle = bundle
@@ -850,19 +937,24 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     }
 
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
-        let runtime: CodexAppServerSessionRuntime
-        do {
-            runtime = try bundle.runtime(forSessionID: sessionID)
-        } catch {
-            activeClient?.disconnect()
-            activeClient = nil
-            onStatus?(.failed(error.localizedDescription))
-            return
+        let client: any SessionWebSocketClient
+        if let native = bundle.nativeClient(forSessionID: sessionID) {
+            client = native.makeEventClient(sessionID: sessionID)
+        } else {
+            let runtime: CodexAppServerSessionRuntime
+            do {
+                runtime = try bundle.runtime(forSessionID: sessionID)
+            } catch {
+                activeClient?.disconnect()
+                activeClient = nil
+                onStatus?(.failed(error.localizedDescription))
+                return
+            }
+            client = CodexAppServerSessionWebSocketClient(runtime: runtime)
         }
         // “单活”边界是当前 Mac，而不是 Runtime provider。同一台 Mac 上当前会话与后台
         // 排队会话可能分别属于 Codex/Claude；两者各复用一条共享连接，不能互相退役。
         // 切换 Mac、进入后台或凭据失效时仍由 AppServerRuntimeBundle 整体关闭。
-        let client = CodexAppServerSessionWebSocketClient(runtime: runtime)
         activeClient?.disconnect()
         activeClient = client
         wireHandlers(to: client)
@@ -891,14 +983,23 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         }
         // guidance 已提交后可能随页面切换释放 wrapper。把本次 generation 的结果处理器
         // 直接交给底层 Task，避免弱转发链随 wrapper 消失，同时保留 Store 自己的 host/generation 校验。
-        return activeClient.sendGuidance(
-            payload,
-            clientMessageID: clientMessageID,
-            expectedTurnID: expectedTurnID,
-            acceptedHandler: onSendAccepted,
-            failureHandler: onSendFailure,
-            outcomeHandler: onTurnSendOutcome
+        // 这条 Codex 专用的结果所有权路径必须保留，不能因为改成协议类型而丢掉。
+        if let codexClient = activeClient as? CodexAppServerSessionWebSocketClient {
+            return codexClient.sendGuidance(
+                payload,
+                clientMessageID: clientMessageID,
+                expectedTurnID: expectedTurnID,
+                acceptedHandler: onSendAccepted,
+                failureHandler: onSendFailure,
+                outcomeHandler: onTurnSendOutcome
+            )
+        }
+        // Harness 不支持 guidance：显式拒绝，不把它当普通 prompt 发出去。
+        onSendFailure?(
+            clientMessageID,
+            HarnessNativeUnavailableError.unsupported(operation: "guidance").localizedDescription
         )
+        return false
     }
 
     @discardableResult
@@ -920,7 +1021,7 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         activeClient?.acknowledgeAppliedEvent(event)
     }
 
-    private func wireHandlers(to client: CodexAppServerSessionWebSocketClient) {
+    private func wireHandlers(to client: any SessionWebSocketClient) {
         client.onStatus = { [weak self] status in
             self?.onStatus?(status)
         }
