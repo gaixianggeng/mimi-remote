@@ -923,9 +923,10 @@ extension SessionStore {
     }
 
     func scheduleRuntimeEventFlush(lease: HostSessionLease, immediately: Bool = false) {
-        // 一个 session 同时只保留一个消费任务。即使 80ms 窗口内越过批量阈值，
-        // 也不为后续每个事件反复取消并新建 Task；最长只多等待当前合并窗口。
-        guard runtimeEventFlushTasks[lease] == nil else {
+        // 一个 session 同时只能有一个“等待 flush”或“正在 drain”的 owner。
+        // applyRuntimeEvent 会跨 actor await；仅靠 runtimeEventFlushTasks 不能覆盖那段重入窗口。
+        guard runtimeEventFlushTasks[lease] == nil,
+              !runtimeEventDrainingLeases.contains(lease) else {
             return
         }
         let delay = immediately ? 0 : runtimeEventFlushDelayNanoseconds
@@ -942,15 +943,29 @@ extension SessionStore {
     }
 
     func flushRuntimeEvents(lease: HostSessionLease) async {
+        // 主动 flush（断线/终止）可以抢掉尚在 sleep 的合并任务，但不能和已经进入
+        // applyRuntimeEvent 的消费者并发。MainActor 在 await 处可重入，所以消费权必须
+        // 独立于 Task 句柄一直持有到 mailbox 真正排空。
         runtimeEventFlushTasks[lease]?.cancel()
         runtimeEventFlushTasks[lease] = nil
-        let events = terminalStreamStore.drain(lease: lease)
-        guard !events.isEmpty, appStore.activeHostScope == lease.hostScope else {
+        guard runtimeEventDrainingLeases.insert(lease).inserted else {
             return
         }
-        for event in events {
-            guard appStore.activeHostScope == lease.hostScope else { return }
-            await applyRuntimeEvent(event, lease: lease)
+        defer {
+            runtimeEventDrainingLeases.remove(lease)
+        }
+
+        while appStore.activeHostScope == lease.hostScope {
+            let events = terminalStreamStore.drain(lease: lease)
+            guard !events.isEmpty else {
+                return
+            }
+            for event in events {
+                guard appStore.activeHostScope == lease.hostScope else { return }
+                await applyRuntimeEvent(event, lease: lease)
+            }
+            // applyRuntimeEvent 的 await 窗口里到达的新事件不会另起消费者；
+            // 回到这里继续 drain，保持同一 lease 的网络到达顺序与 Store 提交顺序一致。
         }
     }
 
