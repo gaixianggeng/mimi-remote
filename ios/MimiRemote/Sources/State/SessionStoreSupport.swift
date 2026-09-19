@@ -79,6 +79,7 @@ struct HistoryFirstPageRequestKey: Hashable {
     let sessionID: SessionID
     let limit: Int
     let loadMode: HistoryMessagesPage.LoadMode
+    let prefersSummaryFirst: Bool
 }
 
 struct SessionListFirstPageRequestKey: Hashable {
