@@ -207,24 +207,61 @@ func (s *Stream) readLoop() {
 			// 比整条订阅失效更安全。上层需要的能力都靠 Until 主动等待。
 			continue
 		}
-		var discriminator valueType
-		_ = json.Unmarshal(frame.Value, &discriminator)
-		value := StreamValue{
-			Type: discriminator.Type,
-			Raw:  frame.Value,
-		}
-		if discriminator.Event != nil {
-			value.EventType = discriminator.Event.Type
-			if value.Type == "" {
-				value.Type = FrameDurableEvent
-			}
+		value, deliver := decodeMuxFrame(frame)
+		if !deliver {
+			continue
 		}
 		select {
 		case s.frames <- value:
 		case <-s.closed:
 			return
 		}
+		if value.IsCarrierEnd() {
+			// 服务端宣告这条订阅结束。必须真的退出读循环：留在阻塞读上会让
+			// 上层永远等不到订阅结束，也就不会重连。
+			return
+		}
 	}
+}
+
+// decodeMuxFrame 把一帧载体解码成 StreamValue。
+//
+// 分派依据是**载体层** type，而不是 value 里的判别式：error/end 帧根本没有
+// value，只看 value 会把它们退化成无法区分的空帧——这正是契约 §8 缺陷 2。
+//
+// deliver 为 false 表示这帧不产生可投递的值（不认识的载体类型）。按既有约定，
+// 认不出的帧丢弃即可，不终止整条订阅。
+func decodeMuxFrame(frame muxFrame) (StreamValue, bool) {
+	switch frame.Type {
+	case CarrierError:
+		return StreamValue{
+			Type:         FrameCarrierError,
+			CarrierType:  CarrierError,
+			CarrierError: frame.Error,
+		}, true
+	case CarrierEnd:
+		return StreamValue{Type: FrameCarrierEnd, CarrierType: CarrierEnd}, true
+	case CarrierItem, "":
+		// "" 是兼容路径：不带载体 type 的对端（含既有测试桩）退回按 value 判别，
+		// 保持旧行为，不因为客户端升级就丢掉整条流。
+	default:
+		return StreamValue{}, false
+	}
+
+	var discriminator valueType
+	_ = json.Unmarshal(frame.Value, &discriminator)
+	value := StreamValue{
+		Type:        discriminator.Type,
+		Raw:         frame.Value,
+		CarrierType: CarrierItem,
+	}
+	if discriminator.Event != nil {
+		value.EventType = discriminator.Event.Type
+		if value.Type == "" {
+			value.Type = FrameDurableEvent
+		}
+	}
+	return value, true
 }
 
 func (s *Stream) pingLoop() {
@@ -246,22 +283,49 @@ func (s *Stream) pingLoop() {
 	}
 }
 
-// Respond 回传一次交互应答。
+// OutcomeKind* 是 $events/result 的 outcome 判别值。
 //
-// Harness 的 outcome 只有 result 一种成功形态：审批结论本身作为 value 传回
-// （allowed-once / rejected / cancelled / unavailable），追问则以 {answers:[...]} 作为
-// value。隔离实验里拒绝审批用的就是 {kind:'result', value:'rejected'}，
-// 因此这里不发明 rejection 之类的其它 kind。
+// 契约 §8 缺陷 3：旧注释断言「outcome 只有 result 一种成功形态」，那是 #492
+// 审批路径的**观测**结果，不是 wire 的能力边界。上游 parseRemoteEventResult
+// 明确接受三种 kind，中继不得因为只见过 result 就拒收 next/rejected。
+const (
+	// OutcomeKindNext 是链式 waterfall 的中间确认，只带 kind。
+	OutcomeKindNext = "next"
+	// OutcomeKindResult 是正常结论，value 可选（审批取 allowed-once 等，追问取 {answers}）。
+	OutcomeKindResult = "result"
+	// OutcomeKindRejected 是客户端拒绝处理该 waterfall，携带结构化 error。
+	// 它与审批业务结论 "rejected" 是两件事，不得混用。
+	OutcomeKindRejected = "rejected"
+)
+
+// RespondOutcome 原样转发一个 outcome 对象。
+//
+// outcome 由调用方构造（见 rpc/events-result.json 的 outcomeNext / approvalRequest /
+// outcomeRejected），本函数**不**校验也不改写 kind：中继的职责是转发移动端的决定，
+// 不是替它决定哪些 kind 合法。args 恰好三个键，多一个少一个上游都判非法。
+//
+// clientId 只是关联值，不是凭据；鉴权与 pending 校验由调用方在更外层完成。
+func (c *Client) RespondOutcome(ctx context.Context, clientID, eventID string, outcome any) error {
+	args := map[string]any{
+		"clientId": clientID,
+		"eventId":  eventID,
+		"outcome":  outcome,
+	}
+	return c.Call(ctx, EndpointEventsResult, args, nil)
+}
+
+// Respond 回传一次 {kind:'result', value:…} 形式的交互应答。
+//
+// 审批结论本身作为 value 传回（allowed-once / rejected / cancelled / unavailable），
+// 追问则以 {answers:[...]} 作为 value。需要 next 或 rejected 时用 RespondOutcome。
 //
 // eventId 必须来自触发它的 waterfall 帧。首个有效应答生效，其它端会收到 cancel；
 // 迟到应答是空操作而非错误，所以这里不把竞态当成失败。
 func (c *Client) Respond(ctx context.Context, clientID, eventID string, value any) error {
-	args := map[string]any{
-		"clientId": clientID,
-		"eventId":  eventID,
-		"outcome":  map[string]any{"kind": "result", "value": value},
-	}
-	return c.Call(ctx, EndpointEventsResult, args, nil)
+	return c.RespondOutcome(ctx, clientID, eventID, map[string]any{
+		"kind":  OutcomeKindResult,
+		"value": value,
+	})
 }
 
 // AnswerQuestions 回传结构化追问答案。answers 必须逐条对应提问的 id。
