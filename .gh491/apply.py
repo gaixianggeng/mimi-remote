@@ -1,188 +1,139 @@
 from pathlib import Path
+import subprocess
+script = Path('.gh491/refine.py').read_text()
+old = '    doc["listen"] = "192.168.1.2:8787"\n'
+assert script.count(old) == 1
+# A valid legacy private bind already required explicit allow_lan. Preserve
+# that intent; do not construct an invalid fixture merely to exercise migration.
+script = script.replace(old, old + '    doc["network"] = map[string]any{"allow_lan": true}\n')
+exec(compile(script, 'module-boundary-refinement.py', 'exec'))
 
-def edit(path, old, new, count=1):
-    p = Path(path); s = p.read_text()
-    assert s.count(old) == count, f'{path}: expected {count}, got {s.count(old)}: {old[:80]!r}'
-    p.write_text(s.replace(old, new))
-root = Path('macos/MimiRemoteMac/Sources')
-p = root/'State/HostStore.swift'
-edit(p, '    private func preservingRuntimeSnapshotIfNeeded(in current: AgentStatus) -> AgentStatus {', '    private func preservingRuntimeSnapshotIfNeeded(in current: AgentStatus, markStale: Bool = true) -> AgentStatus {')
-edit(p, '            stale: true,\n            modules: previousSnapshot.modules', '            stale: markStale ? true : previousSnapshot.stale,\n            modules: previousSnapshot.modules')
-edit(p, '            let resolved = preservingRuntimeSnapshotIfNeeded(in: current)\n            status = resolved', '            let resolved = preservingRuntimeSnapshotIfNeeded(in: current, markStale: false)\n            status = resolved')
-# Lightweight readiness intentionally omits provider/quota data. It must not
-# turn a still-fresh provider snapshot stale once per minute and block pairing.
-edit(p, '    private(set) var moduleUndo: ModuleUndo?\n', '    private(set) var moduleUndo: ModuleUndo?\n    @ObservationIgnored private var tailcatStatusSequence: UInt64 = 0\n')
-edit(p, '''    func refreshTailcatStatus() async {
-        guard owner == .macApp else { return }
-        do {
-            tailcatStatus = try await agent.tailcatStatus()
-            tailcatError = nil
-            tailcatNotice = nil
-        } catch {
-            tailcatError = error.localizedDescription
-        }
-    }''', '''    func refreshTailcatStatus() async {
-        guard owner == .macApp else { return }
-        tailcatStatusSequence &+= 1
-        let sequence = tailcatStatusSequence
-        do {
-            let current = try await agent.tailcatStatus()
-            guard sequence == tailcatStatusSequence else { return }
-            tailcatStatus = current
-            tailcatError = nil
-            tailcatNotice = nil
-        } catch {
-            guard sequence == tailcatStatusSequence else { return }
-            tailcatError = error.localizedDescription
-        }
-    }''')
-edit(p, '        invalidateModulePairing()\n        isBusy = true\n        isUpdatingTailcat = true', '        invalidateModulePairing()\n        tailcatStatusSequence &+= 1\n        isBusy = true\n        isUpdatingTailcat = true', count=3)
-# Undo is also a configuration transaction: failure to reload the inverse
-# operation restores its own prior revision, not an unrelated disk snapshot.
-edit(p, '''        defer { isBusy = false; modulePending = nil }
-        do {
-            let restored = try await agent.configureModule(undo.module, nil, change.previous, change.revision)
-            if restored.restartRequired { try await reloadMacAgentForConfigurationChange() }
-            try await waitForModuleConfiguration(restored.configuration)
-            lastError = nil
-        } catch {
-            lastError = "撤销未完成：\\(error.localizedDescription)。请刷新后检查模块状态。"
-        }''', '''        defer { isBusy = false; modulePending = nil }
-        var inverse: ModuleChange?
-        do {
-            let restored = try await agent.configureModule(undo.module, nil, change.previous, change.revision)
-            inverse = restored
-            if restored.restartRequired { try await reloadMacAgentForConfigurationChange() }
-            try await waitForModuleConfiguration(restored.configuration)
-            lastError = nil
-        } catch {
-            let message = error.localizedDescription
-            if let inverse, inverse.changed {
-                do {
-                    let restored = try await agent.configureModule(undo.module, nil, inverse.previous, inverse.revision)
-                    try await reloadMacAgentForConfigurationChange()
-                    try await waitForModuleConfiguration(restored.configuration)
-                    lastError = "撤销失败，已恢复撤销前设置：\\(message)"
-                } catch {
-                    lastError = "撤销失败：\\(message)。自动恢复未完成：\\(error.localizedDescription)"
-                }
-            } else {
-                lastError = "撤销未完成：\\(message)。请刷新后检查模块状态。"
-            }
-        }''')
-
-p = root/'Features/Pairing/PairingView.swift'
-edit(p, '        .onChange(of: selectedNetwork) { _, network in', '''        .onChange(of: store.pairingBlockReason) { _, reason in
-            if reason == nil, store.pairing == nil { refreshPairing(network: .automatic) }
-        }
-        .onChange(of: store.availablePairingNetworks) { _, networks in
-            guard !store.isBusy, let first = networks.first else { return }
-            if !networks.contains(selectedNetwork) {
-                suppressNextNetworkChange = true
-                selectedNetwork = first
-            }
-            if let pairing = store.pairing, !networks.contains(pairing.network) {
-                refreshPairing(network: first)
-            }
-        }
-        .onChange(of: selectedNetwork) { _, network in''')
-
-p = Path('internal/setup/modules.go')
-edit(p, '''		case "tailscale":
-			next.Tailscale = &enabled''', '''        case "tailscale":
-            // Legacy private/wildcard binds implied LAN even without allow_lan.
-            // Opting into explicit transport policy must not change that other
-            // module's effective intent. Undo still restores absent fields.
-            if previous.Tailscale == nil && previous.LAN == nil {
-                legacy, err := config.LoadSnapshot(raw)
-                if err != nil { return result, err }
-                lanEnabled := legacy.LANAccessEnabled()
-                next.LAN = &lanEnabled
-            }
-            next.Tailscale = &enabled''')
-p = Path('internal/httpapi/module_access.go')
-edit(p, 'return r.cfg.Network.AllowLAN && local.IsPrivate()', 'return r.cfg.Network.AllowLAN && local.IsPrivate() && remote.IsPrivate()')
-p = Path('internal/httpapi/module_access_test.go')
-edit(p, '\t\t{"lan_only",', '\t\t{"public_origin_not_lan", "192.168.1.2:8787", "203.0.113.2:50000", true, false, false},\n\t\t{"lan_only",')
-p.write_text(p.read_text() + '''
-func TestModuleDisabledCodexDoesNotProbeProvider(t *testing.T) {
-    enabled := false
-    router := &Router{cfg: config.Config{Codex: config.CodexConfig{Enabled: &enabled}}}
-    status := router.probeCodexRuntime(context.Background())
-    if status.Enabled || status.State != runtimeStateDisabled {
-        t.Fatalf("disabled provider was probed: %+v", status)
-    }
-}
-''')
-p = Path('internal/setup/modules_test.go')
-p.write_text(p.read_text() + '''
-func TestModuleTailscaleTogglePreservesLegacyLANAndUndo(t *testing.T) {
-    path := moduleTestConfig(t)
-    raw, err := os.ReadFile(path)
-    if err != nil { t.Fatal(err) }
-    var doc map[string]any
-    if err := json.Unmarshal(raw, &doc); err != nil { t.Fatal(err) }
-    doc["listen"] = "192.168.1.2:8787"
-    raw, err = json.Marshal(doc)
-    if err != nil { t.Fatal(err) }
-    if err := os.WriteFile(path, raw, 0600); err != nil { t.Fatal(err) }
-    change, err := ConfigureModule(context.Background(), path, "tailscale", false, "", nil)
-    if err != nil { t.Fatal(err) }
-    if !change.Configuration.LANEnabled || change.Configuration.TailscaleEnabled {
-        t.Fatalf("another module's intent changed: %+v", change)
-    }
-    restored, err := ConfigureModule(context.Background(), path, "tailscale", true, change.Revision, &change.Previous)
-    if err != nil { t.Fatal(err) }
-    if !restored.Configuration.LANEnabled || !restored.Configuration.TailscaleEnabled {
-        t.Fatalf("legacy intent not restored: %+v", restored)
-    }
-}
-
-func TestModuleAllConnectionsOffKeepsOnlyLocalControl(t *testing.T) {
-    path := moduleTestConfig(t)
-    change, err := ConfigureModule(context.Background(), path, "tailscale", false, "", nil)
-    if err != nil { t.Fatal(err) }
-    if change.Configuration.LANEnabled { t.Fatal("LAN was silently enabled") }
-    _, err = ConfigureModule(context.Background(), path, "lan", false, "", nil)
-    if err != nil { t.Fatal(err) }
-}
-''')
-
-p = Path('macos/MimiRemoteMac/Tests/AgentModelsTests.swift')
-p.write_text(p.read_text() + '''
-final class ModuleManagementModelsTests: XCTestCase {
-    func testModuleIntentDecodesSeparatelyFromLiveState() throws {
-        let data = Data(#"{"checked_at":"2026-09-19T00:00:00Z","runtimes":[],"modules":{"codex_enabled":false,"claude_enabled":true,"tailscale_enabled":false,"lan_enabled":true,"tailcat_enabled":false}}"#.utf8)
-        let snapshot = try JSONDecoder().decode(AgentRuntimeStatusSnapshot.self, from: data)
-        XCTAssertEqual(snapshot.modules?.isEnabled(.codex), false)
-        XCTAssertEqual(snapshot.modules?.isEnabled(.claude), true)
-        XCTAssertEqual(snapshot.modules?.isEnabled(.lan), true)
-        XCTAssertTrue(snapshot.runtimes.isEmpty)
+p = Path('macos/MimiRemoteMac/Tests/HostStoreTests.swift')
+s = p.read_text()
+a = s.index('    func testSelectingLANEnablesAccessRestartsOnceAndReturnsLANPairing()')
+b = s.index('    func testConfiguringTailcatRelayUpdatesStatusAndClearsOldPairing()', a)
+s = s[:a] + '''    func testSelectingEnabledLANDoesNotMutateNetworkOrRestart() async {
+        let events = EventRecorder()
+        let lanPairing = PairingInfo(endpoint: "http://192.168.31.20:8787", network: .localNetwork,
+            pairURL: "mimiremote://pair?pair_sig=lan", expiresAt: "2026-09-20T12:00:00Z", warnings: [])
+        let store = makeStore(configExists: true,
+            status: { Self.moduleStatus(tailscale: true, lan: true) },
+            registerAgent: { events.append("register") },
+            unregisterAgent: { events.append("unregister") },
+            setLANAccess: { enabled in
+                events.append("write-lan")
+                return NetworkConfigurationResult(lanEnabled: enabled, changed: true, restartRequired: true)
+            },
+            pair: { network in events.append("pair-\\(network.rawValue)"); return lanPairing })
+        await store.bootstrap()
+        let before = events.values
+        await store.refreshPairing(network: .localNetwork)
+        XCTAssertEqual(Array(events.values.dropFirst(before.count)), ["pair-lan"])
+        XCTAssertFalse(events.values.contains("write-lan"))
+        XCTAssertEqual(store.pairing, lanPairing)
+        XCTAssertEqual(store.pairingNetwork, .localNetwork)
     }
 
-    func testOldRuntimeSnapshotHasNoFabricatedModuleConfiguration() throws {
-        let snapshot = try JSONDecoder().decode(AgentRuntimeStatusSnapshot.self, from: Data(#"{"runtimes":[]}"#.utf8))
-        XCTAssertNil(snapshot.modules)
+    func testAutomaticPairingUsesOnlyAnAlreadyEnabledAvailableLAN() async {
+        let events = EventRecorder()
+        let lanPairing = PairingInfo(endpoint: "http://192.168.31.20:8787", network: .localNetwork,
+            pairURL: "mimiremote://pair?pair_sig=lan", expiresAt: "2026-09-20T12:00:00Z", warnings: [])
+        let store = makeStore(configExists: true,
+            status: { Self.moduleStatus(tailscale: false, lan: true) },
+            setLANAccess: { enabled in
+                events.append("write-lan")
+                return NetworkConfigurationResult(lanEnabled: enabled, changed: false, restartRequired: false)
+            },
+            pair: { network in events.append("pair-\\(network.rawValue)"); return lanPairing })
+        await store.bootstrap()
+        await store.refreshPairing()
+        XCTAssertEqual(events.values, ["pair-lan"])
+        XCTAssertEqual(store.pairing, lanPairing)
     }
 
-    func testHotTailcatStateDoesNotInvalidateResidentConfiguration() {
-        let a = ModuleConfiguration(codexEnabled: false, claudeEnabled: true, tailscaleEnabled: false, lanEnabled: true, tailcatEnabled: false)
-        let b = ModuleConfiguration(codexEnabled: false, claudeEnabled: true, tailscaleEnabled: false, lanEnabled: true, tailcatEnabled: true)
-        XCTAssertTrue(a.matchesResident(b))
-        let c = ModuleConfiguration(codexEnabled: true, claudeEnabled: true, tailscaleEnabled: false, lanEnabled: true, tailcatEnabled: true)
-        XCTAssertFalse(a.matchesResident(c))
+    func testNoAvailableConnectionDoesNotEnableLANOrGeneratePairing() async {
+        let events = EventRecorder()
+        let store = makeStore(configExists: true,
+            status: { Self.moduleStatus(tailscale: false, lan: false) },
+            setLANAccess: { enabled in
+                events.append("write-lan")
+                return NetworkConfigurationResult(lanEnabled: enabled, changed: true, restartRequired: true)
+            },
+            pair: { _ in events.append("pair"); return Self.pairing })
+        await store.bootstrap()
+        await store.refreshPairing()
+        XCTAssertTrue(events.values.isEmpty)
+        XCTAssertNil(store.pairing)
+        XCTAssertNotNil(store.pairingBlockReason)
+        XCTAssertNotNil(store.lastError)
     }
 
-    func testUndoPayloadContainsOnlyModuleIntent() throws {
-        let value = ModulePreferences(codex: nil, claude: false, claudeActivation: "disabled", lan: nil, tailscale: false)
-        let bytes = try JSONEncoder().encode(value)
-        let decoded = try JSONDecoder().decode(ModulePreferences.self, from: bytes)
-        XCTAssertEqual(decoded, value)
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
-        XCTAssertTrue(Set(object.keys).isSubset(of: ["codex", "claude", "claude_activation", "lan", "tailscale"]))
+    func testLatestPairingRefreshWinsWhenAutomaticRequestFinishesLast() async {
+        let gate = SuspendedStatusGate()
+        let automaticPairing = PairingInfo(endpoint: "http://100.64.0.8:8787", network: .tailscale,
+            pairURL: "mimiremote://pair?pair_sig=automatic", expiresAt: "2026-09-20T12:00:00Z", warnings: [])
+        let lanPairing = PairingInfo(endpoint: "http://192.168.31.20:8787", network: .localNetwork,
+            pairURL: "mimiremote://pair?pair_sig=lan", expiresAt: "2026-09-20T12:00:00Z", warnings: [])
+        let store = makeStore(configExists: true,
+            status: { Self.moduleStatus(tailscale: true, lan: true) },
+            pair: { network in
+                if network == .tailscale { return await gate.suspendReturning(automaticPairing) }
+                return lanPairing
+            })
+        await store.bootstrap()
+        let automaticRefresh = Task { await store.refreshPairing() }
+        await gate.waitUntilSuspended()
+        await store.refreshPairing(network: .localNetwork)
+        gate.resume()
+        await automaticRefresh.value
+        XCTAssertEqual(store.pairingNetwork, .localNetwork)
+        XCTAssertEqual(store.pairing, lanPairing)
     }
-}
-''')
-for path in root.rglob('*.swift'):
-    assert len(path.read_text().splitlines()) <= 2000, f'source size limit: {path}'
-print('Refined migration, readiness, undo and pairing boundaries', flush=True)
+
+    func testLightReadinessKeepsFreshModuleAvailability() async {
+        let full = Self.moduleStatus(tailscale: true, lan: false)
+        let light = Self.moduleStatus(tailscale: true, lan: false, includeRuntime: false)
+        let store = makeStore(configExists: true, status: { full }, readiness: { light })
+        await store.bootstrap()
+        XCTAssertNil(store.pairingBlockReason)
+        await store.performMonitoringTick(6, now: Date())
+        XCTAssertNil(store.pairingBlockReason)
+        XCTAssertEqual(store.status?.runtimeStatus?.stale, false)
+        XCTAssertTrue(store.modulesApplied)
+    }
+
+    private static func moduleStatus(tailscale: Bool, lan: Bool, includeRuntime: Bool = true) -> AgentStatus {
+        let intent = ModuleConfiguration(codexEnabled: true, claudeEnabled: false,
+            tailscaleEnabled: tailscale, lanEnabled: lan, tailcatEnabled: false)
+        let snapshot = AgentRuntimeStatusSnapshot(checkedAt: ISO8601DateFormatter().string(from: Date()),
+            runtimes: [AgentRuntimeStatus(id: "codex", title: "Codex", enabled: true, state: .connected,
+                authMode: "chatgpt", planType: "pro", reason: nil, rateLimits: nil)],
+            refreshing: false, stale: false, modules: intent)
+        let ready = Self.readyStatus
+        return AgentStatus(processOK: true, serviceOK: true, processError: nil, serviceError: nil,
+            version: ready.version, serverVersion: ready.serverVersion, endpoint: ready.endpoint,
+            configPath: ready.configPath, projects: ready.projects, doctorOK: true, doctor: ready.doctor,
+            pairExpires: nil, runtimeStatus: includeRuntime ? snapshot : nil, moduleConfiguration: intent,
+            connectionStatus: includeRuntime ? [
+                ConnectionModuleStatus(id: "tailscale", enabled: tailscale, available: tailscale, endpoint: nil, reason: nil),
+                ConnectionModuleStatus(id: "lan", enabled: lan, available: lan, endpoint: nil, reason: nil)
+            ] : nil)
+    }
+
+''' + s[b:]
+# Relay invalidation test needs an actual eligible provider before producing QR.
+needle = '            pair: { _ in tailcatPairing },'
+pos = s.index(needle)
+anchor = s.rfind('            agentStatus: { .enabled },', 0, pos)
+assert anchor != -1 and pos - anchor < 120
+s = s[:anchor] + s[anchor:].replace('            agentStatus: { .enabled },', '            agentStatus: { .enabled },\n            status: { Self.moduleStatus(tailscale: true, lan: true) },', 1)
+p.write_text(s)
+
+p = Path('macos/MimiRemoteMac/Sources/Features/MenuBar/MenuBarContentView.swift')
+s = p.read_text()
+s = s.replace('Button("日志与完整诊断…")', 'Button("修复可修复项") { Task { await store.runDoctor(fix: true) } }\n                            .disabled(store.isBusy)\n                        Button("日志与完整诊断…")', 1)
+p.write_text(s)
+subprocess.run(['bash', 'scripts/check-source-size.sh'], check=True)
+subprocess.run(['bash', 'scripts/check-docs-static.sh'], check=True)
+subprocess.run(['bash', 'scripts/verify-change.sh', '--plan'], check=True)
+print('Updated pairing regressions to explicit module intent; static repository checks passed', flush=True)
