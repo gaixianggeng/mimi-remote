@@ -985,6 +985,11 @@ extension SessionStore {
             // 也不能清掉或放行绑定到另一 turn 的本地队列。
             return
         }
+        if shouldIgnoreResolvedWaitStateAfterTerminal(event, fallbackSessionID: sessionID) {
+            // completion 已经清掉审批/补充输入。它之后迟到的 resolved 只属于旧 turn，
+            // 不能再把 completed 会话写回 running；新 turn 会先由 turnStarted 建立 activeTurnID。
+            return
+        }
         if case .turnCompleted(let metadata) = event {
             cancelTurnCompletionReconciliation(
                 sessionID: metadata.sessionID ?? sessionID
@@ -1169,6 +1174,28 @@ extension SessionStore {
         }
         return false
     }
+
+    func shouldIgnoreResolvedWaitStateAfterTerminal(
+        _ event: AgentEvent,
+        fallbackSessionID: SessionID
+    ) -> Bool {
+        let metadata: AgentEventMetadata
+        switch event {
+        case .approvalResolved(let value):
+            metadata = value
+        case .userInputResolved(let value, _):
+            metadata = value
+        default:
+            return false
+        }
+        let sessionID = metadata.sessionID ?? fallbackSessionID
+        guard locallyCompletedSessionIDs.contains(sessionID),
+              sessionsByID[sessionID]?.activeTurnID == nil else {
+            return false
+        }
+        return true
+    }
+
 
     func scheduleSessionListReconciliation(
         projectID: String,
