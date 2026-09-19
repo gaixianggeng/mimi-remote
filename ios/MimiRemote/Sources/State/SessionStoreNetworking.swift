@@ -176,13 +176,6 @@ protocol SessionStoreAPIClient {
         limit: Int?,
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage
-    func messagesPage(
-        sessionID: String,
-        before: String?,
-        limit: Int?,
-        loadMode: HistoryMessagesPage.LoadMode,
-        prefersSummaryFirst: Bool
-    ) async throws -> HistoryMessagesPage
     func historyTurnItemsPage(
         sessionID: String,
         continuation: HistoryTurnItemsContinuation
@@ -519,21 +512,6 @@ extension SessionStoreAPIClient {
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage {
         try await messagesPage(sessionID: sessionID, before: before, limit: limit)
-    }
-
-    func messagesPage(
-        sessionID: String,
-        before: String?,
-        limit: Int?,
-        loadMode: HistoryMessagesPage.LoadMode,
-        prefersSummaryFirst: Bool
-    ) async throws -> HistoryMessagesPage {
-        try await messagesPage(
-            sessionID: sessionID,
-            before: before,
-            limit: limit,
-            loadMode: loadMode
-        )
     }
 
     func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage? {
