@@ -214,6 +214,12 @@ enum SessionIndexRowLeadingSlot: Equatable {
 enum SessionIndexRowIdentityFallback: Equatable {
     case project
     case directory
+    /// 同组会话的目录末段完全一致，这一列没有任何区分价值，整列不渲染。
+    ///
+    /// 工作区页恒定了项目，行内再逐条重复页面顶部已经写过的名字，读起来像渲染故障
+    /// （一屏 12 行重复 12 次）。判据与分支走同一条规则：一组里只有出现第二种取值，
+    /// 这一列才重新获得区分能力。
+    case none
 }
 
 /// 前导状态字形。
@@ -526,6 +532,9 @@ struct SessionIndexRow: View {
             return session.project
         case .directory:
             return SessionListPresentation.directoryDisplayText(for: session)
+        case .none:
+            // 空文本会让 `identityColumn` 整体不渲染，这一列连同它的定宽一起消失。
+            return ""
         }
     }
 
@@ -538,6 +547,9 @@ struct SessionIndexRow: View {
             return "\(L10n.text("ui.project")) \(session.project)"
         case .directory:
             return L10n.format("ui.directory_value", metadataDirectoryText(for: session))
+        case .none:
+            // 整列不渲染，VoiceOver 也没有可朗读的对象。
+            return ""
         }
     }
 
@@ -800,7 +812,7 @@ struct SessionIndexRow: View {
         hasSearchSnippet: Bool
     ) -> some View {
         Text(text)
-            .font(themeStore.uiFont(size: 11, weight: .regular))
+            .font(themeStore.uiFont(.caption2, weight: .regular))
             .foregroundStyle(tokens.secondaryText)
             .lineLimit(
                 Self.compactSupplementaryPreviewLineLimit(

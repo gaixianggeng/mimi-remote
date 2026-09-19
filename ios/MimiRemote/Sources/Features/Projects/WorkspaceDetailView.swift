@@ -75,7 +75,13 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         : WorkbenchPageLayout.regularPadding)
                         + (hasBottomTabBar ? 0 : WorkspaceSessionFabMetrics.contentBottomAllowance)
                 )
-                .frame(maxWidth: 920, alignment: .leading)
+                // 与顶部胶囊行共用同一条内容宽度轨道。数字由 WorkspaceStripLayout
+                // 单独持有：两处各写一个 920 时，改了一处另一处会静默保持旧行为，
+                // 于是两条左缘又会错开。
+                .frame(
+                    maxWidth: WorkspaceStripLayout.maxContentWidth,
+                    alignment: .leading
+                )
                 .frame(maxWidth: .infinity, alignment: .center)
             }
             .scrollIndicators(.hidden)
@@ -169,6 +175,11 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         // 给唯一的一个分组加标题是纯噪声：窄屏由筛选行充当它的标题，宽屏由胶囊行承担身份。
         // 出现「需要处理 / 正在运行」等多个分段时，标题才真正在区分内容。
         let branchValues = recentSessions.map(\.gitBranchName)
+        // 身份列的回退档位也只算一次，判据和分支共用一条规则：一组里出现第二种
+        // 目录末段才值得逐行渲染，否则整列收起（详见 workspaceIdentityFallback）。
+        let identityFallback = SessionListPresentation.workspaceIdentityFallback(
+            among: recentSessions
+        )
         let showsSectionHeaders = populatedGroups.count > 1
 
         VStack(alignment: .leading, spacing: WorkspaceSessionRowMetrics.sectionBoundarySpacing) {
@@ -187,6 +198,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         group,
                         sessions: sessions,
                         branchValues: branchValues,
+                        identityFallback: identityFallback,
                         showsLoadMore: group == populatedGroups.last,
                         rowDensity: rowDensity,
                         tokens: tokens
@@ -231,6 +243,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         _ group: WorkspaceSessionGroup,
         sessions: [AgentSession],
         branchValues: [String?],
+        identityFallback: SessionIndexRowIdentityFallback,
         showsLoadMore: Bool,
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
@@ -243,7 +256,11 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             )
             : nil
 
-        if let firstStaleIndex {
+        // 分界线的意义是「上面是新的、下面是旧的」。索引为 0 时上半边是空的
+        // （最新一条会话本身就超过 12 小时），它就退化成一个悬在列表顶部的标题，
+        // 反而会被读成整段列表的名字。此时整段都是旧会话，不需要再分界。
+        if let firstStaleIndex,
+           WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: firstStaleIndex) {
             let currentSessions = Array(sessions.prefix(firstStaleIndex))
             let staleSessions = Array(sessions.dropFirst(firstStaleIndex))
 
@@ -257,6 +274,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     sessionRowsStack(
                         sessions: currentSessions,
                         branchValues: branchValues,
+                        identityFallback: identityFallback,
                         showsLoadMore: false,
                         rowDensity: rowDensity,
                         tokens: tokens
@@ -268,6 +286,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 sessionRowsStack(
                     sessions: staleSessions,
                     branchValues: branchValues,
+                    identityFallback: identityFallback,
                     showsLoadMore: showsLoadMore,
                     rowDensity: rowDensity,
                     tokens: tokens
@@ -277,6 +296,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             sessionRowsStack(
                 sessions: sessions,
                 branchValues: branchValues,
+                identityFallback: identityFallback,
                 showsLoadMore: showsLoadMore,
                 rowDensity: rowDensity,
                 tokens: tokens
@@ -293,6 +313,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     private func sessionRowsStack(
         sessions: [AgentSession],
         branchValues: [String?],
+        identityFallback: SessionIndexRowIdentityFallback,
         showsLoadMore: Bool,
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
@@ -322,8 +343,9 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                             session.gitBranchName,
                             among: branchValues
                         ),
-                        // 这一页的项目是恒定的；没有区分价值的分支时用目录末段区分 worktree。
-                        identityFallback: .directory,
+                        // 这一页的项目是恒定的，身份列由页面级判据决定：
+                        // 目录末段在一组里完全一致时整列收起，不再逐行重复页面标题。
+                        identityFallback: identityFallback,
                         // 无状态的行画一枚灰环兜底，让前导列每行都有内容——
                         // 小节标题以这一列为基准线，列不能是稀疏的。
                         showsIdleStateGlyph: true,

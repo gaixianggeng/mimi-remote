@@ -552,6 +552,39 @@ final class SessionListPresentationTests: XCTestCase {
         )
     }
 
+    func testWorkspaceIdentityColumnCollapsesWhenEveryDirectoryTailMatches() {
+        // 工作区页恒定了项目。单目录、无 worktree 分化时，`.directory` 会回退成
+        // 页面顶部已经写过的工作区名本身，逐行重复 12 次读起来像渲染故障。
+        let singleDirectory = [
+            makeSession(id: "a", project: "codex-ipad-agent", dir: "/Users/me/code/codex-ipad-agent"),
+            makeSession(id: "b", project: "codex-ipad-agent", dir: "/Users/me/code/codex-ipad-agent"),
+            makeSession(id: "c", project: "codex-ipad-agent", dir: "/Users/me/code/codex-ipad-agent/"),
+        ]
+        XCTAssertEqual(
+            SessionListPresentation.workspaceIdentityFallback(among: singleDirectory),
+            .none
+        )
+
+        // 出现第二个目录末段，这一列立刻恢复区分能力。
+        let divergentWorktrees = singleDirectory + [
+            makeSession(id: "d", project: "codex-ipad-agent", dir: "/Users/me/code/codex-ipad-agent-mim-202"),
+        ]
+        XCTAssertEqual(
+            SessionListPresentation.workspaceIdentityFallback(among: divergentWorktrees),
+            .directory
+        )
+
+        // 空列表、单条会话都没有区分对象，一样收起。
+        XCTAssertEqual(
+            SessionListPresentation.workspaceIdentityFallback(among: []),
+            .none
+        )
+        XCTAssertEqual(
+            SessionListPresentation.workspaceIdentityFallback(among: [singleDirectory[0]]),
+            .none
+        )
+    }
+
     func testTimestampTextUsesInjectedNowAndCalendar() {
         let calendar = makeCalendar(timeZone: "Asia/Shanghai")
         let now = makeDate(calendar, year: 2025, month: 4, day: 9, hour: 12, minute: 0)

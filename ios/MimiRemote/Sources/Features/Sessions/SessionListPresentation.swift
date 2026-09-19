@@ -288,6 +288,22 @@ enum SessionListPresentation {
         return normalized.isEmpty ? nil : normalized
     }
 
+    /// 工作区页的身份列回退档位：只有目录末段在一组里出现第二种取值时，
+    /// 它才有区分能力，值得逐行渲染。
+    ///
+    /// 判据刻意和 `branchToDisplay` 完全一致。工作区页恒定了项目，`.directory` 在
+    /// 单目录、无 worktree 分化时回退成页面顶部已经写过的工作区名本身——一屏 12 行
+    /// 重复 12 次，读起来像渲染故障。有 worktree 分化时立刻恢复，因为那时它真的在区分。
+    static func workspaceIdentityFallback(
+        among sessions: [AgentSession]
+    ) -> SessionIndexRowIdentityFallback {
+        let directoryTails = sessions
+            .map { directoryTail(for: $0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard Set(directoryTails).count > 1 else { return .none }
+        return .directory
+    }
+
     /// 会话行时间使用调用方注入的当前时刻，工作区快照和生产列表共享同一规则。
     static func timestampText(
         for date: Date?,
