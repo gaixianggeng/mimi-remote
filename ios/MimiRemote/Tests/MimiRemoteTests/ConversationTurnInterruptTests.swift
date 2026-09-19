@@ -365,3 +365,261 @@ extension ConversationDataFlowTests {
         return (store, socket, conversationStore, running)
     }
 }
+
+// MARK: - Runtime / Store stale control integration
+
+@MainActor
+extension ConversationDataFlowTests {
+    func testStaleInterruptRealRuntimeDispatchesQueuedTurnAfterResume() async throws {
+        let fixture = try await makeStaleControlRuntimeFixture()
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        // 列表/历史不接入 Runtime，防止后台刷新恰好修好旧缓存而掩盖故障。
+        let client = MockSessionStoreClient(
+            projects: [fixture.project], sessions: [fixture.session], messagesResult: []
+        )
+        let socket = CodexAppServerSessionWebSocketClient(runtime: fixture.runtime)
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { socket }
+        )
+        defer {
+            store.disconnectWebSocket()
+            store.sessionListReconciliationTasksByProjectID.values.forEach { $0.cancel() }
+            store.sessionListReconciliationTasksByProjectID.removeAll()
+        }
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(fixture.session)
+        await store.selectSession(fixture.session)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let queued = await store.sendTurn(CodexAppServerTurnPayload(prompt: "next message"))
+        XCTAssertTrue(queued)
+        store.interruptSelectedTurn()
+        let interrupt = try await waitForFakeAppServerRequest(fixture.transport, method: "turn/interrupt")
+        XCTAssertEqual(interrupt.params?["turnId"]?.stringValue, "turn_stale")
+        transportErrorResponse(fixture.transport, id: interrupt.id, code: -32600, message: "thread not found")
+
+        // 必须到达真实 thread/resume，再到 turn/start；mock 的 sentTurns 或 UI idle 不算成功。
+        let resume = try await waitForFakeAppServerRequest(fixture.transport, method: "thread/resume")
+        let runtimeActiveBeforeResume = await fixture.runtime.contextsBySessionID[fixture.session.id]?.activeTurnID
+        XCTAssertNil(runtimeActiveBeforeResume)
+        let thread = appServerThreadJSON(
+            id: fixture.session.id, cwd: fixture.project.path, source: "cli", updatedAt: 10
+        )
+        transportResponse(fixture.transport, id: resume.id, result: "{\"thread\":\(thread)}")
+        let start = try await waitForFakeAppServerRequest(fixture.transport, method: "turn/start")
+        XCTAssertEqual(start.params?["threadId"]?.stringValue, fixture.session.id)
+        XCTAssertEqual(start.params?["input"]?.arrayValue?.first?["text"]?.stringValue, "next message")
+        transportResponse(
+            fixture.transport, id: start.id,
+            result: #"{"turn":{"id":"turn_next","status":"inProgress","items":[]}}"#
+        )
+        try await waitForSelectedActiveTurnID("turn_next", store: store)
+        // session 投影可能早于发送 ACK 回调；等同一条消息完成出队，避免跨 actor 时序抖动。
+        for _ in 0..<200 {
+            if store.selectedQueuedTurns.isEmpty { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(store.selectedQueuedTurns.isEmpty)
+        let active = await fixture.runtime.contextsBySessionID[fixture.session.id]?.activeTurnID
+        XCTAssertEqual(active, "turn_next")
+    }
+
+    func testStaleInterruptRuntimeClearsPendingReplayAndRejectsLateRequests() async throws {
+        let fixture = try await makeStaleControlRuntimeFixture()
+        let approval = staleControlRequest(sessionID: fixture.session.id, turnID: "turn_stale", id: 801)
+        let input = staleControlRequest(
+            sessionID: fixture.session.id, turnID: "turn_stale", id: 802,
+            method: "item/tool/requestUserInput"
+        )
+        await fixture.runtime.rememberPendingApprovalRequest(approval)
+        await fixture.runtime.rememberPendingUserInputRequest(input)
+        let oldApprovals = await fixture.runtime.pendingApprovalRequestsByID.count
+        let oldInputs = await fixture.runtime.pendingUserInputRequestsByID.count
+        XCTAssertGreaterThan(oldApprovals, 0)
+        XCTAssertGreaterThan(oldInputs, 0)
+
+        let task = Task {
+            try await fixture.runtime.interruptActiveTurnRecoveringStaleTarget(
+                sessionID: fixture.session.id, expectedTurnID: "turn_stale"
+            )
+        }
+        let interrupt = try await waitForFakeAppServerRequest(fixture.transport, method: "turn/interrupt")
+        transportErrorResponse(fixture.transport, id: interrupt.id, code: -32600, message: "turn not found")
+        try await task.value
+
+        let active = await fixture.runtime.contextsBySessionID[fixture.session.id]?.activeTurnID
+        let pendingApprovals = await fixture.runtime.pendingApprovalRequestsByID
+        let pendingInputs = await fixture.runtime.pendingUserInputRequestsByID
+        let resumed = await fixture.runtime.threadsResumedOnConnection.contains(fixture.session.id)
+        XCTAssertNil(active)
+        XCTAssertTrue(pendingApprovals.isEmpty)
+        XCTAssertTrue(pendingInputs.isEmpty)
+        XCTAssertFalse(resumed)
+        await fixture.runtime.handle(approval)
+        await fixture.runtime.handle(input)
+        let replay = await fixture.runtime.pendingInteractionEvents(sessionID: fixture.session.id)
+        XCTAssertTrue(replay.isEmpty, "迟到请求不能恢复旧审批/输入卡片")
+    }
+
+    func testStaleInterruptRuntimePreservesSupersedingTurn() async throws {
+        let fixture = try await makeStaleControlRuntimeFixture()
+        let task = Task {
+            try await fixture.runtime.interruptActiveTurnRecoveringStaleTarget(
+                sessionID: fixture.session.id, expectedTurnID: "turn_stale"
+            )
+        }
+        let interrupt = try await waitForFakeAppServerRequest(fixture.transport, method: "turn/interrupt")
+        var newer = fixture.session
+        newer.activeTurnID = "turn_new"
+        await fixture.runtime.rememberForkedSession(newer)
+        let approval = staleControlRequest(sessionID: newer.id, turnID: "turn_new", id: 803)
+        await fixture.runtime.rememberPendingApprovalRequest(approval)
+        transportErrorResponse(fixture.transport, id: interrupt.id, code: -32600, message: "turn not found")
+        do {
+            try await task.value
+            XCTFail("旧失败必须保留新轮次，不能让 Store 再合成旧终态")
+        } catch {
+            XCTAssertFalse(ControlCommandFailure.classify(error).isStaleTarget)
+        }
+        let active = await fixture.runtime.contextsBySessionID[newer.id]?.activeTurnID
+        let pending = await fixture.runtime.pendingApprovalRequestsByID
+        let resumed = await fixture.runtime.threadsResumedOnConnection.contains(newer.id)
+        XCTAssertEqual(active, "turn_new")
+        XCTAssertFalse(pending.isEmpty)
+        XCTAssertTrue(resumed)
+    }
+
+    func testNonStaleInterruptRuntimeFailureKeepsActiveTurn() async throws {
+        let fixture = try await makeStaleControlRuntimeFixture()
+        let task = Task {
+            try await fixture.runtime.interruptActiveTurnRecoveringStaleTarget(
+                sessionID: fixture.session.id, expectedTurnID: "turn_stale"
+            )
+        }
+        let interrupt = try await waitForFakeAppServerRequest(fixture.transport, method: "turn/interrupt")
+        transportErrorResponse(
+            fixture.transport, id: interrupt.id, code: -32600,
+            message: "thread already has an active writer"
+        )
+        do {
+            try await task.value
+            XCTFail("普通失败不能当作停止成功")
+        } catch {
+            XCTAssertFalse(ControlCommandFailure.classify(error).isStaleTarget)
+        }
+        let active = await fixture.runtime.contextsBySessionID[fixture.session.id]?.activeTurnID
+        let resumed = await fixture.runtime.threadsResumedOnConnection.contains(fixture.session.id)
+        XCTAssertEqual(active, "turn_stale")
+        XCTAssertTrue(resumed)
+    }
+
+    func testStaleStopRealAPIClientsCloseRuntimeWithoutReleasingNextTurn() async throws {
+        for usesRouting in [false, true] {
+            let fixture = try await makeStaleControlRuntimeFixture()
+            let client: any SessionStoreAPIClient
+            if usesRouting {
+                client = CodexAppServerRuntimeRoutingSessionAPIClient(
+                    codexRuntime: fixture.runtime, claudeRuntime: fixture.runtime
+                )
+            } else {
+                client = CodexAppServerSessionAPIClient(runtime: fixture.runtime)
+            }
+            let input = staleControlRequest(
+                sessionID: fixture.session.id, turnID: "turn_stale", id: 804,
+                method: "item/tool/requestUserInput"
+            )
+            await fixture.runtime.rememberPendingUserInputRequest(input)
+            let task = Task { try await client.stopSession(id: fixture.session.id) }
+            let interrupt = try await waitForFakeAppServerRequest(fixture.transport, method: "turn/interrupt")
+            transportErrorResponse(fixture.transport, id: interrupt.id, code: -32600, message: "thread not found")
+            try await task.value
+            let context = await fixture.runtime.contextsBySessionID[fixture.session.id]
+            let pending = await fixture.runtime.pendingUserInputRequestsByID
+            let events = await fixture.runtime.bufferedEvents(sessionID: fixture.session.id, replayPolicy: .all)
+            XCTAssertNil(context?.activeTurnID)
+            XCTAssertEqual(context?.session.status, "closed")
+            XCTAssertTrue(pending.isEmpty)
+            XCTAssertFalse(events.contains { event in
+                if case .turnCompleted = event { return true }
+                return false
+            }, "停止会话不能先发 turnCompleted 放行本地队列")
+        }
+    }
+
+    func testStaleStopRealAPIClientDoesNotCloseSupersedingTurn() async throws {
+        let fixture = try await makeStaleControlRuntimeFixture()
+        let client = CodexAppServerSessionAPIClient(runtime: fixture.runtime)
+        let task = Task { try await client.stopSession(id: fixture.session.id) }
+        let interrupt = try await waitForFakeAppServerRequest(fixture.transport, method: "turn/interrupt")
+        var newer = fixture.session
+        newer.activeTurnID = "turn_new"
+        await fixture.runtime.rememberForkedSession(newer)
+        transportErrorResponse(fixture.transport, id: interrupt.id, code: -32600, message: "turn not found")
+        do {
+            try await task.value
+            XCTFail("旧停止请求不能关闭新轮次")
+        } catch {
+            XCTAssertFalse(ControlCommandFailure.classify(error).isStaleTarget)
+        }
+        let context = await fixture.runtime.contextsBySessionID[newer.id]
+        XCTAssertEqual(context?.activeTurnID, "turn_new")
+        XCTAssertNotEqual(context?.session.status, "closed")
+    }
+
+    private func makeStaleControlRuntimeFixture() async throws -> StaleControlRuntimeFixture {
+        let project = makeProject(id: "proj_stale_runtime")
+        let session = makeSession(
+            id: "sess_stale_runtime", projectID: project.id, title: "Stale runtime",
+            status: "running", source: "codex", activeTurnID: "turn_stale"
+        )
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "test-token",
+            transportFactory: { transport },
+            turnInterruptRecoveryDelaysNanoseconds: [],
+            configProvider: {
+                makeDirectAppServerConfig(project: project, allowedMethods: [
+                    "initialize", "initialized", "thread/resume", "turn/start", "turn/interrupt"
+                ])
+            }
+        )
+        addTeardownBlock { await runtime.shutdownForHostSwitch() }
+        let warmup = Task { try await runtime.prepareForHostActivation() }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport, id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        try await warmup.value
+        // 保留真实 start/resume 后的 Runtime 缓存和绑定，不能只在 Store 里伪造 active turn。
+        await runtime.rememberForkedSession(session)
+        return StaleControlRuntimeFixture(project: project, session: session, runtime: runtime, transport: transport)
+    }
+
+    private func staleControlRequest(
+        sessionID: SessionID,
+        turnID: TurnID,
+        id: Int64,
+        method: String = "item/commandExecution/requestApproval"
+    ) -> CodexAppServerServerRequest {
+        CodexAppServerServerRequest(id: .int(id), method: method, params: .object([
+            "threadId": .string(sessionID),
+            "turnId": .string(turnID),
+            "itemId": .string("item_\(id)"),
+            "command": .string("echo test"),
+            "questions": .array([])
+        ]))
+    }
+}
+
+private struct StaleControlRuntimeFixture {
+    let project: AgentProject
+    let session: AgentSession
+    let runtime: CodexAppServerSessionRuntime
+    let transport: FakeCodexAppServerTransport
+}
