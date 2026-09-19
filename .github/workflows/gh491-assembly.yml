@@ -1,0 +1,42 @@
+name: GH491 source assembly
+on:
+  push:
+    branches: [codex/gh-491-implementation-assembly]
+permissions:
+  contents: read
+jobs:
+  assemble:
+    if: github.ref == 'refs/heads/codex/gh-491-implementation-assembly'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Apply reviewed source edits
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .gh491/apply.py ]; then
+            echo 'Assembly branch prepared; no source mutation requested yet.'
+            exit 0
+          fi
+          python3 .gh491/apply.py
+          git diff --check
+          git diff --name-only -- '*.go' | xargs -r gofmt -w
+          git ls-files --others --exclude-standard -- '*.go' | xargs -r gofmt -w
+          go test ./internal/config ./internal/setup ./internal/httpapi ./internal/doctor ./cmd/agentd -run '^$'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -rf .gh491
+          rm .github/workflows/gh491-assembly.yml
+          git add -A
+          git commit -m 'feat(mac): implement module management (Refs #491)'
+          echo "ASSEMBLED_TREE=$(git rev-parse HEAD^{tree})"
+          echo "ASSEMBLED_COMMIT=$(git rev-parse HEAD)"
+          git push origin HEAD:codex/gh-491-implementation-assembly
