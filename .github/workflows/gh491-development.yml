@@ -1,0 +1,26 @@
+name: GH491 development snapshot
+
+on:
+  push:
+    branches: [codex/gh-491-module-management-impl]
+    paths: [.github/workflows/gh491-development.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    if: github.repository == 'gaixianggeng/mimi-remote'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Archive tracked source only
+        run: git archive --format=tar HEAD | gzip > "$RUNNER_TEMP/gh491-source.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gh491-source
+          path: ${{ runner.temp }}/gh491-source.tar.gz
+          retention-days: 1
