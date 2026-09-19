@@ -51,7 +51,7 @@ struct WorkspaceCharacterPicker: View {
                                 }
                             if currentCharacterID == character.id {
                                 Image(systemName: "checkmark.circle.fill")
-                                    .font(themeStore.uiFont(size: 12, weight: .semibold))
+                                    .font(themeStore.uiFont(.caption, weight: .semibold))
                                     .foregroundStyle(tokens.primaryAction)
                                     .background(tokens.surface, in: Circle())
                             }
@@ -131,7 +131,7 @@ struct WorkspaceEmojiPicker: View {
                                 )
                             if currentEmoji == emoji {
                                 Image(systemName: "checkmark.circle.fill")
-                                    .font(themeStore.uiFont(size: 12, weight: .semibold))
+                                    .font(themeStore.uiFont(.caption, weight: .semibold))
                                     .foregroundStyle(tokens.primaryAction)
                                     .background(tokens.surface, in: Circle())
                             }

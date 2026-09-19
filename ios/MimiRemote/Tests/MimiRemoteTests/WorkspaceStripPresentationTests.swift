@@ -200,6 +200,56 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         )
     }
 
+    func testRestingNameDisclosureIsBinaryNotInterpolated() {
+        // 曾经的连续披露会在中间态给出「够放一两个字符」的宽度，把工作区名截成
+        // 单字母残片。这里锁死二值：任何输入只能得到 0 或 1。
+        let inputs: [CGFloat] = [
+            0, 200, 345, 505.5, 639.9, 640, 689.5, 872, 1_200, 2_000,
+        ]
+        for width in inputs {
+            for count in [0, 1, 2, 3, 5, 9] {
+                let disclosure = WorkspaceStripLayout.restingNameDisclosure(
+                    viewportWidth: width,
+                    projectCount: count
+                )
+                XCTAssertTrue(
+                    disclosure == 0 || disclosure == 1,
+                    "视口 \(width) / 项目 \(count) 得到非二值披露 \(disclosure)"
+                )
+            }
+        }
+    }
+
+    func testRestingNameDisclosureFollowsMeasuredDeviceWidths() {
+        // 三个宽度都是实测值：13 寸横屏 + 侧栏展开（容器收窄到 920）、
+        // iPad mini 竖屏、iPhone 竖屏。横屏给完整名称，窄屏干净地退回纯头像。
+        XCTAssertEqual(
+            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 689.5, projectCount: 3),
+            1
+        )
+        XCTAssertEqual(
+            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 505.5, projectCount: 3),
+            0
+        )
+        XCTAssertEqual(
+            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 345, projectCount: 3),
+            0
+        )
+    }
+
+    func testRestingNameDisclosureRequiresFullBudgetForEveryRestingChip() {
+        // 宽度过了阈值还不够：项目多到放不下全部名称时，宁可整体退回纯头像，
+        // 也不要只给前几个胶囊名称、后面的被挤掉。
+        XCTAssertEqual(
+            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 1_400, projectCount: 20),
+            0
+        )
+        XCTAssertEqual(
+            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 1_400, projectCount: 6),
+            1
+        )
+    }
+
     func testWorkspaceSelectionHapticOnlyFollowsUserSelectionChanges() {
         XCTAssertFalse(
             WorkspaceSelectionHapticPolicy.shouldFire(

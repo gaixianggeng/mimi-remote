@@ -373,7 +373,7 @@ struct InitialConnectionSettingsSections: View {
             if let message = displayErrorMessage {
                 Text(message)
                     .foregroundStyle(tokens.warning)
-                    .font(themeStore.uiFont(size: 13))
+                    .font(themeStore.uiFont(.footnote))
                     .settingsRow(.descriptive)
                     .accessibilityIdentifier("settings.connection.error")
             }
@@ -732,7 +732,7 @@ struct InitialConnectionSettingsSections: View {
             }
         } label: {
             Image(systemName: "ellipsis.circle")
-                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                .font(themeStore.uiFont(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
                 .frame(width: 44, height: 44)
         }

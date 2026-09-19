@@ -1701,7 +1701,7 @@ struct ComposerView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: isGuidedSelected ? "text.bubble.fill" : "clock")
-                        .font(themeStore.uiFont(size: 16, weight: .bold))
+                        .font(themeStore.uiFont(.callout, weight: .bold))
                     if !usesCompactComposerMetrics {
                         Text(isGuidedSelected ? L10n.text("ui.guide") : L10n.text("ui.queue"))
                             .font(themeStore.uiFont(.callout, weight: .semibold))

@@ -9,6 +9,9 @@ enum SettingsLayoutMetrics {
     static let accessibilityRowHeight: CGFloat = 76
     static let rowHorizontalInset: CGFloat = 16
     static let iconSlot: CGFloat = 28
+    /// 设置链路符号的字号。它是**未缩放的字号**，调用点必须交给
+    /// `themeStore.uiFont(size:)` 再落到 `.font(...)`：把裸字号直接交给 SwiftUI
+    /// 写进 `Font` 会让这一层图标脱离用户字号设置。
     static let symbolPointSize: CGFloat = 18
     static let sectionSpacing: CGFloat = 24
     static let statusModuleCornerRadius = WorkbenchPageLayout.contentPanelCornerRadius
@@ -539,7 +542,7 @@ struct SettingsValueLabel: View {
 
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: systemImage)
-                .font(.system(size: symbolPointSize, weight: .regular))
+                .font(themeStore.uiFont(size: symbolPointSize, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(tokens.secondaryText)
                 .frame(
@@ -1164,7 +1167,7 @@ private struct AccountUsageRefreshButton: View {
                         .controlSize(.small)
                 } else {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(themeStore.uiFont(.footnote, weight: .semibold))
                 }
             }
             .frame(width: 32, height: 32)
@@ -1208,8 +1211,9 @@ struct SettingsConnectionCard: View {
 
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 12) {
+                // 20 落在 title3 档上：档位表没有 19 或 21，就近归位不必新开档。
                 Image(systemName: "desktopcomputer")
-                    .font(.system(size: 20, weight: .regular))
+                    .font(themeStore.uiFont(.title3, weight: .regular))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(hasWarning ? tokens.warning : tokens.secondaryText)
                     .frame(width: SettingsLayoutMetrics.iconSlot)
@@ -1238,7 +1242,7 @@ struct SettingsConnectionCard: View {
                 Spacer(minLength: 8)
 
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(themeStore.uiFont(.footnote, weight: .semibold))
                     .foregroundStyle(tokens.tertiaryText)
                     .accessibilityHidden(true)
             }

@@ -523,8 +523,9 @@ struct UnifiedWorkbenchShell: View {
 
     private func credentialsInvalidBanner(tokens: ThemeTokens) -> some View {
         HStack(spacing: 12) {
+            // 18 并入 headline（17）：档位表里 17 与 20 之间没有档。
             Image(systemName: "lock.trianglebadge.exclamationmark")
-                .font(.system(size: 18, weight: .semibold))
+                .font(themeStore.uiFont(size: 18, weight: .semibold))
                 .foregroundStyle(tokens.warning)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -557,8 +558,9 @@ struct UnifiedWorkbenchShell: View {
 
     private func networkUnavailableBanner(tokens: ThemeTokens) -> some View {
         HStack(spacing: 12) {
+            // 18 并入 headline（17）：档位表里 17 与 20 之间没有档。
             Image(systemName: "wifi.slash")
-                .font(.system(size: 18, weight: .semibold))
+                .font(themeStore.uiFont(size: 18, weight: .semibold))
                 .foregroundStyle(tokens.warning)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -697,7 +699,7 @@ struct UnifiedWorkbenchShell: View {
                             open(.sessions, layout: layout)
                         } label: {
                             Text(L10n.format("ui.more_sessions_count", section.overflowCount))
-                                .font(themeStore.uiFont(size: 11, weight: .medium))
+                                .font(themeStore.uiFont(.caption2, weight: .medium))
                                 .foregroundStyle(tokens.secondaryText)
                                 .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
                                 .contentShape(Rectangle())

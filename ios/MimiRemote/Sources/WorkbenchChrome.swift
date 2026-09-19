@@ -730,11 +730,13 @@ enum WorkbenchChromeIconMetrics {
 }
 
 struct WorkbenchChromeIcon: View {
+    // 图标型 chrome 统一走主题字号，跟随用户设置的字号倍率。
+    @EnvironmentObject private var themeStore: ThemeStore
     let systemName: String
 
     var body: some View {
         Image(systemName: systemName)
-            .font(.system(size: WorkbenchChromeIconMetrics.symbolSize, weight: .semibold))
+            .font(themeStore.uiFont(size: WorkbenchChromeIconMetrics.symbolSize, weight: .semibold))
             .symbolRenderingMode(.hierarchical)
             .frame(
                 width: WorkbenchChromeIconMetrics.symbolFrame,
@@ -1615,7 +1617,7 @@ struct StatusPill: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Text(text)
-            .font(themeStore.uiFont(size: 12, weight: .medium))
+            .font(themeStore.uiFont(.caption, weight: .medium))
             .lineLimit(1)
             .minimumScaleFactor(0.86)
             .padding(.horizontal, 10)

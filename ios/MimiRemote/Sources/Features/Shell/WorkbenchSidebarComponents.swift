@@ -92,8 +92,9 @@ struct AIUsageRingsControl: View {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
+                            // 14 归到 subheadline（15），与侧栏其余行内图标同档。
                             Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(themeStore.uiFont(size: 14, weight: .semibold))
                         }
                     }
                     .frame(width: 34, height: 34)
@@ -217,7 +218,7 @@ struct AIUsageRingsControl: View {
     ) -> some View {
         HStack(spacing: 7) {
             Image(systemName: display.hasLiveData ? "checkmark.seal" : "info.circle")
-                .font(.system(size: 12, weight: .semibold))
+                .font(themeStore.uiFont(.caption, weight: .semibold))
             // name 与 creditText 已分别完成本地化；按原文组合，避免 Xcode 抽取裸 `%@: %@` key。
             Text(verbatim: "\(name): \(display.creditText)")
                 .font(themeStore.uiFont(.caption, weight: .medium))
@@ -518,7 +519,7 @@ struct WorkbenchSidebarFooter: View {
     private var newSessionIcon: some View {
         // 加号在通用 15pt 规格下实际墨迹偏小且略向下；主创建动作单独做光学校正，避免误伤其他图标。
         Image(systemName: "plus")
-            .font(.system(size: 17, weight: .semibold))
+            .font(themeStore.uiFont(.headline, weight: .semibold))
             .symbolRenderingMode(.hierarchical)
             .frame(width: 20, height: 20)
             .offset(y: -0.5)
@@ -571,7 +572,7 @@ struct SessionSidebarMonitorRow: View {
             .frame(width: 18, height: 18)
 
             Text(SessionListPresentation.titleDisplayText(for: session))
-                .font(themeStore.uiFont(size: 13, weight: isSelected ? .semibold : .medium))
+                .font(themeStore.uiFont(.footnote, weight: isSelected ? .semibold : .medium))
                 .foregroundStyle(tokens.primaryText)
                 .lineLimit(1)
                 .truncationMode(.tail)

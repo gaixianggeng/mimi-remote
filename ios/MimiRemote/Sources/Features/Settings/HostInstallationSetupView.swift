@@ -372,7 +372,7 @@ struct RouteStatusRow: View {
             } else {
                 Button(action: onRefresh) {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                        .font(themeStore.uiFont(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                         .foregroundStyle(tokens.secondaryText)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())

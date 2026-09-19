@@ -897,6 +897,8 @@ private struct ConversationReturnToTailButton: View {
 
     private var baseLabel: some View {
         Image(systemName: "arrow.down")
+            // 这枚叶子控件按本文件的约定只接收 tokens，没有 themeStore；P1 不为一行
+            // 字号给它补依赖注入，遗留交给用户决定（见 PR 的「已知遗留」）。
             .font(.system(size: 17, weight: .medium))
             .foregroundStyle(tokens.primaryText)
             .frame(width: 48, height: 48)

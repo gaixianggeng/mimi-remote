@@ -476,7 +476,7 @@ struct SkillAttachmentToken: View {
 
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
-                    .font(themeStore.uiFont(size: 16, weight: .semibold))
+                    .font(themeStore.uiFont(.callout, weight: .semibold))
                     .foregroundStyle(tokens.tertiaryText)
             }
             .buttonStyle(.plain)
