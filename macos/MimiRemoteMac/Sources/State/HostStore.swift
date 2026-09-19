@@ -385,23 +385,17 @@ final class HostStore {
     }
 
     private func prepareAutomaticNetworkBeforeServiceStart() async throws {
-        do {
-            _ = try await agent.pair(.automatic)
-        } catch {
-            // 旧配置可能仍绑定已卸载的 Tailscale IP；启动新服务前先切到 LAN 通配监听。
-            _ = try await agent.setLANAccess(true)
-        }
+        // 启动服务不得因为 Tailscale/配对探测失败而静默扩大到局域网监听。
+        // 网络能力由用户显式开关；失败保留原配置并交给状态/配对界面处理。
+        _ = try? await agent.pair(.automatic)
     }
 
     private func resolvedPairing(for requestedNetwork: PairingNetwork?) async throws -> PairingInfo {
         switch requestedNetwork ?? .automatic {
         case .automatic:
-            do {
-                return try await agent.pair(.automatic)
-            } catch {
-                // 自动模式只有 Tailscale 不可用时才应降级；LAN 准备失败会返回更可操作的错误。
-                return try await localNetworkPairing()
-            }
+            // 自动模式只在当前已启用的连接方式中选择；不能为了生成二维码
+            // 隐式打开 LAN，因为那会扩大 agentd 的网络暴露面。
+            return try await agent.pair(.automatic)
         case .tailscale:
             return try await agent.pair(.tailscale)
         case .localNetwork:
