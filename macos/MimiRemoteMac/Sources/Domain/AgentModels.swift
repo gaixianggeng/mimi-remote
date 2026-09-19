@@ -414,6 +414,20 @@ private extension String {
     }
 }
 
+struct AgentNetworkStatus: Codable, Equatable, Sendable {
+    let mode: String
+    let allowLAN: Bool
+    let policyChecked: Bool
+    let policyOK: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case allowLAN = "allow_lan"
+        case policyChecked = "policy_checked"
+        case policyOK = "policy_ok"
+    }
+}
+
 struct AgentStatus: Codable, Equatable, Sendable {
     let processOK: Bool
     let serviceOK: Bool
@@ -428,6 +442,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
     let doctor: AgentDoctorResults
     let pairExpires: String?
     let runtimeStatus: AgentRuntimeStatusSnapshot?
+    let networkStatus: AgentNetworkStatus?
 
     enum CodingKeys: String, CodingKey {
         case processOK = "process_ok"
@@ -443,6 +458,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         case doctor
         case pairExpires = "pair_expires"
         case runtimeStatus = "runtime_status"
+        case networkStatus = "network_status"
     }
 
     init(
@@ -458,7 +474,8 @@ struct AgentStatus: Codable, Equatable, Sendable {
         doctorOK: Bool,
         doctor: AgentDoctorResults,
         pairExpires: String?,
-        runtimeStatus: AgentRuntimeStatusSnapshot? = nil
+        runtimeStatus: AgentRuntimeStatusSnapshot? = nil,
+        networkStatus: AgentNetworkStatus? = nil
     ) {
         self.processOK = processOK
         self.serviceOK = serviceOK
@@ -473,6 +490,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         self.doctor = doctor
         self.pairExpires = pairExpires
         self.runtimeStatus = runtimeStatus
+        self.networkStatus = networkStatus
     }
 
     init(from decoder: Decoder) throws {
@@ -499,6 +517,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
             // 该快照，不能让健康检查、迁移和服务控制一起解码失败。
             runtimeStatus = nil
         }
+        networkStatus = try container.decodeIfPresent(AgentNetworkStatus.self, forKey: .networkStatus)
     }
 
     var hasAgentVersionMismatch: Bool {
