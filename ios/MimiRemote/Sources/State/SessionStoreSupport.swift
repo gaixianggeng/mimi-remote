@@ -325,6 +325,10 @@ struct HistoryLoadJob {
     /// full 自适应缩页时本次尝试使用的 turn 页大小；nil 表示默认首屏（等价 ladder 顶端）。
     /// 供 history_response_too_large 回退时决定下一级更小的 full 页。
     let fullTurnPageLimit: Int?
+    /// 当前 full 请求是否已经用 summary-first 协议取首屏。Claude 默认开启：
+    /// 先拿轻量用户/助手文本，再用 thread/items/list 后台补工具过程，避免少量可见消息
+    /// 因隐藏工具输出把首屏打成“大历史”并触发 15 秒预算退避。
+    let prefersSummaryFirst: Bool
     let task: Task<HistoryFirstPageResult, Error>
     /// 与 foreground reporting 解耦：quiet 会话也可能需要在现有消息尾部显示轻量进度。
     /// 同一 job 被可见 waiter 加入后会提升为 true，并沿策略重试链传给替代 job。
