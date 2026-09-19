@@ -7,6 +7,61 @@ import UIKit
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testCompletedSessionIgnoresLateResolvedWaitState() {
+        let project = makeProject(id: "proj_terminal_resolved")
+        var completed = makeSession(
+            id: "sess_terminal_resolved",
+            projectID: project.id,
+            title: "Completed",
+            status: "completed",
+            source: "claude"
+        )
+        completed.activeTurnID = nil
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [completed]) }
+        )
+        store.sessions = [completed]
+        store.locallyCompletedSessionIDs.insert(completed.id)
+        let metadata = AgentEventMetadata(
+            seq: nil,
+            sessionID: completed.id,
+            turnID: "old-turn",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: Date()
+        )
+
+        XCTAssertTrue(
+            store.shouldIgnoreResolvedWaitStateAfterTerminal(
+                .approvalResolved(metadata),
+                fallbackSessionID: completed.id
+            )
+        )
+        XCTAssertTrue(
+            store.shouldIgnoreResolvedWaitStateAfterTerminal(
+                .userInputResolved(metadata, skipped: false),
+                fallbackSessionID: completed.id
+            )
+        )
+
+        var running = completed
+        running.status = "running"
+        running.activeTurnID = "new-turn"
+        store.sessions = [running]
+        XCTAssertFalse(
+            store.shouldIgnoreResolvedWaitStateAfterTerminal(
+                .approvalResolved(metadata),
+                fallbackSessionID: completed.id
+            ),
+            "新 turn 已建立后不能吞掉属于当前运行态的 resolved 事件"
+        )
+    }
+
     func testQueuedTurnActiveConflictReturnsToWaitingWithoutFailingSession() async throws {
         let project = makeProject(id: "proj_active_conflict_queue")
         let staleIdle = makeSession(

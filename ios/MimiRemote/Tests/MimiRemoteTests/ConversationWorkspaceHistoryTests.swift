@@ -4646,6 +4646,64 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 
+    func testFullHistoryBudgetThrottleRetriesFullWithoutFalseSummaryNotice() async {
+        let project = makeProject(id: "proj_claude_budget_retry")
+        let history = makeSession(
+            id: "claude_small_budget_retry",
+            projectID: project.id,
+            title: "Claude 小会话",
+            status: "history",
+            source: "claude",
+            resumeID: "small"
+        )
+        var routedHistory = history
+        routedHistory.runtimeProvider = "claude"
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [routedHistory])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(routedHistory) }
+        await client.waitForHistoryRequestCount(1)
+
+        client.failHistoryRequest(
+            at: 0,
+            with: historyPolicyError(reason: "history_budget_limited", retryAfterMs: 1)
+        )
+        await client.waitForHistoryRequestCount(2)
+
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full])
+        XCTAssertEqual(client.requestedMessageLimits, [20, 20])
+        XCTAssertNil(
+            store.selectedHistorySavingsNotice,
+            "临时预算冲突不是大历史，不能误导用户进入缩略历史提示"
+        )
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "claude-small-reply",
+                    role: "assistant",
+                    content: "少量历史",
+                    createdAt: Date(timeIntervalSince1970: 30)
+                )
+            ])
+        )
+        await selectTask.value
+
+        XCTAssertEqual(conversationStore.messages(for: routedHistory.id).map(\.content), ["少量历史"])
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+    }
+
     func testSummaryHistoryPolicyFailureRetriesOnceAfterRetryAfter() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(id: "codex_summary_retry", projectID: project.id, title: "缩略重试", status: "history", source: "codex", resumeID: "summary-retry")

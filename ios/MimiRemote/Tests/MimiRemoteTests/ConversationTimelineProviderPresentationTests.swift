@@ -141,7 +141,8 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         let frozen = cache.snapshot(from: [process], suspendingUpdates: true)
         XCTAssertEqual(frozen.revision, running.revision)
         XCTAssertTrue(try group(in: frozen.rows[0]).isExpanded)
-        let finished = cache.snapshot(from: [process])
+        // active turn 结束属于原地 live 状态变化，不应等滚动结束才呈现。
+        let finished = cache.snapshot(from: [process], suspendingUpdates: true)
         XCTAssertFalse(try group(in: finished.rows[0]).isExpanded)
         let pinned = cache.snapshot(from: [process], expandedProcessMessageIDs: [process.id], activeTurn: .init(id: "turn"))
         let pinnedFinished = cache.snapshot(from: [process], expandedProcessMessageIDs: [process.id])
