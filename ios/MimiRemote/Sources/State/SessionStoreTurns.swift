@@ -667,6 +667,7 @@ extension SessionStore {
         }
         // 选择提交意味着详情已经成为当前可见目标；历史加载即使随后失败，也不能让列表
         // 继续把用户刚打开过的完成结果标成未读。
+        HostSwitchSignpost.event("conversation_open")
         markHistorySessionRead(session.id)
         if let previousSession, previousSession.id != session.id {
             cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
