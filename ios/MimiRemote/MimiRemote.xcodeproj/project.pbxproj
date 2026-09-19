@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B52200000000000000000001 /* WorkspaceGitAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A52200000000000000000001 /* WorkspaceGitAPIClient.swift */; };
+		B52200000000000000000002 /* WorkspaceGitStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A52200000000000000000002 /* WorkspaceGitStore.swift */; };
+		B52200000000000000000003 /* SessionStoreGitState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A52200000000000000000003 /* SessionStoreGitState.swift */; };
+		B52200000000000000000004 /* WorkspaceGitStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A52200000000000000000004 /* WorkspaceGitStoreTests.swift */; };
 		01C54C61ECFCD945AA143C53 /* SessionStoreComposerPermissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF45F0AC4C6BA077701FE488 /* SessionStoreComposerPermissions.swift */; };
 		0209F743D168F03B03894AB0 /* FileAttachmentModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F55F20982430C816BB70A7F5 /* FileAttachmentModelsTests.swift */; };
 		037B9C95E0087324B0B93B82 /* CodexAppServerApprovalProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D536A7DD9FA51261421A61A /* CodexAppServerApprovalProjection.swift */; };
@@ -489,6 +493,10 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A52200000000000000000001 /* WorkspaceGitAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceGitAPIClient.swift; sourceTree = "<group>"; };
+		A52200000000000000000002 /* WorkspaceGitStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspaces/Git/WorkspaceGitStore.swift; sourceTree = "<group>"; };
+		A52200000000000000000003 /* SessionStoreGitState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreGitState.swift; sourceTree = "<group>"; };
+		A52200000000000000000004 /* WorkspaceGitStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceGitStoreTests.swift; sourceTree = "<group>"; };
 		001126768C40E81F1BDA0FCC /* LockScreenApprovalNotification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LockScreenApprovalNotification.swift; sourceTree = "<group>"; };
 		00BF9FE4AEE49C6DD13873AA /* testComposerStatusTrayCrowdedCompactWidth.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testComposerStatusTrayCrowdedCompactWidth.1.png; sourceTree = "<group>"; };
 		023D47371A66B1C8E92BB3D4 /* testSessionLibraryDensityAndAccessibilityLayouts.iphone-390-light.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testSessionLibraryDensityAndAccessibilityLayouts.iphone-390-light.png"; sourceTree = "<group>"; };
@@ -1095,6 +1103,7 @@
 		43F4D9DB96DC2682A38AC5E8 /* MimiRemoteTests */ = {
 			isa = PBXGroup;
 			children = (
+				A52200000000000000000004 /* WorkspaceGitStoreTests.swift */,
 				1FC88F25CEBA6C13050A2B4F /* AgentAPIClientRequestTests.swift */,
 				554F31B0074B97074AE97B31 /* AppExternalLinksTests.swift */,
 				657215B4124C9FDDEA161D2C /* AppleVoiceStartupWatchdogTests.swift */,
@@ -1274,6 +1283,7 @@
 		5BB12206C8D32201707AA176 /* API */ = {
 			isa = PBXGroup;
 			children = (
+				A52200000000000000000001 /* WorkspaceGitAPIClient.swift */,
 				3CF761429383D479BD96FC52 /* AgentAPIClient.swift */,
 				6BC9AC02EFD95C2100D0ED79 /* AgentPushAPI.swift */,
 				9D536A7DD9FA51261421A61A /* CodexAppServerApprovalProjection.swift */,
@@ -1456,6 +1466,7 @@
 		83BE6BD0299E0CB569FAA3A6 /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				A52200000000000000000002 /* WorkspaceGitStore.swift */,
 				6BBBB6868268A19A816F6DFB /* Conversation */,
 				9CAE4254274F046DB2BB77EC /* Diagnostics */,
 				0B6BA937A01A61E3C1962C50 /* Inspector */,
@@ -1659,6 +1670,7 @@
 		F67C03D28B30AD0972F1AF35 /* State */ = {
 			isa = PBXGroup;
 			children = (
+				A52200000000000000000003 /* SessionStoreGitState.swift */,
 				5C9DB99DDCE7CA778B616657 /* AppStore.swift */,
 				3AB921BC2A9B03335E3C8171 /* AppStoreCapabilities.swift */,
 				934F6F53C8E42FE3700DFDD9 /* AppStoreConnectionTesting.swift */,
@@ -2092,6 +2104,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B52200000000000000000004 /* WorkspaceGitStoreTests.swift in Sources */,
 				84F5B773E0438B85B671B2F3 /* AgentAPIClientRequestTests.swift in Sources */,
 				FA451031EB72AE10C3552C3F /* AppExternalLinksTests.swift in Sources */,
 				EF35A98EC4F810C40B19975F /* AppleVoiceStartupWatchdogTests.swift in Sources */,
@@ -2214,6 +2227,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B52200000000000000000001 /* WorkspaceGitAPIClient.swift in Sources */,
+				B52200000000000000000002 /* WorkspaceGitStore.swift in Sources */,
+				B52200000000000000000003 /* SessionStoreGitState.swift in Sources */,
 				E811D57414AC2415D22ADDF0 /* APIResponses.swift in Sources */,
 				F3ABBC8502D690C76985F756 /* AgentAPIClient.swift in Sources */,
 				9FCCC7A13E2113887C18513F /* AgentEvent.swift in Sources */,
