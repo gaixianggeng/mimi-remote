@@ -272,6 +272,22 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.messagesPage(sessionID: sessionID, before: before, limit: limit, loadMode: loadMode)
     }
 
+    func messagesPage(
+        sessionID: String,
+        before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode,
+        prefersSummaryFirst: Bool
+    ) async throws -> HistoryMessagesPage {
+        try await runtime.messagesPage(
+            sessionID: sessionID,
+            before: before,
+            limit: limit,
+            loadMode: loadMode,
+            prefersSummaryFirst: prefersSummaryFirst
+        )
+    }
+
     func historyTurnItemsPage(
         sessionID: String,
         continuation: HistoryTurnItemsContinuation
@@ -723,6 +739,22 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
             before: before,
             limit: limit,
             loadMode: loadMode
+        )
+    }
+
+    func messagesPage(
+        sessionID: String,
+        before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode,
+        prefersSummaryFirst: Bool
+    ) async throws -> HistoryMessagesPage {
+        try await bundle.runtime(forSessionID: sessionID).messagesPage(
+            sessionID: sessionID,
+            before: before,
+            limit: limit,
+            loadMode: loadMode,
+            prefersSummaryFirst: prefersSummaryFirst
         )
     }
 
