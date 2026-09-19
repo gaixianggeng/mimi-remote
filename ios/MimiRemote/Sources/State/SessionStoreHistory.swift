@@ -466,8 +466,7 @@ extension SessionStore {
         allowPolicyRetry: Bool = true,
         recoveryGeneration: UInt64? = nil,
         fullTurnPageLimit: Int? = nil,
-        noticeMessageOverride: String? = nil,
-        prefersSummaryFirst: Bool? = nil
+        noticeMessageOverride: String? = nil
     ) async -> Bool {
         if session.isLocalDraft {
             return true
@@ -475,11 +474,6 @@ extension SessionStore {
         // quiet 只控制失败、状态和 savings notice 是否打扰用户；选中的已缓存会话仍可
         // 显示轻量历史补拉进度，避免消息区只有本地 user 气泡而看不出 assistant 仍在补齐。
         let shouldShowProgress = showsProgress ?? !quiet
-        // Claude transcript 往往只有几条可见消息，却夹着大量隐藏工具/MCP 输出。
-        // 首屏默认 summary-first；完整过程由现有 item enrichment 分页补齐。
-        let shouldPreferSummaryFirst = prefersSummaryFirst
-            ?? (loadMode == .full
-                && Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "claude")
         // 普通自动/权威打开只需要 progress；savings 横幅应只在用户明确选择
         // full/summary，或策略层已经确认需要降级/重试时出现。否则每次短暂的
         // 首屏请求都会先暴露“正在加载完整历史”的决策卡片，再在成功时立即消失。
@@ -593,8 +587,7 @@ extension SessionStore {
                 sessionID: session.id,
                 limit: limit,
                 loadMode: loadMode,
-                cachePolicy: cachePolicy,
-                prefersSummaryFirst: shouldPreferSummaryFirst
+                cachePolicy: cachePolicy
             )
         }
         let job = HistoryLoadJob(
@@ -605,7 +598,6 @@ extension SessionStore {
             recoveryGeneration: recoveryGeneration,
             allowPolicyRetry: allowPolicyRetry,
             fullTurnPageLimit: loadMode == .full ? fullTurnPageLimit : nil,
-            prefersSummaryFirst: shouldPreferSummaryFirst,
             task: task,
             showsProgress: shouldShowProgress,
             requiresForegroundReporting: !quiet,
@@ -843,6 +835,32 @@ extension SessionStore {
         }
         if let policyFailure = historyPolicyFailure(from: error) {
             switch job.loadMode {
+            case .full where (policyFailure.reason == "history_budget_limited"
+                              || policyFailure.reason == "history_request_in_flight")
+                && job.allowPolicyRetry:
+                // 预算/同请求占用只说明 gateway 此刻繁忙，与历史体量无关。
+                // 旧逻辑会把任何 full 策略失败都降级成 economy，随后 economy 又命中同一预算，
+                // 用户就会看到“15 秒后重试缩略历史”，即使 Claude 会话只有几条可见消息。
+                // 保持 full(summary-first) 语义原地退避一次，不制造错误的“大历史”判断。
+                let delay = policyFailure.retryAfterNanoseconds
+                    ?? (policyFailure.reason == "history_request_in_flight"
+                        ? 1_000_000_000
+                        : historyPolicyRetryFallbackNanoseconds)
+                try? await Task.sleep(nanoseconds: delay)
+                guard !Task.isCancelled else { return false }
+                if let selectedSessionID, selectedSessionID != sessionID { return false }
+                return await loadHistory(
+                    for: session,
+                    quiet: effectiveQuiet,
+                    showsProgress: current.showsProgress,
+                    loadMode: .full,
+                    force: true,
+                    reason: .automatic,
+                    successStatusMessage: effectiveQuiet ? nil : current.foregroundSuccessStatusMessage,
+                    allowPolicyRetry: false,
+                    recoveryGeneration: job.recoveryGeneration,
+                    fullTurnPageLimit: job.fullTurnPageLimit
+                )
             case .full:
                 // 低波及自适应缩页：仅当实际可分页的 thread/turns/list full
                 // 被 gateway 按体量阻断时才逐级缩页。老 agentd 回退到 thread/read 后
@@ -871,8 +889,7 @@ extension SessionStore {
                         successStatusMessage: effectiveQuiet ? nil : L10n.text("ui.request_full_history"),
                         recoveryGeneration: job.recoveryGeneration,
                         fullTurnPageLimit: nextTurnPageLimit,
-                        noticeMessageOverride: effectiveQuiet ? nil : retryMessage,
-                        prefersSummaryFirst: job.prefersSummaryFirst
+                        noticeMessageOverride: effectiveQuiet ? nil : retryMessage
                     )
                 }
                 if policyFailure.reason == "history_response_too_large", session.isRunning {
@@ -892,8 +909,7 @@ extension SessionStore {
                     reason: .automatic,
                     successStatusMessage: effectiveQuiet ? nil : L10n.text("ui.thumbnail_history_automatically_loaded"),
                     recoveryGeneration: job.recoveryGeneration,
-                    noticeMessageOverride: effectiveQuiet ? nil : message,
-                    prefersSummaryFirst: job.prefersSummaryFirst
+                    noticeMessageOverride: effectiveQuiet ? nil : message
                 )
             case .economy where policyFailure.reason == "history_response_too_large":
                 break
@@ -921,8 +937,7 @@ extension SessionStore {
                     reason: .automatic,
                     successStatusMessage: effectiveQuiet ? nil : L10n.text("ui.thumbnail_history_loaded"),
                     allowPolicyRetry: false,
-                    recoveryGeneration: job.recoveryGeneration,
-                    prefersSummaryFirst: job.prefersSummaryFirst
+                    recoveryGeneration: job.recoveryGeneration
                 )
             default:
                 break
@@ -1268,15 +1283,13 @@ extension SessionStore {
         sessionID: SessionID,
         limit: Int,
         loadMode: HistoryMessagesPage.LoadMode,
-        cachePolicy: HistoryFirstPageCachePolicy,
-        prefersSummaryFirst: Bool = false
+        cachePolicy: HistoryFirstPageCachePolicy
     ) async throws -> HistoryFirstPageResult {
         let key = HistoryFirstPageRequestKey(
             profileID: appStore.activeHostScope.profileID,
             sessionID: sessionID,
             limit: limit,
-            loadMode: loadMode,
-            prefersSummaryFirst: prefersSummaryFirst
+            loadMode: loadMode
         )
         if cachePolicy == .reuseRecent,
            let cached = historyFirstPageCacheByKey[key],
@@ -1299,8 +1312,7 @@ extension SessionStore {
                 sessionID: sessionID,
                 before: nil,
                 limit: limit,
-                loadMode: loadMode,
-                prefersSummaryFirst: prefersSummaryFirst
+                loadMode: loadMode
             )
         }
         historyFirstPageInFlightByKey[key] = HistoryFirstPageInFlight(token: token, task: task)
