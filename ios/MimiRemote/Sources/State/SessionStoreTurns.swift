@@ -739,10 +739,7 @@ extension SessionStore {
             connectWebSocket(session, replayBufferedEvents: true)
             let didRefreshHistory = await loadHistory(for: session)
             guard isSelectionLeaseCurrent(selectionLease) else { return false }
-            if didRefreshHistory {
-                // 历史已经成为当前基线；连接保持不动，后续只消费实时增量。
-                logStore.add("运行会话首屏历史已与实时订阅收敛：\(session.id)")
-            }
+            _ = didRefreshHistory
         } else if session.isRunning {
             // 其他客户端正在运行：只读观察，不建立可发送的事件通道。
             await loadHistoryIfNeeded(for: session)
