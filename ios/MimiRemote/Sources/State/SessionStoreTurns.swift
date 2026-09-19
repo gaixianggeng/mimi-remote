@@ -737,9 +737,14 @@ extension SessionStore {
             // 先带 replay 接入保证历史加载期间产生的事件不会丢；随后权威历史快照负责去重/
             // 对账，事件 reducer 的 stable id/seq 继续作为合并边界。
             connectWebSocket(session, replayBufferedEvents: true)
-            let didRefreshHistory = await loadHistory(for: session)
-            guard isSelectionLeaseCurrent(selectionLease) else { return false }
-            _ = didRefreshHistory
+            if conversationStore.hasLoadedHistory(sessionID: session.id) {
+                // 已有可读缓存时不要让 selectSession 等网络；后台权威补齐即可。
+                // 页面立刻可交互，Socket 已经承担从当前时刻开始的实时增量。
+                scheduleQuietHistoryRefresh(for: session, showsProgress: true)
+            } else {
+                _ = await loadHistory(for: session)
+                guard isSelectionLeaseCurrent(selectionLease) else { return false }
+            }
         } else if session.isRunning {
             // 其他客户端正在运行：只读观察，不建立可发送的事件通道。
             await loadHistoryIfNeeded(for: session)
