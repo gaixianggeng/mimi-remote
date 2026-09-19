@@ -69,58 +69,151 @@ enum HarnessNativeUnavailableError: Error, LocalizedError, Equatable {
     }
 }
 
-/// H01 骨架：只提供显式 `notImplemented`，不返回空列表、空成功，也不调用旧网关兜底。
+/// 原生 Harness 只读客户端（H02 传输 + H05 目录）。
 ///
-/// 真正的原生实现由后续任务补全。在补全之前，任何调用都必须显式失败，让上层能把
-/// 该 runtime 标成不可用，而不是把「没实现」显示成「没有会话」。
+/// 只做**只读**的 Connection RPC：`session/list`、`session/search`、`session/modelCatalog`。
+/// 写路径（create / prompt / cancel / selectModel）与历史读取（`session/page`）属于后续任务，
+/// 在这里一律显式 `notImplemented`，不返回空成功。
+///
+/// 授权提示 `cwd` 走请求体（与 `internal/httpapi/harness_native_policy.go` 的
+/// `harnessNativeCWDScopedMethods` 一致）：只有 `session/list` 与 `session/search` 接受它，
+/// 它**不进**上游 Harness 的 args。
 final class HarnessSessionAPIClient: HarnessSessionClient {
+    /// 原生通道承接的 runtime id。沿用既有 runtime 身份，不新建 `deepseek-native`。
+    static let runtimeProvider = "deepseek"
+
     let endpoint: String
     let token: String
+    private let rpc: HarnessRPCTransport
 
-    init(endpoint: String, token: String) {
+    init(endpoint: String, token: String, rpc: HarnessRPCTransport? = nil) {
         self.endpoint = endpoint
         self.token = token
+        if let rpc {
+            self.rpc = rpc
+        } else if let baseURL = URL(string: endpoint) {
+            self.rpc = URLSessionHarnessRPCTransport(baseURL: baseURL, token: token)
+        } else {
+            // 地址不可解析时保留一个必然失败的传输，让失败发生在调用点而不是 init 抛错，
+            // 调用方因此总能拿到一个显式错误而不是构造期的崩溃路径。
+            self.rpc = UnreachableHarnessRPCTransport(endpoint: endpoint)
+        }
     }
 
     func makeEventClient(sessionID: SessionID) -> any SessionWebSocketClient {
         HarnessSessionWebSocketClient(endpoint: endpoint, token: token, sessionID: sessionID)
     }
 
+    /// 通道可用性探测。
+    ///
+    /// 用 `session/modelCatalog` 而不是 `session/list`：它零参数、只读、不触发任何模型调用，
+    /// 却同样要走完整条鉴权与上游链路，因此足以区分"通道通了"和"通道没通"。
+    /// 失败必须抛错——返回 false 会与"探测本身没跑"混成同一件事。
     func channelAvailable() async throws -> Bool {
-        throw HarnessNativeUnavailableError.notImplemented(operation: "channelAvailable")
+        _ = try await rpc.call(HarnessRPCRequest(
+            rpcId: Self.makeRPCID(),
+            method: HarnessWireMethod.sessionModelCatalog,
+            args: .object([:]),
+            cwd: nil
+        ))
+        return true
     }
 
+    /// 按 projectID 查询。Harness 没有 Codex 的 project 维度，等价于不带 cwd 的全局查询。
     func sessionsPage(
         projectID: String?,
         cursor: String?,
         limit: Int?,
         consistency: SessionListConsistency
     ) async throws -> SessionsPage {
-        throw HarnessNativeUnavailableError.notImplemented(operation: "session/list")
+        try await listSessions(cwd: nil, workspace: nil)
     }
 
+    /// 工作区目录查询：带 cwd 提示，由 agentd 用既有 canonical scope 逻辑裁剪。
     func sessionsPage(
         workspace: AgentWorkspace,
         cursor: String?,
         limit: Int?,
         consistency: SessionListConsistency
     ) async throws -> SessionsPage {
-        throw HarnessNativeUnavailableError.notImplemented(operation: "session/list")
+        try await listSessions(cwd: workspace.path, workspace: workspace)
     }
 
     func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
-        throw HarnessNativeUnavailableError.notImplemented(operation: "session/list")
+        try await listSessions(cwd: nil, workspace: nil)
     }
 
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {
-        throw HarnessNativeUnavailableError.notImplemented(operation: "session/search")
-    }
-
-    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
-        throw HarnessNativeUnavailableError.notImplemented(operation: "session/read")
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            // 中继会拒空 query；本地先拒能给出可操作文案，也避免把空查询当成"零命中"。
+            throw HarnessTransportError.rejected(status: 400, message: "搜索关键词不能为空")
+        }
+        let value = try await rpc.call(HarnessRPCRequest(
+            rpcId: Self.makeRPCID(),
+            method: HarnessWireMethod.sessionSearch,
+            args: .object(["request": .object(["query": .string(trimmed)])]),
+            cwd: nil
+        ))
+        return try HarnessSessionDirectoryDecoding.searchPage(
+            from: value,
+            runtimeProvider: Self.runtimeProvider,
+            workspace: nil
+        )
     }
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {
-        throw HarnessNativeUnavailableError.notImplemented(operation: "session/modelCatalog")
+        let value = try await rpc.call(HarnessRPCRequest(
+            rpcId: Self.makeRPCID(),
+            method: HarnessWireMethod.sessionModelCatalog,
+            // 该方法描述符没有参数：必须传空对象，省略或带键都会被中继拒。
+            args: .object([:]),
+            cwd: nil
+        ))
+        return try HarnessSessionDirectoryDecoding.modelOptions(
+            from: value,
+            runtimeProvider: Self.runtimeProvider
+        )
+    }
+
+    /// 历史读取属于后续任务（`session/page` 需要本次 follow 的 snapshot.cursor，
+    /// 现在没有合法的 throughSeq 可传）。显式失败，不用空会话冒充。
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        throw HarnessNativeUnavailableError.notImplemented(operation: "session/page")
+    }
+
+    // MARK: 支撑
+
+    private func listSessions(cwd: String?, workspace: AgentWorkspace?) async throws -> SessionsPage {
+        let value = try await rpc.call(HarnessRPCRequest(
+            rpcId: Self.makeRPCID(),
+            method: HarnessWireMethod.sessionList,
+            // 形参名带下划线；写成 "request" 会被 Harness 网关判为 gateway/arguments-invalid。
+            // 上游 list 没有服务端分页，因此不传 cursor。
+            args: .object(["_request": .object([:])]),
+            cwd: cwd
+        ))
+        return try HarnessSessionDirectoryDecoding.sessionsPage(
+            from: value,
+            runtimeProvider: Self.runtimeProvider,
+            workspace: workspace
+        )
+    }
+
+    private static func makeRPCID() -> String {
+        "mimi-\(UUID().uuidString)"
+    }
+}
+
+/// endpoint 无法解析成 URL 时的占位传输：调用必然显式失败。
+private final class UnreachableHarnessRPCTransport: HarnessRPCTransport {
+    private let endpoint: String
+
+    init(endpoint: String) {
+        self.endpoint = endpoint
+    }
+
+    func call(_ request: HarnessRPCRequest) async throws -> HarnessJSONValue {
+        throw HarnessTransportError.malformedResponse("原生通道地址不可解析：\(endpoint)")
     }
 }
