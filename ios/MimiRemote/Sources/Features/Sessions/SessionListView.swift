@@ -223,7 +223,7 @@ struct SessionListView: View {
                         }
                         Text(sessionStore.isLoadingMoreSessionSearchResults ? L10n.text("ui.searching_continues") : L10n.text("ui.continue_searching"))
                     }
-                    .font(themeStore.uiFont(size: 13, weight: .medium))
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
                 }
@@ -358,11 +358,11 @@ struct SessionListView: View {
     private func sessionSearchField(tokens: ThemeTokens) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
                 .foregroundStyle(tokens.tertiaryText)
 
             TextField(L10n.text("ui.search_session"), text: $sessionStore.sessionSearchQuery)
-                .font(themeStore.uiFont(size: 14))
+                .font(themeStore.uiFont(.subheadline))
                 .foregroundStyle(tokens.primaryText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -376,7 +376,7 @@ struct SessionListView: View {
                     sessionStore.sessionSearchQuery = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(themeStore.uiFont(size: 13, weight: .semibold))
+                        .font(themeStore.uiFont(.footnote, weight: .semibold))
                         .symbolRenderingMode(.hierarchical)
                         .frame(width: 28, height: 28)
                 }
@@ -474,7 +474,7 @@ struct SessionListView: View {
             presentNewSession(source: source)
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 24, weight: .medium))
+                .font(themeStore.uiFont(.title2, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(tokens.primaryActionForeground)
                 .frame(
@@ -626,7 +626,7 @@ struct SessionListView: View {
             VStack(spacing: 10) {
                 ProgressView()
                 Text(L10n.text("ui.loading_sessions"))
-                    .font(themeStore.uiFont(size: 13, weight: .medium))
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
             }
             .padding(.vertical, 32)
@@ -639,7 +639,7 @@ struct SessionListView: View {
             VStack(spacing: 10) {
                 ProgressView()
                 Text(L10n.text("ui.searching_historical_conversations"))
-                    .font(themeStore.uiFont(size: 13, weight: .medium))
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
             }
             .padding(.vertical, 24)
@@ -742,7 +742,7 @@ struct SessionListView: View {
             sessionRows(sessions, isActiveSection: isActiveSection, tokens: tokens)
         } header: {
             Text(title)
-                .font(themeStore.uiFont(size: 11, weight: .semibold))
+                .font(themeStore.uiFont(.caption2, weight: .semibold))
                 .foregroundStyle(tokens.secondaryText)
                 .textCase(nil)
                 .accessibilityAddTraits(.isHeader)
@@ -906,7 +906,7 @@ struct SessionListView: View {
     private func activeFilterChip(tokens: ThemeTokens) -> some View {
         HStack(spacing: 8) {
             Text(activeFilterTitle)
-                .font(themeStore.uiFont(size: 12, weight: .semibold))
+                .font(themeStore.uiFont(.caption, weight: .semibold))
                 .lineLimit(1)
 
             Button {
@@ -914,7 +914,7 @@ struct SessionListView: View {
                 selectedStatus = .all
             } label: {
                 Image(systemName: "xmark")
-                    .font(themeStore.uiFont(size: 9, weight: .bold))
+                    .font(themeStore.uiFont(.caption2, weight: .bold))
                     .frame(width: 24, height: 24)
             }
             .buttonStyle(.plain)

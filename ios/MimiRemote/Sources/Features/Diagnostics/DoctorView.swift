@@ -473,8 +473,10 @@ struct DoctorView: View {
                         .font(themeStore.uiFont(.subheadline).weight(.semibold))
                         .foregroundStyle(tokens.primaryText)
                     if check.displayName != check.name {
+                        // 等宽文本走 codeFont 而不是 uiFont：uiFont 不接受 design 参数，
+                        // 换过去会丢掉诊断输出的等宽对齐，也会忽略用户选的代码字体。
                         Text(check.name)
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(themeStore.codeFont(.caption2))
                             .foregroundStyle(tokens.secondaryText)
                     }
                 }
@@ -575,8 +577,9 @@ struct DoctorView: View {
                 }
 
                 ScrollView(.horizontal, showsIndicators: true) {
+                    // 同上：这段是日志/JSON 转储，等宽比字号档位更重要。
                     Text(text)
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(themeStore.codeFont(.caption))
                         .foregroundStyle(tokens.primaryText)
                         .lineLimit(nil)
                         .fixedSize(horizontal: true, vertical: true)

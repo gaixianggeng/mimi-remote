@@ -143,8 +143,9 @@ struct CodexUsagePanel: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(tokens.accent.opacity(0.12))
+                // 19 不在档位表里，就近并入 title3（20）；14 同理并入 subheadline（15）。
                 Image(systemName: "speedometer")
-                    .font(.system(size: 19, weight: .semibold))
+                    .font(themeStore.uiFont(.title3, weight: .semibold))
                     .foregroundStyle(tokens.accent)
             }
             .frame(width: 42, height: 42)
@@ -174,7 +175,7 @@ struct CodexUsagePanel: View {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 HStack(alignment: .center, spacing: 8) {
                     Image(systemName: window.systemImage)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(themeStore.uiFont(.footnote, weight: .semibold))
                         .foregroundStyle(tint)
                         .frame(width: 18)
                     Text(window.label)
@@ -213,7 +214,7 @@ struct CodexUsagePanel: View {
     private func footer(display: CodexUsageWindowsDisplay, tokens: ThemeTokens) -> some View {
         HStack(spacing: 8) {
             Image(systemName: display.hasLiveData ? "checkmark.seal" : "info.circle")
-                .font(.system(size: 13, weight: .semibold))
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
                 .foregroundStyle(display.hasLiveData ? tokens.success : tokens.secondaryText)
             Text(display.creditText)
                 .font(themeStore.uiFont(.footnote, weight: .medium))
@@ -239,7 +240,7 @@ struct CodexUsagePanel: View {
                         .tint(tokens.secondaryText)
                 } else {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
                         .symbolRenderingMode(.hierarchical)
                 }
             }
@@ -410,7 +411,7 @@ struct MacConnectionPanel: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(connectionTone(tokens: tokens).opacity(0.14))
                 Image(systemName: "desktopcomputer")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(themeStore.uiFont(.title2, weight: .semibold))
                     .foregroundStyle(connectionTone(tokens: tokens))
             }
             .frame(width: 46, height: 46)
@@ -760,7 +761,7 @@ struct ProfileInfoRow: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(tone.opacity(0.12))
                 Image(systemName: systemImage)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(themeStore.uiFont(.headline, weight: .semibold))
                     .foregroundStyle(tone)
             }
             .frame(width: 38, height: 38)
@@ -787,7 +788,7 @@ struct ProfileInfoRow: View {
 
             if let trailingSystemImage {
                 Image(systemName: trailingSystemImage)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(themeStore.uiFont(.footnote, weight: .semibold))
                     .foregroundStyle(tokens.tertiaryText)
                     .padding(.top, 11)
             }

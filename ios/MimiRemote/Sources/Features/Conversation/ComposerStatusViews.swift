@@ -530,7 +530,7 @@ struct ComposerStatusTray: View {
     private func collapsedChip(title: String, systemImage: String, tint: Color, tokens: ThemeTokens) -> some View {
         HStack(spacing: 5) {
             Image(systemName: systemImage)
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
                 .foregroundStyle(tint)
             Text(title)
                 .font(themeStore.uiFont(.caption2, weight: .semibold))
@@ -582,7 +582,7 @@ struct ComposerStatusTray: View {
 
         return Button(action: onToggleGoalExpanded) {
             Image(systemName: "chevron.down")
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
                 .foregroundStyle(tint)
                 .rotationEffect(.degrees(isExpanded ? 180 : 0))
                 .animation(motion.animation, value: isExpanded)
@@ -822,7 +822,7 @@ struct ComposerStatusTray: View {
 
     private func segmentIcon(_ systemImage: String, tint: Color) -> some View {
         Image(systemName: systemImage)
-            .font(themeStore.uiFont(size: 16, weight: .semibold))
+            .font(themeStore.uiFont(.callout, weight: .semibold))
             .foregroundStyle(tint)
             .frame(width: 24, height: 24)
             .accessibilityHidden(true)
@@ -831,7 +831,7 @@ struct ComposerStatusTray: View {
     private func refreshButton(tint: Color) -> some View {
         Button(action: onRefreshUsage) {
             Image(systemName: "arrow.clockwise")
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
                 .frame(width: 44, height: 44)
                 // 和 disclosure 同一个坑：没有 contentShape 时这 44×44 只是布局框，
                 // 真正能点中的只有那枚 13pt 图标。
@@ -854,7 +854,7 @@ struct ComposerStatusTray: View {
         let tokens = themeStore.tokens(for: colorScheme)
         return Button(action: action) {
             Image(systemName: systemImage)
-                .font(themeStore.uiFont(size: 16, weight: .semibold))
+                .font(themeStore.uiFont(.callout, weight: .semibold))
                 .foregroundStyle(isDisabled ? tokens.tertiaryText : tint)
                 .frame(width: 44, height: 44)
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

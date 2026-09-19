@@ -157,7 +157,7 @@ struct PendingApprovalActionCard: View {
     private func approvalHeader(tokens: ThemeTokens) -> some View {
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: "exclamationmark.shield.fill")
-                .font(themeStore.uiFont(size: 19, weight: .semibold))
+                .font(themeStore.uiFont(.title3, weight: .semibold))
                 .foregroundStyle(tokens.accent)
                 .frame(width: 36, height: 36)
                 .background(tokens.accent.opacity(0.10), in: Circle())

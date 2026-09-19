@@ -555,7 +555,7 @@ private struct ModelReasoningPickerHeader: View {
                         HStack(spacing: 3) {
                             Text(L10n.text("ui.all_models"))
                             Image(systemName: "chevron.up.chevron.down")
-                                .font(themeStore.uiFont(size: 8, weight: .bold))
+                                .font(themeStore.uiFont(.caption2, weight: .bold))
                         }
                         Image(systemName: "square.grid.2x2")
                     }
@@ -563,7 +563,7 @@ private struct ModelReasoningPickerHeader: View {
                     HStack(spacing: 4) {
                         Text(L10n.text("ui.all_models"))
                         Image(systemName: "chevron.up.chevron.down")
-                            .font(themeStore.uiFont(size: 9, weight: .bold))
+                            .font(themeStore.uiFont(.caption2, weight: .bold))
                     }
                 }
             }
@@ -594,7 +594,7 @@ private struct ModelReasoningPickerHeader: View {
                     .fill(isFastMode ? tokens.accent : tokens.elevatedSurface.opacity(0.72))
 
                 Image(systemName: fastImage)
-                    .font(themeStore.uiFont(size: 14, weight: .semibold))
+                    .font(themeStore.uiFont(.footnote, weight: .semibold))
                     .foregroundStyle(isFastMode ? Color.white : tokens.accent)
             }
             .frame(

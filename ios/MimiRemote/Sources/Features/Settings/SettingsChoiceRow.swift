@@ -120,7 +120,7 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
     private func titleCluster(tokens: ThemeTokens) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Image(systemName: systemImage)
-                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                .font(themeStore.uiFont(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
                 // 图标统一降到次要色，颜色只留给状态。四个偏好图标全用强调色时，
                 // 颜色没有承载任何信息，只是噪音。
@@ -237,7 +237,7 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
         return HStack(alignment: .top, spacing: 12) {
             if let systemImage = option.choiceSystemImage {
                 Image(systemName: systemImage)
-                    .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                    .font(themeStore.uiFont(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(tokens.secondaryText)
                     .frame(
@@ -263,8 +263,9 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
 
             Spacer(minLength: 8)
 
+            // 14 归到 subheadline（15），与同一行标题的字号档保持一致。
             Image(systemName: "checkmark")
-                .font(.system(size: 14, weight: .semibold))
+                .font(themeStore.uiFont(.subheadline, weight: .semibold))
                 .foregroundStyle(tokens.accent)
                 .opacity(isSelected ? 1 : 0)
                 .accessibilityHidden(true)

@@ -244,8 +244,9 @@ struct HostSwitcherMenu: View {
         color: Color,
         tokens: ThemeTokens
     ) -> some View {
+        // 9 提到 caption2（11）：与同排的 16pt 图标并排时，太小的一枚会被读成瑕疵。
         Image(systemName: systemName)
-            .font(.system(size: 9, weight: .bold))
+            .font(themeStore.uiFont(.caption2, weight: .bold))
             .foregroundStyle(color)
             .frame(width: 14, height: 14)
             .background(tokens.background, in: Circle())

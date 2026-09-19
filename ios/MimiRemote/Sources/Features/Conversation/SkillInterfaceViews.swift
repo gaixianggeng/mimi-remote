@@ -283,7 +283,7 @@ struct SkillSelectionContent: View {
     private func emptyState(tokens: ThemeTokens) -> some View {
         VStack(spacing: 8) {
             Image(systemName: "wand.and.stars.inverse")
-                .font(themeStore.uiFont(size: 26, weight: .medium))
+                .font(themeStore.uiFont(.title, weight: .medium))
                 .foregroundStyle(tokens.tertiaryText)
             Text(searchText.isEmpty ? L10n.text("ui.no_skills_available_yet") : L10n.text("ui.no_matching_skill"))
                 .font(themeStore.uiFont(.callout, weight: .medium))
@@ -433,7 +433,7 @@ private struct SkillSelectionRow: View {
         tokens: ThemeTokens
     ) -> some View {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-            .font(themeStore.uiFont(size: 18, weight: .semibold))
+            .font(themeStore.uiFont(.headline, weight: .semibold))
             .foregroundStyle(isSelected ? tint : tokens.tertiaryText)
             .frame(width: 28, height: 38)
             .accessibilityHidden(true)
@@ -465,7 +465,7 @@ struct SkillAttachmentToken: View {
                             .foregroundStyle(tokens.primaryText)
                             .lineLimit(1)
                         Text("SKILL")
-                            .font(themeStore.uiFont(size: 9, weight: .bold))
+                            .font(themeStore.uiFont(.caption2, weight: .bold))
                             .tracking(0.8)
                             .foregroundStyle(tint)
                     }
@@ -476,7 +476,7 @@ struct SkillAttachmentToken: View {
 
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
-                    .font(themeStore.uiFont(size: 16, weight: .semibold))
+                    .font(themeStore.uiFont(.callout, weight: .semibold))
                     .foregroundStyle(tokens.tertiaryText)
             }
             .buttonStyle(.plain)
@@ -534,7 +534,7 @@ struct SkillInvocationCard: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Text("SKILL")
-                .font(themeStore.uiFont(size: 9, weight: .bold))
+                .font(themeStore.uiFont(.caption2, weight: .bold))
                 .tracking(0.8)
                 .foregroundStyle(usesUserBubbleContrast ? Color.white.opacity(0.82) : tint)
                 .padding(.top, 2)

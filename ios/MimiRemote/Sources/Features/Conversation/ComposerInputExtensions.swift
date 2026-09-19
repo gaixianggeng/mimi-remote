@@ -193,13 +193,13 @@ struct ComposerToolbarControlLabel: View {
             }
             if let trailingSystemImage {
                 Image(systemName: trailingSystemImage)
-                    .font(themeStore.uiFont(size: 13, weight: .bold))
+                    .font(themeStore.uiFont(.footnote, weight: .bold))
                     .accessibilityHidden(true)
             }
         }
         .font(
             usesPhoneStyle && usesCondensedTitle
-                ? themeStore.uiFont(size: 15, weight: .medium)
+                ? themeStore.uiFont(.subheadline, weight: .medium)
                 : themeStore.uiFont(
                     usesPhoneStyle ? .body : .caption,
                     weight: usesPhoneStyle ? .medium : .semibold

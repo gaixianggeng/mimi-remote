@@ -642,7 +642,7 @@ struct InspectorSummaryCard: View {
 
         HStack(alignment: .top, spacing: 9) {
             Image(systemName: symbolName)
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(tint)
                 .frame(width: 30, height: 30)

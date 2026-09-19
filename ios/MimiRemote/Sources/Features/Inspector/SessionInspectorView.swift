@@ -14,7 +14,7 @@ struct SessionInspectorView: View {
             Picker(L10n.text("ui.inspector"), selection: $selectedSection) {
                 ForEach(SessionInspectorSection.allCases) { section in
                     Image(systemName: section.symbolName)
-                        .font(themeStore.uiFont(size: 14, weight: .semibold))
+                        .font(themeStore.uiFont(.footnote, weight: .semibold))
                         .frame(maxWidth: .infinity, minHeight: 28)
                         .tag(section)
                         .accessibilityLabel(section.title)
@@ -59,7 +59,7 @@ struct SessionInspectorView: View {
 
         return HStack(spacing: 10) {
             Image(systemName: selectedSection.symbolName)
-                .font(themeStore.uiFont(size: 15, weight: .semibold))
+                .font(themeStore.uiFont(.subheadline, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(tokens.accent)
                 .frame(width: 34, height: 34)

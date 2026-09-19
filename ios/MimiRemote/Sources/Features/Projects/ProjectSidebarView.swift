@@ -177,12 +177,12 @@ struct ProjectSidebarView: View {
                         .tint(tokens.tertiaryText)
                 } else {
                     Image(systemName: "magnifyingglass")
-                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+                        .font(themeStore.uiFont(.caption, weight: .semibold))
                 }
                 Text(sessionStore.isLoadingMoreSessionSearchResults ? L10n.text("ui.searching_continues") : L10n.text("ui.continue_searching"))
                     .lineLimit(1)
             }
-            .font(themeStore.uiFont(size: 12, weight: .medium))
+            .font(themeStore.uiFont(.caption, weight: .medium))
             .foregroundStyle(tokens.tertiaryText)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, 30)
@@ -252,10 +252,10 @@ struct ProjectSidebarView: View {
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(showsSessions ? L10n.text("ui.session") : L10n.text("ui.workspace"))
-                        .font(themeStore.uiFont(size: 13, weight: .semibold))
+                        .font(themeStore.uiFont(.footnote, weight: .semibold))
                         .foregroundStyle(tokens.secondaryText)
                     Text(sidebarHeaderSubtitle(projects: projects))
-                        .font(themeStore.uiFont(size: 11))
+                        .font(themeStore.uiFont(.caption2))
                         .foregroundStyle(tokens.tertiaryText)
                         .lineLimit(1)
                 }
@@ -277,7 +277,7 @@ struct ProjectSidebarView: View {
     private func sidebarCompactHeaderContent(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
         HStack(spacing: 8) {
             Text(showsSessions ? L10n.text("ui.session") : L10n.text("ui.workspace"))
-                .font(themeStore.uiFont(size: 12, weight: .semibold))
+                .font(themeStore.uiFont(.caption, weight: .semibold))
                 .foregroundStyle(tokens.tertiaryText)
             Spacer()
             if shouldShowSidebarHeaderActions(projects: projects) {
@@ -312,10 +312,10 @@ struct ProjectSidebarView: View {
     private func sidebarSearchField(tokens: ThemeTokens) -> some View {
         HStack(spacing: 7) {
             Image(systemName: "magnifyingglass")
-                .font(themeStore.uiFont(size: 12, weight: .semibold))
+                .font(themeStore.uiFont(.caption, weight: .semibold))
                 .foregroundStyle(tokens.tertiaryText)
             TextField(showsSessions ? L10n.text("ui.search_session") : L10n.text("ui.search_workspace"), text: $sessionStore.sessionSearchQuery)
-                .font(themeStore.uiFont(size: 13))
+                .font(themeStore.uiFont(.footnote))
                 .foregroundStyle(tokens.primaryText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -325,7 +325,7 @@ struct ProjectSidebarView: View {
                     sessionStore.sessionSearchQuery = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+                        .font(themeStore.uiFont(.caption, weight: .semibold))
                         .symbolRenderingMode(.hierarchical)
                 }
                 .buttonStyle(.plain)
@@ -368,7 +368,7 @@ struct ProjectSidebarView: View {
                         .frame(width: 34, height: 34)
                         .accessibilityLabel(L10n.text("ui.new_session"))
                 }
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
                 .foregroundStyle(tokens.accent)
                 .background(tokens.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay {
@@ -441,7 +441,7 @@ struct ProjectSidebarView: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(themeStore.uiFont(size: 14, weight: .semibold))
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .frame(width: 32, height: 32)
         }
@@ -491,7 +491,7 @@ private struct SidebarSearchLoadingMessage: View {
                 .controlSize(.small)
                 .tint(tokens.tertiaryText)
             Text(L10n.text("ui.searching_historical_conversations"))
-                .font(themeStore.uiFont(size: 12, weight: .medium))
+                .font(themeStore.uiFont(.caption, weight: .medium))
                 .foregroundStyle(tokens.tertiaryText)
         }
         .padding(.vertical, 10)
@@ -515,11 +515,11 @@ private struct SidebarEmptyMessage: View {
 
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
                 .foregroundStyle(tokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             Text(detail)
-                .font(themeStore.uiFont(size: 12))
+                .font(themeStore.uiFont(.caption))
                 .foregroundStyle(tokens.tertiaryText)
                 .fixedSize(horizontal: false, vertical: true)
             if let actionTitle, let action {
@@ -530,7 +530,7 @@ private struct SidebarEmptyMessage: View {
                         Text(actionTitle)
                     }
                 }
-                .font(themeStore.uiFont(size: 12, weight: .semibold))
+                .font(themeStore.uiFont(.caption, weight: .semibold))
                 .foregroundStyle(tokens.accent)
                 .padding(.horizontal, 10)
                 .frame(height: 30)
@@ -649,7 +649,7 @@ struct OpenWorkspaceSheet: View {
             dismiss()
         }
         .buttonStyle(.plain)
-        .font(themeStore.uiFont(size: 15))
+        .font(themeStore.uiFont(.subheadline))
         .foregroundStyle(tokens.secondaryText)
         .frame(minWidth: 44, minHeight: 44)
         // 打开请求完成前禁止关闭弹窗，避免后台任务在取消后仍切换当前工作区。
@@ -801,7 +801,7 @@ struct OpenWorkspaceSheet: View {
                 ? L10n.text("ui.the_directory_is_too_large_only_the_front")
                 : L10n.text("ui.hidden_directories_library_and_common_cache_directories_will")
         )
-        .font(themeStore.uiFont(size: 12))
+        .font(themeStore.uiFont(.caption))
         .foregroundStyle(tokens.tertiaryText)
         .padding(.top, 14)
         .padding(.bottom, 4)
@@ -843,7 +843,7 @@ struct OpenWorkspaceSheet: View {
                         Task { await open(path: path) }
                     } label: {
                         Text(isOpening ? L10n.text("ui.opening") : L10n.text("ui.open_the_input_path"))
-                            .font(themeStore.uiFont(size: 14, weight: .semibold))
+                            .font(themeStore.uiFont(.footnote, weight: .semibold))
                             .foregroundStyle(canOpenTypedPath ? tokens.primaryAction : tokens.tertiaryText)
                             .frame(maxWidth: .infinity, minHeight: 42)
                             .background(
@@ -861,7 +861,7 @@ struct OpenWorkspaceSheet: View {
                     .disabled(!canOpenTypedPath)
 
                     Text(L10n.text("ui.you_can_directly_paste_the_absolute_path_in"))
-                        .font(themeStore.uiFont(size: 12))
+                        .font(themeStore.uiFont(.caption))
                         .foregroundStyle(tokens.tertiaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -870,11 +870,11 @@ struct OpenWorkspaceSheet: View {
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "keyboard")
-                        .font(themeStore.uiFont(size: 13, weight: .medium))
+                        .font(themeStore.uiFont(.footnote, weight: .medium))
                         .foregroundStyle(tokens.tertiaryText)
                         .frame(width: 20)
                     Text(L10n.text("ui.enter_path_manually"))
-                        .font(themeStore.uiFont(size: 14, weight: .medium))
+                        .font(themeStore.uiFont(.footnote, weight: .medium))
                         .foregroundStyle(tokens.secondaryText)
                 }
                 .frame(minHeight: 44)
@@ -899,26 +899,26 @@ struct OpenWorkspaceSheet: View {
 
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
                 .foregroundStyle(tokens.warning)
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 6) {
                 if let title {
                     Text(title)
-                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+                        .font(themeStore.uiFont(.caption, weight: .semibold))
                         .foregroundStyle(tokens.warning)
                 }
                 Text(message)
-                    .font(themeStore.uiFont(size: 13))
+                    .font(themeStore.uiFont(.footnote))
                     .foregroundStyle(tokens.primaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 if let retry {
                     Button(action: retry) {
                         HStack(spacing: 5) {
                             Image(systemName: "arrow.clockwise")
-                                .font(themeStore.uiFont(size: 12, weight: .semibold))
+                                .font(themeStore.uiFont(.caption, weight: .semibold))
                             Text(L10n.text("ui.try_again"))
-                                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                                .font(themeStore.uiFont(.footnote, weight: .semibold))
                         }
                         .foregroundStyle(tokens.accent)
                         .frame(minHeight: 32)
@@ -956,7 +956,7 @@ struct OpenWorkspaceSheet: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         return Image(systemName: systemImage)
-            .font(themeStore.uiFont(size: 26, weight: .light))
+            .font(themeStore.uiFont(.title, weight: .light))
             .foregroundStyle(tokens.tertiaryText.opacity(0.7))
     }
 
@@ -964,7 +964,7 @@ struct OpenWorkspaceSheet: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         return Text(text)
-            .font(themeStore.uiFont(size: 13))
+            .font(themeStore.uiFont(.footnote))
             .foregroundStyle(tokens.tertiaryText)
             .multilineTextAlignment(.center)
     }
@@ -1145,7 +1145,7 @@ private struct WorkspaceBrowseEntryRow: View {
         HStack(spacing: 12) {
             icon(tokens: tokens)
             Text(entry.name)
-                .font(themeStore.uiFont(size: 15, weight: .medium))
+                .font(themeStore.uiFont(.subheadline, weight: .medium))
                 .foregroundStyle(isReachable ? tokens.primaryText : tokens.tertiaryText)
                 // 目录名是唯一的辨识依据，长名折行而不是从中间截断。
                 .lineLimit(2)
@@ -1161,7 +1161,7 @@ private struct WorkspaceBrowseEntryRow: View {
 
     private func icon(tokens: ThemeTokens) -> some View {
         Image(systemName: entry.isDir ? "folder.fill" : "doc.text.fill")
-            .font(themeStore.uiFont(size: 13, weight: .medium))
+            .font(themeStore.uiFont(.footnote, weight: .medium))
             .foregroundStyle(entry.isDir ? tokens.secondaryText : tokens.tertiaryText)
             .frame(width: 30, height: 30)
             .background(
@@ -1180,7 +1180,7 @@ private struct WorkspaceBrowseEntryRow: View {
             EmptyView()
         } else {
             Image(systemName: entry.isDir ? "chevron.right" : "eye")
-                .font(themeStore.uiFont(size: 12, weight: .semibold))
+                .font(themeStore.uiFont(.caption, weight: .semibold))
                 .foregroundStyle(tokens.tertiaryText.opacity(0.6))
         }
     }
@@ -1276,10 +1276,10 @@ struct WorkspaceCurrentDirectoryCard: View {
             // 让列表行把 accent 让给真正的主动作（打开）。
             HStack(spacing: 5) {
                 Image(systemName: "folder.fill")
-                    .font(themeStore.uiFont(size: 12, weight: .semibold))
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
                     .accessibilityHidden(true)
                 Text(crumb.name)
-                    .font(themeStore.uiFont(size: 14, weight: .semibold))
+                    .font(themeStore.uiFont(.footnote, weight: .semibold))
                     .lineLimit(1)
             }
             .foregroundStyle(tokens.accent)
@@ -1301,7 +1301,7 @@ struct WorkspaceCurrentDirectoryCard: View {
                 onNavigate(crumb.path)
             } label: {
                 Text(crumb.name)
-                    .font(themeStore.uiFont(size: 14, weight: .medium))
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
                     .lineLimit(1)
                     // 首段与列表的 16pt 内容边距对齐，之后各段留出 6pt 呼吸。
@@ -1327,7 +1327,7 @@ struct WorkspaceCurrentDirectoryCard: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         return Image(systemName: "chevron.compact.right")
-            .font(themeStore.uiFont(size: 12, weight: .semibold))
+            .font(themeStore.uiFont(.caption, weight: .semibold))
             .foregroundStyle(tokens.tertiaryText.opacity(0.6))
             .accessibilityHidden(true)
     }
@@ -1336,7 +1336,7 @@ struct WorkspaceCurrentDirectoryCard: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         return Text(L10n.text("ui.locating_be47409b"))
-            .font(themeStore.uiFont(size: 14))
+            .font(themeStore.uiFont(.footnote))
             .foregroundStyle(tokens.tertiaryText)
             .frame(minHeight: 44)
     }
@@ -1345,7 +1345,7 @@ struct WorkspaceCurrentDirectoryCard: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         return Text(prefix)
-            .font(themeStore.uiFont(size: 14))
+            .font(themeStore.uiFont(.footnote))
             .foregroundStyle(tokens.tertiaryText)
             .lineLimit(1)
             .padding(.trailing, prefix == "/" ? 0 : 6)
@@ -1439,7 +1439,7 @@ private struct ProjectSessionRows: View {
 
         if snapshot.isEmpty && !isLoading {
             Text(L10n.text("ui.no_historical_conversations_yet"))
-                .font(themeStore.uiFont(size: 12))
+                .font(themeStore.uiFont(.caption))
                 .foregroundStyle(tokens.tertiaryText)
                 .padding(.leading, 30)
                 .padding(.vertical, 4)
@@ -1522,12 +1522,12 @@ private struct ProjectRow: View, Equatable {
             // 在 UICollectionView 下的 delaysContentTouches 高亮延迟。
             HStack(spacing: 8) {
                 Image(systemName: isUnavailable ? "exclamationmark.triangle.fill" : (isActiveProject || isExpanded ? "folder.fill" : "folder"))
-                    .font(themeStore.uiFont(size: 15, weight: .medium))
+                    .font(themeStore.uiFont(.subheadline, weight: .medium))
                     .symbolRenderingMode(.hierarchical)
                     .frame(width: 20)
                     .foregroundStyle(isUnavailable ? tokens.warning : (isActiveProject ? tokens.accent : tokens.tertiaryText))
                 Text(project.name)
-                    .font(themeStore.uiFont(size: 15, weight: isActiveProject ? .semibold : .medium))
+                    .font(themeStore.uiFont(.subheadline, weight: isActiveProject ? .semibold : .medium))
                     .foregroundStyle(isUnavailable ? tokens.tertiaryText : (isActiveProject ? tokens.primaryText : tokens.secondaryText))
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
@@ -1535,7 +1535,7 @@ private struct ProjectRow: View, Equatable {
                 Spacer(minLength: 8)
                 if isUnavailable {
                     Text(L10n.text("ui.not_available"))
-                        .font(themeStore.uiFont(size: 11, weight: .semibold))
+                        .font(themeStore.uiFont(.caption2, weight: .semibold))
                         .foregroundStyle(tokens.warning)
                 } else if isLoading {
                     ProgressView()
@@ -1543,11 +1543,11 @@ private struct ProjectRow: View, Equatable {
                         .tint(tokens.tertiaryText)
                 } else if showsDisclosure {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+                        .font(themeStore.uiFont(.caption, weight: .semibold))
                         .foregroundStyle(tokens.tertiaryText)
                 } else if isSelected {
                     Image(systemName: "checkmark.circle.fill")
-                        .font(themeStore.uiFont(size: 13, weight: .semibold))
+                        .font(themeStore.uiFont(.footnote, weight: .semibold))
                         .foregroundStyle(tokens.accent)
                 }
             }
@@ -1586,7 +1586,7 @@ private struct ProjectRow: View, Equatable {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(themeStore.uiFont(size: 14, weight: .semibold))
+                    .font(themeStore.uiFont(.footnote, weight: .semibold))
                     .foregroundStyle(tokens.tertiaryText.opacity(0.72))
                     .frame(width: 22, height: 26)
                     // 菜单点击区随行高扩展，不用负 padding，保证 hit-test 在布局边界内稳定生效。
@@ -1660,18 +1660,18 @@ private struct SessionRow: View, Equatable {
                 }
                 if isArchived {
                     Image(systemName: "archivebox.fill")
-                        .font(themeStore.uiFont(size: 11, weight: .semibold))
+                        .font(themeStore.uiFont(.caption2, weight: .semibold))
                         .foregroundStyle(tokens.tertiaryText)
                         .accessibilityLabel(L10n.text("ui.archived"))
                 }
                 if reminder != nil {
                     Image(systemName: "bell.fill")
-                        .font(themeStore.uiFont(size: 11, weight: .semibold))
+                        .font(themeStore.uiFont(.caption2, weight: .semibold))
                         .foregroundStyle(tokens.warning.opacity(0.86))
                         .accessibilityLabel(L10n.text("ui.reminder_set"))
                 }
                 Text(session.title)
-                    .font(themeStore.uiFont(size: 15, weight: isSelected ? .semibold : .regular))
+                    .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(isSelected ? tokens.primaryText : tokens.secondaryText)
                     .lineLimit(1)
                     .layoutPriority(1)
@@ -1697,7 +1697,7 @@ private struct SessionRow: View, Equatable {
 
             if let searchSnippet, !searchSnippet.isEmpty {
                 Text(searchSnippet)
-                    .font(themeStore.uiFont(size: 11, weight: .regular))
+                    .font(themeStore.uiFont(.caption2, weight: .regular))
                     .foregroundStyle(tokens.tertiaryText)
                     .lineLimit(2)
             }
@@ -1738,14 +1738,14 @@ private struct SessionRow: View, Equatable {
                     .accessibilityLabel(statusSummary.title)
             } else {
                 Image(systemName: statusSummary.systemImage)
-                    .font(themeStore.uiFont(size: 13, weight: .semibold))
+                    .font(themeStore.uiFont(.footnote, weight: .semibold))
                     .foregroundStyle(tint(for: statusSummary.tone))
                     .frame(width: 16, height: 16, alignment: .center)
                     .accessibilityLabel(statusSummary.title)
             }
         } else if let updatedAt = session.updatedAt {
             Text(Self.minuteTimeFormatter.string(from: updatedAt))
-                .font(themeStore.uiFont(size: 12, weight: .medium))
+                .font(themeStore.uiFont(.caption, weight: .medium))
                 .foregroundStyle(tokens.tertiaryText)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
@@ -1780,12 +1780,12 @@ private struct SessionRow: View, Equatable {
                     .tint(tint(for: status.tone))
             } else {
                 Image(systemName: status.systemImage)
-                    .font(themeStore.uiFont(size: 9, weight: .semibold))
+                    .font(themeStore.uiFont(.caption2, weight: .semibold))
             }
             Text(status.title)
                 .lineLimit(1)
         }
-        .font(themeStore.uiFont(size: 10, weight: .medium))
+        .font(themeStore.uiFont(.caption2, weight: .medium))
         .foregroundStyle(tint(for: status.tone))
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
@@ -1799,7 +1799,7 @@ private struct SessionRow: View, Equatable {
 
         return Label(L10n.text("ui.just_observe"), systemImage: "eye")
             .labelStyle(.titleAndIcon)
-            .font(themeStore.uiFont(size: 10, weight: .medium))
+            .font(themeStore.uiFont(.caption2, weight: .medium))
             .foregroundStyle(tokens.tertiaryText)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)

@@ -175,7 +175,7 @@ struct NewSessionSheet: View {
             } else {
                 HStack(spacing: 12) {
                     Image(systemName: "terminal.fill")
-                        .font(themeStore.uiFont(size: 16, weight: .semibold))
+                        .font(themeStore.uiFont(.callout, weight: .semibold))
                         .foregroundStyle(tokens.primaryAction)
                         .frame(width: 36, height: 36)
                         .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -192,7 +192,7 @@ struct NewSessionSheet: View {
                     Spacer(minLength: 8)
 
                     Image(systemName: "checkmark.circle.fill")
-                        .font(themeStore.uiFont(size: 20, weight: .semibold))
+                        .font(themeStore.uiFont(.title3, weight: .semibold))
                         .foregroundStyle(tokens.primaryAction)
                 }
                 .padding(.horizontal, 14)
@@ -226,7 +226,7 @@ struct NewSessionSheet: View {
     private func workspaceSummary(_ project: AgentProject, tokens: ThemeTokens) -> some View {
         HStack(spacing: 12) {
             Image(systemName: "folder.fill")
-                .font(themeStore.uiFont(size: 17, weight: .semibold))
+                .font(themeStore.uiFont(.headline, weight: .semibold))
                 .foregroundStyle(tokens.primaryAction)
                 .frame(width: 38, height: 38)
                 .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
