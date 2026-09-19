@@ -733,11 +733,16 @@ extension SessionStore {
                 )
             }
         } else if session.isRunning && canControlSession(session) {
-            // 重新点回运行会话时，离开期间的输出先用 thread/read 快照一次性补齐；
-            // 随后的 WebSocket 只回放状态级 backlog，避免消息区把旧 delta 逐条直播。
+            // 运行中的会话优先恢复实时订阅，不能让历史首屏网络耗时挡住 turn 状态和新输出。
+            // 先带 replay 接入保证历史加载期间产生的事件不会丢；随后权威历史快照负责去重/
+            // 对账，事件 reducer 的 stable id/seq 继续作为合并边界。
+            connectWebSocket(session, replayBufferedEvents: true)
             let didRefreshHistory = await loadHistory(for: session)
             guard isSelectionLeaseCurrent(selectionLease) else { return false }
-            connectWebSocket(session, replayBufferedEvents: !didRefreshHistory)
+            if didRefreshHistory {
+                // 历史已经成为当前基线；连接保持不动，后续只消费实时增量。
+                logStore.add("运行会话首屏历史已与实时订阅收敛：\(session.id)")
+            }
         } else if session.isRunning {
             // 其他客户端正在运行：只读观察，不建立可发送的事件通道。
             await loadHistoryIfNeeded(for: session)
