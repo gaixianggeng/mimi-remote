@@ -54,7 +54,7 @@ struct ConversationProcessGroupRow: View, Equatable {
                     .frame(width: 16, height: 18)
             }
             Text(text)
-                .font(themeStore.uiFont(.footnote, weight: .medium))
+                .font(themeStore.uiFont(size: 14, weight: .medium))
                 .monospacedDigit()
                 .lineLimit(1)
             if group.failedCount > 0 {

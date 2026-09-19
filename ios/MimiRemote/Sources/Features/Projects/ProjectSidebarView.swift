@@ -441,7 +441,7 @@ struct ProjectSidebarView: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(themeStore.uiFont(.footnote, weight: .semibold))
+                .font(themeStore.uiFont(size: 14, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .frame(width: 32, height: 32)
         }
@@ -843,7 +843,7 @@ struct OpenWorkspaceSheet: View {
                         Task { await open(path: path) }
                     } label: {
                         Text(isOpening ? L10n.text("ui.opening") : L10n.text("ui.open_the_input_path"))
-                            .font(themeStore.uiFont(.footnote, weight: .semibold))
+                            .font(themeStore.uiFont(size: 14, weight: .semibold))
                             .foregroundStyle(canOpenTypedPath ? tokens.primaryAction : tokens.tertiaryText)
                             .frame(maxWidth: .infinity, minHeight: 42)
                             .background(
@@ -874,7 +874,7 @@ struct OpenWorkspaceSheet: View {
                         .foregroundStyle(tokens.tertiaryText)
                         .frame(width: 20)
                     Text(L10n.text("ui.enter_path_manually"))
-                        .font(themeStore.uiFont(.footnote, weight: .medium))
+                        .font(themeStore.uiFont(size: 14, weight: .medium))
                         .foregroundStyle(tokens.secondaryText)
                 }
                 .frame(minHeight: 44)
@@ -956,7 +956,7 @@ struct OpenWorkspaceSheet: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         return Image(systemName: systemImage)
-            .font(themeStore.uiFont(.title, weight: .light))
+            .font(themeStore.uiFont(size: 26, weight: .light))
             .foregroundStyle(tokens.tertiaryText.opacity(0.7))
     }
 
@@ -1279,7 +1279,7 @@ struct WorkspaceCurrentDirectoryCard: View {
                     .font(themeStore.uiFont(.caption, weight: .semibold))
                     .accessibilityHidden(true)
                 Text(crumb.name)
-                    .font(themeStore.uiFont(.footnote, weight: .semibold))
+                    .font(themeStore.uiFont(size: 14, weight: .semibold))
                     .lineLimit(1)
             }
             .foregroundStyle(tokens.accent)
@@ -1301,7 +1301,7 @@ struct WorkspaceCurrentDirectoryCard: View {
                 onNavigate(crumb.path)
             } label: {
                 Text(crumb.name)
-                    .font(themeStore.uiFont(.footnote, weight: .medium))
+                    .font(themeStore.uiFont(size: 14, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
                     .lineLimit(1)
                     // 首段与列表的 16pt 内容边距对齐，之后各段留出 6pt 呼吸。
@@ -1336,7 +1336,7 @@ struct WorkspaceCurrentDirectoryCard: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         return Text(L10n.text("ui.locating_be47409b"))
-            .font(themeStore.uiFont(.footnote))
+            .font(themeStore.uiFont(size: 14))
             .foregroundStyle(tokens.tertiaryText)
             .frame(minHeight: 44)
     }
@@ -1345,7 +1345,7 @@ struct WorkspaceCurrentDirectoryCard: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         return Text(prefix)
-            .font(themeStore.uiFont(.footnote))
+            .font(themeStore.uiFont(size: 14))
             .foregroundStyle(tokens.tertiaryText)
             .lineLimit(1)
             .padding(.trailing, prefix == "/" ? 0 : 6)
@@ -1586,7 +1586,7 @@ private struct ProjectRow: View, Equatable {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(themeStore.uiFont(.footnote, weight: .semibold))
+                    .font(themeStore.uiFont(size: 14, weight: .semibold))
                     .foregroundStyle(tokens.tertiaryText.opacity(0.72))
                     .frame(width: 22, height: 26)
                     // 菜单点击区随行高扩展，不用负 padding，保证 hit-test 在布局边界内稳定生效。
@@ -1780,12 +1780,12 @@ private struct SessionRow: View, Equatable {
                     .tint(tint(for: status.tone))
             } else {
                 Image(systemName: status.systemImage)
-                    .font(themeStore.uiFont(.caption2, weight: .semibold))
+                    .font(themeStore.uiFont(size: 9, weight: .semibold))
             }
             Text(status.title)
                 .lineLimit(1)
         }
-        .font(themeStore.uiFont(.caption2, weight: .medium))
+        .font(themeStore.uiFont(size: 10, weight: .medium))
         .foregroundStyle(tint(for: status.tone))
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
@@ -1799,7 +1799,7 @@ private struct SessionRow: View, Equatable {
 
         return Label(L10n.text("ui.just_observe"), systemImage: "eye")
             .labelStyle(.titleAndIcon)
-            .font(themeStore.uiFont(.caption2, weight: .medium))
+            .font(themeStore.uiFont(size: 10, weight: .medium))
             .foregroundStyle(tokens.tertiaryText)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)

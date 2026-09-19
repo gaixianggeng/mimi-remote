@@ -362,7 +362,7 @@ struct SessionListView: View {
                 .foregroundStyle(tokens.tertiaryText)
 
             TextField(L10n.text("ui.search_session"), text: $sessionStore.sessionSearchQuery)
-                .font(themeStore.uiFont(.subheadline))
+                .font(themeStore.uiFont(size: 14))
                 .foregroundStyle(tokens.primaryText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -474,7 +474,7 @@ struct SessionListView: View {
             presentNewSession(source: source)
         } label: {
             Image(systemName: "plus")
-                .font(themeStore.uiFont(.title2, weight: .medium))
+                .font(themeStore.uiFont(size: 24, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(tokens.primaryActionForeground)
                 .frame(
@@ -914,7 +914,7 @@ struct SessionListView: View {
                 selectedStatus = .all
             } label: {
                 Image(systemName: "xmark")
-                    .font(themeStore.uiFont(.caption2, weight: .bold))
+                    .font(themeStore.uiFont(size: 9, weight: .bold))
                     .frame(width: 24, height: 24)
             }
             .buttonStyle(.plain)

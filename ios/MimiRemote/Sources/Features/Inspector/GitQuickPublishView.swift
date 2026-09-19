@@ -200,7 +200,7 @@ struct GitQuickPublishBox: View {
                     ? "exclamationmark.triangle.fill"
                     : (status.hasChanges ? "checkmark.circle" : "checkmark.circle.fill")
             )
-                .font(themeStore.uiFont(.headline, weight: .semibold))
+                .font(themeStore.uiFont(size: 18, weight: .semibold))
                 .foregroundStyle(
                     (status.behind ?? 0) > 0
                         ? tokens.warning

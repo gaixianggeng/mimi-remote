@@ -47,9 +47,6 @@ enum QRCodeScannerSubmissionResult: Equatable {
 }
 
 struct QRCodeScannerSheet: View {
-    // 相机不可用时的占位图标要跟随字号设置：它和手动连接入口同屏，
-    // 用户在设置里拖大字号后，只有它不长大就会显得像渲染失败。
-    @EnvironmentObject private var themeStore: ThemeStore
     @State private var scannerFailure: QRCodeScannerFailure?
     @State private var isCameraReady = false
     @State private var isSubmittingCode = false
@@ -145,7 +142,7 @@ struct QRCodeScannerSheet: View {
                     .tint(.white)
             } else if let systemImage {
                 Image(systemName: systemImage)
-                    .font(themeStore.uiFont(size: 44, weight: .semibold))
+                    .font(.system(size: 44, weight: .semibold))
                     .foregroundStyle(.green)
                     .accessibilityHidden(true)
             }
@@ -169,10 +166,8 @@ struct QRCodeScannerSheet: View {
             Color.black
 
             VStack(spacing: 18) {
-                // 与「相机不可用」占位图标统一到 44：两枚图标同屏、只差 2pt 时
-                // 看起来像没对齐的失误，而不是刻意的层级差。
                 Image(systemName: "camera.viewfinder")
-                    .font(themeStore.uiFont(size: 44, weight: .semibold))
+                    .font(.system(size: 42, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.72))
                     .accessibilityHidden(true)
 

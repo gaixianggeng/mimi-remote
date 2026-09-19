@@ -525,7 +525,7 @@ struct UnifiedWorkbenchShell: View {
         HStack(spacing: 12) {
             // 18 并入 headline（17）：档位表里 17 与 20 之间没有档。
             Image(systemName: "lock.trianglebadge.exclamationmark")
-                .font(themeStore.uiFont(.headline, weight: .semibold))
+                .font(themeStore.uiFont(size: 18, weight: .semibold))
                 .foregroundStyle(tokens.warning)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -560,7 +560,7 @@ struct UnifiedWorkbenchShell: View {
         HStack(spacing: 12) {
             // 18 并入 headline（17）：档位表里 17 与 20 之间没有档。
             Image(systemName: "wifi.slash")
-                .font(themeStore.uiFont(.headline, weight: .semibold))
+                .font(themeStore.uiFont(size: 18, weight: .semibold))
                 .foregroundStyle(tokens.warning)
 
             VStack(alignment: .leading, spacing: 2) {

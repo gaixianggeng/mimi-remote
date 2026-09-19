@@ -14,7 +14,7 @@ struct SessionInspectorView: View {
             Picker(L10n.text("ui.inspector"), selection: $selectedSection) {
                 ForEach(SessionInspectorSection.allCases) { section in
                     Image(systemName: section.symbolName)
-                        .font(themeStore.uiFont(.footnote, weight: .semibold))
+                        .font(themeStore.uiFont(size: 14, weight: .semibold))
                         .frame(maxWidth: .infinity, minHeight: 28)
                         .tag(section)
                         .accessibilityLabel(section.title)

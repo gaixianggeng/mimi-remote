@@ -534,7 +534,7 @@ struct ConversationTimelineView: View {
         let tokens = themeStore.tokens(for: colorScheme)
         return VStack(spacing: 14) {
             Image(systemName: "bubble.left.and.bubble.right.fill")
-                .font(themeStore.uiFont(.title2, weight: .semibold))
+                .font(themeStore.uiFont(size: 24, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(tokens.primaryAction)
                 .frame(width: 52, height: 52)

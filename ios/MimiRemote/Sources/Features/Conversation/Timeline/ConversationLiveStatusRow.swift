@@ -25,7 +25,7 @@ struct ConversationLiveStatusRow: View {
                     .frame(width: 16, height: 18)
 
                     Text(status.text(at: context.date, includesTokens: false))
-                        .font(themeStore.uiFont(.footnote, weight: .medium))
+                        .font(themeStore.uiFont(size: 14, weight: .medium))
                         .monospacedDigit()
                         .foregroundStyle(isWarning ? tokens.warning : tokens.secondaryText)
                         .lineLimit(1)

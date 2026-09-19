@@ -94,7 +94,7 @@ struct AIUsageRingsControl: View {
                         } else {
                             // 14 归到 subheadline（15），与侧栏其余行内图标同档。
                             Image(systemName: "arrow.clockwise")
-                                .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                                .font(themeStore.uiFont(size: 14, weight: .semibold))
                         }
                     }
                     .frame(width: 34, height: 34)
@@ -278,7 +278,7 @@ struct WorkbenchSidebarDestinationButton: View {
                     .resizable()
                     .scaledToFit()
                     .frame(width: 20, height: 20)
-                    .font(themeStore.uiFont(.headline, weight: isSelected ? .semibold : .medium))
+                    .font(themeStore.uiFont(size: 18, weight: isSelected ? .semibold : .medium))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(tokens.primaryAction)
                     .frame(width: 24)
@@ -611,7 +611,7 @@ struct SessionSidebarMonitorRow: View {
                 .fill(tokens.warning.opacity(0.20))
                 .overlay {
                     Image(systemName: "exclamationmark")
-                        .font(themeStore.uiFont(.caption2, weight: .bold))
+                        .font(themeStore.uiFont(size: 7, weight: .bold))
                         .foregroundStyle(tokens.warning)
                 }
                 .accessibilityLabel(L10n.text("ui.needs_you"))
@@ -656,7 +656,7 @@ struct SessionSidebarMonitorRow: View {
                 }
             }
         }
-        .font(themeStore.uiFont(.caption2, weight: .regular))
+        .font(themeStore.uiFont(size: 10.5, weight: .regular))
         .foregroundStyle(tokens.tertiaryText)
         .monospacedDigit()
         .lineLimit(1)

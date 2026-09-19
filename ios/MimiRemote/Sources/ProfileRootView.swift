@@ -145,7 +145,7 @@ struct CodexUsagePanel: View {
                     .fill(tokens.accent.opacity(0.12))
                 // 19 不在档位表里，就近并入 title3（20）；14 同理并入 subheadline（15）。
                 Image(systemName: "speedometer")
-                    .font(themeStore.uiFont(.title3, weight: .semibold))
+                    .font(themeStore.uiFont(size: 19, weight: .semibold))
                     .foregroundStyle(tokens.accent)
             }
             .frame(width: 42, height: 42)
@@ -240,7 +240,7 @@ struct CodexUsagePanel: View {
                         .tint(tokens.secondaryText)
                 } else {
                     Image(systemName: "arrow.clockwise")
-                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .font(themeStore.uiFont(size: 14, weight: .semibold))
                         .symbolRenderingMode(.hierarchical)
                 }
             }

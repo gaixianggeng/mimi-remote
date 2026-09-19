@@ -372,7 +372,7 @@ struct WorktreeCleanupPreviewRow: View {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: isSelectable ? (isSelected ? "checkmark.circle.fill" : "circle") : "lock.shield.fill")
                     .foregroundStyle(isSelectable ? tokens.accent : tokens.secondaryText)
-                    .font(themeStore.uiFont(.title3, weight: .semibold))
+                    .font(themeStore.uiFont(size: 19, weight: .semibold))
                     .frame(width: 22)
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -430,7 +430,7 @@ struct WorktreeCleanupPreviewRow: View {
                             .foregroundStyle(.orange)
                         // 10 提到 caption2（11），并改走 codeFont：这一列是机器码，等宽对齐不能丢。
                         Text(blocker.code)
-                            .font(themeStore.codeFont(size: 11))
+                            .font(themeStore.codeFont(size: 10))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -677,7 +677,7 @@ struct WorktreeManagerRow: View {
                 HStack(spacing: 6) {
                     ForEach(worktreeStatusItems, id: \.self) { item in
                         Text(item)
-                            .font(themeStore.uiFont(.caption2, weight: .semibold))
+                            .font(themeStore.uiFont(size: 10, weight: .semibold))
                             .foregroundStyle(tokens.secondaryText)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)

@@ -931,7 +931,7 @@ private struct WorkspaceIconStyleOptionLabel: View {
             if isSelected {
                 // 9 太小且不在档位表里，提到 caption2（11）保证可读。
                 Image(systemName: "checkmark")
-                    .font(themeStore.uiFont(.caption2, weight: .bold))
+                    .font(themeStore.uiFont(size: 9, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 20, height: 20)
                     .background(tokens.primaryAction, in: Circle())

@@ -285,7 +285,7 @@ struct TokenActivityDotGrid: View {
 
                 ForEach(monthLabels) { label in
                     Text(monthText(label.date))
-                        .font(themeStore.uiFont(.caption2, weight: .medium))
+                        .font(themeStore.uiFont(size: 9, weight: .medium))
                         .foregroundStyle(tokens.tertiaryText)
                         .fixedSize()
                         .offset(x: CGFloat(label.weekIndex) * (cellSize + spacing))

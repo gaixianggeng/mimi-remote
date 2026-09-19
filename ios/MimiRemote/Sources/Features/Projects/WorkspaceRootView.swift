@@ -519,7 +519,7 @@ struct WorkspaceRootView: View {
         } label: {
             // 14 归到 subheadline（15）：加号与同屏的工作区胶囊头像同一档。
             Image(systemName: "plus")
-                .font(themeStore.uiFont(.subheadline, weight: .medium))
+                .font(themeStore.uiFont(size: 14, weight: .medium))
                 .foregroundStyle(tokens.secondaryText)
                 .frame(
                     width: WorkspaceStripLayout.addChipVisualSize,
@@ -1570,7 +1570,7 @@ private struct WorkspaceProjectChip: View {
         if let badgeText = WorkspaceRunningCountBadge.displayText(for: runningSessionCount) {
             // 数字明确说明这是工作区内的聚合数量，不再让一颗绿点同时冒充连接和会话状态。
             Text(badgeText)
-                .font(themeStore.uiFont(.caption2, weight: .bold))
+                .font(themeStore.uiFont(size: 9, weight: .bold))
                 .foregroundStyle(runningCountForeground)
                 .monospacedDigit()
                 .frame(minWidth: 14, minHeight: 14)

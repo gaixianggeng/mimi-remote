@@ -265,7 +265,7 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
 
             // 14 归到 subheadline（15），与同一行标题的字号档保持一致。
             Image(systemName: "checkmark")
-                .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                .font(themeStore.uiFont(size: 14, weight: .semibold))
                 .foregroundStyle(tokens.accent)
                 .opacity(isSelected ? 1 : 0)
                 .accessibilityHidden(true)

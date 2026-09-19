@@ -837,7 +837,7 @@ struct AddContentPanel: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: systemImage)
-                    .font(themeStore.uiFont(.title3, weight: .semibold))
+                    .font(themeStore.uiFont(size: 19, weight: .semibold))
                     .foregroundStyle(tokens.accent)
                     .frame(width: 44, height: 44)
                     .background(tokens.selectionFill, in: Circle())
@@ -1035,7 +1035,7 @@ struct AddContentPanel: View {
     private func emptyCapabilities(title: String, detail: String, tokens: ThemeTokens) -> some View {
         VStack(spacing: 8) {
             Image(systemName: page == .plugins ? "puzzlepiece.extension" : "wand.and.stars")
-                .font(themeStore.uiFont(.title2, weight: .medium))
+                .font(themeStore.uiFont(size: 24, weight: .medium))
                 .foregroundStyle(tokens.tertiaryText)
             Text(title)
                 .font(themeStore.uiFont(.callout, weight: .semibold))
