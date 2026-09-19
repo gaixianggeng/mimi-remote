@@ -129,7 +129,13 @@ type Router struct {
 	// TestFlight 发布会持续数分钟，使用内存任务保存当前进度，避免让移动端 HTTP 请求长时间挂起。
 	gitTestFlightMu   sync.Mutex
 	gitTestFlightJobs map[string]*gitTestFlightReleaseJob
-	shutdownOnce      sync.Once
+	// harnessNativeUpstream 是 /api/harness/rpc 的上游接缝。
+	//
+	// 生产路径留空：中继按请求从 cfg.DeepSeek 建连并认证。非空时完全替代真实连接，
+	// 供同包测试注入 Spy——被拒的调用必须证明"没有触达 Harness"，而这件事只能靠
+	// 一个可观测的替身来断言。
+	harnessNativeUpstream func(context.Context) (harnessNativeRPCUpstream, error)
+	shutdownOnce          sync.Once
 }
 
 // RouterOptions 只承载必须在构造时固定的进程级资源路径。
@@ -319,6 +325,9 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/app-server/history-media/", authed(http.HandlerFunc(r.appServerHistoryMediaHandler)))
 	mux.Handle("/api/app-server/history-output/", authed(http.HandlerFunc(r.appServerHistoryOutputHandler)))
 	mux.Handle("/api/app-server/ws", authed(http.HandlerFunc(r.appServerGatewayWS)))
+	// 原生 Harness 只读中继：与 app-server 网关并列的第三条通道。认证走同一条
+	// fail-closed 边界，协议兼容窗口也一并生效。
+	mux.Handle("/api/harness/rpc", authed(http.HandlerFunc(r.harnessNativeRPCHandler)))
 	return logging(limitAPIRequestBodies(mux), r.monitor), r
 }
 

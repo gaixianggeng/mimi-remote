@@ -105,10 +105,14 @@ type resultEnvelope struct {
 }
 
 // RemoteError 是 Harness 侧返回的业务错误。
+//
+// 第三个字段的 wire 名是 "details"，不是 "data"——这是实跑核对过的：隔离环境里
+// 触发 gateway/arguments-invalid 与 session/agent-busy 时，错误对象都是
+// {code, message, details}。按 "data" 解码会静默丢掉这一项。
 type RemoteError struct {
 	Code    string          `json:"code,omitempty"`
 	Message string          `json:"message,omitempty"`
-	Data    json.RawMessage `json:"data,omitempty"`
+	Details json.RawMessage `json:"details,omitempty"`
 }
 
 func (e *RemoteError) Error() string {

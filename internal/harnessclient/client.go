@@ -172,14 +172,34 @@ func (c *Client) Authenticate(ctx context.Context) error {
 // out 可以为 nil，表示只关心成功与否。业务失败返回 *RemoteError，调用方可以用
 // errors.As 取 code 做降级判断。
 func (c *Client) Call(ctx context.Context, method string, args any, out any) error {
-	if err := ValidateMethod(method); err != nil {
+	value, err := c.CallRaw(ctx, method, args)
+	if err != nil {
 		return err
+	}
+	if out == nil || len(value) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(value, out); err != nil {
+		return fmt.Errorf("harnessclient: 解析 %s 业务结果失败：%w", method, err)
+	}
+	return nil
+}
+
+// CallRaw 执行一次 Connection RPC 并原样返回 result.value。
+//
+// 给中继这类"不解释业务结果"的调用方使用：结果要原样下发给移动端，所以在 agentd 侧
+// 解码再编码是有损的——当前 harnessclient 没建模的字段会在往返里消失。外壳校验
+// （方法名合法性、result 是否存在、result.ok、HTTP 状态）与 Call 完全一致，
+// 这里不存在绕过校验的捷径，区别只在"要不要解码业务结果"。
+func (c *Client) CallRaw(ctx context.Context, method string, args any) (json.RawMessage, error) {
+	if err := ValidateMethod(method); err != nil {
+		return nil, err
 	}
 	c.mu.RLock()
 	cookie := c.cookie
 	c.mu.RUnlock()
 	if cookie == "" {
-		return ErrNotAuthenticated
+		return nil, ErrNotAuthenticated
 	}
 
 	envelope := clientRequest{
@@ -190,55 +210,49 @@ func (c *Client) Call(ctx context.Context, method string, args any, out any) err
 	envelope.Payload.Args = args
 	body, err := json.Marshal(envelope)
 	if err != nil {
-		return fmt.Errorf("harnessclient: 编码请求失败：%w", err)
+		return nil, fmt.Errorf("harnessclient: 编码请求失败：%w", err)
 	}
 
 	target := joinAPI(c.config.BaseURL, method)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Cookie", cookie)
 
 	response, err := c.httpClient().Do(request)
 	if err != nil {
-		return fmt.Errorf("harnessclient: %s 请求失败：%w", method, err)
+		return nil, fmt.Errorf("harnessclient: %s 请求失败：%w", method, err)
 	}
 	defer func() { _ = response.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes))
 	if err != nil {
-		return fmt.Errorf("harnessclient: 读取 %s 响应失败：%w", method, err)
+		return nil, fmt.Errorf("harnessclient: 读取 %s 响应失败：%w", method, err)
 	}
 	if response.StatusCode == http.StatusUnauthorized {
 		// Cookie 已失效，清掉让上层重新认证，不要把 401 当成业务错误。
 		c.ForgetCredentials()
-		return fmt.Errorf("harnessclient: %s 未通过认证，status=401", method)
+		return nil, fmt.Errorf("harnessclient: %s 未通过认证，status=401", method)
 	}
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("harnessclient: %s 返回 status=%d", method, response.StatusCode)
+		return nil, fmt.Errorf("harnessclient: %s 返回 status=%d", method, response.StatusCode)
 	}
 
 	var decoded serverResponse
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return fmt.Errorf("harnessclient: 解析 %s 响应失败：%w", method, err)
+		return nil, fmt.Errorf("harnessclient: 解析 %s 响应失败：%w", method, err)
 	}
 	if decoded.Result == nil {
 		// 裸 {args:...} 会被判为 gateway/bad-request，且 HTTP 仍是 200。
-		return fmt.Errorf("harnessclient: %s %w", method, ErrNoResult)
+		return nil, fmt.Errorf("harnessclient: %s %w", method, ErrNoResult)
 	}
 	if !decoded.Result.OK {
 		if decoded.Result.Error != nil {
-			return decoded.Result.Error
+			return nil, decoded.Result.Error
 		}
-		return fmt.Errorf("harnessclient: %s 返回 ok=false", method)
+		return nil, fmt.Errorf("harnessclient: %s 返回 ok=false", method)
 	}
-	if out == nil || len(decoded.Result.Value) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(decoded.Result.Value, out); err != nil {
-		return fmt.Errorf("harnessclient: 解析 %s 业务结果失败：%w", method, err)
-	}
-	return nil
+	return decoded.Result.Value, nil
 }
