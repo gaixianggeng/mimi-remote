@@ -3,6 +3,7 @@ package harnessclient
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -298,4 +299,64 @@ func keysOf(value map[string]any) []string {
 		keys = append(keys, key)
 	}
 	return keys
+}
+
+// TestDecodeMuxFrameMatchesMuxCarrierFixture 用冻结夹具而不是手写帧钉死载体判别式。
+//
+// 手写 JSON 只能证明"双方自己同意"，证明不了与真实上游一致。这里直接读 H00 的
+// 采集结果：夹具里的 server.error / server.end 必须被判成载体失败与载体结束，
+// 而不是缺陷 2 描述的那种被静默丢弃的空帧。
+func TestDecodeMuxFrameMatchesMuxCarrierFixture(t *testing.T) {
+	raw, err := os.ReadFile("../../contracts/harness-native/fixtures/stream/mux-carrier.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Observations []struct {
+			Label string          `json:"label"`
+			Value json.RawMessage `json:"value"`
+		} `json:"observations"`
+	}
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	frames := map[string]json.RawMessage{}
+	for _, observation := range document.Observations {
+		frames[observation.Label] = observation.Value
+	}
+
+	decode := func(label string) StreamValue {
+		t.Helper()
+		value, ok := frames[label]
+		if !ok {
+			t.Fatalf("夹具缺少 %s 观测", label)
+		}
+		var frame muxFrame
+		if err := json.Unmarshal(value, &frame); err != nil {
+			t.Fatalf("夹具 %s 不是合法载体帧：%v", label, err)
+		}
+		decoded, deliver := decodeMuxFrame(frame)
+		if !deliver {
+			t.Fatalf("夹具 %s 必须投递", label)
+		}
+		return decoded
+	}
+
+	if item := decode("server.item"); item.CarrierType != CarrierItem {
+		t.Fatalf("server.item 载体类型应为 item，得到 %q", item.CarrierType)
+	}
+	carrierError := decode("server.error")
+	if carrierError.CarrierType != CarrierError {
+		t.Fatalf("server.error 载体类型应为 error，得到 %q", carrierError.CarrierType)
+	}
+	remoteErr, ok := carrierError.CarrierFailure()
+	if !ok || remoteErr == nil {
+		t.Fatal("server.error 必须暴露为流级错误")
+	}
+	if remoteErr.Code != "gateway/internal" {
+		t.Fatalf("上游错误码不得被改写，得到 %q", remoteErr.Code)
+	}
+	if !decode("server.end").IsCarrierEnd() {
+		t.Fatal("server.end 必须被识别为载体结束")
+	}
 }

@@ -396,11 +396,144 @@ func TestHarnessNativeStreamDropsUnauthorizedWaterfall(t *testing.T) {
 
 	sendHarnessNativeFrame(t, conn, map[string]any{"type": "open", "streamId": "s1", "endpoint": "$events"})
 
-	// 越权交互不得下发。用一个必定到来的后续帧做屏障，确认前面没有插进 waterfall。
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	// 越权交互不得下发。本 stub 只回放这一帧，因此"读不到任何帧"才是正确行为：
+	// 只要有帧到达（无论内容）就说明越权交互被投递了。
+	_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 	if _, raw, err := conn.ReadMessage(); err == nil {
-		if strings.Contains(string(raw), "越权内容") {
-			t.Fatalf("未授权交互内容不得泄露：%s", raw)
+		t.Fatalf("未授权交互不得下发任何帧，得到 %s", raw)
+	}
+}
+
+// TestHarnessNativeStreamForwardsAuthorizedWaterfall 是 waterfall 投递的正向对照。
+//
+// 只有拒绝用例时，"投递链路整体坏掉"与"策略正确生效"完全无法区分——越权用例照样
+// 通过。H03 必须验收要求"已授权 waterfall 即使页面未打开也能送达"，本用例证明：
+// 未开任何 session/follow 时 waterfall 仍能送达，且送达后应答被接纳并转发上游
+// （与"未投递即拒绝"形成对照）。
+func TestHarnessNativeStreamForwardsAuthorizedWaterfall(t *testing.T) {
+	stub := newHarnessNativeStreamStub(t)
+	url, authorized := harnessNativeStreamFixture(t, stub)
+	stub.sessions = []harnessclient.SessionSummary{harnessNativeFixtureSession("session-in", authorized)}
+	stub.muxOpen = func(conn *websocket.Conn, open map[string]any) {
+		streamID, _ := open["streamId"].(string)
+		_ = conn.WriteMessage(websocket.TextMessage, mustRawJSON(map[string]any{
+			"type": "item", "streamId": streamID,
+			"value": map[string]any{"type": "ready", "clientId": "upstream-client-1"},
+		}))
+		_ = conn.WriteMessage(websocket.TextMessage, mustRawJSON(map[string]any{
+			"type": "item", "streamId": streamID,
+			"value": map[string]any{
+				"type":    "waterfall",
+				"event":   harnessclient.WaterfallApprovalRequest,
+				"eventId": "evt-in",
+				"agentId": "session-in",
+				"request": map[string]any{"toolName": "bash", "callId": "c1", "reason": "授权内容"},
+			},
+		}))
+		<-make(chan struct{})
+	}
+	conn := dialHarnessNativeStream(t, url)
+	sendHarnessNativeFrame(t, conn, map[string]any{"type": "open", "streamId": "s1", "endpoint": "$events"})
+
+	// 首帧是 ready，第二帧才是 waterfall。
+	var delivered map[string]any
+	for attempt := 0; attempt < 2; attempt++ {
+		frame := readHarnessNativeFrame(t, conn)
+		if value, ok := frame["value"].(map[string]any); ok && value["type"] == "waterfall" {
+			delivered = value
+			break
+		}
+	}
+	if delivered == nil {
+		t.Fatal("已授权的 waterfall 必须送达")
+	}
+	if delivered["event"] != harnessclient.WaterfallApprovalRequest {
+		t.Fatalf("原生事件名不得被改写：%v", delivered["event"])
+	}
+	if delivered["eventId"] != "evt-in" || delivered["agentId"] != "session-in" {
+		t.Fatalf("原生身份字段不得被改写：%v", delivered)
+	}
+	if _, ok := delivered["method"]; ok {
+		t.Fatalf("下行不得出现 app-server 的 method 字段：%v", delivered)
+	}
+
+	for _, opened := range stub.openedStreams() {
+		if opened["endpoint"] == "session/follow" {
+			t.Fatalf("投递不得依赖页面打开：%v", opened)
+		}
+	}
+
+	// 已送达的 eventId，应答必须被接纳并真正转发上游。
+	sendHarnessNativeFrame(t, conn, map[string]any{
+		"type": "respond", "eventId": "evt-in",
+		"outcome": map[string]any{"kind": "result", "value": "allowed-once"},
+	})
+	waitForHarnessNativeRPC(t, stub, "$events/result")
+}
+
+// TestHarnessNativeStreamFollowKeepsFixtureWireShape 用冻结夹具钉死 follow 的原生
+// 参数嵌套，并证明上游帧没有被 Codex 化。
+//
+// 这一条针对一个真实踩过的坑：把 address 当成顶层参数解析时，每个 follow 都会因
+// 形状不符被拒——而只有拒绝用例时，这与"策略生效"完全无法区分。
+func TestHarnessNativeStreamFollowKeepsFixtureWireShape(t *testing.T) {
+	fixture, err := os.ReadFile("../../contracts/harness-native/fixtures/stream/mux-carrier.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Observations []struct {
+			Label string          `json:"label"`
+			Value json.RawMessage `json:"value"`
+		} `json:"observations"`
+	}
+	if err := json.Unmarshal(fixture, &document); err != nil {
+		t.Fatal(err)
+	}
+	var open map[string]any
+	for _, observation := range document.Observations {
+		if observation.Label != "client.open" {
+			continue
+		}
+		if err := json.Unmarshal(observation.Value, &open); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if open == nil {
+		t.Fatal("夹具缺少 client.open 观测")
+	}
+
+	stub := newHarnessNativeStreamStub(t)
+	url, authorized := harnessNativeStreamFixture(t, stub)
+	stub.sessions = []harnessclient.SessionSummary{harnessNativeFixtureSession("h00-session-0001", authorized)}
+	stub.muxOpen = func(conn *websocket.Conn, open map[string]any) { <-make(chan struct{}) }
+	conn := dialHarnessNativeStream(t, url)
+
+	// 夹具里的 sessionId 落在授权范围内，因此这一帧必须被接受并原样转发上游。
+	sendHarnessNativeFrame(t, conn, open)
+	waitForHarnessNativeStream(t, stub)
+
+	opened := stub.openedStreams()
+	if len(opened) != 1 {
+		t.Fatalf("应恰好建立 1 条上游订阅，得到 %d", len(opened))
+	}
+	if opened[0]["endpoint"] != "session/follow" {
+		t.Fatalf("endpoint 应原样转发，得到 %v", opened[0]["endpoint"])
+	}
+	payload, _ := opened[0]["payload"].(map[string]any)
+	args, _ := payload["args"].(map[string]any)
+	request, _ := args["request"].(map[string]any)
+	address, _ := request["address"].(map[string]any)
+	if address["sessionId"] != "h00-session-0001" {
+		t.Fatalf("原生参数嵌套 args.request.address.sessionId 必须保留，得到 %v", opened[0])
+	}
+	if request["assistantStream"] != true || request["maxMessages"] != float64(200) {
+		t.Fatalf("原生可选参数必须保留，得到 %v", request)
+	}
+	encoded := string(mustRawJSON(opened[0]))
+	for _, codexField := range []string{"jsonrpc", "\"method\"", "threadId"} {
+		if strings.Contains(encoded, codexField) {
+			t.Fatalf("上游帧不得被 Codex 化（出现 %s）：%s", codexField, encoded)
 		}
 	}
 }
@@ -462,6 +595,22 @@ func waitForHarnessNativeStream(t *testing.T, stub *harnessNativeStreamStub) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("上游订阅始终未建立")
+}
+
+// waitForHarnessNativeRPC 等到上游真的收到某个 RPC。正向用例必须等，不能像负向
+// 用例那样只断言"没收到"——否则转发链路坏掉时用例照样通过。
+func waitForHarnessNativeRPC(t *testing.T, stub *harnessNativeStreamStub, method string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, recorded := range stub.recordedRPCs() {
+			if recorded == method {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("上游始终未收到 %s", method)
 }
 
 func mustRawJSON(value any) []byte {
