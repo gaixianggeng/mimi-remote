@@ -25,6 +25,9 @@ struct AgentCommandClient: Sendable {
     var resetTailcat: @Sendable () async throws -> TailcatStatus = {
         throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
     }
+    var configureModule: @Sendable (HostModule, Bool?, ModulePreferences?, String?) async throws -> ModuleChange = { _, _, _, _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持独立模块管理，请更新后重试。")
+    }
     var version: @Sendable () async throws -> String
 }
 
@@ -141,7 +144,7 @@ extension AgentCommandClient {
                         preference: preference,
                         restoreEnabled: restoreEnabled
                     ),
-                    timeout: .seconds(10)
+                    timeout: .seconds(55)
                 ))
             },
             setLANAccess: { enabled in
@@ -193,6 +196,22 @@ extension AgentCommandClient {
                     binary: binary,
                     arguments: tailcatArguments(action: "reset"),
                     timeout: .seconds(15)
+                ))
+            },
+            configureModule: { module, enabled, restore, revision in
+                let binary = try requireEmbeddedBinary()
+                var arguments = ["module", "--module=\(module.rawValue)", "--json"]
+                if let enabled { arguments.append("--enabled=\(enabled)") }
+                if let restore {
+                    let data = try JSONEncoder().encode(restore)
+                    guard let json = String(data: data, encoding: .utf8) else {
+                        throw AgentClientError.invalidResponse("无法编码模块恢复设置。")
+                    }
+                    arguments.append("--restore=\(json)")
+                }
+                if let revision { arguments.append("--if-revision=\(revision)") }
+                return try decode(ModuleChange.self, from: try await execute(
+                    binary: binary, arguments: arguments, timeout: .seconds(25)
                 ))
             },
             version: {

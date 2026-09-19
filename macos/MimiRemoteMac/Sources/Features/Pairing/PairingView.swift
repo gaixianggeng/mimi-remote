@@ -6,6 +6,7 @@ struct PairingView: View {
     let store: HostStore
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openSettings) private var openSettings
     @State private var didCopyPairingLink = false
     @State private var isRefreshing = false
     @State private var selectedNetwork: PairingNetwork = .tailscale
@@ -18,7 +19,18 @@ struct PairingView: View {
 
     var body: some View {
         Group {
-            if let pairing = store.pairing {
+            if let reason = store.pairingBlockReason {
+                VStack(spacing: 16) {
+                    Image(systemName: "qrcode").font(.largeTitle).foregroundStyle(.secondary)
+                    Text("暂不可配对").font(.headline)
+                    Text(reason).multilineTextAlignment(.center).foregroundStyle(.secondary)
+                    HStack {
+                        Button("打开设置…") { openSettings() }
+                        Button("刷新状态") { Task { await store.refreshModules() } }.disabled(store.isBusy)
+                    }
+                }.padding(36).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let pairing = store.pairing,
+                      store.availablePairingNetworks.contains(pairing.network) {
                 pairingContent(pairing)
             } else if let error = store.lastError {
                 PairingUnavailableState(
@@ -37,7 +49,8 @@ struct PairingView: View {
             PairingWindowBackdrop()
         }
         .task {
-            if store.pairing == nil {
+            await store.refreshModules()
+            if store.pairing == nil, store.pairingBlockReason == nil {
                 await store.refreshPairing()
             }
             if selectedNetwork != store.pairingNetwork {
@@ -66,7 +79,8 @@ struct PairingView: View {
 
                 PairingNetworkPicker(
                     selection: $selectedNetwork,
-                    isRefreshing: isRefreshing
+                    isRefreshing: isRefreshing,
+                    availableNetworks: store.availablePairingNetworks
                 )
                 .padding(.bottom, 20)
 
@@ -127,6 +141,7 @@ struct PairingView: View {
     }
 
     private func copyPairingLink(_ value: String) {
+        guard store.pairingBlockReason == nil, store.pairing?.pairURL == value else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
 
@@ -145,7 +160,7 @@ struct PairingView: View {
 
     private func refreshPairing(network: PairingNetwork? = nil) {
         guard !isRefreshing else { return }
-        let targetNetwork = network ?? selectedNetwork
+        let targetNetwork = network ?? (store.availablePairingNetworks.contains(selectedNetwork) ? selectedNetwork : .automatic)
         isRefreshing = true
         Task {
             await store.refreshPairing(network: targetNetwork)
@@ -191,16 +206,15 @@ private struct PairingIntroduction: View {
 private struct PairingNetworkPicker: View {
     @Binding var selection: PairingNetwork
     let isRefreshing: Bool
+    let availableNetworks: [PairingNetwork]
 
     var body: some View {
         VStack(spacing: 8) {
             Picker("配对网络", selection: $selection) {
-                Text("Tailscale")
-                    .tag(PairingNetwork.tailscale)
-                Text("Tailcat 实验")
-                    .tag(PairingNetwork.tailcat)
-                Text("局域网")
-                    .tag(PairingNetwork.localNetwork)
+                ForEach(availableNetworks) { network in
+                    Text(network == .tailscale ? "Tailscale" : network == .tailcat ? "Tailcat 实验" : "局域网")
+                        .tag(network)
+                }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -227,7 +241,7 @@ private struct PairingNetworkPicker: View {
         case .tailscale:
             "默认推荐 · 支持跨网络连接"
         case .localNetwork:
-            "设备需在同一局域网 · 首次启用会重启服务"
+            "设备需在同一局域网 · 配对不会修改开关"
         case .tailcat:
             "邀请实验 · 不依赖已安装的 Tailscale 客户端"
         }
@@ -248,6 +262,7 @@ private struct PairingCodeCard: View {
     let isRefreshing: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         // 二维码底板固定为白色：扫码对比度不跟随外观模式，深色模式下也要能扫。

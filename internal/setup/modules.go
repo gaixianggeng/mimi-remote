@@ -142,6 +142,9 @@ func ConfigureModule(ctx context.Context, path, module string, enabled bool, exp
 	if err != nil {
 		return result, fmt.Errorf("新的模块设置无效：%w", err)
 	}
+	if restore == nil && module == "claude" && cfg.Claude.Enabled != enabled {
+		return result, fmt.Errorf("AGENTD_CLAUDE_ENABLED 覆盖了模块设置，请先移除该环境变量")
+	}
 	result.Configuration = cfg.Modules()
 	if reflect.DeepEqual(previous, next) {
 		return result, nil
@@ -209,7 +212,10 @@ func ConnectionModules(ctx context.Context, cfg config.Config) []ConnectionModul
 		}
 		row := ConnectionModuleStatus{ID: string(network), Enabled: enabled}
 		if enabled {
-			endpoint, _, err := pairingEndpoint(ctx, cfg, network, defaultPairingNetworkLookups())
+			probeConfig := cfg
+			probeEnabled := true
+			probeConfig.Codex.Enabled = &probeEnabled
+			endpoint, _, err := pairingEndpoint(ctx, probeConfig, network, defaultPairingNetworkLookups())
 			if err != nil {
 				row.Reason = err.Error()
 			} else {
