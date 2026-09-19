@@ -59,6 +59,12 @@ func pairingEndpoint(
 	if err != nil {
 		return "", nil, err
 	}
+	if !cfg.HasEnabledAgent() {
+		return "", nil, fmt.Errorf("所有 AI Agent 都已关闭；请先启用一个 Agent")
+	}
+	if cfg.Network.TailscaleEnabled != nil {
+		return managedPairingEndpoint(ctx, cfg, network, lookups)
+	}
 	if network == PairingNetworkAuto {
 		configuredHost, port := splitListen(cfg.Listen)
 		if port == "" {

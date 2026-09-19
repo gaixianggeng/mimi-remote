@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	runtimebudget "github.com/gaixianggeng/mimi-remote/internal/runtimestatus"
 )
 
@@ -40,10 +41,11 @@ const (
 )
 
 type runtimeStatusResponse struct {
-	CheckedAt  *time.Time             `json:"checked_at,omitempty"`
-	Refreshing bool                   `json:"refreshing"`
-	Stale      bool                   `json:"stale"`
-	Runtimes   []runtimeAccountStatus `json:"runtimes"`
+	Modules    config.ModuleConfiguration `json:"modules"`
+	CheckedAt  *time.Time                 `json:"checked_at,omitempty"`
+	Refreshing bool                       `json:"refreshing"`
+	Stale      bool                       `json:"stale"`
+	Runtimes   []runtimeAccountStatus     `json:"runtimes"`
 }
 
 type runtimeStatusSnapshotCache struct {
@@ -381,6 +383,7 @@ func (r *Router) runtimeStatusHandler(w http.ResponseWriter, req *http.Request) 
 		http.Error(w, "invalid refresh mode", http.StatusBadRequest)
 		return
 	}
+	response.Modules = r.cfg.Modules()
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -445,15 +448,7 @@ func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
 	}
 	return runtimeStatusResponse{
 		Runtimes: []runtimeAccountStatus{
-			{
-				ID:        "codex",
-				Title:     "Codex",
-				Enabled:   true,
-				State:     runtimeStateUnavailable,
-				Transport: strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
-				StartedAt: r.codexRuntimeStartTime(),
-				Reason:    "refresh_in_progress",
-			},
+			r.codexModulePlaceholder(),
 			claude,
 		},
 	}
@@ -470,6 +465,9 @@ func runtimeStatusLoopbackRequest(req *http.Request) bool {
 }
 
 func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountStatus) {
+	if !r.cfg.Codex.IsEnabled() {
+		return runtimeAccountStatus{ID: "codex", Title: "Codex", Enabled: false, State: runtimeStateDisabled, Reason: "disabled"}
+	}
 	status = runtimeAccountStatus{
 		ID:        "codex",
 		Title:     "Codex",

@@ -102,6 +102,9 @@ func (r *Router) probeAppServerUpstream(ctx context.Context) error {
 }
 
 func (r *Router) appServerUpstreamReadinessCheck(ctx context.Context) doctor.Check {
+	if !r.cfg.Codex.IsEnabled() {
+		return doctor.Check{Name: "app-server-upstream", OK: true, Message: "Codex 已关闭"}
+	}
 	if r.upstreamReadiness == nil {
 		// 正常 Router 由构造函数初始化；包内最小 fixture 使用一次性本地探针即可，避免惰性赋值产生竞态。
 		return appServerReadinessCheckFromError(newAppServerReadinessProbe(r.probeAppServerUpstream).Check(ctx))

@@ -88,8 +88,14 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if !tokenOK {
 		tokenMessage = "Token 未配置"
 	}
-	codexOK := commandExists(c.cfg.Codex.Bin)
+	codexOK := true
+	if c.cfg.Codex.IsEnabled() {
+		codexOK = commandExists(c.cfg.Codex.Bin)
+	}
 	codexMessage := "Codex CLI 可执行"
+	if !c.cfg.Codex.IsEnabled() {
+		codexMessage = "Codex 已关闭"
+	}
 	if !codexOK {
 		codexMessage = "未找到 Codex CLI"
 	}
@@ -262,6 +268,9 @@ func (c *Checker) configFileCheck() Check {
 }
 
 func (c *Checker) appServerTokenFileCheck() Check {
+	if !c.cfg.Codex.IsEnabled() {
+		return Check{}
+	}
 	if !config.SupportsManagedAppServer() ||
 		!strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "ws") ||
 		!c.cfg.AppServer.Managed {
@@ -340,6 +349,9 @@ func (c *Checker) runtimeCheck() Check {
 }
 
 func (c *Checker) appServerGatewayCheck(ctx context.Context) Check {
+	if !c.cfg.Codex.IsEnabled() {
+		return Check{}
+	}
 	transport := c.cfg.AppServer.Transport
 	if transport == "" {
 		transport = "ssh"
@@ -369,7 +381,7 @@ func (c *Checker) appServerGatewayCheck(ctx context.Context) Check {
 }
 
 func (c *Checker) needsCodexAppServerCheck() bool {
-	return true
+	return c.cfg.Codex.IsEnabled()
 }
 
 func (c *Checker) codexAppServerCheck(ctx context.Context) Check {

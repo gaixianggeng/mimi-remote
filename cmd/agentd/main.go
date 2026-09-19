@@ -87,6 +87,8 @@ func run(args []string) error {
 		return runTailcat(args)
 	case "network":
 		return runNetwork(args)
+	case "module":
+		return runModuleControl(args)
 	case "runtime":
 		return runRuntime(args)
 	case "doctor":
@@ -335,7 +337,14 @@ func runStart(args []string) error {
 		return err
 	}
 
-	result, err := agentsetup.Pair(context.Background(), *configPath)
+	cfg, err := config.LoadForDoctor(*configPath)
+	if err != nil {
+		return err
+	}
+	result := agentsetup.ResultFromConfig(context.Background(), *configPath, cfg)
+	if !*noPair {
+		result, err = agentsetup.Pair(context.Background(), *configPath)
+	}
 	if err != nil {
 		return fmt.Errorf("读取连接信息失败，请先执行 agentd setup：%w", err)
 	}
@@ -383,7 +392,14 @@ func runRestart(args []string) error {
 		return err
 	}
 
-	result, err := agentsetup.Pair(context.Background(), *configPath)
+	cfg, err := config.LoadForDoctor(*configPath)
+	if err != nil {
+		return err
+	}
+	result := agentsetup.ResultFromConfig(context.Background(), *configPath, cfg)
+	if !*noPair {
+		result, err = agentsetup.Pair(context.Background(), *configPath)
+	}
 	if err != nil {
 		return fmt.Errorf("读取连接信息失败，请先执行 agentd up：%w", err)
 	}
@@ -536,6 +552,10 @@ func runStatus(args []string) error {
 	status["doctor_ok"] = doctorResults.OK
 	status["doctor"] = doctorResults
 	status["network_status"] = networkStatus
+	status["module_configuration"] = cfg.Modules()
+	if *includeRuntime {
+		status["connection_status"] = agentsetup.ConnectionModules(context.Background(), cfg)
+	}
 	status["pair_expires"] = result.PairExpiresAt
 	if runtimeStatusCh != nil {
 		if err := attachRuntimeStatus(status, runtimeStatus, *refreshRuntime); err != nil {
@@ -1082,6 +1102,11 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	}
 
 	listenAddresses := agentDListenAddresses(cfg.Listen, cfg.Network.AllowLAN)
+	if cfg.Network.TailscaleEnabled != nil {
+		networkCtx, cancelNetwork := context.WithTimeout(context.Background(), 2*time.Second)
+		listenAddresses = agentsetup.ModuleListenAddresses(networkCtx, cfg)
+		cancelNetwork()
+	}
 	listeners := make([]net.Listener, 0, len(listenAddresses))
 	for _, address := range listenAddresses {
 		listener, err := net.Listen("tcp", address)
@@ -1581,6 +1606,13 @@ func printJSONTo(w io.Writer, value any) error {
 }
 
 func ensureCodexCLIAvailable(configPath string) error {
+	enabledConfig, loadErr := config.LoadForDoctor(configPath)
+	if loadErr != nil {
+		return loadErr
+	}
+	if !enabledConfig.Codex.IsEnabled() {
+		return nil
+	}
 	// Homebrew service 的 PATH 通常比交互终端更窄。先把有效路径原子写回配置，
 	// 后台进程才不会在本次检查通过后又因找不到同一个 Codex 而失败。
 	if _, _, err := agentsetup.RepairCodexBin(configPath); err != nil {

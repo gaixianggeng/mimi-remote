@@ -220,7 +220,7 @@ var appServerClaudeAllowedMethods = map[string]struct{}{
 type appServerConfigResponse struct {
 	GatewayWSURL string                   `json:"gateway_ws_url"`
 	Runtime      appServerRuntimeMetadata `json:"runtime"`
-	Channels     []appServerChannel       `json:"channels,omitempty"`
+	Channels     []appServerChannel       `json:"channels"`
 	Projects     []projects.Project       `json:"projects"`
 	Policy       appServerPolicyMetadata  `json:"policy"`
 }
@@ -458,6 +458,9 @@ func (r *Router) appServerConfigHandler(w http.ResponseWriter, req *http.Request
 }
 
 func (r *Router) appServerRuntimeMetadata() appServerRuntimeMetadata {
+	if !r.cfg.Codex.IsEnabled() {
+		return appServerRuntimeMetadata{Type: "claude_code_bridge", Transport: "stdio", GatewayAvailable: r.cfg.Claude.Enabled && r.claudeBridgeProbe().Healthy, UpstreamConfigured: r.cfg.Claude.Enabled}
+	}
 	upstream, _ := r.appServerUpstreamWebSocketURL()
 	meta := appServerRuntimeMetadata{
 		Type:               firstNonEmpty(r.cfg.Runtime.Type, "codex_app_server"),
@@ -491,6 +494,12 @@ func appServerAllowedMethodsForRuntime(runtimeID string) map[string]struct{} {
 }
 
 func (r *Router) appServerGatewayURL(req *http.Request) string {
+	if !r.cfg.Codex.IsEnabled() {
+		if r.cfg.Claude.Enabled {
+			return r.appServerGatewayURLForRuntime(req, "claude")
+		}
+		return ""
+	}
 	return r.appServerGatewayURLForRuntime(req, "codex")
 }
 
@@ -544,6 +553,9 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			CWDScope:         "agentd_allowlist",
 		},
 	}}
+	if !r.cfg.Codex.IsEnabled() {
+		channels = channels[:0]
+	}
 	if r.cfg.Claude.Enabled {
 		probe := r.claudeBridgeProbe()
 		claudeRateLimitsAvailable := probe.Healthy && claudebridge.IsSupported(probe.Version)
@@ -648,6 +660,10 @@ func (r *Router) appServerGatewayWS(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Request) {
+	if !r.cfg.Codex.IsEnabled() {
+		writeError(w, http.StatusServiceUnavailable, "Codex 已在 Mimi Remote 中关闭")
+		return
+	}
 	// 必须先验证外侧请求确实要升级 WebSocket。普通 GET 或畸形握手不能触发本机
 	// app-server 拨号，否则一个有效的外侧 token 就能被用来批量消耗 upstream 连接。
 	if !websocket.IsWebSocketUpgrade(req) {

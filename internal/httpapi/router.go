@@ -247,7 +247,7 @@ func NewRouterWithInstallationIDAndOptions(
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
 	r.runtimeStatus = newRuntimeStatusSnapshotCache(r.refreshRuntimeStatus, r.runtimeStatusPlaceholder)
-	if cfg.AppServer.AutoTitle {
+	if cfg.Codex.IsEnabled() && cfg.AppServer.AutoTitle {
 		r.autoThreadTitles = newAutoThreadTitleCoordinator(
 			newCodexAutoThreadTitleGenerator(r),
 			autoThreadTitleTimeout,
@@ -315,7 +315,7 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/app-server/history-media/", authed(http.HandlerFunc(r.appServerHistoryMediaHandler)))
 	mux.Handle("/api/app-server/history-output/", authed(http.HandlerFunc(r.appServerHistoryOutputHandler)))
 	mux.Handle("/api/app-server/ws", authed(http.HandlerFunc(r.appServerGatewayWS)))
-	return logging(limitAPIRequestBodies(mux), r.monitor), r
+	return logging(limitAPIRequestBodies(r.moduleAccessMiddleware(mux)), r.monitor), r
 }
 
 func (r *Router) EnableTailscaleHostMetadata() {

@@ -45,6 +45,7 @@ type Config struct {
 }
 
 type NetworkConfig struct {
+	TailscaleEnabled *bool `json:"tailscale_enabled,omitempty"`
 	// AllowLAN 是显式安全边界。关闭时继续只监听配置地址和 loopback；
 	// 打开后 agentd 才会监听 IPv4 通配地址，同时服务 Tailscale 与局域网。
 	AllowLAN bool `json:"allow_lan"`
@@ -72,6 +73,7 @@ func (c CapabilityConfig) IsDisabled(name string) bool {
 }
 
 type CodexConfig struct {
+	Enabled     *bool             `json:"enabled,omitempty"`
 	Bin         string            `json:"bin"`
 	DefaultArgs []string          `json:"default_args"`
 	Env         map[string]string `json:"env"`
@@ -725,13 +727,21 @@ func (c Config) Validate() error {
 	if c.Listen == "" {
 		return fmt.Errorf("listen 不能为空")
 	}
-	if err := validateAgentListen(c.Listen, c.Network.AllowLAN); err != nil {
+	listen := c.Listen
+	if c.Network.TailscaleEnabled != nil {
+		_, port, err := net.SplitHostPort(c.Listen)
+		if err != nil {
+			return fmt.Errorf("listen 无效：%w", err)
+		}
+		listen = net.JoinHostPort("127.0.0.1", port)
+	}
+	if err := validateAgentListen(listen, c.Network.AllowLAN); err != nil {
 		return err
 	}
 	if c.Auth.Token == "" && !c.DevInsecure {
 		return fmt.Errorf("AGENTD_TOKEN 或 auth.token 不能为空；开发临时绕过请设置 AGENTD_DEV_INSECURE=true")
 	}
-	if c.DevInsecure && (!isLoopbackListen(c.Listen) || c.Network.AllowLAN) {
+	if c.DevInsecure && (!isLoopbackListen(listen) || c.Network.AllowLAN || (c.Network.TailscaleEnabled != nil && *c.Network.TailscaleEnabled)) {
 		return fmt.Errorf("dev_insecure 只允许 loopback listen 且不能启用局域网；远程访问必须使用 Bearer Token")
 	}
 	if c.Auth.Token != "" && len(c.Auth.Token) < 16 {
@@ -743,7 +753,7 @@ func (c Config) Validate() error {
 	if err := validateCapabilities(c.Capabilities); err != nil {
 		return err
 	}
-	if c.Codex.Bin == "" {
+	if c.Codex.IsEnabled() && c.Codex.Bin == "" {
 		return fmt.Errorf("codex.bin 不能为空")
 	}
 	if c.Claude.Enabled && strings.TrimSpace(c.Claude.BridgeBin) == "" && !claudebridge.BundledAvailable() {
@@ -760,34 +770,36 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("runtime.type 只支持 codex_app_server")
 	}
-	switch strings.ToLower(strings.TrimSpace(c.AppServer.Transport)) {
-	case "ssh":
-		if err := ValidateAppServerSSHTarget(c.AppServer.SSHTarget); err != nil {
-			return fmt.Errorf("app_server.ssh_target 无效：%w", err)
+	if c.Codex.IsEnabled() {
+		switch strings.ToLower(strings.TrimSpace(c.AppServer.Transport)) {
+		case "ssh":
+			if err := ValidateAppServerSSHTarget(c.AppServer.SSHTarget); err != nil {
+				return fmt.Errorf("app_server.ssh_target 无效：%w", err)
+			}
+		case "ws":
+			if !SupportsManagedAppServer() {
+				return fmt.Errorf("app_server.transport=ws 只支持 Windows 本机宿主")
+			}
+			if !c.AppServer.Managed {
+				return fmt.Errorf("本机 app_server.transport=ws 必须由 agentd 管理")
+			}
+			if strings.TrimSpace(c.AppServer.WSTokenFile) == "" {
+				return fmt.Errorf("本机 app_server.ws_token_file 不能为空")
+			}
+			if err := validateLoopbackWebSocketListen(c.AppServer.Listen); err != nil {
+				return err
+			}
+		case "local":
+			if !SupportsSharedLocalAppServer() {
+				return fmt.Errorf("app_server.transport=local 只支持 macOS 与 Linux 本机宿主")
+			}
+			if c.AppServer.Managed || strings.TrimSpace(c.AppServer.Listen) != "" ||
+				strings.TrimSpace(c.AppServer.WSTokenFile) != "" || strings.TrimSpace(c.AppServer.SSHTarget) != "" {
+				return fmt.Errorf("共享本机 app_server.transport=local 不能混用 managed、listen、ws_token_file 或 ssh_target")
+			}
+		default:
+			return fmt.Errorf("app_server.transport 只支持 ssh；macOS 与 Linux 另支持共享 local，Windows 另支持受管 ws")
 		}
-	case "ws":
-		if !SupportsManagedAppServer() {
-			return fmt.Errorf("app_server.transport=ws 只支持 Windows 本机宿主")
-		}
-		if !c.AppServer.Managed {
-			return fmt.Errorf("本机 app_server.transport=ws 必须由 agentd 管理")
-		}
-		if strings.TrimSpace(c.AppServer.WSTokenFile) == "" {
-			return fmt.Errorf("本机 app_server.ws_token_file 不能为空")
-		}
-		if err := validateLoopbackWebSocketListen(c.AppServer.Listen); err != nil {
-			return err
-		}
-	case "local":
-		if !SupportsSharedLocalAppServer() {
-			return fmt.Errorf("app_server.transport=local 只支持 macOS 与 Linux 本机宿主")
-		}
-		if c.AppServer.Managed || strings.TrimSpace(c.AppServer.Listen) != "" ||
-			strings.TrimSpace(c.AppServer.WSTokenFile) != "" || strings.TrimSpace(c.AppServer.SSHTarget) != "" {
-			return fmt.Errorf("共享本机 app_server.transport=local 不能混用 managed、listen、ws_token_file 或 ssh_target")
-		}
-	default:
-		return fmt.Errorf("app_server.transport 只支持 ssh；macOS 与 Linux 另支持共享 local，Windows 另支持受管 ws")
 	}
 	if c.Session.OutputBufferBytes <= 0 {
 		return fmt.Errorf("session.output_buffer_bytes 必须大于 0")
