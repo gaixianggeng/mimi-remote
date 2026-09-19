@@ -15,6 +15,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -23,6 +24,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 .gh491/apply.py
+          python3 .gh491/finish.py
           git diff --name-only -- '*.go' | xargs gofmt -w
           git diff --check
           go test ./internal/config ./internal/setup ./internal/httpapi ./internal/doctor ./cmd/agentd -run '^TestModule' -count=1
@@ -33,13 +35,12 @@ jobs:
           find macos/MimiRemoteMac/Sources -name '*.swift' -print0 | xargs -0 xcrun swiftc -emit-module -enable-testing -parse-as-library -D DEBUG -module-name MimiRemoteMac -emit-module-path "$module_dir/MimiRemoteMac.swiftmodule" -swift-version 5 -target "$(uname -m)-apple-macosx15.0" -sdk "$sdk"
           frameworks="$(xcode-select -p)/Platforms/MacOSX.platform/Developer/Library/Frameworks"
           find macos/MimiRemoteMac/Tests -name '*.swift' -print0 | xargs -0 xcrun swiftc -typecheck -parse-as-library -module-name MimiRemoteMacTests -I "$module_dir" -F "$frameworks" -swift-version 5 -target "$(uname -m)-apple-macosx15.0" -sdk "$sdk"
-          grep -nE 'func test.*(Pair|Network|Readiness|LAN)' macos/MimiRemoteMac/Tests/HostStoreTests.swift
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           rm -rf .gh491
           rm .github/workflows/gh491-assembly.yml
           git add -A
-          git commit -m 'fix(mac): harden module migration, undo and pairing refresh (Refs #491)'
+          git commit -m 'fix(mac): complete module lifecycle and regression coverage (Refs #491)'
           echo "ASSEMBLED_TREE=$(git rev-parse HEAD^{tree})"
           echo "ASSEMBLED_COMMIT=$(git rev-parse HEAD)"
           git push origin HEAD:codex/gh-491-implementation-assembly
