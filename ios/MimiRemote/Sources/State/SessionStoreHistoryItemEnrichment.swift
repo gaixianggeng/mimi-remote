@@ -207,7 +207,7 @@ extension SessionStore {
             messages: page.messages
         ))
         let shouldPublish = !state.didPublish
-            || state.bufferedPages.count >= Self.historyItemPagesPerPublish
+            || state.bufferedPages.count >= historyItemPagesPerPublish(sessionID: sessionID)
             || state.pending.isEmpty
         let publication = shouldPublish ? takeHistoryItemPublication(from: &state) : nil
         historyItemEnrichmentBySessionID[sessionID] = state
@@ -296,7 +296,13 @@ extension SessionStore {
         return 1
     }
 
-    private static let historyItemPagesPerPublish = 4
+    private func historyItemPagesPerPublish(sessionID: SessionID) -> Int {
+        guard let session = sessionsByID[sessionID] else { return 4 }
+        // Claude 的工具/MCP transcript 更容易拆成大量 items/list 小页。首个补齐页仍立即发布，
+        // 后续批量稍大一些，减少 MainActor 上 history merge + timeline projection 的频率；
+        // Codex 保持原来的 4 页节奏，避免扩大既有行为面。
+        return Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "claude" ? 8 : 4
+    }
 
     private static func historyItemEnrichmentWork(
         page: HistoryMessagesPage,
