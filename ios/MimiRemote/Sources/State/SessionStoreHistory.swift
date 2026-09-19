@@ -806,6 +806,9 @@ extension SessionStore {
             // 避免不同模式的并发请求互相抢占并丢失恢复机会。
             scheduleDeferredFullHistoryReloadAfterTurnCompletion(sessionID: sessionID)
         }
+        if selectedSessionID == sessionID {
+            HostSwitchSignpost.event("conversation_history_ready")
+        }
         if let effectiveSuccessStatusMessage {
             setStatusMessage(effectiveSuccessStatusMessage)
         }
