@@ -102,13 +102,27 @@ final class ConversationTimelineItemCache {
         suspendingUpdates: Bool = false
     ) -> ConversationTimelineSnapshot {
         let scopeChanged = cachedSnapshot.scope != source.scope
-        // 用户正在拖动/减速时保留同一份展示快照。Store 的各类来源版本继续累积，
-        // 解冻后再以最后一次已展示版本为基准合并原因，因此 history + live 不会丢失。
+        let nextKeys = source.messages.map { ConversationTimelineCacheKey(message: $0) }
+        // 滚动期间只冻结会改变列表结构/高度的更新。纯 live 原地更新（例如 running →
+        // completed、最后一条 assistant 文本增长）允许发布，这样完成状态不会在手指离开后
+        // 才跳变；prepend/enrichment/replacement 仍冻结，继续保护阅读锚点。
         if suspendingUpdates, !scopeChanged, !cachedSnapshot.rows.isEmpty {
-            return cachedSnapshot
+            let pendingReasons = source.versions.changes(since: deliveredVersions)
+            let hasStructuralHistoryChange = pendingReasons.containsHistoryChange
+            let sameMessageStructure = nextKeys.count == keys.count
+                && zip(nextKeys, keys).allSatisfy { next, old in
+                    next.id == old.id
+                        && next.stableID == old.stableID
+                        && next.role == old.role
+                        && next.kind == old.kind
+                        && next.turnID == old.turnID
+                        && next.itemID == old.itemID
+                }
+            if hasStructuralHistoryChange || !sameMessageStructure {
+                return cachedSnapshot
+            }
         }
 
-        let nextKeys = source.messages.map { ConversationTimelineCacheKey(message: $0) }
         let sourceChanged = source.versions != deliveredVersions
         let providerChanged = cachedProvider.map { $0 != provider } ?? false
         let detailModeChanged = cachedShowsDetailedTranscript != showsDetailedTranscript
