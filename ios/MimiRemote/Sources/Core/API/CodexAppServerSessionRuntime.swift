@@ -1229,8 +1229,7 @@ actor CodexAppServerSessionRuntime {
         before: String?,
         limit: Int?,
         loadMode: HistoryMessagesPage.LoadMode = .full,
-        recoveringInterruptedTurnID: TurnID? = nil,
-        prefersSummaryFirst: Bool = false
+        recoveringInterruptedTurnID: TurnID? = nil
     ) async throws -> HistoryMessagesPage {
         let config = try await ensureConfig()
         // 首屏只依赖 thread/turns/list。能不能逐 Turn 补 Item 由每个 Turn 自己的 itemsView
@@ -1246,8 +1245,7 @@ actor CodexAppServerSessionRuntime {
             loadMode: loadMode,
             projects: config.projects,
             canHydrateTurnItems: runtimeSupportsMethod("thread/items/list", in: config),
-            recoveringInterruptedTurnID: recoveringInterruptedTurnID,
-            prefersSummaryFirst: prefersSummaryFirst
+            recoveringInterruptedTurnID: recoveringInterruptedTurnID
         )
     }
 
@@ -1265,8 +1263,7 @@ actor CodexAppServerSessionRuntime {
             loadMode: .full,
             projects: config.projects,
             canHydrateTurnItems: runtimeSupportsMethod("thread/items/list", in: config),
-            recoveringInterruptedTurnID: nil,
-            prefersSummaryFirst: false
+            recoveringInterruptedTurnID: nil
         )
     }
 
@@ -1277,8 +1274,7 @@ actor CodexAppServerSessionRuntime {
         loadMode: HistoryMessagesPage.LoadMode,
         projects: [AgentProject],
         canHydrateTurnItems: Bool,
-        recoveringInterruptedTurnID: TurnID?,
-        prefersSummaryFirst: Bool = false
+        recoveringInterruptedTurnID: TurnID?
     ) async throws -> HistoryMessagesPage {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
         let cursor = Self.decodeThreadTurnsCursor(before)
@@ -1295,9 +1291,7 @@ actor CodexAppServerSessionRuntime {
                 cursor: cursor,
                 limit: Self.threadTurnPageLimit(forMessageLimit: limit, loadMode: loadMode),
                 sortDirection: "desc",
-                // Claude 首屏优先 summary：可见文本立即返回，工具/MCP 过程随后按 turn
-                // 通过 items/list 分页补齐。旧 bridge 若不支持裁剪会忽略 summary，行为兼容。
-                itemsView: prefersSummaryFirst ? "summary" : (loadMode == .economy ? "summary" : "full")
+                itemsView: "summary"
             ),
             timeout: longRunningRequestTimeout
         )
