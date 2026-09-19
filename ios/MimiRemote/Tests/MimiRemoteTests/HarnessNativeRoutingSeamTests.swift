@@ -187,6 +187,53 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         XCTAssertEqual(options.first?.runtimeProvider, "deepseek")
     }
 
+    // MARK: - 原生通道准备流程不依赖 Codex 上游
+
+    func testNativeChannelAvailabilityNeverConsultsCodexUpstream() async throws {
+        let fake = FakeHarnessSessionClient()
+        fake.channelAvailableResult = .success(true)
+        let codexTransport = FakeCodexAppServerTransport()
+        let deepseekTransport = FakeCodexAppServerTransport()
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
+            codexTransport: codexTransport,
+            deepseekTransport: deepseekTransport,
+            harness: fake
+        ))
+
+        let available = try await client.runtimeChannelAvailable(runtimeProvider: "deepseek")
+
+        XCTAssertTrue(available)
+        XCTAssertEqual(fake.channelAvailableCallCount, 1, "原生通道可用性必须问原生客户端")
+        let codexSent = await codexTransport.sentMessages()
+        let deepseekSent = await deepseekTransport.sentMessages()
+        XCTAssertTrue(codexSent.isEmpty, "原生通道准备流程不得依赖 Codex 上游可用性")
+        XCTAssertTrue(deepseekSent.isEmpty, "原生通道准备流程不得再走 deepseek 的 Codex 通道")
+    }
+
+    func testNativeChannelAvailabilityFailureDoesNotFallBackToCodex() async throws {
+        let fake = FakeHarnessSessionClient()
+        fake.channelAvailableResult = .failure(
+            HarnessNativeUnavailableError.notImplemented(operation: "channelAvailable")
+        )
+        let codexTransport = FakeCodexAppServerTransport()
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
+            codexTransport: codexTransport,
+            harness: fake
+        ))
+
+        do {
+            _ = try await client.runtimeChannelAvailable(runtimeProvider: "deepseek")
+            XCTFail("原生通道不可用时必须显式失败，不得静默回落 Codex 通道")
+        } catch {
+            XCTAssertEqual(
+                error as? HarnessNativeUnavailableError,
+                .notImplemented(operation: "channelAvailable")
+            )
+        }
+        let codexSent = await codexTransport.sentMessages()
+        XCTAssertTrue(codexSent.isEmpty, "回落 Codex 会掩盖原生通道尚未就绪")
+    }
+
     // MARK: - 事件客户端与骨架
 
     func testNativeEventClientRejectsGuidanceInsteadOfSendingAsPrompt() {
@@ -304,13 +351,15 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
     private(set) var sessionsPageCallCount = 0
     private(set) var searchCallCount = 0
     private(set) var modelOptionsCallCount = 0
+    private(set) var channelAvailableCallCount = 0
 
     func makeEventClient(sessionID: SessionID) -> any SessionWebSocketClient {
         HarnessSessionWebSocketClient(endpoint: "http://127.0.0.1:8787", token: "fixture", sessionID: sessionID)
     }
 
     func channelAvailable() async throws -> Bool {
-        try channelAvailableResult.get()
+        channelAvailableCallCount += 1
+        return try channelAvailableResult.get()
     }
 
     func sessionsPage(
