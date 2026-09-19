@@ -328,6 +328,10 @@ func NewRouterWithInstallationIDAndOptions(
 	// 原生 Harness 只读中继：与 app-server 网关并列的第三条通道。认证走同一条
 	// fail-closed 边界，协议兼容窗口也一并生效。
 	mux.Handle("/api/harness/rpc", authed(http.HandlerFunc(r.harnessNativeRPCHandler)))
+	// 原生 Harness 流中继：承载 $events / session/follow / session/control。
+	// 与 rpc 并列而非合并——HTTP 与 WebSocket 的失败语义不同，混在一个入口里
+	// 会让"这条错误来自哪条通道"变得难以判断。
+	mux.Handle("/api/harness/ws", authed(http.HandlerFunc(r.harnessNativeStreamHandler)))
 	return logging(limitAPIRequestBodies(mux), r.monitor), r
 }
 
