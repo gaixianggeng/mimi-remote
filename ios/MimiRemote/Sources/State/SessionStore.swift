@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Network
 import UserNotifications
@@ -191,13 +192,6 @@ final class SessionStore: ObservableObject {
     @Published var isDeletingWorktree = false
     @Published var isPruningWorktrees = false
     @Published var worktreeErrorMessage: String?
-    @Published var gitStatusByPath: [String: GitStatusResponse] = [:]
-    @Published var gitStatusErrorByPath: [String: String] = [:]
-    @Published var workspaceGitSummaryByPath: [String: GitStatusResponse] = [:]
-    @Published var workspaceGitSummaryUpdatedAtByPath: [String: Date] = [:]
-    @Published var refreshingWorkspaceGitSummaryPaths: Set<String> = []
-    @Published var isRefreshingGitStatus = false
-    @Published var gitActionErrorByPath: [String: String] = [:]
     @Published var commandActionsByPath: [String: [AgentCommandAction]] = [:]
     @Published var commandActionErrorByPath: [String: String] = [:]
     @Published var commandActionResultByPath: [String: CommandActionRunResponse] = [:]
@@ -206,20 +200,6 @@ final class SessionStore: ObservableObject {
     @Published var queuedCommandActionIDsByPath: [String: [String]] = [:]
     @Published var runningCommandActionPath: String?
     @Published var runningCommandActionID: String?
-    @Published var isRunningGitAction = false
-    @Published var isCommittingGitChanges = false
-    @Published var isPushingGitBranch = false
-    @Published var isQuickPublishingGitChanges = false
-    @Published var gitQuickPublishResultByPath: [String: GitQuickPublishResponse] = [:]
-    @Published var gitTestFlightStatusByPath: [String: GitTestFlightStatusResponse] = [:]
-    @Published var gitTestFlightErrorByPath: [String: String] = [:]
-    @Published var isRefreshingGitTestFlightStatus = false
-    @Published var isStartingGitTestFlightRelease = false
-    @Published var isCreatingPullRequest = false
-    @Published var pullRequestURLByPath: [String: String] = [:]
-    @Published var pullRequestStatusByPath: [String: GitPullRequestStatusResponse] = [:]
-    @Published var pullRequestStatusErrorByPath: [String: String] = [:]
-    @Published var isRefreshingPullRequestStatus = false
     @Published var pendingApprovalDecisionIDsBySessionID: [SessionID: Set<String>] = [:]
     @Published var pendingUserInputResponseIDsBySessionID: [SessionID: Set<String>] = [:]
     var pendingUserInputRequestsBySessionID: [SessionID: [String: AgentUserInputRequest]] = [:]
@@ -282,6 +262,8 @@ final class SessionStore: ObservableObject {
     }
 
     let appStore: AppStore
+    let workspaceGitStore: WorkspaceGitStore
+    private var workspaceGitObservation: AnyCancellable?
     let tailcatExperimentController: TailcatExperimentController?
     let conversationStore: ConversationStore
     let logStore: LogStore
@@ -485,8 +467,6 @@ final class SessionStore: ObservableObject {
     @Published var workspaceSessionFirstPageCompletionByKey: [WorkspaceSessionFirstPageKey: WorkspaceSessionFirstPageCompletion] = [:]
     var sessionListCooldownUntilByBudgetKey: [SessionListBudgetKey: Date] = [:]
     var sessionListReconciliationTasksByProjectID: [String: Task<Void, Never>] = [:]
-    var gitRefreshTasksByPath: [String: Task<Void, Never>] = [:]
-    var gitRefreshRevisionByPath: [String: UInt64] = [:]
     var missingRunningSessionStateByID: [SessionID: MissingRunningSessionState] = [:]
     var missingRunningSessionReconciliationTasksByID: [SessionID: Task<Void, Never>] = [:]
     var lastSessionLibraryIndexRefreshAt: Date?
@@ -531,7 +511,6 @@ final class SessionStore: ObservableObject {
     let sessionListFirstPageCacheTTL: TimeInterval = 2
     let sessionLibraryIndexPollingInterval: TimeInterval = 60
     let sessionListReconciliationDelayNanoseconds: UInt64 = 1_500_000_000
-    var gitRefreshDelayNanoseconds: UInt64 = 600_000_000
     let economyHistoryPageLimit = 60
     let fullHistoryPageLimit = 20
     // full 首屏被 gateway cap 阻断且已知量级时，从首屏 turn 数向下逐级缩页重试完整历史，
@@ -545,7 +524,6 @@ final class SessionStore: ObservableObject {
     static let sessionPreviewLimit = 5
     static let sessionExpansionStep = 5
     /// 根侧栏在普通最近 8 条之外，最多稳定补入 3 条 Codex 派生只读会话。
-    /// 保持有界可见性，避免为了发现外部 Worktree 而退回无界全局列表。
     static let derivedReadOnlyHistorySupplementLimit = 3
     // Tailscale 在弱网下可能经 Peer Relay 或 DERP 转发 thread/list 的较大响应。
     // 首屏先拿较小窗口，避免为了预览历史会话而卡住整个工作台。
@@ -567,8 +545,8 @@ final class SessionStore: ObservableObject {
     static let maximumUnverifiedRunningSessionMisses = 3
     static let commandActionHistoryLimit = 10
     static let queuedTurnLimitPerSession = 20
-    static let workspaceGitSummaryTTL: TimeInterval = 60
-    static let workspaceGitSummaryConcurrencyLimit = 3
+    static let workspaceGitSummaryTTL = WorkspaceGitStore.workspaceGitSummaryTTL
+    static let workspaceGitSummaryConcurrencyLimit = WorkspaceGitStore.workspaceGitSummaryConcurrencyLimit
 
     init(
         appStore: AppStore,
@@ -590,6 +568,7 @@ final class SessionStore: ObservableObject {
         fileUploadStore: FileUploadStore? = nil,
         tailcatExperimentController: TailcatExperimentController? = nil,
         clientFactory: (() throws -> any SessionStoreAPIClient)? = nil,
+        workspaceGitClientFactory: (() throws -> any WorkspaceGitAPIClient)? = nil,
         webSocketFactory: (() -> any SessionWebSocketClient)? = nil,
         sessionWebSocketFactory: ((AgentSession) -> any SessionWebSocketClient)? = nil,
         webSocketReconnectDelayNanoseconds: ((Int) -> UInt64)? = nil,
@@ -608,6 +587,11 @@ final class SessionStore: ObservableObject {
         }
     ) {
         self.appStore = appStore
+        self.workspaceGitStore = Self.makeWorkspaceGitStore(
+            appStore: appStore,
+            workspaceGitClientFactory: workspaceGitClientFactory,
+            legacyClientFactory: clientFactory
+        )
         self.tailcatExperimentController = tailcatExperimentController
         self.conversationStore = conversationStore
         self.logStore = logStore
@@ -746,6 +730,10 @@ final class SessionStore: ObservableObject {
         self.sessionSearchDebounceNanoseconds = sessionSearchDebounceNanoseconds
         self.sessionSearchSleep = sessionSearchSleep
         self.dismissedHistorySavingsNoticeEndpoints = self.historySavingsNoticeStore.loadDismissedEndpoints()
+        // 旧页面暂时仍观察 SessionStore；仅转发变更通知，不复制 Git 数据。
+        workspaceGitObservation = workspaceGitStore.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         reloadSessionListPreferences()
         reloadHistoryReadStates()
         reloadSessionControlStates()
