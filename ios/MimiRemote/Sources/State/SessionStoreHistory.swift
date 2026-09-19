@@ -466,7 +466,8 @@ extension SessionStore {
         allowPolicyRetry: Bool = true,
         recoveryGeneration: UInt64? = nil,
         fullTurnPageLimit: Int? = nil,
-        noticeMessageOverride: String? = nil
+        noticeMessageOverride: String? = nil,
+        prefersSummaryFirst: Bool? = nil
     ) async -> Bool {
         if session.isLocalDraft {
             return true
@@ -474,6 +475,11 @@ extension SessionStore {
         // quiet 只控制失败、状态和 savings notice 是否打扰用户；选中的已缓存会话仍可
         // 显示轻量历史补拉进度，避免消息区只有本地 user 气泡而看不出 assistant 仍在补齐。
         let shouldShowProgress = showsProgress ?? !quiet
+        // Claude transcript 往往只有几条可见消息，却夹着大量隐藏工具/MCP 输出。
+        // 首屏默认 summary-first；完整过程由现有 item enrichment 分页补齐。
+        let shouldPreferSummaryFirst = prefersSummaryFirst
+            ?? (loadMode == .full
+                && Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "claude")
         // 普通自动/权威打开只需要 progress；savings 横幅应只在用户明确选择
         // full/summary，或策略层已经确认需要降级/重试时出现。否则每次短暂的
         // 首屏请求都会先暴露“正在加载完整历史”的决策卡片，再在成功时立即消失。
@@ -587,7 +593,8 @@ extension SessionStore {
                 sessionID: session.id,
                 limit: limit,
                 loadMode: loadMode,
-                cachePolicy: cachePolicy
+                cachePolicy: cachePolicy,
+                prefersSummaryFirst: shouldPreferSummaryFirst
             )
         }
         let job = HistoryLoadJob(
@@ -598,6 +605,7 @@ extension SessionStore {
             recoveryGeneration: recoveryGeneration,
             allowPolicyRetry: allowPolicyRetry,
             fullTurnPageLimit: loadMode == .full ? fullTurnPageLimit : nil,
+            prefersSummaryFirst: shouldPreferSummaryFirst,
             task: task,
             showsProgress: shouldShowProgress,
             requiresForegroundReporting: !quiet,
@@ -863,7 +871,8 @@ extension SessionStore {
                         successStatusMessage: effectiveQuiet ? nil : L10n.text("ui.request_full_history"),
                         recoveryGeneration: job.recoveryGeneration,
                         fullTurnPageLimit: nextTurnPageLimit,
-                        noticeMessageOverride: effectiveQuiet ? nil : retryMessage
+                        noticeMessageOverride: effectiveQuiet ? nil : retryMessage,
+                        prefersSummaryFirst: job.prefersSummaryFirst
                     )
                 }
                 if policyFailure.reason == "history_response_too_large", session.isRunning {
@@ -883,7 +892,8 @@ extension SessionStore {
                     reason: .automatic,
                     successStatusMessage: effectiveQuiet ? nil : L10n.text("ui.thumbnail_history_automatically_loaded"),
                     recoveryGeneration: job.recoveryGeneration,
-                    noticeMessageOverride: effectiveQuiet ? nil : message
+                    noticeMessageOverride: effectiveQuiet ? nil : message,
+                    prefersSummaryFirst: job.prefersSummaryFirst
                 )
             case .economy where policyFailure.reason == "history_response_too_large":
                 break
@@ -911,7 +921,8 @@ extension SessionStore {
                     reason: .automatic,
                     successStatusMessage: effectiveQuiet ? nil : L10n.text("ui.thumbnail_history_loaded"),
                     allowPolicyRetry: false,
-                    recoveryGeneration: job.recoveryGeneration
+                    recoveryGeneration: job.recoveryGeneration,
+                    prefersSummaryFirst: job.prefersSummaryFirst
                 )
             default:
                 break
