@@ -35,6 +35,19 @@ struct ControlCommandFailure: Equatable {
 
     let kind: Kind
     let message: String
+    /// 这条控制命令原本针对的轮次。
+    ///
+    /// 中断命令是**异步**投递失败的：回调到达时，本地活跃轮次可能已经正常结束、并被队列里的
+    /// 下一个轮次取代。带上原始目标，调用方才能确认「要收敛的还是当初下发命令的那个轮次」，
+    /// 而不是拿当前活跃轮次去合成结束（PR #517 评审）。
+    /// 以 thread 为目标的命令（结束会话）为 `nil`，表示不限定具体轮次。
+    let expectedTurnID: TurnID?
+
+    init(kind: Kind, message: String, expectedTurnID: TurnID? = nil) {
+        self.kind = kind
+        self.message = message
+        self.expectedTurnID = expectedTurnID
+    }
 
     var isStaleTarget: Bool {
         kind == .staleTarget
@@ -44,15 +57,20 @@ struct ControlCommandFailure: Equatable {
     ///
     /// app-server 不同版本回的 code 不一致（实测 -32600，旧 mock 用 -32000），与仓库既有的
     /// `isNoRolloutFoundError` 保持同一取舍：只认消息文本、不锁 code，避免漏判。
-    static func classify(_ error: Error) -> ControlCommandFailure {
+    static func classify(_ error: Error, expectedTurnID: TurnID? = nil) -> ControlCommandFailure {
         if let connectionError = error as? CodexAppServerConnectionError,
            case .appServer(let appServerError) = connectionError {
             return ControlCommandFailure(
                 kind: isStaleTargetMessage(appServerError.message) ? .staleTarget : .other,
-                message: error.localizedDescription
+                message: error.localizedDescription,
+                expectedTurnID: expectedTurnID
             )
         }
-        return ControlCommandFailure(kind: .other, message: error.localizedDescription)
+        return ControlCommandFailure(
+            kind: .other,
+            message: error.localizedDescription,
+            expectedTurnID: expectedTurnID
+        )
     }
 
     /// 只匹配「目标不存在或已经结束」这一类语义：消息必须同时提到 thread / turn / rollout，

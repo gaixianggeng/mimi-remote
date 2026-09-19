@@ -131,7 +131,10 @@ extension ConversationDataFlowTests {
         let didQueue = await store.sendTurn(CodexAppServerTurnPayload(prompt: "中断后继续发送"))
         XCTAssertTrue(didQueue)
 
-        harness.socket.emitStaleControlTarget("app-server error -32600: thread not found")
+        harness.socket.emitStaleControlTarget(
+            "app-server error -32600: thread not found",
+            expectedTurnID: "turn_stale_thread"
+        )
 
         try await waitForSelectedActiveTurnID(nil, store: store)
         XCTAssertNotEqual(store.selectedSession?.status, SessionStatus.running.rawValue)
@@ -169,12 +172,60 @@ extension ConversationDataFlowTests {
         let store = harness.store
 
         store.interruptSelectedTurn()
-        harness.socket.emitStaleControlTarget("app-server error -32600: turn not found")
+        harness.socket.emitStaleControlTarget(
+            "app-server error -32600: turn not found",
+            expectedTurnID: "turn_already_finished"
+        )
 
         try await waitForSelectedActiveTurnID(nil, store: store)
         XCTAssertNotEqual(store.selectedSession?.status, SessionStatus.running.rawValue)
         XCTAssertNil(store.errorMessage)
         XCTAssertNil(store.statusMessage)
+    }
+
+    /// 中断失败是异步投递的：回调到达时活跃轮次可能已经被队列里的下一个轮次取代。
+    /// 此时不能拿新轮次去合成结束，否则会把仍在远端运行的新轮次误标为中断（PR #517 评审）。
+    func testStaleInterruptForSupersededTurnKeepsNewerTurnRunning() async throws {
+        let harness = try await makeInterruptHarness(
+            projectID: "proj_stale_interrupt_superseded",
+            sessionID: "sess_stale_interrupt_superseded",
+            activeTurnID: "turn_new"
+        )
+        let store = harness.store
+
+        store.interruptSelectedTurn()
+        XCTAssertEqual(harness.socket.sentCtrlCTurnIDs, ["turn_new"])
+
+        // 命令当初针对的是 turn_old；失败异步到达时，本地已经前进到了 turn_new。
+        harness.socket.emitStaleControlTarget(
+            "app-server error -32600: turn not found",
+            expectedTurnID: "turn_old"
+        )
+
+        try await Task.sleep(nanoseconds: 60_000_000)
+        XCTAssertEqual(
+            store.selectedSession?.activeTurnID,
+            "turn_new",
+            "已经取代旧轮次的新轮次不能被陈旧失败收敛掉"
+        )
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.running.rawValue)
+        XCTAssertNil(store.errorMessage)
+    }
+
+    /// 以 thread 为目标的陈旧失败不带具体轮次：仍然收敛当前活跃轮次（gh-509）。
+    func testStaleThreadLevelFailureConvergesActiveTurn() async throws {
+        let harness = try await makeInterruptHarness(
+            projectID: "proj_stale_thread_level",
+            sessionID: "sess_stale_thread_level",
+            activeTurnID: "turn_thread_level"
+        )
+        let store = harness.store
+
+        harness.socket.emitStaleControlTarget("app-server error -32600: thread not found")
+
+        try await waitForSelectedActiveTurnID(nil, store: store)
+        XCTAssertNotEqual(store.selectedSession?.status, SessionStatus.running.rawValue)
+        XCTAssertNil(store.errorMessage)
     }
 
     /// 手动结束成功：仍然走既有的 turn/completed 收敛路径，且不会留下停止提示（gh-509）。

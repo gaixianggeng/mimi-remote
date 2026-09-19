@@ -358,7 +358,8 @@ extension SessionStore {
                 if failure.isStaleTarget {
                     await self.convergeStaleControlTarget(
                         sessionID: session.id,
-                        hostScope: hostScope
+                        hostScope: hostScope,
+                        expectedTurnID: failure.expectedTurnID
                     )
                     return
                 }
@@ -564,9 +565,21 @@ extension SessionStore {
     /// 本地不会再等到匹配的 turn/completed，所以复用同一条收敛路径，让 active turn、前台活动、
     /// 待办卡片和流式消息一起收口，而不是只清一个字段。只收敛运行态：对话历史、已发送消息和
     /// 待发送队列都不删除（gh-509）。
-    func convergeStaleControlTarget(sessionID: SessionID, hostScope: HostScope) async {
-        guard let turnID = sessionsByID[sessionID]?.activeTurnID else {
-            // 本地已经没有活跃轮次，只剩可能残留的停止提示需要收掉。
+    ///
+    /// `expectedTurnID` 是下发命令时针对的轮次。中断失败是**异步**投递的，回调到达时活跃轮次
+    /// 可能已经正常结束、并被队列里的下一个轮次取代；此时若照常合成一次 turn/completed，
+    /// 就会把仍在远端运行的新轮次误标为中断并清掉它的运行态（PR #517 评审）。
+    /// 因此只有「当前活跃轮次仍是当初那个」才允许收敛；`nil` 表示命令以 thread 为目标，不限定轮次。
+    func convergeStaleControlTarget(
+        sessionID: SessionID,
+        hostScope: HostScope,
+        expectedTurnID: TurnID? = nil
+    ) async {
+        let activeTurnID = sessionsByID[sessionID]?.activeTurnID
+        let stillTargetsActiveTurn = activeTurnID != nil
+            && (expectedTurnID == nil || expectedTurnID == activeTurnID)
+        guard stillTargetsActiveTurn, let turnID = activeTurnID else {
+            // 已经没有需要收敛的活跃轮次（或活跃轮次已经换成别的），只剩可能残留的停止提示要收掉。
             if statusMessage == L10n.text("ui.stopping_current_reply") {
                 setStatusMessage(nil)
             }

@@ -1185,7 +1185,9 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
                 )
             } catch {
                 // 远端已经不认识这个 turn 时，重试不会成功；调用方要据此收敛本地运行态。
-                let failure = ControlCommandFailure.classify(error)
+                // 带上 expectedTurnID：这个失败是异步到达的，届时活跃轮次可能已经换成别的，
+                // 调用方需要靠它判断还能不能收敛（PR #517 评审）。
+                let failure = ControlCommandFailure.classify(error, expectedTurnID: expectedTurnID)
                 await MainActor.run {
                     failureHandler?(failure)
                 }

@@ -156,8 +156,12 @@ final class MockWebSocketClient: SessionWebSocketClient {
     }
 
     @MainActor
-    func emitStaleControlTarget(_ message: String) {
-        onControlFailure?(ControlCommandFailure(kind: .staleTarget, message: message))
+    func emitStaleControlTarget(_ message: String, expectedTurnID: TurnID? = nil) {
+        onControlFailure?(ControlCommandFailure(
+            kind: .staleTarget,
+            message: message,
+            expectedTurnID: expectedTurnID
+        ))
     }
 }
 
