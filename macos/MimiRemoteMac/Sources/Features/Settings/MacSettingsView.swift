@@ -38,12 +38,40 @@ struct MacSettingsView: View {
                 }
             }
 
-            Section("实验功能") {
-                Button(ExperimentMenuRouting.menuTitle) {
-                    // 通用设置保留唯一导航入口；实验配置只在实验功能窗口维护。
-                    openWindow(id: ExperimentMenuRouting.windowID)
+            Section("AI 编程助手") {
+                LabeledContent("Codex", value: store.status?.runtimeStatus?.runtimes.first(where: { $0.id == "codex" })?.state == .available ? "可用" : "正在检查")
+                Toggle("Claude Code", isOn: Binding(
+                    get: { store.claudeEnabled },
+                    set: { enabled in Task { await store.setClaudeEnabled(enabled) } }
+                ))
+                .disabled(!store.canChangeClaude)
+                LabeledContent("Claude Code 状态", value: store.claudeStatusTitle)
+                Text(store.claudeStatusDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("连接方式") {
+                LabeledContent("Tailscale", value: store.pairingNetwork == .tailscale ? "当前配对方式" : "可用于配对")
+                Toggle("Tailcat", isOn: Binding(
+                    get: { store.tailcatEnabled },
+                    set: { enabled in Task { await store.setTailcatEnabled(enabled) } }
+                ))
+                .disabled(!store.canChangeTailcat)
+                LabeledContent("Tailcat 状态", value: store.tailcatStatusTitle)
+
+                Toggle("局域网", isOn: Binding(
+                    get: { store.lanEnabled },
+                    set: { enabled in Task { await store.setLANEnabled(enabled) } }
+                ))
+                .disabled(!store.canChangeLAN)
+                LabeledContent("局域网状态", value: store.lanStatusTitle)
+                if let lanError = store.lanError {
+                    Text(lanError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
-                Text("Claude 实验开关和状态集中在同一窗口。")
+                Text("连接开关只管理 Mimi Remote 自己的访问边界，不会关闭系统 Tailscale 或影响其他应用。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
