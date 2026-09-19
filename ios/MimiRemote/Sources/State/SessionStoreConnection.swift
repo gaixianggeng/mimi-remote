@@ -446,6 +446,9 @@ extension SessionStore {
     func applyWebSocketStatus(_ status: WebSocketStatus, sessionID: String) {
         switch status {
         case .connected:
+            if selectedSessionID == sessionID {
+                HostSwitchSignpost.event("conversation_realtime_ready")
+            }
             guard !isNetworkUnavailable else {
                 suspendWebSocketForNetworkLoss(sessionID: sessionID)
                 return
