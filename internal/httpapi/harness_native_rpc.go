@@ -226,6 +226,15 @@ func (r *Router) harnessNativeUpstreamFor(ctx context.Context) (harnessNativeRPC
 		// 测试接缝：注入 Spy 后不会发生任何真实网络访问。
 		return r.harnessNativeUpstream(ctx)
 	}
+	return r.harnessNativeClientFor(ctx)
+}
+
+// harnessNativeClientFor 构造一个已完成认证的 Harness 客户端。
+//
+// 抽出来给流中继复用：它既需要 Connection RPC（取会话摘要做授权），也需要
+// remote.mux 订阅能力，因此不能只依赖 harnessNativeRPCUpstream 那三个方法。
+// 认证与脱敏策略与只读中继完全一致，两条通道不各写一份。
+func (r *Router) harnessNativeClientFor(ctx context.Context) (*harnessclient.Client, error) {
 	cfg := r.cfg.DeepSeek
 	if !cfg.Enabled {
 		return nil, harnessNativeReject(http.StatusServiceUnavailable, "DeepSeek Harness runtime 未启用")
