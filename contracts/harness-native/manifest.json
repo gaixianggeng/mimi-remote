@@ -304,6 +304,18 @@
     {"case": "正文不得等 block-end 才渲染，必须按 text-delta 累积", "expected": "增量累积", "liveConfirmed": true},
     {"case": "session/page 的 throughSeq 不得写死或猜值，必须取自本次 follow 的 snapshot.cursor", "expected": "取自 snapshot.cursor", "liveConfirmed": true}
   ],
+  "gateA": {
+    "decision": "approved",
+    "date": "2026-09-19",
+    "option": "A",
+    "approvedBy": "负责人",
+    "terms": [
+      "接受依据 0.1.5-rc.2 实跑采集的冻结契约。",
+      "审批/选择题帧不补采；H03 按源码形状实现 $events waterfall 与 $events/result，并在 Gate B 用负向测试覆盖。",
+      "审批帧形状属源码级，实施者不得当作已实测事实；依赖它的代码必须有『形状不符即拒绝』路径，不得静默降级。"
+    ],
+    "releasedTasks": ["H01"]
+  },
   "notProven": [
     "审批请求/应答帧（$events waterfall）未在本次采集出现，形状仍为源码级。本轮回环模型无法触发需要人机应答的工具调用。",
     "assistant-stream 的 kind:'abandoned' 未观测，只按源码处理。",
