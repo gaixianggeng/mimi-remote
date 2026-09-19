@@ -33,12 +33,14 @@ jobs:
           module_dir="$RUNNER_TEMP/gh491-swift-module"
           mkdir -p "$module_dir"
           find macos/MimiRemoteMac/Sources -name '*.swift' -print0 | xargs -0 xcrun swiftc -emit-module -enable-testing -parse-as-library -D DEBUG -module-name MimiRemoteMac -emit-module-path "$module_dir/MimiRemoteMac.swiftmodule" -swift-version 5 -target "$(uname -m)-apple-macosx15.0" -sdk "$sdk"
-          frameworks="$(xcode-select -p)/Platforms/MacOSX.platform/Developer/Library/Frameworks"
-          find macos/MimiRemoteMac/Tests -name '*.swift' -print0 | xargs -0 xcrun swiftc -typecheck -parse-as-library -module-name MimiRemoteMacTests -I "$module_dir" -F "$frameworks" -swift-version 5 -target "$(uname -m)-apple-macosx15.0" -sdk "$sdk"
+          platform_dev="$(xcode-select -p)/Platforms/MacOSX.platform/Developer"
+          find macos/MimiRemoteMac/Tests -name '*.swift' -print0 | xargs -0 xcrun swiftc -typecheck -parse-as-library -module-name MimiRemoteMacTests -I "$module_dir" -I "$platform_dev/usr/lib" -F "$platform_dev/Library/Frameworks" -swift-version 5 -target "$(uname -m)-apple-macosx15.0" -sdk "$sdk"
+          echo 'MAC_PRODUCTION_AND_TEST_SOURCE_TYPECHECK_PASSED (unit tests not executed)'
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           rm -rf .gh491
           rm .github/workflows/gh491-assembly.yml
+          git diff --check origin/main
           git add -A
           git commit -m 'fix(mac): complete module lifecycle and regression coverage (Refs #491)'
           echo "ASSEMBLED_TREE=$(git rev-parse HEAD^{tree})"
