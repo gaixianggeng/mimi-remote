@@ -1278,7 +1278,7 @@ actor CodexAppServerSessionRuntime {
         projects: [AgentProject],
         canHydrateTurnItems: Bool,
         recoveringInterruptedTurnID: TurnID?,
-        prefersSummaryFirst: Bool
+        prefersSummaryFirst: Bool = false
     ) async throws -> HistoryMessagesPage {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
         let cursor = Self.decodeThreadTurnsCursor(before)
