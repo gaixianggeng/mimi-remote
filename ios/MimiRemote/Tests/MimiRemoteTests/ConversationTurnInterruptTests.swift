@@ -414,6 +414,11 @@ extension ConversationDataFlowTests {
         let start = try await waitForFakeAppServerRequest(fixture.transport, method: "turn/start")
         XCTAssertEqual(start.params?["threadId"]?.stringValue, fixture.session.id)
         XCTAssertEqual(start.params?["input"]?.arrayValue?.first?["text"]?.stringValue, "next message")
+        // app-server 会通过独立的 turn/started 通知确认新轮次真正开始；RPC ACK
+        // 只代表请求已接受，不能让 Store 在缺少该边界时提前清掉队列门闩。
+        fixture.transport.enqueue(
+            #"{"method":"turn/started","params":{"threadId":"sess_stale_runtime","turn":{"id":"turn_next","status":"inProgress"}}}"#
+        )
         transportResponse(
             fixture.transport, id: start.id,
             result: #"{"turn":{"id":"turn_next","status":"inProgress","items":[]}}"#
