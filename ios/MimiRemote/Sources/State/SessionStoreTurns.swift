@@ -1619,20 +1619,31 @@ extension SessionStore {
         do {
             let client = try clientFactory()
             try await client.stopSession(id: session.id)
-            updateSession(session.id) { item in
-                item.status = "closed"
-                item.pendingApproval = nil
-                item.activeTurnID = nil
-            }
-            clearForegroundActivity(sessionID: session.id)
-            clearRuntimeActivity(sessionID: session.id)
-            cancelQueuedRunningTurns(sessionID: session.id, markMessagesFailed: true)
-            conversationStore.appendSystem(L10n.text("ui.the_session_has_been_stopped"), sessionID: session.id)
-            disconnectWebSocket()
-            setStatusMessage(L10n.text("ui.session_stopped"))
+            applyStoppedSessionState(sessionID: session.id)
         } catch {
-            setErrorMessage(error.localizedDescription)
+            // 远端已经不认识这个 thread / turn 时重试不会成功。本地必须按「已停止」收敛，
+            // 否则会话会永久停在执行中并保留停止控件（gh-509）。
+            guard ControlCommandFailure.classify(error).isStaleTarget else {
+                setErrorMessage(error.localizedDescription)
+                return
+            }
+            applyStoppedSessionState(sessionID: session.id)
         }
+    }
+
+    /// 会话停止的本地收敛：远端确认停止与「远端已经不存在该 thread / turn」共用同一条路径。
+    private func applyStoppedSessionState(sessionID: SessionID) {
+        updateSession(sessionID) { item in
+            item.status = "closed"
+            item.pendingApproval = nil
+            item.activeTurnID = nil
+        }
+        clearForegroundActivity(sessionID: sessionID)
+        clearRuntimeActivity(sessionID: sessionID)
+        cancelQueuedRunningTurns(sessionID: sessionID, markMessagesFailed: true)
+        conversationStore.appendSystem(L10n.text("ui.the_session_has_been_stopped"), sessionID: sessionID)
+        disconnectWebSocket()
+        setStatusMessage(L10n.text("ui.session_stopped"))
     }
 
     func refreshSelectedThreadGoal() async {
