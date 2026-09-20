@@ -451,15 +451,6 @@ final class AppStore: ObservableObject {
         ))
     }
 
-    /// 当前宿主使用的原生 Harness 客户端；未注入原生通道时为 `nil`。
-    ///
-    /// 供 Store 接上宿主级 `$events` 的出口——那条通道不属于任何会话页面
-    /// （契约 D5：别的会话的审批可能在用户从未打开它时到达）。
-    func nativeHarnessClientForActiveHost() -> HarnessSessionClient? {
-        guard let endpoint = try? Self.validatedEndpoint(connectionEndpoint) else { return nil }
-        return runtimeBundle(endpoint: endpoint, token: token).harness
-    }
-
     func makeSessionWebSocketClient(for session: AgentSession) -> any SessionWebSocketClient {
         let bundle = runtimeBundle(
             endpoint: AgentAPIClient.normalizedEndpoint(connectionEndpoint),
@@ -1978,7 +1969,11 @@ final class AppStore: ObservableObject {
         resetDirectRuntime()
     }
 
-    private func runtimeBundle(endpoint: String, token: String) -> AppServerRuntimeBundle {
+    /// 按 (endpoint, token) 复用同一个 Runtime bundle。
+    ///
+    /// 非 private：`AppStoreRouting` 的原生客户端访问器要用它，且必须拿到**同一个**
+    /// bundle——另建一个会得到第二条 runtime（连接、代次、pending 表都各一份）。
+    func runtimeBundle(endpoint: String, token: String) -> AppServerRuntimeBundle {
         let identity = runtimeIdentity(endpoint: endpoint, token: token)
         if activeRuntimeIdentity == identity, let bundle = activeRuntimeBundle {
             return bundle
