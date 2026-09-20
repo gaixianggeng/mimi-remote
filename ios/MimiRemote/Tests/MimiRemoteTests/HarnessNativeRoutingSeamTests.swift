@@ -236,29 +236,50 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
 
     // MARK: - 事件客户端与骨架
 
-    func testNativeEventClientRejectsGuidanceInsteadOfSendingAsPrompt() {
-        let bundle = makeBundle(harness: FakeHarnessSessionClient())
-        bundle.routes.remember("deepseek", for: "native-session")
-        let wrapper = MultiRuntimeSessionWebSocketClient(bundle: bundle)
+    /// 原生事件客户端必须显式拒绝 guidance，且**不得**把它当成 prompt 发出去。
+    ///
+    /// H08 之前这一层是纯骨架（连接即 failed、所有发送 notImplemented）。H08 之后
+    /// 它有了真实实现，因此两处断言随之迁移到新语义：
+    /// - guidance 仍被拒，但文案来自原生实现（Harness 从不支持它，不是"还没实现"）；
+    /// - `sendGuidance` 返回 false 且**不产生任何 prompt**——这是真正要守住的：
+    ///   把它当 prompt 发会让一次"引导"变成一条新的用户消息。
+    ///
+    /// 风险意图保持不变：这一层绝不能假装成功，也不能为未知操作编造一个替代动作。
+    @MainActor
+    func testNativeEventClientRejectsGuidanceInsteadOfSendingAsPrompt() async {
+        let sink = GuidanceProbeSink()
+        let client = HarnessSessionWebSocketClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            sessionID: "native-session",
+            submission: HarnessSubmissionController(
+                sendPrompt: { sessionID, requestID, text in
+                    await sink.record(sessionID: sessionID, requestID: requestID, text: text)
+                },
+                sendCancel: { _ in }
+            )
+        )
 
-        var status: WebSocketStatus?
         var failureMessage: String?
-        wrapper.onStatus = { status = $0 }
-        wrapper.onSendFailure = { _, message in failureMessage = message }
+        client.onSendFailure = { _, message in failureMessage = message }
 
-        wrapper.connect(sessionID: "native-session")
-
-        let accepted = wrapper.sendGuidance(
+        let accepted = client.sendGuidance(
             CodexAppServerTurnPayload(prompt: "hi"),
             clientMessageID: "cmid-1",
             expectedTurnID: "turn-1"
         )
+
         XCTAssertFalse(accepted, "Harness 不支持 guidance，必须显式拒绝")
-        XCTAssertEqual(failureMessage, HarnessNativeUnavailableError.unsupported(operation: "guidance").localizedDescription)
-        if case .failed = status {} else {
-            XCTFail("原生骨架尚未实现事件流，连接必须显式报 failed 而不是假装已连上")
-        }
+        XCTAssertNotNil(failureMessage, "必须回传可读的失败文案")
+        let recorded = await sink.count
+        XCTAssertEqual(recorded, 0, "guidance 不得被当成 prompt 发出去")
     }
+
+    // 原生骨架的旧断言（H01 时代）已迁移，去向记录在这里：
+    // 原文断言"连接必须显式报 failed"，理由是"骨架尚未实现事件流"。H08 实现事件流后
+    // 这条不再成立——但它的**风险意图**（不得假装已连上）由
+    // `HarnessEventClientTests.testConnectWithoutSnapshotSourceReportsFailure`
+    // 在真实语义下继续覆盖：没有基线来源时连接必须 failed，且不得出现 .connected。
 
     /// 上游失败时不得伪装成"空成功"，也不得回落到旧网关。
     ///
@@ -396,7 +417,20 @@ final class FailingHarnessRPCTransport: HarnessRPCTransport {
     }
 }
 
+/// 记录"有没有被当成 prompt 发出去"的替身。
+///
+/// guidance 被拒的正确证据不是"返回 false"（那可能是空实现），而是**一次 prompt 都没发生**。
+@MainActor
+private final class GuidanceProbeSink {
+    private(set) var count = 0
+
+    func record(sessionID: String, requestID: String, text: String) async {
+        count += 1
+    }
+}
+
 /// 可控的原生客户端替身：用来证明分发路径、并制造单 runtime 失败。
+@MainActor
 final class FakeHarnessSessionClient: HarnessSessionClient {
     var sessionsPageResult: Result<SessionsPage, Error> = .success(SessionsPage(sessions: []))
     var searchResult: Result<ThreadSearchPage, Error> = .success(ThreadSearchPage(results: []))
@@ -409,7 +443,12 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
     private(set) var channelAvailableCallCount = 0
 
     func makeEventClient(sessionID: SessionID) -> any SessionWebSocketClient {
-        HarnessSessionWebSocketClient(endpoint: "http://127.0.0.1:8787", token: "fixture", sessionID: sessionID)
+        HarnessSessionWebSocketClient(
+            endpoint: "http://127.0.0.1:8787", token: "fixture", sessionID: sessionID,
+            submission: HarnessSubmissionController(
+                sendPrompt: { _, _, _ in }, sendCancel: { _ in }
+            )
+        )
     }
 
     func channelAvailable() async throws -> Bool {
@@ -454,5 +493,49 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         modelOptionsCallCount += 1
         return try modelOptionsResult.get()
+    }
+
+    // MARK: - H07 写路径
+
+    var createSessionResult: Result<HarnessCreatedSession, Error> =
+        .success(HarnessCreatedSession(sessionID: "created-fixture", agentPreset: nil))
+    var writeFailure: Error?
+    private(set) var createSessionCallCount = 0
+    private(set) var selectModelCallCount = 0
+    private(set) var submitPromptCallCount = 0
+    private(set) var cancelCallCount = 0
+    private(set) var submittedRequestIDs: [String] = []
+
+    func createSession(cwd: String, sessionID: String?) async throws -> HarnessCreatedSession {
+        createSessionCallCount += 1
+        if let writeFailure { throw writeFailure }
+        return try createSessionResult.get()
+    }
+
+    func selectModel(
+        sessionID: String,
+        provider: String,
+        model: String,
+        reasoningEffort: String?
+    ) async throws {
+        selectModelCallCount += 1
+        if let writeFailure { throw writeFailure }
+    }
+
+    func submitPrompt(
+        sessionID: String,
+        requestID: String,
+        text: String,
+        mode: String,
+        clientTimeZone: String?
+    ) async throws {
+        submitPromptCallCount += 1
+        submittedRequestIDs.append(requestID)
+        if let writeFailure { throw writeFailure }
+    }
+
+    func cancelSession(sessionID: String) async throws {
+        cancelCallCount += 1
+        if let writeFailure { throw writeFailure }
     }
 }

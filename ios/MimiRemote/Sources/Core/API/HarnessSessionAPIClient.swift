@@ -46,6 +46,34 @@ protocol HarnessSessionClient: AnyObject {
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse
 
     func modelOptions() async throws -> [CodexAppServerModelOption]
+
+    // MARK: - H07 写路径
+    //
+    // 写方法与只读方法在**协议层**就分开列：读能力缺失时可以不实现，
+    // 而写能力缺失必须是显式拒绝（见 HarnessNativeUnavailableError）。
+
+    /// 创建会话。`cwd` 既是授权提示也是创建目标。
+    func createSession(cwd: String, sessionID: String?) async throws -> HarnessCreatedSession
+
+    /// 选择模型。provider/model 取值由模型目录决定。
+    func selectModel(
+        sessionID: String,
+        provider: String,
+        model: String,
+        reasoningEffort: String?
+    ) async throws
+
+    /// 提交一次用户输入。`requestID` 是提交与 durable 记录的对账键，必须稳定。
+    func submitPrompt(
+        sessionID: String,
+        requestID: String,
+        text: String,
+        mode: String,
+        clientTimeZone: String?
+    ) async throws
+
+    /// 停止当前轮次（session 级，不是原子 turn 级条件取消）。
+    func cancelSession(sessionID: String) async throws
 }
 
 /// 原生客户端工厂接缝。
@@ -94,6 +122,12 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     let endpoint: String
     let token: String
     private let rpc: HarnessRPCTransport
+    /// 提交编排缓存。每建一个事件客户端都新建控制器会让"上一次提交尚未确认"
+    /// 这条判断失效——状态机必须跨事件客户端存活。
+    private var cachedSubmissionController: HarnessSubmissionController?
+
+    /// 普通输入的提交模式。实测取值域只有 queue|steer，普通发送用 queue。
+    static let defaultPromptMode = "queue"
 
     init(endpoint: String, token: String, rpc: HarnessRPCTransport? = nil) {
         self.endpoint = endpoint
@@ -109,8 +143,42 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         }
     }
 
+    /// 事件客户端。写路径复用本客户端持有的提交编排，不另建一条网络路径。
+    ///
+    /// `fetchSnapshot` 暂不注入：opening snapshot 必须经由中继的 `session/follow`
+    /// 流载体获取（实测直接 POST /api/session/follow 会被判 signature-invalid）。
+    /// 流生命周期与恢复编排属于 H10，届时在此接上，现在保持 nil——
+    /// 让"基线未建立"成为显式失败，而不是假装连上。
+    @MainActor
     func makeEventClient(sessionID: SessionID) -> any SessionWebSocketClient {
-        HarnessSessionWebSocketClient(endpoint: endpoint, token: token, sessionID: sessionID)
+        HarnessSessionWebSocketClient(
+            endpoint: endpoint,
+            token: token,
+            sessionID: sessionID,
+            submission: submissionController()
+        )
+    }
+
+    /// 提交编排。同一个 client 实例复用同一个控制器：写路径的状态机不该每建一个
+    /// 事件客户端就重置一次，否则"上一次提交尚未确认"这条判断会失效。
+    @MainActor
+    private func submissionController() -> HarnessSubmissionController {
+        if let existing = cachedSubmissionController { return existing }
+        let created = HarnessSubmissionController(
+            sendPrompt: { [weak self] sessionID, requestID, text in
+                guard let self else { throw HarnessTransportError.notConnected }
+                try await self.submitPrompt(
+                    sessionID: sessionID, requestID: requestID, text: text,
+                    mode: Self.defaultPromptMode, clientTimeZone: TimeZone.current.identifier
+                )
+            },
+            sendCancel: { [weak self] sessionID in
+                guard let self else { throw HarnessTransportError.notConnected }
+                try await self.cancelSession(sessionID: sessionID)
+            }
+        )
+        cachedSubmissionController = created
+        return created
     }
 
     /// 通道可用性探测。
