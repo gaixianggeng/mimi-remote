@@ -4,11 +4,15 @@
 
 ## 提交 Issue
 
-Bug 请尽量包含：
+提交前请确认支持范围：**iOS / iPadOS 18 或更高版本**，来自 App Store、TestFlight 或从本仓库源码构建的正式签名包。iOS 16 / 17 回移分支，以及未签名 / TrollStore / 越狱构建不在支持范围内，相关问题不进入修复排期；详见[支持说明](docs/support.md)。
 
-- iPhone / iPad 型号与系统版本；
-- Mimi Remote、`agentd`、Codex CLI 或 Claude bridge 的版本；
-- 最小复现步骤、预期结果和实际结果；
+请优先使用仓库的 Issue 模板。Bug 请尽量包含：
+
+- App 版本与构建来源（App Store / TestFlight / 源码自建），以及分支或提交；
+- iPhone / iPad 型号与 iOS / iPadOS 版本；
+- 宿主电脑的操作系统与版本，以及 Mimi Remote Mac 或 `agentd` 的安装方式与版本；
+- 涉及运行时的问题，附 Codex CLI 或 Claude bridge 的版本；
+- 最小复现步骤、预期结果和实际结果，并说明是必现还是偶发；
 - 已脱敏的日志或截图。
 
 不要公开提交 Token、Tailscale IP、私有仓库内容、真实工作目录或完整会话。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。

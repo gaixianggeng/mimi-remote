@@ -1,0 +1,113 @@
+name: 缺陷报告 / Bug report
+description: 报告能在受支持构建（iOS/iPadOS 18 或更高版本）上复现的问题 / Report a problem reproducible on a supported build
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先确认支持范围：**iOS / iPadOS 18 或更高版本**，来自 App Store、TestFlight 或本仓库源码构建的正式签名包。
+
+        iOS 16/17 回移分支，以及未签名 / TrollStore / 越狱构建**不在支持范围**，相关问题不进入修复排期。详见[支持说明](https://github.com/gaixianggeng/mimi-remote/blob/main/docs/support.md)。
+
+        ---
+
+        Please confirm the baseline first: **iOS/iPadOS 18 or later**, from the App Store, TestFlight, or source built from this repository. Back-ports for iOS 16/17 and unsigned / TrollStore / jailbroken builds are **out of scope**.
+
+  - type: dropdown
+    id: build_source
+    attributes:
+      label: App 构建来源 / App build source
+      description: 请如实选择；最后一项表示该构建不在支持范围 / Answer honestly; the last option is out of scope
+      options:
+        - App Store 正式版 / App Store release
+        - TestFlight 测试版 / TestFlight beta
+        - 本仓库源码自建 / Built from this repository's source
+        - 其他（回移分支、未签名 / TrollStore / 越狱构建）/ Other (back-port, unsigned, TrollStore, jailbroken)
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: iOS / iPadOS 版本 / iOS or iPadOS version
+      placeholder: 例如 iOS 26.1 / e.g. iOS 26.1
+    validations:
+      required: true
+
+  - type: input
+    id: device_model
+    attributes:
+      label: 设备型号 / Device model
+      placeholder: 例如 iPhone 17 Pro 或 iPad Pro 13-inch (M5) / e.g. iPhone 17 Pro
+    validations:
+      required: true
+
+  - type: input
+    id: host_environment
+    attributes:
+      label: 宿主电脑与 agentd / Host and agentd
+      description: 操作系统与版本，以及 Mimi Remote Mac 或 agentd 的安装方式与版本 / OS and version, plus install method and version of Mimi Remote Mac or agentd
+      placeholder: 例如 macOS 26.1、Mimi Remote Mac 0.3.16（App Store）、agentd 0.3.16
+    validations:
+      required: true
+
+  - type: input
+    id: runtime
+    attributes:
+      label: 运行时与版本 / Runtime and version
+      description: Codex、Claude 或 DeepSeek 会话请注明；不确定可写「不确定」 / Note the runtime for Codex, Claude, or DeepSeek sessions
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      description: 从启动 App 开始的最小步骤 / Minimal steps starting from launching the app
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果 / Actual result
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果 / Expected result
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reproducibility
+    attributes:
+      label: 可复现性 / Reproducibility
+      options:
+        - 必现 / Always
+        - 偶发但可复现 / Intermittent but reproducible
+        - 只出现一次 / Happened once
+        - 不确定 / Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 脱敏证据 / Sanitized evidence
+      description: 可粘贴脱敏日志或说明截图内容；不要提交完整日志、Token、真实 Tailnet 地址、私有路径或会话标识 / Sanitized logs or screenshots only
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: 脱敏确认 / Redaction
+      options:
+        - label: 我已移除 Token、账号、用户数据、本机路径、真实 IP、设备与会话标识以及私有链接 / I removed tokens, account data, user data, local paths, real IPs, device and session identifiers, and private links
+          required: true
