@@ -578,8 +578,9 @@ final class HarnessHistoryPageTests: XCTestCase {
     private let sessionID = "h00-session-0001"
 
     /// 读冻结契约里的夹具字节。与解码器共用同一份来源，避免"测试自己造的形状"。
+    /// 上溯层级与既有 `harnessFixtureJSON` 一致（先去掉文件名，再退四级到仓库根）。
     func harnessFixtureJSON(_ name: String) throws -> [String: Any] {
-        var root = URL(fileURLWithPath: #filePath)
+        var root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         for _ in 0..<4 { root.deleteLastPathComponent() }
         let url = root
             .appendingPathComponent("contracts/harness-native/fixtures")
