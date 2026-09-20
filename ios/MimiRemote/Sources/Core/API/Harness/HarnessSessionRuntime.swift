@@ -206,23 +206,40 @@ actor HarnessSessionRuntime {
     }
 
     /// 唯一的读循环。
+    ///
+    /// 每条退出路径都必须先确认自己仍是当前代次，再动连接级状态。
+    ///
+    /// 为什么这一条是承重的：`switchHost` 会先 `readerTask.cancel()` 再 `close()` 旧传输。
+    /// cancel 唤不醒阻塞在 `receive()` 上的续体，真正唤醒它的是 `close()`——于是旧 reader
+    /// 会在**新连接可能已经建立之后**才恢复执行，拿到 `nil` 或一个错误。若此时无条件
+    /// `teardown`，它会把代次再推一位、清空 `subscriptions`，把新 host 刚建立的订阅一并抹掉。
+    /// 契约 §5.1 要求旧代次的 Task 回调不得覆盖新主机或新连接，这里就是那个落点。
     private func readLoop(generation: UInt64) async {
         while !Task.isCancelled {
             guard generation == connectionGeneration else { return }
             do {
                 guard let frame = try await streamTransport.receive() else {
-                    await teardown(recordReason: nil)
+                    await teardownIfCurrent(generation: generation, recordReason: nil)
                     return
                 }
                 dispatch(frame, generation: generation)
             } catch let error as HarnessTransportError {
-                await teardown(recordReason: error)
+                await teardownIfCurrent(generation: generation, recordReason: error)
                 return
             } catch {
-                await teardown(recordReason: .closed)
+                await teardownIfCurrent(generation: generation, recordReason: .closed)
                 return
             }
         }
+    }
+
+    /// 只有仍属于当前代次时才拆连接。
+    ///
+    /// 陈旧 reader 直接退出：它持有的连接早已被 `switchHost` / `teardown` 关掉，
+    /// 没有遗留资源需要它来释放；再拆一次只会误伤新代次。
+    private func teardownIfCurrent(generation: UInt64, recordReason: HarnessTransportError?) async {
+        guard generation == connectionGeneration else { return }
+        await teardown(recordReason: recordReason)
     }
 
     private func startHeartbeat(generation: UInt64) {

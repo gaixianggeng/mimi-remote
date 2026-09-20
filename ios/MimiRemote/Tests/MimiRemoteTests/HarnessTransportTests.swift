@@ -697,6 +697,56 @@ final class HarnessTransportTests: XCTestCase {
 
     // MARK: - 14. 未知安全交互
 
+    /// 旧代次的 reader 在切 host **之后**才恢复时，不得拆掉新连接。
+    ///
+    /// 这条把 `testHostSwitchStopsDeliveringFramesFromPreviousTransport` 偶发的那个竞态
+    /// 变成确定性用例：`switchHost` 先 `cancel()` reader 再 `close()` 旧传输，而 cancel
+    /// 唤不醒阻塞在 `receive()` 上的续体——真正唤醒它的是 `close()`。所以旧 reader 完全可能
+    /// 在新 host 的订阅已经建立之后才跑到 `receive()` 的返回点。它此时若无条件 teardown，
+    /// 会把新代次的 `subscriptions` 一并清空：新 host 的帧再也进不来。
+    ///
+    /// 做法：先让旧传输的 close **不**唤醒等待者，等新连接建好、订阅就位之后，再手动唤醒
+    /// 旧 reader。这就是那个时序窗口，只是不再靠负载去赌。
+    func testStaleReaderWakingAfterHostSwitchDoesNotTearDownNewConnection() async throws {
+        let oldStream = FakeHarnessStreamTransport()
+        // 关旧传输时不唤醒 reader：把"唤醒"推迟到新连接建立之后，精确复现竞态窗口。
+        oldStream.resumeWaitersOnClose = false
+        let newStream = FakeHarnessStreamTransport()
+        let runtime = HarnessSessionRuntime(
+            configuration: makeConfiguration(),
+            transports: HarnessSessionRuntime.TransportPair(rpc: FakeHarnessRPCTransport(), stream: oldStream)
+        )
+        try await runtime.openStream(streamID: "s1", endpoint: HarnessWireEndpoint.events)
+        try await Task.sleep(for: .milliseconds(20))
+
+        await runtime.switchHost(
+            to: makeConfiguration(endpoint: "http://127.0.0.1:9999"),
+            transports: HarnessSessionRuntime.TransportPair(rpc: FakeHarnessRPCTransport(), stream: newStream)
+        )
+        try await runtime.openStream(streamID: "s1", endpoint: HarnessWireEndpoint.events)
+        // 订阅已就位（上面 openStream 未抛错即说明连接与订阅都建好了）。
+        let streamsAfterOpen = await runtime.openStreamIDs()
+        XCTAssertEqual(streamsAfterOpen, ["s1"])
+
+        // 现在才唤醒旧 reader——它醒来时看到的 `nil` 属于**上一个**代次。
+        oldStream.releasePendingWaiters()
+        try await Task.sleep(for: .milliseconds(50))
+
+        // 新连接必须仍然活着：订阅还在，且新 host 的帧能进来。
+        let streamsAfterStaleWake = await runtime.openStreamIDs()
+        XCTAssertEqual(
+            streamsAfterStaleWake, ["s1"],
+            "陈旧 reader 不得清掉新代次的订阅"
+        )
+        newStream.push(itemFrame(streamID: "s1", seq: 7))
+        let delivered = await waitUntil {
+            await runtime.bufferedFrameCount(streamID: "s1") > 0
+        }
+        XCTAssertTrue(delivered, "新 host 的帧必须仍能到达")
+        let frame = await runtime.pollFrame(streamID: "s1")
+        XCTAssertEqual(frame?.value?["seq"]?.intValue, 7)
+    }
+
     /// 认不出的安全交互不得投递（UI 无法为它构造合法应答），但必须留下诊断。
     func testUnknownSafetyInteractionIsNotDeliveredButRecorded() async throws {
         let stream = FakeHarnessStreamTransport()
@@ -1122,6 +1172,18 @@ final class FakeHarnessStreamTransport: HarnessStreamTransport, @unchecked Senda
         _closed = true
         let parked = resumeWaitersOnClose ? waiters : []
         if resumeWaitersOnClose { waiters.removeAll() }
+        lock.unlock()
+        for waiter in parked { waiter.resume(returning: nil) }
+    }
+
+    /// 手动唤醒仍在挂起的 reader（返回 nil，表示流已结束）。
+    ///
+    /// 配合 `resumeWaitersOnClose = false` 使用：把"旧 reader 何时恢复"从 close 时刻
+    /// 推迟到测试指定的时刻，从而确定性复现"陈旧 reader 在新连接建立后才醒"的窗口。
+    func releasePendingWaiters() {
+        lock.lock()
+        let parked = waiters
+        waiters.removeAll()
         lock.unlock()
         for waiter in parked { waiter.resume(returning: nil) }
     }
