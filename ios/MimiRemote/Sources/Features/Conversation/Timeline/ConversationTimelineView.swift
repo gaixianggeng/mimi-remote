@@ -649,6 +649,7 @@ struct ConversationTimelineView: View {
             activeTurn: activeTurn,
             suspendingUpdates: scrollController.isInteracting
         )
+        HostSwitchSignpost.event("conversation_timeline_projected")
         guard scrollController.prepare(snapshot) else { return }
         if presentedSnapshot.scope != snapshot.scope {
             expandedActivityIDs.removeAll()

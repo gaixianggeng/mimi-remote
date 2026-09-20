@@ -186,13 +186,15 @@ extension SessionStore {
                       sessionID: session.id,
                       generation: connectionGeneration,
                       hostScope: hostScope
-                  ) else {
+            ) else {
                 return
             }
+            HostSwitchSignpost.event("runtime_event_app_received")
             if let metadata = self.metadata(for: event) {
                 self.recordEventWatermark(metadata, fallbackSessionID: session.id)
             }
             let shouldFlushImmediately = terminalStreamStore.append(event, lease: eventLease)
+            HostSwitchSignpost.event("runtime_event_mailbox_enqueued")
             self.scheduleRuntimeEventFlush(lease: eventLease, immediately: shouldFlushImmediately)
         }
         socket.onSendAccepted = { [weak self] clientMessageID in
@@ -446,9 +448,6 @@ extension SessionStore {
     func applyWebSocketStatus(_ status: WebSocketStatus, sessionID: String) {
         switch status {
         case .connected:
-            if selectedSessionID == sessionID {
-                HostSwitchSignpost.event("conversation_realtime_ready")
-            }
             guard !isNetworkUnavailable else {
                 suspendWebSocketForNetworkLoss(sessionID: sessionID)
                 return
@@ -457,6 +456,9 @@ extension SessionStore {
             webSocketReconnectAttemptBySessionID.removeValue(forKey: sessionID)
             setActiveWriterConflict(false, sessionID: sessionID)
             setWebSocketStatus(.connected)
+            if selectedSessionID == sessionID {
+                HostSwitchSignpost.event("conversation_realtime_ready")
+            }
             setErrorMessage(nil)
             // 真实会话通道连上了，就是「已连接」的事实；用它覆盖冷启动首个 preflight 遗留的
             // 失败值，设备页不再把过程当结论。
@@ -963,6 +965,7 @@ extension SessionStore {
             guard !events.isEmpty else {
                 return
             }
+            HostSwitchSignpost.event("runtime_event_mailbox_drained")
             for event in events {
                 guard appStore.activeHostScope == lease.hostScope else { return }
                 await applyRuntimeEvent(event, lease: lease)
@@ -1018,17 +1021,20 @@ extension SessionStore {
             }
         }
         let runtimeNotification = runtimeNotification(for: event, fallbackSessionID: sessionID)
+        HostSwitchSignpost.event("runtime_event_reducer_started")
         let output = await eventReducer.reduce(
             event,
             fallbackSessionID: sessionID,
             outputIdleClearDelay: foregroundOutputIdleClearDelay
         )
+        HostSwitchSignpost.event("runtime_event_reducer_finished")
         guard appStore.activeHostScope == lease.hostScope else { return }
         // reducer 的 actor 跳转期间可能已收到新轮次。落地前重新校验，确保旧完成
         // 既不会清新 activeTurnID，也不会单独把新轮次的状态覆写为 completed。
         if case .turnCompleted(let metadata) = event,
            shouldIgnoreStaleTurnCompletion(metadata, fallbackSessionID: sessionID) { return }
         applyEventReducerOutput(output)
+        HostSwitchSignpost.event("runtime_event_store_committed")
         if case .turnCompleted(let metadata) = event {
             scheduleMissingAssistantReplyBackfillIfNeeded(
                 turnMetadata: metadata,

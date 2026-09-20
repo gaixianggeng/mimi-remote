@@ -276,8 +276,11 @@ extension ConversationDataFlowTests {
         store.historyLoadedSignatureBySessionID.removeValue(forKey: running.id)
         let reopened = Task { await store.selectSession(running) }
         await client.waitForHistoryRequestCount(2)
+        let didReopen = await reopened.value
+        XCTAssertTrue(didReopen, "缓存可读时重入不等待后台历史请求")
         XCTAssertEqual(store.conversationReadiness(for: running), .loadingHistory)
-        XCTAssertEqual(socket.connectedSessionIDs.count, 1)
+        XCTAssertEqual(socket.connectedSessionIDs.count, 2, "重入后先恢复实时订阅")
+        XCTAssertEqual(socket.replayBufferedEventsByConnect, [true, true], "历史对账完成前由 replay 保护实时缺口")
         store.networkReachabilityStatus = .unsatisfied
         XCTAssertEqual(store.conversationReadiness(for: running), .disconnected)
         store.networkReachabilityStatus = .satisfied
@@ -289,10 +292,13 @@ extension ConversationDataFlowTests {
             CodexHistoryMessage(id: "rollout:101", role: "assistant", content: "已有正文", createdAt: Date(timeIntervalSince1970: 10)),
             CodexHistoryMessage(id: "rollout:102", role: "assistant", content: "离开期间的新正文", createdAt: Date(timeIntervalSince1970: 20))
         ]))
-        let didReopen = await reopened.value
-        XCTAssertTrue(didReopen)
+        _ = try await waitForConversationMessages(in: store.conversationStore, sessionID: running.id) {
+            $0.map(\.content) == ["已有正文", "离开期间的新正文"]
+        }
+        for _ in 0..<80 where store.conversationReadiness(for: running) != .connecting {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         XCTAssertEqual(store.conversationReadiness(for: running), .connecting)
-        XCTAssertEqual(socket.replayBufferedEventsByConnect, [false, false], "快照之后不重复回放旧正文")
         socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
         XCTAssertEqual(store.conversationReadiness(for: running), .live)

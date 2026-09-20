@@ -62,13 +62,41 @@ struct ConversationTimelineTailDescriptor: Equatable {
     let sendStatus: MessageSendStatus
 }
 
+enum ConversationTimelineProjectionMode: Equatable {
+    case reused
+    case tail
+    case full
+}
+
 struct ConversationTimelineSnapshot {
     let scope: ScopedSessionID?
     let rows: [ConversationTimelineItem]
     let rowIDs: [String]
     let tail: ConversationTimelineTailDescriptor?
     let changes: ConversationTimelineChangeReasons
+    let projectionMode: ConversationTimelineProjectionMode
+    let projectedMessageCount: Int
     let revision: Int
+
+    init(
+        scope: ScopedSessionID?,
+        rows: [ConversationTimelineItem],
+        rowIDs: [String],
+        tail: ConversationTimelineTailDescriptor?,
+        changes: ConversationTimelineChangeReasons,
+        projectionMode: ConversationTimelineProjectionMode = .full,
+        projectedMessageCount: Int = 0,
+        revision: Int
+    ) {
+        self.scope = scope
+        self.rows = rows
+        self.rowIDs = rowIDs
+        self.tail = tail
+        self.changes = changes
+        self.projectionMode = projectionMode
+        self.projectedMessageCount = projectedMessageCount
+        self.revision = revision
+    }
 
     static let empty = ConversationTimelineSnapshot(
         scope: nil,
@@ -76,13 +104,22 @@ struct ConversationTimelineSnapshot {
         rowIDs: [],
         tail: nil,
         changes: [],
+        projectionMode: .reused,
+        projectedMessageCount: 0,
         revision: 0
     )
 
 }
 
+private struct ConversationTimelineProjection {
+    let rows: [ConversationTimelineItem]
+    let mode: ConversationTimelineProjectionMode
+    let projectedMessageCount: Int
+}
+
 final class ConversationTimelineItemCache {
     private var keys: [ConversationTimelineCacheKey] = []
+    private var cachedMessages: [ConversationMessage] = []
     private var cachedSnapshot = ConversationTimelineSnapshot.empty
     private var cachedProvider: ConversationTimelineProvider?
     private var cachedShowsDetailedTranscript = false
@@ -103,6 +140,7 @@ final class ConversationTimelineItemCache {
     ) -> ConversationTimelineSnapshot {
         let scopeChanged = cachedSnapshot.scope != source.scope
         let nextKeys = source.messages.map { ConversationTimelineCacheKey(message: $0) }
+        let activeTurnChanged = cachedActiveTurn != activeTurn
         // 滚动期间只冻结会改变列表结构/高度的更新。纯 live 原地更新（例如 running →
         // completed、最后一条 assistant 文本增长）允许发布，这样完成状态不会在手指离开后
         // 才跳变；prepend/enrichment/replacement 仍冻结，继续保护阅读锚点。
@@ -119,7 +157,24 @@ final class ConversationTimelineItemCache {
                         && next.itemID == old.itemID
                 }
             if hasStructuralHistoryChange || !sameMessageStructure {
-                return cachedSnapshot
+                guard activeTurnChanged, !cachedMessages.isEmpty else {
+                    return cachedSnapshot
+                }
+                // 历史结构仍使用已展示消息冻结，但会话终态属于独立轻量状态。
+                // 只用旧消息重投当前 turn，避免 enrichment/prepend 趁机进入视口。
+                return snapshot(
+                    from: ConversationTimelineSourceSnapshot(
+                        scope: source.scope,
+                        messages: cachedMessages,
+                        versions: deliveredVersions
+                    ),
+                    provider: provider,
+                    showsDetailedTranscript: showsDetailedTranscript,
+                    expandedProcessMessageIDs: expandedProcessMessageIDs,
+                    collapsedProcessMessageIDs: collapsedProcessMessageIDs,
+                    activeTurn: activeTurn,
+                    suspendingUpdates: false
+                )
             }
         }
 
@@ -128,26 +183,12 @@ final class ConversationTimelineItemCache {
         let detailModeChanged = cachedShowsDetailedTranscript != showsDetailedTranscript
         let expansionChanged = cachedExpandedProcessMessageIDs != expandedProcessMessageIDs
             || cachedCollapsedProcessMessageIDs != collapsedProcessMessageIDs
-        let activeTurnChanged = cachedActiveTurn != activeTurn
         guard scopeChanged || sourceChanged || providerChanged || detailModeChanged || expansionChanged || activeTurnChanged || nextKeys != keys else {
             return cachedSnapshot
         }
 
         let previousKeys = keys
         let rowsChanged = scopeChanged || providerChanged || detailModeChanged || expansionChanged || activeTurnChanged || nextKeys != previousKeys
-        // 来源原因可能变化，但可渲染字段没有变化（例如折叠命令的隐藏输出进度）。
-        // 此时仍发布新 revision/reasons，但复用原投影，避免无意义地重建整条时间线。
-        let nextRows = rowsChanged
-            ? ConversationTimelineItemBuilder.items(
-                from: source.messages,
-                provider: provider,
-                showsDetailedTranscript: showsDetailedTranscript,
-                expandedProcessMessageIDs: expandedProcessMessageIDs,
-                collapsedProcessMessageIDs: collapsedProcessMessageIDs,
-                activeTurn: activeTurn
-            )
-            : cachedSnapshot.rows
-        let nextRowIDs = rowsChanged ? nextRows.map(\.id) : cachedSnapshot.rowIDs
         let reasons: ConversationTimelineChangeReasons
         if scopeChanged {
             reasons = source.versions.changes(since: .init())
@@ -159,6 +200,32 @@ final class ConversationTimelineItemCache {
         } else {
             reasons = source.versions.changes(since: deliveredVersions)
         }
+        // 常见流式更新只重投最后一个用户 turn。历史结构、展示模式和未知边界仍走完整
+        // builder，保持分组、文件入口和锚点语义不变。
+        let projection = rowsChanged
+            ? projectedRows(
+                messages: source.messages,
+                nextKeys: nextKeys,
+                previousKeys: previousKeys,
+                reasons: reasons,
+                provider: provider,
+                showsDetailedTranscript: showsDetailedTranscript,
+                expandedProcessMessageIDs: expandedProcessMessageIDs,
+                collapsedProcessMessageIDs: collapsedProcessMessageIDs,
+                activeTurn: activeTurn,
+                scopeChanged: scopeChanged,
+                providerChanged: providerChanged,
+                detailModeChanged: detailModeChanged,
+                expansionChanged: expansionChanged,
+                activeTurnChanged: activeTurnChanged
+            )
+            : ConversationTimelineProjection(
+                rows: cachedSnapshot.rows,
+                mode: .reused,
+                projectedMessageCount: 0
+            )
+        let nextRows = projection.rows
+        let nextRowIDs = rowsChanged ? nextRows.map(\.id) : cachedSnapshot.rowIDs
         var presentationReasons = providerChanged ? reasons.union(.historyReplacement) : reasons
         if detailModeChanged || expansionChanged {
             presentationReasons.formUnion([.historyReplacement, .presentation])
@@ -191,6 +258,7 @@ final class ConversationTimelineItemCache {
         }
 
         keys = nextKeys
+        cachedMessages = source.messages
         cachedProvider = provider
         cachedShowsDetailedTranscript = showsDetailedTranscript
         cachedExpandedProcessMessageIDs = expandedProcessMessageIDs
@@ -204,9 +272,124 @@ final class ConversationTimelineItemCache {
             rowIDs: nextRowIDs,
             tail: tail,
             changes: presentationReasons.isEmpty && rowsChanged ? .live : presentationReasons,
+            projectionMode: projection.mode,
+            projectedMessageCount: projection.projectedMessageCount,
             revision: presentationRevision
         )
         return cachedSnapshot
+    }
+
+    private func projectedRows(
+        messages: [ConversationMessage],
+        nextKeys: [ConversationTimelineCacheKey],
+        previousKeys: [ConversationTimelineCacheKey],
+        reasons: ConversationTimelineChangeReasons,
+        provider: ConversationTimelineProvider,
+        showsDetailedTranscript: Bool,
+        expandedProcessMessageIDs: Set<UUID>,
+        collapsedProcessMessageIDs: Set<UUID>,
+        activeTurn: ConversationTimelineActiveTurn?,
+        scopeChanged: Bool,
+        providerChanged: Bool,
+        detailModeChanged: Bool,
+        expansionChanged: Bool,
+        activeTurnChanged: Bool
+    ) -> ConversationTimelineProjection {
+        let requiresFullProjection = scopeChanged
+            || providerChanged
+            || detailModeChanged
+            || expansionChanged
+            || reasons.containsHistoryChange
+        if !requiresFullProjection,
+           let projection = projectedTailRows(
+               messages: messages,
+               nextKeys: nextKeys,
+               previousKeys: previousKeys,
+               provider: provider,
+               showsDetailedTranscript: showsDetailedTranscript,
+               expandedProcessMessageIDs: expandedProcessMessageIDs,
+               collapsedProcessMessageIDs: collapsedProcessMessageIDs,
+               activeTurn: activeTurn,
+               activeTurnChanged: activeTurnChanged
+           ) {
+            return projection
+        }
+        return ConversationTimelineProjection(
+            rows: ConversationTimelineItemBuilder.items(
+                from: messages,
+                provider: provider,
+                showsDetailedTranscript: showsDetailedTranscript,
+                expandedProcessMessageIDs: expandedProcessMessageIDs,
+                collapsedProcessMessageIDs: collapsedProcessMessageIDs,
+                activeTurn: activeTurn
+            ),
+            mode: .full,
+            projectedMessageCount: messages.count
+        )
+    }
+
+    private func projectedTailRows(
+        messages: [ConversationMessage],
+        nextKeys: [ConversationTimelineCacheKey],
+        previousKeys: [ConversationTimelineCacheKey],
+        provider: ConversationTimelineProvider,
+        showsDetailedTranscript: Bool,
+        expandedProcessMessageIDs: Set<UUID>,
+        collapsedProcessMessageIDs: Set<UUID>,
+        activeTurn: ConversationTimelineActiveTurn?,
+        activeTurnChanged: Bool
+    ) -> ConversationTimelineProjection? {
+        guard !messages.isEmpty else { return nil }
+        let firstChangedIndex = Self.firstChangedIndex(nextKeys, previousKeys)
+        guard firstChangedIndex != nil || activeTurnChanged else { return nil }
+        let upperBound = min(firstChangedIndex ?? (messages.count - 1), messages.count - 1)
+        guard let boundaryIndex = messages[...upperBound].lastIndex(where: { $0.role == .user }) else {
+            return nil
+        }
+        let sharedPrefixCount = min(boundaryIndex, min(nextKeys.count, previousKeys.count))
+        guard sharedPrefixCount == boundaryIndex,
+              nextKeys[..<boundaryIndex].elementsEqual(previousKeys[..<boundaryIndex]) else {
+            return nil
+        }
+
+        let prefixRows: [ConversationTimelineItem]
+        if boundaryIndex == previousKeys.count {
+            // 新用户消息刚追加到尾部，旧投影全部是稳定前缀。
+            guard firstChangedIndex == boundaryIndex else { return nil }
+            prefixRows = cachedSnapshot.rows
+        } else {
+            let boundaryRowID = "message:\(messages[boundaryIndex].id.uuidString)"
+            guard let boundaryRowIndex = cachedSnapshot.rows.firstIndex(where: { $0.id == boundaryRowID }) else {
+                return nil
+            }
+            prefixRows = Array(cachedSnapshot.rows[..<boundaryRowIndex])
+        }
+
+        let tailMessages = Array(messages[boundaryIndex...])
+        let tailRows = ConversationTimelineItemBuilder.items(
+            from: tailMessages,
+            provider: provider,
+            showsDetailedTranscript: showsDetailedTranscript,
+            expandedProcessMessageIDs: expandedProcessMessageIDs,
+            collapsedProcessMessageIDs: collapsedProcessMessageIDs,
+            activeTurn: activeTurn
+        )
+        return ConversationTimelineProjection(
+            rows: prefixRows + tailRows,
+            mode: boundaryIndex == 0 ? .full : .tail,
+            projectedMessageCount: tailMessages.count
+        )
+    }
+
+    private static func firstChangedIndex(
+        _ next: [ConversationTimelineCacheKey],
+        _ previous: [ConversationTimelineCacheKey]
+    ) -> Int? {
+        let sharedCount = min(next.count, previous.count)
+        for index in 0..<sharedCount where next[index] != previous[index] {
+            return index
+        }
+        return next.count == previous.count ? nil : sharedCount
     }
 
     /// 纯 builder/cache 测试入口。业务 UI 应使用带 Store 来源版本的重载。

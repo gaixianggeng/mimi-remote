@@ -807,7 +807,15 @@ extension SessionStore {
             scheduleDeferredFullHistoryReloadAfterTurnCompletion(sessionID: sessionID)
         }
         if selectedSessionID == sessionID {
-            HostSwitchSignpost.event("conversation_history_ready")
+            HostSwitchSignpost.event("conversation_history_first_page_ready")
+            switch historyLoadedQualityBySessionID[sessionID] {
+            case .some(.full):
+                HostSwitchSignpost.event("conversation_history_ready")
+            case .some(.summary):
+                HostSwitchSignpost.event("conversation_history_summary_ready")
+            case .some(.enriching), .none:
+                break
+            }
         }
         if let effectiveSuccessStatusMessage {
             setStatusMessage(effectiveSuccessStatusMessage)

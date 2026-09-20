@@ -81,8 +81,18 @@ extension SessionStore {
             oldestHistoryPageOrdinal: 0,
             task: nil
         )
-        let task = Task { @MainActor [weak self] in
+        let defersInitialRequest = isClaudeHistoryItemEnrichment(sessionID: sessionID)
+        let task = Task(priority: .utility) { @MainActor [weak self] in
             guard let self else { return }
+            if defersInitialRequest {
+                // 首屏 summary 已经落入 Store。Claude 的大量工具页让出一个调度周期，
+                // 先让正文、输入和滚动完成首帧提交，再开始后台补齐。
+                await Task.yield()
+                guard !Task.isCancelled,
+                      self.isCurrentHistoryItemEnrichment(sessionID: sessionID, token: token) else {
+                    return
+                }
+            }
             await self.runHistoryItemEnrichment(sessionID: sessionID, token: token)
         }
         historyItemEnrichmentBySessionID[sessionID]?.task = task
@@ -273,9 +283,15 @@ extension SessionStore {
         publishHistoryItemPublication(publication, sessionID: sessionID)
         guard failed || state.didFail else {
             historyLoadedQualityBySessionID[sessionID] = .full
+            if selectedSessionID == sessionID {
+                HostSwitchSignpost.event("conversation_history_ready")
+            }
             return
         }
         historyLoadedQualityBySessionID[sessionID] = .summary
+        if selectedSessionID == sessionID {
+            HostSwitchSignpost.event("conversation_history_summary_ready")
+        }
         setHistoryLoadNotice(
             sessionID: sessionID,
             kind: .summaryLoaded,
@@ -302,6 +318,11 @@ extension SessionStore {
         // 后续批量稍大一些，减少 MainActor 上 history merge + timeline projection 的频率；
         // Codex 保持原来的 4 页节奏，避免扩大既有行为面。
         return Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "claude" ? 8 : 4
+    }
+
+    private func isClaudeHistoryItemEnrichment(sessionID: SessionID) -> Bool {
+        guard let session = sessionsByID[sessionID] else { return false }
+        return Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "claude"
     }
 
     private static func historyItemEnrichmentWork(
@@ -358,8 +379,8 @@ extension SessionStore {
         guard let publication else {
             return
         }
-        // summary 文案已经首屏显示。Item 页只把首个媒体批次立即交给 UI，后续每四页
-        // 合并一次，避免每个 SSH 响应都触发整条时间线重投影和 List diff。
+        // summary 文案已经首屏显示。Item 页只把首个媒体批次立即交给 UI，后续按 Provider
+        // 合批，避免每个 SSH 响应都触发时间线投影和 List diff。
         conversationStore.setHistory(
             publication.messages,
             sessionID: sessionID,

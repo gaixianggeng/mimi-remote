@@ -4654,13 +4654,12 @@ extension ConversationDataFlowTests {
             title: "Claude 小会话",
             status: "history",
             source: "claude",
+            runtimeProvider: "claude",
             resumeID: "small"
         )
-        var routedHistory = history
-        routedHistory.runtimeProvider = "claude"
         let client = OrderedHistoryPageClient(
             projects: [project],
-            page: SessionsPage(sessions: [routedHistory])
+            page: SessionsPage(sessions: [history])
         )
         let conversationStore = ConversationStore()
         let store = SessionStore(
@@ -4671,7 +4670,7 @@ extension ConversationDataFlowTests {
         )
 
         await store.refreshAll(autoAttach: false)
-        let selectTask = Task { await store.selectSession(routedHistory) }
+        let selectTask = Task { await store.selectSession(history) }
         await client.waitForHistoryRequestCount(1)
 
         client.failHistoryRequest(
@@ -4700,7 +4699,7 @@ extension ConversationDataFlowTests {
         )
         await selectTask.value
 
-        XCTAssertEqual(conversationStore.messages(for: routedHistory.id).map(\.content), ["少量历史"])
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["少量历史"])
         XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 

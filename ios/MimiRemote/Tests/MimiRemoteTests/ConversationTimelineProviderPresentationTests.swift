@@ -138,7 +138,7 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         process.turnLifecycle = .inProgress
         let cache = ConversationTimelineItemCache()
         let running = cache.snapshot(from: [process], activeTurn: .init(id: "turn"))
-        let frozen = cache.snapshot(from: [process], suspendingUpdates: true)
+        let frozen = cache.snapshot(from: [process], activeTurn: .init(id: "turn"), suspendingUpdates: true)
         XCTAssertEqual(frozen.revision, running.revision)
         XCTAssertTrue(try group(in: frozen.rows[0]).isExpanded)
         // active turn 结束属于原地 live 状态变化，不应等滚动结束才呈现。
@@ -147,6 +147,65 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         let pinned = cache.snapshot(from: [process], expandedProcessMessageIDs: [process.id], activeTurn: .init(id: "turn"))
         let pinnedFinished = cache.snapshot(from: [process], expandedProcessMessageIDs: [process.id])
         XCTAssertEqual(pinned.rows, pinnedFinished.rows)
+    }
+
+    func testStreamingUpdateRebuildsOnlyLatestUserTurn() throws {
+        let oldUser = makeMessage(id: "old-user", turnID: "old", role: .user, kind: .message, content: "旧问题")
+        let oldAnswer = makeMessage(id: "old-answer", turnID: "old", role: .assistant, kind: .message, content: "旧回答")
+        let currentUser = makeMessage(id: "current-user", turnID: "current", role: .user, kind: .message, content: "新问题")
+        var streaming = makeMessage(id: "streaming", turnID: "current", role: .assistant, kind: .message, content: "第一段")
+        let cache = ConversationTimelineItemCache()
+
+        let initial = cache.snapshot(from: [oldUser, oldAnswer, currentUser, streaming])
+        XCTAssertEqual(initial.projectionMode, .full)
+        XCTAssertEqual(initial.projectedMessageCount, 4)
+
+        streaming.content = "第一段和第二段"
+        let updated = cache.snapshot(from: [oldUser, oldAnswer, currentUser, streaming])
+
+        XCTAssertEqual(updated.projectionMode, .tail)
+        XCTAssertEqual(updated.projectedMessageCount, 2)
+        XCTAssertEqual(try message(in: updated.rows[0]).id, oldUser.id)
+        XCTAssertEqual(try message(in: updated.rows[1]).id, oldAnswer.id)
+        XCTAssertEqual(try message(in: updated.rows[3]).content, "第一段和第二段")
+    }
+
+    func testScrollingPublishesCompletionWhileDeferringConcurrentHistoryStructure() throws {
+        let scope = ScopedSessionID(profileID: "profile", sessionID: "session")
+        var user = makeMessage(id: "user", turnID: "current", role: .user, kind: .message, content: "继续")
+        user.turnLifecycle = nil
+        var process = makeActivity(id: "process", turnID: "current", category: .toolCall, title: "处理中")
+        process.turnLifecycle = .inProgress
+        let earlier = makeActivity(id: "earlier", turnID: "old", category: .thinking, title: "历史过程")
+        var initialVersions = ConversationTimelineSourceVersions(lifetime: 1)
+        initialVersions.record(.live, revision: 1)
+        let cache = ConversationTimelineItemCache()
+        let initial = cache.snapshot(
+            from: .init(scope: scope, messages: [user, process], versions: initialVersions),
+            activeTurn: .init(id: "current")
+        )
+        XCTAssertTrue(try group(in: initial.rows[1]).isExpanded)
+
+        var combinedVersions = initialVersions
+        combinedVersions.record(.historyEnrichment, revision: 2)
+        combinedVersions.record(.live, revision: 3)
+        process.turnLifecycle = .completed
+        let duringScroll = cache.snapshot(
+            from: .init(scope: scope, messages: [earlier, user, process], versions: combinedVersions),
+            activeTurn: nil,
+            suspendingUpdates: true
+        )
+
+        XCTAssertFalse(try group(in: duringScroll.rows[1]).isExpanded)
+        XCTAssertFalse(duringScroll.rows.flatMap(\.anchorMessageIDs).contains(earlier.id))
+        XCTAssertTrue(duringScroll.changes.contains(.live))
+
+        let afterScroll = cache.snapshot(
+            from: .init(scope: scope, messages: [earlier, user, process], versions: combinedVersions),
+            activeTurn: nil
+        )
+        XCTAssertTrue(afterScroll.rows.flatMap(\.anchorMessageIDs).contains(earlier.id))
+        XCTAssertTrue(afterScroll.changes.contains(.historyEnrichment))
     }
 
     func testDefaultProvidersCollapseProcessAndKeepFinalAndFileEntry() throws {
