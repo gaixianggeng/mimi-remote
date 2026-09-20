@@ -154,6 +154,9 @@ struct HostSwitcherMenu: View {
                                 ? .subheadline.weight(.semibold)
                                 : .headline.weight(.semibold)
                         )
+                        // 设备名称是导航标识，不是主题操作：Menu 标签默认继承全局 tint，
+                        // 会被染成主题色；这里固定回正文色，任何预设下都保持中性可读。
+                        .foregroundStyle(themeStore.tokens(for: colorScheme).primaryText)
                         .lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.caption2.weight(.semibold))
