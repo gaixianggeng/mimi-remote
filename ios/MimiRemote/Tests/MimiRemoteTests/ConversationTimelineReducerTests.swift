@@ -3,6 +3,112 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testCanonicalHistoryPagesKeepDistinctItemsWithoutNormalizingToolOutput() {
+        let old = ConversationMessage(
+            turnID: "turn", itemID: "call-old", role: .system, kind: .commandSummary,
+            content: "相同工具输出", sendStatus: .confirmed, timelineOrdinal: 0
+        )
+        let next = ConversationMessage(
+            turnID: "turn", itemID: "call-next", role: .system, kind: .commandSummary,
+            content: old.content, sendStatus: .confirmed, timelineOrdinal: 1
+        )
+        let reducer = ConversationTimelineReducer(normalizeSemanticText: { text in
+            XCTFail("完整分页中不同 Item ID 不能按正文合并或反复清洗")
+            return text
+        })
+        let result = reducer.rebase(snapshot: [next], current: [old], snapshotOrdering: .incrementalFragments)
+        XCTAssertEqual(result.messages.map(\.id), [old.id, next.id])
+    }
+
+    func testCanonicalHistoryPageStillAliasesLegacyPositionalAndLiveItems() {
+        for ordinal: Int64? in [nil, 0] {
+            let old = ConversationMessage(
+                turnID: "turn", itemID: ordinal == nil ? "live-tool" : "item-0",
+                role: .system, kind: .commandSummary, content: "工具结果", sendStatus: .confirmed, timelineOrdinal: ordinal
+            )
+            let next = ConversationMessage(
+                turnID: "turn", itemID: "call-next", role: .system, kind: .commandSummary,
+                content: " 工具结果 ", sendStatus: .confirmed, timelineOrdinal: 0
+            )
+            let result = ConversationTimelineReducer().rebase(
+                snapshot: [next], current: [old], snapshotOrdering: .incrementalFragments
+            )
+            XCTAssertEqual(result.messages.count, 1)
+            XCTAssertEqual(result.messages.first?.id, old.id)
+        }
+    }
+
+    func testMixedHistoryPageDoesNotAliasDifferentCanonicalItems() {
+        let old = ConversationMessage(
+            turnID: "turn", itemID: "call-old", role: .system, kind: .commandSummary,
+            content: "相同工具输出", sendStatus: .confirmed, timelineOrdinal: 0
+        )
+        let next = ConversationMessage(
+            turnID: "turn", itemID: "call-next", role: .system, kind: .commandSummary,
+            content: old.content, sendStatus: .confirmed, timelineOrdinal: 1
+        )
+        let legacy = ConversationMessage(
+            turnID: "turn", itemID: "item-2", role: .system, kind: .commandSummary,
+            content: "其他工具输出", sendStatus: .confirmed, timelineOrdinal: 2
+        )
+        let result = ConversationTimelineReducer().rebase(
+            snapshot: [next, legacy], current: [old], snapshotOrdering: .incrementalFragments
+        )
+        XCTAssertEqual(result.messages.map(\.id), [old.id, next.id, legacy.id])
+    }
+
+    func testRebaseSkipsSemanticTextWorkForStableIDMatches() {
+        let messages = (0..<120).map { index in
+            ConversationMessage(
+                stableID: "item-\(index)", turnID: "turn", itemID: "tool-\(index)",
+                role: .system, kind: .commandSummary,
+                content: String(repeating: "长工具输出\n", count: 200), sendStatus: .confirmed
+            )
+        }
+        let reducer = ConversationTimelineReducer(normalizeSemanticText: { text in
+            XCTFail("稳定 ID 已匹配的消息不能再次清洗正文")
+            return text
+        })
+
+        let result = reducer.rebase(snapshot: messages, current: messages)
+        XCTAssertEqual(result.messages.map(\.id), messages.map(\.id))
+    }
+
+    func testRebaseSkipsSemanticTextWorkWithoutCompatibleTurnAndKind() {
+        let current = [
+            ConversationMessage(turnID: "old", role: .system, kind: .commandSummary, content: "旧工具"),
+            ConversationMessage(turnID: "new", role: .assistant, content: "同轮不同类型")
+        ]
+        let incoming = ConversationMessage(
+            turnID: "new", role: .system, kind: .commandSummary, content: "新工具"
+        )
+        let reducer = ConversationTimelineReducer(normalizeSemanticText: { text in
+            XCTFail("不存在同轮同类型候选时不能清洗正文")
+            return text
+        })
+
+        let result = reducer.rebase(snapshot: [incoming], current: current)
+        XCTAssertEqual(Set(result.messages.map(\.id)), Set((current + [incoming]).map(\.id)))
+    }
+
+    func testRebaseNormalizesOnlyUnmatchedSemanticCandidates() {
+        let exact = ConversationMessage(turnID: "turn", role: .assistant, content: "已精确匹配")
+        let legacy = ConversationMessage(turnID: "turn", itemID: "msg-live", role: .assistant, content: "回答。")
+        let unrelated = ConversationMessage(turnID: "other", role: .assistant, content: "无关长历史")
+        let history = ConversationMessage(turnID: "turn", itemID: "item-0", role: .assistant, content: " 回答。 ")
+        var normalizedTexts: [String] = []
+        let reducer = ConversationTimelineReducer(normalizeSemanticText: { text in
+            normalizedTexts.append(text)
+            return AssistantTextNormalizer.normalizedAssistantTextForDedup(text)
+        })
+
+        let result = reducer.rebase(snapshot: [exact, history], current: [exact, legacy, unrelated])
+        XCTAssertEqual(normalizedTexts, [legacy.content, history.content])
+        XCTAssertEqual(result.messages.count, 3)
+        XCTAssertTrue(result.messages.contains { $0.id == legacy.id && $0.itemID == "item-0" })
+        XCTAssertEqual(result.ambiguousAliasCount, 0)
+    }
+
     func testCompletedUserProjectionBindsLocalEchoToAuthoritativeTurn() throws {
         var projector = CodexAppServerEventProjector()
         let completedUser = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"userMessage","id":"user_1","clientId":"client_1","content":[{"type":"text","text":"继续原请求","text_elements":[]}]}}}"#)

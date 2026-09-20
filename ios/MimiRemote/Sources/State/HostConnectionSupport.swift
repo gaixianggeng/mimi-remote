@@ -634,7 +634,15 @@ enum HostSwitchSignpost {
         os_signpost(.begin, log: log, name: name)
     }
 
+    static func begin(_ name: StaticString, metadata: String) {
+        os_signpost(.begin, log: log, name: name, "%{public}@", metadata as NSString)
+    }
+
     static func end(_ name: StaticString) {
         os_signpost(.end, log: log, name: name)
+    }
+
+    static func end(_ name: StaticString, metadata: String) {
+        os_signpost(.end, log: log, name: name, "%{public}@", metadata as NSString)
     }
 }

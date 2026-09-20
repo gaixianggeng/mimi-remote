@@ -119,7 +119,6 @@ private struct ConversationTimelineProjection {
 
 final class ConversationTimelineItemCache {
     private var keys: [ConversationTimelineCacheKey] = []
-    private var cachedMessages: [ConversationMessage] = []
     private var cachedSnapshot = ConversationTimelineSnapshot.empty
     private var cachedProvider: ConversationTimelineProvider?
     private var cachedShowsDetailedTranscript = false
@@ -139,45 +138,15 @@ final class ConversationTimelineItemCache {
         suspendingUpdates: Bool = false
     ) -> ConversationTimelineSnapshot {
         let scopeChanged = cachedSnapshot.scope != source.scope
-        let nextKeys = source.messages.map { ConversationTimelineCacheKey(message: $0) }
-        let activeTurnChanged = cachedActiveTurn != activeTurn
-        // 滚动期间只冻结会改变列表结构/高度的更新。纯 live 原地更新（例如 running →
-        // completed、最后一条 assistant 文本增长）允许发布，这样完成状态不会在手指离开后
-        // 才跳变；prepend/enrichment/replacement 仍冻结，继续保护阅读锚点。
+        // 滚动控制器在交互期间不捕获阅读锚点，所以这里必须冻结所有会改变行集或行高的投影。
+        // 会话状态仍由 View 的 liveStatus 独立更新；交互结束后 isInteracting 变化会触发再次投影。
+        // 在构造 key 之前返回，避免长会话即使冻结也扫描全部消息。
         if suspendingUpdates, !scopeChanged, !cachedSnapshot.rows.isEmpty {
-            let pendingReasons = source.versions.changes(since: deliveredVersions)
-            let hasStructuralHistoryChange = pendingReasons.containsHistoryChange
-            let sameMessageStructure = nextKeys.count == keys.count
-                && zip(nextKeys, keys).allSatisfy { next, old in
-                    next.id == old.id
-                        && next.stableID == old.stableID
-                        && next.role == old.role
-                        && next.kind == old.kind
-                        && next.turnID == old.turnID
-                        && next.itemID == old.itemID
-                }
-            if hasStructuralHistoryChange || !sameMessageStructure {
-                guard activeTurnChanged, !cachedMessages.isEmpty else {
-                    return cachedSnapshot
-                }
-                // 历史结构仍使用已展示消息冻结，但会话终态属于独立轻量状态。
-                // 只用旧消息重投当前 turn，避免 enrichment/prepend 趁机进入视口。
-                return snapshot(
-                    from: ConversationTimelineSourceSnapshot(
-                        scope: source.scope,
-                        messages: cachedMessages,
-                        versions: deliveredVersions
-                    ),
-                    provider: provider,
-                    showsDetailedTranscript: showsDetailedTranscript,
-                    expandedProcessMessageIDs: expandedProcessMessageIDs,
-                    collapsedProcessMessageIDs: collapsedProcessMessageIDs,
-                    activeTurn: activeTurn,
-                    suspendingUpdates: false
-                )
-            }
+            return cachedSnapshot
         }
 
+        let nextKeys = source.messages.map { ConversationTimelineCacheKey(message: $0) }
+        let activeTurnChanged = cachedActiveTurn != activeTurn
         let sourceChanged = source.versions != deliveredVersions
         let providerChanged = cachedProvider.map { $0 != provider } ?? false
         let detailModeChanged = cachedShowsDetailedTranscript != showsDetailedTranscript
@@ -258,7 +227,6 @@ final class ConversationTimelineItemCache {
         }
 
         keys = nextKeys
-        cachedMessages = source.messages
         cachedProvider = provider
         cachedShowsDetailedTranscript = showsDetailedTranscript
         cachedExpandedProcessMessageIDs = expandedProcessMessageIDs
