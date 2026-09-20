@@ -46,13 +46,11 @@ struct PairingView: View {
         .task {
             await store.refreshIfNeeded()
             await store.refreshTailcatStatus()
-            if store.pairing == nil {
-                await store.refreshPairing()
-            }
-            if selectedNetwork != store.pairingNetwork {
+            if let network = store.pairing?.network, selectedNetwork != network {
                 suppressNextNetworkChange = true
-                selectedNetwork = store.pairingNetwork
+                selectedNetwork = network
             }
+            restorePairingIfNeeded()
         }
         .onChange(of: selectedNetwork) { _, network in
             if suppressNextNetworkChange {
@@ -64,6 +62,22 @@ struct PairingView: View {
         .onChange(of: store.availablePairingNetworks) { _, networks in
             if let first = networks.first, !networks.contains(selectedNetwork) {
                 selectedNetwork = first
+            }
+            restorePairingIfNeeded()
+        }
+        .onChange(of: store.isBusy) { _, busy in
+            if !busy { restorePairingIfNeeded() }
+        }
+        .onChange(of: store.canPair) { _, available in
+            if available { restorePairingIfNeeded() }
+        }
+        .onChange(of: isRefreshing) { _, refreshing in
+            if !refreshing { restorePairingIfNeeded() }
+        }
+        .onChange(of: store.pairing?.network) { _, network in
+            if let network, network != selectedNetwork {
+                suppressNextNetworkChange = true
+                selectedNetwork = network
             }
         }
         .onDisappear {
@@ -142,7 +156,9 @@ struct PairingView: View {
     }
 
     private func copyPairingLink(_ value: String) {
-        guard store.canPair, !store.isBusy, store.pairing?.pairURL == value else { return }
+        guard store.canPair, !store.isBusy,
+              let pairing = store.pairing, pairing.pairURL == value,
+              store.availablePairingNetworks.contains(pairing.network) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
 
@@ -159,15 +175,27 @@ struct PairingView: View {
         }
     }
 
+    /// A module change invalidates its QR while the service is busy. Refresh only
+    /// once it is usable again; a real generation error stays visible for retry.
+    private func restorePairingIfNeeded() {
+        guard !isRefreshing, !store.isBusy, store.canPair,
+              store.pairing == nil, store.lastError == nil else { return }
+        let network: PairingNetwork = store.availablePairingNetworks.contains(selectedNetwork)
+            ? selectedNetwork : .automatic
+        refreshPairing(network: network)
+    }
+
     private func refreshPairing(network: PairingNetwork? = nil) {
         guard !isRefreshing, !store.isBusy, store.canPair else { return }
         let targetNetwork = network ?? selectedNetwork
         isRefreshing = true
         Task {
             await store.refreshPairing(network: targetNetwork)
-            if store.pairingNetwork != targetNetwork {
+            // A superseded request may finish with no QR. Its remembered route
+            // must not replace the user's current, available selection.
+            if let network = store.pairing?.network, network != selectedNetwork {
                 suppressNextNetworkChange = true
-                selectedNetwork = store.pairingNetwork
+                selectedNetwork = network
             }
             isRefreshing = false
         }
