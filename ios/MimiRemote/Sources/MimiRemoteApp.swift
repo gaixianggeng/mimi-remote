@@ -331,6 +331,8 @@ struct MimiRemoteApp: App {
         // 与 AppStore 的 factory 使用同一显式测试参数；生产和普通 Debug 均保持关闭。
         if appStore.debugLaunchConfiguration.usesNativeHarnessTestPath {
             sessionStore.nativeHarnessRollout = HarnessNativeRollout(isEnabled: true)
+            // 宿主级 `$events` 与开关同一起点：它是宿主通道，不随会话页面开关。
+            sessionStore.installNativeHarnessHostEvents()
         }
 #endif
         notificationResponseAdapter.approvalInbox.navigationOwnership = sessionStore.notificationNavigation

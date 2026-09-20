@@ -26,6 +26,54 @@ extension SessionStore {
         nativeHarnessRollout.isEnabled
     }
 
+    // MARK: - 宿主级 $events
+
+    /// 接上宿主级交互事件。
+    ///
+    /// `$events` 是宿主级通道（契约 D5）：别的会话、子 Agent、Harness Web 发出的审批与
+    /// 追问都从这一条流下来，**可能在用户从未打开对应会话时到达**。因此它由宿主独占，
+    /// 不像会话页面那样随页面开关——那样既收不到跨会话审批，退订还会关掉整条共享连接
+    /// （中继规定一条移动连接只绑定一个 `$events` 生命周期）。
+    ///
+    /// 幂等：宿主激活、切回前台、重连都可以安全重复调用。
+    func installNativeHarnessHostEvents() {
+        guard isNativeHarnessDirectoryEnabled else { return }
+        guard let client = appStore.nativeHarnessClientForActiveHost() else { return }
+        Task { @MainActor in
+            client.setHostInteractionSinks(
+                events: { [weak self] event in
+                    self?.deliverNativeHostEvent(event)
+                },
+                changed: { [weak self] in
+                    self?.objectWillChange.send()
+                }
+            )
+            client.startHostEvents()
+        }
+    }
+
+    /// 宿主退役时停止观察。**页面切换不调用它。**
+    func stopNativeHarnessHostEvents() {
+        guard isNativeHarnessDirectoryEnabled else { return }
+        guard let client = appStore.nativeHarnessClientForActiveHost() else { return }
+        Task { @MainActor in
+            await client.stopHostEvents()
+        }
+    }
+
+    /// 把一条宿主级交互事件送进既有事件通道。
+    ///
+    /// 走 `applyRuntimeEvent` 而不是另建一条 UI 路径：会话归属由事件自己的 metadata 决定
+    /// （见 `HarnessInteractionProjection`），因此**无需**当前打开的是哪个会话，
+    /// 未打开的会话也能正确落到它自己的待办与时间线上。
+    private func deliverNativeHostEvent(_ event: AgentEvent) {
+        guard let sessionID = metadata(for: event)?.sessionID else { return }
+        let lease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: sessionID)
+        Task { @MainActor in
+            await self.applyRuntimeEvent(event, lease: lease)
+        }
+    }
+
     /// 为一个工作区发起原生目录刷新。
     func refreshNativeHarnessDirectory(
         workspace: AgentWorkspace,

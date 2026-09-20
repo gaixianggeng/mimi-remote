@@ -694,4 +694,36 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
     func shutdownForHostSwitch() async {
         shutdownCallCount += 1
     }
+
+    // MARK: - 宿主级事件
+
+    private(set) var startHostEventsCallCount = 0
+    private(set) var stopHostEventsCallCount = 0
+    private(set) var hostPendingInteractionsCount = 0
+    private var hostEventsSink: (@MainActor (AgentEvent) -> Void)?
+
+    func setHostInteractionSinks(
+        events: (@MainActor (AgentEvent) -> Void)?,
+        changed: (@MainActor () -> Void)?
+    ) {
+        hostEventsSink = events
+    }
+
+    func startHostEvents() {
+        startHostEventsCallCount += 1
+    }
+
+    func stopHostEvents() async {
+        stopHostEventsCallCount += 1
+    }
+
+    func hostPendingInteractions() -> [HarnessInteractionStore.PendingInteraction] {
+        hostPendingInteractionsCount += 1
+        return []
+    }
+
+    /// 造一条宿主级事件，验证装配方真的把 sink 接上了。
+    func emitHostEvent(_ event: AgentEvent) {
+        hostEventsSink?(event)
+    }
 }

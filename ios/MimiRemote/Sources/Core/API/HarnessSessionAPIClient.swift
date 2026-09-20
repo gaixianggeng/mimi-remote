@@ -75,6 +75,31 @@ protocol HarnessSessionClient: AnyObject {
     /// 停止当前轮次（session 级，不是原子 turn 级条件取消）。
     func cancelSession(sessionID: String) async throws
 
+    // MARK: - 宿主级事件
+    //
+    // `$events` 是宿主级通道（契约 D5）：别的会话的审批与追问可能在用户**从未打开**
+    // 对应会话时到达。它必须由宿主持有，而不是每个会话页面各开一条——中继规定一条
+    // 移动连接只绑定一个 `$events` 生命周期，且退订它会关闭整条共享连接。
+
+    /// 接上宿主级交互事件的出口。装配方在宿主激活时调用一次。
+    @MainActor
+    func setHostInteractionSinks(
+        events: (@MainActor (AgentEvent) -> Void)?,
+        changed: (@MainActor () -> Void)?
+    )
+
+    /// 开始宿主级 `$events` 观察。幂等。
+    @MainActor
+    func startHostEvents()
+
+    /// 停止宿主级观察。只在宿主退役时调用，**页面切换不得调用**。
+    @MainActor
+    func stopHostEvents() async
+
+    /// 宿主级待处理交互，含用户从未打开过的会话。
+    @MainActor
+    func hostPendingInteractions() -> [HarnessInteractionStore.PendingInteraction]
+
     /// 主机或凭据退役时关闭本客户端唯一的 runtime。
     func shutdownForHostSwitch() async
 }
@@ -136,6 +161,12 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     /// 这条判断失效——状态机必须跨事件客户端存活。
     private var cachedSubmissionController: HarnessSubmissionController?
     private var cachedInteractionStore: HarnessInteractionStore?
+    /// 宿主级 `$events` 观察者。**整个宿主只有这一条**（见类型注释与 D5）。
+    private var cachedHostObserver: HarnessHostEventObserver?
+    /// 宿主级交互事件的出口。页面未打开时也要能到达 Store。
+    private var hostEventSink: (@MainActor (AgentEvent) -> Void)?
+    /// 宿主级 pending 集合变化时的通知出口。
+    private var hostChangeSink: (@MainActor () -> Void)?
 
     /// 普通输入的提交模式。实测取值域只有 queue|steer，普通发送用 queue。
     static let defaultPromptMode = "queue"
@@ -171,7 +202,9 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     /// 事件客户端。写路径复用本客户端持有的提交编排，不另建一条网络路径。
     ///
     /// opening snapshot 与后续增量都经由 runtime 的真实 `session/follow` 载体获取。
-    /// `$events`、应答与 RPC 同样复用这一个 runtime；页面断开只退订自己的 stream。
+    /// `$events` 由**宿主级**观察者独占（见 `startHostEvents`），页面只拿自己会话的
+    /// follow 观察引用——中继规定一条移动连接只能有一个 `$events` 生命周期，
+    /// 每页各开一条会被拒，页面退订还会关掉整条共享连接。
     @MainActor
     func makeEventClient(sessionID: SessionID) -> any SessionWebSocketClient {
         HarnessSessionWebSocketClient(
@@ -183,6 +216,59 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
             interactionStore: interactionStore(),
             recovery: HarnessRecoveryCoordinator()
         )
+    }
+
+    /// 宿主级交互事件的出口与 pending 变化通知。
+    ///
+    /// 由装配方（`AppServerRuntimeBundle`）接上，使"用户从未打开该会话"时收到的
+    /// 审批也能到达 Store 与 UI（契约 D5）。
+    @MainActor
+    func setHostInteractionSinks(
+        events: (@MainActor (AgentEvent) -> Void)?,
+        changed: (@MainActor () -> Void)?
+    ) {
+        hostEventSink = events
+        hostChangeSink = changed
+        let observer = hostEventObserver()
+        observer.onEvent = { [weak self] event in
+            self?.hostEventSink?(event)
+            self?.hostChangeSink?()
+        }
+        observer.onStatus = { _ in }
+        observer.onInteractionRejected = { [weak self] _, _, _ in
+            // 拒绝后卡片回到待应答：通知 UI 刷新，让用户能再操作一次。
+            self?.hostChangeSink?()
+        }
+    }
+
+    /// 开始宿主级 `$events` 观察。幂等，可在每次宿主激活时安全调用。
+    @MainActor
+    func startHostEvents() {
+        hostEventObserver().start()
+    }
+
+    /// 停止宿主级观察。只在宿主退役（切 host / 凭据失效 / 关闭）时调用。
+    @MainActor
+    func stopHostEvents() async {
+        await cachedHostObserver?.stop()
+    }
+
+    /// 当前宿主级 pending 交互（含用户从未打开过的会话）。
+    @MainActor
+    func hostPendingInteractions() -> [HarnessInteractionStore.PendingInteraction] {
+        interactionStore().pendingInteractions
+    }
+
+    @MainActor
+    private func hostEventObserver() -> HarnessHostEventObserver {
+        if let existing = cachedHostObserver { return existing }
+        let created = HarnessHostEventObserver(
+            runtime: runtime,
+            interactionStore: interactionStore(),
+            recovery: HarnessRecoveryCoordinator()
+        )
+        cachedHostObserver = created
+        return created
     }
 
     @MainActor
@@ -386,6 +472,9 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     }
 
     func shutdownForHostSwitch() async {
+        // 先退订宿主级 `$events`：中继在它退役时会关闭整条连接，
+        // 顺序反过来会留下一条"已关连接上还挂着订阅"的状态。
+        await stopHostEvents()
         await runtime.shutdown()
     }
 

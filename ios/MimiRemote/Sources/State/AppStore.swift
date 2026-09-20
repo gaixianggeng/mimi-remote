@@ -451,6 +451,15 @@ final class AppStore: ObservableObject {
         ))
     }
 
+    /// 当前宿主使用的原生 Harness 客户端；未注入原生通道时为 `nil`。
+    ///
+    /// 供 Store 接上宿主级 `$events` 的出口——那条通道不属于任何会话页面
+    /// （契约 D5：别的会话的审批可能在用户从未打开它时到达）。
+    func nativeHarnessClientForActiveHost() -> HarnessSessionClient? {
+        guard let endpoint = try? Self.validatedEndpoint(connectionEndpoint) else { return nil }
+        return runtimeBundle(endpoint: endpoint, token: token).harness
+    }
+
     func makeSessionWebSocketClient(for session: AgentSession) -> any SessionWebSocketClient {
         let bundle = runtimeBundle(
             endpoint: AgentAPIClient.normalizedEndpoint(connectionEndpoint),

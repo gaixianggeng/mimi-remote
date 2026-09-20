@@ -148,8 +148,11 @@ final class HarnessEventClientTests: XCTestCase {
         XCTAssertGreaterThan(client.journal?.generation ?? 0, 1, "代次不得写死为 1")
     }
 
-    /// H11：生产事件客户端必须通过同一个 runtime 真正打开 `$events` 与 follow，
-    /// 并持续消费 opening snapshot 后到达的 durable 事件。
+    /// H11：页面客户端必须通过共享 runtime 真正打开 follow，并持续消费
+    /// opening snapshot 后到达的 durable 事件。
+    ///
+    /// **它不开 `$events`**：那是宿主级通道（见 `HarnessHostEventObserverTests`）。
+    /// 页面各开一条会被中继拒绝，退订还会关闭整条共享连接。
     func testRuntimePathOpensRealFollowAndContinuouslyConsumesFrames() async throws {
         let stream = FakeHarnessStreamTransport()
         let runtime = makeRuntime(stream: stream)
@@ -171,14 +174,6 @@ final class HarnessEventClientTests: XCTestCase {
         client.onStatus = { statuses.append($0) }
 
         client.connect(sessionID: sessionID)
-        let eventsID = try await waitForOpenStream(
-            endpoint: HarnessWireEndpoint.events,
-            stream: stream
-        )
-        stream.push(carrierValue(
-            streamID: eventsID,
-            value: .object(["type": .string(HarnessWireFrame.ready)])
-        ))
         let followID = try await waitForOpenStream(
             endpoint: HarnessWireEndpoint.sessionFollow,
             stream: stream
@@ -215,15 +210,18 @@ final class HarnessEventClientTests: XCTestCase {
         }
 
         XCTAssertTrue(statuses.contains(.connected))
-        XCTAssertEqual(stream.connectCount, 1, "follow 与事件流必须共用一个 runtime 连接")
+        XCTAssertEqual(stream.connectCount, 1, "页面只开一条 follow，共用宿主 runtime 的连接")
         XCTAssertTrue(recorder.events.contains {
             guard case .messageCompleted(let message, _) = $0 else { return false }
             return message.clientMessageID == "cm-runtime"
         })
         client.disconnect()
         try await Task.sleep(for: .milliseconds(20))
+        // 页面断开只退订自己的 follow。用一个新 follow 验证共享连接仍然可用——
+        // 真实中继不允许在同一连接上重开 `$events`，拿它来证明"连接还活着"会
+        // 测到一条现实中不存在的路径。
         let reuseID = await runtime.nextStreamID()
-        try await runtime.openStream(streamID: reuseID, endpoint: HarnessWireEndpoint.events)
+        try await runtime.openStream(streamID: reuseID, endpoint: HarnessWireEndpoint.sessionFollow)
         XCTAssertEqual(stream.connectCount, 1, "页面断开只能退订自己的流，不得关闭共享 runtime")
         XCTAssertEqual(stream.closeCount, 0)
         await runtime.cancelStream(streamID: reuseID)
@@ -231,21 +229,13 @@ final class HarnessEventClientTests: XCTestCase {
 
     /// H11：waterfall 必须投影为现有 UI 事件，应答经同一 runtime 回传，且不携带 clientId。
     func testRuntimeInteractionProjectsAndRespondsThroughSameConnection() async throws {
-        let stream = FakeHarnessStreamTransport()
-        let runtime = makeRuntime(stream: stream)
-        let store = HarnessInteractionStore()
-        let client = HarnessSessionWebSocketClient(
-            endpoint: "http://127.0.0.1:8787",
-            token: "fixture",
-            sessionID: sessionID,
-            submission: HarnessSubmissionController(sendPrompt: { _, _, _ in }, sendCancel: { _ in }),
-            runtime: runtime,
-            interactionStore: store,
-            recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
-        )
+        // 交互链路跨两层：宿主观察者收瀑布与回执，页面客户端负责应答提交。
+        // 两者共享同一个 runtime 与 store——这正是"交互不依赖页面"的形状。
+        let (stream, client, store, observer) = try await makeInteractionStack()
         let recorder = EventRecorder()
         client.onEvent = { recorder.events.append($0) }
-        client.connect(sessionID: sessionID)
+        let hostEvents = EventRecorder()
+        observer.onEvent = { hostEvents.events.append($0) }
 
         let eventsID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
         stream.push(carrierValue(
@@ -274,7 +264,7 @@ final class HarnessEventClientTests: XCTestCase {
             ])
         ))
         await waitFor {
-            recorder.events.contains {
+            hostEvents.events.contains {
                 guard case .approvalRequest(let request, _) = $0 else { return false }
                 return request.id == "approval-runtime"
             }
@@ -306,11 +296,19 @@ final class HarnessEventClientTests: XCTestCase {
         ))
         await waitFor { store.interaction(eventID: "approval-runtime") == nil }
         XCTAssertNil(store.interaction(eventID: "approval-runtime"), "收到明确接受回执后才撤卡")
-        XCTAssertTrue(recorder.events.contains {
+        // 撤卡事件走宿主出口——交互属于宿主通道，页面客户端不产生它。
+        await waitFor {
+            hostEvents.events.contains {
+                if case .approvalResolved = $0 { return true }
+                return false
+            }
+        }
+        XCTAssertTrue(hostEvents.events.contains {
             if case .approvalResolved = $0 { return true }
             return false
-        })
+        }, "撤卡必须通知 UI")
         client.disconnect()
+        await observer.stop()
     }
 
     /// 上游拒绝时卡片必须回到待应答，而不是静默消失。
@@ -318,18 +316,9 @@ final class HarnessEventClientTests: XCTestCase {
     /// 这条路径原先**根本到不了**：中继的失败帧不带 streamId，移动端的载体解码器
     /// 判它无法归属后直接丢弃，卡片却已经被"发送成功"撤掉了。
     func testRuntimeRejectedResponseReopensCardInsteadOfDroppingIt() async throws {
-        let stream = FakeHarnessStreamTransport()
-        let runtime = makeRuntime(stream: stream)
-        let store = HarnessInteractionStore()
-        let client = HarnessSessionWebSocketClient(
-            endpoint: "http://127.0.0.1:8787", token: "fixture", sessionID: sessionID,
-            submission: HarnessSubmissionController(sendPrompt: { _, _, _ in }, sendCancel: { _ in }),
-            runtime: runtime, interactionStore: store,
-            recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
-        )
-        var failures: [String] = []
-        client.onApprovalDecisionFailure = { _, message in failures.append(message) }
-        client.connect(sessionID: sessionID)
+        let (stream, client, store, observer) = try await makeInteractionStack()
+        var rejections: [String] = []
+        observer.onInteractionRejected = { _, _, message in rejections.append(message) }
 
         let eventsID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
         stream.push(carrierValue(
@@ -375,27 +364,19 @@ final class HarnessEventClientTests: XCTestCase {
             )
         ))
 
-        await waitFor { failures.contains("目标会话不在授权目录内") }
-        XCTAssertTrue(failures.contains("目标会话不在授权目录内"), "拒绝原因必须如实回传")
+        await waitFor { rejections.contains("目标会话不在授权目录内") }
+        XCTAssertTrue(rejections.contains("目标会话不在授权目录内"), "拒绝原因必须如实回传")
         // 明确拒绝 = 没生效，允许用户重试。
         XCTAssertEqual(store.interaction(eventID: "approval-rejected-upstream")?.state, .pending)
         client.disconnect()
+        await observer.stop()
     }
 
     /// 冻结协议的选项只有 label；UI 投影与应答都必须沿用 label，不要求不存在的 option.id。
     func testRuntimeQuestionUsesLabelOnlyOptionsAndRespondsWithLabels() async throws {
-        let stream = FakeHarnessStreamTransport()
-        let runtime = makeRuntime(stream: stream)
-        let store = HarnessInteractionStore()
-        let client = HarnessSessionWebSocketClient(
-            endpoint: "http://127.0.0.1:8787", token: "fixture", sessionID: sessionID,
-            submission: HarnessSubmissionController(sendPrompt: { _, _, _ in }, sendCancel: { _ in }),
-            runtime: runtime, interactionStore: store,
-            recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
-        )
-        let recorder = EventRecorder()
-        client.onEvent = { recorder.events.append($0) }
-        client.connect(sessionID: sessionID)
+        let (stream, client, store, observer) = try await makeInteractionStack()
+        let hostEvents = EventRecorder()
+        observer.onEvent = { hostEvents.events.append($0) }
 
         let eventsID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
         stream.push(carrierValue(
@@ -429,7 +410,7 @@ final class HarnessEventClientTests: XCTestCase {
             ])
         ))
         await waitFor {
-            recorder.events.contains {
+            hostEvents.events.contains {
                 guard case .userInputRequest(let request, _) = $0 else { return false }
                 return request.id == "question-runtime"
                     && request.questions.first?.options.map(\.label) == ["快速", "稳健"]
@@ -450,23 +431,13 @@ final class HarnessEventClientTests: XCTestCase {
         await waitFor { stream.sentFrames.contains(expected) }
         XCTAssertTrue(stream.sentFrames.contains(expected))
         client.disconnect()
+        await observer.stop()
     }
 
     /// 交互应答的明确接受、明确拒绝、结果未知三态不能合并。
     /// 未知态不自动重发，但同代次可信 cancel 会撤下卡片。
     func testRuntimeInteractionDistinguishesExplicitRejectionFromResponseUnknown() async throws {
-        let stream = FakeHarnessStreamTransport()
-        let runtime = makeRuntime(stream: stream)
-        let store = HarnessInteractionStore()
-        let client = HarnessSessionWebSocketClient(
-            endpoint: "http://127.0.0.1:8787", token: "fixture", sessionID: sessionID,
-            submission: HarnessSubmissionController(sendPrompt: { _, _, _ in }, sendCancel: { _ in }),
-            runtime: runtime, interactionStore: store,
-            recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
-        )
-        let recorder = EventRecorder()
-        client.onEvent = { recorder.events.append($0) }
-        client.connect(sessionID: sessionID)
+        let (stream, client, store, observer) = try await makeInteractionStack()
 
         let eventsID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
         stream.push(carrierValue(streamID: eventsID, value: .object([
@@ -550,11 +521,8 @@ final class HarnessEventClientTests: XCTestCase {
         ])))
         await waitFor { store.interaction(eventID: "response-unknown") == nil }
         XCTAssertNil(store.interaction(eventID: "response-unknown"))
-        XCTAssertTrue(recorder.events.contains {
-            if case .approvalResolved = $0 { return true }
-            return false
-        }, "可信 cancel 只结算撤卡，不宣称哪一端回答获胜")
         client.disconnect()
+        await observer.stop()
     }
 
     func testRuntimeRecoveryUsesNewGenerationAndRejectsOldStreamFrames() async throws {
@@ -572,10 +540,6 @@ final class HarnessEventClientTests: XCTestCase {
         client.onEvent = { recorder.events.append($0) }
         client.connect(sessionID: sessionID)
 
-        let firstEventsID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
-        stream.push(carrierValue(streamID: firstEventsID, value: .object([
-            "type": .string(HarnessWireFrame.ready),
-        ])))
         let firstFollowID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.sessionFollow, stream: stream)
         stream.push(carrierValue(
             streamID: firstFollowID,
@@ -586,14 +550,6 @@ final class HarnessEventClientTests: XCTestCase {
 
         stream.releasePendingWaiters()
         await waitFor { stream.connectCount >= 2 }
-        let secondEventsID = try await waitForOpenStream(
-            endpoint: HarnessWireEndpoint.events,
-            stream: stream,
-            after: sentBeforeRecovery
-        )
-        stream.push(carrierValue(streamID: secondEventsID, value: .object([
-            "type": .string(HarnessWireFrame.ready),
-        ])))
         let secondFollowID = try await waitForOpenStream(
             endpoint: HarnessWireEndpoint.sessionFollow,
             stream: stream,
@@ -616,7 +572,6 @@ final class HarnessEventClientTests: XCTestCase {
         ))
         await waitFor { client.journal?.snapshotCursor == 22 }
 
-        XCTAssertNotEqual(firstEventsID, secondEventsID)
         XCTAssertNotEqual(firstFollowID, secondFollowID)
         XCTAssertFalse(recorder.events.contains {
             guard case .messageCompleted(let message, _) = $0 else { return false }
@@ -1164,6 +1119,40 @@ final class HarnessEventClientTests: XCTestCase {
                 stream: stream
             )
         )
+    }
+
+    /// 一套完整的交互链路：宿主观察者（收瀑布/回执）+ 页面客户端（提交应答）。
+    ///
+    /// 两者共享同一个 runtime 与 store。交互事件从宿主通道来，应答走页面的写路径——
+    /// 这正是生产里的分工，因此测试不该只建其中一个。
+    private func makeInteractionStack() async throws -> (
+        stream: FakeHarnessStreamTransport,
+        client: HarnessSessionWebSocketClient,
+        store: HarnessInteractionStore,
+        observer: HarnessHostEventObserver
+    ) {
+        let stream = FakeHarnessStreamTransport()
+        let runtime = makeRuntime(stream: stream)
+        let store = HarnessInteractionStore()
+        let observer = HarnessHostEventObserver(
+            runtime: runtime,
+            interactionStore: store,
+            recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
+        )
+        observer.start()
+        _ = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
+
+        let client = HarnessSessionWebSocketClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            sessionID: sessionID,
+            submission: HarnessSubmissionController(sendPrompt: { _, _, _ in }, sendCancel: { _ in }),
+            runtime: runtime,
+            interactionStore: store,
+            recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
+        )
+        client.connect(sessionID: sessionID)
+        return (stream, client, store, observer)
     }
 
     private func waitForOpenStream(

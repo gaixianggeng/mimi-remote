@@ -57,8 +57,11 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     private var observationGeneration: UInt64 = 0
     /// runtime 路径的一条消费任务。底层 socket reader 仍只有 `HarnessSessionRuntime` 那一条。
     private var observationTask: Task<Void, Never>?
+    /// 本页面唯一持有的订阅：自己会话的 `session/follow`。
+    ///
+    /// **没有 `eventsStreamID`。** `$events` 是宿主级通道，由 `HarnessHostEventObserver`
+    /// 独占；页面再开一条会被中继拒绝，退订还会关闭整条共享连接。
     private var followStreamID: String?
-    private var eventsStreamID: String?
     private var runtimeGeneration: UInt64?
 
     init(
@@ -163,6 +166,11 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         return true
     }
 
+    /// 释放本页面的观察。
+    ///
+    /// **只退订自己会话的 follow。** 页面的 pending 交互不属于页面（契约 D5）：
+    /// 登记在宿主级 store 里，离开页面不等于用户放弃了那次授权请求。
+    /// `$events` 同样不动——它归宿主，退订它会关闭整条共享连接。
     func disconnect() {
         // 使仍在等待 snapshot 的旧观察租约立即失效。
         observationGeneration &+= 1
@@ -170,14 +178,11 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         observationTask = nil
         let runtime = self.runtime
         let followStreamID = self.followStreamID
-        let eventsStreamID = self.eventsStreamID
         self.followStreamID = nil
-        self.eventsStreamID = nil
         runtimeGeneration = nil
-        if let runtime {
+        if let runtime, let followStreamID {
             Task {
-                if let followStreamID { await runtime.cancelStream(streamID: followStreamID) }
-                if let eventsStreamID { await runtime.cancelStream(streamID: eventsStreamID) }
+                await runtime.cancelStream(streamID: followStreamID)
             }
         }
         journal = nil
@@ -199,27 +204,15 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
 
         while isCurrentObservation(sessionID: sessionID, lease: lease), !Task.isCancelled {
             var openedFollowID: String?
-            var openedEventsID: String?
             do {
                 let generation = try await runtime.connect()
                 guard isCurrentObservation(sessionID: sessionID, lease: lease) else { return }
                 runtimeGeneration = generation
-                interactionStore?.dropStaleGeneration(generation)
 
-                let eventsID = await runtime.nextStreamID()
-                openedEventsID = eventsID
-                eventsStreamID = eventsID
-                try await runtime.openStream(
-                    streamID: eventsID,
-                    endpoint: HarnessWireEndpoint.events
-                )
-                try await waitForReady(
-                    streamID: eventsID,
-                    runtimeGeneration: generation,
-                    sessionID: sessionID,
-                    lease: lease
-                )
-
+                // **不在这里开 `$events`。** 它是宿主级通道，由 `HarnessSessionAPIClient`
+                // 的唯一观察者持有（见 `HarnessHostEventObserver`）。页面各开一条会被中继
+                // 拒绝（一条移动连接只绑定一个 `$events`），而页面退订会关闭整条共享连接
+                // 并波及其它会话的订阅。
                 let followID = await runtime.nextStreamID()
                 openedFollowID = followID
                 followStreamID = followID
@@ -248,22 +241,15 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
 
                 try await consumeRuntimeFrames(
                     followStreamID: followID,
-                    eventsStreamID: eventsID,
                     runtimeGeneration: generation,
                     sessionID: sessionID,
                     lease: lease
                 )
             } catch is CancellationError {
-                await closeRuntimeStreams(
-                    followStreamID: openedFollowID,
-                    eventsStreamID: openedEventsID
-                )
+                await closeFollowStream(openedFollowID)
                 return
             } catch {
-                await closeRuntimeStreams(
-                    followStreamID: openedFollowID,
-                    eventsStreamID: openedEventsID
-                )
+                await closeFollowStream(openedFollowID)
                 guard isCurrentObservation(sessionID: sessionID, lease: lease),
                       !Task.isCancelled else { return }
                 let transport = error as? HarnessTransportError ?? .closed
@@ -278,32 +264,6 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                     onStatus?(.failed(reason))
                     return
                 }
-            }
-        }
-    }
-
-    private func waitForReady(
-        streamID: String,
-        runtimeGeneration: UInt64,
-        sessionID: SessionID,
-        lease: UInt64
-    ) async throws {
-        while true {
-            let frame = try await nextRuntimeFrame(
-                streamID: streamID,
-                runtimeGeneration: runtimeGeneration,
-                sessionID: sessionID,
-                lease: lease
-            )
-            switch frame {
-            case .value(let value) where value.type == HarnessWireFrame.ready:
-                return
-            case .value(let value):
-                try processEventsValue(value, runtimeGeneration: runtimeGeneration)
-            case .carrierError(let remote):
-                throw HarnessTransportError.carrier(remote)
-            case .carrierEnd:
-                throw HarnessTransportError.closed
             }
         }
     }
@@ -337,30 +297,14 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     /// 轮询的是 runtime 的有界邮箱；WebSocket 读取仍由 runtime 唯一 reader 完成。
     private func consumeRuntimeFrames(
         followStreamID: String,
-        eventsStreamID: String,
         runtimeGeneration: UInt64,
         sessionID: SessionID,
         lease: UInt64
     ) async throws {
         guard let runtime else { throw HarnessTransportError.notConnected }
         while isCurrentObservation(sessionID: sessionID, lease: lease), !Task.isCancelled {
-            try await ensureNoDroppedFrames(
-                streamIDs: [followStreamID, eventsStreamID],
-                runtime: runtime
-            )
+            try await ensureNoDroppedFrames(streamIDs: [followStreamID], runtime: runtime)
             var consumed = false
-            while let carrier = await runtime.pollFrame(streamID: eventsStreamID) {
-                consumed = true
-                let frame = try Self.decodeCarrier(carrier)
-                switch frame {
-                case .value(let value):
-                    try processEventsValue(value, runtimeGeneration: runtimeGeneration)
-                case .carrierError(let remote):
-                    throw HarnessTransportError.carrier(remote)
-                case .carrierEnd:
-                    throw HarnessTransportError.closed
-                }
-            }
             while let carrier = await runtime.pollFrame(streamID: followStreamID) {
                 consumed = true
                 let frame = try Self.decodeCarrier(carrier)
@@ -443,213 +387,11 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         }
     }
 
-    private func processEventsValue(
-        _ value: HarnessStreamValue,
-        runtimeGeneration: UInt64
-    ) throws {
-        switch value.type {
-        case HarnessWireFrame.ready:
-            return
-        case HarnessWireFrame.waterfall:
-            let waterfall = try Self.decode(
-                HarnessWaterfallRequest.self,
-                from: value.raw,
-                label: "waterfall"
-            )
-            if let validation = HarnessInteractionAnswer.validate(waterfall: waterfall) {
-                throw HarnessTransportError.unsupportedInteraction(validation.localizedMessage)
-            }
-            guard let eventID = waterfall.eventId?.trimmedNonEmpty,
-                  let event = waterfall.event,
-                  let request = waterfall.request,
-                  let targetSessionID = waterfall.threadHint.trimmedNonEmpty else {
-                throw HarnessTransportError.malformedResponse("waterfall has no attributable session")
-            }
-            _ = interactionStore?.deliver(
-                eventID: eventID,
-                sessionID: targetSessionID,
-                event: event,
-                request: request,
-                generation: runtimeGeneration
-            )
-            guard targetSessionID == sessionID else { return }
-            if event == HarnessWireWaterfallEvent.approvalRequest {
-                onEvent?(approvalEvent(
-                    eventID: eventID,
-                    sessionID: targetSessionID,
-                    request: request,
-                    generation: runtimeGeneration
-                ))
-            } else {
-                onEvent?(questionEvent(
-                    eventID: eventID,
-                    sessionID: targetSessionID,
-                    request: request,
-                    generation: runtimeGeneration
-                ))
-            }
-        case HarnessWireFrame.cancel:
-            guard let eventID = value.raw["eventId"]?.stringValue?.trimmedNonEmpty else {
-                throw HarnessTransportError.malformedResponse("interaction cancel is missing eventId")
-            }
-            let existing = interactionStore?.interaction(eventID: eventID)
-            guard interactionStore?.cancelExternally(
-                eventID: eventID,
-                generation: runtimeGeneration
-            ) == true, existing?.sessionID == sessionID else { return }
-            let metadata = interactionMetadata(
-                eventID: eventID,
-                sessionID: sessionID,
-                generation: runtimeGeneration
-            )
-            onEvent?(existing?.isQuestion == true
-                ? .userInputResolved(metadata, skipped: false)
-                : .approvalResolved(metadata))
-        case HarnessWireFrame.responded:
-            applyRespondAck(value, runtimeGeneration: runtimeGeneration)
-        default:
-            // `$events` 还会携带目录提示等 emit；它们不属于会话时间线，也不能伪装成用户输入。
-            return
-        }
-    }
-
-    /// 应用一帧应答回执。**这是撤卡的唯一依据。**
-    ///
-    /// 中继在"上游已接受"或"明确拒绝"时才发这一帧，并带上 eventId。在此之前的
-    /// 一切（帧写出成功、socket 未报错）都只代表"提交中"，不能用来撤卡：
-    /// 上游随后仍可能拒绝，届时用户会看到一个已经消失的卡片，以为决定已生效。
-    private func applyRespondAck(_ value: HarnessStreamValue, runtimeGeneration: UInt64) {
-        guard let eventID = value.raw["eventId"]?.stringValue?.trimmedNonEmpty else { return }
-        // 迟到的旧代次回执不得结算新连接上的卡片。
-        guard self.runtimeGeneration == runtimeGeneration else { return }
-        guard let pending = interactionStore?.interaction(eventID: eventID) else { return }
-
-        if value.raw["accepted"]?.boolValue == true {
-            interactionStore?.resolve(eventID: eventID)
-            let metadata = interactionMetadata(
-                eventID: eventID,
-                sessionID: pending.sessionID,
-                generation: runtimeGeneration
-            )
-            // 归属仍按事件自己的会话判定，卡片可能属于当前未打开的会话。
-            guard pending.sessionID == sessionID else { return }
-            onEvent?(pending.isQuestion
-                ? .userInputResolved(metadata, skipped: false)
-                : .approvalResolved(metadata))
-            return
-        }
-
-        // 明确拒绝：放回待应答，允许用户改条件后重试。只有**非**临时故障才这样处理，
-        // 否则会把"可能已生效"的请求重新开放，诱发重复提交。
-        let message = Self.remoteErrorMessage(from: value.raw["error"])
-            ?? HarnessTransportError.business(
-                HarnessRemoteError(code: nil, message: nil, details: nil)
-            ).diagnosticSummary
-        interactionStore?.releaseAfterExplicitFailure(eventID: eventID)
-        publishInteractionFailure(
-            eventID: eventID,
-            kind: pending.isQuestion ? .question : .approval,
-            message: message
-        )
-    }
-
-    /// 从回执的 `error` 字段取可读文案。
-    private static func remoteErrorMessage(from raw: HarnessJSONValue?) -> String? {
-        guard let raw else { return nil }
-        if let message = raw["message"]?.stringValue?.trimmedNonEmpty {
-            return message
-        }
-        return raw["code"]?.stringValue?.trimmedNonEmpty
-    }
-
-    private func approvalEvent(
-        eventID: String,
-        sessionID: String,
-        request: HarnessWaterfallPayload,
-        generation: UInt64
-    ) -> AgentEvent {
-        .approvalRequest(
-            AgentApprovalRequest(
-                id: eventID,
-                title: request.toolName?.trimmedNonEmpty ?? L10n.text("ui.request_approval"),
-                body: request.reason?.trimmedNonEmpty,
-                kind: "harness_tool",
-                risk: "high",
-                availableDecisions: ["accept", "decline"]
-            ),
-            interactionMetadata(
-                eventID: eventID,
-                sessionID: sessionID,
-                generation: generation
-            )
-        )
-    }
-
-    private func questionEvent(
-        eventID: String,
-        sessionID: String,
-        request: HarnessWaterfallPayload,
-        generation: UInt64
-    ) -> AgentEvent {
-        let questions = (request.questions ?? []).compactMap { question -> AgentUserInputQuestion? in
-            guard let id = question.id?.trimmedNonEmpty,
-                  let text = question.question?.trimmedNonEmpty else { return nil }
-            return AgentUserInputQuestion(
-                id: id,
-                header: text,
-                question: text,
-                isOther: false,
-                isSecret: false,
-                options: (question.options ?? []).compactMap { option in
-                    option.label?.trimmedNonEmpty.map {
-                        AgentUserInputOption(label: $0, description: nil)
-                    }
-                }
-            )
-        }
-        let metadata = interactionMetadata(
-            eventID: eventID,
-            sessionID: sessionID,
-            generation: generation
-        )
-        return .userInputRequest(
-            AgentUserInputRequest(
-                id: eventID,
-                threadID: sessionID,
-                turnID: nil,
-                itemID: eventID,
-                questions: questions
-            ),
-            metadata
-        )
-    }
-
-    private func interactionMetadata(
-        eventID: String,
-        sessionID: String,
-        generation: UInt64
-    ) -> AgentEventMetadata {
-        AgentEventMetadata(
-            seq: nil,
-            sessionID: sessionID,
-            turnID: nil,
-            itemID: eventID,
-            messageID: "h-interaction-\(eventID)",
-            clientMessageID: nil,
-            revision: Int(truncatingIfNeeded: generation),
-            createdAt: nil
-        )
-    }
-
-    private func closeRuntimeStreams(
-        followStreamID: String?,
-        eventsStreamID: String?
-    ) async {
-        guard let runtime else { return }
-        if let followStreamID { await runtime.cancelStream(streamID: followStreamID) }
-        if let eventsStreamID { await runtime.cancelStream(streamID: eventsStreamID) }
-        if self.followStreamID == followStreamID { self.followStreamID = nil }
-        if self.eventsStreamID == eventsStreamID { self.eventsStreamID = nil }
+    /// 退订本页面的 follow。`$events` 不在这里——它归宿主。
+    private func closeFollowStream(_ streamID: String?) async {
+        guard let runtime, let streamID else { return }
+        await runtime.cancelStream(streamID: streamID)
+        if self.followStreamID == streamID { self.followStreamID = nil }
     }
 
     private func isCurrentObservation(sessionID: SessionID, lease: UInt64) -> Bool {
