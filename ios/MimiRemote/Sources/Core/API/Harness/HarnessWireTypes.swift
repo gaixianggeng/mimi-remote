@@ -45,6 +45,12 @@ enum HarnessWireFrame {
     static let cancel = "cancel"
     static let assistantStream = "assistant-stream"
     static let durableEvent = "event"
+    /// agentd 中继的应答回执。
+    ///
+    /// 它是中继的扩展（不是上游 remote.mux 的形状），承载
+    /// `{eventId, accepted, responded, error?}`。**撤卡只认这一帧**：
+    /// 帧写出成功只代表中继收到了应答，不代表 Harness 接受了它。
+    static let responded = "responded"
 }
 
 /// 载体层判别式：服务端**每帧**都在顶层带 type，取值只有这三个。

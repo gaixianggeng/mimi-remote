@@ -505,10 +505,61 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
             onEvent?(existing?.isQuestion == true
                 ? .userInputResolved(metadata, skipped: false)
                 : .approvalResolved(metadata))
+        case HarnessWireFrame.responded:
+            applyRespondAck(value, runtimeGeneration: runtimeGeneration)
         default:
             // `$events` 还会携带目录提示等 emit；它们不属于会话时间线，也不能伪装成用户输入。
             return
         }
+    }
+
+    /// 应用一帧应答回执。**这是撤卡的唯一依据。**
+    ///
+    /// 中继在"上游已接受"或"明确拒绝"时才发这一帧，并带上 eventId。在此之前的
+    /// 一切（帧写出成功、socket 未报错）都只代表"提交中"，不能用来撤卡：
+    /// 上游随后仍可能拒绝，届时用户会看到一个已经消失的卡片，以为决定已生效。
+    private func applyRespondAck(_ value: HarnessStreamValue, runtimeGeneration: UInt64) {
+        guard let eventID = value.raw["eventId"]?.stringValue?.trimmedNonEmpty else { return }
+        // 迟到的旧代次回执不得结算新连接上的卡片。
+        guard self.runtimeGeneration == runtimeGeneration else { return }
+        guard let pending = interactionStore?.interaction(eventID: eventID) else { return }
+
+        if value.raw["accepted"]?.boolValue == true {
+            interactionStore?.resolve(eventID: eventID)
+            let metadata = interactionMetadata(
+                eventID: eventID,
+                sessionID: pending.sessionID,
+                generation: runtimeGeneration
+            )
+            // 归属仍按事件自己的会话判定，卡片可能属于当前未打开的会话。
+            guard pending.sessionID == sessionID else { return }
+            onEvent?(pending.isQuestion
+                ? .userInputResolved(metadata, skipped: false)
+                : .approvalResolved(metadata))
+            return
+        }
+
+        // 明确拒绝：放回待应答，允许用户改条件后重试。只有**非**临时故障才这样处理，
+        // 否则会把"可能已生效"的请求重新开放，诱发重复提交。
+        let message = Self.remoteErrorMessage(from: value.raw["error"])
+            ?? HarnessTransportError.business(
+                HarnessRemoteError(code: nil, message: nil, details: nil)
+            ).diagnosticSummary
+        interactionStore?.releaseAfterExplicitFailure(eventID: eventID)
+        publishInteractionFailure(
+            eventID: eventID,
+            kind: pending.isQuestion ? .question : .approval,
+            message: message
+        )
+    }
+
+    /// 从回执的 `error` 字段取可读文案。
+    private static func remoteErrorMessage(from raw: HarnessJSONValue?) -> String? {
+        guard let raw else { return nil }
+        if let message = raw["message"]?.stringValue?.trimmedNonEmpty {
+            return message
+        }
+        return raw["code"]?.stringValue?.trimmedNonEmpty
     }
 
     private func approvalEvent(
@@ -942,6 +993,10 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                     outcome: outcome,
                     expectedGeneration: generation
                 )
+                // **写出成功 ≠ 上游已接受。** 帧写进 socket 只说明中继收到了它；
+                // 中继完全可能在这之后拒绝（越权、形状非法、无 clientId）。
+                // 因此这里停在 `.submitting`，卡片继续显示"提交中"，
+                // 由 `applyRespondAck` 收到同 eventId 的回执才撤卡。
                 guard self.runtimeGeneration == generation else {
                     interactionStore.markResponseUnknown(
                         eventID: eventID,
@@ -949,17 +1004,6 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                     )
                     return
                 }
-                let pending = interactionStore.interaction(eventID: eventID)
-                interactionStore.resolve(eventID: eventID)
-                guard pending?.sessionID == self.sessionID else { return }
-                let metadata = self.interactionMetadata(
-                    eventID: eventID,
-                    sessionID: self.sessionID,
-                    generation: generation
-                )
-                self.onEvent?(kind == .approval
-                    ? .approvalResolved(metadata)
-                    : .userInputResolved(metadata, skipped: false))
             } catch {
                 let message = Self.describe(error)
                 if let transport = error as? HarnessTransportError,

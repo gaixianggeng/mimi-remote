@@ -50,6 +50,13 @@ var harnessNativeWSEndpoints = map[string]struct{}{
 // 契约把它列为会话方法，因此 harnessclient 里没有为它单独定义常量。
 const harnessNativeEndpointSessionControl = "session/control"
 
+// harnessNativeFrameResponded 是中继的应答回执帧的内层判别值。
+//
+// 放在 `item` 载体里下发（移动端只解 item/error/end 三种载体帧），字段为
+// `{eventId, accepted, responded, error?}`。它是中继的扩展，不是上游 remote.mux
+// 的形状——与 respond 请求帧本身同属一层约定。
+const harnessNativeFrameResponded = "responded"
+
 // harnessNativeWSClientFrame 是移动端发来的帧。
 //
 // open / cancel 与上游同形；respond 是中继的扩展，承载 $events/result 的语义。
@@ -99,6 +106,12 @@ type harnessNativeStreamConn struct {
 	// clientID 是上游 $events 的 clientId。它只留在中继内部，不下发移动端：
 	// 它是关联值不是凭据，但它决定应答被谁接受，没有理由让外部看见。
 	clientID string
+	// eventsStreamID 是当前 $events 订阅的 streamId。
+	//
+	// 应答确认帧必须带上它：移动端的载体解码器要求帧有非空 streamId，
+	// 否则整帧被判为"无法归属"而丢弃（`HarnessCarrierDecoder.decode`）。
+	// 不带 streamId 的成功回执等于没有回执。
+	eventsStreamID string
 	// 每条移动连接只绑定一个 $events 生命周期；事件流退役时关闭整条连接。
 	eventsOpened bool
 
@@ -315,6 +328,8 @@ func (c *harnessNativeStreamConn) handleOpen(ctx context.Context, frame harnessN
 	c.streams[streamID] = stream
 	if endpoint == harnessclient.EndpointEvents {
 		c.eventsOpened = true
+		// 应答确认帧要带上它，否则移动端无法归属。
+		c.eventsStreamID = streamID
 	}
 	// wg.Add 必须与登记在同一把锁里完成：否则 shutdown 的 wg.Wait 可能在 Add
 	// 之前返回，留下一个不会被等待的 relay 协程。
@@ -596,6 +611,7 @@ func (c *harnessNativeStreamConn) handleCancel(frame harnessNativeWSClientFrame)
 		delete(c.streams, streamID)
 		if stream.endpoint == harnessclient.EndpointEvents {
 			c.clientID = ""
+			c.eventsStreamID = ""
 		}
 	}
 	c.mu.Unlock()
@@ -615,24 +631,29 @@ func (c *harnessNativeStreamConn) handleCancel(frame harnessNativeWSClientFrame)
 }
 
 // handleRespond 处理一次人机应答回传。
+//
+// 每一次结论都必须带 `eventId` 回传移动端。理由不是"礼貌"，而是移动端**无法**从
+// 别处推断结果：`send` 返回只说明帧写进了 socket，中继完全可能在这之后拒绝
+// （越权、形状非法、无 clientId）。没有可关联的回执时，手机只能把"写出成功"
+// 当成"Harness 已接受"，于是上游随后拒绝时卡片已经消失、用户以为已生效。
 func (c *harnessNativeStreamConn) handleRespond(ctx context.Context, frame harnessNativeWSClientFrame) {
 	eventID := strings.TrimSpace(frame.EventID)
 	pending, result, err := c.registry.claim(eventID, c.generation)
 	if err != nil {
-		c.writeStreamError("", harnessNativeRemoteErrorFrom(err))
+		c.writeRespondError(eventID, harnessNativeRemoteErrorFrom(err))
 		return
 	}
 	if result == harnessNativeClaimSettled {
 		// 契约：迟到应答是空操作而非错误。不转发（转发只会拿到上游
-		// lookup-not-found），也不谎报成功。
-		c.writeStreamError("", harnessNativeWSError("harness/interaction-settled", "该交互已终结，应答是空操作"))
+		// lookup-not-found），也不谎报成功。移动端据此把该卡结算掉。
+		c.writeRespondError(eventID, harnessNativeWSError("harness/interaction-settled", "该交互已终结，应答是空操作"))
 		return
 	}
 
 	outcome, err := harnessNativeValidateOutcome(pending.Event, frame.Outcome)
 	if err != nil {
 		c.registry.release(eventID)
-		c.writeStreamError("", harnessNativeRemoteErrorFrom(err))
+		c.writeRespondError(eventID, harnessNativeRemoteErrorFrom(err))
 		return
 	}
 
@@ -642,14 +663,14 @@ func (c *harnessNativeStreamConn) handleRespond(ctx context.Context, frame harne
 	if clientID == "" {
 		// 还没收到 ready，就没有可用的 clientId。不能猜一个。
 		c.registry.release(eventID)
-		c.writeStreamError("", harnessNativeWSError("gateway/service-unavailable", "尚未建立事件代次，请稍后重试"))
+		c.writeRespondError(eventID, harnessNativeWSError("gateway/service-unavailable", "尚未建立事件代次，请稍后重试"))
 		return
 	}
 
 	client, err := c.router.harnessNativeClientFor(ctx)
 	if err != nil {
 		c.registry.release(eventID)
-		c.writeStreamError("", harnessNativeRemoteErrorFrom(err))
+		c.writeRespondError(eventID, harnessNativeRemoteErrorFrom(err))
 		return
 	}
 	if err := c.router.harnessNativeAuthorizeSession(ctx, client, pending.SessionID, nil); err != nil {
@@ -659,11 +680,11 @@ func (c *harnessNativeStreamConn) handleRespond(ctx context.Context, frame harne
 		if errors.As(err, &policyErr) && policyErr.status == http.StatusForbidden {
 			c.registry.forgetSession(pending.SessionID)
 		}
-		c.writeStreamError("", harnessNativeRemoteErrorFrom(err))
+		c.writeRespondError(eventID, harnessNativeRemoteErrorFrom(err))
 		return
 	}
 	if err := client.RespondOutcome(ctx, clientID, eventID, json.RawMessage(mustMarshalRaw(outcome))); err != nil {
-		c.writeStreamError("", harnessNativeRemoteErrorFrom(err))
+		c.writeRespondError(eventID, harnessNativeRemoteErrorFrom(err))
 		var remoteErr *harnessclient.RemoteError
 		if errors.As(err, &remoteErr) {
 			// 明确的业务失败才可在当前连接重试。
@@ -677,6 +698,65 @@ func (c *harnessNativeStreamConn) handleRespond(ctx context.Context, frame harne
 	}
 	// 只有上游接受了才终结。服务器收到应答 != Harness 已接受。
 	c.registry.settle(eventID)
+	// 明确接受才回执。移动端收到它才撤卡；在此之前卡片停在"提交中"。
+	c.writeRespondAccepted(eventID)
+}
+
+// writeRespondAccepted 回传一次被上游接受的应答。
+//
+// 这是「发送成功 ≠ 业务成功」在协议上的落点：帧里必须带 `eventId` 供移动端关联
+// 到具体卡片，并带 `$events` 的 streamId 让载体解码器能归属它。
+func (c *harnessNativeStreamConn) writeRespondAccepted(eventID string) {
+	if eventID == "" {
+		return
+	}
+	c.mu.Lock()
+	streamID := c.eventsStreamID
+	c.mu.Unlock()
+	if streamID == "" {
+		// 没有 $events 订阅就没有可归属的通道。不回执而不是回一帧无归属的帧——
+		// 后者会被移动端当作无法归属而丢弃，等于假装回了。
+		return
+	}
+	c.writeRespondFrame(streamID, map[string]any{
+		"eventId":   eventID,
+		"accepted":  true,
+		"responded": true,
+	})
+}
+
+// writeRespondError 回传一次应答失败，并带上 eventId 供移动端撤下/保留对应卡片。
+//
+// 不带 eventId 的错误对移动端是**不可归属**的：它只知道"有事发生"，无法判断
+// 是哪张卡，于是既不能撤卡也不能放回重试。
+func (c *harnessNativeStreamConn) writeRespondError(eventID string, remoteErr *harnessclient.RemoteError) {
+	c.mu.Lock()
+	streamID := c.eventsStreamID
+	c.mu.Unlock()
+	if streamID == "" || eventID == "" {
+		// 没有 $events 订阅时退回既有形状：至少把失败如实发出去，不静默吞掉。
+		c.writeStreamError("", remoteErr)
+		return
+	}
+	c.writeRespondFrame(streamID, map[string]any{
+		"eventId":   eventID,
+		"accepted":  false,
+		"responded": true,
+		"error":     remoteErr,
+	})
+}
+
+// writeRespondFrame 写一帧应答回执。
+//
+// 走 `item` 载体而不是新的顶层 type：移动端只解 item/error/end 三种载体帧，
+// 复用 item 让回执与其它流帧共用同一条解码路径，不必为它新增一套判别。
+func (c *harnessNativeStreamConn) writeRespondFrame(streamID string, payload map[string]any) {
+	payload["type"] = harnessNativeFrameResponded
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	c.writeItem(streamID, raw)
 }
 
 // finishStream 在一条订阅结束时把它从表里摘掉并释放上游。
@@ -693,6 +773,7 @@ func (c *harnessNativeStreamConn) finishStream(stream *harnessNativeWSStream) {
 		retired = true
 		if stream.endpoint == harnessclient.EndpointEvents {
 			c.clientID = ""
+			c.eventsStreamID = ""
 		}
 	}
 	c.mu.Unlock()

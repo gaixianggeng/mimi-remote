@@ -49,6 +49,29 @@ func h03Approval(sessionID, eventID string) map[string]any {
 	}
 }
 
+// h03RespondAck 断言一帧是某个 eventId 的应答回执，并返回它。
+//
+// 回执必须带 eventId：移动端靠它把结论关联到具体卡片。没有它，手机只能把
+// "帧写出成功"当成"上游已接受"，而上游随后可能拒绝。
+func h03RespondAck(t *testing.T, frame map[string]any, eventID string) map[string]any {
+	t.Helper()
+	if frame["type"] != harnessclient.CarrierItem {
+		t.Fatalf("respond ack must ride the item carrier: %v", frame)
+	}
+	value := h03Value(t, frame)
+	if value["type"] != "responded" {
+		t.Fatalf("expected responded frame, got %v", value)
+	}
+	if value["eventId"] != eventID {
+		t.Fatalf("respond ack carried eventId %v, want %v", value["eventId"], eventID)
+	}
+	if frame["streamId"] == "" || frame["streamId"] == nil {
+		// 无 streamId 的帧会被移动端判为"无法归属"而丢弃，等于没有回执。
+		t.Fatalf("respond ack must be attributable: %v", frame)
+	}
+	return value
+}
+
 func h03AssertTransportClosed(t *testing.T, conn *websocket.Conn) {
 	t.Helper()
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -179,11 +202,10 @@ func TestHarnessNativeH03FollowUnsubscribeKeepsPendingAnswer(t *testing.T) {
 	sendHarnessNativeFrame(t, conn, map[string]any{
 		"type": "respond", "eventId": "event-a", "outcome": map[string]any{"kind": "result", "value": "rejected"},
 	})
-	// readClientFrames is serial: this response is a deterministic post-respond barrier.
-	h03Open(t, conn, "barrier", "h03/not-allowed", "")
-	frame := readHarnessNativeFrame(t, conn)
-	if frame["streamId"] != "barrier" || frame["type"] != harnessclient.CarrierError {
-		t.Fatalf("answer failed after follow unsubscribe: %v", frame)
+	// 应答成功必须有可关联的回执：卡片撤下要等它，而不是等帧写进 socket。
+	ack := h03RespondAck(t, readHarnessNativeFrame(t, conn), "event-a")
+	if ack["accepted"] != true {
+		t.Fatalf("accepted respond must be acknowledged as accepted: %v", ack)
 	}
 	count := 0
 	for _, method := range stub.recordedRPCs() {
@@ -299,13 +321,11 @@ func TestHarnessNativeH03RevokedInteractionDoesNotReachUpstream(t *testing.T) {
 	sendHarnessNativeFrame(t, conn, map[string]any{
 		"type": "respond", "eventId": "event-a", "outcome": map[string]any{"kind": "result", "value": "allowed-once"},
 	})
-	h03Open(t, conn, "barrier", "h03/not-allowed", "")
-	frame := readHarnessNativeFrame(t, conn)
-	if frame["type"] != harnessclient.CarrierError || frame["streamId"] == "barrier" {
-		t.Fatalf("revoked answer was not rejected: %v", frame)
-	}
-	if frame = readHarnessNativeFrame(t, conn); frame["streamId"] != "barrier" {
-		t.Fatalf("missing post-answer barrier: %v", frame)
+	// 撤权后的拒绝必须带 eventId 回传：手机靠它知道是哪张卡被拒，
+	// 才能撤卡或放回重试，而不是把失败挂在一个无关的帧上。
+	ack := h03RespondAck(t, readHarnessNativeFrame(t, conn), "event-a")
+	if ack["accepted"] != false {
+		t.Fatalf("revoked answer must not be acknowledged as accepted: %v", ack)
 	}
 	for _, method := range stub.recordedRPCs() {
 		if method == "$events/result" {

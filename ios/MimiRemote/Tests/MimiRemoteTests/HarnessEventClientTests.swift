@@ -291,12 +291,94 @@ final class HarnessEventClientTests: XCTestCase {
                 outcome: .result(.string(HarnessWireApprovalDecision.allowedOnce))
             ))
         }
+        // **写出成功不撤卡。** 帧进了 socket 只说明中继收到了它，上游随后仍可能拒绝；
+        // 此时卡片必须停在"提交中"，而不是先消失再让用户以为决定已生效。
+        XCTAssertNotNil(store.interaction(eventID: "approval-runtime"), "写出成功期间卡片必须还在")
+        XCTAssertFalse(recorder.events.contains {
+            if case .approvalResolved = $0 { return true }
+            return false
+        })
+
+        // 只有中继的关联回执才撤卡。
+        stream.push(carrierValue(
+            streamID: eventsID,
+            value: respondAckValue(eventID: "approval-runtime", accepted: true)
+        ))
         await waitFor { store.interaction(eventID: "approval-runtime") == nil }
-        XCTAssertNil(store.interaction(eventID: "approval-runtime"), "明确成功后必须撤卡")
+        XCTAssertNil(store.interaction(eventID: "approval-runtime"), "收到明确接受回执后才撤卡")
         XCTAssertTrue(recorder.events.contains {
             if case .approvalResolved = $0 { return true }
             return false
         })
+        client.disconnect()
+    }
+
+    /// 上游拒绝时卡片必须回到待应答，而不是静默消失。
+    ///
+    /// 这条路径原先**根本到不了**：中继的失败帧不带 streamId，移动端的载体解码器
+    /// 判它无法归属后直接丢弃，卡片却已经被"发送成功"撤掉了。
+    func testRuntimeRejectedResponseReopensCardInsteadOfDroppingIt() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let runtime = makeRuntime(stream: stream)
+        let store = HarnessInteractionStore()
+        let client = HarnessSessionWebSocketClient(
+            endpoint: "http://127.0.0.1:8787", token: "fixture", sessionID: sessionID,
+            submission: HarnessSubmissionController(sendPrompt: { _, _, _ in }, sendCancel: { _ in }),
+            runtime: runtime, interactionStore: store,
+            recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
+        )
+        var failures: [String] = []
+        client.onApprovalDecisionFailure = { _, message in failures.append(message) }
+        client.connect(sessionID: sessionID)
+
+        let eventsID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
+        stream.push(carrierValue(
+            streamID: eventsID,
+            value: .object(["type": .string(HarnessWireFrame.ready)])
+        ))
+        let followID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.sessionFollow, stream: stream)
+        stream.push(carrierValue(
+            streamID: followID,
+            value: snapshotValue(sessionID: sessionID, cursor: 11)
+        ))
+        await waitFor { client.journal?.hasOpenedSnapshot == true }
+
+        stream.push(carrierValue(
+            streamID: eventsID,
+            value: .object([
+                "type": .string(HarnessWireFrame.waterfall),
+                "eventId": .string("approval-rejected-upstream"),
+                "event": .string(HarnessWireWaterfallEvent.approvalRequest),
+                "agentId": .string(sessionID),
+                "request": .object([
+                    "toolName": .string("shell"),
+                    "callId": .string("call-rejected"),
+                ]),
+            ])
+        ))
+        await waitFor { store.interaction(eventID: "approval-rejected-upstream") != nil }
+
+        XCTAssertTrue(client.sendApprovalDecision(
+            approvalID: "approval-rejected-upstream",
+            decision: "accept",
+            message: nil
+        ))
+        stream.push(carrierValue(
+            streamID: eventsID,
+            value: respondAckValue(
+                eventID: "approval-rejected-upstream",
+                accepted: false,
+                error: .object([
+                    "code": .string("harness/rejected"),
+                    "message": .string("目标会话不在授权目录内"),
+                ])
+            )
+        ))
+
+        await waitFor { failures.contains("目标会话不在授权目录内") }
+        XCTAssertTrue(failures.contains("目标会话不在授权目录内"), "拒绝原因必须如实回传")
+        // 明确拒绝 = 没生效，允许用户重试。
+        XCTAssertEqual(store.interaction(eventID: "approval-rejected-upstream")?.state, .pending)
         client.disconnect()
     }
 
@@ -409,11 +491,29 @@ final class HarnessEventClientTests: XCTestCase {
 
         pushApproval("explicit-reject")
         await waitFor { store.interaction(eventID: "explicit-reject") != nil }
-        stream.sendError = .business(HarnessRemoteError(
-            code: "approval/rejected", message: "上游明确拒绝", details: nil
-        ))
+        // 真实链路是"帧写出成功、之后才拿到上游结论"。让 send 直接抛业务结果
+        // 会把最关键的那一段跳过去，测的是一条现实中不存在的路径。
         XCTAssertTrue(client.sendApprovalDecision(
             approvalID: "explicit-reject", decision: "accept", message: nil
+        ))
+        await waitFor {
+            stream.sentFrames.contains(.respond(
+                eventID: "explicit-reject",
+                outcome: .result(.string(HarnessWireApprovalDecision.allowedOnce))
+            ))
+        }
+        // 提交中：还没拿到结论，卡片不撤也不放回。
+        XCTAssertEqual(store.interaction(eventID: "explicit-reject")?.state, .submitting)
+        stream.push(carrierValue(
+            streamID: eventsID,
+            value: respondAckValue(
+                eventID: "explicit-reject",
+                accepted: false,
+                error: .object([
+                    "code": .string("approval/rejected"),
+                    "message": .string("上游明确拒绝"),
+                ])
+            )
         ))
         await waitFor { store.interaction(eventID: "explicit-reject")?.state == .pending }
         XCTAssertEqual(store.interaction(eventID: "explicit-reject")?.state, .pending)
@@ -1091,6 +1191,24 @@ final class HarnessEventClientTests: XCTestCase {
             value: value,
             error: nil
         )
+    }
+
+    /// 中继的应答回执帧（`{eventId, accepted, responded, error?}`）。
+    ///
+    /// 撤卡只认它：帧写出成功只代表中继收到了应答，不代表 Harness 接受了它。
+    private func respondAckValue(
+        eventID: String,
+        accepted: Bool,
+        error: HarnessJSONValue? = nil
+    ) -> HarnessJSONValue {
+        var object: [String: HarnessJSONValue] = [
+            "type": .string(HarnessWireFrame.responded),
+            "eventId": .string(eventID),
+            "accepted": .bool(accepted),
+            "responded": .bool(true),
+        ]
+        if let error { object["error"] = error }
+        return .object(object)
     }
 
     private func snapshotValue(sessionID: String, cursor: Int) -> HarnessJSONValue {
