@@ -14,6 +14,15 @@ func moduleTestConfig(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.json")
 	raw := []byte(`{"listen":"100.64.0.2:8787","auth":{"token":"module-test-only"},"app_server":{"transport":"local"},"codex":{"bin":"/missing/module-test-codex","future":{"keep":true}},"claude":{"enabled":false},"network":{"allow_lan":false,"future":17},"future_root":["keep"]}`)
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["projects"] = []config.ProjectConfig{{ID: "module-test", Name: "Module test", Path: t.TempDir()}}
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, raw, 0600); err != nil {
 		t.Fatal(err)
 	}

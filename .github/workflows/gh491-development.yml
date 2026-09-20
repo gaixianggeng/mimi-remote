@@ -3,83 +3,28 @@ name: GH491 implementation checks
 on:
   push:
     branches: [codex/gh-491-module-management-impl]
-    paths:
-      - .github/workflows/gh491-development.yml
-      - .github/gh491-delta-*.part
+    paths: [.github/workflows/gh491-development.yml]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  implementation:
-    if: github.repository == 'gaixianggeng/mimi-remote' && github.ref == 'refs/heads/codex/gh-491-module-management-impl'
+  regression:
+    if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: macos-26
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - name: Reconstruct reviewed source delta
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import hashlib, json, lzma
-          from pathlib import Path
-          packed = b''.join(Path(f'.github/gh491-delta-{i}.part').read_bytes() for i in range(4))
-          assert hashlib.sha256(packed).hexdigest() == '6ee3ec2336e196d292b5c5f8c5e01183eaa63c51e055d4be450ae954d867d9d0'
-          changes = json.loads(lzma.decompress(packed))
-          outputs = []
-          for change in changes:
-              path = Path(change['p'])
-              assert not path.is_absolute() and '..' not in path.parts
-              assert path.parts[0] in {'cmd', 'internal', 'macos', 'docs'}
-              original = path.read_bytes() if path.exists() else None
-              digest = hashlib.sha256(original).hexdigest() if original is not None else None
-              assert digest == change['old'], f'Original changed: {path}'
-              if change['new'] is None:
-                  result = None
-              elif original is None:
-                  result = change['add'].encode()
-              else:
-                  lines = original.decode().splitlines(keepends=True)
-                  for start, end, inserted in reversed(change['ops']):
-                      lines[start:end] = [inserted]
-                  result = ''.join(lines).encode()
-              digest = hashlib.sha256(result).hexdigest() if result is not None else None
-              assert digest == change['new'], f'Reconstruction mismatch: {path}'
-              outputs.append((path, result))
-          for path, result in outputs:
-              if result is None:
-                  path.unlink()
-              else:
-                  path.parent.mkdir(parents=True, exist_ok=True)
-                  path.write_bytes(result)
-          print(f'Validated and applied {len(outputs)} source files.')
-          PY
-          git diff --check
-          bash ./scripts/check-source-size.sh
-      - name: Publish implementation to this branch only
-        id: publish
-        shell: bash
-        run: |
-          set -euo pipefail
-          branch=codex/gh-491-module-management-impl
-          current=$(git ls-remote origin "refs/heads/$branch" | cut -f1)
-          test "$current" = "$GITHUB_SHA"
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A -- cmd internal macos docs/implementation/gh-491-module-controls.md
-          git commit -m 'feat(mac): implement agent and connection module controls (Refs #491)'
-          git push origin "HEAD:refs/heads/$branch"
-          echo "Implementation commit: $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: go.mod
           cache: true
-      - name: Targeted Go regression checks
-        shell: bash
-        run: |
-          go test -count=1 -timeout=240s ./internal/networkaccess ./internal/config ./internal/setup ./internal/httpapi ./cmd/agentd -run 'Test(PolicyIndependentIngress|ListenerClosesDeniedConnections|Module|NetworkModules|CodexDisableWithoutBinary|CodexRestoreRejects|DisabledCodex|AllAgentsOff)'
+      - name: Affected Go package regression
+        run: go test -count=1 -timeout=240s ./internal/networkaccess ./internal/config ./internal/setup ./internal/doctor ./internal/httpapi ./cmd/agentd
       - name: Type-check Mac application and tests
-        if: always() && steps.publish.outcome == 'success'
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
