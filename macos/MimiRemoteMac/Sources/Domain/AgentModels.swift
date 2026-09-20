@@ -80,18 +80,6 @@ struct PairingInfo: Codable, Equatable, Sendable {
     }
 }
 
-struct NetworkConfigurationResult: Codable, Equatable, Sendable {
-    let lanEnabled: Bool
-    let changed: Bool
-    let restartRequired: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case lanEnabled = "lan_enabled"
-        case changed
-        case restartRequired = "restart_required"
-    }
-}
-
 struct TailcatStatus: Codable, Equatable, Sendable {
     let enabled: Bool
     let running: Bool
@@ -116,6 +104,19 @@ enum ClaudeActivationPreference: String, Codable, Equatable, Sendable {
     case disabled
 }
 
+struct ClaudeModuleState: Codable, Equatable, Sendable {
+    let enabled: Bool?
+    let activation: ClaudeActivationPreference?
+    let claudeBin: String?
+    let environmentPresent: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, activation
+        case claudeBin = "claude_bin"
+        case environmentPresent = "environment_present"
+    }
+}
+
 struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
     let enabled: Bool
     let available: Bool
@@ -126,6 +127,34 @@ struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
     let restartRequired: Bool
     let reason: String
     let message: String
+    let previous: ClaudeModuleState?
+    let applied: ClaudeModuleState?
+
+    init(
+        enabled: Bool,
+        available: Bool,
+        preference: ClaudeActivationPreference,
+        previousEnabled: Bool,
+        previousPreference: ClaudeActivationPreference,
+        changed: Bool,
+        restartRequired: Bool,
+        reason: String,
+        message: String,
+        previous: ClaudeModuleState? = nil,
+        applied: ClaudeModuleState? = nil
+    ) {
+        self.enabled = enabled
+        self.available = available
+        self.preference = preference
+        self.previousEnabled = previousEnabled
+        self.previousPreference = previousPreference
+        self.changed = changed
+        self.restartRequired = restartRequired
+        self.reason = reason
+        self.message = message
+        self.previous = previous
+        self.applied = applied
+    }
 
     enum CodingKeys: String, CodingKey {
         case enabled = "claude_enabled"
@@ -137,6 +166,7 @@ struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
         case restartRequired = "restart_required"
         case reason
         case message
+        case previous, applied
     }
 }
 
@@ -368,7 +398,8 @@ struct AgentRuntimeRateLimitWindow: Codable, Equatable, Sendable {
     }
 
     var remainingFraction: Double? {
-        usedPercent.map { min(max(1 - $0 / 100, 0), 1) }
+        guard let usedPercent, usedPercent.isFinite else { return nil }
+        return min(max(1 - usedPercent / 100, 0), 1)
     }
 
     var remainingPercentText: String? {
@@ -414,6 +445,20 @@ private extension String {
     }
 }
 
+struct AgentNetworkStatus: Codable, Equatable, Sendable {
+    let mode: String
+    let allowLAN: Bool
+    let policyChecked: Bool
+    let policyOK: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case allowLAN = "allow_lan"
+        case policyChecked = "policy_checked"
+        case policyOK = "policy_ok"
+    }
+}
+
 struct AgentStatus: Codable, Equatable, Sendable {
     let processOK: Bool
     let serviceOK: Bool
@@ -428,6 +473,9 @@ struct AgentStatus: Codable, Equatable, Sendable {
     let doctor: AgentDoctorResults
     let pairExpires: String?
     let runtimeStatus: AgentRuntimeStatusSnapshot?
+    let networkStatus: AgentNetworkStatus?
+    let moduleStatus: AgentModuleStatus?
+    let moduleStatusState: AgentModuleStatusState?
 
     enum CodingKeys: String, CodingKey {
         case processOK = "process_ok"
@@ -443,6 +491,9 @@ struct AgentStatus: Codable, Equatable, Sendable {
         case doctor
         case pairExpires = "pair_expires"
         case runtimeStatus = "runtime_status"
+        case networkStatus = "network_status"
+        case moduleStatus = "module_status"
+        case moduleStatusState = "module_status_state"
     }
 
     init(
@@ -458,7 +509,10 @@ struct AgentStatus: Codable, Equatable, Sendable {
         doctorOK: Bool,
         doctor: AgentDoctorResults,
         pairExpires: String?,
-        runtimeStatus: AgentRuntimeStatusSnapshot? = nil
+        runtimeStatus: AgentRuntimeStatusSnapshot? = nil,
+        networkStatus: AgentNetworkStatus? = nil,
+        moduleStatus: AgentModuleStatus? = nil,
+        moduleStatusState: AgentModuleStatusState? = nil
     ) {
         self.processOK = processOK
         self.serviceOK = serviceOK
@@ -473,6 +527,9 @@ struct AgentStatus: Codable, Equatable, Sendable {
         self.doctor = doctor
         self.pairExpires = pairExpires
         self.runtimeStatus = runtimeStatus
+        self.networkStatus = networkStatus
+        self.moduleStatus = moduleStatus
+        self.moduleStatusState = moduleStatusState
     }
 
     init(from decoder: Decoder) throws {
@@ -499,6 +556,9 @@ struct AgentStatus: Codable, Equatable, Sendable {
             // 该快照，不能让健康检查、迁移和服务控制一起解码失败。
             runtimeStatus = nil
         }
+        networkStatus = try? container.decodeIfPresent(AgentNetworkStatus.self, forKey: .networkStatus)
+        moduleStatus = try? container.decodeIfPresent(AgentModuleStatus.self, forKey: .moduleStatus)
+        moduleStatusState = try? container.decodeIfPresent(AgentModuleStatusState.self, forKey: .moduleStatusState)
     }
 
     var hasAgentVersionMismatch: Bool {

@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +48,17 @@ type ClaudeConfigurationResult struct {
 	ProxyMismatch      bool                       `json:"proxy_mismatch"`
 	Reason             string                     `json:"reason"`
 	Message            string                     `json:"message"`
+	Previous           ClaudeModuleState          `json:"previous"`
+	Applied            ClaudeModuleState          `json:"applied"`
+}
+
+// ClaudeModuleState 只记录 ConfigureClaude 会修改的字段。回滚比较这些字段，
+// 既能拒绝覆盖其他写者的新意图，也允许无关配置并发更新后继续安全恢复。
+type ClaudeModuleState struct {
+	Enabled            *bool                       `json:"enabled,omitempty"`
+	Activation         *ClaudeActivationPreference `json:"activation,omitempty"`
+	ClaudeBin          *string                     `json:"claude_bin,omitempty"`
+	EnvironmentPresent bool                        `json:"environment_present"`
 }
 
 type claudePreflightResult struct {
@@ -126,11 +139,17 @@ func ConfigureClaude(
 	if err != nil {
 		return ClaudeConfigurationResult{}, err
 	}
+	previousState, err := claudeModuleState(claudeDocument)
+	if err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
 	result := ClaudeConfigurationResult{
 		Enabled:            currentEnabled,
 		Preference:         previousPreference,
 		PreviousEnabled:    currentEnabled,
 		PreviousPreference: previousPreference,
+		Previous:           previousState,
+		Applied:            previousState,
 	}
 
 	// 启动阶段的 auto 不能覆盖用户已经在设置页做出的明确选择。
@@ -201,6 +220,10 @@ func ConfigureClaude(
 	); err != nil {
 		return ClaudeConfigurationResult{}, err
 	}
+	appliedState, err := claudeModuleState(claudeDocument)
+	if err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
 	encodedClaude, err := json.Marshal(claudeDocument)
 	if err != nil {
 		return ClaudeConfigurationResult{}, fmt.Errorf("编码 claude 配置失败：%w", err)
@@ -221,6 +244,7 @@ func ConfigureClaude(
 	result.Enabled = targetEnabled
 	result.Available = preflight.OK
 	result.Preference = targetPreference
+	result.Applied = appliedState
 	result.Changed = changed
 	result.RestartRequired = currentEnabled != targetEnabled || currentClaudeBin != targetClaudeBin
 	result.ClaudeBin = preflight.ClaudeBin
@@ -238,6 +262,168 @@ func ConfigureClaude(
 		result.Message = "已检测到 Claude Code 和兼容的 Claude bridge。"
 	}
 	return result, nil
+}
+
+// RestoreClaude 只在当前受控字段仍等于本次操作的 Applied 快照时恢复 Previous。
+// 读取后的写入继续使用文件 CAS，覆盖“比较后、提交前”插入的并发修改。
+func RestoreClaude(configPath string, previous ClaudeConfigurationResult) (ClaudeConfigurationResult, error) {
+	cfgPath, err := resolveConfigPath(configPath)
+	if err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
+	info, err := os.Lstat(cfgPath)
+	if err != nil {
+		return ClaudeConfigurationResult{}, fmt.Errorf("读取配置文件状态失败：%w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return ClaudeConfigurationResult{}, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
+	}
+	original, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return ClaudeConfigurationResult{}, fmt.Errorf("读取配置文件失败：%w", err)
+	}
+	document := map[string]json.RawMessage{}
+	if err := json.Unmarshal(original, &document); err != nil {
+		return ClaudeConfigurationResult{}, fmt.Errorf("解析配置文件失败：%w", err)
+	}
+	if document == nil {
+		return ClaudeConfigurationResult{}, fmt.Errorf("配置文件必须是 JSON object")
+	}
+	claudeDocument, err := decodeClaudeDocument(document)
+	if err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
+	currentState, err := claudeModuleState(claudeDocument)
+	if err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
+	if !reflect.DeepEqual(currentState, previous.Applied) {
+		return ClaudeConfigurationResult{}, fmt.Errorf("Claude 设置已被其他操作修改，未覆盖新的设置；请刷新后重试")
+	}
+	currentEnabled, err := decodeClaudeEnabled(claudeDocument)
+	if err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
+	currentPreference, err := decodeClaudePreference(claudeDocument, currentEnabled)
+	if err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
+	currentBin, err := decodeClaudeBinary(claudeDocument)
+	if err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
+	if err := applyClaudeModuleState(claudeDocument, previous.Previous); err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
+	encodedClaude, err := json.Marshal(claudeDocument)
+	if err != nil {
+		return ClaudeConfigurationResult{}, fmt.Errorf("编码 claude 配置失败：%w", err)
+	}
+	document["claude"] = encodedClaude
+	updated, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return ClaudeConfigurationResult{}, fmt.Errorf("编码配置文件失败：%w", err)
+	}
+	updated = append(updated, '\n')
+	changed := !bytes.Equal(original, updated)
+	if changed {
+		if err := writePrivateFileAtomicallyCAS(cfgPath, original, updated); err != nil {
+			return ClaudeConfigurationResult{}, fmt.Errorf("原子恢复配置文件失败：%w", err)
+		}
+	}
+	restoredEnabled, err := decodeClaudeEnabled(claudeDocument)
+	if err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
+	restoredPreference, err := decodeClaudePreference(claudeDocument, restoredEnabled)
+	if err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
+	restoredBin, err := decodeClaudeBinary(claudeDocument)
+	if err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
+	return ClaudeConfigurationResult{
+		Enabled: restoredEnabled, Available: restoredEnabled, Preference: restoredPreference,
+		PreviousEnabled: currentEnabled, PreviousPreference: currentPreference,
+		Changed:         changed,
+		RestartRequired: currentEnabled != restoredEnabled || currentBin != restoredBin,
+		ClaudeBin:       restoredBin, Reason: "restored", Message: "已恢复修改前的 Claude 设置。",
+		Previous: currentState, Applied: previous.Previous,
+	}, nil
+}
+
+func claudeModuleState(document map[string]json.RawMessage) (ClaudeModuleState, error) {
+	state := ClaudeModuleState{}
+	if raw, ok := document["enabled"]; ok {
+		var enabled bool
+		if err := json.Unmarshal(raw, &enabled); err != nil {
+			return state, fmt.Errorf("解析 claude.enabled 失败：%w", err)
+		}
+		state.Enabled = &enabled
+	}
+	if raw, ok := document["activation"]; ok {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return state, fmt.Errorf("解析 claude.activation 失败：%w", err)
+		}
+		preference, err := ParseClaudeActivationPreference(value)
+		if err != nil {
+			return state, err
+		}
+		state.Activation = &preference
+	}
+	rawEnv, hasEnv := document["env"]
+	state.EnvironmentPresent = hasEnv && string(rawEnv) != "null"
+	if !state.EnvironmentPresent {
+		return state, nil
+	}
+	env := map[string]json.RawMessage{}
+	if err := json.Unmarshal(rawEnv, &env); err != nil {
+		return state, fmt.Errorf("解析 claude.env 失败：%w", err)
+	}
+	if raw, ok := env[claudeBinaryEnvKey]; ok {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return state, fmt.Errorf("解析 claude.env.%s 失败：%w", claudeBinaryEnvKey, err)
+		}
+		state.ClaudeBin = &value
+	}
+	return state, nil
+}
+
+func applyClaudeModuleState(document map[string]json.RawMessage, state ClaudeModuleState) error {
+	if state.Enabled == nil {
+		delete(document, "enabled")
+	} else {
+		document["enabled"], _ = json.Marshal(*state.Enabled)
+	}
+	if state.Activation == nil {
+		delete(document, "activation")
+	} else {
+		document["activation"], _ = json.Marshal(*state.Activation)
+	}
+	env := map[string]json.RawMessage{}
+	if rawEnv, ok := document["env"]; ok && string(rawEnv) != "null" {
+		if err := json.Unmarshal(rawEnv, &env); err != nil {
+			return fmt.Errorf("解析 claude.env 失败：%w", err)
+		}
+	}
+	if state.ClaudeBin == nil {
+		delete(env, claudeBinaryEnvKey)
+	} else {
+		env[claudeBinaryEnvKey], _ = json.Marshal(*state.ClaudeBin)
+	}
+	if len(env) == 0 && !state.EnvironmentPresent {
+		delete(document, "env")
+		return nil
+	}
+	encodedEnv, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("编码 claude.env 失败：%w", err)
+	}
+	document["env"] = encodedEnv
+	return nil
 }
 
 func decodeClaudeDocument(document map[string]json.RawMessage) (map[string]json.RawMessage, error) {
@@ -538,12 +724,16 @@ func probeClaudeAuthStatus(
 	authCtx, cancelAuth := context.WithTimeout(ctx, deadline)
 	authCommand := exec.CommandContext(authCtx, claudeBin, "auth", "status")
 	authCommand.Env = environment
+	var authOutput bytes.Buffer
+	authCommand.Stdout = &authOutput
 	authCommand.Stderr = io.Discard
-	authOutput, authErr := authCommand.Output()
+	// Command.Output 的内部 pipe 会在超时杀进程时丢掉已经读到的短输出。
+	// 直接写入本地 buffer，保留 loggedIn 作为诊断，但仍以 timeout 作为结果分类。
+	authErr := authCommand.Run()
 	authContextErr := authCtx.Err()
 	cancelAuth()
 
-	loggedIn, parsedAuth := parseClaudeAuthStatus(authOutput)
+	loggedIn, parsedAuth := parseClaudeAuthStatus(authOutput.Bytes())
 	var result *bool
 	if parsedAuth {
 		result = &loggedIn

@@ -36,6 +36,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     let hasInitialSessionContent: Bool
     let canLoadMoreSessions: Bool
     @Binding var selectedRuntime: WorkspaceSessionRuntimeChoice
+    let codexChannelAvailable: Bool
     let claudeChannelAvailable: Bool
     let currentDate: () -> Date
     let onRefreshSessions: () -> Void
@@ -408,7 +409,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         HStack(spacing: 12) {
             WorkspaceRuntimePopoverPicker(
                 selection: $selectedRuntime,
-                claudeChannelAvailable: claudeChannelAvailable
+                claudeChannelAvailable: claudeChannelAvailable,
+                codexChannelAvailable: codexChannelAvailable
             )
 
             Spacer(minLength: 8)
@@ -479,6 +481,10 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 .contentShape(Circle())
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .disabled(!selectedRuntime.isAvailable(
+            codexChannelAvailable: codexChannelAvailable,
+            claudeChannelAvailable: claudeChannelAvailable
+        ))
         .shadow(
             color: isFloating
                 ? tokens.primaryAction.opacity(colorScheme == .dark ? 0.34 : 0.28)

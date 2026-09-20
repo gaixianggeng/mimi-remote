@@ -1031,7 +1031,8 @@ struct UnifiedWorkbenchShell: View {
                 get: {
                     workspaceRuntimeSelection.resolvedRuntime(
                         preferredRuntime: .stored(preferredWorkspaceRuntimeRawValue),
-                        claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
+                        codexChannelAvailable: sessionStore.isCodexRuntimeChannelAvailable,
+                        claudeChannelAvailable: sessionStore.isClaudeRuntimeChannelAvailable
                     )
                 },
                 set: { workspaceRuntimeSelection.manualRuntime = $0 }

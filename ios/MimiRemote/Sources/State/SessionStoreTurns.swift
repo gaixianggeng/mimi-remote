@@ -140,12 +140,16 @@ extension SessionStore {
         var didRefreshRuntimeAvailability = false
         do {
             let client = try clientFactory()
-            // Claude 卡片以 config.channels 的真实可用性为准，不能依赖 model/list 是否成功。
+            // Runtime 入口以 config.channels 的真实可用性为准，不能依赖 model/list 是否成功。
             // 即使模型列表处于 5 分钟缓存期，也要重新读取轻量 channel 元数据。
+            let isCodexRuntimeChannelAvailable = (try? await client.runtimeChannelAvailable(
+                runtimeProvider: "codex"
+            )) == true
             let isClaudeRuntimeChannelAvailable = (try? await client.runtimeChannelAvailable(
                 runtimeProvider: "claude"
             )) == true
             guard appStore.activeHostScope == hostScope else { return }
+            self.isCodexRuntimeChannelAvailable = isCodexRuntimeChannelAvailable
             self.isClaudeRuntimeChannelAvailable = isClaudeRuntimeChannelAvailable
             didRefreshRuntimeAvailability = true
             if !force,
@@ -167,6 +171,7 @@ extension SessionStore {
         } catch {
             guard appStore.activeHostScope == hostScope else { return }
             if !didRefreshRuntimeAvailability {
+                isCodexRuntimeChannelAvailable = true
                 isClaudeRuntimeChannelAvailable = false
             }
             appServerModelOptionsLastRefresh = Date()

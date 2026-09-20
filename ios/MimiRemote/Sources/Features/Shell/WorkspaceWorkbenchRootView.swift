@@ -8,10 +8,20 @@ struct WorkspaceRuntimeSelectionState {
     /// 能力可能在首屏之后才到达；回落只影响显示，不写回偏好或手动选择。
     func resolvedRuntime(
         preferredRuntime: WorkspaceSessionRuntimeChoice,
+        codexChannelAvailable: Bool = true,
         claudeChannelAvailable: Bool
     ) -> WorkspaceSessionRuntimeChoice {
         let requestedRuntime = manualRuntime ?? preferredRuntime
-        return requestedRuntime == .claude && !claudeChannelAvailable ? .codex : requestedRuntime
+        if requestedRuntime.isAvailable(
+            codexChannelAvailable: codexChannelAvailable,
+            claudeChannelAvailable: claudeChannelAvailable
+        ) {
+            return requestedRuntime
+        }
+        return WorkspaceSessionRuntimeChoice.available(
+            codexChannelAvailable: codexChannelAvailable,
+            claudeChannelAvailable: claudeChannelAvailable
+        ).first ?? requestedRuntime
     }
 
     /// 切换电脑或修改全局偏好后，重新使用偏好；普通导航不调用此方法。

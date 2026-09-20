@@ -86,6 +86,7 @@ struct SessionListFirstPageRequestKey: Hashable {
     let connectionGeneration: Int
     let workspaceID: String
     let workspacePath: String
+    let runtimeProvider: String
     let limit: Int
     let consistency: SessionListConsistency
     /// nil 表示真正首屏；非 nil 表示权威展示窗口从已提交边界续跑。
@@ -93,11 +94,13 @@ struct SessionListFirstPageRequestKey: Hashable {
 }
 
 /// “已经有几条缓存”与“当前主机代次已完成精确首屏”是两个状态。
-/// key 必须包含完整 HostScope 和 canonical workspace path，避免切换 Mac、重连或目录身份迁移后误复用旧结论。
+/// key 必须包含完整 HostScope、canonical workspace path 和 Runtime，避免切换 Mac、
+/// 重连、目录身份迁移或模块切换后误复用旧结论。
 struct WorkspaceSessionFirstPageKey: Hashable {
     let hostScope: HostScope
     let workspaceID: String
     let workspacePath: String
+    let runtimeProvider: String
 }
 
 /// 只有携带工作区 cwd 的 thread/list 才能建立这个归属；全局发现不能靠路径包含关系冒充。
@@ -120,6 +123,7 @@ struct WorkspaceSessionFirstPageCompletion: Equatable {
 
 struct SessionListFirstPageResult {
     let page: SessionsPage
+    let runtimeProvider: String
     let requestedCursor: String?
     let requestLineage: UUID?
 }

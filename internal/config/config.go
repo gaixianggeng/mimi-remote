@@ -45,9 +45,11 @@ type Config struct {
 }
 
 type NetworkConfig struct {
-	// AllowLAN 是显式安全边界。关闭时继续只监听配置地址和 loopback；
-	// 打开后 agentd 才会监听 IPv4 通配地址，同时服务 Tailscale 与局域网。
+	// AllowLAN 是 Mimi 局域网入口的显式安全边界。独立模块控制启用后，
+	// agentd 即使监听 IPv4 通配地址，也会在 Accept 后按实际 TCP 地址限制通道。
 	AllowLAN bool `json:"allow_lan"`
+	// nil preserves legacy listen semantics; a value opts into independent Mimi ingress controls.
+	AllowTailscale *bool `json:"allow_tailscale,omitempty"`
 }
 
 type AuthConfig struct {
@@ -72,6 +74,9 @@ func (c CapabilityConfig) IsDisabled(name string) bool {
 }
 
 type CodexConfig struct {
+	// Omitted in existing installations: Codex stays enabled.
+	Enabled     *bool             `json:"enabled,omitempty"`
+	Activation  string            `json:"activation,omitempty"`
 	Bin         string            `json:"bin"`
 	DefaultArgs []string          `json:"default_args"`
 	Env         map[string]string `json:"env"`
@@ -725,13 +730,13 @@ func (c Config) Validate() error {
 	if c.Listen == "" {
 		return fmt.Errorf("listen 不能为空")
 	}
-	if err := validateAgentListen(c.Listen, c.Network.AllowLAN); err != nil {
+	if err := validateAgentListen(c.moduleValidationListen(), c.Network.AllowLAN); err != nil {
 		return err
 	}
 	if c.Auth.Token == "" && !c.DevInsecure {
 		return fmt.Errorf("AGENTD_TOKEN 或 auth.token 不能为空；开发临时绕过请设置 AGENTD_DEV_INSECURE=true")
 	}
-	if c.DevInsecure && (!isLoopbackListen(c.Listen) || c.Network.AllowLAN) {
+	if c.DevInsecure && (!isLoopbackListen(c.moduleValidationListen()) || c.LANAccessEnabled() || c.TailscaleAccessEnabled()) {
 		return fmt.Errorf("dev_insecure 只允许 loopback listen 且不能启用局域网；远程访问必须使用 Bearer Token")
 	}
 	if c.Auth.Token != "" && len(c.Auth.Token) < 16 {
@@ -743,7 +748,7 @@ func (c Config) Validate() error {
 	if err := validateCapabilities(c.Capabilities); err != nil {
 		return err
 	}
-	if c.Codex.Bin == "" {
+	if c.Codex.IsEnabled() && c.Codex.Bin == "" {
 		return fmt.Errorf("codex.bin 不能为空")
 	}
 	if c.Claude.Enabled && strings.TrimSpace(c.Claude.BridgeBin) == "" && !claudebridge.BundledAvailable() {

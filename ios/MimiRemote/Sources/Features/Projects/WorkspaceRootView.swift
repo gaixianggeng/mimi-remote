@@ -767,7 +767,8 @@ struct WorkspaceRootView: View {
 
                 WorkspaceRuntimePicker(
                     selection: $selectedSessionRuntime,
-                    claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
+                    claudeChannelAvailable: sessionStore.isClaudeRuntimeChannelAvailable,
+                    codexChannelAvailable: sessionStore.isCodexRuntimeChannelAvailable
                 )
             }
         }
@@ -1013,7 +1014,8 @@ struct WorkspaceRootView: View {
                 remoteHasMore: cachedPageState?.hasMore == true
             ),
             selectedRuntime: $selectedSessionRuntime,
-            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
+            codexChannelAvailable: sessionStore.isCodexRuntimeChannelAvailable,
+            claudeChannelAvailable: sessionStore.isClaudeRuntimeChannelAvailable,
             currentDate: currentDate,
             onRefreshSessions: {
                 Task {
