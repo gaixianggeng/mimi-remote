@@ -18,6 +18,9 @@ extension AppStore {
     ///
     /// 供 Store 接上宿主级 `$events` 的出口——那条通道不属于任何会话页面
     /// （契约 D5：别的会话的审批可能在用户从未打开它时到达）。
+    ///
+    /// 必须走 `runtimeBundle` 取**同一个** bundle：另建一个会得到第二条 runtime
+    /// （连接、代次、pending 表都各一份），于是"宿主级订阅"其实订在另一条连接上。
     func nativeHarnessClientForActiveHost() -> HarnessSessionClient? {
         guard let endpoint = try? Self.validatedEndpoint(connectionEndpoint) else { return nil }
         return runtimeBundle(endpoint: endpoint, token: token).harness
