@@ -478,7 +478,10 @@ actor HarnessSessionRuntime {
     /// （收尾结算指向的持久日志位置）；少数帧直接放在顶层。
     static func identity(of value: HarnessStreamValue) -> FrameIdentity {
         let durable = value.raw["event"]
-        let outcome = value.raw["outcome"]
+        let assistantFrame = value.type == HarnessWireFrame.assistantStream
+            ? value.raw["frame"]
+            : nil
+        let outcome = assistantFrame?["outcome"] ?? value.raw["outcome"]
         return FrameIdentity(
             carrierType: HarnessWireCarrier.item,
             frameType: value.type,
@@ -487,8 +490,10 @@ actor HarnessSessionRuntime {
             seq: durable?["seq"]?.intValue
                 ?? outcome?["seq"]?.intValue
                 ?? value.raw["seq"]?.intValue,
-            revision: value.raw["revision"]?.intValue,
-            attemptID: value.raw["attemptId"]?.stringValue
+            revision: assistantFrame?["revision"]?.intValue
+                ?? value.raw["revision"]?.intValue,
+            attemptID: assistantFrame?["attemptId"]?.stringValue
+                ?? value.raw["attemptId"]?.stringValue
                 ?? value.raw["attempt"]?["attemptId"]?.stringValue
                 ?? outcome?["attemptId"]?.stringValue
         )

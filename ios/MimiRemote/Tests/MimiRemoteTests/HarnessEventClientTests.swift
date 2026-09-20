@@ -48,14 +48,15 @@ final class HarnessEventClientTests: XCTestCase {
 
     /// 造一个已 connection 的客户端（注入 snapshot）。
     private func makeConnectedClient(
-        sender: RecordingPromptSink
+        sender: RecordingPromptSink,
+        openingSnapshot: HarnessSnapshot? = nil
     ) async throws -> (HarnessSessionWebSocketClient, EventRecorder) {
-        let snapshot = try snapshot()
+        let snapshot = try openingSnapshot ?? self.snapshot()
         let submission = HarnessSubmissionController(
             sendPrompt: { sessionID, requestID, text in
                 try await sender.send(sessionID, requestID, text)
             },
-            sendCancel: { _ in }
+            sendCancel: { sessionID in try await sender.cancel(sessionID) }
         )
         let client = HarnessSessionWebSocketClient(
             endpoint: "http://127.0.0.1:8787",
@@ -109,6 +110,37 @@ final class HarnessEventClientTests: XCTestCase {
             "没有基线来源时必须显式 failed，实际状态：\(statuses)"
         )
         XCTAssertFalse(statuses.contains(.connected), "不得假装已连上")
+    }
+
+    func testLateOpeningSnapshotCannotOverwriteNewerConnectionLease() async throws {
+        let gate = SnapshotGate()
+        let client = HarnessSessionWebSocketClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            sessionID: "old-session",
+            submission: HarnessSubmissionController(sendPrompt: { _, _, _ in }, sendCancel: { _ in }),
+            fetchSnapshot: { sessionID in try await gate.fetch(sessionID: sessionID) }
+        )
+
+        client.connect(sessionID: "old-session")
+        await gate.waitForRequestCount(1)
+        client.connect(sessionID: "new-session")
+        await gate.waitForRequestCount(2)
+
+        gate.resume(
+            sessionID: "new-session",
+            snapshot: snapshot(sessionID: "new-session", cursor: 22)
+        )
+        await waitFor { client.journal?.snapshotCursor == 22 }
+        gate.resume(
+            sessionID: "old-session",
+            snapshot: snapshot(sessionID: "old-session", cursor: 11)
+        )
+        await Task.yield()
+
+        XCTAssertEqual(client.sessionID, "new-session")
+        XCTAssertEqual(client.journal?.snapshotCursor, 22, "旧 snapshot 晚到不得污染新会话")
+        XCTAssertGreaterThan(client.journal?.generation ?? 0, 1, "代次不得写死为 1")
     }
 
     // MARK: - 发送映射（核心）
@@ -228,6 +260,124 @@ final class HarnessEventClientTests: XCTestCase {
 
     // MARK: - 接收与去重
 
+    func testOpeningSnapshotPublishesExistingAssistantPrefixImmediately() async throws {
+        let data = Data(#"""
+        {
+          "type":"snapshot",
+          "header":{"version":3,"id":"h00-session-0001","isSeeded":false},
+          "cursor":13,"records":[],"hasMore":false,
+          "assistantStream":{"revision":3,"activeAttempt":{
+            "attemptId":"attempt-prefix","startedAfterSeq":13,"turn":1,"step":1,"nextIndex":2,
+            "stream":[
+              {"type":"chunk","time":100,"chunk":{"type":"block-start","index":0,"blockType":"text"}},
+              {"type":"text-chunks","time0":101,"index":0,"dt":[],"texts":["已有前缀"]}
+            ]
+          }}
+        }
+        """#.utf8)
+        let opening = try JSONDecoder().decode(HarnessSnapshot.self, from: data)
+        let (_, recorder) = try await makeConnectedClient(
+            sender: RecordingPromptSink(),
+            openingSnapshot: opening
+        )
+
+        let deltas = recorder.events.compactMap { event -> AgentDelta? in
+            if case .assistantDelta(let delta, _) = event { return delta }
+            return nil
+        }
+        XCTAssertEqual(deltas.map(\.text), ["已有前缀"])
+    }
+
+    func testTextChunkPublishesConsumableDeltaBeforeEnd() async throws {
+        let (client, recorder) = try await makeConnectedClient(sender: RecordingPromptSink())
+        XCTAssertNil(client.apply(assistantStream: HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.start,
+            revision: 1,
+            index: nil,
+            chunk: nil,
+            outcome: nil,
+            attemptId: "attempt-live",
+            turn: 1,
+            step: 1,
+            startedAfterSeq: 13
+        )))
+        XCTAssertNil(client.apply(assistantStream: HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.chunk,
+            revision: 2,
+            index: 0,
+            chunk: HarnessAssistantChunk(
+                type: HarnessWireChunkType.textDelta,
+                index: 0,
+                text: "实时正文",
+                blockType: nil,
+                argumentsDelta: nil
+            ),
+            outcome: nil,
+            attemptId: "attempt-live",
+            turn: nil,
+            step: nil,
+            startedAfterSeq: nil
+        )))
+
+        let deltas = recorder.events.compactMap { event -> AgentDelta? in
+            if case .assistantDelta(let delta, _) = event { return delta }
+            return nil
+        }
+        XCTAssertEqual(deltas.map(\.text), ["实时正文"], "end 到达前 UI 就必须收到正文增量")
+        XCTAssertFalse(client.journal?.activeAttempt?.isSettled == true)
+    }
+
+    func testSettledLiveAndDurableAssistantUseOneMessageIdentity() async throws {
+        let (client, recorder) = try await makeConnectedClient(sender: RecordingPromptSink())
+        let frames = [
+            HarnessAssistantStreamFrame(
+                type: HarnessWireAssistantFrame.start, revision: 1, index: nil,
+                chunk: nil, outcome: nil, attemptId: "attempt-settle",
+                turn: 1, step: 1, startedAfterSeq: 13
+            ),
+            HarnessAssistantStreamFrame(
+                type: HarnessWireAssistantFrame.chunk, revision: 2, index: 0,
+                chunk: HarnessAssistantChunk(
+                    type: HarnessWireChunkType.textDelta, index: 0, text: "最终正文",
+                    blockType: nil, argumentsDelta: nil
+                ),
+                outcome: nil, attemptId: "attempt-settle",
+                turn: nil, step: nil, startedAfterSeq: nil
+            ),
+            HarnessAssistantStreamFrame(
+                type: HarnessWireAssistantFrame.end, revision: 3, index: 1,
+                chunk: nil,
+                outcome: HarnessAssistantStreamOutcome(
+                    kind: "committed",
+                    eventType: HarnessWireSettlement.assistantMessage,
+                    seq: 16
+                ),
+                attemptId: "attempt-settle",
+                turn: nil, step: nil, startedAfterSeq: nil
+            ),
+        ]
+        for frame in frames { XCTAssertNil(client.apply(assistantStream: frame)) }
+        client.settleActiveAttempt()
+        XCTAssertTrue(client.apply(durableEvent: durableEvent(
+            type: HarnessWireEventType.assistantMessage,
+            seq: 16,
+            text: "最终正文"
+        )))
+
+        let deltaIDs = recorder.events.compactMap { event -> MessageID? in
+            if case .assistantDelta(_, let metadata) = event { return metadata.messageID }
+            return nil
+        }
+        let completedIDs = recorder.events.compactMap { event -> MessageID? in
+            if case .messageCompleted(let message, _) = event, message.role == .assistant {
+                return message.id
+            }
+            return nil
+        }
+        XCTAssertEqual(Set(deltaIDs + completedIDs), ["h-attempt-attempt-settle-assistant"])
+        XCTAssertFalse(completedIDs.contains("h-seq-16-assistant"))
+    }
+
     /// 重复持久事件不产生第二条展示事件（流式到历史无重复）。
     func testDuplicateDurableEventProjectsOnlyOnce() async throws {
         let (client, recorder) = try await makeConnectedClient(sender: RecordingPromptSink())
@@ -250,11 +400,11 @@ final class HarnessEventClientTests: XCTestCase {
         let event = HarnessDurableEvent(
             type: HarnessWireEventType.userMessage, seq: 9, time: nil,
             data: .object([
-                "message": .object([
-                    "content": .array([.object([
-                        "type": .string("text"), "text": .string("你好"),
-                    ])]),
-                    "source": .object(["rpcId": .string("cm-9")]),
+                "content": .array([.object([
+                    "type": .string("text"), "text": .string("你好"),
+                ])]),
+                "source": .object([
+                    "kind": .string("user"), "rpcId": .string("cm-9"),
                 ]),
             ])
         )
@@ -312,7 +462,8 @@ final class HarnessEventClientTests: XCTestCase {
 
     /// 停止的响应未知同样走 control failure，不报成功。
     func testCancelUnknownReportsControlFailure() async throws {
-        let (client, _) = try await makeConnectedClient(sender: RecordingPromptSink())
+        let sink = RecordingPromptSink()
+        let (client, _) = try await makeConnectedClient(sender: sink)
         var controlFailures: [String] = []
         client.onControlFailure = { controlFailures.append($0) }
 
@@ -321,6 +472,30 @@ final class HarnessEventClientTests: XCTestCase {
         await waitFor { !controlFailures.isEmpty || true }
         // 成功路径不产生 control failure。
         XCTAssertTrue(controlFailures.isEmpty)
+        await waitFor { sink.cancelledSessions.count == 1 }
+        XCTAssertEqual(sink.cancelledSessions, [sessionID])
+    }
+
+    func testCancelRejectsKnownMismatchedTurnWithoutCallingUpstream() async throws {
+        let sink = RecordingPromptSink()
+        let (client, _) = try await makeConnectedClient(sender: sink)
+        XCTAssertNil(client.apply(assistantStream: HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.start,
+            revision: 1,
+            index: nil,
+            chunk: nil,
+            outcome: nil,
+            attemptId: "attempt-cancel",
+            turn: 7,
+            step: 1,
+            startedAfterSeq: 13
+        )))
+        var failure: String?
+        client.onControlFailure = { failure = $0 }
+
+        XCTAssertFalse(client.sendCtrlC(expectedTurnID: "h-turn-6"))
+        XCTAssertNotNil(failure)
+        XCTAssertTrue(sink.cancelledSessions.isEmpty)
     }
 
     // MARK: - 支撑
@@ -331,6 +506,25 @@ final class HarnessEventClientTests: XCTestCase {
             await Task.yield()
         }
     }
+
+    private func snapshot(sessionID: String, cursor: Int) -> HarnessSnapshot {
+        HarnessSnapshot(
+            type: HarnessWireFrame.snapshot,
+            header: HarnessSnapshotHeader(
+                version: 3,
+                id: sessionID,
+                createdAt: nil,
+                cwd: "/fixture",
+                isSeeded: false,
+                agentPreset: nil
+            ),
+            cursor: cursor,
+            records: [],
+            hasMore: false,
+            projections: nil,
+            assistantStream: HarnessAssistantStreamBaseline(revision: 0, activeAttempt: nil)
+        )
+    }
 }
 
 // MARK: - 替身
@@ -338,10 +532,16 @@ final class HarnessEventClientTests: XCTestCase {
 @MainActor
 private final class RecordingPromptSink {
     private(set) var requestIDs: [String] = []
+    private(set) var cancelledSessions: [String] = []
     var failure: Error?
 
     func send(_ sessionID: String, _ requestID: String, _ text: String) async throws {
         requestIDs.append(requestID)
+        if let failure { throw failure }
+    }
+
+    func cancel(_ sessionID: String) async throws {
+        cancelledSessions.append(sessionID)
         if let failure { throw failure }
     }
 }
@@ -349,4 +549,37 @@ private final class RecordingPromptSink {
 @MainActor
 private final class EventRecorder {
     var events: [AgentEvent] = []
+}
+
+@MainActor
+private final class SnapshotGate {
+    private struct Request {
+        let sessionID: String
+        let continuation: CheckedContinuation<HarnessSnapshot, Error>
+    }
+
+    private var requests: [Request] = []
+
+    func fetch(sessionID: String) async throws -> HarnessSnapshot {
+        try await withCheckedThrowingContinuation { continuation in
+            requests.append(Request(sessionID: sessionID, continuation: continuation))
+        }
+    }
+
+    func resume(sessionID: String, snapshot: HarnessSnapshot) {
+        guard let index = requests.firstIndex(where: { $0.sessionID == sessionID }) else {
+            XCTFail("没有等待中的 snapshot 请求：\(sessionID)")
+            return
+        }
+        let request = requests.remove(at: index)
+        request.continuation.resume(returning: snapshot)
+    }
+
+    func waitForRequestCount(_ count: Int) async {
+        for _ in 0..<400 {
+            if requests.count >= count { return }
+            await Task.yield()
+        }
+        XCTFail("等待 snapshot 请求数量 \(count) 超时")
+    }
 }

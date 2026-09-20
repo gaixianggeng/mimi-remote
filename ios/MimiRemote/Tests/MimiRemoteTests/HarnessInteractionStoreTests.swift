@@ -205,8 +205,8 @@ final class HarnessInteractionStoreTests: XCTestCase {
         }
     }
 
-    /// 结果未知的卡片不因"上游 cancel"被清除（那可能是我们自己的应答生效了）。
-    func testResponseUnknownSurvivesExternalCancel() {
+    /// 结果未知收到同代次 cancel 后必须撤卡，但不宣称哪一端的决定获胜。
+    func testResponseUnknownSettlesOnTrustedExternalCancel() {
         let store = HarnessInteractionStore()
         store.deliver(
             eventID: "evt-1", sessionID: "s1",
@@ -216,11 +216,17 @@ final class HarnessInteractionStoreTests: XCTestCase {
         _ = store.claim(eventID: "evt-1", generation: generation)
         store.markResponseUnknown(eventID: "evt-1", detail: "unknown")
 
-        XCTAssertFalse(store.cancelExternally(eventID: "evt-1"))
-        guard case .responseUnknown? = store.interaction(eventID: "evt-1")?.state else {
-            XCTFail("结果未知的状态不得被外部 cancel 覆盖")
-            return
-        }
+        XCTAssertTrue(store.cancelExternally(eventID: "evt-1", generation: generation))
+        XCTAssertNil(store.interaction(eventID: "evt-1"), "cancel 后不得保留可操作卡片")
+        XCTAssertEqual(store.claim(eventID: "evt-1", generation: generation), .settled)
+
+        // 新代次若上游重新投递，只恢复成待应答；不能自动重发旧决定。
+        XCTAssertTrue(store.deliver(
+            eventID: "evt-1", sessionID: "s1",
+            event: HarnessWireWaterfallEvent.approvalRequest,
+            request: approvalPayload(), generation: generation + 1
+        ))
+        XCTAssertEqual(store.interaction(eventID: "evt-1")?.state, .pending)
     }
 
     // MARK: - 撤卡与重投
@@ -233,7 +239,10 @@ final class HarnessInteractionStoreTests: XCTestCase {
             event: HarnessWireWaterfallEvent.approvalRequest,
             request: approvalPayload(), generation: generation
         )
-        XCTAssertTrue(store.cancelExternally(eventID: "evt-1"), "本连接展示过的卡片必须通知撤下")
+        XCTAssertTrue(
+            store.cancelExternally(eventID: "evt-1", generation: generation),
+            "本连接展示过的卡片必须通知撤下"
+        )
         XCTAssertNil(store.interaction(eventID: "evt-1"))
 
         // 迟到的 waterfall 不得复活它。
@@ -247,12 +256,28 @@ final class HarnessInteractionStoreTests: XCTestCase {
     /// cancel 先于 waterfall：撤卡不通知 UI，但仍阻止后续复活。
     func testCancelBeforeDeliveryStillBlocksRevival() {
         let store = HarnessInteractionStore()
-        XCTAssertFalse(store.cancelExternally(eventID: "evt-late"), "没展示过就不该通知 UI")
+        XCTAssertFalse(
+            store.cancelExternally(eventID: "evt-late", generation: generation),
+            "没展示过就不该通知 UI"
+        )
         XCTAssertFalse(store.deliver(
             eventID: "evt-late", sessionID: "s1",
             event: HarnessWireWaterfallEvent.approvalRequest,
             request: approvalPayload(), generation: generation
         ))
+    }
+
+    func testStaleCancelCannotRemoveNewGenerationRedelivery() {
+        let store = HarnessInteractionStore()
+        store.deliver(
+            eventID: "evt-new", sessionID: "s1",
+            event: HarnessWireWaterfallEvent.approvalRequest,
+            request: approvalPayload(), generation: generation + 1
+        )
+
+        XCTAssertFalse(store.cancelExternally(eventID: "evt-new", generation: generation))
+        XCTAssertEqual(store.interaction(eventID: "evt-new")?.generation, generation + 1)
+        XCTAssertEqual(store.interaction(eventID: "evt-new")?.state, .pending)
     }
 
     /// **失败后重投更新原卡片，不新增副本。**

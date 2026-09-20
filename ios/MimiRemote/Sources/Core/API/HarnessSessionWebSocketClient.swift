@@ -9,8 +9,8 @@ import Foundation
 /// ## 职责边界
 ///
 /// 这一层只做两件事：**把 follow 的帧流投影成 AgentEvent**、**把发送意图转成原生提交**。
-/// 它不持有连接代次——那是 `HarnessSessionRuntime` 的唯一职责（契约 D1）。
-/// 因此这里不自己建连接、不自己记代次。
+/// 它不持有传输连接代次——那是 `HarnessSessionRuntime` 的唯一职责（契约 D1）。
+/// 这里仅持有页面观察租约，用于拒绝切换会话后迟到的 snapshot。
 ///
 /// ## 发送为什么同步返回 Bool 而实现是异步
 ///
@@ -43,6 +43,12 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
 
     /// 本会话的原生 journal。`connect` 建立基线后非空。
     private(set) var journal: HarnessSessionJournal?
+    /// assistant-stream 的结算 seq 与直播消息身份之间的唯一替换关系。
+    private var settledAssistantMessageIDBySeq: [Int: MessageID] = [:]
+    /// durable assistant 可能先于 end 到达；在 outcome.seq 明确前不能先造 h-seq 气泡。
+    private var pendingAssistantDurableBySeq: [Int: HarnessDurableEvent] = [:]
+    /// 页面观察租约。只保护异步 snapshot 提交，不创建第二套 transport manager。
+    private var observationGeneration: UInt64 = 0
 
     init(
         endpoint: String,
@@ -69,29 +75,41 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     /// 顺序不可换（契约 §5.5）：`session/page` 的 throughSeq 必须取自**本次** follow
     /// 的 snapshot.cursor，所以 follow 必须先完成。
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
+        observationGeneration &+= 1
+        let generation = observationGeneration
         self.sessionID = sessionID
         onStatus?(.connecting)
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.openBaseline(sessionID: sessionID)
+                guard try await self.openBaseline(
+                    sessionID: sessionID,
+                    generation: generation
+                ) else { return }
+                guard self.observationGeneration == generation,
+                      self.sessionID == sessionID else { return }
                 self.onStatus?(.connected)
             } catch {
                 // 连接失败如实上报。**不**返回"看起来已连上"的假状态——
                 // 那会让上层以为原生通道可用。
+                guard self.observationGeneration == generation,
+                      self.sessionID == sessionID else { return }
                 self.onStatus?(.failed(Self.describe(error)))
             }
         }
     }
 
-    private func openBaseline(sessionID: SessionID) async throws {
+    private func openBaseline(sessionID: SessionID, generation: UInt64) async throws -> Bool {
         guard let fetchSnapshot else {
             // 没有 snapshot 来源就建不了基线。显式失败而不是假装连上。
             throw HarnessTransportError.notConnected
         }
         let snapshot = try await fetchSnapshot(sessionID)
-        var fresh = HarnessSessionJournal(generation: 1)
-        _ = fresh.apply(snapshot: snapshot, acceptingGeneration: 1)
+        guard observationGeneration == generation, self.sessionID == sessionID else { return false }
+        // 冻结版本中 header.id 是 snapshot/session header 的内部 id，并不等于
+        // follow request 的 address.sessionId；归属由本次观察租约和 streamId 保证。
+        var fresh = HarnessSessionJournal(generation: generation)
+        _ = fresh.apply(snapshot: snapshot, acceptingGeneration: generation)
         journal = fresh
 
         // snapshot 里已有的持久记录立刻投影：这是"中途打开"能看到历史的来源。
@@ -103,10 +121,23 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                 onEvent?(projected)
             }
         }
+        if let attempt = fresh.activeAttempt,
+           let event = HarnessPresentationProjector.liveTextEvent(
+               text: HarnessPresentationProjector.assistantText(from: attempt),
+               attempt: attempt,
+               sessionID: sessionID
+           ) {
+            onEvent?(event)
+        }
+        return true
     }
 
     func disconnect() {
+        // 使仍在等待 snapshot 的旧观察租约立即失效。
+        observationGeneration &+= 1
         journal = nil
+        settledAssistantMessageIDBySeq.removeAll()
+        pendingAssistantDurableBySeq.removeAll()
         onStatus?(.disconnected)
     }
 
@@ -122,10 +153,25 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         let isNew = current.apply(durableEvent: event)
         journal = current
         guard isNew else { return false }
-        for projected in HarnessPresentationProjector.project(durableEvent: event, sessionID: sessionID) {
+        if event.type == HarnessWireEventType.assistantMessage,
+           current.activeAttempt != nil,
+           let seq = event.seq {
+            pendingAssistantDurableBySeq[seq] = event
+            return true
+        }
+        publish(durableEvent: event)
+        return true
+    }
+
+    private func publish(durableEvent event: HarnessDurableEvent) {
+        let messageID = event.seq.flatMap { settledAssistantMessageIDBySeq[$0] }
+        for projected in HarnessPresentationProjector.project(
+            durableEvent: event,
+            sessionID: sessionID,
+            assistantMessageID: messageID
+        ) {
             onEvent?(projected)
         }
-        return true
     }
 
     /// 应用一帧 assistant-stream 直播片段。
@@ -135,6 +181,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     @discardableResult
     func apply(assistantStream frame: HarnessAssistantStreamFrame) -> HarnessJournalStreamRejection? {
         guard var current = journal else { return .beforeSnapshot }
+        let previousChunkCount = current.activeAttempt?.chunks.count ?? 0
         let rejection = current.apply(assistantStream: frame)
         journal = current
         if let rejection {
@@ -142,6 +189,25 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                 "harness.stream_interrupted",
                 rejection.diagnosticSummary
             )))
+        } else if frame.type == HarnessWireAssistantFrame.chunk,
+                  current.activeAttempt?.chunks.count ?? 0 > previousChunkCount,
+                  frame.chunk?.type == HarnessWireChunkType.textDelta,
+                  let text = frame.chunk?.text,
+                  let attempt = current.activeAttempt,
+                  let event = HarnessPresentationProjector.liveTextEvent(
+                      text: text,
+                      attempt: attempt,
+                      sessionID: sessionID
+                  ) {
+            onEvent?(event)
+        } else if frame.type == HarnessWireAssistantFrame.end,
+                  let attempt = current.activeAttempt,
+                  attempt.producedAssistantMessage,
+                  let seq = attempt.settledSeq {
+            settledAssistantMessageIDBySeq[seq] = HarnessPresentationProjector.messageID(
+                attempt: attempt,
+                suffix: "assistant"
+            )
         }
         return rejection
     }
@@ -152,11 +218,22 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     /// （见 `HarnessPresentationProjector.project(attempt:)`）。
     func settleActiveAttempt() {
         guard var current = journal, let attempt = current.activeAttempt else { return }
+        if attempt.producedAssistantMessage, let seq = attempt.settledSeq {
+            settledAssistantMessageIDBySeq[seq] = HarnessPresentationProjector.messageID(
+                attempt: attempt,
+                suffix: "assistant"
+            )
+        }
         for projected in HarnessPresentationProjector.project(attempt: attempt, sessionID: sessionID) {
             onEvent?(projected)
         }
         current.retireSettledAttempt()
         journal = current
+        let pending = pendingAssistantDurableBySeq
+        pendingAssistantDurableBySeq.removeAll()
+        for event in pending.values.sorted(by: { ($0.seq ?? -1) < ($1.seq ?? -1) }) {
+            publish(durableEvent: event)
+        }
     }
 
     // MARK: - 发送
@@ -211,11 +288,22 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
 
     /// 停止当前轮次。
     ///
-    /// 已读版本只有 session 级 cancel：它停的是这个会话正在跑的轮次，
-    /// 不是"某个指定轮次"。因此这里**不**校验 expectedTurnID——那会假装
-    /// 我们有原子 turn 级条件取消。
+    /// 已读版本只有 session 级 cancel，不能提供原子 turn 条件取消；但本地已经知道
+    /// 活动 turn 时必须拒绝明确过期目标，避免把新一轮误停。
     @discardableResult
     func sendCtrlC(expectedTurnID: TurnID) -> Bool {
+        if let turn = journal?.activeAttempt?.turn {
+            let activeTurnID: TurnID = "h-turn-\(turn)"
+            guard expectedTurnID == activeTurnID else {
+                onControlFailure?(L10n.format(
+                    "harness.cancel_turn_mismatch",
+                    expectedTurnID,
+                    activeTurnID
+                ))
+                return false
+            }
+        }
+        // 未知 active turn 时仍只能发 session 级 cancel；这是非原子限制，不伪装条件取消。
         Task { [weak self] in
             guard let self else { return }
             let state = await self.submission.cancel(sessionID: self.sessionID)

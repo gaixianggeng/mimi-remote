@@ -26,7 +26,11 @@ enum HarnessPresentationProjector {
     ///
     /// 返回数组而不是单值：一条记录可能产生不止一个展示事件（例如同时更新正文与时间线），
     /// 也可能产生零个（未知类型）。
-    static func project(durableEvent event: HarnessDurableEvent, sessionID: SessionID) -> [AgentEvent] {
+    static func project(
+        durableEvent event: HarnessDurableEvent,
+        sessionID: SessionID,
+        assistantMessageID: MessageID? = nil
+    ) -> [AgentEvent] {
         guard let type = event.type else { return [] }
         switch type {
         case HarnessWireEventType.turnStart:
@@ -36,7 +40,11 @@ enum HarnessPresentationProjector {
         case HarnessWireEventType.userMessage:
             return projectUserMessage(event, sessionID: sessionID)
         case HarnessWireEventType.assistantMessage:
-            return projectAssistantMessage(event, sessionID: sessionID)
+            return projectAssistantMessage(
+                event,
+                sessionID: sessionID,
+                messageID: assistantMessageID
+            )
         case HarnessWireEventType.systemMessage:
             return projectSystemMessage(event, sessionID: sessionID)
         case HarnessWireEventType.stepStart, HarnessWireEventType.stepEnd:
@@ -79,11 +87,38 @@ enum HarnessPresentationProjector {
                         seq: attempt.settledSeq.map(EventSequence.init),
                         sendStatus: .confirmed
                     ),
-                    metadata(seq: attempt.settledSeq, sessionID: sessionID)
+                    metadata(
+                        seq: nil,
+                        sessionID: sessionID,
+                        itemID: messageID(attempt: attempt, suffix: "assistant"),
+                        messageID: messageID(attempt: attempt, suffix: "assistant"),
+                        revision: attempt.lastRevision
+                    )
                 ))
             }
         }
         return events
+    }
+
+    /// 把一个已确认接收的文本 chunk 立即交给既有 UI 增量通道。
+    /// messageID 与收尾、durable 回显共用 attempt 身份，避免生成第二条气泡。
+    static func liveTextEvent(
+        text: String,
+        attempt: HarnessJournalAttempt,
+        sessionID: SessionID
+    ) -> AgentEvent? {
+        guard !text.isEmpty else { return nil }
+        let id = messageID(attempt: attempt, suffix: "assistant")
+        return .assistantDelta(
+            AgentDelta(text: text, role: .assistant, kind: .message),
+            metadata(
+                seq: nil,
+                sessionID: sessionID,
+                itemID: id,
+                messageID: id,
+                revision: attempt.lastRevision
+            )
+        )
     }
 
     /// 从 attempt 的帧序列拼出助手正文。
@@ -144,6 +179,11 @@ enum HarnessPresentationProjector {
 
     private static func projectUserMessage(_ event: HarnessDurableEvent, sessionID: SessionID) -> [AgentEvent] {
         guard let text = messageText(from: event), !text.isEmpty else { return [] }
+        // user/message 也承载 plugin、skill-catalog 等注入上下文。只有 source.kind=user
+        // 才是人真正提交的输入；未知扩展来源按上下文处理，避免伪造成用户发言。
+        guard event.data?["source"]?["kind"]?.stringValue == "user" else {
+            return projectSystemMessage(event, sessionID: sessionID)
+        }
         return [.messageCompleted(
             AgentMessage(
                 id: "h-seq-\(event.seq ?? -1)-user",
@@ -160,18 +200,28 @@ enum HarnessPresentationProjector {
         )]
     }
 
-    private static func projectAssistantMessage(_ event: HarnessDurableEvent, sessionID: SessionID) -> [AgentEvent] {
+    private static func projectAssistantMessage(
+        _ event: HarnessDurableEvent,
+        sessionID: SessionID,
+        messageID: MessageID?
+    ) -> [AgentEvent] {
         guard let text = messageText(from: event), !text.isEmpty else { return [] }
+        let id = messageID ?? "h-seq-\(event.seq ?? -1)-assistant"
         return [.messageCompleted(
             AgentMessage(
-                id: "h-seq-\(event.seq ?? -1)-assistant",
+                id: id,
                 sessionID: sessionID,
                 role: .assistant,
                 content: text,
                 seq: event.seq.map(EventSequence.init),
                 sendStatus: .confirmed
             ),
-            metadata(event, sessionID: sessionID)
+            metadata(
+                seq: event.seq,
+                sessionID: sessionID,
+                itemID: id,
+                messageID: id
+            )
         )]
     }
 
@@ -224,9 +274,9 @@ enum HarnessPresentationProjector {
         return out
     }
 
-    /// 取 `message.source.rpcId`（契约 D4 的提交对账键）。
+    /// 取 `data.source.rpcId`（契约 D4 的提交对账键）。
     private static func sourceRPCID(from event: HarnessDurableEvent) -> ClientMessageID? {
-        guard let value = event.data?["message"]?["source"]?["rpcId"]?.stringValue,
+        guard let value = event.data?["source"]?["rpcId"]?.stringValue,
               !value.isEmpty else { return nil }
         return ClientMessageID(value)
     }
@@ -235,20 +285,26 @@ enum HarnessPresentationProjector {
         metadata(seq: event.seq, sessionID: sessionID)
     }
 
-    private static func metadata(seq: Int?, sessionID: SessionID) -> AgentEventMetadata {
+    private static func metadata(
+        seq: Int?,
+        sessionID: SessionID,
+        itemID: AgentItemID? = nil,
+        messageID: MessageID? = nil,
+        revision: ModelRevision? = nil
+    ) -> AgentEventMetadata {
         AgentEventMetadata(
             seq: seq.map(EventSequence.init),
             sessionID: sessionID,
             turnID: nil,
-            itemID: nil,
-            messageID: nil,
+            itemID: itemID,
+            messageID: messageID,
             clientMessageID: nil,
-            revision: nil,
+            revision: revision,
             createdAt: nil
         )
     }
 
-    private static func messageID(attempt: HarnessJournalAttempt, suffix: String) -> MessageID {
+    static func messageID(attempt: HarnessJournalAttempt, suffix: String) -> MessageID {
         // 用原生身份（attemptId）派生展示 id：同一 attempt 的历史与直播算出同一个 id，
         // 因此"流式到历史"时不会产生第二条气泡。
         if let attemptID = attempt.attemptID, !attemptID.isEmpty {

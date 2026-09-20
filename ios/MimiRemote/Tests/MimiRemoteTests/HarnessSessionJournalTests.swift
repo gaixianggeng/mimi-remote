@@ -70,6 +70,109 @@ final class HarnessSessionJournalTests: XCTestCase {
         XCTAssertEqual(snapshot.records?.count, 3)
     }
 
+    func testActiveAttemptDecodesNonemptyCompactStreamAndContinuesAtNextIndex() throws {
+        let data = Data(#"""
+        {
+          "type":"snapshot",
+          "header":{"version":3,"id":"h00-session-0001","isSeeded":false},
+          "cursor":13,"records":[],"hasMore":false,
+          "assistantStream":{"revision":4,"activeAttempt":{
+            "attemptId":"attempt-live","startedAfterSeq":13,"turn":1,"step":1,"nextIndex":3,
+            "stream":[
+              {"type":"chunk","time":100,"chunk":{"type":"block-start","index":0,"blockType":"text"}},
+              {"type":"text-chunks","time0":101,"index":0,"dt":[1],"texts":["已有","前缀"]}
+            ]
+          }}
+        }
+        """#.utf8)
+        let snapshot = try JSONDecoder().decode(HarnessSnapshot.self, from: data)
+        var journal = HarnessSessionJournal(generation: 7)
+
+        XCTAssertTrue(journal.apply(snapshot: snapshot, acceptingGeneration: 7))
+        let attempt = try XCTUnwrap(journal.activeAttempt)
+        XCTAssertEqual(HarnessPresentationProjector.assistantText(from: attempt), "已有前缀")
+        XCTAssertEqual(attempt.nextChunkIndex, 3)
+
+        let continuation = HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.chunk,
+            revision: 5,
+            index: 3,
+            chunk: HarnessAssistantChunk(
+                type: HarnessWireChunkType.textDelta,
+                index: 0,
+                text: "续接",
+                blockType: nil,
+                argumentsDelta: nil
+            ),
+            outcome: nil,
+            attemptId: "attempt-live",
+            turn: nil,
+            step: nil,
+            startedAfterSeq: nil
+        )
+        XCTAssertNil(journal.apply(assistantStream: continuation))
+        XCTAssertEqual(
+            HarnessPresentationProjector.assistantText(from: try XCTUnwrap(journal.activeAttempt)),
+            "已有前缀续接"
+        )
+    }
+
+    func testActiveAttemptRejectsStringStreamInsteadOfTreatingItAsEmpty() {
+        let data = Data(#"""
+        {
+          "type":"snapshot",
+          "header":{"version":3,"id":"h00-session-0001","isSeeded":false},
+          "cursor":13,"records":[],"hasMore":false,
+          "assistantStream":{"revision":1,"activeAttempt":{
+            "attemptId":"attempt-live","startedAfterSeq":13,"turn":1,"step":1,"nextIndex":0,
+            "stream":"not-an-array"
+          }}
+        }
+        """#.utf8)
+
+        XCTAssertThrowsError(try JSONDecoder().decode(HarnessSnapshot.self, from: data))
+    }
+
+    func testLiveChunkIndexGapIsRejectedInsteadOfDroppingPrefix() throws {
+        var journal = HarnessSessionJournal(generation: 1)
+        XCTAssertTrue(journal.apply(snapshot: try snapshotFixture(), acceptingGeneration: 1))
+        let start = HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.start,
+            revision: 1,
+            index: nil,
+            chunk: nil,
+            outcome: nil,
+            attemptId: "attempt-gap",
+            turn: 1,
+            step: 1,
+            startedAfterSeq: 2
+        )
+        XCTAssertNil(journal.apply(assistantStream: start))
+        let skippedPrefix = HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.chunk,
+            revision: 2,
+            index: 1,
+            chunk: HarnessAssistantChunk(
+                type: HarnessWireChunkType.textDelta,
+                index: 0,
+                text: "缺了 index 0",
+                blockType: nil,
+                argumentsDelta: nil
+            ),
+            outcome: nil,
+            attemptId: "attempt-gap",
+            turn: nil,
+            step: nil,
+            startedAfterSeq: nil
+        )
+
+        XCTAssertEqual(
+            journal.apply(assistantStream: skippedPrefix),
+            .chunkIndexGap(expected: 0, actual: 1)
+        )
+        XCTAssertTrue(journal.activeAttempt?.chunks.isEmpty == true)
+    }
+
     /// 正向对照：snapshot 里的 records 按 seq 进入 journal。
     func testSnapshotRecordsLandInJournalBySeq() throws {
         let snapshot = try snapshotFixture()
@@ -296,7 +399,7 @@ final class HarnessSessionJournalTests: XCTestCase {
                 turn: 1,
                 step: 1,
                 nextIndex: 0,
-                stream: nil
+                stream: []
             )
         )
         let snapshot = HarnessSnapshot(

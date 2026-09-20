@@ -161,7 +161,33 @@ final class HarnessSubmissionControllerTests: XCTestCase {
         _ = await controller.submit(sessionID: "s1", text: "第一次", requestID: "req-e")
         _ = await controller.submit(sessionID: "s1", text: "第二次", requestID: "req-f")
 
-        XCTAssertEqual(controller.latest?.requestID, "req-e", "被拒的提交不得覆盖在途记录")
+        XCTAssertEqual(
+            controller.latestSubmission(sessionID: "s1")?.requestID,
+            "req-e",
+            "被拒的提交不得覆盖在途记录"
+        )
+    }
+
+    /// 一个会话的 responseUnknown 不能阻塞另一个会话的独立提交。
+    func testResponseUnknownIsIsolatedPerSession() async {
+        let sender = RecordingPromptSender()
+        sender.failures = [HarnessTransportError.timedOut]
+        let controller = HarnessSubmissionController(
+            sendPrompt: { try await sender.send($0, $1, $2) },
+            sendCancel: { _ in }
+        )
+
+        let first = await controller.submit(sessionID: "s1", text: "一", requestID: "req-s1")
+        guard case .responseUnknown = first.state else {
+            XCTFail("前置条件：s1 必须是 responseUnknown")
+            return
+        }
+        let second = await controller.submit(sessionID: "s2", text: "二", requestID: "req-s2")
+
+        XCTAssertEqual(second.state, .accepted)
+        XCTAssertEqual(sender.calls.map(\.sessionID), ["s1", "s2"])
+        XCTAssertEqual(controller.latestSubmission(sessionID: "s1")?.requestID, "req-s1")
+        XCTAssertEqual(controller.latestSubmission(sessionID: "s2")?.requestID, "req-s2")
     }
 
     // MARK: - 对账出口
@@ -173,14 +199,14 @@ final class HarnessSubmissionControllerTests: XCTestCase {
             sendCancel: { _ in }
         )
         _ = await controller.submit(sessionID: "s1", text: "x", requestID: "req-g")
-        guard case .responseUnknown = controller.latest?.state else {
+        guard case .responseUnknown = controller.latestSubmission(sessionID: "s1")?.state else {
             XCTFail("前置条件")
             return
         }
 
         controller.resolveAfterReconciliation(requestID: "req-g")
 
-        XCTAssertEqual(controller.latest?.state, .accepted)
+        XCTAssertEqual(controller.latestSubmission(sessionID: "s1")?.state, .accepted)
         // 解开之后可以继续提交。
         let sender = RecordingPromptSender()
         let controller2 = HarnessSubmissionController(
@@ -201,7 +227,7 @@ final class HarnessSubmissionControllerTests: XCTestCase {
 
         controller.resolveAfterReconciliation(requestID: "someone-else")
 
-        guard case .responseUnknown = controller.latest?.state else {
+        guard case .responseUnknown = controller.latestSubmission(sessionID: "s1")?.state else {
             XCTFail("不匹配的 requestId 不得解开未知状态")
             return
         }
@@ -236,7 +262,7 @@ final class HarnessSubmissionControllerTests: XCTestCase {
 
         XCTAssertEqual(submission.requestID, "stable-id")
         XCTAssertEqual(sender.calls.first?.requestID, "stable-id")
-        XCTAssertEqual(controller.latest?.requestID, "stable-id")
+        XCTAssertEqual(controller.latestSubmission(sessionID: "s1")?.requestID, "stable-id")
     }
 }
 

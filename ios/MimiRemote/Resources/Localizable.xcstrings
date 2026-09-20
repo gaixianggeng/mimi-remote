@@ -43497,6 +43497,13 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "Harness 不支持引导，请使用普通输入。" } }
       }
     },
+    "harness.cancel_turn_mismatch": {
+      "comment": "A stale stop target was rejected because another Harness turn is active.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The stop target %@ is stale; the active turn is %@." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "停止目标 %@ 已过期；当前活动轮次是 %@。" } }
+      }
+    },
     "harness.approval_response_not_connected": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Native approval responses are not connected yet." } },

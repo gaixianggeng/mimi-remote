@@ -63,13 +63,23 @@ final class HarnessSubmissionController {
     private let sendPrompt: PromptSender
     private let sendCancel: CancelSender
 
-    /// 本控制器最近一次提交。只保留最新一条——同时提交两次是上层要拦的事，
-    /// 不是这里要缓冲的事。
-    private(set) var latest: Submission?
+    /// 写入状态按 request 保存，并按 session 指向各自最新一条。
+    /// 一个会话的结果未知不能冻结同一 runtime 下的其他会话。
+    private var submissionsByRequestID: [String: Submission] = [:]
+    private var latestRequestIDBySessionID: [String: String] = [:]
 
     init(sendPrompt: @escaping PromptSender, sendCancel: @escaping CancelSender) {
         self.sendPrompt = sendPrompt
         self.sendCancel = sendCancel
+    }
+
+    func latestSubmission(sessionID: String) -> Submission? {
+        guard let requestID = latestRequestIDBySessionID[sessionID] else { return nil }
+        return submissionsByRequestID[requestID]
+    }
+
+    func submission(requestID: String) -> Submission? {
+        submissionsByRequestID[requestID]
     }
 
     /// 发起一次提交。
@@ -81,11 +91,11 @@ final class HarnessSubmissionController {
     /// 上层，是因为"能不能再发一条"依赖的正是本类型持有的状态。
     @discardableResult
     func submit(sessionID: String, text: String, requestID: String) async -> Submission {
-        if let latest {
+        if let latest = latestSubmission(sessionID: sessionID) {
             switch latest.state {
             case .submitting, .responseUnknown:
                 // 在途或结果未知：不放行新提交。调用方应先对账。
-                // 注意这里**不**改写 latest：被拒的这次从未发出，不该覆盖在途状态。
+                // 注意这里**不**改写该会话 latest：被拒的这次从未发出。
                 return Submission(
                     requestID: requestID, sessionID: sessionID, text: text,
                     state: .rejected(L10n.text("harness.previous_submission_unconfirmed"))
@@ -98,7 +108,8 @@ final class HarnessSubmissionController {
         var submission = Submission(
             requestID: requestID, sessionID: sessionID, text: text, state: .submitting
         )
-        latest = submission
+        submissionsByRequestID[requestID] = submission
+        latestRequestIDBySessionID[sessionID] = requestID
 
         do {
             try await sendPrompt(sessionID, requestID, text)
@@ -107,7 +118,7 @@ final class HarnessSubmissionController {
         } catch {
             submission.state = Self.stateForFailure(error)
         }
-        latest = submission
+        submissionsByRequestID[requestID] = submission
         return submission
     }
 
@@ -159,10 +170,9 @@ final class HarnessSubmissionController {
     /// 由读取对账（`session/page` 里出现该 requestId 的 user/message）或上游重投确认调用。
     /// 这是 `.responseUnknown` 的唯一合法出口——它不能被超时或"用户等太久"清掉。
     func resolveAfterReconciliation(requestID: String) {
-        guard let latest, latest.requestID == requestID else { return }
-        guard case .responseUnknown = latest.state else { return }
-        var resolved = latest
+        guard var resolved = submissionsByRequestID[requestID] else { return }
+        guard case .responseUnknown = resolved.state else { return }
         resolved.state = .accepted
-        self.latest = resolved
+        submissionsByRequestID[requestID] = resolved
     }
 }

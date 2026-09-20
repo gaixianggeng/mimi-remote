@@ -45,8 +45,8 @@ final class HarnessPresentationProjectorTests: XCTestCase {
 
     // MARK: - 持久事件投影
 
-    /// 正向对照：真实夹具里的 user/message 必须投影出用户消息，且正文非空。
-    func testUserMessageProjectsWithText() throws {
+    /// 真实夹具里的 `user/message` 实际来自 skill-catalog，不能冒充用户输入。
+    func testSkillCatalogUserMessageProjectsAsContextNotUser() throws {
         let events = try durableEvents()
         let userEvents = events.filter { $0.type == HarnessWireEventType.userMessage }
         XCTAssertFalse(userEvents.isEmpty, "前置条件：夹具里必须有 user/message")
@@ -54,12 +54,63 @@ final class HarnessPresentationProjectorTests: XCTestCase {
         let projected = HarnessPresentationProjector.project(durableEvent: userEvents[0], sessionID: sessionID)
         XCTAssertEqual(projected.count, 1)
         guard case .messageCompleted(let message, _) = projected[0] else {
-            XCTFail("user/message 必须投影成 messageCompleted")
+            XCTFail("注入的 user/message 必须保留为 context")
+            return
+        }
+        XCTAssertEqual(message.role, .system)
+        XCTAssertEqual(message.kind, .context)
+        XCTAssertFalse(message.content.isEmpty, "正文不得为空")
+        XCTAssertEqual(message.sessionID, sessionID)
+    }
+
+    func testHumanUserSourceProjectsAsUser() throws {
+        let event = HarnessDurableEvent(
+            type: HarnessWireEventType.userMessage,
+            seq: 11,
+            time: nil,
+            data: .object([
+                "content": .array([.object([
+                    "type": .string("text"), "text": .string("真实用户输入"),
+                ])]),
+                "source": .object([
+                    "kind": .string("user"), "rpcId": .string("cm-human"),
+                ]),
+            ])
+        )
+
+        guard case .messageCompleted(let message, _) = try XCTUnwrap(
+            HarnessPresentationProjector.project(durableEvent: event, sessionID: sessionID).first
+        ) else {
+            XCTFail("human user/message 必须投影成用户消息")
             return
         }
         XCTAssertEqual(message.role, .user)
-        XCTAssertFalse(message.content.isEmpty, "正文不得为空")
-        XCTAssertEqual(message.sessionID, sessionID)
+        XCTAssertEqual(message.clientMessageID, "cm-human")
+    }
+
+    func testPluginUserMessageProjectsAsContextNotUser() throws {
+        let event = HarnessDurableEvent(
+            type: HarnessWireEventType.userMessage,
+            seq: 12,
+            time: nil,
+            data: .object([
+                "content": .array([.object([
+                    "type": .string("text"), "text": .string("插件注入"),
+                ])]),
+                "source": .object([
+                    "kind": .string("plugin"), "plugin": .string("fixture-plugin"),
+                ]),
+            ])
+        )
+
+        guard case .messageCompleted(let message, _) = try XCTUnwrap(
+            HarnessPresentationProjector.project(durableEvent: event, sessionID: sessionID).first
+        ) else {
+            XCTFail("plugin user/message 必须保留为 context")
+            return
+        }
+        XCTAssertEqual(message.role, .system)
+        XCTAssertEqual(message.kind, .context)
     }
 
     /// 正向对照：assistant/message 投影成助手消息。

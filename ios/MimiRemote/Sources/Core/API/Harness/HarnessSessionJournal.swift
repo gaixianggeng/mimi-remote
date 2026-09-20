@@ -109,13 +109,30 @@ struct HarnessSessionJournal: Equatable {
         //   基线就是那第一帧之后的状态：lastRevision 取 baseline.revision（=1），
         //   下一个 chunk 的 revision 应为 2。
         if let baseline = snapshot.assistantStream, let active = baseline.activeAttempt {
+            let chunks = active.stream
+                .flatMap(\.expandedChunks)
+                .enumerated()
+                .map { offset, chunk in
+                    HarnessAssistantStreamFrame(
+                        type: HarnessWireAssistantFrame.chunk,
+                        revision: nil,
+                        index: offset,
+                        chunk: chunk,
+                        outcome: nil,
+                        attemptId: active.attemptId,
+                        turn: nil,
+                        step: nil,
+                        startedAfterSeq: nil
+                    )
+                }
             activeAttempt = HarnessJournalAttempt(
                 attemptID: active.attemptId,
                 turn: active.turn,
                 step: active.step,
                 startedAfterSeq: active.startedAfterSeq,
                 lastRevision: baseline.revision ?? 0,
-                nextChunkIndex: active.nextIndex ?? 0
+                nextChunkIndex: active.nextIndex,
+                chunks: chunks
             )
         } else {
             // 没有正在进行的输出（或压根没有基线）：清掉上一代的残留——
@@ -187,6 +204,8 @@ struct HarnessSessionJournal: Equatable {
         if let frameAttempt = frame.attemptId, frameAttempt != attempt.attemptID {
             return .attemptMismatch(expected: attempt.attemptID, actual: frameAttempt)
         }
+        // 已消费的 index 是重投，不再次推进 revision 或追加正文。
+        if let index = frame.index, index < attempt.nextChunkIndex { return nil }
         // revision 必须连续（expected = previous + 1）。跳号即断档。
         if let revision = frame.revision, revision != attempt.lastRevision + 1 {
             let gap = HarnessJournalRevisionGap(
@@ -197,12 +216,14 @@ struct HarnessSessionJournal: Equatable {
             revisionGap = gap
             return .revisionGap(gap)
         }
-        if let revision = frame.revision { attempt.lastRevision = revision }
-        // index 稠密递增（从 0 开始）。重复 index 就是重复 chunk，不追加。
+        // index 必须稠密递增；跳号意味着丢失了正文前缀，不能静默接续。
         if let index = frame.index {
-            guard index >= attempt.nextChunkIndex else { return nil }
+            guard index == attempt.nextChunkIndex else {
+                return .chunkIndexGap(expected: attempt.nextChunkIndex, actual: index)
+            }
             attempt.nextChunkIndex = index + 1
         }
+        if let revision = frame.revision { attempt.lastRevision = revision }
         attempt.chunks.append(frame)
         activeAttempt = attempt
         return nil
@@ -306,7 +327,8 @@ struct HarnessJournalAttempt: Equatable {
         step: Int?,
         startedAfterSeq: Int?,
         lastRevision: Int,
-        nextChunkIndex: Int
+        nextChunkIndex: Int,
+        chunks: [HarnessAssistantStreamFrame] = []
     ) {
         self.attemptID = attemptID
         self.turn = turn
@@ -314,6 +336,7 @@ struct HarnessJournalAttempt: Equatable {
         self.startedAfterSeq = startedAfterSeq
         self.lastRevision = lastRevision
         self.nextChunkIndex = nextChunkIndex
+        self.chunks = chunks
     }
 
     init(frame: HarnessAssistantStreamFrame, lastRevision: Int, nextChunkIndex: Int) {
@@ -348,6 +371,8 @@ enum HarnessJournalStreamRejection: Equatable {
     case attemptMismatch(expected: String?, actual: String)
     /// revision 跳号：断档。必须重开 follow，不能把断档接上。
     case revisionGap(HarnessJournalRevisionGap)
+    /// chunk index 跳号：输出前缀丢失，必须重开 follow。
+    case chunkIndexGap(expected: Int, actual: Int)
     /// 认不出的帧型。
     case unknownFrameType(String?)
 
@@ -359,6 +384,8 @@ enum HarnessJournalStreamRejection: Equatable {
             return "attempt-mismatch:expected=\(expected ?? "nil"):actual=\(actual)"
         case .revisionGap(let gap):
             return "revision-gap:expected=\(gap.expected):actual=\(gap.actual)"
+        case .chunkIndexGap(let expected, let actual):
+            return "chunk-index-gap:expected=\(expected):actual=\(actual)"
         case .unknownFrameType(let type): return "unknown-frame-type:\(type ?? "nil")"
         }
     }

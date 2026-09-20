@@ -162,13 +162,16 @@ final class HarnessTransportTests: XCTestCase {
     func testAssistantStreamKeepsRevisionAndAttemptIdentity() throws {
         let raw = HarnessJSONValue.object([
             "type": .string(HarnessWireFrame.assistantStream),
-            "revision": .number(7),
-            "index": .number(3),
-            "chunk": .object(["type": .string("text-delta"), "text": .string("hi")]),
-            "outcome": .object([
-                "kind": .string("committed"),
-                "eventType": .string("assistant/attempt"),
-                "seq": .number(42),
+            "frame": .object([
+                "type": .string(HarnessWireAssistantFrame.end),
+                "attemptId": .string("attempt-identity"),
+                "revision": .number(7),
+                "index": .number(3),
+                "outcome": .object([
+                    "kind": .string("committed"),
+                    "eventType": .string("assistant/attempt"),
+                    "seq": .number(42),
+                ]),
             ]),
         ])
         let streamValue = HarnessStreamValue(
@@ -179,6 +182,36 @@ final class HarnessTransportTests: XCTestCase {
         let identity = HarnessSessionRuntime.identity(of: streamValue)
         XCTAssertEqual(identity.revision, 7)
         XCTAssertEqual(identity.seq, 42)
+        XCTAssertEqual(identity.attemptID, "attempt-identity")
+    }
+
+    func testAssistantStreamFrameDecodesFromNestedFollowEnvelope() throws {
+        let raw: HarnessJSONValue = .object([
+            "type": .string(HarnessWireFrame.assistantStream),
+            "frame": .object([
+                "type": .string(HarnessWireAssistantFrame.chunk),
+                "attemptId": .string("attempt-nested"),
+                "revision": .number(2),
+                "index": .number(0),
+                "time": .number(100),
+                "chunk": .object([
+                    "type": .string(HarnessWireChunkType.textDelta),
+                    "index": .number(0),
+                    "text": .string("nested"),
+                ]),
+            ]),
+        ])
+        let value = HarnessStreamValue(
+            type: HarnessWireFrame.assistantStream,
+            eventType: nil,
+            raw: raw
+        )
+
+        let frame = try HarnessAssistantStreamFrame.decode(from: value)
+
+        XCTAssertEqual(frame.type, HarnessWireAssistantFrame.chunk)
+        XCTAssertEqual(frame.attemptId, "attempt-nested")
+        XCTAssertEqual(frame.chunk?.text, "nested")
     }
 
     // MARK: - 4. 200 业务失败

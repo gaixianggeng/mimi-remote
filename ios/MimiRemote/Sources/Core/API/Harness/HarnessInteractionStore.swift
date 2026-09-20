@@ -58,8 +58,14 @@ final class HarnessInteractionStore {
     }
 
     private var pending: [String: PendingInteraction] = [:]
-    /// 终态 eventId。上游重投同一个 eventId 时必须更新原卡片而不是新增副本（契约 D5）。
-    private var terminal: Set<String> = []
+    private enum TerminalState: Equatable {
+        case resolved
+        /// cancel 只结算其所在代次；新代次重投可受控恢复成 pending。
+        case externallyCancelled(generation: UInt64)
+    }
+
+    /// 终态 eventId。明确解决永久结算；外部 cancel 只结算到其可信代次。
+    private var terminal: [String: TerminalState] = [:]
 
     var pendingCount: Int { pending.count }
 
@@ -85,8 +91,16 @@ final class HarnessInteractionStore {
     ) -> Bool {
         let id = eventID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else { return false }
-        // 已终结的 eventId 不得复活成新卡片。
-        guard !terminal.contains(id) else { return false }
+        if let terminalState = terminal[id] {
+            switch terminalState {
+            case .resolved:
+                return false
+            case .externallyCancelled(let cancelledGeneration):
+                guard generation > cancelledGeneration else { return false }
+                // 新连接上游重投代表它仍待处理；只恢复卡片，不重发旧决定。
+                terminal[id] = nil
+            }
+        }
 
         if var existing = pending[id] {
             // 同 eventId 重投：更新内容，但**保留应答中的状态**——
@@ -130,7 +144,7 @@ final class HarnessInteractionStore {
     func claim(eventID: String, generation: UInt64) -> ClaimResult {
         let id = eventID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else { return .unknown }
-        if terminal.contains(id) { return .settled }
+        if terminal[id] != nil { return .settled }
         guard var existing = pending[id] else { return .unknown }
         guard existing.generation == generation else { return .staleGeneration }
 
@@ -158,7 +172,7 @@ final class HarnessInteractionStore {
         pending[id] = updated
         // 立刻从待处理集合移除：卡片不再可应答。
         pending[id] = nil
-        terminal.insert(id)
+        terminal[id] = .resolved
     }
 
     /// 回传结果未知：**保留卡片并标记**，不解除应答锁。
@@ -189,20 +203,20 @@ final class HarnessInteractionStore {
     ///
     /// 返回是否确实撤下了一张卡——只有本连接展示过的才需要通知 UI。
     @discardableResult
-    func cancelExternally(eventID: String) -> Bool {
+    func cancelExternally(eventID: String, generation: UInt64) -> Bool {
         let id = eventID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let existing = pending[id] else {
             // 未投递给本连接的 eventId：记终态防"cancel 先于 waterfall"时复活，
             // 但不通知 UI（本连接从没展示过它）。
-            terminal.insert(id)
+            terminal[id] = .externallyCancelled(generation: generation)
             return false
         }
-        if case .responseUnknown = existing.state {
-            // 结果未知的应答不因上游 cancel 而清除：那可能是我们自己的应答生效了。
+        guard existing.generation == generation else {
+            // 旧连接迟到的 cancel 不能撤掉新连接刚重投的卡片。
             return false
         }
         pending[id] = nil
-        terminal.insert(id)
+        terminal[id] = .externallyCancelled(generation: generation)
         return true
     }
 

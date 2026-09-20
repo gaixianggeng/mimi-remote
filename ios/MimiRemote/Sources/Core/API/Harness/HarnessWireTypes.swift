@@ -273,7 +273,7 @@ enum HarnessCarrierDecoder {
 
 struct HarnessSnapshotHeader: Decodable, Equatable {
     let version: Int?
-    /// 会话标识。**必须**与订阅目标一致——上游返回别人的快照就是越权。
+    /// Harness 的 header 内部标识。冻结版本实测不等于 follow address.sessionId。
     let id: String?
     let createdAt: Double?
     let cwd: String?
@@ -295,7 +295,7 @@ struct HarnessDurableEvent: Decodable, Equatable {
     let data: HarnessJSONValue?
 }
 
-/// follow 打开帧。首帧**必须**是 snapshot，且 header.id 必须与订阅目标一致。
+/// follow 打开帧。首帧**必须**是 snapshot；会话归属由 carrier streamId 与观察租约确定。
 struct HarnessSnapshot: Decodable, Equatable {
     let type: String?
     let header: HarnessSnapshotHeader?
@@ -315,12 +315,239 @@ struct HarnessAssistantStreamBaseline: Decodable, Equatable {
 }
 
 struct HarnessActiveAttempt: Decodable, Equatable {
-    let attemptId: String?
-    let startedAfterSeq: Int?
-    let turn: Int?
-    let step: Int?
-    let nextIndex: Int?
-    let stream: String?
+    let attemptId: String
+    let startedAfterSeq: Int
+    let turn: Int
+    let step: Int
+    let nextIndex: Int
+    let stream: [HarnessAssistantStreamRecord]
+
+    init(
+        attemptId: String,
+        startedAfterSeq: Int,
+        turn: Int,
+        step: Int,
+        nextIndex: Int,
+        stream: [HarnessAssistantStreamRecord]
+    ) {
+        self.attemptId = attemptId
+        self.startedAfterSeq = startedAfterSeq
+        self.turn = turn
+        self.step = step
+        self.nextIndex = nextIndex
+        self.stream = stream
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case attemptId, startedAfterSeq, turn, step, nextIndex, stream
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        attemptId = try container.decode(String.self, forKey: .attemptId)
+        startedAfterSeq = try container.decode(Int.self, forKey: .startedAfterSeq)
+        turn = try container.decode(Int.self, forKey: .turn)
+        step = try container.decode(Int.self, forKey: .step)
+        nextIndex = try container.decode(Int.self, forKey: .nextIndex)
+        stream = try container.decode([HarnessAssistantStreamRecord].self, forKey: .stream)
+
+        guard !attemptId.isEmpty, nextIndex >= 0 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .nextIndex,
+                in: container,
+                debugDescription: "Active attempt requires a non-empty id and non-negative nextIndex"
+            )
+        }
+        let expandedCount = stream.reduce(0) { $0 + $1.expandedChunks.count }
+        guard expandedCount == nextIndex else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .stream,
+                in: container,
+                debugDescription: "Active attempt stream count \(expandedCount) does not match nextIndex \(nextIndex)"
+            )
+        }
+    }
+}
+
+/// `activeAttempt.stream` 的无损紧凑记录。冻结版本把连续 delta 合并成数组，
+/// 但 `nextIndex` 仍按展开后的 live chunk 计数，所以消费前必须严格校验并展开。
+enum HarnessAssistantStreamRecord: Decodable, Equatable {
+    case text(time0: Int, index: Int, dt: [Int], texts: [String])
+    case reasoning(time0: Int, index: Int, dt: [Int], texts: [String])
+    case toolCall(time0: Int, index: Int, dt: [Int], id: String, name: String?, args: [String])
+    case chunk(time: Int, chunk: HarnessAssistantChunk)
+
+    var expandedChunks: [HarnessAssistantChunk] {
+        switch self {
+        case .text(_, let index, _, let texts):
+            return texts.map {
+                HarnessAssistantChunk(
+                    type: HarnessWireChunkType.textDelta,
+                    index: index,
+                    text: $0,
+                    blockType: nil,
+                    argumentsDelta: nil
+                )
+            }
+        case .reasoning(_, let index, _, let texts):
+            return texts.map {
+                HarnessAssistantChunk(
+                    type: HarnessWireChunkType.reasoningDelta,
+                    index: index,
+                    text: $0,
+                    blockType: nil,
+                    argumentsDelta: nil
+                )
+            }
+        case .toolCall(_, let index, _, let id, let name, let args):
+            return args.map {
+                HarnessAssistantChunk(
+                    type: HarnessWireChunkType.toolCallDelta,
+                    index: index,
+                    text: nil,
+                    blockType: nil,
+                    argumentsDelta: $0,
+                    id: id,
+                    name: name
+                )
+            }
+        case .chunk(_, let chunk):
+            return [chunk]
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let raw = try HarnessJSONValue(from: decoder)
+        guard let object = raw.objectValue,
+              let type = object["type"]?.stringValue else {
+            throw Self.corrupted(decoder, "Assistant stream record must be an object with type")
+        }
+
+        switch type {
+        case "text-chunks", "reasoning-chunks":
+            try Self.requireExactKeys(object, ["type", "time0", "index", "dt", "texts"], decoder)
+            let time0 = try Self.integer(object, "time0", decoder)
+            let index = try Self.nonnegativeInteger(object, "index", decoder)
+            let dt = try Self.integerArray(object, "dt", decoder)
+            let texts = try Self.stringArray(object, "texts", decoder)
+            try Self.validateRun(time0: time0, dt: dt, memberCount: texts.count, decoder: decoder)
+            self = type == "text-chunks"
+                ? .text(time0: time0, index: index, dt: dt, texts: texts)
+                : .reasoning(time0: time0, index: index, dt: dt, texts: texts)
+        case "tool-call-chunks":
+            var keys: Set<String> = ["type", "time0", "index", "dt", "id", "args"]
+            if object["name"] != nil { keys.insert("name") }
+            try Self.requireExactKeys(object, keys, decoder)
+            let time0 = try Self.integer(object, "time0", decoder)
+            let index = try Self.nonnegativeInteger(object, "index", decoder)
+            let dt = try Self.integerArray(object, "dt", decoder)
+            let args = try Self.stringArray(object, "args", decoder)
+            guard let id = object["id"]?.stringValue, !id.isEmpty else {
+                throw Self.corrupted(decoder, "tool-call-chunks id must be non-empty")
+            }
+            let name = object["name"]?.stringValue
+            if object["name"] != nil, name?.isEmpty != false {
+                throw Self.corrupted(decoder, "tool-call-chunks name must be non-empty when present")
+            }
+            try Self.validateRun(time0: time0, dt: dt, memberCount: args.count, decoder: decoder)
+            self = .toolCall(
+                time0: time0, index: index, dt: dt, id: id, name: name, args: args
+            )
+        case "chunk":
+            try Self.requireExactKeys(object, ["type", "time", "chunk"], decoder)
+            let time = try Self.integer(object, "time", decoder)
+            guard let rawChunk = object["chunk"], rawChunk.objectValue != nil else {
+                throw Self.corrupted(decoder, "Assistant stream raw chunk must be an object")
+            }
+            do {
+                let data = try JSONEncoder().encode(rawChunk)
+                self = .chunk(time: time, chunk: try JSONDecoder().decode(HarnessAssistantChunk.self, from: data))
+            } catch {
+                throw Self.corrupted(decoder, "Assistant stream raw chunk is invalid: \(error)")
+            }
+        default:
+            throw Self.corrupted(decoder, "Unsupported assistant stream record \(type)")
+        }
+    }
+
+    private static func requireExactKeys(
+        _ object: [String: HarnessJSONValue],
+        _ expected: Set<String>,
+        _ decoder: Decoder
+    ) throws {
+        guard Set(object.keys) == expected else {
+            throw corrupted(decoder, "Assistant stream record has unexpected keys")
+        }
+    }
+
+    private static func integer(
+        _ object: [String: HarnessJSONValue], _ key: String, _ decoder: Decoder
+    ) throws -> Int {
+        guard case .number(let value) = object[key],
+              value.isFinite,
+              value.rounded(.towardZero) == value,
+              abs(value) <= 9_007_199_254_740_991 else {
+            throw corrupted(decoder, "\(key) must be a safe integer")
+        }
+        return Int(value)
+    }
+
+    private static func nonnegativeInteger(
+        _ object: [String: HarnessJSONValue], _ key: String, _ decoder: Decoder
+    ) throws -> Int {
+        let value = try integer(object, key, decoder)
+        guard value >= 0 else { throw corrupted(decoder, "\(key) must be non-negative") }
+        return value
+    }
+
+    private static func integerArray(
+        _ object: [String: HarnessJSONValue], _ key: String, _ decoder: Decoder
+    ) throws -> [Int] {
+        guard let values = object[key]?.arrayValue else {
+            throw corrupted(decoder, "\(key) must be an integer array")
+        }
+        return try values.map { value in
+            try integer([key: value], key, decoder)
+        }
+    }
+
+    private static func stringArray(
+        _ object: [String: HarnessJSONValue], _ key: String, _ decoder: Decoder
+    ) throws -> [String] {
+        guard let values = object[key]?.arrayValue else {
+            throw corrupted(decoder, "\(key) must be a string array")
+        }
+        let strings = try values.map { value -> String in
+            guard let string = value.stringValue else {
+                throw corrupted(decoder, "\(key) must contain only strings")
+            }
+            return string
+        }
+        guard !strings.isEmpty else { throw corrupted(decoder, "\(key) must be non-empty") }
+        return strings
+    }
+
+    private static func validateRun(
+        time0: Int, dt: [Int], memberCount: Int, decoder: Decoder
+    ) throws {
+        guard dt.count == memberCount - 1 else {
+            throw corrupted(decoder, "dt length must be one less than members")
+        }
+        var time = time0
+        for gap in dt {
+            let (next, overflow) = time.addingReportingOverflow(gap)
+            guard !overflow, abs(Double(next)) <= 9_007_199_254_740_991 else {
+                throw corrupted(decoder, "Assistant stream member time is not a safe integer")
+            }
+            time = next
+        }
+    }
+
+    private static func corrupted(_ decoder: Decoder, _ message: String) -> DecodingError {
+        DecodingError.dataCorrupted(
+            DecodingError.Context(codingPath: decoder.codingPath, debugDescription: message)
+        )
+    }
 }
 
 // MARK: - follow：assistant-stream 直播片段
@@ -382,6 +609,24 @@ struct HarnessAssistantStreamFrame: Decodable, Equatable {
     let turn: Int?
     let step: Int?
     let startedAfterSeq: Int?
+
+    /// follow 的外层 value 是 `{type:"assistant-stream", frame:{…}}`。
+    /// 业务帧只能从嵌套 `frame` 解码，不能误读外层判别式。
+    static func decode(from value: HarnessStreamValue) throws -> HarnessAssistantStreamFrame {
+        guard value.type == HarnessWireFrame.assistantStream,
+              let nested = value.raw["frame"],
+              nested.objectValue != nil else {
+            throw HarnessTransportError.malformedResponse("assistant-stream frame is missing")
+        }
+        do {
+            return try JSONDecoder().decode(
+                HarnessAssistantStreamFrame.self,
+                from: JSONEncoder().encode(nested)
+            )
+        } catch {
+            throw HarnessTransportError.malformedResponse("assistant-stream frame is invalid: \(error)")
+        }
+    }
 }
 
 struct HarnessAssistantChunk: Decodable, Equatable {
@@ -390,6 +635,26 @@ struct HarnessAssistantChunk: Decodable, Equatable {
     let text: String?
     let blockType: String?
     let argumentsDelta: String?
+    let id: String?
+    let name: String?
+
+    init(
+        type: String?,
+        index: Int?,
+        text: String?,
+        blockType: String?,
+        argumentsDelta: String?,
+        id: String? = nil,
+        name: String? = nil
+    ) {
+        self.type = type
+        self.index = index
+        self.text = text
+        self.blockType = blockType
+        self.argumentsDelta = argumentsDelta
+        self.id = id
+        self.name = name
+    }
 }
 
 struct HarnessAssistantStreamOutcome: Decodable, Equatable {
