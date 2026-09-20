@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -19,6 +20,11 @@ func moduleTestConfig(t *testing.T) string {
 		t.Fatal(err)
 	}
 	document["projects"] = []config.ProjectConfig{{ID: "module-test", Name: "Module test", Path: t.TempDir()}}
+	if runtime.GOOS == "windows" {
+		appServer := config.DefaultManagedAppServerConfig()
+		appServer.WSTokenFile = filepath.Join(t.TempDir(), "app-server-token")
+		document["app_server"] = appServer
+	}
 	raw, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
@@ -49,9 +55,15 @@ func assertModuleUnknowns(t *testing.T, path string) {
 	if doc["auth"].(map[string]any)["token"] != "module-test-only" || doc["network"].(map[string]any)["future"] != float64(17) || doc["codex"].(map[string]any)["future"] == nil || doc["future_root"] == nil {
 		t.Fatal("unrelated data lost")
 	}
-	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0600 {
-		t.Fatal("configuration permissions changed")
+	// Windows protects private files with ACLs, not POSIX permission bits.
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Fatal("configuration permissions changed")
+		}
 	}
 }
 
