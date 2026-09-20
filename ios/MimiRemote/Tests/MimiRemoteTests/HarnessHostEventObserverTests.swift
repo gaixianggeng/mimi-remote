@@ -231,7 +231,7 @@ final class HarnessHostEventObserverTests: XCTestCase {
         stream.push(carrierValue(streamID: eventsID, value: .object([
             "type": .string(HarnessWireFrame.responded),
             "eventId": .string("approval-ack"),
-            "accepted": .bool(true),
+            "outcome": .string(HarnessRespondOutcome.accepted),
             "responded": .bool(true),
         ])))
         await waitFor { store.interaction(eventID: "approval-ack") == nil }
@@ -271,7 +271,7 @@ final class HarnessHostEventObserverTests: XCTestCase {
         stream.push(carrierValue(streamID: eventsID, value: .object([
             "type": .string(HarnessWireFrame.responded),
             "eventId": .string("approval-rejected"),
-            "accepted": .bool(false),
+            "outcome": .string(HarnessRespondOutcome.rejected),
             "responded": .bool(true),
             "error": .object([
                 "code": .string("harness/rejected"),
@@ -284,6 +284,106 @@ final class HarnessHostEventObserverTests: XCTestCase {
         XCTAssertEqual(rejections.first?.2, "目标会话不在授权目录内", "拒绝原因必须如实回传")
         // 明确拒绝 = 没生效，允许用户重试。
         XCTAssertEqual(store.interaction(eventID: "approval-rejected")?.state, .pending)
+
+        await observer.stop()
+    }
+
+    /// **结果未知绝不能当成"明确拒绝"。**
+    ///
+    /// 这是回执四态里最容易写错的一处：上游可能已经接受了这次应答、只是 HTTP 响应丢了。
+    /// 把它判成可重试的拒绝，会让用户重新回答一次已经生效的审批——重复执行副作用。
+    /// 因此它必须保持锁定，等对账或上游重投。
+    func testUnknownOutcomeKeepsCardLockedInsteadOfReopening() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let runtime = makeRuntime(stream: stream)
+        let store = HarnessInteractionStore()
+        let observer = HarnessHostEventObserver(
+            runtime: runtime,
+            interactionStore: store,
+            recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
+        )
+        observer.start()
+        let eventsID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
+        stream.push(carrierValue(streamID: eventsID, value: .object([
+            "type": .string(HarnessWireFrame.ready),
+        ])))
+        stream.push(carrierValue(streamID: eventsID, value: .object([
+            "type": .string(HarnessWireFrame.waterfall),
+            "eventId": .string("approval-unknown"),
+            "event": .string(HarnessWireWaterfallEvent.approvalRequest),
+            "agentId": .string(sessionB),
+            "request": .object(["toolName": .string("shell")]),
+        ])))
+        await waitFor { store.interaction(eventID: "approval-unknown") != nil }
+        // 先认领，模拟"已经提交出去"。
+        _ = store.claim(eventID: "approval-unknown", generation: await runtime.connectionGeneration)
+
+        stream.push(carrierValue(streamID: eventsID, value: .object([
+            "type": .string(HarnessWireFrame.responded),
+            "eventId": .string("approval-unknown"),
+            "outcome": .string(HarnessRespondOutcome.unknown),
+            "responded": .bool(true),
+            "error": .object([
+                "code": .string("gateway/service-unavailable"),
+                "message": .string("上游结果未知"),
+            ]),
+        ])))
+        await waitFor {
+            guard case .responseUnknown? = store.interaction(eventID: "approval-unknown")?.state else {
+                return false
+            }
+            return true
+        }
+
+        guard case .responseUnknown = store.interaction(eventID: "approval-unknown")?.state else {
+            XCTFail("结果未知必须保持锁定，实际 \(String(describing: store.interaction(eventID: "approval-unknown")?.state))")
+            return
+        }
+        // 卡片还在，但不可再次应答——重发可能让一次审批被应用两次。
+        XCTAssertNotNil(store.interaction(eventID: "approval-unknown"))
+
+        await observer.stop()
+    }
+
+    /// 他端终结（`settled`）撤卡，但**不**声称本端回答获胜。
+    func testSettledOutcomeRemovesCardWithoutClaimingLocalWin() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let runtime = makeRuntime(stream: stream)
+        let store = HarnessInteractionStore()
+        let observer = HarnessHostEventObserver(
+            runtime: runtime,
+            interactionStore: store,
+            recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
+        )
+        var events: [AgentEvent] = []
+        observer.onEvent = { events.append($0) }
+        observer.start()
+        let eventsID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
+        stream.push(carrierValue(streamID: eventsID, value: .object([
+            "type": .string(HarnessWireFrame.ready),
+        ])))
+        stream.push(carrierValue(streamID: eventsID, value: .object([
+            "type": .string(HarnessWireFrame.waterfall),
+            "eventId": .string("approval-settled"),
+            "event": .string(HarnessWireWaterfallEvent.approvalRequest),
+            "agentId": .string(sessionB),
+            "request": .object(["toolName": .string("shell")]),
+        ])))
+        await waitFor { store.interaction(eventID: "approval-settled") != nil }
+
+        stream.push(carrierValue(streamID: eventsID, value: .object([
+            "type": .string(HarnessWireFrame.responded),
+            "eventId": .string("approval-settled"),
+            "outcome": .string(HarnessRespondOutcome.settled),
+            "responded": .bool(true),
+        ])))
+        await waitFor { store.interaction(eventID: "approval-settled") == nil }
+
+        XCTAssertNil(store.interaction(eventID: "approval-settled"), "已由他端终结的卡片必须撤下")
+        XCTAssertTrue(events.contains {
+            if case .approvalResolved = $0 { return true }
+            return false
+        }, "撤卡要通知 UI；但事件本身不表达'哪一端回答获胜'")
 
         await observer.stop()
     }

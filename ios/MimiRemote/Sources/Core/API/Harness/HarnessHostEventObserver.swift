@@ -287,9 +287,14 @@ final class HarnessHostEventObserver {
 
     /// 应用一帧应答回执。**这是撤卡的唯一依据。**
     ///
-    /// 中继在"上游已接受"或"明确拒绝"时才发这一帧并带上 eventId。在此之前的一切
-    /// （帧写出成功、socket 未报错）都只代表"提交中"：上游随后仍可能拒绝，
-    /// 届时用户会看到一个已经消失的卡片，以为决定已生效。
+    /// 中继在"上游已接受 / 明确拒绝 / 已由他端终结 / 结果未知"时发这一帧。
+    /// 四种结论的动作**互不相同**，因此不能只看一个布尔值：
+    ///
+    /// - 接受 → 撤卡；
+    /// - 他端终结 → 撤卡，但不声称本端回答获胜；
+    /// - 明确拒绝 → 放回，允许用户改条件后重试；
+    /// - 结果未知 → **保持锁定**，不重发、也不当成"没执行"。这一点最关键：
+    ///   上游可能已经接受了这次应答，只是响应丢了；判成可重试会重复执行一次审批。
     private func applyRespondAck(_ value: HarnessStreamValue) {
         guard let eventID = value.raw["eventId"]?.stringValue?.trimmedNonEmpty,
               let generation = runtimeGeneration,
@@ -300,19 +305,42 @@ final class HarnessHostEventObserver {
             sessionID: pending.sessionID,
             generation: generation
         )
-        if value.raw["accepted"]?.boolValue == true {
+        let outcome = value.raw["outcome"]?.stringValue?.trimmedNonEmpty
+
+        switch outcome {
+        case HarnessRespondOutcome.accepted, HarnessRespondOutcome.settled:
+            // 两者都终结这张卡。`settled` 只额外说明"不是本端回答赢了"，
+            // 但对卡片而言结果相同：不再可应答。
             interactionStore.resolve(eventID: eventID)
             onEvent?(HarnessInteractionProjection.resolved(context, isQuestion: pending.isQuestion))
             return
-        }
 
-        // 明确拒绝：放回待应答，允许用户改条件后重试。
-        // 临时故障不走这里（那类失败没有回执，状态保持锁定）。
-        interactionStore.releaseAfterExplicitFailure(eventID: eventID)
-        let message = value.raw["error"]?["message"]?.stringValue?.trimmedNonEmpty
+        case HarnessRespondOutcome.rejected:
+            // 明确拒绝 = 没生效，放回让用户重试。
+            interactionStore.releaseAfterExplicitFailure(eventID: eventID)
+            onInteractionRejected?(pending.sessionID, eventID, Self.respondErrorMessage(value))
+
+        case HarnessRespondOutcome.unknown:
+            // 结果未知：锁定并等待对账/重投。这里**不**调用
+            // `releaseAfterExplicitFailure`，否则一次可能已生效的审批会被重复执行。
+            interactionStore.markResponseUnknown(
+                eventID: eventID,
+                detail: Self.respondErrorMessage(value)
+            )
+            onInteractionRejected?(pending.sessionID, eventID, Self.respondErrorMessage(value))
+
+        default:
+            // 认不出的结论不猜。保持现状（仍是 submitting），并如实提示——
+            // 猜"接受"会撤掉一张可能还待处理的卡，猜"拒绝"会诱发重复提交。
+            onInteractionRejected?(pending.sessionID, eventID, Self.respondErrorMessage(value))
+        }
+    }
+
+    /// 从回执里取可读的错误文案。
+    private static func respondErrorMessage(_ value: HarnessStreamValue) -> String {
+        value.raw["error"]?["message"]?.stringValue?.trimmedNonEmpty
             ?? value.raw["error"]?["code"]?.stringValue?.trimmedNonEmpty
             ?? L10n.text("harness.interaction_response_rejected")
-        onInteractionRejected?(pending.sessionID, eventID, message)
     }
 
     private static func decode<T: Decodable>(

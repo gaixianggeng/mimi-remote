@@ -48,9 +48,25 @@ enum HarnessWireFrame {
     /// agentd 中继的应答回执。
     ///
     /// 它是中继的扩展（不是上游 remote.mux 的形状），承载
-    /// `{eventId, accepted, responded, error?}`。**撤卡只认这一帧**：
+    /// `{eventId, outcome, responded, error?}`。**撤卡只认这一帧**：
     /// 帧写出成功只代表中继收到了应答，不代表 Harness 接受了它。
     static let responded = "responded"
+}
+
+/// 应答回执的结论判别值（中继扩展，与 Go 侧 `harnessNativeRespondOutcome*` 对应）。
+///
+/// 四态刻意分开：`rejected` 与 `unknown` 在移动端要求的动作相反——前者放回重试，
+/// 后者必须保持锁定等对账。合并成一个布尔值会让"上游其实已接受、只是响应丢了"
+/// 被当成可重试，从而重复执行一次审批。
+enum HarnessRespondOutcome {
+    /// 上游明确接受。撤卡。
+    static let accepted = "accepted"
+    /// 上游明确拒绝且未执行。放回重试。
+    static let rejected = "rejected"
+    /// 已由其它路径终结。撤卡，但不声称本端回答获胜。
+    static let settled = "settled"
+    /// 结果未知，可能已生效。保持锁定，等对账或重投。
+    static let unknown = "unknown"
 }
 
 /// 载体层判别式：服务端**每帧**都在顶层带 type，取值只有这三个。

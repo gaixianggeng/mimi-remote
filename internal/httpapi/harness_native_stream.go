@@ -640,20 +640,29 @@ func (c *harnessNativeStreamConn) handleRespond(ctx context.Context, frame harne
 	eventID := strings.TrimSpace(frame.EventID)
 	pending, result, err := c.registry.claim(eventID, c.generation)
 	if err != nil {
-		c.writeRespondError(eventID, harnessNativeRemoteErrorFrom(err))
+		// 认领失败分两类：伪造/代次失效（明确未执行）与"从未投递"。
+		// 两者都没触达上游，但**不能**一律当成可重试的拒绝——伪造是安全边界，
+		// 移动端不该据此重新开放卡片。用 `unknown` 让它保持锁定并如实提示。
+		c.writeRespondOutcome(eventID, harnessNativeRespondOutcomeUnknown, harnessNativeRemoteErrorFrom(err))
 		return
 	}
 	if result == harnessNativeClaimSettled {
 		// 契约：迟到应答是空操作而非错误。不转发（转发只会拿到上游
-		// lookup-not-found），也不谎报成功。移动端据此把该卡结算掉。
-		c.writeRespondError(eventID, harnessNativeWSError("harness/interaction-settled", "该交互已终结，应答是空操作"))
+		// lookup-not-found），也不谎报成功。
+		// 移动端按 `settled` 撤卡——但不能声称本端回答获胜（也许是另一端先答的）。
+		c.writeRespondOutcome(
+			eventID,
+			harnessNativeRespondOutcomeSettled,
+			harnessNativeWSError("harness/interaction-settled", "该交互已终结，应答是空操作"),
+		)
 		return
 	}
 
 	outcome, err := harnessNativeValidateOutcome(pending.Event, frame.Outcome)
 	if err != nil {
 		c.registry.release(eventID)
-		c.writeRespondError(eventID, harnessNativeRemoteErrorFrom(err))
+		// 形状非法 = 这次应答没有被上游看到，可以改条件重试。
+		c.writeRespondOutcome(eventID, harnessNativeRespondOutcomeRejected, harnessNativeRemoteErrorFrom(err))
 		return
 	}
 
@@ -663,14 +672,19 @@ func (c *harnessNativeStreamConn) handleRespond(ctx context.Context, frame harne
 	if clientID == "" {
 		// 还没收到 ready，就没有可用的 clientId。不能猜一个。
 		c.registry.release(eventID)
-		c.writeRespondError(eventID, harnessNativeWSError("gateway/service-unavailable", "尚未建立事件代次，请稍后重试"))
+		// 还没发出，明确未执行。
+		c.writeRespondOutcome(
+			eventID,
+			harnessNativeRespondOutcomeRejected,
+			harnessNativeWSError("gateway/service-unavailable", "尚未建立事件代次，请稍后重试"),
+		)
 		return
 	}
 
 	client, err := c.router.harnessNativeClientFor(ctx)
 	if err != nil {
 		c.registry.release(eventID)
-		c.writeRespondError(eventID, harnessNativeRemoteErrorFrom(err))
+		c.writeRespondOutcome(eventID, harnessNativeRespondOutcomeUnknown, harnessNativeRemoteErrorFrom(err))
 		return
 	}
 	if err := c.router.harnessNativeAuthorizeSession(ctx, client, pending.SessionID, nil); err != nil {
@@ -680,70 +694,79 @@ func (c *harnessNativeStreamConn) handleRespond(ctx context.Context, frame harne
 		if errors.As(err, &policyErr) && policyErr.status == http.StatusForbidden {
 			c.registry.forgetSession(pending.SessionID)
 		}
-		c.writeRespondError(eventID, harnessNativeRemoteErrorFrom(err))
+		// 授权拒绝 = 没转发，明确未执行。
+		c.writeRespondOutcome(eventID, harnessNativeRespondOutcomeRejected, harnessNativeRemoteErrorFrom(err))
 		return
 	}
 	if err := client.RespondOutcome(ctx, clientID, eventID, json.RawMessage(mustMarshalRaw(outcome))); err != nil {
-		c.writeRespondError(eventID, harnessNativeRemoteErrorFrom(err))
 		var remoteErr *harnessclient.RemoteError
 		if errors.As(err, &remoteErr) {
-			// 明确的业务失败才可在当前连接重试。
+			// 明确的业务失败：上游看见了这次应答并拒绝了它，没生效。
+			// 只有这种才回 `rejected`，让移动端放回重试。
 			c.registry.release(eventID)
-		} else {
-			// HTTP 结果未知，不解锁成“尚未生效”。重连后由 Harness 重投
-			// 仍 pending 的请求；这里绝不自动重发用户决定。
-			_ = c.conn.Close()
+			c.writeRespondOutcome(eventID, harnessNativeRespondOutcomeRejected, harnessNativeRemoteErrorFrom(err))
+			return
 		}
+		// HTTP 结果未知：**可能已经生效**。回 `unknown` 而不是 `rejected`——
+		// 后者会让移动端把它当成可重试的明确拒绝，从而重复执行一次审批。
+		// 不解锁成"尚未生效"；重连后由 Harness 重投仍 pending 的请求，
+		// 这里绝不自动重发用户决定。
+		c.writeRespondOutcome(eventID, harnessNativeRespondOutcomeUnknown, harnessNativeRemoteErrorFrom(err))
+		_ = c.conn.Close()
 		return
 	}
 	// 只有上游接受了才终结。服务器收到应答 != Harness 已接受。
 	c.registry.settle(eventID)
 	// 明确接受才回执。移动端收到它才撤卡；在此之前卡片停在"提交中"。
-	c.writeRespondAccepted(eventID)
+	c.writeRespondOutcome(eventID, harnessNativeRespondOutcomeAccepted, nil)
 }
 
-// writeRespondAccepted 回传一次被上游接受的应答。
+// 应答回执的结论判别值。
 //
-// 这是「发送成功 ≠ 业务成功」在协议上的落点：帧里必须带 `eventId` 供移动端关联
-// 到具体卡片，并带 `$events` 的 streamId 让载体解码器能归属它。
-func (c *harnessNativeStreamConn) writeRespondAccepted(eventID string) {
-	if eventID == "" {
-		return
-	}
-	c.mu.Lock()
-	streamID := c.eventsStreamID
-	c.mu.Unlock()
-	if streamID == "" {
-		// 没有 $events 订阅就没有可归属的通道。不回执而不是回一帧无归属的帧——
-		// 后者会被移动端当作无法归属而丢弃，等于假装回了。
-		return
-	}
-	c.writeRespondFrame(streamID, map[string]any{
-		"eventId":   eventID,
-		"accepted":  true,
-		"responded": true,
-	})
-}
+// 一个布尔值不够用：**结果未知**与**明确拒绝**在移动端要求的后续动作完全相反
+// ——前者必须保持锁定等对账，后者要放回让用户重试。把两者混成 `accepted:false`
+// 会让"上游其实已经接受了、只是 HTTP 响应丢了"被当成"可以重试"，从而可能重复
+// 执行一次审批。
+const (
+	// 上游明确接受。移动端据此撤卡。
+	harnessNativeRespondOutcomeAccepted = "accepted"
+	// 上游明确拒绝且**未执行**。移动端保留原因并放回重试。
+	harnessNativeRespondOutcomeRejected = "rejected"
+	// 该交互已由其它路径终结。移动端撤卡，但不声称本端回答获胜。
+	harnessNativeRespondOutcomeSettled = "settled"
+	// 结果未知，可能已生效。移动端不自动重发、不当明确拒绝，进入对账或重投恢复。
+	harnessNativeRespondOutcomeUnknown = "unknown"
+)
 
-// writeRespondError 回传一次应答失败，并带上 eventId 供移动端撤下/保留对应卡片。
+// writeRespondOutcome 回传一次应答的真实结论。
 //
-// 不带 eventId 的错误对移动端是**不可归属**的：它只知道"有事发生"，无法判断
-// 是哪张卡，于是既不能撤卡也不能放回重试。
-func (c *harnessNativeStreamConn) writeRespondError(eventID string, remoteErr *harnessclient.RemoteError) {
+// 每种结论都要带 `eventId`：没有它，移动端只知道"有事发生"，无法判断是哪张卡，
+// 于是既不能撤卡也不能放回重试。
+func (c *harnessNativeStreamConn) writeRespondOutcome(
+	eventID string,
+	outcome string,
+	remoteErr *harnessclient.RemoteError,
+) {
 	c.mu.Lock()
 	streamID := c.eventsStreamID
 	c.mu.Unlock()
 	if streamID == "" || eventID == "" {
-		// 没有 $events 订阅时退回既有形状：至少把失败如实发出去，不静默吞掉。
-		c.writeStreamError("", remoteErr)
+		// 没有 `$events` 订阅就没有可归属的通道。失败时至少把原因如实发出去，
+		// 不静默吞掉；成功时无卡可撤，不回执也不影响正确性。
+		if remoteErr != nil {
+			c.writeStreamError("", remoteErr)
+		}
 		return
 	}
-	c.writeRespondFrame(streamID, map[string]any{
+	payload := map[string]any{
 		"eventId":   eventID,
-		"accepted":  false,
+		"outcome":   outcome,
 		"responded": true,
-		"error":     remoteErr,
-	})
+	}
+	if remoteErr != nil {
+		payload["error"] = remoteErr
+	}
+	c.writeRespondFrame(streamID, payload)
 }
 
 // writeRespondFrame 写一帧应答回执。

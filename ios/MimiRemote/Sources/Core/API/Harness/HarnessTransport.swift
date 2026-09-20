@@ -433,7 +433,6 @@ final class URLSessionHarnessStreamTransport: HarnessStreamTransport {
     private let pingTimeout: TimeInterval
 
     private var task: URLSessionWebSocketTask?
-    private var closed = false
 
     init(
         baseURL: URL,
@@ -450,7 +449,8 @@ final class URLSessionHarnessStreamTransport: HarnessStreamTransport {
     }
 
     func connect() async throws {
-        guard task == nil, !closed else { return }
+        // 已有活连接就复用；否则重新建一条。可重连是断线恢复的前提。
+        guard task == nil else { return }
         let request = makeConnectRequest()
         let nextTask = session.webSocketTask(with: request)
         WebSocketMessageLimits.apply(to: nextTask)
@@ -471,7 +471,7 @@ final class URLSessionHarnessStreamTransport: HarnessStreamTransport {
     }
 
     func send(_ frame: HarnessClientFrame) async throws {
-        guard let task, !closed else {
+        guard let task else {
             throw HarnessTransportError.notConnected
         }
         let data = try frame.encoded()
@@ -488,7 +488,7 @@ final class URLSessionHarnessStreamTransport: HarnessStreamTransport {
     }
 
     func receive() async throws -> HarnessCarrierFrame? {
-        guard let task, !closed else {
+        guard let task else {
             throw HarnessTransportError.notConnected
         }
         let message: URLSessionWebSocketTask.Message
@@ -521,7 +521,7 @@ final class URLSessionHarnessStreamTransport: HarnessStreamTransport {
     /// 挂一个本地超时。两者谁先到谁决定结果，另一个变成空操作（`OneShotResumer` 保证只
     /// 恢复一次）。少了这个超时，探测本身就变成一个新的挂起点，等于没做探测。
     func ping() async throws {
-        guard let task, !closed else {
+        guard let task else {
             throw HarnessTransportError.notConnected
         }
         let resumer = OneShotResumer()
@@ -538,9 +538,13 @@ final class URLSessionHarnessStreamTransport: HarnessStreamTransport {
         }
     }
 
-    /// 关闭。幂等：`close()` 之后 `task` 置空，重复调用直接返回。
+    /// 关闭本代连接。
+    ///
+    /// **不是永久退役。** `close()` 只结束当前这条 socket；`connect()` 之后必须能重新建连，
+    /// 否则断线恢复在真实传输上根本走不通——runtime 会以为自己在重连，transport 却
+    /// 直接返回，随后 send/receive 一律 `notConnected`。
+    /// 需要"永不重连"的语义由 runtime 不再调用 `connect()` 表达，不靠 transport 记一个终态。
     func close() async {
-        closed = true
         let current = task
         task = nil
         current?.cancel(with: .normalClosure, reason: nil)

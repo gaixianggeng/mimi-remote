@@ -72,6 +72,17 @@ func h03RespondAck(t *testing.T, frame map[string]any, eventID string) map[strin
 	return value
 }
 
+// h03RespondOutcome 断言回执的结论判别值。
+//
+// 四态不能合并：`rejected` 要放回重试，而 `unknown` 必须保持锁定——
+// 把后者当成前者会让一次可能已生效的审批被重复执行。
+func h03RespondOutcome(t *testing.T, value map[string]any, want string) {
+	t.Helper()
+	if value["outcome"] != want {
+		t.Fatalf("respond outcome = %v, want %v", value["outcome"], want)
+	}
+}
+
 func h03AssertTransportClosed(t *testing.T, conn *websocket.Conn) {
 	t.Helper()
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -204,9 +215,7 @@ func TestHarnessNativeH03FollowUnsubscribeKeepsPendingAnswer(t *testing.T) {
 	})
 	// 应答成功必须有可关联的回执：卡片撤下要等它，而不是等帧写进 socket。
 	ack := h03RespondAck(t, readHarnessNativeFrame(t, conn), "event-a")
-	if ack["accepted"] != true {
-		t.Fatalf("accepted respond must be acknowledged as accepted: %v", ack)
-	}
+	h03RespondOutcome(t, ack, harnessNativeRespondOutcomeAccepted)
 	count := 0
 	for _, method := range stub.recordedRPCs() {
 		if method == "$events/result" {
@@ -324,9 +333,8 @@ func TestHarnessNativeH03RevokedInteractionDoesNotReachUpstream(t *testing.T) {
 	// 撤权后的拒绝必须带 eventId 回传：手机靠它知道是哪张卡被拒，
 	// 才能撤卡或放回重试，而不是把失败挂在一个无关的帧上。
 	ack := h03RespondAck(t, readHarnessNativeFrame(t, conn), "event-a")
-	if ack["accepted"] != false {
-		t.Fatalf("revoked answer must not be acknowledged as accepted: %v", ack)
-	}
+	// 撤权是"没转发"的明确结论，不是结果未知——移动端应放回而不是锁死。
+	h03RespondOutcome(t, ack, harnessNativeRespondOutcomeRejected)
 	for _, method := range stub.recordedRPCs() {
 		if method == "$events/result" {
 			t.Fatal("revoked answer reached upstream")

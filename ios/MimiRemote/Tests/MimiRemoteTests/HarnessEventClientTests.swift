@@ -294,7 +294,7 @@ final class HarnessEventClientTests: XCTestCase {
         // 只有中继的关联回执才撤卡。
         stream.push(carrierValue(
             streamID: eventsID,
-            value: respondAckValue(eventID: "approval-runtime", accepted: true)
+            value: respondAckValue(eventID: "approval-runtime", outcome: HarnessRespondOutcome.accepted)
         ))
         await waitFor { store.interaction(eventID: "approval-runtime") == nil }
         XCTAssertNil(store.interaction(eventID: "approval-runtime"), "收到明确接受回执后才撤卡")
@@ -358,7 +358,7 @@ final class HarnessEventClientTests: XCTestCase {
             streamID: eventsID,
             value: respondAckValue(
                 eventID: "approval-rejected-upstream",
-                accepted: false,
+                outcome: HarnessRespondOutcome.rejected,
                 error: .object([
                     "code": .string("harness/rejected"),
                     "message": .string("目标会话不在授权目录内"),
@@ -481,7 +481,7 @@ final class HarnessEventClientTests: XCTestCase {
             streamID: eventsID,
             value: respondAckValue(
                 eventID: "explicit-reject",
-                accepted: false,
+                outcome: HarnessRespondOutcome.rejected,
                 error: .object([
                     "code": .string("approval/rejected"),
                     "message": .string("上游明确拒绝"),
@@ -1461,18 +1461,19 @@ final class HarnessEventClientTests: XCTestCase {
         )
     }
 
-    /// 中继的应答回执帧（`{eventId, accepted, responded, error?}`）。
+    /// 中继的应答回执帧（`{eventId, outcome, responded, error?}`）。
     ///
     /// 撤卡只认它：帧写出成功只代表中继收到了应答，不代表 Harness 接受了它。
+    /// 四态刻意分开——`rejected` 放回重试，`unknown` 必须保持锁定。
     private func respondAckValue(
         eventID: String,
-        accepted: Bool,
+        outcome: String,
         error: HarnessJSONValue? = nil
     ) -> HarnessJSONValue {
         var object: [String: HarnessJSONValue] = [
             "type": .string(HarnessWireFrame.responded),
             "eventId": .string(eventID),
-            "accepted": .bool(accepted),
+            "outcome": .string(outcome),
             "responded": .bool(true),
         ]
         if let error { object["error"] = error }
