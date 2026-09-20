@@ -461,7 +461,10 @@ final class ThemeStoreTests: XCTestCase {
             assertGreen(color, context: "meadow dark \(name)")
         }
 
-        // 深色主操作是鼠尾草绿，冲突卡改用黑字；同时它自身要在底色上可读。
+        // 深色主操作是鼠尾草绿，白字压不出对比，主按钮和冲突卡都改用黑字；
+        // 同时主操作自身要在底色上可读。这三条互相牵制：压暗按钮能救白字，
+        // 但会让最后一条掉下去，所以只能从前景色解决。
+        XCTAssertGreaterThanOrEqual(contrastRatio(dark.primaryActionForeground, dark.primaryAction), 4.5)
         XCTAssertGreaterThanOrEqual(contrastRatio(dark.writerConflictPrimaryActionForeground, dark.primaryAction), 4.5)
         XCTAssertGreaterThanOrEqual(contrastRatio(dark.primaryAction, dark.background), 4.5)
         for surface in [dark.background, dark.surface, dark.elevatedSurface, dark.userBubble] {

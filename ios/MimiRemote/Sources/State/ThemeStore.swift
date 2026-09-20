@@ -427,9 +427,20 @@ extension ThemeTokens {
         return primaryAction
     }
 
-    /// 主按钮在两种外观下都使用白字，维持一致、清晰的操作语义。
+    /// 主按钮默认白字，维持一致、清晰的操作语义。
+    ///
+    /// 青草深色是例外：它的主操作是鼠尾草绿 #6FAF86，白字只有 2.6:1，连图形控件的
+    /// 3:1 都不到（新建会话的悬浮按钮就是这一处）。而且压暗按钮救不回来——白字要到
+    /// 4.5:1 得把亮度压到 0.18，那时主操作自身压深色底只剩 4.1:1，又破了另一条门槛。
+    /// 所以改前景而不是改填充：黑字压它有 8.2:1，与冲突卡的
+    /// `writerConflictPrimaryActionForeground` 同一处置。
     var primaryActionForeground: Color {
-        .white
+        switch (preset, resolvedScheme) {
+        case (.meadow, .dark):
+            return .black
+        default:
+            return .white
+        }
     }
 
     /// Writer 冲突卡必须在所有主题中保持可读。部分主题的次级文字和原始 warning
