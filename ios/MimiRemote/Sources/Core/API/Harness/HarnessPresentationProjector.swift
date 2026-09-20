@@ -22,6 +22,30 @@ import Foundation
 /// 是纯函数集合——投影结果只依赖输入。
 enum HarnessPresentationProjector {
 
+    /// 一条持久记录的**稳定展示身份**。
+    ///
+    /// 历史页与实时投影必须算出同一个 id，否则同一条消息会在时间线上出现两次
+    /// （历史一条、直播一条）。时间线 reducer 按 id 做原位覆盖，没有"seq 相同就自动
+    /// 合并"的兜底，因此身份规则必须**只有一处**。
+    ///
+    /// 取值优先级：
+    /// 1. 上游自带的原生消息 id（`data.message.id`）——最权威，历史与直播都拿得到；
+    /// 2. 持久日志的 `seq`——它同样出现在两条路径上，且顺序无关。
+    ///
+    /// 两者都没有时返回 nil，调用方跳过而不是编一个 id。
+    static func stableMessageID(
+        for event: HarnessDurableEvent,
+        prefix: String
+    ) -> MessageID? {
+        if let native = event.data?["message"]?["id"]?.stringValue?.trimmedNonEmpty {
+            return "h-msg-\(native)-\(prefix)"
+        }
+        if let seq = event.seq {
+            return "h-seq-\(seq)-\(prefix)"
+        }
+        return nil
+    }
+
     /// 一条持久记录投影出的展示事件。
     ///
     /// 返回数组而不是单值：一条记录可能产生不止一个展示事件（例如同时更新正文与时间线），
@@ -319,7 +343,7 @@ enum HarnessPresentationProjector {
         }
         return [.messageCompleted(
             AgentMessage(
-                id: "h-seq-\(event.seq ?? -1)-user",
+                id: stableMessageID(for: event, prefix: "user") ?? "h-seq-\(event.seq ?? -1)-user",
                 sessionID: sessionID,
                 // 契约 D4：durable user/message.source.rpcId 就是提交的 requestId。
                 // 把它带出来，上层才能把乐观记录与真实回显对上。
@@ -339,7 +363,11 @@ enum HarnessPresentationProjector {
         messageID: MessageID?
     ) -> [AgentEvent] {
         guard let text = messageText(from: event), !text.isEmpty else { return [] }
-        let id = messageID ?? "h-seq-\(event.seq ?? -1)-assistant"
+        // 优先用上游原生消息 id：历史与直播都拿得到它，因此两条路径算出同一个 id。
+        // `messageID` 是实时结算时从 attempt 反查出来的（同代次的强关联），优先于它。
+        guard let id = messageID ?? stableMessageID(for: event, prefix: "assistant") else {
+            return []
+        }
         return [.messageCompleted(
             AgentMessage(
                 id: id,
@@ -363,7 +391,7 @@ enum HarnessPresentationProjector {
         // 注入上下文用 `context` kind 而不是 user：它不该在时间线上长得像用户说的话。
         return [.messageCompleted(
             AgentMessage(
-                id: "h-seq-\(event.seq ?? -1)-context",
+                id: stableMessageID(for: event, prefix: "context") ?? "h-seq-\(event.seq ?? -1)-context",
                 sessionID: sessionID,
                 role: .system,
                 kind: .context,

@@ -61,13 +61,26 @@ final class HarnessHostEventObserver {
     ///
     /// 幂等是承重的——中继拒绝同一连接上的第二个 `$events`，重复调用会让宿主
     /// 拿一个必然失败的请求去换掉一条正在工作的订阅。
+    /// 但幂等只应对"确实还在跑"的任务：观察循环退出时必须清掉自己的标记，
+    /// 否则一次不可重试的失败之后，宿主再也起不来（标记还在，判断成重复启动）。
     func start() {
         guard consumeTask == nil else { return }
         generation &+= 1
         let lease = generation
         consumeTask = Task { [weak self] in
             await self?.observe(lease: lease)
+            // 按自身租约清理：只有这个任务仍是当前任务时才清。
+            // 无条件清会踩掉 `start()` 刚建的新任务，让新订阅再也无人管理。
+            await self?.finishObservation(lease: lease)
         }
+    }
+
+    /// 观察循环结束后的收尾。只清属于自己的运行标记。
+    private func finishObservation(lease: UInt64) {
+        guard generation == lease else { return }
+        consumeTask = nil
+        eventsStreamID = nil
+        runtimeGeneration = nil
     }
 
     /// 停止观察并退订。
@@ -193,6 +206,13 @@ final class HarnessHostEventObserver {
         lease: UInt64
     ) async throws -> HarnessStreamFrame {
         while isCurrent(lease: lease), !Task.isCancelled {
+            // 丢帧检查与页面 follow 同等重要：待处理集合的状态完整性依赖**每一帧**。
+            // 漏掉一条 waterfall 会让用户看不到一次授权请求；漏掉一条 cancel 或回执
+            // 会让卡片停在错误状态。因此这里不能"继续消费一个已经不完整的状态"，
+            // 必须如实失败并让上层重开订阅。
+            if await runtime.droppedFrameCount(streamID: streamID) > 0 {
+                throw HarnessTransportError.continuityLost("dropped frames on \(streamID)")
+            }
             if let carrier = await runtime.pollFrame(streamID: streamID) {
                 guard let decoded = try HarnessCarrierDecoder.decode(frame: carrier) else {
                     // 无 streamId 的帧无法归属。如实失败并让上层重开，不静默吞掉。

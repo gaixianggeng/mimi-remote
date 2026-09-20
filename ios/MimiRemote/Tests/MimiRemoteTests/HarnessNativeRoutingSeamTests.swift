@@ -492,6 +492,8 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
             codexTransport: codexTransport,
             harness: fake
         ))
+        // 会话被登记为原生承接，历史入口才会走 `nativeClient` 分支。
+        client.rememberRuntimeRoute("deepseek", forSessionID: "native-history")
 
         do {
             _ = try await client.messagesPage(sessionID: "native-history", before: nil, limit: nil)

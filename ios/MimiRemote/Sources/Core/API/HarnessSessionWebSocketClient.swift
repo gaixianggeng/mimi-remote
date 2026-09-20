@@ -42,7 +42,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     ///
     /// `session/page` 的 `throughSeq` 只能取自**本次** follow 的 opening snapshot，
     /// 因此这个值必须由建立基线的一侧上报，历史读取侧不能自己猜。
-    private let reportSnapshotCursor: (@MainActor (SessionID, Int) -> Void)?
+    private let reportSnapshotCursor: (@MainActor (SessionID, Int, UInt64) -> Void)?
 
     var turnDeliveryMode: TurnDeliveryMode { .direct }
     var onEvent: (@MainActor (AgentEvent) -> Void)?
@@ -81,7 +81,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         interactionStore: HarnessInteractionStore? = nil,
         recovery: HarnessRecoveryCoordinator? = nil,
         selectModel: (@MainActor (String, String, String, String?) async throws -> Void)? = nil,
-        reportSnapshotCursor: (@MainActor (SessionID, Int) -> Void)? = nil
+        reportSnapshotCursor: (@MainActor (SessionID, Int, UInt64) -> Void)? = nil
     ) {
         self.endpoint = endpoint
         self.token = token
@@ -159,12 +159,18 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
 
         // 把本次 follow 的 snapshot 游标交给宿主：`session/page` 的 throughSeq 只能是它。
         if let cursor = fresh.snapshotCursor {
-            reportSnapshotCursor?(sessionID, cursor)
+            // 带上**观察代次**：重开/重连会换一个读取上下文，
+            // 旧代次的游标不得当成新代次的读取边界。
+            reportSnapshotCursor?(sessionID, cursor, generation)
         }
 
         // snapshot 里已有的持久记录立刻投影：这是"中途打开"能看到历史的来源。
+        //
+        // **同时要过对账**：断线期间产生的用户回显只会出现在重连后的 snapshot 里，
+        // 那条路径不解除提交锁，用户就会看到自己的消息在时间线上、下一条却发不出去。
         for record in snapshot.records ?? [] {
             guard let event = record.event else { continue }
+            reconcileSubmission(with: event)
             for projected in HarnessPresentationProjector.project(
                 durableEvent: event, sessionID: sessionID
             ) {
@@ -456,17 +462,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     }
 
     private func publish(durableEvent event: HarnessDurableEvent) {
-        // durable 用户回显是对账的**权威事实**：`source.rpcId` 就是提交时的 requestId。
-        // 提交响应丢失（`.responseUnknown`）时，这条回显证明那次提交其实已经落到上游，
-        // 必须据此解锁——否则该会话会被永久冻结，用户看到自己的消息和回复都在，
-        // 下一条却仍提示"上一次提交尚未确认"，而且被误报成"没执行、可重试"。
-        //
-        // 顺序无关：回显先到、HTTP 之后才失败时，`resolveAfterReconciliation` 只在
-        // 仍处 `.responseUnknown` 时改写状态，已经确认过的不会被降回去。
-        if event.type == HarnessWireEventType.userMessage,
-           let requestID = event.data?["source"]?["rpcId"]?.stringValue?.trimmedNonEmpty {
-            submission.resolveAfterReconciliation(requestID: requestID)
-        }
+        reconcileSubmission(with: event)
         let messageID = event.seq.flatMap { settledAssistantMessageIDBySeq[$0] }
         for projected in HarnessPresentationProjector.project(
             durableEvent: event,
@@ -475,6 +471,27 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         ) {
             onEvent?(projected)
         }
+    }
+
+    /// 用一条 durable 记录对账在途提交。
+    ///
+    /// durable 用户回显是对账的**权威事实**：`source.rpcId` 就是提交时的 requestId。
+    /// 提交响应丢失（`.responseUnknown`）时，这条回显证明那次提交其实已经落到上游，
+    /// 必须据此解锁——否则该会话会被永久冻结，用户看到自己的消息和回复都在，
+    /// 下一条却仍提示"上一次提交尚未确认"，而且被误报成"没执行、可重试"。
+    ///
+    /// **每条 durable 记录都要过这里，不能只在 live 路径做。** 断线期间产生的回显
+    /// 只会出现在重连后的 opening snapshot（或历史页）里，那条路径若不过对账，
+    /// 用户永远等不到解锁——而且他看到的恰恰是"消息明明发出去了"。
+    ///
+    /// 顺序无关：回显先到、HTTP 之后才失败时，`resolveAfterReconciliation` 与
+    /// `submit` 的确认保护共同保证已经确认的结果不被降级。
+    private func reconcileSubmission(with event: HarnessDurableEvent) {
+        guard event.type == HarnessWireEventType.userMessage,
+              let requestID = event.data?["source"]?["rpcId"]?.stringValue?.trimmedNonEmpty else {
+            return
+        }
+        submission.resolveAfterReconciliation(requestID: requestID)
     }
 
     /// 应用一帧 assistant-stream 直播片段。

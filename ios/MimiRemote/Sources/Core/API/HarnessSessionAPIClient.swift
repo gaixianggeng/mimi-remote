@@ -162,8 +162,10 @@ enum HarnessNativeUnavailableError: Error, LocalizedError, Equatable {
 
 /// 原生 Harness 客户端。
 ///
-/// 目录、create/model/prompt/cancel、follow、交互应答共用一个 runtime。历史分页
-/// `session/page` 尚未接到 facade，继续显式 `notImplemented`，不能用空历史冒充成功。
+/// 目录、create/model/prompt/cancel、follow、历史分页与交互应答共用一个 runtime。
+///
+/// 历史分页（`session/page`）需要**本次 follow** 的 `snapshot.cursor` 作 `throughSeq`，
+/// 因此读取前先 `awaitSnapshotBaseline`：拿不到就显式失败，绝不猜一个游标。
 ///
 /// 授权提示 `cwd` 走请求体（与 `internal/httpapi/harness_native_policy.go` 的
 /// `harnessNativeCWDScopedMethods` 一致）：`session/list`、`session/search` 与 create 接受它，
@@ -193,12 +195,23 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     private var hostEventSink: (@MainActor (AgentEvent) -> Void)?
     /// 宿主级 pending 集合变化时的通知出口。
     private var hostChangeSink: (@MainActor () -> Void)?
-    /// 每个会话最近一次 follow 的 `snapshot.cursor`。
+    /// 每个会话**当前这一代** follow 的 `snapshot.cursor`。
     ///
     /// `session/page` 的 `throughSeq` 必须取自**本次** follow 的 opening snapshot
     /// （契约 §5.5 实测：传 0 只读到 seq 0，传过大的值返回空 records）。
-    /// 因此页面建立基线时在这里登记，历史读取时取用；没有登记就是"还没有合法游标"。
-    private var snapshotCursorBySessionID: [SessionID: Int] = [:]
+    ///
+    /// 带代次存储的原因：重开或重连会换一个 reading context，旧游标属于上一代
+    /// snapshot，拿它当读取边界会静默读到错误的区间。代次落后于当前登记的即作废。
+    private struct SnapshotBaseline {
+        let cursor: Int
+        let generation: UInt64
+    }
+    private var baselineBySessionID: [SessionID: SnapshotBaseline] = [:]
+    /// 等待某个会话基线就绪的挂起者。
+    ///
+    /// 冷打开的顺序是"先读历史、再连事件"，而历史在基线之前没有合法的 throughSeq。
+    /// 用这个入口让历史**等**基线，而不是在 Store 里塞 sleep/retry 补偿。
+    private var baselineWaiters: [SessionID: [CheckedContinuation<Int?, Never>]] = [:]
 
     /// 普通输入的提交模式。实测取值域只有 queue|steer，普通发送用 queue。
     static let defaultPromptMode = "queue"
@@ -258,8 +271,8 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
                 )
             },
             // 基线建立后回报 snapshot 游标：历史分页的 throughSeq 只能用本次的值。
-            reportSnapshotCursor: { [weak self] sessionID, cursor in
-                self?.rememberSnapshotCursor(cursor, for: sessionID)
+            reportSnapshotCursor: { [weak self] sessionID, cursor, generation in
+                self?.rememberSnapshotCursor(cursor, for: sessionID, generation: generation)
             }
         )
     }
@@ -436,7 +449,11 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         limit: Int?,
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage {
-        let throughSeq = try await snapshotCursor(for: sessionID)
+        guard let throughSeq = await awaitSnapshotBaseline(for: sessionID) else {
+            // 没有基线就没有合法的 throughSeq。猜一个会产生静默错误的页，
+            // 比显式失败危险得多（契约 §5.5 明确禁止）。
+            throw HarnessTransportError.notConnected
+        }
         let beforeSeq = try HarnessHistoryPageDecoding.seq(fromCursor: before)
 
         var request: [String: HarnessJSONValue] = [
@@ -491,22 +508,66 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     }
 
     /// 取该会话本次 follow 的 `snapshot.cursor`。
-    private func snapshotCursor(for sessionID: String) async throws -> Int {
-        guard let cursor = snapshotCursorBySessionID[sessionID] else {
-            // 没有基线就没有合法的 throughSeq。猜一个会产生静默错误的页，
-            // 比显式失败危险得多（契约 §5.5 明确禁止）。
-            throw HarnessTransportError.notConnected
-        }
-        return cursor
+    private func snapshotCursor(for sessionID: String) async -> Int? {
+        baselineBySessionID[sessionID]?.cursor
     }
 
-    /// 登记某会话本次 follow 的 opening snapshot 游标。
+    /// 等某个会话的读取基线就绪，返回它的 `throughSeq`。
     ///
-    /// 由页面客户端在建立基线后回调。只保留最新的：`throughSeq` 属于**这一代**
+    /// 冷打开的真实顺序是"先读历史、再连事件"（`SessionStoreTurns.selectSession`），
+    /// 而 `session/page` 在 follow 建立基线之前没有合法的 `throughSeq`。因此这里让
+    /// 历史**等待**基线，而不是让 Store 各处加 sleep + retry 去碰运气。
+    ///
+    /// 超时后返回 nil，调用方按"暂时读不到"处理——**不**拿一个猜的游标去读，
+    /// 那会静默给出错误的页（契约 §5.5 明确禁止）。
+    @MainActor
+    func awaitSnapshotBaseline(
+        for sessionID: SessionID,
+        timeout: Duration = .seconds(10)
+    ) async -> Int? {
+        if let baseline = baselineBySessionID[sessionID] { return baseline.cursor }
+        let outcome = await withTaskGroup(of: Int?.self) { group -> Int? in
+            group.addTask { @MainActor [weak self] in
+                await withCheckedContinuation { continuation in
+                    guard let self else {
+                        continuation.resume(returning: nil)
+                        return
+                    }
+                    self.baselineWaiters[sessionID, default: []].append(continuation)
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        // 超时或已就绪都清掉挂起者，避免续体泄漏。
+        baselineWaiters[sessionID]?.forEach { $0.resume(returning: baselineBySessionID[sessionID]?.cursor) }
+        baselineWaiters[sessionID] = nil
+        return outcome ?? baselineBySessionID[sessionID]?.cursor
+    }
+
+    /// 登记某会话本次 follow 的 opening snapshot 游标，并唤醒等待者。
+    ///
+    /// 由页面客户端在建立基线后回调。代次只增不减：`throughSeq` 属于**这一代**
     /// snapshot，用上一代的游标会读到错误的区间。
     @MainActor
-    func rememberSnapshotCursor(_ cursor: Int, for sessionID: SessionID) {
-        snapshotCursorBySessionID[sessionID] = cursor
+    func rememberSnapshotCursor(
+        _ cursor: Int,
+        for sessionID: SessionID,
+        generation: UInt64
+    ) {
+        if let existing = baselineBySessionID[sessionID], generation < existing.generation {
+            // 迟到的旧代次基线不得覆盖新代次。
+            return
+        }
+        baselineBySessionID[sessionID] = SnapshotBaseline(cursor: cursor, generation: generation)
+        let waiters = baselineWaiters[sessionID] ?? []
+        baselineWaiters[sessionID] = nil
+        waiters.forEach { $0.resume(returning: cursor) }
     }
 
     // MARK: - H07 写路径

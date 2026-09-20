@@ -133,7 +133,7 @@ final class HarnessSubmissionControllerTests: XCTestCase {
     func testSubmittingStateBlocksConcurrentSubmission() async {
         let gate = PromptGate()
         let controller = HarnessSubmissionController(
-            sendPrompt: { _, _, _ in await gate.wait() },
+            sendPrompt: { _, _, _ in try await gate.wait() },
             sendCancel: { _ in }
         )
 
@@ -292,6 +292,88 @@ final class HarnessSubmissionControllerTests: XCTestCase {
         XCTAssertEqual(sender.calls.count, 1)
     }
 
+    /// 回显**先于** HTTP 返回到达时必须确认，而不是等到超时再冻结。
+    ///
+    /// 正常时序：上游接受了提交并先把 durable 记录推过来，HTTP 响应还在路上。
+    /// 只处理 `.responseUnknown` 会让这次确认白白丢掉，随后的超时把状态写成未知，
+    /// 会话被永久冻结——尽管用户已经能看到自己的消息。
+    func testReconciliationAcceptsSubmittingStateBeforeSendReturns() async {
+        let gate = SendGate()
+        let controller = HarnessSubmissionController(
+            sendPrompt: { _, _, _ in try await gate.wait() },
+            sendCancel: { _ in }
+        )
+
+        // 发起提交：sendPrompt 会挂起。
+        let inFlight = Task { await controller.submit(sessionID: "s1", text: "x", requestID: "req-order-1") }
+        await gate.waitUntilEntered()
+        guard case .submitting = controller.latestSubmission(sessionID: "s1")?.state else {
+            XCTFail("前置条件：提交应先处于 submitting")
+            return
+        }
+
+        // 回显先到：对账确认。
+        controller.resolveAfterReconciliation(requestID: "req-order-1")
+
+        // 之后 HTTP 才失败（超时）：不得把已确认的结果降级。
+        await gate.fail(with: HarnessTransportError.timedOut)
+        let result = await inFlight.value
+
+        XCTAssertEqual(result.state, .accepted, "已被回显确认的提交不得被迟到的失败降级")
+        XCTAssertEqual(controller.latestSubmission(sessionID: "s1")?.state, .accepted)
+        XCTAssertNil(result.blockReason)
+    }
+
+    /// 超时先到、回显后到：同样最终解锁并可继续发送。
+    func testReconciliationAfterTimeoutUnblocksNextSend() async {
+        let controller = HarnessSubmissionController(
+            sendPrompt: { _, _, _ in throw HarnessTransportError.timedOut },
+            sendCancel: { _ in }
+        )
+        _ = await controller.submit(sessionID: "s1", text: "x", requestID: "req-order-2")
+        guard case .responseUnknown = controller.latestSubmission(sessionID: "s1")?.state else {
+            XCTFail("前置条件：超时应判为结果未知")
+            return
+        }
+
+        controller.resolveAfterReconciliation(requestID: "req-order-2")
+
+        XCTAssertEqual(controller.latestSubmission(sessionID: "s1")?.state, .accepted)
+        let sender = RecordingPromptSender()
+        let next = HarnessSubmissionController(
+            sendPrompt: { try await sender.send($0, $1, $2) },
+            sendCancel: { _ in }
+        )
+        _ = await next.submit(sessionID: "s1", text: "y", requestID: "req-order-3")
+        XCTAssertEqual(sender.calls.count, 1, "对账后必须能继续发送")
+    }
+
+    /// 明确拒绝过的提交不得被一条回显改写结论。
+    ///
+    /// 拒绝是"没执行"的确定结论；用回显把它翻成 accepted 会掩盖一次真实的失败。
+    func testReconciliationDoesNotRewriteExplicitRejection() async {
+        let controller = HarnessSubmissionController(
+            sendPrompt: { _, _, _ in
+                throw HarnessTransportError.business(
+                    HarnessRemoteError(code: "session/agent-busy", message: "忙", details: nil)
+                )
+            },
+            sendCancel: { _ in }
+        )
+        _ = await controller.submit(sessionID: "s1", text: "x", requestID: "req-order-4")
+        guard case .rejected = controller.latestSubmission(sessionID: "s1")?.state else {
+            XCTFail("前置条件：业务失败应判为 rejected")
+            return
+        }
+
+        controller.resolveAfterReconciliation(requestID: "req-order-4")
+
+        guard case .rejected = controller.latestSubmission(sessionID: "s1")?.state else {
+            XCTFail("已明确拒绝的提交不得被回显改成已接受")
+            return
+        }
+    }
+
     // MARK: - 停止
 
     func testCancelSuccessAndUnknown() async {
@@ -371,5 +453,35 @@ private final class PromptGate {
             await Task.yield()
         }
         XCTFail("等待进入在途超时")
+    }
+}
+
+
+/// 可控的 `sendPrompt` 闸门：让测试确定性地安排"回显先到 / HTTP 后失败"的顺序。
+@MainActor
+private final class SendGate {
+    private var entered: CheckedContinuation<Void, Never>?
+    private var resume: CheckedContinuation<Void, Error>?
+    private var didEnter = false
+
+    func wait() async throws {
+        didEnter = true
+        entered?.resume()
+        entered = nil
+        try await withCheckedThrowingContinuation { continuation in
+            resume = continuation
+        }
+    }
+
+    func waitUntilEntered() async {
+        if didEnter { return }
+        await withCheckedContinuation { continuation in
+            entered = continuation
+        }
+    }
+
+    func fail(with error: Error) {
+        resume?.resume(throwing: error)
+        resume = nil
     }
 }

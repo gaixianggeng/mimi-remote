@@ -145,12 +145,20 @@ final class HarnessSubmissionController {
             // 上游明确接受。**这不表示生成完成**（契约 D4），只是"已收到"。
             submission.state = .accepted
         } catch {
+            // **已经被可信回显确认过的提交，不得被迟到的传输失败降级。**
+            // `sendPrompt` 是挂起点：等待期间 durable 回显可能已经到了并完成对账
+            // （"回显先到、HTTP 超时后到"）。那种情况下这次失败只说明响应丢了，
+            // 而上游其实已经收到——把它写成 responseUnknown 会让会话重新被冻结，
+            // 尽管用户已经看到自己的消息发出去了。
+            if let confirmed = submissionsByRequestID[requestID],
+               confirmed.state == .accepted {
+                return confirmed
+            }
             submission.state = Self.stateForFailure(error)
         }
         submissionsByRequestID[requestID] = submission
         return submission
     }
-
     /// 把一次失败翻译成状态。
     ///
     /// 这是本类型最关键的一处判断：**只有携带上游业务结论的失败才算 `rejected`**，
@@ -204,14 +212,26 @@ final class HarnessSubmissionController {
         }
     }
 
-    /// 一次提交被对账确认后，清掉在途状态。
+    /// 一次提交被可信回显确认后，清掉在途状态。
     ///
-    /// 由读取对账（`session/page` 里出现该 requestId 的 user/message）或上游重投确认调用。
-    /// 这是 `.responseUnknown` 的唯一合法出口——它不能被超时或"用户等太久"清掉。
+    /// 由读取对账（durable `user/message.source.rpcId` 或历史页里出现该 requestId）
+    /// 调用。这是 `.responseUnknown` 的唯一合法出口——它不能被超时或"用户等太久"清掉。
+    ///
+    /// **也接受 `.submitting`。** 回显完全可能先于 `sendPrompt` 的返回到达：
+    /// 上游接受了提交、durable 记录先推送过来，而 HTTP 响应还在路上。此时只处理
+    /// `.responseUnknown` 会让这次确认白白丢掉，随后到达的超时把状态写成未知，
+    /// 会话就被永久冻结——尽管用户已经能看到自己的消息。
+    /// 确认过的提交不得被之后的传输失败重新降级（见 `submit`）。
     func resolveAfterReconciliation(requestID: String) {
         guard var resolved = submissionsByRequestID[requestID] else { return }
-        guard case .responseUnknown = resolved.state else { return }
-        resolved.state = .accepted
-        submissionsByRequestID[requestID] = resolved
+        switch resolved.state {
+        case .responseUnknown, .submitting:
+            // 回显是权威事实：上游确实收到了这次提交。
+            resolved.state = .accepted
+            submissionsByRequestID[requestID] = resolved
+        case .idle, .accepted, .rejected:
+            // 已经确认或已明确拒绝：不因一条回显改写结论。
+            break
+        }
     }
 }

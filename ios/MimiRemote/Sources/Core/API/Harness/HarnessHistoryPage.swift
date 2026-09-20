@@ -122,9 +122,11 @@ enum HarnessHistoryProjection {
         // 才是人真正提交的输入。
         guard event.data?["source"]?["kind"]?.stringValue == "user" else { return nil }
         // `source.rpcId` 是提交时的 requestId，带上它上层才能把乐观记录与真实回显对上。
+        // 没有稳定身份就不展示：编一个 id 会让同一条消息在时间线上出现两次。
+        guard let id = stableID(prefix: "user", event: event) else { return nil }
         let rpcID = event.data?["source"]?["rpcId"]?.stringValue
         return CodexHistoryMessage(
-            id: stableID(prefix: "user", event: event),
+            id: id,
             role: "user",
             content: text,
             createdAt: date(from: event),
@@ -137,9 +139,10 @@ enum HarnessHistoryProjection {
         _ event: HarnessDurableEvent,
         sessionID: SessionID
     ) -> CodexHistoryMessage? {
-        guard let text = messageText(from: event), !text.isEmpty else { return nil }
+        guard let text = messageText(from: event), !text.isEmpty,
+              let id = stableID(prefix: "assistant", event: event) else { return nil }
         return CodexHistoryMessage(
-            id: stableID(prefix: "assistant", event: event),
+            id: id,
             role: "assistant",
             content: text,
             createdAt: date(from: event),
@@ -151,10 +154,11 @@ enum HarnessHistoryProjection {
         _ event: HarnessDurableEvent,
         sessionID: SessionID
     ) -> CodexHistoryMessage? {
-        guard let text = messageText(from: event), !text.isEmpty else { return nil }
+        guard let text = messageText(from: event), !text.isEmpty,
+              let id = stableID(prefix: "context", event: event) else { return nil }
         // 注入上下文用 `context` kind，不在时间线上长得像用户说的话。
         return CodexHistoryMessage(
-            id: stableID(prefix: "context", event: event),
+            id: id,
             role: "system",
             kind: .context,
             content: text,
@@ -163,12 +167,11 @@ enum HarnessHistoryProjection {
         )
     }
 
-    /// 历史与直播共用的身份：以原生 seq 为准。
-    ///
-    /// seq 是持久日志主键，因此无论走历史页还是流式，同一条记录算出的 id 相同——
-    /// 这正是"历史与直播不产生重复气泡"的依据。
-    static func stableID(prefix: String, event: HarnessDurableEvent) -> MessageID {
-        "h-seq-\(event.seq ?? -1)-\(prefix)"
+    /// 历史与直播共用的身份。**规则只有一处**（见
+    /// `HarnessPresentationProjector.stableMessageID`）：两处各写一份，
+    /// 历史与直播就会各自算出不同的 id，同一条消息在时间线上出现两次。
+    static func stableID(prefix: String, event: HarnessDurableEvent) -> MessageID? {
+        HarnessPresentationProjector.stableMessageID(for: event, prefix: prefix)
     }
 
     /// 从事件的 data 取正文。只取 text 块，reasoning 不混进正文。
