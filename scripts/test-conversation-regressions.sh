@@ -89,6 +89,9 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/DeepSeekCrossRuntimeContractTests \
   -only-testing:MimiRemoteTests/DeepSeekSearchRoutingTests \
   -only-testing:MimiRemoteTests/DeepSeekRuntimePresentationTests \
+  -only-testing:MimiRemoteTests/HarnessNativeRoutingSeamTests \
+  -only-testing:MimiRemoteTests/HarnessTransportTests \
+  -only-testing:MimiRemoteTests/HarnessSessionDirectoryTests \
   -only-testing:MimiRemoteTests/ClaudeTakeoverTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \

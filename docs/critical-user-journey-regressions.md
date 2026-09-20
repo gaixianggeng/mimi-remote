@@ -52,6 +52,7 @@ iOS 的关键测试仍由同一次 `xcodebuild` 执行并复用同一台 Simulat
 | R8 | Git/Worktree 接受越界路径、错误清理目标或旧 Host 的迟到结果 | Go 集成 + iOS Host 隔离；`internal/httpapi`、`SessionStore` | `TestGitActionRejectsUnsafeFilePath`、`TestWorktreeDeleteRejectsUnmanagedPath`、`TestWorktreeCleanupRejectsAllBeforeDeletionWhenSelectedStateChanges`、`testLateGitStatusFromPreviousHostCannotOverwriteCurrentHostState` | 修改错误仓库、误删工作区或显示错误发布状态 |
 | R9 | 可选能力在依赖失败、本地禁用、旧服务端、未知状态或切换 Host 后仍误走新路径 | 单元 + 契约 + 集成；`internal/config`、`internal/httpapi`、`FileAttachmentModelsTests`、`PairingLinkTests`、`ProtocolContractTests` | `TestFileUploadCapabilityRolloutMatrix`、`testFileUploadCapabilityDecisionMatrixFailsClosed`、`testCapabilityNegotiationIsIsolatedPerHostAndRejectsStaleLease`，以及 `version-unknown-capability.json` 两端兼容验证 | 文件请求错误发往另一台 Mac、禁用失效或依赖异常时继续暴露高风险入口 |
 | R10 | 匿名购买、恢复或续期时错误授予未验证交易，前后台并发丢失购买结果，或过期后继续保留服务端授权 | 状态机 + 契约 + StoreKit 适配；`ManagedConnectionEntitlementStoreTests`、`ManagedConnectionEntitlementAPIClientTests`、`ManagedConnectionStoreKitClientTests` | 三组测试完整覆盖购买结果收敛、`currentEntitlements` 恢复、仅手动 `AppStore.sync()`、JWS 请求与响应解析、过期和撤销处理 | 用户已付款但仍显示未订阅，未完成付款获得服务，或订阅失效后授权未撤销 |
+| R11 | 原生 Harness 客户端（#498）把上游失败吞成"空列表/空成功"，或原生路径静默回落到旧 Codex 网关，用户看到"没有会话/没有模型"而通道其实根本没通 | 单元 + 契约；`HarnessNativeRoutingSeamTests`、`HarnessTransportTests`、`HarnessSessionDirectoryTests` | 三组测试覆盖：上游失败必须抛出而非返回空；未实现操作保持显式 `notImplemented`；注入 native 后不构造 DeepSeek Codex actor；`HarnessTransportError.shouldReconnect` 只对链路层失败为真；目录解码读 `contracts/harness-native/fixtures/*` 同一份字节 | 真实会话与模型被显示成"不存在"，用户据此误判 Harness 不可用 |
 
 ### 分层执行
 
