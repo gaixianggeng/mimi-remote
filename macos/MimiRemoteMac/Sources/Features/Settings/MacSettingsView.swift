@@ -37,12 +37,6 @@ struct MacSettingsView: View {
                 }
             }
 
-            Section {
-                ModuleControlsGroup(store: store, group: .agents)
-            }
-            Section {
-                ModuleControlsGroup(store: store, group: .connections)
-            }
             TailcatRelaySettings(store: store)
 
             Section("文件访问") {

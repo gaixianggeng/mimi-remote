@@ -95,42 +95,41 @@ struct MenuBarContentView: View {
                     activateApplication()
                 }
 
-                Menu {
-                    Button("检查更新…") {
+                Divider()
+                    .opacity(MenuBarLayout.actionDividerOpacity)
+
+                HStack(spacing: 6) {
+                    MenuFooterActionButton(
+                        title: "检查更新",
+                        systemImage: "arrow.down.circle",
+                        isEnabled: !updates.isChecking,
+                        isWorking: updates.isChecking
+                    ) {
                         openSettings()
                         activateApplication()
                         Task { await updates.check(manual: true) }
                     }
-                    .disabled(updates.isChecking)
+
                     if store.owner == .macApp {
-                        Button("重新启动服务…") { presentRestartConfirmation() }
-                            .disabled(store.isBusy)
+                        MenuFooterActionButton(
+                            title: "重新启动",
+                            systemImage: "arrow.clockwise",
+                            isEnabled: !store.isBusy
+                        ) {
+                            presentRestartConfirmation()
+                        }
                     }
-                    Divider()
-                    Button("退出并停止服务…", role: .destructive) { presentStopAndQuitConfirmation() }
-                        .disabled(store.isBusy)
-                } label: {
-                    HStack(spacing: MenuBarLayout.symbolTextSpacing) {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: MenuBarLayout.symbolColumnWidth)
-                        Text("更多")
-                            .font(.callout.weight(.medium))
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.tertiary)
+
+                    MenuFooterActionButton(
+                        title: "退出并停止",
+                        systemImage: "power",
+                        isEnabled: !store.isBusy,
+                        role: .destructive
+                    ) {
+                        presentStopAndQuitConfirmation()
                     }
-                    .padding(.horizontal, MenuBarLayout.sectionInset)
-                    .frame(maxWidth: .infinity, minHeight: 40, maxHeight: 40)
-                    .background(
-                        Color.primary.opacity(0.045),
-                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    )
-                    .contentShape(Rectangle())
                 }
-                .menuStyle(.borderlessButton)
+                .padding(.top, 6)
             }
         }
         .padding(.horizontal, MenuBarLayout.contentInset)
@@ -449,6 +448,58 @@ private struct MenuPressButtonStyle: ButtonStyle {
                 reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 1),
                 value: configuration.isPressed
             )
+    }
+}
+
+private struct MenuFooterActionButton: View {
+    let title: String
+    let systemImage: String
+    var isEnabled = true
+    var isWorking = false
+    var role: ButtonRole?
+    let action: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(role: role, action: action) {
+            HStack(spacing: 5) {
+                if isWorking {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 13, height: 13)
+                } else {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(symbolColor)
+                        .frame(width: 13)
+                }
+                Text(title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .frame(maxWidth: .infinity, minHeight: 40, maxHeight: 40)
+            .background(
+                Color.primary.opacity(isHovered ? 0.08 : 0.045),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(MenuPressButtonStyle())
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
+        .accessibilityLabel(title)
+        .onHover { hovering in
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
+                isHovered = hovering
+            }
+        }
+    }
+
+    private var symbolColor: Color {
+        role == .destructive ? Color(nsColor: .systemRed).opacity(0.7) : .secondary
     }
 }
 
