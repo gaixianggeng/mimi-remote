@@ -52,7 +52,9 @@ final class ConversationTimelineViewport {
     func bindAnchorView(_ messageIDs: [UUID], _ view: UIView) {
         // List 会复用同一个原生标记展示另一条消息。旧 UUID 不能继续读取这块
         // UIView 的新 frame；保留空注册，避免退回异步缓存的旧几何。
-        for (id, registered) in views where registered.value === view && !messageIDs.contains(id) {
+        // 折叠过程可能共享数百个消息 ID，逐项 Array.contains 会把一次绑定放大为平方级扫描。
+        let currentIDs = Set(messageIDs)
+        for (id, registered) in views where registered.value === view && !currentIDs.contains(id) {
             views[id] = WeakView(value: nil)
         }
         for id in messageIDs {

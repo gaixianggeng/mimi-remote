@@ -559,6 +559,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     var requestedWorkspaceLimits: [Int?] {
         requestLogLock.withLock { requestedWorkspaceLimitsStorage }
     }
+    var requestedWorkspaceRuntimes: [String] {
+        requestLogLock.withLock { requestedWorkspaceRuntimesStorage }
+    }
+    private var requestedWorkspaceRuntimesStorage: [String] = []
     var requestedThreadSearchQueries: [String] {
         requestLogLock.withLock { requestedThreadSearchQueriesStorage }
     }
@@ -664,7 +668,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         messagesError: Error? = nil,
         modelOptions: [CodexAppServerModelOption] = [],
         modelOptionsError: Error? = nil,
-        runtimeChannelAvailability: [String: Bool] = [:],
+        runtimeChannelAvailability: [String: Bool] = ["codex": true],
         rateLimitsByRuntime: [String: RateLimitSummary] = [:],
         rateLimitHandler: ((String) async throws -> RateLimitSummary?)? = nil,
         controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)? = nil,
@@ -1069,6 +1073,19 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         }
         // 没有注入错误时沿用 projectID 路径，保持既有 workspace→rootProjectID 映射测试不变。
         return try await sessionsPage(projectID: workspace.rootProjectID ?? workspace.id, cursor: cursor, limit: limit)
+    }
+
+    func sessionsPage(
+        workspace: AgentWorkspace,
+        runtimeProvider: String,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency
+    ) async throws -> SessionsPage {
+        requestLogLock.withLock {
+            requestedWorkspaceRuntimesStorage.append(runtimeProvider)
+        }
+        return try await sessionsPage(workspace: workspace, cursor: cursor, limit: limit)
     }
 
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {

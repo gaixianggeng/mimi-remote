@@ -59,6 +59,9 @@ func pairingEndpoint(
 	if err != nil {
 		return "", nil, err
 	}
+	if cfg.HasNetworkModuleControls() {
+		return modulePairingEndpoint(ctx, cfg, network, lookups)
+	}
 	if network == PairingNetworkAuto {
 		configuredHost, port := splitListen(cfg.Listen)
 		if port == "" {

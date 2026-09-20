@@ -42,6 +42,26 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         )
     }
 
+    func testWorkspaceRuntimePreferenceFallsBackToClaudeWhenCodexIsUnavailable() {
+        let state = WorkspaceRuntimeSelectionState()
+
+        XCTAssertEqual(
+            state.resolvedRuntime(
+                preferredRuntime: .codex,
+                codexChannelAvailable: false,
+                claudeChannelAvailable: true
+            ),
+            .claude
+        )
+        XCTAssertEqual(
+            WorkspaceSessionRuntimeChoice.available(
+                codexChannelAvailable: false,
+                claudeChannelAvailable: true
+            ),
+            [.claude]
+        )
+    }
+
     func testWorkspaceManualChoiceSurvivesCapabilityRefreshUntilPreferenceChanges() {
         var state = WorkspaceRuntimeSelectionState(manualRuntime: .codex)
 

@@ -381,6 +381,16 @@ extension SessionStore {
         }
         // summary 文案已经首屏显示。Item 页只把首个媒体批次立即交给 UI，后续按 Provider
         // 合批，避免每个 SSH 响应都触发时间线投影和 List diff。
+        HostSwitchSignpost.begin(
+            "conversation_history_merge",
+            metadata: "messages=\(publication.messages.count) authoritative_turns=\(publication.authoritativeItems.count)"
+        )
+        defer {
+            HostSwitchSignpost.end(
+                "conversation_history_merge",
+                metadata: "messages=\(publication.messages.count)"
+            )
+        }
         conversationStore.setHistory(
             publication.messages,
             sessionID: sessionID,

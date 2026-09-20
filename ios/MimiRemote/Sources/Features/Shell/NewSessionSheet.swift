@@ -86,7 +86,7 @@ struct NewSessionSheet: View {
                         }
                         .frame(minWidth: 48)
                         .workbenchProminentActionStyle()
-                        .disabled(isCreating || selectedProject == nil)
+                        .disabled(isCreating || selectedProject == nil || runtimeChoices.isEmpty)
                         .tint(tokens.primaryAction)
                         .keyboardShortcut(.defaultAction)
                         .accessibilityIdentifier("newSession.create")
@@ -101,7 +101,10 @@ struct NewSessionSheet: View {
         .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
             synchronizeWorkspaceSelection()
         }
-        .onChange(of: sessionStore.hasClaudeRuntimeChannel) { _, _ in
+        .onChange(of: sessionStore.isClaudeRuntimeChannelAvailable) { _, _ in
+            normalizeRuntimeSelection()
+        }
+        .onChange(of: sessionStore.isCodexRuntimeChannelAvailable) { _, _ in
             normalizeRuntimeSelection()
         }
         .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
@@ -151,9 +154,7 @@ struct NewSessionSheet: View {
     }
 
     private func runtimeSection(tokens: ThemeTokens) -> some View {
-        let choices = WorkspaceSessionRuntimeChoice.available(
-            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
-        )
+        let choices = runtimeChoices
 
         return VStack(alignment: .leading, spacing: 12) {
             sectionHeader(
@@ -172,7 +173,7 @@ struct NewSessionSheet: View {
                 .pickerStyle(.segmented)
                 .disabled(isCreating)
                 .accessibilityIdentifier("newSession.runtime")
-            } else {
+            } else if let onlyChoice = choices.first {
                 HStack(spacing: 12) {
                     Image(systemName: "terminal.fill")
                         .font(themeStore.uiFont(size: 16, weight: .semibold))
@@ -181,7 +182,7 @@ struct NewSessionSheet: View {
                         .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Codex")
+                        Text(runtimeTitle(for: onlyChoice))
                             .font(themeStore.uiFont(.body, weight: .semibold))
                             .foregroundStyle(tokens.primaryText)
                         Text(L10n.text("ui.the_only_runtime_currently_available"))
@@ -204,6 +205,11 @@ struct NewSessionSheet: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("newSession.runtime")
+            } else {
+                Label(L10n.text("ui.runtime_unavailable_hint"), systemImage: "exclamationmark.triangle")
+                    .font(themeStore.uiFont(.callout, weight: .medium))
+                    .foregroundStyle(tokens.warning)
+                    .accessibilityIdentifier("newSession.runtimeUnavailable")
             }
 
             Text(L10n.text("ui.cannot_be_switched_during_runtime_after_creation"))
@@ -305,25 +311,23 @@ struct NewSessionSheet: View {
     }
 
     private func normalizeRuntimeSelection() {
-        let choices = WorkspaceSessionRuntimeChoice.available(
-            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
-        )
+        let choices = runtimeChoices
         guard choices.contains(where: { $0.rawValue == lastRuntimeID }) else {
-            lastRuntimeID = choices.first?.rawValue ?? WorkspaceSessionRuntimeChoice.codex.rawValue
+            if let first = choices.first {
+                lastRuntimeID = first.rawValue
+            }
             return
         }
     }
 
     private func createSession() async {
-        guard let project = selectedProject else { return }
+        guard let project = selectedProject,
+              let choice = runtimeChoices.first(where: { $0.rawValue == lastRuntimeID })
+                ?? runtimeChoices.first else { return }
         isCreating = true
         creationErrorMessage = nil
         defer { isCreating = false }
-        let choices = WorkspaceSessionRuntimeChoice.available(
-            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
-        )
         // 创建前再次按当前通道能力校验，避免 Sheet 打开期间通道状态变化造成错误路由。
-        let choice = choices.first(where: { $0.rawValue == lastRuntimeID }) ?? .codex
         lastWorkspaceID = project.id
         await sessionStore.startNewSession(in: project, runtimeProvider: choice.runtimeProvider)
         guard let sessionID = sessionStore.selectedSessionID else {
@@ -331,6 +335,13 @@ struct NewSessionSheet: View {
             return
         }
         leaveSheetForCreatedSession(sessionID)
+    }
+
+    private var runtimeChoices: [WorkspaceSessionRuntimeChoice] {
+        WorkspaceSessionRuntimeChoice.available(
+            codexChannelAvailable: sessionStore.isCodexRuntimeChannelAvailable,
+            claudeChannelAvailable: sessionStore.isClaudeRuntimeChannelAvailable
+        )
     }
 
     private func leaveSheetForCreatedSession(_ sessionID: SessionID) {

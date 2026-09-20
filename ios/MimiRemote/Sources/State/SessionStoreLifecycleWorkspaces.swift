@@ -62,17 +62,20 @@ extension SessionStore {
             guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope) else { return nil }
             mergeFastIndexedSessionPagePreservingAuthoritativeFields(
                 sessions(page.sessions, in: workspace),
-                workspace: workspace
+                workspace: workspace,
+                runtimeProvider: result.runtimeProvider
             )
             updateWorkspaceSessionFirstPageState(
                 workspace: workspace,
                 page: page,
-                consistency: .fastIndexed
+                consistency: .fastIndexed,
+                runtimeProvider: result.runtimeProvider
             )
             recordWorkspaceSessionFirstPageCompletion(
                 workspace: workspace,
                 page: page,
-                consistency: .fastIndexed
+                consistency: .fastIndexed,
+                runtimeProvider: result.runtimeProvider
             )
         } catch {
             // 恢复快照仍须经过工作区授权校验；单次列表失败不应让用户丢掉上次阅读位置。
@@ -680,6 +683,7 @@ extension SessionStore {
             applyWorkspaceSessionFirstPage(
                 workspace: workspace,
                 page: page,
+                runtimeProvider: result.runtimeProvider,
                 consistency: consistency,
                 requestedCursor: result.requestedCursor,
                 requestLineage: result.requestLineage
@@ -799,7 +803,12 @@ extension SessionStore {
 
     /// 只在当前 HostScope 尚未完成精确首屏时触发；多个 View waiter 继续复用 Store 现有 single-flight。
     func ensureAuthoritativeWorkspaceSessionFirstPage(projectID: String) async throws {
-        guard needsAuthoritativeWorkspaceSessionFirstPage(projectID: projectID) else {
+        let client = try clientFactory()
+        let runtimeProvider = try await primarySessionRuntimeProvider(client: client)
+        guard needsAuthoritativeWorkspaceSessionFirstPage(
+            projectID: projectID,
+            runtimeProvider: runtimeProvider
+        ) else {
             return
         }
 
@@ -811,7 +820,8 @@ extension SessionStore {
                 throw WorkspaceSessionRefreshError.workspaceUnavailable
             }
             let startingCursor = authoritativeWorkspaceSessionFirstPageContinuationCursor(
-                workspace: workspace
+                workspace: workspace,
+                runtimeProvider: runtimeProvider
             )
             if let startingCursor,
                !seenContinuationCursors.insert(startingCursor).inserted {
@@ -819,12 +829,20 @@ extension SessionStore {
                 throw AgentAPIError.invalidResponse
             }
 
-            try await refreshWorkspaceSessions(projectID: projectID, restartFromFirst: false)
-            guard needsAuthoritativeWorkspaceSessionFirstPage(projectID: projectID) else {
+            try await refreshWorkspaceSessions(
+                projectID: projectID,
+                restartFromFirst: false,
+                runtimeProvider: runtimeProvider
+            )
+            guard needsAuthoritativeWorkspaceSessionFirstPage(
+                projectID: projectID,
+                runtimeProvider: runtimeProvider
+            ) else {
                 return
             }
             guard let nextCursor = authoritativeWorkspaceSessionFirstPageContinuationCursor(
-                workspace: workspace
+                workspace: workspace,
+                runtimeProvider: runtimeProvider
             ), nextCursor != startingCursor else {
                 // 请求被更新 token 取代或服务端未推进时，当前 waiter 退出；新的 owner/后续手动刷新接管。
                 throw CancellationError()
@@ -844,7 +862,8 @@ extension SessionStore {
     /// 工作区页有自己的本地浏览选择，不能复用 selectProject，否则刷新另一个目录会打断当前任务。
     func refreshWorkspaceSessions(
         projectID: String,
-        restartFromFirst: Bool = true
+        restartFromFirst: Bool = true,
+        runtimeProvider: String? = nil
     ) async throws {
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else { return }
@@ -874,7 +893,8 @@ extension SessionStore {
                 // 用户刷新读取最新首屏并校正归档状态；索引与扫描策略由 Runtime 决定。
                 consistency: .authoritative,
                 source: .workspaceForeground,
-                restartFromFirst: restartFromFirst
+                restartFromFirst: restartFromFirst,
+                runtimeProvider: runtimeProvider
             )
             let page = result.page
             guard isCurrentSessionPageRequest(projectID: workspace.id, token: requestToken) else {
@@ -884,6 +904,7 @@ extension SessionStore {
             applyWorkspaceSessionFirstPage(
                 workspace: workspace,
                 page: page,
+                runtimeProvider: result.runtimeProvider,
                 consistency: .authoritative,
                 requestedCursor: result.requestedCursor,
                 // 工作区页下拉刷新首屏时，保留用户已经翻到的旧页，避免列表突然收缩回 20 条。

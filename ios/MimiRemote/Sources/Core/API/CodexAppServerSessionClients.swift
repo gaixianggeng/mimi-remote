@@ -334,14 +334,15 @@ final class AppServerRuntimeBundle {
         endpoint: String,
         token: String,
         requestTimeout: TimeInterval,
-        preparedConfig: CodexAppServerConfigResponse
+        preparedConfig: CodexAppServerConfigResponse,
+        configProvider: (() async throws -> CodexAppServerConfigResponse)? = nil
     ) {
-        let configProvider = { preparedConfig }
         codex = CodexAppServerSessionRuntime(
             endpoint: endpoint,
             token: token,
             runtimeProvider: "codex",
             requestTimeout: requestTimeout,
+            initialConfig: preparedConfig,
             configProvider: configProvider
         )
         claude = CodexAppServerSessionRuntime(
@@ -349,6 +350,7 @@ final class AppServerRuntimeBundle {
             token: token,
             runtimeProvider: "claude",
             requestTimeout: requestTimeout,
+            initialConfig: preparedConfig,
             configProvider: configProvider
         )
     }
@@ -366,8 +368,134 @@ final class AppServerRuntimeBundle {
         runtime(for: routes.runtimeProvider(for: sessionID))
     }
 
+    static func preferredAvailableRuntimeProvider(in config: CodexAppServerConfigResponse) -> String? {
+        let codexChannel = config.channels.first {
+            CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeID ?? $0.id) == "codex" ||
+                CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.provider) == "codex"
+        }
+        if codexChannel?.gatewayAvailable ?? config.runtime.gatewayAvailable {
+            return "codex"
+        }
+        return config.channels.lazy
+            .filter(\.gatewayAvailable)
+            .map { CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeID ?? $0.provider) }
+            .first { !$0.isEmpty }
+    }
+
+    /// 两个 Runtime 共享同一份 channels 快照。记录安装快照时各自丢弃配置的次数，
+    /// 任一 Runtime 后来丢过配置（断线、换代、daemon 重载）就说明这份快照不再可信。
+    private struct ConfigGeneration: Equatable {
+        var codex: UInt64
+        var claude: UInt64
+    }
+
+    private let configLock = NSLock()
+    private var sharedConfig: CodexAppServerConfigResponse?
+    private var installedGeneration: ConfigGeneration?
+    private var configRefreshTask: Task<CodexAppServerConfigResponse, Error>?
+
+    private func currentConfigGeneration() async -> ConfigGeneration {
+        let codexSequence = await codex.configInvalidationSequence
+        let claudeSequence = await claude.configInvalidationSequence
+        return ConfigGeneration(codex: codexSequence, claude: claudeSequence)
+    }
+
+    private func cachedConfigIfStillValid() async -> CodexAppServerConfigResponse? {
+        let generation = await currentConfigGeneration()
+        let snapshot = await codex.configSnapshot()
+        return configLock.withLock {
+            guard let installedGeneration else {
+                // 首次查询直接复用 preparedConfig / initialConfig 带来的快照，快速切换链路
+                // 不能为了建立基线再发一次 /api/app-server/config。但只有两个 Runtime 都还
+                // 没丢过配置时才允许这样做：否则这份快照可能来自另一个 Runtime 的旧缓存，
+                // 正是本类要修的情况。这类现场强制真读一次。
+                guard generation == ConfigGeneration(codex: 0, claude: 0), let snapshot else {
+                    return nil
+                }
+                self.installedGeneration = generation
+                sharedConfig = snapshot
+                return snapshot
+            }
+            guard installedGeneration == generation, let sharedConfig else { return nil }
+            return sharedConfig
+        }
+    }
+
+    /// 能力判断的唯一入口。先确认共享快照仍然有效，失效时通过一次有界、可合并的
+    /// 配置请求重建，避免「只有 Claude 连接过」时 Codex 缓存的旧 channels 一直生效。
+    func currentConfiguration() async throws -> CodexAppServerConfigResponse {
+        if let cached = await cachedConfigIfStillValid() { return cached }
+        return try await readConfiguration()
+    }
+
+    /// 显式能力刷新（Mac 端切换 Agent、用户强制刷新）必须读到新的服务端配置，
+    /// 不能因为共享快照还有效就复用旧 channels。
+    func refreshConfiguration() async throws {
+        _ = try await readConfiguration()
+    }
+
+    func channelAvailable(runtimeProvider: String) async throws -> Bool {
+        Self.channelAvailable(runtimeProvider: runtimeProvider, in: try await currentConfiguration())
+    }
+
+    static func channelAvailable(
+        runtimeProvider raw: String,
+        in config: CodexAppServerConfigResponse
+    ) -> Bool {
+        let runtime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(raw)
+        if runtime == "codex" {
+            return config.channels.first {
+                CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeID ?? $0.id) == "codex" ||
+                    CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.provider) == "codex"
+            }?.gatewayAvailable ?? config.runtime.gatewayAvailable
+        }
+        return config.channels.contains { channel in
+            (CodexAppServerSessionRuntime.normalizedRuntimeProvider(channel.runtimeID ?? channel.id) == runtime ||
+                CodexAppServerSessionRuntime.normalizedRuntimeProvider(channel.provider) == runtime) &&
+                channel.gatewayAvailable
+        }
+    }
+
+    /// 读取一次配置并把同一份快照同步给两个 Runtime。并发调用合并到同一次请求，
+    /// 不给每个布尔查询各发一次 `/api/app-server/config`。
+    ///
+    /// 快照的有效代次取自**读取完成之后**的失效计数：请求进行期间任一端丢过配置，
+    /// 就说明这份响应可能与 daemon 当前的渠道状态不一致，不能当成有效快照。
+    @discardableResult
+    func readConfiguration() async throws -> CodexAppServerConfigResponse {
+        if let inFlight = configLock.withLock({ configRefreshTask }) {
+            return try await inFlight.value
+        }
+        let basis = await currentConfigGeneration()
+        let task = Task { try await codex.ensureConfig(forceRefresh: true) }
+        configLock.withLock { configRefreshTask = task }
+        let refreshed: CodexAppServerConfigResponse
+        do {
+            refreshed = try await task.value
+        } catch {
+            configLock.withLock {
+                if configRefreshTask == task { configRefreshTask = nil }
+            }
+            throw error
+        }
+        await claude.installConfigSnapshot(refreshed)
+        // 只有全程没有发生配置失效时，这份响应才可以被当成有效快照缓存。
+        // 读取期间任一端断开过，就要等下一次查询重新读取 daemon 的当前渠道。
+        let settled = await currentConfigGeneration() == basis ? basis : nil
+        configLock.withLock {
+            installedGeneration = settled
+            sharedConfig = refreshed
+            if configRefreshTask == task { configRefreshTask = nil }
+        }
+        return refreshed
+    }
+
     func prepareForHostActivation() async throws {
-        try await codex.prepareForHostActivation()
+        let config = try await currentConfiguration()
+        guard let preferred = Self.preferredAvailableRuntimeProvider(in: config) else {
+            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+        }
+        try await runtime(for: preferred).prepareForHostActivation()
     }
 
     func shutdownForHostSwitch() async {
@@ -425,16 +553,27 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {
-        var options = try await bundle.codex.modelOptions()
-        if try await bundle.codex.channelAvailable(runtimeProvider: "claude") {
+        var options: [CodexAppServerModelOption] = []
+        var firstError: Error?
+        var hasAvailableRuntime = false
+        if try await bundle.channelAvailable(runtimeProvider: "codex") {
+            hasAvailableRuntime = true
+            do {
+                options.append(contentsOf: try await bundle.codex.modelOptions())
+            } catch {
+                firstError = error
+            }
+        }
+        if try await bundle.channelAvailable(runtimeProvider: "claude") {
+            hasAvailableRuntime = true
             do {
                 options.append(contentsOf: try await bundle.claude.modelOptions())
             } catch {
-                // Claude 是 experimental runtime；模型列表失败不能拖垮 Codex 主路径。
-                // config/channel metadata 会继续暴露 bridge 状态，菜单这里优先保持可用。
-                print("Claude model/list unavailable: \(error.localizedDescription)")
+                if firstError == nil { firstError = error }
             }
         }
+        if options.isEmpty, let firstError { throw firstError }
+        if !hasAvailableRuntime { throw CodexAppServerSessionRuntimeError.gatewayUnavailable }
         var seen: Set<String> = []
         return options.filter { option in
             guard !seen.contains(option.id) else { return false }
@@ -444,11 +583,14 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary] {
-        try await bundle.codex.permissionProfiles(cwd: cwd)
+        guard try await bundle.channelAvailable(runtimeProvider: "codex") else {
+            return []
+        }
+        return try await bundle.codex.permissionProfiles(cwd: cwd)
     }
 
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
-        try await bundle.codex.channelAvailable(runtimeProvider: runtimeProvider)
+        try await bundle.channelAvailable(runtimeProvider: runtimeProvider)
     }
 
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
@@ -555,6 +697,19 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     /// 代价说明：Claude 的搜索结果限于首页 limit 条。搜索场景下用户通常继续收窄
     /// 关键词而不是翻页；真出现「Claude 结果翻不动」再升级为按 runtime 分段。
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {
+        let codexAvailable = try await bundle.channelAvailable(runtimeProvider: "codex")
+        if !codexAvailable {
+            guard cursor == nil,
+                  try await bundle.channelAvailable(runtimeProvider: "claude") else {
+                return ThreadSearchPage(results: [])
+            }
+            let claudePage = try await bundle.claude.globalThreadListSearchPage(
+                query: query,
+                limit: limit
+            )
+            bundle.routes.remember(claudePage.sessions)
+            return claudePage
+        }
         let codexPage = try await codexClient.searchSessions(query: query, cursor: cursor, limit: limit)
         bundle.routes.remember(codexPage.sessions)
         guard cursor == nil else {
@@ -602,24 +757,34 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {
-        if let sessionID {
-            return await bundle.runtime(forSessionID: sessionID).refreshRateLimit()
+        let runtimeProvider = sessionID.flatMap { bundle.routes.runtimeProvider(for: $0) } ?? "codex"
+        guard try await bundle.channelAvailable(runtimeProvider: runtimeProvider) else {
+            return nil
         }
-        return await bundle.codex.refreshRateLimit()
+        return await bundle.runtime(for: runtimeProvider).refreshRateLimit()
     }
 
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
-        await bundle.runtime(for: runtimeProvider).refreshRateLimit()
+        guard try await bundle.channelAvailable(runtimeProvider: runtimeProvider) else {
+            return nil
+        }
+        return await bundle.runtime(for: runtimeProvider).refreshRateLimit()
     }
 
     func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch {
         // Token 活动来自 ChatGPT 账号，只允许走 Codex channel。
-        await bundle.codex.refreshAccountTokenUsage()
+        guard try await bundle.channelAvailable(runtimeProvider: "codex") else {
+            return .unsupported
+        }
+        return await bundle.codex.refreshAccountTokenUsage()
     }
 
     func refreshAccountTokenUsage(forceRefresh: Bool) async throws -> AccountTokenUsageFetch {
         // Token 活动来自 ChatGPT 账号，只允许走 Codex channel。
-        await bundle.codex.refreshAccountTokenUsage(forceRefresh: forceRefresh)
+        guard try await bundle.channelAvailable(runtimeProvider: "codex") else {
+            return .unsupported
+        }
+        return await bundle.codex.refreshAccountTokenUsage(forceRefresh: forceRefresh)
     }
 
     func threadGoal(threadID: String) async throws -> ThreadGoal? {
