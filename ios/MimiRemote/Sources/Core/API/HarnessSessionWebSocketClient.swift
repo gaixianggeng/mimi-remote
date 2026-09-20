@@ -45,7 +45,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
     var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
-    var onControlFailure: ((String) -> Void)?
+    var onControlFailure: ((ControlCommandFailure) -> Void)?
 
     /// 本会话的原生 journal。`connect` 建立基线后非空。
     private(set) var journal: HarnessSessionJournal?
@@ -408,9 +408,10 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         runtime: HarnessSessionRuntime
     ) async throws {
         for streamID in streamIDs where await runtime.droppedFrameCount(streamID: streamID) > 0 {
-            throw HarnessTransportError.malformedResponse(
-                "Harness stream continuity was lost for \(streamID)"
-            )
+            // 本地缓冲丢弃让这一段的原生顺序不再完整。重开 follow 会拿到新的
+            // opening snapshot 与 revision 基线，丢的那段由 snapshot + 历史补回，
+            // 因此归为**可恢复**的连续性丢失，而不是解析不了的协议错误。
+            throw HarnessTransportError.continuityLost("dropped frames on \(streamID)")
         }
     }
 
@@ -428,9 +429,9 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         case HarnessWireFrame.assistantStream:
             let frame = try HarnessAssistantStreamFrame.decode(from: value)
             if let rejection = apply(assistantStream: frame) {
-                throw HarnessTransportError.malformedResponse(
-                    "assistant stream continuity failed: \(rejection.diagnosticSummary)"
-                )
+                // revision 断档 / index 不连续：重开 follow 就拿到新基线，
+                // 属于可恢复的连续性丢失（契约 §2.7「跳号即载体失败，必须重开 follow」）。
+                throw HarnessTransportError.continuityLost(rejection.diagnosticSummary)
             }
             if frame.type == HarnessWireAssistantFrame.end {
                 settleActiveAttempt()
@@ -770,28 +771,57 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
 
     /// 停止当前轮次。
     ///
-    /// 已读版本只有 session 级 cancel，不能提供原子 turn 条件取消；但本地已经知道
-    /// 活动 turn 时必须拒绝明确过期目标，避免把新一轮误停。
+    /// 已读版本只有 session 级 cancel，不能提供原子 turn 条件取消。但**能确认**目标过期时
+    /// 必须拒绝：`session/cancel` 停的是这个会话正在跑的轮次，一次迟到的停止 A 会停掉
+    /// 之后开始的 B。契约要求如实保留"检查与取消不是原子操作"这一限制，但不因此放弃
+    /// 目标校验。
+    ///
+    /// 判定依据是**整轮**的活跃目标（`activeAttempt` 与最近 durable turn），不是只看
+    /// assistant attempt：工具运行中、两个 attempt 之间、观察尚未恢复时都可能没有
+    /// activeAttempt，而会话仍有正在执行的 turn。
     @discardableResult
     func sendCtrlC(expectedTurnID: TurnID) -> Bool {
-        if let turn = journal?.activeAttempt?.turn {
-            let activeTurnID: TurnID = "h-turn-\(turn)"
-            guard expectedTurnID == activeTurnID else {
-                onControlFailure?(L10n.format(
-                    "harness.cancel_turn_mismatch",
-                    expectedTurnID,
-                    activeTurnID
+        if let currentTurnID = currentKnownTurnID() {
+            guard expectedTurnID == currentTurnID else {
+                // 目标已过期：这次的意图是停旧轮次，而当前是另一个轮次。
+                // 按 gh-509 的语义归入 staleTarget，让调用方收敛本地运行态，
+                // 而不是把它当成一次普通失败去提示重试。
+                onControlFailure?(ControlCommandFailure(
+                    kind: .staleTarget,
+                    message: L10n.format(
+                        "harness.cancel_turn_mismatch",
+                        expectedTurnID,
+                        currentTurnID
+                    ),
+                    expectedTurnID: expectedTurnID
                 ))
                 return false
             }
         }
-        // 未知 active turn 时仍只能发 session 级 cancel；这是非原子限制，不伪装条件取消。
+        // 无法确认目标时只能发 session 级 cancel；这是非原子限制，不伪装条件取消。
         Task { [weak self] in
             guard let self else { return }
             let state = await self.submission.cancel(sessionID: self.sessionID)
             self.publish(cancelState: state)
         }
         return true
+    }
+
+    /// 当前已知的轮次身份，用于拒绝明确过期的停止目标。
+    ///
+    /// 取值优先级：活动 attempt 的 turn（最精确）→ 最近一条 durable `turn/start` 尚未被
+    /// `turn/end` 收尾的 turn。两者都没有时返回 `nil`，表示**无法确认**——
+    /// 这种情况不阻拦取消，但也不谎称已经校验过。
+    private func currentKnownTurnID() -> TurnID? {
+        if let turn = journal?.activeAttempt?.turn {
+            return "h-turn-\(turn)"
+        }
+        // attempt 已结算但整轮没结束（例如正在跑工具、或等待人机应答）：
+        // 这时的会话仍在执行，停止目标必须仍然可比对。
+        if let turn = journal?.activeTurnNumber {
+            return "h-turn-\(turn)"
+        }
+        return nil
     }
 
     /// 审批应答。clientId 仍只由 agentd 持有；移动端只提交 eventId 与 outcome。
@@ -994,7 +1024,11 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         case .accepted:
             onSendAccepted?(nil)
         case .rejected(let message), .responseUnknown(let message):
-            onControlFailure?(message)
+            // 归入 `.other` 而不是 `.staleTarget`：这里只有一个已经本地化过的结论串，
+            // 没有可判定的上游错误码。靠文案反推"目标已过期"会把措辞变化变成
+            // 语义变化，而 gh-509 的 staleTarget 是需要收敛本地运行态的强结论。
+            // 明确过期目标由 `sendCtrlC` 在发送前用本地轮次身份拦下（那里有确切依据）。
+            onControlFailure?(ControlCommandFailure(kind: .other, message: message))
         case .idle, .submitting:
             break
         }

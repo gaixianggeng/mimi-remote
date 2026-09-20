@@ -43,6 +43,17 @@ struct HarnessSessionJournal: Equatable {
     /// 最近一次检测到的 revision 断档。非 nil 表示必须重开 follow，不能把断档静默接上。
     private(set) var revisionGap: HarnessJournalRevisionGap?
 
+    /// 当前**整轮**的活跃 turn 号（不限于 assistant attempt）。
+    ///
+    /// 与 `activeAttempt` 的区别是承重的：assistant attempt 只覆盖"模型正在产出"这一小段，
+    /// 而一个 turn 在 attempt 结束后仍可能继续（跑工具、等人机应答、等下一步输出）。
+    /// 停止目标校验必须看整轮，否则工具运行中、两个 attempt 之间会没有可比对的目标，
+    /// 一次迟到的"停止 A"就会停掉之后开始的 B。
+    ///
+    /// 由 `turn/start` 置位、`turn/end` 清除——两者都是 durable 记录，因此它对
+    /// "还没收到 assistant-stream 基线"和"attempt 已结算"两种情况都成立。
+    private(set) var activeTurnNumber: Int?
+
     /// 是否已经收到过 opening snapshot。没收到就不该接受 live 帧——
     /// 那些帧属于一个我们还没建立基线的流。
     private(set) var hasOpenedSnapshot = false
@@ -93,6 +104,13 @@ struct HarnessSessionJournal: Equatable {
                 // 也不让旧 snapshot 的 seq 覆盖更新的同 seq 内容。
                 recordsBySeq[seq] = event
             }
+        }
+        // 轮次生命周期必须按 seq 顺序重放，不能只看"最后一条 turn 事件"：
+        // snapshot 是窗口，中间可能有多轮开始与结束。
+        activeTurnNumber = nil
+        for seq in recordsBySeq.keys.sorted() {
+            guard let event = recordsBySeq[seq] else { continue }
+            advanceTurnLifecycle(with: event)
         }
 
         snapshotCursor = snapshot.cursor
@@ -152,7 +170,31 @@ struct HarnessSessionJournal: Equatable {
         guard let seq = event.seq else { return false }
         let isNew = recordsBySeq[seq] == nil
         recordsBySeq[seq] = event
+        // 轮次生命周期以 seq 为序推进。重复投递同一 seq 的 turn/start|end 幂等，
+        // 不会因为重投把已经结束的轮次重新标成活跃。
+        if isNew {
+            advanceTurnLifecycle(with: event)
+        }
         return isNew
+    }
+
+    /// 按 durable turn 边界推进当前轮次。
+    ///
+    /// 只认 `turn/start` 与 `turn/end` 两个类型。认不出的不动状态——
+    /// 猜一个轮次号会让停止校验比没有校验更危险。
+    private mutating func advanceTurnLifecycle(with event: HarnessDurableEvent) {
+        switch event.type {
+        case HarnessWireEventType.turnStart:
+            if let turn = event.data?["turn"]?.intValue {
+                activeTurnNumber = turn
+            }
+        case HarnessWireEventType.turnEnd:
+            // `turn/end` 的 reason 不影响"这一轮已经结束"这个结论：
+            // completed / error / aborted 都表示会话不再跑这个轮次。
+            activeTurnNumber = nil
+        default:
+            break
+        }
     }
 
     // MARK: - 活动 attempt（assistant-stream）
@@ -296,6 +338,9 @@ struct HarnessSessionJournal: Equatable {
         revisionGap = nil
         hasOpenedSnapshot = false
         snapshotCursor = nil
+        // 轮次身份属于上一代：新代次尚未拿到 snapshot，此时**无法确认**活跃轮次。
+        // 留着一个旧轮次号会让停止校验误判成"目标匹配"。
+        activeTurnNumber = nil
     }
 }
 

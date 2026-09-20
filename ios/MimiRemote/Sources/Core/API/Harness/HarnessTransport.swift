@@ -52,8 +52,20 @@ enum HarnessTransportError: Error, Equatable {
     case closed
     /// 读超时或心跳失败（含半开链路）。
     case timedOut
-    /// 载体层错误帧。上游已经给出结论，重连无用。
+    /// 载体层错误帧。
+    ///
+    /// **不能一概判为不可重连。** 中继在不同处境下发这条帧：上游物理断流
+    /// （`gateway/service-unavailable`，随后关闭连接）需要重开观察；权限拒绝、
+    /// 协议不兼容则重连多少次都是同一结论。分类依据是错误码的语义，
+    /// 不是"它装在 carrier 里"这件事——`shouldReconnect` 会逐码判断。
     case carrier(HarnessRemoteError)
+    /// 流的连续性丢失：revision 断档或本地缓冲丢帧。
+    ///
+    /// 这类失败**可以**通过重开 follow 恢复：重开即拿到新的 opening snapshot 与
+    /// 新的 revision 基线，丢失的那一段由 snapshot + 历史读取补回来。
+    /// 与 `malformedResponse`（解析不了，重开也一样）刻意分开——
+    /// 合并成一个 case 会让"重开就能修"的情况和"重开也修不了"的情况走同一条路。
+    case continuityLost(String)
     /// 认不出的安全交互（既非审批也非追问）。移动端无法构造合法应答，必须显式拒绝。
     case unsupportedInteraction(String)
     /// 调用方取消。不是故障。
@@ -63,12 +75,38 @@ enum HarnessTransportError: Error, Equatable {
     ///
     /// 只有"链路层"的失败才返回 true。业务失败、策略拒绝、协议缺陷重连多少次都是同一个
     /// 结论——这正是"不同错误分类不能都变成 reconnect"的落点。
+    ///
+    /// `.carrier` 逐码判断：中继用它传达的上游结论里，既有可能恢复的临时不可用，
+    /// 也有不可重试的权限/协议拒绝。删掉这条分支会让物理断流在"先收到错误帧"这个
+    /// 时序下不再重连，而"先观察到关闭"却会重连——同一件事两种结果。
     var shouldReconnect: Bool {
         switch self {
-        case .unauthorized, .server, .notConnected, .closed, .timedOut:
+        case .unauthorized, .server, .notConnected, .closed, .timedOut, .continuityLost:
             return true
         case .rejected, .malformedResponse, .business, .unattributedResponse,
-             .carrier, .unsupportedInteraction, .cancelled:
+             .unsupportedInteraction, .cancelled:
+            return false
+        case .carrier(let error):
+            return Self.carrierCodeIsRecoverable(error.diagnosticCode)
+        }
+    }
+
+    /// 载体错误码是否指向「重连有意义」。
+    ///
+    /// 白名单而非黑名单：认不出的码一律**不重连**。理由是代价不对称——
+    /// 把可恢复的当成不可恢复，用户看到一次明确失败并可手动重试；
+    /// 把不可恢复的当成可恢复，会对着一个权限拒绝无限退避重连，把明确结论
+    /// 伪装成"网络不好"，用户永远等不到"需要重新授权"这句话。
+    static func carrierCodeIsRecoverable(_ code: String) -> Bool {
+        switch code {
+        case "gateway/service-unavailable":
+            // 上游订阅断开或物理断流。中继随后会关闭整条连接，本端重开会拿到新代次。
+            // 注意中继也用这个码表"订阅额度已满"——那也是等一会儿就能恢复的。
+            return true
+        case "gateway/cancelled":
+            // 上游取消了这次调用（例如订阅被另一端撤下）。重开订阅有意义。
+            return true
+        default:
             return false
         }
     }
@@ -96,6 +134,8 @@ enum HarnessTransportError: Error, Equatable {
             return "timed-out"
         case .carrier(let error):
             return "carrier:\(error.diagnosticCode)"
+        case .continuityLost(let detail):
+            return "continuity-lost:\(detail)"
         case .unsupportedInteraction(let event):
             return "unsupported-interaction:\(event)"
         case .cancelled:

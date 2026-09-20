@@ -134,9 +134,19 @@ final class HarnessSubmissionController {
             return .responseUnknown(String(describing: error))
         }
         switch transport {
-        case .business(let remote), .carrier(let remote):
+        case .business(let remote):
             // 上游给出了明确业务结论（例如 session/agent-busy）。这类重试是安全的。
-            // carrier 也算：它是载体层错误帧，同样是上游说的话，不是链路故障。
+            return .rejected(remote.message ?? remote.diagnosticCode)
+        case .carrier(let remote):
+            // 载体错误帧要**逐码**看，不能一概当业务结论。
+            //
+            // `gateway/service-unavailable` 是中继在上游物理断流时发的：那次写完全
+            // 可能已经落到上游，只是结论没回来。把它当成"没执行、可重试"会重复副作用，
+            // 正是本类型头注释要防住的那个后果——所以它走 `responseUnknown`。
+            // 真正的业务码（越权、参数非法、agent-busy 等）才是可重试的明确拒绝。
+            if HarnessTransportError.carrierCodeIsRecoverable(remote.diagnosticCode) {
+                return .responseUnknown(transport.diagnosticSummary)
+            }
             return .rejected(remote.message ?? remote.diagnosticCode)
         case .rejected(_, let message):
             // 中继本地策略拒绝（越权、参数非法）：重试不会改变结论。
@@ -145,7 +155,7 @@ final class HarnessSubmissionController {
             // 凭据失效：明确结论，但需要换凭据而不是重试同一次写。
             return .rejected(L10n.format("harness.credentials_expired_http", status))
         case .server, .malformedResponse, .unattributedResponse, .notConnected,
-             .closed, .timedOut, .unsupportedInteraction, .cancelled:
+             .closed, .timedOut, .continuityLost, .unsupportedInteraction, .cancelled:
             // 这些都可能发生在"上游已经执行、只是我们没拿到结论"之后。
             return .responseUnknown(transport.diagnosticSummary)
         }

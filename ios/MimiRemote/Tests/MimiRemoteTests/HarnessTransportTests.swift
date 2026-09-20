@@ -351,6 +351,8 @@ final class HarnessTransportTests: XCTestCase {
             .notConnected,
             .closed,
             .timedOut,
+            // 连续性丢失重开 follow 就能修：新 opening snapshot 提供新基线。
+            .continuityLost("revision gap"),
         ]
         let surfaceOnly: [HarnessTransportError] = [
             .rejected(status: 400, message: ""),
@@ -366,6 +368,71 @@ final class HarnessTransportTests: XCTestCase {
         }
         for error in surfaceOnly {
             XCTAssertFalse(error.shouldReconnect, "\(error.diagnosticSummary) 不应触发重连")
+        }
+    }
+
+    /// 载体错误必须**逐码**分类，不能因为"装在 carrier 里"就一律判死。
+    ///
+    /// 中继在上游物理断流时先发 `gateway/service-unavailable` 错误帧、再关闭连接。
+    /// 若一概不可重连，同一件事就会有两种结果：先消费到错误帧的停止恢复，
+    /// 先观察到关闭的自动重连。这条断言把两个时序钉到同一个结论。
+    func testCarrierErrorsClassifyByUpstreamSemanticsNotByEnvelope() {
+        // 上游断流 / 订阅额度已满：等一会儿重开就能恢复。
+        XCTAssertTrue(HarnessTransportError
+            .carrier(HarnessRemoteError(code: "gateway/service-unavailable", message: nil, details: nil))
+            .shouldReconnect)
+        XCTAssertTrue(HarnessTransportError
+            .carrier(HarnessRemoteError(code: "gateway/cancelled", message: nil, details: nil))
+            .shouldReconnect)
+
+        // 权限、协议、归属类失败：重连多少次都是同一结论，必须停下来告诉用户。
+        for code in [
+            "gateway/result-invalid",
+            "gateway/internal",
+            "gateway/arguments-invalid",
+            "gateway/binding-invalid",
+            "harness/rejected",
+            "harness/interaction-settled",
+            "session/agent-busy",
+            "session/model-unavailable",
+        ] {
+            XCTAssertFalse(
+                HarnessTransportError.carrier(
+                    HarnessRemoteError(code: code, message: nil, details: nil)
+                ).shouldReconnect,
+                "\(code) 不应触发重连"
+            )
+        }
+
+        // 白名单语义：认不出的码不重连。代价不对称——把不可恢复的当可恢复，
+        // 会对着一次权限拒绝无限退避，把明确结论伪装成"网络不好"。
+        XCTAssertFalse(HarnessTransportError
+            .carrier(HarnessRemoteError(code: "gateway/brand-new-code", message: nil, details: nil))
+            .shouldReconnect)
+    }
+
+    /// 断流写入提交状态时不能退化成"没执行、可重试"。
+    ///
+    /// `gateway/service-unavailable` 发生在一次写之后：那次写可能已经落到上游，
+    /// 只是结论没回来。判成 `.rejected` 会诱导上层重发，让一次提交变成两次副作用。
+    func testServiceUnavailableCarrierBecomesResponseUnknownNotRejected() async {
+        let unknown = await HarnessSubmissionController.stateForFailure(
+            HarnessTransportError.carrier(
+                HarnessRemoteError(code: "gateway/service-unavailable", message: nil, details: nil)
+            )
+        )
+        guard case .responseUnknown = unknown else {
+            return XCTFail("上游断流必须归入结果未知，实际是 \(unknown)")
+        }
+
+        // 真正的业务拒绝仍是明确结论，可以重试。
+        let rejected = await HarnessSubmissionController.stateForFailure(
+            HarnessTransportError.carrier(
+                HarnessRemoteError(code: "session/agent-busy", message: "busy", details: nil)
+            )
+        )
+        guard case .rejected = rejected else {
+            return XCTFail("业务码应当是可重试的明确拒绝，实际是 \(rejected)")
         }
     }
 

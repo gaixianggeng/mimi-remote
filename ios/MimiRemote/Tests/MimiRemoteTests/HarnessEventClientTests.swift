@@ -44,6 +44,11 @@ final class HarnessEventClientTests: XCTestCase {
         )
     }
 
+    /// 轮次边界事件（`turn/start` / `turn/end`）：只带 `turn`，不合成正文。
+    private func turnEvent(type: String, seq: Int, turn: Int) -> HarnessDurableEvent {
+        HarnessDurableEvent(type: type, seq: seq, time: nil, data: .object(["turn": .number(Double(turn))]))
+    }
+
     // MARK: - 夹具
 
     /// 造一个已 connection 的客户端（注入 snapshot）。
@@ -926,7 +931,7 @@ final class HarnessEventClientTests: XCTestCase {
     func testCancelUnknownReportsControlFailure() async throws {
         let sink = RecordingPromptSink()
         let (client, _) = try await makeConnectedClient(sender: sink)
-        var controlFailures: [String] = []
+        var controlFailures: [ControlCommandFailure] = []
         client.onControlFailure = { controlFailures.append($0) }
 
         // cancel 走的是注入的 submission，它的 sendCancel 恒成功；这里只验证成功路径。
@@ -952,12 +957,62 @@ final class HarnessEventClientTests: XCTestCase {
             step: 1,
             startedAfterSeq: 13
         )))
-        var failure: String?
+        var failure: ControlCommandFailure?
         client.onControlFailure = { failure = $0 }
 
         XCTAssertFalse(client.sendCtrlC(expectedTurnID: "h-turn-6"))
-        XCTAssertNotNil(failure)
+        // 已知目标过期必须归入 staleTarget：调用方据此收敛本地运行态，
+        // 而不是把它当成一次普通失败去提示重试（gh-509）。
+        XCTAssertEqual(failure?.kind, .staleTarget)
+        XCTAssertEqual(failure?.expectedTurnID, "h-turn-6")
         XCTAssertTrue(sink.cancelledSessions.isEmpty)
+    }
+
+    /// attempt 已结算但整轮没结束时，停止目标仍必须可比对。
+    ///
+    /// 只认 `activeAttempt` 会漏掉这一段：模型输出完了、正在跑工具或等待人机应答时
+    /// 没有 active attempt，而会话仍在执行。此时一次迟到的"停止 A"会停掉正在跑的 B。
+    /// 轮次身份取自 durable `turn/start`，它对整个 turn 生命周期成立。
+    func testCancelRejectsStaleTargetDuringTurnAfterAttemptSettled() async throws {
+        let sink = RecordingPromptSink()
+        let (client, _) = try await makeConnectedClient(sender: sink)
+
+        // 第 7 轮开始且**没有**活动 attempt：这正是工具执行中/等应答时的形状。
+        _ = client.apply(durableEvent: turnEvent(
+            type: HarnessWireEventType.turnStart, seq: 20, turn: 7
+        ))
+        XCTAssertNil(client.journal?.activeAttempt, "这一段本来就没有 active attempt")
+
+        var failure: ControlCommandFailure?
+        client.onControlFailure = { failure = $0 }
+
+        // 迟到的停止指向第 6 轮：必须拒绝，不能停掉正在跑的第 7 轮。
+        XCTAssertFalse(client.sendCtrlC(expectedTurnID: "h-turn-6"))
+        XCTAssertEqual(failure?.kind, .staleTarget)
+        XCTAssertTrue(sink.cancelledSessions.isEmpty, "过期目标不得触达上游 cancel")
+
+        // 指向当前轮次则放行。
+        XCTAssertTrue(client.sendCtrlC(expectedTurnID: "h-turn-7"))
+        await waitFor { sink.cancelledSessions.count == 1 }
+        XCTAssertEqual(sink.cancelledSessions, [sessionID])
+    }
+
+    /// `turn/end` 之后轮次不再活跃：此时没有可比对的目标，不阻拦取消。
+    func testCancelAfterTurnEndFallsBackToSessionCancel() async throws {
+        let sink = RecordingPromptSink()
+        let (client, _) = try await makeConnectedClient(sender: sink)
+
+        _ = client.apply(durableEvent: turnEvent(
+            type: HarnessWireEventType.turnStart, seq: 20, turn: 7
+        ))
+        _ = client.apply(durableEvent: turnEvent(
+            type: HarnessWireEventType.turnEnd, seq: 21, turn: 7
+        ))
+        XCTAssertNil(client.journal?.activeTurnNumber, "整轮结束后不该再有活跃轮次")
+
+        // 无法确认目标 → 不阻拦（契约如实保留"检查与取消不是原子操作"）。
+        XCTAssertTrue(client.sendCtrlC(expectedTurnID: "h-turn-7"))
+        await waitFor { sink.cancelledSessions.count == 1 }
     }
 
     // MARK: - 支撑

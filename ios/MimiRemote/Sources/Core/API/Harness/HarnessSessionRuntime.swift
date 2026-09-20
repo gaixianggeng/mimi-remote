@@ -259,10 +259,13 @@ actor HarnessSessionRuntime {
                 do {
                     try await self.pingTransport()
                 } catch let error as HarnessTransportError {
-                    await self.teardown(recordReason: error)
+                    // ping 是挂起点：等待期间 runtime 可能已经重建连接。迟到的失败
+                    // 只能拆**它自己那一代**，否则会把新连接的订阅和 reader 一起清掉
+                    // ——与 reader 用同一个入口，不能只保护 reader。
+                    await self.teardownIfCurrent(generation: generation, recordReason: error)
                     return
                 } catch {
-                    await self.teardown(recordReason: .timedOut)
+                    await self.teardownIfCurrent(generation: generation, recordReason: .timedOut)
                     return
                 }
             }
