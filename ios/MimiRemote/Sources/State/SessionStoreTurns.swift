@@ -667,6 +667,7 @@ extension SessionStore {
         }
         // 选择提交意味着详情已经成为当前可见目标；历史加载即使随后失败，也不能让列表
         // 继续把用户刚打开过的完成结果标成未读。
+        HostSwitchSignpost.event("conversation_open")
         markHistorySessionRead(session.id)
         if let previousSession, previousSession.id != session.id {
             cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
@@ -733,11 +734,18 @@ extension SessionStore {
                 )
             }
         } else if session.isRunning && canControlSession(session) {
-            // 重新点回运行会话时，离开期间的输出先用 thread/read 快照一次性补齐；
-            // 随后的 WebSocket 只回放状态级 backlog，避免消息区把旧 delta 逐条直播。
-            let didRefreshHistory = await loadHistory(for: session)
-            guard isSelectionLeaseCurrent(selectionLease) else { return false }
-            connectWebSocket(session, replayBufferedEvents: !didRefreshHistory)
+            // 运行中的会话优先恢复实时订阅，不能让历史首屏网络耗时挡住 turn 状态和新输出。
+            // 先带 replay 接入保证历史加载期间产生的事件不会丢；随后权威历史快照负责去重/
+            // 对账，事件 reducer 的 stable id/seq 继续作为合并边界。
+            connectWebSocket(session, replayBufferedEvents: true)
+            if conversationStore.hasLoadedHistory(sessionID: session.id) {
+                // 已有可读缓存时不要让 selectSession 等网络；后台权威补齐即可。
+                // 页面立刻可交互，Socket 已经承担从当前时刻开始的实时增量。
+                scheduleQuietHistoryRefresh(for: session, showsProgress: true)
+            } else {
+                _ = await loadHistory(for: session)
+                guard isSelectionLeaseCurrent(selectionLease) else { return false }
+            }
         } else if session.isRunning {
             // 其他客户端正在运行：只读观察，不建立可发送的事件通道。
             await loadHistoryIfNeeded(for: session)

@@ -806,6 +806,17 @@ extension SessionStore {
             // 避免不同模式的并发请求互相抢占并丢失恢复机会。
             scheduleDeferredFullHistoryReloadAfterTurnCompletion(sessionID: sessionID)
         }
+        if selectedSessionID == sessionID {
+            HostSwitchSignpost.event("conversation_history_first_page_ready")
+            switch historyLoadedQualityBySessionID[sessionID] {
+            case .some(.full):
+                HostSwitchSignpost.event("conversation_history_ready")
+            case .some(.summary):
+                HostSwitchSignpost.event("conversation_history_summary_ready")
+            case .some(.enriching), .none:
+                break
+            }
+        }
         if let effectiveSuccessStatusMessage {
             setStatusMessage(effectiveSuccessStatusMessage)
         }
@@ -835,6 +846,32 @@ extension SessionStore {
         }
         if let policyFailure = historyPolicyFailure(from: error) {
             switch job.loadMode {
+            case .full where (policyFailure.reason == "history_budget_limited"
+                              || policyFailure.reason == "history_request_in_flight")
+                && job.allowPolicyRetry:
+                // 预算/同请求占用只说明 gateway 此刻繁忙，与历史体量无关。
+                // 旧逻辑会把任何 full 策略失败都降级成 economy，随后 economy 又命中同一预算，
+                // 用户就会看到“15 秒后重试缩略历史”，即使 Claude 会话只有几条可见消息。
+                // 保持 full(summary-first) 语义原地退避一次，不制造错误的“大历史”判断。
+                let delay = policyFailure.retryAfterNanoseconds
+                    ?? (policyFailure.reason == "history_request_in_flight"
+                        ? 1_000_000_000
+                        : historyPolicyRetryFallbackNanoseconds)
+                try? await Task.sleep(nanoseconds: delay)
+                guard !Task.isCancelled else { return false }
+                if let selectedSessionID, selectedSessionID != sessionID { return false }
+                return await loadHistory(
+                    for: session,
+                    quiet: effectiveQuiet,
+                    showsProgress: current.showsProgress,
+                    loadMode: .full,
+                    force: true,
+                    reason: .automatic,
+                    successStatusMessage: effectiveQuiet ? nil : current.foregroundSuccessStatusMessage,
+                    allowPolicyRetry: false,
+                    recoveryGeneration: job.recoveryGeneration,
+                    fullTurnPageLimit: job.fullTurnPageLimit
+                )
             case .full:
                 // 低波及自适应缩页：仅当实际可分页的 thread/turns/list full
                 // 被 gateway 按体量阻断时才逐级缩页。老 agentd 回退到 thread/read 后
