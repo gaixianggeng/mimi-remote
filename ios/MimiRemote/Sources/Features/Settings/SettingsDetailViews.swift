@@ -1480,19 +1480,43 @@ private extension DefaultModelRuntime {
 }
 
 /// 「连接方式」只有两个答案：用已保存的直连线路，还是走自建 Tailcat。
-enum ConnectionMethodChoice: String, CaseIterable, Identifiable, SettingsChoiceOption {
-    case saved
-    case tailcat
+///
+/// 已保存那一侧的名字必须取自档案本身。同样是「不走 Tailcat」，档案可能是 Tailscale、
+/// 局域网或 HTTPS，写死成 Tailscale 会让局域网和 HTTPS 配对的电脑看到错误的线路名。
+/// 设备首页那一行用的就是 `savedFallbackConnectionRoute?.title`，这里保持同一口径。
+struct ConnectionMethodChoice: SettingsChoiceOption {
+    enum Kind: String {
+        case saved
+        case tailcat
+    }
 
-    var id: String { rawValue }
+    let kind: Kind
+    let choiceTitle: String
 
-    var choiceTitle: String {
-        switch self {
-        case .saved:
-            return L10n.text("ui.connection_speed_test_route_tailscale")
-        case .tailcat:
-            return L10n.text("ui.custom_tailcat")
-        }
+    var id: String { kind.rawValue }
+
+    static func options(savedRoute: ConnectionProfileRoute?) -> [ConnectionMethodChoice] {
+        [
+            ConnectionMethodChoice(
+                kind: .saved,
+                // 档案还没落盘时没有可展示的线路名，退回最常见的 Tailscale，
+                // 与设备首页那一行的兜底一致。
+                choiceTitle: savedRoute?.title ?? "Tailscale"
+            ),
+            ConnectionMethodChoice(
+                kind: .tailcat,
+                choiceTitle: L10n.text("ui.custom_tailcat")
+            )
+        ]
+    }
+
+    /// 选中态只按种类比对：换一台电脑会换掉标题，但「当前用的是已保存线路」这件事不变。
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.kind == rhs.kind
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(kind)
     }
 }
 
@@ -1516,7 +1540,7 @@ struct TailcatExperimentSettingsView: View {
                 SettingsChoiceRow(
                     title: L10n.text("ui.connection_method"),
                     systemImage: "point.3.connected.trianglepath.dotted",
-                    options: ConnectionMethodChoice.allCases,
+                    options: methodOptions,
                     selection: methodBinding
                 )
                 // 曾用实验版开启过时，即使当前构建没有框架，也必须允许用户切回直连。
@@ -1589,10 +1613,15 @@ struct TailcatExperimentSettingsView: View {
         .accessibilityIdentifier("settings.experimentalFeatures.detail")
     }
 
+    private var methodOptions: [ConnectionMethodChoice] {
+        ConnectionMethodChoice.options(savedRoute: appStore.savedFallbackConnectionRoute)
+    }
+
     private var methodBinding: Binding<ConnectionMethodChoice> {
-        Binding(
-            get: { controller.isEnabled ? .tailcat : .saved },
-            set: { enabledBinding.wrappedValue = $0 == .tailcat }
+        let options = methodOptions
+        return Binding(
+            get: { controller.isEnabled ? options[1] : options[0] },
+            set: { enabledBinding.wrappedValue = $0.kind == .tailcat }
         )
     }
 
