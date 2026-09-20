@@ -273,7 +273,7 @@
   "fixtureDigests": {
     "fixtures/rpc/session-list.json": "998b3130c36f0fefb8b88d5ab788e341ccebb60bd60ad84242fceecdf3b40c56",
     "fixtures/rpc/session-search.json": "6c67c238e0625a46c2ae3115a5b1fb51f9162acd7e10532520aeceb9442c8439",
-    "fixtures/rpc/session-model-catalog.json": "5f16814be615380a28b6f873456db8154ded0a7b57d4c5dcc2ad369ee0abfadc",
+    "fixtures/rpc/session-model-catalog.json": "97d369da52a4caba46eb8a9913ac0a2fad5698d8952e2b4db165235f2d904374",
     "fixtures/rpc/session-commands.json": "4ce8bab803635defe8a763d764df771d92ac0b69a4b51985543f6715c2c367f7",
     "fixtures/rpc/session-page.json": "aba6f31647e02479a42e56c37bd0d9359e839968524a6244eca3562c3acff184",
     "fixtures/rpc/envelope-errors.json": "f37a5a97256751b84b16bdb6995f2be877930ca2a37fba69328f388777a73319",

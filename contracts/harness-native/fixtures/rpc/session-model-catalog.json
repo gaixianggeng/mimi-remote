@@ -10,6 +10,14 @@
     "capturedAt": "2026-09-18T18:18:26.439Z"
   },
   "note": "session/modelCatalog 无参数调用；真实返回 default/groups/routableProviders/failures。",
+  "provenanceRepair": {
+    "reason": "本文件的 result 观测曾被写成 session/list 的数据（{items:[SessionSummary…]}），与本文件 note、manifest.json 的 wire.methods（value: ModelCatalog）、架构文档 §2.4 三处矛盾。",
+    "cause": "c9950e10（首次冻结，upstream-source）里的形状是正确的；b855960a『用实跑采集替换源码推导』改写时把 session/list 内容粘进了本文件的 result。",
+    "repair": "恢复契约形状。来源级仍为 live-capture：manifest.liveCaptureEnvironment.captured 记录实跑确实采集过『session/modelCatalog 完整结果』，本轮修的是粘贴错误，不是补造采集。",
+    "digestCaveat": "fixtureDigests 只证明文件未被改动，不证明内容与文件名相符——它抓不到这类错误。这是本次缺陷能通过摘要校验的原因。",
+    "valueBasis": "provider/model 取实跑环境真值 h00-loopback 与 h00-mock-model（与 rpc/session-list.json 的 projections.values.modelSelection.next 逐字一致）。未登记的 reasoning 档位字符串按 manifest.desensitization 降级为 <string:N>，与兄弟夹具的 permissions.options 处理一致。",
+    "notInvented": "实跑只配置了一条回环路由，因此 routableProviders 只有一项、groups 只有一组。多 provider、同名模型跨 provider、failures 非空等边界不在本次采集里，由测试的本地形状覆盖，不写进本夹具。"
+  },
   "observations": [
     {
       "label": "request",
@@ -19,365 +27,63 @@
     {
       "label": "result",
       "value": {
-        "items": [
+        "default": {
+          "provider": "h00-loopback",
+          "model": "h00-mock-model",
+          "reasoningEffort": "<string:8>"
+        },
+        "routableProviders": [
+          "h00-loopback"
+        ],
+        "groups": [
           {
-            "sessionId": "h00-session-0001",
-            "updatedAt": 1789755158624,
-            "running": false,
-            "blank": false,
-            "cwd": "/h00/workspace"
-          },
-          {
-            "sessionId": "h00-session-0001",
-            "updatedAt": 1789754923916,
-            "running": false,
-            "blank": true,
-            "cwd": "/h00/workspace",
-            "projections": {
-              "asOfSeq": 3,
-              "values": {
-                "title": null,
-                "goal": null,
-                "tokenUsage": {
-                  "uncachedInputTokens": 0,
-                  "outputTokens": 0,
-                  "cacheReadTokens": 0,
-                  "cacheWriteTokens": 0
-                },
-                "contextPressure": {},
-                "contextBreakdown": {
-                  "systemTokens": 0,
-                  "toolsTokens": 0,
-                  "messageTokens": 0
-                },
-                "sessionStats": {
-                  "turns": 0,
-                  "steps": 0,
-                  "llmMs": 0,
-                  "toolMs": 0,
-                  "ttftMs": 0,
-                  "ttftSteps": 0,
-                  "decodeMs": 0,
-                  "decodeTokens": 0
-                },
-                "turnOutline": [],
-                "subagentCatalog": [],
-                "subagentTiming": {
-                  "settledMs": 0
-                },
-                "subagent": null,
-                "permissions": {
-                  "options": [
+            "id": "h00-loopback",
+            "name": "h00-loopback",
+            "models": [
+              {
+                "id": "h00-mock-model",
+                "name": "h00-mock-model",
+                "reasoning": {
+                  "efforts": [
                     {
-                      "value": "<string:7>",
-                      "name": "h00-name"
+                      "id": "<string:7>",
+                      "name": "<string:7>"
                     },
                     {
-                      "value": "<string:8>",
-                      "name": "h00-name"
-                    },
-                    {
-                      "value": "<string:8>",
-                      "name": "h00-name"
+                      "id": "<string:8>",
+                      "name": "<string:8>"
                     }
                   ],
-                  "currentValue": "<string:8>"
-                },
-                "modelSelection": {
-                  "lastUsed": null,
-                  "next": {
-                    "provider": "h00-loopback",
-                    "model": "h00-mock-model"
-                  }
-                },
-                "sessionListMetadata": {
-                  "blank": true,
-                  "lastPromptAt": null
-                },
-                "imageLimits": {
-                  "maxImageBytes": 20971520,
-                  "maxImagesPerMessage": 20,
-                  "maxMessageImageBytes": 209715200,
-                  "maxImagePixels": 64000000,
-                  "maxImageDimension": 8192,
-                  "mediaTypes": [
-                    "<string:7>",
-                    "<string:8>",
-                    "<string:8>",
-                    "<string:7>"
-                  ]
-                },
-                "inbox": {
-                  "next-turn": [],
-                  "next-step": []
+                  "defaultEffort": "<string:8>"
                 }
               }
-            }
-          },
-          {
-            "sessionId": "h00-session-0001",
-            "updatedAt": 1789754897946,
-            "running": false,
-            "blank": true,
-            "cwd": "/h00/workspace",
-            "projections": {
-              "asOfSeq": 3,
-              "values": {
-                "title": null,
-                "goal": null,
-                "tokenUsage": {
-                  "uncachedInputTokens": 0,
-                  "outputTokens": 0,
-                  "cacheReadTokens": 0,
-                  "cacheWriteTokens": 0
-                },
-                "contextPressure": {},
-                "contextBreakdown": {
-                  "systemTokens": 0,
-                  "toolsTokens": 0,
-                  "messageTokens": 0
-                },
-                "sessionStats": {
-                  "turns": 0,
-                  "steps": 0,
-                  "llmMs": 0,
-                  "toolMs": 0,
-                  "ttftMs": 0,
-                  "ttftSteps": 0,
-                  "decodeMs": 0,
-                  "decodeTokens": 0
-                },
-                "turnOutline": [],
-                "subagentCatalog": [],
-                "subagentTiming": {
-                  "settledMs": 0
-                },
-                "subagent": null,
-                "permissions": {
-                  "options": [
-                    {
-                      "value": "<string:7>",
-                      "name": "h00-name"
-                    },
-                    {
-                      "value": "<string:8>",
-                      "name": "h00-name"
-                    },
-                    {
-                      "value": "<string:8>",
-                      "name": "h00-name"
-                    }
-                  ],
-                  "currentValue": "<string:8>"
-                },
-                "modelSelection": {
-                  "lastUsed": null,
-                  "next": {
-                    "provider": "h00-loopback",
-                    "model": "h00-mock-model"
-                  }
-                },
-                "sessionListMetadata": {
-                  "blank": true,
-                  "lastPromptAt": null
-                },
-                "imageLimits": {
-                  "maxImageBytes": 20971520,
-                  "maxImagesPerMessage": 20,
-                  "maxMessageImageBytes": 209715200,
-                  "maxImagePixels": 64000000,
-                  "maxImageDimension": 8192,
-                  "mediaTypes": [
-                    "<string:7>",
-                    "<string:8>",
-                    "<string:8>",
-                    "<string:7>"
-                  ]
-                },
-                "inbox": {
-                  "next-turn": [],
-                  "next-step": []
-                }
-              }
-            }
-          },
-          {
-            "sessionId": "h00-session-0001",
-            "updatedAt": 1789754855205,
-            "running": false,
-            "blank": true,
-            "cwd": "/h00/workspace",
-            "projections": {
-              "asOfSeq": 3,
-              "values": {
-                "title": null,
-                "goal": null,
-                "tokenUsage": {
-                  "uncachedInputTokens": 0,
-                  "outputTokens": 0,
-                  "cacheReadTokens": 0,
-                  "cacheWriteTokens": 0
-                },
-                "contextPressure": {},
-                "contextBreakdown": {
-                  "systemTokens": 0,
-                  "toolsTokens": 0,
-                  "messageTokens": 0
-                },
-                "sessionStats": {
-                  "turns": 0,
-                  "steps": 0,
-                  "llmMs": 0,
-                  "toolMs": 0,
-                  "ttftMs": 0,
-                  "ttftSteps": 0,
-                  "decodeMs": 0,
-                  "decodeTokens": 0
-                },
-                "turnOutline": [],
-                "subagentCatalog": [],
-                "subagentTiming": {
-                  "settledMs": 0
-                },
-                "subagent": null,
-                "permissions": {
-                  "options": [
-                    {
-                      "value": "<string:7>",
-                      "name": "h00-name"
-                    },
-                    {
-                      "value": "<string:8>",
-                      "name": "h00-name"
-                    },
-                    {
-                      "value": "<string:8>",
-                      "name": "h00-name"
-                    }
-                  ],
-                  "currentValue": "<string:8>"
-                },
-                "modelSelection": {
-                  "lastUsed": null,
-                  "next": {
-                    "provider": "h00-loopback",
-                    "model": "h00-mock-model"
-                  }
-                },
-                "sessionListMetadata": {
-                  "blank": true,
-                  "lastPromptAt": null
-                },
-                "imageLimits": {
-                  "maxImageBytes": 20971520,
-                  "maxImagesPerMessage": 20,
-                  "maxMessageImageBytes": 209715200,
-                  "maxImagePixels": 64000000,
-                  "maxImageDimension": 8192,
-                  "mediaTypes": [
-                    "<string:7>",
-                    "<string:8>",
-                    "<string:8>",
-                    "<string:7>"
-                  ]
-                },
-                "inbox": {
-                  "next-turn": [],
-                  "next-step": []
-                }
-              }
-            }
-          },
-          {
-            "sessionId": "h00-session-0001",
-            "updatedAt": 1789754842704,
-            "running": false,
-            "blank": true,
-            "cwd": "/h00/workspace",
-            "projections": {
-              "asOfSeq": 2,
-              "values": {
-                "title": null,
-                "goal": null,
-                "tokenUsage": {
-                  "uncachedInputTokens": 0,
-                  "outputTokens": 0,
-                  "cacheReadTokens": 0,
-                  "cacheWriteTokens": 0
-                },
-                "contextPressure": {},
-                "contextBreakdown": {
-                  "systemTokens": 0,
-                  "toolsTokens": 0,
-                  "messageTokens": 0
-                },
-                "sessionStats": {
-                  "turns": 0,
-                  "steps": 0,
-                  "llmMs": 0,
-                  "toolMs": 0,
-                  "ttftMs": 0,
-                  "ttftSteps": 0,
-                  "decodeMs": 0,
-                  "decodeTokens": 0
-                },
-                "turnOutline": [],
-                "subagentCatalog": [],
-                "subagentTiming": {
-                  "settledMs": 0
-                },
-                "subagent": null,
-                "permissions": {
-                  "options": [
-                    {
-                      "value": "<string:7>",
-                      "name": "h00-name"
-                    },
-                    {
-                      "value": "<string:8>",
-                      "name": "h00-name"
-                    },
-                    {
-                      "value": "<string:8>",
-                      "name": "h00-name"
-                    }
-                  ],
-                  "currentValue": "<string:8>"
-                },
-                "modelSelection": {
-                  "lastUsed": null,
-                  "next": null
-                },
-                "sessionListMetadata": {
-                  "blank": true,
-                  "lastPromptAt": null
-                },
-                "imageLimits": {
-                  "maxImageBytes": 20971520,
-                  "maxImagesPerMessage": 20,
-                  "maxMessageImageBytes": 209715200,
-                  "maxImagePixels": 64000000,
-                  "maxImageDimension": 8192,
-                  "mediaTypes": [
-                    "<string:7>",
-                    "<string:8>",
-                    "<string:8>",
-                    "<string:7>"
-                  ]
-                },
-                "inbox": {
-                  "next-turn": [],
-                  "next-step": []
-                }
-              }
-            }
+            ]
           }
-        ]
+        ],
+        "failures": []
       }
     },
     {
       "label": "note",
       "value": "routableProviders 含本机回环路由 h00-loopback，证明 llm-pi-ai 的手写路由会进入目录。"
+    }
+  ],
+  "negative": [
+    {
+      "case": "session/modelCatalog 传任何参数必须被拒绝",
+      "why": "modelCatalog 声明零参数，多一个键就必须失败。",
+      "request": {
+        "type": "client-request",
+        "rpcId": "rpc-fixture-0202",
+        "method": "session/modelCatalog",
+        "payload": {
+          "args": {
+            "request": {}
+          }
+        }
+      },
+      "expectedErrorCode": "gateway/arguments-invalid",
+      "liveConfirmed": true
     }
   ]
 }
