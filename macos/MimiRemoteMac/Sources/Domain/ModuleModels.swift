@@ -40,6 +40,10 @@ enum HostModuleGroup: CaseIterable {
     }
 }
 
+enum AgentModuleStatusState: String, Codable, Equatable, Sendable {
+    case available, unsupported, unavailable
+}
+
 struct AgentModuleStatus: Codable, Equatable, Sendable {
     let codexEnabled: Bool
     let claudeEnabled: Bool

@@ -29,6 +29,7 @@ final class HostStore {
     private(set) var lanError: String?
     private(set) var codexError: String?
     private(set) var networkError: String?
+    private(set) var networkErrorModule: HostModuleID?
     private(set) var updatingModule: HostModuleID?
     private(set) var photosAccess: PhotosAccessState = .notDetermined
     /// 启动阶段的补充说明，例如覆盖安装后正在重新登记后台服务。只在
@@ -36,6 +37,7 @@ final class HostStore {
     private(set) var startingDetail: String?
     var lastError: String?
     @ObservationIgnored private var pairingRefreshGeneration = 0
+    @ObservationIgnored private var tailcatStatusRequestSequence: UInt64 = 0
     /// 启动等待期间的 status 轮询只用来判断是否就绪。未就绪的结果不能把生命周期
     /// 写成 degraded/stopped，否则菜单栏会在"正在启动"阶段先闪出"服务需要处理"，
     /// 让用户误以为启动已经失败。真正的失败由等待结束后的 fail() 给出。
@@ -54,7 +56,9 @@ final class HostStore {
     }
 
     var lanEnabled: Bool {
-        status?.moduleStatus?.lanEnabled ?? status?.networkStatus?.allowLAN ?? false
+        if let modules = status?.moduleStatus { return modules.lanEnabled }
+        guard status?.moduleStatusState != .unavailable else { return false }
+        return status?.networkStatus?.allowLAN ?? false
     }
 
     var canChangeLAN: Bool {
@@ -404,7 +408,7 @@ final class HostStore {
 
     private func resolvedPairing(for requestedNetwork: PairingNetwork?) async throws -> PairingInfo {
         var selection = requestedNetwork ?? .automatic
-        if status?.moduleStatus != nil {
+        if status?.moduleStatus != nil || status?.moduleStatusState == .unavailable {
             if selection == .automatic { selection = availablePairingNetworks.first ?? .automatic }
             guard canPair, availablePairingNetworks.contains(selection) else {
                 throw AgentClientError.commandFailed(pairingUnavailableReason)
@@ -602,6 +606,7 @@ final class HostStore {
         updatingModule = network == .tailscale ? .tailscale : .lan
         isUpdatingLAN = network == .localNetwork
         networkError = nil
+        networkErrorModule = updatingModule
         lanError = nil
         invalidateModulePairing()
         defer { updatingModule = nil; isUpdatingLAN = false; isBusy = false }
@@ -672,20 +677,22 @@ final class HostStore {
                 claudeError = result.message
                 return
             }
-            if result.restartRequired {
-                do {
+            do {
+                if result.restartRequired || status?.moduleStatus?.claudeEnabled != result.enabled {
                     try await reloadMacAgentForConfigurationChange()
-                    try await waitForClaudeRuntime(enabled: result.enabled)
-                } catch {
-                    let updateError = error
+                }
+                try await waitForClaudeRuntime(enabled: result.enabled)
+            } catch {
+                let updateError = error
+                if result.changed {
                     let rolledBack = await rollbackClaudeConfiguration(result)
                     let rollbackDetail = rolledBack
                         ? "已恢复修改前的 Claude 设置。"
                         : "自动恢复也失败，请打开诊断后重试。"
                     claudeError = "更新 Claude 设置失败：\(updateError.localizedDescription) \(rollbackDetail)"
+                } else {
+                    claudeError = "更新 Claude 设置失败：\(updateError.localizedDescription)"
                 }
-            } else {
-                await refreshMacAgentStatus()
             }
         } catch {
             claudeError = error.localizedDescription
@@ -693,16 +700,24 @@ final class HostStore {
     }
 
     func refreshTailcatStatus() async {
-        guard owner == .macApp else { return }
+        await refreshTailcatStatus(allowDuringUpdate: false)
+    }
+
+    private func refreshTailcatStatus(allowDuringUpdate: Bool) async {
+        guard owner == .macApp, allowDuringUpdate || !isUpdatingTailcat else { return }
         let generation = pairingRefreshGeneration
+        tailcatStatusRequestSequence &+= 1
+        let requestSequence = tailcatStatusRequestSequence
         do {
             let current = try await agent.tailcatStatus()
-            guard generation == pairingRefreshGeneration else { return }
+            guard generation == pairingRefreshGeneration,
+                  requestSequence == tailcatStatusRequestSequence else { return }
             tailcatStatus = current
             if !isUpdatingTailcat { tailcatError = nil }
             if current.error != nil || !current.running { tailcatNotice = nil }
         } catch {
-            guard generation == pairingRefreshGeneration else { return }
+            guard generation == pairingRefreshGeneration,
+                  requestSequence == tailcatStatusRequestSequence else { return }
             tailcatError = error.localizedDescription
         }
     }
@@ -714,6 +729,7 @@ final class HostStore {
         }
         isBusy = true
         isUpdatingTailcat = true
+        tailcatStatusRequestSequence &+= 1
         tailcatError = nil
         invalidateModulePairing()
         tailcatNotice = nil
@@ -729,7 +745,7 @@ final class HostStore {
             }
         } catch {
             let updateError = error.localizedDescription
-            await refreshTailcatStatus()
+            await refreshTailcatStatus(allowDuringUpdate: true)
             tailcatError = updateError
         }
     }
@@ -741,6 +757,7 @@ final class HostStore {
         }
         isBusy = true
         isUpdatingTailcat = true
+        tailcatStatusRequestSequence &+= 1
         tailcatError = nil
         invalidateModulePairing()
         tailcatNotice = nil
@@ -767,6 +784,7 @@ final class HostStore {
         guard !isBusy, owner == .macApp, tailcatEnabled else { return }
         isBusy = true
         isUpdatingTailcat = true
+        tailcatStatusRequestSequence &+= 1
         tailcatError = nil
         invalidateModulePairing()
         tailcatNotice = nil
@@ -1075,10 +1093,7 @@ final class HostStore {
 
     private func rollbackClaudeConfiguration(_ changed: ClaudeConfigurationResult) async -> Bool {
         do {
-            let restored = try await agent.configureClaude(
-                changed.previousPreference,
-                changed.previousEnabled
-            )
+            let restored = try await agent.restoreClaude(changed)
             claudeConfiguration = restored
             try await reloadMacAgentForConfigurationChange()
             try await waitForClaudeRuntime(enabled: restored.enabled)
@@ -1296,7 +1311,7 @@ final class HostStore {
     }
 
     private func apply(_ current: AgentStatus) {
-        let resolved = preservingRuntimeSnapshotIfNeeded(in: current)
+        let resolved = preservingRuntimeSnapshotIfNeeded(in: preservingModuleStatusIfNeeded(in: current))
         status = resolved
         doctor = resolved.doctor
         lastStatusRefreshAt = Date()
@@ -1334,6 +1349,37 @@ final class HostStore {
         return applyStatusResponse(current, sequence: sequence) ? current : nil
     }
 
+    private func preservingModuleStatusIfNeeded(in current: AgentStatus) -> AgentStatus {
+        guard current.moduleStatus == nil,
+              current.moduleStatusState == .unavailable,
+              current.serviceOK,
+              let previousStatus = status,
+              previousStatus.endpoint == current.endpoint,
+              previousStatus.serverVersion == current.serverVersion,
+              let previousModules = previousStatus.moduleStatus
+        else {
+            return current
+        }
+        return AgentStatus(
+            processOK: current.processOK,
+            serviceOK: current.serviceOK,
+            processError: current.processError,
+            serviceError: current.serviceError,
+            version: current.version,
+            serverVersion: current.serverVersion,
+            endpoint: current.endpoint,
+            configPath: current.configPath,
+            projects: current.projects,
+            doctorOK: current.doctorOK,
+            doctor: current.doctor,
+            pairExpires: current.pairExpires,
+            runtimeStatus: current.runtimeStatus,
+            networkStatus: current.networkStatus,
+            moduleStatus: previousModules,
+            moduleStatusState: .unavailable
+        )
+    }
+
     private func preservingRuntimeSnapshotIfNeeded(in current: AgentStatus) -> AgentStatus {
         guard current.runtimeStatus == nil,
               current.serviceOK,
@@ -1368,7 +1414,8 @@ final class HostStore {
             pairExpires: current.pairExpires,
             runtimeStatus: staleSnapshot,
             networkStatus: current.networkStatus,
-            moduleStatus: current.moduleStatus
+            moduleStatus: current.moduleStatus,
+            moduleStatusState: current.moduleStatusState
         )
     }
 

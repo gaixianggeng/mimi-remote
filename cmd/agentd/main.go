@@ -537,7 +537,9 @@ func runStatus(args []string) error {
 	status["doctor_ok"] = doctorResults.OK
 	status["doctor"] = doctorResults
 	status["network_status"] = networkStatus
-	if modules := fetchModuleStatusForCommand(loopbackEndpoint, result.Token); modules != nil {
+	modules, moduleStatusState := fetchModuleStatusForCommand(loopbackEndpoint, result.Token)
+	status["module_status_state"] = moduleStatusState
+	if modules != nil {
 		status["module_status"] = modules
 	}
 	status["pair_expires"] = result.PairExpiresAt

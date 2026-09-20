@@ -10,6 +10,7 @@ extension HostStore {
     var tailscaleEnabled: Bool {
         if let modules = status?.moduleStatus { return modules.tailscaleEnabled }
         guard let status else { return false }
+        guard status.moduleStatusState != .unavailable else { return false }
         return status.networkStatus?.mode == "tailscale" || status.networkStatus?.allowLAN == true
     }
     var canPair: Bool {
@@ -18,10 +19,11 @@ extension HostStore {
     var availablePairingNetworks: [PairingNetwork] {
         guard status?.serviceOK == true else { return [] }
         var networks: [PairingNetwork] = []
-        if let modules = status?.moduleStatus {
+        if let modules = status?.moduleStatus, status?.moduleStatusState != .unavailable {
             if modules.tailscaleEnabled && modules.tailscaleAvailable { networks.append(.tailscale) }
             if modules.lanEnabled && modules.lanAvailable { networks.append(.localNetwork) }
-        } else if let endpoint = status?.endpoint,
+        } else if status?.moduleStatusState != .unavailable,
+                  let endpoint = status?.endpoint,
                   let host = URLComponents(string: endpoint)?.host,
                   host != "127.0.0.1", host != "localhost", host != "::1" {
             // Compatibility with an older daemon: only its concrete advertised endpoint.
@@ -52,7 +54,8 @@ extension HostStore {
         switch module {
         case .codex: codexError
         case .claude: claudeError
-        case .tailscale, .lan: networkError
+        case .tailscale, .lan:
+            networkErrorModule == module ? networkError : nil
         case .tailcat: tailcatError ?? tailcatStatus?.error
         }
     }
@@ -60,6 +63,9 @@ extension HostStore {
         if updatingModule == module || (module == .claude && isUpdatingClaude) ||
             (module == .tailcat && isUpdatingTailcat) { return "正在更新" }
         if moduleError(module) != nil { return "失败" }
+        if (module == .tailscale || module == .lan), status?.moduleStatusState == .unavailable {
+            return "等待状态更新"
+        }
         if !moduleEnabled(module) { return "已关闭" }
         guard status?.serviceOK == true else { return "等待服务启动" }
         if module.isAgent {

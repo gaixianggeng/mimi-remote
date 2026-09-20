@@ -367,7 +367,15 @@ final class AppServerRuntimeBundle {
     }
 
     func prepareForHostActivation() async throws {
-        try await codex.prepareForHostActivation()
+        if try await codex.channelAvailable(runtimeProvider: "codex") {
+            try await codex.prepareForHostActivation()
+            return
+        }
+        if try await codex.channelAvailable(runtimeProvider: "claude") {
+            try await claude.prepareForHostActivation()
+            return
+        }
+        throw CodexAppServerSessionRuntimeError.gatewayUnavailable
     }
 
     func shutdownForHostSwitch() async {
@@ -425,16 +433,27 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {
-        var options = try await bundle.codex.modelOptions()
+        var options: [CodexAppServerModelOption] = []
+        var firstError: Error?
+        var hasAvailableRuntime = false
+        if try await bundle.codex.channelAvailable(runtimeProvider: "codex") {
+            hasAvailableRuntime = true
+            do {
+                options.append(contentsOf: try await bundle.codex.modelOptions())
+            } catch {
+                firstError = error
+            }
+        }
         if try await bundle.codex.channelAvailable(runtimeProvider: "claude") {
+            hasAvailableRuntime = true
             do {
                 options.append(contentsOf: try await bundle.claude.modelOptions())
             } catch {
-                // Claude 是 experimental runtime；模型列表失败不能拖垮 Codex 主路径。
-                // config/channel metadata 会继续暴露 bridge 状态，菜单这里优先保持可用。
-                print("Claude model/list unavailable: \(error.localizedDescription)")
+                if firstError == nil { firstError = error }
             }
         }
+        if options.isEmpty, let firstError { throw firstError }
+        if !hasAvailableRuntime { throw CodexAppServerSessionRuntimeError.gatewayUnavailable }
         var seen: Set<String> = []
         return options.filter { option in
             guard !seen.contains(option.id) else { return false }

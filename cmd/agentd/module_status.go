@@ -12,6 +12,14 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
+type moduleStatusFetchState string
+
+const (
+	moduleStatusAvailable   moduleStatusFetchState = "available"
+	moduleStatusUnsupported moduleStatusFetchState = "unsupported"
+	moduleStatusUnavailable moduleStatusFetchState = "unavailable"
+)
+
 func moduleListenAddresses(cfg config.Config) []string {
 	if !cfg.HasNetworkModuleControls() {
 		return agentDListenAddresses(cfg.Listen, cfg.Network.AllowLAN)
@@ -28,27 +36,30 @@ func moduleListenAddresses(cfg config.Config) []string {
 	return []string{net.JoinHostPort("127.0.0.1", port)}
 }
 
-func fetchModuleStatusForCommand(endpoint, token string) *config.ModuleStatus {
+func fetchModuleStatusForCommand(endpoint, token string) (*config.ModuleStatus, moduleStatusFetchState) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(endpoint, "/")+"/api/host/modules", nil)
 	if err != nil {
-		return nil
+		return nil, moduleStatusUnavailable
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	client := &http.Client{Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()
 	response, err := client.Do(req)
 	if err != nil {
-		return nil
+		return nil, moduleStatusUnavailable
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusMethodNotAllowed {
+		return nil, moduleStatusUnsupported
+	}
 	if response.StatusCode != http.StatusOK {
-		return nil
+		return nil, moduleStatusUnavailable
 	}
 	var status config.ModuleStatus
 	if err := json.NewDecoder(io.LimitReader(response.Body, 16<<10)).Decode(&status); err != nil {
-		return nil
+		return nil, moduleStatusUnavailable
 	}
-	return &status
+	return &status, moduleStatusAvailable
 }

@@ -11,6 +11,9 @@ struct AgentCommandClient: Sendable {
         _ preference: ClaudeActivationPreference,
         _ restoreEnabled: Bool?
     ) async throws -> ClaudeConfigurationResult
+    var restoreClaude: @Sendable (ClaudeConfigurationResult) async throws -> ClaudeConfigurationResult = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Claude 配置恢复。")
+    }
     var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
     var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
     var tailcatStatus: @Sendable () async throws -> TailcatStatus = {
@@ -153,6 +156,18 @@ extension AgentCommandClient {
                         preference: preference,
                         restoreEnabled: restoreEnabled
                     ),
+                    timeout: .seconds(60)
+                ))
+            },
+            restoreClaude: { previous in
+                let binary = try requireEmbeddedBinary()
+                guard previous.previous != nil, previous.applied != nil else {
+                    throw AgentClientError.commandFailed("缺少原始 Claude 配置，不能安全回滚。")
+                }
+                let payload = String(decoding: try JSONEncoder().encode(previous), as: UTF8.self)
+                return try decode(ClaudeConfigurationResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: ["runtime", "--restore-claude", payload, "--json"],
                     timeout: .seconds(60)
                 ))
             },

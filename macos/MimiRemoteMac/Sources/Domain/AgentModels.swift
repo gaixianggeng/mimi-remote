@@ -104,6 +104,19 @@ enum ClaudeActivationPreference: String, Codable, Equatable, Sendable {
     case disabled
 }
 
+struct ClaudeModuleState: Codable, Equatable, Sendable {
+    let enabled: Bool?
+    let activation: ClaudeActivationPreference?
+    let claudeBin: String?
+    let environmentPresent: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, activation
+        case claudeBin = "claude_bin"
+        case environmentPresent = "environment_present"
+    }
+}
+
 struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
     let enabled: Bool
     let available: Bool
@@ -114,6 +127,34 @@ struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
     let restartRequired: Bool
     let reason: String
     let message: String
+    let previous: ClaudeModuleState?
+    let applied: ClaudeModuleState?
+
+    init(
+        enabled: Bool,
+        available: Bool,
+        preference: ClaudeActivationPreference,
+        previousEnabled: Bool,
+        previousPreference: ClaudeActivationPreference,
+        changed: Bool,
+        restartRequired: Bool,
+        reason: String,
+        message: String,
+        previous: ClaudeModuleState? = nil,
+        applied: ClaudeModuleState? = nil
+    ) {
+        self.enabled = enabled
+        self.available = available
+        self.preference = preference
+        self.previousEnabled = previousEnabled
+        self.previousPreference = previousPreference
+        self.changed = changed
+        self.restartRequired = restartRequired
+        self.reason = reason
+        self.message = message
+        self.previous = previous
+        self.applied = applied
+    }
 
     enum CodingKeys: String, CodingKey {
         case enabled = "claude_enabled"
@@ -125,6 +166,7 @@ struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
         case restartRequired = "restart_required"
         case reason
         case message
+        case previous, applied
     }
 }
 
@@ -433,6 +475,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
     let runtimeStatus: AgentRuntimeStatusSnapshot?
     let networkStatus: AgentNetworkStatus?
     let moduleStatus: AgentModuleStatus?
+    let moduleStatusState: AgentModuleStatusState?
 
     enum CodingKeys: String, CodingKey {
         case processOK = "process_ok"
@@ -450,6 +493,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         case runtimeStatus = "runtime_status"
         case networkStatus = "network_status"
         case moduleStatus = "module_status"
+        case moduleStatusState = "module_status_state"
     }
 
     init(
@@ -467,7 +511,8 @@ struct AgentStatus: Codable, Equatable, Sendable {
         pairExpires: String?,
         runtimeStatus: AgentRuntimeStatusSnapshot? = nil,
         networkStatus: AgentNetworkStatus? = nil,
-        moduleStatus: AgentModuleStatus? = nil
+        moduleStatus: AgentModuleStatus? = nil,
+        moduleStatusState: AgentModuleStatusState? = nil
     ) {
         self.processOK = processOK
         self.serviceOK = serviceOK
@@ -484,6 +529,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         self.runtimeStatus = runtimeStatus
         self.networkStatus = networkStatus
         self.moduleStatus = moduleStatus
+        self.moduleStatusState = moduleStatusState
     }
 
     init(from decoder: Decoder) throws {
@@ -512,6 +558,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         }
         networkStatus = try? container.decodeIfPresent(AgentNetworkStatus.self, forKey: .networkStatus)
         moduleStatus = try? container.decodeIfPresent(AgentModuleStatus.self, forKey: .moduleStatus)
+        moduleStatusState = try? container.decodeIfPresent(AgentModuleStatusState.self, forKey: .moduleStatusState)
     }
 
     var hasAgentVersionMismatch: Bool {

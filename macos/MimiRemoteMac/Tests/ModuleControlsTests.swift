@@ -72,31 +72,54 @@ final class ModuleControlsTests: XCTestCase {
         fixture.failNextRegistration = true
         await store.setLANEnabled(true)
         XCTAssertNotNil(store.networkError)
+        XCTAssertNotNil(store.moduleError(.lan))
+        XCTAssertNil(store.moduleError(.tailscale))
         XCTAssertFalse(store.lanEnabled)
         XCTAssertTrue(store.tailscaleEnabled)
         XCTAssertEqual(fixture.restoredNetwork?.previous, NetworkModuleState(allowLAN: false, allowTailscale: true))
+    }
+
+    func testClaudeToggleReloadsWhenDiskAlreadyMatchesButResidentDoesNot() async {
+        let fixture = ModuleFixture(codex: true, claude: true, claudeOnDisk: false, ts: true, lan: false)
+        let store = fixture.store()
+        await store.bootstrap()
+        let registrationsBeforeToggle = fixture.registrationCalls
+
+        await store.setClaudeEnabled(false)
+
+        XCTAssertFalse(store.claudeEnabled)
+        XCTAssertNil(store.claudeError)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBeforeToggle + 1)
     }
 }
 
 private final class ModuleFixture: @unchecked Sendable {
     private let lock = NSLock()
     private var codex: Bool
-    private let claude: Bool
+    private var claude: Bool
+    private var claudeOnDisk: Bool
     private var ts: Bool
     private var lan: Bool
     private var pendingCodex: Bool?
+    private var pendingClaude: Bool?
     private var pendingNetwork: NetworkConfigurationResult?
     private var _pairCalls = 0
     private var _codexCalls = 0
     private var _restoredNetwork: NetworkConfigurationResult?
+    private var _registrationCalls = 0
     // Only read/written by the MainActor service-registration stub.
     @MainActor var failNextRegistration = false
     var pairCalls: Int { lock.withLock { _pairCalls } }
     var codexCalls: Int { lock.withLock { _codexCalls } }
     var restoredNetwork: NetworkConfigurationResult? { lock.withLock { _restoredNetwork } }
+    var registrationCalls: Int { lock.withLock { _registrationCalls } }
 
-    init(codex: Bool, claude: Bool, ts: Bool, lan: Bool) {
-        self.codex = codex; self.claude = claude; self.ts = ts; self.lan = lan
+    init(codex: Bool, claude: Bool, claudeOnDisk: Bool? = nil, ts: Bool, lan: Bool) {
+        self.codex = codex
+        self.claude = claude
+        self.claudeOnDisk = claudeOnDisk ?? claude
+        self.ts = ts
+        self.lan = lan
     }
     func status() -> AgentStatus {
         lock.withLock {
@@ -105,6 +128,18 @@ private final class ModuleFixture: @unchecked Sendable {
                         projects: 1, doctorOK: true,
                         doctor: AgentDoctorResults(ok: true, version: "test", listen: "127.0.0.1:8787", checks: []),
                         pairExpires: nil,
+                        runtimeStatus: AgentRuntimeStatusSnapshot(
+                            checkedAt: ISO8601DateFormatter().string(from: Date()),
+                            runtimes: [
+                                AgentRuntimeStatus(
+                                    id: "claude", title: "Claude", enabled: claude,
+                                    state: claude ? .available : .disabled,
+                                    authMode: nil, planType: nil, reason: nil, rateLimits: nil
+                                )
+                            ],
+                            refreshing: false,
+                            stale: false
+                        ),
                         moduleStatus: AgentModuleStatus(codexEnabled: codex, claudeEnabled: claude,
                                                        tailscaleEnabled: ts, lanEnabled: lan,
                                                        tailscaleAvailable: true, lanAvailable: true))
@@ -113,6 +148,7 @@ private final class ModuleFixture: @unchecked Sendable {
     func apply() {
         lock.withLock {
             if let pendingCodex { codex = pendingCodex; self.pendingCodex = nil }
+            if let pendingClaude { claude = pendingClaude; self.pendingClaude = nil }
             if let pendingNetwork {
                 ts = pendingNetwork.tailscaleEnabled ?? ts
                 lan = pendingNetwork.lanEnabled
@@ -125,10 +161,26 @@ private final class ModuleFixture: @unchecked Sendable {
             configExists: { true }, setup: { _ in throw ModuleTestError.unexpected },
             status: { self.status() }, readiness: { self.status() }, statusAt: { _ in self.status() },
             doctor: { _ in DoctorFixResults(fixes: [], results: self.status().doctor) },
-            configureClaude: { _, _ in
-                ClaudeConfigurationResult(enabled: self.claude, available: self.claude, preference: .disabled,
-                                          previousEnabled: self.claude, previousPreference: .disabled,
-                                          changed: false, restartRequired: false, reason: "test", message: "")
+            configureClaude: { preference, _ in
+                self.lock.withLock {
+                    if preference == .automatic {
+                        return ClaudeConfigurationResult(
+                            enabled: self.claude, available: self.claude, preference: .automatic,
+                            previousEnabled: self.claudeOnDisk, previousPreference: .automatic,
+                            changed: false, restartRequired: false, reason: "test", message: ""
+                        )
+                    }
+                    let target = preference != .disabled
+                    let previous = self.claudeOnDisk
+                    self.claudeOnDisk = target
+                    self.pendingClaude = target
+                    return ClaudeConfigurationResult(
+                        enabled: target, available: target, preference: preference,
+                        previousEnabled: previous, previousPreference: previous ? .enabled : .disabled,
+                        changed: previous != target, restartRequired: previous != target,
+                        reason: "test", message: ""
+                    )
+                }
             },
             setLANAccess: { _ in throw ModuleTestError.unexpected },
             pair: { _ in
@@ -174,6 +226,7 @@ private final class ModuleFixture: @unchecked Sendable {
         let services = ServiceManagementClient(
             agentStatus: { .notRegistered }, agentConfigurationError: { nil },
             isAgentRegistrationCurrent: { true }, markAgentRegistrationCurrent: {}, registerAgent: {
+                self.lock.withLock { self._registrationCalls += 1 }
                 if self.failNextRegistration { self.failNextRegistration = false; throw ModuleTestError.unexpected }
                 self.apply()
             }, unregisterAgent: {}, agentLaunchFailure: { nil }, mainAppStatus: { .enabled }, registerMainApp: {},

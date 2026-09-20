@@ -930,6 +930,81 @@ final class NotificationRouteResolutionTests: XCTestCase {
         XCTAssertEqual(client.rememberedRuntimeRoute(forSessionID: "thread-claude"), "codex")
     }
 
+    func testHostActivationUsesClaudeWhenCodexChannelIsDisabled() async throws {
+        let project = makeProject(id: "claude-only-activation")
+        let config = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let codexTransport = FakeCodexAppServerTransport()
+        let claudeTransport = FakeCodexAppServerTransport()
+        let codex = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "token", runtimeProvider: "codex",
+            transportFactory: { codexTransport }, configProvider: { config }
+        )
+        let claude = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "token", runtimeProvider: "claude",
+            transportFactory: { claudeTransport }, configProvider: { config }
+        )
+        let bundle = AppServerRuntimeBundle(codexRuntime: codex, claudeRuntime: claude)
+
+        let activation = Task { try await bundle.prepareForHostActivation() }
+        let initialize = try await waitForFakeAppServerRequest(claudeTransport, method: "initialize")
+        transportResponse(
+            claudeTransport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-claude","platformFamily":"macos"}"#
+        )
+        try await activation.value
+
+        let codexMessages = await codexTransport.sentMessages()
+        let claudeReady = await claude.hasReadyConnectionForTesting()
+        XCTAssertTrue(codexMessages.isEmpty)
+        XCTAssertTrue(claudeReady)
+    }
+
+    func testModelOptionsUseClaudeWhenCodexChannelIsDisabled() async throws {
+        let project = makeProject(id: "claude-only-models")
+        let config = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let codexTransport = FakeCodexAppServerTransport()
+        let claudeTransport = FakeCodexAppServerTransport()
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(
+            codexRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787", token: "token", runtimeProvider: "codex",
+                transportFactory: { codexTransport }, configProvider: { config }
+            ),
+            claudeRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787", token: "token", runtimeProvider: "claude",
+                transportFactory: { claudeTransport }, configProvider: { config }
+            )
+        )
+
+        let models = Task { try await client.modelOptions() }
+        let initialize = try await waitForFakeAppServerRequest(claudeTransport, method: "initialize")
+        transportResponse(
+            claudeTransport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-claude","platformFamily":"macos"}"#
+        )
+        let modelList = try await waitForFakeAppServerRequest(claudeTransport, method: "model/list", after: 1)
+        transportResponse(
+            claudeTransport,
+            id: modelList.id,
+            result: #"{"models":[{"id":"claude-sonnet","title":"Claude Sonnet","provider":"anthropic","isDefault":true}]}"#
+        )
+
+        let options = try await models.value
+        XCTAssertEqual(options.map(\.model), ["claude-sonnet"])
+        XCTAssertEqual(options.first?.runtimeProvider, "claude")
+        let codexMessages = await codexTransport.sentMessages()
+        XCTAssertTrue(codexMessages.isEmpty)
+    }
+
     // MARK: - Helpers
 
     private func makeStore(client: any SessionStoreAPIClient, appStore: AppStore? = nil) -> SessionStore {

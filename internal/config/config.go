@@ -45,8 +45,8 @@ type Config struct {
 }
 
 type NetworkConfig struct {
-	// AllowLAN 是显式安全边界。关闭时继续只监听配置地址和 loopback；
-	// 打开后 agentd 才会监听 IPv4 通配地址，同时服务 Tailscale 与局域网。
+	// AllowLAN 是 Mimi 局域网入口的显式安全边界。独立模块控制启用后，
+	// agentd 即使监听 IPv4 通配地址，也会在 Accept 后按实际 TCP 地址限制通道。
 	AllowLAN bool `json:"allow_lan"`
 	// nil preserves legacy listen semantics; a value opts into independent Mimi ingress controls.
 	AllowTailscale *bool `json:"allow_tailscale,omitempty"`

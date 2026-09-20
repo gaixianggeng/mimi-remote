@@ -439,7 +439,7 @@ actor CodexAppServerSessionRuntime {
         let runtime = Self.normalizedRuntimeProvider(raw)
         let config = try await ensureConfig()
         if runtime == "codex" {
-            return true
+            return runtimeGatewayAvailable(in: config)
         }
         return config.channels.contains { channel in
             (Self.normalizedRuntimeProvider(channel.runtimeID ?? channel.id) == runtime ||

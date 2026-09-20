@@ -1139,21 +1139,10 @@ final class HostStoreTests: XCTestCase {
                     throw TestError.expected
                 }
             },
-            configureClaude: { preference, restoreEnabled in
-                events.append("configure-\(preference.rawValue)-\(restoreEnabled.map(String.init) ?? "normal")")
+            configureClaude: { preference, _ in
+                events.append("configure-\(preference.rawValue)")
                 if preference == .automatic {
                     return Self.claudeConfiguration(enabled: true, preference: .enabled)
-                }
-                if let restoreEnabled {
-                    return Self.claudeConfiguration(
-                        enabled: restoreEnabled,
-                        preference: preference,
-                        previousEnabled: false,
-                        previousPreference: .disabled,
-                        changed: true,
-                        restartRequired: true,
-                        reason: "restored"
-                    )
                 }
                 return Self.claudeConfiguration(
                     enabled: false,
@@ -1163,6 +1152,18 @@ final class HostStoreTests: XCTestCase {
                     changed: true,
                     restartRequired: true
                 )
+            },
+            restoreClaude: { _ in
+                events.append("restore-claude")
+                return Self.claudeConfiguration(
+                    enabled: true,
+                    preference: .enabled,
+                    previousEnabled: false,
+                    previousPreference: .disabled,
+                    changed: true,
+                    restartRequired: true,
+                    reason: "restored"
+                )
             }
         )
         await store.bootstrap()
@@ -1170,11 +1171,11 @@ final class HostStoreTests: XCTestCase {
         await store.setClaudeEnabled(false)
 
         XCTAssertEqual(events.values, [
-            "configure-auto-normal",
+            "configure-auto",
             "register-1",
-            "configure-disabled-normal",
+            "configure-disabled",
             "register-2",
-            "configure-enabled-true",
+            "restore-claude",
             "register-3",
         ])
         XCTAssertTrue(store.claudeEnabled)
@@ -1424,6 +1425,42 @@ final class HostStoreTests: XCTestCase {
 
         XCTAssertNil(store.tailcatNotice)
         XCTAssertEqual(store.tailcatStatusDetail, "Tailcat sidecar 已退出")
+    }
+
+    func testTailcatRefreshCannotStartWhileToggleIsInFlight() async {
+        let mutationGate = SuspendedStatusGate()
+        let statusCalls = CallCounter()
+        let enabledStatus = TailcatStatus(
+            enabled: true, running: true, version: "v0.3.0",
+            derpMapURL: nil, pairedDeviceCount: 1, error: nil
+        )
+        let disabledStatus = TailcatStatus(
+            enabled: false, running: false, version: "v0.3.0",
+            derpMapURL: nil, pairedDeviceCount: 1, error: nil
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            tailcatStatus: {
+                _ = statusCalls.increment()
+                return enabledStatus
+            },
+            setTailcatEnabled: { _ in
+                await mutationGate.suspendReturning(disabledStatus)
+            }
+        )
+        await store.bootstrap()
+        await store.refreshTailcatStatus()
+
+        let toggle = Task { await store.setTailcatEnabled(false) }
+        await mutationGate.waitUntilSuspended()
+        await store.refreshTailcatStatus()
+        XCTAssertEqual(statusCalls.current, 1, "修改期间不得启动会覆盖结果的状态读取")
+        mutationGate.resume()
+        await toggle.value
+
+        XCTAssertFalse(store.tailcatEnabled)
+        XCTAssertEqual(store.tailcatStatus?.running, false)
     }
 
     func testDoctorKeepsHomebrewMigrationState() async {
@@ -1805,6 +1842,54 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.status?.runtimeStatus?.stale, true)
     }
 
+    func testTransientModuleStatusFailurePreservesSnapshotWithoutLegacyInference() async {
+        let calls = CallCounter()
+        let modules = AgentModuleStatus(
+            codexEnabled: true,
+            claudeEnabled: false,
+            tailscaleEnabled: true,
+            lanEnabled: false,
+            tailscaleAvailable: true,
+            lanAvailable: true
+        )
+        let statusWithModules = AgentStatus(
+            processOK: true, serviceOK: true, processError: nil, serviceError: nil,
+            version: Self.readyStatus.version, endpoint: Self.readyStatus.endpoint,
+            configPath: Self.readyStatus.configPath, projects: Self.readyStatus.projects,
+            doctorOK: true, doctor: Self.readyStatus.doctor, pairExpires: nil,
+            networkStatus: AgentNetworkStatus(
+                mode: "loopback", allowLAN: false, policyChecked: true, policyOK: true
+            ),
+            moduleStatus: modules,
+            moduleStatusState: .available
+        )
+        let unavailableStatus = AgentStatus(
+            processOK: true, serviceOK: true, processError: nil, serviceError: nil,
+            version: Self.readyStatus.version, endpoint: Self.readyStatus.endpoint,
+            configPath: Self.readyStatus.configPath, projects: Self.readyStatus.projects,
+            doctorOK: true, doctor: Self.readyStatus.doctor, pairExpires: nil,
+            networkStatus: AgentNetworkStatus(
+                mode: "lan", allowLAN: true, policyChecked: true, policyOK: true
+            ),
+            moduleStatus: nil,
+            moduleStatusState: .unavailable
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: { calls.increment() == 1 ? statusWithModules : unavailableStatus }
+        )
+
+        await store.bootstrap()
+        await store.refresh()
+
+        XCTAssertEqual(store.status?.moduleStatus, modules)
+        XCTAssertEqual(store.status?.moduleStatusState, .unavailable)
+        XCTAssertTrue(store.tailscaleEnabled)
+        XCTAssertEqual(store.moduleStateTitle(.tailscale), "等待状态更新")
+        XCTAssertEqual(store.availablePairingNetworks, [])
+    }
+
 
     func makeStore(
         configExists: Bool,
@@ -1836,6 +1921,9 @@ final class HostStoreTests: XCTestCase {
                 previousPreference: .automatic
             )
         },
+        restoreClaude: @escaping @Sendable (ClaudeConfigurationResult) async throws -> ClaudeConfigurationResult = { _ in
+            throw TestError.expected
+        },
         setLANAccess: @escaping @Sendable (Bool) async throws -> NetworkConfigurationResult = {
             NetworkConfigurationResult(lanEnabled: $0, changed: false, restartRequired: false)
         },
@@ -1849,6 +1937,9 @@ final class HostStoreTests: XCTestCase {
                 pairedDeviceCount: 0,
                 error: nil
             )
+        },
+        setTailcatEnabled: @escaping @Sendable (Bool) async throws -> TailcatStatus = { _ in
+            throw TestError.expected
         },
         configureTailcatDERPMap: @escaping @Sendable (String) async throws -> TailcatStatus = { _ in
             TailcatStatus(
@@ -1873,9 +1964,11 @@ final class HostStoreTests: XCTestCase {
             statusAt: { _ in readyStatus },
             doctor: doctor,
             configureClaude: configureClaude,
+            restoreClaude: restoreClaude,
             setLANAccess: setLANAccess,
             pair: pair ?? { _ in Self.pairing },
             tailcatStatus: tailcatStatus,
+            setTailcatEnabled: setTailcatEnabled,
             configureTailcatDERPMap: configureTailcatDERPMap,
             version: { readyStatus.version }
         )
