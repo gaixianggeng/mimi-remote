@@ -60,7 +60,10 @@ struct ModuleControlsGroup: View {
                 }
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 3)
-                .frame(minHeight: 42)
+                .frame(
+                    minHeight: MenuBarLayout.rowHeight,
+                    maxHeight: MenuBarLayout.rowHeight
+                )
 
                 Text("开关立即生效。切换 AI 编程助手会重新加载服务，进行中的移动会话可能中断。")
                     .font(.caption2)
@@ -199,6 +202,7 @@ private struct ModuleControlRow: View {
             .labelsHidden()
             .toggleStyle(.switch)
             .controlSize(.small)
+            .tint(Color.mimiControlAccent)
             .disabled(!store.canChangeModule(module))
             .accessibilityLabel("启用 \(module.title)")
             .accessibilityHint("当前状态：\(stateTitle)")
@@ -214,7 +218,10 @@ private struct ModuleControlRow: View {
             .accessibilityValue(isExpanded ? "已展开" : "已折叠")
         }
         .padding(.horizontal, 3)
-        .frame(minHeight: 42)
+        .frame(
+            minHeight: MenuBarLayout.rowHeight,
+            maxHeight: MenuBarLayout.rowHeight
+        )
     }
 
     private var isWorking: Bool {
@@ -236,7 +243,7 @@ private struct ModuleControlRow: View {
         if isWorking { return .blue }
         if !store.moduleEnabled(module) { return .secondary }
         if title.contains("需要") || title.contains("暂不") { return .orange }
-        if title == "可用" || title.contains("地址可用") || title == "已连接" { return .green }
+        if title == "可用" || title.contains("地址可用") || title == "已连接" { return .mimiSuccess }
         return .secondary
     }
 }
@@ -261,7 +268,7 @@ private struct ModuleStateLabel: View {
                 .lineLimit(1)
         }
         .font(.caption)
-        .foregroundStyle(color)
+        .foregroundStyle(.secondary)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("状态：\(title)")
     }

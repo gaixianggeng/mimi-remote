@@ -1,17 +1,17 @@
 import AppKit
 import SwiftUI
 
-private enum MenuBarLayout {
+enum MenuBarLayout {
     static let contentInset: CGFloat = 12
-    // 底部操作已经有完整的 40pt 点击区域；收紧窗口底边留白，避免最后一行显得虚高。
+    // 底部操作已经使用统一行高；收紧窗口底边留白，避免最后一行显得虚高。
     static let bottomInset: CGFloat = 6
     // 状态信息、运行时和操作区共用同一列网格，避免不同区块的图标与文字左右漂移。
     static let sectionInset: CGFloat = 3
     static let symbolColumnWidth: CGFloat = 16
     static let symbolTextSpacing: CGFloat = 8
     static let textColumnLeading = sectionInset + symbolColumnWidth + symbolTextSpacing
-    // 同组操作使用固定高度，避免分隔线、悬停底色或文案状态造成视觉节奏跳动。
-    static let actionRowHeight: CGFloat = 40
+    // 模块、导航和底部操作共用固定高度，形成稳定节奏并保留完整点击区域。
+    static let rowHeight: CGFloat = 44
     static let actionDividerOpacity: Double = 0.28
 }
 
@@ -397,8 +397,8 @@ private struct MenuActionRow: View {
             .padding(.horizontal, MenuBarLayout.sectionInset)
             .frame(
                 maxWidth: .infinity,
-                minHeight: MenuBarLayout.actionRowHeight,
-                maxHeight: MenuBarLayout.actionRowHeight,
+                minHeight: MenuBarLayout.rowHeight,
+                maxHeight: MenuBarLayout.rowHeight,
                 alignment: .leading
             )
             .background(
@@ -480,7 +480,11 @@ private struct MenuFooterActionButton: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
-            .frame(maxWidth: .infinity, minHeight: 40, maxHeight: 40)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: MenuBarLayout.rowHeight,
+                maxHeight: MenuBarLayout.rowHeight
+            )
             .background(
                 Color.primary.opacity(isHovered ? 0.08 : 0.045),
                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
