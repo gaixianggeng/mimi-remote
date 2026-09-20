@@ -72,7 +72,7 @@ final class MockWebSocketClient: SessionWebSocketClient {
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
     var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
-    var onControlFailure: ((String) -> Void)?
+    var onControlFailure: ((ControlCommandFailure) -> Void)?
 
     private(set) var connectedSessionIDs: [SessionID] = []
     private(set) var replayBufferedEventsByConnect: [Bool] = []
@@ -148,6 +148,20 @@ final class MockWebSocketClient: SessionWebSocketClient {
     @MainActor
     func emitEvent(_ event: AgentEvent) {
         onEvent?(event)
+    }
+
+    @MainActor
+    func emitControlFailure(_ failure: ControlCommandFailure) {
+        onControlFailure?(failure)
+    }
+
+    @MainActor
+    func emitStaleControlTarget(_ message: String, expectedTurnID: TurnID? = nil) {
+        onControlFailure?(ControlCommandFailure(
+            kind: .staleTarget,
+            message: message,
+            expectedTurnID: expectedTurnID
+        ))
     }
 }
 
@@ -480,6 +494,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let cursorPages: [String: SessionsPage]
     let createSessionResponse: CreateSessionResponse?
     var createSessionResults: [Result<CreateSessionResponse, Error>]
+    /// 结束会话的结果；nil 时保持历史行为（抛 unimplemented），只有显式设置时才返回成功或指定错误。
+    var stopSessionResult: Result<Void, Error>?
     let sessionArchiveResults: [String: Result<Void, Error>]
     let sessionArchiveHandler: ((String, Bool) async throws -> Void)?
     let sessionForkResults: [String: Result<AgentSession, Error>]
@@ -1170,7 +1186,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func stopSession(id: String) async throws {
-        throw MockError.unimplemented
+        guard let stopSessionResult else {
+            throw MockError.unimplemented
+        }
+        try stopSessionResult.get()
     }
 
     func setSessionArchived(id: String, archived: Bool) async throws {

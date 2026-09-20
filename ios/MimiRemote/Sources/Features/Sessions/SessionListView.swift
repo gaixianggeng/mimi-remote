@@ -736,6 +736,7 @@ struct SessionListView: View {
     private func retrySessionList() {
         Task {
             await appStore.preflightConnection()
+            await sessionStore.refreshSelectedProjectSessions(showLoading: false)
             await sessionStore.refreshSessionLibraryIndex(authoritative: true)
         }
     }
@@ -954,7 +955,12 @@ struct SessionListView: View {
     private func filterMenu(tokens: ThemeTokens) -> some View {
         Menu {
             Button {
-                Task { await sessionStore.refreshSessionLibraryIndex(authoritative: true) }
+                Task {
+                    // 先刷新用户当前上下文，让可见运行态尽快收敛；跨工作区全局发现随后继续。
+                    // 后者可能包含多 Runtime / 多页扫描，不应成为“点刷新后看见变化”的首个门槛。
+                    await sessionStore.refreshSelectedProjectSessions(showLoading: false)
+                    await sessionStore.refreshSessionLibraryIndex(authoritative: true)
+                }
             } label: {
                 Label(L10n.text("ui.refresh_session_library"), systemImage: "arrow.clockwise")
             }

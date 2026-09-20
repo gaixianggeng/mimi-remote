@@ -206,7 +206,7 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
     }
 
     func stopSession(id: String) async throws {
-        try await runtime.stopSession(id: id)
+        try await runtime.stopSessionRecoveringStaleTarget(id: id)
     }
 
     func setSessionArchived(id: String, archived: Bool) async throws {
@@ -883,7 +883,9 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
             try await native.cancelSession(sessionID: id)
             return
         }
-        try await bundle.runtime(forSessionID: id).stopSession(id: id)
+        // 远端目标已消失时收敛运行态（#517）。原生路径不适用：Harness 只有 session 级
+        // cancel，没有可对账的 turn 身份，撤不了这个「目标已不存在」的分支。
+        try await bundle.runtime(forSessionID: id).stopSessionRecoveringStaleTarget(id: id)
     }
 
     func setSessionArchived(id: String, archived: Bool) async throws {
@@ -971,7 +973,7 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
     var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
-    var onControlFailure: ((String) -> Void)?
+    var onControlFailure: ((ControlCommandFailure) -> Void)?
 
     private let bundle: AppServerRuntimeBundle
     /// 面向既有协议而不是具体 Codex 类型：原生 Harness 事件客户端可以并列接入。
@@ -1093,8 +1095,8 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         client.onUserInputResponseFailure = { [weak self] requestID, message, expired in
             self?.onUserInputResponseFailure?(requestID, message, expired)
         }
-        client.onControlFailure = { [weak self] message in
-            self?.onControlFailure?(message)
+        client.onControlFailure = { [weak self] failure in
+            self?.onControlFailure?(failure)
         }
     }
 
@@ -1119,7 +1121,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
     var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
-    var onControlFailure: ((String) -> Void)?
+    var onControlFailure: ((ControlCommandFailure) -> Void)?
 
     private let runtime: CodexAppServerSessionRuntime
     private var sessionID: SessionID?
@@ -1414,19 +1416,26 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     @discardableResult
     func sendCtrlC(expectedTurnID: TurnID) -> Bool {
         guard let sessionID else {
-            onControlFailure?(L10n.text("ui.direct_websocket_not_connected"))
+            onControlFailure?(ControlCommandFailure(
+                kind: .other,
+                message: L10n.text("ui.direct_websocket_not_connected")
+            ))
             return false
         }
         let failureHandler = onControlFailure
         Task { [runtime] in
             do {
-                try await runtime.interruptActiveTurn(
+                try await runtime.interruptActiveTurnRecoveringStaleTarget(
                     sessionID: sessionID,
                     expectedTurnID: expectedTurnID
                 )
             } catch {
+                // 远端已经不认识这个 turn 时，重试不会成功；调用方要据此收敛本地运行态。
+                // 带上 expectedTurnID：这个失败是异步到达的，届时活跃轮次可能已经换成别的，
+                // 调用方需要靠它判断还能不能收敛（PR #517 评审）。
+                let failure = ControlCommandFailure.classify(error, expectedTurnID: expectedTurnID)
                 await MainActor.run {
-                    failureHandler?(error.localizedDescription)
+                    failureHandler?(failure)
                 }
             }
         }
@@ -1475,6 +1484,115 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
                     failureHandler?(requestID, error.localizedDescription, expired)
                 }
             }
+        }
+        return true
+    }
+}
+
+// MARK: - Stale control recovery
+
+// 陈旧控制目标必须先在 Runtime 收敛，再通知 Store 放行下一轮。
+// 适配器不能仅在 UI 合成终态，否则 startTurn 仍会被 Runtime 的旧 activeTurnID 拒绝。
+extension CodexAppServerSessionRuntime {
+    func interruptActiveTurnRecoveringStaleTarget(
+        sessionID: SessionID,
+        expectedTurnID: TurnID
+    ) async throws {
+        do {
+            try await interruptActiveTurn(sessionID: sessionID, expectedTurnID: expectedTurnID)
+        } catch {
+            guard ControlCommandFailure.classify(error).isStaleTarget else { throw error }
+            guard reconcileStaleControlTarget(
+                sessionID: sessionID,
+                expectedTurnID: expectedTurnID,
+                closesSession: false
+            ) else {
+                // Runtime 已前进时不能让 Store 再用旧失败合成终态。
+                throw supersededControlTargetError(sessionID: sessionID)
+            }
+        }
+    }
+
+    func stopSessionRecoveringStaleTarget(id: SessionID) async throws {
+        let expectedTurnID = contextsBySessionID[id]?.activeTurnID
+        do {
+            try await stopSession(id: id)
+        } catch {
+            guard ControlCommandFailure.classify(error).isStaleTarget,
+                  let expectedTurnID else {
+                throw error
+            }
+            guard reconcileStaleControlTarget(
+                sessionID: id,
+                expectedTurnID: expectedTurnID,
+                closesSession: true
+            ) else {
+                // 停止接口没有携带 turn ID 的失败回调。不能把旧 turn 的 not found
+                // 原样交给 Store，否则它会把已经取代旧轮次的会话整体关闭。
+                throw supersededControlTargetError(sessionID: id)
+            }
+        }
+    }
+
+    private func supersededControlTargetError(sessionID: SessionID) -> Error {
+        if let context = contextsBySessionID[sessionID], let activeTurnID = context.activeTurnID {
+            return CodexAppServerSessionRuntimeError.activeTurnConflict(
+                session: context.session,
+                activeTurnID: activeTurnID
+            )
+        }
+        return CodexAppServerSessionRuntimeError.missingActiveTurn(sessionID)
+    }
+
+    @discardableResult
+    private func reconcileStaleControlTarget(
+        sessionID: SessionID,
+        expectedTurnID: TurnID,
+        closesSession: Bool
+    ) -> Bool {
+        if let activeTurnID = contextsBySessionID[sessionID]?.activeTurnID,
+           activeTurnID != expectedTurnID {
+            return false
+        }
+        // 新 turn/start 的 ACK 可能仍在途，不能用旧控制命令的失败关闭这次提交。
+        guard !sessionsStartingTurn.contains(sessionID) else { return false }
+
+        let terminal = CodexAppServerNotification(
+            method: closesSession ? "thread/closed" : "turn/completed",
+            params: .object([
+                "threadId": .string(sessionID),
+                "turnId": .string(expectedTurnID),
+                "turn": .object([
+                    "id": .string(expectedTurnID),
+                    "status": .string("interrupted")
+                ])
+            ])
+        )
+        // 与真实终态共用请求清理和 tombstone，防止重新订阅或迟到的 server request
+        // 重新生成旧轮次的审批/输入卡片。这里没有 await，校验与清理处于同一 actor 事务。
+        updateTerminalInteractionBarrier(from: terminal)
+        recordPendingTurnStartBoundary(from: terminal)
+        clearPendingServerRequestsForTerminalNotification(terminal)
+        finishTurnInterruptRecoveryIfMatching(sessionID: sessionID, turnID: expectedTurnID)
+        cancelThreadResumeTask(sessionID: sessionID)
+        threadsResumedOnConnection.remove(sessionID)
+        lastLiveSignalAtBySessionID.removeValue(forKey: sessionID)
+
+        let status = closesSession ? "closed" : SessionStatus.completed.rawValue
+        _ = withUpdatedSession(sessionID) { session in
+            session.activeTurnID = nil
+            session.status = status
+            session.pendingApproval = nil
+            session.pendingUserInput = nil
+        }
+        if closesSession {
+            // 停止会话不能发布 turnCompleted：它会在 Store 取消队列前放行下一项。
+            emit(.sessionStatus(status, metadata(threadID: sessionID, turnID: expectedTurnID)))
+        } else {
+            emit(.turnCompleted(
+                metadata(threadID: sessionID, turnID: expectedTurnID)
+                    .withTurnLifecycle(.interrupted)
+            ))
         }
         return true
     }

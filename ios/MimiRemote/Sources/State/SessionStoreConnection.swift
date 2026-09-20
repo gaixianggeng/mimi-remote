@@ -186,13 +186,15 @@ extension SessionStore {
                       sessionID: session.id,
                       generation: connectionGeneration,
                       hostScope: hostScope
-                  ) else {
+            ) else {
                 return
             }
+            HostSwitchSignpost.event("runtime_event_app_received")
             if let metadata = self.metadata(for: event) {
                 self.recordEventWatermark(metadata, fallbackSessionID: session.id)
             }
             let shouldFlushImmediately = terminalStreamStore.append(event, lease: eventLease)
+            HostSwitchSignpost.event("runtime_event_mailbox_enqueued")
             self.scheduleRuntimeEventFlush(lease: eventLease, immediately: shouldFlushImmediately)
         }
         socket.onSendAccepted = { [weak self] clientMessageID in
@@ -343,19 +345,30 @@ extension SessionStore {
                 self?.setErrorMessage(L10n.format("ui.failed_to_send_supplementary_information_value", message))
             }
         }
-        socket.onControlFailure = { [weak self] message in
+        socket.onControlFailure = { [weak self] failure in
             Task { @MainActor in
-                guard self?.isCurrentWebSocketConnection(
+                guard let self, self.isCurrentWebSocketConnection(
                     sessionID: session.id,
                     generation: connectionGeneration,
                     hostScope: hostScope
-                ) == true else {
+                ) else {
                     return
                 }
-                if self?.statusMessage == L10n.text("ui.stopping_current_reply") {
-                    self?.setStatusMessage(nil)
+                // 远端已经不认识这条控制命令的目标（thread / turn 不存在，或该轮次已经结束）。
+                // 本地不会再收到匹配的 turn/completed，必须自己收敛运行态；只弹一条错误会让
+                // 会话永久停在执行中并保留停止控件（gh-509）。
+                if failure.isStaleTarget {
+                    await self.convergeStaleControlTarget(
+                        sessionID: session.id,
+                        hostScope: hostScope,
+                        expectedTurnID: failure.expectedTurnID
+                    )
+                    return
                 }
-                self?.setErrorMessage(L10n.format("ui.failed_to_send_control_command_value", message))
+                if self.statusMessage == L10n.text("ui.stopping_current_reply") {
+                    self.setStatusMessage(nil)
+                }
+                self.setErrorMessage(L10n.format("ui.failed_to_send_control_command_value", failure.message))
             }
         }
         webSocket = socket
@@ -443,6 +456,9 @@ extension SessionStore {
             webSocketReconnectAttemptBySessionID.removeValue(forKey: sessionID)
             setActiveWriterConflict(false, sessionID: sessionID)
             setWebSocketStatus(.connected)
+            if selectedSessionID == sessionID {
+                HostSwitchSignpost.event("conversation_realtime_ready")
+            }
             setErrorMessage(nil)
             // 真实会话通道连上了，就是「已连接」的事实；用它覆盖冷启动首个 preflight 遗留的
             // 失败值，设备页不再把过程当结论。
@@ -547,6 +563,47 @@ extension SessionStore {
         return lowerMessage.contains("already has an active writer")
             || lowerMessage.contains("external_thread_active")
             || (lowerMessage.contains("thread is active") && lowerMessage.contains("codex desktop"))
+    }
+
+    /// 控制命令的目标在远端已经不存在：thread / turn 被回收，或者该轮次已经结束。
+    ///
+    /// 本地不会再等到匹配的 turn/completed，所以复用同一条收敛路径，让 active turn、前台活动、
+    /// 待办卡片和流式消息一起收口，而不是只清一个字段。只收敛运行态：对话历史、已发送消息和
+    /// 待发送队列都不删除（gh-509）。
+    ///
+    /// `expectedTurnID` 是下发命令时针对的轮次。中断失败是**异步**投递的，回调到达时活跃轮次
+    /// 可能已经正常结束、并被队列里的下一个轮次取代；此时若照常合成一次 turn/completed，
+    /// 就会把仍在远端运行的新轮次误标为中断并清掉它的运行态（PR #517 评审）。
+    /// 因此只有「当前活跃轮次仍是当初那个」才允许收敛；`nil` 表示命令以 thread 为目标，不限定轮次。
+    func convergeStaleControlTarget(
+        sessionID: SessionID,
+        hostScope: HostScope,
+        expectedTurnID: TurnID? = nil
+    ) async {
+        let activeTurnID = sessionsByID[sessionID]?.activeTurnID
+        let stillTargetsActiveTurn = activeTurnID != nil
+            && (expectedTurnID == nil || expectedTurnID == activeTurnID)
+        guard stillTargetsActiveTurn, let turnID = activeTurnID else {
+            // 已经没有需要收敛的活跃轮次（或活跃轮次已经换成别的），只剩可能残留的停止提示要收掉。
+            if statusMessage == L10n.text("ui.stopping_current_reply") {
+                setStatusMessage(nil)
+            }
+            return
+        }
+        await applyRuntimeEvent(
+            .turnCompleted(AgentEventMetadata(
+                seq: nil,
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: nil,
+                messageID: nil,
+                clientMessageID: nil,
+                revision: nil,
+                createdAt: nil,
+                turnLifecycle: .interrupted
+            )),
+            lease: HostSessionLease(hostScope: hostScope, sessionID: sessionID)
+        )
     }
 
     @discardableResult
@@ -871,9 +928,10 @@ extension SessionStore {
     }
 
     func scheduleRuntimeEventFlush(lease: HostSessionLease, immediately: Bool = false) {
-        // 一个 session 同时只保留一个消费任务。即使 80ms 窗口内越过批量阈值，
-        // 也不为后续每个事件反复取消并新建 Task；最长只多等待当前合并窗口。
-        guard runtimeEventFlushTasks[lease] == nil else {
+        // 一个 session 同时只能有一个“等待 flush”或“正在 drain”的 owner。
+        // applyRuntimeEvent 会跨 actor await；仅靠 runtimeEventFlushTasks 不能覆盖那段重入窗口。
+        guard runtimeEventFlushTasks[lease] == nil,
+              !runtimeEventDrainingLeases.contains(lease) else {
             return
         }
         let delay = immediately ? 0 : runtimeEventFlushDelayNanoseconds
@@ -890,15 +948,30 @@ extension SessionStore {
     }
 
     func flushRuntimeEvents(lease: HostSessionLease) async {
+        // 主动 flush（断线/终止）可以抢掉尚在 sleep 的合并任务，但不能和已经进入
+        // applyRuntimeEvent 的消费者并发。MainActor 在 await 处可重入，所以消费权必须
+        // 独立于 Task 句柄一直持有到 mailbox 真正排空。
         runtimeEventFlushTasks[lease]?.cancel()
         runtimeEventFlushTasks[lease] = nil
-        let events = terminalStreamStore.drain(lease: lease)
-        guard !events.isEmpty, appStore.activeHostScope == lease.hostScope else {
+        guard runtimeEventDrainingLeases.insert(lease).inserted else {
             return
         }
-        for event in events {
-            guard appStore.activeHostScope == lease.hostScope else { return }
-            await applyRuntimeEvent(event, lease: lease)
+        defer {
+            runtimeEventDrainingLeases.remove(lease)
+        }
+
+        while appStore.activeHostScope == lease.hostScope {
+            let events = terminalStreamStore.drain(lease: lease)
+            guard !events.isEmpty else {
+                return
+            }
+            HostSwitchSignpost.event("runtime_event_mailbox_drained")
+            for event in events {
+                guard appStore.activeHostScope == lease.hostScope else { return }
+                await applyRuntimeEvent(event, lease: lease)
+            }
+            // applyRuntimeEvent 的 await 窗口里到达的新事件不会另起消费者；
+            // 回到这里继续 drain，保持同一 lease 的网络到达顺序与 Store 提交顺序一致。
         }
     }
 
@@ -916,6 +989,11 @@ extension SessionStore {
            shouldIgnoreStaleTurnCompletion(metadata, fallbackSessionID: sessionID) {
             // 历史回放可能晚于新 turn 到达。旧完成事件既不能把新 turn 标成 completed，
             // 也不能清掉或放行绑定到另一 turn 的本地队列。
+            return
+        }
+        if shouldIgnoreResolvedWaitStateAfterTerminal(event, fallbackSessionID: sessionID) {
+            // completion 已经清掉审批/补充输入。它之后迟到的 resolved 只属于旧 turn，
+            // 不能再把 completed 会话写回 running；新 turn 会先由 turnStarted 建立 activeTurnID。
             return
         }
         if case .turnCompleted(let metadata) = event {
@@ -943,17 +1021,20 @@ extension SessionStore {
             }
         }
         let runtimeNotification = runtimeNotification(for: event, fallbackSessionID: sessionID)
+        HostSwitchSignpost.event("runtime_event_reducer_started")
         let output = await eventReducer.reduce(
             event,
             fallbackSessionID: sessionID,
             outputIdleClearDelay: foregroundOutputIdleClearDelay
         )
+        HostSwitchSignpost.event("runtime_event_reducer_finished")
         guard appStore.activeHostScope == lease.hostScope else { return }
         // reducer 的 actor 跳转期间可能已收到新轮次。落地前重新校验，确保旧完成
         // 既不会清新 activeTurnID，也不会单独把新轮次的状态覆写为 completed。
         if case .turnCompleted(let metadata) = event,
            shouldIgnoreStaleTurnCompletion(metadata, fallbackSessionID: sessionID) { return }
         applyEventReducerOutput(output)
+        HostSwitchSignpost.event("runtime_event_store_committed")
         if case .turnCompleted(let metadata) = event {
             scheduleMissingAssistantReplyBackfillIfNeeded(
                 turnMetadata: metadata,
@@ -1102,6 +1183,28 @@ extension SessionStore {
         }
         return false
     }
+
+    func shouldIgnoreResolvedWaitStateAfterTerminal(
+        _ event: AgentEvent,
+        fallbackSessionID: SessionID
+    ) -> Bool {
+        let metadata: AgentEventMetadata
+        switch event {
+        case .approvalResolved(let value):
+            metadata = value
+        case .userInputResolved(let value, _):
+            metadata = value
+        default:
+            return false
+        }
+        let sessionID = metadata.sessionID ?? fallbackSessionID
+        guard locallyCompletedSessionIDs.contains(sessionID),
+              sessionsByID[sessionID]?.activeTurnID == nil else {
+            return false
+        }
+        return true
+    }
+
 
     func scheduleSessionListReconciliation(
         projectID: String,

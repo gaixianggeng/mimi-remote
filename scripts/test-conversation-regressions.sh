@@ -132,6 +132,12 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDirectRuntimeKeepsStaleReplayedServerRequestSilentOnIdleThread \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTurnInterruptAcknowledgementPollsUntilAuthoritativeTerminalTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTargetedInterruptRecoveryWorksWithoutCachedActiveTurnAndProtectsNewerTurn \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleInterruptRealRuntimeDispatchesQueuedTurnAfterResume \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleInterruptRuntimeClearsPendingReplayAndRejectsLateRequests \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleInterruptRuntimePreservesSupersedingTurn \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testNonStaleInterruptRuntimeFailureKeepsActiveTurn \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleStopRealAPIClientsCloseRuntimeWithoutReleasingNextTurn \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleStopRealAPIClientDoesNotCloseSupersedingTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTerminalStreamStoreSeparatesSameSessionAcrossHostScopes \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testConversationStoreScopesSameSessionAndDelayedDeltaByProfile \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testWebSocketFailureAutoReconnectsWithLatestReplayWatermark \

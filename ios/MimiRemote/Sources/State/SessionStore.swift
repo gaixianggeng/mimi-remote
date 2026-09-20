@@ -416,6 +416,8 @@ final class SessionStore: ObservableObject {
     var lastSeenEventSeqBySessionID: [SessionID: EventSequence] = [:]
     var historySnapshotSeqBySessionID: [SessionID: EventSequence] = [:]
     var runtimeEventFlushTasks: [HostSessionLease: Task<Void, Never>] = [:]
+    // flush 跨 await 时 MainActor 可以重入；单独记录真正持有消费权的 lease，避免后续批次并发落地。
+    var runtimeEventDrainingLeases: Set<HostSessionLease> = []
     var foregroundActivityClearTasks: [SessionID: Task<Void, Never>] = [:]
 #if DEBUG
     var didApplyDebugWorkbenchUISeed = false
@@ -535,10 +537,12 @@ final class SessionStore: ObservableObject {
 
     let foregroundOutputIdleClearDelay: UInt64 = 8_000_000_000
     let runtimeEventFlushDelayNanoseconds: UInt64 = 80_000_000
-    let sessionListConnectedPollingDelayNanoseconds: UInt64 = 60_000_000_000
+    // WebSocket 只实时覆盖已 resume/start 的 thread；列表里其它运行会话仍依赖轮询兜底。
+    // 15s/30s 把可见状态陈旧窗口压下来，同时避免把全局历史发现变成高频请求。
+    let sessionListConnectedPollingDelayNanoseconds: UInt64 = 15_000_000_000
     let sessionListDisconnectedPollingDelayNanoseconds: UInt64 = 8_000_000_000
     let sessionListFirstPageCacheTTL: TimeInterval = 2
-    let sessionLibraryIndexPollingInterval: TimeInterval = 60
+    let sessionLibraryIndexPollingInterval: TimeInterval = 30
     let sessionListReconciliationDelayNanoseconds: UInt64 = 1_500_000_000
     var gitRefreshDelayNanoseconds: UInt64 = 600_000_000
     let economyHistoryPageLimit = 60
