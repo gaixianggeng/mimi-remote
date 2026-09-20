@@ -448,7 +448,11 @@ extension SessionStore {
                 return .missing
             }
             let refreshed = sessions(page.sessions, in: workspace)
-            mergeFastIndexedSessionPagePreservingAuthoritativeFields(refreshed, workspace: workspace)
+            mergeFastIndexedSessionPagePreservingAuthoritativeFields(
+                refreshed,
+                workspace: workspace,
+                runtimeProvider: runtime
+            )
             if runtime == "codex" {
                 // 只有 Codex 首屏参与 canonical 分页状态；Claude 页只补行，不能篡改 cursor。
                 updateWorkspaceSessionFirstPageState(workspace: workspace, page: page, consistency: .fastIndexed)

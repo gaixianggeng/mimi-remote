@@ -1953,6 +1953,63 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.availablePairingNetworks, [])
     }
 
+    func testReadinessModuleFailurePreservesSnapshotThenLaterSuccessReplacesIt() async {
+        let readinessCalls = CallCounter()
+        let initialModules = AgentModuleStatus(
+            codexEnabled: true,
+            claudeEnabled: false,
+            tailscaleEnabled: true,
+            lanEnabled: false,
+            tailscaleAvailable: true,
+            lanAvailable: true
+        )
+        let replacementModules = AgentModuleStatus(
+            codexEnabled: false,
+            claudeEnabled: true,
+            tailscaleEnabled: false,
+            lanEnabled: true,
+            tailscaleAvailable: true,
+            lanAvailable: true
+        )
+        func status(modules: AgentModuleStatus?, state: AgentModuleStatusState) -> AgentStatus {
+            AgentStatus(
+                processOK: true, serviceOK: true, processError: nil, serviceError: nil,
+                version: Self.readyStatus.version, endpoint: Self.readyStatus.endpoint,
+                configPath: Self.readyStatus.configPath, projects: Self.readyStatus.projects,
+                doctorOK: true, doctor: Self.readyStatus.doctor, pairExpires: nil,
+                moduleStatus: modules,
+                moduleStatusState: state
+            )
+        }
+        let initialStatus = status(modules: initialModules, state: .available)
+        let unavailableStatus = status(modules: nil, state: .unavailable)
+        let replacementStatus = status(modules: replacementModules, state: .available)
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: { initialStatus },
+            readiness: {
+                readinessCalls.increment() == 1 ? unavailableStatus : replacementStatus
+            }
+        )
+        await store.bootstrap()
+        let baseline = Date()
+
+        await store.performMonitoringTick(6, now: baseline.addingTimeInterval(60))
+
+        XCTAssertEqual(store.status?.moduleStatus, initialModules)
+        XCTAssertEqual(store.status?.moduleStatusState, .unavailable)
+        XCTAssertTrue(store.tailscaleEnabled)
+        XCTAssertTrue(store.canChangeModule(.tailscale))
+
+        await store.performMonitoringTick(12, now: baseline.addingTimeInterval(120))
+
+        XCTAssertEqual(store.status?.moduleStatus, replacementModules)
+        XCTAssertEqual(store.status?.moduleStatusState, .available)
+        XCTAssertFalse(store.tailscaleEnabled)
+        XCTAssertTrue(store.lanEnabled)
+    }
+
     func testInitialUnavailableModuleStatusDisablesAmbiguousNetworkToggles() async {
         let unavailableStatus = AgentStatus(
             processOK: true, serviceOK: true, processError: nil, serviceError: nil,

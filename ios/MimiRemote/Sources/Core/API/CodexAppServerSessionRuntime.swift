@@ -292,6 +292,7 @@ actor CodexAppServerSessionRuntime {
         deprecationDiagnosticSink: @escaping (CodexAppServerDeprecationDiagnostic) -> Void = {
             CodexAppServerProtocolDiagnostics.recordDeprecation($0)
         },
+        initialConfig: CodexAppServerConfigResponse? = nil,
         configProvider: (() async throws -> CodexAppServerConfigResponse)? = nil
     ) {
         let normalizedEndpoint = AgentAPIClient.normalizedEndpoint(endpoint)
@@ -304,6 +305,7 @@ actor CodexAppServerSessionRuntime {
         self.turnInterruptRecoveryDelaysNanoseconds = turnInterruptRecoveryDelaysNanoseconds
         self.gatewayDefaults = gatewayDefaults
         self.deprecationDiagnosticSink = deprecationDiagnosticSink
+        self.config = initialConfig
         self.configProvider = configProvider ?? {
             try await AgentAPIClient(endpoint: normalizedEndpoint, token: token).appServerConfig()
         }
@@ -3271,6 +3273,10 @@ actor CodexAppServerSessionRuntime {
         return next
     }
 
+    func installConfigSnapshot(_ snapshot: CodexAppServerConfigResponse) {
+        config = snapshot
+    }
+
     func sendRecoveringFromStaleInitialization(
         _ request: CodexAppServerRequestSpec,
         timeout: TimeInterval? = nil
@@ -3321,6 +3327,7 @@ actor CodexAppServerSessionRuntime {
         serverRequestPumpTask = nil
         cancelThreadResumeTasks(for: stale)
         connection = nil
+        config = nil
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
         let affected = clearAllPendingServerRequests()
         for sessionID in affected.approvalSessionIDs {

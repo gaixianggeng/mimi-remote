@@ -334,14 +334,15 @@ final class AppServerRuntimeBundle {
         endpoint: String,
         token: String,
         requestTimeout: TimeInterval,
-        preparedConfig: CodexAppServerConfigResponse
+        preparedConfig: CodexAppServerConfigResponse,
+        configProvider: (() async throws -> CodexAppServerConfigResponse)? = nil
     ) {
-        let configProvider = { preparedConfig }
         codex = CodexAppServerSessionRuntime(
             endpoint: endpoint,
             token: token,
             runtimeProvider: "codex",
             requestTimeout: requestTimeout,
+            initialConfig: preparedConfig,
             configProvider: configProvider
         )
         claude = CodexAppServerSessionRuntime(
@@ -349,6 +350,7 @@ final class AppServerRuntimeBundle {
             token: token,
             runtimeProvider: "claude",
             requestTimeout: requestTimeout,
+            initialConfig: preparedConfig,
             configProvider: configProvider
         )
     }
@@ -364,6 +366,27 @@ final class AppServerRuntimeBundle {
 
     func runtime(forSessionID sessionID: SessionID) -> CodexAppServerSessionRuntime {
         runtime(for: routes.runtimeProvider(for: sessionID))
+    }
+
+    static func preferredAvailableRuntimeProvider(in config: CodexAppServerConfigResponse) -> String? {
+        let codexChannel = config.channels.first {
+            CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeID ?? $0.id) == "codex" ||
+                CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.provider) == "codex"
+        }
+        if codexChannel?.gatewayAvailable ?? config.runtime.gatewayAvailable {
+            return "codex"
+        }
+        return config.channels.lazy
+            .filter(\.gatewayAvailable)
+            .map { CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeID ?? $0.provider) }
+            .first { !$0.isEmpty }
+    }
+
+    @discardableResult
+    func refreshConfiguration() async throws -> CodexAppServerConfigResponse {
+        let refreshed = try await codex.ensureConfig(forceRefresh: true)
+        await claude.installConfigSnapshot(refreshed)
+        return refreshed
     }
 
     func prepareForHostActivation() async throws {

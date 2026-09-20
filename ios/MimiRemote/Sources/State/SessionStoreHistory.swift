@@ -1596,7 +1596,8 @@ extension SessionStore {
             if consistency == .fastIndexed {
                 mergeFastIndexedSessionPagePreservingAuthoritativeFields(
                     pageSessions,
-                    workspace: result.workspace
+                    workspace: result.workspace,
+                    runtimeProvider: normalizedRuntime
                 )
             } else {
                 // 新一轮权威刷新必须能修正旧权威数据；只有弱一致性页需要降级保护。
@@ -1961,7 +1962,8 @@ extension SessionStore {
             // 同 ID 的 title/status 等普通字段不能被迟到弱页覆盖。
             mergeFastIndexedSessionPagePreservingAuthoritativeFields(
                 pageSessions,
-                workspace: workspace
+                workspace: workspace,
+                runtimeProvider: runtimeProvider
             )
         } else if !presentationWindowComplete {
             // 展示窗口欠填时保留旧可见行，只补充已扫描 canonical 数据；新 cursor 仍可继续推进。
@@ -2957,7 +2959,7 @@ extension SessionStore {
     func mergeFastIndexedSessionPagePreservingAuthoritativeFields(
         _ pageSessions: [AgentSession],
         workspace: AgentWorkspace,
-        runtimeProvider: String = "codex"
+        runtimeProvider: String
     ) {
         guard shouldProtectAuthoritativeWorkspaceSessionFirstPage(
             workspace: workspace,

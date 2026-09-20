@@ -1312,7 +1312,7 @@ final class HostStore {
     }
 
     private func apply(_ current: AgentStatus) {
-        let resolved = preservingRuntimeSnapshotIfNeeded(in: preservingModuleStatusIfNeeded(in: current))
+        let resolved = preservingTransientStatusSnapshotsIfNeeded(in: current)
         status = resolved
         doctor = resolved.doctor
         lastStatusRefreshAt = Date()
@@ -1379,6 +1379,10 @@ final class HostStore {
             moduleStatus: previousModules,
             moduleStatusState: .unavailable
         )
+    }
+
+    private func preservingTransientStatusSnapshotsIfNeeded(in current: AgentStatus) -> AgentStatus {
+        preservingRuntimeSnapshotIfNeeded(in: preservingModuleStatusIfNeeded(in: current))
     }
 
     private func preservingRuntimeSnapshotIfNeeded(in current: AgentStatus) -> AgentStatus {
@@ -1491,7 +1495,7 @@ final class HostStore {
             guard sequence == statusRequestSequence else { return }
             lastReadinessCommandSuccessAt = now
             readinessFailureStartedAt = nil
-            let resolved = preservingRuntimeSnapshotIfNeeded(in: current)
+            let resolved = preservingTransientStatusSnapshotsIfNeeded(in: current)
             status = resolved
             doctor = resolved.doctor
             lastStatusRefreshAt = now

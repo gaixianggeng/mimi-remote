@@ -964,6 +964,107 @@ final class NotificationRouteResolutionTests: XCTestCase {
         XCTAssertTrue(claudeReady)
     }
 
+    func testPreparedRuntimeBundleRefreshesAgentAvailabilityWithoutChangingIdentity() async throws {
+        let project = makeProject(id: "runtime-config-refresh")
+        let claudeOnly = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let bothEnabled = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: true,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let provider = SequencedDirectConfigProvider([bothEnabled, claudeOnly])
+        let bundle = AppServerRuntimeBundle(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            requestTimeout: 2,
+            preparedConfig: claudeOnly,
+            configProvider: { try await provider.next() }
+        )
+
+        let initialCodexAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "codex")
+        let initialClaudeAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "claude")
+        XCTAssertFalse(initialCodexAvailable)
+        XCTAssertTrue(initialClaudeAvailable)
+        XCTAssertEqual(provider.callCount, 0, "preparedConfig 只作为首次缓存，不应立即重复请求")
+
+        try await bundle.refreshConfiguration()
+        let refreshedCodexAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "codex")
+        let refreshedClaudeAvailable = try await bundle.claude.channelAvailable(runtimeProvider: "claude")
+        XCTAssertTrue(refreshedCodexAvailable)
+        XCTAssertTrue(refreshedClaudeAvailable)
+
+        try await bundle.refreshConfiguration()
+        let disabledCodexAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "codex")
+        let remainingClaudeAvailable = try await bundle.claude.channelAvailable(runtimeProvider: "claude")
+        XCTAssertFalse(disabledCodexAvailable)
+        XCTAssertTrue(remainingClaudeAvailable)
+        XCTAssertEqual(provider.callCount, 2, "强制刷新必须读取新的服务端响应")
+    }
+
+    func testRuntimeBundleReconnectRefreshesChannelsAndSelectsNewAgent() async throws {
+        let project = makeProject(id: "runtime-reconnect-refresh")
+        let bothEnabled = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: true,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let claudeOnly = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let provider = SequencedDirectConfigProvider([claudeOnly])
+        let codexPool = FakeCodexAppServerTransportPool()
+        let claudePool = FakeCodexAppServerTransportPool()
+        let codex = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            runtimeProvider: "codex",
+            transportFactory: { codexPool.make() },
+            initialConfig: bothEnabled,
+            configProvider: { try await provider.next() }
+        )
+        let claude = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            runtimeProvider: "claude",
+            transportFactory: { claudePool.make() },
+            initialConfig: bothEnabled,
+            configProvider: { claudeOnly }
+        )
+        let bundle = AppServerRuntimeBundle(codexRuntime: codex, claudeRuntime: claude)
+
+        let firstActivation = Task { try await bundle.prepareForHostActivation() }
+        let firstTransport = try await waitForFakeAppServerTransport(in: codexPool, index: 0)
+        let firstInitialize = try await waitForFakeAppServerRequest(firstTransport, method: "initialize")
+        transportResponse(firstTransport, id: firstInitialize.id, result: #"{"userAgent":"fake-codex"}"#)
+        try await firstActivation.value
+        firstTransport.failReceive()
+        for _ in 0..<100 {
+            guard await codex.hasReadyConnectionForTesting() else { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let codexStillReady = await codex.hasReadyConnectionForTesting()
+        XCTAssertFalse(codexStillReady)
+
+        let secondActivation = Task { try await bundle.prepareForHostActivation() }
+        let secondTransport = try await waitForFakeAppServerTransport(in: claudePool, index: 0)
+        let secondInitialize = try await waitForFakeAppServerRequest(secondTransport, method: "initialize")
+        transportResponse(secondTransport, id: secondInitialize.id, result: #"{"userAgent":"fake-claude"}"#)
+        try await secondActivation.value
+
+        let reconnectedCodexAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "codex")
+        let reconnectedClaudeAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "claude")
+        XCTAssertFalse(reconnectedCodexAvailable)
+        XCTAssertTrue(reconnectedClaudeAvailable)
+        XCTAssertEqual(provider.callCount, 1)
+        XCTAssertNil(codexPool.transport(at: 1), "重连后已关闭的 Codex 不得再次初始化")
+    }
+
     func testModelOptionsUseClaudeWhenCodexChannelIsDisabled() async throws {
         let project = makeProject(id: "claude-only-models")
         let config = makeDirectAppServerConfig(
