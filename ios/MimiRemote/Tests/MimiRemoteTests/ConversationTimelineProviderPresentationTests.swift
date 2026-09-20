@@ -141,8 +141,11 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         let frozen = cache.snapshot(from: [process], activeTurn: .init(id: "turn"), suspendingUpdates: true)
         XCTAssertEqual(frozen.revision, running.revision)
         XCTAssertTrue(try group(in: frozen.rows[0]).isExpanded)
-        // active turn 结束属于原地 live 状态变化，不应等滚动结束才呈现。
-        let finished = cache.snapshot(from: [process], suspendingUpdates: true)
+        let finishing = cache.snapshot(from: [process], suspendingUpdates: true)
+        XCTAssertEqual(finishing.revision, running.revision)
+        XCTAssertEqual(finishing.rowIDs, running.rowIDs)
+        XCTAssertTrue(try group(in: finishing.rows[0]).isExpanded, "滚动期间不能因 turn 结束删除过程子行")
+        let finished = cache.snapshot(from: [process])
         XCTAssertFalse(try group(in: finished.rows[0]).isExpanded)
         let pinned = cache.snapshot(from: [process], expandedProcessMessageIDs: [process.id], activeTurn: .init(id: "turn"))
         let pinnedFinished = cache.snapshot(from: [process], expandedProcessMessageIDs: [process.id])
@@ -168,6 +171,29 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         XCTAssertEqual(try message(in: updated.rows[0]).id, oldUser.id)
         XCTAssertEqual(try message(in: updated.rows[1]).id, oldAnswer.id)
         XCTAssertEqual(try message(in: updated.rows[3]).content, "第一段和第二段")
+    }
+
+    func testStreamingTextGrowthWaitsForScrollInteraction() throws {
+        var streaming = makeMessage(
+            id: "streaming",
+            turnID: "current",
+            role: .assistant,
+            kind: .message,
+            content: "短回答"
+        )
+        let cache = ConversationTimelineItemCache()
+        let initial = cache.snapshot(from: [streaming])
+
+        streaming.content = "增长后会换行并改变行高的长回答"
+        let duringScroll = cache.snapshot(from: [streaming], suspendingUpdates: true)
+
+        XCTAssertEqual(duringScroll.revision, initial.revision)
+        XCTAssertEqual(try message(in: duringScroll.rows[0]).content, "短回答")
+        XCTAssertEqual(duringScroll.projectionMode, initial.projectionMode)
+
+        let afterScroll = cache.snapshot(from: [streaming])
+        XCTAssertGreaterThan(afterScroll.revision, initial.revision)
+        XCTAssertEqual(try message(in: afterScroll.rows[0]).content, streaming.content)
     }
 
     func testScrollingPublishesCompletionWhileDeferringConcurrentHistoryStructure() throws {
@@ -196,15 +222,17 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
             suspendingUpdates: true
         )
 
-        XCTAssertFalse(try group(in: duringScroll.rows[1]).isExpanded)
+        XCTAssertEqual(duringScroll.revision, initial.revision)
+        XCTAssertEqual(duringScroll.rowIDs, initial.rowIDs)
+        XCTAssertTrue(try group(in: duringScroll.rows[1]).isExpanded)
         XCTAssertFalse(duringScroll.rows.flatMap(\.anchorMessageIDs).contains(earlier.id))
-        XCTAssertTrue(duringScroll.changes.contains(.live))
 
         let afterScroll = cache.snapshot(
             from: .init(scope: scope, messages: [earlier, user, process], versions: combinedVersions),
             activeTurn: nil
         )
         XCTAssertTrue(afterScroll.rows.flatMap(\.anchorMessageIDs).contains(earlier.id))
+        XCTAssertFalse(try group(in: afterScroll.rows[2]).isExpanded)
         XCTAssertTrue(afterScroll.changes.contains(.historyEnrichment))
     }
 

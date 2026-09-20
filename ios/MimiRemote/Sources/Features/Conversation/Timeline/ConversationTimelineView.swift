@@ -640,6 +640,10 @@ struct ConversationTimelineView: View {
         provider: ConversationTimelineProvider,
         activeTurn: ConversationTimelineActiveTurn?
     ) {
+        HostSwitchSignpost.begin(
+            "conversation_timeline_projection",
+            metadata: "messages=\(source.messages.count) revision=\(source.revision) interacting=\(scrollController.isInteracting)"
+        )
         let snapshot = timelineItemCache.snapshot(
             from: source,
             provider: provider,
@@ -649,7 +653,16 @@ struct ConversationTimelineView: View {
             activeTurn: activeTurn,
             suspendingUpdates: scrollController.isInteracting
         )
-        HostSwitchSignpost.event("conversation_timeline_projected")
+        let reusedPresentedSnapshot = snapshot.scope == presentedSnapshot.scope
+            && snapshot.revision == presentedSnapshot.revision
+        let measuredProjectionMode: ConversationTimelineProjectionMode = reusedPresentedSnapshot
+            ? .reused
+            : snapshot.projectionMode
+        let measuredMessageCount = reusedPresentedSnapshot ? 0 : snapshot.projectedMessageCount
+        HostSwitchSignpost.end(
+            "conversation_timeline_projection",
+            metadata: "mode=\(measuredProjectionMode) projected=\(measuredMessageCount) rows=\(snapshot.rows.count)"
+        )
         guard scrollController.prepare(snapshot) else { return }
         if presentedSnapshot.scope != snapshot.scope {
             expandedActivityIDs.removeAll()
@@ -663,7 +676,7 @@ struct ConversationTimelineView: View {
         presentedSnapshot = snapshot
         ConversationScrollDiagnostics.shared.record(
             "projection",
-            "revision=\(snapshot.revision) rows=\(snapshot.rows.count) changes=\(snapshot.changes.rawValue)"
+            "revision=\(snapshot.revision) rows=\(snapshot.rows.count) changes=\(snapshot.changes.rawValue) mode=\(snapshot.projectionMode) projected=\(snapshot.projectedMessageCount)"
         )
         scrollController.snapshotWasPublished()
         if let target = pendingFileActivityID, snapshot.rowIDs.contains(target) {

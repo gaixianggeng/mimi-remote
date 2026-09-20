@@ -1197,7 +1197,15 @@ final class MessageRenderPlanCache {
             return range.upperBound > range.lowerBound && range.upperBound <= safeTailStart
         }
         let tail = String(decoding: content.utf8.dropFirst(safeTailStart), as: UTF8.self)
+        HostSwitchSignpost.begin(
+            "conversation_markdown_parse",
+            metadata: "mode=incremental bytes=\(tail.utf8.count)"
+        )
         let parsedTail = MarkdownParser.shared.parse(tail, baseByteOffset: safeTailStart)
+        HostSwitchSignpost.end(
+            "conversation_markdown_parse",
+            metadata: "mode=incremental blocks=\(parsedTail.blocks.count)"
+        )
         let mergedBlocks = renumber(reusableBlocks + parsedTail.blocks)
 
         return MessageRenderPlan(
@@ -1215,7 +1223,15 @@ final class MessageRenderPlanCache {
 #if DEBUG
         markdownParseInvocationCountForTesting += 1
 #endif
+        HostSwitchSignpost.begin(
+            "conversation_markdown_parse",
+            metadata: "mode=full bytes=\(contentByteCount)"
+        )
         let parsed = MarkdownParser.shared.parse(content)
+        HostSwitchSignpost.end(
+            "conversation_markdown_parse",
+            metadata: "mode=full blocks=\(parsed.blocks.count)"
+        )
         return MessageRenderPlan(
             messageKey: messageKey,
             content: content,
