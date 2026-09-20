@@ -457,8 +457,9 @@ bash ./scripts/verify-change.sh --full
 
 ## 九、夹具索引
 
-全部夹具在 `contracts/harness-native/fixtures/`，来源级别均为 **`live-capture`**
-（`@deepseek-ai/dsh` 0.1.5-rc.2 实跑）。逐文件 SHA-256 见 `manifest.json` 的 `fixtureDigests`。
+全部夹具在 `contracts/harness-native/fixtures/`。其中 11 个是 **`live-capture`**，3 个是
+**`upstream-source`**；`session/modelCatalog` 因未保留原始响应，已诚实降级为源码级。
+逐文件 SHA-256 见 `manifest.json` 的 `fixtureDigests`。
 
 均为虚构 cwd / sessionId / eventId / clientId / attemptId，不含真实主机、路径、会话或凭据。
 **协议常量原样保留**（类型名、事件名、枚举值、键名、工具名、模型与供应方名），否则夹具就失去判别力。
@@ -467,7 +468,7 @@ bash ./scripts/verify-change.sh --full
 |---|---|
 | `rpc/session-list.json` | `_request` 参数名、空表与含真实会话两种结果、负向（错误键名/多余键/方法路径不一致） |
 | `rpc/session-search.json` | 成功、索引不可用降级（0.1.5-rc.2 真实文案）、取消、空 query |
-| `rpc/session-model-catalog.json` | 零参数方法、含 failures 的成功、传参被拒 |
+| `rpc/session-model-catalog.json` | 零参数方法、含 failures 的成功、传参被拒；源码级，非实采证明 |
 | `rpc/session-commands.json` | create / selectModel / prompt / cancel 的请求、成功、错误与规则 |
 | `rpc/session-page.json` | throughSeq 必填与取值来源、空页终止、分页终止条件 |
 | `rpc/events-result.json` | 三种 outcome kind、审批与追问应答、精确键校验；**审批帧未采集的缺口** |

@@ -121,7 +121,7 @@ indirect enum HarnessJSONValue: Codable, Equatable {
         } else {
             throw DecodingError.dataCorruptedError(
                 in: container,
-                debugDescription: "原生 wire 上出现无法表示的 JSON 值"
+                debugDescription: "Native wire contains an unsupported JSON value"
             )
         }
     }
@@ -245,7 +245,7 @@ enum HarnessCarrierDecoder {
             // 服务端声明了 error 却没带 error 对象：不能当成成功，也不能当成空错误。
             return (streamID, .carrierError(frame.error ?? HarnessRemoteError(
                 code: "gateway/internal",
-                message: "载体错误帧缺少 error 对象",
+                message: "Carrier error frame is missing error",
                 details: nil
             )))
         case .some(HarnessWireCarrier.end):
@@ -437,7 +437,6 @@ struct HarnessQuestion: Decodable, Equatable {
 }
 
 struct HarnessQuestionOption: Decodable, Equatable {
-    let id: String?
     let label: String?
 }
 

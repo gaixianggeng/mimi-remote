@@ -27,8 +27,8 @@ wire 事实已由**真实运行的 Harness 实跑核对**，不再只是源码�
 
 | 级别 | 含义 | 当前 |
 |---|---|---|
-| `live-capture` | 从真实运行的 Harness 采集 | **全部 14 个夹具** |
-| `upstream-source` | 从上游源码的类型定义与生成器规则推导，附 blob SHA | 用于解释成因，不再是夹具主来源 |
+| `live-capture` | 从真实运行的 Harness 采集并保留可核对形状 | **11 个夹具** |
+| `upstream-source` | 从上游源码或冻结 npm 包的类型定义推导，附 blob / 文件摘要 | **3 个夹具** |
 | `repo-recorded` | 引用本仓库旧文档记录的 #492 实测事实 | 仅作交叉核对 |
 
 每个夹具文件顶部都有 `provenance` 与 `source` 字段标明级别与出处；逐文件 SHA-256 记在
@@ -36,7 +36,7 @@ wire 事实已由**真实运行的 Harness 实跑核对**，不再只是源码�
 
 ## 未采集（源码级，已在 manifest 标为 `notProven`）
 
-审批请求/应答（`$events` waterfall）、跨连接是否收到 `api-session/added`、Host 重启后的
+`session/modelCatalog` 原始响应、审批请求/应答（`$events` waterfall）、跨连接是否收到 `api-session/added`、Host 重启后的
 `ready`/`close` 语义、用户手机上 App 的构建版本。这四项按源码级处理，实施时不得当成实测事实。
 
 ## 脱敏纪律

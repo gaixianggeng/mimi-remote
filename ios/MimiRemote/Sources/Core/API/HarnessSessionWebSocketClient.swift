@@ -138,7 +138,10 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         let rejection = current.apply(assistantStream: frame)
         journal = current
         if let rejection {
-            onStatus?(.failed("原生流中断（\(rejection.diagnosticSummary)），需要重新订阅"))
+            onStatus?(.failed(L10n.format(
+                "harness.stream_interrupted",
+                rejection.diagnosticSummary
+            )))
         }
         return rejection
     }
@@ -167,7 +170,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool {
         guard let journal, journal.hasOpenedSnapshot else {
             // 基线未建立就发送，服务端回显无法与本地记录关联。
-            onSendFailure?(clientMessageID, "会话基线尚未建立，请稍后重试")
+            onSendFailure?(clientMessageID, L10n.text("harness.session_baseline_not_ready"))
             return false
         }
         let requestID = clientMessageID ?? Self.makeRequestID()
@@ -187,7 +190,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         // 其余输入显式拒绝而不是静默丢弃。
         let text = payload.previewText
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            onSendFailure?(clientMessageID, "Harness 首版只接受文本输入")
+            onSendFailure?(clientMessageID, L10n.text("harness.text_input_only"))
             return false
         }
         return sendInput(text, clientMessageID: clientMessageID)
@@ -202,7 +205,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         clientMessageID: ClientMessageID?,
         expectedTurnID: TurnID
     ) -> Bool {
-        onSendFailure?(clientMessageID, "Harness 不支持 guidance，请使用普通输入")
+        onSendFailure?(clientMessageID, L10n.text("harness.guidance_unsupported"))
         return false
     }
 
@@ -225,13 +228,17 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     /// 在它实现之前保持显式拒绝——不返回假成功。
     @discardableResult
     func sendApprovalDecision(approvalID: String, decision: String, message: String?) -> Bool {
-        onApprovalDecisionFailure?(approvalID, "原生审批应答尚未接线")
+        onApprovalDecisionFailure?(approvalID, L10n.text("harness.approval_response_not_connected"))
         return false
     }
 
     @discardableResult
     func sendUserInputResponse(requestID: String, answers: [String: [String]]) -> Bool {
-        onUserInputResponseFailure?(requestID, "原生追问应答尚未接线", false)
+        onUserInputResponseFailure?(
+            requestID,
+            L10n.text("harness.question_response_not_connected"),
+            false
+        )
         return false
     }
 
@@ -259,7 +266,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
             onTurnSendOutcome?(clientMessageID, .rejected(message: message))
         case .responseUnknown(let detail):
             // 不报成功，也不报"失败可重试"。
-            onSendFailure?(clientMessageID, "提交结果未知，请稍后对账（\(detail)）")
+            onSendFailure?(clientMessageID, L10n.format("harness.submission_result_unknown", detail))
             onTurnSendOutcome?(clientMessageID, .uncertain(message: detail))
         case .idle, .submitting:
             break

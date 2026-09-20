@@ -50,11 +50,12 @@ enum HarnessInteractionAnswer {
 
     /// 构造一次选择题应答。
     ///
-    /// 形状取自冻结夹具：`{"answers":[{"id":<questionId>,"selected":[<optionId>...]}]}`。
+    /// 形状取自冻结的 0.1.5-rc.2 类型：
+    /// `{"answers":[{"id":<questionId>,"selected":[<optionLabel>...]}]}`。
     ///
     /// 三条克制：
-    /// - 只接受**真实存在**的 question id 与 option id（用请求里带的问题单校验），
-    ///   不凭调用方自报。发一个上游不认识的 option id 等于伪造了一个选项。
+    /// - 只接受**真实存在**的 question id 与 option label（用请求里带的问题单校验），
+    ///   不凭调用方自报。上游选项没有 id，客户端不得自行要求或生成 id。
     /// - 未选择任何项的问题**不进入 answers**：发一个空 selected 会被上游当成
     ///   "用户选了空"，与"用户没回答这一题"是两件事。
     /// - 不构造自由输入：Harness 首版的问题只带 options，没有自由文本字段。
@@ -73,10 +74,12 @@ enum HarnessInteractionAnswer {
             }
             var options: Set<String> = []
             for option in question.options ?? [] {
-                guard let optionID = option.id?.trimmedNonEmpty else {
-                    throw HarnessInteractionAnswerError.optionMissingID(questionID: id)
+                guard let optionLabel = option.label,
+                      optionLabel.trimmedNonEmpty != nil else {
+                    throw HarnessInteractionAnswerError.optionMissingLabel(questionID: id)
                 }
-                options.insert(optionID)
+                // label 是冻结上游协议中的选项身份。只用 trim 判断空值，不能改写身份。
+                options.insert(optionLabel)
             }
             allowedOptions[id] = options
         }
@@ -87,12 +90,11 @@ enum HarnessInteractionAnswer {
                 // 问题 id 不在本次请求里：拒绝而不是发一个上游不认识的 id。
                 throw HarnessInteractionAnswerError.unknownQuestionID(questionID)
             }
-            let picked = selected.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
+            let picked = selected.filter { $0.trimmedNonEmpty != nil }
             guard !picked.isEmpty else { continue }
-            for optionID in picked where !allowed.contains(optionID) {
-                throw HarnessInteractionAnswerError.unknownOptionID(
-                    questionID: questionID, optionID: optionID
+            for optionLabel in picked where !allowed.contains(optionLabel) {
+                throw HarnessInteractionAnswerError.unknownOptionLabel(
+                    questionID: questionID, optionLabel: optionLabel
                 )
             }
             encoded.append(.object([
@@ -143,33 +145,33 @@ enum HarnessInteractionAnswerError: Error, Equatable {
     case missingRequestPayload
     case noQuestionsInRequest
     case questionMissingID
-    case optionMissingID(questionID: String)
+    case optionMissingLabel(questionID: String)
     case unknownQuestionID(String)
-    case unknownOptionID(questionID: String, optionID: String)
+    case unknownOptionLabel(questionID: String, optionLabel: String)
     case emptyAnswers
 
     var localizedMessage: String {
         switch self {
         case .unsupportedDecision(let value):
-            return "不支持的回答：\(value)"
+            return L10n.format("harness.answer_unsupported", value)
         case .unsupportedWaterfallEvent(let event):
-            return "无法应答的交互类型：\(event ?? "未知")"
+            return L10n.format("harness.interaction_type_unsupported", event ?? "unknown")
         case .missingEventID:
-            return "交互缺少 eventId，无法回传"
+            return L10n.text("harness.interaction_missing_event_id")
         case .missingRequestPayload:
-            return "交互缺少请求内容"
+            return L10n.text("harness.interaction_missing_request")
         case .noQuestionsInRequest:
-            return "追问没有携带任何问题"
+            return L10n.text("harness.questions_missing")
         case .questionMissingID:
-            return "问题缺少 id"
-        case .optionMissingID(let questionID):
-            return "问题 \(questionID) 的选项缺少 id"
+            return L10n.text("harness.question_missing_id")
+        case .optionMissingLabel(let questionID):
+            return L10n.format("harness.option_missing_label", questionID)
         case .unknownQuestionID(let id):
-            return "问题 \(id) 不在本次请求中"
-        case .unknownOptionID(let questionID, let optionID):
-            return "选项 \(optionID) 不属于问题 \(questionID)"
+            return L10n.format("harness.question_unknown", id)
+        case .unknownOptionLabel(let questionID, let optionLabel):
+            return L10n.format("harness.option_unknown", optionLabel, questionID)
         case .emptyAnswers:
-            return "没有选择任何回答"
+            return L10n.text("harness.answers_empty")
         }
     }
 }

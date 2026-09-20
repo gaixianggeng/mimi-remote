@@ -55,7 +55,6 @@
       "captured": [
         "envelope 正负例与真实错误码",
         "session/list 空表与含真实会话两种结果",
-        "session/modelCatalog 完整结果",
         "session/create、selectModel、prompt、cancel 的成功返回",
         "session/page 一次完整真实回合的持久记录",
         "session/control 的 baseline/projection/queue 帧",
@@ -100,6 +99,13 @@
     "fb2c4b9e698e30edb738bca4cf0618587db7d203": {
       "packages/api/session-controller/src/types.ts": "60f7a93e56a0f31b73cad8f9626ffb43a2cb90f6",
       "packages/api/session-controller/src/control.ts": "9bdd5a05bff21864b963fa408963d2fa82be8c8f"
+    }
+  },
+  "publishedPackageEvidence": {
+    "@deepseek-ai/dsh-user-questions@0.1.5-rc.2": {
+      "npmIntegrity": "sha512-0cRRE9nc9pMxxyC8G8C3859EtPyZR/27FRgRMRe/wDWL30S6JoWWgaw7IFN9FogvaoEp62XV7wQ6ub/eoTqggg==",
+      "lib/types/types.d.ts": "11daf8fb79f6205e77973eea1dd00aea97edab0e38e7dbad5f1964ed2bd43f60",
+      "fact": "AskUserQuestionOption has label and optional description but no id; AskUserQuestionAnswerItem.selected contains option labels."
     }
   },
   "wire": {
@@ -273,11 +279,11 @@
   "fixtureDigests": {
     "fixtures/rpc/session-list.json": "998b3130c36f0fefb8b88d5ab788e341ccebb60bd60ad84242fceecdf3b40c56",
     "fixtures/rpc/session-search.json": "6c67c238e0625a46c2ae3115a5b1fb51f9162acd7e10532520aeceb9442c8439",
-    "fixtures/rpc/session-model-catalog.json": "97d369da52a4caba46eb8a9913ac0a2fad5698d8952e2b4db165235f2d904374",
+    "fixtures/rpc/session-model-catalog.json": "6e86119d3cc892ea023d21c05e2fd7327cc917e98904308c6f2223c3721eeb91",
     "fixtures/rpc/session-commands.json": "4ce8bab803635defe8a763d764df771d92ac0b69a4b51985543f6715c2c367f7",
     "fixtures/rpc/session-page.json": "aba6f31647e02479a42e56c37bd0d9359e839968524a6244eca3562c3acff184",
     "fixtures/rpc/envelope-errors.json": "f37a5a97256751b84b16bdb6995f2be877930ca2a37fba69328f388777a73319",
-    "fixtures/rpc/events-result.json": "2ca174b3d2183c5a141cdbbb32d224adb7427573ad720ce7ab460d84104299ce",
+    "fixtures/rpc/events-result.json": "a0dac26ab83ef5a9af0bda811e74e76843be5d97e9d95f1a1e5f68155e956bec",
     "fixtures/stream/mux-carrier.json": "c81c4965766593c51979e6d398bccb3a34fad10531957b4eb159868f7223af92",
     "fixtures/stream/follow-frames.json": "0ed185ce83536a289c2cc27945231717ebb398ca8842593c74fdd2b31d475aac",
     "fixtures/stream/assistant-stream.json": "0797c10222574d70896d97debe423d0e19ca17114e2d69445553f7d97b11263c",
@@ -317,6 +323,7 @@
     "releasedTasks": ["H01"]
   },
   "notProven": [
+    "session/modelCatalog 的原始响应未保留，当前夹具只按上游类型恢复形状，并用仓库已记录的 modelSelection 值交叉核对；不得称为 live-capture。",
     "审批请求/应答帧（$events waterfall）未在本次采集出现，形状仍为源码级。本轮回环模型无法触发需要人机应答的工具调用。",
     "assistant-stream 的 kind:'abandoned' 未观测，只按源码处理。",
     "reasoning-delta 未观测（假模型未输出推理）。",

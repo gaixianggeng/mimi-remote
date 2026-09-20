@@ -43472,6 +43472,145 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "复制脱敏诊断结果" } }
       }
     },
+    "harness.stream_interrupted": {
+      "comment": "A native Harness stream was discontinuous and must be reopened.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Native stream interrupted (%@). Reopen the session." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原生流中断（%@），需要重新订阅。" } }
+      }
+    },
+    "harness.session_baseline_not_ready": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The session baseline is not ready. Try again shortly." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "会话基线尚未建立，请稍后重试。" } }
+      }
+    },
+    "harness.text_input_only": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This Harness version accepts text input only." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前 Harness 版本只接受文本输入。" } }
+      }
+    },
+    "harness.guidance_unsupported": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Harness does not support steering. Send a normal message instead." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Harness 不支持引导，请使用普通输入。" } }
+      }
+    },
+    "harness.approval_response_not_connected": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Native approval responses are not connected yet." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原生审批应答尚未接线。" } }
+      }
+    },
+    "harness.question_response_not_connected": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Native question responses are not connected yet." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原生追问应答尚未接线。" } }
+      }
+    },
+    "harness.submission_result_unknown": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The submission result is unknown. Reconcile it before retrying (%@)." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "提交结果未知，请先对账再重试（%@）。" } }
+      }
+    },
+    "harness.native_routed_no_fallback": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%@ is owned by the native Harness client and cannot fall back to the Codex channel." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%@ 由 Harness 原生客户端承担，不能回退到 Codex 通道。" } }
+      }
+    },
+    "harness.native_not_implemented": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The native Harness client has not implemented %@." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Harness 原生客户端尚未实现 %@。" } }
+      }
+    },
+    "harness.native_unsupported": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Harness does not support %@." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Harness 不支持 %@。" } }
+      }
+    },
+    "harness.attempt_superseded": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The previous output was replaced by a new attempt and may be incomplete." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "上一条输出被新的尝试取代，内容可能不完整。" } }
+      }
+    },
+    "harness.previous_submission_unconfirmed": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The previous submission is still unconfirmed. Reconcile it or wait for redelivery." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "上一次提交尚未确认结果，请先对账或等待重投。" } }
+      }
+    },
+    "harness.credentials_expired_http": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The credentials have expired (HTTP %@)." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "凭据已失效（HTTP %@）。" } }
+      }
+    },
+    "harness.answer_unsupported": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unsupported answer: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "不支持的回答：%@" } }
+      }
+    },
+    "harness.interaction_type_unsupported": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unsupported interaction type: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法应答的交互类型：%@" } }
+      }
+    },
+    "harness.interaction_missing_event_id": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The interaction has no eventId and cannot be answered." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "交互缺少 eventId，无法回传。" } }
+      }
+    },
+    "harness.interaction_missing_request": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The interaction is missing its request payload." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "交互缺少请求内容。" } }
+      }
+    },
+    "harness.questions_missing": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The request contains no questions." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "追问没有携带任何问题。" } }
+      }
+    },
+    "harness.question_missing_id": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "A question is missing its id." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "问题缺少 id。" } }
+      }
+    },
+    "harness.option_missing_label": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Question %@ has an option without a label." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "问题 %@ 的选项缺少 label。" } }
+      }
+    },
+    "harness.question_unknown": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Question %@ is not part of this request." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "问题 %@ 不在本次请求中。" } }
+      }
+    },
+    "harness.option_unknown": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Option %@ does not belong to question %@." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选项 %@ 不属于问题 %@。" } }
+      }
+    },
+    "harness.answers_empty": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No answers were selected." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "没有选择任何回答。" } }
+      }
+    },
     "·": {
       "comment": "A separator between two elements.",
       "isCommentAutoGenerated": true,

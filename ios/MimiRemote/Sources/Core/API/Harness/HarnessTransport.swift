@@ -180,7 +180,7 @@ final class URLSessionHarnessRPCTransport: HarnessRPCTransport {
             let encoder = JSONEncoder()
             urlRequest.httpBody = try encoder.encode(request)
         } catch {
-            throw HarnessTransportError.malformedResponse("请求参数无法编码：\(error)")
+            throw HarnessTransportError.malformedResponse("Could not encode request arguments: \(error)")
         }
 
         let data: Data
@@ -259,16 +259,16 @@ final class URLSessionHarnessRPCTransport: HarnessRPCTransport {
         do {
             response = try JSONDecoder().decode(HarnessServerResponse.self, from: data)
         } catch {
-            throw HarnessTransportError.malformedResponse("响应不是合法 JSON 外壳：\(error)")
+            throw HarnessTransportError.malformedResponse("Response is not a valid JSON envelope: \(error)")
         }
         if let type = response.type, type != "server-response" {
-            throw HarnessTransportError.malformedResponse("响应 type 不是 server-response：\(type)")
+            throw HarnessTransportError.malformedResponse("Response type is not server-response: \(type)")
         }
         if let rpcId = response.rpcId, !rpcId.isEmpty, rpcId != expectedRPCID {
             throw HarnessTransportError.unattributedResponse(rpcId: rpcId)
         }
         guard let result = response.result else {
-            throw HarnessTransportError.malformedResponse("响应缺少 result")
+            throw HarnessTransportError.malformedResponse("Response is missing result")
         }
         guard result.ok else {
             throw HarnessTransportError.business(result.error ?? HarnessRemoteError(
@@ -278,7 +278,7 @@ final class URLSessionHarnessRPCTransport: HarnessRPCTransport {
             ))
         }
         guard let value = result.value else {
-            throw HarnessTransportError.malformedResponse("result.ok=true 但没有 value")
+            throw HarnessTransportError.malformedResponse("result.ok=true without value")
         }
         return value
     }
@@ -327,7 +327,7 @@ enum HarnessClientFrame: Equatable {
         do {
             return try JSONEncoder().encode(wireValue)
         } catch {
-            throw HarnessTransportError.malformedResponse("客户端帧无法编码：\(error)")
+            throw HarnessTransportError.malformedResponse("Could not encode client frame: \(error)")
         }
     }
 }
@@ -436,7 +436,7 @@ final class URLSessionHarnessStreamTransport: HarnessStreamTransport {
         }
         let data = try frame.encoded()
         guard let text = String(data: data, encoding: .utf8) else {
-            throw HarnessTransportError.malformedResponse("客户端帧不是合法 UTF-8")
+            throw HarnessTransportError.malformedResponse("Client frame is not valid UTF-8")
         }
         do {
             try await task.send(.string(text))
@@ -466,12 +466,12 @@ final class URLSessionHarnessStreamTransport: HarnessStreamTransport {
         case .data(let raw):
             data = raw
         @unknown default:
-            throw HarnessTransportError.malformedResponse("未知的 WebSocket 消息类型")
+            throw HarnessTransportError.malformedResponse("Unknown WebSocket message type")
         }
         do {
             return try JSONDecoder().decode(HarnessCarrierFrame.self, from: data)
         } catch {
-            throw HarnessTransportError.malformedResponse("载体帧不是合法 JSON：\(error)")
+            throw HarnessTransportError.malformedResponse("Carrier frame is not valid JSON: \(error)")
         }
     }
 

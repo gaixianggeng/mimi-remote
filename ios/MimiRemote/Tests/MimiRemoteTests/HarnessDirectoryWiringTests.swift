@@ -68,6 +68,60 @@ final class HarnessDirectoryWiringTests: XCTestCase {
         )
     }
 
+    /// 目录协调器必须显式携带 runtime，让真实 routing facade 选择 Harness。
+    ///
+    /// Harness Spy 与 Codex transport Spy 相互独立：只断言结果不足以发现默认重载
+    /// 偷偷落到 Codex；这里同时证明 Harness 被调用且 Codex 完全未被触碰。
+    func testEnabledRolloutExplicitlyRoutesThroughNativeHarness() async throws {
+        let project = AgentProject(id: "h05-project", name: "H05 Workspace", path: "/h05/workspace")
+        let workspace = AgentWorkspace(project: project)
+        let appStore = makeIsolatedAppStoreForHarnessWiring()
+        appStore.token = "test-token"
+
+        let harness = FakeHarnessSessionClient()
+        harness.sessionsPageResult = .success(page([session(id: "h05-native-route")]))
+        let codexSpy = HarnessDirectoryCodexTransportSpy()
+        let config = makeDirectAppServerConfig(project: project)
+        func runtime(_ provider: String, transport: CodexAppServerTransport) -> CodexAppServerSessionRuntime {
+            CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787",
+                token: "fixture",
+                runtimeProvider: provider,
+                transportFactory: { transport },
+                configProvider: { config }
+            )
+        }
+        let routingClient = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: AppServerRuntimeBundle(
+            codexRuntime: runtime("codex", transport: codexSpy),
+            claudeRuntime: runtime("claude", transport: FakeCodexAppServerTransport()),
+            deepseekRuntime: runtime("deepseek", transport: FakeCodexAppServerTransport()),
+            harness: harness
+        ))
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [workspace], endpoint: appStore.endpoint),
+            clientFactory: { routingClient }
+        )
+        store.nativeHarnessRollout = HarnessNativeRollout(isEnabled: true)
+        store.recentWorkspaces = [workspace]
+        store.rebuildWorkspaceIndex()
+
+        await store.refreshNativeHarnessDirectory(
+            workspace: workspace,
+            consistency: .authoritative,
+            restartFromFirst: true,
+            hostScope: appStore.activeHostScope,
+            generation: appStore.connectionGeneration
+        )
+
+        XCTAssertEqual(harness.sessionsPageCallCount, 1, "目录刷新必须命中 Harness Spy")
+        let codexTouchCount = await codexSpy.touchCount()
+        XCTAssertEqual(codexTouchCount, 0, "目录刷新不得落到默认 Codex 重载")
+        XCTAssertTrue(store.sessions.contains { $0.id == "h05-native-route" })
+    }
+
     // MARK: - 2. 失败语义
 
     /// 上游失败时，接线层不得把它翻译成"成功但为空"。
@@ -260,4 +314,34 @@ private func session(id: String) -> AgentSession {
         createdAt: nil,
         updatedAt: nil
     )
+}
+
+private actor HarnessDirectoryCodexTransportSpyState {
+    private(set) var count = 0
+
+    func record() { count += 1 }
+}
+
+/// 一旦目录误入 Codex 就立即失败，避免测试等待一个永远不会到达的 app-server 回包。
+private final class HarnessDirectoryCodexTransportSpy: CodexAppServerTransport {
+    private let state = HarnessDirectoryCodexTransportSpyState()
+
+    func connect(url: URL, token: String) async throws {
+        await state.record()
+        throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+    }
+
+    func send(_ text: String) async throws {
+        await state.record()
+        throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+    }
+
+    func receive() async throws -> String? {
+        await state.record()
+        throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+    }
+
+    func close() async {}
+
+    func touchCount() async -> Int { await state.count }
 }

@@ -97,11 +97,11 @@ enum HarnessNativeUnavailableError: Error, LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .routedNatively(let runtimeProvider):
-            return "\(runtimeProvider) 由 Harness 原生客户端承担，不能回退到 Codex 通道。"
+            return L10n.format("harness.native_routed_no_fallback", runtimeProvider)
         case .notImplemented(let operation):
-            return "Harness 原生客户端尚未实现 \(operation)。"
+            return L10n.format("harness.native_not_implemented", operation)
         case .unsupported(let operation):
-            return "Harness 不支持 \(operation)。"
+            return L10n.format("harness.native_unsupported", operation)
         }
     }
 }
@@ -196,14 +196,17 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         return true
     }
 
-    /// 按 projectID 查询。Harness 没有 Codex 的 project 维度，等价于不带 cwd 的全局查询。
+    /// Harness 没有 Codex 的 project 维度；非空 projectID 不能被静默丢弃。
     func sessionsPage(
         projectID: String?,
         cursor: String?,
         limit: Int?,
         consistency: SessionListConsistency
     ) async throws -> SessionsPage {
-        try await listSessions(cwd: nil, workspace: nil)
+        guard projectID?.trimmedNonEmpty == nil else {
+            throw HarnessNativeUnavailableError.unsupported(operation: "session/list(projectID)")
+        }
+        return try await listSessions(cwd: nil, workspace: nil)
     }
 
     /// 工作区目录查询：带 cwd 提示，由 agentd 用既有 canonical scope 逻辑裁剪。
@@ -224,7 +227,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             // 中继会拒空 query；本地先拒能给出可操作文案，也避免把空查询当成"零命中"。
-            throw HarnessTransportError.rejected(status: 400, message: "搜索关键词不能为空")
+            throw HarnessTransportError.rejected(status: 400, message: "Search query must not be empty")
         }
         let value = try await rpc.call(HarnessRPCRequest(
             rpcId: Self.makeRPCID(),
@@ -278,7 +281,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         ))
         guard let created = value["sessionId"]?.stringValue?.trimmedNonEmpty else {
             // 建成功了却拿不到身份，后续没有任何操作能指向它。显式失败而不是返回空 id。
-            throw HarnessTransportError.malformedResponse("session/create 结果缺少 sessionId")
+            throw HarnessTransportError.malformedResponse("session/create result is missing sessionId")
         }
         return HarnessCreatedSession(
             sessionID: created,
@@ -387,6 +390,6 @@ private final class UnreachableHarnessRPCTransport: HarnessRPCTransport {
     }
 
     func call(_ request: HarnessRPCRequest) async throws -> HarnessJSONValue {
-        throw HarnessTransportError.malformedResponse("原生通道地址不可解析：\(endpoint)")
+        throw HarnessTransportError.malformedResponse("Invalid native Harness endpoint: \(endpoint)")
     }
 }

@@ -1,8 +1,8 @@
 {
   "$fixture": "harness-native/rpc/events-result",
   "provenance": "upstream-source",
-  "source": "packages/api/gateway/src/stream-protocol.ts#parseRemoteEventResult (blob 142598863), packages/api/gateway/src/client/remote-events.ts",
-  "harnessVersion": "0.1.6-alpha.2",
+  "source": "@deepseek-ai/dsh-user-questions 0.1.5-rc.2 published lib/types/types.d.ts (sha256 11daf8fb79f6205e77973eea1dd00aea97edab0e38e7dbad5f1964ed2bd43f60) plus packages/api/gateway/src/stream-protocol.ts#parseRemoteEventResult (blob 142598863)",
+  "harnessVersion": "0.1.5-rc.2",
   "liveCaptureGap": {
     "status": "not-captured",
     "reason": "本次实跑没有触发审批或选择题，$events 上只观测到 api-session/added|status|activity 三类广播事件，因此本夹具全部为源码级。",
@@ -60,7 +60,7 @@
                 {
                   "id": "question-fixture-0001",
                   "selected": [
-                    "option-fixture-a"
+                    "Option A"
                   ]
                 }
               ]
@@ -157,6 +157,7 @@
       "首个有效应答生效，其他端收到同 eventId 的 cancel，迟到应答是空操作而不是错误。",
       "断线重连后新客户端会重投同一个 eventId；重投必须更新原卡片而不是新增副本。",
       "旧连接的 clientId 不得用于新连接回传。",
+      "选择题 option 在冻结的 0.1.5-rc.2 类型中只有 label；selected 回传 label，不要求也不生成 option.id。",
       "只展示上游支持的回答：允许、拒绝、真实 question/options。不得生成'永久允许''整个会话允许'而实际发送一次性结果。",
       "已授权且 pending 的请求不能因为用户没打开页面而被静默标成已解决。"
     ]

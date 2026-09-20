@@ -61,7 +61,7 @@ enum HarnessPresentationProjector {
         if attempt.wasSuperseded {
             // 未结算就被下一条取代：输出被中断。如实告知，不假装完成。
             events.append(.warning(
-                AgentErrorPayload(message: "上一条输出被新的尝试取代，内容可能不完整",
+                AgentErrorPayload(message: L10n.text("harness.attempt_superseded"),
                                   code: "harness/attempt-superseded", retryable: false),
                 metadata(seq: attempt.settledSeq, sessionID: sessionID)
             ))

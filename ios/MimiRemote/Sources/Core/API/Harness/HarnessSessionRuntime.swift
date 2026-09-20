@@ -284,7 +284,7 @@ actor HarnessSessionRuntime {
     /// 声明一条订阅。`args` 用原生形参对象（follow 用 `HarnessFollowTarget.argsValue`）。
     func openStream(streamID: String, endpoint: String, args: HarnessJSONValue? = nil) async throws {
         guard subscriptions[streamID] == nil else {
-            throw HarnessTransportError.rejected(status: 0, message: "streamId 已被占用")
+            throw HarnessTransportError.rejected(status: 0, message: "streamId is already in use")
         }
         if !isConnected {
             try await connect()

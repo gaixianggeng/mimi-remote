@@ -40,8 +40,8 @@ final class HarnessInteractionStoreTests: XCTestCase {
             toolName: nil, callId: nil, reason: nil,
             questions: [
                 HarnessQuestion(id: "q1", question: "选哪个？", options: [
-                    HarnessQuestionOption(id: "opt-a", label: "A"),
-                    HarnessQuestionOption(id: "opt-b", label: "B"),
+                    HarnessQuestionOption(label: "A"),
+                    HarnessQuestionOption(label: "B"),
                 ]),
             ]
         )
@@ -362,29 +362,63 @@ final class HarnessInteractionStoreTests: XCTestCase {
         }
     }
 
-    /// 正向对照：选择题应答形状与冻结夹具一致。
+    /// 正向对照：冻结 0.1.5-rc.2 的选项只有 label，应答也回传 label。
     func testQuestionsOutcomeMatchesFrozenShape() throws {
         let questions = questionPayload().questions ?? []
         let outcome = try HarnessInteractionAnswer.questionsOutcome(
-            answers: ["q1": ["opt-a"]], questions: questions
+            answers: ["q1": ["A"]], questions: questions
         )
         XCTAssertEqual(
             outcome,
             .result(.object(["answers": .array([
-                .object(["id": .string("q1"), "selected": .array([.string("opt-a")])]),
+                .object(["id": .string("q1"), "selected": .array([.string("A")])]),
             ])]))
         )
     }
 
-    /// 负向：伪造的 option id 必须拒绝（发一个上游不认识的选项等于伪造选项）。
+    func testQuestionsDecodeRealLabelOnlyOptionShape() throws {
+        let data = Data(#"{"questions":[{"id":"q1","question":"Pick one","options":[{"label":"A"},{"label":"B","description":"detail"}]}]}"#.utf8)
+        let payload = try JSONDecoder().decode(HarnessWaterfallPayload.self, from: data)
+        let questions = try XCTUnwrap(payload.questions)
+
+        let outcome = try HarnessInteractionAnswer.questionsOutcome(
+            answers: ["q1": ["B"]], questions: questions
+        )
+
+        XCTAssertEqual(
+            outcome,
+            .result(.object(["answers": .array([
+                .object(["id": .string("q1"), "selected": .array([.string("B")])]),
+            ])]))
+        )
+    }
+
+    func testQuestionsOutcomePreservesLabelIdentityWithoutTrimming() throws {
+        let data = Data(#"{"questions":[{"id":"q1","question":"Pick one","options":[{"label":" A "}]}]}"#.utf8)
+        let payload = try JSONDecoder().decode(HarnessWaterfallPayload.self, from: data)
+        let questions = try XCTUnwrap(payload.questions)
+
+        let outcome = try HarnessInteractionAnswer.questionsOutcome(
+            answers: ["q1": [" A "]], questions: questions
+        )
+
+        XCTAssertEqual(
+            outcome,
+            .result(.object(["answers": .array([
+                .object(["id": .string("q1"), "selected": .array([.string(" A ")])]),
+            ])]))
+        )
+    }
+
+    /// 负向：请求中不存在的 label 必须拒绝（不能把任意文本伪装成选项）。
     func testQuestionsOutcomeRejectsUnknownOption() {
         let questions = questionPayload().questions ?? []
         XCTAssertThrowsError(try HarnessInteractionAnswer.questionsOutcome(
-            answers: ["q1": ["opt-forged"]], questions: questions
+            answers: ["q1": ["forged-label"]], questions: questions
         )) { error in
             XCTAssertEqual(
                 error as? HarnessInteractionAnswerError,
-                .unknownOptionID(questionID: "q1", optionID: "opt-forged")
+                .unknownOptionLabel(questionID: "q1", optionLabel: "forged-label")
             )
         }
     }
@@ -393,7 +427,7 @@ final class HarnessInteractionStoreTests: XCTestCase {
     func testQuestionsOutcomeRejectsUnknownQuestion() {
         let questions = questionPayload().questions ?? []
         XCTAssertThrowsError(try HarnessInteractionAnswer.questionsOutcome(
-            answers: ["q-forged": ["opt-a"]], questions: questions
+            answers: ["q-forged": ["A"]], questions: questions
         )) { error in
             XCTAssertEqual(error as? HarnessInteractionAnswerError, .unknownQuestionID("q-forged"))
         }
@@ -415,15 +449,15 @@ final class HarnessInteractionStoreTests: XCTestCase {
             toolName: nil, callId: nil, reason: nil,
             questions: [
                 HarnessQuestion(id: "q1", question: "一", options: [
-                    HarnessQuestionOption(id: "opt-a", label: "A"),
+                    HarnessQuestionOption(label: "A"),
                 ]),
                 HarnessQuestion(id: "q2", question: "二", options: [
-                    HarnessQuestionOption(id: "opt-b", label: "B"),
+                    HarnessQuestionOption(label: "B"),
                 ]),
             ]
         )
         let outcome = try HarnessInteractionAnswer.questionsOutcome(
-            answers: ["q1": ["opt-a"], "q2": []], questions: payload.questions ?? []
+            answers: ["q1": ["A"], "q2": []], questions: payload.questions ?? []
         )
         guard case .result(let value) = outcome,
               let answers = value["answers"]?.arrayValue else {

@@ -266,8 +266,6 @@ func (r *Router) harnessNativeCreateAllowed(cwd string, scope gatewayScope) bool
 	return gatewayScopeContainsPath(scope, cwd)
 }
 
-
-//
 // 体积先按 Content-Length 预判、再用 LimitReader 兜底：伪造或缺失 Content-Length 的
 // chunked 请求同样会被截断在同一个上限，且多读一个字节用于判定"确实超限"。
 func readHarnessNativeRPCRequest(w http.ResponseWriter, req *http.Request) (harnessNativeRPCRequest, bool) {

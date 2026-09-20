@@ -362,7 +362,7 @@ final class HarnessTransportTests: XCTestCase {
             "answers": .array([
                 .object([
                     "id": .string("question-fixture-0001"),
-                    "selected": .array([.string("option-fixture-a")]),
+                    "selected": .array([.string("Option A")]),
                 ]),
             ]),
         ]))

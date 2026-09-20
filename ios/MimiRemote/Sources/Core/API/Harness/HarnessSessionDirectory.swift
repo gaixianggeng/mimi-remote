@@ -83,7 +83,7 @@ enum HarnessSessionDirectoryDecoding {
         workspace: AgentWorkspace?
     ) throws -> SessionsPage {
         guard let items = value["items"]?.arrayValue else {
-            throw HarnessTransportError.malformedResponse("session/list 结果缺少 items 数组")
+            throw HarnessTransportError.malformedResponse("session/list result is missing items")
         }
         var sessions: [AgentSession] = []
         var seen: Set<SessionID> = []
@@ -108,7 +108,7 @@ enum HarnessSessionDirectoryDecoding {
         // 缺 groups 就不是模型目录。返回空数组会让上层显示"Harness 没有可用模型"，
         // 把一次形状错误伪装成一个业务结论。
         guard let groups = value["groups"]?.arrayValue else {
-            throw HarnessTransportError.malformedResponse("session/modelCatalog 结果缺少 groups 数组")
+            throw HarnessTransportError.malformedResponse("session/modelCatalog result is missing groups")
         }
         let defaultSelection = value["default"]
         let defaultProvider = defaultSelection?["provider"]?.stringValue
@@ -119,14 +119,14 @@ enum HarnessSessionDirectoryDecoding {
         var seen: Set<String> = []
         for group in groups {
             guard let provider = group["id"]?.stringValue?.trimmedNonEmpty else {
-                throw HarnessTransportError.malformedResponse("session/modelCatalog 分组缺少 id")
+                throw HarnessTransportError.malformedResponse("session/modelCatalog group is missing id")
             }
             guard let models = group["models"]?.arrayValue else {
-                throw HarnessTransportError.malformedResponse("session/modelCatalog 分组缺少 models 数组")
+                throw HarnessTransportError.malformedResponse("session/modelCatalog group is missing models")
             }
             for model in models {
                 guard let modelID = model["id"]?.stringValue?.trimmedNonEmpty else {
-                    throw HarnessTransportError.malformedResponse("session/modelCatalog 模型缺少 id")
+                    throw HarnessTransportError.malformedResponse("session/modelCatalog model is missing id")
                 }
                 let reasoning = model["reasoning"]
                 let efforts = (reasoning?["efforts"]?.arrayValue ?? []).compactMap {
@@ -164,13 +164,13 @@ enum HarnessSessionDirectoryDecoding {
         workspace: AgentWorkspace?
     ) throws -> ThreadSearchPage {
         guard let items = value["items"]?.arrayValue else {
-            throw HarnessTransportError.malformedResponse("session/search 结果缺少 items 数组")
+            throw HarnessTransportError.malformedResponse("session/search result is missing items")
         }
         var results: [ThreadSearchResult] = []
         var seen: Set<SessionID> = []
         for item in items {
             guard let sessionID = item["sessionId"]?.stringValue?.trimmedNonEmpty else {
-                throw HarnessTransportError.malformedResponse("session/search 命中项缺少 sessionId")
+                throw HarnessTransportError.malformedResponse("session/search item is missing sessionId")
             }
             guard seen.insert(sessionID).inserted else { continue }
             results.append(ThreadSearchResult(
@@ -197,7 +197,7 @@ enum HarnessSessionDirectoryDecoding {
         workspace: AgentWorkspace?
     ) throws -> AgentSession {
         guard let sessionID = item["sessionId"]?.stringValue?.trimmedNonEmpty else {
-            throw HarnessTransportError.malformedResponse("session/list 项缺少 sessionId")
+            throw HarnessTransportError.malformedResponse("session/list item is missing sessionId")
         }
         let values = item["projections"]?["values"]
         // 标题不在顶层，在 projections.values.title（夹具 itemShapeNote 明确记录）。

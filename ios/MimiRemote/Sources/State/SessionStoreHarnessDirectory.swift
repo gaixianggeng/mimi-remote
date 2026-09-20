@@ -81,6 +81,7 @@ extension SessionStore {
             let client = try self.clientFactory()
             return try await client.sessionsPage(
                 workspace: workspace,
+                runtimeProvider: query.runtimeProvider,
                 cursor: nil,
                 limit: nil,
                 consistency: .fastIndexed

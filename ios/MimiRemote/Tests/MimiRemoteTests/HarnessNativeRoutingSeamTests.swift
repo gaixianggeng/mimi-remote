@@ -81,6 +81,31 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         XCTAssertTrue(deepseekSent.isEmpty, "DeepSeek 分发不得再走 deepseek 的 Codex 通道")
     }
 
+    func testNativeSessionListRejectsNonemptyProjectIDWithoutGlobalFallback() async {
+        let rpc = FailingHarnessRPCTransport(error: HarnessTransportError.timedOut)
+        let client = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: rpc
+        )
+
+        do {
+            _ = try await client.sessionsPage(
+                projectID: "project-must-not-be-dropped",
+                cursor: nil,
+                limit: nil,
+                consistency: .fastIndexed
+            )
+            XCTFail("非空 projectID 不得静默退化成全局查询")
+        } catch {
+            XCTAssertEqual(
+                error as? HarnessNativeUnavailableError,
+                .unsupported(operation: "session/list(projectID)")
+            )
+        }
+        XCTAssertEqual(rpc.callCount, 0, "拒绝必须发生在调用上游之前")
+    }
+
     // MARK: - 单 runtime 失败隔离
 
     func testCodexSearchFailureStillReturnsNativeResults() async throws {

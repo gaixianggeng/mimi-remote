@@ -75,7 +75,7 @@ final class HarnessHistoryLoader {
             // 没有本次 snapshot 的 cursor，就没有合法的 throughSeq。
             // 猜一个（比如用 latestSeq 或 0）会产生静默错误的结果——契约 §5.5 明确禁止。
             throw HarnessTransportError.malformedResponse(
-                "历史读取缺少本次 follow 的 snapshot.cursor，无法确定 throughSeq"
+                "History load requires snapshot.cursor from the current follow"
             )
         }
 

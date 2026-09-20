@@ -88,7 +88,7 @@ final class HarnessSubmissionController {
                 // 注意这里**不**改写 latest：被拒的这次从未发出，不该覆盖在途状态。
                 return Submission(
                     requestID: requestID, sessionID: sessionID, text: text,
-                    state: .rejected("上一次提交尚未确认结果，请先对账或等待重投")
+                    state: .rejected(L10n.text("harness.previous_submission_unconfirmed"))
                 )
             case .idle, .accepted, .rejected:
                 break
@@ -132,7 +132,7 @@ final class HarnessSubmissionController {
             return .rejected(message)
         case .unauthorized(let status):
             // 凭据失效：明确结论，但需要换凭据而不是重试同一次写。
-            return .rejected("凭据已失效（HTTP \(status)）")
+            return .rejected(L10n.format("harness.credentials_expired_http", status))
         case .server, .malformedResponse, .unattributedResponse, .notConnected,
              .closed, .timedOut, .unsupportedInteraction, .cancelled:
             // 这些都可能发生在"上游已经执行、只是我们没拿到结论"之后。
