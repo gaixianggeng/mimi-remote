@@ -394,7 +394,10 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(darkTokens.resolvedScheme, .dark)
     }
 
-    func testMeadowPresetUsesPaperInkAndGrassGreenPalette() {
+    /// 青草主题的约束是「绿只落在有意义的位置」，所以这里断言的是规则而不是一组色号：
+    /// 大面积的底、浮层、系统气泡、描边和整套文字必须是中性的，绿只允许出现在
+    /// 主操作、用户气泡、代码块和语义色上。这样以后谁把绿又铺回背景里，这条会红。
+    func testMeadowPresetKeepsGreenOffLargeBackgrounds() {
         let store = ThemeStore(defaults: defaults)
         store.preset = .meadow
 
@@ -404,14 +407,31 @@ final class ThemeStoreTests: XCTestCase {
         let light = store.tokens(for: .dark)
         XCTAssertEqual(light.preset, .meadow)
         XCTAssertEqual(light.resolvedScheme, .light)
-        // sweepmap.app 的纸白、森林墨绿与草绿：墨绿同时承担正文和主操作，草绿只做点缀。
-        assertRGB(rgba(light.background), red: 247, green: 250, blue: 242)
-        assertRGB(rgba(light.primaryText), red: 33, green: 59, blue: 44)
-        assertRGB(rgba(light.primaryAction), red: 33, green: 59, blue: 44)
-        assertRGB(rgba(light.goalActive), red: 13, green: 184, blue: 59)
-        assertRGB(rgba(light.secondaryText), red: 93, green: 107, blue: 98)
-        // 代码块沿用站内深绿分区：墨绿底纸白字。
-        assertRGB(rgba(light.codeBlock), red: 33, green: 59, blue: 44)
+
+        let lightNeutral: [(String, Color)] = [
+            ("background", light.background),
+            ("elevatedSurface", light.elevatedSurface),
+            ("systemBubble", light.systemBubble),
+            ("border", light.border),
+            ("primaryText", light.primaryText),
+            ("secondaryText", light.secondaryText),
+            ("tertiaryText", light.tertiaryText)
+        ]
+        for (name, color) in lightNeutral {
+            assertNeutral(color, context: "meadow light \(name)")
+        }
+
+        let lightGreen: [(String, Color)] = [
+            ("accent", light.accent),
+            ("userBubble", light.userBubble),
+            ("codeBlock", light.codeBlock),
+            ("success", light.success),
+            ("goalActive", light.goalActive)
+        ]
+        for (name, color) in lightGreen {
+            assertGreen(color, context: "meadow light \(name)")
+        }
+
         XCTAssertGreaterThanOrEqual(contrastRatio(light.codeText, light.codeBlock), 7.0)
         XCTAssertGreaterThanOrEqual(contrastRatio(light.primaryActionForeground, light.primaryAction), 7.0)
         for surface in [light.background, light.surface, light.elevatedSurface, light.userBubble, light.selectionFill] {
@@ -423,8 +443,24 @@ final class ThemeStoreTests: XCTestCase {
         let dark = store.tokens(for: .light)
         XCTAssertEqual(dark.preset, .meadow)
         XCTAssertEqual(dark.resolvedScheme, .dark)
-        assertRGB(rgba(dark.background), red: 20, green: 24, blue: 22)
-        assertRGB(rgba(dark.primaryAction), red: 84, green: 148, blue: 107)
+
+        let darkNeutral: [(String, Color)] = [
+            ("background", dark.background),
+            ("surface", dark.surface),
+            ("elevatedSurface", dark.elevatedSurface),
+            ("systemBubble", dark.systemBubble),
+            ("border", dark.border),
+            ("primaryText", dark.primaryText),
+            ("secondaryText", dark.secondaryText),
+            ("tertiaryText", dark.tertiaryText)
+        ]
+        for (name, color) in darkNeutral {
+            assertNeutral(color, context: "meadow dark \(name)")
+        }
+        for (name, color) in [("accent", dark.accent), ("userBubble", dark.userBubble)] {
+            assertGreen(color, context: "meadow dark \(name)")
+        }
+
         // 深色主操作是鼠尾草绿，冲突卡改用黑字；同时它自身要在底色上可读。
         XCTAssertGreaterThanOrEqual(contrastRatio(dark.writerConflictPrimaryActionForeground, dark.primaryAction), 4.5)
         XCTAssertGreaterThanOrEqual(contrastRatio(dark.primaryAction, dark.background), 4.5)
@@ -433,6 +469,44 @@ final class ThemeStoreTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(contrastRatio(dark.secondaryText, surface), 4.5)
         }
         XCTAssertGreaterThanOrEqual(contrastRatio(dark.codeText, dark.codeBlock), 7.0)
+    }
+
+    /// 中性：三个通道彼此相差不超过 4/255。留一点余量给暖白这类极轻微的偏色。
+    private func assertNeutral(
+        _ color: Color,
+        context: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let c = rgba(color)
+        let channels = [c.red, c.green, c.blue].map { $0 * 255 }
+        let spread = (channels.max() ?? 0) - (channels.min() ?? 0)
+        XCTAssertLessThanOrEqual(
+            spread,
+            4.0,
+            "\(context) 应保持中性，当前通道极差 \(String(format: "%.1f", spread))",
+            file: file,
+            line: line
+        )
+    }
+
+    /// 带绿：绿通道明显高于红蓝，确保这一处确实在表达主题色而不是碰巧偏绿。
+    private func assertGreen(
+        _ color: Color,
+        context: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let c = rgba(color)
+        let green = c.green * 255
+        let others = max(c.red, c.blue) * 255
+        XCTAssertGreaterThan(
+            green - others,
+            6.0,
+            "\(context) 应带绿，当前绿通道只高出 \(String(format: "%.1f", green - others))",
+            file: file,
+            line: line
+        )
     }
 
     func testPrimaryColorPresetsKeepVoiceRecordingAlignedWithAccent() {
