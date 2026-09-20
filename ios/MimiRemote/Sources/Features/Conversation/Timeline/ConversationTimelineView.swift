@@ -770,8 +770,14 @@ struct ConversationHistoryAnchorGeometryModifier: ViewModifier {
     let messageIDs: [UUID]
     let action: ([UUID], CGRect) -> Void
     var bindView: (([UUID], UIView) -> Void)?
-    @State private var latestFrame = CGRect.null
-    @State private var isVisible = false
+    @State private var geometryState = GeometryState()
+
+    // 这些值只供锚点回调读取，不参与绘制。不能把逐帧变化的全局坐标设为
+    // 可观察状态，否则滚动每一帧都会重新计算整行及其 Markdown / 过程摘要。
+    private final class GeometryState {
+        var latestFrame = CGRect.null
+        var isVisible = false
+    }
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -779,15 +785,15 @@ struct ConversationHistoryAnchorGeometryModifier: ViewModifier {
             content.onGeometryChange(for: CGRect.self) { geometry in
                 geometry.frame(in: .global)
             } action: { frame in
-                latestFrame = frame
-                if isVisible {
+                geometryState.latestFrame = frame
+                if geometryState.isVisible {
                     action(messageIDs, frame)
                 }
             }
             .onScrollVisibilityChange(threshold: 0.01) { visible in
-                isVisible = visible
-                if visible, !latestFrame.isNull {
-                    action(messageIDs, latestFrame)
+                geometryState.isVisible = visible
+                if visible, !geometryState.latestFrame.isNull {
+                    action(messageIDs, geometryState.latestFrame)
                 } else if !visible {
                     action(messageIDs, .null)
                 }

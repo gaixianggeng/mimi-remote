@@ -80,10 +80,19 @@ struct ConversationProcessGroup: Identifiable, Equatable {
     let messages: [ConversationMessage]
     let lifecycle: ConversationTurnLifecycle
     let isExpanded: Bool
+    let failedCount: Int
+
+    init(messages: [ConversationMessage], lifecycle: ConversationTurnLifecycle, isExpanded: Bool) {
+        self.messages = messages
+        self.lifecycle = lifecycle
+        self.isExpanded = isExpanded
+        // 消息集合在快照内不可变。只在投影时统计一次，避免行相等性比较和
+        // 标题绘制反复扫描已折叠的大量工具消息。
+        failedCount = messages.count { $0.activityPayload?.isFailure == true }
+    }
 
     var id: String { "process:\(messages[0].id.uuidString)" }
     var turnID: TurnID? { messages.first?.turnID }
-    var failedCount: Int { messages.count { $0.activityPayload?.isFailure == true } }
     var fileMessageIDs: [UUID] {
         messages.filter { $0.kind == .fileChangeSummary || $0.activityPayload?.category == .editFile }.map(\.id)
     }

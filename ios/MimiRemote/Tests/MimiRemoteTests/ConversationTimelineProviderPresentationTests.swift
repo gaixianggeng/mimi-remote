@@ -495,6 +495,21 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         XCTAssertTrue(message.activityPayload?.isInProgress == true)
     }
 
+    func testProcessFailureCountBelongsToItsImmutableSnapshot() {
+        var message = makeActivity(
+            id: "failure-count", turnID: "turn", category: .toolCall, title: "工具"
+        )
+        let completed = ConversationProcessGroup(messages: [message], lifecycle: .completed, isExpanded: false)
+        message.activityPayload = ConversationActivityPayload(
+            category: .toolCall, displayTitle: "工具", status: "failed"
+        )
+        let failed = ConversationProcessGroup(messages: [message], lifecycle: .failed, isExpanded: false)
+
+        XCTAssertEqual(completed.failedCount, 0, "后续状态不能改变已发布快照的统计")
+        XCTAssertEqual(failed.failedCount, 1, "新快照必须重新统计失败状态")
+        XCTAssertEqual(completed.id, failed.id)
+    }
+
     func testLiveAgentMessageKeepsCommentaryKind() throws {
         let started = try AgentAPIClient.decoder.decode(
             CodexAppServerNotification.self,
