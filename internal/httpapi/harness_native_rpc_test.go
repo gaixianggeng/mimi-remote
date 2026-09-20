@@ -347,16 +347,21 @@ func TestHarnessNativeModelCatalogRelaysNativeValue(t *testing.T) {
 
 // --- 负向：本地拒绝且不触达 Harness ---
 
+// 未开放的方法必须被拒且不触达上游。
+//
+// H07 之前这里也包含四个写方法；写路径开放后它们**不再是"被拒"**，
+// 而是转入各自的正向/负向用例（见 harness_native_h07_write_test.go）：
+// 参数非法时同样是 4xx 且不触达上游，但授权通过时必须有转发。
+// 因此这里只保留"经这条 RPC 通道永不开放"的方法——它们的共同点是
+// 必须走流载体，或属于中继未实现的能力。
 func TestHarnessNativeRejectsNonReadOnlyMethodsWithoutTouchingHarness(t *testing.T) {
 	for _, method := range []string{
-		"session/create",
-		"session/prompt",
-		"session/cancel",
-		"session/selectModel",
 		"session/follow",
 		"$events",
 		"$events/result",
 		"session/listExtra",
+		"workspace/create",
+		"session/updateQueue",
 	} {
 		spy := &harnessNativeSpy{}
 		router, _, _ := harnessNativeFixture(t, spy)

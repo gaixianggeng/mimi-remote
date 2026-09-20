@@ -34,9 +34,15 @@ const (
 	harnessNativeMethodSessionSearch       = "session/search"
 	harnessNativeMethodSessionPage         = "session/page"
 	harnessNativeMethodSessionModelCatalog = "session/modelCatalog"
+
+	// H07 写路径。与只读方法分开登记、分开放行（见 harnessNativeWriteMethods）。
+	harnessNativeMethodSessionCreate      = "session/create"
+	harnessNativeMethodSessionSelectModel = "session/selectModel"
+	harnessNativeMethodSessionPrompt      = "session/prompt"
+	harnessNativeMethodSessionCancel      = "session/cancel"
 )
 
-// harnessNativeReadOnlyMethods 是中继允许的方法全集。
+// harnessNativeReadOnlyMethods 是**只读**方法集合。
 //
 // 用显式集合而不是前缀判断：session/create 与 session/cancel 都以 session/ 开头，
 // 按前缀放行会把写方法一起放过去。
@@ -47,14 +53,33 @@ var harnessNativeReadOnlyMethods = map[string]struct{}{
 	harnessNativeMethodSessionModelCatalog: {},
 }
 
+// harnessNativeWriteMethods 是**写**方法集合，与只读集合分开维护。
+//
+// 分成两个集合而不是一个"允许的方法"集合，是为了让"这条通道能不能改上游状态"成为
+// 调用点的显式判断。合并成一个集合后，任何一次"顺手把某方法加进白名单"都会同时
+// 扩大读写两侧；分开之后写侧要单独改、单独审。
+//
+// 注意这里**没有** `$events/result`：应答审批要走流通道（它绑定活连接的 clientId），
+// 不是一条可以被单独调用的 RPC。单独开放它会绕开 clientId 关联。
+var harnessNativeWriteMethods = map[string]struct{}{
+	harnessNativeMethodSessionCreate:      {},
+	harnessNativeMethodSessionSelectModel: {},
+	harnessNativeMethodSessionPrompt:      {},
+	harnessNativeMethodSessionCancel:      {},
+}
+
 // harnessNativeCWDScopedMethods 是接受 cwd 授权提示的方法。
 //
 // session/page 不接受：它的目标由 address.sessionId 决定，cwd 在这里既不是必需信息，
 // 也不能改变授权结果，认下它只会多出一个可以试探的入口。session/modelCatalog 是
 // 全局模型配置，本来就没有目录维度。
+//
+// session/create **接受** cwd：创建会话要落到某个目录，cwd 正是它的授权依据。
+// 其余写方法不接受——它们的目标由 sessionId 决定，cwd 既非必需也不能改变授权结果。
 var harnessNativeCWDScopedMethods = map[string]struct{}{
 	harnessNativeMethodSessionList:   {},
 	harnessNativeMethodSessionSearch: {},
+	harnessNativeMethodSessionCreate: {},
 }
 
 // harnessNativePolicyError 是中继在触达 Harness 之前给出的拒绝。
@@ -115,6 +140,54 @@ type harnessNativePageArgs struct {
 	} `json:"request"`
 }
 
+// --- H07 写路径的原生参数 ---
+
+// harnessNativeCreateArgs 是 session/create 的原生参数。
+//
+// `cwd` 与 `workspaceId` 二选一（H00 实测：同时传两者会被 gateway/bad-request 拒绝）。
+// 中继只开放 cwd：workspaceId 是 Harness 内部标识，移动端拿不到也不该猜。
+// agentPreset 由 Harness 决定默认值——契约 D4 要求 create 默认省略它，
+// 认下它等于让调用方去挑一个中继无法验证是否存在的 preset。
+type harnessNativeCreateArgs struct {
+	Request struct {
+		CWD       string `json:"cwd,omitempty"`
+		SessionID string `json:"sessionId,omitempty"`
+	} `json:"request"`
+}
+
+// harnessNativeSelectModelArgs 是 session/selectModel 的原生参数。
+//
+// provider/model 取值域由 Harness 的模型目录决定，中继只做形状与非空校验，不按名字猜。
+type harnessNativeSelectModelArgs struct {
+	Request struct {
+		SessionID       string `json:"sessionId"`
+		Provider        string `json:"provider"`
+		Model           string `json:"model"`
+		ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	} `json:"request"`
+}
+
+// harnessNativePromptArgs 是 session/prompt 的原生参数。
+//
+// Content 原样透传（它是协议的判别联合，中继不该重写），但必须非空：
+// 空内容会让上游把一次用户提交变成一次空回合。
+type harnessNativePromptArgs struct {
+	Request struct {
+		RequestID      string            `json:"requestId"`
+		SessionID      string            `json:"sessionId"`
+		Mode           string            `json:"mode"`
+		Content        []json.RawMessage `json:"content"`
+		ClientTimeZone string            `json:"clientTimeZone,omitempty"`
+	} `json:"request"`
+}
+
+// harnessNativeCancelArgs 是 session/cancel 的原生参数。
+type harnessNativeCancelArgs struct {
+	Request struct {
+		SessionID string `json:"sessionId"`
+	} `json:"request"`
+}
+
 // harnessNativeDecodeStrict 严格解码一段参数：未知字段直接失败，且只允许一个 JSON 值。
 //
 // 这是"未知字段涉及授权目标时 fail closed"的落点。放任未知字段通过，等于允许调用方
@@ -143,10 +216,13 @@ func harnessNativeDecodeStrict(raw json.RawMessage, target any) error {
 type harnessNativeParsedArgs struct {
 	// Forward 是要转发给 Harness 的原生参数对象。
 	Forward any
-	// SessionID 是 session/page 的目标会话，其余方法为空。
+	// SessionID 是本次调用的目标会话；零参数方法（list/modelCatalog/create）为空。
 	SessionID string
 	// Query 是 session/search 的关键词，其余方法为空。
 	Query string
+	// CreateCWD 是 session/create 的目标目录。创建时还没有 sessionId，
+	// 授权依据只能是这个 cwd——它是 create 唯一可以据以判断"允许建在哪"的输入。
+	CreateCWD string
 }
 
 // harnessNativeArgsForMethod 按方法严格解析参数，并返回转发参数与授权目标。
@@ -217,9 +293,114 @@ func harnessNativeArgsForMethod(method string, raw json.RawMessage) (harnessNati
 		}
 		// 该方法描述符里没有参数，必须传空对象而不是省略。
 		return harnessNativeParsedArgs{Forward: map[string]any{}}, nil
+
+	case harnessNativeMethodSessionCreate:
+		var args harnessNativeCreateArgs
+		if err := harnessNativeDecodeStrict(raw, &args); err != nil {
+			return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusBadRequest, "session/create 参数非法："+err.Error())
+		}
+		cwd := strings.TrimSpace(args.Request.CWD)
+		if cwd == "" {
+			// 没有 cwd 就没有授权依据，也没有可回应的归属。缺它就拒绝，
+			// 而不是让上游去创建在某个默认目录里——那会绕过中继的目录授权。
+			return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusBadRequest, "session/create 必须给出 cwd")
+		}
+		if strings.ContainsRune(cwd, 0) {
+			return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusBadRequest, "session/create 的 cwd 不能包含 NUL")
+		}
+		forward := map[string]any{"cwd": cwd}
+		if sessionID := strings.TrimSpace(args.Request.SessionID); sessionID != "" {
+			// 允许调用方指定 sessionId（用于本地乐观记录的稳定关联）。
+			forward["sessionId"] = sessionID
+		}
+		// agentPreset 刻意不转发：由 Harness 决定默认值（契约 D4）。
+		return harnessNativeParsedArgs{
+			Forward:   map[string]any{"request": forward},
+			CreateCWD: cwd,
+		}, nil
+
+	case harnessNativeMethodSessionSelectModel:
+		var args harnessNativeSelectModelArgs
+		if err := harnessNativeDecodeStrict(raw, &args); err != nil {
+			return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusBadRequest, "session/selectModel 参数非法："+err.Error())
+		}
+		sessionID := strings.TrimSpace(args.Request.SessionID)
+		provider := strings.TrimSpace(args.Request.Provider)
+		model := strings.TrimSpace(args.Request.Model)
+		if sessionID == "" || provider == "" || model == "" {
+			return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusBadRequest, "session/selectModel 必须给出 sessionId、provider 与 model")
+		}
+		forward := map[string]any{"sessionId": sessionID, "provider": provider, "model": model}
+		// reasoningEffort 是可选：只在确实给了非空值时才转发，
+		// 否则会把"没选档位"变成一个显式的空档位。
+		if effort := strings.TrimSpace(args.Request.ReasoningEffort); effort != "" {
+			forward["reasoningEffort"] = effort
+		}
+		return harnessNativeParsedArgs{
+			Forward:   map[string]any{"request": forward},
+			SessionID: sessionID,
+		}, nil
+
+	case harnessNativeMethodSessionPrompt:
+		var args harnessNativePromptArgs
+		if err := harnessNativeDecodeStrict(raw, &args); err != nil {
+			return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusBadRequest, "session/prompt 参数非法："+err.Error())
+		}
+		sessionID := strings.TrimSpace(args.Request.SessionID)
+		requestID := strings.TrimSpace(args.Request.RequestID)
+		mode := strings.TrimSpace(args.Request.Mode)
+		if sessionID == "" {
+			return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusBadRequest, "session/prompt 必须给出 sessionId")
+		}
+		if requestID == "" {
+			// requestId 是提交与 durable user/message.source.rpcId 的关联键（契约 D4）。
+			// 缺它就无法对账"这次提交到底落没落"，因此不允许省略。
+			return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusBadRequest, "session/prompt 必须给出 requestId")
+		}
+		// mode 的取值域实测只有 queue 与 steer（传 default 会被上游判输入非法）。
+		if mode != harnessNativePromptModeQueue && mode != harnessNativePromptModeSteer {
+			return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusBadRequest, "session/prompt 的 mode 只能是 queue 或 steer")
+		}
+		if len(args.Request.Content) == 0 {
+			return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusBadRequest, "session/prompt 的 content 不能为空")
+		}
+		forward := map[string]any{
+			"requestId": requestID,
+			"sessionId": sessionID,
+			"mode":      mode,
+			"content":   args.Request.Content,
+		}
+		if tz := strings.TrimSpace(args.Request.ClientTimeZone); tz != "" {
+			forward["clientTimeZone"] = tz
+		}
+		return harnessNativeParsedArgs{
+			Forward:   map[string]any{"request": forward},
+			SessionID: sessionID,
+		}, nil
+
+	case harnessNativeMethodSessionCancel:
+		var args harnessNativeCancelArgs
+		if err := harnessNativeDecodeStrict(raw, &args); err != nil {
+			return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusBadRequest, "session/cancel 参数非法："+err.Error())
+		}
+		sessionID := strings.TrimSpace(args.Request.SessionID)
+		if sessionID == "" {
+			return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusBadRequest, "session/cancel 必须给出 sessionId")
+		}
+		return harnessNativeParsedArgs{
+			Forward:   map[string]any{"request": map[string]any{"sessionId": sessionID}},
+			SessionID: sessionID,
+		}, nil
 	}
 	return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusForbidden, "不支持的 Harness 方法")
 }
+
+// session/prompt 的 mode 取值域。实测（隔离 Harness 0.1.5-rc.2）只有这两个；
+// 契约文档只写了字段名没写取值，这里以实跑为准。
+const (
+	harnessNativePromptModeQueue = "queue"
+	harnessNativePromptModeSteer = "steer"
+)
 
 // harnessNativeRequestedScope 把请求里的 cwd 提示解析成授权作用域。
 //

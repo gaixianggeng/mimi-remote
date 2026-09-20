@@ -105,9 +105,11 @@ func (r *Router) harnessNativeRPCHandler(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	method := strings.TrimSpace(payload.Method)
-	if _, allowed := harnessNativeReadOnlyMethods[method]; !allowed {
-		// 写方法（create/prompt/cancel/selectModel）与订阅（follow/$events）都在这里被拒。
-		writeError(w, http.StatusForbidden, "中继只开放只读方法")
+	_, readOnly := harnessNativeReadOnlyMethods[method]
+	_, write := harnessNativeWriteMethods[method]
+	if !readOnly && !write {
+		// 订阅（follow/$events/$events/result）与其余未知方法都在这里被拒。
+		writeError(w, http.StatusForbidden, "该 Harness 方法不开放")
 		return
 	}
 	parsed, err := harnessNativeArgsForMethod(method, payload.Args)
@@ -125,6 +127,12 @@ func (r *Router) harnessNativeRPCHandler(w http.ResponseWriter, req *http.Reques
 	upstream, err := r.harnessNativeUpstreamFor(ctx)
 	if err != nil {
 		writeHarnessNativeFailure(w, err)
+		return
+	}
+
+	// 写路径单独分流：它的授权前置条件与只读不同（见 harnessNativeForwardWrite）。
+	if write {
+		r.harnessNativeForwardWrite(w, ctx, upstream, rpcID, method, parsed, scope)
 		return
 	}
 
@@ -181,7 +189,84 @@ func (r *Router) harnessNativeRPCHandler(w http.ResponseWriter, req *http.Reques
 	}
 }
 
-// readHarnessNativeRPCRequest 读取并严格解码请求体。
+// harnessNativeForwardWrite 转发一次写方法，并在此之前完成它的授权前置。
+//
+// 写路径与只读的根本区别：**只读的越权后果是"看见了不该看的"，写路径的是"改了不该改的"**。
+// 因此这里对每个目标会话都要求一次上游归属证明（harnessNativeAuthorizeSession），
+// 而不是像 session/list 那样"按 scope 裁剪结果"——裁剪对一个会改变上游状态的调用没有意义。
+//
+// 两类授权依据：
+//   - session/create：目标还不存在，只能按 cwd 授权。cwd 已在解析阶段非空校验，
+//     并在 scope 解析阶段被验为 projects allowlist / browse_roots 之内。
+//   - 其余三个：按 sessionId 授权，且**必须**拿到上游摘要证明归属；
+//     证明不了就不转发（宁可不做事，也不猜一个目标去做）。
+func (r *Router) harnessNativeForwardWrite(
+	w http.ResponseWriter,
+	ctx context.Context,
+	upstream harnessNativeRPCUpstream,
+	rpcID string,
+	method string,
+	parsed harnessNativeParsedArgs,
+	scope *gatewayScope,
+) {
+	if method == harnessNativeMethodSessionCreate {
+		// create 的授权依据是 cwd：它必须落在本次请求声明的 scope 内。
+		if scope == nil || strings.TrimSpace(parsed.CreateCWD) == "" {
+			writeHarnessNativeFailure(w, harnessNativeReject(
+				http.StatusForbidden, "session/create 需要落在已授权目录内"))
+			return
+		}
+		if !r.harnessNativeCreateAllowed(parsed.CreateCWD, *scope) {
+			writeHarnessNativeFailure(w, harnessNativeReject(
+				http.StatusForbidden, "session/create 的目标目录不在本次授权范围内"))
+			return
+		}
+		r.harnessNativeCallWrite(w, ctx, upstream, rpcID, method, parsed.Forward)
+		return
+	}
+
+	// 其余写方法：目标会话归属必须被上游证明。
+	if parsed.SessionID == "" {
+		writeHarnessNativeFailure(w, harnessNativeReject(http.StatusBadRequest, "缺少目标会话"))
+		return
+	}
+	if authErr := r.harnessNativeAuthorizeSession(ctx, upstream, parsed.SessionID, scope); authErr != nil {
+		writeHarnessNativeFailure(w, authErr)
+		return
+	}
+	r.harnessNativeCallWrite(w, ctx, upstream, rpcID, method, parsed.Forward)
+}
+
+// harnessNativeCallWrite 执行转发并把结果原样下发。
+//
+// 写方法的**业务失败**（HTTP 200 + result.ok=false）与只读同样处理：如实回给客户端，
+// 让它自己决定是否降级。传输层失败才是 502——那种情况连"上游说了什么"都拿不到。
+func (r *Router) harnessNativeCallWrite(
+	w http.ResponseWriter,
+	ctx context.Context,
+	upstream harnessNativeRPCUpstream,
+	rpcID string,
+	method string,
+	forward any,
+) {
+	raw, err := upstream.CallRaw(ctx, method, forward)
+	if err != nil {
+		writeHarnessNativeUpstreamFailure(w, rpcID, err)
+		return
+	}
+	writeHarnessNativeResult(w, rpcID, raw)
+}
+
+// harnessNativeCreateAllowed 判断 create 的目标目录是否落在本次声明的授权范围内。
+//
+// 直接复用 `gatewayScopeContainsPath`：它先 `EvalSymlinks` 再按路径分量比较，
+// 因此符号链接、`..`、以及 `/a/bc` 被 `/a/b` 误放行这几类输入都已覆盖。
+// 不另写一份路径比较——那种"看起来等价"的重复实现正是越权的常见来源。
+func (r *Router) harnessNativeCreateAllowed(cwd string, scope gatewayScope) bool {
+	return gatewayScopeContainsPath(scope, cwd)
+}
+
+
 //
 // 体积先按 Content-Length 预判、再用 LimitReader 兜底：伪造或缺失 Content-Length 的
 // chunked 请求同样会被截断在同一个上限，且多读一个字节用于判定"确实超限"。
