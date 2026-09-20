@@ -8,6 +8,15 @@ import Foundation
 /// 开发期默认不注入（`AppServerRuntimeBundle.harness == nil`）：`deepseek` 仍走既有
 /// app-server 桥接路径，Codex / Claude / DeepSeek 现状行为完全不变。注入后 `deepseek`
 /// 由原生路径承担，`runtime(for:)` 不再回退到 Codex actor 假装 native。
+/// 一次成功创建的结果。
+///
+/// `agentPreset` 是可选：只有 Harness 装配了 agent 名册时才返回（实测 0.1.5-rc.2 返回
+/// `"standard"`）。客户端不得假设它存在。
+struct HarnessCreatedSession: Equatable {
+    let sessionID: String
+    let agentPreset: String?
+}
+
 protocol HarnessSessionClient: AnyObject {
     /// 该 runtime 的事件客户端。事件包装器面向既有 `SessionWebSocketClient` 协议，
     /// 因此不再要求所有实现都是 `CodexAppServerSessionWebSocketClient`。
@@ -180,6 +189,102 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     /// 现在没有合法的 throughSeq 可传）。显式失败，不用空会话冒充。
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
         throw HarnessNativeUnavailableError.notImplemented(operation: "session/page")
+    }
+
+    // MARK: - H07 写路径
+
+    /// 创建会话。`cwd` 同时作为授权提示与创建目标——中继会校验后者落在前者授权的范围内。
+    ///
+    /// `sessionId` 可选：给出它是为了把本地乐观记录与服务端身份稳定关联。
+    /// `agentPreset` 刻意不传：默认值由 Harness 决定（契约 D4）。
+    func createSession(cwd: String, sessionID: String?) async throws -> HarnessCreatedSession {
+        var request: [String: HarnessJSONValue] = ["cwd": .string(cwd)]
+        if let sessionID = sessionID?.trimmedNonEmpty {
+            request["sessionId"] = .string(sessionID)
+        }
+        let value = try await rpc.call(HarnessRPCRequest(
+            rpcId: Self.makeRPCID(),
+            method: HarnessWireMethod.sessionCreate,
+            args: .object(["request": .object(request)]),
+            cwd: cwd
+        ))
+        guard let created = value["sessionId"]?.stringValue?.trimmedNonEmpty else {
+            // 建成功了却拿不到身份，后续没有任何操作能指向它。显式失败而不是返回空 id。
+            throw HarnessTransportError.malformedResponse("session/create 结果缺少 sessionId")
+        }
+        return HarnessCreatedSession(
+            sessionID: created,
+            agentPreset: value["agentPreset"]?.stringValue
+        )
+    }
+
+    /// 选择模型。provider/model 取值由模型目录决定，这里不按名字推断。
+    func selectModel(
+        sessionID: String,
+        provider: String,
+        model: String,
+        reasoningEffort: String?
+    ) async throws {
+        var request: [String: HarnessJSONValue] = [
+            "sessionId": .string(sessionID),
+            "provider": .string(provider),
+            "model": .string(model),
+        ]
+        // 可选档位：只在确实给了非空值时才带上，避免把"没选档位"变成一个显式空档位。
+        if let effort = reasoningEffort?.trimmedNonEmpty {
+            request["reasoningEffort"] = .string(effort)
+        }
+        _ = try await rpc.call(HarnessRPCRequest(
+            rpcId: Self.makeRPCID(),
+            method: HarnessWireMethod.sessionSelectModel,
+            args: .object(["request": .object(request)]),
+            cwd: nil
+        ))
+    }
+
+    /// 提交一次用户输入。
+    ///
+    /// `requestId` 由调用方生成并**保持不变**：它是这次提交与 durable
+    /// `user/message.source.rpcId` 的对账键（契约 D4）。响应未知时不得换一个 id 重发——
+    /// 那会让一次提交变成两次。
+    func submitPrompt(
+        sessionID: String,
+        requestID: String,
+        text: String,
+        mode: String,
+        clientTimeZone: String?
+    ) async throws {
+        var request: [String: HarnessJSONValue] = [
+            "requestId": .string(requestID),
+            "sessionId": .string(sessionID),
+            "mode": .string(mode),
+            "content": .array([.object([
+                "type": .string("text"),
+                "text": .string(text),
+            ])]),
+        ]
+        if let zone = clientTimeZone?.trimmedNonEmpty {
+            request["clientTimeZone"] = .string(zone)
+        }
+        _ = try await rpc.call(HarnessRPCRequest(
+            rpcId: Self.makeRPCID(),
+            method: HarnessWireMethod.sessionPrompt,
+            args: .object(["request": .object(request)]),
+            cwd: nil
+        ))
+    }
+
+    /// 停止当前轮次。
+    ///
+    /// 已读版本只有 session 级 cancel——它停的是这个会话正在跑的轮次，不是"某个指定轮次"。
+    /// 契约要求如实记录这一点，不宣传成原子 turn 级条件取消。
+    func cancelSession(sessionID: String) async throws {
+        _ = try await rpc.call(HarnessRPCRequest(
+            rpcId: Self.makeRPCID(),
+            method: HarnessWireMethod.sessionCancel,
+            args: .object(["request": .object(["sessionId": .string(sessionID)])]),
+            cwd: nil
+        ))
     }
 
     // MARK: 支撑
