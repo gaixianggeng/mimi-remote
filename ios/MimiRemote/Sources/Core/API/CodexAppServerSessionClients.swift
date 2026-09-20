@@ -463,7 +463,10 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary] {
-        try await bundle.codex.permissionProfiles(cwd: cwd)
+        guard try await bundle.codex.channelAvailable(runtimeProvider: "codex") else {
+            return []
+        }
+        return try await bundle.codex.permissionProfiles(cwd: cwd)
     }
 
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
@@ -574,6 +577,19 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     /// 代价说明：Claude 的搜索结果限于首页 limit 条。搜索场景下用户通常继续收窄
     /// 关键词而不是翻页；真出现「Claude 结果翻不动」再升级为按 runtime 分段。
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {
+        let codexAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "codex")
+        if !codexAvailable {
+            guard cursor == nil,
+                  try await bundle.codex.channelAvailable(runtimeProvider: "claude") else {
+                return ThreadSearchPage(results: [])
+            }
+            let claudePage = try await bundle.claude.globalThreadListSearchPage(
+                query: query,
+                limit: limit
+            )
+            bundle.routes.remember(claudePage.sessions)
+            return claudePage
+        }
         let codexPage = try await codexClient.searchSessions(query: query, cursor: cursor, limit: limit)
         bundle.routes.remember(codexPage.sessions)
         guard cursor == nil else {
@@ -621,24 +637,34 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {
-        if let sessionID {
-            return await bundle.runtime(forSessionID: sessionID).refreshRateLimit()
+        let runtimeProvider = sessionID.flatMap { bundle.routes.runtimeProvider(for: $0) } ?? "codex"
+        guard try await bundle.codex.channelAvailable(runtimeProvider: runtimeProvider) else {
+            return nil
         }
-        return await bundle.codex.refreshRateLimit()
+        return await bundle.runtime(for: runtimeProvider).refreshRateLimit()
     }
 
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
-        await bundle.runtime(for: runtimeProvider).refreshRateLimit()
+        guard try await bundle.codex.channelAvailable(runtimeProvider: runtimeProvider) else {
+            return nil
+        }
+        return await bundle.runtime(for: runtimeProvider).refreshRateLimit()
     }
 
     func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch {
         // Token 活动来自 ChatGPT 账号，只允许走 Codex channel。
-        await bundle.codex.refreshAccountTokenUsage()
+        guard try await bundle.codex.channelAvailable(runtimeProvider: "codex") else {
+            return .unsupported
+        }
+        return await bundle.codex.refreshAccountTokenUsage()
     }
 
     func refreshAccountTokenUsage(forceRefresh: Bool) async throws -> AccountTokenUsageFetch {
         // Token 活动来自 ChatGPT 账号，只允许走 Codex channel。
-        await bundle.codex.refreshAccountTokenUsage(forceRefresh: forceRefresh)
+        guard try await bundle.codex.channelAvailable(runtimeProvider: "codex") else {
+            return .unsupported
+        }
+        return await bundle.codex.refreshAccountTokenUsage(forceRefresh: forceRefresh)
     }
 
     func threadGoal(threadID: String) async throws -> ThreadGoal? {

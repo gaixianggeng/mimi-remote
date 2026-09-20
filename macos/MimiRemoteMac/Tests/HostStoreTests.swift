@@ -1463,6 +1463,68 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.tailcatStatus?.running, false)
     }
 
+    func testTailcatMutationRejectsOlderRefreshResult() async {
+        let staleRefreshGate = SuspendedStatusGate()
+        let enabledStatus = TailcatStatus(
+            enabled: true, running: true, version: "v0.3.0",
+            derpMapURL: nil, pairedDeviceCount: 1, error: nil
+        )
+        let disabledStatus = TailcatStatus(
+            enabled: false, running: false, version: "v0.3.0",
+            derpMapURL: nil, pairedDeviceCount: 1, error: nil
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            tailcatStatus: { await staleRefreshGate.suspendReturning(enabledStatus) },
+            setTailcatEnabled: { _ in disabledStatus }
+        )
+        await store.bootstrap()
+
+        let staleRefresh = Task { await store.refreshTailcatStatus() }
+        await staleRefreshGate.waitUntilSuspended()
+        await store.setTailcatEnabled(false)
+        staleRefreshGate.resume()
+        await staleRefresh.value
+
+        XCTAssertFalse(store.tailcatEnabled)
+        XCTAssertFalse(store.availablePairingNetworks.contains(.tailcat))
+    }
+
+    func testLatestTailcatRefreshWinsWhenOlderFailureFinishesLast() async {
+        let staleRefreshGate = SuspendedStatusGate()
+        let latestRefreshGate = SuspendedStatusGate()
+        let calls = CallCounter()
+        let latestStatus = TailcatStatus(
+            enabled: false, running: false, version: "v0.3.0",
+            derpMapURL: nil, pairedDeviceCount: 1, error: nil
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            tailcatStatus: {
+                if calls.increment() == 1 {
+                    _ = await staleRefreshGate.suspendReturning(false)
+                    throw TestError.expected
+                }
+                return await latestRefreshGate.suspendReturning(latestStatus)
+            }
+        )
+        await store.bootstrap()
+
+        let staleRefresh = Task { await store.refreshTailcatStatus() }
+        await staleRefreshGate.waitUntilSuspended()
+        let latestRefresh = Task { await store.refreshTailcatStatus() }
+        await latestRefreshGate.waitUntilSuspended()
+        latestRefreshGate.resume()
+        await latestRefresh.value
+        staleRefreshGate.resume()
+        await staleRefresh.value
+
+        XCTAssertEqual(store.tailcatStatus, latestStatus)
+        XCTAssertNil(store.tailcatError)
+    }
+
     func testDoctorKeepsHomebrewMigrationState() async {
         let store = makeStore(configExists: true, homebrewLoaded: true)
         await store.bootstrap()
@@ -1887,7 +1949,43 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.status?.moduleStatusState, .unavailable)
         XCTAssertTrue(store.tailscaleEnabled)
         XCTAssertEqual(store.moduleStateTitle(.tailscale), "等待状态更新")
+        XCTAssertTrue(store.canChangeModule(.tailscale), "明确标旧的上次快照仍可作为显式操作基线")
         XCTAssertEqual(store.availablePairingNetworks, [])
+    }
+
+    func testInitialUnavailableModuleStatusDisablesAmbiguousNetworkToggles() async {
+        let unavailableStatus = AgentStatus(
+            processOK: true, serviceOK: true, processError: nil, serviceError: nil,
+            version: Self.readyStatus.version, endpoint: Self.readyStatus.endpoint,
+            configPath: Self.readyStatus.configPath, projects: Self.readyStatus.projects,
+            doctorOK: true, doctor: Self.readyStatus.doctor, pairExpires: nil,
+            networkStatus: AgentNetworkStatus(
+                mode: "lan", allowLAN: true, policyChecked: true, policyOK: true
+            ),
+            moduleStatus: nil,
+            moduleStatusState: .unavailable
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: { unavailableStatus }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertFalse(store.tailscaleEnabled)
+        XCTAssertFalse(store.lanEnabled)
+        XCTAssertEqual(store.moduleStateTitle(.tailscale), "等待状态更新")
+        XCTAssertFalse(store.canChangeModule(.tailscale))
+        XCTAssertFalse(store.canChangeModule(.lan))
+        XCTAssertTrue(store.availablePairingNetworks.isEmpty)
+    }
+
+    func testNetworkModulesCannotChangeBeforeFirstStatusSnapshot() {
+        let store = makeStore(configExists: true, agentStatus: { .enabled })
+
+        XCTAssertFalse(store.canChangeModule(.tailscale))
+        XCTAssertFalse(store.canChangeModule(.lan))
     }
 
 

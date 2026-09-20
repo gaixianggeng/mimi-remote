@@ -4,6 +4,14 @@ extension HostStore {
     var canChangeModules: Bool {
         owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
     }
+    func canChangeModule(_ module: HostModuleID) -> Bool {
+        guard canChangeModules else { return false }
+        guard module == .tailscale || module == .lan else { return true }
+        guard let status else { return false }
+        // 首次状态读取失败时没有可信开关方向，禁用网络 Toggle，避免把未知误画成关闭
+        // 后再发送相反操作。已有快照会被标记为 stale，可继续作为显式操作的基线。
+        return status.moduleStatusState != .unavailable || status.moduleStatus != nil
+    }
     var codexEnabled: Bool {
         status?.moduleStatus?.codexEnabled ?? runtime(for: .codex)?.enabled ?? true
     }

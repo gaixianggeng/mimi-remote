@@ -601,9 +601,10 @@ final class HostStore {
     }
 
     private func setNetworkModule(_ network: PairingNetwork, enabled: Bool) async {
-        guard canChangeModules else { return }
+        let module: HostModuleID = network == .tailscale ? .tailscale : .lan
+        guard canChangeModule(module) else { return }
         isBusy = true
-        updatingModule = network == .tailscale ? .tailscale : .lan
+        updatingModule = module
         isUpdatingLAN = network == .localNetwork
         networkError = nil
         networkErrorModule = updatingModule

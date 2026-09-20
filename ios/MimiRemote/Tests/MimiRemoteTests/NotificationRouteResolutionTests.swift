@@ -1005,6 +1005,122 @@ final class NotificationRouteResolutionTests: XCTestCase {
         XCTAssertTrue(codexMessages.isEmpty)
     }
 
+    func testPermissionProfilesDoNotInitializeCodexWhenCodexChannelIsDisabled() async throws {
+        let project = makeProject(id: "claude-only-permissions")
+        let config = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let codexTransport = FakeCodexAppServerTransport()
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(
+            codexRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787", token: "token", runtimeProvider: "codex",
+                transportFactory: { codexTransport }, configProvider: { config }
+            ),
+            claudeRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787", token: "token", runtimeProvider: "claude",
+                transportFactory: { FakeCodexAppServerTransport() }, configProvider: { config }
+            )
+        )
+
+        let profiles = try await client.permissionProfiles(cwd: project.path)
+        let rateLimit = try await client.refreshRateLimit(runtimeProvider: "codex")
+        let tokenUsage = try await client.refreshAccountTokenUsage(forceRefresh: true)
+        let codexMessages = await codexTransport.sentMessages()
+
+        XCTAssertTrue(profiles.isEmpty)
+        XCTAssertNil(rateLimit)
+        XCTAssertEqual(tokenUsage, .unsupported)
+        XCTAssertTrue(codexMessages.isEmpty)
+    }
+
+    func testClaudeOnlySessionListAndNotificationFallbackNeverRequestCodex() async throws {
+        let project = makeProject(id: "claude-only-list")
+        let target = makeSession(
+            id: "thread-claude-only",
+            projectID: project.id,
+            title: "Claude only",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            workspaceSessions: [project.id: [target]],
+            runtimeChannelAvailability: ["codex": false, "claude": true]
+        )
+        let appStore = makeIsolatedAppStore()
+        let store = makeStore(client: client, appStore: appStore)
+        store.projects = [project]
+        let workspace = try XCTUnwrap(store.ensureWorkspaceForKnownProjectID(project.id))
+        let codexCompletionKey = store.workspaceSessionFirstPageKey(
+            for: workspace,
+            runtimeProvider: "codex"
+        )
+        store.workspaceSessionFirstPageCompletionByKey[codexCompletionKey] = WorkspaceSessionFirstPageCompletion(
+            consistency: .authoritative,
+            isPresentationWindowComplete: false,
+            continuationCursor: "codex-only-cursor",
+            scannedSessionIDs: [],
+            completedAt: Date(timeIntervalSince1970: 10)
+        )
+
+        let firstPage = try await store.sessionListFirstPage(
+            workspace: workspace,
+            limit: SessionStore.initialSessionPageLimit,
+            reuseRecent: false,
+            consistency: .authoritative,
+            source: .selectedProject
+        )
+        XCTAssertEqual(firstPage.page.sessions.map(\.id), [target.id])
+        XCTAssertNil(firstPage.requestedCursor, "Claude 首屏不能沿用 Codex 的 opaque cursor")
+        XCTAssertTrue(store.applyWorkspaceSessionFirstPage(
+            workspace: workspace,
+            page: firstPage.page,
+            runtimeProvider: firstPage.runtimeProvider,
+            consistency: .authoritative,
+            requestedCursor: firstPage.requestedCursor,
+            requestLineage: firstPage.requestLineage
+        ))
+        let claudeCompletionKey = store.workspaceSessionFirstPageKey(
+            for: workspace,
+            runtimeProvider: "claude"
+        )
+        XCTAssertEqual(
+            store.workspaceSessionFirstPageCompletionByKey[codexCompletionKey]?.continuationCursor,
+            "codex-only-cursor"
+        )
+        XCTAssertTrue(
+            store.workspaceSessionFirstPageCompletionByKey[claudeCompletionKey]?.isPresentationWindowComplete == true
+        )
+        XCTAssertEqual(
+            store.directoryScopedSessions(workspaceID: project.id, runtimeProvider: "claude").map(\.id),
+            [target.id]
+        )
+        XCTAssertTrue(
+            store.directoryScopedSessions(workspaceID: project.id, runtimeProvider: "codex").isEmpty
+        )
+
+        store.sessions = []
+        let route = SessionNotificationRoute.current(
+            profileID: appStore.notificationRoutingProfileID,
+            projectID: project.id,
+            sessionID: target.id
+        )
+        let notificationResult = try await store.listNotificationSession(
+            route,
+            workspace: workspace,
+            client: client,
+            hostScope: appStore.activeHostScope
+        )
+
+        XCTAssertEqual(notificationResult, .found(target))
+        XCTAssertEqual(client.requestedWorkspaceRuntimes, ["claude", "claude"])
+        XCTAssertEqual(client.requestedWorkspaceCursors, [nil, nil])
+    }
+
     // MARK: - Helpers
 
     private func makeStore(client: any SessionStoreAPIClient, appStore: AppStore? = nil) -> SessionStore {
@@ -1277,6 +1393,10 @@ private final class NotificationRuntimeListClient: SessionStoreAPIClient {
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
         lock.withLock { requestedSessionIDsStorage.append(id) }
         throw readError
+    }
+
+    func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
+        pagesByRuntime[runtimeProvider] != nil
     }
 
     func rememberRuntimeRoute(_ runtimeProvider: String?, forSessionID sessionID: SessionID) {

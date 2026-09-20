@@ -2822,6 +2822,7 @@ extension SessionStore {
         permissionProfilesRefreshGeneration += 1
         permissionProfilesRefreshRequestedCWD = nil
         isRefreshingPermissionProfiles = false
+        isCodexRuntimeChannelAvailable = true
         isClaudeRuntimeChannelAvailable = false
         accountRateLimitsByRuntime = [:]
         accountTokenUsage = nil

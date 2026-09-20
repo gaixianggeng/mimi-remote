@@ -95,7 +95,7 @@ struct ModuleControlsGroup: View {
                     Text("已关闭 \(undoModule.title)").font(.caption)
                     Spacer()
                     Button("撤销关闭") { requestChange(undoModule, enabled: true) }
-                        .disabled(!store.canChangeModules)
+                        .disabled(!store.canChangeModule(undoModule))
                 }
                 .padding(.horizontal, 3)
                 .padding(.top, 6)
@@ -114,7 +114,7 @@ struct ModuleControlsGroup: View {
     }
 
     private func requestChange(_ module: HostModuleID, enabled: Bool) {
-        guard store.canChangeModules, store.moduleEnabled(module) != enabled else { return }
+        guard store.canChangeModule(module), store.moduleEnabled(module) != enabled else { return }
         guard shouldConfirmLastConnectionChange(module, enabled: enabled) else {
             applyChange(module, enabled: enabled)
             return
@@ -122,7 +122,7 @@ struct ModuleControlsGroup: View {
 
         // 只有关闭最后一种连接方式才阻断确认；其它开关立即执行并提供撤销。
         DispatchQueue.main.async {
-            guard store.canChangeModules else { return }
+            guard store.canChangeModule(module) else { return }
             let alert = NSAlert()
             alert.messageText = "关闭最后一种连接方式？"
             alert.informativeText = ModuleChangePresentation.impact(module, enabled: enabled)
@@ -199,7 +199,7 @@ private struct ModuleControlRow: View {
             .labelsHidden()
             .toggleStyle(.switch)
             .controlSize(.small)
-            .disabled(!store.canChangeModules)
+            .disabled(!store.canChangeModule(module))
             .accessibilityLabel("启用 \(module.title)")
             .accessibilityHint("当前状态：\(stateTitle)")
 

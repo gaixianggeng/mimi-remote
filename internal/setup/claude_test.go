@@ -471,7 +471,7 @@ func TestProbeClaudeAuthStatusDoesNotTurnTimeoutIntoSignedOut(t *testing.T) {
 		context.Background(),
 		claude,
 		claudeCommandEnvironment(nil),
-		50*time.Millisecond,
+		500*time.Millisecond,
 	)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("输出 false 后超时必须保留 timeout 分类，got=%v", err)

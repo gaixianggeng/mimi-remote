@@ -724,12 +724,16 @@ func probeClaudeAuthStatus(
 	authCtx, cancelAuth := context.WithTimeout(ctx, deadline)
 	authCommand := exec.CommandContext(authCtx, claudeBin, "auth", "status")
 	authCommand.Env = environment
+	var authOutput bytes.Buffer
+	authCommand.Stdout = &authOutput
 	authCommand.Stderr = io.Discard
-	authOutput, authErr := authCommand.Output()
+	// Command.Output 的内部 pipe 会在超时杀进程时丢掉已经读到的短输出。
+	// 直接写入本地 buffer，保留 loggedIn 作为诊断，但仍以 timeout 作为结果分类。
+	authErr := authCommand.Run()
 	authContextErr := authCtx.Err()
 	cancelAuth()
 
-	loggedIn, parsedAuth := parseClaudeAuthStatus(authOutput)
+	loggedIn, parsedAuth := parseClaudeAuthStatus(authOutput.Bytes())
 	var result *bool
 	if parsedAuth {
 		result = &loggedIn

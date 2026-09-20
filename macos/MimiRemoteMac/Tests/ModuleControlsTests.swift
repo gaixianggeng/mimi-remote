@@ -91,6 +91,19 @@ final class ModuleControlsTests: XCTestCase {
         XCTAssertNil(store.claudeError)
         XCTAssertEqual(fixture.registrationCalls, registrationsBeforeToggle + 1)
     }
+
+    func testClaudeEnableReloadsWhenDiskIsOnButResidentIsOff() async {
+        let fixture = ModuleFixture(codex: true, claude: false, claudeOnDisk: true, ts: true, lan: false)
+        let store = fixture.store()
+        await store.bootstrap()
+        let registrationsBeforeToggle = fixture.registrationCalls
+
+        await store.setClaudeEnabled(true)
+
+        XCTAssertTrue(store.claudeEnabled)
+        XCTAssertNil(store.claudeError)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBeforeToggle + 1)
+    }
 }
 
 private final class ModuleFixture: @unchecked Sendable {

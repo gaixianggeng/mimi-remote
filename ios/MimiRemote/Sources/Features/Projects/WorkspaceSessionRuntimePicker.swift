@@ -60,8 +60,27 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
         }
     }
 
+    func isAvailable(codexChannelAvailable: Bool, claudeChannelAvailable: Bool) -> Bool {
+        switch self {
+        case .codex: codexChannelAvailable
+        case .claude: claudeChannelAvailable
+        }
+    }
+
+    static func available(
+        codexChannelAvailable: Bool,
+        claudeChannelAvailable: Bool
+    ) -> [Self] {
+        allCases.filter {
+            $0.isAvailable(
+                codexChannelAvailable: codexChannelAvailable,
+                claudeChannelAvailable: claudeChannelAvailable
+            )
+        }
+    }
+
     static func available(claudeChannelAvailable: Bool) -> [Self] {
-        claudeChannelAvailable ? [.codex, .claude] : [.codex]
+        available(codexChannelAvailable: true, claudeChannelAvailable: claudeChannelAvailable)
     }
 }
 
@@ -74,6 +93,7 @@ struct WorkspaceRuntimeMenuPicker: View {
 
     @Binding var selection: WorkspaceSessionRuntimeChoice
     let claudeChannelAvailable: Bool
+    let codexChannelAvailable: Bool
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -93,7 +113,10 @@ struct WorkspaceRuntimeMenuPicker: View {
                         }
                     }
                 }
-                .disabled(choice == .claude && !claudeChannelAvailable)
+                .disabled(!choice.isAvailable(
+                    codexChannelAvailable: codexChannelAvailable,
+                    claudeChannelAvailable: claudeChannelAvailable
+                ))
             }
         } label: {
             HStack(spacing: 6) {
@@ -130,6 +153,7 @@ struct WorkspaceRuntimePicker: View {
 
     @Binding var selection: WorkspaceSessionRuntimeChoice
     let claudeChannelAvailable: Bool
+    let codexChannelAvailable: Bool
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -137,7 +161,10 @@ struct WorkspaceRuntimePicker: View {
         HStack(spacing: 0) {
             ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
                 let isSelected = selection == choice
-                let isAvailable = choice != .claude || claudeChannelAvailable
+                let isAvailable = choice.isAvailable(
+                    codexChannelAvailable: codexChannelAvailable,
+                    claudeChannelAvailable: claudeChannelAvailable
+                )
 
                 Button {
                     guard isAvailable else { return }
@@ -246,6 +273,7 @@ struct WorkspaceRuntimePopoverPicker: View {
 
     @Binding var selection: WorkspaceSessionRuntimeChoice
     let claudeChannelAvailable: Bool
+    let codexChannelAvailable: Bool
 
     @State private var isPresented = false
 
@@ -285,9 +313,12 @@ struct WorkspaceRuntimePopoverPicker: View {
     private func popoverContent(tokens: ThemeTokens) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // 始终列出全部 Runtime；不可用的那个保留为禁用行，
-            // 直接隐藏会让「为什么没有 Claude」变成一个无处可查的问题。
+            // 直接隐藏会让用户无法判断对应 Agent 是未接入还是暂不可用。
             ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
-                let isAvailable = choice != .claude || claudeChannelAvailable
+                let isAvailable = choice.isAvailable(
+                    codexChannelAvailable: codexChannelAvailable,
+                    claudeChannelAvailable: claudeChannelAvailable
+                )
 
                 Button {
                     selection = choice

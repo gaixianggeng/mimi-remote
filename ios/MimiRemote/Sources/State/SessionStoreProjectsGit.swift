@@ -1518,6 +1518,7 @@ extension SessionStore {
         }
         var requestToken: Int?
         do {
+            let runtimeProvider = try await primarySessionRuntimeProvider(client: lease.client)
             requestToken = beginSessionPageRequest(projectID: projectID)
             defer {
                 if isProjectsGitHostCurrent(lease) {
@@ -1527,7 +1528,7 @@ extension SessionStore {
             let page = try await sessionListPageFillingPresentationWindow(
                 client: lease.client,
                 workspace: workspace,
-                runtimeProvider: "codex",
+                runtimeProvider: runtimeProvider,
                 cursor: cursor,
                 limit: Self.expandedSessionPageLimit,
                 consistency: .fastIndexed,
@@ -1547,13 +1548,15 @@ extension SessionStore {
             }
             mergeFastIndexedSessionPagePreservingAuthoritativeFields(
                 sessions(page.sessions, in: workspace),
-                workspace: workspace
+                workspace: workspace,
+                runtimeProvider: runtimeProvider
             )
             updateSessionPageState(projectID: projectID, page: page, requestedCursor: cursor)
             // 显示更多也可能从弱索引补认既有 root 的 child 身份。必须在推进到本轮安全
             // continuation 之后再失效首屏完成态，让视图自动用该游标补齐，而不是退回旧边界。
             invalidateAuthoritativeWorkspaceSessionPresentationCompletionIfNeeded(
-                workspace: workspace
+                workspace: workspace,
+                runtimeProvider: runtimeProvider
             )
             sessionProjectsWithAdditionalPages.insert(projectID)
             clearWorkspaceUnavailable(projectID)
@@ -1658,10 +1661,10 @@ extension SessionStore {
         // agentd 返回的每一项都已经过项目、browse_root 与 git common-dir 裁剪；
         // iOS 只消费 opaque cursor，不接触上游全局 cursor。
         //
-        // 两条 runtime 各跑一趟独立遍历：cursor 流互不交织，结果并进同一份
+        // 每条可用 runtime 各跑一趟独立遍历：cursor 流互不交织，结果并进同一份
         // discoveredSessionIDs 由 canonical sessions 统一归并，因此不需要跨 Runtime
-        // 的排序状态机。撤权只在**两趟都完整走完**时才允许——否则 Codex 那趟会把
-        // Claude 刚发现的会话当成"已不存在"删掉。
+        // 的排序状态机。撤权只按已经完整走完的 Runtime 结算，不能用一条通道的结果
+        // 删除另一条通道的会话。
         if !controlledGlobalDiscoveryUnavailable {
             let controlledIDsBeforeTraversal = controlledGlobalSessionIDs
             var discoveredSessionIDs: Set<SessionID> = []
@@ -1670,7 +1673,8 @@ extension SessionStore {
             // 已删除的会话（反之亦然）。
             var discoveredByRuntime: [String: Set<SessionID>] = [:]
             var completedRuntimes: Set<String> = []
-            for runtimeProvider in ["codex", "claude"] {
+            let runtimeProviders = await availableSessionRuntimeProviders(client: client)
+            for runtimeProvider in runtimeProviders {
                 var cursor: String?
                 var runtimeReachedEnd = false
                 for pageIndex in 0..<4 {
