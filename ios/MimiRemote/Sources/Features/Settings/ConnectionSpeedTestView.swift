@@ -26,15 +26,13 @@ struct ConnectionSpeedTestView: View {
 
         Form {
             Section {
-                Picker(
-                    L10n.text("ui.connection_method"),
+                SettingsChoiceRow(
+                    title: L10n.text("ui.connection_method"),
+                    systemImage: "point.3.connected.trianglepath.dotted",
+                    options: ConnectionTestRoute.allCases,
                     selection: $transientPreferences.speedTestRoute
-                ) {
-                    Text(ConnectionTestRoute.tailscale.title).tag(ConnectionTestRoute.tailscale)
-                    Text(ConnectionTestRoute.tailcat.title).tag(ConnectionTestRoute.tailcat)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                )
+                .settingsRow()
                 .accessibilityIdentifier("settings.connectionSpeedTest.route")
             } header: {
                 Text(L10n.text("ui.connection_method"))
@@ -205,15 +203,13 @@ struct ConnectionSpeedTestView: View {
                 .disabled(isTesting)
 
             if transientPreferences.recordsBenchmarkSamples {
-                Picker(
-                    L10n.text("ui.connection_benchmark_scenario"),
+                SettingsChoiceRow(
+                    title: L10n.text("ui.connection_benchmark_scenario"),
+                    systemImage: "chart.bar",
+                    options: ConnectionBenchmarkScenario.allCases,
                     selection: $transientPreferences.benchmarkScenario
-                ) {
-                    ForEach(ConnectionBenchmarkScenario.allCases) { scenario in
-                        Text(scenario.title).tag(scenario)
-                    }
-                }
-                .pickerStyle(.segmented)
+                )
+                .settingsRow()
                 .accessibilityIdentifier("settings.connectionSpeedTest.benchmark.scenario")
                 .disabled(isTesting)
 
@@ -723,6 +719,15 @@ struct ConnectionSpeedTestView: View {
             return tokens.secondaryText
         }
     }
+}
+
+extension ConnectionTestRoute: SettingsChoiceOption {
+    var id: String { rawValue }
+    var choiceTitle: String { title }
+}
+
+extension ConnectionBenchmarkScenario: SettingsChoiceOption {
+    var choiceTitle: String { title }
 }
 
 private extension ConnectionTestRoute {

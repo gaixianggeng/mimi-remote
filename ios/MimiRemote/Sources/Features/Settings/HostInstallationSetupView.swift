@@ -99,16 +99,12 @@ struct HostInstallationSetupView: View {
 
         if isExpanded.wrappedValue {
             VStack(alignment: .leading, spacing: 16) {
-                Picker(
-                    L10n.text("ui.computer_platform"),
+                SettingsChoiceRow(
+                    title: L10n.text("ui.computer_platform"),
+                    systemImage: "desktopcomputer",
+                    options: HostInstallationPlatform.allCases,
                     selection: $transientPreferences.hostInstallationPlatform
-                ) {
-                    ForEach(HostInstallationPlatform.allCases) { platform in
-                        Text(platform.title).tag(platform)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .tint(tokens.accent)
+                )
                 .accessibilityIdentifier("settings.hostInstaller.platform")
 
                 VStack(alignment: .leading, spacing: 6) {

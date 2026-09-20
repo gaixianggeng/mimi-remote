@@ -610,14 +610,16 @@ struct AppearanceView: View {
 
         Form {
             Section {
-                Picker(L10n.text("ui.appearance"), selection: $themeStore.mode) {
-                    ForEach(ThemeMode.allCases) { mode in
-                        Label(mode.title, systemImage: iconName(for: mode))
-                            .tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .settingsRow()
+                // 与语言页同一套：三个选项就地平铺，点一下即生效，选中项的说明
+                // 直接显示在标题下方，不再要求用户先记住「系统」和「浅色」的差别。
+                SettingsChoiceRow(
+                    title: L10n.text("ui.appearance"),
+                    systemImage: "circle.lefthalf.filled",
+                    options: ThemeMode.allCases,
+                    selection: $themeStore.mode
+                )
+                .settingsRow(.descriptive)
+                .accessibilityIdentifier("settings.appearance.mode")
             } header: {
                 Text(L10n.text("ui.dark_and_light_colors"))
                     .settingsSectionHeaderStyle()
@@ -693,19 +695,26 @@ struct AppearanceView: View {
             .listRowBackground(tokens.settingsGroupBackground)
 
             Section {
-                Picker(L10n.text("ui.ui_font"), selection: $themeStore.uiFontPreset) {
-                    ForEach(ThemeUIFontPreset.allCases) { font in
-                        Text(font.title).tag(font)
-                    }
-                }
+                // 两种字体各只有两三个短选项，值不值得为它弹一层菜单：不值得。
+                SettingsChoiceRow(
+                    title: L10n.text("ui.ui_font"),
+                    // 不能用 textformat：它有中文本地化变体，图标位会渲染成「格式」两个汉字，
+                    // 整行读起来变成「格式 UI 字体」。
+                    systemImage: "text.alignleft",
+                    options: ThemeUIFontPreset.allCases,
+                    selection: $themeStore.uiFontPreset
+                )
                 .settingsRow()
+                .accessibilityIdentifier("settings.appearance.uiFont")
 
-                Picker(L10n.text("ui.code_font"), selection: $themeStore.codeFontPreset) {
-                    ForEach(ThemeCodeFontPreset.allCases) { font in
-                        Text(font.title).tag(font)
-                    }
-                }
+                SettingsChoiceRow(
+                    title: L10n.text("ui.code_font"),
+                    systemImage: "chevron.left.forwardslash.chevron.right",
+                    options: ThemeCodeFontPreset.allCases,
+                    selection: $themeStore.codeFontPreset
+                )
                 .settingsRow()
+                .accessibilityIdentifier("settings.appearance.codeFont")
 
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
@@ -847,17 +856,6 @@ struct AppearanceView: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("settings.workspaceIconStyle.option.\(style.rawValue)")
         .id(style.id)
-    }
-
-    private func iconName(for mode: ThemeMode) -> String {
-        switch mode {
-        case .system:
-            return "circle.lefthalf.filled"
-        case .light:
-            return "sun.max"
-        case .dark:
-            return "moon"
-        }
     }
 }
 
@@ -1343,13 +1341,14 @@ private struct DefaultModelRuntimeSection: View {
                 )
                 .settingsRow(.descriptive)
             } else {
-                Picker(L10n.text("ui.reasoning_effort"), selection: reasoningEffortSelectionBinding) {
-                    ForEach(availableEfforts) { effort in
-                        Text(ModelReasoningGridCatalog.effortTitle(effort))
-                            .tag(effort.rawValue)
-                    }
-                }
-                .pickerStyle(.navigationLink)
+                // 档位最多四个短选项，和输入框里的档位网格是同一组值：
+                // 在这里就地平铺，不必为改一个默认档位再推一整页。
+                SettingsChoiceRow(
+                    title: L10n.text("ui.reasoning_effort"),
+                    systemImage: "gauge.with.dots.needle.33percent",
+                    options: availableEfforts,
+                    selection: reasoningEffortChoiceBinding
+                )
                 .settingsRow()
                 .accessibilityIdentifier("settings.defaultModels.reasoning.\(runtime.rawValue)")
             }
@@ -1434,6 +1433,19 @@ private struct DefaultModelRuntimeSection: View {
         )
     }
 
+    /// 胶囊选中的是档位本身；沿用下面那份字符串 Binding 的归一化，
+    /// 不在展示层另存一套「当前档位」。
+    private var reasoningEffortChoiceBinding: Binding<CodexAppServerReasoningEffort> {
+        Binding(
+            get: {
+                CodexAppServerReasoningEffort(rawValue: reasoningEffortSelectionBinding.wrappedValue)
+                    ?? availableEfforts.first
+                    ?? .medium
+            },
+            set: { reasoningEffortSelectionBinding.wrappedValue = $0.rawValue }
+        )
+    }
+
     private var reasoningEffortSelectionBinding: Binding<String> {
         Binding(
             get: {
@@ -1467,6 +1479,23 @@ private extension DefaultModelRuntime {
     }
 }
 
+/// 「连接方式」只有两个答案：用已保存的直连线路，还是走自建 Tailcat。
+enum ConnectionMethodChoice: String, CaseIterable, Identifiable, SettingsChoiceOption {
+    case saved
+    case tailcat
+
+    var id: String { rawValue }
+
+    var choiceTitle: String {
+        switch self {
+        case .saved:
+            return L10n.text("ui.connection_speed_test_route_tailscale")
+        case .tailcat:
+            return L10n.text("ui.custom_tailcat")
+        }
+    }
+}
+
 struct TailcatExperimentSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appStore: AppStore
@@ -1482,13 +1511,15 @@ struct TailcatExperimentSettingsView: View {
 
         Form {
             Section {
-                Toggle(isOn: enabledBinding) {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.enable_custom_tailcat"),
-                        systemImage: "point.3.connected.trianglepath.dotted"
-                    )
-                }
-                // 曾用实验版开启过时，即使当前构建没有框架，也必须允许用户关闭该偏好。
+                // 过去这里是一个「使用自建 Tailcat」开关：关掉之后走的是哪条线路，
+                // 开关本身答不上来。两条线路并排摆出来，当前用的是哪条一眼可见。
+                SettingsChoiceRow(
+                    title: L10n.text("ui.connection_method"),
+                    systemImage: "point.3.connected.trianglepath.dotted",
+                    options: ConnectionMethodChoice.allCases,
+                    selection: methodBinding
+                )
+                // 曾用实验版开启过时，即使当前构建没有框架，也必须允许用户切回直连。
                 .disabled(!controller.isAvailable && !controller.isEnabled)
                 .settingsRow()
                 .accessibilityIdentifier("settings.experimentalFeatures.tailcatToggle")
@@ -1556,6 +1587,13 @@ struct TailcatExperimentSettingsView: View {
         .navigationTitle(L10n.text("ui.connection_method"))
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.experimentalFeatures.detail")
+    }
+
+    private var methodBinding: Binding<ConnectionMethodChoice> {
+        Binding(
+            get: { controller.isEnabled ? .tailcat : .saved },
+            set: { enabledBinding.wrappedValue = $0 == .tailcat }
+        )
     }
 
     private var enabledBinding: Binding<Bool> {

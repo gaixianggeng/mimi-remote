@@ -36,9 +36,46 @@ extension ComposerPermissionMode: SettingsChoiceOption {
     var choiceSystemImage: String? { systemImage }
 }
 
+extension ThemeMode: SettingsChoiceOption {
+    var choiceTitle: String { title }
+    /// 三种外观各自说明自己是什么；选中哪一个，行里就读得到它的含义。
+    var choiceSubtitle: String? { subtitle }
+}
+
+extension ThemeUIFontPreset: SettingsChoiceOption {
+    var choiceTitle: String { title }
+}
+
+extension ThemeCodeFontPreset: SettingsChoiceOption {
+    var choiceTitle: String { title }
+}
+
+extension HostInstallationPlatform: SettingsChoiceOption {
+    var choiceTitle: String { title }
+}
+
+extension WorkspaceSessionRuntimeChoice: SettingsChoiceOption {
+    /// 沿用「优先使用」原来菜单里的两个名字，不改用工作区新建会话那套长标题。
+    var choiceTitle: String {
+        L10n.text(self == .claude ? "ui.runtime_optional" : "ui.runtime_default")
+    }
+}
+
+extension CodexAppServerReasoningEffort: SettingsChoiceOption {
+    /// 档位名称与输入框里的模型档位网格保持同一套写法，不在设置页另起一份翻译。
+    var choiceTitle: String { ModelReasoningGridCatalog.effortTitle(self) }
+}
+
 enum SettingsChoiceMetrics {
     /// 胶囊的内边距。选项行要按它回退缩进，才能让选项文字和标题、说明左对齐。
     static let capsuleHorizontalPadding: CGFloat = 12
+    /// 四个以上选项时收紧一档。密度只看选项个数，不看这一行碰巧有多长：
+    /// 「推理强度」的 Codex 行最后一档是 Ultra、Claude 行是 Max，按实际宽度决定
+    /// 会让同一页上两行一个横排一个竖排，读起来像两种控件。
+    static let compactCapsuleHorizontalPadding: CGFloat = 8
+    static let capsuleSpacing: CGFloat = 6
+    static let compactCapsuleSpacing: CGFloat = 4
+    static let compactThreshold = 4
 }
 
 /// 呈现方式按内容形态选，而不是按平台写死尺寸。
@@ -83,28 +120,19 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
 
     private func inlineRow(tokens: ThemeTokens) -> some View {
         // 行数由可用宽度决定，不写死。语言这种短选项在多数宽度下一行就放得下；
-        // 语音输入带说明，通常需要第二行给胶囊。
+        // 语音输入带说明，通常需要第二行给胶囊；「Medium/High/Extra High/Ultra」这种
+        // 四个长选项在窄屏两行也摆不开，最后一档竖排，宁可高一点也不压扁文字。
         ViewThatFits(in: .horizontal) {
             if !dynamicTypeSize.isAccessibilitySize {
                 HStack(alignment: .center, spacing: 12) {
                     titleCluster(tokens: tokens)
                     Spacer(minLength: 12)
-                    optionCapsules(tokens: tokens)
+                    optionCapsules(tokens: tokens, isStacked: false)
                         .fixedSize(horizontal: true, vertical: false)
                 }
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .center, spacing: 12) {
-                    titleCluster(tokens: tokens)
-                    Spacer(minLength: 8)
-                }
-
-                // 胶囊自带内边距，直接按 optionInset 缩进会让选项文字比标题右移同样的量。
-                // 这里回退相同距离，让「文字对文字」对齐。
-                optionCapsules(tokens: tokens)
-                    .padding(.leading, optionInset - SettingsChoiceMetrics.capsuleHorizontalPadding)
-            }
+            stackedRow(tokens: tokens)
         }
         .padding(.vertical, 10)
         .frame(
@@ -143,21 +171,66 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
         }
     }
 
+    /// 标题一行、胶囊一行。
+    private func stackedRow(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                titleCluster(tokens: tokens)
+                Spacer(minLength: 8)
+            }
+
+            // 胶囊自带内边距，直接按 optionInset 缩进会让选项文字比标题右移同样的量。
+            // 这里回退相同距离，让「文字对文字」对齐。
+            capsuleStrip(tokens: tokens)
+                .padding(.leading, optionInset - capsuleHorizontalPadding)
+        }
+    }
+
+    /// 横排还是竖排只由胶囊自己的宽度决定。放在外层和标题一起量的话，
+    /// 长一点的说明文字会把胶囊也一并挤成竖排——说明本来就该换行，不该改控件形态。
+    @ViewBuilder
+    private func capsuleStrip(tokens: ThemeTokens) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            optionCapsules(tokens: tokens, isStacked: true)
+        } else {
+            ViewThatFits(in: .horizontal) {
+                optionCapsules(tokens: tokens, isStacked: false)
+                optionCapsules(tokens: tokens, isStacked: true)
+            }
+        }
+    }
+
     private var optionInset: CGFloat {
         SettingsLayoutMetrics.iconSlot + 12
     }
 
+    private var isCompactDensity: Bool {
+        options.count >= SettingsChoiceMetrics.compactThreshold
+    }
+
+    private var capsuleHorizontalPadding: CGFloat {
+        isCompactDensity
+            ? SettingsChoiceMetrics.compactCapsuleHorizontalPadding
+            : SettingsChoiceMetrics.capsuleHorizontalPadding
+    }
+
+    private var capsuleSpacing: CGFloat {
+        isCompactDensity
+            ? SettingsChoiceMetrics.compactCapsuleSpacing
+            : SettingsChoiceMetrics.capsuleSpacing
+    }
+
     @ViewBuilder
-    private func optionCapsules(tokens: ThemeTokens) -> some View {
-        // 大字号下一行摆不开就竖排，胶囊各自占满宽度；不横向滚动、不裁切。
-        if dynamicTypeSize.isAccessibilitySize {
-            VStack(alignment: .leading, spacing: 6) {
+    private func optionCapsules(tokens: ThemeTokens, isStacked: Bool) -> some View {
+        // 摆不开就竖排，胶囊各自占满宽度；不横向滚动、不裁切。
+        if isStacked || dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: capsuleSpacing) {
                 ForEach(options) { option in
                     capsule(for: option, tokens: tokens, fillsWidth: true)
                 }
             }
         } else {
-            HStack(spacing: 6) {
+            HStack(spacing: capsuleSpacing) {
                 ForEach(options) { option in
                     capsule(for: option, tokens: tokens, fillsWidth: false)
                 }
@@ -181,7 +254,7 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
                 .settingsDetailFont(weight: isSelected ? .semibold : .regular)
                 .fixedSize(horizontal: false, vertical: true)
                 .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
-                .padding(.horizontal, SettingsChoiceMetrics.capsuleHorizontalPadding)
+                .padding(.horizontal, capsuleHorizontalPadding)
                 .frame(maxWidth: fillsWidth ? .infinity : nil, alignment: .leading)
                 .padding(.vertical, 6)
                 .frame(minHeight: 32)
