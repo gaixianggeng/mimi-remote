@@ -46,6 +46,12 @@ extension SessionStore {
                 },
                 changed: { [weak self] in
                     self?.objectWillChange.send()
+                },
+                rejected: { [weak self] sessionID, _, message in
+                    // 走既有错误提示通道：用户需要知道这次应答为什么没生效。
+                    self?.setErrorMessage(message)
+                    self?.objectWillChange.send()
+                    _ = sessionID
                 }
             )
             client.startHostEvents()

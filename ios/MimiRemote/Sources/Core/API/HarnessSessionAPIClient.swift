@@ -108,10 +108,14 @@ protocol HarnessSessionClient: AnyObject {
     // 移动连接只绑定一个 `$events` 生命周期，且退订它会关闭整条共享连接。
 
     /// 接上宿主级交互事件的出口。装配方在宿主激活时调用一次。
+    ///
+    /// `rejected` 单独回传而不是只触发重绘：卡片被放回可应答是一件事，
+    /// **告诉用户为什么**是另一件事。只重绘会让卡片恢复原状却没有任何解释。
     @MainActor
     func setHostInteractionSinks(
         events: (@MainActor (AgentEvent) -> Void)?,
-        changed: (@MainActor () -> Void)?
+        changed: (@MainActor () -> Void)?,
+        rejected: (@MainActor (_ sessionID: String, _ eventID: String, _ message: String) -> Void)?
     )
 
     /// 开始宿主级 `$events` 观察。幂等。
@@ -195,6 +199,8 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     private var hostEventSink: (@MainActor (AgentEvent) -> Void)?
     /// 宿主级 pending 集合变化时的通知出口。
     private var hostChangeSink: (@MainActor () -> Void)?
+    /// 一次宿主级应答被明确拒绝时的出口（会话、交互、原因）。
+    private var hostRejectionSink: (@MainActor (_ sessionID: String, _ eventID: String, _ message: String) -> Void)?
     /// 每个会话**当前这一代** follow 的 `snapshot.cursor`。
     ///
     /// `session/page` 的 `throughSeq` 必须取自**本次** follow 的 opening snapshot
@@ -284,19 +290,23 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     @MainActor
     func setHostInteractionSinks(
         events: (@MainActor (AgentEvent) -> Void)?,
-        changed: (@MainActor () -> Void)?
+        changed: (@MainActor () -> Void)?,
+        rejected: (@MainActor (_ sessionID: String, _ eventID: String, _ message: String) -> Void)?
     ) {
         hostEventSink = events
         hostChangeSink = changed
+        hostRejectionSink = rejected
         let observer = hostEventObserver()
         observer.onEvent = { [weak self] event in
             self?.hostEventSink?(event)
             self?.hostChangeSink?()
         }
         observer.onStatus = { _ in }
-        observer.onInteractionRejected = { [weak self] _, _, _ in
-            // 拒绝后卡片回到待应答：通知 UI 刷新，让用户能再操作一次。
+        observer.onInteractionRejected = { [weak self] sessionID, eventID, message in
+            // 先刷新（卡片已回到可应答），再把原因交给既有失败处理入口——
+            // 只刷新会让用户看到一个恢复原状但没有解释的卡片。
             self?.hostChangeSink?()
+            self?.hostRejectionSink?(sessionID, eventID, message)
         }
     }
 
