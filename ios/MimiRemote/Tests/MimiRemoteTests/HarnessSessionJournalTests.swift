@@ -568,3 +568,112 @@ final class HarnessSessionJournalTests: XCTestCase {
         }
     }
 }
+
+// MARK: - #499 历史分页（session/page）
+
+/// 原生历史读取的入口契约：throughSeq 来源、游标口径、投影身份。
+@MainActor
+final class HarnessHistoryPageTests: XCTestCase {
+
+    private let sessionID = "h00-session-0001"
+
+    /// 读冻结契约里的夹具字节。与解码器共用同一份来源，避免"测试自己造的形状"。
+    func harnessFixtureJSON(_ name: String) throws -> [String: Any] {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 { root.deleteLastPathComponent() }
+        let url = root
+            .appendingPathComponent("contracts/harness-native/fixtures")
+            .appendingPathComponent(name)
+        let data = try Data(contentsOf: url)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    /// 夹具里的 `session/page` 结果必须能解出记录。
+    ///
+    /// 用的是冻结契约的同一份字节：解码器与上游形状漂移会让历史静默变空。
+    func testFixtureSessionPageDecodes() throws {
+        let fixture = try harnessFixtureJSON("rpc/session-page.json")
+        let observations = try XCTUnwrap(fixture["observations"] as? [[String: Any]])
+        let result = try XCTUnwrap(
+            observations.first { ($0["label"] as? String) == "result" }?["value"]
+        )
+        let data = try JSONSerialization.data(withJSONObject: result)
+        let value = try JSONDecoder().decode(HarnessJSONValue.self, from: data)
+
+        let page = try HarnessHistoryPageDecoding.page(from: value)
+
+        XCTAssertFalse(page.records.isEmpty, "夹具里有真实回合记录")
+        XCTAssertFalse(page.hasMore)
+        XCTAssertEqual(page.records.first?.seq, 0, "seq 是持久日志主键，从 0 起")
+    }
+
+    /// 缺 `hasMore` / `records` 必须显式失败，不能当成空页。
+    func testMalformedPageFailsInsteadOfLookingEmpty() {
+        XCTAssertThrowsError(try HarnessHistoryPageDecoding.page(from: .object(["records": .array([])])))
+        XCTAssertThrowsError(try HarnessHistoryPageDecoding.page(from: .object(["hasMore": .bool(true)])))
+    }
+
+    /// 游标与 seq 的桥接是双向一致的，且拒绝外来游标。
+    ///
+    /// Store 说的是不透明字符串游标，原生说的是整数 seq。混用会让分页读到错误的
+    /// 区间——而且不会报错，只会静默给出错的页。
+    func testCursorRoundTripsAndRejectsForeignCursors() throws {
+        let cursor = HarnessHistoryPageDecoding.cursor(before: 42)
+        XCTAssertEqual(try HarnessHistoryPageDecoding.seq(fromCursor: cursor), 42)
+        XCTAssertNil(try HarnessHistoryPageDecoding.seq(fromCursor: nil))
+        XCTAssertNil(try HarnessHistoryPageDecoding.seq(fromCursor: "   "))
+
+        // 别的 runtime 的游标不得被当成同一个空间。
+        XCTAssertThrowsError(try HarnessHistoryPageDecoding.seq(fromCursor: "codex-cursor-1"))
+        XCTAssertThrowsError(try HarnessHistoryPageDecoding.seq(fromCursor: "hseq:not-a-number"))
+    }
+
+    /// 投影只保留可展示记录，且身份以原生 seq 为准。
+    ///
+    /// seq 是持久日志主键：历史页与直播算出同一个 id，才不会出现第二个气泡。
+    func testProjectionKeepsDisplayableRecordsAndUsesSeqIdentity() {
+        let records = [
+            durable(type: "permission/preset", seq: 0, data: ["preset": .string("workspace-write")]),
+            durable(type: HarnessWireEventType.userMessage, seq: 1, data: [
+                "content": .array([.object(["type": .string("text"), "text": .string("你好")])]),
+                "source": .object(["kind": .string("user"), "rpcId": .string("req-1")]),
+            ]),
+            durable(type: HarnessWireEventType.assistantMessage, seq: 2, data: [
+                "message": .object(["content": .array([
+                    .object(["type": .string("text"), "text": .string("回复")]),
+                ])]),
+            ]),
+            durable(type: "step/start", seq: 3, data: ["turn": .number(1)]),
+        ]
+
+        let messages = HarnessHistoryProjection.messages(from: records, sessionID: sessionID)
+
+        XCTAssertEqual(messages.map(\.content), ["你好", "回复"], "只投影可展示记录")
+        XCTAssertEqual(messages.map(\.id), ["h-seq-1-user", "h-seq-2-assistant"])
+        XCTAssertEqual(messages.first?.clientMessageID, "req-1")
+    }
+
+    /// 注入上下文（source.kind != user）不得伪装成用户发言。
+    func testInjectedContextIsNotProjectedAsUserMessage() {
+        let records = [
+            durable(type: HarnessWireEventType.userMessage, seq: 5, data: [
+                "content": .array([.object([
+                    "type": .string("text"), "text": .string("skill catalog"),
+                ])]),
+                "source": .object(["kind": .string("plugin")]),
+            ]),
+        ]
+
+        let messages = HarnessHistoryProjection.messages(from: records, sessionID: sessionID)
+
+        XCTAssertTrue(messages.isEmpty, "注入上下文不是用户说的话")
+    }
+
+    private func durable(
+        type: String,
+        seq: Int,
+        data: [String: HarnessJSONValue]
+    ) -> HarnessDurableEvent {
+        HarnessDurableEvent(type: type, seq: seq, time: 1_789_755_158_627, data: .object(data))
+    }
+}

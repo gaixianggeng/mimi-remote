@@ -45,6 +45,32 @@ protocol HarnessSessionClient: AnyObject {
 
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse
 
+    // MARK: - 历史分页
+    //
+    // `session/page` 需要**本次 follow** 的 `snapshot.cursor` 作为 `throughSeq`：
+    // 传 0 只读到 seq 0，传一个过大的值返回空 records（契约 §5.5 实测）。
+    // 因此这组方法的调用前提是该会话的 follow 已经建立过基线。
+
+    /// 读取一页历史。`before` 是更早位置的游标；nil 表示从最新往回读。
+    @MainActor
+    func messagesPage(
+        sessionID: String,
+        before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode
+    ) async throws -> HistoryMessagesPage
+
+    /// 单轮补页。原生路径暂无按轮次聚合的读取入口。
+    @MainActor
+    func historyTurnItemsPage(
+        sessionID: String,
+        continuation: HistoryTurnItemsContinuation
+    ) async throws -> HistoryTurnItemsPage
+
+    /// 最新一轮的历史。原生路径暂不单独提供。
+    @MainActor
+    func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage?
+
     func modelOptions() async throws -> [CodexAppServerModelOption]
 
     // MARK: - H07 写路径
@@ -167,6 +193,12 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     private var hostEventSink: (@MainActor (AgentEvent) -> Void)?
     /// 宿主级 pending 集合变化时的通知出口。
     private var hostChangeSink: (@MainActor () -> Void)?
+    /// 每个会话最近一次 follow 的 `snapshot.cursor`。
+    ///
+    /// `session/page` 的 `throughSeq` 必须取自**本次** follow 的 opening snapshot
+    /// （契约 §5.5 实测：传 0 只读到 seq 0，传过大的值返回空 records）。
+    /// 因此页面建立基线时在这里登记，历史读取时取用；没有登记就是"还没有合法游标"。
+    private var snapshotCursorBySessionID: [SessionID: Int] = [:]
 
     /// 普通输入的提交模式。实测取值域只有 queue|steer，普通发送用 queue。
     static let defaultPromptMode = "queue"
@@ -214,7 +246,21 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
             submission: submissionController(),
             runtime: runtime,
             interactionStore: interactionStore(),
-            recovery: HarnessRecoveryCoordinator()
+            recovery: HarnessRecoveryCoordinator(),
+            // 发送前先应用本次模型/档位：只在创建会话时选择覆盖不到后续每一次发送。
+            selectModel: { [weak self] sessionID, provider, model, effort in
+                guard let self else { throw HarnessTransportError.notConnected }
+                try await self.selectModel(
+                    sessionID: sessionID,
+                    provider: provider,
+                    model: model,
+                    reasoningEffort: effort
+                )
+            },
+            // 基线建立后回报 snapshot 游标：历史分页的 throughSeq 只能用本次的值。
+            reportSnapshotCursor: { [weak self] sessionID, cursor in
+                self?.rememberSnapshotCursor(cursor, for: sessionID)
+            }
         )
     }
 
@@ -373,10 +419,94 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         )
     }
 
-    /// 历史读取属于后续任务（`session/page` 需要本次 follow 的 snapshot.cursor，
-    /// 现在没有合法的 throughSeq 可传）。显式失败，不用空会话冒充。
+    /// 会话快照读取（重连前刷新、重命名等入口使用）。
+    ///
+    /// 原生路径没有等价的"读一份会话快照"入口：会话元数据由目录（`session/list`）
+    /// 提供，消息由 follow 与 `session/page` 提供。这里显式拒绝，不用半成品冒充成功——
+    /// 历史分页本身已经接通（见 `messagesPage`），本条不是它的前置。
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
-        throw HarnessNativeUnavailableError.notImplemented(operation: "session/page")
+        throw HarnessNativeUnavailableError.unsupported(operation: "session(snapshot)")
+    }
+
+    /// 读取一页历史。
+    @MainActor
+    func messagesPage(
+        sessionID: String,
+        before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode
+    ) async throws -> HistoryMessagesPage {
+        let throughSeq = try await snapshotCursor(for: sessionID)
+        let beforeSeq = try HarnessHistoryPageDecoding.seq(fromCursor: before)
+
+        var request: [String: HarnessJSONValue] = [
+            "address": .object([
+                "kind": .string("session"),
+                "sessionId": .string(sessionID),
+            ]),
+            // 必填。中继按描述符逐字校验，缺键直接 400。
+            "throughSeq": .number(Double(throughSeq)),
+        ]
+        if let beforeSeq {
+            request["beforeSeq"] = .number(Double(beforeSeq))
+        }
+        if let limit {
+            request["maxMessages"] = .number(Double(limit))
+        }
+
+        let value = try await runtime.call(
+            method: HarnessWireMethod.sessionPage,
+            args: .object(["request": .object(request)]),
+            cwd: nil
+        )
+        let page = try HarnessHistoryPageDecoding.page(from: value)
+        let messages = HarnessHistoryProjection.messages(from: page.records, sessionID: sessionID)
+        // 下一页位置由**已取回记录的最小 seq** 推出，不是编造游标：
+        // 上游结果只有 {records, hasMore}，没有 nextBeforeSeq。
+        // 没有任何记录时无法推进，此时不给游标（调用方据此停止）。
+        let nextCursor = page.records.compactMap(\.seq).min().map(HarnessHistoryPageDecoding.cursor(before:))
+        return HistoryMessagesPage(
+            messages: messages,
+            previousCursor: page.hasMore ? nextCursor : nil,
+            hasMoreBefore: page.hasMore && nextCursor != nil,
+            // 原生路径不做"缩略/完整"两种装载策略：每页就是上游给的那么多条。
+            loadMode: loadMode,
+            notice: nil
+        )
+    }
+
+    /// 单轮补页：原生路径没有按轮次聚合的读取入口。
+    @MainActor
+    func historyTurnItemsPage(
+        sessionID: String,
+        continuation: HistoryTurnItemsContinuation
+    ) async throws -> HistoryTurnItemsPage {
+        throw HarnessNativeUnavailableError.unsupported(operation: "historyTurnItemsPage")
+    }
+
+    /// 最新一轮历史：原生路径不单独提供，调用方走整页读取。
+    @MainActor
+    func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage? {
+        nil
+    }
+
+    /// 取该会话本次 follow 的 `snapshot.cursor`。
+    private func snapshotCursor(for sessionID: String) async throws -> Int {
+        guard let cursor = snapshotCursorBySessionID[sessionID] else {
+            // 没有基线就没有合法的 throughSeq。猜一个会产生静默错误的页，
+            // 比显式失败危险得多（契约 §5.5 明确禁止）。
+            throw HarnessTransportError.notConnected
+        }
+        return cursor
+    }
+
+    /// 登记某会话本次 follow 的 opening snapshot 游标。
+    ///
+    /// 由页面客户端在建立基线后回调。只保留最新的：`throughSeq` 属于**这一代**
+    /// snapshot，用上一代的游标会读到错误的区间。
+    @MainActor
+    func rememberSnapshotCursor(_ cursor: Int, for sessionID: SessionID) {
+        snapshotCursorBySessionID[sessionID] = cursor
     }
 
     // MARK: - H07 写路径

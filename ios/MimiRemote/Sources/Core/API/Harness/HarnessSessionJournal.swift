@@ -402,6 +402,20 @@ struct HarnessJournalAttempt: Equatable {
         guard isSettled else { return false }
         return outcome?.eventType == HarnessWireSettlement.assistantMessage
     }
+
+    /// 某个块索引上已知的工具名。
+    ///
+    /// 工具名在 `block-start` 上给出（`tool-call-delta` 只带参数增量），因此后续的
+    /// 参数帧要靠它找回名字。找不到时返回 nil——不猜，也不拿参数内容充当名字。
+    func toolName(atBlockIndex index: Int) -> String? {
+        for frame in chunks where frame.chunk?.index == index {
+            if let name = frame.chunk?.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !name.isEmpty {
+                return name
+            }
+        }
+        return nil
+    }
 }
 
 // MARK: - 拒绝原因

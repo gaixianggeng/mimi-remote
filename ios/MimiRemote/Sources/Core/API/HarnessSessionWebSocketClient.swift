@@ -36,6 +36,13 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     private let interactionStore: HarnessInteractionStore?
     /// 只做恢复决策，不拥有传输或第二条 reader。
     private let recovery: HarnessRecoveryCoordinator?
+    /// 发送前应用模型/档位选择。生产走原生 `session/selectModel`。
+    private let selectModel: (@MainActor (String, String, String, String?) async throws -> Void)?
+    /// 建立基线后把本次 follow 的 `snapshot.cursor` 交给宿主。
+    ///
+    /// `session/page` 的 `throughSeq` 只能取自**本次** follow 的 opening snapshot，
+    /// 因此这个值必须由建立基线的一侧上报，历史读取侧不能自己猜。
+    private let reportSnapshotCursor: (@MainActor (SessionID, Int) -> Void)?
 
     var turnDeliveryMode: TurnDeliveryMode { .direct }
     var onEvent: (@MainActor (AgentEvent) -> Void)?
@@ -72,7 +79,9 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         fetchSnapshot: (@MainActor (String) async throws -> HarnessSnapshot)? = nil,
         runtime: HarnessSessionRuntime? = nil,
         interactionStore: HarnessInteractionStore? = nil,
-        recovery: HarnessRecoveryCoordinator? = nil
+        recovery: HarnessRecoveryCoordinator? = nil,
+        selectModel: (@MainActor (String, String, String, String?) async throws -> Void)? = nil,
+        reportSnapshotCursor: (@MainActor (SessionID, Int) -> Void)? = nil
     ) {
         self.endpoint = endpoint
         self.token = token
@@ -82,6 +91,8 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         self.runtime = runtime
         self.interactionStore = interactionStore
         self.recovery = recovery
+        self.selectModel = selectModel
+        self.reportSnapshotCursor = reportSnapshotCursor
     }
 
     // MARK: - 连接
@@ -145,6 +156,11 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         var fresh = HarnessSessionJournal(generation: generation)
         _ = fresh.apply(snapshot: snapshot, acceptingGeneration: generation)
         journal = fresh
+
+        // 把本次 follow 的 snapshot 游标交给宿主：`session/page` 的 throughSeq 只能是它。
+        if let cursor = fresh.snapshotCursor {
+            reportSnapshotCursor?(sessionID, cursor)
+        }
 
         // snapshot 里已有的持久记录立刻投影：这是"中途打开"能看到历史的来源。
         for record in snapshot.records ?? [] {
@@ -440,6 +456,17 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     }
 
     private func publish(durableEvent event: HarnessDurableEvent) {
+        // durable 用户回显是对账的**权威事实**：`source.rpcId` 就是提交时的 requestId。
+        // 提交响应丢失（`.responseUnknown`）时，这条回显证明那次提交其实已经落到上游，
+        // 必须据此解锁——否则该会话会被永久冻结，用户看到自己的消息和回复都在，
+        // 下一条却仍提示"上一次提交尚未确认"，而且被误报成"没执行、可重试"。
+        //
+        // 顺序无关：回显先到、HTTP 之后才失败时，`resolveAfterReconciliation` 只在
+        // 仍处 `.responseUnknown` 时改写状态，已经确认过的不会被降回去。
+        if event.type == HarnessWireEventType.userMessage,
+           let requestID = event.data?["source"]?["rpcId"]?.stringValue?.trimmedNonEmpty {
+            submission.resolveAfterReconciliation(requestID: requestID)
+        }
         let messageID = event.seq.flatMap { settledAssistantMessageIDBySeq[$0] }
         for projected in HarnessPresentationProjector.project(
             durableEvent: event,
@@ -467,15 +494,63 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
             )))
         } else if frame.type == HarnessWireAssistantFrame.chunk,
                   current.activeAttempt?.chunks.count ?? 0 > previousChunkCount,
-                  frame.chunk?.type == HarnessWireChunkType.textDelta,
-                  let text = frame.chunk?.text,
                   let attempt = current.activeAttempt,
-                  let event = HarnessPresentationProjector.liveTextEvent(
-                      text: text,
-                      attempt: attempt,
-                      sessionID: sessionID
-                  ) {
-            onEvent?(event)
+                  let chunk = frame.chunk {
+            // 正文、推理、工具三类增量各有自己的展示通道。**只发正文**会让模型
+            // 思考或跑工具时界面看起来像停住了——那正是"处理中没有进度"的来源。
+            switch chunk.type {
+            case HarnessWireChunkType.textDelta:
+                if let text = chunk.text,
+                   let event = HarnessPresentationProjector.liveTextEvent(
+                       text: text, attempt: attempt, sessionID: sessionID
+                   ) {
+                    onEvent?(event)
+                }
+            case HarnessWireChunkType.reasoningDelta:
+                if let text = chunk.text, !text.isEmpty,
+                   let event = HarnessPresentationProjector.liveReasoningEvent(
+                       text: text, attempt: attempt, sessionID: sessionID
+                   ) {
+                    onEvent?(event)
+                }
+            case HarnessWireChunkType.blockStart where chunk.blockType == "tool-call":
+                // 工具开始：状态是"运行中"。参数还没生成完，但用户已经该看到它了。
+                if let event = HarnessPresentationProjector.toolActivityEvent(
+                    HarnessToolActivity(
+                        blockIndex: chunk.index ?? -1,
+                        toolName: chunk.name,
+                        argumentsJSON: "",
+                        isComplete: false
+                    ),
+                    attempt: attempt,
+                    sessionID: sessionID,
+                    isFinished: false
+                ) {
+                    onEvent?(event)
+                }
+            case HarnessWireChunkType.toolCallDelta:
+                // 参数增量：拼接后才是完整 JSON（契约 §2.7）。这里只用来保持
+                // "还在动"的进度感，不解析参数、也不拿它拼标题。
+                if let event = HarnessPresentationProjector.toolActivityEvent(
+                    HarnessToolActivity(
+                        blockIndex: chunk.index ?? -1,
+                        toolName: attempt.toolName(atBlockIndex: chunk.index ?? -1),
+                        argumentsJSON: "",
+                        isComplete: false
+                    ),
+                    attempt: attempt,
+                    sessionID: sessionID,
+                    isFinished: false
+                ) {
+                    onEvent?(event)
+                }
+            case HarnessWireChunkType.blockEnd:
+                // 参数生成结束 ≠ 工具执行结束。这里不标完成；真正的完成由
+                // durable `tool/result` 决定，否则用户会看到一个"已完成"却仍在跑的工具。
+                break
+            default:
+                break
+            }
         } else if frame.type == HarnessWireAssistantFrame.end,
                   let attempt = current.activeAttempt,
                   attempt.producedAssistantMessage,
@@ -537,16 +612,79 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         return true
     }
 
+    /// 发送前先落地本次的模型与推理档位选择。
+    ///
+    /// 只取文本就发是有问题的：用户在已存在的会话里换了模型，界面看起来接受了，
+    /// 实际请求仍用服务端上一次的配置。`selectModel` 只在创建/恢复会话时调用过，
+    /// 覆盖不到后续每一次发送。
+    ///
+    /// 选择失败**不发 prompt**：把模型选择失败当成"用默认模型继续"会让用户以为
+    /// 换的模型生效了。
+    private func applyTurnOptions(
+        _ options: CodexAppServerTurnOptions,
+        clientMessageID: ClientMessageID?
+    ) async -> Bool {
+        guard let model = options.model?.trimmedNonEmpty,
+              let provider = options.modelProvider?.trimmedNonEmpty else {
+            // 没有显式选择就沿用服务端当前配置；这不是失败。
+            return true
+        }
+        guard let selectModel else {
+            onSendFailure?(clientMessageID, L10n.text("harness.model_selection_unsupported"))
+            return false
+        }
+        do {
+            try await selectModel(sessionID, provider, model, options.reasoningEffort?.rawValue)
+            return true
+        } catch {
+            onSendFailure?(
+                clientMessageID,
+                L10n.format("harness.model_selection_failed", Self.describe(error))
+            )
+            return false
+        }
+    }
+
+    /// 原生路径的发送入口。
+    ///
+    /// 两件事必须在这里做完，缺一个就会静默改变用户意图：
+    ///
+    /// 1. **非文本输入显式拒绝。** `previewText` 对图片/文件给出的是**本地化占位文案**
+    ///    （如「[图片]」），把它当 prompt 发出去等于伪造了一条用户消息，附件却被丢掉。
+    /// 2. **先应用本次模型与档位选择**，选择失败就不发 prompt。
     @discardableResult
     func sendTurn(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) -> Bool {
-        // 原生路径上 turn 载荷等价于其中的文本。Harness 首版只接受文本，
-        // 其余输入显式拒绝而不是静默丢弃。
-        let text = payload.previewText
+        let unsupported = payload.input.filter {
+            if case .text = $0 { return false }
+            return true
+        }
+        guard unsupported.isEmpty else {
+            // 认不出的输入不猜、不降级成占位文本。附件在原生路径上尚未实现。
+            onSendFailure?(clientMessageID, L10n.text("harness.text_input_only"))
+            return false
+        }
+        let text = payload.textPrompt
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             onSendFailure?(clientMessageID, L10n.text("harness.text_input_only"))
             return false
         }
-        return sendInput(text, clientMessageID: clientMessageID)
+        guard let journal, journal.hasOpenedSnapshot else {
+            onSendFailure?(clientMessageID, L10n.text("harness.session_baseline_not_ready"))
+            return false
+        }
+
+        let requestID = clientMessageID ?? Self.makeRequestID()
+        let options = payload.options
+        Task { [weak self] in
+            guard let self else { return }
+            // 选择失败不带 prompt 下发：那会让用户以为换的模型生效了。
+            guard await self.applyTurnOptions(options, clientMessageID: clientMessageID) else { return }
+            let submission = await self.submission.submit(
+                sessionID: self.sessionID, text: text, requestID: requestID
+            )
+            self.publish(submission: submission, clientMessageID: clientMessageID ?? requestID)
+        }
+        return true
     }
 
     /// Harness 不支持 guidance：必须显式拒绝，**不得**当成普通 prompt 发出去。
@@ -789,6 +927,14 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         submission: HarnessSubmissionController.Submission,
         clientMessageID: ClientMessageID?
     ) {
+        // 没发出去的提交不能被报成"上游拒绝了它"。用户的下一步是**对账**，
+        // 而不是重试一条他还没发过的消息。
+        if submission.blockReason == .previousSubmissionUnconfirmed {
+            let message = L10n.text("harness.previous_submission_unconfirmed")
+            onSendFailure?(clientMessageID, message)
+            onTurnSendOutcome?(clientMessageID, .uncertain(message: message))
+            return
+        }
         switch submission.state {
         case .accepted:
             onSendAccepted?(clientMessageID)

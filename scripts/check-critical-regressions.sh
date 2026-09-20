@@ -57,6 +57,8 @@ harness_native_test_groups=(
   "HarnessEventClientTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessEventClientTests.swift"
   "HarnessInteractionStoreTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessInteractionStoreTests.swift"
   "HarnessRecoveryCoordinatorTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessRecoveryCoordinatorTests.swift"
+  "HarnessHostEventObserverTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessHostEventObserverTests.swift"
+  "HarnessHistoryPageTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessSessionJournalTests.swift"
 )
 for test_entry in "${harness_native_test_groups[@]}"; do
   test_group="${test_entry%%|*}"
@@ -211,4 +213,4 @@ grep -Fq '"scripts/check-critical-regressions.sh"' .github/workflows/go-ci.yml \
 grep -Fq '"scripts/check-critical-regressions.sh"' .github/workflows/ios-ci.yml \
   || fail "iOS CI 的 push 路径缺少关键链路 checker。"
 
-echo "关键链路回归映射检查通过：12 类风险、4 个 Go 包、3 组托管订阅测试、10 组原生 Harness 测试和 ${#critical_swift_tests[@]} 个高价值 iOS 测试均已接入。"
+echo "关键链路回归映射检查通过：12 类风险、4 个 Go 包、3 组托管订阅测试、${#harness_native_test_groups[@]} 组原生 Harness 测试和 ${#critical_swift_tests[@]} 个高价值 iOS 测试均已接入。"

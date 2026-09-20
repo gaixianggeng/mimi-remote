@@ -54,7 +54,8 @@ final class HarnessEventClientTests: XCTestCase {
     /// 造一个已 connection 的客户端（注入 snapshot）。
     private func makeConnectedClient(
         sender: RecordingPromptSink,
-        openingSnapshot: HarnessSnapshot? = nil
+        openingSnapshot: HarnessSnapshot? = nil,
+        selectModel: (@MainActor (String, String, String, String?) async throws -> Void)? = nil
     ) async throws -> (HarnessSessionWebSocketClient, EventRecorder) {
         let snapshot = try openingSnapshot ?? self.snapshot()
         let submission = HarnessSubmissionController(
@@ -68,7 +69,8 @@ final class HarnessEventClientTests: XCTestCase {
             token: "fixture",
             sessionID: sessionID,
             submission: submission,
-            fetchSnapshot: { _ in snapshot }
+            fetchSnapshot: { _ in snapshot },
+            selectModel: selectModel
         )
         let recorder = EventRecorder()
         client.onEvent = { recorder.events.append($0) }
@@ -618,6 +620,15 @@ final class HarnessEventClientTests: XCTestCase {
         let client = try XCTUnwrap(
             api.makeEventClient(sessionID: sessionID) as? HarnessSessionWebSocketClient
         )
+        // 交互走**宿主级** `$events`，会话页面只观察自己的 follow。
+        // 这正是"不打开该会话也能收到审批"的真实链路形状。
+        var hostEvents: [AgentEvent] = []
+        api.setHostInteractionSinks(
+            events: { hostEvents.append($0) },
+            changed: {}
+        )
+        api.startHostEvents()
+
         var statuses: [WebSocketStatus] = []
         var events: [AgentEvent] = []
         var sendOutcomes: [TurnSendOutcome] = []
@@ -633,18 +644,43 @@ final class HarnessEventClientTests: XCTestCase {
             clientMessageID: "h12-request-\(UUID().uuidString.lowercased())"
         ))
         await waitForLive {
-            events.contains { if case .userInputRequest = $0 { return true }; return false }
+            hostEvents.contains { if case .userInputRequest = $0 { return true }; return false }
         }
 
-        let request = try XCTUnwrap(events.compactMap { event -> AgentUserInputRequest? in
+        let request = try XCTUnwrap(hostEvents.compactMap { event -> AgentUserInputRequest? in
             if case .userInputRequest(let request, _) = event { return request }
             return nil
         }.first)
+        // 归属必须来自瀑布自己的 agentId，且指向本次创建的会话。
+        let requestMetadata = hostEvents.compactMap { event -> AgentEventMetadata? in
+            guard case .userInputRequest(_, let metadata) = event else { return nil }
+            return metadata
+        }.first
+        XCTAssertEqual(
+            requestMetadata?.sessionID,
+            sessionID,
+            "宿主交互必须按事件自己的会话归属，不是任何页面的当前会话"
+        )
         XCTAssertEqual(request.questions.first?.options.map(\.label), ["Continue"])
         XCTAssertTrue(client.sendUserInputResponse(
             requestID: request.id,
             answers: ["confirm": ["Continue"]]
         ))
+
+        await waitForLive {
+            events.contains { if case .turnCompleted = $0 { return true }; return false }
+        }
+        // 应答被上游接受后，宿主通道必须收到可关联的撤卡回执。
+        await waitForLive {
+            hostEvents.contains {
+                if case .userInputResolved = $0 { return true }
+                return false
+            }
+        }
+        XCTAssertTrue(hostEvents.contains {
+            if case .userInputResolved = $0 { return true }
+            return false
+        }, "撤卡必须由宿主通道的关联回执驱动，而不是写出成功")
 
         await waitForLive {
             events.contains { if case .turnCompleted = $0 { return true }; return false }
@@ -768,16 +804,133 @@ final class HarnessEventClientTests: XCTestCase {
     }
 
     /// 非文本输入显式拒绝（Harness 首版只接受文本）。
+    ///
+    /// **真附件必须被拒**，不只是空白 prompt：`previewText` 对图片给出的是本地化
+    /// 占位文案（如「[图片]」），拿它当 prompt 发出去等于伪造了一条用户消息，
+    /// 而附件本身被静默丢弃。原先这条用例只测了空白 prompt，覆盖不到那个后果。
     func testNonTextTurnIsRejected() async throws {
         let sink = RecordingPromptSink()
         let (client, _) = try await makeConnectedClient(sender: sink)
         var failures: [(ClientMessageID?, String)] = []
         client.onSendFailure = { failures.append(($0, $1)) }
 
-        let accepted = client.sendTurn(CodexAppServerTurnPayload(prompt: "   "), clientMessageID: "cm-6")
+        // 1. 纯空白文本：不是有效 prompt。
+        XCTAssertFalse(client.sendTurn(CodexAppServerTurnPayload(prompt: "   "), clientMessageID: "cm-6"))
 
-        XCTAssertFalse(accepted)
-        XCTAssertTrue(sink.requestIDs.isEmpty)
+        // 2. 文本 + 图片：附件在原生路径上不支持，整条必须拒绝，
+        //    而不是把「[图片]」当成用户说的话发出去。
+        let withImage = CodexAppServerTurnPayload(
+            input: [.text("看这张图"), .image(url: "https://example.invalid/a.png")],
+            options: .default
+        )
+        XCTAssertFalse(client.sendTurn(withImage, clientMessageID: "cm-7"))
+        XCTAssertFalse(
+            failures.contains { $0.0 == "cm-7" && $0.1.isEmpty },
+            "拒绝必须有可读原因"
+        )
+
+        // 3. 只有附件、没有文本：同样拒绝。
+        let imageOnly = CodexAppServerTurnPayload(
+            input: [.image(url: "https://example.invalid/b.png")],
+            options: .default
+        )
+        XCTAssertFalse(client.sendTurn(imageOnly, clientMessageID: "cm-8"))
+
+        XCTAssertTrue(sink.texts.isEmpty, "任何被拒的输入都不得变成一次 prompt")
+    }
+
+    /// 发送前先应用本次模型与档位选择；选择失败不发 prompt。
+    ///
+    /// 只取文本就发会让"用户在已有会话里换了模型"看起来生效、实际仍用上一次配置。
+    func testTurnAppliesModelSelectionBeforePrompt() async throws {
+        let sink = RecordingPromptSink()
+        let selections = SelectionRecorder()
+        let (client, _) = try await makeConnectedClient(sender: sink, selectModel: { sessionID, provider, model, effort in
+            await selections.record(sessionID: sessionID, provider: provider, model: model, effort: effort)
+        })
+        var failures: [(ClientMessageID?, String)] = []
+        client.onSendFailure = { failures.append(($0, $1)) }
+
+        var options = CodexAppServerTurnOptions.default
+        options.model = "fixture-model"
+        options.modelProvider = "fixture-provider"
+        options.reasoningEffort = .high
+        let accepted = client.sendTurn(
+            CodexAppServerTurnPayload(prompt: "换模型后发送", options: options),
+            clientMessageID: "cm-model"
+        )
+
+        XCTAssertTrue(accepted)
+        await waitFor { sink.texts.count == 1 }
+        let recorded = await selections.entries
+        XCTAssertEqual(recorded.count, 1, "发送前必须完成一次模型选择")
+        XCTAssertEqual(recorded.first?.provider, "fixture-provider")
+        XCTAssertEqual(recorded.first?.model, "fixture-model")
+        XCTAssertEqual(recorded.first?.effort, "high")
+        XCTAssertEqual(sink.texts, ["换模型后发送"])
+        XCTAssertTrue(failures.isEmpty)
+    }
+
+    /// 模型选择失败时不得把 prompt 发出去。
+    ///
+    /// 把选择失败当成"用默认模型继续"会让用户以为换的模型生效了。
+    func testModelSelectionFailureDoesNotSendPrompt() async throws {
+        let sink = RecordingPromptSink()
+        let (client, _) = try await makeConnectedClient(sender: sink, selectModel: { _, _, _, _ in
+            throw HarnessTransportError.rejected(status: 403, message: "model not routable")
+        })
+        var failures: [(ClientMessageID?, String)] = []
+        client.onSendFailure = { failures.append(($0, $1)) }
+
+        var options = CodexAppServerTurnOptions.default
+        options.model = "unroutable"
+        options.modelProvider = "fixture-provider"
+        XCTAssertTrue(client.sendTurn(
+            CodexAppServerTurnPayload(prompt: "不该发出去", options: options),
+            clientMessageID: "cm-fail"
+        ))
+
+        await waitFor { !failures.isEmpty }
+        XCTAssertTrue(failures.contains { $0.0 == "cm-fail" }, "选择失败必须如实上报")
+        XCTAssertTrue(sink.texts.isEmpty, "选择失败时不得发送 prompt")
+    }
+
+    /// durable 用户回显解开"结果未知"，会话随后可以继续发送。
+    ///
+    /// 复现场景：提交已被上游接受，但 HTTP 响应丢了 → `.responseUnknown`。
+    /// 之后会话流正常显示用户输入与回复，控制器却仍冻结，下一条发送被挡住。
+    /// `user/message.source.rpcId` 就是提交时的 requestId，是权威的对账事实。
+    func testDurableUserEchoReconcilesUnknownSubmissionAndUnblocksNextSend() async throws {
+        let sink = RecordingPromptSink()
+        sink.failure = HarnessTransportError.timedOut
+        let (client, _) = try await makeConnectedClient(sender: sink)
+        var failures: [(ClientMessageID?, String)] = []
+        client.onSendFailure = { failures.append(($0, $1)) }
+
+        XCTAssertTrue(client.sendInput("第一次提交", clientMessageID: "cm-echo"))
+        await waitFor { !failures.isEmpty }
+        XCTAssertTrue(failures.contains { $0.0 == "cm-echo" }, "响应丢失必须如实上报")
+
+        // 上游其实已经接受：durable 回显带着同一个 rpcId 到达。
+        sink.failure = nil
+        _ = client.apply(durableEvent: HarnessDurableEvent(
+            type: HarnessWireEventType.userMessage,
+            seq: 31,
+            time: nil,
+            data: .object([
+                "content": .array([.object([
+                    "type": .string("text"), "text": .string("第一次提交"),
+                ])]),
+                "source": .object([
+                    "kind": .string("user"), "rpcId": .string("cm-echo"),
+                ]),
+            ])
+        ))
+
+        // 对账之后同一会话可以继续发送——不再被永久冻结。
+        XCTAssertTrue(client.sendInput("第二次提交", clientMessageID: "cm-after"))
+        await waitFor { sink.texts.contains("第二次提交") }
+        XCTAssertTrue(sink.texts.contains("第二次提交"), "回显对账后必须能继续发送")
     }
 
     // MARK: - 接收与去重
@@ -847,6 +1000,132 @@ final class HarnessEventClientTests: XCTestCase {
         }
         XCTAssertEqual(deltas.map(\.text), ["实时正文"], "end 到达前 UI 就必须收到正文增量")
         XCTAssertFalse(client.journal?.activeAttempt?.isSettled == true)
+    }
+
+    /// 推理增量必须进过程通道，不能只留在 journal 里。
+    ///
+    /// 只发正文会让模型思考时界面看起来像停住了——那正是"处理中没有进度"的来源。
+    /// 推理走 `processItemCompleted` + `category: .thinking`，与 Codex/Claude 同一条
+    /// 过程通道，不新建渲染路径。
+    func testReasoningChunkPublishesProcessActivityBeforeEnd() async throws {
+        let (client, recorder) = try await makeConnectedClient(sender: RecordingPromptSink())
+        XCTAssertNil(client.apply(assistantStream: HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.start, revision: 1, index: nil,
+            chunk: nil, outcome: nil, attemptId: "attempt-reason",
+            turn: 1, step: 1, startedAfterSeq: 13
+        )))
+        XCTAssertNil(client.apply(assistantStream: HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.chunk, revision: 2, index: 0,
+            chunk: HarnessAssistantChunk(
+                type: HarnessWireChunkType.reasoningDelta,
+                index: 0,
+                text: "先看看目录结构",
+                blockType: nil,
+                argumentsDelta: nil
+            ),
+            outcome: nil, attemptId: "attempt-reason",
+            turn: nil, step: nil, startedAfterSeq: nil
+        )))
+
+        let activities = recorder.events.compactMap { event -> ConversationActivityPayload? in
+            guard case .processItemCompleted(let message, _, _) = event else { return nil }
+            return message.activityPayload
+        }
+        XCTAssertEqual(activities.map(\.category), [.thinking])
+        XCTAssertTrue(activities.first?.displayTitle.isEmpty == false, "过程行必须有可读标题")
+        // 推理不得混进正文。
+        XCTAssertFalse(recorder.events.contains {
+            if case .assistantDelta = $0 { return true }
+            return false
+        }, "推理不是正文")
+    }
+
+    /// 工具参数生成结束**不等于**工具执行结束。
+    ///
+    /// 完成状态只能由 durable `tool/result` 给出。把 `block-end` 当完成会让用户看到
+    /// 一个标着"已完成"却仍在跑的工具。
+    func testToolCallProgressIsNotMarkedCompleteUntilResultArrives() async throws {
+        let (client, recorder) = try await makeConnectedClient(sender: RecordingPromptSink())
+        XCTAssertNil(client.apply(assistantStream: HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.start, revision: 1, index: nil,
+            chunk: nil, outcome: nil, attemptId: "attempt-tool",
+            turn: 1, step: 1, startedAfterSeq: 13
+        )))
+        // tool-call 块开始 + 参数增量 + 块结束：全程都还是"运行中"。
+        let frames: [(Int, HarnessAssistantChunk)] = [
+            (2, HarnessAssistantChunk(
+                type: HarnessWireChunkType.blockStart, index: 0, text: nil,
+                blockType: "tool-call", argumentsDelta: nil, name: "read_file"
+            )),
+            (3, HarnessAssistantChunk(
+                type: HarnessWireChunkType.toolCallDelta, index: 0, text: nil,
+                blockType: nil, argumentsDelta: "{\"path\":"
+            )),
+            (4, HarnessAssistantChunk(
+                type: HarnessWireChunkType.blockEnd, index: 0, text: nil,
+                blockType: "tool-call", argumentsDelta: nil
+            )),
+        ]
+        for (revision, chunk) in frames {
+            XCTAssertNil(client.apply(assistantStream: HarnessAssistantStreamFrame(
+                type: HarnessWireAssistantFrame.chunk, revision: revision, index: chunk.index,
+                chunk: chunk, outcome: nil, attemptId: "attempt-tool",
+                turn: nil, step: nil, startedAfterSeq: nil
+            )))
+        }
+
+        let statuses = recorder.events.compactMap { event -> String? in
+            guard case .processItemCompleted(let message, _, _) = event else { return nil }
+            return message.activityPayload?.status
+        }
+        XCTAssertFalse(statuses.isEmpty, "工具活动必须进过程通道")
+        XCTAssertFalse(statuses.contains("completed"), "参数生成结束不得标为已完成")
+
+        // 真正的结果到达才结算。
+        _ = client.apply(durableEvent: HarnessDurableEvent(
+            type: HarnessWireEventType.toolResult,
+            seq: 40,
+            time: nil,
+            data: .object([
+                "callId": .string("call-1"),
+                "name": .string("read_file"),
+                "step": .number(1),
+                "turn": .number(1),
+            ])
+        ))
+        let afterResult = recorder.events.compactMap { event -> String? in
+            guard case .processItemCompleted(let message, _, _) = event,
+                  message.activityPayload?.category == .toolCall else { return nil }
+            return message.activityPayload?.status
+        }
+        XCTAssertTrue(afterResult.contains("completed"), "收到 tool/result 才算完成")
+    }
+
+    /// durable `tool/call` / `tool/result` 必须被投影，而不是被 default 静默跳过。
+    func testDurableToolEventsAreProjected() async throws {
+        let (client, recorder) = try await makeConnectedClient(sender: RecordingPromptSink())
+
+        _ = client.apply(durableEvent: HarnessDurableEvent(
+            type: HarnessWireEventType.toolCall,
+            seq: 50,
+            time: nil,
+            data: .object([
+                "callId": .string("call-durable"),
+                "name": .string("run_bash"),
+                "arguments": .string("{}"),
+                "step": .number(1),
+                "turn": .number(1),
+            ])
+        ))
+
+        let activities = recorder.events.compactMap { event -> (ConversationActivityPayload?, AgentEventMetadata)? in
+            guard case .processItemCompleted(let message, _, let metadata) = event else { return nil }
+            return (message.activityPayload, metadata)
+        }
+        XCTAssertEqual(activities.count, 1, "tool/call 必须投影成过程条目")
+        XCTAssertEqual(activities.first?.0?.category, .toolCall)
+        XCTAssertEqual(activities.first?.0?.toolName, "run_bash")
+        XCTAssertEqual(activities.first?.0?.status, "running", "调用开始不是完成")
     }
 
     func testSettledLiveAndDurableAssistantUseOneMessageIdentity() async throws {
@@ -1224,17 +1503,37 @@ final class HarnessEventClientTests: XCTestCase {
 @MainActor
 private final class RecordingPromptSink {
     private(set) var requestIDs: [String] = []
+    /// 实际发出的 prompt 正文。用于断言"被拒的输入没有变成一次提交"。
+    private(set) var texts: [String] = []
     private(set) var cancelledSessions: [String] = []
     var failure: Error?
 
     func send(_ sessionID: String, _ requestID: String, _ text: String) async throws {
         requestIDs.append(requestID)
+        texts.append(text)
         if let failure { throw failure }
     }
 
     func cancel(_ sessionID: String) async throws {
         cancelledSessions.append(sessionID)
         if let failure { throw failure }
+    }
+}
+
+/// 记录 `selectModel` 调用，用于断言"发送前确实先选了模型"。
+@MainActor
+private final class SelectionRecorder {
+    struct Entry: Equatable {
+        let sessionID: String
+        let provider: String
+        let model: String
+        let effort: String?
+    }
+
+    private(set) var entries: [Entry] = []
+
+    func record(sessionID: String, provider: String, model: String, effort: String?) {
+        entries.append(Entry(sessionID: sessionID, provider: provider, model: model, effort: effort))
     }
 }
 

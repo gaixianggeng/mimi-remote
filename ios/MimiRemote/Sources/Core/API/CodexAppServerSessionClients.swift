@@ -932,7 +932,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
-        try await bundle.runtime(forSessionID: sessionID).messagesPage(sessionID: sessionID, before: before, limit: limit)
+        try await messagesPage(sessionID: sessionID, before: before, limit: limit, loadMode: .full)
     }
 
     func messagesPage(
@@ -941,7 +941,17 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         limit: Int?,
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage {
-        try await bundle.runtime(forSessionID: sessionID).messagesPage(
+        // 原生会话走 `session/page`：它的 throughSeq 只能取自本次 follow 的 snapshot，
+        // 因此不能落到 Codex actor（那会 `routedNatively` 抛错，用户完全看不到历史）。
+        if let native = bundle.nativeClient(forSessionID: sessionID) {
+            return try await native.messagesPage(
+                sessionID: sessionID,
+                before: before,
+                limit: limit,
+                loadMode: loadMode
+            )
+        }
+        return try await bundle.runtime(forSessionID: sessionID).messagesPage(
             sessionID: sessionID,
             before: before,
             limit: limit,
@@ -953,14 +963,23 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         sessionID: String,
         continuation: HistoryTurnItemsContinuation
     ) async throws -> HistoryTurnItemsPage {
-        try await bundle.runtime(forSessionID: sessionID).historyTurnItemsPage(
+        if let native = bundle.nativeClient(forSessionID: sessionID) {
+            return try await native.historyTurnItemsPage(
+                sessionID: sessionID,
+                continuation: continuation
+            )
+        }
+        return try await bundle.runtime(forSessionID: sessionID).historyTurnItemsPage(
             sessionID: sessionID,
             continuation: continuation
         )
     }
 
     func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage? {
-        try await bundle.runtime(forSessionID: sessionID).latestTurnHistoryPage(sessionID: sessionID)
+        if let native = bundle.nativeClient(forSessionID: sessionID) {
+            return try await native.latestTurnHistoryPage(sessionID: sessionID)
+        }
+        return try await bundle.runtime(forSessionID: sessionID).latestTurnHistoryPage(sessionID: sessionID)
     }
 
 }

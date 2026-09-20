@@ -43522,6 +43522,30 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "Harness 拒绝了这次应答，可以重试。" } }
       }
     },
+    "harness.thinking_title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Thinking" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "思考中" } }
+      }
+    },
+    "harness.tool_activity_title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Running tool" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "运行工具" } }
+      }
+    },
+    "harness.model_selection_failed": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Could not switch the model, so the message was not sent (%@)." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "切换模型失败，消息未发送（%@）。" } }
+      }
+    },
+    "harness.model_selection_unsupported": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This Harness path cannot change the model for an existing session yet." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原生路径暂时无法在已有会话上切换模型。" } }
+      }
+    },
     "harness.submission_result_unknown": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "The submission result is unknown. Reconcile it before retrying (%@)." } },

@@ -42,14 +42,41 @@ final class HarnessSubmissionController {
         case responseUnknown(String)
     }
 
+    /// 一次提交被拒绝放行的原因。
+    ///
+    /// 与 `SubmissionState.rejected` 刻意分开：后者是**上游对这次提交**给出的业务结论
+    /// （"没执行、改条件后可重试"），而这里是"这次提交根本没发出去"。
+    /// 混用会让一处从未发生的写入被报成"上游拒绝了它"，用户据此重试的其实是他
+    /// 还没发过的那条消息——文案与事实都对不上。
+    enum SubmissionBlockReason: Equatable {
+        /// 同一会话上一次提交结果未确认，必须先对账。
+        case previousSubmissionUnconfirmed
+    }
+
     /// 一次提交的身份。上层持有它，用于对账与关联乐观记录。
     struct Submission: Equatable, Identifiable {
         let requestID: String
         let sessionID: String
         let text: String
         var state: SubmissionState
+        /// 非 nil 表示这次提交没有被发出，连同原因一起返回。
+        var blockReason: SubmissionBlockReason?
 
         var id: String { requestID }
+
+        init(
+            requestID: String,
+            sessionID: String,
+            text: String,
+            state: SubmissionState,
+            blockReason: SubmissionBlockReason? = nil
+        ) {
+            self.requestID = requestID
+            self.sessionID = sessionID
+            self.text = text
+            self.state = state
+            self.blockReason = blockReason
+        }
     }
 
     /// 该 runtime 的写能力实现。注入以便测试替身。
@@ -94,11 +121,13 @@ final class HarnessSubmissionController {
         if let latest = latestSubmission(sessionID: sessionID) {
             switch latest.state {
             case .submitting, .responseUnknown:
-                // 在途或结果未知：不放行新提交。调用方应先对账。
-                // 注意这里**不**改写该会话 latest：被拒的这次从未发出。
+                // 在途或结果未知：不放行新提交，且**不谎称上游拒绝了它**——
+                // 这次提交从未发出，用户该做的是对账而不是重试。
+                // 注意这里不改写该会话的 latest：被拒的这次没有发生。
                 return Submission(
                     requestID: requestID, sessionID: sessionID, text: text,
-                    state: .rejected(L10n.text("harness.previous_submission_unconfirmed"))
+                    state: .idle,
+                    blockReason: .previousSubmissionUnconfirmed
                 )
             case .idle, .accepted, .rejected:
                 break

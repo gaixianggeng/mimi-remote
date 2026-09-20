@@ -47,14 +47,140 @@ enum HarnessPresentationProjector {
             )
         case HarnessWireEventType.systemMessage:
             return projectSystemMessage(event, sessionID: sessionID)
+        case HarnessWireEventType.toolCall:
+            return projectToolEvent(event, sessionID: sessionID, isFinished: false)
+        case HarnessWireEventType.toolResult:
+            return projectToolEvent(event, sessionID: sessionID, isFinished: true)
         case HarnessWireEventType.stepStart, HarnessWireEventType.stepEnd:
             // 步骤边界不单独展示：它们没有独立可读内容，展示出来只是噪声。
-            // 进度感由 assistant-stream 的正文/工具活动提供。
+            // 进度感由工具活动与正文增量提供。
             return []
         default:
             // 认不出的类型不猜。保留诊断由上层决定，这里不产出展示事件。
             return []
         }
+    }
+
+    /// 工具调用/结果走既有过程通道（与 Codex 的 `processItemCompleted` 同一处）。
+    ///
+    /// **`isFinished` 只由 `tool/result` 决定**：`tool/call` 只说明模型决定了要调什么，
+    /// 工具还没跑完。把调用当成完成会让用户看到一个已标完成、实际还在执行的工具。
+    private static func projectToolEvent(
+        _ event: HarnessDurableEvent,
+        sessionID: SessionID,
+        isFinished: Bool
+    ) -> [AgentEvent] {
+        // 归属身份优先用 callId：它才是这一次工具执行的稳定身份。
+        // 没有 callId 时退回 seq，绝不与别的调用合并成一条。
+        let callID = event.data?["callId"]?.stringValue?.trimmedNonEmpty
+        let id = callID.map { "h-tool-\($0)" } ?? "h-seq-\(event.seq ?? -1)-tool"
+        let name = event.data?["name"]?.stringValue?.trimmedNonEmpty
+        return [.processItemCompleted(
+            AgentMessage(
+                id: id,
+                sessionID: sessionID,
+                itemID: id,
+                role: .system,
+                kind: .commandSummary,
+                content: name ?? L10n.text("harness.tool_activity_title"),
+                activityPayload: ConversationActivityPayload(
+                    category: .toolCall,
+                    displayTitle: name ?? L10n.text("harness.tool_activity_title"),
+                    status: isFinished ? "completed" : "running",
+                    toolName: name,
+                    toolPresentationKind: .generic
+                ),
+                seq: event.seq.map { EventSequence($0) },
+                sendStatus: .confirmed
+            ),
+            nil,
+            metadata(event, sessionID: sessionID)
+        )]
+    }
+
+    /// 把一条已确认的推理 chunk 交给既有过程通道。
+    ///
+    /// 推理走 `processItemCompleted` + `category: .thinking`——**与 Codex/Claude 同一条
+    /// 通道**，过程展开因此不必为原生再学一套渲染。不混进正文：`messageText` 只取
+    /// text 块，把推理当正文会让用户看到模型的思考被当成最终回答。
+    ///
+    /// 契约标注 `reasoning-delta` 属**源码级**（本轮回环模型未产出推理），因此这里
+    /// 按形状接收、认不出就跳过，不声称已实测。
+    static func liveReasoningEvent(
+        text: String,
+        attempt: HarnessJournalAttempt,
+        sessionID: SessionID
+    ) -> AgentEvent? {
+        guard !text.isEmpty else { return nil }
+        let id = messageID(attempt: attempt, suffix: "reasoning")
+        return .processItemCompleted(
+            AgentMessage(
+                id: id,
+                sessionID: sessionID,
+                itemID: id,
+                role: .system,
+                kind: .reasoningSummary,
+                content: text,
+                activityPayload: ConversationActivityPayload(
+                    category: .thinking,
+                    displayTitle: L10n.text("harness.thinking_title"),
+                    status: "running"
+                ),
+                revision: attempt.lastRevision,
+                sendStatus: .confirmed
+            ),
+            nil,
+            metadata(
+                seq: nil,
+                sessionID: sessionID,
+                itemID: id,
+                messageID: id,
+                revision: attempt.lastRevision
+            )
+        )
+    }
+
+    /// 把一次工具活动交给既有过程通道。
+    ///
+    /// `isComplete` 是承重的：工具参数生成结束（`block-end`）**不等于**工具执行完成。
+    /// 只有拿到真正的工具结果才能标完成，否则用户会看到一个"已完成"却还在跑的工具。
+    static func toolActivityEvent(
+        _ activity: HarnessToolActivity,
+        attempt: HarnessJournalAttempt,
+        sessionID: SessionID,
+        isFinished: Bool
+    ) -> AgentEvent? {
+        let name = activity.toolName?.trimmedNonEmpty
+        let id = "\(messageID(attempt: attempt, suffix: "tool"))-\(activity.blockIndex)"
+        return .processItemCompleted(
+            AgentMessage(
+                id: id,
+                sessionID: sessionID,
+                itemID: id,
+                role: .system,
+                kind: .commandSummary,
+                content: name ?? L10n.text("harness.tool_activity_title"),
+                activityPayload: ConversationActivityPayload(
+                    category: .toolCall,
+                    displayTitle: name ?? L10n.text("harness.tool_activity_title"),
+                    status: isFinished ? "completed" : "running",
+                    toolName: name,
+                    // 参数是模型生成的字符串增量，这里只作为过程详情保留，
+                    // 不拿它拼标题——那会把用户数据带进时间线。
+                    toolPresentationKind: .generic
+                ),
+                revision: attempt.lastRevision,
+                sendStatus: .confirmed
+            ),
+            nil,
+            metadata(
+                seq: nil,
+                sessionID: sessionID,
+                itemID: id,
+                messageID: id,
+                revision: attempt.lastRevision
+            )
+        )
     }
 
     /// 投影一轮活动 attempt 的收尾。
@@ -323,7 +449,10 @@ struct HarnessToolActivity: Equatable {
 }
 
 /// durable 事件类型词表。取自实测（`stream/durable-events.json` 的 `eventTypesObserved`），
-/// 只登记本层会投影的那几个——其余保持"认不出就跳过"，不在这里穷举。
+/// 加上 `docs/deepseek-harness-protocol.md` 记录的 `tool/call` / `tool/result`。
+///
+/// 后两者在冻结夹具的实测清单里没有出现（本轮回环模型未跑真实工具），属**源码级**：
+/// 按文档形状接收，认不出就跳过，不声称已实测。
 enum HarnessWireEventType {
     static let turnStart = "turn/start"
     static let turnEnd = "turn/end"
@@ -332,4 +461,8 @@ enum HarnessWireEventType {
     static let userMessage = "user/message"
     static let assistantMessage = "assistant/message"
     static let systemMessage = "system/message"
+    /// 工具调用：`{callId, name, arguments(字符串), step, turn}`。
+    static let toolCall = "tool/call"
+    /// 工具结果：`{message:{id,role,content[]}, meta:{...}, step, turn}`。
+    static let toolResult = "tool/result"
 }

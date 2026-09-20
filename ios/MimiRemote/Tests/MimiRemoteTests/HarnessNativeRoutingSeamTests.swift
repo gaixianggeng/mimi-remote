@@ -457,10 +457,11 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         }
     }
 
-    /// 后续任务范围的操作必须仍是显式 `notImplemented`，不能返回空成功。
+    /// 仍未开放的操作必须显式拒绝，不能返回空成功。
     ///
-    /// `session/page` 要传本次 follow 的 `snapshot.cursor` 作 throughSeq，H05 时还没有
-    /// 合法的 seq 可用。这条断言守住"写路径与历史读取尚未开放"这个事实不被静默放宽。
+    /// `session(snapshot)` 原生路径没有等价入口（会话元数据走目录，消息走 follow 与
+    /// `session/page`）。历史分页**已经**接通，因此这里换成了真正未开放的那一条，
+    /// 免得用一条已经实现的调用去证明"尚未开放"。
     func testOperationsOutsideCurrentScopeStayExplicitlyUnimplemented() async {
         let client = HarnessSessionAPIClient(
             endpoint: "http://127.0.0.1:8787",
@@ -470,10 +471,40 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
 
         do {
             _ = try await client.session(id: "session-a", afterSeq: nil)
-            XCTFail("session/page 属于后续任务，不得返回空会话冒充历史")
+            XCTFail("会话快照读取在原生路径没有等价入口，不得返回空会话冒充成功")
         } catch {
-            XCTAssertEqual(error as? HarnessNativeUnavailableError, .notImplemented(operation: "session/page"))
+            XCTAssertEqual(
+                error as? HarnessNativeUnavailableError,
+                .unsupported(operation: "session(snapshot)")
+            )
         }
+    }
+
+    /// 历史分页在原生会话上必须走 `session/page`，不能落到 Codex actor。
+    ///
+    /// 落过去会 `routedNatively` 抛错，用户完全看不到历史；而返回空页更糟——
+    /// 它把"读不了"伪装成"没有历史"。
+    func testNativeSessionHistoryRoutesToHarnessInsteadOfCodexActor() async throws {
+        let fake = FakeHarnessSessionClient()
+        fake.messagesPageResult = .failure(HarnessTransportError.notConnected)
+        let codexTransport = FakeCodexAppServerTransport()
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
+            codexTransport: codexTransport,
+            harness: fake
+        ))
+
+        do {
+            _ = try await client.messagesPage(sessionID: "native-history", before: nil, limit: nil)
+            XCTFail("原生失败必须如实抛出，不得返回空历史")
+        } catch {
+            // 错误来自原生通道（未连接）而不是 Codex actor 的 routedNatively。
+            XCTAssertNotEqual(
+                error as? HarnessNativeUnavailableError,
+                .routedNatively(runtimeProvider: "deepseek"),
+                "历史入口必须真正走原生通道，而不是被 routedNatively 拒绝"
+            )
+        }
+        XCTAssertEqual(fake.messagesPageCallCount, 1, "必须调用原生历史读取")
     }
 
     // MARK: - 支撑
@@ -701,6 +732,36 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
     private(set) var stopHostEventsCallCount = 0
     private(set) var hostPendingInteractionsCount = 0
     private var hostEventsSink: (@MainActor (AgentEvent) -> Void)?
+
+    // MARK: - 历史分页
+
+    var messagesPageResult: Result<HistoryMessagesPage, Error> =
+        .success(HistoryMessagesPage(messages: []))
+    private(set) var messagesPageCallCount = 0
+
+    @MainActor
+    func messagesPage(
+        sessionID: String,
+        before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode
+    ) async throws -> HistoryMessagesPage {
+        messagesPageCallCount += 1
+        return try messagesPageResult.get()
+    }
+
+    @MainActor
+    func historyTurnItemsPage(
+        sessionID: String,
+        continuation: HistoryTurnItemsContinuation
+    ) async throws -> HistoryTurnItemsPage {
+        throw HarnessNativeUnavailableError.unsupported(operation: "historyTurnItemsPage")
+    }
+
+    @MainActor
+    func latestTurnHistoryPage(sessionID: String) async throws -> HistoryMessagesPage? {
+        nil
+    }
 
     func setHostInteractionSinks(
         events: (@MainActor (AgentEvent) -> Void)?,

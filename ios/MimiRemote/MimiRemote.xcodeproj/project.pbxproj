@@ -148,6 +148,7 @@
 		4FC318CC62665514E0436EB4 /* HarnessRecoveryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1D7BC51B7A16BBAC974A97 /* HarnessRecoveryCoordinator.swift */; };
 		50544A89C240A84DC7F0C6BE /* RecentWorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1E5753D86397B541589878 /* RecentWorkspaceStore.swift */; };
 		509445C02B3E5D545DB2808B /* SessionStoreNetworking.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC7DA3118F7DF5B276A9BE1D /* SessionStoreNetworking.swift */; };
+		516056012007388134E8BC2F /* HarnessHistoryPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31218C878FC9BC07A42F6F22 /* HarnessHistoryPage.swift */; };
 		523D4FE3642B0D171DB1647E /* CodexAppServerProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA34FDB7E26D6307E81C07CC /* CodexAppServerProtocolTests.swift */; };
 		5264A96AC8B711B42087FA3F /* SessionListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C86A8DFF7254C2458488075 /* SessionListView.swift */; };
 		52EC06DD1FFE0777D70B106A /* PushProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2C2DD74A21F2006C42CF409 /* PushProviderClient.swift */; };
@@ -625,6 +626,7 @@
 		3045D0EB3BA4153934CFC712 /* testSessionStateRingSemanticsAndAlignment.light.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testSessionStateRingSemanticsAndAlignment.light.png; sourceTree = "<group>"; };
 		30AE77ACB3451FADCA7D9C99 /* NotificationTitleCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationTitleCache.swift; sourceTree = "<group>"; };
 		31112285F03CBD9AE20AD0C8 /* HostScope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostScope.swift; sourceTree = "<group>"; };
+		31218C878FC9BC07A42F6F22 /* HarnessHistoryPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessHistoryPage.swift; sourceTree = "<group>"; };
 		315746F97ABB8E16D93F98A4 /* ConversationDataFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDataFlowTests.swift; sourceTree = "<group>"; };
 		3182111D6157BC20DF1A4489 /* testLongTitlesAndValuesAtAccessibilitySize.long-text-accessibility-dark.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testLongTitlesAndValuesAtAccessibilitySize.long-text-accessibility-dark.png"; sourceTree = "<group>"; };
 		31F27FBCBFFB65870C102F16 /* ComposerPermissionMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerPermissionMenu.swift; sourceTree = "<group>"; };
@@ -1645,6 +1647,7 @@
 			isa = PBXGroup;
 			children = (
 				1E2331E284E9D04118864D51 /* HarnessHistoryLoader.swift */,
+				31218C878FC9BC07A42F6F22 /* HarnessHistoryPage.swift */,
 				E679831E811FB434EF269BD9 /* HarnessHostEventObserver.swift */,
 				DCEBABF96310C6594E887C28 /* HarnessInteractionAnswer.swift */,
 				B312516B4736F1D095869E57 /* HarnessInteractionProjection.swift */,
@@ -2439,6 +2442,7 @@
 				BC8113C02839555625D96A97 /* FloatingSidebarPresentation.swift in Sources */,
 				980F0CA2DAD75C9AE4857810 /* GitQuickPublishView.swift in Sources */,
 				397AC77A5A2D72CE28C9243F /* HarnessHistoryLoader.swift in Sources */,
+				516056012007388134E8BC2F /* HarnessHistoryPage.swift in Sources */,
 				9C7CC42961C804B67A8E7D3E /* HarnessHostEventObserver.swift in Sources */,
 				09B4A23166D9A7FD30AC1E37 /* HarnessInteractionAnswer.swift in Sources */,
 				322233E76982FC2B6F6F64DB /* HarnessInteractionProjection.swift in Sources */,

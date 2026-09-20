@@ -233,6 +233,65 @@ final class HarnessSubmissionControllerTests: XCTestCase {
         }
     }
 
+    /// 结果未知时被挡下的新提交**不得**被报成"上游拒绝了它"。
+    ///
+    /// 那次提交从未发出。报 `.rejected`（语义是"没执行、可重试"）会让用户去重试
+    /// 一条他还没发过的消息，而真正该做的是对账。
+    func testBlockedSubmissionReportsUnconfirmedRatherThanRejected() async {
+        let controller = HarnessSubmissionController(
+            sendPrompt: { _, _, _ in throw HarnessTransportError.timedOut },
+            sendCancel: { _ in }
+        )
+        _ = await controller.submit(sessionID: "s1", text: "第一条", requestID: "req-block-1")
+        guard case .responseUnknown = controller.latestSubmission(sessionID: "s1")?.state else {
+            XCTFail("前置条件：第一条必须是 responseUnknown")
+            return
+        }
+
+        let blocked = await controller.submit(sessionID: "s1", text: "第二条", requestID: "req-block-2")
+
+        XCTAssertEqual(blocked.blockReason, .previousSubmissionUnconfirmed)
+        XCTAssertEqual(blocked.state, .idle, "没发出去的提交不是 rejected")
+        // 被拒的这次不得顶掉上一次的 latest：对账仍要针对真正在途的那条。
+        XCTAssertEqual(controller.latestSubmission(sessionID: "s1")?.requestID, "req-block-1")
+    }
+
+    /// 已确认的提交不得被之后的失败回退成未知。
+    ///
+    /// 时序是"回显先到、HTTP 超时后到"：durable 回显已经证明那次提交生效了。
+    func testReconciledSubmissionIsNotDowngradedByLateFailure() async {
+        let controller = HarnessSubmissionController(
+            sendPrompt: { _, _, _ in throw HarnessTransportError.timedOut },
+            sendCancel: { _ in }
+        )
+        _ = await controller.submit(sessionID: "s1", text: "x", requestID: "req-order")
+        guard case .responseUnknown = controller.latestSubmission(sessionID: "s1")?.state else {
+            XCTFail("前置条件")
+            return
+        }
+
+        // 回显先到：对账确认。
+        controller.resolveAfterReconciliation(requestID: "req-order")
+        XCTAssertEqual(controller.latestSubmission(sessionID: "s1")?.state, .accepted)
+
+        // 迟到的失败回执再走一次对账：不得把它降回未知。
+        controller.resolveAfterReconciliation(requestID: "req-order")
+        XCTAssertEqual(
+            controller.latestSubmission(sessionID: "s1")?.state,
+            .accepted,
+            "已经确认的提交不得被回退成未知"
+        )
+
+        // 确认之后同一会话可以继续发送。
+        let sender = RecordingPromptSender()
+        let next = HarnessSubmissionController(
+            sendPrompt: { try await sender.send($0, $1, $2) },
+            sendCancel: { _ in }
+        )
+        _ = await next.submit(sessionID: "s1", text: "下一条", requestID: "req-next")
+        XCTAssertEqual(sender.calls.count, 1)
+    }
+
     // MARK: - 停止
 
     func testCancelSuccessAndUnknown() async {

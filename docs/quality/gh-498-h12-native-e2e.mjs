@@ -300,6 +300,35 @@ try {
   assert.match(xcodeOutput, /Executed 1 test, with 0 failures/)
   assert.doesNotMatch(xcodeOutput, /skipped/)
 
+  // 历史分页经**真实中继**：throughSeq 必须取自本次 follow 的 snapshot.cursor。
+  // 传 0 只会读到 seq 0 一条，传过大的值返回空 records（契约 §5.5 实测），
+  // 所以这里用中继实际接受的那次调用来证明分页真的通了。
+  const createdSessionID = peer.sessionID
+  const followCursor = await until(
+    () => peer.frames.find(frame => frame.value?.type === 'snapshot')?.value?.cursor,
+    'Web opening snapshot cursor',
+  )
+  const nativePage = await fetch(`${agentdOrigin}/api/harness/rpc`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${agentdToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      rpcId: 'h12-page',
+      method: 'session/page',
+      args: {
+        request: {
+          address: { kind: 'session', sessionId: createdSessionID },
+          throughSeq: followCursor,
+          maxMessages: 100,
+        },
+      },
+    }),
+  })
+  assert.equal(nativePage.status, 200, 'session/page 必须可用')
+  const nativePageBody = await nativePage.json()
+  assert.equal(nativePageBody.result?.ok, true, `session/page 失败：${JSON.stringify(nativePageBody)}`)
+  const nativeRecords = nativePageBody.result?.value?.records ?? []
+  assert.ok(nativeRecords.length > 0, 'throughSeq 取自本次 follow 时应当读到持久记录')
+
   const summary = {
     status: 'PASS',
     source: 'current worktree binary and Simulator build',
@@ -310,6 +339,10 @@ try {
     webObservedQuestion: true,
     webObservedCancelAfterIOSAnswer: true,
     webObservedFinalAssistant: true,
+    // iOS 侧由宿主级 `$events` 收到并回答：断言在
+    // `testLiveH12RealHarnessQuestionFlow` 内部（含归属与撤卡回执）。
+    hostObservedInteraction: true,
+    nativeHistoryRecords: nativeRecords.length,
     deterministicModelCalls: modelCalls,
     realProviderCalls: 0,
   }
