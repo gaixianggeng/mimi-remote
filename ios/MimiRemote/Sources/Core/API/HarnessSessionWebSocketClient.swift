@@ -496,8 +496,11 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                   current.activeAttempt?.chunks.count ?? 0 > previousChunkCount,
                   let attempt = current.activeAttempt,
                   let chunk = frame.chunk {
-            // 正文、推理、工具三类增量各有自己的展示通道。**只发正文**会让模型
-            // 思考或跑工具时界面看起来像停住了——那正是"处理中没有进度"的来源。
+            // 正文与推理各有展示通道。**只发正文**会让模型思考时界面看起来像停住了。
+            //
+            // 工具**不在这里**产出条目：直播只有块索引与参数增量，没有 callId，
+            // 而 durable `tool/call` 有。两处各造一个 id 会让同一次调用在时间线上
+            // 出现两条（一条永远停在"运行中"）。工具状态的唯一来源是 durable 事件。
             switch chunk.type {
             case HarnessWireChunkType.textDelta:
                 if let text = chunk.text,
@@ -513,41 +516,6 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                    ) {
                     onEvent?(event)
                 }
-            case HarnessWireChunkType.blockStart where chunk.blockType == "tool-call":
-                // 工具开始：状态是"运行中"。参数还没生成完，但用户已经该看到它了。
-                if let event = HarnessPresentationProjector.toolActivityEvent(
-                    HarnessToolActivity(
-                        blockIndex: chunk.index ?? -1,
-                        toolName: chunk.name,
-                        argumentsJSON: "",
-                        isComplete: false
-                    ),
-                    attempt: attempt,
-                    sessionID: sessionID,
-                    isFinished: false
-                ) {
-                    onEvent?(event)
-                }
-            case HarnessWireChunkType.toolCallDelta:
-                // 参数增量：拼接后才是完整 JSON（契约 §2.7）。这里只用来保持
-                // "还在动"的进度感，不解析参数、也不拿它拼标题。
-                if let event = HarnessPresentationProjector.toolActivityEvent(
-                    HarnessToolActivity(
-                        blockIndex: chunk.index ?? -1,
-                        toolName: attempt.toolName(atBlockIndex: chunk.index ?? -1),
-                        argumentsJSON: "",
-                        isComplete: false
-                    ),
-                    attempt: attempt,
-                    sessionID: sessionID,
-                    isFinished: false
-                ) {
-                    onEvent?(event)
-                }
-            case HarnessWireChunkType.blockEnd:
-                // 参数生成结束 ≠ 工具执行结束。这里不标完成；真正的完成由
-                // durable `tool/result` 决定，否则用户会看到一个"已完成"却仍在跑的工具。
-                break
             default:
                 break
             }

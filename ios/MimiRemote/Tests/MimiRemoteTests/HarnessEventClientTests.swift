@@ -1040,18 +1040,17 @@ final class HarnessEventClientTests: XCTestCase {
         }, "推理不是正文")
     }
 
-    /// 工具参数生成结束**不等于**工具执行结束。
+    /// 直播**不**产出工具条目：唯一来源是 durable 事件。
     ///
-    /// 完成状态只能由 durable `tool/result` 给出。把 `block-end` 当完成会让用户看到
-    /// 一个标着"已完成"却仍在跑的工具。
-    func testToolCallProgressIsNotMarkedCompleteUntilResultArrives() async throws {
+    /// 直播只有块索引与参数增量，没有 callId；durable `tool/call` 有。两处各造一个 id
+    /// 会让同一次调用在时间线上出现两条（一条永远停在"运行中"）。
+    func testLiveToolChunksDoNotCreateToolEntries() async throws {
         let (client, recorder) = try await makeConnectedClient(sender: RecordingPromptSink())
         XCTAssertNil(client.apply(assistantStream: HarnessAssistantStreamFrame(
             type: HarnessWireAssistantFrame.start, revision: 1, index: nil,
             chunk: nil, outcome: nil, attemptId: "attempt-tool",
             turn: 1, step: 1, startedAfterSeq: 13
         )))
-        // tool-call 块开始 + 参数增量 + 块结束：全程都还是"运行中"。
         let frames: [(Int, HarnessAssistantChunk)] = [
             (2, HarnessAssistantChunk(
                 type: HarnessWireChunkType.blockStart, index: 0, text: nil,
@@ -1074,31 +1073,11 @@ final class HarnessEventClientTests: XCTestCase {
             )))
         }
 
-        let statuses = recorder.events.compactMap { event -> String? in
-            guard case .processItemCompleted(let message, _, _) = event else { return nil }
-            return message.activityPayload?.status
+        let toolEntries = recorder.events.filter {
+            guard case .processItemCompleted(let message, _, _) = $0 else { return false }
+            return message.activityPayload?.category == .toolCall
         }
-        XCTAssertFalse(statuses.isEmpty, "工具活动必须进过程通道")
-        XCTAssertFalse(statuses.contains("completed"), "参数生成结束不得标为已完成")
-
-        // 真正的结果到达才结算。
-        _ = client.apply(durableEvent: HarnessDurableEvent(
-            type: HarnessWireEventType.toolResult,
-            seq: 40,
-            time: nil,
-            data: .object([
-                "callId": .string("call-1"),
-                "name": .string("read_file"),
-                "step": .number(1),
-                "turn": .number(1),
-            ])
-        ))
-        let afterResult = recorder.events.compactMap { event -> String? in
-            guard case .processItemCompleted(let message, _, _) = event,
-                  message.activityPayload?.category == .toolCall else { return nil }
-            return message.activityPayload?.status
-        }
-        XCTAssertTrue(afterResult.contains("completed"), "收到 tool/result 才算完成")
+        XCTAssertTrue(toolEntries.isEmpty, "工具条目只能由 durable 事件建立")
     }
 
     /// durable `tool/call` / `tool/result` 必须被投影，而不是被 default 静默跳过。

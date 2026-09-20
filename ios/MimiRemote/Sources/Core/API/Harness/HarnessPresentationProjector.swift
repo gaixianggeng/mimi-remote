@@ -48,9 +48,9 @@ enum HarnessPresentationProjector {
         case HarnessWireEventType.systemMessage:
             return projectSystemMessage(event, sessionID: sessionID)
         case HarnessWireEventType.toolCall:
-            return projectToolEvent(event, sessionID: sessionID, isFinished: false)
+            return projectToolEvent(event, sessionID: sessionID, isResult: false)
         case HarnessWireEventType.toolResult:
-            return projectToolEvent(event, sessionID: sessionID, isFinished: true)
+            return projectToolEvent(event, sessionID: sessionID, isResult: true)
         case HarnessWireEventType.stepStart, HarnessWireEventType.stepEnd:
             // 步骤边界不单独展示：它们没有独立可读内容，展示出来只是噪声。
             // 进度感由工具活动与正文增量提供。
@@ -63,30 +63,41 @@ enum HarnessPresentationProjector {
 
     /// 工具调用/结果走既有过程通道（与 Codex 的 `processItemCompleted` 同一处）。
     ///
-    /// **`isFinished` 只由 `tool/result` 决定**：`tool/call` 只说明模型决定了要调什么，
-    /// 工具还没跑完。把调用当成完成会让用户看到一个已标完成、实际还在执行的工具。
+    /// ## 身份必须能对上，否则不产出
+    ///
+    /// 运行中的条目由 `tool/call` 建立（身份 = callId），结果必须落回**同一条**。
+    /// 认不出结果属于哪次调用时**跳过**：另造一条 `h-seq-*-tool` 会留下一个永远停在
+    /// "运行中"的条目，同时凭空多出一条"已完成"的记录——正是"认不出的类型不猜、
+    /// 也不假成功"要防的。
+    ///
+    /// ## 完成与失败只由真实证据决定
+    ///
+    /// 参数生成结束、甚至"收到了结果事件"都不等于工具成功：失败也是一次结果。
+    /// `tool/result` 里明确标了 error 时展示失败，不借"结果到达"冒充完成。
     private static func projectToolEvent(
         _ event: HarnessDurableEvent,
         sessionID: SessionID,
-        isFinished: Bool
+        isResult: Bool
     ) -> [AgentEvent] {
-        // 归属身份优先用 callId：它才是这一次工具执行的稳定身份。
-        // 没有 callId 时退回 seq，绝不与别的调用合并成一条。
-        let callID = event.data?["callId"]?.stringValue?.trimmedNonEmpty
-        let id = callID.map { "h-tool-\($0)" } ?? "h-seq-\(event.seq ?? -1)-tool"
+        guard let identity = toolIdentity(from: event, isResult: isResult) else {
+            // 认不出归属：不产出事件，也不伪造 id。
+            return []
+        }
         let name = event.data?["name"]?.stringValue?.trimmedNonEmpty
+            ?? toolNameInResult(event)
+        let status = !isResult ? "running" : (toolResultIsError(event) ? "failed" : "completed")
         return [.processItemCompleted(
             AgentMessage(
-                id: id,
+                id: identity,
                 sessionID: sessionID,
-                itemID: id,
+                itemID: identity,
                 role: .system,
                 kind: .commandSummary,
                 content: name ?? L10n.text("harness.tool_activity_title"),
                 activityPayload: ConversationActivityPayload(
                     category: .toolCall,
                     displayTitle: name ?? L10n.text("harness.tool_activity_title"),
-                    status: isFinished ? "completed" : "running",
+                    status: status,
                     toolName: name,
                     toolPresentationKind: .generic
                 ),
@@ -98,11 +109,50 @@ enum HarnessPresentationProjector {
         )]
     }
 
+    /// 这次工具事件的稳定身份，找不到就返回 nil。
+    ///
+    /// `tool/call` 的 `callId` 是文档形状。`tool/result` 的 callId 位置在冻结契约里
+    /// **没有**实测记录，因此按文档里确实出现过的两个位置依次尝试：
+    /// 结果消息的 `source.callId`、内容块上的 `toolCallId`。都取不到就**不猜**。
+    private static func toolIdentity(from event: HarnessDurableEvent, isResult: Bool) -> String? {
+        if !isResult {
+            return event.data?["callId"]?.stringValue?.trimmedNonEmpty.map { "h-tool-\($0)" }
+        }
+        if let callID = event.data?["message"]?["source"]?["callId"]?.stringValue?.trimmedNonEmpty {
+            return "h-tool-\(callID)"
+        }
+        for block in event.data?["message"]?["content"]?.arrayValue ?? [] {
+            if let callID = block["toolCallId"]?.stringValue?.trimmedNonEmpty {
+                return "h-tool-\(callID)"
+            }
+        }
+        return nil
+    }
+
+    /// 结果是否明确标了失败。
+    ///
+    /// 只有**明确**为 error 才算失败；读不到按成功处理。代价不对称：
+    /// 把成功显示成失败会让用户以为工具坏了。
+    private static func toolResultIsError(_ event: HarnessDurableEvent) -> Bool {
+        if event.data?["error"] != nil { return true }
+        for block in event.data?["message"]?["content"]?.arrayValue ?? [] {
+            if block["isError"]?.boolValue == true { return true }
+        }
+        return false
+    }
+
+    private static func toolNameInResult(_ event: HarnessDurableEvent) -> String? {
+        for block in event.data?["message"]?["content"]?.arrayValue ?? [] {
+            if let name = block["name"]?.stringValue?.trimmedNonEmpty { return name }
+        }
+        return nil
+    }
+
     /// 把一条已确认的推理 chunk 交给既有过程通道。
     ///
     /// 推理走 `processItemCompleted` + `category: .thinking`——**与 Codex/Claude 同一条
-    /// 通道**，过程展开因此不必为原生再学一套渲染。不混进正文：`messageText` 只取
-    /// text 块，把推理当正文会让用户看到模型的思考被当成最终回答。
+    /// 通道**，过程展开不必为原生再学一套渲染。不混进正文：正文只取 text 块，
+    /// 把推理当正文会让用户看到模型的思考被当成最终回答。
     ///
     /// 契约标注 `reasoning-delta` 属**源码级**（本轮回环模型未产出推理），因此这里
     /// 按形状接收、认不出就跳过，不声称已实测。
@@ -125,49 +175,6 @@ enum HarnessPresentationProjector {
                     category: .thinking,
                     displayTitle: L10n.text("harness.thinking_title"),
                     status: "running"
-                ),
-                revision: attempt.lastRevision,
-                sendStatus: .confirmed
-            ),
-            nil,
-            metadata(
-                seq: nil,
-                sessionID: sessionID,
-                itemID: id,
-                messageID: id,
-                revision: attempt.lastRevision
-            )
-        )
-    }
-
-    /// 把一次工具活动交给既有过程通道。
-    ///
-    /// `isComplete` 是承重的：工具参数生成结束（`block-end`）**不等于**工具执行完成。
-    /// 只有拿到真正的工具结果才能标完成，否则用户会看到一个"已完成"却还在跑的工具。
-    static func toolActivityEvent(
-        _ activity: HarnessToolActivity,
-        attempt: HarnessJournalAttempt,
-        sessionID: SessionID,
-        isFinished: Bool
-    ) -> AgentEvent? {
-        let name = activity.toolName?.trimmedNonEmpty
-        let id = "\(messageID(attempt: attempt, suffix: "tool"))-\(activity.blockIndex)"
-        return .processItemCompleted(
-            AgentMessage(
-                id: id,
-                sessionID: sessionID,
-                itemID: id,
-                role: .system,
-                kind: .commandSummary,
-                content: name ?? L10n.text("harness.tool_activity_title"),
-                activityPayload: ConversationActivityPayload(
-                    category: .toolCall,
-                    displayTitle: name ?? L10n.text("harness.tool_activity_title"),
-                    status: isFinished ? "completed" : "running",
-                    toolName: name,
-                    // 参数是模型生成的字符串增量，这里只作为过程详情保留，
-                    // 不拿它拼标题——那会把用户数据带进时间线。
-                    toolPresentationKind: .generic
                 ),
                 revision: attempt.lastRevision,
                 sendStatus: .confirmed
