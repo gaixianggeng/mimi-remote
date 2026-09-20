@@ -149,12 +149,9 @@ final class HarnessSessionDirectoryTests: XCTestCase {
 
     /// 正向对照：模型身份必须保留 runtime/provider/model 与**真实**推理档位。
     ///
-    /// 形状来源：`docs/architecture/harness-native-client.md` §2.4 冻结的
-    /// `{default,routableProviders,groups,failures}`，内层字段取自 H00 首次冻结修订
-    /// `c9950e10:contracts/harness-native/fixtures/rpc/session-model-catalog.json`
-    /// （`upstream-source` 级）。当前 `live-capture` 版该夹具的 `result` 观测被误写成
-    /// session/list 数据，已作为阻塞项上报负责人，因此这里不读它——
-    /// 详见交接说明"未验证范围"。
+    /// 边界形状（多 provider、同名模型跨 provider、`failures` 非空、缺 reasoning）走本地形状：
+    /// 本次实跑只配置了一条回环路由，这些情况不在采集范围内，写进共享夹具就是编造数据。
+    /// 真实采集到的那一份由下面 `testModelCatalogDecodingMatchesSharedFixture` 读共享夹具覆盖。
     func testModelCatalogDecodingKeepsProviderAndRealReasoningEfforts() throws {
         let value = try jsonValue([
             "default": ["provider": "provider-fixture-a", "model": "model-fixture-1", "reasoningEffort": "high"],
@@ -213,10 +210,40 @@ final class HarnessSessionDirectoryTests: XCTestCase {
         XCTAssertNotEqual(crossProvider.id, first.id, "同名模型跨 provider 必须有不同身份")
     }
 
+    /// 正向对照：真实采集的模型目录必须解出真实身份。
+    ///
+    /// 这是与 Go 侧读**同一份字节**的那条断言。此前该夹具的 `result` 被误写成
+    /// session/list 数据，模型目录只能靠本地形状自证，两边各自漂移也看不出来。
+    /// 夹具修正后这条恢复，漂移风险才真正消除。
+    func testModelCatalogDecodingMatchesSharedFixture() throws {
+        let value = try harnessObservation("rpc/session-model-catalog.json", label: "result")
+
+        let options = try HarnessSessionDirectoryDecoding.modelOptions(
+            from: value,
+            runtimeProvider: "deepseek"
+        )
+
+        // 实跑只配置了一条回环路由，因此只有一组、一个模型。
+        XCTAssertEqual(options.count, 1)
+        let option = try XCTUnwrap(options.first)
+        XCTAssertEqual(option.provider, "h00-loopback")
+        XCTAssertEqual(option.model, "h00-mock-model")
+        XCTAssertEqual(option.runtimeProvider, "deepseek")
+        // 目录默认项由 default.provider/model 判定，不按顺序猜。
+        XCTAssertTrue(option.isDefault)
+        // 真实档位来自 reasoning.efforts，逐个原样带入（未登记字符串降级为 <string:N>）。
+        XCTAssertEqual(option.supportedReasoningEfforts, ["<string:7>", "<string:8>"])
+        XCTAssertEqual(option.defaultReasoningEffort, "<string:8>")
+    }
+
     /// 负向：不是模型目录的形状必须显式失败。
     ///
     /// 返回空数组会把"形状错了"显示成"Harness 没有可用模型"——那是一个业务结论，
     /// 而这里根本没有拿到过业务结论。
+    ///
+    /// 反例直接用 session/list 的夹具：本次缺陷正是"model-catalog 文件里装了
+    /// session/list 数据"，即这个错配真实发生过。用真实发生过的错配当反例，
+    /// 比编一个假的畸形 JSON 更有判别力。
     func testModelCatalogDecodingRejectsNonCatalogShape() throws {
         let sessionListShaped = try harnessObservation("rpc/session-list.json", label: "result-populated")
         XCTAssertThrowsError(try HarnessSessionDirectoryDecoding.modelOptions(

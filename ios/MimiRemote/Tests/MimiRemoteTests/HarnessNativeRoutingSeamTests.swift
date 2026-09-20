@@ -260,28 +260,65 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         }
     }
 
-    func testSkeletonReturnsExplicitNotImplementedInsteadOfEmptySuccess() async {
-        let skeleton = HarnessSessionAPIClient(endpoint: "http://127.0.0.1:8787", token: "fixture")
+    /// 上游失败时不得伪装成"空成功"，也不得回落到旧网关。
+    ///
+    /// H01 时这条断言的是「骨架返回 `notImplemented`」。H05 把只读三件套换成了真实 RPC，
+    /// `notImplemented` 不再是这些方法的行为，原断言随之失效——**但它的风险意图仍然成立**：
+    /// 一次上游失败不能被翻译成"Harness 没有会话 / 没有模型"。
+    ///
+    /// 所以这里把断言迁移到新语义上，而不是删掉这条风险测试：
+    /// 让传输层抛出真实的链路失败，方法必须**抛出**，且不得退化成空列表。
+    /// 唯一的例外是 `channelAvailable`——它按设计把失败如实转成 throw，同样不允许返回 false。
+    func testNativeClientPropagatesUpstreamFailureInsteadOfEmptySuccess() async throws {
+        let failure = HarnessTransportError.server(status: 503, message: "上游不可用")
+        let client = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: FailingHarnessRPCTransport(error: failure)
+        )
 
+        // 每条都要求"抛错"，而不是"返回空"。返回空列表会让上层显示
+        // "没有会话/没有模型"——那是一个业务结论，而这里根本没拿到业务结论。
         do {
-            _ = try await skeleton.sessionsPage(projectID: nil, cursor: nil, limit: nil, consistency: .fastIndexed)
-            XCTFail("骨架不得返回空成功来冒充「没有会话」")
+            let page = try await client.sessionsPage(
+                projectID: nil, cursor: nil, limit: nil, consistency: .fastIndexed
+            )
+            XCTFail("上游失败不得返回空成功来冒充「没有会话」：\(page.sessions.count) 条")
         } catch {
-            XCTAssertEqual(error as? HarnessNativeUnavailableError, .notImplemented(operation: "session/list"))
+            XCTAssertEqual(error as? HarnessTransportError, failure)
         }
 
         do {
-            _ = try await skeleton.modelOptions()
-            XCTFail("骨架不得返回空模型列表")
+            let options = try await client.modelOptions()
+            XCTFail("上游失败不得返回空模型列表：\(options.count) 个")
         } catch {
-            XCTAssertEqual(error as? HarnessNativeUnavailableError, .notImplemented(operation: "session/modelCatalog"))
+            XCTAssertEqual(error as? HarnessTransportError, failure)
         }
 
         do {
-            _ = try await skeleton.channelAvailable()
-            XCTFail("骨架不得声称通道可用")
+            let available = try await client.channelAvailable()
+            XCTFail("探测失败不得声称通道可用：\(available)")
         } catch {
-            XCTAssertEqual(error as? HarnessNativeUnavailableError, .notImplemented(operation: "channelAvailable"))
+            XCTAssertEqual(error as? HarnessTransportError, failure)
+        }
+    }
+
+    /// 后续任务范围的操作必须仍是显式 `notImplemented`，不能返回空成功。
+    ///
+    /// `session/page` 要传本次 follow 的 `snapshot.cursor` 作 throughSeq，H05 时还没有
+    /// 合法的 seq 可用。这条断言守住"写路径与历史读取尚未开放"这个事实不被静默放宽。
+    func testOperationsOutsideCurrentScopeStayExplicitlyUnimplemented() async {
+        let client = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: FailingHarnessRPCTransport(error: HarnessTransportError.server(status: 503, message: "上游不可用"))
+        )
+
+        do {
+            _ = try await client.session(id: "session-a", afterSeq: nil)
+            XCTFail("session/page 属于后续任务，不得返回空会话冒充历史")
+        } catch {
+            XCTAssertEqual(error as? HarnessNativeUnavailableError, .notImplemented(operation: "session/page"))
         }
     }
 
@@ -338,6 +375,24 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
             deepseekRuntime: runtime("deepseek", deepseekTransport),
             harness: harness
         )
+    }
+}
+
+/// 总是失败的 RPC 传输替身。
+///
+/// 用来把"上游失败"与"没有数据"这两件事分开：如果被测方法把失败吞成空列表，
+/// 断言就会看到"成功但为空"，这正是要挡住的那类静默降级。
+final class FailingHarnessRPCTransport: HarnessRPCTransport {
+    private let error: Error
+    private(set) var callCount = 0
+
+    init(error: Error) {
+        self.error = error
+    }
+
+    func call(_ request: HarnessRPCRequest) async throws -> HarnessJSONValue {
+        callCount += 1
+        throw error
     }
 }
 
