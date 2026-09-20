@@ -3,7 +3,6 @@ import SwiftUI
 struct MacSettingsView: View {
     let store: HostStore
     let updates: AppUpdateStore
-    @Environment(\.openWindow) private var openWindow
     @State private var confirmsRestore = false
 
     var body: some View {

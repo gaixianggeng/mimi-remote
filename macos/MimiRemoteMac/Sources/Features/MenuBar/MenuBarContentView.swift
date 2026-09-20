@@ -33,33 +33,18 @@ struct MenuBarContentView: View {
 
             AppUpdateNotice(updates: updates)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    ModuleControlsGroup(store: store, group: .agents)
-                    Divider()
-                    ModuleControlsGroup(store: store, group: .connections)
-                    Divider()
-                    DisclosureGroup("诊断摘要") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(store.doctor?.ok == true ? "最近一次基础检查通过" : "可运行检查以定位服务问题")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            ForEach((store.doctor?.checks ?? []).filter { !$0.ok }.prefix(3)) { check in
-                                Text(check.message).font(.caption)
-                            }
-                            HStack {
-                                Button("检查") { Task { await store.runDoctor(fix: false) } }
-                                Button("完整报告与日志…") { presentWindow(.diagnostics) }
-                            }
-                            .disabled(store.isBusy)
-                        }
-                        .padding(.top, 6)
-                    }
-                }
-                .padding(.vertical, 12)
+            Divider()
+                .opacity(0.45)
+                .padding(.top, 10)
+
+            // MenuBarExtra 会把只有 maxHeight 的 ScrollView 压缩到接近 0。
+            // 高频开关直接参与首屏固有尺寸计算，保证每次点开菜单栏都可见。
+            VStack(alignment: .leading, spacing: 12) {
+                ModuleControlsGroup(store: store, group: .agents)
+                Divider().opacity(0.45)
+                ModuleControlsGroup(store: store, group: .connections)
             }
-            .frame(maxHeight: 460)
-            .scrollBounceBehavior(.basedOnSize)
+            .padding(.vertical, 8)
 
             if let lastError = store.lastError {
                 MenuStatusMessage(message: lastError)
@@ -81,15 +66,36 @@ struct MenuBarContentView: View {
             }
 
             VStack(spacing: 0) {
+                Divider()
+                    .opacity(MenuBarLayout.actionDividerOpacity)
+
                 MenuActionRow(title: "配对设备…", systemImage: "qrcode", isEnabled: !store.isBusy) {
                     // 空状态也可打开：说明是缺少助手、连接方式，还是服务未启动。
                     presentWindow(.pairing)
                 }
-                MenuActionRow(title: "设置", systemImage: "gearshape") {
+
+                Divider()
+                    .opacity(MenuBarLayout.actionDividerOpacity)
+                    .padding(.leading, MenuBarLayout.textColumnLeading)
+
+                MenuActionRow(
+                    title: "运行诊断…",
+                    systemImage: "waveform.path.ecg",
+                    trailingText: diagnosticSummary
+                ) {
+                    presentWindow(.diagnostics)
+                }
+
+                Divider()
+                    .opacity(MenuBarLayout.actionDividerOpacity)
+                    .padding(.leading, MenuBarLayout.textColumnLeading)
+
+                MenuActionRow(title: "设置…", systemImage: "gearshape") {
                     openSettings()
                     activateApplication()
                 }
-                Menu("更多") {
+
+                Menu {
                     Button("检查更新…") {
                         openSettings()
                         activateApplication()
@@ -103,12 +109,29 @@ struct MenuBarContentView: View {
                     Divider()
                     Button("退出并停止服务…", role: .destructive) { presentStopAndQuitConfirmation() }
                         .disabled(store.isBusy)
+                } label: {
+                    HStack(spacing: MenuBarLayout.symbolTextSpacing) {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: MenuBarLayout.symbolColumnWidth)
+                        Text("更多")
+                            .font(.callout.weight(.medium))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal, MenuBarLayout.sectionInset)
+                    .frame(maxWidth: .infinity, minHeight: 40, maxHeight: 40)
+                    .background(
+                        Color.primary.opacity(0.045),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+                    .contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
-                .padding(.horizontal, MenuBarLayout.sectionInset)
-                .frame(height: 32)
             }
-            .padding(.top, 6)
         }
         .padding(.horizontal, MenuBarLayout.contentInset)
         .padding(.top, MenuBarLayout.contentInset)
@@ -130,6 +153,12 @@ struct MenuBarContentView: View {
             await store.refresh()
             await store.refreshTailcatStatus()
         }
+    }
+
+    private var diagnosticSummary: String? {
+        guard let doctor = store.doctor else { return nil }
+        let issueCount = doctor.checks.filter { !$0.ok }.count
+        return issueCount == 0 ? nil : "\(issueCount) 项待处理"
     }
 
     private func performPrimaryAction() {

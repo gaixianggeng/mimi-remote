@@ -17,7 +17,7 @@ enum HostModuleID: String, CaseIterable, Identifiable, Sendable {
         case .codex: "terminal"
         case .claude: "text.bubble"
         case .tailscale: "network"
-        case .tailcat: "point.3.connected.trianglepath.dotted"
+        case .tailcat: "antenna.radiowaves.left.and.right"
         case .lan: "wifi"
         }
     }
@@ -36,7 +36,7 @@ enum HostModuleGroup: CaseIterable {
     case agents, connections
     var title: String { self == .agents ? "AI 编程助手" : "连接方式" }
     var modules: [HostModuleID] {
-        self == .agents ? [.codex, .claude] : [.tailscale, .tailcat, .lan]
+        self == .agents ? [.codex, .claude] : [.tailscale, .lan, .tailcat]
     }
 }
 

@@ -1,77 +1,95 @@
 import AppKit
 import SwiftUI
 
-/// Menu and Settings share one set of actions and the same HostStore snapshots.
+/// 菜单栏与设置共享同一套模块状态和启停动作；菜单栏首屏不再依赖二级设置入口。
 struct ModuleControlsGroup: View {
     let store: HostStore
     let group: HostModuleGroup
     @State private var expanded: Set<HostModuleID> = []
     @State private var undoModule: HostModuleID?
+    @State private var pendingEnabled: [HostModuleID: Bool] = [:]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(group.title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            ForEach(group.modules) { module in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 10) {
-                        Button {
-                            if !expanded.insert(module).inserted { expanded.remove(module) }
-                        } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: module.symbol).frame(width: 20)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(module.title).font(.callout.weight(.medium))
-                                    Text(store.moduleStateTitle(module))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer(minLength: 4)
-                                Image(systemName: expanded.contains(module) ? "chevron.down" : "chevron.right")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(module.title)，\(store.moduleStateTitle(module))，详情")
-                        .accessibilityValue(expanded.contains(module) ? "已展开" : "已折叠")
-                        Toggle(module.title, isOn: Binding(
-                            get: { store.moduleEnabled(module) },
-                            set: { enabled in requestChange(module, enabled: enabled) }
-                        ))
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                        .disabled(!store.canChangeModules)
-                        .accessibilityLabel("启用 \(module.title)")
-                        .accessibilityHint("开关表示启用意图；可用状态显示在名称下方")
-                    }
-                    if expanded.contains(module) {
-                        ModuleDetailView(store: store, module: module)
-                            .padding(.leading, 28)
-                    }
-                }
-                .padding(.vertical, 3)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(group.title)
+                Spacer()
+                Text("\(enabledCount) 个\(group == .agents ? "已启用" : "已开启")")
             }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 3)
+            .padding(.bottom, 3)
+
+            ForEach(group.modules) { module in
+                Divider()
+                    .opacity(0.28)
+                    .padding(.leading, 34)
+
+                ModuleControlRow(
+                    store: store,
+                    module: module,
+                    isExpanded: expanded.contains(module),
+                    pendingEnabled: pendingEnabled[module],
+                    toggleDetails: { toggleDetails(module) },
+                    requestChange: { requestChange(module, enabled: $0) }
+                )
+
+                if expanded.contains(module) {
+                    ModuleDetailView(store: store, module: module)
+                        .padding(.leading, 34)
+                        .padding(.trailing, 6)
+                        .padding(.bottom, 8)
+                }
+            }
+
             if group == .agents {
-                Text("DeepSeek 尚未接入")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Divider()
+                    .opacity(0.28)
+                    .padding(.leading, 34)
+
+                HStack(spacing: 10) {
+                    Image(systemName: "sparkles")
+                        .frame(width: 24)
+                    Text("DeepSeek")
+                        .font(.callout.weight(.medium))
+                    Spacer(minLength: 8)
+                    Text("未接入")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 3)
+                .frame(minHeight: 42)
+
+                Text("开关立即生效。切换 AI 编程助手会重新加载服务，进行中的移动会话可能中断。")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 3)
+                    .padding(.top, 3)
+
                 if !store.codexEnabled && !store.claudeEnabled {
                     Text("全部助手已关闭，移动端暂不可使用。")
                         .font(.caption)
+                        .padding(.horizontal, 3)
+                        .padding(.top, 5)
                 }
-            } else {
-                Text("三种连接方式可同时开启，仅控制 Mimi；不会关闭系统 Tailscale。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if store.availablePairingNetworks.isEmpty {
-                    Text("暂无可用连接方式，配对不可用。")
+
+                if store.owner == .homebrew {
+                    Text("请先接管为 App 服务，再管理模块。")
                         .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 3)
+                        .padding(.top, 5)
                 }
+            } else if store.availablePairingNetworks.isEmpty {
+                Text("暂无可用连接方式，配对不可用。")
+                    .font(.caption)
+                    .padding(.horizontal, 3)
+                    .padding(.top, 5)
             }
+
             if let undoModule, !store.moduleEnabled(undoModule) {
                 HStack {
                     Text("已关闭 \(undoModule.title)").font(.caption)
@@ -79,36 +97,173 @@ struct ModuleControlsGroup: View {
                     Button("撤销关闭") { requestChange(undoModule, enabled: true) }
                         .disabled(!store.canChangeModules)
                 }
+                .padding(.horizontal, 3)
+                .padding(.top, 6)
             }
-            if store.owner == .homebrew {
-                Text("请先接管为 App 服务，再管理模块。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+        }
+    }
+
+    private var enabledCount: Int {
+        group.modules.filter { pendingEnabled[$0] ?? store.moduleEnabled($0) }.count
+    }
+
+    private func toggleDetails(_ module: HostModuleID) {
+        if !expanded.insert(module).inserted {
+            expanded.remove(module)
         }
     }
 
     private func requestChange(_ module: HostModuleID, enabled: Bool) {
         guard store.canChangeModules, store.moduleEnabled(module) != enabled else { return }
-        // Application-level confirmation survives the transient MenuBarExtra window.
+        guard shouldConfirmLastConnectionChange(module, enabled: enabled) else {
+            applyChange(module, enabled: enabled)
+            return
+        }
+
+        // 只有关闭最后一种连接方式才阻断确认；其它开关立即执行并提供撤销。
         DispatchQueue.main.async {
             guard store.canChangeModules else { return }
             let alert = NSAlert()
-            alert.messageText = "\(enabled ? "启用" : "关闭") \(module.title)？"
+            alert.messageText = "关闭最后一种连接方式？"
             alert.informativeText = ModuleChangePresentation.impact(module, enabled: enabled)
             alert.alertStyle = .warning
-            alert.addButton(withTitle: enabled ? "启用" : "关闭")
+            alert.addButton(withTitle: "关闭")
             alert.addButton(withTitle: "取消")
+            alert.buttons.first?.hasDestructiveAction = true
             NSApplication.shared.activate(ignoringOtherApps: true)
             guard alert.runModal() == .alertFirstButtonReturn else { return }
-            undoModule = nil
-            Task {
-                await store.setModule(module, enabled: enabled)
-                if !enabled, !store.moduleEnabled(module), store.moduleError(module) == nil {
-                    undoModule = module
-                }
+            applyChange(module, enabled: enabled)
+        }
+    }
+
+    private func shouldConfirmLastConnectionChange(_ module: HostModuleID, enabled: Bool) -> Bool {
+        guard !enabled, module.network != nil else { return false }
+        return HostModuleGroup.connections.modules.filter { store.moduleEnabled($0) }.count == 1
+    }
+
+    private func applyChange(_ module: HostModuleID, enabled: Bool) {
+        undoModule = nil
+        pendingEnabled[module] = enabled
+        Task {
+            await store.setModule(module, enabled: enabled)
+            pendingEnabled[module] = nil
+            if !enabled, !store.moduleEnabled(module), store.moduleError(module) == nil {
+                undoModule = module
             }
         }
+    }
+}
+
+private struct ModuleControlRow: View {
+    let store: HostStore
+    let module: HostModuleID
+    let isExpanded: Bool
+    let pendingEnabled: Bool?
+    let toggleDetails: () -> Void
+    let requestChange: (Bool) -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: toggleDetails) {
+                HStack(spacing: 10) {
+                    Image(systemName: module.symbol)
+                        .frame(width: 24)
+                        .foregroundStyle(.secondary)
+                    Text(module.title)
+                        .font(.callout.weight(.medium))
+                    if module == .tailcat {
+                        Text("实验")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.1), in: Capsule())
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 6)
+
+            ModuleStateLabel(
+                title: stateTitle,
+                color: stateColor,
+                isWorking: isWorking
+            )
+
+            Toggle(module.title, isOn: Binding(
+                get: { pendingEnabled ?? store.moduleEnabled(module) },
+                set: requestChange
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(!store.canChangeModules)
+            .accessibilityLabel("启用 \(module.title)")
+            .accessibilityHint("当前状态：\(stateTitle)")
+
+            Button(action: toggleDetails) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 12, height: 24)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(module.title) 详情")
+            .accessibilityValue(isExpanded ? "已展开" : "已折叠")
+        }
+        .padding(.horizontal, 3)
+        .frame(minHeight: 42)
+    }
+
+    private var isWorking: Bool {
+        pendingEnabled != nil || store.updatingModule == module ||
+            (module == .claude && store.isUpdatingClaude) ||
+            (module == .tailcat && store.isUpdatingTailcat)
+    }
+
+    private var stateTitle: String {
+        if let pendingEnabled {
+            return pendingEnabled ? "正在启用…" : "正在关闭…"
+        }
+        return store.moduleStateTitle(module)
+    }
+
+    private var stateColor: Color {
+        let title = stateTitle
+        if store.moduleError(module) != nil { return .red }
+        if isWorking { return .blue }
+        if !store.moduleEnabled(module) { return .secondary }
+        if title.contains("需要") || title.contains("暂不") { return .orange }
+        if title == "可用" || title.contains("地址可用") || title == "已连接" { return .green }
+        return .secondary
+    }
+}
+
+private struct ModuleStateLabel: View {
+    let title: String
+    let color: Color
+    let isWorking: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if isWorking {
+                ProgressView()
+                    .controlSize(.mini)
+            } else {
+                Circle()
+                    .fill(color)
+                    .frame(width: 6, height: 6)
+                    .accessibilityHidden(true)
+            }
+            Text(title)
+                .lineLimit(1)
+        }
+        .font(.caption)
+        .foregroundStyle(color)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("状态：\(title)")
     }
 }
 
