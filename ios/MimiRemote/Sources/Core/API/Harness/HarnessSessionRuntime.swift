@@ -124,6 +124,8 @@ actor HarnessSessionRuntime {
         var endpoint: String
         var generation: UInt64
         var buffer: HarnessStreamBuffer
+        /// 已收到载体 end。此后不再收新帧，但必须等消费者读走 end 才真正删除。
+        var isEnded = false
     }
 
     private var subscriptions: [String: Subscription] = [:]
@@ -292,7 +294,8 @@ actor HarnessSessionRuntime {
         subscriptions[streamID] = Subscription(
             endpoint: endpoint,
             generation: connectionGeneration,
-            buffer: HarnessStreamBuffer(capacity: configuration.bufferCapacity)
+            buffer: HarnessStreamBuffer(capacity: configuration.bufferCapacity),
+            isEnded: false
         )
         do {
             try await streamTransport.send(.open(streamID: streamID, endpoint: endpoint, args: args))
@@ -315,12 +318,22 @@ actor HarnessSessionRuntime {
     /// 回传一次人机应答。
     ///
     /// 调用方**不能**指定 clientId：那由中继自己持有。这里连参数都不提供。
-    func respond(eventID: String, outcome: HarnessOutcome) async throws {
-        guard isConnected else {
+    func respond(
+        eventID: String,
+        outcome: HarnessOutcome,
+        expectedGeneration: UInt64? = nil
+    ) async throws {
+        let generation = connectionGeneration
+        guard isConnected,
+              expectedGeneration == nil || expectedGeneration == generation else {
             throw HarnessTransportError.notConnected
         }
         do {
             try await streamTransport.send(.respond(eventID: eventID, outcome: outcome))
+            // send 是挂起点。若期间重连，旧 eventId 不能在新 clientId 上被当成已确认。
+            guard isConnected, connectionGeneration == generation else {
+                throw HarnessTransportError.closed
+            }
         } catch let error as HarnessTransportError {
             record(.transport(error))
             recoveryAction = Self.action(for: error)
@@ -337,17 +350,33 @@ actor HarnessSessionRuntime {
     func pollFrame(streamID: String) -> HarnessCarrierFrame? {
         guard var subscription = subscriptions[streamID] else { return nil }
         let frame = subscription.buffer.dequeue()
-        subscriptions[streamID] = subscription
+        if subscription.isEnded, subscription.buffer.frames.isEmpty {
+            subscriptions[streamID] = nil
+        } else {
+            subscriptions[streamID] = subscription
+        }
         return frame
     }
 
     func openStreamIDs() -> [String] {
-        subscriptions.keys.sorted()
+        subscriptions.compactMap { streamID, subscription in
+            subscription.isEnded ? nil : streamID
+        }.sorted()
     }
 
     /// 当前缓冲深度。只读，不影响消费顺序。
     func bufferedFrameCount(streamID: String) -> Int {
         subscriptions[streamID]?.buffer.frames.count ?? 0
+    }
+
+    /// 订阅累计丢帧数。持续读取层发现大于 0 必须结束本次观察，不能在缺口后继续拼接。
+    func droppedFrameCount(streamID: String) -> Int {
+        subscriptions[streamID]?.buffer.dropped ?? 0
+    }
+
+    /// 观察租约仍属于当前活连接。旧代次任务只读这个判据，不得自行改连接状态。
+    func isConnectionCurrent(_ generation: UInt64) -> Bool {
+        isConnected && connectionGeneration == generation
     }
 
     // MARK: - Connection RPC
@@ -403,6 +432,10 @@ actor HarnessSessionRuntime {
             record(.staleFrame(streamID: decoded.streamID))
             return
         }
+        guard !subscription.isEnded else {
+            record(.staleFrame(streamID: decoded.streamID))
+            return
+        }
 
         switch decoded.frame {
         case .value(let value):
@@ -438,8 +471,7 @@ actor HarnessSessionRuntime {
 
         case .carrierEnd:
             subscription.buffer.enqueue(frame)
-            subscriptions.removeValue(forKey: decoded.streamID)
-            return
+            subscription.isEnded = true
         }
         subscriptions[decoded.streamID] = subscription
     }

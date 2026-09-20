@@ -3,6 +3,9 @@
 本文件是 #498 改造的实施契约，冻结 wire 协议、恢复语义、安全边界、夹具与验收判据。
 它是 H01—H13 的唯一协议依据：实施者不得临场发明协议事实，只能引用本文件与 `contracts/harness-native/`。
 
+> 当前进度标记：**相关组件已实现，存在待修问题/待集成**。H09/H10 仍不能称为完整闭环；
+> 正式默认切换继续等待 H11/H12 证据与 Gate C 决策。
+
 - 主 Issue：#498。主 PR：#499。分支：`codex/gh-498-harness-runtime`。
 - 代码基线：`7f43f594df3920598e6a7fa4e84f49ab3c62d87c`（base `3a46e00cfa08b2c0af27ea485bf76ac296a49a64`）。
 - 契约版本：`contracts/harness-native/manifest.json` version 1，`status: frozen`。

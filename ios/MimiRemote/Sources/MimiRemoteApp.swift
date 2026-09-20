@@ -327,6 +327,12 @@ struct MimiRemoteApp: App {
             workspaceAppearanceStore: workspaceAppearanceStore,
             tailcatExperimentController: tailcatExperimentController
         )
+#if DEBUG
+        // 与 AppStore 的 factory 使用同一显式测试参数；生产和普通 Debug 均保持关闭。
+        if appStore.debugLaunchConfiguration.usesNativeHarnessTestPath {
+            sessionStore.nativeHarnessRollout = HarnessNativeRollout(isEnabled: true)
+        }
+#endif
         notificationResponseAdapter.approvalInbox.navigationOwnership = sessionStore.notificationNavigation
         _appStore = StateObject(wrappedValue: appStore)
         _conversationStore = StateObject(wrappedValue: conversationStore)

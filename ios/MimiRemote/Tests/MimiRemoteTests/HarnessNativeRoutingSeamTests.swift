@@ -10,6 +10,48 @@ import XCTest
 @MainActor
 final class HarnessNativeRoutingSeamTests: XCTestCase {
 
+#if DEBUG
+    func testNativeHarnessPathRequiresExplicitTestLaunchArgument() {
+        let defaultDebug = DebugLaunchConfiguration.parse(
+            arguments: ["MimiRemote"],
+            environment: ["MIMI_TEST_NATIVE_HARNESS": "1"]
+        )
+        let explicitTest = DebugLaunchConfiguration.parse(
+            arguments: ["MimiRemote", "--test-native-harness"],
+            environment: [:]
+        )
+
+        XCTAssertFalse(defaultDebug.usesNativeHarnessTestPath, "环境变量或普通 Debug 构建不得暗中开启")
+        XCTAssertTrue(explicitTest.usesNativeHarnessTestPath, "只有显式测试启动参数才能开启")
+
+        let defaultBundle = AppServerRuntimeBundle(
+            endpoint: "http://127.0.0.1:8787", token: "fixture",
+            harnessFactory: defaultDebug.nativeHarnessFactory
+        )
+        let testBundle = AppServerRuntimeBundle(
+            endpoint: "http://127.0.0.1:8787", token: "fixture",
+            harnessFactory: explicitTest.nativeHarnessFactory
+        )
+        XCTAssertNil(defaultBundle.harness)
+        XCTAssertNotNil(defaultBundle.deepseek)
+        XCTAssertTrue(testBundle.harness is HarnessSessionAPIClient)
+        XCTAssertNil(testBundle.deepseek)
+    }
+
+    /// H11 的真实 factory 只能由显式测试构建注入；注入后 native 独占 deepseek，
+    /// 不能同时保留旧 Codex actor 作为写失败后的自动回退。
+    func testControlledTestFactoryBuildsNativeClientWithoutDeepSeekFallback() {
+        let bundle = AppServerRuntimeBundle(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            harnessFactory: HarnessSessionAPIClient.controlledTestFactory
+        )
+
+        XCTAssertTrue(bundle.harness is HarnessSessionAPIClient)
+        XCTAssertNil(bundle.deepseek, "原生写路径启用后不得保留旧 deepseek 写回退")
+    }
+#endif
+
     // MARK: - 硬绑定解除
 
     func testInjectedNativeClientDoesNotInstantiateDeepSeekCodexActor() {
@@ -79,6 +121,72 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         let deepseekSent = await deepseekTransport.sentMessages()
         XCTAssertTrue(codexSent.isEmpty, "DeepSeek 分发不得触碰 Codex 通道")
         XCTAssertTrue(deepseekSent.isEmpty, "DeepSeek 分发不得再走 deepseek 的 Codex 通道")
+    }
+
+    func testNativeCreateSelectsModelAndQueuesPromptWithoutCodexFallback() async throws {
+        let fake = FakeHarnessSessionClient()
+        let codexTransport = FakeCodexAppServerTransport()
+        let deepseekTransport = FakeCodexAppServerTransport()
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
+            codexTransport: codexTransport,
+            deepseekTransport: deepseekTransport,
+            harness: fake
+        ))
+        let response = try await client.createSession(CreateSessionRequest(
+            projectID: "seam",
+            projectPath: "/tmp/seam",
+            projectName: "Seam",
+            prompt: "hello harness",
+            turnOptions: CodexAppServerTurnOptions(
+                runtimeProvider: "deepseek",
+                model: "model-a",
+                modelProvider: "provider-a",
+                reasoningEffort: .high
+            ),
+            resumeID: "",
+            clientMessageID: "request-create"
+        ))
+
+        XCTAssertEqual(fake.createdCWDs, ["/tmp/seam"])
+        XCTAssertEqual(fake.selectedModels, [
+            .init(sessionID: "created-fixture", provider: "provider-a", model: "model-a", effort: "high")
+        ])
+        XCTAssertEqual(response.session.id, "created-fixture")
+        XCTAssertEqual(response.session.runtimeProvider, "deepseek")
+        XCTAssertEqual(response.requiresQueuedInitialInput, true)
+        let codexSent = await codexTransport.sentMessages()
+        let deepseekSent = await deepseekTransport.sentMessages()
+        XCTAssertTrue(codexSent.isEmpty)
+        XCTAssertTrue(deepseekSent.isEmpty)
+    }
+
+    func testNativeStopUsesHarnessWithoutCodexFallback() async throws {
+        let fake = FakeHarnessSessionClient()
+        let codexTransport = FakeCodexAppServerTransport()
+        let deepseekTransport = FakeCodexAppServerTransport()
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
+            codexTransport: codexTransport,
+            deepseekTransport: deepseekTransport,
+            harness: fake
+        ))
+        client.rememberRuntimeRoute("deepseek", forSessionID: "native-stop")
+
+        try await client.stopSession(id: "native-stop")
+
+        XCTAssertEqual(fake.cancelledSessionIDs, ["native-stop"])
+        let codexSent = await codexTransport.sentMessages()
+        let deepseekSent = await deepseekTransport.sentMessages()
+        XCTAssertTrue(codexSent.isEmpty)
+        XCTAssertTrue(deepseekSent.isEmpty)
+    }
+
+    func testHostSwitchShutsDownSharedHarnessRuntime() async {
+        let fake = FakeHarnessSessionClient()
+        let bundle = makeBundle(harness: fake)
+
+        await bundle.shutdownForHostSwitch()
+
+        XCTAssertEqual(fake.shutdownCallCount, 1, "主机切换必须终止原生 reader，不能遗留上一主机的连接")
     }
 
     func testNativeSessionListRejectsNonemptyProjectIDWithoutGlobalFallback() async {
@@ -457,6 +565,13 @@ private final class GuidanceProbeSink {
 /// 可控的原生客户端替身：用来证明分发路径、并制造单 runtime 失败。
 @MainActor
 final class FakeHarnessSessionClient: HarnessSessionClient {
+    struct SelectedModel: Equatable {
+        let sessionID: String
+        let provider: String
+        let model: String
+        let effort: String?
+    }
+
     var sessionsPageResult: Result<SessionsPage, Error> = .success(SessionsPage(sessions: []))
     var searchResult: Result<ThreadSearchPage, Error> = .success(ThreadSearchPage(results: []))
     var modelOptionsResult: Result<[CodexAppServerModelOption], Error> = .success([])
@@ -466,6 +581,7 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
     private(set) var searchCallCount = 0
     private(set) var modelOptionsCallCount = 0
     private(set) var channelAvailableCallCount = 0
+    private(set) var shutdownCallCount = 0
 
     func makeEventClient(sessionID: SessionID) -> any SessionWebSocketClient {
         HarnessSessionWebSocketClient(
@@ -530,9 +646,13 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
     private(set) var submitPromptCallCount = 0
     private(set) var cancelCallCount = 0
     private(set) var submittedRequestIDs: [String] = []
+    private(set) var createdCWDs: [String] = []
+    private(set) var selectedModels: [SelectedModel] = []
+    private(set) var cancelledSessionIDs: [String] = []
 
     func createSession(cwd: String, sessionID: String?) async throws -> HarnessCreatedSession {
         createSessionCallCount += 1
+        createdCWDs.append(cwd)
         if let writeFailure { throw writeFailure }
         return try createSessionResult.get()
     }
@@ -544,6 +664,12 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
         reasoningEffort: String?
     ) async throws {
         selectModelCallCount += 1
+        selectedModels.append(.init(
+            sessionID: sessionID,
+            provider: provider,
+            model: model,
+            effort: reasoningEffort
+        ))
         if let writeFailure { throw writeFailure }
     }
 
@@ -561,6 +687,11 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
 
     func cancelSession(sessionID: String) async throws {
         cancelCallCount += 1
+        cancelledSessionIDs.append(sessionID)
         if let writeFailure { throw writeFailure }
+    }
+
+    func shutdownForHostSwitch() async {
+        shutdownCallCount += 1
     }
 }

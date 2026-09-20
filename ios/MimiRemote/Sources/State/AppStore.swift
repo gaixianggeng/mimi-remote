@@ -1647,7 +1647,8 @@ final class AppStore: ObservableObject {
                 token: token,
                 // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破 8 秒总 deadline。
                 requestTimeout: remaining,
-                preparedConfig: config
+                preparedConfig: config,
+                harnessFactory: debugNativeHarnessFactory
             )
             do {
                 try await bundle.prepareForHostActivation()
@@ -1973,14 +1974,14 @@ final class AppStore: ObservableObject {
         if activeRuntimeIdentity == identity, let bundle = activeRuntimeBundle {
             return bundle
         }
-        let bundle = AppServerRuntimeBundle(endpoint: endpoint, token: token)
+        let bundle = AppServerRuntimeBundle(
+            endpoint: endpoint,
+            token: token,
+            harnessFactory: debugNativeHarnessFactory
+        )
         activeRuntimeIdentity = identity
         activeRuntimeBundle = bundle
         return bundle
-    }
-
-    private func runtimeIdentity(endpoint: String, token: String) -> String {
-        "\(endpoint)\n\(token)"
     }
 
     private func resetDirectRuntime() {

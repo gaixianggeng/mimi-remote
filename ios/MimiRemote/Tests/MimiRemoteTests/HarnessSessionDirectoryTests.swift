@@ -252,7 +252,7 @@ final class HarnessSessionDirectoryTests: XCTestCase {
         )) { error in
             XCTAssertEqual(
                 error as? HarnessTransportError,
-                .malformedResponse("session/modelCatalog 结果缺少 groups 数组")
+                .malformedResponse("session/modelCatalog result is missing groups")
             )
         }
     }
@@ -372,7 +372,10 @@ final class HarnessSessionDirectoryTests: XCTestCase {
             _ = try await client.searchSessions(query: "   ", cursor: nil, limit: nil)
             XCTFail("空 query 不得当成零命中")
         } catch {
-            XCTAssertEqual(error as? HarnessTransportError, .rejected(status: 400, message: "搜索关键词不能为空"))
+            XCTAssertEqual(
+                error as? HarnessTransportError,
+                .rejected(status: 400, message: "Search query must not be empty")
+            )
         }
         XCTAssertTrue(transport.requests.isEmpty)
     }

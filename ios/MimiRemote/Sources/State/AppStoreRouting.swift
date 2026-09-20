@@ -2,6 +2,18 @@ import CryptoKit
 import Foundation
 
 extension AppStore {
+    func runtimeIdentity(endpoint: String, token: String) -> String {
+        "\(endpoint)\n\(token)"
+    }
+
+    var debugNativeHarnessFactory: HarnessSessionClientFactory? {
+#if DEBUG
+        debugLaunchConfiguration.nativeHarnessFactory
+#else
+        nil
+#endif
+    }
+
     func setActiveConnectionProfileRoute(_ route: ConnectionProfileRoute) throws {
         guard let profileID = activeConnectionProfileID,
               let index = connectionProfiles.firstIndex(where: { $0.id == profileID }),

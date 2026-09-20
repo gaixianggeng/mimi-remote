@@ -143,6 +143,468 @@ final class HarnessEventClientTests: XCTestCase {
         XCTAssertGreaterThan(client.journal?.generation ?? 0, 1, "代次不得写死为 1")
     }
 
+    /// H11：生产事件客户端必须通过同一个 runtime 真正打开 `$events` 与 follow，
+    /// 并持续消费 opening snapshot 后到达的 durable 事件。
+    func testRuntimePathOpensRealFollowAndContinuouslyConsumesFrames() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let runtime = makeRuntime(stream: stream)
+        let client = HarnessSessionWebSocketClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            sessionID: sessionID,
+            submission: HarnessSubmissionController(sendPrompt: { _, _, _ in }, sendCancel: { _ in }),
+            runtime: runtime,
+            interactionStore: HarnessInteractionStore(),
+            recovery: HarnessRecoveryCoordinator(
+                random: { 0 },
+                sleep: { _ in await Task.yield() }
+            )
+        )
+        let recorder = EventRecorder()
+        var statuses: [WebSocketStatus] = []
+        client.onEvent = { recorder.events.append($0) }
+        client.onStatus = { statuses.append($0) }
+
+        client.connect(sessionID: sessionID)
+        let eventsID = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.events,
+            stream: stream
+        )
+        stream.push(carrierValue(
+            streamID: eventsID,
+            value: .object(["type": .string(HarnessWireFrame.ready)])
+        ))
+        let followID = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow,
+            stream: stream
+        )
+        stream.push(carrierValue(
+            streamID: followID,
+            value: snapshotValue(sessionID: sessionID, cursor: 13)
+        ))
+        await waitFor { client.journal?.hasOpenedSnapshot == true }
+
+        stream.push(carrierValue(
+            streamID: followID,
+            value: .object([
+                "type": .string(HarnessWireFrame.durableEvent),
+                "event": .object([
+                    "type": .string(HarnessWireEventType.userMessage),
+                    "seq": .number(14),
+                    "data": .object([
+                        "content": .array([.object([
+                            "type": .string("text"), "text": .string("runtime 正文"),
+                        ])]),
+                        "source": .object([
+                            "kind": .string("user"), "rpcId": .string("cm-runtime"),
+                        ]),
+                    ]),
+                ]),
+            ])
+        ))
+        await waitFor {
+            recorder.events.contains {
+                guard case .messageCompleted(let message, _) = $0 else { return false }
+                return message.content == "runtime 正文"
+            }
+        }
+
+        XCTAssertTrue(statuses.contains(.connected))
+        XCTAssertEqual(stream.connectCount, 1, "follow 与事件流必须共用一个 runtime 连接")
+        XCTAssertTrue(recorder.events.contains {
+            guard case .messageCompleted(let message, _) = $0 else { return false }
+            return message.clientMessageID == "cm-runtime"
+        })
+        client.disconnect()
+        try await Task.sleep(for: .milliseconds(20))
+        let reuseID = await runtime.nextStreamID()
+        try await runtime.openStream(streamID: reuseID, endpoint: HarnessWireEndpoint.events)
+        XCTAssertEqual(stream.connectCount, 1, "页面断开只能退订自己的流，不得关闭共享 runtime")
+        XCTAssertEqual(stream.closeCount, 0)
+        await runtime.cancelStream(streamID: reuseID)
+    }
+
+    /// H11：waterfall 必须投影为现有 UI 事件，应答经同一 runtime 回传，且不携带 clientId。
+    func testRuntimeInteractionProjectsAndRespondsThroughSameConnection() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let runtime = makeRuntime(stream: stream)
+        let store = HarnessInteractionStore()
+        let client = HarnessSessionWebSocketClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            sessionID: sessionID,
+            submission: HarnessSubmissionController(sendPrompt: { _, _, _ in }, sendCancel: { _ in }),
+            runtime: runtime,
+            interactionStore: store,
+            recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
+        )
+        let recorder = EventRecorder()
+        client.onEvent = { recorder.events.append($0) }
+        client.connect(sessionID: sessionID)
+
+        let eventsID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
+        stream.push(carrierValue(
+            streamID: eventsID,
+            value: .object(["type": .string(HarnessWireFrame.ready)])
+        ))
+        let followID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.sessionFollow, stream: stream)
+        stream.push(carrierValue(
+            streamID: followID,
+            value: snapshotValue(sessionID: sessionID, cursor: 13)
+        ))
+        await waitFor { client.journal?.hasOpenedSnapshot == true }
+
+        stream.push(carrierValue(
+            streamID: eventsID,
+            value: .object([
+                "type": .string(HarnessWireFrame.waterfall),
+                "eventId": .string("approval-runtime"),
+                "event": .string(HarnessWireWaterfallEvent.approvalRequest),
+                "agentId": .string(sessionID),
+                "request": .object([
+                    "toolName": .string("shell"),
+                    "callId": .string("call-runtime"),
+                    "reason": .string("需要执行测试命令"),
+                ]),
+            ])
+        ))
+        await waitFor {
+            recorder.events.contains {
+                guard case .approvalRequest(let request, _) = $0 else { return false }
+                return request.id == "approval-runtime"
+            }
+        }
+
+        XCTAssertTrue(client.sendApprovalDecision(
+            approvalID: "approval-runtime",
+            decision: "accept",
+            message: nil
+        ))
+        await waitFor {
+            stream.sentFrames.contains(.respond(
+                eventID: "approval-runtime",
+                outcome: .result(.string(HarnessWireApprovalDecision.allowedOnce))
+            ))
+        }
+        await waitFor { store.interaction(eventID: "approval-runtime") == nil }
+        XCTAssertNil(store.interaction(eventID: "approval-runtime"), "明确成功后必须撤卡")
+        XCTAssertTrue(recorder.events.contains {
+            if case .approvalResolved = $0 { return true }
+            return false
+        })
+        client.disconnect()
+    }
+
+    /// 冻结协议的选项只有 label；UI 投影与应答都必须沿用 label，不要求不存在的 option.id。
+    func testRuntimeQuestionUsesLabelOnlyOptionsAndRespondsWithLabels() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let runtime = makeRuntime(stream: stream)
+        let store = HarnessInteractionStore()
+        let client = HarnessSessionWebSocketClient(
+            endpoint: "http://127.0.0.1:8787", token: "fixture", sessionID: sessionID,
+            submission: HarnessSubmissionController(sendPrompt: { _, _, _ in }, sendCancel: { _ in }),
+            runtime: runtime, interactionStore: store,
+            recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
+        )
+        let recorder = EventRecorder()
+        client.onEvent = { recorder.events.append($0) }
+        client.connect(sessionID: sessionID)
+
+        let eventsID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
+        stream.push(carrierValue(
+            streamID: eventsID,
+            value: .object(["type": .string(HarnessWireFrame.ready)])
+        ))
+        let followID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.sessionFollow, stream: stream)
+        stream.push(carrierValue(
+            streamID: followID,
+            value: snapshotValue(sessionID: sessionID, cursor: 13)
+        ))
+        await waitFor { client.journal?.hasOpenedSnapshot == true }
+
+        stream.push(carrierValue(
+            streamID: eventsID,
+            value: .object([
+                "type": .string(HarnessWireFrame.waterfall),
+                "eventId": .string("question-runtime"),
+                "event": .string(HarnessWireWaterfallEvent.userQuestions),
+                "agentId": .string(sessionID),
+                "request": .object([
+                    "questions": .array([.object([
+                        "id": .string("q-mode"),
+                        "question": .string("选择模式"),
+                        "options": .array([
+                            .object(["label": .string("快速")]),
+                            .object(["label": .string("稳健")]),
+                        ]),
+                    ])]),
+                ]),
+            ])
+        ))
+        await waitFor {
+            recorder.events.contains {
+                guard case .userInputRequest(let request, _) = $0 else { return false }
+                return request.id == "question-runtime"
+                    && request.questions.first?.options.map(\.label) == ["快速", "稳健"]
+            }
+        }
+
+        XCTAssertTrue(client.sendUserInputResponse(
+            requestID: "question-runtime",
+            answers: ["q-mode": ["稳健"]]
+        ))
+        let expected = HarnessClientFrame.respond(
+            eventID: "question-runtime",
+            outcome: .result(.object(["answers": .array([.object([
+                "id": .string("q-mode"),
+                "selected": .array([.string("稳健")]),
+            ])])]))
+        )
+        await waitFor { stream.sentFrames.contains(expected) }
+        XCTAssertTrue(stream.sentFrames.contains(expected))
+        client.disconnect()
+    }
+
+    /// 交互应答的明确接受、明确拒绝、结果未知三态不能合并。
+    /// 未知态不自动重发，但同代次可信 cancel 会撤下卡片。
+    func testRuntimeInteractionDistinguishesExplicitRejectionFromResponseUnknown() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let runtime = makeRuntime(stream: stream)
+        let store = HarnessInteractionStore()
+        let client = HarnessSessionWebSocketClient(
+            endpoint: "http://127.0.0.1:8787", token: "fixture", sessionID: sessionID,
+            submission: HarnessSubmissionController(sendPrompt: { _, _, _ in }, sendCancel: { _ in }),
+            runtime: runtime, interactionStore: store,
+            recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
+        )
+        let recorder = EventRecorder()
+        client.onEvent = { recorder.events.append($0) }
+        client.connect(sessionID: sessionID)
+
+        let eventsID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
+        stream.push(carrierValue(streamID: eventsID, value: .object([
+            "type": .string(HarnessWireFrame.ready),
+        ])))
+        let followID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.sessionFollow, stream: stream)
+        stream.push(carrierValue(
+            streamID: followID,
+            value: snapshotValue(sessionID: sessionID, cursor: 13)
+        ))
+        await waitFor { client.journal?.hasOpenedSnapshot == true }
+
+        func pushApproval(_ eventID: String) {
+            stream.push(carrierValue(streamID: eventsID, value: .object([
+                "type": .string(HarnessWireFrame.waterfall),
+                "eventId": .string(eventID),
+                "event": .string(HarnessWireWaterfallEvent.approvalRequest),
+                "agentId": .string(sessionID),
+                "request": .object(["toolName": .string("shell")]),
+            ])))
+        }
+
+        pushApproval("explicit-reject")
+        await waitFor { store.interaction(eventID: "explicit-reject") != nil }
+        stream.sendError = .business(HarnessRemoteError(
+            code: "approval/rejected", message: "上游明确拒绝", details: nil
+        ))
+        XCTAssertTrue(client.sendApprovalDecision(
+            approvalID: "explicit-reject", decision: "accept", message: nil
+        ))
+        await waitFor { store.interaction(eventID: "explicit-reject")?.state == .pending }
+        XCTAssertEqual(store.interaction(eventID: "explicit-reject")?.state, .pending)
+
+        stream.sendError = nil
+        pushApproval("response-unknown")
+        await waitFor { store.interaction(eventID: "response-unknown") != nil }
+        stream.sendError = .timedOut
+        XCTAssertTrue(client.sendApprovalDecision(
+            approvalID: "response-unknown", decision: "accept", message: nil
+        ))
+        await waitFor {
+            guard case .responseUnknown? = store.interaction(eventID: "response-unknown")?.state else {
+                return false
+            }
+            return true
+        }
+        let respondCount = stream.sentFrames.filter {
+            if case .respond(let eventID, _) = $0 { return eventID == "response-unknown" }
+            return false
+        }.count
+        XCTAssertFalse(client.sendApprovalDecision(
+            approvalID: "response-unknown", decision: "accept", message: nil
+        ), "结果未知时不得自动或手动重发旧决定")
+        XCTAssertEqual(stream.sentFrames.filter {
+            if case .respond(let eventID, _) = $0 { return eventID == "response-unknown" }
+            return false
+        }.count, respondCount)
+
+        stream.sendError = nil
+        stream.push(carrierValue(streamID: eventsID, value: .object([
+            "type": .string(HarnessWireFrame.cancel),
+            "eventId": .string("response-unknown"),
+        ])))
+        await waitFor { store.interaction(eventID: "response-unknown") == nil }
+        XCTAssertNil(store.interaction(eventID: "response-unknown"))
+        XCTAssertTrue(recorder.events.contains {
+            if case .approvalResolved = $0 { return true }
+            return false
+        }, "可信 cancel 只结算撤卡，不宣称哪一端回答获胜")
+        client.disconnect()
+    }
+
+    func testRuntimeRecoveryUsesNewGenerationAndRejectsOldStreamFrames() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let runtime = makeRuntime(stream: stream)
+        let client = HarnessSessionWebSocketClient(
+            endpoint: "http://127.0.0.1:8787", token: "fixture", sessionID: sessionID,
+            submission: HarnessSubmissionController(sendPrompt: { _, _, _ in }, sendCancel: { _ in }),
+            runtime: runtime, interactionStore: HarnessInteractionStore(),
+            recovery: HarnessRecoveryCoordinator(
+                random: { 0 }, sleep: { _ in await Task.yield() }
+            )
+        )
+        let recorder = EventRecorder()
+        client.onEvent = { recorder.events.append($0) }
+        client.connect(sessionID: sessionID)
+
+        let firstEventsID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
+        stream.push(carrierValue(streamID: firstEventsID, value: .object([
+            "type": .string(HarnessWireFrame.ready),
+        ])))
+        let firstFollowID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.sessionFollow, stream: stream)
+        stream.push(carrierValue(
+            streamID: firstFollowID,
+            value: snapshotValue(sessionID: sessionID, cursor: 13)
+        ))
+        await waitFor { client.journal?.snapshotCursor == 13 }
+        let sentBeforeRecovery = stream.sentFrames.count
+
+        stream.releasePendingWaiters()
+        await waitFor { stream.connectCount >= 2 }
+        let secondEventsID = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.events,
+            stream: stream,
+            after: sentBeforeRecovery
+        )
+        stream.push(carrierValue(streamID: secondEventsID, value: .object([
+            "type": .string(HarnessWireFrame.ready),
+        ])))
+        let secondFollowID = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow,
+            stream: stream,
+            after: sentBeforeRecovery
+        )
+
+        stream.push(carrierValue(streamID: firstFollowID, value: .object([
+            "type": .string(HarnessWireFrame.durableEvent),
+            "event": .object([
+                "type": .string(HarnessWireEventType.userMessage),
+                "seq": .number(99),
+                "data": .object(["content": .array([.object([
+                    "type": .string("text"), "text": .string("旧代次污染"),
+                ])])]),
+            ]),
+        ])))
+        stream.push(carrierValue(
+            streamID: secondFollowID,
+            value: snapshotValue(sessionID: sessionID, cursor: 22)
+        ))
+        await waitFor { client.journal?.snapshotCursor == 22 }
+
+        XCTAssertNotEqual(firstEventsID, secondEventsID)
+        XCTAssertNotEqual(firstFollowID, secondFollowID)
+        XCTAssertFalse(recorder.events.contains {
+            guard case .messageCompleted(let message, _) = $0 else { return false }
+            return message.content == "旧代次污染"
+        })
+        let diagnostics = await runtime.diagnostics
+        XCTAssertTrue(diagnostics.contains {
+            if case .staleFrame(let streamID) = $0 { return streamID == firstFollowID }
+            return false
+        })
+        client.disconnect()
+    }
+
+    /// H12 本地验收入口：只连接固定回环测试服务，不读取生产配置或供应商凭据。
+    ///
+    /// 默认测试环境没有该服务时明确 skipped；H12 runner 会启动真实 Harness、agentd
+    /// 与确定性本地模型，使这一条在 Simulator 中实际执行完整 create/follow/answer 链路。
+    func testLiveH12RealHarnessQuestionFlow() async throws {
+        let endpoint = "http://127.0.0.1:28787"
+        let token = "h12-local-fixture-token-not-secret"
+        let api = HarnessSessionAPIClient(endpoint: endpoint, token: token)
+        do {
+            _ = try await api.modelOptions()
+        } catch {
+            throw XCTSkip("隔离 H12 Harness/agentd 未运行：\(error)")
+        }
+        defer { Task { await api.shutdownForHostSwitch() } }
+
+        var repositoryRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<4 { repositoryRoot.deleteLastPathComponent() }
+        let sessionID = "h12-ios-\(UUID().uuidString.lowercased())"
+        let created = try await api.createSession(
+            cwd: repositoryRoot.path,
+            sessionID: sessionID
+        )
+        XCTAssertEqual(created.sessionID, sessionID)
+        try await api.selectModel(
+            sessionID: sessionID,
+            provider: "research-mock",
+            model: "fixture-model",
+            reasoningEffort: nil
+        )
+
+        let client = try XCTUnwrap(
+            api.makeEventClient(sessionID: sessionID) as? HarnessSessionWebSocketClient
+        )
+        var statuses: [WebSocketStatus] = []
+        var events: [AgentEvent] = []
+        var sendOutcomes: [TurnSendOutcome] = []
+        client.onStatus = { statuses.append($0) }
+        client.onEvent = { events.append($0) }
+        client.onTurnSendOutcome = { _, outcome in sendOutcomes.append(outcome) }
+        client.connect(sessionID: sessionID)
+
+        await waitForLive { statuses.contains(.connected) }
+        XCTAssertTrue(statuses.contains(.connected), "真实 follow 必须完成 opening snapshot")
+        XCTAssertTrue(client.sendInput(
+            "Run the controlled H12 question fixture.",
+            clientMessageID: "h12-request-\(UUID().uuidString.lowercased())"
+        ))
+        await waitForLive {
+            events.contains { if case .userInputRequest = $0 { return true }; return false }
+        }
+
+        let request = try XCTUnwrap(events.compactMap { event -> AgentUserInputRequest? in
+            if case .userInputRequest(let request, _) = event { return request }
+            return nil
+        }.first)
+        XCTAssertEqual(request.questions.first?.options.map(\.label), ["Continue"])
+        XCTAssertTrue(client.sendUserInputResponse(
+            requestID: request.id,
+            answers: ["confirm": ["Continue"]]
+        ))
+
+        await waitForLive {
+            events.contains { if case .turnCompleted = $0 { return true }; return false }
+        }
+        let streamedText = events.compactMap { event -> String? in
+            if case .assistantDelta(let delta, _) = event { return delta.text }
+            return nil
+        }.joined()
+        let completedText = events.compactMap { event -> String? in
+            if case .messageCompleted(let message, _) = event, message.role == .assistant {
+                return message.content
+            }
+            return nil
+        }.joined()
+        XCTAssertTrue(streamedText.contains("fixture complete"), "必须在 attempt 结束前收到真实 UI 增量")
+        XCTAssertTrue(completedText.contains("fixture complete"), "durable 结果必须结算为同一助手消息")
+        XCTAssertTrue(sendOutcomes.contains { if case .accepted = $0 { return true }; return false })
+        client.disconnect()
+    }
+
     // MARK: - 发送映射（核心）
 
     /// 明确接受 → onSendAccepted + accepted outcome。
@@ -503,7 +965,16 @@ final class HarnessEventClientTests: XCTestCase {
     private func waitFor(_ condition: @MainActor () -> Bool, iterations: Int = 400) async {
         for _ in 0..<iterations {
             if condition() { return }
-            await Task.yield()
+            // 原生 reader 以 10ms 间隔消费有界邮箱；连续 yield 会在下一轮消费前跑完，
+            // 让测试把尚未执行误判成业务失败。1ms 轮询保留明确的 400ms 上限。
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+    }
+
+    private func waitForLive(_ condition: @MainActor () -> Bool) async {
+        for _ in 0..<1_200 {
+            if condition() { return }
+            try? await Task.sleep(for: .milliseconds(25))
         }
     }
 
@@ -524,6 +995,65 @@ final class HarnessEventClientTests: XCTestCase {
             projections: nil,
             assistantStream: HarnessAssistantStreamBaseline(revision: 0, activeAttempt: nil)
         )
+    }
+
+    private func makeRuntime(stream: FakeHarnessStreamTransport) -> HarnessSessionRuntime {
+        HarnessSessionRuntime(
+            configuration: HarnessSessionRuntime.Configuration(
+                endpoint: "http://127.0.0.1:8787",
+                token: "fixture",
+                pingInterval: .seconds(30)
+            ),
+            transports: HarnessSessionRuntime.TransportPair(
+                rpc: FakeHarnessRPCTransport(),
+                stream: stream
+            )
+        )
+    }
+
+    private func waitForOpenStream(
+        endpoint: String,
+        stream: FakeHarnessStreamTransport,
+        after frameIndex: Int = 0
+    ) async throws -> String {
+        for _ in 0..<400 {
+            for frame in stream.sentFrames.dropFirst(frameIndex) {
+                if case .open(let streamID, let openedEndpoint, _) = frame,
+                   openedEndpoint == endpoint {
+                    return streamID
+                }
+            }
+            // full 回归会并发运行数百个测试，只 yield 会在连接任务获得调度前耗尽轮询。
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        throw HarnessTransportError.timedOut
+    }
+
+    private func carrierValue(streamID: String, value: HarnessJSONValue) -> HarnessCarrierFrame {
+        HarnessCarrierFrame(
+            type: HarnessWireCarrier.item,
+            streamId: streamID,
+            value: value,
+            error: nil
+        )
+    }
+
+    private func snapshotValue(sessionID: String, cursor: Int) -> HarnessJSONValue {
+        .object([
+            "type": .string(HarnessWireFrame.snapshot),
+            "header": .object([
+                "version": .number(3),
+                "id": .string(sessionID),
+                "cwd": .string("/fixture"),
+                "isSeeded": .bool(false),
+            ]),
+            "cursor": .number(Double(cursor)),
+            "records": .array([]),
+            "hasMore": .bool(false),
+            "assistantStream": .object([
+                "revision": .number(0),
+            ]),
+        ])
     }
 }
 

@@ -445,6 +445,7 @@ final class AppServerRuntimeBundle {
     }
 
     func shutdownForHostSwitch() async {
+        await harness?.shutdownForHostSwitch()
         await codex.shutdownForHostSwitch()
         await claude.shutdownForHostSwitch()
         await deepseek?.shutdownForHostSwitch()
@@ -811,6 +812,50 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        if let native = bundle.nativeClient(for: payload.turnOptions.runtimeProvider) {
+            guard let cwd = payload.projectPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !cwd.isEmpty else {
+                throw HarnessNativeUnavailableError.unsupported(operation: "session/create without cwd")
+            }
+            let resumedID = payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let created: HarnessCreatedSession
+            if resumedID.isEmpty {
+                created = try await native.createSession(cwd: cwd, sessionID: nil)
+            } else {
+                // Harness 会话本身可继续使用；历史“继续”不能再创建一个同内容的新会话。
+                created = HarnessCreatedSession(sessionID: resumedID, agentPreset: nil)
+            }
+            if let provider = payload.turnOptions.modelProvider?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !provider.isEmpty,
+               let model = payload.turnOptions.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !model.isEmpty {
+                try await native.selectModel(
+                    sessionID: created.sessionID,
+                    provider: provider,
+                    model: model,
+                    reasoningEffort: payload.turnOptions.reasoningEffort?.rawValue
+                )
+            }
+            let session = AgentSession(
+                id: created.sessionID,
+                projectID: payload.projectID,
+                project: payload.projectName ?? "",
+                dir: cwd,
+                title: payload.prompt,
+                status: "running",
+                source: AppServerRuntimeBundle.nativeRuntimeProvider,
+                runtimeProvider: AppServerRuntimeBundle.nativeRuntimeProvider,
+                resumeID: nil,
+                createdAt: nil,
+                updatedAt: nil
+            )
+            bundle.routes.remember(session)
+            return CreateSessionResponse(
+                session: session,
+                wsURL: "",
+                requiresQueuedInitialInput: !payload.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            )
+        }
         let runtime = try bundle.runtime(for: payload.turnOptions.runtimeProvider)
         let response = try await runtime.createSession(payload)
         bundle.routes.remember(response.session)
@@ -834,6 +879,10 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func stopSession(id: String) async throws {
+        if let native = bundle.nativeClient(forSessionID: id) {
+            try await native.cancelSession(sessionID: id)
+            return
+        }
         try await bundle.runtime(forSessionID: id).stopSession(id: id)
     }
 

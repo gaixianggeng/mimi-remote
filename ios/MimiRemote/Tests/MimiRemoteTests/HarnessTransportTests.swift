@@ -1038,8 +1038,10 @@ final class HarnessTransportTests: XCTestCase {
         XCTAssertEqual(frame?.error?.code, "gateway/internal")
     }
 
-    /// 服务端宣告 end 之后订阅被摘掉，后续帧不得再进缓冲。
-    func testCarrierEndRemovesSubscription() async throws {
+    /// 服务端宣告 end 后不再接收新帧，但终止帧必须先交给消费者。
+    ///
+    /// 先删订阅会让 `pollFrame` 永远拿不到 end，持续 reader 只能把正常结束误判成静默挂起。
+    func testCarrierEndIsConsumableBeforeSubscriptionIsRetired() async throws {
         let stream = FakeHarnessStreamTransport()
         let runtime = HarnessSessionRuntime(
             configuration: makeConfiguration(),
@@ -1051,9 +1053,11 @@ final class HarnessTransportTests: XCTestCase {
         ))
 
         let ended = await waitUntil { await runtime.openStreamIDs().isEmpty }
-        XCTAssertTrue(ended)
-        let undelivered = await runtime.pollFrame(streamID: "s1")
-        XCTAssertNil(undelivered)
+        XCTAssertTrue(ended, "end 到达后订阅不应继续接收业务帧")
+        let terminal = await runtime.pollFrame(streamID: "s1")
+        XCTAssertEqual(terminal?.type, HarnessWireCarrier.end, "消费者必须能读到终止原因")
+        let drained = await runtime.pollFrame(streamID: "s1")
+        XCTAssertNil(drained)
     }
 
     // MARK: - 20. 替身不得掩盖真实链路
@@ -1156,6 +1160,7 @@ final class FakeHarnessStreamTransport: HarnessStreamTransport, @unchecked Senda
     private var _closeCount = 0
     private var _closed = false
     private var _pingError: HarnessTransportError?
+    private var _sendError: HarnessTransportError?
 
     /// close 时是否唤醒挂起的 reader。
     ///
@@ -1168,6 +1173,11 @@ final class FakeHarnessStreamTransport: HarnessStreamTransport, @unchecked Senda
         set { lock.lock(); _pingError = newValue; lock.unlock() }
     }
 
+    var sendError: HarnessTransportError? {
+        get { lock.lock(); defer { lock.unlock() }; return _sendError }
+        set { lock.lock(); _sendError = newValue; lock.unlock() }
+    }
+
     var connectCount: Int { lock.lock(); defer { lock.unlock() }; return _connectCount }
     var closeCount: Int { lock.lock(); defer { lock.unlock() }; return _closeCount }
     var isClosed: Bool { lock.lock(); defer { lock.unlock() }; return _closed }
@@ -1178,7 +1188,11 @@ final class FakeHarnessStreamTransport: HarnessStreamTransport, @unchecked Senda
     }
 
     func send(_ frame: HarnessClientFrame) async throws {
-        lock.lock(); _sentFrames.append(frame); lock.unlock()
+        lock.lock()
+        _sentFrames.append(frame)
+        let error = _sendError
+        lock.unlock()
+        if let error { throw error }
     }
 
     func receive() async throws -> HarnessCarrierFrame? {
