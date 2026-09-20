@@ -17984,6 +17984,23 @@
         }
       }
     },
+    "ui.neutral_ground_with_a_sage_green_accent": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neutral ground with a sage-green accent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中性底色，鼠尾草绿点缀"
+          }
+        }
+      }
+    },
     "ui.neutral_warm_white_with_a_single_main_color": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -19915,23 +19932,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "配对信息只在你的设备之间传输。"
-          }
-        }
-      }
-    },
-    "ui.paper_white_with_forest_ink_and_a_grass_green_accent": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Paper white with forest-green ink and a grass-green accent"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "纸白底配森林墨绿，草绿点缀"
           }
         }
       }
