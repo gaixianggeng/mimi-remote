@@ -341,6 +341,25 @@ enum HarnessWireChunkType {
     ]
 }
 
+/// assistant-stream 帧型。实测只有这三种（`stream/assistant-stream.json`）。
+enum HarnessWireAssistantFrame {
+    static let start = "start"
+    static let chunk = "chunk"
+    static let end = "end"
+}
+
+/// durable settlement 的 `outcome.eventType` 取值。
+///
+/// **这是区分"正常结算"与"用户取消"的唯一依据。** `outcome.kind` 两者都是
+/// `committed`（实测 `run.aborted-by-user` 的 end 帧），拿 kind 判断会把被取消的
+/// 输出当成一条完整正文。
+enum HarnessWireSettlement {
+    /// 正常结算的助手消息。
+    static let assistantMessage = "assistant/message"
+    /// 用户取消：持久日志里记的是 attempt，不是 message。
+    static let assistantAttempt = "assistant/attempt"
+}
+
 /// assistant-stream 帧。
 ///
 /// `revision` 连续递增（expected = previous + 1，start 为 1）：**跳号必须重开
@@ -353,6 +372,16 @@ struct HarnessAssistantStreamFrame: Decodable, Equatable {
     /// 收尾结算。注意 `kind == "committed"` **不**代表有完整正文：用户取消的
     /// 回合同样是 committed，只能靠 `eventType` 区分。
     let outcome: HarnessAssistantStreamOutcome?
+    /// attempt 身份。契约 §2.7：`start` 帧带 `startedAfterSeq`/`turn`/`step`，
+    /// 且三态帧都带 `attemptId`（实测 `h00-attempt-0001`）。
+    ///
+    /// H04 首版只解了 revision/index/chunk/outcome，漏了这四个——而它们正是
+    /// "不能仅用 (turn, step) 认领同一条消息"这条规则的执行依据：重试可以发生在
+    /// 同一步，认领必须以 attemptId 为准。
+    let attemptId: String?
+    let turn: Int?
+    let step: Int?
+    let startedAfterSeq: Int?
 }
 
 struct HarnessAssistantChunk: Decodable, Equatable {
