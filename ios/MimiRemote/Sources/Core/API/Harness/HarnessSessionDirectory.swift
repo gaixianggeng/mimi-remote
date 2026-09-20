@@ -414,6 +414,23 @@ final class HarnessSessionDirectory {
         refresh(manual: false)
     }
 
+    /// 等待当前在途请求走完（含 dirty 尾随补发的那一次）。
+    ///
+    /// 给调用方一个可观察的完成点：`activate` / `refresh` 都是触发即返回，
+    /// 而"手动刷新真的拿到了新结果"这类断言需要一个确定的结束时刻。没有它，
+    /// 调用方只能靠 sleep 去赌时序——那测出来的只是机器忙闲。
+    ///
+    /// 循环而不是等一次：`finish` 遇到 dirty 会立刻补发下一轮，只等第一轮会提前返回。
+    /// 有界是因为尾随刷新最多补一次。
+    func waitForInFlightRequest() async {
+        var awaited = 0
+        while let task = inFlight {
+            _ = await task.value
+            awaited += 1
+            if awaited > 8 { return }
+        }
+    }
+
     // MARK: 请求
 
     private func startRequest() {

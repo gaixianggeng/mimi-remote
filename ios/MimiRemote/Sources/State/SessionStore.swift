@@ -402,6 +402,13 @@ final class SessionStore: ObservableObject {
     /// 本设备在某个工作区里创建成功的会话 ID。目录页用 `replacing` 整页覆盖时必须并回它们：
     /// 创建时可能有一页更早发出的首屏还在路上，它落地时会把刚登记的新会话冲掉。
     var workspaceCreatedSessionIDsByKey: [WorkspaceDirectorySessionScopeKey: Set<SessionID>] = [:]
+    /// 原生 Harness 通道的受控开关。生产默认关闭（`.disabled`），
+    /// 关闭时 deepseek 继续走既有 app-server 路径。打开它属于 H11。
+    var nativeHarnessRollout: HarnessNativeRollout = .disabled
+    /// 原生目录协调器。只在开关打开后按需创建；它负责时序（代次、single-flight、
+    /// 失败保留旧页、前台 5 秒兜底），**不**持有会话集合——目录事实仍由
+    /// `session/list` 对账后经既有归并写进 `sessions`。
+    var nativeHarnessDirectory: HarnessSessionDirectory?
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?

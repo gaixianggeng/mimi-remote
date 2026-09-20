@@ -57,6 +57,7 @@
 		1F902DC512ED302F40F45D68 /* testPendingApprovalCardUsesWiderIPadPreview.1.png in Resources */ = {isa = PBXBuildFile; fileRef = C7F7986F901ECE53E977D767 /* testPendingApprovalCardUsesWiderIPadPreview.1.png */; };
 		1F9E6F599F1C4D22A9DF7937 /* SessionStoreConversationReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 427F38245A79327423C022D2 /* SessionStoreConversationReadiness.swift */; };
 		206A69B99BE7F57C66DA3ABD /* HarnessSessionDirectoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0599782BEA06A6F086CF861C /* HarnessSessionDirectoryTests.swift */; };
+		AA01DE5000000000000000B3 /* HarnessDirectoryWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA01DE5000000000000000C3 /* HarnessDirectoryWiringTests.swift */; };
 		2097CA31FCDA705B4E41DFB2 /* ComposerState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 207244025842AC17EBFA9009 /* ComposerState.swift */; };
 		20D78099D1CE0CC7A660BFA1 /* MimiInteractionFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81FDFD00533B31F16F861BFB /* MimiInteractionFeedbackTests.swift */; };
 		212A92EE533368BDAD280F7F /* HostWarmSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9804C07B29195A66638EE42E /* HostWarmSnapshot.swift */; };
@@ -272,6 +273,8 @@
 		989F7144D36711010C69FAD9 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 6C892E2BB83F2EE5FDD6EDA4 /* Localizable.xcstrings */; };
 		9928E62AE42C8C038223B3EC /* testComposerStatusTrayExtremelyNarrowCompactWidth.1.png in Resources */ = {isa = PBXBuildFile; fileRef = CEE63E1F88F94DC3D0C543CF /* testComposerStatusTrayExtremelyNarrowCompactWidth.1.png */; };
 		9968EED6771E4057CB4D1D0A /* HarnessSessionAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5DF2866E537A15747CC729B /* HarnessSessionAPIClient.swift */; };
+		AA01DE5000000000000000B1 /* HarnessNativeRollout.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA01DE5000000000000000C1 /* HarnessNativeRollout.swift */; };
+		AA01DE5000000000000000B2 /* SessionStoreHarnessDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA01DE5000000000000000C2 /* SessionStoreHarnessDirectory.swift */; };
 		999E3BF5F93437E385730F0B /* testUnconfiguredConnectionSettingsOnWideWidth.unconfigured-wide.png in Resources */ = {isa = PBXBuildFile; fileRef = 16CB0D7EC045B12FA456084E /* testUnconfiguredConnectionSettingsOnWideWidth.unconfigured-wide.png */; };
 		9B897FC15CC75C70A0DC5444 /* TokenUsageCardSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 620EE3CCFD6A92164C8F272F /* TokenUsageCardSnapshotTests.swift */; platformFilters = (ios, ); };
 		9B9483D073425EF469DF701D /* testUnconfiguredConnectionSettingsOnWideWidthInDarkAppearance.unconfigured-wide-dark.png in Resources */ = {isa = PBXBuildFile; fileRef = 06541D01185FB619F3F3FFF7 /* testUnconfiguredConnectionSettingsOnWideWidthInDarkAppearance.unconfigured-wide-dark.png */; };
@@ -518,6 +521,7 @@
 		04DF31C6F06A2786DE678E4A /* ManagedConnectionDeviceStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedConnectionDeviceStoreTests.swift; sourceTree = "<group>"; };
 		053D35545CB6F6F836EAADBA /* HostWarmSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostWarmSnapshotTests.swift; sourceTree = "<group>"; };
 		0599782BEA06A6F086CF861C /* HarnessSessionDirectoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessSessionDirectoryTests.swift; sourceTree = "<group>"; };
+		AA01DE5000000000000000C3 /* HarnessDirectoryWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessDirectoryWiringTests.swift; sourceTree = "<group>"; };
 		06541D01185FB619F3F3FFF7 /* testUnconfiguredConnectionSettingsOnWideWidthInDarkAppearance.unconfigured-wide-dark.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testUnconfiguredConnectionSettingsOnWideWidthInDarkAppearance.unconfigured-wide-dark.png"; sourceTree = "<group>"; };
 		073C831970D1BA4EBC3FD572 /* SessionListLifecycleCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionListLifecycleCoordinator.swift; sourceTree = "<group>"; };
 		075FEFC74C482609AAAEEA39 /* TailcatExperimentController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TailcatExperimentController.swift; sourceTree = "<group>"; };
@@ -928,6 +932,8 @@
 		F496EBE1E6484F4DF9EC8186 /* ManagedConnectionDeviceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedConnectionDeviceStore.swift; sourceTree = "<group>"; };
 		F55F20982430C816BB70A7F5 /* FileAttachmentModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileAttachmentModelsTests.swift; sourceTree = "<group>"; };
 		F5DF2866E537A15747CC729B /* HarnessSessionAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessSessionAPIClient.swift; sourceTree = "<group>"; };
+		AA01DE5000000000000000C1 /* HarnessNativeRollout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessNativeRollout.swift; sourceTree = "<group>"; };
+		AA01DE5000000000000000C2 /* SessionStoreHarnessDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreHarnessDirectory.swift; sourceTree = "<group>"; };
 		F5EC542E43C2955804F35E34 /* ConversationHistoryItemEnrichmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationHistoryItemEnrichmentTests.swift; sourceTree = "<group>"; };
 		F5EF45DF782D873112FB24F1 /* MimiRemoteUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = MimiRemoteUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F7A631C01496AAA7C083AA6B /* testModelPickerAdaptiveWidthAndAccessibilityLayouts.ipad-popover-420.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testModelPickerAdaptiveWidthAndAccessibilityLayouts.ipad-popover-420.png"; sourceTree = "<group>"; };
@@ -1193,6 +1199,7 @@
 				3277FB115FDF832D6D8AE168 /* GuidanceSendLifecycleTests.swift */,
 				1CD0035558A54BA51E9FC673 /* HarnessNativeRoutingSeamTests.swift */,
 				0599782BEA06A6F086CF861C /* HarnessSessionDirectoryTests.swift */,
+				AA01DE5000000000000000C3 /* HarnessDirectoryWiringTests.swift */,
 				1D9A7BE1E8F17EDC4A461FCB /* HarnessTransportTests.swift */,
 				7738DFB157CF0073926DF5BF /* HostStatusStoreTests.swift */,
 				053D35545CB6F6F836EAADBA /* HostWarmSnapshotTests.swift */,
@@ -1590,6 +1597,7 @@
 			isa = PBXGroup;
 			children = (
 				CE817FD272086F57816CD114 /* HarnessSessionDirectory.swift */,
+				AA01DE5000000000000000C1 /* HarnessNativeRollout.swift */,
 				951D8AD66E7C6627F884BB06 /* HarnessSessionRuntime.swift */,
 				4D64332A6146FC414CE8BCDB /* HarnessTransport.swift */,
 				A2CACB07BD714AC161B78E76 /* HarnessWireTypes.swift */,
@@ -1745,6 +1753,7 @@
 				B923E4207A9FD4C35766E4CA /* SessionContextStore.swift */,
 				CD9975BE3B6F00A870817B17 /* SessionIndexStore.swift */,
 				82A5884CEA865140A301E6AC /* SessionStore.swift */,
+				AA01DE5000000000000000C2 /* SessionStoreHarnessDirectory.swift */,
 				57040D514FF4A6CD6BF4E15B /* SessionStoreArchiveReconciliation.swift */,
 				19FA5201EA09AE205F7A868F /* SessionStoreClaudeTakeover.swift */,
 				BF45F0AC4C6BA077701FE488 /* SessionStoreComposerPermissions.swift */,
@@ -2213,6 +2222,7 @@
 				ACCB28358577180D5E7F6370 /* GuidanceSendLifecycleTests.swift in Sources */,
 				3A23BEDFA84EBB2D6F548D41 /* HarnessNativeRoutingSeamTests.swift in Sources */,
 				206A69B99BE7F57C66DA3ABD /* HarnessSessionDirectoryTests.swift in Sources */,
+				AA01DE5000000000000000B3 /* HarnessDirectoryWiringTests.swift in Sources */,
 				17E9AD665E24DA91069F4442 /* HarnessTransportTests.swift in Sources */,
 				35F3BC829540D91C8D44EE03 /* HostStatusStoreTests.swift in Sources */,
 				F0DC6138A242D45D79253F8B /* HostWarmSnapshotTests.swift in Sources */,
@@ -2362,6 +2372,7 @@
 				BC8113C02839555625D96A97 /* FloatingSidebarPresentation.swift in Sources */,
 				980F0CA2DAD75C9AE4857810 /* GitQuickPublishView.swift in Sources */,
 				9968EED6771E4057CB4D1D0A /* HarnessSessionAPIClient.swift in Sources */,
+				AA01DE5000000000000000B1 /* HarnessNativeRollout.swift in Sources */,
 				420B29E7CEFDA1655CADDD0F /* HarnessSessionDirectory.swift in Sources */,
 				335D8BF4FBDE168B7366995C /* HarnessSessionRuntime.swift in Sources */,
 				570F7C6B4BCA5CFB28027D07 /* HarnessSessionWebSocketClient.swift in Sources */,
@@ -2434,6 +2445,7 @@
 				A4DBF3E94C42D2C505267C1E /* SessionListPresentation.swift in Sources */,
 				5264A96AC8B711B42087FA3F /* SessionListView.swift in Sources */,
 				8F2DD1F690D1B12E159AE592 /* SessionStore.swift in Sources */,
+				AA01DE5000000000000000B2 /* SessionStoreHarnessDirectory.swift in Sources */,
 				CE453DEAE9CC570792AE36D4 /* SessionStoreArchiveReconciliation.swift in Sources */,
 				8231CB311BEE5AD17A645924 /* SessionStoreClaudeTakeover.swift in Sources */,
 				01C54C61ECFCD945AA143C53 /* SessionStoreComposerPermissions.swift in Sources */,
