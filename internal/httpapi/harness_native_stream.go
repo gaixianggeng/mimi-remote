@@ -99,6 +99,8 @@ type harnessNativeStreamConn struct {
 	// clientID 是上游 $events 的 clientId。它只留在中继内部，不下发移动端：
 	// 它是关联值不是凭据，但它决定应答被谁接受，没有理由让外部看见。
 	clientID string
+	// 每条移动连接只绑定一个 $events 生命周期；事件流退役时关闭整条连接。
+	eventsOpened bool
 
 	registry *harnessNativeInteractionRegistry
 	wg       sync.WaitGroup
@@ -172,7 +174,7 @@ func (c *harnessNativeStreamConn) serve(ctx context.Context) {
 		_ = c.conn.SetReadDeadline(time.Now().Add(harnessNativeWSReadIdle))
 
 		var frame harnessNativeWSClientFrame
-		if err := json.Unmarshal(raw, &frame); err != nil {
+		if err := harnessNativeDecodeStrict(raw, &frame); err != nil {
 			c.writeStreamError("", harnessNativeWSError("gateway/bad-request", "帧不是合法 JSON"))
 			continue
 		}
@@ -268,6 +270,11 @@ func (c *harnessNativeStreamConn) handleOpen(ctx context.Context, frame harnessN
 		c.writeStreamError(streamID, harnessNativeWSError("gateway/bad-request", "streamId 已被占用"))
 		return
 	}
+	if endpoint == harnessclient.EndpointEvents && c.eventsOpened {
+		c.mu.Unlock()
+		c.writeStreamError(streamID, harnessNativeWSError("gateway/bad-request", "$events 已绑定，请在新连接上重新订阅"))
+		return
+	}
 	if len(c.streams) >= harnessNativeWSMaxStreams {
 		c.mu.Unlock()
 		// 订阅额度满是**可恢复**的明确错误，不是静默丢弃。
@@ -306,6 +313,9 @@ func (c *harnessNativeStreamConn) handleOpen(ctx context.Context, frame harnessN
 		return
 	}
 	c.streams[streamID] = stream
+	if endpoint == harnessclient.EndpointEvents {
+		c.eventsOpened = true
+	}
 	// wg.Add 必须与登记在同一把锁里完成：否则 shutdown 的 wg.Wait 可能在 Add
 	// 之前返回，留下一个不会被等待的 relay 协程。
 	c.wg.Add(1)
@@ -324,12 +334,23 @@ func (c *harnessNativeStreamConn) relay(ctx context.Context, client *harnessclie
 		select {
 		case frame, ok := <-stream.upstream.Frames():
 			if !ok {
+				if c.isCurrentStream(stream) {
+					// 本地主动退订不走这里。上游物理断流必须让手机感知，
+					// 不能留下“WS 保活但逻辑订阅已死”的连接。
+					c.writeStreamError(stream.streamID, harnessNativeWSError("gateway/service-unavailable", "Harness 订阅已断开，请重新连接"))
+					_ = c.conn.Close()
+				}
+				return
+			}
+			if !c.isCurrentStream(stream) {
 				return
 			}
 			if !c.forwardFrame(ctx, client, stream, frame, awaitingSnapshot) {
 				return
 			}
-			awaitingSnapshot = false
+			if frame.Type == harnessclient.FrameSnapshot {
+				awaitingSnapshot = false
+			}
 		case <-ctx.Done():
 			return
 		case <-c.done():
@@ -350,7 +371,7 @@ func (c *harnessNativeStreamConn) forwardFrame(
 	// 报错会伪装成一次静默超时，用户与诊断都看不出区别。
 	if remoteErr, isFailure := frame.CarrierFailure(); isFailure {
 		c.writeStreamError(stream.streamID, remoteErr)
-		return true
+		return false
 	}
 	if frame.IsCarrierEnd() {
 		c.writeEnd(stream.streamID)
@@ -381,12 +402,18 @@ func (c *harnessNativeStreamConn) forwardEventsFrame(
 		var ready struct {
 			ClientID string `json:"clientId"`
 		}
-		_ = json.Unmarshal(frame.Raw, &ready)
-		if clientID := strings.TrimSpace(ready.ClientID); clientID != "" {
-			c.mu.Lock()
-			c.clientID = clientID
-			c.mu.Unlock()
+		if json.Unmarshal(frame.Raw, &ready) != nil || strings.TrimSpace(ready.ClientID) == "" {
+			c.writeStreamError(stream.streamID, harnessNativeWSError("gateway/result-invalid", "$events ready 缺少有效关联值"))
+			return false
 		}
+		c.mu.Lock()
+		if c.clientID != "" && c.clientID != ready.ClientID {
+			c.mu.Unlock()
+			c.writeStreamError(stream.streamID, harnessNativeWSError("gateway/result-invalid", "$events 代次发生变化，请重新连接"))
+			return false
+		}
+		c.clientID = ready.ClientID
+		c.mu.Unlock()
 		c.writeItem(stream.streamID, json.RawMessage(`{"type":"ready"}`))
 		return true
 
@@ -400,14 +427,14 @@ func (c *harnessNativeStreamConn) forwardEventsFrame(
 			EventID string `json:"eventId"`
 		}
 		_ = json.Unmarshal(frame.Raw, &cancel)
-		if eventID := strings.TrimSpace(cancel.EventID); eventID != "" {
-			c.registry.settle(eventID)
+		if c.registry.cancelDelivered(cancel.EventID) {
+			c.writeItem(stream.streamID, frame.Raw)
 		}
-		c.writeItem(stream.streamID, frame.Raw)
 		return true
 
 	default:
-		c.writeItem(stream.streamID, frame.Raw)
+		// $events 是宿主级通道，未实现授权裁剪的 emit/扩展事件不透传。
+		// 目录由只读 list 刷新；不拿泄露其它会话的事件来替代目录发现。
 		return true
 	}
 }
@@ -416,7 +443,7 @@ func (c *harnessNativeStreamConn) forwardEventsFrame(
 //
 // 四条前置条件缺一不可，任何一条不成立都**不投递**（宁可不显示，也不泄露）：
 //  1. 该 eventId 尚未终结（已终结的不得复活成新卡片）；
-//  2. 归属可证明——取不到证据就暂存等待，不猜；
+//  2. 归属可证明——取不到证据就显式诊断，不猜；
 //  3. 归属到的会话确实落在授权范围内（拿可信会话摘要证明，不用调用方自报）；
 //  4. 注册表接纳（未超上限）。
 func (c *harnessNativeStreamConn) deliverWaterfall(
@@ -440,7 +467,8 @@ func (c *harnessNativeStreamConn) deliverWaterfall(
 
 	sessionID, _ := c.registry.attribute(request)
 	if sessionID == "" {
-		// 归属不可证明。暂存等待（后续帧可能带来 callId 映射），当前不下发。
+		// 本层没有暂存队列；不能注释声称“稍后重试”，实际却静默丢失。
+		c.writeStreamError(stream.streamID, harnessNativeWSError("gateway/result-invalid", "交互缺少可验证的会话归属"))
 		return
 	}
 	// 归属只是候选，仍需用可信会话摘要证明它落在授权范围内。
@@ -453,22 +481,23 @@ func (c *harnessNativeStreamConn) deliverWaterfall(
 		return
 	}
 
-	accepted := c.registry.deliver(harnessNativeInteraction{
+	delivery := c.registry.registerDelivery(harnessNativeInteraction{
 		EventID:    eventID,
 		SessionID:  sessionID,
 		Event:      request.Event,
 		Request:    request.Request,
 		Generation: c.generation,
 	})
-	if !accepted {
-		if c.registry.isTerminal(eventID) {
-			return
-		}
-		// 溢出必须可观测失败：用户看不到卡片就会以为没有需要他决定的事。
-		c.writeStreamError(stream.streamID, harnessNativeWSError("gateway/service-unavailable", "待应答交互已达上限"))
+	switch delivery {
+	case harnessNativeDeliveryNew:
+		c.writeItem(stream.streamID, frame.Raw)
+	case harnessNativeDeliveryDuplicate, harnessNativeDeliveryTerminal:
 		return
+	case harnessNativeDeliveryFull:
+		c.writeStreamError(stream.streamID, harnessNativeWSError("gateway/service-unavailable", "待应答交互已达上限"))
+	default:
+		c.writeStreamError(stream.streamID, harnessNativeWSError("gateway/result-invalid", "交互身份与已投递请求不一致"))
 	}
-	c.writeItem(stream.streamID, frame.Raw)
 }
 
 // forwardFollowFrame 处理会话跟随流。
@@ -500,43 +529,57 @@ func (c *harnessNativeStreamConn) forwardFollowFrame(
 		c.writeStreamError(stream.streamID, harnessNativeWSError("gateway/result-invalid", "snapshot 头部无法解析"))
 		return false
 	}
-	if got := strings.TrimSpace(snapshot.Header.ID); got != "" && got != stream.sessionID {
+	if got := strings.TrimSpace(snapshot.Header.ID); got == "" || got != stream.sessionID {
 		c.writeStreamError(stream.streamID, harnessNativeWSError("gateway/result-invalid", "snapshot 归属与订阅目标不一致"))
 		return false
 	}
-	if cwd := strings.TrimSpace(snapshot.Header.CWD); cwd != "" {
-		if _, ok := c.router.gatewayScopeForPath(cwd); !ok {
-			c.writeStreamError(stream.streamID, harnessNativeWSError("gateway/result-invalid", "snapshot 的工作目录不在授权范围内"))
-			return false
-		}
+	cwd := strings.TrimSpace(snapshot.Header.CWD)
+	if _, ok := c.router.gatewayScopeForPath(cwd); cwd == "" || !ok {
+		c.writeStreamError(stream.streamID, harnessNativeWSError("gateway/result-invalid", "snapshot 的工作目录不在授权范围内"))
+		return false
 	}
 	c.writeItem(stream.streamID, frame.Raw)
 	return true
 }
 
-// forwardControlFrame 处理控制流。
-//
-// 控制帧的会话、投影、jobs 条目都要按授权范围裁剪。这里对能直接看到 sessionId 的
-// 帧逐帧重新授权（不缓存，撤权因此天然生效）；**baseline 帧内嵌的 jobs/projections
-// 条目尚未做逐条裁剪**——那需要按版本形状解析，属本任务未完成部分，已在交接中
-// 列为待办，不假装已覆盖。
+// forwardControlFrame 每帧最多读取一次可信目录；不复用跨帧授权结论。
 func (c *harnessNativeStreamConn) forwardControlFrame(
 	ctx context.Context,
 	client *harnessclient.Client,
 	stream *harnessNativeWSStream,
 	frame harnessclient.StreamValue,
 ) bool {
-	var probe struct {
-		SessionID string `json:"sessionId"`
-	}
-	_ = json.Unmarshal(frame.Raw, &probe)
-	if sessionID := strings.TrimSpace(probe.SessionID); sessionID != "" {
-		if err := c.router.harnessNativeAuthorizeSession(ctx, client, sessionID, nil); err != nil {
-			// 不属于授权范围的会话，整帧丢弃。
-			return true
+	var allowed map[string]bool
+	raw, err := harnessNativeFilterControl(frame.Raw, func(id string) (bool, error) {
+		if allowed == nil {
+			sessions, err := client.ListSessions(ctx, harnessclient.SessionListRequest{})
+			if err != nil {
+				return false, err
+			}
+			allowed = make(map[string]bool, len(sessions))
+			for _, session := range sessions {
+				_, ok := c.router.gatewayScopeForPath(session.CWD)
+				ok = ok && strings.TrimSpace(session.CWD) != ""
+				// 同 ID 的任一摘要不属于授权范围，就不能靠另一条重复项放行。
+				if previous, exists := allowed[session.SessionID]; exists {
+					ok = ok && previous
+				}
+				allowed[session.SessionID] = ok
+			}
 		}
+		return allowed[id], nil
+	})
+	if err != nil {
+		code := "gateway/service-unavailable"
+		if errors.Is(err, errHarnessNativeControlShape) {
+			code = "gateway/result-invalid"
+		}
+		c.writeStreamError(stream.streamID, harnessNativeWSError(code, "控制流无法安全校验，已停止该订阅"))
+		return false
 	}
-	c.writeItem(stream.streamID, frame.Raw)
+	if raw != nil {
+		c.writeItem(stream.streamID, raw)
+	}
 	return true
 }
 
@@ -551,6 +594,9 @@ func (c *harnessNativeStreamConn) handleCancel(frame harnessNativeWSClientFrame)
 	stream, ok := c.streams[streamID]
 	if ok {
 		delete(c.streams, streamID)
+		if stream.endpoint == harnessclient.EndpointEvents {
+			c.clientID = ""
+		}
 	}
 	c.mu.Unlock()
 	if !ok {
@@ -558,11 +604,14 @@ func (c *harnessNativeStreamConn) handleCancel(frame harnessNativeWSClientFrame)
 		// "谁先发现流已结束"本来就有竞态。
 		return
 	}
-	// 退订该会话时一并丢弃它的待应答卡片：用户已经离开这个上下文，
-	// 再让它留在待应答表里会允许一个已经离开的视图做出决定。
-	c.registry.forgetSession(stream.sessionID)
+	// follow 是观察租约，不是交互授权。页面离开不得删除有效 pending。
 	stream.close()
 	c.writeEnd(streamID)
+	if stream.endpoint == harnessclient.EndpointEvents {
+		// 不在同一移动连接上复用旧 clientId 或旧 pending。结束帧必须先于关闭
+		// 写出：倒过来移动端只会收到 1006，无法区分正常退役与链路故障。
+		_ = c.conn.Close()
+	}
 }
 
 // handleRespond 处理一次人机应答回传。
@@ -603,10 +652,27 @@ func (c *harnessNativeStreamConn) handleRespond(ctx context.Context, frame harne
 		c.writeStreamError("", harnessNativeRemoteErrorFrom(err))
 		return
 	}
-	if err := client.RespondOutcome(ctx, clientID, eventID, json.RawMessage(mustMarshalRaw(outcome))); err != nil {
-		// 结果未知：解锁卡片让用户能重试，但**不自动重发**（契约要求）。
+	if err := c.router.harnessNativeAuthorizeSession(ctx, client, pending.SessionID, nil); err != nil {
+		// 拒绝发送；暂时目录故障不应假装成用户拒绝。
 		c.registry.release(eventID)
+		var policyErr *harnessNativePolicyError
+		if errors.As(err, &policyErr) && policyErr.status == http.StatusForbidden {
+			c.registry.forgetSession(pending.SessionID)
+		}
 		c.writeStreamError("", harnessNativeRemoteErrorFrom(err))
+		return
+	}
+	if err := client.RespondOutcome(ctx, clientID, eventID, json.RawMessage(mustMarshalRaw(outcome))); err != nil {
+		c.writeStreamError("", harnessNativeRemoteErrorFrom(err))
+		var remoteErr *harnessclient.RemoteError
+		if errors.As(err, &remoteErr) {
+			// 明确的业务失败才可在当前连接重试。
+			c.registry.release(eventID)
+		} else {
+			// HTTP 结果未知，不解锁成“尚未生效”。重连后由 Harness 重投
+			// 仍 pending 的请求；这里绝不自动重发用户决定。
+			_ = c.conn.Close()
+		}
 		return
 	}
 	// 只有上游接受了才终结。服务器收到应答 != Harness 已接受。
@@ -614,14 +680,32 @@ func (c *harnessNativeStreamConn) handleRespond(ctx context.Context, frame harne
 }
 
 // finishStream 在一条订阅结束时把它从表里摘掉并释放上游。
+//
+// 关闭移动端连接这件事只能由"摘除者"做一次。本地退订已经在 handleCancel 里
+// 摘掉了条目，它紧接着要写一帧 CarrierEnd 再关连接；如果这里也照关一次，两次
+// Close 就会和那次 writeEnd 抢同一连接（writeMu 只护写、不护关），移动端会
+// 只看到 1006 异常关闭而拿不到结束帧，看不出这是一次正常退役。
 func (c *harnessNativeStreamConn) finishStream(stream *harnessNativeWSStream) {
 	c.mu.Lock()
+	retired := false
 	if current, ok := c.streams[stream.streamID]; ok && current == stream {
 		delete(c.streams, stream.streamID)
+		retired = true
+		if stream.endpoint == harnessclient.EndpointEvents {
+			c.clientID = ""
+		}
 	}
 	c.mu.Unlock()
-	c.registry.forgetSession(stream.sessionID)
 	stream.close()
+	if retired && stream.endpoint == harnessclient.EndpointEvents {
+		_ = c.conn.Close()
+	}
+}
+
+func (c *harnessNativeStreamConn) isCurrentStream(stream *harnessNativeWSStream) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.closed && c.streams[stream.streamID] == stream
 }
 
 // --- 帧写出 ---

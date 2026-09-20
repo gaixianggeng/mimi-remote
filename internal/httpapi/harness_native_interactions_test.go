@@ -180,8 +180,8 @@ func TestHarnessNativeClaimRejectsBlankEventID(t *testing.T) {
 
 // --- 投递去重与终态 ---
 
-func TestHarnessNativeRedeliveryUpdatesCardWithoutDuplicate(t *testing.T) {
-	// 上游在重连后会重投同一个 eventId：必须更新原卡片而不是新增副本。
+func TestHarnessNativeRedeliveryCannotRebindSessionOrGeneration(t *testing.T) {
+	// 一条注册表属于一条移动连接；重连使用新注册表，不允许原记录被改绑。
 	registry := newHarnessNativeInteractionRegistry()
 	if !registry.deliver(harnessNativeInteraction{
 		EventID: "event-1", SessionID: "session-a",
@@ -198,12 +198,12 @@ func TestHarnessNativeRedeliveryUpdatesCardWithoutDuplicate(t *testing.T) {
 	if count := registry.pendingCount(); count != 1 {
 		t.Fatalf("重投后待应答条数应仍为 1，得到 %d", count)
 	}
-	// 重投应更新原记录（会话与代次跟随最新一次投递）。
+	// 不匹配的重投必须保留原记录与授权，不接受新的身份。
 	registry.mu.Lock()
 	updated := registry.pending["event-1"]
 	registry.mu.Unlock()
-	if updated.SessionID != "session-b" || updated.Generation != 2 {
-		t.Fatalf("重投必须更新原卡片，得到 %+v", updated)
+	if updated.SessionID != "session-a" || updated.Generation != 1 {
+		t.Fatalf("冲突重投不得改绑原卡片，得到 %+v", updated)
 	}
 }
 
@@ -248,9 +248,8 @@ func TestHarnessNativePendingOverflowFailsObservably(t *testing.T) {
 	}
 }
 
-func TestHarnessNativeReleaseAllowsRetryAfterUnknownResult(t *testing.T) {
-	// 上游传输失败时结果未知：卡片必须回到待应答，让用户还能重试；
-	// 但不得自动重发（契约要求）。
+func TestHarnessNativeReleaseAllowsRetryAfterKnownFailure(t *testing.T) {
+	// 尚未发出或已知被拒的请求可解除本次认领；结果未知的网关路径不调用 release。
 	registry := newHarnessNativeInteractionRegistry()
 	registry.deliver(harnessNativeInteraction{
 		EventID: "event-1", SessionID: "session-a",

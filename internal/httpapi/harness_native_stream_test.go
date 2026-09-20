@@ -568,7 +568,8 @@ func TestHarnessNativeStreamCancelEndsStreamAndIsIdempotent(t *testing.T) {
 	url, _ := harnessNativeStreamFixture(t, stub)
 	conn := dialHarnessNativeStream(t, url)
 
-	sendHarnessNativeFrame(t, conn, map[string]any{"type": "open", "streamId": "s1", "endpoint": "$events"})
+	// 普通订阅的取消仍是幂等的；$events 绑定退役关闭连接由 H03 专项覆盖。
+	sendHarnessNativeFrame(t, conn, map[string]any{"type": "open", "streamId": "s1", "endpoint": "session/control"})
 	waitForHarnessNativeStream(t, stub)
 
 	sendHarnessNativeFrame(t, conn, map[string]any{"type": "cancel", "streamId": "s1"})

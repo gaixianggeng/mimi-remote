@@ -187,39 +187,63 @@ func (registry *harnessNativeInteractionRegistry) markTerminalLocked(eventID str
 	}
 }
 
-// deliver 登记一条即将投递给移动端的交互。
-//
-// 返回 false 表示这条不应投递：要么已经投递过（上游重投，应更新原卡片），
-// 要么已经终结（不得复活）。两种情况都不产生新卡片。
+// harnessNativeDeliveryResult 区分正常重投、终态与真正的容量错误。
+type harnessNativeDeliveryResult uint8
+
+const (
+	harnessNativeDeliveryNew harnessNativeDeliveryResult = iota
+	harnessNativeDeliveryDuplicate
+	harnessNativeDeliveryTerminal
+	harnessNativeDeliveryFull
+	harnessNativeDeliveryInvalid
+)
+
+// deliver 保留既有“是否新增”调用语义；中继使用 registerDelivery 取得完整结果。
 func (registry *harnessNativeInteractionRegistry) deliver(interaction harnessNativeInteraction) bool {
+	return registry.registerDelivery(interaction) == harnessNativeDeliveryNew
+}
+
+func (registry *harnessNativeInteractionRegistry) registerDelivery(interaction harnessNativeInteraction) harnessNativeDeliveryResult {
 	eventID := strings.TrimSpace(interaction.EventID)
-	if eventID == "" {
-		return false
+	if eventID == "" || strings.TrimSpace(interaction.SessionID) == "" {
+		return harnessNativeDeliveryInvalid
 	}
 	interaction.EventID = eventID
 	interaction.DeliveredAt = time.Now()
-
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	if registry.isTerminalLocked(eventID) {
-		return false
+		return harnessNativeDeliveryTerminal
 	}
-	if _, exists := registry.pending[eventID]; exists {
-		// 重投：更新原记录（保留认领状态），不新增副本。
-		existing := registry.pending[eventID]
-		existing.SessionID = interaction.SessionID
-		existing.Event = interaction.Event
-		existing.Request = interaction.Request
-		existing.Generation = interaction.Generation
-		return false
+	if existing, exists := registry.pending[eventID]; exists {
+		// 一条连接只有一个 $events 代次；同 eventId 不允许改绑到别的会话或代次。
+		if existing.SessionID != interaction.SessionID || existing.Event != interaction.Event ||
+			existing.Generation != interaction.Generation {
+			return harnessNativeDeliveryInvalid
+		}
+		// 保留首次投递的请求与 Responding，不因重复帧改写正在回传的决定。
+		return harnessNativeDeliveryDuplicate
 	}
 	if len(registry.pending) >= harnessNativeInteractionPendingMax {
-		// 溢出必须可观测失败，不能静默丢弃正在等待人机决定的卡片——
-		// 用户看不到卡片，就会以为没有需要他决定的事。
-		return false
+		return harnessNativeDeliveryFull
 	}
 	registry.pending[eventID] = &interaction
-	return true
+	return harnessNativeDeliveryNew
+}
+
+// cancelDelivered 对未知事件仍记终态，防止 cancel 先于 waterfall 时复活；
+// 只有本连接已经收到的交互才向下游发撤卡，不泄露其它会话的 eventId。
+func (registry *harnessNativeInteractionRegistry) cancelDelivered(eventID string) bool {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return false
+	}
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	_, delivered := registry.pending[eventID]
+	delete(registry.pending, eventID)
+	registry.markTerminalLocked(eventID)
+	return delivered
 }
 
 // pendingCount 报告当前等待应答的交互条数，供资源上限与诊断使用。
@@ -277,14 +301,15 @@ func (registry *harnessNativeInteractionRegistry) claim(
 		return nil, 0, harnessNativeReject(http.StatusConflict, "该交互正在应答中")
 	}
 	pending.Responding = true
-	return pending, harnessNativeClaimAccepted, nil
+	// 不把仍由注册表持有的可变记录指针交给读协程。
+	snapshot := *pending
+	return &snapshot, harnessNativeClaimAccepted, nil
 }
 
 // release 放弃一次已认领但未能转发的应答，让卡片回到待应答状态。
 //
-// 用于上游传输失败：此时结果未知，不能把卡片当成已解决，否则用户永远等不到
-// 一次可以重试的应答机会。契约要求"未知结果不自动重发"，因此这里只解锁，
-// 不重投。
+// 仅用于尚未发送或已收到明确失败的情况。上游传输失败、结果未知时不调用它：
+// 网关结束当前连接，交由 Harness 在新连接上重投仍 pending 的交互。
 func (registry *harnessNativeInteractionRegistry) release(eventID string) {
 	eventID = strings.TrimSpace(eventID)
 	if eventID == "" {
@@ -309,7 +334,7 @@ func (registry *harnessNativeInteractionRegistry) settle(eventID string) {
 	registry.markTerminalLocked(eventID)
 }
 
-// forgetSession 撤权或退订时丢弃该会话的全部待应答交互。
+// forgetSession 仅在实际撤权时丢弃该会话的全部待应答交互，普通 follow 退订不调用。
 //
 // 撤权必须让旧卡片立刻失效：否则一个已经不该看见该会话的客户端，仍能对
 // 撤权前收到的卡片做出决定。
