@@ -92,6 +92,12 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/HarnessNativeRoutingSeamTests \
   -only-testing:MimiRemoteTests/HarnessTransportTests \
   -only-testing:MimiRemoteTests/HarnessSessionDirectoryTests \
+  -only-testing:MimiRemoteTests/HarnessDirectoryWiringTests \
+  -only-testing:MimiRemoteTests/HarnessSessionJournalTests \
+  -only-testing:MimiRemoteTests/HarnessSubmissionControllerTests \
+  -only-testing:MimiRemoteTests/HarnessPresentationProjectorTests \
+  -only-testing:MimiRemoteTests/HarnessEventClientTests \
+  -only-testing:MimiRemoteTests/HarnessInteractionStoreTests \
   -only-testing:MimiRemoteTests/ClaudeTakeoverTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \

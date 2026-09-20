@@ -20,7 +20,7 @@ map_doc="docs/critical-user-journey-regressions.md"
 [[ -f "$runner" ]] || fail "缺少回归入口 ${runner}。"
 [[ -f "$map_doc" ]] || fail "缺少风险映射 ${map_doc}。"
 
-for risk_id in R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11; do
+for risk_id in R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12; do
   grep -Fq "| ${risk_id} |" "$map_doc" \
     || fail "${map_doc} 缺少 ${risk_id} 的风险映射。"
 done
@@ -50,6 +50,12 @@ harness_native_test_groups=(
   "HarnessNativeRoutingSeamTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessNativeRoutingSeamTests.swift"
   "HarnessTransportTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessTransportTests.swift"
   "HarnessSessionDirectoryTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessSessionDirectoryTests.swift"
+  "HarnessDirectoryWiringTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessDirectoryWiringTests.swift"
+  "HarnessSessionJournalTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessSessionJournalTests.swift"
+  "HarnessSubmissionControllerTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessSubmissionControllerTests.swift"
+  "HarnessPresentationProjectorTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessPresentationProjectorTests.swift"
+  "HarnessEventClientTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessEventClientTests.swift"
+  "HarnessInteractionStoreTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessInteractionStoreTests.swift"
 )
 for test_entry in "${harness_native_test_groups[@]}"; do
   test_group="${test_entry%%|*}"
@@ -204,4 +210,4 @@ grep -Fq '"scripts/check-critical-regressions.sh"' .github/workflows/go-ci.yml \
 grep -Fq '"scripts/check-critical-regressions.sh"' .github/workflows/ios-ci.yml \
   || fail "iOS CI 的 push 路径缺少关键链路 checker。"
 
-echo "关键链路回归映射检查通过：11 类风险、4 个 Go 包、3 组托管订阅测试、3 组原生 Harness 测试和 ${#critical_swift_tests[@]} 个高价值 iOS 测试均已接入。"
+echo "关键链路回归映射检查通过：12 类风险、4 个 Go 包、3 组托管订阅测试、9 组原生 Harness 测试和 ${#critical_swift_tests[@]} 个高价值 iOS 测试均已接入。"
