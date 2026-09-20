@@ -179,7 +179,7 @@ extension CodexAppServerSessionRuntime {
         serverRequestPumpTask = nil
         cancelThreadResumeTasks(for: endedConnection)
         connection = nil
-        config = nil
+        invalidateConfigSnapshot()
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
         threadUnsubscribeRetryTasksBySessionID.values.forEach { $0.task.cancel() }
         threadUnsubscribeRetryTasksBySessionID.removeAll(keepingCapacity: true)

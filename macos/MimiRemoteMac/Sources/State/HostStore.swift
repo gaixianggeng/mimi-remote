@@ -596,8 +596,12 @@ final class HostStore {
                         codexError = "更新 Codex 失败：\(cause)。自动恢复未完成：\(error.localizedDescription)"
                     }
                 } else { codexError = cause }
+                await settleModuleChangeFailure(codexError ?? cause)
             }
-        } catch { codexError = error.localizedDescription }
+        } catch {
+            codexError = error.localizedDescription
+            await settleModuleChangeFailure(error.localizedDescription)
+        }
     }
 
     private func setNetworkModule(_ network: PairingNetwork, enabled: Bool) async {
@@ -631,9 +635,31 @@ final class HostStore {
                         networkError = "更新连接失败：\(cause)。自动恢复未完成：\(error.localizedDescription)"
                     }
                 } else { networkError = cause }
+                await settleModuleChangeFailure(networkError ?? cause)
             }
-        } catch { networkError = error.localizedDescription }
+        } catch {
+            networkError = error.localizedDescription
+            await settleModuleChangeFailure(error.localizedDescription)
+        }
         lanError = networkError
+    }
+
+    /// 模块变更失败后的统一收尾。`reloadMacAgentForConfigurationChange()` 会把生命周期
+    /// 置为 `.starting`，而后续服务管理操作可能直接抛错；`defer` 只清 isBusy/updatingModule，
+    /// 于是界面会停在“正在启动”，所有模块 Toggle 继续被禁用。
+    ///
+    /// 这里做一次有界核对：能读到可信的当前状态就交给常规状态落地；读不到就进入明确的
+    /// 失败态并保留恢复入口。不得为了让开关可用而直接写成 `.ready` —— 退出启动中不等于
+    /// 宣称服务健康。
+    private func settleModuleChangeFailure(_ detail: String) async {
+        guard lifecycle == .starting else { return }
+        // 能读到可信状态时，apply() 已按真实 serviceOK/processOK 落地；服务明确不可用
+        // 就沿用那份更严重的状态。配置可能已改变且恢复未完成，不能因为进程还活着就把
+        // 这次失败收敛成"服务可用"。
+        let applied: AgentStatus? = (try? await fetchAndApplyLatestStatus()) ?? nil
+        if applied != nil, status?.serviceOK == false { return }
+        // 状态不可确认时同样既不能留在 .starting（界面假装还在启动），也不能写成 .ready。
+        lifecycle = .degraded(detail)
     }
 
     private func confirmAppliedModules(codexEnabled: Bool? = nil, network: NetworkConfigurationResult? = nil) async throws {
@@ -694,9 +720,11 @@ final class HostStore {
                 } else {
                     claudeError = "更新 Claude 设置失败：\(updateError.localizedDescription)"
                 }
+                await settleModuleChangeFailure(claudeError ?? updateError.localizedDescription)
             }
         } catch {
             claudeError = error.localizedDescription
+            await settleModuleChangeFailure(error.localizedDescription)
         }
     }
 

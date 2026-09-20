@@ -1065,6 +1065,146 @@ final class NotificationRouteResolutionTests: XCTestCase {
         XCTAssertNil(codexPool.transport(at: 1), "重连后已关闭的 Codex 不得再次初始化")
     }
 
+    /// Claude-only 主机上只有 Claude 建立过 WebSocket。服务端后来开启 Codex 并让 Claude
+    /// 断线时，Codex 的配置缓存（能力判断的来源）从未被清空；普通刷新必须能发现新 Agent，
+    /// 且测试不能靠显式调用 refreshConfiguration 来替生产代码补步骤。
+    func testClaudeOnlyHostDiscoversNewlyEnabledCodexWithoutExplicitRefresh() async throws {
+        let project = makeProject(id: "claude-only-then-codex")
+        let claudeOnly = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let bothEnabled = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: true,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let provider = SequencedDirectConfigProvider([bothEnabled, bothEnabled])
+        let codexPool = FakeCodexAppServerTransportPool()
+        let claudePool = FakeCodexAppServerTransportPool()
+        let codex = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            runtimeProvider: "codex",
+            transportFactory: { codexPool.make() },
+            initialConfig: claudeOnly,
+            configProvider: { try await provider.next() }
+        )
+        let claude = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            runtimeProvider: "claude",
+            transportFactory: { claudePool.make() },
+            initialConfig: claudeOnly,
+            configProvider: { try await provider.next() }
+        )
+        let bundle = AppServerRuntimeBundle(codexRuntime: codex, claudeRuntime: claude)
+
+        // 只有 Claude 建连；Codex 通道此时关闭，不会有自己的 WebSocket。
+        let activation = Task { try await bundle.prepareForHostActivation() }
+        let claudeTransport = try await waitForFakeAppServerTransport(in: claudePool, index: 0)
+        let initialize = try await waitForFakeAppServerRequest(claudeTransport, method: "initialize")
+        transportResponse(claudeTransport, id: initialize.id, result: #"{"userAgent":"fake-claude"}"#)
+        try await activation.value
+        XCTAssertNil(codexPool.transport(at: 0), "Claude-only 主机不应为 Codex 建立连接")
+        XCTAssertEqual(provider.callCount, 0, "preparedConfig 只作为首次缓存，不应立即重复请求")
+
+        // daemon 重载后 Claude 断开，而 Codex 从未连接，因此只有 Claude 的缓存被清空。
+        claudeTransport.failReceive()
+        for _ in 0..<100 {
+            guard await claude.hasReadyConnectionForTesting() else { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let claudeStillReady = await claude.hasReadyConnectionForTesting()
+        XCTAssertFalse(claudeStillReady)
+
+        // 走普通能力查询：不调用 refreshConfiguration，也不能读 Codex 那份未失效的旧缓存。
+        let codexAvailable = try await bundle.channelAvailable(runtimeProvider: "codex")
+        XCTAssertTrue(codexAvailable, "Claude 断线后普通刷新必须能发现新开启的 Codex")
+        let claudeAvailable = try await bundle.channelAvailable(runtimeProvider: "claude")
+        XCTAssertTrue(claudeAvailable)
+        XCTAssertEqual(provider.callCount, 1, "失效后合并成一次配置读取")
+    }
+
+    /// 同一主机从 Claude-only 切到 Codex-only：新建入口与模型选择都要收敛到新的可用通道，
+    /// 而已有的 Claude thread 必须保留自己的 Runtime 归属，不能被自动改派给 Codex。
+    func testHostSwitchFromClaudeOnlyToCodexOnlyUpdatesAvailabilityAndKeepsClaudeRoute() async throws {
+        let project = makeProject(id: "claude-to-codex")
+        let claudeOnly = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        // Codex-only：没有 claude channel，Codex 走顶层 runtime.gatewayAvailable。
+        let codexOnly = makeDirectAppServerConfig(project: project, gatewayAvailable: true)
+        let provider = SequencedDirectConfigProvider([codexOnly, codexOnly])
+        let codexPool = FakeCodexAppServerTransportPool()
+        let claudePool = FakeCodexAppServerTransportPool()
+        let codex = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            runtimeProvider: "codex",
+            transportFactory: { codexPool.make() },
+            initialConfig: claudeOnly,
+            configProvider: { try await provider.next() }
+        )
+        let claude = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            runtimeProvider: "claude",
+            transportFactory: { claudePool.make() },
+            initialConfig: claudeOnly,
+            configProvider: { try await provider.next() }
+        )
+        let bundle = AppServerRuntimeBundle(codexRuntime: codex, claudeRuntime: claude)
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: bundle)
+
+        let activation = Task { try await bundle.prepareForHostActivation() }
+        let claudeTransport = try await waitForFakeAppServerTransport(in: claudePool, index: 0)
+        let initialize = try await waitForFakeAppServerRequest(claudeTransport, method: "initialize")
+        transportResponse(claudeTransport, id: initialize.id, result: #"{"userAgent":"fake-claude"}"#)
+        try await activation.value
+        XCTAssertEqual(provider.callCount, 0)
+
+        // 切换前已存在的 Claude 会话。
+        bundle.routes.remember("claude", for: "thread-existing-claude")
+
+        claudeTransport.failReceive()
+        for _ in 0..<100 {
+            guard await claude.hasReadyConnectionForTesting() else { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let claudeStillReady = await claude.hasReadyConnectionForTesting()
+        XCTAssertFalse(claudeStillReady)
+
+        // 新建入口按生产路径查询：可用 Agent 收敛为 Codex。
+        let codexAvailable = try await client.runtimeChannelAvailable(runtimeProvider: "codex")
+        let claudeAvailable = try await client.runtimeChannelAvailable(runtimeProvider: "claude")
+        XCTAssertTrue(codexAvailable, "切换到 Codex-only 后必须认为 Codex 可用")
+        XCTAssertFalse(claudeAvailable, "已关闭的 Claude 通道不得继续报可用")
+        XCTAssertEqual(provider.callCount, 1, "两个查询共用一次合并后的配置读取")
+
+        // 模型选择随之更新，并且不再向已关闭的 Claude 发起连接。
+        let models = Task { try await client.modelOptions() }
+        let codexTransport = try await waitForFakeAppServerTransport(in: codexPool, index: 0)
+        let codexInitialize = try await waitForFakeAppServerRequest(codexTransport, method: "initialize")
+        transportResponse(codexTransport, id: codexInitialize.id, result: #"{"userAgent":"fake-codex"}"#)
+        let modelList = try await waitForFakeAppServerRequest(codexTransport, method: "model/list", after: 1)
+        transportResponse(
+            codexTransport,
+            id: modelList.id,
+            result: #"{"models":[{"id":"gpt-5-codex","title":"GPT-5 Codex","provider":"openai","isDefault":true}]}"#
+        )
+        let options = try await models.value
+        XCTAssertEqual(options.map(\.model), ["gpt-5-codex"])
+        XCTAssertEqual(options.first?.runtimeProvider, "codex")
+        XCTAssertNil(claudePool.transport(at: 1), "已关闭的 Claude 不得因模型刷新重新建连")
+
+        // 已有 Claude thread 保留原 Runtime 归属，不被改派给 Codex。
+        XCTAssertEqual(client.rememberedRuntimeRoute(forSessionID: "thread-existing-claude"), "claude")
+    }
+
     func testModelOptionsUseClaudeWhenCodexChannelIsDisabled() async throws {
         let project = makeProject(id: "claude-only-models")
         let config = makeDirectAppServerConfig(

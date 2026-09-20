@@ -79,6 +79,60 @@ final class ModuleControlsTests: XCTestCase {
         XCTAssertEqual(fixture.restoredNetwork?.previous, NetworkModuleState(allowLAN: false, allowTailscale: true))
     }
 
+    /// reload 把 lifecycle 置为 .starting 后，注销/登记失败且自动恢复也失败。
+    /// 操作必须结束在明确的失败/降级态并保留真实错误，不能停在"正在启动"把开关一直锁住。
+    func testFailedNetworkModuleChangeDoesNotRemainStarting() async {
+        let fixture = ModuleFixture(codex: true, claude: true, ts: true, lan: false)
+        let store = fixture.store()
+        await store.bootstrap()
+        XCTAssertEqual(store.lifecycle, .ready)
+
+        fixture.failNextRegistration = true
+        fixture.failNetworkRestore = true
+        await store.setLANEnabled(true)
+
+        XCTAssertFalse(store.isBusy)
+        XCTAssertNotEqual(store.lifecycle, .starting, "失败后不得继续假装正在启动")
+        XCTAssertNotEqual(store.lifecycle, .ready, "退出启动中不等于宣称服务健康")
+        XCTAssertNotNil(store.networkError)
+        XCTAssertEqual(store.moduleError(.lan), store.networkError)
+        // 服务状态仍可确认时应收敛到真实状态，而不是无差别标成失败。
+        XCTAssertEqual(store.lifecycle, .degraded(store.networkError ?? ""))
+    }
+
+    /// 状态也不可确认时同样不能留在 .starting，错误必须归到正确模块。
+    func testFailedNetworkModuleChangeSettlesWithoutTrustworthyStatus() async {
+        let fixture = ModuleFixture(codex: true, claude: true, ts: true, lan: false)
+        let store = fixture.store()
+        await store.bootstrap()
+
+        fixture.failNextRegistration = true
+        fixture.failNetworkRestore = true
+        fixture.failStatusReads = true
+        await store.setLANEnabled(true)
+
+        XCTAssertFalse(store.isBusy)
+        XCTAssertNotEqual(store.lifecycle, .starting)
+        XCTAssertNotEqual(store.lifecycle, .ready)
+        XCTAssertNotNil(store.moduleError(.lan))
+        XCTAssertNil(store.moduleError(.tailscale), "错误不得归到未操作的模块")
+    }
+
+    /// Codex 分支走同一收尾，不能只在网络路径生效。
+    func testFailedCodexModuleChangeDoesNotRemainStarting() async {
+        let fixture = ModuleFixture(codex: true, claude: true, ts: true, lan: true)
+        let store = fixture.store()
+        await store.bootstrap()
+
+        fixture.failNextRegistration = true
+        await store.setCodexEnabled(false)
+
+        XCTAssertFalse(store.isBusy)
+        XCTAssertNotEqual(store.lifecycle, .starting)
+        XCTAssertNotEqual(store.lifecycle, .ready)
+        XCTAssertNotNil(store.moduleError(.codex))
+    }
+
     func testClaudeToggleReloadsWhenDiskAlreadyMatchesButResidentDoesNot() async {
         let fixture = ModuleFixture(codex: true, claude: true, claudeOnDisk: false, ts: true, lan: false)
         let store = fixture.store()
@@ -122,6 +176,18 @@ private final class ModuleFixture: @unchecked Sendable {
     private var _registrationCalls = 0
     // Only read/written by the MainActor service-registration stub.
     @MainActor var failNextRegistration = false
+    /// 恢复也失败（模拟配置已被其他操作改动的 CAS 冲突）。
+    private var _failNetworkRestore = false
+    /// 失败收尾时状态不可确认，用于区分"读到真实状态"和"只能进入降级态"两条出口。
+    private var _failStatusReads = false
+    var failNetworkRestore: Bool {
+        get { lock.withLock { _failNetworkRestore } }
+        set { lock.withLock { _failNetworkRestore = newValue } }
+    }
+    var failStatusReads: Bool {
+        get { lock.withLock { _failStatusReads } }
+        set { lock.withLock { _failStatusReads = newValue } }
+    }
     var pairCalls: Int { lock.withLock { _pairCalls } }
     var codexCalls: Int { lock.withLock { _codexCalls } }
     var restoredNetwork: NetworkConfigurationResult? { lock.withLock { _restoredNetwork } }
@@ -172,7 +238,11 @@ private final class ModuleFixture: @unchecked Sendable {
     @MainActor func store() -> HostStore {
         let agent = AgentCommandClient(
             configExists: { true }, setup: { _ in throw ModuleTestError.unexpected },
-            status: { self.status() }, readiness: { self.status() }, statusAt: { _ in self.status() },
+            status: {
+                if self.failStatusReads { throw ModuleTestError.unexpected }
+                return self.status()
+            },
+            readiness: { self.status() }, statusAt: { _ in self.status() },
             doctor: { _ in DoctorFixResults(fixes: [], results: self.status().doctor) },
             configureClaude: { preference, _ in
                 self.lock.withLock {
@@ -225,7 +295,8 @@ private final class ModuleFixture: @unchecked Sendable {
                 }
             },
             restoreNetwork: { result in
-                self.lock.withLock {
+                if self.failNetworkRestore { throw ModuleTestError.unexpected }
+                return self.lock.withLock {
                     self._restoredNetwork = result
                     let restored = NetworkConfigurationResult(lanEnabled: result.previous!.allowLAN,
                                                               changed: true, restartRequired: true,

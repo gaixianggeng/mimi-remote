@@ -193,6 +193,9 @@ actor CodexAppServerSessionRuntime {
     let configProvider: () async throws -> CodexAppServerConfigResponse
     let deprecationDiagnosticSink: (CodexAppServerDeprecationDiagnostic) -> Void
     var config: CodexAppServerConfigResponse?
+    /// 丢弃配置的次数。Bundle 用它判断共享快照是否还有效：daemon 重载可能只让其中一个
+    /// Runtime 断线，而能力判断读的是同一份 channels，所以任一端失效都要让另一个也重读。
+    private(set) var configInvalidationSequence: UInt64 = 0
     var connection: CodexAppServerConnection?
     var connectionAttempt: CodexAppServerConnectionAttempt?
     var connectionAttemptWaiters: [UUID: CheckedContinuation<CodexAppServerPreparedConnection, Error>] = [:]
@@ -3277,6 +3280,17 @@ actor CodexAppServerSessionRuntime {
         config = snapshot
     }
 
+    func configSnapshot() -> CodexAppServerConfigResponse? {
+        config
+    }
+
+    /// 断线、换代或 daemon 重载后共享的 channels 快照不再可信。清空并递增计数，
+    /// 让持有本 Runtime 的一方（AppServerRuntimeBundle）能发现快照已经失效。
+    func invalidateConfigSnapshot() {
+        config = nil
+        configInvalidationSequence &+= 1
+    }
+
     func sendRecoveringFromStaleInitialization(
         _ request: CodexAppServerRequestSpec,
         timeout: TimeInterval? = nil
@@ -3327,7 +3341,7 @@ actor CodexAppServerSessionRuntime {
         serverRequestPumpTask = nil
         cancelThreadResumeTasks(for: stale)
         connection = nil
-        config = nil
+        invalidateConfigSnapshot()
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
         let affected = clearAllPendingServerRequests()
         for sessionID in affected.approvalSessionIDs {
