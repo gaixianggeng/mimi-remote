@@ -21,6 +21,9 @@ type agentAppServerRuntime struct {
 
 func prepareAgentAppServerRuntime(cfg config.Config) (*agentAppServerRuntime, error) {
 	result := &agentAppServerRuntime{}
+	if !cfg.Codex.IsEnabled() {
+		return result, nil
+	}
 	prepareCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	switch strings.ToLower(strings.TrimSpace(cfg.AppServer.Transport)) {

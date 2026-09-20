@@ -18,7 +18,14 @@ struct PairingView: View {
 
     var body: some View {
         Group {
-            if let pairing = store.pairing {
+            if !store.canPair || store.isBusy {
+                PairingUnavailableState(
+                    title: "配对暂不可用",
+                    description: store.isBusy ? "正在更新服务设置，请完成后刷新。" : store.pairingUnavailableReason,
+                    isRetrying: isRefreshing || store.isBusy,
+                    retry: { Task { await store.refresh(); await store.refreshTailcatStatus(); refreshPairing(network: .automatic) } }
+                )
+            } else if let pairing = store.pairing, store.availablePairingNetworks.contains(pairing.network) {
                 pairingContent(pairing)
             } else if let error = store.lastError {
                 PairingUnavailableState(
@@ -37,6 +44,8 @@ struct PairingView: View {
             PairingWindowBackdrop()
         }
         .task {
+            await store.refreshIfNeeded()
+            await store.refreshTailcatStatus()
             if store.pairing == nil {
                 await store.refreshPairing()
             }
@@ -52,6 +61,11 @@ struct PairingView: View {
             }
             refreshPairing(network: network)
         }
+        .onChange(of: store.availablePairingNetworks) { _, networks in
+            if let first = networks.first, !networks.contains(selectedNetwork) {
+                selectedNetwork = first
+            }
+        }
         .onDisappear {
             copyFeedbackTask?.cancel()
         }
@@ -66,7 +80,8 @@ struct PairingView: View {
 
                 PairingNetworkPicker(
                     selection: $selectedNetwork,
-                    isRefreshing: isRefreshing
+                    isRefreshing: isRefreshing,
+                    networks: store.availablePairingNetworks
                 )
                 .padding(.bottom, 20)
 
@@ -127,6 +142,7 @@ struct PairingView: View {
     }
 
     private func copyPairingLink(_ value: String) {
+        guard store.canPair, !store.isBusy, store.pairing?.pairURL == value else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
 
@@ -144,7 +160,7 @@ struct PairingView: View {
     }
 
     private func refreshPairing(network: PairingNetwork? = nil) {
-        guard !isRefreshing else { return }
+        guard !isRefreshing, !store.isBusy, store.canPair else { return }
         let targetNetwork = network ?? selectedNetwork
         isRefreshing = true
         Task {
@@ -191,16 +207,15 @@ private struct PairingIntroduction: View {
 private struct PairingNetworkPicker: View {
     @Binding var selection: PairingNetwork
     let isRefreshing: Bool
+    let networks: [PairingNetwork]
 
     var body: some View {
         VStack(spacing: 8) {
             Picker("配对网络", selection: $selection) {
-                Text("Tailscale")
-                    .tag(PairingNetwork.tailscale)
-                Text("Tailcat 实验")
-                    .tag(PairingNetwork.tailcat)
-                Text("局域网")
-                    .tag(PairingNetwork.localNetwork)
+                ForEach(networks) { network in
+                    Text(network == .localNetwork ? "局域网" : network == .tailcat ? "Tailcat" : "Tailscale")
+                        .tag(network)
+                }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -227,9 +242,9 @@ private struct PairingNetworkPicker: View {
         case .tailscale:
             "默认推荐 · 支持跨网络连接"
         case .localNetwork:
-            "设备需在同一局域网 · 首次启用会重启服务"
+            "设备需在同一局域网 · 刷新不会修改网络设置"
         case .tailcat:
-            "邀请实验 · 不依赖已安装的 Tailscale 客户端"
+            "独立通道 · 不依赖已安装的 Tailscale 客户端"
         }
     }
 

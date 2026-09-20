@@ -27,6 +27,9 @@ final class HostStore {
     private(set) var tailcatNotice: String?
     private(set) var isUpdatingLAN = false
     private(set) var lanError: String?
+    private(set) var codexError: String?
+    private(set) var networkError: String?
+    private(set) var updatingModule: HostModuleID?
     private(set) var photosAccess: PhotosAccessState = .notDetermined
     /// 启动阶段的补充说明，例如覆盖安装后正在重新登记后台服务。只在
     /// `.starting` 期间有值，进入其它生命周期状态时清空。
@@ -43,7 +46,7 @@ final class HostStore {
     }
 
     var claudeEnabled: Bool {
-        claudeConfiguration?.enabled ?? claudeRuntime?.enabled ?? false
+        status?.moduleStatus?.claudeEnabled ?? claudeConfiguration?.enabled ?? claudeRuntime?.enabled ?? false
     }
 
     var canChangeClaude: Bool {
@@ -51,7 +54,7 @@ final class HostStore {
     }
 
     var lanEnabled: Bool {
-        status?.networkStatus?.allowLAN ?? false
+        status?.moduleStatus?.lanEnabled ?? status?.networkStatus?.allowLAN ?? false
     }
 
     var canChangeLAN: Bool {
@@ -84,7 +87,7 @@ final class HostStore {
 
     var tailcatStatusDetail: String {
         if owner == .homebrew {
-            return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Tailcat 实验。"
+            return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Tailcat 模块。"
         }
         if let tailcatError { return tailcatError }
         if let tailcatNotice { return tailcatNotice }
@@ -93,18 +96,6 @@ final class HostStore {
             return "默认关闭。开启后会启动独立 sidecar，不会替换或重启现有 Tailscale 连接。"
         }
         return "已配对 \(tailcatStatus.pairedDeviceCount) 台设备。"
-    }
-
-    var experimentMenuStatusText: String? {
-        guard owner == .macApp else { return "不可管理" }
-        if isUpdatingClaude || isUpdatingTailcat { return "正在更新" }
-        let enabled = [claudeEnabled ? "Claude" : nil, tailcatEnabled ? "Tailcat" : nil].compactMap { $0 }
-        return enabled.isEmpty ? nil : enabled.joined(separator: "、") + " 已启用"
-    }
-
-    var experimentMenuAccessibilityLabel: String {
-        guard let status = experimentMenuStatusText else { return "实验功能" }
-        return "实验功能，\(status)"
     }
 
     var claudeStatusTitle: String {
@@ -123,7 +114,7 @@ final class HostStore {
 
     var claudeStatusDetail: String {
         if owner == .homebrew {
-            return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Claude 实验通道。"
+            return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Claude Code 模块。"
         }
         if let claudeError {
             return claudeError
@@ -383,9 +374,15 @@ final class HostStore {
 
     func refreshPairing(network: PairingNetwork? = nil) async {
         guard !isBusy else { return }
+        guard canPair else {
+            pairing = nil
+            lastError = pairingUnavailableReason
+            return
+        }
         pairingRefreshGeneration &+= 1
         let refreshGeneration = pairingRefreshGeneration
         lastError = nil
+        pairing = nil
         do {
             let nextPairing = try await resolvedPairing(for: network)
             // 较早的请求不能覆盖用户刚选择的网络和二维码。
@@ -402,11 +399,18 @@ final class HostStore {
     private func prepareAutomaticNetworkBeforeServiceStart() async throws {
         // 启动服务不得因为 Tailscale/配对探测失败而静默扩大到局域网监听。
         // 网络能力由用户显式开关；失败保留原配置并交给状态/配对界面处理。
-        _ = try? await agent.pair(.automatic)
+        // 服务启动不依赖是否有可用的外部配对地址。
     }
 
     private func resolvedPairing(for requestedNetwork: PairingNetwork?) async throws -> PairingInfo {
-        switch requestedNetwork ?? .automatic {
+        var selection = requestedNetwork ?? .automatic
+        if status?.moduleStatus != nil {
+            if selection == .automatic { selection = availablePairingNetworks.first ?? .automatic }
+            guard canPair, availablePairingNetworks.contains(selection) else {
+                throw AgentClientError.commandFailed(pairingUnavailableReason)
+            }
+        }
+        switch selection {
         case .automatic:
             // 自动模式只在当前已启用的连接方式中选择；不能为了生成二维码
             // 隐式打开 LAN，因为那会扩大 agentd 的网络暴露面。
@@ -421,33 +425,12 @@ final class HostStore {
     }
 
     private func localNetworkPairing() async throws -> PairingInfo {
-        guard owner == .macApp else {
-            throw AgentClientError.commandFailed("请先将 Homebrew 服务迁移到 Mimi Remote Mac，再启用局域网访问。")
+        guard lanEnabled else {
+            throw AgentClientError.commandFailed("局域网已关闭，请先在连接方式中明确启用。")
         }
-        let configuration = try await agent.setLANAccess(true)
-        var restartedForLAN = false
-        if configuration.restartRequired {
-            // LAN 是扩大监听范围；仅配置首次变化时重启，后续刷新二维码不再打断连接。
-            await restartService()
-            guard lifecycle == .ready else {
-                throw AgentClientError.commandFailed(lastError ?? "启用局域网后服务重启失败。")
-            }
-            restartedForLAN = true
-        }
-
-        var nextPairing = try await agent.pair(.localNetwork)
-        if !(await health.checkDirect(nextPairing.endpoint)) {
-            // 配置可能已开启但当前进程尚未加载；直连校验失败时只补一次重启。
-            if !restartedForLAN {
-                await restartService()
-                guard lifecycle == .ready else {
-                    throw AgentClientError.commandFailed(lastError ?? "局域网服务重启失败。")
-                }
-                nextPairing = try await agent.pair(.localNetwork)
-            }
-            guard await health.checkDirect(nextPairing.endpoint) else {
-                throw AgentClientError.commandFailed("局域网地址暂时不可访问，请检查 macOS 本地网络权限或防火墙设置。")
-            }
+        let nextPairing = try await agent.pair(.localNetwork)
+        guard await health.checkDirect(nextPairing.endpoint) else {
+            throw AgentClientError.commandFailed("局域网地址不可访问，请检查本地网络权限、防火墙或重新启动 Mimi 服务。")
         }
         return nextPairing
     }
@@ -572,43 +555,99 @@ final class HostStore {
     }
 
     func setLANEnabled(_ enabled: Bool) async {
-        guard !isBusy, owner == .macApp else {
-            lanError = "请先启动并接管 Mimi Remote Mac 服务。"
-            return
-        }
-        isBusy = true
-        isUpdatingLAN = true
-        lanError = nil
-        defer {
-            isUpdatingLAN = false
-            isBusy = false
-        }
+        await setNetworkModule(.localNetwork, enabled: enabled)
+    }
 
+    func setTailscaleEnabled(_ enabled: Bool) async {
+        await setNetworkModule(.tailscale, enabled: enabled)
+    }
+
+    func setCodexEnabled(_ enabled: Bool) async {
+        guard canChangeModules else { return }
+        isBusy = true
+        updatingModule = .codex
+        codexError = nil
+        invalidateModulePairing()
+        defer { updatingModule = nil; isBusy = false }
         do {
-            let result = try await agent.setLANAccess(enabled)
-            if result.restartRequired {
-                do {
+            let result = try await agent.configureCodex(enabled ? "enabled" : "disabled")
+            guard result.enabled == enabled, !enabled || result.available else {
+                codexError = result.message
+                return
+            }
+            do {
+                if result.restartRequired || status?.moduleStatus?.codexEnabled != enabled {
                     try await reloadMacAgentForConfigurationChange()
-                } catch {
-                    let updateError = error
-                    // 配置已写入但服务未能加载时恢复用户修改前的网络边界，
-                    // 避免 UI 显示关闭而 resident agentd 仍保持扩大监听。
-                    _ = try? await agent.setLANAccess(!enabled)
-                    try? await reloadMacAgentForConfigurationChange()
-                    lanError = "更新局域网设置失败：\(updateError.localizedDescription)。已尝试恢复修改前设置。"
-                    await refreshMacAgentStatus()
-                    return
                 }
+                try await confirmAppliedModules(codexEnabled: enabled)
+            } catch {
+                let cause = error.localizedDescription
+                if result.changed {
+                    do {
+                        let restored = try await agent.restoreCodex(result)
+                        try await reloadMacAgentForConfigurationChange()
+                        try await confirmAppliedModules(codexEnabled: restored.enabled)
+                        codexError = "更新 Codex 失败：\(cause)。已恢复修改前设置。"
+                    } catch {
+                        codexError = "更新 Codex 失败：\(cause)。自动恢复未完成：\(error.localizedDescription)"
+                    }
+                } else { codexError = cause }
             }
-            await refreshMacAgentStatus()
-            if !enabled, pairingNetwork == .localNetwork {
-                pairing = nil
-                pairingNetwork = .tailscale
+        } catch { codexError = error.localizedDescription }
+    }
+
+    private func setNetworkModule(_ network: PairingNetwork, enabled: Bool) async {
+        guard canChangeModules else { return }
+        isBusy = true
+        updatingModule = network == .tailscale ? .tailscale : .lan
+        isUpdatingLAN = network == .localNetwork
+        networkError = nil
+        lanError = nil
+        invalidateModulePairing()
+        defer { updatingModule = nil; isUpdatingLAN = false; isBusy = false }
+        do {
+            let result = try await agent.configureNetwork(network, enabled)
+            do {
+                if result.restartRequired || status?.moduleStatus?.lanEnabled != result.lanEnabled ||
+                    status?.moduleStatus?.tailscaleEnabled != result.tailscaleEnabled {
+                    try await reloadMacAgentForConfigurationChange()
+                }
+                try await confirmAppliedModules(network: result)
+            } catch {
+                let cause = error.localizedDescription
+                if result.changed {
+                    do {
+                        let restored = try await agent.restoreNetwork(result)
+                        try await reloadMacAgentForConfigurationChange()
+                        try await confirmAppliedModules(network: restored)
+                        networkError = "更新连接失败：\(cause)。已恢复修改前设置。"
+                    } catch {
+                        networkError = "更新连接失败：\(cause)。自动恢复未完成：\(error.localizedDescription)"
+                    }
+                } else { networkError = cause }
             }
-        } catch {
-            lanError = error.localizedDescription
-            await refreshMacAgentStatus()
+        } catch { networkError = error.localizedDescription }
+        lanError = networkError
+    }
+
+    private func confirmAppliedModules(codexEnabled: Bool? = nil, network: NetworkConfigurationResult? = nil) async throws {
+        for attempt in 0..<3 {
+            if let current = try await fetchAndApplyLatestStatus(), let modules = current.moduleStatus,
+               current.serviceOK,
+               codexEnabled == nil || modules.codexEnabled == codexEnabled,
+               network == nil || (modules.lanEnabled == network?.lanEnabled &&
+                                  modules.tailscaleEnabled == network?.tailscaleEnabled) {
+                return
+            }
+            if attempt < 2 { try await Task.sleep(for: .milliseconds(300)) }
         }
+        throw AgentClientError.commandFailed("运行中的 agentd 尚未确认模块设置，请检查版本并重启服务。")
+    }
+
+    private func invalidateModulePairing() {
+        pairingRefreshGeneration &+= 1
+        statusRequestSequence &+= 1
+        pairing = nil
     }
 
     func setClaudeEnabled(_ enabled: Bool) async {
@@ -619,6 +658,7 @@ final class HostStore {
         isBusy = true
         isUpdatingClaude = true
         claudeError = nil
+        invalidateModulePairing()
         defer {
             isUpdatingClaude = false
             isBusy = false
@@ -654,11 +694,15 @@ final class HostStore {
 
     func refreshTailcatStatus() async {
         guard owner == .macApp else { return }
+        let generation = pairingRefreshGeneration
         do {
-            tailcatStatus = try await agent.tailcatStatus()
-            tailcatError = nil
-            tailcatNotice = nil
+            let current = try await agent.tailcatStatus()
+            guard generation == pairingRefreshGeneration else { return }
+            tailcatStatus = current
+            if !isUpdatingTailcat { tailcatError = nil }
+            if current.error != nil || !current.running { tailcatNotice = nil }
         } catch {
+            guard generation == pairingRefreshGeneration else { return }
             tailcatError = error.localizedDescription
         }
     }
@@ -671,6 +715,7 @@ final class HostStore {
         isBusy = true
         isUpdatingTailcat = true
         tailcatError = nil
+        invalidateModulePairing()
         tailcatNotice = nil
         defer {
             isUpdatingTailcat = false
@@ -697,6 +742,7 @@ final class HostStore {
         isBusy = true
         isUpdatingTailcat = true
         tailcatError = nil
+        invalidateModulePairing()
         tailcatNotice = nil
         let wasEnabled = tailcatEnabled
         defer {
@@ -722,6 +768,7 @@ final class HostStore {
         isBusy = true
         isUpdatingTailcat = true
         tailcatError = nil
+        invalidateModulePairing()
         tailcatNotice = nil
         defer {
             isUpdatingTailcat = false
@@ -962,7 +1009,7 @@ final class HostStore {
                 : result.message
             return result.restartRequired
         } catch {
-            // Claude 是实验通道；预检失败不能破坏 Codex 主服务启动。
+            // Claude 预检失败不能阻止 Mac 控制面启动。
             claudeError = "Claude 自动检测失败：\(error.localizedDescription)"
             return false
         }
@@ -1293,6 +1340,7 @@ final class HostStore {
               let previousStatus = status,
               previousStatus.endpoint == current.endpoint,
               previousStatus.serverVersion == current.serverVersion,
+              previousStatus.moduleStatus == current.moduleStatus,
               let previousSnapshot = previousStatus.runtimeStatus
         else {
             return current
@@ -1318,7 +1366,9 @@ final class HostStore {
             doctorOK: current.doctorOK,
             doctor: current.doctor,
             pairExpires: current.pairExpires,
-            runtimeStatus: staleSnapshot
+            runtimeStatus: staleSnapshot,
+            networkStatus: current.networkStatus,
+            moduleStatus: current.moduleStatus
         )
     }
 
@@ -1605,7 +1655,7 @@ final class HostStore {
                     reason: enabled ? "ready" : "disabled_by_user",
                     message: enabled
                         ? "已检测到 Claude Code 和兼容的 Claude bridge。"
-                        : "Claude 实验通道已关闭。"
+                        : "Claude Code 模块已关闭。"
                 )
             },
             setLANAccess: { enabled in

@@ -80,18 +80,6 @@ struct PairingInfo: Codable, Equatable, Sendable {
     }
 }
 
-struct NetworkConfigurationResult: Codable, Equatable, Sendable {
-    let lanEnabled: Bool
-    let changed: Bool
-    let restartRequired: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case lanEnabled = "lan_enabled"
-        case changed
-        case restartRequired = "restart_required"
-    }
-}
-
 struct TailcatStatus: Codable, Equatable, Sendable {
     let enabled: Bool
     let running: Bool
@@ -368,7 +356,8 @@ struct AgentRuntimeRateLimitWindow: Codable, Equatable, Sendable {
     }
 
     var remainingFraction: Double? {
-        usedPercent.map { min(max(1 - $0 / 100, 0), 1) }
+        guard let usedPercent, usedPercent.isFinite else { return nil }
+        return min(max(1 - usedPercent / 100, 0), 1)
     }
 
     var remainingPercentText: String? {
@@ -443,6 +432,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
     let pairExpires: String?
     let runtimeStatus: AgentRuntimeStatusSnapshot?
     let networkStatus: AgentNetworkStatus?
+    let moduleStatus: AgentModuleStatus?
 
     enum CodingKeys: String, CodingKey {
         case processOK = "process_ok"
@@ -459,6 +449,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         case pairExpires = "pair_expires"
         case runtimeStatus = "runtime_status"
         case networkStatus = "network_status"
+        case moduleStatus = "module_status"
     }
 
     init(
@@ -475,7 +466,8 @@ struct AgentStatus: Codable, Equatable, Sendable {
         doctor: AgentDoctorResults,
         pairExpires: String?,
         runtimeStatus: AgentRuntimeStatusSnapshot? = nil,
-        networkStatus: AgentNetworkStatus? = nil
+        networkStatus: AgentNetworkStatus? = nil,
+        moduleStatus: AgentModuleStatus? = nil
     ) {
         self.processOK = processOK
         self.serviceOK = serviceOK
@@ -491,6 +483,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         self.pairExpires = pairExpires
         self.runtimeStatus = runtimeStatus
         self.networkStatus = networkStatus
+        self.moduleStatus = moduleStatus
     }
 
     init(from decoder: Decoder) throws {
@@ -517,7 +510,8 @@ struct AgentStatus: Codable, Equatable, Sendable {
             // 该快照，不能让健康检查、迁移和服务控制一起解码失败。
             runtimeStatus = nil
         }
-        networkStatus = try container.decodeIfPresent(AgentNetworkStatus.self, forKey: .networkStatus)
+        networkStatus = try? container.decodeIfPresent(AgentNetworkStatus.self, forKey: .networkStatus)
+        moduleStatus = try? container.decodeIfPresent(AgentModuleStatus.self, forKey: .moduleStatus)
     }
 
     var hasAgentVersionMismatch: Bool {

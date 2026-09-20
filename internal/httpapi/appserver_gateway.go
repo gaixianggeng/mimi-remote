@@ -544,6 +544,9 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			CWDScope:         "agentd_allowlist",
 		},
 	}}
+	if !r.cfg.Codex.IsEnabled() {
+		channels = channels[:0]
+	}
 	if r.cfg.Claude.Enabled {
 		probe := r.claudeBridgeProbe()
 		claudeRateLimitsAvailable := probe.Healthy && claudebridge.IsSupported(probe.Version)
@@ -648,6 +651,10 @@ func (r *Router) appServerGatewayWS(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Request) {
+	if !r.cfg.Codex.IsEnabled() {
+		writeError(w, http.StatusServiceUnavailable, "Codex 已在 Mimi 中关闭")
+		return
+	}
 	// 必须先验证外侧请求确实要升级 WebSocket。普通 GET 或畸形握手不能触发本机
 	// app-server 拨号，否则一个有效的外侧 token 就能被用来批量消耗 upstream 连接。
 	if !websocket.IsWebSocketUpgrade(req) {
@@ -868,6 +875,9 @@ func writeCodexGatewayRuntimeError(conn *websocket.Conn, code string, message st
 }
 
 func (r *Router) appServerUpstreamWebSocketURL() (string, error) {
+	if !r.cfg.Codex.IsEnabled() {
+		return "", fmt.Errorf("Codex 已在 Mimi 中关闭")
+	}
 	if r.appServerSSH == nil {
 		return "", fmt.Errorf("app_server transport 未配置")
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/httpapi"
+	"github.com/gaixianggeng/mimi-remote/internal/networkaccess"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/session"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
@@ -536,6 +537,9 @@ func runStatus(args []string) error {
 	status["doctor_ok"] = doctorResults.OK
 	status["doctor"] = doctorResults
 	status["network_status"] = networkStatus
+	if modules := fetchModuleStatusForCommand(loopbackEndpoint, result.Token); modules != nil {
+		status["module_status"] = modules
+	}
 	status["pair_expires"] = result.PairExpiresAt
 	if runtimeStatusCh != nil {
 		if err := attachRuntimeStatus(status, runtimeStatus, *refreshRuntime); err != nil {
@@ -712,54 +716,6 @@ func runPairWithWriters(args []string, stdout io.Writer, stderr io.Writer) error
 	return nil
 }
 
-func runNetwork(args []string) error {
-	fs := flag.NewFlagSet("network", flag.ExitOnError)
-	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
-	lanEnabled := fs.Bool("lan-enabled", false, "是否允许局域网访问")
-	asJSON := fs.Bool("json", false, "输出 JSON")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-	lanFlagProvided := false
-	fs.Visit(func(item *flag.Flag) {
-		if item.Name == "lan-enabled" {
-			lanFlagProvided = true
-		}
-	})
-	if !lanFlagProvided {
-		return fmt.Errorf("必须显式传入 --lan-enabled=true 或 --lan-enabled=false")
-	}
-	if err := prepareDefaultConfigMigration(fs, *configPath, os.Stderr); err != nil {
-		return err
-	}
-	if *lanEnabled {
-		if err := ensurePlatformLANAccessAllowed(); err != nil {
-			return err
-		}
-	}
-	changed, err := agentsetup.SetLANAccess(*configPath, *lanEnabled)
-	if err != nil {
-		return err
-	}
-	result := map[string]any{
-		"lan_enabled":      *lanEnabled,
-		"changed":          changed,
-		"restart_required": changed,
-	}
-	if *asJSON {
-		return printJSON(result)
-	}
-	state := "关闭"
-	if *lanEnabled {
-		state = "开启"
-	}
-	fmt.Fprintf(os.Stdout, "局域网访问：%s\n", state)
-	if changed {
-		fmt.Fprintln(os.Stdout, "配置已更新，需要重启 agentd 后生效。")
-	}
-	return nil
-}
-
 func runDoctor(args []string) error {
 	doctorCtx, cancelDoctor := context.WithTimeout(context.Background(), 75*time.Second)
 	defer cancelDoctor()
@@ -875,8 +831,14 @@ func loadRuntimeConfig(args []string, forDoctor bool, configure ...func(*flag.Fl
 		}
 	}
 	if !forDoctor && fileExists(*configPath) {
-		if err := ensureAppServerTransportMigration(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
+		beforeMigration, err := config.LoadForDoctor(*configPath)
+		if err != nil {
 			return config.Config{}, nil, nil, err
+		}
+		if beforeMigration.Codex.IsEnabled() {
+			if err := ensureAppServerTransportMigration(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
+				return config.Config{}, nil, nil, err
+			}
 		}
 		// serve 也必须自检并修复路径：用户登录后由 Homebrew 自动拉起时，不会先经过 up/start。
 		if err := ensureCodexCLIAvailable(*configPath); err != nil {
@@ -1081,7 +1043,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	listenAddresses := agentDListenAddresses(cfg.Listen, cfg.Network.AllowLAN)
+	listenAddresses := moduleListenAddresses(cfg)
 	listeners := make([]net.Listener, 0, len(listenAddresses))
 	for _, address := range listenAddresses {
 		listener, err := net.Listen("tcp", address)
@@ -1091,6 +1053,9 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			}
 			_ = shutdownServeResources(manager, apiRouter, appServerRuntime)
 			return fmt.Errorf("监听 %s 失败：%w", address, err)
+		}
+		if cfg.HasNetworkModuleControls() {
+			listener = networkaccess.Wrap(listener, networkaccess.Policy{Tailscale: cfg.TailscaleAccessEnabled(), LAN: cfg.LANAccessEnabled()})
 		}
 		listeners = append(listeners, listener)
 	}
@@ -1581,6 +1546,13 @@ func printJSONTo(w io.Writer, value any) error {
 }
 
 func ensureCodexCLIAvailable(configPath string) error {
+	current, err := config.LoadForDoctor(configPath)
+	if err != nil {
+		return err
+	}
+	if !current.Codex.IsEnabled() {
+		return nil
+	}
 	// Homebrew service 的 PATH 通常比交互终端更窄。先把有效路径原子写回配置，
 	// 后台进程才不会在本次检查通过后又因找不到同一个 Codex 而失败。
 	if _, _, err := agentsetup.RepairCodexBin(configPath); err != nil {

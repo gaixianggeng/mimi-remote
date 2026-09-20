@@ -324,8 +324,15 @@ func PairForNetwork(ctx context.Context, configPath string, network PairingNetwo
 }
 
 func ResultFromConfig(ctx context.Context, configPath string, cfg config.Config) Result {
-	result, _ := ResultFromConfigForNetwork(ctx, configPath, cfg, PairingNetworkAuto)
-	return result
+	result, err := ResultFromConfigForNetwork(ctx, configPath, cfg, PairingNetworkAuto)
+	if err == nil {
+		return result
+	}
+	_, port := splitListen(cfg.Listen)
+	if port == "" {
+		port = defaultAgentDPort
+	}
+	return Result{ConfigPath: configPath, Endpoint: httpEndpoint("127.0.0.1", port), Token: cfg.Auth.Token, Warnings: []string{err.Error()}}
 }
 
 func ResultFromConfigForNetwork(
@@ -344,6 +351,9 @@ func resultFromConfigForNetwork(
 	network PairingNetwork,
 	lookups pairingNetworkLookups,
 ) (Result, error) {
+	if !cfg.HasEnabledAgent() {
+		return Result{}, fmt.Errorf("全部 AI 编程助手已关闭，请先启用至少一个助手")
+	}
 	endpoint, warnings, err := pairingEndpoint(ctx, cfg, network, lookups)
 	if err != nil {
 		return Result{}, err

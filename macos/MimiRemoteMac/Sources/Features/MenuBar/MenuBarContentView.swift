@@ -33,28 +33,33 @@ struct MenuBarContentView: View {
 
             AppUpdateNotice(updates: updates)
 
-            if let status = store.status {
-                Divider()
-                    .opacity(0.45)
-                    .padding(.top, 11)
-
-                MenuConnectionSummary(status: status, owner: store.owner)
-                    .padding(.vertical, 9)
-
-                Divider()
-                    .opacity(0.45)
-
-                MenuRuntimeSummary(
-                    snapshot: status.runtimeStatus,
-                    serviceAvailable: status.serviceOK,
-                    owner: store.owner,
-                    lifecycle: store.lifecycle
-                )
-                .padding(.vertical, 9)
-
-                Divider()
-                    .opacity(0.45)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    ModuleControlsGroup(store: store, group: .agents)
+                    Divider()
+                    ModuleControlsGroup(store: store, group: .connections)
+                    Divider()
+                    DisclosureGroup("诊断摘要") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(store.doctor?.ok == true ? "最近一次基础检查通过" : "可运行检查以定位服务问题")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ForEach((store.doctor?.checks ?? []).filter { !$0.ok }.prefix(3)) { check in
+                                Text(check.message).font(.caption)
+                            }
+                            HStack {
+                                Button("检查") { Task { await store.runDoctor(fix: false) } }
+                                Button("完整报告与日志…") { presentWindow(.diagnostics) }
+                            }
+                            .disabled(store.isBusy)
+                        }
+                        .padding(.top, 6)
+                    }
+                }
+                .padding(.vertical, 12)
             }
+            .frame(maxHeight: 460)
+            .scrollBounceBehavior(.basedOnSize)
 
             if let lastError = store.lastError {
                 MenuStatusMessage(message: lastError)
@@ -76,104 +81,39 @@ struct MenuBarContentView: View {
             }
 
             VStack(spacing: 0) {
-                MenuActionRow(
-                    title: "配对设备…",
-                    systemImage: "qrcode",
-                    isEnabled: store.status != nil
-                ) {
+                MenuActionRow(title: "配对设备…", systemImage: "qrcode", isEnabled: !store.isBusy) {
+                    // 空状态也可打开：说明是缺少助手、连接方式，还是服务未启动。
                     presentWindow(.pairing)
                 }
-
-                Divider()
-                    .opacity(MenuBarLayout.actionDividerOpacity)
-                    .padding(.leading, MenuBarLayout.textColumnLeading)
-
-                MenuActionRow(
-                    title: "运行诊断…",
-                    systemImage: "stethoscope"
-                ) {
-                    presentWindow(.diagnostics)
-                }
-
-                Divider()
-                    .opacity(MenuBarLayout.actionDividerOpacity)
-                    .padding(.leading, MenuBarLayout.textColumnLeading)
-
-                MenuActionRow(
-                    title: ExperimentMenuRouting.menuTitle,
-                    systemImage: "flask",
-                    trailingText: store.experimentMenuStatusText,
-                    accessibilityLabel: store.experimentMenuAccessibilityLabel
-                ) {
-                    // 菜单首层只导航，不直接切换实验开关：配置执行需要保留
-                    // HostStore 的单 writer、确认和重启语义，避免误触改变服务状态。
-                    presentWindow(.experiments)
-                }
-
-                Divider()
-                    .opacity(MenuBarLayout.actionDividerOpacity)
-                    .padding(.leading, MenuBarLayout.textColumnLeading)
-
-                MenuActionRow(
-                    title: updates.isChecking ? "正在检查更新…" : "检查更新…",
-                    systemImage: "arrow.down.circle",
-                    isEnabled: !updates.isChecking,
-                    isWorking: updates.isChecking
-                ) {
-                    openSettings()
-                    activateApplication()
-                    Task { await updates.check(manual: true) }
-                }
-
-                Divider()
-                    .opacity(MenuBarLayout.actionDividerOpacity)
-                    .padding(.leading, MenuBarLayout.textColumnLeading)
-
-                MenuActionRow(
-                    title: "设置",
-                    systemImage: "gearshape"
-                ) {
+                MenuActionRow(title: "设置", systemImage: "gearshape") {
                     openSettings()
                     activateApplication()
                 }
-
-                if store.owner == .macApp {
-                    Divider()
-                        .opacity(MenuBarLayout.actionDividerOpacity)
-                        .padding(.leading, MenuBarLayout.textColumnLeading)
-
-                    MenuActionRow(
-                        title: "重新启动服务",
-                        systemImage: "arrow.clockwise",
-                        isEnabled: !store.isBusy,
-                        showsDisclosure: false,
-                        isWorking: store.isBusy
-                    ) {
-                        Task { await store.restartService() }
+                Menu("更多") {
+                    Button("检查更新…") {
+                        openSettings()
+                        activateApplication()
+                        Task { await updates.check(manual: true) }
                     }
+                    .disabled(updates.isChecking)
+                    if store.owner == .macApp {
+                        Button("重新启动服务…") { presentRestartConfirmation() }
+                            .disabled(store.isBusy)
+                    }
+                    Divider()
+                    Button("退出并停止服务…", role: .destructive) { presentStopAndQuitConfirmation() }
+                        .disabled(store.isBusy)
                 }
-
-                Divider()
-                    .opacity(MenuBarLayout.actionDividerOpacity)
-                    .padding(.leading, MenuBarLayout.textColumnLeading)
-
-                MenuActionRow(
-                    title: store.isStoppingForQuit ? "正在停止并退出…" : "退出并停止服务…",
-                    systemImage: "power",
-                    isEnabled: !store.isBusy,
-                    role: .destructive,
-                    showsDisclosure: false,
-                    isWorking: store.isStoppingForQuit
-                ) {
-                    presentStopAndQuitConfirmation()
-                }
+                .menuStyle(.borderlessButton)
+                .padding(.horizontal, MenuBarLayout.sectionInset)
+                .frame(height: 32)
             }
             .padding(.top, 6)
         }
         .padding(.horizontal, MenuBarLayout.contentInset)
         .padding(.top, MenuBarLayout.contentInset)
         .padding(.bottom, MenuBarLayout.bottomInset)
-        .frame(width: 340)
+        .frame(width: 360)
         .background(MenuBarWindowPositionGuard())
         .animation(
             reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1),
@@ -181,11 +121,15 @@ struct MenuBarContentView: View {
         )
         .task {
             await store.refreshIfNeeded()
+            await store.refreshTailcatStatus()
         }
     }
 
     private func refreshStatus() {
-        Task { await store.refresh() }
+        Task {
+            await store.refresh()
+            await store.refreshTailcatStatus()
+        }
     }
 
     private func performPrimaryAction() {
@@ -209,6 +153,19 @@ struct MenuBarContentView: View {
         // 等本轮菜单跟踪结束后再激活，避免系统仍把焦点留在刚关闭的 MenuBarExtra 上。
         DispatchQueue.main.async {
             NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+    }
+
+    private func presentRestartConfirmation() {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "重新启动 Mac 服务？"
+            alert.informativeText = "移动连接会短暂断开，执行中的任务可能受影响。已有配置和配对不会删除。"
+            alert.addButton(withTitle: "重新启动")
+            alert.addButton(withTitle: "取消")
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            Task { await store.restartService() }
         }
     }
 
@@ -326,7 +283,7 @@ private struct MenuStatusHeader: View {
         case .notConfigured: "完成 Mac 端设置"
         case .migrationRequired: "Homebrew 服务正在运行"
         case .starting: "正在启动 Mimi Remote"
-        case .ready: "Mimi Remote 已连接"
+        case .ready: "Mac 服务运行中"
         case .degraded: "服务需要处理"
         case .stopped: "服务已停止"
         case .failed: "服务启动失败"
@@ -339,7 +296,7 @@ private struct MenuStatusHeader: View {
         case .notConfigured: "选择代码目录后即可配对移动设备。"
         case .migrationRequired: "可安全迁移，现有配置和配对都会保留。"
         case .starting: startingDetail ?? "移动设备连接会在服务就绪后自动恢复。"
-        case .ready: "Mac 端服务运行正常。"
+        case .ready: "管理 AI 编程助手与移动连接。"
         case .degraded(let message), .failed(let message): message
         case .stopped: "打开 App 或重新登录后可以再次启动。"
         }
@@ -353,595 +310,6 @@ private struct MenuStatusHeader: View {
         case .stopped: .secondary
         case .failed: .red
         }
-    }
-}
-
-private struct MenuConnectionSummary: View {
-    let status: AgentStatus
-    let owner: ServiceOwner
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            MenuMetadataRow(systemImage: "network") {
-                Text(status.endpoint)
-                    .font(.caption.monospaced())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-            }
-
-            MenuMetadataRow(systemImage: "shippingbox") {
-                Text("App \(appVersionLabel) · agentd \(runningAgentVersion)")
-                    .font(.caption2)
-                    .foregroundStyle(status.hasAgentVersionMismatch ? Color.orange : Color.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-
-            MenuMetadataRow(systemImage: ownerSymbol) {
-                Text("\(ownerTitle) · \(status.projects) 个项目")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(ownerColor)
-            }
-        }
-        .padding(.horizontal, MenuBarLayout.sectionInset)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var appVersionLabel: String {
-        let version = Bundle.main.object(
-            forInfoDictionaryKey: "CFBundleShortVersionString"
-        ) as? String
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-        guard let version, !version.isEmpty else { return "版本未知" }
-        guard let build, !build.isEmpty else { return version }
-        return "\(version) (\(build))"
-    }
-
-    private var runningAgentVersion: String {
-        status.serverVersion ?? status.version
-    }
-
-    private var ownerTitle: String {
-        switch owner {
-        case .none: "未托管"
-        case .macApp: "App 托管"
-        case .homebrew: "Homebrew"
-        }
-    }
-
-    private var ownerColor: Color {
-        switch owner {
-        case .none: .secondary
-        case .macApp: .mimiPrimary
-        case .homebrew: .orange
-        }
-    }
-
-    private var ownerSymbol: String {
-        switch owner {
-        case .none: "questionmark.circle"
-        case .macApp: "app.fill"
-        case .homebrew: "shippingbox.fill"
-        }
-    }
-}
-
-private struct MenuMetadataRow<Content: View>: View {
-    let systemImage: String
-    @ViewBuilder let content: Content
-
-    init(systemImage: String, @ViewBuilder content: () -> Content) {
-        self.systemImage = systemImage
-        self.content = content()
-    }
-
-    var body: some View {
-        HStack(spacing: MenuBarLayout.symbolTextSpacing) {
-            Image(systemName: systemImage)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.tertiary)
-                .frame(width: MenuBarLayout.symbolColumnWidth)
-            content
-            Spacer(minLength: 0)
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-private struct MenuRuntimeSummary: View {
-    let snapshot: AgentRuntimeStatusSnapshot?
-    let serviceAvailable: Bool
-    let owner: ServiceOwner
-    let lifecycle: HostLifecycleState
-
-    var body: some View {
-        let codex = runtime(id: "codex")
-        let claude = runtime(id: "claude")
-        let usageSlots = MenuRuntimePresentation.usageSlots(codex: codex, claude: claude)
-
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 5) {
-                Text("AI 运行时")
-                    .font(.caption2.weight(.semibold))
-                    .textCase(.uppercase)
-
-                Spacer(minLength: 4)
-
-                if snapshot?.refreshing == true {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .accessibilityLabel("正在刷新运行时状态")
-                }
-
-                if let snapshotStatusText {
-                    Text(snapshotStatusText)
-                        .font(.caption2)
-                }
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, MenuBarLayout.sectionInset)
-
-            if !usageSlots.isEmpty {
-                MenuRuntimeUsageOverview(slots: usageSlots)
-                    // 先展示额度总览，再展示各运行时详情，扫描顺序与信息层级一致。
-                    .padding(.horizontal, MenuBarLayout.sectionInset)
-            }
-
-            MenuRuntimeRow(
-                runtime: codex,
-                fallbackTitle: "Codex",
-                systemImage: "chevron.left.forwardslash.chevron.right",
-                serviceAvailable: serviceAvailable,
-                isRefreshing: snapshot?.refreshing == true,
-                isStale: isStale,
-                missingDetail: missingDetail
-            )
-
-            MenuRuntimeRow(
-                runtime: claude,
-                fallbackTitle: "Claude",
-                systemImage: "sparkles",
-                serviceAvailable: serviceAvailable,
-                isRefreshing: snapshot?.refreshing == true,
-                isStale: isStale,
-                missingDetail: missingDetail
-            )
-        }
-    }
-
-    private func runtime(id: String) -> AgentRuntimeStatus? {
-        snapshot?.runtimes.first { $0.id == id }
-    }
-
-    private var isStale: Bool {
-        guard serviceAvailable, lifecycleAllowsFreshStatus else { return true }
-        return snapshot?.isExpired() == true
-    }
-
-    private var lifecycleAllowsFreshStatus: Bool {
-        switch lifecycle {
-        case .ready, .migrationRequired:
-            return true
-        default:
-            return false
-        }
-    }
-
-    private var missingDetail: String {
-        if owner == .homebrew {
-            return "升级或迁移到新版 Mac App 后可显示运行时状态。"
-        }
-        if !serviceAvailable {
-            return "Mac 服务不可用。"
-        }
-        return "运行时状态暂不可获取，请刷新或运行诊断。"
-    }
-
-    private var snapshotStatusText: String? {
-        if snapshot?.refreshing == true {
-            return snapshot?.checkedDate == nil ? "正在首次获取" : "后台刷新"
-        }
-        if isStale, snapshot != nil {
-            return "状态可能已过期"
-        }
-        if let checkedDate = snapshot?.checkedDate {
-            return "更新于 \(checkedDate.formatted(date: .omitted, time: .shortened))"
-        }
-        if owner == .homebrew {
-            return "需要升级"
-        }
-        return nil
-    }
-}
-
-private struct MenuRuntimeRow: View {
-    let runtime: AgentRuntimeStatus?
-    let fallbackTitle: String
-    let systemImage: String
-    let serviceAvailable: Bool
-    let isRefreshing: Bool
-    let isStale: Bool
-    let missingDetail: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: MenuBarLayout.symbolTextSpacing) {
-            Image(systemName: systemImage)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(stateColor)
-                .frame(width: MenuBarLayout.symbolColumnWidth, height: 19)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(runtime?.title ?? fallbackTitle)
-                        .font(.callout.weight(.semibold))
-
-                    Spacer(minLength: 4)
-
-                    Circle()
-                        .fill(stateColor)
-                        .frame(width: 6, height: 6)
-                        .accessibilityHidden(true)
-
-                    Text(stateTitle)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(stateTextColor)
-
-                    if let accountLabel {
-                        Text("· \(accountLabel)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if MenuRuntimePresentation.versionText(for: runtime) != nil ||
-                    runtime?.startedDate != nil
-                {
-                    TimelineView(.periodic(from: .now, by: 60)) { context in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            if let versionText = MenuRuntimePresentation.versionText(for: runtime) {
-                                Text(versionText)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-
-                            Spacer(minLength: 2)
-
-                            if let uptime = MenuRuntimePresentation.uptimeText(
-                                for: runtime,
-                                at: context.date
-                            ) {
-                                Label(uptime, systemImage: "clock")
-                                    .fixedSize(horizontal: true, vertical: false)
-                            }
-                        }
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    }
-                }
-
-                if let quotaNoticeText {
-                    Text(quotaNoticeText)
-                        .font(.caption2.weight(quotaIsExhausted ? .semibold : .regular))
-                        .foregroundStyle(quotaIsExhausted ? Color.red : Color.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if let creditSummary {
-                    Text(creditSummary)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if !hasUsageData, quotaNoticeText == nil, creditSummary == nil {
-                    Text(detailText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-        .padding(.horizontal, MenuBarLayout.sectionInset)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var hasUsageData: Bool {
-        guard let limits = runtime?.rateLimits else { return false }
-        return limits.windows.contains {
-            $0.usedPercent != nil || $0.resetsAt != nil || $0.windowDurationMins != nil
-        }
-    }
-
-    private var stateTitle: String {
-        if runtime?.state == .disabled { return "未启用" }
-        // stale-while-revalidate：有旧快照时继续展示最后已知连接状态，
-        // 刷新进度由分区标题承接，不把两行都降级成“过期”。
-        if isStale, !isRefreshing { return "状态已过期" }
-        if isRefreshing, runtime?.reason == "refresh_in_progress" {
-            return "正在刷新"
-        }
-        guard let runtime else {
-            return serviceAvailable ? "状态未知" : "不可用"
-        }
-        switch runtime.state {
-        case .connected: return "已连接"
-        case .available: return "运行时可用"
-        case .signedOut: return "未登录"
-        case .disabled: return "未启用"
-        case .unavailable: return "不可用"
-        }
-    }
-
-    private var accountLabel: String? {
-        if runtime?.authMode == "api_key" {
-            return "API Key"
-        }
-        if let plan = runtime?.effectivePlanType {
-            return formattedAccountValue(plan)
-        }
-        guard let authMode = runtime?.authMode else { return nil }
-        switch authMode {
-        case "api_key": return "API Key"
-        case "chatgpt": return "ChatGPT"
-        case "oauth": return "OAuth"
-        case "bedrock": return "Bedrock"
-        default: return formattedAccountValue(authMode)
-        }
-    }
-
-    private var detailText: String {
-        MenuRuntimePresentation.detailText(
-            for: runtime,
-            missingDetail: missingDetail
-        )
-    }
-
-    private var stateColor: Color {
-        if runtime?.state == .disabled { return .secondary }
-        if isStale, !isRefreshing { return .orange }
-        if isRefreshing, runtime?.reason == "refresh_in_progress" {
-            return .secondary
-        }
-        guard let runtime else {
-            return serviceAvailable ? .secondary : .red
-        }
-        switch runtime.state {
-        case .connected: return Color.mimiPrimary
-        case .available: return Color.blue
-        case .signedOut: return Color.orange
-        case .disabled: return Color.secondary
-        case .unavailable: return Color.red
-        }
-    }
-
-    private var stateTextColor: Color {
-        if isStale, !isRefreshing { return Color.orange.opacity(0.8) }
-        guard let runtime else { return .secondary }
-        switch runtime.state {
-        case .signedOut: return Color.orange.opacity(0.8)
-        case .unavailable: return Color.red.opacity(0.8)
-        case .connected, .available, .disabled: return .secondary
-        }
-    }
-
-    private var quotaIsExhausted: Bool {
-        runtime?.rateLimits?.isExhausted == true
-    }
-
-    private var quotaNoticeText: String? {
-        guard let limits = runtime?.rateLimits else { return nil }
-        if limits.isExhausted {
-            return "额度已耗尽，等待窗口重置。"
-        }
-        switch limits.availability?.lowercased() {
-        case "partial":
-            return "仅显示已观测到的额度窗口。"
-        case "unavailable":
-            return "额度暂不可获取。"
-        default:
-            return nil
-        }
-    }
-
-    private var creditSummary: String? {
-        guard runtime?.authMode != "api_key", let limits = runtime?.rateLimits else {
-            return nil
-        }
-        if limits.creditsUnlimited == true {
-            return "Credits 无限"
-        }
-        if let balance = limits.creditBalance?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !balance.isEmpty
-        {
-            return "Credits 余额 \(balance)"
-        }
-        if limits.hasCredits == false {
-            return "Credits 未启用"
-        }
-        if limits.hasCredits == true {
-            return "Credits 可用"
-        }
-        return nil
-    }
-
-    private func formattedAccountValue(_ raw: String) -> String {
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return raw }
-        switch value.lowercased() {
-        case "plus": return "Plus"
-        case "pro": return "Pro"
-        case "team": return "Team"
-        case "business": return "Business"
-        case "enterprise": return "Enterprise"
-        default: return value
-        }
-    }
-}
-
-private struct MenuRuntimeUsageOverview: View {
-    let slots: [MenuRuntimeUsageSlot]
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            MenuRuntimeUsageRingsGraphic(slots: slots)
-                .fixedSize()
-
-            MenuRuntimeUsageInfoRows(slots: slots)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            Color.primary.opacity(0.04),
-            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-        )
-        .accessibilityElement(children: .contain)
-    }
-}
-
-/// 三层同心圆依次表示 Codex 长窗口、Claude 长窗口、Claude 短窗口。
-/// 菜单栏降低强调色强度，避免小面积高饱和颜色在浅色材质上过度刺眼。
-private struct MenuRuntimeUsageRingsGraphic: View {
-    let slots: [MenuRuntimeUsageSlot]
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private let diameter: CGFloat = 74
-    private let lineWidth: CGFloat = 5
-    private let ringStep: CGFloat = 20
-
-    var body: some View {
-        let ringCount = min(slots.count, 3)
-
-        ZStack(alignment: .center) {
-            ForEach(0..<ringCount, id: \.self) { index in
-                let ringDiameter = diameter - CGFloat(index) * ringStep
-                let item = slots[index].item
-
-                ZStack {
-                    Circle()
-                        .stroke(Color.secondary.opacity(0.18), lineWidth: lineWidth)
-
-                    if let progress = item?.window.remainingFraction {
-                        Circle()
-                            .trim(from: 0, to: item?.isExhausted == true ? 0 : progress)
-                            .stroke(
-                                itemTint(item),
-                                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
-                            )
-                            .rotationEffect(.degrees(-90))
-                            .animation(
-                                reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1),
-                                value: progress
-                            )
-                    }
-                }
-                .frame(width: ringDiameter, height: ringDiameter)
-            }
-        }
-        .frame(width: diameter, height: diameter, alignment: .center)
-        .accessibilityHidden(true)
-    }
-
-    private func itemTint(_ item: MenuRuntimeUsageItem?) -> Color {
-        guard let item else { return .secondary }
-        if item.isExhausted { return Color.red.opacity(0.82) }
-        switch item.tintRole {
-        case .codexLong: return Color.pink.opacity(0.78)
-        case .claudeLong: return Color.cyan.opacity(0.72)
-        case .claudeShort: return Color.mimiPrimary.opacity(0.82)
-        }
-    }
-}
-
-private struct MenuRuntimeUsageInfoRows: View {
-    let slots: [MenuRuntimeUsageSlot]
-
-    var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 7) {
-            ForEach(slots) { slot in
-                MenuRuntimeUsageInfoRow(slot: slot)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct MenuRuntimeUsageInfoRow: View {
-    let slot: MenuRuntimeUsageSlot
-
-    var body: some View {
-        GridRow(alignment: .firstTextBaseline) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Circle()
-                    .fill(tint)
-                    .frame(width: 6, height: 6)
-                    .accessibilityHidden(true)
-
-                Text("\(slot.providerName) · \(slot.windowLabel)")
-                    .font(.caption2.weight(.semibold))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-            .gridColumnAlignment(.leading)
-
-            Text(valueText)
-                .font(.caption2.monospacedDigit().weight(.semibold))
-                .foregroundStyle(valueColor)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .gridColumnAlignment(.trailing)
-
-            Text(resetDetail)
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .gridColumnAlignment(.trailing)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(slot.providerName) \(slot.windowLabel)额度")
-        .accessibilityValue(valueText)
-    }
-
-    private var hasUsageValue: Bool {
-        slot.item?.window.remainingPercentText != nil || slot.item?.isExhausted == true
-    }
-
-    private var valueText: String {
-        if slot.item?.isExhausted == true { return "已耗尽" }
-        return slot.item?.window.remainingPercentText.map { "剩余 \($0)" } ?? "等待额度"
-    }
-
-    private var resetDetail: String {
-        guard let resetDate = slot.item?.window.resetDate else { return "" }
-        return resetText(resetDate)
-    }
-
-    private var valueColor: Color {
-        if slot.item?.isExhausted == true {
-            return Color.red.opacity(0.8)
-        }
-        return hasUsageValue ? Color.primary.opacity(0.72) : .secondary
-    }
-
-    private var tint: Color {
-        if slot.item?.isExhausted == true { return Color.red.opacity(0.82) }
-        switch slot.tintRole {
-        case .codexLong: return Color.pink.opacity(0.78)
-        case .claudeLong: return Color.cyan.opacity(0.72)
-        case .claudeShort: return Color.mimiPrimary.opacity(0.82)
-        }
-    }
-
-    private func resetText(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = .current
-        formatter.setLocalizedDateFormatFromTemplate(
-            Calendar.current.isDateInToday(date) ? "Hm" : "MdHm"
-        )
-        return formatter.string(from: date)
     }
 }
 
