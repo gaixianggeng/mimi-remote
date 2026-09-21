@@ -135,6 +135,10 @@ actor HarnessSessionRuntime {
 
     private var readerTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
+    /// 在途建连。合并在途请求，避免同一连接出现两个 reader 与两个心跳。
+    private var connectTask: Task<UInt64, Error>?
+    /// 在途建连的序号，用于"只清自己那一次"。
+    private var connectSequence: UInt64 = 0
     private var rpcSequence: UInt64 = 0
     private var streamSequence: UInt64 = 0
 
@@ -147,9 +151,50 @@ actor HarnessSessionRuntime {
     // MARK: - 连接
 
     /// 建立连接并开启新代次。已连接时是空操作。
+    ///
+    /// ## 为什么必须合并在途建连
+    ///
+    /// actor 只保证同步片段互斥，**不能**让跨越 `await` 的整个流程变成原子操作。
+    /// 宿主观察器与页面观察器都会调这个入口：两者可能都看到 `isConnected == false`，
+    /// 都进入 `streamTransport.connect()`，回来时各自推进一次代次并重启 reader——
+    /// 于是同一个连接上出现两个 reader 与两个心跳，帧被两条 reader 抢。
+    ///
+    /// ## 为什么建连结果要绑定发起时的生命周期
+    ///
+    /// `streamTransport.connect()` 是挂起点。等待期间 host 可能已切走、或连接已退役；
+    /// 旧调用回来后若无条件写 `isConnected = true`，就**复活了一个已经退役的状态**，
+    /// 而 transport 早已属于上一代。因此这里比对发起时的生命周期标识，
+    /// 不一致就丢弃结果并释放资源，不发布在线状态。
     @discardableResult
     func connect() async throws -> UInt64 {
         if isConnected { return connectionGeneration }
+
+        // 已有一次建连在途：等它，并返回**它产生的代次**。
+        // 返回自己当时读到的 `connectionGeneration` 是错的——那时它还没被推进，
+        // 调用方会拿到一个不属于任何连接的旧值。
+        if let inFlight = connectTask {
+            return try await inFlight.value
+        }
+
+        // 生命周期标识：任何退役都会推进它，用来判断"这次建连还算不算数"。
+        let lifecycle = connectionGeneration
+        connectSequence &+= 1
+        let sequence = connectSequence
+        let task = Task { [weak self] () throws -> UInt64 in
+            guard let self else { throw HarnessTransportError.cancelled }
+            return try await self.performConnect(lifecycle: lifecycle)
+        }
+        connectTask = task
+        defer {
+            // 只清自己那一次：期间可能有新调用已经登记了新的在途任务。
+            if connectSequence == sequence { connectTask = nil }
+        }
+        return try await task.value
+    }
+
+    /// 真正执行一次建连。抽出来是为了让"在途任务返回它产生的代次"成为可能——
+    /// 合并在途请求时，等待者必须拿到同一个结果，而不是各自再算一遍。
+    private func performConnect(lifecycle: UInt64) async throws -> UInt64 {
         do {
             try await streamTransport.connect()
         } catch let error as HarnessTransportError {
@@ -157,6 +202,14 @@ actor HarnessSessionRuntime {
             recoveryAction = Self.action(for: error)
             throw error
         }
+
+        // 等待期间发生过退役（切 host / 断连）：这次建连属于上一代，丢弃。
+        // 不能写 isConnected——那会让旧调用的迟到结果复活已退役的状态。
+        guard connectionGeneration == lifecycle else {
+            await streamTransport.close()
+            throw HarnessTransportError.closed
+        }
+
         connectionGeneration &+= 1
         isConnected = true
         readyGeneration = nil
@@ -183,6 +236,7 @@ actor HarnessSessionRuntime {
 
     private func teardown(recordReason: HarnessTransportError?) async {
         // 代次先自增：任何仍在途的旧帧从这一刻起就失去归属。
+        // 在途建连也据此判断自己已失效（见 `connect`）。
         connectionGeneration &+= 1
         isConnected = false
         readyGeneration = nil

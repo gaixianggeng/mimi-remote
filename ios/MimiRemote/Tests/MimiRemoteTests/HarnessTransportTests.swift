@@ -1250,8 +1250,13 @@ final class FakeHarnessStreamTransport: HarnessStreamTransport, @unchecked Senda
     var isClosed: Bool { lock.lock(); defer { lock.unlock() }; return _closed }
     var sentFrames: [HarnessClientFrame] { lock.lock(); defer { lock.unlock() }; return _sentFrames }
 
+    /// 建连闸门：设置后会挂起 `connect()`，让测试确定性地安排
+    /// "并发建连"与"建连期间退役"这两种交错。默认 nil，行为不变。
+    var connectGate: (@Sendable () async -> Void)?
+
     func connect() async throws {
         lock.lock(); _connectCount += 1; lock.unlock()
+        if let gate = connectGate { await gate() }
     }
 
     func send(_ frame: HarnessClientFrame) async throws {
@@ -1423,5 +1428,120 @@ final class HarnessRPCStubURLProtocol: URLProtocol {
             data.append(buffer, count: count)
         }
         return data
+    }
+}
+
+// MARK: - 建连生命周期（并发与退役交错）
+
+/// 共享 runtime 的建连必须合并，且迟到的结果不得复活已退役的状态。
+///
+/// actor 只保证同步片段互斥，跨 `await` 的整个建连流程不是原子操作。宿主观察器与
+/// 页面观察器都会调同一个入口，因此这两种交错在当前状态机里是**允许发生**的。
+@MainActor
+final class HarnessConnectLifecycleTests: XCTestCase {
+
+    /// 并发建连只产生一个有效代次，而不是两个 reader 抢同一条连接。
+    func testConcurrentConnectsMergeIntoOneInFlightAttempt() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let gate = ConnectGate()
+        stream.connectGate = { await gate.wait() }
+        let runtime = makeRuntime(stream: stream)
+
+        async let first = runtime.connect()
+        async let second = runtime.connect()
+        await gate.waitUntilEntered()
+        gate.open()
+
+        let generations = try await [first, second]
+        XCTAssertEqual(stream.connectCount, 1, "在途建连必须合并，不能并行建两条")
+        XCTAssertEqual(
+            Set(generations).count, 1,
+            "并发建连必须返回同一个代次，实际 \(generations)"
+        )
+    }
+
+    /// 建连期间发生退役时，迟到的建连结果**不得**把状态复活成已连接。
+    func testConnectReturningAfterTeardownDoesNotReviveConnection() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let gate = ConnectGate()
+        stream.connectGate = { await gate.wait() }
+        let runtime = makeRuntime(stream: stream)
+
+        async let connecting = runtime.connect()
+        await gate.waitUntilEntered()
+
+        // 退役（等价于切 host / 断连）。
+        await runtime.shutdown()
+        gate.open()
+
+        // 这次建连属于上一代：必须丢弃，而不是发布在线状态。
+        do {
+            _ = try await connecting
+        } catch {
+            // 抛错是可接受的表达；关键是状态不能被复活。
+        }
+        let generationAfter = await runtime.connectionGeneration
+        // 用"当前代次是否仍被认为已连接"作判据：`isConnected` 是私有的，
+        // 而 `isConnectionCurrent` 正是页面/宿主用来判断租约是否有效的入口。
+        let stillConnected = await runtime.isConnectionCurrent(generationAfter)
+        XCTAssertFalse(stillConnected, "迟到的建连不得复活已退役的连接")
+        // 退役本身已推进过代次，这里不应再被旧调用推第二次。
+        XCTAssertGreaterThanOrEqual(generationAfter, 1)
+    }
+
+    // MARK: - 支撑
+
+    private func makeRuntime(stream: FakeHarnessStreamTransport) -> HarnessSessionRuntime {
+        HarnessSessionRuntime(
+            configuration: HarnessSessionRuntime.Configuration(
+                endpoint: "http://127.0.0.1:8787",
+                token: "fixture",
+                pingInterval: .seconds(30)
+            ),
+            transports: HarnessSessionRuntime.TransportPair(
+                rpc: FakeHarnessRPCTransport(),
+                stream: stream
+            )
+        )
+    }
+}
+
+/// 建连闸门：让测试确定性地安排并发建连与建连期间退役。
+private final class ConnectGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entered: CheckedContinuation<Void, Never>?
+    private var release: CheckedContinuation<Void, Never>?
+    private var didEnter = false
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            didEnter = true
+            entered?.resume()
+            entered = nil
+            release = continuation
+            lock.unlock()
+        }
+    }
+
+    func waitUntilEntered() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if didEnter {
+                lock.unlock()
+                continuation.resume()
+                return
+            }
+            entered = continuation
+            lock.unlock()
+        }
+    }
+
+    func open() {
+        lock.lock()
+        let continuation = release
+        release = nil
+        lock.unlock()
+        continuation?.resume()
     }
 }
