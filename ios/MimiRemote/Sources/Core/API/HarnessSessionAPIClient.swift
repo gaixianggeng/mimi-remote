@@ -213,11 +213,6 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         let generation: UInt64
     }
     private var baselineBySessionID: [SessionID: SnapshotBaseline] = [:]
-    /// 等待某个会话基线就绪的挂起者。
-    ///
-    /// 冷打开的顺序是"先读历史、再连事件"，而历史在基线之前没有合法的 throughSeq。
-    /// 用这个入口让历史**等**基线，而不是在 Store 里塞 sleep/retry 补偿。
-    private var baselineWaiters: [SessionID: [CheckedContinuation<Int?, Never>]] = [:]
 
     /// 普通输入的提交模式。实测取值域只有 queue|steer，普通发送用 queue。
     static let defaultPromptMode = "queue"
@@ -522,13 +517,26 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         baselineBySessionID[sessionID]?.cursor
     }
 
-    /// 等某个会话的读取基线就绪，返回它的 `throughSeq`。
+    /// 取得某个会话的读取基线（`throughSeq`），必要时**主动建立**观察。
     ///
-    /// 冷打开的真实顺序是"先读历史、再连事件"（`SessionStoreTurns.selectSession`），
-    /// 而 `session/page` 在 follow 建立基线之前没有合法的 `throughSeq`。因此这里让
-    /// 历史**等待**基线，而不是让 Store 各处加 sleep + retry 去碰运气。
+    /// ## 为什么必须主动建立
     ///
-    /// 超时后返回 nil，调用方按"暂时读不到"处理——**不**拿一个猜的游标去读，
+    /// Store 冷打开的真实顺序是"先读历史、再连事件"（`SessionStoreTurns.selectSession`）。
+    /// 如果这里只是被动等待，就会和"基线由事件连接产生"互相等待——历史等连接、
+    /// 连接等历史返回，两边都不动，用户看到一个永远转圈的长会话。
+    ///
+    /// 因此这里不等待页面来建连，而是用**同一个 runtime** 起一次观察拿基线，
+    /// 拿到后立刻 `disconnect()`（它只退订自己的 follow，不碰宿主 `$events`，
+    /// 也不关共享连接）。页面随后建自己的连接时会登记新代次的基线。
+    ///
+    /// ## 为什么是有界轮询而不是 continuation + 任务组
+    ///
+    /// 等待必须**可取消、可超时、且真的会退出**。任务组写法有个结构陷阱：
+    /// `cancelAll()` 不会恢复挂起的续体，而任务组退出前要等全部子任务结束——
+    /// 把清理写在组外就永远到不了，超时形同虚设。
+    /// 有界轮询没有这个结构，`Task.sleep` 在取消时直接抛出。
+    ///
+    /// 拿不到就返回 nil，调用方按"暂时读不到"处理：**不**拿猜的游标去读，
     /// 那会静默给出错误的页（契约 §5.5 明确禁止）。
     @MainActor
     func awaitSnapshotBaseline(
@@ -536,31 +544,27 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         timeout: Duration = .seconds(10)
     ) async -> Int? {
         if let baseline = baselineBySessionID[sessionID] { return baseline.cursor }
-        let outcome = await withTaskGroup(of: Int?.self) { group -> Int? in
-            group.addTask { @MainActor [weak self] in
-                await withCheckedContinuation { continuation in
-                    guard let self else {
-                        continuation.resume(returning: nil)
-                        return
-                    }
-                    self.baselineWaiters[sessionID, default: []].append(continuation)
-                }
+
+        let warmUp = makeEventClient(sessionID: sessionID)
+        warmUp.connect(sessionID: sessionID)
+        defer { warmUp.disconnect() }
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if let baseline = baselineBySessionID[sessionID] { return baseline.cursor }
+            do {
+                try await Task.sleep(for: .milliseconds(50))
+            } catch {
+                // 被取消：立即退出，不再占用调用方。
+                break
             }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
         }
-        // 超时或已就绪都清掉挂起者，避免续体泄漏。
-        baselineWaiters[sessionID]?.forEach { $0.resume(returning: baselineBySessionID[sessionID]?.cursor) }
-        baselineWaiters[sessionID] = nil
-        return outcome ?? baselineBySessionID[sessionID]?.cursor
+        return baselineBySessionID[sessionID]?.cursor
     }
 
-    /// 登记某会话本次 follow 的 opening snapshot 游标，并唤醒等待者。
+
+    /// 登记某会话本次 follow 的 opening snapshot 游标。
     ///
     /// 由页面客户端在建立基线后回调。代次只增不减：`throughSeq` 属于**这一代**
     /// snapshot，用上一代的游标会读到错误的区间。
@@ -575,9 +579,6 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
             return
         }
         baselineBySessionID[sessionID] = SnapshotBaseline(cursor: cursor, generation: generation)
-        let waiters = baselineWaiters[sessionID] ?? []
-        baselineWaiters[sessionID] = nil
-        waiters.forEach { $0.resume(returning: cursor) }
     }
 
     // MARK: - H07 写路径

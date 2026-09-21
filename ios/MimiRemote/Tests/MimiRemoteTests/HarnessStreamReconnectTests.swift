@@ -133,3 +133,133 @@ final class HarnessStreamReconnectTests: XCTestCase {
         throw HarnessTransportError.timedOut
     }
 }
+
+// MARK: - 读取基线的建立与取消
+
+/// 冷打开会话时历史读取需要"本次 follow 的 snapshot 游标"。
+///
+/// Store 的顺序是"先读历史、再连事件"，所以基线必须由**读取方主动建立**。
+/// 只被动等待会形成互相等待：历史等连接、连接等历史返回——用户看到的是
+/// 一个永远转圈的长会话。
+@MainActor
+final class HarnessSnapshotBaselineTests: XCTestCase {
+
+    /// 基线入口必须在没有任何页面连接时**自己**建立观察并返回。
+    ///
+    /// 这一条在旧实现上会一直挂起：它只登记等待者，而建立连接要等历史先返回。
+    func testBaselineIsEstablishedWithoutAnyPreexistingConnection() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: FakeHarnessRPCTransport(),
+            stream: stream
+        )
+
+        // 全程没有任何页面调用 connect(sessionID:)。
+        let cursorTask = Task { await api.awaitSnapshotBaseline(
+            for: "h00-session-0001",
+            timeout: .seconds(5)
+        ) }
+
+        // 基线入口应当自己把 follow 建起来，我们按真实顺序推 opening snapshot。
+        let followID = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow,
+            stream: stream
+        )
+        stream.push(carrierValue(
+            streamID: followID,
+            value: snapshotValue(sessionID: "h00-session-0001", cursor: 42)
+        ))
+
+        let cursor = await cursorTask.value
+        XCTAssertEqual(cursor, 42, "基线入口必须主动建立观察并返回本次 snapshot 的游标")
+        await api.shutdownForHostSwitch()
+    }
+
+    /// 拿不到基线时必须在超时后**真的返回** nil，不能挂起调用方。
+    ///
+    /// 旧的实现把续体清理写在任务组外，而任务组退出前要等全部子任务——
+    /// 超时子任务返回后仍会等挂起的续体，清理永远到不了，调用方被无限挂起。
+    func testBaselineTimeoutActuallyReturns() async throws {
+        // 上游从不推 snapshot：基线永远不会就绪。
+        let stream = FakeHarnessStreamTransport()
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: FakeHarnessRPCTransport(),
+            stream: stream
+        )
+
+        let started = Date()
+        let cursor = await api.awaitSnapshotBaseline(for: "never", timeout: .milliseconds(300))
+        let elapsed = Date().timeIntervalSince(started)
+
+        XCTAssertNil(cursor, "拿不到基线必须返回 nil，让调用方显式处理")
+        XCTAssertLessThan(elapsed, 3, "超时必须真的退出，而不是一直挂起")
+        await api.shutdownForHostSwitch()
+    }
+
+    /// 取消等待必须立刻退出，不占用调用方。
+    func testBaselineWaitIsCancellable() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: FakeHarnessRPCTransport(),
+            stream: stream
+        )
+
+        let task = Task { await api.awaitSnapshotBaseline(for: "never", timeout: .seconds(30)) }
+        try? await Task.sleep(for: .milliseconds(100))
+        task.cancel()
+
+        let started = Date()
+        _ = await task.value
+        XCTAssertLessThan(
+            Date().timeIntervalSince(started), 3,
+            "取消后必须立即返回"
+        )
+        await api.shutdownForHostSwitch()
+    }
+
+    // MARK: - 支撑
+
+    private func waitForOpenStream(
+        endpoint: String,
+        stream: FakeHarnessStreamTransport
+    ) async throws -> String {
+        for _ in 0..<200 {
+            for frame in stream.sentFrames {
+                if case .open(let streamID, let openedEndpoint, _) = frame,
+                   openedEndpoint == endpoint {
+                    return streamID
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        throw HarnessTransportError.timedOut
+    }
+
+    private func carrierValue(streamID: String, value: HarnessJSONValue) -> HarnessCarrierFrame {
+        HarnessCarrierFrame(
+            type: HarnessWireCarrier.item,
+            streamId: streamID,
+            value: value,
+            error: nil
+        )
+    }
+
+    private func snapshotValue(sessionID: String, cursor: Int) -> HarnessJSONValue {
+        .object([
+            "type": .string(HarnessWireFrame.snapshot),
+            "header": .object([
+                "id": .string(sessionID),
+                "cwd": .string("/h498/workspace"),
+            ]),
+            "cursor": .number(Double(cursor)),
+            "records": .array([]),
+            "hasMore": .bool(false),
+        ])
+    }
+}
