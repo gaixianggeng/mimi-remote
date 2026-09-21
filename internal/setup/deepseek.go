@@ -154,6 +154,14 @@ func connectDeepSeek(
 	startupURL string,
 	dependencies deepSeekRuntimeDependencies,
 ) (DeepSeekConfigurationResult, error) {
+	if strings.TrimSpace(startupURL) == "" {
+		if configured, configuredErr := configuredDeepSeekCandidate(document); configuredErr == nil {
+			result.BaseURL = configured.BaseURL
+			result.Available = dependencies.probe(ctx, configured) == nil
+			return enableConfiguredDeepSeek(document, result)
+		}
+	}
+
 	candidate, discovered, err := findDeepSeekCandidate(ctx, startupURL, dependencies)
 	if err != nil {
 		result.Message = "未找到可连接的 DeepSeek Harness 服务。"
@@ -173,6 +181,29 @@ func connectDeepSeek(
 	result.Enabled = true
 	result.RestartRequired = changed
 	result.Message = "DeepSeek Harness 已验证并保存。"
+	return result, nil
+}
+
+// 重新开启既有连接时只修改用户启用状态。Harness 当前离线不应让开关回落，
+// 也不能为了重试而改写已保存的地址、凭据或自动发现偏好。
+func enableConfiguredDeepSeek(
+	document deepSeekConfigDocument,
+	result DeepSeekConfigurationResult,
+) (DeepSeekConfigurationResult, error) {
+	updated, err := encodeDeepSeekEnabled(document, true)
+	if err != nil {
+		return DeepSeekConfigurationResult{}, err
+	}
+	if err := writePrivateFileAtomicallyCAS(document.configPath, document.original, updated); err != nil {
+		return DeepSeekConfigurationResult{}, fmt.Errorf("更新 DeepSeek 配置失败：%w", err)
+	}
+	result.Enabled = true
+	result.RestartRequired = !bytes.Equal(updated, document.original)
+	if result.Available {
+		result.Message = "DeepSeek Harness 已启用，当前连接可用。"
+	} else {
+		result.Message = "DeepSeek Harness 已启用，但当前连接不可用；配置已保留。"
+	}
 	return result, nil
 }
 

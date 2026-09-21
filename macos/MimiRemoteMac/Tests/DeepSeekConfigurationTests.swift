@@ -101,6 +101,24 @@ extension HostStoreTests {
         XCTAssertTrue(store.deepSeekError?.contains("启动链接已失效") == true)
     }
 
+    func testDeepSeekUnavailableConnectionKeepsUserToggleEnabled() async {
+        let store = makeStore(configExists: true, agentStatus: { .enabled }, configureDeepSeek: { action, _ in
+            if action == .connect {
+                return DeepSeekConfigurationResult(
+                    enabled: true, available: false, discovered: false,
+                    baseURL: "http://127.0.0.1:3080", message: "当前连接不可用", restartRequired: false
+                )
+            }
+            return Self.discoveredDeepSeek
+        })
+        await store.bootstrap()
+        await store.setDeepSeekEnabled(true)
+        XCTAssertTrue(store.deepSeekEnabled)
+        XCTAssertTrue(store.moduleEnabled(.deepseek))
+        XCTAssertEqual(store.deepSeekStatusTitle, "需要处理")
+        XCTAssertEqual(store.deepSeekStatusDetail, "当前连接不可用")
+    }
+
     func testDeepSeekMutationIsUnavailableForHomebrewOwner() async {
         let calls = DeepSeekConfigurationCalls()
         let store = makeStore(configExists: true, homebrewLoaded: true, configureDeepSeek: { action, _ in

@@ -144,6 +144,74 @@ func TestConfigureDeepSeekAutomaticConnectRecordsDiscoveryPreference(t *testing.
 	}
 }
 
+func TestConfigureDeepSeekConnectReenablesStoredConnectionWithoutDiscovery(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	tokenPath := filepath.Join(dir, managedDeepSeekTokenFilename)
+	writeDeepSeekConfigAtPath(t, configPath, false, "http://127.0.0.1:4000", tokenPath)
+	setDeepSeekAutoDiscover(t, configPath, true)
+	if err := os.WriteFile(tokenPath, []byte("stored-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dependencies := deepSeekTestDependencies()
+	dependencies.discover = func(context.Context) (deepSeekConnectionCandidate, error) {
+		t.Fatal("已有连接不应依赖启动日志重新发现")
+		return deepSeekConnectionCandidate{}, nil
+	}
+	dependencies.probe = func(_ context.Context, candidate deepSeekConnectionCandidate) error {
+		if candidate.BaseURL != "http://127.0.0.1:4000" || candidate.Token != "stored-token" {
+			t.Fatalf("应验证已保存连接：%+v", candidate)
+		}
+		return nil
+	}
+
+	result, err := configureDeepSeek(t.Context(), configPath, DeepSeekRuntimeConnect, "", dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Enabled || !result.Available || result.Discovered || !result.RestartRequired {
+		t.Fatalf("重新启用结果不符：%+v", result)
+	}
+	assertDeepSeekFile(t, tokenPath, []byte("stored-token\n"), true)
+}
+
+func TestConfigureDeepSeekConnectKeepsEnabledIntentWhenStoredConnectionIsOffline(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	tokenPath := filepath.Join(dir, managedDeepSeekTokenFilename)
+	writeDeepSeekConfigAtPath(t, configPath, false, "http://127.0.0.1:4000", tokenPath)
+	if err := os.WriteFile(tokenPath, []byte("stored-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dependencies := deepSeekTestDependencies()
+	dependencies.discover = func(context.Context) (deepSeekConnectionCandidate, error) {
+		t.Fatal("离线是健康状态，不应改写已保存连接")
+		return deepSeekConnectionCandidate{}, nil
+	}
+	dependencies.probe = func(context.Context, deepSeekConnectionCandidate) error {
+		return errors.New("offline")
+	}
+
+	result, err := configureDeepSeek(t.Context(), configPath, DeepSeekRuntimeConnect, "", dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Enabled || result.Available || result.Discovered || !result.RestartRequired {
+		t.Fatalf("离线重新启用结果不符：%+v", result)
+	}
+	stored := readJSONDocument(t, configPath)
+	var deepSeek map[string]json.RawMessage
+	if err := json.Unmarshal(stored["deepseek"], &deepSeek); err != nil {
+		t.Fatal(err)
+	}
+	var enabled bool
+	_ = json.Unmarshal(deepSeek["enabled"], &enabled)
+	if !enabled {
+		t.Fatalf("离线不得撤销用户启用状态：%s", stored["deepseek"])
+	}
+	assertDeepSeekFile(t, tokenPath, []byte("stored-token\n"), true)
+}
+
 func TestConfigureDeepSeekInspectIsReadOnly(t *testing.T) {
 	configPath, original := writeDeepSeekConfigFixture(t, false, "", "")
 	dependencies := deepSeekTestDependencies()
