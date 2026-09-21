@@ -130,6 +130,12 @@ func TestDeepSeekCheckFailsClosed(t *testing.T) {
 				if err := os.WriteFile(path, []byte(token+"\n"), 0o644); err != nil {
 					t.Fatalf("写入 token 文件失败：%v", err)
 				}
+				// WriteFile 的 mode 会被进程 umask 收窄（例如 umask 0077 落成 0600），
+				// 那样这条用例就测不到"权限过宽"分支了。显式 chmod 才真正表达本用例的前提，
+				// 不受调用方 umask 影响。
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatalf("设置 token 文件权限失败：%v", err)
+				}
 				return deepSeekTestConfig(config.DeepSeekConfig{
 					Enabled:               true,
 					BaseURL:               "http://127.0.0.1:5173",
