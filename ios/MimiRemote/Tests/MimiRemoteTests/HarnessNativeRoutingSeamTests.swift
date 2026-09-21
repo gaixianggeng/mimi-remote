@@ -33,9 +33,9 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
             harnessFactory: explicitTest.nativeHarnessFactory
         )
         XCTAssertNil(defaultBundle.harness)
-        XCTAssertNotNil(defaultBundle.deepseek)
+        XCTAssertNil(defaultBundle.nativeClient(for: "deepseek"), "未显式开启时没有原生承接者")
         XCTAssertTrue(testBundle.harness is HarnessSessionAPIClient)
-        XCTAssertNil(testBundle.deepseek)
+        XCTAssertNotNil(testBundle.nativeClient(for: "deepseek"))
     }
 
     /// H11 的真实 factory 只能由显式测试构建注入；注入后 native 独占 deepseek，
@@ -48,7 +48,12 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         )
 
         XCTAssertTrue(bundle.harness is HarnessSessionAPIClient)
-        XCTAssertNil(bundle.deepseek, "原生写路径启用后不得保留旧 deepseek 写回退")
+        XCTAssertThrowsError(
+            try bundle.runtime(for: "deepseek"),
+            "原生写路径启用后不得保留旧 deepseek 写回退"
+        ) { error in
+            XCTAssertEqual(error as? HarnessNativeUnavailableError, .routedNatively(runtimeProvider: "deepseek"))
+        }
     }
 #endif
 
@@ -56,7 +61,12 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
 
     func testInjectedNativeClientDoesNotInstantiateDeepSeekCodexActor() {
         let bundle = makeBundle(harness: FakeHarnessSessionClient())
-        XCTAssertNil(bundle.deepseek, "原生通道激活后不得再构造 deepseek Codex actor")
+        XCTAssertThrowsError(
+            try bundle.runtime(for: "deepseek"),
+            "原生通道激活后不得再构造 deepseek Codex actor"
+        ) { error in
+            XCTAssertEqual(error as? HarnessNativeUnavailableError, .routedNatively(runtimeProvider: "deepseek"))
+        }
         XCTAssertNotNil(bundle.nativeClient(for: "deepseek"))
         XCTAssertNil(bundle.nativeClient(for: "codex"), "原生通道只承接 deepseek")
         XCTAssertNil(bundle.nativeClient(for: "claude"), "原生通道只承接 deepseek")
@@ -73,12 +83,19 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         }
     }
 
-    func testDefaultBundleKeepsLegacyPathUnchanged() throws {
+    /// deepseek 的 app-server 翻译层已删除：即使没有注入原生客户端，也没有可回退的 actor，
+    /// `runtime(for:)` 必须显式抛 `routedNatively`，绝不能静默落到 Codex actor 假装 native。
+    func testDefaultBundleWithoutNativeClientStillRejectsDeepSeekActorLookup() throws {
         let bundle = makeBundle()
-        XCTAssertNil(bundle.harness, "开发期默认不注入原生客户端")
-        XCTAssertNotNil(bundle.deepseek, "未注入时 deepseek 仍走既有 app-server 路径")
+        XCTAssertNil(bundle.harness, "默认不注入原生客户端")
         XCTAssertNil(bundle.nativeClient(for: "deepseek"))
-        XCTAssertNoThrow(try bundle.runtime(for: "deepseek"))
+        XCTAssertThrowsError(try bundle.runtime(for: "deepseek")) { error in
+            XCTAssertEqual(
+                error as? HarnessNativeUnavailableError,
+                .routedNatively(runtimeProvider: "deepseek"),
+                "旧 app-server 桥接路径已删除，deepseek 必须显式失败而不是回退到 actor"
+            )
+        }
     }
 
     func testCodexAndClaudeStillResolveToCodexActorsWhenNativeInjected() throws {
@@ -100,10 +117,8 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
             makeSession(id: "native-a", runtime: "deepseek")
         ]))
         let codexTransport = FakeCodexAppServerTransport()
-        let deepseekTransport = FakeCodexAppServerTransport()
         let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
             codexTransport: codexTransport,
-            deepseekTransport: deepseekTransport,
             harness: fake
         ))
 
@@ -118,18 +133,14 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         XCTAssertEqual(page.sessions.map(\.id), ["native-a"])
         XCTAssertEqual(fake.sessionsPageCallCount, 1)
         let codexSent = await codexTransport.sentMessages()
-        let deepseekSent = await deepseekTransport.sentMessages()
         XCTAssertTrue(codexSent.isEmpty, "DeepSeek 分发不得触碰 Codex 通道")
-        XCTAssertTrue(deepseekSent.isEmpty, "DeepSeek 分发不得再走 deepseek 的 Codex 通道")
     }
 
     func testNativeCreateSelectsModelAndQueuesPromptWithoutCodexFallback() async throws {
         let fake = FakeHarnessSessionClient()
         let codexTransport = FakeCodexAppServerTransport()
-        let deepseekTransport = FakeCodexAppServerTransport()
         let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
             codexTransport: codexTransport,
-            deepseekTransport: deepseekTransport,
             harness: fake
         ))
         let response = try await client.createSession(CreateSessionRequest(
@@ -155,18 +166,14 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         XCTAssertEqual(response.session.runtimeProvider, "deepseek")
         XCTAssertEqual(response.requiresQueuedInitialInput, true)
         let codexSent = await codexTransport.sentMessages()
-        let deepseekSent = await deepseekTransport.sentMessages()
         XCTAssertTrue(codexSent.isEmpty)
-        XCTAssertTrue(deepseekSent.isEmpty)
     }
 
     func testNativeStopUsesHarnessWithoutCodexFallback() async throws {
         let fake = FakeHarnessSessionClient()
         let codexTransport = FakeCodexAppServerTransport()
-        let deepseekTransport = FakeCodexAppServerTransport()
         let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
             codexTransport: codexTransport,
-            deepseekTransport: deepseekTransport,
             harness: fake
         ))
         client.rememberRuntimeRoute("deepseek", forSessionID: "native-stop")
@@ -175,9 +182,7 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
 
         XCTAssertEqual(fake.cancelledSessionIDs, ["native-stop"])
         let codexSent = await codexTransport.sentMessages()
-        let deepseekSent = await deepseekTransport.sentMessages()
         XCTAssertTrue(codexSent.isEmpty)
-        XCTAssertTrue(deepseekSent.isEmpty)
     }
 
     func testHostSwitchShutsDownSharedHarnessRuntime() async {
@@ -326,10 +331,8 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         let fake = FakeHarnessSessionClient()
         fake.channelAvailableResult = .success(true)
         let codexTransport = FakeCodexAppServerTransport()
-        let deepseekTransport = FakeCodexAppServerTransport()
         let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
             codexTransport: codexTransport,
-            deepseekTransport: deepseekTransport,
             harness: fake
         ))
 
@@ -338,9 +341,7 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         XCTAssertTrue(available)
         XCTAssertEqual(fake.channelAvailableCallCount, 1, "原生通道可用性必须问原生客户端")
         let codexSent = await codexTransport.sentMessages()
-        let deepseekSent = await deepseekTransport.sentMessages()
         XCTAssertTrue(codexSent.isEmpty, "原生通道准备流程不得依赖 Codex 上游可用性")
-        XCTAssertTrue(deepseekSent.isEmpty, "原生通道准备流程不得再走 deepseek 的 Codex 通道")
     }
 
     func testNativeChannelAvailabilityFailureDoesNotFallBackToCodex() async throws {
@@ -533,7 +534,6 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
 
     private func makeBundle(
         codexTransport: FakeCodexAppServerTransport = FakeCodexAppServerTransport(),
-        deepseekTransport: FakeCodexAppServerTransport = FakeCodexAppServerTransport(),
         harness: HarnessSessionClient? = nil
     ) -> AppServerRuntimeBundle {
         let project = AgentProject(id: "seam", name: "Seam", path: "/tmp/seam")
@@ -559,7 +559,6 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         return AppServerRuntimeBundle(
             codexRuntime: runtime("codex", codexTransport),
             claudeRuntime: runtime("claude", FakeCodexAppServerTransport()),
-            deepseekRuntime: runtime("deepseek", deepseekTransport),
             harness: harness
         )
     }

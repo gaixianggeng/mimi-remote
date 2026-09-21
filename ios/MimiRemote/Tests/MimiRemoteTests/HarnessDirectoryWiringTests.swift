@@ -94,7 +94,6 @@ final class HarnessDirectoryWiringTests: XCTestCase {
         let routingClient = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: AppServerRuntimeBundle(
             codexRuntime: runtime("codex", transport: codexSpy),
             claudeRuntime: runtime("claude", transport: FakeCodexAppServerTransport()),
-            deepseekRuntime: runtime("deepseek", transport: FakeCodexAppServerTransport()),
             harness: harness
         ))
         let store = SessionStore(

@@ -417,12 +417,15 @@ DeepSeek/Harness 相关 selector：
 
 ```
 MimiRemoteTests/DeepSeekComposerPolicyTests
-MimiRemoteTests/DeepSeekSessionRuntimeTests
-MimiRemoteTests/DeepSeekSessionLifecycleTests
-MimiRemoteTests/DeepSeekCrossRuntimeContractTests
 MimiRemoteTests/DeepSeekSearchRoutingTests
 MimiRemoteTests/DeepSeekRuntimePresentationTests
 ```
+
+> 曾另有 `DeepSeekSessionRuntimeTests`、`DeepSeekSessionLifecycleTests`、
+> `DeepSeekCrossRuntimeContractTests` 三个类。它们断言的是 deepseek 的 **app-server 协议
+> 形状**（channel 方法清单、`_mimi_observe` 观察 pin、follow invalidated 通知、
+> `thread/read` 代替 `thread/resume`）。该翻译层已整体删除，这三个类随之删除；deepseek
+> 的承载能力改由原生通道的 Harness 测试覆盖。
 
 新增 Harness 原生测试沿用 `MimiRemoteTests/<Class>` 形式。测试与快照固定 `iPad Pro 13-inch (M5)`；
 设备忙时等待或报告阻塞，**不绕过租约、不切换设备**。

@@ -336,10 +336,7 @@ final class AppServerRuntimeBundle {
 
     let codex: CodexAppServerSessionRuntime
     let claude: CodexAppServerSessionRuntime
-    /// 仅在**未**注入原生客户端时构造。注入后 `deepseek` 不再经过 Codex actor，
-    /// 从根上避免「拿 Codex actor 假装 native」。
-    let deepseek: CodexAppServerSessionRuntime?
-    /// 原生 Harness 接缝。默认 `nil`：开发期沿用既有 app-server 路径，行为不变。
+    /// 原生 Harness 接缝。默认 `nil`：此时 `deepseek` 显式失败，不会回退到任何 actor。
     let harness: HarnessSessionClient?
     let routes = AppServerRuntimeRouteStore()
 
@@ -348,9 +345,6 @@ final class AppServerRuntimeBundle {
         claude = CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "claude")
         let native = harnessFactory?(endpoint, token)
         harness = native
-        deepseek = native == nil
-            ? CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "deepseek")
-            : nil
     }
 
     /// 快速切换已经拿到 config，候选 Runtime 必须复用它，不能在提交后再次请求
@@ -385,28 +379,16 @@ final class AppServerRuntimeBundle {
         )
         let native = harnessFactory?(endpoint, token)
         harness = native
-        deepseek = native == nil
-            ? CodexAppServerSessionRuntime(
-                endpoint: endpoint,
-                token: token,
-                runtimeProvider: "deepseek",
-                requestTimeout: requestTimeout,
-                configProvider: configProvider
-            )
-            : nil
     }
 
     init(
         codexRuntime: CodexAppServerSessionRuntime,
         claudeRuntime: CodexAppServerSessionRuntime,
-        deepseekRuntime: CodexAppServerSessionRuntime? = nil,
         harness: HarnessSessionClient? = nil
     ) {
         codex = codexRuntime
         claude = claudeRuntime
         self.harness = harness
-        // 两者同时给出时以原生为准：Codex actor 不得与原生通道并存来「兜底」。
-        self.deepseek = harness == nil ? deepseekRuntime : nil
     }
 
     /// 该 provider 是否由原生客户端承接；不是则返回 `nil`。
@@ -422,21 +404,16 @@ final class AppServerRuntimeBundle {
 
     func runtime(for provider: String?) throws -> CodexAppServerSessionRuntime {
         let normalized = CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider)
-        if harness != nil, normalized == Self.nativeRuntimeProvider {
-            // 原生通道激活时不得回退到 Codex actor 假装 native。调用方必须改走
-            // nativeClient(for:)；这里显式失败，让误用立刻暴露而不是静默走错协议。
-            throw HarnessNativeUnavailableError.routedNatively(runtimeProvider: normalized)
-        }
         switch normalized {
         case "codex":
             return codex
         case "claude":
             return claude
         case "deepseek":
-            guard let deepseek else {
-                throw CodexAppServerSessionRuntimeError.gatewayUnavailable
-            }
-            return deepseek
+            // agentd 的 `/api/app-server` 已删除 deepseek 翻译层，`runtime=deepseek` 不再存在；
+            // deepseek 只能由原生通道承接。调用方必须改走 `nativeClient(for:)`；这里无论原生
+            // 是否注入都显式失败，绝不回退到任何 actor 假装 native，也不静默走错协议。
+            throw HarnessNativeUnavailableError.routedNatively(runtimeProvider: normalized)
         default:
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
         }
@@ -580,7 +557,6 @@ final class AppServerRuntimeBundle {
         await harness?.shutdownForHostSwitch()
         await codex.shutdownForHostSwitch()
         await claude.shutdownForHostSwitch()
-        await deepseek?.shutdownForHostSwitch()
     }
 }
 
@@ -647,7 +623,8 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         }
         let secondaryRuntimes: [(provider: String, runtime: CodexAppServerSessionRuntime?)] = [
             ("claude", bundle.claude),
-            ("deepseek", bundle.deepseek)
+            // deepseek 没有 Codex actor：只由原生通道承接，上面走 nativeClient(for:) 分支。
+            ("deepseek", nil)
         ]
         for secondary in secondaryRuntimes {
             do {
@@ -823,7 +800,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
 
     /// 搜索的分页由 Codex 的 thread/search 独占驱动：只有首页会额外查询其他 Runtime，
     /// 并把结果拼在后面。Claude 没有 thread/search，它走 thread/list + searchTerm；
-    /// DeepSeek 直接走 thread/search。这样不需要把多条游标流编进一个复合
+    /// DeepSeek 由原生通道的 `session/search` 承接。这样不需要把多条游标流编进一个复合
     /// cursor（那会重新引入跨 Runtime 的分页状态机）。
     ///
     /// 代价说明：次要 Runtime 的搜索结果限于首页 limit 条。搜索场景下用户通常继续收窄
@@ -852,7 +829,8 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
             unavailable.append("codex")
         }
         let secondaryRuntimes: [(String, CodexAppServerSessionRuntime?)] = [
-            ("claude", bundle.claude), ("deepseek", bundle.deepseek)
+            // deepseek 没有 Codex actor：只由原生通道承接，循环里走 nativeClient(for:) 分支。
+            ("claude", bundle.claude), ("deepseek", nil)
         ]
         for (provider, runtime) in secondaryRuntimes {
             try Task.checkCancellation()

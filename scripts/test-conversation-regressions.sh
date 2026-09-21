@@ -84,9 +84,6 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/CameraAttachmentTests \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
   -only-testing:MimiRemoteTests/DeepSeekComposerPolicyTests \
-  -only-testing:MimiRemoteTests/DeepSeekSessionRuntimeTests \
-  -only-testing:MimiRemoteTests/DeepSeekSessionLifecycleTests \
-  -only-testing:MimiRemoteTests/DeepSeekCrossRuntimeContractTests \
   -only-testing:MimiRemoteTests/DeepSeekSearchRoutingTests \
   -only-testing:MimiRemoteTests/DeepSeekRuntimePresentationTests \
   -only-testing:MimiRemoteTests/HarnessNativeRoutingSeamTests \

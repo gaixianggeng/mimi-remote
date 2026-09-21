@@ -3,8 +3,8 @@ import Foundation
 /// 原生 Harness 通道的受控开关。
 ///
 /// **默认关闭，而且生产不提供打开它的路径。** 关着的时候 `AppStore` 不注入
-/// `harnessFactory`，`AppServerRuntimeBundle.harness` 保持 `nil`，deepseek 继续走
-/// 既有 app-server 路径，行为逐字不变——这是"开发期默认仍走旧路径"的落点。
+/// `harnessFactory`，`AppServerRuntimeBundle.harness` 保持 `nil`：deepseek 只由原生
+/// 通道承接，此时原生未注入，相关调用显式失败，不会回退到任何 app-server actor。
 ///
 /// 为什么是一个显式值而不是环境变量或配置项：H11 的卡片要求"识别到 native-v1 描述后
 /// 才选原生"，也就是**打开这件事本身要有一次决策**。做成隐式开关（读环境、读 UserDefaults）

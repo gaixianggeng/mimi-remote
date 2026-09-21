@@ -5,9 +5,10 @@ import Foundation
 /// 只覆盖路由 facade 会委托给 Harness 的**受支持**操作。主机级 projects / worktree / git /
 /// 文件 / 语音等服务继续走既有 agentd 客户端路径，不进这个协议——刻意保持窄，不造万能协议。
 ///
-/// 开发期默认不注入（`AppServerRuntimeBundle.harness == nil`）：`deepseek` 仍走既有
-/// app-server 桥接路径，Codex / Claude / DeepSeek 现状行为完全不变。注入后 `deepseek`
-/// 由原生路径承担，`runtime(for:)` 不再回退到 Codex actor 假装 native。
+/// agentd 的 `/api/app-server` 已删除 deepseek 翻译层，`runtime=deepseek` 不再存在：
+/// `deepseek` **只由原生通道承接**，`runtime(for:)` 不再回退到任何 Codex actor。
+/// `AppServerRuntimeBundle.harness == nil` 时没有承接者，相关调用显式失败（绝不静默降级）。
+/// Codex / Claude 仍走各自既有 app-server actor，行为不变。
 /// 一次成功创建的结果。
 ///
 /// `agentPreset` 是可选：只有 Harness 装配了 agent 名册时才返回（实测 0.1.5-rc.2 返回
