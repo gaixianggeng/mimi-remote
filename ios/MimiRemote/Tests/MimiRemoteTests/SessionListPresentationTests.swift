@@ -77,6 +77,32 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(state(visible: true), .content)
     }
 
+    func testOnlyInProgressStatesAskTheHostSwitcherToStepAside() {
+        for state in [SessionListPresentationState.connecting, .loading] {
+            XCTAssertTrue(
+                state.showsInPlaceConnectionProgress,
+                "\(state) 正文自己在转，设备入口必须让位"
+            )
+        }
+
+        // 结论型与内容态由正文之外的地方表达，徽标要照常出现。
+        for state in [
+            SessionListPresentationState.content,
+            .searching,
+            .needsWorkspace,
+            .noSessions,
+            .noMatches,
+            .networkUnavailable,
+            .runtimeUnavailable("gateway down"),
+            .loadFailed("timeout")
+        ] {
+            XCTAssertFalse(
+                state.showsInPlaceConnectionProgress,
+                "\(state) 不是进行中，顶栏徽标不该被按下去"
+            )
+        }
+    }
+
     func testConnectionWarmUpOutranksTransientFailuresButNotDefiniteStates() {
         func state(
             connection: ConnectionStatus = .idle,

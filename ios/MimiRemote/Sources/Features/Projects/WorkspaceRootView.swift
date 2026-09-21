@@ -407,6 +407,8 @@ struct WorkspaceRootView: View {
         }
         // 与侧栏 gutter、会话画布同底，宽屏下三块相邻面不出现同亮度色差。
         .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
+        // iPad 紧凑布局的设备入口浮在 TabView 上、归 Shell 所有；它要不要让位只有这里知道。
+        .workbenchRootShowsConnectionProgress(showsInPlaceConnectionProgress)
     }
 
     private func migrateLegacyWorkspaceAppearance() {
