@@ -191,6 +191,9 @@ extension UnifiedWorkbenchShell {
     ) -> some View {
         HostSwitcherMenu(
             presentation: .toolbar,
+            // 这枚浮层只出现在会话页和工作区页的根视图上；预热窗口内两者正文都自带
+            // 连接过渡，顶栏再转一次就成了"两个地方都在转"。
+            suppressesProgressBadge: sessionStore.isEstablishingConnection,
             manageConnections: { openConnectionSettings(layout: layout) }
         )
         .simultaneousGesture(

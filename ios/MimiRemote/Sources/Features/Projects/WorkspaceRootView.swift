@@ -428,6 +428,13 @@ struct WorkspaceRootView: View {
         !usesTabletTopBarHostSwitcher && manageConnections != nil
     }
 
+    /// 正文此刻是连接过渡或目录加载态：整块版面中央已经有一处"正在进行"的表达，
+    /// 设备入口就不该再叠一枚转圈。判据与 `workspaceBrowser` 的分支完全同源。
+    private var showsInPlaceConnectionProgress: Bool {
+        sessionStore.sidebarProjects.isEmpty
+            && (sessionStore.isEstablishingConnection || catalogLoad.state == .loading)
+    }
+
     /// 宽度够时 Runtime 筛选器并入胶囊行，内容头部整条消失；不够时退回列表上方独立一行。
     /// 判定统一由 `WorkspaceStripLayout` 处理，保证底部 Tab 栏始终保留行内新建入口。
     private var usesInlineRuntimePicker: Bool {
@@ -450,6 +457,7 @@ struct WorkspaceRootView: View {
                         ToolbarItem(placement: .topBarLeading) {
                             HostSwitcherMenu(
                                 presentation: .toolbar,
+                                suppressesProgressBadge: showsInPlaceConnectionProgress,
                                 manageConnections: manageConnections
                             )
                             .workbenchToolbarChromeCircle(tokens: tokens)
@@ -462,6 +470,7 @@ struct WorkspaceRootView: View {
                         ToolbarItem(placement: .topBarLeading) {
                             HostSwitcherMenu(
                                 presentation: .toolbar,
+                                suppressesProgressBadge: showsInPlaceConnectionProgress,
                                 manageConnections: manageConnections
                             )
                             .workbenchToolbarChromeCircle(tokens: tokens)
@@ -609,11 +618,12 @@ struct WorkspaceRootView: View {
             Divider()
                 .overlay(tokens.border.opacity(0.7))
 
-            ProgressView(L10n.text("ui.loading_workspace"))
-                .font(themeStore.uiFont(.callout, weight: .medium))
-                .foregroundStyle(tokens.secondaryText)
-                .tint(tokens.primaryAction)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // 与连接过渡同一块版面：正文正中一处表达，顶部胶囊行的设备入口不再叠转圈。
+            ConnectionWarmUpView(
+                headline: L10n.text("ui.loading_workspace"),
+                message: L10n.text("ui.reading_the_workspace_list_from_this_mac")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .accessibilityIdentifier("workspace.loadingState")
@@ -629,12 +639,9 @@ struct WorkspaceRootView: View {
                 .overlay(tokens.border.opacity(0.7))
 
             ConnectionWarmUpView(
-                rowCount: 3,
                 message: L10n.text("ui.workspaces_on_this_mac_appear_as_soon_as")
             )
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .accessibilityIdentifier("workspace.connectingState")
@@ -707,6 +714,7 @@ struct WorkspaceRootView: View {
                 // iPhone 保留原有工作区布局：设备入口与工作区文件夹胶囊共用这一行。
                 HostSwitcherMenu(
                     presentation: .toolbar,
+                    suppressesProgressBadge: showsInPlaceConnectionProgress,
                     manageConnections: manageConnections
                 )
                 .workbenchChromeCircle(tokens: tokens)

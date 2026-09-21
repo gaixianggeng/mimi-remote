@@ -319,6 +319,9 @@ struct SessionListView: View {
                 workbenchChromeToolbarItem(placement: .topBarLeading) {
                     HostSwitcherMenu(
                         presentation: .toolbar,
+                        // 列表正文已经在讲"正在连接/正在加载"，顶栏不再叠第二枚转圈。
+                        suppressesProgressBadge: presentationState == .connecting
+                            || presentationState == .loading,
                         manageConnections: manageConnections
                     )
                     .workbenchToolbarChromeCircle(tokens: tokens)
@@ -632,9 +635,8 @@ struct SessionListView: View {
             .padding(.vertical, 32)
             .accessibilityIdentifier("sessions.loading")
         case .connecting:
-            ConnectionWarmUpView(rowCount: 4)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
+            ConnectionWarmUpView()
+                .padding(.vertical, 24)
         case .searching:
             VStack(spacing: 10) {
                 ProgressView()
