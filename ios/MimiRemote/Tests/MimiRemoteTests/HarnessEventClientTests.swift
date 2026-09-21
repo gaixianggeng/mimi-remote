@@ -1094,6 +1094,53 @@ final class HarnessEventClientTests: XCTestCase {
         )
     }
 
+    /// 历史页必须覆盖实时展示过的工具条目。
+    ///
+    /// 两个投影器必须对"哪些内容可展示"给出**同一个答案**：实时接了
+    /// `tool/call`/`tool/result`，历史若跳过它们，用户重新打开会话就会发现
+    /// 过程条目消失——同一轮对话"看着有、重开没有"。
+    func testHistoryProjectionCoversToolEventsLikeLive() throws {
+        let toolCall = HarnessDurableEvent(
+            type: HarnessWireEventType.toolCall, seq: 50, time: nil,
+            data: .object([
+                "callId": .string("call-hist"),
+                "name": .string("run_bash"),
+                "turn": .number(1),
+            ])
+        )
+        let toolResult = HarnessDurableEvent(
+            type: HarnessWireEventType.toolResult, seq: 51, time: nil,
+            data: .object([
+                "message": .object([
+                    "content": .array([.object([
+                        "type": .string("text"),
+                        "text": .string("done"),
+                        "toolCallId": .string("call-hist"),
+                    ])]),
+                ]),
+                "turn": .number(1),
+            ])
+        )
+
+        let liveToolCount = [toolCall, toolResult].reduce(0) { total, event in
+            total + HarnessPresentationProjector.project(
+                durableEvent: event, sessionID: "s"
+            ).filter {
+                guard case .processItemCompleted(let message, _, _) = $0 else { return false }
+                return message.activityPayload?.category == .toolCall
+            }.count
+        }
+        let historyMessages = HarnessHistoryProjection.messages(
+            from: [toolCall, toolResult], sessionID: "s"
+        )
+
+        XCTAssertEqual(liveToolCount, 2, "前置条件：实时投影覆盖两次工具事件")
+        XCTAssertEqual(
+            historyMessages.count, liveToolCount,
+            "历史投影必须覆盖实时展示过的工具条目，否则重开会话时过程消失"
+        )
+    }
+
     // MARK: - 接收与去重
 
     func testOpeningSnapshotPublishesExistingAssistantPrefixImmediately() async throws {

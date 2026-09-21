@@ -136,11 +136,35 @@ enum HarnessHistoryProjection {
             return assistantMessage(event, sessionID: sessionID)
         case HarnessWireEventType.systemMessage:
             return systemMessage(event, sessionID: sessionID)
+        case HarnessWireEventType.toolCall, HarnessWireEventType.toolResult:
+            return toolMessage(event, sessionID: sessionID)
         default:
             // 步骤边界、权限预设、注入上下文等不单独展示：它们没有独立可读内容，
             // 展示出来只是噪声（与实时投影同一取舍）。
             return nil
         }
+    }
+
+    /// 工具条目走**与实时投影同一个解释**（`HarnessPresentationProjector.toolEntry`）。
+    ///
+    /// 历史若跳过它们，用户重新打开会话就会发现过程条目消失——同一轮对话
+    /// "看着有、重开没有"。两处各写一份解释必然漂移，所以这里只做形式适配
+    /// （产出 `CodexHistoryMessage` 而不是 `AgentEvent`），判断逻辑共用。
+    private static func toolMessage(
+        _ event: HarnessDurableEvent,
+        sessionID: SessionID
+    ) -> CodexHistoryMessage? {
+        guard let entry = HarnessPresentationProjector.toolEntry(from: event) else { return nil }
+        return CodexHistoryMessage(
+            id: entry.id,
+            role: "system",
+            kind: .commandSummary,
+            content: entry.displayTitle,
+            activityPayload: entry.activityPayload,
+            createdAt: date(from: event),
+            seq: entry.seq.map { EventSequence($0) },
+            sendStatus: .confirmed
+        )
     }
 
     private static func userMessage(
