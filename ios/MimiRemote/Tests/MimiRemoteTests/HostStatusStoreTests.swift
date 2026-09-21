@@ -89,6 +89,96 @@ final class HostStatusStoreTests: XCTestCase {
         )
     }
 
+    func testToolbarConnectionBadgeDefersProgressToThePageThatAlreadyShowsIt() {
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: true,
+                isNetworkUnavailable: false,
+                connectionStatus: .idle,
+                pageShowsConnectionProgress: true
+            ),
+            .hidden,
+            "正文的连接过渡已经在表达进行中，顶栏不再叠第二枚转圈"
+        )
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: false,
+                isNetworkUnavailable: false,
+                connectionStatus: .testing,
+                pageShowsConnectionProgress: true
+            ),
+            .hidden
+        )
+        // 结论型状态不属于"正在进行"，正文那一处不表达它们，徽标必须继续出现。
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: false,
+                isNetworkUnavailable: true,
+                connectionStatus: .connected("cached"),
+                pageShowsConnectionProgress: true
+            ),
+            .offline
+        )
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: false,
+                isNetworkUnavailable: false,
+                connectionStatus: .failed("timeout"),
+                pageShowsConnectionProgress: true
+            ),
+            .failed
+        )
+    }
+
+    func testConnectionWarmUpBeaconRipplesStaggerAndVanishAtTheOuterEdge() {
+        let ripples = (0..<ConnectionWarmUpBeacon.rippleCount).map {
+            ConnectionWarmUpBeacon.ripple(index: $0, time: 0, animates: true)
+        }
+
+        XCTAssertEqual(ripples[0].scale, ConnectionWarmUpBeacon.birthScale, accuracy: 0.0001)
+        XCTAssertEqual(ripples[0].opacity, 0, accuracy: 0.0001, "落点上的新一圈先淡入")
+        XCTAssertEqual(ripples[0].lineWidth, ConnectionWarmUpBeacon.maxLineWidth, accuracy: 0.0001)
+        XCTAssertLessThan(ripples[1].scale, ripples[2].scale, "同一时刻各圈相位均匀错开")
+        XCTAssertGreaterThan(ripples[1].opacity, ripples[2].opacity, "越靠外越淡")
+        XCTAssertGreaterThan(ripples[1].lineWidth, ripples[2].lineWidth, "波峰随扩散变薄")
+
+        for ripple in ripples {
+            XCTAssertTrue((ConnectionWarmUpBeacon.birthScale...1).contains(ripple.scale))
+            XCTAssertTrue((0...ConnectionWarmUpBeacon.peakOpacity).contains(ripple.opacity))
+            XCTAssertTrue(
+                (ConnectionWarmUpBeacon.minLineWidth...ConnectionWarmUpBeacon.maxLineWidth)
+                    .contains(ripple.lineWidth)
+            )
+        }
+
+        // 走到最外沿前必须散干净，否则每一轮回到起点都会闪一下。
+        let atOuterEdge = ConnectionWarmUpBeacon.ripple(
+            index: 0,
+            time: ConnectionWarmUpBeacon.cycleDuration * 0.999,
+            animates: true
+        )
+        XCTAssertLessThan(atOuterEdge.opacity, 0.01)
+        XCTAssertEqual(atOuterEdge.scale, 1, accuracy: 0.01)
+    }
+
+    func testConnectionWarmUpBeaconStopsAtStaticRingsUnderReduceMotion() {
+        XCTAssertEqual(
+            ConnectionWarmUpBeacon.ripple(index: 1, time: 0, animates: false),
+            ConnectionWarmUpBeacon.ripple(index: 1, time: 12.3, animates: false),
+            "减弱动态效果下这一圈与时间无关"
+        )
+
+        let inner = ConnectionWarmUpBeacon.ripple(index: 0, time: 0, animates: false)
+        let outer = ConnectionWarmUpBeacon.ripple(
+            index: ConnectionWarmUpBeacon.rippleCount - 1,
+            time: 0,
+            animates: false
+        )
+        XCTAssertLessThan(inner.scale, outer.scale, "静止时仍是一组由内向外的同心圆")
+        XCTAssertGreaterThan(inner.opacity, outer.opacity)
+        XCTAssertGreaterThan(inner.lineWidth, outer.lineWidth)
+    }
+
     func testProbeRequestsOnlyInactiveProfileAndReusesSuccessTTL() async throws {
         let fixture = try makeFixture(
             inactiveExpectedInstallationID: "installation-b",

@@ -3,36 +3,65 @@ import SwiftUI
 /// 首次连接一台电脑时的过渡界面。
 ///
 /// 冷启动和切换电脑都要先建隧道、再等 agentd 网关的上游就绪，这个窗口内的失败是过程
-/// 而不是结论。用内容形状的骨架而不是错误态或转圈占位：形状本身告诉用户接下来会出现
-/// 什么，等真实数据到位时替换的是同一块版面，不会整屏跳变。
+/// 而不是结论。整屏只保留**一处**"正在进行"的表达：居中的水波纹。顶栏设备入口在这
+/// 段时间不再叠第二枚转圈（`HostSwitcherMenu(suppressesProgressBadge:)`），否则同一件
+/// 事被说两遍，用户读到的是"两个地方都在转"，而不是"正在连接这台电脑"。
+///
+/// 这里也不再画内容骨架。骨架预告的是版面，可一旦它和一枚转圈、一枚顶栏徽标同时出现，
+/// 整屏就散成三处闪动；连接过渡真正要回答的只有一句话——现在在连哪台电脑。
 struct ConnectionWarmUpView: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    /// 骨架行数。会话页给完整列表高度，工作区页只需要提示接下来是一份列表。
-    var rowCount = 3
-    /// 说明文案。默认解释“通道正在建立”，调用方可替换成本页面更贴切的说明。
+    /// 标题。默认写成"正在连接 <电脑名>"，调用方可替换成本页面更贴切的说法。
+    var headline: String?
+    /// 说明文案。默认解释"通道正在建立"，调用方可替换成本页面更贴切的说明。
     var message: String?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        VStack(alignment: .leading, spacing: 20) {
-            header(tokens: tokens)
-            skeleton(tokens: tokens)
+        VStack(spacing: 22) {
+            ConnectionWarmUpBeacon(
+                tokens: tokens,
+                animates: !reduceMotion,
+                // 辅助功能字号下文字已经很高，水纹跟着收一档，整块仍能完整落在一屏里。
+                diameter: dynamicTypeSize.isAccessibilitySize ? 124 : 160
+            )
+
+            VStack(spacing: 7) {
+                Text(resolvedHeadline)
+                    .font(themeStore.uiFont(.title3, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+
+                if !resolvedMessage.isEmpty {
+                    Text(resolvedMessage)
+                        .font(themeStore.uiFont(.subheadline))
+                        .foregroundStyle(tokens.secondaryText)
+                        .lineSpacing(2)
+                }
+            }
+            .multilineTextAlignment(.center)
+            // 说明文字不铺满整屏宽：居中的一段话超过这个宽度就会读成正文段落。
+            .frame(maxWidth: 320)
         }
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 32)
+        .padding(.vertical, 28)
+        .frame(maxWidth: .infinity)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title)
+        .accessibilityLabel(resolvedHeadline)
         .accessibilityValue(resolvedMessage)
         .accessibilityIdentifier("connection.warmUp")
     }
 
     /// 连接目标写在标题里。用户同时配对多台电脑时，"正在连接" 本身并不足以说明发生了什么。
-    private var title: String {
+    private var resolvedHeadline: String {
+        if let headline, !headline.isEmpty {
+            return headline
+        }
         guard let displayName = appStore.activeConnectionProfile?.displayName,
               !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return L10n.text("ui.connecting_to_your_mac")
@@ -43,123 +72,100 @@ struct ConnectionWarmUpView: View {
     private var resolvedMessage: String {
         message ?? L10n.text("ui.a_secure_channel_is_being_established_content_appears")
     }
-
-    private func header(tokens: ThemeTokens) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            ProgressView()
-                .controlSize(.small)
-                .tint(tokens.secondaryText)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                Text(resolvedMessage)
-                    .font(themeStore.uiFont(.caption))
-                    .foregroundStyle(tokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 0)
-        }
-    }
-
-    private func skeleton(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
-            ForEach(0..<max(1, rowCount), id: \.self) { index in
-                ConnectionWarmUpSkeletonRow(
-                    tokens: tokens,
-                    titleTrailingInset: Self.titleTrailingInsets[index % Self.titleTrailingInsets.count],
-                    subtitleTrailingInset: Self.subtitleTrailingInsets[index % Self.subtitleTrailingInsets.count]
-                )
-            }
-        }
-        .connectionWarmUpShimmer(tokens: tokens, isAnimating: !reduceMotion)
-    }
-
-    /// 参差的行宽让骨架读起来像一份真实列表，而不是一组等宽色块。
-    private static let titleTrailingInsets: [CGFloat] = [72, 132, 40, 104]
-    private static let subtitleTrailingInsets: [CGFloat] = [168, 118, 196, 146]
 }
 
-/// 单行骨架：左侧头像位，右侧标题与摘要两行。与会话行同构，替换成真实内容时版面不跳。
-private struct ConnectionWarmUpSkeletonRow: View {
+/// 连接中的水波纹：一圈圈圆环按固定节拍从落点推出去，越远越大、越淡、越细。
+///
+/// 三条都照着真实水纹来：外推先快后缓（匀速会读成一根环形进度条）、波峰随扩散变薄、
+/// 走到最外沿前彻底散掉，所以每一轮回到起点时不会闪。
+///
+/// 进度只由当前时间决定（与会话行的运行环、实时状态星芒同一套做法）。视图被复用或重建
+/// 都不会重新起拍，也不会叠加出多个动画源。
+struct ConnectionWarmUpBeacon: View {
     let tokens: ThemeTokens
-    let titleTrailingInset: CGFloat
-    let subtitleTrailingInset: CGFloat
+    let animates: Bool
+    /// 最外沿直径。画布就是这么大，涟漪不会被裁掉。
+    var diameter: CGFloat = 160
+
+    /// 同时在路上的圈数。节拍 = cycleDuration / rippleCount，这里正好是 0.75 秒一圈。
+    static let rippleCount = 4
+    /// 一圈涟漪从落点走到最外沿所需的时间。
+    static let cycleDuration: TimeInterval = 3
+    /// 刚落下时的直径占比。真从 0 开始会有一两帧糊成一个点。
+    static let birthScale: CGFloat = 0.12
+    static let peakOpacity = 0.5
+    static let restingOpacity = 0.32
+    /// 波峰厚度：落点最厚，扩散开来变薄。
+    static let maxLineWidth: CGFloat = 2.6
+    static let minLineWidth: CGFloat = 0.9
+
+    struct Ripple: Equatable {
+        var scale: CGFloat
+        var opacity: Double
+        var lineWidth: CGFloat
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(tokens.elevatedSurface)
-                .frame(width: 28, height: 28)
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !animates)) { context in
+            let time = context.date.timeIntervalSinceReferenceDate
 
-            VStack(alignment: .leading, spacing: 9) {
-                bar(height: 12, trailingInset: titleTrailingInset)
-                bar(height: 9, trailingInset: subtitleTrailingInset)
-            }
-        }
-    }
-
-    private func bar(height: CGFloat, trailingInset: CGFloat) -> some View {
-        HStack(spacing: 0) {
-            RoundedRectangle(cornerRadius: height / 2, style: .continuous)
-                .fill(tokens.elevatedSurface)
-                .frame(height: height)
-            // 用固定宽度的透明尾段制造参差；容器变窄时让色块自己收缩，不会溢出。
-            Color.clear
-                .frame(width: trailingInset, height: height)
-        }
-    }
-}
-
-/// 骨架扫光。只在骨架自身的形状里移动，不在整块矩形上刷一道高光，
-/// 否则它会读成一个独立的发光层，而不是"这些内容正在填充"。
-private struct ConnectionWarmUpShimmer: ViewModifier {
-    let tokens: ThemeTokens
-    let isAnimating: Bool
-
-    @State private var phase: CGFloat = 0
-
-    func body(content: Content) -> some View {
-        content
-            .overlay {
-                if isAnimating {
-                    GeometryReader { proxy in
-                        let sweepWidth = max(proxy.size.width * 0.42, 88)
-                        LinearGradient(
-                            stops: [
-                                .init(color: .clear, location: 0),
-                                .init(color: tokens.primaryText.opacity(0.12), location: 0.5),
-                                .init(color: .clear, location: 1)
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
+            ZStack {
+                ForEach(0..<Self.rippleCount, id: \.self) { index in
+                    let ripple = Self.ripple(index: index, time: time, animates: animates)
+                    // 用 frame 而不是 scaleEffect 定半径：缩放会连描边一起放大，
+                    // 波峰就没法自己变薄了。
+                    Circle()
+                        .strokeBorder(
+                            tokens.primaryAction.opacity(ripple.opacity),
+                            lineWidth: ripple.lineWidth
                         )
-                        .frame(width: sweepWidth)
-                        .offset(x: phase * (proxy.size.width + sweepWidth) - sweepWidth)
-                    }
-                    .mask(content)
-                    .allowsHitTesting(false)
+                        .frame(
+                            width: diameter * ripple.scale,
+                            height: diameter * ripple.scale
+                        )
                 }
             }
-            .task(id: isAnimating) {
-                guard isAnimating else {
-                    phase = 0
-                    return
-                }
-                // 线性匀速：扫光是背景节奏，不该有加速感去抢用户注意。
-                phase = 0
-                withAnimation(.linear(duration: 1.45).repeatForever(autoreverses: false)) {
-                    phase = 1
-                }
-            }
+            .frame(width: diameter, height: diameter)
+        }
+        .frame(width: diameter, height: diameter)
+        .accessibilityHidden(true)
     }
-}
 
-extension View {
-    /// Reduce Motion 下只保留静态骨架：形状仍然预告版面，但不做横向位移。
-    func connectionWarmUpShimmer(tokens: ThemeTokens, isAnimating: Bool) -> some View {
-        modifier(ConnectionWarmUpShimmer(tokens: tokens, isAnimating: isAnimating))
+    /// 第 index 圈涟漪当前的半径占比、不透明度与波峰厚度。
+    static func ripple(index: Int, time: TimeInterval, animates: Bool) -> Ripple {
+        guard animates else {
+            // Reduce Motion：停在一组静止的同心圆。形状仍然读作"波纹正在散开"，
+            // 但没有任何位移——减弱动态效果要的是这个，而不是把状态说没了。
+            let progress = Double(index + 1) / Double(rippleCount + 1)
+            return Ripple(
+                scale: scale(atProgress: progress),
+                opacity: restingOpacity * (1 - progress),
+                lineWidth: lineWidth(atProgress: progress)
+            )
+        }
+
+        let progress = (time / cycleDuration + Double(index) / Double(rippleCount))
+            .truncatingRemainder(dividingBy: 1)
+        // 外推越走越慢。匀速扩张会读成一根环形进度条，而真实的水纹是先快后缓的。
+        let eased = 1 - pow(1 - progress, 2.2)
+        // 落点处的一小段先淡入，新的一圈才不会凭空弹出来。
+        let fadeIn = min(1, progress / 0.1)
+        return Ripple(
+            scale: scale(atProgress: eased),
+            opacity: peakOpacity * fadeIn * (1 - eased),
+            lineWidth: lineWidth(atProgress: eased)
+        )
+    }
+
+    static func scale(atProgress progress: Double) -> CGFloat {
+        birthScale + (1 - birthScale) * CGFloat(clamped(progress))
+    }
+
+    static func lineWidth(atProgress progress: Double) -> CGFloat {
+        maxLineWidth - (maxLineWidth - minLineWidth) * CGFloat(clamped(progress))
+    }
+
+    private static func clamped(_ progress: Double) -> Double {
+        min(1, max(0, progress))
     }
 }

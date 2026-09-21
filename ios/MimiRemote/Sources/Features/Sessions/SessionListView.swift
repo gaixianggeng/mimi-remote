@@ -70,6 +70,18 @@ enum SessionListPresentationState: Equatable {
     case runtimeUnavailable(String)
     case loadFailed(String)
 
+    /// 正文此刻自己就在表达"进行中"。设备入口据此让位，同一屏不出现两处转圈。
+    /// 结论型状态（离线、失败、运行时不可用）不在其中——正文不表达它们。
+    var showsInPlaceConnectionProgress: Bool {
+        switch self {
+        case .connecting, .loading:
+            return true
+        case .content, .searching, .needsWorkspace, .noSessions, .noMatches,
+             .networkUnavailable, .runtimeUnavailable, .loadFailed:
+            return false
+        }
+    }
+
     static func resolve(
         hasVisibleSessions: Bool,
         hasOpenedWorkspace: Bool,
@@ -289,6 +301,8 @@ struct SessionListView: View {
             )
         }
         .animation(sessionRegroupAnimation, value: lifecycleCoordinator.membership)
+        // iPad 紧凑布局的设备入口浮在 TabView 上、归 Shell 所有；它要不要让位只有这里知道。
+        .workbenchRootShowsConnectionProgress(presentationState.showsInPlaceConnectionProgress)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .background { SessionSearchPresentationReporter() }
@@ -319,6 +333,8 @@ struct SessionListView: View {
                 workbenchChromeToolbarItem(placement: .topBarLeading) {
                     HostSwitcherMenu(
                         presentation: .toolbar,
+                        // 列表正文已经在讲"正在连接/正在加载"，顶栏不再叠第二枚转圈。
+                        suppressesProgressBadge: presentationState.showsInPlaceConnectionProgress,
                         manageConnections: manageConnections
                     )
                     .workbenchToolbarChromeCircle(tokens: tokens)
@@ -632,9 +648,8 @@ struct SessionListView: View {
             .padding(.vertical, 32)
             .accessibilityIdentifier("sessions.loading")
         case .connecting:
-            ConnectionWarmUpView(rowCount: 4)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
+            ConnectionWarmUpView()
+                .padding(.vertical, 24)
         case .searching:
             VStack(spacing: 10) {
                 ProgressView()
