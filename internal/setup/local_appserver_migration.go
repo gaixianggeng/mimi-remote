@@ -88,7 +88,7 @@ func MigrateAppServerToSharedLocalWithPreflight(
 		return nil
 	}
 	if !migrateLoopbackSSH && transportName != "" && transportName != "ws" {
-		return fmt.Errorf("旧 app_server.transport=%q 不能自动迁移；请执行 agentd setup --force", transportName)
+		return fmt.Errorf("旧 app_server.transport=%q 不能自动迁移：%w", transportName, config.AppServerTransportError(transportName))
 	}
 	if managed, ok := rawBool(appServer["managed"]); ok && !managed {
 		return fmt.Errorf("旧 app_server.managed=false 不能自动迁移；请执行 agentd setup --force")

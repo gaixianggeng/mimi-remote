@@ -36,6 +36,53 @@ func TestMigrateAppServerToSSHPreflightFailureDoesNotWrite(t *testing.T) {
 	}
 }
 
+// 旧安装包读不懂的 transport 会在这里被拒绝，这个错误会一路传到 Mac App 的
+// check-config。未知取值可能是更新版本写入的，必须给出升级安装包的指引。
+func TestMigrateAppServerToSSHReportsUnknownTransportAsUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{"app_server":{"transport":"shared-local-v2"}}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := MigrateAppServerToSSH(context.Background(), path, "")
+	if !errors.Is(err, config.ErrAppServerTransportUnsupported) {
+		t.Fatalf("未识别的 transport 必须报出升级错误值：%v", err)
+	}
+	if !strings.Contains(err.Error(), "请升级到最新发布包") {
+		t.Fatalf("错误正文必须给出升级安装包的指引：%v", err)
+	}
+	stored, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(stored, original) {
+		t.Fatalf("拒绝迁移不能改写配置：%s", stored)
+	}
+}
+
+// 已移除的历史 transport 不能用升级安装包解决：最新包同样不支持它，
+// 引导用户升级只会让用户白装一次，必须回到「重置配置」这条路。
+func TestMigrateAppServerToSSHKeepsRemovedTransportOffUpgradePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{"app_server":{"transport":"stdio"}}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := MigrateAppServerToSSH(context.Background(), path, "")
+	if !errors.Is(err, config.ErrAppServerTransportRemoved) {
+		t.Fatalf("已移除的 transport 必须报出重置配置错误值：%v", err)
+	}
+	if errors.Is(err, config.ErrAppServerTransportUnsupported) ||
+		strings.Contains(err.Error(), "请升级到最新发布包") {
+		t.Fatalf("已移除的 transport 不得引导升级安装包：%v", err)
+	}
+	if !strings.Contains(err.Error(), "setup --force") {
+		t.Fatalf("已移除的 transport 必须引导重置配置：%v", err)
+	}
+}
+
 func TestMigrateAppServerToSSHAtomicallyPreservesUnknownFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"future":{"keep":true},"app_server":{"transport":"ws","managed":true,"listen":"ws://127.0.0.1:4222","ws_token_file":"/tmp/old","remote_gateway":{"enabled":true},"future_option":"keep"}}`)

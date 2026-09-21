@@ -149,6 +149,7 @@ final class HostStore {
 
     private let agent: AgentCommandClient
     private let services: ServiceManagementClient
+    private let configCheck: AgentdConfigCheckClient
     private let homebrew: HomebrewServiceClient
     private let health: HealthClient
     private let logs: AgentLogClient
@@ -167,6 +168,7 @@ final class HostStore {
     init(
         agent: AgentCommandClient,
         services: ServiceManagementClient,
+        configCheck: AgentdConfigCheckClient = .disabled,
         homebrew: HomebrewServiceClient,
         health: HealthClient,
         logs: AgentLogClient,
@@ -177,6 +179,7 @@ final class HostStore {
     ) {
         self.agent = agent
         self.services = services
+        self.configCheck = configCheck
         self.homebrew = homebrew
         self.health = health
         self.logs = logs
@@ -188,6 +191,7 @@ final class HostStore {
         HostStore(
             agent: .live(),
             services: .live(),
+            configCheck: .live(),
             homebrew: .live(),
             health: .live,
             logs: .live,
@@ -1034,6 +1038,11 @@ final class HostStore {
     }
 
     private func repairEnabledMacAgent(after initialError: Error) async {
+        // 同上：配置本身不可用时，换代不会改变结果，也不该把原因改写成登记问题。
+        if let lifecycleError = initialError as? ServiceLifecycleError, lifecycleError.isConfigurationFailure {
+            fail(lifecycleError)
+            return
+        }
         lifecycle = .starting
         do {
             try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
@@ -1146,12 +1155,30 @@ final class HostStore {
             // 重试却始终拉不起进程。等满整轮再修复会白白浪费近一分钟；一旦 launchd
             // 自己已经报告反复 spawn 失败，就立即交给上层做一次有界换代。
             if let launchFailure = await services.agentLaunchFailure() {
-                throw ServiceLifecycleError.agentSpawnFailed(launchFailure)
+                throw await macAgentLaunchFailureError(launchFailure)
             }
             try await Task.sleep(for: .seconds(1))
         }
         let detail = lastStatus?.serviceError ?? "服务在有限等待内没有通过就绪检查。"
         throw AgentClientError.commandFailed(detail)
+    }
+
+    /// launchd 只报得出「反复 spawn 失败 + 退出码」，真正的原因在 agentd 自己的启动
+    /// 检查里：直接问包内 agentd，就能区分「这份配置需要更新版本的安装包」和「登记
+    /// 记录过期」。配置类问题重新登记多少次都不会变，必须换成真实报错或升级引导。
+    private func macAgentLaunchFailureError(_ launchFailure: String) async -> ServiceLifecycleError {
+        guard let check = await configCheck.check(), !check.ok else {
+            return .agentSpawnFailed(launchFailure)
+        }
+        if check.requiresNewerVersion {
+            return .configRequiresNewerVersion(check.message ?? launchFailure)
+        }
+        // 其它配置问题：把 agentd 的原始报错显示出来，用户才能看到「已被移除，
+        // 请执行 agentd setup --force」这类真正可执行的下一步。
+        guard let message = check.message, !message.isEmpty else {
+            return .agentSpawnFailed(launchFailure)
+        }
+        return .invalidConfiguration(message)
     }
 
     private func registerMacAgentAndWaitForReady(
@@ -1164,6 +1191,10 @@ final class HostStore {
             // 只有新登记的进程真正通过就绪检查后才记账；失败时下次启动仍会重试迁移。
             services.markAgentRegistrationCurrent()
         } catch {
+            // 配置在当前安装包下不可用：注销再登记只会重复同一个失败，直接报真实原因。
+            if let lifecycleError = error as? ServiceLifecycleError, lifecycleError.isConfigurationFailure {
+                throw lifecycleError
+            }
             guard allowAutomaticRepair, services.agentStatus() == .enabled else {
                 throw error
             }

@@ -92,10 +92,12 @@ func run(args []string) error {
 		return runRuntime(args)
 	case "doctor":
 		return runDoctor(args)
+	case "check-config":
+		return runCheckConfig(args)
 	case "serve":
 		return runServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、runtime、serve、doctor、version", cmd)
+		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、runtime、serve、doctor、check-config、version", cmd)
 	}
 }
 
