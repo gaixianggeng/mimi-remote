@@ -36,6 +36,32 @@ func TestMigrateAppServerToSSHPreflightFailureDoesNotWrite(t *testing.T) {
 	}
 }
 
+// 旧安装包读不懂的 transport 会在这里被拒绝，这个错误会一路传到 Mac App 的
+// check-config。因此它必须带上稳定的「需要更新版本」错误值并给出升级指引，
+// 而不是只让用户去重置配置。
+func TestMigrateAppServerToSSHReportsUnsupportedTransportAsUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	original := []byte(`{"app_server":{"transport":"stdio"}}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := MigrateAppServerToSSH(context.Background(), path, "")
+	if !errors.Is(err, config.ErrAppServerTransportUnsupported) {
+		t.Fatalf("不可迁移的 transport 必须报出升级错误值：%v", err)
+	}
+	if !strings.Contains(err.Error(), "请升级到最新发布包") {
+		t.Fatalf("错误正文必须给出升级安装包的指引：%v", err)
+	}
+	stored, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(stored, original) {
+		t.Fatalf("拒绝迁移不能改写配置：%s", stored)
+	}
+}
+
 func TestMigrateAppServerToSSHAtomicallyPreservesUnknownFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"future":{"keep":true},"app_server":{"transport":"ws","managed":true,"listen":"ws://127.0.0.1:4222","ws_token_file":"/tmp/old","remote_gateway":{"enabled":true},"future_option":"keep"}}`)

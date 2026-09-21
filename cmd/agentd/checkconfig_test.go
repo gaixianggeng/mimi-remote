@@ -73,8 +73,11 @@ func TestCheckConfigReusesServePipelineForUnsupportedTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, err := json.Marshal(map[string]any{
-		"listen":  "127.0.0.1:8787",
-		"auth":    map[string]any{"token": "0123456789abcdef0123456789abcdef"},
+		"listen": "127.0.0.1:8787",
+		"auth":   map[string]any{"token": "0123456789abcdef0123456789abcdef"},
+		// 关闭 Codex 让流水线跳过「本机是否装了 Codex CLI」的前置检查：这条用例验证的
+		// 是 App Server 迁移与校验，不应该在没有 Codex 的 CI runner 上失败。
+		"codex":   map[string]any{"enabled": false},
 		"runtime": map[string]any{"type": "codex_app_server"},
 		// 模拟更新版本写入、当前包无法识别的传输方式。
 		"app_server": map[string]any{"transport": "shared-local-v2"},
