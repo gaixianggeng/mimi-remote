@@ -22,9 +22,19 @@ enum HarnessHistoryPageDecoding {
         let hasMore: Bool
     }
 
+    /// 解出一页。**坏结构必须显式失败**，不能退化成"历史为空/已读完"。
+    ///
     /// 不解出「下一页位置」：上游结果只有 `{records, hasMore}`，没有 `nextBeforeSeq`。
     /// 下一个位置由**已取回记录的最小 seq** 推出——这不是编造游标，而是从实际拿到的
     /// 数据里读出边界；没有任何记录时无法推进，调用方必须停下。
+    ///
+    /// 三种坏形状都会被如实拒绝：
+    /// - `records` 不是数组（例如返回了对象）：`arrayValue` 为 nil 时旧写法会 `?? []`
+    ///   得到空页，调用方再因为"没有下一页游标"而停下——协议错误被伪装成了正常读完。
+    /// - 某条记录缺 `event`：那一条的正文会静默消失，而分页游标仍按它推进。
+    /// - `hasMore` 缺失或不是布尔：无法判断终止条件。
+    ///
+    /// 保留已有内容由调用方负责（它持有上一页），这里只保证"不假装成功"。
     static func page(from value: HarnessJSONValue) throws -> Page {
         guard let hasMore = value["hasMore"]?.boolValue else {
             throw HarnessTransportError.malformedResponse("session/page result is missing hasMore")
@@ -32,9 +42,29 @@ enum HarnessHistoryPageDecoding {
         guard let rawRecords = value["records"] else {
             throw HarnessTransportError.malformedResponse("session/page result is missing records")
         }
-        let records = rawRecords.arrayValue?.compactMap { $0["event"] } ?? []
-        let decoded = try records.map { raw -> HarnessDurableEvent in
-            try decode(HarnessDurableEvent.self, from: raw, label: "session/page record")
+        // 必须真的是数组：对象/字符串/数字都不是合法的 records 容器。
+        guard let entries = rawRecords.arrayValue else {
+            throw HarnessTransportError.malformedResponse(
+                "session/page records is not an array"
+            )
+        }
+        let decoded = try entries.map { entry -> HarnessDurableEvent in
+            // 每条都必须是带 event 的记录对象。缺一条就失败——静默跳过会让
+            // 用户看不到那段正文，而界面上没有任何异常迹象。
+            guard let rawEvent = entry["event"] else {
+                throw HarnessTransportError.malformedResponse(
+                    "session/page record is missing its event"
+                )
+            }
+            let event = try decode(HarnessDurableEvent.self, from: rawEvent, label: "session/page record")
+            guard event.seq != nil else {
+                // 没有 seq 就没有分页位置，也没有稳定身份。收下它会让游标推进不了，
+                // 表现为"同一页反复返回"或"历史提前结束"。
+                throw HarnessTransportError.malformedResponse(
+                    "session/page record is missing its seq"
+                )
+            }
+            return event
         }
         return Page(records: decoded, hasMore: hasMore)
     }

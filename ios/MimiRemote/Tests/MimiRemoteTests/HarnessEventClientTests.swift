@@ -934,6 +934,61 @@ final class HarnessEventClientTests: XCTestCase {
         XCTAssertTrue(sink.texts.contains("第二次提交"), "回显对账后必须能继续发送")
     }
 
+    // MARK: - 轮次身份
+
+    /// `turn/start` 必须把原生轮次带进共用状态层。
+    ///
+    /// `EventReducer` 只在 `.turnStarted` 的 metadata 带 turnID 时才设置活动轮次，
+    /// 而 UI 的停止入口要求 `session.activeTurnID` 存在——丢掉它，用户点停止时
+    /// 直接返回"当前没有可中断的轮次"，根本进不到 `sendCtrlC(expectedTurnID:)`
+    /// 的校验。journal 里再准确的判断也没有入口。
+    func testTurnStartProjectsNativeTurnIdentity() async throws {
+        let (client, recorder) = try await makeConnectedClient(sender: RecordingPromptSink())
+        _ = client.apply(durableEvent: HarnessDurableEvent(
+            type: HarnessWireEventType.turnStart,
+            seq: 5,
+            time: nil,
+            data: .object(["turn": .number(3)])
+        ))
+
+        let turnIDs = recorder.events.compactMap { event -> TurnID? in
+            guard case .turnStarted(let metadata) = event else { return nil }
+            return metadata.turnID
+        }
+        XCTAssertEqual(turnIDs, ["h-turn-3"], "turn/start 必须带出原生轮次身份")
+
+        // 停止校验用的也是同一个值——两处必须一致，否则"UI 认为的轮次"
+        // 与"停止时比对的目标"永远对不上。
+        XCTAssertEqual(client.currentKnownTurnID(), "h-turn-3")
+    }
+
+    /// 轮次身份在工具阶段与结束事件上保持一致。
+    func testTurnIdentityIsConsistentAcrossToolPhaseAndEnd() async throws {
+        let (client, recorder) = try await makeConnectedClient(sender: RecordingPromptSink())
+        _ = client.apply(durableEvent: HarnessDurableEvent(
+            type: HarnessWireEventType.toolCall, seq: 6, time: nil,
+            data: .object([
+                "callId": .string("call-t"),
+                "name": .string("run"),
+                "turn": .number(4),
+            ])
+        ))
+        _ = client.apply(durableEvent: HarnessDurableEvent(
+            type: HarnessWireEventType.turnEnd, seq: 7, time: nil,
+            data: .object(["turn": .number(4)])
+        ))
+
+        let ids = recorder.events.compactMap { event -> TurnID? in
+            switch event {
+            case .processItemCompleted(_, _, let metadata): return metadata.turnID
+            case .turnCompleted(let metadata): return metadata.turnID
+            default: return nil
+            }
+        }
+        XCTAssertEqual(ids, ["h-turn-4", "h-turn-4"], "过程条目与轮次结束必须用同一个身份")
+        XCTAssertNil(client.currentKnownTurnID(), "轮次结束后不应再有可停止的目标")
+    }
+
     // MARK: - 接收与去重
 
     func testOpeningSnapshotPublishesExistingAssistantPrefixImmediately() async throws {

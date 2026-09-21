@@ -614,6 +614,67 @@ final class HarnessHistoryPageTests: XCTestCase {
         XCTAssertThrowsError(try HarnessHistoryPageDecoding.page(from: .object(["hasMore": .bool(true)])))
     }
 
+    /// `records` 不是数组时必须失败，**不能**退化成空页。
+    ///
+    /// 旧写法 `rawRecords.arrayValue?.compactMap { ... } ?? []` 会在容器类型错误时
+    /// 得到空数组；调用方再因为"没有下一页游标"而停止分页——协议错误被伪装成
+    /// "历史已经读完"，用户看不到任何异常。
+    func testRecordsOfWrongContainerTypeIsNotAnEmptyPage() {
+        for bad in [
+            HarnessJSONValue.object([:]),
+            .string("nope"),
+            .number(3),
+            .bool(false),
+        ] {
+            XCTAssertThrowsError(
+                try HarnessHistoryPageDecoding.page(
+                    from: .object(["hasMore": .bool(false), "records": bad])
+                ),
+                "records 不是数组时必须失败，实际静默接受：\(bad)"
+            )
+        }
+    }
+
+    /// 记录缺 `event` 或 `seq` 时必须失败，不能静默丢那一条。
+    ///
+    /// 丢掉正文用户看不到，而分页游标却仍按剩余记录推进——历史中间会凭空少一段。
+    func testRecordMissingEventOrSeqFails() {
+        // 缺 event
+        XCTAssertThrowsError(try HarnessHistoryPageDecoding.page(from: .object([
+            "hasMore": .bool(false),
+            "records": .array([.object(["type": .string("event")])]),
+        ])))
+
+        // 有 event 但缺 seq：没有分页位置，也没有稳定身份。
+        XCTAssertThrowsError(try HarnessHistoryPageDecoding.page(from: .object([
+            "hasMore": .bool(false),
+            "records": .array([.object([
+                "type": .string("event"),
+                "event": .object([
+                    "type": .string(HarnessWireEventType.userMessage),
+                    "data": .object([:]),
+                ]),
+            ])]),
+        ])))
+    }
+
+    /// 合法的一页仍然正常解出（正向对照，避免上面的严格化把正常路径也拒了）。
+    func testWellFormedPageStillDecodes() throws {
+        let page = try HarnessHistoryPageDecoding.page(from: .object([
+            "hasMore": .bool(true),
+            "records": .array([.object([
+                "type": .string("event"),
+                "event": .object([
+                    "type": .string(HarnessWireEventType.userMessage),
+                    "seq": .number(7),
+                    "data": .object([:]),
+                ]),
+            ])]),
+        ]))
+        XCTAssertEqual(page.records.map(\.seq), [7])
+        XCTAssertTrue(page.hasMore)
+    }
+
     /// 游标与 seq 的桥接是双向一致的，且拒绝外来游标。
     ///
     /// Store 说的是不透明字符串游标，原生说的是整数 seq。混用会让分页读到错误的

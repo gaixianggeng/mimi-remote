@@ -745,7 +745,10 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     /// 取值优先级：活动 attempt 的 turn（最精确）→ 最近一条 durable `turn/start` 尚未被
     /// `turn/end` 收尾的 turn。两者都没有时返回 `nil`，表示**无法确认**——
     /// 这种情况不阻拦取消，但也不谎称已经校验过。
-    private func currentKnownTurnID() -> TurnID? {
+    ///
+    /// 非 private：停止目标的判定必须能被直接断言——它决定"用户点停止会不会
+    /// 误停另一轮"，只靠间接行为验证容易漏。
+    func currentKnownTurnID() -> TurnID? {
         if let turn = journal?.activeAttempt?.turn {
             return "h-turn-\(turn)"
         }

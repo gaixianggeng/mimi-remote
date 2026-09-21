@@ -442,8 +442,16 @@ enum HarnessPresentationProjector {
         return ClientMessageID(value)
     }
 
+    /// 由 durable 事件构造 metadata，**带上原生轮次身份**。
+    ///
+    /// 轮次是所有 turn 相关事件（开始、过程条目、结束）共用的身份；
+    /// 丢掉它，Store 就不知道当前有哪一轮在跑，停止入口拿不到目标。
     private static func metadata(_ event: HarnessDurableEvent, sessionID: SessionID) -> AgentEventMetadata {
-        metadata(seq: event.seq, sessionID: sessionID)
+        metadata(
+            seq: event.seq,
+            sessionID: sessionID,
+            turnID: turnIdentity(from: event)
+        )
     }
 
     private static func metadata(
@@ -451,18 +459,34 @@ enum HarnessPresentationProjector {
         sessionID: SessionID,
         itemID: AgentItemID? = nil,
         messageID: MessageID? = nil,
-        revision: ModelRevision? = nil
+        revision: ModelRevision? = nil,
+        turnID: TurnID? = nil
     ) -> AgentEventMetadata {
         AgentEventMetadata(
             seq: seq.map(EventSequence.init),
             sessionID: sessionID,
-            turnID: nil,
+            turnID: turnID,
             itemID: itemID,
             messageID: messageID,
             clientMessageID: nil,
             revision: revision,
             createdAt: nil
         )
+    }
+
+    /// durable 事件里的原生轮次身份。
+    ///
+    /// Harness 的 `turn` 是数字（契约 §1.7），而共用状态层用的是字符串 TurnID。
+    /// 必须在这一层稳定映射：`EventReducer` 只在 `.turnStarted` 的 metadata 带 turnID
+    /// 时才更新活动轮次，UI 的停止入口又要求 `session.activeTurnID` 存在——
+    /// 丢掉它，用户点停止时根本进不到 `sendCtrlC(expectedTurnID:)` 的校验，
+    /// journal 里再准确的轮次判断也没有入口。
+    ///
+    /// 前缀与 `HarnessSessionWebSocketClient.currentKnownTurnID()` 保持一致，
+    /// 确保"UI 认为的活动轮次"与"停止校验用的轮次"是同一个值。
+    static func turnIdentity(from event: HarnessDurableEvent) -> TurnID? {
+        guard let turn = event.data?["turn"]?.intValue else { return nil }
+        return "h-turn-\(turn)"
     }
 
     static func messageID(attempt: HarnessJournalAttempt, suffix: String) -> MessageID {
