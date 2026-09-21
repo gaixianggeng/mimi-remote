@@ -64,8 +64,9 @@ final class DeepSeekComposerPolicyTests: XCTestCase {
     }
 
     func testAvailabilityUsesChannelEvenWhenCatalogIsEmpty() async {
+        // 该替身的 channel 字典是**整体替换**默认值，不是合并；要断言 codex 仍可用必须显式列出。
         let store = makeStore(client: MockSessionStoreClient(
-            projects: [], sessions: [], runtimeChannelAvailability: ["deepseek": true]
+            projects: [], sessions: [], runtimeChannelAvailability: ["codex": true, "deepseek": true]
         ))
         await store.refreshAppServerModelOptions()
         XCTAssertEqual(store.availableRuntimeProviders, ["codex", "deepseek"])
