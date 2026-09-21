@@ -5,46 +5,47 @@ import XCTest
 ///
 /// 目标不是验证原生协议本身（H02 起才实现），而是证明三件事：
 /// 1. 原生通道可以并列接入，且 DeepSeek 分发不再依赖 Codex actor；
-/// 2. 未注入原生客户端时（开发期默认）行为完全不变；
+/// 2. 正式构建始终装配原生客户端，但是否启用仍由宿主 channel 决定；
 /// 3. 单个 runtime 失败不拖垮其他 runtime，且骨架只显式失败、不伪装空成功。
 @MainActor
 final class HarnessNativeRoutingSeamTests: XCTestCase {
 
 #if DEBUG
-    func testNativeHarnessPathRequiresExplicitTestLaunchArgument() {
-        let defaultDebug = DebugLaunchConfiguration.parse(
-            arguments: ["MimiRemote"],
-            environment: ["MIMI_TEST_NATIVE_HARNESS": "1"]
-        )
-        let explicitTest = DebugLaunchConfiguration.parse(
-            arguments: ["MimiRemote", "--test-native-harness"],
-            environment: [:]
-        )
-
-        XCTAssertFalse(defaultDebug.usesNativeHarnessTestPath, "环境变量或普通 Debug 构建不得暗中开启")
-        XCTAssertTrue(explicitTest.usesNativeHarnessTestPath, "只有显式测试启动参数才能开启")
-
-        let defaultBundle = AppServerRuntimeBundle(
+    func testFormalNativeHarnessFactoryDoesNotRequireTestLaunchArgument() {
+        let appStore = makeIsolatedAppStore()
+        let bundle = AppServerRuntimeBundle(
             endpoint: "http://127.0.0.1:8787", token: "fixture",
-            harnessFactory: defaultDebug.nativeHarnessFactory
+            harnessFactory: appStore.nativeHarnessFactory
         )
-        let testBundle = AppServerRuntimeBundle(
-            endpoint: "http://127.0.0.1:8787", token: "fixture",
-            harnessFactory: explicitTest.nativeHarnessFactory
+        XCTAssertTrue(bundle.harness is HarnessSessionAPIClient)
+        XCTAssertNotNil(
+            bundle.nativeClient(for: "deepseek"),
+            "正式入口必须在没有 --test-native-harness 时装配原生客户端"
         )
-        XCTAssertNil(defaultBundle.harness)
-        XCTAssertNil(defaultBundle.nativeClient(for: "deepseek"), "未显式开启时没有原生承接者")
-        XCTAssertTrue(testBundle.harness is HarnessSessionAPIClient)
-        XCTAssertNotNil(testBundle.nativeClient(for: "deepseek"))
     }
 
-    /// H11 的真实 factory 只能由显式测试构建注入；注入后 native 独占 deepseek，
-    /// 不能同时保留旧 Codex actor 作为写失败后的自动回退。
-    func testControlledTestFactoryBuildsNativeClientWithoutDeepSeekFallback() {
+    func testSameHostReusesOneNativeHarnessClient() {
+        let appStore = makeIsolatedAppStore()
+        let first = appStore.runtimeBundle(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture"
+        )
+        let second = appStore.runtimeBundle(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture"
+        )
+
+        XCTAssertTrue(first === second)
+        XCTAssertTrue(first.harness === second.harness)
+    }
+
+    /// 正式 factory 注入后 native 独占 deepseek，不能同时保留旧 Codex actor 作为
+    /// 写失败后的自动回退。
+    func testLiveFactoryBuildsNativeClientWithoutDeepSeekFallback() {
         let bundle = AppServerRuntimeBundle(
             endpoint: "http://127.0.0.1:8787",
             token: "fixture",
-            harnessFactory: HarnessSessionAPIClient.controlledTestFactory
+            harnessFactory: HarnessSessionAPIClient.liveFactory
         )
 
         XCTAssertTrue(bundle.harness is HarnessSessionAPIClient)
@@ -107,6 +108,57 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
     func testUnknownRuntimeIsStillRejectedWhenNativeInjected() {
         let bundle = makeBundle(harness: FakeHarnessSessionClient())
         XCTAssertThrowsError(try bundle.runtime(for: "not-a-runtime"))
+    }
+
+    func testHarnessOnlyConnectionProbeUsesNativeHealthWithoutAppServerFallback() async throws {
+        let harness = FakeHarnessSessionClient()
+        let appServer = HarnessProbeForbiddenTransport()
+        let config = makeDirectAppServerConfig(
+            project: makeProject(id: "harness-only"),
+            gatewayAvailable: false,
+            channels: [makeNativeChannel(enabled: true)]
+        )
+
+        try await AppStore.validateAvailableGateway(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            timeout: 1,
+            config: config,
+            transportFactory: { appServer },
+            harnessFactory: { _, _ in harness }
+        )
+
+        XCTAssertEqual(harness.channelAvailableCallCount, 1)
+        let successProbeAppServerConnects = await appServer.connectCallCount()
+        XCTAssertEqual(successProbeAppServerConnects, 0, "Harness-only 探测不得打开 app-server")
+    }
+
+    func testNativeHealthFailureDoesNotRetryThroughAppServer() async throws {
+        let harness = FakeHarnessSessionClient()
+        harness.channelAvailableResult = .failure(HarnessTransportError.closed)
+        let appServer = HarnessProbeForbiddenTransport()
+        let config = makeDirectAppServerConfig(
+            project: makeProject(id: "harness-offline"),
+            gatewayAvailable: false,
+            channels: [makeNativeChannel(enabled: true)]
+        )
+
+        do {
+            try await AppStore.validateAvailableGateway(
+                endpoint: "http://127.0.0.1:8787",
+                token: "fixture",
+                timeout: 1,
+                config: config,
+                transportFactory: { appServer },
+                harnessFactory: { _, _ in harness }
+            )
+            XCTFail("原生健康探测失败必须显式失败")
+        } catch {
+            XCTAssertEqual(error as? HarnessTransportError, .closed)
+        }
+        XCTAssertEqual(harness.channelAvailableCallCount, 1)
+        let failedProbeAppServerConnects = await appServer.connectCallCount()
+        XCTAssertEqual(failedProbeAppServerConnects, 0, "失败后不得改投旧 app-server")
     }
 
     // MARK: - 分发不触碰 Codex 通道
@@ -368,6 +420,63 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         XCTAssertTrue(codexSent.isEmpty, "回落 Codex 会掩盖原生通道尚未就绪")
     }
 
+    func testHarnessOnlyHostPreparesWithoutCodexOrClaude() async throws {
+        let fake = FakeHarnessSessionClient()
+        let codexTransport = FakeCodexAppServerTransport()
+        let bundle = makeBundle(
+            codexTransport: codexTransport,
+            harness: fake,
+            includeCodexChannel: false
+        )
+
+        try await bundle.prepareForHostActivation()
+
+        let codexSent = await codexTransport.sentMessages()
+        XCTAssertTrue(
+            codexSent.isEmpty,
+            "仅启用 Harness 时准备宿主不得初始化已关闭的 Codex/Claude"
+        )
+        XCTAssertEqual(fake.channelAvailableCallCount, 0, "准备阶段只判配置能力，不混入健康探测")
+    }
+
+    func testNativeChannelSeparatesUserEnableCapabilityAndHealth() async throws {
+        let disabledFake = FakeHarnessSessionClient()
+        let disabledClient = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
+            harness: disabledFake,
+            nativeChannel: makeNativeChannel(enabled: false)
+        ))
+        let disabledAvailable = try await disabledClient.runtimeChannelAvailable(runtimeProvider: "deepseek")
+        XCTAssertFalse(disabledAvailable)
+        XCTAssertEqual(disabledFake.channelAvailableCallCount, 0, "用户关闭时不应探测 Harness 健康")
+
+        let unsupportedFake = FakeHarnessSessionClient()
+        let unsupportedClient = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
+            harness: unsupportedFake,
+            nativeChannel: makeNativeChannel(
+                enabled: true,
+                type: "deepseek_harness_service",
+                protocolName: "app_server_jsonrpc_stdio_v1"
+            )
+        ))
+        do {
+            _ = try await unsupportedClient.runtimeChannelAvailable(runtimeProvider: "deepseek")
+            XCTFail("不支持的 agentd 协议必须明确要求升级")
+        } catch {
+            XCTAssertEqual(error as? HarnessNativeUnavailableError, .agentdUpgradeRequired)
+        }
+        XCTAssertEqual(unsupportedFake.channelAvailableCallCount, 0, "能力不兼容时不应触达 Harness")
+
+        let offlineFake = FakeHarnessSessionClient()
+        offlineFake.channelAvailableResult = .success(false)
+        let offlineClient = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
+            harness: offlineFake,
+            nativeChannel: makeNativeChannel(enabled: true)
+        ))
+        let offlineAvailable = try await offlineClient.runtimeChannelAvailable(runtimeProvider: "deepseek")
+        XCTAssertFalse(offlineAvailable)
+        XCTAssertEqual(offlineFake.channelAvailableCallCount, 1, "能力兼容后健康状态由真实原生探测决定")
+    }
+
     // MARK: - 事件客户端与骨架
 
     /// 原生事件客户端必须显式拒绝 guidance，且**不得**把它当成 prompt 发出去。
@@ -534,19 +643,21 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
 
     private func makeBundle(
         codexTransport: FakeCodexAppServerTransport = FakeCodexAppServerTransport(),
-        harness: HarnessSessionClient? = nil
+        harness: HarnessSessionClient? = nil,
+        nativeChannel: CodexAppServerChannelMetadata? = nil,
+        includeCodexChannel: Bool = true
     ) -> AppServerRuntimeBundle {
         let project = AgentProject(id: "seam", name: "Seam", path: "/tmp/seam")
         let methods = ["initialize", "initialized", "model/list", "thread/search"]
-        let config = makeDirectAppServerConfig(project: project, allowedMethods: methods, channels: [
-            CodexAppServerChannelMetadata(
-                id: "deepseek", runtimeID: "deepseek", title: "DeepSeek Harness", provider: "deepseek",
-                type: "deepseek_harness_service", protocolName: "app_server_jsonrpc_stdio_v1",
-                gatewayWSURL: "ws://127.0.0.1:7777/api/app-server/ws?runtime=deepseek",
-                gatewayAvailable: true, managed: false, experimental: true, lifecycle: "per_connection",
-                bridge: nil, methods: methods, capabilities: ["history": true, "streaming": true]
-            )
-        ])
+        var channels = [nativeChannel ?? makeNativeChannel(enabled: true)]
+        if includeCodexChannel {
+            channels.insert(makeCodexChannel(methods: methods), at: 0)
+        }
+        let config = makeDirectAppServerConfig(
+            project: project,
+            allowedMethods: methods,
+            channels: channels
+        )
         func runtime(_ provider: String, _ transport: FakeCodexAppServerTransport) -> CodexAppServerSessionRuntime {
             CodexAppServerSessionRuntime(
                 endpoint: "http://127.0.0.1:8787",
@@ -562,6 +673,54 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
             harness: harness
         )
     }
+
+    private func makeCodexChannel(methods: [String]) -> CodexAppServerChannelMetadata {
+        CodexAppServerChannelMetadata(
+            id: "codex", runtimeID: "codex", title: "Codex", provider: "openai",
+            type: "codex_app_server", protocolName: "app_server_jsonrpc_ws", enabled: true,
+            gatewayWSURL: "ws://127.0.0.1:7777/api/app-server/ws",
+            gatewayAvailable: true, managed: false, experimental: false, lifecycle: "shared_ssh",
+            bridge: nil, methods: methods, capabilities: ["history": true, "streaming": true]
+        )
+    }
+
+    private func makeNativeChannel(
+        enabled: Bool,
+        type: String = "harness_native",
+        protocolName: String = AppServerRuntimeBundle.nativeHarnessProtocol
+    ) -> CodexAppServerChannelMetadata {
+        CodexAppServerChannelMetadata(
+            id: "deepseek", runtimeID: "deepseek", title: "DeepSeek Harness", provider: "deepseek",
+            type: type, protocolName: protocolName, enabled: enabled,
+            gatewayWSURL: "ws://127.0.0.1:7777/api/harness/ws",
+            gatewayAvailable: true, managed: false, experimental: false, lifecycle: "shared_native_client",
+            bridge: nil,
+            methods: ["session/list", "session/follow", "session/page", "session/prompt"],
+            capabilities: ["history": true, "streaming": true, "approval": true]
+        )
+    }
+}
+
+private actor HarnessProbeForbiddenTransportState {
+    var connects = 0
+
+    func recordConnect() {
+        connects += 1
+    }
+}
+
+private final class HarnessProbeForbiddenTransport: CodexAppServerTransport {
+    private let state = HarnessProbeForbiddenTransportState()
+
+    func connect(url: URL, token: String) async throws {
+        await state.recordConnect()
+        throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+    }
+
+    func send(_ text: String) async throws {}
+    func receive() async throws -> String? { nil }
+    func close() async {}
+    func connectCallCount() async -> Int { await state.connects }
 }
 
 /// 总是失败的 RPC 传输替身。

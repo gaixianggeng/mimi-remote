@@ -5,7 +5,7 @@ extension SessionStore {
         client: any SessionStoreAPIClient
     ) async -> [String] {
         var runtimes: [String] = []
-        for runtime in ["codex", "claude"] {
+        for runtime in RuntimeFeatureSupport.runtimeProviders {
             if (try? await client.runtimeChannelAvailable(runtimeProvider: runtime)) == true {
                 runtimes.append(runtime)
             }

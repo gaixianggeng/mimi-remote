@@ -680,14 +680,18 @@ final class HarnessHistoryPageTests: XCTestCase {
     /// Store 说的是不透明字符串游标，原生说的是整数 seq。混用会让分页读到错误的
     /// 区间——而且不会报错，只会静默给出错的页。
     func testCursorRoundTripsAndRejectsForeignCursors() throws {
-        let cursor = HarnessHistoryPageDecoding.cursor(before: 42)
-        XCTAssertEqual(try HarnessHistoryPageDecoding.seq(fromCursor: cursor), 42)
-        XCTAssertNil(try HarnessHistoryPageDecoding.seq(fromCursor: nil))
-        XCTAssertNil(try HarnessHistoryPageDecoding.seq(fromCursor: "   "))
+        let cursor = HarnessHistoryPageDecoding.cursor(before: 42, contextID: 7)
+        XCTAssertEqual(
+            try HarnessHistoryPageDecoding.cursor(from: cursor),
+            .init(contextID: 7, beforeSeq: 42)
+        )
+        XCTAssertNil(try HarnessHistoryPageDecoding.cursor(from: nil))
+        XCTAssertNil(try HarnessHistoryPageDecoding.cursor(from: "   "))
 
         // 别的 runtime 的游标不得被当成同一个空间。
-        XCTAssertThrowsError(try HarnessHistoryPageDecoding.seq(fromCursor: "codex-cursor-1"))
-        XCTAssertThrowsError(try HarnessHistoryPageDecoding.seq(fromCursor: "hseq:not-a-number"))
+        XCTAssertThrowsError(try HarnessHistoryPageDecoding.cursor(from: "codex-cursor-1"))
+        XCTAssertThrowsError(try HarnessHistoryPageDecoding.cursor(from: "hseq:not-a-number"))
+        XCTAssertThrowsError(try HarnessHistoryPageDecoding.cursor(from: "hseq:7:not-a-number"))
     }
 
     /// 投影只保留可展示记录，且身份以原生 seq 为准。
@@ -728,7 +732,9 @@ final class HarnessHistoryPageTests: XCTestCase {
 
         let messages = HarnessHistoryProjection.messages(from: records, sessionID: sessionID)
 
-        XCTAssertTrue(messages.isEmpty, "注入上下文不是用户说的话")
+        XCTAssertEqual(messages.map(\.role), ["system"], "注入上下文不是用户说的话")
+        XCTAssertEqual(messages.map(\.kind), [.context])
+        XCTAssertEqual(messages.map(\.content), ["skill catalog"])
     }
 
     private func durable(

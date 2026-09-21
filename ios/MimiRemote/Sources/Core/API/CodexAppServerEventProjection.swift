@@ -1485,24 +1485,6 @@ extension CodexAppServerSessionRuntime {
                 userDelivery: isInjectedUserMessage ? .injected : nil,
                 isTimestampFallback: itemCreatedAt == nil && itemCompletedAt == nil && estimatedAt != nil
             )
-        case "systemContext":
-            let text = item["text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !text.isEmpty else {
-                return nil
-            }
-            return CodexHistoryMessage(
-                id: messageID,
-                role: "system",
-                kind: .context,
-                content: text,
-                activityPayload: ConversationActivityPayload(item: item),
-                createdAt: processCreatedAt,
-                updatedAt: liveSnapshotUpdatedAt,
-                turnID: turnID,
-                itemID: itemID,
-                timelineOrdinal: timelineOrdinal,
-                isTimestampFallback: processTimestampIsFallback
-            )
         case "imageGeneration", "imageView":
             guard let content = ConversationImageItemProjection.markdownContent(from: item) else {
                 return nil

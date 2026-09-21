@@ -976,7 +976,7 @@ final class NotificationRouteResolutionTests: XCTestCase {
         let bothEnabled = makeDirectAppServerConfig(
             project: project,
             gatewayAvailable: true,
-            channels: [makeClaudeChannelMetadata()]
+            channels: [makeCodexChannelMetadata(), makeClaudeChannelMetadata()]
         )
         let provider = SequencedDirectConfigProvider([bothEnabled, claudeOnly])
         let bundle = AppServerRuntimeBundle(
@@ -1012,7 +1012,7 @@ final class NotificationRouteResolutionTests: XCTestCase {
         let bothEnabled = makeDirectAppServerConfig(
             project: project,
             gatewayAvailable: true,
-            channels: [makeClaudeChannelMetadata()]
+            channels: [makeCodexChannelMetadata(), makeClaudeChannelMetadata()]
         )
         let claudeOnly = makeDirectAppServerConfig(
             project: project,
@@ -1080,7 +1080,7 @@ final class NotificationRouteResolutionTests: XCTestCase {
         let bothEnabled = makeDirectAppServerConfig(
             project: project,
             gatewayAvailable: true,
-            channels: [makeClaudeChannelMetadata()]
+            channels: [makeCodexChannelMetadata(), makeClaudeChannelMetadata()]
         )
         let provider = SequencedDirectConfigProvider([bothEnabled, bothEnabled])
         let codexPool = FakeCodexAppServerTransportPool()

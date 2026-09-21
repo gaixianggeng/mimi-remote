@@ -333,10 +333,12 @@ final class AppServerRuntimeBundle {
     /// 原生通道承接的 runtime ID。沿用既有 `deepseek`，不新建 `deepseek-native`，
     /// 以免切断既有路由、收藏与通知身份。
     static let nativeRuntimeProvider = "deepseek"
+    static let nativeHarnessProtocol = "harness_native_v1"
 
     let codex: CodexAppServerSessionRuntime
     let claude: CodexAppServerSessionRuntime
-    /// 原生 Harness 接缝。默认 `nil`：此时 `deepseek` 显式失败，不会回退到任何 actor。
+    /// 原生 Harness 接缝。正式 App 总是注入；测试可留空，此时 `deepseek` 显式失败，
+    /// 不会回退到任何 actor。
     let harness: HarnessSessionClient?
     let routes = AppServerRuntimeRouteStore()
 
@@ -428,13 +430,37 @@ final class AppServerRuntimeBundle {
             CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeID ?? $0.id) == "codex" ||
                 CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.provider) == "codex"
         }
-        if codexChannel?.gatewayAvailable ?? config.runtime.gatewayAvailable {
+        if codexChannel?.gatewayAvailable == true
+            || (config.channels.isEmpty && config.runtime.gatewayAvailable) {
+            // `runtime` 是旧 agentd 只有单一 Codex 通道时的兼容字段。现代配置只要
+            // 给了 channels，就以显式列表为准；否则“仅启用 Harness”仍会误选 Codex。
             return "codex"
         }
         return config.channels.lazy
             .filter(\.gatewayAvailable)
             .map { CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeID ?? $0.provider) }
             .first { !$0.isEmpty }
+    }
+
+    static func nativeHarnessChannel(
+        in config: CodexAppServerConfigResponse
+    ) -> CodexAppServerChannelMetadata? {
+        config.channels.first {
+            CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeID ?? $0.id)
+                == nativeRuntimeProvider
+        }
+    }
+
+    static func nativeHarnessIsConfigured(
+        in config: CodexAppServerConfigResponse
+    ) throws -> Bool {
+        guard let channel = nativeHarnessChannel(in: config),
+              channel.enabled != false else { return false }
+        guard channel.type == "harness_native",
+              channel.protocolName == nativeHarnessProtocol else {
+            throw HarnessNativeUnavailableError.agentdUpgradeRequired
+        }
+        return channel.gatewayAvailable
     }
 
     /// 两个 Runtime 共享同一份 channels 快照。记录安装快照时各自丢弃配置的次数，
@@ -493,16 +519,23 @@ final class AppServerRuntimeBundle {
         Self.channelAvailable(runtimeProvider: runtimeProvider, in: try await currentConfiguration())
     }
 
+    /// 把“用户启用 + agentd 原生能力”与后续 Harness 健康探测分开。
+    func nativeHarnessConfigured() async throws -> Bool {
+        try Self.nativeHarnessIsConfigured(in: try await currentConfiguration())
+    }
+
     static func channelAvailable(
         runtimeProvider raw: String,
         in config: CodexAppServerConfigResponse
     ) -> Bool {
         let runtime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(raw)
         if runtime == "codex" {
-            return config.channels.first {
+            let channel = config.channels.first {
                 CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeID ?? $0.id) == "codex" ||
                     CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.provider) == "codex"
-            }?.gatewayAvailable ?? config.runtime.gatewayAvailable
+            }
+            return channel?.gatewayAvailable
+                ?? (config.channels.isEmpty && config.runtime.gatewayAvailable)
         }
         return config.channels.contains { channel in
             (CodexAppServerSessionRuntime.normalizedRuntimeProvider(channel.runtimeID ?? channel.id) == runtime ||
@@ -549,6 +582,18 @@ final class AppServerRuntimeBundle {
         let config = try await currentConfiguration()
         guard let preferred = Self.preferredAvailableRuntimeProvider(in: config) else {
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+        }
+        if preferred == Self.nativeRuntimeProvider {
+            guard harness != nil else {
+                throw HarnessNativeUnavailableError.agentdUpgradeRequired
+            }
+            guard try Self.nativeHarnessIsConfigured(in: config) else {
+                throw HarnessNativeUnavailableError.agentdUpgradeRequired
+            }
+            // 原生客户端按需建连。这里只确认“用户已启用 + agentd 支持 native-v1”；
+            // Harness 当前健康状态由 channelAvailable 的真实 RPC 决定。离线不阻止连接
+            // agentd，也不把协议改回 app-server。
+            return
         }
         try await runtime(for: preferred).prepareForHostActivation()
     }
@@ -631,6 +676,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
                 let secondaryOptions: [CodexAppServerModelOption]
                 if let native = bundle.nativeClient(for: secondary.provider) {
                     // 原生通道：Codex 上游不可用时依然能独立进入准备流程并给出模型目录。
+                    guard try await bundle.nativeHarnessConfigured() else { continue }
                     guard try await native.channelAvailable() else { continue }
                     secondaryOptions = try await native.modelOptions()
                 } else {
@@ -671,6 +717,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
 
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
         if let native = bundle.nativeClient(for: runtimeProvider) {
+            guard try await bundle.nativeHarnessConfigured() else { return false }
             return try await native.channelAvailable()
         }
         // 非原生承接时必须走 bundle 的**共享**快照，而不是 Codex 自己的缓存：两个

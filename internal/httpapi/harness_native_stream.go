@@ -100,8 +100,8 @@ func (stream *harnessNativeWSStream) close() {
 //
 // 只统计 `session/follow`：每条 follow 都在 Harness 上持有一条 remote.mux 物理连接，
 // 单连接上限（harnessNativeWSMaxStreams）挡不住"多开几条移动连接"，所以还需要一个
-// 跨连接的上限。`$events` 与连接级的 `session/control` 不计入——一台设备各只开一条，
-// 计入会让默认上限 2 被一台设备的宿主订阅直接占满，表现为"明明可用却连不上"。
+// 跨连接的上限。`$events` 与连接级的 `session/control` 不计入——它们不是会话 follow，
+// 计入会让宿主观察挤占历史预热与多设备会话观察，表现为"明明可用却连不上"。
 func (r *Router) acquireHarnessNativeSession() bool {
 	limit := r.cfg.DeepSeek.MaxConcurrentSessions
 	if limit <= 0 {

@@ -154,6 +154,14 @@ extension SessionStore {
             }
             guard appStore.activeHostScope == hostScope else { return }
             self.availableRuntimeProviders = availableRuntimeProviders
+            if availableRuntimeProviders.contains(Self.nativeHarnessRuntimeProvider) {
+                // 用户已启用、agentd 能力兼容且 Harness 健康后，才建立宿主级事件流。
+                // 这只观察上游，不拥有或停止 Harness 正在执行的任务。
+                installNativeHarnessHostEvents()
+            } else {
+                stopNativeHarnessHostEvents()
+                stopNativeHarnessDirectory()
+            }
             didRefreshRuntimeAvailability = true
             if !force,
                let appServerModelOptionsLastRefresh,

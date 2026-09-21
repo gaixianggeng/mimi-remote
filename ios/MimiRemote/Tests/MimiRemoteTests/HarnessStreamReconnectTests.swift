@@ -172,8 +172,158 @@ final class HarnessSnapshotBaselineTests: XCTestCase {
             value: snapshotValue(sessionID: "h00-session-0001", cursor: 42)
         ))
 
-        let cursor = await cursorTask.value
-        XCTAssertEqual(cursor, 42, "基线入口必须主动建立观察并返回本次 snapshot 的游标")
+        let baseline = await cursorTask.value
+        XCTAssertEqual(baseline?.cursor, 42, "基线入口必须主动建立观察并返回本次 snapshot 的游标")
+        await api.shutdownForHostSwitch()
+    }
+
+    /// 首屏刷新必须等待新的 opening snapshot，不能复用上一次页面留下的 cursor。
+    func testAuthoritativeRefreshWaitsForNewSnapshotContext() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787", token: "fixture",
+            rpc: FakeHarnessRPCTransport(), stream: stream
+        )
+        let sessionID = "h00-session-refresh"
+
+        let firstTask = Task { await api.awaitSnapshotBaseline(for: sessionID) }
+        let firstFollow = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow, stream: stream
+        )
+        stream.push(carrierValue(
+            streamID: firstFollow,
+            value: snapshotValue(sessionID: sessionID, cursor: 10)
+        ))
+        let first = await firstTask.value
+
+        let frameIndex = stream.sentFrames.count
+        let refreshTask = Task { await api.awaitSnapshotBaseline(for: sessionID) }
+        let refreshFollow = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow, stream: stream, after: frameIndex
+        )
+        stream.push(carrierValue(
+            streamID: refreshFollow,
+            value: snapshotValue(sessionID: sessionID, cursor: 20)
+        ))
+        let refreshed = await refreshTask.value
+
+        XCTAssertEqual(first?.cursor, 10)
+        XCTAssertEqual(refreshed?.cursor, 20)
+        XCTAssertTrue((refreshed?.contextID ?? 0) > (first?.contextID ?? 0))
+        await api.shutdownForHostSwitch()
+    }
+
+    /// 两个页面的局部 generation 都会从 1 开始；全局上下文必须按观察开始顺序判断。
+    func testLateSnapshotFromOlderPageCannotReplaceNewerBaseline() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787", token: "fixture",
+            rpc: FakeHarnessRPCTransport(), stream: stream
+        )
+        let sessionID = "h00-session-pages"
+        let older = try XCTUnwrap(
+            api.makeEventClient(sessionID: sessionID) as? HarnessSessionWebSocketClient
+        )
+        older.connect(sessionID: sessionID)
+        let olderFollow = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow, stream: stream
+        )
+
+        let frameIndex = stream.sentFrames.count
+        let newer = try XCTUnwrap(
+            api.makeEventClient(sessionID: sessionID) as? HarnessSessionWebSocketClient
+        )
+        newer.connect(sessionID: sessionID)
+        let newerFollow = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow, stream: stream, after: frameIndex
+        )
+        stream.push(carrierValue(
+            streamID: newerFollow,
+            value: snapshotValue(sessionID: sessionID, cursor: 90)
+        ))
+        try await waitFor { newer.journal?.snapshotCursor == 90 }
+
+        stream.push(carrierValue(
+            streamID: olderFollow,
+            value: snapshotValue(sessionID: sessionID, cursor: 10)
+        ))
+        try await waitFor { older.journal?.snapshotCursor == 10 }
+        let baseline = await api.awaitSnapshotBaseline(
+            for: sessionID, requiringNewSnapshot: false, timeout: .seconds(1)
+        )
+
+        XCTAssertEqual(baseline?.cursor, 90, "迟到的旧页面不得回滚权威读取边界")
+        older.disconnect()
+        newer.disconnect()
+        await api.shutdownForHostSwitch()
+    }
+
+    /// 分页继续使用首屏上下文；刷新产生新上下文后，旧页游标必须显式作废。
+    func testPaginationReusesContextAndRejectsCursorAfterRefresh() async throws {
+        let rpc = FakeHarnessRPCTransport()
+        let pageValue = historyPageValue(seq: 8, hasMore: true)
+        rpc.handler = { request in
+            guard request.method == HarnessWireMethod.sessionPage else {
+                return .failure(.rejected(status: 400, message: "unexpected method"))
+            }
+            return .success(pageValue)
+        }
+        let stream = FakeHarnessStreamTransport()
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787", token: "fixture", rpc: rpc, stream: stream
+        )
+        let sessionID = "h00-session-pagination"
+
+        let firstTask = Task {
+            try await api.messagesPage(sessionID: sessionID, before: nil, limit: 20, loadMode: .full)
+        }
+        let firstFollow = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow, stream: stream
+        )
+        stream.push(carrierValue(
+            streamID: firstFollow,
+            value: snapshotValue(sessionID: sessionID, cursor: 20)
+        ))
+        let firstPage = try await firstTask.value
+        let oldCursor = try XCTUnwrap(firstPage.previousCursor)
+        let followCount = stream.sentFrames.filter {
+            if case .open(_, let endpoint, _) = $0,
+               endpoint == HarnessWireEndpoint.sessionFollow { return true }
+            return false
+        }.count
+
+        _ = try await api.messagesPage(
+            sessionID: sessionID, before: oldCursor, limit: 20, loadMode: .full
+        )
+        XCTAssertEqual(stream.sentFrames.filter {
+            if case .open(_, let endpoint, _) = $0,
+               endpoint == HarnessWireEndpoint.sessionFollow { return true }
+            return false
+        }.count, followCount, "同一快照补页不得另开权威刷新")
+
+        let frameIndex = stream.sentFrames.count
+        let refreshTask = Task {
+            try await api.messagesPage(sessionID: sessionID, before: nil, limit: 20, loadMode: .full)
+        }
+        let refreshFollow = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow, stream: stream, after: frameIndex
+        )
+        stream.push(carrierValue(
+            streamID: refreshFollow,
+            value: snapshotValue(sessionID: sessionID, cursor: 30)
+        ))
+        _ = try await refreshTask.value
+
+        do {
+            _ = try await api.messagesPage(
+                sessionID: sessionID, before: oldCursor, limit: 20, loadMode: .full
+            )
+            XCTFail("刷新后的旧游标必须被拒绝")
+        } catch let error as HarnessTransportError {
+            guard case .continuityLost = error else {
+                return XCTFail("应为 continuityLost，实际 \(error)")
+            }
+        }
         await api.shutdownForHostSwitch()
     }
 
@@ -220,6 +370,60 @@ final class HarnessSnapshotBaselineTests: XCTestCase {
             Date().timeIntervalSince(started), 3,
             "取消后必须立即返回"
         )
+        for _ in 0..<100 where !stream.sentFrames.contains(where: { frame in
+                if case .cancel = frame { return true }
+                return false
+            }) {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(
+            stream.sentFrames.contains { frame in
+                if case .cancel = frame { return true }
+                return false
+            },
+            "历史预热取消必须主动退订 follow，不能泄漏全局会话名额"
+        )
+        await api.shutdownForHostSwitch()
+    }
+
+    /// 快速切页会连续取消历史预热；每一条 follow 都必须各自主动退订一次。
+    func testRapidHistoryWarmupsCancelEveryFollow() async throws {
+        let stream = FakeHarnessStreamTransport()
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787", token: "fixture",
+            rpc: FakeHarnessRPCTransport(), stream: stream
+        )
+        var opened: [String] = []
+
+        for index in 0..<3 {
+            let frameIndex = stream.sentFrames.count
+            let task = Task {
+                await api.awaitSnapshotBaseline(
+                    for: "h00-rapid-\(index)", timeout: .seconds(30)
+                )
+            }
+            let followID = try await waitForOpenStream(
+                endpoint: HarnessWireEndpoint.sessionFollow,
+                stream: stream,
+                after: frameIndex
+            )
+            opened.append(followID)
+            task.cancel()
+            _ = await task.value
+            try await waitFor {
+                stream.sentFrames.contains {
+                    if case .cancel(let streamID) = $0 { return streamID == followID }
+                    return false
+                }
+            }
+        }
+
+        let cancelled = stream.sentFrames.compactMap { frame -> String? in
+            if case .cancel(let streamID) = frame { return streamID }
+            return nil
+        }
+        XCTAssertEqual(Set(cancelled).intersection(opened).count, opened.count)
+        XCTAssertEqual(opened.count, 3, "前置条件：确实快速预热了三个不同页面")
         await api.shutdownForHostSwitch()
     }
 
@@ -227,15 +431,27 @@ final class HarnessSnapshotBaselineTests: XCTestCase {
 
     private func waitForOpenStream(
         endpoint: String,
-        stream: FakeHarnessStreamTransport
+        stream: FakeHarnessStreamTransport,
+        after frameIndex: Int = 0
     ) async throws -> String {
         for _ in 0..<200 {
-            for frame in stream.sentFrames {
+            for frame in stream.sentFrames.dropFirst(frameIndex) {
                 if case .open(let streamID, let openedEndpoint, _) = frame,
                    openedEndpoint == endpoint {
                     return streamID
                 }
             }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        throw HarnessTransportError.timedOut
+    }
+
+    private func waitFor(
+        _ condition: @MainActor () -> Bool,
+        iterations: Int = 200
+    ) async throws {
+        for _ in 0..<iterations {
+            if condition() { return }
             try? await Task.sleep(for: .milliseconds(25))
         }
         throw HarnessTransportError.timedOut
@@ -260,6 +476,28 @@ final class HarnessSnapshotBaselineTests: XCTestCase {
             "cursor": .number(Double(cursor)),
             "records": .array([]),
             "hasMore": .bool(false),
+        ])
+    }
+
+    private func historyPageValue(seq: Int, hasMore: Bool) -> HarnessJSONValue {
+        .object([
+            "hasMore": .bool(hasMore),
+            "records": .array([.object([
+                "type": .string("event"),
+                "event": .object([
+                    "type": .string(HarnessWireEventType.assistantMessage),
+                    "seq": .number(Double(seq)),
+                    "data": .object([
+                        "message": .object([
+                            "id": .string("message-\(seq)"),
+                            "role": .string("assistant"),
+                            "content": .array([.object([
+                                "type": .string("text"), "text": .string("history"),
+                            ])]),
+                        ]),
+                    ]),
+                ]),
+            ])]),
         ])
     }
 }

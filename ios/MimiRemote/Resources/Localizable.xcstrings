@@ -20532,74 +20532,6 @@
         }
       }
     },
-    "ui.context_runtime_context": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Runtime context"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "运行时上下文"
-          }
-        }
-      }
-    },
-    "ui.context_skill_catalog": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Skill catalog"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "技能目录"
-          }
-        }
-      }
-    },
-    "ui.context_system_notice": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "System notice"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "系统通知"
-          }
-        }
-      }
-    },
-    "ui.context_workspace_instructions": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Workspace instructions"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "工作区指令"
-          }
-        }
-      }
-    },
     "ui.plan": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -43556,6 +43488,12 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "%@ is owned by the native Harness client and cannot fall back to the Codex channel." } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "%@ 由 Harness 原生客户端承担，不能回退到 Codex 通道。" } }
+      }
+    },
+    "harness.agentd_upgrade_required": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This agentd version does not support the native Harness channel. Update agentd to continue." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前 agentd 版本不支持 Harness 原生通道，请升级 agentd 后继续。" } }
       }
     },
     "harness.native_not_implemented": {

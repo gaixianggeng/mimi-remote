@@ -339,7 +339,6 @@
 		B4ED6F1DF404172EA9621D74 /* testPendingApprovalCardFitsIPhoneTouchLayout.1.png in Resources */ = {isa = PBXBuildFile; fileRef = A19B006BD6C8E1D836A53FB3 /* testPendingApprovalCardFitsIPhoneTouchLayout.1.png */; };
 		B4EED54C6E282D26A6971CB7 /* WriterConflictForkStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A599DB4AE4DCF67424D03C2D /* WriterConflictForkStoreTests.swift */; };
 		B505832379AACE70F1CD40C2 /* testCodexCompactAndDetailedActivityRows.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 4F8674BCA8C07B25B4C05A4E /* testCodexCompactAndDetailedActivityRows.1.png */; };
-		B54B164FF4497FE183FF0B09 /* HarnessNativeRollout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D4C32C94C74BEB7FFFA51F2 /* HarnessNativeRollout.swift */; };
 		B5A6D5A8CAFAD90567772AED /* ImageAttachmentEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E86C009EEF7D400DE35ADBD1 /* ImageAttachmentEncoder.swift */; };
 		B5BAC2CFD69E8F6E30996369 /* VoiceInputPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FDECF2F05F082FDD81B3AB4 /* VoiceInputPreferences.swift */; };
 		B5BB3BBE3B50E66A5C6A081F /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = 135E8C33C50F8EF2A9F9D9F1 /* Markdown */; };
@@ -574,7 +573,6 @@
 		1B21C203D451C1F559CD1327 /* SessionStoreHistoryItemEnrichment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreHistoryItemEnrichment.swift; sourceTree = "<group>"; };
 		1C6FA730D92E0B37BC0393F0 /* ConversationActivityRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationActivityRows.swift; sourceTree = "<group>"; };
 		1CD0035558A54BA51E9FC673 /* HarnessNativeRoutingSeamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessNativeRoutingSeamTests.swift; sourceTree = "<group>"; };
-		1D4C32C94C74BEB7FFFA51F2 /* HarnessNativeRollout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessNativeRollout.swift; sourceTree = "<group>"; };
 		1D9A7BE1E8F17EDC4A461FCB /* HarnessTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessTransportTests.swift; sourceTree = "<group>"; };
 		1DFDA1FF6067F862CB347130 /* NotificationRouteResolutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRouteResolutionTests.swift; sourceTree = "<group>"; };
 		1E0B093A7A3A0D3BABBF9965 /* UnifiedWorkbenchShell+CompactNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UnifiedWorkbenchShell+CompactNavigation.swift"; sourceTree = "<group>"; };
@@ -1649,7 +1647,6 @@
 				DCEBABF96310C6594E887C28 /* HarnessInteractionAnswer.swift */,
 				B312516B4736F1D095869E57 /* HarnessInteractionProjection.swift */,
 				67879676943D43DB57897DC3 /* HarnessInteractionStore.swift */,
-				1D4C32C94C74BEB7FFFA51F2 /* HarnessNativeRollout.swift */,
 				20F3B5B8EF93BCB01541B9BF /* HarnessPresentationProjector.swift */,
 				4A1D7BC51B7A16BBAC974A97 /* HarnessRecoveryCoordinator.swift */,
 				CE817FD272086F57816CD114 /* HarnessSessionDirectory.swift */,
@@ -2443,7 +2440,6 @@
 				09B4A23166D9A7FD30AC1E37 /* HarnessInteractionAnswer.swift in Sources */,
 				322233E76982FC2B6F6F64DB /* HarnessInteractionProjection.swift in Sources */,
 				D5AA4075288D152A1CF59B35 /* HarnessInteractionStore.swift in Sources */,
-				B54B164FF4497FE183FF0B09 /* HarnessNativeRollout.swift in Sources */,
 				7E2715F27E59E67BB1B5E957 /* HarnessPresentationProjector.swift in Sources */,
 				4FC318CC62665514E0436EB4 /* HarnessRecoveryCoordinator.swift in Sources */,
 				9968EED6771E4057CB4D1D0A /* HarnessSessionAPIClient.swift in Sources */,

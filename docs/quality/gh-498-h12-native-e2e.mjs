@@ -43,23 +43,26 @@ const agentdToken = 'h12-local-fixture-token-not-secret'
 let harness
 let agentdServer
 let modelServer
+let xcodeProcess
+let uiXcodeProcess
 let harnessOrigin
 let harnessCookie
 let harnessOutput = ''
 let agentdOutput = ''
 let xcodeOutput = ''
+let uiXcodeOutput = ''
 let modelCalls = 0
 let webPeer
 let releaseWebReady
 const webReady = new Promise(resolvePromise => { releaseWebReady = resolvePromise })
 
 const delay = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds))
-async function until(predicate, label, timeout = 30_000) {
+async function until(predicate, label, timeout = 30_000, interval = 25) {
   const deadline = Date.now() + timeout
   while (Date.now() < deadline) {
     const value = await predicate()
     if (value) return value
-    await delay(25)
+    await delay(interval)
   }
   throw new Error(`Timed out: ${label}`)
 }
@@ -135,11 +138,14 @@ function startModelServer() {
         index: 0,
         delta: question
           ? { type: 'input_json_delta', partial_json: JSON.stringify(question.input) }
-          : { type: 'text_delta', text: call === 0 ? 'fixture title' : 'fixture ' },
+          : { type: 'text_delta', text: call === 0 ? 'fixture title' : call === 3 ? 'external ' : 'fixture ' },
       })
       if (!question && call > 0) {
         await delay(40)
-        event('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'complete' } })
+        event('content_block_delta', {
+          index: 0,
+          delta: { type: 'text_delta', text: call === 3 ? 'ready' : 'complete' },
+        })
       }
       event('content_block_stop', { index: 0 })
       event('message_delta', {
@@ -176,9 +182,18 @@ async function harnessRPC(method, args) {
 
 async function observeWebPeer() {
   const sessionID = await until(async () => {
-    const listed = await harnessRPC('session/list', { _request: {} })
-    return listed.items?.find(item => item.sessionId?.startsWith('h12-ios-'))?.sessionId
-  }, 'iOS-created Harness session')
+    try {
+      const listed = await harnessRPC('session/list', { _request: {} })
+      return listed.items?.find(item => item.sessionId?.startsWith('h12-ios-'))?.sessionId
+    } catch (error) {
+      if (harness?.exitCode !== null || harness?.signalCode !== null) {
+        throw new Error(`Harness exited while waiting for iOS session:\n${harnessOutput.slice(-2_000)}`, {
+          cause: error,
+        })
+      }
+      return undefined
+    }
+  }, 'iOS-created Harness session', 1_200_000, 250)
   const socket = new WebSocket(`${harnessOrigin.replace('http:', 'ws:')}/api/remote.mux`, {
     headers: { Cookie: harnessCookie },
   })
@@ -255,6 +270,12 @@ try {
     '--force', '--json',
   ], { label: 'agentd-setup' })
   await run(agentd, [
+    'runtime', '--config', configPath, '--codex', 'disabled', '--json',
+  ], { label: 'agentd-disable-codex' })
+  await run(agentd, [
+    'runtime', '--config', configPath, '--claude', 'disabled', '--json',
+  ], { label: 'agentd-disable-claude' })
+  await run(agentd, [
     'runtime', '--config', configPath,
     '--deepseek', 'connect', '--deepseek-url-stdin', '--json',
   ], { input: `${startupURL}\n`, label: 'agentd-runtime-connect' })
@@ -269,6 +290,21 @@ try {
   await until(async () => {
     try { return (await fetch(`${agentdOrigin}/healthz`)).ok } catch { return false }
   }, 'agentd health', 30_000)
+  const authenticatedGet = path => fetch(`${agentdOrigin}${path}`, {
+    headers: { Authorization: `Bearer ${agentdToken}` },
+  })
+  const moduleResponse = await authenticatedGet('/api/host/modules')
+  assert.equal(moduleResponse.status, 200)
+  const modules = await moduleResponse.json()
+  assert.equal(modules.codex_enabled, false, 'H12 必须在 Codex 关闭时运行')
+  assert.equal(modules.claude_enabled, false, 'H12 必须在 Claude 关闭时运行')
+  const gatewayResponse = await authenticatedGet('/api/app-server/config')
+  assert.equal(gatewayResponse.status, 200)
+  const gateway = await gatewayResponse.json()
+  const channels = gateway.channels ?? []
+  assert.deepEqual(channels.map(channel => channel.runtime_id), ['deepseek'])
+  assert.equal(channels[0].enabled, true)
+  assert.equal(channels[0].protocol, 'harness_native_v1')
   const nativeCatalog = await fetch(`${agentdOrigin}/api/harness/rpc`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${agentdToken}`, 'Content-Type': 'application/json' },
@@ -277,15 +313,27 @@ try {
   assert.equal(nativeCatalog.status, 200)
 
   const webObservation = observeWebPeer()
-  const xcode = spawn('bash', [
+  const h12XcodeEnvironment = {
+    ...process.env,
+    IOS_DEVICE_LEASE_WAIT_SECONDS: '1200',
+  }
+  xcodeProcess = spawn('bash', [
     './scripts/ios-dev.sh', 'test',
     '-only-testing:MimiRemoteTests/HarnessEventClientTests/testLiveH12RealHarnessQuestionFlow',
-  ], { cwd: repositoryRoot, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] })
-  xcode.stdout.on('data', data => { xcodeOutput += data })
-  xcode.stderr.on('data', data => { xcodeOutput += data })
-  const [xcodeCode, xcodeSignal] = await once(xcode, 'exit')
+  ], { cwd: repositoryRoot, env: h12XcodeEnvironment, stdio: ['ignore', 'pipe', 'pipe'] })
+  xcodeProcess.stdout.on('data', data => { xcodeOutput += data })
+  xcodeProcess.stderr.on('data', data => { xcodeOutput += data })
+  const xcodeExit = once(xcodeProcess, 'exit')
+  // 先等观察端完成握手，确定性模型的第一个调用才会继续；同时立即持有 exit
+  // promise，避免任一并发分支的拒绝在 await 前变成未处理异常。
+  const peer = await Promise.race([
+    webObservation,
+    xcodeExit.then(([code, signal]) => {
+      throw new Error(`iOS test exited before creating the Harness session: code=${String(code)} signal=${String(signal)}`)
+    }),
+  ])
+  const [xcodeCode, xcodeSignal] = await xcodeExit
   assert.equal(xcodeCode, 0, `iOS test failed: signal=${String(xcodeSignal)}`)
-  const peer = await webObservation
   const question = await until(
     () => peer.frames.find(frame => frame.value?.event === 'user-questions/request')?.value,
     'Web question',
@@ -298,36 +346,199 @@ try {
   await until(() => JSON.stringify(peer.frames).includes('fixture complete'), 'Web final assistant output')
   assert.match(xcodeOutput, /testLiveH12RealHarnessQuestionFlow.*passed/)
   assert.match(xcodeOutput, /Executed 1 test, with 0 failures/)
-  assert.doesNotMatch(xcodeOutput, /skipped/)
-
-  // 历史分页经**真实中继**：throughSeq 必须取自本次 follow 的 snapshot.cursor。
-  // 传 0 只会读到 seq 0 一条，传过大的值返回空 records（契约 §5.5 实测），
-  // 所以这里用中继实际接受的那次调用来证明分页真的通了。
-  const createdSessionID = peer.sessionID
-  const followCursor = await until(
-    () => peer.frames.find(frame => frame.value?.type === 'snapshot')?.value?.cursor,
-    'Web opening snapshot cursor',
+  assert.doesNotMatch(
+    xcodeOutput,
+    /Test Case '.*testLiveH12RealHarnessQuestionFlow.*' skipped/
   )
-  const nativePage = await fetch(`${agentdOrigin}/api/harness/rpc`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${agentdToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      rpcId: 'h12-page',
-      method: 'session/page',
-      args: {
+
+  // 从真实 App Store/UI 再走一遍正式入口。测试内部在 App 已启动后由另一个客户端
+  // 创建会话，断言列表无需重启即可出现，再从现有 Composer 提交到同一 transport。
+  uiXcodeProcess = spawn('bash', [
+    './scripts/ios-dev.sh', 'test',
+    '-only-testing:MimiRemoteUITests/MimiRemotePhysicalSmokeUITests/testLiveH12FormalHarnessPathWithoutNativeFlag',
+  ], {
+    cwd: repositoryRoot,
+    env: {
+      ...h12XcodeEnvironment,
+      SCHEME: 'MimiRemotePhysicalUITests',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  uiXcodeProcess.stdout.on('data', data => { uiXcodeOutput += data })
+  uiXcodeProcess.stderr.on('data', data => { uiXcodeOutput += data })
+  const [uiXcodeCode, uiXcodeSignal] = await once(uiXcodeProcess, 'exit')
+  assert.equal(uiXcodeCode, 0, `iOS UI test failed: signal=${String(uiXcodeSignal)}`)
+  assert.match(uiXcodeOutput, /testLiveH12FormalHarnessPathWithoutNativeFlag.*passed/)
+  assert.match(uiXcodeOutput, /Executed 1 test, with 0 failures/)
+  assert.doesNotMatch(
+    uiXcodeOutput,
+    /Test Case '.*testLiveH12FormalHarnessPathWithoutNativeFlag.*' skipped/
+  )
+  await until(() => modelCalls === 4, 'formal UI deterministic model completion')
+
+  // 用真实 agentd 写入口把同一会话推进到 200 条以上 durable 记录。模型仍是本机
+  // 确定性服务，不读取供应商凭据；这里验证的是长历史分页，不是模型质量。
+  const createdSessionID = peer.sessionID
+  const historySeedPrompts = 36
+  const modelCallsBeforeHistorySeed = modelCalls
+  for (let index = 0; index < historySeedPrompts; index += 1) {
+    const seeded = await fetch(`${agentdOrigin}/api/harness/rpc`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${agentdToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rpcId: `h12-history-seed-${index}`,
+        method: 'session/prompt',
+        args: {
+          request: {
+            requestId: `h12-history-seed-${index}`,
+            sessionId: createdSessionID,
+            mode: 'queue',
+            content: [{ type: 'text', text: `history seed ${index}` }],
+          },
+        },
+      }),
+    })
+    assert.equal(seeded.status, 200, `历史预热 prompt ${index} 必须被 agentd 接纳`)
+    const seededBody = await seeded.json()
+    assert.equal(seededBody.result?.ok, true, `历史预热 prompt ${index} 失败：${JSON.stringify(seededBody)}`)
+  }
+  await until(
+    () => modelCalls === modelCallsBeforeHistorySeed + historySeedPrompts,
+    'long history deterministic model completion',
+    120_000,
+  )
+  // modelCalls 在请求开始时递增；给最后一次 SSE 完成与 durable 落盘一个有界窗口。
+  await delay(500)
+
+  // 历史分页经**真实中继**：旧 follow 的 opening cursor 属于执行前快照，不能拿它
+  // 读取执行后的历史。重新打开同一会话取得新的权威 snapshot，再把该 cursor 作为
+  // throughSeq；这同时覆盖“继续翻同一快照”和“刷新后使用新边界”的区别。
+  const openingCursor = peer.frames.find(
+    frame => frame.streamId === 'web-follow' && frame.value?.type === 'snapshot',
+  )?.value?.cursor
+  const historyStreamID = 'web-history-refresh'
+  peer.socket.send(JSON.stringify({
+    type: 'open',
+    streamId: historyStreamID,
+    endpoint: 'session/follow',
+    payload: { args: {
+      request: {
+        address: { kind: 'session', sessionId: createdSessionID },
+        assistantStream: true,
+        maxMessages: 50,
+      },
+    } },
+  }))
+  const refreshedSnapshot = await until(
+    () => peer.frames.find(
+      frame => frame.streamId === historyStreamID && frame.value?.type === 'snapshot',
+    )?.value,
+    'Web refreshed snapshot cursor',
+  )
+  const followCursor = refreshedSnapshot.cursor
+  assert.ok(followCursor > openingCursor, '重新打开后的 snapshot cursor 必须推进到 durable 历史之后')
+  const pageThroughAgentd = async (rpcId, beforeSeq) => {
+    const request = {
+      address: { kind: 'session', sessionId: createdSessionID },
+      throughSeq: followCursor,
+      maxMessages: 5,
+    }
+    if (beforeSeq !== undefined) request.beforeSeq = beforeSeq
+    const response = await fetch(`${agentdOrigin}/api/harness/rpc`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${agentdToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rpcId,
+        method: 'session/page',
+        args: { request },
+      }),
+    })
+    assert.equal(response.status, 200, 'session/page 必须可用')
+    const body = await response.json()
+    assert.equal(body.result?.ok, true, `session/page 失败：${JSON.stringify(body)}`)
+    return body.result?.value
+  }
+  const seenHistorySeqs = new Set()
+  let page = await pageThroughAgentd('h12-page-0')
+  let pageIndex = 0
+  while (true) {
+    const records = page?.records ?? []
+    assert.ok(records.length > 0, `第 ${pageIndex + 1} 页必须包含持久记录`)
+    const seqs = records.map(record => record.event?.seq).filter(Number.isInteger)
+    assert.equal(seqs.length, records.length, '分页记录必须都有原生 seq')
+    for (const seq of seqs) {
+      assert.equal(seenHistorySeqs.has(seq), false, `历史分页不得重复 seq ${seq}`)
+      seenHistorySeqs.add(seq)
+    }
+    if (!page.hasMore) break
+    const beforeSeq = Math.min(...seqs)
+    pageIndex += 1
+    assert.ok(pageIndex < 100, '历史分页必须在有界页数内结束')
+    page = await pageThroughAgentd(`h12-page-${pageIndex}`, beforeSeq)
+  }
+  assert.ok(
+    seenHistorySeqs.size > 200,
+    `真实长历史必须超过 200 条记录，实际 ${seenHistorySeqs.size}`,
+  )
+  peer.socket.send(JSON.stringify({ type: 'cancel', streamId: historyStreamID }))
+
+  // 保留最初的 Web 观察者，同时反复新建/退订第二条 follow。默认容量是 4；如果主动
+  // 退订没有归还名额，这组真实 agentd 循环会在数次之后收到额度错误。cancel 与
+  // 后续 open 走同一 WebSocket，服务端按序处理；上游已经先结束时 cancel 是幂等空操作，
+  // 因此不要求每次都有额外 end 回执，而由下一条 snapshot 证明前一条已经退役。
+  const followResubscribeCycles = 8
+  for (let index = 0; index < followResubscribeCycles; index += 1) {
+    const streamId = `web-reconnect-${index}`
+    peer.socket.send(JSON.stringify({
+      type: 'open',
+      streamId,
+      endpoint: 'session/follow',
+      payload: { args: {
         request: {
           address: { kind: 'session', sessionId: createdSessionID },
-          throughSeq: followCursor,
-          maxMessages: 100,
+          assistantStream: true,
+          maxMessages: 5,
         },
+      } },
+    }))
+    await until(
+      () => {
+        const error = peer.frames.find(frame => frame.streamId === streamId && frame.type === 'error')
+        assert.equal(error, undefined, `第 ${index + 1} 次重订阅不得耗尽名额`)
+        return peer.frames.some(
+          frame => frame.streamId === streamId && frame.value?.type === 'snapshot',
+        )
       },
-    }),
-  })
-  assert.equal(nativePage.status, 200, 'session/page 必须可用')
-  const nativePageBody = await nativePage.json()
-  assert.equal(nativePageBody.result?.ok, true, `session/page 失败：${JSON.stringify(nativePageBody)}`)
-  const nativeRecords = nativePageBody.result?.value?.records ?? []
-  assert.ok(nativeRecords.length > 0, 'throughSeq 取自本次 follow 时应当读到持久记录')
+      `follow reconnect ${index}`,
+    )
+    peer.socket.send(JSON.stringify({ type: 'cancel', streamId }))
+  }
+  const finalFollowStreamID = 'web-reconnect-final'
+  peer.socket.send(JSON.stringify({
+    type: 'open',
+    streamId: finalFollowStreamID,
+    endpoint: 'session/follow',
+    payload: { args: {
+      request: {
+        address: { kind: 'session', sessionId: createdSessionID },
+        assistantStream: true,
+        maxMessages: 5,
+      },
+    } },
+  }))
+  await until(
+    () => {
+      const error = peer.frames.find(
+        frame => frame.streamId === finalFollowStreamID && frame.type === 'error',
+      )
+      assert.equal(error, undefined, '末次取消后仍必须能重新取得 follow 名额')
+      return peer.frames.some(
+        frame => frame.streamId === finalFollowStreamID && frame.value?.type === 'snapshot',
+      )
+    },
+    'final follow reconnect after all cancellations',
+  )
+  peer.socket.send(JSON.stringify({ type: 'cancel', streamId: finalFollowStreamID }))
 
   const summary = {
     status: 'PASS',
@@ -335,14 +546,23 @@ try {
     harnessVersion: '0.1.5-rc.2',
     agentdOrigin,
     iosTestsExecuted: 1,
+    iosUITestsExecuted: 1,
     iosFailures: 0,
+    formalPathWithoutNativeTestFlag: true,
+    codexDisabled: modules.codex_enabled === false,
+    claudeDisabled: modules.claude_enabled === false,
+    externalSessionAppearedWithoutRestart: true,
+    storeUIComposerCompleted: true,
     webObservedQuestion: true,
     webObservedCancelAfterIOSAnswer: true,
     webObservedFinalAssistant: true,
     // iOS 侧由宿主级 `$events` 收到并回答：断言在
     // `testLiveH12RealHarnessQuestionFlow` 内部（含归属与撤卡回执）。
     hostObservedInteraction: true,
-    nativeHistoryRecords: nativeRecords.length,
+    nativeHistoryRecords: seenHistorySeqs.size,
+    nativeHistoryPages: pageIndex + 1,
+    historySeedPrompts,
+    followResubscribeCycles,
     deterministicModelCalls: modelCalls,
     realProviderCalls: 0,
   }
@@ -350,6 +570,8 @@ try {
   process.stdout.write(`PASS H12 native Harness dual-client flow\nEvidence: ${join(logs, 'summary.json')}\n`)
 } finally {
   if (webPeer?.socket?.readyState === WebSocket.OPEN) webPeer.socket.close()
+  await stopChild(uiXcodeProcess)
+  await stopChild(xcodeProcess)
   await stopChild(agentdServer)
   await stopChild(harness)
   if (modelServer) {
@@ -359,4 +581,5 @@ try {
   await writeFile(join(logs, 'harness.log'), harnessOutput, { mode: 0o600 })
   await writeFile(join(logs, 'agentd.log'), agentdOutput, { mode: 0o600 })
   await writeFile(join(logs, 'xcode.log'), xcodeOutput, { mode: 0o600 })
+  await writeFile(join(logs, 'xcode-ui.log'), uiXcodeOutput, { mode: 0o600 })
 }

@@ -644,6 +644,28 @@ func makeClaudeChannelMetadata(methods: [String]? = nil) -> CodexAppServerChanne
     )
 }
 
+/// 新 agentd 会在 Codex 启用时显式发布该 channel。只要 `channels` 非空，
+/// 测试夹具就必须按真实配置列出 Codex，不再借顶层旧字段暗示它存在。
+func makeCodexChannelMetadata() -> CodexAppServerChannelMetadata {
+    CodexAppServerChannelMetadata(
+        id: "codex",
+        runtimeID: "codex",
+        title: "Codex",
+        provider: "openai",
+        type: "codex_app_server",
+        protocolName: "app_server_jsonrpc_ws",
+        enabled: true,
+        gatewayWSURL: "ws://127.0.0.1:7777/api/app-server/ws",
+        gatewayAvailable: true,
+        managed: false,
+        experimental: nil,
+        lifecycle: "shared_ssh",
+        bridge: nil,
+        methods: nil,
+        capabilities: nil
+    )
+}
+
 func appServerThreadListResult(_ rows: [String], nextCursor: String?) -> String {
     let encodedCursor = nextCursor.map { #","nextCursor":"\#($0)""# } ?? #","nextCursor":null"#
     return #"{"data":[\#(rows.joined(separator: ","))]\#(encodedCursor)}"#

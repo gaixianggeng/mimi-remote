@@ -454,7 +454,6 @@ final class HarnessHostEventObserverTests: XCTestCase {
             logStore: LogStore()
         )
         let sessionID: SessionID = "h498-host-session"
-        store.nativeHarnessRollout = HarnessNativeRollout(isEnabled: true)
         return NativeHostInteractionFixture(appStore: appStore, store: store, sessionID: sessionID)
     }
 

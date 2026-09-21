@@ -385,8 +385,8 @@ final class SessionStore: ObservableObject {
     var networkRecoveryTask: Task<Void, Never>?
     var appLifecycleSuspendedSessionID: SessionID?
     var isAppInBackground = false
-    // 旧 agentd 不接受无 cwd thread/list 时，本 Host 生命周期只探测一次；
-    // 精确工作区列表仍继续工作，形成明确能力检测与兼容回退。
+    // 旧 agentd 不接受 Codex 无 cwd thread/list 时，本 Host 生命周期只探测一次；
+    // 这只缓存 Codex 的能力，不得关闭 Claude / Harness 各自的全局目录。
     var controlledGlobalDiscoveryUnavailable = false
     // 记录当前 Host 经 agentd 受控全局发现授权过的 Thread。精确 cwd 的工作区刷新
     // 不会返回外部 Worktree，必须保留这些 ID；完整全局遍历确认消失后再收缩集合。
@@ -405,13 +405,12 @@ final class SessionStore: ObservableObject {
     /// 本设备在某个工作区里创建成功的会话 ID。目录页用 `replacing` 整页覆盖时必须并回它们：
     /// 创建时可能有一页更早发出的首屏还在路上，它落地时会把刚登记的新会话冲掉。
     var workspaceCreatedSessionIDsByKey: [WorkspaceDirectorySessionScopeKey: Set<SessionID>] = [:]
-    /// 原生 Harness 通道的受控开关。生产默认关闭（`.disabled`），
-    /// 关闭时 deepseek 继续走既有 app-server 路径。打开它属于 H11。
-    var nativeHarnessRollout: HarnessNativeRollout = .disabled
-    /// 原生目录协调器。只在开关打开后按需创建；它负责时序（代次、single-flight、
+    /// 原生目录协调器。只在通道可用后按需创建；它负责时序（代次、single-flight、
     /// 失败保留旧页、前台 5 秒兜底），**不**持有会话集合——目录事实仍由
     /// `session/list` 对账后经既有归并写进 `sessions`。
     var nativeHarnessDirectory: HarnessSessionDirectory?
+    var isNativeHarnessDirectoryListVisible = false
+    var isNativeHarnessDirectoryForeground = false
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?

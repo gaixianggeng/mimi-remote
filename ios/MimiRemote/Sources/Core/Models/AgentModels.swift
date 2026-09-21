@@ -1987,33 +1987,8 @@ struct ConversationActivityPayload: Codable, Hashable {
                 toolPresentationKind: presentation.kind
             )
 
-        case "systemContext":
-            let sourceKind = Self.firstString(in: item, keys: ["sourceKind"])?.trimmedNonEmpty
-            let sourceForm = Self.firstString(in: item, keys: ["sourceForm"])?.trimmedNonEmpty
-            let text = Self.firstString(in: item, keys: ["text"])?.trimmedNonEmpty
-            self.init(
-                category: .context,
-                displayTitle: Self.contextDisplayTitle(sourceKind: sourceKind, sourceForm: sourceForm),
-                subtitle: text
-            )
-
         default:
             return nil
-        }
-    }
-
-    /// 把 Harness 注入上下文（systemContext 的 sourceKind/sourceForm）映射到稳定的用户可见标题。
-    /// 拿不到明确来源时回退到通用「上下文」，不要泄漏内部 kind 枚举名。
-    static func contextDisplayTitle(sourceKind: String?, sourceForm: String?) -> String {
-        switch sourceKind {
-        case "agent-instructions":
-            return L10n.text("ui.context_workspace_instructions")
-        case "skill-catalog":
-            return L10n.text("ui.context_skill_catalog")
-        case "plugin":
-            return sourceForm == "notice" ? L10n.text("ui.context_system_notice") : L10n.text("ui.context_runtime_context")
-        default:
-            return L10n.text("ui.context")
         }
     }
 

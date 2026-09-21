@@ -19,8 +19,9 @@ const (
 	AppName                           = "mimi-remote"
 	DefaultClaudeMaxConcurrentBridges = 3
 	// DefaultDeepSeekMaxConcurrentSessions 限制同时打开的 Harness 会话订阅数。
-	// Harness 每个订阅都会持有一条 remote.mux 连接，必须设上限。
-	DefaultDeepSeekMaxConcurrentSessions = 2
+	// 两台移动设备各自观察一个会话并短暂预热历史时会同时占用四条 remote.mux；
+	// 上限仍保持有界，且不代表正在执行的模型任务数。
+	DefaultDeepSeekMaxConcurrentSessions = 4
 )
 
 var ErrLegacyAppServerConfiguration = errors.New("legacy Codex Desktop sharing configuration")

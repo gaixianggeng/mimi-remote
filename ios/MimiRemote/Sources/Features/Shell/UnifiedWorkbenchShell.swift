@@ -917,6 +917,9 @@ struct UnifiedWorkbenchShell: View {
             icon: icon,
             isSelected: isSelected,
             tokens: tokens,
+            accessibilityIdentifier: destination == .sessions
+                ? "sidebar.sessions"
+                : "sidebar.workspaces",
             action: { open(destination, layout: layout) }
         )
     }

@@ -16,6 +16,16 @@ import Foundation
 /// 再解回来。反过来在 Store 里各写一份必然漂移。
 enum HarnessHistoryPageDecoding {
 
+    /// Store 侧游标同时绑定读取边界与本次 opening snapshot。
+    ///
+    /// 只编码 `beforeSeq` 会让一次旧分页在新的 authoritative refresh 后继续复用新
+    /// `throughSeq`，把两个快照上下文拼成一页。`contextID` 是客户端进程内的不透明
+    /// 读取代次，只用于拒绝这种混用，不发给 Harness。
+    struct Cursor: Equatable {
+        let contextID: UInt64
+        let beforeSeq: Int
+    }
+
     /// `session/page` 的结果。
     struct Page: Equatable {
         let records: [HarnessDurableEvent]
@@ -75,12 +85,12 @@ enum HarnessHistoryPageDecoding {
     /// 请求跨了 runtime，这里显式拒绝而不是当成同一个空间。
     static let cursorPrefix = "hseq:"
 
-    static func cursor(before seq: Int) -> String {
-        "\(cursorPrefix)\(seq)"
+    static func cursor(before seq: Int, contextID: UInt64) -> String {
+        "\(cursorPrefix)\(contextID):\(seq)"
     }
 
-    static func seq(fromCursor cursor: String?) throws -> Int? {
-        guard let cursor = cursor?.trimmingCharacters(in: .whitespacesAndNewlines),
+    static func cursor(from value: String?) throws -> Cursor? {
+        guard let cursor = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               !cursor.isEmpty else {
             return nil
         }
@@ -89,10 +99,13 @@ enum HarnessHistoryPageDecoding {
                 "history cursor does not belong to the native Harness path: \(cursor)"
             )
         }
-        guard let seq = Int(cursor.dropFirst(cursorPrefix.count)) else {
+        let components = cursor.dropFirst(cursorPrefix.count).split(separator: ":", omittingEmptySubsequences: false)
+        guard components.count == 2,
+              let contextID = UInt64(components[0]),
+              let beforeSeq = Int(components[1]) else {
             throw HarnessTransportError.malformedResponse("history cursor is malformed: \(cursor)")
         }
-        return seq
+        return Cursor(contextID: contextID, beforeSeq: beforeSeq)
     }
 
     private static func decode<T: Decodable>(
@@ -120,20 +133,35 @@ enum HarnessHistoryProjection {
     /// 认不出的类型不猜（与实时投影同一原则）。
     static func messages(
         from records: [HarnessDurableEvent],
-        sessionID: SessionID
+        sessionID: SessionID,
+        assistantMessageID: ((HarnessDurableEvent) -> MessageID?)? = nil
     ) -> [CodexHistoryMessage] {
-        records.compactMap { message(from: $0, sessionID: sessionID) }
+        records.compactMap {
+            message(
+                from: $0,
+                sessionID: sessionID,
+                assistantMessageID: assistantMessageID?($0)
+            )
+        }
     }
 
     private static func message(
         from event: HarnessDurableEvent,
-        sessionID: SessionID
+        sessionID: SessionID,
+        assistantMessageID: MessageID?
     ) -> CodexHistoryMessage? {
         switch event.type {
         case HarnessWireEventType.userMessage:
-            return userMessage(event, sessionID: sessionID)
+            // 与实时投影一致：user/message 也承载 Harness 注入上下文。
+            return event.data?["source"]?["kind"]?.stringValue == "user"
+                ? userMessage(event, sessionID: sessionID)
+                : systemMessage(event, sessionID: sessionID)
         case HarnessWireEventType.assistantMessage:
-            return assistantMessage(event, sessionID: sessionID)
+            return assistantMessage(
+                event,
+                sessionID: sessionID,
+                messageID: assistantMessageID
+            )
         case HarnessWireEventType.systemMessage:
             return systemMessage(event, sessionID: sessionID)
         case HarnessWireEventType.toolCall, HarnessWireEventType.toolResult:
@@ -172,9 +200,6 @@ enum HarnessHistoryProjection {
         sessionID: SessionID
     ) -> CodexHistoryMessage? {
         guard let text = messageText(from: event), !text.isEmpty else { return nil }
-        // `user/message` 也承载 plugin、skill-catalog 等注入上下文。只有 source.kind=user
-        // 才是人真正提交的输入。
-        guard event.data?["source"]?["kind"]?.stringValue == "user" else { return nil }
         // `source.rpcId` 是提交时的 requestId，带上它上层才能把乐观记录与真实回显对上。
         // 没有稳定身份就不展示：编一个 id 会让同一条消息在时间线上出现两次。
         guard let id = stableID(prefix: "user", event: event) else { return nil }
@@ -191,10 +216,11 @@ enum HarnessHistoryProjection {
 
     private static func assistantMessage(
         _ event: HarnessDurableEvent,
-        sessionID: SessionID
+        sessionID: SessionID,
+        messageID: MessageID?
     ) -> CodexHistoryMessage? {
         guard let text = messageText(from: event), !text.isEmpty,
-              let id = stableID(prefix: "assistant", event: event) else { return nil }
+              let id = messageID ?? stableID(prefix: "assistant", event: event) else { return nil }
         return CodexHistoryMessage(
             id: id,
             role: "assistant",

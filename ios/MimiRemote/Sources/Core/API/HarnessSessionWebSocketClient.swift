@@ -38,11 +38,20 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     private let recovery: HarnessRecoveryCoordinator?
     /// 发送前应用模型/档位选择。生产走原生 `session/selectModel`。
     private let selectModel: (@MainActor (String, String, String, String?) async throws -> Void)?
+    /// opening snapshot 请求开始前登记宿主级读取上下文。
+    ///
+    /// 页面自己的 `observationGeneration` 只在该页面内有序；两个页面都会从 1 起步，
+    /// 不能拿它们直接判断全局新旧。
+    private let beginSnapshotObservation: (@MainActor (SessionID) -> UInt64)?
     /// 建立基线后把本次 follow 的 `snapshot.cursor` 交给宿主。
     ///
     /// `session/page` 的 `throughSeq` 只能取自**本次** follow 的 opening snapshot，
     /// 因此这个值必须由建立基线的一侧上报，历史读取侧不能自己猜。
     private let reportSnapshotCursor: (@MainActor (SessionID, Int, UInt64) -> Void)?
+    /// snapshot、live durable 与 session/page 共用的提交/身份对账入口。
+    private let reconcileDurableEvent: (@MainActor (SessionID, HarnessDurableEvent) -> MessageID?)?
+    /// 用 `end.outcome.seq` 结算 attempt 与 durable assistant 的唯一身份。
+    private let settleAssistantIdentity: (@MainActor (SessionID, Int, MessageID) -> MessageID)?
 
     var turnDeliveryMode: TurnDeliveryMode { .direct }
     var onEvent: (@MainActor (AgentEvent) -> Void)?
@@ -81,7 +90,10 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         interactionStore: HarnessInteractionStore? = nil,
         recovery: HarnessRecoveryCoordinator? = nil,
         selectModel: (@MainActor (String, String, String, String?) async throws -> Void)? = nil,
-        reportSnapshotCursor: (@MainActor (SessionID, Int, UInt64) -> Void)? = nil
+        beginSnapshotObservation: (@MainActor (SessionID) -> UInt64)? = nil,
+        reportSnapshotCursor: (@MainActor (SessionID, Int, UInt64) -> Void)? = nil,
+        reconcileDurableEvent: (@MainActor (SessionID, HarnessDurableEvent) -> MessageID?)? = nil,
+        settleAssistantIdentity: (@MainActor (SessionID, Int, MessageID) -> MessageID)? = nil
     ) {
         self.endpoint = endpoint
         self.token = token
@@ -92,7 +104,10 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         self.interactionStore = interactionStore
         self.recovery = recovery
         self.selectModel = selectModel
+        self.beginSnapshotObservation = beginSnapshotObservation
         self.reportSnapshotCursor = reportSnapshotCursor
+        self.reconcileDurableEvent = reconcileDurableEvent
+        self.settleAssistantIdentity = settleAssistantIdentity
     }
 
     // MARK: - 连接
@@ -140,15 +155,22 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
             // 没有 snapshot 来源就建不了基线。显式失败而不是假装连上。
             throw HarnessTransportError.notConnected
         }
+        let contextID = beginSnapshotObservation?(sessionID) ?? generation
         let snapshot = try await fetchSnapshot(sessionID)
-        return openBaseline(snapshot: snapshot, sessionID: sessionID, generation: generation)
+        return openBaseline(
+            snapshot: snapshot,
+            sessionID: sessionID,
+            generation: generation,
+            snapshotContextID: contextID
+        )
     }
 
     /// 接受当前观察租约的 opening snapshot，并立即发布已有历史与直播前缀。
     private func openBaseline(
         snapshot: HarnessSnapshot,
         sessionID: SessionID,
-        generation: UInt64
+        generation: UInt64,
+        snapshotContextID: UInt64
     ) -> Bool {
         guard observationGeneration == generation, self.sessionID == sessionID else { return false }
         // 冻结版本中 header.id 是 snapshot/session header 的内部 id，并不等于
@@ -161,7 +183,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         if let cursor = fresh.snapshotCursor {
             // 带上**观察代次**：重开/重连会换一个读取上下文，
             // 旧代次的游标不得当成新代次的读取边界。
-            reportSnapshotCursor?(sessionID, cursor, generation)
+            reportSnapshotCursor?(sessionID, cursor, snapshotContextID)
         }
 
         // snapshot 里已有的持久记录立刻投影：这是"中途打开"能看到历史的来源。
@@ -170,9 +192,11 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         // 那条路径不解除提交锁，用户就会看到自己的消息在时间线上、下一条却发不出去。
         for record in snapshot.records ?? [] {
             guard let event = record.event else { continue }
-            reconcileSubmission(with: event)
+            let assistantMessageID = reconcile(event)
             for projected in HarnessPresentationProjector.project(
-                durableEvent: event, sessionID: sessionID
+                durableEvent: event,
+                sessionID: sessionID,
+                assistantMessageID: assistantMessageID
             ) {
                 onEvent?(projected)
             }
@@ -231,6 +255,10 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                 guard isCurrentObservation(sessionID: sessionID, lease: lease) else { return }
                 runtimeGeneration = generation
 
+                // 全局读取上下文在开 follow **之前**登记。旧页面先开始、晚返回时仍携带
+                // 旧 context，不能覆盖后来开始的刷新。
+                let snapshotContextID = beginSnapshotObservation?(sessionID) ?? lease
+
                 // **不在这里开 `$events`。** 它是宿主级通道，由 `HarnessSessionAPIClient`
                 // 的唯一观察者持有（见 `HarnessHostEventObserver`）。页面各开一条会被中继
                 // 拒绝（一条移动连接只绑定一个 `$events`），而页面退订会关闭整条共享连接
@@ -256,7 +284,8 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                 guard openBaseline(
                     snapshot: snapshot,
                     sessionID: sessionID,
-                    generation: lease
+                    generation: lease,
+                    snapshotContextID: snapshotContextID
                 ) else { return }
                 recovery.recordSuccess()
                 onStatus?(.connected)
@@ -451,19 +480,24 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         let isNew = current.apply(durableEvent: event)
         journal = current
         guard isNew else { return false }
+        let assistantMessageID = reconcile(event)
         if event.type == HarnessWireEventType.assistantMessage,
            current.activeAttempt != nil,
            let seq = event.seq {
             pendingAssistantDurableBySeq[seq] = event
             return true
         }
-        publish(durableEvent: event)
+        publish(durableEvent: event, assistantMessageID: assistantMessageID)
         return true
     }
 
-    private func publish(durableEvent event: HarnessDurableEvent) {
-        reconcileSubmission(with: event)
-        let messageID = event.seq.flatMap { settledAssistantMessageIDBySeq[$0] }
+    private func publish(
+        durableEvent event: HarnessDurableEvent,
+        assistantMessageID reconciledMessageID: MessageID? = nil
+    ) {
+        let messageID = reconciledMessageID
+            ?? reconcile(event)
+            ?? event.seq.flatMap { settledAssistantMessageIDBySeq[$0] }
         for projected in HarnessPresentationProjector.project(
             durableEvent: event,
             sessionID: sessionID,
@@ -492,6 +526,16 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
             return
         }
         submission.resolveAfterReconciliation(requestID: requestID)
+    }
+
+    /// 把所有 durable 来源送进同一提交与身份对账入口。
+    private func reconcile(_ event: HarnessDurableEvent) -> MessageID? {
+        if let reconcileDurableEvent {
+            return reconcileDurableEvent(sessionID, event)
+        }
+        // 独立单测客户端没有宿主 ledger 时仍保留原行为。
+        reconcileSubmission(with: event)
+        return event.seq.flatMap { settledAssistantMessageIDBySeq[$0] }
     }
 
     /// 应用一帧 assistant-stream 直播片段。
@@ -545,19 +589,26 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         return rejection
     }
 
-    /// 结算时把直播身份收敛到**持久身份**上。
+    /// 结算时把 durable 记录收敛到**已经展示的直播身份**上。
     ///
     /// 直播期间只有 attempt 身份可用（那时还没有 durable 记录）；结算拿到 `outcome.seq`
-    /// 后，如果对应的 durable 记录已经在手（先于 end 到达，见
-    /// `pendingAssistantDurableBySeq`），就必须改用与历史页**同一个** `stableMessageID`。
+    /// 后，必须在 API client 的共享 ledger 登记 attempt 身份；后续 durable 与历史页
+    /// 再按 seq 复用它。
     ///
     /// 否则同一条回复会有两个 id：直播 `h-attempt-<id>-assistant`、历史
     /// `h-msg-<nativeId>-assistant`，而 reducer 只按 id 原位覆盖，没有"seq 相同就合并"
     /// 的兜底——用户在刷新后会看到第二条助手消息。
     ///
-    /// durable 记录**晚于** end 到达时这里拿不到它，此时仍退回 attempt 身份；
-    /// 那一条顺序的收敛需要给事件模型加显式别名（见类型注释中的已知限制）。
+    /// 不能在 durable 先到时改用 durable id：直播增量已经以 attempt id 进入 Store，
+    /// 中途换 id 会留下直播气泡并再插入一条完成消息。
     private func settledIdentity(for attempt: HarnessJournalAttempt, seq: Int) -> MessageID {
+        let attemptMessageID = HarnessPresentationProjector.messageID(
+            attempt: attempt,
+            suffix: "assistant"
+        )
+        if let settleAssistantIdentity {
+            return settleAssistantIdentity(sessionID, seq, attemptMessageID)
+        }
         if let durable = pendingAssistantDurableBySeq[seq],
            let durableID = HarnessPresentationProjector.stableMessageID(
                for: durable,
@@ -565,7 +616,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
            ) {
             return durableID
         }
-        return HarnessPresentationProjector.messageID(attempt: attempt, suffix: "assistant")
+        return attemptMessageID
     }
 
     /// 结算当前 attempt 并投影结果。
@@ -574,10 +625,17 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     /// （见 `HarnessPresentationProjector.project(attempt:)`）。
     func settleActiveAttempt() {
         guard var current = journal, let attempt = current.activeAttempt else { return }
+        var assistantMessageID: MessageID?
         if attempt.producedAssistantMessage, let seq = attempt.settledSeq {
-            settledAssistantMessageIDBySeq[seq] = settledIdentity(for: attempt, seq: seq)
+            let settled = settledIdentity(for: attempt, seq: seq)
+            settledAssistantMessageIDBySeq[seq] = settled
+            assistantMessageID = settled
         }
-        for projected in HarnessPresentationProjector.project(attempt: attempt, sessionID: sessionID) {
+        for projected in HarnessPresentationProjector.project(
+            attempt: attempt,
+            sessionID: sessionID,
+            assistantMessageID: assistantMessageID
+        ) {
             onEvent?(projected)
         }
         current.retireSettledAttempt()

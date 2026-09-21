@@ -5,8 +5,6 @@ import Foundation
 ///
 /// 将调试配置与 AppStore 的生产状态职责分离，避免预览能力继续扩大核心状态文件。
 struct DebugLaunchConfiguration {
-    /// H11 只允许测试进程通过显式参数打开；不接受环境变量、持久配置或远端下发。
-    let usesNativeHarnessTestPath: Bool
     let opensWorkbenchWithoutPairing: Bool
     let seedsWorkbenchUI: Bool
     let seedsStoreScreenshotUI: Bool
@@ -19,12 +17,6 @@ struct DebugLaunchConfiguration {
     let hostPlatformPreview: HostPlatform?
     let endpoint: String?
     let token: String?
-
-    /// 工厂与开关由同一份不可变启动配置派生，避免 AppStore 与 SessionStore
-    /// 各自判断后出现“一边已路由、一边仍关闭”的半接线状态。
-    var nativeHarnessFactory: HarnessSessionClientFactory? {
-        usesNativeHarnessTestPath ? HarnessSessionAPIClient.controlledTestFactory : nil
-    }
 
     /// App Store 截图只使用公开的演示档案，并且只写入 AppStore 本次进程的内存态。
     /// 这样真实 Mac 名称、MagicDNS、IP 和访问码不会进入截图或持久化存储。
@@ -109,7 +101,6 @@ struct DebugLaunchConfiguration {
         let hostPlatformPreview = argumentValue(named: "--debug-host-platform", in: arguments)
             .map { HostPlatform(serverValue: $0) }
         return DebugLaunchConfiguration(
-            usesNativeHarnessTestPath: arguments.contains("--test-native-harness"),
             opensWorkbenchWithoutPairing: arguments.contains("--debug-skip-pairing")
                 || boolValue(environment["MIMI_DEBUG_SKIP_PAIRING"])
                 || hostPlatformPreview != nil,

@@ -1612,6 +1612,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         icon: .sessions,
                         isSelected: true,
                         tokens: tokens,
+                        accessibilityIdentifier: "sidebar.sessions",
                         action: {}
                     )
                     WorkbenchSidebarDestinationButton(
@@ -1619,6 +1620,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         icon: .workspaces,
                         isSelected: false,
                         tokens: tokens,
+                        accessibilityIdentifier: "sidebar.workspaces",
                         action: {}
                     )
                 }

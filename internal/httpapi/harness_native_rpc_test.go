@@ -330,6 +330,21 @@ func TestHarnessNativePageRelaysNativeRecordsVerbatim(t *testing.T) {
 	if request["throughSeq"] != int64(16) {
 		t.Fatalf("throughSeq 必须原样转发（snapshot 契约）：%+v", request)
 	}
+	if _, exists := request["beforeSeq"]; exists {
+		t.Fatalf("客户端未提供 beforeSeq 时不得转发零值，否则 Harness 会返回空页：%+v", request)
+	}
+	if _, exists := request["maxMessages"]; exists {
+		t.Fatalf("客户端未提供 maxMessages 时不得伪造零值：%+v", request)
+	}
+
+	boundedBody := `{"rpcId":"r6-bounded","method":"session/page","args":{"request":{"address":{"kind":"session","sessionId":"s1"},"throughSeq":16,"beforeSeq":9,"maxMessages":4}}}`
+	boundedRecorder := callHarnessNativeRPC(t, router, boundedBody, nil)
+	decodeHarnessNativeEnvelope(t, boundedRecorder)
+	boundedForwarded := spy.rawArgs[1].(map[string]any)
+	boundedRequest := boundedForwarded["request"].(map[string]any)
+	if boundedRequest["beforeSeq"] != int64(9) || boundedRequest["maxMessages"] != 4 {
+		t.Fatalf("客户端提供的分页边界必须原样转发：%+v", boundedRequest)
+	}
 }
 
 func TestHarnessNativeModelCatalogRelaysNativeValue(t *testing.T) {

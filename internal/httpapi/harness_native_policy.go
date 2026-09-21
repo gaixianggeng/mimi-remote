@@ -273,13 +273,20 @@ func harnessNativeArgsForMethod(method string, raw json.RawMessage) (harnessNati
 		if *args.Request.ThroughSeq < 0 || args.Request.BeforeSeq < 0 || args.Request.MaxMessages < 0 {
 			return harnessNativeParsedArgs{}, harnessNativeReject(http.StatusBadRequest, "session/page 的游标与条数不能为负")
 		}
+		request := map[string]any{
+			"address":    map[string]any{"kind": "session", "sessionId": sessionID},
+			"throughSeq": *args.Request.ThroughSeq,
+		}
+		// Harness 把 beforeSeq=0 当成“从 seq 0 之前读取”，而不是“未提供”。
+		// 只转发客户端实际给出的有效边界，避免完整历史被错误截成空页。
+		if args.Request.BeforeSeq > 0 {
+			request["beforeSeq"] = args.Request.BeforeSeq
+		}
+		if args.Request.MaxMessages > 0 {
+			request["maxMessages"] = args.Request.MaxMessages
+		}
 		return harnessNativeParsedArgs{
-			Forward: map[string]any{"request": map[string]any{
-				"address":     map[string]any{"kind": "session", "sessionId": sessionID},
-				"throughSeq":  *args.Request.ThroughSeq,
-				"beforeSeq":   args.Request.BeforeSeq,
-				"maxMessages": args.Request.MaxMessages,
-			}},
+			Forward:   map[string]any{"request": request},
 			SessionID: sessionID,
 		}, nil
 

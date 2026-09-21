@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -198,6 +199,99 @@ func TestHarnessNativeStreamConnectionCloseReleasesSessionSlot(t *testing.T) {
 	waitForHarnessNativeActiveSessions(t, router, 0)
 }
 
+// 同一会话可以被 iPhone 和 iPad 同时观察；名额按 follow 订阅计数，不能按
+// sessionID 去重。两条连接也必须独立归还，避免一端退订误伤另一端。
+func TestHarnessNativeStreamSameSessionObserversReleaseIndependently(t *testing.T) {
+	stub := newHarnessNativeStreamStub(t)
+	url, authorized, router := harnessNativeSessionLimitFixture(t, stub, 2)
+	holdHarnessNativeMux(t, stub)
+	stub.sessions = []harnessclient.SessionSummary{harnessNativeFixtureSession("session-a", authorized)}
+
+	phone := dialHarnessNativeStream(t, url)
+	tablet := dialHarnessNativeStream(t, url)
+	sendHarnessNativeFollow(t, phone, "phone", "session-a")
+	sendHarnessNativeFollow(t, tablet, "tablet", "session-a")
+	waitForHarnessNativeOpens(t, stub, 2)
+	waitForHarnessNativeActiveSessions(t, router, 2)
+
+	sendHarnessNativeFrame(t, phone, map[string]any{"type": "cancel", "streamId": "phone"})
+	if frame := readHarnessNativeFrame(t, phone); frame["type"] != harnessclient.CarrierEnd {
+		t.Fatalf("手机退订应回 end 帧，得到 %v", frame)
+	}
+	waitForHarnessNativeActiveSessions(t, router, 1)
+
+	if err := tablet.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitForHarnessNativeActiveSessions(t, router, 0)
+}
+
+// 名额在授权前申请，因此授权失败也必须归还；否则探测一个已删除会话就会永久吃掉容量。
+func TestHarnessNativeStreamAuthorizationFailureReleasesSessionSlot(t *testing.T) {
+	stub := newHarnessNativeStreamStub(t)
+	url, authorized, router := harnessNativeSessionLimitFixture(t, stub, 1)
+	holdHarnessNativeMux(t, stub)
+	stub.sessions = []harnessclient.SessionSummary{harnessNativeFixtureSession("session-valid", authorized)}
+	conn := dialHarnessNativeStream(t, url)
+
+	sendHarnessNativeFollow(t, conn, "denied", "session-missing")
+	if frame := readHarnessNativeFrame(t, conn); frame["type"] != harnessclient.CarrierError {
+		t.Fatalf("未授权 follow 必须回错误帧，得到 %v", frame)
+	}
+	waitForHarnessNativeActiveSessions(t, router, 0)
+
+	sendHarnessNativeFollow(t, conn, "valid", "session-valid")
+	waitForHarnessNativeOpens(t, stub, 1)
+	waitForHarnessNativeActiveSessions(t, router, 1)
+}
+
+// 上游 WebSocket 建连失败发生在申请名额之后，也必须由 handleOpen 的 defer 归还。
+func TestHarnessNativeStreamUpstreamDialFailureReleasesSessionSlot(t *testing.T) {
+	stub := newHarnessNativeStreamStub(t)
+	stub.muxStatus = http.StatusServiceUnavailable
+	url, authorized, router := harnessNativeSessionLimitFixture(t, stub, 1)
+	stub.sessions = []harnessclient.SessionSummary{harnessNativeFixtureSession("session-a", authorized)}
+	conn := dialHarnessNativeStream(t, url)
+
+	sendHarnessNativeFollow(t, conn, "s1", "session-a")
+	if frame := readHarnessNativeFrame(t, conn); frame["type"] != harnessclient.CarrierError {
+		t.Fatalf("上游建连失败必须回错误帧，得到 %v", frame)
+	}
+	waitForHarnessNativeActiveSessions(t, router, 0)
+}
+
+// 上游正常 end、随后客户端重复 cancel、最后整条连接关闭只能归还一次。
+func TestHarnessNativeStreamUpstreamEndReleasesSessionSlotExactlyOnce(t *testing.T) {
+	stub := newHarnessNativeStreamStub(t)
+	stub.muxOpen = func(conn *websocket.Conn, open map[string]any) {
+		_ = conn.WriteJSON(map[string]any{
+			"type": harnessclient.CarrierEnd, "streamId": open["streamId"],
+		})
+	}
+	url, authorized, router := harnessNativeSessionLimitFixture(t, stub, 1)
+	stub.sessions = []harnessclient.SessionSummary{harnessNativeFixtureSession("session-a", authorized)}
+	conn := dialHarnessNativeStream(t, url)
+
+	sendHarnessNativeFollow(t, conn, "s1", "session-a")
+	if frame := readHarnessNativeFrame(t, conn); frame["type"] != harnessclient.CarrierEnd {
+		t.Fatalf("上游 end 必须透传，得到 %v", frame)
+	}
+	waitForHarnessNativeActiveSessions(t, router, 0)
+	// 用一个独立占位名额探测“旧流是否又释放了一次”。单纯断言计数仍为 0
+	// 会被 release 的下限保护掩盖，无法证明 exactly-once。
+	if !router.acquireHarnessNativeSession() {
+		t.Fatal("上游 end 归还后应能重新申请名额")
+	}
+	waitForHarnessNativeActiveSessions(t, router, 1)
+	sendHarnessNativeFrame(t, conn, map[string]any{"type": "cancel", "streamId": "s1"})
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitForHarnessNativeActiveSessions(t, router, 1)
+	router.releaseHarnessNativeSession()
+	waitForHarnessNativeActiveSessions(t, router, 0)
+}
+
 // 未配置时回落到默认上限；释放的下限是 0。
 //
 // 计数被打负会让上限在每个后续连接上被静默放宽一格——那是"配了上限但没生效"，
@@ -212,9 +306,9 @@ func TestHarnessNativeSessionCounterFallsBackAndFloorsAtZero(t *testing.T) {
 	if router.acquireHarnessNativeSession() {
 		t.Fatal("超过默认上限必须拒绝")
 	}
-	router.releaseHarnessNativeSession()
-	router.releaseHarnessNativeSession()
-	router.releaseHarnessNativeSession()
+	for range config.DefaultDeepSeekMaxConcurrentSessions + 1 {
+		router.releaseHarnessNativeSession()
+	}
 	if got := activeHarnessNativeSessions(router); got != 0 {
 		t.Fatalf("释放必须停在 0，得到 %d", got)
 	}

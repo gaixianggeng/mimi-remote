@@ -222,7 +222,11 @@ enum HarnessPresentationProjector {
     /// 被用户取消的 attempt（`eventType == assistant/attempt`）没有完整正文，
     /// 把它当成一条助手消息会让用户看到半截内容被标记为"完成"。
     /// 这是契约 §2.7 那条"committed 不等于有正文"在展示层的落点。
-    static func project(attempt: HarnessJournalAttempt, sessionID: SessionID) -> [AgentEvent] {
+    static func project(
+        attempt: HarnessJournalAttempt,
+        sessionID: SessionID,
+        assistantMessageID: MessageID? = nil
+    ) -> [AgentEvent] {
         guard attempt.isSettled else { return [] }
         var events: [AgentEvent] = []
         if attempt.wasSuperseded {
@@ -236,9 +240,11 @@ enum HarnessPresentationProjector {
         if attempt.producedAssistantMessage {
             let text = assistantText(from: attempt)
             if !text.isEmpty {
+                let resolvedMessageID = assistantMessageID
+                    ?? messageID(attempt: attempt, suffix: "assistant")
                 events.append(.messageCompleted(
                     AgentMessage(
-                        id: messageID(attempt: attempt, suffix: "assistant"),
+                        id: resolvedMessageID,
                         sessionID: sessionID,
                         itemID: attempt.attemptID,
                         role: .assistant,
@@ -249,8 +255,8 @@ enum HarnessPresentationProjector {
                     metadata(
                         seq: nil,
                         sessionID: sessionID,
-                        itemID: messageID(attempt: attempt, suffix: "assistant"),
-                        messageID: messageID(attempt: attempt, suffix: "assistant"),
+                        itemID: resolvedMessageID,
+                        messageID: resolvedMessageID,
                         revision: attempt.lastRevision
                     )
                 ))

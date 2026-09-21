@@ -6,12 +6,12 @@ extension AppStore {
         "\(endpoint)\n\(token)"
     }
 
-    var debugNativeHarnessFactory: HarnessSessionClientFactory? {
-#if DEBUG
-        debugLaunchConfiguration.nativeHarnessFactory
-#else
-        nil
-#endif
+    /// 每个宿主只由 `runtimeBundle` 创建一份原生客户端。
+    ///
+    /// Debug 与正式构建使用同一实现。用户启用状态来自 Mac 模块写入的 agentd 配置，
+    /// 能力来自 config channel，健康状态再由原生 RPC 探测。
+    var nativeHarnessFactory: HarnessSessionClientFactory {
+        HarnessSessionAPIClient.liveFactory
     }
 
     /// 当前宿主使用的原生 Harness 客户端；未注入原生通道时为 `nil`。

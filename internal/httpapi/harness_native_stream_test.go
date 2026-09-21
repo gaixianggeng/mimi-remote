@@ -31,6 +31,8 @@ type harnessNativeStreamStub struct {
 	sessions []harnessclient.SessionSummary
 	// muxOpen 在收到 open 帧后回放帧。
 	muxOpen func(conn *websocket.Conn, open map[string]any)
+	// 非零时让 remote.mux 在升级前失败，用于验证上游建连失败的资源归还。
+	muxStatus int
 
 	mu        sync.Mutex
 	opened    []map[string]any
@@ -88,6 +90,10 @@ func (stub *harnessNativeStreamStub) serve() *httptest.Server {
 	mux.HandleFunc("/api/remote.mux", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := r.Cookie("harness_session"); err != nil {
 			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if stub.muxStatus != 0 {
+			w.WriteHeader(stub.muxStatus)
 			return
 		}
 		conn, err := (&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(w, r, nil)

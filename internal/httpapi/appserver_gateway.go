@@ -243,6 +243,7 @@ type appServerChannel struct {
 	Provider         string                     `json:"provider"`
 	Type             string                     `json:"type"`
 	Protocol         string                     `json:"protocol"`
+	Enabled          bool                       `json:"enabled"`
 	GatewayWSURL     string                     `json:"gateway_ws_url"`
 	GatewayAvailable bool                       `json:"gateway_available"`
 	Managed          bool                       `json:"managed"`
@@ -527,6 +528,7 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		Provider:         "openai",
 		Type:             "codex_app_server",
 		Protocol:         "app_server_jsonrpc_ws",
+		Enabled:          true,
 		GatewayWSURL:     r.appServerGatewayURLForRuntime(req, codexSpec.ID),
 		GatewayAvailable: codexUpstream != "",
 		Managed:          false,
@@ -576,6 +578,7 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			Provider:         "anthropic",
 			Type:             "claude_code_bridge",
 			Protocol:         "app_server_jsonrpc_stdio_v1",
+			Enabled:          true,
 			GatewayWSURL:     r.appServerGatewayURLForRuntime(req, claudeSpec.ID),
 			GatewayAvailable: probe.Healthy,
 			Managed:          false,
@@ -596,7 +599,55 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			Policy:       claudePolicy,
 		})
 	}
+	if r.cfg.DeepSeek.Enabled {
+		// Harness 原生通道不是 app-server runtime，不登记进 appServerRuntimeSpecs，
+		// 也不允许落回 /api/app-server/ws。channel 这里只声明三件彼此独立的事实：
+		// 用户已启用（Enabled）、本 agentd 认识 native-v1（Protocol）、中继入口存在
+		// （GatewayAvailable）。Harness 当前是否健康由移动端实际探测 /api/harness/rpc；
+		// 离线不能把协议偷偷切回旧 app-server 路径。
+		channels = append(channels, appServerChannel{
+			ID:               "deepseek",
+			RuntimeID:        "deepseek",
+			Title:            "DeepSeek Harness",
+			Provider:         "deepseek",
+			Type:             "harness_native",
+			Protocol:         "harness_native_v1",
+			Enabled:          true,
+			GatewayWSURL:     r.harnessNativeGatewayURL(req),
+			GatewayAvailable: true,
+			Managed:          false,
+			Lifecycle:        "shared_native_client",
+			Methods: []string{
+				"session/list", "session/search", "session/modelCatalog", "session/page",
+				"session/create", "session/selectModel", "session/prompt", "session/cancel",
+				"session/follow", "$events", "$events/result",
+			},
+			Capabilities: appServerChannelCapability{
+				Streaming:        true,
+				History:          true,
+				ApprovalRequests: true,
+			},
+			Policy: appServerChannelPolicy{
+				ApprovalPolicies: []string{"never"},
+				SandboxModes:     []string{"danger-full-access"},
+				NetworkAccess:    false,
+				CWDScope:         "agentd_allowlist",
+			},
+		})
+	}
 	return channels
+}
+
+func (r *Router) harnessNativeGatewayURL(req *http.Request) string {
+	scheme := "ws"
+	if req.TLS != nil || strings.EqualFold(req.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "wss"
+	}
+	host := req.Host
+	if strings.TrimSpace(host) == "" {
+		host = r.cfg.Listen
+	}
+	return (&url.URL{Scheme: scheme, Host: host, Path: "/api/harness/ws"}).String()
 }
 
 func removeAppServerMethod(methods []string, removed string) []string {

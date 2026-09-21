@@ -5,7 +5,7 @@ import Foundation
 /// 协调器负责"什么时候发、发什么、结果还算不算数"；这里只做三件它不该管的事：
 /// **取数**（走既有 `SessionStoreAPIClient`，不新开一条网络路径）、
 /// **落地**（复用既有 `mergeSessionLibraryPages`，不新写一套归并）、
-/// **闸门**（未启用时整段不参与，deepseek 继续走既有 app-server 路径）。
+/// **闸门**（构建未装配原生客户端时整段不参与；不会回退旧 app-server 路径）。
 ///
 /// 两条承重约束：
 ///
@@ -17,13 +17,13 @@ import Foundation
 ///    工作区、或用一个早已过期的代次去合并——那正是"旧回调污染新上下文"。
 extension SessionStore {
 
-    /// deepseek 是否由原生通道承接。
+    /// 当前宿主的原生 Harness 目录是否可读。
     ///
-    /// 判据只看 `nativeHarnessRollout`：它关闭时 `AppServerRuntimeBundle.harness` 恒为
-    /// `nil`，因此不存在"原生已承接但开关说没开"的中间态。不拿"通道探测成功"当开关——
-    /// 探测失败是运行时事实，不该改变"用哪条协议"这个构建期决策。
+    /// 正式 App 始终装配客户端；agentd channel 表示用户启用且协议受支持，
+    /// `availableRuntimeProviders` 是配置判定与真实 Harness 健康探测的合并结果。
+    /// 目录只在该结果成立时读取；路由归属仍始终是 native，离线不会回退旧协议。
     var isNativeHarnessDirectoryEnabled: Bool {
-        nativeHarnessRollout.isEnabled
+        availableRuntimeProviders.contains(Self.nativeHarnessRuntimeProvider)
     }
 
     // MARK: - 宿主级 $events
@@ -39,30 +39,29 @@ extension SessionStore {
     func installNativeHarnessHostEvents() {
         guard isNativeHarnessDirectoryEnabled else { return }
         guard let client = appStore.nativeHarnessClientForActiveHost() else { return }
-        Task { @MainActor in
-            client.setHostInteractionSinks(
-                events: { [weak self] event in
-                    self?.deliverNativeHostEvent(event)
-                },
-                changed: { [weak self] in
-                    self?.objectWillChange.send()
-                },
-                rejected: { [weak self] sessionID, eventID, outcome, message in
-                    self?.handleNativeInteractionRejected(
-                        sessionID: sessionID,
-                        eventID: eventID,
-                        outcome: outcome,
-                        message: message
-                    )
-                }
-            )
-            client.startHostEvents()
-        }
+        client.setHostInteractionSinks(
+            events: { [weak self] event in
+                self?.deliverNativeHostEvent(event)
+            },
+            changed: { [weak self] in
+                self?.objectWillChange.send()
+            },
+            rejected: { [weak self] sessionID, eventID, outcome, message in
+                self?.handleNativeInteractionRejected(
+                    sessionID: sessionID,
+                    eventID: eventID,
+                    outcome: outcome,
+                    message: message
+                )
+            }
+        )
+        // 当前方法已经在 MainActor 上。直接启动使健康探测完成与宿主观察建立保持有序，
+        // 不把正式接入交给一个可能晚于首轮目录刷新才执行的游离任务。
+        client.startHostEvents()
     }
 
     /// 宿主退役时停止观察。**页面切换不调用它。**
     func stopNativeHarnessHostEvents() {
-        guard isNativeHarnessDirectoryEnabled else { return }
         guard let client = appStore.nativeHarnessClientForActiveHost() else { return }
         Task { @MainActor in
             await client.stopHostEvents()
@@ -143,6 +142,8 @@ extension SessionStore {
 
     /// 列表可见性与前后台变化。两个都为真才允许 5 秒兜底跑。
     func updateNativeHarnessDirectoryVisibility(isListVisible: Bool, isForeground: Bool) {
+        isNativeHarnessDirectoryListVisible = isListVisible
+        isNativeHarnessDirectoryForeground = isForeground
         nativeHarnessDirectory?.setListVisible(isListVisible, isForeground: isForeground)
     }
 
@@ -193,6 +194,10 @@ extension SessionStore {
             clock: HarnessDispatchDirectoryClock(),
             fetch: fetch,
             deliver: deliver
+        )
+        directory.setListVisible(
+            isNativeHarnessDirectoryListVisible,
+            isForeground: isNativeHarnessDirectoryForeground
         )
         nativeHarnessDirectory = directory
         return directory

@@ -139,8 +139,8 @@ protocol HarnessSessionClient: AnyObject {
 
 /// 原生客户端工厂接缝。
 ///
-/// 生产默认不提供（`nil`），等价于沿用既有 app-server 路径；测试与后续任务通过它注入
-/// 原生实现或 fake。返回 `nil` 表示该 endpoint 不提供原生通道。
+/// 正式 App 由 `AppStore` 注入 live 工厂；可选形态只用于测试替身和不装配客户端的
+/// 受控构造。是否启用由 agentd channel 决定，绝不因工厂缺失而回退旧 app-server 路径。
 typealias HarnessSessionClientFactory = (_ endpoint: String, _ token: String) -> HarnessSessionClient?
 
 /// 原生路径的显式失败。
@@ -154,6 +154,8 @@ enum HarnessNativeUnavailableError: Error, LocalizedError, Equatable {
     case notImplemented(operation: String)
     /// Harness 不支持该操作，必须显式拒绝而不是降级成普通请求。
     case unsupported(operation: String)
+    /// 宿主声明了 DeepSeek，但没有当前 App 所需的原生协议能力。
+    case agentdUpgradeRequired
 
     var errorDescription: String? {
         switch self {
@@ -163,6 +165,8 @@ enum HarnessNativeUnavailableError: Error, LocalizedError, Equatable {
             return L10n.format("harness.native_not_implemented", operation)
         case .unsupported(let operation):
             return L10n.format("harness.native_unsupported", operation)
+        case .agentdUpgradeRequired:
+            return L10n.text("harness.agentd_upgrade_required")
         }
     }
 }
@@ -180,13 +184,11 @@ enum HarnessNativeUnavailableError: Error, LocalizedError, Equatable {
 final class HarnessSessionAPIClient: HarnessSessionClient {
     /// 原生通道承接的 runtime id。沿用既有 runtime 身份，不新建 `deepseek-native`。
     static let runtimeProvider = "deepseek"
-#if DEBUG
-    /// 只供显式测试构建注入。生产装配没有这个入口，避免把未完成的原生路径
-    /// 误当成可由配置开启的正式能力。
-    static let controlledTestFactory: HarnessSessionClientFactory = { endpoint, token in
+    /// 正式构建使用的原生客户端工厂。是否让用户进入 Harness 仍由 agentd 返回的
+    /// `enabled + harness_native_v1` channel 决定；工厂存在不等于用户已启用服务。
+    static let liveFactory: HarnessSessionClientFactory = { endpoint, token in
         HarnessSessionAPIClient(endpoint: endpoint, token: token)
     }
-#endif
 
     let endpoint: String
     let token: String
@@ -211,11 +213,22 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     ///
     /// 带代次存储的原因：重开或重连会换一个 reading context，旧游标属于上一代
     /// snapshot，拿它当读取边界会静默读到错误的区间。代次落后于当前登记的即作废。
-    private struct SnapshotBaseline {
+    struct SnapshotBaseline: Equatable {
         let cursor: Int
-        let generation: UInt64
+        /// 由 API client 在观察**开始时**分配，不使用页面自己的局部 generation。
+        /// 不同页面实例都会从 1 起步，直接比较它们会把新旧关系判断反。
+        let contextID: UInt64
     }
     private var baselineBySessionID: [SessionID: SnapshotBaseline] = [:]
+    private var newestSnapshotContextBySessionID: [SessionID: UInt64] = [:]
+    private var snapshotContextSequence: UInt64 = 0
+
+    /// 已结算 assistant 的唯一展示身份，按「会话 + settlement seq」索引。
+    ///
+    /// `end.outcome.seq` 是 attempt 与 durable `assistant/message` 的桥。结算时保留已经
+    /// 进入 Store 的 attempt 身份；之后同 seq 的 snapshot、live durable 与
+    /// `session/page` 都复用该身份，不再插入第二个 durable 气泡。
+    private var assistantMessageIDBySessionID: [SessionID: [Int: MessageID]] = [:]
 
     /// 普通输入的提交模式。实测取值域只有 queue|steer，普通发送用 queue。
     static let defaultPromptMode = "queue"
@@ -274,9 +287,23 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
                     reasoningEffort: effort
                 )
             },
+            // 在 follow 开始时先登记全局读取上下文；晚到的旧页面不能覆盖后来开始的刷新。
+            beginSnapshotObservation: { [weak self] sessionID in
+                self?.beginSnapshotObservation(for: sessionID) ?? 0
+            },
             // 基线建立后回报 snapshot 游标：历史分页的 throughSeq 只能用本次的值。
-            reportSnapshotCursor: { [weak self] sessionID, cursor, generation in
-                self?.rememberSnapshotCursor(cursor, for: sessionID, generation: generation)
+            reportSnapshotCursor: { [weak self] sessionID, cursor, contextID in
+                self?.rememberSnapshotCursor(cursor, for: sessionID, contextID: contextID)
+            },
+            reconcileDurableEvent: { [weak self] sessionID, event in
+                self?.reconcileCommittedEvent(event, sessionID: sessionID)
+            },
+            settleAssistantIdentity: { [weak self] sessionID, seq, attemptMessageID in
+                self?.settleAssistantIdentity(
+                    sessionID: sessionID,
+                    seq: seq,
+                    attemptMessageID: attemptMessageID
+                ) ?? attemptMessageID
             }
         )
     }
@@ -457,12 +484,23 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         limit: Int?,
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage {
-        guard let throughSeq = await awaitSnapshotBaseline(for: sessionID) else {
+        let decodedCursor = try HarnessHistoryPageDecoding.cursor(from: before)
+        guard let baseline = await awaitSnapshotBaseline(
+            for: sessionID,
+            requiringNewSnapshot: decodedCursor == nil
+        ) else {
             // 没有基线就没有合法的 throughSeq。猜一个会产生静默错误的页，
             // 比显式失败危险得多（契约 §5.5 明确禁止）。
             throw HarnessTransportError.notConnected
         }
-        let beforeSeq = try HarnessHistoryPageDecoding.seq(fromCursor: before)
+        if let decodedCursor, decodedCursor.contextID != baseline.contextID {
+            // 这是上一轮 authoritative snapshot 的分页位置。混用新 throughSeq 会静默
+            // 拼接两个读取上下文；显式失败，让 Store 重新从首屏开始。
+            throw HarnessTransportError.continuityLost(
+                "history cursor belongs to an obsolete Harness snapshot"
+            )
+        }
+        let beforeSeq = decodedCursor?.beforeSeq
 
         var request: [String: HarnessJSONValue] = [
             "address": .object([
@@ -470,7 +508,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
                 "sessionId": .string(sessionID),
             ]),
             // 必填。中继按描述符逐字校验，缺键直接 400。
-            "throughSeq": .number(Double(throughSeq)),
+            "throughSeq": .number(Double(baseline.cursor)),
         ]
         if let beforeSeq {
             request["beforeSeq"] = .number(Double(beforeSeq))
@@ -485,11 +523,24 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
             cwd: nil
         )
         let page = try HarnessHistoryPageDecoding.page(from: value)
-        let messages = HarnessHistoryProjection.messages(from: page.records, sessionID: sessionID)
+        // snapshot、live durable 与 session/page 必须进入同一个提交/身份对账入口。
+        for event in page.records {
+            _ = reconcileCommittedEvent(event, sessionID: sessionID)
+        }
+        let messages = HarnessHistoryProjection.messages(
+            from: page.records,
+            sessionID: sessionID,
+            assistantMessageID: { [weak self] event in
+                guard let self, let seq = event.seq else { return nil }
+                return self.assistantMessageIDBySessionID[sessionID]?[seq]
+            }
+        )
         // 下一页位置由**已取回记录的最小 seq** 推出，不是编造游标：
         // 上游结果只有 {records, hasMore}，没有 nextBeforeSeq。
         // 没有任何记录时无法推进，此时不给游标（调用方据此停止）。
-        let nextCursor = page.records.compactMap(\.seq).min().map(HarnessHistoryPageDecoding.cursor(before:))
+        let nextCursor = page.records.compactMap(\.seq).min().map {
+            HarnessHistoryPageDecoding.cursor(before: $0, contextID: baseline.contextID)
+        }
         return HistoryMessagesPage(
             messages: messages,
             previousCursor: page.hasMore ? nextCursor : nil,
@@ -516,10 +567,6 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     }
 
     /// 取该会话本次 follow 的 `snapshot.cursor`。
-    private func snapshotCursor(for sessionID: String) async -> Int? {
-        baselineBySessionID[sessionID]?.cursor
-    }
-
     /// 取得某个会话的读取基线（`throughSeq`），必要时**主动建立**观察。
     ///
     /// ## 为什么必须主动建立
@@ -544,10 +591,16 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     @MainActor
     func awaitSnapshotBaseline(
         for sessionID: SessionID,
+        requiringNewSnapshot: Bool = true,
         timeout: Duration = .seconds(10)
-    ) async -> Int? {
-        if let baseline = baselineBySessionID[sessionID] { return baseline.cursor }
+    ) async -> SnapshotBaseline? {
+        if !requiringNewSnapshot, let baseline = baselineBySessionID[sessionID] {
+            return baseline
+        }
 
+        // 先记住调用前的上下文。`connect` 会异步登记新上下文；如果在它之后读取，
+        // opening snapshot 先返回时可能把新上下文误当成旧值，导致本次刷新一直等待。
+        let previousContextID = newestSnapshotContextBySessionID[sessionID] ?? 0
         let warmUp = makeEventClient(sessionID: sessionID)
         warmUp.connect(sessionID: sessionID)
         defer { warmUp.disconnect() }
@@ -555,7 +608,10 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
         while clock.now < deadline {
-            if let baseline = baselineBySessionID[sessionID] { return baseline.cursor }
+            if let baseline = baselineBySessionID[sessionID],
+               !requiringNewSnapshot || baseline.contextID > previousContextID {
+                return baseline
+            }
             do {
                 try await Task.sleep(for: .milliseconds(50))
             } catch {
@@ -563,7 +619,25 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
                 break
             }
         }
-        return baselineBySessionID[sessionID]?.cursor
+        guard let baseline = baselineBySessionID[sessionID],
+              !requiringNewSnapshot || baseline.contextID > previousContextID else {
+            return nil
+        }
+        return baseline
+    }
+
+
+    /// 在 opening snapshot 请求**开始前**分配读取上下文。
+    ///
+    /// 分配点不能放在 snapshot 返回后：旧页面先开始、晚返回时会拿到更大的序号，反而
+    /// 覆盖真正的新刷新。登记新上下文时清掉旧 baseline，确保首屏读取不会复用旧 cursor。
+    @MainActor
+    private func beginSnapshotObservation(for sessionID: SessionID) -> UInt64 {
+        snapshotContextSequence &+= 1
+        let contextID = snapshotContextSequence
+        newestSnapshotContextBySessionID[sessionID] = contextID
+        baselineBySessionID[sessionID] = nil
+        return contextID
     }
 
 
@@ -575,13 +649,53 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     func rememberSnapshotCursor(
         _ cursor: Int,
         for sessionID: SessionID,
-        generation: UInt64
+        contextID: UInt64
     ) {
-        if let existing = baselineBySessionID[sessionID], generation < existing.generation {
-            // 迟到的旧代次基线不得覆盖新代次。
+        guard contextID != 0,
+              newestSnapshotContextBySessionID[sessionID] == contextID else {
+            // 迟到的旧页面/旧 follow 基线不得覆盖后来开始的 authoritative refresh。
             return
         }
-        baselineBySessionID[sessionID] = SnapshotBaseline(cursor: cursor, generation: generation)
+        baselineBySessionID[sessionID] = SnapshotBaseline(cursor: cursor, contextID: contextID)
+    }
+
+    /// 所有 durable 来源的唯一提交与身份对账入口。
+    @MainActor
+    @discardableResult
+    private func reconcileCommittedEvent(
+        _ event: HarnessDurableEvent,
+        sessionID: SessionID
+    ) -> MessageID? {
+        if event.type == HarnessWireEventType.userMessage,
+           let requestID = event.data?["source"]?["rpcId"]?.stringValue?.trimmedNonEmpty {
+            submissionController().resolveAfterReconciliation(requestID: requestID)
+        }
+        guard event.type == HarnessWireEventType.assistantMessage,
+              let seq = event.seq,
+              let durableID = HarnessPresentationProjector.stableMessageID(
+                  for: event,
+                  prefix: "assistant"
+              ) else {
+            return nil
+        }
+        return assistantMessageIDBySessionID[sessionID]?[seq] ?? durableID
+    }
+
+    /// 用 `end.outcome.seq` 把直播 attempt 与 durable message 结算成一个展示身份。
+    @MainActor
+    private func settleAssistantIdentity(
+        sessionID: SessionID,
+        seq: Int,
+        attemptMessageID: MessageID
+    ) -> MessageID {
+        var identities = assistantMessageIDBySessionID[sessionID] ?? [:]
+        // 直播增量已经用 attempt 身份进入既有 ConversationStore。即使 durable 先到，
+        // 结算也必须保留这个身份，再让后续 durable/历史按 seq 复用它；改成 durable id
+        // 会留下那条直播气泡，并额外插入一条“完成”消息。
+        let settled = identities[seq] ?? attemptMessageID
+        identities[seq] = settled
+        assistantMessageIDBySessionID[sessionID] = identities
+        return settled
     }
 
     // MARK: - H07 写路径

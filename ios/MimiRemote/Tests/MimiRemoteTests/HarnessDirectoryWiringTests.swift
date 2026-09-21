@@ -5,7 +5,7 @@ import XCTest
 /// H05 接线：SessionStore ←→ 原生目录协调器。
 ///
 /// 这一层要证明四件事，每件都对应卡片的一条硬要求：
-/// 1. **开关默认关**：关闭时不参与刷新，deepseek 继续走既有 app-server 路径。
+/// 1. **状态分离**：客户端装配不等于用户启用或 Harness 健康。
 /// 2. **失败保留旧页**：上游失败不得被翻译成空列表。
 /// 3. **失败不落空页**：协调器不投递空结果，旧会话因此不会被冲掉。
 /// 4. **工作区归属仍受控**：原生结果必须经既有归并，不能绕开目录归属登记。
@@ -15,18 +15,34 @@ import XCTest
 @MainActor
 final class HarnessDirectoryWiringTests: XCTestCase {
 
-    // MARK: - 1. 开关
+    // MARK: - 1. 通道状态
 
-    /// 默认关闭。这条守住"生产默认走旧路径"这个前提——
-    /// 它一旦被静默打开，deepseek 会在写路径尚未实现的阶段切到原生通道。
-    func testRolloutDefaultsToDisabled() {
-        XCTAssertFalse(
-            HarnessNativeRollout.disabled.isEnabled,
-            "原生通道必须默认关闭；打开它属于 H11"
-        )
+    /// 正式构建装配原生客户端，但目录仍需宿主配置与健康探测明确放行。
+    func testInstalledNativeClientDoesNotImplyHealthyDirectory() throws {
+        let fixture = try makeFixture(enabled: false)
+        XCTAssertFalse(fixture.store.isNativeHarnessDirectoryEnabled)
     }
 
-    func testDisabledRolloutSkipsNativeDirectoryRefresh() async throws {
+    func testHarnessOnlyHostSelectsNativeRuntimeForWorkspaceBootstrap() async throws {
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            runtimeChannelAvailability: ["codex": false, "claude": false, "deepseek": true]
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStoreForHarnessWiring(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        let available = await store.availableSessionRuntimeProviders(client: client)
+        let primary = try await store.primarySessionRuntimeProvider(client: client)
+        XCTAssertEqual(available, ["deepseek"])
+        XCTAssertEqual(primary, "deepseek")
+    }
+
+    func testUnavailableNativeChannelSkipsDirectoryRefresh() async throws {
         let fixture = try makeFixture(enabled: false)
         XCTAssertFalse(fixture.store.isNativeHarnessDirectoryEnabled)
 
@@ -46,7 +62,7 @@ final class HarnessDirectoryWiringTests: XCTestCase {
     }
 
     /// 打开后：真实走 client，结果经既有归并写进 sessions。
-    func testEnabledRolloutRefreshesThroughClientAndMergesIntoSessions() async throws {
+    func testAvailableNativeChannelRefreshesAndMergesIntoSessions() async throws {
         let fixture = try makeFixture(
             enabled: true,
             workspacePages: ["h05-project": page([session(id: "h05-wired-1")])]
@@ -72,7 +88,7 @@ final class HarnessDirectoryWiringTests: XCTestCase {
     ///
     /// Harness Spy 与 Codex transport Spy 相互独立：只断言结果不足以发现默认重载
     /// 偷偷落到 Codex；这里同时证明 Harness 被调用且 Codex 完全未被触碰。
-    func testEnabledRolloutExplicitlyRoutesThroughNativeHarness() async throws {
+    func testAvailableNativeChannelExplicitlyRoutesThroughHarness() async throws {
         let project = AgentProject(id: "h05-project", name: "H05 Workspace", path: "/h05/workspace")
         let workspace = AgentWorkspace(project: project)
         let appStore = makeIsolatedAppStoreForHarnessWiring()
@@ -103,7 +119,7 @@ final class HarnessDirectoryWiringTests: XCTestCase {
             recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [workspace], endpoint: appStore.endpoint),
             clientFactory: { routingClient }
         )
-        store.nativeHarnessRollout = HarnessNativeRollout(isEnabled: true)
+        store.availableRuntimeProviders.insert(SessionStore.nativeHarnessRuntimeProvider)
         store.recentWorkspaces = [workspace]
         store.rebuildWorkspaceIndex()
 
@@ -272,7 +288,7 @@ private func makeFixture(
         clientFactory: { client }
     )
     if enabled {
-        store.nativeHarnessRollout = HarnessNativeRollout(isEnabled: true)
+        store.availableRuntimeProviders.insert(SessionStore.nativeHarnessRuntimeProvider)
     }
     // 让工作区进入 workspacesByID：`isCurrentWorkspaceIdentity` 靠它确认归属，
     // 否则交付会被自己拒绝，测出来的是夹具没准备好而不是接线没生效。
