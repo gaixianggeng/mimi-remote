@@ -989,6 +989,111 @@ final class HarnessEventClientTests: XCTestCase {
         XCTAssertNil(client.currentKnownTurnID(), "轮次结束后不应再有可停止的目标")
     }
 
+    // MARK: - 直播与历史的身份收敛
+
+    /// 直播结算后刷新历史，同一条回复**不得**变成两条。
+    ///
+    /// 直播期间用 attempt 身份（那时还没有 durable 记录），历史页按持久身份
+    /// （原生 message.id 或 seq）算——两者若不一致，reducer 会把它当成两条消息
+    /// （它只按 id 原位覆盖，没有"seq 相同就自动合并"的兜底）。
+    ///
+    /// 这里从真实 `ConversationStore` 走完：直播增量 → 结算 → 历史重开。
+    func testLiveAndHistoryReopenDoNotDuplicateAssistantMessage() async throws {
+        let (client, recorder) = try await makeConnectedClient(sender: RecordingPromptSink())
+        let conversation = ConversationStore()
+        let sessionID: SessionID = "h498-identity"
+
+        // 1. 直播：start → text-delta（用 attempt 身份）。
+        _ = client.apply(assistantStream: HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.start, revision: 1, index: nil,
+            chunk: nil, outcome: nil, attemptId: "attempt-dup",
+            turn: 1, step: 1, startedAfterSeq: 13
+        ))
+        _ = client.apply(assistantStream: HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.chunk, revision: 2, index: 0,
+            chunk: HarnessAssistantChunk(
+                type: HarnessWireChunkType.textDelta, index: 0, text: "同一段回复",
+                blockType: nil, argumentsDelta: nil
+            ),
+            outcome: nil, attemptId: "attempt-dup",
+            turn: nil, step: nil, startedAfterSeq: nil
+        ))
+        _ = client.apply(assistantStream: HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.end, revision: 3, index: 1,
+            chunk: nil,
+            outcome: HarnessAssistantStreamOutcome(
+                kind: "committed", eventType: HarnessWireSettlement.assistantMessage, seq: 16
+            ),
+            attemptId: "attempt-dup", turn: nil, step: nil, startedAfterSeq: nil
+        ))
+        client.settleActiveAttempt()
+
+        // 2. durable 结算记录（带原生 message.id）——历史页会用同一个 id。
+        _ = client.apply(durableEvent: HarnessDurableEvent(
+            type: HarnessWireEventType.assistantMessage,
+            seq: 16,
+            time: nil,
+            data: .object([
+                "message": .object([
+                    "id": .string("native-msg-1"),
+                    "role": .string("assistant"),
+                    "content": .array([.object([
+                        "type": .string("text"), "text": .string("同一段回复"),
+                    ])]),
+                ]),
+                "turn": .number(1),
+            ])
+        ))
+
+        // 把直播侧产出的事件真的喂给 ConversationStore——用它自己的两个入口，
+        // 与 reducer 走的是同一条路径。
+        for event in recorder.events {
+            switch event {
+            case .assistantDelta(let delta, let metadata):
+                conversation.applyAssistantDelta(
+                    delta, metadata: metadata, fallbackSessionID: sessionID
+                )
+            case .messageCompleted(let message, let metadata):
+                conversation.completeMessage(
+                    message, metadata: metadata, fallbackSessionID: sessionID
+                )
+            default:
+                break
+            }
+        }
+        // 直播增量在 ConversationStore 里是**缓冲**的，直到一次历史落地才 flush
+        // （见 `setHistory` 的实现）。因此这里不断言中间态——真正的用户可见结果是
+        // "历史落地之后"的条数，那也正是重复气泡会出现的位置。
+
+        // 3. 刷新历史：同一条记录按持久身份再来一次。
+        let historyID = HarnessPresentationProjector.stableMessageID(
+            for: HarnessDurableEvent(
+                type: HarnessWireEventType.assistantMessage,
+                seq: 16,
+                time: nil,
+                data: .object(["message": .object(["id": .string("native-msg-1")])])
+            ),
+            prefix: "assistant"
+        )
+        conversation.setHistory([
+            CodexHistoryMessage(
+                id: try XCTUnwrap(historyID),
+                role: "assistant",
+                content: "同一段回复",
+                createdAt: Date()
+            )
+        ], sessionID: sessionID)
+
+        let afterHistory = conversation.messages(for: sessionID)
+        let assistantMessages = afterHistory.filter { $0.role == .assistant }
+        // 先确认测试确实观察到了内容（否则"只有一条"可能是"一条都没有"）
+        XCTAssertFalse(assistantMessages.isEmpty, "前置条件：历史落地后应有助手消息")
+        XCTAssertEqual(
+            assistantMessages.count, 1,
+            "刷新历史后同一条回复不得变成两条（实际 \(assistantMessages.map(\.content))）"
+        )
+    }
+
     // MARK: - 接收与去重
 
     func testOpeningSnapshotPublishesExistingAssistantPrefixImmediately() async throws {

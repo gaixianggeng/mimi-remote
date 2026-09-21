@@ -121,11 +121,11 @@ final class HarnessSubmissionControllerTests: XCTestCase {
         XCTAssertEqual(sender.calls.count, 1)
 
         // 再提交：必须被拒，且**不产生第二次上游调用**。
+        // 这次的提交从未发出，因此报"待对账"而不是"上游拒绝了它"——
+        // 后者会让用户去重试一条他还没发过的消息。
         let second = await controller.submit(sessionID: "s1", text: "第二次", requestID: "req-b")
-        guard case .rejected = second.state else {
-            XCTFail("结果未知时必须拦住新提交，实际 \(second.state)")
-            return
-        }
+        XCTAssertEqual(second.blockReason, .previousSubmissionUnconfirmed)
+        XCTAssertEqual(second.state, .idle, "没发出去的提交不是 rejected")
         XCTAssertEqual(sender.calls.count, 1, "结果未知不得触发重发")
     }
 
@@ -141,10 +141,8 @@ final class HarnessSubmissionControllerTests: XCTestCase {
         // 让第一次进入在途。
         await gate.waitUntilEntered()
         let second = await controller.submit(sessionID: "s1", text: "第二次", requestID: "req-d")
-        guard case .rejected = second.state else {
-            XCTFail("在途时必须拦住新提交，实际 \(second.state)")
-            return
-        }
+        XCTAssertEqual(second.blockReason, .previousSubmissionUnconfirmed)
+        XCTAssertEqual(second.state, .idle, "在途时被拦下的提交不是 rejected")
         gate.open()
         _ = await first
     }
