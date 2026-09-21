@@ -25,6 +25,39 @@ const (
 
 var ErrLegacyAppServerConfiguration = errors.New("legacy Codex Desktop sharing configuration")
 
+// ErrAppServerTransportUnsupported 表示 app_server.transport 是一个本版本无法识别、
+// 但可能由更新版本写入的取值。真正的原因是版本偏旧（配置被新版本写过，之后又运行了
+// 旧的安装包），所以这里把「升级安装包」放在最前面。
+var ErrAppServerTransportUnsupported = errors.New(
+	"需要更新版本的 Mimi Remote；请升级到最新发布包后重试，或执行 agentd setup --force 重置配置",
+)
+
+// ErrAppServerTransportRemoved 表示配置里是本产品曾经支持、之后被移除的 transport。
+// 这类配置安装最新发布包同样跑不起来，引导升级只会让用户白装一次；正确动作是重置配置。
+var ErrAppServerTransportRemoved = errors.New(
+	"需要执行 agentd setup --force 重置配置；安装最新发布包也不会恢复",
+)
+
+// removedAppServerTransports 记录已经移除的历史 transport。它们必须与「未来版本写入的
+// 未知取值」分开判断：前者任何版本都修不好，后者才是升级安装包能解决的。
+var removedAppServerTransports = map[string]bool{
+	"stdio": true,
+}
+
+// IsRemovedAppServerTransport 报告某个取值是否是已经移除的历史 transport。
+func IsRemovedAppServerTransport(name string) bool {
+	return removedAppServerTransports[strings.ToLower(strings.TrimSpace(name))]
+}
+
+// AppServerTransportError 返回与无法使用的 transport 取值匹配的错误值。分类只在这里发生，
+// 调用方用 %w 包装即可，不会各自漂移成「什么都引导升级」。
+func AppServerTransportError(name string) error {
+	if IsRemovedAppServerTransport(name) {
+		return ErrAppServerTransportRemoved
+	}
+	return ErrAppServerTransportUnsupported
+}
+
 type Config struct {
 	Listen        string           `json:"listen"`
 	Network       NetworkConfig    `json:"network"`
@@ -49,9 +82,11 @@ type Config struct {
 }
 
 type NetworkConfig struct {
-	// AllowLAN 是显式安全边界。关闭时继续只监听配置地址和 loopback；
-	// 打开后 agentd 才会监听 IPv4 通配地址，同时服务 Tailscale 与局域网。
+	// AllowLAN 是 Mimi 局域网入口的显式安全边界。独立模块控制启用后，
+	// agentd 即使监听 IPv4 通配地址，也会在 Accept 后按实际 TCP 地址限制通道。
 	AllowLAN bool `json:"allow_lan"`
+	// nil preserves legacy listen semantics; a value opts into independent Mimi ingress controls.
+	AllowTailscale *bool `json:"allow_tailscale,omitempty"`
 }
 
 type AuthConfig struct {
@@ -76,6 +111,9 @@ func (c CapabilityConfig) IsDisabled(name string) bool {
 }
 
 type CodexConfig struct {
+	// Omitted in existing installations: Codex stays enabled.
+	Enabled     *bool             `json:"enabled,omitempty"`
+	Activation  string            `json:"activation,omitempty"`
 	Bin         string            `json:"bin"`
 	DefaultArgs []string          `json:"default_args"`
 	Env         map[string]string `json:"env"`
@@ -827,13 +865,13 @@ func (c Config) Validate() error {
 	if c.Listen == "" {
 		return fmt.Errorf("listen 不能为空")
 	}
-	if err := validateAgentListen(c.Listen, c.Network.AllowLAN); err != nil {
+	if err := validateAgentListen(c.moduleValidationListen(), c.Network.AllowLAN); err != nil {
 		return err
 	}
 	if c.Auth.Token == "" && !c.DevInsecure {
 		return fmt.Errorf("AGENTD_TOKEN 或 auth.token 不能为空；开发临时绕过请设置 AGENTD_DEV_INSECURE=true")
 	}
-	if c.DevInsecure && (!isLoopbackListen(c.Listen) || c.Network.AllowLAN) {
+	if c.DevInsecure && (!isLoopbackListen(c.moduleValidationListen()) || c.LANAccessEnabled() || c.TailscaleAccessEnabled()) {
 		return fmt.Errorf("dev_insecure 只允许 loopback listen 且不能启用局域网；远程访问必须使用 Bearer Token")
 	}
 	if c.Auth.Token != "" && len(c.Auth.Token) < 16 {
@@ -845,7 +883,7 @@ func (c Config) Validate() error {
 	if err := validateCapabilities(c.Capabilities); err != nil {
 		return err
 	}
-	if c.Codex.Bin == "" {
+	if c.Codex.IsEnabled() && c.Codex.Bin == "" {
 		return fmt.Errorf("codex.bin 不能为空")
 	}
 	if c.Claude.Enabled && strings.TrimSpace(c.Claude.BridgeBin) == "" && !claudebridge.BundledAvailable() {
@@ -897,6 +935,8 @@ func (c Config) Validate() error {
 		}
 	case "local":
 		if !SupportsSharedLocalAppServer() {
+			// 平台能力差异：本机共享 local 在任何版本都只支持 macOS 与 Linux，
+			// 升级安装包不会改变这一点，所以不能报成「需要更新版本」。
 			return fmt.Errorf("app_server.transport=local 只支持 macOS 与 Linux 本机宿主")
 		}
 		if c.AppServer.Managed || strings.TrimSpace(c.AppServer.Listen) != "" ||
@@ -904,7 +944,18 @@ func (c Config) Validate() error {
 			return fmt.Errorf("共享本机 app_server.transport=local 不能混用 managed、listen、ws_token_file 或 ssh_target")
 		}
 	default:
-		return fmt.Errorf("app_server.transport 只支持 ssh；macOS 与 Linux 另支持共享 local，Windows 另支持受管 ws")
+		if IsRemovedAppServerTransport(c.AppServer.Transport) {
+			return fmt.Errorf(
+				"app_server.transport=%q 已被移除：%w",
+				c.AppServer.Transport,
+				ErrAppServerTransportRemoved,
+			)
+		}
+		return fmt.Errorf(
+			"app_server.transport=%q 无法识别：只支持 ssh，macOS 与 Linux 另支持共享 local，Windows 另支持受管 ws；%w",
+			c.AppServer.Transport,
+			ErrAppServerTransportUnsupported,
+		)
 	}
 	if c.Session.OutputBufferBytes <= 0 {
 		return fmt.Errorf("session.output_buffer_bytes 必须大于 0")

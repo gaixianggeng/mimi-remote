@@ -11,7 +11,15 @@ struct WorkspaceRuntimeSelectionState {
         availableRuntimeProviders: Set<String>
     ) -> WorkspaceSessionRuntimeChoice {
         let requestedRuntime = manualRuntime ?? preferredRuntime
-        return requestedRuntime.isAvailable(in: availableRuntimeProviders) ? requestedRuntime : .codex
+        if requestedRuntime.isAvailable(in: availableRuntimeProviders) {
+            return requestedRuntime
+        }
+        // 首选不可用时回落到**实际可用**的第一个，而不是无条件 .codex：
+        // 一个只开了 claude 的主机上，把 codex 顶上来等于提供一个用不了的选择。
+        // 集合为空时 `available` 会兜底成 [.codex]，因此这里一定有值。
+        return WorkspaceSessionRuntimeChoice.available(
+            runtimeProviders: availableRuntimeProviders
+        ).first ?? .codex
     }
 
     /// 切换电脑或修改全局偏好后，重新使用偏好；普通导航不调用此方法。

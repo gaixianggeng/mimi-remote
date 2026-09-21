@@ -578,8 +578,90 @@ final class HostStoreTests: XCTestCase {
         guard case .failed(let message)? = store?.lifecycle else {
             return XCTFail("换代后仍失败应进入 failed，实际 \(String(describing: store?.lifecycle))")
         }
-        XCTAssertTrue(message.contains("自动重新登记仍未恢复"), message)
+        XCTAssertTrue(message.contains("自动重新登记后仍未恢复"), message)
         XCTAssertNil(store?.startingDetail)
+    }
+
+    /// 配置由更新版本写入时，agentd 会在 3 秒一次的拉起里一直退出码 1。这时必须报
+    /// agentd 的真实原因并引导升级安装包，不能改成"服务记录过期"，也不能白做一次换代。
+    func testConfigRequiresNewerVersionSkipsRepairAndSurfacesUpgradeHint() async {
+        let registrationAttempts = CallCounter()
+        var registrationState = ServiceRegistrationState.notRegistered
+        var unregisterAttempts = 0
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: { Self.stoppedStatus },
+            registerAgent: {
+                _ = registrationAttempts.increment()
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                unregisterAttempts += 1
+                registrationState = .notRegistered
+            },
+            agentLaunchFailure: { "launchd 无法启动 agentd，已连续尝试 40 次，最近退出码 1，当前状态 spawn scheduled" },
+            configCheck: AgentdConfigCheckClient(
+                check: {
+                    AgentdConfigCheckResult(
+                        ok: false,
+                        code: AgentdConfigCheckResult.requiresNewerVersionCode,
+                        message: "旧 app_server.transport=\"local\" 不能自动迁移：请升级到最新发布包后重试"
+                    )
+                },
+                agentdURL: URL(filePath: "/tmp/agentd")
+            ),
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        guard case .failed(let message) = store.lifecycle else {
+            return XCTFail("必须进入 failed，实际 \(String(describing: store.lifecycle))")
+        }
+        XCTAssertTrue(message.contains("请升级到最新发布包"), message)
+        XCTAssertTrue(message.contains("旧 app_server.transport"), message)
+        XCTAssertFalse(message.contains("服务记录可能已过期"), message)
+        XCTAssertEqual(unregisterAttempts, 0, "配置不可用时换代毫无意义，不得注销已有登记")
+        XCTAssertEqual(registrationAttempts.current, 1)
+    }
+
+    /// 其它配置坏掉（例如被移除的 stdio transport）时，agentd 的报错才是可执行的下一步。
+    /// 这时既不能谎称升级安装包能修好，也不能白做一次换代。
+    func testConfigFailureWithoutUpgradeCodeShowsAgentdReasonAndSkipsRepair() async {
+        var registrationState = ServiceRegistrationState.notRegistered
+        var unregisterAttempts = 0
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: { Self.stoppedStatus },
+            registerAgent: { registrationState = .enabled },
+            unregisterAgent: {
+                unregisterAttempts += 1
+                registrationState = .notRegistered
+            },
+            agentLaunchFailure: { "launchd 无法启动 agentd，已连续尝试 40 次，最近退出码 1" },
+            configCheck: AgentdConfigCheckClient(
+                check: {
+                    AgentdConfigCheckResult(
+                        ok: false,
+                        code: "config_invalid",
+                        message: "app_server.transport=\"stdio\" 已被移除；请执行 agentd setup --force 重置配置"
+                    )
+                },
+                agentdURL: URL(filePath: "/tmp/agentd")
+            ),
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        guard case .failed(let message) = store.lifecycle else {
+            return XCTFail("必须进入 failed，实际 \(String(describing: store.lifecycle))")
+        }
+        XCTAssertTrue(message.contains("setup --force"), message)
+        XCTAssertFalse(message.contains("请升级到最新发布包"), "最新安装包同样不支持已移除的 transport")
+        XCTAssertEqual(unregisterAttempts, 0, "配置不可用时不得注销已有登记")
     }
 
     func testLaunchFailureDescriptionIgnoresRunningJob() {
@@ -625,7 +707,7 @@ final class HostStoreTests: XCTestCase {
         XCTAssertTrue(detail.contains("17 次"), detail)
         XCTAssertTrue(detail.contains("78"), detail)
         XCTAssertEqual(
-            ServiceLifecycleError.agentSpawnFailed(detail).errorDescription?.contains("后台服务记录可能已过期"),
+            ServiceLifecycleError.agentSpawnFailed(detail).errorDescription?.contains("请升级到最新发布包后重试"),
             true
         )
     }
@@ -1139,21 +1221,10 @@ final class HostStoreTests: XCTestCase {
                     throw TestError.expected
                 }
             },
-            configureClaude: { preference, restoreEnabled in
-                events.append("configure-\(preference.rawValue)-\(restoreEnabled.map(String.init) ?? "normal")")
+            configureClaude: { preference, _ in
+                events.append("configure-\(preference.rawValue)")
                 if preference == .automatic {
                     return Self.claudeConfiguration(enabled: true, preference: .enabled)
-                }
-                if let restoreEnabled {
-                    return Self.claudeConfiguration(
-                        enabled: restoreEnabled,
-                        preference: preference,
-                        previousEnabled: false,
-                        previousPreference: .disabled,
-                        changed: true,
-                        restartRequired: true,
-                        reason: "restored"
-                    )
                 }
                 return Self.claudeConfiguration(
                     enabled: false,
@@ -1163,6 +1234,18 @@ final class HostStoreTests: XCTestCase {
                     changed: true,
                     restartRequired: true
                 )
+            },
+            restoreClaude: { _ in
+                events.append("restore-claude")
+                return Self.claudeConfiguration(
+                    enabled: true,
+                    preference: .enabled,
+                    previousEnabled: false,
+                    previousPreference: .disabled,
+                    changed: true,
+                    restartRequired: true,
+                    reason: "restored"
+                )
             }
         )
         await store.bootstrap()
@@ -1170,11 +1253,11 @@ final class HostStoreTests: XCTestCase {
         await store.setClaudeEnabled(false)
 
         XCTAssertEqual(events.values, [
-            "configure-auto-normal",
+            "configure-auto",
             "register-1",
-            "configure-disabled-normal",
+            "configure-disabled",
             "register-2",
-            "configure-enabled-true",
+            "restore-claude",
             "register-3",
         ])
         XCTAssertTrue(store.claudeEnabled)
@@ -1257,86 +1340,47 @@ final class HostStoreTests: XCTestCase {
         XCTAssertTrue(store.lastError?.contains("服务接管成功") == true)
     }
 
-    func testSelectingLANEnablesAccessRestartsOnceAndReturnsLANPairing() async {
+    func testSelectingDisabledLANDoesNotMutateAccessOrRestartService() async {
         let events = EventRecorder()
-        let lanPairing = PairingInfo(
-            endpoint: "http://192.168.31.20:8787",
-            pairURL: "mimiremote://pair?pair_sig=lan",
-            expiresAt: "2026-07-22T12:00:00Z",
-            warnings: ["仅限同一局域网"]
-        )
         let store = makeStore(
             configExists: true,
-            registerAgent: { events.append("register-mac") },
-            unregisterAgent: { events.append("unregister-mac") },
+            registerAgent: { events.append("register") },
+            unregisterAgent: { events.append("unregister") },
             setLANAccess: { enabled in
                 events.append("lan-\(enabled)")
-                return NetworkConfigurationResult(
-                    lanEnabled: enabled,
-                    changed: true,
-                    restartRequired: true
-                )
+                return NetworkConfigurationResult(lanEnabled: enabled, changed: true, restartRequired: true)
             },
             pair: { network in
                 events.append("pair-\(network.rawValue)")
-                return network == .localNetwork ? lanPairing : Self.pairing
-            },
-            healthCheck: { _ in false }
-        )
-        await store.bootstrap()
-
-        await store.refreshPairing(network: .localNetwork)
-
-        XCTAssertEqual(events.values, [
-            "pair-auto",
-            "register-mac",
-            "lan-true",
-            "unregister-mac",
-            "register-mac",
-            "pair-lan",
-        ])
-        XCTAssertEqual(store.pairingNetwork, .localNetwork)
-        XCTAssertEqual(store.pairing, lanPairing)
-    }
-
-    func testAutomaticPairingFallsBackToLANWhenTailscaleIsUnavailable() async {
-        let events = EventRecorder()
-        let lanPairing = PairingInfo(
-            endpoint: "http://192.168.31.20:8787",
-            network: .localNetwork,
-            pairURL: "mimiremote://pair?pair_sig=automatic-lan",
-            expiresAt: "2026-07-22T12:00:00Z",
-            warnings: ["仅限同一局域网"]
-        )
-        let store = makeStore(
-            configExists: true,
-            registerAgent: { events.append("register-mac") },
-            setLANAccess: { enabled in
-                events.append("lan-\(enabled)")
-                return NetworkConfigurationResult(
-                    lanEnabled: enabled,
-                    changed: false,
-                    restartRequired: false
-                )
-            },
-            pair: { network in
-                events.append("pair-\(network.rawValue)")
-                if network == .automatic {
-                    throw TestError.expected
-                }
-                return lanPairing
+                return Self.pairing
             }
         )
         await store.bootstrap()
+        await store.refreshPairing(network: .localNetwork)
+        XCTAssertEqual(events.values, ["register"])
+        XCTAssertNil(store.pairing)
+        XCTAssertNotNil(store.lastError)
+    }
 
+    func testAutomaticPairingFailureDoesNotEnableLAN() async {
+        let events = EventRecorder()
+        let store = makeStore(
+            configExists: true,
+            registerAgent: { events.append("register") },
+            setLANAccess: { enabled in
+                events.append("lan-\(enabled)")
+                return NetworkConfigurationResult(lanEnabled: enabled, changed: true, restartRequired: true)
+            },
+            pair: { network in
+                events.append("pair-\(network.rawValue)")
+                throw TestError.expected
+            }
+        )
+        await store.bootstrap()
         await store.refreshPairing()
-
-        XCTAssertEqual(store.pairingNetwork, .localNetwork)
-        XCTAssertEqual(store.pairing, lanPairing)
-        XCTAssertEqual(events.values, [
-            "pair-auto", "lan-true", "register-mac",
-            "pair-auto", "lan-true", "pair-lan",
-        ])
+        XCTAssertEqual(events.values, ["register", "pair-auto"])
+        XCTAssertNil(store.pairing)
+        XCTAssertNotNil(store.lastError)
     }
 
     func testLatestPairingRefreshWinsWhenAutomaticRequestFinishesLast() async {
@@ -1360,9 +1404,7 @@ final class HostStoreTests: XCTestCase {
             configExists: true,
             pair: { network in
                 if network == .automatic {
-                    if automaticCalls.increment() == 1 {
-                        return automaticPairing
-                    }
+                    _ = automaticCalls.increment()
                     return await gate.suspendReturning(automaticPairing)
                 }
                 return tailcatPairing
@@ -1465,6 +1507,104 @@ final class HostStoreTests: XCTestCase {
 
         XCTAssertNil(store.tailcatNotice)
         XCTAssertEqual(store.tailcatStatusDetail, "Tailcat sidecar 已退出")
+    }
+
+    func testTailcatRefreshCannotStartWhileToggleIsInFlight() async {
+        let mutationGate = SuspendedStatusGate()
+        let statusCalls = CallCounter()
+        let enabledStatus = TailcatStatus(
+            enabled: true, running: true, version: "v0.3.0",
+            derpMapURL: nil, pairedDeviceCount: 1, error: nil
+        )
+        let disabledStatus = TailcatStatus(
+            enabled: false, running: false, version: "v0.3.0",
+            derpMapURL: nil, pairedDeviceCount: 1, error: nil
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            tailcatStatus: {
+                _ = statusCalls.increment()
+                return enabledStatus
+            },
+            setTailcatEnabled: { _ in
+                await mutationGate.suspendReturning(disabledStatus)
+            }
+        )
+        await store.bootstrap()
+        await store.refreshTailcatStatus()
+
+        let toggle = Task { await store.setTailcatEnabled(false) }
+        await mutationGate.waitUntilSuspended()
+        await store.refreshTailcatStatus()
+        XCTAssertEqual(statusCalls.current, 1, "修改期间不得启动会覆盖结果的状态读取")
+        mutationGate.resume()
+        await toggle.value
+
+        XCTAssertFalse(store.tailcatEnabled)
+        XCTAssertEqual(store.tailcatStatus?.running, false)
+    }
+
+    func testTailcatMutationRejectsOlderRefreshResult() async {
+        let staleRefreshGate = SuspendedStatusGate()
+        let enabledStatus = TailcatStatus(
+            enabled: true, running: true, version: "v0.3.0",
+            derpMapURL: nil, pairedDeviceCount: 1, error: nil
+        )
+        let disabledStatus = TailcatStatus(
+            enabled: false, running: false, version: "v0.3.0",
+            derpMapURL: nil, pairedDeviceCount: 1, error: nil
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            tailcatStatus: { await staleRefreshGate.suspendReturning(enabledStatus) },
+            setTailcatEnabled: { _ in disabledStatus }
+        )
+        await store.bootstrap()
+
+        let staleRefresh = Task { await store.refreshTailcatStatus() }
+        await staleRefreshGate.waitUntilSuspended()
+        await store.setTailcatEnabled(false)
+        staleRefreshGate.resume()
+        await staleRefresh.value
+
+        XCTAssertFalse(store.tailcatEnabled)
+        XCTAssertFalse(store.availablePairingNetworks.contains(.tailcat))
+    }
+
+    func testLatestTailcatRefreshWinsWhenOlderFailureFinishesLast() async {
+        let staleRefreshGate = SuspendedStatusGate()
+        let latestRefreshGate = SuspendedStatusGate()
+        let calls = CallCounter()
+        let latestStatus = TailcatStatus(
+            enabled: false, running: false, version: "v0.3.0",
+            derpMapURL: nil, pairedDeviceCount: 1, error: nil
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            tailcatStatus: {
+                if calls.increment() == 1 {
+                    _ = await staleRefreshGate.suspendReturning(false)
+                    throw TestError.expected
+                }
+                return await latestRefreshGate.suspendReturning(latestStatus)
+            }
+        )
+        await store.bootstrap()
+
+        let staleRefresh = Task { await store.refreshTailcatStatus() }
+        await staleRefreshGate.waitUntilSuspended()
+        let latestRefresh = Task { await store.refreshTailcatStatus() }
+        await latestRefreshGate.waitUntilSuspended()
+        latestRefreshGate.resume()
+        await latestRefresh.value
+        staleRefreshGate.resume()
+        await staleRefresh.value
+
+        XCTAssertEqual(store.tailcatStatus, latestStatus)
+        XCTAssertNil(store.tailcatError)
     }
 
     func testDoctorKeepsHomebrewMigrationState() async {
@@ -1846,6 +1986,147 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.status?.runtimeStatus?.stale, true)
     }
 
+    func testTransientModuleStatusFailurePreservesSnapshotWithoutLegacyInference() async {
+        let calls = CallCounter()
+        let modules = AgentModuleStatus(
+            codexEnabled: true,
+            claudeEnabled: false,
+            tailscaleEnabled: true,
+            lanEnabled: false,
+            tailscaleAvailable: true,
+            lanAvailable: true
+        )
+        let statusWithModules = AgentStatus(
+            processOK: true, serviceOK: true, processError: nil, serviceError: nil,
+            version: Self.readyStatus.version, endpoint: Self.readyStatus.endpoint,
+            configPath: Self.readyStatus.configPath, projects: Self.readyStatus.projects,
+            doctorOK: true, doctor: Self.readyStatus.doctor, pairExpires: nil,
+            networkStatus: AgentNetworkStatus(
+                mode: "loopback", allowLAN: false, policyChecked: true, policyOK: true
+            ),
+            moduleStatus: modules,
+            moduleStatusState: .available
+        )
+        let unavailableStatus = AgentStatus(
+            processOK: true, serviceOK: true, processError: nil, serviceError: nil,
+            version: Self.readyStatus.version, endpoint: Self.readyStatus.endpoint,
+            configPath: Self.readyStatus.configPath, projects: Self.readyStatus.projects,
+            doctorOK: true, doctor: Self.readyStatus.doctor, pairExpires: nil,
+            networkStatus: AgentNetworkStatus(
+                mode: "lan", allowLAN: true, policyChecked: true, policyOK: true
+            ),
+            moduleStatus: nil,
+            moduleStatusState: .unavailable
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: { calls.increment() == 1 ? statusWithModules : unavailableStatus }
+        )
+
+        await store.bootstrap()
+        await store.refresh()
+
+        XCTAssertEqual(store.status?.moduleStatus, modules)
+        XCTAssertEqual(store.status?.moduleStatusState, .unavailable)
+        XCTAssertTrue(store.tailscaleEnabled)
+        XCTAssertEqual(store.moduleStateTitle(.tailscale), "等待状态更新")
+        XCTAssertTrue(store.canChangeModule(.tailscale), "明确标旧的上次快照仍可作为显式操作基线")
+        XCTAssertEqual(store.availablePairingNetworks, [])
+    }
+
+    func testReadinessModuleFailurePreservesSnapshotThenLaterSuccessReplacesIt() async {
+        let readinessCalls = CallCounter()
+        let initialModules = AgentModuleStatus(
+            codexEnabled: true,
+            claudeEnabled: false,
+            tailscaleEnabled: true,
+            lanEnabled: false,
+            tailscaleAvailable: true,
+            lanAvailable: true
+        )
+        let replacementModules = AgentModuleStatus(
+            codexEnabled: false,
+            claudeEnabled: true,
+            tailscaleEnabled: false,
+            lanEnabled: true,
+            tailscaleAvailable: true,
+            lanAvailable: true
+        )
+        func status(modules: AgentModuleStatus?, state: AgentModuleStatusState) -> AgentStatus {
+            AgentStatus(
+                processOK: true, serviceOK: true, processError: nil, serviceError: nil,
+                version: Self.readyStatus.version, endpoint: Self.readyStatus.endpoint,
+                configPath: Self.readyStatus.configPath, projects: Self.readyStatus.projects,
+                doctorOK: true, doctor: Self.readyStatus.doctor, pairExpires: nil,
+                moduleStatus: modules,
+                moduleStatusState: state
+            )
+        }
+        let initialStatus = status(modules: initialModules, state: .available)
+        let unavailableStatus = status(modules: nil, state: .unavailable)
+        let replacementStatus = status(modules: replacementModules, state: .available)
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: { initialStatus },
+            readiness: {
+                readinessCalls.increment() == 1 ? unavailableStatus : replacementStatus
+            }
+        )
+        await store.bootstrap()
+        let baseline = Date()
+
+        await store.performMonitoringTick(6, now: baseline.addingTimeInterval(60))
+
+        XCTAssertEqual(store.status?.moduleStatus, initialModules)
+        XCTAssertEqual(store.status?.moduleStatusState, .unavailable)
+        XCTAssertTrue(store.tailscaleEnabled)
+        XCTAssertTrue(store.canChangeModule(.tailscale))
+
+        await store.performMonitoringTick(12, now: baseline.addingTimeInterval(120))
+
+        XCTAssertEqual(store.status?.moduleStatus, replacementModules)
+        XCTAssertEqual(store.status?.moduleStatusState, .available)
+        XCTAssertFalse(store.tailscaleEnabled)
+        XCTAssertTrue(store.lanEnabled)
+    }
+
+    func testInitialUnavailableModuleStatusDisablesAmbiguousNetworkToggles() async {
+        let unavailableStatus = AgentStatus(
+            processOK: true, serviceOK: true, processError: nil, serviceError: nil,
+            version: Self.readyStatus.version, endpoint: Self.readyStatus.endpoint,
+            configPath: Self.readyStatus.configPath, projects: Self.readyStatus.projects,
+            doctorOK: true, doctor: Self.readyStatus.doctor, pairExpires: nil,
+            networkStatus: AgentNetworkStatus(
+                mode: "lan", allowLAN: true, policyChecked: true, policyOK: true
+            ),
+            moduleStatus: nil,
+            moduleStatusState: .unavailable
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: { unavailableStatus }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertFalse(store.tailscaleEnabled)
+        XCTAssertFalse(store.lanEnabled)
+        XCTAssertEqual(store.moduleStateTitle(.tailscale), "等待状态更新")
+        XCTAssertFalse(store.canChangeModule(.tailscale))
+        XCTAssertFalse(store.canChangeModule(.lan))
+        XCTAssertTrue(store.availablePairingNetworks.isEmpty)
+    }
+
+    func testNetworkModulesCannotChangeBeforeFirstStatusSnapshot() {
+        let store = makeStore(configExists: true, agentStatus: { .enabled })
+
+        XCTAssertFalse(store.canChangeModule(.tailscale))
+        XCTAssertFalse(store.canChangeModule(.lan))
+    }
+
 
     func makeStore(
         configExists: Bool,
@@ -1864,6 +2145,7 @@ final class HostStoreTests: XCTestCase {
         registerAgent: @escaping @MainActor () throws -> Void = {},
         unregisterAgent: @escaping @MainActor () async throws -> Void = {},
         agentLaunchFailure: @escaping @MainActor () async -> String? = { nil },
+        configCheck: AgentdConfigCheckClient = .disabled,
         homebrewStart: @escaping @Sendable () async throws -> Void = {},
         homebrewStop: @escaping @Sendable () async throws -> Void = {},
         configureClaude: @escaping @Sendable (
@@ -1876,6 +2158,9 @@ final class HostStoreTests: XCTestCase {
                 previousEnabled: false,
                 previousPreference: .automatic
             )
+        },
+        restoreClaude: @escaping @Sendable (ClaudeConfigurationResult) async throws -> ClaudeConfigurationResult = { _ in
+            throw TestError.expected
         },
         setLANAccess: @escaping @Sendable (Bool) async throws -> NetworkConfigurationResult = {
             NetworkConfigurationResult(lanEnabled: $0, changed: false, restartRequired: false)
@@ -1890,6 +2175,9 @@ final class HostStoreTests: XCTestCase {
                 pairedDeviceCount: 0,
                 error: nil
             )
+        },
+        setTailcatEnabled: @escaping @Sendable (Bool) async throws -> TailcatStatus = { _ in
+            throw TestError.expected
         },
         configureTailcatDERPMap: @escaping @Sendable (String) async throws -> TailcatStatus = { _ in
             TailcatStatus(
@@ -1922,9 +2210,11 @@ final class HostStoreTests: XCTestCase {
             statusAt: { _ in readyStatus },
             doctor: doctor,
             configureClaude: configureClaude,
+            restoreClaude: restoreClaude,
             setLANAccess: setLANAccess,
             pair: pair ?? { _ in Self.pairing },
             tailcatStatus: tailcatStatus,
+            setTailcatEnabled: setTailcatEnabled,
             configureTailcatDERPMap: configureTailcatDERPMap,
             configureDeepSeek: configureDeepSeek,
             version: { readyStatus.version }
@@ -1951,6 +2241,7 @@ final class HostStoreTests: XCTestCase {
         return HostStore(
             agent: agent,
             services: services,
+            configCheck: configCheck,
             homebrew: homebrew,
             health: HealthClient(check: healthCheck, checkDirect: { _ in true }),
             logs: AgentLogClient(
@@ -1983,7 +2274,7 @@ final class HostStoreTests: XCTestCase {
             processError: nil,
             serviceError: nil,
             version: "0.1.0",
-            endpoint: "http://127.0.0.1:8787",
+            endpoint: "http://100.64.0.8:8787",
             configPath: "/tmp/config.json",
             projects: 1,
             doctorOK: true,

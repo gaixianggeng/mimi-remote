@@ -140,10 +140,14 @@ extension SessionStore {
         var didRefreshRuntimeAvailability = false
         do {
             let client = try clientFactory()
-            // Claude 卡片以 config.channels 的真实可用性为准，不能依赖 model/list 是否成功。
+            // Runtime 入口以 config.channels 的真实可用性为准，不能依赖 model/list 是否成功。
             // 即使模型列表处于 5 分钟缓存期，也要重新读取轻量 channel 元数据。
-            var availableRuntimeProviders: Set<String> = ["codex"]
-            for provider in RuntimeFeatureSupport.runtimeProviders where provider != "codex" {
+            //
+            // **codex 也要探测。** 它同样可能被关掉（host 侧 `HasEnabledAgent()` 就允许
+            // 只剩 claude），写死成"恒可用"会让选择器在一个 codex 通道不可用的主机上
+            // 仍然提供 codex，而真正能用的 claude 不会顶上来。
+            var availableRuntimeProviders: Set<String> = []
+            for provider in RuntimeFeatureSupport.runtimeProviders {
                 if (try? await client.runtimeChannelAvailable(runtimeProvider: provider)) == true {
                     availableRuntimeProviders.insert(provider)
                 }

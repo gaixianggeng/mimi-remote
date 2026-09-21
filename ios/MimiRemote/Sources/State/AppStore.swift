@@ -47,6 +47,8 @@ final class AppStore: ObservableObject {
     private let localAgentPairingClaim: LocalAgentPairingClaim
     private let routeProbe: ConnectionRouteProbe
     private let routeVersionProbe: ConnectionRouteVersionProbe?
+    private let agentAPISession: URLSession
+    private let gatewayProbeTransportFactory: () -> CodexAppServerTransport
     private let usesDefaultRouteProbe: Bool
     var ephemeralLocalProfileID: String?
     private var isConnectionPreflightRunning = false
@@ -55,7 +57,7 @@ final class AppStore: ObservableObject {
     var activeRouteEndpoint: String?
     var isTailcatExperimentModeEnabled = false
     var tailcatExperimentEndpoint: String?
-    private var activeRuntimeBundle: AppServerRuntimeBundle?
+    private(set) var activeRuntimeBundle: AppServerRuntimeBundle?
     private var activeRuntimeIdentity: String?
     private var credentialSuspensionTask: Task<Void, Never>?
     private var credentialLifecycleGeneration: UInt64 = 0
@@ -75,6 +77,8 @@ final class AppStore: ObservableObject {
         localAgentPairingClaim: LocalAgentPairingClaim? = nil,
         routeProbe: ConnectionRouteProbe? = nil,
         routeVersionProbe: ConnectionRouteVersionProbe? = nil,
+        agentAPISession: URLSession = .shared,
+        gatewayProbeTransportFactory: @escaping () -> CodexAppServerTransport = { URLSessionCodexAppServerTransport() },
         allowsEphemeralLocalCredentialFallback: Bool? = nil
     ) {
         self.defaults = defaults
@@ -88,10 +92,27 @@ final class AppStore: ObservableObject {
                 HostConnectionEndpointPolicy.allowsDevelopmentEphemeralCredentialFallback
         self.localAgentProbe = localAgentProbe ?? Self.defaultLocalAgentProbe
         self.localAgentPairingClaim = localAgentPairingClaim ?? Self.defaultLocalAgentPairingClaim
-        self.routeProbe = routeProbe ?? Self.defaultConnectionRouteProbe
+        self.agentAPISession = agentAPISession
+        self.gatewayProbeTransportFactory = gatewayProbeTransportFactory
+        self.routeProbe = routeProbe ?? { endpoint, token, timeout in
+            try await Self.defaultConnectionRouteProbe(
+                endpoint: endpoint,
+                token: token,
+                timeout: timeout,
+                session: agentAPISession,
+                transportFactory: gatewayProbeTransportFactory
+            )
+        }
         usesDefaultRouteProbe = routeProbe == nil
         self.routeVersionProbe = routeProbe == nil
-            ? (routeVersionProbe ?? Self.defaultConnectionRouteVersionProbe)
+            ? (routeVersionProbe ?? { endpoint, token, timeout in
+                try await Self.defaultConnectionRouteVersionProbe(
+                    endpoint: endpoint,
+                    token: token,
+                    timeout: timeout,
+                    session: agentAPISession
+                )
+            })
             : routeVersionProbe
 
         var initialProfiles = Self.loadConnectionProfiles(from: defaults)
@@ -1044,7 +1065,7 @@ final class AppStore: ObservableObject {
         }
 
         let normalized = try Self.validatedEndpoint(endpoint)
-        let client = AgentAPIClient(endpoint: normalized, token: token)
+        let client = AgentAPIClient(endpoint: normalized, token: token, session: agentAPISession)
 
         let healthStartedAt = Date()
         do {
@@ -1082,8 +1103,13 @@ final class AppStore: ObservableObject {
 
         let gatewayStartedAt = Date()
         do {
-            let runtime = CodexAppServerSessionRuntime(endpoint: normalized, token: token, configProvider: { config })
-            try await runtime.validateDirectGateway()
+            try await Self.validateAvailableGateway(
+                endpoint: normalized,
+                token: token,
+                timeout: routeProbeTimeout,
+                config: config,
+                transportFactory: gatewayProbeTransportFactory
+            )
             appendStage(.appServerGateway, since: gatewayStartedAt, status: .succeeded)
         } catch {
             appendStage(.appServerGateway, since: gatewayStartedAt, status: .failed(error.localizedDescription))
@@ -1827,38 +1853,11 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private static func normalizedInstallationID(_ raw: String?) -> String? {
-        guard let raw else { return nil }
-        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalized.isEmpty ? nil : normalized
-    }
-
     private func resolvedHostPlatform(
         _ candidate: HostPlatform,
         fallback: HostPlatform
     ) -> HostPlatform {
         candidate == .unknown ? fallback : candidate
-    }
-
-    private static func unboundInstallationID(profileID: String) -> String {
-        "unbound:\(profileID)"
-    }
-
-    private static func defaultConnectionRouteProbe(
-        endpoint: String,
-        token: String,
-        timeout: TimeInterval
-    ) async throws {
-        let client = AgentAPIClient(endpoint: endpoint, token: token)
-        let config = try await client.appServerConfig(timeout: timeout)
-        let runtime = CodexAppServerSessionRuntime(
-            endpoint: endpoint,
-            token: token,
-            requestTimeout: timeout,
-            configProvider: { config }
-        )
-        // 同时验证控制面和 WebSocket，避免 /healthz 可用但真实 Codex 通道不可用时误选该地址。
-        try await runtime.validateDirectGateway()
     }
 
     /// 探测结果只有在 Profile revision 与 installation_id 都未变化时才能刷新可变名称。

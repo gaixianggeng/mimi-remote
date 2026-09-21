@@ -52,6 +52,10 @@ func (r *Router) localPairingClaimHandler(w http.ResponseWriter, req *http.Reque
 		writeError(w, http.StatusServiceUnavailable, "auth.token 未配置")
 		return
 	}
+	if !r.cfg.HasEnabledAgent() {
+		writeError(w, http.StatusServiceUnavailable, "全部 AI 编程助手已关闭，请先启用助手")
+		return
+	}
 	writeJSON(w, http.StatusOK, pairingClaimResponse{
 		Endpoint: localPairingEndpoint,
 		Token:    token,
@@ -100,6 +104,10 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 	token := strings.TrimSpace(r.cfg.Auth.Token)
 	if token == "" {
 		writeError(w, http.StatusServiceUnavailable, "auth.token 未配置")
+		return
+	}
+	if !r.cfg.HasEnabledAgent() {
+		writeError(w, http.StatusServiceUnavailable, "全部 AI 编程助手已关闭，请先启用助手")
 		return
 	}
 	// 配对票据在签名覆盖的 expires_at 之前可重复兑换，便于同一二维码或复制链接

@@ -444,6 +444,15 @@ func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse
 }
 
 func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
+	codex := runtimeAccountStatus{
+		ID: "codex", Title: "Codex", Enabled: r.cfg.Codex.IsEnabled(),
+		State: runtimeStateUnavailable, Reason: "refresh_in_progress",
+		Transport: strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
+		StartedAt: r.codexRuntimeStartTime(),
+	}
+	if !codex.Enabled {
+		codex.State, codex.Reason, codex.StartedAt = runtimeStateDisabled, "disabled", nil
+	}
 	claude := runtimeAccountStatus{
 		ID:      "claude",
 		Title:   "Claude",
@@ -457,15 +466,7 @@ func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
 	}
 	response := runtimeStatusResponse{
 		Runtimes: []runtimeAccountStatus{
-			{
-				ID:        "codex",
-				Title:     "Codex",
-				Enabled:   true,
-				State:     runtimeStateUnavailable,
-				Transport: strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
-				StartedAt: r.codexRuntimeStartTime(),
-				Reason:    "refresh_in_progress",
-			},
+			codex,
 			claude,
 		},
 	}
@@ -489,6 +490,9 @@ func runtimeStatusLoopbackRequest(req *http.Request) bool {
 }
 
 func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountStatus) {
+	if !r.cfg.Codex.IsEnabled() {
+		return runtimeAccountStatus{ID: "codex", Title: "Codex", State: runtimeStateDisabled, Reason: "disabled"}
+	}
 	status = runtimeAccountStatus{
 		ID:        "codex",
 		Title:     "Codex",

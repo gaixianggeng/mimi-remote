@@ -70,12 +70,28 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
         }
     }
 
+    /// 该 runtime 现在是否可选。
+    ///
+    /// codex 是**兜底项**：主机一个通道都没报可用时仍然提供它，避免选择器变成空列表
+    /// 或未选中态。但主机明确给出了可用集合时，codex 不再特殊——它也要在集合里才算
+    /// 可用，否则"codex 被关掉、只剩 claude"的主机仍会提供 codex，
+    /// 真正能用的 claude 顶不上来（main 上 `testWorkspaceRuntimePreferenceFallsBackToClaudeWhenCodexIsUnavailable`
+    /// 钉住的就是这条）。
     static func available(runtimeProviders: Set<String>) -> [Self] {
-        allCases.filter { $0 == .codex || runtimeProviders.contains($0.runtimeProvider) }
+        let usable = allCases.filter { isAvailable($0, in: runtimeProviders) }
+        return usable.isEmpty ? [.codex] : usable
     }
 
     func isAvailable(in runtimeProviders: Set<String>) -> Bool {
-        self == .codex || runtimeProviders.contains(runtimeProvider)
+        Self.isAvailable(self, in: runtimeProviders)
+    }
+
+    private static func isAvailable(
+        _ choice: Self,
+        in runtimeProviders: Set<String>
+    ) -> Bool {
+        if runtimeProviders.isEmpty { return choice == .codex }
+        return runtimeProviders.contains(choice.runtimeProvider)
     }
 }
 
@@ -299,7 +315,7 @@ struct WorkspaceRuntimePopoverPicker: View {
     private func popoverContent(tokens: ThemeTokens) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // 始终列出全部 Runtime；不可用的那个保留为禁用行，
-            // 直接隐藏会让「为什么没有 Claude」变成一个无处可查的问题。
+            // 直接隐藏会让用户无法判断对应 Agent 是未接入还是暂不可用。
             ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
                 let isAvailable = choice.isAvailable(in: availableRuntimeProviders)
 

@@ -28,6 +28,98 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testClaudeFastPagePreservesClaudeAuthoritativeFieldsWithoutCodexCompletion() throws {
+        let project = makeProject(id: "workspace_claude_authoritative_guard")
+        let workspace = AgentWorkspace(project: project)
+        let shared = makeSession(
+            id: "claude_shared",
+            projectID: project.id,
+            title: "Claude 权威标题",
+            status: "running",
+            source: "claude",
+            runtimeProvider: "claude",
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        var child = makeSession(
+            id: "claude_child",
+            projectID: project.id,
+            title: "Claude 子会话",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude"
+        )
+        child.isSubagent = true
+        let roots = [shared] + (1..<SessionStore.initialSessionPageLimit).map { index in
+            makeSession(
+                id: "claude_root_\(index)",
+                projectID: project.id,
+                title: "Claude 根会话 \(index)",
+                status: "history",
+                source: "claude",
+                runtimeProvider: "claude"
+            )
+        }
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        store.recentWorkspaces = [workspace]
+        XCTAssertTrue(store.applyWorkspaceSessionFirstPage(
+            workspace: workspace,
+            page: SessionsPage(
+                sessions: roots + [child],
+                nextCursor: "claude-authoritative-cursor",
+                hasMore: true
+            ),
+            runtimeProvider: "claude",
+            consistency: .authoritative
+        ))
+        XCTAssertNil(store.workspaceSessionFirstPageConsistency(projectID: project.id, runtimeProvider: "codex"))
+
+        let staleShared = makeSession(
+            id: shared.id,
+            projectID: project.id,
+            title: "过期标题",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        var enrichedChild = child
+        enrichedChild.parentThreadID = shared.id
+        let supplemental = makeSession(
+            id: "claude_supplemental",
+            projectID: project.id,
+            title: "Claude 补充会话",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude"
+        )
+        XCTAssertTrue(store.applyWorkspaceSessionFirstPage(
+            workspace: workspace,
+            page: SessionsPage(
+                sessions: [staleShared, enrichedChild, supplemental],
+                nextCursor: "stale-fast-cursor",
+                hasMore: true
+            ),
+            runtimeProvider: "claude",
+            consistency: .fastIndexed
+        ))
+
+        XCTAssertEqual(store.sessionsByID[shared.id]?.title, shared.title)
+        XCTAssertEqual(store.sessionsByID[shared.id]?.status, shared.status)
+        XCTAssertEqual(store.sessionsByID[child.id]?.parentThreadID, shared.id)
+        XCTAssertNotNil(store.sessionsByID[supplemental.id])
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "claude-authoritative-cursor")
+        XCTAssertEqual(
+            store.workspaceSessionFirstPageConsistency(projectID: project.id, runtimeProvider: "claude"),
+            .authoritative
+        )
+        XCTAssertNil(store.workspaceSessionFirstPageConsistency(projectID: project.id, runtimeProvider: "codex"))
+    }
+
     func testAuthoritativeFirstPageStartsSmallThenAdaptiveFillShrinksToFloor() async throws {
         // 首包保持小窗口；确认欠填后再按已观察密度估算，并在接近凑满时收敛到最小批量。
         let project = makeProject(id: "workspace_oversample_shrink")

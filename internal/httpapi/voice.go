@@ -39,6 +39,10 @@ type voiceTranscriptionResult struct {
 }
 
 func (r *Router) voiceTranscribeHandler(w http.ResponseWriter, req *http.Request) {
+	if !r.cfg.Codex.IsEnabled() {
+		writeError(w, http.StatusServiceUnavailable, "Codex 在 Mimi 中已关闭，语音转写不可用")
+		return
+	}
 	if req.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return

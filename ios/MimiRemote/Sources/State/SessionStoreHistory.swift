@@ -1490,6 +1490,7 @@ extension SessionStore {
             applyWorkspaceSessionFirstPage(
                 workspace: workspace,
                 page: page,
+                runtimeProvider: result.runtimeProvider,
                 consistency: consistency,
                 requestedCursor: result.requestedCursor,
                 requestLineage: result.requestLineage
@@ -1549,7 +1550,8 @@ extension SessionStore {
                     source: .libraryIndex,
                     restartFromFirst: restartFromFirst,
                     client: client,
-                    hostScope: hostScope
+                    hostScope: hostScope,
+                    runtimeProvider: normalizedRuntime
                 )
             } else {
                 let resolvedClient: any SessionStoreAPIClient
@@ -1570,6 +1572,7 @@ extension SessionStore {
                 )
                 result = SessionListFirstPageResult(
                     page: page,
+                    runtimeProvider: normalizedRuntime,
                     requestedCursor: nil,
                     requestLineage: nil
                 )
@@ -1609,14 +1612,18 @@ extension SessionStore {
             if let requestLineage = result.requestLineage,
                !isCurrentSessionListRequestLineage(
                    requestLineage,
-                   workspace: result.workspace
+                   workspace: result.workspace,
+                   runtimeProvider: normalizedRuntime
                ) {
                 continue
             }
             if normalizedRuntime == "codex",
                consistency == .authoritative,
                !restartsFromFirst,
-               authoritativeWorkspaceSessionFirstPageContinuationCursor(workspace: result.workspace)
+               authoritativeWorkspaceSessionFirstPageContinuationCursor(
+                   workspace: result.workspace,
+                   runtimeProvider: normalizedRuntime
+               )
                 != result.requestedCursor {
                 continue
             }
@@ -1630,7 +1637,8 @@ extension SessionStore {
             if consistency == .fastIndexed {
                 mergeFastIndexedSessionPagePreservingAuthoritativeFields(
                     pageSessions,
-                    workspace: result.workspace
+                    workspace: result.workspace,
+                    runtimeProvider: normalizedRuntime
                 )
             } else {
                 // 新一轮权威刷新必须能修正旧权威数据；只有弱一致性页需要降级保护。
@@ -1641,12 +1649,14 @@ extension SessionStore {
                     workspace: result.workspace,
                     page: page,
                     consistency: consistency,
-                    requestedCursor: result.requestedCursor
+                    requestedCursor: result.requestedCursor,
+                    runtimeProvider: normalizedRuntime
                 )
                 recordWorkspaceSessionFirstPageCompletion(
                     workspace: result.workspace,
                     page: page,
-                    consistency: consistency
+                    consistency: consistency,
+                    runtimeProvider: normalizedRuntime
                 )
             }
             clearWorkspaceUnavailable(result.workspace.id)
@@ -1655,20 +1665,27 @@ extension SessionStore {
 
     func workspaceSessionFirstPageKey(
         for workspace: AgentWorkspace,
-        hostScope: HostScope? = nil
+        hostScope: HostScope? = nil,
+        runtimeProvider: String = "codex"
     ) -> WorkspaceSessionFirstPageKey {
         WorkspaceSessionFirstPageKey(
             hostScope: hostScope ?? appStore.activeHostScope,
             workspaceID: workspace.id,
-            workspacePath: standardizedSessionListPath(workspace.path)
+            workspacePath: standardizedSessionListPath(workspace.path),
+            runtimeProvider: Self.normalizedRuntimeProvider(runtimeProvider)
         )
     }
 
     func currentSessionListRequestLineage(
         workspace: AgentWorkspace,
-        hostScope: HostScope
+        hostScope: HostScope,
+        runtimeProvider: String = "codex"
     ) -> UUID {
-        let key = workspaceSessionFirstPageKey(for: workspace, hostScope: hostScope)
+        let key = workspaceSessionFirstPageKey(
+            for: workspace,
+            hostScope: hostScope,
+            runtimeProvider: runtimeProvider
+        )
         if sessionListRequestLineageByWorkspaceKey[key] == nil {
             sessionListRequestLineageByWorkspaceKey[key] = UUID()
         }
@@ -1678,10 +1695,15 @@ extension SessionStore {
     func isCurrentSessionListRequestLineage(
         _ lineage: UUID,
         workspace: AgentWorkspace,
-        hostScope: HostScope? = nil
+        hostScope: HostScope? = nil,
+        runtimeProvider: String = "codex"
     ) -> Bool {
         sessionListRequestLineageByWorkspaceKey[
-            workspaceSessionFirstPageKey(for: workspace, hostScope: hostScope)
+            workspaceSessionFirstPageKey(
+                for: workspace,
+                hostScope: hostScope,
+                runtimeProvider: runtimeProvider
+            )
         ] == lineage
     }
 
@@ -1701,28 +1723,42 @@ extension SessionStore {
             == standardizedSessionListPath(workspace.path)
     }
 
-    func workspaceSessionFirstPageConsistency(projectID: String) -> SessionListConsistency? {
+    func workspaceSessionFirstPageConsistency(
+        projectID: String,
+        runtimeProvider: String = "codex"
+    ) -> SessionListConsistency? {
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
             return nil
         }
         guard let completion = workspaceSessionFirstPageCompletionByKey[
-            workspaceSessionFirstPageKey(for: workspace)
+            workspaceSessionFirstPageKey(for: workspace, runtimeProvider: runtimeProvider)
         ], completion.isPresentationWindowComplete else {
             return nil
         }
         return completion.consistency
     }
 
-    func needsAuthoritativeWorkspaceSessionFirstPage(projectID: String) -> Bool {
-        workspaceSessionFirstPageConsistency(projectID: projectID) != .authoritative
+    func needsAuthoritativeWorkspaceSessionFirstPage(
+        projectID: String,
+        runtimeProvider: String = "codex"
+    ) -> Bool {
+        workspaceSessionFirstPageConsistency(
+            projectID: projectID,
+            runtimeProvider: runtimeProvider
+        ) != .authoritative
     }
 
     func authoritativeWorkspaceSessionFirstPageContinuationCursor(
         workspace: AgentWorkspace,
-        hostScope: HostScope? = nil
+        hostScope: HostScope? = nil,
+        runtimeProvider: String = "codex"
     ) -> String? {
         let completion = workspaceSessionFirstPageCompletionByKey[
-            workspaceSessionFirstPageKey(for: workspace, hostScope: hostScope)
+            workspaceSessionFirstPageKey(
+                for: workspace,
+                hostScope: hostScope,
+                runtimeProvider: runtimeProvider
+            )
         ]
         guard completion?.consistency == .authoritative,
               completion?.isPresentationWindowComplete == false else {
@@ -1733,10 +1769,15 @@ extension SessionStore {
 
     func authoritativeWorkspaceSessionFirstPageProgress(
         workspace: AgentWorkspace,
-        hostScope: HostScope? = nil
+        hostScope: HostScope? = nil,
+        runtimeProvider: String = "codex"
     ) -> WorkspaceSessionFirstPageCompletion? {
         let completion = workspaceSessionFirstPageCompletionByKey[
-            workspaceSessionFirstPageKey(for: workspace, hostScope: hostScope)
+            workspaceSessionFirstPageKey(
+                for: workspace,
+                hostScope: hostScope,
+                runtimeProvider: runtimeProvider
+            )
         ]
         guard completion?.consistency == .authoritative,
               completion?.isPresentationWindowComplete == false,
@@ -1749,16 +1790,22 @@ extension SessionStore {
     func recordWorkspaceSessionFirstPageCompletion(
         workspace: AgentWorkspace,
         page: SessionsPage,
-        consistency: SessionListConsistency
+        consistency: SessionListConsistency,
+        runtimeProvider: String = "codex"
     ) {
         guard isCurrentWorkspaceIdentity(workspace) else { return }
         let hostScope = appStore.activeHostScope
-        let key = workspaceSessionFirstPageKey(for: workspace, hostScope: hostScope)
+        let key = workspaceSessionFirstPageKey(
+            for: workspace,
+            hostScope: hostScope,
+            runtimeProvider: runtimeProvider
+        )
         if let existingCompletion = workspaceSessionFirstPageCompletionByKey[key],
            existingCompletion.consistency == .authoritative,
            consistency == .fastIndexed {
             invalidateAuthoritativeWorkspaceSessionPresentationCompletionIfNeeded(
-                workspace: workspace
+                workspace: workspace,
+                runtimeProvider: runtimeProvider
             )
             return
         }
@@ -1812,10 +1859,14 @@ extension SessionStore {
     /// 弱一致性数据可以补认 child ownership，使已经完成的 20 条权威根会话窗口重新欠填。
     /// 只有仍有安全 continuation 时才失效；真正耗尽的短列表已经是完整展示结果，不应循环重拉。
     func invalidateAuthoritativeWorkspaceSessionPresentationCompletionIfNeeded(
-        workspace: AgentWorkspace
+        workspace: AgentWorkspace,
+        runtimeProvider: String = "codex"
     ) {
         guard isCurrentWorkspaceIdentity(workspace) else { return }
-        let key = workspaceSessionFirstPageKey(for: workspace)
+        let key = workspaceSessionFirstPageKey(
+            for: workspace,
+            runtimeProvider: runtimeProvider
+        )
         guard let existingCompletion = workspaceSessionFirstPageCompletionByKey[key],
               existingCompletion.consistency == .authoritative,
               existingCompletion.isPresentationWindowComplete,
@@ -1837,11 +1888,15 @@ extension SessionStore {
 
     func shouldProtectAuthoritativeWorkspaceSessionFirstPage(
         workspace: AgentWorkspace,
-        incomingConsistency: SessionListConsistency
+        incomingConsistency: SessionListConsistency,
+        runtimeProvider: String = "codex"
     ) -> Bool {
         incomingConsistency == .fastIndexed
             && workspaceSessionFirstPageCompletionByKey[
-                workspaceSessionFirstPageKey(for: workspace)
+                workspaceSessionFirstPageKey(
+                    for: workspace,
+                    runtimeProvider: runtimeProvider
+                )
             ]?.consistency == .authoritative
     }
 
@@ -1849,12 +1904,14 @@ extension SessionStore {
         workspace: AgentWorkspace,
         page: SessionsPage,
         consistency: SessionListConsistency,
-        requestedCursor: String? = nil
+        requestedCursor: String? = nil,
+        runtimeProvider: String = "codex"
     ) {
         guard isCurrentWorkspaceIdentity(workspace) else { return }
         guard !shouldProtectAuthoritativeWorkspaceSessionFirstPage(
             workspace: workspace,
-            incomingConsistency: consistency
+            incomingConsistency: consistency,
+            runtimeProvider: runtimeProvider
         ) else {
             // 弱一致性页可以补行和更新运行态，但不能重置权威首屏留下的 cursor 或已展开窗口。
             rebuildProjectSessionListSnapshot(forProjectID: workspace.id)
@@ -1897,6 +1954,7 @@ extension SessionStore {
     func applyWorkspaceSessionFirstPage(
         workspace: AgentWorkspace,
         page: SessionsPage,
+        runtimeProvider: String = "codex",
         consistency: SessionListConsistency,
         requestedCursor: String? = nil,
         preserveAllLoaded: Bool = false,
@@ -1906,12 +1964,19 @@ extension SessionStore {
         guard isCurrentWorkspaceIdentity(workspace) else { return false }
         // 新首屏开始后，旧后台快速页也不能复活已从目录移除的成员。
         if let requestLineage,
-           !isCurrentSessionListRequestLineage(requestLineage, workspace: workspace) {
+           !isCurrentSessionListRequestLineage(
+               requestLineage,
+               workspace: workspace,
+               runtimeProvider: runtimeProvider
+           ) {
             return false
         }
         if consistency == .authoritative,
            !restartsFromFirst,
-           authoritativeWorkspaceSessionFirstPageContinuationCursor(workspace: workspace)
+           authoritativeWorkspaceSessionFirstPageContinuationCursor(
+               workspace: workspace,
+               runtimeProvider: runtimeProvider
+           )
             != requestedCursor {
             // 同 cursor waiter 的旧结果允许首个提交者推进；其余 waiter 若观察到进度已改变，
             // 必须丢弃，不能把 completion 或 opaque cursor 倒回上一批。
@@ -1920,7 +1985,7 @@ extension SessionStore {
         recordWorkspaceDirectorySessionPage(
             page.sessions,
             in: workspace,
-            runtimeProvider: "codex",
+            runtimeProvider: runtimeProvider,
             replacing: consistency == .authoritative && requestedCursor == nil
         )
         let pageSessions = sessions(page.sessions, in: workspace)
@@ -1931,13 +1996,15 @@ extension SessionStore {
         )
         if shouldProtectAuthoritativeWorkspaceSessionFirstPage(
             workspace: workspace,
-            incomingConsistency: consistency
+            incomingConsistency: consistency,
+            runtimeProvider: runtimeProvider
         ) {
             // authoritative 一旦完成，后续 State DB 稀疏页只能补新 ID 和单调线程身份；
             // 同 ID 的 title/status 等普通字段不能被迟到弱页覆盖。
             mergeFastIndexedSessionPagePreservingAuthoritativeFields(
                 pageSessions,
-                workspace: workspace
+                workspace: workspace,
+                runtimeProvider: runtimeProvider
             )
         } else if !presentationWindowComplete {
             // 展示窗口欠填时保留旧可见行，只补充已扫描 canonical 数据；新 cursor 仍可继续推进。
@@ -1957,12 +2024,14 @@ extension SessionStore {
             workspace: workspace,
             page: page,
             consistency: consistency,
-            requestedCursor: requestedCursor
+            requestedCursor: requestedCursor,
+            runtimeProvider: runtimeProvider
         )
         recordWorkspaceSessionFirstPageCompletion(
             workspace: workspace,
             page: page,
-            consistency: consistency
+            consistency: consistency,
+            runtimeProvider: runtimeProvider
         )
         clearWorkspaceUnavailable(workspace.id)
         return true
@@ -1976,21 +2045,35 @@ extension SessionStore {
         source: SessionListRequestSource,
         restartFromFirst: Bool = false,
         client fixedClient: (any SessionStoreAPIClient)? = nil,
-        hostScope expectedHostScope: HostScope? = nil
+        hostScope expectedHostScope: HostScope? = nil,
+        runtimeProvider requestedRuntimeProvider: String? = nil
     ) async throws -> SessionListFirstPageResult {
         let requestStartedAt = sessionListNow()
         let hostScope = expectedHostScope ?? appStore.activeHostScope
         guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope) else {
             throw CancellationError()
         }
+        let client = try fixedClient ?? clientFactory()
+        let runtimeProvider: String
+        if let requestedRuntimeProvider {
+            runtimeProvider = Self.normalizedRuntimeProvider(requestedRuntimeProvider)
+        } else {
+            runtimeProvider = try await primarySessionRuntimeProvider(client: client)
+        }
+        guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope),
+              !Task.isCancelled else {
+            throw CancellationError()
+        }
         var requestLineage = currentSessionListRequestLineage(
             workspace: workspace,
-            hostScope: hostScope
+            hostScope: hostScope,
+            runtimeProvider: runtimeProvider
         )
         let authoritativeProgress = consistency == .authoritative && !restartFromFirst
             ? authoritativeWorkspaceSessionFirstPageProgress(
                 workspace: workspace,
-                hostScope: hostScope
+                hostScope: hostScope,
+                runtimeProvider: runtimeProvider
             )
             : nil
         let requestedCursor = authoritativeProgress?.continuationCursor
@@ -1999,6 +2082,7 @@ extension SessionStore {
             connectionGeneration: Int(truncatingIfNeeded: hostScope.generation),
             workspaceID: workspace.id,
             workspacePath: workspace.path,
+            runtimeProvider: runtimeProvider,
             limit: limit,
             consistency: consistency,
             cursor: requestedCursor
@@ -2016,6 +2100,7 @@ extension SessionStore {
                 )
                 return SessionListFirstPageResult(
                     page: page,
+                    runtimeProvider: key.runtimeProvider,
                     requestedCursor: key.cursor,
                     requestLineage: inFlight.requestLineage
                 )
@@ -2030,8 +2115,9 @@ extension SessionStore {
 
             if consistency == .authoritative,
                let weakerInFlight = sessionListFirstPageInFlightByKey.first(where: { entry in
-                   matchesCurrentWorkspace(entry.key)
-                       && entry.key.consistency == .fastIndexed
+                    matchesCurrentWorkspace(entry.key)
+                        && entry.key.runtimeProvider == key.runtimeProvider
+                        && entry.key.consistency == .fastIndexed
                }) {
                 // 冷启动的 fastIndexed 可能早于前台精确首屏。不能把弱结果冒充 authoritative，
                 // 也不能并发再打一个 thread/list；先排空弱请求，再回到循环重新加入/创建精确 single-flight。
@@ -2053,6 +2139,7 @@ extension SessionStore {
                restartFromFirst,
                let continuationInFlight = sessionListFirstPageInFlightByKey.first(where: { entry in
                    matchesCurrentWorkspace(entry.key)
+                       && entry.key.runtimeProvider == key.runtimeProvider
                        && entry.key.consistency == .authoritative
                        && entry.key.cursor != nil
                }) {
@@ -2074,6 +2161,7 @@ extension SessionStore {
             if consistency == .fastIndexed,
                let authoritativeContinuationInFlight = sessionListFirstPageInFlightByKey.first(where: { entry in
                    matchesCurrentWorkspace(entry.key)
+                       && entry.key.runtimeProvider == key.runtimeProvider
                        && entry.key.consistency == .authoritative
                        && entry.key.cursor != key.cursor
                }) {
@@ -2095,6 +2183,7 @@ extension SessionStore {
             // 后台快速刷新也可以等待更强的权威请求；权威刷新不能复用快速索引结果，否则会重新引入漏会话问题。
             if let largerInFlight = sessionListFirstPageInFlightByKey.first(where: { entry in
                 matchesCurrentWorkspace(entry.key)
+                    && entry.key.runtimeProvider == key.runtimeProvider
                     && entry.key.cursor == key.cursor
                     && (
                         entry.key.consistency == key.consistency
@@ -2112,6 +2201,7 @@ extension SessionStore {
                 )
                 return SessionListFirstPageResult(
                     page: page,
+                    runtimeProvider: key.runtimeProvider,
                     requestedCursor: key.cursor,
                     requestLineage: largerInFlight.requestLineage
                 )
@@ -2122,7 +2212,11 @@ extension SessionStore {
         if reuseRecent,
            key.cursor == nil,
            let cached = sessionListFirstPageCacheByKey[key]
-                ?? cachedSessionListEntry(workspace: workspace, minimumLimit: limit),
+                ?? cachedSessionListEntry(
+                    workspace: workspace,
+                    runtimeProvider: runtimeProvider,
+                    minimumLimit: limit
+                ),
            now.timeIntervalSince(cached.loadedAt) < sessionListFirstPageCacheTTL {
             SessionListDiagnostics.completed(
                 source: source,
@@ -2133,6 +2227,7 @@ extension SessionStore {
             )
             return SessionListFirstPageResult(
                 page: cached.page,
+                runtimeProvider: key.runtimeProvider,
                 requestedCursor: key.cursor,
                 requestLineage: requestLineage
             )
@@ -2142,7 +2237,11 @@ extension SessionStore {
             // 只有弱一致性后台轮询可以复用旧页。authoritative 必须等待窗口后真的请求；
             // 否则 fastIndexed 稀疏缓存会被调用方误记成“精确首屏已完成”。
             if consistency == .fastIndexed,
-               let stale = cachedSessionListPage(workspace: workspace, minimumLimit: limit) {
+               let stale = cachedSessionListPage(
+                   workspace: workspace,
+                   runtimeProvider: runtimeProvider,
+                   minimumLimit: limit
+               ) {
                 SessionListDiagnostics.completed(
                     source: source,
                     consistency: consistency,
@@ -2152,6 +2251,7 @@ extension SessionStore {
                 )
                 return SessionListFirstPageResult(
                     page: stale,
+                    runtimeProvider: key.runtimeProvider,
                     requestedCursor: key.cursor,
                     requestLineage: requestLineage
                 )
@@ -2164,7 +2264,6 @@ extension SessionStore {
             }
         }
 
-        let client = try fixedClient ?? clientFactory()
         // 续跑只带上当前权威链真正扫描过的 ID，不能把旧缓存或已经“显示更多”的旧页
         // 冒充权威种子；从 sessionsByID 重建可吸收迟到的 sticky child ownership。
         let presentationSeedSessions = authoritativeProgress?.scannedSessionIDs.compactMap {
@@ -2176,7 +2275,11 @@ extension SessionStore {
             // 会在上面的 exact in-flight 分支复用同一 lineage，不会让 owner 失效。
             requestLineage = UUID()
             sessionListRequestLineageByWorkspaceKey[
-                workspaceSessionFirstPageKey(for: workspace, hostScope: hostScope)
+                workspaceSessionFirstPageKey(
+                    for: workspace,
+                    hostScope: hostScope,
+                    runtimeProvider: runtimeProvider
+                )
             ] = requestLineage
         }
         let traversalControl = SessionListFirstPageTraversalControl()
@@ -2184,7 +2287,7 @@ extension SessionStore {
             try await sessionListPageFillingPresentationWindow(
                 client: client,
                 workspace: workspace,
-                runtimeProvider: "codex",
+                runtimeProvider: runtimeProvider,
                 cursor: requestedCursor,
                 limit: limit,
                 consistency: consistency,
@@ -2230,6 +2333,7 @@ extension SessionStore {
             )
             return SessionListFirstPageResult(
                 page: page,
+                runtimeProvider: key.runtimeProvider,
                 requestedCursor: key.cursor,
                 requestLineage: requestLineage
             )
@@ -2422,12 +2526,21 @@ extension SessionStore {
         sessionListFirstPageInFlightByKey.removeValue(forKey: key)
     }
 
-    func cachedSessionListPage(workspace: AgentWorkspace, minimumLimit: Int) -> SessionsPage? {
-        cachedSessionListEntry(workspace: workspace, minimumLimit: minimumLimit)?.page
+    func cachedSessionListPage(
+        workspace: AgentWorkspace,
+        runtimeProvider: String,
+        minimumLimit: Int
+    ) -> SessionsPage? {
+        cachedSessionListEntry(
+            workspace: workspace,
+            runtimeProvider: runtimeProvider,
+            minimumLimit: minimumLimit
+        )?.page
     }
 
     func cachedSessionListEntry(
         workspace: AgentWorkspace,
+        runtimeProvider: String,
         minimumLimit: Int
     ) -> SessionListFirstPageCacheEntry? {
         sessionListFirstPageCacheByKey
@@ -2436,6 +2549,7 @@ extension SessionStore {
                     && entry.key.connectionGeneration == appStore.connectionGeneration
                     && entry.key.workspaceID == workspace.id
                     && entry.key.workspacePath == workspace.path
+                    && entry.key.runtimeProvider == runtimeProvider
                     && entry.key.cursor == nil
                     && entry.key.limit >= minimumLimit
             }
@@ -2885,11 +2999,13 @@ extension SessionStore {
     /// 已有权威行保留普通字段，只单调吸收线程身份；新 ID 仍按正常路径完整加入。
     func mergeFastIndexedSessionPagePreservingAuthoritativeFields(
         _ pageSessions: [AgentSession],
-        workspace: AgentWorkspace
+        workspace: AgentWorkspace,
+        runtimeProvider: String
     ) {
         guard shouldProtectAuthoritativeWorkspaceSessionFirstPage(
             workspace: workspace,
-            incomingConsistency: .fastIndexed
+            incomingConsistency: .fastIndexed,
+            runtimeProvider: runtimeProvider
         ) else {
             mergeSessionPage(pageSessions)
             return

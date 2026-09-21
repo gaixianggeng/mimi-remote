@@ -37,6 +37,15 @@ extension AppStore {
                 CapabilityNegotiationLog.record(capability: capability, decision: .negotiationFailed)
                 return .negotiationFailed
             }
+            // Mac 端切换 Agent 会重载 daemon；同 endpoint/token 的 Bundle 仍需重新读取渠道配置。
+            _ = try? await activeRuntimeBundle?.refreshConfiguration()
+            guard refreshGeneration == capabilityNegotiationGeneration,
+                  capturedState.scope == activeHostState.scope,
+                  capturedEndpoint == AgentAPIClient.normalizedEndpoint(connectionEndpoint),
+                  capturedFingerprint == connectionCredentialFingerprint(token) else {
+                CapabilityNegotiationLog.record(capability: capability, decision: .negotiationFailed)
+                return .negotiationFailed
+            }
             replaceCapabilityNegotiation(
                 version.capabilityNegotiation,
                 preserving: capturedState

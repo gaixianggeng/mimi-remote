@@ -479,6 +479,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 .contentShape(Circle())
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .disabled(!selectedRuntime.isAvailable(in: availableRuntimeProviders))
         .shadow(
             color: isFloating
                 ? tokens.primaryAction.opacity(colorScheme == .dark ? 0.34 : 0.28)

@@ -82,7 +82,9 @@ extension HostStoreTests {
         XCTAssertEqual(recorded, [.refresh])
         XCTAssertFalse(store.deepSeekEnabled)
         XCTAssertEqual(store.deepSeekStatusTitle, "发现运行中的服务")
-        XCTAssertNil(store.experimentMenuStatusText)
+        // 检测到服务不等于启用：模块开关在菜单栏里必须仍是关闭。
+        XCTAssertFalse(store.moduleEnabled(.deepseek))
+        XCTAssertEqual(store.moduleStateTitle(.deepseek), "已关闭")
     }
 
     func testDeepSeekFailedConnectPreservesDisabledStateAndReleasesBusy() async {

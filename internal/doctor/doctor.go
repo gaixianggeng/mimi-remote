@@ -89,8 +89,11 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if !tokenOK {
 		tokenMessage = "Token 未配置"
 	}
-	codexOK := commandExists(c.cfg.Codex.Bin)
+	codexOK := !c.cfg.Codex.IsEnabled() || commandExists(c.cfg.Codex.Bin)
 	codexMessage := "Codex CLI 可执行"
+	if !c.cfg.Codex.IsEnabled() {
+		codexMessage = "Codex 在 Mimi 中已关闭"
+	}
 	if !codexOK {
 		codexMessage = "未找到 Codex CLI"
 	}
@@ -264,6 +267,9 @@ func (c *Checker) configFileCheck() Check {
 }
 
 func (c *Checker) appServerTokenFileCheck() Check {
+	if !c.cfg.Codex.IsEnabled() {
+		return Check{}
+	}
 	if !config.SupportsManagedAppServer() ||
 		!strings.EqualFold(strings.TrimSpace(c.cfg.AppServer.Transport), "ws") ||
 		!c.cfg.AppServer.Managed {
@@ -331,6 +337,9 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (c *Checker) runtimeCheck() Check {
+	if !c.cfg.Codex.IsEnabled() {
+		return Check{Name: "runtime", OK: true, Message: "Codex 在 Mimi 中已关闭"}
+	}
 	runtimeType := c.cfg.Runtime.Type
 	if runtimeType == "" {
 		runtimeType = "codex_app_server"
@@ -342,6 +351,9 @@ func (c *Checker) runtimeCheck() Check {
 }
 
 func (c *Checker) appServerGatewayCheck(ctx context.Context) Check {
+	if !c.cfg.Codex.IsEnabled() {
+		return Check{Name: "app-server", OK: true, Message: "Codex 在 Mimi 中已关闭"}
+	}
 	transport := c.cfg.AppServer.Transport
 	if transport == "" {
 		transport = "ssh"
@@ -371,6 +383,9 @@ func (c *Checker) appServerGatewayCheck(ctx context.Context) Check {
 }
 
 func (c *Checker) needsCodexAppServerCheck() bool {
+	if !c.cfg.Codex.IsEnabled() {
+		return false
+	}
 	return true
 }
 

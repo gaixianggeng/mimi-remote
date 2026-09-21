@@ -391,6 +391,8 @@ struct ProjectSidebarView: View {
             }
             .menuStyle(.button)
             .buttonStyle(.plain)
+            // 空集合表示连 Codex 基线通道都不可用；这个菜单就只剩一个空壳。
+            .disabled(sessionStore.availableRuntimeProviders.isEmpty)
             .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
         }
     }

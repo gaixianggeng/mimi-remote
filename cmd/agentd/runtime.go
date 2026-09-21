@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -29,9 +30,13 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 }
 
 func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("runtime", flag.ExitOnError)
+	fs := flag.NewFlagSet("runtime", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
+	codexPreference := fs.String("codex", "", "Codex 启用策略：auto、enabled 或 disabled")
+	restoreCodex := fs.String("restore-codex", "", "恢复先前 Codex 事务结果 JSON")
 	claudePreference := fs.String("claude", "", "Claude 启用策略：auto、enabled 或 disabled")
+	restoreClaude := fs.String("restore-claude", "", "恢复先前 Claude 事务结果 JSON")
 	deepSeekAction := fs.String("deepseek", "", "DeepSeek 操作：inspect、connect、disabled 或 refresh")
 	deepSeekURLStdin := fs.Bool("deepseek-url-stdin", false, "从标准输入读取 Harness 启动链接")
 	restoreEnabled := fs.Bool("restore-enabled", false, "服务重载失败时恢复先前 enabled 状态")
@@ -43,9 +48,22 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		return fmt.Errorf("runtime 不接受位置参数；含凭据的 Harness 链接只能通过标准输入传入")
 	}
 	hasClaude := strings.TrimSpace(*claudePreference) != ""
+	hasRestoreClaude := strings.TrimSpace(*restoreClaude) != ""
+	hasCodex := strings.TrimSpace(*codexPreference) != ""
+	hasRestoreCodex := strings.TrimSpace(*restoreCodex) != ""
 	hasDeepSeek := strings.TrimSpace(*deepSeekAction) != ""
-	if hasClaude == hasDeepSeek {
-		return fmt.Errorf("必须且只能传入 --claude 或 --deepseek")
+	count := 0
+	for _, selected := range []bool{
+		hasClaude, hasRestoreClaude, hasCodex, hasRestoreCodex, hasDeepSeek,
+	} {
+		if selected {
+			count++
+		}
+	}
+	if count != 1 {
+		return fmt.Errorf(
+			"必须且只能选择 --claude、--restore-claude、--codex、--restore-codex 或 --deepseek 之一",
+		)
 	}
 	if hasDeepSeek {
 		return runDeepSeekRuntime(
@@ -65,6 +83,50 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
+	}
+	if hasCodex || hasRestoreCodex {
+		ctx, cancel := context.WithTimeout(context.Background(), claudeRuntimeMutationTimeout)
+		defer cancel()
+		var result agentsetup.CodexConfigurationResult
+		var err error
+		if hasRestoreCodex {
+			var previous agentsetup.CodexConfigurationResult
+			if err = json.Unmarshal([]byte(*restoreCodex), &previous); err != nil {
+				return err
+			}
+			result, err = agentsetup.RestoreCodex(*configPath, previous)
+		} else {
+			result, err = agentsetup.ConfigureCodex(ctx, *configPath, *codexPreference)
+		}
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return printJSONTo(stdout, result)
+		}
+		fmt.Fprintln(stdout, result.Message)
+		if result.RestartRequired {
+			fmt.Fprintln(stdout, "配置已保存，重启 agentd 后生效。")
+		}
+		return nil
+	}
+	if hasRestoreClaude {
+		var previous agentsetup.ClaudeConfigurationResult
+		if err := json.Unmarshal([]byte(*restoreClaude), &previous); err != nil {
+			return err
+		}
+		result, err := agentsetup.RestoreClaude(*configPath, previous)
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return printJSONTo(stdout, result)
+		}
+		fmt.Fprintln(stdout, result.Message)
+		if result.RestartRequired {
+			fmt.Fprintln(stdout, "配置已恢复，需要重启 agentd 后生效。")
+		}
+		return nil
 	}
 	preference, err := agentsetup.ParseClaudeActivationPreference(*claudePreference)
 	if err != nil {

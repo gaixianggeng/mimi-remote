@@ -1,6 +1,27 @@
 import Foundation
 
 extension SessionStore {
+    func availableSessionRuntimeProviders(
+        client: any SessionStoreAPIClient
+    ) async -> [String] {
+        var runtimes: [String] = []
+        for runtime in ["codex", "claude"] {
+            if (try? await client.runtimeChannelAvailable(runtimeProvider: runtime)) == true {
+                runtimes.append(runtime)
+            }
+        }
+        return runtimes
+    }
+
+    func primarySessionRuntimeProvider(
+        client: any SessionStoreAPIClient
+    ) async throws -> String {
+        guard let runtime = await availableSessionRuntimeProviders(client: client).first else {
+            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+        }
+        return runtime
+    }
+
     func workspaceDirectoryScopeKey(
         for workspace: AgentWorkspace,
         runtimeProvider: String
@@ -187,7 +208,8 @@ extension SessionStore {
                 source: .workspaceForeground,
                 restartFromFirst: restartFromFirst,
                 client: lease.client,
-                hostScope: lease.scope
+                hostScope: lease.scope,
+                runtimeProvider: normalizedRuntime
             )
             canonicalFirstPageResult = result
             page = result.page
@@ -210,7 +232,8 @@ extension SessionStore {
            !isCurrentSessionListRequestLineage(
                requestLineage,
                workspace: workspace,
-               hostScope: lease.scope
+               hostScope: lease.scope,
+               runtimeProvider: normalizedRuntime
            ) {
             // 旧首屏即使稍后在 apply 阶段会被拒绝，也不能先覆盖目录成员集合。
             throw CancellationError()
@@ -229,6 +252,7 @@ extension SessionStore {
             _ = applyWorkspaceSessionFirstPage(
                 workspace: workspace,
                 page: page,
+                runtimeProvider: normalizedRuntime,
                 consistency: .authoritative,
                 requestedCursor: canonicalFirstPageResult.requestedCursor,
                 // Runtime 页面只拿到 Codex rows，不能整页替换并误删同工作区已缓存的

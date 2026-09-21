@@ -11,6 +11,9 @@ struct AgentCommandClient: Sendable {
         _ preference: ClaudeActivationPreference,
         _ restoreEnabled: Bool?
     ) async throws -> ClaudeConfigurationResult
+    var restoreClaude: @Sendable (ClaudeConfigurationResult) async throws -> ClaudeConfigurationResult = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Claude 配置恢复。")
+    }
     var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
     var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
     var tailcatStatus: @Sendable () async throws -> TailcatStatus = {
@@ -32,6 +35,18 @@ struct AgentCommandClient: Sendable {
         throw AgentClientError.commandFailed("当前 agentd 不支持 DeepSeek 配置。")
     }
     var version: @Sendable () async throws -> String
+    var configureCodex: @Sendable (String) async throws -> CodexConfigurationResult = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Codex 模块控制，请更新并重启服务。")
+    }
+    var restoreCodex: @Sendable (CodexConfigurationResult) async throws -> CodexConfigurationResult = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Codex 配置恢复。")
+    }
+    var configureNetwork: @Sendable (PairingNetwork, Bool) async throws -> NetworkConfigurationResult = { _, _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持独立连接控制，请更新并重启服务。")
+    }
+    var restoreNetwork: @Sendable (NetworkConfigurationResult) async throws -> NetworkConfigurationResult = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持连接配置恢复。")
+    }
 }
 
 extension AgentCommandClient {
@@ -149,7 +164,19 @@ extension AgentCommandClient {
                         preference: preference,
                         restoreEnabled: restoreEnabled
                     ),
-                    timeout: .seconds(10)
+                    timeout: .seconds(60)
+                ))
+            },
+            restoreClaude: { previous in
+                let binary = try requireEmbeddedBinary()
+                guard previous.previous != nil, previous.applied != nil else {
+                    throw AgentClientError.commandFailed("缺少原始 Claude 配置，不能安全回滚。")
+                }
+                let payload = String(decoding: try JSONEncoder().encode(previous), as: UTF8.self)
+                return try decode(ClaudeConfigurationResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: ["runtime", "--restore-claude", payload, "--json"],
+                    timeout: .seconds(60)
                 ))
             },
             setLANAccess: { enabled in
@@ -218,6 +245,43 @@ extension AgentCommandClient {
                 let binary = try requireEmbeddedBinary()
                 let result = try await execute(binary: binary, arguments: ["version"])
                 return result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+            },
+            configureCodex: { preference in
+                let binary = try requireEmbeddedBinary()
+                return try decode(CodexConfigurationResult.self, from: try await execute(
+                    binary: binary, arguments: ["runtime", "--codex=\(preference)", "--json"],
+                    timeout: .seconds(60)
+                ))
+            },
+            restoreCodex: { previous in
+                let binary = try requireEmbeddedBinary()
+                let payload = String(decoding: try JSONEncoder().encode(previous), as: UTF8.self)
+                return try decode(CodexConfigurationResult.self, from: try await execute(
+                    binary: binary, arguments: ["runtime", "--restore-codex", payload, "--json"],
+                    timeout: .seconds(60)
+                ))
+            },
+            configureNetwork: { network, enabled in
+                let binary = try requireEmbeddedBinary()
+                guard network == .tailscale || network == .localNetwork else {
+                    throw AgentClientError.commandFailed("这个连接方式不使用系统网络开关。")
+                }
+                let flag = network == .tailscale ? "--tailscale-enabled" : "--lan-enabled"
+                return try decode(NetworkConfigurationResult.self, from: try await execute(
+                    binary: binary, arguments: ["network", "\(flag)=\(enabled)", "--json"],
+                    timeout: .seconds(30)
+                ))
+            },
+            restoreNetwork: { previous in
+                let binary = try requireEmbeddedBinary()
+                guard previous.previous != nil, previous.applied != nil else {
+                    throw AgentClientError.commandFailed("缺少原始连接配置，不能安全回滚。")
+                }
+                let payload = String(decoding: try JSONEncoder().encode(previous), as: UTF8.self)
+                return try decode(NetworkConfigurationResult.self, from: try await execute(
+                    binary: binary, arguments: ["network", "--restore-state", payload, "--json"],
+                    timeout: .seconds(30)
+                ))
             }
         )
     }

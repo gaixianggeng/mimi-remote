@@ -1518,6 +1518,7 @@ extension SessionStore {
         }
         var requestToken: Int?
         do {
+            let runtimeProvider = try await primarySessionRuntimeProvider(client: lease.client)
             requestToken = beginSessionPageRequest(projectID: projectID)
             defer {
                 if isProjectsGitHostCurrent(lease) {
@@ -1527,7 +1528,7 @@ extension SessionStore {
             let page = try await sessionListPageFillingPresentationWindow(
                 client: lease.client,
                 workspace: workspace,
-                runtimeProvider: "codex",
+                runtimeProvider: runtimeProvider,
                 cursor: cursor,
                 limit: Self.expandedSessionPageLimit,
                 consistency: .fastIndexed,
@@ -1547,13 +1548,15 @@ extension SessionStore {
             }
             mergeFastIndexedSessionPagePreservingAuthoritativeFields(
                 sessions(page.sessions, in: workspace),
-                workspace: workspace
+                workspace: workspace,
+                runtimeProvider: runtimeProvider
             )
             updateSessionPageState(projectID: projectID, page: page, requestedCursor: cursor)
             // 显示更多也可能从弱索引补认既有 root 的 child 身份。必须在推进到本轮安全
             // continuation 之后再失效首屏完成态，让视图自动用该游标补齐，而不是退回旧边界。
             invalidateAuthoritativeWorkspaceSessionPresentationCompletionIfNeeded(
-                workspace: workspace
+                workspace: workspace,
+                runtimeProvider: runtimeProvider
             )
             sessionProjectsWithAdditionalPages.insert(projectID)
             clearWorkspaceUnavailable(projectID)

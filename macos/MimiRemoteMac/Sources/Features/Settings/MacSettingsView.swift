@@ -3,7 +3,6 @@ import SwiftUI
 struct MacSettingsView: View {
     let store: HostStore
     let updates: AppUpdateStore
-    @Environment(\.openWindow) private var openWindow
     @State private var confirmsRestore = false
 
     var body: some View {
@@ -38,15 +37,7 @@ struct MacSettingsView: View {
                 }
             }
 
-            Section("实验功能") {
-                Button(ExperimentMenuRouting.menuTitle) {
-                    // 通用设置保留唯一导航入口；实验配置只在实验功能窗口维护。
-                    openWindow(id: ExperimentMenuRouting.windowID)
-                }
-                Text("Claude 实验开关和状态集中在同一窗口。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            TailcatRelaySettings(store: store)
 
             Section("文件访问") {
                 let fileAccess = FileAccessSettingsPresentation.make(
@@ -81,7 +72,11 @@ struct MacSettingsView: View {
         }
         .formStyle(.grouped)
         .scenePadding()
-        .frame(width: 500, height: 640)
+        .frame(width: 560, height: 720)
+        .task {
+            await store.refreshIfNeeded()
+            await store.refreshTailcatStatus()
+        }
         .alert("恢复 Homebrew 服务？", isPresented: $confirmsRestore) {
             Button("取消", role: .cancel) {}
             Button("停止 App 服务并恢复", role: .destructive) {

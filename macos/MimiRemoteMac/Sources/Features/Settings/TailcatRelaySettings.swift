@@ -16,12 +16,12 @@ private enum TailcatRelayMode: String, CaseIterable, Identifiable {
     }
 }
 
-private enum ExperimentInputField: Hashable {
+private enum RelayInputField: Hashable {
     case derpMapURL
 }
 
-/// 实验功能只承载可独立启停、失败时不影响主连接的通道。
-struct ExperimentsView: View {
+/// Advanced Tailcat settings remain in Settings, not a separate experiment window.
+struct TailcatRelaySettings: View {
     let store: HostStore
 
     @Environment(\.openWindow) private var openWindow
@@ -29,63 +29,12 @@ struct ExperimentsView: View {
     @State private var confirmsRelayChange = false
     @State private var relayMode: TailcatRelayMode = .tailcatDefault
     @State private var customDERPMapURL = ""
-    @FocusState private var focusedInputField: ExperimentInputField?
+    @FocusState private var focusedInputField: RelayInputField?
 
     var body: some View {
-        Form {
-            Section("Claude") {
-                Toggle("启用 Claude 实验通道", isOn: Binding(
-                    get: { store.claudeEnabled },
-                    set: { enabled in
-                        Task { await store.setClaudeEnabled(enabled) }
-                    }
-                ))
-                .disabled(!store.canChangeClaude)
-
-                LabeledContent("运行状态") {
-                    HStack(spacing: 6) {
-                        if store.isUpdatingClaude {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Text(store.isUpdatingClaude ? "正在更新" : store.claudeStatusTitle)
-                    }
-                }
-
-                Text(store.claudeStatusDetail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Text("需要本机安装并登录 Claude Code。启用或关闭时会安全地重新加载 agentd；Codex 主通道不受影响。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            DeepSeekExperimentSection(store: store)
-
-            Section("Tailcat") {
-                Toggle("启用 Tailcat 实验通道", isOn: Binding(
-                    get: { store.tailcatEnabled },
-                    set: { enabled in
-                        Task { await store.setTailcatEnabled(enabled) }
-                    }
-                ))
-                .disabled(!store.canChangeTailcat)
-
-                LabeledContent("运行状态") {
-                    HStack(spacing: 6) {
-                        if store.isUpdatingTailcat {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Text(store.tailcatStatusTitle)
-                    }
-                }
-
-                Text(store.tailcatStatusDetail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
+        Group {
+            Section("Tailcat 中继与配对") {
+                Text(store.tailcatStatusDetail).font(.caption).foregroundStyle(.secondary)
                 Picker("中继节点", selection: $relayMode) {
                     ForEach(TailcatRelayMode.allCases) { mode in
                         Text(mode.title).tag(mode)
@@ -150,14 +99,14 @@ struct ExperimentsView: View {
                             }
                         }
                     }
-                    .disabled(!store.tailcatEnabled || store.isUpdatingTailcat)
+                    .disabled(!store.canPair || !store.availablePairingNetworks.contains(.tailcat) || store.isBusy)
 
                     Spacer()
 
                     Button("重置 Tailcat…", role: .destructive) {
                         confirmsTailcatReset = true
                     }
-                    .disabled(!store.tailcatEnabled || store.isUpdatingTailcat)
+                    .disabled(!store.canChangeTailcat || !store.tailcatEnabled)
                 }
 
                 Text("重置会更换主机身份并取消所有 Tailcat 配对。Tailscale、局域网和当前 agentd 会话不受影响。")
@@ -165,10 +114,6 @@ struct ExperimentsView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .formStyle(.grouped)
-        .scenePadding()
-        .frame(width: 520, height: 720)
-        .background(ExperimentWindowActivationGuard())
         .task {
             await store.refreshTailcatStatus()
             syncRelayConfiguration()
@@ -181,7 +126,7 @@ struct ExperimentsView: View {
             syncRelayConfiguration()
         }
         .confirmationDialog(
-            "重置 Tailcat 实验？",
+            "重置 Tailcat？",
             isPresented: $confirmsTailcatReset,
             titleVisibility: .visible
         ) {
@@ -258,34 +203,3 @@ struct ExperimentsView: View {
         }
     }
 }
-
-/// LSUIElement 创建 SwiftUI Window 时不一定自动成为 key window；在内容真正挂载后再激活。
-private struct ExperimentWindowActivationGuard: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        ExperimentWindowProbeView(frame: .zero)
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {}
-}
-
-private final class ExperimentWindowProbeView: NSView {
-    private weak var activatedWindow: NSWindow?
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        guard let window, activatedWindow !== window else { return }
-        activatedWindow = window
-
-        DispatchQueue.main.async { [weak self, weak window] in
-            guard let self, let window, self.window === window else { return }
-            NSApplication.shared.activate(ignoringOtherApps: true)
-            window.makeKeyAndOrderFront(nil)
-        }
-    }
-}
-
-#if DEBUG
-    #Preview("实验功能") {
-        ExperimentsView(store: .preview(.ready))
-    }
-#endif

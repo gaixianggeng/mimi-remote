@@ -257,7 +257,7 @@ func NewRouterWithInstallationIDAndOptions(
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
 	r.runtimeStatus = newRuntimeStatusSnapshotCache(r.refreshRuntimeStatus, r.runtimeStatusPlaceholder)
-	if cfg.AppServer.AutoTitle {
+	if cfg.Codex.IsEnabled() && cfg.AppServer.AutoTitle {
 		r.autoThreadTitles = newAutoThreadTitleCoordinator(
 			newCodexAutoThreadTitleGenerator(r),
 			autoThreadTitleTimeout,
@@ -286,7 +286,7 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/diagnostics/relay", authed(http.HandlerFunc(r.relayDiagnosticsHandler)))
 	mux.Handle("/api/diagnostics/tailscale-path", authed(http.HandlerFunc(r.tailscaleNetworkPathHandler)))
 	mux.Handle("/api/local/tailcat", authed(http.HandlerFunc(r.tailcatLocalHandler)))
-	if cfg.Debug.EnableCodexHistory {
+	if cfg.Debug.EnableCodexHistory && cfg.Codex.IsEnabled() {
 		mux.Handle("/api/debug/codex-history", authed(http.HandlerFunc(r.codexHistoryDebugHandler)))
 	} else {
 		mux.HandleFunc("/api/debug/codex-history", r.codexHistoryDebugDisabledHandler)
@@ -321,6 +321,7 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/git/pull-request/status", authed(http.HandlerFunc(r.gitPullRequestStatusHandler)))
 	mux.Handle("/api/voice/transcribe", authed(http.HandlerFunc(r.voiceTranscribeHandler)))
 	mux.Handle("/api/runtime/status", authed(http.HandlerFunc(r.runtimeStatusHandler)))
+	mux.Handle("/api/host/modules", authed(http.HandlerFunc(r.moduleStatusHandler)))
 	mux.Handle("/api/app-server/config", authed(http.HandlerFunc(r.appServerConfigHandler)))
 	mux.Handle("/api/app-server/history-media/", authed(http.HandlerFunc(r.appServerHistoryMediaHandler)))
 	mux.Handle("/api/app-server/history-output/", authed(http.HandlerFunc(r.appServerHistoryOutputHandler)))

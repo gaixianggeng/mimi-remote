@@ -163,6 +163,9 @@ final class SessionStore: ObservableObject {
     @Published var appServerPermissionProfiles: [CodexAppServerPermissionProfileSummary] = []
     @Published var activePermissionProfileBySessionID: [SessionID: CodexAppServerActivePermissionProfile] = [:]
     @Published var isRefreshingPermissionProfiles = false
+    /// 当前主机实际可用的 Runtime 集合。Codex 恒为可用（它是 app-server 基线通道），
+    /// 其余 provider 由 config.channels 的真实可用性决定；新增 Runtime 只扩这个集合，
+    /// 不再为每个 provider 各开一个 Bool。
     @Published var availableRuntimeProviders: Set<String> = ["codex"]
     var isClaudeRuntimeChannelAvailable: Bool { availableRuntimeProviders.contains("claude") }
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
