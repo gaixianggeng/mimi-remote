@@ -36,6 +36,7 @@
 		AD199C3299AE46CEBBFBD8F4 /* MenuRuntimePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14C8D785FAF772A76606A4A /* MenuRuntimePresentationTests.swift */; };
 		B0007C75D28B779DE9DE6270 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08DE170A943EDB5164E2CD95 /* PairingView.swift */; };
 		B4E72BE5C26B15E8255D9F2B /* HealthClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FF645CF76E8BD94261F54A9 /* HealthClient.swift */; };
+		B56C80AB7790B06A26A54A12 /* RuntimeBrandMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BE60EA7F49423B973B9EB6F /* RuntimeBrandMark.swift */; };
 		BB0B5B43D76CF587EB599ADA /* ModuleModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 054371F4B53A557AF0C1B27B /* ModuleModels.swift */; };
 		D20BE2303A9CADF1E53D1ACF /* AgentdSupervisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AE25E5AEC2D1798E2848DB9 /* AgentdSupervisor.swift */; };
 		D336EA8131545784B5D56A67 /* AppUpdateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8A55B52C00DCCF1CB58B745 /* AppUpdateView.swift */; };
@@ -90,6 +91,7 @@
 		7280BD1DDAD2AA31F8F8C8AC /* ProcessEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessEnvironment.swift; sourceTree = "<group>"; };
 		75DE2EDFF5A04A515E23B015 /* ModuleControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleControlsView.swift; sourceTree = "<group>"; };
 		8BE4D38858D995BC12D0856A /* QRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeView.swift; sourceTree = "<group>"; };
+		8BE60EA7F49423B973B9EB6F /* RuntimeBrandMark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeBrandMark.swift; sourceTree = "<group>"; };
 		8DA7DA1200E8FF88D5E0DDF2 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		95CEFC2080963A6433B43217 /* MenuBarWindowPlacementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarWindowPlacementTests.swift; sourceTree = "<group>"; };
 		9C35C5D9E56DB2D5E11CC261 /* DeepSeekConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepSeekConfigurationTests.swift; sourceTree = "<group>"; };
@@ -165,6 +167,7 @@
 			children = (
 				252E87DED48E48439FF3A75F /* BrandColors.swift */,
 				8BE4D38858D995BC12D0856A /* QRCodeView.swift */,
+				8BE60EA7F49423B973B9EB6F /* RuntimeBrandMark.swift */,
 				4A4847134E49077F02AF8BBE /* StatusComponents.swift */,
 			);
 			path = Shared;
@@ -438,6 +441,7 @@
 				43BD61177935A8FEB6E85133 /* ProcessEnvironment.swift in Sources */,
 				76C0C8E2D63AABBC7AA2C4ED /* ProcessExecutor.swift in Sources */,
 				9190117090B67A3342D6120D /* QRCodeView.swift in Sources */,
+				B56C80AB7790B06A26A54A12 /* RuntimeBrandMark.swift in Sources */,
 				3753BB1F5923C410265B44D3 /* ServiceManagementClient.swift in Sources */,
 				9381140D2855654A9E07746E /* StatusComponents.swift in Sources */,
 				E1BE3D2E8D8A4F2E50236DC3 /* SystemPrivacySettingsClient.swift in Sources */,

@@ -152,9 +152,8 @@ private struct ModuleControlRow: View {
         HStack(spacing: 8) {
             Button(action: toggleDetails) {
                 HStack(spacing: 10) {
-                    Image(systemName: module.symbol)
+                    ModuleRowIcon(module: module)
                         .frame(width: 24)
-                        .foregroundStyle(.secondary)
                     Text(module.title)
                         .font(.callout.weight(.medium))
                     if module == .tailcat {
@@ -229,6 +228,20 @@ private struct ModuleControlRow: View {
         if title.contains("需要") || title.contains("暂不") { return .orange }
         if title == "可用" || title.contains("地址可用") || title == "已连接" { return .mimiSuccess }
         return .secondary
+    }
+}
+
+/// AI 编程助手用各自的品牌标记，其余模块沿用系统符号；两种图标共用同一列宽。
+private struct ModuleRowIcon: View {
+    let module: HostModuleID
+
+    var body: some View {
+        if let mark = module.brandMark {
+            RuntimeBrandMarkIcon(mark: mark, size: MenuBarLayout.brandMarkSize)
+        } else {
+            Image(systemName: module.symbol)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
