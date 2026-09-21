@@ -1061,6 +1061,107 @@ final class HarnessEventClientTests: XCTestCase {
         await api.shutdownForHostSwitch()
     }
 
+    /// 冷打开长历史的真实 Store 顺序是：权威历史预热 follow → 首屏 → 页面 follow → older 页。
+    /// 页面 follow 只是观察租约，不能让首屏签发的分页 cursor 变成 obsolete。
+    func testSessionStoreColdOpenKeepsHistoryCursorAcrossPageFollow() async throws {
+        let rpc = FakeHarnessRPCTransport()
+        var observedThroughSeqs: [Int] = []
+        rpc.handler = { request in
+            guard request.method == HarnessWireMethod.sessionPage,
+                  let pageRequest = request.args?["request"] else {
+                return .failure(.rejected(status: 400, message: "unexpected method"))
+            }
+            observedThroughSeqs.append(pageRequest["throughSeq"]?.intValue ?? -1)
+            let beforeSeq = pageRequest["beforeSeq"]?.intValue
+            let records: [HarnessJSONValue]
+            let hasMore: Bool
+            if beforeSeq == nil {
+                records = [self.toolResultRecordValue(callID: "cold-tool", seq: 51)]
+                hasMore = true
+            } else {
+                records = [self.toolCallRecordValue(callID: "cold-tool", seq: 50)]
+                hasMore = false
+            }
+            return .success(.object([
+                "hasMore": .bool(hasMore),
+                "records": .array(records),
+            ]))
+        }
+        let stream = FakeHarnessStreamTransport()
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787", token: "fixture", rpc: rpc, stream: stream
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "fixture"
+        let conversation = ConversationStore()
+        let bundle = AppServerRuntimeBundle(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            harnessFactory: { _, _ in api }
+        )
+        let routingClient = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: bundle)
+        routingClient.rememberRuntimeRoute(
+            SessionStore.nativeHarnessRuntimeProvider,
+            forSessionID: sessionID
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversation,
+            logStore: LogStore(),
+            clientFactory: { routingClient },
+            sessionWebSocketFactory: { api.makeEventClient(sessionID: $0.id) }
+        )
+        let session = makeSession(
+            id: sessionID,
+            projectID: "harness-project",
+            title: "Harness history",
+            status: "history",
+            source: "deepseek",
+            runtimeProvider: SessionStore.nativeHarnessRuntimeProvider,
+            resumeID: sessionID
+        )
+
+        let selection = Task { await store.selectSession(session) }
+        let historyFollow = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow,
+            stream: stream
+        )
+        // 页面 follow 只有在这条 snapshot 触发首屏返回后才会建立。必须在投递 snapshot
+        // 前冻结帧位置；若等 RPC 已返回再记录，快速调度时会把页面 follow 一并跳过。
+        let afterHistoryFollow = stream.sentFrames.count
+        stream.push(carrierValue(
+            streamID: historyFollow,
+            value: snapshotValue(sessionID: sessionID, cursor: 80)
+        ))
+        await waitFor { rpc.requests.filter { $0.method == HarnessWireMethod.sessionPage }.count == 1 }
+
+        _ = await selection.value
+        let pageFollow = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow,
+            stream: stream,
+            after: afterHistoryFollow
+        )
+        stream.push(carrierValue(
+            streamID: pageFollow,
+            value: snapshotValue(sessionID: sessionID, cursor: 81)
+        ))
+        await waitFor { store.webSocketStatus == WebSocketStatus.connected }
+        XCTAssertTrue(store.canLoadEarlierHistory(sessionID: sessionID))
+
+        await store.loadEarlierHistoryForSelectedSession()
+
+        XCTAssertEqual(observedThroughSeqs, [80, 80], "older 页必须继续使用首屏的读取边界")
+        XCTAssertNil(store.errorMessage)
+        let tools = conversation.messages(for: sessionID).filter {
+            $0.activityPayload?.category == .toolCall
+        }
+        XCTAssertEqual(tools.count, 1, "跨页的 call/result 必须收敛成一个过程条目")
+        XCTAssertEqual(tools.first?.activityPayload?.status, "completed")
+        XCTAssertEqual(tools.first?.activityPayload?.toolName, "run_bash")
+        store.returnToSessionList()
+        await api.shutdownForHostSwitch()
+    }
+
     // MARK: - 轮次身份
 
     /// `turn/start` 必须把原生轮次带进共用状态层。
@@ -1132,6 +1233,105 @@ final class HarnessEventClientTests: XCTestCase {
     /// durable 先于 `end.outcome.seq` 到达时也必须等结算后只发布一个身份。
     func testDurableBeforeEndAndHistoryReopenUseOneAssistantIdentity() async throws {
         try await assertLiveAndHistoryIdentity(durableArrivesFirst: true)
+    }
+
+    /// end 帧可能在页面离开后丢失。重开时 durable 的原生 stream 必须仍能认领已经展示的
+    /// attempt 身份，不能额外插入一个 `h-msg-*` 气泡。
+    func testMissingEndThenLeaveAndReopenKeepsOneAssistantIdentity() async throws {
+        let rpc = FakeHarnessRPCTransport()
+        let stream = FakeHarnessStreamTransport()
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787", token: "fixture", rpc: rpc, stream: stream
+        )
+        let conversation = ConversationStore()
+        let first = try XCTUnwrap(
+            api.makeEventClient(sessionID: sessionID) as? HarnessSessionWebSocketClient
+        )
+        first.onEvent = { [conversation] event in
+            self.applyConversationEvent(event, to: conversation)
+        }
+        first.connect(sessionID: sessionID)
+        let firstFollow = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow, stream: stream
+        )
+        stream.push(carrierValue(
+            streamID: firstFollow,
+            value: snapshotValue(sessionID: sessionID, cursor: 13)
+        ))
+        await waitFor { first.journal?.hasOpenedSnapshot == true }
+        _ = first.apply(assistantStream: HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.start,
+            revision: 1,
+            index: nil,
+            chunk: nil,
+            outcome: nil,
+            attemptId: "attempt-no-end",
+            turn: 1,
+            step: 1,
+            startedAfterSeq: 13
+        ))
+        _ = first.apply(assistantStream: HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.chunk,
+            revision: 2,
+            index: 0,
+            chunk: HarnessAssistantChunk(
+                type: HarnessWireChunkType.textDelta,
+                index: 0,
+                text: "未收到 end 的回复",
+                blockType: nil,
+                argumentsDelta: nil
+            ),
+            outcome: nil,
+            attemptId: "attempt-no-end",
+            turn: nil,
+            step: nil,
+            startedAfterSeq: nil
+        ))
+        XCTAssertEqual(
+            conversation.messages(for: sessionID).filter { $0.role == .assistant }.count,
+            1,
+            "前置条件：同一会话必须先有直播内容"
+        )
+        first.disconnect()
+
+        let durable = assistantRecordValue(
+            nativeID: "native-no-end",
+            seq: 16,
+            text: "未收到 end 的回复",
+            turn: 1,
+            step: 1,
+            stream: [.object([
+                "type": .string("text-chunks"),
+                "time0": .number(1),
+                "index": .number(0),
+                "dt": .array([]),
+                "texts": .array([.string("未收到 end 的回复")]),
+            ])]
+        )
+        let afterDisconnect = stream.sentFrames.count
+        let reopened = try XCTUnwrap(
+            api.makeEventClient(sessionID: sessionID) as? HarnessSessionWebSocketClient
+        )
+        reopened.onEvent = { [conversation] event in
+            self.applyConversationEvent(event, to: conversation)
+        }
+        reopened.connect(sessionID: sessionID)
+        let reopenedFollow = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow,
+            stream: stream,
+            after: afterDisconnect
+        )
+        stream.push(carrierValue(
+            streamID: reopenedFollow,
+            value: snapshotValue(sessionID: sessionID, cursor: 16, records: [durable])
+        ))
+        await waitFor { reopened.journal?.snapshotCursor == 16 }
+
+        let assistantMessages = conversation.messages(for: sessionID).filter { $0.role == .assistant }
+        XCTAssertEqual(assistantMessages.count, 1)
+        XCTAssertEqual(assistantMessages.first?.stableID, "h-attempt-attempt-no-end-assistant")
+        reopened.disconnect()
+        await api.shutdownForHostSwitch()
     }
 
     private func assertLiveAndHistoryIdentity(durableArrivesFirst: Bool) async throws {
@@ -1253,7 +1453,7 @@ final class HarnessEventClientTests: XCTestCase {
     /// 两个投影器必须对"哪些内容可展示"给出**同一个答案**：实时接了
     /// `tool/call`/`tool/result`，历史若跳过它们，用户重新打开会话就会发现
     /// 过程条目消失——同一轮对话"看着有、重开没有"。
-    func testHistoryProjectionCoversToolEventsLikeLive() throws {
+    func testHistoryProjectionFoldsSuccessfulToolCallBeforeConversationStore() throws {
         let toolCall = HarnessDurableEvent(
             type: HarnessWireEventType.toolCall, seq: 50, time: nil,
             data: .object([
@@ -1276,23 +1476,41 @@ final class HarnessEventClientTests: XCTestCase {
             ])
         )
 
-        let liveToolCount = [toolCall, toolResult].reduce(0) { total, event in
-            total + HarnessPresentationProjector.project(
-                durableEvent: event, sessionID: "s"
-            ).filter {
-                guard case .processItemCompleted(let message, _, _) = $0 else { return false }
-                return message.activityPayload?.category == .toolCall
-            }.count
-        }
         let historyMessages = HarnessHistoryProjection.messages(
             from: [toolCall, toolResult], sessionID: "s"
         )
+        let conversation = ConversationStore()
+        conversation.setHistory(historyMessages, sessionID: "s")
+        let tools = conversation.messages(for: "s").filter { $0.activityPayload?.category == .toolCall }
+        XCTAssertEqual(tools.count, 1)
+        XCTAssertEqual(tools.first?.activityPayload?.status, "completed")
+        XCTAssertEqual(tools.first?.activityPayload?.toolName, "run_bash")
+    }
 
-        XCTAssertEqual(liveToolCount, 2, "前置条件：实时投影覆盖两次工具事件")
-        XCTAssertEqual(
-            historyMessages.count, liveToolCount,
-            "历史投影必须覆盖实时展示过的工具条目，否则重开会话时过程消失"
+    func testHistoryProjectionFoldsFailedToolCallBeforeConversationStore() throws {
+        let callID = "call-failed"
+        let toolCall = HarnessDurableEvent(
+            type: HarnessWireEventType.toolCall, seq: 60, time: nil,
+            data: .object(["callId": .string(callID), "name": .string("run_bash")])
         )
+        let toolResult = HarnessDurableEvent(
+            type: HarnessWireEventType.toolResult, seq: 61, time: nil,
+            data: .object(["message": .object(["content": .array([.object([
+                "type": .string("text"),
+                "text": .string("failed"),
+                "toolCallId": .string(callID),
+                "isError": .bool(true),
+            ])])])])
+        )
+        let conversation = ConversationStore()
+        conversation.setHistory(
+            HarnessHistoryProjection.messages(from: [toolCall, toolResult], sessionID: "s"),
+            sessionID: "s"
+        )
+        let tools = conversation.messages(for: "s").filter { $0.activityPayload?.category == .toolCall }
+        XCTAssertEqual(tools.count, 1)
+        XCTAssertEqual(tools.first?.activityPayload?.status, "failed")
+        XCTAssertEqual(tools.first?.activityPayload?.toolName, "run_bash")
     }
 
     // MARK: - 接收与去重
@@ -1863,6 +2081,83 @@ final class HarnessEventClientTests: XCTestCase {
                 ]),
             ]),
         ])
+    }
+
+    private func toolCallRecordValue(callID: String, seq: Int) -> HarnessJSONValue {
+        .object([
+            "type": .string("event"),
+            "event": .object([
+                "type": .string(HarnessWireEventType.toolCall),
+                "seq": .number(Double(seq)),
+                "data": .object([
+                    "callId": .string(callID),
+                    "name": .string("run_bash"),
+                    "turn": .number(1),
+                    "step": .number(1),
+                ]),
+            ]),
+        ])
+    }
+
+    private func toolResultRecordValue(callID: String, seq: Int) -> HarnessJSONValue {
+        .object([
+            "type": .string("event"),
+            "event": .object([
+                "type": .string(HarnessWireEventType.toolResult),
+                "seq": .number(Double(seq)),
+                "data": .object([
+                    "message": .object([
+                        "content": .array([.object([
+                            "type": .string("text"),
+                            "text": .string("done"),
+                            "toolCallId": .string(callID),
+                        ])]),
+                    ]),
+                    "turn": .number(1),
+                    "step": .number(1),
+                ]),
+            ]),
+        ])
+    }
+
+    private func assistantRecordValue(
+        nativeID: String,
+        seq: Int,
+        text: String,
+        turn: Int,
+        step: Int,
+        stream: [HarnessJSONValue]
+    ) -> HarnessJSONValue {
+        .object([
+            "type": .string("event"),
+            "event": .object([
+                "type": .string(HarnessWireEventType.assistantMessage),
+                "seq": .number(Double(seq)),
+                "data": .object([
+                    "message": .object([
+                        "id": .string(nativeID),
+                        "role": .string("assistant"),
+                        "content": .array([.object([
+                            "type": .string("text"), "text": .string(text),
+                        ])]),
+                    ]),
+                    "turn": .number(Double(turn)),
+                    "step": .number(Double(step)),
+                    "stream": .array(stream),
+                ]),
+            ]),
+        ])
+    }
+
+    private func applyConversationEvent(_ event: AgentEvent, to store: ConversationStore) {
+        switch event {
+        case .assistantDelta(let delta, let metadata):
+            store.applyAssistantDelta(delta, metadata: metadata, fallbackSessionID: sessionID)
+        case .messageCompleted(let message, let metadata):
+            store.completeMessage(message, metadata: metadata, fallbackSessionID: sessionID)
+        default:
+            break
+        }
     }
 }
 

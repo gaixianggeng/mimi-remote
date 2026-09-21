@@ -136,13 +136,26 @@ enum HarnessHistoryProjection {
         sessionID: SessionID,
         assistantMessageID: ((HarnessDurableEvent) -> MessageID?)? = nil
     ) -> [CodexHistoryMessage] {
-        records.compactMap {
-            message(
-                from: $0,
+        var messages: [CodexHistoryMessage] = []
+        var toolIndexByID: [MessageID: Int] = [:]
+        for event in records {
+            guard let projected = message(
+                from: event,
                 sessionID: sessionID,
-                assistantMessageID: assistantMessageID?($0)
-            )
+                assistantMessageID: assistantMessageID?(event)
+            ) else { continue }
+            guard projected.activityPayload?.category == .toolCall else {
+                messages.append(projected)
+                continue
+            }
+            if let index = toolIndexByID[projected.id] {
+                messages[index] = mergedToolMessage(messages[index], projected)
+            } else {
+                toolIndexByID[projected.id] = messages.count
+                messages.append(projected)
+            }
         }
+        return messages
     }
 
     private static func message(
@@ -192,6 +205,61 @@ enum HarnessHistoryProjection {
             createdAt: date(from: event),
             seq: entry.seq.map { EventSequence($0) },
             sendStatus: .confirmed
+        )
+    }
+
+    /// 同一 callId 的 `tool/call` 与 `tool/result` 是一个过程条目。
+    ///
+    /// 结果事件的 seq 更大，但经常不再携带工具名；因此状态与时间取较新的原生事件，
+    /// 名称沿用两条事件中已知的值。这样历史投影在进入通用 reducer 前就已收敛，
+    /// 不会因为 reducer 保留第一条而让完成的工具永远停在 running。
+    static func mergedToolMessage(
+        _ lhs: CodexHistoryMessage,
+        _ rhs: CodexHistoryMessage
+    ) -> CodexHistoryMessage {
+        let newer: CodexHistoryMessage
+        let older: CodexHistoryMessage
+        if (rhs.seq ?? .min) >= (lhs.seq ?? .min) {
+            newer = rhs
+            older = lhs
+        } else {
+            newer = lhs
+            older = rhs
+        }
+        guard let newerPayload = newer.activityPayload else { return newer }
+        let olderPayload = older.activityPayload
+        let toolName = newerPayload.toolName ?? olderPayload?.toolName
+        let title = toolName ?? newerPayload.displayTitle
+        return CodexHistoryMessage(
+            id: newer.id,
+            role: newer.role,
+            kind: newer.kind,
+            content: title,
+            activityPayload: ConversationActivityPayload(
+                category: newerPayload.category,
+                displayTitle: title,
+                subtitle: newerPayload.subtitle ?? olderPayload?.subtitle,
+                status: newerPayload.status,
+                command: newerPayload.command ?? olderPayload?.command,
+                cwd: newerPayload.cwd ?? olderPayload?.cwd,
+                toolName: toolName,
+                filePaths: newerPayload.filePaths.isEmpty
+                    ? (olderPayload?.filePaths ?? [])
+                    : newerPayload.filePaths,
+                exitCode: newerPayload.exitCode ?? olderPayload?.exitCode,
+                outputPreview: newerPayload.outputPreview ?? olderPayload?.outputPreview,
+                outputDigest: newerPayload.outputDigest ?? olderPayload?.outputDigest,
+                outputByteCount: newerPayload.outputByteCount ?? olderPayload?.outputByteCount,
+                historyOutputID: newerPayload.historyOutputID ?? olderPayload?.historyOutputID,
+                commandPresentationKind: newerPayload.commandPresentationKind
+                    ?? olderPayload?.commandPresentationKind,
+                toolPresentationKind: newerPayload.toolPresentationKind
+                    ?? olderPayload?.toolPresentationKind
+            ),
+            createdAt: newer.createdAt ?? older.createdAt,
+            updatedAt: newer.updatedAt ?? older.updatedAt,
+            seq: newer.seq,
+            sendStatus: newer.sendStatus
         )
     }
 

@@ -38,18 +38,21 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     private let recovery: HarnessRecoveryCoordinator?
     /// 发送前应用模型/档位选择。生产走原生 `session/selectModel`。
     private let selectModel: (@MainActor (String, String, String, String?) async throws -> Void)?
-    /// opening snapshot 请求开始前登记宿主级读取上下文。
+    /// 权威历史 opening snapshot 请求开始前登记宿主级读取上下文。
     ///
     /// 页面自己的 `observationGeneration` 只在该页面内有序；两个页面都会从 1 起步，
     /// 不能拿它们直接判断全局新旧。
     private let beginSnapshotObservation: (@MainActor (SessionID) -> UInt64)?
-    /// 建立基线后把本次 follow 的 `snapshot.cursor` 交给宿主。
+    /// 建立权威历史基线后把本次 follow 的 `snapshot.cursor` 交给宿主。
     ///
-    /// `session/page` 的 `throughSeq` 只能取自**本次** follow 的 opening snapshot，
-    /// 因此这个值必须由建立基线的一侧上报，历史读取侧不能自己猜。
+    /// `session/page` 的 `throughSeq` 只能取自**本次权威历史观察**的 opening snapshot，
+    /// 因此这个值必须由历史预热一侧上报，普通页面 follow 不得覆盖。
     private let reportSnapshotCursor: (@MainActor (SessionID, Int, UInt64) -> Void)?
     /// snapshot、live durable 与 session/page 共用的提交/身份对账入口。
     private let reconcileDurableEvent: (@MainActor (SessionID, HarnessDurableEvent) -> MessageID?)?
+    /// 直播正文一旦进入 Store，就把原生 attempt 关联保存在宿主级 API client。
+    /// 页面离开时不能丢掉它，否则缺失 end 帧的回复在重开后会出现第二个 durable 气泡。
+    private let rememberAssistantAttempt: (@MainActor (SessionID, HarnessJournalAttempt) -> Void)?
     /// 用 `end.outcome.seq` 结算 attempt 与 durable assistant 的唯一身份。
     private let settleAssistantIdentity: (@MainActor (SessionID, Int, MessageID) -> MessageID)?
 
@@ -93,6 +96,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         beginSnapshotObservation: (@MainActor (SessionID) -> UInt64)? = nil,
         reportSnapshotCursor: (@MainActor (SessionID, Int, UInt64) -> Void)? = nil,
         reconcileDurableEvent: (@MainActor (SessionID, HarnessDurableEvent) -> MessageID?)? = nil,
+        rememberAssistantAttempt: (@MainActor (SessionID, HarnessJournalAttempt) -> Void)? = nil,
         settleAssistantIdentity: (@MainActor (SessionID, Int, MessageID) -> MessageID)? = nil
     ) {
         self.endpoint = endpoint
@@ -107,6 +111,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         self.beginSnapshotObservation = beginSnapshotObservation
         self.reportSnapshotCursor = reportSnapshotCursor
         self.reconcileDurableEvent = reconcileDurableEvent
+        self.rememberAssistantAttempt = rememberAssistantAttempt
         self.settleAssistantIdentity = settleAssistantIdentity
     }
 
@@ -116,10 +121,8 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         connect(sessionID: sessionID, replayBufferedEvents: true)
     }
 
-    /// 建立会话基线：开 follow 拿 opening snapshot，再把其中已有记录投影出来。
-    ///
-    /// 顺序不可换（契约 §5.5）：`session/page` 的 throughSeq 必须取自**本次** follow
-    /// 的 snapshot.cursor，所以 follow 必须先完成。
+    /// 建立会话观察：开 follow 拿 opening snapshot，再把其中已有记录投影出来。
+    /// 历史预热会额外上报读取基线；普通页面 follow 只建立 journal 与实时观察。
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
         observationTask?.cancel()
         observationGeneration &+= 1
@@ -179,10 +182,9 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         _ = fresh.apply(snapshot: snapshot, acceptingGeneration: generation)
         journal = fresh
 
-        // 把本次 follow 的 snapshot 游标交给宿主：`session/page` 的 throughSeq 只能是它。
+        // 仅权威历史观察带回调：把它的 snapshot 游标交给宿主作为 throughSeq。
         if let cursor = fresh.snapshotCursor {
-            // 带上**观察代次**：重开/重连会换一个读取上下文，
-            // 旧代次的游标不得当成新代次的读取边界。
+            // 带上**宿主分配的历史上下文**；页面局部 generation 不参与全局新旧比较。
             reportSnapshotCursor?(sessionID, cursor, snapshotContextID)
         }
 
@@ -207,6 +209,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                attempt: attempt,
                sessionID: sessionID
            ) {
+            rememberAssistantAttempt?(sessionID, attempt)
             onEvent?(event)
         }
         return true
@@ -557,6 +560,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                   current.activeAttempt?.chunks.count ?? 0 > previousChunkCount,
                   let attempt = current.activeAttempt,
                   let chunk = frame.chunk {
+            rememberAssistantAttempt?(sessionID, attempt)
             // 正文与推理各有展示通道。**只发正文**会让模型思考时界面看起来像停住了。
             //
             // 工具**不在这里**产出条目：直播只有块索引与参数增量，没有 callId，

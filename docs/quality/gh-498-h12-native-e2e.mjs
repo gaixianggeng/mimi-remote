@@ -53,6 +53,7 @@ let xcodeOutput = ''
 let uiXcodeOutput = ''
 let modelCalls = 0
 let webPeer
+let agentdPeer
 let releaseWebReady
 const webReady = new Promise(resolvePromise => { releaseWebReady = resolvePromise })
 
@@ -212,6 +213,35 @@ async function observeWebPeer() {
   webPeer = { socket, frames, sessionID }
   releaseWebReady()
   return webPeer
+}
+
+async function connectAgentdPeer() {
+  const socket = new WebSocket(`${agentdOrigin.replace('http:', 'ws:')}/api/harness/ws`, {
+    headers: { Authorization: `Bearer ${agentdToken}` },
+  })
+  const frames = []
+  socket.on('message', data => frames.push(JSON.parse(data)))
+  await once(socket, 'open')
+  return { socket, frames }
+}
+
+function openAgentdFollow(peer, streamId, sessionID) {
+  peer.socket.send(JSON.stringify({
+    type: 'open', streamId, endpoint: 'session/follow', payload: { args: {
+      request: {
+        address: { kind: 'session', sessionId: sessionID },
+        assistantStream: true,
+        maxMessages: 5,
+      },
+    } },
+  }))
+}
+
+async function waitForAgentdFollowOutcome(peer, streamId, label) {
+  return until(() => peer.frames.find(frame => (
+    frame.streamId === streamId
+      && (frame.type === 'error' || frame.value?.type === 'snapshot')
+  )), label)
 }
 
 async function stopChild(child) {
@@ -482,63 +512,73 @@ try {
   )
   peer.socket.send(JSON.stringify({ type: 'cancel', streamId: historyStreamID }))
 
-  // 保留最初的 Web 观察者，同时反复新建/退订第二条 follow。默认容量是 4；如果主动
-  // 退订没有归还名额，这组真实 agentd 循环会在数次之后收到额度错误。cancel 与
-  // 后续 open 走同一 WebSocket，服务端按序处理；上游已经先结束时 cancel 是幂等空操作，
-  // 因此不要求每次都有额外 end 回执，而由下一条 snapshot 证明前一条已经退役。
+  // Web peer 继续只负责跨端观察。资源验收必须走带移动端凭据的 agentd WS，才能真实
+  // 覆盖 /api/harness/ws 的全局 follow 名额，而不是直接绕到 Harness remote.mux。
+  agentdPeer = await connectAgentdPeer()
+  const heldAgentdStreams = []
+  let rejectedAtCapacity
+  for (let index = 0; index < 8; index += 1) {
+    const streamId = `agentd-capacity-${index}`
+    openAgentdFollow(agentdPeer, streamId, createdSessionID)
+    const outcome = await waitForAgentdFollowOutcome(
+      agentdPeer, streamId, `agentd capacity probe ${index}`,
+    )
+    if (outcome.type === 'error') {
+      rejectedAtCapacity = outcome
+      break
+    }
+    heldAgentdStreams.push(streamId)
+  }
+  assert.ok(heldAgentdStreams.length > 0, 'agentd 容量验收必须先成功持有至少一条 follow')
+  assert.ok(rejectedAtCapacity, '填满 agentd follow 上限后下一条必须被明确拒绝')
+  assert.equal(
+    rejectedAtCapacity.error?.code,
+    'gateway/service-unavailable',
+    `容量拒绝必须是可恢复错误：${JSON.stringify(rejectedAtCapacity)}`,
+  )
+
+  let recyclableStreamID = heldAgentdStreams.pop()
+  agentdPeer.socket.send(JSON.stringify({ type: 'cancel', streamId: recyclableStreamID }))
+  await until(
+    () => agentdPeer.frames.some(
+      frame => frame.streamId === recyclableStreamID && frame.type === 'end',
+    ),
+    'agentd cancel releases one follow slot',
+  )
+
   const followResubscribeCycles = 8
   for (let index = 0; index < followResubscribeCycles; index += 1) {
-    const streamId = `web-reconnect-${index}`
-    peer.socket.send(JSON.stringify({
-      type: 'open',
-      streamId,
-      endpoint: 'session/follow',
-      payload: { args: {
-        request: {
-          address: { kind: 'session', sessionId: createdSessionID },
-          assistantStream: true,
-          maxMessages: 5,
-        },
-      } },
-    }))
-    await until(
-      () => {
-        const error = peer.frames.find(frame => frame.streamId === streamId && frame.type === 'error')
-        assert.equal(error, undefined, `第 ${index + 1} 次重订阅不得耗尽名额`)
-        return peer.frames.some(
-          frame => frame.streamId === streamId && frame.value?.type === 'snapshot',
-        )
-      },
-      `follow reconnect ${index}`,
+    const streamId = `agentd-reconnect-${index}`
+    openAgentdFollow(agentdPeer, streamId, createdSessionID)
+    const outcome = await waitForAgentdFollowOutcome(
+      agentdPeer, streamId, `agentd follow reconnect ${index}`,
     )
-    peer.socket.send(JSON.stringify({ type: 'cancel', streamId }))
+    assert.equal(outcome.type, 'item', `第 ${index + 1} 次重订阅必须重新取得名额`)
+    agentdPeer.socket.send(JSON.stringify({ type: 'cancel', streamId }))
+    await until(
+      () => agentdPeer.frames.some(frame => frame.streamId === streamId && frame.type === 'end'),
+      `agentd follow cancel ${index}`,
+    )
   }
-  const finalFollowStreamID = 'web-reconnect-final'
-  peer.socket.send(JSON.stringify({
-    type: 'open',
-    streamId: finalFollowStreamID,
-    endpoint: 'session/follow',
-    payload: { args: {
-      request: {
-        address: { kind: 'session', sessionId: createdSessionID },
-        assistantStream: true,
-        maxMessages: 5,
-      },
-    } },
-  }))
-  await until(
-    () => {
-      const error = peer.frames.find(
-        frame => frame.streamId === finalFollowStreamID && frame.type === 'error',
-      )
-      assert.equal(error, undefined, '末次取消后仍必须能重新取得 follow 名额')
-      return peer.frames.some(
-        frame => frame.streamId === finalFollowStreamID && frame.value?.type === 'snapshot',
-      )
-    },
-    'final follow reconnect after all cancellations',
+
+  // 不逐条 cancel，直接断开持有剩余名额的连接；新连接必须能重新申请，证明连接退役
+  // 也归还名额，且没有依赖“没有新 token”之类的空闲猜测。
+  agentdPeer.socket.close()
+  await once(agentdPeer.socket, 'close')
+  agentdPeer = await connectAgentdPeer()
+  const afterDisconnectStreamID = 'agentd-after-disconnect'
+  openAgentdFollow(agentdPeer, afterDisconnectStreamID, createdSessionID)
+  const afterDisconnect = await waitForAgentdFollowOutcome(
+    agentdPeer, afterDisconnectStreamID, 'agentd reacquire after connection close',
   )
-  peer.socket.send(JSON.stringify({ type: 'cancel', streamId: finalFollowStreamID }))
+  assert.equal(afterDisconnect.type, 'item', '连接断开归还后必须能重新取得 follow 名额')
+  agentdPeer.socket.send(JSON.stringify({ type: 'cancel', streamId: afterDisconnectStreamID }))
+  await until(
+    () => agentdPeer.frames.some(
+      frame => frame.streamId === afterDisconnectStreamID && frame.type === 'end',
+    ),
+    'agentd final follow cancellation',
+  )
 
   const summary = {
     status: 'PASS',
@@ -563,12 +603,15 @@ try {
     nativeHistoryPages: pageIndex + 1,
     historySeedPrompts,
     followResubscribeCycles,
+    agentdFollowCapacityRejected: true,
+    agentdFollowReacquiredAfterDisconnect: true,
     deterministicModelCalls: modelCalls,
     realProviderCalls: 0,
   }
   await writeFile(join(logs, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 })
   process.stdout.write(`PASS H12 native Harness dual-client flow\nEvidence: ${join(logs, 'summary.json')}\n`)
 } finally {
+  if (agentdPeer?.socket?.readyState === WebSocket.OPEN) agentdPeer.socket.close()
   if (webPeer?.socket?.readyState === WebSocket.OPEN) webPeer.socket.close()
   await stopChild(uiXcodeProcess)
   await stopChild(xcodeProcess)

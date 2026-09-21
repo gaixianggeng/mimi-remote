@@ -1,5 +1,56 @@
 import Foundation
 
+/// 已进入 UI、但尚未收到 `end.outcome.seq` 的直播 attempt。
+///
+/// durable assistant 没有 attemptId；它保留了同一次输出的原生 stream。只有原生
+/// turn/step/startedAfterSeq 边界成立，且直播块是 durable stream 的精确前缀时才关联。
+private struct HarnessUnresolvedAssistantAttempt {
+    let attemptID: String
+    let turn: Int
+    let step: Int
+    let startedAfterSeq: Int
+    let chunks: [HarnessAssistantChunk]
+
+    init?(attempt: HarnessJournalAttempt) {
+        guard let attemptID = attempt.attemptID?.trimmedNonEmpty,
+              let turn = attempt.turn,
+              let step = attempt.step,
+              let startedAfterSeq = attempt.startedAfterSeq else {
+            return nil
+        }
+        let chunks = attempt.chunks.compactMap(\.chunk)
+        guard !chunks.isEmpty else { return nil }
+        self.attemptID = attemptID
+        self.turn = turn
+        self.step = step
+        self.startedAfterSeq = startedAfterSeq
+        self.chunks = chunks
+    }
+
+    func matches(durableEvent event: HarnessDurableEvent) -> Bool {
+        guard event.type == HarnessWireEventType.assistantMessage,
+              let seq = event.seq,
+              seq > startedAfterSeq,
+              event.data?["turn"]?.intValue == turn,
+              event.data?["step"]?.intValue == step,
+              let rawStream = event.data?["stream"] else {
+            return false
+        }
+        let records: [HarnessAssistantStreamRecord]
+        do {
+            records = try JSONDecoder().decode(
+                [HarnessAssistantStreamRecord].self,
+                from: JSONEncoder().encode(rawStream)
+            )
+        } catch {
+            return false
+        }
+        let durableChunks = records.flatMap(\.expandedChunks)
+        guard durableChunks.count >= chunks.count else { return false }
+        return Array(durableChunks.prefix(chunks.count)) == chunks
+    }
+}
+
 /// 原生 Harness 客户端接缝（H01）。
 ///
 /// 只覆盖路由 facade 会委托给 Harness 的**受支持**操作。主机级 projects / worktree / git /
@@ -48,9 +99,9 @@ protocol HarnessSessionClient: AnyObject {
 
     // MARK: - 历史分页
     //
-    // `session/page` 需要**本次 follow** 的 `snapshot.cursor` 作为 `throughSeq`：
+    // `session/page` 需要**本次权威历史观察**的 `snapshot.cursor` 作为 `throughSeq`：
     // 传 0 只读到 seq 0，传一个过大的值返回空 records（契约 §5.5 实测）。
-    // 因此这组方法的调用前提是该会话的 follow 已经建立过基线。
+    // 因此这组方法的调用前提是该会话的历史预热 follow 已经建立过基线。
 
     /// 读取一页历史。`before` 是更早位置的游标；nil 表示从最新往回读。
     @MainActor
@@ -175,7 +226,7 @@ enum HarnessNativeUnavailableError: Error, LocalizedError, Equatable {
 ///
 /// 目录、create/model/prompt/cancel、follow、历史分页与交互应答共用一个 runtime。
 ///
-/// 历史分页（`session/page`）需要**本次 follow** 的 `snapshot.cursor` 作 `throughSeq`，
+/// 历史分页（`session/page`）需要**本次权威历史观察**的 `snapshot.cursor` 作 `throughSeq`，
 /// 因此读取前先 `awaitSnapshotBaseline`：拿不到就显式失败，绝不猜一个游标。
 ///
 /// 授权提示 `cwd` 走请求体（与 `internal/httpapi/harness_native_policy.go` 的
@@ -206,13 +257,14 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     private var hostChangeSink: (@MainActor () -> Void)?
     /// 一次宿主级应答未以"接受"收场时的出口（会话、交互、结论、原因）。
     private var hostRejectionSink: (@MainActor (_ sessionID: String, _ eventID: String, _ outcome: String, _ message: String) -> Void)?
-    /// 每个会话**当前这一代** follow 的 `snapshot.cursor`。
+    /// 每个会话最近一次**权威历史刷新**的 `snapshot.cursor`。
     ///
     /// `session/page` 的 `throughSeq` 必须取自**本次** follow 的 opening snapshot
     /// （契约 §5.5 实测：传 0 只读到 seq 0，传过大的值返回空 records）。
     ///
-    /// 带代次存储的原因：重开或重连会换一个 reading context，旧游标属于上一代
-    /// snapshot，拿它当读取边界会静默读到错误的区间。代次落后于当前登记的即作废。
+    /// 带代次存储的原因：重新打开或用户刷新会换一个 reading context，旧游标属于
+    /// 上一次权威 snapshot，拿它当读取边界会静默读到错误的区间。普通页面 follow
+    /// 与重连只是观察租约，不参与代次比较，也不能让分页游标失效。
     struct SnapshotBaseline: Equatable {
         let cursor: Int
         /// 由 API client 在观察**开始时**分配，不使用页面自己的局部 generation。
@@ -229,6 +281,18 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     /// 进入 Store 的 attempt 身份；之后同 seq 的 snapshot、live durable 与
     /// `session/page` 都复用该身份，不再插入第二个 durable 气泡。
     private var assistantMessageIDBySessionID: [SessionID: [Int: MessageID]] = [:]
+
+    /// 页面销毁后仍待 durable 记录确认的直播 attempt。
+    ///
+    /// Harness 的 durable assistant 不携带 attemptId，但会持久化同一次输出的原生
+    /// `stream[]`。这里保留直播块与原生 turn/step/startedAfterSeq，重开后只在原生块
+    /// 完全匹配时认领 durable 身份，不按正文相似度猜测。
+    private var unresolvedAssistantAttemptsBySessionID:
+        [SessionID: [String: HarnessUnresolvedAssistantAttempt]] = [:]
+
+    /// 已见工具条目的最新状态。历史按新到旧分页时，较老的 `tool/call` 不得把已见的
+    /// completed/failed 结果降回 running。
+    private var toolHistoryMessageBySessionID: [SessionID: [MessageID: CodexHistoryMessage]] = [:]
 
     /// 普通输入的提交模式。实测取值域只有 queue|steer，普通发送用 queue。
     static let defaultPromptMode = "queue"
@@ -269,7 +333,30 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     /// 每页各开一条会被拒，页面退订还会关掉整条共享连接。
     @MainActor
     func makeEventClient(sessionID: SessionID) -> any SessionWebSocketClient {
-        HarnessSessionWebSocketClient(
+        makeEventClient(sessionID: sessionID, establishesHistoryBaseline: false)
+    }
+
+    /// 只有权威历史首屏会建立分页读取上下文。页面 follow 与重连只是观察租约，
+    /// 不能让用户正在使用的 older cursor 失效。
+    @MainActor
+    private func makeEventClient(
+        sessionID: SessionID,
+        establishesHistoryBaseline: Bool
+    ) -> HarnessSessionWebSocketClient {
+        let beginObservation: (@MainActor (SessionID) -> UInt64)?
+        let reportCursor: (@MainActor (SessionID, Int, UInt64) -> Void)?
+        if establishesHistoryBaseline {
+            beginObservation = { [weak self] sessionID in
+                self?.beginSnapshotObservation(for: sessionID) ?? 0
+            }
+            reportCursor = { [weak self] sessionID, cursor, contextID in
+                self?.rememberSnapshotCursor(cursor, for: sessionID, contextID: contextID)
+            }
+        } else {
+            beginObservation = nil
+            reportCursor = nil
+        }
+        return HarnessSessionWebSocketClient(
             endpoint: endpoint,
             token: token,
             sessionID: sessionID,
@@ -287,16 +374,13 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
                     reasoningEffort: effort
                 )
             },
-            // 在 follow 开始时先登记全局读取上下文；晚到的旧页面不能覆盖后来开始的刷新。
-            beginSnapshotObservation: { [weak self] sessionID in
-                self?.beginSnapshotObservation(for: sessionID) ?? 0
-            },
-            // 基线建立后回报 snapshot 游标：历史分页的 throughSeq 只能用本次的值。
-            reportSnapshotCursor: { [weak self] sessionID, cursor, contextID in
-                self?.rememberSnapshotCursor(cursor, for: sessionID, contextID: contextID)
-            },
+            beginSnapshotObservation: beginObservation,
+            reportSnapshotCursor: reportCursor,
             reconcileDurableEvent: { [weak self] sessionID, event in
                 self?.reconcileCommittedEvent(event, sessionID: sessionID)
+            },
+            rememberAssistantAttempt: { [weak self] sessionID, attempt in
+                self?.rememberAssistantAttempt(attempt, sessionID: sessionID)
             },
             settleAssistantIdentity: { [weak self] sessionID, seq, attemptMessageID in
                 self?.settleAssistantIdentity(
@@ -527,7 +611,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         for event in page.records {
             _ = reconcileCommittedEvent(event, sessionID: sessionID)
         }
-        let messages = HarnessHistoryProjection.messages(
+        let projected = HarnessHistoryProjection.messages(
             from: page.records,
             sessionID: sessionID,
             assistantMessageID: { [weak self] event in
@@ -535,6 +619,9 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
                 return self.assistantMessageIDBySessionID[sessionID]?[seq]
             }
         )
+        let messages = projected.compactMap {
+            reconcileToolHistoryMessage($0, sessionID: sessionID)
+        }
         // 下一页位置由**已取回记录的最小 seq** 推出，不是编造游标：
         // 上游结果只有 {records, hasMore}，没有 nextBeforeSeq。
         // 没有任何记录时无法推进，此时不给游标（调用方据此停止）。
@@ -566,7 +653,6 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         nil
     }
 
-    /// 取该会话本次 follow 的 `snapshot.cursor`。
     /// 取得某个会话的读取基线（`throughSeq`），必要时**主动建立**观察。
     ///
     /// ## 为什么必须主动建立
@@ -577,7 +663,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     ///
     /// 因此这里不等待页面来建连，而是用**同一个 runtime** 起一次观察拿基线，
     /// 拿到后立刻 `disconnect()`（它只退订自己的 follow，不碰宿主 `$events`，
-    /// 也不关共享连接）。页面随后建自己的连接时会登记新代次的基线。
+    /// 也不关共享连接）。页面随后建立的普通 follow 只恢复实时事件，不改读取基线。
     ///
     /// ## 为什么是有界轮询而不是 continuation + 任务组
     ///
@@ -601,7 +687,10 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         // 先记住调用前的上下文。`connect` 会异步登记新上下文；如果在它之后读取，
         // opening snapshot 先返回时可能把新上下文误当成旧值，导致本次刷新一直等待。
         let previousContextID = newestSnapshotContextBySessionID[sessionID] ?? 0
-        let warmUp = makeEventClient(sessionID: sessionID)
+        let warmUp = makeEventClient(
+            sessionID: sessionID,
+            establishesHistoryBaseline: true
+        )
         warmUp.connect(sessionID: sessionID)
         defer { warmUp.disconnect() }
 
@@ -641,10 +730,10 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     }
 
 
-    /// 登记某会话本次 follow 的 opening snapshot 游标。
+    /// 登记某会话本次权威历史观察的 opening snapshot 游标。
     ///
-    /// 由页面客户端在建立基线后回调。代次只增不减：`throughSeq` 属于**这一代**
-    /// snapshot，用上一代的游标会读到错误的区间。
+    /// 由历史预热客户端在建立基线后回调。代次只增不减：`throughSeq` 属于**这一代**
+    /// 权威 snapshot，用上一代的游标会读到错误的区间。
     @MainActor
     func rememberSnapshotCursor(
         _ cursor: Int,
@@ -670,6 +759,11 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
            let requestID = event.data?["source"]?["rpcId"]?.stringValue?.trimmedNonEmpty {
             submissionController().resolveAfterReconciliation(requestID: requestID)
         }
+        if event.type == HarnessWireEventType.toolCall || event.type == HarnessWireEventType.toolResult {
+            for message in HarnessHistoryProjection.messages(from: [event], sessionID: sessionID) {
+                _ = reconcileToolHistoryMessage(message, sessionID: sessionID)
+            }
+        }
         guard event.type == HarnessWireEventType.assistantMessage,
               let seq = event.seq,
               let durableID = HarnessPresentationProjector.stableMessageID(
@@ -678,7 +772,18 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
               ) else {
             return nil
         }
-        return assistantMessageIDBySessionID[sessionID]?[seq] ?? durableID
+        if let settled = assistantMessageIDBySessionID[sessionID]?[seq] {
+            return settled
+        }
+        if let attempt = matchingUnresolvedAssistantAttempt(for: event, sessionID: sessionID) {
+            let attemptMessageID = "h-attempt-\(attempt.attemptID)-assistant"
+            return settleAssistantIdentity(
+                sessionID: sessionID,
+                seq: seq,
+                attemptMessageID: attemptMessageID
+            )
+        }
+        return durableID
     }
 
     /// 用 `end.outcome.seq` 把直播 attempt 与 durable message 结算成一个展示身份。
@@ -695,7 +800,59 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         let settled = identities[seq] ?? attemptMessageID
         identities[seq] = settled
         assistantMessageIDBySessionID[sessionID] = identities
+        if let attemptID = Self.attemptID(fromAssistantMessageID: attemptMessageID) {
+            unresolvedAssistantAttemptsBySessionID[sessionID]?[attemptID] = nil
+        }
         return settled
+    }
+
+    @MainActor
+    private func rememberAssistantAttempt(
+        _ attempt: HarnessJournalAttempt,
+        sessionID: SessionID
+    ) {
+        guard let unresolved = HarnessUnresolvedAssistantAttempt(attempt: attempt) else { return }
+        unresolvedAssistantAttemptsBySessionID[sessionID, default: [:]][unresolved.attemptID] = unresolved
+    }
+
+    private func matchingUnresolvedAssistantAttempt(
+        for event: HarnessDurableEvent,
+        sessionID: SessionID
+    ) -> HarnessUnresolvedAssistantAttempt? {
+        guard let candidates = unresolvedAssistantAttemptsBySessionID[sessionID]?.values else {
+            return nil
+        }
+        return candidates
+            .filter { $0.matches(durableEvent: event) }
+            .max { $0.startedAfterSeq < $1.startedAfterSeq }
+    }
+
+    private static func attemptID(fromAssistantMessageID messageID: MessageID) -> String? {
+        let prefix = "h-attempt-"
+        let suffix = "-assistant"
+        guard messageID.hasPrefix(prefix), messageID.hasSuffix(suffix) else { return nil }
+        return String(messageID.dropFirst(prefix.count).dropLast(suffix.count))
+    }
+
+    /// 工具历史只在 Harness 边界做折叠；通用 reducer 无需学习某个 runtime 的事件语义。
+    @MainActor
+    private func reconcileToolHistoryMessage(
+        _ message: CodexHistoryMessage,
+        sessionID: SessionID
+    ) -> CodexHistoryMessage? {
+        guard message.activityPayload?.category == .toolCall else { return message }
+        var known = toolHistoryMessageBySessionID[sessionID] ?? [:]
+        if let current = known[message.id] {
+            let merged = HarnessHistoryProjection.mergedToolMessage(current, message)
+            known[message.id] = merged
+            toolHistoryMessageBySessionID[sessionID] = known
+            // older 页仍返回终态条目，让 Store 可以补上较早 tool/call 才携带的名称，
+            // 但状态与 seq 保持较新的 result，绝不降回 running。
+            return merged
+        }
+        known[message.id] = message
+        toolHistoryMessageBySessionID[sessionID] = known
+        return message
     }
 
     // MARK: - H07 写路径
