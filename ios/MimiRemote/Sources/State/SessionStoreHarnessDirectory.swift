@@ -47,11 +47,13 @@ extension SessionStore {
                 changed: { [weak self] in
                     self?.objectWillChange.send()
                 },
-                rejected: { [weak self] sessionID, _, message in
-                    // 走既有错误提示通道：用户需要知道这次应答为什么没生效。
-                    self?.setErrorMessage(message)
-                    self?.objectWillChange.send()
-                    _ = sessionID
+                rejected: { [weak self] sessionID, eventID, outcome, message in
+                    self?.handleNativeInteractionRejected(
+                        sessionID: sessionID,
+                        eventID: eventID,
+                        outcome: outcome,
+                        message: message
+                    )
                 }
             )
             client.startHostEvents()
@@ -65,6 +67,36 @@ extension SessionStore {
         Task { @MainActor in
             await client.stopHostEvents()
         }
+    }
+
+    /// 宿主级交互被拒绝时的统一处理。
+    ///
+    /// ## 为什么必须分结论处理
+    ///
+    /// `rejected` 是"上游明确没执行"：要清掉 Store 的**提交中标记**，否则用户
+    /// 第二次点击会被自己的 pending 挡住（按钮一直停在"正在发送"）。
+    /// 底层 `HarnessInteractionStore` 放回待应答**不等于**上层按钮恢复可操作——
+    /// 那是两份状态，必须一起更新。
+    ///
+    /// `unknown` 是"可能已生效"：**不得**清锁。清了等于允许重发，
+    /// 而重发可能让一次已经执行过的审批再执行一遍。
+    /// 宿主回执的状态交接入口。非 private：这条路径的状态正确性必须能被
+    /// 真实 Store 测试断言（"按钮是否恢复可操作"），而不是只测底层 store。
+    func handleNativeInteractionRejected(
+        sessionID: String,
+        eventID: String,
+        outcome: String,
+        message: String
+    ) {
+        if outcome == HarnessRespondOutcome.rejected {
+            // 走与页面路径同一套清理：审批清 pending 标记，追问恢复卡片。
+            clearPendingApprovalDecision(sessionID: sessionID, approvalID: eventID)
+            if let request = clearPendingUserInputResponse(sessionID: sessionID, requestID: eventID) {
+                restoreUserInputRequestAfterFailure(request, sessionID: sessionID)
+            }
+        }
+        setErrorMessage(message)
+        objectWillChange.send()
     }
 
     /// 把一条宿主级交互事件送进既有事件通道。

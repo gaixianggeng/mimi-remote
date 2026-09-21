@@ -540,12 +540,32 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                   let attempt = current.activeAttempt,
                   attempt.producedAssistantMessage,
                   let seq = attempt.settledSeq {
-            settledAssistantMessageIDBySeq[seq] = HarnessPresentationProjector.messageID(
-                attempt: attempt,
-                suffix: "assistant"
-            )
+            settledAssistantMessageIDBySeq[seq] = settledIdentity(for: attempt, seq: seq)
         }
         return rejection
+    }
+
+    /// 结算时把直播身份收敛到**持久身份**上。
+    ///
+    /// 直播期间只有 attempt 身份可用（那时还没有 durable 记录）；结算拿到 `outcome.seq`
+    /// 后，如果对应的 durable 记录已经在手（先于 end 到达，见
+    /// `pendingAssistantDurableBySeq`），就必须改用与历史页**同一个** `stableMessageID`。
+    ///
+    /// 否则同一条回复会有两个 id：直播 `h-attempt-<id>-assistant`、历史
+    /// `h-msg-<nativeId>-assistant`，而 reducer 只按 id 原位覆盖，没有"seq 相同就合并"
+    /// 的兜底——用户在刷新后会看到第二条助手消息。
+    ///
+    /// durable 记录**晚于** end 到达时这里拿不到它，此时仍退回 attempt 身份；
+    /// 那一条顺序的收敛需要给事件模型加显式别名（见类型注释中的已知限制）。
+    private func settledIdentity(for attempt: HarnessJournalAttempt, seq: Int) -> MessageID {
+        if let durable = pendingAssistantDurableBySeq[seq],
+           let durableID = HarnessPresentationProjector.stableMessageID(
+               for: durable,
+               prefix: "assistant"
+           ) {
+            return durableID
+        }
+        return HarnessPresentationProjector.messageID(attempt: attempt, suffix: "assistant")
     }
 
     /// 结算当前 attempt 并投影结果。
@@ -555,10 +575,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     func settleActiveAttempt() {
         guard var current = journal, let attempt = current.activeAttempt else { return }
         if attempt.producedAssistantMessage, let seq = attempt.settledSeq {
-            settledAssistantMessageIDBySeq[seq] = HarnessPresentationProjector.messageID(
-                attempt: attempt,
-                suffix: "assistant"
-            )
+            settledAssistantMessageIDBySeq[seq] = settledIdentity(for: attempt, seq: seq)
         }
         for projected in HarnessPresentationProjector.project(attempt: attempt, sessionID: sessionID) {
             onEvent?(projected)

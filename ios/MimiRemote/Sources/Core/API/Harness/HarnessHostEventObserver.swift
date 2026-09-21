@@ -34,7 +34,12 @@ final class HarnessHostEventObserver {
     ///
     /// `AgentEvent` 没有"交互失败"这一态（Codex 侧同样走回调），所以拒绝原因
     /// 单独回传，由上层决定提示还是回退卡片状态。
-    var onInteractionRejected: ((_ sessionID: String, _ eventID: String, _ message: String) -> Void)?
+    /// 一次应答没有以"接受"收场时的回传。
+    ///
+    /// 必须带上**结论**而不只是文案：`rejected` 要恢复按钮让用户重试，
+    /// `unknown` 必须保持锁定（重发可能让一次已生效的审批执行两次）。
+    /// 上层若只看文案就无法区分这两者。
+    var onInteractionRejected: ((_ sessionID: String, _ eventID: String, _ outcome: String, _ message: String) -> Void)?
 
     private let runtime: HarnessSessionRuntime
     private let interactionStore: HarnessInteractionStore
@@ -338,7 +343,10 @@ final class HarnessHostEventObserver {
         case HarnessRespondOutcome.rejected:
             // 明确拒绝 = 没生效，放回让用户重试。
             interactionStore.releaseAfterExplicitFailure(eventID: eventID)
-            onInteractionRejected?(pending.sessionID, eventID, Self.respondErrorMessage(value))
+            onInteractionRejected?(
+                pending.sessionID, eventID,
+                HarnessRespondOutcome.rejected, Self.respondErrorMessage(value)
+            )
 
         case HarnessRespondOutcome.unknown:
             // 结果未知：锁定并等待对账/重投。这里**不**调用
@@ -347,12 +355,19 @@ final class HarnessHostEventObserver {
                 eventID: eventID,
                 detail: Self.respondErrorMessage(value)
             )
-            onInteractionRejected?(pending.sessionID, eventID, Self.respondErrorMessage(value))
+            onInteractionRejected?(
+                pending.sessionID, eventID,
+                HarnessRespondOutcome.unknown, Self.respondErrorMessage(value)
+            )
 
         default:
             // 认不出的结论不猜。保持现状（仍是 submitting），并如实提示——
             // 猜"接受"会撤掉一张可能还待处理的卡，猜"拒绝"会诱发重复提交。
-            onInteractionRejected?(pending.sessionID, eventID, Self.respondErrorMessage(value))
+            // 按 unknown 上报：上层不得据此解锁重发。
+            onInteractionRejected?(
+                pending.sessionID, eventID,
+                HarnessRespondOutcome.unknown, Self.respondErrorMessage(value)
+            )
         }
     }
 

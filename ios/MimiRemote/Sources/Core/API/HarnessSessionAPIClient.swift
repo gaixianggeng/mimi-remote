@@ -110,12 +110,14 @@ protocol HarnessSessionClient: AnyObject {
     /// 接上宿主级交互事件的出口。装配方在宿主激活时调用一次。
     ///
     /// `rejected` 单独回传而不是只触发重绘：卡片被放回可应答是一件事，
-    /// **告诉用户为什么**是另一件事。只重绘会让卡片恢复原状却没有任何解释。
+    /// **告诉用户为什么、以及要不要解锁**是另一件事。带上结论（outcome）是关键：
+    /// `rejected` 恢复按钮，`unknown` 必须保持锁定。只重绘会让卡片恢复原状却
+    /// 没有任何解释，也让上层无从判断该不该解锁。
     @MainActor
     func setHostInteractionSinks(
         events: (@MainActor (AgentEvent) -> Void)?,
         changed: (@MainActor () -> Void)?,
-        rejected: (@MainActor (_ sessionID: String, _ eventID: String, _ message: String) -> Void)?
+        rejected: (@MainActor (_ sessionID: String, _ eventID: String, _ outcome: String, _ message: String) -> Void)?
     )
 
     /// 开始宿主级 `$events` 观察。幂等。
@@ -199,8 +201,8 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     private var hostEventSink: (@MainActor (AgentEvent) -> Void)?
     /// 宿主级 pending 集合变化时的通知出口。
     private var hostChangeSink: (@MainActor () -> Void)?
-    /// 一次宿主级应答被明确拒绝时的出口（会话、交互、原因）。
-    private var hostRejectionSink: (@MainActor (_ sessionID: String, _ eventID: String, _ message: String) -> Void)?
+    /// 一次宿主级应答未以"接受"收场时的出口（会话、交互、结论、原因）。
+    private var hostRejectionSink: (@MainActor (_ sessionID: String, _ eventID: String, _ outcome: String, _ message: String) -> Void)?
     /// 每个会话**当前这一代** follow 的 `snapshot.cursor`。
     ///
     /// `session/page` 的 `throughSeq` 必须取自**本次** follow 的 opening snapshot
@@ -286,7 +288,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     func setHostInteractionSinks(
         events: (@MainActor (AgentEvent) -> Void)?,
         changed: (@MainActor () -> Void)?,
-        rejected: (@MainActor (_ sessionID: String, _ eventID: String, _ message: String) -> Void)?
+        rejected: (@MainActor (_ sessionID: String, _ eventID: String, _ outcome: String, _ message: String) -> Void)?
     ) {
         hostEventSink = events
         hostChangeSink = changed
@@ -297,11 +299,11 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
             self?.hostChangeSink?()
         }
         observer.onStatus = { _ in }
-        observer.onInteractionRejected = { [weak self] sessionID, eventID, message in
-            // 先刷新（卡片已回到可应答），再把原因交给既有失败处理入口——
-            // 只刷新会让用户看到一个恢复原状但没有解释的卡片。
+        observer.onInteractionRejected = { [weak self] sessionID, eventID, outcome, message in
+            // 先刷新（底层 pending 已变化），再把**结论与原因**一起交给上层——
+            // 上层据此决定恢复按钮还是保持锁定。只刷新等于让卡片恢复原状却没有解释。
             self?.hostChangeSink?()
-            self?.hostRejectionSink?(sessionID, eventID, message)
+            self?.hostRejectionSink?(sessionID, eventID, outcome, message)
         }
     }
 

@@ -320,7 +320,7 @@ final class HarnessEventClientTests: XCTestCase {
     func testRuntimeRejectedResponseReopensCardInsteadOfDroppingIt() async throws {
         let (stream, client, store, observer) = try await makeInteractionStack()
         var rejections: [String] = []
-        observer.onInteractionRejected = { _, _, message in rejections.append(message) }
+        observer.onInteractionRejected = { _, _, _, message in rejections.append(message) }
 
         let eventsID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
         stream.push(carrierValue(
@@ -626,7 +626,7 @@ final class HarnessEventClientTests: XCTestCase {
         api.setHostInteractionSinks(
             events: { hostEvents.append($0) },
             changed: {},
-            rejected: { _, _, _ in }
+            rejected: { _, _, _, _ in }
         )
         api.startHostEvents()
 

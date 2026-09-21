@@ -251,7 +251,7 @@ final class HarnessHostEventObserverTests: XCTestCase {
             recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
         )
         var rejections: [(String, String, String)] = []
-        observer.onInteractionRejected = { sessionID, eventID, message in
+        observer.onInteractionRejected = { sessionID, eventID, _, message in
             rejections.append((sessionID, eventID, message))
         }
         observer.start()
@@ -388,7 +388,77 @@ final class HarnessHostEventObserverTests: XCTestCase {
         await observer.stop()
     }
 
+    // MARK: - 3. 拒绝后按钮必须真的能再操作
+
+    /// 明确拒绝要清掉 Store 的"提交中"标记，否则用户第二次点击会被自己挡住。
+    ///
+    /// 底层 `HarnessInteractionStore` 放回待应答**不等于**上层按钮恢复可操作——
+    /// 那是两份状态。宿主回执原先只显示错误，没做这一步，于是按钮一直停在
+    /// "正在发送"，用户看到的只是文案变了。
+    func testExplicitRejectionClearsPendingFlagSoUserCanRetry() async throws {
+        let fixture = try makeStoreFixture()
+        defer { fixture.tearDown() }
+
+        // 模拟用户已点过一次：Store 记下"提交中"。
+        fixture.store.markApprovalDecisionPending(
+            NativeHostInteractionFixture.approvalID, sessionID: fixture.sessionID
+        )
+        XCTAssertTrue(
+            fixture.store.isApprovalDecisionPending(fixture.approval(), sessionID: fixture.sessionID),
+            "前置条件：已提交"
+        )
+
+        fixture.store.handleNativeInteractionRejected(
+            sessionID: fixture.sessionID,
+            eventID: NativeHostInteractionFixture.approvalID,
+            outcome: HarnessRespondOutcome.rejected,
+            message: "上游拒绝"
+        )
+
+        XCTAssertFalse(
+            fixture.store.isApprovalDecisionPending(fixture.approval(), sessionID: fixture.sessionID),
+            "明确拒绝后必须清掉提交中标记，让用户能再点一次"
+        )
+    }
+
+    /// 结果未知**不得**清锁：清了就等于允许重发，而可能已生效。
+    func testUnknownOutcomeKeepsPendingFlagLocked() async throws {
+        let fixture = try makeStoreFixture()
+        defer { fixture.tearDown() }
+
+        fixture.store.markApprovalDecisionPending(
+            NativeHostInteractionFixture.approvalID, sessionID: fixture.sessionID
+        )
+
+        fixture.store.handleNativeInteractionRejected(
+            sessionID: fixture.sessionID,
+            eventID: NativeHostInteractionFixture.approvalID,
+            outcome: HarnessRespondOutcome.unknown,
+            message: "结果未知"
+        )
+
+        XCTAssertTrue(
+            fixture.store.isApprovalDecisionPending(fixture.approval(), sessionID: fixture.sessionID),
+            "结果未知时必须保持锁定，重发可能让一次已生效的审批执行两次"
+        )
+    }
+
     // MARK: - 支撑
+
+    /// 真实 SessionStore + 真实 native client，验证状态交接（不是纯函数）。
+    private func makeStoreFixture() throws -> NativeHostInteractionFixture {
+        let appStore = makeIsolatedAppStoreForHarnessHostEvents()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore()
+        )
+        let sessionID: SessionID = "h498-host-session"
+        store.nativeHarnessRollout = HarnessNativeRollout(isEnabled: true)
+        return NativeHostInteractionFixture(appStore: appStore, store: store, sessionID: sessionID)
+    }
+
+
 
     private func makeRuntime(stream: FakeHarnessStreamTransport) -> HarnessSessionRuntime {
         HarnessSessionRuntime(
@@ -449,4 +519,36 @@ final class HarnessHostEventObserverTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(1))
         }
     }
+}
+
+
+/// 宿主交互状态交接的测试夹具。
+@MainActor
+struct NativeHostInteractionFixture {
+    let appStore: AppStore
+    let store: SessionStore
+    let sessionID: SessionID
+
+    /// 夹具用的审批 id。用例与断言共用同一个值，避免两边各写一个字符串。
+    static let approvalID = "approval-x"
+
+    func approval() -> ApprovalSummary {
+        ApprovalSummary(
+            id: Self.approvalID,
+            title: "需要授权",
+            kind: "harness_tool",
+            risk: "high",
+            count: nil
+        )
+    }
+
+    func tearDown() {}
+}
+
+@MainActor
+private func makeIsolatedAppStoreForHarnessHostEvents() -> AppStore {
+    let suiteName = "MimiRemoteTests.HarnessHostEvents.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    return AppStore(defaults: defaults, tokenStore: TokenStore(keychain: TestKeychainOperations()))
 }

@@ -768,17 +768,17 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
     func setHostInteractionSinks(
         events: (@MainActor (AgentEvent) -> Void)?,
         changed: (@MainActor () -> Void)?,
-        rejected: (@MainActor (String, String, String) -> Void)?
+        rejected: (@MainActor (String, String, String, String) -> Void)?
     ) {
         hostEventsSink = events
         hostRejectionSink = rejected
     }
 
-    private var hostRejectionSink: (@MainActor (String, String, String) -> Void)?
+    private var hostRejectionSink: (@MainActor (String, String, String, String) -> Void)?
 
-    /// 造一次"应答被明确拒绝"，验证装配方真的把原因接进了失败处理入口。
-    func emitHostRejection(sessionID: String, eventID: String, message: String) {
-        hostRejectionSink?(sessionID, eventID, message)
+    /// 造一次"应答未以接受收场"，验证装配方把**结论与原因**都接进了失败处理入口。
+    func emitHostRejection(sessionID: String, eventID: String, outcome: String, message: String) {
+        hostRejectionSink?(sessionID, eventID, outcome, message)
     }
 
     func startHostEvents() {
