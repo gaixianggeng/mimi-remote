@@ -111,6 +111,9 @@ struct ShareJourneySettingsRow: View {
                             endPoint: .bottomTrailing
                         )
                     )
+                // 这一行没有 themeStore（纯展示行），而本文件其余字号都乘了
+                // 分享海报的 `scale`。P1 的档位归一只做到能拿到 themeStore 的位置，
+                // 这处遗留交给用户决定是否值得为一行字号引入依赖注入。
                 Image(systemName: "sparkles.rectangle.stack.fill")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(.white)

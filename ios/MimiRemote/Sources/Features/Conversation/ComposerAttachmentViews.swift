@@ -757,7 +757,7 @@ struct AddContentPanel: View {
         Button(action: action) {
             VStack(spacing: 6) {
                 Image(systemName: systemImage)
-                    .font(themeStore.uiFont(size: 17, weight: .semibold))
+                    .font(themeStore.uiFont(.headline, weight: .semibold))
                     .foregroundStyle(tokens.accent)
                     .frame(width: 38, height: 38)
                     .background(tokens.selectionFill, in: Circle())
@@ -794,7 +794,7 @@ struct AddContentPanel: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: systemImage)
-                    .font(themeStore.uiFont(size: 16, weight: .semibold))
+                    .font(themeStore.uiFont(.callout, weight: .semibold))
                     .foregroundStyle(tokens.accent)
                     .frame(width: 36, height: 36)
                     .background(tokens.selectionFill, in: Circle())
@@ -1060,7 +1060,7 @@ struct AddContentPanel: View {
 
     private func pluginIcon(tokens: ThemeTokens) -> some View {
         Image(systemName: "at")
-            .font(themeStore.uiFont(size: 17, weight: .bold))
+            .font(themeStore.uiFont(.headline, weight: .bold))
             .foregroundStyle(tokens.accent)
             .frame(width: 38, height: 38)
             .background(tokens.selectionFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))

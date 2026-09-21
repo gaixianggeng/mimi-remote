@@ -463,7 +463,7 @@ struct ManagedConnectionSubscriptionView: View {
     private func deviceRow(_ device: ManagedConnectionDevice) -> some View {
         HStack(spacing: 12) {
             Image(systemName: device.deviceType == .mac ? "laptopcomputer" : "iphone")
-                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                .font(themeStore.uiFont(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .frame(width: SettingsLayoutMetrics.iconSlot)
                 .foregroundStyle(tokens.secondaryText)
             VStack(alignment: .leading, spacing: 3) {

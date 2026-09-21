@@ -128,7 +128,7 @@ struct WorkspaceRuntimeMenuPicker: View {
                     .lineLimit(1)
 
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(themeStore.uiFont(.caption2, weight: .semibold))
                     .foregroundStyle(tokens.tertiaryText)
             }
             .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
@@ -292,7 +292,7 @@ struct WorkspaceRuntimePopoverPicker: View {
                     .lineLimit(1)
 
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(themeStore.uiFont(.caption2, weight: .semibold))
                     .foregroundStyle(tokens.tertiaryText)
             }
             .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
@@ -377,7 +377,7 @@ struct WorkspaceRuntimePopoverPicker: View {
 
             if choice == selection {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(themeStore.uiFont(.footnote, weight: .semibold))
                     .foregroundStyle(tokens.primaryAction)
                     .accessibilityHidden(true)
             }

@@ -45,7 +45,7 @@ struct ConnectionSpeedTestView: View {
                 HStack(alignment: .center, spacing: 12) {
                     // 与设备首页同一套图标语言：18pt 符号 + 28pt 图标槽，不用彩色圆底。
                     Image(systemName: resultSystemImage)
-                        .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                        .font(themeStore.uiFont(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                         .symbolRenderingMode(.hierarchical)
                         .foregroundStyle(resultTone(tokens: tokens))
                         .frame(width: SettingsLayoutMetrics.iconSlot, height: SettingsLayoutMetrics.iconSlot)
@@ -477,7 +477,7 @@ struct ConnectionSpeedTestView: View {
 
         return HStack(spacing: 6) {
             Image(systemName: networkPath.kind.settingsSystemImage)
-                .font(.system(size: 13, weight: .semibold))
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
 
             Text(networkPath.localizedSummary)
                 .font(themeStore.uiFont(.footnote, weight: .medium))
@@ -828,7 +828,7 @@ private struct ConnectionSpeedTestStageRow: View {
 
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: stage.status.isFailed ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
-                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                .font(themeStore.uiFont(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .foregroundStyle(stage.status.isFailed ? tokens.warning : tokens.success)
                 .frame(width: SettingsLayoutMetrics.iconSlot, height: SettingsLayoutMetrics.iconSlot)
 

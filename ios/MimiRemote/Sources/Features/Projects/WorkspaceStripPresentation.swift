@@ -3,6 +3,12 @@ import SwiftUI
 /// 工作区顶部胶囊的尺寸与宽屏信息密度策略。
 /// 单独放在布局组件中，避免根页面同时承担视觉策略与会话编排职责。
 enum WorkspaceStripLayout {
+    /// 胶囊行的兜底页面内边距。
+    ///
+    /// 真实使用的内边距由 `WorkspaceRootView.stripContentPadding` 按当前页面算出：
+    /// 页面内边距（紧凑 Tab 栏时更窄）加上会话行自身的横向内边距。胶囊行与下方列表
+    /// 必须共用同一条内容列，否则宽屏下第一个胶囊比列表的状态圈更靠左。
+    /// 这个常量只在没有列表上下文的计算里兜底。
     static let horizontalPadding: CGFloat = 24
     /// 44pt 同时是 Apple 的最小命中尺寸和整条控件带的高度：选中项展开成带名称的胶囊，
     /// 其余收缩成头像圆，因此一行就能放下全部工作区，不再需要 138pt 的卡片。
@@ -27,17 +33,43 @@ enum WorkspaceStripLayout {
     /// 结果：iPad mini 竖屏（744 屏宽 / 696 容器）与更宽的 iPad 进入合并态；
     /// iPhone 竖屏（393 / 345）、iPad 1/2 与 1/3 分屏落在阈值以下，退回列表上方独立一行。
     static let inlineRuntimePickerMinimumWidth: CGFloat = 640
+    /// 未选中胶囊开始显示名称所需的最小滚动区宽度。
+    ///
+    /// 这个数是**实测**出来的，不是推导的。胶囊滚动区的真实宽度（容器收窄到
+    /// `maxContentWidth` 之后，再扣掉行内 Runtime 筛选器和分隔线）：
+    ///
+    /// | 场景 | 滚动区宽 |
+    /// | --- | --- |
+    /// | iPad 13 寸横屏 + 侧栏展开（容器 920） | 689.5pt |
+    /// | iPad mini 竖屏（容器 744） | 505.5pt |
+    /// | iPhone 竖屏（容器 393，筛选器不并入） | 345pt |
+    ///
+    /// 阈值取在横屏与竖屏之间：横屏给出完整名称，竖屏干脆退回纯头像。
+    /// 这里曾经用 `(viewportWidth - 760) / 240` 做连续映射，那个 760...1000 的窗口
+    /// 是按"胶囊行占满整列宽"标定的；容器收窄到 920 之后它永远不满足，
+    /// 名称会彻底消失——这正是本常量必须实测、不能沿用的原因。
+    ///
+    /// 改动胶囊行的宽度策略、`maxContentWidth`、Runtime 筛选器尺寸或行内控件组成后，
+    /// 必须重新实测这三个数并更新本表，否则名称要么永远不显示，要么在窄屏被截断。
+    static let nameDisclosureMinimumWidth: CGFloat = 640
 
-    static func minimumContentWidth(viewportWidth: CGFloat) -> CGFloat {
-        max(0, viewportWidth - horizontalPadding * 2)
+    static func minimumContentWidth(
+        viewportWidth: CGFloat,
+        contentPadding: CGFloat = WorkspaceStripLayout.horizontalPadding
+    ) -> CGFloat {
+        max(0, viewportWidth - contentPadding * 2)
     }
 
     /// 统一决定 Runtime 是否进入胶囊行，避免 Runtime 布局和行内新建入口分别判断。
     /// `viewportWidth` 是应用了内边距的外层容器宽，不是设备屏宽。
+    /// `contentPadding` 是这一行实际使用的左右内边距——它和下方会话列表的内容列
+    /// 由同一个表达式给出（见 `WorkspaceRootView.stripContentPadding`），必须传进来，
+    /// 否则这里的可用宽度会比真实值偏大，阈值判断跟着失真。
     static func usesInlineRuntimePicker(
         viewportWidth: CGFloat,
         showsHostSwitcherInStrip: Bool,
-        hasBottomTabBar: Bool
+        hasBottomTabBar: Bool,
+        contentPadding: CGFloat = WorkspaceStripLayout.horizontalPadding
     ) -> Bool {
         // 底部 Tab 栏时新建按钮必须留在筛选行，横屏 iPhone 也不能切到 inline 布局。
         guard !hasBottomTabBar else { return false }
@@ -45,19 +77,28 @@ enum WorkspaceStripLayout {
         let hostSwitcherBudget = showsHostSwitcherInStrip
             ? WorkbenchChromeIconMetrics.minimumHitTarget + chipSpacing
             : 0
-        let availableContentWidth = minimumContentWidth(viewportWidth: viewportWidth)
+        let availableContentWidth = minimumContentWidth(
+            viewportWidth: viewportWidth,
+            contentPadding: contentPadding
+        )
         return availableContentWidth - hostSwitcherBudget >= inlineRuntimePickerMinimumWidth
     }
 
     /// 使用胶囊滚动区的真实宽度，而不是设备宽度。浮动侧栏会持续改变详情区宽度，
     /// 因此这里同时受宽屏阈值和项目数量预算约束：空间不足时仍退回纯头像。
+    ///
+    /// 返回值是**二值**的：要么 1（给足 `restingNameWidth`），要么 0（完全不给）。
+    ///
+    /// 这里曾经返回 0...1 的连续披露进度，并按它插值名称宽度。连续插值在中间态
+    /// 只会给名称留出一两个字符的宽度，于是胶囊上出现孤零零的字母残片——
+    /// 用户读到的不是「空间不够」，是「这个控件坏了」。一个字符的工作区名没有任何
+    /// 辨识价值，不如干净地退回纯头像。
     static func restingNameDisclosure(
         viewportWidth: CGFloat,
         projectCount: Int
     ) -> CGFloat {
         guard viewportWidth > 0, projectCount > 1 else { return 0 }
 
-        let widthProgress = min(max((viewportWidth - 760) / 240, 0), 1)
         // 行末的「添加工作区」虚线胶囊和项目胶囊同宽同间距，一起占用滚动区预算。
         let collapsedWidth = CGFloat(projectCount + 1) * chipHeight
             + CGFloat(projectCount) * chipSpacing
@@ -67,8 +108,14 @@ enum WorkspaceStripLayout {
             viewportWidth - collapsedWidth - selectedNameAllowance
         )
         let restingBudget = CGFloat(projectCount - 1) * restingNameWidth
-        let budgetProgress = min(max(remainingWidth / restingBudget, 0), 1)
-        return min(widthProgress, budgetProgress)
+
+        // 两个条件必须同时满足：滚动区本身够宽，并且扣掉固定占用后，
+        // 每个未选中胶囊都拿得到完整的一份名称宽度。任一不满足就退回纯头像。
+        guard viewportWidth >= nameDisclosureMinimumWidth,
+              remainingWidth >= restingBudget else {
+            return 0
+        }
+        return 1
     }
 }
 

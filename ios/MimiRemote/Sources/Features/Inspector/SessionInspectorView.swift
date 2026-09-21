@@ -59,7 +59,7 @@ struct SessionInspectorView: View {
 
         return HStack(spacing: 10) {
             Image(systemName: selectedSection.symbolName)
-                .font(themeStore.uiFont(size: 15, weight: .semibold))
+                .font(themeStore.uiFont(.subheadline, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(tokens.accent)
                 .frame(width: 34, height: 34)

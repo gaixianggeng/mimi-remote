@@ -537,7 +537,7 @@ struct CapabilityItemRow: View {
 
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: symbolName)
-                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                .font(themeStore.uiFont(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .foregroundStyle(tokens.secondaryText)
                 .frame(width: SettingsLayoutMetrics.iconSlot, height: SettingsLayoutMetrics.iconSlot)
             VStack(alignment: .leading, spacing: 4) {
@@ -723,7 +723,7 @@ struct AppearanceView: View {
                         Text(fontScaleText)
                             .foregroundStyle(tokens.secondaryText)
                     }
-                    .font(themeStore.uiFont(size: 15, weight: .medium))
+                    .font(themeStore.uiFont(.subheadline, weight: .medium))
 
                     Slider(
                         value: Binding(
@@ -736,10 +736,10 @@ struct AppearanceView: View {
 
                     HStack(alignment: .firstTextBaseline) {
                         Text("Aa")
-                            .font(themeStore.uiFont(size: 13, weight: .medium))
+                            .font(themeStore.uiFont(.footnote, weight: .medium))
                         Spacer()
                         Text("Aa")
-                            .font(themeStore.uiFont(size: 22, weight: .semibold))
+                            .font(themeStore.uiFont(.title2, weight: .semibold))
                     }
                     .foregroundStyle(tokens.secondaryText)
                 }
@@ -927,8 +927,9 @@ private struct WorkspaceIconStyleOptionLabel: View {
             }
 
             if isSelected {
+                // 9 太小且不在档位表里，提到 caption2（11）保证可读。
                 Image(systemName: "checkmark")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(themeStore.uiFont(size: 9, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 20, height: 20)
                     .background(tokens.primaryAction, in: Circle())
@@ -977,8 +978,9 @@ struct ThemePresetRow: View {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(preset.swatchBackground)
+                    // 这是主题色板里的示样字形，字号本身不重要，但必须跟随用户的字号设置。
                     Text("Aa")
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .font(themeStore.uiFont(.subheadline, weight: .bold))
                         .foregroundStyle(preset.swatchForeground)
                 }
                 .frame(width: 42, height: 42)
@@ -1023,11 +1025,11 @@ struct AppearanceConversationPreview: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label(themeStore.preset.title, systemImage: "sparkles")
-                    .font(themeStore.uiFont(size: 13, weight: .semibold))
+                    .font(themeStore.uiFont(.footnote, weight: .semibold))
                     .foregroundStyle(tokens.accent)
                 Spacer()
                 Text(themeStore.mode.title)
-                    .font(themeStore.uiFont(size: 12, weight: .medium))
+                    .font(themeStore.uiFont(.caption, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
             }
 
@@ -1036,7 +1038,7 @@ struct AppearanceConversationPreview: View {
                 alignment: .trailing,
                 fill: tokens.userBubble,
                 textColor: tokens.primaryText,
-                font: themeStore.uiFont(size: 15)
+                font: themeStore.uiFont(.subheadline)
             )
 
             PreviewBubble(
@@ -1044,7 +1046,7 @@ struct AppearanceConversationPreview: View {
                 alignment: .leading,
                 fill: tokens.assistantBubble,
                 textColor: tokens.primaryText,
-                font: themeStore.uiFont(size: 15)
+                font: themeStore.uiFont(.subheadline)
             )
 
             VStack(alignment: .leading, spacing: 8) {
@@ -1055,7 +1057,7 @@ struct AppearanceConversationPreview: View {
                     Text("go test ./...")
                         .lineLimit(1)
                 }
-                .font(themeStore.uiFont(size: 13, weight: .medium))
+                .font(themeStore.uiFont(.footnote, weight: .medium))
 
                 Text("let theme = ThemePreset.\(themeStore.preset.rawValue)")
                     .font(themeStore.codeFont(size: 13))

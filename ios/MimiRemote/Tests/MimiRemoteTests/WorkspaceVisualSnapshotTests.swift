@@ -25,6 +25,18 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
         )
     }
 
+    /// iPad 13 寸横屏 + 侧栏展开时详情列约 1056pt：这是胶囊行与列表共享内容宽度轨道
+    /// 的宽屏形态，744 的 iPad mini 竖屏覆盖不到。收窄到 920 之后，两条左缘必须重合，
+    /// 且未选中胶囊要么给出完整名称、要么只剩头像。
+    func testWideWorkspaceKeepsSharedContentTrack() async throws {
+        try await renderWorkspaceSnapshot(
+            width: 1_056,
+            height: 1_032,
+            hasBottomTabBar: false,
+            testName: "testWideWorkspaceKeepsSharedContentTrack"
+        )
+    }
+
     /// 窄屏形态与宽屏是两套头部：Runtime 降级成菜单、分段标题让位、筛选器不并入胶囊行。
     /// 画布固定在 iPhone 宽度即可覆盖，宿主仍是同一台 M5 iPad，基线不随运行设备漂移。
     func testCompactWorkspaceRuntimeMenuOnPhoneWidth() async throws {

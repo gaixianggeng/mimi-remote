@@ -24,7 +24,7 @@ struct WorktreeManagerSheet: View {
                 if let message = sessionStore.worktreeErrorMessage {
                     Section {
                         Label(message, systemImage: "exclamationmark.triangle.fill")
-                            .font(themeStore.uiFont(size: 13, weight: .medium))
+                            .font(themeStore.uiFont(.footnote, weight: .medium))
                             .foregroundStyle(.orange)
                     }
                 }
@@ -72,7 +72,7 @@ struct WorktreeManagerSheet: View {
 
                     if let cleanupPreviewError {
                         Label(cleanupPreviewError, systemImage: "exclamationmark.triangle.fill")
-                            .font(themeStore.uiFont(size: 13, weight: .medium))
+                            .font(themeStore.uiFont(.footnote, weight: .medium))
                             .foregroundStyle(.red)
                     }
                 } footer: {
@@ -377,17 +377,17 @@ struct WorktreeCleanupPreviewRow: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text(item.workspace.name)
-                        .font(themeStore.uiFont(size: 15, weight: .semibold))
+                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
                         .foregroundStyle(tokens.primaryText)
                     Text(item.worktree.path)
-                        .font(themeStore.uiFont(size: 11))
+                        .font(themeStore.uiFont(.caption2))
                         .foregroundStyle(tokens.tertiaryText)
                         .lineLimit(2)
                         .truncationMode(.middle)
                     cleanupDates
                     if isSelectable {
                         Label(L10n.text("ui.comply_with_cleanup_strategy"), systemImage: "checkmark.shield")
-                            .font(themeStore.uiFont(size: 12, weight: .medium))
+                            .font(themeStore.uiFont(.caption, weight: .medium))
                             .foregroundStyle(tokens.success)
                     } else {
                         blockers
@@ -411,7 +411,7 @@ struct WorktreeCleanupPreviewRow: View {
                 Text(L10n.format("ui.recently_used_value", lastUsedAt.formatted(date: .abbreviated, time: .shortened)))
             }
         }
-        .font(themeStore.uiFont(size: 11))
+        .font(themeStore.uiFont(.caption2))
         .foregroundStyle(.secondary)
     }
 
@@ -419,17 +419,18 @@ struct WorktreeCleanupPreviewRow: View {
     private var blockers: some View {
         if item.blockers.isEmpty {
             Label(L10n.text("ui.the_server_is_not_determined_to_be_cleanable"), systemImage: "shield")
-                .font(themeStore.uiFont(size: 12, weight: .medium))
+                .font(themeStore.uiFont(.caption, weight: .medium))
                 .foregroundStyle(.orange)
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(item.blockers) { blocker in
                     VStack(alignment: .leading, spacing: 1) {
                         Text(blocker.message)
-                            .font(themeStore.uiFont(size: 12, weight: .medium))
+                            .font(themeStore.uiFont(.caption, weight: .medium))
                             .foregroundStyle(.orange)
+                        // 10 提到 caption2（11），并改走 codeFont：这一列是机器码，等宽对齐不能丢。
                         Text(blocker.code)
-                            .font(.system(size: 10, design: .monospaced))
+                            .font(themeStore.codeFont(size: 10))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -520,7 +521,7 @@ struct CreateWorktreeSheet: View {
                 if let message = branchErrorMessage, !message.isEmpty {
                     Section {
                         Label(message, systemImage: "exclamationmark.triangle.fill")
-                            .font(themeStore.uiFont(size: 13, weight: .medium))
+                            .font(themeStore.uiFont(.footnote, weight: .medium))
                             .foregroundStyle(.orange)
                     }
                 }
@@ -528,7 +529,7 @@ struct CreateWorktreeSheet: View {
                 if let message = sessionStore.errorMessage, !message.isEmpty {
                     Section {
                         Label(message, systemImage: "exclamationmark.triangle.fill")
-                            .font(themeStore.uiFont(size: 13, weight: .medium))
+                            .font(themeStore.uiFont(.footnote, weight: .medium))
                             .foregroundStyle(.orange)
                     }
                 }
@@ -627,24 +628,24 @@ struct WorktreeManagerRow: View {
                     .frame(width: 20)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.workspace.name)
-                        .font(themeStore.uiFont(size: 15, weight: .semibold))
+                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
                         .foregroundStyle(tokens.primaryText)
                         .lineLimit(1)
                     Text(item.worktree.rootProjectName)
-                        .font(themeStore.uiFont(size: 12, weight: .medium))
+                        .font(themeStore.uiFont(.caption, weight: .medium))
                         .foregroundStyle(tokens.secondaryText)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 if isRunning {
                     Text(L10n.text("ui.running"))
-                        .font(themeStore.uiFont(size: 11, weight: .semibold))
+                        .font(themeStore.uiFont(.caption2, weight: .semibold))
                         .foregroundStyle(tokens.primaryAction)
                 }
             }
 
             Text(item.workspace.path)
-                .font(themeStore.uiFont(size: 12, weight: .regular))
+                .font(themeStore.uiFont(.caption, weight: .regular))
                 .foregroundStyle(tokens.tertiaryText)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -652,11 +653,11 @@ struct WorktreeManagerRow: View {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Label(item.worktree.branch ?? item.worktree.base, systemImage: "point.topleft.down.curvedto.point.bottomright.up")
-                        .font(themeStore.uiFont(size: 11, weight: .medium))
+                        .font(themeStore.uiFont(.caption2, weight: .medium))
                         .foregroundStyle(tokens.secondaryText)
                         .lineLimit(1)
                     Label(L10n.format("ui.base_named", item.worktree.base), systemImage: "arrow.triangle.branch")
-                        .font(themeStore.uiFont(size: 11, weight: .regular))
+                        .font(themeStore.uiFont(.caption2, weight: .regular))
                         .foregroundStyle(tokens.tertiaryText)
                         .lineLimit(1)
                 }

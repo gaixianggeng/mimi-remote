@@ -126,6 +126,17 @@ enum WorkspaceSessionAgeBoundary {
             now.timeIntervalSince(SessionIndexStore.orderingDate(for: session)) > staleInterval
         }
     }
+
+    /// 分界线只在它上面确实还有内容时才该画。
+    ///
+    /// `firstStaleIndex == 0` 表示最新一条会话本身就超过 12 小时：上半边是空的，
+    /// 「12 小时前」会退化成悬在列表顶部的标题，被读成整个列表的名字。
+    /// 判断放在这里而不是让 `firstStaleIndex` 返回 nil——那个函数的语义是
+    /// 「第一个陈旧会话的下标」，0 是合法答案。
+    static func showsBoundary(firstStaleIndex: Int?) -> Bool {
+        guard let firstStaleIndex else { return false }
+        return firstStaleIndex > 0
+    }
 }
 
 /// View 层只记录“哪次调用仍有资格回写”，真实请求复用继续由 SessionStore single-flight 决定。
@@ -239,6 +250,8 @@ struct WorkspaceRootView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
+    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @StateObject private var appearanceStore: WorkspaceAppearanceStore
     @StateObject private var pagerTransitionState = WorkspacePagerTransitionState()
 
@@ -428,13 +441,32 @@ struct WorkspaceRootView: View {
         !usesTabletTopBarHostSwitcher && manageConnections != nil
     }
 
+    /// 胶囊行与下方会话列表共用同一条内容列，左右内边距必须由同一个表达式算出：
+    /// 页面内边距（紧凑 Tab 栏时更窄）加上会话行自身的横向内边距。
+    ///
+    /// 两处曾经各写一个数字——胶囊行固定 24，列表是 20/24 + 12/14——于是宽屏下
+    /// 第一个胶囊比列表的状态圈更靠左，两条左缘对不齐。列表的密度取的是详情列的
+    /// 可用宽度，而收窄到 `maxContentWidth` 不会跨过 `tableWidthThreshold`，
+    /// 所以这里用胶囊行容器宽解析出的密度和列表一致。
+    private var stripContentPadding: CGFloat {
+        let pagePadding = hasCompactTabBar
+            ? WorkbenchPageLayout.compactPadding
+            : WorkbenchPageLayout.regularPadding
+        let rowPadding = SessionIndexRowDensity.resolved(
+            availableWidth: workspaceStripContainerWidth,
+            dynamicTypeSize: dynamicTypeSize
+        ).horizontalPadding
+        return pagePadding + rowPadding
+    }
+
     /// 宽度够时 Runtime 筛选器并入胶囊行，内容头部整条消失；不够时退回列表上方独立一行。
     /// 判定统一由 `WorkspaceStripLayout` 处理，保证底部 Tab 栏始终保留行内新建入口。
     private var usesInlineRuntimePicker: Bool {
         WorkspaceStripLayout.usesInlineRuntimePicker(
             viewportWidth: workspaceStripContainerWidth,
             showsHostSwitcherInStrip: showsHostSwitcherInStrip,
-            hasBottomTabBar: hasBottomTabBar
+            hasBottomTabBar: hasBottomTabBar,
+            contentPadding: stripContentPadding
         )
     }
 
@@ -485,8 +517,9 @@ struct WorkspaceRootView: View {
         Button {
             isPresentingOpenWorkspace = true
         } label: {
+            // 14 归到 subheadline（15）：加号与同屏的工作区胶囊头像同一档。
             Image(systemName: "plus")
-                .font(.system(size: 14, weight: .medium))
+                .font(themeStore.uiFont(size: 14, weight: .medium))
                 .foregroundStyle(tokens.secondaryText)
                 .frame(
                     width: WorkspaceStripLayout.addChipVisualSize,
@@ -654,7 +687,7 @@ struct WorkspaceRootView: View {
 
             VStack(spacing: 18) {
                 Image(systemName: emptyWorkspaceSymbol)
-                    .font(themeStore.uiFont(size: 28, weight: .semibold))
+                    .font(themeStore.uiFont(.title, weight: .semibold))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(tint)
                     .frame(width: 64, height: 64)
@@ -772,8 +805,16 @@ struct WorkspaceRootView: View {
                 )
             }
         }
-        .padding(.horizontal, WorkspaceStripLayout.horizontalPadding)
+        // 与下方会话列表共用同一条内容列：左右内边距取列表内容列的同一个表达式。
+        .padding(.horizontal, stripContentPadding)
         .frame(height: WorkspaceStripLayout.stripHeight)
+        // 胶囊行与下方列表共用同一条内容宽度轨道，否则宽屏下两条左缘会差出上百 pt。
+        // 920 这个数字由 WorkspaceStripLayout.maxContentWidth 单独持有，
+        // 两处各写一个字面量时，改了一处另一处会静默保持旧行为。
+        //
+        // 顺序不能调换：收窄必须排在 `onGeometryChange` 之前，容器宽观测到的才是
+        // 真实可用宽度；放到观测之后，读到的仍是整列宽，宽屏裁切就白做了。
+        .frame(maxWidth: WorkspaceStripLayout.maxContentWidth, alignment: .leading)
         // 只观测已经排好的整行宽度，不参与布局协商；插不插筛选器都读到同一个值。
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
@@ -781,6 +822,9 @@ struct WorkspaceRootView: View {
             guard width > 0, workspaceStripContainerWidth != width else { return }
             workspaceStripContainerWidth = width
         }
+        // 居中发生在观测之后：观测到的是内容轨道宽（宽屏封顶 920），
+        // 不是设备列宽——两者在宽屏上相差几百 pt。
+        .frame(maxWidth: .infinity, alignment: .center)
         .accessibilityLabel(L10n.text("ui.workspace_list"))
     }
 

@@ -270,6 +270,15 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testWorkspaceSessionAgeBoundaryIsNotDrawnWhenNothingPrecedesIt() {
+        // 索引 0 表示最新一条会话本身就超过 12 小时。此时分界线上方没有任何内容，
+        // 「12 小时前」会悬在列表顶部被读成整段列表的名字，所以不画。
+        XCTAssertFalse(WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: 0))
+        XCTAssertFalse(WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: nil))
+        XCTAssertTrue(WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: 1))
+        XCTAssertTrue(WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: 7))
+    }
+
     func testWorkspaceSessionAgeBoundaryIgnoresPinnedStaleSession() {
         let now = Date(timeIntervalSince1970: 1_780_000_000)
         let project = makeProject(id: "workspace-pinned")
@@ -2207,31 +2216,10 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(WorkspaceStripLayout.minimumContentWidth(viewportWidth: 40), 0)
     }
 
-    func testWorkspaceStripOnlyHalfExpandsNamesWhenRealViewportHasRoom() {
-        XCTAssertEqual(
-            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 744, projectCount: 5),
-            0
-        )
-        XCTAssertEqual(
-            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 880, projectCount: 5),
-            0.5,
-            accuracy: 0.0001
-        )
-        XCTAssertEqual(
-            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 1_032, projectCount: 5),
-            1,
-            accuracy: 0.0001
-        )
-        XCTAssertLessThan(
-            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 1_032, projectCount: 10),
-            1,
-            "项目较多时还要受总宽度预算约束"
-        )
-        XCTAssertEqual(
-            WorkspaceStripLayout.restingNameDisclosure(viewportWidth: 1_400, projectCount: 1),
-            0
-        )
-    }
+    // 名称披露的契约改由 WorkspaceStripPresentationTests 锁定：这里原来钉的是
+    // 「按宽度插值出半个名称」的连续披露，那正是把工作区名截成单字母残片的来源。
+    // 现在返回值只有 0/1 两种，用例（含实测设备宽度与预算约束）跟着搬到
+    // WorkspaceStripPresentationTests，避免同一个契约在两处各写一遍。
 
     func testWorkspacePagerTransitionNormalizesScrollGeometry() {
         XCTAssertEqual(
