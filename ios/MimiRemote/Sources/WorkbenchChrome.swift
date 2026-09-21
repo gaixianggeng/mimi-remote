@@ -1530,6 +1530,26 @@ private struct WorkbenchHasBottomTabBarKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+/// 根页面向上报告"正文此刻自己就在表达进行中"（连接过渡或目录加载）。
+///
+/// 页面自己持有的设备入口（iPhone 工作区胶囊行、会话页顶栏）可以直接读页面状态；
+/// iPad 紧凑布局那枚浮层归 Shell 所有、拿不到页面内部的展示状态，只能由页面沿视图树
+/// 报上来。两条路径必须得出同一个结论，否则同一屏上又会出现两处转圈。
+struct WorkbenchRootConnectionProgressKey: PreferenceKey {
+    static let defaultValue = false
+
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
+    }
+}
+
+extension View {
+    /// 页面在这里声明"进行中已经由我表达"。
+    func workbenchRootShowsConnectionProgress(_ showsProgress: Bool) -> some View {
+        preference(key: WorkbenchRootConnectionProgressKey.self, value: showsProgress)
+    }
+}
+
 extension EnvironmentValues {
     var workbenchBottomChromeClearance: CGFloat {
         get { self[WorkbenchBottomChromeClearanceKey.self] }
