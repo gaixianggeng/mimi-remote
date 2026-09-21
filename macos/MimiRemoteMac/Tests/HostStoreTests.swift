@@ -578,8 +578,52 @@ final class HostStoreTests: XCTestCase {
         guard case .failed(let message)? = store?.lifecycle else {
             return XCTFail("换代后仍失败应进入 failed，实际 \(String(describing: store?.lifecycle))")
         }
-        XCTAssertTrue(message.contains("自动重新登记仍未恢复"), message)
+        XCTAssertTrue(message.contains("自动重新登记后仍未恢复"), message)
         XCTAssertNil(store?.startingDetail)
+    }
+
+    /// 配置由更新版本写入时，agentd 会在 3 秒一次的拉起里一直退出码 1。这时必须报
+    /// agentd 的真实原因并引导升级安装包，不能改成"服务记录过期"，也不能白做一次换代。
+    func testConfigRequiresNewerVersionSkipsRepairAndSurfacesUpgradeHint() async {
+        let registrationAttempts = CallCounter()
+        var registrationState = ServiceRegistrationState.notRegistered
+        var unregisterAttempts = 0
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: { Self.stoppedStatus },
+            registerAgent: {
+                _ = registrationAttempts.increment()
+                registrationState = .enabled
+            },
+            unregisterAgent: {
+                unregisterAttempts += 1
+                registrationState = .notRegistered
+            },
+            agentLaunchFailure: { "launchd 无法启动 agentd，已连续尝试 40 次，最近退出码 1，当前状态 spawn scheduled" },
+            configCheck: AgentdConfigCheckClient(
+                check: {
+                    AgentdConfigCheckResult(
+                        ok: false,
+                        code: AgentdConfigCheckResult.requiresNewerVersionCode,
+                        message: "旧 app_server.transport=\"local\" 不能自动迁移：请升级到最新发布包后重试"
+                    )
+                },
+                agentdURL: URL(filePath: "/tmp/agentd")
+            ),
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        guard case .failed(let message) = store.lifecycle else {
+            return XCTFail("必须进入 failed，实际 \(String(describing: store.lifecycle))")
+        }
+        XCTAssertTrue(message.contains("请升级到最新发布包"), message)
+        XCTAssertTrue(message.contains("旧 app_server.transport"), message)
+        XCTAssertFalse(message.contains("服务记录可能已过期"), message)
+        XCTAssertEqual(unregisterAttempts, 0, "配置不可用时换代毫无意义，不得注销已有登记")
+        XCTAssertEqual(registrationAttempts.current, 1)
     }
 
     func testLaunchFailureDescriptionIgnoresRunningJob() {
@@ -625,7 +669,7 @@ final class HostStoreTests: XCTestCase {
         XCTAssertTrue(detail.contains("17 次"), detail)
         XCTAssertTrue(detail.contains("78"), detail)
         XCTAssertEqual(
-            ServiceLifecycleError.agentSpawnFailed(detail).errorDescription?.contains("后台服务记录可能已过期"),
+            ServiceLifecycleError.agentSpawnFailed(detail).errorDescription?.contains("请升级到最新发布包后重试"),
             true
         )
     }
@@ -2063,6 +2107,7 @@ final class HostStoreTests: XCTestCase {
         registerAgent: @escaping @MainActor () throws -> Void = {},
         unregisterAgent: @escaping @MainActor () async throws -> Void = {},
         agentLaunchFailure: @escaping @MainActor () async -> String? = { nil },
+        configCheck: AgentdConfigCheckClient = .disabled,
         homebrewStart: @escaping @Sendable () async throws -> Void = {},
         homebrewStop: @escaping @Sendable () async throws -> Void = {},
         configureClaude: @escaping @Sendable (
@@ -2149,6 +2194,7 @@ final class HostStoreTests: XCTestCase {
         return HostStore(
             agent: agent,
             services: services,
+            configCheck: configCheck,
             homebrew: homebrew,
             health: HealthClient(check: healthCheck, checkDirect: { _ in true }),
             logs: AgentLogClient(

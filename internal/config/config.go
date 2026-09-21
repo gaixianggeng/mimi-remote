@@ -22,6 +22,14 @@ const (
 
 var ErrLegacyAppServerConfiguration = errors.New("legacy Codex Desktop sharing configuration")
 
+// ErrAppServerTransportUnsupported 表示 app_server.transport 的取值当前版本既无法
+// 识别也不再支持。最常见的原因不是配置写错，而是配置由更新版本的 Mimi Remote 写入
+// 之后又运行了较旧的安装包（例如覆盖安装旧 tag），所以这里把「升级安装包」放在
+// 「重置配置」前面，避免用户被引去轮换配对 Token。
+var ErrAppServerTransportUnsupported = errors.New(
+	"app_server.transport 需要更新版本的 Mimi Remote；请升级到最新发布包后重试，或执行 agentd setup --force 重置配置",
+)
+
 type Config struct {
 	Listen        string           `json:"listen"`
 	Network       NetworkConfig    `json:"network"`
@@ -785,14 +793,18 @@ func (c Config) Validate() error {
 		}
 	case "local":
 		if !SupportsSharedLocalAppServer() {
-			return fmt.Errorf("app_server.transport=local 只支持 macOS 与 Linux 本机宿主")
+			return fmt.Errorf("app_server.transport=local 只支持 macOS 与 Linux 本机宿主：%w", ErrAppServerTransportUnsupported)
 		}
 		if c.AppServer.Managed || strings.TrimSpace(c.AppServer.Listen) != "" ||
 			strings.TrimSpace(c.AppServer.WSTokenFile) != "" || strings.TrimSpace(c.AppServer.SSHTarget) != "" {
 			return fmt.Errorf("共享本机 app_server.transport=local 不能混用 managed、listen、ws_token_file 或 ssh_target")
 		}
 	default:
-		return fmt.Errorf("app_server.transport 只支持 ssh；macOS 与 Linux 另支持共享 local，Windows 另支持受管 ws")
+		return fmt.Errorf(
+			"app_server.transport=%q 无法识别：只支持 ssh，macOS 与 Linux 另支持共享 local，Windows 另支持受管 ws；%w",
+			c.AppServer.Transport,
+			ErrAppServerTransportUnsupported,
+		)
 	}
 	if c.Session.OutputBufferBytes <= 0 {
 		return fmt.Errorf("session.output_buffer_bytes 必须大于 0")

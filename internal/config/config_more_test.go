@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,8 +80,10 @@ func TestLoadRejectsLegacyStdioTransportOutsideAtomicSetupMigration(t *testing.T
 	}
 	clearAgentdEnv(t)
 
-	if _, err := Load(cfgPath); err == nil || !strings.Contains(err.Error(), "transport 只支持 ssh") {
-		t.Fatalf("历史 stdio 配置不得在普通 Load 中静默改写：%v", err)
+	if _, err := Load(cfgPath); err == nil ||
+		!errors.Is(err, ErrAppServerTransportUnsupported) ||
+		!strings.Contains(err.Error(), "请升级到最新发布包") {
+		t.Fatalf("历史 stdio 配置不得在普通 Load 中静默改写，且必须给出升级指引：%v", err)
 	}
 }
 

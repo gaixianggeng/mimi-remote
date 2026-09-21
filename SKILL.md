@@ -281,6 +281,7 @@ journalctl --user -u mimi-remote.service -n 200 --no-pager
 
 - `process_ok=false`：服务未运行、端口不可达或 service manager 失败。
 - `process_ok=true` 且 `service_ok=false`：配置、鉴权、版本或真实 Codex app-server 握手失败。
+- macOS 上 launchd 每 3 秒重拉、agentd 每次都立刻退出码 1（App 报“自动重新登记仍未恢复”）：先运行 `agentd check-config --json`；`code=config_requires_newer_version` 表示这份配置由更新版本写入，动作是安装最新发布包，不是重装或 `setup --force`。
 - `file-access-preflight` warning：服务可能已连接，但部分 macOS 目录权限尚未确认。
 - Claude channel 不可用：单独检查 `claude.enabled`、Claude CLI 登录和 bridge probe，不破坏 Codex。
 - 移动端无法连接而本机就绪：检查私网、Endpoint 和 App 内凭据，不开放公网端口。
