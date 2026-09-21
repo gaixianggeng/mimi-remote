@@ -9,6 +9,8 @@ enum MenuBarLayout {
     static let sectionInset: CGFloat = 3
     static let symbolColumnWidth: CGFloat = 16
     static let symbolTextSpacing: CGFloat = 8
+    // 品牌标记是实心图形，比同列的 SF Symbol 线条更重；略收一点才和它们一样压秤。
+    static let brandMarkSize: CGFloat = 15
     static let textColumnLeading = sectionInset + symbolColumnWidth + symbolTextSpacing
     // 模块、导航和底部操作共用固定高度，形成稳定节奏并保留完整点击区域。
     static let rowHeight: CGFloat = 44
