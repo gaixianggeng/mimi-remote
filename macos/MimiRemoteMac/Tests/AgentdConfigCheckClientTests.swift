@@ -67,6 +67,15 @@ final class AgentdConfigCheckClientTests: XCTestCase {
         XCTAssertFalse(message.contains("服务记录可能已过期"), message)
     }
 
+    func testInvalidConfigurationAlsoSkipsRepair() throws {
+        let error = ServiceLifecycleError.invalidConfiguration(
+            "app_server.transport=\"stdio\" 已被移除；请执行 agentd setup --force 重置配置"
+        )
+
+        XCTAssertTrue(error.isConfigurationFailure, "配置坏掉时换多少次登记都不会变")
+        XCTAssertEqual(error.errorDescription?.contains("setup --force"), true)
+    }
+
     func testSpawnFailureKeepsRepairPathAndDropsStaleRecordClaim() throws {
         let error = ServiceLifecycleError.agentSpawnFailed("launchd 无法启动 agentd，最近退出码 78")
 

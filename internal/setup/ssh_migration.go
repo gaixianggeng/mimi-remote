@@ -81,7 +81,7 @@ func MigrateAppServerToSSH(ctx context.Context, configPath string, requestedTarg
 		return nil
 	}
 	if !convertsLocal && transportName != "" && transportName != "ws" {
-		return fmt.Errorf("旧 app_server.transport=%q 不能自动迁移：%w", transportName, config.ErrAppServerTransportUnsupported)
+		return fmt.Errorf("旧 app_server.transport=%q 不能自动迁移：%w", transportName, config.AppServerTransportError(transportName))
 	}
 	if managed, ok := rawBool(appServer["managed"]); ok && !managed {
 		return fmt.Errorf("旧 app_server.managed=false 不能自动迁移；请执行 agentd setup --force")

@@ -186,7 +186,7 @@ agentd logs
 agentd check-config --json
 ```
 
-`code=config_requires_newer_version` 表示这份配置需要更新版本的 `agentd`，对应动作是安装最新发布包，而不是 `setup --force`：后者会重建配置并轮换配对 Token。其它 `code`（例如 `config_invalid`）才回到 `doctor --fix` 与 `agentd logs`。Mac App 在检测到拉起失败循环时会自动运行同一检查，并把 agentd 的原始报错和升级引导显示出来，不再只提示“服务记录可能已过期”。
+`code=config_requires_newer_version` 表示这份配置需要更新版本的 `agentd`，对应动作是安装最新发布包，而不是 `setup --force`：后者会重建配置并轮换配对 Token。反过来，已经移除的历史 transport（例如 `stdio`）会报 `config_invalid`：最新的 `agentd` 同样不支持它，升级安装包修不好，只能 `setup --force` 重置配置；其余 `config_invalid` 回到 `doctor --fix` 与 `agentd logs`。Mac App 在检测到拉起失败循环时会自动运行同一检查，并把 agentd 的原始报错和对应的下一步显示出来，不再只提示“服务记录可能已过期”。
 
 从历史产品目录升级时，如果新版默认配置不存在，`agentd` 会把 `codex-ipad-agent/config.json` 原样复制到 `mimi-remote/config.json`，保留旧文件和其中引用的绝对路径。两边都存在时永远使用新版目录；显式自定义配置时不自动迁移。
 

@@ -626,6 +626,44 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(registrationAttempts.current, 1)
     }
 
+    /// 其它配置坏掉（例如被移除的 stdio transport）时，agentd 的报错才是可执行的下一步。
+    /// 这时既不能谎称升级安装包能修好，也不能白做一次换代。
+    func testConfigFailureWithoutUpgradeCodeShowsAgentdReasonAndSkipsRepair() async {
+        var registrationState = ServiceRegistrationState.notRegistered
+        var unregisterAttempts = 0
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registrationState },
+            status: { Self.stoppedStatus },
+            registerAgent: { registrationState = .enabled },
+            unregisterAgent: {
+                unregisterAttempts += 1
+                registrationState = .notRegistered
+            },
+            agentLaunchFailure: { "launchd 无法启动 agentd，已连续尝试 40 次，最近退出码 1" },
+            configCheck: AgentdConfigCheckClient(
+                check: {
+                    AgentdConfigCheckResult(
+                        ok: false,
+                        code: "config_invalid",
+                        message: "app_server.transport=\"stdio\" 已被移除；请执行 agentd setup --force 重置配置"
+                    )
+                },
+                agentdURL: URL(filePath: "/tmp/agentd")
+            ),
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        guard case .failed(let message) = store.lifecycle else {
+            return XCTFail("必须进入 failed，实际 \(String(describing: store.lifecycle))")
+        }
+        XCTAssertTrue(message.contains("setup --force"), message)
+        XCTAssertFalse(message.contains("请升级到最新发布包"), "最新安装包同样不支持已移除的 transport")
+        XCTAssertEqual(unregisterAttempts, 0, "配置不可用时不得注销已有登记")
+    }
+
     func testLaunchFailureDescriptionIgnoresRunningJob() {
         let output = """
         gui/501/com.gaixianggeng.mimi.mac.agentd = {

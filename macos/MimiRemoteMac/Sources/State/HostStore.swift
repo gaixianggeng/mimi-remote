@@ -1165,12 +1165,20 @@ final class HostStore {
 
     /// launchd 只报得出「反复 spawn 失败 + 退出码」，真正的原因在 agentd 自己的启动
     /// 检查里：直接问包内 agentd，就能区分「这份配置需要更新版本的安装包」和「登记
-    /// 记录过期」。前者重新登记多少次都不会变，必须换成升级安装包的引导。
+    /// 记录过期」。配置类问题重新登记多少次都不会变，必须换成真实报错或升级引导。
     private func macAgentLaunchFailureError(_ launchFailure: String) async -> ServiceLifecycleError {
-        guard let check = await configCheck.check(), check.requiresNewerVersion else {
+        guard let check = await configCheck.check(), !check.ok else {
             return .agentSpawnFailed(launchFailure)
         }
-        return .configRequiresNewerVersion(check.message ?? launchFailure)
+        if check.requiresNewerVersion {
+            return .configRequiresNewerVersion(check.message ?? launchFailure)
+        }
+        // 其它配置问题：把 agentd 的原始报错显示出来，用户才能看到「已被移除，
+        // 请执行 agentd setup --force」这类真正可执行的下一步。
+        guard let message = check.message, !message.isEmpty else {
+            return .agentSpawnFailed(launchFailure)
+        }
+        return .invalidConfiguration(message)
     }
 
     private func registerMacAgentAndWaitForReady(

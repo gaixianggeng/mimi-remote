@@ -80,10 +80,38 @@ func TestLoadRejectsLegacyStdioTransportOutsideAtomicSetupMigration(t *testing.T
 	}
 	clearAgentdEnv(t)
 
+	// stdio 是被移除的历史取值，不是「更新版本写入的未知取值」：安装最新包同样跑不起来，
+	// 所以只能引导重置配置，不能引导升级安装包。
+	if _, err := Load(cfgPath); err == nil ||
+		!errors.Is(err, ErrAppServerTransportRemoved) ||
+		errors.Is(err, ErrAppServerTransportUnsupported) ||
+		!strings.Contains(err.Error(), "setup --force") {
+		t.Fatalf("历史 stdio 配置不得在普通 Load 中静默改写，且必须引导重置配置：%v", err)
+	}
+}
+
+// 未知取值才是版本偏旧的信号：它可能由更新版本写入，升级安装包能修好。
+func TestLoadTreatsUnknownTransportAsRequiringNewerVersion(t *testing.T) {
+	projectDir := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	raw, err := json.Marshal(map[string]any{
+		"auth":       AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		"runtime":    map[string]any{"type": "pty", "fallback_pty": true},
+		"app_server": map[string]any{"transport": "shared-local-v2"},
+		"projects":   []ProjectConfig{{ID: "demo", Name: "Demo", Path: projectDir}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clearAgentdEnv(t)
+
 	if _, err := Load(cfgPath); err == nil ||
 		!errors.Is(err, ErrAppServerTransportUnsupported) ||
 		!strings.Contains(err.Error(), "请升级到最新发布包") {
-		t.Fatalf("历史 stdio 配置不得在普通 Load 中静默改写，且必须给出升级指引：%v", err)
+		t.Fatalf("未识别的 transport 必须引导升级安装包：%v", err)
 	}
 }
 

@@ -16,11 +16,20 @@ import (
 func TestConfigCheckFailureCodeSeparatesUpgradeFromOtherConfigErrors(t *testing.T) {
 	upgrade := fmt.Errorf(
 		"旧 app_server.transport=%q 不能自动迁移：%w",
-		"local",
-		config.ErrAppServerTransportUnsupported,
+		"shared-local-v2",
+		config.AppServerTransportError("shared-local-v2"),
 	)
 	if got := configCheckFailureCode(upgrade); got != configCheckCodeRequiresNewerVersion {
 		t.Fatalf("配置需要更新版本时必须给出升级码，得到 %q", got)
+	}
+	// 已移除的历史取值安装最新包同样跑不起来，不能引导用户白装一次。
+	removed := fmt.Errorf(
+		"旧 app_server.transport=%q 不能自动迁移：%w",
+		"stdio",
+		config.AppServerTransportError("stdio"),
+	)
+	if got := configCheckFailureCode(removed); got != configCheckCodeInvalid {
+		t.Fatalf("已移除的 transport 不得被当成升级场景，得到 %q", got)
 	}
 	if got := configCheckFailureCode(errors.New("auth.token 不能为空")); got != configCheckCodeInvalid {
 		t.Fatalf("其它配置问题不得被当成升级场景，得到 %q", got)
