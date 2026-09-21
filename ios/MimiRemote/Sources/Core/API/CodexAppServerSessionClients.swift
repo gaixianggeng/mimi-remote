@@ -673,7 +673,12 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         if let native = bundle.nativeClient(for: runtimeProvider) {
             return try await native.channelAvailable()
         }
-        return try await bundle.codex.channelAvailable(runtimeProvider: runtimeProvider)
+        // 非原生承接时必须走 bundle 的**共享**快照，而不是 Codex 自己的缓存：两个
+        // Runtime 共用同一份 `/api-app-server/config`，任一 Runtime 断线、换代或 daemon
+        // 重载都会让这份快照失效。`bundle.channelAvailable` 会比对两端的失效代次并重读，
+        // 直接用 `bundle.codex.channelAvailable` 就会丢掉 Claude 那一侧的失效信号——
+        // 表现为切换 Agent 后可用性仍停在旧配置（Codex 已可用却报不可用）。
+        return try await bundle.channelAvailable(runtimeProvider: runtimeProvider)
     }
 
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
