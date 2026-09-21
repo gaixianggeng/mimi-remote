@@ -39,7 +39,6 @@ const (
 // 刻意不使用"唯一活跃会话"兜底：$events 是宿主级通道，"只有一个会话在跑"并不蕴含
 // "这条交互是我的"。按单例认领会把别人的卡片挂到用户的会话上，用户在那个上下文里
 // 做出的授权决定会被用在另一个会话的工具调用上——那是一次真实的越权授权。
-// 这条判断与 `deepseek_gateway_events.go` 的 attributeWaterfall 一致。
 func harnessNativeAttributeWaterfall(
 	request harnessclient.WaterfallRequest,
 	callThreads map[string]string,

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/harnessclient"
 	"github.com/gorilla/websocket"
 )
@@ -79,6 +80,11 @@ type harnessNativeWSStream struct {
 	// sessionID 仅对 session/follow 有意义，用于首帧归属对照。
 	sessionID string
 
+	// sessionSlot 表示这条订阅占用了一个全局会话名额（只有 session/follow 会占）。
+	// slotReleased 是归还幂等位；两者都由 harnessNativeStreamConn.mu 保护。
+	sessionSlot  bool
+	slotReleased bool
+
 	closeOnce sync.Once
 }
 
@@ -88,6 +94,46 @@ func (stream *harnessNativeWSStream) close() {
 			stream.upstream.Close()
 		}
 	})
+}
+
+// acquireHarnessNativeSession 申请一个全局 Harness 会话订阅名额。
+//
+// 只统计 `session/follow`：每条 follow 都在 Harness 上持有一条 remote.mux 物理连接，
+// 单连接上限（harnessNativeWSMaxStreams）挡不住"多开几条移动连接"，所以还需要一个
+// 跨连接的上限。`$events` 与连接级的 `session/control` 不计入——一台设备各只开一条，
+// 计入会让默认上限 2 被一台设备的宿主订阅直接占满，表现为"明明可用却连不上"。
+func (r *Router) acquireHarnessNativeSession() bool {
+	limit := r.cfg.DeepSeek.MaxConcurrentSessions
+	if limit <= 0 {
+		limit = config.DefaultDeepSeekMaxConcurrentSessions
+	}
+	r.harnessNativeSessionMu.Lock()
+	defer r.harnessNativeSessionMu.Unlock()
+	if r.activeHarnessNativeSession >= limit {
+		return false
+	}
+	r.activeHarnessNativeSession++
+	return true
+}
+
+func (r *Router) releaseHarnessNativeSession() {
+	r.harnessNativeSessionMu.Lock()
+	if r.activeHarnessNativeSession > 0 {
+		r.activeHarnessNativeSession--
+	}
+	r.harnessNativeSessionMu.Unlock()
+}
+
+// releaseSessionSlotLocked 归还一条订阅占用的全局会话名额。幂等；调用方须持有 c.mu。
+//
+// 三条退役路径（主动退订、上游结束、整条连接关闭）都以"从 c.streams 摘除"为前置条件，
+// 所以一条流最多走到这里一次。
+func (c *harnessNativeStreamConn) releaseSessionSlotLocked(stream *harnessNativeWSStream) {
+	if !stream.sessionSlot || stream.slotReleased {
+		return
+	}
+	stream.slotReleased = true
+	c.router.releaseHarnessNativeSession()
 }
 
 // harnessNativeStreamConn 是一条移动端连接的中继状态。
@@ -246,6 +292,10 @@ func (c *harnessNativeStreamConn) shutdown() {
 		streams = append(streams, stream)
 	}
 	c.streams = map[string]*harnessNativeWSStream{}
+	// 整条连接退役也必须归还会话名额：漏了这条，断线重连就会一直撞全局上限。
+	for _, stream := range streams {
+		c.releaseSessionSlotLocked(stream)
+	}
 	c.mu.Unlock()
 
 	// 先关信号再等协程：顺序反了会死等还在 select 上的 relay。
@@ -294,7 +344,26 @@ func (c *harnessNativeStreamConn) handleOpen(ctx context.Context, frame harnessN
 		c.writeStreamError(streamID, harnessNativeWSError("gateway/service-unavailable", "订阅数已达上限，请先退订"))
 		return
 	}
+	// 会话订阅在建立上游连接**之前**先占全局名额：物理连接就是这一步产生的。
+	// 与本函数开头的顺序约定一致——被拒的订阅不产生任何一次 Harness 访问。
+	sessionSlot := false
+	if endpoint == harnessclient.MethodSessionFollow {
+		if !c.router.acquireHarnessNativeSession() {
+			c.mu.Unlock()
+			c.writeStreamError(streamID, harnessNativeWSError("gateway/service-unavailable", "同时打开的会话订阅数已达上限，请先退订其它会话"))
+			return
+		}
+		sessionSlot = true
+	}
 	c.mu.Unlock()
+
+	// 授权失败、建连失败或连接已关闭时，名额必须原路归还；登记成功后改由退役路径负责。
+	slotHeld := sessionSlot
+	defer func() {
+		if slotHeld {
+			c.router.releaseHarnessNativeSession()
+		}
+	}()
 
 	args, sessionID, err := c.router.harnessNativeAuthorizeStreamOpen(ctx, endpoint, frame.Payload)
 	if err != nil {
@@ -314,10 +383,11 @@ func (c *harnessNativeStreamConn) handleOpen(ctx context.Context, frame harnessN
 	}
 
 	stream := &harnessNativeWSStream{
-		streamID:  streamID,
-		endpoint:  endpoint,
-		upstream:  upstream,
-		sessionID: sessionID,
+		streamID:    streamID,
+		endpoint:    endpoint,
+		upstream:    upstream,
+		sessionID:   sessionID,
+		sessionSlot: sessionSlot,
 	}
 	c.mu.Lock()
 	if c.closed {
@@ -326,6 +396,8 @@ func (c *harnessNativeStreamConn) handleOpen(ctx context.Context, frame harnessN
 		return
 	}
 	c.streams[streamID] = stream
+	// 名额所有权移交给流本身，推迟到这里的 defer 不能再归还。
+	slotHeld = false
 	if endpoint == harnessclient.EndpointEvents {
 		c.eventsOpened = true
 		// 应答确认帧要带上它，否则移动端无法归属。
@@ -609,6 +681,7 @@ func (c *harnessNativeStreamConn) handleCancel(frame harnessNativeWSClientFrame)
 	stream, ok := c.streams[streamID]
 	if ok {
 		delete(c.streams, streamID)
+		c.releaseSessionSlotLocked(stream)
 		if stream.endpoint == harnessclient.EndpointEvents {
 			c.clientID = ""
 			c.eventsStreamID = ""
@@ -793,6 +866,7 @@ func (c *harnessNativeStreamConn) finishStream(stream *harnessNativeWSStream) {
 	retired := false
 	if current, ok := c.streams[stream.streamID]; ok && current == stream {
 		delete(c.streams, stream.streamID)
+		c.releaseSessionSlotLocked(stream)
 		retired = true
 		if stream.endpoint == harnessclient.EndpointEvents {
 			c.clientID = ""

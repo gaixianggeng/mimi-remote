@@ -25,8 +25,8 @@ import (
 	"strings"
 )
 
-// Remote 方法名。这里只登记 #498 首版声明给移动端的子集，与
-// internal/httpapi 的运行时登记表 appServerDeepSeekAllowedMethods 保持一致；
+// Remote 方法名。登记的是原生通道（/api/harness/rpc 与 /api/harness/ws）实际使用的方法集，
+// 也是 `internal/httpapi` 授权策略 `harnessNativeCWDScopedMethods` 等处的依据；
 // 新增方法必须同时改这两处，否则要么移动端拿不到能力，要么声明了用不了的方法。
 const (
 	MethodSessionList         = "session/list"

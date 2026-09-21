@@ -217,32 +217,6 @@ var appServerClaudeAllowedMethods = map[string]struct{}{
 	"account/rateLimits/read": {},
 }
 
-// appServerDeepSeekAllowedMethods 是 DeepSeek Harness（#498）的首版方法边界。
-// 逐条对齐 #492 调研里已用隔离实验验证过的 Harness 服务能力，未验证的一律不声明：
-//
-//   - 不声明 thread/resume：Harness 侧没有对应的 resume RPC，冷会话恢复走 prompt 等写操作，
-//     不能虚构一个不存在的恢复方法。
-//   - 不声明 turn/steer：Harness 的 session/prompt(mode=steer) 与 queue 语义不同且本轮未验证，
-//     首版只开放普通发送。
-//   - 不声明 thread/fork、goals、archive、compact、review、name/set、settings/update 与
-//     skill/plugin 目录：这些能力尚未适配，声明会让移动端显示选得中但用不了的入口。
-//   - 不声明 account/rateLimits/read：Harness 未暴露对应查询接口。
-var appServerDeepSeekAllowedMethods = map[string]struct{}{
-	"initialize":        {},
-	"initialized":       {},
-	"thread/list":       {},
-	"thread/search":     {},
-	"thread/start":      {},
-	"thread/read":       {},
-	"thread/turns/list": {},
-	"thread/items/list": {},
-	// 本地解除移动端的 follow 观察租约；Harness 没有对应 RPC，不向上游透传。
-	"thread/unsubscribe": {},
-	"turn/start":         {},
-	"turn/interrupt":     {},
-	"model/list":         {},
-}
-
 type appServerConfigResponse struct {
 	GatewayWSURL string                   `json:"gateway_ws_url"`
 	Runtime      appServerRuntimeMetadata `json:"runtime"`
@@ -622,34 +596,6 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			Policy:       claudePolicy,
 		})
 	}
-	if r.cfg.DeepSeek.Enabled {
-		deepSeekSpec, _ := appServerRuntimeSpecFor(appServerRuntimeDeepSeekID)
-		status := appServerDeepSeekStatusFor(r.cfg.DeepSeek)
-		channels = append(channels, appServerChannel{
-			ID:               deepSeekSpec.ID,
-			RuntimeID:        deepSeekSpec.ID,
-			Title:            "DeepSeek Harness",
-			Provider:         "deepseek",
-			Type:             "deepseek_harness_service",
-			Protocol:         "app_server_jsonrpc_ws",
-			GatewayWSURL:     r.appServerGatewayURLForRuntime(req, deepSeekSpec.ID),
-			GatewayAvailable: status.Healthy,
-			Managed:          false,
-			Experimental:     deepSeekSpec.Experimental,
-			Lifecycle:        "per_connection",
-			// 只给状态与修复建议，不给本机服务地址：channel 会下发到移动端，
-			// 本机 endpoint 与 token 路径不属于移动端需要知道的运行态。
-			Bridge: &appServerBridgeMetadata{
-				Name:    "deepseek-harness",
-				Status:  status.Status,
-				Healthy: status.Healthy,
-				Fix:     status.Fix,
-			},
-			Methods:      appServerAllowedMethodListForRuntime(deepSeekSpec.ID),
-			Capabilities: deepSeekSpec.Capabilities,
-			Policy:       deepSeekSpec.Policy,
-		})
-	}
 	return channels
 }
 
@@ -678,8 +624,6 @@ func (r *Router) appServerGatewayWS(w http.ResponseWriter, req *http.Request) {
 		r.appServerCodexGatewayWS(w, req)
 	case appServerRuntimeClaudeID:
 		r.appServerClaudeGatewayWS(w, req)
-	case appServerRuntimeDeepSeekID:
-		r.appServerDeepSeekGatewayWS(w, req)
 	default:
 		writeError(w, http.StatusBadRequest, "未知 app-server runtime："+runtimeID)
 	}

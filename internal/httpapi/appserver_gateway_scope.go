@@ -85,11 +85,6 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 			return validated, fmt.Errorf("permissions 不能与 sandboxPolicy 同时发送")
 		}
 	}
-	if runtimeID == "deepseek" {
-		if err := validateDeepSeekPermissionParams(params); err != nil {
-			return validated, err
-		}
-	}
 	if value, ok := params["collaborationMode"]; ok {
 		if err := validateGatewayCollaborationMode(value); err != nil {
 			return validated, err
@@ -164,8 +159,7 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 	// git common-dir 的映射，与 runtime 无关，因此所有已接入 runtime 同等适用。
 	allowsControlledGlobalList := method == "thread/list" &&
 		(runtimeID == appServerRuntimeCodexID ||
-			runtimeID == appServerRuntimeClaudeID ||
-			runtimeID == appServerRuntimeDeepSeekID)
+			runtimeID == appServerRuntimeClaudeID)
 	if requiresGatewayCWD(method) && !allowsControlledGlobalList {
 		if !validated.hasCWD {
 			return validated, fmt.Errorf("%s.cwd 必须来自 projects allowlist 或 browse_roots", method)
@@ -664,14 +658,8 @@ func hasApprovalPolicyNever(value any) bool {
 
 func gatewayAllowsNoApproval(runtimeID string, method string, params map[string]any) bool {
 	runtimeID = normalizeAppServerRuntimeID(runtimeID)
-	// DeepSeek 与另外两条网关同规则：只有显式完全访问才携带 approvalPolicy=never。
-	// 完全访问是移动端的默认档位，因此这条路径就是日常路径，漏掉会让默认档在
-	// 网关第一步就被拒——用户看到的是"发出去就没反应"。
-	//
-	// 侧向是安全的：Harness 的审批由 Harness 自己发起，agentd 不因这个声明而放行
-	// 任何东西。用户声明"别问我"而 Harness 仍然来问时，结果比声明更保守，
-	// 与 acceptForSession 按一次性放行处理是同一个方向的取舍。
-	if runtimeID != "codex" && runtimeID != "claude" && runtimeID != "deepseek" {
+	// Codex 与 Claude 同规则：只有显式完全访问才携带 approvalPolicy=never。
+	if runtimeID != "codex" && runtimeID != "claude" {
 		return false
 	}
 	if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok && runtimeID == "codex" {
@@ -688,34 +676,6 @@ func gatewayAllowsNoApproval(runtimeID string, method string, params map[string]
 	default:
 		return false
 	}
-}
-
-// validateDeepSeekPermissionParams 拒绝 DeepSeek Harness 无法兑现的沙盒档位。
-//
-// Harness 自己维护会话权限：session/list 的 projections.permissions 只是一份只读投影，
-// 协议里既没有设置入口，session/create 也没有对应字段。因此 agentd 无法施加只读或
-// 工作区写限制，channel 的 policy 里同样不声明这些档位。
-//
-// 之所以要拒绝而不是忽略：移动端无条件按用户选的权限模式发送 sandbox/sandboxPolicy，
-// 静默接受会让用户选了"只读"之后看到 agent 照常写文件。被承诺却没有执行的约束比没有
-// 约束更危险——用户会据此把本来不该交给 agent 的目录交给它。完全访问是唯一能被如实
-// 兑现的档位，也只放行这一个；认不出的取值同样拒绝，不能把拼错的参数当成静默提权。
-func validateDeepSeekPermissionParams(params map[string]any) error {
-	const reason = "DeepSeek Harness 的权限档由 Harness 自身维护，远程只能使用完全访问"
-	if raw, exists := params["sandbox"]; exists && raw != nil {
-		sandbox, ok := gatewayStringParam(params, "sandbox")
-		if !ok || normalizePolicyValue(sandbox) != "dangerfullaccess" {
-			return fmt.Errorf("thread/start.sandbox 不支持 %q：%s", raw, reason)
-		}
-	}
-	if raw, exists := params["sandboxPolicy"]; exists && raw != nil {
-		sandboxPolicy, ok := raw.(map[string]any)
-		sandboxType, typeOK := gatewayStringParam(sandboxPolicy, "type")
-		if !ok || !typeOK || normalizePolicyValue(sandboxType) != "dangerfullaccess" {
-			return fmt.Errorf("sandboxPolicy 不支持 %q：%s", raw, reason)
-		}
-	}
-	return nil
 }
 
 func hasNetworkAccessEnabled(value any) bool {

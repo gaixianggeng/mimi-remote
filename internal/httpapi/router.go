@@ -112,10 +112,12 @@ type Router struct {
 	claudeProbe                appServerBridgeProbe
 	activeClaudeBridge         int
 	claudeBridge               *claudeBridgeSupervisor
-	// DeepSeek Harness（#498）的会话订阅计数。每个订阅都在 Harness 上持有一条
-	// remote.mux 连接，因此必须设上限；上限取 cfg.DeepSeek.MaxConcurrentSessions。
-	deepSeekMu                    sync.Mutex
-	activeDeepSeekSession         int
+	// Harness 原生通道的会话订阅计数（#498）。每条 `session/follow` 都在 Harness 上
+	// 持有一条 remote.mux 物理连接，所以除了单连接上限还需要一个跨连接的上限；
+	// 上限取 cfg.DeepSeek.MaxConcurrentSessions。宿主的 `$events` 与连接级的
+	// `session/control` 不计入，理由见 acquireHarnessNativeSession。
+	harnessNativeSessionMu        sync.Mutex
+	activeHarnessNativeSession    int
 	tailcat                       tailcatSidecar
 	managedPairing                managedPairingService
 	tailcatLocalToken             string

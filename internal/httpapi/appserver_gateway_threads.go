@@ -395,12 +395,9 @@ func sanitizeThreadForkResponse(payload []byte) ([]byte, json.RawMessage, error)
 // （见 TestAppServerGatewayNotificationRedactsInlineImagesForCodexAndClaude 的
 // unknown-runtime-passthrough 子用例）：那是一个独立的产品决定，新接入 runtime 时
 // 应当显式纳入这里，而不是靠这个函数悄悄改变语义。
-//
-// deepseek（#498）已在此登记：Harness 会话同样必须按 thread 授权才能回流通知，
-// 否则一个未授权的 thread 就能把内容推到移动端。
 func (p *appServerGatewayPolicy) enforcesInboundThreadAuthorization() bool {
 	switch normalizeAppServerRuntimeID(p.runtimeID) {
-	case appServerRuntimeCodexID, appServerRuntimeClaudeID, appServerRuntimeDeepSeekID:
+	case appServerRuntimeCodexID, appServerRuntimeClaudeID:
 		return true
 	default:
 		return false
@@ -976,11 +973,11 @@ func appServerServerRequestAllowed(runtimeID string, method string) bool {
 // 直播 turn 事件里的内联图（imageGeneration 裸 base64、mcpToolCall/dynamicToolCall
 // 图片 result、data:image URL）在 codex 和 claude 两条 runtime 上形状一致，都会把
 // 大 base64 顺着 WS + 隧道推一遍。两条链路统一改写成短 URL，避免 Claude 通道漏改导致
-// 带宽打满或单帧撞 gateway cap。deepseek 的 Harness 事件同形，一并纳入。其它未知
+// 带宽打满或单帧撞 gateway cap。其它未知
 // runtime 仍保持原样透传，不改既有语义。
 func appServerRuntimeRedactsInlineImages(runtimeID string) bool {
 	switch normalizeAppServerRuntimeID(runtimeID) {
-	case appServerRuntimeCodexID, appServerRuntimeClaudeID, appServerRuntimeDeepSeekID:
+	case appServerRuntimeCodexID, appServerRuntimeClaudeID:
 		return true
 	default:
 		return false

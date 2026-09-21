@@ -17,9 +17,8 @@ import (
 // 新增 runtime 时仍必须在那些位置显式登记，见各处的说明注释。
 
 const (
-	appServerRuntimeCodexID    = "codex"
-	appServerRuntimeClaudeID   = "claude"
-	appServerRuntimeDeepSeekID = "deepseek"
+	appServerRuntimeCodexID  = "codex"
+	appServerRuntimeClaudeID = "claude"
 )
 
 // appServerRuntimeSpec 描述一条 runtime 的能力边界。
@@ -90,41 +89,6 @@ var appServerRuntimeSpecs = map[string]appServerRuntimeSpec{
 		},
 		Experimental: true,
 	},
-	// DeepSeek Harness（#498）：方法边界取自 #492 已实测的控制面能力，网关装配见
-	// deepseek_gateway.go。channel 只在 deepseek.enabled 时声明，未启用时不会出现在
-	// GET app-server config 的 channels 里。
-	appServerRuntimeDeepSeekID: {
-		ID: appServerRuntimeDeepSeekID,
-		Aliases: []string{
-			"deepseek_harness", "deepseek-harness", "deepseek_harness_service", "deepseek-harness-service", "dsh",
-		},
-		Methods: appServerDeepSeekAllowedMethods,
-		ServerRequestMethods: map[string]struct{}{
-			"applyPatchApproval":                    {},
-			"execCommandApproval":                   {},
-			"item/commandExecution/requestApproval": {},
-			"item/fileChange/requestApproval":       {},
-			"item/fileRead/requestApproval":         {},
-			"item/permissions/requestApproval":      {},
-			"item/tool/requestUserInput":            {},
-		},
-		Capabilities: appServerChannelCapability{
-			Streaming:        true,
-			History:          true,
-			ApprovalRequests: true,
-		},
-		Policy: appServerChannelPolicy{
-			ApprovalPolicies: []string{"on-request"},
-			// 只声明能被兑现的档位。Harness 自己维护会话权限（session/list 的
-			// projections.permissions 只是只读投影，协议里没有设置入口），agentd
-			// 转发不了也施加不了只读与工作区写限制，因此不声明它们——声明一个
-			// 做不到的开关，等于让用户以为有保护。网关侧同时只放行完全访问。
-			SandboxModes:  []string{"danger-full-access"},
-			NetworkAccess: false,
-			CWDScope:      "agentd_allowlist",
-		},
-		Experimental: true,
-	},
 }
 
 func appServerRuntimeSpecFor(runtimeID string) (appServerRuntimeSpec, bool) {
@@ -155,9 +119,6 @@ func normalizeAppServerRuntimeID(raw string) string {
 		return appServerRuntimeCodexID
 	case appServerRuntimeClaudeID, "anthropic", "claude_code", "claude-code", "claude_code_bridge", "claude-code-bridge":
 		return appServerRuntimeClaudeID
-	case appServerRuntimeDeepSeekID, "deepseek_harness", "deepseek-harness",
-		"deepseek_harness_service", "deepseek-harness-service", "dsh":
-		return appServerRuntimeDeepSeekID
 	default:
 		return value
 	}
