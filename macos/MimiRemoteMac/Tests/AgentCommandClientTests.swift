@@ -33,6 +33,29 @@ final class AgentCommandClientTests: XCTestCase {
         )
     }
 
+    func testDiagnosticsCommandsUseLocalJSONInterface() {
+        XCTAssertEqual(
+            AgentCommandClient.diagnosticsArguments(action: .status),
+            ["diagnostics", "status", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.diagnosticsArguments(action: .start),
+            ["diagnostics", "start", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.diagnosticsArguments(action: .stop),
+            ["diagnostics", "stop", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.diagnosticsArguments(action: .clear),
+            ["diagnostics", "clear", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.diagnosticsArguments(action: .export),
+            ["diagnostics", "export", "--json"]
+        )
+    }
+
     func testCodexSessionRepairResultRequiresBothFields() throws {
         XCTAssertEqual(
             try JSONDecoder().decode(

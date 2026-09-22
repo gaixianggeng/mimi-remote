@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"fmt"
+	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"log"
 	"net"
 	"os"
@@ -214,8 +215,10 @@ func (s *claudeBridgeSupervisor) reap(cmd *exec.Cmd, done chan struct{}) {
 	s.mu.Unlock()
 	if err != nil {
 		log.Printf("claude bridge exited err=%v", err)
+		diagnosticlog.Record("bridge", "failed", diagnosticlog.Fields{})
 	} else {
 		log.Printf("claude bridge exited")
+		diagnosticlog.Record("bridge", "stopped", diagnosticlog.Fields{})
 	}
 	close(done)
 }

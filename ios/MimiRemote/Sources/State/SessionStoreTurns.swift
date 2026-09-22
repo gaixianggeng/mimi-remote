@@ -969,6 +969,14 @@ extension SessionStore {
         guard !payload.isEmpty else {
             return false
         }
+        let diagnosticCorrelation = targetSession.map {
+            beginTurnDiagnostics(sessionID: $0.id)
+        } ?? AppDiagnosticCorrelation.make()
+        AppDiagnostics.record(
+            stage: .messageSend,
+            result: .started,
+            correlation: diagnosticCorrelation
+        )
         if let session = targetSession,
            isProtocolReadOnlySession(session) {
             setErrorMessage(L10n.text("ui.read_only"))
@@ -1144,12 +1152,19 @@ extension SessionStore {
             return
         }
         guard let socket = readyWebSocket(for: session) else {
+            AppDiagnostics.record(stage: .interrupt, result: .failed, reason: .notConnected)
             return
         }
         if !socket.sendCtrlC(expectedTurnID: activeTurnID) {
+            AppDiagnostics.record(stage: .interrupt, result: .failed, reason: .transport)
             setErrorMessage(L10n.text("ui.failed_to_stop_current_reply_websocket_not_connected"))
             return
         }
+        AppDiagnostics.record(
+            stage: .interrupt,
+            result: .started,
+            correlation: diagnosticCorrelation(sessionID: session.id)
+        )
         // 中断只停止当前 turn，不关闭 thread；等待匹配的 turn/completed 后，
         // 原会话仍可继续发送下一条消息。
         setStatusMessage(L10n.text("ui.stopping_current_reply"))
@@ -1169,6 +1184,7 @@ extension SessionStore {
             return
         }
         guard let socket = readyWebSocket(for: session) else {
+            AppDiagnostics.record(stage: .approval, result: .failed, reason: .notConnected)
             setErrorMessage(L10n.text("ui.approval_failed_websocket_not_connected"))
             return
         }
@@ -1180,10 +1196,16 @@ extension SessionStore {
         let isAccepting = normalizedDecision.lowercased().hasPrefix("accept")
         markApprovalDecisionPending(approval.id, sessionID: session.id)
         guard socket.sendApprovalDecision(approvalID: approval.id, decision: normalizedDecision, message: nil) else {
+            AppDiagnostics.record(stage: .approval, result: .failed, reason: .transport)
             clearPendingApprovalDecision(sessionID: session.id, approvalID: approval.id)
             setErrorMessage(L10n.text("ui.approval_sending_failed_websocket_not_connected"))
             return
         }
+        AppDiagnostics.record(
+            stage: .approval,
+            result: .started,
+            correlation: diagnosticCorrelation(sessionID: session.id)
+        )
         if normalizedDecision.caseInsensitiveCompare("acceptWithPermissionUpdate") == .orderedSame {
             setStatusMessage(L10n.text("ui.sent_decision_to_approve_and_remember_rules_awaiting"))
         } else {

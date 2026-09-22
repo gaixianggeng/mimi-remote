@@ -49,6 +49,18 @@ struct AgentCommandClient: Sendable {
     var restoreNetwork: @Sendable (NetworkConfigurationResult) async throws -> NetworkConfigurationResult = { _ in
         throw AgentClientError.commandFailed("当前 agentd 不支持连接配置恢复。")
     }
+    var diagnosticsStatus: @Sendable () async throws -> AgentDiagnosticsStatus = {
+        throw AgentClientError.commandFailed("当前 agentd 不支持诊断日志，请更新 App。")
+    }
+    var setDetailedDiagnostics: @Sendable (_ enabled: Bool) async throws -> AgentDiagnosticsStatus = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持诊断日志，请更新 App。")
+    }
+    var clearDiagnostics: @Sendable () async throws -> AgentDiagnosticsStatus = {
+        throw AgentClientError.commandFailed("当前 agentd 不支持诊断日志，请更新 App。")
+    }
+    var exportDiagnostics: @Sendable () async throws -> AgentDiagnosticsExport = {
+        throw AgentClientError.commandFailed("当前 agentd 不支持诊断日志，请更新 App。")
+    }
 }
 
 extension AgentCommandClient {
@@ -74,12 +86,14 @@ extension AgentCommandClient {
             arguments: [String],
             allowFailure: Bool = false,
             timeout: Duration = .seconds(15),
-            forceKillAfterTimeout: Bool = false
+            forceKillAfterTimeout: Bool = false,
+            outputLimit: Int = 1_048_576
         ) async throws -> CommandResult {
             let result = try await executor.run(
                 executable: binary,
                 arguments: arguments,
                 timeout: timeout,
+                outputLimit: outputLimit,
                 environment: environment,
                 forceKillAfterTimeout: forceKillAfterTimeout
             )
@@ -280,6 +294,35 @@ extension AgentCommandClient {
                     binary: binary, arguments: ["network", "--restore-state", payload, "--json"],
                     timeout: .seconds(30)
                 ))
+            },
+            diagnosticsStatus: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(AgentDiagnosticsStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: diagnosticsArguments(action: .status)
+                ))
+            },
+            setDetailedDiagnostics: { enabled in
+                let binary = try requireEmbeddedBinary()
+                return try decode(AgentDiagnosticsStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: diagnosticsArguments(action: enabled ? .start : .stop)
+                ))
+            },
+            clearDiagnostics: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(AgentDiagnosticsStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: diagnosticsArguments(action: .clear)
+                ))
+            },
+            exportDiagnostics: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(AgentDiagnosticsExport.self, from: try await execute(
+                    binary: binary,
+                    arguments: diagnosticsArguments(action: .export),
+                    outputLimit: 24 * 1_048_576
+                ))
             }
         )
     }
@@ -339,6 +382,14 @@ extension AgentCommandClient {
             arguments.append("--derp-map-url=\(derpMapURL)")
         }
         return arguments
+    }
+
+    enum DiagnosticsAction: String {
+        case status, start, stop, clear, export
+    }
+
+    static func diagnosticsArguments(action: DiagnosticsAction) -> [String] {
+        ["diagnostics", action.rawValue, "--json"]
     }
 
 }

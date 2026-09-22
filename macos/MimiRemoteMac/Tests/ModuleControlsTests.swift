@@ -319,7 +319,7 @@ private final class ModuleFixture: @unchecked Sendable {
         return HostStore(agent: agent, services: services,
                          homebrew: HomebrewServiceClient(isLoaded: { false }, installedAgentBinary: { nil }, start: {}, stop: {}),
                          health: HealthClient(check: { _ in false }, checkDirect: { _ in true }),
-                         logs: AgentLogClient(recentLines: { _ in [] }, reveal: {}, fileURL: URL(filePath: "/tmp/module-test.log")))
+                         logs: AgentLogClient(recentLines: { _ in [] }, exportLines: { [] }))
     }
 }
 private enum ModuleTestError: Error { case unexpected }

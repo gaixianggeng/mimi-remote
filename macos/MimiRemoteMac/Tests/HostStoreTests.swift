@@ -2256,8 +2256,7 @@ final class HostStoreTests: XCTestCase {
             health: HealthClient(check: healthCheck, checkDirect: { _ in true }),
             logs: AgentLogClient(
                 recentLines: { _ in [] },
-                reveal: {},
-                fileURL: URL(filePath: "/tmp/mimi-remote-agentd-test.log")
+                exportLines: { [] }
             ),
             systemPrivacySettings: systemPrivacySettings,
             terminateApplication: terminateApplication

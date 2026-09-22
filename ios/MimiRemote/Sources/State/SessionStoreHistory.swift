@@ -714,6 +714,13 @@ extension SessionStore {
         successStatusMessage: String?
     ) async -> Bool {
         let hostScope = appStore.activeHostScope
+        let diagnosticStartedAt = Date()
+        let diagnosticCorrelation = diagnosticCorrelation(sessionID: session.id)
+        AppDiagnostics.record(
+            stage: .sessionHistory,
+            result: .started,
+            correlation: diagnosticCorrelation
+        )
         do {
             let result = try await job.task.value
             let ownsJob = historyLoadJobsBySessionID[session.id]?.token == job.token
@@ -733,8 +740,23 @@ extension SessionStore {
                     hostScope: hostScope
                 )
             }
+            AppDiagnostics.record(
+                stage: .sessionHistory,
+                result: didLoad ? .succeeded : .cancelled,
+                durationMilliseconds: AppDiagnostics.elapsedMilliseconds(since: diagnosticStartedAt),
+                correlation: diagnosticCorrelation
+            )
             return didLoad
         } catch {
+            if !(error is CancellationError) {
+                AppDiagnostics.record(
+                    stage: .sessionHistory,
+                    result: .failed,
+                    reason: .transport,
+                    durationMilliseconds: AppDiagnostics.elapsedMilliseconds(since: diagnosticStartedAt),
+                    correlation: diagnosticCorrelation
+                )
+            }
             return await failHistoryLoadJob(job, session: session, error: error, quiet: quiet)
         }
     }

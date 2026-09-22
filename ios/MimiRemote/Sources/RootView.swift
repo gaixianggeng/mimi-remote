@@ -67,6 +67,8 @@ struct RootView: View {
             migrateLegacyWorkspaceAppearance()
         }
         .task {
+            AppDiagnostics.record(stage: .lifecycle, result: .started, reason: .startup)
+            AppDiagnostics.maintain()
             restoreActiveHostNavigationIfNeeded()
             // 冷启动时场景可能已经激活而 onChange 不再触发；先把当前前台状态登记进闸门镜像。
             foregroundResume.observeScene(active: scenePhase == .active)
@@ -199,6 +201,8 @@ struct RootView: View {
             guard phase == .active else {
                 return
             }
+            AppDiagnostics.record(stage: .lifecycle, result: .received, reason: .foreground)
+            AppDiagnosticsSettingsController.shared.refreshForForeground()
             let shouldRecoverTailcat = needsTailcatRecoveryAfterBackground
             let generation = foregroundResume.begin()
             foregroundResumeTask = Task {
