@@ -220,7 +220,7 @@ func TestAppServerGatewayThreadSearchRejectsMalformedResponse(t *testing.T) {
 
 func newThreadSearchPolicy(t *testing.T) (*appServerGatewayPolicy, string, string) {
 	t.Helper()
-	cfg, registry, _, _, projectDir := appServerGatewayBaseFixture(t)
+	cfg, registry, _, projectDir := appServerGatewayBaseFixture(t)
 	browseRoot := t.TempDir()
 	browseDir := filepath.Join(browseRoot, "browse-workspace")
 	if err := os.Mkdir(browseDir, 0o755); err != nil {

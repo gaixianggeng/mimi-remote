@@ -51,23 +51,10 @@ final class HostStore {
         status?.moduleStatus?.claudeEnabled ?? claudeConfiguration?.enabled ?? claudeRuntime?.enabled ?? false
     }
 
-    var canChangeClaude: Bool {
-        owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
-    }
-
     var lanEnabled: Bool {
         if let modules = status?.moduleStatus { return modules.lanEnabled }
         guard status?.moduleStatusState != .unavailable else { return false }
         return status?.networkStatus?.allowLAN ?? false
-    }
-
-    var canChangeLAN: Bool {
-        owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
-    }
-
-    var lanStatusTitle: String {
-        if isUpdatingLAN { return "正在更新" }
-        return lanEnabled ? "已开启" : "已关闭"
     }
 
     var tailcatEnabled: Bool {
@@ -82,13 +69,6 @@ final class HostStore {
         tailcatStatus?.derpMapURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    var tailcatStatusTitle: String {
-        if isUpdatingTailcat { return "正在更新" }
-        guard let tailcatStatus else { return "尚未检查" }
-        if !tailcatStatus.enabled { return "已关闭" }
-        return tailcatStatus.running ? "运行中" : "需要处理"
-    }
-
     var tailcatStatusDetail: String {
         if owner == .homebrew {
             return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Tailcat 模块。"
@@ -100,43 +80,6 @@ final class HostStore {
             return "默认关闭。开启后会启动独立 sidecar，不会替换或重启现有 Tailscale 连接。"
         }
         return "已配对 \(tailcatStatus.pairedDeviceCount) 台设备。"
-    }
-
-    var claudeStatusTitle: String {
-        guard owner != .homebrew else { return "等待接管 App 服务" }
-        guard let runtime = claudeRuntime else {
-            return claudeEnabled ? "正在检查" : "已关闭"
-        }
-        switch runtime.state {
-        case .connected: return "已连接"
-        case .available: return "可用"
-        case .signedOut: return "需要登录"
-        case .disabled: return "已关闭"
-        case .unavailable: return "暂不可用"
-        }
-    }
-
-    var claudeStatusDetail: String {
-        if owner == .homebrew {
-            return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Claude Code 模块。"
-        }
-        if let claudeError {
-            return claudeError
-        }
-        if let runtime = claudeRuntime, runtime.enabled {
-            switch runtime.state {
-            case .connected, .available:
-                return "Claude Code 与 resident bridge 已就绪。"
-            case .signedOut:
-                return "已检测到 Claude Code，但尚未登录。请先在 Claude Code 中完成登录。"
-            case .unavailable:
-                return "Claude Runtime 暂不可用；请检查登录状态或打开诊断查看详情。"
-            case .disabled:
-                break
-            }
-        }
-        return claudeConfiguration?.message
-            ?? "启动时会检测 Claude Code；可用且已登录时自动启用，检测不到时保持关闭。"
     }
 
     private var claudeRuntime: AgentRuntimeStatus? {

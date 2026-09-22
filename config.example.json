@@ -32,9 +32,6 @@
       "CLAUDE_BRIDGE_BYPASS_PERMISSIONS": "false"
     }
   },
-  "session": {
-    "output_buffer_bytes": 131072
-  },
   "scan_roots": [
     "/Users/you/code"
   ],

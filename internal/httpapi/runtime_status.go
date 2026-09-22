@@ -878,23 +878,7 @@ func (c *runtimeWebSocketRPC) initialize(ctx context.Context) (string, error) {
 }
 
 func (c *runtimeWebSocketRPC) initializeClient(ctx context.Context, name string, title string, version string) (string, error) {
-	var result struct {
-		UserAgent string `json:"userAgent"`
-	}
-	if err := c.call(ctx, "initialize", map[string]any{
-		"clientInfo": map[string]any{
-			"name":    name,
-			"title":   title,
-			"version": version,
-		},
-		"capabilities": map[string]any{},
-	}, &result); err != nil {
-		return "", err
-	}
-	if err := c.notify(ctx, "initialized", map[string]any{}); err != nil {
-		return "", err
-	}
-	return result.UserAgent, nil
+	return initializeJSONRPCClient(ctx, c, name, title, version)
 }
 
 func (c *runtimeWebSocketRPC) call(ctx context.Context, method string, params any, result any) error {

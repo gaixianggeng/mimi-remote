@@ -304,16 +304,6 @@ final class TailcatExperimentController: ObservableObject {
     var isAvailable: Bool { bridge.isAvailable }
     var lastDiagnostic: TailcatPathDiagnostic? { diagnostics.first }
 
-    func loadPublicKey() {
-        guard isAvailable, publicKey.isEmpty else { return }
-        do {
-            let privateKey = try loadOrCreatePrivateKey()
-            publicKey = try bridge.publicKey(privateKey)
-        } catch {
-            state = .failed(message: error.localizedDescription)
-        }
-    }
-
     // 兼容早期实验数据和测试入口。正式产品配对只从二维码写入地址。
     func setAddress(_ value: String) {
         address = value.trimmingCharacters(in: .whitespacesAndNewlines)

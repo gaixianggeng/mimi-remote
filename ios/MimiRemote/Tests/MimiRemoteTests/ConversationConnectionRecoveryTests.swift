@@ -1710,7 +1710,7 @@ extension ConversationDataFlowTests {
             )
         ])
 
-        let startedCompatibilityReview = await store.reviewUncommittedChanges(session)
+        let startedCompatibilityReview = await store.startReview(session, target: .uncommittedChanges)
         XCTAssertTrue(startedCompatibilityReview)
         XCTAssertEqual(client.requestedSessionReviews.last?.target, .uncommittedChanges)
         XCTAssertEqual(client.requestedSessionReviews.last?.delivery, .inline)

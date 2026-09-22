@@ -189,12 +189,6 @@ extension SessionStore {
         )
     }
 
-    func clearWriterConflictForkState(sessionID: SessionID) {
-        let lease = writerConflictForkLease(for: sessionID)
-        writerConflictForkAvailabilityByLease.removeValue(forKey: lease)
-        writerConflictForkErrorByLease.removeValue(forKey: lease)
-    }
-
     func clearAllWriterConflictForkState() {
         writerConflictForkAvailabilityByLease.removeAll()
         writerConflictForkErrorByLease.removeAll()

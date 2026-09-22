@@ -408,22 +408,6 @@ final class ConversationStore: ObservableObject {
         return true
     }
 
-    func markSendingUserMessagesFailed(sessionID: String) {
-        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)] else {
-            return
-        }
-        var changed = false
-        for index in list.indices where list[index].role == .user && list[index].sendStatus == .sending {
-            list[index].sendStatus = .failed
-            list[index].updatedAt = Date()
-            changed = true
-        }
-        guard changed else {
-            return
-        }
-        replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
-    }
-
     func compactTurnPayloadAfterSendAccepted(clientMessageID: ClientMessageID, sessionID: String) {
         guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)],
               let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID),
@@ -484,24 +468,6 @@ final class ConversationStore: ObservableObject {
             sendStatus: .confirmed,
             revision: metadata?.revision
         ), sessionID: sessionID)
-    }
-
-    func resolveApproval(_ approval: ApprovalSummary, accepted: Bool, sessionID: String) {
-        let text = accepted ? L10n.format("ui.approval_approved_value", approval.title) : L10n.format("ui.approval_rejected_value", approval.title)
-        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)] else {
-            appendSystem(text, sessionID: sessionID, kind: .approval)
-            return
-        }
-        // 审批结果应该回写到原来的等待卡片上，避免时间线和详情里长期显示“等待审批”。
-        if let index = list.lastIndex(where: { message in
-            message.kind == .approval && message.content.contains(approval.title)
-        }) {
-            list[index].content = text
-            list[index].updatedAt = Date()
-            replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
-            return
-        }
-        appendSystem(text, sessionID: sessionID, kind: .approval)
     }
 
     func resolveLatestPendingApproval(sessionID: String) {

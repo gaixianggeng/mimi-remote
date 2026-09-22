@@ -11,7 +11,6 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/httpapi"
-	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
 type agentAppServerRuntime struct {
@@ -110,13 +109,9 @@ func (r *agentAppServerRuntime) shutdown() error {
 }
 
 func shutdownServeResources(
-	manager *session.Manager,
 	apiRouter *httpapi.Router,
 	appServerRuntime *agentAppServerRuntime,
 ) error {
-	if manager != nil {
-		manager.Shutdown()
-	}
 	if apiRouter != nil {
 		apiRouter.Shutdown()
 	}

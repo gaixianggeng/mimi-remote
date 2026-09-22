@@ -898,10 +898,6 @@ struct AgentUserInputOption: Identifiable, Codable, Hashable {
     var id: String { label }
 }
 
-enum SessionDataFlow {
-    typealias SessionRow = DataFlowSessionRow
-}
-
 struct DataFlowSessionRow: Identifiable, Codable, Hashable {
     let id: SessionID
     let projectID: String
@@ -1094,31 +1090,6 @@ struct AgentMessage: Identifiable, Codable, Hashable {
         self.revision = try container.decodeIfPresent(ModelRevision.self, forKey: .revision) ?? 0
         self.sendStatus = try container.decodeIfPresent(MessageSendStatus.self, forKey: .sendStatus) ?? .confirmed
         self.isTimestampFallback = try container.decodeIfPresent(Bool.self, forKey: .isTimestampFallback) ?? false
-    }
-}
-
-struct ComposerDraft: Identifiable, Codable, Hashable {
-    let id: String
-    let projectID: String?
-    let sessionID: SessionID?
-    var text: String
-    var isExpanded: Bool
-    var updatedAt: Date
-
-    init(
-        id: String = UUID().uuidString,
-        projectID: String?,
-        sessionID: SessionID?,
-        text: String = "",
-        isExpanded: Bool = false,
-        updatedAt: Date = Date()
-    ) {
-        self.id = id
-        self.projectID = projectID
-        self.sessionID = sessionID
-        self.text = text
-        self.isExpanded = isExpanded
-        self.updatedAt = updatedAt
     }
 }
 

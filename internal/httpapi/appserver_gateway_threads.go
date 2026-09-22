@@ -18,10 +18,6 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
-func (p *appServerGatewayPolicy) rememberPendingThreadResponse(id *json.RawMessage, method string, cwd string, scopeID string) error {
-	return p.rememberPendingThreadResponseWithManagedUse(id, method, cwd, scopeID, "")
-}
-
 func (p *appServerGatewayPolicy) rememberPendingThreadResponseWithManagedUse(id *json.RawMessage, method string, cwd string, scopeID string, managedWorktreePath string) error {
 	return p.rememberPendingThreadRequest(id, appServerGatewayPendingThreadRequest{
 		method: method, cwd: cwd, scopeID: scopeID, managedWorktreePath: managedWorktreePath,
@@ -1373,10 +1369,6 @@ func (p *appServerGatewayPolicy) threadRouteFacts(threadID string) threadRouteFa
 		}
 	}
 	return facts
-}
-
-func (p *appServerGatewayPolicy) projectIDForThread(threadID string) string {
-	return p.threadRouteFacts(threadID).projectID
 }
 
 func (p *appServerGatewayPolicy) prunePendingServerRequestsLocked(now time.Time) {

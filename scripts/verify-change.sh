@@ -143,9 +143,11 @@ rust_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "rust" { print $2 }
 macos_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "macos" { print $2 }')"
 docs_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "docs" { print $2 }')"
 
+# config.example.json 与 README/示例文档同类：对外发布的配置示例，不是产品源码。
+# 此前它没有映射，改一行也会让 quick 在任何检查前 fail closed；这里按文档路径归口到文档静态门禁。
 is_documentation_path() {
   case "$1" in
-    *.md|README|README.*|CONTRIBUTING.*|AGENTS.md|SECURITY.md|LICENSE|LICENSE.*|*/LICENSE|*/LICENSE.*|docs/*|web/*|artifacts/*)
+    *.md|README|README.*|CONTRIBUTING.*|AGENTS.md|SECURITY.md|LICENSE|LICENSE.*|*/LICENSE|*/LICENSE.*|config.example.json|docs/*|web/*|artifacts/*)
       return 0
       ;;
   esac

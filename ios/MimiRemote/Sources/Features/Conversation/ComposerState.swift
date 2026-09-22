@@ -458,19 +458,6 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    var chipTitle: String {
-        switch self {
-        case .requestApproval:
-            return L10n.text("ui.permissions_request_approval")
-        case .readOnly:
-            return L10n.text("ui.permissions_read_only")
-        case .autoApprove:
-            return L10n.text("ui.permissions_approval_for_me")
-        case .fullAccess:
-            return L10n.text("ui.permissions_full_access")
-        }
-    }
-
     var detail: String {
         switch self {
         case .requestApproval:

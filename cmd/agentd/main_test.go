@@ -387,10 +387,10 @@ func TestBrewServiceConfigGuardAllowsPlatformDefault(t *testing.T) {
 	customPath := filepath.Join(t.TempDir(), "custom-config.json")
 	t.Setenv("AGENTD_CONFIG", customPath)
 
-	if err := ensureBrewServiceDefaultConfig(config.PlatformDefaultPath()); err != nil {
+	if err := ensureManagedServiceDefaultConfig("darwin", config.PlatformDefaultPath()); err != nil {
 		t.Fatalf("平台默认 config.json 必须允许 Homebrew 后台托管：%v", err)
 	}
-	if err := ensureBrewServiceDefaultConfig(filepath.Clean(config.PlatformDefaultPath())); err != nil {
+	if err := ensureManagedServiceDefaultConfig("darwin", filepath.Clean(config.PlatformDefaultPath())); err != nil {
 		t.Fatalf("清理后的等价默认路径也应允许：%v", err)
 	}
 }
@@ -1190,9 +1190,6 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 			SSHTarget: "127.0.0.1",
 		},
 		Codex: config.CodexConfig{Bin: "/bin/true"},
-		Session: config.SessionConfig{
-			OutputBufferBytes: 128 * 1024,
-		},
 		Projects: []config.ProjectConfig{{
 			ID: "test", Name: "Test", Path: projectPath,
 		}},

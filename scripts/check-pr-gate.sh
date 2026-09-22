@@ -95,6 +95,7 @@ assert_scope tailcat_source false true false false false experiments/tailcat/mob
 assert_scope tailcat_builder false true false false false scripts/build-tailcat-mobile.sh
 assert_scope tailcat_fixture false true false false false scripts/testdata/tailcat-mobile/fake-go.sh
 assert_scope docs_only false false false false true CONTRIBUTING.md
+assert_scope config_example false false false false true config.example.json
 assert_scope workflow true true true true true .github/workflows/pr-gate.yml
 assert_scope mixed true true true false true \
   cmd/agentd/main.go \
