@@ -793,6 +793,7 @@ final class HostStoreTests: XCTestCase {
             "Label": "com.gaixianggeng.mimi.mac.agentd",
             "BundleProgram": "Contents/MacOS/Mimi Remote Mac",
             "ProgramArguments": ["Mimi Remote Mac", "--agentd-supervisor"],
+            "LimitLoadToSessionType": "Aqua",
         ]
         let propertyListData = try PropertyListSerialization.data(
             fromPropertyList: propertyList,
@@ -830,6 +831,22 @@ final class HostStoreTests: XCTestCase {
                 bundleURL: bundleURL,
                 signingIdentityProvider: signingIdentity
             )
+        )
+        var missingSessionType = propertyList
+        missingSessionType.removeValue(forKey: "LimitLoadToSessionType")
+        try PropertyListSerialization.data(
+            fromPropertyList: missingSessionType,
+            format: .xml,
+            options: 0
+        ).write(to: launchAgentsURL.appending(path: "com.gaixianggeng.mimi.mac.agentd.plist"))
+        XCTAssertTrue(
+            ServiceManagementClient.validateAgentConfiguration(
+                bundleURL: bundleURL,
+                signingIdentityProvider: signingIdentity
+            )?.contains("配置无效") == true
+        )
+        try propertyListData.write(
+            to: launchAgentsURL.appending(path: "com.gaixianggeng.mimi.mac.agentd.plist")
         )
         XCTAssertTrue(
             ServiceManagementClient.validateAgentConfiguration(
@@ -917,6 +934,8 @@ final class HostStoreTests: XCTestCase {
         )
         XCTAssertEqual(dictionary["BundleProgram"] as? String, ServiceManagementClient.supervisorBundleProgram)
         XCTAssertEqual(dictionary["ProgramArguments"] as? [String], ServiceManagementClient.supervisorProgramArguments)
+        XCTAssertEqual(dictionary["LimitLoadToSessionType"] as? String, ServiceManagementClient.agentSessionType)
+        XCTAssertEqual(ServiceManagementClient.agentLaunchDefinitionRevision, "agentd-supervisor-v2-aqua")
     }
 
     func testAgentdSupervisorMapsChildExitAndSignalStatus() {

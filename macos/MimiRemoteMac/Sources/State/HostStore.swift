@@ -31,6 +31,7 @@ final class HostStore {
     private(set) var isUpdatingLAN = false
     private(set) var lanError: String?
     private(set) var codexError: String?
+    private(set) var codexSessionRepairNotice: String?
     private(set) var networkError: String?
     private(set) var networkErrorModule: HostModuleID?
     private(set) var updatingModule: HostModuleID?
@@ -897,6 +898,66 @@ final class HostStore {
             try await registerMacAgentAndWaitForReady()
         } catch {
             fail(error)
+        }
+    }
+
+    /// 用户确认所有共享连接都已退出后，显式释放错误驻留在 Background
+    /// session 的 Codex server，再由 Aqua LaunchAgent 创建新的 resident。
+    func repairSharedCodexRuntime() async {
+        guard !isBusy else { return }
+        let originalServiceStatus = services.agentStatus()
+        guard owner == .macApp, originalServiceStatus == .enabled else {
+            lastError = "当前不是 App 托管服务，不能修复共享运行环境。"
+            return
+        }
+
+        isBusy = true
+        lifecycle = .starting
+        lastError = nil
+        codexSessionRepairNotice = nil
+        defer { isBusy = false }
+
+        do {
+            try validateMacAgentConfiguration()
+            try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
+            let result = try await agent.releaseCodexSession()
+            try await registerMacAgentAndWaitForReady()
+            let releaseMessage = result.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            let summary = releaseMessage.isEmpty
+                ? (result.released
+                    ? "共享运行环境已修复。"
+                    : "共享运行环境无需释放。")
+                : releaseMessage
+            let separator = summary.hasSuffix("。") || summary.hasSuffix("！") || summary.hasSuffix("？")
+                ? ""
+                : "。"
+            codexSessionRepairNotice = "\(summary)\(separator)Mimi Remote Mac 服务已重新启动。"
+        } catch {
+            await restoreMacAgentAfterCodexSessionRepairFailure(
+                originalServiceStatus: originalServiceStatus,
+                cause: error
+            )
+        }
+    }
+
+    private func restoreMacAgentAfterCodexSessionRepairFailure(
+        originalServiceStatus: ServiceRegistrationState,
+        cause: Error
+    ) async {
+        guard originalServiceStatus == .enabled else {
+            fail(cause)
+            return
+        }
+        do {
+            owner = .macApp
+            try await registerMacAgentAndWaitForReady()
+            lastError = "修复共享运行环境失败，已恢复 Mimi Remote Mac 服务：\(cause.localizedDescription)"
+        } catch {
+            // launchd 已重新登记但 resident 因旧 Background server 拒绝而未就绪时，
+            // 仍保留 App owner，让用户关闭其它连接后可以再次执行显式修复。
+            owner = services.agentStatus() == .enabled ? .macApp : .none
+            lifecycle = .failed("修复共享运行环境失败，Mimi Remote Mac 服务未能恢复就绪：\(error.localizedDescription)")
+            lastError = "原始错误：\(cause.localizedDescription)；恢复错误：\(error.localizedDescription)"
         }
     }
 

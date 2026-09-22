@@ -1,5 +1,10 @@
 import Foundation
 
+struct CodexSessionReleaseResult: Decodable, Equatable, Sendable {
+    let released: Bool
+    let message: String
+}
+
 struct AgentCommandClient: Sendable {
     var configExists: @Sendable () -> Bool
     var setup: @Sendable (_ workspaceRoot: URL) async throws -> PairingInfo
@@ -7,6 +12,9 @@ struct AgentCommandClient: Sendable {
     var readiness: @Sendable () async throws -> AgentStatus
     var statusAt: @Sendable (_ binary: URL) async throws -> AgentStatus
     var doctor: @Sendable (_ fix: Bool) async throws -> DoctorFixResults
+    var releaseCodexSession: @Sendable () async throws -> CodexSessionReleaseResult = {
+        throw AgentClientError.commandFailed("当前 agentd 不支持共享运行环境修复，请更新 App。")
+    }
     var configureClaude: @Sendable (
         _ preference: ClaudeActivationPreference,
         _ restoreEnabled: Bool?
@@ -155,6 +163,15 @@ extension AgentCommandClient {
                 }
                 let results = try decode(AgentDoctorResults.self, from: result)
                 return DoctorFixResults(fixes: [], results: results)
+            },
+            releaseCodexSession: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(CodexSessionReleaseResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: codexSessionRepairArguments(),
+                    timeout: .seconds(30),
+                    forceKillAfterTimeout: true
+                ))
             },
             configureClaude: { preference, restoreEnabled in
                 let binary = try requireEmbeddedBinary()
@@ -311,6 +328,10 @@ extension AgentCommandClient {
             arguments.append("--runtime")
         }
         return arguments
+    }
+
+    static func codexSessionRepairArguments() -> [String] {
+        ["repair-codex-session", "--confirm-disconnected", "--json"]
     }
 
     static func claudeConfigurationArguments(

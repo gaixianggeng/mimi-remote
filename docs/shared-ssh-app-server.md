@@ -28,9 +28,9 @@ macOS 的 `~/Library/Application Support/mimi-remote/config.json` 与 Linux 的�
 }
 ```
 
-agentd 直接连接标准 control socket。socket 缺失时由 agentd 启动 `codex app-server --listen unix://`：Linux 优先通过独立的 user-systemd scope，macOS 以独立会话（setsid）启动并把 open-file soft limit 提到至少 8192。两种方式下 agentd 重启都不会终止 resident。本机终端通过 `codex --remote unix://` 接入同一个后端；普通 `codex` 仍会启动自己的本地运行时。
+agentd 直接连接标准 control socket。socket 缺失时由 agentd 启动 `codex app-server --listen unix://`：Linux 优先通过独立的 user-systemd scope；macOS 要求启动方处于已登录用户的 Aqua 环境，再以独立进程会话（setsid）启动并把 open-file soft limit 提到至少 8192。setsid 不会把 SSH 的 Background 安全会话变成用户登录会话。两种方式下 agentd 重启都不会终止 resident。本机终端通过 `codex --remote unix://` 接入同一个后端；普通 `codex` 仍会启动自己的本地运行时。
 
-旧版 macOS setup 自动写入的 `transport=ssh` + `ssh_target=127.0.0.1` 会在 agentd 启动、`agentd setup` 或 `agentd doctor --fix` 时先完成直连预检，再原子改写为 `local`。带用户名的 target 或远端主机不会被自动迁移；预检失败时原配置保持不变。
+旧版 macOS setup 自动写入的 `transport=ssh` + `ssh_target=127.0.0.1` 会在 agentd 启动、`agentd setup` 或 `agentd doctor --fix` 时先完成 CLI 可用性和本机 socket 路径预检，再原子改写为 `local`。macOS 设置与配置迁移不创建共享进程，真实连接由 GUI 服务启动时验证。带用户名的 target 或远端主机不会被自动迁移；静态预检失败时原配置保持不变。
 
 ### 显式远端 SSH（高级）
 
@@ -82,6 +82,10 @@ CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 \
   codex -c features.code_mode_host=true app-server --listen unix://
 ```
 
+macOS 本机模式还通过 `command/exec` 查询 resident 的 `launchctl managername`，仅复用 Aqua 环境。若检查失败或已有 resident 属于 Background，agentd 明确拒绝连接，不终止旧进程，也不改换 socket。Mac App 的 supervisor LaunchAgent 限定为 Aqua；首次设置不抢先启动 resident。Homebrew 用户应通过已登录用户的 `agentd up` 启动 GUI 服务，不能把 SSH 中直接执行 `agentd serve` 当作等价启动方式。
+
+Desktop 的 SSH proxy 仍可接入已由 GUI 服务创建的同一个 socket，任务历史与接续方式不变。若 Desktop 先通过 SSH 创建了 resident，之后启动 Mimi 会报告运行环境错误，需要下面的一次性修复；Mimi 不控制 Desktop 自己的启动逻辑。
+
 launchd 启动的进程和 SSH 登录在 macOS 上的 open-file soft limit 通常只有 256。agentd 启动新 resident 前会读取当前值；低于 8192 时先提高到 8192，无法提高时拒绝启动。它不会降低已经更高的限制。
 
 这个容量余量不能替代订阅释放。App Server 会为每个已加载 Thread 保留 session 和 MCP 资源；取消最后一个订阅后，官方实现仍有 30 分钟无活动宽限期，之后才卸载 Thread。
@@ -97,6 +101,24 @@ agentd 或单条 Mimi WebSocket 退出时只关闭自己的连接或对应 SSH p
 ## macOS 文件访问权限
 
 本机模式下 resident 由 agentd 启动并继承它的 macOS 隐私授权：Mac App 安装版的 agentd 由主 App 的 supervisor 拉起，授权主体是 Mimi Remote Mac（照片图库在 App 的“设置 → 文件访问”中允许）；Homebrew 版的授权主体是 agentd 本身。SSH 模式下 resident 是 sshd 的子进程；若“远程登录”里开启了“允许远程用户完全访问磁盘”（macOS 默认勾选），它会继承 sshd 的完全磁盘访问。因此从 SSH 切到本机模式后，照片图库、Mail、Safari 等“完全磁盘访问”范围内的目录可能从可读变为需要授权；桌面、文稿、下载仍按首次访问时的系统提示授权。需要无人值守访问受保护目录时，按[安装、升级与回滚](install-upgrade-rollback.md)为 Mimi Remote Mac（Homebrew 版为 agentd）授予完全磁盘访问。
+
+### 一次性修复旧的 Background resident
+
+`gh` 登录信息相同，不代表不同 macOS 安全会话都能读取登录钥匙串。旧 resident 由 SSH 创建时，后续 GUI agentd 即使改为直连，仍会复用旧进程的安全环境。重复新建任务或重启 agentd 不会改变这个环境。
+
+先结束所有共享 Codex 任务和其他 Mimi 活动任务，并关闭 Desktop 的 SSH 共享页面。Mac App 用户在“诊断”中选择“修复共享运行环境…”，确认后 App 会停止自己的服务，调用一次性释放命令，再由 Aqua supervisor 重建服务。它不删除任务历史，不复制 GitHub Token，也不修改钥匙串 ACL。
+
+Homebrew 用户在已登录的本机终端执行：
+
+```bash
+agentd stop
+agentd repair-codex-session --confirm-disconnected
+agentd start
+```
+
+只有确认 resident 属于当前用户、默认 socket 的真实 peer、Background 环境，且没有其他连接、活动任务或待执行队列，命令才对该 PID 发送一次 SIGTERM。缺少协议或系统检查结果时拒绝操作；不使用 SIGKILL，不删除 socket。已处于 Aqua 或 socket 不存在时返回无需释放。命令本身不启动 replacement，仍由原有 GUI 服务负责。
+
+App Server 没有原子的“停止接入并安全退出”接口。因此确认后到修复结束前不要重新打开 SSH 共享页面。检测到其他连接或任务时先处理提示再重试，不要反复解锁钥匙串。此操作不能解决钥匙串本身被用户锁定、凭证失效或其他独立授权问题。
 
 ## 会话和消息规则
 
