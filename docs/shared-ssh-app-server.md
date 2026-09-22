@@ -30,7 +30,7 @@ macOS 的 `~/Library/Application Support/mimi-remote/config.json` 与 Linux 的�
 
 agentd 直接连接标准 control socket。socket 缺失时由 agentd 启动 `codex app-server --listen unix://`：Linux 优先通过独立的 user-systemd scope；macOS 要求启动方处于已登录用户的 Aqua 环境，再以独立进程会话（setsid）启动并把 open-file soft limit 提到至少 8192。setsid 不会把 SSH 的 Background 安全会话变成用户登录会话。两种方式下 agentd 重启都不会终止 resident。本机终端通过 `codex --remote unix://` 接入同一个后端；普通 `codex` 仍会启动自己的本地运行时。
 
-旧版 macOS setup 自动写入的 `transport=ssh` + `ssh_target=127.0.0.1` 会在 agentd 启动、`agentd setup` 或 `agentd doctor --fix` 时先完成 CLI 可用性预检，再原子改写为 `local`。macOS 设置与配置迁移不创建共享进程，真实连接由 GUI 服务启动时验证。带用户名的 target 或远端主机不会被自动迁移；CLI 预检失败时原配置保持不变。
+旧版 macOS setup 自动写入的 `transport=ssh` + `ssh_target=127.0.0.1` 会在 agentd 启动、`agentd setup` 或 `agentd doctor --fix` 时先完成 CLI 可用性和本机 socket 路径预检，再原子改写为 `local`。macOS 设置与配置迁移不创建共享进程，真实连接由 GUI 服务启动时验证。带用户名的 target 或远端主机不会被自动迁移；静态预检失败时原配置保持不变。
 
 ### 显式远端 SSH（高级）
 

@@ -18,8 +18,8 @@ var resolveMigrationCodexBin = ResolveCodexBin
 
 // MigrateAppServerToSharedLocal replaces the former managed WebSocket upstream
 // with Codex's standard control socket. On macOS it also rewrites the loopback
-// SSH default that older setups wrote automatically. The resident is initialized
-// before the existing file is changed, and the final write uses byte-level CAS.
+// SSH default that older setups wrote automatically. Platform-specific preflight
+// runs before the file changes (static only on macOS); the write uses byte-level CAS.
 func MigrateAppServerToSharedLocal(ctx context.Context, configPath string) error {
 	return MigrateAppServerToSharedLocalWithPreflight(ctx, configPath, localAppServerPreflight)
 }
