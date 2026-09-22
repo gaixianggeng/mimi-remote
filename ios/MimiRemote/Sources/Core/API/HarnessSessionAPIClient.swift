@@ -275,6 +275,9 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     private var baselineBySessionID: [SessionID: SnapshotBaseline] = [:]
     private var newestSnapshotContextBySessionID: [SessionID: UInt64] = [:]
     private var snapshotContextSequence: UInt64 = 0
+    /// 已实际落到 Store 的页面事件前沿，缓存重开不重演旧轮次。
+    /// 历史读取和预热不推进这里；历史覆盖点由 Store 应用成功后随 connect 传入。
+    private var coveredDurableSeqBySessionID: [SessionID: Int] = [:]
 
     /// 已结算 assistant 的唯一展示身份，按「会话 + settlement seq」索引。
     ///
@@ -400,6 +403,12 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
                     seq: seq,
                     attemptMessageID: attemptMessageID
                 ) ?? attemptMessageID
+            },
+            coveredDurableSequence: { [weak self] sessionID in
+                self?.coveredDurableSeqBySessionID[sessionID]
+            },
+            reportCoveredDurableSequence: { [weak self] sessionID, seq in
+                self?.rememberCoveredDurableSequence(seq, for: sessionID)
             }
         )
     }
@@ -648,6 +657,8 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
             messages: messages,
             previousCursor: page.hasMore ? nextCursor : nil,
             hasMoreBefore: page.hasMore && nextCursor != nil,
+            // 这里只返回事实，Store 应用该页后才可用它抑制 opening 历史回放。
+            snapshotSeq: page.records.compactMap(\.seq).max().map(EventSequence.init),
             // 原生路径不做"缩略/完整"两种装载策略：每页就是上游给的那么多条。
             loadMode: loadMode,
             notice: nil
@@ -762,6 +773,11 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
             return
         }
         baselineBySessionID[sessionID] = SnapshotBaseline(cursor: cursor, contextID: contextID)
+    }
+
+    @MainActor
+    private func rememberCoveredDurableSequence(_ seq: Int, for sessionID: SessionID) {
+        coveredDurableSeqBySessionID[sessionID] = max(coveredDurableSeqBySessionID[sessionID] ?? seq, seq)
     }
 
     /// 所有 durable 来源的唯一提交与身份对账入口。
@@ -1105,6 +1121,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         await stopHostEvents()
         await runtime.shutdown()
         await MainActor.run {
+            coveredDurableSeqBySessionID.removeAll()
             unresolvedAssistantAttemptsBySessionID.removeAll()
             unresolvedAssistantSessionTouch.removeAll()
         }

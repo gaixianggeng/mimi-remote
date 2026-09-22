@@ -94,7 +94,11 @@ extension SessionStore {
         socket.onControlFailure = { _ in }
         relatedSessionSocket = socket
         relatedSessionSocketID = session.id
-        socket.connect(sessionID: session.id, replayBufferedEvents: false)
+        socket.connect(
+            sessionID: session.id,
+            replayBufferedEvents: false,
+            afterSequence: historySnapshotSeqBySessionID[session.id]
+        )
     }
 
     func stopRelatedSessionObservation(sessionID: SessionID? = nil) {
@@ -382,7 +386,11 @@ extension SessionStore {
         syncRuntimeActivity(with: session)
         runtimeEventFlushTasks[eventLease]?.cancel()
         runtimeEventFlushTasks[eventLease] = nil
-        socket.connect(sessionID: session.id, replayBufferedEvents: replayBufferedEvents)
+        socket.connect(
+            sessionID: session.id,
+            replayBufferedEvents: replayBufferedEvents,
+            afterSequence: historySnapshotSeqBySessionID[session.id]
+        )
     }
 
     func replayWatermark(for sessionID: SessionID) -> EventSequence? {
@@ -1166,7 +1174,10 @@ extension SessionStore {
         if connectedSessionID == sessionID, let webSocket {
             return webSocket
         }
-        return queuedSessionSockets[sessionID]
+        if let queued = queuedSessionSockets[sessionID] {
+            return queued
+        }
+        return relatedSessionSocketID == sessionID ? relatedSessionSocket : nil
     }
 
     func shouldIgnoreStaleTurnCompletion(

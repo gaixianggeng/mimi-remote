@@ -1190,6 +1190,10 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     }
 
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
+        connect(sessionID: sessionID, replayBufferedEvents: replayBufferedEvents, afterSequence: nil)
+    }
+
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?) {
         let client: any SessionWebSocketClient
         if let native = bundle.nativeClient(forSessionID: sessionID) {
             client = native.makeEventClient(sessionID: sessionID)
@@ -1211,7 +1215,11 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         activeClient?.disconnect()
         activeClient = client
         wireHandlers(to: client)
-        client.connect(sessionID: sessionID, replayBufferedEvents: replayBufferedEvents)
+        client.connect(
+            sessionID: sessionID,
+            replayBufferedEvents: replayBufferedEvents,
+            afterSequence: afterSequence
+        )
     }
 
     func disconnect() {

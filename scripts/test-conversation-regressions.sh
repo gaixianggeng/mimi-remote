@@ -94,6 +94,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/HarnessSubmissionControllerTests \
   -only-testing:MimiRemoteTests/HarnessPresentationProjectorTests \
   -only-testing:MimiRemoteTests/HarnessEventClientTests \
+  -only-testing:MimiRemoteTests/HarnessSnapshotReplayTests \
   -only-testing:MimiRemoteTests/HarnessInteractionStoreTests \
   -only-testing:MimiRemoteTests/HarnessRecoveryCoordinatorTests \
   -only-testing:MimiRemoteTests/HarnessHostEventObserverTests \

@@ -56,6 +56,9 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         (@MainActor (SessionID, HarnessAssistantAttemptObservation) -> [HarnessAssistantAttemptRetirement])?
     /// 用 `end.outcome.seq` 结算 attempt 与 durable assistant 的唯一身份。
     private let settleAssistantIdentity: (@MainActor (SessionID, Int, MessageID) -> MessageID)?
+    /// 历史页或先前页面观察已经覆盖的持久事件前沿；不把仅做对账视为已经展示。
+    private let coveredDurableSequence: (@MainActor (SessionID) -> Int?)?
+    private let reportCoveredDurableSequence: (@MainActor (SessionID, Int) -> Void)?
 
     var turnDeliveryMode: TurnDeliveryMode { .direct }
     var onEvent: (@MainActor (AgentEvent) -> Void)?
@@ -83,6 +86,18 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     /// 独占；页面再开一条会被中继拒绝，退订还会关闭整条共享连接。
     private var followStreamID: String?
     private var runtimeGeneration: UInt64?
+    /// 显式重开会创建新客户端，本地 observationGeneration 会重新从 1 开始。
+    /// 应用确认使用进程内唯一代次，避免旧 mailbox 的确认误清新客户端的待应用事件。
+    private static var replayEpochSequence: UInt64 = 0
+    private var replayEpoch: UInt64 = 0
+    private var appliedDurableSequence: Int?
+    private var highestAcknowledgedDurableSequence: Int?
+    private var pendingAppliedEventCountsBySeq: [Int: Int] = [:]
+    private enum PresentedTurnState: Equatable {
+        case running(Int)
+        case ended(Int)
+    }
+    private var presentedTurnState: PresentedTurnState?
 
     init(
         endpoint: String,
@@ -100,7 +115,9 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
             (@MainActor (SessionID, HarnessDurableEvent) -> HarnessDurableReconciliation)? = nil,
         observeAssistantAttempt:
             (@MainActor (SessionID, HarnessAssistantAttemptObservation) -> [HarnessAssistantAttemptRetirement])? = nil,
-        settleAssistantIdentity: (@MainActor (SessionID, Int, MessageID) -> MessageID)? = nil
+        settleAssistantIdentity: (@MainActor (SessionID, Int, MessageID) -> MessageID)? = nil,
+        coveredDurableSequence: (@MainActor (SessionID) -> Int?)? = nil,
+        reportCoveredDurableSequence: (@MainActor (SessionID, Int) -> Void)? = nil
     ) {
         self.endpoint = endpoint
         self.token = token
@@ -116,6 +133,8 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         self.reconcileDurableEvent = reconcileDurableEvent
         self.observeAssistantAttempt = observeAssistantAttempt
         self.settleAssistantIdentity = settleAssistantIdentity
+        self.coveredDurableSequence = coveredDurableSequence
+        self.reportCoveredDurableSequence = reportCoveredDurableSequence
     }
 
     // MARK: - 连接
@@ -124,13 +143,29 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         connect(sessionID: sessionID, replayBufferedEvents: true)
     }
 
-    /// 建立会话观察：开 follow 拿 opening snapshot，再把其中已有记录投影出来。
+    /// 建立会话观察：用 opening snapshot 恢复 journal，再按已应用前沿补齐展示事件。
     /// 历史预热会额外上报读取基线；普通页面 follow 只建立 journal 与实时观察。
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
+        connect(sessionID: sessionID, replayBufferedEvents: replayBufferedEvents, afterSequence: nil)
+    }
+
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?) {
         observationTask?.cancel()
         observationGeneration &+= 1
         let generation = observationGeneration
         self.sessionID = sessionID
+        Self.replayEpochSequence &+= 1
+        replayEpoch = Self.replayEpochSequence
+        // false 只抑制有已应用证据的历史。没有前沿时完整投影，不能猜 cursor 后吞消息。
+        appliedDurableSequence = replayBufferedEvents ? nil : [
+            afterSequence.flatMap(Int.init(exactly:)),
+            coveredDurableSequence?(sessionID),
+        ].compactMap { $0 }.max()
+        highestAcknowledgedDurableSequence = appliedDurableSequence
+        pendingAppliedEventCountsBySeq.removeAll()
+        pendingAssistantDurableBySeq.removeAll()
+        settledAssistantMessageIDBySeq.removeAll()
+        presentedTurnState = nil
         onStatus?(.connecting)
         observationTask = Task { [weak self] in
             guard let self else { return }
@@ -171,7 +206,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         )
     }
 
-    /// 接受当前观察租约的 opening snapshot，并立即发布已有历史与直播前缀。
+    /// 接受当前观察租约的 opening snapshot，发布未覆盖的持久事件与当前直播前缀。
     private func openBaseline(
         snapshot: HarnessSnapshot,
         sessionID: SessionID,
@@ -183,6 +218,10 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         // follow request 的 address.sessionId；归属由本次观察租约和 streamId 保证。
         var fresh = HarnessSessionJournal(generation: generation)
         _ = fresh.apply(snapshot: snapshot, acceptingGeneration: generation)
+        // 重连窗口可能已经向后移动；此前收过、但仍在等待 end 身份的 durable 不能丢。
+        for (seq, event) in pendingAssistantDurableBySeq where fresh.record(atSeq: seq) == nil {
+            _ = fresh.apply(durableEvent: event)
+        }
         journal = fresh
         publishAttemptRetirements(observeAssistantAttempt?(
             sessionID,
@@ -195,21 +234,26 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
             reportSnapshotCursor?(sessionID, cursor, snapshotContextID)
         }
 
-        // snapshot 里已有的持久记录立刻投影：这是"中途打开"能看到历史的来源。
-        //
-        // **同时要过对账**：断线期间产生的用户回显只会出现在重连后的 snapshot 里，
-        // 那条路径不解除提交锁，用户就会看到自己的消息在时间线上、下一条却发不出去。
-        for record in snapshot.records ?? [] {
-            guard let event = record.event else { continue }
+        // 历史页已覆盖的旧轮次不能重演成实时开始/完成，但当前仍活动的轮次必须恢复。
+        restoreCurrentTurn(from: fresh, coveredThrough: appliedDurableSequence)
+        // 所有记录仍要对账：断线期间的 user 回显负责解锁，assistant/tool 负责身份与终态。
+        // UI 只补已应用前沿之后的缺口；同一观察重连时保留前沿，不因 fresh journal 全量重播。
+        for event in fresh.orderedRecords {
             let reconciliation = reconcile(event)
             publishAttemptRetirements(reconciliation.interruptedAttempts)
-            for projected in HarnessPresentationProjector.project(
-                durableEvent: event,
-                sessionID: sessionID,
-                assistantMessageID: reconciliation.assistantMessageID
-            ) {
-                onEvent?(projected)
+            if let seq = event.seq {
+                if appliedDurableSequence.map({ seq <= $0 }) == true {
+                    pendingAssistantDurableBySeq.removeValue(forKey: seq)
+                    continue
+                }
+                if pendingAppliedEventCountsBySeq[seq] != nil { continue }
             }
+            if shouldDeferAssistantDurable(event, activeAttempt: fresh.activeAttempt), let seq = event.seq {
+                pendingAssistantDurableBySeq[seq] = event
+                continue
+            }
+            if let seq = event.seq { pendingAssistantDurableBySeq.removeValue(forKey: seq) }
+            publish(durableEvent: event, assistantMessageID: reconciliation.assistantMessageID)
         }
         if let attempt = fresh.activeAttempt,
            let event = HarnessPresentationProjector.liveTextEvent(
@@ -226,6 +270,42 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
             onEvent?(event)
         }
         return true
+    }
+
+    /// 从最终 journal 恢复一次当前状态，不让被截取的历史窗口冒充“已完成”。
+    private func restoreCurrentTurn(from baseline: HarnessSessionJournal, coveredThrough cutoff: Int?) {
+        guard let cutoff else { return }
+        let records = baseline.orderedRecords
+        if let turn = baseline.activeAttempt?.turn ?? baseline.activeTurnNumber {
+            let start = records.last {
+                $0.type == HarnessWireEventType.turnStart && $0.data?["turn"]?.intValue == turn
+            }
+            // 新 start 会按原始 seq 进入增量管线；只有已覆盖的活动轮次需要补当前状态。
+            guard start?.seq.map({ $0 <= cutoff }) ?? true,
+                  presentedTurnState != .running(turn) else { return }
+            presentedTurnState = .running(turn)
+            if let start {
+                HarnessPresentationProjector.project(durableEvent: start, sessionID: sessionID)
+                    .forEach { onEvent?($0) }
+            } else {
+                // 长轮次的 start 可能已滑出窗口；activeAttempt 本身仍提供权威 turn 身份。
+                onEvent?(.turnStarted(AgentEventMetadata(
+                    seq: nil, sessionID: sessionID, turnID: "h-turn-\(turn)", itemID: nil,
+                    messageID: nil, clientMessageID: nil, revision: nil, createdAt: nil
+                )))
+            }
+        } else if let terminal = records.last(where: {
+            $0.type == HarnessWireEventType.turnStart || $0.type == HarnessWireEventType.turnEnd
+        }), terminal.type == HarnessWireEventType.turnEnd,
+                  let seq = terminal.seq, seq <= cutoff,
+                  presentedTurnState != .ended(seq),
+                  case .turnCompleted(let metadata)? = HarnessPresentationProjector.project(
+                    durableEvent: terminal, sessionID: sessionID
+                  ).first {
+            // 只有明确的最后 turn/end 才恢复终态；不发 turnCompleted，避免通知、补页和队列副作用。
+            presentedTurnState = .ended(seq)
+            onEvent?(.sessionStatus("completed", metadata))
+        }
     }
 
     /// 释放本页面的观察。
@@ -498,8 +578,10 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         guard isNew else { return false }
         let reconciliation = reconcile(event)
         publishAttemptRetirements(reconciliation.interruptedAttempts)
-        if event.type == HarnessWireEventType.assistantMessage,
-           current.activeAttempt != nil,
+        if let seq = event.seq, let appliedDurableSequence, seq <= appliedDurableSequence {
+            return true
+        }
+        if shouldDeferAssistantDurable(event, activeAttempt: current.activeAttempt),
            let seq = event.seq {
             pendingAssistantDurableBySeq[seq] = event
             return true
@@ -511,18 +593,45 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         return true
     }
 
+    private func shouldDeferAssistantDurable(
+        _ event: HarnessDurableEvent,
+        activeAttempt: HarnessJournalAttempt?
+    ) -> Bool {
+        guard event.type == HarnessWireEventType.assistantMessage,
+              let seq = event.seq, let activeAttempt else { return false }
+        // seq 只用来排除 attempt 之前的旧记录，不据此认领消息身份；结算仍只认 end.outcome.seq。
+        return activeAttempt.startedAfterSeq.map { seq > $0 } ?? true
+    }
+
     private func publish(
         durableEvent event: HarnessDurableEvent,
         assistantMessageID reconciledMessageID: MessageID? = nil
     ) {
+        guard let onEvent else { return }
+        if let seq = event.seq {
+            guard appliedDurableSequence.map({ seq > $0 }) ?? true,
+                  pendingAppliedEventCountsBySeq[seq] == nil else { return }
+        }
         let messageID = reconciledMessageID
             ?? event.seq.flatMap { settledAssistantMessageIDBySeq[$0] }
-        for projected in HarnessPresentationProjector.project(
+        let projectedEvents = HarnessPresentationProjector.project(
             durableEvent: event,
             sessionID: sessionID,
             assistantMessageID: messageID
-        ) {
-            onEvent?(projected)
+        )
+        if let seq = event.seq, !projectedEvents.isEmpty {
+            pendingAppliedEventCountsBySeq[seq] = projectedEvents.count
+            if event.type == HarnessWireEventType.turnStart, let turn = event.data?["turn"]?.intValue {
+                presentedTurnState = .running(turn)
+            } else if event.type == HarnessWireEventType.turnEnd {
+                presentedTurnState = .ended(seq)
+            }
+        }
+        for projected in projectedEvents {
+            onEvent(projected.withReplayBoundarySequence(
+                event.seq.flatMap(UInt64.init(exactly:)),
+                epoch: replayEpoch
+            ))
         }
     }
 
@@ -967,7 +1076,33 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     }
 
     func acknowledgeAppliedEvent(_ event: AgentEvent) {
-        // 原生路径没有"应用确认"这一步：event 携带原生 seq，去重靠它而不是 ack。
+        let metadata: AgentEventMetadata
+        switch event {
+        case .turnStarted(let value), .turnCompleted(let value),
+             .messageCompleted(_, let value), .processItemCompleted(_, _, let value):
+            metadata = value
+        default:
+            return
+        }
+        guard metadata.sessionID == sessionID,
+              metadata.replayCursorEpoch == replayEpoch,
+              let boundary = metadata.replayBoundarySequence,
+              let seq = Int(exactly: boundary),
+              let count = pendingAppliedEventCountsBySeq[seq] else { return }
+        if count > 1 {
+            pendingAppliedEventCountsBySeq[seq] = count - 1
+            return
+        }
+        pendingAppliedEventCountsBySeq.removeValue(forKey: seq)
+        highestAcknowledgedDurableSequence = max(highestAcknowledgedDurableSequence ?? seq, seq)
+        guard let candidate = highestAcknowledgedDurableSequence,
+              appliedDurableSequence.map({ candidate > $0 }) ?? true else { return }
+        // assistant durable 可能正在等 end.outcome.seq 才能确定展示身份；后到的 ack 不能越过它。
+        let firstUnapplied = (Array(pendingAppliedEventCountsBySeq.keys)
+            + Array(pendingAssistantDurableBySeq.keys)).min()
+        guard firstUnapplied.map({ $0 > candidate }) ?? true else { return }
+        appliedDurableSequence = candidate
+        reportCoveredDurableSequence?(sessionID, candidate)
     }
 
     private enum InteractionResponseKind: Equatable {
