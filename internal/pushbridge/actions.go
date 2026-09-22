@@ -287,15 +287,7 @@ func (s *ActionStore) Len() int {
 }
 
 func (a *Action) allowsDevice(deviceID string) bool {
-	if deviceID == "" {
-		return false
-	}
-	for _, allowed := range a.DeviceIDs {
-		if allowed == deviceID {
-			return true
-		}
-	}
-	return false
+	return deviceAllowed(a.DeviceIDs, deviceID)
 }
 
 func (s *ActionStore) findLocked(runtime string, sessionKey string, requestID string) *Action {
@@ -334,4 +326,18 @@ func randomActionID() (string, error) {
 		return "", err
 	}
 	return "act-" + hex.EncodeToString(buf), nil
+}
+
+// deviceAllowed 判断设备是否在授权列表内。Action 与 LocateRecord 的授权语义
+// 完全一致，规则只保留这一份，避免两处各自演化。
+func deviceAllowed(deviceIDs []string, deviceID string) bool {
+	if deviceID == "" {
+		return false
+	}
+	for _, allowed := range deviceIDs {
+		if allowed == deviceID {
+			return true
+		}
+	}
+	return false
 }

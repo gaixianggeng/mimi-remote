@@ -405,21 +405,13 @@ func tailcatPairPendingError(timeout time.Duration) error {
 	return fmt.Errorf("Tailcat 配对节点仍在等待中继授权，%s 内未完成；节点可能已经生成，请稍后重试一次", timeout)
 }
 
-func (s *tailcatSidecarSupervisor) AllowClient(ctx context.Context, publicKey string) (tailcatStatus, error) {
-	if s == nil {
-		return tailcatStatus{}, errors.New("Tailcat 管理器未初始化")
-	}
-	s.operationMu.Lock()
-	defer s.operationMu.Unlock()
-	var status tailcatStatus
-	err := s.call(ctx, s.controlCallTimeout(), http.MethodPost, "/allow", map[string]string{"public_key": publicKey}, &status)
-	s.applyConfigurationToStatus(&status)
-	return status, err
-}
-
-func (s *tailcatSidecarSupervisor) ReplaceManagedClients(
+// callControlWithStatus 是「加锁 -> 调 sidecar 控制接口 -> 把配置投影回 status」
+// 这一骨架的唯一实现。allow / managed-clients / reset 三个端点此前各写了一遍。
+func (s *tailcatSidecarSupervisor) callControlWithStatus(
 	ctx context.Context,
-	publicKeys []string,
+	method string,
+	path string,
+	body any,
 ) (tailcatStatus, error) {
 	if s == nil {
 		return tailcatStatus{}, errors.New("Tailcat 管理器未初始化")
@@ -427,28 +419,29 @@ func (s *tailcatSidecarSupervisor) ReplaceManagedClients(
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
 	var status tailcatStatus
-	err := s.call(
-		ctx,
-		s.controlCallTimeout(),
-		http.MethodPut,
-		"/managed-clients",
-		map[string][]string{"public_keys": publicKeys},
-		&status,
-	)
+	err := s.call(ctx, s.controlCallTimeout(), method, path, body, &status)
 	s.applyConfigurationToStatus(&status)
 	return status, err
 }
 
+func (s *tailcatSidecarSupervisor) AllowClient(ctx context.Context, publicKey string) (tailcatStatus, error) {
+	return s.callControlWithStatus(ctx, http.MethodPost, "/allow", map[string]string{"public_key": publicKey})
+}
+
+func (s *tailcatSidecarSupervisor) ReplaceManagedClients(
+	ctx context.Context,
+	publicKeys []string,
+) (tailcatStatus, error) {
+	return s.callControlWithStatus(
+		ctx,
+		http.MethodPut,
+		"/managed-clients",
+		map[string][]string{"public_keys": publicKeys},
+	)
+}
+
 func (s *tailcatSidecarSupervisor) Reset(ctx context.Context) (tailcatStatus, error) {
-	if s == nil {
-		return tailcatStatus{}, errors.New("Tailcat 管理器未初始化")
-	}
-	s.operationMu.Lock()
-	defer s.operationMu.Unlock()
-	var status tailcatStatus
-	err := s.call(ctx, s.controlCallTimeout(), http.MethodPost, "/reset", nil, &status)
-	s.applyConfigurationToStatus(&status)
-	return status, err
+	return s.callControlWithStatus(ctx, http.MethodPost, "/reset", nil)
 }
 
 func (s *tailcatSidecarSupervisor) applyConfigurationToStatus(status *tailcatStatus) {

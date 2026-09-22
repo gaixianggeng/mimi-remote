@@ -22,14 +22,6 @@ final class LogStore: ObservableObject {
     private let flushDelayNanoseconds: UInt64 = 120_000_000
     static let retainedSessionLimit = 16
 
-    var visibleLogs: [String: String] {
-        activeValues(in: visibleLogsByScopedSession)
-    }
-
-    var renderedLinesBySession: [String: [LogDisplayLine]] {
-        activeValues(in: renderedLinesByScopedSession)
-    }
-
     /// 切换主机只替换当前命名空间，不复制或清空缓存；所有主机继续共享同一组 LRU 上限。
     func activate(profileID: String) {
         guard activeProfileID != profileID else {
@@ -349,11 +341,4 @@ final class LogStore: ObservableObject {
         ScopedSessionID(profileID: activeProfileID, sessionID: sessionID)
     }
 
-    private func activeValues<Value>(in values: [ScopedSessionID: Value]) -> [String: Value] {
-        var result: [String: Value] = [:]
-        for (key, value) in values where key.profileID == activeProfileID {
-            result[key.sessionID] = value
-        }
-        return result
-    }
 }

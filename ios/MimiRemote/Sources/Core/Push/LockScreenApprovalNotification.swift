@@ -92,10 +92,6 @@ struct LockScreenApprovalNotification: Equatable, Sendable {
     /// `UNNotificationRequest.identifier`，不能传给通知中心删除 API。
     var approvalIdentifier: String { "mimi.approval.\(actionID)" }
 
-    /// 兼容旧的调用方。删除通知时必须使用系统回调或 delivered 列表里的真实请求 ID。
-    @available(*, deprecated, message: "Use this only to correlate approvals; it is not a UNNotificationRequest identifier.")
-    var notificationIdentifier: String { approvalIdentifier }
-
     func identifiesSameApproval(as other: LockScreenApprovalNotification) -> Bool {
         actionID == other.actionID
             && deviceID == other.deviceID

@@ -74,10 +74,6 @@ type CompatibilityError struct {
 	MinimumClientProtocolRevision int
 }
 
-func (e *CompatibilityError) Error() string {
-	return e.Message
-}
-
 // CheckClient 只判断双方声明的最低要求，不因客户端修订号更高就拒绝。
 // 这样纯加法的新客户端仍可连接旧服务；若它依赖新语义，必须提高 minimum server revision。
 func CheckClient(metadata ClientMetadata) *CompatibilityError {

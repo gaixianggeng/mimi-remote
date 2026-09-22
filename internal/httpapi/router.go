@@ -23,7 +23,6 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
 	"github.com/gaixianggeng/mimi-remote/internal/pushbridge"
-	"github.com/gaixianggeng/mimi-remote/internal/session"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
@@ -31,7 +30,6 @@ type Router struct {
 	cfg            config.Config
 	configPath     string
 	projects       *projects.Registry
-	sessions       *session.Manager
 	doctor         *doctor.Checker
 	auth           auth.Authenticator
 	version        string
@@ -148,40 +146,11 @@ type appServerSSHTransport interface {
 	WebSocketDialer(time.Duration) (websocket.Dialer, error)
 }
 
-func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string) http.Handler {
-	handler, _ := NewRouterWithInstallationIDAndOptions(
-		cfg,
-		registry,
-		manager,
-		checker,
-		version,
-		"",
-		RouterOptions{},
-	)
-	return handler
-}
-
-// NewRouterWithInstallationID 为生产入口注入启动阶段已加载的稳定安装身份。
-// Router 只保留内存副本，确保高频 /api/version 探测不会读磁盘或连接 upstream。
-func NewRouterWithInstallationID(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, installationID string) http.Handler {
-	handler, _ := NewRouterWithInstallationIDAndOptions(
-		cfg,
-		registry,
-		manager,
-		checker,
-		version,
-		installationID,
-		RouterOptions{},
-	)
-	return handler
-}
-
 // NewRouterWithInstallationIDAndOptions 由拥有进程生命周期的入口使用。
 // 它返回 Router，确保调用方能关闭常驻 Claude bridge 等进程级资源。
 func NewRouterWithInstallationIDAndOptions(
 	cfg config.Config,
 	registry *projects.Registry,
-	manager *session.Manager,
 	checker *doctor.Checker,
 	version string,
 	installationID string,
@@ -204,7 +173,6 @@ func NewRouterWithInstallationIDAndOptions(
 		cfg:            cfg,
 		configPath:     options.ConfigPath,
 		projects:       registry,
-		sessions:       manager,
 		doctor:         checker,
 		installationID: installationID,
 		auth: auth.NewWithOptions(cfg.Auth.Token, cfg.DevInsecure, auth.Options{
@@ -522,7 +490,7 @@ func (r *Router) codexHistoryDebugHandler(w http.ResponseWriter, req *http.Reque
 		limit = 80
 	}
 	projectID := strings.TrimSpace(req.URL.Query().Get("project_id"))
-	writeJSON(w, http.StatusOK, codexhistory.Diagnose(r.projects, r.sessions.ListUnsorted(), projectID, limit))
+	writeJSON(w, http.StatusOK, codexhistory.Diagnose(r.projects, projectID, limit))
 }
 
 func (r *Router) codexHistoryDebugDisabledHandler(w http.ResponseWriter, req *http.Request) {

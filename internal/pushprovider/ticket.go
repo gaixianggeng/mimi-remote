@@ -85,8 +85,6 @@ func NewTicketSealer(keys map[int][]byte, currentVersion int, lifetime time.Dura
 	return sealer, nil
 }
 
-func (s *TicketSealer) Lifetime() time.Duration { return s.lifetime }
-
 func (s *TicketSealer) Seal(claims TicketClaims) (string, error) {
 	aead, ok := s.keys[s.currentVersion]
 	if !ok {

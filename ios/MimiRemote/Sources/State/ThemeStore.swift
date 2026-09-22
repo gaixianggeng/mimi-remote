@@ -422,11 +422,6 @@ extension ThemeTokens {
         }
     }
 
-    var livelyAccent: Color {
-        guard preset == .codex else { return accent }
-        return primaryAction
-    }
-
     /// 主按钮默认白字，维持一致、清晰的操作语义。
     ///
     /// 青草深色是例外：它的主操作是鼠尾草绿 #6FAF86，白字只有 2.6:1，连图形控件的

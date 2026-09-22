@@ -775,20 +775,19 @@ func applyRelayDirectionForward(stats *relayGatewayDirectionStats, payloadBytes 
 }
 
 func applyRelayDirectionPolicyError(stats *relayGatewayDirectionStats, payloadBytes int, policyMillis int64) {
-	stats.Frames++
 	stats.PolicyRejectedFrames++
-	stats.Bytes += int64(payloadBytes)
-	stats.PolicyMillisTotal += policyMillis
-	stats.LastFrameBytes = int64(payloadBytes)
-	stats.LastPolicyMillis = policyMillis
-	if policyMillis > stats.PolicyMillisMax {
-		stats.PolicyMillisMax = policyMillis
-	}
+	recordRelayDirectionFrame(stats, payloadBytes, policyMillis)
 }
 
 func applyRelayDirectionDropped(stats *relayGatewayDirectionStats, payloadBytes int, policyMillis int64) {
-	stats.Frames++
 	stats.DroppedFrames++
+	recordRelayDirectionFrame(stats, payloadBytes, policyMillis)
+}
+
+// recordRelayDirectionFrame 记录一次被策略拒绝或被丢弃的帧的公共统计。
+// 两个方向此前各自重复了这八行。
+func recordRelayDirectionFrame(stats *relayGatewayDirectionStats, payloadBytes int, policyMillis int64) {
+	stats.Frames++
 	stats.Bytes += int64(payloadBytes)
 	stats.PolicyMillisTotal += policyMillis
 	stats.LastFrameBytes = int64(payloadBytes)

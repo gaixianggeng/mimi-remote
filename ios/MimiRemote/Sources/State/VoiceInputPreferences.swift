@@ -9,8 +9,6 @@ enum VoiceInputProviderIcon: Equatable {
 /// Codex 通过用户配置的主机复用现有登录态完成录音转写。
 enum VoiceInputProvider: String, CaseIterable, Identifiable {
     static let storageKey = "voice.input.provider"
-    static let appleTipAcknowledgedStorageKey = "voice.input.appleTipAcknowledged"
-
     case codex
     case apple
 

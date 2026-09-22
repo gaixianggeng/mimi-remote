@@ -1822,26 +1822,4 @@ struct UnifiedWorkbenchShell: View {
         }
     }
 
-    private var connectionSubtitle: String {
-        if appStore.requiresRePairing {
-            return L10n.text("ui.need_to_re_pair")
-        }
-        if sessionStore.isNetworkUnavailable {
-            return L10n.text("ui.the_network_is_unavailable_waiting_for_automatic_reconnection")
-        }
-        return sessionStore.webSocketStatus == .connected ? L10n.text("ui.mac_is_connected") : L10n.text("ui.remote_development_workbench")
-    }
-
-    private func connectionTone(tokens: ThemeTokens) -> Color {
-        if sessionStore.isNetworkUnavailable, !appStore.requiresRePairing {
-            return tokens.warning
-        }
-        switch sessionStore.webSocketStatus {
-        case .connected: return tokens.success
-        case .connecting: return tokens.warning
-        case .failed: return .red
-        case .terminated: return .red
-        case .disconnected: return tokens.tertiaryText
-        }
-    }
 }
