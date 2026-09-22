@@ -104,7 +104,7 @@ func TestCodexGatewayAuthorizesInboundNotificationsByThread(t *testing.T) {
 	}
 
 	id := json.RawMessage(`99`)
-	if err := policy.rememberPendingThreadResponse(&id, "thread/start", projectDir, "project"); err != nil {
+	if err := policy.rememberPendingThreadResponseWithManagedUse(&id, "thread/start", projectDir, "project", ""); err != nil {
 		t.Fatal(err)
 	}
 	response := []byte(`{"id":99,"result":{"thread":{"id":"new-thread","cwd":` + quoteJSON(projectDir) + `}}}`)

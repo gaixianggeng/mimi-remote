@@ -1,22 +1,17 @@
 package codexhistory
 
 import (
-	"bufio"
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
-	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
 type row struct {
@@ -30,22 +25,6 @@ type row struct {
 	HasRolloutPath int    `json:"has_rollout_path"`
 	CreatedAtMS    int64  `json:"created_at_ms"`
 	UpdatedAtMS    int64  `json:"updated_at_ms"`
-}
-
-type Message struct {
-	ID              string    `json:"id,omitempty"`
-	Role            string    `json:"role"`
-	Content         string    `json:"content"`
-	CreatedAt       time.Time `json:"created_at"`
-	ClientMessageID string    `json:"client_message_id,omitempty"`
-	Revision        int       `json:"revision,omitempty"`
-	SendStatus      string    `json:"send_status,omitempty"`
-}
-
-type MessagePage struct {
-	Messages       []Message `json:"messages"`
-	PreviousCursor string    `json:"previous_cursor,omitempty"`
-	HasMoreBefore  bool      `json:"has_more_before"`
 }
 
 type PageCursor struct {
@@ -106,20 +85,12 @@ var (
 )
 
 const (
-	defaultQueryLimit       = 300
-	maxQueryLimit           = 2000
-	maxHistoryCaches        = 16
-	maxMessageCaches        = 32
-	maxMessagePageCaches    = 64
-	maxMessageIndexCaches   = 16
-	maxMessageIndexBytes    = 8 * 1024 * 1024
-	maxRolloutPathCaches    = 512
-	maxRolloutDBCaches      = 512
-	historyCacheTTL         = 1500 * time.Millisecond
-	rolloutPathCacheTTL     = 1500 * time.Millisecond
-	tailInitialReadSize     = 128 * 1024
-	tailReadChunkSize       = 512 * 1024
-	maxTailPendingLineBytes = maxMessageIndexBytes
+	defaultQueryLimit    = 300
+	maxQueryLimit        = 2000
+	maxHistoryCaches     = 16
+	maxRolloutPathCaches = 512
+	historyCacheTTL      = 1500 * time.Millisecond
+	rolloutPathCacheTTL  = 1500 * time.Millisecond
 )
 
 type historyCacheEntry struct {
@@ -148,11 +119,6 @@ type rolloutPathCacheEntry struct {
 	checkedAt time.Time
 }
 
-type rolloutDBPathCacheEntry struct {
-	signature dbSignature
-	path      string
-}
-
 var historyCache = struct {
 	sync.Mutex
 	items  map[string]historyCacheEntry
@@ -170,68 +136,7 @@ var rolloutPathCache = struct {
 	access cacheAccessTracker
 }{items: map[string]rolloutPathCacheEntry{}, access: newCacheAccessTracker()}
 
-var rolloutDBPathCache = struct {
-	sync.Mutex
-	items  map[string]rolloutDBPathCacheEntry
-	access cacheAccessTracker
-}{items: map[string]rolloutDBPathCacheEntry{}, access: newCacheAccessTracker()}
-
-type messageCacheEntry struct {
-	size     int64
-	modTime  time.Time
-	limit    int
-	complete bool
-	messages []Message
-}
-
-type messagePageCacheEntry struct {
-	size         int64
-	modTime      time.Time
-	beforeOffset int64
-	limit        int
-	page         MessagePage
-}
-
-type messageIndexCacheEntry struct {
-	size     int64
-	modTime  time.Time
-	messages []parsedMessage
-}
-
-var messageCache = struct {
-	sync.Mutex
-	items  map[string]messageCacheEntry
-	access cacheAccessTracker
-}{items: map[string]messageCacheEntry{}, access: newCacheAccessTracker()}
-
-var messagePageCache = struct {
-	sync.Mutex
-	items  map[string]messagePageCacheEntry
-	access cacheAccessTracker
-}{items: map[string]messagePageCacheEntry{}, access: newCacheAccessTracker()}
-
-var messageIndexCache = struct {
-	sync.Mutex
-	items  map[string]messageIndexCacheEntry
-	access cacheAccessTracker
-}{items: map[string]messageIndexCacheEntry{}, access: newCacheAccessTracker()}
-
-func Load(registry *projects.Registry, active []*session.Session) []session.SessionSnapshot {
-	sessions, _ := load(registry, active, "", defaultQueryLimit, PageCursor{})
-	return sessions
-}
-
-func LoadForProject(registry *projects.Registry, active []*session.Session, projectID string, limit int) []session.SessionSnapshot {
-	sessions, _ := load(registry, active, projectID, limit, PageCursor{})
-	return sessions
-}
-
-func LoadPage(registry *projects.Registry, active []*session.Session, projectID string, limit int, cursor PageCursor) []session.SessionSnapshot {
-	sessions, _ := load(registry, active, projectID, limit, cursor)
-	return sessions
-}
-
-func Diagnose(registry *projects.Registry, active []*session.Session, projectID string, limit int) Diagnostics {
+func Diagnose(registry *projects.Registry, projectID string, limit int) Diagnostics {
 	limit = normalizeQueryLimit(limit)
 	store := defaultThreadStore()
 	db := store.databasePath()
@@ -260,16 +165,14 @@ func Diagnose(registry *projects.Registry, active []*session.Session, projectID 
 		result.Project = &ProjectDebug{ID: project.ID, Name: project.Name, Path: project.Path, RealPath: project.RealPath}
 	}
 
-	seen := activeThreadIDs(active)
 	rows, childThreadIDs, scan, err := store.ListThreadsWithStats(projectFilter, limit, true, PageCursor{})
 	if err != nil {
 		result.Error = err.Error()
 		return result
 	}
 	result.Scan = scan
-	_, diagnostics := rowsToSessions(rows, registry, seen, projectID, childThreadIDs)
-	result.Rows = diagnostics
-	for _, item := range diagnostics {
+	result.Rows = rowsToDiagnostics(rows, registry, projectID, childThreadIDs)
+	for _, item := range result.Rows {
 		result.Counts["scanned"]++
 		if item.Included {
 			result.Counts["included"]++
@@ -280,84 +183,10 @@ func Diagnose(registry *projects.Registry, active []*session.Session, projectID 
 	return result
 }
 
-func load(registry *projects.Registry, active []*session.Session, projectID string, limit int, cursor PageCursor) ([]session.SessionSnapshot, error) {
-	store := defaultThreadStore()
-	if _, err := os.Stat(store.databasePath()); err != nil {
-		return nil, err
-	}
-
-	var projectFilter *projects.Project
-	if projectID != "" {
-		project, ok := registry.Get(projectID)
-		if !ok {
-			return nil, os.ErrNotExist
-		}
-		projectFilter = &project
-	}
-
-	rows, childThreadIDs, err := store.ListThreads(projectFilter, normalizeQueryLimit(limit), false, cursor)
-	if err != nil {
-		return nil, err
-	}
-	sessions, _ := rowsToSessions(rows, registry, activeThreadIDs(active), projectID, childThreadIDs)
-	return sessions, nil
-}
-
-func LatestThreadIDForProjectSince(project projects.Project, since time.Time) (string, error) {
-	store := defaultThreadStore()
-	return store.LatestThreadIDForProjectSince(project, since)
-}
-
-func (s ThreadStore) LatestThreadIDForProjectSince(project projects.Project, since time.Time) (string, error) {
-	db := s.databasePath()
-	signature, err := readDBSignature(db)
-	if err != nil {
-		return "", err
-	}
-	columns, edgeColumns, err := historyColumns(db, signature)
-	if err != nil {
-		return "", err
-	}
-	// -3s 回看窗口容忍 session 记录时间与 Codex 写库时间之间的时钟偏差。
-	minMS := since.Add(-3 * time.Second).UnixMilli()
-	rows, err := queryRowsSince(db, &project, minMS, 20, columns, edgeColumns)
-	if err != nil {
-		return "", err
-	}
-	for _, item := range rows {
-		if item.ID == "" || isSubagentThread(item, nil) || !isInteractiveSource(item.Source) || isMissingRollout(item) {
-			continue
-		}
-		// 只认“会话开始之后才新建”的 thread：新建会话的真实 thread，或 resume 被 Codex
-		// fork 出来的新 thread。resume 沿用同一 thread 时它的 created_at 在会话开始之前，
-		// 会被这里排除，于是上层回退到 baseline（resume thread），不改变既有 resume 行为。
-		if item.CreatedAtMS > 0 && item.CreatedAtMS < minMS {
-			continue
-		}
-		return item.ID, nil
-	}
-	return "", os.ErrNotExist
-}
-
-func activeThreadIDs(active []*session.Session) map[string]bool {
-	seen := map[string]bool{}
-	for _, s := range active {
-		snapshot := s.Snapshot()
-		if snapshot.HistoryThreadID != "" {
-			seen[snapshot.HistoryThreadID] = true
-		}
-		if snapshot.ResumeID != "" {
-			seen[snapshot.ResumeID] = true
-		}
-		if strings.HasPrefix(snapshot.ID, "codex_") {
-			seen[strings.TrimPrefix(snapshot.ID, "codex_")] = true
-		}
-	}
-	return seen
-}
-
-func rowsToSessions(rows []row, registry *projects.Registry, seen map[string]bool, projectID string, childThreadIDs map[string]bool) ([]session.SessionSnapshot, []DiagnosticRow) {
-	var sessions []session.SessionSnapshot
+// rowsToDiagnostics 把 storage 行映射成诊断行。
+// 它此前还顺带构造了一份 []session.SessionSnapshot，但调用方一直用 _ 丢弃，
+// 而唯一会读它的 seen 又来自永远为空的 active 列表，因此整段投影都是白算的。
+func rowsToDiagnostics(rows []row, registry *projects.Registry, projectID string, childThreadIDs map[string]bool) []DiagnosticRow {
 	var diagnostics []DiagnosticRow
 	projectPathCache := make(map[string]projectPathMatch, minInt(len(rows), 128))
 	for _, item := range rows {
@@ -368,7 +197,8 @@ func rowsToSessions(rows []row, registry *projects.Registry, seen map[string]boo
 			Reason:    "included",
 			UpdatedAt: msTime(item.UpdatedAtMS),
 		}
-		if item.ID == "" || seen[item.ID] {
+		if item.ID == "" {
+			// 空 ID 沿用既有诊断码，避免仅清理不可达逻辑时改变接口返回值。
 			diagnostic.Reason = "active_session"
 			diagnostics = append(diagnostics, diagnostic)
 			continue
@@ -400,29 +230,10 @@ func rowsToSessions(rows []row, registry *projects.Registry, seen map[string]boo
 			diagnostics = append(diagnostics, diagnostic)
 			continue
 		}
-		title := strings.TrimSpace(item.Title)
-		if title == "" {
-			title = strings.TrimSpace(item.Preview)
-		}
-		if title == "" {
-			title = "Codex 历史会话"
-		}
-		sessions = append(sessions, session.SessionSnapshot{
-			ID:        "codex_" + item.ID,
-			ProjectID: project.ID,
-			Project:   project.Name,
-			Dir:       project.Path,
-			Title:     trimRunes(title, 48),
-			Status:    "history",
-			Source:    "codex",
-			ResumeID:  item.ID,
-			CreatedAt: msTime(item.CreatedAtMS),
-			UpdatedAt: msTime(item.UpdatedAtMS),
-		})
 		diagnostic.Included = true
 		diagnostics = append(diagnostics, diagnostic)
 	}
-	return sessions, diagnostics
+	return diagnostics
 }
 
 func cachedProjectForCWD(registry *projects.Registry, cwd string, cache map[string]projectPathMatch) (projects.Project, bool) {
@@ -476,45 +287,6 @@ func storeRolloutPathExists(path string, exists bool) {
 	rolloutPathCache.items[path] = rolloutPathCacheEntry{exists: exists, checkedAt: time.Now()}
 	rolloutPathCache.access.touch(path)
 	trimCacheLRU(rolloutPathCache.items, &rolloutPathCache.access, maxRolloutPathCaches)
-}
-
-func rolloutDBPathCacheKey(db string, threadID string) string {
-	return db + "\x00" + threadID
-}
-
-func cachedRolloutDBPath(key string, signature dbSignature) (string, bool) {
-	rolloutDBPathCache.Lock()
-	defer rolloutDBPathCache.Unlock()
-
-	entry, ok := rolloutDBPathCache.items[key]
-	if !ok || entry.signature != signature || entry.path == "" {
-		if ok {
-			delete(rolloutDBPathCache.items, key)
-			rolloutDBPathCache.access.forget(key)
-		}
-		return "", false
-	}
-	rolloutDBPathCache.access.touch(key)
-	return entry.path, true
-}
-
-func storeRolloutDBPath(key string, signature dbSignature, path string) {
-	if path == "" {
-		return
-	}
-	rolloutDBPathCache.Lock()
-	defer rolloutDBPathCache.Unlock()
-
-	// 打开历史消息时会反复按 thread id 查 rollout_path；用 DB/WAL 签名做失效条件，
-	// 可以避免重复查询 SQLite，同时保证 Codex 状态库变化后自动重新查询。
-	rolloutDBPathCache.items[key] = rolloutDBPathCacheEntry{signature: signature, path: path}
-	rolloutDBPathCache.access.touch(key)
-	trimCacheLRU(rolloutDBPathCache.items, &rolloutDBPathCache.access, maxRolloutDBCaches)
-}
-
-func loadHistorySnapshot(db string, project *projects.Project, limit int, includeSubagents bool, cursor PageCursor) ([]row, map[string]bool, error) {
-	rows, childIDs, _, err := loadHistorySnapshotWithStats(db, project, limit, includeSubagents, cursor)
-	return rows, childIDs, err
 }
 
 func loadHistorySnapshotWithStats(db string, project *projects.Project, limit int, includeSubagents bool, cursor PageCursor) ([]row, map[string]bool, HistoryScanStats, error) {
@@ -669,43 +441,6 @@ func queryRows(db string, project *projects.Project, limit int, includeSubagents
 		rolloutPathExpr + "," + hasRolloutPathExpr + ",created_at_ms,updated_at_ms from threads where " +
 		// cursor 使用 updated_at_ms + id 做 keyset 分页；SQL 排序也必须保持同一个全序，
 		// 否则同毫秒多条历史时，SQLite 的返回顺序会让下一页漏项或重复。
-		where + " order by updated_at_ms desc, id desc limit " + strconv.Itoa(limit)
-	out, err := sqliteQueryFunc(db, sql)
-	if err != nil {
-		return nil, err
-	}
-	var rows []row
-	if err := json.Unmarshal(out, &rows); err != nil {
-		return nil, err
-	}
-	return rows, nil
-}
-
-func queryRowsSince(db string, project *projects.Project, minUpdatedAtMS int64, limit int, columns map[string]bool, edgeColumns map[string]bool) ([]row, error) {
-	where := "archived=0 and " + topLevelHistoryPredicate(columns, edgeColumns)
-	if project != nil {
-		where += " and (" + pathPredicate(project.Path)
-		if project.RealPath != "" && project.RealPath != project.Path {
-			where += " or " + pathPredicate(project.RealPath)
-		}
-		where += ")"
-	}
-	if minUpdatedAtMS > 0 {
-		where += " and updated_at_ms >= " + strconv.FormatInt(minUpdatedAtMS, 10)
-	}
-	sourceExpr := optionalColumnExpr(columns, "source")
-	threadSourceExpr := optionalColumnExpr(columns, "thread_source")
-	previewExpr := optionalColumnExpr(columns, "preview")
-	rolloutPathExpr := optionalColumnExpr(columns, "rollout_path")
-	hasRolloutPathExpr := "0 as has_rollout_path"
-	if columns["rollout_path"] {
-		hasRolloutPathExpr = "1 as has_rollout_path"
-	}
-	if limit <= 0 {
-		limit = 20
-	}
-	sql := "select id,title,cwd," + sourceExpr + "," + threadSourceExpr + "," + previewExpr + "," +
-		rolloutPathExpr + "," + hasRolloutPathExpr + ",created_at_ms,updated_at_ms from threads where " +
 		where + " order by updated_at_ms desc, id desc limit " + strconv.Itoa(limit)
 	out, err := sqliteQueryFunc(db, sql)
 	if err != nil {
@@ -897,584 +632,6 @@ func normalizeQueryLimit(limit int) int {
 	return limit
 }
 
-func Messages(threadID string) ([]Message, error) {
-	return MessagesWithLimit(threadID, 0)
-}
-
-func MessagesWithLimit(threadID string, limit int) ([]Message, error) {
-	return defaultThreadStore().ReadMessagesWithLimit(threadID, limit)
-}
-
-func MessagesPageWithLimit(threadID string, before string, limit int) (MessagePage, error) {
-	return defaultThreadStore().ReadMessagesPage(threadID, before, limit)
-}
-
-func messagesFromFile(file *os.File, info os.FileInfo, limit int) ([]Message, error) {
-	if limit > 0 {
-		page, err := messagesPageFromTail(file, info.Size(), limit)
-		if err != nil {
-			return nil, err
-		}
-		return page.Messages, nil
-	}
-	return messagesFromReader(file, limit)
-}
-
-func messagesFromTail(file *os.File, size int64, limit int) ([]Message, error) {
-	if limit <= 0 {
-		return messagesFromReader(file, limit)
-	}
-	page, err := messagesPageFromTail(file, size, limit)
-	if err != nil {
-		return nil, err
-	}
-	return page.Messages, nil
-}
-
-type parsedMessage struct {
-	message   Message
-	lineStart int64
-}
-
-const defaultMessagePageLimit = 120
-
-func messagesPageFromTail(file *os.File, endOffset int64, limit int) (MessagePage, error) {
-	if limit <= 0 {
-		limit = defaultMessagePageLimit
-	}
-	if endOffset < 0 {
-		endOffset = 0
-	}
-	target := limit + 1
-	newestFirst := make([]parsedMessage, 0, target)
-	var pending []byte
-	offset := endOffset
-	bufferSize := int64(tailInitialReadSize)
-	if bufferSize > tailReadChunkSize {
-		bufferSize = tailReadChunkSize
-	}
-	if offset > 0 && offset < bufferSize {
-		bufferSize = offset
-	}
-	chunk := make([]byte, bufferSize)
-	for offset > 0 && len(newestFirst) < target {
-		readSize := int64(len(chunk))
-		if offset < readSize {
-			readSize = offset
-		}
-		offset -= readSize
-
-		n, err := file.ReadAt(chunk[:readSize], offset)
-		if err != nil && !errors.Is(err, io.EOF) {
-			return MessagePage{}, err
-		}
-		data := append(chunk[:n], pending...)
-		dataStart := offset
-		start := len(data)
-		for start > 0 && len(newestFirst) < target {
-			idx := bytes.LastIndexByte(data[:start], '\n')
-			if idx < 0 {
-				break
-			}
-			lineStart := dataStart + int64(idx+1)
-			if message, ok := parseMessageLine(data[idx+1 : start]); ok {
-				message.ID = messageIDForOffset(lineStart)
-				newestFirst = append(newestFirst, parsedMessage{message: message, lineStart: lineStart})
-			}
-			start = idx
-		}
-		// 从文件尾部倒读时，data[:start] 是跨 chunk 的半行；保留下来等前一个 chunk 补齐。
-		if len(newestFirst) < target {
-			pending = storeTailPendingLine(pending, data[:start])
-		}
-		// 大多数分页请求都能在文件尾部的首个 128 KiB 内完成；只有仍需向前
-		// 扫描时才分级扩大下一次 ReadAt（128→256→512 KiB），避免小页快路径
-		// 常驻更大的缓冲区。512 KiB 上限可显著减少长 token_count/tool/result 行跨块时的读取次数
-		// 和 pending 拼接，同时不改变行边界、游标或超大半行丢弃语义。
-		if len(newestFirst) < target && offset > 0 && int64(len(chunk)) < tailReadChunkSize {
-			nextSize := int64(len(chunk)) * 2
-			if nextSize > tailReadChunkSize {
-				nextSize = tailReadChunkSize
-			}
-			chunk = make([]byte, nextSize)
-		}
-	}
-	if len(newestFirst) < target && len(bytes.TrimSpace(pending)) > 0 {
-		if message, ok := parseMessageLine(pending); ok {
-			message.ID = messageIDForOffset(0)
-			newestFirst = append(newestFirst, parsedMessage{message: message, lineStart: 0})
-		}
-	}
-	reverseParsedMessages(newestFirst)
-	hasMoreBefore := len(newestFirst) > limit
-	if hasMoreBefore {
-		newestFirst = newestFirst[len(newestFirst)-limit:]
-	}
-	messages := make([]Message, 0, len(newestFirst))
-	previousCursor := ""
-	if len(newestFirst) > 0 && hasMoreBefore {
-		previousCursor = encodeMessageCursor(newestFirst[0].lineStart)
-	}
-	for _, item := range newestFirst {
-		messages = append(messages, item.message)
-	}
-	return MessagePage{
-		Messages:       messages,
-		PreviousCursor: previousCursor,
-		HasMoreBefore:  hasMoreBefore,
-	}, nil
-}
-
-func storeTailPendingLine(reuse []byte, halfLine []byte) []byte {
-	if len(halfLine) > maxTailPendingLineBytes {
-		// Codex rollout 里常见超大的 token_count/tool/result 行。倒读时如果一直拼接这类跨 chunk
-		// 半行，服务端会临时持有数十 MB 内存；超过上限后直接跳过该行尾部，继续解析更早消息。
-		return nil
-	}
-	return append(reuse[:0], halfLine...)
-}
-
-func indexedMessagesFromFile(file *os.File) ([]parsedMessage, error) {
-	return indexedMessagesFromFileAt(file, 0, nil)
-}
-
-func indexedMessagesFromFileAt(file *os.File, startOffset int64, messages []parsedMessage) ([]parsedMessage, error) {
-	if _, err := file.Seek(startOffset, io.SeekStart); err != nil {
-		return nil, err
-	}
-	buffered := bufio.NewReaderSize(file, 256*1024)
-	offset := startOffset
-	for {
-		line, err := buffered.ReadBytes('\n')
-		lineStart := offset
-		offset += int64(len(line))
-		if len(bytes.TrimSpace(line)) > 0 {
-			if message, ok := parseMessageLine(line); ok {
-				message.ID = messageIDForOffset(lineStart)
-				messages = append(messages, parsedMessage{message: message, lineStart: lineStart})
-			}
-		}
-		if err == nil {
-			continue
-		}
-		if errors.Is(err, io.EOF) {
-			return messages, nil
-		}
-		return nil, err
-	}
-}
-
-func extendCachedMessageIndex(path string, info os.FileInfo, file *os.File) ([]parsedMessage, bool, error) {
-	indexed, startOffset, ok := cachedMessageIndexPrefix(path, info)
-	if !ok {
-		return nil, false, nil
-	}
-	atLineBoundary, err := fileOffsetStartsAtLineBoundary(file, startOffset)
-	if err != nil {
-		return nil, false, err
-	}
-	if !atLineBoundary {
-		return nil, false, nil
-	}
-	// Codex rollout 是 append-only JSONL；已有索引覆盖旧 size 前缀时，只解析新增尾段，
-	// 避免运行中会话每次刷新都把同一个小文件前缀重新扫一遍。
-	indexed, err = indexedMessagesFromFileAt(file, startOffset, indexed)
-	if err != nil {
-		return nil, false, err
-	}
-	storeCachedMessageIndex(path, info, indexed)
-	return indexed, true, nil
-}
-
-func fileOffsetStartsAtLineBoundary(file *os.File, offset int64) (bool, error) {
-	if offset <= 0 {
-		return true, nil
-	}
-	var previous [1]byte
-	_, err := file.ReadAt(previous[:], offset-1)
-	if err != nil {
-		return false, err
-	}
-	return previous[0] == '\n', nil
-}
-
-func pageFromIndexedMessages(indexed []parsedMessage, endOffset int64, limit int) MessagePage {
-	if limit <= 0 {
-		limit = defaultMessagePageLimit
-	}
-	if endOffset < 0 {
-		endOffset = 0
-	}
-	endIndex := sort.Search(len(indexed), func(i int) bool {
-		return indexed[i].lineStart >= endOffset
-	})
-	start := endIndex - limit - 1
-	if start < 0 {
-		start = 0
-	}
-	window := indexed[start:endIndex]
-	hasMoreBefore := len(window) > limit
-	if hasMoreBefore {
-		window = window[len(window)-limit:]
-	}
-	page := MessagePage{
-		Messages:      make([]Message, 0, len(window)),
-		HasMoreBefore: hasMoreBefore,
-	}
-	if hasMoreBefore && len(window) > 0 {
-		page.PreviousCursor = encodeMessageCursor(window[0].lineStart)
-	}
-	for _, item := range window {
-		page.Messages = append(page.Messages, item.message)
-	}
-	return page
-}
-
-func messagesFromReader(reader io.Reader, limit int) ([]Message, error) {
-	var messages []Message
-	buffered := bufio.NewReaderSize(reader, 256*1024)
-	var offset int64
-	for {
-		// Codex rollout 里可能包含很大的 tool/result 行，Scanner 有单行上限；
-		// 用 ReadBytes 按行读取可以保留 JSONL 语义，同时避免大历史会话被整页吞空。
-		line, err := buffered.ReadBytes('\n')
-		lineStart := offset
-		offset += int64(len(line))
-		if len(bytes.TrimSpace(line)) > 0 {
-			if message, ok := parseMessageLine(line); ok {
-				message.ID = messageIDForOffset(lineStart)
-				messages = appendLimitedMessage(messages, message, limit)
-			}
-		}
-		if err == nil {
-			continue
-		}
-		if errors.Is(err, io.EOF) {
-			return messages, nil
-		}
-		return messages, err
-	}
-}
-
-func parseMessageLine(line []byte) (Message, bool) {
-	var message Message
-	line = bytes.TrimSpace(line)
-	if len(line) == 0 {
-		return message, false
-	}
-	if !bytes.Contains(line, []byte(`"type":"event_msg"`)) {
-		return message, false
-	}
-	if !bytes.Contains(line, []byte(`"type":"user_message"`)) && !bytes.Contains(line, []byte(`"type":"agent_message"`)) {
-		return message, false
-	}
-
-	if message, ok := parseMessageLineFast(line); ok {
-		return message, true
-	}
-	return parseMessageLineJSON(line)
-}
-
-func parseMessageLineFast(line []byte) (Message, bool) {
-	var message Message
-	topType, topEscaped, ok := jsonStringField(line, []byte(`"type"`))
-	if !ok || topEscaped || !bytes.Equal(topType, []byte("event_msg")) {
-		return message, false
-	}
-	payloadIndex := bytes.Index(line, []byte(`"payload"`))
-	if payloadIndex < 0 {
-		return message, false
-	}
-	payload := line[payloadIndex:]
-	eventType, eventEscaped, ok := jsonStringField(payload, []byte(`"type"`))
-	if !ok || eventEscaped {
-		return message, false
-	}
-	role := ""
-	switch {
-	case bytes.Equal(eventType, []byte("user_message")):
-		role = "user"
-	case bytes.Equal(eventType, []byte("agent_message")):
-		role = "assistant"
-	default:
-		return message, false
-	}
-	rawText, textEscaped, ok := jsonStringField(payload, []byte(`"message"`))
-	if !ok {
-		return message, false
-	}
-	text, ok := decodeJSONString(rawText, textEscaped)
-	if !ok {
-		return message, false
-	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return message, false
-	}
-	rawTimestamp, timestampEscaped, ok := jsonStringField(line, []byte(`"timestamp"`))
-	if !ok {
-		return message, false
-	}
-	timestamp, ok := decodeJSONString(rawTimestamp, timestampEscaped)
-	if !ok {
-		return message, false
-	}
-	return Message{Role: role, Content: text, CreatedAt: parseTime(timestamp)}, true
-}
-
-func parseMessageLineJSON(line []byte) (Message, bool) {
-	var message Message
-	var item struct {
-		Timestamp string `json:"timestamp"`
-		Type      string `json:"type"`
-		Payload   struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-			Phase   string `json:"phase"`
-		} `json:"payload"`
-	}
-	if err := json.Unmarshal(line, &item); err != nil || item.Type != "event_msg" {
-		return message, false
-	}
-	role := ""
-	switch item.Payload.Type {
-	case "user_message":
-		role = "user"
-	case "agent_message":
-		role = "assistant"
-	default:
-		return message, false
-	}
-	text := strings.TrimSpace(item.Payload.Message)
-	if text == "" {
-		return message, false
-	}
-	return Message{Role: role, Content: text, CreatedAt: parseTime(item.Timestamp)}, true
-}
-
-func jsonStringField(line []byte, key []byte) ([]byte, bool, bool) {
-	index := bytes.Index(line, key)
-	if index < 0 {
-		return nil, false, false
-	}
-	position := index + len(key)
-	for position < len(line) && isJSONSpace(line[position]) {
-		position++
-	}
-	if position >= len(line) || line[position] != ':' {
-		return nil, false, false
-	}
-	position++
-	for position < len(line) && isJSONSpace(line[position]) {
-		position++
-	}
-	if position >= len(line) || line[position] != '"' {
-		return nil, false, false
-	}
-	position++
-	start := position
-	escaped := false
-	for position < len(line) {
-		switch line[position] {
-		case '\\':
-			escaped = true
-			position += 2
-			continue
-		case '"':
-			return line[start:position], escaped, true
-		default:
-			position++
-		}
-	}
-	return nil, false, false
-}
-
-func decodeJSONString(raw []byte, escaped bool) (string, bool) {
-	if !escaped {
-		return string(raw), true
-	}
-	quoted := make([]byte, 0, len(raw)+2)
-	quoted = append(quoted, '"')
-	quoted = append(quoted, raw...)
-	quoted = append(quoted, '"')
-	value, err := strconv.Unquote(string(quoted))
-	if err != nil {
-		return "", false
-	}
-	return value, true
-}
-
-func isJSONSpace(value byte) bool {
-	return value == ' ' || value == '\n' || value == '\r' || value == '\t'
-}
-
-func appendLimitedMessage(messages []Message, message Message, limit int) []Message {
-	if limit <= 0 || len(messages) < limit {
-		return append(messages, message)
-	}
-	// 只保留最近 N 条历史，避免大历史会话一次性撑满网络响应和 SwiftUI 渲染。
-	copy(messages, messages[1:])
-	messages[len(messages)-1] = message
-	return messages
-}
-
-func cachedMessages(path string, info os.FileInfo, limit int) ([]Message, bool) {
-	messageCache.Lock()
-	defer messageCache.Unlock()
-
-	entry, ok := messageCache.items[path]
-	if !ok || entry.size != info.Size() || !entry.modTime.Equal(info.ModTime()) {
-		if ok {
-			delete(messageCache.items, path)
-			messageCache.access.forget(path)
-		}
-		return nil, false
-	}
-	if !entry.complete && (limit <= 0 || entry.limit < limit) {
-		return nil, false
-	}
-	messageCache.access.touch(path)
-	return applyMessageLimit(cloneMessages(entry.messages), limit), true
-}
-
-func storeCachedMessages(path string, info os.FileInfo, limit int, messages []Message) {
-	messageCache.Lock()
-	defer messageCache.Unlock()
-
-	// rollout 会随会话追加而变更；用 size+mtime 做缓存版本，命中时避免反复扫描大 JSONL。
-	messageCache.items[path] = messageCacheEntry{
-		size:     info.Size(),
-		modTime:  info.ModTime(),
-		limit:    limit,
-		complete: limit <= 0,
-		messages: cloneMessages(messages),
-	}
-	messageCache.access.touch(path)
-	trimCacheLRU(messageCache.items, &messageCache.access, maxMessageCaches)
-}
-
-func cachedMessagePage(path string, info os.FileInfo, beforeOffset int64, limit int) (MessagePage, bool) {
-	messagePageCache.Lock()
-	defer messagePageCache.Unlock()
-
-	key := messagePageCacheKey(path, beforeOffset, limit)
-	entry, ok := messagePageCache.items[key]
-	if !ok || !cachedMessagePageStillValid(entry, info, beforeOffset) {
-		if ok {
-			delete(messagePageCache.items, key)
-			messagePageCache.access.forget(key)
-		}
-		return MessagePage{}, false
-	}
-	messagePageCache.access.touch(key)
-	return cloneMessagePage(entry.page), true
-}
-
-func cachedMessagePageStillValid(entry messagePageCacheEntry, info os.FileInfo, beforeOffset int64) bool {
-	if entry.size == info.Size() && entry.modTime.Equal(info.ModTime()) {
-		return true
-	}
-	// Codex rollout 是 append-only JSONL。历史翻页读取的是 beforeOffset 之前的稳定前缀；
-	// 后续追加只改变尾部最新页，不会改变旧 offset 前的消息窗口。这样用户边看旧历史边有新输出时，
-	// “加载更早消息”不会因为文件 size/mtime 变化而反复倒读同一段 JSONL。
-	return beforeOffset > 0 && beforeOffset <= entry.size && info.Size() >= entry.size
-}
-
-func storeCachedMessagePage(path string, info os.FileInfo, beforeOffset int64, limit int, page MessagePage) {
-	messagePageCache.Lock()
-	defer messagePageCache.Unlock()
-
-	key := messagePageCacheKey(path, beforeOffset, limit)
-	// 历史消息页会在打开/刷新/返回会话时反复读取；按 offset+limit 缓存整页。
-	// 最新尾页仍由当前 file size 决定；旧 before offset 页按 append-only 前缀复用。
-	messagePageCache.items[key] = messagePageCacheEntry{
-		size:         info.Size(),
-		modTime:      info.ModTime(),
-		beforeOffset: beforeOffset,
-		limit:        limit,
-		page:         cloneMessagePage(page),
-	}
-	messagePageCache.access.touch(key)
-	trimCacheLRU(messagePageCache.items, &messagePageCache.access, maxMessagePageCaches)
-}
-
-func shouldBuildMessageIndex(info os.FileInfo) bool {
-	return info.Size() > 0 && info.Size() <= maxMessageIndexBytes
-}
-
-func cachedMessageIndex(path string, info os.FileInfo) ([]parsedMessage, bool) {
-	messageIndexCache.Lock()
-	defer messageIndexCache.Unlock()
-
-	entry, ok := messageIndexCache.items[path]
-	if !ok || entry.size != info.Size() || !entry.modTime.Equal(info.ModTime()) {
-		if ok && entry.size > info.Size() {
-			delete(messageIndexCache.items, path)
-			messageIndexCache.access.forget(path)
-		}
-		return nil, false
-	}
-	messageIndexCache.access.touch(path)
-	return cloneParsedMessages(entry.messages), true
-}
-
-func cachedMessageIndexPrefix(path string, info os.FileInfo) ([]parsedMessage, int64, bool) {
-	if !shouldBuildMessageIndex(info) {
-		return nil, 0, false
-	}
-	messageIndexCache.Lock()
-	defer messageIndexCache.Unlock()
-
-	entry, ok := messageIndexCache.items[path]
-	if !ok || entry.size <= 0 || entry.size >= info.Size() {
-		return nil, 0, false
-	}
-	messageIndexCache.access.touch(path)
-	return cloneParsedMessages(entry.messages), entry.size, true
-}
-
-func storeCachedMessageIndex(path string, info os.FileInfo, messages []parsedMessage) {
-	if !shouldBuildMessageIndex(info) {
-		return
-	}
-	messageIndexCache.Lock()
-	defer messageIndexCache.Unlock()
-
-	// 这是 Codex rollout 的轻量 metadata index：只缓存消息行 offset 和已解析消息。
-	// 翻更早历史时可以直接二分切页，不再对同一个 JSONL 前缀重复倒读和解析。
-	messageIndexCache.items[path] = messageIndexCacheEntry{
-		size:     info.Size(),
-		modTime:  info.ModTime(),
-		messages: cloneParsedMessages(messages),
-	}
-	messageIndexCache.access.touch(path)
-	trimCacheLRU(messageIndexCache.items, &messageIndexCache.access, maxMessageIndexCaches)
-}
-
-func messagePageCacheKey(path string, beforeOffset int64, limit int) string {
-	return path + "\x00" + strconv.FormatInt(beforeOffset, 10) + "\x00" + strconv.Itoa(limit)
-}
-
-func applyMessageLimit(messages []Message, limit int) []Message {
-	if limit <= 0 || len(messages) <= limit {
-		return messages
-	}
-	return messages[len(messages)-limit:]
-}
-
-func cloneMessagePage(page MessagePage) MessagePage {
-	page.Messages = cloneMessages(page.Messages)
-	return page
-}
-
-func cloneMessages(messages []Message) []Message {
-	return append([]Message(nil), messages...)
-}
-
-func cloneParsedMessages(messages []parsedMessage) []parsedMessage {
-	return append([]parsedMessage(nil), messages...)
-}
-
 type cacheAccessTracker struct {
 	next  uint64
 	ticks map[string]uint64
@@ -1557,40 +714,6 @@ func oldestCacheKey[T any](items map[string]T, access *cacheAccessTracker) (stri
 	return oldest, oldest != ""
 }
 
-type messageCursor struct {
-	Offset int64 `json:"offset"`
-}
-
-func encodeMessageCursor(offset int64) string {
-	if offset <= 0 {
-		return ""
-	}
-	data, err := json.Marshal(messageCursor{Offset: offset})
-	if err != nil {
-		return ""
-	}
-	return base64.RawURLEncoding.EncodeToString(data)
-}
-
-func decodeMessageCursor(raw string) (int64, bool) {
-	if strings.TrimSpace(raw) == "" {
-		return 0, false
-	}
-	data, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
-		return 0, false
-	}
-	var cursor messageCursor
-	if err := json.Unmarshal(data, &cursor); err != nil || cursor.Offset <= 0 {
-		return 0, false
-	}
-	return cursor.Offset, true
-}
-
-func messageIDForOffset(offset int64) string {
-	return "rollout:" + strconv.FormatInt(offset, 10)
-}
-
 func cloneRows(rows []row) []row {
 	return append([]row(nil), rows...)
 }
@@ -1613,37 +736,6 @@ func minInt(a int, b int) int {
 	return b
 }
 
-func reverseMessages(messages []Message) {
-	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
-		messages[i], messages[j] = messages[j], messages[i]
-	}
-}
-
-func reverseParsedMessages(messages []parsedMessage) {
-	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
-		messages[i], messages[j] = messages[j], messages[i]
-	}
-}
-
-func MessagesForSession(sessionID string, resumeID string) ([]Message, error) {
-	threadID := ThreadIDForSession(sessionID, resumeID)
-	if threadID == "" {
-		return nil, os.ErrNotExist
-	}
-	return MessagesWithLimit(threadID, 0)
-}
-
-func ThreadIDForSession(sessionID string, resumeID string) string {
-	if trimmed := strings.TrimSpace(resumeID); trimmed != "" {
-		return trimmed
-	}
-	sessionID = strings.TrimSpace(sessionID)
-	if strings.HasPrefix(sessionID, "codex_") {
-		return strings.TrimPrefix(sessionID, "codex_")
-	}
-	return sessionID
-}
-
 func homeDir() string {
 	if home, err := homeDirFunc(); err == nil {
 		return home
@@ -1656,20 +748,4 @@ func msTime(v int64) time.Time {
 		return time.Now()
 	}
 	return time.UnixMilli(v)
-}
-
-func parseTime(raw string) time.Time {
-	t, err := time.Parse(time.RFC3339Nano, raw)
-	if err != nil {
-		return time.Now()
-	}
-	return t
-}
-
-func trimRunes(s string, n int) string {
-	runes := []rune(strings.Join(strings.Fields(s), " "))
-	if len(runes) <= n {
-		return string(runes)
-	}
-	return string(runes[:n]) + "..."
 }

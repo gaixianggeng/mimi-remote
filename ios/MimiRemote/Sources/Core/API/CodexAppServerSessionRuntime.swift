@@ -1891,19 +1891,6 @@ actor CodexAppServerSessionRuntime {
             || message.contains("not supported")
     }
 
-    func shouldFallbackFromThreadTurnsList(_ error: Error) -> Bool {
-        guard case CodexAppServerConnectionError.appServer(let appError) = error else {
-            return false
-        }
-        let message = appError.message.lowercased()
-        return appError.code == -32601
-            || message.contains("unsupported")
-            || message.contains("not supported")
-            || message.contains("method not found")
-            || message.contains("method 不允许")
-            || message.contains("experimentalapi")
-    }
-
     // full 首屏默认 10 turn；SessionStore 在 history_response_too_large 后按此上限向下
     // 逐级缩页（10→5→2→1，见 SessionStore.fullHistoryTurnPageLadder）。两处必须保持一致。
     static let fullHistoryTurnPageLadderTop = 10
@@ -3743,16 +3730,6 @@ actor CodexAppServerSessionRuntime {
         default:
             return nil
         }
-    }
-
-    func handleUserInputRequest(_ request: CodexAppServerServerRequest) {
-        // requestUserInput 是上游明确要求用户作答的协议事件。无论普通、Plan
-        // 还是 Goal turn，都必须先展示；只有用户点击“跳过”才允许回空 answers。
-        rememberPendingUserInputRequest(request)
-        guard let event = projector.project(request) else {
-            return
-        }
-        emit(event)
     }
 
     func isStaleReplayedApproval(_ request: CodexAppServerServerRequest) -> Bool {

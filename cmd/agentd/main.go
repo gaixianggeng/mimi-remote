@@ -25,7 +25,6 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/httpapi"
 	"github.com/gaixianggeng/mimi-remote/internal/networkaccess"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
-	"github.com/gaixianggeng/mimi-remote/internal/session"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 	"github.com/skip2/go-qrcode"
 )
@@ -314,59 +313,51 @@ func safeUpWarnings(result agentsetup.Result) []string {
 	return warnings
 }
 
+// managedServiceCommandCopy 收拢 start 与 restart 之间唯一的差异。
+// 两个命令的迁移、就绪检查和配对输出流程完全一致，因此共用一份实现。
+type managedServiceCommandCopy struct {
+	flagSetName     string
+	noPairHelp      string
+	pairHint        string
+	startingMessage string
+	serviceAction   string
+	notReadyError   func(error) error
+	readyMessage    string
+}
+
 func runStart(args []string) error {
-	fs := flag.NewFlagSet("start", flag.ExitOnError)
-	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
-	waitTimeout := fs.Duration("wait", 8*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
-	noPair := fs.Bool("no-pair", false, "启动成功后不输出二维码和长期访问码，适合托盘与自动化")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-	if err := prepareDefaultConfigMigration(fs, *configPath, os.Stderr); err != nil {
-		return err
-	}
-	if err := ensureNoLegacyCodexExperimentResidue(); err != nil {
-		return err
-	}
-	if err := ensureManagedServiceDefaultConfig(managedServicePlatform, *configPath); err != nil {
-		return err
-	}
-	if err := ensureManagedServiceInstalled(managedServicePlatform); err != nil {
-		return err
-	}
-	if err := ensureAppServerTransportMigration(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
-		return err
-	}
-
-	result, err := agentsetup.Pair(context.Background(), *configPath)
-	if err != nil {
-		return fmt.Errorf("读取连接信息失败，请先执行 agentd setup：%w", err)
-	}
-	if err := ensureCodexCLIAvailable(*configPath); err != nil {
-		return err
-	}
-
-	fmt.Fprintln(os.Stdout, "正在启动 Mimi Remote 后台服务...")
-	if err := runManagedServiceForPlatform(managedServicePlatform, "start", os.Stdout, os.Stderr); err != nil {
-		return err
-	}
-
-	if err := waitForServiceReady(context.Background(), loopbackServiceEndpoint(result.Endpoint), result.Token, version, *waitTimeout); err != nil {
-		return fmt.Errorf("后台服务已提交，但就绪检查未通过，暂不展示配对二维码：%w", err)
-	} else if *waitTimeout > 0 {
-		fmt.Fprintln(os.Stdout, "agentd 后台服务已启动")
-	}
-	if !*noPair {
-		printServeConnection(os.Stdout, result)
-	}
-	return nil
+	return runManagedServiceCommand(args, managedServiceCommandCopy{
+		flagSetName:     "start",
+		noPairHelp:      "启动成功后不输出二维码和长期访问码，适合托盘与自动化",
+		pairHint:        "setup",
+		startingMessage: "正在启动 Mimi Remote 后台服务...",
+		serviceAction:   "start",
+		notReadyError: func(err error) error {
+			return fmt.Errorf("后台服务已提交，但就绪检查未通过，暂不展示配对二维码：%w", err)
+		},
+		readyMessage: "agentd 后台服务已启动",
+	})
 }
 
 func runRestart(args []string) error {
-	fs := flag.NewFlagSet("restart", flag.ExitOnError)
+	return runManagedServiceCommand(args, managedServiceCommandCopy{
+		flagSetName:     "restart",
+		noPairHelp:      "重启成功后不输出二维码和长期访问码，适合远程自动化",
+		pairHint:        "up",
+		startingMessage: "正在重启 Mimi Remote 助手...",
+		serviceAction:   "restart",
+		notReadyError: func(err error) error {
+			return fmt.Errorf("后台服务已重启，但就绪检查未通过，暂不展示配对二维码：%w", err)
+		},
+		readyMessage: "Mimi Remote 助手已重新连接",
+	})
+}
+
+func runManagedServiceCommand(args []string, copy managedServiceCommandCopy) error {
+	fs := flag.NewFlagSet(copy.flagSetName, flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	waitTimeout := fs.Duration("wait", 8*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
-	noPair := fs.Bool("no-pair", false, "重启成功后不输出二维码和长期访问码，适合远程自动化")
+	noPair := fs.Bool("no-pair", false, copy.noPairHelp)
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -388,19 +379,21 @@ func runRestart(args []string) error {
 
 	result, err := agentsetup.Pair(context.Background(), *configPath)
 	if err != nil {
-		return fmt.Errorf("读取连接信息失败，请先执行 agentd up：%w", err)
+		return fmt.Errorf("读取连接信息失败，请先执行 agentd %s：%w", copy.pairHint, err)
 	}
 	if err := ensureCodexCLIAvailable(*configPath); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stdout, "正在重启 Mimi Remote 助手...")
-	if err := runManagedServiceForPlatform(managedServicePlatform, "restart", os.Stdout, os.Stderr); err != nil {
+
+	fmt.Fprintln(os.Stdout, copy.startingMessage)
+	if err := runManagedServiceForPlatform(managedServicePlatform, copy.serviceAction, os.Stdout, os.Stderr); err != nil {
 		return err
 	}
+
 	if err := waitForServiceReady(context.Background(), loopbackServiceEndpoint(result.Endpoint), result.Token, version, *waitTimeout); err != nil {
-		return fmt.Errorf("后台服务已重启，但就绪检查未通过，暂不展示配对二维码：%w", err)
+		return copy.notReadyError(err)
 	} else if *waitTimeout > 0 {
-		fmt.Fprintln(os.Stdout, "Mimi Remote 助手已重新连接")
+		fmt.Fprintln(os.Stdout, copy.readyMessage)
 	}
 	if !*noPair {
 		printServeConnection(os.Stdout, result)
@@ -902,7 +895,7 @@ func runDoctorFix(
 	if err := ensureNoLegacyCodexExperimentResidue(); err != nil {
 		return nil, false, nil, current, err
 	}
-	configPath = expandUserPath(configPath)
+	configPath = config.ExpandPath(configPath)
 	fixes := []string{}
 	restartRequired := false
 	needsSetup := false
@@ -1022,19 +1015,11 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	if err != nil {
 		return err
 	}
-	manager := session.NewManager(session.Options{
-		CodexBin:     cfg.Codex.Bin,
-		DefaultArgs:  cfg.Codex.DefaultArgs,
-		Env:          cfg.Codex.Env,
-		OutputBuffer: cfg.Session.OutputBufferBytes,
-	})
-
 	routerOptions := appServerRuntime.routerOptions
 	routerOptions.ConfigPath = checker.ConfigPath()
 	apiHandler, apiRouter := httpapi.NewRouterWithInstallationIDAndOptions(
 		cfg,
 		registry,
-		manager,
 		checker,
 		version,
 		installationID,
@@ -1055,7 +1040,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			for _, opened := range listeners {
 				_ = opened.Close()
 			}
-			_ = shutdownServeResources(manager, apiRouter, appServerRuntime)
+			_ = shutdownServeResources(apiRouter, appServerRuntime)
 			return fmt.Errorf("监听 %s 失败：%w", address, err)
 		}
 		if cfg.HasNetworkModuleControls() {
@@ -1079,7 +1064,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	defer stopSignals()
 	return waitForServeExit(stopCh, errCh, func() error {
 		return shutdownServe(server, serveHTTPDrainTimeout, func() error {
-			return shutdownServeResources(manager, apiRouter, appServerRuntime)
+			return shutdownServeResources(apiRouter, appServerRuntime)
 		})
 	})
 }
@@ -1462,18 +1447,6 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-func expandUserPath(path string) string {
-	value := strings.TrimSpace(path)
-	if !strings.HasPrefix(value, "~/") {
-		return value
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return value
-	}
-	return filepath.Join(home, strings.TrimPrefix(value, "~/"))
-}
-
 func prepareDefaultConfigMigration(fs *flag.FlagSet, requestedPath string, notice io.Writer) error {
 	explicitConfig := false
 	fs.Visit(func(item *flag.Flag) {
@@ -1490,10 +1463,6 @@ func prepareDefaultConfigMigration(fs *flag.FlagSet, requestedPath string, notic
 		fmt.Fprintf(notice, "已复用旧版配置并迁移到新目录：%s（旧文件已保留）\n", config.PlatformDefaultPath())
 	}
 	return nil
-}
-
-func ensureBrewServiceDefaultConfig(requestedPath string) error {
-	return ensureManagedServiceDefaultConfig("darwin", requestedPath)
 }
 
 func ensureManagedServiceDefaultConfig(goos string, requestedPath string) error {
@@ -1527,7 +1496,7 @@ func absoluteConfigPath(path string) (string, error) {
 	if value == "" {
 		return "", fmt.Errorf("配置路径不能为空")
 	}
-	abs, err := filepath.Abs(expandUserPath(value))
+	abs, err := filepath.Abs(config.ExpandPath(value))
 	if err != nil {
 		return "", err
 	}
@@ -1837,11 +1806,6 @@ func waitForServiceCheck(ctx context.Context, checkURL string, token string, lab
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
-}
-
-func validateReadyServiceVersion(body io.Reader, expectedVersion string) error {
-	_, err := decodeReadyServiceResults(body, expectedVersion)
-	return err
 }
 
 func decodeReadyServiceResults(body io.Reader, expectedVersion string) (doctor.Results, error) {

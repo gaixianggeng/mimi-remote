@@ -48,70 +48,36 @@ extension SessionStore {
 
     // 文件预览同样不污染全局错误状态：后端只返回授权边界内的普通文件，客户端落到临时目录后交给 QuickLook。
     func previewFile(path: String) async throws -> URL {
-        let lease = try captureProjectsGitHostLease()
-        let profileID = mediaProfileScope
-        let response: FileReadResponse
-        do {
-            response = try await lease.client.readFile(path: path)
-            try requireCurrentProjectsGitHost(lease)
-        } catch {
-            try requireCurrentProjectsGitHost(lease)
-            throw error
+        try await previewMedia { client in
+            try await client.readFile(path: path)
         }
-        let url: URL
-        do {
-            url = try await MediaWorker.shared.previewURL(
-                from: MediaPreviewPayload(response: response),
-                profileID: profileID
-            )
-        } catch {
-            try requireCurrentProjectsGitHost(lease)
-            throw error
-        }
-        guard canApplyProjectsGitResult(lease) else {
-            await MediaWorker.shared.discardPreview(at: url)
-            throw CancellationError()
-        }
-        return url
     }
 
     // 历史图片走 app-server gateway 的短期缓存 ID，不阻塞会话文字首屏；点按后再落到临时文件预览。
     func previewHistoryMedia(id: String) async throws -> URL {
-        let lease = try captureProjectsGitHostLease()
-        let profileID = mediaProfileScope
-        let response: FileReadResponse
-        do {
-            response = try await lease.client.readHistoryMedia(id: id)
-            try requireCurrentProjectsGitHost(lease)
-        } catch {
-            try requireCurrentProjectsGitHost(lease)
-            throw error
+        try await previewMedia { client in
+            try await client.readHistoryMedia(id: id)
         }
-        let url: URL
-        do {
-            url = try await MediaWorker.shared.previewURL(
-                from: MediaPreviewPayload(response: response),
-                profileID: profileID
-            )
-        } catch {
-            try requireCurrentProjectsGitHost(lease)
-            throw error
-        }
-        guard canApplyProjectsGitResult(lease) else {
-            await MediaWorker.shared.discardPreview(at: url)
-            throw CancellationError()
-        }
-        return url
     }
 
     // 超大过程输出只在用户主动打开时下载，并交给 QuickLook 渐进展示；
     // 不把几 MB 的文本放回 SwiftUI 时间线的 Text 树，避免解析与布局卡顿。
     func previewHistoryOutput(id: String) async throws -> URL {
+        try await previewMedia { client in
+            try await client.readHistoryOutput(id: id)
+        }
+    }
+
+    // 以上三个预览此前逐字重复了同一段流程：取 host 租约、两次 host 校验、
+    // 落临时文件、结果过期时丢弃预览。现在只保留这一份，差异由 fetch 闭包注入。
+    private func previewMedia(
+        _ fetch: (any SessionStoreAPIClient) async throws -> FileReadResponse
+    ) async throws -> URL {
         let lease = try captureProjectsGitHostLease()
         let profileID = mediaProfileScope
         let response: FileReadResponse
         do {
-            response = try await lease.client.readHistoryOutput(id: id)
+            response = try await fetch(lease.client)
             try requireCurrentProjectsGitHost(lease)
         } catch {
             try requireCurrentProjectsGitHost(lease)
@@ -271,15 +237,6 @@ extension SessionStore {
             guard canApplyProjectsGitResult(lease) else { return }
             commandActionErrorByPath[run.path] = error.localizedDescription
         }
-    }
-
-    func refreshSelectedGitStatus() async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await refreshGitStatus(path: path)
     }
 
     func refreshGitStatus(path: String) async {
@@ -450,15 +407,6 @@ extension SessionStore {
         }
     }
 
-    func performSelectedGitAction(_ action: GitActionKind, files: [String]) async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await performGitAction(path: path, action: action, files: files)
-    }
-
     func performGitAction(path: String, action: GitActionKind, files: [String]) async {
         let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
         let targetFiles = files
@@ -499,15 +447,6 @@ extension SessionStore {
         }
     }
 
-    func performSelectedGitPatchAction(_ action: GitActionKind, patch: String) async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await performGitPatchAction(path: path, action: action, patch: patch)
-    }
-
     func performGitPatchAction(path: String, action: GitActionKind, patch: String) async {
         let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
         let targetPatch = patch.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -546,15 +485,6 @@ extension SessionStore {
         }
     }
 
-    func commitSelectedGitChanges(message: String) async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await commitGitChanges(path: path, message: message)
-    }
-
     func commitGitChanges(path: String, message: String) async {
         let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
         let commitMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -587,15 +517,6 @@ extension SessionStore {
             guard canApplyProjectsGitResult(lease) else { return }
             gitActionErrorByPath[targetPath] = error.localizedDescription
         }
-    }
-
-    func pushSelectedGitBranch(remote: String? = nil) async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await pushGitBranch(path: path, remote: remote)
     }
 
     func pushGitBranch(path: String, remote: String? = nil) async {
@@ -632,16 +553,6 @@ extension SessionStore {
             guard canApplyProjectsGitResult(lease) else { return }
             gitActionErrorByPath[targetPath] = error.localizedDescription
         }
-    }
-
-    @discardableResult
-    func quickPublishSelectedGitChanges(message: String, remote: String? = nil) async -> Bool {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return false
-        }
-        return await quickPublishGitChanges(path: path, message: message, remote: remote)
     }
 
     @discardableResult
@@ -691,15 +602,6 @@ extension SessionStore {
         }
     }
 
-    func refreshSelectedGitTestFlightStatus() async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await refreshGitTestFlightStatus(path: path)
-    }
-
     func refreshGitTestFlightStatus(path: String) async {
         let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !targetPath.isEmpty else {
@@ -738,16 +640,6 @@ extension SessionStore {
     }
 
     @discardableResult
-    func startSelectedGitTestFlightRelease(whatToTest: String) async -> Bool {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return false
-        }
-        return await startGitTestFlightRelease(path: path, whatToTest: whatToTest)
-    }
-
-    @discardableResult
     func startGitTestFlightRelease(path: String, whatToTest: String) async -> Bool {
         let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !targetPath.isEmpty else {
@@ -783,15 +675,6 @@ extension SessionStore {
         }
     }
 
-    func pollSelectedGitTestFlightRelease() async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await pollGitTestFlightRelease(path: path)
-    }
-
     func pollGitTestFlightRelease(path: String) async {
         let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !targetPath.isEmpty else {
@@ -817,15 +700,6 @@ extension SessionStore {
                 return
             }
         }
-    }
-
-    func createSelectedPullRequest(title: String, body: String = "", draft: Bool = true) async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await createPullRequest(path: path, title: title, body: body, draft: draft)
     }
 
     func createPullRequest(path: String, title: String, body: String = "", draft: Bool = true) async {
@@ -873,15 +747,6 @@ extension SessionStore {
             guard canApplyProjectsGitResult(lease) else { return }
             gitActionErrorByPath[targetPath] = error.localizedDescription
         }
-    }
-
-    func refreshSelectedPullRequestStatus() async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await refreshPullRequestStatus(path: path)
     }
 
     func refreshPullRequestStatus(path: String) async {
@@ -1356,10 +1221,6 @@ extension SessionStore {
 
     /// 保留旧入口，避免已有调用方在 UI 升级期间产生行为变化。
     @discardableResult
-    func reviewUncommittedChanges(_ session: AgentSession) async -> Bool {
-        await startReview(session, target: .uncommittedChanges)
-    }
-
     func reviewTargetDescription(_ target: CodexAppServerReviewTarget) -> String {
         switch target {
         case .uncommittedChanges:

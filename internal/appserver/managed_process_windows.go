@@ -18,10 +18,6 @@ func configureManagedCommand(cmd *exec.Cmd) {
 	}
 }
 
-func validateManagedCodexRuntime(context.Context, string) error {
-	return nil
-}
-
 func terminateManagedProcess(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
 		return

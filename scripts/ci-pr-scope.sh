@@ -126,7 +126,7 @@ else
     # 公开说明和 App Store 文案只需要轻量静态门禁；产品源码、契约与发布
     # 脚本继续由下方语言 scope 覆盖，不能借文档路径绕过完整回归。
     case "$changed_path" in
-      README.md|README.zh-CN.md|CONTRIBUTING.md|docs/*|docs/**/*|scripts/check-docs-static.sh)
+      README.md|README.zh-CN.md|CONTRIBUTING.md|config.example.json|docs/*|docs/**/*|scripts/check-docs-static.sh)
         docs_scope=true
         continue
         ;;

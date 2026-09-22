@@ -4954,7 +4954,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.refreshSelectedGitStatus()
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.refreshGitStatus(path: selectedPath)
 
         XCTAssertEqual(client.requestedGitStatusPaths, [session.dir])
         XCTAssertEqual(store.selectedGitStatus?.unstagedDiff, gitStatus.unstagedDiff)
@@ -5075,7 +5077,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.performSelectedGitAction(.stage, files: ["README.md"])
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.performGitAction(path: selectedPath, action: .stage, files: ["README.md"])
 
         XCTAssertEqual(client.requestedGitActions, [
             RequestedGitAction(path: session.dir, action: .stage, files: ["README.md"])
@@ -5119,7 +5123,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.performSelectedGitPatchAction(.stagePatch, patch: patch)
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.performGitPatchAction(path: selectedPath, action: .stagePatch, patch: patch)
 
         XCTAssertEqual(client.requestedGitPatchActions, [
             RequestedGitPatchAction(path: session.dir, action: .stagePatch, patch: patch.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -5159,7 +5165,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.commitSelectedGitChanges(message: " update readme ")
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.commitGitChanges(path: selectedPath, message: " update readme ")
 
         XCTAssertEqual(client.requestedGitCommits, [
             RequestedGitCommit(path: session.dir, message: "update readme")
@@ -5202,7 +5210,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.pushSelectedGitBranch(remote: " origin ")
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.pushGitBranch(path: selectedPath, remote: " origin ")
 
         XCTAssertEqual(client.requestedGitPushes, [
             RequestedGitPush(path: session.dir, remote: "origin")
@@ -5236,7 +5246,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.createSelectedPullRequest(title: " Draft PR ", body: "Summary", draft: true)
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.createPullRequest(path: selectedPath, title: " Draft PR ", body: "Summary", draft: true)
 
         XCTAssertEqual(client.requestedGitPullRequests, [
             RequestedGitPullRequest(path: session.dir, title: "Draft PR", body: "Summary", draft: true)
@@ -5280,7 +5292,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.refreshSelectedPullRequestStatus()
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.refreshPullRequestStatus(path: selectedPath)
 
         XCTAssertEqual(client.requestedGitPullRequestStatusPaths, [session.dir])
         XCTAssertEqual(store.selectedPullRequestStatus, status)

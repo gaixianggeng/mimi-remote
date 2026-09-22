@@ -38,9 +38,6 @@
     "token_file": "/Users/you/.config/mimi-remote/deepseek.token",
     "max_concurrent_sessions": 2
   },
-  "session": {
-    "output_buffer_bytes": 131072
-  },
   "scan_roots": [
     "/Users/you/code"
   ],

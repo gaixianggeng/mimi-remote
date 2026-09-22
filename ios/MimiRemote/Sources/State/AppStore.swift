@@ -848,23 +848,6 @@ final class AppStore: ObservableObject {
         return didChange
     }
 
-    func validatePairingURL(_ url: URL) async throws -> PairingCredentials {
-        if let ticket = try Self.pairingTicket(from: url) {
-            let credentials = try await claimPairing(ticket)
-            let normalized = try await validateConnection(endpoint: credentials.endpoint, token: credentials.token)
-            return PairingCredentials(
-                endpoint: normalized,
-                token: credentials.token,
-                tailscaleDNSName: credentials.tailscaleDNSName,
-                tailscaleDeviceName: credentials.tailscaleDeviceName
-            )
-        }
-        let credentials = try Self.pairingCredentials(from: url)
-        // 手动调用时只测试外侧 agentd 连接；首次扫码路径会直接保存，减少一次确认。
-        let normalized = try await validateConnection(endpoint: credentials.endpoint, token: credentials.token)
-        return PairingCredentials(endpoint: normalized, token: credentials.token)
-    }
-
     func clearPairing() async throws {
         // 持久化凭据必须先完成 Keychain 删除；临时开发凭据只需清理进程内缓存。
         // 否则系统暂时禁止 Keychain 访问时，下一次启动会变成“旧 Token + 默认 Endpoint”的半提交状态。
@@ -1134,18 +1117,6 @@ final class AppStore: ObservableObject {
 
     var connectionTestStageStabilities: [ConnectionTestStageStability] {
         Self.connectionTestStageStabilities(reports: recentConnectionTestReports)
-    }
-
-    var mostUnstableConnectionTestStage: ConnectionTestStageStability? {
-        connectionTestStageStabilities.max { lhs, rhs in
-            if lhs.failureCount != rhs.failureCount {
-                return lhs.failureCount < rhs.failureCount
-            }
-            if lhs.spreadMillis != rhs.spreadMillis {
-                return lhs.spreadMillis < rhs.spreadMillis
-            }
-            return lhs.maxMillis < rhs.maxMillis
-        }
     }
 
     private func rememberConnectionTestReport(_ report: ConnectionTestReport) {

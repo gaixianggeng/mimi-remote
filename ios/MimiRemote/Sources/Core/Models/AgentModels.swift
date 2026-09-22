@@ -123,10 +123,6 @@ struct AgentSession: Identifiable, Codable, Hashable {
         return branch
     }
 
-    var isAppServerHistory: Bool {
-        status == "history"
-    }
-
     /// 新建页在首条消息前只保留本地草稿，不提前创建没有 rollout 的远端 thread。
     var isLocalDraft: Bool {
         source == "local" && status == "draft" && resumeID == nil
