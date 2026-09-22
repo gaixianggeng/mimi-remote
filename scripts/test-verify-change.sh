@@ -71,6 +71,12 @@ assert_not_contains "$docs_output" "cargo test"
 assert_contains "$docs_output" "Go：没有直接 Go 产品路径"
 assert_contains "$docs_output" "iOS：没有直接 iOS 产品路径"
 
+# 配置示例也必须进入静态门禁，不能被当作文档后以零检查成功退出。
+config_example_output="$(assert_plan config_example config.example.json)"
+assert_contains "$config_example_output" "PR Gate scope：go=false, ios=false, rust=false, macos=false, docs=true"
+assert_contains "$config_example_output" "bash ./scripts/check-docs-static.sh"
+assert_contains "$config_example_output" "将执行 1 项"
+
 nested_docs_output="$(assert_plan nested_docs ios/MimiRemote/README.md bridges/claude/README.md)"
 assert_contains "$nested_docs_output" "判定：纯文档/静态内容"
 assert_not_contains "$nested_docs_output" "ios-dev.sh build-for-testing"

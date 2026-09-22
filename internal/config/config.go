@@ -68,7 +68,6 @@ type Config struct {
 	Claude        ClaudeConfig     `json:"claude"`
 	Push          PushConfig       `json:"push"`
 	Tailcat       TailcatConfig    `json:"tailcat"`
-	Session       SessionConfig    `json:"session"`
 	Debug         DebugConfig      `json:"debug"`
 	Projects      []ProjectConfig  `json:"projects"`
 	ScanRoots     []string         `json:"scan_roots"`
@@ -204,10 +203,6 @@ func DefaultPushConfig() PushConfig {
 	return PushConfig{Enabled: true, ProviderURL: DefaultPushProviderURL}
 }
 
-type SessionConfig struct {
-	OutputBufferBytes int `json:"output_buffer_bytes"`
-}
-
 type DebugConfig struct {
 	EnableCodexHistory bool `json:"enable_codex_history"`
 }
@@ -332,7 +327,7 @@ func loadSnapshot(raw []byte) (Config, error) {
 // loadWithoutProjectDiscovery 只解析配置文件、默认值与进程级覆盖，不访问
 // scan_roots，避免无关网络盘或受保护目录影响基础配置读取。
 func loadWithoutProjectDiscovery(path string) (Config, error) {
-	path = expandPath(path)
+	path = ExpandPath(path)
 	var raw []byte
 	if path != "" {
 		if b, err := os.ReadFile(path); err == nil {
@@ -426,7 +421,9 @@ func RejectLegacyAppServerConfiguration(raw []byte) error {
 	return nil
 }
 
-func expandPath(path string) string {
+// ExpandPath 把前导 "~/" 展开为当前用户主目录，其它输入只裁剪首尾空白。
+// agentd、config 与 doctor 共用这一份实现，不再各写一遍。
+func ExpandPath(path string) string {
 	value := strings.TrimSpace(path)
 	if !strings.HasPrefix(value, "~/") {
 		return value
@@ -449,10 +446,6 @@ func DefaultAppServerTransport() string {
 
 func DefaultAppServerSSHTarget() string {
 	return defaultAppServerSSHTarget
-}
-
-func DefaultWindowsAppServerListen() string {
-	return defaultManagedAppServerListen
 }
 
 func DefaultManagedAppServerListen() string {
@@ -483,11 +476,6 @@ func DefaultSharedLocalAppServerConfig() AppServerConfig {
 		Transport: "local",
 		AutoTitle: true,
 	}
-}
-
-// DefaultWindowsAppServerConfig 保留旧调用方兼容。
-func DefaultWindowsAppServerConfig() AppServerConfig {
-	return DefaultManagedAppServerConfig()
 }
 
 func DefaultClaudeConfig() ClaudeConfig {
@@ -524,9 +512,6 @@ func defaults() Config {
 		},
 		Claude: DefaultClaudeConfig(),
 		Push:   DefaultPushConfig(),
-		Session: SessionConfig{
-			OutputBufferBytes: 128 * 1024,
-		},
 	}
 }
 
@@ -586,11 +571,6 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("AGENTD_DEV_INSECURE"); v == "1" || strings.EqualFold(v, "true") {
 		cfg.DevInsecure = true
-	}
-	if v := os.Getenv("AGENTD_OUTPUT_BUFFER_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Session.OutputBufferBytes = n
-		}
 	}
 	if v := os.Getenv("AGENTD_DEBUG_CODEX_HISTORY"); v != "" {
 		cfg.Debug.EnableCodexHistory = truthy(v)
@@ -844,9 +824,6 @@ func (c Config) Validate() error {
 			c.AppServer.Transport,
 			ErrAppServerTransportUnsupported,
 		)
-	}
-	if c.Session.OutputBufferBytes <= 0 {
-		return fmt.Errorf("session.output_buffer_bytes 必须大于 0")
 	}
 	if len(c.Projects) == 0 {
 		return fmt.Errorf("projects 不能为空；可在 config.json 配置，或设置 AGENTD_PROJECTS=/path/a,/path/b 或 AGENTD_SCAN_ROOTS=/workspace")

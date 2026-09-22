@@ -123,7 +123,6 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 	t.Setenv("AGENTD_BIND", "0.0.0.0")
 	t.Setenv("AGENTD_PORT", "9999")
 	t.Setenv("AGENTD_LISTEN", "127.0.0.1:7777")
-	t.Setenv("AGENTD_OUTPUT_BUFFER_BYTES", "4096")
 	t.Setenv("AGENTD_ALLOW_QUERY_TOKEN", "1")
 	t.Setenv("AGENTD_APP_SERVER_SSH_TARGET", "mimi-host")
 	t.Setenv("AGENTD_APP_SERVER_AUTO_TITLE", "false")
@@ -138,9 +137,6 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 
 	if cfg.Listen != "127.0.0.1:7777" {
 		t.Fatalf("AGENTD_LISTEN 应优先于 bind/port，实际 %q", cfg.Listen)
-	}
-	if cfg.Session.OutputBufferBytes != 4096 {
-		t.Fatalf("输出缓冲区环境变量未生效：%d", cfg.Session.OutputBufferBytes)
 	}
 	if !cfg.Auth.AllowQueryToken {
 		t.Fatal("AGENTD_ALLOW_QUERY_TOKEN=1 应启用 query token 兼容模式")
@@ -475,7 +471,6 @@ func clearAgentdEnv(t *testing.T) {
 		"AGENTD_CODEX_AUTH_FILE",
 		"AGENTD_DEBUG_CODEX_HISTORY",
 		"AGENTD_DEV_INSECURE",
-		"AGENTD_OUTPUT_BUFFER_BYTES",
 		"AGENTD_PROJECTS",
 		"AGENTD_SCAN_ROOTS",
 		"AGENTD_BROWSE_ROOTS",

@@ -1527,18 +1527,6 @@ final class SessionStore: ObservableObject {
         gitActionError(for: selectedGitStatusPath)
     }
 
-    var selectedGitQuickPublishResult: GitQuickPublishResponse? {
-        gitQuickPublishResult(for: selectedGitStatusPath)
-    }
-
-    var selectedGitTestFlightStatus: GitTestFlightStatusResponse? {
-        gitTestFlightStatus(for: selectedGitStatusPath)
-    }
-
-    var selectedGitTestFlightErrorMessage: String? {
-        gitTestFlightError(for: selectedGitStatusPath)
-    }
-
     var selectedPullRequestURL: String? {
         pullRequestURL(for: selectedGitStatusPath)
     }
@@ -1591,22 +1579,6 @@ final class SessionStore: ObservableObject {
     private func normalizedGitStatePath(_ path: String?) -> String? {
         let normalized = path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return normalized.isEmpty ? nil : normalized
-    }
-
-    var connectionBadgeTitle: String? {
-        guard let selectedSession else {
-            return nil
-        }
-        if selectedSession.isLocalDraft {
-            return L10n.text("ui.new_session")
-        }
-        guard selectedSession.isRunning else {
-            if selectedSession.isAppServerHistory {
-                return L10n.text("ui.history")
-            }
-            return selectedSession.status == "closed" ? L10n.text("ui.ended") : selectedSession.status
-        }
-        return webSocketStatus.title
     }
 
     var filteredSessions: [AgentSession] {
@@ -1731,24 +1703,6 @@ final class SessionStore: ObservableObject {
 
     func isWorkspaceShownInSessions(_ projectID: String) -> Bool {
         sessionWorkspaceIDs?.contains(projectID) ?? true
-    }
-
-    func toggleWorkspaceInSessions(_ project: AgentProject) {
-        let allProjectIDs = Set(sidebarProjects.map(\.id))
-        var next = sessionWorkspaceIDs ?? allProjectIDs
-        if next.contains(project.id) {
-            next.remove(project.id)
-            setStatusMessage(L10n.format("ui.value_has_been_removed_from_the_conversation", project.name))
-        } else {
-            next.insert(project.id)
-            setStatusMessage(L10n.format("ui.already_shown_in_session_value", project.name))
-        }
-        setSessionWorkspaceIDs(next.intersection(allProjectIDs))
-    }
-
-    func resetSessionWorkspaceSelection() {
-        setStatusMessage(L10n.text("ui.session_resumed_show_all_workspaces"))
-        setSessionWorkspaceIDs(nil)
     }
 
     func visibleSessions(forProjectID projectID: String) -> [AgentSession] {

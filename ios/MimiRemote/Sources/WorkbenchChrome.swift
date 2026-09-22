@@ -1379,37 +1379,11 @@ struct RelatedSessionConversationView: View {
     }
 }
 
-struct WorkbenchPageHeader: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    let title: String
-    let subtitle: String
-    let tokens: ThemeTokens
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(themeStore.uiFont(.title2, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
-            Text(subtitle)
-                .font(themeStore.uiFont(.callout))
-                .foregroundStyle(tokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
 enum WorkbenchPageLayout {
     static let maxContentWidth: CGFloat = 820
     static let regularPadding: CGFloat = 24
     static let compactPadding: CGFloat = 20
-    static let contentPanelPadding: CGFloat = 16
-    static let groupedPanelPadding: CGFloat = 14
-    static let controlPadding: CGFloat = 10
     static let contentPanelCornerRadius: CGFloat = 22
-    static let groupedPanelCornerRadius: CGFloat = 16
-    static let controlCornerRadius: CGFloat = 12
-
     // iOS 26 的浮动 Tab Bar 没有公开可读取的实时高度。这里统一维护其视觉高度，
     // 再叠加设备 safe area 与 20pt 呼吸区，避免三个顶层页面各自猜一套底部留白。
     static let compactTabBarVisualHeight: CGFloat = 64
@@ -1421,11 +1395,6 @@ enum WorkbenchPageLayout {
             bottomSafeAreaInset: defaultCompactBottomSafeAreaInset
         )
     }
-    // 兼容不在紧凑 Tab 容器中的旧页面；顶层三页会使用实时 safe area 计算值。
-    static var compactBottomPadding: CGFloat {
-        defaultCompactBottomChromeClearance
-    }
-
     static func compactBottomChromeClearance(bottomSafeAreaInset: CGFloat) -> CGFloat {
         compactTabBarVisualHeight
             + max(compactTabBarMinimumSafeArea, bottomSafeAreaInset)
@@ -1567,105 +1536,7 @@ extension EnvironmentValues {
     }
 }
 
-enum WorkbenchSurfaceRole {
-    case contentPanel
-    case groupedPanel
-    case control
-
-    var cornerRadius: CGFloat {
-        switch self {
-        case .contentPanel:
-            WorkbenchPageLayout.contentPanelCornerRadius
-        case .groupedPanel:
-            WorkbenchPageLayout.groupedPanelCornerRadius
-        case .control:
-            WorkbenchPageLayout.controlCornerRadius
-        }
-    }
-}
-
-private struct WorkbenchSurfaceModifier: ViewModifier {
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-
-    let tokens: ThemeTokens
-    let role: WorkbenchSurfaceRole
-
-    func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: role.cornerRadius, style: .continuous)
-
-        content
-            .background(background, in: shape)
-            .overlay {
-                shape.stroke(
-                    tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.72),
-                    lineWidth: colorSchemeContrast == .increased ? 1 : 0.5
-                )
-            }
-    }
-
-    private var background: Color {
-        switch role {
-        case .contentPanel, .groupedPanel:
-            tokens.contentPanelBackground
-        case .control:
-            tokens.surface.opacity(0.72)
-        }
-    }
-}
-
 extension View {
-    func workbenchSurface(tokens: ThemeTokens, role: WorkbenchSurfaceRole) -> some View {
-        modifier(WorkbenchSurfaceModifier(tokens: tokens, role: role))
-    }
-}
-
-struct StatusPill: View {
-    enum Kind {
-        case success
-        case warning
-        case neutral
-    }
-
-    let text: String
-    let kind: Kind
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        Text(text)
-            .font(themeStore.uiFont(size: 12, weight: .medium))
-            .lineLimit(1)
-            .minimumScaleFactor(0.86)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(background(tokens: tokens))
-            .foregroundStyle(foreground(tokens: tokens))
-            .clipShape(Capsule())
-    }
-
-    private func background(tokens: ThemeTokens) -> Color {
-        switch kind {
-        case .success:
-            return tokens.success.opacity(0.16)
-        case .warning:
-            return tokens.warning.opacity(0.18)
-        case .neutral:
-            return tokens.elevatedSurface
-        }
-    }
-
-    private func foreground(tokens: ThemeTokens) -> Color {
-        switch kind {
-        case .success:
-            return tokens.success
-        case .warning:
-            return tokens.warning
-        case .neutral:
-            return tokens.secondaryText
-        }
-    }
 }
 
 /// 设置页和工作台侧栏共用的额度窗口模型。集中选择规则后，两个入口不会因为

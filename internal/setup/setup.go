@@ -223,11 +223,8 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 				"TERM": "xterm-256color",
 			},
 		},
-		Claude: config.DefaultClaudeConfig(),
-		Push:   pushConfigForSetup(originalConfig),
-		Session: config.SessionConfig{
-			OutputBufferBytes: 128 * 1024,
-		},
+		Claude:      config.DefaultClaudeConfig(),
+		Push:        pushConfigForSetup(originalConfig),
 		ScanRoots:   []string{scanRoot},
 		BrowseRoots: []string{browseRoot},
 	}
@@ -409,16 +406,6 @@ func resultFromConfigForNetwork(
 		AppServerSSHTarget:  cfg.AppServer.SSHTarget,
 		Warnings:            warnings,
 	}, nil
-}
-
-func ConnectURL(endpoint, token string) string {
-	now := time.Now().UTC()
-	return connectionURL("connect", endpoint, token, now, now.Add(defaultPairingURLTTL))
-}
-
-func PairURL(endpoint, token string) string {
-	now := time.Now().UTC()
-	return pairingURL(endpoint, token, now, now.Add(defaultPairingURLTTL))
 }
 
 func connectionURL(route, endpoint, token string, issuedAt, expiresAt time.Time) string {

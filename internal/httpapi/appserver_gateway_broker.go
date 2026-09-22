@@ -132,26 +132,6 @@ func (r *Router) codexGatewayBrokerEnabled() bool {
 	return r != nil && r.cfg.AppServer.ApprovalBroker
 }
 
-// attachCodexGatewayBroker 复用同名会话仍然存活的 broker。返回 nil 表示需要按
-// 原路径新建上游连接。
-func (r *Router) attachCodexGatewayBroker(key string, sink *codexGatewaySink) *codexGatewayBroker {
-	if key == "" {
-		return nil
-	}
-	r.codexBrokerMu.Lock()
-	broker := r.codexBrokers[key]
-	r.codexBrokerMu.Unlock()
-	if broker == nil {
-		return nil
-	}
-	if !broker.attach(sink) {
-		// 竞态：broker 在取出后关闭。调用方按新建处理。
-		r.forgetCodexGatewayBroker(key, broker)
-		return nil
-	}
-	return broker
-}
-
 // registerCodexGatewayBroker 把新建的上游连接交给 broker 管理。达到上限时回收
 // 最久未使用的已离线 broker；全部在线则拒绝托管，调用方退回一对一代理。
 func (r *Router) registerCodexGatewayBroker(

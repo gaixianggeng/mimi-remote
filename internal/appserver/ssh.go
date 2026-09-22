@@ -17,6 +17,8 @@ import (
 	"unicode"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 const (
@@ -488,20 +490,11 @@ func initializeWebSocket(ctx context.Context, conn *websocket.Conn) error {
 }
 
 // ValidateSSHTarget 验证 OpenSSH target，避免空白、NUL 和 option injection。
+// 校验规则由 config.ValidateAppServerSSHTarget 单点维护，这里只补上 "SSH target"
+// 前缀；此前两处各写一遍同样的规则，改一处不会同步另一处。
 func ValidateSSHTarget(target string) error {
-	if target == "" {
-		return errors.New("SSH target 不能为空")
-	}
-	if strings.HasPrefix(target, "-") {
-		return errors.New("SSH target 不能以 - 开头")
-	}
-	for _, r := range target {
-		if r == '\x00' {
-			return errors.New("SSH target 不能包含 NUL")
-		}
-		if unicode.IsSpace(r) || unicode.IsControl(r) {
-			return errors.New("SSH target 不能包含空白或控制字符")
-		}
+	if err := config.ValidateAppServerSSHTarget(target); err != nil {
+		return fmt.Errorf("SSH target %w", err)
 	}
 	return nil
 }

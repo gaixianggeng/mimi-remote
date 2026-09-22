@@ -1729,18 +1729,6 @@ extension SessionStore {
         }
     }
 
-    @discardableResult
-    func setSelectedThreadGoal(
-        objective: String?,
-        status: ThreadGoalStatus?,
-        tokenBudget: Int64?
-    ) async -> Bool {
-        guard let sessionID = selectedSessionID else {
-            return false
-        }
-        return await setThreadGoal(threadID: sessionID, objective: objective, status: status, tokenBudget: tokenBudget)
-    }
-
     func updateSelectedThreadGoalStatus(_ status: ThreadGoalStatus) async {
         guard let sessionID = selectedSessionID else {
             return

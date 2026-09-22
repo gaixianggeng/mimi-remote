@@ -1411,9 +1411,3 @@ struct AboutAndLegalSettingsView: View {
         .navigationTitle(L10n.text("ui.about_and_legal"))
     }
 }
-
-struct GatewayDiagnosticSummary {
-    let title: String
-    let detail: String
-    let color: Color
-}

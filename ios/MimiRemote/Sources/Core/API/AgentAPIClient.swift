@@ -777,18 +777,6 @@ struct AgentAPIClient {
         return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? L10n.text("ui.unknown_error")
     }
 
-    private func makePath(_ path: String, query: [String: String?]) -> String {
-        var components = URLComponents()
-        components.path = path
-        components.queryItems = query.compactMap { key, value in
-            guard let value, !value.isEmpty else {
-                return nil
-            }
-            return URLQueryItem(name: key, value: value)
-        }
-        return components.string ?? path
-    }
-
     private func makeURL(baseURL: URL, path: String) -> URL? {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             return nil

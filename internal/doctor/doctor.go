@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -67,7 +66,7 @@ func NewChecker(version string, cfg config.Config, registry *projects.Registry, 
 	}
 	// variadic 参数保持现有嵌入方兼容；CLI 传入真实路径后才启用配置文件权限检查。
 	if len(configPath) > 0 {
-		checker.configPath = expandConfigPath(configPath[0])
+		checker.configPath = config.ExpandPath(configPath[0])
 	}
 	return checker
 }
@@ -311,27 +310,6 @@ func sensitiveFileCheck(name string, label string, path string) Check {
 	}
 	_ = file.Close()
 	return Check{Name: name, OK: true, Message: label + "存在且权限仅当前用户可访问"}
-}
-
-func expandConfigPath(path string) string {
-	value := strings.TrimSpace(path)
-	if !strings.HasPrefix(value, "~/") {
-		return value
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return value
-	}
-	return filepath.Join(home, strings.TrimPrefix(value, "~/"))
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
 }
 
 func (c *Checker) runtimeCheck() Check {

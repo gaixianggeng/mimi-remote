@@ -2526,10 +2526,6 @@ extension SessionStore {
         rebuildProjectSessionListSnapshots()
     }
 
-    func insertShowingAllSessionProjectID(_ value: String) {
-        setSessionVisibleLimit(Self.sessionPreviewLimit + Self.sessionExpansionStep, forProjectID: value)
-    }
-
     func removeShowingAllSessionProjectID(_ value: String) {
         setSessionVisibleLimit(nil, forProjectID: value)
     }

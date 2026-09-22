@@ -232,13 +232,6 @@ func CollapseID(actionID string) string {
 	return hex.EncodeToString(digest[:])[:32]
 }
 
-func normalizeEnvironmentHost(environment string) string {
-	if strings.EqualFold(strings.TrimSpace(environment), "sandbox") {
-		return APNsSandboxHost
-	}
-	return APNsProductionHost
-}
-
 func (n ApprovalNotification) isTurnMessage() bool {
 	return n.Event == completedPushEvent || n.Event == failedPushEvent || n.Event == interruptedPushEvent
 }
