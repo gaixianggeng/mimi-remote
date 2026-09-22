@@ -14,13 +14,18 @@ import (
 // WebSocket 握手却不回应 initialize 的 socket 会让“正在设置”永远停住。
 const sharedLocalPreflightTimeout = 25 * time.Second
 
-// localAppServerPreflight 在 macOS 与 Linux 首次写入配置前附着或启动共享 control
-// socket，并完成 initialize。成功后 resident 保持运行，供终端、Codex Desktop 与 agentd 共用。
-var localAppServerPreflight = func(ctx context.Context, codexBin string, env map[string]string) error {
+var localAppServerPreflight = preflightSharedLocalAppServer
+
+// macOS 设置阶段可能由 SSH 或安装器调用，只验证 CLI，不能抢先创建 SSH 安全会话的
+// resident。真实连接验证由 GUI supervisor 的 serve 完成；Linux 保留原有预检。
+func preflightSharedLocalAppServer(ctx context.Context, codexBin string, env map[string]string) error {
 	ctx, cancel := context.WithTimeout(ctx, sharedLocalPreflightTimeout)
 	defer cancel()
 	if _, err := appserver.CheckLocalCodex(ctx, codexBin); err != nil {
 		return err
+	}
+	if runtime.GOOS == "darwin" {
+		return nil
 	}
 	transport, err := appserver.NewSharedLocalTransport(appserver.SharedLocalOptions{
 		CodexBin: codexBin,

@@ -294,6 +294,11 @@ func shortSharedLocalCodexHome(t *testing.T) string {
 
 func startSharedLocalTestServer(t *testing.T, socket string) func() {
 	t.Helper()
+	return startSharedLocalTestServerWithSession(t, socket, "Aqua")
+}
+
+func startSharedLocalTestServerWithSession(t *testing.T, socket, manager string) func() {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -315,6 +320,12 @@ func startSharedLocalTestServer(t *testing.T, socket string) func() {
 		_ = conn.WriteJSON(map[string]any{"id": 1, "result": map[string]any{}})
 		var initialized map[string]any
 		_ = conn.ReadJSON(&initialized)
+		var sessionProbe map[string]any
+		if conn.ReadJSON(&sessionProbe) == nil {
+			_ = conn.WriteJSON(map[string]any{"id": sessionProbe["id"], "result": map[string]any{
+				"exitCode": 0, "stdout": manager + "\n", "stderr": "",
+			}})
+		}
 	})}
 	go func() { _ = server.Serve(listener) }()
 	return func() {

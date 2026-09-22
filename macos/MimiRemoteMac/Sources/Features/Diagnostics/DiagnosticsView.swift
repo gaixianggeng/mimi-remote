@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DiagnosticsView: View {
     let store: HostStore
+    @State private var confirmsCodexSessionRepair = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -10,6 +11,8 @@ struct DiagnosticsView: View {
                 Button("重新检查") { Task { await store.runDoctor(fix: false) } }
                 Button("修复安全问题") { Task { await store.runDoctor(fix: true) } }
                     .disabled(store.isBusy)
+                Button("修复共享运行环境…") { confirmsCodexSessionRepair = true }
+                    .disabled(store.isBusy || store.owner != .macApp)
                 Button("登录项设置…") { store.openLoginItemsSettings() }
             }
             .padding(18)
@@ -57,6 +60,34 @@ struct DiagnosticsView: View {
                     .foregroundStyle(Color.mimiPrimary)
                     .padding(10)
             }
+
+            if let notice = store.codexSessionRepairNotice {
+                Divider()
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(Color.mimiPrimary)
+                    .padding(10)
+            }
+
+            if let error = store.lastError {
+                Divider()
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(10)
+            }
+        }
+        .confirmationDialog(
+            "修复共享运行环境？",
+            isPresented: $confirmsCodexSessionRepair,
+            titleVisibility: .visible
+        ) {
+            Button("停止服务并修复", role: .destructive) {
+                Task { await store.repairSharedCodexRuntime() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("请先结束所有共享的 Codex 任务和其他 Mimi 活动任务，并关闭 Codex Desktop 的 SSH 共享页面。此操作不会修改钥匙串授权或删除任务历史。检测到活动任务或其他连接时会拒绝修复。")
         }
         .task {
             await store.runDoctor(fix: false)

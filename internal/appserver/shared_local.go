@@ -223,12 +223,18 @@ func (t *SharedLocalTransport) probe(ctx context.Context) error {
 		_ = conn.SetReadDeadline(deadline)
 		_ = conn.SetWriteDeadline(deadline)
 	}
-	return initializeWebSocket(ctx, conn)
+	if err := initializeWebSocket(ctx, conn); err != nil {
+		return err
+	}
+	return validateSharedLocalSession(ctx, conn)
 }
 
 var sharedLocalUnitCounter atomic.Uint64
 
 func startSharedLocalAppServer(ctx context.Context, options SharedLocalOptions) error {
+	if err := validateSharedLocalLaunchSession(ctx); err != nil {
+		return err
+	}
 	if _, err := CheckLocalCodex(ctx, options.CodexBin); err != nil {
 		return fmt.Errorf("拒绝启动不兼容的共享 Codex App Server：%w", err)
 	}
