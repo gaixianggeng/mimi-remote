@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,31 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 )
+
+func TestDiagnosticClearRejectsReplacedActiveFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不允许重命名此处保持打开的日志文件")
+	}
+	path := filepath.Join(t.TempDir(), "agentd.log")
+	writer, err := newRotatingLogWriter(path, defaultManagedLogMaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if err := os.Rename(path, path+".moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("keep replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.clear(); err == nil {
+		t.Fatal("日志路径被替换后必须停止清除")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "keep replacement" {
+		t.Fatal("不能截断替换后的文件")
+	}
+}
 
 func diagnosticTestLine(t *testing.T, at time.Time) string {
 	t.Helper()

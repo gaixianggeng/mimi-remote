@@ -30,7 +30,7 @@ func (w *rotatingLogWriter) prune(now time.Time) error {
 			data += "\n"
 		}
 		if path == w.path {
-			if err := w.file.Truncate(0); err != nil {
+			if err := w.truncateActive(); err != nil {
 				return err
 			}
 			n, err := w.file.Write([]byte(data))
@@ -144,11 +144,34 @@ func (w *rotatingLogWriter) clear() error {
 	if err := os.Remove(w.previous); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := w.file.Truncate(0); err != nil {
+	if err := w.truncateActive(); err != nil {
 		return err
 	}
 	w.size = 0
 	return nil
+}
+
+// Windows 的 O_APPEND 句柄只有 FILE_APPEND_DATA 权限，不能直接 Truncate。
+// 另开可截断的句柄并核对文件身份，既保留追加语义，也不误清路径被替换后的文件。
+// 调用者必须持有 w.mu。
+func (w *rotatingLogWriter) truncateActive() error {
+	current, err := w.file.Stat()
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(w.path, os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(current, info) {
+		return errors.New("活动日志文件已被替换")
+	}
+	return file.Truncate(0)
 }
 
 func (w *rotatingLogWriter) export(now time.Time) ([]string, error) {
