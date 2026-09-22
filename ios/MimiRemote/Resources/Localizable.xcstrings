@@ -9037,6 +9037,57 @@
         }
       }
     },
+    "ui.default_send_method": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default send method"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认发送方式"
+          }
+        }
+      }
+    },
+    "ui.default_send_method_queue_detail": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queue it and send after the current response finishes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "排队，当前回复结束后自动发送"
+          }
+        }
+      }
+    },
+    "ui.default_send_method_steer_detail": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Steer the response being generated right away"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直接补进正在生成的回复"
+          }
+        }
+      }
+    },
     "ui.default_value": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "extractionState": "stale",
@@ -22708,7 +22759,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "queue"
+            "value": "Queue"
           }
         },
         "zh-Hans": {
@@ -22725,7 +22776,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "queue (default)"
+            "value": "Queue (default)"
           }
         },
         "zh-Hans": {
@@ -29266,6 +29317,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "状态：%@"
+          }
+        }
+      }
+    },
+    "ui.steer_current_reply_default": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Steer current response (default)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "引导当前回复（默认）"
           }
         }
       }

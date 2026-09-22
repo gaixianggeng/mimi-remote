@@ -1286,7 +1286,9 @@ struct SessionRecentActivityProjection: Equatable {
     let clientMessageID: ClientMessageID?
 }
 
-enum RunningTurnDelivery {
+/// 运行中再次发送时这条消息怎么送达。同时是设置里「默认发送方式」的取值，
+/// 因此需要 rawValue 与 allCases；两个运行时共用同一套语义，不按 runtime 分叉。
+enum RunningTurnDelivery: String, CaseIterable {
     case queued
     case guided
 }

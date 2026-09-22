@@ -99,6 +99,7 @@ struct SettingsView: View {
     @AppStorage(AppLanguage.preferenceKey) private var appLanguageRawValue = AppLanguage.system.rawValue
     @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.resolved(rawValue: nil).rawValue
     @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
+    @AppStorage(RunningTurnDelivery.defaultStorageKey) private var defaultRunningTurnDeliveryID = RunningTurnDelivery.fallbackDefault.rawValue
     @StateObject private var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @StateObject private var navigation: SettingsNavigationState
     @State private var didApplyDebugLaunchRoute = false
@@ -330,6 +331,20 @@ struct SettingsView: View {
                 }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.defaultPermissions")
+
+                // 只有排队和引导两个选项，而且是运行中每天都会碰的行为：
+                // 就地切换比推一整页合适，和「优先使用」那行同一套写法。
+                SettingsChoiceRow(
+                    title: L10n.text("ui.default_send_method"),
+                    systemImage: "paperplane",
+                    options: RunningTurnDelivery.allCases,
+                    selection: Binding(
+                        get: { RunningTurnDelivery.stored(defaultRunningTurnDeliveryID) },
+                        set: { defaultRunningTurnDeliveryID = $0.rawValue }
+                    )
+                )
+                .settingsRow(.descriptive)
+                .accessibilityIdentifier("settings.defaultSendMethod")
             } header: {
                 sectionHeader(L10n.text("ui.my_preferences"), tokens: tokens)
             }

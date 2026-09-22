@@ -63,6 +63,7 @@ struct ComposerView: View {
     @AppStorage("agentd.developerMode") var developerModeEnabled = false
     @AppStorage(ComposerPermissionMode.defaultStorageKey) var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.resolved(rawValue: nil).rawValue
+    @AppStorage(RunningTurnDelivery.defaultStorageKey) var defaultRunningTurnDeliveryID = RunningTurnDelivery.fallbackDefault.rawValue
     @State var guidedFollowUpEnabled = false
     @State var editingQueuedTurn: QueuedTurnEditorDraft?
     @State var showsQueuedTurnManager = false
@@ -298,9 +299,13 @@ struct ComposerView: View {
 
         return observedContent
         .onChange(of: canUseGuidedFollowUp) { _, canGuide in
-            if !canGuide {
-                guidedFollowUpEnabled = false
-            }
+            // 引导只在当前 turn 内有效。可用性变化就是一次上下文重置，
+            // 重新按「默认发送方式」取值；不可用时必然回落排队。
+            resetFollowUpDeliveryToDefault(canGuide: canGuide)
+        }
+        .onChange(of: defaultRunningTurnDeliveryID) { _, _ in
+            // 设置页改完默认发送方式，当前打开的输入区立即跟上，不必先切走再切回。
+            resetFollowUpDeliveryToDefault()
         }
         .onChange(of: sessionStore.latestSatisfiedPermissionTurnBoundary) { _, boundary in
             guard let boundary,
@@ -314,9 +319,9 @@ struct ComposerView: View {
             )
         }
         .onChange(of: sessionStore.selectedSessionID) { _, _ in
-            // 引导是只对当前正在生成的回复生效的一次性选择。切换会话后恢复安全的
-            // 默认排队，避免把上一条会话的发送意图意外带到另一条运行中会话。
-            guidedFollowUpEnabled = false
+            // 引导是只对当前正在生成的回复生效的一次性选择。切换会话后回到设置里的
+            // 默认发送方式，避免把上一条会话的临时发送意图带到另一条运行中会话。
+            resetFollowUpDeliveryToDefault()
         }
         .onChange(of: sessionStore.selectedThreadGoal) { previousGoal, goal in
             syncGoalStatusBarExpansion(from: previousGoal, to: goal)
@@ -414,7 +419,7 @@ struct ComposerView: View {
             if !accepted {
                 restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
             } else {
-                guidedFollowUpEnabled = false
+                resetFollowUpDeliveryToDefault()
                 resetComposerSendModeAfterSubmit()
             }
         }
@@ -458,7 +463,7 @@ struct ComposerView: View {
             if !accepted {
                 restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
             } else {
-                guidedFollowUpEnabled = false
+                resetFollowUpDeliveryToDefault()
                 resetComposerSendModeAfterSubmit()
             }
         }
@@ -547,7 +552,7 @@ struct ComposerView: View {
         restoreComposerPermissionSelection(for: nextScope)
         clampModelSelectionToSelectedSessionRuntime()
         composerTextExternalRevision += 1
-        guidedFollowUpEnabled = false
+        resetFollowUpDeliveryToDefault()
         measuredComposerTextHeight = 0
         isComposerTextComposing = false
         // iPad 的收起是用户对当前会话输入画布的显式选择；切会话时不自动改写。
@@ -1678,12 +1683,12 @@ struct ComposerView: View {
                 Button {
                     selectFollowUpDelivery(guided: false)
                 } label: {
-                    Label(L10n.text("ui.queue_default"), systemImage: isGuidedSelected ? "clock" : "checkmark")
+                    Label(followUpDeliveryMenuTitle(.queued, isGuidedAvailable: isGuidedAvailable), systemImage: isGuidedSelected ? "clock" : "checkmark")
                 }
                 Button {
                     selectFollowUpDelivery(guided: true)
                 } label: {
-                    Label(isGuidedAvailable ? L10n.text("ui.lead_current_reply") : L10n.text("ui.guide_current_reply_no_active_round_currently"), systemImage: isGuidedSelected ? "checkmark" : "text.bubble")
+                    Label(followUpDeliveryMenuTitle(.guided, isGuidedAvailable: isGuidedAvailable), systemImage: isGuidedSelected ? "checkmark" : "text.bubble")
                 }
                 .disabled(!isGuidedAvailable)
             }
