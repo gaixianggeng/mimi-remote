@@ -1235,9 +1235,9 @@ final class HarnessEventClientTests: XCTestCase {
         try await assertLiveAndHistoryIdentity(durableArrivesFirst: true)
     }
 
-    /// end 帧可能在页面离开后丢失。重开时 durable 的原生 stream 必须仍能认领已经展示的
-    /// attempt 身份，不能额外插入一个 `h-msg-*` 气泡。
-    func testMissingEndThenLeaveAndReopenKeepsOneAssistantIdentity() async throws {
+    /// A 缺失 end 后，同 turn/step 的重试 B 可能产出完全相同的前缀。durable B 不能仅凭
+    /// 内容相同就认领 A；A 保持未确认临时身份，B 使用自己的 durable 身份。
+    func testMissingEndRetryWithIdenticalPrefixDoesNotClaimOldAttemptIdentity() async throws {
         let rpc = FakeHarnessRPCTransport()
         let stream = FakeHarnessStreamTransport()
         let api = HarnessSessionAPIClient(
@@ -1265,7 +1265,7 @@ final class HarnessEventClientTests: XCTestCase {
             index: nil,
             chunk: nil,
             outcome: nil,
-            attemptId: "attempt-no-end",
+            attemptId: "attempt-a-no-end",
             turn: 1,
             step: 1,
             startedAfterSeq: 13
@@ -1282,7 +1282,7 @@ final class HarnessEventClientTests: XCTestCase {
                 argumentsDelta: nil
             ),
             outcome: nil,
-            attemptId: "attempt-no-end",
+            attemptId: "attempt-a-no-end",
             turn: nil,
             step: nil,
             startedAfterSeq: nil
@@ -1295,7 +1295,7 @@ final class HarnessEventClientTests: XCTestCase {
         first.disconnect()
 
         let durable = assistantRecordValue(
-            nativeID: "native-no-end",
+            nativeID: "native-retry-b",
             seq: 16,
             text: "未收到 end 的回复",
             turn: 1,
@@ -1328,10 +1328,225 @@ final class HarnessEventClientTests: XCTestCase {
         await waitFor { reopened.journal?.snapshotCursor == 16 }
 
         let assistantMessages = conversation.messages(for: sessionID).filter { $0.role == .assistant }
-        XCTAssertEqual(assistantMessages.count, 1)
-        XCTAssertEqual(assistantMessages.first?.stableID, "h-attempt-attempt-no-end-assistant")
+        XCTAssertEqual(assistantMessages.count, 2)
+        XCTAssertEqual(
+            Set(assistantMessages.compactMap(\.stableID)),
+            ["h-attempt-attempt-a-no-end-assistant", "h-msg-native-retry-b-assistant"]
+        )
+        XCTAssertEqual(
+            assistantMessages.first { $0.stableID == "h-attempt-attempt-a-no-end-assistant" }?.sendStatus,
+            .sending,
+            "缺少权威 settlement 时旧临时输出必须保持未确认"
+        )
+        XCTAssertEqual(
+            assistantMessages.first { $0.stableID == "h-msg-native-retry-b-assistant" }?.sendStatus,
+            .confirmed
+        )
         reopened.disconnect()
         await api.shutdownForHostSwitch()
+    }
+
+    /// 两个缺失 end 的候选拥有相同 turn/step 与相同正文时，durable 记录仍不能任选一个
+    /// attempt 身份。歧义候选保持未确认，durable 消息使用原生 message id。
+    func testAmbiguousMissingEndCandidatesNeverClaimDurableIdentity() throws {
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: FakeHarnessRPCTransport(),
+            stream: FakeHarnessStreamTransport()
+        )
+        for attemptID in ["attempt-a", "attempt-b"] {
+            let attempt = HarnessJournalAttempt(
+                attemptID: attemptID,
+                turn: 1,
+                step: 1,
+                startedAfterSeq: 13,
+                lastRevision: 2,
+                nextChunkIndex: 1
+            )
+            let identity = try XCTUnwrap(HarnessAssistantAttemptIdentity(attempt: attempt))
+            XCTAssertTrue(api.observeAssistantAttempt(.began(identity), sessionID: sessionID).isEmpty)
+            XCTAssertTrue(api.observeAssistantAttempt(
+                .producedVisibleOutput(attemptID: attemptID),
+                sessionID: sessionID
+            ).isEmpty)
+        }
+
+        let reconciliation = api.reconcileCommittedEvent(
+            HarnessDurableEvent(
+                type: HarnessWireEventType.assistantMessage,
+                seq: 16,
+                time: nil,
+                data: .object([
+                    "message": .object([
+                        "id": .string("native-retry-b"),
+                        "role": .string("assistant"),
+                        "content": .array([.object([
+                            "type": .string("text"),
+                            "text": .string("相同前缀"),
+                        ])]),
+                    ]),
+                    "turn": .number(1),
+                    "step": .number(1),
+                    "stream": .array([.object([
+                        "type": .string("text-chunks"),
+                        "time0": .number(1),
+                        "index": .number(0),
+                        "dt": .array([]),
+                        "texts": .array([.string("相同前缀")]),
+                    ])]),
+                ])
+            ),
+            sessionID: sessionID
+        )
+
+        XCTAssertEqual(reconciliation.assistantMessageID, "h-msg-native-retry-b-assistant")
+        XCTAssertTrue(reconciliation.interruptedAttempts.isEmpty)
+        XCTAssertEqual(api.assistantAttemptLedgerDiagnostics().attemptCount, 2)
+    }
+
+    /// 每个 chunk 只触发一次固定大小状态更新；账本不保留 chunks，因此工作量随 chunk
+    /// 数线性增长，不会在 MainActor 上反复复制完整前缀。
+    func testUnresolvedAttemptLedgerDoesConstantWorkPerChunk() throws {
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: FakeHarnessRPCTransport(),
+            stream: FakeHarnessStreamTransport()
+        )
+        let identity = try XCTUnwrap(HarnessAssistantAttemptIdentity(attempt: HarnessJournalAttempt(
+            attemptID: "attempt-linear",
+            turn: 1,
+            step: 1,
+            startedAfterSeq: 13,
+            lastRevision: 1,
+            nextChunkIndex: 0
+        )))
+        _ = api.observeAssistantAttempt(.began(identity), sessionID: sessionID)
+        for _ in 0..<1_000 {
+            _ = api.observeAssistantAttempt(
+                .producedVisibleOutput(attemptID: identity.attemptID),
+                sessionID: sessionID
+            )
+        }
+
+        let diagnostics = api.assistantAttemptLedgerDiagnostics()
+        XCTAssertEqual(diagnostics.observationWorkUnits, 1_001)
+        XCTAssertEqual(diagnostics.attemptCount, 1)
+        XCTAssertEqual(diagnostics.retainedChunkCount, 0)
+    }
+
+    func testRepeatedCancelledAttemptsLeaveNoLedgerEntries() throws {
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: FakeHarnessRPCTransport(),
+            stream: FakeHarnessStreamTransport()
+        )
+        for index in 0..<64 {
+            let attemptID = "attempt-cancel-\(index)"
+            let identity = try XCTUnwrap(HarnessAssistantAttemptIdentity(attempt: HarnessJournalAttempt(
+                attemptID: attemptID,
+                turn: index,
+                step: 1,
+                startedAfterSeq: index,
+                lastRevision: 1,
+                nextChunkIndex: 0
+            )))
+            _ = api.observeAssistantAttempt(.began(identity), sessionID: sessionID)
+            _ = api.observeAssistantAttempt(
+                .producedVisibleOutput(attemptID: attemptID),
+                sessionID: sessionID
+            )
+            XCTAssertEqual(
+                api.observeAssistantAttempt(
+                    .terminated(attemptID: attemptID, interrupted: true),
+                    sessionID: sessionID
+                ),
+                [HarnessAssistantAttemptRetirement(sessionID: sessionID, attemptID: attemptID)]
+            )
+        }
+        let diagnostics = api.assistantAttemptLedgerDiagnostics()
+        XCTAssertEqual(diagnostics.sessionCount, 0)
+        XCTAssertEqual(diagnostics.attemptCount, 0)
+    }
+
+    func testSupersededAndDurableFailureFactsRetireUnresolvedAttempts() throws {
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: FakeHarnessRPCTransport(),
+            stream: FakeHarnessStreamTransport()
+        )
+        func begin(_ attemptID: String, turn: Int) throws {
+            let identity = try XCTUnwrap(HarnessAssistantAttemptIdentity(attempt: HarnessJournalAttempt(
+                attemptID: attemptID,
+                turn: turn,
+                step: 1,
+                startedAfterSeq: 13,
+                lastRevision: 1,
+                nextChunkIndex: 0
+            )))
+            _ = api.observeAssistantAttempt(.began(identity), sessionID: sessionID)
+            _ = api.observeAssistantAttempt(
+                .producedVisibleOutput(attemptID: attemptID),
+                sessionID: sessionID
+            )
+        }
+
+        try begin("attempt-superseded", turn: 1)
+        XCTAssertEqual(
+            api.observeAssistantAttempt(
+                .terminated(attemptID: "attempt-superseded", interrupted: true),
+                sessionID: sessionID
+            ).map(\.attemptID),
+            ["attempt-superseded"]
+        )
+
+        try begin("attempt-failed", turn: 2)
+        let failure = api.reconcileCommittedEvent(
+            HarnessDurableEvent(
+                type: HarnessWireSettlement.assistantAttempt,
+                seq: 16,
+                time: nil,
+                data: .object(["turn": .number(2), "step": .number(1)])
+            ),
+            sessionID: sessionID
+        )
+        XCTAssertEqual(failure.interruptedAttempts.map(\.attemptID), ["attempt-failed"])
+        XCTAssertEqual(api.assistantAttemptLedgerDiagnostics().attemptCount, 0)
+    }
+
+    func testUnresolvedAttemptLedgerEnforcesPerSessionAndGlobalBudgets() throws {
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: FakeHarnessRPCTransport(),
+            stream: FakeHarnessStreamTransport()
+        )
+        for sessionIndex in 0..<40 {
+            let candidateCount = sessionIndex == 0 ? 12 : 1
+            for attemptIndex in 0..<candidateCount {
+                let identity = try XCTUnwrap(HarnessAssistantAttemptIdentity(attempt: HarnessJournalAttempt(
+                    attemptID: "attempt-\(sessionIndex)-\(attemptIndex)",
+                    turn: attemptIndex,
+                    step: 1,
+                    startedAfterSeq: 0,
+                    lastRevision: 1,
+                    nextChunkIndex: 0
+                )))
+                _ = api.observeAssistantAttempt(
+                    .began(identity),
+                    sessionID: "session-\(sessionIndex)"
+                )
+            }
+            if sessionIndex == 0 {
+                XCTAssertEqual(api.assistantAttemptLedgerDiagnostics().attemptCount, 8)
+            }
+        }
+        let diagnostics = api.assistantAttemptLedgerDiagnostics()
+        XCTAssertEqual(diagnostics.sessionCount, 32)
+        XCTAssertEqual(diagnostics.attemptCount, 32)
     }
 
     private func assertLiveAndHistoryIdentity(durableArrivesFirst: Bool) async throws {

@@ -43531,6 +43531,13 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "上一条输出被新的尝试取代，内容可能不完整。" } }
       }
     },
+    "harness.attempt_interrupted": {
+      "comment": "A streamed assistant output ended without an authoritative attempt-to-durable settlement link.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "A partial output was interrupted and remains unconfirmed." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "一条临时输出已中断，且仍未确认。" } }
+      }
+    },
     "harness.previous_submission_unconfirmed": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "The previous submission is still unconfirmed. Reconcile it or wait for redelivery." } },

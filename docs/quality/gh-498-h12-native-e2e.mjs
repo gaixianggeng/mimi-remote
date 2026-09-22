@@ -561,24 +561,39 @@ try {
     )
   }
 
+  // 上面的循环结束时仍有一个空位。先重新填满容量再断开，否则即使连接关闭没有
+  // 归还任何名额，新连接也能拿到这个预留空位，测试会产生假阳性。
+  const refillStreamID = 'agentd-disconnect-refill'
+  openAgentdFollow(agentdPeer, refillStreamID, createdSessionID)
+  const refillOutcome = await waitForAgentdFollowOutcome(
+    agentdPeer, refillStreamID, 'agentd refill before connection close',
+  )
+  assert.equal(refillOutcome.type, 'item', '断开前必须重新填满 follow 容量')
+  heldAgentdStreams.push(refillStreamID)
+  const disconnectedHeldCount = heldAgentdStreams.length
+
   // 不逐条 cancel，直接断开持有剩余名额的连接；新连接必须能重新申请，证明连接退役
-  // 也归还名额，且没有依赖“没有新 token”之类的空闲猜测。
+  // 也归还全部名额，且没有依赖断开前留下的空位。
   agentdPeer.socket.close()
   await once(agentdPeer.socket, 'close')
   agentdPeer = await connectAgentdPeer()
-  const afterDisconnectStreamID = 'agentd-after-disconnect'
-  openAgentdFollow(agentdPeer, afterDisconnectStreamID, createdSessionID)
-  const afterDisconnect = await waitForAgentdFollowOutcome(
-    agentdPeer, afterDisconnectStreamID, 'agentd reacquire after connection close',
-  )
-  assert.equal(afterDisconnect.type, 'item', '连接断开归还后必须能重新取得 follow 名额')
-  agentdPeer.socket.send(JSON.stringify({ type: 'cancel', streamId: afterDisconnectStreamID }))
-  await until(
-    () => agentdPeer.frames.some(
-      frame => frame.streamId === afterDisconnectStreamID && frame.type === 'end',
-    ),
-    'agentd final follow cancellation',
-  )
+  const reacquiredStreamIDs = []
+  for (let index = 0; index < disconnectedHeldCount; index += 1) {
+    const streamId = `agentd-after-disconnect-${index}`
+    openAgentdFollow(agentdPeer, streamId, createdSessionID)
+    const outcome = await waitForAgentdFollowOutcome(
+      agentdPeer, streamId, `agentd reacquire after connection close ${index}`,
+    )
+    assert.equal(outcome.type, 'item', `连接断开后必须归还第 ${index + 1} 个 follow 名额`)
+    reacquiredStreamIDs.push(streamId)
+  }
+  for (const streamId of reacquiredStreamIDs) {
+    agentdPeer.socket.send(JSON.stringify({ type: 'cancel', streamId }))
+    await until(
+      () => agentdPeer.frames.some(frame => frame.streamId === streamId && frame.type === 'end'),
+      `agentd final follow cancellation ${streamId}`,
+    )
+  }
 
   const summary = {
     status: 'PASS',

@@ -1,54 +1,54 @@
 import Foundation
 
-/// 已进入 UI、但尚未收到 `end.outcome.seq` 的直播 attempt。
+/// 已进入 UI、但尚未收到 `end.outcome.seq` 的直播 attempt 身份。
 ///
-/// durable assistant 没有 attemptId；它保留了同一次输出的原生 stream。只有原生
-/// turn/step/startedAfterSeq 边界成立，且直播块是 durable stream 的精确前缀时才关联。
-private struct HarnessUnresolvedAssistantAttempt {
+/// durable assistant 不携带 attemptId；turn/step/stream 即使都相同也可能属于同一步的
+/// 下一次重试。因此这里只跟踪资源与终态，绝不据此推导 durable 消息身份。
+struct HarnessAssistantAttemptIdentity: Equatable {
     let attemptID: String
-    let turn: Int
-    let step: Int
-    let startedAfterSeq: Int
-    let chunks: [HarnessAssistantChunk]
+    let turn: Int?
+    let step: Int?
+    let startedAfterSeq: Int?
 
     init?(attempt: HarnessJournalAttempt) {
-        guard let attemptID = attempt.attemptID?.trimmedNonEmpty,
-              let turn = attempt.turn,
-              let step = attempt.step,
-              let startedAfterSeq = attempt.startedAfterSeq else {
-            return nil
-        }
-        let chunks = attempt.chunks.compactMap(\.chunk)
-        guard !chunks.isEmpty else { return nil }
+        guard let attemptID = attempt.attemptID?.trimmedNonEmpty else { return nil }
         self.attemptID = attemptID
-        self.turn = turn
-        self.step = step
-        self.startedAfterSeq = startedAfterSeq
-        self.chunks = chunks
+        turn = attempt.turn
+        step = attempt.step
+        startedAfterSeq = attempt.startedAfterSeq
     }
+}
 
-    func matches(durableEvent event: HarnessDurableEvent) -> Bool {
-        guard event.type == HarnessWireEventType.assistantMessage,
-              let seq = event.seq,
-              seq > startedAfterSeq,
-              event.data?["turn"]?.intValue == turn,
-              event.data?["step"]?.intValue == step,
-              let rawStream = event.data?["stream"] else {
-            return false
-        }
-        let records: [HarnessAssistantStreamRecord]
-        do {
-            records = try JSONDecoder().decode(
-                [HarnessAssistantStreamRecord].self,
-                from: JSONEncoder().encode(rawStream)
-            )
-        } catch {
-            return false
-        }
-        let durableChunks = records.flatMap(\.expandedChunks)
-        guard durableChunks.count >= chunks.count else { return false }
-        return Array(durableChunks.prefix(chunks.count)) == chunks
+enum HarnessAssistantAttemptObservation {
+    case began(HarnessAssistantAttemptIdentity)
+    case producedVisibleOutput(attemptID: String)
+    case terminated(attemptID: String, interrupted: Bool)
+    case openedBaseline(activeAttempt: HarnessAssistantAttemptIdentity?)
+}
+
+struct HarnessAssistantAttemptRetirement: Equatable {
+    let sessionID: SessionID
+    let attemptID: String
+}
+
+struct HarnessDurableReconciliation {
+    let assistantMessageID: MessageID?
+    let interruptedAttempts: [HarnessAssistantAttemptRetirement]
+
+    init(
+        assistantMessageID: MessageID? = nil,
+        interruptedAttempts: [HarnessAssistantAttemptRetirement] = []
+    ) {
+        self.assistantMessageID = assistantMessageID
+        self.interruptedAttempts = interruptedAttempts
     }
+}
+
+struct HarnessAssistantAttemptLedgerDiagnostics: Equatable {
+    let sessionCount: Int
+    let attemptCount: Int
+    let observationWorkUnits: Int
+    let retainedChunkCount: Int
 }
 
 /// 原生 Harness 客户端接缝（H01）。
@@ -282,13 +282,23 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     /// `session/page` 都复用该身份，不再插入第二个 durable 气泡。
     private var assistantMessageIDBySessionID: [SessionID: [Int: MessageID]] = [:]
 
-    /// 页面销毁后仍待 durable 记录确认的直播 attempt。
+    private struct UnresolvedAssistantAttempt {
+        var identity: HarnessAssistantAttemptIdentity
+        var producedVisibleOutput = false
+        let ordinal: UInt64
+    }
+
+    /// 页面销毁后仍未收到 `end.outcome.seq` 的直播 attempt。
     ///
-    /// Harness 的 durable assistant 不携带 attemptId，但会持久化同一次输出的原生
-    /// `stream[]`。这里保留直播块与原生 turn/step/startedAfterSeq，重开后只在原生块
-    /// 完全匹配时认领 durable 身份，不按正文相似度猜测。
+    /// 每项只保留固定大小的身份与可见性状态。正文已经在 ConversationStore 中，不能在
+    /// MainActor 上随每个 chunk 重扫并复制一遍。上限防止断线或恶意流长期占用内存。
+    private static let unresolvedAssistantSessionLimit = 32
+    private static let unresolvedAssistantAttemptLimitPerSession = 8
     private var unresolvedAssistantAttemptsBySessionID:
-        [SessionID: [String: HarnessUnresolvedAssistantAttempt]] = [:]
+        [SessionID: [String: UnresolvedAssistantAttempt]] = [:]
+    private var unresolvedAssistantSessionTouch: [SessionID: UInt64] = [:]
+    private var unresolvedAssistantOrdinal: UInt64 = 0
+    private var assistantAttemptObservationWorkUnits = 0
 
     /// 已见工具条目的最新状态。历史按新到旧分页时，较老的 `tool/call` 不得把已见的
     /// completed/failed 结果降回 running。
@@ -378,9 +388,10 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
             reportSnapshotCursor: reportCursor,
             reconcileDurableEvent: { [weak self] sessionID, event in
                 self?.reconcileCommittedEvent(event, sessionID: sessionID)
+                    ?? HarnessDurableReconciliation()
             },
-            rememberAssistantAttempt: { [weak self] sessionID, attempt in
-                self?.rememberAssistantAttempt(attempt, sessionID: sessionID)
+            observeAssistantAttempt: { [weak self] sessionID, observation in
+                self?.observeAssistantAttempt(observation, sessionID: sessionID) ?? []
             },
             settleAssistantIdentity: { [weak self] sessionID, seq, attemptMessageID in
                 self?.settleAssistantIdentity(
@@ -751,10 +762,11 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     /// 所有 durable 来源的唯一提交与身份对账入口。
     @MainActor
     @discardableResult
-    private func reconcileCommittedEvent(
+    func reconcileCommittedEvent(
         _ event: HarnessDurableEvent,
         sessionID: SessionID
-    ) -> MessageID? {
+    ) -> HarnessDurableReconciliation {
+        let interruptedAttempts = consumeAssistantTerminalFact(event, sessionID: sessionID)
         if event.type == HarnessWireEventType.userMessage,
            let requestID = event.data?["source"]?["rpcId"]?.stringValue?.trimmedNonEmpty {
             submissionController().resolveAfterReconciliation(requestID: requestID)
@@ -770,20 +782,20 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
                   for: event,
                   prefix: "assistant"
               ) else {
-            return nil
+            return HarnessDurableReconciliation(interruptedAttempts: interruptedAttempts)
         }
         if let settled = assistantMessageIDBySessionID[sessionID]?[seq] {
-            return settled
-        }
-        if let attempt = matchingUnresolvedAssistantAttempt(for: event, sessionID: sessionID) {
-            let attemptMessageID = "h-attempt-\(attempt.attemptID)-assistant"
-            return settleAssistantIdentity(
-                sessionID: sessionID,
-                seq: seq,
-                attemptMessageID: attemptMessageID
+            return HarnessDurableReconciliation(
+                assistantMessageID: settled,
+                interruptedAttempts: interruptedAttempts
             )
         }
-        return durableID
+        // 缺失 end 时即使 turn/step/stream 前缀完全相同，也可能是同一步的下一次重试。
+        // 没有 outcome.seq 就保留 durable 身份，绝不把它认领到临时 attempt 上。
+        return HarnessDurableReconciliation(
+            assistantMessageID: durableID,
+            interruptedAttempts: interruptedAttempts
+        )
     }
 
     /// 用 `end.outcome.seq` 把直播 attempt 与 durable message 结算成一个展示身份。
@@ -800,38 +812,173 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         let settled = identities[seq] ?? attemptMessageID
         identities[seq] = settled
         assistantMessageIDBySessionID[sessionID] = identities
-        if let attemptID = Self.attemptID(fromAssistantMessageID: attemptMessageID) {
-            unresolvedAssistantAttemptsBySessionID[sessionID]?[attemptID] = nil
-        }
         return settled
     }
 
     @MainActor
-    private func rememberAssistantAttempt(
-        _ attempt: HarnessJournalAttempt,
+    func observeAssistantAttempt(
+        _ observation: HarnessAssistantAttemptObservation,
         sessionID: SessionID
-    ) {
-        guard let unresolved = HarnessUnresolvedAssistantAttempt(attempt: attempt) else { return }
-        unresolvedAssistantAttemptsBySessionID[sessionID, default: [:]][unresolved.attemptID] = unresolved
+    ) -> [HarnessAssistantAttemptRetirement] {
+        assistantAttemptObservationWorkUnits += 1
+        switch observation {
+        case .began(let identity):
+            return beginAssistantAttempt(identity, sessionID: sessionID)
+        case .producedVisibleOutput(let attemptID):
+            guard var entry = unresolvedAssistantAttemptsBySessionID[sessionID]?[attemptID] else {
+                return []
+            }
+            entry.producedVisibleOutput = true
+            unresolvedAssistantAttemptsBySessionID[sessionID]?[attemptID] = entry
+            touchAssistantAttemptSession(sessionID)
+            return []
+        case .terminated(let attemptID, let interrupted):
+            return retireAssistantAttempt(
+                attemptID: attemptID,
+                sessionID: sessionID,
+                reportsInterruption: interrupted
+            ).map { [$0] } ?? []
+        case .openedBaseline(let activeAttempt):
+            var retirements: [HarnessAssistantAttemptRetirement] = []
+            let activeID = activeAttempt?.attemptID
+            let knownAttemptIDs = unresolvedAssistantAttemptsBySessionID[sessionID]
+                .map { Array($0.keys) } ?? []
+            for attemptID in knownAttemptIDs where attemptID != activeID {
+                if let retirement = retireAssistantAttempt(
+                    attemptID: attemptID,
+                    sessionID: sessionID,
+                    reportsInterruption: true
+                ) {
+                    retirements.append(retirement)
+                }
+            }
+            if let activeAttempt {
+                retirements.append(contentsOf: beginAssistantAttempt(activeAttempt, sessionID: sessionID))
+            }
+            return retirements
+        }
     }
 
-    private func matchingUnresolvedAssistantAttempt(
-        for event: HarnessDurableEvent,
+    @MainActor
+    func assistantAttemptLedgerDiagnostics() -> HarnessAssistantAttemptLedgerDiagnostics {
+        HarnessAssistantAttemptLedgerDiagnostics(
+            sessionCount: unresolvedAssistantAttemptsBySessionID.count,
+            attemptCount: unresolvedAssistantAttemptsBySessionID.values.reduce(0) { $0 + $1.count },
+            observationWorkUnits: assistantAttemptObservationWorkUnits,
+            // Ledger 从不保留正文块；正文的唯一内存态由 journal/ConversationStore 负责。
+            retainedChunkCount: 0
+        )
+    }
+
+    @MainActor
+    private func beginAssistantAttempt(
+        _ identity: HarnessAssistantAttemptIdentity,
         sessionID: SessionID
-    ) -> HarnessUnresolvedAssistantAttempt? {
-        guard let candidates = unresolvedAssistantAttemptsBySessionID[sessionID]?.values else {
+    ) -> [HarnessAssistantAttemptRetirement] {
+        var retirements: [HarnessAssistantAttemptRetirement] = []
+        prepareAssistantAttemptSession(sessionID)
+        var attempts = unresolvedAssistantAttemptsBySessionID[sessionID] ?? [:]
+        if var existing = attempts[identity.attemptID] {
+            existing.identity = identity
+            attempts[identity.attemptID] = existing
+            unresolvedAssistantAttemptsBySessionID[sessionID] = attempts
+            touchAssistantAttemptSession(sessionID)
+            return []
+        }
+        if attempts.count >= Self.unresolvedAssistantAttemptLimitPerSession,
+           let oldest = attempts.values.min(by: { $0.ordinal < $1.ordinal }) {
+            attempts[oldest.identity.attemptID] = nil
+            if oldest.producedVisibleOutput {
+                retirements.append(HarnessAssistantAttemptRetirement(
+                    sessionID: sessionID,
+                    attemptID: oldest.identity.attemptID
+                ))
+            }
+        }
+        unresolvedAssistantOrdinal &+= 1
+        attempts[identity.attemptID] = UnresolvedAssistantAttempt(
+            identity: identity,
+            ordinal: unresolvedAssistantOrdinal
+        )
+        unresolvedAssistantAttemptsBySessionID[sessionID] = attempts
+        touchAssistantAttemptSession(sessionID)
+        return retirements
+    }
+
+    @MainActor
+    private func prepareAssistantAttemptSession(_ sessionID: SessionID) {
+        guard unresolvedAssistantAttemptsBySessionID[sessionID] == nil,
+              unresolvedAssistantAttemptsBySessionID.count >= Self.unresolvedAssistantSessionLimit,
+              let oldestSession = unresolvedAssistantSessionTouch.min(by: { $0.value < $1.value })?.key else {
+            return
+        }
+        // 跨会话淘汰只能留下未确认临时输出，不能把提醒投递到当前会话。
+        unresolvedAssistantAttemptsBySessionID[oldestSession] = nil
+        unresolvedAssistantSessionTouch[oldestSession] = nil
+    }
+
+    @MainActor
+    private func touchAssistantAttemptSession(_ sessionID: SessionID) {
+        unresolvedAssistantOrdinal &+= 1
+        unresolvedAssistantSessionTouch[sessionID] = unresolvedAssistantOrdinal
+    }
+
+    @MainActor
+    private func retireAssistantAttempt(
+        attemptID: String,
+        sessionID: SessionID,
+        reportsInterruption: Bool
+    ) -> HarnessAssistantAttemptRetirement? {
+        guard let removed = unresolvedAssistantAttemptsBySessionID[sessionID]?.removeValue(
+            forKey: attemptID
+        ) else {
             return nil
         }
-        return candidates
-            .filter { $0.matches(durableEvent: event) }
-            .max { $0.startedAfterSeq < $1.startedAfterSeq }
+        if unresolvedAssistantAttemptsBySessionID[sessionID]?.isEmpty == true {
+            unresolvedAssistantAttemptsBySessionID[sessionID] = nil
+            unresolvedAssistantSessionTouch[sessionID] = nil
+        } else {
+            touchAssistantAttemptSession(sessionID)
+        }
+        guard reportsInterruption, removed.producedVisibleOutput else { return nil }
+        return HarnessAssistantAttemptRetirement(sessionID: sessionID, attemptID: attemptID)
     }
 
-    private static func attemptID(fromAssistantMessageID messageID: MessageID) -> String? {
-        let prefix = "h-attempt-"
-        let suffix = "-assistant"
-        guard messageID.hasPrefix(prefix), messageID.hasSuffix(suffix) else { return nil }
-        return String(messageID.dropFirst(prefix.count).dropLast(suffix.count))
+    @MainActor
+    private func consumeAssistantTerminalFact(
+        _ event: HarnessDurableEvent,
+        sessionID: SessionID
+    ) -> [HarnessAssistantAttemptRetirement] {
+        guard let attempts = unresolvedAssistantAttemptsBySessionID[sessionID], !attempts.isEmpty else {
+            return []
+        }
+        let attemptIDs: [String]
+        if event.type == HarnessWireSettlement.assistantAttempt,
+           let turn = event.data?["turn"]?.intValue,
+           let step = event.data?["step"]?.intValue {
+            let candidates = attempts.values.filter { entry in
+                guard entry.identity.turn == turn, entry.identity.step == step else { return false }
+                guard let seq = event.seq, let startedAfterSeq = entry.identity.startedAfterSeq else {
+                    return true
+                }
+                return startedAfterSeq < seq
+            }
+            // assistant/attempt 同样没有 attemptId；只在边界唯一时消费，歧义时等待
+            // snapshot 或 turn/end 给出“已经不再活动”的事实。
+            attemptIDs = candidates.count == 1 ? [candidates[0].identity.attemptID] : []
+        } else if event.type == HarnessWireEventType.turnEnd,
+                  let turn = event.data?["turn"]?.intValue {
+            attemptIDs = attempts.values.filter { $0.identity.turn == turn }.map(\.identity.attemptID)
+        } else {
+            attemptIDs = []
+        }
+        return attemptIDs.compactMap {
+            retireAssistantAttempt(
+                attemptID: $0,
+                sessionID: sessionID,
+                reportsInterruption: true
+            )
+        }
     }
 
     /// 工具历史只在 Harness 边界做折叠；通用 reducer 无需学习某个 runtime 的事件语义。
@@ -952,6 +1099,10 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         // 顺序反过来会留下一条"已关连接上还挂着订阅"的状态。
         await stopHostEvents()
         await runtime.shutdown()
+        await MainActor.run {
+            unresolvedAssistantAttemptsBySessionID.removeAll()
+            unresolvedAssistantSessionTouch.removeAll()
+        }
     }
 
     // MARK: 支撑

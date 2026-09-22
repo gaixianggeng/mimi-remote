@@ -49,10 +49,11 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     /// 因此这个值必须由历史预热一侧上报，普通页面 follow 不得覆盖。
     private let reportSnapshotCursor: (@MainActor (SessionID, Int, UInt64) -> Void)?
     /// snapshot、live durable 与 session/page 共用的提交/身份对账入口。
-    private let reconcileDurableEvent: (@MainActor (SessionID, HarnessDurableEvent) -> MessageID?)?
-    /// 直播正文一旦进入 Store，就把原生 attempt 关联保存在宿主级 API client。
-    /// 页面离开时不能丢掉它，否则缺失 end 帧的回复在重开后会出现第二个 durable 气泡。
-    private let rememberAssistantAttempt: (@MainActor (SessionID, HarnessJournalAttempt) -> Void)?
+    private let reconcileDurableEvent:
+        (@MainActor (SessionID, HarnessDurableEvent) -> HarnessDurableReconciliation)?
+    /// 宿主级 attempt 账本只增量接收固定大小的状态，不复制 journal 的完整 chunks。
+    private let observeAssistantAttempt:
+        (@MainActor (SessionID, HarnessAssistantAttemptObservation) -> [HarnessAssistantAttemptRetirement])?
     /// 用 `end.outcome.seq` 结算 attempt 与 durable assistant 的唯一身份。
     private let settleAssistantIdentity: (@MainActor (SessionID, Int, MessageID) -> MessageID)?
 
@@ -95,8 +96,10 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         selectModel: (@MainActor (String, String, String, String?) async throws -> Void)? = nil,
         beginSnapshotObservation: (@MainActor (SessionID) -> UInt64)? = nil,
         reportSnapshotCursor: (@MainActor (SessionID, Int, UInt64) -> Void)? = nil,
-        reconcileDurableEvent: (@MainActor (SessionID, HarnessDurableEvent) -> MessageID?)? = nil,
-        rememberAssistantAttempt: (@MainActor (SessionID, HarnessJournalAttempt) -> Void)? = nil,
+        reconcileDurableEvent:
+            (@MainActor (SessionID, HarnessDurableEvent) -> HarnessDurableReconciliation)? = nil,
+        observeAssistantAttempt:
+            (@MainActor (SessionID, HarnessAssistantAttemptObservation) -> [HarnessAssistantAttemptRetirement])? = nil,
         settleAssistantIdentity: (@MainActor (SessionID, Int, MessageID) -> MessageID)? = nil
     ) {
         self.endpoint = endpoint
@@ -111,7 +114,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         self.beginSnapshotObservation = beginSnapshotObservation
         self.reportSnapshotCursor = reportSnapshotCursor
         self.reconcileDurableEvent = reconcileDurableEvent
-        self.rememberAssistantAttempt = rememberAssistantAttempt
+        self.observeAssistantAttempt = observeAssistantAttempt
         self.settleAssistantIdentity = settleAssistantIdentity
     }
 
@@ -181,6 +184,10 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         var fresh = HarnessSessionJournal(generation: generation)
         _ = fresh.apply(snapshot: snapshot, acceptingGeneration: generation)
         journal = fresh
+        publishAttemptRetirements(observeAssistantAttempt?(
+            sessionID,
+            .openedBaseline(activeAttempt: fresh.activeAttempt.flatMap(HarnessAssistantAttemptIdentity.init))
+        ) ?? [])
 
         // 仅权威历史观察带回调：把它的 snapshot 游标交给宿主作为 throughSeq。
         if let cursor = fresh.snapshotCursor {
@@ -194,11 +201,12 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         // 那条路径不解除提交锁，用户就会看到自己的消息在时间线上、下一条却发不出去。
         for record in snapshot.records ?? [] {
             guard let event = record.event else { continue }
-            let assistantMessageID = reconcile(event)
+            let reconciliation = reconcile(event)
+            publishAttemptRetirements(reconciliation.interruptedAttempts)
             for projected in HarnessPresentationProjector.project(
                 durableEvent: event,
                 sessionID: sessionID,
-                assistantMessageID: assistantMessageID
+                assistantMessageID: reconciliation.assistantMessageID
             ) {
                 onEvent?(projected)
             }
@@ -209,7 +217,12 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                attempt: attempt,
                sessionID: sessionID
            ) {
-            rememberAssistantAttempt?(sessionID, attempt)
+            if let attemptID = attempt.attemptID {
+                publishAttemptRetirements(observeAssistantAttempt?(
+                    sessionID,
+                    .producedVisibleOutput(attemptID: attemptID)
+                ) ?? [])
+            }
             onEvent?(event)
         }
         return true
@@ -483,14 +496,18 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         let isNew = current.apply(durableEvent: event)
         journal = current
         guard isNew else { return false }
-        let assistantMessageID = reconcile(event)
+        let reconciliation = reconcile(event)
+        publishAttemptRetirements(reconciliation.interruptedAttempts)
         if event.type == HarnessWireEventType.assistantMessage,
            current.activeAttempt != nil,
            let seq = event.seq {
             pendingAssistantDurableBySeq[seq] = event
             return true
         }
-        publish(durableEvent: event, assistantMessageID: assistantMessageID)
+        publish(durableEvent: event, assistantMessageID: reconciliation.assistantMessageID)
+        if !reconciliation.interruptedAttempts.isEmpty {
+            publishPendingAssistantDurables()
+        }
         return true
     }
 
@@ -499,7 +516,6 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         assistantMessageID reconciledMessageID: MessageID? = nil
     ) {
         let messageID = reconciledMessageID
-            ?? reconcile(event)
             ?? event.seq.flatMap { settledAssistantMessageIDBySeq[$0] }
         for projected in HarnessPresentationProjector.project(
             durableEvent: event,
@@ -532,13 +548,15 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     }
 
     /// 把所有 durable 来源送进同一提交与身份对账入口。
-    private func reconcile(_ event: HarnessDurableEvent) -> MessageID? {
+    private func reconcile(_ event: HarnessDurableEvent) -> HarnessDurableReconciliation {
         if let reconcileDurableEvent {
             return reconcileDurableEvent(sessionID, event)
         }
         // 独立单测客户端没有宿主 ledger 时仍保留原行为。
         reconcileSubmission(with: event)
-        return event.seq.flatMap { settledAssistantMessageIDBySeq[$0] }
+        return HarnessDurableReconciliation(
+            assistantMessageID: event.seq.flatMap { settledAssistantMessageIDBySeq[$0] }
+        )
     }
 
     /// 应用一帧 assistant-stream 直播片段。
@@ -548,6 +566,11 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     @discardableResult
     func apply(assistantStream frame: HarnessAssistantStreamFrame) -> HarnessJournalStreamRejection? {
         guard var current = journal else { return .beforeSnapshot }
+        // 这里只需要在 start 时识别被替换的身份。保留整个 attempt 会额外持有 chunks
+        // 数组，使后续 append 触发写时复制，重新引入随正文长度增长的主线程成本。
+        let previousAttemptID = frame.type == HarnessWireAssistantFrame.start
+            ? current.activeAttempt?.attemptID
+            : nil
         let previousChunkCount = current.activeAttempt?.chunks.count ?? 0
         let rejection = current.apply(assistantStream: frame)
         journal = current
@@ -556,11 +579,27 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                 "harness.stream_interrupted",
                 rejection.diagnosticSummary
             )))
-        } else if frame.type == HarnessWireAssistantFrame.chunk,
-                  current.activeAttempt?.chunks.count ?? 0 > previousChunkCount,
-                  let attempt = current.activeAttempt,
-                  let chunk = frame.chunk {
-            rememberAssistantAttempt?(sessionID, attempt)
+            return rejection
+        }
+
+        switch frame.type {
+        case HarnessWireAssistantFrame.start:
+            if let previousAttemptID {
+                publishAttemptRetirements(observeAssistantAttempt?(
+                    sessionID,
+                    .terminated(attemptID: previousAttemptID, interrupted: true)
+                ) ?? [])
+            }
+            if let attempt = current.activeAttempt,
+               let identity = HarnessAssistantAttemptIdentity(attempt: attempt) {
+                publishAttemptRetirements(observeAssistantAttempt?(
+                    sessionID,
+                    .began(identity)
+                ) ?? [])
+            }
+        case HarnessWireAssistantFrame.chunk
+            where current.activeAttempt?.chunks.count ?? 0 > previousChunkCount:
+            guard let attempt = current.activeAttempt, let chunk = frame.chunk else { break }
             // 正文与推理各有展示通道。**只发正文**会让模型思考时界面看起来像停住了。
             //
             // 工具**不在这里**产出条目：直播只有块索引与参数增量，没有 callId，
@@ -572,6 +611,12 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                    let event = HarnessPresentationProjector.liveTextEvent(
                        text: text, attempt: attempt, sessionID: sessionID
                    ) {
+                    if let attemptID = attempt.attemptID {
+                        publishAttemptRetirements(observeAssistantAttempt?(
+                            sessionID,
+                            .producedVisibleOutput(attemptID: attemptID)
+                        ) ?? [])
+                    }
                     onEvent?(event)
                 }
             case HarnessWireChunkType.reasoningDelta:
@@ -584,13 +629,24 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
             default:
                 break
             }
-        } else if frame.type == HarnessWireAssistantFrame.end,
-                  let attempt = current.activeAttempt,
-                  attempt.producedAssistantMessage,
-                  let seq = attempt.settledSeq {
-            settledAssistantMessageIDBySeq[seq] = settledIdentity(for: attempt, seq: seq)
+        case HarnessWireAssistantFrame.end:
+            guard let attempt = current.activeAttempt else { break }
+            if attempt.producedAssistantMessage, let seq = attempt.settledSeq {
+                settledAssistantMessageIDBySeq[seq] = settledIdentity(for: attempt, seq: seq)
+            }
+            if let attemptID = attempt.attemptID {
+                publishAttemptRetirements(observeAssistantAttempt?(
+                    sessionID,
+                    .terminated(
+                        attemptID: attemptID,
+                        interrupted: !attempt.producedAssistantMessage
+                    )
+                ) ?? [])
+            }
+        default:
+            break
         }
-        return rejection
+        return nil
     }
 
     /// 结算时把 durable 记录收敛到**已经展示的直播身份**上。
@@ -623,6 +679,37 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         return attemptMessageID
     }
 
+    private func publishAttemptRetirements(_ retirements: [HarnessAssistantAttemptRetirement]) {
+        for retirement in retirements {
+            let warningID = "h-attempt-\(retirement.attemptID)-interruption"
+            onEvent?(.warning(
+                AgentErrorPayload(
+                    message: L10n.text("harness.attempt_interrupted"),
+                    code: "harness/attempt-interrupted",
+                    retryable: false
+                ),
+                AgentEventMetadata(
+                    seq: nil,
+                    sessionID: retirement.sessionID,
+                    turnID: nil,
+                    itemID: warningID,
+                    messageID: warningID,
+                    clientMessageID: nil,
+                    revision: nil,
+                    createdAt: nil
+                )
+            ))
+        }
+    }
+
+    private func publishPendingAssistantDurables() {
+        let pending = pendingAssistantDurableBySeq
+        pendingAssistantDurableBySeq.removeAll()
+        for event in pending.values.sorted(by: { ($0.seq ?? -1) < ($1.seq ?? -1) }) {
+            publish(durableEvent: event)
+        }
+    }
+
     /// 结算当前 attempt 并投影结果。
     ///
     /// 由流投影层在收到 `end` 帧后调用。被取消的 attempt 不会投影出助手消息
@@ -644,11 +731,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         }
         current.retireSettledAttempt()
         journal = current
-        let pending = pendingAssistantDurableBySeq
-        pendingAssistantDurableBySeq.removeAll()
-        for event in pending.values.sorted(by: { ($0.seq ?? -1) < ($1.seq ?? -1) }) {
-            publish(durableEvent: event)
-        }
+        publishPendingAssistantDurables()
     }
 
     // MARK: - 发送
