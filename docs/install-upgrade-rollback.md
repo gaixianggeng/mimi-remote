@@ -266,7 +266,7 @@ agentd start
 
 Linux 桌面安装同时提供顶栏托盘、自启动入口和本机管理面板，使用方法与 GNOME/KDE/Waybar 支持边界见 [Linux 桌面托盘](linux-tray.md)。
 
-Linux Release 包同时包含二进制、user-systemd 模板和安装脚本，不使用 Homebrew。下面示例明确指定版本，校验 `checksums.txt` 后再安装，避免“latest”在无人确认时升级：
+Linux Release 包同时包含 agentd、同版本的 Tailcat 辅助程序、托盘、user-systemd 模板和安装脚本，不使用 Homebrew。下面示例明确指定版本，校验 `checksums.txt` 后再安装，避免“latest”在无人确认时升级：
 
 ```bash
 set -euo pipefail
@@ -338,12 +338,14 @@ Linux 升级时，按首次安装示例下载并校验目标版本，解压后�
 bash ./scripts/install-linux.sh upgrade
 ```
 
-脚本会自动保留上一版二进制和 unit；若新版本无法就绪会当场自动恢复。需要稍后主动回滚时，使用安装成功后保存到本机的脚本：
+脚本会同时校验并安装 agentd 与 mimi-tailcat-experiment，自动保留上一版两个二进制和 unit；若新版本无法就绪会当场恢复安装前版本及原有回滚备份。缺少辅助程序、无法执行或版本不一致的包会在修改安装前被拒绝。需要稍后主动回滚时，使用安装成功后保存到本机的脚本：
 
 ```bash
 bash "$HOME/.local/share/mimi-remote/install-linux.sh" rollback
 "$HOME/.local/bin/agentd" logs -n 200
 ```
+
+从没有 Tailcat 的旧安装升级时，回滚会恢复当时缺少辅助程序的状态并明确提示。若旧备份没有辅助程序且没有对应的缺失标记，安装器拒绝猜测版本，请从目标版本完整 Release 包重新安装。出现「未安装 mimi-tailcat-experiment」时，下载并校验包含该文件的 Linux Release，在解压目录执行 `bash ./scripts/install-linux.sh upgrade`，然后重试内置连接；不需要另装 Tailscale。
 
 如果 Codex CLI 不在模板的 `PATH` 中，先用 `command -v codex` 找到安装目录，再编辑 `~/.config/systemd/user/mimi-remote.service` 的 `Environment=PATH=...`，随后执行 `systemctl --user daemon-reload` 和重启。
 
@@ -420,7 +422,7 @@ gh api --method POST \
   -f "client_payload[release_tag]=$release_tag"
 ```
 
-该入口固定校验 GoReleaser `v2.15.3` 官方预编译包的 SHA-256，并拒绝当前 Go 版本偏离 `go.mod`。它会验证四个平台二进制的 Go 版本、GOOS/GOARCH、CGO 状态、可执行权限、许可证文件、systemd 模板和 Homebrew service；还会逐一核对 Formula 下载 URL 必须指向 `gaixianggeng/mimi-remote`，其中 SHA-256 必须与实际归档一致。普通安装用户不需要运行这个脚本。
+该入口固定校验 GoReleaser `v2.15.3` 官方预编译包的 SHA-256，并拒绝当前 Go 版本偏离 `go.mod`。它会验证四个平台二进制的 Go 版本、GOOS/GOARCH、CGO 状态、可执行权限、许可证文件、systemd 模板和 Homebrew service；还会逐一核对 Formula 下载 URL 必须指向 `gaixianggeng/mimi-remote`，其中 SHA-256 必须与实际归档一致。Linux 归档还必须包含独立 module 构建的 Tailcat 辅助程序；在 Linux 宿主执行产物门禁时，会用当前架构的真实二进制和本机临时 DERP 验证启动、配对信息与正常退出。该检查不使用生产中继或现有用户配置。普通安装用户不需要运行这个脚本。
 
 ### GitHub Release 成功、tap 更新失败
 

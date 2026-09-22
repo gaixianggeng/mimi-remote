@@ -135,7 +135,12 @@ case "\${1:-}" in
     ;;
 esac
 SH
-  chmod +x "$destination/agentd"
+  cat >"$destination/mimi-tailcat-experiment" <<SH
+#!/usr/bin/env bash
+[[ "\${1:-}" == version ]] || exit 2
+echo "$version"
+SH
+  chmod +x "$destination/agentd" "$destination/mimi-tailcat-experiment"
 }
 
 assert_version() {
@@ -189,6 +194,22 @@ fi
 
 unset AGENTD_APP_SERVER_SSH_TARGET
 
+# 首次安装失败必须移除两个新二进制及 unit，不留下半套安装。
+if bash "$release_125_bad/scripts/install-linux.sh" install >"$TEST_DIR/first-failure.log" 2>&1; then
+  echo '首次安装失败没有中止事务。' >&2
+  exit 1
+fi
+[[ ! -e "$HOME/.local/bin/agentd" ]]
+[[ ! -e "$HOME/.local/bin/mimi-tailcat-experiment" ]]
+[[ ! -e "$HOME/.local/bin/agentd.previous" ]]
+[[ ! -e "$HOME/.local/bin/mimi-tailcat-experiment.previous" ]]
+[[ ! -e "$HOME/.config/systemd/user/mimi-remote.service" ]]
+[[ ! -e "$FAKE_SYSTEMCTL_ACTIVE" ]]
+[[ ! -e "$FAKE_SYSTEMCTL_ENABLED" ]]
+# 此测试的 setup 生成的是一次性假配置，移除它以继续覆盖首次成功的配对交接。
+rm "$HOME/.config/mimi-remote/config.json"
+: > "$FAKE_AGENTD_LOG"
+
 install_output="$(bash "$release_123/scripts/install-linux.sh" install 2>&1)"
 grep -Fq '短期配对二维码已就绪（1.2.3）' <<<"$install_output"
 grep -Fq 'export PATH="$HOME/.local/bin:$PATH"' <<<"$install_output"
@@ -208,6 +229,7 @@ agentd_commands="$(<"$FAKE_AGENTD_LOG")"
   exit 1
 }
 assert_version "$HOME/.local/bin/agentd" "1.2.3"
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment" "1.2.3"
 [[ -f "$HOME/.config/systemd/user/mimi-remote.service" ]]
 [[ -f "$HOME/.config/mimi-remote/config.json" ]]
 [[ -f "$FAKE_SYSTEMCTL_ACTIVE" ]]
@@ -237,11 +259,15 @@ assert_version "$pair_failure_home/.local/bin/agentd" "1.2.3"
 
 bash "$release_124/scripts/install-linux.sh" upgrade >/dev/null
 assert_version "$HOME/.local/bin/agentd" "1.2.4"
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment" "1.2.4"
 assert_version "$HOME/.local/bin/agentd.previous" "1.2.3"
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment.previous" "1.2.3"
 
 bash "$HOME/.local/share/mimi-remote/install-linux.sh" rollback >/dev/null
 assert_version "$HOME/.local/bin/agentd" "1.2.3"
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment" "1.2.3"
 assert_version "$HOME/.local/bin/agentd.previous" "1.2.4"
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment.previous" "1.2.4"
 
 set +e
 failure_output="$(bash "$release_125_bad/scripts/install-linux.sh" upgrade 2>&1)"
@@ -266,9 +292,88 @@ if grep -Fq "$TEST_SECRET" <<<"$failure_output"; then
 fi
 grep -Fq -- '--user -u mimi-remote.service -n 80 --no-pager' "$FAKE_JOURNALCTL_LOG"
 assert_version "$HOME/.local/bin/agentd" "1.2.3"
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment" "1.2.3"
 [[ -f "$FAKE_SYSTEMCTL_ACTIVE" ]]
 
+# 失败升级也不能覆盖之前的回滚目标。
+assert_version "$HOME/.local/bin/agentd.previous" "1.2.4"
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment.previous" "1.2.4"
+
 grep -Fq 'restart mimi-remote.service' "$FAKE_SYSTEMCTL_LOG"
+
+# 不完整、不可执行、版本错配的 Release 必须在改安装或调用 systemd 前被拒绝。
+for broken in missing permission mismatch exec; do
+  release_broken="$TEST_DIR/release-$broken"
+  make_release "$release_broken" "1.2.6" "true"
+  case "$broken" in
+    missing) rm "$release_broken/mimi-tailcat-experiment" ;;
+    permission) chmod -x "$release_broken/mimi-tailcat-experiment" ;;
+    mismatch) cp "$release_124/mimi-tailcat-experiment" "$release_broken/mimi-tailcat-experiment" ;;
+    exec) printf '#!/usr/bin/env bash\nexit 17\n' > "$release_broken/mimi-tailcat-experiment" ;;
+  esac
+  cp "$FAKE_SYSTEMCTL_LOG" "$TEST_DIR/systemctl.before"
+  if bash "$release_broken/scripts/install-linux.sh" upgrade >"$TEST_DIR/broken.log" 2>&1; then
+    echo "错误的 Tailcat Release 未拒绝：$broken" >&2
+    exit 1
+  fi
+  cmp "$FAKE_SYSTEMCTL_LOG" "$TEST_DIR/systemctl.before"
+  assert_version "$HOME/.local/bin/agentd" "1.2.3"
+  assert_version "$HOME/.local/bin/mimi-tailcat-experiment" "1.2.3"
+  assert_version "$HOME/.local/bin/agentd.previous" "1.2.4"
+  assert_version "$HOME/.local/bin/mimi-tailcat-experiment.previous" "1.2.4"
+done
+
+# 在第二个二进制落盘时失败，要同时恢复当前安装与上一版备份。
+real_mv="$(command -v mv)"
+export REAL_MV="$real_mv"
+cat >"$TEST_DIR/bin/mv" <<'SH'
+#!/usr/bin/env bash
+if [[ "${FAKE_FAIL_TAILCAT_RENAME:-0}" == 1 && "${2:-}" == *'/mimi-tailcat-experiment.new.'* ]]; then
+  exit 43
+fi
+exec "$REAL_MV" "$@"
+SH
+chmod +x "$TEST_DIR/bin/mv"
+if FAKE_FAIL_TAILCAT_RENAME=1 bash "$release_124/scripts/install-linux.sh" upgrade >"$TEST_DIR/rename.log" 2>&1; then
+  echo 'Tailcat 替换失败没有中止事务。' >&2
+  exit 1
+fi
+assert_version "$HOME/.local/bin/agentd" "1.2.3"
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment" "1.2.3"
+assert_version "$HOME/.local/bin/agentd.previous" "1.2.4"
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment.previous" "1.2.4"
+
+# 从旧的无 sidecar 安装升级，失败时仍无 sidecar，成功后可回到确切的旧状态。
+rm "$HOME/.local/bin/mimi-tailcat-experiment"
+if bash "$release_125_bad/scripts/install-linux.sh" upgrade >"$TEST_DIR/legacy-failure.log" 2>&1; then
+  exit 1
+fi
+[[ ! -e "$HOME/.local/bin/mimi-tailcat-experiment" ]]
+assert_version "$HOME/.local/bin/agentd.previous" "1.2.4"
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment.previous" "1.2.4"
+bash "$release_124/scripts/install-linux.sh" upgrade >/dev/null
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment" "1.2.4"
+[[ -f "$HOME/.local/bin/mimi-tailcat-experiment.previous.absent" ]]
+[[ ! -e "$HOME/.local/bin/mimi-tailcat-experiment.previous" ]]
+bash "$HOME/.local/share/mimi-remote/install-linux.sh" rollback >"$TEST_DIR/legacy-rollback.log"
+grep -Fq '已恢复未包含 Tailcat 的旧安装' "$TEST_DIR/legacy-rollback.log"
+assert_version "$HOME/.local/bin/agentd" "1.2.3"
+[[ ! -e "$HOME/.local/bin/mimi-tailcat-experiment" ]]
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment.previous" "1.2.4"
+[[ ! -e "$HOME/.local/bin/mimi-tailcat-experiment.previous.absent" ]]
+bash "$HOME/.local/share/mimi-remote/install-linux.sh" rollback >/dev/null
+assert_version "$HOME/.local/bin/agentd" "1.2.4"
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment" "1.2.4"
+
+# 没有 absent 标记的丢失备份不能被误认为合法旧安装。
+rm "$HOME/.local/bin/mimi-tailcat-experiment.previous.absent"
+if bash "$HOME/.local/share/mimi-remote/install-linux.sh" rollback >"$TEST_DIR/incomplete-backup.log" 2>&1; then
+  exit 1
+fi
+grep -Fq '上一版 Tailcat 备份不完整' "$TEST_DIR/incomplete-backup.log"
+assert_version "$HOME/.local/bin/agentd" "1.2.4"
+assert_version "$HOME/.local/bin/mimi-tailcat-experiment" "1.2.4"
+
 
 # stop/disable 任一失败都必须在删除安装文件前中止。
 for failure in stop disable; do
@@ -281,6 +386,8 @@ for failure in stop disable; do
     "$failure_home/.config/mimi-remote" \
     "$failure_state"
   cp "$release_123/agentd" "$failure_home/.local/bin/agentd"
+  cp "$release_123/mimi-tailcat-experiment" "$failure_home/.local/bin/mimi-tailcat-experiment"
+  cp "$release_124/mimi-tailcat-experiment" "$failure_home/.local/bin/mimi-tailcat-experiment.previous"
   cp "$release_124/agentd" "$failure_home/.local/bin/agentd.previous"
   cp "$release_123/packaging/systemd/mimi-remote.service" \
     "$failure_home/.config/systemd/user/mimi-remote.service"
@@ -319,6 +426,8 @@ for failure in stop disable; do
   grep -Fq '未删除任何安装文件' <<<"$failure_output"
   [[ -x "$failure_home/.local/bin/agentd" ]]
   [[ -x "$failure_home/.local/bin/agentd.previous" ]]
+  assert_version "$failure_home/.local/bin/mimi-tailcat-experiment" "1.2.3"
+  assert_version "$failure_home/.local/bin/mimi-tailcat-experiment.previous" "1.2.4"
   [[ -f "$failure_home/.config/systemd/user/mimi-remote.service" ]]
   [[ -f "$failure_home/.config/systemd/user/mimi-remote.service.previous" ]]
   [[ -f "$failure_home/.local/share/mimi-remote/install-linux.sh" ]]
@@ -335,6 +444,9 @@ grep -Fq "已保留配置和 Token：$HOME/.config/mimi-remote" <<<"$uninstall_o
 grep -Fq 'rm -rf -- "$HOME/.config/mimi-remote"' <<<"$uninstall_output"
 [[ ! -e "$HOME/.local/bin/agentd" ]]
 [[ ! -e "$HOME/.local/bin/agentd.previous" ]]
+[[ ! -e "$HOME/.local/bin/mimi-tailcat-experiment" ]]
+[[ ! -e "$HOME/.local/bin/mimi-tailcat-experiment.previous" ]]
+[[ ! -e "$HOME/.local/bin/mimi-tailcat-experiment.previous.absent" ]]
 [[ ! -e "$HOME/.config/systemd/user/mimi-remote.service" ]]
 [[ ! -e "$HOME/.config/systemd/user/mimi-remote.service.previous" ]]
 [[ ! -e "$HOME/.local/share/mimi-remote/install-linux.sh" ]]
