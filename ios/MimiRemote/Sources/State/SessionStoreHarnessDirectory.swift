@@ -39,20 +39,30 @@ extension SessionStore {
     func installNativeHarnessHostEvents() {
         guard isNativeHarnessDirectoryEnabled else { return }
         guard let client = appStore.nativeHarnessClientForActiveHost() else { return }
+        // 旧客户端异步退役前仍可能送达尾包；归属固定为安装时的宿主与代次。
+        let hostScope = appStore.activeHostScope
         client.setHostInteractionSinks(
             events: { [weak self] event in
-                self?.deliverNativeHostEvent(event)
+                guard let self, self.appStore.activeHostScope == hostScope else { return }
+                self.deliverNativeHostEvent(event, hostScope: hostScope)
             },
             changed: { [weak self] in
-                self?.objectWillChange.send()
+                guard let self, self.appStore.activeHostScope == hostScope else { return }
+                self.objectWillChange.send()
             },
             rejected: { [weak self] sessionID, eventID, outcome, message in
-                self?.handleNativeInteractionRejected(
+                guard let self, self.appStore.activeHostScope == hostScope else { return }
+                self.handleNativeInteractionRejected(
                     sessionID: sessionID,
                     eventID: eventID,
                     outcome: outcome,
                     message: message
                 )
+            },
+            failed: { [weak self] message in
+                guard let self, self.appStore.activeHostScope == hostScope else { return }
+                // 通道错误没有可信会话归属，只显示宿主错误，不解锁任何会话的待办。
+                self.setErrorMessage(message)
             }
         )
         // 当前方法已经在 MainActor 上。直接启动使健康探测完成与宿主观察建立保持有序，
@@ -103,9 +113,9 @@ extension SessionStore {
     /// 走 `applyRuntimeEvent` 而不是另建一条 UI 路径：会话归属由事件自己的 metadata 决定
     /// （见 `HarnessInteractionProjection`），因此**无需**当前打开的是哪个会话，
     /// 未打开的会话也能正确落到它自己的待办与时间线上。
-    private func deliverNativeHostEvent(_ event: AgentEvent) {
+    private func deliverNativeHostEvent(_ event: AgentEvent, hostScope: HostScope) {
         guard let sessionID = metadata(for: event)?.sessionID else { return }
-        let lease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: sessionID)
+        let lease = HostSessionLease(hostScope: hostScope, sessionID: sessionID)
         Task { @MainActor in
             await self.applyRuntimeEvent(event, lease: lease)
         }
@@ -114,10 +124,7 @@ extension SessionStore {
     /// 为一个工作区发起原生目录刷新。
     func refreshNativeHarnessDirectory(
         workspace: AgentWorkspace,
-        consistency: SessionListConsistency,
-        restartFromFirst: Bool,
-        hostScope: HostScope,
-        generation: Int
+        hostScope: HostScope
     ) async {
         guard isNativeHarnessDirectoryEnabled else { return }
         guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope) else { return }

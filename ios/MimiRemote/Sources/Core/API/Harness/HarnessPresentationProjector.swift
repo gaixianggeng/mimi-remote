@@ -302,44 +302,6 @@ enum HarnessPresentationProjector {
         return out
     }
 
-    /// 从 attempt 抽出的工具活动（供 UI 呈现"运行中/失败"）。
-    ///
-    /// 保持通用工具条目：不伪装成 shell command 或文件变更。
-    static func toolActivities(from attempt: HarnessJournalAttempt) -> [HarnessToolActivity] {
-        var activities: [HarnessToolActivity] = []
-        var pendingByIndex: [Int: HarnessToolActivity] = [:]
-        for frame in attempt.chunks {
-            guard let chunk = frame.chunk else { continue }
-            switch chunk.type {
-            case HarnessWireChunkType.blockStart where chunk.blockType == "tool-call":
-                let index = chunk.index ?? -1
-                pendingByIndex[index] = HarnessToolActivity(
-                    blockIndex: index, toolName: nil, argumentsJSON: "", isComplete: false
-                )
-            case HarnessWireChunkType.toolCallDelta:
-                let index = chunk.index ?? -1
-                var item = pendingByIndex[index] ?? HarnessToolActivity(
-                    blockIndex: index, toolName: nil, argumentsJSON: "", isComplete: false
-                )
-                // 工具参数是增量字符串，必须自行拼接后再解析（契约 §2.7）。
-                if let delta = chunk.argumentsDelta { item.argumentsJSON += delta }
-                pendingByIndex[index] = item
-            case HarnessWireChunkType.blockEnd:
-                let index = chunk.index ?? -1
-                if var item = pendingByIndex[index] {
-                    item.isComplete = true
-                    activities.append(item)
-                    pendingByIndex[index] = nil
-                }
-            default:
-                continue
-            }
-        }
-        // 未收到 block-end 的（例如 attempt 被中断）也要如实给出，标记为未完成。
-        activities.append(contentsOf: pendingByIndex.values.sorted { $0.blockIndex < $1.blockIndex })
-        return activities.sorted { $0.blockIndex < $1.blockIndex }
-    }
-
     // MARK: - 单类投影
 
     private static func projectUserMessage(_ event: HarnessDurableEvent, sessionID: SessionID) -> [AgentEvent] {
@@ -530,14 +492,6 @@ struct HarnessToolEntry: Equatable {
             toolPresentationKind: .generic
         )
     }
-}
-
-/// 一条原生工具活动。刻意保持通用形状，不伪装成 shell/文件变更。
-struct HarnessToolActivity: Equatable {
-    let blockIndex: Int
-    var toolName: String?
-    var argumentsJSON: String
-    var isComplete: Bool
 }
 
 /// durable 事件类型词表。取自实测（`stream/durable-events.json` 的 `eventTypesObserved`），

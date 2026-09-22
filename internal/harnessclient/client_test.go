@@ -240,7 +240,9 @@ func TestCallKeepsLiteralPathForDollarEndpoint(t *testing.T) {
 	client := authenticatedClient(t, fake, server.URL)
 
 	fake.handle(EndpointEventsResult, func(json.RawMessage) (any, *RemoteError) { return map[string]any{}, nil })
-	if err := client.ResolveApproval(context.Background(), "client-1", "event-1", OutcomeRejected); err != nil {
+	if err := client.RespondOutcome(context.Background(), "client-1", "event-1", map[string]any{
+		"kind": OutcomeKindResult, "value": OutcomeRejected,
+	}); err != nil {
 		t.Fatalf("回传审批结论失败：%v", err)
 	}
 	call := fake.recorded()[0]
@@ -276,33 +278,6 @@ func TestValidateMethodRejectsUnsafeNames(t *testing.T) {
 		if err := ValidateMethod(method); err == nil {
 			t.Errorf("非法方法名应被拒绝：%q", method)
 		}
-	}
-}
-
-// 首版只开放 queue 模式，steer 必须被本地拒绝而不是发出去。
-func TestPromptRejectsUnverifiedMode(t *testing.T) {
-	fake := newFakeHarness(t)
-	server := fake.serve()
-	client := authenticatedClient(t, fake, server.URL)
-	fake.handle(MethodSessionPrompt, func(json.RawMessage) (any, *RemoteError) { return nil, nil })
-
-	err := client.Prompt(context.Background(), PromptRequest{
-		SessionID: "s",
-		RequestID: "req-1",
-		Mode:      "steer",
-		Content:   []PromptContent{{Type: "text", Text: "hi"}},
-	})
-	if err == nil {
-		t.Fatal("steer 模式应被拒绝")
-	}
-	if len(fake.recorded()) != 0 {
-		t.Fatal("被拒绝的请求不应发出")
-	}
-	if err := client.Prompt(context.Background(), PromptRequest{SessionID: "s", Content: []PromptContent{{Type: "text", Text: "hi"}}}); err == nil {
-		t.Fatal("缺少 requestId 应被拒绝")
-	}
-	if len(fake.recorded()) != 0 {
-		t.Fatal("缺少 requestId 的请求不应发出")
 	}
 }
 
@@ -364,7 +339,9 @@ func TestCallUsesConnectionEnvelope(t *testing.T) {
 
 	fake.handle(MethodSessionCreate, func(args json.RawMessage) (any, *RemoteError) {
 		var decoded struct {
-			Request CreateSessionRequest `json:"request"`
+			Request struct {
+				CWD string `json:"cwd"`
+			} `json:"request"`
 		}
 		if err := json.Unmarshal(args, &decoded); err != nil {
 			t.Errorf("解析 args 失败：%v", err)
@@ -372,9 +349,14 @@ func TestCallUsesConnectionEnvelope(t *testing.T) {
 		if decoded.Request.CWD != "/workspace/approved" {
 			t.Errorf("cwd 未按 args.request 传递：%+v", decoded.Request)
 		}
-		return CreateSessionResult{SessionID: "session-fixture"}, nil
+		return map[string]any{"sessionId": "session-fixture"}, nil
 	})
-	created, err := client.CreateSession(context.Background(), CreateSessionRequest{CWD: "/workspace/approved"})
+	var created struct {
+		SessionID string `json:"sessionId"`
+	}
+	err := client.Call(context.Background(), MethodSessionCreate, map[string]any{
+		"request": map[string]any{"cwd": "/workspace/approved"},
+	}, &created)
 	if err != nil {
 		t.Fatalf("新建会话失败：%v", err)
 	}
@@ -414,11 +396,13 @@ func TestCallSurfacesRemoteError(t *testing.T) {
 	fake.handle(MethodSessionPrompt, func(json.RawMessage) (any, *RemoteError) {
 		return nil, &RemoteError{Code: "session/not-found", Message: "会话不存在"}
 	})
-	err := client.Prompt(context.Background(), PromptRequest{
-		SessionID: "missing",
-		RequestID: "req-1",
-		Content:   []PromptContent{{Type: "text", Text: "hi"}},
-	})
+	err := client.Call(context.Background(), MethodSessionPrompt, map[string]any{
+		"request": map[string]any{
+			"sessionId": "missing",
+			"requestId": "req-1",
+			"content":   []map[string]any{{"type": "text", "text": "hi"}},
+		},
+	}, nil)
 	var remoteErr *RemoteError
 	if !errors.As(err, &remoteErr) {
 		t.Fatalf("应返回 *RemoteError，得到 %v", err)

@@ -124,6 +124,10 @@ enum HarnessInteractionAnswer {
             return .missingEventID
         }
         _ = eventID
+        guard waterfall.agentId?.trimmedNonEmpty != nil else {
+            // 会话归属只能来自冻结协议保证的 agentId，不能用相似字段猜测。
+            return .missingAgentID
+        }
         guard let request = waterfall.request else {
             return .missingRequestPayload
         }
@@ -142,6 +146,7 @@ enum HarnessInteractionAnswerError: Error, Equatable {
     case unsupportedDecision(String)
     case unsupportedWaterfallEvent(String?)
     case missingEventID
+    case missingAgentID
     case missingRequestPayload
     case noQuestionsInRequest
     case questionMissingID
@@ -158,6 +163,8 @@ enum HarnessInteractionAnswerError: Error, Equatable {
             return L10n.format("harness.interaction_type_unsupported", event ?? "unknown")
         case .missingEventID:
             return L10n.text("harness.interaction_missing_event_id")
+        case .missingAgentID:
+            return L10n.text("harness.interaction_missing_agent_id")
         case .missingRequestPayload:
             return L10n.text("harness.interaction_missing_request")
         case .noQuestionsInRequest:

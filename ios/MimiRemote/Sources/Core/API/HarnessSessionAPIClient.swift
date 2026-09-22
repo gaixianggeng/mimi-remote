@@ -169,7 +169,8 @@ protocol HarnessSessionClient: AnyObject {
     func setHostInteractionSinks(
         events: (@MainActor (AgentEvent) -> Void)?,
         changed: (@MainActor () -> Void)?,
-        rejected: (@MainActor (_ sessionID: String, _ eventID: String, _ outcome: String, _ message: String) -> Void)?
+        rejected: (@MainActor (_ sessionID: String, _ eventID: String, _ outcome: String, _ message: String) -> Void)?,
+        failed: (@MainActor (_ message: String) -> Void)?
     )
 
     /// 开始宿主级 `$events` 观察。幂等。
@@ -411,7 +412,8 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     func setHostInteractionSinks(
         events: (@MainActor (AgentEvent) -> Void)?,
         changed: (@MainActor () -> Void)?,
-        rejected: (@MainActor (_ sessionID: String, _ eventID: String, _ outcome: String, _ message: String) -> Void)?
+        rejected: (@MainActor (_ sessionID: String, _ eventID: String, _ outcome: String, _ message: String) -> Void)?,
+        failed: (@MainActor (_ message: String) -> Void)?
     ) {
         hostEventSink = events
         hostChangeSink = changed
@@ -421,7 +423,10 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
             self?.hostEventSink?(event)
             self?.hostChangeSink?()
         }
-        observer.onStatus = { _ in }
+        observer.onStatus = { status in
+            guard case .failed(let message) = status else { return }
+            failed?(message)
+        }
         observer.onInteractionRejected = { [weak self] sessionID, eventID, outcome, message in
             // 先刷新（底层 pending 已变化），再把**结论与原因**一起交给上层——
             // 上层据此决定恢复按钮还是保持锁定。只刷新等于让卡片恢复原状却没有解释。

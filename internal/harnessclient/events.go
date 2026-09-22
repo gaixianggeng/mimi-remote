@@ -29,10 +29,9 @@ const (
 )
 
 // Stream 是一条 remote.mux 订阅。一个 Stream 对应一个 endpoint，例如 $events 或
-// session/follow。帧按到达顺序进入 Frames，上层用 Until 等待条件成立。
+// session/follow。帧按到达顺序进入 Frames，由上层直接消费。
 type Stream struct {
 	streamID string
-	endpoint string
 	frames   chan StreamValue
 
 	conn      *websocket.Conn
@@ -41,12 +40,6 @@ type Stream struct {
 	// readIdle 是这条订阅的读空闲上限。正常取 eventsReadIdle，测试会调小。
 	readIdle time.Duration
 }
-
-// StreamID 是这个订阅的编号，同一条连接上唯一。
-func (s *Stream) StreamID() string { return s.streamID }
-
-// Endpoint 是这个订阅的 endpoint。
-func (s *Stream) Endpoint() string { return s.endpoint }
 
 // Frames 返回只读帧通道。连接关闭时通道关闭。
 func (s *Stream) Frames() <-chan StreamValue { return s.frames }
@@ -61,50 +54,6 @@ func (s *Stream) Close() {
 	})
 }
 
-// Done 在订阅关闭时关闭，便于 select 等待。
-func (s *Stream) Done() <-chan struct{} { return s.closed }
-
-// Until 等待第一个满足条件的帧。超时或连接结束都会返回错误，且错误里带上
-// endpoint 与用途标签，便于定位是哪一步没等到。
-func (s *Stream) Until(ctx context.Context, label string, timeout time.Duration, match func(StreamValue) bool) (StreamValue, error) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	for {
-		select {
-		case frame, ok := <-s.frames:
-			if !ok {
-				return StreamValue{}, fmt.Errorf("harnessclient: 等待 %s 时订阅已结束（endpoint=%s）", label, s.endpoint)
-			}
-			if match(frame) {
-				return frame, nil
-			}
-		case <-timer.C:
-			return StreamValue{}, fmt.Errorf("harnessclient: 等待 %s 超时（endpoint=%s）", label, s.endpoint)
-		case <-ctx.Done():
-			return StreamValue{}, ctx.Err()
-		}
-	}
-}
-
-// Ready 等待 ready 帧并返回本次连接的 clientId。clientId 只用于回传应答，
-// 属于宿主内部事实，不下发移动端。
-func (s *Stream) Ready(ctx context.Context, timeout time.Duration) (string, error) {
-	frame, err := s.Until(ctx, "ready", timeout, func(value StreamValue) bool {
-		return value.Type == FrameReady
-	})
-	if err != nil {
-		return "", err
-	}
-	var ready readyFrame
-	if err := json.Unmarshal(frame.Raw, &ready); err != nil {
-		return "", fmt.Errorf("harnessclient: 解析 ready 帧失败：%w", err)
-	}
-	if ready.ClientID == "" {
-		return "", errors.New("harnessclient: ready 帧缺少 clientId")
-	}
-	return ready.ClientID, nil
-}
-
 // Waterfall 把 waterfall 帧解码成结构化交互请求。
 func (frame StreamValue) Waterfall() (WaterfallRequest, error) {
 	var decoded WaterfallRequest
@@ -112,14 +61,6 @@ func (frame StreamValue) Waterfall() (WaterfallRequest, error) {
 		return WaterfallRequest{}, fmt.Errorf("harnessclient: 解析 waterfall 帧失败：%w", err)
 	}
 	return decoded, nil
-}
-
-// Decode 把帧的 value 解码到 out。
-func (frame StreamValue) Decode(out any) error {
-	if len(frame.Raw) == 0 {
-		return errors.New("harnessclient: 帧没有 value")
-	}
-	return json.Unmarshal(frame.Raw, out)
 }
 
 // OpenStream 在已有连接上声明一条新订阅。
@@ -168,7 +109,6 @@ func (c *Client) OpenStream(ctx context.Context, endpoint string, args any) (*St
 
 	stream := &Stream{
 		streamID: newStreamID(endpoint),
-		endpoint: endpoint,
 		frames:   make(chan StreamValue, 256),
 		conn:     conn,
 		closed:   make(chan struct{}),
@@ -204,7 +144,7 @@ func (s *Stream) readLoop() {
 		var frame muxFrame
 		if err := json.Unmarshal(raw, &frame); err != nil {
 			// 单帧无法解析不终止订阅：Harness 的帧类型会演进，丢掉不认识的帧
-			// 比整条订阅失效更安全。上层需要的能力都靠 Until 主动等待。
+			// 比整条订阅失效更安全。上层直接消费 Frames 并决定需要哪些帧。
 			continue
 		}
 		value, deliver := decodeMuxFrame(frame)
@@ -314,35 +254,6 @@ func (c *Client) RespondOutcome(ctx context.Context, clientID, eventID string, o
 	return c.Call(ctx, EndpointEventsResult, args, nil)
 }
 
-// Respond 回传一次 {kind:'result', value:…} 形式的交互应答。
-//
-// 审批结论本身作为 value 传回（allowed-once / rejected / cancelled / unavailable），
-// 追问则以 {answers:[...]} 作为 value。需要 next 或 rejected 时用 RespondOutcome。
-//
-// eventId 必须来自触发它的 waterfall 帧。首个有效应答生效，其它端会收到 cancel；
-// 迟到应答是空操作而非错误，所以这里不把竞态当成失败。
-func (c *Client) Respond(ctx context.Context, clientID, eventID string, value any) error {
-	return c.RespondOutcome(ctx, clientID, eventID, map[string]any{
-		"kind":  OutcomeKindResult,
-		"value": value,
-	})
-}
-
-// AnswerQuestions 回传结构化追问答案。answers 必须逐条对应提问的 id。
-func (c *Client) AnswerQuestions(ctx context.Context, clientID, eventID string, answers []Answer) error {
-	return c.Respond(ctx, clientID, eventID, map[string]any{"answers": answers})
-}
-
-// ResolveApproval 回传审批结论。decision 取 Outcome* 常量。
-func (c *Client) ResolveApproval(ctx context.Context, clientID, eventID, decision string) error {
-	switch decision {
-	case OutcomeAllowedOnce, OutcomeRejected, OutcomeCancelled, OutcomeUnavailable:
-	default:
-		return fmt.Errorf("harnessclient: 未知审批结论 %q", decision)
-	}
-	return c.Respond(ctx, clientID, eventID, decision)
-}
-
 func writeJSON(conn *websocket.Conn, value any) error {
 	payload, err := json.Marshal(value)
 	if err != nil {
@@ -356,9 +267,6 @@ func writeJSON(conn *websocket.Conn, value any) error {
 
 // gatewayPath 是 remote.mux 的路径。
 const gatewayPath = "/api/remote.mux"
-
-// GatewayPath 返回事件流路径，供上层在日志里引用而不必重复字面量。
-func GatewayPath() string { return gatewayPath }
 
 // websocketURL 把 HTTP origin 换成对应的 WebSocket 地址。http→ws、https→wss，
 // 与 Harness 自己的客户端一致。
@@ -388,11 +296,6 @@ var streamSequence atomic.Uint64
 func newStreamID(endpoint string) string {
 	sanitized := strings.NewReplacer("/", "-", "$", "").Replace(endpoint)
 	return fmt.Sprintf("%s-%d", sanitized, streamSequence.Add(1))
-}
-
-// SessionPath 返回某个会话的地址描述，供 follow 订阅使用。
-func SessionPath(sessionID string) SessionAddress {
-	return SessionAddress{Kind: "session", SessionID: sessionID}
 }
 
 // API 路径前缀。

@@ -15,7 +15,7 @@ import (
 //
 //   - 缺陷 2：载体层只解 {streamId,value}，丢掉服务端顶层 type 判别值，
 //     于是 error/end 帧变成空帧，流级错误只能表现为超时。
-//   - 缺陷 3：Respond 断言 outcome 只有 result 一种，与上游
+//   - 缺陷 3：旧应答封装断言 outcome 只有 result 一种，与上游
 //     parseRemoteEventResult（接受 next/result/rejected）不符。
 //
 // 夹具依据：contracts/harness-native/fixtures/stream/mux-carrier.json
@@ -258,24 +258,6 @@ func TestRespondOutcomeForwardsEveryKindVerbatim(t *testing.T) {
 				t.Fatalf("outcome 必须逐字转发，期望 %v，得到 %v", testCase.outcome, args["outcome"])
 			}
 		})
-	}
-}
-
-func TestRespondRemainsResultOnlyShorthand(t *testing.T) {
-	fake := newFakeHarness(t)
-	fake.handle(EndpointEventsResult, func(json.RawMessage) (any, *RemoteError) {
-		return map[string]any{}, nil
-	})
-	server := fake.serve()
-	client := authenticatedClient(t, fake, server.URL)
-
-	if err := client.Respond(context.Background(), "client-fixture-0001", "evt-fixture-0001", OutcomeRejected); err != nil {
-		t.Fatal(err)
-	}
-	args := rpcArgs(t, fake.recorded()[0].Envelope)
-	expected := map[string]any{"kind": OutcomeKindResult, "value": OutcomeRejected}
-	if !reflect.DeepEqual(args["outcome"], expected) {
-		t.Fatalf("Respond 应保持 {kind:result,value:…} 形状，得到 %v", args["outcome"])
 	}
 }
 

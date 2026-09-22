@@ -91,43 +91,6 @@ func TestSearchSessionsSendsQueryAndReadsItems(t *testing.T) {
 	}
 }
 
-// session/page 的 throughSeq 必填，且为 0 时也必须出现在线路上（omitempty 会漏掉它）。
-func TestPageSessionAlwaysSendsThroughSeq(t *testing.T) {
-	fake := newFakeHarness(t)
-	server := fake.serve()
-	client := authenticatedClient(t, fake, server.URL)
-
-	var rawArgs map[string]any
-	fake.handle(MethodSessionPage, func(raw json.RawMessage) (any, *RemoteError) {
-		_ = json.Unmarshal(raw, &rawArgs)
-		return SessionPageResult{
-			Records: []SessionHistoryRecord{{Type: "event", Event: SessionWireEvent{Type: "turn/start", Seq: 1, Time: 2}}},
-			HasMore: false,
-		}, nil
-	})
-	result, err := client.PageSession(context.Background(), PageRequest{
-		Address:    SessionAddress{Kind: "session", SessionID: "s-3"},
-		ThroughSeq: 0,
-	})
-	if err != nil {
-		t.Fatalf("取历史失败：%v", err)
-	}
-	if len(result.Records) != 1 || result.Records[0].Event.Type != "turn/start" {
-		t.Fatalf("历史记录解析不符：%#v", result)
-	}
-	request, ok := rawArgs["request"].(map[string]any)
-	if !ok {
-		t.Fatalf("page 参数应为 request 对象：%#v", rawArgs)
-	}
-	if _, ok := request["throughSeq"]; !ok {
-		t.Fatalf("throughSeq 必填，为 0 也必须上线：%#v", request)
-	}
-	address, ok := request["address"].(map[string]any)
-	if !ok || address["kind"] != "session" || address["sessionId"] != "s-3" {
-		t.Fatalf("address 形状不符：%#v", request["address"])
-	}
-}
-
 // 模型目录的 provider 组字段是 name，模型带 reasoning 档位。
 func TestModelCatalogReadsGroupNameAndReasoning(t *testing.T) {
 	fake := newFakeHarness(t)
@@ -159,24 +122,5 @@ func TestModelCatalogReadsGroupNameAndReasoning(t *testing.T) {
 	model := catalog.Groups[0].Models[0]
 	if model.Reasoning == nil || model.Reasoning.DefaultEffort != "high" || len(model.Reasoning.Efforts) != 1 {
 		t.Fatalf("推理档位解析不符：%#v", model.Reasoning)
-	}
-}
-
-// 首版只放行纯文本：图片/文件附件需要额外的媒体边界，未验证前必须本地拒绝。
-func TestPromptRejectsNonTextContent(t *testing.T) {
-	fake := newFakeHarness(t)
-	server := fake.serve()
-	client := authenticatedClient(t, fake, server.URL)
-
-	err := client.Prompt(context.Background(), PromptRequest{
-		SessionID: "s-4",
-		RequestID: "req-fixture",
-		Content:   []PromptContent{{Type: "image"}},
-	})
-	if err == nil {
-		t.Fatal("非文本输入应被本地拒绝")
-	}
-	if len(fake.recorded()) != 0 {
-		t.Fatal("被本地拒绝的输入不应发出 RPC")
 	}
 }

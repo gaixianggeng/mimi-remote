@@ -626,7 +626,8 @@ final class HarnessEventClientTests: XCTestCase {
         api.setHostInteractionSinks(
             events: { hostEvents.append($0) },
             changed: {},
-            rejected: { _, _, _, _ in }
+            rejected: { _, _, _, _ in },
+            failed: { _ in }
         )
         api.startHostEvents()
 

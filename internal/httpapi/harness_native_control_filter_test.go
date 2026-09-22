@@ -56,6 +56,30 @@ func TestHarnessNativeControlFilterMixedBaseline(t *testing.T) {
 	}
 }
 
+func TestHarnessNativeControlFilterBaselineWithoutQueues(t *testing.T) {
+	raw := json.RawMessage(`{"type":"baseline","value":{"jobs":{"allowed":[],"private":[]},"projections":{"allowed":{},"private":{}}}}`)
+	out, err := harnessNativeFilterControl(raw, func(id string) (bool, error) {
+		return id == "allowed", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Value map[string]map[string]json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decoded.Value["queues"]; ok {
+		t.Fatalf("0.1.6 未提供 queues 时不得补造该 section：%s", out)
+	}
+	for _, key := range []string{"jobs", "projections"} {
+		if len(decoded.Value[key]) != 1 || decoded.Value[key]["allowed"] == nil {
+			t.Fatalf("%s 未按授权过滤：%s", key, out)
+		}
+	}
+}
+
 func TestHarnessNativeControlFilterDeltas(t *testing.T) {
 	for _, raw := range []string{
 		`{"type":"projection","sessionId":"a","key":"title","value":null,"seq":4}`,
@@ -85,7 +109,9 @@ func TestHarnessNativeControlFilterRejectsUnknownOrMalformedEnvelope(t *testing.
 		`not-json`, `null`, `[]`, `{}`, `{"type":1}`,
 		`{"type":"unknown","sessionId":"a","secret":"x"}`,
 		`{"type":"baseline","value":null}`,
-		`{"type":"baseline","value":{"jobs":{},"projections":{}}}`,
+		`{"type":"baseline","value":{"jobs":{}}}`,
+		`{"type":"baseline","value":{"projections":{}}}`,
+		`{"type":"baseline","value":{"queues":{},"jobs":{}}}`,
 		`{"type":"baseline","value":{"queues":{},"jobs":{},"projections":{},"secret":{}}}`,
 		`{"type":"baseline","value":{"queues":{},"jobs":{},"projections":{}},"secret":"x"}`,
 		`{"type":"baseline","value":{"queues":[],"jobs":{},"projections":{}}}`,

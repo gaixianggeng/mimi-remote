@@ -72,6 +72,46 @@ final class HarnessHostEventObserverTests: XCTestCase {
         await observer.stop()
     }
 
+    /// 旧字段不能替代 agentId；缺少权威归属时不登记、不展示，也不能取得应答资格。
+    func testWaterfallWithoutAgentIDRejectsLegacySessionHints() async throws {
+        for agentID in [nil, "", "  "] as [String?] {
+            let stream = FakeHarnessStreamTransport()
+            let runtime = makeRuntime(stream: stream)
+            let store = HarnessInteractionStore()
+            let observer = HarnessHostEventObserver(
+                runtime: runtime,
+                interactionStore: store,
+                recovery: HarnessRecoveryCoordinator(random: { 0 }, sleep: { _ in })
+            )
+            var events: [AgentEvent] = []
+            var failed = false
+            observer.onEvent = { events.append($0) }
+            observer.onStatus = { if case .failed = $0 { failed = true } }
+            observer.start()
+            let streamID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
+            stream.push(carrierValue(streamID: streamID, value: .object([
+                "type": .string(HarnessWireFrame.ready),
+            ])))
+            var waterfall: [String: HarnessJSONValue] = [
+                "type": .string(HarnessWireFrame.waterfall),
+                "eventId": .string("unattributed-approval"),
+                "event": .string(HarnessWireWaterfallEvent.approvalRequest),
+                "sessionId": .string(sessionB),
+                "threadId": .string(sessionB),
+                "request": .object(["toolName": .string("shell")]),
+            ]
+            if let agentID { waterfall["agentId"] = .string(agentID) }
+            stream.push(carrierValue(streamID: streamID, value: .object(waterfall)))
+            await waitFor { failed }
+
+            XCTAssertTrue(failed, "缺少有效 agentId 必须显式失败")
+            XCTAssertNil(store.interaction(eventID: "unattributed-approval"))
+            XCTAssertTrue(events.isEmpty, "旧归属提示不能产生可应答的 UI 卡片")
+            await observer.stop()
+            await runtime.shutdown()
+        }
+    }
+
     /// 宿主级订阅只开一条，重复 start 是幂等的。
     ///
     /// 中继规定一条移动连接只绑定一个 `$events` 生命周期（再开会被拒），
@@ -443,7 +483,143 @@ final class HarnessHostEventObserverTests: XCTestCase {
         )
     }
 
+    /// 旧宿主异步退役前仍可能送达回调；同名会话不能让它改写新宿主的待办。
+    func testHostSwitchRejectsRetiredHarnessEventsAndRejections() async throws {
+        let fixture = try makeStoreFixture()
+        let oldClient = try await installHostClient("old", client: FakeHarnessSessionClient(), fixture: fixture)
+        let oldScope = fixture.appStore.activeHostScope
+        let currentClient = try await installHostClient("current", client: FakeHarnessSessionClient(), fixture: fixture)
+        XCTAssertNotEqual(fixture.appStore.activeHostScope, oldScope)
+        XCTAssertEqual(oldClient.startHostEventsCallCount, 1)
+        XCTAssertEqual(currentClient.startHostEventsCallCount, 1)
+
+        fixture.store.markApprovalDecisionPending(
+            NativeHostInteractionFixture.approvalID, sessionID: fixture.sessionID
+        )
+        oldClient.emitHostFailure(message: "retired-host-channel-failure")
+        oldClient.emitHostRejection(
+            sessionID: fixture.sessionID,
+            eventID: NativeHostInteractionFixture.approvalID,
+            outcome: HarnessRespondOutcome.rejected,
+            message: "retired-host-error"
+        )
+        XCTAssertTrue(fixture.store.isApprovalDecisionPending(fixture.approval(), sessionID: fixture.sessionID))
+        XCTAssertNil(fixture.store.errorMessage)
+
+        oldClient.emitHostEvent(hostApproval("retired-host-approval", sessionID: fixture.sessionID))
+        currentClient.emitHostEvent(hostApproval("current-host-approval", sessionID: fixture.sessionID))
+        await waitFor {
+            fixture.store.conversationStore.messages(for: fixture.sessionID)
+                .contains { $0.content.contains("current-host-approval") }
+        }
+        let messages = fixture.store.conversationStore.messages(for: fixture.sessionID)
+        XCTAssertTrue(messages.contains { $0.content.contains("current-host-approval") })
+        XCTAssertFalse(messages.contains { $0.content.contains("retired-host-approval") })
+
+        // 当前宿主的明确拒绝仍然必须解除提交锁，不能把所有回调一并屏蔽。
+        currentClient.emitHostRejection(
+            sessionID: fixture.sessionID,
+            eventID: NativeHostInteractionFixture.approvalID,
+            outcome: HarnessRespondOutcome.rejected,
+            message: "current-host-error"
+        )
+        XCTAssertFalse(fixture.store.isApprovalDecisionPending(fixture.approval(), sessionID: fixture.sessionID))
+        XCTAssertEqual(fixture.store.errorMessage, "current-host-error")
+        currentClient.emitHostFailure(message: "current-host-channel-failure")
+        XCTAssertEqual(fixture.store.errorMessage, "current-host-channel-failure")
+    }
+
+    /// 缺少会话归属属于宿主通道错误，真实 API 接线必须把失败送到 Store，不能静默停掉审批。
+    func testUnattributedHostInteractionSurfacesFailureThroughNativeClient() async throws {
+        let fixture = try makeStoreFixture()
+        let stream = FakeHarnessStreamTransport()
+        let client = HarnessSessionAPIClient(
+            endpoint: "https://malformed.example.invalid",
+            token: "fixture",
+            rpc: FakeHarnessRPCTransport(),
+            stream: stream
+        )
+        _ = try await installHostClient("malformed", client: client, fixture: fixture)
+        fixture.store.markApprovalDecisionPending(
+            NativeHostInteractionFixture.approvalID, sessionID: fixture.sessionID
+        )
+        let streamID = try await waitForOpenStream(endpoint: HarnessWireEndpoint.events, stream: stream)
+        stream.push(carrierValue(streamID: streamID, value: .object([
+            "type": .string(HarnessWireFrame.ready),
+        ])))
+        stream.push(carrierValue(streamID: streamID, value: .object([
+            "type": .string(HarnessWireFrame.waterfall),
+            "eventId": .string("unattributed-approval"),
+            "event": .string(HarnessWireWaterfallEvent.approvalRequest),
+            "sessionId": .string(fixture.sessionID),
+            "threadId": .string(fixture.sessionID),
+            "request": .object(["toolName": .string("shell")]),
+        ])))
+        await waitFor { fixture.store.errorMessage != nil }
+
+        XCTAssertEqual(
+            fixture.store.errorMessage,
+            HarnessTransportError.unsupportedInteraction(
+                HarnessInteractionAnswerError.missingAgentID.localizedMessage
+            ).diagnosticSummary
+        )
+        XCTAssertTrue(fixture.store.isApprovalDecisionPending(fixture.approval(), sessionID: fixture.sessionID))
+        XCTAssertTrue(client.hostPendingInteractions().isEmpty)
+        XCTAssertTrue(fixture.store.conversationStore.messages(for: fixture.sessionID).isEmpty)
+        XCTAssertFalse(stream.sentFrames.contains {
+            if case .respond = $0 { return true }
+            return false
+        })
+        await client.shutdownForHostSwitch()
+    }
+
     // MARK: - 支撑
+
+    private func installHostClient<Client: HarnessSessionClient>(
+        _ name: String,
+        client: Client,
+        fixture: NativeHostInteractionFixture
+    ) async throws -> Client {
+        let endpoint = "https://\(name).example.invalid"
+        let token = "fixture-\(name)"
+        let target = PreparedConnectionProfileTarget.newProfile(id: name, displayName: name)
+        let bundle = AppServerRuntimeBundle(
+            codexRuntime: CodexAppServerSessionRuntime(endpoint: endpoint, token: token),
+            claudeRuntime: CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "claude"),
+            harness: client
+        )
+        let context = PreparedHostContext(
+            lease: PreparedHostLease(
+                endpoint: endpoint,
+                installationID: "installation-\(name)",
+                profileTarget: target,
+                profileRevision: nil,
+                tokenFingerprint: connectionCredentialFingerprint(token)
+            ),
+            runtimeBundle: bundle,
+            expiresAt: Date().addingTimeInterval(8)
+        )
+        _ = try await fixture.appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: endpoint,
+            token: token,
+            profileTarget: target,
+            installationID: "installation-\(name)",
+            hostContext: context
+        ))
+        fixture.store.availableRuntimeProviders.insert("deepseek")
+        fixture.store.installNativeHarnessHostEvents()
+        return client
+    }
+
+    private func hostApproval(_ title: String, sessionID: String) -> AgentEvent {
+        .approvalRequest(
+            AgentApprovalRequest(id: title, title: title, body: nil, kind: "harness_tool", risk: nil),
+            AgentEventMetadata(
+                seq: nil, sessionID: sessionID, turnID: nil, itemID: title,
+                messageID: title, clientMessageID: nil, revision: nil, createdAt: Date()
+            )
+        )
+    }
 
     /// 真实 SessionStore + 真实 native client，验证状态交接（不是纯函数）。
     private func makeStoreFixture() throws -> NativeHostInteractionFixture {

@@ -114,7 +114,7 @@
 | `cancel` | 某交互被其他端应答后作废 | `eventId` |
 | `ready` | `$events` 订阅就绪 | `clientId`、`host.home` |
 
-`assistant-stream.frame` 三态（`SessionAssistantStreamFrame`）：
+`assistant-stream.frame` 三态：
 
 ```json
 { "type": "start", "attemptId": "", "revision": 0, "startedAfterSeq": 0, "turn": 0, "step": 0 }

@@ -491,18 +491,18 @@ final class HarnessTransportTests: XCTestCase {
     }
 
     /// 归属必须来自协议保证的字段，取不到时不得回退到"唯一活跃会话"。
-    func testWaterfallAttributionNeverFallsBackToASingleSession() {
+    func testWaterfallKeepsNativeAgentID() {
         let empty = HarnessWaterfallRequest(
             type: nil, eventId: nil, event: nil, request: nil,
-            agentId: nil, sessionId: nil, threadId: nil
+            agentId: nil
         )
-        XCTAssertEqual(empty.threadHint, "")
+        XCTAssertNil(empty.agentId)
 
         let byAgent = HarnessWaterfallRequest(
             type: nil, eventId: nil, event: nil, request: nil,
-            agentId: "h00-session-0001", sessionId: nil, threadId: nil
+            agentId: "h00-session-0001"
         )
-        XCTAssertEqual(byAgent.threadHint, "h00-session-0001")
+        XCTAssertEqual(byAgent.agentId, "h00-session-0001")
     }
 
     // MARK: - 9. 只连原生路径、只带手机凭据

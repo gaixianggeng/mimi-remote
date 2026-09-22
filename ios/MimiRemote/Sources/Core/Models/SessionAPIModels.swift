@@ -998,9 +998,6 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         let profileID = preservesPermissions ? nil : permissionProfileID.flatMap(nonEmptyString)
         return [
             "model": model.flatMap(nonEmptyString).map { .string($0) },
-            // Harness 目录允许不同供应商具有同名模型，每轮都必须传递用户选择的供应商。
-            "modelProvider": RuntimeFeatureSupport.isDeepSeek(runtimeProvider)
-                ? modelProvider.flatMap(nonEmptyString).map { .string($0) } : nil,
             "serviceTier": serviceTier.flatMap(nonEmptyString).map { .string($0) },
             "effort": reasoningEffort.map { .string($0.rawValue) },
             "summary": reasoningSummary.map { .string($0.rawValue) },

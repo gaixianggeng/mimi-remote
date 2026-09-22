@@ -506,7 +506,7 @@ final class HarnessInteractionStoreTests: XCTestCase {
     func testValidateRejectsUnsupportedEvent() {
         let waterfall = HarnessWaterfallRequest(
             type: "waterfall", eventId: "evt-1", event: "some/unknown-event",
-            request: approvalPayload(), agentId: "s1", sessionId: nil, threadId: nil
+            request: approvalPayload(), agentId: "s1"
         )
         XCTAssertEqual(
             HarnessInteractionAnswer.validate(waterfall: waterfall),
@@ -518,16 +518,32 @@ final class HarnessInteractionStoreTests: XCTestCase {
     func testValidateRejectsMissingEventID() {
         let waterfall = HarnessWaterfallRequest(
             type: "waterfall", eventId: nil, event: HarnessWireWaterfallEvent.approvalRequest,
-            request: approvalPayload(), agentId: "s1", sessionId: nil, threadId: nil
+            request: approvalPayload(), agentId: "s1"
         )
         XCTAssertEqual(HarnessInteractionAnswer.validate(waterfall: waterfall), .missingEventID)
     }
 
-    /// 正向对照：合法审批请求必须通过校验（证明上面的拒绝不是"一律拒绝"）。
+    /// 负向：旧 sessionId/threadId 不能替缺失的 agentId 提供会话归属。
+    func testValidateRejectsLegacySessionHintsWithoutAgentID() throws {
+        let legacyShape: [String: Any] = [
+            "type": "waterfall",
+            "eventId": "evt-1",
+            "event": HarnessWireWaterfallEvent.approvalRequest,
+            "request": ["toolName": "write", "callId": "call-a"],
+            "sessionId": "legacy-session",
+            "threadId": "legacy-thread",
+        ]
+        let data = try JSONSerialization.data(withJSONObject: legacyShape)
+        let waterfall = try JSONDecoder().decode(HarnessWaterfallRequest.self, from: data)
+
+        XCTAssertEqual(HarnessInteractionAnswer.validate(waterfall: waterfall), .missingAgentID)
+    }
+
+    /// 正向对照：非空 agentId 的合法审批请求必须通过校验。
     func testValidateAcceptsWellFormedApproval() {
         let waterfall = HarnessWaterfallRequest(
             type: "waterfall", eventId: "evt-1", event: HarnessWireWaterfallEvent.approvalRequest,
-            request: approvalPayload(), agentId: "s1", sessionId: nil, threadId: nil
+            request: approvalPayload(), agentId: "s1"
         )
         XCTAssertNil(HarnessInteractionAnswer.validate(waterfall: waterfall))
     }

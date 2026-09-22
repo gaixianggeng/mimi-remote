@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,8 +12,8 @@ import (
 
 const testWait = 5 * time.Second
 
-// 订阅必须发出 open 帧，且 args 按 request 包装；follow 打开直播输出。
-func TestSubscribeEventsSendsOpenFrame(t *testing.T) {
+// OpenStream 必须发出带字面 endpoint 与 payload.args 的 open 帧。
+func TestOpenStreamSendsOpenFrame(t *testing.T) {
 	fake := newFakeHarness(t)
 	fake.onMuxOpen(func(conn *websocket.Conn, open map[string]any) error {
 		streamID, _ := open["streamId"].(string)
@@ -23,18 +22,21 @@ func TestSubscribeEventsSendsOpenFrame(t *testing.T) {
 	server := fake.serve()
 	client := authenticatedClient(t, fake, server.URL)
 
-	stream, err := client.SubscribeEvents(context.Background())
+	stream, err := client.OpenStream(context.Background(), EndpointEvents, map[string]any{})
 	if err != nil {
 		t.Fatalf("订阅 $events 失败：%v", err)
 	}
 	defer stream.Close()
 
-	clientID, err := stream.Ready(context.Background(), testWait)
-	if err != nil {
-		t.Fatalf("等待 ready 失败：%v", err)
+	ready := nextStreamFrame(t, stream)
+	if ready.Type != FrameReady {
+		t.Fatalf("首帧应为 ready，得到 %q", ready.Type)
 	}
-	if clientID != "client-fixture" {
-		t.Fatalf("clientId 不符：%s", clientID)
+	var decoded struct {
+		ClientID string `json:"clientId"`
+	}
+	if err := json.Unmarshal(ready.Raw, &decoded); err != nil || decoded.ClientID != "client-fixture" {
+		t.Fatalf("ready 帧不符：%s / %v", ready.Raw, err)
 	}
 
 	opens := fake.openedStreams()
@@ -51,13 +53,13 @@ func TestSubscribeEventsSendsOpenFrame(t *testing.T) {
 	if _, ok := payload["args"]; !ok {
 		t.Fatalf("open 帧缺少 payload.args：%v", opens[0])
 	}
-	if stream.StreamID() == "" {
-		t.Fatal("订阅应有非空 streamId")
+	if streamID, _ := opens[0]["streamId"].(string); streamID == "" {
+		t.Fatal("open 帧应有非空 streamId")
 	}
 }
 
-// 会话订阅的 args 必须按 request 包装并带 assistantStream。
-func TestFollowSessionSerializesRequest(t *testing.T) {
+// 会话订阅的原生 args 必须由 OpenStream 原样包进 payload.args。
+func TestOpenStreamSerializesFollowRequest(t *testing.T) {
 	fake := newFakeHarness(t)
 	fake.onMuxOpen(func(conn *websocket.Conn, open map[string]any) error {
 		streamID, _ := open["streamId"].(string)
@@ -69,15 +71,18 @@ func TestFollowSessionSerializesRequest(t *testing.T) {
 	server := fake.serve()
 	client := authenticatedClient(t, fake, server.URL)
 
-	stream, err := client.FollowSession(context.Background(), "session-fixture", true)
+	stream, err := client.OpenStream(context.Background(), MethodSessionFollow, map[string]any{
+		"request": map[string]any{
+			"address":         map[string]any{"kind": "session", "sessionId": "session-fixture"},
+			"assistantStream": true,
+		},
+	})
 	if err != nil {
 		t.Fatalf("订阅会话失败：%v", err)
 	}
 	defer stream.Close()
-	if _, err := stream.Until(context.Background(), "snapshot", testWait, func(value StreamValue) bool {
-		return value.Type == FrameSnapshot
-	}); err != nil {
-		t.Fatalf("等待 snapshot 失败：%v", err)
+	if frame := nextStreamFrame(t, stream); frame.Type != FrameSnapshot {
+		t.Fatalf("首帧应为 snapshot，得到 %q", frame.Type)
 	}
 
 	opens := fake.openedStreams()
@@ -121,17 +126,18 @@ func TestStreamDistinguishesDurableEventFromAssistantStream(t *testing.T) {
 	server := fake.serve()
 	client := authenticatedClient(t, fake, server.URL)
 
-	stream, err := client.SubscribeEvents(context.Background())
+	stream, err := client.OpenStream(context.Background(), EndpointEvents, map[string]any{})
 	if err != nil {
 		t.Fatalf("订阅失败：%v", err)
 	}
 	defer stream.Close()
 
-	chunk, err := stream.Until(context.Background(), "assistant chunk", testWait, func(value StreamValue) bool {
-		return value.Type == FrameAssistantStream
-	})
-	if err != nil {
-		t.Fatalf("等待直播片段失败：%v", err)
+	if ready := nextStreamFrame(t, stream); ready.Type != FrameReady {
+		t.Fatalf("首帧应为 ready，得到 %q", ready.Type)
+	}
+	chunk := nextStreamFrame(t, stream)
+	if chunk.Type != FrameAssistantStream {
+		t.Fatalf("第二帧应为 assistant-stream，得到 %q", chunk.Type)
 	}
 	var decoded struct {
 		Frame struct {
@@ -139,21 +145,19 @@ func TestStreamDistinguishesDurableEventFromAssistantStream(t *testing.T) {
 			Text string `json:"text"`
 		} `json:"frame"`
 	}
-	if err := chunk.Decode(&decoded); err != nil {
+	if err := json.Unmarshal(chunk.Raw, &decoded); err != nil {
 		t.Fatalf("解码直播片段失败：%v", err)
 	}
 	if decoded.Frame.Type != "chunk" || decoded.Frame.Text != "fixture " {
 		t.Fatalf("直播片段内容不符：%+v", decoded.Frame)
 	}
 
-	turnStart, err := stream.Until(context.Background(), "turn/start", testWait, func(value StreamValue) bool {
-		return value.EventType == "turn/start"
-	})
-	if err != nil {
-		t.Fatalf("等待持久事件失败：%v", err)
-	}
+	turnStart := nextStreamFrame(t, stream)
 	if turnStart.Type != FrameDurableEvent {
 		t.Fatalf("持久事件应归类为 event：%s", turnStart.Type)
+	}
+	if turnStart.EventType != "turn/start" {
+		t.Fatalf("持久事件类型不符：%s", turnStart.EventType)
 	}
 }
 
@@ -196,17 +200,15 @@ func TestWaterfallDecodesApprovalAndQuestion(t *testing.T) {
 	server := fake.serve()
 	client := authenticatedClient(t, fake, server.URL)
 
-	stream, err := client.SubscribeEvents(context.Background())
+	stream, err := client.OpenStream(context.Background(), EndpointEvents, map[string]any{})
 	if err != nil {
 		t.Fatalf("订阅失败：%v", err)
 	}
 	defer stream.Close()
 
-	approvalFrame, err := stream.Until(context.Background(), "审批", testWait, func(value StreamValue) bool {
-		return value.Type == FrameWaterfall
-	})
-	if err != nil {
-		t.Fatalf("等待审批失败：%v", err)
+	approvalFrame := nextStreamFrame(t, stream)
+	if approvalFrame.Type != FrameWaterfall {
+		t.Fatalf("首帧应为 waterfall，得到 %q", approvalFrame.Type)
 	}
 	approval, err := approvalFrame.Waterfall()
 	if err != nil {
@@ -219,15 +221,9 @@ func TestWaterfallDecodesApprovalAndQuestion(t *testing.T) {
 		t.Fatalf("审批工具名不符：%+v", approval.Request)
 	}
 
-	questionFrame, err := stream.Until(context.Background(), "追问", testWait, func(value StreamValue) bool {
-		if value.Type != FrameWaterfall {
-			return false
-		}
-		decoded, err := value.Waterfall()
-		return err == nil && decoded.Event == WaterfallUserQuestions
-	})
-	if err != nil {
-		t.Fatalf("等待追问失败：%v", err)
+	questionFrame := nextStreamFrame(t, stream)
+	if questionFrame.Type != FrameWaterfall {
+		t.Fatalf("第二帧应为 waterfall，得到 %q", questionFrame.Type)
 	}
 	question, err := questionFrame.Waterfall()
 	if err != nil {
@@ -238,22 +234,23 @@ func TestWaterfallDecodesApprovalAndQuestion(t *testing.T) {
 	}
 
 	// 另一端先应答后，本端会收到同 eventId 的 cancel，用来撤销对应卡片。
-	if _, err := stream.Until(context.Background(), "cancel", testWait, func(value StreamValue) bool {
-		return value.Type == FrameCancel
-	}); err != nil {
-		t.Fatalf("等待 cancel 失败：%v", err)
+	if cancel := nextStreamFrame(t, stream); cancel.Type != FrameCancel {
+		t.Fatalf("第三帧应为 cancel，得到 %q", cancel.Type)
 	}
 }
 
 // 追问答案必须逐条按 id 回填，不能把自然语言伪装成结构化答案。
-func TestAnswerQuestionsSendsStructuredAnswers(t *testing.T) {
+func TestRespondOutcomeSendsStructuredAnswers(t *testing.T) {
 	fake := newFakeHarness(t)
 	server := fake.serve()
 	client := authenticatedClient(t, fake, server.URL)
 	fake.handle(EndpointEventsResult, func(json.RawMessage) (any, *RemoteError) { return map[string]any{}, nil })
 
-	err := client.AnswerQuestions(context.Background(), "client-1", "event-question", []Answer{
-		{ID: "confirm", Selected: []string{"Continue"}},
+	err := client.RespondOutcome(context.Background(), "client-1", "event-question", map[string]any{
+		"kind": OutcomeKindResult,
+		"value": map[string]any{"answers": []Answer{
+			{ID: "confirm", Selected: []string{"Continue"}},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("回传答案失败：%v", err)
@@ -280,22 +277,8 @@ func TestAnswerQuestionsSendsStructuredAnswers(t *testing.T) {
 	}
 }
 
-// 未知审批结论必须在本地被拒绝，不发出请求。
-func TestResolveApprovalRejectsUnknownDecision(t *testing.T) {
-	fake := newFakeHarness(t)
-	server := fake.serve()
-	client := authenticatedClient(t, fake, server.URL)
-
-	if err := client.ResolveApproval(context.Background(), "c", "e", "always-allow"); err == nil {
-		t.Fatal("未知审批结论应被拒绝")
-	}
-	if len(fake.recorded()) != 0 {
-		t.Fatal("被拒绝的结论不应发出请求")
-	}
-}
-
-// 等待超时要给出可定位的错误，不能静默阻塞或返回空帧。
-func TestUntilTimesOutWithContext(t *testing.T) {
+// Close 必须幂等，且关闭后 Frames 会结束。
+func TestStreamCloseIsIdempotentAndClosesFrames(t *testing.T) {
 	fake := newFakeHarness(t)
 	fake.onMuxOpen(func(conn *websocket.Conn, open map[string]any) error {
 		<-streamDone(conn)
@@ -304,51 +287,14 @@ func TestUntilTimesOutWithContext(t *testing.T) {
 	server := fake.serve()
 	client := authenticatedClient(t, fake, server.URL)
 
-	stream, err := client.SubscribeEvents(context.Background())
-	if err != nil {
-		t.Fatalf("订阅失败：%v", err)
-	}
-	defer stream.Close()
-
-	_, err = stream.Until(context.Background(), "某个信号", 150*time.Millisecond, func(StreamValue) bool { return false })
-	if err == nil {
-		t.Fatal("超时应返回错误")
-	}
-	if !strings.Contains(err.Error(), "某个信号") || !strings.Contains(err.Error(), EndpointEvents) {
-		t.Fatalf("超时错误应带上用途标签与 endpoint：%v", err)
-	}
-}
-
-// Close 必须幂等，且关闭后等待者立刻得到明确错误而不是挂住。
-func TestStreamCloseIsIdempotentAndUnblocksUntil(t *testing.T) {
-	fake := newFakeHarness(t)
-	fake.onMuxOpen(func(conn *websocket.Conn, open map[string]any) error {
-		<-streamDone(conn)
-		return nil
-	})
-	server := fake.serve()
-	client := authenticatedClient(t, fake, server.URL)
-
-	stream, err := client.SubscribeEvents(context.Background())
+	stream, err := client.OpenStream(context.Background(), EndpointEvents, map[string]any{})
 	if err != nil {
 		t.Fatalf("订阅失败：%v", err)
 	}
 	stream.Close()
 	stream.Close()
 
-	_, err = stream.Until(context.Background(), "关闭后", 2*time.Second, func(StreamValue) bool { return true })
-	if err == nil {
-		t.Fatal("关闭后等待应返回错误")
-	}
-	var notClosed error = ErrNotAuthenticated
-	if errors.Is(err, notClosed) {
-		t.Fatalf("关闭后应是订阅结束错误：%v", err)
-	}
-	select {
-	case <-stream.Done():
-	default:
-		t.Fatal("Close 后 Done 应当已关闭")
-	}
+	assertFramesClosed(t, stream)
 }
 
 // 未认证时不得建立事件流。
@@ -357,7 +303,7 @@ func TestOpenStreamRequiresAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("构造客户端失败：%v", err)
 	}
-	if _, err := client.SubscribeEvents(context.Background()); !errors.Is(err, ErrNotAuthenticated) {
+	if _, err := client.OpenStream(context.Background(), EndpointEvents, map[string]any{}); !errors.Is(err, ErrNotAuthenticated) {
 		t.Fatalf("未认证订阅应返回 ErrNotAuthenticated，得到 %v", err)
 	}
 }
@@ -385,7 +331,7 @@ func TestStreamSendsPingKeepalive(t *testing.T) {
 	server := fake.serve()
 	client := authenticatedClient(t, fake, server.URL)
 
-	stream, err := client.SubscribeEvents(context.Background())
+	stream, err := client.OpenStream(context.Background(), EndpointEvents, map[string]any{})
 	if err != nil {
 		t.Fatalf("订阅失败：%v", err)
 	}
@@ -393,8 +339,24 @@ func TestStreamSendsPingKeepalive(t *testing.T) {
 
 	// 只断言连接在保活周期内不会因为空闲被本端断开；真正的 ping 周期是 30 秒，
 	// 这里不等待那么久，改为确认订阅此时仍然可用。
-	if stream.StreamID() == "" {
-		t.Fatal("订阅应保持有效")
+	select {
+	case <-stream.closed:
+		t.Fatal("订阅在保活周期前意外结束")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func nextStreamFrame(t *testing.T, stream *Stream) StreamValue {
+	t.Helper()
+	select {
+	case frame, ok := <-stream.Frames():
+		if !ok {
+			t.Fatal("收到预期帧前订阅已结束")
+		}
+		return frame
+	case <-time.After(testWait):
+		t.Fatal("等待事件流帧超时")
+		return StreamValue{}
 	}
 }
 
@@ -445,21 +407,21 @@ func TestStreamEndsWhenPeerGoesSilent(t *testing.T) {
 	server := fake.serve()
 	client := authenticatedClientWithIdle(t, fake, server.URL, 300*time.Millisecond)
 
-	stream, err := client.SubscribeEvents(context.Background())
+	stream, err := client.OpenStream(context.Background(), EndpointEvents, map[string]any{})
 	if err != nil {
 		t.Fatalf("订阅失败：%v", err)
 	}
 	defer stream.Close()
 
 	select {
-	case <-stream.Done():
+	case <-stream.closed:
 	case <-time.After(testWait):
 		t.Fatal("对端静默后订阅应当结束，而不是一直阻塞在读上")
 	}
 	assertFramesClosed(t, stream)
 }
 
-// 对端直接断开时，订阅必须整体结束：Done 与 Frames 都要关闭。
+// 对端直接断开时，订阅必须整体结束：关闭信号与 Frames 都要关闭。
 //
 // 只关 Frames 会漏掉一个一直跑的 ping ticker 和一条没关的连接。
 func TestStreamEndsWhenPeerClosesConnection(t *testing.T) {
@@ -471,16 +433,16 @@ func TestStreamEndsWhenPeerClosesConnection(t *testing.T) {
 	server := fake.serve()
 	client := authenticatedClient(t, fake, server.URL)
 
-	stream, err := client.SubscribeEvents(context.Background())
+	stream, err := client.OpenStream(context.Background(), EndpointEvents, map[string]any{})
 	if err != nil {
 		t.Fatalf("订阅失败：%v", err)
 	}
 	defer stream.Close()
 
 	select {
-	case <-stream.Done():
+	case <-stream.closed:
 	case <-time.After(testWait):
-		t.Fatal("对端断开后 Done 应当关闭，否则 ping 协程与连接都会泄漏")
+		t.Fatal("对端断开后关闭信号应当关闭，否则 ping 协程与连接都会泄漏")
 	}
 	assertFramesClosed(t, stream)
 }

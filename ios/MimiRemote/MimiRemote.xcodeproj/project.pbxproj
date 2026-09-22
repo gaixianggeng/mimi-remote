@@ -107,7 +107,6 @@
 		38996D8B176D4A8E5173A27D /* NewSessionPresentationSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7E83526E3C22DF48B2DD911 /* NewSessionPresentationSource.swift */; };
 		391A66E7F197E57DBA1239DF /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 6C892E2BB83F2EE5FDD6EDA4 /* Localizable.xcstrings */; };
 		3942D0F45FDBA6578D875940 /* testCompletedGoalStatusTrayRemainsVisibleAfterTurnFinishes.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 2EBD11FEEFA3EA7C03993BE1 /* testCompletedGoalStatusTrayRemainsVisibleAfterTurnFinishes.1.png */; };
-		397AC77A5A2D72CE28C9243F /* HarnessHistoryLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E2331E284E9D04118864D51 /* HarnessHistoryLoader.swift */; };
 		39BC098D3DD6A3AB3EA13BCA /* SessionStoreHistoryItemEnrichment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B21C203D451C1F559CD1327 /* SessionStoreHistoryItemEnrichment.swift */; };
 		3A23BEDFA84EBB2D6F548D41 /* HarnessNativeRoutingSeamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CD0035558A54BA51E9FC673 /* HarnessNativeRoutingSeamTests.swift */; };
 		3AA6DA50C95E3E7A2D9899EC /* ManagedConnectionStoreKitClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7557CAF6E405B0327D0B7E9 /* ManagedConnectionStoreKitClientTests.swift */; };
@@ -576,7 +575,6 @@
 		1D9A7BE1E8F17EDC4A461FCB /* HarnessTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessTransportTests.swift; sourceTree = "<group>"; };
 		1DFDA1FF6067F862CB347130 /* NotificationRouteResolutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRouteResolutionTests.swift; sourceTree = "<group>"; };
 		1E0B093A7A3A0D3BABBF9965 /* UnifiedWorkbenchShell+CompactNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UnifiedWorkbenchShell+CompactNavigation.swift"; sourceTree = "<group>"; };
-		1E2331E284E9D04118864D51 /* HarnessHistoryLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessHistoryLoader.swift; sourceTree = "<group>"; };
 		1F4C7F055E8F17853BC7CB04 /* testModelPickerAdaptiveWidthAndAccessibilityLayouts.iphone-390-dark.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testModelPickerAdaptiveWidthAndAccessibilityLayouts.iphone-390-dark.png"; sourceTree = "<group>"; };
 		1F63FE197E70AD192F429877 /* ThemeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStore.swift; sourceTree = "<group>"; };
 		1F7EC4CA130B338055AA9D6E /* LockScreenApprovalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LockScreenApprovalTests.swift; sourceTree = "<group>"; };
@@ -1641,7 +1639,6 @@
 		C04DFC2DA8F03B48B16D9DAC /* Harness */ = {
 			isa = PBXGroup;
 			children = (
-				1E2331E284E9D04118864D51 /* HarnessHistoryLoader.swift */,
 				31218C878FC9BC07A42F6F22 /* HarnessHistoryPage.swift */,
 				E679831E811FB434EF269BD9 /* HarnessHostEventObserver.swift */,
 				DCEBABF96310C6594E887C28 /* HarnessInteractionAnswer.swift */,
@@ -2434,7 +2431,6 @@
 				2D6CA662D1D655CE6BE05CF0 /* FileUploadStore.swift in Sources */,
 				BC8113C02839555625D96A97 /* FloatingSidebarPresentation.swift in Sources */,
 				980F0CA2DAD75C9AE4857810 /* GitQuickPublishView.swift in Sources */,
-				397AC77A5A2D72CE28C9243F /* HarnessHistoryLoader.swift in Sources */,
 				516056012007388134E8BC2F /* HarnessHistoryPage.swift in Sources */,
 				9C7CC42961C804B67A8E7D3E /* HarnessHostEventObserver.swift in Sources */,
 				09B4A23166D9A7FD30AC1E37 /* HarnessInteractionAnswer.swift in Sources */,

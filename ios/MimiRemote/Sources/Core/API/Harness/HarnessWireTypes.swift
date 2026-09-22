@@ -22,7 +22,6 @@ enum HarnessWireMethod {
     static let sessionSearch = "session/search"
     static let sessionPage = "session/page"
     static let sessionModelCatalog = "session/modelCatalog"
-    static let sessionFollow = "session/follow"
     static let sessionCreate = "session/create"
     static let sessionSelectModel = "session/selectModel"
     static let sessionPrompt = "session/prompt"
@@ -32,7 +31,6 @@ enum HarnessWireMethod {
 /// remote.mux 上开放的 stream endpoint。
 enum HarnessWireEndpoint {
     static let events = "$events"
-    static let eventsResult = "$events/result"
     static let sessionFollow = "session/follow"
     static let sessionControl = "session/control"
 }
@@ -696,17 +694,6 @@ struct HarnessWaterfallRequest: Decodable, Equatable {
     /// agentId 是协议保证存在的字段，且**等于会话 id**（Harness 的身份设计是
     /// "agent 的注册表 id 等于其会话 id"）。归属因此是核事实，不是推断。
     let agentId: String?
-    let sessionId: String?
-    let threadId: String?
-
-    /// 能确认的会话标识，取不到时为空串。**不得**回退到"唯一活跃会话"。
-    var threadHint: String {
-        for candidate in [agentId, threadId, sessionId] {
-            let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !trimmed.isEmpty { return trimmed }
-        }
-        return ""
-    }
 }
 
 struct HarnessWaterfallPayload: Decodable, Equatable {

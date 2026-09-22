@@ -43568,6 +43568,12 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "交互缺少 eventId，无法回传。" } }
       }
     },
+    "harness.interaction_missing_agent_id": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The session for this request could not be verified. Reconnect and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法确认此请求所属的会话。请重新连接后重试。" } }
+      }
+    },
     "harness.interaction_missing_request": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "The interaction is missing its request payload." } },

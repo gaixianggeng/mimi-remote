@@ -3,8 +3,9 @@
 本文件是 #498 改造的实施契约，冻结 wire 协议、恢复语义、安全边界、夹具与验收判据。
 它是 H01—H13 的唯一协议依据：实施者不得临场发明协议事实，只能引用本文件与 `contracts/harness-native/`。
 
-> 当前进度标记：**相关组件已实现，存在待修问题/待集成**。H09/H10 仍不能称为完整闭环；
-> 正式默认切换继续等待 H11/H12 证据与 Gate C 决策。
+> 当前实施已使用正式原生客户端；旧 DeepSeek app-server 翻译层和实验开关已删除。
+> 本文的基线、设备状态与门禁清单保留 H00 冻结时的记录。最新实现与验证进展见
+> [PR #499](https://github.com/gaixianggeng/mimi-remote/pull/499)；实体设备与真实供应商验收仍待完成。
 
 - 主 Issue：#498。主 PR：#499。分支：`codex/gh-498-harness-runtime`。
 - 代码基线：`7f43f594df3920598e6a7fa4e84f49ab3c62d87c`（base `3a46e00cfa08b2c0af27ea485bf76ac296a49a64`）。
@@ -13,7 +14,7 @@
   （独立 `DSH_HOME` + 回环假模型，未触碰用户 Harness，无真实供应商调用）。
   上游 `0.1.6-alpha.2` 源码仅用于解释成因。
 
-## 一、核对结论（本机实测）
+## 一、H00 冻结时的核对结论（本机实测）
 
 | 项 | 核对值 | 状态 |
 |---|---|---|
@@ -146,7 +147,7 @@ typert 生成器 `analyzer.ts:1140` 用 `wire = parameter.name.text` 作为 wire
 | `session/follow` | `{address,maxMessages?,assistantStream?}` | 帧流 |
 | `session/control` | — | 帧流 |
 
-`SessionAddress` 是判别联合：`{kind:'session',sessionId}` 或 `{kind:'subagent',parentSessionId,childSessionId,mode}`。
+`address` 是判别联合：`{kind:'session',sessionId}` 或 `{kind:'subagent',parentSessionId,childSessionId,mode}`。
 首版只开放 `session` 形态。
 
 `SessionSummary`：`{sessionId,updatedAt,running,blank,parentSessionId?,origin?,cwd?,projections?}`。

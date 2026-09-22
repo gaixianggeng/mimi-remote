@@ -28,7 +28,7 @@ final class HarnessHostEventObserver {
 
     /// 宿主级事件出口。与页面客户端分开：页面断开不应中断这条订阅。
     var onEvent: (@MainActor (AgentEvent) -> Void)?
-    /// 宿主级连接状态。页面自己还会按 follow 上报状态，这里只用于诊断与重连调度。
+    /// 宿主级连接状态。终止观察的失败交给装配层提示；连接中间态不得改写页面状态。
     var onStatus: ((WebSocketStatus) -> Void)?
     /// 一次应答被明确拒绝。
     ///
@@ -262,7 +262,7 @@ final class HarnessHostEventObserver {
             guard let eventID = waterfall.eventId?.trimmedNonEmpty,
                   let event = waterfall.event,
                   let request = waterfall.request,
-                  let targetSessionID = waterfall.threadHint.trimmedNonEmpty,
+                  let targetSessionID = waterfall.agentId?.trimmedNonEmpty,
                   let generation = runtimeGeneration else {
                 throw HarnessTransportError.malformedResponse("waterfall has no attributable session")
             }

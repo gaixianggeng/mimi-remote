@@ -151,10 +151,7 @@ extension SessionStore {
                Self.normalizedRuntimeProvider(runtimeProvider) == Self.nativeHarnessRuntimeProvider {
                 await refreshNativeHarnessDirectory(
                     workspace: workspace,
-                    consistency: consistency,
-                    restartFromFirst: restartFromFirst,
-                    hostScope: hostScope,
-                    generation: generation
+                    hostScope: hostScope
                 )
                 continue
             }

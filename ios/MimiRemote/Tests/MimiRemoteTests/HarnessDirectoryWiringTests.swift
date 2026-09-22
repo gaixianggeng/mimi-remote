@@ -48,10 +48,7 @@ final class HarnessDirectoryWiringTests: XCTestCase {
 
         await fixture.store.refreshNativeHarnessDirectory(
             workspace: fixture.workspace,
-            consistency: .authoritative,
-            restartFromFirst: true,
-            hostScope: fixture.appStore.activeHostScope,
-            generation: fixture.appStore.connectionGeneration
+            hostScope: fixture.appStore.activeHostScope
         )
 
         XCTAssertNil(fixture.store.nativeHarnessDirectory, "关闭时不得创建协调器")
@@ -70,10 +67,7 @@ final class HarnessDirectoryWiringTests: XCTestCase {
 
         await fixture.store.refreshNativeHarnessDirectory(
             workspace: fixture.workspace,
-            consistency: .authoritative,
-            restartFromFirst: true,
-            hostScope: fixture.appStore.activeHostScope,
-            generation: fixture.appStore.connectionGeneration
+            hostScope: fixture.appStore.activeHostScope
         )
 
         XCTAssertEqual(fixture.client.requestedWorkspaceIDs, ["h05-project"])
@@ -125,10 +119,7 @@ final class HarnessDirectoryWiringTests: XCTestCase {
 
         await store.refreshNativeHarnessDirectory(
             workspace: workspace,
-            consistency: .authoritative,
-            restartFromFirst: true,
-            hostScope: appStore.activeHostScope,
-            generation: appStore.connectionGeneration
+            hostScope: appStore.activeHostScope
         )
 
         XCTAssertEqual(harness.sessionsPageCallCount, 1, "目录刷新必须命中 Harness Spy")
@@ -153,10 +144,7 @@ final class HarnessDirectoryWiringTests: XCTestCase {
 
         await fixture.store.refreshNativeHarnessDirectory(
             workspace: fixture.workspace,
-            consistency: .authoritative,
-            restartFromFirst: true,
-            hostScope: fixture.appStore.activeHostScope,
-            generation: fixture.appStore.connectionGeneration
+            hostScope: fixture.appStore.activeHostScope
         )
 
         let directory = try XCTUnwrap(fixture.store.nativeHarnessDirectory)
@@ -180,10 +168,7 @@ final class HarnessDirectoryWiringTests: XCTestCase {
 
         await fixture.store.refreshNativeHarnessDirectory(
             workspace: fixture.workspace,
-            consistency: .authoritative,
-            restartFromFirst: true,
-            hostScope: fixture.appStore.activeHostScope,
-            generation: fixture.appStore.connectionGeneration
+            hostScope: fixture.appStore.activeHostScope
         )
         let afterFirst = fixture.client.requestedWorkspaceIDs.count
 
@@ -212,10 +197,7 @@ final class HarnessDirectoryWiringTests: XCTestCase {
         // 建立协调器（同时完成第一次请求）。
         await fixture.store.refreshNativeHarnessDirectory(
             workspace: fixture.workspace,
-            consistency: .authoritative,
-            restartFromFirst: true,
-            hostScope: fixture.appStore.activeHostScope,
-            generation: fixture.appStore.connectionGeneration
+            hostScope: fixture.appStore.activeHostScope
         )
         let directory = try XCTUnwrap(fixture.store.nativeHarnessDirectory)
         let afterFirst = fixture.client.requestedWorkspaceIDs.count

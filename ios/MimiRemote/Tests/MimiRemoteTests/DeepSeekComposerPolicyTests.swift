@@ -10,7 +10,7 @@ final class DeepSeekComposerPolicyTests: XCTestCase {
         ).sanitizedForRuntimePolicy()
         XCTAssertEqual(options.approvalPolicy, .onRequest)
         XCTAssertNil(options.serviceTier)
-        XCTAssertEqual(options.turnParams(projectPath: "/tmp/project")["modelProvider"]??.stringValue, "provider-b")
+        XCTAssertEqual(options.modelProvider, "provider-b")
         XCTAssertEqual(options.sanitizedForStandardComposer().modelProvider, "provider-b")
         XCTAssertNil(CodexAppServerTurnOptions(modelProvider: "openai")
             .turnParams(projectPath: "/tmp/project")["modelProvider"] ?? nil)

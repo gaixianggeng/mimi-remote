@@ -93,12 +93,6 @@ const (
 	OutcomeUnavailable = "unavailable"
 )
 
-// 会话内 prompt 的投递模式。首版只开放 queue：steer 与 queue 语义不同且尚未验证，
-// 因此不通过移动端暴露。
-const (
-	PromptModeQueue = "queue"
-)
-
 // clientRequest 是 Connection RPC 的请求外壳。裸 {args:...} 会被服务端判为
 // gateway/bad-request，即使 HTTP 200。
 type clientRequest struct {
@@ -304,11 +298,4 @@ type QuestionOption struct {
 type Answer struct {
 	ID       string   `json:"id"`
 	Selected []string `json:"selected,omitempty"`
-}
-
-// readyFrame 给出本次连接的事件代次与 clientId。clientId 只用于回传应答，
-// 不属于可下发移动端的字段。
-type readyFrame struct {
-	Type     string `json:"type"`
-	ClientID string `json:"clientId"`
 }

@@ -10,8 +10,8 @@ import (
 
 var errHarnessNativeControlShape = errors.New("unsupported Harness control frame")
 
-// harnessNativeFilterControl 按 0.1.5-rc.2 的 control.ts 裁剪宿主级控制帧。
-// baseline 的三个字典都以 session ID 为键；条目正文保持原生形状。
+// harnessNativeFilterControl 按已冻结的 control.ts 契约裁剪宿主级控制帧。
+// baseline 的字典都以 session ID 为键；0.1.6 可以省略 queues。
 // authorize 的结果只在本帧内去重，不建立跨帧授权缓存。未知外壳直接失败，
 // 避免新版本增加未经授权的新容器后，被一次 RawMessage 透传带到手机。
 func harnessNativeFilterControl(
@@ -56,12 +56,19 @@ func harnessNativeFilterControl(
 		return nil, errHarnessNativeControlShape
 	}
 	value, err := harnessNativeControlObject(frame["value"])
-	if err != nil || !harnessNativeControlKeys(value, "queues", "jobs", "projections") {
+	if err != nil {
 		return nil, errHarnessNativeControlShape
 	}
-	sections := make(map[string]map[string]json.RawMessage, 3)
+	sectionNames := []string{"jobs", "projections"}
+	if !harnessNativeControlKeys(value, sectionNames...) {
+		sectionNames = []string{"queues", "jobs", "projections"}
+		if !harnessNativeControlKeys(value, sectionNames...) {
+			return nil, errHarnessNativeControlShape
+		}
+	}
+	sections := make(map[string]map[string]json.RawMessage, len(sectionNames))
 	ids := make(map[string]struct{})
-	for _, name := range []string{"queues", "jobs", "projections"} {
+	for _, name := range sectionNames {
 		entries, err := harnessNativeControlObject(value[name])
 		if err != nil {
 			return nil, err

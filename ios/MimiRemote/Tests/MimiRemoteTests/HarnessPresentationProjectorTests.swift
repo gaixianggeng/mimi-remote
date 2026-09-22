@@ -332,44 +332,6 @@ final class HarnessPresentationProjectorTests: XCTestCase {
         XCTAssertEqual(warnings.count, 1, "被取代必须如实告知")
     }
 
-    // MARK: - 工具活动
-
-    /// 工具活动保持通用形状：不伪装成 shell command 或文件变更。
-    func testToolActivityStaysGeneric() throws {
-        let attempt = try makeSettledAttempt("run.tool-call")
-        let activities = HarnessPresentationProjector.toolActivities(from: attempt)
-
-        XCTAssertFalse(activities.isEmpty, "工具回合必须抽出工具活动")
-        for activity in activities {
-            // 通用条目：只有 blockIndex/工具名/参数/isComplete，没有退出码/路径等 shell 专属字段。
-            XCTAssertGreaterThanOrEqual(activity.blockIndex, 0)
-        }
-    }
-
-    /// 未完成的工具块也要如实给出（标记 isComplete=false）。
-    func testIncompleteToolActivityIsReported() {
-        // 只有一个 block-start，没有 block-end：模拟 attempt 被中断。
-        let attempt = HarnessJournalAttempt(
-            attemptID: "a1", turn: 1, step: 1, startedAfterSeq: 0,
-            lastRevision: 1, nextChunkIndex: 0
-        )
-        var mutable = attempt
-        mutable.chunks = [
-            HarnessAssistantStreamFrame(
-                type: HarnessWireAssistantFrame.chunk, revision: 2, index: 0,
-                chunk: HarnessAssistantChunk(
-                    type: HarnessWireChunkType.blockStart, index: 0,
-                    text: nil, blockType: "tool-call", argumentsDelta: nil
-                ),
-                outcome: nil, attemptId: "a1", turn: 1, step: 1, startedAfterSeq: 0
-            )
-        ]
-
-        let activities = HarnessPresentationProjector.toolActivities(from: mutable)
-        XCTAssertEqual(activities.count, 1)
-        XCTAssertFalse(activities[0].isComplete, "未收到 block-end 必须标记为未完成")
-    }
-
     // MARK: - 支撑
 
     private func makeSettledAttempt(_ label: String) throws -> HarnessJournalAttempt {
