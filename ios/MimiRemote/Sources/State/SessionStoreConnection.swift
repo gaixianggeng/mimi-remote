@@ -1034,12 +1034,6 @@ extension SessionStore {
     func applyRuntimeEvent(_ event: AgentEvent, lease: HostSessionLease, sendsNotification: Bool = true) async {
         guard appStore.activeHostScope == lease.hostScope else { return }
         let sessionID = lease.sessionID
-        // assistantDelta 是逐 token 热路径；首响应在 foreground activity 首次切换时记录。
-        if case .assistantDelta = event {
-            // no-op
-        } else {
-            recordRuntimeDiagnostic(event, fallbackSessionID: sessionID)
-        }
         let replayAckSocket = replayBoundarySocket(for: event, fallbackSessionID: sessionID)
         defer {
             replayAckSocket?.acknowledgeAppliedEvent(event)
@@ -1095,6 +1089,13 @@ extension SessionStore {
         // 既不会清新 activeTurnID，也不会单独把新轮次的状态覆写为 completed。
         if case .turnCompleted(let metadata) = event,
            shouldIgnoreStaleTurnCompletion(metadata, fallbackSessionID: sessionID) { return }
+        // 诊断必须遵守与业务状态相同的 stale 过滤，否则旧完成事件会提前结束新 turn 的关联。
+        // assistantDelta 是逐 token 热路径；首响应在 foreground activity 首次切换时记录。
+        if case .assistantDelta = event {
+            // no-op
+        } else {
+            recordRuntimeDiagnostic(event, fallbackSessionID: sessionID)
+        }
         applyEventReducerOutput(output)
         HostSwitchSignpost.event("runtime_event_store_committed")
         if case .turnCompleted(let metadata) = event {

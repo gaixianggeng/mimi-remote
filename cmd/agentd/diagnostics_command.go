@@ -50,8 +50,17 @@ func runDiagnosticsWithWriter(args []string, output io.Writer) error {
 	if err != nil {
 		return errors.New("无法读取本机诊断凭据，请确认服务已启动并检查文件权限")
 	}
-	// 目的地直接构造为回环地址，不接受配置中的远端地址，也不跟随重定向。
-	target := "http://" + net.JoinHostPort("127.0.0.1", port) + "/api/local/diagnostics/" + action
+	// 按服务的实际监听策略选择回环地址，兼容 IPv6 及模块开关重建监听。
+	// 只接受字面回环 IP；其它情况走本机 IPv4，不能向远端地址发送本机凭据。
+	loopback := "127.0.0.1"
+	for _, address := range moduleListenAddresses(cfg) {
+		host, _, _ := net.SplitHostPort(address)
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			loopback = ip.String()
+			break
+		}
+	}
+	target := "http://" + net.JoinHostPort(loopback, port) + "/api/local/diagnostics/" + action
 	req, err := http.NewRequest(method, target, nil)
 	if err != nil {
 		return errors.New("无法建立本机诊断请求")

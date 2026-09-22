@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +12,56 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestDiagnosticsCLIFollowsLoopbackListener(t *testing.T) {
+	for _, tc := range []struct {
+		name, configuredHost, boundHost string
+		network                         map[string]any
+	}{
+		{"ipv6-only", "::1", "::1", nil},
+		{"lan-rebuilds-ipv4", "::1", "127.0.0.1", map[string]any{"allow_lan": true}},
+		{"module-controls-rebuild-alias", "127.0.0.2", "127.0.0.1", map[string]any{"allow_tailscale": false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", net.JoinHostPort(tc.boundHost, "0"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer "+strings.Repeat("a", 64) {
+					t.Error("必须使用独立本机凭据")
+				}
+				_, _ = w.Write([]byte(`{"enabled":false}`))
+			}))
+			server.Listener = listener
+			server.Start()
+			defer server.Close()
+			_, port, _ := net.SplitHostPort(listener.Addr().String())
+			cfg := map[string]any{
+				"listen": net.JoinHostPort(tc.configuredHost, port), "network": tc.network,
+				"auth": map[string]any{"token": "paired-token"}, "codex": map[string]any{"enabled": false},
+			}
+			data, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path+".diagnostics.token", []byte(strings.Repeat("a", 64)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			if err := runDiagnosticsWithWriter([]string{"agentd", "status", "--config", path, "--json"}, &output); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), `"enabled":false`) {
+				t.Fatalf("没有读取到本机诊断状态：%s", output.String())
+			}
+		})
+	}
+}
 
 func TestDiagnosticsCLIUsesLocalBearerAndDoesNotFollowRedirect(t *testing.T) {
 	for _, redirect := range []bool{false, true} {
