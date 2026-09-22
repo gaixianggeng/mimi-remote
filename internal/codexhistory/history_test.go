@@ -70,6 +70,13 @@ func TestRowsToDiagnosticsFiltersNonInteractiveSources(t *testing.T) {
 	}
 }
 
+func TestRowsToDiagnosticsPreservesEmptyThreadReason(t *testing.T) {
+	diagnostics := rowsToDiagnostics([]row{{ID: ""}}, nil, "", nil)
+	if len(diagnostics) != 1 || diagnostics[0].Included || diagnostics[0].Reason != "active_session" {
+		t.Fatalf("瘦身不得改变空线程 ID 的既有诊断返回值：%+v", diagnostics)
+	}
+}
+
 func TestCachedProjectForCWDReusesPositiveAndNegativeMatches(t *testing.T) {
 	dir := t.TempDir()
 	registry, err := projects.NewRegistry([]config.ProjectConfig{{ID: "demo", Name: "Demo", Path: dir}})

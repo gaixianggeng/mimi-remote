@@ -198,9 +198,8 @@ func rowsToDiagnostics(rows []row, registry *projects.Registry, projectID string
 			UpdatedAt: msTime(item.UpdatedAtMS),
 		}
 		if item.ID == "" {
-			// 线程 ID 为空的行此前被贴上 active_session（因为 seen 恒为空，
-			// 这个分支只可能由空 ID 命中），标注与实际原因不符，改为就事论事。
-			diagnostic.Reason = "empty_thread_id"
+			// 空 ID 沿用既有诊断码，避免仅清理不可达逻辑时改变接口返回值。
+			diagnostic.Reason = "active_session"
 			diagnostics = append(diagnostics, diagnostic)
 			continue
 		}
