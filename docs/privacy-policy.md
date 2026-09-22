@@ -1,6 +1,6 @@
 # Mimi Remote 隐私政策 / Privacy Policy
 
-生效日期 / Effective date：2026-07-20
+生效日期 / Effective date：2026-09-22
 
 ## 中文
 
@@ -27,11 +27,11 @@ Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd`
 
 连接可使用局域网、Tailscale 等私有网络或用户配置的 HTTPS 地址。Mimi Remote 不运营用于查看或保存工作内容的中继服务；网络基础设施提供方可能按照其自身政策处理加密连接所必需的网络元数据。
 
-#### 锁屏审批提醒（可选，默认关闭）
+#### 消息通知
 
-「锁屏审批提醒」是默认关闭的实验功能。不开启它时，App 不会请求远程通知授权、不会注册设备 Token，链路上也不会产生任何对外请求；审批仍然只经过用户自己的私有网络。
+消息通知默认开启。首次成功连接电脑后，App 请求系统通知权限；允许后注册通知服务。用户可以在 App 设置关闭消息通知，也可以在系统设置管理通知权限。旧版明确关闭的选择会保留。
 
-开启需要用户在 App 内明确同意，且同意绑定到具体的收件主机——中转地址变化后必须重新同意。开启后：
+官方通知服务不需要额外授权弹窗。自定义服务需要确认具体服务地址，地址变化后重新确认。开启后：
 
 - 会离开设备的只有：本次安装的 APNs 设备 Token、电脑与会话的匿名短标签、审批类型枚举、请求过期时间。
 - 不会离开设备的包括：提示词、回复、模型输出、完整命令、文件路径、diff、源码、文件内容、会话历史，以及 `agentd` 访问 Token。
@@ -39,7 +39,7 @@ Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd`
 
 该提醒服务由 Mimi Remote 开发者运营。它不保存设备 Token，也不保存通知内容；仅保留已撤销的凭据标识到其自然到期为止（最长 30 天），以及不含请求体的结构化错误日志（7 天）与聚合成功率、延迟指标（30 天）。为完成投递，它会短暂处理请求来源 IP。
 
-关闭开关等价于撤销：App 会注销设备 Token，`agentd` 删除本地凭据，服务端把该凭据标识加入撤销表。这项功能是对此前「不运营任何中转服务」表述的实质变更，因此单独列出并保持默认关闭。
+关闭开关后，App 立即停止本地自动任务通知，并注销远程通知。远程注销失败时保留必要凭据以便重试，设置页显示“远程通知关闭未完成”。关闭不会影响会话内审批，也不会取消用户主动设置的定时会话提醒。
 
 #### 系统权限
 
@@ -89,11 +89,11 @@ Mimi Remote connects directly to an `agentd` endpoint that you enter or import b
 
 Connections may use a local network, a private network such as Tailscale, or an HTTPS endpoint you configure. Mimi Remote does not operate a relay that reads or stores your work. Network infrastructure providers may process network metadata required to carry the encrypted connection under their own policies.
 
-#### Lock Screen approval reminders (optional, off by default)
+#### Message notifications
 
-Lock Screen approval reminders are an experimental feature that is off by default. While it is off, the app does not request remote notification authorization, does not register a device token, and sends nothing to any service; approvals continue to travel only over your own private network.
+Message notifications are enabled by default. After the first successful computer connection, the app requests system notification permission and registers when allowed. You can turn message notifications off in the app or manage permission in system settings. Explicit off settings from earlier versions are preserved.
 
-Turning it on requires your explicit in-app agreement, and that agreement is bound to the specific receiving host — if the address changes, you are asked again. Once on:
+The official notification service does not require an additional agreement dialog. Custom service addresses require confirmation, including when the address changes. When enabled:
 
 - What leaves your device: the APNs device token for this install, anonymous short tags for the Mac and the session, the approval kind as a fixed enum, and the request expiry.
 - What never leaves: prompts, replies, model output, full commands, file paths, diffs, source code, file contents, session history, and your `agentd` access token.
@@ -101,7 +101,7 @@ Turning it on requires your explicit in-app agreement, and that agreement is bou
 
 The reminder service is operated by the developer of Mimi Remote. It does not store device tokens or notification payloads. It keeps only revoked credential identifiers until they expire (at most 30 days), structured error logs without request bodies (7 days), and aggregate delivery and latency metrics (30 days). It briefly processes the source IP address required to deliver a request.
 
-Turning the switch off revokes the registration: the app unregisters the device token, `agentd` deletes the local credential, and the service adds that credential identifier to its revocation list. Because this is a material change from the earlier statement that no relay is operated at all, it is listed separately and kept off by default.
+Turning the switch off immediately stops automatic local task notifications and revokes remote registration. If revocation fails, the app retains the credentials needed to retry and reports that remote notifications have not been fully turned off. In-app approvals and manually scheduled session reminders remain available.
 
 #### System permissions
 

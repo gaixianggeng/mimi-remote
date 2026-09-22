@@ -1,138 +1,91 @@
 import SwiftUI
+import UIKit
 
-/// 锁屏审批提醒的设置入口。
-///
-/// 这是默认关闭的实验功能。首次开启必须先看到明确的数据披露：什么会离开这台
-/// 设备、什么不会、由谁接收、保留多久。没有同意就不注册任何东西。
+/// 消息通知偏好与实际送达状态分开显示；自定义服务的信任确认只在需要时出现。
 struct LockScreenApprovalSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openURL) private var openURL
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var store: LockScreenApprovalStore
-
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @State private var isBusy = false
     @State private var showsConsent = false
     @State private var showsRebindConfirmation = false
-    /// 换绑前先补披露同意时记住意图，同意后直接以换绑模式继续，不让用户点两次。
-    @State private var takeOverAfterConsent = false
+    @State private var rebindAfterConsent = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-
         Form {
             Section {
                 Toggle(isOn: toggleBinding) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(L10n.text("ui.push_lock_screen_approval"))
+                        Text(L10n.text("ui.push_receive_notifications"))
                             .font(themeStore.uiFont(.body))
                             .foregroundStyle(tokens.primaryText)
-                        Text(statusDescription)
+                        Text(store.notificationStatusDescription)
                             .font(themeStore.uiFont(.footnote))
-                            .foregroundStyle(statusIsProblem ? tokens.warning : tokens.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-				.disabled(isBusy || !store.hostSupportsPush(for: appStore.activeConnectionProfileID))
-                .accessibilityIdentifier("settings.lockScreenApproval.toggle")
-            } header: {
-                Text(L10n.text("ui.experimental_features"))
-                    .settingsSectionHeaderStyle()
-            } footer: {
-                Text(L10n.text("ui.push_lock_screen_approval_summary"))
-                    .settingsSectionFooterStyle()
-            }
-
-			if !store.hostSupportsPush(for: appStore.activeConnectionProfileID) {
-                Section {
-                    Label {
-                        Text(L10n.text("ui.push_host_not_configured"))
-                            .font(themeStore.uiFont(.subheadline))
                             .foregroundStyle(tokens.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
-                    } icon: {
-                        Image(systemName: "exclamationmark.triangle")
-                            .foregroundStyle(tokens.accent)
                     }
-                    .padding(.vertical, 6)
-                    .accessibilityIdentifier("settings.lockScreenApproval.hostNotice")
+                }
+                .disabled(isBusy)
+                .accessibilityIdentifier("settings.lockScreenApproval.toggle")
+
+                if case .notificationsDenied = store.status, store.notificationsEnabled {
+                    Button(L10n.text("ui.push_open_system_settings")) {
+                        if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
+                            openURL(url)
+                        }
+                    }
+                    .accessibilityIdentifier("settings.lockScreenApproval.systemSettings")
+                }
+                if store.hasPendingDisable {
+                    Button(L10n.text("ui.push_retry_disable")) {
+                        Task { await disable() }
+                    }
+                    .disabled(isBusy)
+                } else if store.notificationsEnabled,
+                          store.hostSupportsPush(for: appStore.activeConnectionProfileID),
+                          !store.hasConsented(for: appStore.activeConnectionProfileID),
+                          store.registeredProfileID == nil || store.registeredProfileID == appStore.activeConnectionProfileID {
+                    Button(L10n.text("ui.push_trust_custom_service")) { showsConsent = true }
+                        .disabled(isBusy)
+                } else if store.notificationsEnabled, case .failed = store.status {
+                    Button(L10n.text("ui.retry")) { Task { await refresh() } }
+                        .disabled(isBusy)
                 }
             }
 
-			if showsRebindOptions {
-				// 旧绑定所在的电脑联系不上（已删、已重装、离线或 Token 被拒）。
-				// 这里给出唯一的出口：以 Provider 撤销为准换绑到当前电脑，或者只关掉。
-				Section {
-					Label {
-						Text(L10n.text("ui.push_previous_host_unavailable"))
-							.font(themeStore.uiFont(.subheadline))
-							.foregroundStyle(tokens.secondaryText)
-							.fixedSize(horizontal: false, vertical: true)
-					} icon: {
-						Image(systemName: "exclamationmark.triangle")
-							.foregroundStyle(tokens.accent)
-					}
-					.padding(.vertical, 6)
-					.accessibilityIdentifier("settings.lockScreenApproval.previousHostNotice")
-					Button {
-						showsRebindConfirmation = true
-					} label: {
-						Label(L10n.text("ui.push_rebind_to_this_computer"), systemImage: "arrow.left.arrow.right")
-					}
-					.settingsRow()
-					.disabled(isBusy || !store.hostSupportsPush(for: appStore.activeConnectionProfileID))
-					.accessibilityIdentifier("settings.lockScreenApproval.rebind")
-					Button(role: .destructive) {
-						Task { await disablePreviousBindingWithoutHost() }
-					} label: {
-						Label(L10n.text("ui.push_turn_off_previous_binding"), systemImage: "bell.slash")
-					}
-					.settingsRow()
-					.disabled(isBusy)
-					.accessibilityIdentifier("settings.lockScreenApproval.turnOffPrevious")
-				}
-			}
-
-            Section {
-                ForEach(LockScreenApprovalDisclosure.leavesDeviceKeys, id: \.self) { key in
-                    disclosureRow(key: key, symbol: "arrow.up.forward", tint: tokens.accent, tokens: tokens)
+            if let profileID = store.registeredProfileID {
+                Section {
+                    LabeledContent(L10n.text("ui.push_notification_computer")) {
+                        Text(appStore.connectionProfiles.first { $0.id == profileID }?.displayName
+                             ?? L10n.text("ui.push_previous_computer"))
+                    }
+                    if profileID != appStore.activeConnectionProfileID {
+                        Button(L10n.text("ui.push_rebind_to_this_computer")) {
+                            showsRebindConfirmation = true
+                        }
+                        .disabled(isBusy || !store.hostSupportsPush(for: appStore.activeConnectionProfileID))
+                        .accessibilityIdentifier("settings.lockScreenApproval.rebind")
+                    }
                 }
-            } header: {
-                Text(L10n.text("ui.push_disclosure_leaves_device"))
-                    .settingsSectionHeaderStyle()
-            } footer: {
-                Text(receiverDescription)
-                    .settingsSectionFooterStyle()
             }
 
             Section {
-                ForEach(LockScreenApprovalDisclosure.staysOnDeviceKeys, id: \.self) { key in
-                    disclosureRow(key: key, symbol: "lock", tint: tokens.secondaryText, tokens: tokens)
+                NavigationLink(value: SettingsDestination.privacyPolicy) {
+                    Label(L10n.text("ui.privacy_policy"), systemImage: "hand.raised")
                 }
-            } header: {
-                Text(L10n.text("ui.push_disclosure_stays_local"))
-                    .settingsSectionHeaderStyle()
-            } footer: {
-                Text(L10n.text("ui.push_disclosure_actionable_kinds"))
-                    .settingsSectionFooterStyle()
             }
-
             if developerModeEnabled {
-                // 只在开发者模式露出：导出的是阶段/结果/原因和脱敏标识，方便把
-                // “点了通知没反应”连同日志一起贴进问题反馈。
                 Section {
                     Button {
-#if canImport(UIKit)
                         UIPasteboard.general.string = NotificationRouteDiagnostics.exportText()
-#endif
                     } label: {
                         Label(L10n.text("ui.push_route_diagnostics_copy"), systemImage: "doc.on.doc")
                     }
-                    .settingsRow()
                     .accessibilityIdentifier("settings.lockScreenApproval.copyRouteDiagnostics")
-                } footer: {
-                    Text(L10n.text("ui.push_route_diagnostics_footer"))
-                        .settingsSectionFooterStyle()
                 }
             }
         }
@@ -140,210 +93,107 @@ struct LockScreenApprovalSettingsView: View {
         .navigationTitle(L10n.text("ui.push_lock_screen_approval"))
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.lockScreenApproval.detail")
-		.task {
-			guard let client = try? appStore.client(),
-			      let activeProfileID = appStore.activeConnectionProfileID else { return }
-			await store.refreshHostSupport(client: client, profileID: activeProfileID)
-			if let profileID = store.registeredProfileID,
-			   profileID == appStore.activeConnectionProfileID {
-				let refreshClient = client
-				await store.refreshTicketIfNeeded(client: refreshClient, profileID: profileID)
-			}
+        .task {
+            guard case .connected = appStore.connectionStatus else { return }
+            await refresh()
         }
         .sheet(isPresented: $showsConsent) {
             LockScreenApprovalConsentSheet(
-				providerHost: store.providerHost(for: appStore.activeConnectionProfileID) ?? "",
-				isOfficialService: store.providerIsOfficial(for: appStore.activeConnectionProfileID),
+                providerHost: store.providerHost(for: appStore.activeConnectionProfileID) ?? "",
+                isOfficialService: false,
                 onAgree: {
+                    store.recordConsent(for: appStore.activeConnectionProfileID)
                     showsConsent = false
-					store.recordConsent(for: appStore.activeConnectionProfileID)
-					let takeOver = takeOverAfterConsent
-					takeOverAfterConsent = false
-                    Task { await enable(takeOverPreviousBinding: takeOver) }
+                    let rebind = rebindAfterConsent
+                    rebindAfterConsent = false
+                    Task { await enable(rebind: rebind) }
                 },
                 onCancel: {
-					takeOverAfterConsent = false
-					showsConsent = false
-				}
+                    rebindAfterConsent = false
+                    showsConsent = false
+                }
             )
         }
-		.alert(
-			L10n.text("ui.push_rebind_confirm_title"),
-			isPresented: $showsRebindConfirmation
-		) {
-			Button(L10n.text("ui.push_rebind_to_this_computer"), role: .destructive) {
-				rebindToCurrentComputer()
-			}
-			Button(L10n.text("ui.cancel"), role: .cancel) {}
-		} message: {
-			Text(L10n.text("ui.push_rebind_confirm_message"))
-		}
-    }
-
-	/// 只有绑定确实属于另一台联系不上的电脑时才露出换绑入口。
-	private var showsRebindOptions: Bool {
-		guard case .previousHostUnavailable = store.status,
-		      store.isEnabled,
-		      let registeredProfileID = store.registeredProfileID else {
-			return false
-		}
-		return registeredProfileID != appStore.activeConnectionProfileID
-	}
-
-    private var toggleBinding: Binding<Bool> {
-		Binding(
-			get: { store.isEnabled(for: appStore.activeConnectionProfileID) },
-            set: { desired in
-                guard !isBusy else { return }
-                if desired {
-                    // 没同意过当前收件主机就先弹披露；同意本身就是开启动作的一部分。
-					if store.hasConsented(for: appStore.activeConnectionProfileID) {
-                        Task { await enable() }
-                    } else {
-                        showsConsent = true
-                    }
+        .alert(L10n.text("ui.push_rebind_confirm_title"), isPresented: $showsRebindConfirmation) {
+            Button(L10n.text("ui.push_rebind_to_this_computer"), role: .destructive) {
+                if store.hasConsented(for: appStore.activeConnectionProfileID) {
+                    Task { await enable(rebind: true) }
                 } else {
-                    Task { await disable() }
+                    rebindAfterConsent = true
+                    showsConsent = true
                 }
             }
+            Button(L10n.text("ui.cancel"), role: .cancel) {}
+        } message: {
+            Text(L10n.text("ui.push_rebind_confirm_message"))
+        }
+    }
+
+    private var toggleBinding: Binding<Bool> {
+        Binding(get: { store.notificationsEnabled }, set: { desired in
+            store.setNotificationsEnabled(desired)
+            if desired {
+                Task { await refresh() }
+            } else {
+                Task { await disable() }
+            }
+        })
+    }
+
+    private func refresh() async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        guard let activeID = appStore.activeConnectionProfileID,
+              let activeClient = try? appStore.client() else { return }
+        await store.refreshHostSupport(client: activeClient, profileID: activeID)
+        let profileID = store.registeredProfileID ?? activeID
+        do {
+            let client = profileID == activeID ? activeClient
+                : try await LockScreenApprovalRouting.client(profileID: profileID, appStore: appStore)
+            await store.synchronize(client: client, profileID: profileID)
+        } catch {
+            if store.hasPendingDisable {
+                await store.disable(client: nil, profileID: profileID, previousHostUnavailable: true)
+            } else {
+                store.markRegistrationFailed()
+            }
+        }
+    }
+
+    private func enable(rebind: Bool) async {
+        isBusy = true
+        defer { isBusy = false }
+        guard let profileID = appStore.activeConnectionProfileID,
+              let client = try? appStore.client() else { return }
+        let previousID = store.registeredProfileID
+        let previousClient: AgentAPIClient?
+        if let previousID, previousID != profileID {
+            previousClient = try? await LockScreenApprovalRouting.client(profileID: previousID, appStore: appStore)
+        } else {
+            previousClient = nil
+        }
+        // 只有明确换绑且旧电脑不可用时，才直接撤销旧服务凭据。
+        let takeOver = rebind && (previousClient == nil || store.status == .previousHostUnavailable)
+        await store.enable(
+            client: client, profileID: profileID,
+            previousClient: previousClient, previousClientProfileID: previousID,
+            takeOverPreviousBinding: takeOver
         )
     }
 
-	private func enable(takeOverPreviousBinding: Bool = false) async {
+    private func disable() async {
         isBusy = true
         defer { isBusy = false }
-		guard let client = try? appStore.client(),
-			  let profileID = appStore.activeConnectionProfileID else { return }
-		let previousClient: AgentAPIClient?
-		let previousClientProfileID: String?
-		if !takeOverPreviousBinding,
-		   let previousProfileID = store.registeredProfileID,
-		   previousProfileID != profileID {
-			// Store 会在 B 注册前注销 A；构造失败时传 nil，Store 保留 A 的本地绑定，
-			// 并把状态置为“旧电脑联系不上”，由下方的换绑入口接手。
-			previousClient = try? await LockScreenApprovalRouting.client(
-				profileID: previousProfileID,
-				appStore: appStore
-			)
-			previousClientProfileID = previousProfileID
-		} else {
-			previousClient = nil
-			previousClientProfileID = nil
-		}
-		await store.enable(
-			client: client,
-			profileID: profileID,
-			previousClient: previousClient,
-			previousClientProfileID: previousClientProfileID,
-			takeOverPreviousBinding: takeOverPreviousBinding
-		)
-	}
-
-	/// 用户在弹窗里确认换绑后才到这里。没同意过当前收件主机就先弹披露，同意后继续换绑。
-	private func rebindToCurrentComputer() {
-		guard !isBusy else { return }
-		if store.hasConsented(for: appStore.activeConnectionProfileID) {
-			Task { await enable(takeOverPreviousBinding: true) }
-		} else {
-			takeOverAfterConsent = true
-			showsConsent = true
-		}
-	}
-
-	private func disable() async {
-		isBusy = true
-		defer { isBusy = false }
-		let client: AgentAPIClient?
-		var previousHostUnavailable = false
-		let registeredProfileID = store.registeredProfileID
-		if let profileID = registeredProfileID,
-		   profileID != appStore.activeConnectionProfileID {
-			client = try? await LockScreenApprovalRouting.client(profileID: profileID, appStore: appStore)
-			// 旧档案已删或凭据缺失时构造不出 client；关闭只能靠 Provider 撤销来保证。
-			previousHostUnavailable = client == nil
-		} else {
-			client = try? appStore.client()
-		}
-		await store.disable(
-			client: client,
-			profileID: registeredProfileID,
-			previousHostUnavailable: previousHostUnavailable
-		)
-	}
-
-	/// 旧电脑已经确认联系不上：不再尝试它的 agentd，直接撤销 Provider Ticket 并清理本地绑定。
-	private func disablePreviousBindingWithoutHost() async {
-		guard !isBusy else { return }
-		isBusy = true
-		defer { isBusy = false }
-		await store.disable(
-			client: nil,
-			profileID: store.registeredProfileID,
-			previousHostUnavailable: true
-		)
-	}
-
-    private var statusIsProblem: Bool {
-        switch store.status {
-        case .notificationsDenied, .failed, .unavailableOnHost, .previousHostUnavailable:
-            return true
-        case .off, .registering, .active:
-            return false
+        let profileID = store.registeredProfileID ?? appStore.activeConnectionProfileID
+        let client: AgentAPIClient?
+        if let profileID, profileID != appStore.activeConnectionProfileID {
+            client = try? await LockScreenApprovalRouting.client(profileID: profileID, appStore: appStore)
+        } else {
+            client = try? appStore.client()
         }
+        await store.disable(client: client, profileID: profileID, previousHostUnavailable: client == nil)
     }
-
-    private var statusDescription: String {
-        if !store.isEnabled(for: appStore.activeConnectionProfileID),
-           case .active = store.status {
-            return L10n.text("ui.push_status_off")
-        }
-        switch store.status {
-        case .off:
-            return L10n.text("ui.push_status_off")
-        case .unavailableOnHost:
-            return L10n.text("ui.push_status_unavailable_on_host")
-        case .notificationsDenied:
-            return L10n.text("ui.push_status_notifications_denied")
-        case .registering:
-            return L10n.text("ui.push_status_registering")
-        case .active(let expiresAt):
-            return L10n.format("ui.push_status_active_until_value", Self.expiryFormatter.string(from: expiresAt))
-        case .failed(let message):
-            return message
-        case .previousHostUnavailable:
-            return L10n.text("ui.push_previous_host_unavailable")
-        }
-    }
-
-    private var receiverDescription: String {
-		guard let host = store.providerHost(for: appStore.activeConnectionProfileID), !host.isEmpty else {
-			return L10n.text("ui.push_receiver_unknown")
-		}
-		return store.providerIsOfficial(for: appStore.activeConnectionProfileID)
-            ? L10n.format("ui.push_receiver_official_value", host)
-            : L10n.format("ui.push_receiver_custom_value", host)
-    }
-
-    private func disclosureRow(key: String, symbol: String, tint: Color, tokens: ThemeTokens) -> some View {
-        Label {
-            Text(L10n.text(key))
-                .font(themeStore.uiFont(.subheadline))
-                .foregroundStyle(tokens.primaryText)
-                .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-            Image(systemName: symbol)
-                .foregroundStyle(tint)
-        }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .combine)
-    }
-
-    private static let expiryFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter
-    }()
 }
 
 /// 披露清单单独抽出来，让设置页与测试引用同一份事实，避免两边描述漂移。

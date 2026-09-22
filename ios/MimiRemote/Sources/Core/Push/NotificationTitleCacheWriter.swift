@@ -97,7 +97,7 @@ final class NotificationTitleCacheWriter: ObservableObject {
             appStore.$activeConnectionProfileID.map { profileID -> (String?, UInt64) in
                 (profileID, coherence.profileDidPublish(profileID))
             },
-            lockScreenApprovalStore.$status.removeDuplicates()
+			lockScreenApprovalStore.$status.combineLatest(lockScreenApprovalStore.$notificationsEnabled)
         )
         .throttle(for: .seconds(debounceInterval), scheduler: DispatchQueue.main, latest: true)
         .sink { [weak self, weak lockScreenApprovalStore] sessionsState, profiles, profileState, _ in
@@ -110,7 +110,8 @@ final class NotificationTitleCacheWriter: ObservableObject {
                 self.recordSkip("awaiting_sessions_after_switch")
                 return
             }
-            let isEnabled = lockScreenApprovalStore?.isEnabled ?? false
+            let isEnabled = (lockScreenApprovalStore?.isEnabled ?? false)
+				&& (lockScreenApprovalStore?.notificationsEnabled ?? false)
             self.synchronize(
                 sessions: sessionsState.0,
                 profiles: profiles,

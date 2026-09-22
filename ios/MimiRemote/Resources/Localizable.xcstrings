@@ -1,6 +1,150 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.push_status_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notifications are temporarily unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通知暂不可用"
+          }
+        }
+      }
+    },
+    "ui.push_status_waiting": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for a connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待连接电脑"
+          }
+        }
+      }
+    },
+    "ui.push_disable_incomplete": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remote notifications have not been fully turned off"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程通知关闭未完成"
+          }
+        }
+      }
+    },
+    "ui.push_previous_computer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Previously connected computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "之前连接的电脑"
+          }
+        }
+      }
+    },
+    "ui.push_notification_computer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notifications from"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接收通知的电脑"
+          }
+        }
+      }
+    },
+    "ui.push_trust_custom_service": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm custom notification service"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认自定义通知服务"
+          }
+        }
+      }
+    },
+    "ui.push_retry_disable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry turning off remote notifications"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试关闭远程通知"
+          }
+        }
+      }
+    },
+    "ui.push_open_system_settings": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open System Settings"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前往系统设置"
+          }
+        }
+      }
+    },
+    "ui.push_receive_notifications": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Receive message notifications"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接收消息通知"
+          }
+        }
+      }
+    },
     "ui.view_process": {
       "localizations": {
         "en": {
@@ -22142,7 +22286,6 @@
       }
     },
     "ui.push_lock_screen_approval": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
@@ -22153,7 +22296,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "消息提醒"
+            "value": "消息通知"
           }
         }
       }
@@ -22380,18 +22523,17 @@
       }
     },
     "ui.push_status_notifications_denied": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Notifications are denied in system settings, so Lock Screen reminders cannot arrive"
+            "value": "System notifications are turned off"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "系统通知权限被拒绝，锁屏提醒无法送达"
+            "value": "系统通知未开启"
           }
         }
       }
@@ -22431,18 +22573,17 @@
       }
     },
     "ui.push_status_registering": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Registering…"
+            "value": "Connecting to notification service"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在注册…"
+            "value": "正在连接通知服务"
           }
         }
       }
@@ -22567,18 +22708,17 @@
       }
     },
     "ui.push_status_unavailable_on_host": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Your Mac is not ready yet"
+            "value": "Remote notifications are unavailable on this computer"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mac 端尚未准备好"
+            "value": "这台电脑暂不支持远程通知"
           }
         }
       }

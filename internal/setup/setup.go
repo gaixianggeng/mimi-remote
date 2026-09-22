@@ -224,6 +224,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			},
 		},
 		Claude: config.DefaultClaudeConfig(),
+		Push:   pushConfigForSetup(originalConfig),
 		Session: config.SessionConfig{
 			OutputBufferBytes: 128 * 1024,
 		},
@@ -270,6 +271,22 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	result.BrowseRoot = browseRoot
 	result.AppServerSSHTarget = appServerSSHTarget
 	return result, nil
+}
+
+func pushConfigForSetup(original []byte) config.PushConfig {
+	defaults := config.DefaultPushConfig()
+	if len(original) == 0 {
+		return defaults
+	}
+	// --force 可以修复其他配置，但不能因此撤销用户已关闭通知或选择自建服务的意愿。
+	// 原文件无法解析时仍允许重建配置，保持 --force 的恢复用途。
+	document := struct {
+		Push config.PushConfig `json:"push"`
+	}{Push: defaults}
+	if json.Unmarshal(original, &document) != nil {
+		return defaults
+	}
+	return document.Push
 }
 
 func normalizeSetupAppServerSSHTarget(raw string) (string, error) {
