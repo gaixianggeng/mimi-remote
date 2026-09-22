@@ -1292,6 +1292,15 @@ struct DiagnosticsAndSupportSettingsView: View {
 
         Form {
             Section {
+                NavigationLink(value: SettingsDestination.appDiagnostics) {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.app_diagnostics"),
+                        systemImage: "waveform.badge.magnifyingglass"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.appDiagnostics")
+
                 NavigationLink(value: SettingsDestination.doctor) {
                     SettingsValueLabel(
                         title: L10n.text("ui.diagnosis_and_support"),

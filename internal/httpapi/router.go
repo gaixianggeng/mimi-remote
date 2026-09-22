@@ -19,6 +19,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
@@ -124,15 +125,18 @@ type Router struct {
 	gitTestFlightMu   sync.Mutex
 	gitTestFlightJobs map[string]*gitTestFlightReleaseJob
 	shutdownOnce      sync.Once
+	diagnosticLogs    DiagnosticLogController
 }
 
 // RouterOptions 只承载必须在构造时固定的进程级资源路径。
 // 空持久化路径保持纯内存行为，供普通测试和嵌入式调用使用；agentd 生产入口
 // 必须注入真实配置与私有状态路径。
 type RouterOptions struct {
-	ConfigPath   string
-	AppServerSSH appServerSSHTransport
-	tailcat      tailcatSidecar
+	ConfigPath             string
+	AppServerSSH           appServerSSHTransport
+	DiagnosticLogs         DiagnosticLogController
+	DiagnosticControlToken string
+	tailcat                tailcatSidecar
 	// managedPairing 只供同包测试注入；生产值使用官方控制面和本机 0600 状态。
 	managedPairing managedPairingService
 	// tailcatLocalToken 只供同包测试注入；生产值来自配置目录中的 0600 文件。
@@ -200,6 +204,7 @@ func NewRouterWithInstallationIDAndOptions(
 		managedPairing:              managedPairing,
 		tailcatLocalToken:           tailcatLocalToken,
 		appServerSSH:                options.AppServerSSH,
+		diagnosticLogs:              options.DiagnosticLogs,
 	}
 	if cfg.Tailcat.Enabled {
 		go func() {
@@ -230,6 +235,7 @@ func NewRouterWithInstallationIDAndOptions(
 		RouteStorePath:  pushRouteStorePath(options.ConfigPath),
 	})
 	mux := http.NewServeMux()
+	r.registerLocalDiagnostics(mux, options.DiagnosticControlToken)
 	mux.HandleFunc("/healthz", r.healthz)
 	mux.HandleFunc("/api/health", r.healthz)
 	mux.HandleFunc("/api/pair/claim", r.pairingClaimHandler)
@@ -343,12 +349,26 @@ func logging(next http.Handler, monitor *relayMonitor) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		if strings.HasPrefix(r.URL.Path, "/api/") && monitor != nil {
+		localDiagnostics := strings.HasPrefix(r.URL.Path, "/api/local/diagnostics/")
+		if strings.HasPrefix(r.URL.Path, "/api/") && monitor != nil && !localDiagnostics {
 			monitor.beginHTTP()
 		}
 		next.ServeHTTP(rec, r)
+		// 控制日志的请求不记录自身，清空后不会立刻被自己的 HTTP 记录填回。
+		if localDiagnostics {
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			duration := time.Since(start)
+			outcome := "succeeded"
+			if rec.status >= 400 {
+				// 未认证请求也可产生 4xx；只在用户临时排障时记录，避免挤掉故障证据。
+				outcome = "rejected"
+			}
+			if rec.status >= 500 {
+				outcome = "failed"
+			}
+			diagnosticlog.Record("http", outcome, diagnosticlog.Fields{StatusCode: rec.status, Duration: duration})
 			log.Printf("%s %s remote=%s host=%s status=%d bytes=%d duration=%s write_duration=%s write_calls=%d", r.Method, redactedRequestURI(r.URL), requestRemoteHost(r), r.Host, rec.status, rec.bytes, duration.Round(time.Millisecond), rec.writeDuration.Round(time.Millisecond), rec.writeCalls)
 			if monitor != nil {
 				monitor.recordHTTP(relayHTTPSample{

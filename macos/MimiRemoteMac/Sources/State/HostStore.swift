@@ -12,6 +12,12 @@ final class HostStore {
     private(set) var pairing: PairingInfo?
     private(set) var pairingNetwork: PairingNetwork = .tailscale
     private(set) var recentLogs: [String] = []
+    private(set) var diagnosticsStatus: AgentDiagnosticsStatus?
+    private(set) var diagnosticsStatusError: String?
+    private(set) var diagnosticsLogError: String?
+    private(set) var isLoadingDiagnostics = false
+    private(set) var isUpdatingDiagnostics = false
+    private(set) var isExportingDiagnostics = false
     private(set) var appliedFixes: [String] = []
     private(set) var isBusy = false
     private(set) var isStoppingForQuit = false
@@ -449,16 +455,76 @@ final class HostStore {
         }
     }
 
-    func loadRecentLogs() async {
+    func refreshDiagnostics() async {
+        guard !isLoadingDiagnostics, !isUpdatingDiagnostics else { return }
+        isLoadingDiagnostics = true
+        diagnosticsStatusError = nil
+        diagnosticsLogError = nil
+        defer { isLoadingDiagnostics = false }
+
+        async let statusCall = agent.diagnosticsStatus()
+        async let logsCall = logs.recentLines(200)
         do {
-            recentLogs = try await logs.recentLines(200)
+            diagnosticsStatus = try await statusCall
+        } catch is CancellationError {
+            return
         } catch {
-            lastError = error.localizedDescription
+            // 服务状态无法读取时不展示过期快照，避免让用户误以为开关仍然有效。
+            diagnosticsStatus = nil
+            diagnosticsStatusError = error.localizedDescription
+        }
+        do {
+            recentLogs = try await logsCall
+        } catch is CancellationError {
+            return
+        } catch {
+            diagnosticsLogError = error.localizedDescription
         }
     }
 
-    func revealLogFile() {
-        logs.reveal()
+    func setDetailedDiagnostics(_ enabled: Bool) async {
+        guard !isLoadingDiagnostics, !isUpdatingDiagnostics else { return }
+        isUpdatingDiagnostics = true
+        diagnosticsStatusError = nil
+        defer { isUpdatingDiagnostics = false }
+        do {
+            diagnosticsStatus = try await agent.setDetailedDiagnostics(enabled)
+        } catch is CancellationError {
+            return
+        } catch {
+            diagnosticsStatusError = error.localizedDescription
+        }
+    }
+
+    func clearDiagnostics() async {
+        guard !isLoadingDiagnostics, !isUpdatingDiagnostics else { return }
+        isUpdatingDiagnostics = true
+        diagnosticsStatusError = nil
+        diagnosticsLogError = nil
+        defer { isUpdatingDiagnostics = false }
+        do {
+            diagnosticsStatus = try await agent.clearDiagnostics()
+            recentLogs = []
+        } catch is CancellationError {
+            return
+        } catch {
+            diagnosticsLogError = error.localizedDescription
+        }
+    }
+
+    func diagnosticExportLines() async -> [String]? {
+        guard !isExportingDiagnostics else { return nil }
+        isExportingDiagnostics = true
+        diagnosticsLogError = nil
+        defer { isExportingDiagnostics = false }
+        do {
+            return try await logs.exportLines()
+        } catch is CancellationError {
+            return nil
+        } catch {
+            diagnosticsLogError = error.localizedDescription
+            return nil
+        }
     }
 
     func openLoginItemsSettings() {
@@ -1789,7 +1855,35 @@ final class HostStore {
                     warnings: network == .localNetwork ? ["局域网配对仅适用于与这台 Mac 位于同一局域网的设备"] : []
                 )
             },
-            version: { status.version }
+            version: { status.version },
+            diagnosticsStatus: {
+                AgentDiagnosticsStatus(
+                    enabled: true,
+                    expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(12 * 60)),
+                    currentBytes: 18_432,
+                    previousBytes: 64_128,
+                    totalBytes: 82_560,
+                    maxTotalBytes: 10 * 1_048_576,
+                    retentionDays: 7
+                )
+            },
+            setDetailedDiagnostics: { enabled in
+                AgentDiagnosticsStatus(
+                    enabled: enabled,
+                    expiresAt: enabled
+                        ? ISO8601DateFormatter().string(from: Date().addingTimeInterval(15 * 60))
+                        : nil,
+                    currentBytes: 18_432,
+                    previousBytes: 64_128, totalBytes: 82_560,
+                    maxTotalBytes: 10 * 1_048_576, retentionDays: 7
+                )
+            },
+            clearDiagnostics: {
+                AgentDiagnosticsStatus(
+                    enabled: false, expiresAt: nil, currentBytes: 0, previousBytes: 0,
+                    totalBytes: 0, maxTotalBytes: 10 * 1_048_576, retentionDays: 7
+                )
+            }
         )
         let services = ServiceManagementClient(
             agentStatus: { .enabled },
@@ -1811,7 +1905,10 @@ final class HostStore {
             services: services,
             homebrew: homebrew,
             health: HealthClient(check: { _ in true }, checkDirect: { _ in true }),
-            logs: AgentLogClient(recentLines: { _ in [] }, reveal: {}, fileURL: URL(filePath: "/tmp/agentd.log"))
+            logs: AgentLogClient(
+                recentLines: { _ in [#"{"stage":"request","outcome":"failed","operation":"status"}"#] },
+                exportLines: { [#"{"stage":"request","outcome":"failed","operation":"status"}"#] }
+            )
         )
         store.lifecycle = lifecycle
         if lifecycle != .notConfigured {

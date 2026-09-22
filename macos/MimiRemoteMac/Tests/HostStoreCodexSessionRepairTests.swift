@@ -254,8 +254,7 @@ final class HostStoreCodexSessionRepairTests: XCTestCase {
             health: HealthClient(check: { _ in false }, checkDirect: { _ in true }),
             logs: AgentLogClient(
                 recentLines: { _ in [] },
-                reveal: {},
-                fileURL: URL(filePath: "/tmp/mimi-codex-session-repair-test.log")
+                exportLines: { [] }
             )
         )
         return RepairStoreFixture(store: store)
