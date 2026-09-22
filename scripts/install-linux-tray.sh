@@ -32,7 +32,11 @@ stop_tray() {
 start_tray() {
   if [[ "${MIMI_TRAY_NO_START:-0}" != 1 && ( -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ) && -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
     mkdir -p "$tray_data"
-    nohup "$tray_binary" >"$tray_data/tray.log" 2>&1 </dev/null &
+    local -a options=()
+    if [[ -f "${files[3]}" ]] && grep -Eq '^Exec=.* --inline-qr([[:space:]]|$)' "${files[3]}"; then
+      options+=(--inline-qr)
+    fi
+    nohup "$tray_binary" "${options[@]}" >"$tray_data/tray.log" 2>&1 </dev/null &
   fi
 }
 
@@ -95,6 +99,14 @@ if [[ "$mode" == rollback ]]; then
   done
 else
   candidate="$TRAY_ROOT/mimi-remote-tray"
+  inline_qr="${MIMI_TRAY_INLINE_QR:-}"
+  if [[ -z "$inline_qr" ]]; then
+    inline_qr=0
+    if [[ -f "${files[3]}" ]] && grep -Eq '^Exec=.* --inline-qr([[:space:]]|$)' "${files[3]}"; then inline_qr=1; fi
+  fi
+  [[ "$inline_qr" == 0 || "$inline_qr" == 1 ]] || { echo 'MIMI_TRAY_INLINE_QR 必须为 0 或 1。' >&2; exit 1; }
+  inline_option=""
+  [[ "$inline_qr" != 1 ]] || inline_option=" --inline-qr"
   [[ -x "$candidate" ]] || { echo 'Release 包缺少 mimi-remote-tray。' >&2; exit 1; }
   [[ "$("$candidate" version)" == "$("$TRAY_ROOT/agentd" version)" ]] || { echo '托盘与 agentd 版本不一致。' >&2; exit 1; }
   install -m 755 "$candidate" "$stage/source/0"
@@ -112,11 +124,11 @@ else
   desktop_exec="${desktop_exec//%/%%}"
   {
     cat "$TRAY_ROOT/packaging/linux/mimi-remote.desktop"
-    printf 'Exec="%s" --show\nIcon=%s/mimi.png\n' "$desktop_exec" "$tray_data"
+    printf 'Exec="%s" --show%s\nIcon=%s/mimi.png\n' "$desktop_exec" "$inline_option" "$tray_data"
   } >"$stage/source/2"
   {
     cat "$TRAY_ROOT/packaging/linux/mimi-remote.desktop"
-    printf 'Exec="%s"\nIcon=%s/mimi.png\n' "$desktop_exec" "$tray_data"
+    printf 'Exec="%s"%s\nIcon=%s/mimi.png\n' "$desktop_exec" "$inline_option" "$tray_data"
     if [[ -f "${files[3]}" ]]; then
       grep -Eq '^Hidden=true[[:space:]]*$' "${files[3]}" && echo 'Hidden=true'
       grep -Eq '^X-GNOME-Autostart-enabled=false[[:space:]]*$' "${files[3]}" && echo 'X-GNOME-Autostart-enabled=false'
