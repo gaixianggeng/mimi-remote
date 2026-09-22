@@ -35,6 +35,8 @@ mcpServer/startupStatus/updated
 model/rerouted
 model/safetyBuffering/updated
 model/verification
+modelProvider/authRecoveryCompleted
+modelProvider/authRecoveryStarted
 process/exited
 process/outputDelta
 project/changed
@@ -42,6 +44,7 @@ remoteControl/status/changed
 serverRequest/resolved
 skills/changed
 thread/archived
+thread/attachment/updated
 thread/closed
 thread/compacted
 thread/deleted

@@ -53,7 +53,11 @@ func prepareAgentAppServerRuntime(cfg config.Config) (*agentAppServerRuntime, er
 			return nil, err
 		}
 		if err := transport.EnsureReady(prepareCtx); err != nil {
-			return nil, err
+			// Codex 不可用只影响该运行时。保留 transport 供诊断与修复后重连，
+			// 每条业务连接仍由 transport 校验登录环境，不会绕过 Aqua 边界。
+			log.Printf("agentd shared local app-server unavailable: %v", err)
+			result.routerOptions.AppServerSSH = transport
+			return result, nil
 		}
 		log.Printf("agentd shared local app-server socket=%s codex_version=%s", transport.SocketPath(), localVersion)
 		result.routerOptions.AppServerSSH = transport

@@ -82,7 +82,7 @@ CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 \
   codex -c features.code_mode_host=true app-server --listen unix://
 ```
 
-macOS 本机模式还通过 `command/exec` 查询 resident 的 `launchctl managername`，仅复用 Aqua 环境。若检查失败或已有 resident 属于 Background，agentd 明确拒绝连接，不终止旧进程，也不改换 socket。Mac App 的 supervisor LaunchAgent 限定为 Aqua；首次设置不抢先启动 resident。Homebrew 用户应通过已登录用户的 `agentd up` 启动 GUI 服务，不能把 SSH 中直接执行 `agentd serve` 当作等价启动方式。
+macOS 本机模式还通过 `command/exec` 查询 resident 的 `launchctl managername`，仅复用 Aqua 环境。每条新的业务连接都以独立探针校验，并核对探针与业务连接的 Unix peer，避免 Desktop 重建服务后沿用旧的校验结果。若检查失败或已有 resident 属于 Background，agentd 拒绝该 Codex 连接，但保留主服务诊断；不终止旧进程，也不改换 socket。Mac App 的 supervisor LaunchAgent 限定为 Aqua；首次设置不抢先启动 resident。Homebrew 用户应通过已登录用户的 `agentd up` 启动 GUI 服务，不能把 SSH 中直接执行 `agentd serve` 当作等价启动方式。
 
 Desktop 的 SSH proxy 仍可接入已由 GUI 服务创建的同一个 socket，任务历史与接续方式不变。若 Desktop 先通过 SSH 创建了 resident，之后启动 Mimi 会报告运行环境错误，需要下面的一次性修复；Mimi 不控制 Desktop 自己的启动逻辑。
 
@@ -94,9 +94,9 @@ launchd 启动的进程和 SSH 登录在 macOS 上的 open-file soft limit 通�
 
 agentd 在进程内串行执行探测与启动。多个入口同时尝试启动时，只有成功绑定默认 Socket 的 App Server 成为 owner；其余连接这个 owner。
 
-agentd 或单条 Mimi WebSocket 退出时只关闭自己的连接或对应 SSH proxy，不停止共享 App Server。socket、SSH、Codex 版本或协议初始化失败时，agentd 明确失败，不回退到独立 WebSocket、stdio 或 Desktop IPC。
+agentd 或单条 Mimi WebSocket 退出时只关闭自己的连接或对应 SSH proxy，不停止共享 App Server。socket、SSH、Codex 版本或协议初始化失败时，Codex 链路明确失败，不回退到独立 WebSocket、stdio 或 Desktop IPC。本机 transport 已建立而 readiness 失败时，agentd 继续提供诊断；静态配置、CLI 预检或其他启动阶段错误仍可能阻止主服务启动。
 
-若默认 Socket 文件仍存在，但无法完成初始化，agentd 会停止并报告错误。它不会猜测 owner 或删除共享 Socket。先确认没有仍在使用该 Socket 的 App Server，再手工运行上面的 `codex ... app-server --listen unix://`；Codex 会按自己的启动锁和 stale-socket 规则恢复。
+若默认 Socket 文件仍存在，但无法完成初始化，agentd 会报告 Codex 不可用并保留诊断服务。它不会猜测 owner 或删除共享 Socket。环境检查失败时，刷新后的 runtime 状态使用 `shared_local_session_unavailable`；`/healthz` 的 200 只证明主服务存活。先确认没有仍在使用该 Socket 的 App Server，再手工运行上面的 `codex ... app-server --listen unix://`；Codex 会按自己的启动锁和 stale-socket 规则恢复。恢复 Aqua 实例后，下一条连接重新校验，不需要重启 agentd。
 
 ## macOS 文件访问权限
 
@@ -118,7 +118,7 @@ agentd start
 
 只有确认 resident 属于当前用户、默认 socket 的真实 peer、Background 环境，且没有其他连接、活动任务或待执行队列，命令才对该 PID 发送一次 SIGTERM。缺少协议或系统检查结果时拒绝操作；不使用 SIGKILL，不删除 socket。已处于 Aqua 或 socket 不存在时返回无需释放。命令本身不启动 replacement，仍由原有 GUI 服务负责。
 
-App Server 没有原子的“停止接入并安全退出”接口。因此确认后到修复结束前不要重新打开 SSH 共享页面。检测到其他连接或任务时先处理提示再重试，不要反复解锁钥匙串。此操作不能解决钥匙串本身被用户锁定、凭证失效或其他独立授权问题。
+Codex `0.155.1` 的 Unix 服务实现可以通过 SIGHUP 停止接纳新的模型回合，等待已接纳的提交和运行回合结束；重复 SIGHUP 不升级为强制退出。这不是 JSON-RPC 方法，也不是单个 Thread 的交接接口。独立 `command/exec` 可能随服务退出而终止，且 Desktop 重连仍可能先创建新的 Background 实例。因此当前一次性修复继续要求其他客户端断开、任务与队列空闲，不把 drain 当作自动接管依据。确认后到修复结束前不要重新打开 SSH 共享页面。此操作不能解决钥匙串本身被用户锁定、凭证失效或其他独立授权问题。
 
 ## 会话和消息规则
 

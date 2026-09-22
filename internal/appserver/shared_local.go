@@ -130,6 +130,29 @@ func (t *SharedLocalTransport) WebSocketHeaders() (http.Header, error) {
 }
 
 func (t *SharedLocalTransport) WebSocketDialer(timeout time.Duration) (websocket.Dialer, error) {
+	dialer, err := t.rawWebSocketDialer(timeout)
+	if err != nil {
+		return websocket.Dialer{}, err
+	}
+	rawDial := dialer.NetDialContext
+	dialer.NetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := rawDial(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		// startup 检查通过后，Desktop 仍可能重建 resident。业务连接必须验证
+		// 自己实际连接的 owner，不能把 agentd 启动时的检查当作永久授权。
+		if err := t.validateConnectionSession(ctx, conn); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return conn, nil
+	}
+	return dialer, nil
+}
+
+// rawWebSocketDialer 仅供登录环境探针和显式修复使用，业务连接不得绕过校验。
+func (t *SharedLocalTransport) rawWebSocketDialer(timeout time.Duration) (websocket.Dialer, error) {
 	if _, err := t.WebSocketURL(); err != nil {
 		return websocket.Dialer{}, err
 	}
@@ -207,7 +230,7 @@ func (t *SharedLocalTransport) probe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	dialer, err := t.WebSocketDialer(4 * time.Second)
+	dialer, err := t.rawWebSocketDialer(4 * time.Second)
 	if err != nil {
 		return err
 	}
