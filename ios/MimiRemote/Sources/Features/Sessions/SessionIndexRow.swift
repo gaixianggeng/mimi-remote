@@ -14,7 +14,7 @@ enum SessionIndexRowDensity: Equatable {
     /// 行高。两行内容加上下留白后仍要留出呼吸量——过去 60/44 的行高把两行文字压在
     /// 一起，配合逐行分隔线读成一张表格；列表需要的是可扫读的条目，不是表格。
     ///
-    /// 会话库两档同高。17pt 标题仍保留两行之间的留白，行高收敛到 68pt。
+    /// 工作区行与带摘要的 iPad 会话行保持 68pt；手机会话行另收敛到 52pt。
     var minimumHeight: CGFloat { 68 }
 
     var horizontalPadding: CGFloat {
@@ -44,7 +44,7 @@ enum SessionIndexRowDensity: Equatable {
 
     /// 前导槽。宽度恒定预留，标题因此在所有行上落在同一条竖线上。
     ///
-    /// 两个 tab 放不同的东西（会话 tab 放项目图标、工作区放状态字形），但槽宽必须相同，
+    /// 两个 tab 放不同的东西（会话 tab 放来源标记、工作区放状态字形），但槽宽必须相同，
     /// 否则同一条会话在两页里的标题起点会差几个点。
     var stateGutterWidth: CGFloat { 20 }
 
@@ -200,12 +200,11 @@ enum SessionRowState: Equatable {
 ///
 /// 两个 tab 的区分符不同，前导槽应当承载各自那一个：
 ///
-/// - 会话 tab 是所有项目的汇集区，"这条属于哪个项目"是第一位的问题，槽里放项目图标；
-///   未读属于会话状态，统一跟在标题后面，不再依附项目图标或占用正文起点。
+/// - 会话 tab 的槽里放来源标记；未读小点跟在标题后面，不占用正文起点。
 /// - 工作区内项目恒定，那个问题不存在，槽里放会话状态字形。
 enum SessionIndexRowLeadingSlot: Equatable {
     case state
-    case projectIcon
+    case runtimeIcon
 }
 
 /// 身份槽没有可展示分支时使用什么信息。
@@ -219,7 +218,7 @@ enum SessionIndexRowIdentityFallback: Equatable {
 }
 
 /// 前导状态字形。需要处理与运行中的状态保留独立形状；
-/// 未读只是轻量提示，配合加粗标题与 VoiceOver 文案，不借用成功色。
+/// 未读只用小点与 VoiceOver 文案提示，不改变整行标题的视觉权重。
 struct SessionRowStateGlyph: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -477,20 +476,16 @@ struct SessionIndexRow: View {
     var isUnread = false
     let density: SessionIndexRowDensity
     var searchSnippet: String? = nil
-    var projectIcon: WorkspaceProjectIconContent? = nil
     /// 详细行可选的 Git 分支；为 nil 时身份槽按调用方指定的规则回退。
     var branch: String? = nil
     /// 会话库默认回退项目名；目录身份仍可用于辅助技术说明 worktree。
     var identityFallback: SessionIndexRowIdentityFallback = .project
-    /// 前导槽承载什么。会话 tab 传 `.projectIcon`，工作区保持 `.state`。
+    /// 前导槽承载什么。会话 tab 传 `.runtimeIcon`，工作区保持 `.state`。
     var leadingSlot: SessionIndexRowLeadingSlot = .state
+    /// 会话 tab 只在宽屏保留一行摘要；手机固定为来源、标题、时间三列。
+    var showsSessionPreview = false
     /// `.state` 槽在无状态时是否画灰环兜底；工作区总览关闭它来降低重复噪声。
     var showsIdleStateGlyph = false
-    /// 仅在一段连续同项目会话的首行展示项目图标，后续行保留同宽空槽维持对齐。
-    ///
-    /// 折叠不丢信息：第二行末端的项目名每一行都在，图标只承担段首的视觉锚点。
-    /// 逐行重复同一枚图标反而会让连续同项目的一段看起来很吵。
-    var showsProjectAnchor = false
     var drawsSelectionBackground = true
     var showsNeutralHistoryStatus = false
     /// 工作区已经给出项目身份；总览行把标题和当前状态置前，分支留给详情与辅助技术。
@@ -551,10 +546,15 @@ struct SessionIndexRow: View {
         sessionStatus: String,
         isUnread: Bool,
         showsNeutralHistoryStatus: Bool,
+        statusIsVisible: Bool = true,
+        runtime: String? = nil,
         identity: String? = nil
     ) -> String {
         var values: [String] = []
-        if !showsStatusLabel(
+        if let runtime, !runtime.isEmpty {
+            values.append(runtime)
+        }
+        if !statusIsVisible || !showsStatusLabel(
             status: status,
             sessionStatus: sessionStatus,
             showsNeutralHistoryStatus: showsNeutralHistoryStatus
@@ -592,11 +592,13 @@ struct SessionIndexRow: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         HStack(alignment: .center, spacing: density.stateGutterSpacing) {
-            leadingGutter(tokens: tokens)
+            leadingGutter()
 
             VStack(alignment: .leading, spacing: density.contentSpacing) {
                 titleLine(tokens: tokens)
-                metadataLine(tokens: tokens)
+                if !isSessionLibrary || showsSessionPreview {
+                    metadataLine(tokens: tokens)
+                }
 
                 if isWorkspaceOverview && dynamicTypeSize.isAccessibilitySize && shouldShowStatusLabel {
                     let preview = SessionListPresentation.distinctPreviewDisplayText(for: session)
@@ -608,14 +610,14 @@ struct SessionIndexRow: View {
                     }
                 }
 
-                if let searchSnippet, !searchSnippet.isEmpty {
+                if !isSessionLibrary, let searchSnippet, !searchSnippet.isEmpty {
                     supplementaryPreviewText(searchSnippet, tokens: tokens, hasSearchSnippet: true)
                 }
             }
         }
         .padding(.horizontal, density.horizontalPadding)
-        .padding(.vertical, isWorkspaceOverview ? 7 : 8)
-        .frame(maxWidth: .infinity, minHeight: isWorkspaceOverview ? Self.workspaceOverviewMinimumHeight : density.minimumHeight, alignment: .leading)
+        .padding(.vertical, isSessionLibrary && !showsSessionPreview ? 4 : (isWorkspaceOverview ? 7 : 8))
+        .frame(maxWidth: .infinity, minHeight: rowMinimumHeight, alignment: .leading)
         .background {
             if isSelected && drawsSelectionBackground {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -628,20 +630,20 @@ struct SessionIndexRow: View {
 
     private func titleLine(tokens: ThemeTokens) -> some View {
         HStack(alignment: dynamicTypeSize.isAccessibilitySize ? .top : .firstTextBaseline, spacing: 7) {
-            if isPinned {
+            if isPinned && !isSessionLibrary {
                 SessionPinnedBadge(compact: true)
             }
 
             Text(visibleTitle)
-                .font(themeStore.uiFont(size: density.titleFontSize, weight: isSelected || isUnread ? .semibold : .regular))
-                .foregroundStyle(isSelected || isUnread ? tokens.primaryText : tokens.listTitleText)
+                .font(themeStore.uiFont(size: density.titleFontSize, weight: isSelected && !isSessionLibrary ? .semibold : .regular))
+                .foregroundStyle(isSelected && !isSessionLibrary ? tokens.primaryText : tokens.listTitleText)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .truncationMode(.tail)
                 .layoutPriority(1)
                 .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
 
-            if leadingSlot == .projectIcon, isUnread {
-                // 会话库前导槽留给项目图标，未读小点跟在标题后面；标题字重仍是主要提示。
+            if leadingSlot == .runtimeIcon, isUnread {
+                // 会话库前导槽留给来源图标，未读小点跟在标题后面。
                 unreadTitleIndicator(tokens: tokens)
                     .layoutPriority(2)
             }
@@ -656,10 +658,27 @@ struct SessionIndexRow: View {
 
     @ViewBuilder
     private func metadataLine(tokens: ThemeTokens) -> some View {
-        if isWorkspaceOverview {
+        if isSessionLibrary {
+            sessionLibraryPreviewLine(tokens: tokens)
+        } else if isWorkspaceOverview {
             workspaceOverviewMetadataLine(tokens: tokens)
         } else {
             standardMetadataLine(tokens: tokens)
+        }
+    }
+
+    @ViewBuilder
+    private func sessionLibraryPreviewLine(tokens: ThemeTokens) -> some View {
+        let preview = searchSnippet?.isEmpty == false
+            ? searchSnippet ?? ""
+            : SessionListPresentation.distinctPreviewDisplayText(for: session)
+        if !preview.isEmpty {
+            Text(preview)
+                .font(themeStore.uiFont(size: density.previewFontSize))
+                .foregroundStyle(tokens.secondaryText)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
         }
     }
 
@@ -774,7 +793,7 @@ struct SessionIndexRow: View {
     }
 
     @ViewBuilder
-    private func leadingGutter(tokens: ThemeTokens) -> some View {
+    private func leadingGutter() -> some View {
         switch leadingSlot {
         case .state:
             SessionRowStateGlyph(
@@ -783,28 +802,13 @@ struct SessionIndexRow: View {
                 drawsIdlePlaceholder: showsIdleStateGlyph
             )
             .frame(width: density.stateGutterWidth, alignment: .center)
-        case .projectIcon:
-            projectIconGutter(tokens: tokens)
+        case .runtimeIcon:
+            RuntimeBrandMarkIcon(
+                mark: SessionRuntimePresentation(session: session).brandMark,
+                size: 11
+            )
+            .frame(width: density.stateGutterWidth, height: density.stateGutterWidth)
         }
-    }
-
-    @ViewBuilder
-    private func projectIconGutter(tokens: ThemeTokens) -> some View {
-        let drawsIcon = showsProjectAnchor && projectIcon != nil
-
-        Group {
-            if drawsIcon, let projectIcon {
-                WorkspaceProjectIconTile(
-                    content: projectIcon,
-                    size: density.stateGutterWidth,
-                    tokens: tokens
-                )
-            } else {
-                Color.clear
-            }
-        }
-        .frame(width: density.stateGutterWidth, height: density.stateGutterWidth)
-        .accessibilityHidden(true)
     }
 
     private func unreadTitleIndicator(tokens: ThemeTokens) -> some View {
@@ -895,6 +899,16 @@ struct SessionIndexRow: View {
 
     private var visibleTitle: String {
         SessionListPresentation.titleDisplayText(for: session)
+    }
+
+    private var isSessionLibrary: Bool {
+        leadingSlot == .runtimeIcon
+    }
+
+    private var rowMinimumHeight: CGFloat {
+        if isWorkspaceOverview { return Self.workspaceOverviewMinimumHeight }
+        if isSessionLibrary && !showsSessionPreview { return 52 }
+        return density.minimumHeight
     }
 
     private var status: AgentSessionDisplayStatus {

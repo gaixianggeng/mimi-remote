@@ -143,7 +143,6 @@ struct SessionListView: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
-    @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -171,10 +170,6 @@ struct SessionListView: View {
         // 同一轮 body 求值内复用同一份轻量索引投影，避免每个 Section 的条件和内容
         // 访问都重新触发全量 filter / merge / sort。生命周期输入仍由当前快照驱动。
         let visibleSessions = self.visibleSessions
-        // 占多数的项目已由行首图标说明，名称只留给少数项目避免第二行重复截断。
-        let hiddenProjectID = SessionListPresentation.dominantIdentity(
-            visibleSessions.map(\.projectID)
-        )
         let sessionPartition = makeSessionPartition(visibleSessions: visibleSessions)
         let historyDateGroups = makeHistoryDateGroups(sessionPartition: sessionPartition)
         let lifecycleInput = makeLifecycleInput(visibleSessions: visibleSessions)
@@ -196,8 +191,6 @@ struct SessionListView: View {
                     sessionSection(
                         title: L10n.text("ui.in_progress"),
                         sessions: sessionPartition.active,
-                        isActiveSection: true,
-                        hiddenProjectID: hiddenProjectID,
                         tokens: tokens
                     )
                 }
@@ -206,8 +199,6 @@ struct SessionListView: View {
                     sessionSection(
                         title: L10n.text("ui.pinned"),
                         sessions: sessionPartition.pinned,
-                        isActiveSection: false,
-                        hiddenProjectID: hiddenProjectID,
                         tokens: tokens
                     )
                 }
@@ -216,8 +207,6 @@ struct SessionListView: View {
                     sessionSection(
                         title: dateBucketTitle(group.bucket),
                         sessions: group.sessions,
-                        isActiveSection: false,
-                        hiddenProjectID: hiddenProjectID,
                         tokens: tokens
                     )
                 }
@@ -761,15 +750,11 @@ struct SessionListView: View {
     private func sessionSection(
         title: String,
         sessions: [AgentSession],
-        isActiveSection: Bool,
-        hiddenProjectID: String?,
         tokens: ThemeTokens
     ) -> some View {
         Section {
             sessionRows(
                 sessions,
-                isActiveSection: isActiveSection,
-                hiddenProjectID: hiddenProjectID,
                 tokens: tokens
             )
         } header: {
@@ -779,7 +764,7 @@ struct SessionListView: View {
                 .textCase(nil)
                 .accessibilityAddTraits(.isHeader)
                 // 与工作区同一条规则：小节标题对齐前导列的左缘。
-                // 会话 tab 的前导列是项目图标，本来就每行都有，不需要兜底字形。
+                // 会话 tab 的前导列是来源图标，本来就每行都有，不需要兜底字形。
                 .listRowInsets(
                     .init(
                         top: 0,
@@ -794,30 +779,11 @@ struct SessionListView: View {
     @ViewBuilder
     private func sessionRows(
         _ sessions: [AgentSession],
-        isActiveSection: Bool,
-        hiddenProjectID: String?,
         tokens: ThemeTokens
     ) -> some View {
-        let profileID = appStore.activeHostScope.profileID
-        let projectIcons = workspaceAppearanceStore.projectIconContents(
-            profileID: profileID,
-            projectIDs: sessionStore.sidebarProjects.map(\.id)
-        )
-
-        ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
-            let previousProjectID = index > sessions.startIndex
-                ? sessions[index - 1].projectID
-                : nil
-            let startsProjectRun = previousProjectID != session.projectID
-            let projectIcon = projectIcons[session.projectID]
-                ?? workspaceAppearanceStore.projectIconContent(
-                    profileID: profileID,
-                    projectID: session.projectID
-                )
+        ForEach(sessions, id: \.id) { session in
             let foregroundActivity = sessionStore.foregroundActivity(for: session.id)
             let isUnread = sessionStore.isHistorySessionUnread(session)
-            let showsNeutralHistoryStatus = isActiveSection && !session.isRunning
-            let showsProjectIdentity = session.projectID != hiddenProjectID
 
             Button {
                 dismissSessionSearchKeyboard()
@@ -835,13 +801,9 @@ struct SessionListView: View {
                     isUnread: isUnread,
                     density: rowDensity,
                     searchSnippet: sessionStore.sessionSearchSnippet(for: session.id),
-                    projectIcon: projectIcon,
-                    identityFallback: showsProjectIdentity ? .project : .none,
-                    // 会话 tab 是所有项目的汇集区：前导槽放项目图标，回答"这条属于哪个项目"。
-                    leadingSlot: .projectIcon,
-                    showsProjectAnchor: startsProjectRun,
-                    // 滚动冻结期间已结束的会话仍留在“进行中”原位，必须显式展示最新终态。
-                    showsNeutralHistoryStatus: showsNeutralHistoryStatus
+                    leadingSlot: .runtimeIcon,
+                    // iPad 宽列保留一行摘要；iPhone 和窄分栏只保留来源、标题、时间。
+                    showsSessionPreview: UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table
                 )
                 .contentShape(Rectangle())
             }
@@ -853,8 +815,10 @@ struct SessionListView: View {
                     status: session.displayStatus(foregroundActivity: foregroundActivity),
                     sessionStatus: session.status,
                     isUnread: isUnread,
-                    showsNeutralHistoryStatus: showsNeutralHistoryStatus,
-                    identity: showsProjectIdentity ? nil : "\(L10n.text("ui.project")) \(session.project)"
+                    showsNeutralHistoryStatus: false,
+                    statusIsVisible: false,
+                    runtime: SessionRuntimePresentation(session: session).title,
+                    identity: "\(L10n.text("ui.project")) \(session.project)"
                 )
             )
             .accessibilityIdentifier("sessions.row.\(session.id)")

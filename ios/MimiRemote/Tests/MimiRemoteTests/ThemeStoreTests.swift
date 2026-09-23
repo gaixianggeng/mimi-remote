@@ -274,17 +274,18 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertGreaterThan(lightSuccess.green, lightSuccess.red)
         XCTAssertGreaterThan(lightSuccess.green, lightSuccess.blue)
 
-        // 浅色也没有品牌紫：主操作是正文墨色配白字，用户气泡是 Notion 胶囊灰。
+        // 浅色主操作恢复产品紫色，用户气泡仍是中性的 Notion 胶囊灰。
         assertRGB(lightUserBubble, red: 240, green: 238, blue: 237)
-        assertRGB(rgba(lightTokens.primaryAction), red: 46, green: 44, blue: 42)
+        assertRGB(rgba(lightTokens.primaryAction), red: 74, green: 20, blue: 74)
+        assertRGB(lightAccent, red: 74, green: 20, blue: 74)
         assertRGB(rgba(lightTokens.primaryActionForeground), red: 255, green: 255, blue: 255)
         // 列表标题：深色照 Notion 侧栏用浅灰，浅色与正文同色。
         assertRGB(rgba(darkTokens.listTitleText), red: 190, green: 189, blue: 187)
         assertRGB(rgba(lightTokens.listTitleText), red: 46, green: 44, blue: 42)
-        // 用量图表与未读点共用低亮度灰紫；图上最强一档在深浅卡面上保持清楚的对比。
-        assertRGB(rgba(lightTokens.tokenActivityAccent), red: 124, green: 107, blue: 158)
+        // 浅色用原主色，深色用灰紫；用量图表和未读点保持同一档语义色。
+        assertRGB(rgba(lightTokens.tokenActivityAccent), red: 74, green: 20, blue: 74)
         assertRGB(rgba(darkTokens.tokenActivityAccent), red: 119, green: 113, blue: 127)
-        assertRGB(rgba(lightTokens.sessionUnreadAccent), red: 124, green: 107, blue: 158)
+        assertRGB(rgba(lightTokens.sessionUnreadAccent), red: 74, green: 20, blue: 74)
         assertRGB(rgba(darkTokens.sessionUnreadAccent), red: 119, green: 113, blue: 127)
         assertRGB(rgba(lightTokens.tokenActivityAxisText), red: 106, green: 105, blue: 102)
         // 默认深色照 Notion AI 圆钮：主操作与强调色同为无色相浅灰，配黑色前景。
@@ -537,8 +538,8 @@ final class ThemeStoreTests: XCTestCase {
                 let warning = rgba(tokens.warning)
 
                 if preset == .codex, scheme == .light {
-                    assertRGB(voice, red: 46, green: 44, blue: 42)
-                    assertRGB(rgba(tokens.tint(for: .active)), red: 46, green: 44, blue: 42)
+                    assertRGB(voice, red: 74, green: 20, blue: 74)
+                    assertRGB(rgba(tokens.tint(for: .active)), red: 74, green: 20, blue: 74)
                     continue
                 }
 
@@ -628,7 +629,7 @@ final class ThemeStoreTests: XCTestCase {
         let forcedLight = store.tokens(for: .dark)
         assertRGB(rgba(forcedLight.background), red: 250, green: 248, blue: 246)
         assertRGB(rgba(forcedLight.settingsGroupBackground), red: 255, green: 255, blue: 255)
-        assertRGB(rgba(forcedLight.tint(for: .active)), red: 46, green: 44, blue: 42)
+        assertRGB(rgba(forcedLight.tint(for: .active)), red: 74, green: 20, blue: 74)
     }
 
     func testCodexDarkForegroundsRemainReadableOnEveryStaticSurface() {

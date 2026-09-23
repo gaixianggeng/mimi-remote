@@ -1006,6 +1006,18 @@ final class SessionListPresentationTests: XCTestCase {
             ),
             "Completed, Branch main"
         )
+        XCTAssertEqual(
+            SessionIndexRow.accessibilityValue(
+                status: active,
+                sessionStatus: SessionStatus.running.rawValue,
+                isUnread: true,
+                showsNeutralHistoryStatus: false,
+                statusIsVisible: false,
+                runtime: "Codex",
+                identity: "Project example"
+            ),
+            "Codex, Running, \(L10n.text("ui.unread_result")), Project example"
+        )
     }
 
     func testSessionRowStateResolutionUsesStatusPriorityBeforeUnread() {
@@ -1129,19 +1141,19 @@ final class SessionListPresentationTests: XCTestCase {
 
 @MainActor
 final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCase {
-    func testSessionProjectIconAndUnreadIndicatorCombinations() {
+    func testSessionRuntimeIconAndUnreadIndicatorCombinations() {
         let project = AgentProject(
-            id: "indicator-combinations",
+            id: "runtime-indicator-combinations",
             name: "codex-ipad-agent",
             path: "/Users/me/code/codex-ipad-agent"
         )
         let themeStore = makeThemeStore()
         let fixedNow = Date(timeIntervalSince1970: 1_782_879_660)
-        let scenarios: [(hasIcon: Bool, isUnread: Bool)] = [
-            (true, true),
-            (true, false),
-            (false, true),
-            (false, false),
+        let scenarios: [(source: String, isUnread: Bool)] = [
+            ("codex", true),
+            ("codex", false),
+            ("claude", true),
+            ("claude", false),
         ]
         let appearances: [(name: String, colorScheme: ColorScheme)] = [
             ("light", .light),
@@ -1155,15 +1167,14 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
                         session: self.makeSession(
                             id: "indicator-\(index)",
                             project: project,
-                            title: "项目图标与未读状态组合 \(index + 1)",
+                            title: "来源图标与未读状态组合 \(index + 1)",
                             status: SessionStatus.completed.rawValue,
-                            preview: "验证项目图标与标题后未读状态分列",
+                            preview: "手机会话行不显示这段摘要",
+                            source: scenario.source,
                             recencyAt: fixedNow.addingTimeInterval(TimeInterval(-index * 60))
                         ),
                         isUnread: scenario.isUnread,
-                        projectIcon: scenario.hasIcon ? .emoji("🐱") : nil,
-                        leadingSlot: .projectIcon,
-                        showsProjectAnchor: scenario.hasIcon,
+                        leadingSlot: .runtimeIcon,
                         currentDate: fixedNow
                     )
                 }
@@ -1176,7 +1187,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
 
             assertSnapshot(
                 of: view,
-                // 快照覆盖未读点位置与标题字重；精确色值由 ThemeStoreTests 断言。
+                // 快照覆盖矢量来源标记、小点位置及标题同字重；精确色值由 ThemeStoreTests 断言。
                 as: .image(precision: 0.995, layout: .fixed(width: 460, height: 330)),
                 named: appearance.name
             )
@@ -1205,7 +1216,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
             project: project,
             title: "已完成但尚未阅读",
             status: SessionStatus.completed.rawValue,
-            preview: "灰紫小点与较粗标题表示结果未读",
+            preview: "仅用小点表示结果未读",
             recencyAt: fixedNow.addingTimeInterval(-60)
         )
         let readHistory = makeSession(
@@ -1263,9 +1274,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
     private func makeRow(
         session: AgentSession,
         isUnread: Bool = false,
-        projectIcon: WorkspaceProjectIconContent? = nil,
         leadingSlot: SessionIndexRowLeadingSlot,
-        showsProjectAnchor: Bool = false,
         showsIdleStateGlyph: Bool = false,
         currentDate: Date
     ) -> SessionIndexRow {
@@ -1279,10 +1288,8 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
             isObserving: false,
             isUnread: isUnread,
             density: .compact,
-            projectIcon: projectIcon,
             leadingSlot: leadingSlot,
             showsIdleStateGlyph: showsIdleStateGlyph,
-            showsProjectAnchor: showsProjectAnchor,
             currentDate: { currentDate }
         )
     }
@@ -1293,6 +1300,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
         title: String,
         status: String,
         preview: String,
+        source: String = "codex",
         activeTurnID: TurnID? = nil,
         recencyAt: Date
     ) -> AgentSession {
@@ -1303,7 +1311,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
             dir: project.path,
             title: title,
             status: status,
-            source: "codex",
+            source: source,
             resumeID: "thread-\(id)",
             createdAt: nil,
             updatedAt: nil,

@@ -2,11 +2,18 @@ import SwiftUI
 
 private extension Color {
     /// 默认主题浅色的墨色 #2E2C2A，取自 Notion iOS 浅色截图的正文。
-    /// 正文、主操作、强调和色卡共用这一值，浅色下不再有品牌紫。
+    /// 只用于阅读与中性表面；操作和小面积强调沿用产品原有的紫色。
     static let notionLightInk = Color(
         red: 46.0 / 255.0,
         green: 44.0 / 255.0,
         blue: 42.0 / 255.0
+    )
+
+    /// 产品原有浅色主色，集中给操作、色卡与少量状态强调使用。
+    static let mimiPrimary = Color(
+        red: 74.0 / 255.0,
+        green: 20.0 / 255.0,
+        blue: 74.0 / 255.0
     )
 
     /// 默认主题浅色的页面底 #FAF8F6，取自 Notion iOS 浅色截图。
@@ -116,7 +123,7 @@ enum ThemePreset: String, CaseIterable, Identifiable {
     var swatchForeground: Color {
         switch self {
         case .codex:
-            return .notionLightInk
+            return .mimiPrimary
         case .github:
             return Color(red: 0.03, green: 0.41, blue: 0.85)
         case .xcode:
@@ -299,20 +306,20 @@ extension ThemeTokens {
         return Color(red: 190.0 / 255.0, green: 189.0 / 255.0, blue: 187.0 / 255.0)
     }
 
-    /// 使用量图表与未读提示共用原默认主题里的灰紫色相，保持小面积主题识别。
-    /// 页面与普通操作仍保持中性，避免把“有用量”误读成成功状态。
+    /// 使用量图表与未读提示共用主题紫色：浅色用原主色，深色收成灰紫。
+    /// 图表只在活动格使用这档颜色，避免把整张卡片染成状态提示。
     var tokenActivityAccent: Color {
         guard preset == .codex else { return accent }
         switch resolvedScheme {
         case .light:
-            return Color(red: 124.0 / 255.0, green: 107.0 / 255.0, blue: 158.0 / 255.0)
+            return .mimiPrimary
         case .dark:
-            // 与浅色保持相近明度和对比度，只压低彩度，避免暗色列表出现亮色跳点。
+            // 深色单独压低彩度，避免暗色列表出现亮色跳点。
             return Color(red: 119.0 / 255.0, green: 113.0 / 255.0, blue: 127.0 / 255.0)
         }
     }
 
-    /// 未读是“有新结果”，不是“执行成功”；与用量图表共用一档低亮度主题色。
+    /// 未读是“有新结果”，不是“执行成功”；与用量图表共用一档小面积主题色。
     var sessionUnreadAccent: Color { tokenActivityAccent }
 
     /// 浅色卡片里的月份和重置时间很小，取更深一档暖灰，保留可读性。
@@ -404,8 +411,8 @@ extension ThemeTokens {
         }
     }
 
-    /// 默认主题照 Notion：深色是 AI 圆钮那档浅灰配黑字，浅色是正文墨色配白字。
-    /// 主操作与小面积强调共用 accent，不带任何色相，同时满足“当填充”和“当前景”两种用法。
+    /// 默认深色主操作是浅灰配黑字，浅色恢复产品紫色配白字。
+    /// 主操作与小面积强调共用 accent，同时满足“当填充”和“当前景”两种用法。
     var primaryAction: Color {
         accent
     }
@@ -584,8 +591,7 @@ extension ThemeTokens {
         conversationPrimaryText
     }
 
-    /// 默认主题的链接色没有色相（深色浅灰、浅色墨色），与正文只差亮度或完全同色；
-    /// 照 Notion 加下划线区分，不只靠颜色。
+    /// 默认主题的链接继续加下划线区分，不只靠颜色。
     var underlinesLinks: Bool {
         preset == .codex
     }
@@ -603,7 +609,7 @@ extension ThemeTokens {
     func tint(for tone: AgentSessionStatusTone) -> Color {
         switch tone {
         case .active:
-            // 运行态文字/图标跟随主操作色；默认主题下它是无色相的浅灰（深色）或墨色（浅色）。
+            // 运行态文字/图标跟随主操作色；默认深色是浅灰，浅色是产品紫色。
             return primaryAction
         case .warning:
             return warning
@@ -841,7 +847,7 @@ final class ThemeStore: ObservableObject {
     private var codexLightTokens: ThemeTokens {
         // 取自 Notion iOS 浅色截图：页面 #FAF8F6、未选中胶囊 #F0EEED、选中胶囊 #ECEAE8、
         // 正文 #2E2C2A，次级文字与图标是 Notion 的暖灰 #787774 / #9B9A97。
-        // 与深色同一原则：主操作是正文墨色配白字，灰紫只用于小面积状态与用量图表。
+        // 浅色主操作恢复产品紫色配白字；正文仍保持 Notion 式中性墨色。
         // 代码块也照 Notion 用浅底深字，不再在浅色页面里嵌一块深色分区。
         ThemeTokens(
             preset: .codex,
@@ -857,15 +863,15 @@ final class ThemeStore: ObservableObject {
             primaryText: .notionLightInk,
             secondaryText: Color(red: 120.0 / 255.0, green: 119.0 / 255.0, blue: 116.0 / 255.0),
             tertiaryText: Color(red: 155.0 / 255.0, green: 154.0 / 255.0, blue: 151.0 / 255.0),
-            accent: .notionLightInk,
+            accent: .mimiPrimary,
             warning: Color(red: 0.663, green: 0.376, blue: 0.000),
             success: Color(red: 0.184, green: 0.490, blue: 0.353),
-            goalActive: .notionLightInk,
-            voiceRecording: .notionLightInk,
+            goalActive: .mimiPrimary,
+            voiceRecording: .mimiPrimary,
             voiceWaveformGradient: [
-                .notionLightInk,
-                Color(red: 120.0 / 255.0, green: 119.0 / 255.0, blue: 116.0 / 255.0),
-                Color(red: 155.0 / 255.0, green: 154.0 / 255.0, blue: 151.0 / 255.0)
+                .mimiPrimary,
+                Color(red: 0.478, green: 0.259, blue: 0.467),
+                Color(red: 0.690, green: 0.525, blue: 0.678)
             ],
             border: Color(red: 232.0 / 255.0, green: 230.0 / 255.0, blue: 227.0 / 255.0),
             selectionFill: Color(red: 236.0 / 255.0, green: 234.0 / 255.0, blue: 232.0 / 255.0)

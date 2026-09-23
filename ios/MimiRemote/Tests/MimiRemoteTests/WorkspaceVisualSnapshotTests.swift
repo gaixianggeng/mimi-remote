@@ -234,7 +234,7 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
         await sessionStore.refreshAppServerModelOptions()
         XCTAssertEqual(sessionStore.sidebarProjects.map(\.id), projects.map(\.id))
         XCTAssertEqual(sessionStore.sessions(forProjectID: projects[0].id).count, sessions.count)
-        // 同一画面同时保留已读和未读记录，快照才会锁住标题字重与小点的差异。
+        // 同一画面同时保留已读和未读记录，快照锁住小点与一致的标题样式。
         sessionStore.markHistorySessionUnread("workspace-review")
         XCTAssertTrue(sessionStore.unreadHistorySessionIDs.contains("workspace-review"))
 
