@@ -965,6 +965,16 @@ final class SessionListPresentationTests: XCTestCase {
             ),
             ""
         )
+        XCTAssertEqual(
+            SessionIndexRow.accessibilityValue(
+                status: completed,
+                sessionStatus: SessionStatus.completed.rawValue,
+                isUnread: false,
+                showsNeutralHistoryStatus: false,
+                identity: "Branch main"
+            ),
+            "Completed, Branch main"
+        )
     }
 
     func testSessionRowStateResolutionUsesStatusPriorityBeforeUnread() {

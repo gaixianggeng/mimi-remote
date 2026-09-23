@@ -103,7 +103,7 @@ enum WorkspaceSessionRowMetrics {
     static let horizontalPadding: CGFloat = 8
     /// 小节标题与上一段最后一行之间的留白。它必须明显大于行内间距，
     /// 因为扁平列表里分组边界完全由这段留白表达，没有卡片边缘可依。
-    static let sectionBoundarySpacing: CGFloat = 22
+    static let sectionBoundarySpacing: CGFloat = 18
     /// 小节标题到它所辖第一行之间的留白，明显小于 `sectionBoundarySpacing`，
     /// 标题才会被读成"属于下面这段"而不是浮在两段中间。
     static let sectionHeaderBottomSpacing: CGFloat = 6

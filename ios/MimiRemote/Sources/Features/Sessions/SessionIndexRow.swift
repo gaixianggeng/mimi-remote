@@ -6,8 +6,7 @@ import SwiftUI
 /// 也没有任何调用点显式传入，留着只会让人以为侧栏复用了这个组件（侧栏有自己的
 /// `ProjectSidebarView.SessionRow`）。
 ///
-/// 两档共用同一套骨架，差别只在字号、留白和身份列宽度。会话 tab 与工作区因此不会
-/// 因为所处页面不同而拿到不同的读法。
+/// 两档共用字号和基础轨道。工作区总览另外压低视觉密度，但命中高度仍超过 44pt。
 enum SessionIndexRowDensity: Equatable {
     case compact
     case table
@@ -15,7 +14,7 @@ enum SessionIndexRowDensity: Equatable {
     /// 行高。两行内容加上下留白后仍要留出呼吸量——过去 60/44 的行高把两行文字压在
     /// 一起，配合逐行分隔线读成一张表格；列表需要的是可扫读的条目，不是表格。
     ///
-    /// 两档同高：装的是同样字号的两行文字，没有理由因为屏幕窄就压扁。
+    /// 会话库两档同高：装的是同样字号的两行文字，没有理由因为屏幕窄就压扁。
     var minimumHeight: CGFloat { 76 }
 
     var horizontalPadding: CGFloat {
@@ -454,22 +453,11 @@ struct SessionIndexRowButtonStyle: ButtonStyle {
     }
 }
 
-/// 会话在列表中的统一表示。
-///
-/// 会话 tab 与工作区使用**同一种排布**，不再各自一套：
-///
-/// ```
-/// [状态槽] 标题 ……………………………………………… 时间
-///          摘要 ……………… 状态文案   身份（分支 / 项目）
-/// ```
-///
-/// 两页真正的差异只有第二行末端身份槽的取值——工作区里项目恒定、区分符是分支；
-/// 会话 tab 默认跨项目、区分符是项目。差异收敛成一个槽，其余几何完全一致。
-///
-/// 曾经存在 `contentLayout` 开关，让两页在 `.table` 下走两套完全不同的排布
-/// （摘要在第一行还是第二行、时间在第一行还是第二行都不一样）。它把"同一个对象
-/// 两种读法"固化进了组件内部，与共用组件的初衷相反，已移除。
+/// 会话库与工作区共用状态、标题和辅助功能语义。
+/// 工作区顶部已经给出项目身份，因此总览行让标题独占首行，时间下沉，
+/// 分支留在辅助技术与会话详情中；会话库继续保留跨项目身份列。
 struct SessionIndexRow: View {
+    static let workspaceOverviewMinimumHeight: CGFloat = 64
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -489,14 +477,13 @@ struct SessionIndexRow: View {
     let density: SessionIndexRowDensity
     var searchSnippet: String? = nil
     var projectIcon: WorkspaceProjectIconContent? = nil
-    /// 工作区在多分支时注入当前行的 Git 分支；为 nil 时身份槽按调用方指定的规则回退。
+    /// 详细行可选的 Git 分支；为 nil 时身份槽按调用方指定的规则回退。
     var branch: String? = nil
-    /// 会话 tab 默认回退项目名；工作区传 `.directory`，在没有区分价值的分支时展示目录末段。
+    /// 会话库默认回退项目名；目录身份仍可用于辅助技术说明 worktree。
     var identityFallback: SessionIndexRowIdentityFallback = .project
     /// 前导槽承载什么。会话 tab 传 `.projectIcon`，工作区保持 `.state`。
     var leadingSlot: SessionIndexRowLeadingSlot = .state
-    /// `.state` 槽在无状态时是否画灰环兜底。工作区传 true，让这一列每行都有内容，
-    /// 小节标题才能拿它当基准线。
+    /// `.state` 槽在无状态时是否画灰环兜底；工作区总览关闭它来降低重复噪声。
     var showsIdleStateGlyph = false
     /// 仅在一段连续同项目会话的首行展示项目图标，后续行保留同宽空槽维持对齐。
     ///
@@ -505,6 +492,8 @@ struct SessionIndexRow: View {
     var showsProjectAnchor = false
     var drawsSelectionBackground = true
     var showsNeutralHistoryStatus = false
+    /// 工作区已经给出项目身份；总览行把标题和当前状态置前，分支留给详情与辅助技术。
+    var isWorkspaceOverview = false
     /// 默认读取系统时钟；工作区和确定性快照可注入固定时间，避免行内时间漂移。
     var currentDate: () -> Date = Date.init
     var calendar: Calendar? = nil
@@ -556,7 +545,8 @@ struct SessionIndexRow: View {
         status: AgentSessionDisplayStatus,
         sessionStatus: String,
         isUnread: Bool,
-        showsNeutralHistoryStatus: Bool
+        showsNeutralHistoryStatus: Bool,
+        identity: String? = nil
     ) -> String {
         var values: [String] = []
         if !showsStatusLabel(
@@ -568,6 +558,9 @@ struct SessionIndexRow: View {
         }
         if isUnread {
             values.append(L10n.text("ui.unread_result"))
+        }
+        if let identity, !identity.isEmpty {
+            values.append(identity)
         }
         return values.joined(separator: ", ")
     }
@@ -600,14 +593,24 @@ struct SessionIndexRow: View {
                 titleLine(tokens: tokens)
                 metadataLine(tokens: tokens)
 
+                if isWorkspaceOverview && dynamicTypeSize.isAccessibilitySize && shouldShowStatusLabel {
+                    let preview = SessionListPresentation.distinctPreviewDisplayText(for: session)
+                    if !preview.isEmpty {
+                        Text(preview)
+                            .font(themeStore.uiFont(size: density.previewFontSize))
+                            .foregroundStyle(tokens.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
                 if let searchSnippet, !searchSnippet.isEmpty {
                     supplementaryPreviewText(searchSnippet, tokens: tokens, hasSearchSnippet: true)
                 }
             }
         }
         .padding(.horizontal, density.horizontalPadding)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, minHeight: density.minimumHeight, alignment: .leading)
+        .padding(.vertical, isWorkspaceOverview ? 7 : 10)
+        .frame(maxWidth: .infinity, minHeight: isWorkspaceOverview ? Self.workspaceOverviewMinimumHeight : density.minimumHeight, alignment: .leading)
         .background {
             if isSelected && drawsSelectionBackground {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -625,7 +628,7 @@ struct SessionIndexRow: View {
             }
 
             Text(visibleTitle)
-                .font(themeStore.uiFont(size: density.titleFontSize, weight: isSelected ? .semibold : .medium))
+                .font(themeStore.uiFont(size: isWorkspaceOverview ? 15 : density.titleFontSize, weight: isSelected ? .semibold : .medium))
                 .foregroundStyle(tokens.primaryText)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .truncationMode(.tail)
@@ -638,14 +641,24 @@ struct SessionIndexRow: View {
                     .layoutPriority(2)
             }
 
-            // 12pt 而不是 6pt：长标题过去会一路顶到时间上，两段文字之间没有间隙。
-            Spacer(minLength: 12)
-
-            timestamp(tokens: tokens)
+            if !isWorkspaceOverview {
+                // 独立会话库保持右侧时间列；工作区总览把时间下沉，给标题留完整宽度。
+                Spacer(minLength: 12)
+                timestamp(tokens: tokens)
+            }
         }
     }
 
+    @ViewBuilder
     private func metadataLine(tokens: ThemeTokens) -> some View {
+        if isWorkspaceOverview {
+            workspaceOverviewMetadataLine(tokens: tokens)
+        } else {
+            standardMetadataLine(tokens: tokens)
+        }
+    }
+
+    private func standardMetadataLine(tokens: ThemeTokens) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             let preview = SessionListPresentation.distinctPreviewDisplayText(for: session)
             if !preview.isEmpty {
@@ -669,7 +682,32 @@ struct SessionIndexRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// 第二行末端的身份槽：工作区给分支或目录，会话 tab 给项目。
+    private func workspaceOverviewMetadataLine(tokens: ThemeTokens) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            // 工作区筛选已说明项目；需要处理时状态比预览重要，普通记录才显示摘要。
+            if shouldShowStatusLabel {
+                animatedStatusLabel(tokens: tokens)
+            } else {
+                let preview = SessionListPresentation.distinctPreviewDisplayText(for: session)
+                if !preview.isEmpty {
+                    Text(preview)
+                        .font(themeStore.uiFont(size: density.previewFontSize, weight: .regular))
+                        .foregroundStyle(tokens.secondaryText)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                        .truncationMode(.tail)
+                        .layoutPriority(1)
+                        .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
+                }
+            }
+
+            Spacer(minLength: 8)
+            stableStateIcons(tokens: tokens)
+            timestamp(tokens: tokens)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 会话库第二行末端的身份槽。
     ///
     /// 定宽 + 右对齐，让它在所有行上形成一条右轨。
     @ViewBuilder

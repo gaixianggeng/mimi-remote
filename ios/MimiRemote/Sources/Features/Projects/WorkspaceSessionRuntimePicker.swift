@@ -225,15 +225,15 @@ struct WorkspaceRuntimePopoverPicker: View {
             isPresented = true
         } label: {
             HStack(spacing: 6) {
-                RuntimeBrandMarkIcon(mark: selection.brandMark, size: 15)
+                RuntimeBrandMarkIcon(mark: selection.brandMark, size: 14)
 
                 Text(selection.listTitle)
-                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
                     .foregroundStyle(tokens.primaryText)
                     .lineLimit(1)
 
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(themeStore.uiFont(size: 10, weight: .semibold))
                     .foregroundStyle(tokens.tertiaryText)
             }
             .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
