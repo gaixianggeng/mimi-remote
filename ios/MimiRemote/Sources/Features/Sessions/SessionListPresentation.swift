@@ -199,6 +199,19 @@ enum SessionListPresentation {
     }
 
     static func distinctPreviewDisplayText(title: String, preview: String?) -> String {
+        let remainder = previewRemainder(title: title, preview: preview)
+        // 以链接开头的摘要在一行宽度里只剩 `[https://github.com/…` 这样的前缀，
+        // 截断后读不出任何内容，却占着整条第二行；这类摘要不显示。
+        return startsWithLink(remainder) ? "" : remainder
+    }
+
+    private static func startsWithLink(_ value: String) -> Bool {
+        let lowered = value.lowercased()
+        return ["http://", "https://", "[http://", "[https://", "<http://", "<https://", "www."]
+            .contains { lowered.hasPrefix($0) }
+    }
+
+    private static func previewRemainder(title: String, preview: String?) -> String {
         let normalizedPreview = displayTitle(preview ?? "")
         guard !normalizedPreview.isEmpty else { return "" }
 
@@ -280,6 +293,19 @@ enum SessionListPresentation {
         let validBranches = Set(branches.compactMap { normalizedBranch($0) })
         guard validBranches.count > 1 else { return nil }
         return displayBranch
+    }
+
+    /// 会话库把占多数的项目视作页面默认身份，只让少数项目显示文字。
+    /// 平票时各项目仍有区分价值；空列表没有默认身份。
+    static func dominantIdentity(_ values: [String]) -> String? {
+        let normalized = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let mostCommon = Dictionary(grouping: normalized, by: { $0 })
+            .max(by: { $0.value.count < $1.value.count }),
+            mostCommon.value.count * 2 > normalized.count
+        else { return nil }
+        return mostCommon.key
     }
 
     static func normalizedBranch(_ branch: String?) -> String? {

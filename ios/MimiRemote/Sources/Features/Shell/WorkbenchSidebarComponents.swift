@@ -270,21 +270,26 @@ struct WorkbenchSidebarDestinationButton: View {
     let tokens: ThemeTokens
     let action: () -> Void
 
+    private var titleColor: Color {
+        isSelected ? tokens.primaryText : tokens.listTitleText
+    }
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
+                // 照 Notion 的导航页签：未选中的图标和文字同为列表标题灰，选中才提亮。
                 icon.navigationImage()
                     .resizable()
                     .scaledToFit()
                     .frame(width: 20, height: 20)
                     .font(themeStore.uiFont(size: 18, weight: isSelected ? .semibold : .medium))
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(tokens.primaryAction)
+                    .foregroundStyle(titleColor)
                     .frame(width: 24)
 
                 Text(title)
-                    .font(themeStore.uiFont(.body, weight: isSelected ? .semibold : .medium))
-                    .foregroundStyle(tokens.primaryText)
+                    .font(themeStore.uiFont(.body, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(titleColor)
 
                 Spacer(minLength: 0)
             }
@@ -544,7 +549,7 @@ struct SessionSidebarMonitorRow: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             // 所有状态共用固定 leading 槽；同项目后续行只隐藏视觉菊花，
             // 仍保留“进行中”无障碍语义，同时避免标题横向跳动。
             Group {
@@ -562,17 +567,19 @@ struct SessionSidebarMonitorRow: View {
 
             Group {
                 if let projectIcon {
-                    WorkspaceProjectIconTile(content: projectIcon, size: 18, tokens: tokens)
+                    WorkspaceProjectIconTile(content: projectIcon, size: 20, tokens: tokens)
                 } else {
                     Color.clear
                         .accessibilityHidden(true)
                 }
             }
-            .frame(width: 18, height: 18)
+            .frame(width: 20, height: 20)
 
+            // 15pt 常规字重：比照 Notion iPad 侧栏的条目，13pt 中粗在大屏上显得局促。
+            // 非选中条目用列表标题灰，选中才提亮到正文色。
             Text(SessionListPresentation.titleDisplayText(for: session))
-                .font(themeStore.uiFont(size: 13, weight: isSelected ? .semibold : .medium))
-                .foregroundStyle(tokens.primaryText)
+                .font(themeStore.uiFont(size: 15, weight: isSelected ? .medium : .regular))
+                .foregroundStyle(isSelected ? tokens.primaryText : tokens.listTitleText)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .layoutPriority(1)
@@ -581,7 +588,7 @@ struct SessionSidebarMonitorRow: View {
             detail(tokens: tokens)
         }
         .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(rowFill(tokens: tokens))
@@ -655,7 +662,7 @@ struct SessionSidebarMonitorRow: View {
                 }
             }
         }
-        .font(themeStore.uiFont(size: 10.5, weight: .regular))
+        .font(themeStore.uiFont(size: 12, weight: .regular))
         .foregroundStyle(tokens.tertiaryText)
         .monospacedDigit()
         .lineLimit(1)

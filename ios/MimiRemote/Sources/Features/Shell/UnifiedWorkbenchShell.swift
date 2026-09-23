@@ -711,6 +711,8 @@ struct UnifiedWorkbenchShell: View {
                 } header: {
                     Text("\(sidebarSectionTitle(section.kind)) \(section.sessions.count + section.overflowCount)")
                         .textCase(nil)
+                        .font(themeStore.uiFont(size: 13, weight: .medium))
+                        .foregroundStyle(tokens.tertiaryText)
                 }
             }
         }
@@ -723,7 +725,7 @@ struct UnifiedWorkbenchShell: View {
                 : 0,
             for: .scrollContent
         )
-        .environment(\.defaultMinListRowHeight, 34)
+        .environment(\.defaultMinListRowHeight, 40)
         // 覆盖式侧栏可能只按 List 的理想内容高度提案；显式占用剩余空间后列表自行滚动。
         .frame(maxHeight: .infinity)
     }

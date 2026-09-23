@@ -554,6 +554,37 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertNil(SessionListPresentation.branchToDisplay(" ", among: ["main", "feature/login"]))
     }
 
+    func testProjectIdentityOnlyShowsForMinorityProject() {
+        XCTAssertEqual(SessionListPresentation.dominantIdentity(["codex", " codex ", "mimi"]), "codex")
+        XCTAssertEqual(SessionListPresentation.dominantIdentity(["codex", "codex"]), "codex")
+        XCTAssertNil(SessionListPresentation.dominantIdentity(["codex", "mimi"]))
+        XCTAssertNil(SessionListPresentation.dominantIdentity([]))
+        let session = makeSession(id: "identity-none", project: "codex-ipad-agent", dir: "/tmp/codex-ipad-agent")
+        XCTAssertEqual(SessionIndexRow.identityFallbackText(for: session, fallback: .none), "")
+    }
+
+    func testLinkLeadingPreviewIsHidden() {
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "查看 Issue #549",
+                preview: "[https://github.com/example/repo/issues/549](https://github.com/example/repo/issues/549)"
+            ),
+            ""
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(title: "看看这个", preview: "https://example.com/a"),
+            ""
+        )
+        // 链接出现在正文中间时摘要仍有内容，照常显示。
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "Review PR",
+                preview: "对照 https://example.com/pr/1 检查改动"
+            ),
+            "对照 https://example.com/pr/1 检查改动"
+        )
+    }
+
     func testWorkspaceIdentityFallsBackToDirectoryWithoutChangingGlobalProjectFallback() {
         let directory = "/Users/me/worktrees/codex-ipad-agent/mim-202"
         let session = makeSession(

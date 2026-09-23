@@ -1671,7 +1671,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
             .contentMargins(.leading, 0, for: .scrollContent)
-            .environment(\.defaultMinListRowHeight, 34)
+            .environment(\.defaultMinListRowHeight, 40)
             .frame(maxHeight: .infinity)
 
             // 直接渲染生产组件，避免 NavigationSplitView 在测试宿主中自动折叠侧栏。
@@ -1874,6 +1874,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         ]
 
         sessionStore.projects = [project, secondProject]
+        sessionStore.recentWorkspaces = [
+            AgentWorkspace(project: project, lastOpenedAt: snapshotMessageDate),
+            AgentWorkspace(project: secondProject, lastOpenedAt: snapshotMessageDate)
+        ]
         sessionStore.sidebarProjects = [project, secondProject]
         sessionStore.sessions = [active, pinned] + historyRows
         sessionStore.pinnedSessionIDs = [pinned.id]

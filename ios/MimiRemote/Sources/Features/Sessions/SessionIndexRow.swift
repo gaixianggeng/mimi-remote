@@ -14,8 +14,8 @@ enum SessionIndexRowDensity: Equatable {
     /// 行高。两行内容加上下留白后仍要留出呼吸量——过去 60/44 的行高把两行文字压在
     /// 一起，配合逐行分隔线读成一张表格；列表需要的是可扫读的条目，不是表格。
     ///
-    /// 会话库两档同高：装的是同样字号的两行文字，没有理由因为屏幕窄就压扁。
-    var minimumHeight: CGFloat { 76 }
+    /// 会话库两档同高。17pt 标题仍保留两行之间的留白，行高收敛到 68pt。
+    var minimumHeight: CGFloat { 68 }
 
     var horizontalPadding: CGFloat {
         switch self {
@@ -32,7 +32,8 @@ enum SessionIndexRowDensity: Equatable {
     /// 密度档位回答的是"这么宽能不能排下一条固定的身份列"，那是几何问题；
     /// 正文该多大是可读性问题，与屏幕宽窄无关——iPhone 上的邮件和 iPad 上用的是
     /// 同一套正文字号。两者绑在一起时，为了让手机上的分支列收窄，整页字都会跟着缩一号。
-    var titleFontSize: CGFloat { 16 }
+    /// 标题用 iOS 正文字号，层级靠较少的元数据和更安静的字色建立。
+    var titleFontSize: CGFloat { 17 }
 
     var metadataFontSize: CGFloat { 12 }
 
@@ -213,6 +214,8 @@ enum SessionIndexRowLeadingSlot: Equatable {
 enum SessionIndexRowIdentityFallback: Equatable {
     case project
     case directory
+    /// 当前列表只有一个项目时，身份已由页面上下文说明。
+    case none
 }
 
 /// 前导状态字形。
@@ -515,6 +518,8 @@ struct SessionIndexRow: View {
             return session.project
         case .directory:
             return SessionListPresentation.directoryDisplayText(for: session)
+        case .none:
+            return ""
         }
     }
 
@@ -527,6 +532,8 @@ struct SessionIndexRow: View {
             return "\(L10n.text("ui.project")) \(session.project)"
         case .directory:
             return L10n.format("ui.directory_value", metadataDirectoryText(for: session))
+        case .none:
+            return ""
         }
     }
 
@@ -609,7 +616,7 @@ struct SessionIndexRow: View {
             }
         }
         .padding(.horizontal, density.horizontalPadding)
-        .padding(.vertical, isWorkspaceOverview ? 7 : 10)
+        .padding(.vertical, isWorkspaceOverview ? 7 : 8)
         .frame(maxWidth: .infinity, minHeight: isWorkspaceOverview ? Self.workspaceOverviewMinimumHeight : density.minimumHeight, alignment: .leading)
         .background {
             if isSelected && drawsSelectionBackground {
@@ -628,8 +635,8 @@ struct SessionIndexRow: View {
             }
 
             Text(visibleTitle)
-                .font(themeStore.uiFont(size: isWorkspaceOverview ? 15 : density.titleFontSize, weight: isSelected ? .semibold : .medium))
-                .foregroundStyle(tokens.primaryText)
+                .font(themeStore.uiFont(size: density.titleFontSize, weight: isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? tokens.primaryText : tokens.listTitleText)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .truncationMode(.tail)
                 .layoutPriority(1)

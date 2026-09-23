@@ -1,11 +1,19 @@
 import SwiftUI
 
 private extension Color {
-    /// 产品默认主操作色 #4A144A。集中定义，避免按钮、消息和色卡分别取近似值。
-    static let mimiPrimary = Color(
-        red: 74.0 / 255.0,
-        green: 20.0 / 255.0,
-        blue: 74.0 / 255.0
+    /// 默认主题浅色的墨色 #2E2C2A，取自 Notion iOS 浅色截图的正文。
+    /// 正文、主操作、强调和色卡共用这一值，浅色下不再有品牌紫。
+    static let notionLightInk = Color(
+        red: 46.0 / 255.0,
+        green: 44.0 / 255.0,
+        blue: 42.0 / 255.0
+    )
+
+    /// 默认主题浅色的页面底 #FAF8F6，取自 Notion iOS 浅色截图。
+    static let notionLightCanvas = Color(
+        red: 250.0 / 255.0,
+        green: 248.0 / 255.0,
+        blue: 246.0 / 255.0
     )
 }
 
@@ -93,7 +101,7 @@ enum ThemePreset: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .codex:
-            return L10n.text("ui.neutral_warm_white_with_a_single_main_color")
+            return L10n.text("ui.notion_style_neutral_grays_without_accent_color")
         case .github:
             return L10n.text("ui.code_review_color_matching_close_to_github_primer")
         case .xcode:
@@ -108,7 +116,7 @@ enum ThemePreset: String, CaseIterable, Identifiable {
     var swatchForeground: Color {
         switch self {
         case .codex:
-            return .mimiPrimary
+            return .notionLightInk
         case .github:
             return Color(red: 0.03, green: 0.41, blue: 0.85)
         case .xcode:
@@ -126,7 +134,7 @@ enum ThemePreset: String, CaseIterable, Identifiable {
     var swatchBackground: Color {
         switch self {
         case .codex:
-            return Color(red: 0.980392, green: 0.968627, blue: 0.945098)
+            return .notionLightCanvas
         case .github:
             return Color(red: 0.96, green: 0.97, blue: 0.98)
         case .xcode:
@@ -220,17 +228,9 @@ struct ThemeTokens {
 }
 
 extension ThemeTokens {
+    /// Notion 的导航列表与页面同底，深浅色都不另起一档侧栏色。
     var sidebarBackground: Color {
-        guard preset == .codex else {
-            return background
-        }
-        switch resolvedScheme {
-        case .light:
-            return Color(red: 0.980392, green: 0.968627, blue: 0.945098)
-        case .dark:
-            // Notion 深色的导航列表与页面同底，不另起一档侧栏色。
-            return background
-        }
+        background
     }
 
     /// 侧栏是结构分区，不是内容卡片。深色下若比工作区底色亮一整级，
@@ -244,17 +244,10 @@ extension ThemeTokens {
         return Color(red: 35.0 / 255.0, green: 35.0 / 255.0, blue: 35.0 / 255.0)
     }
 
+    /// 悬停取 Notion 未选中胶囊那一档，明显弱于选中填充；默认深色里那一档是 surface。
     var sidebarHoverFill: Color {
-        guard preset == .codex else {
-            return elevatedSurface
-        }
-        switch resolvedScheme {
-        case .light:
-            return Color(red: 0.941, green: 0.937, blue: 0.929)
-        case .dark:
-            // 悬停取 Notion 未选中胶囊那一档，明显弱于选中填充。
-            return surface
-        }
+        guard preset == .codex, resolvedScheme == .dark else { return elevatedSurface }
+        return surface
     }
 
     var inputBackground: Color {
@@ -263,65 +256,65 @@ extension ThemeTokens {
         }
         switch resolvedScheme {
         case .light:
-            // 与浅色侧栏复用同一清晰白色，避免页面同时出现侧栏白、额度暖白和阴影过渡白。
+            // 纯白输入卡压在 Notion 的 #FAF8F6 页面上浮起一档，与 Notion 底部输入条一致。
             return .white
         case .dark:
             return elevatedSurface
         }
     }
 
-    /// 长文会话使用接近纸白的中性画布，避免暖色页面透过顶栏和 Composer 材质后
-    /// 被重复染黄。范围只限阅读会话，侧栏与工作区仍保留 Codex 的暖白识别度。
+    /// 会话画布。默认主题浅色曾在这里单独换成纸白，以避开暖白页面被材质重复染黄；
+    /// 改成 Notion 的中性浅底后页面本身不再偏黄，画布与全局底色合一。
     var conversationCanvasBackground: Color {
-        guard preset == .codex, resolvedScheme == .light else {
-            return background
-        }
-        return Color(
-            red: 250.0 / 255.0,
-            green: 250.0 / 255.0,
-            blue: 248.0 / 255.0
-        )
+        background
     }
 
     /// 宽屏工作台的基底。侧栏浮层外围的 gutter、会话/工作区主列表与会话画布在同一屏上
-    /// 彼此相邻，必须共用同一张底色：暖白 background(250,247,241) 与纸白
-    /// conversationCanvasBackground(250,250,248) 亮度相同、只差色温，没有明度台阶的
-    /// 同亮度色差不会被读成层级，只会被读成"颜色没对上"。层级改由 255 白的浮层卡片表达。
-    /// 设置页、各类 sheet 等不与阅读层相邻的界面继续用 background，保留 Codex 暖白识别度。
-    /// 深色与非 codex 主题下本就等于 background，因此这条只作用在浅色 codex。
+    /// 彼此相邻，必须共用同一张底色；层级改由浮层卡片表达。
     var workbenchCanvasBackground: Color {
         conversationCanvasBackground
     }
 
-    /// 长文阅读层使用中性黑而不是全局暖棕文字；同一张 iPhone 截图中可与
-    /// Claude 的 #181818 正文对齐，同时不改变侧栏和工作台的主题识别度。
+    /// 会话阅读层的文字。默认主题浅色曾单独换成 #101010 以对齐 Claude 的正文；
+    /// 改成 Notion 配色后阅读层与列表共用同一套墨色。
     var conversationPrimaryText: Color {
-        guard preset == .codex, resolvedScheme == .light else { return primaryText }
-        // SwiftUI 文本栅格化会与纸白背景做少量边缘混合；源色取 #101010 后，
-        // 实体 iPhone 截图中的完整字干落在参考图的 #181818。
-        return Color(
-            red: 16.0 / 255.0,
-            green: 16.0 / 255.0,
-            blue: 16.0 / 255.0
-        )
+        primaryText
     }
 
     var conversationSecondaryText: Color {
-        guard preset == .codex, resolvedScheme == .light else { return secondaryText }
-        return Color(
-            red: 112.0 / 255.0,
-            green: 112.0 / 255.0,
-            blue: 110.0 / 255.0
-        )
+        secondaryText
     }
 
     var conversationTertiaryText: Color {
+        tertiaryText
+    }
+
+    /// 列表与侧栏条目的标题色。
+    ///
+    /// Notion 深色侧栏的条目标题不是白色，而是 #B9B8B6 上下的浅灰，只有选中那一行
+    /// 才提亮到接近白；导航列表因此显得安静，正文区仍保持高亮。默认深色照这个做法，
+    /// 非选中条目用这一档，选中条目由调用方换回 primaryText。浅色与其它主题等于正文色。
+    var listTitleText: Color {
+        guard preset == .codex, resolvedScheme == .dark else { return primaryText }
+        return Color(red: 190.0 / 255.0, green: 189.0 / 255.0, blue: 187.0 / 255.0)
+    }
+
+    /// 使用量图表需要靠色阶读出强弱；只在这张图里借用 Codex 圆环的冷蓝色相。
+    /// 页面与普通操作仍保持中性，避免把“有用量”误读成成功状态。
+    var tokenActivityAccent: Color {
+        guard preset == .codex else { return accent }
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 49.0 / 255.0, green: 114.0 / 255.0, blue: 142.0 / 255.0)
+        case .dark:
+            return Color(red: 112.0 / 255.0, green: 176.0 / 255.0, blue: 200.0 / 255.0)
+        }
+    }
+
+    /// 浅色卡片里的月份和重置时间很小，取更深一档暖灰，保留可读性。
+    var tokenActivityAxisText: Color {
         guard preset == .codex, resolvedScheme == .light else { return tertiaryText }
-        return Color(
-            red: 142.0 / 255.0,
-            green: 142.0 / 255.0,
-            blue: 139.0 / 255.0
-        )
+        return Color(red: 106.0 / 255.0, green: 105.0 / 255.0, blue: 102.0 / 255.0)
     }
 
     /// Composer 内部的低频控件使用独立的中性表面色。它比页面底色更冷、比输入卡更实，
@@ -332,11 +325,8 @@ extension ThemeTokens {
         }
         switch resolvedScheme {
         case .light:
-            return Color(
-                red: 242.0 / 255.0,
-                green: 241.0 / 255.0,
-                blue: 238.0 / 255.0
-            )
+            // Notion 浅色未选中胶囊 #F0EEED。
+            return elevatedSurface
         case .dark:
             // Notion 悬浮按钮 #3D3D3D，比输入卡高一档。
             return Color(red: 61.0 / 255.0, green: 61.0 / 255.0, blue: 61.0 / 255.0)
@@ -356,11 +346,8 @@ extension ThemeTokens {
         }
         switch resolvedScheme {
         case .light:
-            return Color(
-                red: 237.0 / 255.0,
-                green: 235.0 / 255.0,
-                blue: 231.0 / 255.0
-            )
+            // Notion 浅色选中胶囊 #ECEAE8，比输入卡白面暗一档。
+            return selectionFill
         case .dark:
             return composerControlSurface
         }
@@ -368,8 +355,8 @@ extension ThemeTokens {
 
     /// 禁用发送时的图标墨色。浅色下不能继续沿用启用态的白字：白色压在
     /// composerInactiveActionSurface 上只有约 1.3:1，箭头会整个消失在色块里，
-    /// 而空草稿正是进入会话的默认状态。这里改用同族的低饱和梅紫墨，
-    /// 既保持 4.5:1 以上的可辨识度，又明显弱于启用态的实心紫。
+    /// 而空草稿正是进入会话的默认状态。这里改用与禁用底同族的中性深灰，
+    /// 既保持 4.5:1 以上的可辨识度，又明显弱于启用态的实心墨色。
     var composerInactiveActionForeground: Color {
         guard preset == .codex else {
             // 其它主题的禁用底是 20% 强调色，前景交给该外观自己的高对比墨色，
@@ -379,8 +366,8 @@ extension ThemeTokens {
         }
         switch resolvedScheme {
         case .light:
-            // 与中性禁用底同族的深灰，压在 237/235/231 上约 5:1，
-            // 明显可读又远弱于启用态的白压深紫（约 14:1）。
+            // 与中性禁用底同族的深灰，压在 236/234/232 上约 5:1，
+            // 明显可读又远弱于启用态的白压墨色（约 14:1）。
             return Color(
                 red: 99.0 / 255.0,
                 green: 98.0 / 255.0,
@@ -408,23 +395,15 @@ extension ThemeTokens {
             return border
         }
         switch resolvedScheme {
-        case .light:
-            return Color(red: 0.902, green: 0.890, blue: 0.878)
-        case .dark:
+        case .light, .dark:
             return border
         }
     }
 
-    /// 默认深色照 Notion AI 的浅灰圆钮：主操作与小面积强调共用同一档浅灰，
-    /// 不再带任何色相，也同时满足“当填充”和“当前景”两种用法。
+    /// 默认主题照 Notion：深色是 AI 圆钮那档浅灰配黑字，浅色是正文墨色配白字。
+    /// 主操作与小面积强调共用 accent，不带任何色相，同时满足“当填充”和“当前景”两种用法。
     var primaryAction: Color {
-        guard preset == .codex else { return accent }
-        switch resolvedScheme {
-        case .light:
-            return .mimiPrimary
-        case .dark:
-            return accent
-        }
+        accent
     }
 
     /// 主按钮默认白字，维持一致、清晰的操作语义。
@@ -511,19 +490,16 @@ extension ThemeTokens {
 
     var accentSoft: Color {
         guard preset == .codex else { return accent.opacity(0.12) }
-        switch resolvedScheme {
-        case .light:
-            return Color(red: 0.949, green: 0.933, blue: 0.945)
-        case .dark:
-            return selectionFill
-        }
+        return selectionFill
     }
 
     /// 会话侧滑动作使用独立语义色，而不是在视图里硬编码系统橙/蓝。
     /// 这些颜色都以白色图标和文案为前景，并分别为浅色、深色外观校准对比度。
-    /// 默认深色不带紫色：置顶/取消置顶退成两档中性灰，白字分别约 7:1 和 11:1。
+    /// 默认主题不带紫色：置顶/取消置顶退成两档中性灰，白字都在 4.5:1 以上。
     var sessionPinActionTint: Color {
         switch (preset, resolvedScheme) {
+        case (.codex, .light):
+            return Color(red: 70.0 / 255.0, green: 69.0 / 255.0, blue: 66.0 / 255.0)
         case (_, .light):
             return Color(red: 74.0 / 255.0, green: 20.0 / 255.0, blue: 74.0 / 255.0)
         case (.codex, .dark):
@@ -535,6 +511,8 @@ extension ThemeTokens {
 
     var sessionUnpinActionTint: Color {
         switch (preset, resolvedScheme) {
+        case (.codex, .light):
+            return Color(red: 112.0 / 255.0, green: 111.0 / 255.0, blue: 108.0 / 255.0)
         case (_, .light):
             return Color(red: 91.0 / 255.0, green: 84.0 / 255.0, blue: 95.0 / 255.0)
         case (.codex, .dark):
@@ -602,9 +580,10 @@ extension ThemeTokens {
         conversationPrimaryText
     }
 
-    /// 默认深色的链接色是无色相的浅灰，与正文只差亮度；照 Notion 加下划线区分，不只靠颜色。
+    /// 默认主题的链接色没有色相（深色浅灰、浅色墨色），与正文只差亮度或完全同色；
+    /// 照 Notion 加下划线区分，不只靠颜色。
     var underlinesLinks: Bool {
-        preset == .codex && resolvedScheme == .dark
+        preset == .codex
     }
 
     /// 用户消息的时间文字。发送中整条消息还会叠 0.72 透明度：默认深色若继续用
@@ -620,9 +599,8 @@ extension ThemeTokens {
     func tint(for tone: AgentSessionStatusTone) -> Color {
         switch tone {
         case .active:
-            // 默认深色的运行文字/图标使用 accent（与 primaryAction 同为浅灰）。
-            // 其他外观保持原映射，状态判定本身不变。
-            return preset == .codex && resolvedScheme == .dark ? accent : primaryAction
+            // 运行态文字/图标跟随主操作色；默认主题下它是无色相的浅灰（深色）或墨色（浅色）。
+            return primaryAction
         case .warning:
             return warning
         case .danger:
@@ -857,34 +835,36 @@ final class ThemeStore: ObservableObject {
     }
 
     private var codexLightTokens: ThemeTokens {
-        // 参考系统设置页：用两版背景的中间色保留暖白，同时避免大面积底色偏黄。
+        // 取自 Notion iOS 浅色截图：页面 #FAF8F6、未选中胶囊 #F0EEED、选中胶囊 #ECEAE8、
+        // 正文 #2E2C2A，次级文字与图标是 Notion 的暖灰 #787774 / #9B9A97。
+        // 与深色同一原则：主操作是正文墨色配白字，冷蓝只用于用量图表。
+        // 代码块也照 Notion 用浅底深字，不再在浅色页面里嵌一块深色分区。
         ThemeTokens(
             preset: .codex,
             resolvedScheme: .light,
-            background: Color(red: 0.980392, green: 0.968627, blue: 0.945098),
-            surface: Color(red: 1.00, green: 1.00, blue: 1.00),
-            elevatedSurface: Color(red: 0.957, green: 0.953, blue: 0.941),
-            // 用户内容退回中性表面，品牌紫只承担操作与运行状态，长对话不会出现大块色斑。
-            userBubble: Color(red: 0.957, green: 0.953, blue: 0.941),
+            background: .notionLightCanvas,
+            surface: .white,
+            elevatedSurface: Color(red: 240.0 / 255.0, green: 238.0 / 255.0, blue: 237.0 / 255.0),
+            userBubble: Color(red: 240.0 / 255.0, green: 238.0 / 255.0, blue: 237.0 / 255.0),
             assistantBubble: .white,
-            systemBubble: Color(red: 0.953, green: 0.949, blue: 0.941),
-            codeBlock: Color(red: 0.141, green: 0.125, blue: 0.122),
-            codeText: Color(red: 1.000, green: 0.969, blue: 0.941),
-            primaryText: Color(red: 0.169, green: 0.141, blue: 0.129),
-            secondaryText: Color(red: 0.557, green: 0.557, blue: 0.576),
-            tertiaryText: Color(red: 0.635, green: 0.635, blue: 0.651),
-            accent: .mimiPrimary,
+            systemBubble: Color(red: 240.0 / 255.0, green: 238.0 / 255.0, blue: 237.0 / 255.0),
+            codeBlock: Color(red: 240.0 / 255.0, green: 238.0 / 255.0, blue: 237.0 / 255.0),
+            codeText: .notionLightInk,
+            primaryText: .notionLightInk,
+            secondaryText: Color(red: 120.0 / 255.0, green: 119.0 / 255.0, blue: 116.0 / 255.0),
+            tertiaryText: Color(red: 155.0 / 255.0, green: 154.0 / 255.0, blue: 151.0 / 255.0),
+            accent: .notionLightInk,
             warning: Color(red: 0.663, green: 0.376, blue: 0.000),
             success: Color(red: 0.184, green: 0.490, blue: 0.353),
-            goalActive: .mimiPrimary,
-            voiceRecording: .mimiPrimary,
+            goalActive: .notionLightInk,
+            voiceRecording: .notionLightInk,
             voiceWaveformGradient: [
-                .mimiPrimary,
-                Color(red: 0.478, green: 0.259, blue: 0.467),
-                Color(red: 0.690, green: 0.525, blue: 0.678),
+                .notionLightInk,
+                Color(red: 120.0 / 255.0, green: 119.0 / 255.0, blue: 116.0 / 255.0),
+                Color(red: 155.0 / 255.0, green: 154.0 / 255.0, blue: 151.0 / 255.0)
             ],
-            border: Color(red: 0.898, green: 0.886, blue: 0.875),
-            selectionFill: Color(red: 0.937, green: 0.925, blue: 0.929)
+            border: Color(red: 232.0 / 255.0, green: 230.0 / 255.0, blue: 227.0 / 255.0),
+            selectionFill: Color(red: 236.0 / 255.0, green: 234.0 / 255.0, blue: 232.0 / 255.0)
         )
     }
 
