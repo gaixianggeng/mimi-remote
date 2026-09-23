@@ -53,15 +53,15 @@ PY
 
 备份宿主的 `~/.ssh/authorized_keys` 后，将输出作为**新的一行**加入。不要用普通 SSH 已在使用的公钥，也不要删除原有密钥。专用公钥若已存在于其他行，应先核对重复项，否则 sshd 可能选择未带命令桥的旧行。持有这把专用私钥的客户端可通过原始 SSH 命令在当前用户的 GUI 环境执行命令，访问范围高于普通 Background SSH；只给可信 Desktop 使用，妥善保护私钥。远程接入时可在 `authorized_keys` 行增加 OpenSSH 的 `from=` 来源限制。
 
-在 Desktop 所在电脑的 `~/.ssh/config` 中复制原有可用 Host 配置，使用新的 Host 别名，并将 `IdentityFile` 改为 `~/.ssh/mimi-desktop`，加入 `IdentitiesOnly yes`。保留原 Host 的地址、端口、用户与跳板配置。新的 Host 如继承了 `ControlPath`，应覆盖为 `ControlPath none`，避免复用普通 SSH 已认证的旧连接。
+在 Desktop 所在电脑的 `~/.ssh/config` 中复制原有可用 Host 配置，使用新的 Host 别名，并将 `IdentityFile` 改为 `~/.ssh/mimi-desktop`，加入 `IdentitiesOnly yes`。保留原 Host 的地址、端口、用户与跳板配置。将新条目放在通配的 `Host *` 之前，因为 OpenSSH 使用先匹配到的选项值。设置 `ControlMaster no` 和 `ControlPath none`，避免复用普通 SSH 已认证的旧连接；使用 `ssh -G <新别名>` 核对最终身份文件与控制路径。
 
-本机接入可用下面命令生成配置片段，再追加到 `~/.ssh/config`：
+本机接入可用下面命令生成配置片段。若配置中已有通配 `Host *`，将片段插入其前面；否则可追加到 `~/.ssh/config`：
 
 ```bash
 python3 - <<'PY'
 import getpass
 print('Host mimi-local\n  HostName 127.0.0.1\n  User ' + getpass.getuser()
-      + '\n  IdentityFile ~/.ssh/mimi-desktop\n  IdentitiesOnly yes\n  ControlPath none')
+      + '\n  IdentityFile ~/.ssh/mimi-desktop\n  IdentitiesOnly yes\n  ControlMaster no\n  ControlPath none')
 PY
 ```
 
