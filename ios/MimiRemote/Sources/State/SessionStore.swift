@@ -118,7 +118,7 @@ final class SessionStore: ObservableObject {
     /// 后者按查询是否非空判定，聚焦但没输入时仍是 false，盖不住"键盘已弹出"这一段。
     /// iPad 紧凑布局的设备入口是画在 TabView 上的浮层，不归导航栏管，搜索激活时
     /// 系统会收起 Tab 胶囊和顶栏按钮，浮层却留在原地被搜索框压住，所以需要这个信号。
-    @Published var isSessionSearchPresented = false
+    @Published private(set) var isSessionSearchPresented = false
 
     @Published var sessionSearchQuery = "" {
         didSet {
@@ -792,6 +792,13 @@ final class SessionStore: ObservableObject {
 
     var isNetworkUnavailable: Bool {
         networkReachabilityStatus == .unsatisfied
+    }
+
+    /// `@Published` 写入相同值也会通知全部观察者。会话页每次出现/消失都会上报一次，
+    /// 不去重的话，每次切 Tab 都会让整个工作台（含隐藏的 Tab）多重算一轮。
+    func setSessionSearchPresented(_ isPresented: Bool) {
+        guard isSessionSearchPresented != isPresented else { return }
+        isSessionSearchPresented = isPresented
     }
 
     func sessionSearchSnippet(for sessionID: SessionID) -> String? {
