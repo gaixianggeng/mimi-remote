@@ -218,10 +218,8 @@ enum SessionIndexRowIdentityFallback: Equatable {
     case none
 }
 
-/// 前导状态字形。
-///
-/// 四种状态用**形状**区分而不只是颜色：实心圆带感叹号 / 三角 / 缺口环 / 完整环。
-/// 色觉障碍下这一列仍然可读，这是把状态收进单一色点的方案做不到的。
+/// 前导状态字形。需要处理与运行中的状态保留独立形状；
+/// 未读只是轻量提示，配合加粗标题与 VoiceOver 文案，不借用成功色。
 struct SessionRowStateGlyph: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -272,11 +270,11 @@ struct SessionRowStateGlyph: View {
                 }
             case .unread:
                 Circle()
-                    .strokeBorder(tokens.success, lineWidth: 2)
-                    .frame(width: size, height: size)
+                    .fill(tokens.sessionUnreadAccent)
+                    .frame(width: 6, height: 6)
             case nil:
                 if drawsIdlePlaceholder {
-                    // 虚线环。和"运行中"那枚紫色缺口环的区别落在**形状**上，而不是靠颜色深浅——
+                    // 虚线环。和"运行中"那枚缺口环的区别落在**形状**上，而不是靠颜色深浅——
                     // 虚实之分即使在色觉障碍或纯灰度下也读得出来，这是细一档描边做不到的。
                     //
                     // 描边不能再细了：1.25pt 配 border 色在实机上糊成一团灰雾，读不出是个环。
@@ -635,15 +633,15 @@ struct SessionIndexRow: View {
             }
 
             Text(visibleTitle)
-                .font(themeStore.uiFont(size: density.titleFontSize, weight: isSelected ? .semibold : .regular))
-                .foregroundStyle(isSelected ? tokens.primaryText : tokens.listTitleText)
+                .font(themeStore.uiFont(size: density.titleFontSize, weight: isSelected || isUnread ? .semibold : .regular))
+                .foregroundStyle(isSelected || isUnread ? tokens.primaryText : tokens.listTitleText)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .truncationMode(.tail)
                 .layoutPriority(1)
                 .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
 
             if leadingSlot == .projectIcon, isUnread {
-                // 状态环紧跟可见标题；它的优先级高于标题，因此空间不足时标题先截断。
+                // 会话库前导槽留给项目图标，未读小点跟在标题后面；标题字重仍是主要提示。
                 unreadTitleIndicator(tokens: tokens)
                     .layoutPriority(2)
             }
@@ -811,8 +809,8 @@ struct SessionIndexRow: View {
 
     private func unreadTitleIndicator(tokens: ThemeTokens) -> some View {
         Circle()
-            .strokeBorder(tokens.success, lineWidth: 1.75)
-            .frame(width: 9, height: 9)
+            .fill(tokens.sessionUnreadAccent)
+            .frame(width: 6, height: 6)
             .frame(width: 12, height: 12)
             .accessibilityHidden(true)
     }

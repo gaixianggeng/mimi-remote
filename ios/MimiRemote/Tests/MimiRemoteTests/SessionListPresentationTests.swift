@@ -1176,7 +1176,8 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
 
             assertSnapshot(
                 of: view,
-                as: .image(precision: 0.98, layout: .fixed(width: 460, height: 330)),
+                // 未读点很小，需提高像素门槛才能锁住实心冷蓝点和标题字重。
+                as: .image(precision: 0.995, layout: .fixed(width: 460, height: 330)),
                 named: appearance.name
             )
         }
@@ -1195,7 +1196,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
             project: project,
             title: "运行中的会话",
             status: SessionStatus.running.rawValue,
-            preview: "紫色缺口环表示任务正在运行",
+            preview: "缺口环表示任务正在运行",
             activeTurnID: "turn-state-ring",
             recencyAt: fixedNow
         )
@@ -1204,7 +1205,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
             project: project,
             title: "已完成但尚未阅读",
             status: SessionStatus.completed.rawValue,
-            preview: "绿色完整环只表示完成结果未读",
+            preview: "冷蓝小点与较粗标题表示结果未读",
             recencyAt: fixedNow.addingTimeInterval(-60)
         )
         let readHistory = makeSession(

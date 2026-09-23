@@ -299,7 +299,7 @@ extension ThemeTokens {
         return Color(red: 190.0 / 255.0, green: 189.0 / 255.0, blue: 187.0 / 255.0)
     }
 
-    /// 使用量图表需要靠色阶读出强弱；只在这张图里借用 Codex 圆环的冷蓝色相。
+    /// 使用量图表需要靠色阶读出强弱；小面积借用 Codex 圆环的冷蓝色相。
     /// 页面与普通操作仍保持中性，避免把“有用量”误读成成功状态。
     var tokenActivityAccent: Color {
         guard preset == .codex else { return accent }
@@ -310,6 +310,9 @@ extension ThemeTokens {
             return Color(red: 112.0 / 255.0, green: 176.0 / 255.0, blue: 200.0 / 255.0)
         }
     }
+
+    /// 未读是“有新结果”，不是“执行成功”；沿用用量图表的小面积冷蓝，避免绿色状态环抢标题。
+    var sessionUnreadAccent: Color { tokenActivityAccent }
 
     /// 浅色卡片里的月份和重置时间很小，取更深一档暖灰，保留可读性。
     var tokenActivityAxisText: Color {

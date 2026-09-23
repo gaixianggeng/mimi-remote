@@ -66,7 +66,9 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         ? WorkbenchPageLayout.compactPadding
                         : WorkbenchPageLayout.regularPadding
                 )
-                .padding(.top, 16)
+                // 手机顶部项目条与 Runtime 筛选器属于同一组，少留一档空白。
+                // 宽屏没有第二条筛选行，仍保留原来的内容起始留白。
+                .padding(.top, hasCompactTabBar ? 8 : 16)
                 // 三个顶层页面消费同一个浮动栏 clearance；宽屏无 Tab Bar 时只保留常规页面留白。
                 // 只有按钮真的浮在内容之上时才追加让位高度；回到行内就不需要了。
                 .padding(
