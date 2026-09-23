@@ -31,6 +31,7 @@
 		8B4BE174AFBDA0FB38F55941 /* AgentdConfigCheckClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E67B6F25CBB9A8C531C4AF5F /* AgentdConfigCheckClient.swift */; };
 		9190117090B67A3342D6120D /* QRCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BE4D38858D995BC12D0856A /* QRCodeView.swift */; };
 		9381140D2855654A9E07746E /* StatusComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A4847134E49077F02AF8BBE /* StatusComponents.swift */; };
+		943444FF2C49492A818BEDE7 /* CodexFrontDoorInvocationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 018678E3BFBB71E9F374FF6C /* CodexFrontDoorInvocationTests.swift */; };
 		948724FB5BADA496572B0068 /* HostStoreControlErrors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 420B2B044A245D8F755DB795 /* HostStoreControlErrors.swift */; };
 		A6AFE40180A85DFFB12B968C /* AgentDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F99C0872C5C1DA7EEA3DA0F /* AgentDiagnosticsTests.swift */; };
 		AD199C3299AE46CEBBFBD8F4 /* MenuRuntimePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14C8D785FAF772A76606A4A /* MenuRuntimePresentationTests.swift */; };
@@ -64,6 +65,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		018678E3BFBB71E9F374FF6C /* CodexFrontDoorInvocationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexFrontDoorInvocationTests.swift; sourceTree = "<group>"; };
 		01F22A0DD397F37B0B0E8849 /* HostStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreTests.swift; sourceTree = "<group>"; };
 		0431AEFF2D4E005613D17105 /* ServiceManagementClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceManagementClient.swift; sourceTree = "<group>"; };
 		054371F4B53A557AF0C1B27B /* ModuleModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleModels.swift; sourceTree = "<group>"; };
@@ -197,6 +199,7 @@
 				5F99C0872C5C1DA7EEA3DA0F /* AgentDiagnosticsTests.swift */,
 				F9B97C2451CBB1E2B78D009C /* AgentModelsTests.swift */,
 				3C59B0505460DB90B25BDCDE /* AppUpdateTests.swift */,
+				018678E3BFBB71E9F374FF6C /* CodexFrontDoorInvocationTests.swift */,
 				8C1717DA793AF3CE77106578 /* HostStoreCodexSessionRepairTests.swift */,
 				01F22A0DD397F37B0B0E8849 /* HostStoreTests.swift */,
 				95CEFC2080963A6433B43217 /* MenuBarWindowPlacementTests.swift */,
@@ -461,6 +464,7 @@
 				2D3D7AD1F48F6D665E50089E /* AgentModelsTests.swift in Sources */,
 				233962E6F05066A3F95714E0 /* AgentdConfigCheckClientTests.swift in Sources */,
 				28EBD25B9A113B0FD13FE90E /* AppUpdateTests.swift in Sources */,
+				943444FF2C49492A818BEDE7 /* CodexFrontDoorInvocationTests.swift in Sources */,
 				C8B87ED3A455F4D40A2441AC /* HostStoreCodexSessionRepairTests.swift in Sources */,
 				2D88E2B17C680EC02E71EAB5 /* HostStoreTests.swift in Sources */,
 				11399EBAD3569F1EA7DC3A55 /* MenuBarWindowPlacementTests.swift in Sources */,

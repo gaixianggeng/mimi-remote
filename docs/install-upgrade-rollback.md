@@ -83,7 +83,7 @@ JSON 安全模式只返回 `version`、`service_ok` 和可选的安全 warning�
 
 首个 DMG 不带自动更新。升级时下载目标正式版本的 DMG 和 SHA-256 文件，校验后用新 App 覆盖“应用程序”中的现有版本；不要先删除旧 App，也不要删除 `~/Library/Application Support/mimi-remote`。打开新版本后确认 service owner 仍是 `Mimi Remote Mac`，版本、Doctor、Codex 和已启用的 Claude channel 均正常。
 
-需要回滚时安装上一个仍可从正式 Release 获取、经过 Developer ID 签名和 Apple 公证的 DMG。优先只回滚 App 和内嵌二进制；除非确认新版本写入了旧版本无法读取的配置，否则继续复用现有配置。snapshot、ad-hoc 或未公证构建不能作为稳定回滚版本。
+需要回滚时安装上一个仍可从正式 Release 获取、经过 Developer ID 签名和 Apple 公证的 DMG。优先只回滚 App 和内嵌二进制；除非确认新版本写入了旧版本无法读取的配置，否则继续复用现有配置。若要回到不支持 Codex 前门的旧版，先按[共享 App Server](shared-ssh-app-server.md#macos-mac-app-前门)卸载前门并安全结束私有 backend，再替换 App。snapshot、ad-hoc 或未公证构建不能作为稳定回滚版本。
 
 移动或删除 App 前，先在菜单栏执行“退出并停止服务”。如果要回到 Homebrew，在设置中执行“停止 App 服务并恢复 Homebrew”，确认旧服务重新就绪后再移除 App，避免系统保留指向不存在 bundle 的 LaunchAgent 注册。
 

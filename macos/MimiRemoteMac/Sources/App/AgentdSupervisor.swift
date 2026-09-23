@@ -20,6 +20,39 @@ enum AgentdSupervisorInvocation {
     }
 }
 
+/// launchd 前门以 inetd Wait=true 启动主可执行文件：监听 socket 位于 fd 0-2，原样交给包内
+/// agentd。与 supervisor 一样由主 App 承接 TCC 责任，前门启动的 Codex 后端因此继承同一授权。
+/// 只接受 `--codex-front-door`，或额外带一个绝对路径的 `--config`（隔离验证用）。
+enum CodexFrontDoorInvocation {
+    static let flag = "--codex-front-door"
+
+    static func isRequested(_ arguments: [String]) -> Bool {
+        arguments.dropFirst().contains(flag)
+    }
+
+    enum Configuration: Equatable {
+        case standard
+        case explicit(String)
+
+        var path: String? {
+            if case let .explicit(path) = self { return path }
+            return nil
+        }
+    }
+
+    /// 返回 nil 表示用法错误。
+    static func configuration(_ arguments: [String]) -> Configuration? {
+        switch arguments.count {
+        case 2 where arguments[1] == flag:
+            return .standard
+        case 4 where arguments[1] == flag && arguments[2] == "--config" && arguments[3].hasPrefix("/"):
+            return .explicit(arguments[3])
+        default:
+            return nil
+        }
+    }
+}
+
 struct AgentdSupervisorCommand: Equatable {
     static let agentdRelativePath = "Contents/Resources/agentd"
 
@@ -39,6 +72,22 @@ struct AgentdSupervisorCommand: Equatable {
             executableURL: executableURL,
             arguments: [executableURL.path, "serve", "--log-file", logURL.path]
         )
+    }
+
+    static func frontDoor(bundleURL: URL, homeDirectoryURL: URL, configPath: String?) -> Self {
+        let executableURL = bundleURL.appending(
+            path: agentdRelativePath,
+            directoryHint: .notDirectory
+        )
+        let logURL = homeDirectoryURL.appending(
+            path: "Library/Logs/mimi-remote/codex-front.log",
+            directoryHint: .notDirectory
+        )
+        var arguments = [executableURL.path, "codex-front", "serve", "--log-file", logURL.path]
+        if let configPath {
+            arguments += ["--config", configPath]
+        }
+        return Self(executableURL: executableURL, arguments: arguments)
     }
 }
 
@@ -157,13 +206,13 @@ final class AgentdSupervisorSignalRelay: @unchecked Sendable {
 enum AgentdSupervisor {
     static let agentIdentifier = "com.gaixianggeng.mimi.mac.agentd"
 
-    static func run(bundleURL: URL = Bundle.main.bundleURL) -> Int32 {
+    static func run(
+        bundleURL: URL = Bundle.main.bundleURL,
+        command makeCommand: (URL, URL) -> AgentdSupervisorCommand = AgentdSupervisorCommand.fixed
+    ) -> Int32 {
         let account = currentAccount()
         let homeDirectoryURL = URL(fileURLWithPath: account.homeDirectory)
-        let command = AgentdSupervisorCommand.fixed(
-            bundleURL: bundleURL,
-            homeDirectoryURL: homeDirectoryURL
-        )
+        let command = makeCommand(bundleURL, homeDirectoryURL)
         guard let appIdentity = ServiceManagementClient.codeSigningIdentity(at: bundleURL),
               appIdentity.identifier == "com.gaixianggeng.mimi.mac",
               let teamIdentifier = appIdentity.teamIdentifier,

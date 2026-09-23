@@ -8,13 +8,13 @@ Mimi、本机终端和 Codex Desktop 共用同一个 Unix App Server。任一入
 
 ```text
 Mimi App -> agentd 鉴权 WebSocket -> unix:// ----------------------------------┐
-本机终端 ----------------------------> codex --remote unix:// -----------------+-> ~/.codex/app-server-control/app-server-control.sock
-Desktop --------> Mac SSH 专用入口 ---> GUI 执行官方 Codex CLI / proxy ---------┘
+本机终端 ----------------------------> codex --remote unix:// -----------------+-> 标准 control socket
+本机 Desktop ---> localhost SSH -----> codex app-server proxy -----------------+
+远程 Desktop ---> Mac SSH -----------> codex app-server proxy -----------------┘
+Mac App：标准 socket 由 launchd 持有 -> GUI 前门 -> 私有 backend socket -> 同一个 Aqua App Server
 ```
 
 OpenClaw 和不使用 control socket 的普通本地模式继续使用自己的 App Server。agentd 不枚举、不停止，也不重配这些进程。
-
-macOS 要消除 Desktop SSH 与 Mimi 的启动顺序依赖，应配置[Desktop 专用 SSH 入口](desktop-ssh-gui-entry.md)。它保留系统 SSH 认证，通过 Mimi 的本机命令桥从 GUI 执行官方 CLI。普通系统 SSH 直启 Codex 仍可能产生 Background 实例；下面的原生 SSH 限制专指未配置专用入口的连接。
 
 ## 配置
 
@@ -29,7 +29,24 @@ macOS 的 `~/Library/Application Support/mimi-remote/config.json` 与 Linux 的�
 }
 ```
 
-agentd 直接连接标准 control socket。socket 缺失时由 agentd 启动 `codex app-server --listen unix://`：Linux 优先通过独立的 user-systemd scope；macOS 要求启动方处于已登录用户的 Aqua 环境，再以独立进程会话（setsid）启动并把 open-file soft limit 提到至少 8192。setsid 不会把 SSH 的 Background 安全会话变成用户登录会话。两种方式下 agentd 重启都不会终止 resident。本机终端通过 `codex --remote unix://` 接入同一个后端；普通 `codex` 仍会启动自己的本地运行时。
+agentd 直接连接标准 control socket。Mac App 安装版启动服务前自动登记登录用户的 launchd 前门；由它持有标准 socket，并在 Aqua 环境启动独立的 Codex backend。前门未就绪时 agentd 只报告 Codex 不可用，不自行争夺标准 socket。Linux 的 socket 缺失时仍由 agentd 优先通过独立 user-systemd scope 启动 resident；macOS Homebrew 版沿用已登录用户的 Aqua 启动方式。三种方式都把 open-file soft limit 提到至少 8192；agentd 重启不终止 resident。本机终端通过 `codex --remote unix://` 接入同一个后端；普通 `codex` 仍会启动自己的本地运行时。
+
+### macOS Mac App 前门
+
+Mac App 自动创建 `~/Library/LaunchAgents/com.gaixianggeng.mimi.mac.codex-front.plist`。launchd 在 Aqua 会话持续持有 `~/.codex/app-server-control/app-server-control.sock`，权限为 `0600`。首次连接时，它以 **Mimi Remote Mac** 为授权主体启动前门；前门再启动监听 `app-server-backend.sock` 的官方 Codex CLI，并转发 Unix 字节流。前门、agentd 或单条 SSH 连接重启时，独立 backend 保留正在运行的模型回合。
+
+Desktop 继续使用原来的 SSH Host。它执行的 `codex app-server --listen unix://` 发现标准 socket 已被占用后退出，随后官方 `codex app-server proxy` 经前门接入同一个 backend。无需指定 Mimi 与 Desktop 的启动顺序，也无需修改 SSH 密钥、`authorized_keys` 或 Host 别名。macOS 可能在首次登记时提示新增后台项目；平时启动不出现 Mimi 自定义确认弹窗。
+
+升级前已有 resident 占用标准 socket 时，无论它属于 Background 还是 Aqua，自动登记都不会抢占，主服务保留诊断。先结束共享任务、断开所有 Desktop SSH 页面并停止 Mimi 服务。Background 实例可按下文的一次性修复流程释放；Aqua 实例需要人工核对进程、确认已无其他客户端和活动任务，再向该进程发送 SIGTERM。然后重启 Mimi Remote Mac，使它登记前门。现有客户端尚未断开时不要手动强行 bootstrap 前门：旧实例会与新 backend 暂时并存，可能触发同一会话的 writer 冲突。
+
+检查前门状态或在安全修复后重新登记，可运行已安装 App 内的命令：
+
+```bash
+"/Applications/Mimi Remote Mac.app/Contents/Resources/agentd" codex-front status
+"/Applications/Mimi Remote Mac.app/Contents/Resources/agentd" codex-front install
+```
+
+若 App 安装在 `~/Applications`，将命令中的 `/Applications` 改为 `$HOME/Applications`。回退旧版前，先结束共享任务并断开 Desktop，记录 `codex-front status` 返回的 `backend_pid`，用新版本的 `agentd codex-front uninstall` 卸载前门，再核对 PID 对应的确实是私有 backend 并向它发送一次 SIGTERM。确认退出后才替换 App；不要只换回旧 App 而留下仍指向新版本的 LaunchAgent。
 
 旧版 macOS setup 自动写入的 `transport=ssh` + `ssh_target=127.0.0.1` 会在 agentd 启动、`agentd setup` 或 `agentd doctor --fix` 时先完成 CLI 可用性和本机 socket 路径预检，再原子改写为 `local`。macOS 设置与配置迁移不创建共享进程，真实连接由 GUI 服务启动时验证。带用户名的 target 或远端主机不会被自动迁移；静态预检失败时原配置保持不变。
 
@@ -72,7 +89,7 @@ agentd status
 
 ## 启动与连接
 
-本机模式下 agentd 先探测 control socket 并执行真实 WebSocket 初始化；SSH 模式下则先通过 SSH 打开 `codex app-server proxy`。只有默认 Unix Socket 尚未提供服务时，agentd 才启动 resident；两种模式使用同一条命令：
+本机模式下 agentd 先探测 control socket 并执行真实 WebSocket 初始化；SSH 模式下则先通过 SSH 打开 `codex app-server proxy`。Mac App 的 backend 由前门在首次连接时启动；Linux 与 macOS Homebrew 版在默认 socket 尚未提供服务时由 agentd 启动。Codex 启动参数如下；前门仅将监听地址替换为私有 backend socket：
 
 ```bash
 open_file_limit=$(ulimit -Sn)
@@ -83,9 +100,9 @@ CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 \
   codex -c features.code_mode_host=true app-server --listen unix://
 ```
 
-macOS 本机模式还通过 `command/exec` 查询 resident 的 `launchctl managername`，仅复用 Aqua 环境。每条新的业务连接都以独立探针校验，并核对探针与业务连接的 Unix peer，避免 Desktop 重建服务后沿用旧的校验结果。若检查失败或已有 resident 属于 Background，agentd 拒绝该 Codex 连接，但保留主服务诊断；不终止旧进程，也不改换 socket。Mac App 的 supervisor LaunchAgent 限定为 Aqua；首次设置不抢先启动 resident。Homebrew 用户应通过已登录用户的 `agentd up` 启动 GUI 服务，不能把 SSH 中直接执行 `agentd serve` 当作等价启动方式。
+macOS 本机模式还通过 `command/exec` 查询 resident 的 `launchctl managername`，仅复用 Aqua 环境。每条新的业务连接都以独立探针校验，并核对探针与业务连接的 Unix peer，避免实例替换期间沿用旧的校验结果。若检查失败或已有 resident 属于 Background，agentd 拒绝该 Codex 连接，但保留主服务诊断；不终止旧进程。Mac App 的 supervisor 与前门 LaunchAgent 均限定为 Aqua。Homebrew 用户应通过已登录用户的 `agentd up` 启动 GUI 服务，不能把 SSH 中直接执行 `agentd serve` 当作等价启动方式。
 
-Desktop 通过专用 SSH 入口启动或接入的 resident 同属 Aqua，先后顺序不影响任务接续。未经专用入口的普通 SSH 仍可能先创建 Background resident；此时 Mimi 会报告运行环境错误，需要下面的一次性修复。Mimi 不控制 Desktop 自己的启动逻辑。
+Desktop 的 SSH proxy 与 Mimi 通过前门接入同一个 backend，任务历史与接续方式不变。Mac 尚未登录、前门未加载时，远程 Desktop 仍可能先创建 Background resident；用户登录后按上文步骤做一次安全迁移。Mimi 不控制 Desktop 自己的启动逻辑。
 
 launchd 启动的进程和 SSH 登录在 macOS 上的 open-file soft limit 通常只有 256。agentd 启动新 resident 前会读取当前值；低于 8192 时先提高到 8192，无法提高时拒绝启动。它不会降低已经更高的限制。
 
@@ -93,15 +110,15 @@ launchd 启动的进程和 SSH 登录在 macOS 上的 open-file soft limit 通�
 
 这个 App Server 只接受 Unix Socket 上的连接：agentd 直连、本机终端或 SSH proxy。启动命令会关闭它的 Remote Control 注册，防止它继承 Desktop 已保存的同一套服务端身份。ChatGPT 移动端和 Desktop 普通 “This Mac” 模式继续连接官方 App Server，不会被共享 resident 接管。
 
-agentd 在进程内串行执行探测与启动。多个入口同时尝试启动时，只有成功绑定默认 Socket 的 App Server 成为 owner；其余连接这个 owner。
+Mac App 使用前门后，标准 Socket 的 owner 始终是 launchd；前门用进程内互斥和跨进程文件锁确保并发连接只启动一个私有 backend。Linux 与 macOS Homebrew 版仍由 agentd 在进程内串行探测与启动；多个入口竞争时，只有成功绑定默认 Socket 的 App Server 成为 owner。
 
 agentd 或单条 Mimi WebSocket 退出时只关闭自己的连接或对应 SSH proxy，不停止共享 App Server。socket、SSH、Codex 版本或协议初始化失败时，Codex 链路明确失败，不回退到独立 WebSocket、stdio 或 Desktop IPC。本机 transport 已建立而 readiness 失败时，agentd 继续提供诊断；静态配置、CLI 预检或其他启动阶段错误仍可能阻止主服务启动。
 
-若默认 Socket 文件仍存在，但无法完成初始化，agentd 会报告 Codex 不可用并保留诊断服务。它不会猜测 owner 或删除共享 Socket。环境检查失败时，刷新后的 runtime 状态使用 `shared_local_session_unavailable`；`/healthz` 的 200 只证明主服务存活。先确认没有仍在使用该 Socket 的 App Server，再手工运行上面的 `codex ... app-server --listen unix://`；Codex 会按自己的启动锁和 stale-socket 规则恢复。恢复 Aqua 实例后，下一条连接重新校验，不需要重启 agentd。
+若默认 Socket 文件仍存在，但无法完成初始化，agentd 会报告 Codex 不可用并保留诊断服务。它不会猜测 owner 或删除共享 Socket。环境检查失败时，刷新后的 runtime 状态使用 `shared_local_session_unavailable`；`/healthz` 的 200 只证明主服务存活。Mac App 用户先运行 `codex-front status`，确认登录项与私有 backend 状态，再从 Mac App 重启服务；不要手工在标准 Socket 启动另一个 Codex。Linux 与 macOS Homebrew 用户确认没有仍在使用该 Socket 的 App Server 后，可以手工运行上面的 `codex ... app-server --listen unix://`；Codex 会按自己的启动锁和 stale-socket 规则恢复。恢复 Aqua 实例后，下一条连接重新校验，不需要重启 agentd。
 
 ## macOS 文件访问权限
 
-本机模式下 resident 由 agentd 启动并继承它的 macOS 隐私授权：Mac App 安装版的 agentd 由主 App 的 supervisor 拉起，授权主体是 Mimi Remote Mac（照片图库在 App 的“设置 → 文件访问”中允许）；Homebrew 版的授权主体是 agentd 本身。SSH 模式下 resident 是 sshd 的子进程；若“远程登录”里开启了“允许远程用户完全访问磁盘”（macOS 默认勾选），它会继承 sshd 的完全磁盘访问。因此从 SSH 切到本机模式后，照片图库、Mail、Safari 等“完全磁盘访问”范围内的目录可能从可读变为需要授权；桌面、文稿、下载仍按首次访问时的系统提示授权。需要无人值守访问受保护目录时，按[安装、升级与回滚](install-upgrade-rollback.md)为 Mimi Remote Mac（Homebrew 版为 agentd）授予完全磁盘访问。
+Mac App 安装版的 Codex backend 由前门启动。launchd 先启动 Mimi Remote Mac 主程序，再由它启动包内 agentd，因此授权主体仍是 Mimi Remote Mac（照片图库在 App 的“设置 → 文件访问”中允许）。Homebrew 版 resident 由 agentd 启动，授权主体是 agentd 本身。显式 SSH 模式下 resident 是 sshd 的子进程；若“远程登录”里开启了“允许远程用户完全访问磁盘”（macOS 默认勾选），它会继承 sshd 的完全磁盘访问。因此从 SSH 切到本机模式后，照片图库、Mail、Safari 等“完全磁盘访问”范围内的目录可能从可读变为需要授权；桌面、文稿、下载仍按首次访问时的系统提示授权。需要无人值守访问受保护目录时，按[安装、升级与回滚](install-upgrade-rollback.md)为 Mimi Remote Mac（Homebrew 版为 agentd）授予完全磁盘访问。
 
 ### 一次性修复旧的 Background resident
 
@@ -135,7 +152,7 @@ Codex `0.155.1` 的 Unix 服务实现可以通过 SIGHUP 停止接纳新的模�
 
 ## Desktop 使用方式
 
-本机 Desktop 按[专用 SSH 入口](desktop-ssh-gui-entry.md)新增一个指向 `127.0.0.1` 的 SSH 主机，并从这个主机打开共享项目。只有这一步才需要开启 macOS 的“远程登录”并配置专用密钥；只用 Mimi 不需要。远程 Desktop 使用指向这台 Mac 的专用 SSH 主机。两个入口都必须登录与 agentd 相同的 macOS 用户。
+本机 Desktop 需要新增一个指向 `127.0.0.1` 的 SSH 主机，并从这个主机打开共享项目。只有这一步才需要开启 macOS 的“远程登录”并配置本机非交互 SSH 认证；只用 Mimi 不需要。远程 Desktop 使用指向这台 Mac 的 SSH 主机。两个入口都必须登录与 agentd 相同的 macOS 用户。
 
 普通 “This Mac” 模式仍可用于 ChatGPT Desktop 私有的 `codex_app`、Browser 和专用渲染能力，但它不属于共享运行时。不要同时用普通本地模式和 SSH 模式打开同一个活动 Thread。
 
@@ -150,7 +167,7 @@ ps -axo pid,ppid,command | grep '[c]odex.*app-server'
 lsof -U | grep app-server-control.sock
 ```
 
-升级到包含 open-file 修复的版本后，已经运行的 resident 不会自动获得新限制。先结束所有共享 Thread 的活动 Turn，并关闭对应的 Mimi 和 SSH Desktop 页面。然后核对并重启唯一的 Unix resident：
+升级到包含 open-file 修复的版本后，已经运行的 resident 不会自动获得新限制。Mac App 的私有 backend 可通过 `codex-front status` 找到 PID；先结束所有共享 Thread 的活动 Turn，并关闭对应的 Mimi 和 SSH Desktop 页面，再核对并重启该 PID。Linux 与 macOS Homebrew 的标准 Socket resident 可用：
 
 ```bash
 ps -axo pid=,ppid=,command= | grep '[c]odex.*app-server --listen unix://'

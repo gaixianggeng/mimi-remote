@@ -43,10 +43,6 @@ const serveHTTPDrainTimeout = 5 * time.Second
 
 func main() {
 	if err := run(os.Args); err != nil {
-		var sshExit *sshCommandExit
-		if errors.As(err, &sshExit) {
-			os.Exit(sshExit.code)
-		}
 		fmt.Fprintf(os.Stderr, "错误：%v\n", err)
 		appendManagedServiceFailure(os.Args, err)
 		os.Exit(1)
@@ -96,8 +92,8 @@ func run(args []string) error {
 		return runRuntime(args)
 	case "repair-codex-session":
 		return runCodexSessionRepair(args)
-	case "ssh-bridge":
-		return runSSHBridge(args)
+	case "codex-front":
+		return runCodexFront(args)
 	case "doctor":
 		return runDoctor(args)
 	case "diagnostics":
@@ -107,7 +103,7 @@ func run(args []string) error {
 	case "serve":
 		return runServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、runtime、repair-codex-session、ssh-bridge、serve、doctor、diagnostics、check-config、version", cmd)
+		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、runtime、repair-codex-session、codex-front、serve、doctor、diagnostics、check-config、version", cmd)
 	}
 }
 
@@ -1036,7 +1032,13 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	// 启动后第一时间探测配置目录和 macOS 受保护目录。探测异步执行，避免权限弹窗
 	// 尚未处理时阻塞 HTTP 控制面恢复；结果会进入 readyz/doctor warning 和服务日志。
 	checker.StartFileAccessPreflight()
-	appServerRuntime, err := prepareAgentAppServerRuntime(cfg)
+	frontDoorRequired, frontDoorErr := prepareMacAppCodexFront(cfg, checker.ConfigPath())
+	if frontDoorErr != nil {
+		// 旧 resident 或 launchd 故障不能拖垮诊断服务；同时禁止回退到
+		// agentd 直启标准 socket，以免再次产生 Desktop SSH 启动权竞争。
+		log.Printf("Mimi Codex front door unavailable: %v", frontDoorErr)
+	}
+	appServerRuntime, err := prepareAgentAppServerRuntimeWithFrontDoor(cfg, frontDoorRequired)
 	if err != nil {
 		return err
 	}
@@ -1093,15 +1095,6 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		}()
 	}
 	appServerRuntime.watch(errCh)
-	sshBridge, bridgeErr := startDesktopSSHBridge(cfg, checker.ConfigPath())
-	if bridgeErr != nil {
-		// SSH 接入故障不能拖垮诊断或其他运行时；专用客户端会明确连接失败，
-		// 不降级到 Background 执行，也不抢占现有 Codex 服务。
-		log.Printf("Mimi Desktop SSH command bridge unavailable: %v", bridgeErr)
-	}
-	if sshBridge != nil {
-		defer sshBridge.Close()
-	}
 	stopCh := make(chan os.Signal, 1)
 	stopSignals := notifyServeSignals(stopCh)
 	defer stopSignals()

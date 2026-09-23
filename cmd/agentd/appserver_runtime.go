@@ -19,6 +19,10 @@ type agentAppServerRuntime struct {
 }
 
 func prepareAgentAppServerRuntime(cfg config.Config) (*agentAppServerRuntime, error) {
+	return prepareAgentAppServerRuntimeWithFrontDoor(cfg, false)
+}
+
+func prepareAgentAppServerRuntimeWithFrontDoor(cfg config.Config, frontDoorRequired bool) (*agentAppServerRuntime, error) {
 	result := &agentAppServerRuntime{}
 	if !cfg.Codex.IsEnabled() {
 		return result, nil
@@ -42,8 +46,9 @@ func prepareAgentAppServerRuntime(cfg config.Config) (*agentAppServerRuntime, er
 		result.routerOptions.AppServerSSH = transport
 	case "local":
 		transport, err := appserver.NewSharedLocalTransport(appserver.SharedLocalOptions{
-			CodexBin: cfg.Codex.Bin,
-			Env:      cfg.Codex.Env,
+			CodexBin:    cfg.Codex.Bin,
+			Env:         cfg.Codex.Env,
+			ConnectOnly: frontDoorRequired,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("初始化共享本机 App Server transport 失败：%w", err)

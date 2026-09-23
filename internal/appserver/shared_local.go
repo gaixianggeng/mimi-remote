@@ -33,6 +33,9 @@ var sharedLocalDefaultReadyTimeout = 20 * time.Second
 type SharedLocalOptions struct {
 	CodexBin string
 	Env      map[string]string
+	// ConnectOnly 用于 Mac App 的 launchd 前门。前门不可用时不能由 agentd
+	// 重新绑定标准 socket，否则 Desktop SSH 仍可参与启动权竞争。
+	ConnectOnly bool
 }
 
 // SharedLocalTransport connects agentd to the same Codex control socket used by
@@ -60,12 +63,15 @@ func NewSharedLocalTransport(options SharedLocalOptions) (*SharedLocalTransport,
 	if err != nil {
 		return nil, err
 	}
-	return &SharedLocalTransport{
-		codexBin:  strings.TrimSpace(options.CodexBin),
-		env:       cloneStringMap(options.Env),
-		socket:    socket,
-		startOnce: startSharedLocalAppServer,
-	}, nil
+	transport := &SharedLocalTransport{
+		codexBin: strings.TrimSpace(options.CodexBin),
+		env:      cloneStringMap(options.Env),
+		socket:   socket,
+	}
+	if !options.ConnectOnly {
+		transport.startOnce = startSharedLocalAppServer
+	}
+	return transport, nil
 }
 
 // SharedLocalSocketPath mirrors Codex's unix:// resolution: the control socket
@@ -195,6 +201,9 @@ func (t *SharedLocalTransport) EnsureReady(ctx context.Context) error {
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("检查 Codex control socket 失败：%w", err)
 	}
+	if t.startOnce == nil {
+		return errors.New("共享 Codex 前门尚未就绪；请检查 Mimi Remote Mac 的后台项目和前门诊断")
+	}
 	startErr := t.startOnce(ctx, SharedLocalOptions{CodexBin: t.codexBin, Env: t.env})
 	if startErr != nil {
 		// Another process may have won Codex's cross-process startup race after
@@ -255,6 +264,12 @@ func (t *SharedLocalTransport) probe(ctx context.Context) error {
 var sharedLocalUnitCounter atomic.Uint64
 
 func startSharedLocalAppServer(ctx context.Context, options SharedLocalOptions) error {
+	return startSharedLocalAppServerListening(ctx, options, "unix://")
+}
+
+// startSharedLocalAppServerListening 以 Desktop 相同的参数启动 resident，只替换监听地址。
+// 前门使用私有 backend socket；标准 control socket 由 launchd 持有。
+func startSharedLocalAppServerListening(ctx context.Context, options SharedLocalOptions, listen string) error {
 	if err := validateSharedLocalLaunchSession(ctx); err != nil {
 		return err
 	}
@@ -299,7 +314,7 @@ func startSharedLocalAppServer(ctx context.Context, options SharedLocalOptions) 
 			workingDirectory,
 			environmentFile,
 			resolvedBin,
-			[]string{"-c", "features.code_mode_host=true", "app-server", "--listen", "unix://"},
+			[]string{"-c", "features.code_mode_host=true", "app-server", "--listen", listen},
 		)
 		launchErr := runSystemdResidentCommand(
 			ctx,
@@ -315,7 +330,7 @@ func startSharedLocalAppServer(ctx context.Context, options SharedLocalOptions) 
 	}
 	return startResidentCommand(
 		resolvedBin,
-		[]string{"-c", "features.code_mode_host=true", "app-server", "--listen", "unix://"},
+		[]string{"-c", "features.code_mode_host=true", "app-server", "--listen", listen},
 		env,
 	)
 }
