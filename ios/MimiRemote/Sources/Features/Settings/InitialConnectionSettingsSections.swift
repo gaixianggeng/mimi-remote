@@ -378,7 +378,7 @@ struct InitialConnectionSettingsSections: View {
                     .accessibilityIdentifier("settings.profile.copyNotice")
             }
 
-            connectionErrorMessageRow(tokens: tokens)
+            connectionErrorMessageRow(displayErrorMessage, tokens: tokens)
 
             routeStatusRow(tokens: tokens)
             connectionMethodRows(tokens: tokens)
@@ -857,10 +857,11 @@ struct InitialConnectionSettingsSections: View {
             .padding(.bottom, 8)
             .listRowSeparator(.hidden)
 
-            // 扫码或粘贴失败时，错误紧贴在触发它的按钮下面。手动表单展开时改由表单自己渲染，
+            // 扫码或粘贴失败时，错误紧贴在触发它的按钮下面。只认这次操作自己的反馈，
+            // 当前那台电脑的全局错误不属于这一页。手动表单展开时改由表单自己渲染，
             // 两处不会同时出现，也不会有第二条同标识的元素干扰既有 UI 测试。
             if !isShowingAdvancedManualConnection {
-                connectionErrorMessageRow(tokens: tokens)
+                connectionErrorMessageRow(addComputerErrorMessage, tokens: tokens)
             }
 
             if appStore.connectionProfiles.isEmpty {
@@ -923,7 +924,7 @@ struct InitialConnectionSettingsSections: View {
 
                 // 提交失败时错误就出现在按钮下方：首启页没有「当前电脑」卡片，
                 // 不在这里渲染的话用户点完「连接」看到的是一次没有任何反馈的白屏。
-                connectionErrorMessageRow(tokens: tokens)
+                connectionErrorMessageRow(addComputerErrorMessage, tokens: tokens)
             }
             .padding(.vertical, 6)
         } label: {
@@ -1102,16 +1103,31 @@ struct InitialConnectionSettingsSections: View {
     /// 连接失败时的可见错误行。设备首页挂在「当前电脑」卡片里，
     /// 首启页没有那张卡片，必须自己渲染——否则手动连接或粘贴失败后页面毫无变化，
     /// 用户只会反复点「连接」，或认定 App 坏了（#554）。
-    /// 首启页最多只渲染一处：手动表单展开时贴在提交按钮下方，收起时贴在扫码按钮下方。
+    /// 文案由调用方给出：设备首页用全局口径，添加电脑页只用本次操作的反馈。
+    /// 添加电脑页最多渲染一处：手动表单展开时贴在提交按钮下方，收起时贴在扫码按钮下方。
     @ViewBuilder
-    private func connectionErrorMessageRow(tokens: ThemeTokens) -> some View {
-        if let message = displayErrorMessage {
+    private func connectionErrorMessageRow(
+        _ message: String?,
+        tokens: ThemeTokens
+    ) -> some View {
+        if let message {
             Text(message)
                 .foregroundStyle(tokens.warning)
                 .font(themeStore.uiFont(size: 13))
                 .settingsRow(.descriptive)
                 .accessibilityIdentifier("settings.connection.error")
         }
+    }
+
+    /// 「添加电脑」页只显示这次操作自己的反馈。
+    ///
+    /// 全局的 `appStore.lastError` 描述的是**当前这台电脑**：它的线路断了、或凭据已过期，
+    /// 都与用户此刻想添加一台新电脑无关。照搬 `displayErrorMessage` 会让这类错误在页面一打开
+    /// 时就贴到扫码/粘贴按钮下面，看起来像是刚才那次操作失败；又因为它优先于 `localError`，
+    /// 还会把新产生的粘贴错误盖掉。设备首页保留全局口径不变，那里两者确实指向同一台电脑。
+    private var addComputerErrorMessage: String? {
+        guard let raw = localError else { return nil }
+        return friendlyConnectionMessage(raw, honorsActiveConnectionTermination: false)
     }
 
     private var displayErrorMessage: String? {
@@ -1126,8 +1142,14 @@ struct InitialConnectionSettingsSections: View {
         return friendlyConnectionMessage(raw)
     }
 
-    private func friendlyConnectionMessage(_ raw: String) -> String {
-        if let termination = appStore.connectionTermination {
+    /// `honorsActiveConnectionTermination` 为 false 时不把「当前这台电脑凭据失效」的终态
+    /// 盖到传入的错误上。添加电脑页必须关掉它：那条终态属于设备页正在用的那台电脑，
+    /// 一旦生效，用户粘贴一个空剪贴板或扫描一张过期二维码都会收到「访问码已过期」（#557 评审）。
+    private func friendlyConnectionMessage(
+        _ raw: String,
+        honorsActiveConnectionTermination: Bool = true
+    ) -> String {
+        if honorsActiveConnectionTermination, let termination = appStore.connectionTermination {
             return termination.message
         }
         let lowercased = raw.lowercased()
