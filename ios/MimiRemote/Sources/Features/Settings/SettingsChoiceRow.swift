@@ -96,6 +96,7 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
     let options: [Option]
     @Binding var selection: Option
     var presentation: SettingsChoicePresentation = .inline
+    var optionTitle: (Option) -> String = { $0.choiceTitle }
 
     var body: some View {
         switch presentation {
@@ -106,12 +107,13 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
                 SettingsOptionListView(
                     title: title,
                     options: options,
-                    selection: $selection
+                    selection: $selection,
+                    optionTitle: optionTitle
                 )
             } label: {
                 SettingsValueLabel(
                     title: title,
-                    value: selection.choiceTitle,
+                    value: optionTitle(selection),
                     systemImage: systemImage
                 )
             }
@@ -250,7 +252,7 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
             guard !isSelected else { return }
             selection = option
         } label: {
-            Text(option.choiceTitle)
+            Text(optionTitle(option))
                 .settingsDetailFont(weight: isSelected ? .semibold : .regular)
                 .fixedSize(horizontal: false, vertical: true)
                 .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
@@ -265,7 +267,7 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(option.choiceTitle)
+        .accessibilityLabel(optionTitle(option))
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
 }
@@ -280,6 +282,7 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
     let title: String
     let options: [Option]
     @Binding var selection: Option
+    var optionTitle: (Option) -> String = { $0.choiceTitle }
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -321,7 +324,7 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
             }
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(option.choiceTitle)
+                Text(optionTitle(option))
                     .settingsTitleFont()
                     .foregroundStyle(tokens.primaryText)
                     .fixedSize(horizontal: false, vertical: true)

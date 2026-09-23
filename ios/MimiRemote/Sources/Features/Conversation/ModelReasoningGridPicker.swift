@@ -270,7 +270,7 @@ enum ModelReasoningGridCatalog {
         layout: ModelReasoningGridLayout
     ) -> String? {
         guard let option = layout.model(matching: modelID) else { return nil }
-        return "\(shortTitle(for: option, kind: layout.kind)) · \(effortTitle(effort))"
+        return "\(shortTitle(for: option, kind: layout.kind)) · \(effortTitle(effort, kind: layout.kind))"
     }
 
     static func compactTriggerTitle(
@@ -325,6 +325,8 @@ enum ModelReasoningGridCatalog {
     static func effortTitle(_ effort: CodexAppServerReasoningEffort) -> String {
         // 产品档位固定使用英文名称，协议值仍保持原样，尤其不互换 Max 与 Ultra。
         switch effort {
+        case .off:
+            return "Off"
         case .none:
             return "None"
         case .minimal:
@@ -344,11 +346,31 @@ enum ModelReasoningGridCatalog {
         }
     }
 
+    static func effortTitle(
+        _ effort: CodexAppServerReasoningEffort,
+        kind: ModelReasoningGridKind
+    ) -> String {
+        // Codex 沿用产品名 Light；DeepSeek 的原生档位名必须显示为 Low。
+        kind == .deepSeek && effort == .low ? "Low" : effortTitle(effort)
+    }
+
+    static func effortTitle(
+        _ effort: CodexAppServerReasoningEffort,
+        runtimeProvider: String?
+    ) -> String {
+        CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "deepseek"
+            && effort == .low ? "Low" : effortTitle(effort)
+    }
+
     static func supports(
         _ effort: CodexAppServerReasoningEffort,
         option: CodexAppServerModelOption,
         kind: ModelReasoningGridKind? = nil
     ) -> Bool {
+        if effort == .off,
+           !option.supportedReasoningEfforts.contains(effort.rawValue) {
+            return false
+        }
         let normalizedRuntime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(option.runtimeProvider)
         let requiresDeclaredEfforts = kind == .claude || kind == .deepSeek
             || normalizedRuntime == "claude" || normalizedRuntime == "deepseek"
@@ -365,7 +387,7 @@ enum ModelReasoningGridCatalog {
         for option: CodexAppServerModelOption?
     ) -> [CodexAppServerReasoningEffort] {
         guard let option else {
-            return CodexAppServerReasoningEffort.allCases
+            return CodexAppServerReasoningEffort.allCases.filter { $0 != .off }
         }
         return CodexAppServerReasoningEffort.allCases.filter {
             supports($0, option: option)
@@ -677,7 +699,7 @@ private struct ModelReasoningPickerHeader: View {
                         select(option: option, effort: effort, preservesServerDefault: preservesServerDefault)
                     } label: {
                         Label(
-                            ModelReasoningGridCatalog.effortTitle(effort),
+                            ModelReasoningGridCatalog.effortTitle(effort, kind: layout.kind),
                             systemImage: isSelected(
                                 option: option,
                                 effort: effort,
@@ -784,7 +806,7 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
                     let selectedColumnEffort = layout.model(matching: activeSelection.modelID)
                         .flatMap { layout.effort(for: $0, column: column) }
                         ?? effort
-                    Text(ModelReasoningGridCatalog.effortTitle(effort))
+                    Text(ModelReasoningGridCatalog.effortTitle(effort, kind: layout.kind))
                         .font(themeStore.uiFont(.caption, weight: .semibold))
                         .foregroundStyle(
                             activeSelection.effort == selectedColumnEffort
@@ -1205,7 +1227,7 @@ private struct ModelReasoningAccessiblePicker: View {
                     onSelectModel(activeOption, effort)
                 } label: {
                     HStack {
-                        Text(ModelReasoningGridCatalog.effortTitle(effort))
+                        Text(ModelReasoningGridCatalog.effortTitle(effort, kind: layout.kind))
                         Spacer()
                         if isAvailable && selection.effort == effort {
                             Image(systemName: "checkmark")
@@ -1222,7 +1244,7 @@ private struct ModelReasoningAccessiblePicker: View {
                 .disabled(!isAvailable)
                 .accessibilityLabel(
                     "\(activeOption.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: layout.kind) } ?? ""), "
-                        + ModelReasoningGridCatalog.effortTitle(effort)
+                        + ModelReasoningGridCatalog.effortTitle(effort, kind: layout.kind)
                 )
                 .accessibilityValue(
                     isAvailable

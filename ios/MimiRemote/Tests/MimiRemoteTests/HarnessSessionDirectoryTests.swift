@@ -154,7 +154,7 @@ final class HarnessSessionDirectoryTests: XCTestCase {
     /// 真实采集到的那一份由下面 `testModelCatalogDecodingMatchesSharedFixture` 读共享夹具覆盖。
     func testModelCatalogDecodingKeepsProviderAndRealReasoningEfforts() throws {
         let value = try jsonValue([
-            "default": ["provider": "provider-fixture-a", "model": "model-fixture-1", "reasoningEffort": "high"],
+            "default": ["provider": "provider-fixture-a", "model": "model-fixture-1", "reasoningEffort": "off"],
             "routableProviders": ["provider-fixture-a", "provider-fixture-b"],
             "groups": [
                 [
@@ -166,8 +166,13 @@ final class HarnessSessionDirectoryTests: XCTestCase {
                             "name": "Fixture Model 1",
                             "description": "fixture model",
                             "reasoning": [
-                                "efforts": [["id": "low", "name": "Low"], ["id": "high", "name": "High"]],
-                                "defaultEffort": "high"
+                                "efforts": [
+                                    ["id": "off", "name": "Off"],
+                                    ["id": "low", "name": "Low"],
+                                    ["id": "high", "name": "High"],
+                                    ["id": "max", "name": "Max"]
+                                ],
+                                "defaultEffort": "off"
                             ]
                         ],
                         ["id": "model-fixture-2", "name": "Fixture Model 2"]
@@ -195,8 +200,8 @@ final class HarnessSessionDirectoryTests: XCTestCase {
         XCTAssertEqual(first.description, "fixture model")
         XCTAssertTrue(first.isDefault)
         // 真实推理档位来自 reasoning.efforts，不能拿固定档位表顶上。
-        XCTAssertEqual(first.supportedReasoningEfforts, ["low", "high"])
-        XCTAssertEqual(first.defaultReasoningEffort, "high")
+        XCTAssertEqual(first.supportedReasoningEfforts, ["off", "low", "high", "max"])
+        XCTAssertEqual(first.defaultReasoningEffort, "off")
 
         let second = try XCTUnwrap(options.dropFirst().first)
         XCTAssertEqual(second.model, "model-fixture-2")

@@ -45,11 +45,15 @@ final class DeepSeekRuntimePresentationTests: XCTestCase {
     }
 
     func testDeepSeekModelLayoutUsesDeclaredEffortsAndHidesFastMode() {
+        XCTAssertEqual(CodexAppServerReasoningEffort(rawValue: "off"), .off)
+        XCTAssertNotEqual(CodexAppServerReasoningEffort.off, .none)
+
         let option = CodexAppServerModelOption(
             id: "deepseek-chat",
             provider: "provider-a",
             runtimeProvider: "deepseek",
-            supportedReasoningEfforts: ["low", "high"]
+            supportedReasoningEfforts: ["off", "low", "high", "max"],
+            defaultReasoningEffort: "off"
         )
 
         let layout = ModelReasoningGridCatalog.layout(
@@ -59,7 +63,43 @@ final class DeepSeekRuntimePresentationTests: XCTestCase {
 
         XCTAssertEqual(layout.kind, .deepSeek)
         XCTAssertEqual(layout.models.map(\.model), ["deepseek-chat"])
-        XCTAssertEqual(layout.efforts, [.low, .high])
+        XCTAssertEqual(layout.efforts, [.off, .low, .high, .max])
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.preferredDefaultEffort(
+                runtimeProvider: "deepseek",
+                option: option,
+                layout: layout
+            ),
+            .off
+        )
+        XCTAssertEqual(
+            layout.efforts.map { ModelReasoningGridCatalog.effortTitle($0, kind: layout.kind) },
+            ["Off", "Low", "High", "Max"]
+        )
+        XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.low), "Light")
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.effortTitle(.low, runtimeProvider: "deepseek"),
+            "Low"
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.effortTitle(.low, runtimeProvider: "codex"),
+            "Light"
+        )
         XCTAssertFalse(layout.showsFastMode)
+    }
+
+    func testAdvancedOptionsKeepsOffOnlyForDeepSeekOrExistingSelection() {
+        XCTAssertFalse(AdvancedTurnOptionsSheet.reasoningEfforts(
+            runtimeProvider: "codex",
+            selection: nil
+        ).contains(.off))
+        XCTAssertTrue(AdvancedTurnOptionsSheet.reasoningEfforts(
+            runtimeProvider: "deepseek",
+            selection: nil
+        ).contains(.off))
+        XCTAssertTrue(AdvancedTurnOptionsSheet.reasoningEfforts(
+            runtimeProvider: nil,
+            selection: .off
+        ).contains(.off))
     }
 }

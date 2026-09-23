@@ -2,6 +2,13 @@ import XCTest
 @testable import MimiRemoteMac
 
 final class AgentModelsTests: XCTestCase {
+    func testAgentModulesUseMatchingBrandMarks() {
+        XCTAssertEqual(HostModuleID.codex.brandMark?.assetName, "OpenAIMonoblossom")
+        XCTAssertEqual(HostModuleID.claude.brandMark?.assetName, "Claude")
+        XCTAssertEqual(HostModuleID.deepseek.brandMark?.assetName, "DeepSeek")
+        XCTAssertNil(HostModuleID.tailscale.brandMark)
+    }
+
     func testPairingExpiryStatusDescribesOnlyTheTimeBoundary() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let status = PairingExpiryStatus(rawValue: "")

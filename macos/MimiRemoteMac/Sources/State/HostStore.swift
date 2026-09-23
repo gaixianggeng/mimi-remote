@@ -749,46 +749,6 @@ final class HostStore {
         }
     }
 
-    var deepSeekEnabled: Bool {
-        deepSeekConfiguration?.enabled ?? deepSeekRuntime?.enabled ?? false
-    }
-
-    var canChangeDeepSeek: Bool {
-        owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
-    }
-
-    private var deepSeekRuntime: AgentRuntimeStatus? {
-        status?.runtimeStatus?.runtimes.first { $0.id.caseInsensitiveCompare("deepseek") == .orderedSame }
-    }
-
-    var deepSeekStatusTitle: String {
-        if isUpdatingDeepSeek { return "正在检查" }
-        if deepSeekError != nil { return "需要处理" }
-        if !deepSeekEnabled {
-            return deepSeekConfiguration?.discovered == true ? "发现运行中的服务" : "未启用"
-        }
-        guard let runtime = deepSeekRuntime else { return "等待服务加载" }
-        if runtime.reason == "refresh_in_progress" { return "正在检查" }
-        switch runtime.state {
-        case .available, .connected: return "已连接"
-        case .signedOut: return "需要更新启动链接"
-        case .disabled: return "等待服务加载"
-        case .unavailable: return "暂不可用"
-        }
-    }
-
-    var deepSeekStatusDetail: String {
-        if owner != .macApp { return "先由 Mimi Remote Mac 接管服务，再配置 DeepSeek。" }
-        if let deepSeekError { return deepSeekError }
-        if deepSeekEnabled, deepSeekRuntime?.reason == "refresh_in_progress" {
-            return "正在确认 agentd 与 Harness 的连接。"
-        }
-        if deepSeekEnabled, deepSeekRuntime?.state == .unavailable {
-            return "Harness 暂不可用。确认它仍在运行后，点击重新检测。"
-        }
-        return deepSeekConfiguration?.message ?? "自动检测本机运行中的 Harness 后台服务。"
-    }
-
     func inspectDeepSeek() async {
         guard owner == .macApp, !isUpdatingDeepSeek, !isBusy else { return }
         isUpdatingDeepSeek = true

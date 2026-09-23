@@ -847,7 +847,10 @@ final class HarnessEventClientTests: XCTestCase {
     func testTurnAppliesModelSelectionBeforePrompt() async throws {
         let sink = RecordingPromptSink()
         let selections = SelectionRecorder()
+        var steps: [String] = []
+        sink.onSend = { steps.append("prompt") }
         let (client, _) = try await makeConnectedClient(sender: sink, selectModel: { sessionID, provider, model, effort in
+            steps.append("selectModel")
             await selections.record(sessionID: sessionID, provider: provider, model: model, effort: effort)
         })
         var failures: [(ClientMessageID?, String)] = []
@@ -856,7 +859,7 @@ final class HarnessEventClientTests: XCTestCase {
         var options = CodexAppServerTurnOptions.default
         options.model = "fixture-model"
         options.modelProvider = "fixture-provider"
-        options.reasoningEffort = .high
+        options.reasoningEffort = .off
         let accepted = client.sendTurn(
             CodexAppServerTurnPayload(prompt: "换模型后发送", options: options),
             clientMessageID: "cm-model"
@@ -868,7 +871,8 @@ final class HarnessEventClientTests: XCTestCase {
         XCTAssertEqual(recorded.count, 1, "发送前必须完成一次模型选择")
         XCTAssertEqual(recorded.first?.provider, "fixture-provider")
         XCTAssertEqual(recorded.first?.model, "fixture-model")
-        XCTAssertEqual(recorded.first?.effort, "high")
+        XCTAssertEqual(recorded.first?.effort, "off")
+        XCTAssertEqual(steps, ["selectModel", "prompt"])
         XCTAssertEqual(sink.texts, ["换模型后发送"])
         XCTAssertTrue(failures.isEmpty)
     }
@@ -2386,8 +2390,10 @@ private final class RecordingPromptSink {
     private(set) var texts: [String] = []
     private(set) var cancelledSessions: [String] = []
     var failure: Error?
+    var onSend: (@MainActor () -> Void)?
 
     func send(_ sessionID: String, _ requestID: String, _ text: String) async throws {
+        onSend?()
         requestIDs.append(requestID)
         texts.append(text)
         if let failure { throw failure }

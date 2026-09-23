@@ -1353,7 +1353,10 @@ private struct DefaultModelRuntimeSection: View {
                     title: L10n.text("ui.reasoning_effort"),
                     systemImage: "gauge.with.dots.needle.33percent",
                     options: availableEfforts,
-                    selection: reasoningEffortChoiceBinding
+                    selection: reasoningEffortChoiceBinding,
+                    optionTitle: {
+                        ModelReasoningGridCatalog.effortTitle($0, runtimeProvider: runtime.rawValue)
+                    }
                 )
                 .settingsRow()
                 .accessibilityIdentifier("settings.defaultModels.reasoning.\(runtime.rawValue)")

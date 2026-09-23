@@ -631,6 +631,8 @@ enum CodexAppServerUserInput: Codable, Hashable, Identifiable {
 }
 
 enum CodexAppServerReasoningEffort: String, Codable, CaseIterable, Hashable, Identifiable {
+    // Harness 的 off 是上游明确支持的推理档位，不能降级成含义不同的 none。
+    case off
     case none
     case minimal
     case low

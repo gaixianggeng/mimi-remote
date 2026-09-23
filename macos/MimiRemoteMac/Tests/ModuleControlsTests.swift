@@ -43,6 +43,17 @@ final class ModuleControlsTests: XCTestCase {
         XCTAssertEqual(fixture.pairCalls, 0)
     }
 
+    func testDeepSeekOnlyHostCanPair() async {
+        let fixture = ModuleFixture(codex: false, claude: false, ts: true, lan: false, deepSeek: true)
+        let store = fixture.store()
+        await store.bootstrap()
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertTrue(store.deepSeekEnabled)
+        XCTAssertEqual(store.availablePairingNetworks, [.tailscale])
+        XCTAssertTrue(store.canPair)
+        XCTAssertFalse(store.pairingUnavailableReason.contains("全部"))
+    }
+
     func testOnlyEnabledAvailableNetworkIsOffered() async {
         let fixture = ModuleFixture(codex: true, claude: false, ts: false, lan: true)
         let store = fixture.store()
@@ -164,6 +175,7 @@ private final class ModuleFixture: @unchecked Sendable {
     private let lock = NSLock()
     private var codex: Bool
     private var claude: Bool
+    private var deepSeek: Bool
     private var claudeOnDisk: Bool
     private var ts: Bool
     private var lan: Bool
@@ -193,9 +205,10 @@ private final class ModuleFixture: @unchecked Sendable {
     var restoredNetwork: NetworkConfigurationResult? { lock.withLock { _restoredNetwork } }
     var registrationCalls: Int { lock.withLock { _registrationCalls } }
 
-    init(codex: Bool, claude: Bool, claudeOnDisk: Bool? = nil, ts: Bool, lan: Bool) {
+    init(codex: Bool, claude: Bool, claudeOnDisk: Bool? = nil, ts: Bool, lan: Bool, deepSeek: Bool = false) {
         self.codex = codex
         self.claude = claude
+        self.deepSeek = deepSeek
         self.claudeOnDisk = claudeOnDisk ?? claude
         self.ts = ts
         self.lan = lan
@@ -213,6 +226,11 @@ private final class ModuleFixture: @unchecked Sendable {
                                 AgentRuntimeStatus(
                                     id: "claude", title: "Claude", enabled: claude,
                                     state: claude ? .available : .disabled,
+                                    authMode: nil, planType: nil, reason: nil, rateLimits: nil
+                                ),
+                                AgentRuntimeStatus(
+                                    id: "deepseek", title: "DeepSeek", enabled: deepSeek,
+                                    state: deepSeek ? .connected : .disabled,
                                     authMode: nil, planType: nil, reason: nil, rateLimits: nil
                                 )
                             ],
@@ -269,6 +287,12 @@ private final class ModuleFixture: @unchecked Sendable {
             pair: { _ in
                 self.lock.withLock { self._pairCalls += 1 }
                 throw ModuleTestError.unexpected
+            },
+            configureDeepSeek: { _, _ in
+                DeepSeekConfigurationResult(
+                    enabled: self.deepSeek, available: self.deepSeek, discovered: self.deepSeek,
+                    baseURL: nil, message: "fixture", restartRequired: false
+                )
             },
             version: { "test" },
             configureCodex: { preference in

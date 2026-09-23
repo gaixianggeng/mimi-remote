@@ -372,8 +372,14 @@ struct AdvancedTurnOptionsSheet: View {
                     Picker(L10n.text("ui.reasoning_effort"), selection: $draft.reasoningEffort) {
                         Text(L10n.text("ui.default_option"))
                             .tag(Optional<CodexAppServerReasoningEffort>.none)
-                        ForEach(CodexAppServerReasoningEffort.allCases) { effort in
-                            Text(ModelReasoningGridCatalog.effortTitle(effort))
+                        ForEach(Self.reasoningEfforts(
+                            runtimeProvider: draft.runtimeProvider,
+                            selection: draft.reasoningEffort
+                        )) { effort in
+                            Text(ModelReasoningGridCatalog.effortTitle(
+                                effort,
+                                runtimeProvider: draft.runtimeProvider
+                            ))
                                 .tag(Optional(effort))
                         }
                     }
@@ -428,6 +434,17 @@ struct AdvancedTurnOptionsSheet: View {
                     Button(L10n.text("ui.application")) { apply() }
                 }
             }
+        }
+    }
+
+    static func reasoningEfforts(
+        runtimeProvider: String?,
+        selection: CodexAppServerReasoningEffort?
+    ) -> [CodexAppServerReasoningEffort] {
+        let runtime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
+        // 没有模型能力目录时不替 Codex/Claude 增加 off；DeepSeek 或既有 off 选择必须保留。
+        return CodexAppServerReasoningEffort.allCases.filter {
+            $0 != .off || runtime == "deepseek" || selection == .off
         }
     }
 
