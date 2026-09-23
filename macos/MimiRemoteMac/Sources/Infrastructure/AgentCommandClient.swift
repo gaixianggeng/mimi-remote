@@ -15,6 +15,7 @@ struct AgentCommandClient: Sendable {
     var releaseCodexSession: @Sendable () async throws -> CodexSessionReleaseResult = {
         throw AgentClientError.commandFailed("当前 agentd 不支持共享运行环境修复，请更新 App。")
     }
+    var uninstallCodexFrontDoor: @Sendable () async throws -> Void = {}
     var configureClaude: @Sendable (
         _ preference: ClaudeActivationPreference,
         _ restoreEnabled: Bool?
@@ -178,6 +179,14 @@ extension AgentCommandClient {
                     timeout: .seconds(30),
                     forceKillAfterTimeout: true
                 ))
+            },
+            uninstallCodexFrontDoor: {
+                let binary = try requireEmbeddedBinary()
+                _ = try await execute(
+                    binary: binary,
+                    arguments: ["codex-front", "uninstall", "--stop-idle-backend"],
+                    timeout: .seconds(40)
+                )
             },
             configureClaude: { preference, restoreEnabled in
                 let binary = try requireEmbeddedBinary()

@@ -37,7 +37,9 @@ Mac App 自动创建 `~/Library/LaunchAgents/com.gaixianggeng.mimi.mac.codex-fro
 
 Desktop 继续使用原来的 SSH Host。它执行的 `codex app-server --listen unix://` 发现标准 socket 已被占用后退出，随后官方 `codex app-server proxy` 经前门接入同一个 backend。无需指定 Mimi 与 Desktop 的启动顺序，也无需修改 SSH 密钥、`authorized_keys` 或 Host 别名。macOS 可能在首次登记时提示新增后台项目；平时启动不出现 Mimi 自定义确认弹窗。
 
-升级前已有 resident 占用标准 socket 时，无论它属于 Background 还是 Aqua，自动登记都不会抢占，主服务保留诊断。先结束共享任务、断开所有 Desktop SSH 页面并停止 Mimi 服务。Background 实例可按下文的一次性修复流程释放；Aqua 实例需要人工核对进程、确认已无其他客户端和活动任务，再向该进程发送 SIGTERM。然后重启 Mimi Remote Mac，使它登记前门。现有客户端尚未断开时不要手动强行 bootstrap 前门：旧实例会与新 backend 暂时并存，可能触发同一会话的 writer 冲突。
+首次安装时若已有 resident 占用标准 socket，自动登记不会抢占，主服务保留诊断。先结束共享任务、断开所有 Desktop SSH 页面并停止 Mimi 服务。Background 实例可按下文的一次性修复流程释放；Aqua 实例需要人工核对进程、确认已无其他客户端和活动任务，再向该进程发送 SIGTERM。然后重启 Mimi Remote Mac 登记前门。
+
+已登记的前门在 Mac 登录后可能遇到登录前由 Desktop 启动的旧 resident。此时新连接会等待旧实例完全退出，不能提前进入私有 backend。旧客户端仍连接时不发信号；客户端断开后，只有能确认旧 Codex 版本支持重复 SIGHUP 的优雅退出语义，才自动请求 drain。版本或进程身份无法确认时拒绝自动迁移，保留旧任务供人工处理。独立 `command/exec` 不属于模型回合 drain 保证，迁移前仍应结束这类命令。
 
 检查前门状态或在安全修复后重新登记，可运行已安装 App 内的命令：
 
@@ -46,7 +48,7 @@ Desktop 继续使用原来的 SSH Host。它执行的 `codex app-server --listen
 "/Applications/Mimi Remote Mac.app/Contents/Resources/agentd" codex-front install
 ```
 
-若 App 安装在 `~/Applications`，将命令中的 `/Applications` 改为 `$HOME/Applications`。回退旧版前，先结束共享任务并断开 Desktop，记录 `codex-front status` 返回的 `backend_pid`，用新版本的 `agentd codex-front uninstall` 卸载前门，再核对 PID 对应的确实是私有 backend 并向它发送一次 SIGTERM。确认退出后才替换 App；不要只换回旧 App 而留下仍指向新版本的 LaunchAgent。
+若 App 安装在 `~/Applications`，将命令中的 `/Applications` 改为 `$HOME/Applications`。回退旧版前，先结束共享任务并断开 Desktop，记录 `codex-front status` 返回的 `backend_pid`，用新版本的 `agentd codex-front uninstall --stop-idle-backend` 确认私有 backend 空闲、请求优雅退出并卸载前门。命令失败时不要替换 App；不要只换回旧 App 而留下仍指向新版本的 LaunchAgent。
 
 旧版 macOS setup 自动写入的 `transport=ssh` + `ssh_target=127.0.0.1` 会在 agentd 启动、`agentd setup` 或 `agentd doctor --fix` 时先完成 CLI 可用性和本机 socket 路径预检，再原子改写为 `local`。macOS 设置与配置迁移不创建共享进程，真实连接由 GUI 服务启动时验证。带用户名的 target 或远端主机不会被自动迁移；静态预检失败时原配置保持不变。
 

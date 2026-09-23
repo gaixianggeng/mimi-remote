@@ -3,6 +3,8 @@
 package main
 
 import (
+	"encoding/json"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,18 +12,70 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
+func TestLoadCodexFrontDoorRejectsBrokenConfigAndSocketMismatch(t *testing.T) {
+	newHome := func() string {
+		home, err := os.MkdirTemp("/tmp", "mimi-front-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(home) })
+		return home
+	}
+	aHome, bHome := newHome(), newHome()
+	aSocket, err := appserver.SharedLocalSocketPath(map[string]string{"CODEX_HOME": aHome})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(aSocket), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", aSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, []byte("{invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCodexFrontDoor(configPath, listener, nil); err == nil {
+		t.Fatal("配置损坏时不能回退到默认 CODEX_HOME")
+	}
+	writeConfig := func(home string) {
+		body, err := json.Marshal(map[string]any{"codex": map[string]any{"env": map[string]string{"CODEX_HOME": home}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(configPath, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeConfig(bHome)
+	if _, err := loadCodexFrontDoor(configPath, listener, nil); err == nil {
+		t.Fatal("A 的 launchd listener 不能转发到 B 的 CODEX_HOME")
+	}
+	writeConfig(aHome)
+	if _, err := loadCodexFrontDoor(configPath, listener, nil); err != nil {
+		t.Fatalf("配置和 listener 一致时应启动：%v", err)
+	}
+}
+
 func TestRenderCodexFrontPlistIsValidLaunchdSocketJob(t *testing.T) {
 	socket := "/Users/example/.codex/app-server-control/app-server-control.sock"
-	plist := renderCodexFrontPlist("com.example.front", []string{"/Applications/A & B.app/Contents/MacOS/Mimi Remote Mac", codexFrontAppFlag}, socket)
+	plist := renderCodexFrontPlist("com.example.front", []string{"/Applications/A & B.app/Contents/MacOS/Mimi Remote Mac", codexFrontAppFlag}, socket, "build-a")
 	path := filepath.Join(t.TempDir(), "front.plist")
 	if err := os.WriteFile(path, plist, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if output, err := exec.Command("/usr/bin/plutil", "-lint", path).CombinedOutput(); err != nil {
 		t.Fatalf("plutil 校验失败：%s", output)
+	}
+	if got, err := codexFrontPlistSocket(path); err != nil || got != socket {
+		t.Fatalf("前门 plist socket=%q err=%v", got, err)
 	}
 	text := string(plist)
 	for _, want := range []string{
@@ -31,10 +85,30 @@ func TestRenderCodexFrontPlistIsValidLaunchdSocketJob(t *testing.T) {
 		"<key>Wait</key>\n\t\t<true/>",
 		"<string>Aqua</string>",
 		"A &amp; B.app",
+		"MIMI_CODEX_FRONT_REVISION",
+		"build-a",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("plist 缺少 %q：\n%s", want, text)
 		}
+	}
+}
+
+func TestCodexFrontExecutableRevisionChangesWithBinary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agentd")
+	if err := os.WriteFile(path, []byte("first"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first, err := codexFrontExecutableRevision(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("second"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	second, err := codexFrontExecutableRevision(path)
+	if err != nil || first == second {
+		t.Fatalf("同路径覆盖升级必须改变前门修订号：first=%s second=%s err=%v", first, second, err)
 	}
 }
 

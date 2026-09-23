@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -26,6 +27,8 @@ func newTestFrontDoor(t *testing.T) *FrontDoor {
 	if err := os.MkdirAll(filepath.Dir(door.BackendSocketPath()), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// 单元测试不能扫描或给用户正在运行的 Codex 进程发信号。
+	door.orphans.listCodex = func() ([]sharedLocalRepairProcess, error) { return nil, nil }
 	return door
 }
 
@@ -149,6 +152,31 @@ func TestFrontDoorReportsLaunchFailureWithinDeadline(t *testing.T) {
 	}
 }
 
+func TestFrontDoorMigrationLockWaitsForActiveClient(t *testing.T) {
+	door := newTestFrontDoor(t)
+	stop := echoBackend(t, door.BackendSocketPath())
+	defer stop()
+	client, err := door.DialBackend(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if unlock, err := door.LockMigration(ctx); err == nil {
+		unlock()
+		_ = client.Close()
+		t.Fatal("客户端仍连接时不能换代前门")
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := door.LockMigration(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+}
+
 func TestFrontDoorReleasesOnlyIdlePublicListeners(t *testing.T) {
 	door := newTestFrontDoor(t)
 	idle := sharedLocalRepairProcess{PID: 101, UID: 501, StartSec: 1, Name: "codex"}
@@ -182,7 +210,8 @@ func TestFrontDoorReleasesOnlyIdlePublicListeners(t *testing.T) {
 			}
 			return sharedLocalRepairProcess{}, false, nil
 		},
-		signalTERM: func(pid int) error {
+		canDrain: func(context.Context, sharedLocalRepairProcess) error { return nil },
+		signalHUP: func(pid int) error {
 			signaled = append(signaled, pid)
 			return nil
 		},
@@ -202,7 +231,208 @@ func TestFrontDoorReleasesOnlyIdlePublicListeners(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(signaled, []int{101}) {
-		t.Fatalf("只应向空闲孤儿发送一次 SIGTERM，实际 %v", signaled)
+		t.Fatalf("同一前门只应向空闲孤儿发送一次 SIGHUP，实际 %v", signaled)
+	}
+}
+
+func TestFrontDoorBlocksBackendUntilBusyOrphanExits(t *testing.T) {
+	door := newTestFrontDoor(t)
+	old := sharedLocalRepairProcess{PID: 101, UID: 501, StartSec: 1, Name: "codex"}
+	var alive atomic.Bool
+	alive.Store(true)
+	door.orphans.listCodex = func() ([]sharedLocalRepairProcess, error) {
+		if alive.Load() {
+			return []sharedLocalRepairProcess{old}, nil
+		}
+		return nil, nil
+	}
+	door.orphans.args = func(int) ([]string, error) {
+		return []string{"codex", "app-server", "--listen", "unix://"}, nil
+	}
+	door.orphans.socketNames = func(context.Context, int, string) (int, error) { return 2, nil }
+	door.orphans.canDrain = func(context.Context, sharedLocalRepairProcess) error {
+		t.Fatal("旧实例仍有客户端时不能发退出信号")
+		return nil
+	}
+	var launches atomic.Int32
+	door.launch = func(context.Context, SharedLocalOptions, string) error {
+		launches.Add(1)
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if _, err := door.DialBackend(ctx); err == nil {
+		t.Fatal("旧实例仍有客户端时必须阻断新 backend")
+	}
+	if launches.Load() != 0 {
+		t.Fatal("迁移受阻时不应启动 backend")
+	}
+	alive.Store(false)
+	stop := echoBackend(t, door.BackendSocketPath())
+	defer stop()
+	conn, err := door.DialBackend(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+}
+
+func TestFrontDoorWaitsForGracefulOrphanDrain(t *testing.T) {
+	door := newTestFrontDoor(t)
+	old := sharedLocalRepairProcess{PID: 101, UID: uint32(os.Getuid()), StartSec: 1, Name: "codex"}
+	var alive atomic.Bool
+	alive.Store(true)
+	var signals atomic.Int32
+	signalSeen := make(chan struct{}, 1)
+	door.orphans.listCodex = func() ([]sharedLocalRepairProcess, error) {
+		if alive.Load() {
+			return []sharedLocalRepairProcess{old}, nil
+		}
+		return nil, nil
+	}
+	door.orphans.args = func(int) ([]string, error) {
+		return []string{"codex", "app-server", "--listen", "unix://"}, nil
+	}
+	door.orphans.socketNames = func(context.Context, int, string) (int, error) { return 1, nil }
+	door.orphans.process = func(int) (sharedLocalRepairProcess, bool, error) { return old, alive.Load(), nil }
+	door.orphans.canDrain = func(context.Context, sharedLocalRepairProcess) error { return nil }
+	door.orphans.signalHUP = func(int) error {
+		signals.Add(1)
+		signalSeen <- struct{}{}
+		return nil
+	}
+	stop := echoBackend(t, door.BackendSocketPath())
+	defer stop()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() {
+		conn, err := door.DialBackend(ctx)
+		if err == nil {
+			_ = conn.Close()
+		}
+		finished <- err
+	}()
+	select {
+	case <-signalSeen:
+	case <-ctx.Done():
+		t.Fatal("前门没有请求旧实例 drain")
+	}
+	if signals.Load() != 1 {
+		t.Fatalf("应向空闲旧实例发送一次 SIGHUP，实际 %d", signals.Load())
+	}
+	select {
+	case err := <-finished:
+		t.Fatalf("旧实例仍在 drain 时不应接入 backend：%v", err)
+	default:
+	}
+	alive.Store(false)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFrontDoorRestartWaitsForDrainingProcessAfterSocketCloses(t *testing.T) {
+	door := newTestFrontDoor(t)
+	old := sharedLocalRepairProcess{PID: 101, UID: uint32(os.Getuid()), StartSec: 1, Name: "codex"}
+	var alive atomic.Bool
+	alive.Store(true)
+	var references atomic.Int32
+	references.Store(1)
+	var signals atomic.Int32
+	configure := func(target *FrontDoor) {
+		target.orphans.listCodex = func() ([]sharedLocalRepairProcess, error) {
+			if alive.Load() {
+				return []sharedLocalRepairProcess{old}, nil
+			}
+			return nil, nil
+		}
+		target.orphans.args = func(int) ([]string, error) {
+			return []string{"codex", "app-server", "--listen", "unix://"}, nil
+		}
+		target.orphans.socketNames = func(context.Context, int, string) (int, error) { return int(references.Load()), nil }
+		target.orphans.process = func(int) (sharedLocalRepairProcess, bool, error) { return old, alive.Load(), nil }
+		target.orphans.canDrain = func(context.Context, sharedLocalRepairProcess) error { return nil }
+		target.orphans.signalHUP = func(int) error { signals.Add(1); return nil }
+	}
+	configure(door)
+	if _, err := door.ReleaseIdleOrphans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	references.Store(0)
+	if orphans, err := door.ReleaseIdleOrphans(context.Background()); err != nil || len(orphans) != 1 {
+		t.Fatalf("socket 已关闭但进程仍在 drain 时必须保留阻断：%+v, %v", orphans, err)
+	}
+	restarted, err := NewFrontDoor(door.options, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configure(restarted)
+	var launches atomic.Int32
+	restarted.launch = func(context.Context, SharedLocalOptions, string) error {
+		launches.Add(1)
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if _, err := restarted.DialBackend(ctx); err == nil || launches.Load() != 0 {
+		t.Fatalf("前门重启后不得越过仍在 drain 的旧进程：err=%v launches=%d", err, launches.Load())
+	}
+	if signals.Load() != 2 {
+		t.Fatalf("前门重启后应安全补发一次 SIGHUP，实际 %d", signals.Load())
+	}
+	transferCtx, transferCancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer transferCancel()
+	if err := restarted.WaitForOrphans(transferCtx); err == nil {
+		t.Fatal("永久移交 Homebrew 也必须等待旧 resident 退出")
+	}
+	alive.Store(false)
+	if err := restarted.WaitForOrphans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stop := echoBackend(t, restarted.BackendSocketPath())
+	defer stop()
+	conn, err := restarted.DialBackend(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+}
+
+func TestFrontDoorRestartUsesGracefulSignalAndRejectsUnknownVersion(t *testing.T) {
+	old := sharedLocalRepairProcess{PID: 101, UID: 501, StartSec: 1, Name: "codex"}
+	var signals atomic.Int32
+	newDoor := func() *FrontDoor {
+		door := newTestFrontDoor(t)
+		door.orphans.listCodex = func() ([]sharedLocalRepairProcess, error) {
+			return []sharedLocalRepairProcess{old}, nil
+		}
+		door.orphans.args = func(int) ([]string, error) {
+			return []string{"codex", "app-server", "--listen", "unix://"}, nil
+		}
+		door.orphans.socketNames = func(context.Context, int, string) (int, error) { return 1, nil }
+		door.orphans.process = func(int) (sharedLocalRepairProcess, bool, error) { return old, true, nil }
+		door.orphans.canDrain = func(context.Context, sharedLocalRepairProcess) error { return nil }
+		door.orphans.signalHUP = func(int) error { signals.Add(1); return nil }
+		return door
+	}
+	for range 2 {
+		if _, err := newDoor().ReleaseIdleOrphans(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if signals.Load() != 2 {
+		t.Fatalf("前门重启后仍只能使用可重复的 SIGHUP，实际 %d", signals.Load())
+	}
+	blocked := newDoor()
+	blocked.orphans.canDrain = func(context.Context, sharedLocalRepairProcess) error {
+		return errors.New("unsupported version")
+	}
+	if _, err := blocked.ReleaseIdleOrphans(context.Background()); err == nil {
+		t.Fatal("无法确认旧版本退出语义时必须拒绝自动迁移")
+	}
+	if signals.Load() != 2 {
+		t.Fatal("未知版本不能收到退出信号")
 	}
 }
 
