@@ -502,7 +502,7 @@ struct SessionListView: View {
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .shadow(
-            color: tokens.primaryAction.opacity(colorScheme == .dark ? 0.34 : 0.28),
+            color: tokens.primaryActionShadow,
             radius: 12,
             y: 5
         )
@@ -669,6 +669,7 @@ struct SessionListView: View {
                     onOpenWorkspaces?()
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(tokens.primaryActionForeground)
                 .controlSize(.large)
                 .tint(tokens.primaryAction)
                 .accessibilityIdentifier("sessions.empty.openWorkspaces")
@@ -684,6 +685,7 @@ struct SessionListView: View {
                     presentNewSession(source: nil)
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(tokens.primaryActionForeground)
                 .controlSize(.large)
                 .tint(tokens.primaryAction)
             }
@@ -732,6 +734,7 @@ struct SessionListView: View {
         } actions: {
             Button(L10n.text("ui.try_again"), action: retrySessionList)
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(tokens.primaryActionForeground)
                 .controlSize(.large)
                 .tint(tokens.primaryAction)
                 .accessibilityIdentifier("sessions.empty.retry")

@@ -90,6 +90,7 @@ struct ConnectionSpeedTestView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(tokens.primaryActionForeground)
                 .settingsRow()
                 .disabled(!canRunTest)
                 .accessibilityIdentifier("settings.connectionSpeedTest.run")

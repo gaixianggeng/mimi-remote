@@ -82,12 +82,14 @@ struct SkillIconView: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let tint = SkillBrandColor.color(metadata.brandColor) ?? tokens.accent
+        let brandTint = SkillBrandColor.color(metadata.brandColor)
+        let tint = brandTint ?? tokens.primaryAction
         let shape = RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
 
         Image(systemName: "wand.and.stars")
             .font(themeStore.uiFont(size: size * 0.43, weight: .semibold))
-            .foregroundStyle(.white)
+            // 没有品牌色时退回主操作色，前景要跟着主操作配对（默认深色是浅灰配黑）。
+            .foregroundStyle(brandTint == nil ? tokens.primaryActionForeground : .white)
             .frame(width: size, height: size)
             .background(tint.gradient, in: shape)
             .overlay {
@@ -241,6 +243,7 @@ struct SkillSelectionContent: View {
     private var doneButton: some View {
         Button(L10n.text("ui.complete"), action: onDone)
             .buttonStyle(.borderedProminent)
+            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
             .frame(minWidth: 64, minHeight: 44)
             .accessibilityIdentifier("composer.skillPicker.done")
     }

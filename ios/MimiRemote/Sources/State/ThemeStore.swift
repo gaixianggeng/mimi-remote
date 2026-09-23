@@ -228,18 +228,20 @@ extension ThemeTokens {
         case .light:
             return Color(red: 0.980392, green: 0.968627, blue: 0.945098)
         case .dark:
-            return Color(red: 24.0 / 255.0, green: 24.0 / 255.0, blue: 24.0 / 255.0)
+            // Notion 深色的导航列表与页面同底，不另起一档侧栏色。
+            return background
         }
     }
 
     /// 侧栏是结构分区，不是内容卡片。深色下若比工作区底色亮一整级，
     /// 整屏就会出现两块明显不同的深色，是“看着乱”的最大来源；
-    /// 这里只比背景高一点点，层级交给留白、字重和分组间距表达。
+    /// 宽屏浮层侧栏四周直接透出同色画布，只比背景高一点点保住浮层边缘，
+    /// 层级交给留白、字重和分组间距表达。
     var sidebarSurfaceBackground: Color {
         guard preset == .codex, resolvedScheme == .dark else {
             return contentPanelBackground
         }
-        return sidebarBackground
+        return Color(red: 35.0 / 255.0, green: 35.0 / 255.0, blue: 35.0 / 255.0)
     }
 
     var sidebarHoverFill: Color {
@@ -250,7 +252,8 @@ extension ThemeTokens {
         case .light:
             return Color(red: 0.941, green: 0.937, blue: 0.929)
         case .dark:
-            return elevatedSurface
+            // 悬停取 Notion 未选中胶囊那一档，明显弱于选中填充。
+            return surface
         }
     }
 
@@ -335,7 +338,8 @@ extension ThemeTokens {
                 blue: 238.0 / 255.0
             )
         case .dark:
-            return Color(red: 51.0 / 255.0, green: 51.0 / 255.0, blue: 51.0 / 255.0)
+            // Notion 悬浮按钮 #3D3D3D，比输入卡高一档。
+            return Color(red: 61.0 / 255.0, green: 61.0 / 255.0, blue: 61.0 / 255.0)
         }
     }
 
@@ -411,14 +415,15 @@ extension ThemeTokens {
         }
     }
 
-    /// 默认深色用低饱和紫承载白字主操作；更亮的 accent 只用于小面积前景。
+    /// 默认深色照 Notion AI 的浅灰圆钮：主操作与小面积强调共用同一档浅灰，
+    /// 不再带任何色相，也同时满足“当填充”和“当前景”两种用法。
     var primaryAction: Color {
         guard preset == .codex else { return accent }
         switch resolvedScheme {
         case .light:
             return .mimiPrimary
         case .dark:
-            return Color(red: 124.0 / 255.0, green: 107.0 / 255.0, blue: 158.0 / 255.0)
+            return accent
         }
     }
 
@@ -429,12 +434,27 @@ extension ThemeTokens {
     /// 4.5:1 得把亮度压到 0.18，那时主操作自身压深色底只剩 4.1:1，又破了另一条门槛。
     /// 所以改前景而不是改填充：黑字压它有 8.2:1，与冲突卡的
     /// `writerConflictPrimaryActionForeground` 同一处置。
+    ///
+    /// 默认深色的主操作是浅灰 #D3D3D3，与 Notion AI 圆钮一样配纯黑图标（14:1）。
     var primaryActionForeground: Color {
         switch (preset, resolvedScheme) {
-        case (.meadow, .dark):
+        case (.codex, .dark), (.meadow, .dark):
             return .black
         default:
             return .white
+        }
+    }
+
+    /// 悬浮主按钮的投影。彩色主操作用同色投影做一点光晕；默认深色的主操作是浅灰，
+    /// 同色投影会变成一圈发白的光，改用普通的黑色投影。
+    var primaryActionShadow: Color {
+        switch (preset, resolvedScheme) {
+        case (.codex, .dark):
+            return Color.black.opacity(0.40)
+        case (_, .dark):
+            return primaryAction.opacity(0.34)
+        case (_, .light):
+            return primaryAction.opacity(0.28)
         }
     }
 
@@ -480,10 +500,11 @@ extension ThemeTokens {
     /// 只为本卡片选择经过校准的黑白前景，不改变其它主操作。
     var writerConflictPrimaryActionForeground: Color {
         switch (preset, resolvedScheme) {
-        case (.codex, _), (.github, .light), (.gruvbox, .light), (.meadow, .light):
+        case (.codex, .light), (.github, .light), (.gruvbox, .light), (.meadow, .light):
             return .white
-        case (.github, .dark), (.xcode, _), (.gruvbox, .dark), (.meadow, .dark):
-            // 青草深色的主操作是鼠尾草绿，白字只有约 3.6:1，黑字约 5.8:1。
+        case (.codex, .dark), (.github, .dark), (.xcode, _), (.gruvbox, .dark), (.meadow, .dark):
+            // 青草深色的主操作是鼠尾草绿，白字只有约 3.6:1，黑字约 5.8:1；
+            // 默认深色的主操作是浅灰，同样只能配黑字。
             return .black
         }
     }
@@ -500,20 +521,25 @@ extension ThemeTokens {
 
     /// 会话侧滑动作使用独立语义色，而不是在视图里硬编码系统橙/蓝。
     /// 这些颜色都以白色图标和文案为前景，并分别为浅色、深色外观校准对比度。
+    /// 默认深色不带紫色：置顶/取消置顶退成两档中性灰，白字分别约 7:1 和 11:1。
     var sessionPinActionTint: Color {
-        switch resolvedScheme {
-        case .light:
+        switch (preset, resolvedScheme) {
+        case (_, .light):
             return Color(red: 74.0 / 255.0, green: 20.0 / 255.0, blue: 74.0 / 255.0)
-        case .dark:
+        case (.codex, .dark):
+            return Color(red: 90.0 / 255.0, green: 90.0 / 255.0, blue: 88.0 / 255.0)
+        case (_, .dark):
             return Color(red: 112.0 / 255.0, green: 61.0 / 255.0, blue: 116.0 / 255.0)
         }
     }
 
     var sessionUnpinActionTint: Color {
-        switch resolvedScheme {
-        case .light:
+        switch (preset, resolvedScheme) {
+        case (_, .light):
             return Color(red: 91.0 / 255.0, green: 84.0 / 255.0, blue: 95.0 / 255.0)
-        case .dark:
+        case (.codex, .dark):
+            return Color(red: 61.0 / 255.0, green: 61.0 / 255.0, blue: 61.0 / 255.0)
+        case (_, .dark):
             return Color(red: 67.0 / 255.0, green: 61.0 / 255.0, blue: 70.0 / 255.0)
         }
     }
@@ -576,10 +602,25 @@ extension ThemeTokens {
         conversationPrimaryText
     }
 
+    /// 默认深色的链接色是无色相的浅灰，与正文只差亮度；照 Notion 加下划线区分，不只靠颜色。
+    var underlinesLinks: Bool {
+        preset == .codex && resolvedScheme == .dark
+    }
+
+    /// 用户消息的时间文字。发送中整条消息还会叠 0.72 透明度：默认深色若继续用
+    /// Notion 的次级灰，叠完压画布只剩约 4.3:1。发送中改用主文字色，叠完恰好落回
+    /// 次级灰附近的亮度，发送完成切回次级灰时看不出跳变。
+    func userMessageTimestampForeground(isSending: Bool) -> Color {
+        guard preset == .codex, resolvedScheme == .dark else {
+            return userBubbleForeground.opacity(0.64)
+        }
+        return isSending ? primaryText : secondaryText
+    }
+
     func tint(for tone: AgentSessionStatusTone) -> Color {
         switch tone {
         case .active:
-            // 默认深色的运行文字/图标使用亮 accent；白字按钮仍使用 primaryAction。
+            // 默认深色的运行文字/图标使用 accent（与 primaryAction 同为浅灰）。
             // 其他外观保持原映射，状态判定本身不变。
             return preset == .codex && resolvedScheme == .dark ? accent : primaryAction
         case .warning:
@@ -848,33 +889,42 @@ final class ThemeStore: ObservableObject {
     }
 
     private var codexDarkTokens: ThemeTokens {
-        // 中性石墨承载内容；低饱和紫只承担交互强调，成功/警告/录音语义色保持不变。
+        // 取自 Notion iOS 深色截图的逐像素色值：页面 #1F1F1F、未选中胶囊 #2B2B29、
+        // 选中胶囊 #373735、标题 #EFEFED、次级文字 #ABAAA6、AI 圆钮 #D3D3D3。
+        // 整套没有彩色强调色，文字和胶囊带 Notion 原有的极轻暖灰；只有成功/警告保留语义色。
+        //
+        // 三处按对比度门槛偏离了截图：
+        // - 输入框/浮层取 #323232（Notion 的圆形按钮底），不取 #3D3D3D 的悬浮输入条，
+        //   否则三级文字在上面到不了 4.5:1；#3D3D3D 留给输入框里的控件。
+        // - Notion 只有两级文字，它的 #868686 只用在图标上；三级文字取 #A1A09D，
+        //   是在选中胶囊上仍有 4.5:1 的最暗值。
+        // - 代码块取 Notion 桌面页面底 #191919，比画布暗一档，与正文分区。
         ThemeTokens(
             preset: .codex,
             resolvedScheme: .dark,
-            background: Color(red: 20.0 / 255.0, green: 20.0 / 255.0, blue: 20.0 / 255.0),
-            surface: Color(red: 31.0 / 255.0, green: 31.0 / 255.0, blue: 31.0 / 255.0),
-            elevatedSurface: Color(red: 41.0 / 255.0, green: 41.0 / 255.0, blue: 41.0 / 255.0),
-            userBubble: Color(red: 41.0 / 255.0, green: 41.0 / 255.0, blue: 41.0 / 255.0),
-            assistantBubble: Color(red: 31.0 / 255.0, green: 31.0 / 255.0, blue: 31.0 / 255.0),
-            systemBubble: Color(red: 31.0 / 255.0, green: 31.0 / 255.0, blue: 31.0 / 255.0),
-            codeBlock: Color(red: 16.0 / 255.0, green: 16.0 / 255.0, blue: 16.0 / 255.0),
-            codeText: Color(red: 235.0 / 255.0, green: 235.0 / 255.0, blue: 235.0 / 255.0),
-            primaryText: Color(red: 235.0 / 255.0, green: 235.0 / 255.0, blue: 235.0 / 255.0),
-            secondaryText: Color(red: 184.0 / 255.0, green: 184.0 / 255.0, blue: 184.0 / 255.0),
-            tertiaryText: Color(red: 150.0 / 255.0, green: 150.0 / 255.0, blue: 150.0 / 255.0),
-            accent: Color(red: 184.0 / 255.0, green: 174.0 / 255.0, blue: 213.0 / 255.0),
+            background: Color(red: 31.0 / 255.0, green: 31.0 / 255.0, blue: 31.0 / 255.0),
+            surface: Color(red: 43.0 / 255.0, green: 43.0 / 255.0, blue: 41.0 / 255.0),
+            elevatedSurface: Color(red: 50.0 / 255.0, green: 50.0 / 255.0, blue: 50.0 / 255.0),
+            userBubble: Color(red: 50.0 / 255.0, green: 50.0 / 255.0, blue: 50.0 / 255.0),
+            assistantBubble: Color(red: 43.0 / 255.0, green: 43.0 / 255.0, blue: 41.0 / 255.0),
+            systemBubble: Color(red: 43.0 / 255.0, green: 43.0 / 255.0, blue: 41.0 / 255.0),
+            codeBlock: Color(red: 25.0 / 255.0, green: 25.0 / 255.0, blue: 25.0 / 255.0),
+            codeText: Color(red: 239.0 / 255.0, green: 239.0 / 255.0, blue: 237.0 / 255.0),
+            primaryText: Color(red: 239.0 / 255.0, green: 239.0 / 255.0, blue: 237.0 / 255.0),
+            secondaryText: Color(red: 171.0 / 255.0, green: 170.0 / 255.0, blue: 166.0 / 255.0),
+            tertiaryText: Color(red: 161.0 / 255.0, green: 160.0 / 255.0, blue: 157.0 / 255.0),
+            accent: Color(red: 211.0 / 255.0, green: 211.0 / 255.0, blue: 211.0 / 255.0),
             warning: Color(red: 0.941, green: 0.710, blue: 0.384),
             success: Color(red: 0.396, green: 0.773, blue: 0.557),
-            goalActive: Color(red: 0.827, green: 0.490, blue: 0.608),
-            voiceRecording: Color(red: 0.776, green: 0.506, blue: 0.796),
+            goalActive: Color(red: 211.0 / 255.0, green: 211.0 / 255.0, blue: 211.0 / 255.0),
+            voiceRecording: Color(red: 211.0 / 255.0, green: 211.0 / 255.0, blue: 211.0 / 255.0),
             voiceWaveformGradient: [
-                Color(red: 0.867, green: 0.659, blue: 0.875),
-                Color(red: 0.776, green: 0.506, blue: 0.796),
-                Color(red: 0.608, green: 0.341, blue: 0.616)
+                Color(red: 239.0 / 255.0, green: 239.0 / 255.0, blue: 237.0 / 255.0),
+                Color(red: 211.0 / 255.0, green: 211.0 / 255.0, blue: 211.0 / 255.0),
+                Color(red: 171.0 / 255.0, green: 170.0 / 255.0, blue: 166.0 / 255.0)
             ],
-            border: Color(red: 58.0 / 255.0, green: 58.0 / 255.0, blue: 58.0 / 255.0),
-            selectionFill: Color(red: 44.0 / 255.0, green: 41.0 / 255.0, blue: 50.0 / 255.0)
+            border: Color(red: 55.0 / 255.0, green: 55.0 / 255.0, blue: 53.0 / 255.0),
+            selectionFill: Color(red: 55.0 / 255.0, green: 55.0 / 255.0, blue: 53.0 / 255.0)
         )
     }
 

@@ -929,7 +929,7 @@ private struct WorkspaceIconStyleOptionLabel: View {
             if isSelected {
                 Image(systemName: "checkmark")
                     .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(tokens.primaryActionForeground)
                     .frame(width: 20, height: 20)
                     .background(tokens.primaryAction, in: Circle())
                     .overlay {

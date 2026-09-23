@@ -693,6 +693,7 @@ struct WorkspaceRootView: View {
                         .padding(.horizontal, 4)
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(tokens.primaryActionForeground)
                 .buttonBorderShape(.capsule)
                 .controlSize(.large)
                 .tint(tokens.primaryAction)

@@ -542,6 +542,7 @@ struct UnifiedWorkbenchShell: View {
                 presentSheet(.settings)
             }
             .buttonStyle(.borderedProminent)
+            .foregroundStyle(tokens.primaryActionForeground)
             .controlSize(.small)
             .accessibilityIdentifier("connection.repairPairing")
         }

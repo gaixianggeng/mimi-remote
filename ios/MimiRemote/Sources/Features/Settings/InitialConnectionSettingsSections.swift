@@ -910,6 +910,7 @@ struct InitialConnectionSettingsSections: View {
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(tokens.primaryActionForeground)
                 .tint(tokens.primaryAction)
                 .disabled(!canSubmit)
             }

@@ -33,6 +33,7 @@ struct NewSessionSheet: View {
                             onOpenWorkspaces()
                         }
                         .buttonStyle(.borderedProminent)
+                        .foregroundStyle(tokens.primaryActionForeground)
                         .tint(tokens.primaryAction)
                     }
                 } else {
@@ -86,6 +87,7 @@ struct NewSessionSheet: View {
                         }
                         .frame(minWidth: 48)
                         .workbenchProminentActionStyle()
+                        .foregroundStyle(tokens.primaryActionForeground)
                         .disabled(isCreating || selectedProject == nil || runtimeChoices.isEmpty)
                         .tint(tokens.primaryAction)
                         .keyboardShortcut(.defaultAction)

@@ -162,6 +162,7 @@ struct WorkspaceEmojiPicker: View {
 
                     Button(L10n.text("ui.apply"), action: applyCustomEmoji)
                         .buttonStyle(.borderedProminent)
+                        .foregroundStyle(tokens.primaryActionForeground)
                         .tint(tokens.primaryAction)
                         .disabled(customInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }

@@ -444,7 +444,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         ))
         .shadow(
             color: isFloating
-                ? tokens.primaryAction.opacity(colorScheme == .dark ? 0.34 : 0.28)
+                ? tokens.primaryActionShadow
                 : .clear,
             radius: isFloating ? 12 : 0,
             y: isFloating ? 5 : 0
