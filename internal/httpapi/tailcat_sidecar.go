@@ -722,6 +722,9 @@ func resolveTailcatSidecarBinary(configured string) (string, error) {
 	if path, err := exec.LookPath(name); err == nil {
 		return path, nil
 	}
+	if runtime.GOOS == "linux" {
+		return "", fmt.Errorf("未安装 %s；请下载完整 Linux Release 包，在解压目录执行 bash ./scripts/install-linux.sh upgrade 后重试；Tailcat 保持关闭", name)
+	}
 	return "", fmt.Errorf("未安装 %s；Tailcat 实验保持关闭", name)
 }
 

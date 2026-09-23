@@ -488,14 +488,12 @@ struct InitialConnectionSettingsSections: View {
     /// 一台电脑都没存过时没有可绑定的对象，这一组不出现。
     /// 右侧状态与详情页开关同一口径：只看当前电脑是否已开启，不再写死「默认关闭」。
     private var notificationsSection: some View {
-        let isEnabled = lockScreenApprovalStore.isEnabled(for: appStore.activeConnectionProfileID)
-
         return Section {
             NavigationLink(value: SettingsDestination.lockScreenApproval) {
                 ConnectionRowLabel(
                     title: L10n.text("ui.push_lock_screen_approval"),
-                    value: L10n.text(isEnabled ? "ui.push_status_on" : "ui.push_status_off"),
-                    systemImage: "lock.iphone"
+                    value: lockScreenApprovalStore.notificationStatusDescription,
+                    systemImage: "bell"
                 )
             }
             .settingsStandardListRow()

@@ -90,6 +90,24 @@ func TestSharedLocalTransportStartsOnceAndThenAttaches(t *testing.T) {
 	}
 }
 
+func TestSharedLocalTransportConnectOnlyNeverStartsResident(t *testing.T) {
+	codexHome := shortSharedLocalCodexHome(t)
+	transport, err := NewSharedLocalTransport(SharedLocalOptions{
+		Env: map[string]string{"CODEX_HOME": codexHome}, ConnectOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := transport.EnsureReady(ctx); err == nil || !strings.Contains(err.Error(), "前门尚未就绪") {
+		t.Fatalf("前门缺失时应拒绝另起共享 resident：%v", err)
+	}
+	if _, err := os.Lstat(transport.SocketPath()); !os.IsNotExist(err) {
+		t.Fatalf("connect-only 意外创建标准 socket：%v", err)
+	}
+}
+
 func TestSharedLocalTransportRejectsNonSocketOccupant(t *testing.T) {
 	codexHome := shortSharedLocalCodexHome(t)
 	socket := filepath.Join(codexHome, sharedLocalSocketDir, sharedLocalSocketName)

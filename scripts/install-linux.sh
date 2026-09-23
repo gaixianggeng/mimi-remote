@@ -12,7 +12,7 @@ usage() {
 命令：
   install     默认。从当前已解压的 Release 包安装；已有版本会自动备份。
   upgrade     与 install 使用同一安全替换流程，语义上表示升级。
-  rollback    恢复 ~/.local/bin/agentd.previous 和上一版 systemd 模板。
+  rollback    恢复上一版 agentd、Tailcat 辅助程序和 systemd 模板。
   uninstall   停用并移除 user-systemd 服务与安装文件；保留配置和 Token。
   --self-test 只运行参数、架构和版本校验，不修改系统。
 
@@ -145,12 +145,16 @@ uninstall_linux() {
   local previous_service="$4"
   local installed_helper="$5"
   local config_dir="$6"
+  local destination_tailcat="$HOME/.local/bin/mimi-tailcat-experiment"
   local installed_path
   local has_installed_file="0"
 
   for installed_path in \
     "$destination_binary" \
     "$previous_binary" \
+    "$destination_tailcat" \
+    "${destination_tailcat}.previous" \
+    "${destination_tailcat}.previous.absent" \
     "$destination_service" \
     "$previous_service" \
     "$installed_helper"; do
@@ -189,6 +193,9 @@ uninstall_linux() {
     rm -f -- \
       "$destination_binary" \
       "$previous_binary" \
+      "$destination_tailcat" \
+      "${destination_tailcat}.previous" \
+      "${destination_tailcat}.previous.absent" \
       "$installed_helper"
     echo "Mimi Remote Linux uninstall 完成。"
   fi
@@ -259,6 +266,11 @@ main() {
   local installed_helper="$HOME/.local/share/mimi-remote/install-linux.sh"
   local source_binary="$ROOT_DIR/agentd"
   local source_service="$ROOT_DIR/packaging/systemd/mimi-remote.service"
+  local destination_tailcat="$HOME/.local/bin/mimi-tailcat-experiment"
+  local previous_tailcat="${destination_tailcat}.previous"
+  local previous_tailcat_absent="${previous_tailcat}.absent"
+  local source_tailcat="$ROOT_DIR/mimi-tailcat-experiment"
+  local source_has_tailcat="1"
 
   local command_name
   if [[ "$mode" == "uninstall" ]]; then
@@ -284,6 +296,12 @@ main() {
   if [[ "$mode" == "rollback" ]]; then
     source_binary="$previous_binary"
     source_service="$previous_service"
+    source_tailcat="$previous_tailcat"
+    if [[ -f "$previous_tailcat_absent" && ! -e "$previous_tailcat" ]]; then
+      source_has_tailcat="0"
+    elif [[ ! -x "$source_tailcat" || -e "$previous_tailcat_absent" ]]; then
+      fail "上一版 Tailcat 备份不完整；请从目标版本的完整 Release 包重新安装。"
+    fi
     [[ -x "$source_binary" ]] || fail "缺少 ${previous_binary}，无法回滚。"
     [[ -f "$source_service" ]] || fail "缺少 ${previous_service}，无法回滚 service 模板。"
   else
@@ -299,12 +317,23 @@ main() {
   validate_release_version "$source_version" \
     || fail "拒绝安装非正式版本：${source_version}。"
 
+  if [[ "$source_has_tailcat" == "1" ]]; then
+    [[ -x "$source_tailcat" ]] \
+      || fail "Release 包缺少可执行的 mimi-tailcat-experiment；请重新下载完整 Linux Release 包。"
+    local tailcat_version
+    tailcat_version="$("$source_tailcat" version)" \
+      || fail "Tailcat 辅助程序无法执行，请下载匹配当前架构的完整 Release 包。"
+    [[ "$tailcat_version" == "$source_version" ]] \
+      || fail "Tailcat 与 agentd 版本不一致；请使用同一 Release 包重新安装。"
+  fi
+
   local work_dir
   work_dir="$(mktemp -d)"
   local transaction_started="0"
   local completed="0"
   local had_binary="0"
   local had_service="0"
+  local had_tailcat="0"
   local was_enabled="0"
   local was_active="0"
   local created_config="0"
@@ -317,9 +346,17 @@ main() {
     setup_transport_args=(--app-server-ssh-target "$app_server_ssh_target")
   fi
 
+  # 连同上一版备份一起快照；失败升级不能覆盖用户原先可用的回滚版本。
+  local transaction_paths=("$destination_binary" "$destination_tailcat" "$destination_service"
+    "$previous_binary" "$previous_tailcat" "$previous_tailcat_absent" "$previous_service")
+  local transaction_modes=(755 755 644 755 755 644 644)
+
   cleanup() {
     rm -rf "$work_dir"
-    rm -f "${destination_binary}.new.$$" "${destination_service}.new.$$"
+    local path
+    for path in "${transaction_paths[@]}"; do
+      rm -f "${path}.new.$$" "${path}.restore.$$"
+    done
   }
 
   # 任一步骤失败都恢复安装前的二进制和 unit；首次安装失败则停用残留服务。
@@ -328,18 +365,17 @@ main() {
     trap - ERR
     if [[ "$transaction_started" == "1" && "$completed" != "1" ]]; then
       echo "安装未通过就绪检查，正在恢复安装前版本..." >&2
-      if [[ "$had_binary" == "1" ]]; then
-        install -m 755 "$work_dir/agentd.before" "${destination_binary}.restore.$$" || true
-        mv -f "${destination_binary}.restore.$$" "$destination_binary" || true
-      else
-        rm -f "$destination_binary"
-      fi
-      if [[ "$had_service" == "1" ]]; then
-        install -m 644 "$work_dir/service.before" "${destination_service}.restore.$$" || true
-        mv -f "${destination_service}.restore.$$" "$destination_service" || true
-      else
-        rm -f "$destination_service"
-      fi
+      local index path
+      for index in "${!transaction_paths[@]}"; do
+        path="${transaction_paths[$index]}"
+        if [[ -f "$work_dir/before-$index" ]]; then
+          install -m "${transaction_modes[$index]}" "$work_dir/before-$index" "${path}.restore.$$" \
+            && mv -f "${path}.restore.$$" "$path" \
+            || echo "警告：恢复 $path 失败，请保留日志并重新安装完整 Release 包。" >&2
+        else
+          rm -f "$path"
+        fi
+      done
       systemctl --user daemon-reload >/dev/null 2>&1 || true
       if [[ "$was_enabled" == "1" ]]; then
         systemctl --user enable "$SERVICE_NAME" >/dev/null 2>&1 || true
@@ -381,6 +417,20 @@ main() {
   mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/code"
   install -m 755 "$source_binary" "$work_dir/agentd.source"
   install -m 644 "$source_service" "$work_dir/service.source"
+  if [[ "$source_has_tailcat" == "1" ]]; then
+    install -m 755 "$source_tailcat" "$work_dir/tailcat.source"
+  fi
+  local index path
+  for index in "${!transaction_paths[@]}"; do
+    path="${transaction_paths[$index]}"
+    if [[ -f "$path" ]]; then
+      install -m "${transaction_modes[$index]}" "$path" "$work_dir/before-$index"
+    fi
+  done
+  if [[ -f "$destination_tailcat" ]]; then
+    had_tailcat="1"
+    install -m 755 "$destination_tailcat" "$work_dir/tailcat.before"
+  fi
 
   if [[ -f "$destination_binary" ]]; then
     had_binary="1"
@@ -402,6 +452,16 @@ main() {
     install -m 755 "$work_dir/agentd.before" "${previous_binary}.new.$$"
     mv -f "${previous_binary}.new.$$" "$previous_binary"
   fi
+  if [[ "$had_binary" == "1" && "$had_tailcat" == "1" ]]; then
+    install -m 755 "$work_dir/tailcat.before" "${previous_tailcat}.new.$$"
+    mv -f "${previous_tailcat}.new.$$" "$previous_tailcat"
+    rm -f "$previous_tailcat_absent"
+  elif [[ "$had_binary" == "1" ]]; then
+    # 明确记录旧安装没有 Tailcat；不能把缺失/损坏的备份误当成旧版本。
+    : > "${previous_tailcat_absent}.new.$$"
+    mv -f "${previous_tailcat_absent}.new.$$" "$previous_tailcat_absent"
+    rm -f "$previous_tailcat"
+  fi
   if [[ "$had_service" == "1" ]]; then
     install -m 644 "$work_dir/service.before" "${previous_service}.new.$$"
     mv -f "${previous_service}.new.$$" "$previous_service"
@@ -411,6 +471,14 @@ main() {
   [[ "$("${destination_binary}.new.$$" version)" == "$source_version" ]] \
     || fail "暂存二进制版本校验失败。"
   mv -f "${destination_binary}.new.$$" "$destination_binary"
+  if [[ "$source_has_tailcat" == "1" ]]; then
+    install -m 755 "$work_dir/tailcat.source" "${destination_tailcat}.new.$$"
+    [[ "$("${destination_tailcat}.new.$$" version)" == "$source_version" ]] \
+      || fail "暂存 Tailcat 辅助程序版本校验失败。"
+    mv -f "${destination_tailcat}.new.$$" "$destination_tailcat"
+  else
+    rm -f "$destination_tailcat"
+  fi
   install -m 644 "$work_dir/service.source" "${destination_service}.new.$$"
   mv -f "${destination_service}.new.$$" "$destination_service"
 
@@ -466,6 +534,9 @@ main() {
     echo "警告：agentd 已完成 ${mode}，托盘更新未完成；请运行 Release 包的 scripts/install-linux-tray.sh 重试。" >&2
   fi
   echo "Mimi Remote Linux ${mode} 完成：agentd ${source_version}。"
+  if [[ "$source_has_tailcat" == "0" ]]; then
+    echo "已恢复未包含 Tailcat 的旧安装；内置连接不可用，请升级到包含辅助程序的完整 Linux Release。"
+  fi
   echo "配置：$config_path"
   echo "服务：systemctl --user status $SERVICE_NAME"
   echo "回滚：bash $installed_helper rollback"

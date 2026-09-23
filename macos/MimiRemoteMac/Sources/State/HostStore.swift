@@ -278,6 +278,9 @@ final class HostStore {
         defer { isBusy = false }
         do {
             try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
+            // 永久交还 Homebrew 前，先确认私有 Codex backend 空闲并注销独立前门。
+            // 失败时走现有回滚，不能留下仍指向将被移走 App 的 LaunchAgent。
+            try await agent.uninstallCodexFrontDoor()
             try await homebrew.start()
             try await waitForHomebrewReady(binary: oldAgent)
             homebrewLoaded = true

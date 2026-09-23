@@ -18,6 +18,7 @@ import (
 const (
 	AppName                           = "mimi-remote"
 	DefaultClaudeMaxConcurrentBridges = 3
+	DefaultPushProviderURL            = "https://api.code89757.com/mimi-push"
 )
 
 var ErrLegacyAppServerConfiguration = errors.New("legacy Codex Desktop sharing configuration")
@@ -188,15 +189,18 @@ type VoiceConfig struct {
 	CodexAuthFile             string `json:"codex_auth_file,omitempty"`
 }
 
-// PushConfig 是锁屏审批提醒（MIM-112）的本机开关。默认关闭：只有用户在 App 内
-// 显式同意使用中转服务、并且这里配置了 Provider 之后，agentd 才会注册设备或
-// 发送任何提醒。坚持纯本地部署的用户不开启即可，链路上不产生对外请求。
+// PushConfig 控制电脑端消息通知。默认提供官方推送服务，但只有 App 已授权并
+// 注册设备后才会发送通知；显式关闭后不产生通知请求。
 type PushConfig struct {
 	Enabled     bool   `json:"enabled"`
 	ProviderURL string `json:"provider_url,omitempty"`
-	// Environment 必须与 App 构建匹配：TestFlight/Debug 是 sandbox，
-	// App Store 是 production，Device Token 不能跨环境使用。
+	// Environment 是电脑端报告的兼容默认值。App 按签名中的 aps-environment
+	// 向 Provider 注册，实际投递环境保存在 Ticket 中，Device Token 不能跨环境使用。
 	Environment string `json:"environment,omitempty"`
+}
+
+func DefaultPushConfig() PushConfig {
+	return PushConfig{Enabled: true, ProviderURL: DefaultPushProviderURL}
 }
 
 type DebugConfig struct {
@@ -507,6 +511,7 @@ func defaults() Config {
 			},
 		},
 		Claude: DefaultClaudeConfig(),
+		Push:   DefaultPushConfig(),
 	}
 }
 
