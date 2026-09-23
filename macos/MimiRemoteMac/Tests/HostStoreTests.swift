@@ -1712,6 +1712,7 @@ final class HostStoreTests: XCTestCase {
             homebrewLoaded: true,
             registerAgent: { events.append("register-mac") },
             unregisterAgent: { events.append("unregister-mac") },
+            uninstallCodexFrontDoor: { events.append("uninstall-front") },
             homebrewStart: {
                 events.append("start-homebrew")
                 throw TestError.expected
@@ -1728,7 +1729,7 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.lifecycle, .ready)
         XCTAssertTrue(store.lastError?.contains("已继续使用 App 服务") == true)
         XCTAssertEqual(events.values, [
-            "stop-homebrew", "register-mac", "unregister-mac", "start-homebrew",
+            "stop-homebrew", "register-mac", "unregister-mac", "uninstall-front", "start-homebrew",
             "stop-homebrew", "register-mac",
         ])
     }
@@ -2163,6 +2164,7 @@ final class HostStoreTests: XCTestCase {
         },
         registerAgent: @escaping @MainActor () throws -> Void = {},
         unregisterAgent: @escaping @MainActor () async throws -> Void = {},
+        uninstallCodexFrontDoor: @escaping @Sendable () async throws -> Void = {},
         agentLaunchFailure: @escaping @MainActor () async -> String? = { nil },
         configCheck: AgentdConfigCheckClient = .disabled,
         homebrewStart: @escaping @Sendable () async throws -> Void = {},
@@ -2220,6 +2222,7 @@ final class HostStoreTests: XCTestCase {
             readiness: readiness ?? status,
             statusAt: { _ in readyStatus },
             doctor: doctor,
+            uninstallCodexFrontDoor: uninstallCodexFrontDoor,
             configureClaude: configureClaude,
             restoreClaude: restoreClaude,
             setLANAccess: setLANAccess,

@@ -25,19 +25,21 @@ import (
 const (
 	sharedLocalBackendSocketName = "app-server-backend.sock"
 	sharedLocalBackendLockName   = "app-server-backend.lock"
+	frontDoorMigrationLockName   = "app-server-front-migration.lock"
 	frontDoorBackendReadyTimeout = 20 * time.Second
 	frontDoorDialAttemptTimeout  = 2 * time.Second
 )
 
 type FrontDoor struct {
-	options  SharedLocalOptions
-	public   string
-	backend  string
-	lockPath string
-	logf     func(string, ...any)
-	launchMu sync.Mutex
-	launch   func(context.Context, SharedLocalOptions, string) error
-	orphans  frontDoorOrphanOps
+	options           SharedLocalOptions
+	public            string
+	backend           string
+	lockPath          string
+	migrationLockPath string
+	logf              func(string, ...any)
+	launchMu          sync.Mutex
+	launch            func(context.Context, SharedLocalOptions, string) error
+	orphans           frontDoorOrphanOps
 }
 
 func NewFrontDoor(options SharedLocalOptions, logf func(string, ...any)) (*FrontDoor, error) {
@@ -54,13 +56,14 @@ func NewFrontDoor(options SharedLocalOptions, logf func(string, ...any)) (*Front
 		logf = func(string, ...any) {}
 	}
 	return &FrontDoor{
-		options:  SharedLocalOptions{CodexBin: strings.TrimSpace(options.CodexBin), Env: cloneStringMap(options.Env)},
-		public:   public,
-		backend:  backend,
-		lockPath: filepath.Join(directory, sharedLocalBackendLockName),
-		logf:     logf,
-		launch:   startSharedLocalAppServerListening,
-		orphans:  defaultFrontDoorOrphanOps(),
+		options:           SharedLocalOptions{CodexBin: strings.TrimSpace(options.CodexBin), Env: cloneStringMap(options.Env)},
+		public:            public,
+		backend:           backend,
+		lockPath:          filepath.Join(directory, sharedLocalBackendLockName),
+		migrationLockPath: filepath.Join(directory, frontDoorMigrationLockName),
+		logf:              logf,
+		launch:            startSharedLocalAppServerListening,
+		orphans:           defaultFrontDoorOrphanOps(),
 	}, nil
 }
 
@@ -140,6 +143,26 @@ func (f *FrontDoor) handle(ctx context.Context, client net.Conn) {
 
 // DialBackend 连接 backend；不存在时在进程内与跨进程锁内启动一次，再等待就绪。
 func (f *FrontDoor) DialBackend(ctx context.Context) (net.Conn, error) {
+	// 共享锁随客户端连接持有；永久移交或前门换代先取排他锁，
+	// 等旧连接全部关闭后才检查空闲状态，期间不允许新的连接插入。
+	unlock, err := lockFrontDoorFileMode(ctx, f.migrationLockPath, unix.LOCK_SH)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := f.dialBackend(ctx)
+	if err != nil {
+		unlock()
+		return nil, err
+	}
+	return &frontDoorLockedConn{Conn: conn, unlock: unlock}, nil
+}
+
+func (f *FrontDoor) dialBackend(ctx context.Context) (net.Conn, error) {
+	// 旧标准 socket 被 launchd 重新绑定后，旧 resident 仍可能持有活动会话。
+	// 必须等它退出，才允许任何客户端进入私有 backend，避免同一 Thread 出现两个 writer。
+	if err := f.waitForOrphans(ctx); err != nil {
+		return nil, err
+	}
 	if conn, err := f.dialBackendOnce(ctx); err == nil {
 		return conn, nil
 	}
@@ -179,18 +202,68 @@ func (f *FrontDoor) DialBackend(ctx context.Context) (net.Conn, error) {
 	}
 }
 
+// LockMigration 排他阻止新客户端，直到换代或卸载操作完成。
+func (f *FrontDoor) LockMigration(ctx context.Context) (func(), error) {
+	return lockFrontDoorFileMode(ctx, f.migrationLockPath, unix.LOCK_EX)
+}
+
+type frontDoorLockedConn struct {
+	net.Conn
+	unlock func()
+	once   sync.Once
+}
+
+func (c *frontDoorLockedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.unlock)
+	return err
+}
+
+func (c *frontDoorLockedConn) CloseWrite() error {
+	if closer, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return closer.CloseWrite()
+	}
+	return c.Close()
+}
+
+func (f *FrontDoor) waitForOrphans(ctx context.Context) error {
+	for {
+		orphans, err := f.ReleaseIdleOrphans(ctx)
+		if err != nil {
+			return fmt.Errorf("无法确认旧共享 Codex 实例已退出：%w", err)
+		}
+		if len(orphans) == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("旧共享 Codex 实例尚未退出，暂不开放新 backend：%w", ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// WaitForOrphans 只在调用方已确认前门持有标准 socket 时使用，永久移交前等待旧实例真正退出。
+func (f *FrontDoor) WaitForOrphans(ctx context.Context) error {
+	return f.waitForOrphans(ctx)
+}
+
 func (f *FrontDoor) dialBackendOnce(ctx context.Context) (net.Conn, error) {
 	dialer := net.Dialer{Timeout: frontDoorDialAttemptTimeout}
 	return dialer.DialContext(ctx, "unix", f.backend)
 }
 
 func lockFrontDoorFile(ctx context.Context, path string) (func(), error) {
+	return lockFrontDoorFileMode(ctx, path, unix.LOCK_EX)
+}
+
+func lockFrontDoorFileMode(ctx context.Context, path string, mode int) (func(), error) {
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("打开共享 Codex backend 启动锁失败：%w", err)
 	}
 	for {
-		err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		err := unix.Flock(int(file.Fd()), mode|unix.LOCK_NB)
 		if err == nil {
 			return func() {
 				_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)

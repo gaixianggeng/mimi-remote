@@ -5,6 +5,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -107,26 +109,36 @@ func runCodexFrontServe(args []string) error {
 	}
 	defer closeLog()
 
-	options := appserver.SharedLocalOptions{}
-	if cfg, loadErr := config.LoadForDoctor(*configPath); loadErr == nil {
-		options = appserver.SharedLocalOptions{CodexBin: cfg.Codex.Bin, Env: cfg.Codex.Env}
-	} else {
-		logger.Printf("codex front door uses defaults: config unavailable: %v", loadErr)
-	}
-	options.CodexBin = appserver.FrontDoorCodexBin(options.CodexBin, options.Env)
-	door, err := appserver.NewFrontDoor(options, logger.Printf)
+	door, err := loadCodexFrontDoor(*configPath, listener, logger.Printf)
 	if err != nil {
 		logger.Printf("codex front door init failed: %v", err)
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stop()
-	logger.Printf("codex front door serving pid=%d public=%s backend=%s codex=%s",
-		os.Getpid(), door.PublicSocketPath(), door.BackendSocketPath(), options.CodexBin)
+	logger.Printf("codex front door serving pid=%d public=%s backend=%s",
+		os.Getpid(), door.PublicSocketPath(), door.BackendSocketPath())
 	go watchCodexFrontOrphans(ctx, door, logger)
 	err = door.Serve(ctx, listener)
 	logger.Printf("codex front door stopped: %v", err)
 	return err
+}
+
+func loadCodexFrontDoor(configPath string, listener net.Listener, logf func(string, ...any)) (*appserver.FrontDoor, error) {
+	cfg, err := config.LoadForDoctor(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("读取前门配置失败，拒绝回退其他 CODEX_HOME：%w", err)
+	}
+	options := appserver.SharedLocalOptions{CodexBin: cfg.Codex.Bin, Env: cfg.Codex.Env}
+	options.CodexBin = appserver.FrontDoorCodexBin(options.CodexBin, options.Env)
+	door, err := appserver.NewFrontDoor(options, logf)
+	if err != nil {
+		return nil, err
+	}
+	if listener.Addr().Network() != "unix" || listener.Addr().String() != door.PublicSocketPath() {
+		return nil, fmt.Errorf("launchd 前门 socket 与配置不一致：listener=%s config=%s", listener.Addr(), door.PublicSocketPath())
+	}
+	return door, nil
 }
 
 // launchd 的 inetd Wait=true 模式把监听 socket 同时放在 fd 0、1、2。换成 /dev/null 与日志文件，
@@ -234,11 +246,43 @@ func runCodexFrontInstall(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	plist := renderCodexFrontPlist(install.Label, programArgs, install.Socket)
+	revision, err := codexFrontExecutableRevision(executable)
+	if err != nil {
+		return err
+	}
+	plist := renderCodexFrontPlist(install.Label, programArgs, install.Socket, revision)
 	loaded := codexFrontLoaded(install.Label)
-	if existing, readErr := os.ReadFile(install.PlistPath); loaded && readErr == nil && bytes.Equal(existing, plist) {
+	existing, readErr := os.ReadFile(install.PlistPath)
+	if loaded && readErr == nil && bytes.Equal(existing, plist) && codexFrontSocketListening(install.Socket) {
 		fmt.Fprintf(stdout, "前门已安装：%s\n", install.Socket)
 		return nil
+	}
+	if loaded {
+		if readErr != nil {
+			return fmt.Errorf("无法读取已加载的前门配置，拒绝热更新：%w", readErr)
+		}
+		previousSocket, err := codexFrontPlistSocket(install.PlistPath)
+		if err != nil || previousSocket != install.Socket {
+			return errors.New("前门标准 socket 配置已改变，拒绝在旧会话运行时自动切换 CODEX_HOME")
+		}
+		cfg, err := config.LoadForDoctor(*configPath)
+		if err != nil {
+			return err
+		}
+		door, err := appserver.NewFrontDoor(appserver.SharedLocalOptions{CodexBin: cfg.Codex.Bin, Env: cfg.Codex.Env}, nil)
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		unlock, err := door.LockMigration(ctx)
+		if err != nil {
+			return fmt.Errorf("等待前门共享连接结束失败：%w", err)
+		}
+		defer unlock()
+		if err := door.CanReload(ctx); err != nil {
+			return fmt.Errorf("前门有活动共享任务，暂缓加载新版：%w", err)
+		}
 	}
 	if !loaded && codexFrontSocketListening(install.Socket) {
 		// launchd 加载时会删除并重新绑定该路径，现有实例将失去新连接。必须先让它结束。
@@ -256,6 +300,9 @@ func runCodexFrontInstall(args []string, stdout io.Writer) error {
 		}
 	}
 	if err := codexFrontBootstrap(install.PlistPath); err != nil {
+		if loaded && writeFileAtomically(install.PlistPath, existing, 0o644) == nil {
+			_ = codexFrontBootstrap(install.PlistPath)
+		}
 		return err
 	}
 	if !codexFrontSocketListening(install.Socket) {
@@ -268,6 +315,7 @@ func runCodexFrontInstall(args []string, stdout io.Writer) error {
 func runCodexFrontUninstall(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	configPath, label, plistPath := codexFrontFlags(fs)
+	stopIdleBackend := fs.Bool("stop-idle-backend", false, "仅在私有 backend 空闲并退出后卸载前门")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -275,7 +323,39 @@ func runCodexFrontUninstall(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if codexFrontLoaded(install.Label) {
+	loaded := codexFrontLoaded(install.Label)
+	if loaded {
+		registeredSocket, err := codexFrontPlistSocket(install.PlistPath)
+		if err != nil || registeredSocket != install.Socket {
+			return errors.New("已加载前门的标准 socket 与当前配置不一致，拒绝卸载错误的共享环境")
+		}
+	}
+	if *stopIdleBackend {
+		cfg, err := config.LoadForDoctor(*configPath)
+		if err != nil {
+			return err
+		}
+		door, err := appserver.NewFrontDoor(appserver.SharedLocalOptions{CodexBin: cfg.Codex.Bin, Env: cfg.Codex.Env}, nil)
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		unlock, err := door.LockMigration(ctx)
+		if err != nil {
+			return fmt.Errorf("等待前门共享连接结束失败：%w", err)
+		}
+		defer unlock()
+		if loaded {
+			if err := door.WaitForOrphans(ctx); err != nil {
+				return fmt.Errorf("旧共享 Codex 实例尚未退出，无法安全恢复 Homebrew：%w", err)
+			}
+		}
+		if err := door.StopIdleBackend(ctx); err != nil {
+			return fmt.Errorf("前门仍有活动服务，无法安全恢复 Homebrew：%w", err)
+		}
+	}
+	if loaded {
 		if err := codexFrontBootout(install.Label); err != nil {
 			return err
 		}
@@ -287,7 +367,11 @@ func runCodexFrontUninstall(args []string, stdout io.Writer) error {
 	if info, err := os.Lstat(install.Socket); err == nil && info.Mode()&os.ModeSocket != 0 && !codexFrontSocketListening(install.Socket) {
 		_ = os.Remove(install.Socket)
 	}
-	fmt.Fprintln(stdout, "前门已卸载；后端 Codex 保持运行，直到它自行退出或被修复流程释放。")
+	if *stopIdleBackend {
+		fmt.Fprintln(stdout, "前门已卸载；空闲私有 Codex backend 已安全退出。")
+	} else {
+		fmt.Fprintln(stdout, "前门已卸载；后端 Codex 保持运行，直到它自行退出或被修复流程释放。")
+	}
 	return nil
 }
 
@@ -370,7 +454,28 @@ func codexFrontProgramArguments(executable string, direct bool, configPath, logF
 	return []string{executable, "codex-front", "serve", "--config", config.ExpandPath(configPath), "--log-file", logFile}, nil
 }
 
-func renderCodexFrontPlist(label string, programArgs []string, socket string) []byte {
+func codexFrontExecutableRevision(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("读取前门二进制失败：%w", err)
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", fmt.Errorf("计算前门二进制摘要失败：%w", err)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func codexFrontPlistSocket(path string) (string, error) {
+	output, err := exec.Command("/usr/bin/plutil", "-extract", "Sockets.Listeners.SockPathName", "raw", "-o", "-", path).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func renderCodexFrontPlist(label string, programArgs []string, socket, revision string) []byte {
 	escape := func(value string) string {
 		var buffer bytes.Buffer
 		_ = xml.EscapeText(&buffer, []byte(value))
@@ -391,7 +496,8 @@ func renderCodexFrontPlist(label string, programArgs []string, socket string) []
 	b.WriteString("\t\t\t<key>SockPathMode</key>\n\t\t\t<integer>384</integer>\n\t\t</dict>\n\t</dict>\n")
 	b.WriteString("\t<key>inetdCompatibility</key>\n\t<dict>\n\t\t<key>Wait</key>\n\t\t<true/>\n\t</dict>\n")
 	b.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
-	fmt.Fprintf(&b, "\t\t<key>PATH</key>\n\t\t<string>%s</string>\n\t</dict>\n", codexFrontSupervisorPath)
+	fmt.Fprintf(&b, "\t\t<key>PATH</key>\n\t\t<string>%s</string>\n", codexFrontSupervisorPath)
+	fmt.Fprintf(&b, "\t\t<key>MIMI_CODEX_FRONT_REVISION</key>\n\t\t<string>%s</string>\n\t</dict>\n", escape(revision))
 	b.WriteString("\t<key>AssociatedBundleIdentifiers</key>\n\t<array>\n\t\t<string>com.gaixianggeng.mimi.mac</string>\n\t</array>\n")
 	b.WriteString("\t<key>LimitLoadToSessionType</key>\n\t<string>Aqua</string>\n")
 	b.WriteString("\t<key>ProcessType</key>\n\t<string>Interactive</string>\n")

@@ -402,6 +402,10 @@ func dialSharedLocalRepairConnection(
 	if err != nil {
 		return nil, err
 	}
+	return dialSharedLocalRepairTransport(ctx, transport)
+}
+
+func dialSharedLocalRepairTransport(ctx context.Context, transport *SharedLocalTransport) (sharedLocalRepairConnection, error) {
 	dialer, err := transport.rawWebSocketDialer(4 * time.Second)
 	if err != nil {
 		return nil, err
