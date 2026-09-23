@@ -281,11 +281,11 @@ final class ThemeStoreTests: XCTestCase {
         // 列表标题：深色照 Notion 侧栏用浅灰，浅色与正文同色。
         assertRGB(rgba(darkTokens.listTitleText), red: 190, green: 189, blue: 187)
         assertRGB(rgba(lightTokens.listTitleText), red: 46, green: 44, blue: 42)
-        // 色相只出现在用量图表；图上最强一档在深浅卡面上都保持清楚的对比。
-        assertRGB(rgba(lightTokens.tokenActivityAccent), red: 49, green: 114, blue: 142)
-        assertRGB(rgba(darkTokens.tokenActivityAccent), red: 112, green: 176, blue: 200)
-        assertRGB(rgba(lightTokens.sessionUnreadAccent), red: 49, green: 114, blue: 142)
-        assertRGB(rgba(darkTokens.sessionUnreadAccent), red: 112, green: 176, blue: 200)
+        // 用量图表与未读点共用低亮度灰紫；图上最强一档在深浅卡面上保持清楚的对比。
+        assertRGB(rgba(lightTokens.tokenActivityAccent), red: 124, green: 107, blue: 158)
+        assertRGB(rgba(darkTokens.tokenActivityAccent), red: 119, green: 113, blue: 127)
+        assertRGB(rgba(lightTokens.sessionUnreadAccent), red: 124, green: 107, blue: 158)
+        assertRGB(rgba(darkTokens.sessionUnreadAccent), red: 119, green: 113, blue: 127)
         assertRGB(rgba(lightTokens.tokenActivityAxisText), red: 106, green: 105, blue: 102)
         // 默认深色照 Notion AI 圆钮：主操作与强调色同为无色相浅灰，配黑色前景。
         let darkPrimaryAction = rgba(darkTokens.primaryAction)

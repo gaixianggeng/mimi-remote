@@ -299,19 +299,20 @@ extension ThemeTokens {
         return Color(red: 190.0 / 255.0, green: 189.0 / 255.0, blue: 187.0 / 255.0)
     }
 
-    /// 使用量图表需要靠色阶读出强弱；小面积借用 Codex 圆环的冷蓝色相。
+    /// 使用量图表与未读提示共用原默认主题里的灰紫色相，保持小面积主题识别。
     /// 页面与普通操作仍保持中性，避免把“有用量”误读成成功状态。
     var tokenActivityAccent: Color {
         guard preset == .codex else { return accent }
         switch resolvedScheme {
         case .light:
-            return Color(red: 49.0 / 255.0, green: 114.0 / 255.0, blue: 142.0 / 255.0)
+            return Color(red: 124.0 / 255.0, green: 107.0 / 255.0, blue: 158.0 / 255.0)
         case .dark:
-            return Color(red: 112.0 / 255.0, green: 176.0 / 255.0, blue: 200.0 / 255.0)
+            // 与浅色保持相近明度和对比度，只压低彩度，避免暗色列表出现亮色跳点。
+            return Color(red: 119.0 / 255.0, green: 113.0 / 255.0, blue: 127.0 / 255.0)
         }
     }
 
-    /// 未读是“有新结果”，不是“执行成功”；沿用用量图表的小面积冷蓝，避免绿色状态环抢标题。
+    /// 未读是“有新结果”，不是“执行成功”；与用量图表共用一档低亮度主题色。
     var sessionUnreadAccent: Color { tokenActivityAccent }
 
     /// 浅色卡片里的月份和重置时间很小，取更深一档暖灰，保留可读性。
@@ -498,7 +499,7 @@ extension ThemeTokens {
 
     /// 会话侧滑动作使用独立语义色，而不是在视图里硬编码系统橙/蓝。
     /// 这些颜色都以白色图标和文案为前景，并分别为浅色、深色外观校准对比度。
-    /// 默认主题不带紫色：置顶/取消置顶退成两档中性灰，白字都在 4.5:1 以上。
+    /// 默认主题的置顶/取消置顶动作使用两档中性灰，白字都在 4.5:1 以上。
     var sessionPinActionTint: Color {
         switch (preset, resolvedScheme) {
         case (.codex, .light):
@@ -840,7 +841,7 @@ final class ThemeStore: ObservableObject {
     private var codexLightTokens: ThemeTokens {
         // 取自 Notion iOS 浅色截图：页面 #FAF8F6、未选中胶囊 #F0EEED、选中胶囊 #ECEAE8、
         // 正文 #2E2C2A，次级文字与图标是 Notion 的暖灰 #787774 / #9B9A97。
-        // 与深色同一原则：主操作是正文墨色配白字，冷蓝只用于用量图表。
+        // 与深色同一原则：主操作是正文墨色配白字，灰紫只用于小面积状态与用量图表。
         // 代码块也照 Notion 用浅底深字，不再在浅色页面里嵌一块深色分区。
         ThemeTokens(
             preset: .codex,
@@ -874,7 +875,7 @@ final class ThemeStore: ObservableObject {
     private var codexDarkTokens: ThemeTokens {
         // 取自 Notion iOS 深色截图的逐像素色值：页面 #1F1F1F、未选中胶囊 #2B2B29、
         // 选中胶囊 #373735、标题 #EFEFED、次级文字 #ABAAA6、AI 圆钮 #D3D3D3。
-        // 整套没有彩色强调色，文字和胶囊带 Notion 原有的极轻暖灰；只有成功/警告保留语义色。
+        // 大面积操作保持中性，文字和胶囊带 Notion 原有的极轻暖灰；小面积状态留给灰紫。
         //
         // 三处按对比度门槛偏离了截图：
         // - 输入框/浮层取 #323232（Notion 的圆形按钮底），不取 #3D3D3D 的悬浮输入条，

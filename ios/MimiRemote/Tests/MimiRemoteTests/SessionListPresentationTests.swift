@@ -1176,7 +1176,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
 
             assertSnapshot(
                 of: view,
-                // 未读点很小，需提高像素门槛才能锁住实心冷蓝点和标题字重。
+                // 快照覆盖未读点位置与标题字重；精确色值由 ThemeStoreTests 断言。
                 as: .image(precision: 0.995, layout: .fixed(width: 460, height: 330)),
                 named: appearance.name
             )
@@ -1205,7 +1205,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
             project: project,
             title: "已完成但尚未阅读",
             status: SessionStatus.completed.rawValue,
-            preview: "冷蓝小点与较粗标题表示结果未读",
+            preview: "灰紫小点与较粗标题表示结果未读",
             recencyAt: fixedNow.addingTimeInterval(-60)
         )
         let readHistory = makeSession(

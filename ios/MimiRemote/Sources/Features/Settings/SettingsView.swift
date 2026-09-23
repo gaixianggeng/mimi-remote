@@ -900,7 +900,7 @@ struct AccountTokenUsageCard: View {
                         .fill(tokens.tertiaryText.opacity(0.18))
 
                     Capsule()
-                        // 单窗口没有三环的颜色编码要对应，用点格图的冷蓝色保持一套配色；
+                        // 单窗口没有三环的颜色编码要对应，用点格图的灰紫色保持一套配色；
                         // item.tint 那套青/粉/紫只在多环并列、需要靠颜色区分窗口时才有意义。
                         .fill(tokens.tokenActivityAccent)
                         .frame(width: max(proxy.size.width * progress, progress > 0 ? 6 : 0))
