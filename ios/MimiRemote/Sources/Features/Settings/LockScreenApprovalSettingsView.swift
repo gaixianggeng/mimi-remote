@@ -63,7 +63,8 @@ struct LockScreenApprovalSettingsView: View {
                         Text(appStore.connectionProfiles.first { $0.id == profileID }?.displayName
                              ?? L10n.text("ui.push_previous_computer"))
                     }
-                    if profileID != appStore.activeConnectionProfileID {
+                    // 关闭未完成时只能重试注销；换绑会隐式重新开启用户已关闭的通知。
+                    if store.notificationsEnabled, profileID != appStore.activeConnectionProfileID {
                         Button(L10n.text("ui.push_rebind_to_this_computer")) {
                             showsRebindConfirmation = true
                         }
@@ -173,6 +174,8 @@ struct LockScreenApprovalSettingsView: View {
         } else {
             previousClient = nil
         }
+        // 查询旧电脑期间，另一窗口可能已关闭通知；迟到的换绑不能改写这个选择。
+        guard store.notificationsEnabled else { return }
         // 只有明确换绑且旧电脑不可用时，才直接撤销旧服务凭据。
         let takeOver = rebind && (previousClient == nil || store.status == .previousHostUnavailable)
         await store.enable(
