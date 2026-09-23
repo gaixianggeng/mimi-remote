@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -403,7 +402,7 @@ func dialSharedLocalRepairConnection(
 	if err != nil {
 		return nil, err
 	}
-	dialer, err := transport.WebSocketDialer(4 * time.Second)
+	dialer, err := transport.rawWebSocketDialer(4 * time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -429,32 +428,7 @@ func (c *websocketSharedLocalRepairConnection) Initialize(ctx context.Context) e
 }
 
 func (c *websocketSharedLocalRepairConnection) PeerIdentity() (int, uint32, error) {
-	underlying := c.conn.UnderlyingConn()
-	syscallConn, ok := underlying.(syscall.Conn)
-	if !ok {
-		return 0, 0, errors.New("Unix connection 不支持原生 peer 校验")
-	}
-	raw, err := syscallConn.SyscallConn()
-	if err != nil {
-		return 0, 0, err
-	}
-	var pid int
-	var uid uint32
-	var socketErr error
-	if err := raw.Control(func(fd uintptr) {
-		pid, socketErr = unix.GetsockoptInt(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERPID)
-		if socketErr != nil {
-			return
-		}
-		var cred *unix.Xucred
-		cred, socketErr = unix.GetsockoptXucred(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
-		if socketErr == nil {
-			uid = cred.Uid
-		}
-	}); err != nil {
-		return 0, 0, err
-	}
-	return pid, uid, socketErr
+	return sharedLocalPeerIdentity(c.conn.UnderlyingConn())
 }
 
 func (c *websocketSharedLocalRepairConnection) ValidateSession(ctx context.Context) error {

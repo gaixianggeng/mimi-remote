@@ -57,6 +57,7 @@ mcpServer/resource/read
 mcpServer/tool/call
 mcpServerStatus/list
 memory/reset
+memory/status
 mock/experimentalMethod
 model/list
 modelProvider/capabilities/read
@@ -65,6 +66,7 @@ plugin/install
 plugin/installed
 plugin/list
 plugin/read
+plugin/reconcile
 plugin/search
 plugin/share/checkout
 plugin/share/delete
@@ -98,6 +100,9 @@ skills/extraRoots/set
 skills/list
 thread/approveGuardianDeniedAction
 thread/archive
+thread/attachment/add
+thread/attachment/list
+thread/attachment/remove
 thread/backgroundTerminals/clean
 thread/backgroundTerminals/list
 thread/backgroundTerminals/terminate
@@ -150,5 +155,10 @@ turn/interrupt
 turn/settings/update
 turn/start
 turn/steer
+userVerification/cancel
+userVerification/delete
+userVerification/enroll
+userVerification/status
+userVerification/verify
 windowsSandbox/readiness
 windowsSandbox/setupStart

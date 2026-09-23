@@ -19,6 +19,10 @@ type agentAppServerRuntime struct {
 }
 
 func prepareAgentAppServerRuntime(cfg config.Config) (*agentAppServerRuntime, error) {
+	return prepareAgentAppServerRuntimeWithFrontDoor(cfg, false)
+}
+
+func prepareAgentAppServerRuntimeWithFrontDoor(cfg config.Config, frontDoorRequired bool) (*agentAppServerRuntime, error) {
 	result := &agentAppServerRuntime{}
 	if !cfg.Codex.IsEnabled() {
 		return result, nil
@@ -42,8 +46,9 @@ func prepareAgentAppServerRuntime(cfg config.Config) (*agentAppServerRuntime, er
 		result.routerOptions.AppServerSSH = transport
 	case "local":
 		transport, err := appserver.NewSharedLocalTransport(appserver.SharedLocalOptions{
-			CodexBin: cfg.Codex.Bin,
-			Env:      cfg.Codex.Env,
+			CodexBin:    cfg.Codex.Bin,
+			Env:         cfg.Codex.Env,
+			ConnectOnly: frontDoorRequired,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("初始化共享本机 App Server transport 失败：%w", err)
@@ -53,7 +58,11 @@ func prepareAgentAppServerRuntime(cfg config.Config) (*agentAppServerRuntime, er
 			return nil, err
 		}
 		if err := transport.EnsureReady(prepareCtx); err != nil {
-			return nil, err
+			// Codex 不可用只影响该运行时。保留 transport 供诊断与修复后重连，
+			// 每条业务连接仍由 transport 校验登录环境，不会绕过 Aqua 边界。
+			log.Printf("agentd shared local app-server unavailable: %v", err)
+			result.routerOptions.AppServerSSH = transport
+			return result, nil
 		}
 		log.Printf("agentd shared local app-server socket=%s codex_version=%s", transport.SocketPath(), localVersion)
 		result.routerOptions.AppServerSSH = transport

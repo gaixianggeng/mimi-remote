@@ -500,6 +500,10 @@ func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountSt
 		_ = response.Body.Close()
 	}
 	if err != nil {
+		var sessionErr *appserver.SharedLocalSessionError
+		if errors.As(err, &sessionErr) {
+			status.Reason = "shared_local_session_unavailable"
+		}
 		return status
 	}
 	defer conn.Close()
