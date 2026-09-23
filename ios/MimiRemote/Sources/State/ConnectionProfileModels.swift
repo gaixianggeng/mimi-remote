@@ -151,6 +151,11 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
     var endpoint: String
     var tailscaleDNSName: String?
     var tailscaleDeviceName: String?
+    /// 宿主设备名（macOS 优先系统「电脑名称」，否则主机名）。
+    ///
+    /// 与路由无关：Tailcat 与局域网宿主没有 Tailscale 名称，它是这些档案默认显示名的唯一来源。
+    /// 它只是展示元数据，不参与身份、路由或凭据判断。
+    var hostDeviceName: String?
     var isDisplayNameCustomized: Bool
     var lastSuccessfulAt: Date?
     var installationID: String?
@@ -164,6 +169,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         case endpoint
         case tailscaleDNSName
         case tailscaleDeviceName
+        case hostDeviceName
         case isDisplayNameCustomized
         case lastSuccessfulAt
         case installationID
@@ -178,6 +184,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         endpoint: String,
         tailscaleDNSName: String? = nil,
         tailscaleDeviceName: String? = nil,
+        hostDeviceName: String? = nil,
         isDisplayNameCustomized: Bool? = nil,
         lastSuccessfulAt: Date?,
         installationID: String? = nil,
@@ -196,16 +203,21 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
                 dnsName: normalizedDNSName
             )
             : nil
+        // 设备名不属于路由元数据：Tailcat 与局域网档案同样需要它作为默认显示名。
+        let normalizedHostDeviceName = Self.normalizedHostDeviceName(hostDeviceName)
         let trimmedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         let inferredCustomization = !trimmedDisplayName.isEmpty &&
             trimmedDisplayName != Self.fallbackDisplayName(endpoint: endpoint)
         self.isDisplayNameCustomized = isDisplayNameCustomized ?? inferredCustomization
         self.displayName = self.isDisplayNameCustomized
             ? trimmedDisplayName
-            : (normalizedDeviceName ?? Self.fallbackDisplayName(endpoint: endpoint))
+            : (normalizedHostDeviceName
+                ?? normalizedDeviceName
+                ?? Self.fallbackDisplayName(endpoint: endpoint))
         self.endpoint = endpoint
         self.tailscaleDNSName = normalizedDNSName
         self.tailscaleDeviceName = normalizedDeviceName
+        self.hostDeviceName = normalizedHostDeviceName
         self.lastSuccessfulAt = lastSuccessfulAt
         self.installationID = installationID
         self.hostPlatform = hostPlatform
@@ -234,6 +246,10 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
                 dnsName: tailscaleDNSName
             )
             : nil
+        // 旧档案没有设备名字段：缺失时保持 nil，显示名继续按地址回退。
+        hostDeviceName = Self.normalizedHostDeviceName(
+            try container.decodeIfPresent(String.self, forKey: .hostDeviceName)
+        )
         let trimmedDisplayName = decodedDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
         isDisplayNameCustomized = try container.decodeIfPresent(
             Bool.self,
@@ -244,7 +260,9 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         )
         displayName = isDisplayNameCustomized
             ? trimmedDisplayName
-            : (tailscaleDeviceName ?? Self.fallbackDisplayName(endpoint: endpoint))
+            : (hostDeviceName
+                ?? tailscaleDeviceName
+                ?? Self.fallbackDisplayName(endpoint: endpoint))
         lastSuccessfulAt = try container.decodeIfPresent(Date.self, forKey: .lastSuccessfulAt)
         installationID = try container.decodeIfPresent(String.self, forKey: .installationID)
         hostPlatform = try container.decodeIfPresent(HostPlatform.self, forKey: .hostPlatform) ?? .unknown
@@ -324,6 +342,17 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         return value
     }
 
+    /// 宿主设备名只做长度与控制字符校验：它来自宿主系统设置，不参与路由推导，
+    /// 因此不像 MagicDNS 名称那样需要后缀与字符集约束。
+    static func normalizedHostDeviceName(_ raw: String?) -> String? {
+        let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value, !value.isEmpty, value.count <= 63,
+              !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            return nil
+        }
+        return value
+    }
+
     static func isTailscaleIPEndpoint(_ endpoint: String) -> Bool {
         guard let host = URLComponents(string: endpoint)?.host?
             .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
@@ -351,6 +380,43 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
             return L10n.text("ui.this_mac")
         }
         return host
+    }
+
+    /// 合并本次验证与已存档案的 Tailscale 元数据；本次结果优先，缺失时保留旧值。
+    static func resolvedTailscaleMetadata(
+        prepared: PreparedConnectionSettings,
+        existing: ConnectionProfile
+    ) -> (dnsName: String?, deviceName: String?) {
+        let dnsName = prepared.tailscaleDNSName ?? existing.tailscaleDNSName
+        let deviceName = normalizedTailscaleDeviceName(
+            prepared.tailscaleDeviceName ?? existing.tailscaleDeviceName,
+            dnsName: dnsName
+        )
+        return (dnsName, deviceName)
+    }
+
+    /// 未自定义名字时的自动显示名：宿主设备名优先，其次 Tailscale 设备名，最后退回地址。
+    ///
+    /// 用户填写的名字（且不是地址占位）与已经自定义过的档案始终优先，不被自动刷新覆盖。
+    static func resolvedDisplay(
+        existing: ConnectionProfile?,
+        requested: String?,
+        endpoint: String,
+        hostDeviceName: String?,
+        tailscaleDeviceName: String?
+    ) -> (name: String, customized: Bool) {
+        if let existing, existing.isDisplayNameCustomized {
+            return (existing.displayName, true)
+        }
+        let fallback = fallbackDisplayName(endpoint: endpoint)
+        let normalizedRequested = requested?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !normalizedRequested.isEmpty, normalizedRequested != fallback {
+            return (normalizedRequested, true)
+        }
+        let automaticName = normalizedHostDeviceName(hostDeviceName)
+            ?? tailscaleDeviceName
+            ?? fallback
+        return (automaticName, false)
     }
 }
 
@@ -608,6 +674,9 @@ struct PreparedConnectionSettings: Equatable {
     let installationID: String?
     let tailscaleDNSName: String?
     let tailscaleDeviceName: String?
+    /// 宿主设备名。与 Tailscale 元数据不同，它不按路由过滤：Tailcat 与局域网宿主
+    /// 也必须能把它写进档案，作为未自定义名字时的默认显示名。
+    let hostDeviceName: String?
     let hostPlatform: HostPlatform
     let hostContext: PreparedHostContext?
     let capabilityNegotiation: HostCapabilityNegotiation
@@ -622,6 +691,7 @@ struct PreparedConnectionSettings: Equatable {
         installationID: String? = nil,
         tailscaleDNSName: String? = nil,
         tailscaleDeviceName: String? = nil,
+        hostDeviceName: String? = nil,
         hostPlatform: HostPlatform = .unknown,
         hostContext: PreparedHostContext? = nil,
         capabilityNegotiation: HostCapabilityNegotiation = .notNegotiated
@@ -645,6 +715,7 @@ struct PreparedConnectionSettings: Equatable {
                 dnsName: self.tailscaleDNSName
             )
             : nil
+        self.hostDeviceName = ConnectionProfile.normalizedHostDeviceName(hostDeviceName)
         self.hostPlatform = hostPlatform
         self.hostContext = hostContext
         self.capabilityNegotiation = capabilityNegotiation
@@ -660,6 +731,7 @@ struct PreparedConnectionSettings: Equatable {
             lhs.installationID == rhs.installationID &&
             lhs.tailscaleDNSName == rhs.tailscaleDNSName &&
             lhs.tailscaleDeviceName == rhs.tailscaleDeviceName &&
+            lhs.hostDeviceName == rhs.hostDeviceName &&
             lhs.hostPlatform == rhs.hostPlatform &&
             lhs.hostContext === rhs.hostContext &&
             lhs.capabilityNegotiation == rhs.capabilityNegotiation

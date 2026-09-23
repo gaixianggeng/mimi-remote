@@ -62,6 +62,7 @@ extension AppStore {
             installationID: routed.installationID,
             tailscaleDNSName: routed.tailscaleDNSName,
             tailscaleDeviceName: routed.tailscaleDeviceName,
+            hostDeviceName: routed.hostDeviceName,
             hostPlatform: routed.hostPlatform,
             hostContext: routed.hostContext,
             capabilityNegotiation: routed.capabilityNegotiation

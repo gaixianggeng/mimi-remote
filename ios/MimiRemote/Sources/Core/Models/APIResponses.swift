@@ -41,6 +41,9 @@ struct VersionResponse: Codable {
     let installationID: String?
     let tailscaleDNSName: String?
     let tailscaleDeviceName: String?
+    /// 宿主设备名（macOS 优先系统「电脑名称」）。纯加法字段：旧 agentd 缺失时为 nil，
+    /// 客户端保持原有按地址回退的默认名。
+    let deviceName: String?
     let protocolRevision: Int
     let minimumClientProtocolRevision: Int
     let platform: String?
@@ -53,6 +56,7 @@ struct VersionResponse: Codable {
         installationID: String? = nil,
         tailscaleDNSName: String? = nil,
         tailscaleDeviceName: String? = nil,
+        deviceName: String? = nil,
         protocolRevision: Int = MimiProtocolContract.currentRevision,
         minimumClientProtocolRevision: Int = MimiProtocolContract.minimumSupportedClientRevision,
         platform: String? = nil,
@@ -67,6 +71,7 @@ struct VersionResponse: Codable {
             tailscaleDeviceName,
             dnsName: self.tailscaleDNSName
         )
+        self.deviceName = ConnectionProfile.normalizedHostDeviceName(deviceName)
         self.protocolRevision = protocolRevision
         self.minimumClientProtocolRevision = minimumClientProtocolRevision
         self.platform = platform
@@ -80,6 +85,7 @@ struct VersionResponse: Codable {
         case installationID = "installation_id"
         case tailscaleDNSName = "tailscale_dns_name"
         case tailscaleDeviceName = "tailscale_device_name"
+        case deviceName = "device_name"
         case protocolRevision = "protocol_revision"
         case minimumClientProtocolRevision = "minimum_client_protocol_revision"
         case platform
@@ -98,6 +104,9 @@ struct VersionResponse: Codable {
         self.tailscaleDeviceName = ConnectionProfile.normalizedTailscaleDeviceName(
             try container.decodeIfPresent(String.self, forKey: .tailscaleDeviceName),
             dnsName: self.tailscaleDNSName
+        )
+        self.deviceName = ConnectionProfile.normalizedHostDeviceName(
+            try container.decodeIfPresent(String.self, forKey: .deviceName)
         )
         // revision 1 的旧 agentd 没有版本化字段。按明确记录的上一版窗口解码，
         // 再由 requireCompatible() 判断；不能因纯加法字段缺失让整条连接直接解析失败。

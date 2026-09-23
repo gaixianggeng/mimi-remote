@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
@@ -90,6 +91,37 @@ func TestVersionResponseOptionallyAdvertisesCurrentMagicDNSMetadata(t *testing.T
 	if response.TailscaleDNSName != "studio-mac.tailnet.ts.net" ||
 		response.TailscaleDeviceName != "studio-mac" {
 		t.Fatalf("version 未宣告当前 Tailscale 名称：%+v", response)
+	}
+}
+
+func TestVersionResponseOptionallyAdvertisesHostDeviceName(t *testing.T) {
+	server := newTestServer(t)
+	server.router.hostDeviceNameLookup = func(context.Context) string { return "工作室的 Mac Studio" }
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("version 请求失败：status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response protocolcontract.VersionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.DeviceName != "工作室的 Mac Studio" {
+		t.Fatalf("version 未宣告宿主设备名：%+v", response)
+	}
+}
+
+// 读取不到设备名时字段必须省略，客户端据此继续按地址回退，而不是显示空名字。
+func TestVersionResponseOmitsUnavailableHostDeviceName(t *testing.T) {
+	server := newTestServer(t)
+	server.router.hostDeviceNameLookup = func(context.Context) string { return "   " }
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("version 请求失败：status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "device_name") {
+		t.Fatalf("空设备名不应出现在线协议里：%s", rec.Body.String())
 	}
 }
 
