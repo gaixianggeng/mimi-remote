@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"github.com/gorilla/websocket"
 )
 
@@ -213,6 +214,7 @@ type relayFrameMeta struct {
 	ID         string
 	Method     string
 	IsResponse bool
+	IsError    bool
 }
 
 type relayGatewayTermination struct {
@@ -344,6 +346,7 @@ func (m *relayMonitor) recordHTTP(sample relayHTTPSample) {
 }
 
 func (m *relayMonitor) recordGatewayDialFailure(duration time.Duration, err error) {
+	diagnosticlog.Record("gateway_connect", "failed", diagnosticlog.Fields{Duration: duration})
 	if m == nil {
 		return
 	}
@@ -391,6 +394,7 @@ func (m *relayMonitor) startGatewayConnection(remote string, host string, upstre
 		m.gateway.UpstreamDialMillisMax = dialMillis
 	}
 	m.active[id] = stats
+	diagnosticlog.Record("gateway_connect", "succeeded", diagnosticlog.Fields{Reference: diagnosticlog.Reference(id), Duration: dialDuration})
 	return &relayGatewayConnMonitor{parent: m, id: id}
 }
 
@@ -410,6 +414,11 @@ func (m *relayMonitor) finishGatewayConnection(id string, reason string) {
 	}
 	now := time.Now().UTC()
 	termination := relayGatewayTerminationFromReason(reason)
+	outcome := "stopped"
+	if termination.Kind != "normal_close" && termination.Kind != "canceled" && termination.Kind != "none" {
+		outcome = "failed"
+	}
+	diagnosticlog.Record("gateway_disconnect", outcome, diagnosticlog.Fields{Reference: diagnosticlog.Reference(id), Duration: now.Sub(stats.StartedAt)})
 	stats.EndedAt = &now
 	stats.DurationMillis = now.Sub(stats.StartedAt).Milliseconds()
 	stats.CloseStage = termination.Stage
@@ -481,6 +490,7 @@ func (m *relayMonitor) beginGatewayRPC(connectionID string, requestID string, me
 		SentAt:       now,
 		RequestBytes: requestBytes,
 	}
+	diagnosticlog.Record("rpc_request", "sent", diagnosticlog.Fields{Operation: diagnosticlog.Operation(method), Reference: diagnosticlog.Reference(connectionID + ":" + requestID)})
 	stats.RPC.OutstandingRequests = int64(len(stats.pendingRPC))
 	m.gateway.RPC.OutstandingRequests = totalOutstandingRPC(m.active)
 	m.gateway.RPC.OutstandingMillisMax = maxOutstandingMillisAcross(m.active, now)
@@ -523,19 +533,25 @@ func (m *relayMonitor) recordGatewayForward(id string, direction string, payload
 		return
 	}
 	stats.LastUpstreamMethod = meta.Method
+	recordGatewayLifecycle(id, meta.Method, payload)
 	stats.LastUpstreamBytes = int64(payloadBytes)
 	if meta.ID != "" && meta.IsResponse {
-		m.completeGatewayRPC(stats, meta.ID, forwardedBytes, now)
+		m.completeGatewayRPC(stats, meta.ID, forwardedBytes, now, meta.IsError)
 	}
 }
 
-func (m *relayMonitor) completeGatewayRPC(stats *relayGatewayConnectionStats, id string, responseBytes int, now time.Time) {
+func (m *relayMonitor) completeGatewayRPC(stats *relayGatewayConnectionStats, id string, responseBytes int, now time.Time, failed bool) {
 	pending, ok := stats.pendingRPC[id]
 	if !ok {
 		return
 	}
 	delete(stats.pendingRPC, id)
 	latencyMillis := now.Sub(pending.SentAt).Milliseconds()
+	outcome := "succeeded"
+	if failed {
+		outcome = "failed"
+	}
+	diagnosticlog.Record("rpc_response", outcome, diagnosticlog.Fields{Operation: diagnosticlog.Operation(pending.Method), Reference: diagnosticlog.Reference(stats.ID + ":" + id), Duration: now.Sub(pending.SentAt)})
 	sample := relayGatewayRPCSample{
 		CompletedAt:    now,
 		Method:         pending.Method,
@@ -563,6 +579,7 @@ func (c *relayGatewayConnMonitor) recordPolicyError(direction string, payloadByt
 }
 
 func (m *relayMonitor) recordGatewayPolicyError(id string, direction string, payloadBytes int, policyDuration time.Duration) {
+	diagnosticlog.Record("policy", "failed", diagnosticlog.Fields{Reference: diagnosticlog.Reference(id), Duration: policyDuration})
 	policyMillis := policyDuration.Milliseconds()
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -599,7 +616,7 @@ func (m *relayMonitor) recordGatewayHistoryResponseBlocked(id string, payloadByt
 	m.gateway.HistoryResponsesBlocked++
 	m.gateway.HistoryResponseBytesBlocked += int64(payloadBytes)
 	if meta.ID != "" && meta.IsResponse {
-		m.completeGatewayRPC(stats, meta.ID, payloadBytes, now)
+		m.completeGatewayRPC(stats, meta.ID, payloadBytes, now, true)
 	}
 }
 
@@ -814,6 +831,7 @@ func relayFrameMetaFromPayload(payload []byte) relayFrameMeta {
 		return relayFrameMeta{}
 	}
 	meta := relayFrameMeta{Method: strings.TrimSpace(frame.Method)}
+	meta.IsError = len(frame.Error) > 0 && string(frame.Error) != "null"
 	if frame.ID != nil {
 		meta.ID = string(*frame.ID)
 	}

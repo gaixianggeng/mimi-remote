@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
+	"github.com/tailscale/tailcat"
+	"tailscale.com/tailcfg"
 )
 
 const (
@@ -127,6 +129,7 @@ func (m *Manager) StartPairing(ttl time.Duration) (Status, error) {
 		AddressPath:     pairAddress,
 		AllowAllClients: true,
 		DERPMapURL:      m.config.DERPMapURL,
+		Region:          m.pairRegionLocked(),
 	})
 	if err != nil {
 		return Status{}, fmt.Errorf("启动短期 Tailcat 配对服务：%w", err)
@@ -137,6 +140,20 @@ func (m *Manager) StartPairing(ttl time.Duration) (Status, error) {
 	generation := m.pairGeneration
 	m.schedulePairExpiryLocked(generation, ttl)
 	return m.statusLocked(), nil
+}
+
+// 配对节点与稳定节点使用同一个引导中继，避免每次生成二维码都重新运行
+// DERP 延迟探测。只复用公开路由信息；临时身份仍在每次 StartPairing 时轮换。
+// 地址未内嵌中继时返回 nil，让 StartHost 沿用配置的中继发现路径。
+func (m *Manager) pairRegionLocked() *tailcfg.DERPRegion {
+	if m.host == nil {
+		return nil
+	}
+	info, err := tailcat.ParseAddr(tailcat.Addr(m.host.Address()))
+	if err != nil || len(info.Region) != 1 || len(info.Region[0].Nodes) == 0 {
+		return nil
+	}
+	return info.Region[0]
 }
 
 func (m *Manager) AllowClient(rawKey string) (Status, error) {

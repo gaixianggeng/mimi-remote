@@ -26,6 +26,7 @@ type linuxTrayApplication struct {
 	state      linuxTraySnapshot
 	operation  chan struct{}
 	cancel     context.CancelFunc
+	pairTimer  *time.Timer
 }
 
 func main() {
@@ -36,6 +37,7 @@ func main() {
 	fs := flag.NewFlagSet("mimi-remote-tray", flag.ExitOnError)
 	agent := fs.String("agent", "", "agentd 的绝对路径（默认与托盘二进制同目录）")
 	show := fs.Bool("show", false, "在终端中打开管理界面")
+	inlineQR := fs.Bool("inline-qr", false, "在已适配的桌面托盘菜单中展开二维码")
 	terminal := fs.String("terminal", "", "在当前终端中打开指定管理页面")
 	quit := fs.Bool("quit", false, "退出现有托盘实例，保持 agentd 运行")
 	_ = fs.Parse(os.Args[1:])
@@ -46,12 +48,12 @@ func main() {
 		}
 		return
 	}
-	if err := runLinuxTray(*agent, *show, *quit); err != nil {
+	if err := runLinuxTray(*agent, *show, *quit, *inlineQR); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
-func runLinuxTray(agent string, show, quit bool) error {
+func runLinuxTray(agent string, show, quit bool, inlineQR ...bool) error {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		if quit {
@@ -82,6 +84,8 @@ func runLinuxTray(agent string, show, quit bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	app := &linuxTrayApplication{ctx: ctx, cancel: cancel, controller: controller, operation: make(chan struct{}, 1)}
+	app.state.InlineQR = len(inlineQR) > 0 && inlineQR[0]
+	defer app.clearMenuPair()
 	notifier, err := newLinuxNotifier(conn, app.dispatch, app.showTerminal, cancel)
 	if err != nil {
 		return err
@@ -158,6 +162,10 @@ func (a *linuxTrayApplication) readStatus(manual bool) error {
 	return err
 }
 func (a *linuxTrayApplication) dispatch(action string) {
+	if a.snapshot().InlineQR && (strings.HasPrefix(action, "pair-") || action == "refresh-pair") {
+		a.toggleMenuPair(action)
+		return
+	}
 	switch action {
 	case "quit":
 		a.cancel()
@@ -168,7 +176,7 @@ func (a *linuxTrayApplication) dispatch(action string) {
 			a.showTerminal("status")
 		}
 	default:
-		a.showTerminal(action)
+		a.showTerminal(linuxTerminalPairAction(action))
 	}
 }
 func copyLinuxEndpoint(ctx context.Context, endpoint string) error {
@@ -202,7 +210,9 @@ func (a *linuxTrayApplication) perform(action string) (string, *linuxPairingInfo
 		return "", nil, errors.New("正在执行其他操作，请稍后重试")
 	}
 	allowed := false
-	for _, item := range flattenLinuxMenu(linuxMenuItems(a.snapshot())) {
+	state := a.snapshot()
+	state.PairMenu = nil // A visible collapse button is not permission to create a ticket.
+	for _, item := range flattenLinuxMenu(linuxMenuItems(state)) {
 		if item.Action == action && item.Enabled {
 			allowed = true
 		}

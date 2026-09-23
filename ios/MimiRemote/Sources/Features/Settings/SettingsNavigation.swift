@@ -10,6 +10,7 @@ enum SettingsDestination: Hashable {
     case defaultPermissions
     case lockScreenApproval
     case diagnostics
+    case appDiagnostics
     case doctor
     case support
     case advanced
@@ -153,6 +154,8 @@ struct SettingsDestinationView: View {
             LockScreenApprovalSettingsView()
         case .diagnostics:
             DiagnosticsAndSupportSettingsView(showsHistoryDiagnostics: developerModeEnabled)
+        case .appDiagnostics:
+            AppDiagnosticsSettingsView()
         case .doctor:
             DoctorView(showsHistoryDiagnostics: developerModeEnabled)
         case .support:

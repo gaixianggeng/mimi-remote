@@ -865,6 +865,8 @@ extension SessionStore {
         restartFromFirst: Bool = true,
         runtimeProvider: String? = nil
     ) async throws {
+        let diagnosticStartedAt = Date()
+        AppDiagnostics.record(stage: .sessionList, result: .started)
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else { return }
 #endif
@@ -912,7 +914,18 @@ extension SessionStore {
                 restartsFromFirst: restartFromFirst,
                 requestLineage: result.requestLineage
             )
+            AppDiagnostics.record(
+                stage: .sessionList,
+                result: .succeeded,
+                durationMilliseconds: AppDiagnostics.elapsedMilliseconds(since: diagnosticStartedAt)
+            )
         } catch {
+            AppDiagnostics.record(
+                stage: .sessionList,
+                result: error is CancellationError ? .cancelled : .failed,
+                reason: error is CancellationError ? .unknown : .transport,
+                durationMilliseconds: AppDiagnostics.elapsedMilliseconds(since: diagnosticStartedAt)
+            )
             _ = terminateConnectionIfCredentialsInvalid(error)
             throw error
         }

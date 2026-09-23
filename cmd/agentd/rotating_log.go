@@ -3,8 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -128,20 +126,4 @@ func (w *rotatingLogWriter) Close() error {
 	err := w.file.Close()
 	w.file = nil
 	return err
-}
-
-func configureServeFileLogging(path string) (func(), error) {
-	if path == "" {
-		return nil, nil
-	}
-	writer, err := newRotatingLogWriter(path, defaultManagedLogMaxBytes)
-	if err != nil {
-		return nil, err
-	}
-	previous := log.Writer()
-	log.SetOutput(io.MultiWriter(previous, writer))
-	return func() {
-		log.SetOutput(previous)
-		_ = writer.Close()
-	}, nil
 }

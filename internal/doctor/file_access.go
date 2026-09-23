@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
@@ -75,6 +76,7 @@ func (c *Checker) StartFileAccessPreflight() {
 		for _, failure := range failures {
 			log.Printf("agentd startup file access preflight blocked path=%q error=%v", failure.path, failure.err)
 		}
+		diagnosticlog.Record("permissions", "failed", diagnosticlog.Fields{})
 	}()
 }
 
@@ -145,6 +147,7 @@ func (c *Checker) requestFileAccess(path string, home string, probe func(string)
 			Fix:     fileAccessPreflightFix(),
 		}
 		log.Printf("agentd on-demand file access probe blocked domain=%q error=%v", domain.name, err)
+		diagnosticlog.Record("permissions", "failed", diagnosticlog.Fields{})
 	}()
 	return domain.name, true
 }

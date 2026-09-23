@@ -21,6 +21,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/httpapi"
 	"github.com/gaixianggeng/mimi-remote/internal/networkaccess"
@@ -91,14 +92,18 @@ func run(args []string) error {
 		return runRuntime(args)
 	case "repair-codex-session":
 		return runCodexSessionRepair(args)
+	case "codex-front":
+		return runCodexFront(args)
 	case "doctor":
 		return runDoctor(args)
+	case "diagnostics":
+		return runDiagnostics(args)
 	case "check-config":
 		return runCheckConfig(args)
 	case "serve":
 		return runServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、runtime、repair-codex-session、serve、doctor、check-config、version", cmd)
+		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、runtime、repair-codex-session、codex-front、serve、doctor、diagnostics、check-config、version", cmd)
 	}
 }
 
@@ -150,11 +155,17 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func runServe(args []string) error {
+func runServe(args []string) (serveErr error) {
 	logFile := ""
 	managedService := false
+	loggingReady := false
+	defer func() {
+		if serveErr != nil && !loggingReady && logFile != "" {
+			recordDiagnosticStartupFailure(logFile)
+		}
+	}()
 	cfg, registry, checker, err := loadRuntimeConfig(args, false, func(fs *flag.FlagSet) {
-		fs.StringVar(&logFile, "log-file", "", "同时把服务日志写入指定文件")
+		fs.StringVar(&logFile, "log-file", "", "把有容量上限的诊断日志写入指定文件")
 		fs.BoolVar(&managedService, "managed-service", false, "由当前平台的用户级后台服务启动")
 	})
 	if err != nil {
@@ -172,14 +183,22 @@ func runServe(args []string) error {
 	if closeManagedRuntime != nil {
 		defer closeManagedRuntime()
 	}
-	closeLog, err := configureServeFileLogging(logFile)
+	diagnostics, closeLog, err := configureServeFileLogging(logFile)
 	if err != nil {
 		return err
 	}
 	if closeLog != nil {
 		defer closeLog()
 	}
-	return serve(cfg, registry, checker)
+	loggingReady = true
+	diagnosticlog.Record("service", "started", diagnosticlog.Fields{})
+	err = serve(cfg, registry, checker, diagnostics)
+	if err != nil {
+		diagnosticlog.Record("service", "failed", diagnosticlog.Fields{})
+	} else {
+		diagnosticlog.Record("service", "stopped", diagnosticlog.Fields{})
+	}
+	return err
 }
 
 func runUp(args []string) error {
@@ -1005,7 +1024,7 @@ func forceSetupWithBackup(ctx context.Context, configPath string) ([]string, err
 	return fixes, nil
 }
 
-func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Checker) error {
+func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Checker, diagnostics *managedDiagnosticLogs) error {
 	installationID, err := loadInstallationIDForServe()
 	if err != nil {
 		return err
@@ -1013,12 +1032,27 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	// 启动后第一时间探测配置目录和 macOS 受保护目录。探测异步执行，避免权限弹窗
 	// 尚未处理时阻塞 HTTP 控制面恢复；结果会进入 readyz/doctor warning 和服务日志。
 	checker.StartFileAccessPreflight()
-	appServerRuntime, err := prepareAgentAppServerRuntime(cfg)
+	frontDoorRequired, frontDoorErr := prepareMacAppCodexFront(cfg, checker.ConfigPath())
+	if frontDoorErr != nil {
+		// 旧 resident 或 launchd 故障不能拖垮诊断服务；同时禁止回退到
+		// agentd 直启标准 socket，以免再次产生 Desktop SSH 启动权竞争。
+		log.Printf("Mimi Codex front door unavailable: %v", frontDoorErr)
+	}
+	appServerRuntime, err := prepareAgentAppServerRuntimeWithFrontDoor(cfg, frontDoorRequired)
 	if err != nil {
 		return err
 	}
 	routerOptions := appServerRuntime.routerOptions
 	routerOptions.ConfigPath = checker.ConfigPath()
+	if diagnostics != nil {
+		routerOptions.DiagnosticLogs = diagnostics
+		token, err := diagnosticControlToken(checker.ConfigPath(), true)
+		if err != nil {
+			_ = appServerRuntime.shutdown()
+			return errors.New("无法准备本机诊断凭据")
+		}
+		routerOptions.DiagnosticControlToken = token
+	}
 	apiHandler, apiRouter := httpapi.NewRouterWithInstallationIDAndOptions(
 		cfg,
 		registry,
