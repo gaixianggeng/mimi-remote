@@ -51,6 +51,9 @@ final class ConnectionSettingsDraft: ObservableObject {
     @Published var token = ""
     @Published var didLoadInitialConnection = false
     @Published var pendingManualConnectionIntent: ConnectionQRCodeScanIntent?
+    /// 工作台横幅的「重新配对」要把用户直接带到扫码页，但扫码页由连接页持有并呈现：
+    /// 横幅只能先打开这一页，再把一次性的请求交给它消费（#554）。
+    @Published var pendingRepairRequest = false
     @Published var isSavingConnection = false
     @Published var isAddingConnectionProfile = false
     @Published var profileDisplayName = ""

@@ -270,6 +270,14 @@ struct InitialConnectionSettingsSections: View {
         .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + 12 }
         // 连接地址/Token 是高频编辑状态，放在这个小子树里，避免每次删字都重绘整个设置页。
         .onAppear(perform: loadInitialConnectionIfNeeded)
+        // 横幅的「重新配对」先打开这一页，再在这里消费那次一次性请求。
+        // 用 task 而不是 onAppear：扫码 Cover 的宿主是这一页，得等它进入层级后再呈现。
+        .task(id: draft.pendingRepairRequest) {
+            guard draft.pendingRepairRequest else { return }
+            draft.pendingRepairRequest = false
+            guard mode == .deviceHome else { return }
+            beginRepairingCurrentProfile()
+        }
         .onChange(of: appStore.activeConnectionProfileID) { _, _ in
             loadInitialConnectionIfNeeded()
         }
@@ -370,13 +378,7 @@ struct InitialConnectionSettingsSections: View {
                     .accessibilityIdentifier("settings.profile.copyNotice")
             }
 
-            if let message = displayErrorMessage {
-                Text(message)
-                    .foregroundStyle(tokens.warning)
-                    .font(themeStore.uiFont(size: 13))
-                    .settingsRow(.descriptive)
-                    .accessibilityIdentifier("settings.connection.error")
-            }
+            connectionErrorMessageRow(tokens: tokens)
 
             routeStatusRow(tokens: tokens)
             connectionMethodRows(tokens: tokens)
@@ -857,6 +859,12 @@ struct InitialConnectionSettingsSections: View {
             .padding(.bottom, 8)
             .listRowSeparator(.hidden)
 
+            // 扫码或粘贴失败时，错误紧贴在触发它的按钮下面。手动表单展开时改由表单自己渲染，
+            // 两处不会同时出现，也不会有第二条同标识的元素干扰既有 UI 测试。
+            if !isShowingAdvancedManualConnection {
+                connectionErrorMessageRow(tokens: tokens)
+            }
+
             if appStore.connectionProfiles.isEmpty {
                 // 新用户扫不到码通常是因为电脑端还没装，先把这一步说清楚。
                 Text(L10n.text("ui.install_guide_hint"))
@@ -914,6 +922,10 @@ struct InitialConnectionSettingsSections: View {
                 .buttonStyle(.borderedProminent)
                 .tint(tokens.primaryAction)
                 .disabled(!canSubmit)
+
+                // 提交失败时错误就出现在按钮下方：首启页没有「当前电脑」卡片，
+                // 不在这里渲染的话用户点完「连接」看到的是一次没有任何反馈的白屏。
+                connectionErrorMessageRow(tokens: tokens)
             }
             .padding(.vertical, 6)
         } label: {
@@ -1086,6 +1098,21 @@ struct InitialConnectionSettingsSections: View {
             return themeStore.tokens(for: colorScheme).warning
         case .idle:
             return .secondary
+        }
+    }
+
+    /// 连接失败时的可见错误行。设备首页挂在「当前电脑」卡片里，
+    /// 首启页没有那张卡片，必须自己渲染——否则手动连接或粘贴失败后页面毫无变化，
+    /// 用户只会反复点「连接」，或认定 App 坏了（#554）。
+    /// 首启页最多只渲染一处：手动表单展开时贴在提交按钮下方，收起时贴在扫码按钮下方。
+    @ViewBuilder
+    private func connectionErrorMessageRow(tokens: ThemeTokens) -> some View {
+        if let message = displayErrorMessage {
+            Text(message)
+                .foregroundStyle(tokens.warning)
+                .font(themeStore.uiFont(size: 13))
+                .settingsRow(.descriptive)
+                .accessibilityIdentifier("settings.connection.error")
         }
     }
 

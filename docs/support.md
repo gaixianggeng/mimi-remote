@@ -30,12 +30,15 @@ Mac App 首次设置会显示短期配对二维码，然后在移动端 App 的�
 
 ### 实现
 
-连接失败时依次检查：
+连接失败时依次检查（下面都是界面操作，不要求命令行）：
 
-1. 在 Mac 执行 `agentd doctor --fix` 和 `agentd status`。
-2. 确认移动设备与 Mac 的网络可达，且没有把私网 HTTP 地址替换成公网 HTTP。
-3. 在 App 中打开“设置 → 诊断与支持”，运行连接测速并查看失败阶段。
-4. 重新执行 `agentd pair`，使用新的二维码配对。
+1. 看 Mac 菜单栏的 Mimi Remote 图标是否还在、是否显示已连接。图标不在就重新打开“应用程序”里的 **Mimi Remote Mac**。
+2. 打开 Mac App 的窗口，按首屏提示处理：未配置时会提示先选择代码目录，服务未运行时窗口会给出启动入口。
+3. 确认移动设备与 Mac 的网络可达，且没有把私网 HTTP 地址替换成公网 HTTP。
+4. 在 App 中打开“设置 → 诊断与支持”，运行连接测速并查看失败阶段。
+5. 二维码过期或配对失效时，在 Mac 菜单栏的 Mimi Remote 里点“配对设备…”，再点“刷新二维码”，然后在 App 里扫新码。
+
+命令行安装（服务器、自动化或故障恢复）用同一套检查：第 1、2 步换成 `agentd status`（必要时 `agentd doctor --fix`），第 5 步换成 `agentd pair`。
 
 删除本地连接资料：在“设置 → Mac 连接”中选择“忘记连接”或删除连接档案。这样会删除对应配置和 Keychain Token。删除 App 前建议先完成此操作。
 
@@ -75,12 +78,15 @@ The Mac app shows a short-lived pairing QR code during first-run setup; scan it 
 
 ### Troubleshooting
 
-If connection fails:
+If connection fails, check these in order (all of them are in the UI; no command line required):
 
-1. Run `agentd doctor --fix` and `agentd status` on the Mac.
-2. Confirm network reachability and do not replace a private HTTP address with a public HTTP endpoint.
-3. Open Settings → Diagnostics & Support in the app, run the connection speed test, and inspect the failed stage.
-4. Run `agentd pair` again and pair with a fresh QR code.
+1. Check the Mimi Remote icon in the Mac menu bar: it should still be there and report a connected state. If it is gone, reopen **Mimi Remote Mac** from Applications.
+2. Open the Mac app window and follow what it shows: an unconfigured app asks you to choose a code directory first, and a stopped service offers a start action.
+3. Confirm network reachability and do not replace a private HTTP address with a public HTTP endpoint.
+4. Open Settings → Diagnostics & Support in the app, run the connection speed test, and inspect the failed stage.
+5. When the QR code expires or pairing stops working, open Mimi Remote in the Mac menu bar, choose "Pair Device…", click "Refresh QR Code", then scan the new code in the app.
+
+For command-line installs (servers, automation, or recovery), the same checks apply: replace steps 1–2 with `agentd status` (and `agentd doctor --fix` when needed), and step 5 with `agentd pair`.
 
 To remove local connection data, choose Forget Connection or delete the connection profile under Settings → Mac Connection. This removes its configuration and Keychain token. Do this before uninstalling if you want credentials explicitly removed.
 
