@@ -213,8 +213,14 @@ grep -Fq 'POSIX_SPAWN_START_SUSPENDED' macos/MimiRemoteMac/Sources/App/AgentdSup
   || fail "agentd supervisor 没有在执行前暂停子进程以完成运行态签名校验。"
 grep -Fq 'POSIX_SPAWN_SETSIGDEF' macos/MimiRemoteMac/Sources/App/AgentdSupervisor.swift \
   || fail "agentd supervisor 没有为子进程恢复默认终止信号处置。"
-grep -Fq 'agentd-supervisor-v1' macos/MimiRemoteMac/Sources/Infrastructure/ServiceManagementClient.swift \
+grep -Fq 'agentd-supervisor-v2-aqua' macos/MimiRemoteMac/Sources/Infrastructure/ServiceManagementClient.swift \
   || fail "LaunchAgent 定义变化后没有强制已安装的机器重新登记。"
+grep -Fq '<key>LimitLoadToSessionType</key>' \
+  macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist \
+  || fail "LaunchAgent 没有声明用户登录会话限制。"
+grep -Fq '<string>Aqua</string>' \
+  macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist \
+  || fail "LaunchAgent 没有限定为 Aqua 用户登录环境。"
 [[ ! -e macos/MimiRemoteMac/Sources/App/CodexDaemonSupervisor.swift ]] \
   || fail "Mac App 仍包含已移除的 Codex shared daemon supervisor。"
 grep -Fq -- 'CommandLine.arguments.contains("--codex-daemon-supervisor")' macos/MimiRemoteMac/Sources/App/MimiRemoteMacApp.swift \

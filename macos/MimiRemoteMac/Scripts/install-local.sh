@@ -37,10 +37,15 @@ if [[ "$(basename "$destination")" != "Mimi Remote Mac.app" ]]; then
   echo "安装目标必须以 Mimi Remote Mac.app 结尾：$destination" >&2
   exit 2
 fi
-if pgrep -x "Mimi Remote Mac" >/dev/null 2>&1; then
-  echo "请先从菜单栏退出 Mimi Remote Mac，再重新安装。" >&2
+# 前门是独立的 launchd 登录任务，会在菜单栏 App 退出后继续运行。
+# 覆盖安装保留它和正在运行的 backend；新 App 启动时会在空闲后安全换代。
+while IFS= read -r app_pid; do
+  [[ -n "$app_pid" ]] || continue
+  app_command="$(ps -p "$app_pid" -o command= 2>/dev/null || true)"
+  [[ "$app_command" == *"--codex-front-door"* ]] && continue
+  echo "请先从菜单栏退出并停止 Mimi Remote Mac 服务，再重新安装。" >&2
   exit 1
-fi
+done < <(pgrep -x "Mimi Remote Mac" || true)
 
 mkdir -p "$destination_parent"
 staging_dir="$(mktemp -d "$destination_parent/.mimi-remote-install.XXXXXX")"

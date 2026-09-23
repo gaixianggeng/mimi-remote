@@ -12,6 +12,12 @@ final class HostStore {
     private(set) var pairing: PairingInfo?
     private(set) var pairingNetwork: PairingNetwork = .tailscale
     private(set) var recentLogs: [String] = []
+    private(set) var diagnosticsStatus: AgentDiagnosticsStatus?
+    private(set) var diagnosticsStatusError: String?
+    private(set) var diagnosticsLogError: String?
+    private(set) var isLoadingDiagnostics = false
+    private(set) var isUpdatingDiagnostics = false
+    private(set) var isExportingDiagnostics = false
     private(set) var appliedFixes: [String] = []
     private(set) var isBusy = false
     private(set) var isStoppingForQuit = false
@@ -28,6 +34,7 @@ final class HostStore {
     private(set) var isUpdatingLAN = false
     private(set) var lanError: String?
     private(set) var codexError: String?
+    private(set) var codexSessionRepairNotice: String?
     private(set) var networkError: String?
     private(set) var networkErrorModule: HostModuleID?
     private(set) var updatingModule: HostModuleID?
@@ -271,6 +278,9 @@ final class HostStore {
         defer { isBusy = false }
         do {
             try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
+            // 永久交还 Homebrew 前，先确认私有 Codex backend 空闲并注销独立前门。
+            // 失败时走现有回滚，不能留下仍指向将被移走 App 的 LaunchAgent。
+            try await agent.uninstallCodexFrontDoor()
             try await homebrew.start()
             try await waitForHomebrewReady(binary: oldAgent)
             homebrewLoaded = true
@@ -448,16 +458,76 @@ final class HostStore {
         }
     }
 
-    func loadRecentLogs() async {
+    func refreshDiagnostics() async {
+        guard !isLoadingDiagnostics, !isUpdatingDiagnostics else { return }
+        isLoadingDiagnostics = true
+        diagnosticsStatusError = nil
+        diagnosticsLogError = nil
+        defer { isLoadingDiagnostics = false }
+
+        async let statusCall = agent.diagnosticsStatus()
+        async let logsCall = logs.recentLines(200)
         do {
-            recentLogs = try await logs.recentLines(200)
+            diagnosticsStatus = try await statusCall
+        } catch is CancellationError {
+            return
         } catch {
-            lastError = error.localizedDescription
+            // 服务状态无法读取时不展示过期快照，避免让用户误以为开关仍然有效。
+            diagnosticsStatus = nil
+            diagnosticsStatusError = error.localizedDescription
+        }
+        do {
+            recentLogs = try await logsCall
+        } catch is CancellationError {
+            return
+        } catch {
+            diagnosticsLogError = error.localizedDescription
         }
     }
 
-    func revealLogFile() {
-        logs.reveal()
+    func setDetailedDiagnostics(_ enabled: Bool) async {
+        guard !isLoadingDiagnostics, !isUpdatingDiagnostics else { return }
+        isUpdatingDiagnostics = true
+        diagnosticsStatusError = nil
+        defer { isUpdatingDiagnostics = false }
+        do {
+            diagnosticsStatus = try await agent.setDetailedDiagnostics(enabled)
+        } catch is CancellationError {
+            return
+        } catch {
+            diagnosticsStatusError = error.localizedDescription
+        }
+    }
+
+    func clearDiagnostics() async {
+        guard !isLoadingDiagnostics, !isUpdatingDiagnostics else { return }
+        isUpdatingDiagnostics = true
+        diagnosticsStatusError = nil
+        diagnosticsLogError = nil
+        defer { isUpdatingDiagnostics = false }
+        do {
+            diagnosticsStatus = try await agent.clearDiagnostics()
+            recentLogs = []
+        } catch is CancellationError {
+            return
+        } catch {
+            diagnosticsLogError = error.localizedDescription
+        }
+    }
+
+    func diagnosticExportLines() async -> [String]? {
+        guard !isExportingDiagnostics else { return nil }
+        isExportingDiagnostics = true
+        diagnosticsLogError = nil
+        defer { isExportingDiagnostics = false }
+        do {
+            return try await logs.exportLines()
+        } catch is CancellationError {
+            return nil
+        } catch {
+            diagnosticsLogError = error.localizedDescription
+            return nil
+        }
     }
 
     func openLoginItemsSettings() {
@@ -790,6 +860,66 @@ final class HostStore {
             try await registerMacAgentAndWaitForReady()
         } catch {
             fail(error)
+        }
+    }
+
+    /// 用户确认所有共享连接都已退出后，显式释放错误驻留在 Background
+    /// session 的 Codex server，再由 Aqua LaunchAgent 创建新的 resident。
+    func repairSharedCodexRuntime() async {
+        guard !isBusy else { return }
+        let originalServiceStatus = services.agentStatus()
+        guard owner == .macApp, originalServiceStatus == .enabled else {
+            lastError = "当前不是 App 托管服务，不能修复共享运行环境。"
+            return
+        }
+
+        isBusy = true
+        lifecycle = .starting
+        lastError = nil
+        codexSessionRepairNotice = nil
+        defer { isBusy = false }
+
+        do {
+            try validateMacAgentConfiguration()
+            try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
+            let result = try await agent.releaseCodexSession()
+            try await registerMacAgentAndWaitForReady()
+            let releaseMessage = result.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            let summary = releaseMessage.isEmpty
+                ? (result.released
+                    ? "共享运行环境已修复。"
+                    : "共享运行环境无需释放。")
+                : releaseMessage
+            let separator = summary.hasSuffix("。") || summary.hasSuffix("！") || summary.hasSuffix("？")
+                ? ""
+                : "。"
+            codexSessionRepairNotice = "\(summary)\(separator)Mimi Remote Mac 服务已重新启动。"
+        } catch {
+            await restoreMacAgentAfterCodexSessionRepairFailure(
+                originalServiceStatus: originalServiceStatus,
+                cause: error
+            )
+        }
+    }
+
+    private func restoreMacAgentAfterCodexSessionRepairFailure(
+        originalServiceStatus: ServiceRegistrationState,
+        cause: Error
+    ) async {
+        guard originalServiceStatus == .enabled else {
+            fail(cause)
+            return
+        }
+        do {
+            owner = .macApp
+            try await registerMacAgentAndWaitForReady()
+            lastError = "修复共享运行环境失败，已恢复 Mimi Remote Mac 服务：\(cause.localizedDescription)"
+        } catch {
+            // launchd 已重新登记但 resident 因旧 Background server 拒绝而未就绪时，
+            // 仍保留 App owner，让用户关闭其它连接后可以再次执行显式修复。
+            owner = services.agentStatus() == .enabled ? .macApp : .none
+            lifecycle = .failed("修复共享运行环境失败，Mimi Remote Mac 服务未能恢复就绪：\(error.localizedDescription)")
+            lastError = "原始错误：\(cause.localizedDescription)；恢复错误：\(error.localizedDescription)"
         }
     }
 
@@ -1728,7 +1858,35 @@ final class HostStore {
                     warnings: network == .localNetwork ? ["局域网配对仅适用于与这台 Mac 位于同一局域网的设备"] : []
                 )
             },
-            version: { status.version }
+            version: { status.version },
+            diagnosticsStatus: {
+                AgentDiagnosticsStatus(
+                    enabled: true,
+                    expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(12 * 60)),
+                    currentBytes: 18_432,
+                    previousBytes: 64_128,
+                    totalBytes: 82_560,
+                    maxTotalBytes: 10 * 1_048_576,
+                    retentionDays: 7
+                )
+            },
+            setDetailedDiagnostics: { enabled in
+                AgentDiagnosticsStatus(
+                    enabled: enabled,
+                    expiresAt: enabled
+                        ? ISO8601DateFormatter().string(from: Date().addingTimeInterval(15 * 60))
+                        : nil,
+                    currentBytes: 18_432,
+                    previousBytes: 64_128, totalBytes: 82_560,
+                    maxTotalBytes: 10 * 1_048_576, retentionDays: 7
+                )
+            },
+            clearDiagnostics: {
+                AgentDiagnosticsStatus(
+                    enabled: false, expiresAt: nil, currentBytes: 0, previousBytes: 0,
+                    totalBytes: 0, maxTotalBytes: 10 * 1_048_576, retentionDays: 7
+                )
+            }
         )
         let services = ServiceManagementClient(
             agentStatus: { .enabled },
@@ -1750,7 +1908,10 @@ final class HostStore {
             services: services,
             homebrew: homebrew,
             health: HealthClient(check: { _ in true }, checkDirect: { _ in true }),
-            logs: AgentLogClient(recentLines: { _ in [] }, reveal: {}, fileURL: URL(filePath: "/tmp/agentd.log"))
+            logs: AgentLogClient(
+                recentLines: { _ in [#"{"stage":"request","outcome":"failed","operation":"status"}"#] },
+                exportLines: { [#"{"stage":"request","outcome":"failed","operation":"status"}"#] }
+            )
         )
         store.lifecycle = lifecycle
         if lifecycle != .notConfigured {

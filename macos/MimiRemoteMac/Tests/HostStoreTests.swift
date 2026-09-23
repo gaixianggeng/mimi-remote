@@ -793,6 +793,7 @@ final class HostStoreTests: XCTestCase {
             "Label": "com.gaixianggeng.mimi.mac.agentd",
             "BundleProgram": "Contents/MacOS/Mimi Remote Mac",
             "ProgramArguments": ["Mimi Remote Mac", "--agentd-supervisor"],
+            "LimitLoadToSessionType": "Aqua",
         ]
         let propertyListData = try PropertyListSerialization.data(
             fromPropertyList: propertyList,
@@ -830,6 +831,22 @@ final class HostStoreTests: XCTestCase {
                 bundleURL: bundleURL,
                 signingIdentityProvider: signingIdentity
             )
+        )
+        var missingSessionType = propertyList
+        missingSessionType.removeValue(forKey: "LimitLoadToSessionType")
+        try PropertyListSerialization.data(
+            fromPropertyList: missingSessionType,
+            format: .xml,
+            options: 0
+        ).write(to: launchAgentsURL.appending(path: "com.gaixianggeng.mimi.mac.agentd.plist"))
+        XCTAssertTrue(
+            ServiceManagementClient.validateAgentConfiguration(
+                bundleURL: bundleURL,
+                signingIdentityProvider: signingIdentity
+            )?.contains("配置无效") == true
+        )
+        try propertyListData.write(
+            to: launchAgentsURL.appending(path: "com.gaixianggeng.mimi.mac.agentd.plist")
         )
         XCTAssertTrue(
             ServiceManagementClient.validateAgentConfiguration(
@@ -917,6 +934,8 @@ final class HostStoreTests: XCTestCase {
         )
         XCTAssertEqual(dictionary["BundleProgram"] as? String, ServiceManagementClient.supervisorBundleProgram)
         XCTAssertEqual(dictionary["ProgramArguments"] as? [String], ServiceManagementClient.supervisorProgramArguments)
+        XCTAssertEqual(dictionary["LimitLoadToSessionType"] as? String, ServiceManagementClient.agentSessionType)
+        XCTAssertEqual(ServiceManagementClient.agentLaunchDefinitionRevision, "agentd-supervisor-v2-aqua")
     }
 
     func testAgentdSupervisorMapsChildExitAndSignalStatus() {
@@ -1693,6 +1712,7 @@ final class HostStoreTests: XCTestCase {
             homebrewLoaded: true,
             registerAgent: { events.append("register-mac") },
             unregisterAgent: { events.append("unregister-mac") },
+            uninstallCodexFrontDoor: { events.append("uninstall-front") },
             homebrewStart: {
                 events.append("start-homebrew")
                 throw TestError.expected
@@ -1709,7 +1729,7 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.lifecycle, .ready)
         XCTAssertTrue(store.lastError?.contains("已继续使用 App 服务") == true)
         XCTAssertEqual(events.values, [
-            "stop-homebrew", "register-mac", "unregister-mac", "start-homebrew",
+            "stop-homebrew", "register-mac", "unregister-mac", "uninstall-front", "start-homebrew",
             "stop-homebrew", "register-mac",
         ])
     }
@@ -2144,6 +2164,7 @@ final class HostStoreTests: XCTestCase {
         },
         registerAgent: @escaping @MainActor () throws -> Void = {},
         unregisterAgent: @escaping @MainActor () async throws -> Void = {},
+        uninstallCodexFrontDoor: @escaping @Sendable () async throws -> Void = {},
         agentLaunchFailure: @escaping @MainActor () async -> String? = { nil },
         configCheck: AgentdConfigCheckClient = .disabled,
         homebrewStart: @escaping @Sendable () async throws -> Void = {},
@@ -2201,6 +2222,7 @@ final class HostStoreTests: XCTestCase {
             readiness: readiness ?? status,
             statusAt: { _ in readyStatus },
             doctor: doctor,
+            uninstallCodexFrontDoor: uninstallCodexFrontDoor,
             configureClaude: configureClaude,
             restoreClaude: restoreClaude,
             setLANAccess: setLANAccess,
@@ -2237,8 +2259,7 @@ final class HostStoreTests: XCTestCase {
             health: HealthClient(check: healthCheck, checkDirect: { _ in true }),
             logs: AgentLogClient(
                 recentLines: { _ in [] },
-                reveal: {},
-                fileURL: URL(filePath: "/tmp/mimi-remote-agentd-test.log")
+                exportLines: { [] }
             ),
             systemPrivacySettings: systemPrivacySettings,
             terminateApplication: terminateApplication
