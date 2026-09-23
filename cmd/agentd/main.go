@@ -43,6 +43,10 @@ const serveHTTPDrainTimeout = 5 * time.Second
 
 func main() {
 	if err := run(os.Args); err != nil {
+		var sshExit *sshCommandExit
+		if errors.As(err, &sshExit) {
+			os.Exit(sshExit.code)
+		}
 		fmt.Fprintf(os.Stderr, "错误：%v\n", err)
 		appendManagedServiceFailure(os.Args, err)
 		os.Exit(1)
@@ -92,6 +96,8 @@ func run(args []string) error {
 		return runRuntime(args)
 	case "repair-codex-session":
 		return runCodexSessionRepair(args)
+	case "ssh-bridge":
+		return runSSHBridge(args)
 	case "doctor":
 		return runDoctor(args)
 	case "diagnostics":
@@ -101,7 +107,7 @@ func run(args []string) error {
 	case "serve":
 		return runServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、runtime、repair-codex-session、serve、doctor、diagnostics、check-config、version", cmd)
+		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、runtime、repair-codex-session、ssh-bridge、serve、doctor、diagnostics、check-config、version", cmd)
 	}
 }
 
@@ -1087,6 +1093,15 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		}()
 	}
 	appServerRuntime.watch(errCh)
+	sshBridge, bridgeErr := startDesktopSSHBridge(cfg, checker.ConfigPath())
+	if bridgeErr != nil {
+		// SSH 接入故障不能拖垮诊断或其他运行时；专用客户端会明确连接失败，
+		// 不降级到 Background 执行，也不抢占现有 Codex 服务。
+		log.Printf("Mimi Desktop SSH command bridge unavailable: %v", bridgeErr)
+	}
+	if sshBridge != nil {
+		defer sshBridge.Close()
+	}
 	stopCh := make(chan os.Signal, 1)
 	stopSignals := notifyServeSignals(stopCh)
 	defer stopSignals()

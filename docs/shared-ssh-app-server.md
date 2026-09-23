@@ -9,11 +9,12 @@ Mimi、本机终端和 Codex Desktop 共用同一个 Unix App Server。任一入
 ```text
 Mimi App -> agentd 鉴权 WebSocket -> unix:// ----------------------------------┐
 本机终端 ----------------------------> codex --remote unix:// -----------------+-> ~/.codex/app-server-control/app-server-control.sock
-本机 Desktop ---> localhost SSH -----> codex app-server proxy -----------------+
-远程 Desktop ---> Mac SSH -----------> codex app-server proxy -----------------┘
+Desktop --------> Mac SSH 专用入口 ---> GUI 执行官方 Codex CLI / proxy ---------┘
 ```
 
 OpenClaw 和不使用 control socket 的普通本地模式继续使用自己的 App Server。agentd 不枚举、不停止，也不重配这些进程。
+
+macOS 要消除 Desktop SSH 与 Mimi 的启动顺序依赖，应配置[Desktop 专用 SSH 入口](desktop-ssh-gui-entry.md)。它保留系统 SSH 认证，通过 Mimi 的本机命令桥从 GUI 执行官方 CLI。普通系统 SSH 直启 Codex 仍可能产生 Background 实例；下面的原生 SSH 限制专指未配置专用入口的连接。
 
 ## 配置
 
@@ -84,7 +85,7 @@ CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1 \
 
 macOS 本机模式还通过 `command/exec` 查询 resident 的 `launchctl managername`，仅复用 Aqua 环境。每条新的业务连接都以独立探针校验，并核对探针与业务连接的 Unix peer，避免 Desktop 重建服务后沿用旧的校验结果。若检查失败或已有 resident 属于 Background，agentd 拒绝该 Codex 连接，但保留主服务诊断；不终止旧进程，也不改换 socket。Mac App 的 supervisor LaunchAgent 限定为 Aqua；首次设置不抢先启动 resident。Homebrew 用户应通过已登录用户的 `agentd up` 启动 GUI 服务，不能把 SSH 中直接执行 `agentd serve` 当作等价启动方式。
 
-Desktop 的 SSH proxy 仍可接入已由 GUI 服务创建的同一个 socket，任务历史与接续方式不变。若 Desktop 先通过 SSH 创建了 resident，之后启动 Mimi 会报告运行环境错误，需要下面的一次性修复；Mimi 不控制 Desktop 自己的启动逻辑。
+Desktop 通过专用 SSH 入口启动或接入的 resident 同属 Aqua，先后顺序不影响任务接续。未经专用入口的普通 SSH 仍可能先创建 Background resident；此时 Mimi 会报告运行环境错误，需要下面的一次性修复。Mimi 不控制 Desktop 自己的启动逻辑。
 
 launchd 启动的进程和 SSH 登录在 macOS 上的 open-file soft limit 通常只有 256。agentd 启动新 resident 前会读取当前值；低于 8192 时先提高到 8192，无法提高时拒绝启动。它不会降低已经更高的限制。
 
@@ -134,7 +135,7 @@ Codex `0.155.1` 的 Unix 服务实现可以通过 SIGHUP 停止接纳新的模�
 
 ## Desktop 使用方式
 
-本机 Desktop 需要新增一个指向 `127.0.0.1` 的 SSH 主机，并从这个主机打开共享项目。只有这一步才需要开启 macOS 的“远程登录”并配置本机非交互 SSH 认证；只用 Mimi 不需要。远程 Desktop 使用指向这台 Mac 的 SSH 主机。两个入口都必须登录与 agentd 相同的 macOS 用户。
+本机 Desktop 按[专用 SSH 入口](desktop-ssh-gui-entry.md)新增一个指向 `127.0.0.1` 的 SSH 主机，并从这个主机打开共享项目。只有这一步才需要开启 macOS 的“远程登录”并配置专用密钥；只用 Mimi 不需要。远程 Desktop 使用指向这台 Mac 的专用 SSH 主机。两个入口都必须登录与 agentd 相同的 macOS 用户。
 
 普通 “This Mac” 模式仍可用于 ChatGPT Desktop 私有的 `codex_app`、Browser 和专用渲染能力，但它不属于共享运行时。不要同时用普通本地模式和 SSH 模式打开同一个活动 Thread。
 

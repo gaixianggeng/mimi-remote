@@ -62,6 +62,7 @@ type Config struct {
 	Capabilities  CapabilityConfig `json:"capabilities"`
 	Runtime       RuntimeConfig    `json:"runtime"`
 	AppServer     AppServerConfig  `json:"app_server"`
+	DesktopSSH    DesktopSSHConfig `json:"desktop_ssh"`
 	Voice         VoiceConfig      `json:"voice"`
 	Codex         CodexConfig      `json:"codex"`
 	Claude        ClaudeConfig     `json:"claude"`
@@ -74,6 +75,12 @@ type Config struct {
 	WorktreesRoot string           `json:"worktrees_root"`
 	Actions       []ActionConfig   `json:"actions"`
 	DevInsecure   bool             `json:"dev_insecure"`
+}
+
+// DesktopSSHConfig 显式启用本机命令桥。SSH 认证仍由系统 sshd 完成；
+// 只有另行配置专用密钥的 Desktop 连接会进入这个 GUI 执行入口。
+type DesktopSSHConfig struct {
+	Enabled bool `json:"enabled"`
 }
 
 type NetworkConfig struct {
