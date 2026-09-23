@@ -32,6 +32,28 @@ final class MessageNotificationTests: XCTestCase {
         XCTAssertEqual(NotificationFlowURLProtocol.count("POST /api/push/devices"), 1)
     }
 
+    func testColdStartTokenChangeRegistersAfterHostSupportLoads() async throws {
+        let fixture = try Fixture()
+        defer { fixture.close() }
+        await fixture.store.synchronize(client: fixture.client, profileID: "computer-a")
+
+        let restarted = LockScreenApprovalStore(
+            defaults: fixture.defaults, ticketStore: fixture.tickets,
+            identityStore: PushInstallationIdentityStore(keychain: fixture.keychain),
+            clearNotificationTitleCache: {},
+            providerClientFactory: { PushProviderClient(baseURL: $0, session: fixture.session) },
+            requestAuthorization: { true }
+        )
+        XCTAssertTrue(restarted.handleDeviceToken(Data([0x56, 0x78])))
+        await restarted.refreshRegistrationAfterDeviceTokenChange(
+            client: fixture.client, profileID: "computer-a"
+        )
+        XCTAssertEqual(NotificationFlowURLProtocol.count("POST /api/push/devices"), 1)
+
+        await restarted.synchronize(client: fixture.client, profileID: "computer-a")
+        XCTAssertEqual(NotificationFlowURLProtocol.count("POST /api/push/devices"), 2)
+    }
+
     func testDeniedPermissionKeepsPreferenceAndResumesWhenAllowed() async throws {
         var granted = false
         let fixture = try Fixture(requestAuthorization: { granted })

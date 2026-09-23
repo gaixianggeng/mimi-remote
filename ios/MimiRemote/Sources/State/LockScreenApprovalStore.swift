@@ -239,6 +239,9 @@ final class LockScreenApprovalStore: ObservableObject {
 			if isEnabled,
 			   !defaults.bool(forKey: Key.registrationNeedsRepair),
 			   registeredProviderMatchesCurrentProvider(for: profileID),
+			   // 冷启动的 APNs 回调可能早于主机配置查询；不能用旧 Token 的有效期跳过补注册。
+			   cachedDeviceToken.map({ defaults.string(forKey: Key.deviceTokenFingerprint)
+				   == Self.deviceTokenFingerprint($0) }) ?? true,
 			   let expiry = defaults.object(forKey: Key.ticketExpiresAt) as? Date,
 			   expiry.timeIntervalSinceNow >= 7 * 24 * 60 * 60,
 			   case .active = status {
