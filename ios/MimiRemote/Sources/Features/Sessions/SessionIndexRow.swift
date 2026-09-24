@@ -95,6 +95,7 @@ struct SessionRuntimePresentation: Equatable {
     enum Kind: Equatable {
         case codex
         case claude
+        case deepSeek
     }
 
     let kind: Kind
@@ -106,9 +107,14 @@ struct SessionRuntimePresentation: Equatable {
     init(runtimeProvider: String?, source: String) {
         let provider = runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawValue = provider?.isEmpty == false ? provider : source
-        kind = CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue) == "claude"
-            ? .claude
-            : .codex
+        switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue) {
+        case "claude":
+            kind = .claude
+        case "deepseek":
+            kind = .deepSeek
+        default:
+            kind = .codex
+        }
     }
 
     var title: String {
@@ -117,6 +123,8 @@ struct SessionRuntimePresentation: Equatable {
             return L10n.text("ui.runtime_default")
         case .claude:
             return L10n.text("ui.runtime_optional")
+        case .deepSeek:
+            return "DeepSeek"
         }
     }
 
@@ -126,6 +134,8 @@ struct SessionRuntimePresentation: Equatable {
             return .openAI
         case .claude:
             return .claude
+        case .deepSeek:
+            return .deepSeek
         }
     }
 }

@@ -919,6 +919,9 @@ struct UnifiedWorkbenchShell: View {
             icon: icon,
             isSelected: isSelected,
             tokens: tokens,
+            accessibilityIdentifier: destination == .sessions
+                ? "sidebar.sessions"
+                : "sidebar.workspaces",
             action: { open(destination, layout: layout) }
         )
     }
@@ -1033,8 +1036,7 @@ struct UnifiedWorkbenchShell: View {
                 get: {
                     workspaceRuntimeSelection.resolvedRuntime(
                         preferredRuntime: .stored(preferredWorkspaceRuntimeRawValue),
-                        codexChannelAvailable: sessionStore.isCodexRuntimeChannelAvailable,
-                        claudeChannelAvailable: sessionStore.isClaudeRuntimeChannelAvailable
+                        availableRuntimeProviders: sessionStore.availableRuntimeProviders
                     )
                 },
                 set: { workspaceRuntimeSelection.manualRuntime = $0 }

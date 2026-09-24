@@ -46,6 +46,10 @@ extension SessionStore {
             ? payload
             : await payloadResolvingRequiredModel(payload, submissionContext: submissionContext)
         guard appStore.activeHostScope == hostScope else { return false }
+        if !payload.isEmpty, let error = RuntimeFeatureSupport.submissionError(for: payload) {
+            if isSelectionLeaseCurrent(createIntent) { setErrorMessage(error) }
+            return false
+        }
         if !payload.isEmpty,
            let notice = CodexQuotaNotice.make(
                rateLimit: submissionContext.session?.rateLimit,
@@ -170,6 +174,11 @@ extension SessionStore {
         do {
             guard appStore.activeHostScope == hostScope else { return false }
             let client = try clientFactory()
+            // 旧版缓存的 Harness 历史项没有 resumeID；原生 sessionId 本身就是续聊身份。
+            let nativeResumeID = resume.flatMap { session in
+                Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == Self.nativeHarnessRuntimeProvider
+                    ? session.id : nil
+            }
             let response = try await client.createSession(CreateSessionRequest(
                 projectID: projectID,
                 projectPath: workspace.path,
@@ -179,7 +188,7 @@ extension SessionStore {
                 input: payload.input,
                 turnOptions: payload.options,
                 initialGoalObjective: initialGoalObjective,
-                resumeID: resume?.resumeID ?? "",
+                resumeID: resume?.resumeID ?? nativeResumeID ?? "",
                 clientMessageID: clientMessageID
             ))
             guard appStore.activeHostScope == hostScope else { return false }
@@ -748,7 +757,7 @@ extension SessionStore {
             )
             return didLoad
         } catch {
-            if !(error is CancellationError) {
+            if !isHistoryLoadCancellation(error) {
                 AppDiagnostics.record(
                     stage: .sessionHistory,
                     result: .failed,
@@ -859,7 +868,7 @@ extension SessionStore {
             .map(isSelectionLeaseCurrent) ?? false
         let effectiveQuiet = !current.requiresForegroundReporting || !hasCurrentForegroundOwner
         historyLoadJobsBySessionID.removeValue(forKey: sessionID)
-        if error is CancellationError {
+        if isHistoryLoadCancellation(error) {
             return false
         }
         if let failure = error as? HistoryFirstPageFetchFailure,
@@ -989,6 +998,12 @@ extension SessionStore {
             }
         }
         return false
+    }
+
+    func isHistoryLoadCancellation(_ error: Error) -> Bool {
+        // 首屏请求会先包装底层 transport 错误；取消判定必须看原始错误。
+        let underlying = (error as? HistoryFirstPageFetchFailure)?.underlying ?? error
+        return isCancellationError(underlying)
     }
 
     // gateway 策略拒绝（-32080）对同样的请求参数是确定性失败：自动重连只会带着相同参数再次被拒，
@@ -3670,6 +3685,7 @@ extension SessionStore {
         sessionSearchLoadingCursor = nil
         remoteSessionSearchSnippetByID = [:]
         remoteSessionSearchResults = []
+        remoteSessionSearchNotice = nil
         sessionSearchNextCursor = nil
         sessionSearchHasMore = false
         isSearchingRemoteSessionResults = false
@@ -3692,6 +3708,13 @@ extension SessionStore {
         replacing: Bool,
         requestedCursor: String?
     ) {
+        if replacing || !page.unavailableRuntimeProviders.isEmpty {
+            let providers = page.unavailableRuntimeProviders.map {
+                $0 == "deepseek" ? "DeepSeek" : $0.capitalized
+            }
+            remoteSessionSearchNotice = providers.isEmpty ? nil
+                : L10n.format("ui.search_runtime_unavailable", providers.joined(separator: ", "))
+        }
         var sessionsByID: [SessionID: AgentSession] = [:]
         var snippetsByID: [SessionID: String] = replacing ? [:] : remoteSessionSearchSnippetByID
         if !replacing {

@@ -270,6 +270,7 @@ struct WorkbenchSidebarDestinationButton: View {
     let icon: WorkbenchNavigationIcon
     let isSelected: Bool
     let tokens: ThemeTokens
+    let accessibilityIdentifier: String
     let action: () -> Void
 
     private var titleColor: Color {
@@ -318,6 +319,7 @@ struct WorkbenchSidebarDestinationButton: View {
         .listRowBackground(Color.clear)
         .accessibilityLabel(title)
         .accessibilityValue(isSelected ? L10n.text("ui.selected") : L10n.text("ui.not_selected"))
+        .accessibilityIdentifier(accessibilityIdentifier)
     }
 }
 

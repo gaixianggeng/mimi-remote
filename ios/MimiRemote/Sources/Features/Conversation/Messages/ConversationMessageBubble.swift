@@ -420,7 +420,9 @@ struct ConversationMessageContent: View {
         guard message.turnPayload == nil || payloadImageItems.isEmpty else {
             return []
         }
-        return ConversationFileReferenceDetector.imageReferences(in: userDisplayContent)
+        return ConversationFileReferenceDetector.imageReferences(
+            in: ConversationUserMessagePresentation.imageReferenceContent(from: message.content)
+        )
     }
 
     private var userImageSources: [ConversationImageSource] {

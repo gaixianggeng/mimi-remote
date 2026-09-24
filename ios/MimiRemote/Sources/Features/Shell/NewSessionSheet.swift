@@ -103,10 +103,7 @@ struct NewSessionSheet: View {
         .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
             synchronizeWorkspaceSelection()
         }
-        .onChange(of: sessionStore.isClaudeRuntimeChannelAvailable) { _, _ in
-            normalizeRuntimeSelection()
-        }
-        .onChange(of: sessionStore.isCodexRuntimeChannelAvailable) { _, _ in
+        .onChange(of: sessionStore.availableRuntimeProviders) { _, _ in
             normalizeRuntimeSelection()
         }
         .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
@@ -177,9 +174,7 @@ struct NewSessionSheet: View {
                 .accessibilityIdentifier("newSession.runtime")
             } else if let onlyChoice = choices.first {
                 HStack(spacing: 12) {
-                    Image(systemName: "terminal.fill")
-                        .font(themeStore.uiFont(size: 16, weight: .semibold))
-                        .foregroundStyle(tokens.primaryAction)
+                    RuntimeBrandMarkIcon(mark: choices[0].brandMark, size: 16)
                         .frame(width: 36, height: 36)
                         .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
@@ -270,7 +265,11 @@ struct NewSessionSheet: View {
     }
 
     private func runtimeTitle(for choice: WorkspaceSessionRuntimeChoice) -> String {
-        choice == .codex ? "Codex" : "Claude Code"
+        switch choice {
+        case .codex: "Codex"
+        case .claude: "Claude Code"
+        case .deepseek: "DeepSeek Harness"
+        }
     }
 
     private func compactWorkspacePath(_ path: String) -> String {
@@ -341,8 +340,7 @@ struct NewSessionSheet: View {
 
     private var runtimeChoices: [WorkspaceSessionRuntimeChoice] {
         WorkspaceSessionRuntimeChoice.available(
-            codexChannelAvailable: sessionStore.isCodexRuntimeChannelAvailable,
-            claudeChannelAvailable: sessionStore.isClaudeRuntimeChannelAvailable
+            runtimeProviders: sessionStore.availableRuntimeProviders
         )
     }
 

@@ -521,9 +521,7 @@ struct ConversationTimelineView: View {
     }
 
     private func shouldShowReturnToTailButton(timelineItems: [ConversationTimelineItem]) -> Bool {
-        !timelineItems.isEmpty
-            && scrollController.isReadable
-            && (scrollController.mode == .readingHistory || scrollController.hasUnseenTail)
+        !timelineItems.isEmpty && scrollController.canReturnToTail
     }
 
     private var returnToTailAccessibilityLabel: String {
@@ -691,16 +689,14 @@ struct ConversationTimelineView: View {
         // 长列表首次定位不能依赖尾行已经实例化；proxy 接线与原生视口发现独立。
         controller.connect(epoch: epoch) { [weak controller] command in
             // 所有滚动副作用只从控制器到达此处，不反向观察 contentOffset 产生新命令。
+            if case .tail = command.target,
+               controller?.viewport.scrollToTail(animated: command.animated && !reduceMotion) == true {
+                return
+            }
             let apply = {
                 switch command.target {
                 case .tail:
-                    if !command.animated,
-                       let scrollView = controller?.viewport.scrollView,
-                       let metrics = controller?.viewport.metrics {
-                        scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: metrics.maximumOffsetY), animated: false)
-                    } else {
-                        proxy.scrollTo(Self.timelineTailSentinelID, anchor: .bottom)
-                    }
+                    proxy.scrollTo(Self.timelineTailSentinelID, anchor: .bottom)
                 case let .offset(offset):
                     guard let scrollView = controller?.viewport.scrollView else { return }
                     scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: offset), animated: false)

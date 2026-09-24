@@ -243,6 +243,8 @@ struct CodexAppServerChannelMetadata: Codable, Hashable, Identifiable {
     let provider: String
     let type: String
     let protocolName: String?
+    /// 用户是否在宿主设置中启用了该通道。旧服务没有该字段时为 nil。
+    var enabled: Bool? = nil
     let gatewayWSURL: String
     let gatewayAvailable: Bool
     let managed: Bool
@@ -259,6 +261,7 @@ struct CodexAppServerChannelMetadata: Codable, Hashable, Identifiable {
         case provider
         case type
         case protocolName = "protocol"
+        case enabled
         case gatewayWSURL = "gateway_ws_url"
         case gatewayAvailable = "gateway_available"
         case managed

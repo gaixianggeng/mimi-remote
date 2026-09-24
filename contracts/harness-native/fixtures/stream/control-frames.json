@@ -1,0 +1,99 @@
+{
+  "provenance": {
+    "level": "live-capture",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.1.5-rc.2",
+    "upstreamTag": "dsh-v0.1.5-rc.2",
+    "profile": "web",
+    "transport": "http://127.0.0.1 loopback, cookie session after GET /?token=",
+    "modelFixture": "@deepseek-ai/dsh-llm-mock-server (scriptable OpenAI-compatible SSE)",
+    "capturedAt": "2026-09-18T18:18:26.439Z"
+  },
+  "note": "session/control 无参数流：先 baseline，再 projection/queue 增量。baseline 携带 queues/jobs/projections 三个字典。",
+  "observations": [
+    {
+      "label": "baseline",
+      "value": {
+        "type": "baseline",
+        "value": {
+          "queues": {},
+          "jobs": {},
+          "projections": {}
+        }
+      }
+    },
+    {
+      "label": "baselineTopLevelKeys",
+      "value": [
+        "queues",
+        "jobs",
+        "projections"
+      ]
+    },
+    {
+      "label": "projection.first",
+      "value": {
+        "type": "projection",
+        "sessionId": "h00-session-0001",
+        "key": "<str:11>",
+        "value": {
+          "options": [
+            {
+              "value": "<string:7>",
+              "name": "h00-name"
+            },
+            {
+              "value": "<string:8>",
+              "name": "h00-name"
+            },
+            {
+              "value": "<string:8>",
+              "name": "h00-name"
+            }
+          ],
+          "currentValue": "<string:8>"
+        },
+        "seq": 0
+      }
+    },
+    {
+      "label": "queue.first",
+      "value": {
+        "type": "queue",
+        "sessionId": "h00-session-0001",
+        "items": [
+          {
+            "id": "h00-id-0001",
+            "placement": "<str:6>",
+            "rpcId": "h00-rpc-0001",
+            "message": {
+              "id": "h00-id-0001",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "H00 回环正文"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "queue.drained",
+      "value": {
+        "type": "queue",
+        "sessionId": "h00-session-0001",
+        "items": []
+      }
+    },
+    {
+      "label": "versionNote",
+      "value": "0.1.5-rc.2 的 baseline 含 queues，且 queue 帧类型存在；上游 0.1.6-alpha.2 已移除 queues 与 queue 帧。以本机实测版本为准。"
+    },
+    {
+      "label": "controlHasNoSessionArgument",
+      "value": "control() 只有 signal 形参，wire 上无参数；它不是按会话订阅，而是覆盖本机全部会话。"
+    }
+  ]
+}

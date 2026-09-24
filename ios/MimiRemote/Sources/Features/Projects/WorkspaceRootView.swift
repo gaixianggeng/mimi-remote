@@ -784,8 +784,10 @@ struct WorkspaceRootView: View {
 
                 WorkspaceRuntimePicker(
                     selection: $selectedSessionRuntime,
-                    claudeChannelAvailable: sessionStore.isClaudeRuntimeChannelAvailable,
-                    codexChannelAvailable: sessionStore.isCodexRuntimeChannelAvailable
+                    availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+                    onRetryUnavailable: { choice in
+                        await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
+                    }
                 )
             }
         }
@@ -1031,8 +1033,10 @@ struct WorkspaceRootView: View {
                 remoteHasMore: cachedPageState?.hasMore == true
             ),
             selectedRuntime: $selectedSessionRuntime,
-            codexChannelAvailable: sessionStore.isCodexRuntimeChannelAvailable,
-            claudeChannelAvailable: sessionStore.isClaudeRuntimeChannelAvailable,
+            availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+            onRetryUnavailable: { choice in
+                await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
+            },
             currentDate: currentDate,
             onRefreshSessions: {
                 Task {

@@ -1644,7 +1644,8 @@ final class AppStore: ObservableObject {
                 token: token,
                 // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破 8 秒总 deadline。
                 requestTimeout: remaining,
-                preparedConfig: config
+                preparedConfig: config,
+                harnessFactory: nativeHarnessFactory
             )
             do {
                 try await bundle.prepareForHostActivation()
@@ -1938,19 +1939,20 @@ final class AppStore: ObservableObject {
         resetDirectRuntime()
     }
 
-    private func runtimeBundle(endpoint: String, token: String) -> AppServerRuntimeBundle {
+    /// 按 (endpoint, token) 复用同一个 Runtime bundle。非 private：路由扩展要用它。
+    func runtimeBundle(endpoint: String, token: String) -> AppServerRuntimeBundle {
         let identity = runtimeIdentity(endpoint: endpoint, token: token)
         if activeRuntimeIdentity == identity, let bundle = activeRuntimeBundle {
             return bundle
         }
-        let bundle = AppServerRuntimeBundle(endpoint: endpoint, token: token)
+        let bundle = AppServerRuntimeBundle(
+            endpoint: endpoint,
+            token: token,
+            harnessFactory: nativeHarnessFactory
+        )
         activeRuntimeIdentity = identity
         activeRuntimeBundle = bundle
         return bundle
-    }
-
-    private func runtimeIdentity(endpoint: String, token: String) -> String {
-        "\(endpoint)\n\(token)"
     }
 
     private func resetDirectRuntime() {

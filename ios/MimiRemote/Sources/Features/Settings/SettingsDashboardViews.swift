@@ -51,6 +51,7 @@ struct ConnectionSettingsView: View {
                 Section {
                     // 只有两个运行时，值不值得为它弹一层菜单：不值得。两个名字并排摆出来，
                     // 当前用哪个一眼可见，点一下即生效——和语言、外观那几行是同一套写法。
+                    // 选项取 allCases，新增 Runtime 自动出现在这一行，不必再改这里。
                     SettingsChoiceRow(
                         title: L10n.text("ui.preferred_runtime"),
                         systemImage: "sparkles",

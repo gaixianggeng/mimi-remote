@@ -1930,6 +1930,7 @@ extension ConversationDataFlowTests {
     func testWorkspaceCancellationClassifierDoesNotHideRealNetworkFailures() {
         XCTAssertTrue(isCancellationError(CancellationError()))
         XCTAssertTrue(isCancellationError(URLError(.cancelled)))
+        XCTAssertTrue(isCancellationError(HarnessTransportError.cancelled))
         XCTAssertFalse(isCancellationError(URLError(.timedOut)))
         XCTAssertFalse(isCancellationError(URLError(.notConnectedToInternet)))
         XCTAssertFalse(isCancellationError(AgentAPIError.server(status: 500, message: "server failed")))
@@ -1940,6 +1941,7 @@ extension ConversationDataFlowTests {
             workspaceSessionLoadFailureDisposition(URLError(.cancelled)),
             .cancelled
         )
+        XCTAssertEqual(workspaceSessionLoadFailureDisposition(HarnessTransportError.cancelled), .cancelled)
 
         let timeout = URLError(.timedOut)
         XCTAssertEqual(

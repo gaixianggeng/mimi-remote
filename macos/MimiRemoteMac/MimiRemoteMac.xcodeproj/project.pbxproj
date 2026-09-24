@@ -23,6 +23,7 @@
 		58C74CEDC10E4370604F7FA6 /* HomebrewServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A7026C81DC36F9303474CE6 /* HomebrewServiceClient.swift */; };
 		6170367AFF136474BDDFE79A /* HostModulePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 276532E4BA65A66A4D9AFA56 /* HostModulePresentation.swift */; };
 		642F9E49711F073D72016DF1 /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47FFCBD7F69A1A4EAA2D1871 /* HostStore.swift */; };
+		646E5B1D36C74B419372EBE4 /* DeepSeekConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB9A64DB49D670340D4F5791 /* DeepSeekConfiguration.swift */; };
 		6954EBFF208DE2B1D0A7D3A8 /* TailcatRelaySettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1986CF55627D6A29668B3B10 /* TailcatRelaySettings.swift */; };
 		73569A6C33D94DEE3D9141F3 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 067C5878128418FC7FEBE76A /* OnboardingView.swift */; };
 		76C0C8E2D63AABBC7AA2C4ED /* ProcessExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4970FED3A0AD33401F1DFE86 /* ProcessExecutor.swift */; };
@@ -34,6 +35,7 @@
 		9381140D2855654A9E07746E /* StatusComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A4847134E49077F02AF8BBE /* StatusComponents.swift */; };
 		943444FF2C49492A818BEDE7 /* CodexFrontDoorInvocationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 018678E3BFBB71E9F374FF6C /* CodexFrontDoorInvocationTests.swift */; };
 		948724FB5BADA496572B0068 /* HostStoreControlErrors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 420B2B044A245D8F755DB795 /* HostStoreControlErrors.swift */; };
+		9819A85F69F0BCD02F07153B /* DeepSeekConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C35C5D9E56DB2D5E11CC261 /* DeepSeekConfigurationTests.swift */; };
 		A6AFE40180A85DFFB12B968C /* AgentDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F99C0872C5C1DA7EEA3DA0F /* AgentDiagnosticsTests.swift */; };
 		AD199C3299AE46CEBBFBD8F4 /* MenuRuntimePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14C8D785FAF772A76606A4A /* MenuRuntimePresentationTests.swift */; };
 		B0007C75D28B779DE9DE6270 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08DE170A943EDB5164E2CD95 /* PairingView.swift */; };
@@ -101,10 +103,12 @@
 		8C1717DA793AF3CE77106578 /* HostStoreCodexSessionRepairTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreCodexSessionRepairTests.swift; sourceTree = "<group>"; };
 		8DA7DA1200E8FF88D5E0DDF2 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		95CEFC2080963A6433B43217 /* MenuBarWindowPlacementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarWindowPlacementTests.swift; sourceTree = "<group>"; };
+		9C35C5D9E56DB2D5E11CC261 /* DeepSeekConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepSeekConfigurationTests.swift; sourceTree = "<group>"; };
 		A14C8D785FAF772A76606A4A /* MenuRuntimePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuRuntimePresentationTests.swift; sourceTree = "<group>"; };
 		A1A62A4B02D2D4B3685ED5AD /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A4B237B273C4752F1393B508 /* HostStoreFrontDoorRestoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreFrontDoorRestoreTests.swift; sourceTree = "<group>"; };
 		A8A55B52C00DCCF1CB58B745 /* AppUpdateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateView.swift; sourceTree = "<group>"; };
+		AB9A64DB49D670340D4F5791 /* DeepSeekConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepSeekConfiguration.swift; sourceTree = "<group>"; };
 		B78765A951C28D21B18CCFAF /* MenuRuntimePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuRuntimePresentation.swift; sourceTree = "<group>"; };
 		BD1EB9E7DF5E2AD9AE3FFAF5 /* ModuleControlsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleControlsTests.swift; sourceTree = "<group>"; };
 		C187C502CDCBC251CB35D863 /* MimiRemoteMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MimiRemoteMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -122,6 +126,7 @@
 			children = (
 				1F17DD694E825499E8C8965E /* AgentDiagnosticsModels.swift */,
 				DC7976BAA1C4222A9CE0CF24 /* AgentModels.swift */,
+				AB9A64DB49D670340D4F5791 /* DeepSeekConfiguration.swift */,
 				509C3157F7B0D582B0E2633D /* ModuleChangePresentation.swift */,
 				054371F4B53A557AF0C1B27B /* ModuleModels.swift */,
 			);
@@ -201,6 +206,7 @@
 				5F99C0872C5C1DA7EEA3DA0F /* AgentDiagnosticsTests.swift */,
 				F9B97C2451CBB1E2B78D009C /* AgentModelsTests.swift */,
 				3C59B0505460DB90B25BDCDE /* AppUpdateTests.swift */,
+				9C35C5D9E56DB2D5E11CC261 /* DeepSeekConfigurationTests.swift */,
 				018678E3BFBB71E9F374FF6C /* CodexFrontDoorInvocationTests.swift */,
 				8C1717DA793AF3CE77106578 /* HostStoreCodexSessionRepairTests.swift */,
 				A4B237B273C4752F1393B508 /* HostStoreFrontDoorRestoreTests.swift */,
@@ -432,6 +438,7 @@
 				D336EA8131545784B5D56A67 /* AppUpdateView.swift in Sources */,
 				1A8CB50439D0E08A8514EA5B /* BrandColors.swift in Sources */,
 				78843D42483895178C480F25 /* DashboardView.swift in Sources */,
+				646E5B1D36C74B419372EBE4 /* DeepSeekConfiguration.swift in Sources */,
 				0CA331176F893C656E0CCDA1 /* DiagnosticsView.swift in Sources */,
 				B4E72BE5C26B15E8255D9F2B /* HealthClient.swift in Sources */,
 				58C74CEDC10E4370604F7FA6 /* HomebrewServiceClient.swift in Sources */,
@@ -467,6 +474,7 @@
 				2D3D7AD1F48F6D665E50089E /* AgentModelsTests.swift in Sources */,
 				233962E6F05066A3F95714E0 /* AgentdConfigCheckClientTests.swift in Sources */,
 				28EBD25B9A113B0FD13FE90E /* AppUpdateTests.swift in Sources */,
+				9819A85F69F0BCD02F07153B /* DeepSeekConfigurationTests.swift in Sources */,
 				943444FF2C49492A818BEDE7 /* CodexFrontDoorInvocationTests.swift in Sources */,
 				C8B87ED3A455F4D40A2441AC /* HostStoreCodexSessionRepairTests.swift in Sources */,
 				46A365270584A3428ABC7936 /* HostStoreFrontDoorRestoreTests.swift in Sources */,
