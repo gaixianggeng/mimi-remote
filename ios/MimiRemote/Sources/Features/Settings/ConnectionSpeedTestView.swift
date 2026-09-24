@@ -35,8 +35,7 @@ struct ConnectionSpeedTestView: View {
                 .settingsRow()
                 .accessibilityIdentifier("settings.connectionSpeedTest.route")
             } header: {
-                Text(L10n.text("ui.connection_method"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.connection_method"), showsDivider: false)
             }
             .settingsGroupRowStyle()
 
@@ -96,8 +95,7 @@ struct ConnectionSpeedTestView: View {
                 .disabled(!canRunTest)
                 .accessibilityIdentifier("settings.connectionSpeedTest.run")
             } header: {
-                Text(transientPreferences.speedTestRoute.title)
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: transientPreferences.speedTestRoute.title)
             } footer: {
                 Text(testFooter)
                     .settingsSectionFooterStyle()
@@ -113,8 +111,7 @@ struct ConnectionSpeedTestView: View {
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
                 } header: {
-                    Text(L10n.text("ui.speed_test_results"))
-                        .settingsSectionHeaderStyle()
+                    SettingsGroupHeader(title: L10n.text("ui.speed_test_results"))
                 }
                 .settingsGroupRowStyle()
 
@@ -123,8 +120,7 @@ struct ConnectionSpeedTestView: View {
                         ConnectionSpeedTestStageRow(stage: stage)
                     }
                 } header: {
-                    Text(L10n.text("ui.segmentation_takes_time"))
-                        .settingsSectionHeaderStyle()
+                    SettingsGroupHeader(title: L10n.text("ui.segmentation_takes_time"))
                 }
                 .settingsGroupRowStyle()
 
@@ -149,8 +145,7 @@ struct ConnectionSpeedTestView: View {
                             )
                         }
                     } header: {
-                        Text(L10n.text("ui.gateway_observation"))
-                            .settingsSectionHeaderStyle()
+                        SettingsGroupHeader(title: L10n.text("ui.gateway_observation"))
                     }
                     .settingsGroupRowStyle()
                 }
@@ -244,8 +239,7 @@ struct ConnectionSpeedTestView: View {
                 }
             }
         } header: {
-            Text(L10n.text("ui.connection_benchmark_title"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.connection_benchmark_title"))
         } footer: {
             Group {
                 if transientPreferences.recordsBenchmarkSamples {

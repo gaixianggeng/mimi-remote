@@ -55,6 +55,8 @@ struct LockScreenApprovalSettingsView: View {
                     Button(L10n.text("ui.retry")) { Task { await refresh() } }
                         .disabled(isBusy)
                 }
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             }
             .settingsGroupRowStyle()
 
@@ -72,6 +74,8 @@ struct LockScreenApprovalSettingsView: View {
                         .disabled(isBusy || !store.hostSupportsPush(for: appStore.activeConnectionProfileID))
                         .accessibilityIdentifier("settings.lockScreenApproval.rebind")
                     }
+                } header: {
+                    SettingsGroupHeader()
                 }
                 .settingsGroupRowStyle()
             }
@@ -80,6 +84,8 @@ struct LockScreenApprovalSettingsView: View {
                 NavigationLink(value: SettingsDestination.privacyPolicy) {
                     Label(L10n.text("ui.privacy_policy"), systemImage: "hand.raised")
                 }
+            } header: {
+                SettingsGroupHeader()
             }
             .settingsGroupRowStyle()
             if developerModeEnabled {
@@ -90,6 +96,8 @@ struct LockScreenApprovalSettingsView: View {
                         Label(L10n.text("ui.push_route_diagnostics_copy"), systemImage: "doc.on.doc")
                     }
                     .accessibilityIdentifier("settings.lockScreenApproval.copyRouteDiagnostics")
+                } header: {
+                    SettingsGroupHeader()
                 }
                 .settingsGroupRowStyle()
             }
@@ -240,6 +248,8 @@ struct LockScreenApprovalConsentSheet: View {
                         .foregroundStyle(tokens.primaryText)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.vertical, 4)
+                } header: {
+                    SettingsGroupHeader(showsDivider: false)
                 } footer: {
                     Text(isOfficialService
                         ? L10n.text("ui.push_consent_official_note")
@@ -256,8 +266,7 @@ struct LockScreenApprovalConsentSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } header: {
-                    Text(L10n.text("ui.push_disclosure_leaves_device"))
-                        .settingsSectionHeaderStyle()
+                    SettingsGroupHeader(title: L10n.text("ui.push_disclosure_leaves_device"))
                 }
                 .settingsGroupRowStyle()
 
@@ -269,8 +278,7 @@ struct LockScreenApprovalConsentSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } header: {
-                    Text(L10n.text("ui.push_disclosure_stays_local"))
-                        .settingsSectionHeaderStyle()
+                    SettingsGroupHeader(title: L10n.text("ui.push_disclosure_stays_local"))
                 } footer: {
                     Text(L10n.text("ui.push_consent_retention"))
                         .settingsSectionFooterStyle()

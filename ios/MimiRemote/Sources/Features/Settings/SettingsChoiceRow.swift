@@ -295,6 +295,8 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
                     .buttonStyle(.plain)
                     .settingsRow(option.choiceSubtitle == nil ? .standard : .descriptive)
                 }
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             }
             .settingsGroupRowStyle()
         }
@@ -373,8 +375,7 @@ struct LanguageSettingsView: View {
                 .settingsRow()
                 .accessibilityIdentifier("settings.language.detail.language")
             } header: {
-                Text(L10n.text("ui.language"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.language"), showsDivider: false)
             }
             .settingsGroupRowStyle()
 
@@ -387,6 +388,8 @@ struct LanguageSettingsView: View {
                 )
                 .settingsRow(.descriptive)
                 .accessibilityIdentifier("settings.language.detail.voiceInput")
+            } header: {
+                SettingsGroupHeader()
             }
             .settingsGroupRowStyle()
         }

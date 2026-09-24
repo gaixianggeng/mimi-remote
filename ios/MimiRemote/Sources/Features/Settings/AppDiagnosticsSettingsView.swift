@@ -124,6 +124,8 @@ struct AppDiagnosticsSettingsView: View {
                 }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.appDiagnostics.detailedLogging")
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             } footer: {
                 Text(detailedLoggingFooter)
                     .settingsSectionFooterStyle()
@@ -156,6 +158,8 @@ struct AppDiagnosticsSettingsView: View {
                 }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.appDiagnostics.clear")
+            } header: {
+                SettingsGroupHeader()
             } footer: {
                 Text(L10n.text("ui.app_diagnostics_storage_explanation"))
                     .settingsSectionFooterStyle()
@@ -167,6 +171,8 @@ struct AppDiagnosticsSettingsView: View {
                     Label(L10n.text("ui.app_diagnostics_operation_failed"), systemImage: "exclamationmark.triangle")
                         .foregroundStyle(tokens.warning)
                         .settingsStandardListRow()
+                } header: {
+                    SettingsGroupHeader()
                 }
                 .settingsGroupRowStyle()
             }

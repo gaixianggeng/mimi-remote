@@ -45,7 +45,22 @@ extension View {
             .listRowSeparator(.hidden)
     }
 
+    /// 分组脚注。左右边距显式给定、与分组标题同一条边线：系统脚注比标题多缩进约 4pt，
+    /// 分组之间有细线后这点错位很显眼（#563）。只用于 Section 的 footer。
     func settingsSectionFooterStyle() -> some View {
+        modifier(PageSectionCaptionModifier(weight: .regular))
+            .listRowInsets(
+                EdgeInsets(
+                    top: SettingsLayoutMetrics.groupFooterTopSpacing,
+                    leading: SettingsLayoutMetrics.rowHorizontalInset,
+                    bottom: 0,
+                    trailing: SettingsLayoutMetrics.rowHorizontalInset
+                )
+            )
+    }
+
+    /// 行内说明文字：字号与颜色同分组脚注，不带脚注的边距。
+    func settingsCaptionStyle() -> some View {
         modifier(PageSectionCaptionModifier(weight: .regular))
     }
 
@@ -104,7 +119,8 @@ private struct SettingsDetailPageModifier: ViewModifier {
 ///
 /// 平铺之后只剩留白区分分组，单行的分组（消息通知、优先使用）没有标题，
 /// 看起来像是游离在两组之间；一条与内容同宽的细线把「这里换了一件事」说清楚。
-/// 页面第一组不画线；单行的分组可以只有线、没有标题。
+/// 页面第一组不画线；单行的分组可以只有线、没有标题；第一组既无线也无标题时只留顶部间距，
+/// 否则系统会按无标题分组的默认上边距空出一大截，各页起点高低不一。
 ///
 /// 分组之间的留白全部由这里给出，所在页面要把分组间距和 `defaultMinListHeaderHeight`
 /// 都设为 0（见 `dividedSettingsList()`）：系统分组标题至少约 28pt 高、内容垂直居中，
@@ -152,6 +168,10 @@ struct SettingsGroupHeader<Accessory: View>: View {
                     accessory
                 }
                 .padding(.top, showsDivider ? 0 : SettingsLayoutMetrics.groupTitleTopInset)
+            } else if !showsDivider {
+                Color.clear
+                    .frame(height: SettingsLayoutMetrics.groupTitleTopInset)
+                    .accessibilityHidden(true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

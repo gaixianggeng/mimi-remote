@@ -22,6 +22,8 @@ enum SettingsLayoutMetrics {
     static let groupDividerTitleSpacing: CGFloat = 10
     /// 页面第一组没有细线，标题离内容顶端的距离。
     static let groupTitleTopInset: CGFloat = 6
+    /// 分组脚注离上方最后一行的距离；脚注下方不再留白，由下一组细线上方的留白接上。
+    static let groupFooterTopSpacing: CGFloat = 6
     /// 行尾标记（刷新、展开箭头）按系统导航箭头取：宽度、字号、到值文字的间距。
     static let trailingAccessoryWidth: CGFloat = 16
     static let trailingAccessoryPointSize: CGFloat = 14
@@ -1286,6 +1288,8 @@ struct DiagnosticsAndSupportSettingsView: View {
                 }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.support")
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             }
             .settingsGroupRowStyle()
         }
@@ -1323,12 +1327,15 @@ struct AdvancedDevelopmentSettingsView: View {
                 }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.developerMode")
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             } footer: {
                 Text(
                     developerModeEnabled
                         ? L10n.text("ui.historical_diagnostics_may_display_the_local_machine_path")
                         : L10n.text("ui.turn_on_to_use_advanced_operating_options_and")
                 )
+                .settingsSectionFooterStyle()
             }
             .settingsGroupRowStyle()
             if developerModeEnabled {
@@ -1380,8 +1387,11 @@ struct AboutAndLegalSettingsView: View {
                 }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.openSourceLicense")
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             } footer: {
                 Text(L10n.text("ui.legal_documents_are_included_in_the_app"))
+                    .settingsSectionFooterStyle()
             }
             .settingsGroupRowStyle()
         }

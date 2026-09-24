@@ -182,8 +182,7 @@ struct ManagedConnectionSubscriptionView: View {
                 }
             }
         } header: {
-            Text(L10n.text("ui.managed_subscription_status"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.managed_subscription_status"), showsDivider: false)
         }
         .settingsGroupRowStyle()
     }
@@ -233,8 +232,7 @@ struct ManagedConnectionSubscriptionView: View {
                     .foregroundStyle(tokens.warning)
             }
         } header: {
-            Text(L10n.text("ui.managed_devices_connection"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.managed_devices_connection"))
         } footer: {
             Text(L10n.text("ui.managed_devices_rescan_notice"))
                 .settingsSectionFooterStyle()
@@ -296,8 +294,7 @@ struct ManagedConnectionSubscriptionView: View {
                     .foregroundStyle(tokens.warning)
             }
         } header: {
-            Text(L10n.text("ui.managed_connection_route_status"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.managed_connection_route_status"))
         } footer: {
             Group {
                 if showsManagedRecoveryActions {
@@ -435,8 +432,7 @@ struct ManagedConnectionSubscriptionView: View {
                 }
             }
         } header: {
-            Text(L10n.text("ui.managed_devices_title"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.managed_devices_title"))
         } footer: {
             Text(L10n.text("ui.managed_devices_privacy_notice"))
                 .settingsSectionFooterStyle()
@@ -608,8 +604,7 @@ struct ManagedConnectionSubscriptionView: View {
                 }
             }
         } header: {
-            Text(L10n.text("ui.managed_subscription_plans"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.managed_subscription_plans"))
         } footer: {
             Text(L10n.text("ui.managed_subscription_renews_automatically"))
                 .settingsSectionFooterStyle()
@@ -636,8 +631,7 @@ struct ManagedConnectionSubscriptionView: View {
             }
             .frame(minHeight: 44)
         } header: {
-            Text(L10n.text("ui.subscription_information"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.subscription_information"))
         }
         .settingsGroupRowStyle()
     }

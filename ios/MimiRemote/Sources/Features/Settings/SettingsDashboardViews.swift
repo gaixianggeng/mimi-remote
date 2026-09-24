@@ -63,7 +63,7 @@ struct ConnectionSettingsView: View {
                     // 说明是这一行的解释，放进同一组、与行标题同一条左边线；
                     // 系统脚注比分组标题多缩进几个点，放在脚注里对不齐（#563）。
                     Text(L10n.text("ui.preferred_runtime_description"))
-                        .settingsSectionFooterStyle()
+                        .settingsCaptionStyle()
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .listRowInsets(
@@ -82,8 +82,6 @@ struct ConnectionSettingsView: View {
                 .settingsGroupRowStyle()
             }
         }
-        // 分组之间用细线划分；要挂在 themedSettingsForm 之内，离 Form 最近的分组间距才生效。
-        .dividedSettingsList()
         .navigationDestination(isPresented: $isPresentingAddComputerForManualConnection) {
             AddComputerView(qrScannerPresentation: qrScannerPresentation, navigation: navigation)
         }
