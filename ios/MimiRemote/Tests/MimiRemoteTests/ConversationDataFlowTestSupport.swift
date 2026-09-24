@@ -532,7 +532,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let messagesError: Error?
     let modelOptionsResult: [CodexAppServerModelOption]
     let modelOptionsError: Error?
-    let runtimeChannelAvailability: [String: Bool]
+    var runtimeChannelAvailability: [String: Bool]
     let rateLimitsByRuntime: [String: RateLimitSummary]
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)?

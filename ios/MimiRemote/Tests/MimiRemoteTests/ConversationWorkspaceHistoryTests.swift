@@ -2172,19 +2172,24 @@ extension ConversationDataFlowTests {
     // 回归：新建草稿必须保留入口选择的 runtime，直到首条消息真正创建远端会话。
     func testWorkspaceSessionRuntimeChoicesExposeClaudeProviderOnlyWhenAvailable() {
         XCTAssertEqual(
-            WorkspaceSessionRuntimeChoice.available(claudeChannelAvailable: false),
+            WorkspaceSessionRuntimeChoice.available(runtimeProviders: ["codex"]),
             [.codex],
             "Claude 通道不可用时，工作区入口只能创建 Codex 会话"
         )
         XCTAssertEqual(
-            WorkspaceSessionRuntimeChoice.available(claudeChannelAvailable: true),
-            [.codex, .claude],
+            WorkspaceSessionRuntimeChoice.available(runtimeProviders: ["codex", "claude", "deepseek"]),
+            [.codex, .claude, .deepseek],
             "Claude 通道可用时，工作区入口必须显式暴露 Claude 会话动作"
         )
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.runtimeProvider, "codex")
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.runtimeProvider, "claude")
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.brandMark.assetName, "OpenAIMonoblossom")
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.brandMark.assetName, "Claude")
+        XCTAssertEqual(
+            WorkspaceSessionRuntimeChoice.deepseek.brandMark.assetName,
+            "DeepSeek",
+            "DeepSeek 必须用自己的品牌标记，不能退回中性的终端 SF Symbol"
+        )
     }
 
     func testSessionRuntimePresentationNormalizesKnownRuntimeAliases() {
@@ -4774,6 +4779,37 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy, .economy])
         XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .summaryFailed)
         XCTAssertNotNil(store.errorMessage)
+    }
+
+    func testWrappedHarnessHistoryCancellationDoesNotShowFailureNotice() async {
+        let project = makeProject(id: "proj_harness_cancelled_history")
+        let history = makeSession(
+            id: "harness_cancelled_history",
+            projectID: project.id,
+            title: "取消的历史读取",
+            status: "history",
+            source: "deepseek",
+            runtimeProvider: "deepseek",
+            resumeID: "harness_cancelled_history"
+        )
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+        // historyFirstPage 会先包装 transport 错误；最终 UI 仍需把它识别为取消。
+        client.failHistoryRequest(at: 0, with: HarnessTransportError.cancelled)
+        await selectTask.value
+
+        XCTAssertNotEqual(store.selectedHistorySavingsNotice?.kind, .fullFailed)
+        XCTAssertNotEqual(store.selectedHistorySavingsNotice?.kind, .summaryFailed)
+        XCTAssertNil(store.errorMessage)
     }
 
     func testLoadEarlierHistoryMergesOlderMessagePage() async {

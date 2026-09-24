@@ -1214,7 +1214,7 @@ struct DefaultModelSettingsView: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let runtimes = DefaultModelRuntime.allCases
+        let runtimes = displayedRuntimes
 
         Form {
             // 两个 runtime 各自一段，不再用分段控件互相遮挡：
@@ -1249,8 +1249,14 @@ struct DefaultModelSettingsView: View {
     }
 
     private func normalizeStoredEfforts() {
-        for runtime in DefaultModelRuntime.allCases {
+        for runtime in displayedRuntimes {
             normalizeStoredEffort(for: runtime)
+        }
+    }
+
+    private var displayedRuntimes: [DefaultModelRuntime] {
+        DefaultModelRuntime.allCases.filter {
+            $0 != .deepseek || sessionStore.isRuntimeAvailable($0.rawValue)
         }
     }
 
@@ -1347,7 +1353,10 @@ private struct DefaultModelRuntimeSection: View {
                     title: L10n.text("ui.reasoning_effort"),
                     systemImage: "gauge.with.dots.needle.33percent",
                     options: availableEfforts,
-                    selection: reasoningEffortChoiceBinding
+                    selection: reasoningEffortChoiceBinding,
+                    optionTitle: {
+                        ModelReasoningGridCatalog.effortTitle($0, runtimeProvider: runtime.rawValue)
+                    }
                 )
                 .settingsRow()
                 .accessibilityIdentifier("settings.defaultModels.reasoning.\(runtime.rawValue)")
@@ -1475,6 +1484,8 @@ private extension DefaultModelRuntime {
             return "Codex"
         case .claude:
             return "Claude Code"
+        case .deepseek:
+            return "DeepSeek Harness"
         }
     }
 }

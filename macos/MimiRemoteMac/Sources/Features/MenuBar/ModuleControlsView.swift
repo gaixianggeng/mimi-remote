@@ -48,27 +48,6 @@ struct ModuleControlsGroup: View {
                     .opacity(0.28)
                     .padding(.leading, 34)
 
-                HStack(spacing: 10) {
-                    RuntimeBrandMarkIcon(
-                        mark: .deepSeek,
-                        size: MenuBarLayout.brandMarkSize,
-                        isMuted: true
-                    )
-                    .frame(width: 24)
-                    Text("DeepSeek")
-                        .font(.callout.weight(.medium))
-                    Spacer(minLength: 8)
-                    Text("未接入")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 3)
-                .frame(
-                    minHeight: MenuBarLayout.rowHeight,
-                    maxHeight: MenuBarLayout.rowHeight
-                )
-
                 Text("开关立即生效。切换 AI 编程助手会重新加载服务，进行中的移动会话可能中断。")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
@@ -76,7 +55,7 @@ struct ModuleControlsGroup: View {
                     .padding(.horizontal, 3)
                     .padding(.top, 3)
 
-                if !store.codexEnabled && !store.claudeEnabled {
+                if !store.codexEnabled && !store.claudeEnabled && !store.deepSeekEnabled {
                     Text("全部助手已关闭，移动端暂不可使用。")
                         .font(.caption)
                         .padding(.horizontal, 3)
@@ -230,7 +209,8 @@ private struct ModuleControlRow: View {
     private var isWorking: Bool {
         pendingEnabled != nil || store.updatingModule == module ||
             (module == .claude && store.isUpdatingClaude) ||
-            (module == .tailcat && store.isUpdatingTailcat)
+            (module == .tailcat && store.isUpdatingTailcat) ||
+            (module == .deepseek && store.isUpdatingDeepSeek)
     }
 
     private var stateTitle: String {
@@ -296,6 +276,7 @@ private struct ModuleDetailView: View {
     let module: HostModuleID
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
+    @State private var deepSeekStartupURL = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -320,6 +301,10 @@ private struct ModuleDetailView: View {
             .disabled(store.isBusy)
         }
         .fixedSize(horizontal: false, vertical: true)
+        .task {
+            // 展开时才检查，避免每次打开菜单栏都跑一次 Harness 探测。
+            if module == .deepseek { await store.inspectDeepSeek() }
+        }
     }
 
     @ViewBuilder private var agentDetail: some View {
@@ -353,22 +338,66 @@ private struct ModuleDetailView: View {
                 Text("额度未知或尚未刷新").font(.caption).foregroundStyle(.secondary)
             }
         }
-        Text(module == .codex
-             ? "使用 Mac 上的 Codex。关闭只阻止 Mimi 使用该助手，不退出 Codex Desktop。"
-             : "使用本机 Claude Code 与 bridge；请在 Mac 上完成安装和登录。")
+        Text(agentDetailCaption)
             .font(.caption).foregroundStyle(.secondary)
-        HStack {
-            Button("复制登录命令") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(module == .codex ? "codex login" : "claude", forType: .string)
+        if module == .deepseek {
+            Text(store.deepSeekStatusDetail).font(.caption)
+            if let baseURL = store.deepSeekConfiguration?.baseURL, !baseURL.isEmpty {
+                Text("服务地址：\(baseURL)").font(.caption).textSelection(.enabled)
             }
-            Button("打开终端") {
-                if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") {
-                    NSWorkspace.shared.open(url)
+            // Harness 有自己的登录与模型管理，这里只负责把它连上 agentd。
+            HStack {
+                if store.deepSeekEnabled {
+                    Button("关闭通道") { Task { await store.configureDeepSeek(.disabled) } }
+                } else if store.deepSeekConfiguration?.discovered == true {
+                    Button("连接已发现的服务") { Task { await store.configureDeepSeek(.connect) } }
+                }
+                Button("重新检测") { Task { await store.configureDeepSeek(.refresh) } }
+            }
+            .controlSize(.small)
+            .disabled(!store.canChangeDeepSeek || store.isUpdatingDeepSeek)
+
+            DisclosureGroup("手动连接") {
+                TextField("Harness 启动链接", text: $deepSeekStartupURL,
+                          prompt: Text("粘贴 dsh web 输出的完整链接"))
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("deepseek.startupURL")
+                Button("验证并连接") {
+                    let link = deepSeekStartupURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                    deepSeekStartupURL = ""
+                    Task { await store.configureDeepSeek(.connect, startupURL: link) }
+                }
+                .disabled(
+                    !store.canChangeDeepSeek || store.isUpdatingDeepSeek ||
+                        deepSeekStartupURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+                Text("适用于终端启动或未被自动发现的服务。链接含访问凭据，不会显示在服务地址中。")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Text("加载通道会重启 agentd，现有连接会短暂重连；Mimi 不会安装、启动或停止 Harness。")
+                .font(.caption2).foregroundStyle(.tertiary)
+        } else {
+            HStack {
+                Button("复制登录命令") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(module == .codex ? "codex login" : "claude", forType: .string)
+                }
+                Button("打开终端") {
+                    if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") {
+                        NSWorkspace.shared.open(url)
+                    }
                 }
             }
+            .controlSize(.small)
         }
-        .controlSize(.small)
+    }
+
+    private var agentDetailCaption: String {
+        switch module {
+        case .codex: "使用 Mac 上的 Codex。关闭只阻止 Mimi 使用该助手，不退出 Codex Desktop。"
+        case .claude: "使用本机 Claude Code 与 bridge；请在 Mac 上完成安装和登录。"
+        default: "使用本机运行中的 DeepSeek Harness。关闭只断开 Mimi 的连接，不影响 Harness 本身。"
+        }
     }
 
     @ViewBuilder private var connectionDetail: some View {

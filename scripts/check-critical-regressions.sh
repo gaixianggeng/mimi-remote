@@ -20,7 +20,7 @@ map_doc="docs/critical-user-journey-regressions.md"
 [[ -f "$runner" ]] || fail "缺少回归入口 ${runner}。"
 [[ -f "$map_doc" ]] || fail "缺少风险映射 ${map_doc}。"
 
-for risk_id in R1 R2 R3 R4 R5 R6 R7 R8 R9 R10; do
+for risk_id in R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12; do
   grep -Fq "| ${risk_id} |" "$map_doc" \
     || fail "${map_doc} 缺少 ${risk_id} 的风险映射。"
 done
@@ -31,6 +31,36 @@ managed_subscription_test_groups=(
   "ManagedConnectionStoreKitClientTests|ios/MimiRemote/Tests/MimiRemoteTests/ManagedConnectionStoreKitClientTests.swift"
 )
 for test_entry in "${managed_subscription_test_groups[@]}"; do
+  test_group="${test_entry%%|*}"
+  test_file="${test_entry#*|}"
+  [[ -f "$test_file" ]] || fail "测试源码不存在：${test_file}。"
+  grep -Fq "final class ${test_group}" "$test_file" \
+    || fail "${test_file} 缺少 ${test_group}。"
+  grep -Fq -- "-only-testing:MimiRemoteTests/${test_group}" "$runner" \
+    || fail "iOS runner 未选择 ${test_group}。"
+  grep -Fq "$test_group" "$map_doc" \
+    || fail "${map_doc} 未记录 ${test_group}。"
+done
+
+# 原生 Harness 客户端（#498）三组测试此前不在任何 selector 列表里，只能靠人工定向执行：
+# H05 删掉了只读方法的 `notImplemented` 抛出，却漏改 H01 那条断言它的测试，红灯因此
+# 无人发现。这组校验把"测试类存在 ↔ runner 选中 ↔ 映射表记录"钉在一起，让同样的漏改
+# 直接让 Gate 失败。
+harness_native_test_groups=(
+  "HarnessNativeRoutingSeamTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessNativeRoutingSeamTests.swift"
+  "HarnessTransportTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessTransportTests.swift"
+  "HarnessSessionDirectoryTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessSessionDirectoryTests.swift"
+  "HarnessDirectoryWiringTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessDirectoryWiringTests.swift"
+  "HarnessSessionJournalTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessSessionJournalTests.swift"
+  "HarnessSubmissionControllerTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessSubmissionControllerTests.swift"
+  "HarnessPresentationProjectorTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessPresentationProjectorTests.swift"
+  "HarnessEventClientTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessEventClientTests.swift"
+  "HarnessInteractionStoreTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessInteractionStoreTests.swift"
+  "HarnessRecoveryCoordinatorTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessRecoveryCoordinatorTests.swift"
+  "HarnessHostEventObserverTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessHostEventObserverTests.swift"
+  "HarnessHistoryPageTests|ios/MimiRemote/Tests/MimiRemoteTests/HarnessSessionJournalTests.swift"
+)
+for test_entry in "${harness_native_test_groups[@]}"; do
   test_group="${test_entry%%|*}"
   test_file="${test_entry#*|}"
   [[ -f "$test_file" ]] || fail "测试源码不存在：${test_file}。"
@@ -183,4 +213,4 @@ grep -Fq '"scripts/check-critical-regressions.sh"' .github/workflows/go-ci.yml \
 grep -Fq '"scripts/check-critical-regressions.sh"' .github/workflows/ios-ci.yml \
   || fail "iOS CI 的 push 路径缺少关键链路 checker。"
 
-echo "关键链路回归映射检查通过：10 类风险、4 个 Go 包、3 组托管订阅测试和 ${#critical_swift_tests[@]} 个高价值 iOS 测试均已接入。"
+echo "关键链路回归映射检查通过：12 类风险、4 个 Go 包、3 组托管订阅测试、${#harness_native_test_groups[@]} 组原生 Harness 测试和 ${#critical_swift_tests[@]} 个高价值 iOS 测试均已接入。"

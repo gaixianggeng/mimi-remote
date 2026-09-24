@@ -145,6 +145,7 @@ struct SessionListView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// 底部浮着 Tab 栏时新建留在顶栏，否则改用右下角浮起按钮。
@@ -153,6 +154,7 @@ struct SessionListView: View {
     @State private var selectedWorkspaceID = "all"
     @State private var selectedStatus: SessionLibraryStatusFilter = .all
     @State private var keyboardSelectionID: SessionID?
+    @State private var isNativeDirectoryListVisible = false
     /// 列表实际可用宽度。nil 表示还没测到，此时暂用 Shell 注入的页面身份作为种子。
     @State private var measuredContentWidth: CGFloat?
     @FocusState private var hasListKeyboardFocus: Bool
@@ -219,6 +221,15 @@ struct SessionListView: View {
                     .frame(maxWidth: .infinity)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
+            }
+
+            if sessionStore.isSessionSearchActive, let notice = sessionStore.remoteSessionSearchNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(tokens.secondaryText)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .accessibilityIdentifier("sessions.search.partialFailure")
             }
 
             // Gateway 过滤后当前页可能没有可见结果但仍给出 nextCursor，入口必须独立于空态展示。
@@ -365,6 +376,24 @@ struct SessionListView: View {
         }
         .onAppear {
             synchronizeLifecycle(lifecycleInput)
+            isNativeDirectoryListVisible = true
+            sessionStore.updateNativeHarnessDirectoryVisibility(
+                isListVisible: true,
+                isForeground: scenePhase == .active
+            )
+        }
+        .onDisappear {
+            isNativeDirectoryListVisible = false
+            sessionStore.updateNativeHarnessDirectoryVisibility(
+                isListVisible: false,
+                isForeground: false
+            )
+        }
+        .onChange(of: scenePhase) { _, phase in
+            sessionStore.updateNativeHarnessDirectoryVisibility(
+                isListVisible: isNativeDirectoryListVisible,
+                isForeground: isNativeDirectoryListVisible && phase == .active
+            )
         }
         .onChange(of: lifecycleInput) { _, newInput in
             synchronizeLifecycle(newInput)
@@ -662,6 +691,7 @@ struct SessionListView: View {
         case .needsWorkspace:
             ContentUnavailableView {
                 Label(L10n.text("ui.no_workspace_has_been_opened_yet"), systemImage: "folder.badge.plus")
+                    .accessibilityIdentifier("sessions.empty.needsWorkspace")
             } description: {
                 Text(L10n.text("ui.open_a_workspace_to_load_its_sessions"))
             } actions: {
@@ -673,7 +703,6 @@ struct SessionListView: View {
                 .tint(tokens.primaryAction)
                 .accessibilityIdentifier("sessions.empty.openWorkspaces")
             }
-            .accessibilityIdentifier("sessions.empty.needsWorkspace")
         case .noSessions:
             ContentUnavailableView {
                 Label(L10n.text("ui.no_sessions_yet"), systemImage: "bubble.left.and.bubble.right")

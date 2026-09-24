@@ -121,6 +121,8 @@ struct ConversationLiveStatus: Equatable {
             return .callingTools
         case .error:
             return nil
+        case .context:
+            return nil
         }
     }
 
