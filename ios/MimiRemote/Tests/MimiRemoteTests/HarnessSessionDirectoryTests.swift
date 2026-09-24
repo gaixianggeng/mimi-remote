@@ -609,6 +609,54 @@ final class HarnessSessionDirectoryTests: XCTestCase {
         )
     }
 
+    func testCurrentHarnessCancellationKeepsPageAndRunsTrailingRefresh() async throws {
+        let clock = FakeHarnessDirectoryClock()
+        let fetch = GatedDirectoryFetch()
+        var delivered: [SessionsPage] = []
+        let directory = HarnessSessionDirectory(
+            clock: clock,
+            fetch: { try await fetch.fetch($0) },
+            deliver: { _, page in delivered.append(page) }
+        )
+
+        directory.activate(query: makeQuery(scope: .global))
+        await waitUntil { fetch.callCount == 1 }
+        fetch.resumeNext(with: .success(page(["old"])))
+        await waitUntil { directory.state == .loaded }
+
+        directory.notifyDirectoryMayHaveChanged()
+        await waitUntil { fetch.callCount == 2 }
+        directory.notifyDirectoryMayHaveChanged()
+        fetch.resumeNext(with: .failure(HarnessTransportError.cancelled))
+        await waitUntil { fetch.callCount == 3 }
+
+        XCTAssertEqual(directory.state, .loaded)
+        XCTAssertEqual(directory.sessions.map(\.id), ["old"])
+        XCTAssertEqual(delivered.count, 1, "取消不得交付空页或清理旧归属")
+
+        fetch.resumeNext(with: .success(page(["new"])))
+        await waitUntil { directory.sessions.map(\.id) == ["new"] }
+        XCTAssertEqual(delivered.count, 2)
+    }
+
+    func testFirstHarnessCancellationLeavesLoadingAndKeepsFallback() async throws {
+        let clock = FakeHarnessDirectoryClock()
+        let fetch = GatedDirectoryFetch()
+        let directory = makeDirectory(clock: clock, fetch: fetch)
+
+        directory.activate(query: makeQuery(scope: .global))
+        directory.setListVisible(true, isForeground: true)
+        await waitUntil { fetch.callCount == 1 }
+        fetch.resumeNext(with: .failure(HarnessTransportError.cancelled))
+        await directory.waitForInFlightRequest()
+        XCTAssertEqual(directory.state, .idle, "当前取消不能让空目录永久停在加载中")
+
+        clock.advance(by: 5)
+        await waitUntil { fetch.callCount == 2 }
+        fetch.resumeNext(with: .success(page(["after-cancel"])))
+        await waitUntil { directory.state == .loaded }
+    }
+
     /// 首屏失败不得被当成"没有会话"。
     func testFirstPageFailureIsNotAnEmptyDirectory() async throws {
         let clock = FakeHarnessDirectoryClock()

@@ -757,7 +757,7 @@ extension SessionStore {
             )
             return didLoad
         } catch {
-            if !(error is CancellationError) {
+            if !isHistoryLoadCancellation(error) {
                 AppDiagnostics.record(
                     stage: .sessionHistory,
                     result: .failed,
@@ -868,7 +868,7 @@ extension SessionStore {
             .map(isSelectionLeaseCurrent) ?? false
         let effectiveQuiet = !current.requiresForegroundReporting || !hasCurrentForegroundOwner
         historyLoadJobsBySessionID.removeValue(forKey: sessionID)
-        if error is CancellationError {
+        if isHistoryLoadCancellation(error) {
             return false
         }
         if let failure = error as? HistoryFirstPageFetchFailure,
@@ -998,6 +998,12 @@ extension SessionStore {
             }
         }
         return false
+    }
+
+    func isHistoryLoadCancellation(_ error: Error) -> Bool {
+        // 首屏请求会先包装底层 transport 错误；取消判定必须看原始错误。
+        let underlying = (error as? HistoryFirstPageFetchFailure)?.underlying ?? error
+        return isCancellationError(underlying)
     }
 
     // gateway 策略拒绝（-32080）对同样的请求参数是确定性失败：自动重连只会带着相同参数再次被拒，

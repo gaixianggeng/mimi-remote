@@ -4781,6 +4781,37 @@ extension ConversationDataFlowTests {
         XCTAssertNotNil(store.errorMessage)
     }
 
+    func testWrappedHarnessHistoryCancellationDoesNotShowFailureNotice() async {
+        let project = makeProject(id: "proj_harness_cancelled_history")
+        let history = makeSession(
+            id: "harness_cancelled_history",
+            projectID: project.id,
+            title: "取消的历史读取",
+            status: "history",
+            source: "deepseek",
+            runtimeProvider: "deepseek",
+            resumeID: "harness_cancelled_history"
+        )
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+        // historyFirstPage 会先包装 transport 错误；最终 UI 仍需把它识别为取消。
+        client.failHistoryRequest(at: 0, with: HarnessTransportError.cancelled)
+        await selectTask.value
+
+        XCTAssertNotEqual(store.selectedHistorySavingsNotice?.kind, .fullFailed)
+        XCTAssertNotEqual(store.selectedHistorySavingsNotice?.kind, .summaryFailed)
+        XCTAssertNil(store.errorMessage)
+    }
+
     func testLoadEarlierHistoryMergesOlderMessagePage() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")

@@ -489,9 +489,15 @@ final class HarnessSessionDirectory {
             state = .loaded
             deliver(requestQuery, page)
         case .failure(let error):
-            if error is CancellationError { return }
-            // 失败保留旧页：只换状态，不动 sessions。
-            state = .failed(error.localizedDescription)
+            if isCancellationError(error) {
+                // 当前请求也可能被 Harness 主动取消；不能停在 loading，更不能跳过尾随刷新/兜底。
+                if state == .loading {
+                    state = sessions.isEmpty ? .idle : .loaded
+                }
+            } else {
+                // 失败保留旧页：只换状态，不动 sessions。
+                state = .failed(error.localizedDescription)
+            }
         }
 
         if dirty {

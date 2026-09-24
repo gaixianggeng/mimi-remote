@@ -315,6 +315,47 @@ func TestHarnessNativeSearchWithCWDMatchesExactDirectory(t *testing.T) {
 	}
 }
 
+func TestHarnessNativeSearchExcludesSubagents(t *testing.T) {
+	for _, indexed := range []bool{true, false} {
+		name := "local-fallback"
+		if indexed {
+			name = "upstream-index"
+		}
+		t.Run(name, func(t *testing.T) {
+			spy := &harnessNativeSpy{}
+			router, authorized, _ := harnessNativeFixture(t, spy)
+			parent := harnessNativeSession("parent", authorized, 10, false)
+			parentOnly := harnessNativeSession("parent-only", authorized, 20, false)
+			parentOnly.ParentSessionID = "parent"
+			originOnly := harnessNativeSession("origin-only", authorized, 30, false)
+			originOnly.Origin = "subagent"
+			for _, session := range []*harnessclient.SessionSummary{&parent, &parentOnly, &originOnly} {
+				session.Projections = &harnessclient.SessionProjectionHints{
+					Values: harnessclient.SessionProjectionValue{Title: "parser"},
+				}
+			}
+			spy.sessions = []harnessclient.SessionSummary{parent, parentOnly, originOnly}
+			spy.searchResult = harnessclient.SessionSearchResult{Items: []harnessclient.SessionSearchItem{
+				{SessionID: "parent", Snippet: "parser"},
+				{SessionID: "parent-only", Snippet: "parser child"},
+				{SessionID: "origin-only", Snippet: "parser child"},
+			}}
+			if !indexed {
+				spy.searchErr = &harnessclient.RemoteError{Code: "gateway/internal", Message: "search unavailable"}
+			}
+			body := `{"rpcId":"top-level-search","method":"session/search","cwd":` + strconv.Quote(authorized) + `,"args":{"request":{"query":"parser"}}}`
+			envelope := decodeHarnessNativeEnvelope(t, callHarnessNativeRPC(t, router, body, nil))
+			var value harnessNativeSearchResult
+			if err := json.Unmarshal(envelope.Result.Value, &value); err != nil {
+				t.Fatal(err)
+			}
+			if len(value.Items) != 1 || value.Items[0].SessionID != "parent" {
+				t.Fatalf("搜索只能展示顶层会话，得到 %+v", value.Items)
+			}
+		})
+	}
+}
+
 func TestHarnessNativeSearchDegradesToLocalMatchWithinAuthorizedList(t *testing.T) {
 	spy := &harnessNativeSpy{}
 	router, authorized, unauthorized := harnessNativeFixture(t, spy)

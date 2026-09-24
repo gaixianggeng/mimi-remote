@@ -560,7 +560,8 @@ func (r *Router) harnessNativeSearch(
 		rows := make([]harnessNativeSearchRow, 0, len(result.Items))
 		for _, item := range result.Items {
 			// 摘要缺失说明该会话不在已授权列表里，直接丢弃。
-			if _, ok := visible[item.SessionID]; !ok {
+			session, ok := visible[item.SessionID]
+			if !ok || harnessNativeIsSubagent(session) {
 				continue
 			}
 			rows = append(rows, harnessNativeSearchRow{SessionID: item.SessionID, Snippet: item.Snippet})
@@ -574,6 +575,9 @@ func (r *Router) harnessNativeSearch(
 	needle := strings.ToLower(query)
 	rows := make([]harnessNativeSearchRow, 0, 16)
 	for _, session := range sessions {
+		if harnessNativeIsSubagent(session) {
+			continue
+		}
 		haystack, snippet := harnessNativeSearchHaystack(session)
 		if !strings.Contains(haystack, needle) {
 			continue
@@ -584,6 +588,11 @@ func (r *Router) harnessNativeSearch(
 		}
 	}
 	return harnessNativeSearchResult{Items: rows, HasMore: false}, nil
+}
+
+// 搜索只返回顶层会话；原始列表仍保留子会话供父子导航使用。
+func harnessNativeIsSubagent(session harnessclient.SessionSummary) bool {
+	return strings.TrimSpace(session.ParentSessionID) != "" || session.Origin == "subagent"
 }
 
 // harnessNativeSearchIndexUnavailable 判定上游错误是不是"检索索引未启用"。
