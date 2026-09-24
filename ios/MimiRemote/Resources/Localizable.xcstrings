@@ -25972,6 +25972,23 @@
         }
       }
     },
+    "ui.runtime_retry_hint": {
+      "comment": "Hint for a runtime that can be rechecked after a failed availability probe.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap to check this runtime again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点击重新检查此运行时。"
+          }
+        }
+      }
+    },
     "ui.runtime_unavailable_hint": {
       "comment": "Accessibility hint for an unavailable runtime filter.",
       "localizations": {

@@ -777,7 +777,10 @@ struct WorkspaceRootView: View {
 
                 WorkspaceRuntimePicker(
                     selection: $selectedSessionRuntime,
-                    availableRuntimeProviders: sessionStore.availableRuntimeProviders
+                    availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+                    onRetryUnavailable: { choice in
+                        await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
+                    }
                 )
             }
         }
@@ -1024,6 +1027,9 @@ struct WorkspaceRootView: View {
             ),
             selectedRuntime: $selectedSessionRuntime,
             availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+            onRetryUnavailable: { choice in
+                await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
+            },
             currentDate: currentDate,
             onRefreshSessions: {
                 Task {

@@ -102,9 +102,11 @@ struct WorkspaceRuntimePicker: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @Namespace private var selectionNamespace
+    @State private var retryingRuntime: WorkspaceSessionRuntimeChoice?
 
     @Binding var selection: WorkspaceSessionRuntimeChoice
     let availableRuntimeProviders: Set<String>
+    let onRetryUnavailable: (WorkspaceSessionRuntimeChoice) async -> Bool
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -115,18 +117,25 @@ struct WorkspaceRuntimePicker: View {
                 let isAvailable = choice.isAvailable(in: availableRuntimeProviders)
 
                 Button {
-                    guard isAvailable else { return }
-                    if reduceMotion {
-                        selection = choice
+                    if isAvailable {
+                        select(choice)
                     } else {
-                        // 选中内胶囊从当前显示位置继续运动，避免两个独立色块交叉闪烁。
-                        withAnimation(.spring(response: 0.28, dampingFraction: 1)) {
-                            selection = choice
+                        guard retryingRuntime == nil else { return }
+                        let previousSelection = selection
+                        retryingRuntime = choice
+                        Task {
+                            let recovered = await onRetryUnavailable(choice)
+                            if recovered, selection == previousSelection { select(choice) }
+                            retryingRuntime = nil
                         }
                     }
                 } label: {
                     HStack(spacing: 5) {
-                        RuntimeBrandMarkIcon(mark: choice.brandMark, size: 14)
+                        if retryingRuntime == choice {
+                            ProgressView().controlSize(.mini).frame(width: 14, height: 14)
+                        } else {
+                            RuntimeBrandMarkIcon(mark: choice.brandMark, size: 14)
+                        }
 
                         Text(choice.listTitle)
                             .font(themeStore.uiFont(.footnote, weight: isSelected ? .semibold : .medium))
@@ -179,13 +188,13 @@ struct WorkspaceRuntimePicker: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-                .disabled(!isAvailable)
+                .disabled(retryingRuntime != nil)
                 .accessibilityLabel(choice.listTitle)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
                 .accessibilityHint(
                     isAvailable
                         ? L10n.text("ui.show_runtime_sessions_hint")
-                        : L10n.text("ui.runtime_unavailable_hint")
+                        : L10n.text("ui.runtime_retry_hint")
                 )
                 .accessibilityIdentifier("workspace.sessions.runtime.\(choice.rawValue)")
             }
@@ -210,6 +219,17 @@ struct WorkspaceRuntimePicker: View {
         .accessibilityLabel(L10n.text("ui.runtime_provider"))
         .accessibilityIdentifier("workspace.sessions.runtimePicker")
     }
+
+    private func select(_ choice: WorkspaceSessionRuntimeChoice) {
+        if reduceMotion {
+            selection = choice
+        } else {
+            // 选中内胶囊从当前显示位置继续运动，避免两个独立色块交叉闪烁。
+            withAnimation(.spring(response: 0.28, dampingFraction: 1)) {
+                selection = choice
+            }
+        }
+    }
 }
 
 /// 窄屏弹窗形态：触发行仍是一处品牌标记加 chevron，但展开的是锚定气泡而不是系统菜单。
@@ -221,8 +241,10 @@ struct WorkspaceRuntimePopoverPicker: View {
 
     @Binding var selection: WorkspaceSessionRuntimeChoice
     let availableRuntimeProviders: Set<String>
+    let onRetryUnavailable: (WorkspaceSessionRuntimeChoice) async -> Bool
 
     @State private var isPresented = false
+    @State private var retryingRuntime: WorkspaceSessionRuntimeChoice?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -259,25 +281,39 @@ struct WorkspaceRuntimePopoverPicker: View {
 
     private func popoverContent(tokens: ThemeTokens) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 始终列出全部 Runtime；不可用的那个保留为禁用行，
-            // 直接隐藏会让用户无法判断对应 Agent 是未接入还是暂不可用。
+            // 始终列出全部 Runtime；暂不可用的那个允许点击重探，
+            // 不能让首次网络失败把筛选器锁死到 App 重启。
             ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
                 let isAvailable = choice.isAvailable(in: availableRuntimeProviders)
 
                 Button {
-                    selection = choice
-                    isPresented = false
+                    if isAvailable {
+                        selection = choice
+                        isPresented = false
+                    } else {
+                        guard retryingRuntime == nil else { return }
+                        let previousSelection = selection
+                        retryingRuntime = choice
+                        Task {
+                            let recovered = await onRetryUnavailable(choice)
+                            if recovered, selection == previousSelection {
+                                selection = choice
+                                isPresented = false
+                            }
+                            retryingRuntime = nil
+                        }
+                    }
                 } label: {
                     row(choice: choice, isAvailable: isAvailable, tokens: tokens)
                 }
                 .buttonStyle(.plain)
-                .disabled(!isAvailable)
+                .disabled(retryingRuntime != nil)
                 .accessibilityLabel(choice.listTitle)
                 .accessibilityAddTraits(choice == selection ? .isSelected : [])
                 .accessibilityHint(
                     isAvailable
                         ? L10n.text("ui.show_runtime_sessions_hint")
-                        : L10n.text("ui.runtime_unavailable_hint")
+                        : L10n.text("ui.runtime_retry_hint")
                 )
                 .accessibilityIdentifier("workspace.sessions.runtime.\(choice.rawValue)")
 
@@ -298,19 +334,23 @@ struct WorkspaceRuntimePopoverPicker: View {
         tokens: ThemeTokens
     ) -> some View {
         HStack(spacing: 10) {
-            RuntimeBrandMarkIcon(mark: choice.brandMark, size: 20)
-                .opacity(isAvailable ? 1 : 0.4)
+            if retryingRuntime == choice {
+                ProgressView().controlSize(.small).frame(width: 20, height: 20)
+            } else {
+                RuntimeBrandMarkIcon(mark: choice.brandMark, size: 20)
+                    .opacity(isAvailable ? 1 : 0.4)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(choice.listTitle)
                     .font(themeStore.uiFont(.subheadline, weight: choice == selection ? .semibold : .regular))
                     .foregroundStyle(isAvailable ? tokens.primaryText : tokens.tertiaryText)
 
-                // 两行都带副标题，行高才是齐的；不可用时这一行改说为什么点不了。
+                // 两行都带副标题，行高才是齐的；不可用时提示可点击重试。
                 Text(
                     isAvailable
                         ? choice.listSubtitle
-                        : L10n.text("ui.runtime_unavailable_hint")
+                        : L10n.text("ui.runtime_retry_hint")
                 )
                 .font(themeStore.uiFont(.caption))
                 .foregroundStyle(tokens.tertiaryText)

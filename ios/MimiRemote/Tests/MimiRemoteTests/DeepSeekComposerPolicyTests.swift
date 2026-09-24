@@ -74,6 +74,24 @@ final class DeepSeekComposerPolicyTests: XCTestCase {
         XCTAssertFalse(store.isClaudeRuntimeChannelAvailable)
     }
 
+    func testUnavailableHarnessCanRecoverOnRuntimeTapWithoutRestartingStore() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [], runtimeChannelAvailability: ["codex": true, "deepseek": false]
+        )
+        let store = makeStore(client: client)
+        await store.refreshAppServerModelOptions()
+        XCTAssertFalse(store.isRuntimeAvailable("deepseek"))
+        let stillUnavailable = await store.retryRuntimeAvailability("deepseek")
+        XCTAssertFalse(stillUnavailable, "Mac 端未启用或 Harness 仍离线时不能误选")
+
+        client.runtimeChannelAvailability["deepseek"] = true
+        let recovered = await store.retryRuntimeAvailability("deepseek")
+
+        XCTAssertTrue(recovered)
+        XCTAssertTrue(store.isRuntimeAvailable("deepseek"))
+        XCTAssertTrue(store.isRuntimeAvailable("codex"), "重探 DeepSeek 不应撤销其他通道")
+    }
+
     func testCreateSendsHarnessModelAndInteractiveApproval() async throws {
         let project = makeProject(id: "project-harness-create")
         let created = makeSession(id: "session-harness-create", projectID: project.id,

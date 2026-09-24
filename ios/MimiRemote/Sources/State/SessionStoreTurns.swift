@@ -191,6 +191,29 @@ extension SessionStore {
         }
     }
 
+    /// 用户点到暂不可用的 Runtime 时只重探该通道；先尝试重读配置，避免沿用
+    /// Mac 端刚启用通道前的缓存。配置刷新失败仍可用旧快照重试健康探测，
+    /// 探测失败不撤销其他已确认可用的通道。
+    func retryRuntimeAvailability(_ runtimeProvider: String) async -> Bool {
+        let provider = Self.normalizedRuntimeProvider(runtimeProvider)
+        guard RuntimeFeatureSupport.runtimeProviders.contains(provider) else { return false }
+        let hostScope = appStore.activeHostScope
+        do {
+            _ = try? await appStore.activeRuntimeBundle?.refreshConfiguration()
+            let available = try await clientFactory().runtimeChannelAvailable(runtimeProvider: provider)
+            guard appStore.activeHostScope == hostScope else { return false }
+            if available {
+                availableRuntimeProviders.insert(provider)
+                if provider == Self.nativeHarnessRuntimeProvider {
+                    installNativeHarnessHostEvents()
+                }
+            }
+            return available
+        } catch {
+            return false
+        }
+    }
+
     func refreshPermissionProfiles(cwd: String?) async {
         let normalizedCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !normalizedCWD.isEmpty else {
