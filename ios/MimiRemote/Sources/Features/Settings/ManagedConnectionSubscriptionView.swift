@@ -185,6 +185,7 @@ struct ManagedConnectionSubscriptionView: View {
             Text(L10n.text("ui.managed_subscription_status"))
                 .settingsSectionHeaderStyle()
         }
+        .settingsGroupRowStyle()
     }
 
     private func entitlementStatusText(_ status: ManagedConnectionEntitlement.Status) -> String {
@@ -238,6 +239,7 @@ struct ManagedConnectionSubscriptionView: View {
             Text(L10n.text("ui.managed_devices_rescan_notice"))
                 .settingsSectionFooterStyle()
         }
+        .settingsGroupRowStyle()
     }
 
     private var managedRouteSection: some View {
@@ -304,6 +306,7 @@ struct ManagedConnectionSubscriptionView: View {
             }
             .settingsSectionFooterStyle()
         }
+        .settingsGroupRowStyle()
     }
 
     private var showsManagedRecoveryActions: Bool {
@@ -438,6 +441,7 @@ struct ManagedConnectionSubscriptionView: View {
             Text(L10n.text("ui.managed_devices_privacy_notice"))
                 .settingsSectionFooterStyle()
         }
+        .settingsGroupRowStyle()
     }
 
     private func deviceUsageLabel(
@@ -461,7 +465,7 @@ struct ManagedConnectionSubscriptionView: View {
     }
 
     private func deviceRow(_ device: ManagedConnectionDevice) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
             Image(systemName: device.deviceType == .mac ? "laptopcomputer" : "iphone")
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .frame(width: SettingsLayoutMetrics.iconSlot)
@@ -610,6 +614,7 @@ struct ManagedConnectionSubscriptionView: View {
             Text(L10n.text("ui.managed_subscription_renews_automatically"))
                 .settingsSectionFooterStyle()
         }
+        .settingsGroupRowStyle()
     }
 
     private var subscriptionInformationSection: some View {
@@ -634,5 +639,6 @@ struct ManagedConnectionSubscriptionView: View {
             Text(L10n.text("ui.subscription_information"))
                 .settingsSectionHeaderStyle()
         }
+        .settingsGroupRowStyle()
     }
 }

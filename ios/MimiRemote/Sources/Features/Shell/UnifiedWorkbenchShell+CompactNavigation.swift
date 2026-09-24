@@ -27,10 +27,8 @@ extension UnifiedWorkbenchShell {
                 bottomSafeAreaInset: bottomSafeAreaInset
             )
             : max(bottomSafeAreaInset, WorkbenchPageLayout.regularPadding)
-        // 搜索激活时系统会收起 Tab 胶囊和顶栏按钮，把搜索框铺满整条导航栏。
-        // 这枚设备入口是 TabView 上的浮层、不归导航栏管，不一起收起就会被搜索框压住。
+        // 会话搜索是列表上方的扁平搜索框，不再接管导航栏，设备入口浮层无需为它让位。
         let showsTabletHostSwitcher = !layout.isPhone
-            && !sessionStore.isSessionSearchPresented
             && (
                 navigationState.compactSelectedTab == .sessions
                     ? navigationState.compactSessionPath.isEmpty

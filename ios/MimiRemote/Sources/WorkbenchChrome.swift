@@ -994,6 +994,7 @@ struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
     var body: some View {
         HStack(spacing: 4) {
             brand
+                .avoidingWindowControls()
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             // 收起与展开共用同一个磨砂按钮，保证触摸、指针和按压反馈完全一致。
@@ -1004,6 +1005,20 @@ struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
         .padding(.trailing, 8)
         .padding(.top, 10)
         .padding(.bottom, 6)
+    }
+}
+
+extension View {
+    /// iPadOS 26 窗口模式下，窗口左上角有系统的红黄绿按钮。隐藏导航栏后自己画的顶部控件
+    /// 不会被系统自动让开，浮动侧栏的设备入口曾被那组按钮整个压住（#562）。
+    /// 这里按容器圆角区域横向让位；全屏、iPhone 与 iOS 26 之前的系统上位移为零。
+    @ViewBuilder
+    func avoidingWindowControls() -> some View {
+        if #available(iOS 26.0, *) {
+            containerCornerOffset(.leading, sizeToFit: true)
+        } else {
+            self
+        }
     }
 }
 

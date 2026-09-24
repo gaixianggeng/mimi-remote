@@ -146,6 +146,10 @@ struct SessionListView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// 搜索框文字与图标先跟随系统字号，再交给 ThemeStore 叠应用内比例；
+    /// 紧凑布局在辅助功能字号下也用这一枚自绘搜索框，不能写死字号。
+    @ScaledMetric(relativeTo: .subheadline) private var searchFieldTextSize: CGFloat = 15
+    @ScaledMetric(relativeTo: .subheadline) private var searchFieldGlyphSize: CGFloat = 14
     /// 底部浮着 Tab 栏时新建留在顶栏，否则改用右下角浮起按钮。
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
     @StateObject private var lifecycleCoordinator = SessionListLifecycleCoordinator()
@@ -231,7 +235,7 @@ struct SessionListView: View {
                         }
                         Text(sessionStore.isLoadingMoreSessionSearchResults ? L10n.text("ui.searching_continues") : L10n.text("ui.continue_searching"))
                     }
-                    .font(themeStore.uiFont(size: 13, weight: .medium))
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
                 }
@@ -259,9 +263,6 @@ struct SessionListView: View {
         // 与侧栏 gutter、会话画布同底，宽屏下三块相邻面不出现同亮度色差。
         .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .workbenchClearBottomScrollEdge()
-        // 只清除原生搜索模式下 List 重复的自动留白；负边距会把首行推进
-        // 粘性标题的裁切区域，因此必须让内容继续停留在系统安全边界内。
-        .sessionListNativeSearchTopMargin(isEnabled: !showsToolbarSearchField)
         // 只有按钮真的浮在内容之上时才多让一段，最后一条会话才能滚到按钮之上被读到。
         .contentMargins(
             .bottom,
@@ -280,7 +281,7 @@ struct SessionListView: View {
         .scrollDismissesKeyboard(.interactively)
         .simultaneousGesture(
             TapGesture().onEnded {
-                // 原生 navigationBarDrawer 和宽屏顶栏搜索都位于 List 外；列表内任意点击
+                // 紧凑布局的顶部搜索条和宽屏顶栏搜索都位于 List 外；列表内任意点击
                 // 都可以安全结束第一响应者，同时不清空查询词或改变当前搜索结果。
                 dismissSessionSearchKeyboard()
             }
@@ -301,16 +302,18 @@ struct SessionListView: View {
         .workbenchRootShowsConnectionProgress(presentationState.showsInPlaceConnectionProgress)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .background { SessionSearchPresentationReporter() }
-        .sessionListNativeSearchable(
-            isEnabled: !showsToolbarSearchField,
-            text: $sessionStore.sessionSearchQuery,
-            prompt: Text(L10n.text("ui.search_session")),
-            tintColor: tokens.primaryText,
-            toolbarSurface: tokens.workbenchCanvasBackground,
-            colorScheme: colorScheme,
-            onSubmit: dismissSessionSearchKeyboard
-        )
+        // 紧凑布局不再用系统 `.searchable`：iOS 26 给它套一层 Liquid Glass 外壳（高光描边、
+        // 投影，深色下是一整条偏亮灰块），外壳没有公开 API 可换，成了页面顶部最重的元素（#564）。
+        // 改为与宽屏顶栏同一枚扁平搜索框，固定在列表上方。
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !showsToolbarSearchField {
+                sessionSearchField(tokens: tokens, fillsWidth: true)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 4)
+                    .padding(.bottom, 8)
+                    .background(tokens.workbenchCanvasBackground)
+            }
+        }
         .toolbar {
             if showsToolbarSearchField {
                 if #available(iOS 26.0, *) {
@@ -367,14 +370,15 @@ struct SessionListView: View {
         }
     }
 
-    private func sessionSearchField(tokens: ThemeTokens) -> some View {
+    /// 会话搜索框。宽屏放在顶栏（定宽），紧凑布局铺满列表上方（`fillsWidth`）；两处同一种扁平样式。
+    private func sessionSearchField(tokens: ThemeTokens, fillsWidth: Bool = false) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .font(themeStore.uiFont(size: searchFieldGlyphSize, weight: .semibold))
                 .foregroundStyle(tokens.tertiaryText)
 
             TextField(L10n.text("ui.search_session"), text: $sessionStore.sessionSearchQuery)
-                .font(themeStore.uiFont(size: 14))
+                .font(themeStore.uiFont(size: searchFieldTextSize))
                 .foregroundStyle(tokens.primaryText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -388,7 +392,7 @@ struct SessionListView: View {
                     sessionStore.sessionSearchQuery = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(themeStore.uiFont(size: 13, weight: .semibold))
+                        .font(themeStore.uiFont(size: searchFieldGlyphSize, weight: .semibold))
                         .symbolRenderingMode(.hierarchical)
                         .frame(width: 28, height: 28)
                 }
@@ -398,8 +402,12 @@ struct SessionListView: View {
             }
         }
         .padding(.horizontal, 12)
-        .frame(height: 36)
-        .frame(minWidth: 260, idealWidth: 360, maxWidth: 420)
+        .frame(minHeight: 36)
+        .frame(
+            minWidth: fillsWidth ? nil : 260,
+            idealWidth: fillsWidth ? nil : 360,
+            maxWidth: fillsWidth ? .infinity : 420
+        )
         .background(tokens.surface.opacity(0.74), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -638,7 +646,7 @@ struct SessionListView: View {
             VStack(spacing: 10) {
                 ProgressView()
                 Text(L10n.text("ui.loading_sessions"))
-                    .font(themeStore.uiFont(size: 13, weight: .medium))
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
             }
             .padding(.vertical, 32)
@@ -650,7 +658,7 @@ struct SessionListView: View {
             VStack(spacing: 10) {
                 ProgressView()
                 Text(L10n.text("ui.searching_historical_conversations"))
-                    .font(themeStore.uiFont(size: 13, weight: .medium))
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
             }
             .padding(.vertical, 24)
@@ -759,9 +767,7 @@ struct SessionListView: View {
             )
         } header: {
             Text(title)
-                .font(themeStore.uiFont(size: 11, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText)
-                .textCase(nil)
+                .pageSectionHeaderStyle()
                 .accessibilityAddTraits(.isHeader)
                 // 与工作区同一条规则：小节标题对齐前导列的左缘。
                 // 会话 tab 的前导列是来源图标，本来就每行都有，不需要兜底字形。
@@ -906,7 +912,7 @@ struct SessionListView: View {
     private func activeFilterChip(tokens: ThemeTokens) -> some View {
         HStack(spacing: 8) {
             Text(activeFilterTitle)
-                .font(themeStore.uiFont(size: 12, weight: .semibold))
+                .font(themeStore.uiFont(.caption, weight: .semibold))
                 .lineLimit(1)
 
             Button {
@@ -1237,66 +1243,5 @@ struct SessionRenameSheet: View {
                 dismiss()
             }
         }
-    }
-}
-
-private extension View {
-    @ViewBuilder
-    func sessionListNativeSearchTopMargin(isEnabled: Bool) -> some View {
-        if isEnabled {
-            contentMargins(.top, 0, for: .scrollContent)
-        } else {
-            self
-        }
-    }
-
-    @ViewBuilder
-    func sessionListNativeSearchable(
-        isEnabled: Bool,
-        text: Binding<String>,
-        prompt: Text,
-        tintColor: Color,
-        toolbarSurface: Color,
-        colorScheme: ColorScheme,
-        onSubmit: @escaping () -> Void
-    ) -> some View {
-        if isEnabled {
-            searchable(
-                text: text,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: prompt
-            )
-            // 紧凑布局保留完整的系统搜索框，不再缩成会触发展开转场的第三个工具按钮。
-            .tint(tintColor)
-            // 明确给系统搜索栏传递主题的前景/底色，避免快照宿主把浅色模式
-            // 的放大镜和 prompt 渲染成白色；深色主题仍由系统自动反转。
-            .toolbarBackground(toolbarSurface, for: .navigationBar)
-            .toolbarColorScheme(colorScheme, for: .navigationBar)
-            .onSubmit(of: .search, onSubmit)
-        } else {
-            self
-        }
-    }
-}
-
-
-/// 把系统搜索框的激活态上报给 `SessionStore`，供 Shell 决定是否收起浮层设备入口。
-///
-/// 只读 `\.isSearching`，**不要**改用 `.searchable(isPresented:)` 的双向绑定：
-/// 那样我们会反向驱动系统的搜索状态，反复激活/取消几次后会卡在已激活，
-/// 表现为顶部 Tab 栏收起后不再还回来。
-private struct SessionSearchPresentationReporter: View {
-    @Environment(\.isSearching) private var isSearching
-    @EnvironmentObject private var sessionStore: SessionStore
-
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .allowsHitTesting(false)
-            .onAppear { sessionStore.isSessionSearchPresented = isSearching }
-            .onDisappear { sessionStore.isSessionSearchPresented = false }
-            .onChange(of: isSearching) { _, newValue in
-                sessionStore.isSessionSearchPresented = newValue
-            }
     }
 }

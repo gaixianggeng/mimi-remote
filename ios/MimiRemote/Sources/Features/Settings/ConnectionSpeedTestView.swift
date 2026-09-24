@@ -38,11 +38,12 @@ struct ConnectionSpeedTestView: View {
                 Text(L10n.text("ui.connection_method"))
                     .settingsSectionHeaderStyle()
             }
+            .settingsGroupRowStyle()
 
             benchmarkRecordingSection(tokens: tokens)
 
             Section {
-                HStack(alignment: .center, spacing: 12) {
+                HStack(alignment: .center, spacing: SettingsLayoutMetrics.iconSpacing) {
                     // 与设备首页同一套图标语言：18pt 符号 + 28pt 图标槽，不用彩色圆底。
                     Image(systemName: resultSystemImage)
                         .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
@@ -101,6 +102,7 @@ struct ConnectionSpeedTestView: View {
                 Text(testFooter)
                     .settingsSectionFooterStyle()
             }
+            .settingsGroupRowStyle()
 
             if let report = currentReport {
                 Section {
@@ -114,6 +116,7 @@ struct ConnectionSpeedTestView: View {
                     Text(L10n.text("ui.speed_test_results"))
                         .settingsSectionHeaderStyle()
                 }
+                .settingsGroupRowStyle()
 
                 Section {
                     ForEach(report.stages) { stage in
@@ -123,6 +126,7 @@ struct ConnectionSpeedTestView: View {
                     Text(L10n.text("ui.segmentation_takes_time"))
                         .settingsSectionHeaderStyle()
                 }
+                .settingsGroupRowStyle()
 
                 if let diagnostics = report.gatewayDiagnostics {
                     Section {
@@ -148,6 +152,7 @@ struct ConnectionSpeedTestView: View {
                         Text(L10n.text("ui.gateway_observation"))
                             .settingsSectionHeaderStyle()
                     }
+                    .settingsGroupRowStyle()
                 }
             }
         }
@@ -251,6 +256,7 @@ struct ConnectionSpeedTestView: View {
             }
             .settingsSectionFooterStyle()
         }
+        .settingsGroupRowStyle()
     }
 
     private func benchmarkProgressRow(
@@ -827,7 +833,7 @@ private struct ConnectionSpeedTestStageRow: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: SettingsLayoutMetrics.iconSpacing) {
             Image(systemName: stage.status.isFailed ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .foregroundStyle(stage.status.isFailed ? tokens.warning : tokens.success)

@@ -263,6 +263,8 @@ enum WorkbenchNavigationIcon {
 /// 固定导航入口自绘选中态，避免 iOS 26 SidebarListStyle 自动套用过圆的胶囊背景。
 struct WorkbenchSidebarDestinationButton: View {
     @EnvironmentObject private var themeStore: ThemeStore
+    /// 与会话行、设置行同一条字号通路：先跟随系统字号，再叠应用内比例（#563）。
+    @ScaledMetric(relativeTo: .body) private var titlePointSize: CGFloat = 17
 
     let title: String
     let icon: WorkbenchNavigationIcon
@@ -288,7 +290,7 @@ struct WorkbenchSidebarDestinationButton: View {
                     .frame(width: 24)
 
                 Text(title)
-                    .font(themeStore.uiFont(.body, weight: isSelected ? .semibold : .regular))
+                    .font(themeStore.uiFont(size: titlePointSize, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(titleColor)
 
                 Spacer(minLength: 0)
@@ -536,6 +538,10 @@ struct SessionSidebarMonitorRow: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 侧栏最近条目比导航入口低一档：标题 subheadline 15、时间 footnote 13；
+    /// 同样先跟随系统字号，再叠应用内比例（#563）。
+    @ScaledMetric(relativeTo: .subheadline) private var titlePointSize: CGFloat = 15
+    @ScaledMetric(relativeTo: .footnote) private var detailPointSize: CGFloat = 13
 
     let session: AgentSession
     let kind: SessionSidebarSectionKind
@@ -578,7 +584,7 @@ struct SessionSidebarMonitorRow: View {
             // 15pt 常规字重：比照 Notion iPad 侧栏的条目，13pt 中粗在大屏上显得局促。
             // 非选中条目用列表标题灰，选中才提亮到正文色。
             Text(SessionListPresentation.titleDisplayText(for: session))
-                .font(themeStore.uiFont(size: 15, weight: isSelected ? .medium : .regular))
+                .font(themeStore.uiFont(size: titlePointSize, weight: isSelected ? .medium : .regular))
                 .foregroundStyle(isSelected ? tokens.primaryText : tokens.listTitleText)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -662,7 +668,7 @@ struct SessionSidebarMonitorRow: View {
                 }
             }
         }
-        .font(themeStore.uiFont(size: 12, weight: .regular))
+        .font(themeStore.uiFont(size: detailPointSize))
         .foregroundStyle(tokens.tertiaryText)
         .monospacedDigit()
         .lineLimit(1)

@@ -23,14 +23,30 @@ extension View {
         modifier(SettingsDetailPageModifier(width: width))
     }
 
-    /// 分组标题与脚注在整条设置链路只有这一套排版。系统默认标题字号更大、英文还会转成
-    /// 全大写，和「我的」自己写的标题不是一套；两个 Tab 并排看时最先被读成「配色没对上」。
+    /// 分组标题在四个一级页面（会话、工作区、设备、我的）、iPad 侧栏与整条设置链路
+    /// 只有这一套排版。过去会话 11pt 半粗、工作区 13pt 半粗带计数、设置 13pt 中粗、
+    /// 侧栏 13pt 三级灰各写一份，四个 Tab 并排时最先被读成「不是一个系统」（#563）。
+    func pageSectionHeaderStyle() -> some View {
+        modifier(PageSectionCaptionModifier(weight: .medium))
+    }
+
+    /// 设置链路沿用原名，与 `pageSectionHeaderStyle()` 是同一套排版。
     func settingsSectionHeaderStyle() -> some View {
-        modifier(SettingsSectionCaptionModifier(weight: .medium))
+        pageSectionHeaderStyle()
+    }
+
+    /// 设置分组的行直接落在页面底色上：不再装进圆角卡片，也不画行间分隔线（#563）。
+    ///
+    /// 会话、工作区的内容都铺在页面上、只靠分组标题和留白分段；设置页过去每组一张卡片，
+    /// 四个 Tab 并排时读成两套系统。行背景只能挂在 Section 上（挂在 Form 外层不会下发到行），
+    /// 所以每个设置分组都要显式接这一个修饰符，不能留系统默认的分组卡片色。
+    func settingsGroupRowStyle() -> some View {
+        listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
     }
 
     func settingsSectionFooterStyle() -> some View {
-        modifier(SettingsSectionCaptionModifier(weight: .regular))
+        modifier(PageSectionCaptionModifier(weight: .regular))
     }
 
     func settingsScrollContent(width: CGFloat = 720) -> some View {
@@ -118,7 +134,7 @@ private struct SettingsRowModifier: ViewModifier {
 
 /// 标题和脚注共用同一个字号与文字色，只靠字重区分主次。
 /// 字号与行文字一样先跟随系统辅助功能字号，再交给 ThemeStore 叠应用内比例。
-private struct SettingsSectionCaptionModifier: ViewModifier {
+private struct PageSectionCaptionModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
     @ScaledMetric(relativeTo: .footnote) private var pointSize: CGFloat = 13

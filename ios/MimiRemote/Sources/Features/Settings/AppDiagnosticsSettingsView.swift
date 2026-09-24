@@ -128,7 +128,7 @@ struct AppDiagnosticsSettingsView: View {
                 Text(detailedLoggingFooter)
                     .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 Button {
@@ -160,7 +160,7 @@ struct AppDiagnosticsSettingsView: View {
                 Text(L10n.text("ui.app_diagnostics_storage_explanation"))
                     .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             if controller.operationFailed {
                 Section {
@@ -168,7 +168,7 @@ struct AppDiagnosticsSettingsView: View {
                         .foregroundStyle(tokens.warning)
                         .settingsStandardListRow()
                 }
-                .listRowBackground(tokens.settingsGroupBackground)
+                .settingsGroupRowStyle()
             }
         }
         .themedSettingsForm(tokens: tokens)

@@ -23,7 +23,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
-    @ScaledMetric(relativeTo: .caption) private var compactActionFontSize: CGFloat = 12
+    @ScaledMetric(relativeTo: .footnote) private var compactActionFontSize: CGFloat = 13
     @State private var isLoadingMoreSessions = false
 
     let statusLine: StatusLine
@@ -196,27 +196,16 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
-        // 计数推到行尾，跟系统列表（「最近通话  12」）一致；贴在标题后面会读成标题的一部分。
-        //
-        // 分区标题是给内容分段的路标，不是页面标题。用正文墨色的 15pt 半粗时它和
-        // 会话标题同重，一屏里就出现两级都在喊的文字；计数更只是补充说明。
-        // 两者一起降到 13pt 次级/三级灰，扫读时先看到的仍然是会话本身。
-        HStack(spacing: 8) {
-            Text(group.title)
-                .font(themeStore.uiFont(.footnote, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText)
-
-            Spacer(minLength: 8)
-
-            Text("\(count)")
-                .font(themeStore.uiFont(.footnote))
-                .foregroundStyle(tokens.tertiaryText)
-                .monospacedDigit()
-        }
-        // 小节标题对齐前导状态槽左缘；普通历史行留白，状态只在有意义时出现。
-        .padding(.horizontal, rowDensity.horizontalPadding)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(sessionCountAccessibilityLabel(for: group, count: count))
+        // 分区标题与会话 tab、设置页同一套排版（#563）。计数只是当前已展开窗口的数量，
+        // 行尾一排数字会把列表读成仪表盘；数量改由 VoiceOver 朗读。
+        Text(group.title)
+            .pageSectionHeaderStyle()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // 小节标题对齐前导图标左缘。
+            .padding(.horizontal, rowDensity.horizontalPadding)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(sessionCountAccessibilityLabel(for: group, count: count))
+            .accessibilityAddTraits(.isHeader)
     }
 
     @ViewBuilder
@@ -293,7 +282,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 Button {
                     onOpenSession(session)
                 } label: {
-                    // 工作区身份已在顶部出现，行内优先保留会话标题和需处理状态。
+                    // 与会话 tab 完全同一种行（#563）：来源图标 + 标题 + 时间，宽屏 iPad 多一行摘要；
+                    // 需要处理或仍在运行时，状态文字占据时间的位置。
                     SessionIndexRow(
                         session: session,
                         foregroundActivity: foregroundActivity,
@@ -304,7 +294,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         isObserving: sessionStore.isSessionObserving(session),
                         isUnread: isUnread,
                         density: rowDensity,
-                        isWorkspaceOverview: true,
+                        leadingSlot: .runtimeIcon,
+                        showsSessionPreview: UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table,
                         currentDate: currentDate,
                         calendar: calendar,
                         locale: locale,
@@ -419,25 +410,31 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         // 浮起时可以画得实体一些；回到筛选行里必须收进 44pt 行高，也不该再投影——
         // 行内元素投影会读成一枚悬在纸面上的贴纸。
         let isFloating = !hasBottomTabBar
-        let diameter = isFloating
-            ? WorkspaceSessionFabMetrics.diameter
-            : WorkspaceSessionFabMetrics.inlineDiameter
+        let diameter = WorkspaceSessionFabMetrics.diameter
 
         return Button {
             // thread 创建时就绑定 runtime；这里必须把当前选择一路传到 SessionStore。
             onStartSession(selectedRuntime)
         } label: {
-            Image(systemName: "plus")
-                .font(.system(size: isFloating ? 24 : 18, weight: .medium))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(tokens.primaryActionForeground)
-                .frame(width: diameter, height: diameter)
-                .background(tokens.primaryAction, in: Circle())
-                .frame(
-                    minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
-                    minHeight: WorkbenchChromeIconMetrics.minimumHitTarget
-                )
-                .contentShape(Circle())
+            if isFloating {
+                Image(systemName: "plus")
+                    .font(.system(size: 24, weight: .medium))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(tokens.primaryActionForeground)
+                    .frame(width: diameter, height: diameter)
+                    .background(tokens.primaryAction, in: Circle())
+                    .frame(
+                        minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
+                        minHeight: WorkbenchChromeIconMetrics.minimumHitTarget
+                    )
+                    .contentShape(Circle())
+            } else {
+                // 手机上与会话 tab 顶栏的新建按钮同一种写法：磨砂圆 + 正文色加号（#563）。
+                // 过去这里是一颗紫色实心圆，同一个动作在两页长成两样。
+                WorkbenchChromeIcon(systemName: "plus")
+                    .foregroundStyle(tokens.primaryText)
+                    .workbenchChromeCircle(tokens: tokens)
+            }
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(!selectedRuntime.isAvailable(
@@ -463,8 +460,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         tokens: ThemeTokens
     ) -> some View {
         Text(L10n.text("ui.twelve_hours_ago"))
-            .font(themeStore.uiFont(.footnote, weight: .semibold))
-            .foregroundStyle(tokens.secondaryText)
+            .pageSectionHeaderStyle()
             .padding(.horizontal, rowDensity.horizontalPadding)
             .padding(.top, WorkspaceSessionRowMetrics.sectionBoundarySpacing)
             .padding(.bottom, WorkspaceSessionRowMetrics.sectionHeaderBottomSpacing)
@@ -480,19 +476,18 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     ) -> some View {
         VStack(spacing: 0) {
             ForEach(0..<3, id: \.self) { _ in
+                // 与单行会话行同形：一条标题占位，右端一小段时间占位。
                 HStack {
-                    VStack(alignment: .leading, spacing: 8) {
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(tokens.elevatedSurface)
-                            .frame(width: 210, height: 12)
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(tokens.elevatedSurface)
-                            .frame(width: 128, height: 9)
-                    }
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(tokens.elevatedSurface)
+                        .frame(width: 210, height: 12)
                     Spacer(minLength: 8)
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(tokens.elevatedSurface)
+                        .frame(width: 36, height: 9)
                 }
                 .padding(.horizontal, rowDensity.horizontalPadding)
-                .frame(minHeight: SessionIndexRow.workspaceOverviewMinimumHeight)
+                .frame(minHeight: SessionIndexRow.libraryRowMinimumHeight)
             }
         }
         .redacted(reason: .placeholder)

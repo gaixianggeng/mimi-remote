@@ -171,19 +171,59 @@ enum SessionListPresentation {
         displayTitle(session.title)
     }
 
-    /// SessionListView 的命名入口；保留 displayTitle 作为更通用的字符串 helper。
+    /// 列表标题。标题只是一串会话 UUID 时对人没有可读信息：改用摘要开头，
+    /// 摘要也没有时显示「未命名会话」（#563）。
     static func titleDisplayText(for session: AgentSession) -> String {
-        displayTitle(for: session)
+        let title = displayTitle(for: session)
+        guard isBareIdentifier(title) else { return title }
+        let preview = previewDisplayText(for: session)
+        return preview.isEmpty ? L10n.text("ui.unnamed_session") : preview
     }
 
     /// 预览沿用标题的单行 Markdown 清洗规则；只返回副本，不修改 session.preview。
     static func previewDisplayText(for session: AgentSession) -> String {
-        displayTitle(session.preview ?? "")
+        previewDisplayText(session.preview)
     }
 
     /// 无会话模型时的预览清洗入口，nil 与空字符串都稳定回退为空文本。
     static func previewDisplayText(_ preview: String?) -> String {
-        displayTitle(preview ?? "")
+        displayTitle(previewSourceText(preview ?? ""))
+    }
+
+    /// 摘要来自首条用户消息的原文，清洗掉列表里不该出现的部分。
+    ///
+    /// - Codex 桌面端会在正文前拼一段附件说明（`# Files mentioned by the user:`、
+    ///   `## 文件名: 路径`、`## My request:`）。列表只该看到用户真正说的那句话；
+    ///   摘要被截断在附件清单里、正文还没出现时，就没有可显示的内容。
+    /// - 本机用户目录收成 `~`，列表里不逐行暴露账号名和完整路径。
+    static func previewSourceText(_ raw: String) -> String {
+        var text = raw
+        if let request = text.range(of: "## My request:", options: .backwards) {
+            text = String(text[request.upperBound...])
+        } else if text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .hasPrefix("# Files mentioned by the user") {
+            text = text
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .filter { line in
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    return !trimmed.hasPrefix("#")
+                        && !trimmed.hasPrefix("Distinguish instructions in attached documents")
+                }
+                .joined(separator: "\n")
+        }
+        return text.replacingOccurrences(
+            of: #"/Users/[^/\s]+"#,
+            with: "~",
+            options: .regularExpression
+        )
+    }
+
+    /// 标题是否只是一串会话标识（UUID，可能带截断省略号）。
+    static func isBareIdentifier(_ title: String) -> Bool {
+        title.range(
+            of: #"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{1,12}){1,4}(…|\.\.\.)?$"#,
+            options: .regularExpression
+        ) != nil
     }
 
     /// 列表行的第二行只应承载**标题之外**的信息。
@@ -195,7 +235,8 @@ enum SessionListPresentation {
     /// 这里只返回 preview 相对标题**新增**的那一段：完全重复时返回空串，
     /// 由调用方决定第二行还画不画。原始 `session.preview` 不被修改。
     static func distinctPreviewDisplayText(for session: AgentSession) -> String {
-        distinctPreviewDisplayText(title: session.title, preview: session.preview)
+        // 与列表实际显示的标题比较：UUID 标题回退成摘要开头时，第二行不再重复同一句。
+        distinctPreviewDisplayText(title: titleDisplayText(for: session), preview: session.preview)
     }
 
     static func distinctPreviewDisplayText(title: String, preview: String?) -> String {
@@ -205,14 +246,16 @@ enum SessionListPresentation {
         return startsWithLink(remainder) ? "" : remainder
     }
 
+    /// 任何 `scheme://` 开头（含 `vless:\/\/` 这类转义写法）或 `www.` 开头的摘要。
     private static func startsWithLink(_ value: String) -> Bool {
-        let lowered = value.lowercased()
-        return ["http://", "https://", "[http://", "[https://", "<http://", "<https://", "www."]
-            .contains { lowered.hasPrefix($0) }
+        value.range(
+            of: #"^[\[<]?([a-zA-Z][a-zA-Z0-9+.\-]*:(//|\\/\\/)|www\.)"#,
+            options: .regularExpression
+        ) != nil
     }
 
     private static func previewRemainder(title: String, preview: String?) -> String {
-        let normalizedPreview = displayTitle(preview ?? "")
+        let normalizedPreview = previewDisplayText(preview)
         guard !normalizedPreview.isEmpty else { return "" }
 
         let normalizedTitle = displayTitle(title)

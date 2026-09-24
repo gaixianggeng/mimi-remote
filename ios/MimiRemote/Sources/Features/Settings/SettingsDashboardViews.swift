@@ -63,7 +63,7 @@ struct ConnectionSettingsView: View {
                     Text(L10n.text("ui.preferred_runtime_description"))
                         .settingsSectionFooterStyle()
                 }
-                .listRowBackground(tokens.settingsGroupBackground)
+                .settingsGroupRowStyle()
             }
         }
         .navigationDestination(isPresented: $isPresentingAddComputerForManualConnection) {

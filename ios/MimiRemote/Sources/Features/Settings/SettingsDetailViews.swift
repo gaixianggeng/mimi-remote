@@ -122,6 +122,7 @@ struct ConnectionProfileRenameSheet: View {
                         .foregroundStyle(draft.validationMessage == nil ? themeStore.tokens(for: colorScheme).secondaryText : themeStore.tokens(for: colorScheme).warning)
                         .settingsSectionFooterStyle()
                 }
+                .settingsGroupRowStyle()
 
                 if let submitError = draft.submitError {
                     Section {
@@ -129,6 +130,7 @@ struct ConnectionProfileRenameSheet: View {
                             .foregroundStyle(themeStore.tokens(for: colorScheme).warning)
                             .accessibilityIdentifier("settings.profile.rename.error")
                     }
+                    .settingsGroupRowStyle()
                 }
             }
             .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
@@ -304,7 +306,7 @@ struct CapabilitiesView: View {
                 Text(L10n.text("ui.here_the_local_skills_and_mcp_configurations_discoverable"))
                     .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             if let error = sessionStore.capabilityErrorMessage {
                 Section {
@@ -315,7 +317,7 @@ struct CapabilitiesView: View {
                     Text(L10n.text("ui.error"))
                         .settingsSectionHeaderStyle()
                 }
-                .listRowBackground(tokens.settingsGroupBackground)
+                .settingsGroupRowStyle()
             }
 
             Section {
@@ -338,7 +340,7 @@ struct CapabilitiesView: View {
                 Text(L10n.text("ui.skills"))
                     .settingsSectionHeaderStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 let servers = sessionStore.capabilityList?.mcpServers ?? []
@@ -362,7 +364,7 @@ struct CapabilitiesView: View {
                 Text("MCP")
                     .settingsSectionHeaderStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
@@ -535,7 +537,7 @@ struct CapabilityItemRow: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: SettingsLayoutMetrics.iconSpacing) {
             Image(systemName: symbolName)
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .foregroundStyle(tokens.secondaryText)
@@ -627,7 +629,7 @@ struct AppearanceView: View {
                 Text(L10n.text("ui.system_mode_follows_the_current_device_appearance_light"))
                     .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 ScrollViewReader { scrollProxy in
@@ -676,7 +678,7 @@ struct AppearanceView: View {
                 Text(L10n.text("ui.workspace_avatar_style_description"))
                     .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 ForEach(ThemePreset.allCases) { preset in
@@ -692,7 +694,7 @@ struct AppearanceView: View {
                 Text(L10n.text("ui.topic"))
                     .settingsSectionHeaderStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 // 两种字体各只有两三个短选项，值不值得为它弹一层菜单：不值得。
@@ -749,7 +751,7 @@ struct AppearanceView: View {
                 Text(L10n.text("ui.font"))
                     .settingsSectionHeaderStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 AppearanceConversationPreview()
@@ -758,7 +760,7 @@ struct AppearanceView: View {
                 Text(L10n.text("ui.chat_preview"))
                     .settingsSectionHeaderStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 Button(role: .destructive) {
@@ -772,7 +774,7 @@ struct AppearanceView: View {
                 }
                 .settingsRow()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
@@ -933,8 +935,9 @@ private struct WorkspaceIconStyleOptionLabel: View {
                     .frame(width: 20, height: 20)
                     .background(tokens.primaryAction, in: Circle())
                     .overlay {
+                        // 分组不再有卡片底，对勾徽章直接和页面底色抠开。
                         Circle()
-                            .stroke(tokens.settingsGroupBackground, lineWidth: 2)
+                            .stroke(tokens.background, lineWidth: 2)
                     }
                     .offset(x: 2, y: 2)
             }
@@ -1379,7 +1382,7 @@ private struct DefaultModelRuntimeSection: View {
             }
             .settingsSectionFooterStyle()
         }
-        .listRowBackground(tokens.settingsGroupBackground)
+        .settingsGroupRowStyle()
     }
 
     private var hasCustomDefault: Bool {
@@ -1564,6 +1567,7 @@ struct TailcatExperimentSettingsView: View {
                 .settingsSectionFooterStyle()
                 .padding(.top, 8)
             }
+            .settingsGroupRowStyle()
 
             Section {
                 RouteStatusRow(
@@ -1604,6 +1608,7 @@ struct TailcatExperimentSettingsView: View {
                 .settingsSectionFooterStyle()
                 .padding(.top, 8)
             }
+            .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
@@ -1688,7 +1693,7 @@ extension View {
         modifier(SettingsCanvasBackgroundModifier(tokens: tokens))
     }
 
-    /// 分组底由各 Section 显式接 settingsGroupBackground，「我的」根页用的是同一个 token。
+    /// 每个 Section 显式接 settingsGroupRowStyle()，「我的」根页用的是同一个修饰符。
     /// 注意：listRowBackground 挂在 Form 外层不会下发到行，所以这里不设，只能在 Section 上设。
     func themedSettingsForm(tokens: ThemeTokens) -> some View {
         scrollContentBackground(.hidden)

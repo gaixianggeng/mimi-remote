@@ -95,7 +95,7 @@ struct HostInstallationSetupView: View {
                 .accessibilityIdentifier("settings.hostInstaller.disclosure")
         }
         .settingsRow()
-        .listRowBackground(tokens.settingsGroupBackground)
+        .settingsGroupRowStyle()
 
         if isExpanded.wrappedValue {
             VStack(alignment: .leading, spacing: 16) {
@@ -122,7 +122,7 @@ struct HostInstallationSetupView: View {
                 .accessibilityIdentifier("settings.hostInstaller.installationDetail")
 
                 Link(destination: transientPreferences.hostInstallationPlatform.releaseURL) {
-                    HStack(spacing: 12) {
+                    HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
                         // 品牌资源保持官方黑白原色，不跟随 App 的主题色染色。
                         Image("GitHubInvertocat")
                             .renderingMode(.original)
@@ -177,7 +177,7 @@ struct HostInstallationSetupView: View {
             }
             .padding(.vertical, 12)
             .settingsRow()
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
             // 展开内容是标题行的延续，不用分隔线把两者切开。
             .listRowSeparator(.hidden, edges: .top)
 
@@ -213,7 +213,7 @@ struct HostInstallationSetupView: View {
             )
         }
         .settingsRow()
-        .listRowBackground(tokens.settingsGroupBackground)
+        .settingsGroupRowStyle()
         .accessibilityIdentifier("settings.hostInstaller.commandLine")
     }
 }

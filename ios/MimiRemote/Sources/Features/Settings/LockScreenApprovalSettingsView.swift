@@ -56,6 +56,7 @@ struct LockScreenApprovalSettingsView: View {
                         .disabled(isBusy)
                 }
             }
+            .settingsGroupRowStyle()
 
             if let profileID = store.registeredProfileID {
                 Section {
@@ -72,6 +73,7 @@ struct LockScreenApprovalSettingsView: View {
                         .accessibilityIdentifier("settings.lockScreenApproval.rebind")
                     }
                 }
+                .settingsGroupRowStyle()
             }
 
             Section {
@@ -79,6 +81,7 @@ struct LockScreenApprovalSettingsView: View {
                     Label(L10n.text("ui.privacy_policy"), systemImage: "hand.raised")
                 }
             }
+            .settingsGroupRowStyle()
             if developerModeEnabled {
                 Section {
                     Button {
@@ -88,6 +91,7 @@ struct LockScreenApprovalSettingsView: View {
                     }
                     .accessibilityIdentifier("settings.lockScreenApproval.copyRouteDiagnostics")
                 }
+                .settingsGroupRowStyle()
             }
         }
         .themedSettingsForm(tokens: tokens)
@@ -242,6 +246,7 @@ struct LockScreenApprovalConsentSheet: View {
                         : L10n.text("ui.push_consent_custom_note"))
                         .settingsSectionFooterStyle()
                 }
+                .settingsGroupRowStyle()
 
                 Section {
                     ForEach(LockScreenApprovalDisclosure.leavesDeviceKeys, id: \.self) { key in
@@ -254,6 +259,7 @@ struct LockScreenApprovalConsentSheet: View {
                     Text(L10n.text("ui.push_disclosure_leaves_device"))
                         .settingsSectionHeaderStyle()
                 }
+                .settingsGroupRowStyle()
 
                 Section {
                     ForEach(LockScreenApprovalDisclosure.staysOnDeviceKeys, id: \.self) { key in
@@ -269,6 +275,7 @@ struct LockScreenApprovalConsentSheet: View {
                     Text(L10n.text("ui.push_consent_retention"))
                         .settingsSectionFooterStyle()
                 }
+                .settingsGroupRowStyle()
             }
             .themedSettingsForm(tokens: tokens)
             .navigationTitle(L10n.text("ui.push_consent_title"))

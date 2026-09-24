@@ -265,9 +265,9 @@ struct InitialConnectionSettingsSections: View {
                 addComputerSection(tokens: tokens)
             }
         }
-        .listRowBackground(tokens.settingsGroupBackground)
+        .settingsGroupRowStyle()
         .settingsStandardListRow()
-        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + 12 }
+        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing }
         // 连接地址/Token 是高频编辑状态，放在这个小子树里，避免每次删字都重绘整个设置页。
         .onAppear(perform: loadInitialConnectionIfNeeded)
         .onChange(of: appStore.activeConnectionProfileID) { _, _ in
@@ -348,6 +348,7 @@ struct InitialConnectionSettingsSections: View {
                 }
                 .accessibilityIdentifier("settings.debugEnterWorkbench")
             }
+            .settingsGroupRowStyle()
 #endif
         }
     }
@@ -373,7 +374,7 @@ struct InitialConnectionSettingsSections: View {
             if let message = displayErrorMessage {
                 Text(message)
                     .foregroundStyle(tokens.warning)
-                    .font(themeStore.uiFont(size: 13))
+                    .font(themeStore.uiFont(.footnote))
                     .settingsRow(.descriptive)
                     .accessibilityIdentifier("settings.connection.error")
             }
@@ -527,13 +528,14 @@ struct InitialConnectionSettingsSections: View {
             } header: {
                 header
             }
+            .settingsGroupRowStyle()
         }
     }
 
     private func currentComputerRow(_ item: ConnectionProfileSettingsItem) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        return HStack(spacing: 12) {
+        return HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
             computerGlyph(item)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -563,7 +565,7 @@ struct InitialConnectionSettingsSections: View {
         }
         .padding(.vertical, 8)
         .frame(minHeight: SettingsLayoutMetrics.deviceRowHeight)
-        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + 12 }
+        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.profile.\(item.id)")
     }
@@ -576,7 +578,7 @@ struct InitialConnectionSettingsSections: View {
             : AnyLayout(HStackLayout(alignment: .center, spacing: 8))
 
         return layout {
-            HStack(spacing: 12) {
+            HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
                 computerGlyph(item)
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -620,10 +622,10 @@ struct InitialConnectionSettingsSections: View {
 
                 profileMenu(item)
             }
-            .padding(.leading, dynamicTypeSize.isAccessibilitySize ? SettingsLayoutMetrics.iconSlot + 12 : 0)
+            .padding(.leading, dynamicTypeSize.isAccessibilitySize ? SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing : 0)
         }
         .padding(.vertical, 10)
-        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + 12 }
+        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.profile.\(item.id)")
     }
@@ -935,6 +937,7 @@ struct InitialConnectionSettingsSections: View {
         } footer: {
             footer()
         }
+        .settingsGroupRowStyle()
         // 真正的相机 Cover 由 SettingsView 根层呈现，避免 Form.Section 重建后丢失 presenter。
         .onAppear(perform: configureQRCodeScannerPresentation)
         .confirmationDialog(

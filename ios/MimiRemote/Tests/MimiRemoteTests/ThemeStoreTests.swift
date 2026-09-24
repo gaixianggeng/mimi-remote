@@ -585,7 +585,7 @@ final class ThemeStoreTests: XCTestCase {
             tokens.sidebarBackground, tokens.sidebarSurfaceBackground, tokens.sidebarHoverFill,
             tokens.inputBackground, tokens.composerControlSurface, tokens.composerInactiveActionSurface,
             tokens.planCardBackground, tokens.planCardBorder, tokens.contentPanelBackground,
-            tokens.settingsGroupBackground, tokens.border, tokens.codeBlock,
+            tokens.border, tokens.codeBlock,
             tokens.primaryText, tokens.secondaryText, tokens.tertiaryText, tokens.codeText,
             tokens.accent, tokens.accentSoft, tokens.primaryAction, tokens.selectionFill,
             tokens.goalActive, tokens.voiceRecording,
@@ -599,7 +599,6 @@ final class ThemeStoreTests: XCTestCase {
             XCTAssertEqual(value.alpha, 1, accuracy: 0.0001)
         }
         assertRGB(rgba(tokens.accentSoft), red: 55, green: 55, blue: 53)
-        assertRGB(rgba(tokens.settingsGroupBackground), red: 43, green: 43, blue: 41)
         // 成功/警告是状态语义，不随主题去色。
         assertRGB(rgba(tokens.success), red: 101, green: 197, blue: 142)
         assertRGB(rgba(tokens.warning), red: 240, green: 181, blue: 98)
@@ -612,12 +611,6 @@ final class ThemeStoreTests: XCTestCase {
             for scheme in [ColorScheme.light, .dark] {
                 let tokens = store.tokens(for: scheme)
                 let isDefaultDark = preset == .codex && scheme == .dark
-                // 设置分组底在所有预设、明暗下都等于该主题的 surface：设备页、设置详情页
-                // 和「我的」共用同一个入口，不允许某一支单独回到 elevatedSurface。
-                let group = rgba(tokens.settingsGroupBackground)
-                let expectedGroup = rgba(tokens.surface)
-                XCTAssertLessThan(colorDistance(group, expectedGroup), 0.0001)
-                XCTAssertEqual(group.alpha, expectedGroup.alpha, accuracy: 0.0001)
                 let active = rgba(tokens.tint(for: .active))
                 let expectedActive = rgba(isDefaultDark ? tokens.accent : tokens.primaryAction)
                 XCTAssertLessThan(colorDistance(active, expectedActive), 0.0001)
@@ -628,7 +621,6 @@ final class ThemeStoreTests: XCTestCase {
         store.mode = .light
         let forcedLight = store.tokens(for: .dark)
         assertRGB(rgba(forcedLight.background), red: 250, green: 248, blue: 246)
-        assertRGB(rgba(forcedLight.settingsGroupBackground), red: 255, green: 255, blue: 255)
         assertRGB(rgba(forcedLight.tint(for: .active)), red: 74, green: 20, blue: 74)
     }
 
@@ -636,7 +628,7 @@ final class ThemeStoreTests: XCTestCase {
         let store = ThemeStore(defaults: defaults)
         let tokens = store.tokens(for: .dark)
         let surfaces = [
-            tokens.background, tokens.settingsGroupBackground, tokens.contentPanelBackground,
+            tokens.background, tokens.contentPanelBackground,
             tokens.elevatedSurface, tokens.inputBackground, tokens.userBubble,
             tokens.selectionFill, tokens.workspaceCardSelectionFill
         ]

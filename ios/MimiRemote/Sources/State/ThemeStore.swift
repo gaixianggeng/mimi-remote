@@ -556,18 +556,6 @@ extension ThemeTokens {
         surface
     }
 
-    /// 设置链路里所有 Form 分组的底：设备页、各设置详情页和「我的」共用这一个入口，
-    /// 与内容卡片同级。
-    ///
-    /// 曾经这些分组各自铺 elevatedSurface。深色下它比画布亮一整级、还带暖紫；浅色下
-    /// 是 #F4F3F0，比工作台画布只暗几个百分点——读不出层级，只读得出「颜色没对上」。
-    /// 而「我的」根页的行落在系统分组背景上（那里的 listRowBackground 挂在 Form 外层，
-    /// SwiftUI 不会下发到行），于是同一条链路里出现两种分组底。这里收敛成一个 token，
-    /// 明暗和各预设都跟随主题的 surface。
-    var settingsGroupBackground: Color {
-        surface
-    }
-
     /// 选中反馈复用同一低饱和填充，不再为工作区额外引入一档深梅紫。
     var workspaceCardSelectionFill: Color {
         selectionFill
