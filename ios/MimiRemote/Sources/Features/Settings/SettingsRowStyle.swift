@@ -100,6 +100,90 @@ private struct SettingsDetailPageModifier: ViewModifier {
     }
 }
 
+/// 设置页的分组标题：分组之间用一条细线划分功能区，取代过去的卡片（#563）。
+///
+/// 平铺之后只剩留白区分分组，单行的分组（消息通知、优先使用）没有标题，
+/// 看起来像是游离在两组之间；一条与内容同宽的细线把「这里换了一件事」说清楚。
+/// 页面第一组不画线；单行的分组可以只有线、没有标题。
+///
+/// 分组之间的留白全部由这里给出，所在页面要把分组间距和 `defaultMinListHeaderHeight`
+/// 都设为 0（见 `dividedSettingsList()`）：系统分组标题至少约 28pt 高、内容垂直居中，
+/// 只有一条线的标题会被上下各垫十几点，带文字的标题却几乎不垫，两种分界就不一样宽。
+struct SettingsGroupHeader<Accessory: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    private let title: String?
+    private let showsDivider: Bool
+    private let accessory: Accessory
+
+    init(
+        title: String? = nil,
+        showsDivider: Bool = true,
+        @ViewBuilder accessory: () -> Accessory
+    ) {
+        self.title = title
+        self.showsDivider = showsDivider
+        self.accessory = accessory()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if showsDivider {
+                Rectangle()
+                    .fill(themeStore.tokens(for: colorScheme).border)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 1 / max(displayScale, 1))
+                    .padding(.top, SettingsLayoutMetrics.groupDividerSpacing)
+                    .padding(
+                        .bottom,
+                        title == nil
+                            ? SettingsLayoutMetrics.groupDividerSpacing
+                            : SettingsLayoutMetrics.groupDividerTitleSpacing
+                    )
+                    .accessibilityHidden(true)
+            }
+            if let title {
+                HStack(alignment: .center, spacing: 8) {
+                    Text(title)
+                        .settingsSectionHeaderStyle()
+                        .accessibilityAddTraits(.isHeader)
+                    accessory
+                }
+                .padding(.top, showsDivider ? 0 : SettingsLayoutMetrics.groupTitleTopInset)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // 显式给出左右边距：系统给分组标题的边距会随分组内容浮动几点，
+        // 细线就会和上一条线不一样长。与行内容同一条左右边线。
+        .listRowInsets(
+            EdgeInsets(
+                top: 0,
+                leading: SettingsLayoutMetrics.rowHorizontalInset,
+                bottom: 0,
+                trailing: SettingsLayoutMetrics.rowHorizontalInset
+            )
+        )
+    }
+}
+
+extension SettingsGroupHeader where Accessory == EmptyView {
+    init(title: String? = nil, showsDivider: Bool = true) {
+        self.init(title: title, showsDivider: showsDivider) { EmptyView() }
+    }
+}
+
+extension View {
+    /// 用细线分组的页面（设备、我的）：分组间距与系统标题最小高度都归零，
+    /// 分组之间的距离只由 `SettingsGroupHeader` 决定。必须挂在离 Form 最近的位置，
+    /// 外层的 listSectionSpacing 会被内层覆盖。
+    func dividedSettingsList() -> some View {
+        listSectionSpacing(0)
+            .environment(\.defaultMinListHeaderHeight, 0)
+    }
+}
+
 private struct SettingsRowModifier: ViewModifier {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -146,5 +230,85 @@ private struct PageSectionCaptionModifier: ViewModifier {
             .font(themeStore.uiFont(size: pointSize, weight: weight))
             .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
             .textCase(nil)
+    }
+}
+
+/// 设置页的展开行（安装指引、手动连接、命令行安装）。
+///
+/// 系统样式在列表里的展开箭头由 UIKit 绘制：纯黑、比导航箭头粗一号，
+/// tint、前景色和主题都改不动它，和同页的导航箭头放在一起像两套控件（#563）。
+/// 这里换成与导航箭头、线路刷新标记同色同宽的箭头，展开时转向下方。
+/// 自定义样式下展开内容与标题同在一行，不再被系统当成子行多缩进一级。
+struct SettingsDisclosureGroupStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        SettingsDisclosureGroupBody(configuration: configuration)
+    }
+}
+
+private struct SettingsDisclosureGroupBody: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let configuration: DisclosureGroupStyleConfiguration
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(reduceMotion ? nil : .default) {
+                    configuration.isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: SettingsLayoutMetrics.trailingAccessorySpacing) {
+                    configuration.label
+
+                    SettingsTrailingAccessory(
+                        systemImage: "chevron.right",
+                        rotation: .degrees(configuration.isExpanded ? 90 : 0)
+                    )
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(
+                configuration.isExpanded ? L10n.text("ui.expanded") : L10n.text("ui.collected")
+            )
+
+            if configuration.isExpanded {
+                configuration.content
+            }
+        }
+    }
+}
+
+/// 行尾标记（线路刷新、展开箭头、外链、Token 刷新）与系统导航箭头长得一样：同宽、同字重、同色。
+///
+/// 系统导航箭头不跟主题，固定是 tertiaryLabel；主题的三级文字色在浅色下更深、深色下更亮，
+/// 两种标记并排时一深一浅，读起来像两套控件（#563）。系统箭头也跟正文一起随辅助功能字号放大，
+/// 这里按正文缩放；刷新中换成同宽的 spinner，标记列不跳动。
+struct SettingsTrailingAccessory: View {
+    let systemImage: String
+    var rotation: Angle = .zero
+    var isBusy = false
+    /// 行尾标记通常只是装饰，行本身已经说清楚动作；单独成钮时（Token 刷新）要留给旁白。
+    var isDecorative = true
+
+    @ScaledMetric(relativeTo: .body)
+    private var pointSize: CGFloat = SettingsLayoutMetrics.trailingAccessoryPointSize
+    @ScaledMetric(relativeTo: .body)
+    private var width: CGFloat = SettingsLayoutMetrics.trailingAccessoryWidth
+
+    var body: some View {
+        Group {
+            if isBusy {
+                ProgressView()
+                    .controlSize(.mini)
+            } else {
+                Image(systemName: systemImage)
+                    .font(.system(size: pointSize, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: .tertiaryLabel))
+                    .rotationEffect(rotation)
+            }
+        }
+        .frame(width: width)
+        .accessibilityHidden(isDecorative)
     }
 }

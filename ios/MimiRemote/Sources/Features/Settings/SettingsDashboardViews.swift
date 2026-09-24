@@ -59,20 +59,37 @@ struct ConnectionSettingsView: View {
                     )
                     .settingsRow()
                     .accessibilityIdentifier("settings.preferredRuntime")
-                } footer: {
+
+                    // 说明是这一行的解释，放进同一组、与行标题同一条左边线；
+                    // 系统脚注比分组标题多缩进几个点，放在脚注里对不齐（#563）。
                     Text(L10n.text("ui.preferred_runtime_description"))
                         .settingsSectionFooterStyle()
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .listRowInsets(
+                            EdgeInsets(
+                                top: 0,
+                                leading: SettingsLayoutMetrics.rowHorizontalInset
+                                    + SettingsLayoutMetrics.iconSlot
+                                    + SettingsLayoutMetrics.iconSpacing,
+                                bottom: 12,
+                                trailing: SettingsLayoutMetrics.rowHorizontalInset
+                            )
+                        )
+                } header: {
+                    SettingsGroupHeader()
                 }
                 .settingsGroupRowStyle()
             }
         }
+        // 分组之间用细线划分；要挂在 themedSettingsForm 之内，离 Form 最近的分组间距才生效。
+        .dividedSettingsList()
         .navigationDestination(isPresented: $isPresentingAddComputerForManualConnection) {
             AddComputerView(qrScannerPresentation: qrScannerPresentation, navigation: navigation)
         }
         .themedSettingsForm(tokens: tokens)
         // 普通操作和展开箭头保持中性；扫码按钮单独使用主操作色。
         .tint(tokens.secondaryText)
-        .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
         .frame(maxWidth: isDevicesTab ? 920 : 720)
         .frame(maxWidth: .infinity)
         .settingsCanvasBackground(tokens: tokens)

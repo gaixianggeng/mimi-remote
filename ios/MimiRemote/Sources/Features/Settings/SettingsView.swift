@@ -4,7 +4,7 @@ import SwiftUI
 /// 各自决定行高与图标尺寸，导致真机滚动时出现不一致的视觉节奏。
 enum SettingsLayoutMetrics {
     static let standardRowHeight: CGFloat = 52
-    /// 设备 Tab 的当前电脑主行：名称 20pt + 副标题，比普通行高一档。
+    /// 设备 Tab 的电脑行（当前与其他电脑同一档）：名称 17pt 中粗 + 状态副标题，比普通行高一档。
     static let deviceRowHeight: CGFloat = 64
     static let accessibilityRowHeight: CGFloat = 76
     static let rowHorizontalInset: CGFloat = 16
@@ -15,6 +15,17 @@ enum SettingsLayoutMetrics {
     static let iconSpacing: CGFloat = 8
     static let symbolPointSize: CGFloat = 18
     static let sectionSpacing: CGFloat = 24
+    /// 分组细线上下的留白。行本身上下各有约 17pt 内边距，线两侧到文字的距离因此相等，
+    /// 且明显大于组内两行文字之间的距离，读作分界而不是又一条行分隔线。
+    static let groupDividerSpacing: CGFloat = 12
+    /// 细线到其下分组标题的距离：比细线上方的留白小，线和标题一起读作下一组的开头。
+    static let groupDividerTitleSpacing: CGFloat = 10
+    /// 页面第一组没有细线，标题离内容顶端的距离。
+    static let groupTitleTopInset: CGFloat = 6
+    /// 行尾标记（刷新、展开箭头）按系统导航箭头取：宽度、字号、到值文字的间距。
+    static let trailingAccessoryWidth: CGFloat = 16
+    static let trailingAccessoryPointSize: CGFloat = 14
+    static let trailingAccessorySpacing: CGFloat = 8
 }
 
 enum TokenCountFormatter {
@@ -224,9 +235,7 @@ struct SettingsView: View {
                 // 四个分组都带标题，页面语法才一致。顶部两块原先没有标题，
                 // 读起来就是一坨没有标签的大块，底部却是分好组的列表。
                 // 累计值和刷新按钮挂在这一行，卡片里就不必再留一层标题。
-                HStack(alignment: .center, spacing: 8) {
-                    sectionHeader(L10n.text("ui.token_usage"), tokens: tokens)
-
+                SettingsGroupHeader(title: L10n.text("ui.token_usage"), showsDivider: false) {
                     // 宽屏把累计值推到最右、和刷新按钮成组；窄屏这样会在标题和累计值之间
                     // 撑出一大片空，所以让它紧跟标题，Spacer 留到刷新按钮之前。
                     if horizontalSizeClass == .compact {
@@ -271,7 +280,7 @@ struct SettingsView: View {
                     .listRowSeparator(.hidden)
                     .accessibilityIdentifier("settings.connectionManagement")
                 } header: {
-                    sectionHeader(L10n.text("ui.mac_devices"), tokens: tokens)
+                    SettingsGroupHeader(title: L10n.text("ui.mac_devices"))
                 }
                 .settingsGroupRowStyle()
             }
@@ -287,7 +296,7 @@ struct SettingsView: View {
                     .settingsStandardListRow()
                     .accessibilityIdentifier("settings.managedSubscription")
                 } header: {
-                    sectionHeader(L10n.text("ui.managed_subscription_section"), tokens: tokens)
+                    SettingsGroupHeader(title: L10n.text("ui.managed_subscription_section"))
                 }
                 .settingsGroupRowStyle()
             }
@@ -336,7 +345,7 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.defaultPermissions")
             } header: {
-                sectionHeader(L10n.text("ui.my_preferences"), tokens: tokens)
+                SettingsGroupHeader(title: L10n.text("ui.my_preferences"))
             }
             .settingsGroupRowStyle()
 
@@ -368,14 +377,14 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.aboutLegal")
             } header: {
-                sectionHeader(L10n.text("ui.more"), tokens: tokens)
+                SettingsGroupHeader(title: L10n.text("ui.more"))
             }
             .settingsGroupRowStyle()
         }
         // 与 themedSettingsForm 同一套：画布自绘、标题不转大写；每个分组接
         // settingsGroupRowStyle()，和「设备」及各设置详情页一样平铺在页面上。
         // 行样式只能挂在 Section 上：listRowBackground 放到 Form 外层不会下发到行。
-        .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
+        .dividedSettingsList()
         .textCase(nil)
         .scrollContentBackground(.hidden)
         .background(canvasBackground.ignoresSafeArea())
@@ -430,13 +439,6 @@ struct SettingsView: View {
             .foregroundStyle(tokens.secondaryText)
             .lineLimit(1)
         }
-    }
-
-    /// 排版本体在 settingsSectionHeaderStyle：整条设置链路（含「设备」和各详情页）
-    /// 共用同一套分组标题，不再由每个页面各自决定字号和文字色。
-    private func sectionHeader(_ title: String, tokens: ThemeTokens) -> some View {
-        Text(title)
-            .settingsSectionHeaderStyle()
     }
 
     private func refreshAccountUsage() async {
@@ -1140,37 +1142,24 @@ struct AccountTokenUsageCard: View {
 }
 
 private struct AccountUsageRefreshButton: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-
     let isRefreshing: Bool
     let onRefresh: () async -> Void
 
     var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
         Button {
             Task { await onRefresh() }
         } label: {
-            Group {
-                if isRefreshing {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-            }
-            .frame(width: 32, height: 32)
-            .background(tokens.secondaryText.opacity(0.08), in: Circle())
-            .overlay {
-                Circle().stroke(tokens.border.opacity(0.72), lineWidth: 1)
-            }
-            .frame(width: 44, height: 44)
-            .contentShape(Circle())
+            // 与设备页线路行的刷新标记同一个样子：平铺页面上不再单独画一枚带底色和描边的圆钮。
+            // 标记贴右，与下方各行的箭头落在同一列；44pt 命中区向左延伸（#563）。
+            SettingsTrailingAccessory(
+                systemImage: "arrow.clockwise",
+                isBusy: isRefreshing,
+                isDecorative: false
+            )
+            .frame(width: 44, height: 44, alignment: .trailing)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(tokens.secondaryText)
         .disabled(isRefreshing)
         .accessibilityLabel(
             isRefreshing
