@@ -1036,6 +1036,7 @@ private struct PendingUserInputActionBar: View {
                 }
             }
             .buttonStyle(.borderedProminent)
+            .foregroundStyle(tokens.primaryActionForeground)
             .tint(tokens.accent)
             .controlSize(.large)
             .frame(minHeight: 44)

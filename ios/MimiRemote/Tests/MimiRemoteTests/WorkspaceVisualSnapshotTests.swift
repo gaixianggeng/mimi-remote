@@ -46,7 +46,8 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
             hasBottomTabBar: false,
             testName: "testAccessibilityWorkspaceRowsGrowAndKeepDistinctPreview",
             dynamicTypeSize: .accessibility5,
-            precision: 1
+            // 运行中圆环按时钟旋转；允许这一小块的帧差，同时仍能发现文字截断。
+            precision: 0.999
         )
     }
 
@@ -233,6 +234,9 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
         await sessionStore.refreshAppServerModelOptions()
         XCTAssertEqual(sessionStore.sidebarProjects.map(\.id), projects.map(\.id))
         XCTAssertEqual(sessionStore.sessions(forProjectID: projects[0].id).count, sessions.count)
+        // 同一画面同时保留已读和未读记录，快照锁住小点与一致的标题样式。
+        sessionStore.markHistorySessionUnread("workspace-review")
+        XCTAssertTrue(sessionStore.unreadHistorySessionIDs.contains("workspace-review"))
 
         let appearanceDefaultsSuite = "WorkspaceVisualSnapshotTests.Appearance.\(UUID().uuidString)"
         let appearanceDefaults = UserDefaults(suiteName: appearanceDefaultsSuite)!
@@ -240,6 +244,8 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
         let appearanceStore = WorkspaceAppearanceStore(defaults: appearanceDefaults)
         // 默认角色会混入安装身份；快照显式固定，避免隔离 AppStore 后生成的新身份让视觉基线抖动。
         let appearanceProfileID = appStore.activeHostScope.profileID
+        // 默认图标风格会随产品设置变化；固定旧基线的西游角色，隔离本次列表布局差异。
+        appearanceStore.setStyle(.journey, profileID: appearanceProfileID)
         appearanceStore.setCustomCharacterID("sun-wukong", profileID: appearanceProfileID, projectID: projects[0].id)
         appearanceStore.setCustomCharacterID("zhu-bajie", profileID: appearanceProfileID, projectID: projects[1].id)
         appearanceStore.setCustomCharacterID("white-bone-demon", profileID: appearanceProfileID, projectID: projects[2].id)

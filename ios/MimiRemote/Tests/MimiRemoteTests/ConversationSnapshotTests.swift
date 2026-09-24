@@ -1388,7 +1388,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testSessionRuntimeBadgesInConversationList() {
+    func testSessionRuntimeIconsInPhoneConversationRows() {
         let project = AgentProject(id: "runtime-badges", name: "runtime-badges", path: "/Users/me/code/runtime-badges")
         let themeStore = makeThemeStore()
         let codex = makeSnapshotSession(
@@ -1419,7 +1419,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                density: .compact
+                density: .compact,
+                leadingSlot: .runtimeIcon
             )
             SessionIndexRow(
                 session: claude,
@@ -1429,18 +1430,19 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                density: .compact
+                density: .compact,
+                leadingSlot: .runtimeIcon
             )
         }
         .padding(16)
         .environmentObject(themeStore)
         .environment(\.colorScheme, .light)
         .background(themeStore.tokens(for: .light).background)
-        .frame(width: 460, height: 190)
+        .frame(width: 390, height: 150)
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 460, height: 190))
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 150))
         )
     }
 
@@ -1464,7 +1466,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testSessionRuntimeMetadataInDarkConversationList() {
+    func testSessionRuntimeIconsAndPreviewInDarkIPadConversationRows() {
         let project = AgentProject(
             id: "runtime-dark",
             name: "codex-ipad-agent",
@@ -1500,7 +1502,9 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 reminder: nil,
                 isObserving: false,
                 isUnread: true,
-                density: .compact
+                density: .table,
+                leadingSlot: .runtimeIcon,
+                showsSessionPreview: true
             )
             SessionIndexRow(
                 session: claude,
@@ -1510,18 +1514,20 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
-                density: .compact
+                density: .table,
+                leadingSlot: .runtimeIcon,
+                showsSessionPreview: true
             )
         }
         .padding(16)
         .environmentObject(themeStore)
         .environment(\.colorScheme, .dark)
         .background(themeStore.tokens(for: .dark).background)
-        .frame(width: 460, height: 190)
+        .frame(width: 744, height: 190)
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 460, height: 190))
+            as: .image(precision: 0.98, layout: .fixed(width: 744, height: 190))
         )
     }
 
@@ -1673,7 +1679,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
             .contentMargins(.leading, 0, for: .scrollContent)
-            .environment(\.defaultMinListRowHeight, 34)
+            .environment(\.defaultMinListRowHeight, 40)
             .frame(maxHeight: .infinity)
 
             // 直接渲染生产组件，避免 NavigationSplitView 在测试宿主中自动折叠侧栏。
@@ -1876,6 +1882,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         ]
 
         sessionStore.projects = [project, secondProject]
+        sessionStore.recentWorkspaces = [
+            AgentWorkspace(project: project, lastOpenedAt: snapshotMessageDate),
+            AgentWorkspace(project: secondProject, lastOpenedAt: snapshotMessageDate)
+        ]
         sessionStore.sidebarProjects = [project, secondProject]
         sessionStore.sessions = [active, pinned] + historyRows
         sessionStore.pinnedSessionIDs = [pinned.id]

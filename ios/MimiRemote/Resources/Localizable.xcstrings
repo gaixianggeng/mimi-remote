@@ -18210,19 +18210,19 @@
         }
       }
     },
-    "ui.neutral_warm_white_with_a_single_main_color": {
+    "ui.notion_style_neutral_grays_without_accent_color": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Neutral warm white with a single deep-purple main color"
+            "value": "Notion-style neutrals with a subtle blue in usage charts"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "中性暖白配单一深紫主色"
+            "value": "Notion 式中性底色，用量图表点缀冷蓝"
           }
         }
       }

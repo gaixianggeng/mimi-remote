@@ -148,7 +148,7 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
 
     /// 说明紧贴标题下方。长翻译和大字号沿同一文字起点换行。
     private func titleCluster(tokens: ThemeTokens) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
+        HStack(alignment: .firstTextBaseline, spacing: SettingsLayoutMetrics.iconSpacing) {
             Image(systemName: systemImage)
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
@@ -203,7 +203,7 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
     }
 
     private var optionInset: CGFloat {
-        SettingsLayoutMetrics.iconSlot + 12
+        SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing
     }
 
     private var isCompactDensity: Bool {
@@ -298,7 +298,10 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
                     .buttonStyle(.plain)
                     .settingsRow(option.choiceSubtitle == nil ? .standard : .descriptive)
                 }
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             }
+            .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
@@ -310,7 +313,7 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
     private func optionRow(_ option: Option, tokens: ThemeTokens) -> some View {
         let isSelected = option == selection
 
-        return HStack(alignment: .top, spacing: 12) {
+        return HStack(alignment: .top, spacing: SettingsLayoutMetrics.iconSpacing) {
             if let systemImage = option.choiceSystemImage {
                 Image(systemName: systemImage)
                     .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
@@ -375,9 +378,9 @@ struct LanguageSettingsView: View {
                 .settingsRow()
                 .accessibilityIdentifier("settings.language.detail.language")
             } header: {
-                Text(L10n.text("ui.language"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.language"), showsDivider: false)
             }
+            .settingsGroupRowStyle()
 
             Section {
                 SettingsChoiceRow(
@@ -388,7 +391,10 @@ struct LanguageSettingsView: View {
                 )
                 .settingsRow(.descriptive)
                 .accessibilityIdentifier("settings.language.detail.voiceInput")
+            } header: {
+                SettingsGroupHeader()
             }
+            .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
