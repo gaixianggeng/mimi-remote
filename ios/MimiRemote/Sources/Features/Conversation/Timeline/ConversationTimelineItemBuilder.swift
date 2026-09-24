@@ -77,7 +77,10 @@ struct ConversationTimelineItemBuilder {
     private static func isProcessMessage(_ message: ConversationMessage) -> Bool {
         guard message.role != .user else { return false }
         switch message.kind {
-        case .commentary, .plan, .reasoningSummary, .commandSummary, .fileChangeSummary, .context:
+        case .plan:
+            // turn/plan/updated 是执行步骤；独立 plan item 是交给用户阅读的完整计划。
+            return message.itemID == "turn-plan"
+        case .commentary, .reasoningSummary, .commandSummary, .fileChangeSummary, .context:
             return true
         case .approval, .userInput:
             return isResolvedInteractionMessage(message)
