@@ -22,7 +22,11 @@ enum ConversationUserMessagePresentation {
         guard withoutBrowserContext != nil || fileMention != nil else {
             return content
         }
-        return removingRequestMarker(from: fileMention?.request ?? candidate)
+        if let fileMention {
+            // 包装标题已被解析器消费，不能再次删除用户正文中同名的标题。
+            return fileMention.request.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return removingRequestMarker(from: candidate)
     }
 
     /// 旧会话可能只有文本路径而没有结构化图片输入；展示正文时仍需从隐藏的清单读取图片路径。
@@ -31,6 +35,15 @@ enum ConversationUserMessagePresentation {
         let candidate = (removingBrowserContext(from: trimmedContent) ?? trimmedContent)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return fileMentionEnvelope(from: candidate)?.header
+    }
+
+    static func imageReferenceContent(from content: String) -> String {
+        let visible = displayContent(from: content)
+        guard let hiddenHeader = hiddenFileMentionHeader(from: content) else {
+            return visible
+        }
+        // 正文中手动提到的图片优先占用预览名额，隐藏清单补齐其余附件。
+        return visible + "\n" + hiddenHeader
     }
 
     private static func removingBrowserContext(from content: String) -> String? {

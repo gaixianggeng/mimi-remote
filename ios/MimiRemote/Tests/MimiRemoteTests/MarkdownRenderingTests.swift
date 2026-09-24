@@ -176,6 +176,18 @@ final class MarkdownRenderingTests: XCTestCase {
         let browserContext = "<in-app-browser-context source=\"ambient-ui-state\">状态</in-app-browser-context>\n\n"
         XCTAssertEqual(ConversationUserMessagePresentation.displayContent(from: browserContext + content), "请比较这两张图片。")
         XCTAssertNotNil(ConversationUserMessagePresentation.hiddenFileMentionHeader(from: browserContext + content))
+
+        let userHeading = "## My request:\n请保留这一行标题。"
+        let withUserHeading = content.replacingOccurrences(of: "请比较这两张图片。", with: userHeading)
+        XCTAssertEqual(ConversationUserMessagePresentation.displayContent(from: withUserHeading), userHeading)
+
+        let withBodyImage = content.replacingOccurrences(of: "请比较这两张图片。", with: "请看 /tmp/extra.png")
+        XCTAssertEqual(
+            ConversationFileReferenceDetector.imageReferences(
+                in: ConversationUserMessagePresentation.imageReferenceContent(from: withBodyImage)
+            ).map(\.path),
+            ["/tmp/extra.png", "/tmp/first.png", "/tmp/second.png"]
+        )
     }
 
     func testUserMessagePresentationPreservesIncompleteFileMentionEnvelope() {

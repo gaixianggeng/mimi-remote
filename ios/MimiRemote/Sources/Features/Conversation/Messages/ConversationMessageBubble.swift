@@ -420,9 +420,9 @@ struct ConversationMessageContent: View {
         guard message.turnPayload == nil || payloadImageItems.isEmpty else {
             return []
         }
-        let source = ConversationUserMessagePresentation.hiddenFileMentionHeader(from: message.content)
-            ?? userDisplayContent
-        return ConversationFileReferenceDetector.imageReferences(in: source)
+        return ConversationFileReferenceDetector.imageReferences(
+            in: ConversationUserMessagePresentation.imageReferenceContent(from: message.content)
+        )
     }
 
     private var userImageSources: [ConversationImageSource] {
