@@ -1023,10 +1023,11 @@ extension ConversationDataFlowTests {
         let conversationStore = ConversationStore()
         conversationStore.setHistory(messages, sessionID: "thr_processed")
         let items = ConversationTimelineItemBuilder.items(from: conversationStore.messages(for: "thr_processed"), showsDetailedTranscript: true)
-        XCTAssertEqual(items.count, 7)
+        XCTAssertEqual(items.count, 8)
         guard case .processGroup = items[1], case .processMessage(let commentary) = items[2],
-              case .activity(let plan) = items[3], case .activity(let reasoning) = items[4],
-              case .activity(let command) = items[5], case .message(let final) = items[6] else {
+              case .message(let plan) = items[3],
+              case .processGroup = items[4], case .activity(let reasoning) = items[5],
+              case .activity(let command) = items[6], case .message(let final) = items[7] else {
             return XCTFail("展开后必须保持历史说明、计划、思考、工具、答复的原始顺序")
         }
         XCTAssertEqual(commentary.itemID, "commentary_processed")
