@@ -397,19 +397,13 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
     }
 
-    func testReturnToTailDuringDecelerationRunsOnceAfterIdleWithoutOtherUpdates() async {
+    func testReturnToTailDuringDecelerationRunsImmediatelyAndOnlyOnce() async {
         let rig = ScrollRig()
         XCTAssertTrue(rig.controller.isReadable)
         rig.controller.phaseChanged(.tracking)
         rig.report(offset: 600)
         rig.controller.phaseChanged(.decelerating)
         rig.controller.returnToTail()
-        await drain()
-        XCTAssertTrue(rig.commands.isEmpty, "显式请求也不能在当前手势内抢写位置")
-        XCTAssertEqual(rig.controller.mode, .readingHistory, "请求尚未执行时不能提前隐藏按钮")
-        rig.report(offset: 500)
-        rig.controller.phaseChanged(.idle)
-        await drain()
         XCTAssertEqual(rig.commands.map(\.target), [.tail])
         XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
         XCTAssertEqual(rig.controller.mode, .followingTail)
@@ -418,23 +412,49 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(rig.commands.count, 1)
     }
 
-    func testNewGestureCancelsReturnToTailQueuedDuringDeceleration() async {
-        for startsBeforeIdle in [false, true] {
-            let rig = ScrollRig()
-            rig.controller.phaseChanged(.tracking)
-            rig.report(offset: 600)
-            rig.controller.phaseChanged(.decelerating)
-            rig.controller.returnToTail()
-            if !startsBeforeIdle { rig.controller.phaseChanged(.idle) }
-            // 新手势既可能中断旧惯性，也可能抢在 idle 后的合并任务之前到来。
-            rig.controller.phaseChanged(.tracking)
-            rig.report(offset: 450)
-            rig.controller.phaseChanged(.idle)
-            await drain()
-            XCTAssertTrue(rig.commands.isEmpty)
-            XCTAssertEqual(rig.controller.mode, .readingHistory)
-            XCTAssertEqual(rig.scrollView.contentOffset.y, 450, accuracy: 0.5)
-        }
+    func testNewGestureAfterReturnToTailCanResumeReadingHistory() async {
+        let rig = ScrollRig()
+        rig.controller.phaseChanged(.tracking)
+        rig.report(offset: 600)
+        rig.controller.phaseChanged(.decelerating)
+        rig.controller.returnToTail()
+        XCTAssertEqual(rig.commands.map(\.target), [.tail])
+        rig.controller.phaseChanged(.tracking)
+        rig.report(offset: 450)
+        rig.controller.phaseChanged(.idle)
+        await drain()
+        XCTAssertEqual(rig.commands.count, 1)
+        XCTAssertEqual(rig.controller.mode, .readingHistory)
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 450, accuracy: 0.5)
+    }
+
+    func testLeavingBottomShowsReturnButtonFromMeasuredDistance() {
+        let rig = ScrollRig()
+        XCTAssertFalse(rig.controller.canReturnToTail)
+        rig.controller.phaseChanged(.tracking)
+        rig.report(offset: 1_175)
+        XCTAssertTrue(rig.controller.canReturnToTail, "小幅上滑也应出现入口")
+        rig.controller.phaseChanged(.idle)
+        rig.controller.phaseChanged(.tracking)
+        rig.report(offset: 1_200)
+        rig.controller.phaseChanged(.idle)
+        XCTAssertFalse(rig.controller.canReturnToTail)
+        // 即使滚动模式仍是 followingTail，真实视口离底也应显示入口。
+        rig.report(offset: 900)
+        XCTAssertEqual(rig.controller.mode, .followingTail)
+        XCTAssertTrue(rig.controller.canReturnToTail)
+        rig.controller.phaseChanged(.tracking)
+        rig.report(offset: 800)
+        XCTAssertEqual(rig.controller.mode, .readingHistory)
+        XCTAssertTrue(rig.controller.canReturnToTail)
+    }
+
+    func testNativeViewportScrollsToActualBottomWithContentInset() {
+        let rig = ScrollRig()
+        rig.scrollView.contentInset.bottom = 40
+        rig.scrollView.contentOffset.y = 400
+        XCTAssertTrue(rig.controller.viewport.scrollToTail(animated: false))
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 1_240, accuracy: 0.5)
     }
 
     func testThawedMetadataSnapshotDoesNotDiscardExplicitReturnToTail() async {
@@ -451,13 +471,19 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
     }
 
-    func testInitialPresentationCompletesWhenCommandDoesNotChangeGeometry() async {
+    func testInitialPresentationCompletesWhenCommandDoesNotChangeGeometry() async throws {
         let rig = ScrollRig(connect: false)
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
         rig.report(offset: 1_200)
         rig.controller.tailVisibilityChanged(true, epoch: rig.controller.epoch)
         XCTAssertFalse(rig.controller.isReadable)
         rig.controller.connect(epoch: rig.controller.epoch) { _ in }
-        await drain()
+        // CI 负载下合并任务可能晚于固定次数的 yield；只等待有界的可读交接结果。
+        for _ in 0..<50 {
+            if rig.controller.isReadable { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertTrue(rig.controller.isReadable, "无变化的 scrollTo 不会再报告 geometry，仍须交接首屏")
     }
 
