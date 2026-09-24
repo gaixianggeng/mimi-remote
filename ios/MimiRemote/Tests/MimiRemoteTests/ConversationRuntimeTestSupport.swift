@@ -468,7 +468,9 @@ func waitForFakeAppServerRequest(
     file: StaticString = #filePath,
     line: UInt = #line
 ) async throws -> CodexAppServerRequest {
-    for _ in 0..<200 {
+    // 轮询预算从 2s 放宽到 4s：CI 负载下 fake transport 的请求投递偶发超时，
+    // 与产品逻辑无关。
+    for _ in 0..<400 {
         let messages = await transport.sentMessages()
         if startIndex < messages.count {
             for text in messages[startIndex...] {
@@ -639,6 +641,28 @@ func makeClaudeChannelMetadata(methods: [String]? = nil) -> CodexAppServerChanne
             "model/list", "account/rateLimits/read"
         ],
         capabilities: ["history": true, "streaming": true]
+    )
+}
+
+/// 新 agentd 会在 Codex 启用时显式发布该 channel。只要 `channels` 非空，
+/// 测试夹具就必须按真实配置列出 Codex，不再借顶层旧字段暗示它存在。
+func makeCodexChannelMetadata() -> CodexAppServerChannelMetadata {
+    CodexAppServerChannelMetadata(
+        id: "codex",
+        runtimeID: "codex",
+        title: "Codex",
+        provider: "openai",
+        type: "codex_app_server",
+        protocolName: "app_server_jsonrpc_ws",
+        enabled: true,
+        gatewayWSURL: "ws://127.0.0.1:7777/api/app-server/ws",
+        gatewayAvailable: true,
+        managed: false,
+        experimental: nil,
+        lifecycle: "shared_ssh",
+        bridge: nil,
+        methods: nil,
+        capabilities: nil
     )
 }
 

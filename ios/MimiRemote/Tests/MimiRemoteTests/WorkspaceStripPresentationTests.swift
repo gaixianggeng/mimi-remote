@@ -8,7 +8,10 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         state.reset()
 
         XCTAssertEqual(
-            state.resolvedRuntime(preferredRuntime: .claude, claudeChannelAvailable: true),
+            state.resolvedRuntime(
+                preferredRuntime: .claude,
+                availableRuntimeProviders: ["codex", "claude"]
+            ),
             .claude
         )
     }
@@ -22,7 +25,10 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         let state = WorkspaceRuntimeSelectionState()
         for preferredRuntime in WorkspaceSessionRuntimeChoice.allCases {
             XCTAssertEqual(
-                state.resolvedRuntime(preferredRuntime: preferredRuntime, claudeChannelAvailable: true),
+                state.resolvedRuntime(
+                    preferredRuntime: preferredRuntime,
+                    availableRuntimeProviders: Set(WorkspaceSessionRuntimeChoice.allCases.map(\.runtimeProvider))
+                ),
                 preferredRuntime
             )
         }
@@ -32,33 +38,60 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         let state = WorkspaceRuntimeSelectionState()
 
         XCTAssertEqual(
-            state.resolvedRuntime(preferredRuntime: .claude, claudeChannelAvailable: false),
+            state.resolvedRuntime(
+                preferredRuntime: .claude,
+                availableRuntimeProviders: ["codex"]
+            ),
             .codex
         )
         XCTAssertEqual(
-            state.resolvedRuntime(preferredRuntime: .claude, claudeChannelAvailable: true),
+            state.resolvedRuntime(
+                preferredRuntime: .claude,
+                availableRuntimeProviders: ["codex", "claude"]
+            ),
             .claude,
             "启动或切换电脑时能力晚到，仍应恢复 Claude 偏好"
         )
     }
 
+    /// 首选 Runtime 不可用时必须回落到**实际可用**的那个。
+    ///
+    /// main 上这条断言的是"codex 被关掉时退到 claude"。合并后 codex 同样参与探测
+    /// （不再写死为恒可用），所以这条语义得以保留——只开了 claude 的主机上，
+    /// 把用不了的 codex 顶上来是错的。
     func testWorkspaceRuntimePreferenceFallsBackToClaudeWhenCodexIsUnavailable() {
         let state = WorkspaceRuntimeSelectionState()
 
         XCTAssertEqual(
             state.resolvedRuntime(
                 preferredRuntime: .codex,
-                codexChannelAvailable: false,
-                claudeChannelAvailable: true
+                availableRuntimeProviders: ["claude"]
             ),
             .claude
         )
         XCTAssertEqual(
-            WorkspaceSessionRuntimeChoice.available(
-                codexChannelAvailable: false,
-                claudeChannelAvailable: true
-            ),
+            WorkspaceSessionRuntimeChoice.available(runtimeProviders: ["claude"]),
             [.claude]
+        )
+    }
+
+    /// 主机一个通道都没上报时，codex 作为兜底项仍然可选，选择器不会空。
+    ///
+    /// 这是"能力尚未到达"的正常态（首屏早于探测完成），不能让用户看到空列表
+    /// 或未选中态。
+    func testCodexRemainsFallbackWhenNoChannelIsReported() {
+        let state = WorkspaceRuntimeSelectionState()
+
+        XCTAssertEqual(
+            state.resolvedRuntime(
+                preferredRuntime: .claude,
+                availableRuntimeProviders: []
+            ),
+            .codex
+        )
+        XCTAssertEqual(
+            WorkspaceSessionRuntimeChoice.available(runtimeProviders: []),
+            [.codex]
         )
     }
 
@@ -67,7 +100,10 @@ final class WorkspaceStripPresentationTests: XCTestCase {
 
         for isAvailable in [false, true, false, true] {
             XCTAssertEqual(
-                state.resolvedRuntime(preferredRuntime: .claude, claudeChannelAvailable: isAvailable),
+                state.resolvedRuntime(
+                    preferredRuntime: .claude,
+                    availableRuntimeProviders: isAvailable ? ["codex", "claude"] : ["codex"]
+                ),
                 .codex,
                 "能力刷新不能覆盖用户手动切换"
             )
@@ -75,7 +111,10 @@ final class WorkspaceStripPresentationTests: XCTestCase {
 
         state.reset()
         XCTAssertEqual(
-            state.resolvedRuntime(preferredRuntime: .claude, claudeChannelAvailable: true),
+            state.resolvedRuntime(
+                preferredRuntime: .claude,
+                availableRuntimeProviders: ["codex", "claude"]
+            ),
             .claude
         )
     }
@@ -84,11 +123,17 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         let state = WorkspaceRuntimeSelectionState(manualRuntime: .claude)
 
         XCTAssertEqual(
-            state.resolvedRuntime(preferredRuntime: .codex, claudeChannelAvailable: false),
+            state.resolvedRuntime(
+                preferredRuntime: .codex,
+                availableRuntimeProviders: ["codex"]
+            ),
             .codex
         )
         XCTAssertEqual(
-            state.resolvedRuntime(preferredRuntime: .codex, claudeChannelAvailable: true),
+            state.resolvedRuntime(
+                preferredRuntime: .codex,
+                availableRuntimeProviders: ["codex", "claude"]
+            ),
             .claude
         )
     }

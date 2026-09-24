@@ -49,6 +49,10 @@ final class ConversationTimelineScrollController {
     private(set) var hasUnseenTail = false
     private(set) var epoch = 0
 
+    var canReturnToTail: Bool {
+        isReadable && (mode == .readingHistory || hasUnseenTail || !isNearBottom)
+    }
+
     @ObservationIgnored let viewport = ConversationTimelineViewport()
     @ObservationIgnored private(set) var scope: ScopedSessionID?
     @ObservationIgnored private(set) var revision = 0
@@ -187,7 +191,8 @@ final class ConversationTimelineScrollController {
         metrics = next
         isNearBottom = next.isNearBottom
         if isInteracting {
-            if let start = interactionStartOffset, next.contentOffsetY < start - 12 {
+            // 小幅上滑也应显示入口；缺失起点回调时仍以真实离底距离兜住。
+            if !next.isNearBottom || (interactionStartOffset.map { next.contentOffsetY < $0 - 12 } ?? false) {
                 mode = .readingHistory
             }
             return
@@ -312,10 +317,13 @@ final class ConversationTimelineScrollController {
         guard isActive, hasContent else { return }
         ConversationScrollDiagnostics.shared.record("return_tail")
         beginInput()
+        // 按钮点击是明确的新滚动意图，直接打断当前惯性，不等待可能迟到的 idle 回调。
+        isInteracting = false
+        interactionStartOffset = nil
         pending = .tail(animated: true, reason: .user)
-        guard !isInteracting else { return }
         mode = isReadable ? .followingTail : .initialPositioning
         hasUnseenTail = false
+        applyPending(allowProxyScroll: true)
         schedulePending()
     }
 
@@ -457,7 +465,9 @@ final class ConversationTimelineScrollController {
     }
 
     private func applyPending(allowProxyScroll: Bool = false) {
-        guard isActive, !isInteracting, !viewport.isUserScrolling,
+        let explicitReturn: Bool
+        if case .tail(_, .user) = pending { explicitReturn = true } else { explicitReturn = false }
+        guard isActive, (explicitReturn || (!isInteracting && !viewport.isUserScrolling)),
               let pending, let execute, let scope,
               let current = metrics ?? viewport.metrics, current.contentHeight > 0 else { return }
         let target: ConversationTimelineScrollTarget

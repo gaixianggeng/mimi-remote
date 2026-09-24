@@ -24,10 +24,21 @@ extension AppStore {
         token: String,
         timeout: TimeInterval,
         config: CodexAppServerConfigResponse,
-        transportFactory: @escaping () -> CodexAppServerTransport
+        transportFactory: @escaping () -> CodexAppServerTransport,
+        harnessFactory: HarnessSessionClientFactory = HarnessSessionAPIClient.liveFactory
     ) async throws {
         guard let runtimeProvider = AppServerRuntimeBundle.preferredAvailableRuntimeProvider(in: config) else {
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+        }
+        if runtimeProvider == AppServerRuntimeBundle.nativeRuntimeProvider {
+            // Harness-only 宿主没有 app-server WebSocket。连接探测必须走原生 RPC；
+            // 如果 Harness 离线就如实失败，绝不能再把同一操作改投旧 DeepSeek 路径。
+            guard try AppServerRuntimeBundle.nativeHarnessIsConfigured(in: config),
+                  let harness = harnessFactory(endpoint, token),
+                  try await harness.channelAvailable() else {
+                throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+            }
+            return
         }
         let runtime = CodexAppServerSessionRuntime(
             endpoint: endpoint,

@@ -29,8 +29,17 @@ private struct SessionRowActionController {
     }
 
     var canChangeArchiveState: Bool {
-        !sessionStore.isProtocolReadOnlySession(session)
+        supportsArchive
+            && !sessionStore.isProtocolReadOnlySession(session)
             && !sessionStore.isSessionArchiveMutationPending(session.id)
+    }
+
+    var supportsArchive: Bool {
+        RuntimeFeatureSupport.supportsArchive(
+            for: CodexAppServerSessionRuntime.normalizedRuntimeProvider(
+                session.runtimeProvider ?? session.source
+            )
+        )
     }
 
     var pinTitle: String {
@@ -151,14 +160,16 @@ struct SessionActionMenuContent: View {
             }
             .menuOrder(.fixed)
 
-            Divider()
+            if actions.supportsArchive {
+                Divider()
 
-            Button(role: actions.isArchived ? nil : .destructive) {
-                actions.toggleArchived()
-            } label: {
-                Label(actions.archiveTitle, systemImage: actions.archiveSystemImage)
+                Button(role: actions.isArchived ? nil : .destructive) {
+                    actions.toggleArchived()
+                } label: {
+                    Label(actions.archiveTitle, systemImage: actions.archiveSystemImage)
+                }
+                .disabled(!actions.canChangeArchiveState)
             }
-            .disabled(!actions.canChangeArchiveState)
         }
     }
 
@@ -320,10 +331,12 @@ private struct SessionActionsContextMenuModifier: ViewModifier {
                     }
                 }
 
-                Button(actions.archiveTitle) {
-                    actions.toggleArchived()
+                if actions.supportsArchive {
+                    Button(actions.archiveTitle) {
+                        actions.toggleArchived()
+                    }
+                    .disabled(!actions.canChangeArchiveState)
                 }
-                .disabled(!actions.canChangeArchiveState)
             }
             .sessionActionSheets(presentation: $presentation)
     }
@@ -369,13 +382,15 @@ private struct SessionRowSwipeActionsModifier: ViewModifier {
                 }
                 // LTR 下从右向左滑动揭示 trailing；永久删除、停止和取消不进入滑动入口。
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    Button(role: actions.isArchived ? nil : .destructive) {
-                        actions.toggleArchived()
-                    } label: {
-                        Label(actions.archiveTitle, systemImage: actions.archiveSystemImage)
+                    if actions.supportsArchive {
+                        Button(role: actions.isArchived ? nil : .destructive) {
+                            actions.toggleArchived()
+                        } label: {
+                            Label(actions.archiveTitle, systemImage: actions.archiveSystemImage)
+                        }
+                        .tint(actions.isArchived ? Color.blue : Color.red)
+                        .disabled(!actions.canChangeArchiveState)
                     }
-                    .tint(actions.isArchived ? Color.blue : Color.red)
-                    .disabled(!actions.canChangeArchiveState)
                 }
         } else {
             content

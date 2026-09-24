@@ -2,6 +2,30 @@ import CryptoKit
 import Foundation
 
 extension AppStore {
+    func runtimeIdentity(endpoint: String, token: String) -> String {
+        "\(endpoint)\n\(token)"
+    }
+
+    /// 每个宿主只由 `runtimeBundle` 创建一份原生客户端。
+    ///
+    /// Debug 与正式构建使用同一实现。用户启用状态来自 Mac 模块写入的 agentd 配置，
+    /// 能力来自 config channel，健康状态再由原生 RPC 探测。
+    var nativeHarnessFactory: HarnessSessionClientFactory {
+        HarnessSessionAPIClient.liveFactory
+    }
+
+    /// 当前宿主使用的原生 Harness 客户端；未注入原生通道时为 `nil`。
+    ///
+    /// 供 Store 接上宿主级 `$events` 的出口——那条通道不属于任何会话页面
+    /// （契约 D5：别的会话的审批可能在用户从未打开它时到达）。
+    ///
+    /// 必须走 `runtimeBundle` 取**同一个** bundle：另建一个会得到第二条 runtime
+    /// （连接、代次、pending 表都各一份），于是"宿主级订阅"其实订在另一条连接上。
+    func nativeHarnessClientForActiveHost() -> HarnessSessionClient? {
+        guard let endpoint = try? Self.validatedEndpoint(connectionEndpoint) else { return nil }
+        return runtimeBundle(endpoint: endpoint, token: token).harness
+    }
+
     func setActiveConnectionProfileRoute(_ route: ConnectionProfileRoute) throws {
         guard let profileID = activeConnectionProfileID,
               let index = connectionProfiles.firstIndex(where: { $0.id == profileID }),

@@ -374,7 +374,7 @@ struct ConversationActivityRow: View, Equatable {
             )
         case .thinking:
             return provider == .claude ? nil : payload.subtitle.map(ConversationActivityPayload.plainProgressText)
-        case .plan, .error:
+        case .plan, .error, .context:
             return payload.subtitle.map(ConversationActivityPayload.plainProgressText)
         }
     }
@@ -529,6 +529,8 @@ enum ProcessedActivitySymbol {
             return "wrench.and.screwdriver"
         case .error:
             return "exclamationmark.triangle"
+        case .context:
+            return "info.circle"
         }
     }
 }

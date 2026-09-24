@@ -1,0 +1,77 @@
+{
+  "provenance": {
+    "level": "live-capture",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.1.5-rc.2",
+    "upstreamTag": "dsh-v0.1.5-rc.2",
+    "profile": "web",
+    "transport": "http://127.0.0.1 loopback, cookie session after GET /?token=",
+    "modelFixture": "@deepseek-ai/dsh-llm-mock-server (scriptable OpenAI-compatible SSE)",
+    "capturedAt": "2026-09-18T18:18:26.439Z"
+  },
+  "note": "remote.mux WebSocket 载体帧：客户端 open/cancel，服务端 item/error/end。",
+  "observations": [
+    {
+      "label": "client.open",
+      "value": {
+        "type": "open",
+        "streamId": "h00-rpc-0001",
+        "endpoint": "session/follow",
+        "payload": {
+          "args": {
+            "request": {
+              "address": {
+                "kind": "session",
+                "sessionId": "h00-session-0001"
+              },
+              "assistantStream": true,
+              "maxMessages": 200
+            }
+          }
+        }
+      }
+    },
+    {
+      "label": "client.cancel",
+      "value": {
+        "type": "cancel",
+        "streamId": "h00-rpc-0001"
+      }
+    },
+    {
+      "label": "server.item",
+      "value": {
+        "type": "item",
+        "streamId": "h00-rpc-0001",
+        "value": {}
+      },
+      "note": "value 的判别式是 value.type。"
+    },
+    {
+      "label": "server.error",
+      "value": {
+        "type": "error",
+        "streamId": "h00-rpc-0001",
+        "error": {
+          "code": "gateway/internal",
+          "message": "<string:0>"
+        }
+      }
+    },
+    {
+      "label": "server.end",
+      "value": {
+        "type": "end",
+        "streamId": "h00-rpc-0001"
+      }
+    },
+    {
+      "label": "path",
+      "value": "/api/remote.mux（WebSocket，凭 Cookie 鉴权）"
+    },
+    {
+      "label": "observedNote",
+      "value": "实测三路流均只用到 item 载体；error/end 未在成功路径出现，客户端仍必须按判别式处理。"
+    }
+  ]
+}

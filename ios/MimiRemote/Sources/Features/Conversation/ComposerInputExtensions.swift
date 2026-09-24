@@ -66,7 +66,7 @@ extension ComposerView {
     }
 
     var availablePermissionProfiles: [CodexAppServerPermissionProfileSummary] {
-        guard selectedSessionRuntimeProviderForModelMenu != "claude",
+        guard composerRuntimeProvider == "codex",
               sessionStore.permissionProfilesCWD == permissionProfileCWD
         else {
             return []
@@ -116,7 +116,12 @@ extension ComposerView {
     }
 
     var availablePermissionModes: [ComposerPermissionMode] {
-        ComposerPermissionMode.allCases
+        RuntimeFeatureSupport.permissionModes(for: composerRuntimeProvider)
+    }
+
+    var composerRuntimeProvider: String {
+        selectedSessionRuntimeProviderForModelMenu
+            ?? normalizedRuntimeProvider(composerState.turnOptions.runtimeProvider)
     }
 }
 import UIKit
@@ -319,6 +324,12 @@ extension ComposerView {
                 showsPermissionSettings: isPhoneComposer && composerTurnSettingsPolicy.allowsTurnSettingsEditing,
                 permissionModes: availablePermissionModes,
                 selectedPermissionMode: composerState.permissionMode,
+                showsAttachmentActions: RuntimeFeatureSupport.supportsAttachments(
+                    for: composerRuntimeProvider
+                ),
+                showsSkillActions: RuntimeFeatureSupport.supportsSkills(
+                    for: composerRuntimeProvider
+                ),
                 showsCameraAction: showsCameraAttachmentAction,
                 selectedSkillPaths: selectedSkillPaths,
                 onPickFile: {
@@ -422,7 +433,9 @@ extension ComposerView {
 
     private var composerContextControls: some View {
         HStack(spacing: 8) {
-            skillPickerButton
+            if RuntimeFeatureSupport.supportsSkills(for: composerRuntimeProvider) {
+                skillPickerButton
+            }
             if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
                 permissionMenu
             }

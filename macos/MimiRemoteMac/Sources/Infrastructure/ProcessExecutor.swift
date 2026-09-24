@@ -14,12 +14,14 @@ enum ProcessExecutorError: LocalizedError {
     case launchFailed(String)
     case timedOut
     case outputTooLarge
+    case inputTooLarge
 
     var errorDescription: String? {
         switch self {
         case .launchFailed(let message): "无法启动命令：\(message)"
         case .timedOut: "命令执行超时"
         case .outputTooLarge: "命令输出超过安全上限"
+        case .inputTooLarge: "命令输入超过安全上限"
         }
     }
 }
@@ -33,8 +35,12 @@ actor ProcessExecutor {
         timeout: Duration = .seconds(15),
         outputLimit: Int = 1_048_576,
         environment: [String: String]? = nil,
-        forceKillAfterTimeout: Bool = false
+        forceKillAfterTimeout: Bool = false,
+        standardInput: Data? = nil
     ) async throws -> CommandResult {
+        guard (standardInput?.count ?? 0) <= 16_384 else {
+            throw ProcessExecutorError.inputTooLarge
+        }
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -45,11 +51,25 @@ actor ProcessExecutor {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        // 启动链接含凭据，只经私有 stdin 传递，不能出现在 argv 或日志中。
+        let inputPipe = standardInput.map { _ in Pipe() }
+        if let inputPipe {
+            // 子进程提前退出时只应得到 EPIPE，不能让 SIGPIPE 终止整个 Mac App。
+            _ = Darwin.fcntl(inputPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+            process.standardInput = inputPipe
+        }
+        defer {
+            try? inputPipe?.fileHandleForReading.close()
+            try? inputPipe?.fileHandleForWriting.close()
+        }
+
         do {
             try process.run()
         } catch {
             throw ProcessExecutorError.launchFailed(error.localizedDescription)
         }
+        // 父进程不能保留读端，否则子进程超时退出后，阻塞的写入仍等不到 EPIPE。
+        try? inputPipe?.fileHandleForReading.close()
         // hosted runner 上 Process.isRunning 可能在子进程仍存活时返回 false；
         // 启动成功后固定 PID，并以 waitUntilExit 返回后取消 timeout task 作为
         // 唯一退出门控，避免依赖 Foundation 的运行态缓存。
@@ -84,6 +104,9 @@ actor ProcessExecutor {
             execute: timeoutWorkItem
         )
 
+        // 先启动读端并安装超时，再在专用线程写入；不能用管道容量假设阻塞 actor。
+        async let inputWrite: Void = Self.writeInput(inputPipe?.fileHandleForWriting, data: standardInput)
+
         let status = await withTaskCancellationHandler {
             await Self.waitUntilExit(process)
         } onCancel: {
@@ -94,6 +117,7 @@ actor ProcessExecutor {
 
         let stdout = try await stdoutRead
         let stderr = try await stderrRead
+        await inputWrite
         if Task.isCancelled {
             throw CancellationError()
         }
@@ -109,6 +133,18 @@ actor ProcessExecutor {
     private struct BoundedRead {
         let data: Data
         let exceededLimit: Bool
+    }
+
+    private static func writeInput(_ handle: FileHandle?, data: Data?) async {
+        guard let handle, let data else { return }
+        await withCheckedContinuation { continuation in
+            Thread.detachNewThread {
+                // 不回显输入或底层错误。提前退出、超时与取消由进程结果统一报告。
+                try? handle.write(contentsOf: data)
+                try? handle.close()
+                continuation.resume()
+            }
+        }
     }
 
     private static func dispatchDeadline(after duration: Duration) -> DispatchTime {
