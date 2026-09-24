@@ -828,6 +828,7 @@ struct SessionListView: View {
         ForEach(sessions, id: \.id) { session in
             let foregroundActivity = sessionStore.foregroundActivity(for: session.id)
             let isUnread = sessionStore.isHistorySessionUnread(session)
+            let usesWideIPadRow = UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table
 
             Button {
                 dismissSessionSearchKeyboard()
@@ -845,14 +846,15 @@ struct SessionListView: View {
                     isUnread: isUnread,
                     density: rowDensity,
                     searchSnippet: sessionStore.sessionSearchSnippet(for: session.id),
-                    projectIdentity: selectedWorkspaceID == "all"
+                    // 紧凑行保持单行；跨项目身份只在有空间承载摘要的宽屏行展示。
+                    projectIdentity: usesWideIPadRow && selectedWorkspaceID == "all"
                         ? SessionListPresentation.projectIdentityToDisplay(
                             session.project,
                             dominant: dominantProject
                         ) : nil,
                     leadingSlot: .runtimeIcon,
-                    // iPad 宽列保留普通摘要；窄屏只在搜索命中或跨项目时显示第二行。
-                    showsSessionPreview: UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table
+                    // iPad 宽列保留普通摘要；窄屏只在搜索命中时显示第二行。
+                    showsSessionPreview: usesWideIPadRow
                 )
                 .contentShape(Rectangle())
             }
