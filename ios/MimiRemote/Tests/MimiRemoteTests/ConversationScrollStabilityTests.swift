@@ -471,13 +471,19 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
     }
 
-    func testInitialPresentationCompletesWhenCommandDoesNotChangeGeometry() async {
+    func testInitialPresentationCompletesWhenCommandDoesNotChangeGeometry() async throws {
         let rig = ScrollRig(connect: false)
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
         rig.report(offset: 1_200)
         rig.controller.tailVisibilityChanged(true, epoch: rig.controller.epoch)
         XCTAssertFalse(rig.controller.isReadable)
         rig.controller.connect(epoch: rig.controller.epoch) { _ in }
-        await drain()
+        // CI 负载下合并任务可能晚于固定次数的 yield；只等待有界的可读交接结果。
+        for _ in 0..<50 {
+            if rig.controller.isReadable { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertTrue(rig.controller.isReadable, "无变化的 scrollTo 不会再报告 geometry，仍须交接首屏")
     }
 
