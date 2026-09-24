@@ -182,9 +182,9 @@ struct ManagedConnectionSubscriptionView: View {
                 }
             }
         } header: {
-            Text(L10n.text("ui.managed_subscription_status"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.managed_subscription_status"), showsDivider: false)
         }
+        .settingsGroupRowStyle()
     }
 
     private func entitlementStatusText(_ status: ManagedConnectionEntitlement.Status) -> String {
@@ -232,12 +232,12 @@ struct ManagedConnectionSubscriptionView: View {
                     .foregroundStyle(tokens.warning)
             }
         } header: {
-            Text(L10n.text("ui.managed_devices_connection"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.managed_devices_connection"))
         } footer: {
             Text(L10n.text("ui.managed_devices_rescan_notice"))
                 .settingsSectionFooterStyle()
         }
+        .settingsGroupRowStyle()
     }
 
     private var managedRouteSection: some View {
@@ -294,8 +294,7 @@ struct ManagedConnectionSubscriptionView: View {
                     .foregroundStyle(tokens.warning)
             }
         } header: {
-            Text(L10n.text("ui.managed_connection_route_status"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.managed_connection_route_status"))
         } footer: {
             Group {
                 if showsManagedRecoveryActions {
@@ -304,6 +303,7 @@ struct ManagedConnectionSubscriptionView: View {
             }
             .settingsSectionFooterStyle()
         }
+        .settingsGroupRowStyle()
     }
 
     private var showsManagedRecoveryActions: Bool {
@@ -432,12 +432,12 @@ struct ManagedConnectionSubscriptionView: View {
                 }
             }
         } header: {
-            Text(L10n.text("ui.managed_devices_title"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.managed_devices_title"))
         } footer: {
             Text(L10n.text("ui.managed_devices_privacy_notice"))
                 .settingsSectionFooterStyle()
         }
+        .settingsGroupRowStyle()
     }
 
     private func deviceUsageLabel(
@@ -461,7 +461,7 @@ struct ManagedConnectionSubscriptionView: View {
     }
 
     private func deviceRow(_ device: ManagedConnectionDevice) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
             Image(systemName: device.deviceType == .mac ? "laptopcomputer" : "iphone")
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .frame(width: SettingsLayoutMetrics.iconSlot)
@@ -604,12 +604,12 @@ struct ManagedConnectionSubscriptionView: View {
                 }
             }
         } header: {
-            Text(L10n.text("ui.managed_subscription_plans"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.managed_subscription_plans"))
         } footer: {
             Text(L10n.text("ui.managed_subscription_renews_automatically"))
                 .settingsSectionFooterStyle()
         }
+        .settingsGroupRowStyle()
     }
 
     private var subscriptionInformationSection: some View {
@@ -631,8 +631,8 @@ struct ManagedConnectionSubscriptionView: View {
             }
             .frame(minHeight: 44)
         } header: {
-            Text(L10n.text("ui.subscription_information"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.subscription_information"))
         }
+        .settingsGroupRowStyle()
     }
 }

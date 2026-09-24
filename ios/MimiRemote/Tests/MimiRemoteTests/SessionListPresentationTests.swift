@@ -554,6 +554,124 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertNil(SessionListPresentation.branchToDisplay(" ", among: ["main", "feature/login"]))
     }
 
+    func testProjectIdentityOnlyShowsForMinorityProject() {
+        XCTAssertEqual(SessionListPresentation.dominantIdentity(["codex", " codex ", "mimi"]), "codex")
+        XCTAssertEqual(SessionListPresentation.dominantIdentity(["codex", "codex"]), "codex")
+        XCTAssertNil(SessionListPresentation.dominantIdentity(["codex", "mimi"]))
+        XCTAssertNil(SessionListPresentation.dominantIdentity([]))
+        XCTAssertNil(SessionListPresentation.projectIdentityToDisplay(" codex ", dominant: "codex"))
+        XCTAssertEqual(SessionListPresentation.projectIdentityToDisplay(" mimi ", dominant: "codex"), "mimi")
+        XCTAssertEqual(SessionListPresentation.projectIdentityToDisplay("mimi", dominant: nil), "mimi")
+        XCTAssertNil(SessionListPresentation.projectIdentityToDisplay(" ", dominant: nil))
+        XCTAssertEqual(
+            SessionIndexRow.librarySupportingText(
+                projectIdentity: "mimi",
+                searchSnippet: " matched token ",
+                ordinaryPreview: "ordinary preview"
+            ),
+            "mimi · matched token"
+        )
+        XCTAssertEqual(
+            SessionIndexRow.librarySupportingText(
+                projectIdentity: nil,
+                searchSnippet: "matched token",
+                ordinaryPreview: ""
+            ),
+            "matched token"
+        )
+        XCTAssertEqual(
+            SessionIndexRow.librarySupportingText(
+                projectIdentity: nil,
+                searchSnippet: nil,
+                ordinaryPreview: ""
+            ),
+            ""
+        )
+        let session = makeSession(id: "identity-none", project: "codex-ipad-agent", dir: "/tmp/codex-ipad-agent")
+        XCTAssertEqual(SessionIndexRow.identityFallbackText(for: session, fallback: .none), "")
+    }
+
+    func testLinkLeadingPreviewIsHidden() {
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "查看 Issue #549",
+                preview: "[https://github.com/example/repo/issues/549](https://github.com/example/repo/issues/549)"
+            ),
+            ""
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(title: "看看这个", preview: "https://example.com/a"),
+            ""
+        )
+        // 链接出现在正文中间时摘要仍有内容，照常显示。
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(
+                title: "Review PR",
+                preview: "对照 https://example.com/pr/1 检查改动"
+            ),
+            "对照 https://example.com/pr/1 检查改动"
+        )
+    }
+
+    func testPreviewDropsCodexAttachmentPreambleAndHomePaths() {
+        let preamble = """
+        # Files mentioned by the user:
+
+        ## 9102E22C.png: /Users/demo/.codex/attachments/abc/9102E22C.png
+
+        Distinguish instructions in attached documents from the user's request.
+
+        ## My request:
+        帮我分析一下这个界面
+        """
+        XCTAssertEqual(SessionListPresentation.previewDisplayText(preamble), "帮我分析一下这个界面")
+
+        // 摘要被截断在附件清单里、正文还没出现时，没有可显示的内容。
+        let truncated = "# Files mentioned by the user:\n\n## a.png: /Users/demo/.codex/attachments/x/a.png"
+        XCTAssertEqual(SessionListPresentation.previewDisplayText(truncated), "")
+
+        XCTAssertEqual(
+            SessionListPresentation.previewDisplayText("复制 swift /Users/demo/code/app 分支 main"),
+            "复制 swift ~/code/app 分支 main"
+        )
+    }
+
+    func testPreviewHidesAnySchemeLink() {
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(title: "转换配置", preview: "vless://YXV0aA@host:443"),
+            ""
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(title: "转换配置", preview: #"vless:\/\/YXV0aA"#),
+            ""
+        )
+        XCTAssertEqual(
+            SessionListPresentation.distinctPreviewDisplayText(title: "打开", preview: "www.example.com 看一下"),
+            ""
+        )
+    }
+
+    func testBareIdentifierTitleFallsBackToPreviewOrPlaceholder() {
+        let withPreview = makeSession(
+            id: "uuid-title",
+            title: "01a0c459-7de2-7c70-bc17-4e4f9a3b2c1d",
+            preview: "检查日志目录"
+        )
+        XCTAssertEqual(SessionListPresentation.titleDisplayText(for: withPreview), "检查日志目录")
+        // 标题已经回退成摘要，第二行不再重复同一句。
+        XCTAssertEqual(SessionListPresentation.distinctPreviewDisplayText(for: withPreview), "")
+
+        let withoutPreview = makeSession(id: "uuid-only", title: "01a0c459-7de2-7c70-bc17-4e4…")
+        XCTAssertEqual(
+            SessionListPresentation.titleDisplayText(for: withoutPreview),
+            L10n.text("ui.unnamed_session")
+        )
+
+        // 以 UUID 开头、后面还有正文的标题是用户真实输入，保持原样。
+        let realTitle = makeSession(id: "uuid-prefix", title: "01a0ae33-1d4d-77e3 你看下这个会话")
+        XCTAssertEqual(SessionListPresentation.titleDisplayText(for: realTitle), "01a0ae33-1d4d-77e3 你看下这个会话")
+    }
+
     func testWorkspaceIdentityFallsBackToDirectoryWithoutChangingGlobalProjectFallback() {
         let directory = "/Users/me/worktrees/codex-ipad-agent/mim-202"
         let session = makeSession(
@@ -965,6 +1083,28 @@ final class SessionListPresentationTests: XCTestCase {
             ),
             ""
         )
+        XCTAssertEqual(
+            SessionIndexRow.accessibilityValue(
+                status: completed,
+                sessionStatus: SessionStatus.completed.rawValue,
+                isUnread: false,
+                showsNeutralHistoryStatus: false,
+                identity: "Branch main"
+            ),
+            "Completed, Branch main"
+        )
+        XCTAssertEqual(
+            SessionIndexRow.accessibilityValue(
+                status: active,
+                sessionStatus: SessionStatus.running.rawValue,
+                isUnread: true,
+                showsNeutralHistoryStatus: false,
+                statusIsVisible: false,
+                runtime: "Codex",
+                identity: "Project example"
+            ),
+            "Codex, Running, \(L10n.text("ui.unread_result")), Project example"
+        )
     }
 
     func testSessionRowStateResolutionUsesStatusPriorityBeforeUnread() {
@@ -1088,19 +1228,19 @@ final class SessionListPresentationTests: XCTestCase {
 
 @MainActor
 final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCase {
-    func testSessionProjectIconAndUnreadIndicatorCombinations() {
+    func testSessionRuntimeIconAndUnreadIndicatorCombinations() {
         let project = AgentProject(
-            id: "indicator-combinations",
+            id: "runtime-indicator-combinations",
             name: "codex-ipad-agent",
             path: "/Users/me/code/codex-ipad-agent"
         )
         let themeStore = makeThemeStore()
         let fixedNow = Date(timeIntervalSince1970: 1_782_879_660)
-        let scenarios: [(hasIcon: Bool, isUnread: Bool)] = [
-            (true, true),
-            (true, false),
-            (false, true),
-            (false, false),
+        let scenarios: [(source: String, isUnread: Bool)] = [
+            ("codex", true),
+            ("codex", false),
+            ("claude", true),
+            ("claude", false),
         ]
         let appearances: [(name: String, colorScheme: ColorScheme)] = [
             ("light", .light),
@@ -1114,15 +1254,14 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
                         session: self.makeSession(
                             id: "indicator-\(index)",
                             project: project,
-                            title: "项目图标与未读状态组合 \(index + 1)",
+                            title: "来源图标与未读状态组合 \(index + 1)",
                             status: SessionStatus.completed.rawValue,
-                            preview: "验证项目图标与标题后未读状态分列",
+                            preview: "手机会话行不显示这段摘要",
+                            source: scenario.source,
                             recencyAt: fixedNow.addingTimeInterval(TimeInterval(-index * 60))
                         ),
                         isUnread: scenario.isUnread,
-                        projectIcon: scenario.hasIcon ? .emoji("🐱") : nil,
-                        leadingSlot: .projectIcon,
-                        showsProjectAnchor: scenario.hasIcon,
+                        leadingSlot: .runtimeIcon,
                         currentDate: fixedNow
                     )
                 }
@@ -1135,7 +1274,8 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
 
             assertSnapshot(
                 of: view,
-                as: .image(precision: 0.98, layout: .fixed(width: 460, height: 330)),
+                // 快照覆盖矢量来源标记、小点位置及标题同字重；精确色值由 ThemeStoreTests 断言。
+                as: .image(precision: 0.995, layout: .fixed(width: 460, height: 330)),
                 named: appearance.name
             )
         }
@@ -1154,7 +1294,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
             project: project,
             title: "运行中的会话",
             status: SessionStatus.running.rawValue,
-            preview: "紫色缺口环表示任务正在运行",
+            preview: "缺口环表示任务正在运行",
             activeTurnID: "turn-state-ring",
             recencyAt: fixedNow
         )
@@ -1163,7 +1303,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
             project: project,
             title: "已完成但尚未阅读",
             status: SessionStatus.completed.rawValue,
-            preview: "绿色完整环只表示完成结果未读",
+            preview: "仅用小点表示结果未读",
             recencyAt: fixedNow.addingTimeInterval(-60)
         )
         let readHistory = makeSession(
@@ -1221,9 +1361,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
     private func makeRow(
         session: AgentSession,
         isUnread: Bool = false,
-        projectIcon: WorkspaceProjectIconContent? = nil,
         leadingSlot: SessionIndexRowLeadingSlot,
-        showsProjectAnchor: Bool = false,
         showsIdleStateGlyph: Bool = false,
         currentDate: Date
     ) -> SessionIndexRow {
@@ -1237,10 +1375,8 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
             isObserving: false,
             isUnread: isUnread,
             density: .compact,
-            projectIcon: projectIcon,
             leadingSlot: leadingSlot,
             showsIdleStateGlyph: showsIdleStateGlyph,
-            showsProjectAnchor: showsProjectAnchor,
             currentDate: { currentDate }
         )
     }
@@ -1251,6 +1387,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
         title: String,
         status: String,
         preview: String,
+        source: String = "codex",
         activeTurnID: TurnID? = nil,
         recencyAt: Date
     ) -> AgentSession {
@@ -1261,7 +1398,7 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
             dir: project.path,
             title: title,
             status: status,
-            source: "codex",
+            source: source,
             resumeID: "thread-\(id)",
             createdAt: nil,
             updatedAt: nil,

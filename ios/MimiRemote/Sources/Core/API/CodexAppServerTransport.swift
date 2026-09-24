@@ -113,6 +113,7 @@ protocol SessionWebSocketClient: AnyObject {
 
     func connect(sessionID: SessionID)
     func connect(sessionID: SessionID, replayBufferedEvents: Bool)
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?)
     func disconnect()
     func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool
     func sendTurn(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) -> Bool
@@ -128,6 +129,11 @@ extension SessionWebSocketClient {
 
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
         connect(sessionID: sessionID)
+    }
+
+    /// 历史页已经落到 Store 后才传递读取前沿；不支持原生序号的实现沿用原连接语义。
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?) {
+        connect(sessionID: sessionID, replayBufferedEvents: replayBufferedEvents)
     }
 
     func acknowledgeAppliedEvent(_ event: AgentEvent) {}

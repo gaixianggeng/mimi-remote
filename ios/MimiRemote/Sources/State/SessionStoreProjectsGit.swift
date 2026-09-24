@@ -1522,11 +1522,11 @@ extension SessionStore {
         // agentd 返回的每一项都已经过项目、browse_root 与 git common-dir 裁剪；
         // iOS 只消费 opaque cursor，不接触上游全局 cursor。
         //
-        // 每条可用 runtime 各跑一趟独立遍历：cursor 流互不交织，结果并进同一份
+        // 每条 runtime 各跑一趟独立遍历：cursor 流互不交织，结果并进同一份
         // discoveredSessionIDs 由 canonical sessions 统一归并，因此不需要跨 Runtime
-        // 的排序状态机。撤权只按已经完整走完的 Runtime 结算，不能用一条通道的结果
-        // 删除另一条通道的会话。
-        if !controlledGlobalDiscoveryUnavailable {
+        // 的排序状态机。撤权按已完整遍历的 runtime 结算，不能把其他通道刚发现的
+        // 会话当成“已不存在”删掉。
+        do {
             let controlledIDsBeforeTraversal = controlledGlobalSessionIDs
             var discoveredSessionIDs: Set<SessionID> = []
             // 撤权按 runtime 独立结算：Claude bridge 未启用或不健康是常态，
@@ -1534,8 +1534,15 @@ extension SessionStore {
             // 已删除的会话（反之亦然）。
             var discoveredByRuntime: [String: Set<SessionID>] = [:]
             var completedRuntimes: Set<String> = []
-            let runtimeProviders = await availableSessionRuntimeProviders(client: client)
-            for runtimeProvider in runtimeProviders {
+            // 分页结果先在本地累积，整趟遍历结束后一次提交。每页各自合并会在翻页的
+            // 十几秒里让所有观察 SessionStore 的界面（含隐藏的 Tab）反复整体重算。
+            var discoveredSessions: [AgentSession] = []
+            for runtimeProvider in RuntimeFeatureSupport.runtimeProviders {
+                // 旧 agentd 可能只拒绝 Codex 的无 cwd thread/list。这个能力缓存只能
+                // 跳过 Codex；Harness 和 Claude 各有独立目录，不能被它一起永久关闭。
+                if runtimeProvider == "codex", controlledGlobalDiscoveryUnavailable {
+                    continue
+                }
                 var cursor: String?
                 var runtimeReachedEnd = false
                 for pageIndex in 0..<4 {
@@ -1554,14 +1561,7 @@ extension SessionStore {
                         let pageSessionIDs = Set(page.sessions.map(\.id))
                         discoveredSessionIDs.formUnion(pageSessionIDs)
                         discoveredByRuntime[runtimeProvider, default: []].formUnion(pageSessionIDs)
-                        // 先发布授权 ID 再合并 Session，确保后续目录归属判断能识别全局结果。
-                        let expandedControlledIDs = controlledGlobalSessionIDs.union(pageSessionIDs)
-                        if expandedControlledIDs != controlledGlobalSessionIDs {
-                            controlledGlobalSessionIDs = expandedControlledIDs
-                        }
-                        // 全局发现只携带根项目归属。只有同 ID 已被对应 cwd 查询确认时，
-                        // 才沿用工作区 identity；不能根据父子路径关系猜测归属。
-                        mergeSessionPage(page.sessions.map(alignGlobalSessionToKnownDirectoryScope))
+                        discoveredSessions.append(contentsOf: page.sessions)
                         guard page.hasMore,
                               let nextCursor = page.nextCursor,
                               nextCursor != cursor else {
@@ -1576,8 +1576,8 @@ extension SessionStore {
                             // Host 已切换或任务已取消：旧 Host 的迟到错误不得污染新 Host 证据。
                             return
                         }
-                        // 只有 Codex 报不可用才整体停掉受控发现：Claude bridge 未启用或
-                        // 不健康是常态，不能因此让 Codex 的外部 Worktree 也发现不到。
+                        // 旧 agentd 对 Codex 无 cwd thread/list 的能力拒绝只缓存 Codex。
+                        // 其他 runtime 仍须在本轮和后续刷新中继续各走自己的目录。
                         if pageIndex == 0, runtimeProvider == "codex", isControlledGlobalDiscoveryUnavailable(error) {
                             controlledGlobalDiscoveryUnavailable = true
                         }
@@ -1598,6 +1598,14 @@ extension SessionStore {
             guard appStore.activeHostScope == hostScope,
                   appStore.connectionGeneration == generation,
                   !Task.isCancelled else { return }
+            // 先发布授权 ID 再合并 Session，确保目录归属判断能识别全局结果。
+            let expandedControlledIDs = controlledGlobalSessionIDs.union(discoveredSessionIDs)
+            if expandedControlledIDs != controlledGlobalSessionIDs {
+                controlledGlobalSessionIDs = expandedControlledIDs
+            }
+            // 全局发现只携带根项目归属。只有同 ID 已被对应 cwd 查询确认时，
+            // 才沿用工作区 identity；不能根据父子路径关系猜测归属。
+            mergeSessionPage(discoveredSessions.map(alignGlobalSessionToKnownDirectoryScope))
             if !completedRuntimes.isEmpty {
                 // 完整遍历是删除旧授权 ID 的唯一证据；分页上限、重复 cursor 或错误时
                 // 只合并本次已见项，避免把尚未扫到的外部 Worktree 从列表误删。
@@ -1640,11 +1648,6 @@ extension SessionStore {
                 let settledIDs = discoveredSessionIDs.union(retainedFromUnsettledRuntimes)
                 if controlledGlobalSessionIDs != settledIDs {
                     controlledGlobalSessionIDs = settledIDs
-                }
-            } else {
-                let expandedControlledIDs = controlledGlobalSessionIDs.union(discoveredSessionIDs)
-                if expandedControlledIDs != controlledGlobalSessionIDs {
-                    controlledGlobalSessionIDs = expandedControlledIDs
                 }
             }
         }
@@ -1828,11 +1831,14 @@ extension SessionStore {
             }
 #endif
             guard !isNetworkUnavailable,
-                  appStore.isConfigured,
-                  selectedProjectID != nil else {
+                  appStore.isConfigured else {
                 continue
             }
-            await refreshSelectedProjectSessions(showLoading: false)
+            if selectedProjectID != nil {
+                await refreshSelectedProjectSessions(showLoading: false)
+            }
+            // 「会话」页允许没有当前工作区。另一端创建的 Harness 会话只能从全局目录
+            // 被发现，因此全局兜底不能被 selectedProjectID 这项页面局部状态挡住。
             await refreshSessionLibraryIndexIfStale()
         }
     }

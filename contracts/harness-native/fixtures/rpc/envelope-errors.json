@@ -1,0 +1,91 @@
+{
+  "provenance": {
+    "level": "live-capture",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.1.5-rc.2",
+    "upstreamTag": "dsh-v0.1.5-rc.2",
+    "profile": "web",
+    "transport": "http://127.0.0.1 loopback, cookie session after GET /?token=",
+    "modelFixture": "@deepseek-ai/dsh-llm-mock-server (scriptable OpenAI-compatible SSE)",
+    "capturedAt": "2026-09-18T18:18:26.439Z"
+  },
+  "note": "真实 envelope 与实测错误外壳。error 对象是 {code, message, details}——注意是 details 而不是 data。",
+  "observations": [
+    {
+      "label": "request-envelope",
+      "value": {
+        "type": "client-request",
+        "rpcId": "h00-rpc-0001",
+        "method": "session/list",
+        "payload": {
+          "args": {
+            "_request": {}
+          }
+        }
+      }
+    },
+    {
+      "label": "response-success",
+      "value": {
+        "type": "server-response",
+        "rpcId": "h00-rpc-0001",
+        "result": {
+          "ok": true,
+          "value": {}
+        }
+      }
+    },
+    {
+      "label": "error.gateway/arguments-invalid",
+      "value": {
+        "type": "server-response",
+        "rpcId": "h00-rpc-0001",
+        "result": {
+          "ok": false,
+          "error": {
+            "code": "gateway/arguments-invalid",
+            "message": "<string:0>",
+            "details": {}
+          }
+        }
+      },
+      "note": "未按形参名包裹参数时实测得到。"
+    },
+    {
+      "label": "error.gateway/internal",
+      "value": {
+        "type": "server-response",
+        "rpcId": "h00-rpc-0001",
+        "result": {
+          "ok": false,
+          "error": {
+            "code": "gateway/internal",
+            "message": "<string:0>",
+            "details": {}
+          }
+        }
+      }
+    },
+    {
+      "label": "error.session/agent-busy",
+      "value": {
+        "type": "server-response",
+        "rpcId": "h00-rpc-0001",
+        "result": {
+          "ok": false,
+          "error": {
+            "code": "session/agent-busy",
+            "message": "prompt rejected",
+            "details": {
+              "reason": "<string:60>"
+            }
+          }
+        }
+      }
+    },
+    {
+      "label": "httpStatusNote",
+      "value": "业务失败仍是 HTTP 200；必须以 result.ok 判定，不能以状态码判定。"
+    }
+  ]
+}

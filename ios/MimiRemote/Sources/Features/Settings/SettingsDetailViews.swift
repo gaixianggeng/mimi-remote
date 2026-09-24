@@ -117,18 +117,24 @@ struct ConnectionProfileRenameSheet: View {
                     )
                         .settingsRow()
                         .accessibilityIdentifier("settings.profile.rename.name")
+                } header: {
+                    SettingsGroupHeader(showsDivider: false)
                 } footer: {
                     Text(draft.validationMessage ?? L10n.format("ui.up_to_value_characters_only_the_local_display", AppStore.connectionProfileDisplayNameLimit))
                         .foregroundStyle(draft.validationMessage == nil ? themeStore.tokens(for: colorScheme).secondaryText : themeStore.tokens(for: colorScheme).warning)
                         .settingsSectionFooterStyle()
                 }
+                .settingsGroupRowStyle()
 
                 if let submitError = draft.submitError {
                     Section {
                         Text(submitError)
                             .foregroundStyle(themeStore.tokens(for: colorScheme).warning)
                             .accessibilityIdentifier("settings.profile.rename.error")
+                    } header: {
+                        SettingsGroupHeader()
                     }
+                    .settingsGroupRowStyle()
                 }
             }
             .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
@@ -300,11 +306,13 @@ struct CapabilitiesView: View {
                 }
                 .disabled(sessionStore.isRefreshingCapabilities)
                 .settingsRow()
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             } footer: {
                 Text(L10n.text("ui.here_the_local_skills_and_mcp_configurations_discoverable"))
                     .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             if let error = sessionStore.capabilityErrorMessage {
                 Section {
@@ -312,10 +320,9 @@ struct CapabilitiesView: View {
                         .font(themeStore.uiFont(.caption))
                         .foregroundStyle(tokens.warning)
                 } header: {
-                    Text(L10n.text("ui.error"))
-                        .settingsSectionHeaderStyle()
+                    SettingsGroupHeader(title: L10n.text("ui.error"))
                 }
-                .listRowBackground(tokens.settingsGroupBackground)
+                .settingsGroupRowStyle()
             }
 
             Section {
@@ -335,10 +342,9 @@ struct CapabilitiesView: View {
                     }
                 }
             } header: {
-                Text(L10n.text("ui.skills"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.skills"))
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 let servers = sessionStore.capabilityList?.mcpServers ?? []
@@ -359,10 +365,9 @@ struct CapabilitiesView: View {
                     }
                 }
             } header: {
-                Text("MCP")
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: "MCP")
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
@@ -535,7 +540,7 @@ struct CapabilityItemRow: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: SettingsLayoutMetrics.iconSpacing) {
             Image(systemName: symbolName)
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .foregroundStyle(tokens.secondaryText)
@@ -621,13 +626,12 @@ struct AppearanceView: View {
                 .settingsRow(.descriptive)
                 .accessibilityIdentifier("settings.appearance.mode")
             } header: {
-                Text(L10n.text("ui.dark_and_light_colors"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.dark_and_light_colors"), showsDivider: false)
             } footer: {
                 Text(L10n.text("ui.system_mode_follows_the_current_device_appearance_light"))
                     .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 ScrollViewReader { scrollProxy in
@@ -670,13 +674,12 @@ struct AppearanceView: View {
                     .accessibilityIdentifier("settings.workspaceIconStyle")
                 }
             } header: {
-                Text(L10n.text("ui.workspace_avatar_style"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.workspace_avatar_style"))
             } footer: {
                 Text(L10n.text("ui.workspace_avatar_style_description"))
                     .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 ForEach(ThemePreset.allCases) { preset in
@@ -689,10 +692,9 @@ struct AppearanceView: View {
                     }
                 }
             } header: {
-                Text(L10n.text("ui.topic"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.topic"))
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 // 两种字体各只有两三个短选项，值不值得为它弹一层菜单：不值得。
@@ -746,19 +748,17 @@ struct AppearanceView: View {
                 .padding(.vertical, 4)
                 .settingsRow(.descriptive)
             } header: {
-                Text(L10n.text("ui.font"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.font"))
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 AppearanceConversationPreview()
                     .listRowInsets(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12))
             } header: {
-                Text(L10n.text("ui.chat_preview"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.chat_preview"))
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 Button(role: .destructive) {
@@ -771,8 +771,10 @@ struct AppearanceView: View {
                     Label(L10n.text("ui.restore_default_appearance"), systemImage: "arrow.counterclockwise")
                 }
                 .settingsRow()
+            } header: {
+                SettingsGroupHeader()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
@@ -929,12 +931,13 @@ private struct WorkspaceIconStyleOptionLabel: View {
             if isSelected {
                 Image(systemName: "checkmark")
                     .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(tokens.primaryActionForeground)
                     .frame(width: 20, height: 20)
                     .background(tokens.primaryAction, in: Circle())
                     .overlay {
+                        // 分组不再有卡片底，对勾徽章直接和页面底色抠开。
                         Circle()
-                            .stroke(tokens.settingsGroupBackground, lineWidth: 2)
+                            .stroke(tokens.background, lineWidth: 2)
                     }
                     .offset(x: 2, y: 2)
             }
@@ -1214,7 +1217,7 @@ struct DefaultModelSettingsView: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let runtimes = DefaultModelRuntime.allCases
+        let runtimes = displayedRuntimes
 
         Form {
             // 两个 runtime 各自一段，不再用分段控件互相遮挡：
@@ -1226,7 +1229,8 @@ struct DefaultModelSettingsView: View {
                     tokens: tokens,
                     footer: runtime == runtimes.last
                         ? L10n.text("ui.default_model_settings_description")
-                        : nil
+                        : nil,
+                    showsDivider: runtime != runtimes.first
                 )
             }
         }
@@ -1249,8 +1253,14 @@ struct DefaultModelSettingsView: View {
     }
 
     private func normalizeStoredEfforts() {
-        for runtime in DefaultModelRuntime.allCases {
+        for runtime in displayedRuntimes {
             normalizeStoredEffort(for: runtime)
+        }
+    }
+
+    private var displayedRuntimes: [DefaultModelRuntime] {
+        DefaultModelRuntime.allCases.filter {
+            $0 != .deepseek || sessionStore.isRuntimeAvailable($0.rawValue)
         }
     }
 
@@ -1292,6 +1302,8 @@ private struct DefaultModelRuntimeSection: View {
     let allOptions: [CodexAppServerModelOption]
     let tokens: ThemeTokens
     let footer: String?
+    /// 页面第一段不画分组细线。
+    let showsDivider: Bool
 
     @AppStorage private var modelOptionID: String
     @AppStorage private var reasoningEffortRawValue: String
@@ -1300,12 +1312,14 @@ private struct DefaultModelRuntimeSection: View {
         runtime: DefaultModelRuntime,
         allOptions: [CodexAppServerModelOption],
         tokens: ThemeTokens,
-        footer: String?
+        footer: String?,
+        showsDivider: Bool
     ) {
         self.runtime = runtime
         self.allOptions = allOptions
         self.tokens = tokens
         self.footer = footer
+        self.showsDivider = showsDivider
         _modelOptionID = AppStorage(
             wrappedValue: "",
             DefaultModelPreferences.modelOptionIDKey(for: runtime.rawValue)
@@ -1347,7 +1361,10 @@ private struct DefaultModelRuntimeSection: View {
                     title: L10n.text("ui.reasoning_effort"),
                     systemImage: "gauge.with.dots.needle.33percent",
                     options: availableEfforts,
-                    selection: reasoningEffortChoiceBinding
+                    selection: reasoningEffortChoiceBinding,
+                    optionTitle: {
+                        ModelReasoningGridCatalog.effortTitle($0, runtimeProvider: runtime.rawValue)
+                    }
                 )
                 .settingsRow()
                 .accessibilityIdentifier("settings.defaultModels.reasoning.\(runtime.rawValue)")
@@ -1369,8 +1386,7 @@ private struct DefaultModelRuntimeSection: View {
                 .accessibilityIdentifier("settings.defaultModels.reset.\(runtime.rawValue)")
             }
         } header: {
-            Text(runtime.settingsTitle)
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: runtime.settingsTitle, showsDivider: showsDivider)
         } footer: {
             Group {
                 if let footer {
@@ -1379,7 +1395,7 @@ private struct DefaultModelRuntimeSection: View {
             }
             .settingsSectionFooterStyle()
         }
-        .listRowBackground(tokens.settingsGroupBackground)
+        .settingsGroupRowStyle()
     }
 
     private var hasCustomDefault: Bool {
@@ -1475,6 +1491,8 @@ private extension DefaultModelRuntime {
             return "Codex"
         case .claude:
             return "Claude Code"
+        case .deepseek:
+            return "DeepSeek Harness"
         }
     }
 }
@@ -1556,6 +1574,8 @@ struct TailcatExperimentSettingsView: View {
                 )
                 .settingsRow()
                 .accessibilityIdentifier("settings.experimentalFeatures.status")
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(L10n.text("ui.custom_tailcat_summary"))
@@ -1564,6 +1584,7 @@ struct TailcatExperimentSettingsView: View {
                 .settingsSectionFooterStyle()
                 .padding(.top, 8)
             }
+            .settingsGroupRowStyle()
 
             Section {
                 RouteStatusRow(
@@ -1596,6 +1617,8 @@ struct TailcatExperimentSettingsView: View {
                 .disabled(controller.diagnostics.isEmpty)
                 .settingsRow()
                 .accessibilityIdentifier("settings.experimentalFeatures.copyDiagnostics")
+            } header: {
+                SettingsGroupHeader()
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(L10n.text("ui.tailcat_diagnostics_help"))
@@ -1604,6 +1627,7 @@ struct TailcatExperimentSettingsView: View {
                 .settingsSectionFooterStyle()
                 .padding(.top, 8)
             }
+            .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
@@ -1688,12 +1712,16 @@ extension View {
         modifier(SettingsCanvasBackgroundModifier(tokens: tokens))
     }
 
-    /// 分组底由各 Section 显式接 settingsGroupBackground，「我的」根页用的是同一个 token。
+    /// 每个 Section 显式接 settingsGroupRowStyle()，「我的」根页用的是同一个修饰符。
     /// 注意：listRowBackground 挂在 Form 外层不会下发到行，所以这里不设，只能在 Section 上设。
+    ///
+    /// 设置链路所有页面都用细线分组（#563）：分组间距归零，每个 Section 都要有
+    /// `SettingsGroupHeader` 作标题——页面第一组 `showsDivider: false`，其余各组画线。
+    /// 漏了标题的分组会和上一组贴在一起。
     func themedSettingsForm(tokens: ThemeTokens) -> some View {
         scrollContentBackground(.hidden)
             .textCase(nil)
-            .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
+            .dividedSettingsList()
             .settingsCanvasBackground(tokens: tokens)
     }
 }

@@ -263,28 +263,36 @@ enum WorkbenchNavigationIcon {
 /// 固定导航入口自绘选中态，避免 iOS 26 SidebarListStyle 自动套用过圆的胶囊背景。
 struct WorkbenchSidebarDestinationButton: View {
     @EnvironmentObject private var themeStore: ThemeStore
+    /// 与会话行、设置行同一条字号通路：先跟随系统字号，再叠应用内比例（#563）。
+    @ScaledMetric(relativeTo: .body) private var titlePointSize: CGFloat = 17
 
     let title: String
     let icon: WorkbenchNavigationIcon
     let isSelected: Bool
     let tokens: ThemeTokens
+    let accessibilityIdentifier: String
     let action: () -> Void
+
+    private var titleColor: Color {
+        isSelected ? tokens.primaryText : tokens.listTitleText
+    }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
+                // 照 Notion 的导航页签：未选中的图标和文字同为列表标题灰，选中才提亮。
                 icon.navigationImage()
                     .resizable()
                     .scaledToFit()
                     .frame(width: 20, height: 20)
                     .font(themeStore.uiFont(size: 18, weight: isSelected ? .semibold : .medium))
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(tokens.primaryAction)
+                    .foregroundStyle(titleColor)
                     .frame(width: 24)
 
                 Text(title)
-                    .font(themeStore.uiFont(.body, weight: isSelected ? .semibold : .medium))
-                    .foregroundStyle(tokens.primaryText)
+                    .font(themeStore.uiFont(size: titlePointSize, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(titleColor)
 
                 Spacer(minLength: 0)
             }
@@ -311,6 +319,7 @@ struct WorkbenchSidebarDestinationButton: View {
         .listRowBackground(Color.clear)
         .accessibilityLabel(title)
         .accessibilityValue(isSelected ? L10n.text("ui.selected") : L10n.text("ui.not_selected"))
+        .accessibilityIdentifier(accessibilityIdentifier)
     }
 }
 
@@ -531,6 +540,10 @@ struct SessionSidebarMonitorRow: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 侧栏最近条目比导航入口低一档：标题 subheadline 15、时间 footnote 13；
+    /// 同样先跟随系统字号，再叠应用内比例（#563）。
+    @ScaledMetric(relativeTo: .subheadline) private var titlePointSize: CGFloat = 15
+    @ScaledMetric(relativeTo: .footnote) private var detailPointSize: CGFloat = 13
 
     let session: AgentSession
     let kind: SessionSidebarSectionKind
@@ -544,7 +557,7 @@ struct SessionSidebarMonitorRow: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             // 所有状态共用固定 leading 槽；同项目后续行只隐藏视觉菊花，
             // 仍保留“进行中”无障碍语义，同时避免标题横向跳动。
             Group {
@@ -562,17 +575,19 @@ struct SessionSidebarMonitorRow: View {
 
             Group {
                 if let projectIcon {
-                    WorkspaceProjectIconTile(content: projectIcon, size: 18, tokens: tokens)
+                    WorkspaceProjectIconTile(content: projectIcon, size: 20, tokens: tokens)
                 } else {
                     Color.clear
                         .accessibilityHidden(true)
                 }
             }
-            .frame(width: 18, height: 18)
+            .frame(width: 20, height: 20)
 
+            // 15pt 常规字重：比照 Notion iPad 侧栏的条目，13pt 中粗在大屏上显得局促。
+            // 非选中条目用列表标题灰，选中才提亮到正文色。
             Text(SessionListPresentation.titleDisplayText(for: session))
-                .font(themeStore.uiFont(size: 13, weight: isSelected ? .semibold : .medium))
-                .foregroundStyle(tokens.primaryText)
+                .font(themeStore.uiFont(size: titlePointSize, weight: isSelected ? .medium : .regular))
+                .foregroundStyle(isSelected ? tokens.primaryText : tokens.listTitleText)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .layoutPriority(1)
@@ -581,7 +596,7 @@ struct SessionSidebarMonitorRow: View {
             detail(tokens: tokens)
         }
         .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(rowFill(tokens: tokens))
@@ -655,7 +670,7 @@ struct SessionSidebarMonitorRow: View {
                 }
             }
         }
-        .font(themeStore.uiFont(size: 10.5, weight: .regular))
+        .font(themeStore.uiFont(size: detailPointSize))
         .foregroundStyle(tokens.tertiaryText)
         .monospacedDigit()
         .lineLimit(1)

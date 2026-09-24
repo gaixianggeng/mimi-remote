@@ -27,6 +27,9 @@ final class HostStore {
     private(set) var claudeConfiguration: ClaudeConfigurationResult?
     private(set) var isUpdatingClaude = false
     private(set) var claudeError: String?
+    private(set) var deepSeekConfiguration: DeepSeekConfigurationResult?
+    private(set) var isUpdatingDeepSeek = false
+    private(set) var deepSeekError: String?
     private(set) var tailcatStatus: TailcatStatus?
     private(set) var isUpdatingTailcat = false
     private(set) var tailcatError: String?
@@ -178,7 +181,8 @@ final class HostStore {
             }
             await enableLoginLaunchBestEffort()
             let reloadClaudeConfiguration = await reconcileClaudeConfigurationAtLaunch()
-            await startMacAgentIfNeeded(reloadConfiguration: reloadClaudeConfiguration)
+            let reloadDeepSeekConfiguration = await reconcileDeepSeekConfigurationAtLaunch()
+            await startMacAgentIfNeeded(reloadConfiguration: reloadClaudeConfiguration || reloadDeepSeekConfiguration)
         }
         if owner == .macApp, runtimeStatusNeedsFollowUp {
             // App 启动时就把服务端占位快照追到可展示结果，用户第一次展开
@@ -742,6 +746,69 @@ final class HostStore {
         } catch {
             claudeError = error.localizedDescription
             await settleModuleChangeFailure(error.localizedDescription)
+        }
+    }
+
+    func inspectDeepSeek() async {
+        guard owner == .macApp, !isUpdatingDeepSeek, !isBusy else { return }
+        isUpdatingDeepSeek = true
+        defer { isUpdatingDeepSeek = false }
+        do {
+            let result = try await agent.configureDeepSeek(.inspect, nil)
+            deepSeekConfiguration = result
+            deepSeekError = result.enabled && !result.available ? result.message : nil
+        } catch {
+            deepSeekError = error.localizedDescription
+        }
+    }
+
+    func configureDeepSeek(_ action: DeepSeekConfigurationAction, startupURL: String? = nil) async {
+        guard canChangeDeepSeek, !isUpdatingDeepSeek else { return }
+        isBusy = true
+        isUpdatingDeepSeek = true
+        deepSeekError = nil
+        defer {
+            isUpdatingDeepSeek = false
+            isBusy = false
+        }
+        do {
+            let result = try await agent.configureDeepSeek(action, startupURL)
+            deepSeekConfiguration = result
+            // 最新的直接检查失败优先于 runtime-status 的旧缓存，避免仍显示“已连接”。
+            deepSeekError = result.enabled && !result.available ? result.message : nil
+            if result.restartRequired {
+                do {
+                    try await reloadMacAgentForConfigurationChange()
+                } catch {
+                    // 配置已提交但服务未加载时必须明确区分，不能把预检成功显示为已连接。
+                    deepSeekError = "配置已保存，但 agentd 重新加载失败。请重试启动服务。\(error.localizedDescription)"
+                    fail(error)
+                    return
+                }
+            }
+            await refreshMacAgentStatus()
+            if runtimeStatusNeedsFollowUp { scheduleRuntimeStatusFollowUp() }
+        } catch {
+            deepSeekError = error.localizedDescription
+        }
+    }
+
+    /// 模块开关的入口：开启走自动发现连接，关闭复用 `.disabled`。
+    /// Harness 的启动与停止不归 Mimi 管，所以这里只改 agentd 侧的一段连接配置。
+    func setDeepSeekEnabled(_ enabled: Bool) async {
+        await configureDeepSeek(enabled ? .connect : .disabled)
+    }
+
+    private func reconcileDeepSeekConfigurationAtLaunch() async -> Bool {
+        do {
+            // 只刷新已启用的托管连接。检测到 Harness 不代表用户同意自动启用。
+            let result = try await agent.configureDeepSeek(.refresh, nil)
+            deepSeekConfiguration = result
+            deepSeekError = result.enabled && !result.available ? result.message : nil
+            return result.restartRequired
+        } catch {
+            deepSeekError = "DeepSeek 自动检测失败：\(error.localizedDescription)"
+            return false
         }
     }
 

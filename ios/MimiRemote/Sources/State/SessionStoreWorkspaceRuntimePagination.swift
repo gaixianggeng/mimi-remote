@@ -5,7 +5,7 @@ extension SessionStore {
         client: any SessionStoreAPIClient
     ) async -> [String] {
         var runtimes: [String] = []
-        for runtime in ["codex", "claude"] {
+        for runtime in RuntimeFeatureSupport.runtimeProviders {
             if (try? await client.runtimeChannelAvailable(runtimeProvider: runtime)) == true {
                 runtimes.append(runtime)
             }
@@ -141,9 +141,20 @@ extension SessionStore {
         hostScope: HostScope,
         generation: Int
     ) async {
-        let runtimeProviders = await availableSessionRuntimeProviders(client: client)
-        for runtimeProvider in runtimeProviders {
+        for runtimeProvider in RuntimeFeatureSupport.runtimeProviders {
+            if runtimeProvider != "codex",
+               (try? await client.runtimeChannelAvailable(runtimeProvider: runtimeProvider)) != true { continue }
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
+            // deepseek 由原生通道承接时走协调器：它管代次、single-flight 与失败保留旧页。
+            // 未启用时这段完全不参与，下面照旧走既有 app-server 路径。
+            if isNativeHarnessDirectoryEnabled,
+               Self.normalizedRuntimeProvider(runtimeProvider) == Self.nativeHarnessRuntimeProvider {
+                await refreshNativeHarnessDirectory(
+                    workspace: workspace,
+                    hostScope: hostScope
+                )
+                continue
+            }
             let result = await sessionLibraryPage(
                 workspace: workspace,
                 runtimeProvider: runtimeProvider,

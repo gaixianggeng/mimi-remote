@@ -145,6 +145,44 @@ func TestAppServerConfigIncludesClaudeChannelWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestAppServerConfigPublishesEnabledHarnessAsNativeOnlyChannel(t *testing.T) {
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
+		cfg.DeepSeek.Enabled = true
+	})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/app-server/config", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config metadata 应返回 200，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	channels := body["channels"].([]any)
+	var harness map[string]any
+	for _, value := range channels {
+		channel := value.(map[string]any)
+		if channel["runtime_id"] == "deepseek" {
+			harness = channel
+			break
+		}
+	}
+	if harness == nil {
+		t.Fatalf("用户启用 Harness 后必须发布 deepseek channel：%v", channels)
+	}
+	if harness["enabled"] != true || harness["type"] != "harness_native" ||
+		harness["protocol"] != "harness_native_v1" || harness["lifecycle"] != "shared_native_client" {
+		t.Fatalf("Harness channel 必须明确区分用户启用、原生能力与共享客户端：%v", harness)
+	}
+	if gateway, _ := harness["gateway_ws_url"].(string); !strings.HasSuffix(gateway, "/api/harness/ws") {
+		t.Fatalf("Harness channel 不得指向旧 app-server gateway：%v", harness)
+	}
+	methods := harness["methods"].([]any)
+	if !containsAnyString(methods, "session/follow") || !containsAnyString(methods, "session/page") ||
+		containsAnyString(methods, "initialize") {
+		t.Fatalf("Harness channel 只应声明原生方法：%v", methods)
+	}
+}
+
 // #411：旧 bridge 无视 itemsView 直接回完整 items，iOS 能正常显示，不抬最低版本；
 // 但不能对它声明 thread/items/list，否则 iOS 会把 summary 首页排进注定失败的补齐任务。
 func TestAppServerConfigHidesClaudeItemsListForBridgeWithoutItemPaging(t *testing.T) {
@@ -1823,7 +1861,7 @@ func TestGatewayThreadTurnsListMarksItemsListAvailableForClaude(t *testing.T) {
 		"itemsView":          "summary",
 		"itemsListAvailable": false,
 	}
-	if err := validateGatewayThreadTurnsListParams(params); err != nil {
+	if err := validateGatewayThreadTurnsListParams(appServerRuntimeClaudeID, params); err != nil {
 		t.Fatalf("thread/turns/list 合法参数不应被拒绝：%v", err)
 	}
 

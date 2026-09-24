@@ -55,7 +55,10 @@ struct LockScreenApprovalSettingsView: View {
                     Button(L10n.text("ui.retry")) { Task { await refresh() } }
                         .disabled(isBusy)
                 }
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             }
+            .settingsGroupRowStyle()
 
             if let profileID = store.registeredProfileID {
                 Section {
@@ -71,14 +74,20 @@ struct LockScreenApprovalSettingsView: View {
                         .disabled(isBusy || !store.hostSupportsPush(for: appStore.activeConnectionProfileID))
                         .accessibilityIdentifier("settings.lockScreenApproval.rebind")
                     }
+                } header: {
+                    SettingsGroupHeader()
                 }
+                .settingsGroupRowStyle()
             }
 
             Section {
                 NavigationLink(value: SettingsDestination.privacyPolicy) {
                     Label(L10n.text("ui.privacy_policy"), systemImage: "hand.raised")
                 }
+            } header: {
+                SettingsGroupHeader()
             }
+            .settingsGroupRowStyle()
             if developerModeEnabled {
                 Section {
                     Button {
@@ -87,7 +96,10 @@ struct LockScreenApprovalSettingsView: View {
                         Label(L10n.text("ui.push_route_diagnostics_copy"), systemImage: "doc.on.doc")
                     }
                     .accessibilityIdentifier("settings.lockScreenApproval.copyRouteDiagnostics")
+                } header: {
+                    SettingsGroupHeader()
                 }
+                .settingsGroupRowStyle()
             }
         }
         .themedSettingsForm(tokens: tokens)
@@ -236,12 +248,15 @@ struct LockScreenApprovalConsentSheet: View {
                         .foregroundStyle(tokens.primaryText)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.vertical, 4)
+                } header: {
+                    SettingsGroupHeader(showsDivider: false)
                 } footer: {
                     Text(isOfficialService
                         ? L10n.text("ui.push_consent_official_note")
                         : L10n.text("ui.push_consent_custom_note"))
                         .settingsSectionFooterStyle()
                 }
+                .settingsGroupRowStyle()
 
                 Section {
                     ForEach(LockScreenApprovalDisclosure.leavesDeviceKeys, id: \.self) { key in
@@ -251,9 +266,9 @@ struct LockScreenApprovalConsentSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } header: {
-                    Text(L10n.text("ui.push_disclosure_leaves_device"))
-                        .settingsSectionHeaderStyle()
+                    SettingsGroupHeader(title: L10n.text("ui.push_disclosure_leaves_device"))
                 }
+                .settingsGroupRowStyle()
 
                 Section {
                     ForEach(LockScreenApprovalDisclosure.staysOnDeviceKeys, id: \.self) { key in
@@ -263,12 +278,12 @@ struct LockScreenApprovalConsentSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } header: {
-                    Text(L10n.text("ui.push_disclosure_stays_local"))
-                        .settingsSectionHeaderStyle()
+                    SettingsGroupHeader(title: L10n.text("ui.push_disclosure_stays_local"))
                 } footer: {
                     Text(L10n.text("ui.push_consent_retention"))
                         .settingsSectionFooterStyle()
                 }
+                .settingsGroupRowStyle()
             }
             .themedSettingsForm(tokens: tokens)
             .navigationTitle(L10n.text("ui.push_consent_title"))

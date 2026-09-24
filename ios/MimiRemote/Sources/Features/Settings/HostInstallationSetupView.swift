@@ -94,8 +94,9 @@ struct HostInstallationSetupView: View {
             ConnectionRowLabel(title: L10n.text("ui.install_on_your_computer"), systemImage: "arrow.down.app")
                 .accessibilityIdentifier("settings.hostInstaller.disclosure")
         }
+        .disclosureGroupStyle(SettingsDisclosureGroupStyle())
         .settingsRow()
-        .listRowBackground(tokens.settingsGroupBackground)
+        .settingsGroupRowStyle()
 
         if isExpanded.wrappedValue {
             VStack(alignment: .leading, spacing: 16) {
@@ -122,7 +123,7 @@ struct HostInstallationSetupView: View {
                 .accessibilityIdentifier("settings.hostInstaller.installationDetail")
 
                 Link(destination: transientPreferences.hostInstallationPlatform.releaseURL) {
-                    HStack(spacing: 12) {
+                    HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
                         // 品牌资源保持官方黑白原色，不跟随 App 的主题色染色。
                         Image("GitHubInvertocat")
                             .renderingMode(.original)
@@ -136,12 +137,10 @@ struct HostInstallationSetupView: View {
                             .foregroundStyle(tokens.primaryText)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Spacer(minLength: 8)
+                        Spacer(minLength: SettingsLayoutMetrics.trailingAccessorySpacing)
 
-                        Image(systemName: "arrow.up.right")
-                            .font(themeStore.uiFont(.caption, weight: .semibold))
-                            .foregroundStyle(tokens.secondaryText)
-                            .accessibilityHidden(true)
+                        // 外链标记与相邻行的展开、导航箭头同宽同色，落在同一列。
+                        SettingsTrailingAccessory(systemImage: "arrow.up.right")
                     }
                     .settingsRow()
                     .contentShape(Rectangle())
@@ -177,7 +176,7 @@ struct HostInstallationSetupView: View {
             }
             .padding(.vertical, 12)
             .settingsRow()
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
             // 展开内容是标题行的延续，不用分隔线把两者切开。
             .listRowSeparator(.hidden, edges: .top)
 
@@ -205,15 +204,19 @@ struct HostInstallationSetupView: View {
                     .font(themeStore.uiFont(.footnote))
                     .foregroundStyle(tokens.secondaryText)
             }
-            .padding(.vertical, 6)
+            .foregroundStyle(tokens.primaryText)
+            // 展开内容与标题同在一行，底部要自己留出与下一行的距离。
+            .padding(.top, 6)
+            .padding(.bottom, 14)
         } label: {
             ConnectionRowLabel(
                 title: L10n.text("ui.command_line_installation_advanced"),
                 systemImage: "terminal"
             )
         }
+        .disclosureGroupStyle(SettingsDisclosureGroupStyle())
         .settingsRow()
-        .listRowBackground(tokens.settingsGroupBackground)
+        .settingsGroupRowStyle()
         .accessibilityIdentifier("settings.hostInstaller.commandLine")
     }
 }
@@ -353,32 +356,26 @@ struct RouteStatusRow: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(spacing: 8) {
-            ConnectionRowLabel(
-                title: L10n.text("ui.route_label"),
-                value: value,
-                systemImage: "antenna.radiowaves.left.and.right",
-                valueTint: isFailed ? tokens.warning : nil
-            )
+        // 整行就是「重新测一次」：刷新标记缩到与相邻行的导航箭头同宽、落在同一列，
+        // 值文字因此与上下行右对齐（#563）。过去这里是一枚 44pt 的独立按钮，图标居中，
+        // 值和图标都比箭头行往左缩了一大截。点击区域改为整行，比 44pt 圆钮更好点。
+        Button(action: onRefresh) {
+            HStack(spacing: SettingsLayoutMetrics.trailingAccessorySpacing) {
+                ConnectionRowLabel(
+                    title: L10n.text("ui.route_label"),
+                    value: value,
+                    systemImage: "antenna.radiowaves.left.and.right",
+                    valueTint: isFailed ? tokens.warning : nil
+                )
 
-            if isBusy {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 44, height: 44)
-            } else {
-                Button(action: onRefresh) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
-                        .foregroundStyle(tokens.secondaryText)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
-                .disabled(!isEnabled)
-                .accessibilityLabel(L10n.text("ui.refresh"))
-                .accessibilityIdentifier(refreshAccessibilityIdentifier)
+                SettingsTrailingAccessory(systemImage: "arrow.clockwise", isBusy: isBusy)
             }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled || isBusy)
+        .accessibilityHint(L10n.text("ui.refresh"))
+        .accessibilityIdentifier(refreshAccessibilityIdentifier)
         .animation(reduceMotion ? nil : .default, value: isBusy)
     }
 }

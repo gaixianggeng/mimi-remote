@@ -183,8 +183,6 @@ struct InitialConnectionSettingsSections: View {
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @ScaledMetric(relativeTo: .body) private var profileTitlePointSize = 17.0
     @ScaledMetric(relativeTo: .subheadline) private var profileDetailPointSize = 15.0
-    /// 当前电脑是整个 Tab 的内容主标题，比普通行大一档。
-    @ScaledMetric(relativeTo: .title3) private var currentComputerTitlePointSize = 20.0
 
     @ObservedObject var draft: ConnectionSettingsDraft
     let transientPreferences: SettingsTransientPreferences
@@ -265,9 +263,9 @@ struct InitialConnectionSettingsSections: View {
                 addComputerSection(tokens: tokens)
             }
         }
-        .listRowBackground(tokens.settingsGroupBackground)
+        .settingsGroupRowStyle()
         .settingsStandardListRow()
-        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + 12 }
+        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing }
         // 连接地址/Token 是高频编辑状态，放在这个小子树里，避免每次删字都重绘整个设置页。
         .onAppear(perform: loadInitialConnectionIfNeeded)
         // 横幅的「重新配对」先打开这一页，再在这里消费那次一次性请求。
@@ -337,10 +335,10 @@ struct InitialConnectionSettingsSections: View {
 
         if let current = model.current {
             currentComputerSection(current, tokens: tokens)
-            notificationsSection
+            notificationsSection(showsDivider: true)
             otherComputersSection(model.others, ownsPresentation: false)
         } else if !model.others.isEmpty {
-            notificationsSection
+            notificationsSection(showsDivider: false)
             // 忘记当前电脑后仍会留下已保存的其它电脑；此时由这一组承接确认弹窗。
             otherComputersSection(model.others, ownsPresentation: true)
         } else {
@@ -355,13 +353,16 @@ struct InitialConnectionSettingsSections: View {
                     ConnectionRowLabel(title: L10n.text("ui.debug_enter_the_workbench"), systemImage: "wrench.and.screwdriver")
                 }
                 .accessibilityIdentifier("settings.debugEnterWorkbench")
+            } header: {
+                SettingsGroupHeader()
             }
+            .settingsGroupRowStyle()
 #endif
         }
     }
 
     /// 当前电脑、连接状态和连接方式过去是三个分组，回答的却是同一个问题。
-    /// 这里合成一张卡片：上半部分只做设备识别，下半部分是配置与诊断的直达入口。
+    /// 这里合成一组：首行只做设备识别，其下是配置与诊断的直达入口。
     private func currentComputerSection(
         _ item: ConnectionProfileSettingsItem,
         tokens: ThemeTokens
@@ -393,8 +394,7 @@ struct InitialConnectionSettingsSections: View {
             .settingsStandardListRow()
             .accessibilityIdentifier("settings.connectionSpeedTest")
         } header: {
-            Text(L10n.text("ui.current_mac"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.current_mac"), showsDivider: false)
         } footer: {
             EmptyView()
         }
@@ -487,8 +487,8 @@ struct InitialConnectionSettingsSections: View {
     /// 消息提醒绑定的是某一台电脑，和电脑管理放在同一个 Tab；单独成组，不混进当前电脑卡片。
     /// 一台电脑都没存过时没有可绑定的对象，这一组不出现。
     /// 右侧状态与详情页开关同一口径：只看当前电脑是否已开启，不再写死「默认关闭」。
-    private var notificationsSection: some View {
-        return Section {
+    private func notificationsSection(showsDivider: Bool) -> some View {
+        Section {
             NavigationLink(value: SettingsDestination.lockScreenApproval) {
                 ConnectionRowLabel(
                     title: L10n.text("ui.push_lock_screen_approval"),
@@ -498,6 +498,9 @@ struct InitialConnectionSettingsSections: View {
             }
             .settingsStandardListRow()
             .accessibilityIdentifier("settings.lockScreenApproval")
+        } header: {
+            // 单行分组不需要标题，一条细线就把它和当前电脑分开。
+            SettingsGroupHeader(showsDivider: showsDivider)
         }
     }
 
@@ -510,8 +513,7 @@ struct InitialConnectionSettingsSections: View {
         _ items: [ConnectionProfileSettingsItem],
         ownsPresentation: Bool
     ) -> some View {
-        let header = Text(L10n.text("ui.other_computers"))
-            .settingsSectionHeaderStyle()
+        let header = SettingsGroupHeader(title: L10n.text("ui.other_computers"))
 
         if ownsPresentation {
             connectionPresentationSection {
@@ -529,20 +531,20 @@ struct InitialConnectionSettingsSections: View {
             } header: {
                 header
             }
+            .settingsGroupRowStyle()
         }
     }
 
     private func currentComputerRow(_ item: ConnectionProfileSettingsItem) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        return HStack(spacing: 12) {
+        return HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
             computerGlyph(item)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.profile.displayName)
-                    .font(themeStore.uiFont(size: currentComputerTitlePointSize, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+                // 与「其他电脑」同一档：名称 17pt 中粗 + 15pt 状态。当前电脑的身份由分组标题
+                // 说明，不再靠更大一号的字——同一种对象两种字号，是这页读起来乱的来源之一（#563）。
+                computerNameText(item, tokens: tokens)
 
                 HStack(spacing: 6) {
                     // 分组标题已经说明这是当前电脑，这里不再重复「当前」徽章。
@@ -565,7 +567,7 @@ struct InitialConnectionSettingsSections: View {
         }
         .padding(.vertical, 8)
         .frame(minHeight: SettingsLayoutMetrics.deviceRowHeight)
-        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + 12 }
+        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.profile.\(item.id)")
     }
@@ -578,7 +580,7 @@ struct InitialConnectionSettingsSections: View {
             : AnyLayout(HStackLayout(alignment: .center, spacing: 8))
 
         return layout {
-            HStack(spacing: 12) {
+            HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
                 computerGlyph(item)
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -622,10 +624,12 @@ struct InitialConnectionSettingsSections: View {
 
                 profileMenu(item)
             }
-            .padding(.leading, dynamicTypeSize.isAccessibilitySize ? SettingsLayoutMetrics.iconSlot + 12 : 0)
+            .padding(.leading, dynamicTypeSize.isAccessibilitySize ? SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing : 0)
         }
-        .padding(.vertical, 10)
-        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + 12 }
+        // 与当前电脑行同一行高，两组电脑行节奏一致。
+        .padding(.vertical, 8)
+        .frame(minHeight: SettingsLayoutMetrics.deviceRowHeight)
+        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.profile.\(item.id)")
     }
@@ -731,10 +735,12 @@ struct InitialConnectionSettingsSections: View {
                 .accessibilityIdentifier("settings.profile.delete.\(item.id)")
             }
         } label: {
+            // 图标贴右，与相邻行的导航箭头落在同一列；44pt 命中区向左延伸（#563）。
             Image(systemName: "ellipsis.circle")
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
-                .frame(width: 44, height: 44)
+                .frame(width: 44, height: 44, alignment: .trailing)
+                .contentShape(Rectangle())
         }
         .disabled(isSavingConnection || profileOperationID != nil)
         .accessibilityLabel(L10n.format("ui.manage_value", item.profile.displayName))
@@ -877,8 +883,7 @@ struct InitialConnectionSettingsSections: View {
             HostInstallationSetupView(transientPreferences: transientPreferences)
             manualConnectionRow(tokens: tokens)
         } header: {
-            Text(L10n.text("ui.add_mac"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.add_mac"), showsDivider: false)
         } footer: {
             Text(connectionSectionFooter)
                 .settingsSectionFooterStyle()
@@ -919,6 +924,7 @@ struct InitialConnectionSettingsSections: View {
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(tokens.primaryActionForeground)
                 .tint(tokens.primaryAction)
                 .disabled(!canSubmit)
 
@@ -926,10 +932,14 @@ struct InitialConnectionSettingsSections: View {
                 // 不在这里渲染的话用户点完「连接」看到的是一次没有任何反馈的白屏。
                 connectionErrorMessageRow(addComputerErrorMessage, tokens: tokens)
             }
-            .padding(.vertical, 6)
+            .foregroundStyle(tokens.primaryText)
+            // 展开内容与标题同在一行，底部要自己留出与下一行的距离。
+            .padding(.top, 6)
+            .padding(.bottom, 14)
         } label: {
             ConnectionRowLabel(title: manualConnectionTitle, systemImage: "keyboard")
         }
+        .disclosureGroupStyle(SettingsDisclosureGroupStyle())
         .accessibilityIdentifier("settings.connection.manual")
     }
 
@@ -947,6 +957,7 @@ struct InitialConnectionSettingsSections: View {
         } footer: {
             footer()
         }
+        .settingsGroupRowStyle()
         // 真正的相机 Cover 由 SettingsView 根层呈现，避免 Form.Section 重建后丢失 presenter。
         .onAppear(perform: configureQRCodeScannerPresentation)
         .confirmationDialog(
@@ -1113,7 +1124,7 @@ struct InitialConnectionSettingsSections: View {
         if let message {
             Text(message)
                 .foregroundStyle(tokens.warning)
-                .font(themeStore.uiFont(size: 13))
+                .font(themeStore.uiFont(.footnote))
                 .settingsRow(.descriptive)
                 .accessibilityIdentifier("settings.connection.error")
         }

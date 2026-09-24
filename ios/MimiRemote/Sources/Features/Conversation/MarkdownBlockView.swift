@@ -94,6 +94,11 @@ struct MarkdownBlockView: View {
         for run in attributed.runs where run.inlinePresentationIntent?.contains(.code) == true {
             attributed[run.range].font = style.codeFont
         }
+        if style.underlinesLinks {
+            for run in attributed.runs where run.link != nil {
+                attributed[run.range].underlineStyle = .single
+            }
+        }
         return attributed
     }
 

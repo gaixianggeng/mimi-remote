@@ -35,6 +35,7 @@ extension HostModuleID {
         switch self {
         case .codex: .openAI
         case .claude: .claude
+        case .deepseek: .deepSeek
         default: nil
         }
     }

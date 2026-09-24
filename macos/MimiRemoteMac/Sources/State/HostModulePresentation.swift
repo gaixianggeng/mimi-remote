@@ -22,7 +22,8 @@ extension HostStore {
         return status.networkStatus?.mode == "tailscale" || status.networkStatus?.allowLAN == true
     }
     var canPair: Bool {
-        status?.serviceOK == true && (codexEnabled || claudeEnabled) && !availablePairingNetworks.isEmpty
+        status?.serviceOK == true && (codexEnabled || claudeEnabled || deepSeekEnabled)
+            && !availablePairingNetworks.isEmpty
     }
     var availablePairingNetworks: [PairingNetwork] {
         guard status?.serviceOK == true else { return [] }
@@ -41,7 +42,9 @@ extension HostStore {
         return networks
     }
     var pairingUnavailableReason: String {
-        if !(codexEnabled || claudeEnabled) { return "全部 AI 编程助手已关闭。请先启用至少一个助手。" }
+        if !(codexEnabled || claudeEnabled || deepSeekEnabled) {
+            return "全部 AI 编程助手已关闭。请先启用至少一个助手。"
+        }
         if status?.serviceOK != true { return "Mac 服务尚未就绪，请先启动或修复服务。" }
         return "没有可用的连接方式。请开启并连接 Tailscale、局域网或 Tailcat 后再配对。"
     }
@@ -49,10 +52,43 @@ extension HostStore {
         guard module.isAgent else { return nil }
         return status?.runtimeStatus?.runtimes.first { $0.id.lowercased() == module.rawValue }
     }
+    var deepSeekEnabled: Bool {
+        deepSeekConfiguration?.enabled ?? runtime(for: .deepseek)?.enabled ?? false
+    }
+    var canChangeDeepSeek: Bool {
+        owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
+    }
+    var deepSeekStatusTitle: String {
+        if isUpdatingDeepSeek { return "正在检查" }
+        if deepSeekError != nil { return "需要处理" }
+        if !deepSeekEnabled {
+            return deepSeekConfiguration?.discovered == true ? "发现运行中的服务" : "未启用"
+        }
+        guard let runtime = runtime(for: .deepseek) else { return "等待服务加载" }
+        if runtime.reason == "refresh_in_progress" { return "正在检查" }
+        switch runtime.state {
+        case .available, .connected: return "已连接"
+        case .signedOut: return "需要更新启动链接"
+        case .disabled: return "等待服务加载"
+        case .unavailable: return "暂不可用"
+        }
+    }
+    var deepSeekStatusDetail: String {
+        if owner != .macApp { return "先由 Mimi Remote Mac 接管服务，再配置 DeepSeek。" }
+        if let deepSeekError { return deepSeekError }
+        if deepSeekEnabled, runtime(for: .deepseek)?.reason == "refresh_in_progress" {
+            return "正在确认 agentd 与 Harness 的连接。"
+        }
+        if deepSeekEnabled, runtime(for: .deepseek)?.state == .unavailable {
+            return "Harness 暂不可用。确认它仍在运行后，点击重新检测。"
+        }
+        return deepSeekConfiguration?.message ?? "自动检测本机运行中的 Harness 后台服务。"
+    }
     func moduleEnabled(_ module: HostModuleID) -> Bool {
         switch module {
         case .codex: codexEnabled
         case .claude: claudeEnabled
+        case .deepseek: deepSeekEnabled
         case .tailscale: tailscaleEnabled
         case .lan: lanEnabled
         case .tailcat: tailcatEnabled
@@ -62,6 +98,7 @@ extension HostStore {
         switch module {
         case .codex: codexError
         case .claude: claudeError
+        case .deepseek: deepSeekError
         case .tailscale, .lan:
             networkErrorModule == module ? networkError : nil
         case .tailcat: tailcatError ?? tailcatStatus?.error
@@ -69,7 +106,8 @@ extension HostStore {
     }
     func moduleStateTitle(_ module: HostModuleID) -> String {
         if updatingModule == module || (module == .claude && isUpdatingClaude) ||
-            (module == .tailcat && isUpdatingTailcat) { return "正在更新" }
+            (module == .tailcat && isUpdatingTailcat) ||
+            (module == .deepseek && isUpdatingDeepSeek) { return "正在更新" }
         if moduleError(module) != nil { return "失败" }
         if (module == .tailscale || module == .lan), status?.moduleStatusState == .unavailable {
             return "等待状态更新"
@@ -97,6 +135,7 @@ extension HostStore {
         switch module {
         case .codex: await setCodexEnabled(enabled)
         case .claude: await setClaudeEnabled(enabled)
+        case .deepseek: await setDeepSeekEnabled(enabled)
         case .tailscale: await setTailscaleEnabled(enabled)
         case .lan: await setLANEnabled(enabled)
         case .tailcat: await setTailcatEnabled(enabled)

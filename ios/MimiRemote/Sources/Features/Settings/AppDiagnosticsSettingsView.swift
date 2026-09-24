@@ -124,11 +124,13 @@ struct AppDiagnosticsSettingsView: View {
                 }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.appDiagnostics.detailedLogging")
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             } footer: {
                 Text(detailedLoggingFooter)
                     .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 Button {
@@ -156,19 +158,23 @@ struct AppDiagnosticsSettingsView: View {
                 }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.appDiagnostics.clear")
+            } header: {
+                SettingsGroupHeader()
             } footer: {
                 Text(L10n.text("ui.app_diagnostics_storage_explanation"))
                     .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             if controller.operationFailed {
                 Section {
                     Label(L10n.text("ui.app_diagnostics_operation_failed"), systemImage: "exclamationmark.triangle")
                         .foregroundStyle(tokens.warning)
                         .settingsStandardListRow()
+                } header: {
+                    SettingsGroupHeader()
                 }
-                .listRowBackground(tokens.settingsGroupBackground)
+                .settingsGroupRowStyle()
             }
         }
         .themedSettingsForm(tokens: tokens)
