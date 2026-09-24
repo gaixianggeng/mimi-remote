@@ -1534,6 +1534,9 @@ extension SessionStore {
             // 已删除的会话（反之亦然）。
             var discoveredByRuntime: [String: Set<SessionID>] = [:]
             var completedRuntimes: Set<String> = []
+            // 分页结果先在本地累积，整趟遍历结束后一次提交。每页各自合并会在翻页的
+            // 十几秒里让所有观察 SessionStore 的界面（含隐藏的 Tab）反复整体重算。
+            var discoveredSessions: [AgentSession] = []
             for runtimeProvider in RuntimeFeatureSupport.runtimeProviders {
                 // 旧 agentd 可能只拒绝 Codex 的无 cwd thread/list。这个能力缓存只能
                 // 跳过 Codex；Harness 和 Claude 各有独立目录，不能被它一起永久关闭。
@@ -1558,14 +1561,7 @@ extension SessionStore {
                         let pageSessionIDs = Set(page.sessions.map(\.id))
                         discoveredSessionIDs.formUnion(pageSessionIDs)
                         discoveredByRuntime[runtimeProvider, default: []].formUnion(pageSessionIDs)
-                        // 先发布授权 ID 再合并 Session，确保后续目录归属判断能识别全局结果。
-                        let expandedControlledIDs = controlledGlobalSessionIDs.union(pageSessionIDs)
-                        if expandedControlledIDs != controlledGlobalSessionIDs {
-                            controlledGlobalSessionIDs = expandedControlledIDs
-                        }
-                        // 全局发现只携带根项目归属。只有同 ID 已被对应 cwd 查询确认时，
-                        // 才沿用工作区 identity；不能根据父子路径关系猜测归属。
-                        mergeSessionPage(page.sessions.map(alignGlobalSessionToKnownDirectoryScope))
+                        discoveredSessions.append(contentsOf: page.sessions)
                         guard page.hasMore,
                               let nextCursor = page.nextCursor,
                               nextCursor != cursor else {
@@ -1602,6 +1598,14 @@ extension SessionStore {
             guard appStore.activeHostScope == hostScope,
                   appStore.connectionGeneration == generation,
                   !Task.isCancelled else { return }
+            // 先发布授权 ID 再合并 Session，确保目录归属判断能识别全局结果。
+            let expandedControlledIDs = controlledGlobalSessionIDs.union(discoveredSessionIDs)
+            if expandedControlledIDs != controlledGlobalSessionIDs {
+                controlledGlobalSessionIDs = expandedControlledIDs
+            }
+            // 全局发现只携带根项目归属。只有同 ID 已被对应 cwd 查询确认时，
+            // 才沿用工作区 identity；不能根据父子路径关系猜测归属。
+            mergeSessionPage(discoveredSessions.map(alignGlobalSessionToKnownDirectoryScope))
             if !completedRuntimes.isEmpty {
                 // 完整遍历是删除旧授权 ID 的唯一证据；分页上限、重复 cursor 或错误时
                 // 只合并本次已见项，避免把尚未扫到的外部 Worktree 从列表误删。
@@ -1644,11 +1648,6 @@ extension SessionStore {
                 let settledIDs = discoveredSessionIDs.union(retainedFromUnsettledRuntimes)
                 if controlledGlobalSessionIDs != settledIDs {
                     controlledGlobalSessionIDs = settledIDs
-                }
-            } else {
-                let expandedControlledIDs = controlledGlobalSessionIDs.union(discoveredSessionIDs)
-                if expandedControlledIDs != controlledGlobalSessionIDs {
-                    controlledGlobalSessionIDs = expandedControlledIDs
                 }
             }
         }

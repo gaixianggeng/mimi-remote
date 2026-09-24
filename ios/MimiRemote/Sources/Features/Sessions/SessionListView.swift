@@ -375,7 +375,9 @@ struct SessionListView: View {
             }
         }
         .task {
-            await sessionStore.refreshSessionLibraryIndex()
+            // 切 Tab 回来也会触发；索引在轮询间隔内刷新过就不再重拉。Host 切换会清空
+            // 刷新时间，下拉和菜单刷新仍走强制的权威刷新。
+            await sessionStore.refreshSessionLibraryIndexIfStale()
         }
         .onAppear {
             synchronizeLifecycle(lifecycleInput)
