@@ -99,11 +99,9 @@ enum WorkspaceSessionPresentation {
 
 /// 工作区只保留自己的分组节奏；会话行几何直接使用 `SessionIndexRowDensity`。
 enum WorkspaceSessionRowMetrics {
-    /// Runtime 菜单仍需要自己的标签内边距；它不参与会话行布局。
-    static let horizontalPadding: CGFloat = 8
     /// 小节标题与上一段最后一行之间的留白。它必须明显大于行内间距，
     /// 因为扁平列表里分组边界完全由这段留白表达，没有卡片边缘可依。
-    static let sectionBoundarySpacing: CGFloat = 22
+    static let sectionBoundarySpacing: CGFloat = 18
     /// 小节标题到它所辖第一行之间的留白，明显小于 `sectionBoundarySpacing`，
     /// 标题才会被读成"属于下面这段"而不是浮在两段中间。
     static let sectionHeaderBottomSpacing: CGFloat = 6
@@ -113,13 +111,7 @@ enum WorkspaceSessionRowMetrics {
 /// 54pt 同时把命中区带到 44pt 之上，不需要再叠一层透明 frame。
 enum WorkspaceSessionFabMetrics {
     static let diameter: CGFloat = 54
-    /// 回到筛选行里的形态。必须收进 44pt 行高，因此比浮起态小一圈；
-    /// 命中区仍由外层 44pt frame 保证。
-    ///
-    /// 列表脱卡之后这一页最重的中间调没有了，一枚 36pt 的实心深紫盘旁边是 13pt 灰字，
-    /// 重量落差大到它成了唯一被看见的东西。它是主操作，该显眼，但不该是"只看得见它"。
-    /// 32pt 少掉约五分之一面积，仍然是全页唯一的实色圆钮。
-    static let inlineDiameter: CGFloat = 32
+    // 回到筛选行里的形态不再单独定尺寸：它与会话 tab 顶栏的新建按钮同为 44pt 磨砂圆（#563）。
     /// 距屏幕右下两条边的留白，两个方向取同一个值，按钮才落在视觉上的角上。
     static let edgeInset: CGFloat = 20
     /// 列表底部要额外让出的高度，保证最后一行能滚到浮起按钮**之上**被读到，

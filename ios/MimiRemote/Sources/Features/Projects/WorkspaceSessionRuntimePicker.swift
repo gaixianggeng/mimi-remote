@@ -253,18 +253,20 @@ struct WorkspaceRuntimePopoverPicker: View {
             isPresented = true
         } label: {
             HStack(spacing: 6) {
-                RuntimeBrandMarkIcon(mark: selection.brandMark, size: 15)
+                RuntimeBrandMarkIcon(mark: selection.brandMark, size: 14)
 
                 Text(selection.listTitle)
-                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
                     .foregroundStyle(tokens.primaryText)
                     .lineLimit(1)
 
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(themeStore.uiFont(size: 10, weight: .semibold))
                     .foregroundStyle(tokens.tertiaryText)
             }
-            .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
+            // 与会话行同一个水平内边距：品牌标记与分组标题、会话标题落在同一条左边线上。
+            // 窄屏才显示这一行，因此取紧凑密度。
+            .padding(.horizontal, SessionIndexRowDensity.compact.horizontalPadding)
             // 视觉高度保持在标题量级，透明命中层仍满足 44pt。
             .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget, alignment: .leading)
             .contentShape(Rectangle())

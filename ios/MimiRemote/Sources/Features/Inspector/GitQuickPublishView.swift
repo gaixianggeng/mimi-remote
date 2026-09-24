@@ -276,17 +276,17 @@ struct GitQuickPublishBox: View {
                 if isWorking {
                     ProgressView()
                         .controlSize(.small)
-                        .tint(.white)
+                        .tint(tokens.primaryActionForeground)
                 } else {
                     Image(systemName: "arrow.up.circle")
                 }
                 Text(status.hasChanges ? L10n.text("ui.submit_and_push") : L10n.text("ui.push_current_branch"))
             }
             .font(themeStore.uiFont(.caption, weight: .semibold))
-            .foregroundStyle(canQuickPublish ? Color.white : tokens.tertiaryText)
+            .foregroundStyle(canQuickPublish ? tokens.primaryActionForeground : tokens.tertiaryText)
             .frame(maxWidth: .infinity)
             .frame(height: 46)
-            .background(canQuickPublish ? tokens.accent : tokens.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(canQuickPublish ? tokens.primaryAction : tokens.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(!canQuickPublish)

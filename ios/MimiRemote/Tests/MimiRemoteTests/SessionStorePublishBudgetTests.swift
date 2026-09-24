@@ -34,6 +34,11 @@ final class SessionStorePublishBudgetTests: XCTestCase {
                 if runtimeProvider == "claude" {
                     return claudePage
                 }
+                if runtimeProvider == "deepseek" {
+                    return SessionsPage(sessions: [
+                        self.makeBudgetSession("deepseek-a", projectID: project.id, source: "deepseek"),
+                    ])
+                }
                 return codexPages[cursor ?? ""] ?? SessionsPage(sessions: [])
             }
         )
@@ -55,39 +60,14 @@ final class SessionStorePublishBudgetTests: XCTestCase {
         XCTAssertEqual(client.requestedControlledGlobalCursors, [nil, "codex-page-2", "codex-page-3"])
         XCTAssertEqual(
             Set(store.sessions.map(\.id)),
-            ["codex-a", "codex-b", "codex-c", "claude-a"],
-            "两条 runtime 的所有分页都要并入 canonical sessions"
+            ["codex-a", "codex-b", "codex-c", "claude-a", "deepseek-a"],
+            "三条 runtime 的所有分页都要并入 canonical sessions"
         )
         XCTAssertEqual(
             sessionsPublishCount,
             1,
             "全局发现翻页期间不能逐页发布；每次发布都会让整个工作台重算一轮"
         )
-    }
-
-    func testSessionSearchPresentationIgnoresUnchangedValue() {
-        let store = SessionStore(
-            appStore: makeIsolatedAppStore(),
-            conversationStore: ConversationStore(),
-            logStore: LogStore(),
-            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
-        )
-        var publishCount = 0
-        var cancellables: Set<AnyCancellable> = []
-        store.objectWillChange
-            .sink { _ in publishCount += 1 }
-            .store(in: &cancellables)
-
-        // 会话页每次出现/消失都会上报一次；值没变时不能让观察者重算。
-        store.setSessionSearchPresented(false)
-        XCTAssertEqual(publishCount, 0)
-
-        store.setSessionSearchPresented(true)
-        XCTAssertTrue(store.isSessionSearchPresented)
-        XCTAssertEqual(publishCount, 1)
-
-        store.setSessionSearchPresented(true)
-        XCTAssertEqual(publishCount, 1)
     }
 
     private func makeBudgetSession(_ id: String, projectID: String, source: String) -> AgentSession {

@@ -648,7 +648,7 @@ private struct ModelReasoningPickerHeader: View {
 
                 Image(systemName: fastImage)
                     .font(themeStore.uiFont(size: 14, weight: .semibold))
-                    .foregroundStyle(isFastMode ? Color.white : tokens.accent)
+                    .foregroundStyle(isFastMode ? tokens.primaryActionForeground : tokens.accent)
             }
             .frame(
                 width: ModelReasoningGridMetrics.fastModeVisualDiameter,

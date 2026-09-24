@@ -321,6 +321,7 @@ struct UnifiedWorkbenchShell: View {
                 WorkbenchFloatingSidebarRevealButton(tokens: tokens) {
                     toggleFloatingSidebarVisibility()
                 }
+                .avoidingWindowControls()
                 .padding(.leading, WorkbenchSidebarSurfaceMetrics.outerInset)
                 // 工作区会话详情已有 leading 返回按钮；侧栏关闭时把恢复入口放到导航栏下方。
                 // 只横向移动仍会落在 NavigationBar 的命中表面内，视觉分开但按钮不可点击。
@@ -542,6 +543,7 @@ struct UnifiedWorkbenchShell: View {
                 presentSheet(.settings)
             }
             .buttonStyle(.borderedProminent)
+            .foregroundStyle(tokens.primaryActionForeground)
             .controlSize(.small)
             .accessibilityIdentifier("connection.repairPairing")
         }
@@ -697,7 +699,7 @@ struct UnifiedWorkbenchShell: View {
                             open(.sessions, layout: layout)
                         } label: {
                             Text(L10n.format("ui.more_sessions_count", section.overflowCount))
-                                .font(themeStore.uiFont(size: 11, weight: .medium))
+                                .font(themeStore.uiFont(.footnote, weight: .medium))
                                 .foregroundStyle(tokens.secondaryText)
                                 .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
                                 .contentShape(Rectangle())
@@ -709,7 +711,7 @@ struct UnifiedWorkbenchShell: View {
                     }
                 } header: {
                     Text("\(sidebarSectionTitle(section.kind)) \(section.sessions.count + section.overflowCount)")
-                        .textCase(nil)
+                        .pageSectionHeaderStyle()
                 }
             }
         }
@@ -722,7 +724,7 @@ struct UnifiedWorkbenchShell: View {
                 : 0,
             for: .scrollContent
         )
-        .environment(\.defaultMinListRowHeight, 34)
+        .environment(\.defaultMinListRowHeight, 40)
         // 覆盖式侧栏可能只按 List 的理想内容高度提案；显式占用剩余空间后列表自行滚动。
         .frame(maxHeight: .infinity)
     }

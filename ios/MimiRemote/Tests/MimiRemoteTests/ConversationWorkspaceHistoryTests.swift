@@ -268,6 +268,10 @@ extension ConversationDataFlowTests {
             WorkspaceSessionAgeBoundary.firstStaleIndex(in: [stale], now: now),
             0
         )
+        // 最新一条就已超过十二小时时上方没有较新的会话，不画悬在列表顶部的分界线。
+        XCTAssertFalse(WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: 0))
+        XCTAssertFalse(WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: nil))
+        XCTAssertTrue(WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: 2))
     }
 
     func testWorkspaceSessionAgeBoundaryIgnoresPinnedStaleSession() {

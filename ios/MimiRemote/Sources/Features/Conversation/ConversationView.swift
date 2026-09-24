@@ -293,6 +293,7 @@ struct ConversationView: View {
                 Label(L10n.text("ui.refresh_status"), systemImage: "arrow.clockwise")
             }
             .buttonStyle(.borderedProminent)
+            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
             .controlSize(.small)
             .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
 
@@ -321,6 +322,7 @@ struct ConversationView: View {
                     Label(L10n.text("ui.view_abbreviated_version_only"), systemImage: "text.justify")
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
                 .controlSize(.small)
                 .disabled(sessionStore.isRefreshingSelectedSession)
 
@@ -333,6 +335,7 @@ struct ConversationView: View {
                     Label(L10n.text("ui.retry_full_history"), systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
                 .controlSize(.small)
                 .disabled(sessionStore.isRefreshingSelectedSession)
 
@@ -364,6 +367,7 @@ struct ConversationView: View {
                     Label(L10n.text("ui.load_full_history"), systemImage: "arrow.down.circle")
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
                 .controlSize(.small)
                 .disabled(sessionStore.isRefreshingSelectedSession)
 
@@ -384,6 +388,7 @@ struct ConversationView: View {
                     Label(L10n.text("ui.try_again_abbreviated_version"), systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
                 .controlSize(.small)
                 .disabled(sessionStore.isRefreshingSelectedSession)
 
