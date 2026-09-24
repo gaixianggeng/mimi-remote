@@ -236,7 +236,9 @@ struct WorkspaceRuntimePopoverPicker: View {
                     .font(themeStore.uiFont(size: 10, weight: .semibold))
                     .foregroundStyle(tokens.tertiaryText)
             }
-            .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
+            // 与会话行同一个水平内边距：品牌标记与分组标题、会话标题落在同一条左边线上。
+            // 窄屏才显示这一行，因此取紧凑密度。
+            .padding(.horizontal, SessionIndexRowDensity.compact.horizontalPadding)
             // 视觉高度保持在标题量级，透明命中层仍满足 44pt。
             .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget, alignment: .leading)
             .contentShape(Rectangle())

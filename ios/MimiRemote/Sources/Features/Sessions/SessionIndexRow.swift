@@ -187,13 +187,14 @@ enum SessionRowState: Equatable {
 
 /// 会话行前导槽放什么。
 ///
-/// 两个 tab 的区分符不同，前导槽应当承载各自那一个：
-///
-/// - 会话 tab 的槽里放来源标记；未读小点跟在标题后面，不占用正文起点。
-/// - 工作区内项目恒定，那个问题不存在，槽里放会话状态字形。
+/// - 会话 tab 汇集两种来源，槽里放来源标记；未读小点跟在标题后面，不占用正文起点。
+/// - 工作区顶部已经按 Codex / Claude 筛选，每行来源都一样，不画前导槽（`.none`），
+///   标题直接与分组标题对齐。
+/// - `.state` 是旧式详细行，槽里放会话状态字形。
 enum SessionIndexRowLeadingSlot: Equatable {
     case state
     case runtimeIcon
+    case none
 }
 
 /// 身份槽没有可展示分支时使用什么信息。
@@ -626,8 +627,8 @@ struct SessionIndexRow: View {
                 .layoutPriority(1)
                 .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
 
-            if leadingSlot == .runtimeIcon, isUnread {
-                // 会话库前导槽留给来源图标，未读小点跟在标题后面。
+            if isSessionLibrary, isUnread {
+                // 单行布局的未读小点跟在标题后面，不占用正文起点。
                 unreadTitleIndicator(tokens: tokens)
                     .layoutPriority(2)
             }
@@ -774,6 +775,9 @@ struct SessionIndexRow: View {
                 size: 11
             )
             .frame(width: density.stateGutterWidth, height: density.stateGutterWidth)
+        case .none:
+            // 不占位：HStack 不会为空视图留间距，标题从行内边距处开始。
+            EmptyView()
         }
     }
 
@@ -867,8 +871,9 @@ struct SessionIndexRow: View {
         SessionListPresentation.titleDisplayText(for: session)
     }
 
+    /// 会话 tab 与工作区共用的单行布局（有无来源标记都算）。
     private var isSessionLibrary: Bool {
-        leadingSlot == .runtimeIcon
+        leadingSlot != .state
     }
 
     private var rowMinimumHeight: CGFloat {

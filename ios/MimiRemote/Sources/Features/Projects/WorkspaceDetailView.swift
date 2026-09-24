@@ -224,7 +224,10 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             )
             : nil
 
-        if let firstStaleIndex {
+        // 分界线的意义是「上面是新的、下面是旧的」。最新一条就已超过 12 小时时上半边是空的，
+        // 它会退化成悬在列表顶部的标题，被读成整段列表的名字；此时不再分界。
+        if let firstStaleIndex,
+           WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: firstStaleIndex) {
             let currentSessions = Array(sessions.prefix(firstStaleIndex))
             let staleSessions = Array(sessions.dropFirst(firstStaleIndex))
 
@@ -282,8 +285,9 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 Button {
                     onOpenSession(session)
                 } label: {
-                    // 与会话 tab 完全同一种行（#563）：来源图标 + 标题 + 时间，宽屏 iPad 多一行摘要；
-                    // 需要处理或仍在运行时，状态文字占据时间的位置。
+                    // 与会话 tab 同一种单行（#563）：标题 + 时间，宽屏 iPad 多一行摘要；需要处理或
+                    // 仍在运行时，状态文字占据时间的位置。顶部已按 Codex / Claude 筛选，每行来源
+                    // 相同，不再重复画来源标记，标题直接与分组标题对齐。
                     SessionIndexRow(
                         session: session,
                         foregroundActivity: foregroundActivity,
@@ -294,7 +298,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         isObserving: sessionStore.isSessionObserving(session),
                         isUnread: isUnread,
                         density: rowDensity,
-                        leadingSlot: .runtimeIcon,
+                        leadingSlot: .none,
                         showsSessionPreview: UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table,
                         currentDate: currentDate,
                         calendar: calendar,

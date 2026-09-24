@@ -126,6 +126,12 @@ enum WorkspaceSessionAgeBoundary {
             now.timeIntervalSince(SessionIndexStore.orderingDate(for: session)) > staleInterval
         }
     }
+
+    /// 只有分界线上方确实有较新的会话时才值得画 12 小时分界。
+    static func showsBoundary(firstStaleIndex: Int?) -> Bool {
+        guard let firstStaleIndex else { return false }
+        return firstStaleIndex > 0
+    }
 }
 
 /// View 层只记录“哪次调用仍有资格回写”，真实请求复用继续由 SessionStore single-flight 决定。

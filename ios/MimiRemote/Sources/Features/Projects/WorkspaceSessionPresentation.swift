@@ -99,8 +99,6 @@ enum WorkspaceSessionPresentation {
 
 /// 工作区只保留自己的分组节奏；会话行几何直接使用 `SessionIndexRowDensity`。
 enum WorkspaceSessionRowMetrics {
-    /// Runtime 菜单仍需要自己的标签内边距；它不参与会话行布局。
-    static let horizontalPadding: CGFloat = 8
     /// 小节标题与上一段最后一行之间的留白。它必须明显大于行内间距，
     /// 因为扁平列表里分组边界完全由这段留白表达，没有卡片边缘可依。
     static let sectionBoundarySpacing: CGFloat = 18
