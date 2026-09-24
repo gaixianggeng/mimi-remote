@@ -483,13 +483,15 @@ struct SessionIndexRow: View {
     var isUnread = false
     let density: SessionIndexRowDensity
     var searchSnippet: String? = nil
+    /// 会话库跨项目时才传入需要显示的项目名；不改变工作区中的单项目行。
+    var projectIdentity: String? = nil
     /// 详细行可选的 Git 分支；为 nil 时身份槽按调用方指定的规则回退。
     var branch: String? = nil
     /// 会话库默认回退项目名；目录身份仍可用于辅助技术说明 worktree。
     var identityFallback: SessionIndexRowIdentityFallback = .project
     /// 前导槽承载什么。会话 tab 与工作区都传 `.runtimeIcon`；`.state` 留给旧式详细行。
     var leadingSlot: SessionIndexRowLeadingSlot = .state
-    /// 会话 tab 只在宽屏保留一行摘要；手机固定为来源、标题、时间三列。
+    /// 会话 tab 只在宽屏保留普通摘要；窄屏仅为搜索命中和跨项目身份增加第二行。
     var showsSessionPreview = false
     /// `.state` 槽在无状态时是否画灰环兜底；工作区总览关闭它来降低重复噪声。
     var showsIdleStateGlyph = false
@@ -601,7 +603,7 @@ struct SessionIndexRow: View {
 
             VStack(alignment: .leading, spacing: density.contentSpacing) {
                 titleLine(tokens: tokens)
-                if !isSessionLibrary || showsSessionPreview {
+                if !isSessionLibrary || showsSessionPreview || !librarySupportingText.isEmpty {
                     metadataLine(tokens: tokens)
                 }
 
@@ -671,17 +673,41 @@ struct SessionIndexRow: View {
 
     @ViewBuilder
     private func sessionLibraryPreviewLine(tokens: ThemeTokens) -> some View {
-        let preview = searchSnippet?.isEmpty == false
-            ? searchSnippet ?? ""
-            : SessionListPresentation.distinctPreviewDisplayText(for: session)
-        if !preview.isEmpty {
-            Text(preview)
+        if !librarySupportingText.isEmpty {
+            Text(librarySupportingText)
                 .font(themeStore.uiFont(size: previewPointSize))
                 .foregroundStyle(tokens.secondaryText)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                .lineLimit(
+                    dynamicTypeSize.isAccessibilitySize ? nil : (searchSnippet?.isEmpty == false ? 2 : 1)
+                )
                 .truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
         }
+    }
+
+    private var librarySupportingText: String {
+        let ordinaryPreview = showsSessionPreview
+            ? SessionListPresentation.distinctPreviewDisplayText(for: session)
+            : ""
+        return Self.librarySupportingText(
+            projectIdentity: projectIdentity,
+            searchSnippet: searchSnippet,
+            ordinaryPreview: ordinaryPreview
+        )
+    }
+
+    static func librarySupportingText(
+        projectIdentity: String?,
+        searchSnippet: String?,
+        ordinaryPreview: String
+    ) -> String {
+        let snippet = searchSnippet?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let preview = snippet.isEmpty ? ordinaryPreview : snippet
+        // 紧凑行平时保持单行；搜索命中上下文和少数项目身份才值得增加第二行。
+        return [projectIdentity, preview]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
     }
 
     private func standardMetadataLine(tokens: ThemeTokens) -> some View {

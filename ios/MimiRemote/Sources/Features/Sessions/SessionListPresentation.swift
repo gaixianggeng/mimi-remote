@@ -351,6 +351,11 @@ enum SessionListPresentation {
         return mostCommon.key
     }
 
+    static func projectIdentityToDisplay(_ value: String, dominant: String?) -> String? {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty || normalized == dominant ? nil : normalized
+    }
+
     static func normalizedBranch(_ branch: String?) -> String? {
         guard let branch else { return nil }
         let normalized = branch.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -559,6 +559,34 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(SessionListPresentation.dominantIdentity(["codex", "codex"]), "codex")
         XCTAssertNil(SessionListPresentation.dominantIdentity(["codex", "mimi"]))
         XCTAssertNil(SessionListPresentation.dominantIdentity([]))
+        XCTAssertNil(SessionListPresentation.projectIdentityToDisplay(" codex ", dominant: "codex"))
+        XCTAssertEqual(SessionListPresentation.projectIdentityToDisplay(" mimi ", dominant: "codex"), "mimi")
+        XCTAssertEqual(SessionListPresentation.projectIdentityToDisplay("mimi", dominant: nil), "mimi")
+        XCTAssertNil(SessionListPresentation.projectIdentityToDisplay(" ", dominant: nil))
+        XCTAssertEqual(
+            SessionIndexRow.librarySupportingText(
+                projectIdentity: "mimi",
+                searchSnippet: " matched token ",
+                ordinaryPreview: "ordinary preview"
+            ),
+            "mimi · matched token"
+        )
+        XCTAssertEqual(
+            SessionIndexRow.librarySupportingText(
+                projectIdentity: nil,
+                searchSnippet: "matched token",
+                ordinaryPreview: ""
+            ),
+            "matched token"
+        )
+        XCTAssertEqual(
+            SessionIndexRow.librarySupportingText(
+                projectIdentity: nil,
+                searchSnippet: nil,
+                ordinaryPreview: ""
+            ),
+            ""
+        )
         let session = makeSession(id: "identity-none", project: "codex-ipad-agent", dir: "/tmp/codex-ipad-agent")
         XCTAssertEqual(SessionIndexRow.identityFallbackText(for: session, fallback: .none), "")
     }
