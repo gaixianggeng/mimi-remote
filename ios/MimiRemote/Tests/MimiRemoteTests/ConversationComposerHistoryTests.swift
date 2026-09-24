@@ -1710,8 +1710,8 @@ extension ConversationDataFlowTests {
         }
         XCTAssertEqual(commentary.kind, .commentary)
         XCTAssertEqual(commentary.content, "我先调用一个子 agent。")
-        guard case .processMessage(let plan) = items[3] else {
-            return XCTFail("计划卡应保留在服务端输入顺序中的原始位置")
+        guard case .message(let plan) = items[3] else {
+            return XCTFail("完整计划应作为主时间线消息保留在服务端输入顺序中的原始位置")
         }
         XCTAssertEqual(plan.kind, .plan)
         XCTAssertEqual(plan.content, "让子 agent 生成一个短笑话。")
