@@ -78,6 +78,36 @@ final class HarnessDirectoryWiringTests: XCTestCase {
         )
     }
 
+    func testSuccessfulEmptyDirectoryRevokesStaleMembership() async throws {
+        let fixture = try makeFixture(
+            enabled: true,
+            workspacePages: ["h05-project": page([])]
+        )
+        let stale = session(id: "previously-listed")
+        fixture.store.sessions = [stale]
+        fixture.store.controlledGlobalSessionIDs = [stale.id]
+        fixture.store.recordWorkspaceDirectorySessionPage(
+            [stale],
+            in: fixture.workspace,
+            runtimeProvider: "deepseek",
+            replacing: true
+        )
+        XCTAssertEqual(
+            fixture.store.directoryScopedSessions(workspaceID: fixture.workspace.id, runtimeProvider: "deepseek").map(\.id),
+            [stale.id]
+        )
+
+        await fixture.store.refreshNativeHarnessDirectory(
+            workspace: fixture.workspace,
+            hostScope: fixture.appStore.activeHostScope
+        )
+
+        XCTAssertTrue(fixture.store.directoryScopedSessions(
+            workspaceID: fixture.workspace.id,
+            runtimeProvider: "deepseek"
+        ).isEmpty, "成功的空快照必须清除旧目录成员")
+    }
+
     /// 目录协调器必须显式携带 runtime，让真实 routing facade 选择 Harness。
     ///
     /// Harness Spy 与 Codex transport Spy 相互独立：只断言结果不足以发现默认重载

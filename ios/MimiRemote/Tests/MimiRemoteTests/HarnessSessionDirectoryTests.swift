@@ -96,6 +96,26 @@ final class HarnessSessionDirectoryTests: XCTestCase {
         XCTAssertEqual(page.sessions.first?.title, "投影标题")
     }
 
+    func testListPreservesResumeIDAndSubagentIdentity() throws {
+        let value = try jsonValue(["items": [
+            ["sessionId": "root", "cwd": "/h05/workspace", "running": false],
+            ["sessionId": "child", "cwd": "/h05/workspace", "parentSessionId": "root", "origin": "subagent"],
+            ["sessionId": "orphan-child", "cwd": "/h05/workspace", "origin": "subagent"]
+        ]])
+        let page = try HarnessSessionDirectoryDecoding.sessionsPage(
+            from: value,
+            runtimeProvider: "deepseek",
+            workspace: nil
+        )
+
+        XCTAssertEqual(page.sessions.count, 3, "子会话仍需保留在 canonical 目录供父子导航使用")
+        XCTAssertEqual(page.sessions.first?.resumeID, "root")
+        XCTAssertFalse(try XCTUnwrap(page.sessions.first).isSubagentThread)
+        XCTAssertEqual(page.sessions[1].parentThreadID, "root")
+        XCTAssertTrue(page.sessions[1].isSubagentThread)
+        XCTAssertTrue(page.sessions[2].isSubagentThread)
+    }
+
     /// 空表是**合法结果**，不是失败。
     func testEmptyListIsASuccessfulEmptyPage() throws {
         let value = try harnessObservation("rpc/session-list.json", label: "result-empty")

@@ -42,6 +42,9 @@ type SessionSummary struct {
 	// Blank 表示还没有任何轮次，Mimi 侧据此隐藏空会话。
 	Blank bool   `json:"blank"`
 	CWD   string `json:"cwd,omitempty"`
+	// 父会话身份必须跨 agentd 中继保留；iPad 侧据此从顶层列表排除子会话。
+	ParentSessionID string `json:"parentSessionId,omitempty"`
+	Origin          string `json:"origin,omitempty"`
 	// Projections 是可选投影；冷会话也可能带标题与轮次大纲。
 	Projections *SessionProjectionHints `json:"projections,omitempty"`
 }

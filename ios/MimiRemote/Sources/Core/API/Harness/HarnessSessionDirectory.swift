@@ -202,6 +202,8 @@ enum HarnessSessionDirectoryDecoding {
         let values = item["projections"]?["values"]
         // 标题不在顶层，在 projections.values.title（夹具 itemShapeNote 明确记录）。
         let title = values?["title"]?.stringValue
+        let parentSessionID = item["parentSessionId"]?.stringValue?.trimmedNonEmpty
+        let isSubagent = parentSessionID != nil || item["origin"]?.stringValue == "subagent"
         return makeSession(
             sessionID: sessionID,
             cwd: item["cwd"]?.stringValue?.trimmedNonEmpty,
@@ -211,7 +213,9 @@ enum HarnessSessionDirectoryDecoding {
                 Date(timeIntervalSince1970: Double($0) / 1000)
             },
             runtimeProvider: runtimeProvider,
-            workspace: workspace
+            workspace: workspace,
+            parentSessionID: parentSessionID,
+            isSubagent: isSubagent
         )
     }
 
@@ -222,7 +226,9 @@ enum HarnessSessionDirectoryDecoding {
         running: Bool,
         updatedAt: Date?,
         runtimeProvider: String,
-        workspace: AgentWorkspace?
+        workspace: AgentWorkspace?,
+        parentSessionID: String? = nil,
+        isSubagent: Bool = false
     ) -> AgentSession {
         AgentSession(
             id: sessionID,
@@ -236,10 +242,13 @@ enum HarnessSessionDirectoryDecoding {
             status: running ? "running" : "history",
             source: runtimeProvider,
             runtimeProvider: runtimeProvider,
-            resumeID: nil,
+            // Harness 的历史会话直接按同一个 sessionId 续聊；缺失它会误走 session/create。
+            resumeID: sessionID,
             createdAt: nil,
             updatedAt: updatedAt,
-            recencyAt: updatedAt
+            recencyAt: updatedAt,
+            parentThreadID: parentSessionID,
+            isSubagent: isSubagent
         )
     }
 }

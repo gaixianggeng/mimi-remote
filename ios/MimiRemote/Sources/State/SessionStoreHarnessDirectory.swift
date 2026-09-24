@@ -192,6 +192,8 @@ extension SessionStore {
             self.mergeSessionLibraryPages(
                 [(workspace: workspace, page: page, requestedCursor: nil, requestLineage: nil)],
                 generation: self.appStore.connectionGeneration,
+                // Harness list 没有分页；成功的空页也是完整目录快照，必须撤销旧成员。
+                consistency: .authoritative,
                 runtimeProvider: Self.nativeHarnessRuntimeProvider,
                 restartsFromFirst: false
             )

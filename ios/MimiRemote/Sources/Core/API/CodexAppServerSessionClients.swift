@@ -1028,7 +1028,8 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
                 status: "running",
                 source: AppServerRuntimeBundle.nativeRuntimeProvider,
                 runtimeProvider: AppServerRuntimeBundle.nativeRuntimeProvider,
-                resumeID: nil,
+                // 刚创建或续聊后的会话也必须保留原生 ID，下一轮历史输入才能继续同一个会话。
+                resumeID: created.sessionID,
                 createdAt: nil,
                 updatedAt: nil
             )

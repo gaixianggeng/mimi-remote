@@ -174,6 +174,11 @@ extension SessionStore {
         do {
             guard appStore.activeHostScope == hostScope else { return false }
             let client = try clientFactory()
+            // 旧版缓存的 Harness 历史项没有 resumeID；原生 sessionId 本身就是续聊身份。
+            let nativeResumeID = resume.flatMap { session in
+                Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == Self.nativeHarnessRuntimeProvider
+                    ? session.id : nil
+            }
             let response = try await client.createSession(CreateSessionRequest(
                 projectID: projectID,
                 projectPath: workspace.path,
@@ -183,7 +188,7 @@ extension SessionStore {
                 input: payload.input,
                 turnOptions: payload.options,
                 initialGoalObjective: initialGoalObjective,
-                resumeID: resume?.resumeID ?? "",
+                resumeID: resume?.resumeID ?? nativeResumeID ?? "",
                 clientMessageID: clientMessageID
             ))
             guard appStore.activeHostScope == hostScope else { return false }

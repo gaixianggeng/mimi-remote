@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -432,7 +433,7 @@ func (r *Router) harnessNativeRequestedScope(method string, cwd string) (*gatewa
 
 // harnessNativeVisibleSessions 取回会话列表并按授权作用域裁剪。
 //
-// scope 非空时只保留该目录下的会话；scope 为空表示"受控全局发现"——逐行重新映射
+// scope 非空时只保留 cwd 恰好等于该目录的会话；scope 为空表示"受控全局发现"——逐行重新映射
 // 授权作用域，命不中的直接丢弃。两种情况都要求会话带 cwd：拿不到 cwd 就无法证明
 // 归属，不能因为"读的是列表"就放行。
 func (r *Router) harnessNativeVisibleSessions(
@@ -456,7 +457,7 @@ func (r *Router) harnessNativeVisibleSessions(
 			continue
 		}
 		if scope != nil {
-			if !gatewayScopeContainsPath(*scope, session.CWD) {
+			if !harnessNativeSessionInDirectory(*scope, session.CWD) {
 				continue
 			}
 		} else if _, ok := r.gatewayScopeForPath(session.CWD); !ok {
@@ -469,6 +470,17 @@ func (r *Router) harnessNativeVisibleSessions(
 	// 最近活动的在前，与 Mimi 侧栏的"最近"一致。
 	sort.SliceStable(visible, func(i, j int) bool { return visible[i].UpdatedAt > visible[j].UpdatedAt })
 	return visible, nil
+}
+
+// 工作区标签是一个目录，不是整个子目录树。授权仍允许访问子目录；只有列表和搜索
+// 使用精确 cwd，避免选中父目录时把所有子目录会话一起展示。比较真实路径以兼容 symlink。
+func harnessNativeSessionInDirectory(scope gatewayScope, cwd string) bool {
+	abs, err := filepath.Abs(strings.TrimSpace(cwd))
+	if err != nil {
+		return false
+	}
+	realPath, err := filepath.EvalSymlinks(abs)
+	return err == nil && realPath == scope.realPath
 }
 
 // harnessNativeAuthorizeSession 判定目标会话是否落在授权范围内。

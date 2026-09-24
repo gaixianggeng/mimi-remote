@@ -215,10 +215,69 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
             .init(sessionID: "created-fixture", provider: "provider-a", model: "model-a", effort: "high")
         ])
         XCTAssertEqual(response.session.id, "created-fixture")
+        XCTAssertEqual(response.session.resumeID, "created-fixture")
         XCTAssertEqual(response.session.runtimeProvider, "deepseek")
         XCTAssertEqual(response.requiresQueuedInitialInput, true)
         let codexSent = await codexTransport.sentMessages()
         XCTAssertTrue(codexSent.isEmpty)
+    }
+
+    func testNativeResumeKeepsExistingSessionWithoutCreatingAnother() async throws {
+        let fake = FakeHarnessSessionClient()
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(harness: fake))
+
+        let response = try await client.createSession(CreateSessionRequest(
+            projectID: "seam",
+            projectPath: "/tmp/seam",
+            projectName: "Seam",
+            prompt: "continue",
+            turnOptions: CodexAppServerTurnOptions(runtimeProvider: "deepseek"),
+            resumeID: "existing-session",
+            clientMessageID: "request-resume"
+        ))
+
+        XCTAssertEqual(fake.createSessionCallCount, 0)
+        XCTAssertEqual(response.session.id, "existing-session")
+        XCTAssertEqual(response.session.resumeID, "existing-session")
+        XCTAssertEqual(response.requiresQueuedInitialInput, true)
+    }
+
+    func testLegacyCachedNativeSessionUsesItsIDForResume() async {
+        let project = AgentProject(id: "seam", name: "Seam", path: "/tmp/seam")
+        let history = AgentSession(
+            id: "existing-session",
+            projectID: project.id,
+            project: project.name,
+            dir: project.path,
+            title: "Existing",
+            status: "history",
+            source: "deepseek",
+            runtimeProvider: "deepseek",
+            resumeID: nil,
+            createdAt: nil,
+            updatedAt: nil
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [history])
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [AgentWorkspace(project: project)]
+        store.rebuildWorkspaceIndex()
+        store.appServerModelOptions = [CodexAppServerModelOption(
+            id: "model-a", provider: "provider-a", runtimeProvider: "deepseek"
+        )]
+
+        _ = await store.createSession(
+            projectID: project.id,
+            prompt: "continue",
+            resume: history,
+            runtimeProvider: "deepseek"
+        )
+
+        XCTAssertEqual(client.createPayloads.first?.resumeID, history.id)
     }
 
     func testNativeStopUsesHarnessWithoutCodexFallback() async throws {

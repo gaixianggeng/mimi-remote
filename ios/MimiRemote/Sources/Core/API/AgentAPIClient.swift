@@ -24,6 +24,9 @@ func isCancellationError(_ error: Error) -> Bool {
     if error is CancellationError {
         return true
     }
+    if (error as? HarnessTransportError) == .cancelled {
+        return true
+    }
     if let urlError = error as? URLError {
         return urlError.code == .cancelled
     }

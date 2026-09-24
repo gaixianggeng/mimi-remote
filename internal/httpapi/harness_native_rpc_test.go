@@ -204,8 +204,18 @@ func TestHarnessNativeListReturnsOnlyAuthorizedSessions(t *testing.T) {
 func TestHarnessNativeListWithCWDScopesResults(t *testing.T) {
 	spy := &harnessNativeSpy{}
 	router, authorized, unauthorized := harnessNativeFixture(t, spy)
+	child := filepath.Join(authorized, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(authorized, alias); err != nil {
+		t.Fatal(err)
+	}
 	spy.sessions = []harnessclient.SessionSummary{
 		harnessNativeSession("in-scope", authorized, 10, false),
+		harnessNativeSession("same-directory-alias", alias, 15, false),
+		harnessNativeSession("child-directory", child, 18, false),
 		harnessNativeSession("out-of-scope", unauthorized, 20, false),
 	}
 
@@ -217,8 +227,37 @@ func TestHarnessNativeListWithCWDScopesResults(t *testing.T) {
 	if err := json.Unmarshal(envelope.Result.Value, &value); err != nil {
 		t.Fatal(err)
 	}
-	if len(value.Items) != 1 || value.Items[0].SessionID != "in-scope" {
-		t.Fatalf("cwd 应把结果限制在该目录内，得到 %+v", value.Items)
+	if len(value.Items) != 2 || value.Items[0].SessionID != "same-directory-alias" || value.Items[1].SessionID != "in-scope" {
+		t.Fatalf("cwd 应只显示当前目录，兼容同一路径的 symlink，不包含子目录：%+v", value.Items)
+	}
+
+	// 无 cwd 的受控全局发现仍应包含获授权的子目录，不能被工作区列表规则缩小。
+	global := decodeHarnessNativeEnvelope(t, callHarnessNativeRPC(t, router, `{"rpcId":"global","method":"session/list"}`, nil))
+	if err := json.Unmarshal(global.Result.Value, &value); err != nil {
+		t.Fatal(err)
+	}
+	if len(value.Items) != 3 || value.Items[0].SessionID != "child-directory" {
+		t.Fatalf("全局发现应保留获授权的子目录会话：%+v", value.Items)
+	}
+}
+
+func TestHarnessNativeListPreservesSubagentIdentity(t *testing.T) {
+	spy := &harnessNativeSpy{}
+	router, authorized, _ := harnessNativeFixture(t, spy)
+	var child harnessclient.SessionSummary
+	if err := json.Unmarshal([]byte(`{"sessionId":"child","parentSessionId":"parent","origin":"subagent","cwd":`+strconv.Quote(authorized)+`}`), &child); err != nil {
+		t.Fatal(err)
+	}
+	spy.sessions = []harnessclient.SessionSummary{child}
+
+	recorder := callHarnessNativeRPC(t, router, `{"rpcId":"child-list","method":"session/list"}`, nil)
+	envelope := decodeHarnessNativeEnvelope(t, recorder)
+	var value harnessNativeListValue
+	if err := json.Unmarshal(envelope.Result.Value, &value); err != nil {
+		t.Fatal(err)
+	}
+	if len(value.Items) != 1 || value.Items[0].ParentSessionID != "parent" || value.Items[0].Origin != "subagent" {
+		t.Fatalf("子会话身份必须经原生列表保留，得到 %+v", value.Items)
 	}
 }
 
@@ -247,6 +286,32 @@ func TestHarnessNativeSearchDropsHitsWithoutAuthorizedSummary(t *testing.T) {
 	}
 	if strings.Contains(recorder.Body.String(), "must-not-leak") {
 		t.Fatalf("未授权会话的 snippet 不得出现在响应里：%s", recorder.Body.String())
+	}
+}
+
+func TestHarnessNativeSearchWithCWDMatchesExactDirectory(t *testing.T) {
+	spy := &harnessNativeSpy{}
+	router, authorized, _ := harnessNativeFixture(t, spy)
+	child := filepath.Join(authorized, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spy.sessions = []harnessclient.SessionSummary{
+		harnessNativeSession("current", authorized, 10, false),
+		harnessNativeSession("child", child, 20, false),
+	}
+	spy.searchResult = harnessclient.SessionSearchResult{Items: []harnessclient.SessionSearchItem{
+		{SessionID: "current", Snippet: "visible"},
+		{SessionID: "child", Snippet: "not-in-current-directory"},
+	}}
+	body := `{"rpcId":"exact-search","method":"session/search","cwd":` + strconv.Quote(authorized) + `,"args":{"request":{"query":"anything"}}}`
+	envelope := decodeHarnessNativeEnvelope(t, callHarnessNativeRPC(t, router, body, nil))
+	var value harnessNativeSearchResult
+	if err := json.Unmarshal(envelope.Result.Value, &value); err != nil {
+		t.Fatal(err)
+	}
+	if len(value.Items) != 1 || value.Items[0].SessionID != "current" {
+		t.Fatalf("工作区搜索只能返回当前目录会话：%+v", value.Items)
 	}
 }
 
