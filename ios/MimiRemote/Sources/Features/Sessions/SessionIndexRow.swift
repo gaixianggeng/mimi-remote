@@ -491,7 +491,7 @@ struct SessionIndexRow: View {
     var identityFallback: SessionIndexRowIdentityFallback = .project
     /// 前导槽承载什么。会话 tab 与工作区都传 `.runtimeIcon`；`.state` 留给旧式详细行。
     var leadingSlot: SessionIndexRowLeadingSlot = .state
-    /// 会话 tab 只在宽屏保留普通摘要；窄屏仅为搜索命中增加第二行。
+    /// 会话 tab 只在宽屏保留普通摘要；窄屏仅为搜索命中和跨项目身份增加第二行。
     var showsSessionPreview = false
     /// `.state` 槽在无状态时是否画灰环兜底；工作区总览关闭它来降低重复噪声。
     var showsIdleStateGlyph = false
@@ -703,7 +703,7 @@ struct SessionIndexRow: View {
     ) -> String {
         let snippet = searchSnippet?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let preview = snippet.isEmpty ? ordinaryPreview : snippet
-        // 普通紧凑行保持单行；搜索命中上下文才在窄屏增加第二行。
+        // 紧凑行平时保持单行；搜索命中上下文和少数项目身份才值得增加第二行。
         return [projectIdentity, preview]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }

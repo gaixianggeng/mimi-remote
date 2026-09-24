@@ -846,14 +846,14 @@ struct SessionListView: View {
                     isUnread: isUnread,
                     density: rowDensity,
                     searchSnippet: sessionStore.sessionSearchSnippet(for: session.id),
-                    // 紧凑行保持单行；跨项目身份只在有空间承载摘要的宽屏行展示。
-                    projectIdentity: usesWideIPadRow && selectedWorkspaceID == "all"
+                    // iPhone 普通行保持单行；iPad 大字与 Mac Catalyst 仍需项目名区分会话。
+                    projectIdentity: UIDevice.current.userInterfaceIdiom != .phone && selectedWorkspaceID == "all"
                         ? SessionListPresentation.projectIdentityToDisplay(
                             session.project,
                             dominant: dominantProject
                         ) : nil,
                     leadingSlot: .runtimeIcon,
-                    // iPad 宽列保留普通摘要；窄屏只在搜索命中时显示第二行。
+                    // iPad 宽列保留普通摘要；窄屏只在搜索命中或跨项目时显示第二行。
                     showsSessionPreview: usesWideIPadRow
                 )
                 .contentShape(Rectangle())
