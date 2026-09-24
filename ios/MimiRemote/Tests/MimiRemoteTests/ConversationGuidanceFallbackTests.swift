@@ -323,6 +323,85 @@ extension ConversationDataFlowTests {
         socket.disconnect()
     }
 
+    /// gh-511：App 在后台期间旧 turn 已完成，本地仍记着它。发送前的 resume 快照证明它已结束，
+    /// 这时不能再带过期 expectedTurnID 发 turn/steer（服务端必拒），而应作为新一轮发出。
+    func testDirectGuidanceStartsNewTurnWhenResumeShowsExpectedTurnFinished() async throws {
+        let project = AgentProject(
+            id: "proj_guidance_resume_finished",
+            name: "Guidance Resume Finished",
+            path: "/tmp/guidance-resume-finished"
+        )
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let apiClient = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let listTask = Task {
+            try await apiClient.sessions(projectID: project.id, cursor: nil, limit: nil)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        let threadList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(
+            transport,
+            id: threadList.id,
+            result: #"{"data":[{"id":"thr_guidance_resume_finished","sessionId":"thr_guidance_resume_finished","preview":"running before background","ephemeral":false,"createdAt":1780491000,"updatedAt":1780491001,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/guidance-resume-finished","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"running before background","turns":[{"id":"turn_finished_in_background","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780491001,"completedAt":null,"durationMs":null}]}],"nextCursor":null}"#
+        )
+        _ = try await listTask.value
+
+        let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        var outcome: TurnSendOutcome?
+        socket.onTurnSendOutcome = { _, value in outcome = value }
+        socket.connect(sessionID: "thr_guidance_resume_finished")
+        let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 3)
+
+        // resume 应答前发送：本地校验仍看到旧 turn，steer 与事件连接共用这次 resume。
+        XCTAssertTrue(socket.sendGuidance(
+            CodexAppServerTurnPayload(prompt: "回前台后继续问"),
+            clientMessageID: "client_guidance_resume_finished",
+            expectedTurnID: "turn_finished_in_background"
+        ))
+        var steerPassedLocalCheck = false
+        for _ in 0..<200 {
+            steerPassedLocalCheck = await runtime.hasTurnSubmissionInFlight(sessionID: "thr_guidance_resume_finished")
+            if steerPassedLocalCheck { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(steerPassedLocalCheck)
+
+        transportResponse(
+            transport,
+            id: resume.id,
+            result: #"{"thread":{"id":"thr_guidance_resume_finished","sessionId":"thr_guidance_resume_finished","preview":"running before background","ephemeral":false,"createdAt":1780491000,"updatedAt":1780491002,"status":{"type":"idle"},"path":null,"cwd":"/tmp/guidance-resume-finished","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"running before background","turns":[{"id":"turn_finished_in_background","items":[],"itemsView":{"type":"complete"},"status":"completed","error":null,"startedAt":1780491001,"completedAt":1780491002,"durationMs":1000}]}}"#
+        )
+        let turnStart = try await waitForFakeAppServerRequest(transport, method: "turn/start", after: 4)
+        let params = try XCTUnwrap(turnStart.params?.objectValue)
+        XCTAssertEqual(params["clientUserMessageId"]?.stringValue, "client_guidance_resume_finished")
+        XCTAssertEqual(params["input"]?.arrayValue?.first?.objectValue?["text"]?.stringValue, "回前台后继续问")
+        transportResponse(
+            transport,
+            id: turnStart.id,
+            result: #"{"turn":{"id":"turn_after_background","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780491003,"completedAt":null,"durationMs":null}}"#
+        )
+        for _ in 0..<200 where outcome == nil {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(outcome, .accepted(turnID: "turn_after_background"))
+        let requests = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertEqual(requests.filter { $0.method == "turn/start" }.count, 1)
+        XCTAssertTrue(requests.allSatisfy { $0.method != "turn/steer" })
+        socket.disconnect()
+    }
+
     func testDirectGuidanceUncertainSteerFailureDoesNotFallbackToTurnStart() async throws {
         let project = AgentProject(
             id: "proj_guidance_uncertain_runtime",
