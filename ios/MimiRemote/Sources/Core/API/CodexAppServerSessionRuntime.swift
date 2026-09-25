@@ -2612,6 +2612,11 @@ actor CodexAppServerSessionRuntime {
             let connection = try await ensureConnection()
             do {
                 try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
+                // resume 会用权威快照改写 context。旧 turn 若在后台或断线期间已经结束，
+                // expectedTurnID 已过期，turn/steer 必然被拒；此时尚未发送，交给调用方降级为 turn/start。
+                guard contextsBySessionID[sessionID]?.activeTurnID == expectedTurnID else {
+                    throw CodexAppServerSessionRuntimeError.missingActiveTurn(sessionID)
+                }
                 _ = try await connection.send(try builder.turnSteer(
                     threadID: sessionID,
                     cwd: context.cwd,
