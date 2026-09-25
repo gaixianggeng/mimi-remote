@@ -27,11 +27,25 @@ enum SettingsDestination: Hashable {
 
 @MainActor
 final class SettingsNavigationState: ObservableObject {
-    @Published var mePath: [SettingsDestination] = []
-    @Published var devicePath: [SettingsDestination] = []
+    @Published var mePath: [SettingsDestination] = [] {
+        didSet { clearErrorWhenEnteringAddComputer(from: oldValue, to: mePath) }
+    }
+    @Published var devicePath: [SettingsDestination] = [] {
+        didSet { clearErrorWhenEnteringAddComputer(from: oldValue, to: devicePath) }
+    }
     @Published var profileRenamePresentation = ConnectionProfileRenamePresentationState()
     let connectionDraft = ConnectionSettingsDraft()
     let transientPreferences = SettingsTransientPreferences()
+
+    private func clearErrorWhenEnteringAddComputer(
+        from oldPath: [SettingsDestination],
+        to newPath: [SettingsDestination]
+    ) {
+        // 导航路径在横竖屏重建时仍保留；只有新推入添加页才开始一轮新反馈。
+        if !oldPath.contains(.addComputer), newPath.contains(.addComputer) {
+            connectionDraft.beginAddingComputer()
+        }
+    }
 }
 
 /// 回退线路（Tailscale/局域网/HTTPS）的一次探测结果。Tailcat 的探测历史由
@@ -61,6 +75,7 @@ final class ConnectionSettingsDraft: ObservableObject {
     @Published var pendingRemovalConfirmation: ConnectionCredentialRemovalConfirmation?
     @Published var isShowingAdvancedManualConnection = false
     @Published var localError: String?
+    @Published var addComputerError: String?
     @Published var copyingConnectionProfileID: String?
     @Published var copiedConnectionProfileID: String?
     // 设备首页线路行的探测状态放草稿里，Section 重建或旋转都不丢。
@@ -74,6 +89,10 @@ final class ConnectionSettingsDraft: ObservableObject {
     private var loadedProfileID: String?
     private var loadedEndpoint = ""
     private var loadedToken = ""
+
+    func beginAddingComputer() {
+        addComputerError = nil
+    }
 
     /// 旋转只重建页面，不会改变来源值，因此保留用户输入。外部连接切换或凭据更新时，
     /// 旧草稿已不再对应当前连接，必须重新载入并退出旧的编辑上下文。
@@ -98,6 +117,7 @@ final class ConnectionSettingsDraft: ObservableObject {
         pendingRemovalConfirmation = nil
         isShowingAdvancedManualConnection = false
         localError = nil
+        addComputerError = nil
         return true
     }
 }

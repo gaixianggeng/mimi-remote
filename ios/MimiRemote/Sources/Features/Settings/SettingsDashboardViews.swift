@@ -43,7 +43,10 @@ struct ConnectionSettingsView: View {
                 transientPreferences: navigation.transientPreferences,
                 mode: .deviceHome,
                 onRequestProfileRename: { navigation.profileRenamePresentation.present($0) },
-                onRequestManualConnection: { isPresentingAddComputerForManualConnection = true },
+                onRequestManualConnection: {
+                    navigation.connectionDraft.beginAddingComputer()
+                    isPresentingAddComputerForManualConnection = true
+                },
                 probesRouteAutomatically: probesRouteAutomatically
             )
 
@@ -169,9 +172,6 @@ struct AddComputerView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @ObservedObject var navigation: SettingsNavigationState
-    /// 错误草稿是整份设置共用的，设备页失败留下的那条不该跟着进这一页（#557 评审）。
-    /// 只在进入这一页时清一次：旋转等重新出现不能再清，否则会抹掉用户刚看到的提交结果。
-    @State private var didClearInheritedError = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -186,11 +186,6 @@ struct AddComputerView: View {
             )
         }
         .themedSettingsForm(tokens: tokens)
-        .onAppear {
-            guard !didClearInheritedError else { return }
-            didClearInheritedError = true
-            navigation.connectionDraft.localError = nil
-        }
         // 普通操作和展开箭头保持中性；扫码按钮单独使用主操作色。
         .tint(tokens.secondaryText)
         .settingsDetailPage()

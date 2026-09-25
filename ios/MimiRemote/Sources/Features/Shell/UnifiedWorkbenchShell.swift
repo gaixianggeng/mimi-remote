@@ -1369,6 +1369,11 @@ struct UnifiedWorkbenchShell: View {
 #if DEBUG
         guard !didApplyDebugLaunchRoute else { return }
         let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--debug-show-repair-banner"),
+           appStore.debugLaunchConfiguration.seedsStoreScreenshotUI {
+            // 只用内存中的演示档案走横幅点击链路，不触碰真实配对凭据。
+            appStore.markCredentialsInvalid()
+        }
         // App Store 截图需要在 Simulator 与真机上得到完全相同的页面状态。
         // 这些入口只存在于 Debug 构建，不改变正常启动、恢复或 Release 路由。
         if arguments.contains("--debug-open-devices") {
