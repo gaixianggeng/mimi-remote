@@ -537,7 +537,11 @@ final class ConversationTimelineScrollController {
     }
 
     private func confirmInitialPosition() {
-        guard mode == .initialPositioning, attemptedInitialPosition, isTailVisible,
+        // 长 List 的尾部哨兵可能尚未实例化，不应让遮罩永久等待可见回调。
+        // 已挂载的原生视口实际到达底部时，也足以完成首次可读交接。
+        let hasMountedNativeViewport = viewport.scrollView?.window != nil
+        guard mode == .initialPositioning, attemptedInitialPosition,
+              isTailVisible || hasMountedNativeViewport,
               let current = viewport.metrics ?? metrics,
               abs(current.maximumOffsetY - current.contentOffsetY) <= 4 else { return }
         mode = .followingTail

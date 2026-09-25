@@ -259,6 +259,22 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertTrue(rig.controller.isReadable, "后续历史补齐不重新遮罩")
     }
 
+    func testInitialPresentationUncoversNativeTailWithoutSentinelVisibilityCallback() async throws {
+        let rig = ScrollRig(connect: false)
+        let window = try mount(rig.scrollView)
+        defer { window.isHidden = true }
+        rig.report(offset: 0)
+        XCTAssertFalse(rig.controller.isReadable, "滚动命令执行前不能揭开遮罩")
+        rig.connect()
+        await drain()
+
+        XCTAssertEqual(rig.commands.map(\.target), [.tail])
+        XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
+        // 长 List 的尾行可能尚未实例化，不能让白色遮罩永久等待它的可见回调。
+        XCTAssertTrue(rig.controller.isReadable)
+        XCTAssertEqual(rig.controller.mode, .followingTail)
+    }
+
     func testTailLayoutCorrectionUsesCurrentSizeAndDoesNotWriteDuringInteraction() {
         let rig = ScrollRig()
         rig.report(offset: 1_200, height: 2_400)
