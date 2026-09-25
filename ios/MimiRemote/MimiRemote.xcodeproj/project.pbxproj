@@ -174,6 +174,7 @@
 		5F1E77B918F1DD505E57E409 /* ConversationPermissionRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C2D7E95D44FFC79F69E2A0F /* ConversationPermissionRecoveryTests.swift */; };
 		5FD1DBDBCD89B51F6B22D679 /* ConversationSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C7C7C0DF7B33C596EBE5FC7 /* ConversationSnapshotTests.swift */; platformFilters = (ios, ); };
 		602B0A0356EA734D770DCF00 /* SessionStoreConnectionWarmUp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77D734211CD7B4ECB92F8D39 /* SessionStoreConnectionWarmUp.swift */; };
+		60CC738815E9B27CE9EFE3BB /* AppStoreHostMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9809BF368AF94881F1CCC9E1 /* AppStoreHostMetadata.swift */; };
 		613A97BCD065B780C6162C8E /* ConversationTimelineReducerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F938DA83B5613E99E202281D /* ConversationTimelineReducerTests.swift */; };
 		61FC963CFB3ED09059EDA70C /* testNoTerminalTurnUsesAccessibleLayeredLayout.1.png in Resources */ = {isa = PBXBuildFile; fileRef = A8E14D359CDA20CBF7E78DD1 /* testNoTerminalTurnUsesAccessibleLayeredLayout.1.png */; };
 		620B98D648F2832CC67C1FF7 /* PushEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C77D16FEE0ECFE004B98A40 /* PushEnvironment.swift */; };
@@ -805,6 +806,7 @@
 		9780397FF2CE07EEB329D676 /* ConversationTimelineCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationTimelineCache.swift; sourceTree = "<group>"; };
 		97A0B761520F7AEF2F16D3DC /* SessionStoreConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreConnection.swift; sourceTree = "<group>"; };
 		9804C07B29195A66638EE42E /* HostWarmSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostWarmSnapshot.swift; sourceTree = "<group>"; };
+		9809BF368AF94881F1CCC9E1 /* AppStoreHostMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreHostMetadata.swift; sourceTree = "<group>"; };
 		9811B3CE215E02A0D371878C /* AgentModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentModels.swift; sourceTree = "<group>"; };
 		995395FD72E3386DFD66F143 /* ProtocolContract.generated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtocolContract.generated.swift; sourceTree = "<group>"; };
 		99CA5F598EECCC36BB093643 /* SettingsRowStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsRowStyle.swift; sourceTree = "<group>"; };
@@ -1787,6 +1789,7 @@
 				5C9DB99DDCE7CA778B616657 /* AppStore.swift */,
 				3AB921BC2A9B03335E3C8171 /* AppStoreCapabilities.swift */,
 				934F6F53C8E42FE3700DFDD9 /* AppStoreConnectionTesting.swift */,
+				9809BF368AF94881F1CCC9E1 /* AppStoreHostMetadata.swift */,
 				6DF3FE084B65924E2014463C /* AppStoreRouting.swift */,
 				1154D73506BE309E6A2ED0EC /* CarStatusSnapshotCoordinator.swift */,
 				332F6935AFF261FAA35F289A /* CarStatusSnapshotMapping.swift */,
@@ -2374,6 +2377,7 @@
 				A44C4B01562D78D25968ABFF /* AppStore.swift in Sources */,
 				16DE0C7960A8CAAE1D8A554F /* AppStoreCapabilities.swift in Sources */,
 				DDB05F720316DF94C27BB541 /* AppStoreConnectionTesting.swift in Sources */,
+				60CC738815E9B27CE9EFE3BB /* AppStoreHostMetadata.swift in Sources */,
 				41032E4AF4E356EA802FEBDD /* AppStoreRouting.swift in Sources */,
 				2189CFD030284E19F7D529A5 /* AppleSpeechTranscription.swift in Sources */,
 				76DD6A7B8D4D93D4385A615D /* AssistantTextNormalizer.swift in Sources */,

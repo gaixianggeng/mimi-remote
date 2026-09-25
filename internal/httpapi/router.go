@@ -21,6 +21,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
+	"github.com/gaixianggeng/mimi-remote/internal/hostinfo"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
 	"github.com/gaixianggeng/mimi-remote/internal/pushbridge"
@@ -47,6 +48,10 @@ type Router struct {
 	// tailscaleHostResolver 只缓存 MagicDNS 路由元数据。installationID 仍是唯一身份边界；
 	// 名称变化只会影响下一次候选连接，不会创建或合并 ConnectionProfile。
 	tailscaleHostLookup func(context.Context) tailscaleinfo.Host
+	// hostDeviceNameLookup 只负责 /api/version 的展示用设备名。Tailcat 与局域网宿主
+	// 没有 Tailscale 名称，客户端据此在用户未自定义名字时显示真实设备名。nil 或空值时
+	// 不宣告该字段，客户端继续按原有回退显示地址。
+	hostDeviceNameLookup func(context.Context) string
 	// upstreamReadiness 对高频 readyz 轮询做短 TTL + single-flight，避免每 300ms 都创建 WebSocket。
 	upstreamReadiness *appServerReadinessProbe
 	// runtimeStatus 只服务本机菜单栏。额度探测可能访问 OAuth/Keychain 和 provider，
@@ -320,6 +325,16 @@ func (r *Router) EnableTailscaleHostMetadata() {
 	r.tailscaleHostLookup = resolver.Lookup
 }
 
+// EnableHostDeviceName 宣告宿主设备名，供客户端在未自定义名字时作为默认显示名。
+// 与 Tailscale 元数据分开注入：Tailcat 和局域网宿主也必须有可读设备名。
+func (r *Router) EnableHostDeviceName() {
+	if r == nil || r.hostDeviceNameLookup != nil {
+		return
+	}
+	resolver := hostinfo.NewResolver(time.Minute)
+	r.hostDeviceNameLookup = resolver.Lookup
+}
+
 // Shutdown releases the long-lived runtimes the router started. Call it after
 // the HTTP server has drained: the resident Claude bridge spawns Claude Code
 // children of its own, and killing it earlier would cut turns that in-flight
@@ -501,14 +516,19 @@ func (r *Router) versionHandler(w http.ResponseWriter, req *http.Request) {
 	if r.tailscaleHostLookup != nil {
 		host = r.tailscaleHostLookup(req.Context())
 	}
-	writeJSON(w, http.StatusOK, protocolcontract.CurrentVersionResponseWithTailscale(
+	response := protocolcontract.CurrentVersionResponseWithTailscale(
 		r.version,
 		r.installationID,
 		host.DNSName,
 		host.DeviceName,
 		r.capabilities.enabledNames(),
 		r.capabilities.statuses(),
-	))
+	)
+	// 设备名是纯展示的加法字段：读不到时保持省略，旧客户端与旧档案都不受影响。
+	if r.hostDeviceNameLookup != nil {
+		response.DeviceName = strings.TrimSpace(r.hostDeviceNameLookup(req.Context()))
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (r *Router) doctorHandler(w http.ResponseWriter, req *http.Request) {

@@ -488,7 +488,9 @@ final class AppStore: ObservableObject {
         token: String,
         profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil),
         tailscaleDNSName: String? = nil,
-        tailscaleDeviceName: String? = nil
+        tailscaleDeviceName: String? = nil,
+        hostDeviceName: String? = nil,
+        adoptsHostDeviceName: Bool = true
     ) async throws -> PreparedConnectionSettings {
         let normalizedEndpoint = try Self.validatedEndpoint(endpoint)
         let normalizedDNSName = ConnectionProfile.normalizedTailscaleDNSName(tailscaleDNSName)
@@ -510,7 +512,9 @@ final class AppStore: ObservableObject {
                         token: token,
                         profileTarget: profileTarget,
                         tailscaleDNSName: normalizedDNSName,
-                        tailscaleDeviceName: normalizedDeviceName
+                        tailscaleDeviceName: normalizedDeviceName,
+                        hostDeviceName: hostDeviceName,
+                        adoptsHostDeviceName: adoptsHostDeviceName
                     )
                 }
 
@@ -522,7 +526,8 @@ final class AppStore: ObservableObject {
                     token: token,
                     profileTarget: profileTarget,
                     tailscaleDNSName: normalizedDNSName,
-                    tailscaleDeviceName: normalizedDeviceName
+                    tailscaleDeviceName: normalizedDeviceName,
+                    hostDeviceName: adoptsHostDeviceName ? hostDeviceName : nil
                 )
             } catch {
                 if Task.isCancelled || error is CancellationError {
@@ -623,11 +628,13 @@ final class AppStore: ObservableObject {
                     installationID,
                     excludingProfileID: current.id
                 )
-                let metadata = Self.resolvedTailscaleMetadata(prepared: prepared, existing: current)
-                let display = Self.resolvedProfileDisplay(
+                let metadata = ConnectionProfile.resolvedTailscaleMetadata(prepared: prepared, existing: current)
+                let hostDeviceName = prepared.hostDeviceName ?? current.hostDeviceName
+                let display = ConnectionProfile.resolvedDisplay(
                     existing: current,
                     requested: displayName,
                     endpoint: normalizedEndpoint,
+                    hostDeviceName: hostDeviceName,
                     tailscaleDeviceName: metadata.deviceName
                 )
                 targetProfile = ConnectionProfile(
@@ -636,19 +643,21 @@ final class AppStore: ObservableObject {
                     endpoint: normalizedEndpoint,
                     tailscaleDNSName: metadata.dnsName,
                     tailscaleDeviceName: metadata.deviceName,
+                    hostDeviceName: hostDeviceName,
                     isDisplayNameCustomized: display.customized,
                     lastSuccessfulAt: prepared.validatedAt,
                     installationID: installationID ?? current.installationID,
-                    hostPlatform: resolvedHostPlatform(prepared.hostPlatform, fallback: current.hostPlatform),
+                    hostPlatform: Self.resolvedHostPlatform(prepared.hostPlatform, fallback: current.hostPlatform),
                     connectionRoute: prepared.route.profileRoute,
                     revision: current.revision &+ 1
                 )
             } else {
                 try rejectDuplicateInstallation(installationID, excludingProfileID: nil)
-                let display = Self.resolvedProfileDisplay(
+                let display = ConnectionProfile.resolvedDisplay(
                     existing: nil,
                     requested: displayName,
                     endpoint: normalizedEndpoint,
+                    hostDeviceName: prepared.hostDeviceName,
                     tailscaleDeviceName: prepared.tailscaleDeviceName
                 )
                 targetProfile = ConnectionProfile(
@@ -657,6 +666,7 @@ final class AppStore: ObservableObject {
                     endpoint: normalizedEndpoint,
                     tailscaleDNSName: prepared.tailscaleDNSName,
                     tailscaleDeviceName: prepared.tailscaleDeviceName,
+                    hostDeviceName: prepared.hostDeviceName,
                     isDisplayNameCustomized: display.customized,
                     lastSuccessfulAt: prepared.validatedAt,
                     installationID: installationID,
@@ -666,10 +676,11 @@ final class AppStore: ObservableObject {
             }
         case .newProfile(let id, let displayName):
             try rejectDuplicateInstallation(installationID, excludingProfileID: id)
-            let display = Self.resolvedProfileDisplay(
+            let display = ConnectionProfile.resolvedDisplay(
                 existing: nil,
                 requested: displayName,
                 endpoint: normalizedEndpoint,
+                hostDeviceName: prepared.hostDeviceName,
                 tailscaleDeviceName: prepared.tailscaleDeviceName
             )
             targetProfile = ConnectionProfile(
@@ -678,6 +689,7 @@ final class AppStore: ObservableObject {
                 endpoint: normalizedEndpoint,
                 tailscaleDNSName: prepared.tailscaleDNSName,
                 tailscaleDeviceName: prepared.tailscaleDeviceName,
+                hostDeviceName: prepared.hostDeviceName,
                 isDisplayNameCustomized: display.customized,
                 lastSuccessfulAt: prepared.validatedAt,
                 installationID: installationID,
@@ -697,11 +709,13 @@ final class AppStore: ObservableObject {
                 installationID,
                 excludingProfileID: existing.id
             )
-            let metadata = Self.resolvedTailscaleMetadata(prepared: prepared, existing: existing)
-            let display = Self.resolvedProfileDisplay(
+            let metadata = ConnectionProfile.resolvedTailscaleMetadata(prepared: prepared, existing: existing)
+            let hostDeviceName = prepared.hostDeviceName ?? existing.hostDeviceName
+            let display = ConnectionProfile.resolvedDisplay(
                 existing: existing,
                 requested: nil,
                 endpoint: normalizedEndpoint,
+                hostDeviceName: hostDeviceName,
                 tailscaleDeviceName: metadata.deviceName
             )
             targetProfile = ConnectionProfile(
@@ -710,10 +724,11 @@ final class AppStore: ObservableObject {
                 endpoint: normalizedEndpoint,
                 tailscaleDNSName: metadata.dnsName,
                 tailscaleDeviceName: metadata.deviceName,
+                hostDeviceName: hostDeviceName,
                 isDisplayNameCustomized: display.customized,
                 lastSuccessfulAt: prepared.validatedAt,
                 installationID: installationID ?? existing.installationID,
-                hostPlatform: resolvedHostPlatform(prepared.hostPlatform, fallback: existing.hostPlatform),
+                hostPlatform: Self.resolvedHostPlatform(prepared.hostPlatform, fallback: existing.hostPlatform),
                 connectionRoute: prepared.route.profileRoute,
                 revision: existing.revision &+ 1
             )
@@ -944,44 +959,23 @@ final class AppStore: ObservableObject {
         }
         connectionProfiles = nextProfiles
         if id == activeConnectionProfileID {
-            activeHostState = ActiveHostState(
-                scope: activeHostState.scope,
-                endpoint: activeHostState.endpoint,
-                displayName: displayName,
-                committedAt: activeHostState.committedAt,
-                capabilityNegotiation: activeHostState.capabilityNegotiation
-            )
+            replaceActiveHostDisplayName(displayName)
         }
         return true
     }
 
-    /// 主机探活可在不切换连接的情况下补齐平台元数据。
-    ///
-    /// 平台不参与凭据或路由身份，因此不递增 revision；但仍核对探测开始时的 revision，
-    /// 防止旧请求在用户编辑连接地址后覆盖新档案。
-    func rememberHostPlatform(
-        _ hostPlatform: HostPlatform,
-        profileID: String,
-        expectedRevision: UInt64
-    ) {
-        guard hostPlatform != .unknown,
-              let profileIndex = connectionProfiles.firstIndex(where: {
-                  $0.id == profileID && $0.revision == expectedRevision
-              }),
-              connectionProfiles[profileIndex].hostPlatform != hostPlatform else {
-            return
-        }
-
-        var nextProfiles = connectionProfiles
-        nextProfiles[profileIndex].hostPlatform = hostPlatform
-        if profileID != ephemeralLocalProfileID {
-            guard let encodedProfiles = try? JSONEncoder().encode(nextProfiles) else {
-                return
-            }
-            persistProfiles(encodedProfiles)
-        }
-        connectionProfiles = nextProfiles
+    /// 只更新当前主机的展示名，保留 scope、endpoint、提交时间与协商结果。
+    /// 手动重命名和探测回来的设备名刷新共用这一条路径。
+    func replaceActiveHostDisplayName(_ displayName: String) {
+        activeHostState = ActiveHostState(
+            scope: activeHostState.scope,
+            endpoint: activeHostState.endpoint,
+            displayName: displayName,
+            committedAt: activeHostState.committedAt,
+            capabilityNegotiation: activeHostState.capabilityNegotiation
+        )
     }
+
     @discardableResult
     func validateConnection(
         endpoint: String,
@@ -1543,6 +1537,7 @@ final class AppStore: ObservableObject {
                 endpoint: normalizedEndpoint,
                 tailscaleDNSName: profile.tailscaleDNSName,
                 tailscaleDeviceName: profile.tailscaleDeviceName,
+                hostDeviceName: profile.hostDeviceName,
                 isDisplayNameCustomized: profile.isDisplayNameCustomized,
                 lastSuccessfulAt: profile.lastSuccessfulAt,
                 installationID: normalizedInstallationID(profile.installationID),
@@ -1572,42 +1567,15 @@ final class AppStore: ObservableObject {
         ConnectionProfile.fallbackDisplayName(endpoint: endpoint)
     }
 
-    private static func resolvedTailscaleMetadata(
-        prepared: PreparedConnectionSettings,
-        existing: ConnectionProfile
-    ) -> (dnsName: String?, deviceName: String?) {
-        let dnsName = prepared.tailscaleDNSName ?? existing.tailscaleDNSName
-        let deviceName = ConnectionProfile.normalizedTailscaleDeviceName(
-            prepared.tailscaleDeviceName ?? existing.tailscaleDeviceName,
-            dnsName: dnsName
-        )
-        return (dnsName, deviceName)
-    }
-
-    private static func resolvedProfileDisplay(
-        existing: ConnectionProfile?,
-        requested: String?,
-        endpoint: String,
-        tailscaleDeviceName: String?
-    ) -> (name: String, customized: Bool) {
-        if let existing, existing.isDisplayNameCustomized {
-            return (existing.displayName, true)
-        }
-        let fallback = defaultProfileDisplayName(endpoint: endpoint)
-        let normalizedRequested = requested?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !normalizedRequested.isEmpty, normalizedRequested != fallback {
-            return (normalizedRequested, true)
-        }
-        return (tailscaleDeviceName ?? fallback, false)
-    }
-
     private func prepareFastHostContext(
         activeEndpoint: String,
         fallbackEndpoint: String,
         token: String,
         profileTarget: PreparedConnectionProfileTarget,
         tailscaleDNSName: String?,
-        tailscaleDeviceName: String?
+        tailscaleDeviceName: String?,
+        hostDeviceName: String?,
+        adoptsHostDeviceName: Bool
     ) async throws -> PreparedConnectionSettings {
         let deadline = Date().addingTimeInterval(8)
         let client = AgentAPIClient(endpoint: activeEndpoint, token: token)
@@ -1657,6 +1625,10 @@ final class AppStore: ObservableObject {
                 HostSwitchSignpost.event("gateway_initialized")
                 let refreshedDNSName = version.tailscaleDNSName ?? tailscaleDNSName
                 let refreshedDeviceName = version.tailscaleDeviceName ?? tailscaleDeviceName
+                // 本机直连（同一台电脑）显式不采用设备名，保留「这台电脑」这个语义正确的默认名。
+                let refreshedHostDeviceName = adoptsHostDeviceName
+                    ? (version.deviceName ?? hostDeviceName)
+                    : nil
                 return PreparedConnectionSettings(
                     endpoint: fallbackEndpoint,
                     activeEndpoint: activeEndpoint,
@@ -1665,6 +1637,7 @@ final class AppStore: ObservableObject {
                     installationID: installationID,
                     tailscaleDNSName: refreshedDNSName,
                     tailscaleDeviceName: refreshedDeviceName,
+                    hostDeviceName: refreshedHostDeviceName,
                     hostPlatform: HostPlatform(serverValue: version.platform),
                     hostContext: PreparedHostContext(
                         lease: PreparedHostLease(
@@ -1824,70 +1797,6 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func resolvedHostPlatform(
-        _ candidate: HostPlatform,
-        fallback: HostPlatform
-    ) -> HostPlatform {
-        candidate == .unknown ? fallback : candidate
-    }
-
-    /// 探测结果只有在 Profile revision 与 installation_id 都未变化时才能刷新可变名称。
-    /// DNSName 只改变下一次路由候选，不会合并档案，也不会改写稳定身份。
-    @discardableResult
-    func refreshConnectionProfileHostMetadata(
-        profileID: String,
-        expectedRevision: UInt64,
-        version: VersionResponse
-    ) -> ConnectionProfile? {
-        guard let index = connectionProfiles.firstIndex(where: { $0.id == profileID }),
-              connectionProfiles[index].revision == expectedRevision,
-              ConnectionProfile.isTailscaleIPEndpoint(connectionProfiles[index].endpoint),
-              let expectedInstallationID = Self.normalizedInstallationID(
-                  connectionProfiles[index].installationID
-              ),
-              Self.normalizedInstallationID(version.installationID) == expectedInstallationID,
-              let dnsName = version.tailscaleDNSName else {
-            return nil
-        }
-        let deviceName = ConnectionProfile.normalizedTailscaleDeviceName(
-            version.tailscaleDeviceName,
-            dnsName: dnsName
-        )
-        var updated = connectionProfiles[index]
-        let nextDisplayName = updated.isDisplayNameCustomized
-            ? updated.displayName
-            : (deviceName ?? Self.defaultProfileDisplayName(endpoint: updated.endpoint))
-        guard updated.tailscaleDNSName != dnsName ||
-                updated.tailscaleDeviceName != deviceName ||
-                updated.displayName != nextDisplayName else {
-            return updated
-        }
-        updated.tailscaleDNSName = dnsName
-        updated.tailscaleDeviceName = deviceName
-        updated.displayName = nextDisplayName
-        updated.revision &+= 1
-
-        var nextProfiles = connectionProfiles
-        nextProfiles[index] = updated
-        if profileID != ephemeralLocalProfileID {
-            guard let encoded = try? JSONEncoder().encode(nextProfiles) else {
-                return nil
-            }
-            persistProfiles(encoded)
-        }
-        connectionProfiles = nextProfiles
-        if profileID == activeConnectionProfileID {
-            activeHostState = ActiveHostState(
-                scope: activeHostState.scope,
-                endpoint: activeHostState.endpoint,
-                displayName: updated.displayName,
-                committedAt: activeHostState.committedAt,
-                capabilityNegotiation: activeHostState.capabilityNegotiation
-            )
-        }
-        return updated
-    }
-
     private static func defaultLocalAgentProbe(endpoint: String, timeout: TimeInterval) async throws {
         _ = try await AgentAPIClient(endpoint: endpoint, token: "").health(timeout: timeout)
     }
@@ -1915,7 +1824,9 @@ final class AppStore: ObservableObject {
             token: claimedToken,
             profileTarget: .currentOrNew(
                 displayName: activeConnectionProfile == nil ? L10n.text("ui.this_mac") : nil
-            )
+            ),
+            // 本机直连指向的就是当前设备，「这台电脑」比读到的设备名更准确。
+            adoptsHostDeviceName: false
         )
         _ = try await commitConnectionSettings(prepared)
         activateConnectionRoute(.local, endpoint: localAgentEndpoint)
