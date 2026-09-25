@@ -179,7 +179,6 @@ struct InitialConnectionSettingsSections: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var tailcatController: TailcatExperimentController
-    @EnvironmentObject private var lockScreenApprovalStore: LockScreenApprovalStore
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @ScaledMetric(relativeTo: .body) private var profileTitlePointSize = 17.0
     @ScaledMetric(relativeTo: .subheadline) private var profileDetailPointSize = 15.0
@@ -327,10 +326,8 @@ struct InitialConnectionSettingsSections: View {
 
         if let current = model.current {
             currentComputerSection(current, tokens: tokens)
-            notificationsSection(showsDivider: true)
             otherComputersSection(model.others, ownsPresentation: false)
         } else if !model.others.isEmpty {
-            notificationsSection(showsDivider: false)
             // 忘记当前电脑后仍会留下已保存的其它电脑；此时由这一组承接确认弹窗。
             otherComputersSection(model.others, ownsPresentation: true)
         } else {
@@ -354,7 +351,7 @@ struct InitialConnectionSettingsSections: View {
     }
 
     /// 当前电脑、连接状态和连接方式过去是三个分组，回答的却是同一个问题。
-    /// 这里合成一组：首行只做设备识别，其下是配置与诊断的直达入口。
+    /// 这里合成一组：首行放设备身份与线路，其下是配置与诊断的直达入口。
     private func currentComputerSection(
         _ item: ConnectionProfileSettingsItem,
         tokens: ThemeTokens
@@ -379,7 +376,6 @@ struct InitialConnectionSettingsSections: View {
                     .accessibilityIdentifier("settings.connection.error")
             }
 
-            routeStatusRow(tokens: tokens)
             connectionMethodRows(tokens: tokens)
 
             NavigationLink(value: SettingsDestination.speedTest) {
@@ -395,18 +391,6 @@ struct InitialConnectionSettingsSections: View {
             SettingsGroupHeader(title: L10n.text("ui.current_mac"), showsDivider: false)
         } footer: {
             EmptyView()
-        }
-    }
-
-    /// 线路行：切到这台电脑就能直接看到走哪条路、多少延迟，并原地刷新。
-    private func routeStatusRow(tokens: ThemeTokens) -> some View {
-        RouteStatusRow(
-            value: routeProbeSummary,
-            isFailed: routeProbeFailed,
-            isBusy: draft.isProbingRoute,
-            isEnabled: appStore.isConfigured
-        ) {
-            Task { await refreshRouteProbe() }
         }
     }
 
@@ -439,6 +423,13 @@ struct InitialConnectionSettingsSections: View {
             return L10n.text("ui.route_not_probed")
         }
         return ConnectionRouteFormatting.briefSummary(probe)
+    }
+
+    /// 当前电脑块的线路行：「线路」退一档颜色做标签，结论本身失败时才转警示色。
+    private func routeLineText(tokens: ThemeTokens) -> Text {
+        Text(L10n.text("ui.route_label")).foregroundStyle(tokens.tertiaryText)
+            + Text(verbatim: "  ")
+            + Text(routeProbeSummary).foregroundStyle(routeProbeFailed ? tokens.warning : tokens.secondaryText)
     }
 
     /// Tailcat 走 disco-ping + health 计时（controller 持久化历史）；
@@ -482,26 +473,6 @@ struct InitialConnectionSettingsSections: View {
         )
     }
 
-    /// 消息提醒绑定的是某一台电脑，和电脑管理放在同一个 Tab；单独成组，不混进当前电脑卡片。
-    /// 一台电脑都没存过时没有可绑定的对象，这一组不出现。
-    /// 右侧状态与详情页开关同一口径：只看当前电脑是否已开启，不再写死「默认关闭」。
-    private func notificationsSection(showsDivider: Bool) -> some View {
-        Section {
-            NavigationLink(value: SettingsDestination.lockScreenApproval) {
-                ConnectionRowLabel(
-                    title: L10n.text("ui.push_lock_screen_approval"),
-                    value: lockScreenApprovalStore.notificationStatusDescription,
-                    systemImage: "bell"
-                )
-            }
-            .settingsStandardListRow()
-            .accessibilityIdentifier("settings.lockScreenApproval")
-        } header: {
-            // 单行分组不需要标题，一条细线就把它和当前电脑分开。
-            SettingsGroupHeader(showsDivider: showsDivider)
-        }
-    }
-
     /// 其它电脑和添加电脑回答的是同一个问题：「还能连哪台」。合成一组：已保存的电脑在上，
     /// 末行是添加电脑，像 Wi-Fi 列表末尾的「其他…」。已经存过电脑时添加是低频操作，
     /// 首页只留一个入口；扫码、粘贴、安装说明和手动地址都在添加电脑页。
@@ -511,7 +482,10 @@ struct InitialConnectionSettingsSections: View {
         _ items: [ConnectionProfileSettingsItem],
         ownsPresentation: Bool
     ) -> some View {
-        let header = SettingsGroupHeader(title: L10n.text("ui.other_computers"))
+        let header = SettingsGroupHeader(
+            title: L10n.text("ui.other_computers"),
+            showsDivider: !ownsPresentation
+        )
 
         if ownsPresentation {
             connectionPresentationSection {
@@ -536,32 +510,64 @@ struct InitialConnectionSettingsSections: View {
     private func currentComputerRow(_ item: ConnectionProfileSettingsItem) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        return HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
+        return HStack(alignment: .top, spacing: SettingsLayoutMetrics.iconSpacing) {
             computerGlyph(item)
+                .padding(.top, 8)
 
-            VStack(alignment: .leading, spacing: 3) {
-                // 与「其他电脑」同一档：名称 17pt 中粗 + 15pt 状态。当前电脑的身份由分组标题
-                // 说明，不再靠更大一号的字——同一种对象两种字号，是这页读起来乱的来源之一（#563）。
-                computerNameText(item, tokens: tokens)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        computerNameText(item, tokens: tokens)
 
-                HStack(spacing: 6) {
-                    // 分组标题已经说明这是当前电脑，这里不再重复「当前」徽章。
-                    computerSubtitle(
-                        item,
-                        state: compactConnectionStatusTitle,
-                        stateTint: statusColor
-                    )
-                    .font(themeStore.uiFont(size: profileDetailPointSize))
+                        HStack(spacing: 6) {
+                            computerSubtitle(
+                                item,
+                                state: compactConnectionStatusTitle,
+                                stateTint: statusColor
+                            )
+                            .font(themeStore.uiFont(size: profileDetailPointSize))
 
-                    if isDisplayingConnectionProgress {
-                        ProgressView()
-                            .controlSize(.small)
+                            if isDisplayingConnectionProgress {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                        }
                     }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            profileMenu(item)
+                    profileMenu(item)
+                }
+
+                // 线路是当前电脑的状态，作为名称、状态之下的第三行，三行同一节奏读成一块。
+                // 前面带「线路」：只看「未检测」「探测失败」读不出是什么没测。
+                // 整行都能重新探测；刷新标记与相邻行的导航箭头同色同宽、落在同一列（#563）。
+                // 命中区上下各外扩 8pt 补到约 44pt，布局高度不变，三行间距不被撑开。
+                Button {
+                    Task { await refreshRouteProbe() }
+                } label: {
+                    HStack(spacing: SettingsLayoutMetrics.trailingAccessorySpacing) {
+                        routeLineText(tokens: tokens)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        SettingsTrailingAccessory(
+                            systemImage: "arrow.clockwise",
+                            isBusy: draft.isProbingRoute
+                        )
+                    }
+                    .font(themeStore.uiFont(size: profileDetailPointSize))
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, -8)
+                .padding(.top, 3)
+                .disabled(!appStore.isConfigured || draft.isProbingRoute)
+                .accessibilityLabel(L10n.text("ui.route_label"))
+                .accessibilityValue(routeProbeSummary)
+                .accessibilityHint(L10n.text("ui.refresh"))
+                .accessibilityIdentifier("settings.connection.refreshRoute")
+            }
         }
         .padding(.vertical, 8)
         .frame(minHeight: SettingsLayoutMetrics.deviceRowHeight)
@@ -608,15 +614,23 @@ struct InitialConnectionSettingsSections: View {
                     .frame(minHeight: 44)
                 } else {
                     // 列表里只连一台：点它是把当前电脑换成这台，文案直说「切换」。
-                    Button(L10n.text("ui.switch_computer")) {
+                    // 画成与选中胶囊同底色的小胶囊：只有一个粗体词时读起来像标签，不像按钮。
+                    let isSwitchDisabled = isSavingConnection || profileOperationID != nil
+                    Button {
                         Task { await switchConnectionProfile(id: item.id) }
+                    } label: {
+                        Text(L10n.text("ui.switch_computer"))
+                            .font(themeStore.uiFont(size: profileDetailPointSize, weight: .medium))
+                            .foregroundStyle(tokens.accent)
+                            .padding(.horizontal, SettingsChoiceMetrics.capsuleHorizontalPadding)
+                            .frame(minHeight: 30)
+                            .background(tokens.selectionFill, in: Capsule())
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
-                    .font(themeStore.uiFont(size: profileDetailPointSize, weight: .semibold))
-                    .buttonStyle(.borderless)
-                    .tint(tokens.accent)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .contentShape(Rectangle())
-                    .disabled(isSavingConnection || profileOperationID != nil)
+                    .buttonStyle(.plain)
+                    .opacity(isSwitchDisabled ? 0.45 : 1)
+                    .disabled(isSwitchDisabled)
                     .accessibilityIdentifier("settings.profile.switch.\(item.id)")
                 }
 
@@ -787,7 +801,6 @@ struct InitialConnectionSettingsSections: View {
         NavigationLink(value: SettingsDestination.addComputer) {
             ConnectionRowLabel(
                 title: L10n.text("ui.add_mac"),
-                value: L10n.text("ui.add_computer_entry_value"),
                 systemImage: "plus.circle"
             )
         }

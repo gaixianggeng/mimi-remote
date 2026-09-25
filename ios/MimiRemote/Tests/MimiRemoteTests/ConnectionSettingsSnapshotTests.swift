@@ -88,6 +88,70 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
+    /// 与设备首页的日常场景一致：当前电脑、另一台已保存电脑和偏好设置同屏出现。
+    func testConnectedAndSavedComputersOnCompactWidth() {
+        assertConnectionSettings(
+            profiles: [
+                makeProfile(
+                    id: "studio-mac",
+                    name: "工作室 Mac",
+                    endpoint: "http://100.64.0.10:8787",
+                    dnsName: "studio-mac.tail.example.ts.net",
+                    deviceName: "studio-mac",
+                    platform: .apple
+                ),
+                makeProfile(
+                    id: "linux-server",
+                    name: "Linux 工作站",
+                    endpoint: "http://100.64.0.20:8787",
+                    dnsName: "linux-server.tail.example.ts.net",
+                    deviceName: "linux-server",
+                    platform: .linux
+                )
+            ],
+            width: 393,
+            height: 852,
+            colorScheme: .dark,
+            connectionStatus: .connected("snapshot"),
+            named: "connected-and-saved-compact"
+        )
+    }
+
+    /// 浅色下三组的标题线，以及当前电脑块第三行的线路结论（固定一条探测结果，不走网络）。
+    func testConnectedComputerShowsRouteSummaryInLightAppearance() {
+        assertConnectionSettings(
+            profiles: [
+                makeProfile(
+                    id: "studio-mac",
+                    name: "工作室 Mac",
+                    endpoint: "http://100.64.0.10:8787",
+                    dnsName: "studio-mac.tail.example.ts.net",
+                    deviceName: "studio-mac",
+                    platform: .apple
+                ),
+                makeProfile(
+                    id: "linux-server",
+                    name: "Linux 工作站",
+                    endpoint: "http://100.64.0.20:8787",
+                    dnsName: "linux-server.tail.example.ts.net",
+                    deviceName: "linux-server",
+                    platform: .linux
+                )
+            ],
+            width: 393,
+            height: 852,
+            connectionStatus: .connected("snapshot"),
+            routeProbe: FallbackRouteProbe(
+                checkedAt: Date(timeIntervalSince1970: 1_785_105_600),
+                pathKind: .derp,
+                relayRegion: nil,
+                httpMillis: 61,
+                succeeded: true
+            ),
+            named: "connected-route-light"
+        )
+    }
+
     func testMultipleUnavailableConnectionsAtAccessibilitySize() {
         assertConnectionSettings(
             profiles: [
@@ -123,6 +187,7 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
         dynamicTypeSize: DynamicTypeSize = .large,
         colorScheme: ColorScheme = .light,
         connectionStatus: ConnectionStatus? = nil,
+        routeProbe: FallbackRouteProbe? = nil,
         named name: String,
         file: StaticString = #file,
         testName: String = #function,
@@ -133,9 +198,16 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
             connectionStatus: connectionStatus
         )
         // 导航由真实入口持有；这里固定表单容器，独立验证分组、按钮和电脑行的布局。
-        // 线路自动探测依赖网络耗时且结果带时间戳，快照里必须关掉，让线路行停在「未检测」。
+        // 线路自动探测依赖网络耗时且结果带时间戳，快照里必须关掉，让线路行停在「未检测」；
+        // 需要看线路结论时直接给草稿塞一条记在当前电脑名下的探测结果。
+        let navigation = SettingsNavigationState()
+        if let routeProbe {
+            navigation.connectionDraft.routeProbeProfileID = profiles.first?.id
+            navigation.connectionDraft.fallbackRouteProbe = routeProbe
+        }
         let view = ConnectionSettingsView(
             qrScannerPresentation: fixture.qrScannerPresentation,
+            navigation: navigation,
             probesRouteAutomatically: false
         )
         // 偏好使用独立存储，避免模拟器里上次手动选择污染视觉基线。

@@ -91,7 +91,7 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
     }
 
     func testLockScreenApprovalSettingsRemainReachableAcrossRotation() throws {
-        // 消息提醒在设备页，排在当前电脑和其他电脑之间。
+        // 消息提醒与运行时选择同在设备页的「偏好设置」组。
         openDevices()
         let entry = element("settings.lockScreenApproval")
         scrollTo(entry)

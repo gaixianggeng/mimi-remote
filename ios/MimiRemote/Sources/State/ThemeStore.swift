@@ -296,6 +296,12 @@ extension ThemeTokens {
         tertiaryText
     }
 
+    /// 四个 Tab 共用的卡片底：设置分组卡，以及会话、工作区里的重点小模块。
+    /// 浅色是压在 #FAF8F6 画布上的白卡，深色是比画布亮一档的 surface。
+    var moduleCardBackground: Color {
+        surface
+    }
+
     /// 列表与侧栏条目的标题色。
     ///
     /// Notion 深色侧栏的条目标题不是白色，而是 #B9B8B6 上下的浅灰，只有选中那一行

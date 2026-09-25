@@ -116,6 +116,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         return VStack(alignment: .leading, spacing: 8) {
             if !showsInlineRuntimePicker {
                 recentSessionsHeader(tokens: tokens)
+                    .padding(.bottom, 8)
             }
 
             // 工作区状态紧贴第一条会话行，与列表共用左右内边距：
@@ -152,8 +153,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         }
     }
 
-    /// 需要处理 / 正在运行 / 最近会话三段保留标题与计数；12 小时边界再把「最近会话」
-    /// 拆成前后两小节。分段全部由小节标题和留白表达，没有卡片参与。
+    /// 需要处理 / 正在运行 / 最近会话三段保留标题；12 小时边界再把「最近会话」拆成前后两小节。
+    /// 前两段装进小卡片，最近会话平铺，由小节标题和留白分段。
     /// 分段本身取代了原来那条“运行中 · 刚刚活跃”摘要——它只描述第一条，却读起来像在描述整个列表。
     @ViewBuilder
     private func groupedSessionSections(
@@ -182,6 +183,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         group,
                         sessions: sessions,
                         showsLoadMore: group == populatedGroups.last,
+                        isCarded: showsSectionHeaders && group != .recent,
                         rowDensity: rowDensity,
                         tokens: tokens
                     )
@@ -213,6 +215,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         _ group: WorkspaceSessionGroup,
         sessions: [AgentSession],
         showsLoadMore: Bool,
+        isCarded: Bool,
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
@@ -241,6 +244,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     sessionRowsStack(
                         sessions: currentSessions,
                         showsLoadMore: false,
+                        isCarded: isCarded,
                         rowDensity: rowDensity,
                         tokens: tokens
                     )
@@ -251,6 +255,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 sessionRowsStack(
                     sessions: staleSessions,
                     showsLoadMore: showsLoadMore,
+                    isCarded: isCarded,
                     rowDensity: rowDensity,
                     tokens: tokens
                 )
@@ -259,6 +264,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             sessionRowsStack(
                 sessions: sessions,
                 showsLoadMore: showsLoadMore,
+                isCarded: isCarded,
                 rowDensity: rowDensity,
                 tokens: tokens
             )
@@ -272,6 +278,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     private func sessionRowsStack(
         sessions: [AgentSession],
         showsLoadMore: Bool,
+        isCarded: Bool,
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
@@ -334,6 +341,14 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 loadMoreButton(tokens: tokens)
             }
         }
+        // 卡片比行宽出一点，行内文字离卡边 16pt，与设置卡同一条文字线。
+        .background {
+            if isCarded {
+                RoundedRectangle(cornerRadius: WorkbenchModuleCard.cornerRadius, style: .continuous)
+                    .fill(tokens.moduleCardBackground)
+                    .padding(.horizontal, -WorkbenchModuleCard.horizontalOutset)
+            }
+        }
     }
 
     private func loadMoreButton(tokens: ThemeTokens) -> some View {
@@ -375,7 +390,20 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     ///
     /// 新建按钮下沉右下之后这一行只剩筛选器，不再有两个元素争抢宽度，`ViewThatFits` 也就不需要了。
     /// 窄屏把 Runtime 降级成菜单：分段控件是这一屏第二颗灰胶囊，而多数人一天只用一个 Runtime。
+    /// Runtime 选择与新建会话是这一页的操作区，装进一张小卡片；加号圆钮收进卡内，
+    /// 不贴着卡片的圆角端头，下方多留一点与会话分组分开。
     private func recentSessionsHeader(tokens: ThemeTokens) -> some View {
+        recentSessionsHeaderRow(tokens: tokens)
+            .padding(.vertical, 4)
+            .padding(.trailing, 4)
+            .background {
+                RoundedRectangle(cornerRadius: WorkbenchModuleCard.cornerRadius, style: .continuous)
+                    .fill(tokens.moduleCardBackground)
+                    .padding(.horizontal, -WorkbenchModuleCard.horizontalOutset)
+            }
+    }
+
+    private func recentSessionsHeaderRow(tokens: ThemeTokens) -> some View {
         HStack(spacing: 12) {
             WorkspaceRuntimePopoverPicker(
                 selection: $selectedRuntime,

@@ -55,9 +55,13 @@ extension HostInstallationPlatform: SettingsChoiceOption {
 }
 
 extension WorkspaceSessionRuntimeChoice: SettingsChoiceOption {
-    /// 沿用「优先使用」原来菜单里的两个名字，不改用工作区新建会话那套长标题。
+    /// 设置页保留完整的 Claude Code 名称，三个选项逐一映射，避免 DeepSeek 退回 Codex。
     var choiceTitle: String {
-        L10n.text(self == .claude ? "ui.runtime_optional" : "ui.runtime_default")
+        switch self {
+        case .codex: L10n.text("ui.runtime_default")
+        case .claude: L10n.text("ui.runtime_optional")
+        case .deepseek: "DeepSeek"
+        }
     }
 }
 
@@ -93,6 +97,8 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
 
     let title: String
     let systemImage: String
+    /// 整行的说明，排在标题下方；选中项自带说明时以选中项为准。
+    var detail: String? = nil
     let options: [Option]
     @Binding var selection: Option
     var presentation: SettingsChoicePresentation = .inline
@@ -163,7 +169,7 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
                 Text(title)
                     .settingsTitleFont()
                     .foregroundStyle(tokens.primaryText)
-                if let subtitle = selection.choiceSubtitle {
+                if let subtitle = selection.choiceSubtitle ?? detail {
                     Text(subtitle)
                         .settingsDetailFont()
                         .foregroundStyle(tokens.secondaryText)
