@@ -228,6 +228,28 @@ struct InitialConnectionSettingsSections: View {
         get { draft.localError }
         nonmutating set { draft.localError = newValue }
     }
+    /// 首次连接也渲染在设备页；连接尝试按页面用途写入对应错误，设备管理的迟到结果
+    /// 仍写 localError，不能覆盖正在添加电脑时的粘贴或扫码反馈。
+    private var connectionAttemptError: String? {
+        get { showsAddComputerError ? draft.addComputerError : draft.localError }
+        nonmutating set {
+            if showsAddComputerError {
+                draft.addComputerError = newValue
+            } else {
+                draft.localError = newValue
+            }
+        }
+    }
+    private var showsAddComputerError: Bool {
+        mode == .addComputer || appStore.connectionProfiles.isEmpty
+    }
+    private func setConnectionAttemptError(_ error: String?, forAddComputer: Bool) {
+        if forAddComputer {
+            draft.addComputerError = error
+        } else {
+            draft.localError = error
+        }
+    }
     private var copyingConnectionProfileID: String? {
         get { draft.copyingConnectionProfileID }
         nonmutating set { draft.copyingConnectionProfileID = newValue }
@@ -268,6 +290,14 @@ struct InitialConnectionSettingsSections: View {
         .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing }
         // 连接地址/Token 是高频编辑状态，放在这个小子树里，避免每次删字都重绘整个设置页。
         .onAppear(perform: loadInitialConnectionIfNeeded)
+        // 横幅的「重新配对」先打开这一页，再在这里消费一次性请求。
+        // task 不保证外层 sheet 已完成转场；扫码呈现必须经过实际交互验收。
+        .task(id: draft.pendingRepairRequest) {
+            guard draft.pendingRepairRequest else { return }
+            draft.pendingRepairRequest = false
+            guard mode == .deviceHome else { return }
+            beginRepairingCurrentProfile()
+        }
         .onChange(of: appStore.activeConnectionProfileID) { _, _ in
             loadInitialConnectionIfNeeded()
         }
@@ -371,13 +401,7 @@ struct InitialConnectionSettingsSections: View {
                     .accessibilityIdentifier("settings.profile.copyNotice")
             }
 
-            if let message = displayErrorMessage {
-                Text(message)
-                    .foregroundStyle(tokens.warning)
-                    .font(themeStore.uiFont(.footnote))
-                    .settingsRow(.descriptive)
-                    .accessibilityIdentifier("settings.connection.error")
-            }
+            connectionErrorMessageRow(displayErrorMessage, tokens: tokens)
 
             routeStatusRow(tokens: tokens)
             connectionMethodRows(tokens: tokens)
@@ -861,6 +885,13 @@ struct InitialConnectionSettingsSections: View {
             .padding(.bottom, 8)
             .listRowSeparator(.hidden)
 
+            // 扫码或粘贴失败时，错误紧贴在触发它的按钮下面。只认这次操作自己的反馈，
+            // 当前那台电脑的全局错误不属于这一页。手动表单展开时改由表单自己渲染，
+            // 两处不会同时出现，也不会有第二条同标识的元素干扰既有 UI 测试。
+            if !isShowingAdvancedManualConnection {
+                connectionErrorMessageRow(addComputerErrorMessage, tokens: tokens)
+            }
+
             if appStore.connectionProfiles.isEmpty {
                 // 新用户扫不到码通常是因为电脑端还没装，先把这一步说清楚。
                 Text(L10n.text("ui.install_guide_hint"))
@@ -918,6 +949,10 @@ struct InitialConnectionSettingsSections: View {
                 .foregroundStyle(tokens.primaryActionForeground)
                 .tint(tokens.primaryAction)
                 .disabled(!canSubmit)
+
+                // 提交失败时错误就出现在按钮下方：首启页没有「当前电脑」卡片，
+                // 不在这里渲染的话用户点完「连接」看到的是一次没有任何反馈的白屏。
+                connectionErrorMessageRow(addComputerErrorMessage, tokens: tokens)
             }
             .foregroundStyle(tokens.primaryText)
             // 展开内容与标题同在一行，底部要自己留出与下一行的距离。
@@ -996,7 +1031,7 @@ struct InitialConnectionSettingsSections: View {
                         isAddingConnectionProfile = false
                         endpoint = ""
                         token = ""
-                        localError = nil
+                        connectionAttemptError = nil
                     }
                 }
                 isShowingAdvancedManualConnection = isExpanded
@@ -1098,6 +1133,36 @@ struct InitialConnectionSettingsSections: View {
         }
     }
 
+    /// 连接失败时的可见错误行。设备首页挂在「当前电脑」卡片里，
+    /// 首启页没有那张卡片，必须自己渲染——否则手动连接或粘贴失败后页面毫无变化，
+    /// 用户只会反复点「连接」，或认定 App 坏了（#554）。
+    /// 文案由调用方给出：设备首页用全局口径，添加电脑页只用本次操作的反馈。
+    /// 添加电脑页最多渲染一处：手动表单展开时贴在提交按钮下方，收起时贴在扫码按钮下方。
+    @ViewBuilder
+    private func connectionErrorMessageRow(
+        _ message: String?,
+        tokens: ThemeTokens
+    ) -> some View {
+        if let message {
+            Text(message)
+                .foregroundStyle(tokens.warning)
+                .font(themeStore.uiFont(.footnote))
+                .settingsRow(.descriptive)
+                .accessibilityIdentifier("settings.connection.error")
+        }
+    }
+
+    /// 「添加电脑」页只显示本轮添加流程自己的反馈。
+    ///
+    /// 全局的 `appStore.lastError` 描述的是**当前这台电脑**：它的线路断了、或凭据已过期，
+    /// 都与用户此刻想添加一台新电脑无关。照搬 `displayErrorMessage` 会让这类错误在页面一打开
+    /// 时就贴到扫码/粘贴按钮下面，看起来像是刚才那次操作失败；又因为它优先于添加错误，
+    /// 还会把新产生的粘贴错误盖掉。设备首页保留全局口径不变，那里两者确实指向同一台电脑。
+    private var addComputerErrorMessage: String? {
+        guard let raw = draft.addComputerError else { return nil }
+        return friendlyConnectionMessage(raw, honorsActiveConnectionTermination: false)
+    }
+
     private var displayErrorMessage: String? {
         // 预热窗口内卡片显示「连接中」，不能同时贴一条上一轮探测留下的过期错误；
         // 表单自己的错误（localError）不受影响。
@@ -1110,9 +1175,18 @@ struct InitialConnectionSettingsSections: View {
         return friendlyConnectionMessage(raw)
     }
 
-    private func friendlyConnectionMessage(_ raw: String) -> String {
-        if let termination = appStore.connectionTermination {
+    /// `honorsActiveConnectionTermination` 为 false 时不把「当前这台电脑凭据失效」的终态
+    /// 盖到传入的错误上。添加电脑页必须关掉它：那条终态属于设备页正在用的那台电脑，
+    /// 一旦生效，用户粘贴一个空剪贴板或扫描一张过期二维码都会收到「访问码已过期」（#557 评审）。
+    private func friendlyConnectionMessage(
+        _ raw: String,
+        honorsActiveConnectionTermination: Bool = true
+    ) -> String {
+        if honorsActiveConnectionTermination, let termination = appStore.connectionTermination {
             return termination.message
+        }
+        if raw == L10n.text("ui.clipboard_does_not_contain_connection_info") {
+            return raw
         }
         let lowercased = raw.lowercased()
         if lowercased.contains("expired") || raw.contains("过期") {
@@ -1172,7 +1246,7 @@ struct InitialConnectionSettingsSections: View {
         profileDisplayName = ""
         endpoint = ""
         token = ""
-        localError = nil
+        connectionAttemptError = nil
     }
 
     private var scannerHost: ConnectionQRCodeScannerHost {
@@ -1191,7 +1265,7 @@ struct InitialConnectionSettingsSections: View {
         guard let rawValue = UIPasteboard.general.string?
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !rawValue.isEmpty else {
-            localError = L10n.text("ui.clipboard_does_not_contain_connection_info")
+            connectionAttemptError = L10n.text("ui.clipboard_does_not_contain_connection_info")
             return
         }
         let intent: ConnectionQRCodeScanIntent = appStore.activeConnectionProfile == nil
@@ -1271,7 +1345,7 @@ struct InitialConnectionSettingsSections: View {
             return
         }
         guard intent.isValid(activeProfileID: appStore.activeConnectionProfileID) else {
-            localError = L10n.text("ui.the_current_mac_has_changed_please_try_again")
+            connectionAttemptError = L10n.text("ui.the_current_mac_has_changed_please_try_again")
             isShowingAdvancedManualConnection = false
             return
         }
@@ -1282,7 +1356,7 @@ struct InitialConnectionSettingsSections: View {
             profileDisplayName = ""
             endpoint = ""
             token = ""
-            localError = nil
+            connectionAttemptError = nil
         case .addConnectionProfile:
             prepareAddingConnectionProfile()
         case .repairCurrentProfile:
@@ -1290,7 +1364,7 @@ struct InitialConnectionSettingsSections: View {
             profileDisplayName = appStore.activeConnectionProfile?.displayName ?? ""
             endpoint = appStore.endpoint
             token = ""
-            localError = nil
+            connectionAttemptError = nil
         }
         isShowingAdvancedManualConnection = true
         // 已有电脑时首页不内联添加流程，表单在添加电脑页：不推过去用户会看到一片空。
@@ -1307,7 +1381,7 @@ struct InitialConnectionSettingsSections: View {
             endpoint = appStore.endpoint
             token = appStore.token
             isAddingConnectionProfile = false
-            guard await refreshCommittedConnection(maxWait: 10) else {
+            guard await refreshCommittedConnection(maxWait: 10, forAddComputer: false) else {
                 return
             }
         } catch is CancellationError {
@@ -1355,6 +1429,7 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private func save() async {
+        let errorBelongsToAddComputer = showsAddComputerError
         isSavingConnection = true
         defer { isSavingConnection = false }
         do {
@@ -1374,15 +1449,18 @@ struct InitialConnectionSettingsSections: View {
             endpoint = appStore.endpoint
             token = appStore.token
             isAddingConnectionProfile = false
-            guard await refreshCommittedConnection(maxWait: wasConfigured ? 10 : 45) else {
+            guard await refreshCommittedConnection(
+                maxWait: wasConfigured ? 10 : 45,
+                forAddComputer: errorBelongsToAddComputer
+            ) else {
                 return
             }
         } catch is CancellationError {
-            localError = nil
+            setConnectionAttemptError(nil, forAddComputer: errorBelongsToAddComputer)
         } catch {
             appStore.connectionStatus = .failed(error.localizedDescription)
             appStore.lastError = error.localizedDescription
-            localError = error.localizedDescription
+            setConnectionAttemptError(error.localizedDescription, forAddComputer: errorBelongsToAddComputer)
         }
     }
 
@@ -1390,11 +1468,12 @@ struct InitialConnectionSettingsSections: View {
         _ rawValue: String,
         intent: ConnectionQRCodeScanIntent
     ) async -> QRCodeScannerSubmissionResult {
+        let errorBelongsToAddComputer = showsAddComputerError
         isSavingConnection = true
         guard intent.isValid(activeProfileID: appStore.activeConnectionProfileID) else {
             isSavingConnection = false
             let message = L10n.text("ui.the_current_mac_has_changed_please_try_again")
-            localError = message
+            setConnectionAttemptError(message, forAddComputer: errorBelongsToAddComputer)
             return .rejected(message)
         }
         do {
@@ -1419,7 +1498,10 @@ struct InitialConnectionSettingsSections: View {
             // 不让扫码页额外卡住最多 45 秒，也不要求用户重复扫描配对码。
             Task { @MainActor in
                 defer { isSavingConnection = false }
-                _ = await refreshCommittedConnection(maxWait: wasConfigured ? 10 : 45)
+                _ = await refreshCommittedConnection(
+                    maxWait: wasConfigured ? 10 : 45,
+                    forAddComputer: errorBelongsToAddComputer
+                )
             }
             return .accepted(
                 wasAddingConnectionProfile
@@ -1428,25 +1510,25 @@ struct InitialConnectionSettingsSections: View {
             )
         } catch is CancellationError {
             isSavingConnection = false
-            localError = nil
+            setConnectionAttemptError(nil, forAddComputer: errorBelongsToAddComputer)
             return .rejected(L10n.text("ui.the_code_scan_has_been_cancelled_please_scan"))
         } catch {
             isSavingConnection = false
             appStore.connectionStatus = .failed(error.localizedDescription)
             appStore.lastError = error.localizedDescription
-            localError = error.localizedDescription
+            setConnectionAttemptError(error.localizedDescription, forAddComputer: errorBelongsToAddComputer)
             return .rejected(error.localizedDescription)
         }
     }
 
-    private func refreshCommittedConnection(maxWait: TimeInterval) async -> Bool {
+    private func refreshCommittedConnection(maxWait: TimeInterval, forAddComputer: Bool) async -> Bool {
         let didLoad = await sessionStore.refreshAfterConnectionCommit(maxWait: maxWait)
         if didLoad {
-            localError = nil
+            setConnectionAttemptError(nil, forAddComputer: forAddComputer)
         } else if Task.isCancelled {
-            localError = nil
+            setConnectionAttemptError(nil, forAddComputer: forAddComputer)
         } else {
-            localError = appStore.lastError ?? sessionStore.errorMessage
+            setConnectionAttemptError(appStore.lastError ?? sessionStore.errorMessage, forAddComputer: forAddComputer)
         }
         return didLoad
     }

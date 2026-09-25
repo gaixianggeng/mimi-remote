@@ -126,14 +126,22 @@ struct SettingsView: View {
         showsDeviceEntry: Bool = true,
         onOpenDevices: (() -> Void)? = nil,
         navigation: SettingsNavigationState? = nil,
-        qrScannerPresentation: ConnectionQRCodeScannerPresentation? = nil
+        qrScannerPresentation: ConnectionQRCodeScannerPresentation? = nil,
+        opensConnectionForRepair: Bool = false
     ) {
         self.isInitialSetup = isInitialSetup
         self.showsDoneButton = showsDoneButton
         self.embedsNavigationStack = embedsNavigationStack
         self.showsDeviceEntry = showsDeviceEntry
         self.onOpenDevices = onOpenDevices
-        _navigation = StateObject(wrappedValue: navigation ?? SettingsNavigationState())
+        let resolvedNavigation = navigation ?? SettingsNavigationState()
+        if opensConnectionForRepair {
+            // 工作台横幅的「重新配对」：直接落到设备页，并把一次性的扫码请求交给它消费。
+            // 页面仍然由这一层自己的 presentation 呈现扫码 Cover，不跨层共享状态。
+            resolvedNavigation.mePath = [.connection]
+            resolvedNavigation.connectionDraft.pendingRepairRequest = true
+        }
+        _navigation = StateObject(wrappedValue: resolvedNavigation)
         _qrScannerPresentation = StateObject(wrappedValue: qrScannerPresentation ?? ConnectionQRCodeScannerPresentation())
     }
 

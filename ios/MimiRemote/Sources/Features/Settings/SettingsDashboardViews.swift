@@ -43,7 +43,10 @@ struct ConnectionSettingsView: View {
                 transientPreferences: navigation.transientPreferences,
                 mode: .deviceHome,
                 onRequestProfileRename: { navigation.profileRenamePresentation.present($0) },
-                onRequestManualConnection: { isPresentingAddComputerForManualConnection = true },
+                onRequestManualConnection: {
+                    navigation.connectionDraft.beginAddingComputer()
+                    isPresentingAddComputerForManualConnection = true
+                },
                 probesRouteAutomatically: probesRouteAutomatically
             )
 
