@@ -87,6 +87,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/DeepSeekSearchRoutingTests \
   -only-testing:MimiRemoteTests/DeepSeekRuntimePresentationTests \
   -only-testing:MimiRemoteTests/HarnessNativeRoutingSeamTests \
+  -only-testing:MimiRemoteTests/SessionObservationLeaseTests \
   -only-testing:MimiRemoteTests/HarnessTransportTests \
   -only-testing:MimiRemoteTests/HarnessSessionDirectoryTests \
   -only-testing:MimiRemoteTests/HarnessDirectoryWiringTests \
@@ -94,6 +95,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/HarnessSubmissionControllerTests \
   -only-testing:MimiRemoteTests/HarnessPresentationProjectorTests \
   -only-testing:MimiRemoteTests/HarnessEventClientTests \
+  -only-testing:MimiRemoteTests/HarnessStreamReconnectTests \
   -only-testing:MimiRemoteTests/HarnessSnapshotReplayTests \
   -only-testing:MimiRemoteTests/HarnessInteractionStoreTests \
   -only-testing:MimiRemoteTests/HarnessRecoveryCoordinatorTests \
@@ -167,6 +169,9 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testWorkbenchRestorationRouteRejectsSnapshotFromDifferentEndpoint \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testColdStartResolvedCandidateCannotCommitAfterUserSelectsAnotherSession \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLateGitStatusFromPreviousHostCannotOverwriteCurrentHostState \
+  -only-testing:MimiRemoteTests/WorkspaceGitStoreTests \
+  -only-testing:MimiRemoteTests/WorkspaceGitSummaryTests \
+  -only-testing:MimiRemoteTests/WorkspaceHostBoundaryTests \
   -only-testing:MimiRemoteTests/SessionArchiveReconciliationTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testManualWorkspaceRefreshRestartsFromFirstCursor \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testManualSessionLibraryRefreshRestartsDirectoryPageFromFirstCursor \
