@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,6 +132,191 @@ func TestHarnessNativeRouterShutdownCancelsOpeningSubscription(t *testing.T) {
 		t.Fatalf("关闭期间建立了上游订阅：%d", opens)
 	}
 	h03AssertTransportClosed(t, conn)
+}
+
+func TestHarnessNativeClientDisconnectCancelsOpeningSubscription(t *testing.T) {
+	for _, graceful := range []bool{false, true} {
+		name := "socket-close"
+		if graceful {
+			name = "normal-close-frame"
+		}
+		t.Run(name, func(t *testing.T) {
+			stub := newHarnessNativeStreamStub(t)
+			started := make(chan struct{})
+			cancelled := make(chan struct{})
+			release := make(chan struct{})
+			var calls atomic.Int32
+			stub.beforeRPCReply = func(req *http.Request) {
+				if calls.Add(1) != 1 {
+					return
+				}
+				close(started)
+				select {
+				case <-req.Context().Done():
+					close(cancelled)
+				case <-release:
+				}
+			}
+			url, cwd, router := harnessNativeSessionLimitFixture(t, stub, 1)
+			t.Cleanup(func() { close(release) })
+			t.Cleanup(router.Shutdown)
+			stub.sessions = []harnessclient.SessionSummary{harnessNativeFixtureSession("session-a", cwd)}
+			stub.muxOpen = func(conn *websocket.Conn, open map[string]any) {
+				h03SendUpstream(t, conn, open["streamId"].(string), map[string]any{
+					"type": "snapshot", "header": map[string]any{"id": "session-a", "cwd": cwd},
+					"records": []any{}, "cursor": 0,
+				})
+				_, _, _ = conn.ReadMessage()
+			}
+			conn := dialHarnessNativeStream(t, url)
+			sendHarnessNativeFollow(t, conn, "follow", "session-a")
+			awaitHarnessNativeSignal(t, started, "follow 未开始目录授权")
+			if graceful {
+				if err := conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				_ = conn.Close()
+			}
+			awaitHarnessNativeSignal(t, cancelled, "移动端断开后打开中的 follow 授权未取消")
+			waitForHarnessNativeActiveSessions(t, router, 0)
+			if opens, _ := stub.upstreamTouches(); opens != 0 {
+				t.Fatalf("已断开的连接建立了上游订阅：%d", opens)
+			}
+
+			// 用真实重连证明旧请求已归还名额，而不只检查内部计数。
+			reconnected := dialHarnessNativeStream(t, url)
+			sendHarnessNativeFollow(t, reconnected, "follow", "session-a")
+			if value := h03Value(t, readHarnessNativeFrame(t, reconnected)); value["type"] != "snapshot" {
+				t.Fatalf("重连未恢复订阅：%v", value)
+			}
+		})
+	}
+}
+
+func TestHarnessNativeClientDisconnectCancelsRespond(t *testing.T) {
+	for _, phase := range []string{"authorization", "result"} {
+		t.Run(phase, func(t *testing.T) {
+			stub := newHarnessNativeStreamStub(t)
+			started := make(chan struct{})
+			cancelled := make(chan struct{})
+			release := make(chan struct{})
+			var lists atomic.Int32
+			stub.beforeRPCReply = func(req *http.Request) {
+				isRespondAuthorization := req.URL.Path == "/api/session/list" && lists.Add(1) == 2
+				if !(phase == "authorization" && isRespondAuthorization) &&
+					!(phase == "result" && req.URL.Path == "/api/$events/result") {
+					return
+				}
+				close(started)
+				select {
+				case <-req.Context().Done():
+					close(cancelled)
+				case <-release:
+				}
+			}
+			stub.muxOpen = func(conn *websocket.Conn, open map[string]any) {
+				id := open["streamId"].(string)
+				h03SendUpstream(t, conn, id, map[string]any{"type": "ready", "clientId": "client-a"})
+				h03SendUpstream(t, conn, id, h03Approval("session-a", "event-a"))
+				_, _, _ = conn.ReadMessage()
+			}
+			url, cwd, router := harnessNativeSessionLimitFixture(t, stub, 1)
+			t.Cleanup(func() { close(release) })
+			t.Cleanup(router.Shutdown)
+			stub.sessions = []harnessclient.SessionSummary{harnessNativeFixtureSession("session-a", cwd)}
+			conn := dialHarnessNativeStream(t, url)
+			h03Open(t, conn, "events", harnessclient.EndpointEvents, "")
+			_ = h03Value(t, readHarnessNativeFrame(t, conn))
+			if value := h03Value(t, readHarnessNativeFrame(t, conn)); value["eventId"] != "event-a" {
+				t.Fatalf("交互未投递：%v", value)
+			}
+			sendHarnessNativeFrame(t, conn, map[string]any{
+				"type": "respond", "eventId": "event-a", "outcome": map[string]any{"kind": "result", "value": "allowed-once"},
+			})
+			awaitHarnessNativeSignal(t, started, "应答未进入预期 RPC")
+			_ = conn.Close()
+			awaitHarnessNativeSignal(t, cancelled, "移动端断开后应答 RPC 未取消")
+			router.Shutdown()
+			results := 0
+			for _, method := range stub.recordedRPCs() {
+				if method == harnessclient.EndpointEventsResult {
+					results++
+				}
+			}
+			want := 0
+			if phase == "result" {
+				want = 1
+			}
+			if results != want {
+				t.Fatalf("断线后不应继续或重试应答：result RPC=%d，期望 %d", results, want)
+			}
+		})
+	}
+}
+
+func TestHarnessNativeQueuedFramesPreserveOpenCancelOrder(t *testing.T) {
+	stub := newHarnessNativeStreamStub(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	stub.beforeRPCReply = func(req *http.Request) {
+		if calls.Add(1) != 1 {
+			return
+		}
+		close(started)
+		select {
+		case <-req.Context().Done():
+		case <-release:
+		}
+	}
+	stub.muxOpen = func(conn *websocket.Conn, _ map[string]any) {
+		_, _, _ = conn.ReadMessage()
+	}
+	url, cwd, router := harnessNativeSessionLimitFixture(t, stub, 1)
+	t.Cleanup(router.Shutdown)
+	stub.sessions = []harnessclient.SessionSummary{harnessNativeFixtureSession("session-a", cwd)}
+	conn := dialHarnessNativeStream(t, url)
+	sendHarnessNativeFollow(t, conn, "follow", "session-a")
+	awaitHarnessNativeSignal(t, started, "follow 未开始目录授权")
+	sendHarnessNativeFrame(t, conn, map[string]any{"type": "cancel", "streamId": "follow"})
+	sendHarnessNativeFollow(t, conn, "follow", "session-a")
+	close(release)
+	if frame := readHarnessNativeFrame(t, conn); frame["type"] != harnessclient.CarrierEnd || frame["streamId"] != "follow" {
+		t.Fatalf("应先完成旧 follow 的退订：%v", frame)
+	}
+	waitForHarnessNativeOpens(t, stub, 2)
+	waitForHarnessNativeActiveSessions(t, router, 1)
+	if _, lists := stub.upstreamTouches(); lists != 2 {
+		t.Fatalf("复用 streamId 的第二次订阅未按顺序授权：lists=%d", lists)
+	}
+}
+
+func TestHarnessNativePendingFrameOverflowCancelsOpeningSubscription(t *testing.T) {
+	stub := newHarnessNativeStreamStub(t)
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	stub.beforeRPCReply = func(req *http.Request) {
+		close(started)
+		<-req.Context().Done()
+		close(cancelled)
+	}
+	url, _, router := harnessNativeSessionLimitFixture(t, stub, 1)
+	t.Cleanup(router.Shutdown)
+	conn := dialHarnessNativeStream(t, url)
+	sendHarnessNativeFollow(t, conn, "follow", "session-a")
+	awaitHarnessNativeSignal(t, started, "follow 未开始目录授权")
+	for range harnessNativeWSMaxPendingFrames + 1 {
+		if err := conn.WriteJSON(map[string]any{"type": "cancel", "streamId": "follow"}); err != nil {
+			break // 服务端已因缓冲超限关连接，后续断言仍须证明 RPC 和名额已回收。
+		}
+	}
+	awaitHarnessNativeSignal(t, cancelled, "缓冲超限后授权 RPC 未取消")
+	waitForHarnessNativeActiveSessions(t, router, 0)
+	h03AssertTransportClosed(t, conn)
+	if opens, _ := stub.upstreamTouches(); opens != 0 {
+		t.Fatalf("关闭期间建立了上游订阅：%d", opens)
+	}
 }
 
 func awaitHarnessNativeSignal(t *testing.T, signal <-chan struct{}, message string) {

@@ -1247,6 +1247,8 @@ extension SessionStore {
                 )
                 if let responseSelectionLease {
                     await loadHistoryIfNeeded(for: responseSession)
+                    // 历史等待结束时 ConversationStore 可能已切到另一主机；普通导航仍应保留原会话的分叉提示。
+                    guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return false }
                     if isSelectionLeaseCurrent(responseSelectionLease) {
                         if responseSession.isRunning {
                             connectWebSocket(responseSession)

@@ -105,6 +105,123 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         }
     }
 
+    func testHandoffHistorySuccessAfterHostSwitchCannotWriteNewHostConversation() async throws {
+        try await assertOldHostHandoffCannotWriteNewHost(historyError: nil)
+    }
+
+    func testHandoffHistoryCancellationAfterHostSwitchCannotWriteNewHostConversation() async throws {
+        try await assertOldHostHandoffCannotWriteNewHost(historyError: CancellationError())
+    }
+
+    func testCancelledHandoffCannotAppendCompletionAfterHistoryReturns() async {
+        let fixture = handoffFixture()
+        let task = Task { await fixture.store.handoffSessionToWorktree(fixture.source) }
+        await fixture.history.waitForHistoryRequestCount(1)
+
+        task.cancel()
+        fixture.history.resolveHistoryRequest(at: 0, with: HistoryMessagesPage(messages: []))
+
+        let result = await task.value
+        XCTAssertFalse(result)
+        XCTAssertTrue(fixture.store.conversationStore.messages(for: fixture.forked.id).isEmpty)
+    }
+
+    func testHandoffHistoryCompletionAppendsToForkedConversation() async {
+        await assertHandoffAppendsCompletion(navigateAway: false)
+    }
+
+    func testHandoffHistoryCompletionAfterSameHostNavigationKeepsForkedConversation() async {
+        await assertHandoffAppendsCompletion(navigateAway: true)
+    }
+
+    private func assertOldHostHandoffCannotWriteNewHost(historyError: Error?) async throws {
+        let fixture = handoffFixture()
+        let task = Task { await fixture.store.handoffSessionToWorktree(fixture.source) }
+        await fixture.history.waitForHistoryRequestCount(1)
+        let oldScope = fixture.store.appStore.activeHostScope
+
+        // 使用真实提交入口切换 ConversationStore namespace，并取消旧历史 job。
+        _ = try await fixture.store.commitPreparedConnection(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.20:8787",
+            token: "token-b",
+            profileTarget: .newProfile(id: "host-b", displayName: "Host B"),
+            installationID: "installation-b"
+        ))
+        XCTAssertNotEqual(fixture.store.appStore.activeHostScope, oldScope)
+        fixture.store.conversationStore.appendSystem("new-host-message", sessionID: fixture.forked.id)
+
+        if let historyError {
+            fixture.history.failHistoryRequest(at: 0, with: historyError)
+        } else {
+            fixture.history.resolveHistoryRequest(at: 0, with: HistoryMessagesPage(messages: []))
+        }
+
+        let result = await task.value
+        XCTAssertFalse(result)
+        XCTAssertEqual(
+            fixture.store.conversationStore.messages(for: fixture.forked.id).map(\.content),
+            ["new-host-message"]
+        )
+    }
+
+    private func assertHandoffAppendsCompletion(navigateAway: Bool) async {
+        let fixture = handoffFixture()
+        let task = Task { await fixture.store.handoffSessionToWorktree(fixture.source) }
+        await fixture.history.waitForHistoryRequestCount(1)
+
+        if navigateAway {
+            _ = fixture.store.commitSelection(
+                projectID: root.id,
+                sessionID: fixture.source.id,
+                reason: .userOpen
+            )
+        }
+        fixture.history.resolveHistoryRequest(at: 0, with: HistoryMessagesPage(messages: []))
+
+        let result = await task.value
+        XCTAssertTrue(result)
+        XCTAssertEqual(
+            fixture.store.selectedSessionID,
+            navigateAway ? fixture.source.id : fixture.forked.id
+        )
+        XCTAssertEqual(
+            fixture.store.conversationStore.messages(for: fixture.forked.id).map(\.content),
+            [L10n.text("ui.this_worktree_has_been_forked_from_the_source")]
+        )
+        XCTAssertTrue(fixture.store.conversationStore.messages(for: fixture.source.id).isEmpty)
+    }
+
+    private func handoffFixture() -> (
+        store: SessionStore, source: AgentSession, forked: AgentSession, history: OrderedHistoryPageClient
+    ) {
+        let response = worktreeResponse()
+        let source = AgentSession(
+            id: "source-thread", projectID: root.id, project: root.name, dir: root.path,
+            title: "Source", status: "history", source: "codex", resumeID: "source-thread",
+            createdAt: nil, updatedAt: nil
+        )
+        let forked = AgentSession(
+            id: "forked-thread", projectID: response.workspace.id,
+            project: response.workspace.name, dir: response.workspace.path,
+            title: "Forked", status: "history", source: "codex", resumeID: "forked-thread",
+            createdAt: nil, updatedAt: nil
+        )
+        let history = OrderedHistoryPageClient(projects: [root], page: SessionsPage(sessions: []))
+        let client = HandoffHistoryClient(forked: forked, history: history)
+        let host = WorkspaceHostProbe(projects: [root])
+        host.createHandler = { response }
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            workspaceHostClientFactory: { host }
+        )
+        store.projects = [root]
+        store.sessions = [source]
+        return (store, source, forked, history)
+    }
+
     private func switchHost(_ appStore: AppStore) async throws {
         _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
             endpoint: "http://100.64.0.20:8787",
@@ -122,6 +239,43 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
             rootProjectID: root.id, rootProjectName: root.name, rootProjectPath: root.path
         )
         return WorktreeCreateResponse(workspace: workspace, worktree: descriptor)
+    }
+}
+
+/// 复用可控历史响应，只为 handoff 提供列表和 fork；其他写操作仍明确失败。
+private final class HandoffHistoryClient: SessionStoreAPIClient {
+    let forked: AgentSession
+    let history: OrderedHistoryPageClient
+
+    init(forked: AgentSession, history: OrderedHistoryPageClient) {
+        self.forked = forked
+        self.history = history
+    }
+
+    func projects() async throws -> [AgentProject] { try await history.projects() }
+    func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
+        try await history.sessions(projectID: projectID, cursor: cursor, limit: limit)
+    }
+    func forkSession(
+        threadID: String,
+        workspace: AgentWorkspace,
+        reason: AgentSessionForkReason,
+        lastTurnID: TurnID?
+    ) async throws -> AgentSession {
+        forked
+    }
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        throw AgentAPIError.invalidResponse
+    }
+    func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        throw AgentAPIError.invalidResponse
+    }
+    func stopSession(id: String) async throws { throw AgentAPIError.invalidResponse }
+    func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
+        try await history.messages(sessionID: sessionID, before: before, limit: limit)
+    }
+    func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
+        try await history.messagesPage(sessionID: sessionID, before: before, limit: limit)
     }
 }
 

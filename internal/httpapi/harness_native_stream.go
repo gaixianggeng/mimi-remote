@@ -28,8 +28,10 @@ const (
 	// harnessNativeWSMaxStreams 限制单条连接的并发订阅数。每多一条订阅就多一条
 	// 到 Harness 的物理连接，没有上限时一个已配对客户端就能把本机连接数打满。
 	harnessNativeWSMaxStreams = 8
-	harnessNativeWSWriteWait  = 10 * time.Second
-	harnessNativeWSReadLimit  = 1 << 20
+	// 限制耗时 RPC 等待期间积压的客户端帧；超过上限就关闭连接，不能阻塞读取而漏掉断线。
+	harnessNativeWSMaxPendingFrames = 32
+	harnessNativeWSWriteWait        = 10 * time.Second
+	harnessNativeWSReadLimit        = 1 << 20
 	// 读空闲上限：这么久没收到任何帧（含 pong）即判定链路已死。
 	harnessNativeWSReadIdle   = 120 * time.Second
 	harnessNativeWSPingPeriod = 30 * time.Second
@@ -202,8 +204,11 @@ func (c *harnessNativeStreamConn) serve(ctx context.Context) {
 	c.conn.SetPongHandler(func(string) error {
 		return c.conn.SetReadDeadline(time.Now().Add(harnessNativeWSReadIdle))
 	})
-	c.wg.Add(1)
+	frames := make(chan []byte, harnessNativeWSMaxPendingFrames)
+	// 帧处理串行执行，读取独立前进，授权/应答 RPC 等待期间也能发现 EOF 并取消请求。
+	c.wg.Add(2)
 	go c.pingLoop()
+	go c.handleFrames(ctx, frames)
 
 	for {
 		_, raw, err := c.conn.ReadMessage()
@@ -212,7 +217,30 @@ func (c *harnessNativeStreamConn) serve(ctx context.Context) {
 		}
 		// 读到东西就续期，避免把"帧很密但一直没 pong"的健康连接判死。
 		_ = c.conn.SetReadDeadline(time.Now().Add(harnessNativeWSReadIdle))
+		select {
+		case frames <- raw:
+		case <-ctx.Done():
+			return
+		default:
+			return
+		}
+	}
+}
 
+// handleFrames 保持 open/cancel/respond 的接收顺序；由 serve 负责关闭并等待本协程。
+func (c *harnessNativeStreamConn) handleFrames(ctx context.Context, frames <-chan []byte) {
+	defer c.wg.Done()
+	for {
+		var raw []byte
+		select {
+		case raw = <-frames:
+		case <-ctx.Done():
+			return
+		}
+		// 关闭与已缓冲帧可能同时可读，关闭后不再执行队列里的命令。
+		if ctx.Err() != nil {
+			return
+		}
 		var frame harnessNativeWSClientFrame
 		if err := harnessNativeDecodeStrict(raw, &frame); err != nil {
 			c.writeStreamError("", harnessNativeWSError("gateway/bad-request", "帧不是合法 JSON"))

@@ -54,17 +54,17 @@ DeepSeek 保留原生协议和事件序号，不进入 Codex 翻译路径。主�
 
 本次不改变原有同主机 loading 粒度、Git 组合操作的失败展示策略或取消语义，不把结构抽取包装成这些问题的修复。
 
-Worktree 的创建、列表、分支、清理和删除在 await 后复核请求所属的 HostScope。旧主机成功、失败和 defer 都不能写入新主机。创建和 handoff 还复核导航意图；过期结果不能先写入工作区缓存，handoff 在切主机后不能向新主机继续 fork。
+Worktree 的创建、列表、分支、清理和删除在 await 后复核请求所属的 HostScope。旧主机成功、失败和 defer 都不能写入新主机。创建和 handoff 还复核导航意图；过期结果不能先写入工作区缓存，handoff 在切主机后不能向新主机继续 fork。handoff 等待历史后再次检查主机和任务取消状态，再写入完成提示；同主机切页仍将提示保留在原分叉会话。
 
 ## 原生桥接与页面观察
 
-agentd 的 `harnessNativeResources` 单独拥有原生 WebSocket 连接、会话订阅名额和关闭门。Router 关闭时先阻止新连接与订阅，再取消已有连接的请求上下文、关闭 socket，并等待 handler 释放上游订阅。它不拥有 Harness 进程或 Agent 任务。客户端断开也会取消连接内正在等待的授权 RPC，避免 relay 阻塞导致资源不能回收。
+agentd 的 `harnessNativeResources` 单独拥有原生 WebSocket 连接、会话订阅名额和关闭门。Router 关闭时先阻止新连接与订阅，再取消已有连接的请求上下文、关闭 socket，并等待 handler 释放上游订阅。它不拥有 Harness 进程或 Agent 任务。连接持续读取客户端帧，由单个协程按接收顺序处理，客户端断开可以取消正在等待的授权或应答 RPC 并归还订阅名额。待处理帧超过 32 条时关闭连接，避免队列阻塞断线检测或无限增长。
 
 页面观察与已提交命令分开管理。`MultiRuntimeSessionWebSocketClient` 用观察代次拒绝旧客户端的事件、状态和路由写入；发送结果仍交回原有对账路径。Harness follow 任务在 actor 读取后复核会话和观察代次，所有退出路径只取消该任务自己打开的 follow ID。切页不会关闭宿主共享连接或 `$events`，也不会改变原生 seq、cursor、revision。
 
 ## 验证及工程生成
 
-`WorkspaceGitStoreTests` 覆盖独立工厂、单份状态与通知转发、旧主机成功/失败回调、复合操作客户端冻结、空路径和摘要 TTL。`WorkspaceHostBoundaryTests` 覆盖无 Runtime 的目录/启动加载，以及旧主机 Worktree 结果隔离。两类测试及 `WorkspaceGitSummaryTests` 接入既有 PR Gate selector。
+`WorkspaceGitStoreTests` 覆盖独立工厂、单份状态与通知转发、旧主机成功/失败回调、复合操作客户端冻结、空路径和摘要 TTL。`WorkspaceHostBoundaryTests` 覆盖无 Runtime 的目录/启动加载、旧主机 Worktree 结果隔离，以及 handoff 历史等待后的主机切换、任务取消和同主机导航。两类测试及 `WorkspaceGitSummaryTests` 接入既有 PR Gate selector。
 
 `SessionObservationLeaseTests` 覆盖失效客户端回调、路由保护、snapshot/live 切页及旧订阅释放，同样加入 PR Gate。Go 的 `TestHarnessNative*` 回归覆盖 Router 关闭、关闭后的连接拒绝、客户端断开和订阅打开中的授权取消，并运行 race 检查。
 
