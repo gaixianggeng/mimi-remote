@@ -199,8 +199,7 @@ struct SessionListView: View {
                         title: L10n.text("ui.in_progress"),
                         sessions: sessionPartition.active,
                         dominantProject: dominantProject,
-                        tokens: tokens,
-                        isModule: true
+                        tokens: tokens
                     )
                 }
 
@@ -218,8 +217,7 @@ struct SessionListView: View {
                         title: dateBucketTitle(group.bucket),
                         sessions: group.sessions,
                         dominantProject: dominantProject,
-                        tokens: tokens,
-                        isModule: group.bucket == .today || group.bucket == .yesterday
+                        tokens: tokens
                     )
                 }
             } else {
@@ -791,21 +789,18 @@ struct SessionListView: View {
         }
     }
 
-    /// 进行中、今天、昨天用卡片建立节奏；置顶和较早的历史保持平铺，避免长列表被卡片淹没。
     @ViewBuilder
     private func sessionSection(
         title: String,
         sessions: [AgentSession],
         dominantProject: String?,
-        tokens: ThemeTokens,
-        isModule: Bool = false
+        tokens: ThemeTokens
     ) -> some View {
         Section {
             sessionRows(
                 sessions,
                 dominantProject: dominantProject,
-                tokens: tokens,
-                isModule: isModule
+                tokens: tokens
             )
         } header: {
             Text(title)
@@ -828,10 +823,9 @@ struct SessionListView: View {
     private func sessionRows(
         _ sessions: [AgentSession],
         dominantProject: String?,
-        tokens: ThemeTokens,
-        isModule: Bool = false
+        tokens: ThemeTokens
     ) -> some View {
-        ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
+        ForEach(sessions, id: \.id) { session in
             let foregroundActivity = sessionStore.foregroundActivity(for: session.id)
             let isUnread = sessionStore.isHistorySessionUnread(session)
             let usesWideIPadRow = UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table
@@ -890,31 +884,7 @@ struct SessionListView: View {
                 )
             )
             .listRowSeparator(.hidden)
-            .listRowBackground(
-                sessionRowBackground(
-                    isModule: isModule,
-                    position: .init(index: index, count: sessions.count),
-                    tokens: tokens
-                )
-            )
-        }
-    }
-
-    @ViewBuilder
-    private func sessionRowBackground(
-        isModule: Bool,
-        position: WorkbenchModuleCard.Position,
-        tokens: ThemeTokens
-    ) -> some View {
-        if isModule {
-            // 行的左右插入是 20pt；卡片边线再往外让一点，卡内文字离卡边 16pt。
-            WorkbenchModuleCardRowBackground(
-                position: position,
-                fill: tokens.moduleCardBackground,
-                horizontalInset: 20 - WorkbenchModuleCard.horizontalOutset
-            )
-        } else {
-            Color.clear
+            .listRowBackground(Color.clear)
         }
     }
 

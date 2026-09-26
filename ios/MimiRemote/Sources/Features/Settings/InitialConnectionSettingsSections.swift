@@ -351,7 +351,7 @@ struct InitialConnectionSettingsSections: View {
     }
 
     /// 当前电脑、连接状态和连接方式过去是三个分组，回答的却是同一个问题。
-    /// 这里合成一组：首行放设备身份与线路，其下是配置与诊断的直达入口。
+    /// 这里合成一组：首行只做设备识别，其下是线路、配置与诊断三条单行入口。
     private func currentComputerSection(
         _ item: ConnectionProfileSettingsItem,
         tokens: ThemeTokens
@@ -376,6 +376,7 @@ struct InitialConnectionSettingsSections: View {
                     .accessibilityIdentifier("settings.connection.error")
             }
 
+            routeStatusRow(tokens: tokens)
             connectionMethodRows(tokens: tokens)
 
             NavigationLink(value: SettingsDestination.speedTest) {
@@ -391,6 +392,18 @@ struct InitialConnectionSettingsSections: View {
             SettingsGroupHeader(title: L10n.text("ui.current_mac"), showsDivider: false)
         } footer: {
             EmptyView()
+        }
+    }
+
+    /// 线路行：切到这台电脑就能直接看到走哪条路、多少延迟，并原地刷新。
+    private func routeStatusRow(tokens: ThemeTokens) -> some View {
+        RouteStatusRow(
+            value: routeProbeSummary,
+            isFailed: routeProbeFailed,
+            isBusy: draft.isProbingRoute,
+            isEnabled: appStore.isConfigured
+        ) {
+            Task { await refreshRouteProbe() }
         }
     }
 
@@ -423,13 +436,6 @@ struct InitialConnectionSettingsSections: View {
             return L10n.text("ui.route_not_probed")
         }
         return ConnectionRouteFormatting.briefSummary(probe)
-    }
-
-    /// 当前电脑块的线路行：「线路」退一档颜色做标签，结论本身失败时才转警示色。
-    private func routeLineText(tokens: ThemeTokens) -> Text {
-        Text(L10n.text("ui.route_label")).foregroundStyle(tokens.tertiaryText)
-            + Text(verbatim: "  ")
-            + Text(routeProbeSummary).foregroundStyle(routeProbeFailed ? tokens.warning : tokens.secondaryText)
     }
 
     /// Tailcat 走 disco-ping + health 计时（controller 持久化历史）；
@@ -510,67 +516,42 @@ struct InitialConnectionSettingsSections: View {
     private func currentComputerRow(_ item: ConnectionProfileSettingsItem) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        return HStack(alignment: .top, spacing: SettingsLayoutMetrics.iconSpacing) {
+        return HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
             computerGlyph(item)
-                .padding(.top, 8)
 
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        computerNameText(item, tokens: tokens)
+            VStack(alignment: .leading, spacing: 3) {
+                // 电脑行固定两行：名称一行、平台与状态一行，当前电脑与其他电脑同一种写法。
+                // 线路、连接方式、诊断都是它下面的单行功能行，不再挤进这一块（#575）。
+                computerNameText(item, tokens: tokens)
 
-                        HStack(spacing: 6) {
-                            computerSubtitle(
-                                item,
-                                state: compactConnectionStatusTitle,
-                                stateTint: statusColor
-                            )
-                            .font(themeStore.uiFont(size: profileDetailPointSize))
-
-                            if isDisplayingConnectionProgress {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    profileMenu(item)
-                }
-
-                // 线路是当前电脑的状态，作为名称、状态之下的第三行，三行同一节奏读成一块。
-                // 前面带「线路」：只看「未检测」「探测失败」读不出是什么没测。
-                // 整行都能重新探测；刷新标记与相邻行的导航箭头同色同宽、落在同一列（#563）。
-                // 命中区上下各外扩 8pt 补到约 44pt，布局高度不变，三行间距不被撑开。
-                Button {
-                    Task { await refreshRouteProbe() }
-                } label: {
-                    HStack(spacing: SettingsLayoutMetrics.trailingAccessorySpacing) {
-                        routeLineText(tokens: tokens)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                        SettingsTrailingAccessory(
-                            systemImage: "arrow.clockwise",
-                            isBusy: draft.isProbingRoute
-                        )
-                    }
+                HStack(spacing: 6) {
+                    computerSubtitle(
+                        item,
+                        state: compactConnectionStatusTitle,
+                        stateTint: statusColor
+                    )
                     .font(themeStore.uiFont(size: profileDetailPointSize))
-                    .padding(.vertical, 8)
-                    .contentShape(Rectangle())
+                    .lineLimit(1)
+
+                    if isDisplayingConnectionProgress {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                 }
-                .buttonStyle(.plain)
-                .padding(.vertical, -8)
-                .padding(.top, 3)
-                .disabled(!appStore.isConfigured || draft.isProbingRoute)
-                .accessibilityLabel(L10n.text("ui.route_label"))
-                .accessibilityValue(routeProbeSummary)
-                .accessibilityHint(L10n.text("ui.refresh"))
-                .accessibilityIdentifier("settings.connection.refreshRoute")
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            profileMenu(item)
         }
         .padding(.vertical, 8)
         .frame(minHeight: SettingsLayoutMetrics.deviceRowHeight)
+        // 当前电脑就是几台电脑里「选中」的那一台：垫一层与「优先使用」选中胶囊同色的底，
+        // 不另画卡片或徽章。底色比行内容左右各宽出 12pt，文字仍在原来的竖线上。
+        .listRowBackground(
+            RoundedRectangle(cornerRadius: SettingsLayoutMetrics.selectedRowCornerRadius, style: .continuous)
+                .fill(tokens.selectionFill)
+                .padding(.horizontal, SettingsLayoutMetrics.selectedRowHorizontalInset)
+        )
         .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.profile.\(item.id)")
@@ -614,7 +595,8 @@ struct InitialConnectionSettingsSections: View {
                     .frame(minHeight: 44)
                 } else {
                     // 列表里只连一台：点它是把当前电脑换成这台，文案直说「切换」。
-                    // 画成与选中胶囊同底色的小胶囊：只有一个粗体词时读起来像标签，不像按钮。
+                    // 画成描边小胶囊：只有一个粗体词时读起来像标签，不像按钮；
+                    // 不用填充，填充底色已经留给「当前电脑」这类选中状态。
                     let isSwitchDisabled = isSavingConnection || profileOperationID != nil
                     Button {
                         Task { await switchConnectionProfile(id: item.id) }
@@ -624,7 +606,7 @@ struct InitialConnectionSettingsSections: View {
                             .foregroundStyle(tokens.accent)
                             .padding(.horizontal, SettingsChoiceMetrics.capsuleHorizontalPadding)
                             .frame(minHeight: 30)
-                            .background(tokens.selectionFill, in: Capsule())
+                            .overlay(Capsule().strokeBorder(tokens.groupRule, lineWidth: 1))
                             .frame(minWidth: 44, minHeight: 44)
                             .contentShape(Rectangle())
                     }
@@ -816,7 +798,8 @@ struct InitialConnectionSettingsSections: View {
         let outcome = report.failedStage == nil
             ? L10n.text("ui.diagnostics_last_check_passed")
             : L10n.text("ui.diagnostics_last_check_failed")
-        return "\(outcome) · \(ConnectionRouteFormatting.timeText(report.startedAt))"
+        // 首页只放得下一行：当天写时刻、昨天写「昨天」、更早写月/日，完整时间在诊断页。
+        return "\(outcome) · \(ConnectionRouteFormatting.compactTimeText(report.startedAt))"
     }
 
     /// 添加电脑是一次性流程：扫码是唯一主操作，安装指引与手动地址都排在它下面。

@@ -1394,61 +1394,6 @@ struct RelatedSessionConversationView: View {
     }
 }
 
-/// 会话、工作区里的小模块和设置页的分组卡是同一种卡片（#575）。
-///
-/// 设置分组卡由系统 insetGrouped 绘制，列表里的小模块自己画；两边的底色、圆角和左右留白
-/// 必须一致，四个 Tab 放在一起才读成一套系统。较早的历史列表仍然平铺，
-/// 卡内文字与平铺行的文字落在同一条竖线上，有卡没卡正文都不左右跳。
-enum WorkbenchModuleCard {
-    /// 与 iOS 26 insetGrouped 分组卡的圆角一致（设置页快照实测约 26pt）。
-    static let cornerRadius: CGFloat = 26
-    /// 卡片比会话行的点击区域左右各宽出一点：行内文字离卡边 16pt，与设置卡内文字列同一条线。
-    static let horizontalOutset: CGFloat = 4
-
-    /// 一张卡由几行拼成时，每行只画属于自己的那几个圆角，拼起来是一整张卡。
-    enum Position {
-        case single
-        case first
-        case middle
-        case last
-
-        init(index: Int, count: Int) {
-            if count <= 1 {
-                self = .single
-            } else if index == 0 {
-                self = .first
-            } else if index == count - 1 {
-                self = .last
-            } else {
-                self = .middle
-            }
-        }
-
-        var roundsTop: Bool { self == .single || self == .first }
-        var roundsBottom: Bool { self == .single || self == .last }
-    }
-}
-
-/// List 行背景用的卡片片段：List 行背景铺满整行宽度，这里按给定的左右留白收进卡片边线。
-struct WorkbenchModuleCardRowBackground: View {
-    let position: WorkbenchModuleCard.Position
-    let fill: Color
-    let horizontalInset: CGFloat
-
-    var body: some View {
-        let radius = WorkbenchModuleCard.cornerRadius
-        UnevenRoundedRectangle(
-            topLeadingRadius: position.roundsTop ? radius : 0,
-            bottomLeadingRadius: position.roundsBottom ? radius : 0,
-            bottomTrailingRadius: position.roundsBottom ? radius : 0,
-            topTrailingRadius: position.roundsTop ? radius : 0,
-            style: .continuous
-        )
-        .fill(fill)
-        .padding(.horizontal, horizontalInset)
-    }
-}
-
 enum WorkbenchPageLayout {
     static let maxContentWidth: CGFloat = 820
     static let regularPadding: CGFloat = 24

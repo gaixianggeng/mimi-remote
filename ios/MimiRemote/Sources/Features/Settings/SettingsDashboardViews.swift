@@ -66,7 +66,9 @@ struct ConnectionSettingsView: View {
                     // 选项取 allCases，新增 Runtime 自动出现在这一行，不必再改这里。
                     SettingsChoiceRow(
                         title: L10n.text("ui.preferred_runtime"),
-                        systemImage: "sparkles",
+                        // 选的是在电脑终端里跑的编程代理（Codex、Claude Code、DeepSeek），用终端图标；
+                        // 星光读成「AI 功能」，和这一行的含义对不上。
+                        systemImage: "terminal",
                         detail: L10n.text("ui.preferred_runtime_description"),
                         options: WorkspaceSessionRuntimeChoice.allCases,
                         selection: preferredRuntimeBinding

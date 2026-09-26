@@ -15,16 +15,24 @@ enum SettingsLayoutMetrics {
     static let iconSpacing: CGFloat = 8
     static let symbolPointSize: CGFloat = 18
     static let sectionSpacing: CGFloat = 24
-    /// 没有标题的两张卡片之间的距离。
-    static let groupCardSpacing: CGFloat = 24
-    /// 带标题的分组与上一张卡片之间的留白（上一张卡底边到标题）。
-    static let groupTitleSeparation: CGFloat = 26
-    /// 标题到本组卡片的距离：比上方留白小得多，标题读作这张卡的名字。
-    static let groupTitleBottomSpacing: CGFloat = 8
+    /// 无标题分组细线上下的留白。行本身上下各有约 17pt 内边距，线两侧到文字的距离因此相等，
+    /// 且明显大于组内两行文字之间的距离，读作分界而不是又一条行分隔线。
+    static let groupDividerSpacing: CGFloat = 12
+    /// 带标题的分组与上一组之间的留白（上一行底边到标题）。加上行自身约 15pt 的内边距，
+    /// 上一组文字到标题约 40pt，明显大于组内两行文字之间约 30pt 的间距。
+    static let groupTitleSeparation: CGFloat = 24
+    /// 标题到本组第一行的距离：比上方留白小得多，标题读作本组的开头。
+    static let groupTitleBottomSpacing: CGFloat = 6
+    /// 标题与其右侧细线、细线与右端附加内容之间的距离。
+    static let groupTitleRuleSpacing: CGFloat = 10
     /// 页面第一组的标题离内容顶端的距离。
     static let groupTitleTopInset: CGFloat = 6
-    /// 分组脚注离卡片底边的距离；脚注下方不再留白，由下一组标题上方的留白接上。
+    /// 分组脚注离上方最后一行的距离；脚注下方不再留白，由下一组标题上方的留白接上。
     static let groupFooterTopSpacing: CGFloat = 6
+    /// 选中行（当前电脑）的底色：与「优先使用」选中胶囊同色的圆角底，左右比行内容各宽出 12pt
+    /// （行内容离行边 16pt，底色收进 4pt）。
+    static let selectedRowCornerRadius: CGFloat = 12
+    static let selectedRowHorizontalInset: CGFloat = 4
     /// 行尾标记（刷新、展开箭头）按系统导航箭头取：宽度、字号、到值文字的间距。
     static let trailingAccessoryWidth: CGFloat = 16
     static let trailingAccessoryPointSize: CGFloat = 14
@@ -169,7 +177,10 @@ struct SettingsView: View {
                     .frame(maxWidth: 920)
                     .frame(maxWidth: .infinity)
                     .background(canvasBackground.ignoresSafeArea())
-                    .navigationTitle("")
+                    // 与「设备」页同一种居中小标题：Tab 标签虽已写着「我的」，页面顶部空着时
+                    // 两个相邻 Tab 一个有标题一个没有，读起来不是一套写法（#575）。
+                    // 独立设置 sheet 带「完成」按钮，标题写「设置」。
+                    .navigationTitle(L10n.text(showsDoneButton ? "ui.settings" : "ui.me"))
                     .navigationBarTitleDisplayMode(.inline)
             }
         }
@@ -229,13 +240,15 @@ struct SettingsView: View {
                         ),
                     onRefresh: refreshAccountUsage
                 )
-                // 卡片底由分组给出（settingsGroupRowStyle），与其它设置卡同一底色和圆角。
                 .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
                 .accessibilityIdentifier("settings.tokenUsage")
             } header: {
                 // 四个分组都带标题，页面语法才一致。顶部两块原先没有标题，
                 // 读起来就是一坨没有标签的大块，底部却是分好组的列表。
-                // 累计值和刷新按钮挂在这一行，卡片里就不必再留一层标题；两者靠右成组。
+                // 累计值和刷新按钮挂在这一行，卡片里就不必再留一层标题。
+                // 两者排在标题线的右端：线把标题和它们连起来，窄屏也不会空出一大片。
                 SettingsGroupHeader(title: L10n.text("ui.token_usage"), showsDivider: false) {
                     lifetimeTokenLabel(tokens: tokens)
 
@@ -269,6 +282,8 @@ struct SettingsView: View {
                     // NavigationLink 会再叠一个系统 disclosure，右侧就成了两个箭头。
                     .buttonStyle(.plain)
                     .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                     .accessibilityIdentifier("settings.connectionManagement")
                 } header: {
                     SettingsGroupHeader(title: L10n.text("ui.mac_devices"))
@@ -622,7 +637,8 @@ struct AccountTokenUsageCard: View {
             }
             stackedLayout(tokens: tokens)
         }
-        // 卡片底由所在分组给出（我的页），这里只留与设置行同一条 16pt 的内边距。
+        // 平铺在页面上，不再装进卡片（#563）：与设置行同一条 16pt 左边线，
+        // 由分组标题和留白与上下内容分开。
         .padding(.horizontal, SettingsLayoutMetrics.rowHorizontalInset)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
@@ -1150,6 +1166,11 @@ private struct AccountUsageRefreshButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // 布局只占标记本身的宽度：分组标题线一直延伸到标记前，多出的命中区压在线上。
+        // 高度同理不撑高标题行，「Token 使用量」才与设备页「当前电脑」落在同一高度，
+        // 切 Tab 时第一组标题不上下跳。
+        .padding(.leading, SettingsLayoutMetrics.trailingAccessoryWidth - 44)
+        .padding(.vertical, -14)
         .disabled(isRefreshing)
         .accessibilityLabel(
             isRefreshing
@@ -1225,7 +1246,7 @@ struct SettingsConnectionCard: View {
                     .accessibilityIdentifier("settings.connection.warning")
             }
         }
-        // 卡片底由所在分组给出；断线时由卡内的警告文字说明，不再靠橙色描边。
+        // 与其它设置行一样平铺在页面上（#563）；断线时由卡内的警告文字说明，不再靠橙色描边。
         .padding(.horizontal, SettingsLayoutMetrics.rowHorizontalInset)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)

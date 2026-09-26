@@ -117,7 +117,7 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    /// 浅色下三组的标题线，以及当前电脑块第三行的线路结论（固定一条探测结果，不走网络）。
+    /// 浅色下三组的标题线、当前电脑的选中底色，以及线路行的结论（固定一条探测结果，不走网络）。
     func testConnectedComputerShowsRouteSummaryInLightAppearance() {
         assertConnectionSettings(
             profiles: [

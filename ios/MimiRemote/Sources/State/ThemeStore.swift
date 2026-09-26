@@ -296,10 +296,12 @@ extension ThemeTokens {
         tertiaryText
     }
 
-    /// 四个 Tab 共用的卡片底：设置分组卡，以及会话、工作区里的重点小模块。
-    /// 浅色是压在 #FAF8F6 画布上的白卡，深色是比画布亮一档的 surface。
-    var moduleCardBackground: Color {
-        surface
+    /// 设置分组的标题线。平铺页面上它是分组之间唯一的线，只用 1 个物理像素。
+    /// 默认浅色的边框色 #E8E6E3 压在 #FAF8F6 上几乎看不见（明度差约 6），这里加深到
+    /// #DEDBD7，与深色 #373735 压在 #1F1F1F 上的明度差（约 11）持平。其它主题沿用边框色。
+    var groupRule: Color {
+        guard preset == .codex, resolvedScheme == .light else { return border }
+        return Color(red: 222.0 / 255.0, green: 219.0 / 255.0, blue: 215.0 / 255.0)
     }
 
     /// 列表与侧栏条目的标题色。

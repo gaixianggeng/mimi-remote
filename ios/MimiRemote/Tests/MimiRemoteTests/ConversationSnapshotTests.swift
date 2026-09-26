@@ -1844,7 +1844,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 title: "验证发丝分隔线",
                 status: SessionStatus.history.rawValue,
                 preview: "分隔线从标题区域开始，组末不再绘制",
-                recencyAt: localDate(dayOffset: -1, hour: 9, minute: 6)
+                recencyAt: localDate(dayOffset: 0, hour: 9, minute: 6)
             ),
             makeSnapshotSession(
                 id: "session-list-today-other-project",
@@ -1853,7 +1853,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 status: SessionStatus.history.rawValue,
                 preview: "项目切换时立即出现新的图标锚点",
                 runtimeProvider: "claude",
-                recencyAt: localDate(dayOffset: -1, hour: 8, minute: 54)
+                recencyAt: localDate(dayOffset: 0, hour: 8, minute: 54)
             ),
             makeSnapshotSession(
                 id: "session-list-today-7",
@@ -1861,7 +1861,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 title: "检查 compact 顶栏与安全区",
                 status: SessionStatus.failed.rawValue,
                 preview: "窄屏回退两行布局，不使用固定列宽",
-                recencyAt: localDate(dayOffset: -1, hour: 8, minute: 42)
+                recencyAt: localDate(dayOffset: 0, hour: 8, minute: 42)
             ),
             makeSnapshotSession(
                 id: "session-list-today-8",
@@ -1869,7 +1869,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 title: "保留 Inspector 完整路径",
                 status: SessionStatus.history.rawValue,
                 preview: "主列表只显示项目名称，详情仍有完整目录",
-                recencyAt: localDate(dayOffset: -3, hour: 8, minute: 30)
+                recencyAt: localDate(dayOffset: 0, hour: 8, minute: 30)
             ),
             makeSnapshotSession(
                 id: "session-list-today-9",
@@ -1877,7 +1877,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 title: "完成 MIM-104 快照验收",
                 status: SessionStatus.history.rawValue,
                 preview: "使用 90% 同项目的实机数据分布验证密度",
-                recencyAt: localDate(dayOffset: -3, hour: 8, minute: 18)
+                recencyAt: localDate(dayOffset: 0, hour: 8, minute: 18)
             ),
         ]
 
