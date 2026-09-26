@@ -4,8 +4,8 @@ go 1.27.1
 
 require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
-	github.com/tailscale/tailcat v0.6.0
-	tailscale.com v1.103.0-pre.0.20260904030409-31d8badb3bfb
+	github.com/tailscale/tailcat v0.7.0
+	tailscale.com v1.103.0-pre.0.20260916030321-a2263542f260
 )
 
 require (
@@ -79,7 +79,7 @@ require (
 	github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc // indirect
 	github.com/tailscale/web-client-prebuilt v0.0.0-20250124233751-d4cd19a26976 // indirect
 	github.com/tailscale/wf v0.0.0-20240214030419-6fbb0a674ee6 // indirect
-	github.com/tailscale/wireguard-go v0.0.0-20260904023712-e855235c55a2 // indirect
+	github.com/tailscale/wireguard-go v0.0.0-20260911194433-e3222a3340cd // indirect
 	github.com/tailscale/xnet v0.0.0-20240729143630-8497ac4dab2e // indirect
 	github.com/u-root/u-root v0.14.0 // indirect
 	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 // indirect
@@ -87,21 +87,21 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb // indirect
-	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260209203927-2842357ff358 // indirect
 	golang.org/x/mobile v0.0.0-20260821190718-4776eadac327 // indirect
-	golang.org/x/mod v0.39.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/term v0.45.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/term v0.46.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	golang.org/x/tools v0.49.0 // indirect
+	golang.org/x/tools v0.50.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
-	gvisor.dev/gvisor v0.0.0-20260224225140-573d5e7127a8 // indirect
+	gvisor.dev/gvisor v0.0.0-20260915211658-a6f909f08a72 // indirect
 	honnef.co/go/tools v0.8.0-rc.1 // indirect
 )
 

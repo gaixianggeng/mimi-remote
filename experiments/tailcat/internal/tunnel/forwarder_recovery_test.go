@@ -164,7 +164,9 @@ func TestForwarderCloseCancelsRecoveryAndReleasesLocalConnections(t *testing.T) 
 		<-ctx.Done()
 		return ctx.Err()
 	}}
-	initial := &stubTunnelClient{}
+	initial := &stubTunnelClient{disco: func(context.Context) (*ipnstate.PingResult, error) {
+		return nil, errors.New("engine unavailable")
+	}}
 	f := newStubForwarder(t, initial, func() tunnelClient { return next })
 	local, err := net.Dial("tcp", f.listener.Addr().String())
 	if err != nil {
@@ -239,7 +241,10 @@ func TestForwarderRecoversBeforeSendingAndDoesNotTreatHTTPAuthAsTunnelFailure(t 
 		return (&net.Dialer{}).DialContext(ctx, "tcp", target.Host)
 	}}
 	var created atomic.Int32
-	f := newStubForwarder(t, &stubTunnelClient{}, func() tunnelClient { created.Add(1); return next })
+	initial := &stubTunnelClient{disco: func(context.Context) (*ipnstate.PingResult, error) {
+		return nil, errors.New("engine unavailable")
+	}}
+	f := newStubForwarder(t, initial, func() tunnelClient { created.Add(1); return next })
 	client := &http.Client{Timeout: 5 * time.Second}
 	response, err := client.Post(f.Endpoint(), "text/plain", strings.NewReader("one message"))
 	if err != nil {
@@ -315,9 +320,196 @@ func TestForwarderMonitorRecoversAnEstablishedSilentConnection(t *testing.T) {
 		t.Fatalf("失效的旧连接未释放：%v", err)
 	}
 	recovered, err := f.clientForRequest(context.Background())
-	if err != nil || recovered.transport != next || probes.Load() != 1 {
+	if err != nil || recovered.transport != next || probes.Load() != 2 {
 		t.Fatalf("存活探测未恢复连接：%v", err)
 	}
+}
+
+func TestForwarderMonitorKeepsEngineAfterTransientProbeFailure(t *testing.T) {
+	var probes atomic.Int32
+	initial := &stubTunnelClient{disco: func(context.Context) (*ipnstate.PingResult, error) {
+		if probes.Add(1) == 1 {
+			return nil, errors.New("transient probe failure")
+		}
+		return &ipnstate.PingResult{DERPRegionID: 1}, nil
+	}}
+	var created atomic.Int32
+	f := newStubForwarder(t, initial, func() tunnelClient {
+		created.Add(1)
+		return &stubTunnelClient{}
+	})
+	local, remote := net.Pipe()
+	defer local.Close()
+	defer remote.Close()
+	f.mu.Lock()
+	f.connections[local] = f.current
+	f.mu.Unlock()
+
+	f.checkActiveClient()
+	if probes.Load() != 2 || created.Load() != 0 || initial.closes.Load() != 0 {
+		t.Fatal("单次探测失败后仍重建了健康引擎")
+	}
+	if f.current == nil || f.current.transport != initial {
+		t.Fatal("瞬态探测失败改变了当前引擎")
+	}
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := activeRead(local)
+		readDone <- err
+	}()
+	if _, err := remote.Write([]byte("x")); err != nil {
+		t.Fatalf("瞬态探测失败关闭了活动流：%v", err)
+	}
+	if err := <-readDone; err != nil {
+		t.Fatalf("活动流读取失败：%v", err)
+	}
+}
+
+func TestForwarderDiscoPingKeepsEngineAfterTransientProbeFailure(t *testing.T) {
+	var probes atomic.Int32
+	initial := &stubTunnelClient{disco: func(context.Context) (*ipnstate.PingResult, error) {
+		if probes.Add(1) == 1 {
+			return nil, errors.New("transient probe failure")
+		}
+		return &ipnstate.PingResult{DERPRegionID: 1, DERPRegionCode: "test"}, nil
+	}}
+	var created atomic.Int32
+	f := newStubForwarder(t, initial, func() tunnelClient {
+		created.Add(1)
+		return &stubTunnelClient{}
+	})
+
+	result, err := f.DiscoPing(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Path != "derp" || probes.Load() != 2 {
+		t.Fatalf("二次探测结果异常：result=%+v probes=%d", result, probes.Load())
+	}
+	if created.Load() != 0 || initial.closes.Load() != 0 || f.current.transport != initial {
+		t.Fatal("公开诊断的单次错误重建了健康引擎")
+	}
+}
+
+func TestForwarderTransientDialFailureDoesNotCloseOtherActiveStreams(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	target, _ := url.Parse(server.URL)
+	var dials atomic.Int32
+	initial := &stubTunnelClient{dial: func(ctx context.Context, _ uint16) (net.Conn, error) {
+		if dials.Add(1) == 1 {
+			return nil, errors.New("transient dial failure")
+		}
+		return (&net.Dialer{}).DialContext(ctx, "tcp", target.Host)
+	}}
+	var created atomic.Int32
+	f := newStubForwarder(t, initial, func() tunnelClient {
+		created.Add(1)
+		return &stubTunnelClient{}
+	})
+	active, remote := net.Pipe()
+	defer active.Close()
+	defer remote.Close()
+	f.mu.Lock()
+	f.connections[active] = f.current
+	f.mu.Unlock()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	response, err := client.Get(f.Endpoint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent || dials.Load() != 2 {
+		t.Fatalf("瞬态拨号失败后请求未恢复：status=%d dials=%d", response.StatusCode, dials.Load())
+	}
+	if created.Load() != 0 || initial.closes.Load() != 0 {
+		t.Fatal("瞬态拨号失败重建了健康引擎")
+	}
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := activeRead(active)
+		readDone <- err
+	}()
+	if _, err := remote.Write([]byte("x")); err != nil {
+		t.Fatalf("瞬态拨号失败关闭了其他活动流：%v", err)
+	}
+	if err := <-readDone; err != nil {
+		t.Fatalf("其他活动流读取失败：%v", err)
+	}
+}
+
+func TestForwarderRetriesSecondDialFailedAfterConcurrentRecovery(t *testing.T) {
+	var received, oldDials, newDials, created atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != "one message" {
+			t.Errorf("请求内容为 %q", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	target, _ := url.Parse(server.URL)
+	secondDialStarted, releaseSecondDial := make(chan struct{}), make(chan struct{})
+	initial := &stubTunnelClient{dial: func(ctx context.Context, _ uint16) (net.Conn, error) {
+		switch oldDials.Add(1) {
+		case 1:
+			return nil, errors.New("transient dial failure")
+		case 2:
+			close(secondDialStarted)
+			select {
+			case <-releaseSecondDial:
+				return nil, errors.New("stale engine closed")
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		default:
+			t.Error("旧引擎发生额外拨号")
+			return nil, errors.New("unexpected old engine dial")
+		}
+	}}
+	next := &stubTunnelClient{dial: func(ctx context.Context, _ uint16) (net.Conn, error) {
+		newDials.Add(1)
+		return (&net.Dialer{}).DialContext(ctx, "tcp", target.Host)
+	}}
+	f := newStubForwarder(t, initial, func() tunnelClient {
+		created.Add(1)
+		return next
+	})
+	endpoint, old := f.Endpoint(), f.current
+	requestDone := make(chan error, 1)
+	go func() {
+		client := &http.Client{Timeout: 5 * time.Second}
+		response, err := client.Post(endpoint, "text/plain", strings.NewReader("one message"))
+		if err == nil {
+			response.Body.Close()
+			if response.StatusCode != http.StatusNoContent {
+				err = errors.New("响应状态不正确")
+			}
+		}
+		requestDone <- err
+	}()
+	awaitSignal(t, secondDialStarted)
+	if _, err := f.recoverClient(f.ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseSecondDial)
+	if err := <-requestDone; err != nil {
+		t.Fatalf("并发恢复后旧代引擎的拨号错误中断了请求：%v", err)
+	}
+	if received.Load() != 1 || oldDials.Load() != 2 || initial.closes.Load() != 1 ||
+		newDials.Load() != 1 || created.Load() != 1 || f.Endpoint() != endpoint {
+		t.Fatal("请求未恰好转发一次、拨号或恢复次数异常，或本地入口改变")
+	}
+}
+
+func activeRead(connection net.Conn) (byte, error) {
+	buffer := []byte{0}
+	_, err := io.ReadFull(connection, buffer)
+	return buffer[0], err
 }
 
 func TestForwarderMonitorPreservesHealthySlowBusinessConnection(t *testing.T) {

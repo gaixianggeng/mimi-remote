@@ -78,8 +78,10 @@ protocol TailcatExperimentRuntimeProtocol: Actor {
     func start(address: String, privateKey: String) async throws -> String
     func prepare(address: String, privateKey: String) async throws -> String
     func activatePrepared(endpoint: String) throws
-    func discardPrepared(endpoint: String) throws
-    func hasPrepared(endpoint: String) -> Bool
+    @discardableResult
+    func discardPrepared(endpoint: String) async throws -> String?
+    func hasPrepared(endpoint: String) async -> Bool
+    func currentEndpoint() async -> String?
     func discoPing() throws -> TailcatDiscoPingPayload
     func stop() throws
     func stop(ifCurrentEndpoint endpoint: String) throws
@@ -97,67 +99,108 @@ struct TailcatExperimentBridgeAdapter {
     )
 }
 
+protocol TailcatProxyProtocol: AnyObject {
+    var localEndpoint: String { get }
+    func discoPing(timeoutSeconds: Int) throws -> String
+    func close() throws
+}
+
+extension MimiTailcatProxy: TailcatProxyProtocol {}
+
 actor TailcatExperimentRuntime: TailcatExperimentRuntimeProtocol {
-    private var proxy: MimiTailcatProxy?
-    private var preparedProxies: [String: MimiTailcatProxy] = [:]
+    private struct Configuration {
+        let address: String
+        let privateKey: String
+    }
+
+    private struct PreparedProxy {
+        let endpoint: String
+        let previousConfiguration: Configuration?
+    }
+
+    typealias ProxyFactory = @Sendable (String, String, Int) throws -> any TailcatProxyProtocol
+
+    private let proxyFactory: ProxyFactory
+    private var proxy: (any TailcatProxyProtocol)?
+    private var configuration: Configuration?
+    private var preparedProxy: PreparedProxy?
+
+    init(proxyFactory: @escaping ProxyFactory = { address, privateKey, remotePort in
+        try MimiTailcatBridge.startProxy(
+            address: address,
+            privateKey: privateKey,
+            remotePort: remotePort
+        )
+    }) {
+        self.proxyFactory = proxyFactory
+    }
 
     func start(address: String, privateKey: String) async throws -> String {
         try Task.checkCancellation()
         try stop()
-        let nextProxy = try MimiTailcatBridge.startProxy(
-            address: address,
-            privateKey: privateKey,
-            remotePort: 8787
-        )
+        let nextConfiguration = Configuration(address: address, privateKey: privateKey)
+        let nextProxy = try startProxy(configuration: nextConfiguration)
+        proxy = nextProxy
+        configuration = nextConfiguration
         guard !Task.isCancelled else {
-            try? nextProxy.close()
+            try stop()
             throw CancellationError()
         }
-        let endpoint = nextProxy.localEndpoint
-        guard !endpoint.isEmpty else {
-            try? nextProxy.close()
-            throw URLError(.cannotConnectToHost)
-        }
-        proxy = nextProxy
-        return endpoint
+        return nextProxy.localEndpoint
     }
 
     func prepare(address: String, privateKey: String) async throws -> String {
         try Task.checkCancellation()
-        let nextProxy = try MimiTailcatBridge.startProxy(
-            address: address,
-            privateKey: privateKey,
-            remotePort: 8787
+        if let preparedProxy {
+            _ = try await discardPrepared(endpoint: preparedProxy.endpoint)
+        }
+        let previousConfiguration = configuration
+        try closeCurrentProxy()
+        let nextConfiguration = Configuration(address: address, privateKey: privateKey)
+        let nextProxy: any TailcatProxyProtocol
+        do {
+            nextProxy = try startProxy(configuration: nextConfiguration)
+        } catch {
+            _ = try? restore(configuration: previousConfiguration)
+            throw error
+        }
+        proxy = nextProxy
+        configuration = nextConfiguration
+        preparedProxy = PreparedProxy(
+            endpoint: nextProxy.localEndpoint,
+            previousConfiguration: previousConfiguration
         )
         guard !Task.isCancelled else {
-            try? nextProxy.close()
+            _ = try await discardPrepared(endpoint: nextProxy.localEndpoint)
             throw CancellationError()
         }
-        let endpoint = nextProxy.localEndpoint
-        guard !endpoint.isEmpty else {
-            try? nextProxy.close()
-            throw URLError(.cannotConnectToHost)
-        }
-        preparedProxies[endpoint] = nextProxy
-        return endpoint
+        return nextProxy.localEndpoint
     }
 
     func activatePrepared(endpoint: String) throws {
-        guard let nextProxy = preparedProxies.removeValue(forKey: endpoint) else {
+        guard preparedProxy?.endpoint == endpoint,
+              proxy?.localEndpoint == endpoint else {
             throw URLError(.cannotConnectToHost)
         }
-        let previousProxy = proxy
-        proxy = nextProxy
-        try? previousProxy?.close()
+        preparedProxy = nil
     }
 
-    func discardPrepared(endpoint: String) throws {
-        guard let preparedProxy = preparedProxies.removeValue(forKey: endpoint) else { return }
-        try preparedProxy.close()
+    @discardableResult
+    func discardPrepared(endpoint: String) async throws -> String? {
+        guard let preparedProxy, preparedProxy.endpoint == endpoint else {
+            return proxy?.localEndpoint
+        }
+        let previousConfiguration = preparedProxy.previousConfiguration
+        try closeCurrentProxy()
+        return try restore(configuration: previousConfiguration)
     }
 
-    func hasPrepared(endpoint: String) -> Bool {
-        preparedProxies[endpoint] != nil
+    func hasPrepared(endpoint: String) async -> Bool {
+        preparedProxy?.endpoint == endpoint && proxy?.localEndpoint == endpoint
+    }
+
+    func currentEndpoint() async -> String? {
+        proxy?.localEndpoint
     }
 
     func discoPing() throws -> TailcatDiscoPingPayload {
@@ -167,14 +210,41 @@ actor TailcatExperimentRuntime: TailcatExperimentRuntimeProtocol {
     }
 
     func stop() throws {
-        guard let proxy else { return }
-        self.proxy = nil
-        try proxy.close()
+        try closeCurrentProxy()
     }
 
     func stop(ifCurrentEndpoint endpoint: String) throws {
         guard proxy?.localEndpoint == endpoint else { return }
         try stop()
+    }
+
+    private func startProxy(configuration: Configuration) throws -> any TailcatProxyProtocol {
+        let nextProxy = try proxyFactory(configuration.address, configuration.privateKey, 8787)
+        guard !nextProxy.localEndpoint.isEmpty else {
+            try? nextProxy.close()
+            throw URLError(.cannotConnectToHost)
+        }
+        return nextProxy
+    }
+
+    private func closeCurrentProxy() throws {
+        // 原生 Close 报错时也已释放 forwarder；旧代理及候选回滚记录不能继续作为有效线路。
+        defer {
+            proxy = nil
+            configuration = nil
+            preparedProxy = nil
+        }
+        try proxy?.close()
+    }
+
+    @discardableResult
+    private func restore(configuration: Configuration?) throws -> String? {
+        guard let configuration else { return nil }
+        // 同一设备私钥不能同时运行两个原生引擎。候选失败后只能在其关闭后重建旧线路。
+        let restoredProxy = try startProxy(configuration: configuration)
+        proxy = restoredProxy
+        self.configuration = configuration
+        return restoredProxy.localEndpoint
     }
 }
 
@@ -191,6 +261,8 @@ final class TailcatExperimentController: ObservableObject {
     @Published private(set) var diagnostics: [TailcatPathDiagnostic]
 
     private struct PendingPairing {
+        let generation: UInt64
+        let previousActiveProfileID: String?
         let stableAddress: String
         let localEndpoint: String
         let connectionStartedAt: Date
@@ -208,6 +280,7 @@ final class TailcatExperimentController: ObservableObject {
 
     private let defaults: UserDefaults
     private let tokenStore: TokenStore
+    private weak var appStore: AppStore?
     private let runtime: any TailcatExperimentRuntimeProtocol
     private let bridge: TailcatExperimentBridgeAdapter
     private let managedPairingAuthorizer: (any ManagedConnectionPairingAuthorizing)?
@@ -278,6 +351,7 @@ final class TailcatExperimentController: ObservableObject {
         let initialEnabled = requestsTailcat && (available || profileRoute.isManaged)
         self.defaults = defaults
         self.tokenStore = tokenStore
+        self.appStore = appStore
         self.runtime = runtime
         self.bridge = bridge
         self.managedPairingAuthorizer = managedPairingAuthorizer
@@ -306,7 +380,12 @@ final class TailcatExperimentController: ObservableObject {
 
     // 兼容早期实验数据和测试入口。正式产品配对只从二维码写入地址。
     func setAddress(_ value: String) {
-        address = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextAddress = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isEnabled, nextAddress != address {
+            // 地址代次改变后旧 loopback 可能随旧引擎关闭；新线路发布前必须保持 fail-closed。
+            appStore?.setTailcatExperimentEndpoint(nil)
+        }
+        address = nextAddress
         if address.isEmpty {
             try? tokenStore.deleteTailcatExperimentAddress()
         } else {
@@ -340,6 +419,7 @@ final class TailcatExperimentController: ObservableObject {
             preparationTask?.task.cancel()
             preparationTask = nil
             try? await runtime.stop()
+            appStore.setTailcatExperimentEndpoint(nil)
             appStore.setTailcatExperimentModeEnabled(false)
             state = isAvailable ? .disabled : .unavailable
             return true
@@ -385,6 +465,7 @@ final class TailcatExperimentController: ObservableObject {
         preparationTask = nil
         pendingPairing = nil
         try? await runtime.stop()
+        appStore.setTailcatExperimentEndpoint(nil)
         appStore.setTailcatExperimentModeEnabled(false)
         let connected = await appStore.preflightConnection(
             force: true,
@@ -421,8 +502,8 @@ final class TailcatExperimentController: ObservableObject {
         )
     }
 
-    /// iOS 锁屏会挂起 Tailcat 的 DERP/WireGuard 状态，但旧 proxy 仍可能保留本地 listener。
-    /// 真正经历后台后创建全新 Client，确保重新握手，再让 REST/WebSocket 恢复。
+    /// Go 侧探活会在同一 loopback endpoint 内有界恢复引擎；探活成功时必须复用现有线路。
+    /// 只有探活失败才由 Swift 关闭旧 proxy 并重建，避免一次前台切换制造两套相同身份。
     @discardableResult
     func recoverRouteFromForeground(
         appStore: AppStore,
@@ -441,6 +522,28 @@ final class TailcatExperimentController: ObservableObject {
             }
         }
         guard !Task.isCancelled else { return false }
+        let capturedGeneration = generation
+        let capturedAddress = address
+        if case .connected(let endpoint) = state,
+           appStore.tailcatExperimentEndpoint == endpoint {
+            do {
+                _ = try await runtime.discoPing()
+                guard !Task.isCancelled,
+                      capturedGeneration == generation,
+                      capturedAddress == address,
+                      isEnabled else {
+                    return false
+                }
+                return true
+            } catch {
+                guard !Task.isCancelled,
+                      capturedGeneration == generation,
+                      capturedAddress == address,
+                      isEnabled else {
+                    return false
+                }
+            }
+        }
         generation &+= 1
         appStore.setTailcatExperimentEndpoint(nil)
         return await prepareRoute(
@@ -571,10 +674,12 @@ final class TailcatExperimentController: ObservableObject {
         }
         let previousEnabled = isEnabled
         let previousAddress = address
+        let previousActiveProfileID = appStore.activeConnectionProfileID
         let previousLegacyAddress = (try? tokenStore.loadTailcatExperimentAddress()) ?? ""
-        var stableCandidateEndpoint: String?
+        var candidateEndpoint: String?
         state = .starting
         generation &+= 1
+        let operationGeneration = generation
         do {
             let privateKey = try loadOrCreatePrivateKey()
             let clientKey = try bridge.publicKey(privateKey)
@@ -597,32 +702,34 @@ final class TailcatExperimentController: ObservableObject {
             } else {
                 managedAuthorization = nil
             }
+            try ensureCurrent(operationGeneration)
+            // 授权失败尚未触碰健康引擎；只有即将顺序替换时才先关闭旧 endpoint。
+            appStore.setTailcatExperimentEndpoint(nil)
             let pairingEndpoint = try await runtime.prepare(
                 address: link.pairAddress,
                 privateKey: privateKey
             )
-            let response: PairingClaimResponse
-            do {
-                let claimRequest: PairingClaimRequest
-                if let managedAuthorization {
-                    claimRequest = link.ticket.managedClaimRequest(
-                        tailcatClientKey: clientKey,
-                        pairingSessionID: managedAuthorization.sessionID,
-                        managedPairingGrant: managedAuthorization.grant
-                    )
-                } else {
-                    claimRequest = link.ticket.claimRequest(tailcatClientKey: clientKey)
-                }
-                response = try await AgentAPIClient(endpoint: pairingEndpoint, token: "")
-                    .claimPairing(claimRequest)
-                if let managedAuthorization {
-                    managedPairingAuthorizer?.didCompleteManagedPairing(managedAuthorization)
-                }
-            } catch {
-                try? await runtime.discardPrepared(endpoint: pairingEndpoint)
-                throw error
+            candidateEndpoint = pairingEndpoint
+            try ensureCurrent(operationGeneration)
+            let claimRequest: PairingClaimRequest
+            if let managedAuthorization {
+                claimRequest = link.ticket.managedClaimRequest(
+                    tailcatClientKey: clientKey,
+                    pairingSessionID: managedAuthorization.sessionID,
+                    managedPairingGrant: managedAuthorization.grant
+                )
+            } else {
+                claimRequest = link.ticket.claimRequest(tailcatClientKey: clientKey)
             }
-            try? await runtime.discardPrepared(endpoint: pairingEndpoint)
+            let response = try await AgentAPIClient(endpoint: pairingEndpoint, token: "")
+                .claimPairing(claimRequest)
+            try ensureCurrent(operationGeneration)
+            if let managedAuthorization {
+                managedPairingAuthorizer?.didCompleteManagedPairing(managedAuthorization)
+            }
+            _ = try await runtime.discardPrepared(endpoint: pairingEndpoint)
+            candidateEndpoint = nil
+            try ensureCurrent(operationGeneration)
             let stableAddress = response.tailcatAddress?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !stableAddress.isEmpty else {
@@ -632,7 +739,8 @@ final class TailcatExperimentController: ObservableObject {
                 address: stableAddress,
                 privateKey: privateKey
             )
-            stableCandidateEndpoint = stableEndpoint
+            candidateEndpoint = stableEndpoint
+            try ensureCurrent(operationGeneration)
             let canonicalEndpoint = try AppStore.validatedEndpoint(
                 response.endpoint.isEmpty ? link.ticket.endpoint : response.endpoint
             )
@@ -644,7 +752,10 @@ final class TailcatExperimentController: ObservableObject {
                 token: response.token,
                 profileTarget: resolvedProfileTarget
             )
+            try ensureCurrent(operationGeneration)
             pendingPairing = PendingPairing(
+                generation: operationGeneration,
+                previousActiveProfileID: previousActiveProfileID,
                 stableAddress: stableAddress,
                 localEndpoint: stableEndpoint,
                 connectionStartedAt: connectionStartedAt,
@@ -654,15 +765,18 @@ final class TailcatExperimentController: ObservableObject {
                 targetProfileID: nil,
                 previousProfileAddress: nil
             )
+            candidateEndpoint = nil
             return prepared
         } catch {
-            if let stableCandidateEndpoint {
-                try? await runtime.discardPrepared(endpoint: stableCandidateEndpoint)
+            if let candidateEndpoint {
+                try? await runtime.discardPrepared(endpoint: candidateEndpoint)
             }
             await restoreAfterPairingFailure(
                 previousEnabled: previousEnabled,
                 previousAddress: previousAddress,
                 previousLegacyAddress: previousLegacyAddress,
+                expectedGeneration: operationGeneration,
+                expectedActiveProfileID: previousActiveProfileID,
                 appStore: appStore
             )
             enqueueManagedConnectionAttempt(
@@ -694,22 +808,29 @@ final class TailcatExperimentController: ObservableObject {
         }
         let previousEnabled = isEnabled
         let previousAddress = address
+        let previousActiveProfileID = appStore.activeConnectionProfileID
         var candidateEndpoint: String?
         generation &+= 1
+        let operationGeneration = generation
         state = .starting
         do {
+            appStore.setTailcatExperimentEndpoint(nil)
             let endpoint = try await runtime.prepare(
                 address: targetAddress,
                 privateKey: try loadOrCreatePrivateKey()
             )
             candidateEndpoint = endpoint
+            try ensureCurrent(operationGeneration)
             let prepared = try await appStore.prepareConnectionProfileSwitch(
                 id: id,
                 activeEndpoint: endpoint,
                 tailcatAddress: targetAddress,
                 managed: profile.connectionRoute.isManaged
             )
+            try ensureCurrent(operationGeneration)
             pendingPairing = PendingPairing(
+                generation: operationGeneration,
+                previousActiveProfileID: previousActiveProfileID,
                 stableAddress: targetAddress,
                 localEndpoint: endpoint,
                 connectionStartedAt: now(),
@@ -728,6 +849,8 @@ final class TailcatExperimentController: ObservableObject {
                 previousEnabled: previousEnabled,
                 previousAddress: previousAddress,
                 previousLegacyAddress: nil,
+                expectedGeneration: operationGeneration,
+                expectedActiveProfileID: previousActiveProfileID,
                 appStore: appStore
             )
             throw error
@@ -735,14 +858,24 @@ final class TailcatExperimentController: ObservableObject {
     }
 
     func stagePreparedRouteIfNeeded(_ prepared: PreparedConnectionSettings, appStore: AppStore) async throws {
-        guard prepared.route.usesTailcat,
-              var pendingPairing,
+        guard prepared.route.usesTailcat else { return }
+        guard var pendingPairing,
+              pendingPairing.generation == generation,
               AgentAPIClient.normalizedEndpoint(pendingPairing.localEndpoint) ==
                 AgentAPIClient.normalizedEndpoint(prepared.activeEndpoint)
-        else { return }
+        else { throw CancellationError() }
         guard await runtime.hasPrepared(endpoint: pendingPairing.localEndpoint) else {
             throw URLError(.cannotConnectToHost)
         }
+        guard !Task.isCancelled,
+              generation == pendingPairing.generation,
+              pendingPairing.previousActiveProfileID == appStore.activeConnectionProfileID,
+              let currentPendingPairing = self.pendingPairing,
+              currentPendingPairing.generation == pendingPairing.generation,
+              currentPendingPairing.localEndpoint == pendingPairing.localEndpoint else {
+            throw CancellationError()
+        }
+        pendingPairing = currentPendingPairing
         let profileID: String
         switch prepared.profileTarget {
         case .existingProfile(let id), .newProfile(let id, _):
@@ -761,6 +894,23 @@ final class TailcatExperimentController: ObservableObject {
             }
         } catch {
             try? restoreProfileAddress(previousAddress, profileID: profileID)
+            _ = try? await runtime.discardPrepared(endpoint: pendingPairing.localEndpoint)
+            guard ownsPendingPairing(
+                pendingPairing,
+                expectedActiveProfileID: pendingPairing.previousActiveProfileID,
+                appStore: appStore
+            ) else {
+                throw error
+            }
+            self.pendingPairing = nil
+            await restoreAfterPairingFailure(
+                previousEnabled: pendingPairing.previousEnabled,
+                previousAddress: pendingPairing.previousAddress,
+                previousLegacyAddress: pendingPairing.previousLegacyAddress,
+                expectedGeneration: pendingPairing.generation,
+                expectedActiveProfileID: pendingPairing.previousActiveProfileID,
+                appStore: appStore
+            )
             throw error
         }
         pendingPairing.targetProfileID = profileID
@@ -781,11 +931,18 @@ final class TailcatExperimentController: ObservableObject {
             } else {
                 address = ""
             }
+            appStore.setTailcatExperimentEndpoint(nil)
             appStore.setTailcatExperimentModeEnabled(false)
             state = isAvailable ? .disabled : .unavailable
             return
         }
-        guard let pendingPairing,
+        guard let pendingPairing else { return }
+        let committedProfileID = pendingPairing.targetProfileID ?? pendingPairing.previousActiveProfileID
+        guard ownsPendingPairing(
+                  pendingPairing,
+                  expectedActiveProfileID: committedProfileID,
+                  appStore: appStore
+              ),
               AgentAPIClient.normalizedEndpoint(pendingPairing.localEndpoint) ==
                 AgentAPIClient.normalizedEndpoint(prepared.activeEndpoint)
         else { return }
@@ -793,7 +950,20 @@ final class TailcatExperimentController: ObservableObject {
         do {
             try await runtime.activatePrepared(endpoint: pendingPairing.localEndpoint)
         } catch {
+            guard ownsOperation(
+                generation: pendingPairing.generation,
+                activeProfileID: committedProfileID,
+                appStore: appStore
+            ), self.pendingPairing == nil else { return }
             state = .failed(message: error.localizedDescription)
+            return
+        }
+        guard ownsOperation(
+            generation: pendingPairing.generation,
+            activeProfileID: committedProfileID,
+            appStore: appStore
+        ), self.pendingPairing == nil else {
+            try? await runtime.stop(ifCurrentEndpoint: pendingPairing.localEndpoint)
             return
         }
         let legacyWasAssigned = pendingPairing.previousLegacyAddress == pendingPairing.stableAddress
@@ -817,7 +987,12 @@ final class TailcatExperimentController: ObservableObject {
     }
 
     func discardPreparedRouteIfNeeded(_ prepared: PreparedConnectionSettings?, appStore: AppStore) async {
-        guard let pendingPairing else { return }
+        guard let pendingPairing,
+              ownsPendingPairing(
+                  pendingPairing,
+                  expectedActiveProfileID: pendingPairing.previousActiveProfileID,
+                  appStore: appStore
+              ) else { return }
         if let prepared,
            AgentAPIClient.normalizedEndpoint(pendingPairing.localEndpoint) !=
             AgentAPIClient.normalizedEndpoint(prepared.activeEndpoint) {
@@ -825,6 +1000,11 @@ final class TailcatExperimentController: ObservableObject {
         }
         self.pendingPairing = nil
         try? await runtime.discardPrepared(endpoint: pendingPairing.localEndpoint)
+        guard ownsOperation(
+            generation: pendingPairing.generation,
+            activeProfileID: pendingPairing.previousActiveProfileID,
+            appStore: appStore
+        ), self.pendingPairing == nil else { return }
         if let profileID = pendingPairing.targetProfileID,
            let previousProfileAddress = pendingPairing.previousProfileAddress {
             try? restoreProfileAddress(previousProfileAddress, profileID: profileID)
@@ -833,6 +1013,8 @@ final class TailcatExperimentController: ObservableObject {
             previousEnabled: pendingPairing.previousEnabled,
             previousAddress: pendingPairing.previousAddress,
             previousLegacyAddress: pendingPairing.previousLegacyAddress,
+            expectedGeneration: pendingPairing.generation,
+            expectedActiveProfileID: pendingPairing.previousActiveProfileID,
             appStore: appStore
         )
     }
@@ -920,8 +1102,15 @@ final class TailcatExperimentController: ObservableObject {
         previousEnabled: Bool,
         previousAddress: String,
         previousLegacyAddress: String?,
+        expectedGeneration: UInt64,
+        expectedActiveProfileID: String?,
         appStore: AppStore
     ) async {
+        guard expectedGeneration == generation,
+              expectedActiveProfileID == appStore.activeConnectionProfileID else { return }
+        let restoredEndpoint = await runtime.currentEndpoint()
+        guard expectedGeneration == generation,
+              expectedActiveProfileID == appStore.activeConnectionProfileID else { return }
         if let previousLegacyAddress {
             if previousLegacyAddress.isEmpty {
                 try? tokenStore.deleteTailcatExperimentAddress()
@@ -937,12 +1126,44 @@ final class TailcatExperimentController: ObservableObject {
             defaults.removeObject(forKey: Self.enabledKey)
         }
         guard previousEnabled, !previousAddress.isEmpty else {
+            appStore.setTailcatExperimentEndpoint(nil)
             appStore.setTailcatExperimentModeEnabled(false)
             state = isAvailable ? .disabled : .unavailable
             return
         }
         appStore.setTailcatExperimentModeEnabled(true)
-        state = appStore.tailcatExperimentEndpoint.map { .connected(endpoint: $0) } ?? .starting
+        appStore.setTailcatExperimentEndpoint(restoredEndpoint)
+        state = restoredEndpoint.map { .connected(endpoint: $0) } ?? .starting
+    }
+
+    private func ensureCurrent(_ expectedGeneration: UInt64) throws {
+        guard !Task.isCancelled, expectedGeneration == generation else {
+            throw CancellationError()
+        }
+    }
+
+    private func ownsOperation(
+        generation: UInt64,
+        activeProfileID: String?,
+        appStore: AppStore
+    ) -> Bool {
+        generation == self.generation && activeProfileID == appStore.activeConnectionProfileID
+    }
+
+    private func ownsPendingPairing(
+        _ candidate: PendingPairing,
+        expectedActiveProfileID: String?,
+        appStore: AppStore
+    ) -> Bool {
+        guard ownsOperation(
+            generation: candidate.generation,
+            activeProfileID: expectedActiveProfileID,
+            appStore: appStore
+        ), let current = pendingPairing else {
+            return false
+        }
+        return current.generation == candidate.generation
+            && current.localEndpoint == candidate.localEndpoint
     }
 
     private func loadOrCreatePrivateKey() throws -> String {
