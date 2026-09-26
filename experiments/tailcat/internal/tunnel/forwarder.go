@@ -115,9 +115,15 @@ func (f *Forwarder) DiscoPing(ctx context.Context) (PathDiagnostic, error) {
 	result, err := client.transport.DiscoPing(probeContext)
 	cancel()
 	if err != nil && ctx.Err() == nil {
-		client, err = f.recoverClient(ctx, client)
-		if err == nil {
-			result, err = client.transport.DiscoPing(ctx)
+		// 用同一引擎再确认一次，避免单个瞬态探测错误关闭全部活动流。
+		probeContext, cancel = context.WithTimeout(ctx, forwarderAttemptTimeout)
+		result, err = client.transport.DiscoPing(probeContext)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			client, err = f.recoverClient(ctx, client)
+			if err == nil {
+				result, err = client.transport.DiscoPing(ctx)
+			}
 		}
 	}
 	if err != nil {
@@ -215,7 +221,13 @@ func (f *Forwarder) proxy(localConn net.Conn, remotePort uint16) {
 		tunnelConn, err := client.transport.DialTCPPort(attemptContext, remotePort)
 		stopAttempt()
 		if err != nil && dialContext.Err() == nil {
-			client, err = f.recoverClient(dialContext, client)
+			// TCP 目标短暂不可达不代表 Tailcat 引擎已经失效。只有同一引擎的
+			// 限时存活确认也失败，才进入会关闭活动流的恢复流程。
+			if probeErr := f.confirmClientAlive(dialContext, client); probeErr != nil {
+				client, err = f.recoverClient(dialContext, client)
+			} else {
+				err = nil
+			}
 			if err == nil {
 				tunnelConn, err = client.transport.DialTCPPort(dialContext, remotePort)
 			}

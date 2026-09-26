@@ -11,6 +11,7 @@ actor TailcatRouteRecorder {
 
 private enum TailcatRuntimeStubError: Error {
     case startFailed
+    case unhealthy
 }
 
 private actor TailcatExperimentRuntimeStub: TailcatExperimentRuntimeProtocol {
@@ -20,7 +21,18 @@ private actor TailcatExperimentRuntimeStub: TailcatExperimentRuntimeProtocol {
     private var blockedStartContinuation: CheckedContinuation<Void, Never>?
     private var blockedStartWaiters: [CheckedContinuation<Void, Never>] = []
     private var activeEndpoint: String?
-    private var preparedEndpoints: Set<String> = []
+    private var activeAddress: String?
+    private var preparedEndpoint: String?
+    private var preparedPreviousAddress: String?
+    private var healthy = true
+    private var activeEngineCount = 0
+    private var maximumActiveEngineCount = 0
+    private var blocksCurrentEndpoint = false
+    private var currentEndpointContinuation: CheckedContinuation<Void, Never>?
+    private var currentEndpointWaiters: [CheckedContinuation<Void, Never>] = []
+    private var blocksHasPrepared = false
+    private var hasPreparedContinuation: CheckedContinuation<Void, Never>?
+    private var hasPreparedWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
         startResults: [Result<String, TailcatRuntimeStubError>],
@@ -31,15 +43,31 @@ private actor TailcatExperimentRuntimeStub: TailcatExperimentRuntimeProtocol {
     }
 
     func start(address: String, privateKey: String) async throws -> String {
+        closeActiveEngine()
         let endpoint = try await nextEndpoint()
-        activeEndpoint = endpoint
+        installActiveEngine(endpoint: endpoint, address: address)
         return endpoint
     }
 
     func prepare(address: String, privateKey: String) async throws -> String {
-        let endpoint = try await nextEndpoint()
-        preparedEndpoints.insert(endpoint)
-        return endpoint
+        if let preparedEndpoint {
+            _ = try await discardPrepared(endpoint: preparedEndpoint)
+        }
+        let previousAddress = activeAddress
+        closeActiveEngine()
+        do {
+            let endpoint = try await nextEndpoint()
+            installActiveEngine(endpoint: endpoint, address: address)
+            preparedEndpoint = endpoint
+            preparedPreviousAddress = previousAddress
+            return endpoint
+        } catch {
+            if let previousAddress {
+                let restoredEndpoint = try await nextEndpoint()
+                installActiveEngine(endpoint: restoredEndpoint, address: previousAddress)
+            }
+            throw error
+        }
     }
 
     private func nextEndpoint() async throws -> String {
@@ -58,32 +86,53 @@ private actor TailcatExperimentRuntimeStub: TailcatExperimentRuntimeProtocol {
     }
 
     func activatePrepared(endpoint: String) throws {
-        guard preparedEndpoints.remove(endpoint) != nil else {
+        guard preparedEndpoint == endpoint, activeEndpoint == endpoint else {
             throw TailcatRuntimeStubError.startFailed
         }
-        activeEndpoint = endpoint
+        preparedEndpoint = nil
+        preparedPreviousAddress = nil
     }
 
-    func discardPrepared(endpoint: String) throws {
-        preparedEndpoints.remove(endpoint)
+    func discardPrepared(endpoint: String) async throws -> String? {
+        guard preparedEndpoint == endpoint else { return activeEndpoint }
+        let previousAddress = preparedPreviousAddress
+        preparedEndpoint = nil
+        preparedPreviousAddress = nil
+        closeActiveEngine()
+        guard let previousAddress else { return nil }
+        let restoredEndpoint = try await nextEndpoint()
+        installActiveEngine(endpoint: restoredEndpoint, address: previousAddress)
+        return restoredEndpoint
     }
 
-    func hasPrepared(endpoint: String) -> Bool {
-        preparedEndpoints.contains(endpoint)
+    func hasPrepared(endpoint: String) async -> Bool {
+        let result = preparedEndpoint == endpoint && activeEndpoint == endpoint
+        if blocksHasPrepared {
+            await withCheckedContinuation { continuation in
+                hasPreparedContinuation = continuation
+                hasPreparedWaiters.forEach { $0.resume() }
+                hasPreparedWaiters = []
+            }
+        }
+        return result
     }
 
     func discoPing() throws -> TailcatDiscoPingPayload {
-        TailcatDiscoPingPayload(path: "direct", latencyMillis: 1, derpRegionCode: nil)
+        guard healthy else { throw TailcatRuntimeStubError.unhealthy }
+        return TailcatDiscoPingPayload(path: "direct", latencyMillis: 1, derpRegionCode: nil)
     }
 
     func stop() throws {
-        activeEndpoint = nil
-        preparedEndpoints.removeAll()
+        closeActiveEngine()
+        preparedEndpoint = nil
+        preparedPreviousAddress = nil
     }
 
     func stop(ifCurrentEndpoint endpoint: String) throws {
         if activeEndpoint == endpoint {
-            activeEndpoint = nil
+            closeActiveEngine()
+            preparedEndpoint = nil
+            preparedPreviousAddress = nil
         }
     }
 
@@ -91,12 +140,69 @@ private actor TailcatExperimentRuntimeStub: TailcatExperimentRuntimeProtocol {
         starts
     }
 
-    func currentEndpoint() -> String? {
-        activeEndpoint
+    func currentEndpoint() async -> String? {
+        if blocksCurrentEndpoint {
+            await withCheckedContinuation { continuation in
+                currentEndpointContinuation = continuation
+                currentEndpointWaiters.forEach { $0.resume() }
+                currentEndpointWaiters = []
+            }
+        }
+        return activeEndpoint
     }
 
     func hasPreparedEndpoint(_ endpoint: String) -> Bool {
-        preparedEndpoints.contains(endpoint)
+        preparedEndpoint == endpoint
+    }
+
+    func setHealthy(_ healthy: Bool) {
+        self.healthy = healthy
+    }
+
+    func maximumConcurrentEngineCount() -> Int {
+        maximumActiveEngineCount
+    }
+
+    func blockNextCurrentEndpoint() {
+        blocksCurrentEndpoint = true
+    }
+
+    func waitForBlockedCurrentEndpoint() async {
+        guard currentEndpointContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            guard currentEndpointContinuation == nil else {
+                continuation.resume()
+                return
+            }
+            currentEndpointWaiters.append(continuation)
+        }
+    }
+
+    func releaseBlockedCurrentEndpoint() {
+        blocksCurrentEndpoint = false
+        currentEndpointContinuation?.resume()
+        currentEndpointContinuation = nil
+    }
+
+    func blockNextHasPrepared() {
+        blocksHasPrepared = true
+    }
+
+    func waitForBlockedHasPrepared() async {
+        guard hasPreparedContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            guard hasPreparedContinuation == nil else {
+                continuation.resume()
+                return
+            }
+            hasPreparedWaiters.append(continuation)
+        }
+    }
+
+    func releaseBlockedHasPrepared() {
+        blocksHasPrepared = false
+        hasPreparedContinuation?.resume()
+        hasPreparedContinuation = nil
     }
 
     func waitForBlockedStart() async {
@@ -113,6 +219,81 @@ private actor TailcatExperimentRuntimeStub: TailcatExperimentRuntimeProtocol {
     func releaseBlockedStart() {
         blockedStartContinuation?.resume()
         blockedStartContinuation = nil
+    }
+
+    private func installActiveEngine(endpoint: String, address: String) {
+        activeEndpoint = endpoint
+        activeAddress = address
+        activeEngineCount += 1
+        maximumActiveEngineCount = max(maximumActiveEngineCount, activeEngineCount)
+    }
+
+    private func closeActiveEngine() {
+        guard activeEndpoint != nil else { return }
+        activeEndpoint = nil
+        activeAddress = nil
+        activeEngineCount -= 1
+    }
+}
+
+private final class TailcatProxyFactoryRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var results: [Result<String, TailcatRuntimeStubError>]
+    private var activeCount = 0
+    private var maximumActiveCount = 0
+    private var addresses: [String] = []
+
+    init(results: [Result<String, TailcatRuntimeStubError>]) {
+        self.results = results
+    }
+
+    func make(address: String, privateKey: String, remotePort: Int) throws -> any TailcatProxyProtocol {
+        lock.lock()
+        defer { lock.unlock() }
+        addresses.append(address)
+        guard !results.isEmpty else { throw TailcatRuntimeStubError.startFailed }
+        let endpoint = try results.removeFirst().get()
+        activeCount += 1
+        maximumActiveCount = max(maximumActiveCount, activeCount)
+        return TailcatProxyStub(endpoint: endpoint) { [weak self] in
+            self?.recordClose()
+        }
+    }
+
+    func snapshot() -> (maximumActiveCount: Int, addresses: [String]) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (maximumActiveCount, addresses)
+    }
+
+    private func recordClose() {
+        lock.lock()
+        activeCount -= 1
+        lock.unlock()
+    }
+}
+
+private final class TailcatProxyStub: TailcatProxyProtocol, @unchecked Sendable {
+    let localEndpoint: String
+    private let onClose: @Sendable () -> Void
+    private let lock = NSLock()
+    private var closed = false
+
+    init(endpoint: String, onClose: @escaping @Sendable () -> Void) {
+        localEndpoint = endpoint
+        self.onClose = onClose
+    }
+
+    func discoPing(timeoutSeconds: Int) throws -> String {
+        "{\"path\":\"direct\",\"latency_millis\":1}"
+    }
+
+    func close() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !closed else { return }
+        closed = true
+        onClose()
     }
 }
 
@@ -161,6 +342,47 @@ private final class ManagedConnectionEventReporterStub: ManagedConnectionEventRe
 
 @MainActor
 final class TailcatExperimentRoutingTests: XCTestCase {
+    func testRuntimeProfileReplacementNeverOverlapsNativeEngines() async throws {
+        let recorder = TailcatProxyFactoryRecorder(results: [
+            .success("http://127.0.0.1:49152"),
+            .success("http://127.0.0.1:49153"),
+            .success("http://127.0.0.1:49154"),
+        ])
+        let runtime = TailcatExperimentRuntime(proxyFactory: recorder.make)
+
+        _ = try await runtime.start(address: "tailcat:mac-a", privateKey: "private-key")
+        let candidate = try await runtime.prepare(address: "tailcat:mac-b", privateKey: "private-key")
+        let restored = try await runtime.discardPrepared(endpoint: candidate)
+        let snapshot = recorder.snapshot()
+
+        XCTAssertEqual(restored, "http://127.0.0.1:49154")
+        XCTAssertEqual(snapshot.maximumActiveCount, 1)
+        XCTAssertEqual(snapshot.addresses, ["tailcat:mac-a", "tailcat:mac-b", "tailcat:mac-a"])
+    }
+
+    func testRuntimeFailedCandidateStartRestoresPreviousRouteWithoutOverlap() async throws {
+        let recorder = TailcatProxyFactoryRecorder(results: [
+            .success("http://127.0.0.1:49152"),
+            .failure(.startFailed),
+            .success("http://127.0.0.1:49154"),
+        ])
+        let runtime = TailcatExperimentRuntime(proxyFactory: recorder.make)
+        _ = try await runtime.start(address: "tailcat:mac-a", privateKey: "private-key")
+
+        do {
+            _ = try await runtime.prepare(address: "tailcat:mac-b", privateKey: "private-key")
+            XCTFail("候选启动失败必须向调用方返回错误")
+        } catch {
+            XCTAssertTrue(error is TailcatRuntimeStubError)
+        }
+        let restored = await runtime.currentEndpoint()
+        let snapshot = recorder.snapshot()
+
+        XCTAssertEqual(restored, "http://127.0.0.1:49154")
+        XCTAssertEqual(snapshot.maximumActiveCount, 1)
+        XCTAssertEqual(snapshot.addresses, ["tailcat:mac-a", "tailcat:mac-b", "tailcat:mac-a"])
+    }
+
     func testConnectionMethodSummaryReflectsRouteStateInsteadOfEnabledFlag() {
         XCTAssertEqual(TailcatExperimentState.unavailable.connectionMethodSummary,
                        L10n.text("ui.tailcat_framework_unavailable"))
@@ -389,6 +611,43 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(startCallCount, 1)
     }
 
+    func testCancelledPairingPreparationDiscardsPairEndpointAndRestoresRoute() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [
+                .success("http://127.0.0.1:49152"),
+                .success("http://127.0.0.1:49153"),
+                .success("http://127.0.0.1:49154"),
+            ],
+            blockedStartCall: 2
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.controller.setAddress("tailcat:current")
+        let enabled = await fixture.controller.setEnabled(true, appStore: fixture.store)
+        XCTAssertTrue(enabled)
+        let url = try XCTUnwrap(URL(string: Self.freeTailcatPairingURL))
+        let pairingTask = Task {
+            try await fixture.controller.preparePairingURL(
+                url,
+                appStore: fixture.store,
+                profileTarget: .currentOrNew(displayName: nil)
+            )
+        }
+        await fixture.runtime.waitForBlockedStart()
+
+        pairingTask.cancel()
+        await fixture.runtime.releaseBlockedStart()
+        await XCTAssertThrowsErrorAsync(try await pairingTask.value) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+
+        let activeEndpoint = await fixture.runtime.currentEndpoint()
+        let pairEndpointRemains = await fixture.runtime.hasPreparedEndpoint("http://127.0.0.1:49153")
+        XCTAssertEqual(activeEndpoint, "http://127.0.0.1:49154")
+        XCTAssertFalse(pairEndpointRemains)
+        XCTAssertEqual(fixture.store.tailcatExperimentEndpoint, "http://127.0.0.1:49154")
+        XCTAssertEqual(fixture.controller.state, .connected(endpoint: "http://127.0.0.1:49154"))
+    }
+
     func testConnectedPrepareRouteDoesNotRestartProxy() async throws {
         let fixture = try makeControllerFixture(startResults: [
             .success("http://127.0.0.1:49152"),
@@ -407,7 +666,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(fixture.store.tailcatExperimentEndpoint, "http://127.0.0.1:49152")
     }
 
-    func testForegroundRecoveryRestartsProxyAndPublishesNewEndpoint() async throws {
+    func testForegroundRecoveryKeepsHealthyProxyAndEndpoint() async throws {
         let fixture = try makeControllerFixture(startResults: [
             .success("http://127.0.0.1:49152"),
             .success("http://127.0.0.1:49153")
@@ -421,9 +680,29 @@ final class TailcatExperimentRoutingTests: XCTestCase {
 
         XCTAssertTrue(enabled)
         XCTAssertTrue(recovered)
+        XCTAssertEqual(startCallCount, 1)
+        XCTAssertEqual(fixture.store.tailcatExperimentEndpoint, "http://127.0.0.1:49152")
+        XCTAssertEqual(fixture.controller.state, .connected(endpoint: "http://127.0.0.1:49152"))
+    }
+
+    func testForegroundRecoveryRestartsUnhealthyProxyOnce() async throws {
+        let fixture = try makeControllerFixture(startResults: [
+            .success("http://127.0.0.1:49152"),
+            .success("http://127.0.0.1:49153")
+        ])
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+
+        fixture.controller.setAddress("tailcat:test-address")
+        let enabled = await fixture.controller.setEnabled(true, appStore: fixture.store)
+        XCTAssertTrue(enabled)
+        await fixture.runtime.setHealthy(false)
+
+        let recovered = await fixture.controller.recoverRouteFromForeground(appStore: fixture.store)
+        let startCallCount = await fixture.runtime.startCallCount()
+
+        XCTAssertTrue(recovered)
         XCTAssertEqual(startCallCount, 2)
         XCTAssertEqual(fixture.store.tailcatExperimentEndpoint, "http://127.0.0.1:49153")
-        XCTAssertEqual(fixture.controller.state, .connected(endpoint: "http://127.0.0.1:49153"))
     }
 
     func testCancelledForegroundRecoveryCanRetryAfterInactivePhase() async throws {
@@ -440,6 +719,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         fixture.controller.setAddress("tailcat:test-address")
         let enabled = await fixture.controller.setEnabled(true, appStore: fixture.store)
         XCTAssertTrue(enabled)
+        await fixture.runtime.setHealthy(false)
 
         let interruptedRecovery = Task {
             await fixture.controller.recoverRouteFromForeground(appStore: fixture.store)
@@ -460,6 +740,38 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(fixture.store.tailcatExperimentEndpoint, "http://127.0.0.1:49154")
     }
 
+    func testStaleForegroundRecoveryCannotPublishAfterAddressGenerationChanges() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [
+                .success("http://127.0.0.1:49152"),
+                .success("http://127.0.0.1:49153"),
+                .success("http://127.0.0.1:49154"),
+            ],
+            blockedStartCall: 2
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+
+        fixture.controller.setAddress("tailcat:old-address")
+        let enabled = await fixture.controller.setEnabled(true, appStore: fixture.store)
+        XCTAssertTrue(enabled)
+        await fixture.runtime.setHealthy(false)
+        let staleRecovery = Task {
+            await fixture.controller.recoverRouteFromForeground(appStore: fixture.store)
+        }
+        await fixture.runtime.waitForBlockedStart()
+
+        fixture.controller.setAddress("tailcat:new-address")
+        await fixture.runtime.releaseBlockedStart()
+        let staleResult = await staleRecovery.value
+        XCTAssertFalse(staleResult)
+        XCTAssertEqual(fixture.controller.state, .starting)
+        XCTAssertNil(fixture.store.tailcatExperimentEndpoint)
+
+        let currentReady = await fixture.controller.prepareRoute(appStore: fixture.store)
+        XCTAssertTrue(currentReady)
+        XCTAssertEqual(fixture.store.tailcatExperimentEndpoint, "http://127.0.0.1:49154")
+    }
+
     func testForegroundRecoveryFailureKeepsTailcatFailClosed() async throws {
         let fixture = try makeControllerFixture(startResults: [
             .success("http://127.0.0.1:49152"),
@@ -471,6 +783,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
 
         fixture.controller.setAddress("tailcat:test-address")
         let enabled = await fixture.controller.setEnabled(true, appStore: fixture.store)
+        await fixture.runtime.setHealthy(false)
         let recovered = await fixture.controller.recoverRouteFromForeground(appStore: fixture.store)
 
         XCTAssertTrue(enabled)
@@ -720,6 +1033,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         let runtime = TailcatExperimentRuntimeStub(startResults: [
             .success("http://127.0.0.1:49152"),
             .success("http://127.0.0.1:49153"),
+            .success("http://127.0.0.1:49154"),
         ])
         let controller = TailcatExperimentController(
             appStore: store,
@@ -741,10 +1055,144 @@ final class TailcatExperimentRoutingTests: XCTestCase {
 
         let activeEndpoint = await runtime.currentEndpoint()
         let candidateRemains = await runtime.hasPreparedEndpoint("http://127.0.0.1:49153")
-        XCTAssertEqual(activeEndpoint, "http://127.0.0.1:49152")
+        let maximumEngineCount = await runtime.maximumConcurrentEngineCount()
+        XCTAssertEqual(activeEndpoint, "http://127.0.0.1:49154")
         XCTAssertFalse(candidateRemains)
+        XCTAssertEqual(maximumEngineCount, 1)
         XCTAssertEqual(store.activeConnectionProfileID, "mac-a")
-        XCTAssertEqual(store.connectionEndpoint, "http://127.0.0.1:49152")
+        XCTAssertEqual(store.connectionEndpoint, "http://127.0.0.1:49154")
+    }
+
+    func testProfileRollbackDoesNotPublishEndpointAfterGenerationChangesDuringRestore() async throws {
+        let suiteName = "TailcatExperimentRoutingTests.StaleProfileRollback.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profiles = [
+            ConnectionProfile(
+                id: "mac-a", displayName: "Mac A", endpoint: "http://100.64.0.10:8787",
+                lastSuccessfulAt: nil, connectionRoute: .tailcat
+            ),
+            ConnectionProfile(
+                id: "mac-b", displayName: "Mac B", endpoint: "http://100.64.0.20:8787",
+                lastSuccessfulAt: nil, connectionRoute: .tailcat
+            ),
+        ]
+        defaults.set(try JSONEncoder().encode(profiles), forKey: "agentd.connectionProfiles.v2")
+        defaults.set("mac-a", forKey: "agentd.activeConnectionProfileID.v1")
+        let tokenStore = TokenStore(keychain: TestKeychainOperations())
+        try tokenStore.save("token-a", profileID: "mac-a")
+        try tokenStore.save("token-b", profileID: "mac-b")
+        try tokenStore.saveTailcatAddress("tailcat:mac-a", profileID: "mac-a")
+        try tokenStore.saveTailcatAddress("tailcat:mac-b", profileID: "mac-b")
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: tokenStore,
+            prefersLocalConnection: false,
+            routeProbe: { endpoint, _, _ in
+                if endpoint == "http://127.0.0.1:49153" {
+                    throw URLError(.cannotConnectToHost)
+                }
+            }
+        )
+        let runtime = TailcatExperimentRuntimeStub(startResults: [
+            .success("http://127.0.0.1:49152"),
+            .success("http://127.0.0.1:49153"),
+            .success("http://127.0.0.1:49154"),
+        ])
+        let controller = TailcatExperimentController(
+            appStore: store,
+            defaults: defaults,
+            tokenStore: tokenStore,
+            runtime: runtime,
+            bridge: .init(
+                isAvailable: true,
+                generatePrivateKey: { "private-key" },
+                publicKey: { _ in "nodekey:public-key" }
+            )
+        )
+        let initialReady = await controller.prepareRoute(appStore: store)
+        XCTAssertTrue(initialReady)
+        await runtime.blockNextCurrentEndpoint()
+        let staleSwitch = Task {
+            try await controller.prepareConnectionProfileSwitch(id: "mac-b", appStore: store)
+        }
+        await runtime.waitForBlockedCurrentEndpoint()
+
+        controller.setAddress("tailcat:newer-operation")
+        await runtime.releaseBlockedCurrentEndpoint()
+        await XCTAssertThrowsErrorAsync(try await staleSwitch.value)
+
+        XCTAssertEqual(controller.address, "tailcat:newer-operation")
+        XCTAssertEqual(controller.state, .starting)
+        XCTAssertNil(store.tailcatExperimentEndpoint)
+        XCTAssertEqual(store.connectionEndpoint, "http://127.0.0.1:1")
+        let runtimeEndpoint = await runtime.currentEndpoint()
+        XCTAssertEqual(runtimeEndpoint, "http://127.0.0.1:49154")
+    }
+
+    func testStaleStageCannotWriteAddressAfterNewPendingRouteTakesOver() async throws {
+        let suiteName = "TailcatExperimentRoutingTests.StaleStage.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profiles = [
+            ConnectionProfile(
+                id: "mac-a", displayName: "Mac A", endpoint: "http://100.64.0.10:8787",
+                lastSuccessfulAt: nil, connectionRoute: .tailcat
+            ),
+            ConnectionProfile(
+                id: "mac-b", displayName: "Mac B", endpoint: "http://100.64.0.20:8787",
+                lastSuccessfulAt: nil, connectionRoute: .tailcat
+            ),
+        ]
+        defaults.set(try JSONEncoder().encode(profiles), forKey: "agentd.connectionProfiles.v2")
+        defaults.set("mac-a", forKey: "agentd.activeConnectionProfileID.v1")
+        let tokenStore = TokenStore(keychain: TestKeychainOperations())
+        try tokenStore.save("token-a", profileID: "mac-a")
+        try tokenStore.save("token-b", profileID: "mac-b")
+        try tokenStore.saveTailcatAddress("tailcat:mac-a", profileID: "mac-a")
+        try tokenStore.saveTailcatAddress("tailcat:mac-b", profileID: "mac-b")
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: tokenStore,
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in }
+        )
+        let runtime = TailcatExperimentRuntimeStub(startResults: [
+            .success("http://127.0.0.1:49152"),
+            .success("http://127.0.0.1:49153"),
+            .success("http://127.0.0.1:49154"),
+            .success("http://127.0.0.1:49155"),
+        ])
+        let controller = TailcatExperimentController(
+            appStore: store,
+            defaults: defaults,
+            tokenStore: tokenStore,
+            runtime: runtime,
+            bridge: .init(
+                isAvailable: true,
+                generatePrivateKey: { "private-key" },
+                publicKey: { _ in "nodekey:public-key" }
+            )
+        )
+        let initialReady = await controller.prepareRoute(appStore: store)
+        XCTAssertTrue(initialReady)
+        let stalePrepared = try await controller.prepareConnectionProfileSwitch(id: "mac-b", appStore: store)
+        await runtime.blockNextHasPrepared()
+        let staleStage = Task {
+            try await controller.stagePreparedRouteIfNeeded(stalePrepared, appStore: store)
+        }
+        await runtime.waitForBlockedHasPrepared()
+
+        let currentPrepared = try await controller.prepareConnectionProfileSwitch(id: "mac-a", appStore: store)
+        try tokenStore.saveTailcatAddress("tailcat:newer-mac-b", profileID: "mac-b")
+        await runtime.releaseBlockedHasPrepared()
+        await XCTAssertThrowsErrorAsync(try await staleStage.value) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+
+        XCTAssertEqual(try tokenStore.loadTailcatAddress(profileID: "mac-b"), "tailcat:newer-mac-b")
+        let currentCandidateRemains = await runtime.hasPrepared(endpoint: currentPrepared.activeEndpoint)
+        XCTAssertTrue(currentCandidateRemains)
     }
 
     func testTailcatAddressWriteFailurePreventsProfileCommit() async throws {
@@ -778,6 +1226,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         let runtime = TailcatExperimentRuntimeStub(startResults: [
             .success("http://127.0.0.1:49152"),
             .success("http://127.0.0.1:49153"),
+            .success("http://127.0.0.1:49154"),
         ])
         let controller = TailcatExperimentController(
             appStore: store,
@@ -801,7 +1250,8 @@ final class TailcatExperimentRoutingTests: XCTestCase {
 
         XCTAssertEqual(store.activeConnectionProfileID, "mac-a")
         let activeEndpoint = await runtime.currentEndpoint()
-        XCTAssertEqual(activeEndpoint, "http://127.0.0.1:49152")
+        XCTAssertEqual(activeEndpoint, "http://127.0.0.1:49154")
+        XCTAssertEqual(store.connectionEndpoint, "http://127.0.0.1:49154")
     }
 
     func testLegacyGlobalAddressMigratesToActiveProfile() throws {
