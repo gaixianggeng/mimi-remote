@@ -832,9 +832,11 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
     private(set) var modelOptionsCallCount = 0
     private(set) var channelAvailableCallCount = 0
     private(set) var shutdownCallCount = 0
+    var eventClientFactory: ((SessionID) -> any SessionWebSocketClient)?
 
     func makeEventClient(sessionID: SessionID) -> any SessionWebSocketClient {
-        HarnessSessionWebSocketClient(
+        if let eventClientFactory { return eventClientFactory(sessionID) }
+        return HarnessSessionWebSocketClient(
             endpoint: "http://127.0.0.1:8787", token: "fixture", sessionID: sessionID,
             submission: HarnessSubmissionController(
                 sendPrompt: { _, _, _ in }, sendCancel: { _ in }
