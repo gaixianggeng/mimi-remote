@@ -39,8 +39,12 @@ func (t *SharedLocalTransport) validateConnectionSession(ctx context.Context, co
 	}
 	// 使用独立连接完成 initialize 和探针，保留业务连接的原始协议状态。
 	// 先固定业务连接、再比对 probe 的 peer，可拒绝校验期间替换 socket 的竞态。
-	if err := initializeWebSocket(probeCtx, probe); err != nil {
+	initializeResult, err := initializeWebSocketResult(probeCtx, probe)
+	if err != nil {
 		return sharedLocalSessionIOError(probeCtx, err)
+	}
+	if err := validateExpectedBackendCodexHome(t.expectedBackendHome, initializeResult.CodexHome, t.requireBackendHome); err != nil {
+		return err
 	}
 	return validateSharedLocalSession(probeCtx, probe)
 }

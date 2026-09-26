@@ -438,8 +438,13 @@ func (t *SSHTransport) dialWebSocketRaw(ctx context.Context, headers http.Header
 }
 
 func initializeWebSocket(ctx context.Context, conn *websocket.Conn) error {
+	_, err := initializeWebSocketResult(ctx, conn)
+	return err
+}
+
+func initializeWebSocketResult(ctx context.Context, conn *websocket.Conn) (InitializeResult, error) {
 	if conn == nil {
-		return errors.New("WebSocket connection 为空")
+		return InitializeResult{}, errors.New("WebSocket connection 为空")
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetReadDeadline(deadline)
@@ -460,16 +465,18 @@ func initializeWebSocket(ctx context.Context, conn *websocket.Conn) error {
 		},
 	}
 	if err := conn.WriteJSON(payload); err != nil {
-		return fmt.Errorf("发送 app-server initialize 失败：%w", err)
+		return InitializeResult{}, fmt.Errorf("发送 app-server initialize 失败：%w", err)
 	}
+	var result InitializeResult
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
-			return fmt.Errorf("读取 app-server initialize 响应失败：%w", err)
+			return InitializeResult{}, fmt.Errorf("读取 app-server initialize 响应失败：%w", err)
 		}
 		var frame struct {
 			ID     json.RawMessage `json:"id"`
 			Method string          `json:"method"`
+			Result json.RawMessage `json:"result"`
 			Error  *RPCError       `json:"error,omitempty"`
 		}
 		if err := json.Unmarshal(raw, &frame); err != nil {
@@ -479,14 +486,19 @@ func initializeWebSocket(ctx context.Context, conn *websocket.Conn) error {
 			continue
 		}
 		if frame.Error != nil {
-			return fmt.Errorf("app-server initialize 被拒绝：%w", frame.Error)
+			return InitializeResult{}, fmt.Errorf("app-server initialize 被拒绝：%w", frame.Error)
+		}
+		if len(frame.Result) > 0 && string(frame.Result) != "null" {
+			if err := json.Unmarshal(frame.Result, &result); err != nil {
+				return InitializeResult{}, fmt.Errorf("解析 app-server initialize 响应失败：%w", err)
+			}
 		}
 		break
 	}
 	if err := conn.WriteJSON(map[string]any{"method": "initialized", "params": map[string]any{}}); err != nil {
-		return fmt.Errorf("发送 app-server initialized 失败：%w", err)
+		return InitializeResult{}, fmt.Errorf("发送 app-server initialized 失败：%w", err)
 	}
-	return nil
+	return result, nil
 }
 
 // ValidateSSHTarget 验证 OpenSSH target，避免空白、NUL 和 option injection。

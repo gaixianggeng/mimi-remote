@@ -66,7 +66,7 @@ func TestLoadCodexFrontDoorRejectsBrokenConfigAndSocketMismatch(t *testing.T) {
 
 func TestRenderCodexFrontPlistIsValidLaunchdSocketJob(t *testing.T) {
 	socket := "/Users/example/.codex/app-server-control/app-server-control.sock"
-	plist := renderCodexFrontPlist("com.example.front", []string{"/Applications/A & B.app/Contents/MacOS/Mimi Remote Mac", codexFrontAppFlag}, socket, "build-a")
+	plist := renderCodexFrontPlist("com.example.front", []string{"/Applications/A & B.app/Contents/MacOS/Mimi Remote Mac", codexFrontAppFlag}, socket, "build-a", "/Users/example/.codex")
 	path := filepath.Join(t.TempDir(), "front.plist")
 	if err := os.WriteFile(path, plist, 0o644); err != nil {
 		t.Fatal(err)

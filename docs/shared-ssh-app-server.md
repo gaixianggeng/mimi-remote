@@ -52,6 +52,74 @@ Desktop 继续使用原来的 SSH Host。它执行的 `codex app-server --listen
 
 旧版 macOS setup 自动写入的 `transport=ssh` + `ssh_target=127.0.0.1` 会在 agentd 启动、`agentd setup` 或 `agentd doctor --fix` 时先完成 CLI 可用性和本机 socket 路径预检，再原子改写为 `local`。macOS 设置与配置迁移不创建共享进程，真实连接由 GUI 服务启动时验证。带用户名的 target 或远端主机不会被自动迁移；静态预检失败时原配置保持不变。
 
+### 可选：隔离普通 Desktop 与 SSH/Mimi 的会话目录
+
+Mac App 可用 `app_server.shared_codex_home` 为共享 backend 指定独立的绝对目录。默认不设置，升级不会自动启用或移动历史。此配置只支持 Mac App 的 `local` 前门；Linux、Homebrew 直启 resident、远端 `ssh` transport 不支持。
+
+启用后，普通 Desktop “This Mac” 仍读取原 `~/.codex`；SSH 与 Mimi 继续连接原标准 socket，前门把两者转发到独立目录中的同一个 backend。无需修改 Desktop 安装包、SSH Host、密钥或 shell 配置。新建的共享会话不再被普通 Desktop 从原目录扫描到。
+
+独立目录同时隔离 Codex 配置、认证、历史、skills/plugins 等状态。需要在新目录重新登录并按需配置；本功能不复制凭据、不迁移 SQLite 或 rollout，不改变旧会话 ID。旧历史留在原目录，已经被普通 Desktop 发现的旧会话不会自动重新归类。切换后的旧会话迁移应另行安排，不能把两份目录的历史直接拼接。
+
+目录必须已存在，且不能与公共 socket 所属的 CODEX_HOME 相同、互为父子目录或通过符号链接指向同一目录。推荐使用 `~/.codex-mimi`，不要修改现有 `codex.env.CODEX_HOME`；后者决定 Desktop SSH 仍在使用的公共 socket。
+
+准备独立目录并登录（只操作新目录）：
+
+```bash
+mkdir -p "$HOME/.codex-mimi"
+chmod 700 "$HOME/.codex-mimi"
+CODEX_HOME="$HOME/.codex-mimi" codex login
+```
+
+实际切换前，结束所有共享任务与队列，关闭 Desktop SSH 页面，在 Mac App 中停止服务并退出 App。先用**原配置**安全卸载前门；任何失败都应停止，不能继续修改目录或强杀后台任务：
+
+```bash
+"/Applications/Mimi Remote Mac.app/Contents/Resources/agentd" codex-front uninstall --stop-idle-backend
+```
+
+卸载成功后，备份并只更新这一项配置。以下脚本保留其他字段，使用同目录临时文件原子替换，输出备份位置而不输出配置内容：
+
+```bash
+python3 - <<'PYCODE'
+import json
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
+config_path = Path.home() / "Library/Application Support/mimi-remote/config.json"
+shared_home = (Path.home() / ".codex-mimi").resolve(strict=True)
+config = json.loads(config_path.read_text())
+if config.get("app_server", {}).get("transport") != "local":
+    raise SystemExit("此步骤只适用于现有 local 前门配置")
+fd, backup = tempfile.mkstemp(prefix="config.before-shared-home.", suffix=".json", dir=config_path.parent)
+os.close(fd)
+shutil.copyfile(config_path, backup)
+config["app_server"]["shared_codex_home"] = str(shared_home)
+fd, staged = tempfile.mkstemp(prefix=".config.", dir=config_path.parent)
+try:
+    with os.fdopen(fd, "w") as output:
+        json.dump(config, output, ensure_ascii=False, indent=2)
+        output.write("\n")
+    os.replace(staged, config_path)
+finally:
+    if os.path.exists(staged):
+        os.unlink(staged)
+print("配置备份：", backup)
+PYCODE
+```
+
+再启动 Mac App，由它登记前门。检查状态，并从 SSH 与 Mimi 各创建/续聊一个新共享会话：
+
+```bash
+"/Applications/Mimi Remote Mac.app/Contents/Resources/agentd" codex-front status
+```
+
+状态中的 `backend_codex_home` 应为新目录，`isolated_history` 应为 `true`，且没有 `configuration_error`。这些字段描述配置，不能代替实际连接验证。Mimi 每次连接还会核对上游 `initialize.codexHome`；字段缺失或目录不符时拒绝连接，不能把旧 backend 当作隔离服务。旧版 Codex 若不返回这个字段，也不能启用隔离。
+
+前门将安装时的 backend 目录固定在 LaunchAgent 中。直接编辑运行中配置不能热切换目录；安装和启动都会拒绝不一致的配置。切换必须经过上述原配置的安全卸载，确保旧 backend 无连接、活动回合或队列；独立目录模式不允许仅卸载前门而留下 backend。
+
+回退时，同样先结束共享任务、关闭客户端并退出 Mac App，用**当前隔离配置**执行 `codex-front uninstall --stop-idle-backend`。成功后从配置中删除 `app_server.shared_codex_home`，再启动 Mac App。也可恢复切换前的配置备份，但应先确认期间没有其他配置更新。独立目录中的新历史保留，不删除、不自动合入原历史。不要只替换旧版安装包：旧版本不理解此配置，会重新接入默认历史。
+
 ### 显式远端 SSH（高级）
 
 要把 Codex 放到另一台主机时，显式指定 target；agentd 用 `ssh -T <target> codex app-server proxy` 连接远端的共享 socket：
