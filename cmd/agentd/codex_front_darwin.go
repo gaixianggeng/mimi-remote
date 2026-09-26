@@ -235,6 +235,10 @@ func resolveCodexFrontInstallation(configPath, label, plistPath string) (codexFr
 }
 
 func runCodexFrontInstall(args []string, stdout io.Writer) error {
+	return runCodexFrontInstallWithOps(args, stdout, defaultCodexFrontManagementOps())
+}
+
+func runCodexFrontInstallWithOps(args []string, stdout io.Writer, ops codexFrontManagementOps) error {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	configPath, label, plistPath := codexFrontFlags(fs)
 	direct := fs.Bool("direct", false, "直接由 launchd 启动 agentd（仅供开发验证，后端不继承 Mimi Remote Mac 的隐私授权）")
@@ -242,6 +246,11 @@ func runCodexFrontInstall(args []string, stdout io.Writer) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
+	unlockManagement, err := lockCodexFrontManagement(*label, true)
+	if err != nil {
+		return err
+	}
+	defer unlockManagement()
 	install, err := resolveCodexFrontInstallation(*configPath, *label, *plistPath)
 	if err != nil {
 		return err
@@ -262,7 +271,7 @@ func runCodexFrontInstall(args []string, stdout io.Writer) error {
 		return err
 	}
 	plist := renderCodexFrontPlist(install.Label, programArgs, install.Socket, revision, install.BackendHome)
-	loaded := codexFrontLoaded(install.Label)
+	loaded := ops.loaded(install.Label)
 	existing, readErr := os.ReadFile(install.PlistPath)
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return fmt.Errorf("无法读取已有前门配置，拒绝覆盖：%w", readErr)
@@ -275,7 +284,7 @@ func runCodexFrontInstall(args []string, stdout io.Writer) error {
 	if err := rejectLegacyBackendForIsolation(install); err != nil {
 		return err
 	}
-	if loaded && readErr == nil && bytes.Equal(existing, plist) && codexFrontSocketListening(install.Socket) {
+	if loaded && readErr == nil && bytes.Equal(existing, plist) && ops.socketListening(install.Socket) {
 		fmt.Fprintf(stdout, "前门已安装：%s\n", install.Socket)
 		return nil
 	}
@@ -300,7 +309,7 @@ func runCodexFrontInstall(args []string, stdout io.Writer) error {
 			return fmt.Errorf("前门有活动共享任务，暂缓加载新版：%w", err)
 		}
 	}
-	if !loaded && codexFrontSocketListening(install.Socket) {
+	if !loaded && ops.socketListening(install.Socket) {
 		// launchd 加载时会删除并重新绑定该路径，现有实例将失去新连接。必须先让它结束。
 		return fmt.Errorf("标准 socket 已有 Codex 实例在监听：%s。请结束共享任务并关闭 Desktop SSH 页面，按共享 App Server 文档安全释放旧实例后重试前门安装", install.Socket)
 	}
@@ -311,17 +320,16 @@ func runCodexFrontInstall(args []string, stdout io.Writer) error {
 		return err
 	}
 	if loaded {
-		if err := codexFrontBootout(install.Label); err != nil {
-			return err
+		if err := ops.bootout(install.Label); err != nil {
+			return errors.Join(err, restoreCodexFrontPlist(install.PlistPath, existing, readErr == nil))
 		}
 	}
-	if err := codexFrontBootstrap(install.PlistPath); err != nil {
-		if loaded && writeFileAtomically(install.PlistPath, existing, 0o644) == nil {
-			_ = codexFrontBootstrap(install.PlistPath)
-		}
-		return err
+	if err := ops.bootstrap(install.PlistPath); err != nil {
+		return errors.Join(err, rollbackCodexFrontInstall(install, ops, loaded, existing, readErr == nil))
 	}
-	if !codexFrontSocketListening(install.Socket) {
+	if !ops.socketListening(install.Socket) {
+		// bootstrap 已成功时保留一致的 job/plist，避免探测失败期间已有客户端触发了 backend，
+		// 随后回滚前门却把该 backend 遗留为无管理进程。
 		return fmt.Errorf("前门已加载，但标准 socket 未就绪：%s", install.Socket)
 	}
 	fmt.Fprintf(stdout, "前门已安装：label=%s socket=%s plist=%s\n", install.Label, install.Socket, install.PlistPath)
@@ -329,12 +337,21 @@ func runCodexFrontInstall(args []string, stdout io.Writer) error {
 }
 
 func runCodexFrontUninstall(args []string, stdout io.Writer) error {
+	return runCodexFrontUninstallWithOps(args, stdout, defaultCodexFrontManagementOps())
+}
+
+func runCodexFrontUninstallWithOps(args []string, stdout io.Writer, ops codexFrontManagementOps) error {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	configPath, label, plistPath := codexFrontFlags(fs)
 	stopIdleBackend := fs.Bool("stop-idle-backend", false, "仅在私有 backend 空闲并退出后卸载前门")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
+	unlockManagement, err := lockCodexFrontManagement(*label, true)
+	if err != nil {
+		return err
+	}
+	defer unlockManagement()
 	install, err := resolveCodexFrontInstallation(*configPath, *label, *plistPath)
 	if err != nil {
 		return err
@@ -347,7 +364,7 @@ func runCodexFrontUninstall(args []string, stdout io.Writer) error {
 	if install.BackendHome != filepath.Dir(filepath.Dir(install.Socket)) && !*stopIdleBackend {
 		return errors.New("独立会话目录的前门必须使用 --stop-idle-backend 安全卸载，不能遗留旧运行时后切换目录")
 	}
-	loaded := codexFrontLoaded(install.Label)
+	loaded := ops.loaded(install.Label)
 	if loaded {
 		registeredSocket, err := codexFrontPlistSocket(install.PlistPath)
 		if err != nil || registeredSocket != install.Socket {
@@ -374,7 +391,7 @@ func runCodexFrontUninstall(args []string, stdout io.Writer) error {
 		}
 	}
 	if loaded {
-		if err := codexFrontBootout(install.Label); err != nil {
+		if err := ops.bootout(install.Label); err != nil {
 			return err
 		}
 	}
@@ -382,7 +399,7 @@ func runCodexFrontUninstall(args []string, stdout io.Writer) error {
 		return err
 	}
 	// launchd 卸载后留下的 socket 文件已无人监听；Codex 探测到连接被拒也会自行清理。
-	if info, err := os.Lstat(install.Socket); err == nil && info.Mode()&os.ModeSocket != 0 && !codexFrontSocketListening(install.Socket) {
+	if info, err := os.Lstat(install.Socket); err == nil && info.Mode()&os.ModeSocket != 0 && !ops.socketListening(install.Socket) {
 		_ = os.Remove(install.Socket)
 	}
 	if *stopIdleBackend {
@@ -409,17 +426,26 @@ type codexFrontStatus struct {
 }
 
 func runCodexFrontStatus(args []string, stdout io.Writer) error {
+	return runCodexFrontStatusWithOps(args, stdout, defaultCodexFrontManagementOps())
+}
+
+func runCodexFrontStatusWithOps(args []string, stdout io.Writer, ops codexFrontManagementOps) error {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	configPath, label, plistPath := codexFrontFlags(fs)
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
+	unlockManagement, err := lockCodexFrontManagement(*label, false)
+	if err != nil {
+		return err
+	}
+	defer unlockManagement()
 	install, err := resolveCodexFrontInstallation(*configPath, *label, *plistPath)
 	if err != nil {
 		return err
 	}
 	status := codexFrontStatus{
-		Label: install.Label, Loaded: codexFrontLoaded(install.Label), PlistPath: install.PlistPath,
+		Label: install.Label, Loaded: ops.loaded(install.Label), PlistPath: install.PlistPath,
 		PublicSocket: install.Socket, ConfiguredBackendCodexHome: install.BackendHome,
 	}
 	// 即使 job 已退出，磁盘登记仍是旧 backend 的身份；不能把新配置当作已切换成功。
@@ -443,7 +469,7 @@ func runCodexFrontStatus(args []string, stdout io.Writer) error {
 			status.BackendError = err.Error()
 		}
 	}
-	status.PublicListening = status.Loaded || codexFrontSocketListening(status.PublicSocket)
+	status.PublicListening = status.Loaded || ops.socketListening(status.PublicSocket)
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(status)

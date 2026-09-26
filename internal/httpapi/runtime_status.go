@@ -294,17 +294,18 @@ func (r *Router) storeClaudeRuntimeQuota(limits *runtimeRateLimits) {
 // runtimeAccountStatus 只包含菜单栏需要的脱敏状态。账号邮箱、Token、Keychain
 // 内容和上游原始错误都不能进入这个结构，避免 status CLI 或日志扩大凭据暴露面。
 type runtimeAccountStatus struct {
-	ID         string                 `json:"id"`
-	Title      string                 `json:"title"`
-	Enabled    bool                   `json:"enabled"`
-	State      runtimeConnectionState `json:"state"`
-	Transport  string                 `json:"transport,omitempty"`
-	Version    string                 `json:"version,omitempty"`
-	StartedAt  *time.Time             `json:"started_at,omitempty"`
-	AuthMode   string                 `json:"auth_mode,omitempty"`
-	PlanType   string                 `json:"plan_type,omitempty"`
-	Reason     string                 `json:"reason,omitempty"`
-	RateLimits *runtimeRateLimits     `json:"rate_limits,omitempty"`
+	ID           string                 `json:"id"`
+	Title        string                 `json:"title"`
+	Enabled      bool                   `json:"enabled"`
+	State        runtimeConnectionState `json:"state"`
+	Transport    string                 `json:"transport,omitempty"`
+	Version      string                 `json:"version,omitempty"`
+	StartedAt    *time.Time             `json:"started_at,omitempty"`
+	AuthMode     string                 `json:"auth_mode,omitempty"`
+	PlanType     string                 `json:"plan_type,omitempty"`
+	Reason       string                 `json:"reason,omitempty"`
+	LoginCommand string                 `json:"login_command,omitempty"`
+	RateLimits   *runtimeRateLimits     `json:"rate_limits,omitempty"`
 }
 
 type runtimeRateLimits struct {
@@ -447,8 +448,9 @@ func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
 	codex := runtimeAccountStatus{
 		ID: "codex", Title: "Codex", Enabled: r.cfg.Codex.IsEnabled(),
 		State: runtimeStateUnavailable, Reason: "refresh_in_progress",
-		Transport: strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
-		StartedAt: r.codexRuntimeStartTime(),
+		Transport:    strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
+		StartedAt:    r.codexRuntimeStartTime(),
+		LoginCommand: r.codexRuntimeLoginCommand(),
 	}
 	if !codex.Enabled {
 		codex.State, codex.Reason, codex.StartedAt = runtimeStateDisabled, "disabled", nil
@@ -479,6 +481,23 @@ func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
 	return response
 }
 
+func (r *Router) codexRuntimeLoginCommand() string {
+	if !strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "local") {
+		return ""
+	}
+	home, ok := r.cfg.EffectiveLocalCodexHome()
+	if !ok {
+		return ""
+	}
+	bin := strings.TrimSpace(r.cfg.Codex.Bin)
+	if bin == "" {
+		bin = "codex"
+	}
+	// 只拼接固定的 login 子命令；目录和可执行路径均作为单个 shell 参数转义。
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+	return "CODEX_HOME=" + quote(home) + " " + quote(bin) + " login"
+}
+
 func runtimeStatusLoopbackRequest(req *http.Request) bool {
 	remote := strings.TrimSpace(req.RemoteAddr)
 	host, _, err := net.SplitHostPort(remote)
@@ -490,6 +509,8 @@ func runtimeStatusLoopbackRequest(req *http.Request) bool {
 }
 
 func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountStatus) {
+	// 登录指引只依赖已加载配置，未登录或后端不可用时也必须指向同一目录。
+	defer func() { status.LoginCommand = r.codexRuntimeLoginCommand() }()
 	if !r.cfg.Codex.IsEnabled() {
 		return runtimeAccountStatus{ID: "codex", Title: "Codex", State: runtimeStateDisabled, Reason: "disabled"}
 	}

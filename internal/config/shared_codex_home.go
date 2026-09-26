@@ -29,3 +29,29 @@ func (c Config) ValidateSharedCodexHome() error {
 	}
 	return nil
 }
+
+// EffectiveLocalCodexHome 返回当前本机 App Server 实际使用的 CODEX_HOME。
+// SSH 后端的目录只能由远端主机解析，调用方不能用本机路径冒充远端目录。
+func (c Config) EffectiveLocalCodexHome() (string, bool) {
+	transport := normalizeTransport(c.AppServer.Transport)
+	if strings.EqualFold(transport, "ssh") {
+		return "", false
+	}
+	if strings.EqualFold(transport, "local") {
+		if home := c.AppServer.SharedCodexHome; home != "" {
+			return home, true
+		}
+	}
+	// CODEX_HOME 与 App Server 的 socket 解析保持一致，目录名中的空格不能被裁剪。
+	if home := c.Codex.Env["CODEX_HOME"]; home != "" {
+		return home, true
+	}
+	if home := os.Getenv("CODEX_HOME"); home != "" {
+		return home, true
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".codex"), true
+	}
+	return filepath.Join(home, ".codex"), true
+}

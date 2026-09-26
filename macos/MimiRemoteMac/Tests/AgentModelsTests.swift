@@ -2,6 +2,20 @@ import XCTest
 @testable import MimiRemoteMac
 
 final class AgentModelsTests: XCTestCase {
+    func testRuntimeLoginCommandUsesBackendTargetAndSupportsLegacyPayloads() throws {
+        let command = "CODEX_HOME='/tmp/shared home' '/tmp/codex tool' login"
+        let raw = Data(#"{"id":"codex","title":"Codex","enabled":true,"state":"signed_out","login_command":"CODEX_HOME='/tmp/shared home' '/tmp/codex tool' login"}"#.utf8)
+        let runtime = try JSONDecoder().decode(AgentRuntimeStatus.self, from: raw)
+        XCTAssertEqual(runtime.effectiveLoginCommand, command)
+
+        for (id, expected) in [("codex", "codex login"), ("claude", "claude")] {
+            let legacy = Data("{\"id\":\"\(id)\",\"title\":\"Test\",\"enabled\":true,\"state\":\"signed_out\"}".utf8)
+            let decoded = try JSONDecoder().decode(AgentRuntimeStatus.self, from: legacy)
+            XCTAssertNil(decoded.loginCommand)
+            XCTAssertEqual(decoded.effectiveLoginCommand, expected)
+        }
+    }
+
     func testAgentModulesUseMatchingBrandMarks() {
         XCTAssertEqual(HostModuleID.codex.brandMark?.assetName, "OpenAIMonoblossom")
         XCTAssertEqual(HostModuleID.claude.brandMark?.assetName, "Claude")

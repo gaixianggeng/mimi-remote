@@ -58,7 +58,9 @@ Mac App 可用 `app_server.shared_codex_home` 为共享 backend 指定独立的�
 
 启用后，普通 Desktop “This Mac” 仍读取原 `~/.codex`；SSH 与 Mimi 继续连接原标准 socket，前门把两者转发到独立目录中的同一个 backend。无需修改 Desktop 安装包、SSH Host、密钥或 shell 配置。新建的共享会话不再被普通 Desktop 从原目录扫描到。
 
-独立目录同时隔离 Codex 配置、认证、历史、skills/plugins 等状态。需要在新目录重新登录并按需配置；本功能不复制凭据、不迁移 SQLite 或 rollout，不改变旧会话 ID。旧历史留在原目录，已经被普通 Desktop 发现的旧会话不会自动重新归类。切换后的旧会话迁移应另行安排，不能把两份目录的历史直接拼接。
+独立目录同时隔离该 Codex 目录内的配置、认证、历史、skills/plugins 等状态。需要在新目录重新登录并按需配置；本功能不复制凭据、不迁移 SQLite 或 rollout，不改变旧会话 ID。旧历史留在原目录，已经被普通 Desktop 发现的旧会话不会自动重新归类。切换后的旧会话迁移应另行安排，不能把两份目录的历史直接拼接。
+
+Mimi 的用户级 Codex skills 与 MCP 摘要跟随同一后端目录；仓库级配置、用户 `.agents/skills` 和管理员规则继续保留。语音转写默认读取后端目录的认证，显式设置的 `voice.codex_auth_file` 仍优先。Mac App 的“复制登录命令”也使用实际后端目录和 Codex 路径，可用于后续重新登录。
 
 目录必须已存在，且不能与公共 socket 所属的 CODEX_HOME 相同、互为父子目录或通过符号链接指向同一目录。推荐使用 `~/.codex-mimi`，不要修改现有 `codex.env.CODEX_HOME`；后者决定 Desktop SSH 仍在使用的公共 socket。
 

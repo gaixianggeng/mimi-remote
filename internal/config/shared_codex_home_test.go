@@ -55,3 +55,54 @@ func TestSharedCodexHomeRejectsInvalidPathsAndTransports(t *testing.T) {
 		}
 	}
 }
+
+func TestEffectiveLocalCodexHomeUsesBackendPriority(t *testing.T) {
+	userHome := t.TempDir()
+	processHome := t.TempDir()
+	configuredHome := t.TempDir()
+	sharedHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
+	t.Setenv("CODEX_HOME", processHome)
+
+	cfg := Config{
+		AppServer: AppServerConfig{Transport: "local", SharedCodexHome: sharedHome},
+		Codex:     CodexConfig{Env: map[string]string{"CODEX_HOME": configuredHome}},
+	}
+	if got, ok := cfg.EffectiveLocalCodexHome(); !ok || got != sharedHome {
+		t.Fatalf("共享后端目录应优先：got=%q ok=%v", got, ok)
+	}
+	cfg.AppServer.SharedCodexHome = ""
+	if got, ok := cfg.EffectiveLocalCodexHome(); !ok || got != configuredHome {
+		t.Fatalf("Codex 配置目录应优先进程环境：got=%q ok=%v", got, ok)
+	}
+	delete(cfg.Codex.Env, "CODEX_HOME")
+	if got, ok := cfg.EffectiveLocalCodexHome(); !ok || got != processHome {
+		t.Fatalf("应回退进程 CODEX_HOME：got=%q ok=%v", got, ok)
+	}
+	t.Setenv("CODEX_HOME", "")
+	if got, ok := cfg.EffectiveLocalCodexHome(); !ok || got != filepath.Join(userHome, ".codex") {
+		t.Fatalf("应回退用户默认目录：got=%q ok=%v", got, ok)
+	}
+}
+
+func TestEffectiveLocalCodexHomeDoesNotResolveSSHBackend(t *testing.T) {
+	cfg := Config{
+		AppServer: AppServerConfig{Transport: "ssh", SharedCodexHome: t.TempDir()},
+		Codex:     CodexConfig{Env: map[string]string{"CODEX_HOME": t.TempDir()}},
+	}
+	if got, ok := cfg.EffectiveLocalCodexHome(); ok || got != "" {
+		t.Fatalf("SSH backend home 应留给远端解析：got=%q ok=%v", got, ok)
+	}
+}
+
+func TestEffectiveLocalCodexHomePreservesSharedDirectoryCharacters(t *testing.T) {
+	sharedHome := filepath.Join(t.TempDir(), `backend 'quoted' `)
+	if err := os.Mkdir(sharedHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{AppServer: AppServerConfig{Transport: "local", SharedCodexHome: sharedHome}}
+	if got, ok := cfg.EffectiveLocalCodexHome(); !ok || got != sharedHome {
+		t.Fatalf("共享目录中的空格和引号必须原样保留：got=%q want=%q ok=%v", got, sharedHome, ok)
+	}
+}

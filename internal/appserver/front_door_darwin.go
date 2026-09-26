@@ -4,6 +4,7 @@ package appserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -279,6 +280,28 @@ func (f *FrontDoor) dialBackend(ctx context.Context) (net.Conn, error) {
 // LockMigration 排他阻止新客户端，直到换代或卸载操作完成。
 func (f *FrontDoor) LockMigration(ctx context.Context) (func(), error) {
 	return lockFrontDoorFileMode(ctx, f.migrationLockPath, unix.LOCK_EX)
+}
+
+// LockFrontDoorManagement 按 launchd label 串行安装、卸载和状态快照。
+// 锁不放在 CODEX_HOME 中，确保同一 job 在切换公共目录时仍使用同一把锁。
+func LockFrontDoorManagement(ctx context.Context, label string, exclusive bool) (func(), error) {
+	if strings.TrimSpace(label) == "" {
+		return nil, errors.New("前门 launchd label 不能为空")
+	}
+	cacheDirectory, err := os.UserCacheDir()
+	if err != nil {
+		return nil, fmt.Errorf("定位前门管理锁目录失败：%w", err)
+	}
+	directory := filepath.Join(cacheDirectory, "mimi-remote", "codex-front-locks")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return nil, fmt.Errorf("创建前门管理锁目录失败：%w", err)
+	}
+	digest := sha256.Sum256([]byte(label))
+	mode := unix.LOCK_SH
+	if exclusive {
+		mode = unix.LOCK_EX
+	}
+	return lockFrontDoorFileMode(ctx, filepath.Join(directory, fmt.Sprintf("%x.lock", digest)), mode)
 }
 
 type frontDoorLockedConn struct {

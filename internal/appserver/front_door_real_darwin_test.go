@@ -5,6 +5,7 @@ package appserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -212,14 +213,20 @@ func TestFrontDoorRealSeparateBackendThreadIsolation(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(door.PublicSocketPath()), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(door.BackendSocketPath()), 0o700); err != nil {
-		t.Fatal(err)
-	}
 	ordinarySocket := filepath.Join(publicHome, "ordinary.sock")
 	stopOrdinary := startRealCodexSocketServer(t, bin, publicHome, ordinarySocket)
 	defer stopOrdinary()
-	stopBackend := startRealCodexSocketServer(t, bin, backendHome, door.BackendSocketPath())
-	defer stopBackend()
+	// backend 必须从不存在的状态由 FrontDoor 首次连接拉起，覆盖真实首次启动路径。
+	if _, err := os.Stat(door.BackendSocketPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("首次连接前不应已有 backend socket：%v", err)
+	}
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		if err := door.StopIdleBackend(cleanupCtx); err != nil {
+			t.Errorf("清理测试启动的真实 backend 失败：%v", err)
+		}
+	}()
 
 	listener, err := net.Listen("unix", door.PublicSocketPath())
 	if err != nil {
