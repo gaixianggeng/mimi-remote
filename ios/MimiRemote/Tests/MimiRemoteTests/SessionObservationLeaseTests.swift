@@ -217,7 +217,11 @@ final class SessionObservationLeaseTests: XCTestCase {
                 "cwd": .string("/fixture"), "isSeeded": .bool(false),
             ]),
             "cursor": .number(Double(records.last?["seq"]?.intValue ?? 0)),
-            "records": .array(records), "hasMore": .bool(false),
+            // snapshot.records 必须带 event 信封；裸 durable 会解码成 event == nil，无法触发切页。
+            "records": .array(records.map {
+                .object(["type": .string(HarnessWireFrame.durableEvent), "event": $0])
+            }),
+            "hasMore": .bool(false),
             "assistantStream": .object(["revision": .number(0)]),
         ])
     }
