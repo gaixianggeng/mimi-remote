@@ -653,6 +653,21 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         try await codexClient.transcribeVoice(filename: filename, contentType: contentType, audioData: audioData, language: language)
     }
 
+    func modelOptions(runtimeProvider: String) async throws -> [CodexAppServerModelOption] {
+        let provider = CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
+        if let native = bundle.nativeClient(for: provider) {
+            guard try await bundle.nativeHarnessConfigured() else {
+                throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+            }
+            // modelCatalog 已经走完整的鉴权和上游链路，无需先以同一 RPC 再做健康探测。
+            return try await native.modelOptions()
+        }
+        guard try await bundle.channelAvailable(runtimeProvider: provider) else {
+            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+        }
+        return try await bundle.runtime(for: provider).modelOptions()
+    }
+
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         var options: [CodexAppServerModelOption] = []
         var firstError: Error?
@@ -1181,6 +1196,8 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     private let bundle: AppServerRuntimeBundle
     /// 面向既有协议而不是具体 Codex 类型：原生 Harness 事件客户端可以并列接入。
     private var activeClient: (any SessionWebSocketClient)?
+    /// 只约束页面观察；已提交命令仍由原有结果回调完成对账。
+    private var observationGeneration: UInt64 = 0
 
     init(bundle: AppServerRuntimeBundle) {
         self.bundle = bundle
@@ -1195,6 +1212,9 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     }
 
     func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?) {
+        // 先让旧观察失效，再断开它。disconnect 与已排队的读回调都不能改写新页面。
+        observationGeneration &+= 1
+        let generation = observationGeneration
         let client: any SessionWebSocketClient
         if let native = bundle.nativeClient(forSessionID: sessionID) {
             client = native.makeEventClient(sessionID: sessionID)
@@ -1215,7 +1235,7 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         // 切换 Mac、进入后台或凭据失效时仍由 AppServerRuntimeBundle 整体关闭。
         activeClient?.disconnect()
         activeClient = client
-        wireHandlers(to: client)
+        wireHandlers(to: client, generation: generation)
         client.connect(
             sessionID: sessionID,
             replayBufferedEvents: replayBufferedEvents,
@@ -1224,8 +1244,11 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     }
 
     func disconnect() {
-        activeClient?.disconnect()
+        observationGeneration &+= 1
+        let previous = activeClient
         activeClient = nil
+        previous?.disconnect()
+        if previous != nil { onStatus?(.disconnected) }
     }
 
     @discardableResult
@@ -1283,13 +1306,16 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         activeClient?.acknowledgeAppliedEvent(event)
     }
 
-    private func wireHandlers(to client: any SessionWebSocketClient) {
+    private func wireHandlers(to client: any SessionWebSocketClient, generation: UInt64) {
         client.onStatus = { [weak self] status in
-            self?.onStatus?(status)
+            guard let self, self.observationGeneration == generation else { return }
+            self.onStatus?(status)
         }
         client.onEvent = { [weak self] event in
-            self?.rememberRoute(from: event)
-            self?.onEvent?(event)
+            guard let self, self.observationGeneration == generation else { return }
+            // 路由表与 UI 共用同一观察边界，旧回调不能先污染路由再被 UI 丢弃。
+            self.rememberRoute(from: event)
+            self.onEvent?(event)
         }
         client.onSendAccepted = { [weak self] clientMessageID in
             self?.onSendAccepted?(clientMessageID)

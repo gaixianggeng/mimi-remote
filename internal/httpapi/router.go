@@ -111,12 +111,8 @@ type Router struct {
 	claudeProbe                appServerBridgeProbe
 	activeClaudeBridge         int
 	claudeBridge               *claudeBridgeSupervisor
-	// Harness 原生通道的会话订阅计数（#498）。每条 `session/follow` 都在 Harness 上
-	// 持有一条 remote.mux 物理连接，所以除了单连接上限还需要一个跨连接的上限；
-	// 上限取 cfg.DeepSeek.MaxConcurrentSessions。宿主的 `$events` 与连接级的
-	// `session/control` 不计入，理由见 acquireHarnessNativeSession。
-	harnessNativeSessionMu        sync.Mutex
-	activeHarnessNativeSession    int
+	// Harness 原生资源由独立 owner 关闭和限流，Router 只负责入口与组合。
+	harnessNative                 harnessNativeResources
 	tailcat                       tailcatSidecar
 	managedPairing                managedPairingService
 	tailcatLocalToken             string
@@ -329,6 +325,7 @@ func (r *Router) Shutdown() {
 		return
 	}
 	r.shutdownOnce.Do(func() {
+		r.harnessNative.shutdown()
 		r.shutdownCodexGateways()
 		if r.push != nil {
 			// 等在途通知投递结束并落盘定位记录，之后才拆运行时与临时目录。

@@ -62,7 +62,7 @@ echo "==> iOS conversation regressions"
 # - FileAttachmentModelsTests：文件上传、capability 状态矩阵、内部上下文编解码和旧服务端兼容。
 # - ConversationTimelineProviderPresentationTests：Codex/Claude 默认与详细记录投影、锚点和全文入口。
 # - ConversationScrollStabilityTests：首屏可读交接、手势取消、阅读锚点和显式回到底部。
-# - ConversationTimelineRuntimeRegressionTests：原生 List 在 Codex/Claude 更新及历史前插后的视口。
+# - ConversationTimelineRuntimeRegressionTests：原生 List 在 Codex/Claude/DeepSeek 更新及历史前插后的视口。
 # - SessionListLifecycleCoordinatorTests：滚动冻结、idle 重排和完成/失败 Haptic exactly-once。
 # - SessionListPresentationTests：会话摘要、分支身份、时间格式和紧凑行数策略。
 # - ConversationSnapshotTests：用户气泡/助手文档流、复杂 Markdown、图片和活动行的关键视觉回归。
@@ -75,8 +75,11 @@ echo "==> iOS conversation regressions"
 # - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
 # - NotificationTitleCacheTests、NotificationContentRewriterTests：会话标题的 App Group 本地缓存，
 #   以及通知扩展只用该缓存在设备上改写锁屏文案、缓存缺失时退回通用文案。
+test_result_bundle="$(mktemp -d "${TMPDIR:-/tmp}/mimi-conversation-tests.XXXXXX")/core.xcresult"
+test_status=0
 bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -quiet \
+  -resultBundlePath "$test_result_bundle" \
   -collect-test-diagnostics never \
   -testLanguage zh-Hans \
   -testRegion CN \
@@ -87,6 +90,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/DeepSeekSearchRoutingTests \
   -only-testing:MimiRemoteTests/DeepSeekRuntimePresentationTests \
   -only-testing:MimiRemoteTests/HarnessNativeRoutingSeamTests \
+  -only-testing:MimiRemoteTests/SessionObservationLeaseTests \
   -only-testing:MimiRemoteTests/HarnessTransportTests \
   -only-testing:MimiRemoteTests/HarnessSessionDirectoryTests \
   -only-testing:MimiRemoteTests/HarnessDirectoryWiringTests \
@@ -94,6 +98,8 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/HarnessSubmissionControllerTests \
   -only-testing:MimiRemoteTests/HarnessPresentationProjectorTests \
   -only-testing:MimiRemoteTests/HarnessEventClientTests \
+  -only-testing:MimiRemoteTests/HarnessStreamReconnectTests \
+  -only-testing:MimiRemoteTests/HarnessSnapshotBaselineTests \
   -only-testing:MimiRemoteTests/HarnessSnapshotReplayTests \
   -only-testing:MimiRemoteTests/HarnessInteractionStoreTests \
   -only-testing:MimiRemoteTests/HarnessRecoveryCoordinatorTests \
@@ -112,6 +118,13 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testContinuationCreateACKDoesNotReplaceNewSessionSelection \
   -only-testing:MimiRemoteTests/ConversationLiveStatusTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testFirstSendPublishesPreparationBeforeAcknowledgementAndLiveSubscription \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTargetModelFailureCacheIsPerRuntimeAndCanExpire \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testForcedMenuRefreshSupersedesPendingTargetModelResult \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testConcurrentTargetModelPreparationSharesCatalog \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLocalCodexDraftDoesNotAdoptClaudeFromPartialModelCatalog \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDefaultModelResolutionCarriesRuntimeProviderBeforeCreate \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testModelListFailureFallsBackToBuiltInModelBeforeCreate \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testClaudeHistorySessionIgnoresStaleCodexModelSelectionBeforeResume \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testReopenShowsHistoryThenConnectionWithoutInventingNetworkFailure \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testHostChangeDuringModelLookupCancelsCapturedSubmission \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testHostSwitchSettlesPendingGuidanceInOriginalProfile \
@@ -167,6 +180,9 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testWorkbenchRestorationRouteRejectsSnapshotFromDifferentEndpoint \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testColdStartResolvedCandidateCannotCommitAfterUserSelectsAnotherSession \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLateGitStatusFromPreviousHostCannotOverwriteCurrentHostState \
+  -only-testing:MimiRemoteTests/WorkspaceGitStoreTests \
+  -only-testing:MimiRemoteTests/WorkspaceGitSummaryTests \
+  -only-testing:MimiRemoteTests/WorkspaceHostBoundaryTests \
   -only-testing:MimiRemoteTests/SessionArchiveReconciliationTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testManualWorkspaceRefreshRestartsFromFirstCursor \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testManualSessionLibraryRefreshRestartsDirectoryPageFromFirstCursor \
@@ -212,4 +228,10 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ManagedConnectionEntitlementStoreTests \
   -only-testing:MimiRemoteTests/ManagedConnectionEntitlementAPIClientTests \
   -only-testing:MimiRemoteTests/ManagedConnectionStoreKitClientTests \
-  -only-testing:MimiRemoteTests/LocalizationTests
+  -only-testing:MimiRemoteTests/LocalizationTests || test_status=$?
+
+if [[ "$test_status" -ne 0 && -d "$test_result_bundle" ]]; then
+  # quiet 日志可能只列测试名；失败时保留具体断言，诊断失败也不能覆盖原退出码。
+  xcrun xcresulttool get test-results summary --path "$test_result_bundle" || true
+fi
+exit "$test_status"

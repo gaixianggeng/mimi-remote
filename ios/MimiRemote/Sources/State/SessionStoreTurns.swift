@@ -173,6 +173,9 @@ extension SessionStore {
             let options = try await client.modelOptions()
             guard appStore.activeHostScope == hostScope else { return }
             appServerModelOptionsLastRefresh = Date()
+            for provider in RuntimeFeatureSupport.runtimeProviders {
+                turnModelRefreshByRuntime[provider] = (hostScope, Date())
+            }
             if !options.isEmpty || force {
                 appServerModelOptions = options
             }
@@ -185,9 +188,59 @@ extension SessionStore {
                 availableRuntimeProviders = ["codex"]
             }
             appServerModelOptionsLastRefresh = Date()
+            for provider in RuntimeFeatureSupport.runtimeProviders {
+                turnModelRefreshByRuntime[provider] = (hostScope, Date())
+            }
             if force {
                 setStatusMessage(L10n.text("ui.model_list_unavailable_continue_using_built_in_options"))
             }
+        }
+    }
+
+    private func prepareTurnModelOptions(runtimeProvider: String, hostScope: HostScope) async {
+        guard appStore.activeHostScope == hostScope else { return }
+        let provider = Self.normalizedRuntimeProvider(runtimeProvider)
+        guard RuntimeFeatureSupport.runtimeProviders.contains(provider) else { return }
+        if appServerModelOptions.contains(where: { Self.normalizedRuntimeProvider($0.runtimeProvider) == provider }) {
+            return
+        }
+        if let refresh = turnModelRefreshByRuntime[provider], refresh.hostScope == hostScope,
+           Date().timeIntervalSince(refresh.date) < 300 {
+            return
+        }
+        let requestID: UUID
+        let refreshDate: Date?
+        let task: Task<[CodexAppServerModelOption], Error>
+        if let pending = turnModelTasksByRuntime[provider], pending.hostScope == hostScope {
+            requestID = pending.id
+            refreshDate = pending.refreshDate
+            task = pending.task
+        } else {
+            do {
+                let client = try clientFactory()
+                requestID = UUID()
+                refreshDate = turnModelRefreshByRuntime[provider]?.date
+                task = Task { try await client.modelOptions(runtimeProvider: provider) }
+                turnModelTasksByRuntime[provider] = (hostScope, requestID, refreshDate, task)
+            } catch {
+                turnModelRefreshByRuntime[provider] = (hostScope, Date())
+                return
+            }
+        }
+        let result = await task.result
+        // 同一目标共享请求；旧主机或已被另一等待者收尾的请求不能清除新请求。
+        guard appStore.activeHostScope == hostScope,
+              turnModelTasksByRuntime[provider]?.id == requestID else { return }
+        turnModelTasksByRuntime.removeValue(forKey: provider)
+        // 强制菜单刷新已产生更新的成功/失败快照时，旧目标查询不能覆盖它。
+        guard turnModelRefreshByRuntime[provider]?.date == refreshDate else { return }
+        turnModelRefreshByRuntime[provider] = (hostScope, Date())
+        if case .success(let options) = result {
+            // 菜单与发送共用一份目录。兼容返回聚合目录的单 Runtime/测试客户端。
+            let refreshedProviders = Set(options.map { Self.normalizedRuntimeProvider($0.runtimeProvider) }).union([provider])
+            appServerModelOptions = appServerModelOptions.filter {
+                !refreshedProviders.contains(Self.normalizedRuntimeProvider($0.runtimeProvider))
+            } + options
         }
     }
 
@@ -291,11 +344,20 @@ extension SessionStore {
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
             return resolved
         }
-        if appServerModelOptions.isEmpty {
-            await refreshAppServerModelOptions(expectedHostScope: submissionContext?.hostScope)
+        let isLocalDraft = submissionContext.map { $0.session?.isLocalDraft == true }
+            ?? (selectedSession?.isLocalDraft == true)
+        // 草稿的 nil 是 Codex 的兼容写法；部分目录不能把它隐式改成其他 Runtime。
+        // 草稿仍允许用户显式选择 Runtime，没有会话的新入口保留原有默认项推断。
+        let targetRuntimeProvider = lockedRuntimeProvider
+            ?? Self.explicitRuntimeProvider(resolved.options.runtimeProvider)
+            ?? (isLocalDraft ? "codex" : nil)
+        if appServerModelOptions.isEmpty || targetRuntimeProvider != nil {
+            await prepareTurnModelOptions(
+                runtimeProvider: targetRuntimeProvider ?? "codex",
+                hostScope: submissionContext?.hostScope ?? appStore.activeHostScope
+            )
         }
         let allOptions = appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : appServerModelOptions
-        let targetRuntimeProvider = lockedRuntimeProvider ?? Self.explicitRuntimeProvider(resolved.options.runtimeProvider)
         let options = targetRuntimeProvider.map { runtimeProvider in
             allOptions.filter { Self.normalizedRuntimeProvider($0.runtimeProvider) == runtimeProvider }
         } ?? allOptions
@@ -435,18 +497,31 @@ extension SessionStore {
     }
 
     func loadEarlierHistory(sessionID: SessionID) async {
-        guard let session = sessionsByID[sessionID],
+        guard !Task.isCancelled,
+              let session = sessionsByID[sessionID],
               let cursor = historyPreviousCursorBySessionID[session.id],
               canLoadEarlierHistory(sessionID: session.id),
+              historyLoadJobsBySessionID[session.id] == nil,
               !loadingEarlierHistorySessionIDs.contains(session.id)
         else {
             return
         }
+        let hostScope = appStore.activeHostScope
+        let jobToken = historyLoadJobTokenBySessionID[session.id]
+        let pageToken = historyPageRequestTokenBySessionID[session.id]
+        // 翻页属于发起时的主机和首屏上下文；普通切换会话仍可更新原会话缓存。
+        let isCurrentContext = {
+            self.appStore.activeHostScope == hostScope
+                && self.historyLoadJobTokenBySessionID[session.id] == jobToken
+                && self.historyPageRequestTokenBySessionID[session.id] == pageToken
+        }
         loadingEarlierHistorySessionIDs.insert(session.id)
         setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.load_older_messages"), fraction: 0.18)
         defer {
-            loadingEarlierHistorySessionIDs.remove(session.id)
-            clearHistoryLoadProgress(sessionID: session.id)
+            if isCurrentContext() {
+                loadingEarlierHistorySessionIDs.remove(session.id)
+                clearHistoryLoadProgress(sessionID: session.id)
+            }
         }
         do {
             let client = try clientFactory()
@@ -457,6 +532,7 @@ extension SessionStore {
                 limit: historyLoadedQualityBySessionID[session.id] == .summary ? economyHistoryPageLimit : fullHistoryPageLimit,
                 loadMode: historyLoadedQualityBySessionID[session.id] == .summary ? .economy : .full
             )
+            guard !Task.isCancelled, isCurrentContext() else { return }
             setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.parse_historical_messages"), fraction: 0.76)
             ingestHistoryContext(page.context, fallbackSessionID: session.id)
             conversationStore.setHistory(
@@ -479,14 +555,28 @@ extension SessionStore {
             )
             historySessionsWithAdditionalPages.insert(session.id)
             appendHistoryItemEnrichment(page: page, sessionID: session.id)
-            setErrorMessage(nil)
+            setErrorMessage(nil, sessionID: session.id)
         } catch {
+            guard !Task.isCancelled, isCurrentContext() else { return }
+            if case HarnessTransportError.continuityLost = error {
+                // 首屏刷新失败也可能已经换了原生读取基线；只重建一次首屏 cursor，
+                // 保留已显示正文，下一次用户翻页再沿新上下文继续，避免递归重试。
+                _ = await loadHistory(
+                    for: session,
+                    quiet: selectedSessionID != session.id,
+                    loadMode: historyLoadedQualityBySessionID[session.id] == .summary ? .economy : .full,
+                    force: true,
+                    reason: .authoritativeReopen,
+                    allowPolicyRetry: false
+                )
+                return
+            }
             if case AgentAPIError.invalidResponse = error {
                 // 无效分页响应无法安全重试。保留已加载内容，但关闭入口，避免同一 cursor
                 // 被用户或自动流程反复请求。
                 closeHistoryPagination(sessionID: session.id)
             }
-            setErrorMessage(error.localizedDescription)
+            setErrorMessage(error.localizedDescription, sessionID: session.id)
         }
     }
 
@@ -673,7 +763,7 @@ extension SessionStore {
 
         if workspace == nil {
             // 冷启动时项目索引可能尚未建立；只补一次项目元数据，不进入 bootstrap 的循环重试。
-            let fetchedProjects = try await client.projects()
+            let fetchedProjects = try await workspaceHostClientFactory().projects()
             guard route.profileID == appStore.notificationRoutingProfileID else {
                 return .profileSwitched
             }
@@ -1047,6 +1137,19 @@ extension SessionStore {
            notice.blocksSending {
             setErrorMessage(notice.message)
             return false
+        }
+        let preparationLease = submissionContext.selectionLease
+        if runningDelivery == .queued, isSelectionLeaseCurrent(preparationLease) {
+            // 模型目录可能走网络；从点击发送起就复用发送状态，并随页面租约释放。
+            sessionCreationLoadingLease = preparationLease
+            isLoading = true
+        }
+        defer {
+            if runningDelivery == .queued, isSubmissionHostCurrent(submissionContext),
+               sessionCreationLoadingLease == preparationLease {
+                sessionCreationLoadingLease = nil
+                isLoading = false
+            }
         }
         let payload = runningDelivery == .queued
             ? await payloadResolvingRequiredModel(payload, submissionContext: submissionContext)

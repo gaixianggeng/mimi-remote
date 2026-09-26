@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/harnessclient"
 	"github.com/gorilla/websocket"
 )
@@ -29,8 +28,10 @@ const (
 	// harnessNativeWSMaxStreams 限制单条连接的并发订阅数。每多一条订阅就多一条
 	// 到 Harness 的物理连接，没有上限时一个已配对客户端就能把本机连接数打满。
 	harnessNativeWSMaxStreams = 8
-	harnessNativeWSWriteWait  = 10 * time.Second
-	harnessNativeWSReadLimit  = 1 << 20
+	// 限制耗时 RPC 等待期间积压的客户端帧；超过上限就关闭连接，不能阻塞读取而漏掉断线。
+	harnessNativeWSMaxPendingFrames = 32
+	harnessNativeWSWriteWait        = 10 * time.Second
+	harnessNativeWSReadLimit        = 1 << 20
 	// 读空闲上限：这么久没收到任何帧（含 pong）即判定链路已死。
 	harnessNativeWSReadIdle   = 120 * time.Second
 	harnessNativeWSPingPeriod = 30 * time.Second
@@ -96,34 +97,6 @@ func (stream *harnessNativeWSStream) close() {
 	})
 }
 
-// acquireHarnessNativeSession 申请一个全局 Harness 会话订阅名额。
-//
-// 只统计 `session/follow`：每条 follow 都在 Harness 上持有一条 remote.mux 物理连接，
-// 单连接上限（harnessNativeWSMaxStreams）挡不住"多开几条移动连接"，所以还需要一个
-// 跨连接的上限。`$events` 与连接级的 `session/control` 不计入——它们不是会话 follow，
-// 计入会让宿主观察挤占历史预热与多设备会话观察，表现为"明明可用却连不上"。
-func (r *Router) acquireHarnessNativeSession() bool {
-	limit := r.cfg.DeepSeek.MaxConcurrentSessions
-	if limit <= 0 {
-		limit = config.DefaultDeepSeekMaxConcurrentSessions
-	}
-	r.harnessNativeSessionMu.Lock()
-	defer r.harnessNativeSessionMu.Unlock()
-	if r.activeHarnessNativeSession >= limit {
-		return false
-	}
-	r.activeHarnessNativeSession++
-	return true
-}
-
-func (r *Router) releaseHarnessNativeSession() {
-	r.harnessNativeSessionMu.Lock()
-	if r.activeHarnessNativeSession > 0 {
-		r.activeHarnessNativeSession--
-	}
-	r.harnessNativeSessionMu.Unlock()
-}
-
 // releaseSessionSlotLocked 归还一条订阅占用的全局会话名额。幂等；调用方须持有 c.mu。
 //
 // 三条退役路径（主动退订、上游结束、整条连接关闭）都以"从 c.streams 摘除"为前置条件，
@@ -133,7 +106,7 @@ func (c *harnessNativeStreamConn) releaseSessionSlotLocked(stream *harnessNative
 		return
 	}
 	stream.slotReleased = true
-	c.router.releaseHarnessNativeSession()
+	c.router.harnessNative.releaseSession()
 }
 
 // harnessNativeStreamConn 是一条移动端连接的中继状态。
@@ -165,6 +138,8 @@ type harnessNativeStreamConn struct {
 	wg       sync.WaitGroup
 	// closedCh 在 shutdown 时关闭，用于让 relay / ping 协程立刻退出。
 	closedCh chan struct{}
+	// cancel 结束连接内的授权/应答 RPC，避免 shutdown 等待请求上下文自取消。
+	cancel context.CancelFunc
 }
 
 // harnessNativeStreamGeneration 为每条新连接分配一个进程内唯一代次。
@@ -202,6 +177,7 @@ func (r *Router) harnessNativeStreamHandler(w http.ResponseWriter, req *http.Req
 		return
 	}
 
+	ctx, cancel := context.WithCancel(req.Context())
 	session := &harnessNativeStreamConn{
 		router:     r,
 		conn:       conn,
@@ -209,8 +185,14 @@ func (r *Router) harnessNativeStreamHandler(w http.ResponseWriter, req *http.Req
 		generation: nextHarnessNativeStreamGeneration(),
 		registry:   newHarnessNativeInteractionRegistry(),
 		closedCh:   make(chan struct{}),
+		cancel:     cancel,
 	}
-	session.serve(req.Context())
+	if !r.harnessNative.register(session) {
+		session.stop()
+		return
+	}
+	defer r.harnessNative.release(session)
+	session.serve(ctx)
 }
 
 // serve 读取客户端帧直到连接结束，结束时一次性释放全部资源。
@@ -222,7 +204,11 @@ func (c *harnessNativeStreamConn) serve(ctx context.Context) {
 	c.conn.SetPongHandler(func(string) error {
 		return c.conn.SetReadDeadline(time.Now().Add(harnessNativeWSReadIdle))
 	})
+	frames := make(chan []byte, harnessNativeWSMaxPendingFrames)
+	// 帧处理串行执行，读取独立前进，授权/应答 RPC 等待期间也能发现 EOF 并取消请求。
+	c.wg.Add(2)
 	go c.pingLoop()
+	go c.handleFrames(ctx, frames)
 
 	for {
 		_, raw, err := c.conn.ReadMessage()
@@ -231,7 +217,30 @@ func (c *harnessNativeStreamConn) serve(ctx context.Context) {
 		}
 		// 读到东西就续期，避免把"帧很密但一直没 pong"的健康连接判死。
 		_ = c.conn.SetReadDeadline(time.Now().Add(harnessNativeWSReadIdle))
+		select {
+		case frames <- raw:
+		case <-ctx.Done():
+			return
+		default:
+			return
+		}
+	}
+}
 
+// handleFrames 保持 open/cancel/respond 的接收顺序；由 serve 负责关闭并等待本协程。
+func (c *harnessNativeStreamConn) handleFrames(ctx context.Context, frames <-chan []byte) {
+	defer c.wg.Done()
+	for {
+		var raw []byte
+		select {
+		case raw = <-frames:
+		case <-ctx.Done():
+			return
+		}
+		// 关闭与已缓冲帧可能同时可读，关闭后不再执行队列里的命令。
+		if ctx.Err() != nil {
+			return
+		}
 		var frame harnessNativeWSClientFrame
 		if err := harnessNativeDecodeStrict(raw, &frame); err != nil {
 			c.writeStreamError("", harnessNativeWSError("gateway/bad-request", "帧不是合法 JSON"))
@@ -251,6 +260,7 @@ func (c *harnessNativeStreamConn) serve(ctx context.Context) {
 }
 
 func (c *harnessNativeStreamConn) pingLoop() {
+	defer c.wg.Done()
 	ticker := time.NewTicker(harnessNativeWSPingPeriod)
 	defer ticker.Stop()
 	for {
@@ -274,6 +284,12 @@ func (c *harnessNativeStreamConn) pingLoop() {
 
 func (c *harnessNativeStreamConn) done() <-chan struct{} {
 	return c.closedCh
+}
+
+// stop 可由资源 owner 调用：取消网络请求并唤醒读循环，由 serve 统一释放订阅。
+func (c *harnessNativeStreamConn) stop() {
+	c.cancel()
+	_ = c.conn.Close()
 }
 
 // shutdown 一次性释放：关闭所有上游订阅、关闭本连接。
@@ -300,10 +316,10 @@ func (c *harnessNativeStreamConn) shutdown() {
 
 	// 先关信号再等协程：顺序反了会死等还在 select 上的 relay。
 	close(c.closedCh)
+	c.stop()
 	for _, stream := range streams {
 		stream.close()
 	}
-	_ = c.conn.Close()
 	c.wg.Wait()
 }
 
@@ -348,7 +364,7 @@ func (c *harnessNativeStreamConn) handleOpen(ctx context.Context, frame harnessN
 	// 与本函数开头的顺序约定一致——被拒的订阅不产生任何一次 Harness 访问。
 	sessionSlot := false
 	if endpoint == harnessclient.MethodSessionFollow {
-		if !c.router.acquireHarnessNativeSession() {
+		if !c.router.harnessNative.acquireSession(c.router.cfg.DeepSeek.MaxConcurrentSessions) {
 			c.mu.Unlock()
 			c.writeStreamError(streamID, harnessNativeWSError("gateway/service-unavailable", "同时打开的会话订阅数已达上限，请先退订其它会话"))
 			return
@@ -361,7 +377,7 @@ func (c *harnessNativeStreamConn) handleOpen(ctx context.Context, frame harnessN
 	slotHeld := sessionSlot
 	defer func() {
 		if slotHeld {
-			c.router.releaseHarnessNativeSession()
+			c.router.harnessNative.releaseSession()
 		}
 	}()
 

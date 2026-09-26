@@ -221,19 +221,20 @@ final class HarnessSnapshotBaselineTests: XCTestCase {
             rpc: FakeHarnessRPCTransport(), stream: stream
         )
         let sessionID = "h00-session-pages"
-        let older = try XCTUnwrap(
-            api.makeEventClient(sessionID: sessionID) as? HarnessSessionWebSocketClient
-        )
-        older.connect(sessionID: sessionID)
+        // 权威 factory 是私有实现；通过真实历史预热入口取得各自的全局读取上下文。
+        let olderTask = Task { await api.awaitSnapshotBaseline(for: sessionID) }
         let olderFollow = try await waitForOpenStream(
             endpoint: HarnessWireEndpoint.sessionFollow, stream: stream
         )
+        stream.push(carrierValue(
+            streamID: olderFollow,
+            value: snapshotValue(sessionID: sessionID, cursor: 10)
+        ))
+        let olderBaseline = await olderTask.value
+        let olderContextID = try XCTUnwrap(olderBaseline?.contextID)
 
         let frameIndex = stream.sentFrames.count
-        let newer = try XCTUnwrap(
-            api.makeEventClient(sessionID: sessionID) as? HarnessSessionWebSocketClient
-        )
-        newer.connect(sessionID: sessionID)
+        let newerTask = Task { await api.awaitSnapshotBaseline(for: sessionID) }
         let newerFollow = try await waitForOpenStream(
             endpoint: HarnessWireEndpoint.sessionFollow, stream: stream, after: frameIndex
         )
@@ -241,20 +242,16 @@ final class HarnessSnapshotBaselineTests: XCTestCase {
             streamID: newerFollow,
             value: snapshotValue(sessionID: sessionID, cursor: 90)
         ))
-        try await waitFor { newer.journal?.snapshotCursor == 90 }
-
-        stream.push(carrierValue(
-            streamID: olderFollow,
-            value: snapshotValue(sessionID: sessionID, cursor: 10)
-        ))
-        try await waitFor { older.journal?.snapshotCursor == 10 }
+        let newerBaseline = await newerTask.value
+        XCTAssertEqual(newerBaseline?.cursor, 90)
+        XCTAssertGreaterThan(try XCTUnwrap(newerBaseline?.contextID), olderContextID)
+        // 模拟退役观察在新快照之后才送达的报告，验证实际 API 回调入口拒绝旧上下文。
+        api.rememberSnapshotCursor(10, for: sessionID, contextID: olderContextID)
         let baseline = await api.awaitSnapshotBaseline(
             for: sessionID, requiringNewSnapshot: false, timeout: .seconds(1)
         )
 
         XCTAssertEqual(baseline?.cursor, 90, "迟到的旧页面不得回滚权威读取边界")
-        older.disconnect()
-        newer.disconnect()
         await api.shutdownForHostSwitch()
     }
 
@@ -285,6 +282,7 @@ final class HarnessSnapshotBaselineTests: XCTestCase {
             value: snapshotValue(sessionID: sessionID, cursor: 20)
         ))
         let firstPage = try await firstTask.value
+        XCTAssertTrue(firstPage.resetsPaginationContext)
         let oldCursor = try XCTUnwrap(firstPage.previousCursor)
         let followCount = stream.sentFrames.filter {
             if case .open(_, let endpoint, _) = $0,
@@ -292,9 +290,10 @@ final class HarnessSnapshotBaselineTests: XCTestCase {
             return false
         }.count
 
-        _ = try await api.messagesPage(
+        let olderPage = try await api.messagesPage(
             sessionID: sessionID, before: oldCursor, limit: 20, loadMode: .full
         )
+        XCTAssertFalse(olderPage.resetsPaginationContext)
         XCTAssertEqual(stream.sentFrames.filter {
             if case .open(_, let endpoint, _) = $0,
                endpoint == HarnessWireEndpoint.sessionFollow { return true }
@@ -312,7 +311,8 @@ final class HarnessSnapshotBaselineTests: XCTestCase {
             streamID: refreshFollow,
             value: snapshotValue(sessionID: sessionID, cursor: 30)
         ))
-        _ = try await refreshTask.value
+        let refreshedPage = try await refreshTask.value
+        XCTAssertTrue(refreshedPage.resetsPaginationContext)
 
         do {
             _ = try await api.messagesPage(
@@ -324,6 +324,96 @@ final class HarnessSnapshotBaselineTests: XCTestCase {
                 return XCTFail("应为 continuityLost，实际 \(error)")
             }
         }
+        await api.shutdownForHostSwitch()
+    }
+
+    func testStoreKeepsLoadedNativeHistoryAndCanPageAfterAuthoritativeRefresh() async throws {
+        try await assertStoreCanPageAfterNativeRefresh(failRefresh: false)
+    }
+
+    func testStoreRecoversCursorOnceAfterNativeRefreshChangesBaselineButFails() async throws {
+        try await assertStoreCanPageAfterNativeRefresh(failRefresh: true)
+    }
+
+    private func assertStoreCanPageAfterNativeRefresh(failRefresh: Bool) async throws {
+        let rpc = FakeHarnessRPCTransport()
+        var requests: [(through: Int, before: Int?)] = []
+        rpc.handler = { request in
+            guard request.method == HarnessWireMethod.sessionPage,
+                  let value = request.args?["request"],
+                  let through = value["throughSeq"]?.intValue else {
+                return .failure(.rejected(status: 400, message: "unexpected method"))
+            }
+            let before = value["beforeSeq"]?.intValue
+            requests.append((through, before))
+            if failRefresh && through == 30 {
+                return .failure(.rejected(status: 500, message: "refresh failed"))
+            }
+            let seq = before == nil ? through - 2 : (through == 20 ? 8 : 4)
+            return .success(self.historyPageValue(seq: seq, hasMore: seq != 4))
+        }
+        let stream = FakeHarnessStreamTransport()
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787", token: "fixture", rpc: rpc, stream: stream
+        )
+        let bundle = AppServerRuntimeBundle(
+            endpoint: "http://127.0.0.1:8787", token: "fixture", harnessFactory: { _, _ in api }
+        )
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: bundle)
+        let project = AgentProject(id: "native-history", name: "Native", path: "/tmp/native-history")
+        let session = AgentSession(
+            id: "native-history-thread", projectID: project.id, project: project.name, dir: project.path,
+            title: "Native history", status: "history", source: "deepseek", resumeID: nil,
+            createdAt: nil, updatedAt: nil
+        )
+        bundle.routes.remember(session)
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(),
+            logStore: LogStore(), clientFactory: { client }
+        )
+        store.projects = [project]
+        store.sessions = [session]
+        _ = store.commitSelection(projectID: project.id, sessionID: session.id, reason: .userOpen)
+        let first = Task { await store.loadHistory(for: session) }
+        let firstFollow = try await waitForOpenStream(endpoint: HarnessWireEndpoint.sessionFollow, stream: stream)
+        stream.push(carrierValue(streamID: firstFollow, value: snapshotValue(sessionID: session.id, cursor: 20)))
+        let firstLoaded = await first.value
+        XCTAssertTrue(firstLoaded)
+        await store.loadEarlierHistory(sessionID: session.id)
+        XCTAssertEqual(store.conversationStore.messages(for: session.id).count, 2)
+        let loadedIDs = Set(store.conversationStore.messages(for: session.id).map(\.id))
+        let oldCursor = store.historyPreviousCursorBySessionID[session.id]
+
+        let refreshFrameIndex = stream.sentFrames.count
+        let refresh = Task { await store.loadHistory(for: session, force: true) }
+        let refreshFollow = try await waitForOpenStream(
+            endpoint: HarnessWireEndpoint.sessionFollow, stream: stream, after: refreshFrameIndex
+        )
+        stream.push(carrierValue(streamID: refreshFollow, value: snapshotValue(sessionID: session.id, cursor: 30)))
+        let refreshed = await refresh.value
+        XCTAssertEqual(refreshed, !failRefresh)
+
+        if failRefresh {
+            let recoveryFrameIndex = stream.sentFrames.count
+            let recovery = Task { await store.loadEarlierHistory(sessionID: session.id) }
+            let recoveryFollow = try await waitForOpenStream(
+                endpoint: HarnessWireEndpoint.sessionFollow, stream: stream, after: recoveryFrameIndex
+            )
+            stream.push(carrierValue(streamID: recoveryFollow, value: snapshotValue(sessionID: session.id, cursor: 40)))
+            await recovery.value
+            XCTAssertEqual(requests.count, 4, "一次失效只恢复首屏，不自动递归翻页")
+        }
+
+        XCTAssertNotEqual(store.historyPreviousCursorBySessionID[session.id], oldCursor)
+        XCTAssertTrue(loadedIDs.isSubset(of: Set(store.conversationStore.messages(for: session.id).map(\.id))))
+        XCTAssertTrue(store.canLoadEarlierHistory(sessionID: session.id))
+        await store.loadEarlierHistory(sessionID: session.id)
+        XCTAssertEqual(requests.last?.through, failRefresh ? 40 : 30)
+        XCTAssertEqual(requests.last?.before, failRefresh ? 38 : 28)
+        XCTAssertEqual(store.conversationStore.messages(for: session.id).count, 4)
+        XCTAssertFalse(store.canLoadEarlierHistory(sessionID: session.id))
+        XCTAssertNil(store.errorMessage)
+        XCTAssertNil(store.historyLoadProgress(sessionID: session.id))
         await api.shutdownForHostSwitch()
     }
 

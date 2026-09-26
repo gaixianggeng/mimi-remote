@@ -319,6 +319,8 @@ struct HistoryMessagesPage: Equatable {
     let itemContinuations: [HistoryTurnItemsContinuation]
     let latestForkableTurnID: TurnID?
     let turnStates: [HistoryTurnState]
+    /// 本次首屏建立了新的读取上下文，分页状态须按本页重建；正文仍可合并保留。
+    var resetsPaginationContext: Bool
 
     init(response: MessagesResponse) {
         self.messages = response.messages
@@ -332,6 +334,7 @@ struct HistoryMessagesPage: Equatable {
         self.itemContinuations = []
         self.latestForkableTurnID = nil
         self.turnStates = []
+        self.resetsPaginationContext = false
     }
 
     init(
@@ -345,7 +348,8 @@ struct HistoryMessagesPage: Equatable {
         authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:],
         itemContinuations: [HistoryTurnItemsContinuation] = [],
         latestForkableTurnID: TurnID? = nil,
-        turnStates: [HistoryTurnState] = []
+        turnStates: [HistoryTurnState] = [],
+        resetsPaginationContext: Bool = false
     ) {
         self.messages = messages
         self.previousCursor = previousCursor
@@ -358,6 +362,7 @@ struct HistoryMessagesPage: Equatable {
         self.itemContinuations = itemContinuations
         self.latestForkableTurnID = latestForkableTurnID
         self.turnStates = turnStates
+        self.resetsPaginationContext = resetsPaginationContext
     }
 }
 
