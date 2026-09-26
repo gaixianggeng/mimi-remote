@@ -673,7 +673,7 @@ extension SessionStore {
 
         if workspace == nil {
             // 冷启动时项目索引可能尚未建立；只补一次项目元数据，不进入 bootstrap 的循环重试。
-            let fetchedProjects = try await client.projects()
+            let fetchedProjects = try await workspaceHostClientFactory().projects()
             guard route.profileID == appStore.notificationRoutingProfileID else {
                 return .profileSwitched
             }

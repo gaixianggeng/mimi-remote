@@ -6,8 +6,29 @@ struct ProjectsGitHostLease {
     let client: any SessionStoreAPIClient
 }
 
+struct WorkspaceHostLease {
+    let scope: HostScope
+    let client: any WorkspaceHostAPIClient
+}
+
 // 文件预览、命令动作、Git、项目列表与网络恢复按工作区能力集中。
 extension SessionStore {
+    func captureWorkspaceHostLease() throws -> WorkspaceHostLease {
+        WorkspaceHostLease(scope: appStore.activeHostScope, client: try workspaceHostClientFactory())
+    }
+
+    private func isWorkspaceHostCurrent(_ lease: WorkspaceHostLease) -> Bool {
+        appStore.activeHostScope == lease.scope
+    }
+
+    private func canApplyWorkspaceHostResult(_ lease: WorkspaceHostLease) -> Bool {
+        !Task.isCancelled && isWorkspaceHostCurrent(lease)
+    }
+
+    func requireCurrentWorkspaceHost(_ lease: WorkspaceHostLease) throws {
+        guard canApplyWorkspaceHostResult(lease) else { throw CancellationError() }
+    }
+
     func captureProjectsGitHostLease() throws -> ProjectsGitHostLease {
         let scope = appStore.activeHostScope
         let client = try clientFactory()
@@ -34,14 +55,14 @@ extension SessionStore {
     }
 
     func listDirectories(path: String) async throws -> DirectoryListResponse {
-        let lease = try captureProjectsGitHostLease()
+        let lease = try captureWorkspaceHostLease()
         do {
             let response = try await lease.client.listDirectories(path: path)
-            try requireCurrentProjectsGitHost(lease)
+            try requireCurrentWorkspaceHost(lease)
             return response
         } catch {
             // 旧主机的失败也属于旧结果，统一转成取消，避免 B 页面展示 A 的网络错误。
-            try requireCurrentProjectsGitHost(lease)
+            try requireCurrentWorkspaceHost(lease)
             throw error
         }
     }
@@ -71,16 +92,16 @@ extension SessionStore {
     // 以上三个预览此前逐字重复了同一段流程：取 host 租约、两次 host 校验、
     // 落临时文件、结果过期时丢弃预览。现在只保留这一份，差异由 fetch 闭包注入。
     private func previewMedia(
-        _ fetch: (any SessionStoreAPIClient) async throws -> FileReadResponse
+        _ fetch: (any WorkspaceHostAPIClient) async throws -> FileReadResponse
     ) async throws -> URL {
-        let lease = try captureProjectsGitHostLease()
+        let lease = try captureWorkspaceHostLease()
         let profileID = mediaProfileScope
         let response: FileReadResponse
         do {
             response = try await fetch(lease.client)
-            try requireCurrentProjectsGitHost(lease)
+            try requireCurrentWorkspaceHost(lease)
         } catch {
-            try requireCurrentProjectsGitHost(lease)
+            try requireCurrentWorkspaceHost(lease)
             throw error
         }
         let url: URL
@@ -90,10 +111,10 @@ extension SessionStore {
                 profileID: profileID
             )
         } catch {
-            try requireCurrentProjectsGitHost(lease)
+            try requireCurrentWorkspaceHost(lease)
             throw error
         }
-        guard canApplyProjectsGitResult(lease) else {
+        guard canApplyWorkspaceHostResult(lease) else {
             await MediaWorker.shared.discardPreview(at: url)
             throw CancellationError()
         }
@@ -114,9 +135,9 @@ extension SessionStore {
         guard !targetPath.isEmpty else {
             return
         }
-        let lease: ProjectsGitHostLease
+        let lease: WorkspaceHostLease
         do {
-            lease = try captureProjectsGitHostLease()
+            lease = try captureWorkspaceHostLease()
         } catch {
             commandActionsByPath[targetPath] = []
             commandActionErrorByPath[targetPath] = error.localizedDescription
@@ -124,18 +145,18 @@ extension SessionStore {
         }
         isRefreshingCommandActions = true
         defer {
-            if isProjectsGitHostCurrent(lease) {
+            if isWorkspaceHostCurrent(lease) {
                 isRefreshingCommandActions = false
             }
         }
         do {
             let actions = try await lease.client.commandActions(path: targetPath)
-            guard canApplyProjectsGitResult(lease) else { return }
+            guard canApplyWorkspaceHostResult(lease) else { return }
             // action 是 agentd 配置里的 allowlist，只按工作区 path 缓存，避免跨会话串结果。
             commandActionsByPath[targetPath] = actions
             commandActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
-            guard canApplyProjectsGitResult(lease) else { return }
+            guard canApplyWorkspaceHostResult(lease) else { return }
             commandActionsByPath[targetPath] = []
             commandActionErrorByPath[targetPath] = error.localizedDescription
         }
@@ -202,9 +223,9 @@ extension SessionStore {
     }
 
     func performCommandActionRun(_ run: QueuedCommandActionRun) async {
-        let lease: ProjectsGitHostLease
+        let lease: WorkspaceHostLease
         do {
-            lease = try captureProjectsGitHostLease()
+            lease = try captureWorkspaceHostLease()
         } catch {
             commandActionErrorByPath[run.path] = error.localizedDescription
             return
@@ -212,7 +233,7 @@ extension SessionStore {
         runningCommandActionPath = run.path
         runningCommandActionID = run.id
         defer {
-            if isProjectsGitHostCurrent(lease) {
+            if isWorkspaceHostCurrent(lease) {
                 runningCommandActionPath = nil
                 runningCommandActionID = nil
             }
@@ -223,7 +244,7 @@ extension SessionStore {
                 id: run.id,
                 confirmed: run.confirmed
             )
-            guard canApplyProjectsGitResult(lease) else { return }
+            guard canApplyWorkspaceHostResult(lease) else { return }
             commandActionResultByPath[run.path] = response
             var history = commandActionHistoryByPath[run.path] ?? []
             // 执行历史只做本地短缓存，不写后端，避免命令输出长期留存在配置服务里。
@@ -234,7 +255,7 @@ extension SessionStore {
             commandActionHistoryByPath[run.path] = history
             commandActionErrorByPath.removeValue(forKey: run.path)
         } catch {
-            guard canApplyProjectsGitResult(lease) else { return }
+            guard canApplyWorkspaceHostResult(lease) else { return }
             commandActionErrorByPath[run.path] = error.localizedDescription
         }
     }

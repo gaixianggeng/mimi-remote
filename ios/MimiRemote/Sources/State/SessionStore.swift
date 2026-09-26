@@ -321,6 +321,7 @@ final class SessionStore: ObservableObject {
     // 这样既能跨横竖屏导致的 ComposerView 重建恢复，又不会扩大敏感数据存储范围。
     var pendingUserInputFormStateCache = PendingUserInputFormState()
     let clientFactory: () throws -> any SessionStoreAPIClient
+    let workspaceHostClientFactory: () throws -> any WorkspaceHostAPIClient
     let webSocketFactory: () -> any SessionWebSocketClient
     let sessionWebSocketFactory: ((AgentSession) -> any SessionWebSocketClient)?
     let webSocketReconnectDelayNanoseconds: (Int) -> UInt64
@@ -577,6 +578,7 @@ final class SessionStore: ObservableObject {
         fileUploadStore: FileUploadStore? = nil,
         tailcatExperimentController: TailcatExperimentController? = nil,
         clientFactory: (() throws -> any SessionStoreAPIClient)? = nil,
+        workspaceHostClientFactory: (() throws -> any WorkspaceHostAPIClient)? = nil,
         workspaceGitClientFactory: (() throws -> any WorkspaceGitAPIClient)? = nil,
         webSocketFactory: (() -> any SessionWebSocketClient)? = nil,
         sessionWebSocketFactory: ((AgentSession) -> any SessionWebSocketClient)? = nil,
@@ -708,6 +710,14 @@ final class SessionStore: ObservableObject {
         // 审批和补充信息始终允许提醒；完成/失败属于高频日常事件，首版默认关闭。
         self.runtimeCompletionNotificationsEnabled = runtimeCompletionNotificationsEnabled
         self.clientFactory = clientFactory ?? { try appStore.makeSessionStoreAPIClient() }
+        if let workspaceHostClientFactory {
+            self.workspaceHostClientFactory = workspaceHostClientFactory
+        } else if let clientFactory {
+            // 旧测试注入仍走同一个替身；生产不通过会话路由构造主机数据客户端。
+            self.workspaceHostClientFactory = { SessionClientWorkspaceHostAdapter(client: try clientFactory()) }
+        } else {
+            self.workspaceHostClientFactory = { try appStore.client() }
+        }
         self.webSocketFactory = webSocketFactory ?? { appStore.makeSessionWebSocketClient() }
         if let sessionWebSocketFactory {
             self.sessionWebSocketFactory = sessionWebSocketFactory

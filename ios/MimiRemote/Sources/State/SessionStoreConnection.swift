@@ -2470,7 +2470,7 @@ extension SessionStore {
     // - resolve 抛传输层错误（连不上 agentd） → 无法判定，按瞬时处理，不冤枉标记。
     func evaluateWorkspaceAvailability(_ workspace: AgentWorkspace) async -> WorkspaceAvailability {
         do {
-            let client = try clientFactory()
+            let client = try workspaceHostClientFactory()
             _ = try await client.resolveWorkspace(path: workspace.path)
             return .available
         } catch let error as AgentAPIError {

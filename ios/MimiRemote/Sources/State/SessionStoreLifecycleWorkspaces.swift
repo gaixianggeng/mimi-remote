@@ -570,8 +570,7 @@ extension SessionStore {
         var didObserveHost = false
         let hostRequestStartedAt = sessionListNow()
         do {
-            let client = try clientFactory()
-            let fetchedProjects = try await client.projects()
+            let fetchedProjects = try await workspaceHostClientFactory().projects()
             guard connectionGeneration == appStore.connectionGeneration else {
                 return
             }
@@ -772,12 +771,15 @@ extension SessionStore {
     /// 只刷新工作区目录，不改变当前会话选择，也不重建 WebSocket。
     /// 工作区页浏览和手动刷新必须与会话运行态隔离，避免用户查看目录时打断长任务。
     func refreshWorkspaceCatalog() async throws {
-        let hostScope = appStore.activeHostScope
-        let client = try clientFactory()
-        let fetchedProjects = try await client.projects()
-        // projects 属于远端主机数据；旧 host 或已取消的 View 任务不得在 await 后写入当前 Store。
-        guard !Task.isCancelled, appStore.activeHostScope == hostScope else {
-            throw CancellationError()
+        let lease = try captureWorkspaceHostLease()
+        let fetchedProjects: [AgentProject]
+        do {
+            fetchedProjects = try await lease.client.projects()
+            try requireCurrentWorkspaceHost(lease)
+        } catch {
+            // 旧主机的失败也不能进入新主机页面的错误提示。
+            try requireCurrentWorkspaceHost(lease)
+            throw error
         }
         setProjectsIfChanged(fetchedProjects)
 
@@ -941,9 +943,8 @@ extension SessionStore {
         }
         let openIntent = reserveSelectionIntent()
         do {
-            // 走 clientFactory（与会话请求同一个注入点）而不是 appStore.client()，
-            // 让 resolve 和后续会话加载共用一条可测试链路。
-            let resolvedWorkspace = try await clientFactory().resolveWorkspace(path: trimmed)
+            // 主机路径校验直接走 agentd；打开后的会话加载再选择对应 Runtime。
+            let resolvedWorkspace = try await workspaceHostClientFactory().resolveWorkspace(path: trimmed)
             // resolve 之后的 remember 会写入当前 Profile；必须先确认旧意图仍持有提交权，
             // 否则切主机或新导航会把上一台 Mac 的工作区持久化到新作用域。
             guard !Task.isCancelled, isSelectionLeaseCurrent(openIntent) else {
@@ -996,15 +997,21 @@ extension SessionStore {
     @discardableResult
     func createWorktreeAndOpen(project: AgentProject, name: String? = nil, base: String? = nil, branch: String? = nil) async -> Bool {
         let openIntent = reserveSelectionIntent()
+        let hostScope = appStore.activeHostScope
         isCreatingWorktree = true
-        defer { isCreatingWorktree = false }
+        defer {
+            if appStore.activeHostScope == hostScope { isCreatingWorktree = false }
+        }
         do {
-            let response = try await clientFactory().createWorktree(
+            let response = try await workspaceHostClientFactory().createWorktree(
                 path: project.path,
                 name: name?.trimmingCharacters(in: .whitespacesAndNewlines),
                 base: base?.trimmingCharacters(in: .whitespacesAndNewlines),
                 branch: branch?.trimmingCharacters(in: .whitespacesAndNewlines)
             )
+            // rememberWorkspace 会持久化到当前 Profile，必须先拒绝旧主机和过期导航结果。
+            guard !Task.isCancelled, appStore.activeHostScope == hostScope,
+                  isSelectionLeaseCurrent(openIntent) else { return false }
             let workspace = rememberWorkspace(response.workspace)
             // Worktree 成功创建后作为一个普通 workspace 接入，后续 thread/list 和 thread/start 复用现有 cwd 安全链路。
             upsertManagedWorktree(WorktreeListItem(workspace: workspace, worktree: response.worktree))
@@ -1077,11 +1084,11 @@ extension SessionStore {
         }
 
         do {
-            let client = try clientFactory()
             // resolveWorkspace 重新经过 Mac 端 allowlist 校验，不能仅凭 iPad 缓存的 cwd 发起 fork。
-            let workspace = try await client.resolveWorkspace(path: session.dir)
+            let workspace = try await workspaceHostClientFactory().resolveWorkspace(path: session.dir)
             guard appStore.activeHostScope == hostScope else { return false }
 
+            let client = try clientFactory()
             let sourceThreadID = normalizedOptional(session.resumeID) ?? session.id
             let forked = try await client.forkSession(
                 threadID: sourceThreadID,
@@ -1178,17 +1185,22 @@ extension SessionStore {
         }
 
         let handoffIntent = reserveSelectionIntent()
+        let hostScope = appStore.activeHostScope
         isCreatingWorktree = true
-        defer { isCreatingWorktree = false }
+        defer {
+            if appStore.activeHostScope == hostScope { isCreatingWorktree = false }
+        }
         do {
             // handoff 仍然创建真实 managed Worktree，再用普通 thread/start 启动新线程；
             // 不伪造历史迁移，避免跨 cwd resume 带来不可预测状态。
-            let response = try await clientFactory().createWorktree(
+            let response = try await workspaceHostClientFactory().createWorktree(
                 path: rootWorkspace.path,
                 name: normalizedOptional(name) ?? defaultHandoffWorktreeName(for: session),
                 base: normalizedOptional(base),
                 branch: normalizedOptional(branch)
             )
+            guard !Task.isCancelled, appStore.activeHostScope == hostScope,
+                  isSelectionLeaseCurrent(handoffIntent) else { return false }
             let workspace = rememberWorkspace(response.workspace)
             upsertManagedWorktree(WorktreeListItem(workspace: workspace, worktree: response.worktree))
             clearWorkspaceUnavailable(workspace.id)
@@ -1209,6 +1221,11 @@ extension SessionStore {
                 activatesProject: false,
                 foregroundLease: workspaceSelectionLease
             )
+            // 后续 fork 有副作用；切主机或用户离开后不能从全局工厂取新目标继续执行。
+            guard !Task.isCancelled, appStore.activeHostScope == hostScope,
+                  let workspaceSelectionLease, isSelectionLeaseCurrent(workspaceSelectionLease) else {
+                return false
+            }
 
             let sourceThreadID = normalizedOptional(session.resumeID) ?? session.id
             do {
@@ -1217,17 +1234,17 @@ extension SessionStore {
                     workspace: workspace,
                     reason: .worktreeHandoff
                 )
+                guard !Task.isCancelled, appStore.activeHostScope == hostScope,
+                      isSelectionLeaseCurrent(workspaceSelectionLease) else { return false }
                 let responseSession = self.session(forked, in: workspace)
                 upsert(responseSession)
                 insertExpandedProjectID(responseSession.projectID)
-                let responseSelectionLease = workspaceSelectionLease.flatMap {
-                    commitSelection(
-                        projectID: responseSession.projectID,
-                        sessionID: responseSession.id,
-                        reason: .userOpen,
-                        ifCurrent: $0
-                    )
-                }
+                let responseSelectionLease = commitSelection(
+                    projectID: responseSession.projectID,
+                    sessionID: responseSession.id,
+                    reason: .userOpen,
+                    ifCurrent: workspaceSelectionLease
+                )
                 if let responseSelectionLease {
                     await loadHistoryIfNeeded(for: responseSession)
                     if isSelectionLeaseCurrent(responseSelectionLease) {
@@ -1242,10 +1259,9 @@ extension SessionStore {
                 conversationStore.appendSystem(L10n.text("ui.this_worktree_has_been_forked_from_the_source"), sessionID: responseSession.id)
                 return true
             } catch {
-                if let workspaceSelectionLease,
-                   isSelectionLeaseCurrent(workspaceSelectionLease) {
-                    setStatusMessage(L10n.format("ui.native_fork_is_not_available_use_prompt_worktree", error.localizedDescription))
-                }
+                guard !Task.isCancelled, appStore.activeHostScope == hostScope,
+                      isSelectionLeaseCurrent(workspaceSelectionLease) else { return false }
+                setStatusMessage(L10n.format("ui.native_fork_is_not_available_use_prompt_worktree", error.localizedDescription))
             }
 
             var options = CodexAppServerTurnOptions.default
@@ -1262,7 +1278,7 @@ extension SessionStore {
                 payload: CodexAppServerTurnPayload(prompt: prompt, options: options),
                 resume: nil,
                 clientMessageID: UUID().uuidString,
-                ifCurrent: workspaceSelectionLease ?? handoffIntent
+                ifCurrent: workspaceSelectionLease
             )
             return started
         } catch {
@@ -1326,38 +1342,70 @@ extension SessionStore {
             return
         }
 
+        let lease: WorkspaceHostLease
+        do {
+            lease = try captureWorkspaceHostLease()
+        } catch {
+            worktreeBranchErrorByPath[trimmed] = error.localizedDescription
+            return
+        }
         isRefreshingWorktreeBranches = true
-        defer { isRefreshingWorktreeBranches = false }
+        defer {
+            if appStore.activeHostScope == lease.scope { isRefreshingWorktreeBranches = false }
+        }
         do {
             // 分支列表是只读建议值：缓存服务端 canonical path，同时保留调用方原始 key，避免 /var 和 /private/var 这类路径差异影响 UI 命中。
-            let response = try await clientFactory().worktreeBranches(path: trimmed)
+            let response = try await lease.client.worktreeBranches(path: trimmed)
+            guard !Task.isCancelled, appStore.activeHostScope == lease.scope else { return }
             worktreeBranchesByPath[trimmed] = response
             worktreeBranchesByPath[response.path] = response
             worktreeBranchErrorByPath.removeValue(forKey: trimmed)
             worktreeBranchErrorByPath.removeValue(forKey: response.path)
         } catch {
+            guard !Task.isCancelled, appStore.activeHostScope == lease.scope else { return }
             worktreeBranchErrorByPath[trimmed] = error.localizedDescription
         }
     }
 
     func refreshManagedWorktrees() async {
-        isRefreshingWorktrees = true
-        defer { isRefreshingWorktrees = false }
+        let lease: WorkspaceHostLease
         do {
-            let worktrees = try await clientFactory().listWorktrees()
+            lease = try captureWorkspaceHostLease()
+        } catch {
+            worktreeErrorMessage = error.localizedDescription
+            return
+        }
+        isRefreshingWorktrees = true
+        defer {
+            if appStore.activeHostScope == lease.scope { isRefreshingWorktrees = false }
+        }
+        do {
+            let worktrees = try await lease.client.listWorktrees()
+            guard !Task.isCancelled, appStore.activeHostScope == lease.scope else { return }
             setManagedWorktreesIfChanged(worktrees)
             worktreeErrorMessage = nil
         } catch {
+            guard !Task.isCancelled, appStore.activeHostScope == lease.scope else { return }
             worktreeErrorMessage = error.localizedDescription
         }
     }
 
     @discardableResult
     func pruneMissingManagedWorktrees() async -> Int {
-        isPruningWorktrees = true
-        defer { isPruningWorktrees = false }
+        let lease: WorkspaceHostLease
         do {
-            let response = try await clientFactory().pruneMissingWorktrees()
+            lease = try captureWorkspaceHostLease()
+        } catch {
+            worktreeErrorMessage = error.localizedDescription
+            return 0
+        }
+        isPruningWorktrees = true
+        defer {
+            if appStore.activeHostScope == lease.scope { isPruningWorktrees = false }
+        }
+        do {
+            let response = try await lease.client.pruneMissingWorktrees()
+            guard !Task.isCancelled, appStore.activeHostScope == lease.scope else { return 0 }
             let prunedPaths = Set(response.prunedPaths.compactMap(normalizedWorktreeCleanupPath))
             // 先应用服务端返回的成功结果；即使部分 registry 文件删除失败，
             // 已经 prune 的登记也不能继续残留在 Worktree 管理列表中。
@@ -1391,17 +1439,21 @@ extension SessionStore {
             }
             return count
         } catch {
+            guard !Task.isCancelled, appStore.activeHostScope == lease.scope else { return 0 }
             worktreeErrorMessage = error.localizedDescription
             return 0
         }
     }
 
     func previewManagedWorktreeCleanup() async throws -> WorktreeCleanupResponse {
+        let lease = try captureWorkspaceHostLease()
         do {
-            let response = try await clientFactory().previewWorktreeCleanup()
+            let response = try await lease.client.previewWorktreeCleanup()
+            try requireCurrentWorkspaceHost(lease)
             worktreeErrorMessage = nil
             return response
         } catch {
+            try requireCurrentWorkspaceHost(lease)
             worktreeErrorMessage = error.localizedDescription
             throw error
         }
@@ -1431,8 +1483,10 @@ extension SessionStore {
             throw WorktreeCleanupSelectionError.missingPlan
         }
 
+        let lease = try captureWorkspaceHostLease()
         do {
-            let response = try await clientFactory().executeWorktreeCleanup(paths: requestedPaths.sorted(), planID: planID)
+            let response = try await lease.client.executeWorktreeCleanup(paths: requestedPaths.sorted(), planID: planID)
+            try requireCurrentWorkspaceHost(lease)
             let deletedPaths = Set(response.deletedPaths.compactMap(normalizedWorktreeCleanupPath))
             let deletedItems = managedWorktrees.filter {
                 guard let path = normalizedWorktreeCleanupPath($0.worktree.path) else {
@@ -1452,6 +1506,7 @@ extension SessionStore {
 
             // 删除响应描述本次策略评估；再取一次管理列表，确保 Sheet 背后的列表与 agentd registry 一致。
             await refreshManagedWorktrees()
+            try requireCurrentWorkspaceHost(lease)
             if let partialFailureMessage = response.partialFailureMessage {
                 // 多 Worktree 删除无法形成文件系统事务。先承认并刷新已经成功的部分，
                 // 再暴露失败，避免 UI 把整批操作误报为“全部未执行”。
@@ -1468,6 +1523,7 @@ extension SessionStore {
             }
             return response
         } catch {
+            try requireCurrentWorkspaceHost(lease)
             worktreeErrorMessage = error.localizedDescription
             throw error
         }
@@ -1520,10 +1576,20 @@ extension SessionStore {
         }
 
         let workspace = item.workspace
-        isDeletingWorktree = true
-        defer { isDeletingWorktree = false }
+        let lease: WorkspaceHostLease
         do {
-            let response = try await clientFactory().deleteWorktree(path: workspace.path, force: force)
+            lease = try captureWorkspaceHostLease()
+        } catch {
+            worktreeErrorMessage = error.localizedDescription
+            return false
+        }
+        isDeletingWorktree = true
+        defer {
+            if appStore.activeHostScope == lease.scope { isDeletingWorktree = false }
+        }
+        do {
+            let response = try await lease.client.deleteWorktree(path: workspace.path, force: force)
+            guard !Task.isCancelled, appStore.activeHostScope == lease.scope else { return false }
             let deletedPaths = Set([response.deletedPath, workspace.path].compactMap(normalizedWorktreeCleanupPath))
             // Git checkout 已经删除后，registry unlink 失败可能让 response.worktrees
             // 暂时仍含陈旧项。先按 deleted_path/当前 workspace 移除真实删除结果，
@@ -1547,6 +1613,7 @@ extension SessionStore {
             }
             return true
         } catch {
+            guard !Task.isCancelled, appStore.activeHostScope == lease.scope else { return false }
             worktreeErrorMessage = error.localizedDescription
             return false
         }
