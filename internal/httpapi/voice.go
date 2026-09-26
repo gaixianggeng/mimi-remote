@@ -132,7 +132,7 @@ func (r *Router) createVoiceTranscription(ctx context.Context, payload voiceTran
 	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if response.StatusCode == http.StatusUnauthorized {
-			return voiceTranscriptionResult{}, fmt.Errorf("Codex 登录态已失效，请先在 Mac 上运行 codex login 或打开 Codex Desktop 重新登录")
+			return voiceTranscriptionResult{}, fmt.Errorf("Codex 登录态已失效，%s", r.voiceLoginInstruction("请先在 Mac 上运行 codex login 或打开 Codex Desktop 重新登录"))
 		}
 		return voiceTranscriptionResult{}, fmt.Errorf("Codex 登录态语音转写返回 HTTP %d：%s", response.StatusCode, voiceServiceError(responseBody))
 	}
@@ -180,10 +180,10 @@ type codexChatGPTAuth struct {
 }
 
 func (r *Router) loadCodexChatGPTAuth() (codexChatGPTAuth, error) {
-	authFile := codexAuthFilePath(r.cfg.Voice.CodexAuthFile)
+	authFile := r.codexAuthFilePath()
 	data, err := os.ReadFile(authFile)
 	if err != nil {
-		return codexChatGPTAuth{}, fmt.Errorf("未找到 Codex 登录态，请先在 Mac 上运行 codex login 或打开 Codex Desktop 登录：%w", err)
+		return codexChatGPTAuth{}, fmt.Errorf("未找到 Codex 登录态，%s：%w", r.voiceLoginInstruction("请先在 Mac 上运行 codex login 或打开 Codex Desktop 登录"), err)
 	}
 	var decoded struct {
 		AuthMode string `json:"auth_mode"`
@@ -203,10 +203,18 @@ func (r *Router) loadCodexChatGPTAuth() (codexChatGPTAuth, error) {
 		return codexChatGPTAuth{}, fmt.Errorf("Codex 登录态缺少 access_token，请重新登录 Codex")
 	}
 	if exp, ok := jwtExpiry(token); ok && time.Now().After(exp) {
-		return codexChatGPTAuth{}, fmt.Errorf("Codex 登录态已过期，请在 Mac 上运行 codex login status 或重新登录 Codex")
+		return codexChatGPTAuth{}, fmt.Errorf("Codex 登录态已过期，%s", r.voiceLoginInstruction("请在 Mac 上运行 codex login status 或重新登录 Codex"))
 	}
 	accountID := firstNonEmpty(strings.TrimSpace(decoded.Tokens.AccountID), chatGPTAccountIDFromJWT(token))
 	return codexChatGPTAuth{AccessToken: token, AccountID: accountID}, nil
+}
+
+func (r *Router) voiceLoginInstruction(fallback string) string {
+	if strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "local") &&
+		r.cfg.AppServer.SharedCodexHome != "" && strings.TrimSpace(r.cfg.Voice.CodexAuthFile) == "" {
+		return "请在 Mimi Remote Mac 的 Codex 详情中复制登录命令，并在终端为共享目录重新登录"
+	}
+	return fallback
 }
 
 func voiceFileHeader(payload voiceTranscriptionRequest) textproto.MIMEHeader {
@@ -269,10 +277,14 @@ func normalizedVoiceLanguage(raw string) string {
 	}
 }
 
-func codexAuthFilePath(configured string) string {
-	if path := expandHomePath(strings.TrimSpace(configured)); path != "" {
+func (r *Router) codexAuthFilePath() string {
+	if path := expandHomePath(strings.TrimSpace(r.cfg.Voice.CodexAuthFile)); path != "" {
 		return path
 	}
+	if codexHome, ok := r.cfg.EffectiveLocalCodexHome(); ok {
+		return filepath.Join(codexHome, "auth.json")
+	}
+	// SSH 后端目录在远端解析；语音仍沿用原本机登录态，保持旧配置兼容。
 	if codexHome := expandHomePath(strings.TrimSpace(os.Getenv("CODEX_HOME"))); codexHome != "" {
 		return filepath.Join(codexHome, "auth.json")
 	}

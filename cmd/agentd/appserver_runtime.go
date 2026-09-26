@@ -27,6 +27,12 @@ func prepareAgentAppServerRuntimeWithFrontDoor(cfg config.Config, frontDoorRequi
 	if !cfg.Codex.IsEnabled() {
 		return result, nil
 	}
+	if err := cfg.ValidateSharedCodexHome(); err != nil {
+		return nil, err
+	}
+	if cfg.AppServer.SharedCodexHome != "" && !frontDoorRequired {
+		return nil, fmt.Errorf("app_server.shared_codex_home 需要 Mac App 的受管前门，不能回退为独立 resident")
+	}
 	prepareCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	switch strings.ToLower(strings.TrimSpace(cfg.AppServer.Transport)) {
@@ -46,9 +52,10 @@ func prepareAgentAppServerRuntimeWithFrontDoor(cfg config.Config, frontDoorRequi
 		result.routerOptions.AppServerSSH = transport
 	case "local":
 		transport, err := appserver.NewSharedLocalTransport(appserver.SharedLocalOptions{
-			CodexBin:    cfg.Codex.Bin,
-			Env:         cfg.Codex.Env,
-			ConnectOnly: frontDoorRequired,
+			CodexBin:         cfg.Codex.Bin,
+			Env:              cfg.Codex.Env,
+			ConnectOnly:      frontDoorRequired,
+			BackendCodexHome: cfg.AppServer.SharedCodexHome,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("初始化共享本机 App Server transport 失败：%w", err)

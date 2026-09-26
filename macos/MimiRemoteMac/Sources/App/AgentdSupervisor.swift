@@ -106,6 +106,8 @@ enum AgentdSupervisorEnvironment {
         "SSL_CERT_DIR",
         "NODE_EXTRA_CA_CERTS",
         "CLAUDE_CODE_CERT_STORE",
+        // 前门固定安装时的后端目录；配置漂移时 agentd 必须拒绝悄悄切换历史。
+        "MIMI_CODEX_FRONT_BACKEND_HOME",
     ]
 
     static func sanitized(

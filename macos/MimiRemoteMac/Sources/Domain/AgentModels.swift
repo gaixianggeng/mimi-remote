@@ -292,6 +292,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
     let authMode: String?
     let planType: String?
     let reason: String?
+    let loginCommand: String?
     let rateLimits: AgentRuntimeRateLimits?
 
     enum CodingKeys: String, CodingKey {
@@ -304,6 +305,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         case authMode = "auth_mode"
         case planType = "plan_type"
         case reason
+        case loginCommand = "login_command"
         case rateLimits = "rate_limits"
     }
 
@@ -317,6 +319,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         authMode: String?,
         planType: String?,
         reason: String?,
+        loginCommand: String? = nil,
         rateLimits: AgentRuntimeRateLimits?
     ) {
         self.id = id
@@ -328,11 +331,22 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         self.authMode = authMode
         self.planType = planType
         self.reason = reason
+        self.loginCommand = loginCommand
         self.rateLimits = rateLimits
     }
 
     var effectivePlanType: String? {
         planType?.trimmedNonEmpty ?? rateLimits?.planType?.trimmedNonEmpty
+    }
+
+    var effectiveLoginCommand: String? {
+        // 旧 agentd 不返回此字段时保留原入口；新版本已按实际共享目录生成命令。
+        if let command = loginCommand?.trimmedNonEmpty { return command }
+        switch id.lowercased() {
+        case "codex": return "codex login"
+        case "claude": return "claude"
+        default: return nil
+        }
     }
 
     var startedDate: Date? {

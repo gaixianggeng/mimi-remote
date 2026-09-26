@@ -34,6 +34,8 @@ func (e *SharedLocalSessionError) Error() string {
 		return ""
 	}
 	switch e.Kind {
+	case "backend_home":
+		return "共享 Codex 前门连接的 backend CODEX_HOME 与配置不一致"
 	case "background":
 		return "已有共享本机 Codex App Server 运行在后台安全会话（Background），无法继承用户登录授权"
 	case "unexpected_manager":

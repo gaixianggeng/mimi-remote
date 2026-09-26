@@ -77,14 +77,19 @@ func (r *Router) capabilityListHandler(w http.ResponseWriter, req *http.Request)
 		}
 	}
 
+	codexHome, localBackend := r.cfg.EffectiveLocalCodexHome()
+	if !localBackend {
+		// SSH 的 backend home 只能在远端解析；保留旧版本的本机能力摘要。
+		codexHome = defaultUserCodexHome()
+	}
 	writeJSON(w, http.StatusOK, capabilityListResponse{
 		Path:       realPath,
-		Skills:     discoverSkillCapabilities(realPath, boundaryPath),
-		MCPServers: discoverMCPCapabilities(realPath, boundaryPath),
+		Skills:     discoverSkillCapabilities(realPath, boundaryPath, codexHome),
+		MCPServers: discoverMCPCapabilities(realPath, boundaryPath, codexHome),
 	})
 }
 
-func discoverSkillCapabilities(realPath string, boundaryPath string) []skillCapability {
+func discoverSkillCapabilities(realPath string, boundaryPath string, codexHome string) []skillCapability {
 	var roots []capabilityRoot
 	if realPath != "" {
 		for _, dir := range projectCapabilityDirs(realPath, boundaryPath) {
@@ -94,7 +99,9 @@ func discoverSkillCapabilities(realPath string, boundaryPath string) []skillCapa
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		roots = append(roots, capabilityRoot{path: filepath.Join(home, ".agents", "skills"), scope: "user"})
-		roots = append(roots, capabilityRoot{path: filepath.Join(home, ".codex", "skills"), scope: "user"})
+	}
+	if codexHome != "" {
+		roots = append(roots, capabilityRoot{path: filepath.Join(codexHome, "skills"), scope: "user"})
 	}
 	roots = append(roots, capabilityRoot{path: "/etc/codex/skills", scope: "admin"})
 
@@ -197,15 +204,15 @@ func parseSimpleYAMLScalar(line string) (string, string, bool) {
 	return key, value, key != ""
 }
 
-func discoverMCPCapabilities(realPath string, boundaryPath string) []mcpServerCapability {
+func discoverMCPCapabilities(realPath string, boundaryPath string, codexHome string) []mcpServerCapability {
 	var configs []capabilityRoot
 	if realPath != "" {
 		for _, dir := range projectCapabilityDirs(realPath, boundaryPath) {
 			configs = append(configs, capabilityRoot{path: filepath.Join(dir, ".codex", "config.toml"), scope: "repo"})
 		}
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		configs = append(configs, capabilityRoot{path: filepath.Join(home, ".codex", "config.toml"), scope: "user"})
+	if codexHome != "" {
+		configs = append(configs, capabilityRoot{path: filepath.Join(codexHome, "config.toml"), scope: "user"})
 	}
 
 	seen := map[string]bool{}
@@ -222,6 +229,14 @@ func discoverMCPCapabilities(realPath string, boundaryPath string) []mcpServerCa
 		}
 	}
 	return out
+}
+
+func defaultUserCodexHome() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".codex")
+	}
+	return filepath.Join(home, ".codex")
 }
 
 func mcpServersInConfig(path string, scope string) []mcpServerCapability {

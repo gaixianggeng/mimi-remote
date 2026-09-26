@@ -207,6 +207,9 @@ type AppServerConfig struct {
 	// 使 agentd 仍能接住待审批请求。默认关闭：它改变了 gateway 的连接生命周期，
 	// 需要先在真机上验证后台/锁屏路径再放开。
 	ApprovalBroker bool `json:"approval_broker,omitempty"`
+	// SharedCodexHome 只隔离 Mac App 前门的后端历史；公共 SSH socket 仍使用原 CODEX_HOME。
+	// 默认留空，启用前必须完成独立登录与显式冷切换。
+	SharedCodexHome string `json:"shared_codex_home,omitempty"`
 }
 
 // NormalizeDeepSeekBaseURL 校验并规范化 Harness 服务地址。
@@ -900,6 +903,9 @@ func (c Config) Validate() error {
 	case "codex_app_server":
 	default:
 		return fmt.Errorf("runtime.type 只支持 codex_app_server")
+	}
+	if err := c.ValidateSharedCodexHome(); err != nil {
+		return err
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AppServer.Transport)) {
 	case "ssh":

@@ -4,6 +4,7 @@ package appserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +33,7 @@ const (
 
 type FrontDoor struct {
 	options           SharedLocalOptions
+	backendHome       string
 	public            string
 	backend           string
 	lockPath          string
@@ -47,8 +49,13 @@ func NewFrontDoor(options SharedLocalOptions, logf func(string, ...any)) (*Front
 	if err != nil {
 		return nil, err
 	}
-	directory := filepath.Dir(public)
-	backend := filepath.Join(directory, sharedLocalBackendSocketName)
+	publicDirectory := filepath.Dir(public)
+	backendHome, err := resolveFrontDoorBackendHome(options.BackendCodexHome, publicDirectory)
+	if err != nil {
+		return nil, err
+	}
+	backendDirectory := filepath.Join(backendHome, sharedLocalSocketDir)
+	backend := filepath.Join(backendDirectory, sharedLocalBackendSocketName)
 	if len([]byte(backend)) >= 104 {
 		return nil, errors.New("Codex backend socket 路径过长，请缩短 CODEX_HOME")
 	}
@@ -56,11 +63,17 @@ func NewFrontDoor(options SharedLocalOptions, logf func(string, ...any)) (*Front
 		logf = func(string, ...any) {}
 	}
 	return &FrontDoor{
-		options:           SharedLocalOptions{CodexBin: strings.TrimSpace(options.CodexBin), Env: cloneStringMap(options.Env)},
+		options: SharedLocalOptions{
+			CodexBin:         strings.TrimSpace(options.CodexBin),
+			Env:              cloneStringMap(options.Env),
+			BackendCodexHome: options.BackendCodexHome,
+			ConnectOnly:      options.ConnectOnly,
+		},
+		backendHome:       backendHome,
 		public:            public,
 		backend:           backend,
-		lockPath:          filepath.Join(directory, sharedLocalBackendLockName),
-		migrationLockPath: filepath.Join(directory, frontDoorMigrationLockName),
+		lockPath:          filepath.Join(backendDirectory, sharedLocalBackendLockName),
+		migrationLockPath: filepath.Join(publicDirectory, frontDoorMigrationLockName),
 		logf:              logf,
 		launch:            startSharedLocalAppServerListening,
 		orphans:           defaultFrontDoorOrphanOps(),
@@ -69,6 +82,59 @@ func NewFrontDoor(options SharedLocalOptions, logf func(string, ...any)) (*Front
 
 func (f *FrontDoor) PublicSocketPath() string  { return f.public }
 func (f *FrontDoor) BackendSocketPath() string { return f.backend }
+func (f *FrontDoor) BackendCodexHome() string  { return f.backendHome }
+
+func resolveFrontDoorBackendHome(configured, publicDirectory string) (string, error) {
+	publicHome := filepath.Dir(publicDirectory)
+	if configured == "" {
+		return publicHome, nil
+	}
+	if !filepath.IsAbs(configured) {
+		return "", errors.New("独立 Codex backend 要求 CODEX_HOME 使用绝对路径")
+	}
+	backendHome, err := canonicalExistingDirectory(configured)
+	if err != nil {
+		return "", fmt.Errorf("独立 Codex backend 的 CODEX_HOME 无效：%w", err)
+	}
+	if pathsOverlap(publicHome, backendHome) || pathsOverlapByIdentity(publicHome, backendHome) {
+		return "", errors.New("独立 Codex backend 的 CODEX_HOME 不能与公共 CODEX_HOME 相同或相互包含")
+	}
+	return backendHome, nil
+}
+
+// pathsOverlapByIdentity 覆盖大小写不敏感文件系统上的别名路径；仅比较已存在目录，
+// 不用字符串大小写规则猜测文件系统语义。
+func pathsOverlapByIdentity(left, right string) bool {
+	return pathContainsByIdentity(left, right) || pathContainsByIdentity(right, left)
+}
+
+func pathContainsByIdentity(parent, candidate string) bool {
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return false
+	}
+	for current := candidate; ; current = filepath.Dir(current) {
+		if currentInfo, statErr := os.Stat(current); statErr == nil && os.SameFile(parentInfo, currentInfo) {
+			return true
+		}
+		next := filepath.Dir(current)
+		if next == current {
+			return false
+		}
+	}
+}
+
+func pathsOverlap(left, right string) bool {
+	return pathContains(left, right) || pathContains(right, left)
+}
+
+func pathContains(parent, candidate string) bool {
+	relative, err := filepath.Rel(parent, candidate)
+	if err != nil {
+		return false
+	}
+	return relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
 
 // FrontDoorCodexBin 按 Desktop 经 SSH 的解析顺序选 Codex：`${CODEX_INSTALL_DIR:-$HOME/.local/bin}`
 // 优先，其次才是配置。Desktop 升级 Codex 后会强杀旧 App Server 再重连；前门若仍启动配置里的
@@ -171,6 +237,9 @@ func (f *FrontDoor) dialBackend(ctx context.Context) (net.Conn, error) {
 	if conn, err := f.dialBackendOnce(ctx); err == nil {
 		return conn, nil
 	}
+	if err := os.MkdirAll(filepath.Dir(f.backend), 0o700); err != nil {
+		return nil, fmt.Errorf("创建共享 Codex backend 控制目录失败：%w", err)
+	}
 	unlock, err := lockFrontDoorFile(ctx, f.lockPath)
 	if err != nil {
 		return nil, err
@@ -180,7 +249,13 @@ func (f *FrontDoor) dialBackend(ctx context.Context) (net.Conn, error) {
 		return conn, nil
 	}
 	// 残留的 backend socket 文件交给 Codex 自己的探测处理：连接被拒才删除并重新绑定。
-	launchErr := f.launch(ctx, f.options, "unix://"+f.backend)
+	launchOptions := f.options
+	if launchOptions.BackendCodexHome != "" {
+		// 公共 socket 始终由原环境决定；只在启动私有 backend 时切换身份目录。
+		launchOptions.Env = cloneStringMap(f.options.Env)
+		launchOptions.Env["CODEX_HOME"] = f.backendHome
+	}
+	launchErr := f.launch(ctx, launchOptions, "unix://"+f.backend)
 	if launchErr != nil {
 		f.logf("codex front door backend launch reported: %v", launchErr)
 	} else {
@@ -205,6 +280,28 @@ func (f *FrontDoor) dialBackend(ctx context.Context) (net.Conn, error) {
 // LockMigration 排他阻止新客户端，直到换代或卸载操作完成。
 func (f *FrontDoor) LockMigration(ctx context.Context) (func(), error) {
 	return lockFrontDoorFileMode(ctx, f.migrationLockPath, unix.LOCK_EX)
+}
+
+// LockFrontDoorManagement 按 launchd label 串行安装、卸载和状态快照。
+// 锁不放在 CODEX_HOME 中，确保同一 job 在切换公共目录时仍使用同一把锁。
+func LockFrontDoorManagement(ctx context.Context, label string, exclusive bool) (func(), error) {
+	if strings.TrimSpace(label) == "" {
+		return nil, errors.New("前门 launchd label 不能为空")
+	}
+	cacheDirectory, err := os.UserCacheDir()
+	if err != nil {
+		return nil, fmt.Errorf("定位前门管理锁目录失败：%w", err)
+	}
+	directory := filepath.Join(cacheDirectory, "mimi-remote", "codex-front-locks")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return nil, fmt.Errorf("创建前门管理锁目录失败：%w", err)
+	}
+	digest := sha256.Sum256([]byte(label))
+	mode := unix.LOCK_SH
+	if exclusive {
+		mode = unix.LOCK_EX
+	}
+	return lockFrontDoorFileMode(ctx, filepath.Join(directory, fmt.Sprintf("%x.lock", digest)), mode)
 }
 
 type frontDoorLockedConn struct {

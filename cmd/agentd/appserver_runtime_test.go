@@ -6,12 +6,23 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
+
+func TestSharedCodexHomeCannotStartAnUnmanagedResident(t *testing.T) {
+	cfg := config.Config{
+		Codex:     config.CodexConfig{Bin: "/must-not-execute-codex"},
+		AppServer: config.AppServerConfig{Transport: "local", SharedCodexHome: t.TempDir()},
+	}
+	if _, err := prepareAgentAppServerRuntime(cfg); err == nil || !strings.Contains(err.Error(), "前门") {
+		t.Fatalf("独立目录不能回退到默认 resident 或执行 Codex：%v", err)
+	}
+}
 
 func TestLocalCodexUnavailablePreservesDiagnosticRuntime(t *testing.T) {
 	// Unix socket 路径有长度限制，不能使用默认的长 macOS test temp 路径。
