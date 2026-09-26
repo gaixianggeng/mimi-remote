@@ -243,6 +243,7 @@ type appServerChannel struct {
 	Provider         string                     `json:"provider"`
 	Type             string                     `json:"type"`
 	Protocol         string                     `json:"protocol"`
+	Enabled          bool                       `json:"enabled"`
 	GatewayWSURL     string                     `json:"gateway_ws_url"`
 	GatewayAvailable bool                       `json:"gateway_available"`
 	Managed          bool                       `json:"managed"`
@@ -483,11 +484,16 @@ func appServerAllowedMethodListForRuntime(runtimeID string) []string {
 	return methods
 }
 
+// appServerAllowedMethodsForRuntime 只认登记表里的 runtime，未登记的一律返回空集合。
+// 这里刻意不再回退到 Codex 方法表：回退意味着一个拼错或伪造的 runtime 参数就能拿到
+// Codex 的全部写方法，而调用方看不出任何异常。新增 runtime 请登记
+// appserver_gateway_runtimes.go 的 appServerRuntimeSpecs。
 func appServerAllowedMethodsForRuntime(runtimeID string) map[string]struct{} {
-	if normalizeAppServerRuntimeID(runtimeID) == "claude" {
-		return appServerClaudeAllowedMethods
+	spec, ok := appServerRuntimeSpecFor(runtimeID)
+	if !ok {
+		return nil
 	}
-	return appServerAllowedMethods
+	return spec.Methods
 }
 
 func (r *Router) appServerGatewayURL(req *http.Request) string {
@@ -511,49 +517,37 @@ func (r *Router) appServerGatewayURLForRuntime(req *http.Request, runtimeID stri
 }
 
 func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
+	// 方法白名单、能力与权限一律从 runtime 登记表取，channel 只补各自独有的运行态信息
+	// （探测结果、bridge 元数据、gateway 地址）。不要在 channel 里另写一份能力字面量。
+	codexSpec, _ := appServerRuntimeSpecFor(appServerRuntimeCodexID)
 	codexUpstream, _ := r.appServerUpstreamWebSocketURL()
 	channels := []appServerChannel{{
-		ID:               "codex",
-		RuntimeID:        "codex",
+		ID:               codexSpec.ID,
+		RuntimeID:        codexSpec.ID,
 		Title:            "Codex",
 		Provider:         "openai",
 		Type:             "codex_app_server",
 		Protocol:         "app_server_jsonrpc_ws",
-		GatewayWSURL:     r.appServerGatewayURLForRuntime(req, "codex"),
+		Enabled:          true,
+		GatewayWSURL:     r.appServerGatewayURLForRuntime(req, codexSpec.ID),
 		GatewayAvailable: codexUpstream != "",
 		Managed:          false,
 		Lifecycle:        "shared_ssh",
-		Methods:          appServerAllowedMethodList(),
-		Capabilities: appServerChannelCapability{
-			Streaming:        true,
-			History:          true,
-			ApprovalRequests: true,
-			FileDiffs:        true,
-			Goals:            true,
-			Archive:          true,
-			Fork:             true,
-			Rename:           true,
-			Compact:          true,
-			Review:           true,
-			RateLimits:       true,
-		},
-		Policy: appServerChannelPolicy{
-			ApprovalPolicies: []string{"on-request", "never"},
-			SandboxModes:     []string{"read-only", "workspace-write", "danger-full-access"},
-			NetworkAccess:    false,
-			CWDScope:         "agentd_allowlist",
-		},
+		Methods:          appServerAllowedMethodListForRuntime(codexSpec.ID),
+		Capabilities:     codexSpec.Capabilities,
+		Policy:           codexSpec.Policy,
 	}}
+	if !r.cfg.Codex.IsEnabled() {
+		channels = channels[:0]
+	}
 	if r.cfg.Claude.Enabled {
+		claudeSpec, _ := appServerRuntimeSpecFor(appServerRuntimeClaudeID)
 		probe := r.claudeBridgeProbe()
 		claudeRateLimitsAvailable := probe.Healthy && claudebridge.IsSupported(probe.Version)
-		claudeMethods := appServerAllowedMethodListForRuntime("claude")
-		claudeApprovalPolicies := []string{"on-request"}
-		claudeSandboxModes := []string{"read-only", "workspace-write"}
-		if probe.Healthy && claudebridge.SupportsFullAccess(probe.Version) {
-			claudeApprovalPolicies = append(claudeApprovalPolicies, "never")
-			claudeSandboxModes = append(claudeSandboxModes, "danger-full-access")
-		}
+		claudeMethods := appServerAllowedMethodListForRuntime(claudeSpec.ID)
+		// 完全访问只在 bridge 版本支持时声明；登记表给的是可靠基线，
+		// 这里按探测结果上调。
+		claudeFullAccessAvailable := probe.Healthy && claudebridge.SupportsFullAccess(probe.Version)
 		if !claudeRateLimitsAvailable {
 			claudeMethods = removeAppServerMethod(claudeMethods, "account/rateLimits/read")
 		}
@@ -563,17 +557,32 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		if !probe.Healthy || !claudebridge.SupportsThreadTakeover(probe.Version) {
 			claudeMethods = removeAppServerMethod(claudeMethods, "thread/takeover")
 		}
+		// RateLimits 的登记基线是 false，实际是否可用由 bridge 探测决定。
+		claudeCapabilities := claudeSpec.Capabilities
+		claudeCapabilities.RateLimits = claudeRateLimitsAvailable
+		// 手动接管（#482）同样由 bridge 探测决定，登记表只给不依赖探测的基线。
+		claudeCapabilities.IdleTakeover = probe.Healthy && claudebridge.SupportsThreadTakeover(probe.Version)
+		// 权限档位同样以登记表为基线，只在 bridge 支持完全访问时上调；显式复制切片，
+		// 避免 append 写回登记表的底层数组而影响后续请求。
+		claudePolicy := claudeSpec.Policy
+		claudePolicy.ApprovalPolicies = append([]string{}, claudePolicy.ApprovalPolicies...)
+		claudePolicy.SandboxModes = append([]string{}, claudePolicy.SandboxModes...)
+		if claudeFullAccessAvailable {
+			claudePolicy.ApprovalPolicies = append(claudePolicy.ApprovalPolicies, "never")
+			claudePolicy.SandboxModes = append(claudePolicy.SandboxModes, "danger-full-access")
+		}
 		channels = append(channels, appServerChannel{
-			ID:               "claude",
-			RuntimeID:        "claude",
+			ID:               claudeSpec.ID,
+			RuntimeID:        claudeSpec.ID,
 			Title:            "Claude Code",
 			Provider:         "anthropic",
 			Type:             "claude_code_bridge",
 			Protocol:         "app_server_jsonrpc_stdio_v1",
-			GatewayWSURL:     r.appServerGatewayURLForRuntime(req, "claude"),
+			Enabled:          true,
+			GatewayWSURL:     r.appServerGatewayURLForRuntime(req, claudeSpec.ID),
 			GatewayAvailable: probe.Healthy,
 			Managed:          false,
-			Experimental:     true,
+			Experimental:     claudeSpec.Experimental,
 			Lifecycle:        "per_connection",
 			Bridge: &appServerBridgeMetadata{
 				Name:           "alleycat-claude-bridge",
@@ -585,24 +594,60 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 				LastProbeError: probe.Error,
 				Fix:            claudebridge.InstallHint,
 			},
-			Methods: claudeMethods,
+			Methods:      claudeMethods,
+			Capabilities: claudeCapabilities,
+			Policy:       claudePolicy,
+		})
+	}
+	if r.cfg.DeepSeek.Enabled {
+		// Harness 原生通道不是 app-server runtime，不登记进 appServerRuntimeSpecs，
+		// 也不允许落回 /api/app-server/ws。channel 这里只声明三件彼此独立的事实：
+		// 用户已启用（Enabled）、本 agentd 认识 native-v1（Protocol）、中继入口存在
+		// （GatewayAvailable）。Harness 当前是否健康由移动端实际探测 /api/harness/rpc；
+		// 离线不能把协议偷偷切回旧 app-server 路径。
+		channels = append(channels, appServerChannel{
+			ID:               "deepseek",
+			RuntimeID:        "deepseek",
+			Title:            "DeepSeek Harness",
+			Provider:         "deepseek",
+			Type:             "harness_native",
+			Protocol:         "harness_native_v1",
+			Enabled:          true,
+			GatewayWSURL:     r.harnessNativeGatewayURL(req),
+			GatewayAvailable: true,
+			Managed:          false,
+			Lifecycle:        "shared_native_client",
+			Methods: []string{
+				"session/list", "session/search", "session/modelCatalog", "session/page",
+				"session/create", "session/selectModel", "session/prompt", "session/cancel",
+				"session/follow", "$events", "$events/result",
+			},
 			Capabilities: appServerChannelCapability{
 				Streaming:        true,
 				History:          true,
 				ApprovalRequests: true,
-				FileDiffs:        true,
-				RateLimits:       claudeRateLimitsAvailable,
-				IdleTakeover:     probe.Healthy && claudebridge.SupportsThreadTakeover(probe.Version),
 			},
 			Policy: appServerChannelPolicy{
-				ApprovalPolicies: claudeApprovalPolicies,
-				SandboxModes:     claudeSandboxModes,
+				ApprovalPolicies: []string{"never"},
+				SandboxModes:     []string{"danger-full-access"},
 				NetworkAccess:    false,
 				CWDScope:         "agentd_allowlist",
 			},
 		})
 	}
 	return channels
+}
+
+func (r *Router) harnessNativeGatewayURL(req *http.Request) string {
+	scheme := "ws"
+	if req.TLS != nil || strings.EqualFold(req.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "wss"
+	}
+	host := req.Host
+	if strings.TrimSpace(host) == "" {
+		host = r.cfg.Listen
+	}
+	return (&url.URL{Scheme: scheme, Host: host, Path: "/api/harness/ws"}).String()
 }
 
 func removeAppServerMethod(methods []string, removed string) []string {
@@ -613,18 +658,6 @@ func removeAppServerMethod(methods []string, removed string) []string {
 		}
 	}
 	return filtered
-}
-
-func normalizeAppServerRuntimeID(raw string) string {
-	value := strings.TrimSpace(strings.ToLower(raw))
-	switch value {
-	case "", "codex", "openai", "codex_app_server", "codex-app-server":
-		return "codex"
-	case "claude", "anthropic", "claude_code", "claude-code", "claude_code_bridge", "claude-code-bridge":
-		return "claude"
-	default:
-		return value
-	}
 }
 
 func (r *Router) appServerGatewayWS(w http.ResponseWriter, req *http.Request) {
@@ -638,9 +671,9 @@ func (r *Router) appServerGatewayWS(w http.ResponseWriter, req *http.Request) {
 	}
 	runtimeID := normalizeAppServerRuntimeID(req.URL.Query().Get("runtime"))
 	switch runtimeID {
-	case "codex":
+	case appServerRuntimeCodexID:
 		r.appServerCodexGatewayWS(w, req)
-	case "claude":
+	case appServerRuntimeClaudeID:
 		r.appServerClaudeGatewayWS(w, req)
 	default:
 		writeError(w, http.StatusBadRequest, "未知 app-server runtime："+runtimeID)
@@ -648,6 +681,10 @@ func (r *Router) appServerGatewayWS(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Request) {
+	if !r.cfg.Codex.IsEnabled() {
+		writeError(w, http.StatusServiceUnavailable, "Codex 已在 Mimi 中关闭")
+		return
+	}
 	// 必须先验证外侧请求确实要升级 WebSocket。普通 GET 或畸形握手不能触发本机
 	// app-server 拨号，否则一个有效的外侧 token 就能被用来批量消耗 upstream 连接。
 	if !websocket.IsWebSocketUpgrade(req) {
@@ -868,6 +905,9 @@ func writeCodexGatewayRuntimeError(conn *websocket.Conn, code string, message st
 }
 
 func (r *Router) appServerUpstreamWebSocketURL() (string, error) {
+	if !r.cfg.Codex.IsEnabled() {
+		return "", fmt.Errorf("Codex 已在 Mimi 中关闭")
+	}
 	if r.appServerSSH == nil {
 		return "", fmt.Errorf("app_server transport 未配置")
 	}

@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,8 +80,38 @@ func TestLoadRejectsLegacyStdioTransportOutsideAtomicSetupMigration(t *testing.T
 	}
 	clearAgentdEnv(t)
 
-	if _, err := Load(cfgPath); err == nil || !strings.Contains(err.Error(), "transport 只支持 ssh") {
-		t.Fatalf("历史 stdio 配置不得在普通 Load 中静默改写：%v", err)
+	// stdio 是被移除的历史取值，不是「更新版本写入的未知取值」：安装最新包同样跑不起来，
+	// 所以只能引导重置配置，不能引导升级安装包。
+	if _, err := Load(cfgPath); err == nil ||
+		!errors.Is(err, ErrAppServerTransportRemoved) ||
+		errors.Is(err, ErrAppServerTransportUnsupported) ||
+		!strings.Contains(err.Error(), "setup --force") {
+		t.Fatalf("历史 stdio 配置不得在普通 Load 中静默改写，且必须引导重置配置：%v", err)
+	}
+}
+
+// 未知取值才是版本偏旧的信号：它可能由更新版本写入，升级安装包能修好。
+func TestLoadTreatsUnknownTransportAsRequiringNewerVersion(t *testing.T) {
+	projectDir := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	raw, err := json.Marshal(map[string]any{
+		"auth":       AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		"runtime":    map[string]any{"type": "pty", "fallback_pty": true},
+		"app_server": map[string]any{"transport": "shared-local-v2"},
+		"projects":   []ProjectConfig{{ID: "demo", Name: "Demo", Path: projectDir}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clearAgentdEnv(t)
+
+	if _, err := Load(cfgPath); err == nil ||
+		!errors.Is(err, ErrAppServerTransportUnsupported) ||
+		!strings.Contains(err.Error(), "请升级到最新发布包") {
+		t.Fatalf("未识别的 transport 必须引导升级安装包：%v", err)
 	}
 }
 
@@ -92,7 +123,6 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 	t.Setenv("AGENTD_BIND", "0.0.0.0")
 	t.Setenv("AGENTD_PORT", "9999")
 	t.Setenv("AGENTD_LISTEN", "127.0.0.1:7777")
-	t.Setenv("AGENTD_OUTPUT_BUFFER_BYTES", "4096")
 	t.Setenv("AGENTD_ALLOW_QUERY_TOKEN", "1")
 	t.Setenv("AGENTD_APP_SERVER_SSH_TARGET", "mimi-host")
 	t.Setenv("AGENTD_APP_SERVER_AUTO_TITLE", "false")
@@ -107,9 +137,6 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 
 	if cfg.Listen != "127.0.0.1:7777" {
 		t.Fatalf("AGENTD_LISTEN 应优先于 bind/port，实际 %q", cfg.Listen)
-	}
-	if cfg.Session.OutputBufferBytes != 4096 {
-		t.Fatalf("输出缓冲区环境变量未生效：%d", cfg.Session.OutputBufferBytes)
 	}
 	if !cfg.Auth.AllowQueryToken {
 		t.Fatal("AGENTD_ALLOW_QUERY_TOKEN=1 应启用 query token 兼容模式")
@@ -444,7 +471,6 @@ func clearAgentdEnv(t *testing.T) {
 		"AGENTD_CODEX_AUTH_FILE",
 		"AGENTD_DEBUG_CODEX_HISTORY",
 		"AGENTD_DEV_INSECURE",
-		"AGENTD_OUTPUT_BUFFER_BYTES",
 		"AGENTD_PROJECTS",
 		"AGENTD_SCAN_ROOTS",
 		"AGENTD_BROWSE_ROOTS",

@@ -393,8 +393,8 @@ extension SessionStore {
         return sessionsByID[rawID]
     }
 
-    /// 首屏列表兜底。runtime 已知（路由或已记住的会话路由）只查一趟；未知时先 Codex 再 Claude，
-    /// 最多两次列表请求，不自动翻页。
+    /// 首屏列表兜底。runtime 已知（路由或已记住的会话路由）只查一趟；未知时只遍历
+    /// 当前主机实际开放的 Runtime，不自动翻页，也不探测已关闭的通道。
     func listNotificationSession(
         _ route: SessionNotificationRoute,
         workspace: AgentWorkspace,
@@ -404,7 +404,15 @@ extension SessionStore {
         let correlation = NotificationRouteDiagnostics.shortReference(route.sessionID)
         let knownRuntime = route.runtimeProvider
             ?? client.rememberedRuntimeRoute(forSessionID: route.sessionID)
-        let runtimes = knownRuntime.map { [Self.normalizedRuntimeProvider($0)] } ?? ["codex", "claude"]
+        let runtimes: [String]
+        if let knownRuntime {
+            runtimes = [Self.normalizedRuntimeProvider(knownRuntime)]
+        } else {
+            runtimes = await availableSessionRuntimeProviders(client: client)
+        }
+        guard !runtimes.isEmpty else {
+            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+        }
 
         for (attempt, runtime) in runtimes.enumerated() {
             let startedAt = Date()
@@ -418,8 +426,8 @@ extension SessionStore {
                     consistency: .fastIndexed
                 )
             } catch {
-                // 第二趟 Claude 只是补充尝试：bridge 未启用或不健康时，
-                // 不能把已经成功的 Codex 未命中变成“无法打开”。
+                // 后续 Runtime 只是补充尝试：不能把前一条通道已经成功的未命中
+                // 变成“无法打开”。
                 guard attempt > 0, !isCancellationError(error),
                       !appStore.acceptsCredentialInvalidation(error) else {
                     throw error
@@ -440,7 +448,11 @@ extension SessionStore {
                 return .missing
             }
             let refreshed = sessions(page.sessions, in: workspace)
-            mergeFastIndexedSessionPagePreservingAuthoritativeFields(refreshed, workspace: workspace)
+            mergeFastIndexedSessionPagePreservingAuthoritativeFields(
+                refreshed,
+                workspace: workspace,
+                runtimeProvider: runtime
+            )
             if runtime == "codex" {
                 // 只有 Codex 首屏参与 canonical 分页状态；Claude 页只补行，不能篡改 cursor。
                 updateWorkspaceSessionFirstPageState(workspace: workspace, page: page, consistency: .fastIndexed)

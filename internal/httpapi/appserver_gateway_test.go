@@ -23,10 +23,10 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
-	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
 func TestAppServerConfigRequiresAuthAndReturnsSanitizedMetadata(t *testing.T) {
@@ -142,6 +142,44 @@ func TestAppServerConfigIncludesClaudeChannelWhenEnabled(t *testing.T) {
 	}
 	if !containsAnyString(methods, "thread/items/list") {
 		t.Fatalf("0.2.9 起的 bridge 按 turn 分页 item，channel 必须声明 thread/items/list：%v", methods)
+	}
+}
+
+func TestAppServerConfigPublishesEnabledHarnessAsNativeOnlyChannel(t *testing.T) {
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
+		cfg.DeepSeek.Enabled = true
+	})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/app-server/config", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config metadata 应返回 200，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	channels := body["channels"].([]any)
+	var harness map[string]any
+	for _, value := range channels {
+		channel := value.(map[string]any)
+		if channel["runtime_id"] == "deepseek" {
+			harness = channel
+			break
+		}
+	}
+	if harness == nil {
+		t.Fatalf("用户启用 Harness 后必须发布 deepseek channel：%v", channels)
+	}
+	if harness["enabled"] != true || harness["type"] != "harness_native" ||
+		harness["protocol"] != "harness_native_v1" || harness["lifecycle"] != "shared_native_client" {
+		t.Fatalf("Harness channel 必须明确区分用户启用、原生能力与共享客户端：%v", harness)
+	}
+	if gateway, _ := harness["gateway_ws_url"].(string); !strings.HasSuffix(gateway, "/api/harness/ws") {
+		t.Fatalf("Harness channel 不得指向旧 app-server gateway：%v", harness)
+	}
+	methods := harness["methods"].([]any)
+	if !containsAnyString(methods, "session/follow") || !containsAnyString(methods, "session/page") ||
+		containsAnyString(methods, "initialize") {
+		t.Fatalf("Harness channel 只应声明原生方法：%v", methods)
 	}
 }
 
@@ -524,7 +562,7 @@ while IFS= read -r line; do :; done
 // no ~/.cargo/bin, and a config carrying someone else's absolute path would
 // otherwise leave Claude unavailable on a complete install.
 func TestResolveClaudeBridgeFallsBackToTheBundledCopy(t *testing.T) {
-	sibling := bundledClaudeBridgeSiblingPath()
+	sibling := claudebridge.BundledSiblingPath()
 	if sibling == "" {
 		t.Skip("拿不到可执行文件路径")
 	}
@@ -1823,7 +1861,7 @@ func TestGatewayThreadTurnsListMarksItemsListAvailableForClaude(t *testing.T) {
 		"itemsView":          "summary",
 		"itemsListAvailable": false,
 	}
-	if err := validateGatewayThreadTurnsListParams(params); err != nil {
+	if err := validateGatewayThreadTurnsListParams(appServerRuntimeClaudeID, params); err != nil {
 		t.Fatalf("thread/turns/list 合法参数不应被拒绝：%v", err)
 	}
 
@@ -2803,7 +2841,7 @@ func TestAppServerGatewayThreadCachePrunesOldestWhenFull(t *testing.T) {
 }
 
 func TestAppServerGatewayObservesThreadResponseOnlyWithPendingRequest(t *testing.T) {
-	_, registry, _, _, projectDir := appServerGatewayBaseFixture(t)
+	_, registry, _, projectDir := appServerGatewayBaseFixture(t)
 	router := &Router{
 		projects:       registry,
 		gatewayThreads: map[string]appServerGatewayAllowedThread{},
@@ -2827,7 +2865,7 @@ func TestAppServerGatewayObservesThreadResponseOnlyWithPendingRequest(t *testing
 	}
 
 	id := json.RawMessage("42")
-	if err := policy.rememberPendingThreadResponse(&id, "thread/list", projectDir, "demo"); err != nil {
+	if err := policy.rememberPendingThreadResponseWithManagedUse(&id, "thread/list", projectDir, "demo", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload); !forward || policyErr != nil {
@@ -2912,7 +2950,7 @@ func appServerGatewayRouterFixtureWithRouter(t *testing.T, upstreamURL string, c
 
 func buildAppServerGatewayFixture(t *testing.T, upstreamURL string, customize func(*config.Config)) (http.Handler, *Router, string) {
 	t.Helper()
-	cfg, registry, manager, checker, projectDir := appServerGatewayBaseFixture(t)
+	cfg, registry, checker, projectDir := appServerGatewayBaseFixture(t)
 	cfg.AppServer = config.AppServerConfig{
 		Transport: "ssh",
 		SSHTarget: upstreamURL,
@@ -2920,7 +2958,7 @@ func buildAppServerGatewayFixture(t *testing.T, upstreamURL string, customize fu
 	if customize != nil {
 		customize(&cfg)
 	}
-	handler, router := NewRouterWithInstallationIDAndOptions(cfg, registry, manager, checker, "test", "", RouterOptions{
+	handler, router := NewRouterWithInstallationIDAndOptions(cfg, registry, checker, "test", "", RouterOptions{
 		AppServerSSH: directWSTestTransport{upstreamURL: upstreamURL},
 	})
 	// Any fixture that reaches the Claude gateway starts a resident bridge;
@@ -2929,16 +2967,7 @@ func buildAppServerGatewayFixture(t *testing.T, upstreamURL string, customize fu
 	return handler, router, projectDir
 }
 
-func testAppServerTokenFile(t *testing.T, token string) string {
-	t.Helper()
-	tokenFile := filepath.Join(t.TempDir(), "app-server-token")
-	if err := os.WriteFile(tokenFile, []byte(token+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return tokenFile
-}
-
-func appServerGatewayBaseFixture(t *testing.T) (config.Config, *projects.Registry, *session.Manager, *doctor.Checker, string) {
+func appServerGatewayBaseFixture(t *testing.T) (config.Config, *projects.Registry, *doctor.Checker, string) {
 	t.Helper()
 	projectDir := t.TempDir()
 	cfg := config.Config{
@@ -2948,7 +2977,6 @@ func appServerGatewayBaseFixture(t *testing.T) (config.Config, *projects.Registr
 			Bin: "/bin/cat",
 			Env: map[string]string{"TERM": "xterm-256color"},
 		},
-		Session: config.SessionConfig{OutputBufferBytes: 8 * 1024},
 		Projects: []config.ProjectConfig{{
 			ID:   "demo",
 			Name: "Demo",
@@ -2959,15 +2987,8 @@ func appServerGatewayBaseFixture(t *testing.T) (config.Config, *projects.Registr
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := session.NewManager(session.Options{
-		CodexBin:     cfg.Codex.Bin,
-		DefaultArgs:  cfg.Codex.DefaultArgs,
-		Env:          cfg.Codex.Env,
-		OutputBuffer: cfg.Session.OutputBufferBytes,
-	})
-	t.Cleanup(manager.Shutdown)
 	checker := doctor.NewChecker("test", cfg, registry)
-	return cfg, registry, manager, checker, projectDir
+	return cfg, registry, checker, projectDir
 }
 
 func fakeAppServerUpstream(t *testing.T, onFrame func(conn *websocket.Conn, messageType int, payload []byte)) (string, <-chan []byte, *atomic.Int64) {

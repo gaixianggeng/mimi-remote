@@ -26,6 +26,54 @@ final class AgentCommandClientTests: XCTestCase {
         )
     }
 
+    func testCodexSessionRepairUsesFixedExplicitCommand() {
+        XCTAssertEqual(
+            AgentCommandClient.codexSessionRepairArguments(),
+            ["repair-codex-session", "--confirm-disconnected", "--json"]
+        )
+    }
+
+    func testDiagnosticsCommandsUseLocalJSONInterface() {
+        XCTAssertEqual(
+            AgentCommandClient.diagnosticsArguments(action: .status),
+            ["diagnostics", "status", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.diagnosticsArguments(action: .start),
+            ["diagnostics", "start", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.diagnosticsArguments(action: .stop),
+            ["diagnostics", "stop", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.diagnosticsArguments(action: .clear),
+            ["diagnostics", "clear", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.diagnosticsArguments(action: .export),
+            ["diagnostics", "export", "--json"]
+        )
+    }
+
+    func testCodexSessionRepairResultRequiresBothFields() throws {
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                CodexSessionReleaseResult.self,
+                from: Data(#"{"released":false,"message":"无需释放"}"#.utf8)
+            ),
+            CodexSessionReleaseResult(released: false, message: "无需释放")
+        )
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            CodexSessionReleaseResult.self,
+            from: Data(#"{"message":"结果不完整"}"#.utf8)
+        ))
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            CodexSessionReleaseResult.self,
+            from: Data(#"{"released":true}"#.utf8)
+        ))
+    }
+
     func testClaudeConfigurationArgumentsKeepNormalAndRollbackCallsExplicit() {
         XCTAssertEqual(
             AgentCommandClient.claudeConfigurationArguments(preference: .automatic),

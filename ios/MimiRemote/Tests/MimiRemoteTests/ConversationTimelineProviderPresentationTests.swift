@@ -138,14 +138,102 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         process.turnLifecycle = .inProgress
         let cache = ConversationTimelineItemCache()
         let running = cache.snapshot(from: [process], activeTurn: .init(id: "turn"))
-        let frozen = cache.snapshot(from: [process], suspendingUpdates: true)
+        let frozen = cache.snapshot(from: [process], activeTurn: .init(id: "turn"), suspendingUpdates: true)
         XCTAssertEqual(frozen.revision, running.revision)
         XCTAssertTrue(try group(in: frozen.rows[0]).isExpanded)
+        let finishing = cache.snapshot(from: [process], suspendingUpdates: true)
+        XCTAssertEqual(finishing.revision, running.revision)
+        XCTAssertEqual(finishing.rowIDs, running.rowIDs)
+        XCTAssertTrue(try group(in: finishing.rows[0]).isExpanded, "滚动期间不能因 turn 结束删除过程子行")
         let finished = cache.snapshot(from: [process])
         XCTAssertFalse(try group(in: finished.rows[0]).isExpanded)
         let pinned = cache.snapshot(from: [process], expandedProcessMessageIDs: [process.id], activeTurn: .init(id: "turn"))
         let pinnedFinished = cache.snapshot(from: [process], expandedProcessMessageIDs: [process.id])
         XCTAssertEqual(pinned.rows, pinnedFinished.rows)
+    }
+
+    func testStreamingUpdateRebuildsOnlyLatestUserTurn() throws {
+        let oldUser = makeMessage(id: "old-user", turnID: "old", role: .user, kind: .message, content: "旧问题")
+        let oldAnswer = makeMessage(id: "old-answer", turnID: "old", role: .assistant, kind: .message, content: "旧回答")
+        let currentUser = makeMessage(id: "current-user", turnID: "current", role: .user, kind: .message, content: "新问题")
+        var streaming = makeMessage(id: "streaming", turnID: "current", role: .assistant, kind: .message, content: "第一段")
+        let cache = ConversationTimelineItemCache()
+
+        let initial = cache.snapshot(from: [oldUser, oldAnswer, currentUser, streaming])
+        XCTAssertEqual(initial.projectionMode, .full)
+        XCTAssertEqual(initial.projectedMessageCount, 4)
+
+        streaming.content = "第一段和第二段"
+        let updated = cache.snapshot(from: [oldUser, oldAnswer, currentUser, streaming])
+
+        XCTAssertEqual(updated.projectionMode, .tail)
+        XCTAssertEqual(updated.projectedMessageCount, 2)
+        XCTAssertEqual(try message(in: updated.rows[0]).id, oldUser.id)
+        XCTAssertEqual(try message(in: updated.rows[1]).id, oldAnswer.id)
+        XCTAssertEqual(try message(in: updated.rows[3]).content, "第一段和第二段")
+    }
+
+    func testStreamingTextGrowthWaitsForScrollInteraction() throws {
+        var streaming = makeMessage(
+            id: "streaming",
+            turnID: "current",
+            role: .assistant,
+            kind: .message,
+            content: "短回答"
+        )
+        let cache = ConversationTimelineItemCache()
+        let initial = cache.snapshot(from: [streaming])
+
+        streaming.content = "增长后会换行并改变行高的长回答"
+        let duringScroll = cache.snapshot(from: [streaming], suspendingUpdates: true)
+
+        XCTAssertEqual(duringScroll.revision, initial.revision)
+        XCTAssertEqual(try message(in: duringScroll.rows[0]).content, "短回答")
+        XCTAssertEqual(duringScroll.projectionMode, initial.projectionMode)
+
+        let afterScroll = cache.snapshot(from: [streaming])
+        XCTAssertGreaterThan(afterScroll.revision, initial.revision)
+        XCTAssertEqual(try message(in: afterScroll.rows[0]).content, streaming.content)
+    }
+
+    func testScrollingPublishesCompletionWhileDeferringConcurrentHistoryStructure() throws {
+        let scope = ScopedSessionID(profileID: "profile", sessionID: "session")
+        var user = makeMessage(id: "user", turnID: "current", role: .user, kind: .message, content: "继续")
+        user.turnLifecycle = nil
+        var process = makeActivity(id: "process", turnID: "current", category: .toolCall, title: "处理中")
+        process.turnLifecycle = .inProgress
+        let earlier = makeActivity(id: "earlier", turnID: "old", category: .thinking, title: "历史过程")
+        var initialVersions = ConversationTimelineSourceVersions(lifetime: 1)
+        initialVersions.record(.live, revision: 1)
+        let cache = ConversationTimelineItemCache()
+        let initial = cache.snapshot(
+            from: .init(scope: scope, messages: [user, process], versions: initialVersions),
+            activeTurn: .init(id: "current")
+        )
+        XCTAssertTrue(try group(in: initial.rows[1]).isExpanded)
+
+        var combinedVersions = initialVersions
+        combinedVersions.record(.historyEnrichment, revision: 2)
+        combinedVersions.record(.live, revision: 3)
+        process.turnLifecycle = .completed
+        let duringScroll = cache.snapshot(
+            from: .init(scope: scope, messages: [earlier, user, process], versions: combinedVersions),
+            activeTurn: nil,
+            suspendingUpdates: true
+        )
+
+        XCTAssertEqual(duringScroll.revision, initial.revision)
+        XCTAssertEqual(duringScroll.rowIDs, initial.rowIDs)
+        XCTAssertTrue(try group(in: duringScroll.rows[1]).isExpanded)
+        XCTAssertFalse(duringScroll.rows.flatMap(\.anchorMessageIDs).contains(earlier.id))
+
+        let afterScroll = cache.snapshot(
+            from: .init(scope: scope, messages: [earlier, user, process], versions: combinedVersions),
+            activeTurn: nil
+        )
+        XCTAssertTrue(afterScroll.rows.flatMap(\.anchorMessageIDs).contains(earlier.id))
+        XCTAssertFalse(try group(in: afterScroll.rows[2]).isExpanded)
+        XCTAssertTrue(afterScroll.changes.contains(.historyEnrichment))
     }
 
     func testDefaultProvidersCollapseProcessAndKeepFinalAndFileEntry() throws {
@@ -164,6 +252,43 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
             XCTAssertEqual(files.messageIDs, [edit.id])
             XCTAssertEqual(files.firstActivityID, ConversationTimelineItem.activityID(for: edit))
         }
+    }
+
+    func testGeneratedPlanStaysReadableAfterTurnCompletesAndHistoryReloads() throws {
+        var read = makeActivity(id: "read", turnID: "turn", category: .runCommand, title: "读取")
+        read.turnLifecycle = .inProgress
+        let body = "## 会话历史加载与提示优化\n\n1. 先加载首屏。\n2. 显示明确提示。"
+        var plan = makeMessage(id: "plan", turnID: "turn", role: .system, kind: .plan, content: body)
+        plan.itemID = "plan-item"
+        plan.activityPayload = ConversationActivityPayload(category: .plan, displayTitle: "计划", subtitle: body)
+        plan.turnLifecycle = .inProgress
+
+        for provider in [ConversationTimelineProvider.codex, .claude] {
+            let cache = ConversationTimelineItemCache()
+            let live = cache.snapshot(from: [read, plan], provider: provider, activeTurn: .init(id: "turn"))
+            XCTAssertEqual(try message(in: live.rows[2]).content, body)
+
+            var completedRead = read
+            completedRead.turnLifecycle = .completed
+            var completedPlan = plan
+            completedPlan.turnLifecycle = .completed
+            let completed = cache.snapshot(from: [completedRead, completedPlan], provider: provider)
+            XCTAssertFalse(try group(in: completed.rows[0]).isExpanded)
+            XCTAssertEqual(try message(in: completed.rows[1]).content, body)
+
+            let reloaded = ConversationTimelineItemBuilder.items(from: [completedRead, completedPlan], provider: provider)
+            XCTAssertEqual(try message(in: reloaded[1]).content, body)
+        }
+    }
+
+    func testTurnPlanUpdateRemainsInsideProcess() throws {
+        let read = makeActivity(id: "read", turnID: "turn", category: .runCommand, title: "读取")
+        var checklist = makeMessage(id: "steps", turnID: "turn", role: .system, kind: .plan, content: "→ 读取\n· 验证")
+        checklist.itemID = "turn-plan"
+
+        let rows = ConversationTimelineItemBuilder.items(from: [read, checklist])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(try group(in: rows[0]).messages.map(\.id), [read.id, checklist.id])
     }
 
     func testExpandedProcessKeepsNarrativeOrderWithoutAnotherBatchLevel() throws {
@@ -405,6 +530,21 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         XCTAssertEqual(message.activityPayload?.category, .thinking)
         XCTAssertEqual(message.activityPayload?.subtitle, "正在检查实现")
         XCTAssertTrue(message.activityPayload?.isInProgress == true)
+    }
+
+    func testProcessFailureCountBelongsToItsImmutableSnapshot() {
+        var message = makeActivity(
+            id: "failure-count", turnID: "turn", category: .toolCall, title: "工具"
+        )
+        let completed = ConversationProcessGroup(messages: [message], lifecycle: .completed, isExpanded: false)
+        message.activityPayload = ConversationActivityPayload(
+            category: .toolCall, displayTitle: "工具", status: "failed"
+        )
+        let failed = ConversationProcessGroup(messages: [message], lifecycle: .failed, isExpanded: false)
+
+        XCTAssertEqual(completed.failedCount, 0, "后续状态不能改变已发布快照的统计")
+        XCTAssertEqual(failed.failedCount, 1, "新快照必须重新统计失败状态")
+        XCTAssertEqual(completed.id, failed.id)
     }
 
     func testLiveAgentMessageKeepsCommentaryKind() throws {

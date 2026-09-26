@@ -553,16 +553,6 @@ func (r *Router) finishGitTestFlightJob(job *gitTestFlightReleaseJob, err error,
 	r.gitTestFlightMu.Unlock()
 }
 
-func (r *Router) gitTestFlightJobSnapshot(repoRoot string) *gitTestFlightJobSnapshot {
-	r.gitTestFlightMu.Lock()
-	defer r.gitTestFlightMu.Unlock()
-	job := r.gitTestFlightJobs[repoRoot]
-	if job == nil {
-		return nil
-	}
-	return snapshotGitTestFlightJob(job)
-}
-
 func (r *Router) gitTestFlightJobStatus(repoRoot string) (*gitTestFlightJobSnapshot, *gitTestFlightCapability) {
 	r.gitTestFlightMu.Lock()
 	defer r.gitTestFlightMu.Unlock()

@@ -359,10 +359,6 @@ extension SessionStore {
         setStatusMessage(message)
     }
 
-    func hasQueuedGoalTurn(sessionID: SessionID) -> Bool {
-        queuedRunningTurnsBySessionID[sessionID]?.contains(where: { $0.intent.startsGoal }) == true
-    }
-
     func cancelQueuedRunningTurns(sessionID: SessionID, markMessagesFailed: Bool) {
         let queued = queuedRunningTurnsBySessionID[sessionID] ?? []
         queuedGuidanceDispatchClientMessageIDs.subtract(queued.map(\.clientMessageID))

@@ -408,6 +408,14 @@ func (r *Router) codexRuntimeStartTime() *time.Time {
 func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse {
 	codexResult := make(chan runtimeAccountStatus, 1)
 	claudeResult := make(chan runtimeAccountStatus, 1)
+	deepSeekResult := make(chan runtimeAccountStatus, 1)
+	if r.cfg.DeepSeek.Enabled {
+		go func() {
+			probeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+			defer cancel()
+			deepSeekResult <- r.probeDeepSeekRuntime(probeCtx)
+		}()
+	}
 	go func() {
 		probeCtx, cancel := context.WithTimeout(ctx, codexRuntimeProbeTimeout)
 		defer cancel()
@@ -422,16 +430,29 @@ func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse
 	codex := <-codexResult
 	claude := <-claudeResult
 	checkedAt := time.Now().UTC()
-	return runtimeStatusResponse{
+	response := runtimeStatusResponse{
 		CheckedAt: &checkedAt,
 		Runtimes: []runtimeAccountStatus{
 			codex,
 			claude,
 		},
 	}
+	if r.cfg.DeepSeek.Enabled {
+		response.Runtimes = append(response.Runtimes, <-deepSeekResult)
+	}
+	return response
 }
 
 func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
+	codex := runtimeAccountStatus{
+		ID: "codex", Title: "Codex", Enabled: r.cfg.Codex.IsEnabled(),
+		State: runtimeStateUnavailable, Reason: "refresh_in_progress",
+		Transport: strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
+		StartedAt: r.codexRuntimeStartTime(),
+	}
+	if !codex.Enabled {
+		codex.State, codex.Reason, codex.StartedAt = runtimeStateDisabled, "disabled", nil
+	}
 	claude := runtimeAccountStatus{
 		ID:      "claude",
 		Title:   "Claude",
@@ -443,20 +464,19 @@ func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
 		claude.State = runtimeStateDisabled
 		claude.Reason = "disabled"
 	}
-	return runtimeStatusResponse{
+	response := runtimeStatusResponse{
 		Runtimes: []runtimeAccountStatus{
-			{
-				ID:        "codex",
-				Title:     "Codex",
-				Enabled:   true,
-				State:     runtimeStateUnavailable,
-				Transport: strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
-				StartedAt: r.codexRuntimeStartTime(),
-				Reason:    "refresh_in_progress",
-			},
+			codex,
 			claude,
 		},
 	}
+	if r.cfg.DeepSeek.Enabled {
+		response.Runtimes = append(response.Runtimes, runtimeAccountStatus{
+			ID: "deepseek", Title: "DeepSeek Harness", Enabled: true,
+			State: runtimeStateUnavailable, Reason: "refresh_in_progress",
+		})
+	}
+	return response
 }
 
 func runtimeStatusLoopbackRequest(req *http.Request) bool {
@@ -470,6 +490,9 @@ func runtimeStatusLoopbackRequest(req *http.Request) bool {
 }
 
 func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountStatus) {
+	if !r.cfg.Codex.IsEnabled() {
+		return runtimeAccountStatus{ID: "codex", Title: "Codex", State: runtimeStateDisabled, Reason: "disabled"}
+	}
 	status = runtimeAccountStatus{
 		ID:        "codex",
 		Title:     "Codex",
@@ -496,6 +519,10 @@ func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountSt
 		_ = response.Body.Close()
 	}
 	if err != nil {
+		var sessionErr *appserver.SharedLocalSessionError
+		if errors.As(err, &sessionErr) {
+			status.Reason = "shared_local_session_unavailable"
+		}
 		return status
 	}
 	defer conn.Close()
@@ -874,23 +901,7 @@ func (c *runtimeWebSocketRPC) initialize(ctx context.Context) (string, error) {
 }
 
 func (c *runtimeWebSocketRPC) initializeClient(ctx context.Context, name string, title string, version string) (string, error) {
-	var result struct {
-		UserAgent string `json:"userAgent"`
-	}
-	if err := c.call(ctx, "initialize", map[string]any{
-		"clientInfo": map[string]any{
-			"name":    name,
-			"title":   title,
-			"version": version,
-		},
-		"capabilities": map[string]any{},
-	}, &result); err != nil {
-		return "", err
-	}
-	if err := c.notify(ctx, "initialized", map[string]any{}); err != nil {
-		return "", err
-	}
-	return result.UserAgent, nil
+	return initializeJSONRPCClient(ctx, c, name, title, version)
 }
 
 func (c *runtimeWebSocketRPC) call(ctx context.Context, method string, params any, result any) error {

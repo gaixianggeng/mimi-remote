@@ -17,7 +17,6 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
-	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
 func newWorktreeCleanupFixture(t *testing.T, count int) worktreeCleanupFixture {
@@ -59,28 +58,38 @@ func newWorktreeCleanupFixture(t *testing.T, count int) worktreeCleanupFixture {
 		Auth:          config.AuthConfig{Token: testToken},
 		WorktreesRoot: worktreesRoot,
 		Codex:         config.CodexConfig{Bin: "/bin/cat", Env: map[string]string{"TERM": "xterm-256color"}},
-		Session:       config.SessionConfig{OutputBufferBytes: 8 * 1024},
 		Projects:      []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: repo}},
 	}
 	registry, err := projects.NewRegistry(cfg.Projects)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := session.NewManager(session.Options{
-		CodexBin: cfg.Codex.Bin, Env: cfg.Codex.Env, OutputBuffer: cfg.Session.OutputBufferBytes,
-	})
-	t.Cleanup(manager.Shutdown)
 	router := &Router{
 		cfg:                         cfg,
 		projects:                    registry,
-		sessions:                    manager,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
 		managedWorktrees:            map[string]managedWorktree{},
 		managedWorktreeCleanupPlans: map[string]worktreeCleanupPlan{},
 	}
-	handler := auth.New(testToken, false).Middleware(http.HandlerFunc(router.worktreeCleanupHandler))
-	server := testServer{handler: handler, manager: manager}
+	handler := auth.NewWithOptions(testToken, false, auth.Options{}).Middleware(http.HandlerFunc(router.worktreeCleanupHandler))
+	server := testServer{handler: handler}
 	return worktreeCleanupFixture{server: server, router: router, repo: repo, worktreesRoot: worktreesRoot, worktrees: worktrees}
+}
+
+// registerGatewayThreadForTest 注入一条活跃 gateway thread，等价于一次真实的
+// thread/start：它是 managedWorktreeHasRunningSession 唯一的活输入。
+func registerGatewayThreadForTest(router *Router, id string, cwd string) {
+	router.gatewayThreadsMu.Lock()
+	defer router.gatewayThreadsMu.Unlock()
+	if router.gatewayThreads == nil {
+		router.gatewayThreads = map[string]appServerGatewayAllowedThread{}
+	}
+	router.gatewayThreads[id] = appServerGatewayAllowedThread{
+		id:       id,
+		cwd:      cwd,
+		scopeID:  workspaceIDForRealPath(cwd),
+		lastSeen: time.Now(),
+	}
 }
 
 func newManagedWorktreeGatewayPolicyForTest(router *Router) *appServerGatewayPolicy {

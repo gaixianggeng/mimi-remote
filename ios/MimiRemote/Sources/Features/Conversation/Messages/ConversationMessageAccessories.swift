@@ -340,6 +340,8 @@ struct RuntimeSummaryCard: View {
             return L10n.text("ui.abnormal_operation")
         case .warning:
             return L10n.text("ui.run_warning")
+        case .context:
+            return L10n.text("ui.context")
         case .message:
             return L10n.text("ui.status")
         }
@@ -374,6 +376,8 @@ struct RuntimeSummaryCard: View {
             return "exclamationmark.triangle"
         case .warning:
             return "exclamationmark.triangle"
+        case .context:
+            return "info.circle"
         case .message:
             return "info.circle"
         }
@@ -386,7 +390,7 @@ struct RuntimeSummaryCard: View {
                 return tokens.accent
             case .error:
                 return .red
-            case .thinking, .runCommand, .toolCall:
+            case .thinking, .runCommand, .toolCall, .context:
                 return tokens.secondaryText
             }
         }
@@ -423,7 +427,7 @@ struct RuntimeSummaryCard: View {
                 return tokens.accent.opacity(0.10)
             case .error:
                 return Color.red.opacity(0.10)
-            case .thinking, .runCommand, .toolCall:
+            case .thinking, .runCommand, .toolCall, .context:
                 return tokens.systemBubble
             }
         }

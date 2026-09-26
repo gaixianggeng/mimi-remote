@@ -14,6 +14,14 @@ enum MimiRemoteMacMain {
         }
         // LaunchAgent 以 supervisor 模式启动主可执行文件：必须早于任何 UI、隔离副本提示和
         // Store 初始化，只接受唯一的固定参数，任何多余参数都按用法错误退出。
+        if CodexFrontDoorInvocation.isRequested(CommandLine.arguments) {
+            guard let configuration = CodexFrontDoorInvocation.configuration(CommandLine.arguments) else {
+                Darwin.exit(EX_USAGE)
+            }
+            Darwin.exit(AgentdSupervisor.run { bundleURL, homeDirectoryURL in
+                .frontDoor(bundleURL: bundleURL, homeDirectoryURL: homeDirectoryURL, configPath: configuration.path)
+            })
+        }
         if AgentdSupervisorInvocation.isRequested(CommandLine.arguments) {
             guard AgentdSupervisorInvocation.matches(CommandLine.arguments) else {
                 Darwin.exit(EX_USAGE)
@@ -92,11 +100,6 @@ struct MimiRemoteMacApp: App {
         }
         .defaultSize(width: 720, height: 620)
 
-        Window("实验功能", id: ExperimentMenuRouting.windowID) {
-            ExperimentsView(store: store)
-        }
-        .defaultSize(width: 500, height: 680)
-
         Settings {
             MacSettingsView(store: store, updates: updates)
         }
@@ -120,5 +123,4 @@ enum AppWindow: String {
     case dashboard
     case pairing
     case diagnostics
-    case experiments
 }

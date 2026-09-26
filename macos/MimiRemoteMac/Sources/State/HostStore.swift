@@ -12,6 +12,12 @@ final class HostStore {
     private(set) var pairing: PairingInfo?
     private(set) var pairingNetwork: PairingNetwork = .tailscale
     private(set) var recentLogs: [String] = []
+    private(set) var diagnosticsStatus: AgentDiagnosticsStatus?
+    private(set) var diagnosticsStatusError: String?
+    private(set) var diagnosticsLogError: String?
+    private(set) var isLoadingDiagnostics = false
+    private(set) var isUpdatingDiagnostics = false
+    private(set) var isExportingDiagnostics = false
     private(set) var appliedFixes: [String] = []
     private(set) var isBusy = false
     private(set) var isStoppingForQuit = false
@@ -21,16 +27,27 @@ final class HostStore {
     private(set) var claudeConfiguration: ClaudeConfigurationResult?
     private(set) var isUpdatingClaude = false
     private(set) var claudeError: String?
+    private(set) var deepSeekConfiguration: DeepSeekConfigurationResult?
+    private(set) var isUpdatingDeepSeek = false
+    private(set) var deepSeekError: String?
     private(set) var tailcatStatus: TailcatStatus?
     private(set) var isUpdatingTailcat = false
     private(set) var tailcatError: String?
     private(set) var tailcatNotice: String?
+    private(set) var isUpdatingLAN = false
+    private(set) var lanError: String?
+    private(set) var codexError: String?
+    private(set) var codexSessionRepairNotice: String?
+    private(set) var networkError: String?
+    private(set) var networkErrorModule: HostModuleID?
+    private(set) var updatingModule: HostModuleID?
     private(set) var photosAccess: PhotosAccessState = .notDetermined
     /// 启动阶段的补充说明，例如覆盖安装后正在重新登记后台服务。只在
     /// `.starting` 期间有值，进入其它生命周期状态时清空。
     private(set) var startingDetail: String?
     var lastError: String?
     @ObservationIgnored private var pairingRefreshGeneration = 0
+    @ObservationIgnored private var tailcatStatusRequestSequence: UInt64 = 0
     /// 启动等待期间的 status 轮询只用来判断是否就绪。未就绪的结果不能把生命周期
     /// 写成 degraded/stopped，否则菜单栏会在"正在启动"阶段先闪出"服务需要处理"，
     /// 让用户误以为启动已经失败。真正的失败由等待结束后的 fail() 给出。
@@ -41,11 +58,13 @@ final class HostStore {
     }
 
     var claudeEnabled: Bool {
-        claudeConfiguration?.enabled ?? claudeRuntime?.enabled ?? false
+        status?.moduleStatus?.claudeEnabled ?? claudeConfiguration?.enabled ?? claudeRuntime?.enabled ?? false
     }
 
-    var canChangeClaude: Bool {
-        owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
+    var lanEnabled: Bool {
+        if let modules = status?.moduleStatus { return modules.lanEnabled }
+        guard status?.moduleStatusState != .unavailable else { return false }
+        return status?.networkStatus?.allowLAN ?? false
     }
 
     var tailcatEnabled: Bool {
@@ -60,16 +79,9 @@ final class HostStore {
         tailcatStatus?.derpMapURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    var tailcatStatusTitle: String {
-        if isUpdatingTailcat { return "正在更新" }
-        guard let tailcatStatus else { return "尚未检查" }
-        if !tailcatStatus.enabled { return "已关闭" }
-        return tailcatStatus.running ? "运行中" : "需要处理"
-    }
-
     var tailcatStatusDetail: String {
         if owner == .homebrew {
-            return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Tailcat 实验。"
+            return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Tailcat 模块。"
         }
         if let tailcatError { return tailcatError }
         if let tailcatNotice { return tailcatNotice }
@@ -78,55 +90,6 @@ final class HostStore {
             return "默认关闭。开启后会启动独立 sidecar，不会替换或重启现有 Tailscale 连接。"
         }
         return "已配对 \(tailcatStatus.pairedDeviceCount) 台设备。"
-    }
-
-    var experimentMenuStatusText: String? {
-        guard owner == .macApp else { return "不可管理" }
-        if isUpdatingClaude || isUpdatingTailcat { return "正在更新" }
-        let enabled = [claudeEnabled ? "Claude" : nil, tailcatEnabled ? "Tailcat" : nil].compactMap { $0 }
-        return enabled.isEmpty ? nil : enabled.joined(separator: "、") + " 已启用"
-    }
-
-    var experimentMenuAccessibilityLabel: String {
-        guard let status = experimentMenuStatusText else { return "实验功能" }
-        return "实验功能，\(status)"
-    }
-
-    var claudeStatusTitle: String {
-        guard owner != .homebrew else { return "等待接管 App 服务" }
-        guard let runtime = claudeRuntime else {
-            return claudeEnabled ? "正在检查" : "已关闭"
-        }
-        switch runtime.state {
-        case .connected: return "已连接"
-        case .available: return "可用"
-        case .signedOut: return "需要登录"
-        case .disabled: return "已关闭"
-        case .unavailable: return "暂不可用"
-        }
-    }
-
-    var claudeStatusDetail: String {
-        if owner == .homebrew {
-            return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Claude 实验通道。"
-        }
-        if let claudeError {
-            return claudeError
-        }
-        if let runtime = claudeRuntime, runtime.enabled {
-            switch runtime.state {
-            case .connected, .available:
-                return "Claude Code 与 resident bridge 已就绪。"
-            case .signedOut:
-                return "已检测到 Claude Code，但尚未登录。请先在 Claude Code 中完成登录。"
-            case .unavailable:
-                return "Claude Runtime 暂不可用；请检查登录状态或打开诊断查看详情。"
-            case .disabled:
-                break
-            }
-        }
-        return claudeConfiguration?.message
-            ?? "启动时会检测 Claude Code；可用且已登录时自动启用，检测不到时保持关闭。"
     }
 
     private var claudeRuntime: AgentRuntimeStatus? {
@@ -139,6 +102,7 @@ final class HostStore {
 
     private let agent: AgentCommandClient
     private let services: ServiceManagementClient
+    private let configCheck: AgentdConfigCheckClient
     private let homebrew: HomebrewServiceClient
     private let health: HealthClient
     private let logs: AgentLogClient
@@ -157,6 +121,7 @@ final class HostStore {
     init(
         agent: AgentCommandClient,
         services: ServiceManagementClient,
+        configCheck: AgentdConfigCheckClient = .disabled,
         homebrew: HomebrewServiceClient,
         health: HealthClient,
         logs: AgentLogClient,
@@ -167,6 +132,7 @@ final class HostStore {
     ) {
         self.agent = agent
         self.services = services
+        self.configCheck = configCheck
         self.homebrew = homebrew
         self.health = health
         self.logs = logs
@@ -178,6 +144,7 @@ final class HostStore {
         HostStore(
             agent: .live(),
             services: .live(),
+            configCheck: .live(),
             homebrew: .live(),
             health: .live,
             logs: .live,
@@ -214,7 +181,8 @@ final class HostStore {
             }
             await enableLoginLaunchBestEffort()
             let reloadClaudeConfiguration = await reconcileClaudeConfigurationAtLaunch()
-            await startMacAgentIfNeeded(reloadConfiguration: reloadClaudeConfiguration)
+            let reloadDeepSeekConfiguration = await reconcileDeepSeekConfigurationAtLaunch()
+            await startMacAgentIfNeeded(reloadConfiguration: reloadClaudeConfiguration || reloadDeepSeekConfiguration)
         }
         if owner == .macApp, runtimeStatusNeedsFollowUp {
             // App 启动时就把服务端占位快照追到可展示结果，用户第一次展开
@@ -314,6 +282,9 @@ final class HostStore {
         defer { isBusy = false }
         do {
             try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
+            // 永久交还 Homebrew 前，先确认私有 Codex backend 空闲并注销独立前门。
+            // 失败时走现有回滚，不能留下仍指向将被移走 App 的 LaunchAgent。
+            try await agent.uninstallCodexFrontDoor()
             try await homebrew.start()
             try await waitForHomebrewReady(binary: oldAgent)
             homebrewLoaded = true
@@ -368,9 +339,15 @@ final class HostStore {
 
     func refreshPairing(network: PairingNetwork? = nil) async {
         guard !isBusy else { return }
+        guard canPair else {
+            pairing = nil
+            lastError = pairingUnavailableReason
+            return
+        }
         pairingRefreshGeneration &+= 1
         let refreshGeneration = pairingRefreshGeneration
         lastError = nil
+        pairing = nil
         do {
             let nextPairing = try await resolvedPairing(for: network)
             // 较早的请求不能覆盖用户刚选择的网络和二维码。
@@ -385,23 +362,24 @@ final class HostStore {
     }
 
     private func prepareAutomaticNetworkBeforeServiceStart() async throws {
-        do {
-            _ = try await agent.pair(.automatic)
-        } catch {
-            // 旧配置可能仍绑定已卸载的 Tailscale IP；启动新服务前先切到 LAN 通配监听。
-            _ = try await agent.setLANAccess(true)
-        }
+        // 启动服务不得因为 Tailscale/配对探测失败而静默扩大到局域网监听。
+        // 网络能力由用户显式开关；失败保留原配置并交给状态/配对界面处理。
+        // 服务启动不依赖是否有可用的外部配对地址。
     }
 
     private func resolvedPairing(for requestedNetwork: PairingNetwork?) async throws -> PairingInfo {
-        switch requestedNetwork ?? .automatic {
-        case .automatic:
-            do {
-                return try await agent.pair(.automatic)
-            } catch {
-                // 自动模式只有 Tailscale 不可用时才应降级；LAN 准备失败会返回更可操作的错误。
-                return try await localNetworkPairing()
+        var selection = requestedNetwork ?? .automatic
+        if status?.moduleStatus != nil || status?.moduleStatusState == .unavailable {
+            if selection == .automatic { selection = availablePairingNetworks.first ?? .automatic }
+            guard canPair, availablePairingNetworks.contains(selection) else {
+                throw AgentClientError.commandFailed(pairingUnavailableReason)
             }
+        }
+        switch selection {
+        case .automatic:
+            // 自动模式只在当前已启用的连接方式中选择；不能为了生成二维码
+            // 隐式打开 LAN，因为那会扩大 agentd 的网络暴露面。
+            return try await agent.pair(.automatic)
         case .tailscale:
             return try await agent.pair(.tailscale)
         case .localNetwork:
@@ -412,33 +390,12 @@ final class HostStore {
     }
 
     private func localNetworkPairing() async throws -> PairingInfo {
-        guard owner == .macApp else {
-            throw AgentClientError.commandFailed("请先将 Homebrew 服务迁移到 Mimi Remote Mac，再启用局域网访问。")
+        guard lanEnabled else {
+            throw AgentClientError.commandFailed("局域网已关闭，请先在连接方式中明确启用。")
         }
-        let configuration = try await agent.setLANAccess(true)
-        var restartedForLAN = false
-        if configuration.restartRequired {
-            // LAN 是扩大监听范围；仅配置首次变化时重启，后续刷新二维码不再打断连接。
-            await restartService()
-            guard lifecycle == .ready else {
-                throw AgentClientError.commandFailed(lastError ?? "启用局域网后服务重启失败。")
-            }
-            restartedForLAN = true
-        }
-
-        var nextPairing = try await agent.pair(.localNetwork)
-        if !(await health.checkDirect(nextPairing.endpoint)) {
-            // 配置可能已开启但当前进程尚未加载；直连校验失败时只补一次重启。
-            if !restartedForLAN {
-                await restartService()
-                guard lifecycle == .ready else {
-                    throw AgentClientError.commandFailed(lastError ?? "局域网服务重启失败。")
-                }
-                nextPairing = try await agent.pair(.localNetwork)
-            }
-            guard await health.checkDirect(nextPairing.endpoint) else {
-                throw AgentClientError.commandFailed("局域网地址暂时不可访问，请检查 macOS 本地网络权限或防火墙设置。")
-            }
+        let nextPairing = try await agent.pair(.localNetwork)
+        guard await health.checkDirect(nextPairing.endpoint) else {
+            throw AgentClientError.commandFailed("局域网地址不可访问，请检查本地网络权限、防火墙或重新启动 Mimi 服务。")
         }
         return nextPairing
     }
@@ -505,16 +462,76 @@ final class HostStore {
         }
     }
 
-    func loadRecentLogs() async {
+    func refreshDiagnostics() async {
+        guard !isLoadingDiagnostics, !isUpdatingDiagnostics else { return }
+        isLoadingDiagnostics = true
+        diagnosticsStatusError = nil
+        diagnosticsLogError = nil
+        defer { isLoadingDiagnostics = false }
+
+        async let statusCall = agent.diagnosticsStatus()
+        async let logsCall = logs.recentLines(200)
         do {
-            recentLogs = try await logs.recentLines(200)
+            diagnosticsStatus = try await statusCall
+        } catch is CancellationError {
+            return
         } catch {
-            lastError = error.localizedDescription
+            // 服务状态无法读取时不展示过期快照，避免让用户误以为开关仍然有效。
+            diagnosticsStatus = nil
+            diagnosticsStatusError = error.localizedDescription
+        }
+        do {
+            recentLogs = try await logsCall
+        } catch is CancellationError {
+            return
+        } catch {
+            diagnosticsLogError = error.localizedDescription
         }
     }
 
-    func revealLogFile() {
-        logs.reveal()
+    func setDetailedDiagnostics(_ enabled: Bool) async {
+        guard !isLoadingDiagnostics, !isUpdatingDiagnostics else { return }
+        isUpdatingDiagnostics = true
+        diagnosticsStatusError = nil
+        defer { isUpdatingDiagnostics = false }
+        do {
+            diagnosticsStatus = try await agent.setDetailedDiagnostics(enabled)
+        } catch is CancellationError {
+            return
+        } catch {
+            diagnosticsStatusError = error.localizedDescription
+        }
+    }
+
+    func clearDiagnostics() async {
+        guard !isLoadingDiagnostics, !isUpdatingDiagnostics else { return }
+        isUpdatingDiagnostics = true
+        diagnosticsStatusError = nil
+        diagnosticsLogError = nil
+        defer { isUpdatingDiagnostics = false }
+        do {
+            diagnosticsStatus = try await agent.clearDiagnostics()
+            recentLogs = []
+        } catch is CancellationError {
+            return
+        } catch {
+            diagnosticsLogError = error.localizedDescription
+        }
+    }
+
+    func diagnosticExportLines() async -> [String]? {
+        guard !isExportingDiagnostics else { return nil }
+        isExportingDiagnostics = true
+        diagnosticsLogError = nil
+        defer { isExportingDiagnostics = false }
+        do {
+            return try await logs.exportLines()
+        } catch is CancellationError {
+            return nil
+        } catch {
+            diagnosticsLogError = error.localizedDescription
+            return nil
+        }
     }
 
     func openLoginItemsSettings() {
@@ -562,6 +579,130 @@ final class HostStore {
         }
     }
 
+    func setLANEnabled(_ enabled: Bool) async {
+        await setNetworkModule(.localNetwork, enabled: enabled)
+    }
+
+    func setTailscaleEnabled(_ enabled: Bool) async {
+        await setNetworkModule(.tailscale, enabled: enabled)
+    }
+
+    func setCodexEnabled(_ enabled: Bool) async {
+        guard canChangeModules else { return }
+        isBusy = true
+        updatingModule = .codex
+        codexError = nil
+        invalidateModulePairing()
+        defer { updatingModule = nil; isBusy = false }
+        do {
+            let result = try await agent.configureCodex(enabled ? "enabled" : "disabled")
+            guard result.enabled == enabled, !enabled || result.available else {
+                codexError = result.message
+                return
+            }
+            do {
+                if result.restartRequired || status?.moduleStatus?.codexEnabled != enabled {
+                    try await reloadMacAgentForConfigurationChange()
+                }
+                try await confirmAppliedModules(codexEnabled: enabled)
+            } catch {
+                let cause = error.localizedDescription
+                if result.changed {
+                    do {
+                        let restored = try await agent.restoreCodex(result)
+                        try await reloadMacAgentForConfigurationChange()
+                        try await confirmAppliedModules(codexEnabled: restored.enabled)
+                        codexError = "更新 Codex 失败：\(cause)。已恢复修改前设置。"
+                    } catch {
+                        codexError = "更新 Codex 失败：\(cause)。自动恢复未完成：\(error.localizedDescription)"
+                    }
+                } else { codexError = cause }
+                await settleModuleChangeFailure(codexError ?? cause)
+            }
+        } catch {
+            codexError = error.localizedDescription
+            await settleModuleChangeFailure(error.localizedDescription)
+        }
+    }
+
+    private func setNetworkModule(_ network: PairingNetwork, enabled: Bool) async {
+        let module: HostModuleID = network == .tailscale ? .tailscale : .lan
+        guard canChangeModule(module) else { return }
+        isBusy = true
+        updatingModule = module
+        isUpdatingLAN = network == .localNetwork
+        networkError = nil
+        networkErrorModule = updatingModule
+        lanError = nil
+        invalidateModulePairing()
+        defer { updatingModule = nil; isUpdatingLAN = false; isBusy = false }
+        do {
+            let result = try await agent.configureNetwork(network, enabled)
+            do {
+                if result.restartRequired || status?.moduleStatus?.lanEnabled != result.lanEnabled ||
+                    status?.moduleStatus?.tailscaleEnabled != result.tailscaleEnabled {
+                    try await reloadMacAgentForConfigurationChange()
+                }
+                try await confirmAppliedModules(network: result)
+            } catch {
+                let cause = error.localizedDescription
+                if result.changed {
+                    do {
+                        let restored = try await agent.restoreNetwork(result)
+                        try await reloadMacAgentForConfigurationChange()
+                        try await confirmAppliedModules(network: restored)
+                        networkError = "更新连接失败：\(cause)。已恢复修改前设置。"
+                    } catch {
+                        networkError = "更新连接失败：\(cause)。自动恢复未完成：\(error.localizedDescription)"
+                    }
+                } else { networkError = cause }
+                await settleModuleChangeFailure(networkError ?? cause)
+            }
+        } catch {
+            networkError = error.localizedDescription
+            await settleModuleChangeFailure(error.localizedDescription)
+        }
+        lanError = networkError
+    }
+
+    /// 模块变更失败后的统一收尾。`reloadMacAgentForConfigurationChange()` 会把生命周期
+    /// 置为 `.starting`，而后续服务管理操作可能直接抛错；`defer` 只清 isBusy/updatingModule，
+    /// 于是界面会停在“正在启动”，所有模块 Toggle 继续被禁用。
+    ///
+    /// 这里做一次有界核对：能读到可信的当前状态就交给常规状态落地；读不到就进入明确的
+    /// 失败态并保留恢复入口。不得为了让开关可用而直接写成 `.ready` —— 退出启动中不等于
+    /// 宣称服务健康。
+    private func settleModuleChangeFailure(_ detail: String) async {
+        guard lifecycle == .starting else { return }
+        // 能读到可信状态时，apply() 已按真实 serviceOK/processOK 落地；服务明确不可用
+        // 就沿用那份更严重的状态。配置可能已改变且恢复未完成，不能因为进程还活着就把
+        // 这次失败收敛成"服务可用"。
+        let applied: AgentStatus? = (try? await fetchAndApplyLatestStatus()) ?? nil
+        if applied != nil, status?.serviceOK == false { return }
+        // 状态不可确认时同样既不能留在 .starting（界面假装还在启动），也不能写成 .ready。
+        lifecycle = .degraded(detail)
+    }
+
+    private func confirmAppliedModules(codexEnabled: Bool? = nil, network: NetworkConfigurationResult? = nil) async throws {
+        for attempt in 0..<3 {
+            if let current = try await fetchAndApplyLatestStatus(), let modules = current.moduleStatus,
+               current.serviceOK,
+               codexEnabled == nil || modules.codexEnabled == codexEnabled,
+               network == nil || (modules.lanEnabled == network?.lanEnabled &&
+                                  modules.tailscaleEnabled == network?.tailscaleEnabled) {
+                return
+            }
+            if attempt < 2 { try await Task.sleep(for: .milliseconds(300)) }
+        }
+        throw AgentClientError.commandFailed("运行中的 agentd 尚未确认模块设置，请检查版本并重启服务。")
+    }
+
+    private func invalidateModulePairing() {
+        pairingRefreshGeneration &+= 1
+        statusRequestSequence &+= 1
+        pairing = nil
+    }
+
     func setClaudeEnabled(_ enabled: Bool) async {
         guard !isBusy, owner == .macApp else {
             claudeError = "请先启动并接管 Mimi Remote Mac 服务。"
@@ -570,6 +711,7 @@ final class HostStore {
         isBusy = true
         isUpdatingClaude = true
         claudeError = nil
+        invalidateModulePairing()
         defer {
             isUpdatingClaude = false
             isBusy = false
@@ -583,33 +725,112 @@ final class HostStore {
                 claudeError = result.message
                 return
             }
-            if result.restartRequired {
-                do {
+            do {
+                if result.restartRequired || status?.moduleStatus?.claudeEnabled != result.enabled {
                     try await reloadMacAgentForConfigurationChange()
-                    try await waitForClaudeRuntime(enabled: result.enabled)
-                } catch {
-                    let updateError = error
+                }
+                try await waitForClaudeRuntime(enabled: result.enabled)
+            } catch {
+                let updateError = error
+                if result.changed {
                     let rolledBack = await rollbackClaudeConfiguration(result)
                     let rollbackDetail = rolledBack
                         ? "已恢复修改前的 Claude 设置。"
                         : "自动恢复也失败，请打开诊断后重试。"
                     claudeError = "更新 Claude 设置失败：\(updateError.localizedDescription) \(rollbackDetail)"
+                } else {
+                    claudeError = "更新 Claude 设置失败：\(updateError.localizedDescription)"
                 }
-            } else {
-                await refreshMacAgentStatus()
+                await settleModuleChangeFailure(claudeError ?? updateError.localizedDescription)
             }
         } catch {
             claudeError = error.localizedDescription
+            await settleModuleChangeFailure(error.localizedDescription)
+        }
+    }
+
+    func inspectDeepSeek() async {
+        guard owner == .macApp, !isUpdatingDeepSeek, !isBusy else { return }
+        isUpdatingDeepSeek = true
+        defer { isUpdatingDeepSeek = false }
+        do {
+            let result = try await agent.configureDeepSeek(.inspect, nil)
+            deepSeekConfiguration = result
+            deepSeekError = result.enabled && !result.available ? result.message : nil
+        } catch {
+            deepSeekError = error.localizedDescription
+        }
+    }
+
+    func configureDeepSeek(_ action: DeepSeekConfigurationAction, startupURL: String? = nil) async {
+        guard canChangeDeepSeek, !isUpdatingDeepSeek else { return }
+        isBusy = true
+        isUpdatingDeepSeek = true
+        deepSeekError = nil
+        defer {
+            isUpdatingDeepSeek = false
+            isBusy = false
+        }
+        do {
+            let result = try await agent.configureDeepSeek(action, startupURL)
+            deepSeekConfiguration = result
+            // 最新的直接检查失败优先于 runtime-status 的旧缓存，避免仍显示“已连接”。
+            deepSeekError = result.enabled && !result.available ? result.message : nil
+            if result.restartRequired {
+                do {
+                    try await reloadMacAgentForConfigurationChange()
+                } catch {
+                    // 配置已提交但服务未加载时必须明确区分，不能把预检成功显示为已连接。
+                    deepSeekError = "配置已保存，但 agentd 重新加载失败。请重试启动服务。\(error.localizedDescription)"
+                    fail(error)
+                    return
+                }
+            }
+            await refreshMacAgentStatus()
+            if runtimeStatusNeedsFollowUp { scheduleRuntimeStatusFollowUp() }
+        } catch {
+            deepSeekError = error.localizedDescription
+        }
+    }
+
+    /// 模块开关的入口：开启走自动发现连接，关闭复用 `.disabled`。
+    /// Harness 的启动与停止不归 Mimi 管，所以这里只改 agentd 侧的一段连接配置。
+    func setDeepSeekEnabled(_ enabled: Bool) async {
+        await configureDeepSeek(enabled ? .connect : .disabled)
+    }
+
+    private func reconcileDeepSeekConfigurationAtLaunch() async -> Bool {
+        do {
+            // 只刷新已启用的托管连接。检测到 Harness 不代表用户同意自动启用。
+            let result = try await agent.configureDeepSeek(.refresh, nil)
+            deepSeekConfiguration = result
+            deepSeekError = result.enabled && !result.available ? result.message : nil
+            return result.restartRequired
+        } catch {
+            deepSeekError = "DeepSeek 自动检测失败：\(error.localizedDescription)"
+            return false
         }
     }
 
     func refreshTailcatStatus() async {
-        guard owner == .macApp else { return }
+        await refreshTailcatStatus(allowDuringUpdate: false)
+    }
+
+    private func refreshTailcatStatus(allowDuringUpdate: Bool) async {
+        guard owner == .macApp, allowDuringUpdate || !isUpdatingTailcat else { return }
+        let generation = pairingRefreshGeneration
+        tailcatStatusRequestSequence &+= 1
+        let requestSequence = tailcatStatusRequestSequence
         do {
-            tailcatStatus = try await agent.tailcatStatus()
-            tailcatError = nil
-            tailcatNotice = nil
+            let current = try await agent.tailcatStatus()
+            guard generation == pairingRefreshGeneration,
+                  requestSequence == tailcatStatusRequestSequence else { return }
+            tailcatStatus = current
+            if !isUpdatingTailcat { tailcatError = nil }
+            if current.error != nil || !current.running { tailcatNotice = nil }
         } catch {
+            guard generation == pairingRefreshGeneration,
+                  requestSequence == tailcatStatusRequestSequence else { return }
             tailcatError = error.localizedDescription
         }
     }
@@ -621,7 +842,9 @@ final class HostStore {
         }
         isBusy = true
         isUpdatingTailcat = true
+        tailcatStatusRequestSequence &+= 1
         tailcatError = nil
+        invalidateModulePairing()
         tailcatNotice = nil
         defer {
             isUpdatingTailcat = false
@@ -635,7 +858,7 @@ final class HostStore {
             }
         } catch {
             let updateError = error.localizedDescription
-            await refreshTailcatStatus()
+            await refreshTailcatStatus(allowDuringUpdate: true)
             tailcatError = updateError
         }
     }
@@ -647,7 +870,9 @@ final class HostStore {
         }
         isBusy = true
         isUpdatingTailcat = true
+        tailcatStatusRequestSequence &+= 1
         tailcatError = nil
+        invalidateModulePairing()
         tailcatNotice = nil
         let wasEnabled = tailcatEnabled
         defer {
@@ -672,7 +897,9 @@ final class HostStore {
         guard !isBusy, owner == .macApp, tailcatEnabled else { return }
         isBusy = true
         isUpdatingTailcat = true
+        tailcatStatusRequestSequence &+= 1
         tailcatError = nil
+        invalidateModulePairing()
         tailcatNotice = nil
         defer {
             isUpdatingTailcat = false
@@ -700,6 +927,66 @@ final class HostStore {
             try await registerMacAgentAndWaitForReady()
         } catch {
             fail(error)
+        }
+    }
+
+    /// 用户确认所有共享连接都已退出后，显式释放错误驻留在 Background
+    /// session 的 Codex server，再由 Aqua LaunchAgent 创建新的 resident。
+    func repairSharedCodexRuntime() async {
+        guard !isBusy else { return }
+        let originalServiceStatus = services.agentStatus()
+        guard owner == .macApp, originalServiceStatus == .enabled else {
+            lastError = "当前不是 App 托管服务，不能修复共享运行环境。"
+            return
+        }
+
+        isBusy = true
+        lifecycle = .starting
+        lastError = nil
+        codexSessionRepairNotice = nil
+        defer { isBusy = false }
+
+        do {
+            try validateMacAgentConfiguration()
+            try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
+            let result = try await agent.releaseCodexSession()
+            try await registerMacAgentAndWaitForReady()
+            let releaseMessage = result.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            let summary = releaseMessage.isEmpty
+                ? (result.released
+                    ? "共享运行环境已修复。"
+                    : "共享运行环境无需释放。")
+                : releaseMessage
+            let separator = summary.hasSuffix("。") || summary.hasSuffix("！") || summary.hasSuffix("？")
+                ? ""
+                : "。"
+            codexSessionRepairNotice = "\(summary)\(separator)Mimi Remote Mac 服务已重新启动。"
+        } catch {
+            await restoreMacAgentAfterCodexSessionRepairFailure(
+                originalServiceStatus: originalServiceStatus,
+                cause: error
+            )
+        }
+    }
+
+    private func restoreMacAgentAfterCodexSessionRepairFailure(
+        originalServiceStatus: ServiceRegistrationState,
+        cause: Error
+    ) async {
+        guard originalServiceStatus == .enabled else {
+            fail(cause)
+            return
+        }
+        do {
+            owner = .macApp
+            try await registerMacAgentAndWaitForReady()
+            lastError = "修复共享运行环境失败，已恢复 Mimi Remote Mac 服务：\(cause.localizedDescription)"
+        } catch {
+            // launchd 已重新登记但 resident 因旧 Background server 拒绝而未就绪时，
+            // 仍保留 App owner，让用户关闭其它连接后可以再次执行显式修复。
+            owner = services.agentStatus() == .enabled ? .macApp : .none
+            lifecycle = .failed("修复共享运行环境失败，Mimi Remote Mac 服务未能恢复就绪：\(error.localizedDescription)")
+            lastError = "原始错误：\(cause.localizedDescription)；恢复错误：\(error.localizedDescription)"
         }
     }
 
@@ -891,6 +1178,11 @@ final class HostStore {
     }
 
     private func repairEnabledMacAgent(after initialError: Error) async {
+        // 同上：配置本身不可用时，换代不会改变结果，也不该把原因改写成登记问题。
+        if let lifecycleError = initialError as? ServiceLifecycleError, lifecycleError.isConfigurationFailure {
+            fail(lifecycleError)
+            return
+        }
         lifecycle = .starting
         do {
             try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
@@ -913,7 +1205,7 @@ final class HostStore {
                 : result.message
             return result.restartRequired
         } catch {
-            // Claude 是实验通道；预检失败不能破坏 Codex 主服务启动。
+            // Claude 预检失败不能阻止 Mac 控制面启动。
             claudeError = "Claude 自动检测失败：\(error.localizedDescription)"
             return false
         }
@@ -979,10 +1271,7 @@ final class HostStore {
 
     private func rollbackClaudeConfiguration(_ changed: ClaudeConfigurationResult) async -> Bool {
         do {
-            let restored = try await agent.configureClaude(
-                changed.previousPreference,
-                changed.previousEnabled
-            )
+            let restored = try await agent.restoreClaude(changed)
             claudeConfiguration = restored
             try await reloadMacAgentForConfigurationChange()
             try await waitForClaudeRuntime(enabled: restored.enabled)
@@ -1006,12 +1295,30 @@ final class HostStore {
             // 重试却始终拉不起进程。等满整轮再修复会白白浪费近一分钟；一旦 launchd
             // 自己已经报告反复 spawn 失败，就立即交给上层做一次有界换代。
             if let launchFailure = await services.agentLaunchFailure() {
-                throw ServiceLifecycleError.agentSpawnFailed(launchFailure)
+                throw await macAgentLaunchFailureError(launchFailure)
             }
             try await Task.sleep(for: .seconds(1))
         }
         let detail = lastStatus?.serviceError ?? "服务在有限等待内没有通过就绪检查。"
         throw AgentClientError.commandFailed(detail)
+    }
+
+    /// launchd 只报得出「反复 spawn 失败 + 退出码」，真正的原因在 agentd 自己的启动
+    /// 检查里：直接问包内 agentd，就能区分「这份配置需要更新版本的安装包」和「登记
+    /// 记录过期」。配置类问题重新登记多少次都不会变，必须换成真实报错或升级引导。
+    private func macAgentLaunchFailureError(_ launchFailure: String) async -> ServiceLifecycleError {
+        guard let check = await configCheck.check(), !check.ok else {
+            return .agentSpawnFailed(launchFailure)
+        }
+        if check.requiresNewerVersion {
+            return .configRequiresNewerVersion(check.message ?? launchFailure)
+        }
+        // 其它配置问题：把 agentd 的原始报错显示出来，用户才能看到「已被移除，
+        // 请执行 agentd setup --force」这类真正可执行的下一步。
+        guard let message = check.message, !message.isEmpty else {
+            return .agentSpawnFailed(launchFailure)
+        }
+        return .invalidConfiguration(message)
     }
 
     private func registerMacAgentAndWaitForReady(
@@ -1024,6 +1331,10 @@ final class HostStore {
             // 只有新登记的进程真正通过就绪检查后才记账；失败时下次启动仍会重试迁移。
             services.markAgentRegistrationCurrent()
         } catch {
+            // 配置在当前安装包下不可用：注销再登记只会重复同一个失败，直接报真实原因。
+            if let lifecycleError = error as? ServiceLifecycleError, lifecycleError.isConfigurationFailure {
+                throw lifecycleError
+            }
             guard allowAutomaticRepair, services.agentStatus() == .enabled else {
                 throw error
             }
@@ -1200,7 +1511,7 @@ final class HostStore {
     }
 
     private func apply(_ current: AgentStatus) {
-        let resolved = preservingRuntimeSnapshotIfNeeded(in: current)
+        let resolved = preservingTransientStatusSnapshotsIfNeeded(in: current)
         status = resolved
         doctor = resolved.doctor
         lastStatusRefreshAt = Date()
@@ -1238,12 +1549,48 @@ final class HostStore {
         return applyStatusResponse(current, sequence: sequence) ? current : nil
     }
 
+    private func preservingModuleStatusIfNeeded(in current: AgentStatus) -> AgentStatus {
+        guard current.moduleStatus == nil,
+              current.moduleStatusState == .unavailable,
+              current.serviceOK,
+              let previousStatus = status,
+              previousStatus.endpoint == current.endpoint,
+              previousStatus.serverVersion == current.serverVersion,
+              let previousModules = previousStatus.moduleStatus
+        else {
+            return current
+        }
+        return AgentStatus(
+            processOK: current.processOK,
+            serviceOK: current.serviceOK,
+            processError: current.processError,
+            serviceError: current.serviceError,
+            version: current.version,
+            serverVersion: current.serverVersion,
+            endpoint: current.endpoint,
+            configPath: current.configPath,
+            projects: current.projects,
+            doctorOK: current.doctorOK,
+            doctor: current.doctor,
+            pairExpires: current.pairExpires,
+            runtimeStatus: current.runtimeStatus,
+            networkStatus: current.networkStatus,
+            moduleStatus: previousModules,
+            moduleStatusState: .unavailable
+        )
+    }
+
+    private func preservingTransientStatusSnapshotsIfNeeded(in current: AgentStatus) -> AgentStatus {
+        preservingRuntimeSnapshotIfNeeded(in: preservingModuleStatusIfNeeded(in: current))
+    }
+
     private func preservingRuntimeSnapshotIfNeeded(in current: AgentStatus) -> AgentStatus {
         guard current.runtimeStatus == nil,
               current.serviceOK,
               let previousStatus = status,
               previousStatus.endpoint == current.endpoint,
               previousStatus.serverVersion == current.serverVersion,
+              previousStatus.moduleStatus == current.moduleStatus,
               let previousSnapshot = previousStatus.runtimeStatus
         else {
             return current
@@ -1269,7 +1616,10 @@ final class HostStore {
             doctorOK: current.doctorOK,
             doctor: current.doctor,
             pairExpires: current.pairExpires,
-            runtimeStatus: staleSnapshot
+            runtimeStatus: staleSnapshot,
+            networkStatus: current.networkStatus,
+            moduleStatus: current.moduleStatus,
+            moduleStatusState: current.moduleStatusState
         )
     }
 
@@ -1344,7 +1694,7 @@ final class HostStore {
             guard sequence == statusRequestSequence else { return }
             lastReadinessCommandSuccessAt = now
             readinessFailureStartedAt = nil
-            let resolved = preservingRuntimeSnapshotIfNeeded(in: current)
+            let resolved = preservingTransientStatusSnapshotsIfNeeded(in: current)
             status = resolved
             doctor = resolved.doctor
             lastStatusRefreshAt = now
@@ -1556,7 +1906,7 @@ final class HostStore {
                     reason: enabled ? "ready" : "disabled_by_user",
                     message: enabled
                         ? "已检测到 Claude Code 和兼容的 Claude bridge。"
-                        : "Claude 实验通道已关闭。"
+                        : "Claude Code 模块已关闭。"
                 )
             },
             setLANAccess: { enabled in
@@ -1575,7 +1925,35 @@ final class HostStore {
                     warnings: network == .localNetwork ? ["局域网配对仅适用于与这台 Mac 位于同一局域网的设备"] : []
                 )
             },
-            version: { status.version }
+            version: { status.version },
+            diagnosticsStatus: {
+                AgentDiagnosticsStatus(
+                    enabled: true,
+                    expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(12 * 60)),
+                    currentBytes: 18_432,
+                    previousBytes: 64_128,
+                    totalBytes: 82_560,
+                    maxTotalBytes: 10 * 1_048_576,
+                    retentionDays: 7
+                )
+            },
+            setDetailedDiagnostics: { enabled in
+                AgentDiagnosticsStatus(
+                    enabled: enabled,
+                    expiresAt: enabled
+                        ? ISO8601DateFormatter().string(from: Date().addingTimeInterval(15 * 60))
+                        : nil,
+                    currentBytes: 18_432,
+                    previousBytes: 64_128, totalBytes: 82_560,
+                    maxTotalBytes: 10 * 1_048_576, retentionDays: 7
+                )
+            },
+            clearDiagnostics: {
+                AgentDiagnosticsStatus(
+                    enabled: false, expiresAt: nil, currentBytes: 0, previousBytes: 0,
+                    totalBytes: 0, maxTotalBytes: 10 * 1_048_576, retentionDays: 7
+                )
+            }
         )
         let services = ServiceManagementClient(
             agentStatus: { .enabled },
@@ -1597,7 +1975,10 @@ final class HostStore {
             services: services,
             homebrew: homebrew,
             health: HealthClient(check: { _ in true }, checkDirect: { _ in true }),
-            logs: AgentLogClient(recentLines: { _ in [] }, reveal: {}, fileURL: URL(filePath: "/tmp/agentd.log"))
+            logs: AgentLogClient(
+                recentLines: { _ in [#"{"stage":"request","outcome":"failed","operation":"status"}"#] },
+                exportLines: { [#"{"stage":"request","outcome":"failed","operation":"status"}"#] }
+            )
         )
         store.lifecycle = lifecycle
         if lifecycle != .notConfigured {

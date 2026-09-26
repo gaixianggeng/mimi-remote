@@ -197,9 +197,9 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.sessions.allSatisfy { !$0.allowsDirectInput })
     }
 
-    /// MIM-246：受控全局发现必须对 Codex 与 Claude 各跑一趟独立遍历。
-    /// 回归前 Claude 那趟根本不发，Claude 会话在「会话」tab 完全不出现。
-    func testControlledGlobalDiscoveryTraversesBothRuntimesAndMergesSessions() async {
+    /// 受控全局发现必须对每个 Runtime 各跑一趟独立遍历。
+    /// 回归前 Harness 会被 Codex 的能力缓存挡住，在「会话」tab 永远不出现。
+    func testControlledGlobalDiscoveryTraversesAllRuntimesAndMergesSessions() async {
         let project = makeProject(id: "proj_dual")
         let codexSession = makeSession(
             id: "codex-global",
@@ -217,17 +217,27 @@ extension ConversationDataFlowTests {
             source: "claude",
             resumeID: "claude-global"
         )
+        let harnessSession = makeSession(
+            id: "harness-global",
+            projectID: project.id,
+            title: "Harness 会话",
+            status: "history",
+            source: "deepseek",
+            resumeID: "harness-global"
+        )
         let client = MockSessionStoreClient(
             projects: [project],
             sessions: [],
             controlledGlobalSessionsByRuntimeHandler: { runtimeProvider, cursor, limit in
                 XCTAssertEqual(limit, 50)
-                XCTAssertNil(cursor, "两条 runtime 的游标流互不交织，各自从头开始")
+                XCTAssertNil(cursor, "各 runtime 的游标流互不交织，各自从头开始")
                 switch runtimeProvider {
                 case "codex":
                     return SessionsPage(sessions: [codexSession])
                 case "claude":
                     return SessionsPage(sessions: [claudeSession])
+                case "deepseek":
+                    return SessionsPage(sessions: [harnessSession])
                 default:
                     XCTFail("不应请求未知 runtime：\(runtimeProvider)")
                     return SessionsPage(sessions: [])
@@ -245,13 +255,13 @@ extension ConversationDataFlowTests {
 
         XCTAssertEqual(
             client.requestedControlledGlobalRuntimes,
-            ["codex", "claude"],
-            "两条 runtime 都要遍历，且顺序稳定"
+            ["codex", "claude", "deepseek"],
+            "三条 runtime 都要遍历，且顺序稳定"
         )
         XCTAssertEqual(
             Set(store.sessions.map(\.id)),
-            ["codex-global", "claude-global"],
-            "两趟结果并进同一份 canonical sessions"
+            ["codex-global", "claude-global", "harness-global"],
+            "三趟结果并进同一份 canonical sessions"
         )
     }
 
@@ -612,14 +622,30 @@ extension ConversationDataFlowTests {
 
     func testSessionLibraryFallsBackAfterControlledGlobalCapabilityRejection() async {
         let project = makeProject(id: "proj_fallback")
+        let harnessSession = makeSession(
+            id: "harness-after-codex-rejection",
+            projectID: project.id,
+            title: "Harness 外部会话",
+            status: "history",
+            source: "deepseek",
+            resumeID: "harness-after-codex-rejection"
+        )
+        var harnessRequestCount = 0
         let client = MockSessionStoreClient(
             projects: [project],
             sessions: [],
-            controlledGlobalSessionsHandler: { _, _ in
-                throw AgentAPIError.server(
-                    status: 400,
-                    message: "thread/list.cwd 必须来自已授权工作区"
-                )
+            controlledGlobalSessionsByRuntimeHandler: { runtimeProvider, _, _ in
+                if runtimeProvider == "codex" {
+                    throw AgentAPIError.server(
+                        status: 400,
+                        message: "thread/list.cwd 必须来自已授权工作区"
+                    )
+                }
+                if runtimeProvider == "deepseek" {
+                    harnessRequestCount += 1
+                    return SessionsPage(sessions: harnessRequestCount == 1 ? [] : [harnessSession])
+                }
+                return SessionsPage(sessions: [])
             }
         )
         let store = SessionStore(
@@ -636,8 +662,48 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(
             client.requestedControlledGlobalCursors.count,
             1,
-            "旧 agentd 的能力拒绝只探测一次，之后继续使用精确 workspace 列表"
+            "旧 agentd 的 Codex 能力拒绝只探测一次"
         )
+        XCTAssertEqual(harnessRequestCount, 2, "Codex 能力拒绝不得关闭 Harness 后续刷新")
+        XCTAssertTrue(store.sessions.contains { $0.id == harnessSession.id })
+    }
+
+    func testVisibleSessionPollingRefreshesHarnessDirectoryWithoutSelectedWorkspace() async {
+        let harnessSession = makeSession(
+            id: "harness-no-selected-workspace",
+            projectID: "external-harness-project",
+            title: "另一端新建",
+            status: "history",
+            source: "deepseek",
+            resumeID: "harness-no-selected-workspace"
+        )
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            controlledGlobalSessionsByRuntimeHandler: { runtimeProvider, _, _ in
+                SessionsPage(sessions: runtimeProvider == "deepseek" ? [harnessSession] : [])
+            }
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "configured-token"
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            sessionListSleep: { _ in await Task.yield() }
+        )
+        XCTAssertNil(store.selectedProjectID)
+
+        let polling = Task { await store.pollSelectedProjectSessionsWhileVisible() }
+        for _ in 0..<100 where !store.sessions.contains(where: { $0.id == harnessSession.id }) {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        polling.cancel()
+        await polling.value
+
+        XCTAssertTrue(store.sessions.contains { $0.id == harnessSession.id })
+        XCTAssertTrue(client.requestedControlledGlobalRuntimes.contains("deepseek"))
     }
 
     func testWorkspaceRefreshPreservesControlledGlobalWorktreeUntilCompleteTraversalRemovesIt() async throws {
@@ -4888,7 +4954,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.refreshSelectedGitStatus()
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.refreshGitStatus(path: selectedPath)
 
         XCTAssertEqual(client.requestedGitStatusPaths, [session.dir])
         XCTAssertEqual(store.selectedGitStatus?.unstagedDiff, gitStatus.unstagedDiff)
@@ -5009,7 +5077,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.performSelectedGitAction(.stage, files: ["README.md"])
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.performGitAction(path: selectedPath, action: .stage, files: ["README.md"])
 
         XCTAssertEqual(client.requestedGitActions, [
             RequestedGitAction(path: session.dir, action: .stage, files: ["README.md"])
@@ -5053,7 +5123,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.performSelectedGitPatchAction(.stagePatch, patch: patch)
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.performGitPatchAction(path: selectedPath, action: .stagePatch, patch: patch)
 
         XCTAssertEqual(client.requestedGitPatchActions, [
             RequestedGitPatchAction(path: session.dir, action: .stagePatch, patch: patch.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -5093,7 +5165,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.commitSelectedGitChanges(message: " update readme ")
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.commitGitChanges(path: selectedPath, message: " update readme ")
 
         XCTAssertEqual(client.requestedGitCommits, [
             RequestedGitCommit(path: session.dir, message: "update readme")
@@ -5136,7 +5210,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.pushSelectedGitBranch(remote: " origin ")
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.pushGitBranch(path: selectedPath, remote: " origin ")
 
         XCTAssertEqual(client.requestedGitPushes, [
             RequestedGitPush(path: session.dir, remote: "origin")
@@ -5170,7 +5246,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.createSelectedPullRequest(title: " Draft PR ", body: "Summary", draft: true)
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.createPullRequest(path: selectedPath, title: " Draft PR ", body: "Summary", draft: true)
 
         XCTAssertEqual(client.requestedGitPullRequests, [
             RequestedGitPullRequest(path: session.dir, title: "Draft PR", body: "Summary", draft: true)
@@ -5214,7 +5292,9 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
-        await store.refreshSelectedPullRequestStatus()
+        let selectedPath = store.selectedGitStatusPath ?? ""
+        XCTAssertEqual(selectedPath, session.dir)
+        await store.refreshPullRequestStatus(path: selectedPath)
 
         XCTAssertEqual(client.requestedGitPullRequestStatusPaths, [session.dir])
         XCTAssertEqual(store.selectedPullRequestStatus, status)

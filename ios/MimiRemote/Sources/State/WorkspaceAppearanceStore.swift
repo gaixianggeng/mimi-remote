@@ -745,10 +745,6 @@ final class WorkspaceAppearanceStore: ObservableObject {
         return Self.normalizedEmoji(storedValue)
     }
 
-    func defaultEmoji(profileID _: String, projectID _: String) -> String {
-        Self.builtInEmoji[0]
-    }
-
     func setCustomEmoji(_ emoji: String?, profileID: String, projectID: String) {
         guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
             return

@@ -183,8 +183,6 @@ struct InitialConnectionSettingsSections: View {
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @ScaledMetric(relativeTo: .body) private var profileTitlePointSize = 17.0
     @ScaledMetric(relativeTo: .subheadline) private var profileDetailPointSize = 15.0
-    /// 当前电脑是整个 Tab 的内容主标题，比普通行大一档。
-    @ScaledMetric(relativeTo: .title3) private var currentComputerTitlePointSize = 20.0
 
     @ObservedObject var draft: ConnectionSettingsDraft
     let transientPreferences: SettingsTransientPreferences
@@ -265,9 +263,9 @@ struct InitialConnectionSettingsSections: View {
                 addComputerSection(tokens: tokens)
             }
         }
-        .listRowBackground(tokens.settingsGroupBackground)
+        .settingsGroupRowStyle()
         .settingsStandardListRow()
-        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + 12 }
+        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing }
         // 连接地址/Token 是高频编辑状态，放在这个小子树里，避免每次删字都重绘整个设置页。
         .onAppear(perform: loadInitialConnectionIfNeeded)
         .onChange(of: appStore.activeConnectionProfileID) { _, _ in
@@ -329,10 +327,10 @@ struct InitialConnectionSettingsSections: View {
 
         if let current = model.current {
             currentComputerSection(current, tokens: tokens)
-            notificationsSection
+            notificationsSection(showsDivider: true)
             otherComputersSection(model.others, ownsPresentation: false)
         } else if !model.others.isEmpty {
-            notificationsSection
+            notificationsSection(showsDivider: false)
             // 忘记当前电脑后仍会留下已保存的其它电脑；此时由这一组承接确认弹窗。
             otherComputersSection(model.others, ownsPresentation: true)
         } else {
@@ -347,13 +345,16 @@ struct InitialConnectionSettingsSections: View {
                     ConnectionRowLabel(title: L10n.text("ui.debug_enter_the_workbench"), systemImage: "wrench.and.screwdriver")
                 }
                 .accessibilityIdentifier("settings.debugEnterWorkbench")
+            } header: {
+                SettingsGroupHeader()
             }
+            .settingsGroupRowStyle()
 #endif
         }
     }
 
     /// 当前电脑、连接状态和连接方式过去是三个分组，回答的却是同一个问题。
-    /// 这里合成一张卡片：上半部分只做设备识别，下半部分是配置与诊断的直达入口。
+    /// 这里合成一组：首行只做设备识别，其下是配置与诊断的直达入口。
     private func currentComputerSection(
         _ item: ConnectionProfileSettingsItem,
         tokens: ThemeTokens
@@ -373,7 +374,7 @@ struct InitialConnectionSettingsSections: View {
             if let message = displayErrorMessage {
                 Text(message)
                     .foregroundStyle(tokens.warning)
-                    .font(themeStore.uiFont(size: 13))
+                    .font(themeStore.uiFont(.footnote))
                     .settingsRow(.descriptive)
                     .accessibilityIdentifier("settings.connection.error")
             }
@@ -391,8 +392,7 @@ struct InitialConnectionSettingsSections: View {
             .settingsStandardListRow()
             .accessibilityIdentifier("settings.connectionSpeedTest")
         } header: {
-            Text(L10n.text("ui.current_mac"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.current_mac"), showsDivider: false)
         } footer: {
             EmptyView()
         }
@@ -485,19 +485,20 @@ struct InitialConnectionSettingsSections: View {
     /// 消息提醒绑定的是某一台电脑，和电脑管理放在同一个 Tab；单独成组，不混进当前电脑卡片。
     /// 一台电脑都没存过时没有可绑定的对象，这一组不出现。
     /// 右侧状态与详情页开关同一口径：只看当前电脑是否已开启，不再写死「默认关闭」。
-    private var notificationsSection: some View {
-        let isEnabled = lockScreenApprovalStore.isEnabled(for: appStore.activeConnectionProfileID)
-
-        return Section {
+    private func notificationsSection(showsDivider: Bool) -> some View {
+        Section {
             NavigationLink(value: SettingsDestination.lockScreenApproval) {
                 ConnectionRowLabel(
                     title: L10n.text("ui.push_lock_screen_approval"),
-                    value: L10n.text(isEnabled ? "ui.push_status_on" : "ui.push_status_off"),
-                    systemImage: "lock.iphone"
+                    value: lockScreenApprovalStore.notificationStatusDescription,
+                    systemImage: "bell"
                 )
             }
             .settingsStandardListRow()
             .accessibilityIdentifier("settings.lockScreenApproval")
+        } header: {
+            // 单行分组不需要标题，一条细线就把它和当前电脑分开。
+            SettingsGroupHeader(showsDivider: showsDivider)
         }
     }
 
@@ -510,8 +511,7 @@ struct InitialConnectionSettingsSections: View {
         _ items: [ConnectionProfileSettingsItem],
         ownsPresentation: Bool
     ) -> some View {
-        let header = Text(L10n.text("ui.other_computers"))
-            .settingsSectionHeaderStyle()
+        let header = SettingsGroupHeader(title: L10n.text("ui.other_computers"))
 
         if ownsPresentation {
             connectionPresentationSection {
@@ -529,20 +529,20 @@ struct InitialConnectionSettingsSections: View {
             } header: {
                 header
             }
+            .settingsGroupRowStyle()
         }
     }
 
     private func currentComputerRow(_ item: ConnectionProfileSettingsItem) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        return HStack(spacing: 12) {
+        return HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
             computerGlyph(item)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.profile.displayName)
-                    .font(themeStore.uiFont(size: currentComputerTitlePointSize, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+                // 与「其他电脑」同一档：名称 17pt 中粗 + 15pt 状态。当前电脑的身份由分组标题
+                // 说明，不再靠更大一号的字——同一种对象两种字号，是这页读起来乱的来源之一（#563）。
+                computerNameText(item, tokens: tokens)
 
                 HStack(spacing: 6) {
                     // 分组标题已经说明这是当前电脑，这里不再重复「当前」徽章。
@@ -565,7 +565,7 @@ struct InitialConnectionSettingsSections: View {
         }
         .padding(.vertical, 8)
         .frame(minHeight: SettingsLayoutMetrics.deviceRowHeight)
-        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + 12 }
+        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.profile.\(item.id)")
     }
@@ -578,7 +578,7 @@ struct InitialConnectionSettingsSections: View {
             : AnyLayout(HStackLayout(alignment: .center, spacing: 8))
 
         return layout {
-            HStack(spacing: 12) {
+            HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
                 computerGlyph(item)
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -622,10 +622,12 @@ struct InitialConnectionSettingsSections: View {
 
                 profileMenu(item)
             }
-            .padding(.leading, dynamicTypeSize.isAccessibilitySize ? SettingsLayoutMetrics.iconSlot + 12 : 0)
+            .padding(.leading, dynamicTypeSize.isAccessibilitySize ? SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing : 0)
         }
-        .padding(.vertical, 10)
-        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + 12 }
+        // 与当前电脑行同一行高，两组电脑行节奏一致。
+        .padding(.vertical, 8)
+        .frame(minHeight: SettingsLayoutMetrics.deviceRowHeight)
+        .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.profile.\(item.id)")
     }
@@ -731,10 +733,12 @@ struct InitialConnectionSettingsSections: View {
                 .accessibilityIdentifier("settings.profile.delete.\(item.id)")
             }
         } label: {
+            // 图标贴右，与相邻行的导航箭头落在同一列；44pt 命中区向左延伸（#563）。
             Image(systemName: "ellipsis.circle")
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
-                .frame(width: 44, height: 44)
+                .frame(width: 44, height: 44, alignment: .trailing)
+                .contentShape(Rectangle())
         }
         .disabled(isSavingConnection || profileOperationID != nil)
         .accessibilityLabel(L10n.format("ui.manage_value", item.profile.displayName))
@@ -870,8 +874,7 @@ struct InitialConnectionSettingsSections: View {
             HostInstallationSetupView(transientPreferences: transientPreferences)
             manualConnectionRow(tokens: tokens)
         } header: {
-            Text(L10n.text("ui.add_mac"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.add_mac"), showsDivider: false)
         } footer: {
             Text(connectionSectionFooter)
                 .settingsSectionFooterStyle()
@@ -912,13 +915,18 @@ struct InitialConnectionSettingsSections: View {
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(tokens.primaryActionForeground)
                 .tint(tokens.primaryAction)
                 .disabled(!canSubmit)
             }
-            .padding(.vertical, 6)
+            .foregroundStyle(tokens.primaryText)
+            // 展开内容与标题同在一行，底部要自己留出与下一行的距离。
+            .padding(.top, 6)
+            .padding(.bottom, 14)
         } label: {
             ConnectionRowLabel(title: manualConnectionTitle, systemImage: "keyboard")
         }
+        .disclosureGroupStyle(SettingsDisclosureGroupStyle())
         .accessibilityIdentifier("settings.connection.manual")
     }
 
@@ -936,6 +944,7 @@ struct InitialConnectionSettingsSections: View {
         } footer: {
             footer()
         }
+        .settingsGroupRowStyle()
         // 真正的相机 Cover 由 SettingsView 根层呈现，避免 Form.Section 重建后丢失 presenter。
         .onAppear(perform: configureQRCodeScannerPresentation)
         .confirmationDialog(
@@ -1074,281 +1083,6 @@ struct InitialConnectionSettingsSections: View {
             return nil
         }
         return AppStore.connectionTestDurationText(milliseconds: milliseconds)
-    }
-
-    private func connectionStageSummaryRow(title: String, stage: ConnectionTestStageTiming, color: Color) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text("\(stage.kind.title) · \(AppStore.connectionTestDurationText(milliseconds: stage.durationMillis))")
-                .monospacedDigit()
-                .foregroundStyle(color)
-                .lineLimit(1)
-        }
-    }
-
-    private func connectionStabilityRow(_ stability: ConnectionTestStageStability) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(L10n.text("ui.recent_fluctuations"))
-            Spacer(minLength: 12)
-            VStack(alignment: .trailing, spacing: 3) {
-                Text(stability.kind.title)
-                    .foregroundStyle(themeStore.tokens(for: colorScheme).warning)
-                Text(connectionStabilityDetailText(stability))
-                    .font(themeStore.uiFont(.footnote))
-                    .monospacedDigit()
-                    .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
-                    .lineLimit(1)
-            }
-        }
-    }
-
-    private func connectionStabilityDetailText(_ stability: ConnectionTestStageStability) -> String {
-        let spread = AppStore.connectionTestDurationText(milliseconds: stability.spreadMillis)
-        let max = AppStore.connectionTestDurationText(milliseconds: stability.maxMillis)
-        if stability.failureCount > 0 {
-            return L10n.format(
-                "ui.connection_test_stability_failure_summary",
-                L10n.plural("ui.connection_test_samples_count", count: stability.sampleCount),
-                L10n.plural("ui.connection_test_failures_count", count: stability.failureCount),
-                max
-            )
-        }
-        return L10n.format(
-            "ui.connection_test_stability_summary",
-            L10n.plural("ui.connection_test_samples_count", count: stability.sampleCount),
-            spread,
-            max
-        )
-    }
-
-    private func connectionStageRow(_ stage: ConnectionTestStageTiming) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        return HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 5) {
-                    Text(stage.kind.title)
-                    if case .failed = stage.status {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(themeStore.uiFont(.caption2, weight: .semibold))
-                            .foregroundStyle(tokens.warning)
-                    }
-                }
-                Text(stage.kind.detail)
-                    .font(themeStore.uiFont(.footnote))
-                    .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 12)
-            Text(stageDurationText(stage))
-                .font(themeStore.uiFont(.footnote, weight: .medium))
-                .monospacedDigit()
-                .foregroundStyle(connectionStageColor(stage))
-                .lineLimit(1)
-        }
-    }
-
-    private func stageDurationText(_ stage: ConnectionTestStageTiming) -> String {
-        let duration = AppStore.connectionTestDurationText(milliseconds: stage.durationMillis)
-        switch stage.status {
-        case .succeeded:
-            return duration
-        case .failed:
-            return L10n.format("ui.failure_value", duration)
-        }
-    }
-
-    private func connectionStageColor(_ stage: ConnectionTestStageTiming) -> Color {
-        switch stage.status {
-        case .succeeded:
-            return .secondary
-        case .failed:
-            return themeStore.tokens(for: colorScheme).warning
-        }
-    }
-
-    @ViewBuilder
-    private func connectionGatewayDiagnosticsRows(_ diagnostics: ConnectionTestGatewayDiagnostics) -> some View {
-        connectionGatewaySummaryRow(diagnostics)
-
-        if diagnostics.failedUpstreamDialsDelta > 0 {
-            connectionGatewayMetricRow(
-                title: L10n.text("ui.upstream_dialup_failed"),
-                detail: L10n.text("ui.this_test_failed_to_add_a_new_addition"),
-                value: L10n.format(
-                    "ui.connection_test_upstream_dial_failures",
-                    L10n.plural("ui.upstream_dial_failures_count", count: diagnostics.failedUpstreamDialsDelta),
-                    AppStore.connectionTestDurationText(milliseconds: diagnostics.upstreamDialMillisMax)
-                ),
-                color: .red
-            )
-        }
-
-        if let connection = diagnostics.relatedConnection {
-            connectionGatewayMetricRow(
-                title: L10n.text("ui.mac_upstream_dialing"),
-                detail: L10n.text("ui.agentd_to_local_app_server"),
-                value: AppStore.connectionTestDurationText(milliseconds: connection.upstreamDialMillis),
-                color: gatewayMetricColor(milliseconds: connection.upstreamDialMillis)
-            )
-        }
-
-        if let rpc = diagnostics.latestRPC {
-            connectionGatewayMetricRow(
-                title: L10n.text("ui.recent_rpcs"),
-                detail: rpc.method.isEmpty ? "app-server JSON-RPC" : rpc.method,
-                value: AppStore.connectionTestDurationText(milliseconds: rpc.latencyMillis),
-                color: gatewayMetricColor(milliseconds: rpc.latencyMillis)
-            )
-        }
-
-        if diagnostics.rpcOutstandingRequests > 0 {
-            connectionGatewayMetricRow(
-                title: L10n.text("ui.waiting_for_upstream"),
-                detail: L10n.text("ui.app_server_still_hasn_t_returned_a_response"),
-                value: L10n.format("ui.value_value", diagnostics.rpcOutstandingRequests, AppStore.connectionTestDurationText(milliseconds: diagnostics.rpcOutstandingMillisMax)),
-                color: themeStore.tokens(for: colorScheme).warning
-            )
-        }
-
-        if diagnostics.writeBackMillisMax > 0 {
-            connectionGatewayMetricRow(
-                title: L10n.text("ui.write_back_to_ipad"),
-                detail: L10n.text("ui.agentd_gateway_is_written_to_the_current_device"),
-                value: AppStore.connectionTestDurationText(milliseconds: diagnostics.writeBackMillisMax),
-                color: gatewayMetricColor(milliseconds: diagnostics.writeBackMillisMax)
-            )
-        }
-
-        if let closeReason = diagnostics.relatedConnection?.closeReason,
-           !closeReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            connectionGatewayMetricRow(
-                title: L10n.text("ui.recently_disconnected"),
-                detail: closeReason,
-                value: nil,
-                color: .secondary
-            )
-        }
-
-        if let hint = diagnostics.hints.first {
-            Text(hint)
-                .font(themeStore.uiFont(.footnote))
-                .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
-        }
-    }
-
-    private func connectionGatewaySummaryRow(_ diagnostics: ConnectionTestGatewayDiagnostics) -> some View {
-        let summary = gatewayDiagnosticSummary(diagnostics)
-        return HStack(alignment: .top, spacing: 12) {
-            Text(L10n.text("ui.gateway_judgment"))
-            Spacer(minLength: 12)
-            VStack(alignment: .trailing, spacing: 3) {
-                Text(summary.title)
-                    .foregroundStyle(summary.color)
-                    .lineLimit(1)
-                Text(summary.detail)
-                    .font(themeStore.uiFont(.footnote))
-                    .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.trailing)
-            }
-        }
-    }
-
-    private func connectionGatewayMetricRow(title: String, detail: String, value: String?, color: Color) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                Text(detail)
-                    .font(themeStore.uiFont(.footnote))
-                    .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
-                    .lineLimit(2)
-            }
-            Spacer(minLength: 12)
-            if let value {
-                Text(value)
-                    .font(themeStore.uiFont(.footnote, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(color)
-                    .lineLimit(1)
-            }
-        }
-    }
-
-    private func connectionGatewayDiagnosticsErrorRow(_ error: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(L10n.text("ui.gateway_diagnostics"))
-            Spacer(minLength: 12)
-            Text(error)
-                .font(themeStore.uiFont(.footnote))
-                .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
-                .multilineTextAlignment(.trailing)
-                .lineLimit(2)
-        }
-    }
-
-    private func gatewayMetricColor(milliseconds: Int) -> Color {
-        if milliseconds >= 2_000 {
-            return themeStore.tokens(for: colorScheme).warning
-        }
-        if milliseconds >= 500 {
-            return themeStore.tokens(for: colorScheme).warning
-        }
-        return .secondary
-    }
-
-    private func gatewayDiagnosticSummary(_ diagnostics: ConnectionTestGatewayDiagnostics) -> GatewayDiagnosticSummary {
-        let warning = themeStore.tokens(for: colorScheme).warning
-        if diagnostics.failedUpstreamDialsDelta > 0 {
-            return GatewayDiagnosticSummary(
-                title: L10n.text("ui.upstream_dialup_failed"),
-                detail: L10n.text("ui.agentd_failed_to_connect_to_local_app_server"),
-                color: .red
-            )
-        }
-        if diagnostics.rpcOutstandingRequests > 0 && diagnostics.rpcOutstandingMillisMax >= 2_000 {
-            return GatewayDiagnosticSummary(
-                title: L10n.text("ui.upstream_did_not_return"),
-                detail: L10n.text("ui.the_request_has_been_sent_to_app_server"),
-                color: warning
-            )
-        }
-        if let rpc = diagnostics.latestRPC,
-           rpc.latencyMillis >= 1_000 {
-            let method = rpc.method.isEmpty ? "app-server JSON-RPC" : rpc.method
-            return GatewayDiagnosticSummary(
-                title: L10n.text("ui.rpc_returns_slowly"),
-                detail: L10n.format("ui.value_return_time_is_high", method),
-                color: gatewayMetricColor(milliseconds: rpc.latencyMillis)
-            )
-        }
-        if diagnostics.writeBackMillisMax >= 500 {
-            return GatewayDiagnosticSummary(
-                title: L10n.text("ui.write_back_link_slow"),
-                detail: L10n.text("ui.prioritize_checking_ipads_and_tailscale_networks"),
-                color: gatewayMetricColor(milliseconds: diagnostics.writeBackMillisMax)
-            )
-        }
-        if let connection = diagnostics.relatedConnection,
-           connection.upstreamDialMillis >= 500 {
-            return GatewayDiagnosticSummary(
-                title: L10n.text("ui.local_dialing_is_slow"),
-                detail: L10n.text("ui.agentd_is_slow_to_establish_a_connection_to"),
-                color: gatewayMetricColor(milliseconds: connection.upstreamDialMillis)
-            )
-        }
-        if diagnostics.totalConnectionsDelta > 0 {
-            return GatewayDiagnosticSummary(
-                title: L10n.text("ui.there_is_a_new_connection_this_time"),
-                detail: L10n.text("ui.no_obvious_gateway_bottleneck_found"),
-                color: .secondary
-            )
-        }
-        return GatewayDiagnosticSummary(
-            title: L10n.text("ui.no_new_samples"),
-            detail: L10n.text("ui.continue_to_reproduce_the_slow_scene_and_look"),
-            color: .secondary
-        )
     }
 
     private var statusColor: Color {
@@ -1725,82 +1459,6 @@ struct InitialConnectionSettingsSections: View {
             localError = nil
         } catch {
             localError = error.localizedDescription
-        }
-    }
-}
-
-struct ConnectionDiagnosticsNetworkPathRow: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    let networkPath: TailscaleNetworkPathResponse
-
-    var body: some View {
-        // iOS 26/27 的 Form 会把带自定义内容的 LabeledContent 拉伸到剩余整屏高度。
-        // 改用固有高度布局，让网络路径与后续诊断行始终连续排列。
-        Group {
-            // 常规字号下保留短 DERP 摘要的紧凑单行；其余路径必须完整测量后再决定是否换行。
-            if networkPath.kind == .derp, !dynamicTypeSize.isAccessibilitySize {
-                compactDERPContent
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    horizontalContent
-                    verticalContent
-                }
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .fixedSize(horizontal: false, vertical: true)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("settings.connection.diagnostics.networkPath")
-    }
-
-    private var compactDERPContent: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text(L10n.text("ui.tailscale_network_path"))
-                .lineLimit(1)
-                .layoutPriority(1)
-
-            Spacer(minLength: 12)
-
-            networkPathLabel
-                .font(.subheadline)
-                .multilineTextAlignment(.trailing)
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
-        }
-    }
-
-    private var horizontalContent: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text(L10n.text("ui.tailscale_network_path"))
-                .fixedSize(horizontal: true, vertical: false)
-
-            Spacer(minLength: 12)
-
-            networkPathLabel
-                .font(.subheadline)
-                .fixedSize(horizontal: true, vertical: false)
-        }
-    }
-
-    private var verticalContent: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(L10n.text("ui.tailscale_network_path"))
-
-            networkPathLabel
-                .font(.subheadline)
-                .multilineTextAlignment(.trailing)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var networkPathLabel: some View {
-        HStack(spacing: 6) {
-            Image(systemName: networkPath.kind.settingsSystemImage)
-                .foregroundStyle(.tint)
-                .accessibilityHidden(true)
-            Text(networkPath.localizedSummary)
         }
     }
 }

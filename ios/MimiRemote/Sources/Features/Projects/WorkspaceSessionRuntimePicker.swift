@@ -4,6 +4,7 @@ import SwiftUI
 enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
     case codex
     case claude
+    case deepseek
 
     static let preferenceKey = "workspace.preferredRuntime"
 
@@ -13,14 +14,7 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var runtimeProvider: String {
-        switch self {
-        case .codex:
-            return "codex"
-        case .claude:
-            return "claude"
-        }
-    }
+    var runtimeProvider: String { rawValue }
 
     var listTitle: String {
         switch self {
@@ -28,6 +22,8 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
             return L10n.text("ui.runtime_default")
         case .claude:
             return L10n.text("ui.runtime_claude_short")
+        case .deepseek:
+            return "DeepSeek"
         }
     }
 
@@ -37,6 +33,8 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
             return L10n.text("ui.create_a_new_codex_session")
         case .claude:
             return L10n.text("ui.create_a_new_claude_code_session")
+        case .deepseek:
+            return "Create a new DeepSeek Harness session"
         }
     }
 
@@ -46,6 +44,16 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
             return .openAI
         case .claude:
             return .claude
+        case .deepseek:
+            return .deepSeek
+        }
+    }
+
+    var actionSystemImage: String {
+        switch self {
+        case .codex: "plus.circle"
+        case .claude: "sparkles"
+        case .deepseek: "terminal.fill"
         }
     }
 
@@ -57,66 +65,33 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
             return L10n.text("ui.runtime_subtitle_codex")
         case .claude:
             return L10n.text("ui.runtime_subtitle_claude")
+        case .deepseek:
+            return "DeepSeek Harness"
         }
     }
 
-    static func available(claudeChannelAvailable: Bool) -> [Self] {
-        claudeChannelAvailable ? [.codex, .claude] : [.codex]
+    /// 该 runtime 现在是否可选。
+    ///
+    /// codex 是**兜底项**：主机一个通道都没报可用时仍然提供它，避免选择器变成空列表
+    /// 或未选中态。但主机明确给出了可用集合时，codex 不再特殊——它也要在集合里才算
+    /// 可用，否则"codex 被关掉、只剩 claude"的主机仍会提供 codex，
+    /// 真正能用的 claude 顶不上来（main 上 `testWorkspaceRuntimePreferenceFallsBackToClaudeWhenCodexIsUnavailable`
+    /// 钉住的就是这条）。
+    static func available(runtimeProviders: Set<String>) -> [Self] {
+        let usable = allCases.filter { isAvailable($0, in: runtimeProviders) }
+        return usable.isEmpty ? [.codex] : usable
     }
-}
 
-/// 窄屏形态：分段控件在竖屏是头顶第二颗灰胶囊，而多数人一天只用一个 Runtime。
-/// 降级成菜单后这一行只剩一处品牌标记加一个 chevron，头顶的等重灰块少一个。
-/// 代价是另一个 Runtime 收进菜单、可发现性降一档，因此只在放不下分段控件时使用。
-struct WorkspaceRuntimeMenuPicker: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
+    func isAvailable(in runtimeProviders: Set<String>) -> Bool {
+        Self.isAvailable(self, in: runtimeProviders)
+    }
 
-    @Binding var selection: WorkspaceSessionRuntimeChoice
-    let claudeChannelAvailable: Bool
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        Menu {
-            // 菜单项始终列出全部 Runtime；不可用的那个保留为禁用项，
-            // 直接隐藏会让「为什么没有 Claude」变成一个无处可查的问题。
-            ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
-                Button {
-                    selection = choice
-                } label: {
-                    Label {
-                        Text(choice.listTitle)
-                    } icon: {
-                        if choice == selection {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-                .disabled(choice == .claude && !claudeChannelAvailable)
-            }
-        } label: {
-            HStack(spacing: 6) {
-                RuntimeBrandMarkIcon(mark: selection.brandMark, size: 15)
-
-                Text(selection.listTitle)
-                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(1)
-
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(tokens.tertiaryText)
-            }
-            .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
-            // 视觉高度保持在标题量级，透明命中层仍满足 44pt。
-            .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .menuOrder(.fixed)
-        .accessibilityLabel(L10n.text("ui.runtime_provider"))
-        .accessibilityValue(selection.listTitle)
-        .accessibilityIdentifier("workspace.sessions.runtimePicker")
+    private static func isAvailable(
+        _ choice: Self,
+        in runtimeProviders: Set<String>
+    ) -> Bool {
+        if runtimeProviders.isEmpty { return choice == .codex }
+        return runtimeProviders.contains(choice.runtimeProvider)
     }
 }
 
@@ -127,9 +102,11 @@ struct WorkspaceRuntimePicker: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @Namespace private var selectionNamespace
+    @State private var retryingRuntime: WorkspaceSessionRuntimeChoice?
 
     @Binding var selection: WorkspaceSessionRuntimeChoice
-    let claudeChannelAvailable: Bool
+    let availableRuntimeProviders: Set<String>
+    let onRetryUnavailable: (WorkspaceSessionRuntimeChoice) async -> Bool
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -137,21 +114,28 @@ struct WorkspaceRuntimePicker: View {
         HStack(spacing: 0) {
             ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
                 let isSelected = selection == choice
-                let isAvailable = choice != .claude || claudeChannelAvailable
+                let isAvailable = choice.isAvailable(in: availableRuntimeProviders)
 
                 Button {
-                    guard isAvailable else { return }
-                    if reduceMotion {
-                        selection = choice
+                    if isAvailable {
+                        select(choice)
                     } else {
-                        // 选中内胶囊从当前显示位置继续运动，避免两个独立色块交叉闪烁。
-                        withAnimation(.spring(response: 0.28, dampingFraction: 1)) {
-                            selection = choice
+                        guard retryingRuntime == nil else { return }
+                        let previousSelection = selection
+                        retryingRuntime = choice
+                        Task {
+                            let recovered = await onRetryUnavailable(choice)
+                            if recovered, selection == previousSelection { select(choice) }
+                            retryingRuntime = nil
                         }
                     }
                 } label: {
                     HStack(spacing: 5) {
-                        RuntimeBrandMarkIcon(mark: choice.brandMark, size: 14)
+                        if retryingRuntime == choice {
+                            ProgressView().controlSize(.mini).frame(width: 14, height: 14)
+                        } else {
+                            RuntimeBrandMarkIcon(mark: choice.brandMark, size: 14)
+                        }
 
                         Text(choice.listTitle)
                             .font(themeStore.uiFont(.footnote, weight: isSelected ? .semibold : .medium))
@@ -204,13 +188,13 @@ struct WorkspaceRuntimePicker: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-                .disabled(!isAvailable)
+                .disabled(retryingRuntime != nil)
                 .accessibilityLabel(choice.listTitle)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
                 .accessibilityHint(
                     isAvailable
                         ? L10n.text("ui.show_runtime_sessions_hint")
-                        : L10n.text("ui.runtime_unavailable_hint")
+                        : L10n.text("ui.runtime_retry_hint")
                 )
                 .accessibilityIdentifier("workspace.sessions.runtime.\(choice.rawValue)")
             }
@@ -235,6 +219,17 @@ struct WorkspaceRuntimePicker: View {
         .accessibilityLabel(L10n.text("ui.runtime_provider"))
         .accessibilityIdentifier("workspace.sessions.runtimePicker")
     }
+
+    private func select(_ choice: WorkspaceSessionRuntimeChoice) {
+        if reduceMotion {
+            selection = choice
+        } else {
+            // 选中内胶囊从当前显示位置继续运动，避免两个独立色块交叉闪烁。
+            withAnimation(.spring(response: 0.28, dampingFraction: 1)) {
+                selection = choice
+            }
+        }
+    }
 }
 
 /// 窄屏弹窗形态：触发行仍是一处品牌标记加 chevron，但展开的是锚定气泡而不是系统菜单。
@@ -245,9 +240,11 @@ struct WorkspaceRuntimePopoverPicker: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @Binding var selection: WorkspaceSessionRuntimeChoice
-    let claudeChannelAvailable: Bool
+    let availableRuntimeProviders: Set<String>
+    let onRetryUnavailable: (WorkspaceSessionRuntimeChoice) async -> Bool
 
     @State private var isPresented = false
+    @State private var retryingRuntime: WorkspaceSessionRuntimeChoice?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -256,18 +253,20 @@ struct WorkspaceRuntimePopoverPicker: View {
             isPresented = true
         } label: {
             HStack(spacing: 6) {
-                RuntimeBrandMarkIcon(mark: selection.brandMark, size: 15)
+                RuntimeBrandMarkIcon(mark: selection.brandMark, size: 14)
 
                 Text(selection.listTitle)
-                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
                     .foregroundStyle(tokens.primaryText)
                     .lineLimit(1)
 
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(themeStore.uiFont(size: 10, weight: .semibold))
                     .foregroundStyle(tokens.tertiaryText)
             }
-            .padding(.horizontal, WorkspaceSessionRowMetrics.horizontalPadding)
+            // 与会话行同一个水平内边距：品牌标记与分组标题、会话标题落在同一条左边线上。
+            // 窄屏才显示这一行，因此取紧凑密度。
+            .padding(.horizontal, SessionIndexRowDensity.compact.horizontalPadding)
             // 视觉高度保持在标题量级，透明命中层仍满足 44pt。
             .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget, alignment: .leading)
             .contentShape(Rectangle())
@@ -284,25 +283,39 @@ struct WorkspaceRuntimePopoverPicker: View {
 
     private func popoverContent(tokens: ThemeTokens) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 始终列出全部 Runtime；不可用的那个保留为禁用行，
-            // 直接隐藏会让「为什么没有 Claude」变成一个无处可查的问题。
+            // 始终列出全部 Runtime；暂不可用的那个允许点击重探，
+            // 不能让首次网络失败把筛选器锁死到 App 重启。
             ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
-                let isAvailable = choice != .claude || claudeChannelAvailable
+                let isAvailable = choice.isAvailable(in: availableRuntimeProviders)
 
                 Button {
-                    selection = choice
-                    isPresented = false
+                    if isAvailable {
+                        selection = choice
+                        isPresented = false
+                    } else {
+                        guard retryingRuntime == nil else { return }
+                        let previousSelection = selection
+                        retryingRuntime = choice
+                        Task {
+                            let recovered = await onRetryUnavailable(choice)
+                            if recovered, selection == previousSelection {
+                                selection = choice
+                                isPresented = false
+                            }
+                            retryingRuntime = nil
+                        }
+                    }
                 } label: {
                     row(choice: choice, isAvailable: isAvailable, tokens: tokens)
                 }
                 .buttonStyle(.plain)
-                .disabled(!isAvailable)
+                .disabled(retryingRuntime != nil)
                 .accessibilityLabel(choice.listTitle)
                 .accessibilityAddTraits(choice == selection ? .isSelected : [])
                 .accessibilityHint(
                     isAvailable
                         ? L10n.text("ui.show_runtime_sessions_hint")
-                        : L10n.text("ui.runtime_unavailable_hint")
+                        : L10n.text("ui.runtime_retry_hint")
                 )
                 .accessibilityIdentifier("workspace.sessions.runtime.\(choice.rawValue)")
 
@@ -323,19 +336,25 @@ struct WorkspaceRuntimePopoverPicker: View {
         tokens: ThemeTokens
     ) -> some View {
         HStack(spacing: 10) {
-            RuntimeBrandMarkIcon(mark: choice.brandMark, size: 20)
-                .opacity(isAvailable ? 1 : 0.4)
+            if retryingRuntime == choice {
+                ProgressView().controlSize(.small).frame(width: 20, height: 20)
+            } else {
+                RuntimeBrandMarkIcon(mark: choice.brandMark, size: 20)
+                    // 此菜单中 DeepSeek 的横向墨迹偏宽，只在这里缩小，不影响其他尺寸的标记。
+                    .scaleEffect(choice == .deepseek ? 0.86 : 1)
+                    .opacity(isAvailable ? 1 : 0.4)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(choice.listTitle)
                     .font(themeStore.uiFont(.subheadline, weight: choice == selection ? .semibold : .regular))
                     .foregroundStyle(isAvailable ? tokens.primaryText : tokens.tertiaryText)
 
-                // 两行都带副标题，行高才是齐的；不可用时这一行改说为什么点不了。
+                // 两行都带副标题，行高才是齐的；不可用时提示可点击重试。
                 Text(
                     isAvailable
                         ? choice.listSubtitle
-                        : L10n.text("ui.runtime_unavailable_hint")
+                        : L10n.text("ui.runtime_retry_hint")
                 )
                 .font(themeStore.uiFont(.caption))
                 .foregroundStyle(tokens.tertiaryText)

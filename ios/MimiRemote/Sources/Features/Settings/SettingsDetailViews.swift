@@ -117,18 +117,24 @@ struct ConnectionProfileRenameSheet: View {
                     )
                         .settingsRow()
                         .accessibilityIdentifier("settings.profile.rename.name")
+                } header: {
+                    SettingsGroupHeader(showsDivider: false)
                 } footer: {
                     Text(draft.validationMessage ?? L10n.format("ui.up_to_value_characters_only_the_local_display", AppStore.connectionProfileDisplayNameLimit))
                         .foregroundStyle(draft.validationMessage == nil ? themeStore.tokens(for: colorScheme).secondaryText : themeStore.tokens(for: colorScheme).warning)
                         .settingsSectionFooterStyle()
                 }
+                .settingsGroupRowStyle()
 
                 if let submitError = draft.submitError {
                     Section {
                         Text(submitError)
                             .foregroundStyle(themeStore.tokens(for: colorScheme).warning)
                             .accessibilityIdentifier("settings.profile.rename.error")
+                    } header: {
+                        SettingsGroupHeader()
                     }
+                    .settingsGroupRowStyle()
                 }
             }
             .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
@@ -300,11 +306,13 @@ struct CapabilitiesView: View {
                 }
                 .disabled(sessionStore.isRefreshingCapabilities)
                 .settingsRow()
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             } footer: {
                 Text(L10n.text("ui.here_the_local_skills_and_mcp_configurations_discoverable"))
                     .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             if let error = sessionStore.capabilityErrorMessage {
                 Section {
@@ -312,10 +320,9 @@ struct CapabilitiesView: View {
                         .font(themeStore.uiFont(.caption))
                         .foregroundStyle(tokens.warning)
                 } header: {
-                    Text(L10n.text("ui.error"))
-                        .settingsSectionHeaderStyle()
+                    SettingsGroupHeader(title: L10n.text("ui.error"))
                 }
-                .listRowBackground(tokens.settingsGroupBackground)
+                .settingsGroupRowStyle()
             }
 
             Section {
@@ -335,10 +342,9 @@ struct CapabilitiesView: View {
                     }
                 }
             } header: {
-                Text(L10n.text("ui.skills"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.skills"))
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 let servers = sessionStore.capabilityList?.mcpServers ?? []
@@ -359,10 +365,9 @@ struct CapabilitiesView: View {
                     }
                 }
             } header: {
-                Text("MCP")
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: "MCP")
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
@@ -535,7 +540,7 @@ struct CapabilityItemRow: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: SettingsLayoutMetrics.iconSpacing) {
             Image(systemName: symbolName)
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .foregroundStyle(tokens.secondaryText)
@@ -610,22 +615,23 @@ struct AppearanceView: View {
 
         Form {
             Section {
-                Picker(L10n.text("ui.appearance"), selection: $themeStore.mode) {
-                    ForEach(ThemeMode.allCases) { mode in
-                        Label(mode.title, systemImage: iconName(for: mode))
-                            .tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .settingsRow()
+                // 与语言页同一套：三个选项就地平铺，点一下即生效，选中项的说明
+                // 直接显示在标题下方，不再要求用户先记住「系统」和「浅色」的差别。
+                SettingsChoiceRow(
+                    title: L10n.text("ui.appearance"),
+                    systemImage: "circle.lefthalf.filled",
+                    options: ThemeMode.allCases,
+                    selection: $themeStore.mode
+                )
+                .settingsRow(.descriptive)
+                .accessibilityIdentifier("settings.appearance.mode")
             } header: {
-                Text(L10n.text("ui.dark_and_light_colors"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.dark_and_light_colors"), showsDivider: false)
             } footer: {
                 Text(L10n.text("ui.system_mode_follows_the_current_device_appearance_light"))
                     .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 ScrollViewReader { scrollProxy in
@@ -668,13 +674,12 @@ struct AppearanceView: View {
                     .accessibilityIdentifier("settings.workspaceIconStyle")
                 }
             } header: {
-                Text(L10n.text("ui.workspace_avatar_style"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.workspace_avatar_style"))
             } footer: {
                 Text(L10n.text("ui.workspace_avatar_style_description"))
                     .settingsSectionFooterStyle()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 ForEach(ThemePreset.allCases) { preset in
@@ -687,25 +692,31 @@ struct AppearanceView: View {
                     }
                 }
             } header: {
-                Text(L10n.text("ui.topic"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.topic"))
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
-                Picker(L10n.text("ui.ui_font"), selection: $themeStore.uiFontPreset) {
-                    ForEach(ThemeUIFontPreset.allCases) { font in
-                        Text(font.title).tag(font)
-                    }
-                }
+                // 两种字体各只有两三个短选项，值不值得为它弹一层菜单：不值得。
+                SettingsChoiceRow(
+                    title: L10n.text("ui.ui_font"),
+                    // 不能用 textformat：它有中文本地化变体，图标位会渲染成「格式」两个汉字，
+                    // 整行读起来变成「格式 UI 字体」。
+                    systemImage: "text.alignleft",
+                    options: ThemeUIFontPreset.allCases,
+                    selection: $themeStore.uiFontPreset
+                )
                 .settingsRow()
+                .accessibilityIdentifier("settings.appearance.uiFont")
 
-                Picker(L10n.text("ui.code_font"), selection: $themeStore.codeFontPreset) {
-                    ForEach(ThemeCodeFontPreset.allCases) { font in
-                        Text(font.title).tag(font)
-                    }
-                }
+                SettingsChoiceRow(
+                    title: L10n.text("ui.code_font"),
+                    systemImage: "chevron.left.forwardslash.chevron.right",
+                    options: ThemeCodeFontPreset.allCases,
+                    selection: $themeStore.codeFontPreset
+                )
                 .settingsRow()
+                .accessibilityIdentifier("settings.appearance.codeFont")
 
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
@@ -737,19 +748,17 @@ struct AppearanceView: View {
                 .padding(.vertical, 4)
                 .settingsRow(.descriptive)
             } header: {
-                Text(L10n.text("ui.font"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.font"))
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 AppearanceConversationPreview()
                     .listRowInsets(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12))
             } header: {
-                Text(L10n.text("ui.chat_preview"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.chat_preview"))
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 Button(role: .destructive) {
@@ -762,8 +771,10 @@ struct AppearanceView: View {
                     Label(L10n.text("ui.restore_default_appearance"), systemImage: "arrow.counterclockwise")
                 }
                 .settingsRow()
+            } header: {
+                SettingsGroupHeader()
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
@@ -848,17 +859,6 @@ struct AppearanceView: View {
         .accessibilityIdentifier("settings.workspaceIconStyle.option.\(style.rawValue)")
         .id(style.id)
     }
-
-    private func iconName(for mode: ThemeMode) -> String {
-        switch mode {
-        case .system:
-            return "circle.lefthalf.filled"
-        case .light:
-            return "sun.max"
-        case .dark:
-            return "moon"
-        }
-    }
 }
 
 private struct WorkspaceIconStyleOptionLabel: View {
@@ -931,12 +931,13 @@ private struct WorkspaceIconStyleOptionLabel: View {
             if isSelected {
                 Image(systemName: "checkmark")
                     .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(tokens.primaryActionForeground)
                     .frame(width: 20, height: 20)
                     .background(tokens.primaryAction, in: Circle())
                     .overlay {
+                        // 分组不再有卡片底，对勾徽章直接和页面底色抠开。
                         Circle()
-                            .stroke(tokens.settingsGroupBackground, lineWidth: 2)
+                            .stroke(tokens.background, lineWidth: 2)
                     }
                     .offset(x: 2, y: 2)
             }
@@ -1216,7 +1217,7 @@ struct DefaultModelSettingsView: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let runtimes = DefaultModelRuntime.allCases
+        let runtimes = displayedRuntimes
 
         Form {
             // 两个 runtime 各自一段，不再用分段控件互相遮挡：
@@ -1228,7 +1229,8 @@ struct DefaultModelSettingsView: View {
                     tokens: tokens,
                     footer: runtime == runtimes.last
                         ? L10n.text("ui.default_model_settings_description")
-                        : nil
+                        : nil,
+                    showsDivider: runtime != runtimes.first
                 )
             }
         }
@@ -1251,8 +1253,14 @@ struct DefaultModelSettingsView: View {
     }
 
     private func normalizeStoredEfforts() {
-        for runtime in DefaultModelRuntime.allCases {
+        for runtime in displayedRuntimes {
             normalizeStoredEffort(for: runtime)
+        }
+    }
+
+    private var displayedRuntimes: [DefaultModelRuntime] {
+        DefaultModelRuntime.allCases.filter {
+            $0 != .deepseek || sessionStore.isRuntimeAvailable($0.rawValue)
         }
     }
 
@@ -1294,6 +1302,8 @@ private struct DefaultModelRuntimeSection: View {
     let allOptions: [CodexAppServerModelOption]
     let tokens: ThemeTokens
     let footer: String?
+    /// 页面第一段不画分组细线。
+    let showsDivider: Bool
 
     @AppStorage private var modelOptionID: String
     @AppStorage private var reasoningEffortRawValue: String
@@ -1302,12 +1312,14 @@ private struct DefaultModelRuntimeSection: View {
         runtime: DefaultModelRuntime,
         allOptions: [CodexAppServerModelOption],
         tokens: ThemeTokens,
-        footer: String?
+        footer: String?,
+        showsDivider: Bool
     ) {
         self.runtime = runtime
         self.allOptions = allOptions
         self.tokens = tokens
         self.footer = footer
+        self.showsDivider = showsDivider
         _modelOptionID = AppStorage(
             wrappedValue: "",
             DefaultModelPreferences.modelOptionIDKey(for: runtime.rawValue)
@@ -1343,13 +1355,17 @@ private struct DefaultModelRuntimeSection: View {
                 )
                 .settingsRow(.descriptive)
             } else {
-                Picker(L10n.text("ui.reasoning_effort"), selection: reasoningEffortSelectionBinding) {
-                    ForEach(availableEfforts) { effort in
-                        Text(ModelReasoningGridCatalog.effortTitle(effort))
-                            .tag(effort.rawValue)
+                // 档位最多四个短选项，和输入框里的档位网格是同一组值：
+                // 在这里就地平铺，不必为改一个默认档位再推一整页。
+                SettingsChoiceRow(
+                    title: L10n.text("ui.reasoning_effort"),
+                    systemImage: "gauge.with.dots.needle.33percent",
+                    options: availableEfforts,
+                    selection: reasoningEffortChoiceBinding,
+                    optionTitle: {
+                        ModelReasoningGridCatalog.effortTitle($0, runtimeProvider: runtime.rawValue)
                     }
-                }
-                .pickerStyle(.navigationLink)
+                )
                 .settingsRow()
                 .accessibilityIdentifier("settings.defaultModels.reasoning.\(runtime.rawValue)")
             }
@@ -1370,8 +1386,7 @@ private struct DefaultModelRuntimeSection: View {
                 .accessibilityIdentifier("settings.defaultModels.reset.\(runtime.rawValue)")
             }
         } header: {
-            Text(runtime.settingsTitle)
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: runtime.settingsTitle, showsDivider: showsDivider)
         } footer: {
             Group {
                 if let footer {
@@ -1380,7 +1395,7 @@ private struct DefaultModelRuntimeSection: View {
             }
             .settingsSectionFooterStyle()
         }
-        .listRowBackground(tokens.settingsGroupBackground)
+        .settingsGroupRowStyle()
     }
 
     private var hasCustomDefault: Bool {
@@ -1434,6 +1449,19 @@ private struct DefaultModelRuntimeSection: View {
         )
     }
 
+    /// 胶囊选中的是档位本身；沿用下面那份字符串 Binding 的归一化，
+    /// 不在展示层另存一套「当前档位」。
+    private var reasoningEffortChoiceBinding: Binding<CodexAppServerReasoningEffort> {
+        Binding(
+            get: {
+                CodexAppServerReasoningEffort(rawValue: reasoningEffortSelectionBinding.wrappedValue)
+                    ?? availableEfforts.first
+                    ?? .medium
+            },
+            set: { reasoningEffortSelectionBinding.wrappedValue = $0.rawValue }
+        )
+    }
+
     private var reasoningEffortSelectionBinding: Binding<String> {
         Binding(
             get: {
@@ -1463,7 +1491,50 @@ private extension DefaultModelRuntime {
             return "Codex"
         case .claude:
             return "Claude Code"
+        case .deepseek:
+            return "DeepSeek Harness"
         }
+    }
+}
+
+/// 「连接方式」只有两个答案：用已保存的直连线路，还是走自建 Tailcat。
+///
+/// 已保存那一侧的名字必须取自档案本身。同样是「不走 Tailcat」，档案可能是 Tailscale、
+/// 局域网或 HTTPS，写死成 Tailscale 会让局域网和 HTTPS 配对的电脑看到错误的线路名。
+/// 设备首页那一行用的就是 `savedFallbackConnectionRoute?.title`，这里保持同一口径。
+struct ConnectionMethodChoice: SettingsChoiceOption {
+    enum Kind: String {
+        case saved
+        case tailcat
+    }
+
+    let kind: Kind
+    let choiceTitle: String
+
+    var id: String { kind.rawValue }
+
+    static func options(savedRoute: ConnectionProfileRoute?) -> [ConnectionMethodChoice] {
+        [
+            ConnectionMethodChoice(
+                kind: .saved,
+                // 档案还没落盘时没有可展示的线路名，退回最常见的 Tailscale，
+                // 与设备首页那一行的兜底一致。
+                choiceTitle: savedRoute?.title ?? "Tailscale"
+            ),
+            ConnectionMethodChoice(
+                kind: .tailcat,
+                choiceTitle: L10n.text("ui.custom_tailcat")
+            )
+        ]
+    }
+
+    /// 选中态只按种类比对：换一台电脑会换掉标题，但「当前用的是已保存线路」这件事不变。
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.kind == rhs.kind
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(kind)
     }
 }
 
@@ -1482,13 +1553,15 @@ struct TailcatExperimentSettingsView: View {
 
         Form {
             Section {
-                Toggle(isOn: enabledBinding) {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.enable_custom_tailcat"),
-                        systemImage: "point.3.connected.trianglepath.dotted"
-                    )
-                }
-                // 曾用实验版开启过时，即使当前构建没有框架，也必须允许用户关闭该偏好。
+                // 过去这里是一个「使用自建 Tailcat」开关：关掉之后走的是哪条线路，
+                // 开关本身答不上来。两条线路并排摆出来，当前用的是哪条一眼可见。
+                SettingsChoiceRow(
+                    title: L10n.text("ui.connection_method"),
+                    systemImage: "point.3.connected.trianglepath.dotted",
+                    options: methodOptions,
+                    selection: methodBinding
+                )
+                // 曾用实验版开启过时，即使当前构建没有框架，也必须允许用户切回直连。
                 .disabled(!controller.isAvailable && !controller.isEnabled)
                 .settingsRow()
                 .accessibilityIdentifier("settings.experimentalFeatures.tailcatToggle")
@@ -1501,6 +1574,8 @@ struct TailcatExperimentSettingsView: View {
                 )
                 .settingsRow()
                 .accessibilityIdentifier("settings.experimentalFeatures.status")
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(L10n.text("ui.custom_tailcat_summary"))
@@ -1509,6 +1584,7 @@ struct TailcatExperimentSettingsView: View {
                 .settingsSectionFooterStyle()
                 .padding(.top, 8)
             }
+            .settingsGroupRowStyle()
 
             Section {
                 RouteStatusRow(
@@ -1541,6 +1617,8 @@ struct TailcatExperimentSettingsView: View {
                 .disabled(controller.diagnostics.isEmpty)
                 .settingsRow()
                 .accessibilityIdentifier("settings.experimentalFeatures.copyDiagnostics")
+            } header: {
+                SettingsGroupHeader()
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(L10n.text("ui.tailcat_diagnostics_help"))
@@ -1549,6 +1627,7 @@ struct TailcatExperimentSettingsView: View {
                 .settingsSectionFooterStyle()
                 .padding(.top, 8)
             }
+            .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
@@ -1556,6 +1635,18 @@ struct TailcatExperimentSettingsView: View {
         .navigationTitle(L10n.text("ui.connection_method"))
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.experimentalFeatures.detail")
+    }
+
+    private var methodOptions: [ConnectionMethodChoice] {
+        ConnectionMethodChoice.options(savedRoute: appStore.savedFallbackConnectionRoute)
+    }
+
+    private var methodBinding: Binding<ConnectionMethodChoice> {
+        let options = methodOptions
+        return Binding(
+            get: { controller.isEnabled ? options[1] : options[0] },
+            set: { enabledBinding.wrappedValue = $0.kind == .tailcat }
+        )
     }
 
     private var enabledBinding: Binding<Bool> {
@@ -1621,12 +1712,16 @@ extension View {
         modifier(SettingsCanvasBackgroundModifier(tokens: tokens))
     }
 
-    /// 分组底由各 Section 显式接 settingsGroupBackground，「我的」根页用的是同一个 token。
+    /// 每个 Section 显式接 settingsGroupRowStyle()，「我的」根页用的是同一个修饰符。
     /// 注意：listRowBackground 挂在 Form 外层不会下发到行，所以这里不设，只能在 Section 上设。
+    ///
+    /// 设置链路所有页面都用细线分组（#563）：分组间距归零，每个 Section 都要有
+    /// `SettingsGroupHeader` 作标题——页面第一组 `showsDivider: false`，其余各组画线。
+    /// 漏了标题的分组会和上一组贴在一起。
     func themedSettingsForm(tokens: ThemeTokens) -> some View {
         scrollContentBackground(.hidden)
             .textCase(nil)
-            .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
+            .dividedSettingsList()
             .settingsCanvasBackground(tokens: tokens)
     }
 }

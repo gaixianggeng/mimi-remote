@@ -420,7 +420,9 @@ struct ConversationMessageContent: View {
         guard message.turnPayload == nil || payloadImageItems.isEmpty else {
             return []
         }
-        return ConversationFileReferenceDetector.imageReferences(in: userDisplayContent)
+        return ConversationFileReferenceDetector.imageReferences(
+            in: ConversationUserMessagePresentation.imageReferenceContent(from: message.content)
+        )
     }
 
     private var userImageSources: [ConversationImageSource] {
@@ -590,12 +592,8 @@ struct ConversationMessageContent: View {
         guard message.role == .user else {
             return nil
         }
-        let tokens = themeStore.tokens(for: colorScheme)
-        // sending 还会对整条消息叠加 0.72 opacity；默认深色避免时间文字再次降透明度。
-        if tokens.preset == .codex, tokens.resolvedScheme == .dark {
-            return tokens.secondaryText
-        }
-        return userBubbleForeground.opacity(0.64)
+        return themeStore.tokens(for: colorScheme)
+            .userMessageTimestampForeground(isSending: message.sendStatus == .sending)
     }
 
     private var userBubbleForeground: Color {

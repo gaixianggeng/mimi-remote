@@ -50,6 +50,7 @@ Go 依赖版本以 `go.mod`、`go.sum` 为准；源码树包含 iOS 客户端时
 | `swift-custom-dump` | `1.6.0` | iOS 测试 |
 | `xctest-dynamic-overlay` | `1.9.0` | iOS 测试 |
 | `Simple Icons Linux / Tux SVG` | `16.27.0` | iOS 运行时资源 |
+| `Simple Icons DeepSeek SVG` | `16.27.0` | macOS 运行时资源 |
 
 ## 公共领域视觉素材
 
@@ -2436,6 +2437,19 @@ Simple Icons 项目以 CC0 1.0 Universal 发布：
 
 Tux 原始设计由 Larry Ewing 使用 GIMP 创作。本项目仅将该 Linux 标志作为已连接服务端
 操作系统的识别图标，不表示 Linux、Larry Ewing 或 Simple Icons 对本项目的背书。
+
+### Simple Icons DeepSeek SVG
+
+使用范围：macOS 菜单栏未接入运行时标识
+
+来源：<https://cdn.jsdelivr.net/npm/simple-icons@16.27.0/icons/deepseek.svg>
+
+Simple Icons 项目以 CC0 1.0 Universal 发布：
+<https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md>
+
+图形路径与上游逐字节一致，仅按该项目元数据中登记的品牌色 `#5786FE` 补充填充色并重新换行。
+本项目仅用该标识标注菜单栏中尚未接入的运行时，不提供任何 DeepSeek 功能，也不表示 DeepSeek
+或 Simple Icons 对本项目的背书。
 
 ## 更新要求
 

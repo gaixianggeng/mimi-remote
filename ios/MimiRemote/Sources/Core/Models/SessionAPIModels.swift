@@ -58,6 +58,7 @@ struct ThreadSearchPage: Equatable {
     let results: [ThreadSearchResult]
     let nextCursor: String?
     let backwardsCursor: String?
+    let unavailableRuntimeProviders: [String]
 
     var sessions: [AgentSession] {
         results.map(\.session)
@@ -66,11 +67,13 @@ struct ThreadSearchPage: Equatable {
     init(
         results: [ThreadSearchResult],
         nextCursor: String? = nil,
-        backwardsCursor: String? = nil
+        backwardsCursor: String? = nil,
+        unavailableRuntimeProviders: [String] = []
     ) {
         self.results = results
         self.nextCursor = nextCursor
         self.backwardsCursor = backwardsCursor
+        self.unavailableRuntimeProviders = unavailableRuntimeProviders
     }
 }
 
@@ -628,6 +631,8 @@ enum CodexAppServerUserInput: Codable, Hashable, Identifiable {
 }
 
 enum CodexAppServerReasoningEffort: String, Codable, CaseIterable, Hashable, Identifiable {
+    // Harness 的 off 是上游明确支持的推理档位，不能降级成含义不同的 none。
+    case off
     case none
     case minimal
     case low
@@ -890,7 +895,9 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         // 标准模式只保留用户能从主工具栏明确选择的运行偏好；权限按钮现在是主工具栏的一部分，
         // 因此保留安全的审批/沙盒预设，但仍清掉高级 JSON、网络访问和其它隐藏运行时字段。
         sanitized.applyStandardComposerPermissionPreset()
-        sanitized.modelProvider = nil
+        if !RuntimeFeatureSupport.isDeepSeek(runtimeProvider) {
+            sanitized.modelProvider = nil
+        }
         sanitized.networkAccess = false
         sanitized.config = nil
         sanitized.baseInstructions = nil
@@ -906,6 +913,18 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
 
     func sanitizedForRuntimePolicy() -> CodexAppServerTurnOptions {
         var sanitized = self
+        if RuntimeFeatureSupport.isDeepSeek(runtimeProvider) {
+            // 完全访问不代表 Harness 免审批；它仍通过 server request 向用户请求确认。
+            sanitized.approvalPolicy = .onRequest
+            sanitized.approvalsReviewer = "user"
+            sanitized.networkAccess = false
+            sanitized.serviceTier = nil
+            if sanitized.permissionProfileID == ":danger-full-access" {
+                sanitized.permissionProfileID = nil
+                sanitized.sandboxMode = .dangerFullAccess
+            }
+            return sanitized
+        }
         // 两条通道的完全访问都表示显式免审批；旧草稿的 on-request 在发送前归一化。
         // 被动恢复仍继承会话设置，不能因为全局默认变化而提升现有会话权限。
         if !sanitized.preservesThreadPermissionSettings,

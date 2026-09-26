@@ -27,10 +27,8 @@ extension UnifiedWorkbenchShell {
                 bottomSafeAreaInset: bottomSafeAreaInset
             )
             : max(bottomSafeAreaInset, WorkbenchPageLayout.regularPadding)
-        // 搜索激活时系统会收起 Tab 胶囊和顶栏按钮，把搜索框铺满整条导航栏。
-        // 这枚设备入口是 TabView 上的浮层、不归导航栏管，不一起收起就会被搜索框压住。
+        // 会话搜索是列表上方的扁平搜索框，不再接管导航栏，设备入口浮层无需为它让位。
         let showsTabletHostSwitcher = !layout.isPhone
-            && !sessionStore.isSessionSearchPresented
             && (
                 navigationState.compactSelectedTab == .sessions
                     ? navigationState.compactSessionPath.isEmpty
@@ -44,14 +42,23 @@ extension UnifiedWorkbenchShell {
             bottomContentMargin: bottomChromeClearance,
             hasBottomTabBar: hasBottomTabBar
         )
-        .overlay(alignment: .topLeading) {
+        // 浮层归 Shell 所有，但"正文是不是已经在表达进行中"只有根页面知道：
+        // 预热窗口和目录加载都算，所以不能在这里用 store 重新推一遍。
+        .overlayPreferenceValue(
+            WorkbenchRootConnectionProgressKey.self,
+            alignment: .topLeading
+        ) { rootShowsConnectionProgress in
             if showsTabletHostSwitcher {
-                compactTabletHostSwitcher(layout: layout, tokens: tokens)
-                    .padding(.leading, 10)
-                    // 与 Tab 胶囊、顶栏「···」「+」共用同一条中心线（实测 y≈53.5pt）。
-                    // TabView overlay 的原点比那条线高，这里补回来；数值随
-                    // workbenchToolbarChromeCircle 的 40pt 直径一起标定。
-                    .offset(y: WorkbenchChromeIconMetrics.compactHostSwitcherCenterOffset)
+                compactTabletHostSwitcher(
+                    layout: layout,
+                    tokens: tokens,
+                    rootShowsConnectionProgress: rootShowsConnectionProgress
+                )
+                .padding(.leading, 10)
+                // 与 Tab 胶囊、顶栏「···」「+」共用同一条中心线（实测 y≈53.5pt）。
+                // TabView overlay 的原点比那条线高，这里补回来；数值随
+                // workbenchToolbarChromeCircle 的 40pt 直径一起标定。
+                .offset(y: WorkbenchChromeIconMetrics.compactHostSwitcherCenterOffset)
             }
         }
         // 原生 Tab 保留系统交互；材质按系统版本交给 Chrome 层，页面只负责保持背景连续。
@@ -158,7 +165,6 @@ extension UnifiedWorkbenchShell {
             .accessibilityIdentifier(tab.accessibilityIdentifier)
     }
 
-    @ViewBuilder
     func compactTabRoot<Content: View>(
         for tab: CompactWorkbenchTab,
         usesIndependentStack: Bool,
@@ -166,20 +172,29 @@ extension UnifiedWorkbenchShell {
         tokens: ThemeTokens,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        if usesIndependentStack {
-            NavigationStack(path: compactPathBinding(for: tab, layout: layout)) {
+        Group {
+            if usesIndependentStack {
+                NavigationStack(path: compactPathBinding(for: tab, layout: layout)) {
+                    content()
+                        .navigationDestination(for: AppDestination.self) { destination in
+                            compactDestination(
+                                destination,
+                                layout: layout,
+                                tokens: tokens,
+                                shouldHideTabBar: true
+                            )
+                        }
+                }
+            } else {
                 content()
-                    .navigationDestination(for: AppDestination.self) { destination in
-                        compactDestination(
-                            destination,
-                            layout: layout,
-                            tokens: tokens,
-                            shouldHideTabBar: true
-                        )
-                    }
             }
-        } else {
-            content()
+        }
+        // 没选中的 Tab 仍然留在内存里继续汇报。浮层只跟着当前这一页走，
+        // 否则另一页的加载态会替看得见的这页把徽标按下去。
+        .transformPreference(WorkbenchRootConnectionProgressKey.self) { showsProgress in
+            if navigationState.compactSelectedTab != tab {
+                showsProgress = false
+            }
         }
     }
 
@@ -187,10 +202,14 @@ extension UnifiedWorkbenchShell {
     /// 它和导航栏里的「···」「+」在同一条视线上，直径不一致会立刻被看出来。
     func compactTabletHostSwitcher(
         layout: WorkbenchLayout,
-        tokens: ThemeTokens
+        tokens: ThemeTokens,
+        rootShowsConnectionProgress: Bool
     ) -> some View {
         HostSwitcherMenu(
             presentation: .toolbar,
+            // 当前根页面自己在讲"正在连接/正在加载"时让位，顶栏不再叠第二枚转圈；
+            // 判据由页面报上来，与它自己那枚设备入口用的是同一个值。
+            suppressesProgressBadge: rootShowsConnectionProgress,
             manageConnections: { openConnectionSettings(layout: layout) }
         )
         .simultaneousGesture(

@@ -94,7 +94,11 @@ extension SessionStore {
         socket.onControlFailure = { _ in }
         relatedSessionSocket = socket
         relatedSessionSocketID = session.id
-        socket.connect(sessionID: session.id, replayBufferedEvents: false)
+        socket.connect(
+            sessionID: session.id,
+            replayBufferedEvents: false,
+            afterSequence: historySnapshotSeqBySessionID[session.id]
+        )
     }
 
     func stopRelatedSessionObservation(sessionID: SessionID? = nil) {
@@ -186,13 +190,15 @@ extension SessionStore {
                       sessionID: session.id,
                       generation: connectionGeneration,
                       hostScope: hostScope
-                  ) else {
+            ) else {
                 return
             }
+            HostSwitchSignpost.event("runtime_event_app_received")
             if let metadata = self.metadata(for: event) {
                 self.recordEventWatermark(metadata, fallbackSessionID: session.id)
             }
             let shouldFlushImmediately = terminalStreamStore.append(event, lease: eventLease)
+            HostSwitchSignpost.event("runtime_event_mailbox_enqueued")
             self.scheduleRuntimeEventFlush(lease: eventLease, immediately: shouldFlushImmediately)
         }
         socket.onSendAccepted = { [weak self] clientMessageID in
@@ -214,6 +220,11 @@ extension SessionStore {
                 guard isCurrentConnection || isPendingGuidance else {
                     return
                 }
+                AppDiagnostics.record(
+                    stage: .messageAcknowledgement,
+                    result: .succeeded,
+                    correlation: self.beginTurnDiagnostics(sessionID: session.id)
+                )
                 if isPendingGuidance,
                    self.acceptPendingGuidance(clientMessageID: clientMessageID, sessionID: session.id) {
                     return
@@ -246,6 +257,12 @@ extension SessionStore {
                 guard isCurrentConnection || isPendingGuidance else {
                     return
                 }
+                AppDiagnostics.record(
+                    stage: .messageAcknowledgement,
+                    result: .failed,
+                    reason: .transport,
+                    correlation: self.diagnosticCorrelation(sessionID: session.id)
+                )
                 if let clientMessageID {
                     if isPendingGuidance,
                        self.failPendingGuidance(
@@ -317,6 +334,12 @@ extension SessionStore {
                     return
                 }
                 self?.clearPendingApprovalDecision(sessionID: session.id, approvalID: approvalID)
+                AppDiagnostics.record(
+                    stage: .approval,
+                    result: .failed,
+                    reason: .transport,
+                    correlation: self?.diagnosticCorrelation(sessionID: session.id)
+                )
                 self?.setErrorMessage(L10n.format("ui.approval_sending_failed_value", message))
             }
         }
@@ -380,7 +403,11 @@ extension SessionStore {
         syncRuntimeActivity(with: session)
         runtimeEventFlushTasks[eventLease]?.cancel()
         runtimeEventFlushTasks[eventLease] = nil
-        socket.connect(sessionID: session.id, replayBufferedEvents: replayBufferedEvents)
+        socket.connect(
+            sessionID: session.id,
+            replayBufferedEvents: replayBufferedEvents,
+            afterSequence: historySnapshotSeqBySessionID[session.id]
+        )
     }
 
     func replayWatermark(for sessionID: SessionID) -> EventSequence? {
@@ -444,8 +471,10 @@ extension SessionStore {
     }
 
     func applyWebSocketStatus(_ status: WebSocketStatus, sessionID: String) {
+        let correlation = diagnosticCorrelation(sessionID: sessionID)
         switch status {
         case .connected:
+            AppDiagnostics.record(stage: .connection, result: .succeeded, correlation: correlation)
             guard !isNetworkUnavailable else {
                 suspendWebSocketForNetworkLoss(sessionID: sessionID)
                 return
@@ -454,6 +483,9 @@ extension SessionStore {
             webSocketReconnectAttemptBySessionID.removeValue(forKey: sessionID)
             setActiveWriterConflict(false, sessionID: sessionID)
             setWebSocketStatus(.connected)
+            if selectedSessionID == sessionID {
+                HostSwitchSignpost.event("conversation_realtime_ready")
+            }
             setErrorMessage(nil)
             // 真实会话通道连上了，就是「已连接」的事实；用它覆盖冷启动首个 preflight 遗留的
             // 失败值，设备页不再把过程当结论。
@@ -461,12 +493,24 @@ extension SessionStore {
             dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
         case .failed(let message):
             if isNetworkUnavailable {
+                AppDiagnostics.record(
+                    stage: .connection,
+                    result: .cancelled,
+                    reason: .networkUnavailable,
+                    correlation: correlation
+                )
                 suspendWebSocketForNetworkLoss(sessionID: sessionID)
                 setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"))
                 return
             }
             let policyRejected = Self.isDeterministicGatewayPolicyFailure(message)
             let activeWriterConflict = Self.isCodexActiveWriterConflict(message)
+            AppDiagnostics.record(
+                stage: .connection,
+                result: .failed,
+                reason: activeWriterConflict ? .writerConflict : (policyRejected ? .policyRejected : .transport),
+                correlation: correlation
+            )
             if activeWriterConflict {
                 setActiveWriterConflict(true, sessionID: sessionID)
             }
@@ -500,6 +544,12 @@ extension SessionStore {
                 }
             }
         case .terminated(let reason):
+            AppDiagnostics.record(
+                stage: .connection,
+                result: .failed,
+                reason: reason == .credentialsInvalid ? .credentialsInvalid : .server,
+                correlation: correlation
+            )
             setActiveWriterConflict(false, sessionID: sessionID)
             if reason == .credentialsInvalid,
                !appStore.isCurrentCredentialFingerprint(connectedCredentialFingerprint) {
@@ -520,11 +570,23 @@ extension SessionStore {
             terminateConnection(reason)
         case .disconnected:
             if isNetworkUnavailable {
+                AppDiagnostics.record(
+                    stage: .connection,
+                    result: .cancelled,
+                    reason: .networkUnavailable,
+                    correlation: correlation
+                )
                 suspendWebSocketForNetworkLoss(sessionID: sessionID)
                 setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"))
                 return
             }
             let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
+            AppDiagnostics.record(
+                stage: .connection,
+                result: canReconnect ? .failed : .cancelled,
+                reason: .disconnected,
+                correlation: correlation
+            )
             if connectedSessionID == sessionID {
                 connectedSessionID = nil
                 connectedHostScope = nil
@@ -544,6 +606,7 @@ extension SessionStore {
                 setWebSocketStatus(.disconnected)
             }
         case .connecting:
+            AppDiagnostics.record(stage: .connection, result: .started, correlation: correlation)
             setWebSocketStatus(.connecting)
         }
     }
@@ -740,6 +803,12 @@ extension SessionStore {
         }
 
         let attempt = webSocketReconnectAttemptBySessionID[sessionID, default: 0] + 1
+        AppDiagnostics.record(
+            stage: .reconnection,
+            result: .scheduled,
+            reason: .disconnected,
+            correlation: diagnosticCorrelation(sessionID: sessionID)
+        )
         webSocketReconnectTask?.cancel()
         webSocketReconnectGeneration &+= 1
         let reconnectGeneration = webSocketReconnectGeneration
@@ -923,9 +992,10 @@ extension SessionStore {
     }
 
     func scheduleRuntimeEventFlush(lease: HostSessionLease, immediately: Bool = false) {
-        // 一个 session 同时只保留一个消费任务。即使 80ms 窗口内越过批量阈值，
-        // 也不为后续每个事件反复取消并新建 Task；最长只多等待当前合并窗口。
-        guard runtimeEventFlushTasks[lease] == nil else {
+        // 一个 session 同时只能有一个“等待 flush”或“正在 drain”的 owner。
+        // applyRuntimeEvent 会跨 actor await；仅靠 runtimeEventFlushTasks 不能覆盖那段重入窗口。
+        guard runtimeEventFlushTasks[lease] == nil,
+              !runtimeEventDrainingLeases.contains(lease) else {
             return
         }
         let delay = immediately ? 0 : runtimeEventFlushDelayNanoseconds
@@ -942,15 +1012,30 @@ extension SessionStore {
     }
 
     func flushRuntimeEvents(lease: HostSessionLease) async {
+        // 主动 flush（断线/终止）可以抢掉尚在 sleep 的合并任务，但不能和已经进入
+        // applyRuntimeEvent 的消费者并发。MainActor 在 await 处可重入，所以消费权必须
+        // 独立于 Task 句柄一直持有到 mailbox 真正排空。
         runtimeEventFlushTasks[lease]?.cancel()
         runtimeEventFlushTasks[lease] = nil
-        let events = terminalStreamStore.drain(lease: lease)
-        guard !events.isEmpty, appStore.activeHostScope == lease.hostScope else {
+        guard runtimeEventDrainingLeases.insert(lease).inserted else {
             return
         }
-        for event in events {
-            guard appStore.activeHostScope == lease.hostScope else { return }
-            await applyRuntimeEvent(event, lease: lease)
+        defer {
+            runtimeEventDrainingLeases.remove(lease)
+        }
+
+        while appStore.activeHostScope == lease.hostScope {
+            let events = terminalStreamStore.drain(lease: lease)
+            guard !events.isEmpty else {
+                return
+            }
+            HostSwitchSignpost.event("runtime_event_mailbox_drained")
+            for event in events {
+                guard appStore.activeHostScope == lease.hostScope else { return }
+                await applyRuntimeEvent(event, lease: lease)
+            }
+            // applyRuntimeEvent 的 await 窗口里到达的新事件不会另起消费者；
+            // 回到这里继续 drain，保持同一 lease 的网络到达顺序与 Store 提交顺序一致。
         }
     }
 
@@ -968,6 +1053,11 @@ extension SessionStore {
            shouldIgnoreStaleTurnCompletion(metadata, fallbackSessionID: sessionID) {
             // 历史回放可能晚于新 turn 到达。旧完成事件既不能把新 turn 标成 completed，
             // 也不能清掉或放行绑定到另一 turn 的本地队列。
+            return
+        }
+        if shouldIgnoreResolvedWaitStateAfterTerminal(event, fallbackSessionID: sessionID) {
+            // completion 已经清掉审批/补充输入。它之后迟到的 resolved 只属于旧 turn，
+            // 不能再把 completed 会话写回 running；新 turn 会先由 turnStarted 建立 activeTurnID。
             return
         }
         if case .turnCompleted(let metadata) = event {
@@ -995,17 +1085,27 @@ extension SessionStore {
             }
         }
         let runtimeNotification = runtimeNotification(for: event, fallbackSessionID: sessionID)
+        HostSwitchSignpost.event("runtime_event_reducer_started")
         let output = await eventReducer.reduce(
             event,
             fallbackSessionID: sessionID,
             outputIdleClearDelay: foregroundOutputIdleClearDelay
         )
+        HostSwitchSignpost.event("runtime_event_reducer_finished")
         guard appStore.activeHostScope == lease.hostScope else { return }
         // reducer 的 actor 跳转期间可能已收到新轮次。落地前重新校验，确保旧完成
         // 既不会清新 activeTurnID，也不会单独把新轮次的状态覆写为 completed。
         if case .turnCompleted(let metadata) = event,
            shouldIgnoreStaleTurnCompletion(metadata, fallbackSessionID: sessionID) { return }
+        // 诊断必须遵守与业务状态相同的 stale 过滤，否则旧完成事件会提前结束新 turn 的关联。
+        // assistantDelta 是逐 token 热路径；首响应在 foreground activity 首次切换时记录。
+        if case .assistantDelta = event {
+            // no-op
+        } else {
+            recordRuntimeDiagnostic(event, fallbackSessionID: sessionID)
+        }
         applyEventReducerOutput(output)
+        HostSwitchSignpost.event("runtime_event_store_committed")
         if case .turnCompleted(let metadata) = event {
             scheduleMissingAssistantReplyBackfillIfNeeded(
                 turnMetadata: metadata,
@@ -1137,7 +1237,10 @@ extension SessionStore {
         if connectedSessionID == sessionID, let webSocket {
             return webSocket
         }
-        return queuedSessionSockets[sessionID]
+        if let queued = queuedSessionSockets[sessionID] {
+            return queued
+        }
+        return relatedSessionSocketID == sessionID ? relatedSessionSocket : nil
     }
 
     func shouldIgnoreStaleTurnCompletion(
@@ -1154,6 +1257,28 @@ extension SessionStore {
         }
         return false
     }
+
+    func shouldIgnoreResolvedWaitStateAfterTerminal(
+        _ event: AgentEvent,
+        fallbackSessionID: SessionID
+    ) -> Bool {
+        let metadata: AgentEventMetadata
+        switch event {
+        case .approvalResolved(let value):
+            metadata = value
+        case .userInputResolved(let value, _):
+            metadata = value
+        default:
+            return false
+        }
+        let sessionID = metadata.sessionID ?? fallbackSessionID
+        guard locallyCompletedSessionIDs.contains(sessionID),
+              sessionsByID[sessionID]?.activeTurnID == nil else {
+            return false
+        }
+        return true
+    }
+
 
     func scheduleSessionListReconciliation(
         projectID: String,
@@ -2475,10 +2600,6 @@ extension SessionStore {
         rebuildProjectSessionListSnapshots()
     }
 
-    func insertShowingAllSessionProjectID(_ value: String) {
-        setSessionVisibleLimit(Self.sessionPreviewLimit + Self.sessionExpansionStep, forProjectID: value)
-    }
-
     func removeShowingAllSessionProjectID(_ value: String) {
         setSessionVisibleLimit(nil, forProjectID: value)
     }
@@ -2822,7 +2943,7 @@ extension SessionStore {
         permissionProfilesRefreshGeneration += 1
         permissionProfilesRefreshRequestedCWD = nil
         isRefreshingPermissionProfiles = false
-        isClaudeRuntimeChannelAvailable = false
+        availableRuntimeProviders = ["codex"]
         accountRateLimitsByRuntime = [:]
         accountTokenUsage = nil
         accountTokenActivity = .idle
@@ -3303,6 +3424,13 @@ extension SessionStore {
         // 因此仅在活动真正变化时才写回；计时器仍每次重置（它不是 @Published）。
         if foregroundActivityBySessionID[sessionID] != activity {
             foregroundActivityBySessionID[sessionID] = activity
+            if activity == .receivingAssistant,
+               AppDiagnostics.isDetailedLoggingEnabled,
+               let correlation = AppDiagnosticTraceRegistry.shared.takeFirstResponse(
+                   key: diagnosticTraceKey(sessionID: sessionID)
+               ) {
+                AppDiagnostics.record(stage: .firstResponse, result: .received, correlation: correlation)
+            }
         }
         foregroundActivityClearTasks[sessionID]?.cancel()
         guard let delay else {

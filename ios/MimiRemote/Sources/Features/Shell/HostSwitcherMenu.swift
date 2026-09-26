@@ -14,13 +14,17 @@ enum HostToolbarConnectionBadge: Equatable {
     case failed
     case unknown
 
+    /// - Parameter pageShowsConnectionProgress: 正文此刻自己就在讲"正在连接/正在加载"。
+    ///   同一件事说两遍会让用户读成"两处都在转"，因此这种页面上只保留结论型徽标
+    ///   （离线、失败、未知），进行中交给正文那一处表达。
     static func resolve(
         isSwitching: Bool,
         isNetworkUnavailable: Bool,
-        connectionStatus: ConnectionStatus
+        connectionStatus: ConnectionStatus,
+        pageShowsConnectionProgress: Bool = false
     ) -> HostToolbarConnectionBadge {
         if isSwitching {
-            return .progress
+            return pageShowsConnectionProgress ? .hidden : .progress
         }
         if isNetworkUnavailable {
             return .offline
@@ -29,7 +33,7 @@ enum HostToolbarConnectionBadge: Equatable {
         case .connected:
             return .hidden
         case .testing:
-            return .progress
+            return pageShowsConnectionProgress ? .hidden : .progress
         case .failed:
             return .failed
         case .idle:
@@ -47,15 +51,19 @@ struct HostSwitcherMenu: View {
 
     let presentation: HostSwitcherPresentation
     let usesCondensedSidebarMetrics: Bool
+    /// 所在页面的正文已经在表达"正在连接/正在加载"。设备入口此时不再叠一枚转圈。
+    let suppressesProgressBadge: Bool
     let manageConnections: () -> Void
 
     init(
         presentation: HostSwitcherPresentation,
         usesCondensedSidebarMetrics: Bool = false,
+        suppressesProgressBadge: Bool = false,
         manageConnections: @escaping () -> Void
     ) {
         self.presentation = presentation
         self.usesCondensedSidebarMetrics = usesCondensedSidebarMetrics
+        self.suppressesProgressBadge = suppressesProgressBadge
         self.manageConnections = manageConnections
     }
 
@@ -154,6 +162,9 @@ struct HostSwitcherMenu: View {
                                 ? .subheadline.weight(.semibold)
                                 : .headline.weight(.semibold)
                         )
+                        // 设备名称是导航标识，不是主题操作：Menu 标签默认继承全局 tint，
+                        // 会被染成主题色；这里固定回正文色，任何预设下都保持中性可读。
+                        .foregroundStyle(themeStore.tokens(for: colorScheme).primaryText)
                         .lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.caption2.weight(.semibold))
@@ -198,7 +209,8 @@ struct HostSwitcherMenu: View {
                     HostToolbarConnectionBadge.resolve(
                         isSwitching: isSwitching,
                         isNetworkUnavailable: sessionStore.isNetworkUnavailable,
-                        connectionStatus: appStore.connectionStatus
+                        connectionStatus: appStore.connectionStatus,
+                        pageShowsConnectionProgress: suppressesProgressBadge
                     )
                 )
             }

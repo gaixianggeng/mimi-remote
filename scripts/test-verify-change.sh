@@ -71,6 +71,14 @@ assert_not_contains "$docs_output" "cargo test"
 assert_contains "$docs_output" "Go：没有直接 Go 产品路径"
 assert_contains "$docs_output" "iOS：没有直接 iOS 产品路径"
 
+# 配置示例也必须进入静态门禁，不能被当作文档后以零检查成功退出。
+config_example_output="$(assert_plan config_example config.example.json)"
+assert_contains "$config_example_output" "PR Gate scope：go=false, ios=false, rust=false, macos=false, docs=true"
+assert_contains "$config_example_output" "bash ./scripts/check-docs-static.sh"
+# 合并配置示例的文档归类后，仍保留 JSON 解析；两项静态检查都不能丢。
+assert_contains "$config_example_output" "变更的 JSON 配置模板先做语法解析"
+assert_contains "$config_example_output" "将执行 2 项"
+
 nested_docs_output="$(assert_plan nested_docs ios/MimiRemote/README.md bridges/claude/README.md)"
 assert_contains "$nested_docs_output" "判定：纯文档/静态内容"
 assert_not_contains "$nested_docs_output" "ios-dev.sh build-for-testing"
@@ -131,6 +139,20 @@ assert_not_contains "$go_output" "ios-dev.sh build-for-testing"
 
 go_fixture_output="$(assert_plan go_fixture internal/httpapi/testdata/request.json)"
 assert_contains "$go_fixture_output" "go test ./internal/httpapi -count=1"
+
+# contracts/harness-native 是 H00 新增的 Go/iOS 共享契约根。补映射前它整个落在
+# unknown_paths，导致任何检查执行前就 fail-closed 退出。
+harness_fixture_output="$(assert_plan harness_fixture contracts/harness-native/fixtures/stream/mux-carrier.json)"
+assert_contains "$harness_fixture_output" "bash ./scripts/check-harness-native-contract.sh"
+assert_contains "$harness_fixture_output" "PR Gate scope：go=true, ios=true"
+assert_contains "$harness_fixture_output" "自动高风险信号：检测到 Go/iOS 共享协议路径"
+assert_not_contains "$harness_fixture_output" "没有验证映射"
+# 与 contracts/mimi-protocol 同样由专用契约检查覆盖，quick 不再重复一次全仓 Go test。
+assert_not_contains "$harness_fixture_output" "Go 受影响范围使用完整回归"
+
+harness_manifest_output="$(assert_plan harness_manifest contracts/harness-native/manifest.json)"
+assert_contains "$harness_manifest_output" "bash ./scripts/check-harness-native-contract.sh"
+assert_not_contains "$harness_manifest_output" "没有验证映射"
 
 rust_leaf_output="$(assert_plan rust_leaf bridges/claude/crates/claude-bridge/src/lib.rs)"
 assert_contains "$rust_leaf_output" "-p alleycat-claude-bridge"

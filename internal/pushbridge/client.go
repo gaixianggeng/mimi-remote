@@ -56,39 +56,8 @@ func NewClient(baseURL string) *Client {
 
 func (c *Client) Configured() bool { return c != nil && c.baseURL != "" }
 
-// IssueTicket 用设备刚拿到的 APNs Token 换一张不透明 Ticket。agentd 只是代跑
-// 这一步的传输，它不解析、也无法解析返回的 Ticket 内容。
-func (c *Client) IssueTicket(ctx context.Context, environment string, deviceToken string, installation string) (string, time.Time, error) {
-	if !c.Configured() {
-		return "", time.Time{}, errors.New("未配置推送 Provider")
-	}
-	body := map[string]any{
-		"version":      1,
-		"environment":  environment,
-		"device_token": deviceToken,
-		"installation": installation,
-	}
-	var response struct {
-		Ticket    string `json:"ticket"`
-		ExpiresAt string `json:"expires_at"`
-	}
-	if err := c.post(ctx, "/v1/ticket", body, &response); err != nil {
-		return "", time.Time{}, err
-	}
-	expiry, err := time.Parse(time.RFC3339, response.ExpiresAt)
-	if err != nil {
-		return "", time.Time{}, fmt.Errorf("Provider 返回的到期时间无效: %w", err)
-	}
-	return response.Ticket, expiry, nil
-}
-
-func (c *Client) RevokeTicket(ctx context.Context, ticket string) error {
-	if !c.Configured() {
-		return nil
-	}
-	return c.post(ctx, "/v1/ticket/revoke", map[string]any{"version": 1, "ticket": ticket}, nil)
-}
-
+// Notify 是本包唯一的生产调用路径：Ticket 的签发与撤销由 iOS 的
+// PushProviderClient 直接完成，agentd 只负责投递审批提醒。
 func (c *Client) Notify(ctx context.Context, notification Notification) error {
 	if !c.Configured() {
 		return errors.New("未配置推送 Provider")

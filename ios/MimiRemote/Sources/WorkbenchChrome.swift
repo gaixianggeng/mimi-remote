@@ -994,6 +994,7 @@ struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
     var body: some View {
         HStack(spacing: 4) {
             brand
+                .avoidingWindowControls()
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             // 收起与展开共用同一个磨砂按钮，保证触摸、指针和按压反馈完全一致。
@@ -1004,6 +1005,20 @@ struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
         .padding(.trailing, 8)
         .padding(.top, 10)
         .padding(.bottom, 6)
+    }
+}
+
+extension View {
+    /// iPadOS 26 窗口模式下，窗口左上角有系统的红黄绿按钮。隐藏导航栏后自己画的顶部控件
+    /// 不会被系统自动让开，浮动侧栏的设备入口曾被那组按钮整个压住（#562）。
+    /// 这里按容器圆角区域横向让位；全屏、iPhone 与 iOS 26 之前的系统上位移为零。
+    @ViewBuilder
+    func avoidingWindowControls() -> some View {
+        if #available(iOS 26.0, *) {
+            containerCornerOffset(.leading, sizeToFit: true)
+        } else {
+            self
+        }
     }
 }
 
@@ -1379,37 +1394,11 @@ struct RelatedSessionConversationView: View {
     }
 }
 
-struct WorkbenchPageHeader: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    let title: String
-    let subtitle: String
-    let tokens: ThemeTokens
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(themeStore.uiFont(.title2, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
-            Text(subtitle)
-                .font(themeStore.uiFont(.callout))
-                .foregroundStyle(tokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
 enum WorkbenchPageLayout {
     static let maxContentWidth: CGFloat = 820
     static let regularPadding: CGFloat = 24
     static let compactPadding: CGFloat = 20
-    static let contentPanelPadding: CGFloat = 16
-    static let groupedPanelPadding: CGFloat = 14
-    static let controlPadding: CGFloat = 10
     static let contentPanelCornerRadius: CGFloat = 22
-    static let groupedPanelCornerRadius: CGFloat = 16
-    static let controlCornerRadius: CGFloat = 12
-
     // iOS 26 的浮动 Tab Bar 没有公开可读取的实时高度。这里统一维护其视觉高度，
     // 再叠加设备 safe area 与 20pt 呼吸区，避免三个顶层页面各自猜一套底部留白。
     static let compactTabBarVisualHeight: CGFloat = 64
@@ -1421,11 +1410,6 @@ enum WorkbenchPageLayout {
             bottomSafeAreaInset: defaultCompactBottomSafeAreaInset
         )
     }
-    // 兼容不在紧凑 Tab 容器中的旧页面；顶层三页会使用实时 safe area 计算值。
-    static var compactBottomPadding: CGFloat {
-        defaultCompactBottomChromeClearance
-    }
-
     static func compactBottomChromeClearance(bottomSafeAreaInset: CGFloat) -> CGFloat {
         compactTabBarVisualHeight
             + max(compactTabBarMinimumSafeArea, bottomSafeAreaInset)
@@ -1530,6 +1514,26 @@ private struct WorkbenchHasBottomTabBarKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+/// 根页面向上报告"正文此刻自己就在表达进行中"（连接过渡或目录加载）。
+///
+/// 页面自己持有的设备入口（iPhone 工作区胶囊行、会话页顶栏）可以直接读页面状态；
+/// iPad 紧凑布局那枚浮层归 Shell 所有、拿不到页面内部的展示状态，只能由页面沿视图树
+/// 报上来。两条路径必须得出同一个结论，否则同一屏上又会出现两处转圈。
+struct WorkbenchRootConnectionProgressKey: PreferenceKey {
+    static let defaultValue = false
+
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
+    }
+}
+
+extension View {
+    /// 页面在这里声明"进行中已经由我表达"。
+    func workbenchRootShowsConnectionProgress(_ showsProgress: Bool) -> some View {
+        preference(key: WorkbenchRootConnectionProgressKey.self, value: showsProgress)
+    }
+}
+
 extension EnvironmentValues {
     var workbenchBottomChromeClearance: CGFloat {
         get { self[WorkbenchBottomChromeClearanceKey.self] }
@@ -1547,105 +1551,7 @@ extension EnvironmentValues {
     }
 }
 
-enum WorkbenchSurfaceRole {
-    case contentPanel
-    case groupedPanel
-    case control
-
-    var cornerRadius: CGFloat {
-        switch self {
-        case .contentPanel:
-            WorkbenchPageLayout.contentPanelCornerRadius
-        case .groupedPanel:
-            WorkbenchPageLayout.groupedPanelCornerRadius
-        case .control:
-            WorkbenchPageLayout.controlCornerRadius
-        }
-    }
-}
-
-private struct WorkbenchSurfaceModifier: ViewModifier {
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-
-    let tokens: ThemeTokens
-    let role: WorkbenchSurfaceRole
-
-    func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: role.cornerRadius, style: .continuous)
-
-        content
-            .background(background, in: shape)
-            .overlay {
-                shape.stroke(
-                    tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.72),
-                    lineWidth: colorSchemeContrast == .increased ? 1 : 0.5
-                )
-            }
-    }
-
-    private var background: Color {
-        switch role {
-        case .contentPanel, .groupedPanel:
-            tokens.contentPanelBackground
-        case .control:
-            tokens.surface.opacity(0.72)
-        }
-    }
-}
-
 extension View {
-    func workbenchSurface(tokens: ThemeTokens, role: WorkbenchSurfaceRole) -> some View {
-        modifier(WorkbenchSurfaceModifier(tokens: tokens, role: role))
-    }
-}
-
-struct StatusPill: View {
-    enum Kind {
-        case success
-        case warning
-        case neutral
-    }
-
-    let text: String
-    let kind: Kind
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        Text(text)
-            .font(themeStore.uiFont(size: 12, weight: .medium))
-            .lineLimit(1)
-            .minimumScaleFactor(0.86)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(background(tokens: tokens))
-            .foregroundStyle(foreground(tokens: tokens))
-            .clipShape(Capsule())
-    }
-
-    private func background(tokens: ThemeTokens) -> Color {
-        switch kind {
-        case .success:
-            return tokens.success.opacity(0.16)
-        case .warning:
-            return tokens.warning.opacity(0.18)
-        case .neutral:
-            return tokens.elevatedSurface
-        }
-    }
-
-    private func foreground(tokens: ThemeTokens) -> Color {
-        switch kind {
-        case .success:
-            return tokens.success
-        case .warning:
-            return tokens.warning
-        case .neutral:
-            return tokens.secondaryText
-        }
-    }
 }
 
 /// 设置页和工作台侧栏共用的额度窗口模型。集中选择规则后，两个入口不会因为

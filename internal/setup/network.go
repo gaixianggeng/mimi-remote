@@ -2,11 +2,9 @@ package setup
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 
@@ -58,6 +56,9 @@ func pairingEndpoint(
 	network, err := ParsePairingNetwork(string(network))
 	if err != nil {
 		return "", nil, err
+	}
+	if cfg.HasNetworkModuleControls() {
+		return modulePairingEndpoint(ctx, cfg, network, lookups)
 	}
 	if network == PairingNetworkAuto {
 		configuredHost, port := splitListen(cfg.Listen)
@@ -292,95 +293,4 @@ func selectLANIPv4Candidate(candidates []lanIPv4Candidate) string {
 		return ""
 	}
 	return candidates[0].ip
-}
-
-// SetLANAccess 只修改 network.allow_lan，保留 token、项目、动作和未来新增字段。
-// 配置采用 0600 临时文件 + rename 原子提交，避免切换网络时损坏现有配置。
-func SetLANAccess(configPath string, enabled bool) (bool, error) {
-	cfgPath, err := resolveConfigPath(configPath)
-	if err != nil {
-		return false, err
-	}
-	info, err := os.Lstat(cfgPath)
-	if err != nil {
-		return false, fmt.Errorf("读取配置文件状态失败：%w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
-	}
-
-	cfg, err := config.LoadForDoctor(cfgPath)
-	if err != nil {
-		return false, err
-	}
-	originalListen := cfg.Listen
-	cfg.Network.AllowLAN = enabled
-	if !enabled {
-		host, port := splitListen(cfg.Listen)
-		ip := net.ParseIP(strings.Trim(host, "[]"))
-		if ip != nil && ip.IsUnspecified() {
-			if port == "" {
-				port = defaultAgentDPort
-			}
-			cfg.Listen = net.JoinHostPort("127.0.0.1", port)
-		}
-	}
-	if err := cfg.Validate(); err != nil {
-		return false, fmt.Errorf("新的网络配置无效：%w", err)
-	}
-
-	original, err := os.ReadFile(cfgPath)
-	if err != nil {
-		return false, fmt.Errorf("读取配置文件失败：%w", err)
-	}
-	document := map[string]json.RawMessage{}
-	if err := json.Unmarshal(original, &document); err != nil {
-		return false, fmt.Errorf("解析配置文件失败：%w", err)
-	}
-	if document == nil {
-		return false, fmt.Errorf("配置文件必须是 JSON object")
-	}
-
-	networkDocument := map[string]json.RawMessage{}
-	if rawNetwork, ok := document["network"]; ok && string(rawNetwork) != "null" {
-		if err := json.Unmarshal(rawNetwork, &networkDocument); err != nil {
-			return false, fmt.Errorf("解析 network 配置失败：%w", err)
-		}
-	}
-	current := false
-	if rawAllowLAN, ok := networkDocument["allow_lan"]; ok {
-		if err := json.Unmarshal(rawAllowLAN, &current); err != nil {
-			return false, fmt.Errorf("解析 network.allow_lan 失败：%w", err)
-		}
-	}
-	updatedListen := cfg.Listen
-	if current == enabled && updatedListen == originalListen {
-		return false, nil
-	}
-
-	encodedEnabled, err := json.Marshal(enabled)
-	if err != nil {
-		return false, fmt.Errorf("编码 network.allow_lan 失败：%w", err)
-	}
-	networkDocument["allow_lan"] = encodedEnabled
-	encodedNetwork, err := json.Marshal(networkDocument)
-	if err != nil {
-		return false, fmt.Errorf("编码 network 配置失败：%w", err)
-	}
-	document["network"] = encodedNetwork
-	if updatedListen != originalListen {
-		encodedListen, err := json.Marshal(updatedListen)
-		if err != nil {
-			return false, fmt.Errorf("编码 listen 配置失败：%w", err)
-		}
-		document["listen"] = encodedListen
-	}
-	updated, err := json.MarshalIndent(document, "", "  ")
-	if err != nil {
-		return false, fmt.Errorf("编码配置文件失败：%w", err)
-	}
-	if err := writePrivateFileAtomicallyCAS(cfgPath, original, append(updated, '\n')); err != nil {
-		return false, fmt.Errorf("原子更新配置文件失败：%w", err)
-	}
-	return true, nil
 }

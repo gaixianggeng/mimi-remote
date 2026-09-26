@@ -321,12 +321,24 @@ typealias LocalAgentProbe = (_ endpoint: String, _ timeout: TimeInterval) async 
 typealias LocalAgentPairingClaim = (_ endpoint: String, _ timeout: TimeInterval) async throws -> String
 
 extension AppStore {
+    static func normalizedInstallationID(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    static func unboundInstallationID(profileID: String) -> String {
+        "unbound:\(profileID)"
+    }
+
     static func defaultConnectionRouteVersionProbe(
         endpoint: String,
         token: String,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        session: URLSession = .shared
     ) async throws -> VersionResponse {
-        try await AgentAPIClient(endpoint: endpoint, token: token).version(timeout: min(timeout, 2))
+        try await AgentAPIClient(endpoint: endpoint, token: token, session: session)
+            .version(timeout: min(timeout, 2))
     }
 
     func validateConnectionCandidateIdentityAndRefreshHostMetadata(
@@ -571,10 +583,6 @@ final class PreparedHostContext {
         expirationTask?.cancel()
     }
 
-    var isConsumed: Bool {
-        runtimeBundle == nil
-    }
-
     func validatedRuntimeBundle(
         matching expectedLease: PreparedHostLease,
         now: Date = Date()
@@ -634,7 +642,15 @@ enum HostSwitchSignpost {
         os_signpost(.begin, log: log, name: name)
     }
 
+    static func begin(_ name: StaticString, metadata: String) {
+        os_signpost(.begin, log: log, name: name, "%{public}@", metadata as NSString)
+    }
+
     static func end(_ name: StaticString) {
         os_signpost(.end, log: log, name: name)
+    }
+
+    static func end(_ name: StaticString, metadata: String) {
+        os_signpost(.end, log: log, name: name, "%{public}@", metadata as NSString)
     }
 }

@@ -5,6 +5,7 @@ struct MarkdownStyle: Equatable {
     let textColor: Color
     let secondaryColor: Color
     let linkColor: Color
+    let underlinesLinks: Bool
     let codeForeground: Color
     let codeBackground: Color
     let tableBackground: Color
@@ -34,6 +35,7 @@ struct MarkdownStyle: Equatable {
             textColor: textColor,
             secondaryColor: isUser ? textColor.opacity(0.68) : (tokens?.conversationSecondaryText ?? .secondary),
             linkColor: tokens?.accent ?? fallbackAccent,
+            underlinesLinks: tokens?.underlinesLinks ?? false,
             codeForeground: tokens?.codeText ?? .primary,
             codeBackground: tokens?.codeBlock ?? Color(.tertiarySystemBackground),
             tableBackground: tokens?.elevatedSurface ?? Color(.secondarySystemBackground),

@@ -140,13 +140,28 @@ extension SessionStore {
         var didRefreshRuntimeAvailability = false
         do {
             let client = try clientFactory()
-            // Claude 卡片以 config.channels 的真实可用性为准，不能依赖 model/list 是否成功。
+            // Runtime 入口以 config.channels 的真实可用性为准，不能依赖 model/list 是否成功。
             // 即使模型列表处于 5 分钟缓存期，也要重新读取轻量 channel 元数据。
-            let isClaudeRuntimeChannelAvailable = (try? await client.runtimeChannelAvailable(
-                runtimeProvider: "claude"
-            )) == true
+            //
+            // **codex 也要探测。** 它同样可能被关掉（host 侧 `HasEnabledAgent()` 就允许
+            // 只剩 claude），写死成"恒可用"会让选择器在一个 codex 通道不可用的主机上
+            // 仍然提供 codex，而真正能用的 claude 不会顶上来。
+            var availableRuntimeProviders: Set<String> = []
+            for provider in RuntimeFeatureSupport.runtimeProviders {
+                if (try? await client.runtimeChannelAvailable(runtimeProvider: provider)) == true {
+                    availableRuntimeProviders.insert(provider)
+                }
+            }
             guard appStore.activeHostScope == hostScope else { return }
-            self.isClaudeRuntimeChannelAvailable = isClaudeRuntimeChannelAvailable
+            self.availableRuntimeProviders = availableRuntimeProviders
+            if availableRuntimeProviders.contains(Self.nativeHarnessRuntimeProvider) {
+                // 用户已启用、agentd 能力兼容且 Harness 健康后，才建立宿主级事件流。
+                // 这只观察上游，不拥有或停止 Harness 正在执行的任务。
+                installNativeHarnessHostEvents()
+            } else {
+                stopNativeHarnessHostEvents()
+                stopNativeHarnessDirectory()
+            }
             didRefreshRuntimeAvailability = true
             if !force,
                let appServerModelOptionsLastRefresh,
@@ -167,12 +182,35 @@ extension SessionStore {
         } catch {
             guard appStore.activeHostScope == hostScope else { return }
             if !didRefreshRuntimeAvailability {
-                isClaudeRuntimeChannelAvailable = false
+                availableRuntimeProviders = ["codex"]
             }
             appServerModelOptionsLastRefresh = Date()
             if force {
                 setStatusMessage(L10n.text("ui.model_list_unavailable_continue_using_built_in_options"))
             }
+        }
+    }
+
+    /// 用户点到暂不可用的 Runtime 时只重探该通道；先尝试重读配置，避免沿用
+    /// Mac 端刚启用通道前的缓存。配置刷新失败仍可用旧快照重试健康探测，
+    /// 探测失败不撤销其他已确认可用的通道。
+    func retryRuntimeAvailability(_ runtimeProvider: String) async -> Bool {
+        let provider = Self.normalizedRuntimeProvider(runtimeProvider)
+        guard RuntimeFeatureSupport.runtimeProviders.contains(provider) else { return false }
+        let hostScope = appStore.activeHostScope
+        do {
+            _ = try? await appStore.activeRuntimeBundle?.refreshConfiguration()
+            let available = try await clientFactory().runtimeChannelAvailable(runtimeProvider: provider)
+            guard appStore.activeHostScope == hostScope else { return false }
+            if available {
+                availableRuntimeProviders.insert(provider)
+                if provider == Self.nativeHarnessRuntimeProvider {
+                    installNativeHarnessHostEvents()
+                }
+            }
+            return available
+        } catch {
+            return false
         }
     }
 
@@ -266,6 +304,13 @@ extension SessionStore {
             candidateOptions = CodexAppServerModelOption.builtInClaudeFallback
         } else if options.isEmpty, targetRuntimeProvider == "codex" {
             candidateOptions = CodexAppServerModelOption.builtInFallback
+        } else if let targetRuntimeProvider, targetRuntimeProvider != "codex", targetRuntimeProvider != "claude" {
+            // 第三方目录不可用时不能拿 GPT 作为兜底，也不能继续发送旧的跨通道模型。
+            candidateOptions = options
+            if options.isEmpty {
+                resolved.options.model = nil
+                resolved.options.modelProvider = nil
+            }
         } else {
             candidateOptions = options.isEmpty ? allOptions : options
         }
@@ -274,11 +319,15 @@ extension SessionStore {
            !requestedModel.isEmpty,
            let matched = candidateOptions.first(where: {
                $0.model.caseInsensitiveCompare(requestedModel) == .orderedSame
+                   && (!RuntimeFeatureSupport.isDeepSeek(targetRuntimeProvider)
+                       || resolved.options.modelProvider == nil
+                       || $0.provider == resolved.options.modelProvider)
            }) {
             // 目录命中后使用服务端返回的 canonical id/provider，避免旧草稿或跨渠道残留
             // 把不可识别 UUID/alias 直接送进 turn/start。
             resolved.options.model = matched.model
             resolved.options.modelProvider = matched.provider
+            resolveHarnessReasoningEffort(&resolved.options, model: matched)
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
             return resolved
         }
@@ -295,8 +344,21 @@ extension SessionStore {
         }
         resolved.options.model = selected.model
         resolved.options.modelProvider = selected.provider
+        resolveHarnessReasoningEffort(&resolved.options, model: selected)
         resolved.options = resolved.options.sanitizedForRuntimePolicy()
         return resolved
+    }
+
+    private func resolveHarnessReasoningEffort(
+        _ options: inout CodexAppServerTurnOptions,
+        model: CodexAppServerModelOption
+    ) {
+        guard RuntimeFeatureSupport.isDeepSeek(options.runtimeProvider) else { return }
+        // 跨模型切换不继承目录未声明的档位，避免把 Codex 的默认档位送到 Harness。
+        if let effort = options.reasoningEffort,
+           model.supportedReasoningEfforts.contains(effort.rawValue) { return }
+        options.reasoningEffort = model.defaultReasoningEffort
+            .flatMap(CodexAppServerReasoningEffort.init(rawValue:))
     }
 
     func updateSelectedThreadPermissionsForNextTurn(_ options: CodexAppServerTurnOptions) {
@@ -337,6 +399,10 @@ extension SessionStore {
 
     static func normalizedRuntimeProvider(_ rawValue: String?) -> String {
         CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue)
+    }
+
+    func isRuntimeAvailable(_ provider: String) -> Bool {
+        availableRuntimeProviders.contains(Self.normalizedRuntimeProvider(provider))
     }
 
     static func payloadRuntimeProvider(_ normalizedRuntimeProvider: String) -> String? {
@@ -667,6 +733,7 @@ extension SessionStore {
         }
         // 选择提交意味着详情已经成为当前可见目标；历史加载即使随后失败，也不能让列表
         // 继续把用户刚打开过的完成结果标成未读。
+        HostSwitchSignpost.event("conversation_open")
         markHistorySessionRead(session.id)
         if let previousSession, previousSession.id != session.id {
             cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
@@ -733,11 +800,18 @@ extension SessionStore {
                 )
             }
         } else if session.isRunning && canControlSession(session) {
-            // 重新点回运行会话时，离开期间的输出先用 thread/read 快照一次性补齐；
-            // 随后的 WebSocket 只回放状态级 backlog，避免消息区把旧 delta 逐条直播。
-            let didRefreshHistory = await loadHistory(for: session)
-            guard isSelectionLeaseCurrent(selectionLease) else { return false }
-            connectWebSocket(session, replayBufferedEvents: !didRefreshHistory)
+            // 运行中的会话优先恢复实时订阅，不能让历史首屏网络耗时挡住 turn 状态和新输出。
+            // 先带 replay 接入保证历史加载期间产生的事件不会丢；随后权威历史快照负责去重/
+            // 对账，事件 reducer 的 stable id/seq 继续作为合并边界。
+            connectWebSocket(session, replayBufferedEvents: true)
+            if conversationStore.hasLoadedHistory(sessionID: session.id) {
+                // 已有可读缓存时不要让 selectSession 等网络；后台权威补齐即可。
+                // 页面立刻可交互，Socket 已经承担从当前时刻开始的实时增量。
+                scheduleQuietHistoryRefresh(for: session, showsProgress: true)
+            } else {
+                _ = await loadHistory(for: session)
+                guard isSelectionLeaseCurrent(selectionLease) else { return false }
+            }
         } else if session.isRunning {
             // 其他客户端正在运行：只读观察，不建立可发送的事件通道。
             await loadHistoryIfNeeded(for: session)
@@ -956,6 +1030,14 @@ extension SessionStore {
         guard !payload.isEmpty else {
             return false
         }
+        let diagnosticCorrelation = targetSession.map {
+            beginTurnDiagnostics(sessionID: $0.id)
+        } ?? AppDiagnosticCorrelation.make()
+        AppDiagnostics.record(
+            stage: .messageSend,
+            result: .started,
+            correlation: diagnosticCorrelation
+        )
         if let session = targetSession,
            isProtocolReadOnlySession(session) {
             setErrorMessage(L10n.text("ui.read_only"))
@@ -971,6 +1053,10 @@ extension SessionStore {
             : payload
         guard isSubmissionHostCurrent(submissionContext) else { return false }
         guard !isAwaitingSessionCreation(targetSession) else { return false }
+        if let error = RuntimeFeatureSupport.submissionError(for: payload) {
+            setErrorMessage(error)
+            return false
+        }
         let prompt = payload.previewText
 
         if let localDraft = targetSession, localDraft.isLocalDraft {
@@ -1131,12 +1217,19 @@ extension SessionStore {
             return
         }
         guard let socket = readyWebSocket(for: session) else {
+            AppDiagnostics.record(stage: .interrupt, result: .failed, reason: .notConnected)
             return
         }
         if !socket.sendCtrlC(expectedTurnID: activeTurnID) {
+            AppDiagnostics.record(stage: .interrupt, result: .failed, reason: .transport)
             setErrorMessage(L10n.text("ui.failed_to_stop_current_reply_websocket_not_connected"))
             return
         }
+        AppDiagnostics.record(
+            stage: .interrupt,
+            result: .started,
+            correlation: diagnosticCorrelation(sessionID: session.id)
+        )
         // 中断只停止当前 turn，不关闭 thread；等待匹配的 turn/completed 后，
         // 原会话仍可继续发送下一条消息。
         setStatusMessage(L10n.text("ui.stopping_current_reply"))
@@ -1156,6 +1249,7 @@ extension SessionStore {
             return
         }
         guard let socket = readyWebSocket(for: session) else {
+            AppDiagnostics.record(stage: .approval, result: .failed, reason: .notConnected)
             setErrorMessage(L10n.text("ui.approval_failed_websocket_not_connected"))
             return
         }
@@ -1167,10 +1261,16 @@ extension SessionStore {
         let isAccepting = normalizedDecision.lowercased().hasPrefix("accept")
         markApprovalDecisionPending(approval.id, sessionID: session.id)
         guard socket.sendApprovalDecision(approvalID: approval.id, decision: normalizedDecision, message: nil) else {
+            AppDiagnostics.record(stage: .approval, result: .failed, reason: .transport)
             clearPendingApprovalDecision(sessionID: session.id, approvalID: approval.id)
             setErrorMessage(L10n.text("ui.approval_sending_failed_websocket_not_connected"))
             return
         }
+        AppDiagnostics.record(
+            stage: .approval,
+            result: .started,
+            correlation: diagnosticCorrelation(sessionID: session.id)
+        )
         if normalizedDecision.caseInsensitiveCompare("acceptWithPermissionUpdate") == .orderedSame {
             setStatusMessage(L10n.text("ui.sent_decision_to_approve_and_remember_rules_awaiting"))
         } else {
@@ -1714,18 +1814,6 @@ extension SessionStore {
             setErrorMessage(error.localizedDescription)
             return false
         }
-    }
-
-    @discardableResult
-    func setSelectedThreadGoal(
-        objective: String?,
-        status: ThreadGoalStatus?,
-        tokenBudget: Int64?
-    ) async -> Bool {
-        guard let sessionID = selectedSessionID else {
-            return false
-        }
-        return await setThreadGoal(threadID: sessionID, objective: objective, status: status, tokenBudget: tokenBudget)
     }
 
     func updateSelectedThreadGoalStatus(_ status: ThreadGoalStatus) async {

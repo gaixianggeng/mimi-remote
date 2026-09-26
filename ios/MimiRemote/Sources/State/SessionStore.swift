@@ -101,6 +101,7 @@ final class SessionStore: ObservableObject {
     // 首屏搜索覆盖 300ms 防抖和实际请求；与分页 loading 分离，避免“继续搜索”误占空态。
     @Published var isSearchingRemoteSessionResults = false
     @Published var isLoadingMoreSessionSearchResults = false
+    @Published var remoteSessionSearchNotice: String?
     @Published var pinnedSessionIDs: Set<SessionID> = []
     @Published var archivedSessionIDs: Set<SessionID> = []
     /// UI 只通过 `isSessionArchiveMutationPending` 查询当前 Profile；这里保留完整作用域，
@@ -115,12 +116,6 @@ final class SessionStore: ObservableObject {
     @Published var selectedSessionID: String?
     /// 路由只监听明确的导航提交，不再把后台数据更新等同于“打开会话”。
     @Published var lastSelectionCommit: SessionSelectionCommit?
-    /// 系统搜索框是否处于激活态（聚焦/展开），与 `isSessionSearchActive` 不同：
-    /// 后者按查询是否非空判定，聚焦但没输入时仍是 false，盖不住"键盘已弹出"这一段。
-    /// iPad 紧凑布局的设备入口是画在 TabView 上的浮层，不归导航栏管，搜索激活时
-    /// 系统会收起 Tab 胶囊和顶栏按钮，浮层却留在原地被搜索框压住，所以需要这个信号。
-    @Published var isSessionSearchPresented = false
-
     @Published var sessionSearchQuery = "" {
         didSet {
             guard oldValue != sessionSearchQuery else {
@@ -163,7 +158,11 @@ final class SessionStore: ObservableObject {
     @Published var appServerPermissionProfiles: [CodexAppServerPermissionProfileSummary] = []
     @Published var activePermissionProfileBySessionID: [SessionID: CodexAppServerActivePermissionProfile] = [:]
     @Published var isRefreshingPermissionProfiles = false
-    @Published var isClaudeRuntimeChannelAvailable = false
+    /// 当前主机实际可用的 Runtime 集合。Codex 恒为可用（它是 app-server 基线通道），
+    /// 其余 provider 由 config.channels 的真实可用性决定；新增 Runtime 只扩这个集合，
+    /// 不再为每个 provider 各开一个 Bool。
+    @Published var availableRuntimeProviders: Set<String> = ["codex"]
+    var isClaudeRuntimeChannelAvailable: Bool { availableRuntimeProviders.contains("claude") }
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
     /// 账号维度的累计用量。与活动历史分开保存：服务端可以给出 lifetime 却不给日粒度历史。
     @Published var accountTokenUsage: AccountTokenUsageSnapshot?
@@ -362,8 +361,8 @@ final class SessionStore: ObservableObject {
     var networkRecoveryTask: Task<Void, Never>?
     var appLifecycleSuspendedSessionID: SessionID?
     var isAppInBackground = false
-    // 旧 agentd 不接受无 cwd thread/list 时，本 Host 生命周期只探测一次；
-    // 精确工作区列表仍继续工作，形成明确能力检测与兼容回退。
+    // 旧 agentd 不接受 Codex 无 cwd thread/list 时，本 Host 生命周期只探测一次；
+    // 这只缓存 Codex 的能力，不得关闭 Claude / Harness 各自的全局目录。
     var controlledGlobalDiscoveryUnavailable = false
     // 记录当前 Host 经 agentd 受控全局发现授权过的 Thread。精确 cwd 的工作区刷新
     // 不会返回外部 Worktree，必须保留这些 ID；完整全局遍历确认消失后再收缩集合。
@@ -382,6 +381,12 @@ final class SessionStore: ObservableObject {
     /// 本设备在某个工作区里创建成功的会话 ID。目录页用 `replacing` 整页覆盖时必须并回它们：
     /// 创建时可能有一页更早发出的首屏还在路上，它落地时会把刚登记的新会话冲掉。
     var workspaceCreatedSessionIDsByKey: [WorkspaceDirectorySessionScopeKey: Set<SessionID>] = [:]
+    /// 原生目录协调器。只在通道可用后按需创建；它负责时序（代次、single-flight、
+    /// 失败保留旧页、前台 5 秒兜底），**不**持有会话集合——目录事实仍由
+    /// `session/list` 对账后经既有归并写进 `sessions`。
+    var nativeHarnessDirectory: HarnessSessionDirectory?
+    var isNativeHarnessDirectoryListVisible = false
+    var isNativeHarnessDirectoryForeground = false
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?
@@ -389,6 +394,8 @@ final class SessionStore: ObservableObject {
     var lastSeenEventSeqBySessionID: [SessionID: EventSequence] = [:]
     var historySnapshotSeqBySessionID: [SessionID: EventSequence] = [:]
     var runtimeEventFlushTasks: [HostSessionLease: Task<Void, Never>] = [:]
+    // flush 跨 await 时 MainActor 可以重入；单独记录真正持有消费权的 lease，避免后续批次并发落地。
+    var runtimeEventDrainingLeases: Set<HostSessionLease> = []
     var foregroundActivityClearTasks: [SessionID: Task<Void, Never>] = [:]
 #if DEBUG
     var didApplyDebugWorkbenchUISeed = false
@@ -506,10 +513,12 @@ final class SessionStore: ObservableObject {
 
     let foregroundOutputIdleClearDelay: UInt64 = 8_000_000_000
     let runtimeEventFlushDelayNanoseconds: UInt64 = 80_000_000
-    let sessionListConnectedPollingDelayNanoseconds: UInt64 = 60_000_000_000
+    // WebSocket 只实时覆盖已 resume/start 的 thread；列表里其它运行会话仍依赖轮询兜底。
+    // 15s/30s 把可见状态陈旧窗口压下来，同时避免把全局历史发现变成高频请求。
+    let sessionListConnectedPollingDelayNanoseconds: UInt64 = 15_000_000_000
     let sessionListDisconnectedPollingDelayNanoseconds: UInt64 = 8_000_000_000
     let sessionListFirstPageCacheTTL: TimeInterval = 2
-    let sessionLibraryIndexPollingInterval: TimeInterval = 60
+    let sessionLibraryIndexPollingInterval: TimeInterval = 30
     let sessionListReconciliationDelayNanoseconds: UInt64 = 1_500_000_000
     let economyHistoryPageLimit = 60
     let fullHistoryPageLimit = 20
@@ -1510,18 +1519,6 @@ final class SessionStore: ObservableObject {
         gitActionError(for: selectedGitStatusPath)
     }
 
-    var selectedGitQuickPublishResult: GitQuickPublishResponse? {
-        gitQuickPublishResult(for: selectedGitStatusPath)
-    }
-
-    var selectedGitTestFlightStatus: GitTestFlightStatusResponse? {
-        gitTestFlightStatus(for: selectedGitStatusPath)
-    }
-
-    var selectedGitTestFlightErrorMessage: String? {
-        gitTestFlightError(for: selectedGitStatusPath)
-    }
-
     var selectedPullRequestURL: String? {
         pullRequestURL(for: selectedGitStatusPath)
     }
@@ -1574,22 +1571,6 @@ final class SessionStore: ObservableObject {
     private func normalizedGitStatePath(_ path: String?) -> String? {
         let normalized = path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return normalized.isEmpty ? nil : normalized
-    }
-
-    var connectionBadgeTitle: String? {
-        guard let selectedSession else {
-            return nil
-        }
-        if selectedSession.isLocalDraft {
-            return L10n.text("ui.new_session")
-        }
-        guard selectedSession.isRunning else {
-            if selectedSession.isAppServerHistory {
-                return L10n.text("ui.history")
-            }
-            return selectedSession.status == "closed" ? L10n.text("ui.ended") : selectedSession.status
-        }
-        return webSocketStatus.title
     }
 
     var filteredSessions: [AgentSession] {
@@ -1714,24 +1695,6 @@ final class SessionStore: ObservableObject {
 
     func isWorkspaceShownInSessions(_ projectID: String) -> Bool {
         sessionWorkspaceIDs?.contains(projectID) ?? true
-    }
-
-    func toggleWorkspaceInSessions(_ project: AgentProject) {
-        let allProjectIDs = Set(sidebarProjects.map(\.id))
-        var next = sessionWorkspaceIDs ?? allProjectIDs
-        if next.contains(project.id) {
-            next.remove(project.id)
-            setStatusMessage(L10n.format("ui.value_has_been_removed_from_the_conversation", project.name))
-        } else {
-            next.insert(project.id)
-            setStatusMessage(L10n.format("ui.already_shown_in_session_value", project.name))
-        }
-        setSessionWorkspaceIDs(next.intersection(allProjectIDs))
-    }
-
-    func resetSessionWorkspaceSelection() {
-        setStatusMessage(L10n.text("ui.session_resumed_show_all_workspaces"))
-        setSessionWorkspaceIDs(nil)
     }
 
     func visibleSessions(forProjectID projectID: String) -> [AgentSession] {

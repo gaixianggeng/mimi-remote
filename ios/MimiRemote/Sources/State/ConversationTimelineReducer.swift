@@ -5,6 +5,12 @@ import Foundation
 /// 核心约束是“首次出现决定槽位，后续事件原位更新”。时间只在两个完全没有顺序关系的
 /// 独立片段之间充当插入提示，绝不能重新排列已经建立的 Turn/Item 顺序。
 struct ConversationTimelineReducer {
+    private let normalizeSemanticText: (String) -> String
+
+    init(normalizeSemanticText: @escaping (String) -> String = AssistantTextNormalizer.normalizedAssistantTextForDedup) {
+        self.normalizeSemanticText = normalizeSemanticText
+    }
+
     enum SnapshotOrdering {
         case authoritative
         case incrementalFragments
@@ -36,15 +42,11 @@ struct ConversationTimelineReducer {
 
         var currentIndicesByUUID: [UUID: Int] = [:]
         var currentIndicesByPrimaryKey: [String: [Int]] = [:]
-        var currentIndicesBySemanticKey: [String: [Int]] = [:]
         for index in current.indices {
             // 极端情况下旧缓存可能已有重复 UUID；保留首次出现槽位，不能在重建时间线时崩溃。
             currentIndicesByUUID[current[index].id] = currentIndicesByUUID[current[index].id] ?? index
             if let key = primaryKey(for: current[index]) {
                 currentIndicesByPrimaryKey[key, default: []].append(index)
-            }
-            if let key = semanticAliasKey(for: current[index]) {
-                currentIndicesBySemanticKey[key, default: []].append(index)
             }
         }
 
@@ -65,14 +67,55 @@ struct ConversationTimelineReducer {
             }
         }
 
+        // 语义别名只是稳定 ID 未命中后的兼容退路。先按 Turn/类型筛选双方
+        // 未匹配项，不能在每页补齐时清洗整段历史里无关的巨型工具输出。
+        var unmatchedSnapshotIndicesByScope: [String: [Int]] = [:]
+        var scopesWithLegacySnapshotItems = Set<String>()
+        for snapshotIndex in snapshot.indices where matchedCurrentBySnapshotIndex[snapshotIndex] == nil {
+            if let scope = semanticAliasScope(for: snapshot[snapshotIndex]) {
+                unmatchedSnapshotIndicesByScope[scope, default: []].append(snapshotIndex)
+                if !hasCanonicalHistoryIdentity(snapshot[snapshotIndex]) {
+                    scopesWithLegacySnapshotItems.insert(scope)
+                }
+            }
+        }
+        var currentIndicesByScope: [String: [Int]] = [:]
+        for currentIndex in current.indices where !consumedCurrentIndices.contains(currentIndex) {
+            if let scope = semanticAliasScope(for: current[currentIndex]),
+               unmatchedSnapshotIndicesByScope[scope] != nil {
+                // thread/items/list 已校验非空 Item ID，且完整分页有规范序号。
+                // 两条规范历史的不同 ID 代表不同 Item，不能仅因工具输出相同而合并。
+                // 仅保留 live/summary（无规范序号）及 legacy item-N 的文本兼容退路。
+                if snapshotOrdering == .incrementalFragments,
+                   hasCanonicalHistoryIdentity(current[currentIndex]),
+                   !scopesWithLegacySnapshotItems.contains(scope) { continue }
+                currentIndicesByScope[scope, default: []].append(currentIndex)
+            }
+        }
+        var currentIndicesBySemanticKey: [String: [Int]] = [:]
+        for indices in currentIndicesByScope.values {
+            for currentIndex in indices {
+                if let key = semanticAliasKey(for: current[currentIndex]) {
+                    currentIndicesBySemanticKey[key, default: []].append(currentIndex)
+                }
+            }
+        }
         var unmatchedSnapshotIndicesBySemanticKey: [String: [Int]] = [:]
         for snapshotIndex in snapshot.indices where matchedCurrentBySnapshotIndex[snapshotIndex] == nil {
+            guard let scope = semanticAliasScope(for: snapshot[snapshotIndex]),
+                  currentIndicesByScope[scope] != nil else { continue }
             if let key = semanticAliasKey(for: snapshot[snapshotIndex]) {
                 unmatchedSnapshotIndicesBySemanticKey[key, default: []].append(snapshotIndex)
             }
         }
         for (key, snapshotIndices) in unmatchedSnapshotIndicesBySemanticKey {
-            let currentCandidates = (currentIndicesBySemanticKey[key] ?? []).filter { !consumedCurrentIndices.contains($0) }
+            let currentCandidates = (currentIndicesBySemanticKey[key] ?? []).filter { currentIndex in
+                guard !consumedCurrentIndices.contains(currentIndex) else { return false }
+                // 混合新旧格式的分页仍不能把两个不同的规范 Item 按相同正文合并。
+                return snapshotOrdering != .incrementalFragments
+                    || !hasCanonicalHistoryIdentity(current[currentIndex])
+                    || snapshotIndices.contains { !hasCanonicalHistoryIdentity(snapshot[$0]) }
+            }
             guard snapshotIndices.count == 1, currentCandidates.count == 1,
                   let snapshotIndex = snapshotIndices.first,
                   let currentIndex = currentCandidates.first else {
@@ -414,14 +457,14 @@ struct ConversationTimelineReducer {
         return nil
     }
 
-    private func semanticAliasKey(for message: ConversationMessage) -> String? {
+    private func semanticAliasScope(for message: ConversationMessage) -> String? {
         guard let turnID = message.turnID, !turnID.isEmpty else { return nil }
         let semanticKind: String
         if message.role == .assistant {
             semanticKind = "assistant:\(message.kind.rawValue)"
         } else if message.role == .system {
             switch message.kind {
-            case .reasoningSummary, .plan, .commandSummary, .fileChangeSummary:
+            case .reasoningSummary, .plan, .commandSummary, .fileChangeSummary, .context:
                 semanticKind = "system:\(message.kind.rawValue)"
             case .message, .commentary, .approval, .userInput, .warning, .error:
                 return nil
@@ -429,9 +472,20 @@ struct ConversationTimelineReducer {
         } else {
             return nil
         }
-        let normalized = AssistantTextNormalizer.normalizedAssistantTextForDedup(message.content)
+        return "\(turnID):\(semanticKind)"
+    }
+
+    private func hasCanonicalHistoryIdentity(_ message: ConversationMessage) -> Bool {
+        guard message.timelineOrdinal != nil, let itemID = message.itemID, !itemID.isEmpty else { return false }
+        // 旧 thread/read 可能把真实 Item ID 重编号为 item-N；即使带序号也不能视为稳定身份。
+        return !itemID.hasPrefix("item-") || Int(itemID.dropFirst(5)) == nil
+    }
+
+    private func semanticAliasKey(for message: ConversationMessage) -> String? {
+        guard let scope = semanticAliasScope(for: message) else { return nil }
+        let normalized = normalizeSemanticText(message.content)
         guard !normalized.isEmpty else { return nil }
-        return "\(turnID):\(semanticKind):\(normalized)"
+        return "\(scope):\(normalized)"
     }
 
     private func shouldPruneProjectedProcess(

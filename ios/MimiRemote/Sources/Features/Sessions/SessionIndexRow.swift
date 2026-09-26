@@ -6,8 +6,7 @@ import SwiftUI
 /// 也没有任何调用点显式传入，留着只会让人以为侧栏复用了这个组件（侧栏有自己的
 /// `ProjectSidebarView.SessionRow`）。
 ///
-/// 两档共用同一套骨架，差别只在字号、留白和身份列宽度。会话 tab 与工作区因此不会
-/// 因为所处页面不同而拿到不同的读法。
+/// 两档共用字号和基础轨道。工作区总览另外压低视觉密度，但命中高度仍超过 44pt。
 enum SessionIndexRowDensity: Equatable {
     case compact
     case table
@@ -15,8 +14,8 @@ enum SessionIndexRowDensity: Equatable {
     /// 行高。两行内容加上下留白后仍要留出呼吸量——过去 60/44 的行高把两行文字压在
     /// 一起，配合逐行分隔线读成一张表格；列表需要的是可扫读的条目，不是表格。
     ///
-    /// 两档同高：装的是同样字号的两行文字，没有理由因为屏幕窄就压扁。
-    var minimumHeight: CGFloat { 76 }
+    /// 工作区行与带摘要的 iPad 会话行保持 68pt；手机会话行另收敛到 52pt。
+    var minimumHeight: CGFloat { 68 }
 
     var horizontalPadding: CGFloat {
         switch self {
@@ -28,25 +27,15 @@ enum SessionIndexRowDensity: Equatable {
     /// 标题与元数据行之间的间距。比行与行之间的留白小得多，两行才会读成一个整体。
     var contentSpacing: CGFloat { 4 }
 
-    /// 字号在两档之间**不变**。
-    ///
-    /// 密度档位回答的是"这么宽能不能排下一条固定的身份列"，那是几何问题；
-    /// 正文该多大是可读性问题，与屏幕宽窄无关——iPhone 上的邮件和 iPad 上用的是
-    /// 同一套正文字号。两者绑在一起时，为了让手机上的分支列收窄，整页字都会跟着缩一号。
-    var titleFontSize: CGFloat { 16 }
-
-    var metadataFontSize: CGFloat { 12 }
-
-    /// 摘要比标题低一档、比元数据高一档，同样不随密度变化。
-    var previewFontSize: CGFloat { 13.5 }
-
-    var statusIconSize: CGFloat { 9 }
+    // 字号不属于密度档位：密度只回答"这么宽能不能排下一条固定的身份列"，正文多大与屏幕
+    // 宽窄无关。会话行与设置行、侧栏共用同一套字号（#563），见 `SessionIndexRow` 的
+    // `titlePointSize` 等 `@ScaledMetric`。
 
     /// 前导槽。宽度恒定预留，标题因此在所有行上落在同一条竖线上。
     ///
-    /// 两个 tab 放不同的东西（会话 tab 放项目图标、工作区放状态字形），但槽宽必须相同，
-    /// 否则同一条会话在两页里的标题起点会差几个点。
-    var stateGutterWidth: CGFloat { 20 }
+    /// 与设置行的图标槽同宽（`SettingsLayoutMetrics.iconSlot`），四个 Tab 的行文字
+    /// 落在同一条竖线上（#563）。
+    var stateGutterWidth: CGFloat { 24 }
 
     /// 状态字形在槽内的绘制尺寸，比槽略小以便居中。
     var stateGlyphSize: CGFloat { 16 }
@@ -106,6 +95,7 @@ struct SessionRuntimePresentation: Equatable {
     enum Kind: Equatable {
         case codex
         case claude
+        case deepSeek
     }
 
     let kind: Kind
@@ -117,9 +107,14 @@ struct SessionRuntimePresentation: Equatable {
     init(runtimeProvider: String?, source: String) {
         let provider = runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawValue = provider?.isEmpty == false ? provider : source
-        kind = CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue) == "claude"
-            ? .claude
-            : .codex
+        switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue) {
+        case "claude":
+            kind = .claude
+        case "deepseek":
+            kind = .deepSeek
+        default:
+            kind = .codex
+        }
     }
 
     var title: String {
@@ -128,6 +123,8 @@ struct SessionRuntimePresentation: Equatable {
             return L10n.text("ui.runtime_default")
         case .claude:
             return L10n.text("ui.runtime_optional")
+        case .deepSeek:
+            return "DeepSeek"
         }
     }
 
@@ -137,6 +134,8 @@ struct SessionRuntimePresentation: Equatable {
             return .openAI
         case .claude:
             return .claude
+        case .deepSeek:
+            return .deepSeek
         }
     }
 }
@@ -198,14 +197,14 @@ enum SessionRowState: Equatable {
 
 /// 会话行前导槽放什么。
 ///
-/// 两个 tab 的区分符不同，前导槽应当承载各自那一个：
-///
-/// - 会话 tab 是所有项目的汇集区，"这条属于哪个项目"是第一位的问题，槽里放项目图标；
-///   未读属于会话状态，统一跟在标题后面，不再依附项目图标或占用正文起点。
-/// - 工作区内项目恒定，那个问题不存在，槽里放会话状态字形。
+/// - 会话 tab 汇集两种来源，槽里放来源标记；未读小点跟在标题后面，不占用正文起点。
+/// - 工作区顶部已经按 Codex / Claude 筛选，每行来源都一样，不画前导槽（`.none`），
+///   标题直接与分组标题对齐。
+/// - `.state` 是旧式详细行，槽里放会话状态字形。
 enum SessionIndexRowLeadingSlot: Equatable {
     case state
-    case projectIcon
+    case runtimeIcon
+    case none
 }
 
 /// 身份槽没有可展示分支时使用什么信息。
@@ -214,12 +213,12 @@ enum SessionIndexRowLeadingSlot: Equatable {
 enum SessionIndexRowIdentityFallback: Equatable {
     case project
     case directory
+    /// 当前列表只有一个项目时，身份已由页面上下文说明。
+    case none
 }
 
-/// 前导状态字形。
-///
-/// 四种状态用**形状**区分而不只是颜色：实心圆带感叹号 / 三角 / 缺口环 / 完整环。
-/// 色觉障碍下这一列仍然可读，这是把状态收进单一色点的方案做不到的。
+/// 前导状态字形。需要处理与运行中的状态保留独立形状；
+/// 未读只用小点与 VoiceOver 文案提示，不改变整行标题的视觉权重。
 struct SessionRowStateGlyph: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -270,11 +269,11 @@ struct SessionRowStateGlyph: View {
                 }
             case .unread:
                 Circle()
-                    .strokeBorder(tokens.success, lineWidth: 2)
-                    .frame(width: size, height: size)
+                    .fill(tokens.sessionUnreadAccent)
+                    .frame(width: 6, height: 6)
             case nil:
                 if drawsIdlePlaceholder {
-                    // 虚线环。和"运行中"那枚紫色缺口环的区别落在**形状**上，而不是靠颜色深浅——
+                    // 虚线环。和"运行中"那枚缺口环的区别落在**形状**上，而不是靠颜色深浅——
                     // 虚实之分即使在色觉障碍或纯灰度下也读得出来，这是细一档描边做不到的。
                     //
                     // 描边不能再细了：1.25pt 配 border 色在实机上糊成一团灰雾，读不出是个环。
@@ -454,22 +453,11 @@ struct SessionIndexRowButtonStyle: ButtonStyle {
     }
 }
 
-/// 会话在列表中的统一表示。
-///
-/// 会话 tab 与工作区使用**同一种排布**，不再各自一套：
-///
-/// ```
-/// [状态槽] 标题 ……………………………………………… 时间
-///          摘要 ……………… 状态文案   身份（分支 / 项目）
-/// ```
-///
-/// 两页真正的差异只有第二行末端身份槽的取值——工作区里项目恒定、区分符是分支；
-/// 会话 tab 默认跨项目、区分符是项目。差异收敛成一个槽，其余几何完全一致。
-///
-/// 曾经存在 `contentLayout` 开关，让两页在 `.table` 下走两套完全不同的排布
-/// （摘要在第一行还是第二行、时间在第一行还是第二行都不一样）。它把"同一个对象
-/// 两种读法"固化进了组件内部，与共用组件的初衷相反，已移除。
+/// 会话库与工作区共用同一种会话行：来源图标 + 标题 + 时间（宽屏 iPad 多一行摘要）。
+/// 同一个对象在两页里长得不一样，是四个 Tab 读起来像两个系统的原因之一（#563）。
 struct SessionIndexRow: View {
+    /// 会话库单行的最小高度；工作区骨架屏按同一高度占位，加载前后行距不跳。
+    static let libraryRowMinimumHeight: CGFloat = 52
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -477,6 +465,13 @@ struct SessionIndexRow: View {
     @Environment(\.calendar) private var environmentCalendar
     @Environment(\.locale) private var environmentLocale
     @Environment(\.timeZone) private var environmentTimeZone
+    /// 行内文字与设置行走同一条字号通路：先跟随系统字号（Dynamic Type），再叠应用内比例。
+    /// 档位与设置页一致——标题 body 17、摘要 subheadline 15、时间与状态 footnote 13；
+    /// 只放大分组标题而不放大行文字时，辅助功能字号下层级会倒过来（#563）。
+    @ScaledMetric(relativeTo: .body) private var titlePointSize: CGFloat = 17
+    @ScaledMetric(relativeTo: .subheadline) private var previewPointSize: CGFloat = 15
+    @ScaledMetric(relativeTo: .footnote) private var metadataPointSize: CGFloat = 13
+    @ScaledMetric(relativeTo: .footnote) private var statusIconPointSize: CGFloat = 9
 
     let session: AgentSession
     let foregroundActivity: SessionForegroundActivity?
@@ -488,21 +483,18 @@ struct SessionIndexRow: View {
     var isUnread = false
     let density: SessionIndexRowDensity
     var searchSnippet: String? = nil
-    var projectIcon: WorkspaceProjectIconContent? = nil
-    /// 工作区在多分支时注入当前行的 Git 分支；为 nil 时身份槽按调用方指定的规则回退。
+    /// 会话库跨项目时才传入需要显示的项目名；不改变工作区中的单项目行。
+    var projectIdentity: String? = nil
+    /// 详细行可选的 Git 分支；为 nil 时身份槽按调用方指定的规则回退。
     var branch: String? = nil
-    /// 会话 tab 默认回退项目名；工作区传 `.directory`，在没有区分价值的分支时展示目录末段。
+    /// 会话库默认回退项目名；目录身份仍可用于辅助技术说明 worktree。
     var identityFallback: SessionIndexRowIdentityFallback = .project
-    /// 前导槽承载什么。会话 tab 传 `.projectIcon`，工作区保持 `.state`。
+    /// 前导槽承载什么。会话 tab 与工作区都传 `.runtimeIcon`；`.state` 留给旧式详细行。
     var leadingSlot: SessionIndexRowLeadingSlot = .state
-    /// `.state` 槽在无状态时是否画灰环兜底。工作区传 true，让这一列每行都有内容，
-    /// 小节标题才能拿它当基准线。
+    /// 会话 tab 只在宽屏保留普通摘要；窄屏仅为搜索命中和跨项目身份增加第二行。
+    var showsSessionPreview = false
+    /// `.state` 槽在无状态时是否画灰环兜底；工作区总览关闭它来降低重复噪声。
     var showsIdleStateGlyph = false
-    /// 仅在一段连续同项目会话的首行展示项目图标，后续行保留同宽空槽维持对齐。
-    ///
-    /// 折叠不丢信息：第二行末端的项目名每一行都在，图标只承担段首的视觉锚点。
-    /// 逐行重复同一枚图标反而会让连续同项目的一段看起来很吵。
-    var showsProjectAnchor = false
     var drawsSelectionBackground = true
     var showsNeutralHistoryStatus = false
     /// 默认读取系统时钟；工作区和确定性快照可注入固定时间，避免行内时间漂移。
@@ -526,6 +518,8 @@ struct SessionIndexRow: View {
             return session.project
         case .directory:
             return SessionListPresentation.directoryDisplayText(for: session)
+        case .none:
+            return ""
         }
     }
 
@@ -538,6 +532,8 @@ struct SessionIndexRow: View {
             return "\(L10n.text("ui.project")) \(session.project)"
         case .directory:
             return L10n.format("ui.directory_value", metadataDirectoryText(for: session))
+        case .none:
+            return ""
         }
     }
 
@@ -556,10 +552,16 @@ struct SessionIndexRow: View {
         status: AgentSessionDisplayStatus,
         sessionStatus: String,
         isUnread: Bool,
-        showsNeutralHistoryStatus: Bool
+        showsNeutralHistoryStatus: Bool,
+        statusIsVisible: Bool = true,
+        runtime: String? = nil,
+        identity: String? = nil
     ) -> String {
         var values: [String] = []
-        if !showsStatusLabel(
+        if let runtime, !runtime.isEmpty {
+            values.append(runtime)
+        }
+        if !statusIsVisible || !showsStatusLabel(
             status: status,
             sessionStatus: sessionStatus,
             showsNeutralHistoryStatus: showsNeutralHistoryStatus
@@ -568,6 +570,9 @@ struct SessionIndexRow: View {
         }
         if isUnread {
             values.append(L10n.text("ui.unread_result"))
+        }
+        if let identity, !identity.isEmpty {
+            values.append(identity)
         }
         return values.joined(separator: ", ")
     }
@@ -594,20 +599,22 @@ struct SessionIndexRow: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         HStack(alignment: .center, spacing: density.stateGutterSpacing) {
-            leadingGutter(tokens: tokens)
+            leadingGutter()
 
             VStack(alignment: .leading, spacing: density.contentSpacing) {
                 titleLine(tokens: tokens)
-                metadataLine(tokens: tokens)
+                if !isSessionLibrary || showsSessionPreview || !librarySupportingText.isEmpty {
+                    metadataLine(tokens: tokens)
+                }
 
-                if let searchSnippet, !searchSnippet.isEmpty {
+                if !isSessionLibrary, let searchSnippet, !searchSnippet.isEmpty {
                     supplementaryPreviewText(searchSnippet, tokens: tokens, hasSearchSnippet: true)
                 }
             }
         }
         .padding(.horizontal, density.horizontalPadding)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, minHeight: density.minimumHeight, alignment: .leading)
+        .padding(.vertical, isSessionLibrary && !showsSessionPreview ? 4 : 8)
+        .frame(maxWidth: .infinity, minHeight: rowMinimumHeight, alignment: .leading)
         .background {
             if isSelected && drawsSelectionBackground {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -620,37 +627,95 @@ struct SessionIndexRow: View {
 
     private func titleLine(tokens: ThemeTokens) -> some View {
         HStack(alignment: dynamicTypeSize.isAccessibilitySize ? .top : .firstTextBaseline, spacing: 7) {
-            if isPinned {
+            if isPinned && !isSessionLibrary {
                 SessionPinnedBadge(compact: true)
             }
 
             Text(visibleTitle)
-                .font(themeStore.uiFont(size: density.titleFontSize, weight: isSelected ? .semibold : .medium))
-                .foregroundStyle(tokens.primaryText)
+                .font(themeStore.uiFont(size: titlePointSize, weight: isSelected && !isSessionLibrary ? .semibold : .regular))
+                .foregroundStyle(isSelected && !isSessionLibrary ? tokens.primaryText : tokens.listTitleText)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .truncationMode(.tail)
                 .layoutPriority(1)
                 .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
 
-            if leadingSlot == .projectIcon, isUnread {
-                // 状态环紧跟可见标题；它的优先级高于标题，因此空间不足时标题先截断。
+            if isSessionLibrary, isUnread {
+                // 单行布局的未读小点跟在标题后面，不占用正文起点。
                 unreadTitleIndicator(tokens: tokens)
                     .layoutPriority(2)
             }
 
-            // 12pt 而不是 6pt：长标题过去会一路顶到时间上，两段文字之间没有间隙。
             Spacer(minLength: 12)
 
-            timestamp(tokens: tokens)
+            if isSessionLibrary {
+                // 单行里没有第二行可放状态：需要处理或仍在运行时，状态文字占据时间的位置；
+                // 提醒、只看等标记跟在它前面。普通历史行照常显示时间。
+                stableStateIcons(tokens: tokens)
+                if shouldShowStatusLabel {
+                    animatedStatusLabel(tokens: tokens)
+                } else {
+                    timestamp(tokens: tokens)
+                }
+            } else {
+                timestamp(tokens: tokens)
+            }
         }
     }
 
+    @ViewBuilder
     private func metadataLine(tokens: ThemeTokens) -> some View {
+        if isSessionLibrary {
+            sessionLibraryPreviewLine(tokens: tokens)
+        } else {
+            standardMetadataLine(tokens: tokens)
+        }
+    }
+
+    @ViewBuilder
+    private func sessionLibraryPreviewLine(tokens: ThemeTokens) -> some View {
+        if !librarySupportingText.isEmpty {
+            Text(librarySupportingText)
+                .font(themeStore.uiFont(size: previewPointSize))
+                .foregroundStyle(tokens.secondaryText)
+                .lineLimit(
+                    dynamicTypeSize.isAccessibilitySize ? nil : (searchSnippet?.isEmpty == false ? 2 : 1)
+                )
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
+        }
+    }
+
+    private var librarySupportingText: String {
+        let ordinaryPreview = showsSessionPreview
+            ? SessionListPresentation.distinctPreviewDisplayText(for: session)
+            : ""
+        return Self.librarySupportingText(
+            projectIdentity: projectIdentity,
+            searchSnippet: searchSnippet,
+            ordinaryPreview: ordinaryPreview
+        )
+    }
+
+    static func librarySupportingText(
+        projectIdentity: String?,
+        searchSnippet: String?,
+        ordinaryPreview: String
+    ) -> String {
+        let snippet = searchSnippet?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let preview = snippet.isEmpty ? ordinaryPreview : snippet
+        // 紧凑行平时保持单行；搜索命中上下文和少数项目身份才值得增加第二行。
+        return [projectIdentity, preview]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
+
+    private func standardMetadataLine(tokens: ThemeTokens) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             let preview = SessionListPresentation.distinctPreviewDisplayText(for: session)
             if !preview.isEmpty {
                 Text(preview)
-                    .font(themeStore.uiFont(size: density.previewFontSize, weight: .regular))
+                    .font(themeStore.uiFont(size: previewPointSize))
                     .foregroundStyle(tokens.secondaryText)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                     // 标准省略号而不是渐隐蒙版：蒙版过去无条件施加，没溢出的短摘要
@@ -669,7 +734,7 @@ struct SessionIndexRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// 第二行末端的身份槽：工作区给分支或目录，会话 tab 给项目。
+    /// 会话库第二行末端的身份槽。
     ///
     /// 定宽 + 右对齐，让它在所有行上形成一条右轨。
     @ViewBuilder
@@ -690,7 +755,7 @@ struct SessionIndexRow: View {
                     .accessibilityHidden(true)
 
                 Text(branch)
-                    .font(themeStore.uiFont(size: density.metadataFontSize, weight: .regular))
+                    .font(themeStore.uiFont(size: metadataPointSize))
                     .foregroundStyle(tokens.tertiaryText)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                     // 头部截断而不是中间截断。`codex/` `feature/` 这类命名空间前缀在
@@ -701,7 +766,7 @@ struct SessionIndexRow: View {
                 Text(Self.identityFallbackText(for: session, fallback: identityFallback))
                     .font(
                         themeStore.uiFont(
-                            size: density.metadataFontSize,
+                            size: metadataPointSize,
                             weight: identityFallback == .project ? .medium : .regular
                         )
                     )
@@ -731,7 +796,7 @@ struct SessionIndexRow: View {
     }
 
     @ViewBuilder
-    private func leadingGutter(tokens: ThemeTokens) -> some View {
+    private func leadingGutter() -> some View {
         switch leadingSlot {
         case .state:
             SessionRowStateGlyph(
@@ -740,34 +805,22 @@ struct SessionIndexRow: View {
                 drawsIdlePlaceholder: showsIdleStateGlyph
             )
             .frame(width: density.stateGutterWidth, alignment: .center)
-        case .projectIcon:
-            projectIconGutter(tokens: tokens)
+        case .runtimeIcon:
+            RuntimeBrandMarkIcon(
+                mark: SessionRuntimePresentation(session: session).brandMark,
+                size: 11
+            )
+            .frame(width: density.stateGutterWidth, height: density.stateGutterWidth)
+        case .none:
+            // 不占位：HStack 不会为空视图留间距，标题从行内边距处开始。
+            EmptyView()
         }
-    }
-
-    @ViewBuilder
-    private func projectIconGutter(tokens: ThemeTokens) -> some View {
-        let drawsIcon = showsProjectAnchor && projectIcon != nil
-
-        Group {
-            if drawsIcon, let projectIcon {
-                WorkspaceProjectIconTile(
-                    content: projectIcon,
-                    size: density.stateGutterWidth,
-                    tokens: tokens
-                )
-            } else {
-                Color.clear
-            }
-        }
-        .frame(width: density.stateGutterWidth, height: density.stateGutterWidth)
-        .accessibilityHidden(true)
     }
 
     private func unreadTitleIndicator(tokens: ThemeTokens) -> some View {
         Circle()
-            .strokeBorder(tokens.success, lineWidth: 1.75)
-            .frame(width: 9, height: 9)
+            .fill(tokens.sessionUnreadAccent)
+            .frame(width: 6, height: 6)
             .frame(width: 12, height: 12)
             .accessibilityHidden(true)
     }
@@ -776,19 +829,19 @@ struct SessionIndexRow: View {
     private func stableStateIcons(tokens: ThemeTokens) -> some View {
         if isArchived {
             Image(systemName: "archivebox.fill")
-                .font(themeStore.uiFont(size: density.statusIconSize, weight: .semibold))
+                .font(themeStore.uiFont(size: statusIconPointSize, weight: .semibold))
                 .foregroundStyle(tokens.tertiaryText)
                 .accessibilityLabel(L10n.text("ui.archived"))
         }
         if reminder != nil {
             Image(systemName: "bell.fill")
-                .font(themeStore.uiFont(size: density.statusIconSize, weight: .semibold))
+                .font(themeStore.uiFont(size: statusIconPointSize, weight: .semibold))
                 .foregroundStyle(tokens.warning)
                 .accessibilityLabel(L10n.text("ui.reminder"))
         }
         if isObserving {
             Image(systemName: "eye")
-                .font(themeStore.uiFont(size: density.statusIconSize, weight: .semibold))
+                .font(themeStore.uiFont(size: statusIconPointSize, weight: .semibold))
                 .foregroundStyle(tokens.tertiaryText)
                 .accessibilityLabel(L10n.text("ui.just_observe"))
         }
@@ -800,7 +853,7 @@ struct SessionIndexRow: View {
         hasSearchSnippet: Bool
     ) -> some View {
         Text(text)
-            .font(themeStore.uiFont(size: 11, weight: .regular))
+            .font(themeStore.uiFont(size: metadataPointSize))
             .foregroundStyle(tokens.secondaryText)
             .lineLimit(
                 Self.compactSupplementaryPreviewLineLimit(
@@ -831,7 +884,7 @@ struct SessionIndexRow: View {
     /// 在同一行里重复一遍既占横向空间又是两份需要同步的真相。
     private func statusLabel(tokens: ThemeTokens) -> some View {
         Text(status.title)
-            .font(themeStore.uiFont(size: density.metadataFontSize, weight: .semibold))
+            .font(themeStore.uiFont(size: metadataPointSize, weight: .semibold))
             .foregroundStyle(statusColor(tokens: tokens))
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
@@ -842,7 +895,7 @@ struct SessionIndexRow: View {
     private func timestamp(tokens: ThemeTokens) -> some View {
         if !timestampText.isEmpty {
             Text(timestampText)
-                .font(themeStore.uiFont(size: density.metadataFontSize, weight: .regular))
+                .font(themeStore.uiFont(size: metadataPointSize))
                 .foregroundStyle(tokens.tertiaryText)
                 .monospacedDigit()
                 .lineLimit(1)
@@ -852,6 +905,16 @@ struct SessionIndexRow: View {
 
     private var visibleTitle: String {
         SessionListPresentation.titleDisplayText(for: session)
+    }
+
+    /// 会话 tab 与工作区共用的单行布局（有无来源标记都算）。
+    private var isSessionLibrary: Bool {
+        leadingSlot != .state
+    }
+
+    private var rowMinimumHeight: CGFloat {
+        if isSessionLibrary && !showsSessionPreview { return Self.libraryRowMinimumHeight }
+        return density.minimumHeight
     }
 
     private var status: AgentSessionDisplayStatus {

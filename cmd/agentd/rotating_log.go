@@ -3,11 +3,11 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 const defaultManagedLogMaxBytes int64 = 5 * 1024 * 1024
@@ -24,7 +24,7 @@ type rotatingLogWriter struct {
 }
 
 func newRotatingLogWriter(path string, maxBytes int64) (*rotatingLogWriter, error) {
-	path = filepath.Clean(expandUserPath(path))
+	path = filepath.Clean(config.ExpandPath(path))
 	if path == "." || path == "" {
 		return nil, fmt.Errorf("日志文件路径不能为空")
 	}
@@ -126,20 +126,4 @@ func (w *rotatingLogWriter) Close() error {
 	err := w.file.Close()
 	w.file = nil
 	return err
-}
-
-func configureServeFileLogging(path string) (func(), error) {
-	if path == "" {
-		return nil, nil
-	}
-	writer, err := newRotatingLogWriter(path, defaultManagedLogMaxBytes)
-	if err != nil {
-		return nil, err
-	}
-	previous := log.Writer()
-	log.SetOutput(io.MultiWriter(previous, writer))
-	return func() {
-		log.SetOutput(previous)
-		_ = writer.Close()
-	}, nil
 }

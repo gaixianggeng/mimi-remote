@@ -7,7 +7,17 @@ enum ServiceLifecycleError: LocalizedError {
     case requiresApproval
     case agentRegistrationFailed(String)
     case agentSpawnFailed(String)
+    case configRequiresNewerVersion(String)
     case automaticRepairFailed(initial: String, recovery: String)
+
+    /// 配置在当前安装包下不可用。这类失败换多少次登记都不会变，必须跳过换代，
+    /// 否则只会把真实原因埋进「自动重新登记仍未恢复」里。
+    var isConfigurationFailure: Bool {
+        switch self {
+        case .invalidConfiguration, .configRequiresNewerVersion: true
+        default: false
+        }
+    }
 
     var errorDescription: String? {
         switch self {
@@ -22,9 +32,14 @@ enum ServiceLifecycleError: LocalizedError {
         case .agentRegistrationFailed(let detail):
             "系统没有找到原服务记录，自动重新登记失败：\(detail)。请运行诊断并重试。"
         case .agentSpawnFailed(let detail):
-            "macOS 无法启动后台服务（\(detail)），后台服务记录可能已过期。"
+            "macOS 无法启动后台服务（\(detail)）。如果刚刚覆盖安装过安装包，请升级到最新发布包后重试。"
+        case .configRequiresNewerVersion(let detail):
+            "当前安装包过旧，无法使用这份配置：\(detail)。请升级到最新发布包后重试。"
         case .automaticRepairFailed(let initial, let recovery):
-            "服务首次启动失败（\(initial)），自动重新登记仍未恢复（\(recovery)）。请运行诊断。"
+            // 首次失败与换代后的失败常常是同一句，重复播报只会让用户以为有两处故障。
+            initial == recovery
+                ? "服务启动失败（\(initial)），自动重新登记后仍未恢复。请运行诊断。"
+                : "服务启动失败（\(initial)），自动重新登记仍未恢复（\(recovery)）。请运行诊断。"
         }
     }
 }

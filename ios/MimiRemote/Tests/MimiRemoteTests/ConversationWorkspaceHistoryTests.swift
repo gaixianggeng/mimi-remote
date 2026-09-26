@@ -268,6 +268,10 @@ extension ConversationDataFlowTests {
             WorkspaceSessionAgeBoundary.firstStaleIndex(in: [stale], now: now),
             0
         )
+        // 最新一条就已超过十二小时时上方没有较新的会话，不画悬在列表顶部的分界线。
+        XCTAssertFalse(WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: 0))
+        XCTAssertFalse(WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: nil))
+        XCTAssertTrue(WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: 2))
     }
 
     func testWorkspaceSessionAgeBoundaryIgnoresPinnedStaleSession() {
@@ -2172,19 +2176,24 @@ extension ConversationDataFlowTests {
     // 回归：新建草稿必须保留入口选择的 runtime，直到首条消息真正创建远端会话。
     func testWorkspaceSessionRuntimeChoicesExposeClaudeProviderOnlyWhenAvailable() {
         XCTAssertEqual(
-            WorkspaceSessionRuntimeChoice.available(claudeChannelAvailable: false),
+            WorkspaceSessionRuntimeChoice.available(runtimeProviders: ["codex"]),
             [.codex],
             "Claude 通道不可用时，工作区入口只能创建 Codex 会话"
         )
         XCTAssertEqual(
-            WorkspaceSessionRuntimeChoice.available(claudeChannelAvailable: true),
-            [.codex, .claude],
+            WorkspaceSessionRuntimeChoice.available(runtimeProviders: ["codex", "claude", "deepseek"]),
+            [.codex, .claude, .deepseek],
             "Claude 通道可用时，工作区入口必须显式暴露 Claude 会话动作"
         )
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.runtimeProvider, "codex")
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.runtimeProvider, "claude")
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.brandMark.assetName, "OpenAIMonoblossom")
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.brandMark.assetName, "Claude")
+        XCTAssertEqual(
+            WorkspaceSessionRuntimeChoice.deepseek.brandMark.assetName,
+            "DeepSeek",
+            "DeepSeek 必须用自己的品牌标记，不能退回中性的终端 SF Symbol"
+        )
     }
 
     func testSessionRuntimePresentationNormalizesKnownRuntimeAliases() {
@@ -4646,6 +4655,63 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 
+    func testFullHistoryBudgetThrottleRetriesFullWithoutFalseSummaryNotice() async {
+        let project = makeProject(id: "proj_claude_budget_retry")
+        let history = makeSession(
+            id: "claude_small_budget_retry",
+            projectID: project.id,
+            title: "Claude 小会话",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "small"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+
+        client.failHistoryRequest(
+            at: 0,
+            with: historyPolicyError(reason: "history_budget_limited", retryAfterMs: 1)
+        )
+        await client.waitForHistoryRequestCount(2)
+
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full])
+        XCTAssertEqual(client.requestedMessageLimits, [20, 20])
+        XCTAssertNil(
+            store.selectedHistorySavingsNotice,
+            "临时预算冲突不是大历史，不能误导用户进入缩略历史提示"
+        )
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "claude-small-reply",
+                    role: "assistant",
+                    content: "少量历史",
+                    createdAt: Date(timeIntervalSince1970: 30)
+                )
+            ])
+        )
+        await selectTask.value
+
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["少量历史"])
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+    }
+
     func testSummaryHistoryPolicyFailureRetriesOnceAfterRetryAfter() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(id: "codex_summary_retry", projectID: project.id, title: "缩略重试", status: "history", source: "codex", resumeID: "summary-retry")
@@ -4717,6 +4783,37 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy, .economy])
         XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .summaryFailed)
         XCTAssertNotNil(store.errorMessage)
+    }
+
+    func testWrappedHarnessHistoryCancellationDoesNotShowFailureNotice() async {
+        let project = makeProject(id: "proj_harness_cancelled_history")
+        let history = makeSession(
+            id: "harness_cancelled_history",
+            projectID: project.id,
+            title: "取消的历史读取",
+            status: "history",
+            source: "deepseek",
+            runtimeProvider: "deepseek",
+            resumeID: "harness_cancelled_history"
+        )
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+        // historyFirstPage 会先包装 transport 错误；最终 UI 仍需把它识别为取消。
+        client.failHistoryRequest(at: 0, with: HarnessTransportError.cancelled)
+        await selectTask.value
+
+        XCTAssertNotEqual(store.selectedHistorySavingsNotice?.kind, .fullFailed)
+        XCTAssertNotEqual(store.selectedHistorySavingsNotice?.kind, .summaryFailed)
+        XCTAssertNil(store.errorMessage)
     }
 
     func testLoadEarlierHistoryMergesOlderMessagePage() async {

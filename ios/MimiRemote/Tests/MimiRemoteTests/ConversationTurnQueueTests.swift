@@ -7,6 +7,123 @@ import UIKit
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testStaleTurnCompletionDoesNotEndOrRecordCurrentDiagnosticTrace() async throws {
+        let project = makeProject(id: "proj_stale_completion_diagnostics")
+        let running = makeSession(
+            id: "sess_stale_completion_diagnostics",
+            projectID: project.id,
+            title: "Current Turn",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            activeTurnID: "turn-current"
+        )
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [running]) }
+        )
+        store.sessions = [running]
+
+        let defaults = UserDefaults.standard
+        let expirationKey = AppDiagnosticsPolicy.detailedLoggingExpirationKey
+        let previousExpiration = defaults.object(forKey: expirationKey)
+        defer {
+            if let previousExpiration {
+                defaults.set(previousExpiration, forKey: expirationKey)
+            } else {
+                defaults.removeObject(forKey: expirationKey)
+            }
+            AppDiagnosticTraceRegistry.shared.reset()
+        }
+        AppDiagnosticsPolicy.setDetailedLoggingEnabled(true, defaults: defaults)
+        AppDiagnosticTraceRegistry.shared.reset()
+        try await AppDiagnostics.clear()
+
+        let key = store.diagnosticTraceKey(sessionID: running.id)
+        let currentCorrelation = AppDiagnosticTraceRegistry.shared.markTurnStarted(key: key)
+        await store.applyRuntimeEvent(
+            .turnCompleted(AgentEventMetadata(
+                seq: 1,
+                sessionID: running.id,
+                turnID: "turn-old",
+                itemID: nil,
+                messageID: nil,
+                clientMessageID: nil,
+                revision: nil,
+                createdAt: nil
+            )),
+            lease: HostSessionLease(hostScope: appStore.activeHostScope, sessionID: running.id),
+            sendsNotification: false
+        )
+
+        XCTAssertEqual(AppDiagnosticTraceRegistry.shared.takeFirstResponse(key: key), currentCorrelation)
+        let exported = try await AppDiagnostics.exportData()
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let recordedEvents = exported.split(separator: 0x0A).compactMap {
+            try? decoder.decode(AppDiagnosticEvent.self, from: Data($0))
+        }
+        XCTAssertFalse(recordedEvents.contains { $0.stage == .completion })
+        try await AppDiagnostics.clear()
+    }
+
+    func testCompletedSessionIgnoresLateResolvedWaitState() {
+        let project = makeProject(id: "proj_terminal_resolved")
+        var completed = makeSession(
+            id: "sess_terminal_resolved",
+            projectID: project.id,
+            title: "Completed",
+            status: "completed",
+            source: "claude"
+        )
+        completed.activeTurnID = nil
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [completed]) }
+        )
+        store.sessions = [completed]
+        store.locallyCompletedSessionIDs.insert(completed.id)
+        let metadata = AgentEventMetadata(
+            seq: nil,
+            sessionID: completed.id,
+            turnID: "old-turn",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: Date()
+        )
+
+        XCTAssertTrue(
+            store.shouldIgnoreResolvedWaitStateAfterTerminal(
+                .approvalResolved(metadata),
+                fallbackSessionID: completed.id
+            )
+        )
+        XCTAssertTrue(
+            store.shouldIgnoreResolvedWaitStateAfterTerminal(
+                .userInputResolved(metadata, skipped: false),
+                fallbackSessionID: completed.id
+            )
+        )
+
+        var running = completed
+        running.status = "running"
+        running.activeTurnID = "new-turn"
+        store.sessions = [running]
+        XCTAssertFalse(
+            store.shouldIgnoreResolvedWaitStateAfterTerminal(
+                .approvalResolved(metadata),
+                fallbackSessionID: completed.id
+            ),
+            "新 turn 已建立后不能吞掉属于当前运行态的 resolved 事件"
+        )
+    }
+
     func testQueuedTurnActiveConflictReturnsToWaitingWithoutFailingSession() async throws {
         let project = makeProject(id: "proj_active_conflict_queue")
         let staleIdle = makeSession(

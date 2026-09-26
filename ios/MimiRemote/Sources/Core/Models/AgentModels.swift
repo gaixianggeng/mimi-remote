@@ -123,10 +123,6 @@ struct AgentSession: Identifiable, Codable, Hashable {
         return branch
     }
 
-    var isAppServerHistory: Bool {
-        status == "history"
-    }
-
     /// 新建页在首条消息前只保留本地草稿，不提前创建没有 rollout 的远端 thread。
     var isLocalDraft: Bool {
         source == "local" && status == "draft" && resumeID == nil
@@ -1197,7 +1193,15 @@ final class MessageRenderPlanCache {
             return range.upperBound > range.lowerBound && range.upperBound <= safeTailStart
         }
         let tail = String(decoding: content.utf8.dropFirst(safeTailStart), as: UTF8.self)
+        HostSwitchSignpost.begin(
+            "conversation_markdown_parse",
+            metadata: "mode=incremental bytes=\(tail.utf8.count)"
+        )
         let parsedTail = MarkdownParser.shared.parse(tail, baseByteOffset: safeTailStart)
+        HostSwitchSignpost.end(
+            "conversation_markdown_parse",
+            metadata: "mode=incremental blocks=\(parsedTail.blocks.count)"
+        )
         let mergedBlocks = renumber(reusableBlocks + parsedTail.blocks)
 
         return MessageRenderPlan(
@@ -1215,7 +1219,15 @@ final class MessageRenderPlanCache {
 #if DEBUG
         markdownParseInvocationCountForTesting += 1
 #endif
+        HostSwitchSignpost.begin(
+            "conversation_markdown_parse",
+            metadata: "mode=full bytes=\(contentByteCount)"
+        )
         let parsed = MarkdownParser.shared.parse(content)
+        HostSwitchSignpost.end(
+            "conversation_markdown_parse",
+            metadata: "mode=full blocks=\(parsed.blocks.count)"
+        )
         return MessageRenderPlan(
             messageKey: messageKey,
             content: content,
@@ -1710,6 +1722,8 @@ enum MessageRole: String, Codable, Hashable {
 enum MessageKind: String, Codable, Hashable {
     case message
     case commentary
+    // Harness 注入的上下文（工作区指令/技能目录/运行时快照等），system 侧的折叠内容。
+    case context = "context"
     case plan
     case reasoningSummary = "reasoning_summary"
     case commandSummary = "command_summary"
@@ -1742,6 +1756,8 @@ enum ConversationActivityCategory: String, Codable, Hashable {
     case editFile = "edit_file"
     case toolCall = "tool_call"
     case error
+    // Harness 注入上下文，非工具/思考类，展示为 system 侧可折叠条目。
+    case context = "context"
 }
 
 /// 命令在主时间线中的展示语义。协议能明确给出只读动作时展示为探索，
@@ -1984,6 +2000,8 @@ struct ConversationActivityPayload: Codable, Hashable {
             return .fileChangeSummary
         case .error:
             return .error
+        case .context:
+            return .context
         }
     }
 
@@ -1998,6 +2016,8 @@ struct ConversationActivityPayload: Codable, Hashable {
         case .toolCall:
             return toolSummaryText
         case .error:
+            return subtitle ?? displayTitle
+        case .context:
             return subtitle ?? displayTitle
         }
     }

@@ -1710,8 +1710,8 @@ extension ConversationDataFlowTests {
         }
         XCTAssertEqual(commentary.kind, .commentary)
         XCTAssertEqual(commentary.content, "我先调用一个子 agent。")
-        guard case .processMessage(let plan) = items[3] else {
-            return XCTFail("计划卡应保留在服务端输入顺序中的原始位置")
+        guard case .message(let plan) = items[3] else {
+            return XCTFail("完整计划应作为主时间线消息保留在服务端输入顺序中的原始位置")
         }
         XCTAssertEqual(plan.kind, .plan)
         XCTAssertEqual(plan.content, "让子 agent 生成一个短笑话。")
@@ -2150,7 +2150,7 @@ extension ConversationDataFlowTests {
         let decoder = JSONDecoder()
 
         let event = try decoder.decode(
-            StructuredAgentEvent.self,
+            AgentEvent.self,
             from: Data(#"{"type":"assistant_delta","seq":42,"session_id":"sess_1","turn_id":"turn_1","item_id":"item_1","message_id":"msg_1","revision":3,"delta":{"text":"hello","role":"assistant","kind":"message"}}"#.utf8)
         )
 
@@ -2694,7 +2694,7 @@ extension ConversationDataFlowTests {
         let decoder = JSONDecoder()
 
         let stringDelta = try decoder.decode(
-            StructuredAgentEvent.self,
+            AgentEvent.self,
             from: Data(#"{"type":"assistant_delta","data":"字符串增量","seq":8,"session_id":"sess_1","message_id":"msg_1"}"#.utf8)
         )
         if case .assistantDelta(let delta, let meta) = stringDelta {
@@ -2706,7 +2706,7 @@ extension ConversationDataFlowTests {
         }
 
         let approval = try decoder.decode(
-            StructuredAgentEvent.self,
+            AgentEvent.self,
             from: Data(#"{"type":"approval_request","approval":{"id":"approval_1","title":"运行命令","body":"go test ./...","kind":"command","risk":"medium"},"seq":9,"session_id":"sess_1"}"#.utf8)
         )
         if case .approvalRequest(let request, let meta) = approval {
@@ -2719,7 +2719,7 @@ extension ConversationDataFlowTests {
         }
 
         let resolved = try decoder.decode(
-            StructuredAgentEvent.self,
+            AgentEvent.self,
             from: Data(#"{"type":"approval_resolved","seq":10,"session_id":"sess_1","item_id":"approval_1"}"#.utf8)
         )
         if case .approvalResolved(let meta) = resolved {

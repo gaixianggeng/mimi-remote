@@ -67,6 +67,8 @@ struct RootView: View {
             migrateLegacyWorkspaceAppearance()
         }
         .task {
+            AppDiagnostics.record(stage: .lifecycle, result: .started, reason: .startup)
+            AppDiagnostics.maintain()
             restoreActiveHostNavigationIfNeeded()
             // 冷启动时场景可能已经激活而 onChange 不再触发；先把当前前台状态登记进闸门镜像。
             foregroundResume.observeScene(active: scenePhase == .active)
@@ -199,6 +201,8 @@ struct RootView: View {
             guard phase == .active else {
                 return
             }
+            AppDiagnostics.record(stage: .lifecycle, result: .received, reason: .foreground)
+            AppDiagnosticsSettingsController.shared.refreshForForeground()
             let shouldRecoverTailcat = needsTailcatRecoveryAfterBackground
             let generation = foregroundResume.begin()
             foregroundResumeTask = Task {
@@ -325,14 +329,22 @@ struct RootView: View {
             scenePhase == .active ? "active" : "inactive",
             appStore.activeConnectionProfileID ?? "",
             lockScreenApprovalStore.registeredProfileID ?? "",
+			lockScreenApprovalStore.notificationsEnabled ? "on" : "off",
+			hasCompletedInitialBootstrap ? "ready" : "bootstrapping",
+			String(appStore.connectionStatusRevision),
         ].joined(separator: "|")
     }
 
     private func refreshLockScreenApprovalLifecycle(markFailure: Bool) async {
-        guard lockScreenApprovalStore.isEnabled,
-              let profileID = lockScreenApprovalStore.registeredProfileID else {
+        guard scenePhase == .active, hasCompletedInitialBootstrap,
+			  appStore.canEnterWorkbench,
+			  let profileID = lockScreenApprovalStore.registeredProfileID ?? appStore.activeConnectionProfileID else {
             return
         }
+		// 首次配对完成但连接还未验证时，不提前弹出系统权限请求。
+		if lockScreenApprovalStore.registeredProfileID == nil {
+			guard case .connected = appStore.connectionStatus else { return }
+		}
         do {
             let client: AgentAPIClient
             if profileID == appStore.activeConnectionProfileID {
@@ -343,9 +355,7 @@ struct RootView: View {
                     appStore: appStore
                 )
             }
-            lockScreenApprovalStore.registerNotificationInfrastructure()
-			await lockScreenApprovalStore.refreshHostSupport(client: client, profileID: profileID)
-            await lockScreenApprovalStore.refreshTicketIfNeeded(
+            await lockScreenApprovalStore.synchronize(
                 client: client,
                 profileID: profileID
             )
@@ -357,6 +367,10 @@ struct RootView: View {
         } catch is CancellationError {
             return
         } catch {
+			if lockScreenApprovalStore.hasPendingDisable {
+				await lockScreenApprovalStore.disable(client: nil, profileID: profileID, previousHostUnavailable: true)
+				return
+			}
             if markFailure {
                 lockScreenApprovalStore.markRegistrationFailed()
             }

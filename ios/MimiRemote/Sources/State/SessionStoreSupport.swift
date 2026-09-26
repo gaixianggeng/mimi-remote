@@ -86,6 +86,7 @@ struct SessionListFirstPageRequestKey: Hashable {
     let connectionGeneration: Int
     let workspaceID: String
     let workspacePath: String
+    let runtimeProvider: String
     let limit: Int
     let consistency: SessionListConsistency
     /// nil 表示真正首屏；非 nil 表示权威展示窗口从已提交边界续跑。
@@ -93,11 +94,13 @@ struct SessionListFirstPageRequestKey: Hashable {
 }
 
 /// “已经有几条缓存”与“当前主机代次已完成精确首屏”是两个状态。
-/// key 必须包含完整 HostScope 和 canonical workspace path，避免切换 Mac、重连或目录身份迁移后误复用旧结论。
+/// key 必须包含完整 HostScope、canonical workspace path 和 Runtime，避免切换 Mac、
+/// 重连、目录身份迁移或模块切换后误复用旧结论。
 struct WorkspaceSessionFirstPageKey: Hashable {
     let hostScope: HostScope
     let workspaceID: String
     let workspacePath: String
+    let runtimeProvider: String
 }
 
 /// 只有携带工作区 cwd 的 thread/list 才能建立这个归属；全局发现不能靠路径包含关系冒充。
@@ -120,6 +123,7 @@ struct WorkspaceSessionFirstPageCompletion: Equatable {
 
 struct SessionListFirstPageResult {
     let page: SessionsPage
+    let runtimeProvider: String
     let requestedCursor: String?
     let requestLineage: UUID?
 }
@@ -1056,9 +1060,17 @@ struct UserNotificationSessionReminderScheduler: SessionReminderScheduling {
     static let runtimeNotificationIDPrefix = "mimi.sessionRuntime."
 
     let center: UNUserNotificationCenter
+	let defaults: UserDefaults
+	let authorization: NotificationAuthorizationController
 
-    init(center: UNUserNotificationCenter = .current()) {
+    init(
+		center: UNUserNotificationCenter = .current(),
+		defaults: UserDefaults = .standard,
+		authorization: NotificationAuthorizationController = .shared
+	) {
         self.center = center
+		self.defaults = defaults
+		self.authorization = authorization
     }
 
     func schedule(
@@ -1096,8 +1108,10 @@ struct UserNotificationSessionReminderScheduler: SessionReminderScheduling {
         _ notification: SessionRuntimeNotification,
         route: SessionNotificationRoute
     ) async throws {
-        let granted = try await requestAuthorizationIfNeeded()
-        guard granted else {
+		guard MessageNotificationPreferences.isEnabled(in: defaults) else { return }
+		// 自动事件只读取权限；首次授权由前台连接流程负责。
+        let granted = try await authorization.authorize(requestIfNeeded: false)
+        guard granted, MessageNotificationPreferences.isEnabled(in: defaults) else {
             return
         }
 
@@ -1119,7 +1133,19 @@ struct UserNotificationSessionReminderScheduler: SessionReminderScheduling {
         )
         center.removePendingNotificationRequests(withIdentifiers: [notificationID])
         try await add(request)
+		// add 会挂起；关闭期间刚加入的通知也要撤下，不能绕过开关。
+		if !MessageNotificationPreferences.isEnabled(in: defaults) {
+			center.removePendingNotificationRequests(withIdentifiers: [notificationID])
+			center.removeDeliveredNotifications(withIdentifiers: [notificationID])
+		}
     }
+
+	static func cancelRuntimeNotifications(on center: UNUserNotificationCenter) async {
+		let pending = await center.pendingNotificationRequests()
+		center.removePendingNotificationRequests(withIdentifiers: pending.map(\.identifier).filter(isRuntimeNotificationID))
+		let delivered = await center.deliveredNotifications()
+		center.removeDeliveredNotifications(withIdentifiers: delivered.map { $0.request.identifier }.filter(isRuntimeNotificationID))
+	}
 
     func cancel(sessionID: SessionID, profileID: String) {
         let identifier = Self.notificationID(profileID: profileID, sessionID: sessionID)
@@ -1147,17 +1173,7 @@ struct UserNotificationSessionReminderScheduler: SessionReminderScheduling {
     }
 
     func requestAuthorizationIfNeeded() async throws -> Bool {
-        let settings = await notificationSettings()
-        switch settings.authorizationStatus {
-        case .authorized, .provisional, .ephemeral:
-            return true
-        case .denied:
-            return false
-        case .notDetermined:
-            return try await requestAuthorization()
-        @unknown default:
-            return false
-        }
+		try await authorization.authorize(requestIfNeeded: true)
     }
 
     func notificationSettings() async -> UNNotificationSettings {
@@ -1169,15 +1185,7 @@ struct UserNotificationSessionReminderScheduler: SessionReminderScheduling {
     }
 
     func requestAuthorization() async throws -> Bool {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
-            center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: granted)
-                }
-            }
-        }
+		try await authorization.authorize(requestIfNeeded: true)
     }
 
     func add(_ request: UNNotificationRequest) async throws {

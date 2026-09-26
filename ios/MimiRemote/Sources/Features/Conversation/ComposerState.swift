@@ -241,6 +241,7 @@ struct ComposerModelSelectionCache {
 enum DefaultModelRuntime: String, CaseIterable, Hashable, Identifiable {
     case codex
     case claude
+    case deepseek
 
     var id: String { rawValue }
 
@@ -259,6 +260,8 @@ enum DefaultModelPreferences {
     static let codexReasoningEffortKey = "composer.defaultModel.codex.reasoningEffort"
     static let claudeModelOptionIDKey = "composer.defaultModel.claude.optionID"
     static let claudeReasoningEffortKey = "composer.defaultModel.claude.reasoningEffort"
+    static let deepSeekModelOptionIDKey = "composer.defaultModel.deepseek.optionID"
+    static let deepSeekReasoningEffortKey = "composer.defaultModel.deepseek.reasoningEffort"
 
     /// 默认值是本机偏好，不跟随 Host 或会话保存；只有“没有会话快照”时才会被 Composer 使用。
     static func options(
@@ -273,21 +276,31 @@ enum DefaultModelPreferences {
         guard available.isEmpty else {
             return available
         }
-        return runtime == "claude"
-            ? CodexAppServerModelOption.builtInClaudeFallback
-            : CodexAppServerModelOption.builtInFallback
+        switch runtime {
+        case "claude":
+            return CodexAppServerModelOption.builtInClaudeFallback
+        case "deepseek":
+            // Harness 模型目录是唯一事实；回退到 GPT 会让界面显示无法兑现的模型。
+            return []
+        default:
+            return CodexAppServerModelOption.builtInFallback
+        }
     }
 
     static func modelOptionIDKey(for runtimeProvider: String) -> String {
-        CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "claude"
-            ? claudeModelOptionIDKey
-            : codexModelOptionIDKey
+        switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) {
+        case "claude": claudeModelOptionIDKey
+        case "deepseek": deepSeekModelOptionIDKey
+        default: codexModelOptionIDKey
+        }
     }
 
     static func reasoningEffortKey(for runtimeProvider: String) -> String {
-        CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "claude"
-            ? claudeReasoningEffortKey
-            : codexReasoningEffortKey
+        switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) {
+        case "claude": claudeReasoningEffortKey
+        case "deepseek": deepSeekReasoningEffortKey
+        default: codexReasoningEffortKey
+        }
     }
 
     static func storedModelOptionID(
@@ -455,19 +468,6 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
             return L10n.text("ui.approval_for_me")
         case .fullAccess:
             return L10n.text("ui.full_access")
-        }
-    }
-
-    var chipTitle: String {
-        switch self {
-        case .requestApproval:
-            return L10n.text("ui.permissions_request_approval")
-        case .readOnly:
-            return L10n.text("ui.permissions_read_only")
-        case .autoApprove:
-            return L10n.text("ui.permissions_approval_for_me")
-        case .fullAccess:
-            return L10n.text("ui.permissions_full_access")
         }
     }
 

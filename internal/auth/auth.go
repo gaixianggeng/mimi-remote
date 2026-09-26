@@ -17,10 +17,6 @@ type Options struct {
 	AllowQueryToken bool
 }
 
-func New(token string, devNoAuth bool) Authenticator {
-	return NewWithOptions(token, devNoAuth, Options{})
-}
-
 func NewWithOptions(token string, devNoAuth bool, options Options) Authenticator {
 	return Authenticator{token: token, devNoAuth: devNoAuth, allowQuery: options.AllowQueryToken}
 }

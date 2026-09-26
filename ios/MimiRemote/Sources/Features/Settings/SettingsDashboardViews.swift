@@ -49,38 +49,38 @@ struct ConnectionSettingsView: View {
 
             if isDevicesTab || showsAddComputerEntry {
                 Section {
-                    Menu {
-                        Picker(L10n.text("ui.preferred_runtime"), selection: preferredRuntimeBinding) {
-                            Text(L10n.text("ui.runtime_default"))
-                                .tag(WorkspaceSessionRuntimeChoice.codex)
-                            Text(L10n.text("ui.runtime_optional"))
-                                .tag(WorkspaceSessionRuntimeChoice.claude)
-                        }
-                    } label: {
-                        HStack(spacing: 8) {
-                            SettingsValueLabel(
-                                title: L10n.text("ui.preferred_runtime"),
-                                value: preferredRuntimeTitle,
-                                systemImage: "sparkles"
-                            )
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.caption)
-                                .foregroundStyle(tokens.tertiaryText)
-                                .accessibilityHidden(true)
-                        }
-                        // 菜单覆盖完整设置行，标题和留白也能直接打开选项。
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+                    // 只有两个运行时，值不值得为它弹一层菜单：不值得。两个名字并排摆出来，
+                    // 当前用哪个一眼可见，点一下即生效——和语言、外观那几行是同一套写法。
+                    // 选项取 allCases，新增 Runtime 自动出现在这一行，不必再改这里。
+                    SettingsChoiceRow(
+                        title: L10n.text("ui.preferred_runtime"),
+                        systemImage: "sparkles",
+                        options: WorkspaceSessionRuntimeChoice.allCases,
+                        selection: preferredRuntimeBinding
+                    )
                     .settingsRow()
-                    .accessibilityLabel(L10n.text("ui.preferred_runtime"))
-                    .accessibilityValue(preferredRuntimeTitle)
                     .accessibilityIdentifier("settings.preferredRuntime")
-                } footer: {
+
+                    // 说明是这一行的解释，放进同一组、与行标题同一条左边线；
+                    // 系统脚注比分组标题多缩进几个点，放在脚注里对不齐（#563）。
                     Text(L10n.text("ui.preferred_runtime_description"))
-                        .settingsSectionFooterStyle()
+                        .settingsCaptionStyle()
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .listRowInsets(
+                            EdgeInsets(
+                                top: 0,
+                                leading: SettingsLayoutMetrics.rowHorizontalInset
+                                    + SettingsLayoutMetrics.iconSlot
+                                    + SettingsLayoutMetrics.iconSpacing,
+                                bottom: 12,
+                                trailing: SettingsLayoutMetrics.rowHorizontalInset
+                            )
+                        )
+                } header: {
+                    SettingsGroupHeader()
                 }
-                .listRowBackground(tokens.settingsGroupBackground)
+                .settingsGroupRowStyle()
             }
         }
         .navigationDestination(isPresented: $isPresentingAddComputerForManualConnection) {
@@ -89,7 +89,6 @@ struct ConnectionSettingsView: View {
         .themedSettingsForm(tokens: tokens)
         // 普通操作和展开箭头保持中性；扫码按钮单独使用主操作色。
         .tint(tokens.secondaryText)
-        .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
         .frame(maxWidth: isDevicesTab ? 920 : 720)
         .frame(maxWidth: .infinity)
         .settingsCanvasBackground(tokens: tokens)
@@ -141,11 +140,6 @@ struct ConnectionSettingsView: View {
     private var showsAddComputerEntry: Bool {
         let model = appStore.connectionProfileSettingsModel
         return model.current != nil || !model.others.isEmpty
-    }
-
-    private var preferredRuntimeTitle: String {
-        L10n.text(WorkspaceSessionRuntimeChoice.stored(preferredRuntimeRawValue) == .claude
-            ? "ui.runtime_optional" : "ui.runtime_default")
     }
 
     private var preferredRuntimeBinding: Binding<WorkspaceSessionRuntimeChoice> {

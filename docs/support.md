@@ -10,10 +10,12 @@
 
 使用前请确认：
 
-- iPhone 或 iPad 运行 App 支持的系统版本。
+- iPhone 或 iPad 运行 iOS / iPadOS 18 或更高版本。
 - Mac 运行 macOS 15 或更高版本，并已安装和登录 Codex CLI。
 - Mac 已从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 安装并启动 **Mimi Remote Mac**。
 - 移动设备能够通过局域网、Tailscale 私有网络或用户配置的 HTTPS 地址访问 Mac。
+
+支持范围：只有来自 App Store、TestFlight 或从本仓库源码构建的正式签名包在支持范围内。iOS 16 / 17 回移分支，以及未签名 / TrollStore / 越狱构建不受支持，相关问题不进入修复排期。
 
 普通用户请下载 `Mimi-Remote-Mac.dmg`，打开后将 **Mimi Remote Mac** 拖入“应用程序”，再在 Mac App 内完成首次设置。命令行安装只作为服务器、自动化或故障恢复入口：
 
@@ -53,10 +55,12 @@ This page provides installation, connection, diagnostics, data-deletion, and con
 
 Before using the app, confirm that:
 
-- Your iPhone or iPad runs a supported system version.
+- Your iPhone or iPad runs iOS/iPadOS 18 or later.
 - Your Mac runs macOS 15 or later, with Codex CLI installed and signed in.
 - **Mimi Remote Mac** is installed from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) and running.
 - The mobile device can reach the Mac over a local network, a private Tailscale network, or an HTTPS endpoint you configure.
+
+Supported builds: only signed builds from the App Store, TestFlight, or source built from this repository are supported. iOS 16/17 back-ports, and unsigned / TrollStore / jailbroken builds, are out of scope and are not scheduled for fixes.
 
 For normal setup, download `Mimi-Remote-Mac.dmg`, open it, drag **Mimi Remote Mac** to Applications, and finish setup in the Mac app. Use the command-line path only for servers, automation, or recovery:
 

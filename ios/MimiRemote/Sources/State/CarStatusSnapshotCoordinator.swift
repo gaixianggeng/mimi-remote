@@ -142,28 +142,6 @@ extension SessionStore {
         carStatusSnapshotCoordinator.selection
     }
 
-    func isCarStatusSession(_ session: AgentSession) -> Bool {
-        carStatusSnapshotCoordinator.isSelected(
-            profileID: appStore.notificationRoutingProfileID,
-            sessionID: session.id
-        )
-    }
-
-    func selectCarStatusSession(_ session: AgentSession) {
-        // 远端搜索结果可能尚未进入当前工作区首屏；先提升为 canonical session，
-        // 让搜索词清空后仍能被后续刷新和 Widget 同步稳定追踪。
-        upsert(session)
-        carStatusSnapshotCoordinator.select(
-            profileID: appStore.notificationRoutingProfileID,
-            session: session,
-            isReachable: isCarStatusHostReachable
-        )
-    }
-
-    func clearCarStatusSession() {
-        carStatusSnapshotCoordinator.clearSelection()
-    }
-
     func synchronizeCarStatusSnapshot() {
         carStatusSnapshotCoordinator.synchronize(
             profileID: appStore.notificationRoutingProfileID,

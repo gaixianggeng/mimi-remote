@@ -1,0 +1,80 @@
+name: 能力或体验改进 / Feature or improvement
+description: 提议一项新能力，或改进现有体验 / Propose a new capability or an improvement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先确认支持范围：**iOS / iPadOS 18 或更高版本**的正式签名包，或来自 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)、Homebrew、官方安装脚本的 Mac、Linux、Windows 组件。iOS 16/17 回移分支与未签名 / TrollStore / 越狱构建不在支持范围，详见[支持说明](https://github.com/gaixianggeng/mimi-remote/blob/main/docs/support.md)。
+
+        下面的字段与仓库的问题账本一致：目标、现状与证据、期望结果、验收标准、实现边界，请逐项填写。
+
+        ---
+
+        Supported baseline: signed **iOS/iPadOS 18 or later** builds, plus Mac / Linux / Windows components from GitHub Releases, Homebrew, or the official install scripts. Back-ports and unsigned builds are out of scope.
+
+  - type: dropdown
+    id: baseline
+    attributes:
+      label: 构建与支持基线 / Build and support baseline
+      description: 请如实选择；最后一项表示该构建不在支持范围 / Answer honestly; the last option is out of scope
+      options:
+        - iOS / iPadOS App，18 或更高版本（App Store / TestFlight / 本仓库源码）/ iOS or iPadOS app, 18 or later
+        - Mac App 或 agentd（GitHub Releases / Homebrew / 本仓库源码）/ Mac app or agentd
+        - Linux 托盘、安装脚本或 Windows 安装包（GitHub Releases / 官方脚本）/ Linux tray, install scripts, or Windows installer
+        - 其他（回移分支、未签名 / TrollStore / 越狱构建、改动过的包）/ Other (back-port, unsigned, TrollStore, jailbroken, modified)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 受影响的组件 / Affected component
+      options:
+        - iOS / iPadOS App
+        - Mac App（含 App 托管的 agentd）/ Mac app (including app-managed agentd)
+        - agentd、CLI 与网关 / agentd, CLI, and gateway
+        - Linux 托盘或安装脚本 / Linux tray or install scripts
+        - Windows 安装器 / Windows installer
+        - 发布与打包 / Release and packaging
+        - 不确定 / Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目标 / Goal
+      description: 描述用户可感知的结果，不要写成「修改某个文件」 / Describe the user-visible outcome
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: 现状与证据 / Current state and evidence
+      description: 现在是什么样、在什么场景下造成困扰 / What happens today, and in which situation it hurts
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果 / Expected result
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准 / Acceptance criteria
+      description: 逐条列出可核对的检查项 / Checkable criteria, one per line
+    validations:
+      required: true
+
+  - type: textarea
+    id: boundary
+    attributes:
+      label: 实现边界 / Scope boundary
+      description: 明确不做什么，以及不引入哪些依赖或服务 / What is explicitly out of scope
+    validations:
+      required: true
