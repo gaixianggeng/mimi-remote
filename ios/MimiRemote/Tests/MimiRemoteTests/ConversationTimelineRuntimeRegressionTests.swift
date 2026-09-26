@@ -3,13 +3,13 @@ import UIKit
 import XCTest
 @testable import MimiRemote
 
-/// #484：Codex 与 Claude 共用同一时间线展示和滚动结果合同。
+/// Codex、Claude 与 DeepSeek 共用同一时间线展示和滚动结果合同。
 ///
 /// fixture 只写入脱敏的本地历史，不连接真实 runtime，也不依赖某个滚动策略布尔函数。
 @MainActor
 final class ConversationTimelineRuntimeRegressionTests: XCTestCase {
     func testActiveProcessCollapsesWhenOnlySessionStatusChanges() async throws {
-        for provider in [TimelineRuntimeProviderFixture.codex, .claude] {
+        for provider in [TimelineRuntimeProviderFixture.codex, .claude, .deepseek] {
             let fixture = try makeFixture(provider: provider)
             defer {
                 fixture.tearDown()
@@ -77,12 +77,20 @@ final class ConversationTimelineRuntimeRegressionTests: XCTestCase {
         try await assertRuntimeTimelineUserResults(provider: .claude)
     }
 
+    func testDeepSeekTimelineKeepsReadableViewportAcrossRuntimeUpdates() async throws {
+        try await assertRuntimeTimelineUserResults(provider: .deepseek)
+    }
+
     func testCodexLoadingEarlierHistoryKeepsTopMessageInPlace() async throws {
         try await assertLoadingEarlierHistoryKeepsTopMessageInPlace(provider: .codex)
     }
 
     func testClaudeLoadingEarlierHistoryKeepsTopMessageInPlace() async throws {
         try await assertLoadingEarlierHistoryKeepsTopMessageInPlace(provider: .claude)
+    }
+
+    func testDeepSeekLoadingEarlierHistoryKeepsTopMessageInPlace() async throws {
+        try await assertLoadingEarlierHistoryKeepsTopMessageInPlace(provider: .deepseek)
     }
 
     func testCodexLoadingEarlierHistoryKeepsTopMessageInPlaceWhenMorePagesRemain() async throws {
@@ -95,6 +103,13 @@ final class ConversationTimelineRuntimeRegressionTests: XCTestCase {
     func testClaudeLoadingEarlierHistoryKeepsTopMessageInPlaceWhenMorePagesRemain() async throws {
         try await assertLoadingEarlierHistoryKeepsTopMessageInPlace(
             provider: .claude,
+            pageHasMoreBefore: true
+        )
+    }
+
+    func testDeepSeekLoadingEarlierHistoryKeepsTopMessageInPlaceWhenMorePagesRemain() async throws {
+        try await assertLoadingEarlierHistoryKeepsTopMessageInPlace(
+            provider: .deepseek,
             pageHasMoreBefore: true
         )
     }
@@ -726,6 +741,7 @@ final class ConversationTimelineRuntimeRegressionTests: XCTestCase {
 private enum TimelineRuntimeProviderFixture: String {
     case codex
     case claude
+    case deepseek
 
     var label: String { rawValue.capitalized }
 }

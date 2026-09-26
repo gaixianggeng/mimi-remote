@@ -653,6 +653,21 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         try await codexClient.transcribeVoice(filename: filename, contentType: contentType, audioData: audioData, language: language)
     }
 
+    func modelOptions(runtimeProvider: String) async throws -> [CodexAppServerModelOption] {
+        let provider = CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
+        if let native = bundle.nativeClient(for: provider) {
+            guard try await bundle.nativeHarnessConfigured() else {
+                throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+            }
+            // modelCatalog 已经走完整的鉴权和上游链路，无需先以同一 RPC 再做健康探测。
+            return try await native.modelOptions()
+        }
+        guard try await bundle.channelAvailable(runtimeProvider: provider) else {
+            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+        }
+        return try await bundle.runtime(for: provider).modelOptions()
+    }
+
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         var options: [CodexAppServerModelOption] = []
         var firstError: Error?

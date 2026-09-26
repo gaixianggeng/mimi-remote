@@ -506,6 +506,9 @@ final class SessionStore: ObservableObject {
     @Published var historySavingsNoticesBySessionID: [SessionID: HistorySavingsNotice] = [:]
     @Published var dismissedHistorySavingsNoticeEndpoints: Set<String> = []
     var appServerModelOptionsLastRefresh: Date?
+    // 只缓存目标目录的读取状态；模型数据仍统一存于 appServerModelOptions。
+    var turnModelRefreshByRuntime: [String: (hostScope: HostScope, date: Date)] = [:]
+    var turnModelTasksByRuntime: [String: (hostScope: HostScope, id: UUID, refreshDate: Date?, task: Task<[CodexAppServerModelOption], Error>)] = [:]
     var permissionProfilesCWD: String?
     var permissionProfilesRefreshRequestedCWD: String?
     var permissionProfilesRefreshGeneration = 0

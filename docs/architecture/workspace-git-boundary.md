@@ -62,11 +62,21 @@ agentd 的 `harnessNativeResources` 单独拥有原生 WebSocket 连接、会话
 
 页面观察与已提交命令分开管理。`MultiRuntimeSessionWebSocketClient` 用观察代次拒绝旧客户端的事件、状态和路由写入；发送结果仍交回原有对账路径。Harness follow 任务在 actor 读取后复核会话和观察代次，所有退出路径只取消该任务自己打开的 follow ID。切页不会关闭宿主共享连接或 `$events`，也不会改变原生 seq、cursor、revision。
 
+## 发送准备与历史分页
+
+发送准备通过 `modelOptions(runtimeProvider:)` 只查询目标 Runtime，模型菜单仍可聚合全部目录。原生模型目录请求本身完成通道验证，不再重复执行同一目录 RPC 作为健康探测。发送与菜单共用 `appServerModelOptions`；目标查询按主机和 Runtime 合并请求并保留失败缓存，强制菜单刷新可使旧目标结果失效。发送准备期间复用页面租约和现有 loading 状态。
+
+续聊收到真正的消息 ACK 后，先确认本地气泡，再等待历史补齐。`requiresQueuedInitialInput` 只表示会话已准备好，不能冒充首条消息已发出。历史补齐与实时订阅的先后顺序仍由原有回放策略控制。
+
+更早历史分页捕获主机、历史加载代次和页面请求代次。新首屏请求接管加载状态后，旧分页的正文、游标、错误和 defer 都不能覆盖新状态；同主机普通导航仍允许原会话缓存更新。Harness 首屏返回 `resetsPaginationContext`，让 Store 使用新分页链并保留已加载正文，Store 不解析原生游标。短缓存复用不重复触发重置；失效游标只恢复一次首屏，由后续翻页继续推进。
+
 ## 验证及工程生成
 
 `WorkspaceGitStoreTests` 覆盖独立工厂、单份状态与通知转发、旧主机成功/失败回调、复合操作客户端冻结、空路径和摘要 TTL。`WorkspaceHostBoundaryTests` 覆盖无 Runtime 的目录/启动加载、旧主机 Worktree 结果隔离，以及 handoff 历史等待后的主机切换、任务取消和同主机导航。两类测试及 `WorkspaceGitSummaryTests` 接入既有 PR Gate selector。
 
 `SessionObservationLeaseTests` 覆盖失效客户端回调、路由保护、snapshot/live 切页及旧订阅释放，同样加入 PR Gate。Go 的 `TestHarnessNative*` 回归覆盖 Router 关闭、关闭后的连接拒绝、客户端断开和订阅打开中的授权取消，并运行 race 检查。
+
+发送目录回归覆盖目标 Runtime 隔离、请求合并、失败缓存、强制刷新竞态和准备状态。`WorkspaceHostBoundaryTests` 覆盖分页换代与 ACK 后的历史等待；`HarnessSnapshotBaselineTests` 覆盖真实原生 API 到 Store 的游标恢复。`ConversationTimelineRuntimeRegressionTests` 同时验证 Codex、Claude、DeepSeek 的可读首帧、消息更新、切换会话和历史前插位置；这些测试使用本地 fixture，不代表真实网络延迟或真机帧率。
 
 新增源文件与测试由 `ios/MimiRemote/project.yml` 中递归的 `Sources` / `Tests` 路径纳入。工程使用 XcodeGen 生成并同步提交，再使用仓库统一验证入口。
 

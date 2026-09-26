@@ -2211,7 +2211,9 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(createPayload.turnOptions.runtimeProvider, "claude")
         XCTAssertEqual(createPayload.turnOptions.model, "sonnet")
         XCTAssertEqual(createPayload.turnOptions.modelProvider, "anthropic")
-        XCTAssertEqual(createPayload.turnOptions.sandboxMode, .workspaceWrite)
+        // 当前默认是完全访问；跨 Runtime 纠正模型不应偷偷改写显式发送的权限档位。
+        XCTAssertEqual(createPayload.turnOptions.sandboxMode, .dangerFullAccess)
+        XCTAssertEqual(createPayload.turnOptions.approvalPolicy, .never)
         XCTAssertEqual(client.modelOptionsCallCount, 1)
     }
 

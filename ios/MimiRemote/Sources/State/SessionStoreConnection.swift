@@ -2782,6 +2782,11 @@ extension SessionStore {
     }
 
     func clearConnectionData() {
+        // 主机已经切换，旧发送 lease 的常规清理不会再更新页面；在退役边界释放其 loading。
+        if sessionCreationLoadingLease != nil {
+            sessionCreationLoadingLease = nil
+            isLoading = false
+        }
         invalidateCarStatusHostObservation()
         controlledGlobalDiscoveryUnavailable = false
         controlledGlobalSessionIDs = []
@@ -2937,6 +2942,9 @@ extension SessionStore {
         isUpdatingThreadGoal = false
         appServerModelOptions = []
         appServerModelOptionsLastRefresh = nil
+        turnModelTasksByRuntime.values.forEach { $0.task.cancel() }
+        turnModelTasksByRuntime = [:]
+        turnModelRefreshByRuntime = [:]
         appServerPermissionProfiles = []
         activePermissionProfileBySessionID = [:]
         permissionProfilesCWD = nil

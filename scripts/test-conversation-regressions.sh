@@ -62,7 +62,7 @@ echo "==> iOS conversation regressions"
 # - FileAttachmentModelsTests：文件上传、capability 状态矩阵、内部上下文编解码和旧服务端兼容。
 # - ConversationTimelineProviderPresentationTests：Codex/Claude 默认与详细记录投影、锚点和全文入口。
 # - ConversationScrollStabilityTests：首屏可读交接、手势取消、阅读锚点和显式回到底部。
-# - ConversationTimelineRuntimeRegressionTests：原生 List 在 Codex/Claude 更新及历史前插后的视口。
+# - ConversationTimelineRuntimeRegressionTests：原生 List 在 Codex/Claude/DeepSeek 更新及历史前插后的视口。
 # - SessionListLifecycleCoordinatorTests：滚动冻结、idle 重排和完成/失败 Haptic exactly-once。
 # - SessionListPresentationTests：会话摘要、分支身份、时间格式和紧凑行数策略。
 # - ConversationSnapshotTests：用户气泡/助手文档流、复杂 Markdown、图片和活动行的关键视觉回归。
@@ -96,6 +96,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/HarnessPresentationProjectorTests \
   -only-testing:MimiRemoteTests/HarnessEventClientTests \
   -only-testing:MimiRemoteTests/HarnessStreamReconnectTests \
+  -only-testing:MimiRemoteTests/HarnessSnapshotBaselineTests \
   -only-testing:MimiRemoteTests/HarnessSnapshotReplayTests \
   -only-testing:MimiRemoteTests/HarnessInteractionStoreTests \
   -only-testing:MimiRemoteTests/HarnessRecoveryCoordinatorTests \
@@ -114,6 +115,13 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testContinuationCreateACKDoesNotReplaceNewSessionSelection \
   -only-testing:MimiRemoteTests/ConversationLiveStatusTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testFirstSendPublishesPreparationBeforeAcknowledgementAndLiveSubscription \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTargetModelFailureCacheIsPerRuntimeAndCanExpire \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testForcedMenuRefreshSupersedesPendingTargetModelResult \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testConcurrentTargetModelPreparationSharesCatalog \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLocalCodexDraftDoesNotAdoptClaudeFromPartialModelCatalog \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDefaultModelResolutionCarriesRuntimeProviderBeforeCreate \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testModelListFailureFallsBackToBuiltInModelBeforeCreate \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testClaudeHistorySessionIgnoresStaleCodexModelSelectionBeforeResume \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testReopenShowsHistoryThenConnectionWithoutInventingNetworkFailure \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testHostChangeDuringModelLookupCancelsCapturedSubmission \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testHostSwitchSettlesPendingGuidanceInOriginalProfile \
