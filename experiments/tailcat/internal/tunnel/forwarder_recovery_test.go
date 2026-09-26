@@ -441,6 +441,71 @@ func TestForwarderTransientDialFailureDoesNotCloseOtherActiveStreams(t *testing.
 	}
 }
 
+func TestForwarderRetriesSecondDialFailedAfterConcurrentRecovery(t *testing.T) {
+	var received, oldDials, newDials, created atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != "one message" {
+			t.Errorf("请求内容为 %q", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	target, _ := url.Parse(server.URL)
+	secondDialStarted, releaseSecondDial := make(chan struct{}), make(chan struct{})
+	initial := &stubTunnelClient{dial: func(ctx context.Context, _ uint16) (net.Conn, error) {
+		switch oldDials.Add(1) {
+		case 1:
+			return nil, errors.New("transient dial failure")
+		case 2:
+			close(secondDialStarted)
+			select {
+			case <-releaseSecondDial:
+				return nil, errors.New("stale engine closed")
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		default:
+			t.Error("旧引擎发生额外拨号")
+			return nil, errors.New("unexpected old engine dial")
+		}
+	}}
+	next := &stubTunnelClient{dial: func(ctx context.Context, _ uint16) (net.Conn, error) {
+		newDials.Add(1)
+		return (&net.Dialer{}).DialContext(ctx, "tcp", target.Host)
+	}}
+	f := newStubForwarder(t, initial, func() tunnelClient {
+		created.Add(1)
+		return next
+	})
+	endpoint, old := f.Endpoint(), f.current
+	requestDone := make(chan error, 1)
+	go func() {
+		client := &http.Client{Timeout: 5 * time.Second}
+		response, err := client.Post(endpoint, "text/plain", strings.NewReader("one message"))
+		if err == nil {
+			response.Body.Close()
+			if response.StatusCode != http.StatusNoContent {
+				err = errors.New("响应状态不正确")
+			}
+		}
+		requestDone <- err
+	}()
+	awaitSignal(t, secondDialStarted)
+	if _, err := f.recoverClient(f.ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseSecondDial)
+	if err := <-requestDone; err != nil {
+		t.Fatalf("并发恢复后旧代引擎的拨号错误中断了请求：%v", err)
+	}
+	if received.Load() != 1 || oldDials.Load() != 2 || initial.closes.Load() != 1 ||
+		newDials.Load() != 1 || created.Load() != 1 || f.Endpoint() != endpoint {
+		t.Fatal("请求未恰好转发一次、拨号或恢复次数异常，或本地入口改变")
+	}
+}
+
 func activeRead(connection net.Conn) (byte, error) {
 	buffer := []byte{0}
 	_, err := io.ReadFull(connection, buffer)

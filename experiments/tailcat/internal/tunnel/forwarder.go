@@ -232,6 +232,18 @@ func (f *Forwarder) proxy(localConn net.Conn, remotePort uint16) {
 				tunnelConn, err = client.transport.DialTCPPort(dialContext, remotePort)
 			}
 		}
+		if err != nil && dialContext.Err() == nil {
+			f.mu.Lock()
+			stale := f.current != client
+			f.mu.Unlock()
+			if stale {
+				// 第二次拨号可能被并发恢复关闭；尚未转发字节，可以复用新一代重试。
+				client, err = f.recoverClient(dialContext, client)
+				if err == nil {
+					continue
+				}
+			}
+		}
 		if err != nil {
 			return
 		}

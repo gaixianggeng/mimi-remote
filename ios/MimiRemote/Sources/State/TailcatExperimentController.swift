@@ -192,7 +192,6 @@ actor TailcatExperimentRuntime: TailcatExperimentRuntimeProtocol {
         }
         let previousConfiguration = preparedProxy.previousConfiguration
         try closeCurrentProxy()
-        self.preparedProxy = nil
         return try restore(configuration: previousConfiguration)
     }
 
@@ -212,7 +211,6 @@ actor TailcatExperimentRuntime: TailcatExperimentRuntimeProtocol {
 
     func stop() throws {
         try closeCurrentProxy()
-        preparedProxy = nil
     }
 
     func stop(ifCurrentEndpoint endpoint: String) throws {
@@ -230,13 +228,13 @@ actor TailcatExperimentRuntime: TailcatExperimentRuntimeProtocol {
     }
 
     private func closeCurrentProxy() throws {
-        guard let proxy else {
+        // 原生 Close 报错时也已释放 forwarder；旧代理及候选回滚记录不能继续作为有效线路。
+        defer {
+            proxy = nil
             configuration = nil
-            return
+            preparedProxy = nil
         }
-        try proxy.close()
-        self.proxy = nil
-        configuration = nil
+        try proxy?.close()
     }
 
     @discardableResult

@@ -9,9 +9,10 @@ actor TailcatRouteRecorder {
     }
 }
 
-private enum TailcatRuntimeStubError: Error {
+private enum TailcatRuntimeStubError: Error, Equatable {
     case startFailed
     case unhealthy
+    case closeFailed
 }
 
 private actor TailcatExperimentRuntimeStub: TailcatExperimentRuntimeProtocol {
@@ -239,12 +240,14 @@ private actor TailcatExperimentRuntimeStub: TailcatExperimentRuntimeProtocol {
 private final class TailcatProxyFactoryRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var results: [Result<String, TailcatRuntimeStubError>]
+    private let closeFailures: Set<Int>
     private var activeCount = 0
     private var maximumActiveCount = 0
     private var addresses: [String] = []
 
-    init(results: [Result<String, TailcatRuntimeStubError>]) {
+    init(results: [Result<String, TailcatRuntimeStubError>], closeFailures: Set<Int> = []) {
         self.results = results
+        self.closeFailures = closeFailures
     }
 
     func make(address: String, privateKey: String, remotePort: Int) throws -> any TailcatProxyProtocol {
@@ -255,7 +258,7 @@ private final class TailcatProxyFactoryRecorder: @unchecked Sendable {
         let endpoint = try results.removeFirst().get()
         activeCount += 1
         maximumActiveCount = max(maximumActiveCount, activeCount)
-        return TailcatProxyStub(endpoint: endpoint) { [weak self] in
+        return TailcatProxyStub(endpoint: endpoint, closeFails: closeFailures.contains(addresses.count)) { [weak self] in
             self?.recordClose()
         }
     }
@@ -274,14 +277,22 @@ private final class TailcatProxyFactoryRecorder: @unchecked Sendable {
 }
 
 private final class TailcatProxyStub: TailcatProxyProtocol, @unchecked Sendable {
-    let localEndpoint: String
+    private let endpoint: String
+    private let closeFails: Bool
     private let onClose: @Sendable () -> Void
     private let lock = NSLock()
     private var closed = false
 
-    init(endpoint: String, onClose: @escaping @Sendable () -> Void) {
-        localEndpoint = endpoint
+    init(endpoint: String, closeFails: Bool, onClose: @escaping @Sendable () -> Void) {
+        self.endpoint = endpoint
+        self.closeFails = closeFails
         self.onClose = onClose
+    }
+
+    var localEndpoint: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return closed ? "" : endpoint
     }
 
     func discoPing(timeoutSeconds: Int) throws -> String {
@@ -294,6 +305,8 @@ private final class TailcatProxyStub: TailcatProxyProtocol, @unchecked Sendable 
         guard !closed else { return }
         closed = true
         onClose()
+        // 原生 Close 即使报错也已释放 forwarder，后续 endpoint 为空且 Close 幂等。
+        if closeFails { throw TailcatRuntimeStubError.closeFailed }
     }
 }
 
@@ -342,6 +355,114 @@ private final class ManagedConnectionEventReporterStub: ManagedConnectionEventRe
 
 @MainActor
 final class TailcatExperimentRoutingTests: XCTestCase {
+    func testRuntimeFailedCloseInvalidatesRouteBeforeReplacement() async throws {
+        let recorder = TailcatProxyFactoryRecorder(results: [
+            .success("http://127.0.0.1:49152"),
+            .success("http://127.0.0.1:49153"),
+        ], closeFailures: [1])
+        let runtime = TailcatExperimentRuntime(proxyFactory: recorder.make)
+        _ = try await runtime.start(address: "tailcat:mac-a", privateKey: "private-key")
+
+        await XCTAssertThrowsErrorAsync(
+            try await runtime.prepare(address: "tailcat:mac-b", privateKey: "private-key")
+        ) { error in
+            XCTAssertEqual(error as? TailcatRuntimeStubError, .closeFailed)
+        }
+        let endpointAfterFailure = await runtime.currentEndpoint()
+        XCTAssertNil(endpointAfterFailure)
+        XCTAssertEqual(recorder.snapshot().addresses, ["tailcat:mac-a"])
+
+        let endpoint = try await runtime.start(address: "tailcat:mac-b", privateKey: "private-key")
+        XCTAssertEqual(endpoint, "http://127.0.0.1:49153")
+        XCTAssertEqual(recorder.snapshot().maximumActiveCount, 1)
+    }
+
+    func testRuntimeFailedCandidateCloseClearsPendingRollback() async throws {
+        for stopsInsteadOfDiscard in [false, true] {
+            let recorder = TailcatProxyFactoryRecorder(results: [
+                .success("http://127.0.0.1:49152"),
+                .success("http://127.0.0.1:49153"),
+                .success("http://127.0.0.1:49154"),
+            ], closeFailures: [2])
+            let runtime = TailcatExperimentRuntime(proxyFactory: recorder.make)
+            _ = try await runtime.start(address: "tailcat:mac-a", privateKey: "private-key")
+            let candidate = try await runtime.prepare(address: "tailcat:mac-b", privateKey: "private-key")
+
+            do {
+                if stopsInsteadOfDiscard {
+                    try await runtime.stop()
+                } else {
+                    _ = try await runtime.discardPrepared(endpoint: candidate)
+                }
+                XCTFail("关闭错误必须继续传给调用方")
+            } catch {
+                XCTAssertEqual(error as? TailcatRuntimeStubError, .closeFailed)
+            }
+            let endpointAfterFailure = await runtime.currentEndpoint()
+            let hasPrepared = await runtime.hasPrepared(endpoint: candidate)
+            XCTAssertNil(endpointAfterFailure)
+            XCTAssertFalse(hasPrepared)
+
+            // 迟到的清理不能根据已经失效的候选记录重新启动旧线路。
+            let lateDiscard = try await runtime.discardPrepared(endpoint: candidate)
+            XCTAssertNil(lateDiscard)
+            XCTAssertEqual(recorder.snapshot().addresses, ["tailcat:mac-a", "tailcat:mac-b"])
+        }
+    }
+
+    func testProfileSwitchCloseFailureDoesNotPublishConnectedRoute() async throws {
+        let suiteName = "TailcatExperimentRoutingTests.CloseFailure.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profiles = [
+            ConnectionProfile(
+                id: "mac-a", displayName: "Mac A", endpoint: "http://100.64.0.10:8787",
+                lastSuccessfulAt: nil, connectionRoute: .tailcat
+            ),
+            ConnectionProfile(
+                id: "mac-b", displayName: "Mac B", endpoint: "http://100.64.0.20:8787",
+                lastSuccessfulAt: nil, connectionRoute: .tailcat
+            ),
+        ]
+        defaults.set(try JSONEncoder().encode(profiles), forKey: "agentd.connectionProfiles.v2")
+        defaults.set("mac-a", forKey: "agentd.activeConnectionProfileID.v1")
+        let tokenStore = TokenStore(keychain: TestKeychainOperations())
+        for profile in profiles {
+            try tokenStore.save("test-token", profileID: profile.id)
+            try tokenStore.saveTailcatAddress("tailcat:\(profile.id)", profileID: profile.id)
+        }
+        let store = AppStore(
+            defaults: defaults, tokenStore: tokenStore, prefersLocalConnection: false,
+            routeProbe: { _, _, _ in }
+        )
+        let recorder = TailcatProxyFactoryRecorder(results: [
+            .success("http://127.0.0.1:49152"),
+        ], closeFailures: [1])
+        let runtime = TailcatExperimentRuntime(proxyFactory: recorder.make)
+        let controller = TailcatExperimentController(
+            appStore: store, defaults: defaults, tokenStore: tokenStore, runtime: runtime,
+            bridge: .init(
+                isAvailable: true,
+                generatePrivateKey: { "private-key" },
+                publicKey: { _ in "nodekey:public-key" }
+            )
+        )
+        let initialReady = await controller.prepareRoute(appStore: store)
+        XCTAssertTrue(initialReady)
+
+        await XCTAssertThrowsErrorAsync(
+            try await controller.prepareConnectionProfileSwitch(id: "mac-b", appStore: store)
+        ) { error in
+            XCTAssertEqual(error as? TailcatRuntimeStubError, .closeFailed)
+        }
+
+        XCTAssertEqual(store.activeConnectionProfileID, "mac-a")
+        XCTAssertEqual(store.connectionEndpoint, "http://127.0.0.1:1")
+        XCTAssertTrue(store.isTailcatExperimentModeEnabled)
+        XCTAssertEqual(controller.state, .starting)
+        XCTAssertEqual(recorder.snapshot().addresses, ["tailcat:mac-a"])
+    }
+
     func testRuntimeProfileReplacementNeverOverlapsNativeEngines() async throws {
         let recorder = TailcatProxyFactoryRecorder(results: [
             .success("http://127.0.0.1:49152"),
