@@ -75,8 +75,11 @@ echo "==> iOS conversation regressions"
 # - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
 # - NotificationTitleCacheTests、NotificationContentRewriterTests：会话标题的 App Group 本地缓存，
 #   以及通知扩展只用该缓存在设备上改写锁屏文案、缓存缺失时退回通用文案。
+test_result_bundle="$(mktemp -d "${TMPDIR:-/tmp}/mimi-conversation-tests.XXXXXX")/core.xcresult"
+test_status=0
 bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -quiet \
+  -resultBundlePath "$test_result_bundle" \
   -collect-test-diagnostics never \
   -testLanguage zh-Hans \
   -testRegion CN \
@@ -225,4 +228,10 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ManagedConnectionEntitlementStoreTests \
   -only-testing:MimiRemoteTests/ManagedConnectionEntitlementAPIClientTests \
   -only-testing:MimiRemoteTests/ManagedConnectionStoreKitClientTests \
-  -only-testing:MimiRemoteTests/LocalizationTests
+  -only-testing:MimiRemoteTests/LocalizationTests || test_status=$?
+
+if [[ "$test_status" -ne 0 && -d "$test_result_bundle" ]]; then
+  # quiet 日志可能只列测试名；失败时保留具体断言，诊断失败也不能覆盖原退出码。
+  xcrun xcresulttool get test-results summary --path "$test_result_bundle" || true
+fi
+exit "$test_status"
