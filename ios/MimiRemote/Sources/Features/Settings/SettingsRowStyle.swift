@@ -35,11 +35,11 @@ extension View {
         pageSectionHeaderStyle()
     }
 
-    /// 设置分组的行直接落在页面底色上：不再装进圆角卡片，也不画行间分隔线（#563）。
+    /// 设置分组的行直接落在页面底色上，不装进卡片，也不画行间分隔线（#563）。
     ///
-    /// 会话、工作区的内容都铺在页面上、只靠分组标题和留白分段；设置页过去每组一张卡片，
-    /// 四个 Tab 并排时读成两套系统。行背景只能挂在 Section 上（挂在 Form 外层不会下发到行），
-    /// 所以每个设置分组都要显式接这一个修饰符，不能留系统默认的分组卡片色。
+    /// 四个一级 Tab 都是平铺写法；设备、我的与设置详情页靠分组标题右侧的细线划分功能区（#575）。
+    /// 行背景只能挂在 Section 上（挂在 Form 外层不会下发到行），所以每个设置分组都要显式接这一个修饰符，
+    /// 不能留系统默认的分组卡片色。
     func settingsGroupRowStyle() -> some View {
         listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
@@ -115,11 +115,14 @@ private struct SettingsDetailPageModifier: ViewModifier {
     }
 }
 
-/// 设置页的分组标题：分组之间用一条细线划分功能区，取代过去的卡片（#563）。
+/// 设置页的分组标题：标题嵌在细线上（#575）。
 ///
-/// 平铺之后只剩留白区分分组，单行的分组（消息通知、优先使用）没有标题，
-/// 看起来像是游离在两组之间；一条与内容同宽的细线把「这里换了一件事」说清楚。
-/// 页面第一组不画线；单行的分组可以只有线、没有标题；第一组既无线也无标题时只留顶部间距，
+/// 标题贴内容左边线，与会话、工作区的分组标题、分组脚注同一条竖线；细线从标题右侧延伸到右边线。
+/// 标题和线是同一个元素，页面第一组也画，每一组的开头长得一样；`showsDivider` 对带标题的分组
+/// 只决定与上一组之间的留白。留白上大下小：上一组最后一行离标题远、标题离本组第一行近，
+/// 标题读作下一组的开头，而不是悬在两组正中间的又一条分隔线。
+///
+/// 没有标题的单行分组只画一条线；第一组既无线也无标题时只留顶部间距，
 /// 否则系统会按无标题分组的默认上边距空出一大截，各页起点高低不一。
 ///
 /// 分组之间的留白全部由这里给出，所在页面要把分组间距和 `defaultMinListHeaderHeight`
@@ -146,29 +149,30 @@ struct SettingsGroupHeader<Accessory: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if showsDivider {
-                Rectangle()
-                    .fill(themeStore.tokens(for: colorScheme).border)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 1 / max(displayScale, 1))
-                    .padding(.top, SettingsLayoutMetrics.groupDividerSpacing)
-                    .padding(
-                        .bottom,
-                        title == nil
-                            ? SettingsLayoutMetrics.groupDividerSpacing
-                            : SettingsLayoutMetrics.groupDividerTitleSpacing
-                    )
-                    .accessibilityHidden(true)
-            }
             if let title {
-                HStack(alignment: .center, spacing: 8) {
+                // 附加内容（累计值、刷新）排在线的右端，线把标题和它们连成一行。
+                HStack(alignment: .center, spacing: SettingsLayoutMetrics.groupTitleRuleSpacing) {
                     Text(title)
                         .settingsSectionHeaderStyle()
+                        .fixedSize(horizontal: false, vertical: true)
+                        .layoutPriority(1)
                         .accessibilityAddTraits(.isHeader)
+                    dividerLine
+                        .frame(minWidth: SettingsLayoutMetrics.groupTitleRuleSpacing, maxWidth: .infinity)
                     accessory
                 }
-                .padding(.top, showsDivider ? 0 : SettingsLayoutMetrics.groupTitleTopInset)
-            } else if !showsDivider {
+                .padding(
+                    .top,
+                    showsDivider
+                        ? SettingsLayoutMetrics.groupTitleSeparation
+                        : SettingsLayoutMetrics.groupTitleTopInset
+                )
+                .padding(.bottom, SettingsLayoutMetrics.groupTitleBottomSpacing)
+            } else if showsDivider {
+                dividerLine
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, SettingsLayoutMetrics.groupDividerSpacing)
+            } else {
                 Color.clear
                     .frame(height: SettingsLayoutMetrics.groupTitleTopInset)
                     .accessibilityHidden(true)
@@ -186,6 +190,13 @@ struct SettingsGroupHeader<Accessory: View>: View {
             )
         )
     }
+
+    private var dividerLine: some View {
+        Rectangle()
+            .fill(themeStore.tokens(for: colorScheme).groupRule)
+            .frame(height: 1 / max(displayScale, 1))
+            .accessibilityHidden(true)
+    }
 }
 
 extension SettingsGroupHeader where Accessory == EmptyView {
@@ -195,7 +206,7 @@ extension SettingsGroupHeader where Accessory == EmptyView {
 }
 
 extension View {
-    /// 用细线分组的页面（设备、我的）：分组间距与系统标题最小高度都归零，
+    /// 用细线分组的页面（设备、我的、设置详情）：分组间距与系统标题最小高度都归零，
     /// 分组之间的距离只由 `SettingsGroupHeader` 决定。必须挂在离 Form 最近的位置，
     /// 外层的 listSectionSpacing 会被内层覆盖。
     func dividedSettingsList() -> some View {

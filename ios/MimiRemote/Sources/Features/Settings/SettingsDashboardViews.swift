@@ -6,6 +6,7 @@ struct ConnectionSettingsView: View {
     @EnvironmentObject private var appStore: AppStore
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
+    @EnvironmentObject private var lockScreenApprovalStore: LockScreenApprovalStore
     @EnvironmentObject private var themeStore: ThemeStore
     @AppStorage(WorkspaceSessionRuntimeChoice.preferenceKey)
     private var preferredRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
@@ -49,36 +50,33 @@ struct ConnectionSettingsView: View {
 
             if isDevicesTab || showsAddComputerEntry {
                 Section {
-                    // 只有两个运行时，值不值得为它弹一层菜单：不值得。两个名字并排摆出来，
-                    // 当前用哪个一眼可见，点一下即生效——和语言、外观那几行是同一套写法。
+                    if showsAddComputerEntry {
+                        NavigationLink(value: SettingsDestination.lockScreenApproval) {
+                            ConnectionRowLabel(
+                                title: L10n.text("ui.push_lock_screen_approval"),
+                                value: lockScreenApprovalStore.notificationStatusDescription,
+                                systemImage: "bell"
+                            )
+                        }
+                        .settingsStandardListRow()
+                        .accessibilityIdentifier("settings.lockScreenApproval")
+                    }
+
+                    // 与「我的」页语言、语音输入同一种选择行：说明紧贴标题，选项胶囊与标题文字对齐。
                     // 选项取 allCases，新增 Runtime 自动出现在这一行，不必再改这里。
                     SettingsChoiceRow(
                         title: L10n.text("ui.preferred_runtime"),
-                        systemImage: "sparkles",
+                        // 选的是在电脑终端里跑的编程代理（Codex、Claude Code、DeepSeek），用终端图标；
+                        // 星光读成「AI 功能」，和这一行的含义对不上。
+                        systemImage: "terminal",
+                        detail: L10n.text("ui.preferred_runtime_description"),
                         options: WorkspaceSessionRuntimeChoice.allCases,
                         selection: preferredRuntimeBinding
                     )
                     .settingsRow()
                     .accessibilityIdentifier("settings.preferredRuntime")
-
-                    // 说明是这一行的解释，放进同一组、与行标题同一条左边线；
-                    // 系统脚注比分组标题多缩进几个点，放在脚注里对不齐（#563）。
-                    Text(L10n.text("ui.preferred_runtime_description"))
-                        .settingsCaptionStyle()
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .listRowInsets(
-                            EdgeInsets(
-                                top: 0,
-                                leading: SettingsLayoutMetrics.rowHorizontalInset
-                                    + SettingsLayoutMetrics.iconSlot
-                                    + SettingsLayoutMetrics.iconSpacing,
-                                bottom: 12,
-                                trailing: SettingsLayoutMetrics.rowHorizontalInset
-                            )
-                        )
                 } header: {
-                    SettingsGroupHeader()
+                    SettingsGroupHeader(title: L10n.text("ui.device_preferences"))
                 }
                 .settingsGroupRowStyle()
             }

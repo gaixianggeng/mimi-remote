@@ -15,15 +15,24 @@ enum SettingsLayoutMetrics {
     static let iconSpacing: CGFloat = 8
     static let symbolPointSize: CGFloat = 18
     static let sectionSpacing: CGFloat = 24
-    /// 分组细线上下的留白。行本身上下各有约 17pt 内边距，线两侧到文字的距离因此相等，
+    /// 无标题分组细线上下的留白。行本身上下各有约 17pt 内边距，线两侧到文字的距离因此相等，
     /// 且明显大于组内两行文字之间的距离，读作分界而不是又一条行分隔线。
     static let groupDividerSpacing: CGFloat = 12
-    /// 细线到其下分组标题的距离：比细线上方的留白小，线和标题一起读作下一组的开头。
-    static let groupDividerTitleSpacing: CGFloat = 10
-    /// 页面第一组没有细线，标题离内容顶端的距离。
+    /// 带标题的分组与上一组之间的留白（上一行底边到标题）。加上行自身约 15pt 的内边距，
+    /// 上一组文字到标题约 40pt，明显大于组内两行文字之间约 30pt 的间距。
+    static let groupTitleSeparation: CGFloat = 24
+    /// 标题到本组第一行的距离：比上方留白小得多，标题读作本组的开头。
+    static let groupTitleBottomSpacing: CGFloat = 6
+    /// 标题与其右侧细线、细线与右端附加内容之间的距离。
+    static let groupTitleRuleSpacing: CGFloat = 10
+    /// 页面第一组的标题离内容顶端的距离。
     static let groupTitleTopInset: CGFloat = 6
-    /// 分组脚注离上方最后一行的距离；脚注下方不再留白，由下一组细线上方的留白接上。
+    /// 分组脚注离上方最后一行的距离；脚注下方不再留白，由下一组标题上方的留白接上。
     static let groupFooterTopSpacing: CGFloat = 6
+    /// 选中行（当前电脑）的底色：与「优先使用」选中胶囊同色的圆角底，左右比行内容各宽出 12pt
+    /// （行内容离行边 16pt，底色收进 4pt）。
+    static let selectedRowCornerRadius: CGFloat = 12
+    static let selectedRowHorizontalInset: CGFloat = 4
     /// 行尾标记（刷新、展开箭头）按系统导航箭头取：宽度、字号、到值文字的间距。
     static let trailingAccessoryWidth: CGFloat = 16
     static let trailingAccessoryPointSize: CGFloat = 14
@@ -97,7 +106,6 @@ extension View {
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
@@ -169,7 +177,10 @@ struct SettingsView: View {
                     .frame(maxWidth: 920)
                     .frame(maxWidth: .infinity)
                     .background(canvasBackground.ignoresSafeArea())
-                    .navigationTitle("")
+                    // 与「设备」页同一种居中小标题：Tab 标签虽已写着「我的」，页面顶部空着时
+                    // 两个相邻 Tab 一个有标题一个没有，读起来不是一套写法（#575）。
+                    // 独立设置 sheet 带「完成」按钮，标题写「设置」。
+                    .navigationTitle(L10n.text(showsDoneButton ? "ui.settings" : "ui.me"))
                     .navigationBarTitleDisplayMode(.inline)
             }
         }
@@ -237,16 +248,9 @@ struct SettingsView: View {
                 // 四个分组都带标题，页面语法才一致。顶部两块原先没有标题，
                 // 读起来就是一坨没有标签的大块，底部却是分好组的列表。
                 // 累计值和刷新按钮挂在这一行，卡片里就不必再留一层标题。
+                // 两者排在标题线的右端：线把标题和它们连起来，窄屏也不会空出一大片。
                 SettingsGroupHeader(title: L10n.text("ui.token_usage"), showsDivider: false) {
-                    // 宽屏把累计值推到最右、和刷新按钮成组；窄屏这样会在标题和累计值之间
-                    // 撑出一大片空，所以让它紧跟标题，Spacer 留到刷新按钮之前。
-                    if horizontalSizeClass == .compact {
-                        lifetimeTokenLabel(tokens: tokens)
-                        Spacer(minLength: 8)
-                    } else {
-                        Spacer(minLength: 8)
-                        lifetimeTokenLabel(tokens: tokens)
-                    }
+                    lifetimeTokenLabel(tokens: tokens)
 
                     AccountUsageRefreshButton(
                         isRefreshing: sessionStore.isRefreshingAccountTokenActivity
@@ -1162,6 +1166,11 @@ private struct AccountUsageRefreshButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // 布局只占标记本身的宽度：分组标题线一直延伸到标记前，多出的命中区压在线上。
+        // 高度同理不撑高标题行，「Token 使用量」才与设备页「当前电脑」落在同一高度，
+        // 切 Tab 时第一组标题不上下跳。
+        .padding(.leading, SettingsLayoutMetrics.trailingAccessoryWidth - 44)
+        .padding(.vertical, -14)
         .disabled(isRefreshing)
         .accessibilityLabel(
             isRefreshing

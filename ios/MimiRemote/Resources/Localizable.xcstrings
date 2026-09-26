@@ -21123,19 +21123,19 @@
       }
     },
     "ui.preferred_runtime_description": {
-      "comment": "Explains the preferred workspace runtime and its fallback behavior.",
+      "comment": "Explains which runtime's sessions a workspace shows by default.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Workspaces show sessions from this runtime by default. If Claude Code isn't supported, Codex is used automatically."
+            "value": "Workspaces show sessions from the selected runtime by default"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "工作区默认展示该类型的会话。不支持 Claude Code 时自动使用 Codex。"
+            "value": "工作区默认展示所选类型的会话"
           }
         }
       }
@@ -43499,6 +43499,13 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Other computers" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "其他电脑" } }
+      }
+    },
+    "ui.device_preferences": {
+      "comment": "Section title for device-related preferences.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Preferences" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "偏好设置" } }
       }
     },
     "ui.verifying_connection": {

@@ -179,7 +179,6 @@ struct InitialConnectionSettingsSections: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var tailcatController: TailcatExperimentController
-    @EnvironmentObject private var lockScreenApprovalStore: LockScreenApprovalStore
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @ScaledMetric(relativeTo: .body) private var profileTitlePointSize = 17.0
     @ScaledMetric(relativeTo: .subheadline) private var profileDetailPointSize = 15.0
@@ -327,10 +326,8 @@ struct InitialConnectionSettingsSections: View {
 
         if let current = model.current {
             currentComputerSection(current, tokens: tokens)
-            notificationsSection(showsDivider: true)
             otherComputersSection(model.others, ownsPresentation: false)
         } else if !model.others.isEmpty {
-            notificationsSection(showsDivider: false)
             // 忘记当前电脑后仍会留下已保存的其它电脑；此时由这一组承接确认弹窗。
             otherComputersSection(model.others, ownsPresentation: true)
         } else {
@@ -354,7 +351,7 @@ struct InitialConnectionSettingsSections: View {
     }
 
     /// 当前电脑、连接状态和连接方式过去是三个分组，回答的却是同一个问题。
-    /// 这里合成一组：首行只做设备识别，其下是配置与诊断的直达入口。
+    /// 这里合成一组：首行只做设备识别，其下是线路、配置与诊断三条单行入口。
     private func currentComputerSection(
         _ item: ConnectionProfileSettingsItem,
         tokens: ThemeTokens
@@ -482,26 +479,6 @@ struct InitialConnectionSettingsSections: View {
         )
     }
 
-    /// 消息提醒绑定的是某一台电脑，和电脑管理放在同一个 Tab；单独成组，不混进当前电脑卡片。
-    /// 一台电脑都没存过时没有可绑定的对象，这一组不出现。
-    /// 右侧状态与详情页开关同一口径：只看当前电脑是否已开启，不再写死「默认关闭」。
-    private func notificationsSection(showsDivider: Bool) -> some View {
-        Section {
-            NavigationLink(value: SettingsDestination.lockScreenApproval) {
-                ConnectionRowLabel(
-                    title: L10n.text("ui.push_lock_screen_approval"),
-                    value: lockScreenApprovalStore.notificationStatusDescription,
-                    systemImage: "bell"
-                )
-            }
-            .settingsStandardListRow()
-            .accessibilityIdentifier("settings.lockScreenApproval")
-        } header: {
-            // 单行分组不需要标题，一条细线就把它和当前电脑分开。
-            SettingsGroupHeader(showsDivider: showsDivider)
-        }
-    }
-
     /// 其它电脑和添加电脑回答的是同一个问题：「还能连哪台」。合成一组：已保存的电脑在上，
     /// 末行是添加电脑，像 Wi-Fi 列表末尾的「其他…」。已经存过电脑时添加是低频操作，
     /// 首页只留一个入口；扫码、粘贴、安装说明和手动地址都在添加电脑页。
@@ -511,7 +488,10 @@ struct InitialConnectionSettingsSections: View {
         _ items: [ConnectionProfileSettingsItem],
         ownsPresentation: Bool
     ) -> some View {
-        let header = SettingsGroupHeader(title: L10n.text("ui.other_computers"))
+        let header = SettingsGroupHeader(
+            title: L10n.text("ui.other_computers"),
+            showsDivider: !ownsPresentation
+        )
 
         if ownsPresentation {
             connectionPresentationSection {
@@ -540,18 +520,18 @@ struct InitialConnectionSettingsSections: View {
             computerGlyph(item)
 
             VStack(alignment: .leading, spacing: 3) {
-                // 与「其他电脑」同一档：名称 17pt 中粗 + 15pt 状态。当前电脑的身份由分组标题
-                // 说明，不再靠更大一号的字——同一种对象两种字号，是这页读起来乱的来源之一（#563）。
+                // 电脑行固定两行：名称一行、平台与状态一行，当前电脑与其他电脑同一种写法。
+                // 线路、连接方式、诊断都是它下面的单行功能行，不再挤进这一块（#575）。
                 computerNameText(item, tokens: tokens)
 
                 HStack(spacing: 6) {
-                    // 分组标题已经说明这是当前电脑，这里不再重复「当前」徽章。
                     computerSubtitle(
                         item,
                         state: compactConnectionStatusTitle,
                         stateTint: statusColor
                     )
                     .font(themeStore.uiFont(size: profileDetailPointSize))
+                    .lineLimit(1)
 
                     if isDisplayingConnectionProgress {
                         ProgressView()
@@ -565,6 +545,13 @@ struct InitialConnectionSettingsSections: View {
         }
         .padding(.vertical, 8)
         .frame(minHeight: SettingsLayoutMetrics.deviceRowHeight)
+        // 当前电脑就是几台电脑里「选中」的那一台：垫一层与「优先使用」选中胶囊同色的底，
+        // 不另画卡片或徽章。底色比行内容左右各宽出 12pt，文字仍在原来的竖线上。
+        .listRowBackground(
+            RoundedRectangle(cornerRadius: SettingsLayoutMetrics.selectedRowCornerRadius, style: .continuous)
+                .fill(tokens.selectionFill)
+                .padding(.horizontal, SettingsLayoutMetrics.selectedRowHorizontalInset)
+        )
         .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.profile.\(item.id)")
@@ -608,15 +595,24 @@ struct InitialConnectionSettingsSections: View {
                     .frame(minHeight: 44)
                 } else {
                     // 列表里只连一台：点它是把当前电脑换成这台，文案直说「切换」。
-                    Button(L10n.text("ui.switch_computer")) {
+                    // 画成描边小胶囊：只有一个粗体词时读起来像标签，不像按钮；
+                    // 不用填充，填充底色已经留给「当前电脑」这类选中状态。
+                    let isSwitchDisabled = isSavingConnection || profileOperationID != nil
+                    Button {
                         Task { await switchConnectionProfile(id: item.id) }
+                    } label: {
+                        Text(L10n.text("ui.switch_computer"))
+                            .font(themeStore.uiFont(size: profileDetailPointSize, weight: .medium))
+                            .foregroundStyle(tokens.accent)
+                            .padding(.horizontal, SettingsChoiceMetrics.capsuleHorizontalPadding)
+                            .frame(minHeight: 30)
+                            .overlay(Capsule().strokeBorder(tokens.groupRule, lineWidth: 1))
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
-                    .font(themeStore.uiFont(size: profileDetailPointSize, weight: .semibold))
-                    .buttonStyle(.borderless)
-                    .tint(tokens.accent)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .contentShape(Rectangle())
-                    .disabled(isSavingConnection || profileOperationID != nil)
+                    .buttonStyle(.plain)
+                    .opacity(isSwitchDisabled ? 0.45 : 1)
+                    .disabled(isSwitchDisabled)
                     .accessibilityIdentifier("settings.profile.switch.\(item.id)")
                 }
 
@@ -787,7 +783,6 @@ struct InitialConnectionSettingsSections: View {
         NavigationLink(value: SettingsDestination.addComputer) {
             ConnectionRowLabel(
                 title: L10n.text("ui.add_mac"),
-                value: L10n.text("ui.add_computer_entry_value"),
                 systemImage: "plus.circle"
             )
         }
@@ -803,7 +798,8 @@ struct InitialConnectionSettingsSections: View {
         let outcome = report.failedStage == nil
             ? L10n.text("ui.diagnostics_last_check_passed")
             : L10n.text("ui.diagnostics_last_check_failed")
-        return "\(outcome) · \(ConnectionRouteFormatting.timeText(report.startedAt))"
+        // 首页只放得下一行：当天写时刻、昨天写「昨天」、更早写月/日，完整时间在诊断页。
+        return "\(outcome) · \(ConnectionRouteFormatting.compactTimeText(report.startedAt))"
     }
 
     /// 添加电脑是一次性流程：扫码是唯一主操作，安装指引与手动地址都排在它下面。

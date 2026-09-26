@@ -296,6 +296,14 @@ extension ThemeTokens {
         tertiaryText
     }
 
+    /// 设置分组的标题线。平铺页面上它是分组之间唯一的线，只用 1 个物理像素。
+    /// 默认浅色的边框色 #E8E6E3 压在 #FAF8F6 上几乎看不见（明度差约 6），这里加深到
+    /// #DEDBD7，与深色 #373735 压在 #1F1F1F 上的明度差（约 11）持平。其它主题沿用边框色。
+    var groupRule: Color {
+        guard preset == .codex, resolvedScheme == .light else { return border }
+        return Color(red: 222.0 / 255.0, green: 219.0 / 255.0, blue: 215.0 / 255.0)
+    }
+
     /// 列表与侧栏条目的标题色。
     ///
     /// Notion 深色侧栏的条目标题不是白色，而是 #B9B8B6 上下的浅灰，只有选中那一行
