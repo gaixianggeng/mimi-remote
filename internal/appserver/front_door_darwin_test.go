@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,12 +25,171 @@ func newTestFrontDoor(t *testing.T) *FrontDoor {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(door.BackendSocketPath()), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(door.PublicSocketPath()), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// 单元测试不能扫描或给用户正在运行的 Codex 进程发信号。
 	door.orphans.listCodex = func() ([]sharedLocalRepairProcess, error) { return nil, nil }
 	return door
+}
+
+func TestFrontDoorUsesSeparateBackendCodexHome(t *testing.T) {
+	publicHome := shortSharedLocalCodexHome(t)
+	backendHome := shortSharedLocalCodexHome(t)
+	env := map[string]string{"CODEX_HOME": publicHome, "MIMI_TEST_MARKER": "kept"}
+	door, err := NewFrontDoor(SharedLocalOptions{Env: env, BackendCodexHome: backendHome}, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	door.orphans.listCodex = func() ([]sharedLocalRepairProcess, error) { return nil, nil }
+	if got, want := door.PublicSocketPath(), filepath.Join(publicHome, sharedLocalSocketDir, sharedLocalSocketName); got != want {
+		t.Fatalf("public socket=%q want %q", got, want)
+	}
+	if got, want := door.BackendSocketPath(), filepath.Join(backendHome, sharedLocalSocketDir, sharedLocalBackendSocketName); got != want {
+		t.Fatalf("backend socket=%q want %q", got, want)
+	}
+	if door.BackendCodexHome() != backendHome {
+		t.Fatalf("backend home=%q want %q", door.BackendCodexHome(), backendHome)
+	}
+	if door.lockPath != filepath.Join(backendHome, sharedLocalSocketDir, sharedLocalBackendLockName) {
+		t.Fatalf("backend 启动锁未放在独立 home：%q", door.lockPath)
+	}
+	if door.migrationLockPath != filepath.Join(publicHome, sharedLocalSocketDir, frontDoorMigrationLockName) {
+		t.Fatalf("迁移锁必须保留在公共 home：%q", door.migrationLockPath)
+	}
+	if err := os.MkdirAll(filepath.Dir(door.PublicSocketPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	env["MIMI_TEST_MARKER"] = "changed-after-construction"
+	var launched SharedLocalOptions
+	var stop func()
+	door.launch = func(_ context.Context, options SharedLocalOptions, _ string) error {
+		launched = options
+		stop = echoBackend(t, door.BackendSocketPath())
+		return nil
+	}
+	t.Cleanup(func() {
+		if stop != nil {
+			stop()
+		}
+	})
+	conn, err := door.DialBackend(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	if launched.Env["CODEX_HOME"] != backendHome || launched.Env["MIMI_TEST_MARKER"] != "kept" {
+		t.Fatalf("backend 启动环境错误：%v", launched.Env)
+	}
+	if env["CODEX_HOME"] != publicHome || door.options.Env["CODEX_HOME"] != publicHome || door.options.Env["MIMI_TEST_MARKER"] != "kept" {
+		t.Fatalf("启动 backend 不得修改公共环境：input=%v stored=%v", env, door.options.Env)
+	}
+	restarted, err := NewFrontDoor(door.options, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.PublicSocketPath() != door.PublicSocketPath() || restarted.BackendSocketPath() != door.BackendSocketPath() {
+		t.Fatalf("重建前门改变了 socket：public=%q backend=%q", restarted.PublicSocketPath(), restarted.BackendSocketPath())
+	}
+}
+
+func TestFrontDoorDefaultBackendPathsRemainPublic(t *testing.T) {
+	publicHome := shortSharedLocalCodexHome(t)
+	door, err := NewFrontDoor(SharedLocalOptions{Env: map[string]string{"CODEX_HOME": publicHome}}, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if door.BackendCodexHome() != publicHome {
+		t.Fatalf("默认 backend home=%q want %q", door.BackendCodexHome(), publicHome)
+	}
+	if filepath.Dir(door.PublicSocketPath()) != filepath.Dir(door.BackendSocketPath()) ||
+		door.lockPath != filepath.Join(filepath.Dir(door.PublicSocketPath()), sharedLocalBackendLockName) {
+		t.Fatal("默认 backend socket 与启动锁路径必须保持不变")
+	}
+}
+
+func TestFrontDoorRejectsInvalidSeparateBackendHomes(t *testing.T) {
+	publicHome := shortSharedLocalCodexHome(t)
+	child := filepath.Join(publicHome, "child")
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(filepath.Dir(publicHome), "not-a-directory")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(filepath.Dir(publicHome), "public-alias")
+	if err := os.Symlink(publicHome, alias); err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]string{
+		"relative":       "relative-home",
+		"missing":        filepath.Join(filepath.Dir(publicHome), "missing"),
+		"file":           file,
+		"same":           publicHome,
+		"canonical same": alias,
+		"backend child":  child,
+		"backend parent": filepath.Dir(publicHome),
+	}
+	for name, backendHome := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewFrontDoor(SharedLocalOptions{
+				Env:              map[string]string{"CODEX_HOME": publicHome},
+				BackendCodexHome: backendHome,
+			}, t.Logf)
+			if err == nil {
+				t.Fatalf("必须拒绝 backend home %q", backendHome)
+			}
+		})
+	}
+}
+
+func TestFrontDoorRejectsCaseInsensitiveBackendAlias(t *testing.T) {
+	publicHome := shortSharedLocalCodexHome(t)
+	caseAlias := filepath.Join(filepath.Dir(publicHome), strings.ToUpper(filepath.Base(publicHome)))
+	publicInfo, publicErr := os.Stat(publicHome)
+	aliasInfo, aliasErr := os.Stat(caseAlias)
+	if publicErr != nil || aliasErr != nil || !os.SameFile(publicInfo, aliasInfo) {
+		t.Skip("当前测试文件系统区分路径大小写")
+	}
+	_, err := NewFrontDoor(SharedLocalOptions{
+		Env:              map[string]string{"CODEX_HOME": publicHome},
+		BackendCodexHome: caseAlias,
+	}, t.Logf)
+	if err == nil {
+		t.Fatal("大小写别名指向同一目录时必须拒绝隔离")
+	}
+}
+
+func TestFrontDoorGenerationsSharePublicMigrationLock(t *testing.T) {
+	publicHome := shortSharedLocalCodexHome(t)
+	firstBackend := shortSharedLocalCodexHome(t)
+	secondBackend := shortSharedLocalCodexHome(t)
+	first, err := NewFrontDoor(SharedLocalOptions{Env: map[string]string{"CODEX_HOME": publicHome}, BackendCodexHome: firstBackend}, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewFrontDoor(SharedLocalOptions{Env: map[string]string{"CODEX_HOME": publicHome}, BackendCodexHome: secondBackend}, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.migrationLockPath != second.migrationLockPath || first.lockPath == second.lockPath {
+		t.Fatalf("两代前门锁路径错误：migration=%q/%q backend=%q/%q", first.migrationLockPath, second.migrationLockPath, first.lockPath, second.lockPath)
+	}
+	if err := os.MkdirAll(filepath.Dir(first.migrationLockPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := first.LockMigration(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if secondUnlock, err := second.LockMigration(ctx); err == nil {
+		secondUnlock()
+		t.Fatal("不同 backend home 的前门代际必须在公共迁移锁上互斥")
+	}
 }
 
 // echoBackend 模拟 Codex backend：逐行回显，关闭时删除 socket。

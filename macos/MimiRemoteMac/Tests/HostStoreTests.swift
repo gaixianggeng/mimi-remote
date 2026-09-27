@@ -978,6 +978,7 @@ final class HostStoreTests: XCTestCase {
                 "NODE_OPTIONS": "--require=/tmp/inject.js",
                 "CLAUDE_BRIDGE_CLAUDE_BIN": "/tmp/fake-claude",
                 "MIMI_REMOTE_TCC_OWNER": "com.example.spoofed",
+                "MIMI_CODEX_FRONT_BACKEND_HOME": "/Users/tester/.codex-mimi",
             ]
         )
         XCTAssertEqual(environment, [
@@ -990,6 +991,7 @@ final class HostStoreTests: XCTestCase {
             "MIMI_REMOTE_TCC_OWNER=com.gaixianggeng.mimi.mac",
             "SSH_AUTH_SOCK=/private/tmp/ssh-agent.sock",
             "LANG=zh_CN.UTF-8",
+            "MIMI_CODEX_FRONT_BACKEND_HOME=/Users/tester/.codex-mimi",
         ])
         for forbiddenKey in [
             "AGENTD_BROWSE_ROOTS",

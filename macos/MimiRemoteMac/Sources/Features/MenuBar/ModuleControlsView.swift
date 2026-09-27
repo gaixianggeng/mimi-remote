@@ -379,9 +379,11 @@ private struct ModuleDetailView: View {
         } else {
             HStack {
                 Button("复制登录命令") {
+                    guard let command = loginCommand else { return }
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(module == .codex ? "codex login" : "claude", forType: .string)
+                    NSPasteboard.general.setString(command, forType: .string)
                 }
+                .disabled(loginCommand == nil)
                 Button("打开终端") {
                     if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") {
                         NSWorkspace.shared.open(url)
@@ -390,6 +392,11 @@ private struct ModuleDetailView: View {
             }
             .controlSize(.small)
         }
+    }
+
+    private var loginCommand: String? {
+        if module == .claude { return "claude" }
+        return store.runtime(for: module)?.effectiveLoginCommand
     }
 
     private var agentDetailCaption: String {

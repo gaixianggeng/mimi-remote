@@ -62,6 +62,121 @@ func TestSharedLocalBusinessConnectionRechecksReplacementSession(t *testing.T) {
 	}
 }
 
+func TestSharedLocalConnectOnlyValidatesBackendCodexHome(t *testing.T) {
+	publicHome := shortSharedLocalCodexHome(t)
+	expectedHome := shortSharedLocalCodexHome(t)
+	socket := filepath.Join(publicHome, sharedLocalSocketDir, sharedLocalSocketName)
+	transport, err := NewSharedLocalTransport(SharedLocalOptions{
+		Env:              map[string]string{"CODEX_HOME": publicHome},
+		BackendCodexHome: expectedHome,
+		ConnectOnly:      true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name         string
+		reportedHome string
+		wantError    bool
+	}{
+		{name: "matching", reportedHome: expectedHome},
+		{name: "missing", reportedHome: "", wantError: true},
+		{name: "different", reportedHome: publicHome, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stop := startSharedLocalTestServerWithSessionAndHome(t, socket, "Aqua", test.reportedHome)
+			defer stop()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			err := transport.probe(ctx)
+			if !test.wantError {
+				if err != nil {
+					t.Fatalf("匹配的 backend home 应通过 readiness：%v", err)
+				}
+				return
+			}
+			var sessionErr *SharedLocalSessionError
+			if !errors.As(err, &sessionErr) || sessionErr.Kind != "backend_home" {
+				t.Fatalf("readiness 必须拒绝错误 backend home：%T %v", err, err)
+			}
+		})
+	}
+}
+
+func TestSharedLocalBusinessConnectionRejectsUnexpectedBackendCodexHome(t *testing.T) {
+	publicHome := shortSharedLocalCodexHome(t)
+	expectedHome := shortSharedLocalCodexHome(t)
+	socket := filepath.Join(publicHome, sharedLocalSocketDir, sharedLocalSocketName)
+	stop := startSharedLocalTestServerWithSessionAndHome(t, socket, "Aqua", publicHome)
+	defer stop()
+	transport, err := NewSharedLocalTransport(SharedLocalOptions{
+		Env:              map[string]string{"CODEX_HOME": publicHome},
+		BackendCodexHome: expectedHome,
+		ConnectOnly:      true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dialer, err := transport.WebSocketDialer(time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, response, err := dialer.DialContext(ctx, sharedLocalHandshakeURL, nil)
+	if response != nil && response.Body != nil {
+		_ = response.Body.Close()
+	}
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("业务连接不得接入错误 CODEX_HOME 的 backend")
+	}
+	var sessionErr *SharedLocalSessionError
+	if !errors.As(err, &sessionErr) || sessionErr.Kind != "backend_home" {
+		t.Fatalf("业务连接必须返回可识别的 backend home 错误：%T %v", err, err)
+	}
+}
+
+func TestSharedLocalConnectOnlyRejectsRunningIsolatedBackendAfterRollback(t *testing.T) {
+	publicHome := shortSharedLocalCodexHome(t)
+	oldIsolatedHome := shortSharedLocalCodexHome(t)
+	socket := filepath.Join(publicHome, sharedLocalSocketDir, sharedLocalSocketName)
+	stop := startSharedLocalTestServerWithSessionAndHome(t, socket, "Aqua", oldIsolatedHome)
+	defer stop()
+	transport, err := NewSharedLocalTransport(SharedLocalOptions{
+		Env:         map[string]string{"CODEX_HOME": publicHome},
+		ConnectOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var sessionErr *SharedLocalSessionError
+	if err := transport.probe(ctx); !errors.As(err, &sessionErr) || sessionErr.Kind != "backend_home" {
+		t.Fatalf("删除隔离配置后必须拒绝仍指向旧 home 的前门：%T %v", err, err)
+	}
+}
+
+func TestSharedLocalConnectOnlyDefaultAllowsLegacyInitializeWithoutCodexHome(t *testing.T) {
+	publicHome := shortSharedLocalCodexHome(t)
+	socket := filepath.Join(publicHome, sharedLocalSocketDir, sharedLocalSocketName)
+	stop := startSharedLocalTestServerWithSessionAndHome(t, socket, "Aqua", "")
+	defer stop()
+	transport, err := NewSharedLocalTransport(SharedLocalOptions{
+		Env:         map[string]string{"CODEX_HOME": publicHome},
+		ConnectOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := transport.probe(ctx); err != nil {
+		t.Fatalf("默认 home 应兼容不报告 codexHome 的旧 CLI：%v", err)
+	}
+}
+
 func TestSharedLocalRepairCanStillInspectBackgroundServer(t *testing.T) {
 	home := shortSharedLocalCodexHome(t)
 	stop := startSharedLocalTestServerWithSession(t, filepath.Join(home, sharedLocalSocketDir, sharedLocalSocketName), "Background")

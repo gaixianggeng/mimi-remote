@@ -33,6 +33,8 @@ var sharedLocalDefaultReadyTimeout = 20 * time.Second
 type SharedLocalOptions struct {
 	CodexBin string
 	Env      map[string]string
+	// BackendCodexHome 为 Mac 前门指定独立 backend 身份目录，并供 ConnectOnly 校验实际连接身份。
+	BackendCodexHome string
 	// ConnectOnly 用于 Mac App 的 launchd 前门。前门不可用时不能由 agentd
 	// 重新绑定标准 socket，否则 Desktop SSH 仍可参与启动权竞争。
 	ConnectOnly bool
@@ -41,11 +43,13 @@ type SharedLocalOptions struct {
 // SharedLocalTransport connects agentd to the same Codex control socket used by
 // local terminal clients. It never owns or stops the resident App Server.
 type SharedLocalTransport struct {
-	codexBin  string
-	env       map[string]string
-	socket    string
-	ensureMu  sync.Mutex
-	startOnce func(context.Context, SharedLocalOptions) error
+	codexBin            string
+	env                 map[string]string
+	socket              string
+	expectedBackendHome string
+	requireBackendHome  bool
+	ensureMu            sync.Mutex
+	startOnce           func(context.Context, SharedLocalOptions) error
 }
 
 // SupportsSharedLocalTransport reports whether this host can attach to Codex's
@@ -63,10 +67,27 @@ func NewSharedLocalTransport(options SharedLocalOptions) (*SharedLocalTransport,
 	if err != nil {
 		return nil, err
 	}
+	expectedBackendHome := ""
+	requireBackendHome := false
+	if runtime.GOOS == "darwin" && options.ConnectOnly {
+		if options.BackendCodexHome != "" {
+			expectedBackendHome, err = canonicalExistingDirectory(options.BackendCodexHome)
+			if err != nil {
+				return nil, fmt.Errorf("解析期望的 Codex backend CODEX_HOME 失败：%w", err)
+			}
+			requireBackendHome = true
+		} else {
+			// 空配置表示回退到公共 CODEX_HOME。旧 CLI 不报告 codexHome 时保持兼容；
+			// 新 CLI 一旦报告就必须匹配，避免误连仍在运行的旧隔离前门。
+			expectedBackendHome = filepath.Dir(filepath.Dir(socket))
+		}
+	}
 	transport := &SharedLocalTransport{
-		codexBin: strings.TrimSpace(options.CodexBin),
-		env:      cloneStringMap(options.Env),
-		socket:   socket,
+		codexBin:            strings.TrimSpace(options.CodexBin),
+		env:                 cloneStringMap(options.Env),
+		socket:              socket,
+		expectedBackendHome: expectedBackendHome,
+		requireBackendHome:  requireBackendHome,
 	}
 	if !options.ConnectOnly {
 		transport.startOnce = startSharedLocalAppServer
@@ -112,6 +133,38 @@ func SharedLocalSocketPath(extraEnv map[string]string) (string, error) {
 		return "", errors.New("Codex control socket 路径过长，请缩短 CODEX_HOME")
 	}
 	return path, nil
+}
+
+func canonicalExistingDirectory(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", errors.New("路径必须是绝对路径")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("目录不存在或不可访问：%w", err)
+	}
+	if !info.IsDir() {
+		return "", errors.New("路径不是目录")
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("解析目录规范路径失败：%w", err)
+	}
+	return filepath.Clean(canonical), nil
+}
+
+func validateExpectedBackendCodexHome(expected, reported string, required bool) error {
+	if expected == "" {
+		return nil
+	}
+	if reported == "" && !required {
+		return nil
+	}
+	reportedCanonical, err := canonicalExistingDirectory(reported)
+	if err != nil || reportedCanonical != expected {
+		return &SharedLocalSessionError{Kind: "backend_home", Err: errors.New("app-server 未报告期望的 CODEX_HOME")}
+	}
+	return nil
 }
 
 func (t *SharedLocalTransport) SocketPath() string {
@@ -255,7 +308,11 @@ func (t *SharedLocalTransport) probe(ctx context.Context) error {
 		_ = conn.SetReadDeadline(deadline)
 		_ = conn.SetWriteDeadline(deadline)
 	}
-	if err := initializeWebSocket(ctx, conn); err != nil {
+	initializeResult, err := initializeWebSocketResult(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if err := validateExpectedBackendCodexHome(t.expectedBackendHome, initializeResult.CodexHome, t.requireBackendHome); err != nil {
 		return err
 	}
 	return validateSharedLocalSession(ctx, conn)
