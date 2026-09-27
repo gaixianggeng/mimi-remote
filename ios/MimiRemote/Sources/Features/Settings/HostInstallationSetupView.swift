@@ -326,6 +326,7 @@ struct ConnectionRowLabel: View {
     let systemImage: String
     var valueTint: Color? = nil
     var titleTint: Color? = nil
+    var valueStyle: SettingsValueStyle = .plain
 
     var body: some View {
         SettingsValueLabel(
@@ -333,7 +334,8 @@ struct ConnectionRowLabel: View {
             value: value,
             systemImage: systemImage,
             valueTint: valueTint,
-            titleTint: titleTint
+            titleTint: titleTint,
+            valueStyle: valueStyle
         )
     }
 }
@@ -351,6 +353,7 @@ struct RouteStatusRow: View {
     var isBusy = false
     var isEnabled = true
     var refreshAccessibilityIdentifier = "settings.connection.refreshRoute"
+    var valueStyle: SettingsValueStyle = .plain
     let onRefresh: () -> Void
 
     var body: some View {
@@ -365,7 +368,8 @@ struct RouteStatusRow: View {
                     title: L10n.text("ui.route_label"),
                     value: value,
                     systemImage: "antenna.radiowaves.left.and.right",
-                    valueTint: isFailed ? tokens.warning : nil
+                    valueTint: isFailed ? tokens.warning : nil,
+                    valueStyle: valueStyle
                 )
 
                 SettingsTrailingAccessory(systemImage: "arrow.clockwise", isBusy: isBusy)

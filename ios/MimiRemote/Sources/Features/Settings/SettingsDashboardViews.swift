@@ -55,25 +55,27 @@ struct ConnectionSettingsView: View {
                             ConnectionRowLabel(
                                 title: L10n.text("ui.push_lock_screen_approval"),
                                 value: lockScreenApprovalStore.notificationStatusDescription,
-                                systemImage: "bell"
+                                systemImage: "bell",
+                                valueStyle: .capsule
                             )
                         }
                         .settingsStandardListRow()
                         .accessibilityIdentifier("settings.lockScreenApproval")
                     }
 
-                    // 与「我的」页语言、语音输入同一种选择行：说明紧贴标题，选项胶囊与标题文字对齐。
+                    // 与「我的」页语言同一种选择行：标题一行、选项胶囊一行，选项文字与标题文字对齐。
+                    // 说明不再占一行（三行太重），交给旁白读。
                     // 选项取 allCases，新增 Runtime 自动出现在这一行，不必再改这里。
                     SettingsChoiceRow(
                         title: L10n.text("ui.preferred_runtime"),
                         // 选的是在电脑终端里跑的编程代理（Codex、Claude Code、DeepSeek），用终端图标；
                         // 星光读成「AI 功能」，和这一行的含义对不上。
                         systemImage: "terminal",
-                        detail: L10n.text("ui.preferred_runtime_description"),
                         options: WorkspaceSessionRuntimeChoice.allCases,
                         selection: preferredRuntimeBinding
                     )
                     .settingsRow()
+                    .accessibilityHint(L10n.text("ui.preferred_runtime_description"))
                     .accessibilityIdentifier("settings.preferredRuntime")
                 } header: {
                     SettingsGroupHeader(title: L10n.text("ui.device_preferences"))
