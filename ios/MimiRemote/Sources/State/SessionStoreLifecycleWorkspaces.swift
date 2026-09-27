@@ -1122,6 +1122,9 @@ extension SessionStore {
                 ifCurrent: duplicateIntent
             )
             if let selectionLease {
+                // 原会话的错误保存在全局提示中，切到副本时必须先清除。
+                // 在加载前清除，避免覆盖副本随后产生的真实错误；原会话的 writer lease 仍保留。
+                setErrorMessage(nil)
                 await loadHistoryIfNeeded(for: responseSession)
                 if isSelectionLeaseCurrent(selectionLease) {
                     if responseSession.isRunning {

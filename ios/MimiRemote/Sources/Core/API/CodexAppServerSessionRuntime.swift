@@ -2202,10 +2202,10 @@ actor CodexAppServerSessionRuntime {
         guard runtimeProvider == "codex" else {
             return true
         }
-        // 共享 SSH 的多个入口必须在打开时就得到同一份 writer 结论。普通 WS 仍保持
-        // 空闲历史只读，避免仅浏览历史就提前取得 writer。
+        // 本机 local 与 SSH 都连接共享运行时，打开时必须取得服务端的 writer 结论。
+        // 普通 WS 仍保持空闲历史只读，避免仅浏览历史就提前取得 writer。
         let transport = config.runtime.transport.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return transport == "ssh" || session.isRunning
+        return transport == "ssh" || transport == "local" || session.isRunning
     }
 
     func replaceThreadSubscriptionLease(

@@ -108,6 +108,11 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ClaudeTakeoverTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSharedLocalOpeningIdleThreadResumesToValidateWriter \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSharedSSHOpeningIdleThreadResumesToValidateWriter \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDirectIdleHistorySessionSendsThroughResumePath \
+  -only-testing:MimiRemoteTests/WriterConflictForkStoreTests \
+  -only-testing:MimiRemoteTests/ForkOnWriterConflictProtocolTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSteerTurnSurvivesLastObserverLeavingWhileThreadResumeIsPending \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStartTurnSurvivesLastObserverLeavingWhileThreadResumeIsPending \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStartTurnSurvivesLastObserverLeavingWhileTurnStartAcknowledgementIsPending \
