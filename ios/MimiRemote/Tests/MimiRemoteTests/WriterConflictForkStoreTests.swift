@@ -5,7 +5,11 @@ import XCTest
 final class WriterConflictForkStoreTests: XCTestCase {
     func testIdleWriterConflictForksLatestStateAndKeepsSourceLock() async {
         let fixture = makeFixture(sourceStatus: "history")
-        fixture.store.setActiveWriterConflict(true, sessionID: fixture.source.id)
+        fixture.store.setErrorMessage(
+            "app-server 错误 -32600: thread source-thread already has an active writer",
+            sessionID: fixture.source.id
+        )
+        XCTAssertEqual(fixture.store.errorMessage, L10n.text("ui.codex_active_writer_conflict"))
 
         XCTAssertEqual(
             fixture.store.selectedWriterConflictForkAvailability,
@@ -24,6 +28,8 @@ final class WriterConflictForkStoreTests: XCTestCase {
             )
         ])
         XCTAssertEqual(fixture.store.selectedSessionID, fixture.forked.id)
+        XCTAssertNil(fixture.store.errorMessage, "原会话的占用提示不能留在复制出的新会话中。")
+        XCTAssertFalse(fixture.store.selectedSessionHasActiveWriterConflict)
         XCTAssertTrue(
             fixture.store.hasActiveWriterConflict(sessionID: fixture.source.id),
             "复制成功只能打开新 Thread，不能清除原会话的 writer 结论。"
@@ -42,7 +48,10 @@ final class WriterConflictForkStoreTests: XCTestCase {
                 latestForkableTurnID: "turn-last-terminal"
             )
         )
-        fixture.store.setActiveWriterConflict(true, sessionID: fixture.source.id)
+        fixture.store.setErrorMessage(
+            "app-server 错误 -32600: thread source-thread already has an active writer",
+            sessionID: fixture.source.id
+        )
 
         await fixture.store.prepareSelectedWriterConflictForkAvailability()
 
@@ -57,7 +66,38 @@ final class WriterConflictForkStoreTests: XCTestCase {
 
         XCTAssertTrue(duplicated)
         XCTAssertEqual(fixture.client.requestedSessionForks.first?.lastTurnID, "turn-last-terminal")
+        XCTAssertNil(fixture.store.errorMessage)
+        XCTAssertFalse(fixture.store.selectedSessionHasActiveWriterConflict)
         XCTAssertTrue(fixture.store.hasActiveWriterConflict(sessionID: fixture.source.id))
+    }
+
+    func testWriterConflictCopyCanSendFirstPromptToNewSession() async throws {
+        let fixture = makeFixture(sourceStatus: "history")
+        fixture.store.setErrorMessage(
+            "app-server 错误 -32600: thread source-thread already has an active writer",
+            sessionID: fixture.source.id
+        )
+        fixture.client.createSessionResults = [
+            .success(try makeCreateSessionResponse(session: fixture.forked))
+        ]
+
+        let duplicated = await fixture.store.duplicateSelectedWriterConflictSession()
+        XCTAssertTrue(duplicated)
+        XCTAssertNil(fixture.store.errorMessage)
+
+        let sent = await fixture.store.sendTurn(CodexAppServerTurnPayload(
+            prompt: "继续这个副本",
+            options: .init(model: "gpt-test", modelProvider: "openai")
+        ))
+
+        XCTAssertTrue(sent)
+        XCTAssertEqual(fixture.client.createPayloads.count, 1)
+        XCTAssertEqual(fixture.client.createPayloads.first?.resumeID, fixture.forked.id)
+        XCTAssertEqual(fixture.client.createPayloads.first?.prompt, "继续这个副本")
+        XCTAssertNil(fixture.store.errorMessage)
+        XCTAssertFalse(fixture.store.selectedSessionHasActiveWriterConflict)
+        XCTAssertTrue(fixture.store.hasActiveWriterConflict(sessionID: fixture.source.id))
+        fixture.store.clearConnectionData()
     }
 
     func testRetryReloadsLatestMessagesBeforeRecheckingWriterAccess() async throws {
@@ -269,7 +309,10 @@ final class WriterConflictForkStoreTests: XCTestCase {
             sourceStatus: "history",
             forkResult: .failure(failure)
         )
-        fixture.store.setActiveWriterConflict(true, sessionID: fixture.source.id)
+        fixture.store.setErrorMessage(
+            "app-server 错误 -32600: thread source-thread already has an active writer",
+            sessionID: fixture.source.id
+        )
         fixture.store.duplicatingSessionIDs.insert(fixture.source.id)
 
         let blocked = await fixture.store.duplicateSelectedWriterConflictSession()
@@ -286,6 +329,8 @@ final class WriterConflictForkStoreTests: XCTestCase {
             fixture.store.selectedWriterConflictForkErrorMessage?.contains("fork rejected") == true
         )
         XCTAssertTrue(fixture.store.hasActiveWriterConflict(sessionID: fixture.source.id))
+        XCTAssertEqual(fixture.store.selectedSessionID, fixture.source.id)
+        XCTAssertEqual(fixture.store.errorMessage, L10n.text("ui.codex_active_writer_conflict"))
     }
 
     func testOldHostCompletionDoesNotReleaseNewHostDuplicateLock() async throws {
