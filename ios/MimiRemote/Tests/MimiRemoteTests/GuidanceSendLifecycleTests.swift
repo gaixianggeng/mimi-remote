@@ -17,6 +17,64 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         )
     }
 
+    func testDefaultSendMethodFallsBackToQueueWhenPreferenceIsMissingOrUnknown() {
+        // 没存过偏好、或旧版本写进去的值读不出来时，必须保持既有行为：排队。
+        XCTAssertEqual(RunningTurnDelivery.fallbackDefault, .queued)
+        XCTAssertEqual(RunningTurnDelivery.stored(""), .queued)
+        XCTAssertEqual(RunningTurnDelivery.stored("steer"), .queued)
+        XCTAssertEqual(RunningTurnDelivery.stored(RunningTurnDelivery.queued.rawValue), .queued)
+        XCTAssertEqual(RunningTurnDelivery.stored(RunningTurnDelivery.guided.rawValue), .guided)
+        // 设置页按这个顺序排两个胶囊；排队在前，保持与今天的默认一致。
+        XCTAssertEqual(RunningTurnDelivery.allCases, [.queued, .guided])
+    }
+
+    func testGuidedDefaultOnlyAppliesWhileSteeringIsAvailable() {
+        // 切换会话、发送成功和可用性变化都走这一个入口；两个运行时共用同一份偏好，
+        // 因此这里不按 runtime 分叉，只看当前 turn 能不能被引导。
+        XCTAssertEqual(
+            RunningTurnDelivery.restoredSelection(default: .guided, canUseGuidedFollowUp: true),
+            .guided
+        )
+        XCTAssertEqual(
+            RunningTurnDelivery.restoredSelection(default: .guided, canUseGuidedFollowUp: false),
+            .queued,
+            "没有可引导的活动 turn 时，偏好选了引导也必须回落排队"
+        )
+        XCTAssertEqual(
+            RunningTurnDelivery.restoredSelection(default: .queued, canUseGuidedFollowUp: true),
+            .queued
+        )
+        XCTAssertEqual(
+            RunningTurnDelivery.restoredSelection(default: .queued, canUseGuidedFollowUp: false),
+            .queued
+        )
+    }
+
+    func testSendMethodMenuMarksThePreferredOptionAsDefault() {
+        XCTAssertEqual(
+            RunningTurnDelivery.queued.menuTitle(isDefault: true, isGuidedAvailable: true),
+            L10n.text("ui.queue_default")
+        )
+        XCTAssertEqual(
+            RunningTurnDelivery.queued.menuTitle(isDefault: false, isGuidedAvailable: true),
+            L10n.text("ui.queue_for_next_round"),
+            "默认改成引导后，「（默认）」不能继续钉在排队项上"
+        )
+        XCTAssertEqual(
+            RunningTurnDelivery.guided.menuTitle(isDefault: true, isGuidedAvailable: true),
+            L10n.text("ui.steer_current_reply_default")
+        )
+        XCTAssertEqual(
+            RunningTurnDelivery.guided.menuTitle(isDefault: false, isGuidedAvailable: true),
+            L10n.text("ui.lead_current_reply")
+        )
+        XCTAssertEqual(
+            RunningTurnDelivery.guided.menuTitle(isDefault: true, isGuidedAvailable: false),
+            L10n.text("ui.guide_current_reply_no_active_round_currently"),
+            "引导不可用时先说明原因，默认标记让位"
+        )
+    }
+
     private enum GuidanceResponse {
         case acknowledged
         case rejected

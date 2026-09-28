@@ -36,6 +36,12 @@ extension ComposerPermissionMode: SettingsChoiceOption {
     var choiceSystemImage: String? { systemImage }
 }
 
+extension RunningTurnDelivery: SettingsChoiceOption {
+    var choiceTitle: String { title }
+    var choiceSubtitle: String? { detail }
+    var choiceSystemImage: String? { systemImage }
+}
+
 extension ThemeMode: SettingsChoiceOption {
     var choiceTitle: String { title }
     /// 三种外观各自说明自己是什么；选中哪一个，行里就读得到它的含义。

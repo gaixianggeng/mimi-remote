@@ -417,6 +417,73 @@ enum DefaultModelPreferences {
     }
 }
 
+/// 「默认发送方式」偏好。会话运行中再发一条消息时，默认排队到下一回合还是引导当前回复。
+///
+/// 只保留一个全局偏好，不按运行时分开存：引导的可用性只取决于会话是否运行中、有没有
+/// 活动 turn、权限选择是否需要新 turn，Codex 与 Claude 走的都是同一条 `turn/steer`。
+extension RunningTurnDelivery: Identifiable {
+    static let defaultStorageKey = "composer.defaultRunningTurnDelivery"
+    /// 没存过偏好时保持既有行为：排队最安全，不会改写正在生成的回复。
+    static let fallbackDefault: RunningTurnDelivery = .queued
+
+    var id: String { rawValue }
+
+    static func stored(_ rawValue: String) -> RunningTurnDelivery {
+        RunningTurnDelivery(rawValue: rawValue) ?? fallbackDefault
+    }
+
+    /// 切换会话、发送成功或引导可用性变化后，输入区该回到哪个发送方式。
+    ///
+    /// 引导只对当前正在生成的这一条回复生效，所以每次上下文重置都重新取偏好；
+    /// 当前不具备引导条件时必须回落排队，不能因为偏好选了引导就把消息发失败。
+    static func restoredSelection(
+        default preference: RunningTurnDelivery,
+        canUseGuidedFollowUp: Bool
+    ) -> RunningTurnDelivery {
+        canUseGuidedFollowUp ? preference : .queued
+    }
+
+    var title: String {
+        switch self {
+        case .queued:
+            return L10n.text("ui.queue")
+        case .guided:
+            return L10n.text("ui.guide")
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .queued:
+            return L10n.text("ui.default_send_method_queue_detail")
+        case .guided:
+            return L10n.text("ui.default_send_method_steer_detail")
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .queued:
+            return "clock"
+        case .guided:
+            return "text.bubble"
+        }
+    }
+
+    /// 输入区菜单里的「（默认）」跟随偏好，不再固定写在排队项上。
+    func menuTitle(isDefault: Bool, isGuidedAvailable: Bool) -> String {
+        switch self {
+        case .queued:
+            return isDefault ? L10n.text("ui.queue_default") : L10n.text("ui.queue_for_next_round")
+        case .guided:
+            guard isGuidedAvailable else {
+                return L10n.text("ui.guide_current_reply_no_active_round_currently")
+            }
+            return isDefault ? L10n.text("ui.steer_current_reply_default") : L10n.text("ui.lead_current_reply")
+        }
+    }
+}
+
 enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
     case requestApproval
     case readOnly

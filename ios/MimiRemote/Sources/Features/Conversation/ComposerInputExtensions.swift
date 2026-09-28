@@ -26,6 +26,26 @@ extension ComposerView {
         }
     }
 
+    var defaultRunningTurnDelivery: RunningTurnDelivery {
+        RunningTurnDelivery.stored(defaultRunningTurnDeliveryID)
+    }
+
+    /// 回到设置里的「默认发送方式」。`canGuide` 只在 onChange 里传，
+    /// 因为那一刻新的可用性还没写回视图，直接读计算属性会拿到旧值。
+    func resetFollowUpDeliveryToDefault(canGuide: Bool? = nil) {
+        guidedFollowUpEnabled = RunningTurnDelivery.restoredSelection(
+            default: defaultRunningTurnDelivery,
+            canUseGuidedFollowUp: canGuide ?? canUseGuidedFollowUp
+        ) == .guided
+    }
+
+    func followUpDeliveryMenuTitle(_ delivery: RunningTurnDelivery, isGuidedAvailable: Bool) -> String {
+        delivery.menuTitle(
+            isDefault: delivery == defaultRunningTurnDelivery,
+            isGuidedAvailable: isGuidedAvailable
+        )
+    }
+
     func setPermissionMode(_ mode: ComposerPermissionMode) {
         defaultPermissionModeID = mode.rawValue
         composerState.applyPermissionMode(
