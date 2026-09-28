@@ -49,10 +49,15 @@ private struct WorkbenchTopScrollEdgeBoost: View {
     let intensity: Double
     let topInset: CGFloat
 
-    /// 导航控制层以下继续渐隐的距离。太短会把收边挤成一条可见的线，太长会连正常正文一起压掉。
-    private let fadeTail: CGFloat = 56
+    /// 导航控制层以下继续渐隐的距离。太短会把收边挤成一条可见的线，太长会连正常正文一起压掉
+    /// ——实机上 56pt 已经把标题下方一整行正文洗白，读起来像被挡住。
+    private let fadeTail: CGFloat = 24
 
-    /// 收边采样点数。9 个点足以让 smoothstep 在 56pt 内看不出分段。
+    /// 满强度时 mask 的最大 alpha。浅色下这层自带提亮，满档会把标题区刷成一块白板；
+    /// 留两成让系统 soft edge 的玻璃透出来，正文仍糊到不可辨读。
+    private static let peakAlpha: Double = 0.5
+
+    /// 收边采样点数。9 个点足以让 smoothstep 在收边距离内看不出分段。
     private static let falloffSampleCount: Int = 9
 
     /// 收边曲线。等距线性渐变在"满强度结束、斜坡开始"那一点存在斜率突变，人眼会把这种
@@ -72,7 +77,7 @@ private struct WorkbenchTopScrollEdgeBoost: View {
             let progress: CGFloat = CGFloat(index) / lastIndex
             let eased: CGFloat = progress * progress * (3.0 - 2.0 * progress)
             let falloff: Double = Double(1.0 - eased)
-            let alpha: Double = falloff * intensity
+            let alpha: Double = falloff * intensity * peakAlpha
             let location: CGFloat = holdStop + (1.0 - holdStop) * progress
             stops.append(Gradient.Stop(color: Color.black.opacity(alpha), location: location))
         }
