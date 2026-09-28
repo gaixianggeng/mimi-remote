@@ -16492,18 +16492,18 @@
       }
     },
     "ui.mac_installer_requirements_and_instructions": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing. 版本号必须与 Mac App 的 MACOSX_DEPLOYMENT_TARGET（macos/MimiRemoteMac/project.yml）保持一致；#242 降低部署目标时漏改了这两条文案（#554）。",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Requires macOS 26 or later. Open the DMG, then drag Mimi Remote to Applications."
+            "value": "Requires macOS 15 or later. Open the DMG, then drag Mimi Remote to Applications."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "需要 macOS 26 或更高版本。打开 DMG 后，将 Mimi Remote 拖入“应用程序”。"
+            "value": "需要 macOS 15 或更高版本。打开 DMG 后，将 Mimi Remote 拖入“应用程序”。"
           }
         }
       }
@@ -32764,18 +32764,18 @@
       }
     },
     "ui.the_pairing_qr_code_has_expired_please_re": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing. 主路径必须指向 Mac App 的菜单栏入口；DMG 安装没有 agentd 命令，终端用法只作为命令行安装的补充（#554）。",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The pairing QR code has expired. Please re-run agentd pair on your Mac and scan the code."
+            "value": "The pairing QR code has expired. On your Mac, open Mimi Remote from the menu bar, choose \"Pair Device...\", click \"Refresh QR Code\", then scan again. Command-line installs can run agentd pair instead."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "配对二维码已过期，请在 Mac 上重新运行 agentd pair 后扫码。"
+            "value": "配对二维码已过期。请在 Mac 菜单栏的 Mimi Remote 里点“配对设备…”，再点“刷新二维码”后重新扫码；命令行安装请运行 agentd pair。"
           }
         }
       }

@@ -29,6 +29,9 @@ struct UnifiedWorkbenchShell: View {
     )
     @State private var didRestoreFloatingSidebarVisibility = false
     @State private var sheetPresentationState = WorkbenchSheetPresentationState()
+    /// 横幅的「重新配对」打开设置 sheet 时，要直接落到设备页并弹出扫码页（#554）。
+    /// 只对那一次呈现出 true，sheet 关闭时复位，普通打开设置不受影响。
+    @State private var settingsSheetOpensRepair = false
     @State private var inspectorPresentationState = InspectorPresentationState()
     @State private var sessionActionPresentation: SessionActionPresentation?
     @State private var transcriptPresentation = ConversationTranscriptPresentation()
@@ -89,7 +92,10 @@ struct UnifiedWorkbenchShell: View {
                         layout: layout
                     )
                 case .settings:
-                    SettingsView(isInitialSetup: false)
+                    SettingsView(
+                        isInitialSetup: false,
+                        opensConnectionForRepair: settingsSheetOpensRepair
+                    )
                 }
             }
             .onAppear {
@@ -178,6 +184,7 @@ struct UnifiedWorkbenchShell: View {
 
     private func dismissSheet() {
         // 关闭后必须清空来源，下一次键盘、恢复或程序化展示才能安全走 fallback。
+        settingsSheetOpensRepair = false
         sheetPresentationState.dismiss()
     }
 
@@ -540,6 +547,9 @@ struct UnifiedWorkbenchShell: View {
             Spacer(minLength: 8)
 
             Button(L10n.text("ui.re_pair")) {
+                // 文案承诺的是「重新扫描二维码」，就直接把用户带到扫码页，
+                // 而不是丢在设置首页让他自己再找两层（#554）。
+                settingsSheetOpensRepair = true
                 presentSheet(.settings)
             }
             .buttonStyle(.borderedProminent)
@@ -1359,6 +1369,11 @@ struct UnifiedWorkbenchShell: View {
 #if DEBUG
         guard !didApplyDebugLaunchRoute else { return }
         let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--debug-show-repair-banner"),
+           appStore.debugLaunchConfiguration.seedsStoreScreenshotUI {
+            // 只用内存中的演示档案走横幅点击链路，不触碰真实配对凭据。
+            appStore.markCredentialsInvalid()
+        }
         // App Store 截图需要在 Simulator 与真机上得到完全相同的页面状态。
         // 这些入口只存在于 Debug 构建，不改变正常启动、恢复或 Release 路由。
         if arguments.contains("--debug-open-devices") {
