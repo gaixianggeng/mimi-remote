@@ -34,6 +34,8 @@ const (
 	codexFrontAppFlag        = "--codex-front-door"
 	codexFrontOrphanInterval = time.Minute
 	codexFrontSupervisorPath = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+	// agentd 启动时不能为旧前门的活动共享连接等满迁移超时，HTTP 服务须先恢复。
+	codexFrontServeMigrationTimeout = time.Second
 )
 
 // 只在已安装的 Mac App 使用默认配置时自动登记前门。隔离构建和 Homebrew
@@ -54,7 +56,10 @@ func prepareMacAppCodexFront(cfg config.Config, configPath string) (bool, error)
 	if !isInstalledMacAppAgentd(executable, home) {
 		return false, nil
 	}
-	return true, runCodexFrontInstall([]string{"codex-front install", "--config", configPath}, io.Discard)
+	return true, runCodexFrontInstallWithOpsAndMigrationTimeout(
+		[]string{"codex-front install", "--config", configPath}, io.Discard,
+		defaultCodexFrontManagementOps(), codexFrontServeMigrationTimeout,
+	)
 }
 
 func isInstalledMacAppAgentd(executable, home string) bool {
@@ -239,6 +244,10 @@ func runCodexFrontInstall(args []string, stdout io.Writer) error {
 }
 
 func runCodexFrontInstallWithOps(args []string, stdout io.Writer, ops codexFrontManagementOps) error {
+	return runCodexFrontInstallWithOpsAndMigrationTimeout(args, stdout, ops, 20*time.Second)
+}
+
+func runCodexFrontInstallWithOpsAndMigrationTimeout(args []string, stdout io.Writer, ops codexFrontManagementOps, migrationTimeout time.Duration) error {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	configPath, label, plistPath := codexFrontFlags(fs)
 	direct := fs.Bool("direct", false, "直接由 launchd 启动 agentd（仅供开发验证，后端不继承 Mimi Remote Mac 的隐私授权）")
@@ -298,7 +307,7 @@ func runCodexFrontInstallWithOps(args []string, stdout io.Writer, ops codexFront
 		}
 		// 安装身份与安全检查共用同一配置快照，避免并发改配置后检查了另一套后端。
 		door := install.door
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), migrationTimeout)
 		defer cancel()
 		unlock, err := door.LockMigration(ctx)
 		if err != nil {
