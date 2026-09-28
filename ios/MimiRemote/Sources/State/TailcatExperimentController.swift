@@ -282,6 +282,7 @@ final class TailcatExperimentController: ObservableObject {
     private let tokenStore: TokenStore
     private weak var appStore: AppStore?
     private let runtime: any TailcatExperimentRuntimeProtocol
+    private let localEndpointProbe: @Sendable (String) async -> Bool
     private let bridge: TailcatExperimentBridgeAdapter
     private let managedPairingAuthorizer: (any ManagedConnectionPairingAuthorizing)?
     private let managedConnectionEventReporter: (any ManagedConnectionEventReporting)?
@@ -296,6 +297,9 @@ final class TailcatExperimentController: ObservableObject {
         defaults: UserDefaults = .standard,
         tokenStore: TokenStore = TokenStore(),
         runtime: any TailcatExperimentRuntimeProtocol = TailcatExperimentRuntime(),
+        localEndpointProbe: @escaping @Sendable (String) async -> Bool = {
+            await TailcatLocalEndpointProbe.isReachable($0)
+        },
         bridge: TailcatExperimentBridgeAdapter = .live,
         managedPairingAuthorizer: (any ManagedConnectionPairingAuthorizing)? = nil,
         managedConnectionEventReporter: (any ManagedConnectionEventReporting)? = nil,
@@ -353,6 +357,7 @@ final class TailcatExperimentController: ObservableObject {
         self.tokenStore = tokenStore
         self.appStore = appStore
         self.runtime = runtime
+        self.localEndpointProbe = localEndpointProbe
         self.bridge = bridge
         self.managedPairingAuthorizer = managedPairingAuthorizer
         self.managedConnectionEventReporter = managedConnectionEventReporter
@@ -482,7 +487,17 @@ final class TailcatExperimentController: ObservableObject {
         guard appStore.activeConnectionProfile?.connectionRoute.isManaged == true else {
             return false
         }
-        let routeReady = await prepareRoute(appStore: appStore)
+        let routeReady: Bool
+        if case .connected = state {
+            // 手动重试也必须校验旧端口，不能让 connected 状态绕过恢复。
+            routeReady = await recoverRouteFromForeground(
+                appStore: appStore,
+                refreshPathDiagnosticAfterPreparation: false
+            )
+        } else {
+            // 主动重试临时线路时仍需启动 Tailcat，不能沿用前台恢复的临时线路豁免。
+            routeReady = await prepareRoute(appStore: appStore)
+        }
         guard routeReady else { return false }
         let connected = await appStore.preflightConnection(force: true)
         if !connected {
@@ -502,8 +517,8 @@ final class TailcatExperimentController: ObservableObject {
         )
     }
 
-    /// Go 侧探活会在同一 loopback endpoint 内有界恢复引擎；探活成功时必须复用现有线路。
-    /// 只有探活失败才由 Swift 关闭旧 proxy 并重建，避免一次前台切换制造两套相同身份。
+    /// 本地监听与 Tailcat 引擎都可用时复用线路，避免前台切换打断健康连接。
+    /// DiscoPing 不经过 loopback 监听，不能单独证明 App 仍能连接本地代理。
     @discardableResult
     func recoverRouteFromForeground(
         appStore: AppStore,
@@ -527,14 +542,23 @@ final class TailcatExperimentController: ObservableObject {
         if case .connected(let endpoint) = state,
            appStore.tailcatExperimentEndpoint == endpoint {
             do {
-                _ = try await runtime.discoPing()
+                let localEndpointReady = await localEndpointProbe(endpoint)
                 guard !Task.isCancelled,
                       capturedGeneration == generation,
                       capturedAddress == address,
                       isEnabled else {
                     return false
                 }
-                return true
+                if localEndpointReady {
+                    _ = try await runtime.discoPing()
+                    guard !Task.isCancelled,
+                          capturedGeneration == generation,
+                          capturedAddress == address,
+                          isEnabled else {
+                        return false
+                    }
+                    return true
+                }
             } catch {
                 guard !Task.isCancelled,
                       capturedGeneration == generation,
