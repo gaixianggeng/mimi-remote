@@ -228,6 +228,8 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationTimelineProviderPresentationSnapshotTests \
   -only-testing:MimiRemoteTests/MarkdownRenderingTests \
   -only-testing:MimiRemoteTests/PairingLinkTests \
+  -only-testing:MimiRemoteTests/TailcatExperimentRoutingTests \
+  -only-testing:MimiRemoteTests/TailcatLocalEndpointProbeTests \
   -only-testing:MimiRemoteTests/DoctorDiagnosticsTests \
   -only-testing:MimiRemoteTests/ProtocolContractTests \
   -only-testing:MimiRemoteTests/ManagedConnectionEntitlementStoreTests \

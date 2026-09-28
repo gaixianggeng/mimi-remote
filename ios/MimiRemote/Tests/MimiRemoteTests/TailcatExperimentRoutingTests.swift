@@ -9,6 +9,29 @@ actor TailcatRouteRecorder {
     }
 }
 
+private actor TailcatLocalProbeGate {
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func probe() async -> Bool {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            waiters.forEach { $0.resume() }
+            waiters = []
+        }
+    }
+
+    func waitForProbe() async {
+        guard continuation == nil else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func finish(_ result: Bool) {
+        continuation?.resume(returning: result)
+        continuation = nil
+    }
+}
+
 private enum TailcatRuntimeStubError: Error, Equatable {
     case startFailed
     case unhealthy
@@ -599,6 +622,52 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(fixture.store.activeConnectionProfile?.connectionRoute, .managedTailcat)
     }
 
+    func testManagedRetryRebuildsClosedLocalPortOnFirstAttempt() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [
+                .success("http://127.0.0.1:49152"),
+                .success("http://127.0.0.1:49153")
+            ],
+            localEndpointProbe: { _ in false },
+            managedProfile: true
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let prepared = await fixture.controller.prepareRoute(appStore: fixture.store)
+        XCTAssertTrue(prepared)
+
+        let recovered = await fixture.controller.retryManagedConnection(appStore: fixture.store)
+        let starts = await fixture.runtime.startCallCount()
+
+        XCTAssertTrue(recovered)
+        XCTAssertEqual(starts, 2)
+        XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:49153")
+        XCTAssertEqual(fixture.controller.state, .connected(endpoint: "http://127.0.0.1:49153"))
+    }
+
+    func testManagedRetryLeavesTemporaryRouteAndStartsTailcat() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [
+                .success("http://127.0.0.1:49152"),
+                .success("http://127.0.0.1:49153")
+            ],
+            managedProfile: true
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let prepared = await fixture.controller.prepareRoute(appStore: fixture.store)
+        let usedFallback = await fixture.controller.useSavedRouteOnce(.tailscale, appStore: fixture.store)
+        XCTAssertTrue(prepared)
+        XCTAssertTrue(usedFallback)
+
+        let recovered = await fixture.controller.retryManagedConnection(appStore: fixture.store)
+        let starts = await fixture.runtime.startCallCount()
+
+        XCTAssertTrue(recovered)
+        XCTAssertEqual(starts, 2)
+        XCTAssertTrue(fixture.store.isTailcatExperimentModeEnabled)
+        XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:49153")
+        XCTAssertEqual(fixture.controller.state, .connected(endpoint: "http://127.0.0.1:49153"))
+    }
+
     func testManagedFailureTelemetryDoesNotDelayFailureResult() async throws {
         let reporter = ManagedConnectionEventReporterStub()
         reporter.blocksReports = true
@@ -788,10 +857,17 @@ final class TailcatExperimentRoutingTests: XCTestCase {
     }
 
     func testForegroundRecoveryKeepsHealthyProxyAndEndpoint() async throws {
-        let fixture = try makeControllerFixture(startResults: [
-            .success("http://127.0.0.1:49152"),
-            .success("http://127.0.0.1:49153")
-        ])
+        let recorder = TailcatRouteRecorder()
+        let fixture = try makeControllerFixture(
+            startResults: [
+                .success("http://127.0.0.1:49152"),
+                .success("http://127.0.0.1:49153")
+            ],
+            localEndpointProbe: { endpoint in
+                await recorder.record(endpoint)
+                return true
+            }
+        )
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
 
         fixture.controller.setAddress("tailcat:test-address")
@@ -804,6 +880,105 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(startCallCount, 1)
         XCTAssertEqual(fixture.store.tailcatExperimentEndpoint, "http://127.0.0.1:49152")
         XCTAssertEqual(fixture.controller.state, .connected(endpoint: "http://127.0.0.1:49152"))
+        let probedEndpoints = await recorder.endpoints
+        XCTAssertEqual(probedEndpoints, ["http://127.0.0.1:49152"])
+    }
+
+    func testForegroundRecoveryRebuildsClosedLocalPortDespiteHealthyDiscoPing() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [
+                .success("http://127.0.0.1:49152"),
+                .success("http://127.0.0.1:49153")
+            ],
+            localEndpointProbe: { _ in false }
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.controller.setAddress("tailcat:test-address")
+        let enabled = await fixture.controller.setEnabled(true, appStore: fixture.store)
+        XCTAssertTrue(enabled)
+        // 现场故障的关键条件：引擎仍可探活，但 App 使用的本地端口已经失效。
+        _ = try await fixture.runtime.discoPing()
+
+        let recovered = await fixture.controller.recoverRouteFromForeground(appStore: fixture.store)
+        let starts = await fixture.runtime.startCallCount()
+
+        XCTAssertTrue(recovered)
+        XCTAssertEqual(starts, 2)
+        XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:49153")
+        XCTAssertEqual(fixture.controller.state, .connected(endpoint: "http://127.0.0.1:49153"))
+    }
+
+    func testClosedLocalPortRecoveryFailureKeepsTailcatFailClosed() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [.success("http://127.0.0.1:49152"), .failure(.startFailed)],
+            localEndpointProbe: { _ in false }
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.store.endpoint = "http://100.64.0.10:8787"
+        fixture.controller.setAddress("tailcat:test-address")
+        let enabled = await fixture.controller.setEnabled(true, appStore: fixture.store)
+        XCTAssertTrue(enabled)
+
+        let recovered = await fixture.controller.recoverRouteFromForeground(appStore: fixture.store)
+
+        XCTAssertFalse(recovered)
+        XCTAssertNil(fixture.store.tailcatExperimentEndpoint)
+        XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:1")
+        XCTAssertEqual(fixture.store.endpoint, "http://100.64.0.10:8787")
+    }
+
+    func testCancelledLocalProbeDoesNotRestartOrClearCurrentProxy() async throws {
+        let gate = TailcatLocalProbeGate()
+        let fixture = try makeControllerFixture(
+            startResults: [.success("http://127.0.0.1:49152")],
+            localEndpointProbe: { _ in await gate.probe() }
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.controller.setAddress("tailcat:test-address")
+        let enabled = await fixture.controller.setEnabled(true, appStore: fixture.store)
+        XCTAssertTrue(enabled)
+        let recovery = Task {
+            await fixture.controller.recoverRouteFromForeground(appStore: fixture.store)
+        }
+        await gate.waitForProbe()
+        recovery.cancel()
+        await gate.finish(false)
+
+        let recovered = await recovery.value
+        let starts = await fixture.runtime.startCallCount()
+        XCTAssertFalse(recovered)
+        XCTAssertEqual(starts, 1)
+        XCTAssertEqual(fixture.store.tailcatExperimentEndpoint, "http://127.0.0.1:49152")
+    }
+
+    func testLocalProbeResultCannotOverwriteChangedAddressGeneration() async throws {
+        let gate = TailcatLocalProbeGate()
+        let fixture = try makeControllerFixture(
+            startResults: [
+                .success("http://127.0.0.1:49152"),
+                .success("http://127.0.0.1:49153")
+            ],
+            localEndpointProbe: { _ in await gate.probe() }
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.controller.setAddress("tailcat:old-address")
+        let enabled = await fixture.controller.setEnabled(true, appStore: fixture.store)
+        XCTAssertTrue(enabled)
+        let staleRecovery = Task {
+            await fixture.controller.recoverRouteFromForeground(appStore: fixture.store)
+        }
+        await gate.waitForProbe()
+        fixture.controller.setAddress("tailcat:new-address")
+        let prepared = await fixture.controller.prepareRoute(appStore: fixture.store)
+        XCTAssertTrue(prepared)
+        await gate.finish(false)
+
+        let recovered = await staleRecovery.value
+        let starts = await fixture.runtime.startCallCount()
+        XCTAssertFalse(recovered)
+        XCTAssertEqual(starts, 2)
+        XCTAssertEqual(fixture.store.tailcatExperimentEndpoint, "http://127.0.0.1:49153")
+        XCTAssertEqual(fixture.controller.state, .connected(endpoint: "http://127.0.0.1:49153"))
     }
 
     func testForegroundRecoveryRestartsUnhealthyProxyOnce() async throws {
@@ -1480,6 +1655,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
     private func makeControllerFixture(
         startResults: [Result<String, TailcatRuntimeStubError>],
         blockedStartCall: Int? = nil,
+        localEndpointProbe: @escaping @Sendable (String) async -> Bool = { _ in true },
         managedPairingAuthorizer: (any ManagedConnectionPairingAuthorizing)? = nil,
         managedProfile: Bool = false,
         managedAddress: String? = "tailcat:managed-mac",
@@ -1532,6 +1708,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
             defaults: defaults,
             tokenStore: tokenStore,
             runtime: runtime,
+            localEndpointProbe: localEndpointProbe,
             bridge: bridge,
             managedPairingAuthorizer: managedPairingAuthorizer,
             managedConnectionEventReporter: managedConnectionEventReporter
