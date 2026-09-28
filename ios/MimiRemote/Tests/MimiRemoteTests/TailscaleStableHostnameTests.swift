@@ -290,4 +290,248 @@ final class TailscaleStableHostnameTests: XCTestCase {
         XCTAssertEqual(store.connectionEndpoint, "http://100.64.0.10:8787")
         XCTAssertEqual(try store.client().endpoint, "http://100.64.0.10:8787")
     }
+
+    func testTailcatPairingUsesHostDeviceNameAsDefaultDisplayName() async throws {
+        let suiteName = "TailscaleStableHostnameTests.TailcatDeviceName.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in }
+        )
+
+        // Tailcat 配对链接签发的规范地址就是 loopback；设备名必须能独立于地址写进档案，
+        // 否则设置页只能显示「这台电脑」。
+        let prepared = PreparedConnectionSettings(
+            endpoint: "http://127.0.0.1:8787",
+            activeEndpoint: "http://127.0.0.1:28787",
+            route: .customTailcat(address: "tailcat:stable-address"),
+            token: "tailcat-token",
+            profileTarget: .newProfile(id: "tailcat-mac", displayName: ""),
+            installationID: "installation-tailcat",
+            hostDeviceName: "工作室的 Mac Studio"
+        )
+        _ = try await store.commitConnectionSettings(prepared)
+
+        XCTAssertEqual(store.activeConnectionProfile?.displayName, "工作室的 Mac Studio")
+        XCTAssertEqual(store.activeConnectionProfile?.hostDeviceName, "工作室的 Mac Studio")
+        XCTAssertEqual(store.activeConnectionProfile?.isDisplayNameCustomized, false)
+        XCTAssertEqual(store.activeConnectionProfile?.connectionRoute, .customTailcat)
+    }
+
+    func testLANProfileWithoutNameUsesHostDeviceName() async throws {
+        let suiteName = "TailscaleStableHostnameTests.LanPrepareDeviceName.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in }
+        )
+
+        let prepared = try await store.prepareConnectionSettings(
+            endpoint: "http://192.168.1.20:8787",
+            token: "lan-token",
+            profileTarget: .newProfile(id: "lan-mac", displayName: ""),
+            hostDeviceName: "工作室的 Mac Studio"
+        )
+        _ = try await store.commitConnectionSettings(prepared)
+
+        XCTAssertEqual(store.activeConnectionProfile?.displayName, "工作室的 Mac Studio")
+        XCTAssertEqual(store.activeConnectionProfile?.hostDeviceName, "工作室的 Mac Studio")
+    }
+
+    func testManualProfileNameStillWinsOverHostDeviceName() async throws {
+        let suiteName = "TailscaleStableHostnameTests.ManualName.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in }
+        )
+
+        let prepared = try await store.prepareConnectionSettings(
+            endpoint: "http://192.168.1.20:8787",
+            token: "lan-token",
+            profileTarget: .newProfile(id: "lan-mac", displayName: "书房电脑"),
+            hostDeviceName: "工作室的 Mac Studio"
+        )
+        _ = try await store.commitConnectionSettings(prepared)
+
+        XCTAssertEqual(store.activeConnectionProfile?.displayName, "书房电脑")
+        XCTAssertEqual(store.activeConnectionProfile?.isDisplayNameCustomized, true)
+    }
+
+    func testLocalLoopbackPairingKeepsThisComputerName() async throws {
+        let suiteName = "TailscaleStableHostnameTests.LocalName.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in }
+        )
+
+        // 本机直连读写的是当前设备，保留「这台电脑」而不是把宿主设备名写进去。
+        let prepared = try await store.prepareConnectionSettings(
+            endpoint: "http://127.0.0.1:8787",
+            token: "local-token",
+            profileTarget: .currentOrNew(displayName: L10n.text("ui.this_mac")),
+            hostDeviceName: "工作室的 Mac Studio",
+            adoptsHostDeviceName: false
+        )
+        XCTAssertNil(prepared.hostDeviceName)
+        _ = try await store.commitConnectionSettings(prepared)
+
+        XCTAssertEqual(store.activeConnectionProfile?.displayName, L10n.text("ui.this_mac"))
+        XCTAssertNil(store.activeConnectionProfile?.hostDeviceName)
+    }
+
+    func testStoredHostDeviceNameSurvivesDecodingAndStoreReload() throws {
+        let profile = ConnectionProfile(
+            id: "tailcat-mac",
+            displayName: "这台电脑",
+            endpoint: "http://127.0.0.1:8787",
+            hostDeviceName: "工作室的 Mac Studio",
+            isDisplayNameCustomized: false,
+            lastSuccessfulAt: nil,
+            installationID: "installation-tailcat",
+            connectionRoute: .customTailcat
+        )
+        let encoded = try JSONEncoder().encode([profile])
+        let decoded = try JSONDecoder().decode([ConnectionProfile].self, from: encoded)
+        XCTAssertEqual(decoded.first?.displayName, "工作室的 Mac Studio")
+        XCTAssertEqual(decoded.first?.hostDeviceName, "工作室的 Mac Studio")
+
+        let suiteName = "TailscaleStableHostnameTests.StoredDeviceName.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(encoded, forKey: "agentd.connectionProfiles.v2")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("token-tailcat".utf8), account: "agentd-profile.\(profile.id)")
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain)
+        )
+
+        // 重新加载档案时不能把已持久化的设备名退回地址占位。
+        XCTAssertEqual(store.activeConnectionProfile?.displayName, "工作室的 Mac Studio")
+    }
+
+    func testLegacyProfileWithoutHostDeviceNameKeepsAddressFallback() throws {
+        let decoded = try JSONDecoder().decode(
+            ConnectionProfile.self,
+            from: Data(#"{"id":"legacy","displayName":"192.168.1.20","endpoint":"http://192.168.1.20:8787","isDisplayNameCustomized":false,"revision":0}"#.utf8)
+        )
+        XCTAssertNil(decoded.hostDeviceName)
+        XCTAssertEqual(decoded.displayName, "192.168.1.20")
+    }
+
+    func testHostMetadataRefreshAdoptsDeviceNameForNonTailscaleProfile() throws {
+        let suiteName = "TailscaleStableHostnameTests.LanDeviceName.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profile = ConnectionProfile(
+            id: "lan-mac",
+            displayName: "192.168.1.20",
+            endpoint: "http://192.168.1.20:8787",
+            isDisplayNameCustomized: false,
+            lastSuccessfulAt: nil,
+            installationID: "installation-lan"
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v2")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations())
+        )
+
+        let refreshed = try XCTUnwrap(store.refreshConnectionProfileHostMetadata(
+            profileID: profile.id,
+            expectedRevision: profile.revision,
+            version: VersionResponse(
+                name: "agentd",
+                version: "test",
+                installationID: "installation-lan",
+                deviceName: "工作室的 Mac Studio"
+            )
+        ))
+        XCTAssertEqual(refreshed.displayName, "工作室的 Mac Studio")
+        XCTAssertEqual(refreshed.hostDeviceName, "工作室的 Mac Studio")
+        XCTAssertFalse(refreshed.isDisplayNameCustomized)
+
+        // 旧 agentd 不再上报设备名时必须保留已存名称，不能擦回地址。
+        let withoutName = try XCTUnwrap(store.refreshConnectionProfileHostMetadata(
+            profileID: profile.id,
+            expectedRevision: refreshed.revision,
+            version: VersionResponse(
+                name: "agentd",
+                version: "test",
+                installationID: "installation-lan"
+            )
+        ))
+        XCTAssertEqual(withoutName.displayName, "工作室的 Mac Studio")
+        XCTAssertEqual(withoutName.hostDeviceName, "工作室的 Mac Studio")
+    }
+
+    func testHostMetadataRefreshKeepsCustomNameWhenHostIsRenamed() throws {
+        let suiteName = "TailscaleStableHostnameTests.RenamedHost.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profile = ConnectionProfile(
+            id: "mac-a",
+            displayName: "工作室电脑",
+            endpoint: "http://127.0.0.1:8787",
+            hostDeviceName: "旧设备名",
+            isDisplayNameCustomized: true,
+            lastSuccessfulAt: nil,
+            installationID: "installation-a",
+            connectionRoute: .customTailcat
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v2")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations())
+        )
+
+        let refreshed = try XCTUnwrap(store.refreshConnectionProfileHostMetadata(
+            profileID: profile.id,
+            expectedRevision: profile.revision,
+            version: VersionResponse(
+                name: "agentd",
+                version: "test",
+                installationID: "installation-a",
+                deviceName: "新设备名"
+            )
+        ))
+        XCTAssertEqual(refreshed.displayName, "工作室电脑")
+        XCTAssertEqual(refreshed.hostDeviceName, "新设备名")
+    }
+
+    func testVersionResponseTreatsHostDeviceNameAsAdditiveField() throws {
+        let legacy = try JSONDecoder().decode(
+            VersionResponse.self,
+            from: Data(#"{"name":"agentd","version":"test","protocol_revision":2,"minimum_client_protocol_revision":1}"#.utf8)
+        )
+        XCTAssertNil(legacy.deviceName)
+
+        let current = try JSONDecoder().decode(
+            VersionResponse.self,
+            from: Data(#"{"name":"agentd","version":"test","device_name":"工作室的 Mac Studio","protocol_revision":2,"minimum_client_protocol_revision":1}"#.utf8)
+        )
+        XCTAssertEqual(current.deviceName, "工作室的 Mac Studio")
+    }
 }
