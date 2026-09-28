@@ -10,6 +10,7 @@ struct ConversationTimelineView: View {
     let layout: ConversationLayout
     let explicitSessionID: SessionID?
     let allowsTopUnderlap: Bool
+    let deepensTopScrollEdge: Bool
     @State private var expandedActivityIDs: Set<String> = []
     @State private var expandedProcessMessageIDs: Set<UUID> = []
     @State private var collapsedProcessMessageIDs: Set<UUID> = []
@@ -29,11 +30,13 @@ struct ConversationTimelineView: View {
     init(
         layout: ConversationLayout,
         sessionID: SessionID? = nil,
-        allowsTopUnderlap: Bool = false
+        allowsTopUnderlap: Bool = false,
+        deepensTopScrollEdge: Bool = false
     ) {
         self.layout = layout
         explicitSessionID = sessionID
         self.allowsTopUnderlap = allowsTopUnderlap
+        self.deepensTopScrollEdge = deepensTopScrollEdge
     }
 
     private var displayedSessionID: SessionID? {
@@ -185,7 +188,10 @@ struct ConversationTimelineView: View {
                 .background(tokens.conversationCanvasBackground)
                 // 顶部正文进入导航层、底部正文经过 Composer 时都使用系统柔和虚化；
                 // 不再在任一边缘切出一整块与页面不同的实色底板。
-                .workbenchSoftConversationScrollEdges(allowsTopUnderlap: allowsTopUnderlap)
+                .workbenchSoftConversationScrollEdges(
+                    allowsTopUnderlap: allowsTopUnderlap,
+                    deepensTopEdge: deepensTopScrollEdge
+                )
                 .simultaneousGesture(TapGesture().onEnded {
                     KeyboardDismissal.dismiss()
                 })

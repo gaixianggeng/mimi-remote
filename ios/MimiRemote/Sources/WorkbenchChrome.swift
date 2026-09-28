@@ -851,15 +851,26 @@ extension View {
     /// 会话滚动边缘统一使用柔和渐隐：顶部正文进入导航控制层、底部正文经过 Composer
     /// 后方时都由系统提供渐进式虚化，不会像 `hard` 那样切出横贯全宽的边界线。
     /// iOS 26 之前没有该效果，保持原样。
+    ///
+    /// `deepensTopEdge` 在系统虚化之上再叠一层加深，只给没有侧栏的紧凑导航用：宽屏详情列
+    /// 顶部一旦被这层玻璃提亮，就会比相邻侧栏亮一档，界线正好压在分栏缝上。
     @ViewBuilder
-    func workbenchSoftConversationScrollEdges(allowsTopUnderlap: Bool) -> some View {
+    func workbenchSoftConversationScrollEdges(
+        allowsTopUnderlap: Bool,
+        deepensTopEdge: Bool = false
+    ) -> some View {
         if #available(iOS 26.0, *) {
             if allowsTopUnderlap {
                 // List 本来就绘制到导航栏后方，安全区只决定“静止时第一行落在哪里”。
                 // 这里不能再 ignoresSafeArea(.top)：那会把顶部内边距整个抹掉，静止状态的
                 // 首行内容直接顶进导航控制层，加载态的 ProgressView 会和标题副标题叠字。
                 // 需要的虚化由 scrollEdgeEffectStyle 在内容真正上滚重叠时提供。
-                scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                if deepensTopEdge {
+                    scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                        .modifier(WorkbenchTopScrollEdgeBoostModifier())
+                } else {
+                    scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                }
             } else {
                 scrollEdgeEffectStyle(.soft, for: .bottom)
             }
@@ -1459,7 +1470,7 @@ struct SessionNavigationMaterialModifier: ViewModifier {
                 // 对顶部滚动边缘做渐进模糊：`.thinMaterial` / `.ultraThinMaterial` 会在下沿切出
                 // 一条横贯全宽的灰带，即使换成画布色渐变，后方正文也只是被压淡而依然逐字清晰——
                 // 「挡住但还看得见」正是最难看的一档。真正的虚化只能来自 soft scroll edge，
-                // 所以这里让出底板，额外的压暗由 ConversationView 顶部那层渐隐叠加提供。
+                // 所以这里让出底板；紧凑导航下的额外加深见 WorkbenchTopScrollEdgeBoost。
                 .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
                 .toolbarColorScheme(colorScheme, for: .navigationBar)
         } else if usesCompactNavigation {
