@@ -235,6 +235,81 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(messages.filter { $0.stableID == completed.id }.count, 1)
     }
 
+    func testCompletedUserWithoutClientIDDoesNotReconcileTurnBoundGuidance() {
+        let store = ConversationStore()
+        let sessionID = "thread-turn-bound-guidance"
+        let clientMessageID = "client-turn-bound-guidance"
+        let sentAt = Date(timeIntervalSince1970: 100)
+        store.appendLocalUser(
+            "继续检查",
+            sessionID: sessionID,
+            clientMessageID: clientMessageID,
+            sendStatus: .sent,
+            userDelivery: .guided,
+            createdAt: sentAt
+        )
+        XCTAssertTrue(store.bindTurnID("turn-active", clientMessageID: clientMessageID, sessionID: sessionID))
+
+        store.completeMessage(
+            AgentMessage(
+                id: "appserver:turn-active:user-history",
+                sessionID: sessionID,
+                turnID: "turn-active",
+                itemID: "user-history",
+                role: .user,
+                content: "继续检查",
+                createdAt: sentAt.addingTimeInterval(1),
+                revision: 1,
+                sendStatus: .confirmed
+            ),
+            metadata: .empty,
+            fallbackSessionID: sessionID
+        )
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages.first { $0.clientMessageID == clientMessageID }?.sendStatus, .sent)
+    }
+
+    func testCompletedUserWithoutClientIDUsesMetadataTimeForLegacyMatch() {
+        let store = ConversationStore()
+        let sessionID = "thread-old-user-replay"
+        let sentAt = Date()
+        store.appendLocalUser(
+            "重复文本",
+            sessionID: sessionID,
+            clientMessageID: "client-new-user",
+            sendStatus: .sent,
+            createdAt: sentAt
+        )
+
+        store.completeMessage(
+            AgentMessage(
+                id: "appserver:turn-old:user-old",
+                sessionID: sessionID,
+                turnID: "turn-old",
+                itemID: "user-old",
+                role: .user,
+                content: "重复文本",
+                revision: 1,
+                sendStatus: .confirmed
+            ),
+            metadata: AgentEventMetadata(
+                seq: nil,
+                sessionID: sessionID,
+                turnID: "turn-old",
+                itemID: "user-old",
+                messageID: "appserver:turn-old:user-old",
+                clientMessageID: nil,
+                revision: 1,
+                createdAt: sentAt.addingTimeInterval(-11 * 60)
+            ),
+            fallbackSessionID: sessionID
+        )
+
+        XCTAssertEqual(store.messages(for: sessionID).count, 2)
+    }
+
     func testLegacyClaudeSnapshotDeduplicatesConfirmedLocalUserEcho() {
         let localID = UUID()
         let local = ConversationMessage(

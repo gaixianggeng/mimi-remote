@@ -704,7 +704,11 @@ final class ConversationStore: ObservableObject {
                   !boundTurnID.isEmpty else { return index }
             return message.turnID == boundTurnID ? index : nil
         }
-        let matchingLegacyUserIndex = legacyUserEchoIndex(for: message, in: list)
+        let matchingLegacyUserIndex = legacyUserEchoIndex(
+            for: message,
+            eventCreatedAt: metadata.createdAt,
+            in: list
+        )
         if let index = matchingStableIndex ?? matchingClientIndex ?? matchingLegacyUserIndex {
             let previous = list[index]
             list[index].stableID = stableID
@@ -788,7 +792,11 @@ final class ConversationStore: ObservableObject {
         }
     }
 
-    private func legacyUserEchoIndex(for message: AgentMessage, in list: [ConversationMessage]) -> Int? {
+    private func legacyUserEchoIndex(
+        for message: AgentMessage,
+        eventCreatedAt: Date?,
+        in list: [ConversationMessage]
+    ) -> Int? {
         guard message.role == .user,
               message.clientMessageID == nil else {
             return nil
@@ -797,20 +805,14 @@ final class ConversationStore: ObservableObject {
         guard !incomingText.isEmpty else {
             return nil
         }
-        let incomingCreatedAt = message.createdAt ?? Date()
+        let incomingCreatedAt = message.createdAt ?? eventCreatedAt ?? Date()
         let candidates = list.indices.filter { index in
             let local = list[index]
             guard local.role == .user,
                   local.clientMessageID != nil,
+                  local.turnID?.isEmpty != false,
                   local.sendStatus != .confirmed,
                   abs(local.createdAt.timeIntervalSince(incomingCreatedAt)) <= 10 * 60 else {
-                return false
-            }
-            if let localTurnID = local.turnID,
-               let incomingTurnID = message.turnID,
-               !localTurnID.isEmpty,
-               !incomingTurnID.isEmpty,
-               localTurnID != incomingTurnID {
                 return false
             }
             // 老 Claude bridge 的首条完成事件可能缺 client_message_id，并把附件清单
