@@ -778,7 +778,7 @@ final class HostStore {
             deepSeekError = result.enabled && !result.available ? result.message : nil
             if result.restartRequired {
                 do {
-                    try await reloadMacAgentForConfigurationChange()
+                    try await reloadMacAgentForConfigurationChange(fastRestart: true)
                 } catch {
                     // 配置已提交但服务未加载时必须明确区分，不能把预检成功显示为已连接。
                     deepSeekError = "配置已保存，但 agentd 重新加载失败。请重试启动服务。\(error.localizedDescription)"
@@ -1211,7 +1211,7 @@ final class HostStore {
         }
     }
 
-    private func reloadMacAgentForConfigurationChange() async throws {
+    private func reloadMacAgentForConfigurationChange(fastRestart: Bool = false) async throws {
         try validateMacAgentConfiguration()
         lifecycle = .starting
         let endpoint: String?
@@ -1222,6 +1222,13 @@ final class HostStore {
         }
         switch services.agentStatus() {
         case .enabled:
+            if fastRestart && services.isAgentRegistrationCurrent() {
+                do {
+                    try await services.restartAgent()
+                    try await waitForMacAgentReady()
+                    return
+                } catch { /* 快速重启失败才回退完整登记换代。 */ }
+            }
             try await unregisterMacAgentAndWait(endpoint: endpoint)
         case .notRegistered, .notFound:
             // main 已把 `.notFound` 视为 BTM 记录缺失等可恢复状态；配置重载时

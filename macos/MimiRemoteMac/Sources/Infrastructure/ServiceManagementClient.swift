@@ -15,6 +15,9 @@ struct ServiceManagementClient {
     var markAgentRegistrationCurrent: @MainActor () -> Void
     var registerAgent: @MainActor () throws -> Void
     var unregisterAgent: @MainActor () async throws -> Void
+    var restartAgent: @MainActor () async throws -> Void = {
+        throw AgentClientError.commandFailed("快速重启后台服务不可用")
+    }
     /// launchd 是否正卡在反复拉起却启动不了 agentd 的循环里（例如覆盖安装后
     /// BTM 复用了旧 App 的 Launch Constraint）。返回非空即表示需要立即换代登记。
     var agentLaunchFailure: @MainActor () async -> String?
@@ -61,6 +64,21 @@ extension ServiceManagementClient {
                 guard service.status != .notRegistered, service.status != .notFound else { return }
                 // 使用异步 API 等待系统真正终止旧进程；回调完成后才可安全重新注册。
                 try await service.unregister()
+            },
+            restartAgent: {
+                // 配置变更只需重启已登记的 job；完整注销会让 BTM 重新登记并延长等待。
+                let target = "gui/\(getuid())/\(agentLabel)"
+                let result = try await executor.run(
+                    executable: launchctl,
+                    arguments: ["kickstart", "-k", target],
+                    timeout: .seconds(10),
+                    outputLimit: 4 * 1024,
+                    environment: environment,
+                    forceKillAfterTimeout: true
+                )
+                guard result.status == 0 else {
+                    throw AgentClientError.commandFailed("快速重启后台服务失败")
+                }
             },
             agentLaunchFailure: {
                 // SMAppService 在 launchd 拉不起进程时仍报告 enabled，只有 launchd
