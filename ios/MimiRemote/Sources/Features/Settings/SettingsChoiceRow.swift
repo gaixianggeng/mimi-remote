@@ -97,8 +97,6 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
 
     let title: String
     let systemImage: String
-    /// 整行的说明，排在标题下方；选中项自带说明时以选中项为准。
-    var detail: String? = nil
     let options: [Option]
     @Binding var selection: Option
     var presentation: SettingsChoicePresentation = .inline
@@ -169,7 +167,7 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
                 Text(title)
                     .settingsTitleFont()
                     .foregroundStyle(tokens.primaryText)
-                if let subtitle = selection.choiceSubtitle ?? detail {
+                if let subtitle = selection.choiceSubtitle {
                     Text(subtitle)
                         .settingsDetailFont()
                         .foregroundStyle(tokens.secondaryText)

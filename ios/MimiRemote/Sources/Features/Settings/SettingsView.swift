@@ -29,10 +29,9 @@ enum SettingsLayoutMetrics {
     static let groupTitleTopInset: CGFloat = 6
     /// 分组脚注离上方最后一行的距离；脚注下方不再留白，由下一组标题上方的留白接上。
     static let groupFooterTopSpacing: CGFloat = 6
-    /// 选中行（当前电脑）的底色：与「优先使用」选中胶囊同色的圆角底，左右比行内容各宽出 12pt
-    /// （行内容离行边 16pt，底色收进 4pt）。
-    static let selectedRowCornerRadius: CGFloat = 12
-    static let selectedRowHorizontalInset: CGFloat = 4
+    /// 当前电脑状态值的灰底胶囊：内边距与高度按「优先使用」的选项胶囊取。
+    static let valueCapsuleHorizontalPadding: CGFloat = 10
+    static let valueCapsuleMinHeight: CGFloat = 28
     /// 行尾标记（刷新、展开箭头）按系统导航箭头取：宽度、字号、到值文字的间距。
     static let trailingAccessoryWidth: CGFloat = 16
     static let trailingAccessoryPointSize: CGFloat = 14
@@ -313,7 +312,8 @@ struct SettingsView: View {
                         title: L10n.text("ui.personalization"),
                         value: themeStore.mode.title,
                         systemImage: "circle.lefthalf.filled",
-                        symbolPointSize: 16
+                        symbolPointSize: 16,
+                        valueStyle: .capsule
                     )
                 }
                 .settingsStandardListRow()
@@ -323,7 +323,8 @@ struct SettingsView: View {
                     SettingsValueLabel(
                         title: L10n.text("ui.language"),
                         value: languageSettingsSummary,
-                        systemImage: "globe"
+                        systemImage: "globe",
+                        valueStyle: .capsule
                     )
                 }
                 .settingsStandardListRow()
@@ -345,7 +346,8 @@ struct SettingsView: View {
                     SettingsValueLabel(
                         title: L10n.text("ui.default_permissions"),
                         value: ComposerPermissionMode.stored(defaultPermissionModeID).title,
-                        systemImage: "lock.shield"
+                        systemImage: "lock.shield",
+                        valueStyle: .capsule
                     )
                 }
                 .settingsStandardListRow()
@@ -534,6 +536,14 @@ struct SettingsView: View {
 
 }
 
+/// 行尾的值怎么呈现：普通次级文字，或装进与「优先使用」选中胶囊同色的灰底胶囊。
+/// 设备、我的两个 Tab 的值都用胶囊：页面大面积平铺，与会话、工作区一致，
+/// 只用这些小块把「当前是什么」点出来（#575）；设置详情页仍用普通文字。
+enum SettingsValueStyle {
+    case plain
+    case capsule
+}
+
 struct SettingsValueLabel: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -546,6 +556,7 @@ struct SettingsValueLabel: View {
     /// 动作行（点了就执行，不导航）用强调色标题区分于导航行，与列表里的按钮惯例一致。
     var titleTint: Color? = nil
     var symbolPointSize: CGFloat = SettingsLayoutMetrics.symbolPointSize
+    var valueStyle: SettingsValueStyle = .plain
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -572,7 +583,12 @@ struct SettingsValueLabel: View {
                     }
                     VStack(alignment: .leading, spacing: 4) {
                         titleText(tokens: tokens)
+                        // 胶囊自带内边距，折行时回退同样距离，胶囊里的字与标题左对齐。
                         valueText(value, tokens: tokens)
+                            .padding(
+                                .leading,
+                                valueStyle == .capsule ? -SettingsLayoutMetrics.valueCapsuleHorizontalPadding : 0
+                            )
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 10)
@@ -595,12 +611,28 @@ struct SettingsValueLabel: View {
             .layoutPriority(1)
     }
 
+    @ViewBuilder
     private func valueText(_ value: String, tokens: ThemeTokens) -> some View {
-        Text(value)
-            .settingsDetailFont()
-            .monospacedDigit()
-            .foregroundStyle(valueTint ?? tokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
+        switch valueStyle {
+        case .plain:
+            Text(value)
+                .settingsDetailFont()
+                .monospacedDigit()
+                .foregroundStyle(valueTint ?? tokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        case .capsule:
+            // 与「优先使用」选中胶囊同一种灰底。灰底上次级灰字对比度不足（浅色约 3.7:1），
+            // 字改用正文色；失败等状态仍用各自的警示色。
+            Text(value)
+                .settingsDetailFont()
+                .monospacedDigit()
+                .foregroundStyle(valueTint ?? tokens.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, SettingsLayoutMetrics.valueCapsuleHorizontalPadding)
+                .padding(.vertical, 4)
+                .frame(minHeight: SettingsLayoutMetrics.valueCapsuleMinHeight)
+                .background(tokens.selectionFill, in: Capsule())
+        }
     }
 
     private var rowHeight: CGFloat {

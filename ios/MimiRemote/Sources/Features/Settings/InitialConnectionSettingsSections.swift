@@ -376,6 +376,7 @@ struct InitialConnectionSettingsSections: View {
                     .accessibilityIdentifier("settings.connection.error")
             }
 
+            // 线路、连接方式、诊断的值装进与「优先使用」选中胶囊同色的灰底胶囊（见 SettingsValueStyle）。
             routeStatusRow(tokens: tokens)
             connectionMethodRows(tokens: tokens)
 
@@ -383,7 +384,8 @@ struct InitialConnectionSettingsSections: View {
                 ConnectionRowLabel(
                     title: L10n.text("ui.connection_diagnostics"),
                     value: connectionDiagnosticsSummary,
-                    systemImage: "stethoscope"
+                    systemImage: "stethoscope",
+                    valueStyle: .capsule
                 )
             }
             .settingsStandardListRow()
@@ -401,7 +403,8 @@ struct InitialConnectionSettingsSections: View {
             value: routeProbeSummary,
             isFailed: routeProbeFailed,
             isBusy: draft.isProbingRoute,
-            isEnabled: appStore.isConfigured
+            isEnabled: appStore.isConfigured,
+            valueStyle: .capsule
         ) {
             Task { await refreshRouteProbe() }
         }
@@ -545,13 +548,6 @@ struct InitialConnectionSettingsSections: View {
         }
         .padding(.vertical, 8)
         .frame(minHeight: SettingsLayoutMetrics.deviceRowHeight)
-        // 当前电脑就是几台电脑里「选中」的那一台：垫一层与「优先使用」选中胶囊同色的底，
-        // 不另画卡片或徽章。底色比行内容左右各宽出 12pt，文字仍在原来的竖线上。
-        .listRowBackground(
-            RoundedRectangle(cornerRadius: SettingsLayoutMetrics.selectedRowCornerRadius, style: .continuous)
-                .fill(tokens.selectionFill)
-                .padding(.horizontal, SettingsLayoutMetrics.selectedRowHorizontalInset)
-        )
         .alignmentGuide(.listRowSeparatorLeading) { _ in SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.profile.\(item.id)")
@@ -751,7 +747,8 @@ struct InitialConnectionSettingsSections: View {
                     value: appStore.activeConnectionProfile?.connectionRoute.isManaged == true
                         ? tailcatController.state.connectionMethodSummary
                         : L10n.text("ui.managed_connection_recommended_value"),
-                    systemImage: "network"
+                    systemImage: "network",
+                    valueStyle: .capsule
                 )
             }
             .settingsStandardListRow()
@@ -763,7 +760,8 @@ struct InitialConnectionSettingsSections: View {
                 ConnectionRowLabel(
                     title: L10n.text("ui.connection_method"),
                     value: currentConnectionMethodTitle,
-                    systemImage: "point.3.connected.trianglepath.dotted"
+                    systemImage: "point.3.connected.trianglepath.dotted",
+                    valueStyle: .capsule
                 )
             }
             .settingsStandardListRow()
