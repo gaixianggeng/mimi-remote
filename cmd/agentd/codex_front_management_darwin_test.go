@@ -248,7 +248,7 @@ func TestCodexFrontServeMigrationDoesNotWaitForActiveConnection(t *testing.T) {
 	defer unlock()
 
 	start := time.Now()
-	err = runCodexFrontInstallWithOpsAndMigrationTimeout([]string{
+	err = runCodexFrontInstallWithOpsAndLockTimeout([]string{
 		"install", "--direct", "--config", configPath, "--label", label,
 		"--plist", plistPath, "--log-file", filepath.Join(root, "front.log"),
 	}, &bytes.Buffer{}, fake.ops(), 50*time.Millisecond)
