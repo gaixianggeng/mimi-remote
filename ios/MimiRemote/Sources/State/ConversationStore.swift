@@ -704,7 +704,8 @@ final class ConversationStore: ObservableObject {
                   !boundTurnID.isEmpty else { return index }
             return message.turnID == boundTurnID ? index : nil
         }
-        if let index = matchingStableIndex ?? matchingClientIndex {
+        let matchingLegacyUserIndex = legacyUserEchoIndex(for: message, in: list)
+        if let index = matchingStableIndex ?? matchingClientIndex ?? matchingLegacyUserIndex {
             let previous = list[index]
             list[index].stableID = stableID
             // 服务端 user item 回显可能早于或晚于 turn/start ACK。两条链路都要把
@@ -785,6 +786,45 @@ final class ConversationStore: ObservableObject {
             list.append(completedMessage)
             appendMessageWithIndex(completedMessage, list: list, sessionID: sessionID)
         }
+    }
+
+    private func legacyUserEchoIndex(for message: AgentMessage, in list: [ConversationMessage]) -> Int? {
+        guard message.role == .user,
+              message.clientMessageID == nil else {
+            return nil
+        }
+        let incomingText = normalizedUserEchoText(message.content)
+        guard !incomingText.isEmpty else {
+            return nil
+        }
+        let incomingCreatedAt = message.createdAt ?? Date()
+        let candidates = list.indices.filter { index in
+            let local = list[index]
+            guard local.role == .user,
+                  local.clientMessageID != nil,
+                  local.sendStatus != .confirmed,
+                  abs(local.createdAt.timeIntervalSince(incomingCreatedAt)) <= 10 * 60 else {
+                return false
+            }
+            if let localTurnID = local.turnID,
+               let incomingTurnID = message.turnID,
+               !localTurnID.isEmpty,
+               !incomingTurnID.isEmpty,
+               localTurnID != incomingTurnID {
+                return false
+            }
+            // 老 Claude bridge 的首条完成事件可能缺 client_message_id，并把附件清单
+            // 包在正文中。用用户实际可见的文本对账，同时保留本地结构化图片载荷。
+            let localText = local.turnPayload?.textPrompt ?? local.content
+            return normalizedUserEchoText(localText) == incomingText
+        }
+        // 相同正文存在多个待确认发送时无法判断对应关系，宁可保留也不误吞真实消息。
+        return candidates.count == 1 ? candidates.first : nil
+    }
+
+    private func normalizedUserEchoText(_ content: String) -> String {
+        ConversationUserMessagePresentation.displayContent(from: content)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func historyProjectedTwinIndex(for message: ConversationMessage, in list: [ConversationMessage]) -> Int? {
