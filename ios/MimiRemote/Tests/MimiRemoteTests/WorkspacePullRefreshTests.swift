@@ -12,6 +12,139 @@ final class WorkspacePullRefreshTests: XCTestCase {
     /// SwiftUI 是否重新执行 .refreshable 并不确定，会让用例偶发空跑；
     /// 首屏 single-flight 的复用语义已由 WorkspaceSessionSingleFlightTests 在 Store 层覆盖。
     func testPullRefreshPublishesSessionsWithoutRequestingWorkspaceGitSummaries() async throws {
+        try await assertPullRefresh(runtimeProvider: "codex")
+    }
+
+    func testClaudePullRefreshPublishesSessionsWithoutRequestingWorkspaceGitSummaries() async throws {
+        try await assertPullRefresh(runtimeProvider: "claude")
+    }
+
+    func testRefreshOwnerSurvivesWaiterCancellationForBothRuntimes() async throws {
+        try await assertRefreshOwnerCancellation(cancelsOwner: false)
+    }
+
+    func testRefreshOwnerRejectsCancelledPageForBothRuntimes() async throws {
+        try await assertRefreshOwnerCancellation(cancelsOwner: true)
+    }
+
+    func testRefreshOwnerRejectsPreviousHostForBothRuntimes() async throws {
+        try await assertRefreshOwnerCancellation(cancelsOwner: false, changesHost: true)
+    }
+
+    func testRefreshOwnerRejectsChangedWorkspacePathForBothRuntimes() async throws {
+        try await assertRefreshOwnerCancellation(cancelsOwner: false, changesPath: true)
+    }
+
+    private func assertRefreshOwnerCancellation(
+        cancelsOwner: Bool, changesHost: Bool = false, changesPath: Bool = false
+    ) async throws {
+        for runtime in ["codex", "claude"] {
+            let appStore = makeIsolatedAppStore()
+            let project = AgentProject(id: "owner", name: "owner", path: "/workspace/owner")
+            let workspace = AgentWorkspace(project: project)
+            let session = AgentSession(
+                id: "new-\(runtime)", projectID: project.id, project: project.name,
+                dir: project.path, title: "new", status: "history", source: runtime,
+                runtimeProvider: runtime, resumeID: nil, createdAt: Date(), updatedAt: Date()
+            )
+            let summary = try JSONDecoder().decode(
+                GitStatusResponse.self, from: Data("{\"path\":\"/workspace/owner\",\"is_repository\":false,\"files\":[]}".utf8)
+            )
+            let client = PullRefreshClient(
+                projects: [project], initialPage: SessionsPage(sessions: [session]),
+                gitProbe: PullRefreshGitProbe(), gitSummary: summary
+            )
+            let store = SessionStore(
+                appStore: appStore, conversationStore: ConversationStore(), logStore: LogStore(),
+                recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [workspace], endpoint: appStore.endpoint),
+                clientFactory: { client }
+            )
+            store.reloadRecentWorkspaces()
+            let key = WorkspaceSessionPresentationKey(
+                hostScope: appStore.activeHostScope, workspaceID: project.id,
+                workspacePath: project.path, runtimeProvider: runtime
+            )
+            let owner = WorkspaceSessionRefreshOwner()
+            let gate = PullRefreshRequestGate()
+            defer { gate.release(); owner.cancelAll() }
+            client.holdNextSessionPage(with: gate)
+            var returnedPage: SessionsPage?
+            var failure: Error?
+            let waiter = Task { @MainActor in
+                await owner.refresh(key: key) {
+                    do {
+                        returnedPage = try await store.workspaceRuntimeSessionsPage(
+                            projectID: project.id, runtimeProvider: runtime, cursor: nil,
+                            limit: SessionStore.initialSessionPageLimit, restartFromFirst: true
+                        )
+                    } catch { failure = error }
+                }
+            }
+            try await waitForRefreshUI("owned request did not start") { gate.hasStarted }
+            waiter.cancel()
+            if cancelsOwner { owner.cancelAll() }
+            if changesHost {
+                _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+                    endpoint: "http://other-host.local:8787", token: "test-token"
+                ))
+            }
+            if changesPath {
+                store.recentWorkspaces = [AgentWorkspace(project: AgentProject(
+                    id: project.id, name: project.name, path: "/workspace/remapped"
+                ))]
+            }
+            gate.release()
+            await waiter.value
+            if cancelsOwner || changesHost || changesPath {
+                XCTAssertTrue(failure is CancellationError)
+                XCTAssertNil(returnedPage)
+                XCTAssertNil(store.sessionsByID[session.id])
+                XCTAssertTrue(store.directoryScopedSessions(workspaceID: project.id, runtimeProvider: runtime).isEmpty)
+            } else {
+                XCTAssertNil(failure)
+                XCTAssertEqual(returnedPage?.sessions.map(\.id), [session.id])
+                XCTAssertNotNil(store.sessionsByID[session.id])
+                XCTAssertEqual(store.directoryScopedSessions(workspaceID: project.id, runtimeProvider: runtime).map(\.id), [session.id])
+            }
+        }
+    }
+
+    func testRepeatedRefreshKeepsNewOwnerWhenOldRequestReturns() async throws {
+        let owner = WorkspaceSessionRefreshOwner()
+        let key = WorkspaceSessionPresentationKey(
+            hostScope: makeIsolatedAppStore().activeHostScope,
+            workspaceID: "repeat", workspacePath: "/workspace/repeat", runtimeProvider: "claude"
+        )
+        let oldGate = PullRefreshRequestGate()
+        let newGate = PullRefreshRequestGate()
+        defer { oldGate.release(); newGate.release(); owner.cancelAll() }
+        var oldCancelled = false
+        var newCancelled = false
+        let oldWaiter = Task { @MainActor in
+            await owner.refresh(key: key) {
+                await oldGate.wait()
+                oldCancelled = Task.isCancelled
+            }
+        }
+        try await waitForRefreshUI { oldGate.hasStarted }
+        let newWaiter = Task { @MainActor in
+            await owner.refresh(key: key) {
+                await newGate.wait()
+                newCancelled = Task.isCancelled
+            }
+        }
+        try await waitForRefreshUI { newGate.hasStarted }
+        oldGate.release()
+        await oldWaiter.value
+        XCTAssertTrue(oldCancelled)
+        // 旧 owner 的迟到清理不能移除新任务，否则导航取消将失效。
+        owner.cancelAll()
+        newGate.release()
+        await newWaiter.value
+        XCTAssertTrue(newCancelled)
+    }
+
+    private func assertPullRefresh(runtimeProvider: String) async throws {
         let appStore = makeIsolatedAppStore()
         _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
             endpoint: "http://workspace-refresh.local:8787",
@@ -26,12 +159,12 @@ final class WorkspacePullRefreshTests: XCTestCase {
         let initialSession = AgentSession(
             id: "initial-session", projectID: project.id, project: project.name,
             dir: project.path, title: "刷新前会话", status: "history",
-            source: "codex", runtimeProvider: "codex", resumeID: nil, createdAt: Date(), updatedAt: Date()
+            source: runtimeProvider, runtimeProvider: runtimeProvider, resumeID: nil, createdAt: Date(), updatedAt: Date()
         )
         let refreshedSession = AgentSession(
             id: "refreshed-session", projectID: project.id, project: project.name,
             dir: project.path, title: "下拉后出现", status: "history",
-            source: "codex", runtimeProvider: "codex", resumeID: nil, createdAt: Date(), updatedAt: Date()
+            source: runtimeProvider, runtimeProvider: runtimeProvider, resumeID: nil, createdAt: Date(), updatedAt: Date()
         )
         let gitProbe = PullRefreshGitProbe()
         let gitSummary = try JSONDecoder().decode(
@@ -56,7 +189,7 @@ final class WorkspacePullRefreshTests: XCTestCase {
         let themeDefaults = try XCTUnwrap(UserDefaults(suiteName: themeSuite))
         defer { themeDefaults.removePersistentDomain(forName: themeSuite) }
         let view = WorkspaceRootView(
-            selectedSessionRuntime: .constant(.codex), onStartSession: { _, _ in },
+            selectedSessionRuntime: .constant(runtimeProvider == "claude" ? .claude : .codex), onStartSession: { _, _ in },
             embedsNavigationStack: false, initialWorkspaceID: project.id
         )
         .environmentObject(appStore)
@@ -142,6 +275,10 @@ final class WorkspacePullRefreshTests: XCTestCase {
                 && store.sessionListFirstPageInFlightByKey.isEmpty
                 && !refreshControl.isRefreshing
         }
+        XCTAssertNotNil(store.sessionsByID[refreshedSession.id], "新会话必须提交 canonical Store")
+        XCTAssertTrue(store.directoryScopedSessions(
+            workspaceID: project.id, runtimeProvider: runtimeProvider
+        ).contains { $0.id == refreshedSession.id }, "新会话必须进入当前 Runtime 的目录列表")
         // 目录同步是下拉的附属工作，退到指示器之后仍然要跑；Git 摘要则一次都不能发。
         try await waitForRefreshUI(
             "下拉未触发后台目录同步：projectsCallCount=\(client.projectsCallCount)"
@@ -333,6 +470,10 @@ private final class PullRefreshClient: SessionStoreAPIClient {
             nextProjectsGate = gate
             projectsResult = projects
         }
+    }
+
+    func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
+        runtimeProvider == "codex" || runtimeProvider == "claude"
     }
 
     func projects() async throws -> [AgentProject] {
