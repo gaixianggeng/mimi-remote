@@ -61,6 +61,8 @@ flowchart LR
 
 宿主网关负责验证移动端连接，并连接到所选运行时。Mimi Remote 不提供云账号、会话托管或应用层中转。你选择使用的网络与第三方服务，包括 Tailscale、Codex、Claude Code、DeepSeek Harness、GitHub、语音转写和 MCP，按各自方式处理数据。锁屏审批提醒会使用小型推送服务，但默认关闭；服务接收的数据见[隐私政策](docs/privacy-policy.md)。
 
+Windows 上的 Codex App Server 使用本机 loopback WebSocket 传输，不直接向局域网开放。
+
 Mimi Remote 是会话客户端，不提供通用远程 Shell，也不在 iOS 内运行 Agent。Codex Desktop 普通的「This Mac」会话不会自动进入共享 App Server；支持的接入方式见[共享 App Server 说明](docs/shared-ssh-app-server.md)。安装和恢复见[平台指南](docs/install-upgrade-rollback.md)，安全问题按 [SECURITY.md](SECURITY.md) 私下报告。
 
 ## 源码与参与

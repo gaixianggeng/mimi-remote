@@ -261,6 +261,7 @@ struct WorkspaceRootView: View {
     @State private var manualCatalogRefreshInvocationID: UUID?
     @State private var runtimeSessionPagesByKey: [WorkspaceSessionPresentationKey: WorkspaceRuntimeSessionPageState] = [:]
     @State private var sessionLoadStates: [WorkspaceSessionPresentationKey: WorkspaceSessionLoadState] = [:]
+    @State private var sessionRefreshOwner = WorkspaceSessionRefreshOwner()
     @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
     /// canonical Store 可以持有超采样得到的额外 root；这里仅记录每个工作区已经向用户展开多少条。
     /// key 带 HostScope、路径和 Runtime，避免跨 Mac、目录身份或引擎复用旧窗口。
@@ -338,14 +339,20 @@ struct WorkspaceRootView: View {
             synchronizeSelection()
         }
         .onChange(of: appStore.activeHostScope) { _, _ in
+            sessionRefreshOwner.cancelAll()
             cancelManualCatalogRefresh()
         }
         .onChange(of: appStore.isCredentialMemorySuspended) { _, isSuspended in
             if isSuspended {
+                sessionRefreshOwner.cancelAll()
                 cancelManualCatalogRefresh()
             }
         }
+        .onChange(of: selectedWorkspaceID) { _, _ in
+            sessionRefreshOwner.cancelAll()
+        }
         .onDisappear {
+            sessionRefreshOwner.cancelAll()
             cancelManualCatalogRefresh()
         }
         .onChange(of: appStore.connectionProfiles) { _, _ in
@@ -1268,6 +1275,19 @@ struct WorkspaceRootView: View {
         project: AgentProject,
         presentationKey: WorkspaceSessionPresentationKey,
         restartFromFirst: Bool = false
+    ) async {
+        guard !Task.isCancelled else { return }
+        await sessionRefreshOwner.refresh(key: presentationKey) {
+            await performWorkspaceSessionsRefresh(
+                project: project, presentationKey: presentationKey, restartFromFirst: restartFromFirst
+            )
+        }
+    }
+
+    private func performWorkspaceSessionsRefresh(
+        project: AgentProject,
+        presentationKey: WorkspaceSessionPresentationKey,
+        restartFromFirst: Bool
     ) async {
         // 每个 Runtime 独立占有提交 token；切换筛选不会让旧请求覆盖当前 Runtime 的缓存。
         let invocationID = sessionLoadInvocationTokens.begin(for: presentationKey)
