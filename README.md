@@ -61,6 +61,8 @@ flowchart LR
 
 The host gateway authenticates the mobile connection and connects it to the selected runtime. Mimi Remote does not provide cloud accounts, session hosting, or an application-level relay. Network infrastructure and services you choose, including Tailscale, Codex, Claude Code, DeepSeek Harness, GitHub, voice transcription, and MCP, follow their own data practices. Optional Lock Screen approval reminders use a small push service; they are off by default. See the [privacy policy](docs/privacy-policy.md) for what that service receives.
 
+On Windows, the Codex App Server uses a loopback WebSocket transport and is not exposed directly to the LAN.
+
 Mimi Remote is a session client, not a general-purpose remote shell, and it does not run agents inside iOS. Codex Desktop's ordinary “This Mac” sessions are not automatically shared with its App Server. [Shared App Server setup](docs/shared-ssh-app-server.md) explains the supported Desktop connection. For setup and recovery, use the [installation guide](docs/install-upgrade-rollback.md); for security reports, use [SECURITY.md](SECURITY.md).
 
 ## Build and contribute
