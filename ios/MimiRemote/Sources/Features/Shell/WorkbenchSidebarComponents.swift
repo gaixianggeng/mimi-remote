@@ -160,7 +160,7 @@ struct AIUsageRingsControl: View {
                 Text(item.window.remainingText)
                     .font(themeStore.uiFont(.callout, weight: .semibold))
                     .foregroundStyle(
-                        item.window.remainingProgress == nil ? tokens.secondaryText : item.tint
+                        item.window.remainingProgress == nil ? tokens.secondaryText : tokens.primaryText
                     )
                     .monospacedDigit()
             }

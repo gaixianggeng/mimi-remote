@@ -876,7 +876,7 @@ struct AccountTokenUsageCard: View {
             .font(themeStore.uiFont(.caption, weight: .semibold))
             .monospacedDigit()
             .foregroundStyle(
-                item.window.remainingProgress == nil ? tokens.secondaryText : item.tint
+                item.window.remainingProgress == nil ? tokens.secondaryText : tokens.primaryText
             )
 
         if usesSingleLine {
