@@ -130,6 +130,25 @@ final class WorkspaceGitStoreTests: XCTestCase {
         XCTAssertEqual(store.workspaceGitSummaryByPath[path]?.head, "full")
     }
 
+    func testCancelledSummaryTaskDoesNotStartGitRequest() async {
+        let probe = WorkspaceGitClientProbe(status: status("cancelled"))
+        var creations = 0
+        let store = WorkspaceGitStore(
+            currentHostScope: { self.hostScope("a", generation: 1) },
+            clientFactory: { creations += 1; return probe }
+        )
+        let request = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await store.refreshWorkspaceGitSummary(path: path)
+        }
+        await request.value
+
+        XCTAssertEqual(creations, 0, "已取消的摘要任务不得创建客户端")
+        XCTAssertTrue(probe.summaryPaths.isEmpty, "已取消的摘要任务不得启动 Git 请求")
+        XCTAssertNil(store.workspaceGitSummaryByPath[path])
+        XCTAssertTrue(store.refreshingWorkspaceGitSummaryPaths.isEmpty)
+    }
+
     private func hostScope(_ id: String, generation: UInt64) -> HostScope {
         HostScope(profileID: id, installationID: "test-\(id)", generation: generation)
     }
