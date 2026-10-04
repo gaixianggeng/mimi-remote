@@ -36,7 +36,7 @@ struct AIUsageRingsControl: View {
             isCompact: horizontalSizeClass == .compact,
             usesCondensedVisual: usesCondensedVisual
         )
-        let items = usageItems(tokens: tokens)
+        let items = usageItems()
 
         CombinedUsageRingsGraphic(
             items: items,
@@ -68,7 +68,7 @@ struct AIUsageRingsControl: View {
     }
 
     private func usageDetails(tokens: ThemeTokens) -> some View {
-        let items = usageItems(tokens: tokens)
+        let items = usageItems()
 
         return VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
@@ -194,12 +194,11 @@ struct AIUsageRingsControl: View {
         await onRefresh()
     }
 
-    private func usageItems(tokens: ThemeTokens) -> [CombinedUsageItem] {
+    private func usageItems() -> [CombinedUsageItem] {
         CombinedUsageItem.make(
             codexDisplay: codexDisplay,
             claudeDisplay: claudeDisplay,
-            includesClaude: includesClaude,
-            claudeShortTint: tokens.accent
+            includesClaude: includesClaude
         )
     }
 

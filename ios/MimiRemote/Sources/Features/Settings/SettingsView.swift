@@ -1173,8 +1173,7 @@ struct AccountTokenUsageCard: View {
         CombinedUsageItem.make(
             codexDisplay: codexDisplay,
             claudeDisplay: claudeDisplay,
-            includesClaude: includesClaude,
-            claudeShortTint: themeStore.tokens(for: colorScheme).accent
+            includesClaude: includesClaude
         )
     }
 }

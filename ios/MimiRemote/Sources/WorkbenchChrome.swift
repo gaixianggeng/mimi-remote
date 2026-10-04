@@ -1568,6 +1568,10 @@ extension View {
 /// 设置页和工作台侧栏共用的额度窗口模型。集中选择规则后，两个入口不会因为
 /// 服务端 primary / secondary 槽位变化而展示不同的三个圆环。
 struct CombinedUsageItem: Identifiable {
+    private static let codexTint = Color(red: 24.0 / 255.0, green: 187.0 / 255.0, blue: 248.0 / 255.0)
+    private static let claudeLongTint = Color(red: 249.0 / 255.0, green: 111.0 / 255.0, blue: 137.0 / 255.0)
+    private static let claudeShortTint = Color(red: 51.0 / 255.0, green: 218.0 / 255.0, blue: 219.0 / 255.0)
+
     let runtimeProvider: String
     let providerName: String
     let window: CodexUsageWindowDisplay
@@ -1577,15 +1581,12 @@ struct CombinedUsageItem: Identifiable {
         "\(runtimeProvider):\(window.id)"
     }
 
+    // 三环由外到内依次是 Codex 长窗口、Claude 长窗口、Claude 短窗口。
+    // 颜色在此固定，设置页和侧栏的圆环、图例共享同一顺序。
     static func make(
         codexDisplay: CodexUsageWindowsDisplay,
         claudeDisplay: CodexUsageWindowsDisplay,
-        includesClaude: Bool,
-        // 三环由外到内依次是 Codex 长窗口、Claude 长窗口、Claude 短窗口。
-        // 外环使用青色、中环使用粉色；设置页与左上角入口复用这里，避免图例和圆环错位。
-        codexTint: Color = .cyan,
-        claudeLongTint: Color = .pink,
-        claudeShortTint: Color
+        includesClaude: Bool
     ) -> [CombinedUsageItem] {
         var items: [CombinedUsageItem] = []
 
@@ -1595,7 +1596,7 @@ struct CombinedUsageItem: Identifiable {
                     runtimeProvider: "codex",
                     providerName: providerName(for: codexDisplay, fallback: "Codex"),
                     window: codexWindow,
-                    tint: codexTint
+                    tint: Self.codexTint
                 )
             )
         }
@@ -1606,7 +1607,7 @@ struct CombinedUsageItem: Identifiable {
                     runtimeProvider: "claude",
                     providerName: providerName(for: claudeDisplay, fallback: "Claude"),
                     window: claudeLongWindow,
-                    tint: claudeLongTint
+                    tint: Self.claudeLongTint
                 )
             )
 
@@ -1619,7 +1620,7 @@ struct CombinedUsageItem: Identifiable {
                         runtimeProvider: "claude",
                         providerName: providerName(for: claudeDisplay, fallback: "Claude"),
                         window: claudeShortWindow,
-                        tint: claudeShortTint
+                        tint: Self.claudeShortTint
                     )
                 )
             }
