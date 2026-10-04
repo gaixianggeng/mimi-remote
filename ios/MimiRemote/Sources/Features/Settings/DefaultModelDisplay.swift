@@ -1,6 +1,17 @@
 import Foundation
 
 enum DefaultModelDisplay {
+    static func inheritedTitle(
+        for runtime: DefaultModelRuntime,
+        allOptions: [CodexAppServerModelOption],
+        isRefreshing: Bool
+    ) -> String {
+        // 默认项继续跟随解析策略，固定模型项则保存 ID；同名时也必须能区分。
+        L10n.format("ui.default_model_inherited_name", title(
+            for: runtime, allOptions: allOptions, isRefreshing: isRefreshing
+        ))
+    }
+
     static func title(
         for runtime: DefaultModelRuntime,
         allOptions: [CodexAppServerModelOption],

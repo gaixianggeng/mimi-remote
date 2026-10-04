@@ -2,6 +2,14 @@ import XCTest
 @testable import MimiRemote
 
 final class DefaultModelDisplayTests: XCTestCase {
+    func testInheritedPickerTitleDiffersFromPinnedCatalogTitle() {
+        let option = CodexAppServerModelOption(id: "gpt-custom", title: "Custom GPT", isDefault: true)
+        let inherited = DefaultModelDisplay.inheritedTitle(for: .codex, allOptions: [option], isRefreshing: false)
+        XCTAssertEqual(inherited, L10n.format("ui.default_model_inherited_name", option.menuTitle))
+        XCTAssertTrue(inherited.contains(option.menuTitle))
+        XCTAssertNotEqual(inherited, option.menuTitle)
+    }
+
     func testDisplayMatchesEffectiveDefaultWithoutSavingSelection() throws {
         let suite = "DefaultModelDisplayTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

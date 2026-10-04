@@ -1337,7 +1337,7 @@ private struct DefaultModelRuntimeSection: View {
     var body: some View {
         Section {
             Picker(L10n.text("ui.model"), selection: modelSelectionBinding) {
-                Text(DefaultModelDisplay.title(
+                Text(DefaultModelDisplay.inheritedTitle(
                     for: runtime, allOptions: allOptions, isRefreshing: isRefreshing
                 ))
                     .tag("")

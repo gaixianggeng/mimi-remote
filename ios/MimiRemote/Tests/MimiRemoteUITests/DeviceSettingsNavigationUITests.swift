@@ -161,8 +161,10 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         let claude = element("settings.defaultModels.model.claude")
         XCTAssertTrue(codex.waitForExistence(timeout: 8))
         XCTAssertTrue(claude.waitForExistence(timeout: 8))
-        XCTAssertEqual(codex.value as? String, "GPT-6 Astra")
-        XCTAssertTrue(["型号未确认", "正在加载模型…"].contains(claude.value as? String ?? ""))
+        XCTAssertEqual(codex.value as? String, "GPT-6 Astra（跟随默认）")
+        let claudeValue = claude.value as? String ?? ""
+        XCTAssertTrue(claudeValue.contains("型号未确认") || claudeValue.contains("正在加载模型…"))
+        XCTAssertTrue(claudeValue.contains("跟随默认"))
         capture("default-model-resolved-display")
     }
 
