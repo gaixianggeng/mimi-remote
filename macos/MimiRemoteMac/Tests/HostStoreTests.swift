@@ -2166,6 +2166,9 @@ final class HostStoreTests: XCTestCase {
         },
         registerAgent: @escaping @MainActor () throws -> Void = {},
         unregisterAgent: @escaping @MainActor () async throws -> Void = {},
+        restartAgent: @escaping @MainActor () async throws -> Void = {
+            throw AgentClientError.commandFailed("快速重启未配置")
+        },
         uninstallCodexFrontDoor: @escaping @Sendable () async throws -> Void = {},
         agentLaunchFailure: @escaping @MainActor () async -> String? = { nil },
         configCheck: AgentdConfigCheckClient = .disabled,
@@ -2250,6 +2253,7 @@ final class HostStoreTests: XCTestCase {
             markAgentRegistrationCurrent: markAgentRegistrationCurrent,
             registerAgent: registerAgent,
             unregisterAgent: unregisterAgent,
+            restartAgent: restartAgent,
             agentLaunchFailure: agentLaunchFailure,
             mainAppStatus: { .enabled },
             registerMainApp: {},

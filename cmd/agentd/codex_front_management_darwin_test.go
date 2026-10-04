@@ -219,6 +219,54 @@ func TestCodexFrontUpdateBootstrapFailureRestoresLoadedJob(t *testing.T) {
 	}
 }
 
+func TestCodexFrontServeMigrationDoesNotWaitForActiveConnection(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "front-active-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	setCodexFrontManagementTestHome(t, root)
+	configPath := writeCodexFrontManagementConfig(t, root, "public")
+	plistPath := filepath.Join(root, "front.plist")
+	label := "test.mimi.front.active-" + filepath.Base(root)
+	install, err := resolveCodexFrontInstallation(configPath, label, plistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(install.Socket), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldPlist := renderCodexFrontPlist(label, []string{"/usr/bin/old-agentd"}, install.Socket, "old", install.BackendHome)
+	if err := os.WriteFile(plistPath, oldPlist, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeCodexFrontLaunchd{loaded: true, job: append([]byte(nil), oldPlist...)}
+	unlock, err := install.door.LockMigration(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+
+	start := time.Now()
+	err = runCodexFrontInstallWithOpsAndLockTimeout([]string{
+		"install", "--direct", "--config", configPath, "--label", label,
+		"--plist", plistPath, "--log-file", filepath.Join(root, "front.log"),
+	}, &bytes.Buffer{}, fake.ops(), 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "等待前门共享连接结束失败") {
+		t.Fatalf("活动连接应暂缓换代：%v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("服务启动不能等满前门迁移时间：%s", elapsed)
+	}
+	onDisk, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(onDisk, oldPlist) || !fake.loaded || fake.bootstrapCalls != 0 {
+		t.Fatal("暂缓换代时必须保留原有前门登记和运行态")
+	}
+}
+
 func TestCodexFrontStatusWaitsForInstallSnapshot(t *testing.T) {
 	root, err := os.MkdirTemp("/tmp", "front-status-")
 	if err != nil {
