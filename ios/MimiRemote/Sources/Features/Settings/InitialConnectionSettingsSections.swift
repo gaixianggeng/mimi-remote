@@ -376,7 +376,6 @@ struct InitialConnectionSettingsSections: View {
                     .accessibilityIdentifier("settings.connection.error")
             }
 
-            // 线路、连接方式、诊断的值装进与「优先使用」选中胶囊同色的灰底胶囊（见 SettingsValueStyle）。
             routeStatusRow(tokens: tokens)
             connectionMethodRows(tokens: tokens)
 
@@ -384,8 +383,7 @@ struct InitialConnectionSettingsSections: View {
                 ConnectionRowLabel(
                     title: L10n.text("ui.connection_diagnostics"),
                     value: connectionDiagnosticsSummary,
-                    systemImage: "stethoscope",
-                    valueStyle: .capsule
+                    systemImage: "stethoscope"
                 )
             }
             .settingsStandardListRow()
@@ -403,8 +401,7 @@ struct InitialConnectionSettingsSections: View {
             value: routeProbeSummary,
             isFailed: routeProbeFailed,
             isBusy: draft.isProbingRoute,
-            isEnabled: appStore.isConfigured,
-            valueStyle: .capsule
+            isEnabled: appStore.isConfigured
         ) {
             Task { await refreshRouteProbe() }
         }
@@ -655,12 +652,12 @@ struct InitialConnectionSettingsSections: View {
 
     private func computerGlyph(_ item: ConnectionProfileSettingsItem) -> some View {
         // 平台图标用品牌原色：彩虹苹果、四色 Windows、黑白橙 Tux 一眼就能分出电脑，
-        // 比统一染成次级文字色更容易识别。只有未知平台的通用电脑轮廓继承次级墨色。
+        // 比统一染成图标色更容易识别。只有未知平台的通用电脑轮廓继承设置行的图标色。
         HostPlatformGlyph(
             kind: item.profile.hostPlatform.iconKind,
             size: SettingsLayoutMetrics.symbolPointSize
         )
-        .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+        .foregroundStyle(themeStore.tokens(for: colorScheme).settingsIconTint)
         .frame(width: SettingsLayoutMetrics.iconSlot, height: SettingsLayoutMetrics.iconSlot)
         .accessibilityHidden(true)
     }
@@ -747,8 +744,7 @@ struct InitialConnectionSettingsSections: View {
                     value: appStore.activeConnectionProfile?.connectionRoute.isManaged == true
                         ? tailcatController.state.connectionMethodSummary
                         : L10n.text("ui.managed_connection_recommended_value"),
-                    systemImage: "network",
-                    valueStyle: .capsule
+                    systemImage: "network"
                 )
             }
             .settingsStandardListRow()
@@ -760,8 +756,7 @@ struct InitialConnectionSettingsSections: View {
                 ConnectionRowLabel(
                     title: L10n.text("ui.connection_method"),
                     value: currentConnectionMethodTitle,
-                    systemImage: "point.3.connected.trianglepath.dotted",
-                    valueStyle: .capsule
+                    systemImage: "point.3.connected.trianglepath.dotted"
                 )
             }
             .settingsStandardListRow()
