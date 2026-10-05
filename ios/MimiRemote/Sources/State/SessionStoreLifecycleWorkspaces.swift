@@ -466,7 +466,8 @@ extension SessionStore {
             CodexHistoryMessage(
                 id: "\(sessionID)-assistant-2",
                 role: "assistant",
-                content: L10n.text("ui.the_screenshot_only_uses_users_demo_and_local"),
+                content: ProcessInfo.processInfo.environment["MIMI_DEBUG_MESSAGE_BODY"]
+                    ?? L10n.text("ui.the_screenshot_only_uses_users_demo_and_local"),
                 createdAt: now.addingTimeInterval(-60 * 4),
                 turnID: "\(sessionID)-turn-2",
                 itemID: "\(sessionID)-item-assistant-2",
