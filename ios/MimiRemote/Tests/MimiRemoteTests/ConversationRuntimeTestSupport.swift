@@ -585,6 +585,7 @@ func makeDirectAppServerConfig(
     project: AgentProject,
     gatewayAvailable: Bool = true,
     allowedMethods: [String]? = nil,
+    transport: String = "ws",
     channels: [CodexAppServerChannelMetadata] = []
 ) -> CodexAppServerConfigResponse {
     let defaultAllowedMethods = [
@@ -600,7 +601,7 @@ func makeDirectAppServerConfig(
         gatewayWSURL: gatewayAvailable ? "ws://127.0.0.1:7777/api/app-server/ws" : "",
         runtime: CodexAppServerRuntimeMetadata(
             type: "codex_app_server",
-            transport: "ws",
+            transport: transport,
             managed: true,
             gatewayAvailable: gatewayAvailable,
         upstreamConfigured: gatewayAvailable,
