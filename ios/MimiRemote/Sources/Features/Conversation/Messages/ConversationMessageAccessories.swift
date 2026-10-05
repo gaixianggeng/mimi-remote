@@ -467,51 +467,51 @@ struct RuntimeSummaryCard: View {
 }
 
 private struct MessageContextMenuModifier: ViewModifier {
-    @EnvironmentObject private var themeStore: ThemeStore
     let message: ConversationMessage
     let retry: (() -> Void)?
     let stop: (() -> Void)?
-    @State private var isSelectingText = false
+    @State private var selectionText: String?
 
     func body(content: Content) -> some View {
-        // 菜单只提供动作，预览由系统直接从调用处的真实消息表面生成。
-        // 各表面通过 .contentShape(.contextMenuPreview, ...) 声明自己的边界，
-        // 避免维护第二套会与 Markdown、图片和流式高度脱节的“假气泡”。
-        content
-            .contextMenu {
-                Button {
-                    UIPasteboard.general.string = message.content
-                } label: {
-                    Label(L10n.text("ui.copy"), systemImage: "doc.on.doc")
-                }
-
-                // 全幅气泡的 contextMenu 长按会抢占文本选区的长按手势，直接给正文加
-                // .textSelection 无法在气泡内起效；因此提供一个专用的可选择文本表面，
-                // 让用户能挑选返回内容里的任意片段单独复制。
-                if !selectableText.isEmpty {
+        Group {
+            if let selectedContent = selectionText {
+                MessageInlineTextSelection(
+                    text: selectedContent,
+                    role: message.role,
+                    selectionText: $selectionText
+                )
+            } else {
+                // 菜单预览使用消息真实表面；选文时才换成可选择的正文。
+                content.contextMenu {
                     Button {
-                        isSelectingText = true
+                        UIPasteboard.general.string = message.content
                     } label: {
-                        Label(L10n.text("ui.select_text"), systemImage: "text.cursor")
+                        Label(L10n.text("ui.copy"), systemImage: "doc.on.doc")
                     }
-                }
 
-                if message.role == .user && message.sendStatus == .failed, let retry {
-                    Button(action: retry) {
-                        Label(L10n.text("ui.try_again"), systemImage: "arrow.clockwise")
+                    // contextMenu 会抢占正文长按；选文模式移除菜单，让系统接管文本选区。
+                    if !selectableText.isEmpty {
+                        Button {
+                            selectionText = selectableText
+                        } label: {
+                            Label(L10n.text("ui.select_text"), systemImage: "text.cursor")
+                        }
                     }
-                }
 
-                if message.role == .assistant && message.sendStatus == .sending, let stop {
-                    Button(role: .destructive, action: stop) {
-                        Label(L10n.text("ui.stop"), systemImage: "stop.circle")
+                    if message.role == .user && message.sendStatus == .failed, let retry {
+                        Button(action: retry) {
+                            Label(L10n.text("ui.try_again"), systemImage: "arrow.clockwise")
+                        }
+                    }
+
+                    if message.role == .assistant && message.sendStatus == .sending, let stop {
+                        Button(role: .destructive, action: stop) {
+                            Label(L10n.text("ui.stop"), systemImage: "stop.circle")
+                        }
                     }
                 }
             }
-            .sheet(isPresented: $isSelectingText) {
-                MessageTextSelectionSheet(text: selectableText)
-                    .environmentObject(themeStore)
-            }
+        }
     }
 
     private var selectableText: String {
@@ -519,8 +519,46 @@ private struct MessageContextMenuModifier: ViewModifier {
     }
 }
 
-/// 可选择文本表面：正文渲染层被 contextMenu 手势占用，这里用一个不带长按菜单的
-/// 独立视图承载 `.textSelection(.enabled)`，从而支持逐句/逐段挑选复制。
+private struct MessageInlineTextSelection: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let text: String
+    let role: ConversationMessage.Role
+    @Binding var selectionText: String?
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                selectionText = nil
+            } label: {
+                HStack {
+                    Text(L10n.text("ui.select_text"))
+                        .foregroundStyle(tokens.secondaryText)
+                    Spacer(minLength: 12)
+                    Text(L10n.text("ui.close"))
+                }
+                .font(themeStore.uiFont(.caption, weight: .semibold))
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(L10n.text("ui.close"))
+
+            Text(text)
+                .font(themeStore.uiFont(.body))
+                .foregroundStyle(role == .user ? tokens.userBubbleForeground : tokens.conversationPrimaryText)
+                .lineSpacing(2)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(14)
+        .background(role == .user ? tokens.userBubble : tokens.assistantBubble,
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+/// 转写草稿仍用独立选文页面；消息正文使用原位选文模式。
 struct MessageTextSelectionSheet: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
