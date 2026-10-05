@@ -89,6 +89,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/DeepSeekComposerPolicyTests \
   -only-testing:MimiRemoteTests/DeepSeekSearchRoutingTests \
   -only-testing:MimiRemoteTests/DeepSeekRuntimePresentationTests \
+  -only-testing:MimiRemoteTests/DefaultModelDisplayTests \
   -only-testing:MimiRemoteTests/HarnessNativeRoutingSeamTests \
   -only-testing:MimiRemoteTests/SessionObservationLeaseTests \
   -only-testing:MimiRemoteTests/HarnessTransportTests \

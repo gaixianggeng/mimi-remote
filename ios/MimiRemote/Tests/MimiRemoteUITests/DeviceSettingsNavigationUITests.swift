@@ -152,6 +152,22 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         capture("manual-draft-portrait")
     }
 
+    func testDefaultModelsShowEffectiveNameAndHonestUnknownState() throws {
+        openMe()
+        let row = element("settings.defaultModels")
+        scrollTo(row)
+        row.tap()
+        let codex = element("settings.defaultModels.model.codex")
+        let claude = element("settings.defaultModels.model.claude")
+        XCTAssertTrue(codex.waitForExistence(timeout: 8))
+        XCTAssertTrue(claude.waitForExistence(timeout: 8))
+        XCTAssertEqual(codex.value as? String, "GPT-6 Astra（跟随默认）")
+        let claudeValue = claude.value as? String ?? ""
+        XCTAssertTrue(claudeValue.contains("型号未确认") || claudeValue.contains("正在加载模型…"))
+        XCTAssertTrue(claudeValue.contains("跟随默认"))
+        capture("default-model-resolved-display")
+    }
+
     func testAllSettingsDestinationsRemainReachable() throws {
         // 只检查本次样式覆盖的可达入口，不发起真实网络诊断或购买。
         openMe()

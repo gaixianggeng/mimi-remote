@@ -1226,6 +1226,7 @@ struct DefaultModelSettingsView: View {
                 DefaultModelRuntimeSection(
                     runtime: runtime,
                     allOptions: sessionStore.appServerModelOptions,
+                    isRefreshing: sessionStore.isRefreshingAppServerModels,
                     tokens: tokens,
                     footer: runtime == runtimes.last
                         ? L10n.text("ui.default_model_settings_description")
@@ -1300,6 +1301,7 @@ struct DefaultModelSettingsView: View {
 private struct DefaultModelRuntimeSection: View {
     let runtime: DefaultModelRuntime
     let allOptions: [CodexAppServerModelOption]
+    let isRefreshing: Bool
     let tokens: ThemeTokens
     let footer: String?
     /// 页面第一段不画分组细线。
@@ -1311,12 +1313,14 @@ private struct DefaultModelRuntimeSection: View {
     init(
         runtime: DefaultModelRuntime,
         allOptions: [CodexAppServerModelOption],
+        isRefreshing: Bool,
         tokens: ThemeTokens,
         footer: String?,
         showsDivider: Bool
     ) {
         self.runtime = runtime
         self.allOptions = allOptions
+        self.isRefreshing = isRefreshing
         self.tokens = tokens
         self.footer = footer
         self.showsDivider = showsDivider
@@ -1333,7 +1337,9 @@ private struct DefaultModelRuntimeSection: View {
     var body: some View {
         Section {
             Picker(L10n.text("ui.model"), selection: modelSelectionBinding) {
-                Text(L10n.text("ui.use_built_in_default"))
+                Text(DefaultModelDisplay.inheritedTitle(
+                    for: runtime, allOptions: allOptions, isRefreshing: isRefreshing
+                ))
                     .tag("")
                 ForEach(modelOptions) { option in
                     Text(option.menuTitle)

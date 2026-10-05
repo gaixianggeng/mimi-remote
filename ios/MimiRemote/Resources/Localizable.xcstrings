@@ -1,6 +1,58 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.default_model_inherited_name": {
+      "comment": "Model name for the inherited default option, distinct from pinning the same model.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ (follow default)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@（跟随默认）"
+          }
+        }
+      }
+    },
+    "ui.default_model_loading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading model…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载模型…"
+          }
+        }
+      }
+    },
+    "ui.default_model_unconfirmed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model not confirmed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "型号未确认"
+          }
+        }
+      }
+    },
     "ui.search_runtime_unavailable": {
       "comment": "A search may succeed for one runtime while another fails. Keep the available results visible.",
       "localizations": {
