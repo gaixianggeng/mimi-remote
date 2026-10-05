@@ -468,31 +468,31 @@ struct RuntimeSummaryCard: View {
 
 private struct MessageContextMenuModifier: ViewModifier {
     let message: ConversationMessage
+    let hasSelectableBody: Bool
     let retry: (() -> Void)?
     let stop: (() -> Void)?
-    @State private var selectionText: String?
+    @State private var isSelectingCardText = false
 
     func body(content: Content) -> some View {
         Group {
-            if let selectedContent = selectionText {
-                MessageInlineTextSelection(
-                    text: selectedContent,
-                    role: message.role,
-                    selectionText: $selectionText
-                )
+            if usesNativeTextActions {
+                // 正文自己协调长按菜单和系统选区，外层不再安装会抢占同一手势的 contextMenu。
+                content.environment(\.messageTextActions, MessageTextActions(
+                    copyText: message.visibleCopyText,
+                    retry: message.role == .user && message.sendStatus == .failed ? retry : nil,
+                    stop: message.role == .assistant && message.sendStatus == .sending ? stop : nil
+                ))
             } else {
-                // 菜单预览使用消息真实表面；选文时才换成可选择的正文。
                 content.contextMenu {
                     Button {
-                        UIPasteboard.general.string = message.content
+                        UIPasteboard.general.string = message.visibleCopyText
                     } label: {
                         Label(L10n.text("ui.copy"), systemImage: "doc.on.doc")
                     }
 
-                    // contextMenu 会抢占正文长按；选文模式移除菜单，让系统接管文本选区。
                     if !selectableText.isEmpty {
                         Button {
-                            selectionText = selectableText
+                            isSelectingCardText = true
                         } label: {
                             Label(L10n.text("ui.select_text"), systemImage: "text.cursor")
                         }
@@ -510,55 +510,23 @@ private struct MessageContextMenuModifier: ViewModifier {
                         }
                     }
                 }
+                .sheet(isPresented: $isSelectingCardText) {
+                    MessageTextSelectionSheet(text: selectableText)
+                }
             }
         }
+    }
+
+    private var usesNativeTextActions: Bool {
+        hasSelectableBody && message.role != .system && (message.kind == .message || message.kind == .commentary)
     }
 
     private var selectableText: String {
-        message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        message.visibleCopyText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
-private struct MessageInlineTextSelection: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-    let text: String
-    let role: ConversationMessage.Role
-    @Binding var selectionText: String?
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        VStack(alignment: .leading, spacing: 12) {
-            Button {
-                selectionText = nil
-            } label: {
-                HStack {
-                    Text(L10n.text("ui.select_text"))
-                        .foregroundStyle(tokens.secondaryText)
-                    Spacer(minLength: 12)
-                    Text(L10n.text("ui.close"))
-                }
-                .font(themeStore.uiFont(.caption, weight: .semibold))
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(L10n.text("ui.close"))
-
-            Text(text)
-                .font(themeStore.uiFont(.body))
-                .foregroundStyle(role == .user ? tokens.userBubbleForeground : tokens.conversationPrimaryText)
-                .lineSpacing(2)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(14)
-        .background(role == .user ? tokens.userBubble : tokens.assistantBubble,
-                    in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-}
-
-/// 转写草稿仍用独立选文页面；消息正文使用原位选文模式。
+/// 转写草稿及非正文卡片保留独立页面；普通消息在同一富文本视图里选文。
 struct MessageTextSelectionSheet: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -602,10 +570,11 @@ struct MessageTextSelectionSheet: View {
 extension View {
     func messageContextMenu(
         for message: ConversationMessage,
+        hasSelectableBody: Bool = true,
         retry: (() -> Void)? = nil,
         stop: (() -> Void)? = nil
     ) -> some View {
-        modifier(MessageContextMenuModifier(message: message, retry: retry, stop: stop))
+        modifier(MessageContextMenuModifier(message: message, hasSelectableBody: hasSelectableBody, retry: retry, stop: stop))
     }
 }
 
@@ -615,6 +584,7 @@ struct MessageTimestampCaption: View {
     let text: String
     var isFallback = false
     var foreground: Color?
+    var details: String?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -626,10 +596,16 @@ struct MessageTimestampCaption: View {
             .lineLimit(1)
             .minimumScaleFactor(0.88)
             .accessibilityLabel(isFallback ? L10n.format("ui.message_time_full_estimate_value", text) : L10n.format("ui.message_time_value", text))
+            .accessibilityValue(details ?? "")
+            .help(details ?? text)
     }
 }
 
 extension ConversationMessage {
+    var displayTimestampText: String {
+        Self.compactTime(role == .assistant && sendStatus != .sending ? (updatedAt ?? createdAt) : createdAt)
+    }
+
     var timestampCaptionText: String {
         let text: String
         switch role {
