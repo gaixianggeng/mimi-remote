@@ -516,16 +516,15 @@ extension SessionStore {
                 && self.historyPageRequestTokenBySessionID[session.id] == pageToken
         }
         loadingEarlierHistorySessionIDs.insert(session.id)
-        setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.load_older_messages"), fraction: 0.18)
+        showHistoryLoading(sessionID: session.id)
         defer {
             if isCurrentContext() {
                 loadingEarlierHistorySessionIDs.remove(session.id)
-                clearHistoryLoadProgress(sessionID: session.id)
+                hideHistoryLoading(sessionID: session.id)
             }
         }
         do {
             let client = try clientFactory()
-            setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.request_history_paging"), fraction: 0.42)
             let page = try await client.messagesPage(
                 sessionID: session.id,
                 before: cursor,
@@ -533,7 +532,6 @@ extension SessionStore {
                 loadMode: historyLoadedQualityBySessionID[session.id] == .summary ? .economy : .full
             )
             guard !Task.isCancelled, isCurrentContext() else { return }
-            setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.parse_historical_messages"), fraction: 0.76)
             ingestHistoryContext(page.context, fallbackSessionID: session.id)
             conversationStore.setHistory(
                 page.messages,
@@ -546,7 +544,6 @@ extension SessionStore {
                 authoritativeHistory: page.messages,
                 historyIsComplete: page.loadMode == .full && !page.hasMoreBefore
             )
-            setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.update_interface"), fraction: 0.94)
             updateHistoryPageState(
                 sessionID: session.id,
                 page: page,

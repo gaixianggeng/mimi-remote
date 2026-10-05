@@ -256,7 +256,7 @@ final class ConversationTimelineRuntimeRegressionTests: XCTestCase {
         }
         await fixture.client.waitForHistoryRequestCount(1)
         XCTAssertTrue(fixture.sessionStore.isLoadingEarlierHistory(sessionID: fixture.primarySessionID))
-        XCTAssertNotNil(fixture.sessionStore.historyLoadProgress(sessionID: fixture.primarySessionID))
+        XCTAssertTrue(fixture.sessionStore.isShowingHistoryLoading(sessionID: fixture.primarySessionID))
 
         // 加载按钮只建立阅读意图。锚点必须在旧页真正发布时捕获，不能依赖 250ms 临时事务。
         for _ in 0..<24 {

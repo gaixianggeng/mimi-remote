@@ -2761,19 +2761,6 @@ extension SessionStore {
         errorMessage = userFacingValue
     }
 
-    func setHistoryLoadProgress(sessionID: SessionID, title: String, fraction: Double) {
-        let bounded = min(max(fraction, 0), 1)
-        let next = HistoryLoadProgress(sessionID: sessionID, title: title, fraction: bounded)
-        guard historyLoadProgressBySessionID[sessionID] != next else {
-            return
-        }
-        historyLoadProgressBySessionID[sessionID] = next
-    }
-
-    func clearHistoryLoadProgress(sessionID: SessionID) {
-        historyLoadProgressBySessionID.removeValue(forKey: sessionID)
-    }
-
     func setWebSocketStatus(_ value: WebSocketStatus) {
         guard webSocketStatus != value else {
             return
@@ -2927,7 +2914,7 @@ extension SessionStore {
         deferredFullHistorySessionIDs = []
         freshEmptyHistorySignatureBySessionID = [:]
         initialHistoryLoadingSessionIDs = []
-        historyLoadProgressBySessionID = [:]
+        visibleHistoryLoadingSessionIDs = []
         historySavingsNoticesBySessionID = [:]
         loadingEarlierHistorySessionIDs = []
         lastSeenEventSeqBySessionID = [:]

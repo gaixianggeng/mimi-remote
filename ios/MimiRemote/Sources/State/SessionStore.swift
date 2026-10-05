@@ -502,7 +502,7 @@ final class SessionStore: ObservableObject {
     var deferredFullHistorySessionIDs: Set<SessionID> = []
     var freshEmptyHistorySignatureBySessionID: [SessionID: HistoryLoadSignature] = [:]
     var initialHistoryLoadingSessionIDs: Set<SessionID> = []
-    @Published var historyLoadProgressBySessionID: [SessionID: HistoryLoadProgress] = [:]
+    @Published var visibleHistoryLoadingSessionIDs: Set<SessionID> = []
     @Published var historySavingsNoticesBySessionID: [SessionID: HistorySavingsNotice] = [:]
     @Published var dismissedHistorySavingsNoticeEndpoints: Set<String> = []
     var appServerModelOptionsLastRefresh: Date?
