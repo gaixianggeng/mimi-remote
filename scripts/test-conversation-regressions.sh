@@ -207,7 +207,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchiveOldTokenCannotClearNewPendingAndPendingArchiveBlocksPin \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchivedSessionMustUnarchiveRemotelyBeforePinning \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testMarkHistorySessionUnreadPersistsCompletionWatermark \
-  -only-testing:MimiRemoteTests/WorkspacePullRefreshTests/testPullRefreshPublishesSessionsWithoutRequestingWorkspaceGitSummaries \
+  -only-testing:MimiRemoteTests/WorkspacePullRefreshTests \
   -only-testing:MimiRemoteTests/ConversationTimelineProviderPresentationTests \
   -only-testing:MimiRemoteTests/ConversationActivityDetailProjectionTests \
   -only-testing:MimiRemoteTests/ConversationScrollStabilityTests \

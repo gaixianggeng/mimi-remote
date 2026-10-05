@@ -133,7 +133,10 @@ final class WorkspaceGitStore: ObservableObject {
 
     func refreshWorkspaceGitSummary(path: String, force: Bool = false, now: Date = Date()) async {
         let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetPath.isEmpty,
+        // catalog 的子任务可能在主 actor 获得执行机会之前已被页面取消。
+        // 不能先启动 Git 再丢弃结果，否则下一次有效刷新还会重复请求。
+        guard !Task.isCancelled,
+              !targetPath.isEmpty,
               !refreshingWorkspaceGitSummaryPaths.contains(targetPath)
         else {
             return
