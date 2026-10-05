@@ -1086,3 +1086,77 @@ extension ConversationDataFlowTests {
         }
     }
 }
+
+@MainActor
+extension ConversationDataFlowTests {
+    func testResumedHistoryThreadTokenUsageForFinishedTurnDoesNotMarkSessionRunning() async throws {
+        let project = AgentProject(id: "proj_resume_usage", name: "Resume Usage", path: "/tmp/resume-usage")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/list", "thread/resume"],
+                    transport: "local"
+                )
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let listTask = Task {
+            try await client.sessions(projectID: project.id, cursor: nil, limit: nil)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let threadList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(transport, id: threadList.id, result: #"{"data":[{"id":"thr_resume_usage","sessionId":"thr_resume_usage","preview":"历史会话","ephemeral":false,"modelProvider":"openai","createdAt":1780490900,"updatedAt":1780490901,"status":{"type":"notLoaded"},"path":null,"cwd":"/tmp/resume-usage","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史会话","turns":[]}],"nextCursor":null}"#)
+        let listed = try await listTask.value
+        XCTAssertEqual(listed.first?.isRunning, false)
+
+        let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        var statuses: [WebSocketStatus] = []
+        var events: [AgentEvent] = []
+        socket.onStatus = { statuses.append($0) }
+        socket.onEvent = { events.append($0) }
+        socket.connect(sessionID: "thr_resume_usage")
+
+        let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 2)
+        transportResponse(transport, id: resume.id, result: #"{"thread":{"id":"thr_resume_usage","sessionId":"thr_resume_usage","preview":"历史会话","ephemeral":false,"modelProvider":"openai","createdAt":1780490900,"updatedAt":1780490902,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resume-usage","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史会话","turns":[]}}"#)
+        for _ in 0..<200 where !statuses.contains(.connected) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(statuses.contains(.connected))
+
+        // 真实 Codex app-server 在 thread/resume 之后会补发一次上一轮的用量，turnId 指向早已完成的 turn。
+        // 这只是线程级统计，不能被当作“错过 turn/started 的运行中 turn”回填，否则历史会话会被标成运行中。
+        transport.enqueue(#"{"method":"thread/tokenUsage/updated","params":{"threadId":"thr_resume_usage","turnId":"turn_resume_usage_done","tokenUsage":{"total":{"inputTokens":100,"outputTokens":50,"totalTokens":150},"last":{"inputTokens":100,"outputTokens":50,"totalTokens":150},"modelContextWindow":200000}}}"#)
+        func receivedTokenUsage() -> Bool {
+            events.contains {
+                if case .sessionContext(let context, _) = $0 {
+                    return context.tokenUsage != nil
+                }
+                return false
+            }
+        }
+        for _ in 0..<200 where !receivedTokenUsage() {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(receivedTokenUsage())
+
+        let runningSessions = events.compactMap { event -> AgentSession? in
+            if case .session(let session) = event, session.isRunning || session.activeTurnID != nil {
+                return session
+            }
+            return nil
+        }
+        XCTAssertTrue(runningSessions.isEmpty, "已完成 turn 的用量补发不能把会话改成运行中：\(runningSessions.map { ($0.status, $0.activeTurnID) })")
+        let runtimeContext = await runtime.contextsBySessionID["thr_resume_usage"]
+        XCTAssertNil(runtimeContext?.activeTurnID)
+        XCTAssertEqual(runtimeContext?.session.isRunning, false)
+
+        socket.disconnect()
+    }
+}
