@@ -216,9 +216,11 @@ final class WorkspacePullRefreshTests: XCTestCase {
         let themeSuite = "WorkspacePullRefreshTests.Theme.\(UUID().uuidString)"
         let themeDefaults = try XCTUnwrap(UserDefaults(suiteName: themeSuite))
         defer { themeDefaults.removePersistentDomain(forName: themeSuite) }
+        let catalogProbe = PullRefreshCatalogProbe()
         let view = WorkspaceRootView(
             selectedSessionRuntime: .constant(runtimeProvider == "claude" ? .claude : .codex), onStartSession: { _, _ in },
-            embedsNavigationStack: false, initialWorkspaceID: project.id
+            embedsNavigationStack: false, initialWorkspaceID: project.id,
+            onCatalogRefreshEvent: catalogProbe.record
         )
         .environmentObject(appStore)
         .environmentObject(store)
@@ -328,6 +330,7 @@ final class WorkspacePullRefreshTests: XCTestCase {
 
         let foregroundCatalogGate = PullRefreshRequestGate()
         gitProbe.phase = "foreground-fresh"
+        catalogProbe.phase = "foreground-fresh"
         defer { foregroundCatalogGate.release() }
         let foregroundProject = AgentProject(id: project.id, name: "foreground-catalog", path: project.path)
         client.holdNextProjects(with: foregroundCatalogGate, returning: [foregroundProject])
@@ -344,9 +347,12 @@ final class WorkspacePullRefreshTests: XCTestCase {
         // 紧邻响应放行设置时间，前面的 UI 调度耗时不能把这一轮的 TTL 耗尽。
         store.workspaceGitSummaryUpdatedAtByPath[workspacePath] = Date()
         foregroundCatalogGate.release()
-        try await waitForRefreshUI("恢复前台目录响应未提交") {
+        // projects 发布后 catalog 仍可能在调度 Git 子任务。必须等完整调用结束，
+        // 再改变 TTL 或取消页面任务，否则本用例会人为制造一次合法的取消后重试。
+        try await waitForRefreshUI("恢复前台目录及 Git TTL 检查未结束") {
             foregroundCatalogGate.hasCompleted && store.projects == [foregroundProject]
                 && viewObservation.isSuspended == false
+                && catalogProbe.hasCompleted("foreground-fresh")
         }
         XCTAssertEqual(
             gitProbe.requestCount,
@@ -356,6 +362,7 @@ final class WorkspacePullRefreshTests: XCTestCase {
 
         let expiredCatalogGate = PullRefreshRequestGate()
         gitProbe.phase = "foreground-expired"
+        catalogProbe.phase = "foreground-expired"
         defer { expiredCatalogGate.release() }
         client.holdNextProjects(with: expiredCatalogGate, returning: [project])
         store.workspaceGitSummaryUpdatedAtByPath[workspacePath] = .distantPast
@@ -370,6 +377,7 @@ final class WorkspacePullRefreshTests: XCTestCase {
         expiredCatalogGate.release()
         try await waitForRefreshUI("TTL 过期后的前台恢复未更新 Git 摘要") {
             expiredCatalogGate.hasCompleted && store.projects == [project]
+                && catalogProbe.hasCompleted("foreground-expired")
                 && gitProbe.requestCount > gitRequestCountBeforePull
                 && store.refreshingWorkspaceGitSummaryPaths.isEmpty
                 && store.workspaceGitSummaryUpdatedAtByPath[workspacePath] != .distantPast
@@ -377,6 +385,25 @@ final class WorkspacePullRefreshTests: XCTestCase {
         XCTAssertEqual(gitProbe.requestCount, gitRequestCountBeforePull + 1, "TTL 过期前台恢复：\(gitProbe.trace)")
     }
 
+}
+
+@MainActor
+private final class PullRefreshCatalogProbe {
+    var phase = "initial"
+    private var phases: [UUID: String] = [:]
+    private var completedPhases: Set<String> = []
+
+    func record(_ id: UUID, _ finished: Bool) {
+        if finished, let phase = phases.removeValue(forKey: id) {
+            completedPhases.insert(phase)
+        } else if !finished {
+            phases[id] = phase
+        }
+    }
+
+    func hasCompleted(_ phase: String) -> Bool {
+        completedPhases.contains(phase) && phases.isEmpty
+    }
 }
 
 @MainActor
@@ -456,10 +483,17 @@ private final class PullRefreshGitProbe: @unchecked Sendable {
 
     var requestCount: Int { lock.withLock { storage } }
 
-    func record() {
+    func begin() -> Int {
         lock.withLock {
             storage += 1
-            events.append("\(storage):\(phaseStorage) cancelled=\(Task.isCancelled)")
+            events.append("\(storage):\(phaseStorage) start cancelled=\(Task.isCancelled)")
+            return storage
+        }
+    }
+
+    func finish(_ id: Int) {
+        lock.withLock {
+            events.append("\(id):\(phaseStorage) return cancelled=\(Task.isCancelled)")
         }
     }
 }
@@ -563,7 +597,8 @@ private final class PullRefreshClient: SessionStoreAPIClient {
     }
 
     func gitStatus(path: String) async throws -> GitStatusResponse {
-        gitProbe.record()
+        let id = gitProbe.begin()
+        defer { gitProbe.finish(id) }
         return gitSummary
     }
 }

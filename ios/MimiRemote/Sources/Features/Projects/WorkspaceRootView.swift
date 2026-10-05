@@ -252,6 +252,8 @@ struct WorkspaceRootView: View {
     let onOpenSession: (AgentSession) -> Void
     let manageConnections: (() -> Void)?
     let embedsNavigationStack: Bool
+    // 完整调用边界包含目录发布后的 Git 尾部工作；供确定性测试观察，不影响加载态。
+    private let onCatalogRefreshEvent: ((UUID, Bool) -> Void)?
     private let currentDate: () -> Date
 
     @State private var selectedWorkspaceID: String?
@@ -283,12 +285,14 @@ struct WorkspaceRootView: View {
         embedsNavigationStack: Bool = true,
         appearanceStore: WorkspaceAppearanceStore? = nil,
         initialWorkspaceID: String? = nil,
+        onCatalogRefreshEvent: ((UUID, Bool) -> Void)? = nil,
         currentDate: @escaping () -> Date = Date.init
     ) {
         self.onStartSession = onStartSession
         self.onOpenSession = onOpenSession
         self.manageConnections = manageConnections
         self.embedsNavigationStack = embedsNavigationStack
+        self.onCatalogRefreshEvent = onCatalogRefreshEvent
         self.currentDate = currentDate
         _selectedSessionRuntime = selectedSessionRuntime
         _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
@@ -1208,6 +1212,8 @@ struct WorkspaceRootView: View {
 
     private func refreshCatalog(refreshesGitSummaries: Bool = true) async {
         let invocationID = catalogLoad.begin()
+        onCatalogRefreshEvent?(invocationID, false)
+        defer { onCatalogRefreshEvent?(invocationID, true) }
         do {
             try await sessionStore.refreshWorkspaceCatalog()
             guard catalogLoad.isCurrent(invocationID) else {
