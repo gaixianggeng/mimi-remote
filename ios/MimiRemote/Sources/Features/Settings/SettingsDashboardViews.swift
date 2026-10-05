@@ -55,8 +55,7 @@ struct ConnectionSettingsView: View {
                             ConnectionRowLabel(
                                 title: L10n.text("ui.push_lock_screen_approval"),
                                 value: lockScreenApprovalStore.notificationStatusDescription,
-                                systemImage: "bell",
-                                valueStyle: .capsule
+                                systemImage: "bell"
                             )
                         }
                         .settingsStandardListRow()

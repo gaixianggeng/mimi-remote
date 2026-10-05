@@ -465,7 +465,7 @@ struct ManagedConnectionSubscriptionView: View {
             Image(systemName: device.deviceType == .mac ? "laptopcomputer" : "iphone")
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .frame(width: SettingsLayoutMetrics.iconSlot)
-                .foregroundStyle(tokens.secondaryText)
+                .foregroundStyle(tokens.settingsIconTint)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(device.deviceType == .mac

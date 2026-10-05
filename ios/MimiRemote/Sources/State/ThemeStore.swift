@@ -296,12 +296,38 @@ extension ThemeTokens {
         tertiaryText
     }
 
-    /// 设置分组的标题线。平铺页面上它是分组之间唯一的线，只用 1 个物理像素。
-    /// 默认浅色的边框色 #E8E6E3 压在 #FAF8F6 上几乎看不见（明度差约 6），这里加深到
-    /// #DEDBD7，与深色 #373735 压在 #1F1F1F 上的明度差（约 11）持平。其它主题沿用边框色。
+    /// 设置卡片里的细线：行间分隔线和「切换」这类描边小胶囊，只用 1 个物理像素。
+    /// 默认浅色的边框色 #E8E6E3 压在白卡上偏淡，加深到 #DEDBD7；默认深色的边框色 #373735
+    /// 压在 #2B2B29 的卡片上几乎看不见，提亮到 #42423F。两边与卡片的明度差都在 11 上下（#615）。
+    /// 其它主题沿用边框色。
     var groupRule: Color {
-        guard preset == .codex, resolvedScheme == .light else { return border }
-        return Color(red: 222.0 / 255.0, green: 219.0 / 255.0, blue: 215.0 / 255.0)
+        guard preset == .codex else { return border }
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 222.0 / 255.0, green: 219.0 / 255.0, blue: 215.0 / 255.0)
+        case .dark:
+            return Color(red: 66.0 / 255.0, green: 66.0 / 255.0, blue: 63.0 / 255.0)
+        }
+    }
+
+    /// 设置分组卡片的底色（#615）。设备、我的和设置详情页每组一张卡片，会话、工作区仍平铺。
+    /// 卡片只比页面底高一档：默认浅色是白卡压 #FAF8F6，深色是 #2B2B29 压 #1F1F1F。
+    /// GitHub 浅色的页面和 surface 都是纯白，卡片会看不出来，改用 elevatedSurface。
+    var settingsGroupBackground: Color {
+        guard preset == .github, resolvedScheme == .light else { return surface }
+        return elevatedSurface
+    }
+
+    /// 设置行首图标的颜色（#615）。次级文字色的图标压在白卡上发虚；默认主题加深一档，
+    /// 落在正文和次级文字之间，仍明显弱于标题，颜色只留给状态。其它主题沿用次级文字色。
+    var settingsIconTint: Color {
+        guard preset == .codex else { return secondaryText }
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 92.0 / 255.0, green: 91.0 / 255.0, blue: 88.0 / 255.0)
+        case .dark:
+            return Color(red: 201.0 / 255.0, green: 200.0 / 255.0, blue: 197.0 / 255.0)
+        }
     }
 
     /// 列表与侧栏条目的标题色。

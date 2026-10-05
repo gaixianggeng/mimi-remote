@@ -156,9 +156,9 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
             Image(systemName: systemImage)
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
-                // 图标统一降到次要色，颜色只留给状态。四个偏好图标全用强调色时，
+                // 图标统一用设置行的图标色，颜色只留给状态。四个偏好图标全用强调色时，
                 // 颜色没有承载任何信息，只是噪音。
-                .foregroundStyle(tokens.secondaryText)
+                .foregroundStyle(tokens.settingsIconTint)
                 .frame(width: SettingsLayoutMetrics.iconSlot, alignment: .leading)
                 .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 4 }
                 .accessibilityHidden(true)
@@ -322,7 +322,7 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
                 Image(systemName: systemImage)
                     .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(tokens.secondaryText)
+                    .foregroundStyle(tokens.settingsIconTint)
                     .frame(
                         width: SettingsLayoutMetrics.iconSlot,
                         height: SettingsLayoutMetrics.iconSlot

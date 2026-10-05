@@ -142,6 +142,7 @@ final class TokenUsageCardSnapshotTests: XCTestCase {
             ? .compact
             : .regular
 
+        let themeStore = ThemeStore(defaults: themeDefaults)
         let view = AccountTokenUsageCard(
             codexDisplay: Self.codexDisplay,
             claudeDisplay: Self.claudeDisplay,
@@ -151,11 +152,13 @@ final class TokenUsageCardSnapshotTests: XCTestCase {
             isRefreshing: isRefreshing,
             onRefresh: {}
         )
-        .environmentObject(ThemeStore(defaults: themeDefaults))
+        .environmentObject(themeStore)
         .environment(\.colorScheme, colorScheme)
         .environment(\.horizontalSizeClass, horizontalSizeClass)
         .frame(width: width)
         .fixedSize(horizontal: false, vertical: true)
+        // 「我的」页里这张卡的底色由所在分组给出（#615），快照补上同一块卡片底色。
+        .background(themeStore.tokens(for: colorScheme).settingsGroupBackground)
 
         if let failure = verifySnapshot(
             of: view,
