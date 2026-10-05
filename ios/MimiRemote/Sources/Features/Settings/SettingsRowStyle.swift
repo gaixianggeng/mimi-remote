@@ -197,7 +197,7 @@ private struct SettingsGroupCardModifier: ViewModifier {
         let tokens = themeStore.tokens(for: colorScheme)
         content
             .listRowBackground(tokens.settingsGroupBackground)
-            .listRowSeparatorTint(tokens.groupRule)
+            .listRowSeparatorTint(tokens.settingsRowSeparator)
     }
 }
 

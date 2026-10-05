@@ -296,7 +296,7 @@ extension ThemeTokens {
         tertiaryText
     }
 
-    /// 设置卡片里的细线：行间分隔线和「切换」这类描边小胶囊，只用 1 个物理像素。
+    /// 设置卡片里「切换」这类描边小胶囊的描边，只用 1 个物理像素。
     /// 默认浅色的边框色 #E8E6E3 压在白卡上偏淡，加深到 #DEDBD7；默认深色的边框色 #373735
     /// 压在 #2B2B29 的卡片上几乎看不见，提亮到 #42423F。两边与卡片的明度差都在 11 上下（#615）。
     /// 其它主题沿用边框色。
@@ -307,6 +307,19 @@ extension ThemeTokens {
             return Color(red: 222.0 / 255.0, green: 219.0 / 255.0, blue: 215.0 / 255.0)
         case .dark:
             return Color(red: 66.0 / 255.0, green: 66.0 / 255.0, blue: 63.0 / 255.0)
+        }
+    }
+
+    /// 设置卡片内行与行之间的分隔线（#615）。一张卡里有好几条，要比描边轻得多，
+    /// 实机上 #DEDBD7 显得太突出：默认浅色取 Notion 分隔线的深浅 #EDEBE8，深色 #3A3A38，
+    /// 两边与卡片的明度差都在 7 上下。其它主题沿用边框色。
+    var settingsRowSeparator: Color {
+        guard preset == .codex else { return border }
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 237.0 / 255.0, green: 235.0 / 255.0, blue: 232.0 / 255.0)
+        case .dark:
+            return Color(red: 58.0 / 255.0, green: 58.0 / 255.0, blue: 56.0 / 255.0)
         }
     }
 
