@@ -23,6 +23,31 @@ final class WorkspacePullRefreshTests: XCTestCase {
         try await assertRefreshOwnerCancellation(cancelsOwner: false)
     }
 
+    func testManualRefreshOwnerAcceptsAlreadyCancelledWaiterForBothRuntimes() async throws {
+        try await assertRefreshOwnerCancellation(cancelsOwner: false, waiterCancelledBeforeStart: true)
+    }
+
+    func testInactiveOwnerRejectsLateManualRefreshAndCancelledAutomaticRefresh() async {
+        let owner = WorkspaceSessionRefreshOwner()
+        let key = WorkspaceSessionPresentationKey(
+            hostScope: makeIsolatedAppStore().activeHostScope,
+            workspaceID: "inactive", workspacePath: "/workspace/inactive", runtimeProvider: "claude"
+        )
+        var starts = 0
+        owner.deactivate()
+        await owner.refresh(key: key, allowsCancelledWaiter: true) { starts += 1 }
+        XCTAssertEqual(starts, 0, "页面离开后迟到的手动刷新不能启动")
+        owner.activate()
+        let automatic = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await owner.refresh(key: key) { starts += 1 }
+        }
+        await automatic.value
+        XCTAssertEqual(starts, 0, "已取消的自动加载不能变成新请求")
+        await owner.refresh(key: key) { starts += 1 }
+        XCTAssertEqual(starts, 1, "再次进入页面后的有效加载仍能启动")
+    }
+
     func testRefreshOwnerRejectsCancelledPageForBothRuntimes() async throws {
         try await assertRefreshOwnerCancellation(cancelsOwner: true)
     }
@@ -36,7 +61,8 @@ final class WorkspacePullRefreshTests: XCTestCase {
     }
 
     private func assertRefreshOwnerCancellation(
-        cancelsOwner: Bool, changesHost: Bool = false, changesPath: Bool = false
+        cancelsOwner: Bool, changesHost: Bool = false, changesPath: Bool = false,
+        waiterCancelledBeforeStart: Bool = false
     ) async throws {
         for runtime in ["codex", "claude"] {
             let appStore = makeIsolatedAppStore()
@@ -71,7 +97,8 @@ final class WorkspacePullRefreshTests: XCTestCase {
             var returnedPage: SessionsPage?
             var failure: Error?
             let waiter = Task { @MainActor in
-                await owner.refresh(key: key) {
+                if waiterCancelledBeforeStart { withUnsafeCurrentTask { $0?.cancel() } }
+                await owner.refresh(key: key, allowsCancelledWaiter: waiterCancelledBeforeStart) {
                     do {
                         returnedPage = try await store.workspaceRuntimeSessionsPage(
                             projectID: project.id, runtimeProvider: runtime, cursor: nil,
@@ -167,6 +194,7 @@ final class WorkspacePullRefreshTests: XCTestCase {
             source: runtimeProvider, runtimeProvider: runtimeProvider, resumeID: nil, createdAt: Date(), updatedAt: Date()
         )
         let gitProbe = PullRefreshGitProbe()
+        defer { print("PullRefreshGitTrace runtime=\(runtimeProvider) \(gitProbe.trace)") }
         let gitSummary = try JSONDecoder().decode(
             GitStatusResponse.self,
             from: Data("{\"path\":\"/workspace/pull-refresh\",\"is_repository\":true,\"branch\":\"initial\",\"files\":[]}".utf8)
@@ -233,6 +261,7 @@ final class WorkspacePullRefreshTests: XCTestCase {
         XCTAssertGreaterThan(gitRequestCountBeforePull, 0, "首屏应至少取过一次 Git 摘要，后面的断言才有意义")
 
         let sessionGate = PullRefreshRequestGate()
+        gitProbe.phase = "pull"
         let manualCatalogGate = PullRefreshRequestGate()
         defer {
             sessionGate.release()
@@ -298,6 +327,7 @@ final class WorkspacePullRefreshTests: XCTestCase {
         )
 
         let foregroundCatalogGate = PullRefreshRequestGate()
+        gitProbe.phase = "foreground-fresh"
         defer { foregroundCatalogGate.release() }
         let foregroundProject = AgentProject(id: project.id, name: "foreground-catalog", path: project.path)
         client.holdNextProjects(with: foregroundCatalogGate, returning: [foregroundProject])
@@ -325,6 +355,7 @@ final class WorkspacePullRefreshTests: XCTestCase {
         )
 
         let expiredCatalogGate = PullRefreshRequestGate()
+        gitProbe.phase = "foreground-expired"
         defer { expiredCatalogGate.release() }
         client.holdNextProjects(with: expiredCatalogGate, returning: [project])
         store.workspaceGitSummaryUpdatedAtByPath[workspacePath] = .distantPast
@@ -343,7 +374,7 @@ final class WorkspacePullRefreshTests: XCTestCase {
                 && store.refreshingWorkspaceGitSummaryPaths.isEmpty
                 && store.workspaceGitSummaryUpdatedAtByPath[workspacePath] != .distantPast
         }
-        XCTAssertEqual(gitProbe.requestCount, gitRequestCountBeforePull + 1)
+        XCTAssertEqual(gitProbe.requestCount, gitRequestCountBeforePull + 1, "TTL 过期前台恢复：\(gitProbe.trace)")
     }
 
 }
@@ -414,11 +445,22 @@ private final class PullRefreshRequestGate: @unchecked Sendable {
 private final class PullRefreshGitProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var storage = 0
+    private var phaseStorage = "initial"
+    private var events: [String] = []
+
+    var phase: String {
+        get { lock.withLock { phaseStorage } }
+        set { lock.withLock { phaseStorage = newValue } }
+    }
+    var trace: String { lock.withLock { events.joined(separator: "; ") } }
 
     var requestCount: Int { lock.withLock { storage } }
 
     func record() {
-        lock.withLock { storage += 1 }
+        lock.withLock {
+            storage += 1
+            events.append("\(storage):\(phaseStorage) cancelled=\(Task.isCancelled)")
+        }
     }
 }
 

@@ -326,6 +326,7 @@ struct WorkspaceRootView: View {
                 navigationContent(tokens: tokens)
             }
         }
+        .onAppear { sessionRefreshOwner.activate() }
         .task(id: catalogRefreshScope) {
             // 后台会主动清空内存凭据；恢复完成发布 false 后，完整 scope 会确定性触发一次新刷新。
             guard !catalogRefreshScope.credentialsSuspended else {
@@ -352,7 +353,7 @@ struct WorkspaceRootView: View {
             sessionRefreshOwner.cancelAll()
         }
         .onDisappear {
-            sessionRefreshOwner.cancelAll()
+            sessionRefreshOwner.deactivate()
             cancelManualCatalogRefresh()
         }
         .onChange(of: appStore.connectionProfiles) { _, _ in
@@ -1250,7 +1251,8 @@ struct WorkspaceRootView: View {
             // 取消或失效响应也必须留下总耗时，不能只依赖 Store 成功提交的日志。
             SessionListDiagnostics.refreshStage("manual_end", startedAt: startedAt, source: .workspaceForeground)
         }
-        guard !Task.isCancelled,
+        guard sessionRefreshOwner.isActive,
+              !appStore.isCredentialMemorySuspended,
               selectedWorkspaceID == projectID,
               let project = sessionStore.sidebarProjects.first(where: { $0.id == projectID })
         else {
@@ -1276,8 +1278,14 @@ struct WorkspaceRootView: View {
         presentationKey: WorkspaceSessionPresentationKey,
         restartFromFirst: Bool = false
     ) async {
-        guard !Task.isCancelled else { return }
-        await sessionRefreshOwner.refresh(key: presentationKey) {
+        // 有效手动操作在进入 owner 前也可能被 SwiftUI 取消等待者。
+        // 页面 owner 的活动状态与 Store 的 Host/路径 lease 决定它是否还能启动。
+        guard !appStore.isCredentialMemorySuspended,
+              appStore.activeHostScope == presentationKey.hostScope,
+              sessionStore.sidebarProjects.contains(where: {
+                  $0.id == project.id && $0.path == presentationKey.workspacePath
+              }) else { return }
+        await sessionRefreshOwner.refresh(key: presentationKey, allowsCancelledWaiter: restartFromFirst) {
             await performWorkspaceSessionsRefresh(
                 project: project, presentationKey: presentationKey, restartFromFirst: restartFromFirst
             )

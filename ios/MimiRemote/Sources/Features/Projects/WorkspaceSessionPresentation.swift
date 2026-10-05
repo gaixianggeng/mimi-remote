@@ -13,11 +13,21 @@ struct WorkspaceSessionPresentationKey: Hashable {
 @MainActor
 final class WorkspaceSessionRefreshOwner {
     private var tasks: [WorkspaceSessionPresentationKey: (id: UUID, task: Task<Void, Never>)] = [:]
+    private(set) var isActive = true
+
+    func activate() { isActive = true }
+
+    func deactivate() {
+        isActive = false
+        cancelAll()
+    }
 
     func refresh(
         key: WorkspaceSessionPresentationKey,
+        allowsCancelledWaiter: Bool = false,
         operation: @escaping @MainActor () async -> Void
     ) async {
+        guard isActive, allowsCancelledWaiter || !Task.isCancelled else { return }
         tasks[key]?.task.cancel()
         let id = UUID()
         let task = Task { @MainActor in await operation() }
