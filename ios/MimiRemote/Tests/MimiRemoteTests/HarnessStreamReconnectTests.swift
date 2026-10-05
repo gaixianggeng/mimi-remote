@@ -413,7 +413,7 @@ final class HarnessSnapshotBaselineTests: XCTestCase {
         XCTAssertEqual(store.conversationStore.messages(for: session.id).count, 4)
         XCTAssertFalse(store.canLoadEarlierHistory(sessionID: session.id))
         XCTAssertNil(store.errorMessage)
-        XCTAssertNil(store.historyLoadProgress(sessionID: session.id))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: session.id))
         await api.shutdownForHostSwitch()
     }
 

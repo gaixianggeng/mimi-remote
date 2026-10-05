@@ -20214,23 +20214,6 @@
         }
       }
     },
-    "ui.parse_historical_messages": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Parse historical messages"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "解析历史消息"
-          }
-        }
-      }
-    },
     "ui.passed": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -21224,23 +21207,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "在 Mac 上准备"
-          }
-        }
-      }
-    },
-    "ui.prepare_to_load_abbreviated_history": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Preparing to load compact history"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "准备加载缩略历史"
           }
         }
       }
@@ -23491,23 +23457,6 @@
         }
       }
     },
-    "ui.ready_to_load_full_history": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ready to load full history"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "准备加载完整历史"
-          }
-        }
-      }
-    },
     "ui.reasoning_and_service_tier": {
       "comment": "Advanced turn options section containing reasoning effort and service tier controls.",
       "localizations": {
@@ -24862,23 +24811,6 @@
         }
       }
     },
-    "ui.request_history_paging": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Request history paging"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请求历史分页"
-          }
-        }
-      }
-    },
     "ui.request_subsequent_changes": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -24909,23 +24841,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "请求更改目标"
-          }
-        }
-      }
-    },
-    "ui.request_thumbnail_history": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Request compact history"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请求缩略历史"
           }
         }
       }
@@ -35742,23 +35657,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "更新连接"
-          }
-        }
-      }
-    },
-    "ui.update_interface": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Update interface"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "更新界面"
           }
         }
       }

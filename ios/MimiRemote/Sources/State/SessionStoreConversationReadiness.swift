@@ -53,11 +53,23 @@ extension SessionStore {
         return loadingEarlierHistorySessionIDs.contains(sessionID)
     }
 
-    func historyLoadProgress(sessionID: SessionID?) -> HistoryLoadProgress? {
+    /// 只表示可见加载反馈；quiet 请求仍由共享 HistoryLoadJob 独立管理。
+    func isShowingHistoryLoading(sessionID: SessionID?) -> Bool {
         guard let sessionID else {
-            return nil
+            return false
         }
-        return historyLoadProgressBySessionID[sessionID]
+        return visibleHistoryLoadingSessionIDs.contains(sessionID)
+    }
+
+    func showHistoryLoading(sessionID: SessionID) {
+        // 界面只需要开始/结束；重复 waiter 不应再次发布全局 Store 更新。
+        guard !visibleHistoryLoadingSessionIDs.contains(sessionID) else { return }
+        visibleHistoryLoadingSessionIDs.insert(sessionID)
+    }
+
+    func hideHistoryLoading(sessionID: SessionID) {
+        guard visibleHistoryLoadingSessionIDs.contains(sessionID) else { return }
+        visibleHistoryLoadingSessionIDs.remove(sessionID)
     }
 
     func conversationReadiness(for session: AgentSession) -> ConversationReadiness {
