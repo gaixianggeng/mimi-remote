@@ -177,14 +177,11 @@ struct HostSwitcherMenu: View {
                             .foregroundStyle(.secondary)
                             .accessibilityHidden(true)
                     }
-                    if isSwitching {
-                        ProgressView()
-                            .controlSize(.mini)
-                    } else {
-                        Circle()
-                            .fill(currentConnectionColor)
-                            .frame(width: 6, height: 6)
-                    }
+                    // 连接中也只画一枚静止圆点，不再转圈：动效统一由正文正中的加载圆环表达，
+                    // 侧栏是状态行，文字"正在连接…"已经说清楚（#624）。橙色与 `.testing` 同义。
+                    Circle()
+                        .fill(isSwitching ? Color.orange : currentConnectionColor)
+                        .frame(width: 6, height: 6)
                     Text(isSwitching ? L10n.text("ui.connecting") : currentConnectionText)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
