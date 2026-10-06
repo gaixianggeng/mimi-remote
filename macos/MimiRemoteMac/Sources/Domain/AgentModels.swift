@@ -255,6 +255,10 @@ struct AgentRuntimeStatusSnapshot: Codable, Equatable, Sendable {
     var hasRetryableFailure: Bool {
         runtimes.contains {
             guard $0.enabled else { return false }
+            if $0.id == "deepseek", $0.state == .signedOut,
+               $0.reason == "credentials_rejected" {
+                return true
+            }
             if $0.reason == "quota_refresh_in_progress" {
                 return true
             }
@@ -263,6 +267,13 @@ struct AgentRuntimeStatusSnapshot: Codable, Equatable, Sendable {
             }
             return $0.state == .unavailable
                 && $0.reason != "refresh_in_progress"
+        }
+    }
+
+    var hasRejectedDeepSeekCredentials: Bool {
+        runtimes.contains {
+            $0.id == "deepseek" && $0.enabled && $0.state == .signedOut
+                && $0.reason == "credentials_rejected"
         }
     }
 }

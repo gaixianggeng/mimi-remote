@@ -337,6 +337,31 @@ final class AgentModelsTests: XCTestCase {
         XCTAssertFalse(disabled.hasRetryableFailure)
     }
 
+    func testRejectedCredentialRetryOnlyTargetsEnabledDeepSeek() {
+        func snapshot(id: String, enabled: Bool, state: AgentRuntimeConnectionState, reason: String) -> AgentRuntimeStatusSnapshot {
+            AgentRuntimeStatusSnapshot(checkedAt: nil, runtimes: [
+                AgentRuntimeStatus(
+                    id: id, title: id, enabled: enabled, state: state,
+                    authMode: nil, planType: nil, reason: reason, rateLimits: nil
+                ),
+            ])
+        }
+        let rejected = snapshot(id: "deepseek", enabled: true, state: .signedOut, reason: "credentials_rejected")
+        XCTAssertTrue(rejected.hasRetryableFailure)
+        XCTAssertEqual(HostStore.runtimeStatusFollowUpDelay(snapshot: rejected, didRetryUnavailable: false), .seconds(32))
+        XCTAssertNil(HostStore.runtimeStatusFollowUpDelay(snapshot: rejected, didRetryUnavailable: true))
+        XCTAssertFalse(snapshot(id: "deepseek", enabled: false, state: .signedOut, reason: "credentials_rejected").hasRetryableFailure)
+        XCTAssertFalse(snapshot(id: "claude", enabled: true, state: .signedOut, reason: "credentials_rejected").hasRetryableFailure)
+        XCTAssertFalse(snapshot(id: "deepseek", enabled: true, state: .signedOut, reason: "other").hasRetryableFailure)
+        XCTAssertEqual(
+            HostStore.runtimeStatusFollowUpDelay(
+                snapshot: snapshot(id: "deepseek", enabled: true, state: .unavailable, reason: "harness_unavailable"),
+                didRetryUnavailable: false
+            ),
+            .seconds(15)
+        )
+    }
+
     func testLifecyclePresentationIsStable() {
         XCTAssertEqual(HostLifecycleState.ready.title, "服务可用")
         XCTAssertEqual(HostLifecycleState.failed("boom").detail, "boom")

@@ -1731,7 +1731,7 @@ final class HostStore {
             defer { runtimeStatusFollowUpTask = nil }
             // Provider 冷启动可能涉及 bridge 启动、OAuth 刷新和网络查询。
             // 菜单先展示缓存/refreshing，再在后台有界轮询，不能重新阻塞 readiness。
-            // 首次 unavailable/额度刷新还会在服务端 15 秒失败 TTL 后重试一次；
+            // 首次 unavailable/额度刷新等 15 秒；凭据被拒等 30 秒轮换冷却后重试；
             // 16 轮足够覆盖两次 9 秒 provider 预算，同时避免永久轮询。
             var didRetryUnavailable = false
             for _ in 0..<16 {
@@ -1785,7 +1785,7 @@ final class HostStore {
             return .seconds(2)
         }
         if !didRetryUnavailable, snapshot?.hasRetryableFailure == true {
-            return .seconds(15)
+            return snapshot?.hasRejectedDeepSeekCredentials == true ? .seconds(32) : .seconds(15)
         }
         return nil
     }

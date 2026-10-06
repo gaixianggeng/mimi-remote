@@ -243,6 +243,20 @@ extension HostStoreTests {
         XCTAssertEqual(store.deepSeekStatusTitle, "需要更新启动链接")
         XCTAssertEqual(store.moduleStateTitle(.deepseek), "需要更新启动链接")
         XCTAssertTrue(store.deepSeekStatusDetail.contains("重启 Harness 后点击重新检测"))
+        let rejected = try? Self.deepSeekRuntimeStatus(
+            state: "signed_out", reason: "credentials_rejected"
+        ).runtimeStatus
+        XCTAssertTrue(rejected?.hasRetryableFailure == true)
+        XCTAssertEqual(
+            HostStore.runtimeStatusFollowUpDelay(
+                snapshot: rejected,
+                didRetryUnavailable: false
+            ),
+            .seconds(32)
+        )
+        XCTAssertNil(HostStore.runtimeStatusFollowUpDelay(
+            snapshot: rejected, didRetryUnavailable: true
+        ))
     }
 
     func testDeepSeekLaunchRefreshMissDoesNotHideSelfHealedRuntime() async {
