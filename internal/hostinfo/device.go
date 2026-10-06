@@ -118,7 +118,8 @@ func (r *Resolver) refresh() {
 		return
 	}
 	r.mu.Lock()
-	if r.refreshing {
+	// Lookup 释放锁后可能被延迟；另一个刷新已完成时不要重复探测。
+	if r.refreshing || (r.resolved && time.Now().Before(r.expiresAt)) {
 		r.mu.Unlock()
 		return
 	}

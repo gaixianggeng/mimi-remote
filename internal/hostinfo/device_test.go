@@ -174,6 +174,31 @@ func TestResolverColdLookupNeverBlocksOrDuplicatesPrewarm(t *testing.T) {
 	}
 }
 
+func TestResolverDelayedRefreshSkipsNewlyFreshCache(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	defer close(release)
+	resolver := newResolver(time.Minute, func(context.Context) string {
+		calls.Add(1)
+		<-release
+		return "extra-lookup"
+	})
+	// 模拟一个 Lookup 已看到旧缓存，但尚未进入 refresh；另一请求先完成刷新。
+	resolver.mu.Lock()
+	resolver.store("fresh-name")
+	resolver.mu.Unlock()
+	resolver.refresh()
+	resolver.mu.Lock()
+	refreshing := resolver.refreshing
+	resolver.mu.Unlock()
+	if refreshing || calls.Load() != 0 {
+		t.Fatalf("已有新鲜缓存时不应启动重复探测：refreshing=%v calls=%d", refreshing, calls.Load())
+	}
+	if got := resolver.Lookup(context.Background()); got != "fresh-name" {
+		t.Fatalf("应保留刚写入的缓存：%q", got)
+	}
+}
+
 func waitForResolver(t *testing.T, resolver *Resolver) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
