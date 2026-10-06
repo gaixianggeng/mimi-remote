@@ -514,6 +514,39 @@ final class TailscaleStableHostnameTests: XCTestCase {
         XCTAssertEqual(store.activeConnectionProfile?.displayName, "工作室的 Mac Studio")
     }
 
+    func testDisablingTailcatLoopbackClearsHostNameAcrossReload() throws {
+        let suiteName = "TailscaleStableHostnameTests.TailcatRouteChange.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profile = ConnectionProfile(
+            id: "tailcat-mac", displayName: "", endpoint: "http://127.0.0.1:8787",
+            hostDeviceName: "工作室的 Mac Studio", isDisplayNameCustomized: false,
+            lastSuccessfulAt: nil, connectionRoute: .customTailcat
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v2")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("tailcat-token".utf8), account: "agentd-profile.tailcat-mac")
+        let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+        XCTAssertEqual(store.activeConnectionProfile?.displayName, "工作室的 Mac Studio")
+
+        try store.setActiveConnectionProfileRoute(.lan)
+        XCTAssertEqual(store.activeConnectionProfile?.displayName, L10n.text("ui.this_mac"))
+        XCTAssertNil(store.activeConnectionProfile?.hostDeviceName)
+
+        let reloaded = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+        XCTAssertEqual(reloaded.activeConnectionProfile?.connectionRoute, .lan)
+        XCTAssertEqual(reloaded.activeConnectionProfile?.displayName, L10n.text("ui.this_mac"))
+        XCTAssertNil(reloaded.activeConnectionProfile?.hostDeviceName)
+
+        // 旧版本保存的错误组合也应在解码时归一化。
+        let stale = #"{"id":"stale","displayName":"工作室的 Mac Studio","endpoint":"http://127.0.0.1:8787","hostDeviceName":"工作室的 Mac Studio","isDisplayNameCustomized":false,"connectionRoute":"lan"}"#
+        let decoded = try JSONDecoder().decode(ConnectionProfile.self, from: Data(stale.utf8))
+        XCTAssertEqual(decoded.displayName, L10n.text("ui.this_mac"))
+        XCTAssertNil(decoded.hostDeviceName)
+    }
+
     func testLegacyProfileWithoutHostDeviceNameKeepsAddressFallback() throws {
         let decoded = try JSONDecoder().decode(
             ConnectionProfile.self,

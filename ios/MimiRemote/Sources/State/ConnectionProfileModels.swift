@@ -203,8 +203,12 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
                 dnsName: normalizedDNSName
             )
             : nil
-        // 设备名不属于路由元数据：Tailcat 与局域网档案同样需要它作为默认显示名。
-        let normalizedHostDeviceName = Self.normalizedHostDeviceName(hostDeviceName)
+        let resolvedRoute = connectionRoute ?? ConnectionProfileRoute.configuredValue(
+            endpoint: endpoint,
+            tailscaleDNSName: normalizedDNSName
+        )
+        let normalizedHostDeviceName = Self.acceptsHostDeviceName(endpoint: endpoint, route: resolvedRoute)
+            ? Self.normalizedHostDeviceName(hostDeviceName) : nil
         let trimmedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         let inferredCustomization = !trimmedDisplayName.isEmpty &&
             trimmedDisplayName != Self.fallbackDisplayName(endpoint: endpoint)
@@ -221,10 +225,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         self.lastSuccessfulAt = lastSuccessfulAt
         self.installationID = installationID
         self.hostPlatform = hostPlatform
-        self.connectionRoute = connectionRoute ?? ConnectionProfileRoute.configuredValue(
-            endpoint: endpoint,
-            tailscaleDNSName: normalizedDNSName
-        )
+        self.connectionRoute = resolvedRoute
         self.revision = revision
     }
 
@@ -246,10 +247,15 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
                 dnsName: tailscaleDNSName
             )
             : nil
-        // 旧档案没有设备名字段：缺失时保持 nil，显示名继续按地址回退。
-        hostDeviceName = Self.normalizedHostDeviceName(
-            try container.decodeIfPresent(String.self, forKey: .hostDeviceName)
+        connectionRoute = ConnectionProfileRoute.persistedValue(
+            try container.decodeIfPresent(String.self, forKey: .connectionRoute),
+            endpoint: endpoint,
+            tailscaleDNSName: tailscaleDNSName
         )
+        // 旧档案没有设备名字段；旧版本留下的本机 loopback 名称也不能在重载时复活。
+        hostDeviceName = Self.acceptsHostDeviceName(endpoint: endpoint, route: connectionRoute)
+            ? Self.normalizedHostDeviceName(try container.decodeIfPresent(String.self, forKey: .hostDeviceName))
+            : nil
         let trimmedDisplayName = decodedDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
         isDisplayNameCustomized = try container.decodeIfPresent(
             Bool.self,
@@ -266,11 +272,6 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         lastSuccessfulAt = try container.decodeIfPresent(Date.self, forKey: .lastSuccessfulAt)
         installationID = try container.decodeIfPresent(String.self, forKey: .installationID)
         hostPlatform = try container.decodeIfPresent(HostPlatform.self, forKey: .hostPlatform) ?? .unknown
-        connectionRoute = ConnectionProfileRoute.persistedValue(
-            try container.decodeIfPresent(String.self, forKey: .connectionRoute),
-            endpoint: endpoint,
-            tailscaleDNSName: tailscaleDNSName
-        )
         revision = try container.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0
     }
 
