@@ -187,6 +187,109 @@ final class MessageTextSelectionTests: XCTestCase {
         XCTAssertEqual(UIPasteboard.general.string, "let")
     }
 
+    func testMessageMenuLiftFollowsPresentationWithoutChangingTextLayout() {
+        let view = MessageTextView()
+        let document = markdown("正文 **保持排版**，只让消息表面浮起。")
+        view.apply(document, style: style)
+        let originalSize = view.measuredSize(width: 360, fillsWidth: true)
+        let originalText = NSAttributedString(attributedString: view.attributedText)
+        var presentations: [Bool] = []
+        view.messageActions = MessageTextActions(copyText: "正文", menuPresentationChanged: { presentations.append($0) })
+        let interaction = UIEditMenuInteraction(delegate: view)
+        let configuration = UIEditMenuConfiguration(identifier: nil, sourcePoint: .zero)
+
+        view.editMenuInteraction(interaction, willPresentMenuFor: configuration, animator: ImmediateMenuAnimator())
+        XCTAssertEqual(presentations, [true])
+        XCTAssertTrue(view.attributedText.isEqual(to: originalText))
+        XCTAssertEqual(view.measuredSize(width: 360, fillsWidth: true), originalSize)
+
+        view.editMenuInteraction(interaction, willDismissMenuFor: configuration, animator: ImmediateMenuAnimator())
+        XCTAssertEqual(presentations, [true, false])
+        XCTAssertFalse(view.isSelectingMessageText)
+    }
+
+    func testEnteringSelectionSettlesLiftAndDoesNotLiftFragmentMenu() {
+        let view = MessageTextView()
+        view.apply(.plain("选择正文片段", style: style), style: style)
+        view.frame = CGRect(x: 0, y: 0, width: 360, height: 150)
+        let window = host(view)
+        defer {
+            view.resignFirstResponder()
+            window.isHidden = true
+        }
+        var presentations: [Bool] = []
+        view.messageActions = MessageTextActions(copyText: "选择正文片段", menuPresentationChanged: { presentations.append($0) })
+        let interaction = UIEditMenuInteraction(delegate: view)
+        let configuration = UIEditMenuConfiguration(identifier: nil, sourcePoint: .zero)
+
+        view.editMenuInteraction(interaction, willPresentMenuFor: configuration, animator: ImmediateMenuAnimator())
+        view.beginSelection()
+        view.editMenuInteraction(interaction, willPresentMenuFor: configuration, animator: ImmediateMenuAnimator())
+
+        XCTAssertEqual(presentations, [true, false])
+        XCTAssertTrue(view.isSelectingMessageText)
+    }
+
+    func testRemovingMessageViewResetsMenuLift() {
+        let view = MessageTextView()
+        let window = host(view)
+        defer { window.isHidden = true }
+        var presentations: [Bool] = []
+        view.messageActions = MessageTextActions(copyText: "正文", menuPresentationChanged: { presentations.append($0) })
+        view.editMenuInteraction(
+            UIEditMenuInteraction(delegate: view),
+            willPresentMenuFor: UIEditMenuConfiguration(identifier: nil, sourcePoint: .zero),
+            animator: ImmediateMenuAnimator()
+        )
+
+        view.removeFromSuperview()
+
+        XCTAssertEqual(presentations, [true, false])
+    }
+
+    private final class ImmediateMenuAnimator: NSObject, UIEditMenuInteractionAnimating {
+        func addAnimations(_ animations: @escaping () -> Void) { animations() }
+        func addCompletion(_ completion: @escaping () -> Void) { completion() }
+    }
+
+    func testMenuLiftMovesOnlyDisplayAndRespectsReducedMotion() async throws {
+        let resting = try await liftedTextFrame(isPresented: false, reduceMotion: false)
+        let lifted = try await liftedTextFrame(isPresented: true, reduceMotion: false)
+        let reduced = try await liftedTextFrame(isPresented: true, reduceMotion: true)
+
+        XCTAssertLessThan(lifted.minY, resting.minY)
+        XCTAssertGreaterThan(lifted.width, resting.width)
+        XCTAssertLessThanOrEqual(lifted.width - resting.width, 8.1)
+        XCTAssertEqual(reduced.minY, resting.minY, accuracy: 0.1)
+        XCTAssertEqual(reduced.width, resting.width, accuracy: 0.1)
+    }
+
+    private func liftedTextFrame(isPresented: Bool, reduceMotion: Bool) async throws -> CGRect {
+        let suite = "MessageMenuLiftTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let root = MessagePlainText(text: "消息浮起时保持原有排版。", style: style.markdown, fillsWidth: true)
+            .frame(width: 300, height: 60)
+            .modifier(MessageMenuLift(isPresented: isPresented, role: .assistant, reduceMotion: reduceMotion))
+            .environmentObject(ThemeStore(defaults: defaults))
+        let controller = UIHostingController(rootView: root)
+        controller.safeAreaRegions = []
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        controller.view.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        controller.view.layoutIfNeeded()
+        let textView = try XCTUnwrap(messageTextView(in: controller.view))
+        return textView.convert(textView.bounds, to: window)
+    }
+
+    private func messageTextView(in view: UIView) -> MessageTextView? {
+        if let text = view as? MessageTextView { return text }
+        return view.subviews.lazy.compactMap { self.messageTextView(in: $0) }.first
+    }
+
     private func markdown(_ source: String) -> MessageTextDocument {
         .markdown(MarkdownParser.shared.parse(source).blocks, style: style)
     }

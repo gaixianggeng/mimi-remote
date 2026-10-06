@@ -5,6 +5,7 @@ struct MessageTextActions {
     var copyText: String
     var retry: (() -> Void)?
     var stop: (() -> Void)?
+    var menuPresentationChanged: ((Bool) -> Void)?
 }
 
 private struct MessageTextActionsKey: EnvironmentKey {
@@ -62,6 +63,7 @@ final class MessageTextView: UITextView, UITextViewDelegate, UIEditMenuInteracti
     var messageActions: MessageTextActions?
     var openLink: ((URL) -> Void)?
     private(set) var isSelectingMessageText = false
+    private var isMessageMenuPresented = false
     private var pendingSelection = false
     private var pressLocation = CGPoint.zero
     private var document = MessageTextDocument(text: NSAttributedString(string: ""), codeBlocks: [])
@@ -147,7 +149,10 @@ final class MessageTextView: UITextView, UITextViewDelegate, UIEditMenuInteracti
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { endSelection() }
+        if window == nil {
+            updateMessageMenuPresentation(false)
+            endSelection()
+        }
     }
 
     override func resignFirstResponder() -> Bool {
@@ -185,7 +190,17 @@ final class MessageTextView: UITextView, UITextViewDelegate, UIEditMenuInteracti
         return UIMenu(children: items)
     }
 
+    func editMenuInteraction(_ interaction: UIEditMenuInteraction, willPresentMenuFor configuration: UIEditMenuConfiguration, animator: any UIEditMenuInteractionAnimating) {
+        animator.addAnimations { [weak self] in
+            guard let self else { return }
+            self.updateMessageMenuPresentation(!self.isSelectingMessageText)
+        }
+    }
+
     func editMenuInteraction(_ interaction: UIEditMenuInteraction, willDismissMenuFor configuration: UIEditMenuConfiguration, animator: any UIEditMenuInteractionAnimating) {
+        animator.addAnimations { [weak self] in
+            self?.updateMessageMenuPresentation(false)
+        }
         animator.addCompletion { [weak self] in
             guard let self, self.pendingSelection else { return }
             self.pendingSelection = false
@@ -195,6 +210,7 @@ final class MessageTextView: UITextView, UITextViewDelegate, UIEditMenuInteracti
 
     func beginSelection() {
         guard textStorage.length > 0 else { return }
+        updateMessageMenuPresentation(false)
         // 只切换原生手势与选区，正文、字号、布局和视图身份始终不变。
         isSelectingMessageText = true
         isSelectable = true
@@ -228,6 +244,12 @@ final class MessageTextView: UITextView, UITextViewDelegate, UIEditMenuInteracti
         linkTap.isEnabled = true
         outsideTap.view?.removeGestureRecognizer(outsideTap)
         messageMenu.dismissMenu()
+    }
+
+    private func updateMessageMenuPresentation(_ presented: Bool) {
+        guard isMessageMenuPresented != presented else { return }
+        isMessageMenuPresented = presented
+        messageActions?.menuPresentationChanged?(presented)
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
