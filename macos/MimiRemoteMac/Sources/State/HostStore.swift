@@ -801,10 +801,10 @@ final class HostStore {
 
     private func reconcileDeepSeekConfigurationAtLaunch() async -> Bool {
         do {
-            // 只刷新已启用的托管连接。检测到 Harness 不代表用户同意自动启用。
+            // 只刷新已启用的托管连接，检测到 Harness 不代表同意启用。开机时它可能还没换好凭据，可用性交给会自愈的 agentd 运行态。
             let result = try await agent.configureDeepSeek(.refresh, nil)
             deepSeekConfiguration = result
-            deepSeekError = result.enabled && !result.available ? result.message : nil
+            deepSeekError = nil
             return result.restartRequired
         } catch {
             deepSeekError = "DeepSeek 自动检测失败：\(error.localizedDescription)"

@@ -43,6 +43,12 @@ type Config struct {
 // ErrNotAuthenticated 表示尚未完成 token 换 Cookie。
 var ErrNotAuthenticated = errors.New("harnessclient: 尚未完成认证")
 
+// ErrCredentialsRejected 表示 Harness 拒绝了启动 token（认证握手返回 401）。
+//
+// 启动 token 在每个 Harness 进程启动时随机生成。被拒通常意味着 Harness 重启过、
+// 保存的 token 已经作废，服务本身仍可达；调用方据此区分“换凭据”与“服务不可用”。
+var ErrCredentialsRejected = errors.New("harnessclient: Harness 拒绝了启动 token")
+
 // ErrNoResult 表示响应缺少 result 外壳。Harness 的 gateway 在请求外壳不对时
 // 会返回这种响应，必须当成失败而不是空成功。
 var ErrNoResult = errors.New("harnessclient: 响应缺少 result 外壳")
@@ -151,6 +157,9 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	defer func() { _ = response.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<16))
 
+	if response.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("%w，status=401", ErrCredentialsRejected)
+	}
 	if response.StatusCode != http.StatusSeeOther {
 		return fmt.Errorf("harnessclient: 认证未返回重定向，status=%d", response.StatusCode)
 	}

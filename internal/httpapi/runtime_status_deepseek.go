@@ -2,7 +2,7 @@ package httpapi
 
 import (
 	"context"
-	"os"
+	"errors"
 
 	"github.com/gaixianggeng/mimi-remote/internal/harnessclient"
 )
@@ -19,19 +19,17 @@ func (r *Router) probeDeepSeekRuntime(ctx context.Context) runtimeAccountStatus 
 		status.Reason = "disabled"
 		return status
 	}
-	// 凭据误指向命名管道时，文件读取不受 context 超时控制；探测不能因此卡住全部状态刷新。
-	info, err := os.Stat(r.cfg.DeepSeek.TokenFile)
-	if err != nil || !info.Mode().IsRegular() {
+	client, err := r.authenticatedDeepSeekClient(ctx)
+	switch {
+	case errors.Is(err, errDeepSeekCredentialsUnavailable):
 		status.Reason = "credentials_unavailable"
 		return status
-	}
-	token, err := harnessclient.ReadTokenFile(r.cfg.DeepSeek.TokenFile)
-	if err != nil {
-		status.Reason = "credentials_unavailable"
+	case errors.Is(err, harnessclient.ErrCredentialsRejected):
+		// 服务在线但不认已存 token，且自动更新没成功：需要用户换启动链接，而不是等服务恢复。
+		status.State = runtimeStateSignedOut
+		status.Reason = deepSeekCredentialsRejectedReason
 		return status
-	}
-	client, err := harnessclient.New(harnessclient.Config{BaseURL: r.cfg.DeepSeek.BaseURL, AccessToken: token})
-	if err != nil || client.Authenticate(ctx) != nil {
+	case err != nil:
 		return status
 	}
 	catalog, err := client.ModelCatalog(ctx)
@@ -48,3 +46,7 @@ func (r *Router) probeDeepSeekRuntime(ctx context.Context) runtimeAccountStatus 
 	status.Reason = "models_unavailable"
 	return status
 }
+
+// deepSeekCredentialsRejectedReason 标记“Harness 拒绝已存启动凭据”。它同样按失败快照
+// 短期缓存，Harness 重启后的自动更新或用户手动恢复能尽快反映到菜单栏。
+const deepSeekCredentialsRejectedReason = "credentials_rejected"

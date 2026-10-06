@@ -289,8 +289,12 @@ func TestAuthenticateRejectsWrongToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("构造客户端失败：%v", err)
 	}
-	if err := client.Authenticate(context.Background()); err == nil {
-		t.Fatal("错误 token 不应认证成功")
+	err = client.Authenticate(context.Background())
+	if !errors.Is(err, ErrCredentialsRejected) {
+		t.Fatalf("Harness 拒绝 token 必须可与服务不可达区分：%v", err)
+	}
+	if strings.Contains(err.Error(), "wrong-token") {
+		t.Fatalf("认证错误不得包含 token：%v", err)
 	}
 	if client.Authenticated() {
 		t.Fatal("认证失败后不应处于已认证状态")
@@ -328,6 +332,9 @@ func TestAuthenticateNeverLeaksTokenInTransportError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), token) {
 		t.Fatalf("认证错误不得包含 token：%v", err)
+	}
+	if errors.Is(err, ErrCredentialsRejected) {
+		t.Fatalf("服务不可达不能被当成凭据被拒：%v", err)
 	}
 }
 

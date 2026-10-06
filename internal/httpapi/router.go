@@ -132,8 +132,10 @@ type Router struct {
 	// 供同包测试注入 Spy——被拒的调用必须证明"没有触达 Harness"，而这件事只能靠
 	// 一个可观测的替身来断言。
 	harnessNativeUpstream func(context.Context) (harnessNativeRPCUpstream, error)
-	shutdownOnce          sync.Once
-	diagnosticLogs        DiagnosticLogController
+	// deepSeekCredential 在 Harness 重启换了启动 token 后，为受管连接换上新凭据。零值可用。
+	deepSeekCredential deepSeekCredentialRenewal
+	shutdownOnce       sync.Once
+	diagnosticLogs     DiagnosticLogController
 }
 
 // RouterOptions 只承载必须在构造时固定的进程级资源路径。

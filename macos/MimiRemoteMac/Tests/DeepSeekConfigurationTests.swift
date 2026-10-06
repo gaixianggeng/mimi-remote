@@ -231,6 +231,45 @@ extension HostStoreTests {
         XCTAssertNil(store.deepSeekError)
     }
 
+    func testDeepSeekLaunchRefreshMissDefersToRejectedCredentialRuntime() async {
+        let store = makeStore(
+            configExists: true, agentStatus: { .enabled },
+            status: { try Self.deepSeekRuntimeStatus(state: "signed_out", reason: "credentials_rejected") },
+            configureDeepSeek: { _, _ in Self.unavailableLaunchRefresh }
+        )
+        await store.bootstrap()
+        // 开机刷新抢在 Harness 换好凭据之前不算错误；agentd 的运行态才是结论。
+        XCTAssertNil(store.deepSeekError)
+        XCTAssertEqual(store.deepSeekStatusTitle, "需要更新启动链接")
+        XCTAssertEqual(store.moduleStateTitle(.deepseek), "需要更新启动链接")
+        XCTAssertTrue(store.deepSeekStatusDetail.contains("重启 Harness 后点击重新检测"))
+    }
+
+    func testDeepSeekLaunchRefreshMissDoesNotHideSelfHealedRuntime() async {
+        let store = makeStore(
+            configExists: true, agentStatus: { .enabled },
+            status: { try Self.deepSeekRuntimeStatus(state: "available", reason: "ready") },
+            configureDeepSeek: { _, _ in Self.unavailableLaunchRefresh }
+        )
+        await store.bootstrap()
+        XCTAssertNil(store.deepSeekError)
+        XCTAssertEqual(store.deepSeekStatusTitle, "已连接")
+        XCTAssertEqual(store.moduleStateTitle(.deepseek), "可用")
+    }
+
+    private nonisolated static var unavailableLaunchRefresh: DeepSeekConfigurationResult {
+        DeepSeekConfigurationResult(
+            enabled: true, available: false, discovered: false,
+            baseURL: "http://127.0.0.1:3080", message: "未能从本机取得可用的 Harness 启动信息", restartRequired: false
+        )
+    }
+
+    private nonisolated static func deepSeekRuntimeStatus(state: String, reason: String) throws -> AgentStatus {
+        let checkedAt = ISO8601DateFormatter().string(from: Date())
+        let json = #"{"process_ok":true,"service_ok":true,"version":"fixture","endpoint":"http://127.0.0.1:8787","config_path":"/tmp/fixture.json","projects":1,"doctor_ok":true,"doctor":{"ok":true,"version":"fixture","listen":"127.0.0.1:8787","checks":[]},"runtime_status":{"checked_at":"\#(checkedAt)","runtimes":[{"id":"deepseek","title":"DeepSeek Harness","enabled":true,"state":"\#(state)","reason":"\#(reason)"}]}}"#
+        return try JSONDecoder().decode(AgentStatus.self, from: Data(json.utf8))
+    }
+
     private nonisolated static var discoveredDeepSeek: DeepSeekConfigurationResult {
         DeepSeekConfigurationResult(
             enabled: false, available: true, discovered: true,

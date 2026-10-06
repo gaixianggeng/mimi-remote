@@ -237,6 +237,7 @@ func runtimeStatusHasFailure(response runtimeStatusResponse) bool {
 	for _, runtime := range response.Runtimes {
 		if runtime.State == runtimeStateUnavailable ||
 			runtime.Reason == "quota_refresh_in_progress" ||
+			runtime.Reason == deepSeekCredentialsRejectedReason ||
 			runtime.RateLimits != nil &&
 				strings.EqualFold(runtime.RateLimits.Availability, "unavailable") {
 			return true
