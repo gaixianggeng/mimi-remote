@@ -89,6 +89,90 @@ final class HostStatusStoreTests: XCTestCase {
         )
     }
 
+    func testToolbarConnectionBadgeDefersProgressToThePageThatAlreadyShowsIt() {
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: true,
+                isNetworkUnavailable: false,
+                connectionStatus: .idle,
+                pageShowsConnectionProgress: true
+            ),
+            .hidden,
+            "正文的连接过渡已经在表达进行中，顶栏不再叠第二枚转圈"
+        )
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: false,
+                isNetworkUnavailable: false,
+                connectionStatus: .testing,
+                pageShowsConnectionProgress: true
+            ),
+            .hidden
+        )
+        // 结论型状态不属于"正在进行"，正文那一处不表达它们，徽标必须继续出现。
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: false,
+                isNetworkUnavailable: true,
+                connectionStatus: .connected("cached"),
+                pageShowsConnectionProgress: true
+            ),
+            .offline
+        )
+        XCTAssertEqual(
+            HostToolbarConnectionBadge.resolve(
+                isSwitching: false,
+                isNetworkUnavailable: false,
+                connectionStatus: .failed("timeout"),
+                pageShowsConnectionProgress: true
+            ),
+            .failed
+        )
+    }
+
+    func testLoadingOrbitArcRevolvesAndBreathesWithinBounds() {
+        let origin = LoadingOrbit.arc(time: 0, animates: true)
+        XCTAssertEqual(origin.start, 0, accuracy: 0.0001, "零时刻从正上方起步")
+
+        let quarterTurn = LoadingOrbit.arc(time: LoadingOrbit.revolutionDuration / 4, animates: true)
+        XCTAssertEqual(quarterTurn.start, 0.25, accuracy: 0.0001, "匀速转动：四分之一周期走四分之一圈")
+
+        let fullTurn = LoadingOrbit.arc(time: LoadingOrbit.revolutionDuration, animates: true)
+        XCTAssertEqual(fullTurn.start, 0, accuracy: 0.0001, "转满一圈回到起点，不跳帧")
+
+        // 弧长在区间内伸缩，且确实会变：不会退化成一个点，也不会长成整圈。
+        let samples = stride(from: 0.0, to: LoadingOrbit.breathDuration, by: 0.05).map {
+            LoadingOrbit.arc(time: 1_000_000 + $0, animates: true)
+        }
+        for arc in samples {
+            XCTAssertTrue((0..<1).contains(arc.start))
+            XCTAssertTrue((LoadingOrbit.minArcLength...LoadingOrbit.maxArcLength).contains(arc.length))
+        }
+        let lengths = samples.map(\.length)
+        XCTAssertEqual(lengths.min() ?? 0, LoadingOrbit.minArcLength, accuracy: 0.01)
+        XCTAssertEqual(lengths.max() ?? 0, LoadingOrbit.maxArcLength, accuracy: 0.01)
+    }
+
+    func testLoadingOrbitStopsAtRestingArcUnderReduceMotion() {
+        XCTAssertEqual(LoadingOrbit.arc(time: 0, animates: false), LoadingOrbit.restingArc)
+        XCTAssertEqual(
+            LoadingOrbit.arc(time: 12.3, animates: false),
+            LoadingOrbit.restingArc,
+            "减弱动态效果下弧与时间无关"
+        )
+        XCTAssertGreaterThan(LoadingOrbit.restingArc.length, 0, "静止时仍要看得出是一段弧")
+    }
+
+    func testLoadingOrbitRingIsThickAtEverySize() {
+        for size in [LoadingOrbit.Size.large, .regular] {
+            let diameter = size.diameter
+            let lineWidth = LoadingOrbit.lineWidth(diameter: diameter)
+            // 环身约占直径的 29%：这正是替换细水纹的理由（#624）。
+            XCTAssertEqual(lineWidth / diameter, 0.29, accuracy: 0.001)
+            XCTAssertGreaterThanOrEqual(lineWidth, 10, "面板尺寸也不能细成一根线")
+        }
+    }
+
     func testProbeRequestsOnlyInactiveProfileAndReusesSuccessTTL() async throws {
         let fixture = try makeFixture(
             inactiveExpectedInstallationID: "installation-b",

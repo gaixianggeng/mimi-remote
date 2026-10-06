@@ -7,6 +7,8 @@ struct ConversationView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    // 紧凑导航的 Shell 根部统一注入该值，push 出来的会话详情同样继承；宽屏侧栏布局为 false。
+    @Environment(\.workbenchHasCompactTabBar) private var usesCompactNavigation
     // 不同 iPadOS 侧栏形态下，detail 的 size 提案和 leading safe area 组合并不一致：
     // 有的版本给整窗宽度并把侧栏记在 safe area，有的已经缩小 size 却仍报告 inset，
     // 纯提案算术会把横屏详情列的宽度重复扣除侧栏而误入紧凑分支。
@@ -63,7 +65,10 @@ struct ConversationView: View {
                     // 瞬态业务状态不得切换 List 的 safe-area 几何，否则材质会消失并跳动。
                     allowsTopUnderlap: Self.shouldAllowTopUnderlap(
                         reduceTransparency: reduceTransparency
-                    )
+                    ),
+                    // 系统 soft edge 太弱，正文滚到标题后方仍能逐字辨读，紧凑导航再叠一层加深。
+                    // 宽屏侧栏布局不叠：详情列顶部被提亮后会比相邻侧栏亮一档，界线压在分栏缝上。
+                    deepensTopScrollEdge: usesCompactNavigation
                 )
             }
             // 测量层必须先占满 NavigationStack 实际分配的详情列，再把结果回写给
@@ -293,6 +298,7 @@ struct ConversationView: View {
                 Label(L10n.text("ui.refresh_status"), systemImage: "arrow.clockwise")
             }
             .buttonStyle(.borderedProminent)
+            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
             .controlSize(.small)
             .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
 
@@ -321,6 +327,7 @@ struct ConversationView: View {
                     Label(L10n.text("ui.view_abbreviated_version_only"), systemImage: "text.justify")
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
                 .controlSize(.small)
                 .disabled(sessionStore.isRefreshingSelectedSession)
 
@@ -333,6 +340,7 @@ struct ConversationView: View {
                     Label(L10n.text("ui.retry_full_history"), systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
                 .controlSize(.small)
                 .disabled(sessionStore.isRefreshingSelectedSession)
 
@@ -364,6 +372,7 @@ struct ConversationView: View {
                     Label(L10n.text("ui.load_full_history"), systemImage: "arrow.down.circle")
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
                 .controlSize(.small)
                 .disabled(sessionStore.isRefreshingSelectedSession)
 
@@ -384,6 +393,7 @@ struct ConversationView: View {
                     Label(L10n.text("ui.try_again_abbreviated_version"), systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
                 .controlSize(.small)
                 .disabled(sessionStore.isRefreshingSelectedSession)
 

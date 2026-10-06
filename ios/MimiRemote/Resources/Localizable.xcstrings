@@ -1,6 +1,219 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.default_model_inherited_name": {
+      "comment": "Model name for the inherited default option, distinct from pinning the same model.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ (follow default)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@（跟随默认）"
+          }
+        }
+      }
+    },
+    "ui.default_model_loading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading model…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载模型…"
+          }
+        }
+      }
+    },
+    "ui.default_model_unconfirmed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model not confirmed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "型号未确认"
+          }
+        }
+      }
+    },
+    "ui.search_runtime_unavailable": {
+      "comment": "A search may succeed for one runtime while another fails. Keep the available results visible.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ search is temporarily unavailable. Results may be incomplete."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 搜索暂不可用，结果可能不完整。"
+          }
+        }
+      }
+    },
+    "ui.push_status_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notifications are temporarily unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通知暂不可用"
+          }
+        }
+      }
+    },
+    "ui.push_status_waiting": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for a connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待连接电脑"
+          }
+        }
+      }
+    },
+    "ui.push_disable_incomplete": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remote notifications have not been fully turned off"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程通知关闭未完成"
+          }
+        }
+      }
+    },
+    "ui.push_previous_computer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Previously connected computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "之前连接的电脑"
+          }
+        }
+      }
+    },
+    "ui.push_notification_computer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notifications from"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接收通知的电脑"
+          }
+        }
+      }
+    },
+    "ui.push_trust_custom_service": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm custom notification service"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认自定义通知服务"
+          }
+        }
+      }
+    },
+    "ui.push_retry_disable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry turning off remote notifications"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试关闭远程通知"
+          }
+        }
+      }
+    },
+    "ui.push_open_system_settings": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open System Settings"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前往系统设置"
+          }
+        }
+      }
+    },
+    "ui.push_receive_notifications": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Receive message notifications"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接收消息通知"
+          }
+        }
+      }
+    },
     "ui.view_process": {
       "localizations": {
         "en": {
@@ -8915,6 +9128,54 @@
         }
       }
     },
+    "ui.deepseek_models_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The DeepSeek model catalog is unavailable. Refresh and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 模型目录不可用，请刷新后重试"
+          }
+        }
+      }
+    },
+    "ui.deepseek_requires_full_access": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek supports Full Access only. Select it explicitly in the permissions menu; Harness still requests approvals."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 仅支持完全访问，请在权限菜单中明确选择；审批仍由 Harness 发起"
+          }
+        }
+      }
+    },
+    "ui.deepseek_text_only": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek currently supports text input only."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 当前仅支持文本输入"
+          }
+        }
+      }
+    },
     "ui.decision_sent": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "extractionState": "stale",
@@ -16334,18 +16595,18 @@
       }
     },
     "ui.mac_installer_requirements_and_instructions": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing. 版本号必须与 Mac App 的 MACOSX_DEPLOYMENT_TARGET（macos/MimiRemoteMac/project.yml）保持一致；#242 降低部署目标时漏改了这两条文案（#554）。",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Requires macOS 26 or later. Open the DMG, then drag Mimi Remote to Applications."
+            "value": "Requires macOS 15 or later. Open the DMG, then drag Mimi Remote to Applications."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "需要 macOS 26 或更高版本。打开 DMG 后，将 Mimi Remote 拖入“应用程序”。"
+            "value": "需要 macOS 15 或更高版本。打开 DMG 后，将 Mimi Remote 拖入“应用程序”。"
           }
         }
       }
@@ -18052,19 +18313,19 @@
         }
       }
     },
-    "ui.neutral_warm_white_with_a_single_main_color": {
+    "ui.notion_style_neutral_grays_without_accent_color": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Neutral warm white with a single deep-purple main color"
+            "value": "Notion-style neutrals with a subtle blue in usage charts"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "中性暖白配单一深紫主色"
+            "value": "Notion 式中性底色，用量图表点缀冷蓝"
           }
         }
       }
@@ -20004,23 +20265,6 @@
         }
       }
     },
-    "ui.parse_historical_messages": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Parse historical messages"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "解析历史消息"
-          }
-        }
-      }
-    },
     "ui.passed": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -20501,6 +20745,23 @@
         }
       }
     },
+    "ui.context": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Context"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上下文"
+          }
+        }
+      }
+    },
     "ui.plan": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -20948,19 +21209,19 @@
       }
     },
     "ui.preferred_runtime_description": {
-      "comment": "Explains the preferred workspace runtime and its fallback behavior.",
+      "comment": "Explains which runtime's sessions a workspace shows by default.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Workspaces show sessions from this runtime by default. If Claude Code isn't supported, Codex is used automatically."
+            "value": "Workspaces show sessions from the selected runtime by default"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "工作区默认展示该类型的会话。不支持 Claude Code 时自动使用 Codex。"
+            "value": "工作区默认展示所选类型的会话"
           }
         }
       }
@@ -20997,23 +21258,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "在 Mac 上准备"
-          }
-        }
-      }
-    },
-    "ui.prepare_to_load_abbreviated_history": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Preparing to load compact history"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "准备加载缩略历史"
           }
         }
       }
@@ -22193,7 +22437,6 @@
       }
     },
     "ui.push_lock_screen_approval": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
@@ -22204,7 +22447,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "消息提醒"
+            "value": "消息通知"
           }
         }
       }
@@ -22431,18 +22674,17 @@
       }
     },
     "ui.push_status_notifications_denied": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Notifications are denied in system settings, so Lock Screen reminders cannot arrive"
+            "value": "System notifications are turned off"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "系统通知权限被拒绝，锁屏提醒无法送达"
+            "value": "系统通知未开启"
           }
         }
       }
@@ -22482,18 +22724,17 @@
       }
     },
     "ui.push_status_registering": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Registering…"
+            "value": "Connecting to notification service"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在注册…"
+            "value": "正在连接通知服务"
           }
         }
       }
@@ -22618,18 +22859,17 @@
       }
     },
     "ui.push_status_unavailable_on_host": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Your Mac is not ready yet"
+            "value": "Remote notifications are unavailable on this computer"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mac 端尚未准备好"
+            "value": "这台电脑暂不支持远程通知"
           }
         }
       }
@@ -23251,19 +23491,19 @@
         }
       }
     },
-    "ui.ready_to_load_full_history": {
+    "ui.reading_the_workspace_list_from_this_mac": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ready to load full history"
+            "value": "Reading the workspace list from this Mac."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "准备加载完整历史"
+            "value": "正在读取这台电脑上的工作区列表。"
           }
         }
       }
@@ -24622,23 +24862,6 @@
         }
       }
     },
-    "ui.request_history_paging": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Request history paging"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请求历史分页"
-          }
-        }
-      }
-    },
     "ui.request_subsequent_changes": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -24669,23 +24892,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "请求更改目标"
-          }
-        }
-      }
-    },
-    "ui.request_thumbnail_history": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Request compact history"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请求缩略历史"
           }
         }
       }
@@ -25780,6 +25986,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "运行时摘要"
+          }
+        }
+      }
+    },
+    "ui.runtime_retry_hint": {
+      "comment": "Hint for a runtime that can be rechecked after a failed availability probe.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap to check this runtime again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点击重新检查此运行时。"
           }
         }
       }
@@ -27700,24 +27923,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "会话标题：%@"
-          }
-        }
-      }
-    },
-    "ui.running_sessions_count": {
-      "comment": "Accessibility summary for the number of running sessions in one workspace.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Running sessions: %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在运行的会话：%@"
           }
         }
       }
@@ -32576,18 +32781,18 @@
       }
     },
     "ui.the_pairing_qr_code_has_expired_please_re": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing. 主路径必须指向 Mac App 的菜单栏入口；DMG 安装没有 agentd 命令，终端用法只作为命令行安装的补充（#554）。",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The pairing QR code has expired. Please re-run agentd pair on your Mac and scan the code."
+            "value": "The pairing QR code has expired. On your Mac, open Mimi Remote from the menu bar, choose the item with the QR-code icon, then click the circular-arrow button in the pairing window and scan again. Command-line installs can run agentd pair instead."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "配对二维码已过期，请在 Mac 上重新运行 agentd pair 后扫码。"
+            "value": "配对二维码已过期。请在 Mac 菜单栏的 Mimi Remote 里点“配对设备…”，再点“刷新二维码”后重新扫码；命令行安装请运行 agentd pair。"
           }
         }
       }
@@ -35502,23 +35707,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "更新连接"
-          }
-        }
-      }
-    },
-    "ui.update_interface": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Update interface"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "更新界面"
           }
         }
       }
@@ -43313,6 +43501,13 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "其他电脑" } }
       }
     },
+    "ui.device_preferences": {
+      "comment": "Section title for device-related preferences.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Preferences" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "偏好设置" } }
+      }
+    },
     "ui.verifying_connection": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -43388,6 +43583,264 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Copy redacted diagnostics" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "复制脱敏诊断结果" } }
+      }
+    },
+    "harness.stream_interrupted": {
+      "comment": "A native Harness stream was discontinuous and must be reopened.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Native stream interrupted (%@). Reopen the session." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原生流中断（%@），需要重新订阅。" } }
+      }
+    },
+    "harness.session_baseline_not_ready": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The session baseline is not ready. Try again shortly." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "会话基线尚未建立，请稍后重试。" } }
+      }
+    },
+    "harness.text_input_only": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This Harness version accepts text input only." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前 Harness 版本只接受文本输入。" } }
+      }
+    },
+    "harness.guidance_unsupported": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Harness does not support steering. Send a normal message instead." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Harness 不支持引导，请使用普通输入。" } }
+      }
+    },
+    "harness.cancel_turn_mismatch": {
+      "comment": "A stale stop target was rejected because another Harness turn is active.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The stop target %@ is stale; the active turn is %@." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "停止目标 %@ 已过期；当前活动轮次是 %@。" } }
+      }
+    },
+    "harness.approval_response_not_connected": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Native approval responses are not connected yet." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原生审批应答尚未接线。" } }
+      }
+    },
+    "harness.question_response_not_connected": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Native question responses are not connected yet." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原生追问应答尚未接线。" } }
+      }
+    },
+    "harness.interaction_response_rejected": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Harness rejected this response. You can retry." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Harness 拒绝了这次应答，可以重试。" } }
+      }
+    },
+    "harness.thinking_title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Thinking" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "思考中" } }
+      }
+    },
+    "harness.tool_activity_title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Running tool" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "运行工具" } }
+      }
+    },
+    "harness.model_selection_failed": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Could not switch the model, so the message was not sent (%@)." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "切换模型失败，消息未发送（%@）。" } }
+      }
+    },
+    "harness.model_selection_unsupported": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This Harness path cannot change the model for an existing session yet." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原生路径暂时无法在已有会话上切换模型。" } }
+      }
+    },
+    "harness.submission_result_unknown": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The submission result is unknown. Reconcile it before retrying (%@)." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "提交结果未知，请先对账再重试（%@）。" } }
+      }
+    },
+    "harness.native_routed_no_fallback": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%@ is owned by the native Harness client and cannot fall back to the Codex channel." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%@ 由 Harness 原生客户端承担，不能回退到 Codex 通道。" } }
+      }
+    },
+    "harness.agentd_upgrade_required": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This agentd version does not support the native Harness channel. Update agentd to continue." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前 agentd 版本不支持 Harness 原生通道，请升级 agentd 后继续。" } }
+      }
+    },
+    "harness.native_not_implemented": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The native Harness client has not implemented %@." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Harness 原生客户端尚未实现 %@。" } }
+      }
+    },
+    "harness.native_unsupported": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Harness does not support %@." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Harness 不支持 %@。" } }
+      }
+    },
+    "harness.attempt_superseded": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The previous output was replaced by a new attempt and may be incomplete." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "上一条输出被新的尝试取代，内容可能不完整。" } }
+      }
+    },
+    "harness.attempt_interrupted": {
+      "comment": "A streamed assistant output ended without an authoritative attempt-to-durable settlement link.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "A partial output was interrupted and remains unconfirmed." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "一条临时输出已中断，且仍未确认。" } }
+      }
+    },
+    "harness.previous_submission_unconfirmed": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The previous submission is still unconfirmed. Reconcile it or wait for redelivery." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "上一次提交尚未确认结果，请先对账或等待重投。" } }
+      }
+    },
+    "harness.credentials_expired_http": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The credentials have expired (HTTP %@)." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "凭据已失效（HTTP %@）。" } }
+      }
+    },
+    "harness.answer_unsupported": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unsupported answer: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "不支持的回答：%@" } }
+      }
+    },
+    "harness.interaction_type_unsupported": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unsupported interaction type: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法应答的交互类型：%@" } }
+      }
+    },
+    "harness.interaction_missing_event_id": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The interaction has no eventId and cannot be answered." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "交互缺少 eventId，无法回传。" } }
+      }
+    },
+    "harness.interaction_missing_agent_id": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The session for this request could not be verified. Reconnect and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法确认此请求所属的会话。请重新连接后重试。" } }
+      }
+    },
+    "harness.interaction_missing_request": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The interaction is missing its request payload." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "交互缺少请求内容。" } }
+      }
+    },
+    "harness.questions_missing": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The request contains no questions." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "追问没有携带任何问题。" } }
+      }
+    },
+    "harness.question_missing_id": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "A question is missing its id." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "问题缺少 id。" } }
+      }
+    },
+    "harness.option_missing_label": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Question %@ has an option without a label." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "问题 %@ 的选项缺少 label。" } }
+      }
+    },
+    "harness.question_unknown": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Question %@ is not part of this request." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "问题 %@ 不在本次请求中。" } }
+      }
+    },
+    "harness.option_unknown": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Option %@ does not belong to question %@." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选项 %@ 不属于问题 %@。" } }
+      }
+    },
+    "harness.answers_empty": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No answers were selected." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "没有选择任何回答。" } }
+      }
+    },
+    "ui.app_diagnostics": {
+      "comment": "User-facing title for local application diagnostics.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "App Diagnostics" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "应用诊断" } }
+      }
+    },
+    "ui.temporary_detailed_logging": {
+      "comment": "A temporary switch that records additional fixed-code diagnostic events.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Detailed Logging for 15 Minutes" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "详细日志（15 分钟）" } }
+      }
+    },
+    "ui.detailed_logging_off_explanation": {
+      "comment": "Explains the default diagnostics state.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Off by default. Important failures are still retained using privacy-safe fixed codes." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "默认关闭。重要失败仍会以保护隐私的固定代码保留。" } }
+      }
+    },
+    "ui.detailed_logging_expiration_value": {
+      "comment": "Shows when temporary detailed logging will turn off. The argument is a localized time.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Automatically turns off at %@." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "将在 %@ 自动关闭。" } }
+      }
+    },
+    "ui.export_app_diagnostics": {
+      "comment": "Exports the app-owned local diagnostics file.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Export Diagnostics" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "导出诊断日志" } }
+      }
+    },
+    "ui.clear_app_diagnostics": {
+      "comment": "Clears only the app-owned local diagnostics files.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Clear Diagnostics" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "清除诊断日志" } }
+      }
+    },
+    "ui.clear_app_diagnostics_confirmation": {
+      "comment": "Confirmation before clearing only app-owned diagnostics.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Clear local app diagnostics?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "清除本机应用诊断日志？" } }
+      }
+    },
+    "ui.app_diagnostics_storage_explanation": {
+      "comment": "Explains diagnostics retention and privacy boundaries.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Exports include only the last 7 days. Cleanup runs at launch, when returning to the foreground, and periodically while the app runs. Storage is limited to two 5 MB files. Message text, paths, URLs, IP addresses, and account identifiers are excluded." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "导出只包含最近 7 天的日志。应用会在启动、回到前台及运行期间定期清理。存储最多为两个 5 MB 文件。不记录消息正文、路径、网址、IP 地址和账号标识。" } }
+      }
+    },
+    "ui.app_diagnostics_operation_failed": {
+      "comment": "A fixed user-facing message when diagnostics export fails.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The diagnostics operation failed. Please try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "诊断操作失败，请重试。" } }
       }
     },
     "·": {

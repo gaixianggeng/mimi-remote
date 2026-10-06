@@ -67,9 +67,3 @@ func (s *RevocationStore) Purge(ctx context.Context, now time.Time) (int64, erro
 	}
 	return result.RowsAffected()
 }
-
-func (s *RevocationStore) Count(ctx context.Context) (int, error) {
-	var count int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM revoked_tickets`).Scan(&count)
-	return count, err
-}

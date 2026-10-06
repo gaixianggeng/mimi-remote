@@ -6,8 +6,29 @@ struct ProjectsGitHostLease {
     let client: any SessionStoreAPIClient
 }
 
+struct WorkspaceHostLease {
+    let scope: HostScope
+    let client: any WorkspaceHostAPIClient
+}
+
 // 文件预览、命令动作、Git、项目列表与网络恢复按工作区能力集中。
 extension SessionStore {
+    func captureWorkspaceHostLease() throws -> WorkspaceHostLease {
+        WorkspaceHostLease(scope: appStore.activeHostScope, client: try workspaceHostClientFactory())
+    }
+
+    private func isWorkspaceHostCurrent(_ lease: WorkspaceHostLease) -> Bool {
+        appStore.activeHostScope == lease.scope
+    }
+
+    private func canApplyWorkspaceHostResult(_ lease: WorkspaceHostLease) -> Bool {
+        !Task.isCancelled && isWorkspaceHostCurrent(lease)
+    }
+
+    func requireCurrentWorkspaceHost(_ lease: WorkspaceHostLease) throws {
+        guard canApplyWorkspaceHostResult(lease) else { throw CancellationError() }
+    }
+
     func captureProjectsGitHostLease() throws -> ProjectsGitHostLease {
         let scope = appStore.activeHostScope
         let client = try clientFactory()
@@ -34,87 +55,53 @@ extension SessionStore {
     }
 
     func listDirectories(path: String) async throws -> DirectoryListResponse {
-        let lease = try captureProjectsGitHostLease()
+        let lease = try captureWorkspaceHostLease()
         do {
             let response = try await lease.client.listDirectories(path: path)
-            try requireCurrentProjectsGitHost(lease)
+            try requireCurrentWorkspaceHost(lease)
             return response
         } catch {
             // 旧主机的失败也属于旧结果，统一转成取消，避免 B 页面展示 A 的网络错误。
-            try requireCurrentProjectsGitHost(lease)
+            try requireCurrentWorkspaceHost(lease)
             throw error
         }
     }
 
     // 文件预览同样不污染全局错误状态：后端只返回授权边界内的普通文件，客户端落到临时目录后交给 QuickLook。
     func previewFile(path: String) async throws -> URL {
-        let lease = try captureProjectsGitHostLease()
-        let profileID = mediaProfileScope
-        let response: FileReadResponse
-        do {
-            response = try await lease.client.readFile(path: path)
-            try requireCurrentProjectsGitHost(lease)
-        } catch {
-            try requireCurrentProjectsGitHost(lease)
-            throw error
+        try await previewMedia { client in
+            try await client.readFile(path: path)
         }
-        let url: URL
-        do {
-            url = try await MediaWorker.shared.previewURL(
-                from: MediaPreviewPayload(response: response),
-                profileID: profileID
-            )
-        } catch {
-            try requireCurrentProjectsGitHost(lease)
-            throw error
-        }
-        guard canApplyProjectsGitResult(lease) else {
-            await MediaWorker.shared.discardPreview(at: url)
-            throw CancellationError()
-        }
-        return url
     }
 
     // 历史图片走 app-server gateway 的短期缓存 ID，不阻塞会话文字首屏；点按后再落到临时文件预览。
     func previewHistoryMedia(id: String) async throws -> URL {
-        let lease = try captureProjectsGitHostLease()
-        let profileID = mediaProfileScope
-        let response: FileReadResponse
-        do {
-            response = try await lease.client.readHistoryMedia(id: id)
-            try requireCurrentProjectsGitHost(lease)
-        } catch {
-            try requireCurrentProjectsGitHost(lease)
-            throw error
+        try await previewMedia { client in
+            try await client.readHistoryMedia(id: id)
         }
-        let url: URL
-        do {
-            url = try await MediaWorker.shared.previewURL(
-                from: MediaPreviewPayload(response: response),
-                profileID: profileID
-            )
-        } catch {
-            try requireCurrentProjectsGitHost(lease)
-            throw error
-        }
-        guard canApplyProjectsGitResult(lease) else {
-            await MediaWorker.shared.discardPreview(at: url)
-            throw CancellationError()
-        }
-        return url
     }
 
     // 超大过程输出只在用户主动打开时下载，并交给 QuickLook 渐进展示；
     // 不把几 MB 的文本放回 SwiftUI 时间线的 Text 树，避免解析与布局卡顿。
     func previewHistoryOutput(id: String) async throws -> URL {
-        let lease = try captureProjectsGitHostLease()
+        try await previewMedia { client in
+            try await client.readHistoryOutput(id: id)
+        }
+    }
+
+    // 以上三个预览此前逐字重复了同一段流程：取 host 租约、两次 host 校验、
+    // 落临时文件、结果过期时丢弃预览。现在只保留这一份，差异由 fetch 闭包注入。
+    private func previewMedia(
+        _ fetch: (any WorkspaceHostAPIClient) async throws -> FileReadResponse
+    ) async throws -> URL {
+        let lease = try captureWorkspaceHostLease()
         let profileID = mediaProfileScope
         let response: FileReadResponse
         do {
-            response = try await lease.client.readHistoryOutput(id: id)
-            try requireCurrentProjectsGitHost(lease)
+            response = try await fetch(lease.client)
+            try requireCurrentWorkspaceHost(lease)
         } catch {
-            try requireCurrentProjectsGitHost(lease)
+            try requireCurrentWorkspaceHost(lease)
             throw error
         }
         let url: URL
@@ -124,10 +111,10 @@ extension SessionStore {
                 profileID: profileID
             )
         } catch {
-            try requireCurrentProjectsGitHost(lease)
+            try requireCurrentWorkspaceHost(lease)
             throw error
         }
-        guard canApplyProjectsGitResult(lease) else {
+        guard canApplyWorkspaceHostResult(lease) else {
             await MediaWorker.shared.discardPreview(at: url)
             throw CancellationError()
         }
@@ -148,9 +135,9 @@ extension SessionStore {
         guard !targetPath.isEmpty else {
             return
         }
-        let lease: ProjectsGitHostLease
+        let lease: WorkspaceHostLease
         do {
-            lease = try captureProjectsGitHostLease()
+            lease = try captureWorkspaceHostLease()
         } catch {
             commandActionsByPath[targetPath] = []
             commandActionErrorByPath[targetPath] = error.localizedDescription
@@ -158,18 +145,18 @@ extension SessionStore {
         }
         isRefreshingCommandActions = true
         defer {
-            if isProjectsGitHostCurrent(lease) {
+            if isWorkspaceHostCurrent(lease) {
                 isRefreshingCommandActions = false
             }
         }
         do {
             let actions = try await lease.client.commandActions(path: targetPath)
-            guard canApplyProjectsGitResult(lease) else { return }
+            guard canApplyWorkspaceHostResult(lease) else { return }
             // action 是 agentd 配置里的 allowlist，只按工作区 path 缓存，避免跨会话串结果。
             commandActionsByPath[targetPath] = actions
             commandActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
-            guard canApplyProjectsGitResult(lease) else { return }
+            guard canApplyWorkspaceHostResult(lease) else { return }
             commandActionsByPath[targetPath] = []
             commandActionErrorByPath[targetPath] = error.localizedDescription
         }
@@ -236,9 +223,9 @@ extension SessionStore {
     }
 
     func performCommandActionRun(_ run: QueuedCommandActionRun) async {
-        let lease: ProjectsGitHostLease
+        let lease: WorkspaceHostLease
         do {
-            lease = try captureProjectsGitHostLease()
+            lease = try captureWorkspaceHostLease()
         } catch {
             commandActionErrorByPath[run.path] = error.localizedDescription
             return
@@ -246,7 +233,7 @@ extension SessionStore {
         runningCommandActionPath = run.path
         runningCommandActionID = run.id
         defer {
-            if isProjectsGitHostCurrent(lease) {
+            if isWorkspaceHostCurrent(lease) {
                 runningCommandActionPath = nil
                 runningCommandActionID = nil
             }
@@ -257,7 +244,7 @@ extension SessionStore {
                 id: run.id,
                 confirmed: run.confirmed
             )
-            guard canApplyProjectsGitResult(lease) else { return }
+            guard canApplyWorkspaceHostResult(lease) else { return }
             commandActionResultByPath[run.path] = response
             var history = commandActionHistoryByPath[run.path] ?? []
             // 执行历史只做本地短缓存，不写后端，避免命令输出长期留存在配置服务里。
@@ -268,139 +255,25 @@ extension SessionStore {
             commandActionHistoryByPath[run.path] = history
             commandActionErrorByPath.removeValue(forKey: run.path)
         } catch {
-            guard canApplyProjectsGitResult(lease) else { return }
+            guard canApplyWorkspaceHostResult(lease) else { return }
             commandActionErrorByPath[run.path] = error.localizedDescription
         }
     }
 
-    func refreshSelectedGitStatus() async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await refreshGitStatus(path: path)
-    }
-
     func refreshGitStatus(path: String) async {
-        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetPath.isEmpty else {
-            return
-        }
-        let lease: ProjectsGitHostLease
-        do {
-            lease = try captureProjectsGitHostLease()
-        } catch {
-            gitStatusErrorByPath[targetPath] = error.localizedDescription
-            return
-        }
-        await refreshGitStatus(path: targetPath, lease: lease)
-    }
-
-    private func refreshGitStatus(path targetPath: String, lease: ProjectsGitHostLease) async {
-        guard canApplyProjectsGitResult(lease) else { return }
-        isRefreshingGitStatus = true
-        defer {
-            if isProjectsGitHostCurrent(lease) {
-                isRefreshingGitStatus = false
-            }
-        }
-        do {
-            let status = try await lease.client.gitStatus(path: targetPath)
-            guard canApplyProjectsGitResult(lease) else { return }
-            // path 只在当前 Profile 内唯一；完整 HostScope lease 阻止旧 Mac 的同路径结果回填。
-            gitStatusByPath[targetPath] = status
-            cacheWorkspaceGitSummary(status, path: targetPath)
-            gitStatusErrorByPath.removeValue(forKey: targetPath)
-            gitActionErrorByPath.removeValue(forKey: targetPath)
-        } catch {
-            guard canApplyProjectsGitResult(lease) else { return }
-            gitStatusErrorByPath[targetPath] = error.localizedDescription
-        }
+        await workspaceGitStore.refreshGitStatus(path: path)
     }
 
     func refreshWorkspaceGitSummaries(for projects: [AgentProject], force: Bool = false) async {
-        let hostScope = appStore.activeHostScope
-        var seenPaths: Set<String> = []
-        let paths = projects.compactMap { project -> String? in
-            let path = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !path.isEmpty, seenPaths.insert(path).inserted else {
-                return nil
-            }
-            return path
-        }
-
-        // 每个摘要都会执行少量本地 Git 命令；分批并发既缩短 Tailscale 往返，
-        // 又避免最近工作区较多时一次启动过多 git 子进程。
-        for start in stride(from: 0, to: paths.count, by: Self.workspaceGitSummaryConcurrencyLimit) {
-            guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
-            let end = min(start + Self.workspaceGitSummaryConcurrencyLimit, paths.count)
-            let batch = paths[start..<end]
-            await withTaskGroup(of: Void.self) { group in
-                for path in batch {
-                    group.addTask { @MainActor [weak self] in
-                        guard let self, self.appStore.activeHostScope == hostScope else { return }
-                        await self.refreshWorkspaceGitSummary(path: path, force: force)
-                    }
-                }
-            }
-        }
+        await workspaceGitStore.refreshWorkspaceGitSummaries(paths: projects.map(\.path), force: force)
     }
 
     func refreshWorkspaceGitSummary(path: String, force: Bool = false, now: Date = Date()) async {
-        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetPath.isEmpty,
-              !refreshingWorkspaceGitSummaryPaths.contains(targetPath)
-        else {
-            return
-        }
-        if !force,
-           let updatedAt = workspaceGitSummaryUpdatedAtByPath[targetPath],
-           now.timeIntervalSince(updatedAt) < Self.workspaceGitSummaryTTL {
-            return
-        }
-
-        let lease: ProjectsGitHostLease
-        do {
-            lease = try captureProjectsGitHostLease()
-        } catch {
-            return
-        }
-        refreshingWorkspaceGitSummaryPaths.insert(targetPath)
-        defer {
-            if isProjectsGitHostCurrent(lease) {
-                refreshingWorkspaceGitSummaryPaths.remove(targetPath)
-            }
-        }
-        do {
-            let status = try await lease.client.gitStatusSummary(path: targetPath)
-            guard canApplyProjectsGitResult(lease) else { return }
-            workspaceGitSummaryByPath[targetPath] = status
-            workspaceGitSummaryUpdatedAtByPath[targetPath] = now
-        } catch {
-            // 卡片摘要是渐进增强：失败时保留旧缓存，不把局部 Git 问题提升成页面错误。
-        }
+        await workspaceGitStore.refreshWorkspaceGitSummary(path: path, force: force, now: now)
     }
 
     func cacheWorkspaceGitSummary(_ status: GitStatusResponse, path: String, now: Date = Date()) {
-        let previous = workspaceGitSummaryByPath[path]
-        workspaceGitSummaryByPath[path] = GitStatusResponse(
-            path: status.path,
-            isRepository: status.isRepository,
-            branch: status.branch,
-            head: status.head,
-            ahead: status.ahead ?? previous?.ahead,
-            behind: status.behind ?? previous?.behind,
-            upstream: status.upstream ?? previous?.upstream,
-            statusText: nil,
-            diffStat: nil,
-            unstagedDiff: nil,
-            stagedDiff: nil,
-            files: status.files,
-            truncated: status.truncated,
-            truncatedNote: status.truncatedNote
-        )
-        workspaceGitSummaryUpdatedAtByPath[path] = now
+        workspaceGitStore.cacheWorkspaceGitSummary(status, path: path, now: now)
     }
 
     /// Agent 回合结束后只刷新用户已经看过的 Git 状态。按 path 合并尾部事件，
@@ -409,512 +282,50 @@ extension SessionStore {
         sessionID: SessionID,
         hostScope: HostScope
     ) {
-        guard appStore.activeHostScope == hostScope,
-              let path = sessionsByID[sessionID]?.dir.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty,
-              gitStatusByPath[path] != nil || workspaceGitSummaryByPath[path] != nil
-        else {
-            return
-        }
-
-        gitRefreshTasksByPath[path]?.cancel()
-        let revision = gitRefreshRevisionByPath[path, default: 0] &+ 1
-        gitRefreshRevisionByPath[path] = revision
-        gitRefreshTasksByPath[path] = Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await Task.sleep(nanoseconds: self.gitRefreshDelayNanoseconds)
-            } catch {
-                return
-            }
-            guard !Task.isCancelled,
-                  self.appStore.activeHostScope == hostScope,
-                  self.gitRefreshRevisionByPath[path] == revision
-            else {
-                return
-            }
-
-            if self.gitStatusByPath[path] != nil {
-                await self.refreshGitStatus(path: path)
-            } else if self.workspaceGitSummaryByPath[path] != nil {
-                await self.refreshWorkspaceGitSummary(path: path, force: true)
-            }
-
-            guard self.appStore.activeHostScope == hostScope,
-                  self.gitRefreshRevisionByPath[path] == revision
-            else {
-                return
-            }
-            self.gitRefreshTasksByPath.removeValue(forKey: path)
-            self.gitRefreshRevisionByPath.removeValue(forKey: path)
-        }
-    }
-
-    func performSelectedGitAction(_ action: GitActionKind, files: [String]) async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await performGitAction(path: path, action: action, files: files)
+        guard let path = sessionsByID[sessionID]?.dir else { return }
+        workspaceGitStore.scheduleRefreshAfterTurnCompletion(path: path, hostScope: hostScope)
     }
 
     func performGitAction(path: String, action: GitActionKind, files: [String]) async {
-        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        let targetFiles = files
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        guard !targetPath.isEmpty, !targetFiles.isEmpty else {
-            return
-        }
-
-        let lease: ProjectsGitHostLease
-        do {
-            lease = try captureProjectsGitHostLease()
-        } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
-            return
-        }
-        isRunningGitAction = true
-        defer {
-            if isProjectsGitHostCurrent(lease) {
-                isRunningGitAction = false
-            }
-        }
-        do {
-            let status = try await lease.client.gitAction(
-                path: targetPath,
-                action: action,
-                files: targetFiles
-            )
-            guard canApplyProjectsGitResult(lease) else { return }
-            // 写动作成功后直接采用服务端返回的新状态，避免前端本地推断 Git index。
-            gitStatusByPath[targetPath] = status
-            cacheWorkspaceGitSummary(status, path: targetPath)
-            gitStatusErrorByPath.removeValue(forKey: targetPath)
-            gitActionErrorByPath.removeValue(forKey: targetPath)
-        } catch {
-            guard canApplyProjectsGitResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
-        }
-    }
-
-    func performSelectedGitPatchAction(_ action: GitActionKind, patch: String) async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await performGitPatchAction(path: path, action: action, patch: patch)
+        await workspaceGitStore.performGitAction(path: path, action: action, files: files)
     }
 
     func performGitPatchAction(path: String, action: GitActionKind, patch: String) async {
-        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        let targetPatch = patch.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetPath.isEmpty, !targetPatch.isEmpty else {
-            return
-        }
-
-        let lease: ProjectsGitHostLease
-        do {
-            lease = try captureProjectsGitHostLease()
-        } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
-            return
-        }
-        isRunningGitAction = true
-        defer {
-            if isProjectsGitHostCurrent(lease) {
-                isRunningGitAction = false
-            }
-        }
-        do {
-            let status = try await lease.client.gitPatchAction(
-                path: targetPath,
-                action: action,
-                patch: targetPatch
-            )
-            guard canApplyProjectsGitResult(lease) else { return }
-            // hunk 操作同样以服务端返回为准，避免本地解析 patch 后再二次推断状态。
-            gitStatusByPath[targetPath] = status
-            cacheWorkspaceGitSummary(status, path: targetPath)
-            gitStatusErrorByPath.removeValue(forKey: targetPath)
-            gitActionErrorByPath.removeValue(forKey: targetPath)
-        } catch {
-            guard canApplyProjectsGitResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
-        }
-    }
-
-    func commitSelectedGitChanges(message: String) async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await commitGitChanges(path: path, message: message)
+        await workspaceGitStore.performGitPatchAction(path: path, action: action, patch: patch)
     }
 
     func commitGitChanges(path: String, message: String) async {
-        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        let commitMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetPath.isEmpty, !commitMessage.isEmpty else {
-            return
-        }
-
-        let lease: ProjectsGitHostLease
-        do {
-            lease = try captureProjectsGitHostLease()
-        } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
-            return
-        }
-        isCommittingGitChanges = true
-        defer {
-            if isProjectsGitHostCurrent(lease) {
-                isCommittingGitChanges = false
-            }
-        }
-        do {
-            let status = try await lease.client.gitCommit(path: targetPath, message: commitMessage)
-            guard canApplyProjectsGitResult(lease) else { return }
-            // commit 只提交已暂存内容；成功后用服务端状态清理 staged diff 和文件列表。
-            gitStatusByPath[targetPath] = status
-            cacheWorkspaceGitSummary(status, path: targetPath)
-            gitStatusErrorByPath.removeValue(forKey: targetPath)
-            gitActionErrorByPath.removeValue(forKey: targetPath)
-        } catch {
-            guard canApplyProjectsGitResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
-        }
-    }
-
-    func pushSelectedGitBranch(remote: String? = nil) async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await pushGitBranch(path: path, remote: remote)
+        await workspaceGitStore.commitGitChanges(path: path, message: message)
     }
 
     func pushGitBranch(path: String, remote: String? = nil) async {
-        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        let targetRemote = remote?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetPath.isEmpty else {
-            return
-        }
-
-        let lease: ProjectsGitHostLease
-        do {
-            lease = try captureProjectsGitHostLease()
-        } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
-            return
-        }
-        isPushingGitBranch = true
-        defer {
-            if isProjectsGitHostCurrent(lease) {
-                isPushingGitBranch = false
-            }
-        }
-        do {
-            let response = try await lease.client.gitPush(
-                path: targetPath,
-                remote: targetRemote?.isEmpty == true ? nil : targetRemote
-            )
-            guard canApplyProjectsGitResult(lease) else { return }
-            gitStatusByPath[targetPath] = response.status
-            cacheWorkspaceGitSummary(response.status, path: targetPath)
-            gitStatusErrorByPath.removeValue(forKey: targetPath)
-            gitActionErrorByPath.removeValue(forKey: targetPath)
-        } catch {
-            guard canApplyProjectsGitResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
-        }
-    }
-
-    @discardableResult
-    func quickPublishSelectedGitChanges(message: String, remote: String? = nil) async -> Bool {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return false
-        }
-        return await quickPublishGitChanges(path: path, message: message, remote: remote)
+        await workspaceGitStore.pushGitBranch(path: path, remote: remote)
     }
 
     @discardableResult
     func quickPublishGitChanges(path: String, message: String, remote: String? = nil) async -> Bool {
-        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        let commitMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        let targetRemote = remote?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetPath.isEmpty, !commitMessage.isEmpty else {
-            return false
-        }
-
-        let lease: ProjectsGitHostLease
-        do {
-            lease = try captureProjectsGitHostLease()
-        } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
-            return false
-        }
-        isQuickPublishingGitChanges = true
-        defer {
-            if isProjectsGitHostCurrent(lease) {
-                isQuickPublishingGitChanges = false
-            }
-        }
-        do {
-            let response = try await lease.client.gitQuickPublish(
-                path: targetPath,
-                message: commitMessage,
-                remote: targetRemote?.isEmpty == true ? nil : targetRemote,
-                confirmed: true
-            )
-            guard canApplyProjectsGitResult(lease) else { return false }
-            gitQuickPublishResultByPath[targetPath] = response
-            gitStatusByPath[targetPath] = response.status
-            cacheWorkspaceGitSummary(response.status, path: targetPath)
-            gitStatusErrorByPath.removeValue(forKey: targetPath)
-            gitActionErrorByPath.removeValue(forKey: targetPath)
-            // 后续状态读取必须复用同一 client；切换后重新取工厂会把 A 的 path 发到 B。
-            await refreshGitTestFlightStatus(path: targetPath, lease: lease)
-            return canApplyProjectsGitResult(lease)
-        } catch {
-            guard canApplyProjectsGitResult(lease) else { return false }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
-            // 组合动作可能已经完成本地 commit 但在 push 阶段失败，失败后必须重新读取真实 Git 状态。
-            await refreshGitStatus(path: targetPath, lease: lease)
-            return false
-        }
-    }
-
-    func refreshSelectedGitTestFlightStatus() async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await refreshGitTestFlightStatus(path: path)
+        await workspaceGitStore.quickPublishGitChanges(path: path, message: message, remote: remote)
     }
 
     func refreshGitTestFlightStatus(path: String) async {
-        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetPath.isEmpty else {
-            return
-        }
-        let lease: ProjectsGitHostLease
-        do {
-            lease = try captureProjectsGitHostLease()
-        } catch {
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
-            return
-        }
-        await refreshGitTestFlightStatus(path: targetPath, lease: lease)
-    }
-
-    private func refreshGitTestFlightStatus(
-        path targetPath: String,
-        lease: ProjectsGitHostLease
-    ) async {
-        guard canApplyProjectsGitResult(lease) else { return }
-        isRefreshingGitTestFlightStatus = true
-        defer {
-            if isProjectsGitHostCurrent(lease) {
-                isRefreshingGitTestFlightStatus = false
-            }
-        }
-        do {
-            let status = try await lease.client.gitTestFlightStatus(path: targetPath)
-            guard canApplyProjectsGitResult(lease) else { return }
-            gitTestFlightStatusByPath[targetPath] = status
-            gitTestFlightErrorByPath.removeValue(forKey: targetPath)
-        } catch {
-            guard canApplyProjectsGitResult(lease) else { return }
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
-        }
-    }
-
-    @discardableResult
-    func startSelectedGitTestFlightRelease(whatToTest: String) async -> Bool {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return false
-        }
-        return await startGitTestFlightRelease(path: path, whatToTest: whatToTest)
+        await workspaceGitStore.refreshGitTestFlightStatus(path: path)
     }
 
     @discardableResult
     func startGitTestFlightRelease(path: String, whatToTest: String) async -> Bool {
-        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetPath.isEmpty else {
-            return false
-        }
-        let lease: ProjectsGitHostLease
-        do {
-            lease = try captureProjectsGitHostLease()
-        } catch {
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
-            return false
-        }
-        isStartingGitTestFlightRelease = true
-        defer {
-            if isProjectsGitHostCurrent(lease) {
-                isStartingGitTestFlightRelease = false
-            }
-        }
-        do {
-            let status = try await lease.client.gitTestFlightRun(
-                path: targetPath,
-                whatToTest: whatToTest.trimmingCharacters(in: .whitespacesAndNewlines),
-                confirmed: true
-            )
-            guard canApplyProjectsGitResult(lease) else { return false }
-            gitTestFlightStatusByPath[targetPath] = status
-            gitTestFlightErrorByPath.removeValue(forKey: targetPath)
-            return true
-        } catch {
-            guard canApplyProjectsGitResult(lease) else { return false }
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
-            return false
-        }
-    }
-
-    func pollSelectedGitTestFlightRelease() async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await pollGitTestFlightRelease(path: path)
+        await workspaceGitStore.startGitTestFlightRelease(path: path, whatToTest: whatToTest)
     }
 
     func pollGitTestFlightRelease(path: String) async {
-        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetPath.isEmpty else {
-            return
-        }
-        let lease: ProjectsGitHostLease
-        do {
-            lease = try captureProjectsGitHostLease()
-        } catch {
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
-            return
-        }
-        while !Task.isCancelled {
-            guard canApplyProjectsGitResult(lease) else { return }
-            await refreshGitTestFlightStatus(path: targetPath, lease: lease)
-            guard canApplyProjectsGitResult(lease),
-                  gitTestFlightStatusByPath[targetPath]?.job?.isRunning == true else {
-                return
-            }
-            do {
-                try await Task.sleep(for: .seconds(2))
-            } catch {
-                return
-            }
-        }
-    }
-
-    func createSelectedPullRequest(title: String, body: String = "", draft: Bool = true) async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await createPullRequest(path: path, title: title, body: body, draft: draft)
+        await workspaceGitStore.pollGitTestFlightRelease(path: path)
     }
 
     func createPullRequest(path: String, title: String, body: String = "", draft: Bool = true) async {
-        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetPath.isEmpty, !prTitle.isEmpty else {
-            return
-        }
-
-        let lease: ProjectsGitHostLease
-        do {
-            lease = try captureProjectsGitHostLease()
-        } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
-            return
-        }
-        isCreatingPullRequest = true
-        defer {
-            if isProjectsGitHostCurrent(lease) {
-                isCreatingPullRequest = false
-            }
-        }
-        do {
-            let response = try await lease.client.gitCreatePullRequest(
-                path: targetPath,
-                title: prTitle,
-                body: body,
-                draft: draft
-            )
-            guard canApplyProjectsGitResult(lease) else { return }
-            if let url = response.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty {
-                pullRequestURLByPath[targetPath] = url
-                pullRequestStatusByPath[targetPath] = GitPullRequestStatusResponse(
-                    path: targetPath,
-                    branch: response.branch,
-                    exists: true,
-                    title: prTitle,
-                    url: url,
-                    isDraft: draft
-                )
-            }
-            pullRequestStatusErrorByPath.removeValue(forKey: targetPath)
-            gitActionErrorByPath.removeValue(forKey: targetPath)
-        } catch {
-            guard canApplyProjectsGitResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
-        }
-    }
-
-    func refreshSelectedPullRequestStatus() async {
-        guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty
-        else {
-            return
-        }
-        await refreshPullRequestStatus(path: path)
+        await workspaceGitStore.createPullRequest(path: path, title: title, body: body, draft: draft)
     }
 
     func refreshPullRequestStatus(path: String) async {
-        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetPath.isEmpty else {
-            return
-        }
-
-        let lease: ProjectsGitHostLease
-        do {
-            lease = try captureProjectsGitHostLease()
-        } catch {
-            pullRequestStatusErrorByPath[targetPath] = error.localizedDescription
-            return
-        }
-        isRefreshingPullRequestStatus = true
-        defer {
-            if isProjectsGitHostCurrent(lease) {
-                isRefreshingPullRequestStatus = false
-            }
-        }
-        do {
-            let response = try await lease.client.gitPullRequestStatus(path: targetPath)
-            guard canApplyProjectsGitResult(lease) else { return }
-            pullRequestStatusByPath[targetPath] = response
-            if let url = response.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty {
-                pullRequestURLByPath[targetPath] = url
-            }
-            pullRequestStatusErrorByPath.removeValue(forKey: targetPath)
-        } catch {
-            guard canApplyProjectsGitResult(lease) else { return }
-            pullRequestStatusErrorByPath[targetPath] = error.localizedDescription
-        }
+        await workspaceGitStore.refreshPullRequestStatus(path: path)
     }
 
     func forgetWorkspace(_ project: AgentProject) {
@@ -1356,10 +767,6 @@ extension SessionStore {
 
     /// 保留旧入口，避免已有调用方在 UI 升级期间产生行为变化。
     @discardableResult
-    func reviewUncommittedChanges(_ session: AgentSession) async -> Bool {
-        await startReview(session, target: .uncommittedChanges)
-    }
-
     func reviewTargetDescription(_ target: CodexAppServerReviewTarget) -> String {
         switch target {
         case .uncommittedChanges:
@@ -1661,11 +1068,11 @@ extension SessionStore {
         // agentd 返回的每一项都已经过项目、browse_root 与 git common-dir 裁剪；
         // iOS 只消费 opaque cursor，不接触上游全局 cursor。
         //
-        // 每条可用 runtime 各跑一趟独立遍历：cursor 流互不交织，结果并进同一份
+        // 每条 runtime 各跑一趟独立遍历：cursor 流互不交织，结果并进同一份
         // discoveredSessionIDs 由 canonical sessions 统一归并，因此不需要跨 Runtime
-        // 的排序状态机。撤权只按已经完整走完的 Runtime 结算，不能用一条通道的结果
-        // 删除另一条通道的会话。
-        if !controlledGlobalDiscoveryUnavailable {
+        // 的排序状态机。撤权按已完整遍历的 runtime 结算，不能把其他通道刚发现的
+        // 会话当成“已不存在”删掉。
+        do {
             let controlledIDsBeforeTraversal = controlledGlobalSessionIDs
             var discoveredSessionIDs: Set<SessionID> = []
             // 撤权按 runtime 独立结算：Claude bridge 未启用或不健康是常态，
@@ -1673,8 +1080,15 @@ extension SessionStore {
             // 已删除的会话（反之亦然）。
             var discoveredByRuntime: [String: Set<SessionID>] = [:]
             var completedRuntimes: Set<String> = []
-            let runtimeProviders = await availableSessionRuntimeProviders(client: client)
-            for runtimeProvider in runtimeProviders {
+            // 分页结果先在本地累积，整趟遍历结束后一次提交。每页各自合并会在翻页的
+            // 十几秒里让所有观察 SessionStore 的界面（含隐藏的 Tab）反复整体重算。
+            var discoveredSessions: [AgentSession] = []
+            for runtimeProvider in RuntimeFeatureSupport.runtimeProviders {
+                // 旧 agentd 可能只拒绝 Codex 的无 cwd thread/list。这个能力缓存只能
+                // 跳过 Codex；Harness 和 Claude 各有独立目录，不能被它一起永久关闭。
+                if runtimeProvider == "codex", controlledGlobalDiscoveryUnavailable {
+                    continue
+                }
                 var cursor: String?
                 var runtimeReachedEnd = false
                 for pageIndex in 0..<4 {
@@ -1693,14 +1107,7 @@ extension SessionStore {
                         let pageSessionIDs = Set(page.sessions.map(\.id))
                         discoveredSessionIDs.formUnion(pageSessionIDs)
                         discoveredByRuntime[runtimeProvider, default: []].formUnion(pageSessionIDs)
-                        // 先发布授权 ID 再合并 Session，确保后续目录归属判断能识别全局结果。
-                        let expandedControlledIDs = controlledGlobalSessionIDs.union(pageSessionIDs)
-                        if expandedControlledIDs != controlledGlobalSessionIDs {
-                            controlledGlobalSessionIDs = expandedControlledIDs
-                        }
-                        // 全局发现只携带根项目归属。只有同 ID 已被对应 cwd 查询确认时，
-                        // 才沿用工作区 identity；不能根据父子路径关系猜测归属。
-                        mergeSessionPage(page.sessions.map(alignGlobalSessionToKnownDirectoryScope))
+                        discoveredSessions.append(contentsOf: page.sessions)
                         guard page.hasMore,
                               let nextCursor = page.nextCursor,
                               nextCursor != cursor else {
@@ -1715,8 +1122,8 @@ extension SessionStore {
                             // Host 已切换或任务已取消：旧 Host 的迟到错误不得污染新 Host 证据。
                             return
                         }
-                        // 只有 Codex 报不可用才整体停掉受控发现：Claude bridge 未启用或
-                        // 不健康是常态，不能因此让 Codex 的外部 Worktree 也发现不到。
+                        // 旧 agentd 对 Codex 无 cwd thread/list 的能力拒绝只缓存 Codex。
+                        // 其他 runtime 仍须在本轮和后续刷新中继续各走自己的目录。
                         if pageIndex == 0, runtimeProvider == "codex", isControlledGlobalDiscoveryUnavailable(error) {
                             controlledGlobalDiscoveryUnavailable = true
                         }
@@ -1737,6 +1144,14 @@ extension SessionStore {
             guard appStore.activeHostScope == hostScope,
                   appStore.connectionGeneration == generation,
                   !Task.isCancelled else { return }
+            // 先发布授权 ID 再合并 Session，确保目录归属判断能识别全局结果。
+            let expandedControlledIDs = controlledGlobalSessionIDs.union(discoveredSessionIDs)
+            if expandedControlledIDs != controlledGlobalSessionIDs {
+                controlledGlobalSessionIDs = expandedControlledIDs
+            }
+            // 全局发现只携带根项目归属。只有同 ID 已被对应 cwd 查询确认时，
+            // 才沿用工作区 identity；不能根据父子路径关系猜测归属。
+            mergeSessionPage(discoveredSessions.map(alignGlobalSessionToKnownDirectoryScope))
             if !completedRuntimes.isEmpty {
                 // 完整遍历是删除旧授权 ID 的唯一证据；分页上限、重复 cursor 或错误时
                 // 只合并本次已见项，避免把尚未扫到的外部 Worktree 从列表误删。
@@ -1779,11 +1194,6 @@ extension SessionStore {
                 let settledIDs = discoveredSessionIDs.union(retainedFromUnsettledRuntimes)
                 if controlledGlobalSessionIDs != settledIDs {
                     controlledGlobalSessionIDs = settledIDs
-                }
-            } else {
-                let expandedControlledIDs = controlledGlobalSessionIDs.union(discoveredSessionIDs)
-                if expandedControlledIDs != controlledGlobalSessionIDs {
-                    controlledGlobalSessionIDs = expandedControlledIDs
                 }
             }
         }
@@ -1967,11 +1377,14 @@ extension SessionStore {
             }
 #endif
             guard !isNetworkUnavailable,
-                  appStore.isConfigured,
-                  selectedProjectID != nil else {
+                  appStore.isConfigured else {
                 continue
             }
-            await refreshSelectedProjectSessions(showLoading: false)
+            if selectedProjectID != nil {
+                await refreshSelectedProjectSessions(showLoading: false)
+            }
+            // 「会话」页允许没有当前工作区。另一端创建的 Harness 会话只能从全局目录
+            // 被发现，因此全局兜底不能被 selectedProjectID 这项页面局部状态挡住。
             await refreshSessionLibraryIndexIfStale()
         }
     }

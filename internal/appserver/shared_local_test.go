@@ -90,6 +90,24 @@ func TestSharedLocalTransportStartsOnceAndThenAttaches(t *testing.T) {
 	}
 }
 
+func TestSharedLocalTransportConnectOnlyNeverStartsResident(t *testing.T) {
+	codexHome := shortSharedLocalCodexHome(t)
+	transport, err := NewSharedLocalTransport(SharedLocalOptions{
+		Env: map[string]string{"CODEX_HOME": codexHome}, ConnectOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := transport.EnsureReady(ctx); err == nil || !strings.Contains(err.Error(), "前门尚未就绪") {
+		t.Fatalf("前门缺失时应拒绝另起共享 resident：%v", err)
+	}
+	if _, err := os.Lstat(transport.SocketPath()); !os.IsNotExist(err) {
+		t.Fatalf("connect-only 意外创建标准 socket：%v", err)
+	}
+}
+
 func TestSharedLocalTransportRejectsNonSocketOccupant(t *testing.T) {
 	codexHome := shortSharedLocalCodexHome(t)
 	socket := filepath.Join(codexHome, sharedLocalSocketDir, sharedLocalSocketName)
@@ -294,6 +312,15 @@ func shortSharedLocalCodexHome(t *testing.T) string {
 
 func startSharedLocalTestServer(t *testing.T, socket string) func() {
 	t.Helper()
+	return startSharedLocalTestServerWithSession(t, socket, "Aqua")
+}
+
+func startSharedLocalTestServerWithSession(t *testing.T, socket, manager string) func() {
+	return startSharedLocalTestServerWithSessionAndHome(t, socket, manager, filepath.Dir(filepath.Dir(socket)))
+}
+
+func startSharedLocalTestServerWithSessionAndHome(t *testing.T, socket, manager, reportedHome string) func() {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -312,9 +339,19 @@ func startSharedLocalTestServer(t *testing.T, socket string) func() {
 		if conn.ReadJSON(&initialize) != nil {
 			return
 		}
-		_ = conn.WriteJSON(map[string]any{"id": 1, "result": map[string]any{}})
+		result := map[string]any{}
+		if reportedHome != "" {
+			result["codexHome"] = reportedHome
+		}
+		_ = conn.WriteJSON(map[string]any{"id": 1, "result": result})
 		var initialized map[string]any
 		_ = conn.ReadJSON(&initialized)
+		var sessionProbe map[string]any
+		if conn.ReadJSON(&sessionProbe) == nil {
+			_ = conn.WriteJSON(map[string]any{"id": sessionProbe["id"], "result": map[string]any{
+				"exitCode": 0, "stdout": manager + "\n", "stderr": "",
+			}})
+		}
 	})}
 	go func() { _ = server.Serve(listener) }()
 	return func() {

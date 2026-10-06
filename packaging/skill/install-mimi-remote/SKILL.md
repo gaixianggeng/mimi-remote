@@ -71,7 +71,7 @@ codex app-server --help
 
 确认 Mac 与移动设备位于同一私有网络。跨网络优先使用同一 Tailnet；同一局域网可以不安装 Tailscale。`tailscale` CLI 不在 `PATH` 时，允许用户通过 Tailscale App 确认状态。
 
-macOS App 路径只要求 macOS 26 或更高版本和 Codex CLI；不要求 Homebrew、Go、Rust、Xcode 或 XcodeGen。仅在源码构建时检查相应工具链。
+macOS App 路径只要求 macOS 15 或更高版本和 Codex CLI；不要求 Homebrew、Go、Rust、Xcode 或 XcodeGen。仅在源码构建时检查相应工具链。
 
 用户明确要求 Claude Code 时再检查：
 

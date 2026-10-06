@@ -18,6 +18,8 @@
 	</dict>
 	<key>KeepAlive</key>
 	<true/>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
 	<key>ProcessType</key>
 	<string>Interactive</string>
 	<key>RunAtLoad</key>

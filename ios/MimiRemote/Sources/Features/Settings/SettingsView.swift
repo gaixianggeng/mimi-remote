@@ -4,14 +4,33 @@ import SwiftUI
 /// 各自决定行高与图标尺寸，导致真机滚动时出现不一致的视觉节奏。
 enum SettingsLayoutMetrics {
     static let standardRowHeight: CGFloat = 52
-    /// 设备 Tab 的当前电脑主行：名称 20pt + 副标题，比普通行高一档。
+    /// 设备 Tab 的电脑行（当前与其他电脑同一档）：名称 17pt 中粗 + 状态副标题，比普通行高一档。
     static let deviceRowHeight: CGFloat = 64
     static let accessibilityRowHeight: CGFloat = 76
     static let rowHorizontalInset: CGFloat = 16
-    static let iconSlot: CGFloat = 28
+    /// 图标槽与会话行的前导槽同宽（24）。24 而不是 20：18pt 的键盘、听诊器这类宽符号本身就接近 24pt 宽。
+    static let iconSlot: CGFloat = 24
+    /// 图标到文字的间距。设置行装进卡片后比会话行的 8pt 多留 4pt，图标列不再贴着文字（#615）；
+    /// 卡片和平铺列表本来就是两种表面，切 Tab 时这 4pt 不会读成正文跳动。
+    static let iconSpacing: CGFloat = 12
     static let symbolPointSize: CGFloat = 18
     static let sectionSpacing: CGFloat = 24
-    static let statusModuleCornerRadius = WorkbenchPageLayout.contentPanelCornerRadius
+    /// 两张卡片之间没有标题时的距离。
+    static let groupCardSpacing: CGFloat = 24
+    /// 带标题的分组与上一张卡片之间的留白（上一张卡的底边到标题）。
+    static let groupTitleSeparation: CGFloat = 26
+    /// 标题到本组卡片的距离：比上方留白小得多，标题读作这张卡的名字。
+    static let groupTitleBottomSpacing: CGFloat = 8
+    /// 标题与右端附加内容（累计值、刷新）之间的最小距离。
+    static let groupTitleAccessorySpacing: CGFloat = 8
+    /// 页面第一组的标题离内容顶端的距离。
+    static let groupTitleTopInset: CGFloat = 6
+    /// 分组脚注离卡片底边的距离；脚注下方不再留白，由下一组标题上方的留白接上。
+    static let groupFooterTopSpacing: CGFloat = 6
+    /// 行尾标记（刷新、展开箭头）按系统导航箭头取：宽度、字号、到值文字的间距。
+    static let trailingAccessoryWidth: CGFloat = 16
+    static let trailingAccessoryPointSize: CGFloat = 14
+    static let trailingAccessorySpacing: CGFloat = 8
 }
 
 enum TokenCountFormatter {
@@ -81,7 +100,6 @@ extension View {
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
@@ -111,14 +129,22 @@ struct SettingsView: View {
         showsDeviceEntry: Bool = true,
         onOpenDevices: (() -> Void)? = nil,
         navigation: SettingsNavigationState? = nil,
-        qrScannerPresentation: ConnectionQRCodeScannerPresentation? = nil
+        qrScannerPresentation: ConnectionQRCodeScannerPresentation? = nil,
+        opensConnectionForRepair: Bool = false
     ) {
         self.isInitialSetup = isInitialSetup
         self.showsDoneButton = showsDoneButton
         self.embedsNavigationStack = embedsNavigationStack
         self.showsDeviceEntry = showsDeviceEntry
         self.onOpenDevices = onOpenDevices
-        _navigation = StateObject(wrappedValue: navigation ?? SettingsNavigationState())
+        let resolvedNavigation = navigation ?? SettingsNavigationState()
+        if opensConnectionForRepair {
+            // 工作台横幅的「重新配对」：直接落到设备页，并把一次性的扫码请求交给它消费。
+            // 页面仍然由这一层自己的 presentation 呈现扫码 Cover，不跨层共享状态。
+            resolvedNavigation.mePath = [.connection]
+            resolvedNavigation.connectionDraft.pendingRepairRequest = true
+        }
+        _navigation = StateObject(wrappedValue: resolvedNavigation)
         _qrScannerPresentation = StateObject(wrappedValue: qrScannerPresentation ?? ConnectionQRCodeScannerPresentation())
     }
 
@@ -154,7 +180,10 @@ struct SettingsView: View {
                     .frame(maxWidth: 920)
                     .frame(maxWidth: .infinity)
                     .background(canvasBackground.ignoresSafeArea())
-                    .navigationTitle("")
+                    // 与「设备」页同一种居中小标题：Tab 标签虽已写着「我的」，页面顶部空着时
+                    // 两个相邻 Tab 一个有标题一个没有，读起来不是一套写法（#575）。
+                    // 独立设置 sheet 带「完成」按钮，标题写「设置」。
+                    .navigationTitle(L10n.text(showsDoneButton ? "ui.settings" : "ui.me"))
                     .navigationBarTitleDisplayMode(.inline)
             }
         }
@@ -214,26 +243,15 @@ struct SettingsView: View {
                         ),
                     onRefresh: refreshAccountUsage
                 )
+                // 卡片底由分组给出（settingsGroupRowStyle），与其它设置卡同一底色和圆角。
                 .listRowInsets(EdgeInsets())
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
                 .accessibilityIdentifier("settings.tokenUsage")
             } header: {
                 // 四个分组都带标题，页面语法才一致。顶部两块原先没有标题，
                 // 读起来就是一坨没有标签的大块，底部却是分好组的列表。
-                // 累计值和刷新按钮挂在这一行，卡片里就不必再留一层标题。
-                HStack(alignment: .center, spacing: 8) {
-                    sectionHeader(L10n.text("ui.token_usage"), tokens: tokens)
-
-                    // 宽屏把累计值推到最右、和刷新按钮成组；窄屏这样会在标题和累计值之间
-                    // 撑出一大片空，所以让它紧跟标题，Spacer 留到刷新按钮之前。
-                    if horizontalSizeClass == .compact {
-                        lifetimeTokenLabel(tokens: tokens)
-                        Spacer(minLength: 8)
-                    } else {
-                        Spacer(minLength: 8)
-                        lifetimeTokenLabel(tokens: tokens)
-                    }
+                // 累计值和刷新按钮挂在标题这一行的右端，卡片里就不必再留一层标题。
+                SettingsGroupHeader(title: L10n.text("ui.token_usage"), showsDivider: false) {
+                    lifetimeTokenLabel(tokens: tokens)
 
                     AccountUsageRefreshButton(
                         isRefreshing: sessionStore.isRefreshingAccountTokenActivity
@@ -246,6 +264,7 @@ struct SettingsView: View {
                     )
                 }
             }
+            .settingsGroupRowStyle()
 
             if showsDeviceEntry {
                 Section {
@@ -264,12 +283,11 @@ struct SettingsView: View {
                     // NavigationLink 会再叠一个系统 disclosure，右侧就成了两个箭头。
                     .buttonStyle(.plain)
                     .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
                     .accessibilityIdentifier("settings.connectionManagement")
                 } header: {
-                    sectionHeader(L10n.text("ui.mac_devices"), tokens: tokens)
+                    SettingsGroupHeader(title: L10n.text("ui.mac_devices"))
                 }
+                .settingsGroupRowStyle()
             }
 
             if ManagedConnectionSubscriptionView.isEntryVisible {
@@ -283,9 +301,9 @@ struct SettingsView: View {
                     .settingsStandardListRow()
                     .accessibilityIdentifier("settings.managedSubscription")
                 } header: {
-                    sectionHeader(L10n.text("ui.managed_subscription_section"), tokens: tokens)
+                    SettingsGroupHeader(title: L10n.text("ui.managed_subscription_section"))
                 }
-                .listRowBackground(tokens.settingsGroupBackground)
+                .settingsGroupRowStyle()
             }
 
             Section {
@@ -346,9 +364,9 @@ struct SettingsView: View {
                 .settingsRow(.descriptive)
                 .accessibilityIdentifier("settings.defaultSendMethod")
             } header: {
-                sectionHeader(L10n.text("ui.my_preferences"), tokens: tokens)
+                SettingsGroupHeader(title: L10n.text("ui.my_preferences"))
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
 
             Section {
                 NavigationLink(value: SettingsDestination.diagnostics) {
@@ -378,14 +396,14 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.aboutLegal")
             } header: {
-                sectionHeader(L10n.text("ui.more"), tokens: tokens)
+                SettingsGroupHeader(title: L10n.text("ui.more"))
             }
-            .listRowBackground(tokens.settingsGroupBackground)
+            .settingsGroupRowStyle()
         }
-        // 与 themedSettingsForm 同一套：画布自绘、标题不转大写；分组底走
-        // settingsGroupBackground，和「设备」及各设置详情页是同一个 token。
-        // 分组底只能挂在 Section 上：listRowBackground 放到 Form 外层不会下发到行。
-        .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
+        // 与 themedSettingsForm 同一套：画布自绘、标题不转大写；每个分组接
+        // settingsGroupRowStyle()，和「设备」及各设置详情页一样每组一张卡片。
+        // 行样式只能挂在 Section 上：listRowBackground 放到 Form 外层不会下发到行。
+        .dividedSettingsList()
         .textCase(nil)
         .scrollContentBackground(.hidden)
         .background(canvasBackground.ignoresSafeArea())
@@ -440,13 +458,6 @@ struct SettingsView: View {
             .foregroundStyle(tokens.secondaryText)
             .lineLimit(1)
         }
-    }
-
-    /// 排版本体在 settingsSectionHeaderStyle：整条设置链路（含「设备」和各详情页）
-    /// 共用同一套分组标题，不再由每个页面各自决定字号和文字色。
-    private func sectionHeader(_ title: String, tokens: ThemeTokens) -> some View {
-        Text(title)
-            .settingsSectionHeaderStyle()
     }
 
     private func refreshAccountUsage() async {
@@ -536,6 +547,10 @@ struct SettingsView: View {
 
 }
 
+/// 设置行：图标、标题，行尾可带一个值。
+///
+/// 值是普通次级文字（#615）。#575 在平铺页面上把值装进灰底胶囊，用小块点出「当前是什么」；
+/// 分组装进卡片以后，卡片里再套灰胶囊就成了盒中盒，值退回与系统设置一致的灰字。
 struct SettingsValueLabel: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -552,11 +567,11 @@ struct SettingsValueLabel: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: SettingsLayoutMetrics.iconSpacing) {
             Image(systemName: systemImage)
                 .font(.system(size: symbolPointSize, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(tokens.secondaryText)
+                .foregroundStyle(tokens.settingsIconTint)
                 .frame(
                     width: SettingsLayoutMetrics.iconSlot,
                     height: SettingsLayoutMetrics.iconSlot
@@ -586,6 +601,10 @@ struct SettingsValueLabel: View {
         // 标准行只规定下限。翻译变长或字体变大时必须能增加高度。
         .frame(maxWidth: .infinity, minHeight: rowHeight, alignment: .leading)
         .contentShape(Rectangle())
+        // 卡片内的分隔线从标题文字起画，图标列不被线切开。
+        .alignmentGuide(.listRowSeparatorLeading) { _ in
+            SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing
+        }
         .accessibilityElement(children: .combine)
     }
 
@@ -639,22 +658,11 @@ struct AccountTokenUsageCard: View {
             }
             stackedLayout(tokens: tokens)
         }
-        .padding(16)
+        // 卡片底由所在分组给出（#615）。左右与设置行同一条 16pt 边线；上下留同样的 16pt，
+        // 圆环和热力图不贴卡片边。
+        .padding(.horizontal, SettingsLayoutMetrics.rowHorizontalInset)
+        .padding(.vertical, SettingsLayoutMetrics.rowHorizontalInset)
         .frame(maxWidth: .infinity)
-        .background(
-            tokens.surface,
-            in: RoundedRectangle(
-                cornerRadius: SettingsLayoutMetrics.statusModuleCornerRadius,
-                style: .continuous
-            )
-        )
-        .overlay {
-            RoundedRectangle(
-                cornerRadius: SettingsLayoutMetrics.statusModuleCornerRadius,
-                style: .continuous
-            )
-            .stroke(tokens.border.opacity(0.48), lineWidth: 0.5)
-        }
         .accessibilityElement(children: .contain)
     }
 
@@ -857,7 +865,7 @@ struct AccountTokenUsageCard: View {
             .font(themeStore.uiFont(.caption, weight: .semibold))
             .monospacedDigit()
             .foregroundStyle(
-                item.window.remainingProgress == nil ? tokens.secondaryText : item.tint
+                item.window.remainingProgress == nil ? tokens.secondaryText : tokens.primaryText
             )
 
         if usesSingleLine {
@@ -896,7 +904,7 @@ struct AccountTokenUsageCard: View {
 
                 Text(item.window.resetText)
                     .font(themeStore.uiFont(.caption))
-                    .foregroundStyle(tokens.tertiaryText)
+                    .foregroundStyle(tokens.tokenActivityAxisText)
                     .lineLimit(1)
 
                 Spacer(minLength: 8)
@@ -915,9 +923,9 @@ struct AccountTokenUsageCard: View {
                         .fill(tokens.tertiaryText.opacity(0.18))
 
                     Capsule()
-                        // 单窗口没有三环的颜色编码要对应，用主题强调色和下方点格图保持一套配色；
+                        // 单窗口没有三环的颜色编码要对应，用点格图的主题紫色保持一套配色；
                         // item.tint 那套青/粉/紫只在多环并列、需要靠颜色区分窗口时才有意义。
-                        .fill(tokens.accent)
+                        .fill(tokens.tokenActivityAccent)
                         .frame(width: max(proxy.size.width * progress, progress > 0 ? 6 : 0))
                         .animation(
                             reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1),
@@ -1155,43 +1163,35 @@ struct AccountTokenUsageCard: View {
             codexDisplay: codexDisplay,
             claudeDisplay: claudeDisplay,
             includesClaude: includesClaude,
-            claudeShortTint: themeStore.tokens(for: colorScheme).accent
+            colorScheme: colorScheme
         )
     }
 }
 
 private struct AccountUsageRefreshButton: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-
     let isRefreshing: Bool
     let onRefresh: () async -> Void
 
     var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
         Button {
             Task { await onRefresh() }
         } label: {
-            Group {
-                if isRefreshing {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-            }
-            .frame(width: 32, height: 32)
-            .background(tokens.secondaryText.opacity(0.08), in: Circle())
-            .overlay {
-                Circle().stroke(tokens.border.opacity(0.72), lineWidth: 1)
-            }
-            .frame(width: 44, height: 44)
-            .contentShape(Circle())
+            // 与设备页线路行的刷新标记同一个样子：不单独画一枚带底色和描边的圆钮。
+            // 标记贴右，与下方各行的箭头落在同一列；44pt 命中区向左延伸（#563）。
+            SettingsTrailingAccessory(
+                systemImage: "arrow.clockwise",
+                isBusy: isRefreshing,
+                isDecorative: false
+            )
+            .frame(width: 44, height: 44, alignment: .trailing)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(tokens.secondaryText)
+        // 布局只占标记本身的宽度，多出的命中区向左压在标题行的空白上。
+        // 高度同理不撑高标题行，「Token 使用量」才与设备页「当前电脑」落在同一高度，
+        // 切 Tab 时第一组标题不上下跳。
+        .padding(.leading, SettingsLayoutMetrics.trailingAccessoryWidth - 44)
+        .padding(.vertical, -14)
         .disabled(isRefreshing)
         .accessibilityLabel(
             isRefreshing
@@ -1222,11 +1222,11 @@ struct SettingsConnectionCard: View {
         let hasWarning = warningText != nil
 
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 12) {
+            HStack(alignment: .center, spacing: SettingsLayoutMetrics.iconSpacing) {
                 Image(systemName: "desktopcomputer")
                     .font(.system(size: 20, weight: .regular))
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(hasWarning ? tokens.warning : tokens.secondaryText)
+                    .foregroundStyle(hasWarning ? tokens.warning : tokens.settingsIconTint)
                     .frame(width: SettingsLayoutMetrics.iconSlot)
                     .accessibilityHidden(true)
 
@@ -1267,25 +1267,10 @@ struct SettingsConnectionCard: View {
                     .accessibilityIdentifier("settings.connection.warning")
             }
         }
-        .padding(16)
+        // 卡片底由所在分组给出（#615）；断线时由卡内的警告文字说明，不再靠橙色描边。
+        .padding(.horizontal, SettingsLayoutMetrics.rowHorizontalInset)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            tokens.surface,
-            in: RoundedRectangle(
-                cornerRadius: SettingsLayoutMetrics.statusModuleCornerRadius,
-                style: .continuous
-            )
-        )
-        .overlay {
-            RoundedRectangle(
-                cornerRadius: SettingsLayoutMetrics.statusModuleCornerRadius,
-                style: .continuous
-            )
-            .stroke(
-                hasWarning ? tokens.warning.opacity(0.55) : tokens.border.opacity(0.48),
-                lineWidth: hasWarning ? 1 : 0.5
-            )
-        }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
@@ -1307,6 +1292,15 @@ struct DiagnosticsAndSupportSettingsView: View {
 
         Form {
             Section {
+                NavigationLink(value: SettingsDestination.appDiagnostics) {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.app_diagnostics"),
+                        systemImage: "waveform.badge.magnifyingglass"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.appDiagnostics")
+
                 NavigationLink(value: SettingsDestination.doctor) {
                     SettingsValueLabel(
                         title: L10n.text("ui.diagnosis_and_support"),
@@ -1324,7 +1318,10 @@ struct DiagnosticsAndSupportSettingsView: View {
                 }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.support")
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             }
+            .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
@@ -1360,13 +1357,17 @@ struct AdvancedDevelopmentSettingsView: View {
                 }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.developerMode")
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             } footer: {
                 Text(
                     developerModeEnabled
                         ? L10n.text("ui.historical_diagnostics_may_display_the_local_machine_path")
                         : L10n.text("ui.turn_on_to_use_advanced_operating_options_and")
                 )
+                .settingsSectionFooterStyle()
             }
+            .settingsGroupRowStyle()
             if developerModeEnabled {
                 ConversationScrollDiagnosticsSection()
             }
@@ -1416,19 +1417,17 @@ struct AboutAndLegalSettingsView: View {
                 }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.openSourceLicense")
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
             } footer: {
                 Text(L10n.text("ui.legal_documents_are_included_in_the_app"))
+                    .settingsSectionFooterStyle()
             }
+            .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage()
         .navigationBarTitleDisplayMode(.inline)
         .navigationTitle(L10n.text("ui.about_and_legal"))
     }
-}
-
-struct GatewayDiagnosticSummary {
-    let title: String
-    let detail: String
-    let color: Color
 }

@@ -919,7 +919,9 @@ final class NotificationRouteResolutionTests: XCTestCase {
         client.rememberRuntimeRoute("", forSessionID: "thread-claude")
         XCTAssertEqual(client.rememberedRuntimeRoute(forSessionID: "thread-claude"), "claude")
         client.rememberRuntimeRoute("mystery-runtime", forSessionID: "thread-claude")
-        XCTAssertEqual(client.rememberedRuntimeRoute(forSessionID: "thread-claude"), "claude")
+        // 缺失 provider 沿用旧路由；显式未知 provider 必须拒绝，不能继续向另一通道发送。
+        XCTAssertEqual(client.rememberedRuntimeRoute(forSessionID: "thread-claude"), "mystery-runtime")
+        XCTAssertThrowsError(try bundle.runtime(forSessionID: "thread-claude"))
 
         client.rememberRuntimeRoute("anthropic", forSessionID: "thread-new")
         XCTAssertEqual(client.rememberedRuntimeRoute(forSessionID: "thread-new"), "claude")
@@ -974,7 +976,7 @@ final class NotificationRouteResolutionTests: XCTestCase {
         let bothEnabled = makeDirectAppServerConfig(
             project: project,
             gatewayAvailable: true,
-            channels: [makeClaudeChannelMetadata()]
+            channels: [makeCodexChannelMetadata(), makeClaudeChannelMetadata()]
         )
         let provider = SequencedDirectConfigProvider([bothEnabled, claudeOnly])
         let bundle = AppServerRuntimeBundle(
@@ -1010,7 +1012,7 @@ final class NotificationRouteResolutionTests: XCTestCase {
         let bothEnabled = makeDirectAppServerConfig(
             project: project,
             gatewayAvailable: true,
-            channels: [makeClaudeChannelMetadata()]
+            channels: [makeCodexChannelMetadata(), makeClaudeChannelMetadata()]
         )
         let claudeOnly = makeDirectAppServerConfig(
             project: project,
@@ -1078,7 +1080,7 @@ final class NotificationRouteResolutionTests: XCTestCase {
         let bothEnabled = makeDirectAppServerConfig(
             project: project,
             gatewayAvailable: true,
-            channels: [makeClaudeChannelMetadata()]
+            channels: [makeCodexChannelMetadata(), makeClaudeChannelMetadata()]
         )
         let provider = SequencedDirectConfigProvider([bothEnabled, bothEnabled])
         let codexPool = FakeCodexAppServerTransportPool()

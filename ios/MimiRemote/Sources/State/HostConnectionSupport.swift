@@ -583,10 +583,6 @@ final class PreparedHostContext {
         expirationTask?.cancel()
     }
 
-    var isConsumed: Bool {
-        runtimeBundle == nil
-    }
-
     func validatedRuntimeBundle(
         matching expectedLease: PreparedHostLease,
         now: Date = Date()

@@ -78,8 +78,13 @@ struct ConversationScrollDiagnosticsSection: View {
             }
             .settingsStandardListRow()
             .accessibilityIdentifier("settings.scrollDiagnostics.copy")
+        } header: {
+            // 挂在「高级与开发」页开发者模式之下，是该页第二组。
+            SettingsGroupHeader()
         } footer: {
             Text(L10n.text("ui.scroll_trace_help"))
+                .settingsSectionFooterStyle()
         }
+        .settingsGroupRowStyle()
     }
 }

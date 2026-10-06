@@ -185,7 +185,7 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(store.tokens(for: .light).resolvedScheme, .dark)
     }
 
-    func testDefaultCodexPresetUsesWarmLightAndNeutralDarkPalette() {
+    func testDefaultCodexPresetUsesNotionNeutralPalettes() {
         let store = ThemeStore(defaults: defaults)
 
         let lightTokens = store.tokens(for: .light)
@@ -237,24 +237,27 @@ final class ThemeStoreTests: XCTestCase {
         let darkTertiaryText = rgba(darkTokens.tertiaryText)
 
         XCTAssertEqual(ThemePreset.codex.title, L10n.text("ui.default"))
-        XCTAssertEqual(ThemePreset.codex.subtitle, L10n.text("ui.neutral_warm_white_with_a_single_main_color"))
+        XCTAssertEqual(ThemePreset.codex.subtitle, L10n.text("ui.notion_style_neutral_grays_without_accent_color"))
 
-        assertRGB(lightBackground, red: 250, green: 247, blue: 241)
-        assertRGB(lightSidebarBackground, red: 250, green: 247, blue: 241)
+        // 取自 Notion iOS 浅色截图：页面、胶囊、选中与文字；侧栏和会话画布与页面同底。
+        assertRGB(lightBackground, red: 250, green: 248, blue: 246)
+        assertRGB(lightSidebarBackground, red: 250, green: 248, blue: 246)
         assertRGB(lightSidebarSurfaceBackground, red: 255, green: 255, blue: 255)
-        assertRGB(lightSelectionFill, red: 239, green: 236, blue: 237)
-        assertRGB(lightSidebarHoverFill, red: 240, green: 239, blue: 237)
+        assertRGB(lightSelectionFill, red: 236, green: 234, blue: 232)
+        assertRGB(lightSidebarHoverFill, red: 240, green: 238, blue: 237)
         assertRGB(lightInputBackground, red: 255, green: 255, blue: 255)
-        assertRGB(lightConversationCanvasBackground, red: 250, green: 250, blue: 248)
-        assertRGB(lightConversationPrimaryText, red: 16, green: 16, blue: 16)
-        assertRGB(lightConversationSecondaryText, red: 112, green: 112, blue: 110)
-        assertRGB(lightConversationTertiaryText, red: 142, green: 142, blue: 139)
-        assertRGB(lightComposerControlSurface, red: 242, green: 241, blue: 238)
-        assertRGB(lightComposerInactiveActionSurface, red: 237, green: 235, blue: 231)
+        assertRGB(lightConversationCanvasBackground, red: 250, green: 248, blue: 246)
+        assertRGB(lightConversationPrimaryText, red: 46, green: 44, blue: 42)
+        assertRGB(lightConversationSecondaryText, red: 120, green: 119, blue: 116)
+        assertRGB(lightConversationTertiaryText, red: 155, green: 154, blue: 151)
+        assertRGB(lightComposerControlSurface, red: 240, green: 238, blue: 237)
+        assertRGB(lightComposerInactiveActionSurface, red: 236, green: 234, blue: 232)
         assertRGB(lightPlanCardBackground, red: 255, green: 255, blue: 255)
-        assertRGB(lightPlanCardBorder, red: 230, green: 227, blue: 224)
-        assertRGB(lightBorder, red: 229, green: 226, blue: 223)
-        assertRGB(lightSecondaryText, red: 142, green: 142, blue: 147)
+        assertRGB(lightPlanCardBorder, red: 232, green: 230, blue: 227)
+        assertRGB(lightBorder, red: 232, green: 230, blue: 227)
+        assertRGB(lightSecondaryText, red: 120, green: 119, blue: 116)
+        assertRGB(rgba(lightTokens.codeBlock), red: 240, green: 238, blue: 237)
+        assertRGB(rgba(lightTokens.codeText), red: 46, green: 44, blue: 42)
         XCTAssertGreaterThan(lightSurface.red, 0.99)
         XCTAssertGreaterThan(lightSurface.green, 0.99)
         XCTAssertGreaterThan(lightSurface.blue, 0.99)
@@ -271,44 +274,54 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertGreaterThan(lightSuccess.green, lightSuccess.red)
         XCTAssertGreaterThan(lightSuccess.green, lightSuccess.blue)
 
-        // 用户内容使用中性表面；品牌深紫只保留给操作和色卡。
-        assertRGB(lightUserBubble, red: 244, green: 243, blue: 240)
+        // 浅色主操作恢复产品紫色，用户气泡仍是中性的 Notion 胶囊灰。
+        assertRGB(lightUserBubble, red: 240, green: 238, blue: 237)
         assertRGB(rgba(lightTokens.primaryAction), red: 74, green: 20, blue: 74)
+        assertRGB(lightAccent, red: 74, green: 20, blue: 74)
+        assertRGB(rgba(lightTokens.primaryActionForeground), red: 255, green: 255, blue: 255)
+        // 列表标题：深色照 Notion 侧栏用浅灰，浅色与正文同色。
+        assertRGB(rgba(darkTokens.listTitleText), red: 190, green: 189, blue: 187)
+        assertRGB(rgba(lightTokens.listTitleText), red: 46, green: 44, blue: 42)
+        // 浅色用原主色，深色用灰紫；用量图表和未读点保持同一档语义色。
+        assertRGB(rgba(lightTokens.tokenActivityAccent), red: 74, green: 20, blue: 74)
+        assertRGB(rgba(darkTokens.tokenActivityAccent), red: 119, green: 113, blue: 127)
+        assertRGB(rgba(lightTokens.sessionUnreadAccent), red: 74, green: 20, blue: 74)
+        assertRGB(rgba(darkTokens.sessionUnreadAccent), red: 119, green: 113, blue: 127)
+        assertRGB(rgba(lightTokens.tokenActivityAxisText), red: 106, green: 105, blue: 102)
+        // 默认深色照 Notion AI 圆钮：主操作与强调色同为无色相浅灰，配黑色前景。
         let darkPrimaryAction = rgba(darkTokens.primaryAction)
-        assertRGB(darkPrimaryAction, red: 124, green: 107, blue: 158)
-        XCTAssertGreaterThan(colorDistance(darkAccent, darkPrimaryAction), 0.1)
+        assertRGB(darkPrimaryAction, red: 211, green: 211, blue: 211)
+        assertRGB(darkAccent, red: 211, green: 211, blue: 211)
+        assertRGB(rgba(darkTokens.primaryActionForeground), red: 0, green: 0, blue: 0)
         XCTAssertGreaterThan(lightUserBubble.alpha, 0.99)
         XCTAssertEqual(codexSwatchForeground.red, lightAccent.red, accuracy: 0.001)
         XCTAssertEqual(codexSwatchForeground.green, lightAccent.green, accuracy: 0.001)
         XCTAssertEqual(codexSwatchForeground.blue, lightAccent.blue, accuracy: 0.001)
 
-        // 大面积表面和三级文字使用中性灰；卡片、输入/浮层和控件保留明确层级。
-        assertRGB(darkBackground, red: 20, green: 20, blue: 20)
-        assertRGB(darkSurface, red: 31, green: 31, blue: 31)
-        assertRGB(darkElevatedSurface, red: 41, green: 41, blue: 41)
-        assertRGB(darkSidebarBackground, red: 24, green: 24, blue: 24)
-        assertRGB(darkSidebarSurfaceBackground, red: 24, green: 24, blue: 24)
-        assertRGB(darkSidebarHoverFill, red: 41, green: 41, blue: 41)
-        assertRGB(darkInputBackground, red: 41, green: 41, blue: 41)
-        assertRGB(darkConversationCanvasBackground, red: 20, green: 20, blue: 20)
-        assertRGB(darkComposerControlSurface, red: 51, green: 51, blue: 51)
-        assertRGB(darkComposerInactiveActionSurface, red: 51, green: 51, blue: 51)
-        assertRGB(darkPlanCardBackground, red: 31, green: 31, blue: 31)
-        assertRGB(darkPlanCardBorder, red: 58, green: 58, blue: 58)
-        assertRGB(darkBorder, red: 58, green: 58, blue: 58)
-        assertRGB(darkSelectionFill, red: 44, green: 41, blue: 50)
-        assertRGB(darkContentPanelBackground, red: 31, green: 31, blue: 31)
-        assertRGB(darkWorkspaceCardSelectionFill, red: 44, green: 41, blue: 50)
-        assertRGB(darkPrimaryText, red: 235, green: 235, blue: 235)
-        assertRGB(darkSecondaryText, red: 184, green: 184, blue: 184)
-        assertRGB(darkTertiaryText, red: 150, green: 150, blue: 150)
+        // 取自 Notion iOS 深色截图：页面、未选中胶囊、选中胶囊和两级文字直接对齐；
+        // 卡片、输入/浮层和控件保留明确层级。
+        assertRGB(darkBackground, red: 31, green: 31, blue: 31)
+        assertRGB(darkSurface, red: 43, green: 43, blue: 41)
+        assertRGB(darkElevatedSurface, red: 50, green: 50, blue: 50)
+        assertRGB(darkSidebarBackground, red: 31, green: 31, blue: 31)
+        assertRGB(darkSidebarSurfaceBackground, red: 35, green: 35, blue: 35)
+        assertRGB(darkSidebarHoverFill, red: 43, green: 43, blue: 41)
+        assertRGB(darkInputBackground, red: 50, green: 50, blue: 50)
+        assertRGB(darkConversationCanvasBackground, red: 31, green: 31, blue: 31)
+        assertRGB(darkComposerControlSurface, red: 61, green: 61, blue: 61)
+        assertRGB(darkComposerInactiveActionSurface, red: 61, green: 61, blue: 61)
+        assertRGB(darkPlanCardBackground, red: 43, green: 43, blue: 41)
+        assertRGB(darkPlanCardBorder, red: 55, green: 55, blue: 53)
+        assertRGB(darkBorder, red: 55, green: 55, blue: 53)
+        assertRGB(darkSelectionFill, red: 55, green: 55, blue: 53)
+        assertRGB(darkContentPanelBackground, red: 43, green: 43, blue: 41)
+        assertRGB(darkWorkspaceCardSelectionFill, red: 55, green: 55, blue: 53)
+        assertRGB(darkPrimaryText, red: 239, green: 239, blue: 237)
+        assertRGB(darkSecondaryText, red: 171, green: 170, blue: 166)
+        assertRGB(darkTertiaryText, red: 161, green: 160, blue: 157)
         XCTAssertLessThan(abs(darkBackground.red - darkBackground.blue), 0.02)
         XCTAssertLessThan(abs(darkSurface.red - darkSurface.blue), 0.04)
         XCTAssertLessThan(abs(darkElevatedSurface.red - darkElevatedSurface.blue), 0.04)
-        XCTAssertGreaterThan(darkAccent.red, 0.70)
-        XCTAssertGreaterThan(darkAccent.green, 0.45)
-        XCTAssertGreaterThan(darkAccent.blue, 0.75)
-        XCTAssertGreaterThan(darkAccent.blue, darkAccent.green)
         XCTAssertGreaterThan(darkSuccess.green, darkSuccess.red)
         XCTAssertGreaterThan(darkSuccess.green, darkSuccess.blue)
 
@@ -565,27 +578,30 @@ final class ThemeStoreTests: XCTestCase {
     func testCodexDarkDerivedSurfacesAndTextAreNeutralAndOpaque() {
         let store = ThemeStore(defaults: defaults)
         let tokens = store.tokens(for: .dark)
+        // 深色下除成功/警告外不再有任何色相：表面、文字、强调、选中、录音与波形
+        // 都是灰阶，最多带 Notion 原有的极轻暖灰（红 ≥ 绿 ≥ 蓝，差值不超过 5）。
         let neutralColors = [
             tokens.background, tokens.surface, tokens.elevatedSurface,
             tokens.sidebarBackground, tokens.sidebarSurfaceBackground, tokens.sidebarHoverFill,
             tokens.inputBackground, tokens.composerControlSurface, tokens.composerInactiveActionSurface,
             tokens.planCardBackground, tokens.planCardBorder, tokens.contentPanelBackground,
-            tokens.settingsGroupBackground, tokens.border, tokens.codeBlock,
-            tokens.primaryText, tokens.secondaryText, tokens.tertiaryText, tokens.codeText
-        ]
+            tokens.border, tokens.codeBlock,
+            tokens.primaryText, tokens.secondaryText, tokens.tertiaryText, tokens.codeText,
+            tokens.accent, tokens.accentSoft, tokens.primaryAction, tokens.selectionFill,
+            tokens.goalActive, tokens.voiceRecording,
+            tokens.sessionPinActionTint, tokens.sessionUnpinActionTint
+        ] + tokens.voiceWaveformGradient
         for color in neutralColors {
             let value = rgba(color)
-            XCTAssertEqual(value.red, value.green, accuracy: 0.0001)
-            XCTAssertEqual(value.green, value.blue, accuracy: 0.0001)
+            XCTAssertGreaterThanOrEqual(value.red, value.green - 0.0001)
+            XCTAssertGreaterThanOrEqual(value.green, value.blue - 0.0001)
+            XCTAssertLessThanOrEqual(value.red - value.blue, 5.0 / 255.0 + 0.0001)
             XCTAssertEqual(value.alpha, 1, accuracy: 0.0001)
         }
-        assertRGB(rgba(tokens.accent), red: 184, green: 174, blue: 213)
-        assertRGB(rgba(tokens.accentSoft), red: 44, green: 41, blue: 50)
-        assertRGB(rgba(tokens.settingsGroupBackground), red: 31, green: 31, blue: 31)
-        // 保留已有成功/警告/录音语义色，不把状态统一染成主题紫。
+        assertRGB(rgba(tokens.accentSoft), red: 55, green: 55, blue: 53)
+        // 成功/警告是状态语义，不随主题去色。
         assertRGB(rgba(tokens.success), red: 101, green: 197, blue: 142)
         assertRGB(rgba(tokens.warning), red: 240, green: 181, blue: 98)
-        assertRGB(rgba(tokens.voiceRecording), red: 198, green: 129, blue: 203)
     }
 
     func testDefaultDarkColorOverridesDoNotLeakIntoOtherSchemesOrPresets() {
@@ -595,12 +611,6 @@ final class ThemeStoreTests: XCTestCase {
             for scheme in [ColorScheme.light, .dark] {
                 let tokens = store.tokens(for: scheme)
                 let isDefaultDark = preset == .codex && scheme == .dark
-                // 设置分组底在所有预设、明暗下都等于该主题的 surface：设备页、设置详情页
-                // 和「我的」共用同一个入口，不允许某一支单独回到 elevatedSurface。
-                let group = rgba(tokens.settingsGroupBackground)
-                let expectedGroup = rgba(tokens.surface)
-                XCTAssertLessThan(colorDistance(group, expectedGroup), 0.0001)
-                XCTAssertEqual(group.alpha, expectedGroup.alpha, accuracy: 0.0001)
                 let active = rgba(tokens.tint(for: .active))
                 let expectedActive = rgba(isDefaultDark ? tokens.accent : tokens.primaryAction)
                 XCTAssertLessThan(colorDistance(active, expectedActive), 0.0001)
@@ -610,8 +620,7 @@ final class ThemeStoreTests: XCTestCase {
         store.preset = .codex
         store.mode = .light
         let forcedLight = store.tokens(for: .dark)
-        assertRGB(rgba(forcedLight.background), red: 250, green: 247, blue: 241)
-        assertRGB(rgba(forcedLight.settingsGroupBackground), red: 255, green: 255, blue: 255)
+        assertRGB(rgba(forcedLight.background), red: 250, green: 248, blue: 246)
         assertRGB(rgba(forcedLight.tint(for: .active)), red: 74, green: 20, blue: 74)
     }
 
@@ -619,7 +628,7 @@ final class ThemeStoreTests: XCTestCase {
         let store = ThemeStore(defaults: defaults)
         let tokens = store.tokens(for: .dark)
         let surfaces = [
-            tokens.background, tokens.settingsGroupBackground, tokens.contentPanelBackground,
+            tokens.background, tokens.contentPanelBackground,
             tokens.elevatedSurface, tokens.inputBackground, tokens.userBubble,
             tokens.selectionFill, tokens.workspaceCardSelectionFill
         ]
@@ -643,12 +652,22 @@ final class ThemeStoreTests: XCTestCase {
         // ConversationMessageContent 的整组 sending opacity 同时作用于文字与气泡。
         // MessageTimestampCaption 的最终渲染仍须由会话快照覆盖。
         let sendingBubble = flatten(tokens.userBubble.opacity(0.72), over: canvas)
-        let sendingTimestamp = flatten(tokens.secondaryText.opacity(0.72), over: canvas)
+        let sendingTimestamp = flatten(
+            tokens.userMessageTimestampForeground(isSending: true).opacity(0.72),
+            over: canvas
+        )
         XCTAssertGreaterThanOrEqual(contrastRatio(sendingTimestamp, sendingBubble), 4.5)
         XCTAssertGreaterThanOrEqual(contrastRatio(sendingTimestamp, canvas), 4.5)
-        // WorkbenchChromeMaterial 的 Reduce Transparency + 完整选中态有可确定的合成底色。
+        let sentTimestamp = tokens.userMessageTimestampForeground(isSending: false)
+        XCTAssertGreaterThanOrEqual(contrastRatio(sentTimestamp, tokens.userBubble), 4.5)
+        XCTAssertGreaterThanOrEqual(contrastRatio(sentTimestamp, canvas), 4.5)
+        // WorkbenchChromeMaterial 的 Reduce Transparency 有可确定的合成底色。
+        // 未选中的胶囊/按钮用次级文字；完整选中时文字过渡到主文字（工作区胶囊）
+        // 或主操作色（「我的」按钮），次级文字不会落在完整选中底上。
+        let restingChrome = tokens.elevatedSurface
+        XCTAssertGreaterThanOrEqual(contrastRatio(tokens.secondaryText, restingChrome), 4.5)
         let selectedChrome = flatten(tokens.primaryText.opacity(0.14), over: tokens.elevatedSurface)
-        for text in [tokens.primaryText, tokens.secondaryText] {
+        for text in [tokens.primaryText, tokens.primaryAction] {
             XCTAssertGreaterThanOrEqual(contrastRatio(text, selectedChrome), 4.5)
         }
         let inactiveFill = tokens.composerInactiveActionSurface

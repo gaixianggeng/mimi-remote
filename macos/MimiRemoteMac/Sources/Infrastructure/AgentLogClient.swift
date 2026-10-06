@@ -1,32 +1,23 @@
-import AppKit
 import Foundation
 
 struct AgentLogClient: Sendable {
     var recentLines: @Sendable (_ count: Int) async throws -> [String]
-    var reveal: @MainActor @Sendable () -> Void
-    let fileURL: URL
+    var exportLines: @Sendable () async throws -> [String] = {
+        throw AgentClientError.commandFailed("当前 agentd 不支持安全日志导出，请更新 App。")
+    }
 }
 
 extension AgentLogClient {
     static let live: AgentLogClient = {
-        let fileURL = FileManager.default.homeDirectoryForCurrentUser
-            .appending(path: "Library/Logs/mimi-remote/agentd.log")
+        let agent = AgentCommandClient.live()
         return AgentLogClient(
             recentLines: { count in
                 let safeCount = min(max(count, 1), 500)
-                return try await Task.detached {
-                    guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
-                    let raw = try Data(contentsOf: fileURL, options: .mappedIfSafe)
-                    return String(decoding: raw, as: UTF8.self)
-                        .split(whereSeparator: \.isNewline)
-                        .suffix(safeCount)
-                        .map(String.init)
-                }.value
+                return Array(try await agent.exportDiagnostics().lines.suffix(safeCount))
             },
-            reveal: {
-                NSWorkspace.shared.activateFileViewerSelecting([fileURL])
-            },
-            fileURL: fileURL
+            exportLines: {
+                try await agent.exportDiagnostics().lines
+            }
         )
     }()
 }

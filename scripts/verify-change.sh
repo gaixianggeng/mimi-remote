@@ -143,9 +143,11 @@ rust_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "rust" { print $2 }
 macos_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "macos" { print $2 }')"
 docs_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "docs" { print $2 }')"
 
+# config.example.json 与 README/示例文档同类：对外发布的配置示例，不是产品源码。
+# 此前它没有映射，改一行也会让 quick 在任何检查前 fail closed；这里按文档路径归口到文档静态门禁。
 is_documentation_path() {
   case "$1" in
-    *.md|README|README.*|CONTRIBUTING.*|AGENTS.md|SECURITY.md|LICENSE|LICENSE.*|*/LICENSE|*/LICENSE.*|docs/*|web/*|artifacts/*)
+    *.md|README|README.*|CONTRIBUTING.*|AGENTS.md|SECURITY.md|LICENSE|LICENSE.*|*/LICENSE|*/LICENSE.*|config.example.json|docs/*|web/*|artifacts/*)
       return 0
       ;;
   esac
@@ -154,7 +156,7 @@ is_documentation_path() {
 
 is_control_path() {
   case "$1" in
-    .github/*|scripts/*|packaging/*|config/*|.goreleaser.yml|.gitignore|.editorconfig|.xcodebuildmcp/*)
+    .github/*|scripts/*|packaging/*|config/*|config.example.json|.goreleaser.yml|.gitignore|.editorconfig|.xcodebuildmcp/*)
       return 0
       ;;
   esac
@@ -168,7 +170,7 @@ is_go_source_path() {
       ;;
   esac
   case "$1" in
-    *.go|go.mod|go.sum|cmd/*|internal/*|contracts/mimi-protocol/*)
+    *.go|go.mod|go.sum|cmd/*|internal/*|contracts/mimi-protocol/*|contracts/harness-native/*)
       return 0
       ;;
   esac
@@ -177,7 +179,7 @@ is_go_source_path() {
 
 is_ios_source_path() {
   case "$1" in
-    ios/MimiRemote/*|experiments/tailcat/*|contracts/mimi-protocol/*|internal/protocolcontract/*)
+    ios/MimiRemote/*|experiments/tailcat/*|contracts/mimi-protocol/*|internal/protocolcontract/*|contracts/harness-native/*)
       return 0
       ;;
   esac
@@ -209,6 +211,7 @@ direct_rust=false
 direct_macos=false
 has_control=false
 has_contract=false
+has_harness_native_contract=false
 has_release_control=false
 has_gate_control=false
 has_codex_control=false
@@ -229,6 +232,7 @@ shell_paths=()
 yaml_paths=()
 ruby_paths=()
 python_paths=()
+json_paths=()
 powershell_paths=()
 go_packages=()
 go_requires_full=false
@@ -318,7 +322,7 @@ for path in "${changed_paths[@]:-}"; do
       path_is_go=true
       direct_go=true
       case "$path" in
-        contracts/mimi-protocol/*)
+        contracts/mimi-protocol/*|contracts/harness-native/*)
           # 共享 fixture 由专用契约检查覆盖；quick 不再重复一次全仓 Go test。
           ;;
         *)
@@ -352,6 +356,11 @@ for path in "${changed_paths[@]:-}"; do
   case "$path" in
     contracts/mimi-protocol/*|internal/protocolcontract/*)
       has_contract=true
+      ;;
+  esac
+  case "$path" in
+    contracts/harness-native/*)
+      has_harness_native_contract=true
       ;;
   esac
   case "$path" in
@@ -441,6 +450,11 @@ for path in "${changed_paths[@]:-}"; do
     *.yml|*.yaml)
       [[ -f "$path" ]] && yaml_paths+=("$path")
       ;;
+    # 只收根目录的配置模板。iOS 与 contracts 下的 JSON 是产品数据，各自被所在
+    # 语言栈的构建或协议检查覆盖，不在这里做语法预检。
+    config.example.json)
+      [[ -f "$path" ]] && json_paths+=("$path")
+      ;;
   esac
 
   if [[ "$path_is_documentation" == false ]] && \
@@ -519,6 +533,15 @@ if [[ "${#python_paths[@]}" -gt 0 ]]; then
   add_check "变更的 Python 脚本先做无产物语法检查" "$python_command" "all"
 fi
 
+if [[ "${#json_paths[@]}" -gt 0 ]]; then
+  command -v python3 >/dev/null 2>&1 || fail "JSON 语法检查需要 python3。"
+  json_command="python3 -c 'import json, pathlib, sys; [json.loads(pathlib.Path(path).read_text()) for path in sys.argv[1:]]'"
+  for path in "${json_paths[@]}"; do
+    json_command+=" $(shell_quote "$path")"
+  done
+  add_check "变更的 JSON 配置模板先做语法解析" "$json_command" "all"
+fi
+
 if [[ "$docs_scope" == true ]]; then
   add_check "文档与公开发布说明使用轻量静态门禁" "bash ./scripts/check-docs-static.sh"
 fi
@@ -569,6 +592,9 @@ fi
 if [[ "$has_contract" == true ]]; then
   add_check "Go/iOS 共享契约变化" "bash ./scripts/check-mimi-protocol-contract.sh" "go ios"
 fi
+if [[ "$has_harness_native_contract" == true ]]; then
+  add_check "原生 Harness 契约夹具完整性" "bash ./scripts/check-harness-native-contract.sh" "go ios"
+fi
 if [[ "$direct_go" == true || "$direct_ios" == true || "$has_source_size_control" == true ]]; then
   # 先用秒级门禁拦住超大源文件，避免等到 Xcode/Go 构建后才失败。
   add_check "Go/iOS 源码体积快速门禁" "bash ./scripts/check-source-size.sh" "go ios"
@@ -595,7 +621,7 @@ if [[ "$direct_go" == true ]]; then
     done
     go_test_command+=" -count=1"
     add_check "Go quick 只测试直接变更的 package" "$go_test_command" "go"
-  elif [[ "$has_contract" == false ]]; then
+  elif [[ "$has_contract" == false && "$has_harness_native_contract" == false ]]; then
     add_check "Go 受影响范围无法定位 package，使用完整回归" "go test ./... -count=1" "go"
   fi
   if [[ "$mode" == "full" ]]; then
@@ -661,7 +687,7 @@ print_plan() {
   echo "- full 条件：高风险状态语义、影响范围无法界定的大重构、本地 full 能补齐必要回归的 CI 覆盖缺口、正式发布或用户明确要求。"
   echo "- 跨栈或共享协议：定向覆盖接口兼容与失败/降级链路；不因语言数量自动升级 full。"
   echo "- 非 full 条件：普通 UI、文案、单 package、测试文件、改动文件较多、准备提交或“为了保险”。"
-  if [[ "$has_contract" == true ]]; then
+  if [[ "$has_contract" == true || "$has_harness_native_contract" == true ]]; then
     echo "- 自动高风险信号：检测到 Go/iOS 共享协议路径；核对兼容语义和定向契约覆盖后评估 full。"
   elif [[ "$direct_go" == true && "$direct_ios" == true ]] || \
        [[ "$direct_go" == true && "$direct_rust" == true ]] || \

@@ -11,7 +11,6 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/httpapi"
-	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
 type agentAppServerRuntime struct {
@@ -20,9 +19,19 @@ type agentAppServerRuntime struct {
 }
 
 func prepareAgentAppServerRuntime(cfg config.Config) (*agentAppServerRuntime, error) {
+	return prepareAgentAppServerRuntimeWithFrontDoor(cfg, false)
+}
+
+func prepareAgentAppServerRuntimeWithFrontDoor(cfg config.Config, frontDoorRequired bool) (*agentAppServerRuntime, error) {
 	result := &agentAppServerRuntime{}
 	if !cfg.Codex.IsEnabled() {
 		return result, nil
+	}
+	if err := cfg.ValidateSharedCodexHome(); err != nil {
+		return nil, err
+	}
+	if cfg.AppServer.SharedCodexHome != "" && !frontDoorRequired {
+		return nil, fmt.Errorf("app_server.shared_codex_home 需要 Mac App 的受管前门，不能回退为独立 resident")
 	}
 	prepareCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
@@ -43,8 +52,10 @@ func prepareAgentAppServerRuntime(cfg config.Config) (*agentAppServerRuntime, er
 		result.routerOptions.AppServerSSH = transport
 	case "local":
 		transport, err := appserver.NewSharedLocalTransport(appserver.SharedLocalOptions{
-			CodexBin: cfg.Codex.Bin,
-			Env:      cfg.Codex.Env,
+			CodexBin:         cfg.Codex.Bin,
+			Env:              cfg.Codex.Env,
+			ConnectOnly:      frontDoorRequired,
+			BackendCodexHome: cfg.AppServer.SharedCodexHome,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("初始化共享本机 App Server transport 失败：%w", err)
@@ -54,7 +65,11 @@ func prepareAgentAppServerRuntime(cfg config.Config) (*agentAppServerRuntime, er
 			return nil, err
 		}
 		if err := transport.EnsureReady(prepareCtx); err != nil {
-			return nil, err
+			// Codex 不可用只影响该运行时。保留 transport 供诊断与修复后重连，
+			// 每条业务连接仍由 transport 校验登录环境，不会绕过 Aqua 边界。
+			log.Printf("agentd shared local app-server unavailable: %v", err)
+			result.routerOptions.AppServerSSH = transport
+			return result, nil
 		}
 		log.Printf("agentd shared local app-server socket=%s codex_version=%s", transport.SocketPath(), localVersion)
 		result.routerOptions.AppServerSSH = transport
@@ -110,13 +125,9 @@ func (r *agentAppServerRuntime) shutdown() error {
 }
 
 func shutdownServeResources(
-	manager *session.Manager,
 	apiRouter *httpapi.Router,
 	appServerRuntime *agentAppServerRuntime,
 ) error {
-	if manager != nil {
-		manager.Shutdown()
-	}
 	if apiRouter != nil {
 		apiRouter.Shutdown()
 	}

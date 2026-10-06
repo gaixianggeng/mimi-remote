@@ -45,6 +45,7 @@ for required_file in \
   scripts/test-install-linux-tray.sh \
   scripts/ios-dev.sh \
   scripts/test-install-linux.sh \
+  scripts/test-linux-tailcat-package.sh \
   scripts/check-release-prerequisites.sh \
   scripts/check-macos-release-signing.sh \
   scripts/check-release-artifacts.sh \
@@ -53,6 +54,7 @@ for required_file in \
   scripts/restart-agentd-dev-macos.sh \
   scripts/restart-agentd-dev-handoff-macos.sh \
   scripts/verify-release.sh \
+  scripts/testdata/linux-tailcat/packaged_test.go.in \
   docs/install-upgrade-rollback.md; do
   [[ -f "$required_file" ]] || fail "缺少 ${required_file}。"
 done
@@ -75,6 +77,7 @@ bash -n \
   scripts/install-linux-tray.sh \
   scripts/test-install-linux-tray.sh \
   scripts/test-install-linux.sh \
+  scripts/test-linux-tailcat-package.sh \
   scripts/verify-release.sh
 bash ./scripts/check-release-prerequisites.sh --self-test >/dev/null
 bash ./scripts/check-macos-release-signing.sh --self-test >/dev/null
@@ -109,10 +112,12 @@ bash ./scripts/package-skill.sh "$skill_dist" >/dev/null
 rm -rf "$skill_dist"
 trap - EXIT
 
-for tray_file in scripts/install-linux-tray.sh packaging/linux/mimi-remote.desktop cmd/mimi-remote-tray/assets/mimi.png cmd/mimi-remote-tray/assets/*-symbolic.svg; do
+for tray_file in scripts/install-linux-tray.sh scripts/install-omarchy-tray-qr.py packaging/linux/omarchy/MimiPairingQR.qml packaging/linux/mimi-remote.desktop cmd/mimi-remote-tray/assets/mimi.png cmd/mimi-remote-tray/assets/*-symbolic.svg; do
   [[ -f "$tray_file" ]] || fail "缺少 Linux 托盘文件 $tray_file。"
   grep -Fq "$tray_file" .goreleaser.yml || fail "Linux 归档没有包含 $tray_file。"
 done
+grep -Fq 'binary: mimi-tailcat-experiment' .goreleaser.yml || fail "Linux 发布缺少 Tailcat 辅助程序。"
+grep -Fq 'dir: experiments/tailcat' .goreleaser.yml || fail "Tailcat 必须从独立 module 构建。"
 grep -Fq 'binary: mimi-remote-tray' .goreleaser.yml || fail "Linux 发布缺少托盘二进制。"
 
 service_file="packaging/systemd/mimi-remote.service"
@@ -213,8 +218,14 @@ grep -Fq 'POSIX_SPAWN_START_SUSPENDED' macos/MimiRemoteMac/Sources/App/AgentdSup
   || fail "agentd supervisor 没有在执行前暂停子进程以完成运行态签名校验。"
 grep -Fq 'POSIX_SPAWN_SETSIGDEF' macos/MimiRemoteMac/Sources/App/AgentdSupervisor.swift \
   || fail "agentd supervisor 没有为子进程恢复默认终止信号处置。"
-grep -Fq 'agentd-supervisor-v1' macos/MimiRemoteMac/Sources/Infrastructure/ServiceManagementClient.swift \
+grep -Fq 'agentd-supervisor-v2-aqua' macos/MimiRemoteMac/Sources/Infrastructure/ServiceManagementClient.swift \
   || fail "LaunchAgent 定义变化后没有强制已安装的机器重新登记。"
+grep -Fq '<key>LimitLoadToSessionType</key>' \
+  macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist \
+  || fail "LaunchAgent 没有声明用户登录会话限制。"
+grep -Fq '<string>Aqua</string>' \
+  macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist \
+  || fail "LaunchAgent 没有限定为 Aqua 用户登录环境。"
 [[ ! -e macos/MimiRemoteMac/Sources/App/CodexDaemonSupervisor.swift ]] \
   || fail "Mac App 仍包含已移除的 Codex shared daemon supervisor。"
 grep -Fq -- 'CommandLine.arguments.contains("--codex-daemon-supervisor")' macos/MimiRemoteMac/Sources/App/MimiRemoteMacApp.swift \

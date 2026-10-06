@@ -123,10 +123,6 @@ struct AgentSession: Identifiable, Codable, Hashable {
         return branch
     }
 
-    var isAppServerHistory: Bool {
-        status == "history"
-    }
-
     /// 新建页在首条消息前只保留本地草稿，不提前创建没有 rollout 的远端 thread。
     var isLocalDraft: Bool {
         source == "local" && status == "draft" && resumeID == nil
@@ -1726,6 +1722,8 @@ enum MessageRole: String, Codable, Hashable {
 enum MessageKind: String, Codable, Hashable {
     case message
     case commentary
+    // Harness 注入的上下文（工作区指令/技能目录/运行时快照等），system 侧的折叠内容。
+    case context = "context"
     case plan
     case reasoningSummary = "reasoning_summary"
     case commandSummary = "command_summary"
@@ -1758,6 +1756,8 @@ enum ConversationActivityCategory: String, Codable, Hashable {
     case editFile = "edit_file"
     case toolCall = "tool_call"
     case error
+    // Harness 注入上下文，非工具/思考类，展示为 system 侧可折叠条目。
+    case context = "context"
 }
 
 /// 命令在主时间线中的展示语义。协议能明确给出只读动作时展示为探索，
@@ -2000,6 +2000,8 @@ struct ConversationActivityPayload: Codable, Hashable {
             return .fileChangeSummary
         case .error:
             return .error
+        case .context:
+            return .context
         }
     }
 
@@ -2014,6 +2016,8 @@ struct ConversationActivityPayload: Codable, Hashable {
         case .toolCall:
             return toolSummaryText
         case .error:
+            return subtitle ?? displayTitle
+        case .context:
             return subtitle ?? displayTitle
         }
     }

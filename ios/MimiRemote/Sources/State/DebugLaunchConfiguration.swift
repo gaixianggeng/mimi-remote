@@ -83,8 +83,13 @@ struct DebugLaunchConfiguration {
     }
 
     static func current(processInfo: ProcessInfo = .processInfo) -> DebugLaunchConfiguration {
-        let arguments = processInfo.arguments
-        let environment = processInfo.environment
+        parse(arguments: processInfo.arguments, environment: processInfo.environment)
+    }
+
+    static func parse(
+        arguments: [String],
+        environment: [String: String]
+    ) -> DebugLaunchConfiguration {
         let seedsQueuedTurnsUI = arguments.contains("--debug-seed-queue-ui")
             || boolValue(environment["MIMI_DEBUG_SEED_QUEUE_UI"])
         let seedsMCPApprovalUI = arguments.contains("--debug-seed-mcp-approval-ui")

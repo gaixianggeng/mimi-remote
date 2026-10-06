@@ -340,6 +340,8 @@ struct RuntimeSummaryCard: View {
             return L10n.text("ui.abnormal_operation")
         case .warning:
             return L10n.text("ui.run_warning")
+        case .context:
+            return L10n.text("ui.context")
         case .message:
             return L10n.text("ui.status")
         }
@@ -374,6 +376,8 @@ struct RuntimeSummaryCard: View {
             return "exclamationmark.triangle"
         case .warning:
             return "exclamationmark.triangle"
+        case .context:
+            return "info.circle"
         case .message:
             return "info.circle"
         }
@@ -386,7 +390,7 @@ struct RuntimeSummaryCard: View {
                 return tokens.accent
             case .error:
                 return .red
-            case .thinking, .runCommand, .toolCall:
+            case .thinking, .runCommand, .toolCall, .context:
                 return tokens.secondaryText
             }
         }
@@ -423,7 +427,7 @@ struct RuntimeSummaryCard: View {
                 return tokens.accent.opacity(0.10)
             case .error:
                 return Color.red.opacity(0.10)
-            case .thinking, .runCommand, .toolCall:
+            case .thinking, .runCommand, .toolCall, .context:
                 return tokens.systemBubble
             }
         }
@@ -463,60 +467,99 @@ struct RuntimeSummaryCard: View {
 }
 
 private struct MessageContextMenuModifier: ViewModifier {
-    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let message: ConversationMessage
+    let hasSelectableBody: Bool
     let retry: (() -> Void)?
     let stop: (() -> Void)?
-    @State private var isSelectingText = false
+    @State private var isSelectingCardText = false
+    @State private var isMenuPresented = false
 
     func body(content: Content) -> some View {
-        // 菜单只提供动作，预览由系统直接从调用处的真实消息表面生成。
-        // 各表面通过 .contentShape(.contextMenuPreview, ...) 声明自己的边界，
-        // 避免维护第二套会与 Markdown、图片和流式高度脱节的“假气泡”。
-        content
-            .contextMenu {
-                Button {
-                    UIPasteboard.general.string = message.content
-                } label: {
-                    Label(L10n.text("ui.copy"), systemImage: "doc.on.doc")
-                }
-
-                // 全幅气泡的 contextMenu 长按会抢占文本选区的长按手势，直接给正文加
-                // .textSelection 无法在气泡内起效；因此提供一个专用的可选择文本表面，
-                // 让用户能挑选返回内容里的任意片段单独复制。
-                if !selectableText.isEmpty {
+        Group {
+            if usesNativeTextActions {
+                // 正文自己协调长按菜单和系统选区，外层不再安装会抢占同一手势的 contextMenu。
+                content.environment(\.messageTextActions, MessageTextActions(
+                    copyText: message.visibleCopyText,
+                    retry: message.role == .user && message.sendStatus == .failed ? retry : nil,
+                    stop: message.role == .assistant && message.sendStatus == .sending ? stop : nil,
+                    menuPresentationChanged: { isMenuPresented = $0 }
+                ))
+                .modifier(MessageMenuLift(isPresented: isMenuPresented, role: message.role, reduceMotion: reduceMotion))
+                .onDisappear { isMenuPresented = false }
+            } else {
+                content.contextMenu {
                     Button {
-                        isSelectingText = true
+                        UIPasteboard.general.string = message.visibleCopyText
                     } label: {
-                        Label(L10n.text("ui.select_text"), systemImage: "text.cursor")
+                        Label(L10n.text("ui.copy"), systemImage: "doc.on.doc")
+                    }
+
+                    if !selectableText.isEmpty {
+                        Button {
+                            isSelectingCardText = true
+                        } label: {
+                            Label(L10n.text("ui.select_text"), systemImage: "text.cursor")
+                        }
+                    }
+
+                    if message.role == .user && message.sendStatus == .failed, let retry {
+                        Button(action: retry) {
+                            Label(L10n.text("ui.try_again"), systemImage: "arrow.clockwise")
+                        }
+                    }
+
+                    if message.role == .assistant && message.sendStatus == .sending, let stop {
+                        Button(role: .destructive, action: stop) {
+                            Label(L10n.text("ui.stop"), systemImage: "stop.circle")
+                        }
                     }
                 }
-
-                if message.role == .user && message.sendStatus == .failed, let retry {
-                    Button(action: retry) {
-                        Label(L10n.text("ui.try_again"), systemImage: "arrow.clockwise")
-                    }
-                }
-
-                if message.role == .assistant && message.sendStatus == .sending, let stop {
-                    Button(role: .destructive, action: stop) {
-                        Label(L10n.text("ui.stop"), systemImage: "stop.circle")
-                    }
+                .sheet(isPresented: $isSelectingCardText) {
+                    MessageTextSelectionSheet(text: selectableText)
                 }
             }
-            .sheet(isPresented: $isSelectingText) {
-                MessageTextSelectionSheet(text: selectableText)
-                    .environmentObject(themeStore)
-            }
+        }
+    }
+
+    private var usesNativeTextActions: Bool {
+        hasSelectableBody && message.role != .system && (message.kind == .message || message.kind == .commentary)
     }
 
     private var selectableText: String {
-        message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        message.visibleCopyText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
-/// 可选择文本表面：正文渲染层被 contextMenu 手势占用，这里用一个不带长按菜单的
-/// 独立视图承载 `.textSelection(.enabled)`，从而支持逐句/逐段挑选复制。
+struct MessageMenuLift: ViewModifier {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let isPresented: Bool
+    let role: ConversationMessage.Role
+    let reduceMotion: Bool
+
+    func body(content: Content) -> some View {
+        let moves = isPresented && !reduceMotion
+        content
+            .background {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(themeStore.tokens(for: colorScheme).surface)
+                    .padding(-8)
+                    .opacity(isPresented && role == .assistant ? 1 : 0)
+            }
+            .shadow(color: .black.opacity(isPresented ? (colorScheme == .dark ? 0.3 : 0.14) : 0), radius: 12, y: 6)
+            .visualEffect { effect, geometry in
+                // 只变换显示层；长回复最多放大 8pt，避免远离按下位置，也不触发布局重排。
+                effect
+                    .scaleEffect(moves ? 1 + min(0.015, 8 / max(1, geometry.size.width, geometry.size.height)) : 1,
+                                 anchor: role == .user ? .trailing : .leading)
+                    .offset(y: moves ? -3 : 0)
+            }
+            .animation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.28, dampingFraction: 1), value: isPresented)
+    }
+}
+
+/// 转写草稿及非正文卡片保留独立页面；普通消息在同一富文本视图里选文。
 struct MessageTextSelectionSheet: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -560,10 +603,11 @@ struct MessageTextSelectionSheet: View {
 extension View {
     func messageContextMenu(
         for message: ConversationMessage,
+        hasSelectableBody: Bool = true,
         retry: (() -> Void)? = nil,
         stop: (() -> Void)? = nil
     ) -> some View {
-        modifier(MessageContextMenuModifier(message: message, retry: retry, stop: stop))
+        modifier(MessageContextMenuModifier(message: message, hasSelectableBody: hasSelectableBody, retry: retry, stop: stop))
     }
 }
 
@@ -573,6 +617,7 @@ struct MessageTimestampCaption: View {
     let text: String
     var isFallback = false
     var foreground: Color?
+    var details: String?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -584,10 +629,16 @@ struct MessageTimestampCaption: View {
             .lineLimit(1)
             .minimumScaleFactor(0.88)
             .accessibilityLabel(isFallback ? L10n.format("ui.message_time_full_estimate_value", text) : L10n.format("ui.message_time_value", text))
+            .accessibilityValue(details ?? "")
+            .help(details ?? text)
     }
 }
 
 extension ConversationMessage {
+    var displayTimestampText: String {
+        Self.compactTime(role == .assistant && sendStatus != .sending ? (updatedAt ?? createdAt) : createdAt)
+    }
+
     var timestampCaptionText: String {
         let text: String
         switch role {

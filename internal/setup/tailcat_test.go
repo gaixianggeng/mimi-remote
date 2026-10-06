@@ -134,7 +134,7 @@ func TestTailcatPairContainsOnlyShortLivedTicketAndPairAddress(t *testing.T) {
 }`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := TailcatPair(configPath, "tailcat-temporary-address")
+	result, err := TailcatPairWithManagedHost(configPath, "tailcat-temporary-address", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

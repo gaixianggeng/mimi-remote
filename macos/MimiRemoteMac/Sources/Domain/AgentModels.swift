@@ -253,6 +253,10 @@ struct AgentRuntimeStatusSnapshot: Codable, Equatable, Sendable {
     }
 
     var hasRetryableFailure: Bool {
+        hasOtherRetryableFailure || hasRejectedDeepSeekCredentials
+    }
+
+    var hasOtherRetryableFailure: Bool {
         runtimes.contains {
             guard $0.enabled else { return false }
             if $0.reason == "quota_refresh_in_progress" {
@@ -263,6 +267,37 @@ struct AgentRuntimeStatusSnapshot: Codable, Equatable, Sendable {
             }
             return $0.state == .unavailable
                 && $0.reason != "refresh_in_progress"
+        }
+    }
+
+    var hasRejectedDeepSeekCredentials: Bool {
+        runtimes.contains {
+            $0.id == "deepseek" && $0.enabled && $0.state == .signedOut
+                && $0.reason == "credentials_rejected"
+        }
+    }
+}
+
+/// Keeps the Mac's ordinary provider retry independent of DeepSeek's 30-second
+/// credential-renewal cooldown. Each kind gets at most one follow-up attempt.
+struct RuntimeStatusFollowUpState {
+    private(set) var didRetryOtherFailure = false
+    private(set) var didRetryRejectedCredentials = false
+
+    func delay(for snapshot: AgentRuntimeStatusSnapshot?) -> Duration? {
+        guard let snapshot else { return nil }
+        if snapshot.refreshing == true { return .seconds(2) }
+        if snapshot.hasOtherRetryableFailure && !didRetryOtherFailure { return .seconds(15) }
+        if snapshot.hasRejectedDeepSeekCredentials && !didRetryRejectedCredentials { return .seconds(32) }
+        return nil
+    }
+
+    mutating func markRetry(for snapshot: AgentRuntimeStatusSnapshot?) {
+        guard let snapshot else { return }
+        if snapshot.hasOtherRetryableFailure && !didRetryOtherFailure {
+            didRetryOtherFailure = true
+        } else if snapshot.hasRejectedDeepSeekCredentials && !didRetryRejectedCredentials {
+            didRetryRejectedCredentials = true
         }
     }
 }
@@ -292,6 +327,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
     let authMode: String?
     let planType: String?
     let reason: String?
+    let loginCommand: String?
     let rateLimits: AgentRuntimeRateLimits?
 
     enum CodingKeys: String, CodingKey {
@@ -304,6 +340,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         case authMode = "auth_mode"
         case planType = "plan_type"
         case reason
+        case loginCommand = "login_command"
         case rateLimits = "rate_limits"
     }
 
@@ -317,6 +354,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         authMode: String?,
         planType: String?,
         reason: String?,
+        loginCommand: String? = nil,
         rateLimits: AgentRuntimeRateLimits?
     ) {
         self.id = id
@@ -328,11 +366,22 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         self.authMode = authMode
         self.planType = planType
         self.reason = reason
+        self.loginCommand = loginCommand
         self.rateLimits = rateLimits
     }
 
     var effectivePlanType: String? {
         planType?.trimmedNonEmpty ?? rateLimits?.planType?.trimmedNonEmpty
+    }
+
+    var effectiveLoginCommand: String? {
+        // 旧 agentd 不返回此字段时保留原入口；新版本已按实际共享目录生成命令。
+        if let command = loginCommand?.trimmedNonEmpty { return command }
+        switch id.lowercased() {
+        case "codex": return "codex login"
+        case "claude": return "claude"
+        default: return nil
+        }
     }
 
     var startedDate: Date? {

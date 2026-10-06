@@ -385,6 +385,10 @@ extension CodexAppServerSessionRuntime {
         params: [String: CodexAppServerJSONValue]
     ) {
         guard method != "turn/completed",
+              // thread/* 是线程级状态（用量、压缩等），不能证明 turn 仍在运行。Codex 在
+              // thread/resume 后会补发上一轮的 tokenUsage，turnId 指向已完成的 turn；
+              // 据此回填会把历史会话误标成运行中。
+              !method.hasPrefix("thread/"),
               let threadID = params["threadId"]?.stringValue,
               let turnID = params["turnId"]?.stringValue,
               !turnID.isEmpty else {
@@ -948,62 +952,57 @@ extension CodexAppServerSessionRuntime {
         return summary
     }
 
-    func firstDouble(in object: [String: CodexAppServerJSONValue]?, keys: [String]) -> Double? {
+    /// object/keys 的取值骨架此前在 firstDouble / firstInt64 / firstBool 里各写了一遍：
+    /// 按顺序取第一个能成功转换的值。这里只保留骨架，转换规则由调用方注入。
+    private func firstConverted<T>(
+        in object: [String: CodexAppServerJSONValue]?,
+        keys: [String],
+        _ convert: (CodexAppServerJSONValue) -> T?
+    ) -> T? {
         guard let object else {
             return nil
         }
         for key in keys {
-            guard let value = object[key] else {
+            guard let value = object[key], let converted = convert(value) else {
                 continue
             }
+            return converted
+        }
+        return nil
+    }
+
+    func firstDouble(in object: [String: CodexAppServerJSONValue]?, keys: [String]) -> Double? {
+        firstConverted(in: object, keys: keys) { value in
             switch value {
             case .double(let number):
                 return number
             case .int(let number):
                 return Double(number)
             case .string(let raw):
-                if let number = Double(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                    return number
-                }
+                return Double(raw.trimmingCharacters(in: .whitespacesAndNewlines))
             default:
-                continue
+                return nil
             }
         }
-        return nil
     }
 
     func firstInt64(in object: [String: CodexAppServerJSONValue]?, keys: [String]) -> Int64? {
-        guard let object else {
-            return nil
-        }
-        for key in keys {
-            guard let value = object[key] else {
-                continue
-            }
+        firstConverted(in: object, keys: keys) { value in
             switch value {
             case .int(let number):
                 return number
             case .double(let number):
                 return Int64(number)
             case .string(let raw):
-                if let number = Int64(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                    return number
-                }
+                return Int64(raw.trimmingCharacters(in: .whitespacesAndNewlines))
             default:
-                continue
+                return nil
             }
         }
-        return nil
     }
 
     func firstBool(in object: [String: CodexAppServerJSONValue]?, keys: [String]) -> Bool? {
-        guard let object else {
-            return nil
-        }
-        for key in keys {
-            guard let value = object[key] else {
-                continue
-            }
+        firstConverted(in: object, keys: keys) { value in
             if let bool = value.boolValue {
                 return bool
             }
@@ -1015,8 +1014,8 @@ extension CodexAppServerSessionRuntime {
                     return false
                 }
             }
+            return nil
         }
-        return nil
     }
 
     func sessionStatus(from value: CodexAppServerJSONValue?, forceRunning: Bool) -> String {

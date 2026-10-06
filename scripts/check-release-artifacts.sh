@@ -131,6 +131,26 @@ for platform in "${EXPECTED_ARCHIVES[@]}"; do
         cmp -s "$tray_file" "$temp_dir/$tray_file" || { echo "Linux 托盘归档与源码不一致。" >&2; exit 1; }
       fi
     done
+    # Tailcat 是独立 module，用自己的工具链，但必须与 agentd 同版本、同架构。
+    sidecar=mimi-tailcat-experiment
+    grep -Fxq "$sidecar" <<<"$archive_listing" || { echo "Linux 归档缺少 $sidecar。" >&2; exit 1; }
+    tar -xzf "$archive" -C "$temp_dir" "$sidecar"
+    [[ -x "$temp_dir/$sidecar" ]] || { echo 'Linux Tailcat 缺少执行权限。' >&2; exit 1; }
+    sidecar_metadata="$(go version -m "$temp_dir/$sidecar")"
+    sidecar_go_version="go$(awk '$1 == "go" { print $2; exit }' experiments/tailcat/go.mod)"
+    archive_version="${archive_name#mimi-remote_}"
+    archive_version="${archive_version%_${platform}.tar.gz}"
+    for expected_setting in GOOS=linux "GOARCH=${platform##*_}" CGO_ENABLED=0 \
+      github.com/gaixianggeng/mimi-remote/experiments/tailcat/cmd/mimi-tailcat-experiment; do
+      grep -Fq "$expected_setting" <<<"$sidecar_metadata" || { echo "Linux Tailcat 构建信息不正确：$expected_setting。" >&2; exit 1; }
+    done
+    [[ "$(awk 'NR == 1 { print $2 }' <<<"$sidecar_metadata")" == "$sidecar_go_version" ]] \
+      || { echo "Linux Tailcat 工具链与 module 不一致。" >&2; exit 1; }
+    if [[ "$(go env GOHOSTOS)_$(go env GOHOSTARCH)" == "$platform" ]]; then
+      [[ "$("$temp_dir/$sidecar" version)" == "$archive_version" ]] \
+        || { echo "Linux Tailcat 运行版本不匹配。" >&2; exit 1; }
+      bash ./scripts/test-linux-tailcat-package.sh "$temp_dir/$sidecar"
+    fi
     [[ -x "$temp_dir/mimi-remote-tray" ]] || { echo 'Linux 托盘缺少执行权限。' >&2; exit 1; }
     tray_metadata="$(go version -m "$temp_dir/mimi-remote-tray")"
     for expected_setting in GOOS=linux "GOARCH=${platform##*_}" CGO_ENABLED=0; do

@@ -1,0 +1,91 @@
+package packaged_test
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"syscall"
+	"testing"
+	"time"
+
+	"tailscale.com/tstest/integration"
+)
+
+// Exercise the shipped executable with a local relay and disposable state.
+// No production relay, user configuration or installed service is involved.
+func TestPackagedTailcatStartsAndPairs(t *testing.T) {
+	binary := os.Getenv("MIMI_TEST_TAILCAT_BINARY")
+	if binary == "" {
+		t.Fatal("MIMI_TEST_TAILCAT_BINARY must point to the extracted Linux executable")
+	}
+	derpMap := integration.RunDERPAndSTUN(t, t.Logf, "127.0.0.1")
+	mapServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(derpMap)
+	}))
+	defer mapServer.Close()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ready")
+	}))
+	defer backend.Close()
+	state := t.TempDir()
+	control := filepath.Join(state, "control.sock")
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "managed-host", "--target", backend.Listener.Addr().String(),
+		"--port", "8787", "--state-dir", state, "--control", control, "--derpmap-url", mapServer.URL)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		if err := cmd.Wait(); err != nil {
+			t.Errorf("packaged sidecar did not stop cleanly: %v", err)
+		}
+	}()
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", control)
+	}}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 20 * time.Second}
+	var status struct {
+		Running       bool   `json:"running"`
+		Address       string `json:"address"`
+		PairAddress   string `json:"pair_address"`
+		PairPublicKey string `json:"pair_public_key"`
+		PairExpiresAt string `json:"pair_expires_at"`
+	}
+	for {
+		request, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://sidecar/status", nil)
+		response, err := client.Do(request)
+		if err == nil {
+			err = json.NewDecoder(response.Body).Decode(&status)
+			response.Body.Close()
+			if err == nil && response.StatusCode == http.StatusOK && status.Running && status.Address != "" {
+				break
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("packaged sidecar never became ready")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://sidecar/pair", nil)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || status.PairAddress == "" || status.PairPublicKey == "" || status.PairExpiresAt == "" {
+		t.Fatal("packaged sidecar did not return complete pairing information")
+	}
+}

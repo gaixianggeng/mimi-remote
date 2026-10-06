@@ -47,6 +47,8 @@ enum QRCodeScannerSubmissionResult: Equatable {
 }
 
 struct QRCodeScannerSheet: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     @State private var scannerFailure: QRCodeScannerFailure?
     @State private var isCameraReady = false
     @State private var isSubmittingCode = false
@@ -184,6 +186,7 @@ struct QRCodeScannerSheet: View {
                     if failure.recoveryActions.contains(.openSettings) {
                         Button(L10n.text("ui.go_to_system_settings"), action: openAppSettings)
                             .buttonStyle(.borderedProminent)
+                            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
                             .controlSize(.large)
                     }
                     if failure.recoveryActions.contains(.retryScanning) {
@@ -192,11 +195,13 @@ struct QRCodeScannerSheet: View {
                             scannerFailure = nil
                         }
                         .buttonStyle(.borderedProminent)
+                        .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
                         .controlSize(.large)
                     }
                     if failure.recoveryActions.count == 1 {
                         Button(L10n.text("ui.use_manual_connection_instead"), action: chooseManualConnection)
                             .buttonStyle(.borderedProminent)
+                            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
                             .controlSize(.large)
                     } else {
                         Button(L10n.text("ui.use_manual_connection_instead"), action: chooseManualConnection)
@@ -204,6 +209,8 @@ struct QRCodeScannerSheet: View {
                             .controlSize(.large)
                     }
                 }
+                // 显式配对主操作底色与前景：默认深色的主操作是浅灰，只能配黑字。
+                .tint(themeStore.tokens(for: colorScheme).primaryAction)
                 .frame(maxWidth: 320)
             }
             .foregroundStyle(.white)

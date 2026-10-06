@@ -153,10 +153,6 @@ func (c *Client) Notify(method string, params any) error {
 	return c.writeJSON(message)
 }
 
-func (c *Client) Notifications() <-chan Notification {
-	return c.notifications
-}
-
 func (c *Client) Diagnostics() Diagnostics {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -344,10 +340,6 @@ func (c *Client) writeServerResponse(id json.RawMessage, result any, rpcErr *RPC
 
 func defaultServerRequestHandler(ctx context.Context, req ServerRequest) (any, *RPCError) {
 	return failClosedResult(req, "no mobile approval client attached")
-}
-
-func FailClosedServerRequestResult(req ServerRequest, reason string) (any, *RPCError) {
-	return failClosedResult(req, reason)
 }
 
 func failClosedResult(req ServerRequest, reason string) (any, *RPCError) {

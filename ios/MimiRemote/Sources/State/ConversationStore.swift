@@ -408,22 +408,6 @@ final class ConversationStore: ObservableObject {
         return true
     }
 
-    func markSendingUserMessagesFailed(sessionID: String) {
-        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)] else {
-            return
-        }
-        var changed = false
-        for index in list.indices where list[index].role == .user && list[index].sendStatus == .sending {
-            list[index].sendStatus = .failed
-            list[index].updatedAt = Date()
-            changed = true
-        }
-        guard changed else {
-            return
-        }
-        replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
-    }
-
     func compactTurnPayloadAfterSendAccepted(clientMessageID: ClientMessageID, sessionID: String) {
         guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)],
               let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID),
@@ -484,24 +468,6 @@ final class ConversationStore: ObservableObject {
             sendStatus: .confirmed,
             revision: metadata?.revision
         ), sessionID: sessionID)
-    }
-
-    func resolveApproval(_ approval: ApprovalSummary, accepted: Bool, sessionID: String) {
-        let text = accepted ? L10n.format("ui.approval_approved_value", approval.title) : L10n.format("ui.approval_rejected_value", approval.title)
-        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)] else {
-            appendSystem(text, sessionID: sessionID, kind: .approval)
-            return
-        }
-        // 审批结果应该回写到原来的等待卡片上，避免时间线和详情里长期显示“等待审批”。
-        if let index = list.lastIndex(where: { message in
-            message.kind == .approval && message.content.contains(approval.title)
-        }) {
-            list[index].content = text
-            list[index].updatedAt = Date()
-            replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
-            return
-        }
-        appendSystem(text, sessionID: sessionID, kind: .approval)
     }
 
     func resolveLatestPendingApproval(sessionID: String) {
@@ -738,7 +704,12 @@ final class ConversationStore: ObservableObject {
                   !boundTurnID.isEmpty else { return index }
             return message.turnID == boundTurnID ? index : nil
         }
-        if let index = matchingStableIndex ?? matchingClientIndex {
+        let matchingLegacyUserIndex = legacyUserEchoIndex(
+            for: message,
+            eventCreatedAt: metadata.createdAt,
+            in: list
+        )
+        if let index = matchingStableIndex ?? matchingClientIndex ?? matchingLegacyUserIndex {
             let previous = list[index]
             list[index].stableID = stableID
             // 服务端 user item 回显可能早于或晚于 turn/start ACK。两条链路都要把
@@ -819,6 +790,80 @@ final class ConversationStore: ObservableObject {
             list.append(completedMessage)
             appendMessageWithIndex(completedMessage, list: list, sessionID: sessionID)
         }
+    }
+
+    private func legacyUserEchoIndex(
+        for message: AgentMessage,
+        eventCreatedAt: Date?,
+        in list: [ConversationMessage]
+    ) -> Int? {
+        guard message.role == .user,
+              message.clientMessageID == nil else {
+            return nil
+        }
+        let incomingText = normalizedUserEchoText(message.content)
+        let incomingCreatedAt = message.createdAt ?? eventCreatedAt ?? Date()
+        let candidates = list.indices.filter { index in
+            let local = list[index]
+            guard local.role == .user,
+                  local.clientMessageID != nil,
+                  local.turnID?.isEmpty != false,
+                  local.sendStatus != .confirmed,
+                  abs(local.createdAt.timeIntervalSince(incomingCreatedAt)) <= 10 * 60 else {
+                return false
+            }
+            // 老 Claude bridge 的首条完成事件可能缺 client_message_id，并把附件清单
+            // 包在正文中。用用户实际可见的文本对账，同时保留本地结构化图片载荷。
+            let localText = local.turnPayload?.textPrompt ?? local.content
+            guard normalizedUserEchoText(localText) == incomingText else {
+                return false
+            }
+            return !incomingText.isEmpty || legacyAttachmentEchoMatches(message.content, payload: local.turnPayload)
+        }
+        // 相同正文存在多个待确认发送时无法判断对应关系，宁可保留也不误吞真实消息。
+        return candidates.count == 1 ? candidates.first : nil
+    }
+
+    private func normalizedUserEchoText(_ content: String) -> String {
+        ConversationUserMessagePresentation.displayContent(from: content)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func legacyAttachmentEchoMatches(_ content: String, payload: CodexAppServerTurnPayload?) -> Bool {
+        guard let payload,
+              let header = ConversationUserMessagePresentation.hiddenFileMentionHeader(from: content) else {
+            return false
+        }
+        var names = header.split(separator: "\n").compactMap { line -> String? in
+            guard line.hasPrefix("## "), let separator = line.range(of: ": /", options: .backwards) else {
+                return nil
+            }
+            return String(line[line.index(line.startIndex, offsetBy: 3)..<separator.lowerBound])
+        }
+        var anonymousImageCount = 0
+        var namedAttachmentCount = 0
+        for input in payload.input {
+            switch input {
+            case .text(let text, _) where text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
+                continue
+            case .image:
+                anonymousImageCount += 1
+            case .localImage(let path, _):
+                guard let index = names.firstIndex(of: URL(fileURLWithPath: path).lastPathComponent) else { return false }
+                names.remove(at: index)
+                namedAttachmentCount += 1
+            case .uploadedFile(let file):
+                guard let index = names.firstIndex(of: file.name) else { return false }
+                names.remove(at: index)
+                namedAttachmentCount += 1
+            default:
+                return false
+            }
+        }
+        // data URL 没有文件名，只能以图片类型和数量对账；其余附件必须同名。
+        let imageExtensions: Set<String> = ["gif", "heic", "jpeg", "jpg", "png", "webp"]
+        return anonymousImageCount + namedAttachmentCount > 0 && names.count == anonymousImageCount &&
+            names.allSatisfy { imageExtensions.contains(URL(fileURLWithPath: $0).pathExtension.lowercased()) }
     }
 
     private func historyProjectedTwinIndex(for message: ConversationMessage, in list: [ConversationMessage]) -> Int? {
@@ -1918,7 +1963,7 @@ final class ConversationStore: ObservableObject {
 
     private func processMessageMergeKind(for kind: MessageKind) -> String? {
         switch kind {
-        case .reasoningSummary, .plan, .commandSummary, .fileChangeSummary:
+        case .reasoningSummary, .plan, .commandSummary, .fileChangeSummary, .context:
             return kind.rawValue
         case .message, .commentary, .approval, .userInput, .warning, .error:
             return nil

@@ -464,7 +464,7 @@ struct ConversationTimelineReducer {
             semanticKind = "assistant:\(message.kind.rawValue)"
         } else if message.role == .system {
             switch message.kind {
-            case .reasoningSummary, .plan, .commandSummary, .fileChangeSummary:
+            case .reasoningSummary, .plan, .commandSummary, .fileChangeSummary, .context:
                 semanticKind = "system:\(message.kind.rawValue)"
             case .message, .commentary, .approval, .userInput, .warning, .error:
                 return nil

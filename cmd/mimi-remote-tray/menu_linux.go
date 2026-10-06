@@ -18,6 +18,7 @@ type linuxMenuItem struct {
 	Action    string
 	Enabled   bool
 	Separator bool
+	IconData  []byte
 	Children  []linuxMenuItem
 }
 
@@ -30,6 +31,8 @@ type linuxTraySnapshot struct {
 	HasTailcat   bool
 	TailcatError string
 	UIError      string
+	InlineQR     bool
+	PairMenu     *linuxMenuPair
 }
 
 func (s linuxTraySnapshot) title() string {
@@ -90,6 +93,9 @@ func linuxMenuItems(s linuxTraySnapshot) []linuxMenuItem {
 		linuxMenuItem{ID: 92, Separator: true},
 		linuxMenuItem{ID: 109, Label: "退出托盘", Action: "quit", Enabled: true},
 	)
+	if s.InlineQR {
+		items = linuxPairMenuItems(items, s)
+	}
 	for i := range items {
 		items[i].Label = truncateUTF16Text(redactTrayText(items[i].Label), 150)
 	}
@@ -165,6 +171,9 @@ func menuProperties(item linuxMenuItem, names []string) map[string]dbus.Variant 
 	all := map[string]dbus.Variant{"label": dbus.MakeVariant(item.Label), "enabled": dbus.MakeVariant(item.Enabled), "visible": dbus.MakeVariant(true)}
 	if item.Separator {
 		all["type"] = dbus.MakeVariant("separator")
+	}
+	if len(item.IconData) > 0 {
+		all["icon-data"] = dbus.MakeVariant(item.IconData)
 	}
 	if len(item.Children) > 0 {
 		all["children-display"] = dbus.MakeVariant("submenu")

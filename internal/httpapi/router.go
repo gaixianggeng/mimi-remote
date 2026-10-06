@@ -19,11 +19,12 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
+	"github.com/gaixianggeng/mimi-remote/internal/hostinfo"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
 	"github.com/gaixianggeng/mimi-remote/internal/pushbridge"
-	"github.com/gaixianggeng/mimi-remote/internal/session"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
@@ -31,7 +32,6 @@ type Router struct {
 	cfg            config.Config
 	configPath     string
 	projects       *projects.Registry
-	sessions       *session.Manager
 	doctor         *doctor.Checker
 	auth           auth.Authenticator
 	version        string
@@ -48,6 +48,10 @@ type Router struct {
 	// tailscaleHostResolver 只缓存 MagicDNS 路由元数据。installationID 仍是唯一身份边界；
 	// 名称变化只会影响下一次候选连接，不会创建或合并 ConnectionProfile。
 	tailscaleHostLookup func(context.Context) tailscaleinfo.Host
+	// hostDeviceNameLookup 只负责 /api/version 的展示用设备名。Tailcat 与局域网宿主
+	// 没有 Tailscale 名称，客户端据此在用户未自定义名字时显示真实设备名。nil 或空值时
+	// 不宣告该字段，客户端继续按原有回退显示地址。
+	hostDeviceNameLookup func(context.Context) string
 	// upstreamReadiness 对高频 readyz 轮询做短 TTL + single-flight，避免每 300ms 都创建 WebSocket。
 	upstreamReadiness *appServerReadinessProbe
 	// runtimeStatus 只服务本机菜单栏。额度探测可能访问 OAuth/Keychain 和 provider，
@@ -105,13 +109,15 @@ type Router struct {
 	claudeObservers        map[string]*claudeApprovalObserver
 	// claudeObserverEpochs 让前台 attach 与断线 observer 安装共享同一个代际门。
 	// 新连接先递增代际，旧 handler 随后到达时就不能再发布 observer。
-	claudeObserverEpochs          map[string]uint64
-	gatewayHistoryBudgetMu        sync.Mutex
-	gatewayHistoryGlobalBudget    appServerGatewayHistoryBudget
-	claudeMu                      sync.Mutex
-	claudeProbe                   appServerBridgeProbe
-	activeClaudeBridge            int
-	claudeBridge                  *claudeBridgeSupervisor
+	claudeObserverEpochs       map[string]uint64
+	gatewayHistoryBudgetMu     sync.Mutex
+	gatewayHistoryGlobalBudget appServerGatewayHistoryBudget
+	claudeMu                   sync.Mutex
+	claudeProbe                appServerBridgeProbe
+	activeClaudeBridge         int
+	claudeBridge               *claudeBridgeSupervisor
+	// Harness 原生资源由独立 owner 关闭和限流，Router 只负责入口与组合。
+	harnessNative                 harnessNativeResources
 	tailcat                       tailcatSidecar
 	managedPairing                managedPairingService
 	tailcatLocalToken             string
@@ -125,16 +131,27 @@ type Router struct {
 	// TestFlight 发布会持续数分钟，使用内存任务保存当前进度，避免让移动端 HTTP 请求长时间挂起。
 	gitTestFlightMu   sync.Mutex
 	gitTestFlightJobs map[string]*gitTestFlightReleaseJob
-	shutdownOnce      sync.Once
+	// harnessNativeUpstream 是 /api/harness/rpc 的上游接缝。
+	//
+	// 生产路径留空：中继按请求从 cfg.DeepSeek 建连并认证。非空时完全替代真实连接，
+	// 供同包测试注入 Spy——被拒的调用必须证明"没有触达 Harness"，而这件事只能靠
+	// 一个可观测的替身来断言。
+	harnessNativeUpstream func(context.Context) (harnessNativeRPCUpstream, error)
+	// deepSeekCredential 在 Harness 重启换了启动 token 后，为受管连接换上新凭据。零值可用。
+	deepSeekCredential deepSeekCredentialRenewal
+	shutdownOnce       sync.Once
+	diagnosticLogs     DiagnosticLogController
 }
 
 // RouterOptions 只承载必须在构造时固定的进程级资源路径。
 // 空持久化路径保持纯内存行为，供普通测试和嵌入式调用使用；agentd 生产入口
 // 必须注入真实配置与私有状态路径。
 type RouterOptions struct {
-	ConfigPath   string
-	AppServerSSH appServerSSHTransport
-	tailcat      tailcatSidecar
+	ConfigPath             string
+	AppServerSSH           appServerSSHTransport
+	DiagnosticLogs         DiagnosticLogController
+	DiagnosticControlToken string
+	tailcat                tailcatSidecar
 	// managedPairing 只供同包测试注入；生产值使用官方控制面和本机 0600 状态。
 	managedPairing managedPairingService
 	// tailcatLocalToken 只供同包测试注入；生产值来自配置目录中的 0600 文件。
@@ -148,40 +165,11 @@ type appServerSSHTransport interface {
 	WebSocketDialer(time.Duration) (websocket.Dialer, error)
 }
 
-func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string) http.Handler {
-	handler, _ := NewRouterWithInstallationIDAndOptions(
-		cfg,
-		registry,
-		manager,
-		checker,
-		version,
-		"",
-		RouterOptions{},
-	)
-	return handler
-}
-
-// NewRouterWithInstallationID 为生产入口注入启动阶段已加载的稳定安装身份。
-// Router 只保留内存副本，确保高频 /api/version 探测不会读磁盘或连接 upstream。
-func NewRouterWithInstallationID(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, installationID string) http.Handler {
-	handler, _ := NewRouterWithInstallationIDAndOptions(
-		cfg,
-		registry,
-		manager,
-		checker,
-		version,
-		installationID,
-		RouterOptions{},
-	)
-	return handler
-}
-
 // NewRouterWithInstallationIDAndOptions 由拥有进程生命周期的入口使用。
 // 它返回 Router，确保调用方能关闭常驻 Claude bridge 等进程级资源。
 func NewRouterWithInstallationIDAndOptions(
 	cfg config.Config,
 	registry *projects.Registry,
-	manager *session.Manager,
 	checker *doctor.Checker,
 	version string,
 	installationID string,
@@ -204,7 +192,6 @@ func NewRouterWithInstallationIDAndOptions(
 		cfg:            cfg,
 		configPath:     options.ConfigPath,
 		projects:       registry,
-		sessions:       manager,
 		doctor:         checker,
 		installationID: installationID,
 		auth: auth.NewWithOptions(cfg.Auth.Token, cfg.DevInsecure, auth.Options{
@@ -232,6 +219,7 @@ func NewRouterWithInstallationIDAndOptions(
 		managedPairing:              managedPairing,
 		tailcatLocalToken:           tailcatLocalToken,
 		appServerSSH:                options.AppServerSSH,
+		diagnosticLogs:              options.DiagnosticLogs,
 	}
 	if cfg.Tailcat.Enabled {
 		go func() {
@@ -262,6 +250,7 @@ func NewRouterWithInstallationIDAndOptions(
 		RouteStorePath:  pushRouteStorePath(options.ConfigPath),
 	})
 	mux := http.NewServeMux()
+	r.registerLocalDiagnostics(mux, options.DiagnosticControlToken)
 	mux.HandleFunc("/healthz", r.healthz)
 	mux.HandleFunc("/api/health", r.healthz)
 	mux.HandleFunc("/api/pair/claim", r.pairingClaimHandler)
@@ -316,6 +305,13 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/app-server/history-media/", authed(http.HandlerFunc(r.appServerHistoryMediaHandler)))
 	mux.Handle("/api/app-server/history-output/", authed(http.HandlerFunc(r.appServerHistoryOutputHandler)))
 	mux.Handle("/api/app-server/ws", authed(http.HandlerFunc(r.appServerGatewayWS)))
+	// 原生 Harness 只读中继：与 app-server 网关并列的第三条通道。认证走同一条
+	// fail-closed 边界，协议兼容窗口也一并生效。
+	mux.Handle("/api/harness/rpc", authed(http.HandlerFunc(r.harnessNativeRPCHandler)))
+	// 原生 Harness 流中继：承载 $events / session/follow / session/control。
+	// 与 rpc 并列而非合并——HTTP 与 WebSocket 的失败语义不同，混在一个入口里
+	// 会让"这条错误来自哪条通道"变得难以判断。
+	mux.Handle("/api/harness/ws", authed(http.HandlerFunc(r.harnessNativeStreamHandler)))
 	return logging(limitAPIRequestBodies(mux), r.monitor), r
 }
 
@@ -327,6 +323,16 @@ func (r *Router) EnableTailscaleHostMetadata() {
 	r.tailscaleHostLookup = resolver.Lookup
 }
 
+// EnableHostDeviceName 宣告宿主设备名，供客户端在未自定义名字时作为默认显示名。
+// 与 Tailscale 元数据分开注入：Tailcat 和局域网宿主也必须有可读设备名。
+func (r *Router) EnableHostDeviceName() {
+	if r == nil || r.hostDeviceNameLookup != nil {
+		return
+	}
+	resolver := hostinfo.NewResolver(time.Minute)
+	r.hostDeviceNameLookup = resolver.Lookup
+}
+
 // Shutdown releases the long-lived runtimes the router started. Call it after
 // the HTTP server has drained: the resident Claude bridge spawns Claude Code
 // children of its own, and killing it earlier would cut turns that in-flight
@@ -336,6 +342,7 @@ func (r *Router) Shutdown() {
 		return
 	}
 	r.shutdownOnce.Do(func() {
+		r.harnessNative.shutdown()
 		r.shutdownCodexGateways()
 		if r.push != nil {
 			// 等在途通知投递结束并落盘定位记录，之后才拆运行时与临时目录。
@@ -375,12 +382,26 @@ func logging(next http.Handler, monitor *relayMonitor) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		if strings.HasPrefix(r.URL.Path, "/api/") && monitor != nil {
+		localDiagnostics := strings.HasPrefix(r.URL.Path, "/api/local/diagnostics/")
+		if strings.HasPrefix(r.URL.Path, "/api/") && monitor != nil && !localDiagnostics {
 			monitor.beginHTTP()
 		}
 		next.ServeHTTP(rec, r)
+		// 控制日志的请求不记录自身，清空后不会立刻被自己的 HTTP 记录填回。
+		if localDiagnostics {
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			duration := time.Since(start)
+			outcome := "succeeded"
+			if rec.status >= 400 {
+				// 未认证请求也可产生 4xx；只在用户临时排障时记录，避免挤掉故障证据。
+				outcome = "rejected"
+			}
+			if rec.status >= 500 {
+				outcome = "failed"
+			}
+			diagnosticlog.Record("http", outcome, diagnosticlog.Fields{StatusCode: rec.status, Duration: duration})
 			log.Printf("%s %s remote=%s host=%s status=%d bytes=%d duration=%s write_duration=%s write_calls=%d", r.Method, redactedRequestURI(r.URL), requestRemoteHost(r), r.Host, rec.status, rec.bytes, duration.Round(time.Millisecond), rec.writeDuration.Round(time.Millisecond), rec.writeCalls)
 			if monitor != nil {
 				monitor.recordHTTP(relayHTTPSample{
@@ -494,14 +515,19 @@ func (r *Router) versionHandler(w http.ResponseWriter, req *http.Request) {
 	if r.tailscaleHostLookup != nil {
 		host = r.tailscaleHostLookup(req.Context())
 	}
-	writeJSON(w, http.StatusOK, protocolcontract.CurrentVersionResponseWithTailscale(
+	response := protocolcontract.CurrentVersionResponseWithTailscale(
 		r.version,
 		r.installationID,
 		host.DNSName,
 		host.DeviceName,
 		r.capabilities.enabledNames(),
 		r.capabilities.statuses(),
-	))
+	)
+	// 设备名是纯展示的加法字段：读不到时保持省略，旧客户端与旧档案都不受影响。
+	if r.hostDeviceNameLookup != nil {
+		response.DeviceName = strings.TrimSpace(r.hostDeviceNameLookup(req.Context()))
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (r *Router) doctorHandler(w http.ResponseWriter, req *http.Request) {
@@ -522,7 +548,7 @@ func (r *Router) codexHistoryDebugHandler(w http.ResponseWriter, req *http.Reque
 		limit = 80
 	}
 	projectID := strings.TrimSpace(req.URL.Query().Get("project_id"))
-	writeJSON(w, http.StatusOK, codexhistory.Diagnose(r.projects, r.sessions.ListUnsorted(), projectID, limit))
+	writeJSON(w, http.StatusOK, codexhistory.Diagnose(r.projects, projectID, limit))
 }
 
 func (r *Router) codexHistoryDebugDisabledHandler(w http.ResponseWriter, req *http.Request) {

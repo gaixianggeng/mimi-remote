@@ -156,9 +156,10 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 	// 无 cwd 的 thread/list 仅用于受控全局发现。它的响应必须在
 	// observeUpstreamFrame 中逐条完成路径、仓库身份和 capability 裁剪，
 	// 不能作为普通“省略 cwd”透传。裁剪只依赖 cwd → 项目 / browse-root /
-	// git common-dir 的映射，与 runtime 无关，因此 Codex 与 Claude 同等适用。
+	// git common-dir 的映射，与 runtime 无关，因此所有已接入 runtime 同等适用。
 	allowsControlledGlobalList := method == "thread/list" &&
-		(runtimeID == "codex" || runtimeID == "claude")
+		(runtimeID == appServerRuntimeCodexID ||
+			runtimeID == appServerRuntimeClaudeID)
 	if requiresGatewayCWD(method) && !allowsControlledGlobalList {
 		if !validated.hasCWD {
 			return validated, fmt.Errorf("%s.cwd 必须来自 projects allowlist 或 browse_roots", method)
@@ -657,6 +658,7 @@ func hasApprovalPolicyNever(value any) bool {
 
 func gatewayAllowsNoApproval(runtimeID string, method string, params map[string]any) bool {
 	runtimeID = normalizeAppServerRuntimeID(runtimeID)
+	// Codex 与 Claude 同规则：只有显式完全访问才携带 approvalPolicy=never。
 	if runtimeID != "codex" && runtimeID != "claude" {
 		return false
 	}

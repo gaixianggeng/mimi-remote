@@ -26,7 +26,6 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
-	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
 const (
@@ -37,7 +36,6 @@ const (
 type testServer struct {
 	handler http.Handler
 	router  *Router
-	manager *session.Manager
 }
 
 // directWSTestTransport 只用于把旧 gateway 协议测试接到内存 WebSocket server。
@@ -109,7 +107,6 @@ func newTestServerWithConfig(t *testing.T, customize func(*config.Config)) testS
 			Bin: "/bin/cat",
 			Env: map[string]string{"TERM": "xterm-256color"},
 		},
-		Session: config.SessionConfig{OutputBufferBytes: 8 * 1024},
 		Projects: []config.ProjectConfig{{
 			ID:   "demo",
 			Name: "Demo",
@@ -123,14 +120,6 @@ func newTestServerWithConfig(t *testing.T, customize func(*config.Config)) testS
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := session.NewManager(session.Options{
-		CodexBin:     cfg.Codex.Bin,
-		DefaultArgs:  cfg.Codex.DefaultArgs,
-		Env:          cfg.Codex.Env,
-		OutputBuffer: cfg.Session.OutputBufferBytes,
-	})
-	t.Cleanup(manager.Shutdown)
-
 	checker := doctor.NewChecker("test", cfg, registry)
 	options := RouterOptions{}
 	if strings.HasPrefix(cfg.AppServer.SSHTarget, "ws://") || strings.HasPrefix(cfg.AppServer.SSHTarget, "wss://") {
@@ -139,7 +128,6 @@ func newTestServerWithConfig(t *testing.T, customize func(*config.Config)) testS
 	handler, router := NewRouterWithInstallationIDAndOptions(
 		cfg,
 		registry,
-		manager,
 		checker,
 		"test",
 		testInstallationID,
@@ -148,7 +136,6 @@ func newTestServerWithConfig(t *testing.T, customize func(*config.Config)) testS
 	return testServer{
 		handler: handler,
 		router:  router,
-		manager: manager,
 	}
 }
 
@@ -2361,7 +2348,7 @@ func TestManualWorktreeDeleteUsesCleanupCriticalSection(t *testing.T) {
 	}
 }
 
-func TestWorktreeCleanupRechecksSessionImmediatelyBeforeDelete(t *testing.T) {
+func TestWorktreeCleanupRechecksRunningStateImmediatelyBeforeDelete(t *testing.T) {
 	fixture := newWorktreeCleanupFixture(t, 4)
 	preview := requestWorktreeCleanup(t, fixture.server, worktreeCleanupRequest{})
 	var plan worktreeCleanupResponse
@@ -2369,25 +2356,11 @@ func TestWorktreeCleanupRechecksSessionImmediatelyBeforeDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := fixture.worktrees[0]
-	var running *session.Session
 	fixture.router.managedWorktreeCleanupDelete = func(ctx context.Context, path string, force bool, expected worktreeCleanupInstanceIdentity) (managedWorktree, error) {
-		var err error
-		running, err = fixture.server.manager.Create(session.CreateRequest{
-			Project: projects.Project{
-				ID: workspaceIDForRealPath(target.Path), Name: "Late Running Worktree", Path: target.Path, RealPath: target.Path,
-			},
-			Title: "late-running",
-		})
-		if err != nil {
-			return managedWorktree{}, err
-		}
+		// 预检通过之后、真正删除之前，才出现新的运行态。
+		registerGatewayThreadForTest(fixture.router, "late-thread", target.Path)
 		return fixture.router.deleteManagedWorktreeWithExpectedIdentityLocked(ctx, path, force, expected)
 	}
-	t.Cleanup(func() {
-		if running != nil {
-			_ = running.Stop()
-		}
-	})
 
 	dryRunFalse := false
 	execute := requestWorktreeCleanup(t, fixture.server, worktreeCleanupRequest{
@@ -2401,10 +2374,10 @@ func TestWorktreeCleanupRechecksSessionImmediatelyBeforeDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(result.DeletedPaths) != 0 || result.FailedPath != target.Path || result.Error == "" {
-		t.Fatalf("删除紧前新 session 必须阻止删除：%+v", result)
+		t.Fatalf("删除紧前新出现的运行态必须阻止删除：%+v", result)
 	}
 	if _, err := os.Stat(target.CheckoutPath); err != nil {
-		t.Fatalf("有新运行 session 的 checkout 必须保留：%v", err)
+		t.Fatalf("有新运行态的 checkout 必须保留：%v", err)
 	}
 }
 
@@ -2640,24 +2613,9 @@ func TestWorktreeCleanupRejectsInvalidExecutionContract(t *testing.T) {
 }
 
 func TestWorktreeCleanupBlocksRunningSession(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the session manager needs a Windows PTY backend")
-	}
 	fixture := newWorktreeCleanupFixture(t, 4)
 	target := fixture.worktrees[0]
-	running, err := fixture.server.manager.Create(session.CreateRequest{
-		Project: projects.Project{
-			ID:       workspaceIDForRealPath(target.Path),
-			Name:     "Running Worktree",
-			Path:     target.Path,
-			RealPath: target.Path,
-		},
-		Title: "running",
-	})
-	if err != nil {
-		t.Fatalf("创建运行会话失败：%v", err)
-	}
-	t.Cleanup(func() { _ = running.Stop() })
+	registerGatewayThreadForTest(fixture.router, "running-thread", target.Path)
 
 	preview := requestWorktreeCleanup(t, fixture.server, worktreeCleanupRequest{})
 	var plan worktreeCleanupResponse

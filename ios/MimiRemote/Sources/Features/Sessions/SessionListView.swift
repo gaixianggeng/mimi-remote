@@ -70,6 +70,31 @@ enum SessionListPresentationState: Equatable {
     case runtimeUnavailable(String)
     case loadFailed(String)
 
+    /// 正文此刻自己就在表达"进行中"。设备入口据此让位，同一屏不出现两处转圈。
+    /// 结论型状态（离线、失败、运行时不可用）不在其中——正文不表达它们。
+    var showsInPlaceConnectionProgress: Bool {
+        switch self {
+        case .connecting, .loading:
+            return true
+        case .content, .searching, .needsWorkspace, .noSessions, .noMatches,
+             .networkUnavailable, .runtimeUnavailable, .loadFailed:
+            return false
+        }
+    }
+
+    /// 正文在等内容到达：用整页居中的加载圆环表达，而不是塞进列表第一行。
+    /// 它和 `showsInPlaceConnectionProgress` 不是一回事——搜索中同样要居中等待，
+    /// 但搜索不是连接进度，顶栏设备徽标照常出现。
+    var showsCenteredLoading: Bool {
+        switch self {
+        case .connecting, .loading, .searching:
+            return true
+        case .content, .needsWorkspace, .noSessions, .noMatches,
+             .networkUnavailable, .runtimeUnavailable, .loadFailed:
+            return false
+        }
+    }
+
     static func resolve(
         hasVisibleSessions: Bool,
         hasOpenedWorkspace: Bool,
@@ -131,16 +156,21 @@ struct SessionListView: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
-    @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// 搜索框文字与图标先跟随系统字号，再交给 ThemeStore 叠应用内比例；
+    /// 紧凑布局在辅助功能字号下也用这一枚自绘搜索框，不能写死字号。
+    @ScaledMetric(relativeTo: .subheadline) private var searchFieldTextSize: CGFloat = 15
+    @ScaledMetric(relativeTo: .subheadline) private var searchFieldGlyphSize: CGFloat = 14
     /// 底部浮着 Tab 栏时新建留在顶栏，否则改用右下角浮起按钮。
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
     @StateObject private var lifecycleCoordinator = SessionListLifecycleCoordinator()
     @State private var selectedWorkspaceID = "all"
     @State private var selectedStatus: SessionLibraryStatusFilter = .all
     @State private var keyboardSelectionID: SessionID?
+    @State private var isNativeDirectoryListVisible = false
     /// 列表实际可用宽度。nil 表示还没测到，此时暂用 Shell 注入的页面身份作为种子。
     @State private var measuredContentWidth: CGFloat?
     @FocusState private var hasListKeyboardFocus: Bool
@@ -159,6 +189,7 @@ struct SessionListView: View {
         // 同一轮 body 求值内复用同一份轻量索引投影，避免每个 Section 的条件和内容
         // 访问都重新触发全量 filter / merge / sort。生命周期输入仍由当前快照驱动。
         let visibleSessions = self.visibleSessions
+        let dominantProject = SessionListPresentation.dominantIdentity(visibleSessions.map(\.project))
         let sessionPartition = makeSessionPartition(visibleSessions: visibleSessions)
         let historyDateGroups = makeHistoryDateGroups(sessionPartition: sessionPartition)
         let lifecycleInput = makeLifecycleInput(visibleSessions: visibleSessions)
@@ -180,7 +211,7 @@ struct SessionListView: View {
                     sessionSection(
                         title: L10n.text("ui.in_progress"),
                         sessions: sessionPartition.active,
-                        isActiveSection: true,
+                        dominantProject: dominantProject,
                         tokens: tokens
                     )
                 }
@@ -189,7 +220,7 @@ struct SessionListView: View {
                     sessionSection(
                         title: L10n.text("ui.pinned"),
                         sessions: sessionPartition.pinned,
-                        isActiveSection: false,
+                        dominantProject: dominantProject,
                         tokens: tokens
                     )
                 }
@@ -198,15 +229,24 @@ struct SessionListView: View {
                     sessionSection(
                         title: dateBucketTitle(group.bucket),
                         sessions: group.sessions,
-                        isActiveSection: false,
+                        dominantProject: dominantProject,
                         tokens: tokens
                     )
                 }
-            } else {
+            } else if !presentationState.showsCenteredLoading {
                 sessionListUnavailableContent(state: presentationState, tokens: tokens)
                     .frame(maxWidth: .infinity)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
+            }
+
+            if sessionStore.isSessionSearchActive, let notice = sessionStore.remoteSessionSearchNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(tokens.secondaryText)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .accessibilityIdentifier("sessions.search.partialFailure")
             }
 
             // Gateway 过滤后当前页可能没有可见结果但仍给出 nextCursor，入口必须独立于空态展示。
@@ -223,7 +263,7 @@ struct SessionListView: View {
                         }
                         Text(sessionStore.isLoadingMoreSessionSearchResults ? L10n.text("ui.searching_continues") : L10n.text("ui.continue_searching"))
                     }
-                    .font(themeStore.uiFont(size: 13, weight: .medium))
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
                 }
@@ -251,9 +291,6 @@ struct SessionListView: View {
         // 与侧栏 gutter、会话画布同底，宽屏下三块相邻面不出现同亮度色差。
         .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .workbenchClearBottomScrollEdge()
-        // 只清除原生搜索模式下 List 重复的自动留白；负边距会把首行推进
-        // 粘性标题的裁切区域，因此必须让内容继续停留在系统安全边界内。
-        .sessionListNativeSearchTopMargin(isEnabled: !showsToolbarSearchField)
         // 只有按钮真的浮在内容之上时才多让一段，最后一条会话才能滚到按钮之上被读到。
         .contentMargins(
             .bottom,
@@ -272,7 +309,7 @@ struct SessionListView: View {
         .scrollDismissesKeyboard(.interactively)
         .simultaneousGesture(
             TapGesture().onEnded {
-                // 原生 navigationBarDrawer 和宽屏顶栏搜索都位于 List 外；列表内任意点击
+                // 紧凑布局的顶部搜索条和宽屏顶栏搜索都位于 List 外；列表内任意点击
                 // 都可以安全结束第一响应者，同时不清空查询词或改变当前搜索结果。
                 dismissSessionSearchKeyboard()
             }
@@ -289,18 +326,26 @@ struct SessionListView: View {
             )
         }
         .animation(sessionRegroupAnimation, value: lifecycleCoordinator.membership)
+        // iPad 紧凑布局的设备入口浮在 TabView 上、归 Shell 所有；它要不要让位只有这里知道。
+        .workbenchRootShowsConnectionProgress(presentationState.showsInPlaceConnectionProgress)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .background { SessionSearchPresentationReporter() }
-        .sessionListNativeSearchable(
-            isEnabled: !showsToolbarSearchField,
-            text: $sessionStore.sessionSearchQuery,
-            prompt: Text(L10n.text("ui.search_session")),
-            tintColor: tokens.primaryText,
-            toolbarSurface: tokens.workbenchCanvasBackground,
-            colorScheme: colorScheme,
-            onSubmit: dismissSessionSearchKeyboard
-        )
+        // 紧凑布局不再用系统 `.searchable`：iOS 26 给它套一层 Liquid Glass 外壳（高光描边、
+        // 投影，深色下是一整条偏亮灰块），外壳没有公开 API 可换，成了页面顶部最重的元素（#564）。
+        // 改为与宽屏顶栏同一枚扁平搜索框，固定在列表上方。
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !showsToolbarSearchField {
+                sessionSearchField(tokens: tokens, fillsWidth: true)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 4)
+                    .padding(.bottom, 8)
+                    .background(tokens.workbenchCanvasBackground)
+            }
+        }
+        // 挂在 safeAreaInset 之后：居中范围包含顶部搜索框，与工作区页（含胶囊行）同一块区域。
+        .overlay {
+            sessionListCenteredLoading(state: presentationState)
+        }
         .toolbar {
             if showsToolbarSearchField {
                 if #available(iOS 26.0, *) {
@@ -319,6 +364,8 @@ struct SessionListView: View {
                 workbenchChromeToolbarItem(placement: .topBarLeading) {
                     HostSwitcherMenu(
                         presentation: .toolbar,
+                        // 列表正文已经在讲"正在连接/正在加载"，顶栏不再叠第二枚转圈。
+                        suppressesProgressBadge: presentationState.showsInPlaceConnectionProgress,
                         manageConnections: manageConnections
                     )
                     .workbenchToolbarChromeCircle(tokens: tokens)
@@ -345,24 +392,45 @@ struct SessionListView: View {
             }
         }
         .task {
-            await sessionStore.refreshSessionLibraryIndex()
+            // 切 Tab 回来也会触发；索引在轮询间隔内刷新过就不再重拉。Host 切换会清空
+            // 刷新时间，下拉和菜单刷新仍走强制的权威刷新。
+            await sessionStore.refreshSessionLibraryIndexIfStale()
         }
         .onAppear {
             synchronizeLifecycle(lifecycleInput)
+            isNativeDirectoryListVisible = true
+            sessionStore.updateNativeHarnessDirectoryVisibility(
+                isListVisible: true,
+                isForeground: scenePhase == .active
+            )
+        }
+        .onDisappear {
+            isNativeDirectoryListVisible = false
+            sessionStore.updateNativeHarnessDirectoryVisibility(
+                isListVisible: false,
+                isForeground: false
+            )
+        }
+        .onChange(of: scenePhase) { _, phase in
+            sessionStore.updateNativeHarnessDirectoryVisibility(
+                isListVisible: isNativeDirectoryListVisible,
+                isForeground: isNativeDirectoryListVisible && phase == .active
+            )
         }
         .onChange(of: lifecycleInput) { _, newInput in
             synchronizeLifecycle(newInput)
         }
     }
 
-    private func sessionSearchField(tokens: ThemeTokens) -> some View {
+    /// 会话搜索框。宽屏放在顶栏（定宽），紧凑布局铺满列表上方（`fillsWidth`）；两处同一种扁平样式。
+    private func sessionSearchField(tokens: ThemeTokens, fillsWidth: Bool = false) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .font(themeStore.uiFont(size: searchFieldGlyphSize, weight: .semibold))
                 .foregroundStyle(tokens.tertiaryText)
 
             TextField(L10n.text("ui.search_session"), text: $sessionStore.sessionSearchQuery)
-                .font(themeStore.uiFont(size: 14))
+                .font(themeStore.uiFont(size: searchFieldTextSize))
                 .foregroundStyle(tokens.primaryText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -376,7 +444,7 @@ struct SessionListView: View {
                     sessionStore.sessionSearchQuery = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(themeStore.uiFont(size: 13, weight: .semibold))
+                        .font(themeStore.uiFont(size: searchFieldGlyphSize, weight: .semibold))
                         .symbolRenderingMode(.hierarchical)
                         .frame(width: 28, height: 28)
                 }
@@ -386,8 +454,12 @@ struct SessionListView: View {
             }
         }
         .padding(.horizontal, 12)
-        .frame(height: 36)
-        .frame(minWidth: 260, idealWidth: 360, maxWidth: 420)
+        .frame(minHeight: 36)
+        .frame(
+            minWidth: fillsWidth ? nil : 260,
+            idealWidth: fillsWidth ? nil : 360,
+            maxWidth: fillsWidth ? .infinity : 420
+        )
         .background(tokens.surface.opacity(0.74), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -486,7 +558,7 @@ struct SessionListView: View {
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .shadow(
-            color: tokens.primaryAction.opacity(colorScheme == .dark ? 0.34 : 0.28),
+            color: tokens.primaryActionShadow,
             radius: 12,
             y: 5
         )
@@ -614,39 +686,38 @@ struct SessionListView: View {
         )
     }
 
+    /// 整页居中的等待态。铺在列表与顶部搜索框之上（而不是列表行里），
+    /// 圆环中心才对准屏幕正中，并与工作区页的连接过渡落在同一点。
+    @ViewBuilder
+    private func sessionListCenteredLoading(state: SessionListPresentationState) -> some View {
+        switch state {
+        case .connecting:
+            ConnectionWarmUpView()
+        case .loading:
+            LoadingStateView(message: L10n.text("ui.loading_sessions"))
+                .accessibilityIdentifier("sessions.loading")
+        case .searching:
+            LoadingStateView(message: L10n.text("ui.searching_historical_conversations"))
+                .accessibilityIdentifier("sessions.search.initialLoading")
+        case .content, .needsWorkspace, .noSessions, .noMatches,
+             .networkUnavailable, .runtimeUnavailable, .loadFailed:
+            EmptyView()
+        }
+    }
+
     @ViewBuilder
     private func sessionListUnavailableContent(
         state: SessionListPresentationState,
         tokens: ThemeTokens
     ) -> some View {
         switch state {
-        case .content:
+        case .content, .connecting, .loading, .searching:
+            // 等待态由 `sessionListCenteredLoading` 铺在整页上表达。
             EmptyView()
-        case .loading:
-            VStack(spacing: 10) {
-                ProgressView()
-                Text(L10n.text("ui.loading_sessions"))
-                    .font(themeStore.uiFont(size: 13, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-            }
-            .padding(.vertical, 32)
-            .accessibilityIdentifier("sessions.loading")
-        case .connecting:
-            ConnectionWarmUpView(rowCount: 4)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
-        case .searching:
-            VStack(spacing: 10) {
-                ProgressView()
-                Text(L10n.text("ui.searching_historical_conversations"))
-                    .font(themeStore.uiFont(size: 13, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-            }
-            .padding(.vertical, 24)
-            .accessibilityIdentifier("sessions.search.initialLoading")
         case .needsWorkspace:
             ContentUnavailableView {
                 Label(L10n.text("ui.no_workspace_has_been_opened_yet"), systemImage: "folder.badge.plus")
+                    .accessibilityIdentifier("sessions.empty.needsWorkspace")
             } description: {
                 Text(L10n.text("ui.open_a_workspace_to_load_its_sessions"))
             } actions: {
@@ -654,11 +725,11 @@ struct SessionListView: View {
                     onOpenWorkspaces?()
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(tokens.primaryActionForeground)
                 .controlSize(.large)
                 .tint(tokens.primaryAction)
                 .accessibilityIdentifier("sessions.empty.openWorkspaces")
             }
-            .accessibilityIdentifier("sessions.empty.needsWorkspace")
         case .noSessions:
             ContentUnavailableView {
                 Label(L10n.text("ui.no_sessions_yet"), systemImage: "bubble.left.and.bubble.right")
@@ -669,6 +740,7 @@ struct SessionListView: View {
                     presentNewSession(source: nil)
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(tokens.primaryActionForeground)
                 .controlSize(.large)
                 .tint(tokens.primaryAction)
             }
@@ -717,6 +789,7 @@ struct SessionListView: View {
         } actions: {
             Button(L10n.text("ui.try_again"), action: retrySessionList)
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(tokens.primaryActionForeground)
                 .controlSize(.large)
                 .tint(tokens.primaryAction)
                 .accessibilityIdentifier("sessions.empty.retry")
@@ -736,19 +809,21 @@ struct SessionListView: View {
     private func sessionSection(
         title: String,
         sessions: [AgentSession],
-        isActiveSection: Bool,
+        dominantProject: String?,
         tokens: ThemeTokens
     ) -> some View {
         Section {
-            sessionRows(sessions, isActiveSection: isActiveSection, tokens: tokens)
+            sessionRows(
+                sessions,
+                dominantProject: dominantProject,
+                tokens: tokens
+            )
         } header: {
             Text(title)
-                .font(themeStore.uiFont(size: 11, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText)
-                .textCase(nil)
+                .pageSectionHeaderStyle()
                 .accessibilityAddTraits(.isHeader)
                 // 与工作区同一条规则：小节标题对齐前导列的左缘。
-                // 会话 tab 的前导列是项目图标，本来就每行都有，不需要兜底字形。
+                // 会话 tab 的前导列是来源图标，本来就每行都有，不需要兜底字形。
                 .listRowInsets(
                     .init(
                         top: 0,
@@ -763,28 +838,13 @@ struct SessionListView: View {
     @ViewBuilder
     private func sessionRows(
         _ sessions: [AgentSession],
-        isActiveSection: Bool,
+        dominantProject: String?,
         tokens: ThemeTokens
     ) -> some View {
-        let profileID = appStore.activeHostScope.profileID
-        let projectIcons = workspaceAppearanceStore.projectIconContents(
-            profileID: profileID,
-            projectIDs: sessionStore.sidebarProjects.map(\.id)
-        )
-
-        ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
-            let previousProjectID = index > sessions.startIndex
-                ? sessions[index - 1].projectID
-                : nil
-            let startsProjectRun = previousProjectID != session.projectID
-            let projectIcon = projectIcons[session.projectID]
-                ?? workspaceAppearanceStore.projectIconContent(
-                    profileID: profileID,
-                    projectID: session.projectID
-                )
+        ForEach(sessions, id: \.id) { session in
             let foregroundActivity = sessionStore.foregroundActivity(for: session.id)
             let isUnread = sessionStore.isHistorySessionUnread(session)
-            let showsNeutralHistoryStatus = isActiveSection && !session.isRunning
+            let usesWideIPadRow = UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table
 
             Button {
                 dismissSessionSearchKeyboard()
@@ -802,12 +862,15 @@ struct SessionListView: View {
                     isUnread: isUnread,
                     density: rowDensity,
                     searchSnippet: sessionStore.sessionSearchSnippet(for: session.id),
-                    projectIcon: projectIcon,
-                    // 会话 tab 是所有项目的汇集区：前导槽放项目图标，回答"这条属于哪个项目"。
-                    leadingSlot: .projectIcon,
-                    showsProjectAnchor: startsProjectRun,
-                    // 滚动冻结期间已结束的会话仍留在“进行中”原位，必须显式展示最新终态。
-                    showsNeutralHistoryStatus: showsNeutralHistoryStatus
+                    // iPhone 普通行保持单行；iPad 大字与 Mac Catalyst 仍需项目名区分会话。
+                    projectIdentity: UIDevice.current.userInterfaceIdiom != .phone && selectedWorkspaceID == "all"
+                        ? SessionListPresentation.projectIdentityToDisplay(
+                            session.project,
+                            dominant: dominantProject
+                        ) : nil,
+                    leadingSlot: .runtimeIcon,
+                    // iPad 宽列保留普通摘要；窄屏只在搜索命中或跨项目时显示第二行。
+                    showsSessionPreview: usesWideIPadRow
                 )
                 .contentShape(Rectangle())
             }
@@ -819,7 +882,10 @@ struct SessionListView: View {
                     status: session.displayStatus(foregroundActivity: foregroundActivity),
                     sessionStatus: session.status,
                     isUnread: isUnread,
-                    showsNeutralHistoryStatus: showsNeutralHistoryStatus
+                    showsNeutralHistoryStatus: false,
+                    statusIsVisible: false,
+                    runtime: SessionRuntimePresentation(session: session).title,
+                    identity: "\(L10n.text("ui.project")) \(session.project)"
                 )
             )
             .accessibilityIdentifier("sessions.row.\(session.id)")
@@ -907,7 +973,7 @@ struct SessionListView: View {
     private func activeFilterChip(tokens: ThemeTokens) -> some View {
         HStack(spacing: 8) {
             Text(activeFilterTitle)
-                .font(themeStore.uiFont(size: 12, weight: .semibold))
+                .font(themeStore.uiFont(.caption, weight: .semibold))
                 .lineLimit(1)
 
             Button {
@@ -1238,66 +1304,5 @@ struct SessionRenameSheet: View {
                 dismiss()
             }
         }
-    }
-}
-
-private extension View {
-    @ViewBuilder
-    func sessionListNativeSearchTopMargin(isEnabled: Bool) -> some View {
-        if isEnabled {
-            contentMargins(.top, 0, for: .scrollContent)
-        } else {
-            self
-        }
-    }
-
-    @ViewBuilder
-    func sessionListNativeSearchable(
-        isEnabled: Bool,
-        text: Binding<String>,
-        prompt: Text,
-        tintColor: Color,
-        toolbarSurface: Color,
-        colorScheme: ColorScheme,
-        onSubmit: @escaping () -> Void
-    ) -> some View {
-        if isEnabled {
-            searchable(
-                text: text,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: prompt
-            )
-            // 紧凑布局保留完整的系统搜索框，不再缩成会触发展开转场的第三个工具按钮。
-            .tint(tintColor)
-            // 明确给系统搜索栏传递主题的前景/底色，避免快照宿主把浅色模式
-            // 的放大镜和 prompt 渲染成白色；深色主题仍由系统自动反转。
-            .toolbarBackground(toolbarSurface, for: .navigationBar)
-            .toolbarColorScheme(colorScheme, for: .navigationBar)
-            .onSubmit(of: .search, onSubmit)
-        } else {
-            self
-        }
-    }
-}
-
-
-/// 把系统搜索框的激活态上报给 `SessionStore`，供 Shell 决定是否收起浮层设备入口。
-///
-/// 只读 `\.isSearching`，**不要**改用 `.searchable(isPresented:)` 的双向绑定：
-/// 那样我们会反向驱动系统的搜索状态，反复激活/取消几次后会卡在已激活，
-/// 表现为顶部 Tab 栏收起后不再还回来。
-private struct SessionSearchPresentationReporter: View {
-    @Environment(\.isSearching) private var isSearching
-    @EnvironmentObject private var sessionStore: SessionStore
-
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .allowsHitTesting(false)
-            .onAppear { sessionStore.isSessionSearchPresented = isSearching }
-            .onDisappear { sessionStore.isSessionSearchPresented = false }
-            .onChange(of: isSearching) { _, newValue in
-                sessionStore.isSessionSearchPresented = newValue
-            }
     }
 }

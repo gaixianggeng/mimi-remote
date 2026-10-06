@@ -29,6 +29,9 @@ struct UnifiedWorkbenchShell: View {
     )
     @State private var didRestoreFloatingSidebarVisibility = false
     @State private var sheetPresentationState = WorkbenchSheetPresentationState()
+    /// 横幅的「重新配对」打开设置 sheet 时，要直接落到设备页并弹出扫码页（#554）。
+    /// 只对那一次呈现出 true，sheet 关闭时复位，普通打开设置不受影响。
+    @State private var settingsSheetOpensRepair = false
     @State private var inspectorPresentationState = InspectorPresentationState()
     @State private var sessionActionPresentation: SessionActionPresentation?
     @State private var transcriptPresentation = ConversationTranscriptPresentation()
@@ -89,7 +92,10 @@ struct UnifiedWorkbenchShell: View {
                         layout: layout
                     )
                 case .settings:
-                    SettingsView(isInitialSetup: false)
+                    SettingsView(
+                        isInitialSetup: false,
+                        opensConnectionForRepair: settingsSheetOpensRepair
+                    )
                 }
             }
             .onAppear {
@@ -178,6 +184,7 @@ struct UnifiedWorkbenchShell: View {
 
     private func dismissSheet() {
         // 关闭后必须清空来源，下一次键盘、恢复或程序化展示才能安全走 fallback。
+        settingsSheetOpensRepair = false
         sheetPresentationState.dismiss()
     }
 
@@ -321,6 +328,7 @@ struct UnifiedWorkbenchShell: View {
                 WorkbenchFloatingSidebarRevealButton(tokens: tokens) {
                     toggleFloatingSidebarVisibility()
                 }
+                .avoidingWindowControls()
                 .padding(.leading, WorkbenchSidebarSurfaceMetrics.outerInset)
                 // 工作区会话详情已有 leading 返回按钮；侧栏关闭时把恢复入口放到导航栏下方。
                 // 只横向移动仍会落在 NavigationBar 的命中表面内，视觉分开但按钮不可点击。
@@ -539,9 +547,13 @@ struct UnifiedWorkbenchShell: View {
             Spacer(minLength: 8)
 
             Button(L10n.text("ui.re_pair")) {
+                // 文案承诺的是「重新扫描二维码」，就直接把用户带到扫码页，
+                // 而不是丢在设置首页让他自己再找两层（#554）。
+                settingsSheetOpensRepair = true
                 presentSheet(.settings)
             }
             .buttonStyle(.borderedProminent)
+            .foregroundStyle(tokens.primaryActionForeground)
             .controlSize(.small)
             .accessibilityIdentifier("connection.repairPairing")
         }
@@ -697,7 +709,7 @@ struct UnifiedWorkbenchShell: View {
                             open(.sessions, layout: layout)
                         } label: {
                             Text(L10n.format("ui.more_sessions_count", section.overflowCount))
-                                .font(themeStore.uiFont(size: 11, weight: .medium))
+                                .font(themeStore.uiFont(.footnote, weight: .medium))
                                 .foregroundStyle(tokens.secondaryText)
                                 .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
                                 .contentShape(Rectangle())
@@ -709,7 +721,7 @@ struct UnifiedWorkbenchShell: View {
                     }
                 } header: {
                     Text("\(sidebarSectionTitle(section.kind)) \(section.sessions.count + section.overflowCount)")
-                        .textCase(nil)
+                        .pageSectionHeaderStyle()
                 }
             }
         }
@@ -722,7 +734,7 @@ struct UnifiedWorkbenchShell: View {
                 : 0,
             for: .scrollContent
         )
-        .environment(\.defaultMinListRowHeight, 34)
+        .environment(\.defaultMinListRowHeight, 40)
         // 覆盖式侧栏可能只按 List 的理想内容高度提案；显式占用剩余空间后列表自行滚动。
         .frame(maxHeight: .infinity)
     }
@@ -917,6 +929,9 @@ struct UnifiedWorkbenchShell: View {
             icon: icon,
             isSelected: isSelected,
             tokens: tokens,
+            accessibilityIdentifier: destination == .sessions
+                ? "sidebar.sessions"
+                : "sidebar.workspaces",
             action: { open(destination, layout: layout) }
         )
     }
@@ -1031,8 +1046,7 @@ struct UnifiedWorkbenchShell: View {
                 get: {
                     workspaceRuntimeSelection.resolvedRuntime(
                         preferredRuntime: .stored(preferredWorkspaceRuntimeRawValue),
-                        codexChannelAvailable: sessionStore.isCodexRuntimeChannelAvailable,
-                        claudeChannelAvailable: sessionStore.isClaudeRuntimeChannelAvailable
+                        availableRuntimeProviders: sessionStore.availableRuntimeProviders
                     )
                 },
                 set: { workspaceRuntimeSelection.manualRuntime = $0 }
@@ -1355,6 +1369,11 @@ struct UnifiedWorkbenchShell: View {
 #if DEBUG
         guard !didApplyDebugLaunchRoute else { return }
         let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--debug-show-repair-banner"),
+           appStore.debugLaunchConfiguration.seedsStoreScreenshotUI {
+            // 只用内存中的演示档案走横幅点击链路，不触碰真实配对凭据。
+            appStore.markCredentialsInvalid()
+        }
         // App Store 截图需要在 Simulator 与真机上得到完全相同的页面状态。
         // 这些入口只存在于 Debug 构建，不改变正常启动、恢复或 Release 路由。
         if arguments.contains("--debug-open-devices") {
@@ -1822,26 +1841,4 @@ struct UnifiedWorkbenchShell: View {
         }
     }
 
-    private var connectionSubtitle: String {
-        if appStore.requiresRePairing {
-            return L10n.text("ui.need_to_re_pair")
-        }
-        if sessionStore.isNetworkUnavailable {
-            return L10n.text("ui.the_network_is_unavailable_waiting_for_automatic_reconnection")
-        }
-        return sessionStore.webSocketStatus == .connected ? L10n.text("ui.mac_is_connected") : L10n.text("ui.remote_development_workbench")
-    }
-
-    private func connectionTone(tokens: ThemeTokens) -> Color {
-        if sessionStore.isNetworkUnavailable, !appStore.requiresRePairing {
-            return tokens.warning
-        }
-        switch sessionStore.webSocketStatus {
-        case .connected: return tokens.success
-        case .connecting: return tokens.warning
-        case .failed: return .red
-        case .terminated: return .red
-        case .disconnected: return tokens.tertiaryText
-        }
-    }
 }

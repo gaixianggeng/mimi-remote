@@ -1,6 +1,26 @@
 import SwiftUI
 import UIKit
 
+enum ForegroundResumeLifecycleAction: Equatable {
+    case ignore
+    case cancel
+    case start
+
+    static func resolve(scenePhase: ScenePhase, resumeInFlight: Bool) -> Self {
+        switch scenePhase {
+        case .background:
+            return .cancel
+        case .active:
+            return resumeInFlight ? .ignore : .start
+        case .inactive:
+            // 控制中心、系统弹窗等短暂 inactive 不代表进入后台，不能打断正在恢复的隧道。
+            return .ignore
+        @unknown default:
+            return .ignore
+        }
+    }
+}
+
 struct RootView: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
@@ -21,7 +41,7 @@ struct RootView: View {
     @State private var hasCompletedInitialBootstrap = false
     @State private var workbenchRouteRevision: UInt64 = 0
     @State private var activeRestorationProfileID: String?
-    /// 严格表示“后台之后还欠一次 Tailcat 重启”；它不再是通知闸门的条件，
+    /// 严格表示“后台之后还欠一次 Tailcat 健康恢复”；它不再是通知闸门的条件，
     /// 只保证下一次进入前台仍会重试恢复。
     @State private var needsTailcatRecoveryAfterBackground = false
     @State private var foregroundResumeTask: Task<Void, Never>?
@@ -67,6 +87,8 @@ struct RootView: View {
             migrateLegacyWorkspaceAppearance()
         }
         .task {
+            AppDiagnostics.record(stage: .lifecycle, result: .started, reason: .startup)
+            AppDiagnostics.maintain()
             restoreActiveHostNavigationIfNeeded()
             // 冷启动时场景可能已经激活而 onChange 不再触发；先把当前前台状态登记进闸门镜像。
             foregroundResume.observeScene(active: scenePhase == .active)
@@ -186,19 +208,34 @@ struct RootView: View {
             // 先登记前台状态再决定是否恢复：闸门读的是这份镜像，保证“场景已激活”和
             // “恢复进行中”在同一次回调里一起生效，中间没有可被提前放行的帧。
             foregroundResume.observeScene(active: phase == .active)
-            foregroundResumeTask?.cancel()
-            foregroundResumeTask = nil
-            if phase == .background {
+            switch ForegroundResumeLifecycleAction.resolve(
+                scenePhase: phase,
+                resumeInFlight: foregroundResume.isInFlight
+            ) {
+            case .ignore:
+                return
+            case .cancel:
+                foregroundResumeTask?.cancel()
+                foregroundResumeTask = nil
+                if let generation = foregroundResume.inFlightGeneration {
+                    // 后台同步结束旧代次；否则快速回前台会误把已取消任务当成仍在恢复而漏启动。
+                    _ = foregroundResume.finish(
+                        generation: generation,
+                        outcome: .cancelled,
+                        profileID: appStore.activeConnectionProfileID
+                    )
+                }
                 needsTailcatRecoveryAfterBackground = true
                 persistActiveHostRestoration()
                 hostStatusStore.cancel()
                 sessionStore.suspendForBackground()
                 appStore.suspendCredentialsForBackground()
                 return
+            case .start:
+                break
             }
-            guard phase == .active else {
-                return
-            }
+            AppDiagnostics.record(stage: .lifecycle, result: .received, reason: .foreground)
+            AppDiagnosticsSettingsController.shared.refreshForForeground()
             let shouldRecoverTailcat = needsTailcatRecoveryAfterBackground
             let generation = foregroundResume.begin()
             foregroundResumeTask = Task {
@@ -207,7 +244,13 @@ struct RootView: View {
                 // 但被更新任务顶掉的旧任务不能清掉新任务的标记，代次在 tracker 里把关。
                 let profileID = appStore.activeConnectionProfileID
                 defer {
-                    foregroundResume.finish(generation: generation, outcome: outcome, profileID: profileID)
+                    if foregroundResume.finish(
+                        generation: generation,
+                        outcome: outcome,
+                        profileID: profileID
+                    ) {
+                        foregroundResumeTask = nil
+                    }
                 }
                 outcome = await performForegroundResume(recoverTailcat: shouldRecoverTailcat)
             }
@@ -216,6 +259,15 @@ struct RootView: View {
             persistSessionRestoreSnapshotIfNeeded(session)
         }
         .onChange(of: appStore.activeConnectionProfileID) { _, profileID in
+            foregroundResumeTask?.cancel()
+            foregroundResumeTask = nil
+            if let generation = foregroundResume.inFlightGeneration {
+                _ = foregroundResume.finish(
+                    generation: generation,
+                    outcome: .cancelled,
+                    profileID: profileID
+                )
+            }
             switchRestorationNamespace(to: profileID)
         }
         .onChange(of: sessionStore.isConnectionSwitchInProgress) { _, isSwitching in
@@ -325,14 +377,22 @@ struct RootView: View {
             scenePhase == .active ? "active" : "inactive",
             appStore.activeConnectionProfileID ?? "",
             lockScreenApprovalStore.registeredProfileID ?? "",
+			lockScreenApprovalStore.notificationsEnabled ? "on" : "off",
+			hasCompletedInitialBootstrap ? "ready" : "bootstrapping",
+			String(appStore.connectionStatusRevision),
         ].joined(separator: "|")
     }
 
     private func refreshLockScreenApprovalLifecycle(markFailure: Bool) async {
-        guard lockScreenApprovalStore.isEnabled,
-              let profileID = lockScreenApprovalStore.registeredProfileID else {
+        guard scenePhase == .active, hasCompletedInitialBootstrap,
+			  appStore.canEnterWorkbench,
+			  let profileID = lockScreenApprovalStore.registeredProfileID ?? appStore.activeConnectionProfileID else {
             return
         }
+		// 首次配对完成但连接还未验证时，不提前弹出系统权限请求。
+		if lockScreenApprovalStore.registeredProfileID == nil {
+			guard case .connected = appStore.connectionStatus else { return }
+		}
         do {
             let client: AgentAPIClient
             if profileID == appStore.activeConnectionProfileID {
@@ -343,9 +403,7 @@ struct RootView: View {
                     appStore: appStore
                 )
             }
-            lockScreenApprovalStore.registerNotificationInfrastructure()
-			await lockScreenApprovalStore.refreshHostSupport(client: client, profileID: profileID)
-            await lockScreenApprovalStore.refreshTicketIfNeeded(
+            await lockScreenApprovalStore.synchronize(
                 client: client,
                 profileID: profileID
             )
@@ -357,6 +415,10 @@ struct RootView: View {
         } catch is CancellationError {
             return
         } catch {
+			if lockScreenApprovalStore.hasPendingDisable {
+				await lockScreenApprovalStore.disable(client: nil, profileID: profileID, previousHostUnavailable: true)
+				return
+			}
             if markFailure {
                 lockScreenApprovalStore.markRegistrationFailed()
             }

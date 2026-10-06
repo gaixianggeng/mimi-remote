@@ -38,7 +38,37 @@ bash "$HOME/.local/share/mimi-remote/install-linux-tray.sh" rollback
 bash "$HOME/.local/share/mimi-remote/install-linux-tray.sh" uninstall
 ```
 
-托盘二进制、图标、桌面/自启动入口和安装助手使用同一快照回滚。升级失败会恢复原文件；首次安装的前一状态是“无托盘”。托盘日志为 `~/.local/share/mimi-remote/tray.log`。不修改 Waybar、Hyprland、GNOME 或 Tailscale 配置。
+托盘二进制、图标、桌面/自启动入口和安装助手使用同一快照回滚。升级失败会恢复原文件；首次安装的前一状态是“无托盘”。托盘日志为 `~/.local/share/mimi-remote/tray.log`。主安装器不修改桌面栏、Hyprland 或网络配置。
+
+## Omarchy 菜单内二维码
+
+固定平铺终端可能放不下字符二维码。Omarchy 可选适配支持直接在右上角菜单点击 **展开 Tailcat 二维码**，再次点击 **收起 Tailcat 二维码**；Tailscale 和局域网使用相同交互。展开或重新生成时菜单保持打开，二维码按屏幕像素整倍数绘制，保留白色边缘和完整图像。有效期显示在图片下方，过期自动移除图片并提示重新生成。
+
+标准 DBusMenu 只能提供图片数据，图片大小和点击后是否关闭由桌面宿主控制。Omarchy 默认把菜单图片缩为小图标，因此需要对用户托盘副本安装显示适配。需要 Python 3；已有托盘副本时直接使用其目录，不重复克隆：
+
+```bash
+# 仅在尚未克隆托盘时执行；Omarchy 会将其加入当前栏布局
+omarchy plugin clone omarchy.tray
+
+# 将 <插件ID> 替换为上一步返回或当前栏正在使用的托盘副本 ID
+python3 ./scripts/install-omarchy-tray-qr.py "$HOME/.config/omarchy/plugins/<插件ID>"
+MIMI_TRAY_INLINE_QR=1 bash ./scripts/install-linux-tray.sh upgrade
+
+# 宿主可能保留 QML 缓存；重启桌面栏后使用新版组件
+omarchy restart shell
+```
+
+适配只修改指定用户插件中的菜单显示，首次备份为 `Tray.qml.before-mimi-qr`；不覆盖系统插件，也不替换用户原有托盘定制。遇到不兼容的菜单结构会拒绝写入。菜单二维码模式使用 `--inline-qr`，安装器将选择保存在桌面入口和自启动参数中，后续升级保留选择，回滚恢复先前选择。未选择此模式的桌面继续使用原终端配对。
+
+二维码只通过会话 D-Bus 传递短期 PNG，不保存票据文件；收起、切换网络和退出清除当前图片。Tailcat 未就绪时只提示检查服务，不自动启用。菜单保留 **在终端中配对…** 入口。撤销适配：
+
+```bash
+MIMI_TRAY_INLINE_QR=0 bash ./scripts/install-linux-tray.sh upgrade
+python3 ./scripts/install-omarchy-tray-qr.py "$HOME/.config/omarchy/plugins/<插件ID>" --uninstall
+omarchy restart shell
+```
+
+撤销只移除适配代码，保留其他定制及备份；未使用的 `MimiPairingQR.qml` 组件不含用户数据，可在桌面栏重启后删除。
 
 ## 终端界面与配对
 
@@ -54,7 +84,7 @@ Tailcat 是 main 已支持的内置连接功能，与外部 Tailscale 网络独�
 
 | 环境 | 支持边界 |
 | --- | --- |
-| Omarchy / Quickshell | 使用现有 StatusNotifier 托盘，图标可能在折叠区；已在本机完成真实注册、菜单协议和状态面板验证 |
+| Omarchy / Quickshell | 使用现有 StatusNotifier 托盘，图标可能在折叠区；可选安装上述菜单内二维码适配 |
 | Waybar | 需要已有 `tray` 模块；遵循相同协议，独立 Waybar 会话仍需视觉验收 |
 | KDE Plasma | 使用系统 StatusNotifier 托盘；独立 KDE 会话仍需视觉验收 |
 | GNOME | 需要提供 AppIndicator/StatusNotifier 支持的扩展；不自动安装或配置扩展 |

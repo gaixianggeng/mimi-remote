@@ -12,8 +12,7 @@ import (
 // Manager 把设备注册表、动作句柄与 Provider 客户端连成一条闭环，并对 Codex 与
 // Claude Code 两条 runtime 提供同一个入口。
 //
-// 默认关闭。未启用或 Provider 未配置时，所有入口都是空操作 —— 升级后的行为与
-// 今天逐字一致，不会产生任何对外请求。
+// 未启用、Provider 未配置或没有已注册设备时，不产生任何对外通知请求。
 type Manager struct {
 	mu      sync.RWMutex
 	routes  *RouteStore

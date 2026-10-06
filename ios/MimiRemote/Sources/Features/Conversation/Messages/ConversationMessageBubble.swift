@@ -27,7 +27,6 @@ struct ConversationMessageContent: View {
             }
         }
             .frame(maxWidth: maxContentWidth, alignment: contentAlignment)
-            .opacity(message.sendStatus == .sending ? 0.72 : 1)
             .quickLookPreview($previewURL)
     }
 
@@ -44,6 +43,7 @@ struct ConversationMessageContent: View {
             .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 12, style: .continuous))
             .messageContextMenu(
                 for: message,
+                hasSelectableBody: !userImageText.isEmpty,
                 retry: {
                     retry(message)
                 },
@@ -59,6 +59,7 @@ struct ConversationMessageContent: View {
             .contentShape(.contextMenuPreview, shape)
             .messageContextMenu(
                 for: message,
+                hasSelectableBody: !shouldRenderStructuredUserPayload || !structuredPayloadText.isEmpty,
                 retry: {
                     retry(message)
                 },
@@ -76,10 +77,6 @@ struct ConversationMessageContent: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(background, in: shape)
-                .overlay {
-                    shape.strokeBorder(bubbleBorder, lineWidth: 1)
-                }
-                .shadow(color: bubbleShadowColor, radius: 2, y: 1)
                 .contentShape(.interaction, shape)
                 .contentShape(.contextMenuPreview, shape)
                 .messageContextMenu(
@@ -91,9 +88,10 @@ struct ConversationMessageContent: View {
                 )
 
             MessageTimestampCaption(
-                text: message.timestampCaptionText,
+                text: message.displayTimestampText,
                 isFallback: message.isTimestampFallback,
-                foreground: timestampForeground
+                foreground: timestampForeground,
+                details: message.timestampCaptionText
             )
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -111,8 +109,9 @@ struct ConversationMessageContent: View {
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
                 MessageTimestampCaption(
-                    text: message.timestampCaptionText,
-                    isFallback: message.isTimestampFallback
+                    text: message.displayTimestampText,
+                    isFallback: message.isTimestampFallback,
+                    details: message.timestampCaptionText
                 )
             }
         }
@@ -137,9 +136,8 @@ struct ConversationMessageContent: View {
             .padding(.vertical, 10)
             .background(background, in: shape)
             .overlay {
-                shape.strokeBorder(bubbleBorder, lineWidth: 1)
+                shape.strokeBorder(message.role == .user ? .clear : bubbleBorder, lineWidth: 1)
             }
-            .shadow(color: bubbleShadowColor, radius: message.role == .user ? 2 : 6, y: message.role == .user ? 1 : 2)
     }
 
     private var contentWithTimestamp: some View {
@@ -186,9 +184,7 @@ struct ConversationMessageContent: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
         } else {
-            Text(presentationContent)
-                .font(themeStore.uiFont(.body))
-                .fixedSize(horizontal: false, vertical: true)
+            MessagePlainText(text: presentationContent, style: style)
         }
     }
 
@@ -209,9 +205,10 @@ struct ConversationMessageContent: View {
             userPayloadAccessories(style: style)
 
             MessageTimestampCaption(
-                text: message.timestampCaptionText,
+                text: message.displayTimestampText,
                 isFallback: message.isTimestampFallback,
-                foreground: tokens.secondaryText
+                foreground: tokens.secondaryText,
+                details: message.timestampCaptionText
             )
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -271,18 +268,7 @@ struct ConversationMessageContent: View {
 
     @ViewBuilder
     private func markdownContent(plan: MessageRenderPlan, style: MarkdownStyle) -> some View {
-        if plan.isSinglePlainParagraph, case let .paragraph(inline) = plan.blocks.first?.kind {
-            Text(inline.plain)
-                .font(style.bodyFont)
-                .fixedSize(horizontal: false, vertical: true)
-        } else {
-            VStack(alignment: .leading, spacing: style.blockSpacing) {
-                ForEach(plan.blocks) { block in
-                    MarkdownBlockView(block: block, style: style)
-                }
-            }
-            .fixedSize(horizontal: false, vertical: true)
-        }
+        MessageMarkdownBody(blocks: plan.blocks, style: style, fillsWidth: message.role == .assistant)
     }
 
     private var isAssistantDocument: Bool {
@@ -337,10 +323,7 @@ struct ConversationMessageContent: View {
             let plan = MessageRenderPlanCache.shared.plan(for: message, rendering: text)
             markdownContent(plan: plan, style: style)
         } else {
-            Text(text)
-                .font(style.bodyFont)
-                .foregroundStyle(userBubbleForeground)
-                .fixedSize(horizontal: false, vertical: true)
+            MessagePlainText(text: text, style: style)
         }
     }
 
@@ -420,7 +403,9 @@ struct ConversationMessageContent: View {
         guard message.turnPayload == nil || payloadImageItems.isEmpty else {
             return []
         }
-        return ConversationFileReferenceDetector.imageReferences(in: userDisplayContent)
+        return ConversationFileReferenceDetector.imageReferences(
+            in: ConversationUserMessagePresentation.imageReferenceContent(from: message.content)
+        )
     }
 
     private var userImageSources: [ConversationImageSource] {
@@ -570,17 +555,6 @@ struct ConversationMessageContent: View {
         return tokens.border.opacity(message.role == .assistant ? 0.58 : 0.54)
     }
 
-    private var bubbleShadowColor: Color {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let opacity: Double
-        if message.role == .user {
-            opacity = tokens.resolvedScheme == .light ? 0.05 : 0.12
-        } else {
-            opacity = tokens.resolvedScheme == .light ? 0.045 : 0.16
-        }
-        return Color.black.opacity(opacity)
-    }
-
     private var foreground: Color {
         let tokens = themeStore.tokens(for: colorScheme)
         return message.role == .user ? userBubbleForeground : tokens.conversationPrimaryText
@@ -590,12 +564,8 @@ struct ConversationMessageContent: View {
         guard message.role == .user else {
             return nil
         }
-        let tokens = themeStore.tokens(for: colorScheme)
-        // sending 还会对整条消息叠加 0.72 opacity；默认深色避免时间文字再次降透明度。
-        if tokens.preset == .codex, tokens.resolvedScheme == .dark {
-            return tokens.secondaryText
-        }
-        return userBubbleForeground.opacity(0.64)
+        return themeStore.tokens(for: colorScheme)
+            .userMessageTimestampForeground(isSending: message.sendStatus == .sending)
     }
 
     private var userBubbleForeground: Color {

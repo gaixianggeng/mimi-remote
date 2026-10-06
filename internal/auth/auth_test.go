@@ -6,7 +6,7 @@ import (
 )
 
 func TestAuthenticatorValidBearerToken(t *testing.T) {
-	a := New("0123456789abcdef0123456789abcdef", false)
+	a := NewWithOptions("0123456789abcdef0123456789abcdef", false, Options{})
 	req, err := http.NewRequest(http.MethodGet, "/api/projects", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -18,7 +18,7 @@ func TestAuthenticatorValidBearerToken(t *testing.T) {
 }
 
 func TestAuthenticatorRejectsWrongToken(t *testing.T) {
-	a := New("0123456789abcdef0123456789abcdef", false)
+	a := NewWithOptions("0123456789abcdef0123456789abcdef", false, Options{})
 	req, err := http.NewRequest(http.MethodGet, "/api/projects?token=bad-token", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +29,7 @@ func TestAuthenticatorRejectsWrongToken(t *testing.T) {
 }
 
 func TestAuthenticatorRejectsQueryTokenByDefault(t *testing.T) {
-	a := New("0123456789abcdef0123456789abcdef", false)
+	a := NewWithOptions("0123456789abcdef0123456789abcdef", false, Options{})
 	req, err := http.NewRequest(http.MethodGet, "/api/projects?token=0123456789abcdef0123456789abcdef", nil)
 	if err != nil {
 		t.Fatal(err)

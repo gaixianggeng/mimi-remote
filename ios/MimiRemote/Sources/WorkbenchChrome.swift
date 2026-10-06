@@ -851,15 +851,26 @@ extension View {
     /// 会话滚动边缘统一使用柔和渐隐：顶部正文进入导航控制层、底部正文经过 Composer
     /// 后方时都由系统提供渐进式虚化，不会像 `hard` 那样切出横贯全宽的边界线。
     /// iOS 26 之前没有该效果，保持原样。
+    ///
+    /// `deepensTopEdge` 在系统虚化之上再叠一层加深，只给没有侧栏的紧凑导航用：宽屏详情列
+    /// 顶部一旦被这层玻璃提亮，就会比相邻侧栏亮一档，界线正好压在分栏缝上。
     @ViewBuilder
-    func workbenchSoftConversationScrollEdges(allowsTopUnderlap: Bool) -> some View {
+    func workbenchSoftConversationScrollEdges(
+        allowsTopUnderlap: Bool,
+        deepensTopEdge: Bool = false
+    ) -> some View {
         if #available(iOS 26.0, *) {
             if allowsTopUnderlap {
                 // List 本来就绘制到导航栏后方，安全区只决定“静止时第一行落在哪里”。
                 // 这里不能再 ignoresSafeArea(.top)：那会把顶部内边距整个抹掉，静止状态的
                 // 首行内容直接顶进导航控制层，加载态的 ProgressView 会和标题副标题叠字。
                 // 需要的虚化由 scrollEdgeEffectStyle 在内容真正上滚重叠时提供。
-                scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                if deepensTopEdge {
+                    scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                        .modifier(WorkbenchTopScrollEdgeBoostModifier())
+                } else {
+                    scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                }
             } else {
                 scrollEdgeEffectStyle(.soft, for: .bottom)
             }
@@ -994,6 +1005,7 @@ struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
     var body: some View {
         HStack(spacing: 4) {
             brand
+                .avoidingWindowControls()
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             // 收起与展开共用同一个磨砂按钮，保证触摸、指针和按压反馈完全一致。
@@ -1004,6 +1016,20 @@ struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
         .padding(.trailing, 8)
         .padding(.top, 10)
         .padding(.bottom, 6)
+    }
+}
+
+extension View {
+    /// iPadOS 26 窗口模式下，窗口左上角有系统的红黄绿按钮。隐藏导航栏后自己画的顶部控件
+    /// 不会被系统自动让开，浮动侧栏的设备入口曾被那组按钮整个压住（#562）。
+    /// 这里按容器圆角区域横向让位；全屏、iPhone 与 iOS 26 之前的系统上位移为零。
+    @ViewBuilder
+    func avoidingWindowControls() -> some View {
+        if #available(iOS 26.0, *) {
+            containerCornerOffset(.leading, sizeToFit: true)
+        } else {
+            self
+        }
     }
 }
 
@@ -1229,8 +1255,7 @@ struct RelatedSessionConversationView: View {
                     ConversationTimelineView(layout: layout, sessionID: relation.id)
 
                     if isLoading {
-                        ProgressView(L10n.text("ui.loading"))
-                            .controlSize(.regular)
+                        LoadingStateView(message: L10n.text("ui.loading"))
                     } else if didFailToLoad && childSession == nil {
                         ContentUnavailableView(
                             L10n.text("ui.sub_agent"),
@@ -1379,37 +1404,11 @@ struct RelatedSessionConversationView: View {
     }
 }
 
-struct WorkbenchPageHeader: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    let title: String
-    let subtitle: String
-    let tokens: ThemeTokens
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(themeStore.uiFont(.title2, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
-            Text(subtitle)
-                .font(themeStore.uiFont(.callout))
-                .foregroundStyle(tokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
 enum WorkbenchPageLayout {
     static let maxContentWidth: CGFloat = 820
     static let regularPadding: CGFloat = 24
     static let compactPadding: CGFloat = 20
-    static let contentPanelPadding: CGFloat = 16
-    static let groupedPanelPadding: CGFloat = 14
-    static let controlPadding: CGFloat = 10
     static let contentPanelCornerRadius: CGFloat = 22
-    static let groupedPanelCornerRadius: CGFloat = 16
-    static let controlCornerRadius: CGFloat = 12
-
     // iOS 26 的浮动 Tab Bar 没有公开可读取的实时高度。这里统一维护其视觉高度，
     // 再叠加设备 safe area 与 20pt 呼吸区，避免三个顶层页面各自猜一套底部留白。
     static let compactTabBarVisualHeight: CGFloat = 64
@@ -1421,11 +1420,6 @@ enum WorkbenchPageLayout {
             bottomSafeAreaInset: defaultCompactBottomSafeAreaInset
         )
     }
-    // 兼容不在紧凑 Tab 容器中的旧页面；顶层三页会使用实时 safe area 计算值。
-    static var compactBottomPadding: CGFloat {
-        defaultCompactBottomChromeClearance
-    }
-
     static func compactBottomChromeClearance(bottomSafeAreaInset: CGFloat) -> CGFloat {
         compactTabBarVisualHeight
             + max(compactTabBarMinimumSafeArea, bottomSafeAreaInset)
@@ -1475,7 +1469,7 @@ struct SessionNavigationMaterialModifier: ViewModifier {
                 // 对顶部滚动边缘做渐进模糊：`.thinMaterial` / `.ultraThinMaterial` 会在下沿切出
                 // 一条横贯全宽的灰带，即使换成画布色渐变，后方正文也只是被压淡而依然逐字清晰——
                 // 「挡住但还看得见」正是最难看的一档。真正的虚化只能来自 soft scroll edge，
-                // 所以这里让出底板，额外的压暗由 ConversationView 顶部那层渐隐叠加提供。
+                // 所以这里让出底板；紧凑导航下的额外加深见 WorkbenchTopScrollEdgeBoost。
                 .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
                 .toolbarColorScheme(colorScheme, for: .navigationBar)
         } else if usesCompactNavigation {
@@ -1530,6 +1524,26 @@ private struct WorkbenchHasBottomTabBarKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+/// 根页面向上报告"正文此刻自己就在表达进行中"（连接过渡或目录加载）。
+///
+/// 页面自己持有的设备入口（iPhone 工作区胶囊行、会话页顶栏）可以直接读页面状态；
+/// iPad 紧凑布局那枚浮层归 Shell 所有、拿不到页面内部的展示状态，只能由页面沿视图树
+/// 报上来。两条路径必须得出同一个结论，否则同一屏上又会出现两处转圈。
+struct WorkbenchRootConnectionProgressKey: PreferenceKey {
+    static let defaultValue = false
+
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
+    }
+}
+
+extension View {
+    /// 页面在这里声明"进行中已经由我表达"。
+    func workbenchRootShowsConnectionProgress(_ showsProgress: Bool) -> some View {
+        preference(key: WorkbenchRootConnectionProgressKey.self, value: showsProgress)
+    }
+}
+
 extension EnvironmentValues {
     var workbenchBottomChromeClearance: CGFloat {
         get { self[WorkbenchBottomChromeClearanceKey.self] }
@@ -1547,110 +1561,32 @@ extension EnvironmentValues {
     }
 }
 
-enum WorkbenchSurfaceRole {
-    case contentPanel
-    case groupedPanel
-    case control
-
-    var cornerRadius: CGFloat {
-        switch self {
-        case .contentPanel:
-            WorkbenchPageLayout.contentPanelCornerRadius
-        case .groupedPanel:
-            WorkbenchPageLayout.groupedPanelCornerRadius
-        case .control:
-            WorkbenchPageLayout.controlCornerRadius
-        }
-    }
-}
-
-private struct WorkbenchSurfaceModifier: ViewModifier {
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-
-    let tokens: ThemeTokens
-    let role: WorkbenchSurfaceRole
-
-    func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: role.cornerRadius, style: .continuous)
-
-        content
-            .background(background, in: shape)
-            .overlay {
-                shape.stroke(
-                    tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.72),
-                    lineWidth: colorSchemeContrast == .increased ? 1 : 0.5
-                )
-            }
-    }
-
-    private var background: Color {
-        switch role {
-        case .contentPanel, .groupedPanel:
-            tokens.contentPanelBackground
-        case .control:
-            tokens.surface.opacity(0.72)
-        }
-    }
-}
-
 extension View {
-    func workbenchSurface(tokens: ThemeTokens, role: WorkbenchSurfaceRole) -> some View {
-        modifier(WorkbenchSurfaceModifier(tokens: tokens, role: role))
-    }
-}
-
-struct StatusPill: View {
-    enum Kind {
-        case success
-        case warning
-        case neutral
-    }
-
-    let text: String
-    let kind: Kind
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        Text(text)
-            .font(themeStore.uiFont(size: 12, weight: .medium))
-            .lineLimit(1)
-            .minimumScaleFactor(0.86)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(background(tokens: tokens))
-            .foregroundStyle(foreground(tokens: tokens))
-            .clipShape(Capsule())
-    }
-
-    private func background(tokens: ThemeTokens) -> Color {
-        switch kind {
-        case .success:
-            return tokens.success.opacity(0.16)
-        case .warning:
-            return tokens.warning.opacity(0.18)
-        case .neutral:
-            return tokens.elevatedSurface
-        }
-    }
-
-    private func foreground(tokens: ThemeTokens) -> Color {
-        switch kind {
-        case .success:
-            return tokens.success
-        case .warning:
-            return tokens.warning
-        case .neutral:
-            return tokens.secondaryText
-        }
-    }
 }
 
 /// 设置页和工作台侧栏共用的额度窗口模型。集中选择规则后，两个入口不会因为
 /// 服务端 primary / secondary 槽位变化而展示不同的三个圆环。
 struct CombinedUsageItem: Identifiable {
+    /// Codex 用低饱和墨蓝，Claude 两个窗口用同一陶土色系的深浅，与梅子紫热力图和暖白底同温。
+    /// 深色外观整体提亮一档，否则墨蓝会沉进 #1F1F1F 的卡片底。
+    private struct Palette {
+        let codex: Color
+        let claudeLong: Color
+        let claudeShort: Color
+    }
+
+    private static let lightPalette = Palette(
+        codex: Color(red: 62.0 / 255.0, green: 92.0 / 255.0, blue: 128.0 / 255.0),
+        claudeLong: Color(red: 200.0 / 255.0, green: 100.0 / 255.0, blue: 63.0 / 255.0),
+        claudeShort: Color(red: 232.0 / 255.0, green: 165.0 / 255.0, blue: 135.0 / 255.0)
+    )
+
+    private static let darkPalette = Palette(
+        codex: Color(red: 143.0 / 255.0, green: 169.0 / 255.0, blue: 200.0 / 255.0),
+        claudeLong: Color(red: 224.0 / 255.0, green: 135.0 / 255.0, blue: 106.0 / 255.0),
+        claudeShort: Color(red: 242.0 / 255.0, green: 192.0 / 255.0, blue: 168.0 / 255.0)
+    )
+
     let runtimeProvider: String
     let providerName: String
     let window: CodexUsageWindowDisplay
@@ -1660,16 +1596,15 @@ struct CombinedUsageItem: Identifiable {
         "\(runtimeProvider):\(window.id)"
     }
 
+    // 三环由外到内依次是 Codex 长窗口、Claude 长窗口、Claude 短窗口。
+    // 颜色在此固定，设置页和侧栏的圆环、图例共享同一顺序。
     static func make(
         codexDisplay: CodexUsageWindowsDisplay,
         claudeDisplay: CodexUsageWindowsDisplay,
         includesClaude: Bool,
-        // 三环由外到内依次是 Codex 长窗口、Claude 长窗口、Claude 短窗口。
-        // 外环使用青色、中环使用粉色；设置页与左上角入口复用这里，避免图例和圆环错位。
-        codexTint: Color = .cyan,
-        claudeLongTint: Color = .pink,
-        claudeShortTint: Color
+        colorScheme: ColorScheme
     ) -> [CombinedUsageItem] {
+        let palette = colorScheme == .dark ? Self.darkPalette : Self.lightPalette
         var items: [CombinedUsageItem] = []
 
         if let codexWindow = preferredLongWindow(in: codexDisplay) {
@@ -1678,7 +1613,7 @@ struct CombinedUsageItem: Identifiable {
                     runtimeProvider: "codex",
                     providerName: providerName(for: codexDisplay, fallback: "Codex"),
                     window: codexWindow,
-                    tint: codexTint
+                    tint: palette.codex
                 )
             )
         }
@@ -1689,7 +1624,7 @@ struct CombinedUsageItem: Identifiable {
                     runtimeProvider: "claude",
                     providerName: providerName(for: claudeDisplay, fallback: "Claude"),
                     window: claudeLongWindow,
-                    tint: claudeLongTint
+                    tint: palette.claudeLong
                 )
             )
 
@@ -1702,7 +1637,7 @@ struct CombinedUsageItem: Identifiable {
                         runtimeProvider: "claude",
                         providerName: providerName(for: claudeDisplay, fallback: "Claude"),
                         window: claudeShortWindow,
-                        tint: claudeShortTint
+                        tint: palette.claudeShort
                     )
                 )
             }

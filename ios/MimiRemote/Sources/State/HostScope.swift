@@ -63,11 +63,6 @@ struct ScopedSessionID: Hashable, Sendable {
     let sessionID: String
 }
 
-struct ScopedProjectID: Hashable, Sendable {
-    let profileID: String
-    let projectID: String
-}
-
 /// 实时事件不只按 Profile 隔离，还必须绑定连接代次；切回同一台 Mac 后，
 /// 上一个 generation 的尾包也不能进入新的 Runtime。
 struct HostSessionLease: Hashable, Sendable {

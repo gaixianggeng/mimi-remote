@@ -285,8 +285,8 @@ struct TokenActivityDotGrid: View {
 
                 ForEach(monthLabels) { label in
                     Text(monthText(label.date))
-                        .font(themeStore.uiFont(size: 9, weight: .medium))
-                        .foregroundStyle(tokens.tertiaryText)
+                        .font(themeStore.uiFont(size: 10, weight: .medium))
+                        .foregroundStyle(tokens.tokenActivityAxisText)
                         .fixedSize()
                         .offset(x: CGFloat(label.weekIndex) * (cellSize + spacing))
                 }
@@ -309,10 +309,10 @@ struct TokenActivityDotGrid: View {
         guard !day.isFuture else { return .clear }
         let contrastBoost = colorSchemeContrast == .increased ? 0.12 : 0
         switch day.intensity {
-        case 1: return tokens.accent.opacity(0.24 + contrastBoost)
-        case 2: return tokens.accent.opacity(0.42 + contrastBoost)
-        case 3: return tokens.accent.opacity(0.64 + contrastBoost)
-        case 4: return tokens.accent.opacity(0.92)
+        case 1: return tokens.tokenActivityAccent.opacity(0.24 + contrastBoost)
+        case 2: return tokens.tokenActivityAccent.opacity(0.42 + contrastBoost)
+        case 3: return tokens.tokenActivityAccent.opacity(0.64 + contrastBoost)
+        case 4: return tokens.tokenActivityAccent.opacity(0.92)
         default: return tokens.secondaryText.opacity(0.09 + contrastBoost)
         }
     }

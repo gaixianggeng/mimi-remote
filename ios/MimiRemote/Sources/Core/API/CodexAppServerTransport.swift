@@ -113,6 +113,7 @@ protocol SessionWebSocketClient: AnyObject {
 
     func connect(sessionID: SessionID)
     func connect(sessionID: SessionID, replayBufferedEvents: Bool)
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?)
     func disconnect()
     func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool
     func sendTurn(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) -> Bool
@@ -128,6 +129,11 @@ extension SessionWebSocketClient {
 
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
         connect(sessionID: sessionID)
+    }
+
+    /// 历史页已经落到 Store 后才传递读取前沿；不支持原生序号的实现沿用原连接语义。
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?) {
+        connect(sessionID: sessionID, replayBufferedEvents: replayBufferedEvents)
     }
 
     func acknowledgeAppliedEvent(_ event: AgentEvent) {}
@@ -482,17 +488,7 @@ actor CodexAppServerConnection {
     }
 
     func sendNotification(_ notification: CodexAppServerNotification) async throws {
-        guard isConnected else {
-            throw CodexAppServerConnectionError.disconnected
-        }
-        let data = try encoder.encode(notification)
-        do {
-            try await transport.send(String(decoding: data, as: UTF8.self))
-        } catch {
-            let wrapped = CodexAppServerConnectionError.transport(error)
-            markDisconnected(with: wrapped)
-            throw wrapped
-        }
+        try await sendEncoded(notification)
     }
 
     func respond(to request: CodexAppServerServerRequest, result: CodexAppServerJSONValue? = .object([:])) async throws {
@@ -624,10 +620,16 @@ actor CodexAppServerConnection {
     }
 
     private func sendResponse(_ response: CodexAppServerResponse) async throws {
+        try await sendEncoded(response)
+    }
+
+    /// notification 与 response 的发送此前各写了一遍相同流程：连接检查、编码、
+    /// 失败时统一包装成 transport 错误并标记断连。这里只保留一份。
+    private func sendEncoded<Value: Encodable>(_ value: Value) async throws {
         guard isConnected else {
             throw CodexAppServerConnectionError.disconnected
         }
-        let data = try encoder.encode(response)
+        let data = try encoder.encode(value)
         do {
             try await transport.send(String(decoding: data, as: UTF8.self))
         } catch {

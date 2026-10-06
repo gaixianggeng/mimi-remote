@@ -4,13 +4,15 @@
 
 `agentd` 不是 Codex app-server 的无条件透传代理。它只开放移动端当前需要、且能在项目 allowlist 内安全约束的协议能力；Codex 新增方法时默认不自动获得远程权限。
 
-当前协议基线固定为 Codex CLI `0.151.0`：
+当前协议基线固定为 Codex CLI `0.155.1`：
 
-- Client Request：154 个
+- Client Request：164 个
 - Server Request：11 个
-- Server Notification：79 个
+- Server Notification：82 个
 
 方法快照位于 `internal/httpapi/testdata/codex-protocol/`，CI 会在 Codex 版本或方法集合漂移时失败。
+
+该版本的共享服务可通过进程信号进入优雅退出，但没有对应的 JSON-RPC 交接接口。退出等待模型回合，不保证独立 `command/exec` 完成。`thread/unsubscribe` 仍只取消当前连接订阅，不能释放 Desktop 的其他连接。共享启动与修复边界见 [共享 App Server](shared-ssh-app-server.md)。
 
 本文件只描述 Codex app-server 上游协议。Mimi iOS 与 `agentd` 自身 REST /
 WebSocket 的修订窗口、共享 fixtures 和更新命令见

@@ -24,6 +24,9 @@ func isCancellationError(_ error: Error) -> Bool {
     if error is CancellationError {
         return true
     }
+    if (error as? HarnessTransportError) == .cancelled {
+        return true
+    }
     if let urlError = error as? URLError {
         return urlError.code == .cancelled
     }
@@ -775,18 +778,6 @@ struct AgentAPIClient {
             return error
         }
         return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? L10n.text("ui.unknown_error")
-    }
-
-    private func makePath(_ path: String, query: [String: String?]) -> String {
-        var components = URLComponents()
-        components.path = path
-        components.queryItems = query.compactMap { key, value in
-            guard let value, !value.isEmpty else {
-                return nil
-            }
-            return URLQueryItem(name: key, value: value)
-        }
-        return components.string ?? path
     }
 
     private func makeURL(baseURL: URL, path: String) -> URL? {

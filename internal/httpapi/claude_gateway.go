@@ -148,12 +148,6 @@ func resolveClaudeBridgePath(command string) (string, bool) {
 	return claudebridge.ResolveBinary(command)
 }
 
-// bundledClaudeBridgeSiblingPath is the bridge next to the running agentd, or
-// "" when the executable path cannot be determined.
-func bundledClaudeBridgeSiblingPath() string {
-	return claudebridge.BundledSiblingPath()
-}
-
 func probeClaudeBridgeVersion(path string, args []string, env map[string]string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -650,17 +644,6 @@ func readBridgeStdoutLine(reader *bufio.Reader, max int) ([]byte, bool, error) {
 		}
 		return buf, false, err
 	}
-}
-
-func writeStdioBridgeFrame(stdin io.Writer, mu *sync.Mutex, payload []byte) ([]byte, error) {
-	compacted, err := compactJSONLine(payload)
-	if err != nil {
-		return nil, err
-	}
-	if err := writeStdioBridgeCompactedFrame(stdin, mu, compacted); err != nil {
-		return nil, err
-	}
-	return compacted, nil
 }
 
 func writeStdioBridgeCompactedFrame(stdin io.Writer, mu *sync.Mutex, compacted []byte) error {

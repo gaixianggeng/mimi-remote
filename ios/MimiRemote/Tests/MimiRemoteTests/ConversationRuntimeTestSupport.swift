@@ -468,7 +468,9 @@ func waitForFakeAppServerRequest(
     file: StaticString = #filePath,
     line: UInt = #line
 ) async throws -> CodexAppServerRequest {
-    for _ in 0..<200 {
+    // 轮询预算从 2s 放宽到 4s：CI 负载下 fake transport 的请求投递偶发超时，
+    // 与产品逻辑无关。
+    for _ in 0..<400 {
         let messages = await transport.sentMessages()
         if startIndex < messages.count {
             for text in messages[startIndex...] {
@@ -583,6 +585,7 @@ func makeDirectAppServerConfig(
     project: AgentProject,
     gatewayAvailable: Bool = true,
     allowedMethods: [String]? = nil,
+    transport: String = "ws",
     channels: [CodexAppServerChannelMetadata] = []
 ) -> CodexAppServerConfigResponse {
     let defaultAllowedMethods = [
@@ -598,7 +601,7 @@ func makeDirectAppServerConfig(
         gatewayWSURL: gatewayAvailable ? "ws://127.0.0.1:7777/api/app-server/ws" : "",
         runtime: CodexAppServerRuntimeMetadata(
             type: "codex_app_server",
-            transport: "ws",
+            transport: transport,
             managed: true,
             gatewayAvailable: gatewayAvailable,
         upstreamConfigured: gatewayAvailable,
@@ -639,6 +642,28 @@ func makeClaudeChannelMetadata(methods: [String]? = nil) -> CodexAppServerChanne
             "model/list", "account/rateLimits/read"
         ],
         capabilities: ["history": true, "streaming": true]
+    )
+}
+
+/// 新 agentd 会在 Codex 启用时显式发布该 channel。只要 `channels` 非空，
+/// 测试夹具就必须按真实配置列出 Codex，不再借顶层旧字段暗示它存在。
+func makeCodexChannelMetadata() -> CodexAppServerChannelMetadata {
+    CodexAppServerChannelMetadata(
+        id: "codex",
+        runtimeID: "codex",
+        title: "Codex",
+        provider: "openai",
+        type: "codex_app_server",
+        protocolName: "app_server_jsonrpc_ws",
+        enabled: true,
+        gatewayWSURL: "ws://127.0.0.1:7777/api/app-server/ws",
+        gatewayAvailable: true,
+        managed: false,
+        experimental: nil,
+        lifecycle: "shared_ssh",
+        bridge: nil,
+        methods: nil,
+        capabilities: nil
     )
 }
 
@@ -1145,6 +1170,7 @@ func assertStabilizedConversationSnapshot<Content: View>(
     line: UInt = #line
 ) async throws {
     let host = UIHostingController(rootView: view)
+    host.safeAreaRegions = []
     if let contrast { host.traitOverrides.accessibilityContrast = contrast }
     let windowScene = try XCTUnwrap(
         UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
@@ -1171,9 +1197,15 @@ func assertStabilizedConversationSnapshot<Content: View>(
 
     // 会话快照验证稳定后的内容与样式。先把真实 List 放进窗口并完成首屏定位，
     // 避免离屏 SwiftUI 快照只截到稳定遮罩。
+    // 先让原生文字完成显示周期，再截取已定位的窗口，避免重挂视图触发屏外裁剪。
+    try await Task.sleep(nanoseconds: 100_000_000)
+    host.view.layoutIfNeeded()
+    let image = UIGraphicsImageRenderer(size: size).image { _ in
+        host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+    }
     assertSnapshot(
-        of: host.view,
-        as: .image(precision: precision, size: size),
+        of: image,
+        as: .image(precision: precision),
         named: named,
         file: file,
         testName: testName,

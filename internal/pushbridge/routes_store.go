@@ -46,15 +46,7 @@ type LocateRecord struct {
 }
 
 func (r LocateRecord) allowsDevice(deviceID string) bool {
-	if deviceID == "" {
-		return false
-	}
-	for _, allowed := range r.DeviceIDs {
-		if allowed == deviceID {
-			return true
-		}
-	}
-	return false
+	return deviceAllowed(r.DeviceIDs, deviceID)
 }
 
 func (r LocateRecord) sameTurn(other LocateRecord) bool {

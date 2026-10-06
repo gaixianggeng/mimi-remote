@@ -1,12 +1,13 @@
 import Foundation
 
 enum HostModuleID: String, CaseIterable, Identifiable, Sendable {
-    case codex, claude, tailscale, tailcat, lan
+    case codex, claude, deepseek, tailscale, tailcat, lan
     var id: String { rawValue }
     var title: String {
         switch self {
         case .codex: "Codex"
         case .claude: "Claude Code"
+        case .deepseek: "DeepSeek Harness"
         case .tailscale: "Tailscale"
         case .tailcat: "Tailcat"
         case .lan: "局域网"
@@ -16,12 +17,13 @@ enum HostModuleID: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .codex: "terminal"
         case .claude: "text.bubble"
+        case .deepseek: "sparkles"
         case .tailscale: "network"
         case .tailcat: "antenna.radiowaves.left.and.right"
         case .lan: "wifi"
         }
     }
-    var isAgent: Bool { self == .codex || self == .claude }
+    var isAgent: Bool { self == .codex || self == .claude || self == .deepseek }
     var network: PairingNetwork? {
         switch self {
         case .tailscale: .tailscale
@@ -36,7 +38,7 @@ enum HostModuleGroup: CaseIterable {
     case agents, connections
     var title: String { self == .agents ? "AI 编程助手" : "连接方式" }
     var modules: [HostModuleID] {
-        self == .agents ? [.codex, .claude] : [.tailscale, .lan, .tailcat]
+        self == .agents ? [.codex, .claude, .deepseek] : [.tailscale, .lan, .tailcat]
     }
 }
 
