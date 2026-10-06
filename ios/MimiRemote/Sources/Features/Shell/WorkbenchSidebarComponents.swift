@@ -198,7 +198,8 @@ struct AIUsageRingsControl: View {
         CombinedUsageItem.make(
             codexDisplay: codexDisplay,
             claudeDisplay: claudeDisplay,
-            includesClaude: includesClaude
+            includesClaude: includesClaude,
+            colorScheme: colorScheme
         )
     }
 
