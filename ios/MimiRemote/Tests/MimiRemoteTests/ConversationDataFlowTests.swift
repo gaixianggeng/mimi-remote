@@ -556,7 +556,7 @@ final class ConversationDataFlowTests: XCTestCase {
                 hasHistorySavingsNotice: false,
                 liveStatusReadiness: nil
             ),
-            "空时间线由现有空状态 ProgressView 负责"
+            "空时间线由静态的历史加载文案负责"
         )
         XCTAssertFalse(
             ConversationTimelineView.shouldShowInlineHistoryLoading(

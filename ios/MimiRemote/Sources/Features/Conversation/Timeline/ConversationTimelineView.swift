@@ -613,12 +613,13 @@ struct ConversationTimelineView: View {
     @ViewBuilder
     private func timelineEmptyState(isHistoryLoading: Bool) -> some View {
         if isHistoryLoading {
-            // 留在时间线列表行里（上方 80pt）而不是铺满居中：首屏历史到达时
-            // 列表的滚动锚点与贴底逻辑都以行为准，不在这里另起一层浮层。
-            LoadingStateView(
-                message: L10n.text("ui.loading_session_records"),
-                placement: .inline
-            )
+            // 详情首屏只保留静态说明；列表页的加载圆环继续由 SessionListView 展示。
+            // 状态仍留在时间线行里，避免历史到达时改变滚动锚点或贴底逻辑。
+            Text(L10n.text("ui.loading_session_records"))
+                .font(themeStore.uiFont(.subheadline))
+                .foregroundStyle(workbenchSecondaryText)
+                .accessibilityIdentifier("conversation.historyLoading")
+                .allowsHitTesting(false)
         } else if let error = sessionStore.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
             ContentUnavailableView {
                 Label(L10n.text("ui.session_record_loading_failed"), systemImage: "exclamationmark.triangle")
