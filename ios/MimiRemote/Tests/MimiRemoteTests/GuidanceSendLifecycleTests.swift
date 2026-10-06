@@ -63,6 +63,51 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         XCTAssertNotEqual(next, RunningTurnDeliveryContext(turnID: "turn-two", canGuide: false))
     }
 
+    func testBackgroundSendOnlyRestoresChoicesFromItsComposerActivation() {
+        let sessionA = ComposerDraftScopeKey.session("session-a")
+        let sessionB = ComposerDraftScopeKey.session("session-b")
+        let submitted = ComposerTransientSelectionCheckpoint(
+            scope: sessionA,
+            scopeRevision: 4,
+            deliveryRevision: 7,
+            sendModeRevision: 3
+        )
+
+        let resumed = submitted.restoration(
+            activeScope: sessionA, selectedScope: sessionA,
+            scopeRevision: 4, deliveryRevision: 7, sendModeRevision: 3
+        )
+        XCTAssertTrue(resumed.delivery)
+        XCTAssertTrue(resumed.sendMode, "same-session resume may advance the selection lease")
+
+        let changedDelivery = submitted.restoration(
+            activeScope: sessionA, selectedScope: sessionA,
+            scopeRevision: 4, deliveryRevision: 8, sendModeRevision: 3
+        )
+        XCTAssertFalse(changedDelivery.delivery, "keep a new Queue/Steer choice made while sending")
+        XCTAssertTrue(changedDelivery.sendMode)
+
+        let changedMode = submitted.restoration(
+            activeScope: sessionA, selectedScope: sessionA,
+            scopeRevision: 4, deliveryRevision: 7, sendModeRevision: 4
+        )
+        XCTAssertTrue(changedMode.delivery)
+        XCTAssertFalse(changedMode.sendMode)
+
+        for (active, selected, revision) in [
+            (sessionB, sessionB, UInt64(5)),
+            (sessionA, sessionA, UInt64(6)),
+            (sessionA, sessionB, UInt64(4)),
+        ] {
+            let afterNavigation = submitted.restoration(
+                activeScope: active, selectedScope: selected,
+                scopeRevision: revision, deliveryRevision: 7, sendModeRevision: 3
+            )
+            XCTAssertFalse(afterNavigation.delivery)
+            XCTAssertFalse(afterNavigation.sendMode)
+        }
+    }
+
     func testSendMethodMenuMarksThePreferredOptionAsDefault() {
         XCTAssertEqual(
             RunningTurnDelivery.queued.menuTitle(isDefault: true, isGuidedAvailable: true),

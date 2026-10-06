@@ -65,6 +65,9 @@ struct ComposerView: View {
     @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.resolved(rawValue: nil).rawValue
     @AppStorage(RunningTurnDelivery.defaultStorageKey) var defaultRunningTurnDeliveryID = RunningTurnDelivery.fallbackDefault.rawValue
     @State var guidedFollowUpEnabled = false
+    @State var composerScopeRevision: UInt64 = 0
+    @State var followUpDeliveryChoiceRevision: UInt64 = 0
+    @State var sendModeChoiceRevision: UInt64 = 0
     @State var editingQueuedTurn: QueuedTurnEditorDraft?
     @State var showsQueuedTurnManager = false
     @State var isSelectingVoiceDraftText = false
@@ -398,6 +401,7 @@ struct ComposerView: View {
             return submitGoalDraft()
         }
         let submittedDraftScope = activeComposerDraftScope
+        let selectionCheckpoint = transientSelectionCheckpoint
         // 点击时就固定目标；Task 开始执行前，返回手势可能已经清空当前会话。
         let submissionContext = sessionStore.captureTurnSubmissionContext()
         let options = preparedTurnOptionsForSubmit()
@@ -420,11 +424,7 @@ struct ComposerView: View {
             if !accepted {
                 restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
             } else {
-                // 发送可在后台完成；不要复位用户切到另一会话后设置的发送方式。
-                guard activeComposerDraftScope == submittedDraftScope,
-                      sessionStore.isSelectionLeaseCurrent(submissionContext.selectionLease) else { return }
-                resetFollowUpDeliveryToDefault()
-                resetComposerSendModeAfterSubmit()
+                restoreTransientSelectionsAfterSubmit(selectionCheckpoint)
             }
         }
         return true
@@ -437,6 +437,7 @@ struct ComposerView: View {
         // 防止 app-server 沿用上一轮规划协作状态。
         options.collaborationMode = .default
         let submittedDraftScope = activeComposerDraftScope
+        let selectionCheckpoint = transientSelectionCheckpoint
         let submissionContext = sessionStore.captureTurnSubmissionContext()
         guard let submitted = composerState.takeDraftForSubmit(
             isLoading: sessionStore.isLoading || sessionStore.isUpdatingThreadGoal,
@@ -467,10 +468,7 @@ struct ComposerView: View {
             if !accepted {
                 restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
             } else {
-                guard activeComposerDraftScope == submittedDraftScope,
-                      sessionStore.isSelectionLeaseCurrent(submissionContext.selectionLease) else { return }
-                resetFollowUpDeliveryToDefault()
-                resetComposerSendModeAfterSubmit()
+                restoreTransientSelectionsAfterSubmit(selectionCheckpoint)
             }
         }
         return true
@@ -555,6 +553,7 @@ struct ComposerView: View {
 
         // 先切 scope 再恢复，避免 restore 触发的 onChange 把新会话草稿误写回旧 scope。
         activeComposerDraftScope = nextScope
+        composerScopeRevision &+= 1
         composerState.setSendMode(restoredSendMode)
         persistComposerSendMode(restoredSendMode, for: nextScope)
         composerState.restoreDraftSnapshot(sessionStore.composerDraft(for: nextScope))
@@ -1684,6 +1683,9 @@ struct ComposerView: View {
         guard mode != .plan || composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
             return
         }
+        if composerState.sendMode != mode {
+            sendModeChoiceRevision &+= 1
+        }
         composerState.setSendMode(mode)
         let scope = activeComposerDraftScope == .none ? currentComposerDraftScope : activeComposerDraftScope
         persistComposerSendMode(mode, for: scope)
@@ -1779,6 +1781,7 @@ struct ComposerView: View {
             return
         }
         guidedFollowUpEnabled = guided
+        followUpDeliveryChoiceRevision &+= 1
         UISelectionFeedbackGenerator().selectionChanged()
     }
 
