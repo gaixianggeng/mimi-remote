@@ -393,6 +393,57 @@ final class TailscaleStableHostnameTests: XCTestCase {
         XCTAssertNil(store.activeConnectionProfile?.hostDeviceName)
     }
 
+    func testInactiveLocalProfileKeepsThisComputerWhileTailcatAdoptsHostName() throws {
+        let suiteName = "TailscaleStableHostnameTests.InactiveLocal.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let local = ConnectionProfile(
+            id: "local", displayName: "", endpoint: "http://127.0.0.1:8787",
+            isDisplayNameCustomized: false, lastSuccessfulAt: nil,
+            installationID: "installation-local", connectionRoute: .lan
+        )
+        let tailcat = ConnectionProfile(
+            id: "tailcat", displayName: "", endpoint: "http://127.0.0.1:28787",
+            isDisplayNameCustomized: false, lastSuccessfulAt: nil,
+            installationID: "installation-tailcat", connectionRoute: .customTailcat
+        )
+        let active = ConnectionProfile(
+            id: "remote", displayName: "", endpoint: "http://192.168.1.20:8787",
+            isDisplayNameCustomized: false, lastSuccessfulAt: nil,
+            installationID: "installation-remote", connectionRoute: .lan
+        )
+        defaults.set(try JSONEncoder().encode([local, tailcat, active]), forKey: "agentd.connectionProfiles.v2")
+        defaults.set(active.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(active.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("remote-token".utf8), account: "agentd-profile.remote")
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain)
+        )
+
+        let localResult = try XCTUnwrap(store.refreshConnectionProfileHostMetadata(
+            profileID: local.id, expectedRevision: local.revision,
+            version: VersionResponse(
+                name: "agentd", version: "test", installationID: "installation-local",
+                deviceName: "工作室的 Mac Studio"
+            )
+        ))
+        XCTAssertEqual(localResult.displayName, L10n.text("ui.this_mac"))
+        XCTAssertNil(localResult.hostDeviceName)
+        XCTAssertEqual(store.activeConnectionProfileID, active.id)
+
+        let tailcatResult = try XCTUnwrap(store.refreshConnectionProfileHostMetadata(
+            profileID: tailcat.id, expectedRevision: tailcat.revision,
+            version: VersionResponse(
+                name: "agentd", version: "test", installationID: "installation-tailcat",
+                deviceName: "工作室的 Mac Studio"
+            )
+        ))
+        XCTAssertEqual(tailcatResult.displayName, "工作室的 Mac Studio")
+        XCTAssertEqual(tailcatResult.hostDeviceName, "工作室的 Mac Studio")
+    }
+
     func testStoredHostDeviceNameSurvivesDecodingAndStoreReload() throws {
         let profile = ConnectionProfile(
             id: "tailcat-mac",

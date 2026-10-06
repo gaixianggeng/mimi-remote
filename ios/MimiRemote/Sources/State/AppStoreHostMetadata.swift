@@ -74,16 +74,21 @@ extension AppStore {
                 dnsName: dnsName
             ) ?? connectionProfiles[index].tailscaleDeviceName)
             : nil
-        let hostDeviceName = ConnectionProfile.normalizedHostDeviceName(version.deviceName)
-            ?? connectionProfiles[index].hostDeviceName
+        // Tailcat 也把 loopback 用作规范地址；仅非 Tailcat 本机直连保留「这台电脑」。
+        let isLocalLoopback = !connectionProfiles[index].connectionRoute.usesTailcat
+            && HostConnectionEndpointPolicy.isLoopbackEndpoint(connectionProfiles[index].endpoint)
+        let hostDeviceName = isLocalLoopback ? nil
+            : (ConnectionProfile.normalizedHostDeviceName(version.deviceName)
+                ?? connectionProfiles[index].hostDeviceName)
         var updated = connectionProfiles[index]
         // 设备名优先于 Tailscale 名称：宿主系统里的「电脑名称」是用户在设置里认得的名字，
         // 主机名或 MagicDNS 名称只在读不到电脑名时才作为默认名。
         let nextDisplayName = updated.isDisplayNameCustomized
             ? updated.displayName
-            : (hostDeviceName
-                ?? deviceName
-                ?? ConnectionProfile.fallbackDisplayName(endpoint: updated.endpoint))
+            : (isLocalLoopback ? L10n.text("ui.this_mac")
+                : (hostDeviceName
+                    ?? deviceName
+                    ?? ConnectionProfile.fallbackDisplayName(endpoint: updated.endpoint)))
         guard updated.tailscaleDNSName != dnsName ||
                 updated.tailscaleDeviceName != deviceName ||
                 updated.hostDeviceName != hostDeviceName ||

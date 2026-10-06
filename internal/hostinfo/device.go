@@ -97,20 +97,13 @@ func newResolver(ttl time.Duration, lookup func(context.Context) string) *Resolv
 	return &Resolver{ttl: ttl, lookup: lookup}
 }
 
-func (r *Resolver) Lookup(ctx context.Context) string {
+func (r *Resolver) Lookup(_ context.Context) string {
 	if r == nil {
 		return ""
 	}
 	r.mu.Lock()
-	if !r.resolved {
-		// 预热尚未完成时的兜底：同步解析一次，不让客户端长期拿不到设备名。
-		value := r.lookup(ctx)
-		r.store(value)
-		r.mu.Unlock()
-		return value
-	}
 	cached := r.cached
-	stale := !time.Now().Before(r.expiresAt)
+	stale := !r.resolved || !time.Now().Before(r.expiresAt)
 	r.mu.Unlock()
 	if stale {
 		r.refresh()

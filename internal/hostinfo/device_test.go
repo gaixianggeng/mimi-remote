@@ -78,6 +78,8 @@ func TestResolverCachesUntilTTLExpires(t *testing.T) {
 		}
 		return "renamed-mac"
 	})
+	resolver.Lookup(context.Background())
+	waitForResolver(t, resolver)
 	if got := resolver.Lookup(context.Background()); got != "studio-mac" {
 		t.Fatalf("首次读取异常：%q", got)
 	}
@@ -99,6 +101,7 @@ func TestResolverCachesEmptyResult(t *testing.T) {
 	if got := resolver.Lookup(context.Background()); got != "" {
 		t.Fatalf("空设备名应原样返回：%q", got)
 	}
+	waitForResolver(t, resolver)
 	if got := resolver.Lookup(context.Background()); got != "" {
 		t.Fatalf("空设备名应保持空值：%q", got)
 	}
@@ -116,6 +119,8 @@ func TestResolverRefreshesInBackgroundAfterTTL(t *testing.T) {
 		}
 		return "renamed-mac"
 	})
+	resolver.Lookup(context.Background())
+	waitForResolver(t, resolver)
 	if got := resolver.Lookup(context.Background()); got != "studio-mac" {
 		t.Fatalf("首次读取异常：%q", got)
 	}
@@ -132,6 +137,57 @@ func TestResolverRefreshesInBackgroundAfterTTL(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("过期刷新应只解析一次，calls=%d", calls.Load())
+	}
+}
+
+func TestResolverColdLookupNeverBlocksOrDuplicatesPrewarm(t *testing.T) {
+	var calls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{}, 1)
+	defer close(release)
+	resolver := newResolver(time.Minute, func(context.Context) string {
+		calls.Add(1)
+		close(started)
+		<-release
+		return "studio-mac"
+	})
+	resolver.refresh()
+	<-started
+
+	result := make(chan string, 1)
+	go func() { result <- resolver.Lookup(context.Background()) }()
+	select {
+	case got := <-result:
+		if got != "" {
+			t.Fatalf("预热未完成时应返回空缓存：%q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("冷缓存请求被系统设备名探测阻塞")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("冷缓存请求不应重复探测，calls=%d", calls.Load())
+	}
+	release <- struct{}{}
+	waitForResolver(t, resolver)
+	if got := resolver.Lookup(context.Background()); got != "studio-mac" {
+		t.Fatalf("预热完成后应返回设备名：%q", got)
+	}
+}
+
+func waitForResolver(t *testing.T, resolver *Resolver) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		resolver.mu.Lock()
+		resolved := resolver.resolved
+		resolver.mu.Unlock()
+		if resolved {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("设备名后台探测未完成")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
