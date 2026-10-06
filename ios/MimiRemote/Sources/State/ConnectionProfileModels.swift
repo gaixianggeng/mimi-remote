@@ -382,6 +382,10 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         return host
     }
 
+    static func acceptsHostDeviceName(endpoint: String, route: ConnectionProfileRoute) -> Bool {
+        route.usesTailcat || !HostConnectionEndpointPolicy.isLoopbackEndpoint(endpoint)
+    }
+
     /// 合并本次验证与已存档案的 Tailscale 元数据；本次结果优先，缺失时保留旧值。
     static func resolvedTailscaleMetadata(
         prepared: PreparedConnectionSettings,

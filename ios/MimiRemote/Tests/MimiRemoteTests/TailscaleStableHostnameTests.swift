@@ -444,6 +444,43 @@ final class TailscaleStableHostnameTests: XCTestCase {
         XCTAssertEqual(tailcatResult.hostDeviceName, "工作室的 Mac Studio")
     }
 
+    func testLocalFallbackClearsSavedHostNameAcrossReload() async throws {
+        let suiteName = "TailscaleStableHostnameTests.LocalFallback.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let existing = ConnectionProfile(
+            id: "mac", displayName: "", endpoint: "http://192.168.1.20:8787",
+            hostDeviceName: "工作室的 Mac Studio", isDisplayNameCustomized: false,
+            lastSuccessfulAt: nil, installationID: "installation-mac",
+            connectionRoute: .lan
+        )
+        defaults.set(try JSONEncoder().encode([existing]), forKey: "agentd.connectionProfiles.v2")
+        defaults.set(existing.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(existing.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("old-token".utf8), account: "agentd-profile.mac")
+        let store = AppStore(
+            defaults: defaults, tokenStore: TokenStore(keychain: keychain),
+            routeProbe: { _, _, _ in }
+        )
+        XCTAssertEqual(store.activeConnectionProfile?.displayName, "工作室的 Mac Studio")
+
+        // 本机配对不返回设备名；旧档案的名称也不能补回新的 loopback 路由。
+        let prepared = PreparedConnectionSettings(
+            endpoint: "http://127.0.0.1:8787", route: .lan,
+            token: "local-token", profileTarget: .currentOrNew(displayName: nil),
+            installationID: "installation-mac"
+        )
+        _ = try await store.commitConnectionSettings(prepared)
+        XCTAssertEqual(store.activeConnectionProfile?.displayName, L10n.text("ui.this_mac"))
+        XCTAssertNil(store.activeConnectionProfile?.hostDeviceName)
+        XCTAssertFalse(store.activeConnectionProfile?.isDisplayNameCustomized ?? true)
+
+        let reloaded = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+        XCTAssertEqual(reloaded.activeConnectionProfile?.displayName, L10n.text("ui.this_mac"))
+        XCTAssertNil(reloaded.activeConnectionProfile?.hostDeviceName)
+    }
+
     func testStoredHostDeviceNameSurvivesDecodingAndStoreReload() throws {
         let profile = ConnectionProfile(
             id: "tailcat-mac",

@@ -75,8 +75,10 @@ extension AppStore {
             ) ?? connectionProfiles[index].tailscaleDeviceName)
             : nil
         // Tailcat 也把 loopback 用作规范地址；仅非 Tailcat 本机直连保留「这台电脑」。
-        let isLocalLoopback = !connectionProfiles[index].connectionRoute.usesTailcat
-            && HostConnectionEndpointPolicy.isLoopbackEndpoint(connectionProfiles[index].endpoint)
+        let isLocalLoopback = !ConnectionProfile.acceptsHostDeviceName(
+            endpoint: connectionProfiles[index].endpoint,
+            route: connectionProfiles[index].connectionRoute
+        )
         let hostDeviceName = isLocalLoopback ? nil
             : (ConnectionProfile.normalizedHostDeviceName(version.deviceName)
                 ?? connectionProfiles[index].hostDeviceName)

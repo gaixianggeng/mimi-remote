@@ -595,6 +595,10 @@ final class AppStore: ObservableObject {
     func commitConnectionSettings(_ prepared: PreparedConnectionSettings) async throws -> Bool {
         let normalizedEndpoint = try Self.validatedEndpoint(prepared.endpoint)
         let normalizedActiveEndpoint = try Self.validatedEndpoint(prepared.activeEndpoint)
+        let acceptsHostDeviceName = ConnectionProfile.acceptsHostDeviceName(
+            endpoint: normalizedEndpoint, route: prepared.route.profileRoute
+        )
+        let preparedHostDeviceName = acceptsHostDeviceName ? prepared.hostDeviceName : nil
         let installationID = Self.normalizedInstallationID(prepared.installationID)
         let preparedLease = installationID.map {
             PreparedHostLease(
@@ -629,7 +633,8 @@ final class AppStore: ObservableObject {
                     excludingProfileID: current.id
                 )
                 let metadata = ConnectionProfile.resolvedTailscaleMetadata(prepared: prepared, existing: current)
-                let hostDeviceName = prepared.hostDeviceName ?? current.hostDeviceName
+                let hostDeviceName = acceptsHostDeviceName
+                    ? (preparedHostDeviceName ?? current.hostDeviceName) : nil
                 let display = ConnectionProfile.resolvedDisplay(
                     existing: current,
                     requested: displayName,
@@ -657,7 +662,7 @@ final class AppStore: ObservableObject {
                     existing: nil,
                     requested: displayName,
                     endpoint: normalizedEndpoint,
-                    hostDeviceName: prepared.hostDeviceName,
+                    hostDeviceName: preparedHostDeviceName,
                     tailscaleDeviceName: prepared.tailscaleDeviceName
                 )
                 targetProfile = ConnectionProfile(
@@ -666,7 +671,7 @@ final class AppStore: ObservableObject {
                     endpoint: normalizedEndpoint,
                     tailscaleDNSName: prepared.tailscaleDNSName,
                     tailscaleDeviceName: prepared.tailscaleDeviceName,
-                    hostDeviceName: prepared.hostDeviceName,
+                    hostDeviceName: preparedHostDeviceName,
                     isDisplayNameCustomized: display.customized,
                     lastSuccessfulAt: prepared.validatedAt,
                     installationID: installationID,
@@ -680,7 +685,7 @@ final class AppStore: ObservableObject {
                 existing: nil,
                 requested: displayName,
                 endpoint: normalizedEndpoint,
-                hostDeviceName: prepared.hostDeviceName,
+                hostDeviceName: preparedHostDeviceName,
                 tailscaleDeviceName: prepared.tailscaleDeviceName
             )
             targetProfile = ConnectionProfile(
@@ -689,7 +694,7 @@ final class AppStore: ObservableObject {
                 endpoint: normalizedEndpoint,
                 tailscaleDNSName: prepared.tailscaleDNSName,
                 tailscaleDeviceName: prepared.tailscaleDeviceName,
-                hostDeviceName: prepared.hostDeviceName,
+                hostDeviceName: preparedHostDeviceName,
                 isDisplayNameCustomized: display.customized,
                 lastSuccessfulAt: prepared.validatedAt,
                 installationID: installationID,
@@ -710,7 +715,8 @@ final class AppStore: ObservableObject {
                 excludingProfileID: existing.id
             )
             let metadata = ConnectionProfile.resolvedTailscaleMetadata(prepared: prepared, existing: existing)
-            let hostDeviceName = prepared.hostDeviceName ?? existing.hostDeviceName
+            let hostDeviceName = acceptsHostDeviceName
+                ? (preparedHostDeviceName ?? existing.hostDeviceName) : nil
             let display = ConnectionProfile.resolvedDisplay(
                 existing: existing,
                 requested: nil,
