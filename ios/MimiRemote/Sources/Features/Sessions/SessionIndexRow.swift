@@ -33,8 +33,8 @@ enum SessionIndexRowDensity: Equatable {
 
     /// 前导槽。宽度恒定预留，标题因此在所有行上落在同一条竖线上。
     ///
-    /// 与设置行的图标槽同宽（`SettingsLayoutMetrics.iconSlot`），四个 Tab 的行文字
-    /// 落在同一条竖线上（#563）。
+    /// 与设置行的图标槽同宽（`SettingsLayoutMetrics.iconSlot`，#563）。设置行装进卡片后
+    /// 图标到文字多留 4pt（#615），会话与工作区的行文字仍落在同一条竖线上。
     var stateGutterWidth: CGFloat { 24 }
 
     /// 状态字形在槽内的绘制尺寸，比槽略小以便居中。

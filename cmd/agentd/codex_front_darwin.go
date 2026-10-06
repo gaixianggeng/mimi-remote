@@ -34,6 +34,8 @@ const (
 	codexFrontAppFlag        = "--codex-front-door"
 	codexFrontOrphanInterval = time.Minute
 	codexFrontSupervisorPath = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+	// agentd 启动时不能为旧前门的活动共享连接等满迁移锁，HTTP 服务须先恢复。
+	codexFrontServeMigrationLockTimeout = time.Second
 )
 
 // 只在已安装的 Mac App 使用默认配置时自动登记前门。隔离构建和 Homebrew
@@ -54,7 +56,10 @@ func prepareMacAppCodexFront(cfg config.Config, configPath string) (bool, error)
 	if !isInstalledMacAppAgentd(executable, home) {
 		return false, nil
 	}
-	return true, runCodexFrontInstall([]string{"codex-front install", "--config", configPath}, io.Discard)
+	return true, runCodexFrontInstallWithOpsAndLockTimeout(
+		[]string{"codex-front install", "--config", configPath}, io.Discard,
+		defaultCodexFrontManagementOps(), codexFrontServeMigrationLockTimeout,
+	)
 }
 
 func isInstalledMacAppAgentd(executable, home string) bool {
@@ -239,6 +244,10 @@ func runCodexFrontInstall(args []string, stdout io.Writer) error {
 }
 
 func runCodexFrontInstallWithOps(args []string, stdout io.Writer, ops codexFrontManagementOps) error {
+	return runCodexFrontInstallWithOpsAndLockTimeout(args, stdout, ops, 20*time.Second)
+}
+
+func runCodexFrontInstallWithOpsAndLockTimeout(args []string, stdout io.Writer, ops codexFrontManagementOps, lockTimeout time.Duration) error {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	configPath, label, plistPath := codexFrontFlags(fs)
 	direct := fs.Bool("direct", false, "直接由 launchd 启动 agentd（仅供开发验证，后端不继承 Mimi Remote Mac 的隐私授权）")
@@ -298,14 +307,17 @@ func runCodexFrontInstallWithOps(args []string, stdout io.Writer, ops codexFront
 		}
 		// 安装身份与安全检查共用同一配置快照，避免并发改配置后检查了另一套后端。
 		door := install.door
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		unlock, err := door.LockMigration(ctx)
+		lockCtx, cancelLock := context.WithTimeout(context.Background(), lockTimeout)
+		unlock, err := door.LockMigration(lockCtx)
+		cancelLock()
 		if err != nil {
 			return fmt.Errorf("等待前门共享连接结束失败：%w", err)
 		}
 		defer unlock()
-		if err := door.CanReload(ctx); err != nil {
+		// 已取得锁后使用独立预算检查空闲线程，不能让短锁等待截断安全检查。
+		checkCtx, cancelCheck := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancelCheck()
+		if err := door.CanReload(checkCtx); err != nil {
 			return fmt.Errorf("前门有活动共享任务，暂缓加载新版：%w", err)
 		}
 	}

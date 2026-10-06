@@ -35,18 +35,19 @@ extension View {
         pageSectionHeaderStyle()
     }
 
-    /// 设置分组的行直接落在页面底色上，不装进卡片，也不画行间分隔线（#563）。
+    /// 设置分组装进一张圆角卡片，卡片内行与行之间画分隔线（#615）。
     ///
-    /// 四个一级 Tab 都是平铺写法；设备、我的与设置详情页靠分组标题右侧的细线划分功能区（#575）。
+    /// 规则按页面类型分：会话、工作区是内容列表，保持平铺；设备、我的与设置详情页是设置类页面，
+    /// 每组一张卡片。09-25 试过给内容列表也加局部卡片，同一列表一半卡片一半平铺，读起来很乱（#575），
+    /// 所以卡片只在设置链路出现。分隔线从行文字起点画起（行上的 `listRowSeparatorLeading`）。
     /// 行背景只能挂在 Section 上（挂在 Form 外层不会下发到行），所以每个设置分组都要显式接这一个修饰符，
     /// 不能留系统默认的分组卡片色。
     func settingsGroupRowStyle() -> some View {
-        listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+        modifier(SettingsGroupCardModifier())
     }
 
     /// 分组脚注。左右边距显式给定、与分组标题同一条边线：系统脚注比标题多缩进约 4pt，
-    /// 分组之间有细线后这点错位很显眼（#563）。只用于 Section 的 footer。
+    /// 上下两行文字一错位就很显眼（#563）。只用于 Section 的 footer。
     func settingsSectionFooterStyle() -> some View {
         modifier(PageSectionCaptionModifier(weight: .regular))
             .listRowInsets(
@@ -115,24 +116,20 @@ private struct SettingsDetailPageModifier: ViewModifier {
     }
 }
 
-/// 设置页的分组标题：标题嵌在细线上（#575）。
+/// 设置页的分组标题：卡片上方的一行小标题，与卡内图标列左对齐（#615）。
 ///
-/// 标题贴内容左边线，与会话、工作区的分组标题、分组脚注同一条竖线；细线从标题右侧延伸到右边线。
-/// 标题和线是同一个元素，页面第一组也画，每一组的开头长得一样；`showsDivider` 对带标题的分组
-/// 只决定与上一组之间的留白。留白上大下小：上一组最后一行离标题远、标题离本组第一行近，
-/// 标题读作下一组的开头，而不是悬在两组正中间的又一条分隔线。
+/// 分组之间靠卡片本身分开，不再画 #575 的标题细线。字号字重与会话、工作区的分组标题同一套；
+/// 附加内容（累计值、刷新）靠右排在同一行。`showsDivider` 只决定与上一组之间留不留组间距：
+/// 页面第一组传 false，只留很小的顶部间距。留白上大下小：上一张卡离标题远、标题离本组卡片近，
+/// 标题读作下一张卡的名字，而不是悬在两张卡正中间。
 ///
-/// 没有标题的单行分组只画一条线；第一组既无线也无标题时只留顶部间距，
+/// 没有标题的分组只留组间距；第一组既无标题也不留组间距时只留顶部间距，
 /// 否则系统会按无标题分组的默认上边距空出一大截，各页起点高低不一。
 ///
 /// 分组之间的留白全部由这里给出，所在页面要把分组间距和 `defaultMinListHeaderHeight`
 /// 都设为 0（见 `dividedSettingsList()`）：系统分组标题至少约 28pt 高、内容垂直居中，
-/// 只有一条线的标题会被上下各垫十几点，带文字的标题却几乎不垫，两种分界就不一样宽。
+/// 无标题的分组会被上下各垫十几点，带文字的标题却几乎不垫，两种组间距就不一样宽。
 struct SettingsGroupHeader<Accessory: View>: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.displayScale) private var displayScale
-    @EnvironmentObject private var themeStore: ThemeStore
-
     private let title: String?
     private let showsDivider: Bool
     private let accessory: Accessory
@@ -148,17 +145,15 @@ struct SettingsGroupHeader<Accessory: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        Group {
             if let title {
-                // 附加内容（累计值、刷新）排在线的右端，线把标题和它们连成一行。
-                HStack(alignment: .center, spacing: SettingsLayoutMetrics.groupTitleRuleSpacing) {
+                HStack(alignment: .center, spacing: SettingsLayoutMetrics.groupTitleAccessorySpacing) {
                     Text(title)
                         .settingsSectionHeaderStyle()
                         .fixedSize(horizontal: false, vertical: true)
                         .layoutPriority(1)
                         .accessibilityAddTraits(.isHeader)
-                    dividerLine
-                        .frame(minWidth: SettingsLayoutMetrics.groupTitleRuleSpacing, maxWidth: .infinity)
+                    Spacer(minLength: 0)
                     accessory
                 }
                 .padding(
@@ -168,19 +163,19 @@ struct SettingsGroupHeader<Accessory: View>: View {
                         : SettingsLayoutMetrics.groupTitleTopInset
                 )
                 .padding(.bottom, SettingsLayoutMetrics.groupTitleBottomSpacing)
-            } else if showsDivider {
-                dividerLine
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, SettingsLayoutMetrics.groupDividerSpacing)
             } else {
                 Color.clear
-                    .frame(height: SettingsLayoutMetrics.groupTitleTopInset)
+                    .frame(
+                        height: showsDivider
+                            ? SettingsLayoutMetrics.groupCardSpacing
+                            : SettingsLayoutMetrics.groupTitleTopInset
+                    )
                     .accessibilityHidden(true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         // 显式给出左右边距：系统给分组标题的边距会随分组内容浮动几点，
-        // 细线就会和上一条线不一样长。与行内容同一条左右边线。
+        // 标题就会和卡内的图标列错开。与卡内行内容同一条左右边线。
         .listRowInsets(
             EdgeInsets(
                 top: 0,
@@ -190,12 +185,19 @@ struct SettingsGroupHeader<Accessory: View>: View {
             )
         )
     }
+}
 
-    private var dividerLine: some View {
-        Rectangle()
-            .fill(themeStore.tokens(for: colorScheme).groupRule)
-            .frame(height: 1 / max(displayScale, 1))
-            .accessibilityHidden(true)
+/// 设置分组的卡片底与卡内分隔线（#615）。卡片形状直接用系统 insetGrouped 分组：
+/// 圆角、左右边距和按下高亮都与系统设置一致，这里只换卡片底色和分隔线颜色。
+private struct SettingsGroupCardModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    func body(content: Content) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        content
+            .listRowBackground(tokens.settingsGroupBackground)
+            .listRowSeparatorTint(tokens.settingsRowSeparator)
     }
 }
 
@@ -206,8 +208,8 @@ extension SettingsGroupHeader where Accessory == EmptyView {
 }
 
 extension View {
-    /// 用细线分组的页面（设备、我的、设置详情）：分组间距与系统标题最小高度都归零，
-    /// 分组之间的距离只由 `SettingsGroupHeader` 决定。必须挂在离 Form 最近的位置，
+    /// 用卡片分组的页面（设备、我的、设置详情）：分组间距与系统标题最小高度都归零，
+    /// 卡片之间的距离只由 `SettingsGroupHeader` 决定。必须挂在离 Form 最近的位置，
     /// 外层的 listSectionSpacing 会被内层覆盖。
     func dividedSettingsList() -> some View {
         listSectionSpacing(0)

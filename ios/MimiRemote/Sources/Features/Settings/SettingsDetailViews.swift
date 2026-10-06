@@ -543,7 +543,7 @@ struct CapabilityItemRow: View {
         HStack(alignment: .top, spacing: SettingsLayoutMetrics.iconSpacing) {
             Image(systemName: symbolName)
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
-                .foregroundStyle(tokens.secondaryText)
+                .foregroundStyle(tokens.settingsIconTint)
                 .frame(width: SettingsLayoutMetrics.iconSlot, height: SettingsLayoutMetrics.iconSlot)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -1226,6 +1226,7 @@ struct DefaultModelSettingsView: View {
                 DefaultModelRuntimeSection(
                     runtime: runtime,
                     allOptions: sessionStore.appServerModelOptions,
+                    isRefreshing: sessionStore.isRefreshingAppServerModels,
                     tokens: tokens,
                     footer: runtime == runtimes.last
                         ? L10n.text("ui.default_model_settings_description")
@@ -1300,9 +1301,10 @@ struct DefaultModelSettingsView: View {
 private struct DefaultModelRuntimeSection: View {
     let runtime: DefaultModelRuntime
     let allOptions: [CodexAppServerModelOption]
+    let isRefreshing: Bool
     let tokens: ThemeTokens
     let footer: String?
-    /// 页面第一段不画分组细线。
+    /// 页面第一段不留组间距。
     let showsDivider: Bool
 
     @AppStorage private var modelOptionID: String
@@ -1311,12 +1313,14 @@ private struct DefaultModelRuntimeSection: View {
     init(
         runtime: DefaultModelRuntime,
         allOptions: [CodexAppServerModelOption],
+        isRefreshing: Bool,
         tokens: ThemeTokens,
         footer: String?,
         showsDivider: Bool
     ) {
         self.runtime = runtime
         self.allOptions = allOptions
+        self.isRefreshing = isRefreshing
         self.tokens = tokens
         self.footer = footer
         self.showsDivider = showsDivider
@@ -1333,7 +1337,9 @@ private struct DefaultModelRuntimeSection: View {
     var body: some View {
         Section {
             Picker(L10n.text("ui.model"), selection: modelSelectionBinding) {
-                Text(L10n.text("ui.use_built_in_default"))
+                Text(DefaultModelDisplay.inheritedTitle(
+                    for: runtime, allOptions: allOptions, isRefreshing: isRefreshing
+                ))
                     .tag("")
                 ForEach(modelOptions) { option in
                     Text(option.menuTitle)
@@ -1715,9 +1721,9 @@ extension View {
     /// 每个 Section 显式接 settingsGroupRowStyle()，「我的」根页用的是同一个修饰符。
     /// 注意：listRowBackground 挂在 Form 外层不会下发到行，所以这里不设，只能在 Section 上设。
     ///
-    /// 设置链路所有页面都用细线分组（#563）：分组间距归零，每个 Section 都要有
-    /// `SettingsGroupHeader` 作标题——页面第一组 `showsDivider: false`，其余各组画线。
-    /// 漏了标题的分组会和上一组贴在一起。
+    /// 设置链路所有页面都每组一张卡片（#615）：分组间距归零，每个 Section 都要有
+    /// `SettingsGroupHeader` 作标题——页面第一组 `showsDivider: false`，其余各组留出组间距。
+    /// 漏了标题的分组会和上一张卡片贴在一起。
     func themedSettingsForm(tokens: ThemeTokens) -> some View {
         scrollContentBackground(.hidden)
             .textCase(nil)

@@ -176,6 +176,61 @@ extension HostStoreTests {
         XCTAssertNotEqual(store.lifecycle, .starting)
     }
 
+    func testDeepSeekToggleRestartsCurrentServiceWithoutReregistering() async {
+        var events: [String] = []
+        let store = makeStore(
+            configExists: true, agentStatus: { .enabled },
+            registerAgent: { events.append("register") },
+            unregisterAgent: { events.append("unregister") },
+            restartAgent: { events.append("restart") },
+            configureDeepSeek: { action, _ in
+                DeepSeekConfigurationResult(
+                    enabled: action == .connect, available: action == .connect,
+                    discovered: false, baseURL: "http://127.0.0.1:3080",
+                    message: "fixture", restartRequired: action != .refresh
+                )
+            }
+        )
+        await store.bootstrap()
+        events.removeAll()
+
+        await store.configureDeepSeek(.connect)
+        await store.configureDeepSeek(.disabled)
+
+        XCTAssertEqual(events, ["restart", "restart"])
+        XCTAssertFalse(store.deepSeekEnabled)
+        XCTAssertFalse(store.isBusy)
+    }
+
+    func testDeepSeekFastRestartFailureFallsBackToFullRegistration() async {
+        var events: [String] = []
+        var registration: ServiceRegistrationState = .enabled
+        let store = makeStore(
+            configExists: true, agentStatus: { registration },
+            registerAgent: { registration = .enabled; events.append("register") },
+            unregisterAgent: { registration = .notRegistered; events.append("unregister") },
+            restartAgent: {
+                events.append("restart")
+                throw AgentClientError.commandFailed("launchctl unavailable")
+            },
+            configureDeepSeek: { action, _ in
+                DeepSeekConfigurationResult(
+                    enabled: action == .connect, available: action == .connect,
+                    discovered: false, baseURL: "http://127.0.0.1:3080",
+                    message: "fixture", restartRequired: action == .connect
+                )
+            },
+            healthCheck: { _ in false }
+        )
+        await store.bootstrap()
+        events.removeAll()
+
+        await store.configureDeepSeek(.connect)
+
+        XCTAssertEqual(events, ["restart", "unregister", "register"])
+        XCTAssertNil(store.deepSeekError)
+    }
+
     private nonisolated static var discoveredDeepSeek: DeepSeekConfigurationResult {
         DeepSeekConfigurationResult(
             enabled: false, available: true, discovered: true,

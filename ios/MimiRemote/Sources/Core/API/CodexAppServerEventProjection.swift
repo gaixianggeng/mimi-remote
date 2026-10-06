@@ -385,6 +385,10 @@ extension CodexAppServerSessionRuntime {
         params: [String: CodexAppServerJSONValue]
     ) {
         guard method != "turn/completed",
+              // thread/* 是线程级状态（用量、压缩等），不能证明 turn 仍在运行。Codex 在
+              // thread/resume 后会补发上一轮的 tokenUsage，turnId 指向已完成的 turn；
+              // 据此回填会把历史会话误标成运行中。
+              !method.hasPrefix("thread/"),
               let threadID = params["threadId"]?.stringValue,
               let turnID = params["turnId"]?.stringValue,
               !turnID.isEmpty else {

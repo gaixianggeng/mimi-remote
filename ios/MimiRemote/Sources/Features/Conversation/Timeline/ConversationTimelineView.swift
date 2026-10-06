@@ -65,7 +65,7 @@ struct ConversationTimelineView: View {
             session: displayedSession,
             messages: source.messages
         )
-        let isHistoryLoading = sessionStore.historyLoadProgress(sessionID: displayedSessionID) != nil
+        let isHistoryLoading = sessionStore.isShowingHistoryLoading(sessionID: displayedSessionID)
         let liveStatus = displayedSessionID.flatMap { sessionID -> ConversationLiveStatus? in
             guard let session = displayedSession else { return nil }
             return ConversationLiveStatus.make(
@@ -96,7 +96,8 @@ struct ConversationTimelineView: View {
             timelineItemsAreEmpty: timelineItems.isEmpty,
             isHistoryLoading: isHistoryLoading,
             isLoadingEarlierHistory: isLoadingEarlierHistory,
-            hasHistorySavingsNotice: explicitSessionID == nil && sessionStore.selectedHistorySavingsNotice != nil
+            hasHistorySavingsNotice: explicitSessionID == nil && sessionStore.selectedHistorySavingsNotice != nil,
+            liveStatusReadiness: liveStatus?.readiness
         )
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottom) {
@@ -447,12 +448,15 @@ struct ConversationTimelineView: View {
         timelineItemsAreEmpty: Bool,
         isHistoryLoading: Bool,
         isLoadingEarlierHistory: Bool,
-        hasHistorySavingsNotice: Bool
+        hasHistorySavingsNotice: Bool,
+        liveStatusReadiness: ConversationReadiness?
     ) -> Bool {
         !timelineItemsAreEmpty
             && isHistoryLoading
             && !isLoadingEarlierHistory
             && !hasHistorySavingsNotice
+            // 实时状态已表达同一段历史恢复，不再并排显示第二个等待提示。
+            && liveStatusReadiness != .loadingHistory
     }
 
     private var loadEarlierRow: some View {

@@ -178,8 +178,8 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(SettingsLayoutMetrics.standardRowHeight, 52)
         XCTAssertEqual(SettingsLayoutMetrics.accessibilityRowHeight, 76)
         XCTAssertEqual(SettingsLayoutMetrics.iconSlot, 24)
-        XCTAssertEqual(SettingsLayoutMetrics.iconSpacing, 8)
-        // 会话行前导槽与设置行图标槽同宽，四个 Tab 的行文字落在同一条竖线上。
+        XCTAssertEqual(SettingsLayoutMetrics.iconSpacing, 12)
+        // 会话行前导槽与设置行图标槽同宽；设置行在卡片里，图标到文字比会话行多留 4pt（#615）。
         XCTAssertEqual(SessionIndexRowDensity.compact.stateGutterWidth, SettingsLayoutMetrics.iconSlot)
         XCTAssertEqual(SettingsLayoutMetrics.symbolPointSize, 18)
     }

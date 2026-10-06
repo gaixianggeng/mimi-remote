@@ -27,7 +27,7 @@ final class SettingsConnectionCardSnapshotTests: XCTestCase {
                 warningText: nil
             )
             .padding(16)
-            .background(tokens.background)
+            .background(tokens.settingsGroupBackground)
             .environmentObject(themeStore)
             .environment(\.colorScheme, .light)
             .frame(width: cardWidth)
@@ -51,7 +51,7 @@ final class SettingsConnectionCardSnapshotTests: XCTestCase {
                 warningText: "网络不可用，同步已暂停。恢复网络后会自动重连。"
             )
             .padding(16)
-            .background(tokens.background)
+            .background(tokens.settingsGroupBackground)
             .environmentObject(themeStore)
             .environment(\.colorScheme, .light)
             .frame(width: cardWidth)
@@ -73,7 +73,7 @@ final class SettingsConnectionCardSnapshotTests: XCTestCase {
                 warningText: nil
             )
             .padding(16)
-            .background(tokens.background)
+            .background(tokens.settingsGroupBackground)
             .environmentObject(themeStore)
             .environment(\.colorScheme, .dark)
             .frame(width: cardWidth)

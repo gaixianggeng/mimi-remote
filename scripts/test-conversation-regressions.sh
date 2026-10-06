@@ -89,6 +89,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/DeepSeekComposerPolicyTests \
   -only-testing:MimiRemoteTests/DeepSeekSearchRoutingTests \
   -only-testing:MimiRemoteTests/DeepSeekRuntimePresentationTests \
+  -only-testing:MimiRemoteTests/DefaultModelDisplayTests \
   -only-testing:MimiRemoteTests/HarnessNativeRoutingSeamTests \
   -only-testing:MimiRemoteTests/SessionObservationLeaseTests \
   -only-testing:MimiRemoteTests/HarnessTransportTests \
@@ -206,7 +207,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchiveOldTokenCannotClearNewPendingAndPendingArchiveBlocksPin \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchivedSessionMustUnarchiveRemotelyBeforePinning \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testMarkHistorySessionUnreadPersistsCompletionWatermark \
-  -only-testing:MimiRemoteTests/WorkspacePullRefreshTests/testPullRefreshPublishesSessionsWithoutRequestingWorkspaceGitSummaries \
+  -only-testing:MimiRemoteTests/WorkspacePullRefreshTests \
   -only-testing:MimiRemoteTests/ConversationTimelineProviderPresentationTests \
   -only-testing:MimiRemoteTests/ConversationActivityDetailProjectionTests \
   -only-testing:MimiRemoteTests/ConversationScrollStabilityTests \
@@ -227,6 +228,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testCommentaryAndTrailingActivitiesRendering \
   -only-testing:MimiRemoteTests/ConversationTimelineProviderPresentationSnapshotTests \
   -only-testing:MimiRemoteTests/MarkdownRenderingTests \
+  -only-testing:MimiRemoteTests/MessageTextSelectionTests \
   -only-testing:MimiRemoteTests/PairingLinkTests \
   -only-testing:MimiRemoteTests/TailcatExperimentRoutingTests \
   -only-testing:MimiRemoteTests/TailcatLocalEndpointProbeTests \

@@ -547,9 +547,17 @@ final class ConversationScrollStabilityTests: XCTestCase {
         rig.scrollView.contentOffset.y = 600
         rig.controller.beginLoadingEarlierHistory()
         let marker = rig.addMarker(y: 700)
+        let correction = expectation(description: "展开后的阅读锚点补偿已执行")
+        ConversationTimelineScrollController.testingCommandObserver = { record in
+            if record.reason == .historyAnchor, record.target == .offset(660) {
+                correction.fulfill()
+            }
+        }
+        defer { ConversationTimelineScrollController.testingCommandObserver = nil }
         rig.controller.expansionChanged("activity-batch", isExpanded: true, isAnimated: false)
         marker.frame.origin.y += 60
-        await drain()
+        // yield 次数不代表合并任务完成；等待真实命令后仍精确验证原生 offset。
+        await fulfillment(of: [correction], timeout: 1)
         XCTAssertEqual(rig.scrollView.contentOffset.y, 660)
         try await Task.sleep(for: .milliseconds(350))
         let count = rig.commands.count

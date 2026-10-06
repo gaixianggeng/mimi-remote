@@ -252,6 +252,8 @@ struct WorkspaceRootView: View {
     let onOpenSession: (AgentSession) -> Void
     let manageConnections: (() -> Void)?
     let embedsNavigationStack: Bool
+    // 完整调用边界包含目录发布后的 Git 尾部工作；供确定性测试观察，不影响加载态。
+    private let onCatalogRefreshEvent: ((UUID, Bool) -> Void)?
     private let currentDate: () -> Date
 
     @State private var selectedWorkspaceID: String?
@@ -261,6 +263,7 @@ struct WorkspaceRootView: View {
     @State private var manualCatalogRefreshInvocationID: UUID?
     @State private var runtimeSessionPagesByKey: [WorkspaceSessionPresentationKey: WorkspaceRuntimeSessionPageState] = [:]
     @State private var sessionLoadStates: [WorkspaceSessionPresentationKey: WorkspaceSessionLoadState] = [:]
+    @State private var sessionRefreshOwner = WorkspaceSessionRefreshOwner()
     @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
     /// canonical Store 可以持有超采样得到的额外 root；这里仅记录每个工作区已经向用户展开多少条。
     /// key 带 HostScope、路径和 Runtime，避免跨 Mac、目录身份或引擎复用旧窗口。
@@ -282,12 +285,14 @@ struct WorkspaceRootView: View {
         embedsNavigationStack: Bool = true,
         appearanceStore: WorkspaceAppearanceStore? = nil,
         initialWorkspaceID: String? = nil,
+        onCatalogRefreshEvent: ((UUID, Bool) -> Void)? = nil,
         currentDate: @escaping () -> Date = Date.init
     ) {
         self.onStartSession = onStartSession
         self.onOpenSession = onOpenSession
         self.manageConnections = manageConnections
         self.embedsNavigationStack = embedsNavigationStack
+        self.onCatalogRefreshEvent = onCatalogRefreshEvent
         self.currentDate = currentDate
         _selectedSessionRuntime = selectedSessionRuntime
         _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
@@ -325,6 +330,7 @@ struct WorkspaceRootView: View {
                 navigationContent(tokens: tokens)
             }
         }
+        .onAppear { sessionRefreshOwner.activate() }
         .task(id: catalogRefreshScope) {
             // 后台会主动清空内存凭据；恢复完成发布 false 后，完整 scope 会确定性触发一次新刷新。
             guard !catalogRefreshScope.credentialsSuspended else {
@@ -338,14 +344,20 @@ struct WorkspaceRootView: View {
             synchronizeSelection()
         }
         .onChange(of: appStore.activeHostScope) { _, _ in
+            sessionRefreshOwner.cancelAll()
             cancelManualCatalogRefresh()
         }
         .onChange(of: appStore.isCredentialMemorySuspended) { _, isSuspended in
             if isSuspended {
+                sessionRefreshOwner.cancelAll()
                 cancelManualCatalogRefresh()
             }
         }
+        .onChange(of: selectedWorkspaceID) { _, _ in
+            sessionRefreshOwner.cancelAll()
+        }
         .onDisappear {
+            sessionRefreshOwner.deactivate()
             cancelManualCatalogRefresh()
         }
         .onChange(of: appStore.connectionProfiles) { _, _ in
@@ -1197,6 +1209,8 @@ struct WorkspaceRootView: View {
 
     private func refreshCatalog(refreshesGitSummaries: Bool = true) async {
         let invocationID = catalogLoad.begin()
+        onCatalogRefreshEvent?(invocationID, false)
+        defer { onCatalogRefreshEvent?(invocationID, true) }
         do {
             try await sessionStore.refreshWorkspaceCatalog()
             guard catalogLoad.isCurrent(invocationID) else {
@@ -1240,7 +1254,8 @@ struct WorkspaceRootView: View {
             // 取消或失效响应也必须留下总耗时，不能只依赖 Store 成功提交的日志。
             SessionListDiagnostics.refreshStage("manual_end", startedAt: startedAt, source: .workspaceForeground)
         }
-        guard !Task.isCancelled,
+        guard sessionRefreshOwner.isActive,
+              !appStore.isCredentialMemorySuspended,
               selectedWorkspaceID == projectID,
               let project = sessionStore.sidebarProjects.first(where: { $0.id == projectID })
         else {
@@ -1265,6 +1280,25 @@ struct WorkspaceRootView: View {
         project: AgentProject,
         presentationKey: WorkspaceSessionPresentationKey,
         restartFromFirst: Bool = false
+    ) async {
+        // 有效手动操作在进入 owner 前也可能被 SwiftUI 取消等待者。
+        // 页面 owner 的活动状态与 Store 的 Host/路径 lease 决定它是否还能启动。
+        guard !appStore.isCredentialMemorySuspended,
+              appStore.activeHostScope == presentationKey.hostScope,
+              sessionStore.sidebarProjects.contains(where: {
+                  $0.id == project.id && $0.path == presentationKey.workspacePath
+              }) else { return }
+        await sessionRefreshOwner.refresh(key: presentationKey, allowsCancelledWaiter: restartFromFirst) {
+            await performWorkspaceSessionsRefresh(
+                project: project, presentationKey: presentationKey, restartFromFirst: restartFromFirst
+            )
+        }
+    }
+
+    private func performWorkspaceSessionsRefresh(
+        project: AgentProject,
+        presentationKey: WorkspaceSessionPresentationKey,
+        restartFromFirst: Bool
     ) async {
         // 每个 Runtime 独立占有提交 token；切换筛选不会让旧请求覆盖当前 Runtime 的缓存。
         let invocationID = sessionLoadInvocationTokens.begin(for: presentationKey)

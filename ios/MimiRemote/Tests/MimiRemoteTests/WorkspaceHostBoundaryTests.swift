@@ -1,9 +1,27 @@
+import Combine
 import XCTest
 @testable import MimiRemote
 
 @MainActor
 final class WorkspaceHostBoundaryTests: XCTestCase {
     private let root = AgentProject(id: "root", name: "Root", path: "/tmp/root")
+
+    func testHistoryLoadingFeedbackIgnoresRepeatedShowAndHide() {
+        let (store, session, _) = paginationFixture()
+        var changes: [Set<SessionID>] = []
+        let observation = store.$visibleHistoryLoadingSessionIDs.dropFirst().sink { changes.append($0) }
+        defer { observation.cancel() }
+
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: nil))
+        store.showHistoryLoading(sessionID: session.id)
+        store.showHistoryLoading(sessionID: session.id)
+        store.hideHistoryLoading(sessionID: "unrelated-session")
+        XCTAssertTrue(store.isShowingHistoryLoading(sessionID: session.id))
+        store.hideHistoryLoading(sessionID: session.id)
+        store.hideHistoryLoading(sessionID: session.id)
+
+        XCTAssertEqual(changes, [Set([session.id]), Set<SessionID>()], "重复 waiter 只发布一次开始和一次结束")
+    }
 
     func testWorkspaceBootstrapCatalogAndWorktreeListDoNotCreateSessionRuntime() async throws {
         let host = WorkspaceHostProbe(projects: [root])
@@ -148,7 +166,7 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         await history.waitForHistoryRequestCount(1)
         let refresh = Task { await store.loadHistory(for: session, force: true) }
         await history.waitForHistoryRequestCount(2)
-        let refreshProgress = store.historyLoadProgress(sessionID: session.id)
+        let refreshIsLoading = store.isShowingHistoryLoading(sessionID: session.id)
 
         // 新首屏等待时不允许使用旧 cursor 再发分页；旧 defer 也不能清除首屏进度。
         await store.loadEarlierHistory(sessionID: session.id)
@@ -157,13 +175,13 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         await older.value
 
         XCTAssertFalse(store.conversationStore.messages(for: session.id).contains { $0.content == "obsolete" })
-        XCTAssertEqual(store.historyLoadProgress(sessionID: session.id), refreshProgress)
+        XCTAssertEqual(store.isShowingHistoryLoading(sessionID: session.id), refreshIsLoading)
         XCTAssertFalse(store.loadingEarlierHistorySessionIDs.contains(session.id))
         history.resolveHistoryRequest(at: 1, with: paginationPage("refreshed", cursor: "refreshed-cursor"))
         let loaded = await refresh.value
         XCTAssertTrue(loaded)
         XCTAssertEqual(store.historyPreviousCursorBySessionID[session.id], "refreshed-cursor")
-        XCTAssertNil(store.historyLoadProgress(sessionID: session.id))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: session.id))
     }
 
     func testEarlierHistoryFailureAfterRefreshCannotCloseNewPaginationOrClearItsLoading() async {
@@ -176,7 +194,7 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         _ = await refresh.value
         let currentOlder = Task { await store.loadEarlierHistory(sessionID: session.id) }
         await history.waitForHistoryRequestCount(3)
-        let currentProgress = store.historyLoadProgress(sessionID: session.id)
+        let currentIsLoading = store.isShowingHistoryLoading(sessionID: session.id)
         store.setErrorMessage("current-error")
 
         history.failHistoryRequest(at: 0, with: AgentAPIError.invalidResponse)
@@ -185,7 +203,7 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         XCTAssertEqual(store.historyPreviousCursorBySessionID[session.id], "refreshed-cursor")
         XCTAssertTrue(store.canLoadEarlierHistory(sessionID: session.id))
         XCTAssertTrue(store.loadingEarlierHistorySessionIDs.contains(session.id))
-        XCTAssertEqual(store.historyLoadProgress(sessionID: session.id), currentProgress)
+        XCTAssertEqual(store.isShowingHistoryLoading(sessionID: session.id), currentIsLoading)
         XCTAssertEqual(store.errorMessage, "current-error")
         history.resolveHistoryRequest(at: 2, with: paginationPage("current-older"))
         await currentOlder.value
@@ -206,7 +224,7 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         XCTAssertEqual(store.historyPreviousCursorBySessionID[session.id], "initial-cursor")
         XCTAssertEqual(store.errorMessage, "existing-error")
         XCTAssertFalse(store.loadingEarlierHistorySessionIDs.contains(session.id))
-        XCTAssertNil(store.historyLoadProgress(sessionID: session.id))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: session.id))
     }
 
     func testEarlierHistoryAfterSameHostNavigationStillUpdatesOriginalConversation() async {
@@ -221,7 +239,7 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         XCTAssertTrue(store.conversationStore.messages(for: session.id).contains { $0.content == "older" })
         XCTAssertFalse(store.canLoadEarlierHistory(sessionID: session.id))
         XCTAssertEqual(store.errorMessage, "other-selection-error")
-        XCTAssertNil(store.historyLoadProgress(sessionID: session.id))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: session.id))
     }
 
     func testEarlierHistoryContinuityRecoveryFailureDoesNotRetryIndefinitely() async {
@@ -236,7 +254,7 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         XCTAssertEqual(history.requestedMessageCursors, ["initial-cursor", nil])
         XCTAssertEqual(store.conversationStore.messages(for: session.id).map(\.content), ["initial"])
         XCTAssertFalse(store.loadingEarlierHistorySessionIDs.contains(session.id))
-        XCTAssertNil(store.historyLoadProgress(sessionID: session.id))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: session.id))
         // full 首屏失败统一显示历史失败提示与状态；summary 才使用全局 errorMessage。
         XCTAssertEqual(store.historySavingsNoticesBySessionID[session.id]?.kind, .fullFailed)
         XCTAssertNotNil(store.statusMessage)
@@ -414,7 +432,7 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         preparePagination(store: store, session: session, content: "new-host", cursor: "new-host-cursor")
         let currentOlder = Task { await store.loadEarlierHistory(sessionID: session.id) }
         await history.waitForHistoryRequestCount(2)
-        let currentProgress = store.historyLoadProgress(sessionID: session.id)
+        let currentIsLoading = store.isShowingHistoryLoading(sessionID: session.id)
         store.setErrorMessage("new-host-error")
 
         if let error {
@@ -428,13 +446,13 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         XCTAssertEqual(store.historyPreviousCursorBySessionID[session.id], "new-host-cursor")
         XCTAssertTrue(store.canLoadEarlierHistory(sessionID: session.id))
         XCTAssertTrue(store.loadingEarlierHistorySessionIDs.contains(session.id))
-        XCTAssertEqual(store.historyLoadProgress(sessionID: session.id), currentProgress)
+        XCTAssertEqual(store.isShowingHistoryLoading(sessionID: session.id), currentIsLoading)
         XCTAssertEqual(store.errorMessage, "new-host-error")
         history.resolveHistoryRequest(at: 1, with: paginationPage("new-host-older"))
         await currentOlder.value
         XCTAssertTrue(store.conversationStore.messages(for: session.id).contains { $0.content == "new-host-older" })
         XCTAssertFalse(store.loadingEarlierHistorySessionIDs.contains(session.id))
-        XCTAssertNil(store.historyLoadProgress(sessionID: session.id))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: session.id))
     }
 
     private func assertOldHostContinuityRecoveryCannotChangeNewHost(error: Error?, reuseProfile: Bool = false) async throws {
@@ -468,7 +486,7 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         XCTAssertEqual(store.historyLoadJobsBySessionID[session.id]?.token, oldJobToken)
         XCTAssertEqual(store.historyPageRequestTokenBySessionID[session.id], oldPageToken)
         let currentPageKey = store.historyFirstPageInFlightByKey.keys.first
-        let currentProgress = store.historyLoadProgress(sessionID: session.id)
+        let currentIsLoading = store.isShowingHistoryLoading(sessionID: session.id)
         store.setErrorMessage("new-host-error")
         store.setStatusMessage("new-host-status")
 
@@ -483,7 +501,7 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         XCTAssertEqual(store.historyPreviousCursorBySessionID[session.id], "new-host-cursor")
         XCTAssertEqual(store.historyLoadJobsBySessionID[session.id]?.token, oldJobToken)
         XCTAssertEqual(currentPageKey.flatMap { store.historyFirstPageInFlightByKey[$0]?.token }, oldPageToken)
-        XCTAssertEqual(store.historyLoadProgress(sessionID: session.id), currentProgress)
+        XCTAssertEqual(store.isShowingHistoryLoading(sessionID: session.id), currentIsLoading)
         XCTAssertNil(store.historySavingsNoticesBySessionID[session.id])
         XCTAssertEqual(store.errorMessage, "new-host-error")
         XCTAssertEqual(store.statusMessage, "new-host-status")
@@ -492,7 +510,7 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         XCTAssertTrue(loaded)
         XCTAssertTrue(store.conversationStore.messages(for: session.id).contains { $0.content == "new-host-refreshed" })
         XCTAssertEqual(store.historyPreviousCursorBySessionID[session.id], "new-host-next")
-        XCTAssertNil(store.historyLoadProgress(sessionID: session.id))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: session.id))
         XCTAssertNil(store.historyLoadJobsBySessionID[session.id])
     }
 
