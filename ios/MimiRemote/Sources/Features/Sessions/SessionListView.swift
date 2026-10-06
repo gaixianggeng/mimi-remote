@@ -82,6 +82,19 @@ enum SessionListPresentationState: Equatable {
         }
     }
 
+    /// 正文在等内容到达：用整页居中的加载圆环表达，而不是塞进列表第一行。
+    /// 它和 `showsInPlaceConnectionProgress` 不是一回事——搜索中同样要居中等待，
+    /// 但搜索不是连接进度，顶栏设备徽标照常出现。
+    var showsCenteredLoading: Bool {
+        switch self {
+        case .connecting, .loading, .searching:
+            return true
+        case .content, .needsWorkspace, .noSessions, .noMatches,
+             .networkUnavailable, .runtimeUnavailable, .loadFailed:
+            return false
+        }
+    }
+
     static func resolve(
         hasVisibleSessions: Bool,
         hasOpenedWorkspace: Bool,
@@ -220,7 +233,7 @@ struct SessionListView: View {
                         tokens: tokens
                     )
                 }
-            } else {
+            } else if !presentationState.showsCenteredLoading {
                 sessionListUnavailableContent(state: presentationState, tokens: tokens)
                     .frame(maxWidth: .infinity)
                     .listRowBackground(Color.clear)
@@ -328,6 +341,10 @@ struct SessionListView: View {
                     .padding(.bottom, 8)
                     .background(tokens.workbenchCanvasBackground)
             }
+        }
+        // 挂在 safeAreaInset 之后：居中范围包含顶部搜索框，与工作区页（含胶囊行）同一块区域。
+        .overlay {
+            sessionListCenteredLoading(state: presentationState)
         }
         .toolbar {
             if showsToolbarSearchField {
@@ -669,35 +686,34 @@ struct SessionListView: View {
         )
     }
 
+    /// 整页居中的等待态。铺在列表与顶部搜索框之上（而不是列表行里），
+    /// 圆环中心才对准屏幕正中，并与工作区页的连接过渡落在同一点。
+    @ViewBuilder
+    private func sessionListCenteredLoading(state: SessionListPresentationState) -> some View {
+        switch state {
+        case .connecting:
+            ConnectionWarmUpView()
+        case .loading:
+            LoadingStateView(message: L10n.text("ui.loading_sessions"))
+                .accessibilityIdentifier("sessions.loading")
+        case .searching:
+            LoadingStateView(message: L10n.text("ui.searching_historical_conversations"))
+                .accessibilityIdentifier("sessions.search.initialLoading")
+        case .content, .needsWorkspace, .noSessions, .noMatches,
+             .networkUnavailable, .runtimeUnavailable, .loadFailed:
+            EmptyView()
+        }
+    }
+
     @ViewBuilder
     private func sessionListUnavailableContent(
         state: SessionListPresentationState,
         tokens: ThemeTokens
     ) -> some View {
         switch state {
-        case .content:
+        case .content, .connecting, .loading, .searching:
+            // 等待态由 `sessionListCenteredLoading` 铺在整页上表达。
             EmptyView()
-        case .loading:
-            VStack(spacing: 10) {
-                ProgressView()
-                Text(L10n.text("ui.loading_sessions"))
-                    .font(themeStore.uiFont(.footnote, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-            }
-            .padding(.vertical, 32)
-            .accessibilityIdentifier("sessions.loading")
-        case .connecting:
-            ConnectionWarmUpView()
-                .padding(.vertical, 24)
-        case .searching:
-            VStack(spacing: 10) {
-                ProgressView()
-                Text(L10n.text("ui.searching_historical_conversations"))
-                    .font(themeStore.uiFont(.footnote, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-            }
-            .padding(.vertical, 24)
-            .accessibilityIdentifier("sessions.search.initialLoading")
         case .needsWorkspace:
             ContentUnavailableView {
                 Label(L10n.text("ui.no_workspace_has_been_opened_yet"), systemImage: "folder.badge.plus")

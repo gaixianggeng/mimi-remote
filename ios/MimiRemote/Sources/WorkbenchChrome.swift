@@ -1255,8 +1255,7 @@ struct RelatedSessionConversationView: View {
                     ConversationTimelineView(layout: layout, sessionID: relation.id)
 
                     if isLoading {
-                        ProgressView(L10n.text("ui.loading"))
-                            .controlSize(.regular)
+                        LoadingStateView(message: L10n.text("ui.loading"))
                     } else if didFailToLoad && childSession == nil {
                         ContentUnavailableView(
                             L10n.text("ui.sub_agent"),

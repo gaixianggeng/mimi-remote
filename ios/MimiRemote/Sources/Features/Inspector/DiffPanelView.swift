@@ -374,10 +374,12 @@ struct DiffPanelView: View {
                     }
                 }
             } else if sessionStore.isRefreshingGitStatus {
-                ProgressView(L10n.text("ui.reading_git_status"))
-                    .font(themeStore.uiFont(.caption))
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 48)
+                LoadingStateView(
+                    message: L10n.text("ui.reading_git_status"),
+                    size: .regular,
+                    placement: .inline
+                )
+                .padding(.top, 48)
             } else {
                 ContentUnavailableView(L10n.text("ui.no_git_status_yet"), systemImage: "arrow.clockwise")
                     .font(themeStore.uiFont(.caption))
