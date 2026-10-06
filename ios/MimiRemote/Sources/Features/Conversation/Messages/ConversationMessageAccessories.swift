@@ -467,11 +467,13 @@ struct RuntimeSummaryCard: View {
 }
 
 private struct MessageContextMenuModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let message: ConversationMessage
     let hasSelectableBody: Bool
     let retry: (() -> Void)?
     let stop: (() -> Void)?
     @State private var isSelectingCardText = false
+    @State private var isMenuPresented = false
 
     func body(content: Content) -> some View {
         Group {
@@ -480,8 +482,11 @@ private struct MessageContextMenuModifier: ViewModifier {
                 content.environment(\.messageTextActions, MessageTextActions(
                     copyText: message.visibleCopyText,
                     retry: message.role == .user && message.sendStatus == .failed ? retry : nil,
-                    stop: message.role == .assistant && message.sendStatus == .sending ? stop : nil
+                    stop: message.role == .assistant && message.sendStatus == .sending ? stop : nil,
+                    menuPresentationChanged: { isMenuPresented = $0 }
                 ))
+                .modifier(MessageMenuLift(isPresented: isMenuPresented, role: message.role, reduceMotion: reduceMotion))
+                .onDisappear { isMenuPresented = false }
             } else {
                 content.contextMenu {
                     Button {
@@ -523,6 +528,34 @@ private struct MessageContextMenuModifier: ViewModifier {
 
     private var selectableText: String {
         message.visibleCopyText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+struct MessageMenuLift: ViewModifier {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let isPresented: Bool
+    let role: ConversationMessage.Role
+    let reduceMotion: Bool
+
+    func body(content: Content) -> some View {
+        let moves = isPresented && !reduceMotion
+        content
+            .background {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(themeStore.tokens(for: colorScheme).surface)
+                    .padding(-8)
+                    .opacity(isPresented && role == .assistant ? 1 : 0)
+            }
+            .shadow(color: .black.opacity(isPresented ? (colorScheme == .dark ? 0.3 : 0.14) : 0), radius: 12, y: 6)
+            .visualEffect { effect, geometry in
+                // 只变换显示层；长回复最多放大 8pt，避免远离按下位置，也不触发布局重排。
+                effect
+                    .scaleEffect(moves ? 1 + min(0.015, 8 / max(1, geometry.size.width, geometry.size.height)) : 1,
+                                 anchor: role == .user ? .trailing : .leading)
+                    .offset(y: moves ? -3 : 0)
+            }
+            .animation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.28, dampingFraction: 1), value: isPresented)
     }
 }
 
