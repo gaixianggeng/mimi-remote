@@ -154,6 +154,75 @@ fi
 assert_contains "$(<"$old_full_output_path")" "old-token.txt"
 assert_not_contains "$(<"$old_full_output_path")" "$old_secret"
 
+
+# A unique-blob prefilter must retain every original tree/path occurrence.
+shared_repository="$test_root/shared-blob-repository"
+create_repository "$shared_repository"
+printf -v shared_secret 'github_pat_%040d' 3
+printf '\n# %s\n' "$shared_secret" >> "$shared_repository/scripts/check-public-repo-safety.sh"
+mkdir -p "$shared_repository/nested"
+cp "$shared_repository/scripts/check-public-repo-safety.sh" "$shared_repository/visible-script.txt"
+cp "$shared_repository/scripts/check-public-repo-safety.sh" "$shared_repository/nested/second-script.txt"
+printf 'same harmless content\n' > "$shared_repository/nested/removed.p8"
+cp "$shared_repository/nested/removed.p8" "$shared_repository/nested/.env.template"
+printf '\0%s\n' "$shared_secret" > "$shared_repository/binary.dat"
+git -C "$shared_repository" add .
+git -C "$shared_repository" commit -q -m shared-sensitive-history
+shared_commit="$(git -C "$shared_repository" rev-parse HEAD)"
+git -C "$shared_repository" branch historical-only "$shared_commit"
+rm "$shared_repository/visible-script.txt" "$shared_repository/nested/second-script.txt" \
+  "$shared_repository/nested/removed.p8" "$shared_repository/binary.dat"
+cp scripts/check-public-repo-safety.sh "$shared_repository/scripts/check-public-repo-safety.sh"
+git -C "$shared_repository" add -A
+git -C "$shared_repository" commit -q -m remove-shared-material
+git -C "$shared_repository" commit --allow-empty -q -m repeated-tree
+shared_output_path="$test_root/shared-full-history.output"
+if (cd "$shared_repository" && bash ./scripts/check-public-repo-safety.sh --full-history) \
+  >"$shared_output_path" 2>&1; then
+  fail "Full history must reject shared blobs and historical sensitive paths."
+fi
+shared_output="$(<"$shared_output_path")"
+assert_contains "$shared_output" "$shared_commit visible-script.txt"
+assert_contains "$shared_output" "$shared_commit nested/second-script.txt"
+assert_contains "$shared_output" "$shared_commit nested/removed.p8"
+assert_not_contains "$shared_output" "$shared_commit scripts/check-public-repo-safety.sh"
+assert_not_contains "$shared_output" "$shared_commit nested/.env.template"
+assert_not_contains "$shared_output" "$shared_commit binary.dat"
+assert_not_contains "$shared_output" "$shared_secret"
+
+# The text prefilter is deliberately broader than git grep -I. A binary blob
+# must not become a finding, even with a diff attribute, when -I ignores it.
+attributes_repository="$test_root/attributes-repository"
+create_repository "$attributes_repository"
+printf '\0%s\n' "$shared_secret" > "$attributes_repository/forced-text.dat"
+printf 'forced-text.dat diff\n' > "$attributes_repository/.gitattributes"
+git -C "$attributes_repository" add .
+link_blob="$(printf '%s\n' "$shared_secret" | git -C "$attributes_repository" hash-object -w --stdin)"
+git -C "$attributes_repository" update-index --add --cacheinfo "120000,$link_blob,secret-link"
+git -C "$attributes_repository" commit -q -m forced-text-blob
+attributes_output_path="$test_root/attributes.output"
+if ! (cd "$attributes_repository" && bash ./scripts/check-public-repo-safety.sh --full-history) \
+  >"$attributes_output_path" 2>&1; then
+  fail "The prefilter must preserve git grep -I binary exclusions."
+fi
+assert_not_contains "$(<"$attributes_output_path")" "forced-text.dat"
+assert_not_contains "$(<"$attributes_output_path")" "secret-link"
+assert_not_contains "$(<"$attributes_output_path")" "$shared_secret"
+
+# Missing objects must fail closed instead of disappearing from a blob list.
+missing_repository="$test_root/missing-blob-repository"
+create_repository "$missing_repository"
+printf 'ordinary content\n' > "$missing_repository/missing.txt"
+git -C "$missing_repository" add missing.txt
+git -C "$missing_repository" commit -q -m missing-blob
+missing_blob="$(git -C "$missing_repository" rev-parse HEAD:missing.txt)"
+[[ "$missing_blob" =~ ^[0-9a-f]{40}$ ]] || fail "Unexpected fixture object ID."
+rm "$missing_repository/.git/objects/${missing_blob:0:2}/${missing_blob:2}"
+if (cd "$missing_repository" && bash ./scripts/check-public-repo-safety.sh --full-history) \
+  >"$test_root/missing-blob.output" 2>&1; then
+  fail "Full history must fail closed when a reachable blob is missing."
+fi
+
 rm -rf "$test_root"
 trap - EXIT
 
