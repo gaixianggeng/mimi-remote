@@ -84,7 +84,7 @@ If connection fails, check these in order (all of them are in the UI; no command
 2. Open the Mac app window and follow what it shows: an unconfigured app asks you to choose a code directory first, and a stopped service offers a start action.
 3. Confirm network reachability and do not replace a private HTTP address with a public HTTP endpoint.
 4. Open Settings → Diagnostics & Support in the app, run the connection speed test, and inspect the failed stage.
-5. When the QR code expires or pairing stops working, open Mimi Remote in the Mac menu bar, choose "Pair Device…", click "Refresh QR Code", then scan the new code in the app.
+5. When the QR code expires or pairing stops working, open Mimi Remote in the Mac menu bar, choose the item with the QR-code icon, click the circular-arrow button in the pairing window, then scan the new code in the app.
 
 For command-line installs (servers, automation, or recovery), the same checks apply: replace steps 1–2 with `agentd status` (and `agentd doctor --fix` when needed), and step 5 with `agentd pair`.
 

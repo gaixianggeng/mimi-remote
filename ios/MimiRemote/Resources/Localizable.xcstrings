@@ -32718,7 +32718,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The pairing QR code has expired. On your Mac, open Mimi Remote from the menu bar, choose \"Pair Device...\", click \"Refresh QR Code\", then scan again. Command-line installs can run agentd pair instead."
+            "value": "The pairing QR code has expired. On your Mac, open Mimi Remote from the menu bar, choose the item with the QR-code icon, then click the circular-arrow button in the pairing window and scan again. Command-line installs can run agentd pair instead."
           }
         },
         "zh-Hans": {
