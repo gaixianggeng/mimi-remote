@@ -184,11 +184,3 @@ enum WorkspaceSessionGroup: String, CaseIterable {
         allCases.filter(groups.contains)
     }
 }
-
-/// 工作区徽标表达聚合数量。个位数保持圆形，十个及以上封顶为 `9+`，避免撑大头像。
-enum WorkspaceRunningCountBadge {
-    static func displayText(for count: Int) -> String? {
-        guard count > 0 else { return nil }
-        return count > 9 ? "9+" : String(count)
-    }
-}

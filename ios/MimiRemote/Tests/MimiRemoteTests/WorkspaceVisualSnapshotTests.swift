@@ -46,7 +46,6 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
             hasBottomTabBar: false,
             testName: "testAccessibilityWorkspaceRowsGrowAndKeepDistinctPreview",
             dynamicTypeSize: .accessibility5,
-            // 运行中圆环按时钟旋转；允许这一小块的帧差，同时仍能发现文字截断。
             precision: 0.999
         )
     }
@@ -180,7 +179,7 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
                 )
             )
         ]
-        // iPhone 宽度快照专门保持单一“最近会话”分组，覆盖窄屏不显示分组标题时的计数语义；
+        // iPhone 宽度快照保持单一“最近会话”分组，覆盖窄屏不显示分组标题的形态。
         // iPad 继续保留运行中与最近会话两个分组，锁住宽屏层级。
         let sessions = hasBottomTabBar
             ? allSessions.filter { $0.id != "workspace-running" }

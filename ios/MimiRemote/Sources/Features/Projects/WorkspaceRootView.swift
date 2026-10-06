@@ -858,7 +858,6 @@ struct WorkspaceRootView: View {
                         unavailableCharacterIDs: [],
                         unavailableEmoji: [],
                         gitSummary: nil,
-                        runningSessionCount: 0,
                         isUnavailable: false,
                         isSelected: index == 0,
                         projectIndex: index,
@@ -875,7 +874,6 @@ struct WorkspaceRootView: View {
                 }
             } else {
                 ForEach(sessionStore.sidebarProjects) { project in
-                    let projectSessions = sessionStore.sessions(forProjectID: project.id)
                     let displayedCharacter = characterAssignments[project.id]
                         ?? appearanceStore.character(
                             style: iconStyle,
@@ -912,7 +910,6 @@ struct WorkspaceRootView: View {
                         unavailableCharacterIDs: unavailableCharacterIDs,
                         unavailableEmoji: unavailableEmoji,
                         gitSummary: sessionStore.workspaceGitSummaryByPath[project.path],
-                        runningSessionCount: projectSessions.filter(\.isRunning).count,
                         isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
                         isSelected: selectedWorkspaceID == project.id,
                         projectIndex: projectIndex,
@@ -1410,7 +1407,6 @@ private struct WorkspaceProjectChip: View {
     let unavailableEmoji: Set<String>
     /// 胶囊本身不再展示 Git 摘要；这里只用来决定“Git 变更”菜单项是否可用。
     let gitSummary: GitStatusResponse?
-    let runningSessionCount: Int
     let isUnavailable: Bool
     let isSelected: Bool
     let projectIndex: Int
@@ -1572,30 +1568,7 @@ private struct WorkspaceProjectChip: View {
             size: size,
             tokens: tokens
         )
-        .overlay(alignment: .topTrailing) {
-            runningCountBadge
-        }
         .opacity(isUnavailable ? 0.62 : 1)
-    }
-
-    @ViewBuilder
-    private var runningCountBadge: some View {
-        if let badgeText = WorkspaceRunningCountBadge.displayText(for: runningSessionCount) {
-            // 数字明确说明这是工作区内的聚合数量，不再让一颗绿点同时冒充连接和会话状态。
-            Text(badgeText)
-                .font(themeStore.uiFont(size: 9, weight: .bold))
-                .foregroundStyle(runningCountForeground)
-                .monospacedDigit()
-                .frame(minWidth: 14, minHeight: 14)
-                .padding(.horizontal, badgeText.count > 1 ? 1.5 : 0)
-                .background(tokens.success, in: Capsule())
-                .overlay {
-                    Capsule()
-                        .stroke(tokens.background, lineWidth: 1.25)
-                }
-                .offset(x: 3, y: -3)
-                .accessibilityHidden(true)
-        }
     }
 
     @ViewBuilder
@@ -1622,24 +1595,10 @@ private struct WorkspaceProjectChip: View {
         }
     }
 
-    private var runningCountForeground: Color {
-        // Gruvbox Light 的暖白压在橄榄绿上只有约 3.22:1；纯黑可提升到约 5.38:1。
-        if tokens.preset == .gruvbox, tokens.resolvedScheme == .light {
-            return .black
-        }
-        return tokens.background
-    }
-
     private var accessibilitySummary: String {
-        let statusParts = [
-            isUnavailable ? L10n.text("ui.need_to_retry") : nil,
-            runningSessionCount > 0
-                ? L10n.format("ui.running_sessions_count", runningSessionCount)
-                : nil
-        ].compactMap { $0 }
-        let status = statusParts.isEmpty
-            ? L10n.text("ui.git_status_unknown")
-            : statusParts.joined(separator: ", ")
+        let status = isUnavailable
+            ? L10n.text("ui.need_to_retry")
+            : L10n.text("ui.git_status_unknown")
         let selected = isSelected ? L10n.text("ui.selected_b4f8bea5") : ""
         return L10n.format(
             "ui.workspace_card_summary",
