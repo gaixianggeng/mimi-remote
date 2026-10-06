@@ -176,6 +176,108 @@ extension HostStoreTests {
         XCTAssertNotEqual(store.lifecycle, .starting)
     }
 
+    func testDeepSeekToggleRestartsCurrentServiceWithoutReregistering() async {
+        var events: [String] = []
+        let store = makeStore(
+            configExists: true, agentStatus: { .enabled },
+            registerAgent: { events.append("register") },
+            unregisterAgent: { events.append("unregister") },
+            restartAgent: { events.append("restart") },
+            configureDeepSeek: { action, _ in
+                DeepSeekConfigurationResult(
+                    enabled: action == .connect, available: action == .connect,
+                    discovered: false, baseURL: "http://127.0.0.1:3080",
+                    message: "fixture", restartRequired: action != .refresh
+                )
+            }
+        )
+        await store.bootstrap()
+        events.removeAll()
+
+        await store.configureDeepSeek(.connect)
+        await store.configureDeepSeek(.disabled)
+
+        XCTAssertEqual(events, ["restart", "restart"])
+        XCTAssertFalse(store.deepSeekEnabled)
+        XCTAssertFalse(store.isBusy)
+    }
+
+    func testDeepSeekFastRestartFailureFallsBackToFullRegistration() async {
+        var events: [String] = []
+        var registration: ServiceRegistrationState = .enabled
+        let store = makeStore(
+            configExists: true, agentStatus: { registration },
+            registerAgent: { registration = .enabled; events.append("register") },
+            unregisterAgent: { registration = .notRegistered; events.append("unregister") },
+            restartAgent: {
+                events.append("restart")
+                throw AgentClientError.commandFailed("launchctl unavailable")
+            },
+            configureDeepSeek: { action, _ in
+                DeepSeekConfigurationResult(
+                    enabled: action == .connect, available: action == .connect,
+                    discovered: false, baseURL: "http://127.0.0.1:3080",
+                    message: "fixture", restartRequired: action == .connect
+                )
+            },
+            healthCheck: { _ in false }
+        )
+        await store.bootstrap()
+        events.removeAll()
+
+        await store.configureDeepSeek(.connect)
+
+        XCTAssertEqual(events, ["restart", "unregister", "register"])
+        XCTAssertNil(store.deepSeekError)
+    }
+
+    func testDeepSeekLaunchRefreshMissDefersToRejectedCredentialRuntime() async {
+        let store = makeStore(
+            configExists: true, agentStatus: { .enabled },
+            status: { try Self.deepSeekRuntimeStatus(state: "signed_out", reason: "credentials_rejected") },
+            configureDeepSeek: { _, _ in Self.unavailableLaunchRefresh }
+        )
+        await store.bootstrap()
+        // 开机刷新抢在 Harness 换好凭据之前不算错误；agentd 的运行态才是结论。
+        XCTAssertNil(store.deepSeekError)
+        XCTAssertEqual(store.deepSeekStatusTitle, "需要更新启动链接")
+        XCTAssertEqual(store.moduleStateTitle(.deepseek), "需要更新启动链接")
+        XCTAssertTrue(store.deepSeekStatusDetail.contains("重启 Harness 后点击重新检测"))
+        let rejected = try? Self.deepSeekRuntimeStatus(
+            state: "signed_out", reason: "credentials_rejected"
+        ).runtimeStatus
+        XCTAssertTrue(rejected?.hasRetryableFailure == true)
+        var retry = RuntimeStatusFollowUpState()
+        XCTAssertEqual(retry.delay(for: rejected), .seconds(32))
+        retry.markRetry(for: rejected)
+        XCTAssertNil(retry.delay(for: rejected))
+    }
+
+    func testDeepSeekLaunchRefreshMissDoesNotHideSelfHealedRuntime() async {
+        let store = makeStore(
+            configExists: true, agentStatus: { .enabled },
+            status: { try Self.deepSeekRuntimeStatus(state: "available", reason: "ready") },
+            configureDeepSeek: { _, _ in Self.unavailableLaunchRefresh }
+        )
+        await store.bootstrap()
+        XCTAssertNil(store.deepSeekError)
+        XCTAssertEqual(store.deepSeekStatusTitle, "已连接")
+        XCTAssertEqual(store.moduleStateTitle(.deepseek), "可用")
+    }
+
+    private nonisolated static var unavailableLaunchRefresh: DeepSeekConfigurationResult {
+        DeepSeekConfigurationResult(
+            enabled: true, available: false, discovered: false,
+            baseURL: "http://127.0.0.1:3080", message: "未能从本机取得可用的 Harness 启动信息", restartRequired: false
+        )
+    }
+
+    private nonisolated static func deepSeekRuntimeStatus(state: String, reason: String) throws -> AgentStatus {
+        let checkedAt = ISO8601DateFormatter().string(from: Date())
+        let json = #"{"process_ok":true,"service_ok":true,"version":"fixture","endpoint":"http://127.0.0.1:8787","config_path":"/tmp/fixture.json","projects":1,"doctor_ok":true,"doctor":{"ok":true,"version":"fixture","listen":"127.0.0.1:8787","checks":[]},"runtime_status":{"checked_at":"\#(checkedAt)","runtimes":[{"id":"deepseek","title":"DeepSeek Harness","enabled":true,"state":"\#(state)","reason":"\#(reason)"}]}}"#
+        return try JSONDecoder().decode(AgentStatus.self, from: Data(json.utf8))
+    }
+
     private nonisolated static var discoveredDeepSeek: DeepSeekConfigurationResult {
         DeepSeekConfigurationResult(
             enabled: false, available: true, discovered: true,

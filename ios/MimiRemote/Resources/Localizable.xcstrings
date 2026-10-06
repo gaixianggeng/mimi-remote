@@ -1,6 +1,58 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.default_model_inherited_name": {
+      "comment": "Model name for the inherited default option, distinct from pinning the same model.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ (follow default)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@（跟随默认）"
+          }
+        }
+      }
+    },
+    "ui.default_model_loading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading model…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载模型…"
+          }
+        }
+      }
+    },
+    "ui.default_model_unconfirmed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model not confirmed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "型号未确认"
+          }
+        }
+      }
+    },
     "ui.search_runtime_unavailable": {
       "comment": "A search may succeed for one runtime while another fails. Keep the available results visible.",
       "localizations": {
@@ -20162,23 +20214,6 @@
         }
       }
     },
-    "ui.parse_historical_messages": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Parse historical messages"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "解析历史消息"
-          }
-        }
-      }
-    },
     "ui.passed": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -21123,19 +21158,19 @@
       }
     },
     "ui.preferred_runtime_description": {
-      "comment": "Explains the preferred workspace runtime and its fallback behavior.",
+      "comment": "Explains which runtime's sessions a workspace shows by default.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Workspaces show sessions from this runtime by default. If Claude Code isn't supported, Codex is used automatically."
+            "value": "Workspaces show sessions from the selected runtime by default"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "工作区默认展示该类型的会话。不支持 Claude Code 时自动使用 Codex。"
+            "value": "工作区默认展示所选类型的会话"
           }
         }
       }
@@ -21172,23 +21207,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "在 Mac 上准备"
-          }
-        }
-      }
-    },
-    "ui.prepare_to_load_abbreviated_history": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Preparing to load compact history"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "准备加载缩略历史"
           }
         }
       }
@@ -23439,23 +23457,6 @@
         }
       }
     },
-    "ui.ready_to_load_full_history": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ready to load full history"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "准备加载完整历史"
-          }
-        }
-      }
-    },
     "ui.reasoning_and_service_tier": {
       "comment": "Advanced turn options section containing reasoning effort and service tier controls.",
       "localizations": {
@@ -24810,23 +24811,6 @@
         }
       }
     },
-    "ui.request_history_paging": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Request history paging"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请求历史分页"
-          }
-        }
-      }
-    },
     "ui.request_subsequent_changes": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -24857,23 +24841,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "请求更改目标"
-          }
-        }
-      }
-    },
-    "ui.request_thumbnail_history": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Request compact history"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请求缩略历史"
           }
         }
       }
@@ -27905,24 +27872,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "会话标题：%@"
-          }
-        }
-      }
-    },
-    "ui.running_sessions_count": {
-      "comment": "Accessibility summary for the number of running sessions in one workspace.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Running sessions: %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在运行的会话：%@"
           }
         }
       }
@@ -35690,23 +35639,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "更新连接"
-          }
-        }
-      }
-    },
-    "ui.update_interface": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Update interface"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "更新界面"
           }
         }
       }
@@ -43499,6 +43431,13 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Other computers" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "其他电脑" } }
+      }
+    },
+    "ui.device_preferences": {
+      "comment": "Section title for device-related preferences.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Preferences" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "偏好设置" } }
       }
     },
     "ui.verifying_connection": {

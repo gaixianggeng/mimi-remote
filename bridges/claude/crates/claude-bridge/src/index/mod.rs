@@ -370,7 +370,10 @@ fn is_legacy_invalid_preview(preview: &str) -> bool {
     ]
     .iter()
     .any(|prefix| preview.starts_with(prefix));
-    preview == "(no messages)" || truncated_internal_prefix || is_internal_user_text(preview)
+    preview == "(no messages)"
+        || preview == "<task-notification>"
+        || truncated_internal_prefix
+        || is_internal_user_text(preview)
 }
 
 /// Compat shim. Today's daemon calls
@@ -396,6 +399,20 @@ impl ThreadIndex {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn legacy_task_notification_preview_is_invalid() {
+        assert!(is_legacy_invalid_preview("<task-notification>"));
+        assert!(is_legacy_invalid_preview(
+            "<task-notification>\n<status>stopped</status>\n</task-notification>"
+        ));
+        assert!(!is_legacy_invalid_preview(
+            "请解释 <task-notification> 是什么"
+        ));
+        assert!(!is_legacy_invalid_preview(
+            "<task-notification>示例</task-notification> 后面还有提问"
+        ));
+    }
 
     fn entry(id: &str, cwd: &str, created: i64, updated: i64, archived: bool) -> IndexEntry {
         IndexEntry {

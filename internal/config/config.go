@@ -137,6 +137,8 @@ type DeepSeekConfig struct {
 	Enabled bool `json:"enabled"`
 	// AutoDiscover 只在用户选择自动发现连接时设置。手动粘贴的连接即使也使用
 	// 受管 token 文件，refresh 也不能把它替换为另一个本机 LaunchAgent 服务。
+	// 唯一例外是同一地址上的凭据轮换：已存 token 被拒且本机 Harness 在同一地址上
+	// 给出新 token 时，用户开启或重新检测会换上新凭据，并转为自动发现。
 	AutoDiscover bool `json:"auto_discover,omitempty"`
 	// BaseURL 是 Harness 服务的 origin。明文 HTTP 只允许回环地址：
 	// 启动 token 会在认证请求的查询串里出现，不能走可被旁听的网络。
@@ -207,6 +209,9 @@ type AppServerConfig struct {
 	// 使 agentd 仍能接住待审批请求。默认关闭：它改变了 gateway 的连接生命周期，
 	// 需要先在真机上验证后台/锁屏路径再放开。
 	ApprovalBroker bool `json:"approval_broker,omitempty"`
+	// SharedCodexHome 只隔离 Mac App 前门的后端历史；公共 SSH socket 仍使用原 CODEX_HOME。
+	// 默认留空，启用前必须完成独立登录与显式冷切换。
+	SharedCodexHome string `json:"shared_codex_home,omitempty"`
 }
 
 // NormalizeDeepSeekBaseURL 校验并规范化 Harness 服务地址。
@@ -900,6 +905,9 @@ func (c Config) Validate() error {
 	case "codex_app_server":
 	default:
 		return fmt.Errorf("runtime.type 只支持 codex_app_server")
+	}
+	if err := c.ValidateSharedCodexHome(); err != nil {
+		return err
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AppServer.Transport)) {
 	case "ssh":

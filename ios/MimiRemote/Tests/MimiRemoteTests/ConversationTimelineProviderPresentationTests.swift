@@ -254,6 +254,43 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         }
     }
 
+    func testGeneratedPlanStaysReadableAfterTurnCompletesAndHistoryReloads() throws {
+        var read = makeActivity(id: "read", turnID: "turn", category: .runCommand, title: "读取")
+        read.turnLifecycle = .inProgress
+        let body = "## 会话历史加载与提示优化\n\n1. 先加载首屏。\n2. 显示明确提示。"
+        var plan = makeMessage(id: "plan", turnID: "turn", role: .system, kind: .plan, content: body)
+        plan.itemID = "plan-item"
+        plan.activityPayload = ConversationActivityPayload(category: .plan, displayTitle: "计划", subtitle: body)
+        plan.turnLifecycle = .inProgress
+
+        for provider in [ConversationTimelineProvider.codex, .claude] {
+            let cache = ConversationTimelineItemCache()
+            let live = cache.snapshot(from: [read, plan], provider: provider, activeTurn: .init(id: "turn"))
+            XCTAssertEqual(try message(in: live.rows[2]).content, body)
+
+            var completedRead = read
+            completedRead.turnLifecycle = .completed
+            var completedPlan = plan
+            completedPlan.turnLifecycle = .completed
+            let completed = cache.snapshot(from: [completedRead, completedPlan], provider: provider)
+            XCTAssertFalse(try group(in: completed.rows[0]).isExpanded)
+            XCTAssertEqual(try message(in: completed.rows[1]).content, body)
+
+            let reloaded = ConversationTimelineItemBuilder.items(from: [completedRead, completedPlan], provider: provider)
+            XCTAssertEqual(try message(in: reloaded[1]).content, body)
+        }
+    }
+
+    func testTurnPlanUpdateRemainsInsideProcess() throws {
+        let read = makeActivity(id: "read", turnID: "turn", category: .runCommand, title: "读取")
+        var checklist = makeMessage(id: "steps", turnID: "turn", role: .system, kind: .plan, content: "→ 读取\n· 验证")
+        checklist.itemID = "turn-plan"
+
+        let rows = ConversationTimelineItemBuilder.items(from: [read, checklist])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(try group(in: rows[0]).messages.map(\.id), [read.id, checklist.id])
+    }
+
     func testExpandedProcessKeepsNarrativeOrderWithoutAnotherBatchLevel() throws {
         let first = makeActivity(id: "read", turnID: "turn", category: .runCommand, title: "读取", commandKind: .exploration)
         let progress = makeMessage(id: "progress", turnID: "turn", role: .assistant, kind: .commentary, content: "继续")

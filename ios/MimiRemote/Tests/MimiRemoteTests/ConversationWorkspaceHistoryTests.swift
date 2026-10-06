@@ -3617,7 +3617,7 @@ extension ConversationDataFlowTests {
             await store.loadHistory(for: history, quiet: true)
         }
         await client.waitForHistoryRequestCount(1)
-        XCTAssertNil(store.historyLoadProgress(sessionID: history.id))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: history.id))
 
         let visibleJoin = Task {
             await store.loadHistory(for: history, quiet: true, showsProgress: true)
@@ -3626,8 +3626,8 @@ extension ConversationDataFlowTests {
         try? await Task.sleep(nanoseconds: 20_000_000)
 
         XCTAssertEqual(client.requestedMessageCursors, [nil], "可见 waiter 应加入已有 job，不重复请求")
-        XCTAssertNotNil(
-            store.historyLoadProgress(sessionID: history.id),
+        XCTAssertTrue(
+            store.isShowingHistoryLoading(sessionID: history.id),
             "加入已有 quiet job 后，进度必须保留到共享请求完成"
         )
 
@@ -3645,7 +3645,7 @@ extension ConversationDataFlowTests {
         _ = await backgroundLoad.value
         _ = await visibleJoin.value
 
-        XCTAssertNil(store.historyLoadProgress(sessionID: history.id))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: history.id))
         XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 
@@ -3685,12 +3685,12 @@ extension ConversationDataFlowTests {
             )
         }
         await client.waitForHistoryRequestCount(2)
-        XCTAssertNotNil(store.historyLoadProgress(sessionID: history.id))
+        XCTAssertTrue(store.isShowingHistoryLoading(sessionID: history.id))
 
         client.resolveHistoryRequest(at: 0, with: HistoryMessagesPage(messages: []))
         _ = await staleLoad.value
-        XCTAssertNotNil(
-            store.historyLoadProgress(sessionID: history.id),
+        XCTAssertTrue(
+            store.isShowingHistoryLoading(sessionID: history.id),
             "迟到的旧 job 不得清除替代 job 的进度"
         )
 
@@ -3707,7 +3707,7 @@ extension ConversationDataFlowTests {
         )
         _ = await replacementLoad.value
 
-        XCTAssertNil(store.historyLoadProgress(sessionID: history.id))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: history.id))
         XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 
@@ -3735,14 +3735,14 @@ extension ConversationDataFlowTests {
         store.scheduleQuietHistoryRefresh(for: history)
         await client.waitForHistoryRequestCount(1)
 
-        XCTAssertNil(
-            store.historyLoadProgress(sessionID: history.id),
+        XCTAssertFalse(
+            store.isShowingHistoryLoading(sessionID: history.id),
             "恢复链路的默认 quiet refresh 不应意外改成可见状态"
         )
         client.resolveHistoryRequest(at: 0, with: HistoryMessagesPage(messages: []))
         try? await Task.sleep(nanoseconds: 30_000_000)
 
-        XCTAssertNil(store.historyLoadProgress(sessionID: history.id))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: history.id))
         XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 
@@ -3784,8 +3784,8 @@ extension ConversationDataFlowTests {
 
         XCTAssertEqual(client.requestedMessageLimits, [20, 5])
         XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full])
-        XCTAssertNotNil(
-            store.historyLoadProgress(sessionID: history.id),
+        XCTAssertTrue(
+            store.isShowingHistoryLoading(sessionID: history.id),
             "可见 quiet full 缩页重试期间必须继续显示进度"
         )
         XCTAssertNil(store.selectedHistorySavingsNotice)
@@ -3803,8 +3803,8 @@ extension ConversationDataFlowTests {
         )
         _ = await load.value
 
-        XCTAssertNil(
-            store.historyLoadProgress(sessionID: history.id),
+        XCTAssertFalse(
+            store.isShowingHistoryLoading(sessionID: history.id),
             "替代 full job 完成后必须清除进度，不能永久旋转"
         )
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["缩页后的完整历史"])
@@ -3844,8 +3844,8 @@ extension ConversationDataFlowTests {
         await client.waitForHistoryRequestCount(2)
 
         XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy])
-        XCTAssertNotNil(
-            store.historyLoadProgress(sessionID: history.id),
+        XCTAssertTrue(
+            store.isShowingHistoryLoading(sessionID: history.id),
             "可见 quiet summary fallback 期间必须继续显示进度"
         )
         XCTAssertNil(store.selectedHistorySavingsNotice)
@@ -3866,8 +3866,8 @@ extension ConversationDataFlowTests {
         )
         _ = await load.value
 
-        XCTAssertNil(
-            store.historyLoadProgress(sessionID: history.id),
+        XCTAssertFalse(
+            store.isShowingHistoryLoading(sessionID: history.id),
             "替代 economy job 完成后必须清除进度，不能永久旋转"
         )
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["自动缩略历史"])
@@ -3947,8 +3947,8 @@ extension ConversationDataFlowTests {
             },
             "权威历史补拉期间先保留可见的本地 user 消息"
         )
-        XCTAssertNotNil(
-            store.historyLoadProgress(sessionID: running.id),
+        XCTAssertTrue(
+            store.isShowingHistoryLoading(sessionID: running.id),
             "已有本地 user 消息时仍应展示轻量历史加载进度"
         )
         XCTAssertNil(store.selectedHistorySavingsNotice, "权威重开只显示 progress，不应提前展示 savings 卡片")
@@ -3977,7 +3977,7 @@ extension ConversationDataFlowTests {
         )
         await reopen.value
 
-        XCTAssertNil(store.historyLoadProgress(sessionID: running.id))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: running.id))
         XCTAssertTrue(
             conversationStore.messages(for: running.id).contains {
                 $0.role == .assistant && $0.content == "程序员去海边，发现浪都是递归的。"
@@ -4118,15 +4118,15 @@ extension ConversationDataFlowTests {
 
         // 缓存已经形成可读首屏，后台补拉不能再插入会改变尾部布局的临时进度行。
         XCTAssertTrue(conversationStore.messages(for: history.id).contains { $0.content == "已缓存历史" })
-        XCTAssertNil(
-            store.historyLoadProgress(sessionID: history.id),
+        XCTAssertFalse(
+            store.isShowingHistoryLoading(sessionID: history.id),
             "缓存消息可见时，静默补拉必须保持不可见"
         )
         XCTAssertNil(store.selectedHistorySavingsNotice)
         client.failHistoryRequest(at: 1, with: MockError.timeout)
         try await Task.sleep(nanoseconds: 30_000_000)
 
-        XCTAssertNil(store.historyLoadProgress(sessionID: history.id))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: history.id))
         XCTAssertNil(store.selectedHistorySavingsNotice)
         XCTAssertNil(store.errorMessage)
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["已缓存历史"])

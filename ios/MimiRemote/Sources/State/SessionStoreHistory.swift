@@ -291,7 +291,25 @@ extension SessionStore {
                 )
             }
 
-            // 历史 resume 必须先补齐上下文，再追加本次用户输入，避免“发完历史没了”。
+            // 非队列发送在 create/resume 响应中已经拿到 turn ACK，历史补拉不应延迟确认。
+            // 原生队列响应只代表会话已准备好，仍须等待真正发送输入后的 ACK。
+            if !prompt.isEmpty, !queuesInitialInput {
+                if let clientMessageID {
+                    conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: responseSession.id, status: .sent)
+                    conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: responseSession.id)
+                } else {
+                    conversationStore.appendLocalUser(
+                        prompt,
+                        sessionID: responseSession.id,
+                        clientMessageID: nil,
+                        sendStatus: .sent,
+                        turnPayload: payload.retainedAfterAcceptedSend()
+                    )
+                }
+                setForegroundActivity(.waitingForAssistant, sessionID: responseSession.id)
+            }
+
+            // 历史 resume 仍先建立 canonical 快照，再订阅实时事件，保持 snapshot/live 对账顺序。
             // 新线程的首轮内容由本地回显和 buffered event replay 承接；turn/start 刚 ACK 时 rollout
             // 可能尚未可读，此时同步请求完整历史只会制造 no-rollout/超时竞态。
             let didLoadInitialHistory: Bool
@@ -315,21 +333,7 @@ extension SessionStore {
                 didLoadInitialHistory = false
             }
             guard appStore.activeHostScope == hostScope else { return false }
-            if !prompt.isEmpty, !queuesInitialInput {
-                if let clientMessageID {
-                    conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: responseSession.id, status: .sent)
-                    conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: responseSession.id)
-                } else {
-                    conversationStore.appendLocalUser(
-                        prompt,
-                        sessionID: responseSession.id,
-                        clientMessageID: nil,
-                        sendStatus: .sent,
-                        turnPayload: payload.retainedAfterAcceptedSend()
-                    )
-                }
-                setForegroundActivity(.waitingForAssistant, sessionID: responseSession.id)
-            } else if prompt.isEmpty {
+            if prompt.isEmpty {
                 conversationStore.appendSystem(L10n.text("ui.an_interactive_session_has_been_started"), sessionID: responseSession.id)
             }
             if let firstMessage = response.firstMessage {
@@ -480,6 +484,7 @@ extension SessionStore {
         if session.isLocalDraft {
             return true
         }
+        let hostScope = appStore.activeHostScope
         // quiet 只控制失败、状态和 savings notice 是否打扰用户；选中的已缓存会话仍可
         // 显示轻量历史补拉进度，避免消息区只有本地 user 气泡而看不出 assistant 仍在补齐。
         let shouldShowProgress = showsProgress ?? !quiet
@@ -528,33 +533,9 @@ extension SessionStore {
                             successStatusMessage: successStatusMessage,
                             showSavingsNotice: shouldShowSavingsNotice
                         )
-                        if shouldShowProgress {
-                            setHistoryLoadProgress(
-                                sessionID: session.id,
-                                title: loadMode == .full ? L10n.text("ui.request_full_history") : L10n.text("ui.request_thumbnail_history"),
-                                fraction: 0.32
-                            )
-                        }
-                        let didLoad = await awaitHistoryLoadJob(
-                            existing,
-                            session: session,
-                            quiet: false,
-                            successStatusMessage: successStatusMessage
-                        )
-                        if shouldShowProgress {
-                            clearHistoryLoadProgress(
-                                sessionID: session.id,
-                                ifCurrentHistoryLoadJobToken: existing.token
-                            )
-                        }
-                        return didLoad
                     }
                     if shouldShowProgress {
-                        setHistoryLoadProgress(
-                            sessionID: session.id,
-                            title: loadMode == .full ? L10n.text("ui.request_full_history") : L10n.text("ui.request_thumbnail_history"),
-                            fraction: 0.32
-                        )
+                        showHistoryLoading(sessionID: session.id)
                     }
                     let didLoad = await awaitHistoryLoadJob(
                         existing,
@@ -562,8 +543,8 @@ extension SessionStore {
                         quiet: quiet,
                         successStatusMessage: successStatusMessage
                     )
-                    if shouldShowProgress {
-                        clearHistoryLoadProgress(
+                    if shouldShowProgress, appStore.activeHostScope == hostScope {
+                        hideHistoryLoading(
                             sessionID: session.id,
                             ifCurrentHistoryLoadJobToken: existing.token
                         )
@@ -592,7 +573,8 @@ extension SessionStore {
         let hasNewerSessionSnapshot = historyLoadedSignatureBySessionID[session.id].map { $0 != signature } == true
         let cachePolicy: HistoryFirstPageCachePolicy = force || hasNewerSessionSnapshot ? .bypass : .reuseRecent
         let task = Task { [self] in
-            try await historyFirstPage(
+            guard appStore.activeHostScope == hostScope else { throw CancellationError() }
+            return try await historyFirstPage(
                 sessionID: session.id,
                 limit: limit,
                 loadMode: loadMode,
@@ -625,20 +607,17 @@ extension SessionStore {
         }
 
         if shouldShowProgress {
-            setHistoryLoadProgress(sessionID: session.id, title: loadMode == .full ? L10n.text("ui.ready_to_load_full_history") : L10n.text("ui.prepare_to_load_abbreviated_history"), fraction: 0.08)
+            showHistoryLoading(sessionID: session.id)
         }
         defer {
-            if shouldShowProgress {
-                clearHistoryLoadProgress(
+            if shouldShowProgress, appStore.activeHostScope == hostScope {
+                hideHistoryLoading(
                     sessionID: session.id,
                     ifCurrentHistoryLoadJobToken: jobToken
                 )
             }
         }
 
-        if shouldShowProgress {
-            setHistoryLoadProgress(sessionID: session.id, title: loadMode == .full ? L10n.text("ui.request_full_history") : L10n.text("ui.request_thumbnail_history"), fraction: 0.32)
-        }
         return await awaitHistoryLoadJob(job, session: session, quiet: quiet, successStatusMessage: successStatusMessage)
     }
 
@@ -732,6 +711,8 @@ extension SessionStore {
         )
         do {
             let result = try await job.task.value
+            // 切主机会清空整数 token；新主机同名会话可能重用相同值，提交前还须验证主机代次。
+            guard appStore.activeHostScope == hostScope else { return false }
             let ownsJob = historyLoadJobsBySessionID[session.id]?.token == job.token
             let didLoad = finishHistoryLoadJob(
                 job,
@@ -757,6 +738,7 @@ extension SessionStore {
             )
             return didLoad
         } catch {
+            guard appStore.activeHostScope == hostScope else { return false }
             if !isHistoryLoadCancellation(error) {
                 AppDiagnostics.record(
                     stage: .sessionHistory,
@@ -789,9 +771,6 @@ extension SessionStore {
         guard isCurrentHistoryPageRequest(sessionID: sessionID, token: result.token) else {
             return false
         }
-        if !effectiveQuiet {
-            setHistoryLoadProgress(sessionID: sessionID, title: L10n.text("ui.parse_historical_messages"), fraction: 0.74)
-        }
         if !conversationStore.hasLoadedHistory(sessionID: sessionID) {
             // ConversationStore 会独立按 LRU 淘汰正文。正文不存在时，SessionStore 中残留的
             // 深层 cursor 或 exhausted 状态已经失去对应时间线，必须让新首屏重建分页基线。
@@ -801,9 +780,6 @@ extension SessionStore {
             historySeenPreviousCursorsBySessionID.removeValue(forKey: sessionID)
         }
         applyHistoryFirstPage(result.page, sessionID: sessionID)
-        if !effectiveQuiet {
-            setHistoryLoadProgress(sessionID: sessionID, title: L10n.text("ui.update_interface"), fraction: 0.94)
-        }
         updateHistoryPageState(sessionID: sessionID, page: result.page, preserveExistingCursorOnEmptyPage: true)
         historyLoadedSignatureBySessionID[sessionID] = job.sessionSignature
         // full 页自带 notice 只有一种成因：本页 Turn 需要补 Item，而当前 runtime 没有
@@ -1213,11 +1189,11 @@ extension SessionStore {
             historyLoadJobsBySessionID.removeValue(forKey: sessionID)
             // 新 job 可能继续保持 quiet；先清掉旧代可见进度，由替代 job
             // 按自己的 showsProgress 选择是否重新写入。
-            clearHistoryLoadProgress(sessionID: sessionID)
+            hideHistoryLoading(sessionID: sessionID)
         }
     }
 
-    func clearHistoryLoadProgress(
+    func hideHistoryLoading(
         sessionID: SessionID,
         ifCurrentHistoryLoadJobToken token: Int
     ) {
@@ -1226,7 +1202,7 @@ extension SessionStore {
         guard historyLoadJobTokenBySessionID[sessionID] == token else {
             return
         }
-        clearHistoryLoadProgress(sessionID: sessionID)
+        hideHistoryLoading(sessionID: sessionID)
     }
 
     func setHistoryLoadNotice(sessionID: SessionID, kind: HistorySavingsNotice.Kind, message customMessage: String? = nil) {
@@ -1333,8 +1309,9 @@ extension SessionStore {
         loadMode: HistoryMessagesPage.LoadMode,
         cachePolicy: HistoryFirstPageCachePolicy
     ) async throws -> HistoryFirstPageResult {
+        let hostScope = appStore.activeHostScope
         let key = HistoryFirstPageRequestKey(
-            profileID: appStore.activeHostScope.profileID,
+            profileID: hostScope.profileID,
             sessionID: sessionID,
             limit: limit,
             loadMode: loadMode
@@ -1342,12 +1319,17 @@ extension SessionStore {
         if cachePolicy == .reuseRecent,
            let cached = historyFirstPageCacheByKey[key],
            Date().timeIntervalSince(cached.loadedAt) < historyFirstPageCacheTTL {
-            return HistoryFirstPageResult(page: cached.page, token: cached.token)
+            // 缓存命中没有建立新读取上下文，不能再次把已推进的分页 cursor 重置回首屏。
+            var page = cached.page
+            page.resetsPaginationContext = false
+            return HistoryFirstPageResult(page: page, token: cached.token)
         }
         if cachePolicy == .reuseRecent,
            let inFlight = historyFirstPageInFlightByKey[key] {
             do {
-                return HistoryFirstPageResult(page: try await inFlight.task.value, token: inFlight.token)
+                let page = try await inFlight.task.value
+                guard appStore.activeHostScope == hostScope else { throw CancellationError() }
+                return HistoryFirstPageResult(page: page, token: inFlight.token)
             } catch {
                 throw HistoryFirstPageFetchFailure(underlying: error, token: inFlight.token)
             }
@@ -1366,13 +1348,15 @@ extension SessionStore {
         historyFirstPageInFlightByKey[key] = HistoryFirstPageInFlight(token: token, task: task)
         do {
             let page = try await task.value
+            guard appStore.activeHostScope == hostScope else { throw CancellationError() }
             if historyFirstPageInFlightByKey[key]?.token == token {
                 historyFirstPageInFlightByKey.removeValue(forKey: key)
                 historyFirstPageCacheByKey[key] = HistoryFirstPageCacheEntry(page: page, loadedAt: Date(), token: token)
             }
             return HistoryFirstPageResult(page: page, token: token)
         } catch {
-            if historyFirstPageInFlightByKey[key]?.token == token {
+            if appStore.activeHostScope == hostScope,
+               historyFirstPageInFlightByKey[key]?.token == token {
                 historyFirstPageInFlightByKey.removeValue(forKey: key)
             }
             throw HistoryFirstPageFetchFailure(underlying: error, token: token)
@@ -3085,9 +3069,10 @@ extension SessionStore {
         recordHistorySnapshotSeq(page.snapshotSeq, sessionID: sessionID)
         if requestedCursor == nil {
             if historySessionsWithAdditionalPages.contains(sessionID),
-               historyHasMoreBeforeBySessionID[sessionID] != nil {
+               historyHasMoreBeforeBySessionID[sessionID] != nil,
+               !page.resetsPaginationContext {
                 // 用户已经翻到更深窗口后，首屏刷新只合并最新内容。不能让滑出首屏的
-                // 有效历史消失，也不能用首屏 cursor 覆盖深层或已耗尽的分页状态。
+                // 有效历史消失。新读取上下文则以服务端 hasMore 重建分页，补齐离线新增的间隙。
                 return
             }
             if let cursor = page.previousCursor, page.hasMoreBefore {
@@ -3095,6 +3080,7 @@ extension SessionStore {
                 historyHasMoreBeforeBySessionID[sessionID] = true
                 historySeenPreviousCursorsBySessionID[sessionID] = [cursor]
             } else if preserveExistingCursorOnEmptyPage,
+                      !page.resetsPaginationContext,
                       page.messages.isEmpty,
                       historyPreviousCursorBySessionID[sessionID] != nil {
                 // resume/刷新首屏偶发空页时不要丢掉已有 older cursor。用户主动点“加载更早”
@@ -3412,6 +3398,10 @@ extension SessionStore {
     func beginHistoryLoadJob(sessionID: SessionID) -> Int {
         let token = (historyLoadJobTokenBySessionID[sessionID] ?? 0) + 1
         historyLoadJobTokenBySessionID[sessionID] = token
+        // 新首屏同步接管上下文，旧分页的迟到响应和 defer 都不能再改变加载状态。
+        if loadingEarlierHistorySessionIDs.remove(sessionID) != nil {
+            hideHistoryLoading(sessionID: sessionID)
+        }
         return token
     }
 
@@ -3846,7 +3836,7 @@ extension SessionStore {
         historySessionsWithAdditionalPages.formIntersection(validSessionIDs)
         historySnapshotSeqBySessionID = historySnapshotSeqBySessionID.filter { validSessionIDs.contains($0.key) }
         historyPageRequestTokenBySessionID = historyPageRequestTokenBySessionID.filter { validSessionIDs.contains($0.key) }
-        historyLoadProgressBySessionID = historyLoadProgressBySessionID.filter { validSessionIDs.contains($0.key) }
+        visibleHistoryLoadingSessionIDs.formIntersection(validSessionIDs)
         let staleHistoryLoadJobIDs = historyLoadJobsBySessionID.keys.filter { !validSessionIDs.contains($0) }
         for sessionID in staleHistoryLoadJobIDs {
             historyLoadJobsBySessionID[sessionID]?.task.cancel()

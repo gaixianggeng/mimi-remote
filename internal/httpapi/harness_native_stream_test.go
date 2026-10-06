@@ -33,6 +33,8 @@ type harnessNativeStreamStub struct {
 	muxOpen func(conn *websocket.Conn, open map[string]any)
 	// 非零时让 remote.mux 在升级前失败，用于验证上游建连失败的资源归还。
 	muxStatus int
+	// beforeRPCReply 可阻塞目录授权，验证连接关闭会取消仍在执行的请求。
+	beforeRPCReply func(*http.Request)
 
 	mu        sync.Mutex
 	opened    []map[string]any
@@ -135,6 +137,9 @@ func (stub *harnessNativeStreamStub) serve() *httptest.Server {
 		}
 		var envelope map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&envelope)
+		if stub.beforeRPCReply != nil {
+			stub.beforeRPCReply(r)
+		}
 		rpcID, _ := envelope["rpcId"].(string)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{

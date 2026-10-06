@@ -130,53 +130,47 @@ final class HostStatusStoreTests: XCTestCase {
         )
     }
 
-    func testConnectionWarmUpBeaconRipplesStaggerAndVanishAtTheOuterEdge() {
-        let ripples = (0..<ConnectionWarmUpBeacon.rippleCount).map {
-            ConnectionWarmUpBeacon.ripple(index: $0, time: 0, animates: true)
+    func testLoadingOrbitArcRevolvesAndBreathesWithinBounds() {
+        let origin = LoadingOrbit.arc(time: 0, animates: true)
+        XCTAssertEqual(origin.start, 0, accuracy: 0.0001, "零时刻从正上方起步")
+
+        let quarterTurn = LoadingOrbit.arc(time: LoadingOrbit.revolutionDuration / 4, animates: true)
+        XCTAssertEqual(quarterTurn.start, 0.25, accuracy: 0.0001, "匀速转动：四分之一周期走四分之一圈")
+
+        let fullTurn = LoadingOrbit.arc(time: LoadingOrbit.revolutionDuration, animates: true)
+        XCTAssertEqual(fullTurn.start, 0, accuracy: 0.0001, "转满一圈回到起点，不跳帧")
+
+        // 弧长在区间内伸缩，且确实会变：不会退化成一个点，也不会长成整圈。
+        let samples = stride(from: 0.0, to: LoadingOrbit.breathDuration, by: 0.05).map {
+            LoadingOrbit.arc(time: 1_000_000 + $0, animates: true)
         }
-
-        XCTAssertEqual(ripples[0].scale, ConnectionWarmUpBeacon.birthScale, accuracy: 0.0001)
-        XCTAssertEqual(ripples[0].opacity, 0, accuracy: 0.0001, "落点上的新一圈先淡入")
-        XCTAssertEqual(ripples[0].lineWidth, ConnectionWarmUpBeacon.maxLineWidth, accuracy: 0.0001)
-        XCTAssertLessThan(ripples[1].scale, ripples[2].scale, "同一时刻各圈相位均匀错开")
-        XCTAssertGreaterThan(ripples[1].opacity, ripples[2].opacity, "越靠外越淡")
-        XCTAssertGreaterThan(ripples[1].lineWidth, ripples[2].lineWidth, "波峰随扩散变薄")
-
-        for ripple in ripples {
-            XCTAssertTrue((ConnectionWarmUpBeacon.birthScale...1).contains(ripple.scale))
-            XCTAssertTrue((0...ConnectionWarmUpBeacon.peakOpacity).contains(ripple.opacity))
-            XCTAssertTrue(
-                (ConnectionWarmUpBeacon.minLineWidth...ConnectionWarmUpBeacon.maxLineWidth)
-                    .contains(ripple.lineWidth)
-            )
+        for arc in samples {
+            XCTAssertTrue((0..<1).contains(arc.start))
+            XCTAssertTrue((LoadingOrbit.minArcLength...LoadingOrbit.maxArcLength).contains(arc.length))
         }
-
-        // 走到最外沿前必须散干净，否则每一轮回到起点都会闪一下。
-        let atOuterEdge = ConnectionWarmUpBeacon.ripple(
-            index: 0,
-            time: ConnectionWarmUpBeacon.cycleDuration * 0.999,
-            animates: true
-        )
-        XCTAssertLessThan(atOuterEdge.opacity, 0.01)
-        XCTAssertEqual(atOuterEdge.scale, 1, accuracy: 0.01)
+        let lengths = samples.map(\.length)
+        XCTAssertEqual(lengths.min() ?? 0, LoadingOrbit.minArcLength, accuracy: 0.01)
+        XCTAssertEqual(lengths.max() ?? 0, LoadingOrbit.maxArcLength, accuracy: 0.01)
     }
 
-    func testConnectionWarmUpBeaconStopsAtStaticRingsUnderReduceMotion() {
+    func testLoadingOrbitStopsAtRestingArcUnderReduceMotion() {
+        XCTAssertEqual(LoadingOrbit.arc(time: 0, animates: false), LoadingOrbit.restingArc)
         XCTAssertEqual(
-            ConnectionWarmUpBeacon.ripple(index: 1, time: 0, animates: false),
-            ConnectionWarmUpBeacon.ripple(index: 1, time: 12.3, animates: false),
-            "减弱动态效果下这一圈与时间无关"
+            LoadingOrbit.arc(time: 12.3, animates: false),
+            LoadingOrbit.restingArc,
+            "减弱动态效果下弧与时间无关"
         )
+        XCTAssertGreaterThan(LoadingOrbit.restingArc.length, 0, "静止时仍要看得出是一段弧")
+    }
 
-        let inner = ConnectionWarmUpBeacon.ripple(index: 0, time: 0, animates: false)
-        let outer = ConnectionWarmUpBeacon.ripple(
-            index: ConnectionWarmUpBeacon.rippleCount - 1,
-            time: 0,
-            animates: false
-        )
-        XCTAssertLessThan(inner.scale, outer.scale, "静止时仍是一组由内向外的同心圆")
-        XCTAssertGreaterThan(inner.opacity, outer.opacity)
-        XCTAssertGreaterThan(inner.lineWidth, outer.lineWidth)
+    func testLoadingOrbitRingIsThickAtEverySize() {
+        for size in [LoadingOrbit.Size.large, .regular] {
+            let diameter = size.diameter
+            let lineWidth = LoadingOrbit.lineWidth(diameter: diameter)
+            // 环身约占直径的 29%：这正是替换细水纹的理由（#624）。
+            XCTAssertEqual(lineWidth / diameter, 0.29, accuracy: 0.001)
+            XCTAssertGreaterThanOrEqual(lineWidth, 10, "面板尺寸也不能细成一根线")
+        }
     }
 
     func testProbeRequestsOnlyInactiveProfileAndReusesSuccessTTL() async throws {

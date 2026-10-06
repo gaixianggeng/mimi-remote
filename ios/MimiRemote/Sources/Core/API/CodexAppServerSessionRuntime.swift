@@ -2202,10 +2202,10 @@ actor CodexAppServerSessionRuntime {
         guard runtimeProvider == "codex" else {
             return true
         }
-        // 共享 SSH 的多个入口必须在打开时就得到同一份 writer 结论。普通 WS 仍保持
-        // 空闲历史只读，避免仅浏览历史就提前取得 writer。
+        // 本机 local 与 SSH 都连接共享运行时，打开时必须取得服务端的 writer 结论。
+        // 普通 WS 仍保持空闲历史只读，避免仅浏览历史就提前取得 writer。
         let transport = config.runtime.transport.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return transport == "ssh" || session.isRunning
+        return transport == "ssh" || transport == "local" || session.isRunning
     }
 
     func replaceThreadSubscriptionLease(
@@ -2612,6 +2612,11 @@ actor CodexAppServerSessionRuntime {
             let connection = try await ensureConnection()
             do {
                 try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
+                // resume 会用权威快照改写 context。旧 turn 若在后台或断线期间已经结束，
+                // expectedTurnID 已过期，turn/steer 必然被拒；此时尚未发送，交给调用方降级为 turn/start。
+                guard contextsBySessionID[sessionID]?.activeTurnID == expectedTurnID else {
+                    throw CodexAppServerSessionRuntimeError.missingActiveTurn(sessionID)
+                }
                 _ = try await connection.send(try builder.turnSteer(
                     threadID: sessionID,
                     cwd: context.cwd,

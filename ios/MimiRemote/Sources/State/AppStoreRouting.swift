@@ -34,6 +34,13 @@ extension AppStore {
         }
         var nextProfiles = connectionProfiles
         nextProfiles[index].connectionRoute = route
+        if !ConnectionProfile.acceptsHostDeviceName(endpoint: nextProfiles[index].endpoint, route: route) {
+            nextProfiles[index].hostDeviceName = nil
+            if !nextProfiles[index].isDisplayNameCustomized {
+                nextProfiles[index].displayName = nextProfiles[index].tailscaleDeviceName
+                    ?? ConnectionProfile.fallbackDisplayName(endpoint: nextProfiles[index].endpoint)
+            }
+        }
         nextProfiles[index].revision &+= 1
         if profileID != ephemeralLocalProfileID {
             persistProfiles(try JSONEncoder().encode(nextProfiles))
@@ -86,6 +93,7 @@ extension AppStore {
             installationID: routed.installationID,
             tailscaleDNSName: routed.tailscaleDNSName,
             tailscaleDeviceName: routed.tailscaleDeviceName,
+            hostDeviceName: routed.hostDeviceName,
             hostPlatform: routed.hostPlatform,
             hostContext: routed.hostContext,
             capabilityNegotiation: routed.capabilityNegotiation

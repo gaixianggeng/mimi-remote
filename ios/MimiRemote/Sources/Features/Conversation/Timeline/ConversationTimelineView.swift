@@ -10,6 +10,7 @@ struct ConversationTimelineView: View {
     let layout: ConversationLayout
     let explicitSessionID: SessionID?
     let allowsTopUnderlap: Bool
+    let deepensTopScrollEdge: Bool
     @State private var expandedActivityIDs: Set<String> = []
     @State private var expandedProcessMessageIDs: Set<UUID> = []
     @State private var collapsedProcessMessageIDs: Set<UUID> = []
@@ -29,11 +30,13 @@ struct ConversationTimelineView: View {
     init(
         layout: ConversationLayout,
         sessionID: SessionID? = nil,
-        allowsTopUnderlap: Bool = false
+        allowsTopUnderlap: Bool = false,
+        deepensTopScrollEdge: Bool = false
     ) {
         self.layout = layout
         explicitSessionID = sessionID
         self.allowsTopUnderlap = allowsTopUnderlap
+        self.deepensTopScrollEdge = deepensTopScrollEdge
     }
 
     private var displayedSessionID: SessionID? {
@@ -62,7 +65,7 @@ struct ConversationTimelineView: View {
             session: displayedSession,
             messages: source.messages
         )
-        let isHistoryLoading = sessionStore.historyLoadProgress(sessionID: displayedSessionID) != nil
+        let isHistoryLoading = sessionStore.isShowingHistoryLoading(sessionID: displayedSessionID)
         let liveStatus = displayedSessionID.flatMap { sessionID -> ConversationLiveStatus? in
             guard let session = displayedSession else { return nil }
             return ConversationLiveStatus.make(
@@ -93,7 +96,8 @@ struct ConversationTimelineView: View {
             timelineItemsAreEmpty: timelineItems.isEmpty,
             isHistoryLoading: isHistoryLoading,
             isLoadingEarlierHistory: isLoadingEarlierHistory,
-            hasHistorySavingsNotice: explicitSessionID == nil && sessionStore.selectedHistorySavingsNotice != nil
+            hasHistorySavingsNotice: explicitSessionID == nil && sessionStore.selectedHistorySavingsNotice != nil,
+            liveStatusReadiness: liveStatus?.readiness
         )
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottom) {
@@ -185,7 +189,10 @@ struct ConversationTimelineView: View {
                 .background(tokens.conversationCanvasBackground)
                 // 顶部正文进入导航层、底部正文经过 Composer 时都使用系统柔和虚化；
                 // 不再在任一边缘切出一整块与页面不同的实色底板。
-                .workbenchSoftConversationScrollEdges(allowsTopUnderlap: allowsTopUnderlap)
+                .workbenchSoftConversationScrollEdges(
+                    allowsTopUnderlap: allowsTopUnderlap,
+                    deepensTopEdge: deepensTopScrollEdge
+                )
                 .simultaneousGesture(TapGesture().onEnded {
                     KeyboardDismissal.dismiss()
                 })
@@ -441,12 +448,15 @@ struct ConversationTimelineView: View {
         timelineItemsAreEmpty: Bool,
         isHistoryLoading: Bool,
         isLoadingEarlierHistory: Bool,
-        hasHistorySavingsNotice: Bool
+        hasHistorySavingsNotice: Bool,
+        liveStatusReadiness: ConversationReadiness?
     ) -> Bool {
         !timelineItemsAreEmpty
             && isHistoryLoading
             && !isLoadingEarlierHistory
             && !hasHistorySavingsNotice
+            // 实时状态已表达同一段历史恢复，不再并排显示第二个等待提示。
+            && liveStatusReadiness != .loadingHistory
     }
 
     private var loadEarlierRow: some View {
@@ -603,8 +613,13 @@ struct ConversationTimelineView: View {
     @ViewBuilder
     private func timelineEmptyState(isHistoryLoading: Bool) -> some View {
         if isHistoryLoading {
-            ProgressView(L10n.text("ui.loading_session_records"))
-                .accessibilityLabel(L10n.text("ui.loading_session_records"))
+            // 详情首屏只保留静态说明；列表页的加载圆环继续由 SessionListView 展示。
+            // 状态仍留在时间线行里，避免历史到达时改变滚动锚点或贴底逻辑。
+            Text(L10n.text("ui.loading_session_records"))
+                .font(themeStore.uiFont(.subheadline))
+                .foregroundStyle(workbenchSecondaryText)
+                .accessibilityIdentifier("conversation.historyLoading")
+                .allowsHitTesting(false)
         } else if let error = sessionStore.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
             ContentUnavailableView {
                 Label(L10n.text("ui.session_record_loading_failed"), systemImage: "exclamationmark.triangle")

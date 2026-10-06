@@ -1601,16 +1601,6 @@ struct FileQueuedTurnStore: QueuedTurnPersisting {
     }
 }
 
-struct HistoryLoadProgress: Equatable {
-    let sessionID: SessionID
-    var title: String
-    var fraction: Double
-
-    var percentText: String {
-        "\(Int((min(max(fraction, 0), 1) * 100).rounded()))%"
-    }
-}
-
 struct SessionRestoreSnapshot: Codable, Equatable {
     let profileID: String?
     let endpoint: String

@@ -16,14 +16,23 @@ import (
 type fakeManagedHost struct {
 	address    string
 	publicKey  string
+	added      []string
+	addErr     error
+	addFn      func(string) error
 	closed     bool
 	closeCalls int
 	closeErr   error
 }
 
-func (h *fakeManagedHost) AddAllowedClient(string) error { return nil }
-func (h *fakeManagedHost) Address() string               { return h.address }
-func (h *fakeManagedHost) PublicKey() string             { return h.publicKey }
+func (h *fakeManagedHost) AddAllowedClient(rawKey string) error {
+	h.added = append(h.added, rawKey)
+	if h.addFn != nil {
+		return h.addFn(rawKey)
+	}
+	return h.addErr
+}
+func (h *fakeManagedHost) Address() string   { return h.address }
+func (h *fakeManagedHost) PublicKey() string { return h.publicKey }
 func (h *fakeManagedHost) Close() error {
 	h.closeCalls++
 	if h.closeErr != nil {
@@ -63,6 +72,99 @@ func TestReplaceManagedClientsRetainsOldHostWhenCloseFails(t *testing.T) {
 	}
 	if !oldHost.closed || oldHost.closeCalls != 2 || startCalls != 1 {
 		t.Fatalf("下一次同步应重试关闭并完成替换：closed=%t closes=%d starts=%d", oldHost.closed, oldHost.closeCalls, startCalls)
+	}
+}
+
+func TestReplaceManagedClientsAddsWithoutRestartingStableHost(t *testing.T) {
+	freeKey := key.NewNode().Public().String()
+	firstManagedKey := key.NewNode().Public().String()
+	secondManagedKey := key.NewNode().Public().String()
+	host := &fakeManagedHost{}
+	startCalls := 0
+	manager := &Manager{
+		host:    host,
+		clients: []string{freeKey},
+		startHost: func(tunnel.HostConfig) (managedHost, error) {
+			startCalls++
+			return &fakeManagedHost{}, nil
+		},
+	}
+
+	if _, err := manager.ReplaceManagedClients([]string{freeKey, firstManagedKey}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.ReplaceManagedClients([]string{firstManagedKey, secondManagedKey, freeKey}); err != nil {
+		t.Fatal(err)
+	}
+	if host.closeCalls != 0 || startCalls != 0 {
+		t.Fatalf("纯新增托管授权重建了稳定主机：closes=%d starts=%d", host.closeCalls, startCalls)
+	}
+	if !reflect.DeepEqual(host.added, []string{firstManagedKey, secondManagedKey}) {
+		t.Fatalf("原地追加的托管授权异常：%v", host.added)
+	}
+	if !reflect.DeepEqual(manager.managedClients, []string{firstManagedKey, secondManagedKey, freeKey}) {
+		t.Fatalf("托管集合未提交：%v", manager.managedClients)
+	}
+}
+
+func TestReplaceManagedClientsSameSetDoesNothing(t *testing.T) {
+	firstKey := key.NewNode().Public().String()
+	secondKey := key.NewNode().Public().String()
+	host := &fakeManagedHost{}
+	startCalls := 0
+	manager := &Manager{
+		host:           host,
+		managedClients: []string{firstKey, secondKey},
+		startHost: func(tunnel.HostConfig) (managedHost, error) {
+			startCalls++
+			return &fakeManagedHost{}, nil
+		},
+	}
+
+	if _, err := manager.ReplaceManagedClients([]string{secondKey, firstKey, secondKey}); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.added) != 0 || host.closeCalls != 0 || startCalls != 0 {
+		t.Fatalf("相同集合触发了动作：added=%v closes=%d starts=%d", host.added, host.closeCalls, startCalls)
+	}
+}
+
+func TestReplaceManagedClientsRevokesPartiallyAppliedAddition(t *testing.T) {
+	firstKey := key.NewNode().Public().String()
+	secondKey := key.NewNode().Public().String()
+	addCalls := 0
+	oldHost := &fakeManagedHost{addFn: func(string) error {
+		addCalls++
+		if addCalls == 2 {
+			return errors.New("add failed")
+		}
+		return nil
+	}}
+	startCalls := 0
+	var started tunnel.HostConfig
+	manager := &Manager{
+		host: oldHost,
+		startHost: func(config tunnel.HostConfig) (managedHost, error) {
+			startCalls++
+			started = config
+			return &fakeManagedHost{}, nil
+		},
+	}
+
+	if _, err := manager.ReplaceManagedClients([]string{firstKey, secondKey}); err == nil {
+		t.Fatal("部分追加失败时应返回错误")
+	}
+	if !reflect.DeepEqual(manager.managedClients, []string{firstKey}) {
+		t.Fatalf("未记录已经生效的托管授权：%v", manager.managedClients)
+	}
+	if _, err := manager.ReplaceManagedClients(nil); err != nil {
+		t.Fatal(err)
+	}
+	if oldHost.closeCalls != 1 || startCalls != 1 {
+		t.Fatalf("撤销部分生效授权未重启一次：closes=%d starts=%d", oldHost.closeCalls, startCalls)
+	}
+	if len(started.AllowedClientKeys) != 0 || len(manager.managedClients) != 0 {
+		t.Fatalf("撤销后仍保留托管授权：started=%v managed=%v", started.AllowedClientKeys, manager.managedClients)
 	}
 }
 
@@ -243,7 +345,7 @@ func TestReplaceManagedClientsRestartsWithFreeAndManagedUnion(t *testing.T) {
 		config:         Config{},
 		host:           oldHost,
 		clients:        []string{freeKey},
-		managedClients: []string{oldManagedKey},
+		managedClients: []string{oldManagedKey, newManagedKey},
 		startHost: func(config tunnel.HostConfig) (managedHost, error) {
 			started = config
 			return &fakeManagedHost{address: "new", publicKey: "new-public"}, nil
@@ -254,8 +356,8 @@ func TestReplaceManagedClientsRestartsWithFreeAndManagedUnion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !oldHost.closed {
-		t.Fatal("替换托管策略前应关闭包含旧授权的稳定主机")
+	if !oldHost.closed || oldHost.closeCalls != 1 {
+		t.Fatalf("替换托管策略前应关闭一次旧稳定主机：closed=%t calls=%d", oldHost.closed, oldHost.closeCalls)
 	}
 	if !reflect.DeepEqual(started.AllowedClientKeys, []string{freeKey, newManagedKey}) {
 		t.Fatalf("稳定主机白名单未合并免费与托管客户端：%v", started.AllowedClientKeys)

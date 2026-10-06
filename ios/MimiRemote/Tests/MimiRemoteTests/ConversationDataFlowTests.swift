@@ -544,7 +544,8 @@ final class ConversationDataFlowTests: XCTestCase {
                 timelineItemsAreEmpty: false,
                 isHistoryLoading: true,
                 isLoadingEarlierHistory: false,
-                hasHistorySavingsNotice: false
+                hasHistorySavingsNotice: false,
+                liveStatusReadiness: nil
             )
         )
         XCTAssertFalse(
@@ -552,16 +553,18 @@ final class ConversationDataFlowTests: XCTestCase {
                 timelineItemsAreEmpty: true,
                 isHistoryLoading: true,
                 isLoadingEarlierHistory: false,
-                hasHistorySavingsNotice: false
+                hasHistorySavingsNotice: false,
+                liveStatusReadiness: nil
             ),
-            "空时间线由现有空状态 ProgressView 负责"
+            "空时间线由静态的历史加载文案负责"
         )
         XCTAssertFalse(
             ConversationTimelineView.shouldShowInlineHistoryLoading(
                 timelineItemsAreEmpty: false,
                 isHistoryLoading: true,
                 isLoadingEarlierHistory: true,
-                hasHistorySavingsNotice: false
+                hasHistorySavingsNotice: false,
+                liveStatusReadiness: nil
             ),
             "加载更早历史时只保留顶部按钮 spinner"
         )
@@ -570,7 +573,8 @@ final class ConversationDataFlowTests: XCTestCase {
                 timelineItemsAreEmpty: false,
                 isHistoryLoading: true,
                 isLoadingEarlierHistory: false,
-                hasHistorySavingsNotice: true
+                hasHistorySavingsNotice: true,
+                liveStatusReadiness: nil
             ),
             "已有 savings notice 时不重复显示 inline 状态行"
         )
@@ -579,8 +583,32 @@ final class ConversationDataFlowTests: XCTestCase {
                 timelineItemsAreEmpty: false,
                 isHistoryLoading: false,
                 isLoadingEarlierHistory: false,
-                hasHistorySavingsNotice: false
+                hasHistorySavingsNotice: false,
+                liveStatusReadiness: nil
             )
+        )
+    }
+
+    func testHistoryRestorationDoesNotShowTwoWaitingIndicators() {
+        XCTAssertFalse(
+            ConversationTimelineView.shouldShowInlineHistoryLoading(
+                timelineItemsAreEmpty: false,
+                isHistoryLoading: true,
+                isLoadingEarlierHistory: false,
+                hasHistorySavingsNotice: false,
+                liveStatusReadiness: .loadingHistory
+            ),
+            "实时状态已显示恢复历史时，不再增加同一请求的加载提示"
+        )
+        XCTAssertTrue(
+            ConversationTimelineView.shouldShowInlineHistoryLoading(
+                timelineItemsAreEmpty: false,
+                isHistoryLoading: true,
+                isLoadingEarlierHistory: false,
+                hasHistorySavingsNotice: false,
+                liveStatusReadiness: .live
+            ),
+            "已连接的运行状态不能遮掉独立的历史刷新反馈"
         )
     }
 

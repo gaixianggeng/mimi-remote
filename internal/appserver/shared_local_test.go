@@ -316,6 +316,10 @@ func startSharedLocalTestServer(t *testing.T, socket string) func() {
 }
 
 func startSharedLocalTestServerWithSession(t *testing.T, socket, manager string) func() {
+	return startSharedLocalTestServerWithSessionAndHome(t, socket, manager, filepath.Dir(filepath.Dir(socket)))
+}
+
+func startSharedLocalTestServerWithSessionAndHome(t *testing.T, socket, manager, reportedHome string) func() {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		t.Fatal(err)
@@ -335,7 +339,11 @@ func startSharedLocalTestServerWithSession(t *testing.T, socket, manager string)
 		if conn.ReadJSON(&initialize) != nil {
 			return
 		}
-		_ = conn.WriteJSON(map[string]any{"id": 1, "result": map[string]any{}})
+		result := map[string]any{}
+		if reportedHome != "" {
+			result["codexHome"] = reportedHome
+		}
+		_ = conn.WriteJSON(map[string]any{"id": 1, "result": result})
 		var initialized map[string]any
 		_ = conn.ReadJSON(&initialized)
 		var sessionProbe map[string]any

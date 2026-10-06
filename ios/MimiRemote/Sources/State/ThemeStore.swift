@@ -296,6 +296,53 @@ extension ThemeTokens {
         tertiaryText
     }
 
+    /// 设置卡片里「切换」这类描边小胶囊的描边，只用 1 个物理像素。
+    /// 默认浅色的边框色 #E8E6E3 压在白卡上偏淡，加深到 #DEDBD7；默认深色的边框色 #373735
+    /// 压在 #2B2B29 的卡片上几乎看不见，提亮到 #42423F。两边与卡片的明度差都在 11 上下（#615）。
+    /// 其它主题沿用边框色。
+    var groupRule: Color {
+        guard preset == .codex else { return border }
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 222.0 / 255.0, green: 219.0 / 255.0, blue: 215.0 / 255.0)
+        case .dark:
+            return Color(red: 66.0 / 255.0, green: 66.0 / 255.0, blue: 63.0 / 255.0)
+        }
+    }
+
+    /// 设置卡片内行与行之间的分隔线（#615）。一张卡里有好几条，要比描边轻得多，
+    /// 实机上 #DEDBD7 显得太突出：默认浅色取 Notion 分隔线的深浅 #EDEBE8，深色 #3A3A38，
+    /// 两边与卡片的明度差都在 7 上下。其它主题沿用边框色。
+    var settingsRowSeparator: Color {
+        guard preset == .codex else { return border }
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 237.0 / 255.0, green: 235.0 / 255.0, blue: 232.0 / 255.0)
+        case .dark:
+            return Color(red: 58.0 / 255.0, green: 58.0 / 255.0, blue: 56.0 / 255.0)
+        }
+    }
+
+    /// 设置分组卡片的底色（#615）。设备、我的和设置详情页每组一张卡片，会话、工作区仍平铺。
+    /// 卡片只比页面底高一档：默认浅色是白卡压 #FAF8F6，深色是 #2B2B29 压 #1F1F1F。
+    /// GitHub 浅色的页面和 surface 都是纯白，卡片会看不出来，改用 elevatedSurface。
+    var settingsGroupBackground: Color {
+        guard preset == .github, resolvedScheme == .light else { return surface }
+        return elevatedSurface
+    }
+
+    /// 设置行首图标的颜色（#615）。次级文字色的图标压在白卡上发虚；默认主题加深一档，
+    /// 落在正文和次级文字之间，仍明显弱于标题，颜色只留给状态。其它主题沿用次级文字色。
+    var settingsIconTint: Color {
+        guard preset == .codex else { return secondaryText }
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 92.0 / 255.0, green: 91.0 / 255.0, blue: 88.0 / 255.0)
+        case .dark:
+            return Color(red: 201.0 / 255.0, green: 200.0 / 255.0, blue: 197.0 / 255.0)
+        }
+    }
+
     /// 列表与侧栏条目的标题色。
     ///
     /// Notion 深色侧栏的条目标题不是白色，而是 #B9B8B6 上下的浅灰，只有选中那一行

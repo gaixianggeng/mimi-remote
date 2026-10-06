@@ -5,6 +5,50 @@ import XCTest
 ///
 /// 这里覆盖的是 #417 F1 的根因：恢复失败曾经让闸门永远关闭，通知永远留在收件箱。
 final class NotificationRoutingGateTests: XCTestCase {
+    func testInactiveSceneDoesNotCancelOrDuplicateInFlightResume() {
+        XCTAssertEqual(
+            ForegroundResumeLifecycleAction.resolve(scenePhase: .inactive, resumeInFlight: true),
+            .ignore
+        )
+        XCTAssertEqual(
+            ForegroundResumeLifecycleAction.resolve(scenePhase: .active, resumeInFlight: true),
+            .ignore
+        )
+        XCTAssertEqual(
+            ForegroundResumeLifecycleAction.resolve(scenePhase: .background, resumeInFlight: true),
+            .cancel
+        )
+        XCTAssertEqual(
+            ForegroundResumeLifecycleAction.resolve(scenePhase: .active, resumeInFlight: false),
+            .start
+        )
+    }
+
+    func testBackgroundCancellationAllowsImmediateActiveResumeBeforeOldTaskExits() {
+        var tracker = ForegroundResumeTracker()
+        let staleGeneration = tracker.begin()
+
+        XCTAssertTrue(
+            tracker.finish(
+                generation: staleGeneration,
+                outcome: .cancelled,
+                profileID: "mac-a"
+            )
+        )
+        XCTAssertEqual(
+            ForegroundResumeLifecycleAction.resolve(
+                scenePhase: .active,
+                resumeInFlight: tracker.isInFlight
+            ),
+            .start
+        )
+
+        let currentGeneration = tracker.begin()
+        XCTAssertFalse(tracker.finish(generation: staleGeneration, outcome: .cancelled))
+        XCTAssertTrue(tracker.isInFlight, "旧任务退出不能结束刚启动的新前台恢复")
+        XCTAssertTrue(tracker.finish(generation: currentGeneration, outcome: .completed))
+    }
+
     func testGateOpensAfterFailedCredentialRestore() {
         var tracker = ForegroundResumeTracker()
         let generation = tracker.begin()

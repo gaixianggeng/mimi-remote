@@ -340,6 +340,8 @@ struct WorkspaceRuntimePopoverPicker: View {
                 ProgressView().controlSize(.small).frame(width: 20, height: 20)
             } else {
                 RuntimeBrandMarkIcon(mark: choice.brandMark, size: 20)
+                    // 此菜单中 DeepSeek 的横向墨迹偏宽，只在这里缩小，不影响其他尺寸的标记。
+                    .scaleEffect(choice == .deepseek ? 0.86 : 1)
                     .opacity(isAvailable ? 1 : 0.4)
             }
 

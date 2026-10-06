@@ -851,15 +851,26 @@ extension View {
     /// 会话滚动边缘统一使用柔和渐隐：顶部正文进入导航控制层、底部正文经过 Composer
     /// 后方时都由系统提供渐进式虚化，不会像 `hard` 那样切出横贯全宽的边界线。
     /// iOS 26 之前没有该效果，保持原样。
+    ///
+    /// `deepensTopEdge` 在系统虚化之上再叠一层加深，只给没有侧栏的紧凑导航用：宽屏详情列
+    /// 顶部一旦被这层玻璃提亮，就会比相邻侧栏亮一档，界线正好压在分栏缝上。
     @ViewBuilder
-    func workbenchSoftConversationScrollEdges(allowsTopUnderlap: Bool) -> some View {
+    func workbenchSoftConversationScrollEdges(
+        allowsTopUnderlap: Bool,
+        deepensTopEdge: Bool = false
+    ) -> some View {
         if #available(iOS 26.0, *) {
             if allowsTopUnderlap {
                 // List 本来就绘制到导航栏后方，安全区只决定“静止时第一行落在哪里”。
                 // 这里不能再 ignoresSafeArea(.top)：那会把顶部内边距整个抹掉，静止状态的
                 // 首行内容直接顶进导航控制层，加载态的 ProgressView 会和标题副标题叠字。
                 // 需要的虚化由 scrollEdgeEffectStyle 在内容真正上滚重叠时提供。
-                scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                if deepensTopEdge {
+                    scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                        .modifier(WorkbenchTopScrollEdgeBoostModifier())
+                } else {
+                    scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                }
             } else {
                 scrollEdgeEffectStyle(.soft, for: .bottom)
             }
@@ -1244,8 +1255,7 @@ struct RelatedSessionConversationView: View {
                     ConversationTimelineView(layout: layout, sessionID: relation.id)
 
                     if isLoading {
-                        ProgressView(L10n.text("ui.loading"))
-                            .controlSize(.regular)
+                        LoadingStateView(message: L10n.text("ui.loading"))
                     } else if didFailToLoad && childSession == nil {
                         ContentUnavailableView(
                             L10n.text("ui.sub_agent"),
@@ -1459,7 +1469,7 @@ struct SessionNavigationMaterialModifier: ViewModifier {
                 // 对顶部滚动边缘做渐进模糊：`.thinMaterial` / `.ultraThinMaterial` 会在下沿切出
                 // 一条横贯全宽的灰带，即使换成画布色渐变，后方正文也只是被压淡而依然逐字清晰——
                 // 「挡住但还看得见」正是最难看的一档。真正的虚化只能来自 soft scroll edge，
-                // 所以这里让出底板，额外的压暗由 ConversationView 顶部那层渐隐叠加提供。
+                // 所以这里让出底板；紧凑导航下的额外加深见 WorkbenchTopScrollEdgeBoost。
                 .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
                 .toolbarColorScheme(colorScheme, for: .navigationBar)
         } else if usesCompactNavigation {
@@ -1557,6 +1567,26 @@ extension View {
 /// 设置页和工作台侧栏共用的额度窗口模型。集中选择规则后，两个入口不会因为
 /// 服务端 primary / secondary 槽位变化而展示不同的三个圆环。
 struct CombinedUsageItem: Identifiable {
+    /// Codex 用低饱和墨蓝，Claude 两个窗口用同一陶土色系的深浅，与梅子紫热力图和暖白底同温。
+    /// 深色外观整体提亮一档，否则墨蓝会沉进 #1F1F1F 的卡片底。
+    private struct Palette {
+        let codex: Color
+        let claudeLong: Color
+        let claudeShort: Color
+    }
+
+    private static let lightPalette = Palette(
+        codex: Color(red: 62.0 / 255.0, green: 92.0 / 255.0, blue: 128.0 / 255.0),
+        claudeLong: Color(red: 200.0 / 255.0, green: 100.0 / 255.0, blue: 63.0 / 255.0),
+        claudeShort: Color(red: 232.0 / 255.0, green: 165.0 / 255.0, blue: 135.0 / 255.0)
+    )
+
+    private static let darkPalette = Palette(
+        codex: Color(red: 143.0 / 255.0, green: 169.0 / 255.0, blue: 200.0 / 255.0),
+        claudeLong: Color(red: 224.0 / 255.0, green: 135.0 / 255.0, blue: 106.0 / 255.0),
+        claudeShort: Color(red: 242.0 / 255.0, green: 192.0 / 255.0, blue: 168.0 / 255.0)
+    )
+
     let runtimeProvider: String
     let providerName: String
     let window: CodexUsageWindowDisplay
@@ -1566,16 +1596,15 @@ struct CombinedUsageItem: Identifiable {
         "\(runtimeProvider):\(window.id)"
     }
 
+    // 三环由外到内依次是 Codex 长窗口、Claude 长窗口、Claude 短窗口。
+    // 颜色在此固定，设置页和侧栏的圆环、图例共享同一顺序。
     static func make(
         codexDisplay: CodexUsageWindowsDisplay,
         claudeDisplay: CodexUsageWindowsDisplay,
         includesClaude: Bool,
-        // 三环由外到内依次是 Codex 长窗口、Claude 长窗口、Claude 短窗口。
-        // 外环使用青色、中环使用粉色；设置页与左上角入口复用这里，避免图例和圆环错位。
-        codexTint: Color = .cyan,
-        claudeLongTint: Color = .pink,
-        claudeShortTint: Color
+        colorScheme: ColorScheme
     ) -> [CombinedUsageItem] {
+        let palette = colorScheme == .dark ? Self.darkPalette : Self.lightPalette
         var items: [CombinedUsageItem] = []
 
         if let codexWindow = preferredLongWindow(in: codexDisplay) {
@@ -1584,7 +1613,7 @@ struct CombinedUsageItem: Identifiable {
                     runtimeProvider: "codex",
                     providerName: providerName(for: codexDisplay, fallback: "Codex"),
                     window: codexWindow,
-                    tint: codexTint
+                    tint: palette.codex
                 )
             )
         }
@@ -1595,7 +1624,7 @@ struct CombinedUsageItem: Identifiable {
                     runtimeProvider: "claude",
                     providerName: providerName(for: claudeDisplay, fallback: "Claude"),
                     window: claudeLongWindow,
-                    tint: claudeLongTint
+                    tint: palette.claudeLong
                 )
             )
 
@@ -1608,7 +1637,7 @@ struct CombinedUsageItem: Identifiable {
                         runtimeProvider: "claude",
                         providerName: providerName(for: claudeDisplay, fallback: "Claude"),
                         window: claudeShortWindow,
-                        tint: claudeShortTint
+                        tint: palette.claudeShort
                     )
                 )
             }

@@ -373,7 +373,7 @@ fn image_source_to_data_url(source: &Value) -> Option<String> {
     Some(format!("data:{media_type};base64,{data}"))
 }
 
-/// Claude Code 把 `/model` 等本地命令以顶层 `user` 记录写入 transcript，
+/// Claude Code 把本地命令和后台任务通知以顶层 `user` 记录写入 transcript，
 /// 但这些记录只服务 CLI 自身，不能在移动端伪装成用户发送的对话消息。
 /// 这里只识别完整的保留标签包装，避免误删普通文本中对标签的讨论。
 fn is_internal_user_content(content: &Value) -> bool {
@@ -383,11 +383,12 @@ fn is_internal_user_content(content: &Value) -> bool {
     is_internal_user_text(text)
 }
 
-/// Claude CLI 内部命令和中断标记会伪装成 user 文本；索引扫描和历史翻译必须
+/// Claude CLI 内部命令、后台任务通知和中断标记会伪装成 user 文本；索引扫描和历史翻译必须
 /// 复用同一判定，避免污染会话标题、用户气泡和 turn 锚点。
 pub(crate) fn is_internal_user_text(text: &str) -> bool {
     let text = text.trim();
     text == "[Request interrupted by user]"
+        || is_complete_reserved_tag(text, "task-notification")
         || is_complete_reserved_tag(text, "local-command-caveat")
         || is_complete_reserved_tag(text, "local-command-stdout")
         || is_complete_reserved_tag(text, "local-command-stderr")
@@ -1216,6 +1217,92 @@ mod tests {
                 other => panic!("expected text, got {other:?}"),
             },
             other => panic!("expected UserMessage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_notification_is_not_a_user_turn_or_rollback_anchor() {
+        let notification = "<task-notification>\n<task-id>old-shell</task-id>\n<status>stopped</status>\n</task-notification>";
+        let text = [
+            json!({
+                "type": "user",
+                "message": {"role": "user", "content": "先前的问题"},
+                "timestamp": "2026-09-23T14:26:23Z",
+                "uuid": "old-user"
+            }),
+            json!({
+                "type": "assistant",
+                "message": {"id": "old-reply", "content": [{"type": "text", "text": "先前的回复"}]},
+                "timestamp": "2026-09-23T14:47:08Z"
+            }),
+            json!({
+                "type": "user",
+                "promptId": "resume-notification",
+                "message": {"role": "user", "content": notification},
+                "timestamp": "2026-09-28T06:17:27Z",
+                "uuid": "internal-notification"
+            }),
+            json!({
+                "type": "user",
+                "message": {"role": "user", "content": "继续处理"},
+                "timestamp": "2026-09-28T06:18:00Z",
+                "uuid": "new-user"
+            }),
+        ]
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let turns = messages_text_to_turns(&text);
+        assert_eq!(turns.len(), 2);
+        assert!(matches!(
+            &turns[0].items[..],
+            [ThreadItem::UserMessage { .. }, ThreadItem::AgentMessage { text, .. }]
+                if text == "先前的回复"
+        ));
+        assert!(matches!(
+            &turns[1].items[..],
+            [ThreadItem::UserMessage { content, .. }]
+                if matches!(&content[0], UserInput::Text { text, .. } if text == "继续处理")
+        ));
+        assert_eq!(
+            list_user_message_ids_from_text(&text),
+            vec!["old-user", "new-user"]
+        );
+
+        let notification_only = json!({
+            "type": "user",
+            "message": {"role": "user", "content": notification},
+            "timestamp": "2026-09-28T06:17:27Z",
+            "uuid": "internal-notification"
+        })
+        .to_string();
+        assert!(messages_text_to_turns(&notification_only).is_empty());
+        assert!(list_user_message_ids_from_text(&notification_only).is_empty());
+    }
+
+    #[test]
+    fn discussion_of_task_notification_remains_a_user_message() {
+        for content in [
+            "请解释 <task-notification> 是什么",
+            "<task-notification>尚未闭合",
+            "<task-notification>示例</task-notification> 后面还有提问",
+        ] {
+            let text = json!({
+                "type": "user",
+                "message": {"role": "user", "content": content},
+                "timestamp": "2026-09-28T06:18:00Z",
+                "uuid": "real-user"
+            })
+            .to_string();
+            let turns = messages_text_to_turns(&text);
+            assert_eq!(turns.len(), 1, "{content}");
+            assert!(matches!(
+                &turns[0].items[0],
+                ThreadItem::UserMessage { content: inputs, .. }
+                    if matches!(&inputs[0], UserInput::Text { text, .. } if text == content)
+            ));
+            assert_eq!(list_user_message_ids_from_text(&text), vec!["real-user"]);
         }
     }
 

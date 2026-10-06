@@ -8,6 +8,41 @@ struct WorkspaceSessionPresentationKey: Hashable {
     let runtimeProvider: String
 }
 
+/// 页面拥有列表刷新；SwiftUI 更新 refreshable/task 环境时取消等待者，不能取消有效请求。
+/// 真正离开页面、切主机或挂起凭据时由页面显式取消；同 key 的新请求撤销旧 owner。
+@MainActor
+final class WorkspaceSessionRefreshOwner {
+    private var tasks: [WorkspaceSessionPresentationKey: (id: UUID, task: Task<Void, Never>)] = [:]
+    private(set) var isActive = true
+
+    func activate() { isActive = true }
+
+    func deactivate() {
+        isActive = false
+        cancelAll()
+    }
+
+    func refresh(
+        key: WorkspaceSessionPresentationKey,
+        allowsCancelledWaiter: Bool = false,
+        operation: @escaping @MainActor () async -> Void
+    ) async {
+        guard isActive, allowsCancelledWaiter || !Task.isCancelled else { return }
+        tasks[key]?.task.cancel()
+        let id = UUID()
+        let task = Task { @MainActor in await operation() }
+        tasks[key] = (id, task)
+        await task.value
+        guard tasks[key]?.id == id else { return }
+        tasks[key] = nil
+    }
+
+    func cancelAll() {
+        tasks.values.forEach { $0.task.cancel() }
+        tasks.removeAll()
+    }
+}
+
 struct WorkspaceRuntimeSessionPageState: Equatable {
     var sessions: [AgentSession] = []
     var nextCursor: String?
@@ -147,13 +182,5 @@ enum WorkspaceSessionGroup: String, CaseIterable {
 
     static func orderedPopulatedGroups(from groups: Set<Self>) -> [Self] {
         allCases.filter(groups.contains)
-    }
-}
-
-/// 工作区徽标表达聚合数量。个位数保持圆形，十个及以上封顶为 `9+`，避免撑大头像。
-enum WorkspaceRunningCountBadge {
-    static func displayText(for count: Int) -> String? {
-        guard count > 0 else { return nil }
-        return count > 9 ? "9+" : String(count)
     }
 }

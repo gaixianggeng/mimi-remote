@@ -215,6 +215,10 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(didCreateDraft)
         let send = Task { await store.sendTurn(CodexAppServerTurnPayload(prompt: "验证首发")) }
         await gate.waitForModelRequest()
+        let preparing = try XCTUnwrap(store.selectedSession)
+        XCTAssertTrue(store.isLoading, "模型等待期必须立即反馈本次发送，不能等创建 RPC 才进入 loading")
+        XCTAssertEqual(store.conversationReadiness(for: preparing), .sending)
+        XCTAssertTrue(socket.connectedSessionIDs.isEmpty)
         await gate.resolveModels([])
         await gate.waitForCreateRequestCount(1)
         let pending = try XCTUnwrap(store.selectedSession)
@@ -238,6 +242,122 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.conversationStore.messages(for: created.id).filter { $0.role == .user }.count, 1)
         store.returnToSessionList()
         XCTAssertNil(store.selectedSessionID)
+    }
+
+    func testTargetModelFailureCacheIsPerRuntimeAndCanExpire() async {
+        let failed = MockSessionStoreClient(projects: [], sessions: [], modelOptionsError: MockError.unimplemented)
+        let claude = CodexAppServerModelOption(id: "claude-live", provider: "anthropic", runtimeProvider: "claude", isDefault: true)
+        let codex = CodexAppServerModelOption(id: "codex-live", provider: "openai", isDefault: true)
+        var client = failed
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { client }
+        )
+        let codexPayload = CodexAppServerTurnPayload(prompt: "Codex", options: .init(runtimeProvider: "codex"))
+        _ = await store.payloadResolvingRequiredModel(codexPayload)
+        _ = await store.payloadResolvingRequiredModel(codexPayload)
+        XCTAssertEqual(failed.modelOptionsCallCount, 1, "一次失败在连续解析时不重复请求目录")
+
+        client = MockSessionStoreClient(projects: [], sessions: [], modelOptions: [claude])
+        let claudePayload = CodexAppServerTurnPayload(prompt: "Claude", options: .init(runtimeProvider: "claude"))
+        let resolvedClaude = await store.payloadResolvingRequiredModel(claudePayload)
+        XCTAssertEqual(resolvedClaude.options.model, "claude-live", "Codex 负缓存不能阻止其他 Runtime 查询")
+        _ = await store.payloadResolvingRequiredModel(claudePayload)
+        XCTAssertEqual(client.modelOptionsCallCount, 1, "有效目录应直接复用")
+
+        store.turnModelRefreshByRuntime["codex"] = (store.appStore.activeHostScope, Date(timeIntervalSinceNow: -301))
+        client = MockSessionStoreClient(projects: [], sessions: [], modelOptions: [codex])
+        let resolvedCodex = await store.payloadResolvingRequiredModel(codexPayload)
+        XCTAssertEqual(resolvedCodex.options.model, "codex-live")
+        XCTAssertEqual(client.modelOptionsCallCount, 1)
+        XCTAssertEqual(Set(store.appServerModelOptions.map(\.model)), ["codex-live", "claude-live"])
+    }
+
+    func testLocalCodexDraftDoesNotAdoptClaudeFromPartialModelCatalog() async throws {
+        let project = makeProject(id: "proj_partial_models")
+        let created = makeSession(id: "sess_partial_models", projectID: project.id, title: "Codex", status: "running", source: "codex")
+        let claude = CodexAppServerModelOption(id: "claude-live", provider: "anthropic", runtimeProvider: "claude", isDefault: true)
+        var client = MockSessionStoreClient(projects: [project], sessions: [], modelOptions: [claude])
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { client }, webSocketFactory: { MockWebSocketClient() }
+        )
+        await store.refreshAll(autoAttach: false)
+        _ = await store.payloadResolvingRequiredModel(.init(prompt: "预读 Claude", options: .init(runtimeProvider: "claude")))
+        XCTAssertEqual(store.appServerModelOptions.map(\.model), ["claude-live"])
+        let didCreateDraft = await store.createSession(projectID: project.id, prompt: "", resume: nil)
+        XCTAssertTrue(didCreateDraft)
+        XCTAssertNil(store.selectedSession?.runtimeProvider)
+        let explicitClaude = await store.payloadResolvingRequiredModel(
+            .init(prompt: "显式切换 Claude", options: .init(runtimeProvider: "claude"))
+        )
+        XCTAssertEqual(explicitClaude.options.model, "claude-live", "草稿仍允许用户显式选择 Runtime")
+        client = MockSessionStoreClient(
+            projects: [project], sessions: [], createSessionResponse: try makeCreateSessionResponse(session: created),
+            modelOptions: [.init(id: "codex-live", provider: "openai", isDefault: true)]
+        )
+
+        let didSend = await store.sendTurn(.init(prompt: "Codex 草稿首发"))
+
+        XCTAssertTrue(didSend)
+        let request = try XCTUnwrap(client.createPayloads.first)
+        XCTAssertNil(request.turnOptions.runtimeProvider)
+        XCTAssertEqual(request.turnOptions.model, "codex-live")
+        XCTAssertEqual(request.turnOptions.modelProvider, "openai")
+        XCTAssertEqual(client.modelOptionsCallCount, 1)
+        XCTAssertEqual(Set(store.appServerModelOptions.map(\.model)), ["codex-live", "claude-live"])
+        store.clearConnectionData()
+    }
+
+    func testForcedMenuRefreshSupersedesPendingTargetModelResult() async {
+        for menuFails in [false, true] {
+            let gate = TurnSubmissionClientGate()
+            let pendingClient = TurnSubmissionGateClient(projects: [], sessions: [], gate: gate)
+            let fresh = CodexAppServerModelOption(id: "fresh-menu", provider: "openai", isDefault: true)
+            let menuClient = MockSessionStoreClient(
+                projects: [], sessions: [], modelOptions: [fresh],
+                modelOptionsError: menuFails ? MockError.unimplemented : nil
+            )
+            var useMenuClient = false
+            let store = SessionStore(
+                appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
+                clientFactory: {
+                    if useMenuClient { return menuClient }
+                    return pendingClient
+                }
+            )
+            let payload = CodexAppServerTurnPayload(prompt: "目录竞态", options: .init(runtimeProvider: "codex"))
+            let resolving = Task { await store.payloadResolvingRequiredModel(payload) }
+            await gate.waitForModelRequest()
+            useMenuClient = true
+            await store.refreshAppServerModelOptions(force: true)
+            await gate.resolveModels([.init(id: "stale-target", provider: "openai", isDefault: true)])
+            let resolved = await resolving.value
+            XCTAssertFalse(store.appServerModelOptions.contains { $0.model == "stale-target" })
+            if !menuFails { XCTAssertEqual(resolved.options.model, "fresh-menu") }
+            _ = await store.payloadResolvingRequiredModel(payload)
+            XCTAssertEqual(menuClient.modelOptionsCallCount, 1, "菜单的成功或失败缓存应被发送共用")
+        }
+    }
+
+    func testConcurrentTargetModelPreparationSharesCatalog() async {
+        let gate = TurnSubmissionClientGate()
+        let client = TurnSubmissionGateClient(projects: [], sessions: [], gate: gate)
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { client }
+        )
+        let payload = CodexAppServerTurnPayload(prompt: "共享目录", options: .init(runtimeProvider: "codex"))
+        let first = Task { await store.payloadResolvingRequiredModel(payload) }
+        let second = Task { await store.payloadResolvingRequiredModel(payload) }
+        await gate.waitForModelRequest()
+        await gate.resolveModels([.init(id: "shared-model", provider: "openai", isDefault: true)])
+        let firstResult = await first.value
+        let secondResult = await second.value
+        let count = await gate.modelRequestCount()
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(firstResult.options.model, "shared-model")
+        XCTAssertEqual(secondResult.options.model, "shared-model")
     }
 
     func testReopenShowsHistoryThenConnectionWithoutInventingNetworkFailure() async throws {
@@ -508,7 +628,10 @@ extension ConversationDataFlowTests {
         }
 
         await gate.waitForModelRequest()
+        XCTAssertTrue(store.isLoading)
+        XCTAssertEqual(store.conversationReadiness(for: running), .sending)
         store.returnToSessionList()
+        XCTAssertFalse(store.isLoading, "切页要立即释放模型准备状态")
         await gate.resolveModels([])
 
         let didSend = await sendTask.value
@@ -650,7 +773,7 @@ extension ConversationDataFlowTests {
     func testHostChangeDuringModelLookupCancelsCapturedSubmission() async throws {
         let project = makeProject(id: "proj_send_navigation_host")
         let gate = TurnSubmissionClientGate()
-        let client = TurnSubmissionGateClient(projects: [project], sessions: [], gate: gate)
+        var client = TurnSubmissionGateClient(projects: [project], sessions: [], gate: gate)
         let appStore = makeIsolatedAppStore()
         appStore.token = "old-token"
         let store = SessionStore(
@@ -670,17 +793,39 @@ extension ConversationDataFlowTests {
             )
         }
         await gate.waitForModelRequest()
+        XCTAssertTrue(store.isLoading)
         _ = try await store.commitPreparedConnection(PreparedConnectionSettings(
             endpoint: "http://127.0.0.1:9988",
             token: "new-token"
         ))
         XCTAssertNotEqual(appStore.activeHostScope, submissionContext.hostScope)
-        await gate.resolveModels([])
+        XCTAssertFalse(store.isLoading, "主机切换应立即解除旧模型准备的页面占用")
+        XCTAssertNil(store.sessionCreationLoadingLease)
+        let newGate = TurnSubmissionClientGate()
+        client = TurnSubmissionGateClient(projects: [project], sessions: [], gate: newGate)
+        await store.refreshAll(autoAttach: false)
+        let didCreateNewDraft = await store.createSession(projectID: project.id, prompt: "", resume: nil)
+        XCTAssertTrue(didCreateNewDraft)
+        let newDraft = try XCTUnwrap(store.selectedSession)
+        let newSend = Task { await store.sendTurn(CodexAppServerTurnPayload(prompt: "新主机发送")) }
+        await newGate.waitForModelRequest()
+        await gate.resolveModels([.init(id: "old-host-model", provider: "openai")])
 
         let didSend = await sendTask.value
         let createRequestCount = await gate.createRequestCount()
         XCTAssertFalse(didSend)
         XCTAssertEqual(createRequestCount, 0)
+        XCTAssertTrue(store.isLoading, "旧模型请求不能清除新主机的发送状态")
+        XCTAssertEqual(store.conversationReadiness(for: newDraft), .sending)
+        XCTAssertTrue(store.appServerModelOptions.isEmpty)
+        await newGate.resolveModels([.init(id: "new-host-model", provider: "openai", isDefault: true)])
+        await newGate.waitForCreateRequestCount(1)
+        let requests = await newGate.createRequests()
+        XCTAssertEqual(requests.first?.turnOptions.model, "new-host-model", "旧请求不能清除新主机在途目录")
+        await newGate.resolveCreate(.failure(MockError.unimplemented))
+        let newDidSend = await newSend.value
+        XCTAssertFalse(newDidSend)
+        XCTAssertFalse(store.isLoading)
     }
 }
 
@@ -710,19 +855,23 @@ private func waitForMessageStatus(
 }
 
 private actor TurnSubmissionClientGate {
-    private var modelContinuation: CheckedContinuation<[CodexAppServerModelOption], Never>?
+    private var modelContinuations: [CheckedContinuation<[CodexAppServerModelOption], Never>] = []
     private var modelRequestWaiters: [CheckedContinuation<Void, Never>] = []
     private var didRequestModels = false
+    private var recordedModelRequestCount = 0
+    private var resolvedModels: [CodexAppServerModelOption]?
     private var createContinuations: [CheckedContinuation<CreateSessionResponse, Error>] = []
     private var createRequestWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var recordedCreateRequests: [CreateSessionRequest] = []
 
     func requestModels() async -> [CodexAppServerModelOption] {
+        recordedModelRequestCount += 1
         didRequestModels = true
         modelRequestWaiters.forEach { $0.resume() }
         modelRequestWaiters.removeAll()
+        if let resolvedModels { return resolvedModels }
         return await withCheckedContinuation { continuation in
-            modelContinuation = continuation
+            modelContinuations.append(continuation)
         }
     }
 
@@ -734,9 +883,12 @@ private actor TurnSubmissionClientGate {
     }
 
     func resolveModels(_ options: [CodexAppServerModelOption]) {
-        modelContinuation?.resume(returning: options)
-        modelContinuation = nil
+        resolvedModels = options
+        modelContinuations.forEach { $0.resume(returning: options) }
+        modelContinuations.removeAll()
     }
+
+    func modelRequestCount() -> Int { recordedModelRequestCount }
 
     func requestCreate(_ request: CreateSessionRequest) async throws -> CreateSessionResponse {
         recordedCreateRequests.append(request)

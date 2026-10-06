@@ -436,6 +436,61 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         XCTAssertEqual(options.first?.runtimeProvider, "deepseek")
     }
 
+    func testCodexModelPreparationDoesNotWaitForBlockedHarnessCatalog() async throws {
+        let harness = FakeHarnessSessionClient()
+        let entered = expectation(description: "Harness 目录请求已挂起")
+        let release = AsyncStream<Void>.makeStream()
+        harness.modelOptionsGate = {
+            entered.fulfill()
+            for await _ in release.stream { return }
+        }
+        defer { release.continuation.finish() }
+        let codexTransport = FakeCodexAppServerTransport()
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
+            codexTransport: codexTransport,
+            harness: harness
+        ))
+        let nativeTask = Task { try await client.modelOptions(runtimeProvider: "deepseek") }
+        await fulfillment(of: [entered], timeout: 1)
+
+        let codexFinished = expectation(description: "Codex 在 Harness 目录释放前完成")
+        let codexTask = Task {
+            defer { codexFinished.fulfill() }
+            return try await client.modelOptions(runtimeProvider: "codex")
+        }
+        try await initialize(codexTransport)
+        let request = try await waitForFakeAppServerRequest(codexTransport, method: "model/list")
+        transportResponse(codexTransport, id: request.id,
+                          result: #"{"models":[{"id":"gpt-live","provider":"openai","isDefault":true}]}"#)
+        await fulfillment(of: [codexFinished], timeout: 1)
+        XCTAssertEqual(harness.modelOptionsCallCount, 1, "Codex 准备不得追加原生目录请求")
+        XCTAssertEqual(harness.channelAvailableCallCount, 0, "原生目录本身已验证健康，不重复探测")
+        release.continuation.finish()
+        let options = try await codexTask.value
+        XCTAssertEqual(options.map(\.model), ["gpt-live"])
+        _ = try await nativeTask.value
+    }
+
+    func testNativeModelPreparationReadsCatalogOnceWithoutCodexConnection() async throws {
+        let harness = FakeHarnessSessionClient()
+        harness.modelOptionsResult = .success([
+            CodexAppServerModelOption(id: "native-live", provider: "provider-a", runtimeProvider: "deepseek")
+        ])
+        let codexTransport = FakeCodexAppServerTransport()
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
+            codexTransport: codexTransport,
+            harness: harness
+        ))
+
+        let options = try await client.modelOptions(runtimeProvider: "deepseek")
+
+        XCTAssertEqual(options.map(\.model), ["native-live"])
+        XCTAssertEqual(harness.modelOptionsCallCount, 1)
+        XCTAssertEqual(harness.channelAvailableCallCount, 0)
+        let codexSent = await codexTransport.sentMessages()
+        XCTAssertTrue(codexSent.isEmpty)
+    }
+
     // MARK: - 原生通道准备流程不依赖 Codex 上游
 
     func testNativeChannelAvailabilityNeverConsultsCodexUpstream() async throws {
@@ -826,15 +881,18 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
     var searchResult: Result<ThreadSearchPage, Error> = .success(ThreadSearchPage(results: []))
     var modelOptionsResult: Result<[CodexAppServerModelOption], Error> = .success([])
     var channelAvailableResult: Result<Bool, Error> = .success(true)
+    var modelOptionsGate: (() async -> Void)?
 
     private(set) var sessionsPageCallCount = 0
     private(set) var searchCallCount = 0
     private(set) var modelOptionsCallCount = 0
     private(set) var channelAvailableCallCount = 0
     private(set) var shutdownCallCount = 0
+    var eventClientFactory: ((SessionID) -> any SessionWebSocketClient)?
 
     func makeEventClient(sessionID: SessionID) -> any SessionWebSocketClient {
-        HarnessSessionWebSocketClient(
+        if let eventClientFactory { return eventClientFactory(sessionID) }
+        return HarnessSessionWebSocketClient(
             endpoint: "http://127.0.0.1:8787", token: "fixture", sessionID: sessionID,
             submission: HarnessSubmissionController(
                 sendPrompt: { _, _, _ in }, sendCancel: { _ in }
@@ -883,6 +941,7 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         modelOptionsCallCount += 1
+        await modelOptionsGate?()
         return try modelOptionsResult.get()
     }
 

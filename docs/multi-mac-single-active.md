@@ -33,6 +33,7 @@ flowchart LR
 - `agentd` 首次启动生成随机 UUID v4，原子写入配置目录的 `installation-id`，权限固定为 `0600`。
 - 已存在的身份文件若权限、类型或格式异常，`agentd` 拒绝启动；不会静默换身份。
 - 认证后的 `GET /api/version` 从内存返回 `installation_id` 和服务端 `platform`（`darwin` / `windows` / `linux`），请求过程不读磁盘、不启动子进程、不连接 upstream。
+- 同一响应里的 `device_name` 是宿主电脑名（macOS 取系统「电脑名称」，其他平台取主机名）；它只作为未自定义名字连接的默认显示名，不参与身份判断。该字段在进程启动时预热、过期后后台刷新，请求路径同样不读磁盘、不启动子进程。
 - `HostScope` 由 `profileID + installationID + generation` 组成；异步结果回写前必须验证完整租约。
 - Session、Project、Message、Log、Context、Draft、分页、通知、Markdown Render、图片和本地路径缓存均按 Profile 隔离。
 - endpoint 旧数据只在唯一 Profile 匹配时复制一次；同地址存在歧义时不迁移。

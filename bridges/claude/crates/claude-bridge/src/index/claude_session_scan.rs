@@ -481,6 +481,7 @@ mod tests {
         let path = dir.path().join("internal-before-real.jsonl");
         let records = [
             r#"{"type":"user","isMeta":true,"cwd":"/private/tmp","message":{"role":"user","content":"<local-command-caveat>internal</local-command-caveat>"},"timestamp":"2026-07-17T05:11:50Z"}"#,
+            r#"{"type":"user","cwd":"/private/tmp","message":{"role":"user","content":"<task-notification>\n<status>stopped</status>\n</task-notification>"},"timestamp":"2026-07-17T05:11:50.500Z"}"#,
             r#"{"type":"user","message":{"role":"user","content":"<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>sonnet</command-args>"},"timestamp":"2026-07-17T05:11:51Z"}"#,
             r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"done"}]},"timestamp":"2026-07-17T05:11:52Z"}"#,
             r#"{"type":"user","message":{"role":"user","content":"[Request interrupted by user]"},"timestamp":"2026-07-17T05:11:52.500Z"}"#,
@@ -506,6 +507,7 @@ mod tests {
         let path = dir.path().join("internal-only.jsonl");
         let records = [
             r#"{"type":"user","isMeta":true,"cwd":"/private/tmp","message":{"role":"user","content":"metadata"}}"#,
+            r#"{"type":"user","cwd":"/private/tmp","message":{"role":"user","content":"<task-notification>\n<status>stopped</status>\n</task-notification>"}}"#,
             r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>done</local-command-stdout>"}}"#,
             r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"done"}]}}"#,
         ];

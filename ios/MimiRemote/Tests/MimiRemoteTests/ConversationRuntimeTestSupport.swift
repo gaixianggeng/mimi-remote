@@ -585,6 +585,7 @@ func makeDirectAppServerConfig(
     project: AgentProject,
     gatewayAvailable: Bool = true,
     allowedMethods: [String]? = nil,
+    transport: String = "ws",
     channels: [CodexAppServerChannelMetadata] = []
 ) -> CodexAppServerConfigResponse {
     let defaultAllowedMethods = [
@@ -600,7 +601,7 @@ func makeDirectAppServerConfig(
         gatewayWSURL: gatewayAvailable ? "ws://127.0.0.1:7777/api/app-server/ws" : "",
         runtime: CodexAppServerRuntimeMetadata(
             type: "codex_app_server",
-            transport: "ws",
+            transport: transport,
             managed: true,
             gatewayAvailable: gatewayAvailable,
         upstreamConfigured: gatewayAvailable,
@@ -1169,6 +1170,7 @@ func assertStabilizedConversationSnapshot<Content: View>(
     line: UInt = #line
 ) async throws {
     let host = UIHostingController(rootView: view)
+    host.safeAreaRegions = []
     if let contrast { host.traitOverrides.accessibilityContrast = contrast }
     let windowScene = try XCTUnwrap(
         UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
@@ -1195,9 +1197,15 @@ func assertStabilizedConversationSnapshot<Content: View>(
 
     // 会话快照验证稳定后的内容与样式。先把真实 List 放进窗口并完成首屏定位，
     // 避免离屏 SwiftUI 快照只截到稳定遮罩。
+    // 先让原生文字完成显示周期，再截取已定位的窗口，避免重挂视图触发屏外裁剪。
+    try await Task.sleep(nanoseconds: 100_000_000)
+    host.view.layoutIfNeeded()
+    let image = UIGraphicsImageRenderer(size: size).image { _ in
+        host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+    }
     assertSnapshot(
-        of: host.view,
-        as: .image(precision: precision, size: size),
+        of: image,
+        as: .image(precision: precision),
         named: named,
         file: file,
         testName: testName,

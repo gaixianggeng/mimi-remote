@@ -739,8 +739,7 @@ struct OpenWorkspaceSheet: View {
                 // 只有首次进入才让位给加载态；目录之间切换时保留上一屏内容，
                 // 避免每点一层就闪一次空列表。
                 browseStatusBlock {
-                    ProgressView()
-                        .controlSize(.regular)
+                    LoadingOrbit(size: .regular)
                     statusCaption(L10n.text("ui.loading_catalog"))
                 }
             } else if let browseError {

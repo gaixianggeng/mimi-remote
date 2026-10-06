@@ -183,7 +183,7 @@ func (m *Manager) AllowClient(rawKey string) (Status, error) {
 }
 
 // ReplaceManagedClients 用控制面返回的完整集合替换托管白名单。Tailcat 上游
-// 只支持追加客户端，因此删除或撤销必须重启稳定主机，不能继续复用旧内存状态。
+// 支持原地追加，但不支持删除，因此只有撤销客户端时才重启稳定主机。
 func (m *Manager) ReplaceManagedClients(rawKeys []string) (Status, error) {
 	next, err := normalizeClientKeys(rawKeys)
 	if err != nil {
@@ -191,7 +191,30 @@ func (m *Manager) ReplaceManagedClients(rawKeys []string) (Status, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if stringSlicesEqual(m.managedClients, next) && m.host != nil {
+	if clientKeySetsEqual(m.managedClients, next) && m.host != nil {
+		return m.statusLocked(), nil
+	}
+	if m.host != nil && clientKeysContainAll(next, m.managedClients) {
+		// 纯新增不会扩大到控制面集合之外，可以在现有引擎上逐项授权。
+		// 与免费白名单重叠的键已经生效，无需重复追加。
+		active := mergeClientKeys(m.clients, m.managedClients)
+		applied := append([]string(nil), m.managedClients...)
+		for _, rawKey := range next {
+			if clientKeysContainAll(m.managedClients, []string{rawKey}) {
+				continue
+			}
+			if !clientKeysContainAll(active, []string{rawKey}) {
+				if err := m.host.AddAllowedClient(rawKey); err != nil {
+					// 前面的追加已经生效且上游不能删除。记录实际集合，确保控制面
+					// 随后撤销时会识别到删除并通过重启关闭授权。
+					m.managedClients = applied
+					return Status{}, err
+				}
+				active = append(active, rawKey)
+			}
+			applied = append(applied, rawKey)
+		}
+		m.managedClients = next
 		return m.statusLocked(), nil
 	}
 	if m.host != nil {
@@ -521,12 +544,17 @@ func mergeClientKeys(groups ...[]string) []string {
 	return merged
 }
 
-func stringSlicesEqual(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
+func clientKeySetsEqual(left, right []string) bool {
+	return len(left) == len(right) && clientKeysContainAll(left, right)
+}
+
+func clientKeysContainAll(keys, required []string) bool {
+	available := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		available[key] = struct{}{}
 	}
-	for index := range left {
-		if left[index] != right[index] {
+	for _, key := range required {
+		if _, exists := available[key]; !exists {
 			return false
 		}
 	}

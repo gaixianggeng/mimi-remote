@@ -18,6 +18,9 @@ type VersionResponse struct {
 	CapabilityStatuses            []CapabilityStatus `json:"capability_statuses"`
 	TailscaleDNSName              string             `json:"tailscale_dns_name,omitempty"`
 	TailscaleDeviceName           string             `json:"tailscale_device_name,omitempty"`
+	// DeviceName 是宿主设备名（macOS 优先系统「电脑名称」，否则主机名）。它只作为
+	// 客户端展示默认名的来源，不参与身份、路由或鉴权；纯加法字段，旧客户端直接忽略。
+	DeviceName string `json:"device_name,omitempty"`
 }
 
 // CapabilityStatus 解释某个已知能力为什么被声明或被服务端关闭。

@@ -1062,6 +1062,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		routerOptions,
 	)
 	apiRouter.EnableTailscaleHostMetadata()
+	apiRouter.EnableHostDeviceName()
 	server := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           apiHandler,

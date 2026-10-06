@@ -661,7 +661,8 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
             snapshotSeq: page.records.compactMap(\.seq).max().map(EventSequence.init),
             // 原生路径不做"缩略/完整"两种装载策略：每页就是上游给的那么多条。
             loadMode: loadMode,
-            notice: nil
+            notice: nil,
+            resetsPaginationContext: decodedCursor == nil
         )
     }
 

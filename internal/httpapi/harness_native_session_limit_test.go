@@ -93,9 +93,9 @@ func waitForHarnessNativeActiveSessions(t *testing.T, router *Router, want int) 
 }
 
 func activeHarnessNativeSessions(router *Router) int {
-	router.harnessNativeSessionMu.Lock()
-	defer router.harnessNativeSessionMu.Unlock()
-	return router.activeHarnessNativeSession
+	router.harnessNative.mu.Lock()
+	defer router.harnessNative.mu.Unlock()
+	return router.harnessNative.activeSessions
 }
 
 // 上限必须跨连接生效。单连接上限（harnessNativeWSMaxStreams）挡不住"一个客户端
@@ -279,7 +279,7 @@ func TestHarnessNativeStreamUpstreamEndReleasesSessionSlotExactlyOnce(t *testing
 	waitForHarnessNativeActiveSessions(t, router, 0)
 	// 用一个独立占位名额探测“旧流是否又释放了一次”。单纯断言计数仍为 0
 	// 会被 release 的下限保护掩盖，无法证明 exactly-once。
-	if !router.acquireHarnessNativeSession() {
+	if !router.harnessNative.acquireSession(router.cfg.DeepSeek.MaxConcurrentSessions) {
 		t.Fatal("上游 end 归还后应能重新申请名额")
 	}
 	waitForHarnessNativeActiveSessions(t, router, 1)
@@ -288,7 +288,7 @@ func TestHarnessNativeStreamUpstreamEndReleasesSessionSlotExactlyOnce(t *testing
 		t.Fatal(err)
 	}
 	waitForHarnessNativeActiveSessions(t, router, 1)
-	router.releaseHarnessNativeSession()
+	router.harnessNative.releaseSession()
 	waitForHarnessNativeActiveSessions(t, router, 0)
 }
 
@@ -299,20 +299,20 @@ func TestHarnessNativeStreamUpstreamEndReleasesSessionSlotExactlyOnce(t *testing
 func TestHarnessNativeSessionCounterFallsBackAndFloorsAtZero(t *testing.T) {
 	router := &Router{cfg: config.Config{DeepSeek: config.DeepSeekConfig{MaxConcurrentSessions: 0}}}
 	for i := 1; i <= config.DefaultDeepSeekMaxConcurrentSessions; i++ {
-		if !router.acquireHarnessNativeSession() {
+		if !router.harnessNative.acquireSession(router.cfg.DeepSeek.MaxConcurrentSessions) {
 			t.Fatalf("第 %d 个名额应在默认上限内", i)
 		}
 	}
-	if router.acquireHarnessNativeSession() {
+	if router.harnessNative.acquireSession(router.cfg.DeepSeek.MaxConcurrentSessions) {
 		t.Fatal("超过默认上限必须拒绝")
 	}
 	for range config.DefaultDeepSeekMaxConcurrentSessions + 1 {
-		router.releaseHarnessNativeSession()
+		router.harnessNative.releaseSession()
 	}
 	if got := activeHarnessNativeSessions(router); got != 0 {
 		t.Fatalf("释放必须停在 0，得到 %d", got)
 	}
-	if !router.acquireHarnessNativeSession() {
+	if !router.harnessNative.acquireSession(router.cfg.DeepSeek.MaxConcurrentSessions) {
 		t.Fatal("释放后应能重新申请名额")
 	}
 }

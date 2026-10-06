@@ -389,6 +389,18 @@ enum ConnectionRouteFormatting {
         return date.formatted(date: .abbreviated, time: .shortened)
     }
 
+    /// 首页单行放得下的时间：当天写时刻，昨天写「昨天」，更早只写月/日。
+    /// 「2026年9月24日 22:10」这种完整写法会把诊断行挤成两行，完整时间留给诊断页。
+    static func compactTimeText(_ date: Date, calendar: Calendar = .current) -> String {
+        if calendar.isDateInToday(date) {
+            return date.formatted(date: .omitted, time: .shortened)
+        }
+        if calendar.isDateInYesterday(date) {
+            return L10n.text("ui.yesterday")
+        }
+        return date.formatted(.dateTime.month(.defaultDigits).day())
+    }
+
     /// 卡片里不写「直连（UDP 打洞）」这种解释性全称，解释留给诊断页。
     static func pathText(_ path: String, region: String?) -> String {
         switch path {

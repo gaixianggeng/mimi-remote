@@ -94,7 +94,7 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
     }
 
     func testLockScreenApprovalSettingsRemainReachableAcrossRotation() throws {
-        // 消息提醒在设备页，排在当前电脑和其他电脑之间。
+        // 消息提醒与运行时选择同在设备页的「偏好设置」组。
         openDevices()
         let entry = element("settings.lockScreenApproval")
         scrollTo(entry)
@@ -205,6 +205,22 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         XCTAssertTrue(displayName.waitForExistence(timeout: 12))
         XCTAssertEqual(displayName.value as? String, manualDraft)
         capture("manual-draft-portrait")
+    }
+
+    func testDefaultModelsShowEffectiveNameAndHonestUnknownState() throws {
+        openMe()
+        let row = element("settings.defaultModels")
+        scrollTo(row)
+        row.tap()
+        let codex = element("settings.defaultModels.model.codex")
+        let claude = element("settings.defaultModels.model.claude")
+        XCTAssertTrue(codex.waitForExistence(timeout: 8))
+        XCTAssertTrue(claude.waitForExistence(timeout: 8))
+        XCTAssertEqual(codex.value as? String, "GPT-6 Astra（跟随默认）")
+        let claudeValue = claude.value as? String ?? ""
+        XCTAssertTrue(claudeValue.contains("型号未确认") || claudeValue.contains("正在加载模型…"))
+        XCTAssertTrue(claudeValue.contains("跟随默认"))
+        capture("default-model-resolved-display")
     }
 
     func testAllSettingsDestinationsRemainReachable() throws {

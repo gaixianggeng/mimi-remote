@@ -21,6 +21,8 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.stored("unknown"), .codex)
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.stored("codex"), .codex)
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.stored("claude"), .claude)
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.stored("deepseek"), .deepseek)
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.deepseek.rawValue, "deepseek")
 
         let state = WorkspaceRuntimeSelectionState()
         for preferredRuntime in WorkspaceSessionRuntimeChoice.allCases {
@@ -32,6 +34,17 @@ final class WorkspaceStripPresentationTests: XCTestCase {
                 preferredRuntime
             )
         }
+    }
+
+    func testWorkspaceRuntimeSettingsTitlesCoverAllChoices() {
+        XCTAssertEqual(
+            WorkspaceSessionRuntimeChoice.allCases.map(\.choiceTitle),
+            [
+                L10n.text("ui.runtime_default"),
+                L10n.text("ui.runtime_optional"),
+                "DeepSeek"
+            ]
+        )
     }
 
     func testWorkspaceRuntimePreferenceRecoversAfterCapabilityArrives() {

@@ -239,6 +239,8 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         // 所有记录仍要对账：断线期间的 user 回显负责解锁，assistant/tool 负责身份与终态。
         // UI 只补已应用前沿之后的缺口；同一观察重连时保留前沿，不因 fresh journal 全量重播。
         for event in fresh.orderedRecords {
+            // 投影会同步调用 Store；它可能在回调中切页，剩余旧 snapshot 不能继续发布。
+            guard isCurrentObservation(sessionID: sessionID, lease: generation) else { return false }
             let reconciliation = reconcile(event)
             publishAttemptRetirements(reconciliation.interruptedAttempts)
             if let seq = event.seq {
@@ -255,6 +257,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
             if let seq = event.seq { pendingAssistantDurableBySeq.removeValue(forKey: seq) }
             publish(durableEvent: event, assistantMessageID: reconciliation.assistantMessageID)
         }
+        guard isCurrentObservation(sessionID: sessionID, lease: generation) else { return false }
         if let attempt = fresh.activeAttempt,
            let event = HarnessPresentationProjector.liveTextEvent(
                text: HarnessPresentationProjector.assistantText(from: attempt),
@@ -345,58 +348,11 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         }
 
         while isCurrentObservation(sessionID: sessionID, lease: lease), !Task.isCancelled {
-            var openedFollowID: String?
             do {
-                let generation = try await runtime.connect()
-                guard isCurrentObservation(sessionID: sessionID, lease: lease) else { return }
-                runtimeGeneration = generation
-
-                // 全局读取上下文在开 follow **之前**登记。旧页面先开始、晚返回时仍携带
-                // 旧 context，不能覆盖后来开始的刷新。
-                let snapshotContextID = beginSnapshotObservation?(sessionID) ?? lease
-
-                // **不在这里开 `$events`。** 它是宿主级通道，由 `HarnessSessionAPIClient`
-                // 的唯一观察者持有（见 `HarnessHostEventObserver`）。页面各开一条会被中继
-                // 拒绝（一条移动连接只绑定一个 `$events`），而页面退订会关闭整条共享连接
-                // 并波及其它会话的订阅。
-                let followID = await runtime.nextStreamID()
-                openedFollowID = followID
-                followStreamID = followID
-                try await runtime.openStream(
-                    streamID: followID,
-                    endpoint: HarnessWireEndpoint.sessionFollow,
-                    args: HarnessFollowTarget(
-                        sessionID: sessionID,
-                        assistantStream: true,
-                        maxMessages: 200
-                    ).argsValue
-                )
-                let snapshot = try await waitForOpeningSnapshot(
-                    streamID: followID,
-                    runtimeGeneration: generation,
-                    sessionID: sessionID,
-                    lease: lease
-                )
-                guard openBaseline(
-                    snapshot: snapshot,
-                    sessionID: sessionID,
-                    generation: lease,
-                    snapshotContextID: snapshotContextID
-                ) else { return }
-                recovery.recordSuccess()
-                onStatus?(.connected)
-
-                try await consumeRuntimeFrames(
-                    followStreamID: followID,
-                    runtimeGeneration: generation,
-                    sessionID: sessionID,
-                    lease: lease
-                )
+                try await observeFollow(sessionID: sessionID, lease: lease, runtime: runtime, recovery: recovery)
             } catch is CancellationError {
-                await closeFollowStream(openedFollowID)
                 return
             } catch {
-                await closeFollowStream(openedFollowID)
                 guard isCurrentObservation(sessionID: sessionID, lease: lease),
                       !Task.isCancelled else { return }
                 let transport = error as? HarnessTransportError ?? .closed
@@ -413,6 +369,53 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                 }
             }
         }
+    }
+
+    /// 每次观察独占一个 follow ID。所有退出路径都释放该 ID，不读取新观察的订阅来清理。
+    private func observeFollow(
+        sessionID: SessionID,
+        lease: UInt64,
+        runtime: HarnessSessionRuntime,
+        recovery: HarnessRecoveryCoordinator
+    ) async throws {
+        let generation = try await runtime.connect()
+        try requireCurrentObservation(sessionID: sessionID, lease: lease)
+        runtimeGeneration = generation
+        // 在开 follow 前登记全局历史上下文，普通页面仍不拥有历史游标或宿主 $events。
+        let snapshotContextID = beginSnapshotObservation?(sessionID) ?? lease
+        let followID = await runtime.nextStreamID()
+        try requireCurrentObservation(sessionID: sessionID, lease: lease)
+        followStreamID = followID
+        do {
+            try await runtime.openStream(
+                streamID: followID,
+                endpoint: HarnessWireEndpoint.sessionFollow,
+                args: HarnessFollowTarget(
+                    sessionID: sessionID,
+                    assistantStream: true,
+                    maxMessages: 200
+                ).argsValue
+            )
+            let snapshot = try await waitForOpeningSnapshot(
+                streamID: followID, runtimeGeneration: generation, sessionID: sessionID, lease: lease
+            )
+            guard openBaseline(
+                snapshot: snapshot,
+                sessionID: sessionID,
+                generation: lease,
+                snapshotContextID: snapshotContextID
+            ) else { throw CancellationError() }
+            try requireCurrentObservation(sessionID: sessionID, lease: lease)
+            recovery.recordSuccess()
+            onStatus?(.connected)
+            try await consumeRuntimeFrames(
+                followStreamID: followID, runtimeGeneration: generation, sessionID: sessionID, lease: lease
+            )
+        } catch {
+            await closeFollowStream(followID)
+            throw error
+        }
+        await closeFollowStream(followID)
     }
 
     private func waitForOpeningSnapshot(
@@ -451,8 +454,11 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         guard let runtime else { throw HarnessTransportError.notConnected }
         while isCurrentObservation(sessionID: sessionID, lease: lease), !Task.isCancelled {
             try await ensureNoDroppedFrames(streamIDs: [followStreamID], runtime: runtime)
+            try requireCurrentObservation(sessionID: sessionID, lease: lease)
             var consumed = false
             while let carrier = await runtime.pollFrame(streamID: followStreamID) {
+                // actor 读取是挂起点；旧任务醒来时不能把帧应用到新会话的 journal。
+                try requireCurrentObservation(sessionID: sessionID, lease: lease)
                 consumed = true
                 let frame = try Self.decodeCarrier(carrier)
                 switch frame {
@@ -484,6 +490,7 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         while isCurrentObservation(sessionID: sessionID, lease: lease), !Task.isCancelled {
             try await ensureNoDroppedFrames(streamIDs: [streamID], runtime: runtime)
             if let carrier = await runtime.pollFrame(streamID: streamID) {
+                try requireCurrentObservation(sessionID: sessionID, lease: lease)
                 return try Self.decodeCarrier(carrier)
             }
             guard await runtime.isConnectionCurrent(runtimeGeneration) else {
@@ -543,6 +550,12 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
 
     private func isCurrentObservation(sessionID: SessionID, lease: UInt64) -> Bool {
         observationGeneration == lease && self.sessionID == sessionID
+    }
+
+    private func requireCurrentObservation(sessionID: SessionID, lease: UInt64) throws {
+        guard isCurrentObservation(sessionID: sessionID, lease: lease), !Task.isCancelled else {
+            throw CancellationError()
+        }
     }
 
     private static func decodeCarrier(_ carrier: HarnessCarrierFrame) throws -> HarnessStreamFrame {

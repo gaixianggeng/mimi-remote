@@ -79,8 +79,22 @@ func (f *Forwarder) checkActiveClient() {
 	_, err := client.transport.DiscoPing(ctx)
 	cancel()
 	if err != nil && f.ctx.Err() == nil {
-		_, _ = f.recoverClient(f.ctx, client)
+		// 单次 DISCO 丢包不能销毁仍承载业务流的引擎。第二次限时探测也失败，
+		// 才把错误视为引擎失效并关闭属于这一代的活动连接。
+		ctx, cancel = context.WithTimeout(f.ctx, forwarderAttemptTimeout)
+		_, err = client.transport.DiscoPing(ctx)
+		cancel()
+		if err != nil && f.ctx.Err() == nil {
+			_, _ = f.recoverClient(f.ctx, client)
+		}
 	}
+}
+
+func (f *Forwarder) confirmClientAlive(ctx context.Context, client *forwarderClient) error {
+	probeContext, cancel := context.WithTimeout(ctx, forwarderAttemptTimeout)
+	defer cancel()
+	_, err := client.transport.DiscoPing(probeContext)
+	return err
 }
 
 func (f *Forwarder) clientForRequest(ctx context.Context) (*forwarderClient, error) {
