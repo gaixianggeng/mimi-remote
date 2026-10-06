@@ -79,6 +79,11 @@ extension HostStore {
         if deepSeekEnabled, runtime(for: .deepseek)?.reason == "refresh_in_progress" {
             return "正在确认 agentd 与 Harness 的连接。"
         }
+        if deepSeekEnabled, runtime(for: .deepseek)?.state == .signedOut {
+            // agentd 已自动尝试过换凭据：走到这里说明本机取不到 Harness 的新启动链接。
+            return "Harness 重启后，保存的启动凭据已失效，且没能自动更新（启动日志可能已被清理）。"
+                + "重启 Harness 后点击重新检测，或在手动连接中粘贴新的启动链接。"
+        }
         if deepSeekEnabled, runtime(for: .deepseek)?.state == .unavailable {
             return "Harness 暂不可用。确认它仍在运行后，点击重新检测。"
         }
@@ -119,7 +124,7 @@ extension HostStore {
             if status?.runtimeStatus?.isExpired() == true { return "等待状态更新" }
             switch runtime.state {
             case .available, .connected: return "可用"
-            case .signedOut: return "需要登录"
+            case .signedOut: return module == .deepseek ? "需要更新启动链接" : "需要登录"
             case .disabled: return "等待设置生效"
             case .unavailable: return runtime.reason == "refresh_in_progress" ? "正在检查" : "暂不可用"
             }

@@ -801,10 +801,10 @@ final class HostStore {
 
     private func reconcileDeepSeekConfigurationAtLaunch() async -> Bool {
         do {
-            // 只刷新已启用的托管连接。检测到 Harness 不代表用户同意自动启用。
+            // 只刷新已启用的托管连接，检测到 Harness 不代表同意启用。开机时它可能还没换好凭据，可用性交给会自愈的 agentd 运行态。
             let result = try await agent.configureDeepSeek(.refresh, nil)
             deepSeekConfiguration = result
-            deepSeekError = result.enabled && !result.available ? result.message : nil
+            deepSeekError = nil
             return result.restartRequired
         } catch {
             deepSeekError = "DeepSeek 自动检测失败：\(error.localizedDescription)"
@@ -1731,17 +1731,14 @@ final class HostStore {
             defer { runtimeStatusFollowUpTask = nil }
             // Provider 冷启动可能涉及 bridge 启动、OAuth 刷新和网络查询。
             // 菜单先展示缓存/refreshing，再在后台有界轮询，不能重新阻塞 readiness。
-            // 首次 unavailable/额度刷新还会在服务端 15 秒失败 TTL 后重试一次；
+            // 首次 unavailable/额度刷新等 15 秒；凭据被拒等 30 秒轮换冷却后重试；
             // 16 轮足够覆盖两次 9 秒 provider 预算，同时避免永久轮询。
-            var didRetryUnavailable = false
+            var retryState = RuntimeStatusFollowUpState()
             for _ in 0..<16 {
                 let delay: Duration
                 if isRefreshingStatus {
                     delay = .seconds(2)
-                } else if let nextDelay = Self.runtimeStatusFollowUpDelay(
-                    snapshot: status?.runtimeStatus,
-                    didRetryUnavailable: didRetryUnavailable
-                ) {
+                } else if let nextDelay = retryState.delay(for: status?.runtimeStatus) {
                     delay = nextDelay
                 } else {
                     return
@@ -1754,16 +1751,11 @@ final class HostStore {
                 guard !Task.isCancelled, owner == .macApp, !isBusy else { return }
                 guard !isRefreshingStatus else { continue }
 
-                guard Self.runtimeStatusFollowUpDelay(
-                    snapshot: status?.runtimeStatus,
-                    didRetryUnavailable: didRetryUnavailable
-                ) != nil else {
-                    return
-                }
+                guard retryState.delay(for: status?.runtimeStatus) == delay else { continue }
                 if status?.runtimeStatus?.refreshing != true,
                    status?.runtimeStatus?.hasRetryableFailure == true
                 {
-                    didRetryUnavailable = true
+                    retryState.markRetry(for: status?.runtimeStatus)
                 }
                 isRefreshingStatus = true
                 await refreshMacAgentStatus()
@@ -1775,19 +1767,6 @@ final class HostStore {
     private var runtimeStatusNeedsFollowUp: Bool {
         status?.runtimeStatus?.refreshing == true
             || status?.runtimeStatus?.hasRetryableFailure == true
-    }
-
-    nonisolated static func runtimeStatusFollowUpDelay(
-        snapshot: AgentRuntimeStatusSnapshot?,
-        didRetryUnavailable: Bool
-    ) -> Duration? {
-        if snapshot?.refreshing == true {
-            return .seconds(2)
-        }
-        if !didRetryUnavailable, snapshot?.hasRetryableFailure == true {
-            return .seconds(15)
-        }
-        return nil
     }
 
     private func fail(_ error: Error) {

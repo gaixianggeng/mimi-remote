@@ -321,20 +321,46 @@ final class AgentModelsTests: XCTestCase {
         XCTAssertTrue(failed.hasRetryableFailure)
         XCTAssertTrue(quotaRefreshing.hasRetryableFailure)
         XCTAssertTrue(quotaUnavailable.hasRetryableFailure)
-        XCTAssertEqual(
-            HostStore.runtimeStatusFollowUpDelay(
-                snapshot: failed,
-                didRetryUnavailable: false
-            ),
-            .seconds(15)
-        )
-        XCTAssertNil(
-            HostStore.runtimeStatusFollowUpDelay(
-                snapshot: failed,
-                didRetryUnavailable: true
-            )
-        )
+        var retry = RuntimeStatusFollowUpState()
+        XCTAssertEqual(retry.delay(for: failed), .seconds(15))
+        retry.markRetry(for: failed)
+        XCTAssertNil(retry.delay(for: failed))
         XCTAssertFalse(disabled.hasRetryableFailure)
+    }
+
+    func testRejectedCredentialRetryOnlyTargetsEnabledDeepSeek() {
+        func snapshot(id: String, enabled: Bool, state: AgentRuntimeConnectionState, reason: String) -> AgentRuntimeStatusSnapshot {
+            AgentRuntimeStatusSnapshot(checkedAt: nil, runtimes: [
+                AgentRuntimeStatus(
+                    id: id, title: id, enabled: enabled, state: state,
+                    authMode: nil, planType: nil, reason: reason, rateLimits: nil
+                ),
+            ])
+        }
+        let rejected = snapshot(id: "deepseek", enabled: true, state: .signedOut, reason: "credentials_rejected")
+        XCTAssertTrue(rejected.hasRetryableFailure)
+        var credentialRetry = RuntimeStatusFollowUpState()
+        XCTAssertEqual(credentialRetry.delay(for: rejected), .seconds(32))
+        credentialRetry.markRetry(for: rejected)
+        XCTAssertNil(credentialRetry.delay(for: rejected))
+        XCTAssertFalse(snapshot(id: "deepseek", enabled: false, state: .signedOut, reason: "credentials_rejected").hasRetryableFailure)
+        XCTAssertFalse(snapshot(id: "claude", enabled: true, state: .signedOut, reason: "credentials_rejected").hasRetryableFailure)
+        XCTAssertFalse(snapshot(id: "deepseek", enabled: true, state: .signedOut, reason: "other").hasRetryableFailure)
+        let unavailable = snapshot(
+            id: "claude", enabled: true, state: .unavailable,
+            reason: "bridge_unavailable"
+        )
+        XCTAssertEqual(RuntimeStatusFollowUpState().delay(for: unavailable), .seconds(15))
+
+        let combined = AgentRuntimeStatusSnapshot(
+            checkedAt: nil, runtimes: rejected.runtimes + unavailable.runtimes
+        )
+        var combinedRetry = RuntimeStatusFollowUpState()
+        XCTAssertEqual(combinedRetry.delay(for: combined), .seconds(15))
+        combinedRetry.markRetry(for: combined)
+        XCTAssertEqual(combinedRetry.delay(for: combined), .seconds(32))
+        combinedRetry.markRetry(for: combined)
+        XCTAssertNil(combinedRetry.delay(for: combined))
     }
 
     func testLifecyclePresentationIsStable() {

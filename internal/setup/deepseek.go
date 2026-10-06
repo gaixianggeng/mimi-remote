@@ -119,14 +119,12 @@ func inspectDeepSeek(
 	dependencies deepSeekRuntimeDependencies,
 ) DeepSeekConfigurationResult {
 	if document.enabled {
-		configured, readErr := configuredDeepSeekCandidate(document)
-		if readErr == nil {
-			result.Available = dependencies.probe(ctx, configured) == nil
-		}
+		probeErr := probeConfiguredDeepSeek(ctx, document, dependencies)
+		result.Available = probeErr == nil
 		if result.Available {
 			result.Message = "当前 DeepSeek Harness 连接可用。"
 		} else {
-			result.Message = "DeepSeek 已启用，但当前连接不可用。"
+			result.Message = "DeepSeek 已启用，但当前连接不可用。" + deepSeekProbeFailureGuidance(probeErr)
 		}
 		return result
 	}
@@ -157,8 +155,21 @@ func connectDeepSeek(
 	if strings.TrimSpace(startupURL) == "" {
 		if configured, configuredErr := configuredDeepSeekCandidate(document); configuredErr == nil {
 			result.BaseURL = configured.BaseURL
-			result.Available = dependencies.probe(ctx, configured) == nil
-			return enableConfiguredDeepSeek(document, result)
+			probeErr := dependencies.probe(ctx, configured)
+			result.Available = probeErr == nil
+			// 凭据被拒说明 Harness 重启过；同一地址上能取得新凭据时直接换上，
+			// 否则用户点开关只会把作废的凭据重新启用一遍。
+			if errors.Is(probeErr, harnessclient.ErrCredentialsRejected) {
+				if changed, recoverErr := recoverRejectedDeepSeek(ctx, document, dependencies); recoverErr == nil {
+					result.Enabled = true
+					result.Available = true
+					result.Discovered = true
+					result.RestartRequired = changed
+					result.Message = deepSeekCredentialRenewedMessage
+					return result, nil
+				}
+			}
+			return enableConfiguredDeepSeek(document, result, probeErr)
 		}
 	}
 
@@ -189,6 +200,7 @@ func connectDeepSeek(
 func enableConfiguredDeepSeek(
 	document deepSeekConfigDocument,
 	result DeepSeekConfigurationResult,
+	probeErr error,
 ) (DeepSeekConfigurationResult, error) {
 	updated, err := encodeDeepSeekEnabled(document, true)
 	if err != nil {
@@ -202,7 +214,7 @@ func enableConfiguredDeepSeek(
 	if result.Available {
 		result.Message = "DeepSeek Harness 已启用，当前连接可用。"
 	} else {
-		result.Message = "DeepSeek Harness 已启用，但当前连接不可用；配置已保留。"
+		result.Message = "DeepSeek Harness 已启用，但当前连接不可用；配置已保留。" + deepSeekProbeFailureGuidance(probeErr)
 	}
 	return result, nil
 }
@@ -218,22 +230,34 @@ func refreshDeepSeek(
 		return inspectDeepSeek(ctx, document, result, dependencies), nil
 	}
 	managedTokenPath := managedDeepSeekTokenPath(document.configPath)
-	if !document.autoDiscover || filepath.Clean(document.tokenFile) != managedTokenPath {
-		result.Message = "当前 DeepSeek 连接未启用受管自动发现，未自动替换服务。"
-		configured, err := configuredDeepSeekCandidate(document)
-		if err == nil {
-			result.Available = dependencies.probe(ctx, configured) == nil
+	if filepath.Clean(document.tokenFile) != managedTokenPath {
+		// 外部 token 文件由用户自己维护，refresh 只验证，不改写。
+		probeErr := probeConfiguredDeepSeek(ctx, document, dependencies)
+		result.Available = probeErr == nil
+		result.Message = "当前 DeepSeek 连接使用外部 token 文件，未自动替换服务。"
+		if probeErr != nil {
+			result.Message += deepSeekProbeFailureGuidance(probeErr)
 		}
 		return result, nil
 	}
-	candidate, discovered, err := findDeepSeekCandidate(ctx, "", dependencies)
-	if err != nil {
-		result.Message = "未发现正在运行的 DeepSeek Harness；保留现有配置。"
-		return result, nil
+	if !document.autoDiscover {
+		return refreshManualDeepSeek(ctx, document, result, dependencies), nil
 	}
-	result.Discovered = discovered
-	if err := probeAndRecheckDeepSeek(ctx, candidate, discovered, dependencies); err != nil {
-		result.Message = "DeepSeek Harness 认证或模型目录检查失败；保留现有配置。"
+	candidate, discovered, err := findDeepSeekCandidate(ctx, "", dependencies)
+	if err == nil {
+		result.Discovered = discovered
+		err = probeAndRecheckDeepSeek(ctx, candidate, discovered, dependencies)
+	}
+	if err != nil {
+		// 启动日志可能已被清理工具删掉，或 Harness 刚启动、还没写出启动行。
+		// 已保存的凭据此时仍可能有效，不能因为发现失败就报告不可用。
+		probeErr := probeConfiguredDeepSeek(ctx, document, dependencies)
+		result.Available = probeErr == nil
+		if result.Available {
+			result.Message = "当前 DeepSeek Harness 连接可用；未读到新的启动信息，保留现有配置。"
+		} else {
+			result.Message = "未能从本机取得可用的 Harness 启动信息；保留现有配置。" + deepSeekProbeFailureGuidance(probeErr)
+		}
 		return result, nil
 	}
 	result.Available = true

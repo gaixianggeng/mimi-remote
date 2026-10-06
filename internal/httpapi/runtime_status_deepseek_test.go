@@ -20,7 +20,7 @@ func TestDeepSeekRuntimeStatusRequiresAuthenticatedModels(t *testing.T) {
 		want                runtimeConnectionState
 	}{
 		{"ready", "", `{"groups":[{"id":"fixture","models":[{"id":"model-a"}]}]}`, runtimeStateAvailable},
-		{"invalid credential", "invalid-private-credential", `{"groups":[]}`, runtimeStateUnavailable},
+		{"rejected credential", "invalid-private-credential", `{"groups":[]}`, runtimeStateSignedOut},
 		{"no models", "", `{"groups":[]}`, runtimeStateUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

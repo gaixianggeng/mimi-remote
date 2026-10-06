@@ -24,6 +24,12 @@
 
 - 启动 token 只用于 `GET /?token=<token>`，返回 **303** 并下发绑定 hostname+port 的 Cookie。
 - 普通 API **不接受** `Authorization` 头；没有 Cookie 一律 **401**。
+- 启动 token 在**每个 Harness 进程启动时随机生成**（`dsh-client-connection` 的 `processLaunchToken`），
+  只出现在进程内存和启动时的 stdout 里；Harness 一重启，旧 token 换 Cookie 就返回 **401**。Cookie 由
+  持久化密钥签名，默认 30 天有效，可跨重启（来源：本机 `dsh` 0.1.5-rc.1 源码）。
+- agentd 不缓存 Cookie，每次请求都用已存 token 重新认证。token 被拒（401）时，agentd 只为受管自动发现连接
+  从本机 LaunchAgent 重新发现**同一地址**上的新 token，验证通过后原子替换受管 token 文件并重试一次；失败后
+  冷却 30 秒。地址变化、手动连接或外部 token 文件不自动替换（#587）。
 - RPC 走 `POST /api/<method>`，body 是 Connection RPC 外壳：
 
 ```json

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/harnessclient"
 )
 
@@ -318,30 +317,28 @@ func (r *Router) harnessNativeUpstreamFor(ctx context.Context) (harnessNativeRPC
 // remote.mux 订阅能力，因此不能只依赖 harnessNativeRPCUpstream 那三个方法。
 // 认证与脱敏策略与只读中继完全一致，两条通道不各写一份。
 func (r *Router) harnessNativeClientFor(ctx context.Context) (*harnessclient.Client, error) {
-	cfg := r.cfg.DeepSeek
-	if !cfg.Enabled {
+	if !r.cfg.DeepSeek.Enabled {
 		return nil, harnessNativeReject(http.StatusServiceUnavailable, "DeepSeek Harness runtime 未启用")
 	}
-	baseURL, err := config.NormalizeDeepSeekBaseURL(cfg.BaseURL)
-	if err != nil || baseURL == "" {
+	client, err := r.authenticatedDeepSeekClient(ctx)
+	switch {
+	case err == nil:
+		return client, nil
+	case errors.Is(err, errDeepSeekBaseURLUnavailable):
 		return nil, harnessNativeReject(http.StatusServiceUnavailable, "deepseek.base_url 不可用，请在电脑运行 agentd doctor")
-	}
-	token, err := harnessclient.ReadTokenFile(cfg.TokenFile)
-	if err != nil {
+	case errors.Is(err, errDeepSeekCredentialsUnavailable):
 		// 错误里含本机绝对路径：日志记原因，回给移动端的只有可操作文案。
 		log.Printf("harness native rpc 读取 token 文件失败 err=%v", err)
 		return nil, harnessNativeReject(http.StatusServiceUnavailable, "读取 Harness 凭据失败，请在电脑运行 agentd doctor")
-	}
-	client, err := harnessclient.New(harnessclient.Config{BaseURL: baseURL, AccessToken: token})
-	if err != nil {
-		return nil, harnessNativeReject(http.StatusServiceUnavailable, "deepseek.base_url 不可用，请在电脑运行 agentd doctor")
-	}
-	if err := client.Authenticate(ctx); err != nil {
+	case errors.Is(err, harnessclient.ErrCredentialsRejected):
+		// 自动更新已经试过：Harness 重启后的新凭据取不到，只能在电脑上处理。
+		log.Printf("harness native rpc 启动凭据被拒且未能自动更新")
+		return nil, harnessNativeReject(http.StatusBadGateway, "Harness 已重启，电脑上保存的启动凭据失效，请在电脑的 Mimi Remote 菜单栏重新检测 DeepSeek")
+	default:
 		// harnessclient 已保证传输层错误里不含启动 token，这里再收敛一次长度与关键词。
 		log.Printf("harness native rpc 认证失败 err=%s", sanitizeGatewayDiagnostic(err.Error()))
 		return nil, harnessNativeReject(http.StatusBadGateway, "无法连接 Harness 服务，请在电脑运行 agentd doctor")
 	}
-	return client, nil
 }
 
 // writeHarnessNativeResult 下发一次成功的只读结果。

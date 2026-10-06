@@ -253,6 +253,10 @@ struct AgentRuntimeStatusSnapshot: Codable, Equatable, Sendable {
     }
 
     var hasRetryableFailure: Bool {
+        hasOtherRetryableFailure || hasRejectedDeepSeekCredentials
+    }
+
+    var hasOtherRetryableFailure: Bool {
         runtimes.contains {
             guard $0.enabled else { return false }
             if $0.reason == "quota_refresh_in_progress" {
@@ -263,6 +267,37 @@ struct AgentRuntimeStatusSnapshot: Codable, Equatable, Sendable {
             }
             return $0.state == .unavailable
                 && $0.reason != "refresh_in_progress"
+        }
+    }
+
+    var hasRejectedDeepSeekCredentials: Bool {
+        runtimes.contains {
+            $0.id == "deepseek" && $0.enabled && $0.state == .signedOut
+                && $0.reason == "credentials_rejected"
+        }
+    }
+}
+
+/// Keeps the Mac's ordinary provider retry independent of DeepSeek's 30-second
+/// credential-renewal cooldown. Each kind gets at most one follow-up attempt.
+struct RuntimeStatusFollowUpState {
+    private(set) var didRetryOtherFailure = false
+    private(set) var didRetryRejectedCredentials = false
+
+    func delay(for snapshot: AgentRuntimeStatusSnapshot?) -> Duration? {
+        guard let snapshot else { return nil }
+        if snapshot.refreshing == true { return .seconds(2) }
+        if snapshot.hasOtherRetryableFailure && !didRetryOtherFailure { return .seconds(15) }
+        if snapshot.hasRejectedDeepSeekCredentials && !didRetryRejectedCredentials { return .seconds(32) }
+        return nil
+    }
+
+    mutating func markRetry(for snapshot: AgentRuntimeStatusSnapshot?) {
+        guard let snapshot else { return }
+        if snapshot.hasOtherRetryableFailure && !didRetryOtherFailure {
+            didRetryOtherFailure = true
+        } else if snapshot.hasRejectedDeepSeekCredentials && !didRetryRejectedCredentials {
+            didRetryRejectedCredentials = true
         }
     }
 }
