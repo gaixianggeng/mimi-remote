@@ -1733,15 +1733,12 @@ final class HostStore {
             // 菜单先展示缓存/refreshing，再在后台有界轮询，不能重新阻塞 readiness。
             // 首次 unavailable/额度刷新等 15 秒；凭据被拒等 30 秒轮换冷却后重试；
             // 16 轮足够覆盖两次 9 秒 provider 预算，同时避免永久轮询。
-            var didRetryUnavailable = false
+            var retryState = RuntimeStatusFollowUpState()
             for _ in 0..<16 {
                 let delay: Duration
                 if isRefreshingStatus {
                     delay = .seconds(2)
-                } else if let nextDelay = Self.runtimeStatusFollowUpDelay(
-                    snapshot: status?.runtimeStatus,
-                    didRetryUnavailable: didRetryUnavailable
-                ) {
+                } else if let nextDelay = retryState.delay(for: status?.runtimeStatus) {
                     delay = nextDelay
                 } else {
                     return
@@ -1754,16 +1751,11 @@ final class HostStore {
                 guard !Task.isCancelled, owner == .macApp, !isBusy else { return }
                 guard !isRefreshingStatus else { continue }
 
-                guard Self.runtimeStatusFollowUpDelay(
-                    snapshot: status?.runtimeStatus,
-                    didRetryUnavailable: didRetryUnavailable
-                ) != nil else {
-                    return
-                }
+                guard retryState.delay(for: status?.runtimeStatus) == delay else { continue }
                 if status?.runtimeStatus?.refreshing != true,
                    status?.runtimeStatus?.hasRetryableFailure == true
                 {
-                    didRetryUnavailable = true
+                    retryState.markRetry(for: status?.runtimeStatus)
                 }
                 isRefreshingStatus = true
                 await refreshMacAgentStatus()
@@ -1775,19 +1767,6 @@ final class HostStore {
     private var runtimeStatusNeedsFollowUp: Bool {
         status?.runtimeStatus?.refreshing == true
             || status?.runtimeStatus?.hasRetryableFailure == true
-    }
-
-    nonisolated static func runtimeStatusFollowUpDelay(
-        snapshot: AgentRuntimeStatusSnapshot?,
-        didRetryUnavailable: Bool
-    ) -> Duration? {
-        if snapshot?.refreshing == true {
-            return .seconds(2)
-        }
-        if !didRetryUnavailable, snapshot?.hasRetryableFailure == true {
-            return snapshot?.hasRejectedDeepSeekCredentials == true ? .seconds(32) : .seconds(15)
-        }
-        return nil
     }
 
     private func fail(_ error: Error) {

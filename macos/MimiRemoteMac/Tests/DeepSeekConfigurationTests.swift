@@ -247,16 +247,10 @@ extension HostStoreTests {
             state: "signed_out", reason: "credentials_rejected"
         ).runtimeStatus
         XCTAssertTrue(rejected?.hasRetryableFailure == true)
-        XCTAssertEqual(
-            HostStore.runtimeStatusFollowUpDelay(
-                snapshot: rejected,
-                didRetryUnavailable: false
-            ),
-            .seconds(32)
-        )
-        XCTAssertNil(HostStore.runtimeStatusFollowUpDelay(
-            snapshot: rejected, didRetryUnavailable: true
-        ))
+        var retry = RuntimeStatusFollowUpState()
+        XCTAssertEqual(retry.delay(for: rejected), .seconds(32))
+        retry.markRetry(for: rejected)
+        XCTAssertNil(retry.delay(for: rejected))
     }
 
     func testDeepSeekLaunchRefreshMissDoesNotHideSelfHealedRuntime() async {
