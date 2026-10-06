@@ -1567,9 +1567,25 @@ extension View {
 /// 设置页和工作台侧栏共用的额度窗口模型。集中选择规则后，两个入口不会因为
 /// 服务端 primary / secondary 槽位变化而展示不同的三个圆环。
 struct CombinedUsageItem: Identifiable {
-    private static let codexTint = Color(red: 24.0 / 255.0, green: 187.0 / 255.0, blue: 248.0 / 255.0)
-    private static let claudeLongTint = Color(red: 249.0 / 255.0, green: 111.0 / 255.0, blue: 137.0 / 255.0)
-    private static let claudeShortTint = Color(red: 51.0 / 255.0, green: 218.0 / 255.0, blue: 219.0 / 255.0)
+    /// Codex 用低饱和墨蓝，Claude 两个窗口用同一陶土色系的深浅，与梅子紫热力图和暖白底同温。
+    /// 深色外观整体提亮一档，否则墨蓝会沉进 #1F1F1F 的卡片底。
+    private struct Palette {
+        let codex: Color
+        let claudeLong: Color
+        let claudeShort: Color
+    }
+
+    private static let lightPalette = Palette(
+        codex: Color(red: 62.0 / 255.0, green: 92.0 / 255.0, blue: 128.0 / 255.0),
+        claudeLong: Color(red: 200.0 / 255.0, green: 100.0 / 255.0, blue: 63.0 / 255.0),
+        claudeShort: Color(red: 232.0 / 255.0, green: 165.0 / 255.0, blue: 135.0 / 255.0)
+    )
+
+    private static let darkPalette = Palette(
+        codex: Color(red: 143.0 / 255.0, green: 169.0 / 255.0, blue: 200.0 / 255.0),
+        claudeLong: Color(red: 224.0 / 255.0, green: 135.0 / 255.0, blue: 106.0 / 255.0),
+        claudeShort: Color(red: 242.0 / 255.0, green: 192.0 / 255.0, blue: 168.0 / 255.0)
+    )
 
     let runtimeProvider: String
     let providerName: String
@@ -1585,8 +1601,10 @@ struct CombinedUsageItem: Identifiable {
     static func make(
         codexDisplay: CodexUsageWindowsDisplay,
         claudeDisplay: CodexUsageWindowsDisplay,
-        includesClaude: Bool
+        includesClaude: Bool,
+        colorScheme: ColorScheme
     ) -> [CombinedUsageItem] {
+        let palette = colorScheme == .dark ? Self.darkPalette : Self.lightPalette
         var items: [CombinedUsageItem] = []
 
         if let codexWindow = preferredLongWindow(in: codexDisplay) {
@@ -1595,7 +1613,7 @@ struct CombinedUsageItem: Identifiable {
                     runtimeProvider: "codex",
                     providerName: providerName(for: codexDisplay, fallback: "Codex"),
                     window: codexWindow,
-                    tint: Self.codexTint
+                    tint: palette.codex
                 )
             )
         }
@@ -1606,7 +1624,7 @@ struct CombinedUsageItem: Identifiable {
                     runtimeProvider: "claude",
                     providerName: providerName(for: claudeDisplay, fallback: "Claude"),
                     window: claudeLongWindow,
-                    tint: Self.claudeLongTint
+                    tint: palette.claudeLong
                 )
             )
 
@@ -1619,7 +1637,7 @@ struct CombinedUsageItem: Identifiable {
                         runtimeProvider: "claude",
                         providerName: providerName(for: claudeDisplay, fallback: "Claude"),
                         window: claudeShortWindow,
-                        tint: Self.claudeShortTint
+                        tint: palette.claudeShort
                     )
                 )
             }
