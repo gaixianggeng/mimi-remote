@@ -420,6 +420,9 @@ struct ComposerView: View {
             if !accepted {
                 restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
             } else {
+                // 发送可在后台完成；不要复位用户切到另一会话后设置的发送方式。
+                guard activeComposerDraftScope == submittedDraftScope,
+                      sessionStore.isSelectionLeaseCurrent(submissionContext.selectionLease) else { return }
                 resetFollowUpDeliveryToDefault()
                 resetComposerSendModeAfterSubmit()
             }
@@ -464,6 +467,8 @@ struct ComposerView: View {
             if !accepted {
                 restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
             } else {
+                guard activeComposerDraftScope == submittedDraftScope,
+                      sessionStore.isSelectionLeaseCurrent(submissionContext.selectionLease) else { return }
                 resetFollowUpDeliveryToDefault()
                 resetComposerSendModeAfterSubmit()
             }
