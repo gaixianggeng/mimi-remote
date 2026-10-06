@@ -45,6 +45,7 @@ struct ComposerTransientSelectionCheckpoint {
     let scopeRevision: UInt64
     let deliveryRevision: UInt64
     let sendModeRevision: UInt64
+    let cachedSendModeRevision: UInt64
 
     func restoration(
         activeInstanceID: UUID?,
@@ -704,6 +705,7 @@ enum ComposerSendMode: String, CaseIterable, Identifiable {
 struct ComposerSendModeCache {
     private var storedScope: ComposerDraftScopeKey = .none
     private var storedMode: ComposerSendMode = .standard
+    private(set) var revision: UInt64 = 0
 
     func modeForScopeActivation(
         previousScope: ComposerDraftScopeKey,
@@ -726,6 +728,12 @@ struct ComposerSendModeCache {
     mutating func save(_ mode: ComposerSendMode, for scope: ComposerDraftScopeKey) {
         storedScope = scope
         storedMode = mode
+        revision &+= 1
+    }
+
+    mutating func clearSubmittedModeIfUnchanged(for scope: ComposerDraftScopeKey, revision: UInt64) {
+        guard storedScope == scope, self.revision == revision else { return }
+        save(.standard, for: scope)
     }
 
     mutating func removeAll() {

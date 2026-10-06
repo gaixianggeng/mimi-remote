@@ -72,7 +72,8 @@ final class GuidanceSendLifecycleTests: XCTestCase {
             scope: sessionA,
             scopeRevision: 4,
             deliveryRevision: 7,
-            sendModeRevision: 3
+            sendModeRevision: 3,
+            cachedSendModeRevision: 2
         )
 
         let resumed = submitted.restoration(
@@ -120,6 +121,32 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         )
         XCTAssertFalse(rebuiltComposer.delivery)
         XCTAssertFalse(rebuiltComposer.sendMode, "a rebuilt composer can reuse local revision values")
+    }
+
+    func testHiddenSubmittedModeClearsOnlyUnchangedCache() {
+        let scope = ComposerDraftScopeKey.session("session-a")
+        var cache = ComposerSendModeCache()
+        cache.save(.plan, for: scope)
+        let submittedRevision = cache.revision
+        cache.clearSubmittedModeIfUnchanged(for: scope, revision: submittedRevision)
+        XCTAssertEqual(
+            cache.modeForScopeActivation(
+                previousScope: .none, nextScope: scope,
+                currentMode: .standard, isOptimisticSessionHandoff: false
+            ),
+            .standard
+        )
+
+        cache.save(.goal, for: scope)
+        cache.clearSubmittedModeIfUnchanged(for: scope, revision: submittedRevision)
+        XCTAssertEqual(
+            cache.modeForScopeActivation(
+                previousScope: .none, nextScope: scope,
+                currentMode: .standard, isOptimisticSessionHandoff: false
+            ),
+            .goal,
+            "a newer choice must survive the old submission's completion"
+        )
     }
 
     func testSendMethodMenuMarksThePreferredOptionAsDefault() {

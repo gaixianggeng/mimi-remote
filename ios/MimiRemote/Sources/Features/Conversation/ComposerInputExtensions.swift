@@ -45,7 +45,8 @@ extension ComposerView {
             scope: activeComposerDraftScope,
             scopeRevision: composerScopeRevision,
             deliveryRevision: followUpDeliveryChoiceRevision,
-            sendModeRevision: sendModeChoiceRevision
+            sendModeRevision: sendModeChoiceRevision,
+            cachedSendModeRevision: sessionStore.composerSendModeCache.revision
         )
     }
 
@@ -65,6 +66,12 @@ extension ComposerView {
         }
         if restoration.sendMode {
             resetComposerSendModeAfterSubmit()
+        } else if sessionStore.activeComposerInstanceID == nil {
+            // 页面已关闭时没有本地模式可复位；只清理仍属于这次提交的共享缓存。
+            sessionStore.composerSendModeCache.clearSubmittedModeIfUnchanged(
+                for: checkpoint.scope,
+                revision: checkpoint.cachedSendModeRevision
+            )
         }
     }
 
