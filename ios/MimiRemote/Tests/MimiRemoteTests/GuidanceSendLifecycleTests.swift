@@ -64,9 +64,11 @@ final class GuidanceSendLifecycleTests: XCTestCase {
     }
 
     func testBackgroundSendOnlyRestoresChoicesFromItsComposerActivation() {
+        let instanceID = UUID()
         let sessionA = ComposerDraftScopeKey.session("session-a")
         let sessionB = ComposerDraftScopeKey.session("session-b")
         let submitted = ComposerTransientSelectionCheckpoint(
+            instanceID: instanceID,
             scope: sessionA,
             scopeRevision: 4,
             deliveryRevision: 7,
@@ -74,6 +76,7 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         )
 
         let resumed = submitted.restoration(
+            activeInstanceID: instanceID,
             activeScope: sessionA, selectedScope: sessionA,
             scopeRevision: 4, deliveryRevision: 7, sendModeRevision: 3
         )
@@ -81,6 +84,7 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         XCTAssertTrue(resumed.sendMode, "same-session resume may advance the selection lease")
 
         let changedDelivery = submitted.restoration(
+            activeInstanceID: instanceID,
             activeScope: sessionA, selectedScope: sessionA,
             scopeRevision: 4, deliveryRevision: 8, sendModeRevision: 3
         )
@@ -88,6 +92,7 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         XCTAssertTrue(changedDelivery.sendMode)
 
         let changedMode = submitted.restoration(
+            activeInstanceID: instanceID,
             activeScope: sessionA, selectedScope: sessionA,
             scopeRevision: 4, deliveryRevision: 7, sendModeRevision: 4
         )
@@ -100,12 +105,21 @@ final class GuidanceSendLifecycleTests: XCTestCase {
             (sessionA, sessionB, UInt64(4)),
         ] {
             let afterNavigation = submitted.restoration(
+                activeInstanceID: instanceID,
                 activeScope: active, selectedScope: selected,
                 scopeRevision: revision, deliveryRevision: 7, sendModeRevision: 3
             )
             XCTAssertFalse(afterNavigation.delivery)
             XCTAssertFalse(afterNavigation.sendMode)
         }
+
+        let rebuiltComposer = submitted.restoration(
+            activeInstanceID: UUID(),
+            activeScope: sessionA, selectedScope: sessionA,
+            scopeRevision: 4, deliveryRevision: 7, sendModeRevision: 3
+        )
+        XCTAssertFalse(rebuiltComposer.delivery)
+        XCTAssertFalse(rebuiltComposer.sendMode, "a rebuilt composer can reuse local revision values")
     }
 
     func testSendMethodMenuMarksThePreferredOptionAsDefault() {

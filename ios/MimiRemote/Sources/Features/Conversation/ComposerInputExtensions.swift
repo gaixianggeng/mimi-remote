@@ -41,6 +41,7 @@ extension ComposerView {
 
     var transientSelectionCheckpoint: ComposerTransientSelectionCheckpoint {
         ComposerTransientSelectionCheckpoint(
+            instanceID: composerInstanceID,
             scope: activeComposerDraftScope,
             scopeRevision: composerScopeRevision,
             deliveryRevision: followUpDeliveryChoiceRevision,
@@ -52,6 +53,7 @@ extension ComposerView {
         // 同一会话恢复会推进 selectionGeneration，但没有切换输入区；只检查实际
         // scope 的生命周期。切到别处再回来时，revision 能挡住旧完成回调。
         let restoration = checkpoint.restoration(
+            activeInstanceID: sessionStore.activeComposerInstanceID,
             activeScope: activeComposerDraftScope,
             selectedScope: currentComposerDraftScope,
             scopeRevision: composerScopeRevision,

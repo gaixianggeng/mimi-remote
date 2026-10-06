@@ -65,6 +65,7 @@ struct ComposerView: View {
     @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.resolved(rawValue: nil).rawValue
     @AppStorage(RunningTurnDelivery.defaultStorageKey) var defaultRunningTurnDeliveryID = RunningTurnDelivery.fallbackDefault.rawValue
     @State var guidedFollowUpEnabled = false
+    @State var composerInstanceID = UUID()
     @State var composerScopeRevision: UInt64 = 0
     @State var followUpDeliveryChoiceRevision: UInt64 = 0
     @State var sendModeChoiceRevision: UInt64 = 0
@@ -334,6 +335,7 @@ struct ComposerView: View {
             await autoDismissVoiceErrorIfNeeded(voiceInput.errorMessage)
         }
         .onAppear {
+            sessionStore.activeComposerInstanceID = composerInstanceID
             switchComposerDraftScope(to: currentComposerDraftScope)
             enforceComposerTurnSettingsPolicy()
             restorePendingUserInputFormStateFromCache()
@@ -344,6 +346,9 @@ struct ComposerView: View {
             await prepareComposer()
         }
         .onDisappear {
+            if sessionStore.activeComposerInstanceID == composerInstanceID {
+                sessionStore.activeComposerInstanceID = nil
+            }
             synchronizeComposerTextBeforeDraftScopeChange()
             sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
             sessionStore.saveComposerModelSelection(

@@ -40,19 +40,22 @@ enum ComposerDraftScopeKey: Hashable {
 }
 
 struct ComposerTransientSelectionCheckpoint {
+    let instanceID: UUID
     let scope: ComposerDraftScopeKey
     let scopeRevision: UInt64
     let deliveryRevision: UInt64
     let sendModeRevision: UInt64
 
     func restoration(
+        activeInstanceID: UUID?,
         activeScope: ComposerDraftScopeKey,
         selectedScope: ComposerDraftScopeKey,
         scopeRevision: UInt64,
         deliveryRevision: UInt64,
         sendModeRevision: UInt64
     ) -> (delivery: Bool, sendMode: Bool) {
-        let sameActivation = scope == activeScope && scope == selectedScope
+        let sameActivation = instanceID == activeInstanceID
+            && scope == activeScope && scope == selectedScope
             && self.scopeRevision == scopeRevision
         return (
             delivery: sameActivation && self.deliveryRevision == deliveryRevision,
