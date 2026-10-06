@@ -883,6 +883,33 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
+    func testConversationDetailHistoryLoadingShowsTextWithoutOrbit() {
+        let sessionID = "snapshot_detail_history_loading"
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        sessionStore.selectedSessionID = sessionID
+        sessionStore.showHistoryLoading(sessionID: sessionID)
+
+        let view = ConversationTimelineView(
+            layout: ConversationLayout(containerWidth: 390, horizontalSizeClass: .compact)
+        )
+        .environmentObject(sessionStore)
+        .environmentObject(conversationStore)
+        .environmentObject(makeThemeStore())
+        .environment(\.colorScheme, .light)
+        .frame(width: 390, height: 640)
+
+        assertSnapshot(
+            of: view,
+            as: .wait(for: 0.8, on: .image(precision: 0.98, layout: .fixed(width: 390, height: 640)))
+        )
+    }
+
     func testConversationLayoutUsesVisibleIPadSplitViewWidth() {
         // iPad mini 横屏中 NavigationSplitView 可能把 1133pt 整窗宽度交给 detail，
         // 同时以 300pt leading safe area 表达侧栏；composer 必须只消费剩余的 833pt。
