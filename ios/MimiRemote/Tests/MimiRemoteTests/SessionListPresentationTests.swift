@@ -103,6 +103,24 @@ final class SessionListPresentationTests: XCTestCase {
         }
     }
 
+    func testWaitingStatesAreCenteredOnThePageInsteadOfTheFirstRow() {
+        for state in [SessionListPresentationState.connecting, .loading, .searching] {
+            XCTAssertTrue(state.showsCenteredLoading, "\(state) 是在等内容，圆环要铺在整页正中")
+        }
+
+        for state in [
+            SessionListPresentationState.content,
+            .needsWorkspace,
+            .noSessions,
+            .noMatches,
+            .networkUnavailable,
+            .runtimeUnavailable("gateway down"),
+            .loadFailed("timeout")
+        ] {
+            XCTAssertFalse(state.showsCenteredLoading, "\(state) 不是等待态，仍走列表内的空态")
+        }
+    }
+
     func testConnectionWarmUpOutranksTransientFailuresButNotDefiniteStates() {
         func state(
             connection: ConnectionStatus = .idle,

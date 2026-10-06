@@ -613,8 +613,12 @@ struct ConversationTimelineView: View {
     @ViewBuilder
     private func timelineEmptyState(isHistoryLoading: Bool) -> some View {
         if isHistoryLoading {
-            ProgressView(L10n.text("ui.loading_session_records"))
-                .accessibilityLabel(L10n.text("ui.loading_session_records"))
+            // 留在时间线列表行里（上方 80pt）而不是铺满居中：首屏历史到达时
+            // 列表的滚动锚点与贴底逻辑都以行为准，不在这里另起一层浮层。
+            LoadingStateView(
+                message: L10n.text("ui.loading_session_records"),
+                placement: .inline
+            )
         } else if let error = sessionStore.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
             ContentUnavailableView {
                 Label(L10n.text("ui.session_record_loading_failed"), systemImage: "exclamationmark.triangle")

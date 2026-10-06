@@ -53,7 +53,7 @@ struct AttachmentPreviewSheet: View {
                     .frame(maxWidth: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             } else if isLoadingEmbeddedImage {
-                ProgressView()
+                LoadingOrbit(size: .regular)
                     .frame(maxWidth: .infinity, minHeight: 180)
             } else if let remoteURL = URL(string: url),
                       let scheme = remoteURL.scheme?.lowercased(),
@@ -61,7 +61,7 @@ struct AttachmentPreviewSheet: View {
                 AsyncImage(url: remoteURL) { phase in
                     switch phase {
                     case .empty:
-                        ProgressView()
+                        LoadingOrbit(size: .regular)
                             .frame(maxWidth: .infinity, minHeight: 180)
                     case .success(let image):
                         image

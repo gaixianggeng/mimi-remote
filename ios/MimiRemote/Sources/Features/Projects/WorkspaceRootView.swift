@@ -632,39 +632,47 @@ struct WorkspaceRootView: View {
     }
 
     private func workspaceLoadingState(tokens: ThemeTokens) -> some View {
-        VStack(spacing: 0) {
-            workspaceStrip(tokens: tokens)
-
-            Divider()
-                .overlay(tokens.border.opacity(0.7))
-
-            // 与连接过渡同一块版面：正文正中一处表达，顶部胶囊行的设备入口不再叠转圈。
+        // 与连接过渡同一块版面：正文正中一处表达，顶部胶囊行的设备入口不再叠转圈。
+        workspaceWaitingPage(tokens: tokens) {
             ConnectionWarmUpView(
                 headline: L10n.text("ui.loading_workspace"),
                 message: L10n.text("ui.reading_the_workspace_list_from_this_mac")
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .accessibilityIdentifier("workspace.loadingState")
     }
 
     /// 与加载态同构：顶部保留工作区胶囊行的位置，正文换成连接过渡，
     /// 目录真正到手时替换的是同一块版面。
     private func workspaceConnectingState(tokens: ThemeTokens) -> some View {
+        workspaceWaitingPage(tokens: tokens) {
+            ConnectionWarmUpView(
+                message: L10n.text("ui.workspaces_on_this_mac_appear_as_soon_as")
+            )
+        }
+        .accessibilityIdentifier("workspace.connectingState")
+    }
+
+    /// 等待态的整页骨架：胶囊行照常在顶部，加载圆环铺在整页之上。
+    ///
+    /// 圆环对准的是整页正中（含胶囊行），而不是胶囊行下方剩余区域的正中——
+    /// 会话页的居中范围同样包含顶部搜索框，两页的圆环因此落在同一点，切 Tab 时不跳。
+    private func workspaceWaitingPage(
+        tokens: ThemeTokens,
+        @ViewBuilder indicator: () -> some View
+    ) -> some View {
         VStack(spacing: 0) {
             workspaceStrip(tokens: tokens)
 
             Divider()
                 .overlay(tokens.border.opacity(0.7))
 
-            ConnectionWarmUpView(
-                message: L10n.text("ui.workspaces_on_this_mac_appear_as_soon_as")
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Spacer(minLength: 0)
+        }
+        .overlay {
+            indicator()
         }
         .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
-        .accessibilityIdentifier("workspace.connectingState")
     }
 
     private func workspaceEmptyState(tokens: ThemeTokens) -> some View {
