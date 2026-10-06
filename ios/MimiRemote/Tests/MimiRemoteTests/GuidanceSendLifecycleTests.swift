@@ -50,6 +50,19 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         )
     }
 
+    func testDeliveryContextChangesWhenActiveReplyChangesWithoutLosingSteering() {
+        let previous = RunningTurnDeliveryContext(turnID: "turn-one", canGuide: true)
+        let next = RunningTurnDeliveryContext(turnID: "turn-two", canGuide: true)
+
+        XCTAssertNotEqual(previous, next)
+        XCTAssertEqual(
+            RunningTurnDelivery.restoredSelection(default: .guided, canUseGuidedFollowUp: next.canGuide),
+            .guided,
+            "the new reply must restore the configured preference after a one-off Queue choice"
+        )
+        XCTAssertNotEqual(next, RunningTurnDeliveryContext(turnID: "turn-two", canGuide: false))
+    }
+
     func testSendMethodMenuMarksThePreferredOptionAsDefault() {
         XCTAssertEqual(
             RunningTurnDelivery.queued.menuTitle(isDefault: true, isGuidedAvailable: true),

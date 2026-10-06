@@ -299,10 +299,10 @@ struct ComposerView: View {
         }
 
         return observedContent
-        .onChange(of: canUseGuidedFollowUp) { _, canGuide in
-            // 引导只在当前 turn 内有效。可用性变化就是一次上下文重置，
-            // 重新按「默认发送方式」取值；不可用时必然回落排队。
-            resetFollowUpDeliveryToDefault(canGuide: canGuide)
+        .onChange(of: runningTurnDeliveryContext) { _, context in
+            // 引导只在当前 turn 内有效。即使可用性始终为 true，直接换到
+            // 下一条活动回复时也要丢弃上一条回复的一次性选择。
+            resetFollowUpDeliveryToDefault(canGuide: context.canGuide)
         }
         .onChange(of: defaultRunningTurnDeliveryID) { _, _ in
             // 设置页改完默认发送方式，当前打开的输入区立即跟上，不必先切走再切回。
@@ -690,6 +690,13 @@ struct ComposerView: View {
             && session.activeTurnID != nil
             && !composerState.permissionSelectionRequiresNewTurn
             && !sessionStore.hasPendingPermissionTurnBoundaryForSelectedSession
+    }
+
+    var runningTurnDeliveryContext: RunningTurnDeliveryContext {
+        RunningTurnDeliveryContext(
+            turnID: sessionStore.selectedSession?.activeTurnID,
+            canGuide: canUseGuidedFollowUp
+        )
     }
 
     var runningTurnDeliveryForSubmit: RunningTurnDelivery {

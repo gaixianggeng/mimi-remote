@@ -484,6 +484,13 @@ extension RunningTurnDelivery: Identifiable {
     }
 }
 
+/// A temporary Queue/Steer choice belongs to one active reply, even when steering
+/// remains available while the session moves directly to another reply.
+struct RunningTurnDeliveryContext: Equatable {
+    let turnID: TurnID?
+    let canGuide: Bool
+}
+
 enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
     case requestApproval
     case readOnly
