@@ -576,6 +576,19 @@ private func codexMCPFormPropertyIsRenderable(_ value: CodexAppServerJSONValue) 
     }
 }
 
+/// Turn 的失败原因属于回合本身，不是 Item；实时通知和历史读取必须使用同一份解析。
+func appServerTurnErrorPayload(from turn: [String: CodexAppServerJSONValue]) -> AgentErrorPayload? {
+    let error = turn["error"]
+    let message = (error?.objectValue?["message"]?.stringValue ?? error?.stringValue)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let message, !message.isEmpty else { return nil }
+    return AgentErrorPayload(
+        message: message,
+        code: error?.objectValue?["code"]?.stringValue,
+        retryable: error?.objectValue?["retryable"]?.boolValue
+    )
+}
+
 struct CodexAppServerEventProjector {
     private struct StreamedTextKey: Hashable {
         let sessionID: SessionID?
@@ -706,7 +719,11 @@ struct CodexAppServerEventProjector {
             return fileChangeContextEvent(params: params, metadata: metadata)
         case "turn/completed":
             clearStreamedText(sessionID: metadata.sessionID, turnID: metadata.turnID)
-            return .turnCompleted(metadata.withTurnLifecycle(turnLifecycle(from: params)))
+            let lifecycle = turnLifecycle(from: params)
+            let error = lifecycle == .failed
+                ? appServerTurnErrorPayload(from: params["turn"]?.objectValue ?? params)
+                : nil
+            return .turnCompleted(metadata.withTurnLifecycle(lifecycle, error: error))
         case "serverRequest/resolved":
             return .approvalResolved(metadata)
         case "warning":

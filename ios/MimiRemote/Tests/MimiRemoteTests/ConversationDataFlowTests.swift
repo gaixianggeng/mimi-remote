@@ -3040,10 +3040,10 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(output.statusUpdates.first?.1, SessionStatus.failed.rawValue)
         XCTAssertEqual(output.foregroundClears, ["claude_thread"])
         XCTAssertEqual(output.errorMessage, "Invalid authentication credentials")
-        if case .system(let text, let sessionID, let kind, _) = try XCTUnwrap(output.messageMutations.first) {
-            XCTAssertEqual(sessionID, "claude_thread")
-            XCTAssertEqual(kind, .error)
-            XCTAssertTrue(text.contains("Invalid authentication credentials"))
+        if case .completed(let message, _, _) = try XCTUnwrap(output.messageMutations.first) {
+            XCTAssertEqual(message.sessionID, "claude_thread")
+            XCTAssertEqual(message.kind, .error)
+            XCTAssertTrue(message.content.contains("Invalid authentication credentials"))
         } else {
             XCTFail("Expected runtime error system message")
         }
