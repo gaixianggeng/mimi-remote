@@ -348,7 +348,11 @@ extension SessionStore {
             if let responseSelectionLease,
                isSelectionLeaseCurrent(responseSelectionLease) {
                 let shouldReplayBufferedEvents = resume == nil || !didLoadInitialHistory
-                connectWebSocket(responseSession, replayBufferedEvents: shouldReplayBufferedEvents)
+                connectWebSocket(
+                    responseSession,
+                    replayBufferedEvents: shouldReplayBufferedEvents,
+                    allowNonRunning: resume == nil && !payload.isEmpty
+                )
                 // 恢复反馈属于页面生命周期状态，不是服务端 transcript 内容，避免它参与历史排序。
                 setStatusMessage(resume == nil ? L10n.text("ui.session_started") : L10n.text("ui.this_historical_conversation_has_been_continued"))
                 setErrorMessage(nil)
