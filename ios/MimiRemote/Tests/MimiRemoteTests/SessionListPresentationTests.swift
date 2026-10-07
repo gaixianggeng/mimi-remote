@@ -5,6 +5,18 @@ import XCTest
 @testable import MimiRemote
 
 final class SessionListPresentationTests: XCTestCase {
+    func testWorkspaceIdentityAppearsOnlyWhenDirectoriesDiffer() {
+        let main = makeSession(id: "main", project: "mimi", dir: "/work/mimi")
+        let another = makeSession(id: "another", project: "mimi", dir: "/work/mimi")
+        let worktree = makeSession(id: "worktree", project: "mimi", dir: "/work/mimi-fix")
+
+        XCTAssertEqual(SessionListPresentation.workspaceIdentityFallback(among: []), .none)
+        XCTAssertEqual(SessionListPresentation.workspaceIdentityFallback(among: [main, another]), .none)
+        XCTAssertEqual(SessionListPresentation.workspaceIdentityFallback(among: [main, worktree]), .directory)
+        XCTAssertEqual(SessionIndexRow.identityFallbackText(for: main, fallback: .none), "")
+        XCTAssertEqual(SessionIndexRow.identityFallbackText(for: worktree, fallback: .directory), "mimi-fix")
+    }
+
     @MainActor
     func testFirstConnectionWithoutOpenedWorkspaceFinishesLoading() async {
         let appStore = makeIsolatedAppStore()
