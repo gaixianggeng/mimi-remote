@@ -255,6 +255,28 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         )
     }
 
+    func testInlineRuntimeThresholdFollowsSharedContentPadding() {
+        let contentPadding: CGFloat = 40
+        let threshold = WorkspaceStripLayout.inlineRuntimePickerMinimumWidth + contentPadding * 2
+
+        XCTAssertEqual(
+            WorkspaceStripLayout.minimumContentWidth(viewportWidth: threshold, contentPadding: contentPadding),
+            WorkspaceStripLayout.inlineRuntimePickerMinimumWidth
+        )
+        XCTAssertFalse(WorkspaceStripLayout.usesInlineRuntimePicker(
+            viewportWidth: threshold - 1,
+            showsHostSwitcherInStrip: false,
+            hasBottomTabBar: false,
+            contentPadding: contentPadding
+        ))
+        XCTAssertTrue(WorkspaceStripLayout.usesInlineRuntimePicker(
+            viewportWidth: threshold,
+            showsHostSwitcherInStrip: false,
+            hasBottomTabBar: false,
+            contentPadding: contentPadding
+        ))
+    }
+
     func testInlineRuntimeThresholdReservesDeviceEntryBudget() {
         let deviceEntryBudget = WorkbenchChromeIconMetrics.minimumHitTarget
             + WorkspaceStripLayout.chipSpacing

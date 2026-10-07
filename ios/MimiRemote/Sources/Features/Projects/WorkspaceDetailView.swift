@@ -78,7 +78,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         : WorkbenchPageLayout.regularPadding)
                         + (hasBottomTabBar ? 0 : WorkspaceSessionFabMetrics.contentBottomAllowance)
                 )
-                .frame(maxWidth: 920, alignment: .leading)
+                .frame(maxWidth: WorkspaceStripLayout.maxContentWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .center)
             }
             .scrollIndicators(.hidden)
@@ -165,6 +165,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         // 给唯一的一个分组加标题是纯噪声：窄屏由筛选行充当它的标题，宽屏由胶囊行承担身份。
         // 出现「需要处理 / 正在运行」等多个分段时，标题才真正在区分内容。
         let showsSectionHeaders = populatedGroups.count > 1
+        let identityFallback = SessionListPresentation.workspaceIdentityFallback(among: recentSessions)
 
         VStack(alignment: .leading, spacing: WorkspaceSessionRowMetrics.sectionBoundarySpacing) {
             ForEach(populatedGroups, id: \.self) { group in
@@ -181,6 +182,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     sessionGroupBody(
                         group,
                         sessions: sessions,
+                        identityFallback: identityFallback,
                         showsLoadMore: group == populatedGroups.last,
                         rowDensity: rowDensity,
                         tokens: tokens
@@ -212,6 +214,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     private func sessionGroupBody(
         _ group: WorkspaceSessionGroup,
         sessions: [AgentSession],
+        identityFallback: SessionIndexRowIdentityFallback,
         showsLoadMore: Bool,
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
@@ -240,6 +243,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 if !currentSessions.isEmpty {
                     sessionRowsStack(
                         sessions: currentSessions,
+                        identityFallback: identityFallback,
                         showsLoadMore: false,
                         rowDensity: rowDensity,
                         tokens: tokens
@@ -250,6 +254,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
 
                 sessionRowsStack(
                     sessions: staleSessions,
+                    identityFallback: identityFallback,
                     showsLoadMore: showsLoadMore,
                     rowDensity: rowDensity,
                     tokens: tokens
@@ -258,6 +263,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         } else {
             sessionRowsStack(
                 sessions: sessions,
+                identityFallback: identityFallback,
                 showsLoadMore: showsLoadMore,
                 rowDensity: rowDensity,
                 tokens: tokens
@@ -271,6 +277,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     /// 分组由小节标题和留白承担，不用卡片或逐行分隔线争夺注意力。
     private func sessionRowsStack(
         sessions: [AgentSession],
+        identityFallback: SessionIndexRowIdentityFallback,
         showsLoadMore: Bool,
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
@@ -298,6 +305,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         isObserving: sessionStore.isSessionObserving(session),
                         isUnread: isUnread,
                         density: rowDensity,
+                        identityFallback: identityFallback,
                         leadingSlot: .none,
                         showsSessionPreview: UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table,
                         currentDate: currentDate,
@@ -318,7 +326,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         showsNeutralHistoryStatus: false,
                         identity: SessionListPresentation.normalizedBranch(session.gitBranchName).map {
                             "\(L10n.text("ui.branch")) \($0)"
-                        } ?? SessionIndexRow.identityFallbackAccessibilityLabel(for: session, fallback: .directory)
+                        } ?? SessionIndexRow.identityFallbackAccessibilityLabel(for: session, fallback: identityFallback)
                     )
                 )
                 .sessionRowActions(session)

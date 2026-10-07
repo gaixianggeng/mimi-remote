@@ -197,7 +197,18 @@ private struct SettingsGroupCardModifier: ViewModifier {
         let tokens = themeStore.tokens(for: colorScheme)
         content
             .listRowBackground(tokens.settingsGroupBackground)
-            .listRowSeparatorTint(tokens.settingsRowSeparator)
+            .listRowSeparatorTint(rowSeparatorTint)
+    }
+
+    /// 外观切换后系统列表不会给已有的行重新套用 `listRowSeparatorTint`：卡片底换成了深色，
+    /// 分隔线却停在浅色的 #EDEBE8，成了一条白线（#631）。交给 UIKit 一个按 trait 求值的
+    /// 动态颜色，深浅色切换时由系统重新解析。
+    private var rowSeparatorTint: Color {
+        let themeStore = themeStore
+        return Color(uiColor: UIColor { traits in
+            let scheme: ColorScheme = traits.userInterfaceStyle == .dark ? .dark : .light
+            return UIColor(themeStore.tokens(for: scheme).settingsRowSeparator)
+        })
     }
 }
 

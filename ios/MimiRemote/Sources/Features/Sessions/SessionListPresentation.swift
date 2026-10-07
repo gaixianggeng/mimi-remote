@@ -74,6 +74,12 @@ struct SessionSidebarSection: Equatable, Hashable, Identifiable {
 
 /// 会话列表需要的纯展示计算，避免 SwiftUI View 同时承担日期和字符串规则。
 enum SessionListPresentation {
+    static func workspaceIdentityFallback(among sessions: [AgentSession]) -> SessionIndexRowIdentityFallback {
+        let directoryTails = sessions
+            .map { directoryTail(for: $0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return Set(directoryTails).count > 1 ? .directory : .none
+    }
     static let sidebarJustCompletedWindow: TimeInterval = 2 * 60 * 60
 
     /// 按历史时间将会话放入固定日期桶；空桶不返回，桶内保持输入顺序。
