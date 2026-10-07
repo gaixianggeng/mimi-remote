@@ -63,7 +63,12 @@ struct ComposerView: View {
     @AppStorage("agentd.developerMode") var developerModeEnabled = false
     @AppStorage(ComposerPermissionMode.defaultStorageKey) var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.resolved(rawValue: nil).rawValue
+    @AppStorage(RunningTurnDelivery.defaultStorageKey) var defaultRunningTurnDeliveryID = RunningTurnDelivery.fallbackDefault.rawValue
     @State var guidedFollowUpEnabled = false
+    @State var composerInstanceID = UUID()
+    @State var composerScopeRevision: UInt64 = 0
+    @State var followUpDeliveryChoiceRevision: UInt64 = 0
+    @State var sendModeChoiceRevision: UInt64 = 0
     @State var editingQueuedTurn: QueuedTurnEditorDraft?
     @State var showsQueuedTurnManager = false
     @State var isSelectingVoiceDraftText = false
@@ -298,10 +303,29 @@ struct ComposerView: View {
         }
 
         return observedContent
-        .onChange(of: canUseGuidedFollowUp) { _, canGuide in
-            if !canGuide {
-                guidedFollowUpEnabled = false
-            }
+        .onChange(of: runningTurnDeliveryContext) { _, context in
+            // 引导只在当前 turn 内有效。即使可用性始终为 true，直接换到
+            // 下一条活动回复时也要丢弃上一条回复的一次性选择。
+            resetFollowUpDeliveryToDefault(canGuide: context.canGuide)
+        }
+        .onChange(of: defaultRunningTurnDeliveryID) { _, _ in
+            // 设置页改完默认发送方式，当前打开的输入区立即跟上，不必先切走再切回。
+            resetFollowUpDeliveryToDefault()
+        }
+        .onChange(of: sessionStore.appStore.activeHostScope) { _, _ in
+            resetFollowUpDeliveryToDefault()
+        }
+        .onChange(of: sessionStore.latestCompletedComposerModeReset) { _, event in
+            guard let event,
+                  sessionStore.activeComposerInstanceID == composerInstanceID,
+                  activeComposerDraftScope == event.scope,
+                  currentComposerDraftScope == event.scope else { return }
+            composerState.setSendMode(
+                sessionStore.composerSendModeCache.modeForReappearance(of: event.scope)
+            )
+        }
+        .onChange(of: sessionStore.latestCompletedComposerDeliveryReset) { _, event in
+            synchronizeCompletedComposerDeliveryReset(event)
         }
         .onChange(of: sessionStore.latestSatisfiedPermissionTurnBoundary) { _, boundary in
             guard let boundary,
@@ -314,10 +338,8 @@ struct ComposerView: View {
                 for: activeComposerDraftScope
             )
         }
-        .onChange(of: sessionStore.selectedSessionID) { _, _ in
-            // 引导是只对当前正在生成的回复生效的一次性选择。切换会话后恢复安全的
-            // 默认排队，避免把上一条会话的发送意图意外带到另一条运行中会话。
-            guidedFollowUpEnabled = false
+        .onChange(of: sessionStore.selectedSessionID) { previousID, nextID in
+            synchronizeFollowUpDeliveryForSelectionChange(previousID: previousID, nextID: nextID)
         }
         .onChange(of: sessionStore.selectedThreadGoal) { previousGoal, goal in
             syncGoalStatusBarExpansion(from: previousGoal, to: goal)
@@ -326,7 +348,12 @@ struct ComposerView: View {
             await autoDismissVoiceErrorIfNeeded(voiceInput.errorMessage)
         }
         .onAppear {
+            sessionStore.activeComposerInstanceID = composerInstanceID
             switchComposerDraftScope(to: currentComposerDraftScope)
+            restoreFollowUpDeliveryForReappearance()
+            composerState.setSendMode(
+                sessionStore.composerSendModeCache.modeForReappearance(of: activeComposerDraftScope)
+            )
             enforceComposerTurnSettingsPolicy()
             restorePendingUserInputFormStateFromCache()
             synchronizePendingUserInputPresentation(previous: nil, current: pendingUserInputSelectionIdentity)
@@ -336,6 +363,9 @@ struct ComposerView: View {
             await prepareComposer()
         }
         .onDisappear {
+            if sessionStore.activeComposerInstanceID == composerInstanceID {
+                sessionStore.activeComposerInstanceID = nil
+            }
             synchronizeComposerTextBeforeDraftScopeChange()
             sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
             sessionStore.saveComposerModelSelection(
@@ -393,6 +423,7 @@ struct ComposerView: View {
             return submitGoalDraft()
         }
         let submittedDraftScope = activeComposerDraftScope
+        let selectionCheckpoint = transientSelectionCheckpoint
         // 点击时就固定目标；Task 开始执行前，返回手势可能已经清空当前会话。
         let submissionContext = sessionStore.captureTurnSubmissionContext()
         let options = preparedTurnOptionsForSubmit()
@@ -415,8 +446,7 @@ struct ComposerView: View {
             if !accepted {
                 restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
             } else {
-                guidedFollowUpEnabled = false
-                resetComposerSendModeAfterSubmit()
+                restoreTransientSelectionsAfterSubmit(selectionCheckpoint)
             }
         }
         return true
@@ -429,6 +459,7 @@ struct ComposerView: View {
         // 防止 app-server 沿用上一轮规划协作状态。
         options.collaborationMode = .default
         let submittedDraftScope = activeComposerDraftScope
+        let selectionCheckpoint = transientSelectionCheckpoint
         let submissionContext = sessionStore.captureTurnSubmissionContext()
         guard let submitted = composerState.takeDraftForSubmit(
             isLoading: sessionStore.isLoading || sessionStore.isUpdatingThreadGoal,
@@ -459,8 +490,7 @@ struct ComposerView: View {
             if !accepted {
                 restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
             } else {
-                guidedFollowUpEnabled = false
-                resetComposerSendModeAfterSubmit()
+                restoreTransientSelectionsAfterSubmit(selectionCheckpoint)
             }
         }
         return true
@@ -545,14 +575,28 @@ struct ComposerView: View {
 
         // 先切 scope 再恢复，避免 restore 触发的 onChange 把新会话草稿误写回旧 scope。
         activeComposerDraftScope = nextScope
+        if !isOptimisticHandoff {
+            composerScopeRevision &+= 1
+        }
         composerState.setSendMode(restoredSendMode)
-        persistComposerSendMode(restoredSendMode, for: nextScope)
+        if isOptimisticHandoff {
+            sessionStore.composerSendModeCache.migrateScope(
+                from: previousScope, to: nextScope, mode: restoredSendMode
+            )
+            sessionStore.composerDeliverySelectionCache.migrateScope(from: previousScope, to: nextScope)
+        } else {
+            persistComposerSendMode(restoredSendMode, for: nextScope)
+        }
         composerState.restoreDraftSnapshot(sessionStore.composerDraft(for: nextScope))
         restoreComposerModelSelection(for: nextScope)
         restoreComposerPermissionSelection(for: nextScope)
         clampModelSelectionToSelectedSessionRuntime()
         composerTextExternalRevision += 1
-        guidedFollowUpEnabled = false
+        if previousScope == .none || isOptimisticHandoff {
+            restoreFollowUpDeliveryForReappearance()
+        } else {
+            resetFollowUpDeliveryToDefault()
+        }
         measuredComposerTextHeight = 0
         isComposerTextComposing = false
         // iPad 的收起是用户对当前会话输入画布的显式选择；切会话时不自动改写。
@@ -568,7 +612,11 @@ struct ComposerView: View {
         else {
             return false
         }
-        return previousSessionID.hasPrefix("local:") && !nextSessionID.hasPrefix("local:")
+        guard previousSessionID.hasPrefix("local:"),
+              !nextSessionID.hasPrefix("local:"),
+              let commit = sessionStore.lastSelectionCommit,
+              case .identityReplacement(let replacedID) = commit.reason else { return false }
+        return replacedID == previousSessionID && commit.sessionID == nextSessionID
     }
 
     func persistComposerSendMode(_ mode: ComposerSendMode, for scope: ComposerDraftScopeKey) {
@@ -685,6 +733,13 @@ struct ComposerView: View {
             && session.activeTurnID != nil
             && !composerState.permissionSelectionRequiresNewTurn
             && !sessionStore.hasPendingPermissionTurnBoundaryForSelectedSession
+    }
+
+    var runningTurnDeliveryContext: RunningTurnDeliveryContext {
+        RunningTurnDeliveryContext(
+            turnID: sessionStore.selectedSession?.activeTurnID,
+            canGuide: canUseGuidedFollowUp
+        )
     }
 
     var runningTurnDeliveryForSubmit: RunningTurnDelivery {
@@ -1667,6 +1722,9 @@ struct ComposerView: View {
         guard mode != .plan || composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
             return
         }
+        if composerState.sendMode != mode {
+            sendModeChoiceRevision &+= 1
+        }
         composerState.setSendMode(mode)
         let scope = activeComposerDraftScope == .none ? currentComposerDraftScope : activeComposerDraftScope
         persistComposerSendMode(mode, for: scope)
@@ -1704,12 +1762,12 @@ struct ComposerView: View {
                 Button {
                     selectFollowUpDelivery(guided: false)
                 } label: {
-                    Label(L10n.text("ui.queue_default"), systemImage: isGuidedSelected ? "clock" : "checkmark")
+                    Label(followUpDeliveryMenuTitle(.queued, isGuidedAvailable: isGuidedAvailable), systemImage: isGuidedSelected ? "clock" : "checkmark")
                 }
                 Button {
                     selectFollowUpDelivery(guided: true)
                 } label: {
-                    Label(isGuidedAvailable ? L10n.text("ui.lead_current_reply") : L10n.text("ui.guide_current_reply_no_active_round_currently"), systemImage: isGuidedSelected ? "checkmark" : "text.bubble")
+                    Label(followUpDeliveryMenuTitle(.guided, isGuidedAvailable: isGuidedAvailable), systemImage: isGuidedSelected ? "checkmark" : "text.bubble")
                 }
                 .disabled(!isGuidedAvailable)
             }
@@ -1762,6 +1820,11 @@ struct ComposerView: View {
             return
         }
         guidedFollowUpEnabled = guided
+        followUpDeliveryChoiceRevision &+= 1
+        sessionStore.composerDeliverySelectionCache.save(
+            guided ? .guided : .queued, for: activeComposerDraftScope,
+            context: runningTurnDeliveryContext, default: defaultRunningTurnDelivery
+        )
         UISelectionFeedbackGenerator().selectionChanged()
     }
 

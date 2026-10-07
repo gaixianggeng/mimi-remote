@@ -2797,6 +2797,7 @@ extension SessionStore {
         composerModelSelectionCache.removeAll()
         composerPermissionSelectionCache.removeAll()
         composerSendModeCache.removeAll()
+        composerDeliverySelectionCache.clear()
         stopAllQueuedSessionMonitoring()
         cancelAllTurnCompletionReconciliations()
         cancelAllMissingAssistantReplyBackfills()
