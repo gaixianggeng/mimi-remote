@@ -196,6 +196,19 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         XCTAssertEqual(cache.clearIfUnchanged(revision: submittedRevision), server)
     }
 
+    func testRebuiltComposerNavigationInvalidatesPreviousSessionOverride() {
+        let sessionA = ComposerDraftScopeKey.session("session-a")
+        let sessionB = ComposerDraftScopeKey.session("session-b")
+        let turn = RunningTurnDeliveryContext(turnID: "turn", canGuide: true)
+        var cache = ComposerDeliverySelectionCache()
+        cache.save(.queued, for: sessionA, context: turn, default: .guided)
+
+        XCTAssertNil(cache.selectionForActivation(of: sessionB, context: turn, default: .guided))
+        XCTAssertNil(cache.selectionForActivation(of: sessionA, context: turn, default: .guided))
+        cache.save(.queued, for: sessionA, context: turn, default: .guided)
+        XCTAssertNil(cache.selectionForActivation(of: sessionA, context: turn, default: .queued))
+    }
+
     func testSubmittedModeRevisionSurvivesOptimisticIdentityHandoff() {
         let local = ComposerDraftScopeKey.session("local:project:message")
         let server = ComposerDraftScopeKey.session("server-session")

@@ -312,6 +312,9 @@ struct ComposerView: View {
             // 设置页改完默认发送方式，当前打开的输入区立即跟上，不必先切走再切回。
             resetFollowUpDeliveryToDefault()
         }
+        .onChange(of: sessionStore.appStore.activeHostScope) { _, _ in
+            resetFollowUpDeliveryToDefault()
+        }
         .onChange(of: sessionStore.latestCompletedComposerModeReset) { _, event in
             guard let event,
                   sessionStore.activeComposerInstanceID == composerInstanceID,
@@ -336,8 +339,6 @@ struct ComposerView: View {
             )
         }
         .onChange(of: sessionStore.selectedSessionID) { previousID, nextID in
-            // 引导是只对当前正在生成的回复生效的一次性选择。切换会话后回到设置里的
-            // 默认发送方式，避免把上一条会话的临时发送意图带到另一条运行中会话。
             synchronizeFollowUpDeliveryForSelectionChange(previousID: previousID, nextID: nextID)
         }
         .onChange(of: sessionStore.selectedThreadGoal) { previousGoal, goal in

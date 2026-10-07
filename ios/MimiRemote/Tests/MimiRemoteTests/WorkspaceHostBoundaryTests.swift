@@ -6,6 +6,19 @@ import XCTest
 final class WorkspaceHostBoundaryTests: XCTestCase {
     private let root = AgentProject(id: "root", name: "Root", path: "/tmp/root")
 
+    func testHostBoundaryClearsUnmountedComposerDeliveryOverride() {
+        let (store, session, _) = paginationFixture()
+        let scope = ComposerDraftScopeKey.session(session.id)
+        let context = RunningTurnDeliveryContext(turnID: "active-turn", canGuide: true)
+        store.composerDeliverySelectionCache.save(.queued, for: scope, context: context, default: .guided)
+        let oldRevision = store.composerDeliverySelectionCache.revision
+
+        store.clearConnectionData()
+
+        XCTAssertNil(store.composerDeliverySelectionCache.selection(for: scope, context: context, default: .guided))
+        XCTAssertGreaterThan(store.composerDeliverySelectionCache.revision, oldRevision)
+    }
+
     func testHistoryLoadingFeedbackIgnoresRepeatedShowAndHide() {
         let (store, session, _) = paginationFixture()
         var changes: [Set<SessionID>] = []

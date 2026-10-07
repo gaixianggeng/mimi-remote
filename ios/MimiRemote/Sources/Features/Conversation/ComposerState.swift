@@ -528,6 +528,15 @@ struct ComposerDeliverySelectionCache {
         self.scope == scope && self.context == context && self.configuredDefault == configuredDefault ? selection : nil
     }
 
+    mutating func selectionForActivation(
+        of scope: ComposerDraftScopeKey, context: RunningTurnDeliveryContext,
+        default configuredDefault: RunningTurnDelivery
+    ) -> RunningTurnDelivery? {
+        let restored = selection(for: scope, context: context, default: configuredDefault)
+        if restored == nil { clear() }
+        return restored
+    }
+
     mutating func save(_ selection: RunningTurnDelivery, for scope: ComposerDraftScopeKey, context: RunningTurnDeliveryContext, default configuredDefault: RunningTurnDelivery) {
         guard self.scope != scope || self.context != context || self.configuredDefault != configuredDefault || self.selection != selection else { return }
         self.scope = scope

@@ -41,9 +41,10 @@ extension ComposerView {
     }
 
     func restoreFollowUpDeliveryForReappearance() {
-        let selection = sessionStore.composerDeliverySelectionCache.selection(
-            for: activeComposerDraftScope, context: runningTurnDeliveryContext, default: defaultRunningTurnDelivery
-        ) ?? RunningTurnDelivery.restoredSelection(
+        let cachedSelection = sessionStore.composerDeliverySelectionCache.selectionForActivation(
+            of: activeComposerDraftScope, context: runningTurnDeliveryContext, default: defaultRunningTurnDelivery
+        )
+        let selection = cachedSelection ?? RunningTurnDelivery.restoredSelection(
             default: defaultRunningTurnDelivery, canUseGuidedFollowUp: canUseGuidedFollowUp
         )
         guidedFollowUpEnabled = selection == .guided && canUseGuidedFollowUp
