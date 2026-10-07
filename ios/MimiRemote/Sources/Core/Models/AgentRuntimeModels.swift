@@ -1103,6 +1103,8 @@ struct AgentEventMetadata: Codable, Hashable {
     let revision: ModelRevision?
     let createdAt: Date?
     let turnLifecycle: ConversationTurnLifecycle?
+    /// completion 的失败原因随终态传递，保留原有队列放行与迟到事件过滤语义。
+    let turnError: AgentErrorPayload?
     /// Runtime 的可恢复序号：Claude 使用完整 turn/thread 边界，Harness 使用 durable seq。
     /// 必须等 MainActor 已把事件写入 Conversation/Session 状态后才能提交。
     let replayBoundarySequence: UInt64?
@@ -1120,6 +1122,7 @@ struct AgentEventMetadata: Codable, Hashable {
         case revision
         case createdAt = "created_at"
         case turnLifecycle = "turn_lifecycle"
+        case turnError = "turn_error"
         case replayBoundarySequence = "replay_boundary_sequence"
         case replayCursorEpoch = "replay_cursor_epoch"
     }
@@ -1134,6 +1137,7 @@ struct AgentEventMetadata: Codable, Hashable {
         revision: ModelRevision?,
         createdAt: Date?,
         turnLifecycle: ConversationTurnLifecycle? = nil,
+        turnError: AgentErrorPayload? = nil,
         replayBoundarySequence: UInt64? = nil,
         replayCursorEpoch: UInt64? = nil
     ) {
@@ -1146,11 +1150,12 @@ struct AgentEventMetadata: Codable, Hashable {
         self.revision = revision
         self.createdAt = createdAt
         self.turnLifecycle = turnLifecycle
+        self.turnError = turnError
         self.replayBoundarySequence = replayBoundarySequence
         self.replayCursorEpoch = replayCursorEpoch
     }
 
-    func withTurnLifecycle(_ lifecycle: ConversationTurnLifecycle) -> AgentEventMetadata {
+    func withTurnLifecycle(_ lifecycle: ConversationTurnLifecycle, error: AgentErrorPayload? = nil) -> AgentEventMetadata {
         AgentEventMetadata(
             seq: seq,
             sessionID: sessionID,
@@ -1161,6 +1166,7 @@ struct AgentEventMetadata: Codable, Hashable {
             revision: revision,
             createdAt: createdAt,
             turnLifecycle: lifecycle,
+            turnError: error ?? turnError,
             replayBoundarySequence: replayBoundarySequence,
             replayCursorEpoch: replayCursorEpoch
         )
@@ -1177,6 +1183,7 @@ struct AgentEventMetadata: Codable, Hashable {
             revision: revision,
             createdAt: createdAt,
             turnLifecycle: turnLifecycle,
+            turnError: turnError,
             replayBoundarySequence: sequence,
             replayCursorEpoch: epoch
         )

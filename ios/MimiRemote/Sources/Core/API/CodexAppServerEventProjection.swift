@@ -1425,6 +1425,28 @@ extension CodexAppServerSessionRuntime {
                 }
                 messages.append(message)
             }
+            if turnLifecycle == .failed, let turnID,
+               let error = appServerTurnErrorPayload(from: turn) {
+                let authenticationFailure = ClaudeAuthenticationRecovery.matches(error)
+                // 失败可能只留下用户 Item；错误卡片必须从 Turn 恢复，不能依赖最终答复存在。
+                messages.append(CodexHistoryMessage(
+                    id: "runtime-error:\(turnID)",
+                    role: "system",
+                    kind: .error,
+                    content: authenticationFailure
+                        ? ClaudeAuthenticationRecovery.recoveryMessage
+                        : L10n.format("ui.run_error_value", error.message),
+                    activityPayload: authenticationFailure ? ClaudeAuthenticationRecovery.activityPayload : nil,
+                    createdAt: completedAt ?? lastResolvedAt ?? startedAt ?? Self.stableHistoryFallbackDate(index: messages.count),
+                    updatedAt: completedAt,
+                    turnID: turnID,
+                    timelineOrdinal: timelineOrdinalsAreCanonical
+                        ? historyTimelineOrdinal(turnIndex: turnIndex, itemIndex: 999_999)
+                        : nil,
+                    turnLifecycle: .failed,
+                    isTimestampFallback: completedAt == nil
+                ))
+            }
         }
         return messages
     }

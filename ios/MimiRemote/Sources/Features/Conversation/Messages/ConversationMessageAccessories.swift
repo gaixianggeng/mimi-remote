@@ -142,7 +142,8 @@ struct RuntimeSummaryCard: View {
             Text(message.content)
                 .font(themeStore.uiFont(.caption))
                 .foregroundStyle(tokens.secondaryText)
-                .lineLimit(3)
+                .lineLimit(message.kind == .error ? nil : 3)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
