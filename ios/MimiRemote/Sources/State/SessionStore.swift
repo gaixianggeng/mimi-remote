@@ -319,6 +319,7 @@ final class SessionStore: ObservableObject {
     var composerSendModeCache = ComposerSendModeCache()
     // 旧 ComposerView 的异步提交不能在页面重建后改写新输入区的临时选择。
     var activeComposerInstanceID: UUID?
+    @Published var latestCompletedComposerModeReset: ComposerModeResetEvent?
     // 补充信息可能包含 isSecret 答案，只在 SessionStore 生命周期内暂存，绝不落盘。
     // 这样既能跨横竖屏导致的 ComposerView 重建恢复，又不会扩大敏感数据存储范围。
     var pendingUserInputFormStateCache = PendingUserInputFormState()

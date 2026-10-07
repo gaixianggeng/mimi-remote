@@ -702,10 +702,19 @@ enum ComposerSendMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+struct ComposerModeResetEvent: Equatable {
+    let scope: ComposerDraftScopeKey
+    let revision: UInt64
+}
+
 struct ComposerSendModeCache {
     private var storedScope: ComposerDraftScopeKey = .none
     private var storedMode: ComposerSendMode = .standard
     private(set) var revision: UInt64 = 0
+
+    func modeForReappearance(of scope: ComposerDraftScopeKey) -> ComposerSendMode {
+        storedScope == scope ? storedMode : .standard
+    }
 
     func modeForScopeActivation(
         previousScope: ComposerDraftScopeKey,
@@ -726,14 +735,16 @@ struct ComposerSendModeCache {
     }
 
     mutating func save(_ mode: ComposerSendMode, for scope: ComposerDraftScopeKey) {
+        guard storedScope != scope || storedMode != mode else { return }
         storedScope = scope
         storedMode = mode
         revision &+= 1
     }
 
-    mutating func clearSubmittedModeIfUnchanged(for scope: ComposerDraftScopeKey, revision: UInt64) {
-        guard storedScope == scope, self.revision == revision else { return }
+    mutating func clearSubmittedModeIfUnchanged(for scope: ComposerDraftScopeKey, revision: UInt64) -> Bool {
+        guard storedScope == scope, self.revision == revision else { return false }
         save(.standard, for: scope)
+        return true
     }
 
     mutating func removeAll() {

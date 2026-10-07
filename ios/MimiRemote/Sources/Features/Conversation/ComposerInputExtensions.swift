@@ -66,11 +66,14 @@ extension ComposerView {
         }
         if restoration.sendMode {
             resetComposerSendModeAfterSubmit()
-        } else if sessionStore.activeComposerInstanceID == nil {
-            // 页面已关闭时没有本地模式可复位；只清理仍属于这次提交的共享缓存。
-            sessionStore.composerSendModeCache.clearSubmittedModeIfUnchanged(
+        } else if sessionStore.composerSendModeCache.clearSubmittedModeIfUnchanged(
                 for: checkpoint.scope,
                 revision: checkpoint.cachedSendModeRevision
+            ) {
+            // 新输入区可能已重建；通知它从共享缓存读取复位后的模式。
+            sessionStore.latestCompletedComposerModeReset = ComposerModeResetEvent(
+                scope: checkpoint.scope,
+                revision: sessionStore.composerSendModeCache.revision
             )
         }
     }

@@ -128,7 +128,10 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         var cache = ComposerSendModeCache()
         cache.save(.plan, for: scope)
         let submittedRevision = cache.revision
-        cache.clearSubmittedModeIfUnchanged(for: scope, revision: submittedRevision)
+        cache.save(.plan, for: scope)
+        XCTAssertEqual(cache.revision, submittedRevision, "reconstruction must not invalidate an unchanged choice")
+        XCTAssertTrue(cache.clearSubmittedModeIfUnchanged(for: scope, revision: submittedRevision))
+        XCTAssertEqual(cache.modeForReappearance(of: scope), .standard)
         XCTAssertEqual(
             cache.modeForScopeActivation(
                 previousScope: .none, nextScope: scope,
@@ -138,7 +141,8 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         )
 
         cache.save(.goal, for: scope)
-        cache.clearSubmittedModeIfUnchanged(for: scope, revision: submittedRevision)
+        XCTAssertFalse(cache.clearSubmittedModeIfUnchanged(for: scope, revision: submittedRevision))
+        XCTAssertEqual(cache.modeForReappearance(of: scope), .goal)
         XCTAssertEqual(
             cache.modeForScopeActivation(
                 previousScope: .none, nextScope: scope,

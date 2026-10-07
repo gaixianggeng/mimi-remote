@@ -312,6 +312,15 @@ struct ComposerView: View {
             // 设置页改完默认发送方式，当前打开的输入区立即跟上，不必先切走再切回。
             resetFollowUpDeliveryToDefault()
         }
+        .onChange(of: sessionStore.latestCompletedComposerModeReset) { _, event in
+            guard let event,
+                  sessionStore.activeComposerInstanceID == composerInstanceID,
+                  activeComposerDraftScope == event.scope,
+                  currentComposerDraftScope == event.scope else { return }
+            composerState.setSendMode(
+                sessionStore.composerSendModeCache.modeForReappearance(of: event.scope)
+            )
+        }
         .onChange(of: sessionStore.latestSatisfiedPermissionTurnBoundary) { _, boundary in
             guard let boundary,
                   activeComposerDraftScope == .session(boundary.sessionID) else {
@@ -337,6 +346,9 @@ struct ComposerView: View {
         .onAppear {
             sessionStore.activeComposerInstanceID = composerInstanceID
             switchComposerDraftScope(to: currentComposerDraftScope)
+            composerState.setSendMode(
+                sessionStore.composerSendModeCache.modeForReappearance(of: activeComposerDraftScope)
+            )
             enforceComposerTurnSettingsPolicy()
             restorePendingUserInputFormStateFromCache()
             synchronizePendingUserInputPresentation(previous: nil, current: pendingUserInputSelectionIdentity)
