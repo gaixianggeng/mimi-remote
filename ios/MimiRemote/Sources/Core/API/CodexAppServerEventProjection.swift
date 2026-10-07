@@ -1429,6 +1429,7 @@ extension CodexAppServerSessionRuntime {
                let error = appServerTurnErrorPayload(from: turn) {
                 let authenticationFailure = ClaudeAuthenticationRecovery.matches(error)
                 // 失败可能只留下用户 Item；错误卡片必须从 Turn 恢复，不能依赖最终答复存在。
+                // 每回合序号占一百万个位置，错误使用末尾预留位置，排在分页补齐的真实 Item 后。
                 messages.append(CodexHistoryMessage(
                     id: "runtime-error:\(turnID)",
                     role: "system",

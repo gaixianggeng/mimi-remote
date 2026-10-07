@@ -402,3 +402,168 @@ final class ConversationActivityDetailProjectionTests: XCTestCase {
         return try XCTUnwrap(items.first)
     }
 }
+
+@MainActor
+extension ConversationActivityDetailProjectionTests {
+    func testFailedTurnCompletionKeepsReasonAndTerminalBehavior() async throws {
+        var projector = CodexAppServerEventProjector()
+        let turn = failureReasonTestTurn()
+        let event = try XCTUnwrap(projector.project(failureReasonTestCompletion(turn)))
+        guard case .turnCompleted(let metadata) = event else {
+            return XCTFail("展示错误不能改变 completion 的队列与迟到事件语义")
+        }
+        XCTAssertEqual(metadata.turnLifecycle, .failed)
+        XCTAssertEqual(metadata.turnError?.message, failureReasonTestMessage)
+        XCTAssertEqual(metadata.turnID, "turn-failure-reason")
+        guard case .turnCompleted(let replayMetadata) = event.withReplayBoundarySequence(42, epoch: 3) else {
+            return XCTFail("Expected completion with replay boundary")
+        }
+        XCTAssertEqual(replayMetadata.turnError, metadata.turnError)
+        XCTAssertEqual(replayMetadata.replayBoundarySequence, 42)
+
+        let output = await EventReducer().reduce(event, fallbackSessionID: "wrong-thread", outputIdleClearDelay: 0)
+        XCTAssertEqual(output.statusUpdates.first?.0, "thread-failure-reason")
+        XCTAssertEqual(output.statusUpdates.first?.1, SessionStatus.failed.rawValue)
+        XCTAssertTrue(output.messageMutations.contains {
+            if case .markCurrentAssistantCompleted = $0 { return true }
+            return false
+        })
+        guard case .completed(let message, _, _) = try XCTUnwrap(output.messageMutations.first) else {
+            return XCTFail("具体原因必须进入可见错误消息")
+        }
+        XCTAssertEqual(message.kind, .error)
+        XCTAssertTrue(message.content.contains(failureReasonTestMessage))
+    }
+
+    func testTurnFailureReasonMergesLiveHistoryAndRepeatedNotifications() async throws {
+        let conversation = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversation,
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        let reducer = EventReducer()
+        var projector = CodexAppServerEventProjector()
+        let turn = failureReasonTestTurn()
+        let separateError = CodexAppServerNotification(method: "error", params: .object([
+            "threadId": .string("thread-failure-reason"),
+            "turnId": .string("turn-failure-reason"),
+            "error": turn["error"]!,
+            "willRetry": .bool(false)
+        ]))
+        for notification in [separateError, failureReasonTestCompletion(turn)] {
+            let event = try XCTUnwrap(projector.project(notification))
+            store.applyEventReducerOutput(await reducer.reduce(event, fallbackSessionID: "wrong-thread", outputIdleClearDelay: 0))
+        }
+        let original = try XCTUnwrap(conversation.messages(for: "thread-failure-reason").first)
+        XCTAssertEqual(conversation.messages(for: "thread-failure-reason").count, 1)
+
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        let history = await runtime.historyMessages(
+            fromTurns: [turn], sessionID: "thread-failure-reason", snapshotReadAt: Date()
+        )
+        conversation.setHistory(history, sessionID: "thread-failure-reason")
+        conversation.setHistory(history, sessionID: "thread-failure-reason")
+        let replay = try XCTUnwrap(projector.project(failureReasonTestCompletion(turn)))
+        store.applyEventReducerOutput(await reducer.reduce(replay, fallbackSessionID: "wrong-thread", outputIdleClearDelay: 0))
+        let messages = conversation.messages(for: "thread-failure-reason")
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages.first?.id, original.id)
+        XCTAssertEqual(messages.first?.turnLifecycle, .failed)
+        XCTAssertTrue(messages.first?.content.contains(failureReasonTestMessage) == true)
+        guard case .message(let visibleError) = try XCTUnwrap(ConversationTimelineItemBuilder.items(from: messages).first) else {
+            return XCTFail("错误原因不能折叠进已处理组")
+        }
+        XCTAssertEqual(visibleError.kind, .error)
+    }
+
+    func testHistoricalFailedTurnShowsReasonAfterUserItem() async throws {
+        var turn = failureReasonTestTurn()
+        turn["items"] = .array([.object([
+            "id": .string("failure-user"), "type": .string("userMessage"),
+            "content": .array([.object(["type": .string("text"), "text": .string("test")])])
+        ])])
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        let history = await runtime.historyMessages(
+            fromTurns: [turn], sessionID: "thread-failure-reason", snapshotReadAt: Date()
+        )
+        XCTAssertEqual(history.map(\.kind), [.message, .error])
+        XCTAssertEqual(history.map(\.role), ["user", "system"])
+        XCTAssertEqual(history.last?.createdAt, Date(timeIntervalSince1970: 200))
+        XCTAssertTrue(history.last?.content.contains(failureReasonTestMessage) == true)
+        XCTAssertGreaterThan(try XCTUnwrap(history.last?.timelineOrdinal), try XCTUnwrap(history.first?.timelineOrdinal))
+    }
+
+    func testTurnFailureReasonIgnoresEmptyErrorsAndNonFailedTurns() async throws {
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        let cases: [(String, CodexAppServerJSONValue)] = [
+            ("failed", .null), ("failed", .string(" \n ")),
+            ("failed", .object(["message": .string(" ")])),
+            ("completed", .object(["message": .string(failureReasonTestMessage)])),
+            ("interrupted", .object(["message": .string(failureReasonTestMessage)]))
+        ]
+        for (status, error) in cases {
+            var turn = failureReasonTestTurn()
+            turn["status"] = .string(status)
+            turn["error"] = error
+            var projector = CodexAppServerEventProjector()
+            guard case .turnCompleted(let metadata) = try XCTUnwrap(projector.project(failureReasonTestCompletion(turn))) else {
+                return XCTFail("Expected completion")
+            }
+            XCTAssertNil(metadata.turnError)
+            let history = await runtime.historyMessages(
+                fromTurns: [turn], sessionID: "thread-failure-reason", snapshotReadAt: Date()
+            )
+            XCTAssertTrue(history.isEmpty)
+        }
+    }
+
+    func testHistoricalTurnErrorSupportsStringAndClaudeRecovery() async throws {
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        var turn = failureReasonTestTurn()
+        turn["error"] = .string("  \(failureReasonTestMessage)\n")
+        let stringHistory = await runtime.historyMessages(
+            fromTurns: [turn], sessionID: "thread-failure-reason", snapshotReadAt: Date()
+        )
+        XCTAssertEqual(stringHistory.first?.content, L10n.format("ui.run_error_value", failureReasonTestMessage))
+        turn["error"] = .object([
+            "message": .string("Failed to authenticate"),
+            "code": .string(ClaudeAuthenticationRecovery.errorCode)
+        ])
+        let recoveryHistory = await runtime.historyMessages(
+            fromTurns: [turn], sessionID: "thread-failure-reason", snapshotReadAt: Date()
+        )
+        XCTAssertEqual(recoveryHistory.first?.content, ClaudeAuthenticationRecovery.recoveryMessage)
+        XCTAssertTrue(recoveryHistory.first?.activityPayload?.isClaudeAuthenticationRecovery == true)
+    }
+
+    func testTurnErrorMetadataRemainsCompatibleWithOlderEvents() throws {
+        let legacyData = Data(#"{"session_id":"thread-failure-reason","turn_id":"turn-failure-reason","turn_lifecycle":"failed"}"#.utf8)
+        let legacy = try JSONDecoder().decode(AgentEventMetadata.self, from: legacyData)
+        XCTAssertNil(legacy.turnError)
+        let updated = legacy.withTurnLifecycle(.failed, error: AgentErrorPayload(
+            message: failureReasonTestMessage, code: nil, retryable: false
+        ))
+        let decoded = try JSONDecoder().decode(AgentEventMetadata.self, from: JSONEncoder().encode(updated))
+        XCTAssertEqual(decoded, updated)
+    }
+
+    private var failureReasonTestMessage: String {
+        "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+    }
+
+    private func failureReasonTestTurn() -> [String: CodexAppServerJSONValue] {
+        [
+            "id": .string("turn-failure-reason"), "status": .string("failed"),
+            "startedAt": .int(100), "completedAt": .int(200), "items": .array([]),
+            "error": .object(["message": .string(failureReasonTestMessage)])
+        ]
+    }
+
+    private func failureReasonTestCompletion(_ turn: [String: CodexAppServerJSONValue]) -> CodexAppServerNotification {
+        CodexAppServerNotification(method: "turn/completed", params: .object([
+            "threadId": .string("thread-failure-reason"), "turn": .object(turn)
+        ]))
+    }
+}
