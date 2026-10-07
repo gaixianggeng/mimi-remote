@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 支持范围与自助诊断 / Support scope and self-service diagnostics
+    url: https://github.com/gaixianggeng/mimi-remote/blob/main/docs/support.md
+    about: 安装、连接、诊断与数据删除入口，并写明支持的系统版本和不受支持的构建 / Install, connection, diagnostics, data deletion, plus the supported OS versions and unsupported builds
+  - name: 私下报告安全问题 / Report a security issue privately
+    url: https://github.com/gaixianggeng/mimi-remote/blob/main/SECURITY.md
+    about: 请勿使用公开 Issue 报告安全漏洞 / Do not report security vulnerabilities in public issues

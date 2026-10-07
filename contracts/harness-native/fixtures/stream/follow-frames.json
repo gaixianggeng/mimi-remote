@@ -1,0 +1,208 @@
+{
+  "provenance": {
+    "level": "live-capture",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.1.5-rc.2",
+    "upstreamTag": "dsh-v0.1.5-rc.2",
+    "profile": "web",
+    "transport": "http://127.0.0.1 loopback, cookie session after GET /?token=",
+    "modelFixture": "@deepseek-ai/dsh-llm-mock-server (scriptable OpenAI-compatible SSE)",
+    "capturedAt": "2026-09-18T18:18:26.439Z"
+  },
+  "note": "session/follow 流：打开帧 snapshot（含 header/cursor/records/projections/assistantStream），随后是 event 增量帧。",
+  "observations": [
+    {
+      "label": "snapshot",
+      "value": {
+        "type": "snapshot",
+        "header": {
+          "version": 3,
+          "id": "h00-id-0001",
+          "createdAt": 1789755457813,
+          "cwd": "/h00/workspace",
+          "isSeeded": false,
+          "agentPreset": "standard"
+        },
+        "cursor": 2,
+        "records": [
+          {
+            "type": "event",
+            "event": {
+              "type": "permission/preset",
+              "seq": 0,
+              "time": 1789755457906,
+              "data": {
+                "preset": "workspace-write"
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "sandbox/mode",
+              "seq": 1,
+              "time": 1789755457907,
+              "data": {
+                "mode": "workspace-write"
+              }
+            }
+          },
+          {
+            "type": "event",
+            "event": {
+              "type": "approval/policy",
+              "seq": 2,
+              "time": 1789755457907,
+              "data": {
+                "policy": "<string:7>"
+              }
+            }
+          }
+        ],
+        "hasMore": false,
+        "projections": {
+          "asOfSeq": 2,
+          "values": {
+            "title": null,
+            "goal": null,
+            "tokenUsage": {
+              "uncachedInputTokens": 0,
+              "outputTokens": 0,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0
+            },
+            "contextPressure": {},
+            "contextBreakdown": {
+              "systemTokens": 0,
+              "toolsTokens": 0,
+              "messageTokens": 0
+            },
+            "sessionStats": {
+              "turns": 0,
+              "steps": 0,
+              "llmMs": 0,
+              "toolMs": 0,
+              "ttftMs": 0,
+              "ttftSteps": 0,
+              "decodeMs": 0,
+              "decodeTokens": 0
+            },
+            "turnOutline": [],
+            "agentPreset": "standard",
+            "subagentCatalog": [],
+            "subagentTiming": {
+              "settledMs": 0
+            },
+            "subagent": null,
+            "permissions": {
+              "options": [
+                {
+                  "value": "<string:7>",
+                  "name": "h00-name"
+                },
+                {
+                  "value": "<string:8>",
+                  "name": "h00-name"
+                },
+                {
+                  "value": "<string:8>",
+                  "name": "h00-name"
+                }
+              ],
+              "currentValue": "<string:8>"
+            },
+            "modelSelection": {
+              "lastUsed": null,
+              "next": null
+            },
+            "sessionListMetadata": {
+              "blank": true,
+              "lastPromptAt": null
+            },
+            "imageLimits": {
+              "maxImageBytes": 20971520,
+              "maxImagesPerMessage": 20,
+              "maxMessageImageBytes": 209715200,
+              "maxImagePixels": 64000000,
+              "maxImageDimension": 8192,
+              "mediaTypes": [
+                "<string:7>",
+                "<string:8>",
+                "<string:8>",
+                "<string:7>"
+              ]
+            },
+            "inbox": {
+              "next-turn": [],
+              "next-step": []
+            },
+            "todos": null,
+            "plan": {
+              "active": false,
+              "pending": false
+            }
+          }
+        },
+        "assistantStream": {
+          "revision": 0
+        }
+      }
+    },
+    {
+      "label": "snapshot.header",
+      "value": {
+        "version": 3,
+        "id": "h00-id-0001",
+        "createdAt": 1789755457906,
+        "cwd": "/h00/workspace",
+        "isSeeded": false
+      }
+    },
+    {
+      "label": "event.model/selection",
+      "value": {
+        "type": "event",
+        "event": {
+          "type": "model/selection",
+          "seq": 3,
+          "time": 1789755458641,
+          "data": {
+            "provider": "h00-loopback",
+            "model": "h00-mock-model"
+          }
+        }
+      }
+    },
+    {
+      "label": "event.turn/start",
+      "value": {
+        "type": "event",
+        "event": {
+          "type": "turn/start",
+          "seq": 5,
+          "time": 1789755460187,
+          "data": {
+            "turn": 1
+          }
+        }
+      }
+    },
+    {
+      "label": "request",
+      "value": {
+        "request": {
+          "address": {
+            "kind": "session",
+            "sessionId": "h00-session-0001"
+          },
+          "assistantStream": true,
+          "maxMessages": 200
+        }
+      }
+    },
+    {
+      "label": "cursorNote",
+      "value": "snapshot.cursor 是日志切点，必须回传给 session/page 的 throughSeq。"
+    }
+  ]
+}

@@ -18,10 +18,6 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
-func (p *appServerGatewayPolicy) rememberPendingThreadResponse(id *json.RawMessage, method string, cwd string, scopeID string) error {
-	return p.rememberPendingThreadResponseWithManagedUse(id, method, cwd, scopeID, "")
-}
-
 func (p *appServerGatewayPolicy) rememberPendingThreadResponseWithManagedUse(id *json.RawMessage, method string, cwd string, scopeID string, managedWorktreePath string) error {
 	return p.rememberPendingThreadRequest(id, appServerGatewayPendingThreadRequest{
 		method: method, cwd: cwd, scopeID: scopeID, managedWorktreePath: managedWorktreePath,
@@ -391,13 +387,13 @@ func sanitizeThreadForkResponse(payload []byte) ([]byte, json.RawMessage, error)
 	return rewritten, resultRaw, nil
 }
 
-// 下行门禁适用于我们自己拥有的两条 runtime。未知 runtime 保持既有透传语义
+// 下行门禁适用于我们自己拥有的几条 runtime。未知 runtime 保持既有透传语义
 // （见 TestAppServerGatewayNotificationRedactsInlineImagesForCodexAndClaude 的
 // unknown-runtime-passthrough 子用例）：那是一个独立的产品决定，新接入 runtime 时
 // 应当显式纳入这里，而不是靠这个函数悄悄改变语义。
 func (p *appServerGatewayPolicy) enforcesInboundThreadAuthorization() bool {
 	switch normalizeAppServerRuntimeID(p.runtimeID) {
-	case "codex", "claude":
+	case appServerRuntimeCodexID, appServerRuntimeClaudeID:
 		return true
 	default:
 		return false
@@ -960,6 +956,12 @@ func appServerServerRequestAllowed(runtimeID string, method string) bool {
 	if method == "item/tool/call" {
 		return normalizeAppServerRuntimeID(runtimeID) == "codex"
 	}
+	// 登记表声明了更窄的反向集合时以登记表为准：Harness 只经审批与结构化追问两条
+	// waterfall 向客户端发起交互，不能因为共用一份全局白名单就继承 MCP elicitation 等入口。
+	if spec, ok := appServerRuntimeSpecFor(runtimeID); ok && spec.ServerRequestMethods != nil {
+		_, allowed := spec.ServerRequestMethods[method]
+		return allowed
+	}
 	_, ok := appServerAllowedServerRequestMethods[method]
 	return ok
 }
@@ -967,10 +969,11 @@ func appServerServerRequestAllowed(runtimeID string, method string) bool {
 // 直播 turn 事件里的内联图（imageGeneration 裸 base64、mcpToolCall/dynamicToolCall
 // 图片 result、data:image URL）在 codex 和 claude 两条 runtime 上形状一致，都会把
 // 大 base64 顺着 WS + 隧道推一遍。两条链路统一改写成短 URL，避免 Claude 通道漏改导致
-// 带宽打满或单帧撞 gateway cap。其它未知 runtime 仍保持原样透传，不改既有语义。
+// 带宽打满或单帧撞 gateway cap。其它未知
+// runtime 仍保持原样透传，不改既有语义。
 func appServerRuntimeRedactsInlineImages(runtimeID string) bool {
 	switch normalizeAppServerRuntimeID(runtimeID) {
-	case "codex", "claude":
+	case appServerRuntimeCodexID, appServerRuntimeClaudeID:
 		return true
 	default:
 		return false
@@ -1373,10 +1376,6 @@ func (p *appServerGatewayPolicy) threadRouteFacts(threadID string) threadRouteFa
 		}
 	}
 	return facts
-}
-
-func (p *appServerGatewayPolicy) projectIDForThread(threadID string) string {
-	return p.threadRouteFacts(threadID).projectID
 }
 
 func (p *appServerGatewayPolicy) prunePendingServerRequestsLocked(now time.Time) {

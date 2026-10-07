@@ -18,7 +18,14 @@ struct PairingView: View {
 
     var body: some View {
         Group {
-            if let pairing = store.pairing {
+            if !store.canPair || store.isBusy {
+                PairingUnavailableState(
+                    title: "配对暂不可用",
+                    description: store.isBusy ? "正在更新服务设置，请完成后刷新。" : store.pairingUnavailableReason,
+                    isRetrying: isRefreshing || store.isBusy,
+                    retry: { Task { await store.refresh(); await store.refreshTailcatStatus(); refreshPairing(network: .automatic) } }
+                )
+            } else if let pairing = store.pairing, store.availablePairingNetworks.contains(pairing.network) {
                 pairingContent(pairing)
             } else if let error = store.lastError {
                 PairingUnavailableState(
@@ -37,13 +44,13 @@ struct PairingView: View {
             PairingWindowBackdrop()
         }
         .task {
-            if store.pairing == nil {
-                await store.refreshPairing()
-            }
-            if selectedNetwork != store.pairingNetwork {
+            await store.refreshIfNeeded()
+            await store.refreshTailcatStatus()
+            if let network = store.pairing?.network, selectedNetwork != network {
                 suppressNextNetworkChange = true
-                selectedNetwork = store.pairingNetwork
+                selectedNetwork = network
             }
+            restorePairingIfNeeded()
         }
         .onChange(of: selectedNetwork) { _, network in
             if suppressNextNetworkChange {
@@ -51,6 +58,27 @@ struct PairingView: View {
                 return
             }
             refreshPairing(network: network)
+        }
+        .onChange(of: store.availablePairingNetworks) { _, networks in
+            if let first = networks.first, !networks.contains(selectedNetwork) {
+                selectedNetwork = first
+            }
+            restorePairingIfNeeded()
+        }
+        .onChange(of: store.isBusy) { _, busy in
+            if !busy { restorePairingIfNeeded() }
+        }
+        .onChange(of: store.canPair) { _, available in
+            if available { restorePairingIfNeeded() }
+        }
+        .onChange(of: isRefreshing) { _, refreshing in
+            if !refreshing { restorePairingIfNeeded() }
+        }
+        .onChange(of: store.pairing?.network) { _, network in
+            if let network, network != selectedNetwork {
+                suppressNextNetworkChange = true
+                selectedNetwork = network
+            }
         }
         .onDisappear {
             copyFeedbackTask?.cancel()
@@ -66,7 +94,8 @@ struct PairingView: View {
 
                 PairingNetworkPicker(
                     selection: $selectedNetwork,
-                    isRefreshing: isRefreshing
+                    isRefreshing: isRefreshing,
+                    networks: store.availablePairingNetworks
                 )
                 .padding(.bottom, 20)
 
@@ -127,6 +156,9 @@ struct PairingView: View {
     }
 
     private func copyPairingLink(_ value: String) {
+        guard store.canPair, !store.isBusy,
+              let pairing = store.pairing, pairing.pairURL == value,
+              store.availablePairingNetworks.contains(pairing.network) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
 
@@ -143,15 +175,27 @@ struct PairingView: View {
         }
     }
 
+    /// A module change invalidates its QR while the service is busy. Refresh only
+    /// once it is usable again; a real generation error stays visible for retry.
+    private func restorePairingIfNeeded() {
+        guard !isRefreshing, !store.isBusy, store.canPair,
+              store.pairing == nil, store.lastError == nil else { return }
+        let network: PairingNetwork = store.availablePairingNetworks.contains(selectedNetwork)
+            ? selectedNetwork : .automatic
+        refreshPairing(network: network)
+    }
+
     private func refreshPairing(network: PairingNetwork? = nil) {
-        guard !isRefreshing else { return }
+        guard !isRefreshing, !store.isBusy, store.canPair else { return }
         let targetNetwork = network ?? selectedNetwork
         isRefreshing = true
         Task {
             await store.refreshPairing(network: targetNetwork)
-            if store.pairingNetwork != targetNetwork {
+            // A superseded request may finish with no QR. Its remembered route
+            // must not replace the user's current, available selection.
+            if let network = store.pairing?.network, network != selectedNetwork {
                 suppressNextNetworkChange = true
-                selectedNetwork = store.pairingNetwork
+                selectedNetwork = network
             }
             isRefreshing = false
         }
@@ -191,16 +235,15 @@ private struct PairingIntroduction: View {
 private struct PairingNetworkPicker: View {
     @Binding var selection: PairingNetwork
     let isRefreshing: Bool
+    let networks: [PairingNetwork]
 
     var body: some View {
         VStack(spacing: 8) {
             Picker("配对网络", selection: $selection) {
-                Text("Tailscale")
-                    .tag(PairingNetwork.tailscale)
-                Text("Tailcat 实验")
-                    .tag(PairingNetwork.tailcat)
-                Text("局域网")
-                    .tag(PairingNetwork.localNetwork)
+                ForEach(networks) { network in
+                    Text(network == .localNetwork ? "局域网" : network == .tailcat ? "Tailcat" : "Tailscale")
+                        .tag(network)
+                }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -227,9 +270,9 @@ private struct PairingNetworkPicker: View {
         case .tailscale:
             "默认推荐 · 支持跨网络连接"
         case .localNetwork:
-            "设备需在同一局域网 · 首次启用会重启服务"
+            "设备需在同一局域网 · 刷新不会修改网络设置"
         case .tailcat:
-            "邀请实验 · 不依赖已安装的 Tailscale 客户端"
+            "独立通道 · 不依赖已安装的 Tailscale 客户端"
         }
     }
 

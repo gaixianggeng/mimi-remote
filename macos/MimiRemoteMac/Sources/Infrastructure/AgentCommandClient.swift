@@ -1,5 +1,10 @@
 import Foundation
 
+struct CodexSessionReleaseResult: Decodable, Equatable, Sendable {
+    let released: Bool
+    let message: String
+}
+
 struct AgentCommandClient: Sendable {
     var configExists: @Sendable () -> Bool
     var setup: @Sendable (_ workspaceRoot: URL) async throws -> PairingInfo
@@ -7,10 +12,17 @@ struct AgentCommandClient: Sendable {
     var readiness: @Sendable () async throws -> AgentStatus
     var statusAt: @Sendable (_ binary: URL) async throws -> AgentStatus
     var doctor: @Sendable (_ fix: Bool) async throws -> DoctorFixResults
+    var releaseCodexSession: @Sendable () async throws -> CodexSessionReleaseResult = {
+        throw AgentClientError.commandFailed("当前 agentd 不支持共享运行环境修复，请更新 App。")
+    }
+    var uninstallCodexFrontDoor: @Sendable () async throws -> Void = {}
     var configureClaude: @Sendable (
         _ preference: ClaudeActivationPreference,
         _ restoreEnabled: Bool?
     ) async throws -> ClaudeConfigurationResult
+    var restoreClaude: @Sendable (ClaudeConfigurationResult) async throws -> ClaudeConfigurationResult = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Claude 配置恢复。")
+    }
     var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
     var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
     var tailcatStatus: @Sendable () async throws -> TailcatStatus = {
@@ -25,7 +37,37 @@ struct AgentCommandClient: Sendable {
     var resetTailcat: @Sendable () async throws -> TailcatStatus = {
         throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
     }
+    var configureDeepSeek: @Sendable (
+        _ action: DeepSeekConfigurationAction,
+        _ startupURL: String?
+    ) async throws -> DeepSeekConfigurationResult = { _, _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 DeepSeek 配置。")
+    }
     var version: @Sendable () async throws -> String
+    var configureCodex: @Sendable (String) async throws -> CodexConfigurationResult = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Codex 模块控制，请更新并重启服务。")
+    }
+    var restoreCodex: @Sendable (CodexConfigurationResult) async throws -> CodexConfigurationResult = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Codex 配置恢复。")
+    }
+    var configureNetwork: @Sendable (PairingNetwork, Bool) async throws -> NetworkConfigurationResult = { _, _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持独立连接控制，请更新并重启服务。")
+    }
+    var restoreNetwork: @Sendable (NetworkConfigurationResult) async throws -> NetworkConfigurationResult = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持连接配置恢复。")
+    }
+    var diagnosticsStatus: @Sendable () async throws -> AgentDiagnosticsStatus = {
+        throw AgentClientError.commandFailed("当前 agentd 不支持诊断日志，请更新 App。")
+    }
+    var setDetailedDiagnostics: @Sendable (_ enabled: Bool) async throws -> AgentDiagnosticsStatus = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持诊断日志，请更新 App。")
+    }
+    var clearDiagnostics: @Sendable () async throws -> AgentDiagnosticsStatus = {
+        throw AgentClientError.commandFailed("当前 agentd 不支持诊断日志，请更新 App。")
+    }
+    var exportDiagnostics: @Sendable () async throws -> AgentDiagnosticsExport = {
+        throw AgentClientError.commandFailed("当前 agentd 不支持诊断日志，请更新 App。")
+    }
 }
 
 extension AgentCommandClient {
@@ -51,14 +93,18 @@ extension AgentCommandClient {
             arguments: [String],
             allowFailure: Bool = false,
             timeout: Duration = .seconds(15),
-            forceKillAfterTimeout: Bool = false
+            forceKillAfterTimeout: Bool = false,
+            standardInput: Data? = nil,
+            outputLimit: Int = 1_048_576
         ) async throws -> CommandResult {
             let result = try await executor.run(
                 executable: binary,
                 arguments: arguments,
                 timeout: timeout,
+                outputLimit: outputLimit,
                 environment: environment,
-                forceKillAfterTimeout: forceKillAfterTimeout
+                forceKillAfterTimeout: forceKillAfterTimeout,
+                standardInput: standardInput
             )
             if result.status != 0 && !allowFailure {
                 throw AgentClientError.commandFailed(
@@ -133,6 +179,23 @@ extension AgentCommandClient {
                 let results = try decode(AgentDoctorResults.self, from: result)
                 return DoctorFixResults(fixes: [], results: results)
             },
+            releaseCodexSession: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(CodexSessionReleaseResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: codexSessionRepairArguments(),
+                    timeout: .seconds(30),
+                    forceKillAfterTimeout: true
+                ))
+            },
+            uninstallCodexFrontDoor: {
+                let binary = try requireEmbeddedBinary()
+                _ = try await execute(
+                    binary: binary,
+                    arguments: ["codex-front", "uninstall", "--stop-idle-backend"],
+                    timeout: .seconds(40)
+                )
+            },
             configureClaude: { preference, restoreEnabled in
                 let binary = try requireEmbeddedBinary()
                 return try decode(ClaudeConfigurationResult.self, from: try await execute(
@@ -141,7 +204,19 @@ extension AgentCommandClient {
                         preference: preference,
                         restoreEnabled: restoreEnabled
                     ),
-                    timeout: .seconds(10)
+                    timeout: .seconds(60)
+                ))
+            },
+            restoreClaude: { previous in
+                let binary = try requireEmbeddedBinary()
+                guard previous.previous != nil, previous.applied != nil else {
+                    throw AgentClientError.commandFailed("缺少原始 Claude 配置，不能安全回滚。")
+                }
+                let payload = String(decoding: try JSONEncoder().encode(previous), as: UTF8.self)
+                return try decode(ClaudeConfigurationResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: ["runtime", "--restore-claude", payload, "--json"],
+                    timeout: .seconds(60)
                 ))
             },
             setLANAccess: { enabled in
@@ -195,12 +270,98 @@ extension AgentCommandClient {
                     timeout: .seconds(15)
                 ))
             },
+            configureDeepSeek: { action, startupURL in
+                let binary = try requireEmbeddedBinary()
+                let arguments = deepSeekConfigurationArguments(action: action, hasStartupURL: startupURL != nil)
+                return try decode(DeepSeekConfigurationResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: arguments,
+                    timeout: .seconds(20),
+                    forceKillAfterTimeout: true,
+                    standardInput: startupURL.map { Data($0.utf8) }
+                ))
+            },
             version: {
                 let binary = try requireEmbeddedBinary()
                 let result = try await execute(binary: binary, arguments: ["version"])
                 return result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+            },
+            configureCodex: { preference in
+                let binary = try requireEmbeddedBinary()
+                return try decode(CodexConfigurationResult.self, from: try await execute(
+                    binary: binary, arguments: ["runtime", "--codex=\(preference)", "--json"],
+                    timeout: .seconds(60)
+                ))
+            },
+            restoreCodex: { previous in
+                let binary = try requireEmbeddedBinary()
+                let payload = String(decoding: try JSONEncoder().encode(previous), as: UTF8.self)
+                return try decode(CodexConfigurationResult.self, from: try await execute(
+                    binary: binary, arguments: ["runtime", "--restore-codex", payload, "--json"],
+                    timeout: .seconds(60)
+                ))
+            },
+            configureNetwork: { network, enabled in
+                let binary = try requireEmbeddedBinary()
+                guard network == .tailscale || network == .localNetwork else {
+                    throw AgentClientError.commandFailed("这个连接方式不使用系统网络开关。")
+                }
+                let flag = network == .tailscale ? "--tailscale-enabled" : "--lan-enabled"
+                return try decode(NetworkConfigurationResult.self, from: try await execute(
+                    binary: binary, arguments: ["network", "\(flag)=\(enabled)", "--json"],
+                    timeout: .seconds(30)
+                ))
+            },
+            restoreNetwork: { previous in
+                let binary = try requireEmbeddedBinary()
+                guard previous.previous != nil, previous.applied != nil else {
+                    throw AgentClientError.commandFailed("缺少原始连接配置，不能安全回滚。")
+                }
+                let payload = String(decoding: try JSONEncoder().encode(previous), as: UTF8.self)
+                return try decode(NetworkConfigurationResult.self, from: try await execute(
+                    binary: binary, arguments: ["network", "--restore-state", payload, "--json"],
+                    timeout: .seconds(30)
+                ))
+            },
+            diagnosticsStatus: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(AgentDiagnosticsStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: diagnosticsArguments(action: .status)
+                ))
+            },
+            setDetailedDiagnostics: { enabled in
+                let binary = try requireEmbeddedBinary()
+                return try decode(AgentDiagnosticsStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: diagnosticsArguments(action: enabled ? .start : .stop)
+                ))
+            },
+            clearDiagnostics: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(AgentDiagnosticsStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: diagnosticsArguments(action: .clear)
+                ))
+            },
+            exportDiagnostics: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(AgentDiagnosticsExport.self, from: try await execute(
+                    binary: binary,
+                    arguments: diagnosticsArguments(action: .export),
+                    outputLimit: 24 * 1_048_576
+                ))
             }
         )
+    }
+
+    static func deepSeekConfigurationArguments(
+        action: DeepSeekConfigurationAction,
+        hasStartupURL: Bool
+    ) -> [String] {
+        var arguments = ["runtime", "--deepseek", action.rawValue, "--json"]
+        if hasStartupURL { arguments.append("--deepseek-url-stdin") }
+        return arguments
     }
 
     static func setupArguments(workspaceRoot: URL, browseRoot: URL) -> [String] {
@@ -219,6 +380,10 @@ extension AgentCommandClient {
             arguments.append("--runtime")
         }
         return arguments
+    }
+
+    static func codexSessionRepairArguments() -> [String] {
+        ["repair-codex-session", "--confirm-disconnected", "--json"]
     }
 
     static func claudeConfigurationArguments(
@@ -254,6 +419,14 @@ extension AgentCommandClient {
             arguments.append("--derp-map-url=\(derpMapURL)")
         }
         return arguments
+    }
+
+    enum DiagnosticsAction: String {
+        case status, start, stop, clear, export
+    }
+
+    static func diagnosticsArguments(action: DiagnosticsAction) -> [String] {
+        ["diagnostics", action.rawValue, "--json"]
     }
 
 }

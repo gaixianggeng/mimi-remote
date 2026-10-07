@@ -271,7 +271,7 @@ func syncLegacyMigrationDirectory(dir string) error {
 }
 
 func absoluteExpandedPath(path string) (string, error) {
-	value := strings.TrimSpace(expandPath(path))
+	value := strings.TrimSpace(ExpandPath(path))
 	if value == "" {
 		return "", fmt.Errorf("配置路径不能为空")
 	}

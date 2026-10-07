@@ -898,10 +898,6 @@ struct AgentUserInputOption: Identifiable, Codable, Hashable {
     var id: String { label }
 }
 
-enum SessionDataFlow {
-    typealias SessionRow = DataFlowSessionRow
-}
-
 struct DataFlowSessionRow: Identifiable, Codable, Hashable {
     let id: SessionID
     let projectID: String
@@ -1097,31 +1093,6 @@ struct AgentMessage: Identifiable, Codable, Hashable {
     }
 }
 
-struct ComposerDraft: Identifiable, Codable, Hashable {
-    let id: String
-    let projectID: String?
-    let sessionID: SessionID?
-    var text: String
-    var isExpanded: Bool
-    var updatedAt: Date
-
-    init(
-        id: String = UUID().uuidString,
-        projectID: String?,
-        sessionID: SessionID?,
-        text: String = "",
-        isExpanded: Bool = false,
-        updatedAt: Date = Date()
-    ) {
-        self.id = id
-        self.projectID = projectID
-        self.sessionID = sessionID
-        self.text = text
-        self.isExpanded = isExpanded
-        self.updatedAt = updatedAt
-    }
-}
-
 struct AgentEventMetadata: Codable, Hashable {
     let seq: EventSequence?
     let sessionID: SessionID?
@@ -1132,8 +1103,8 @@ struct AgentEventMetadata: Codable, Hashable {
     let revision: ModelRevision?
     let createdAt: Date?
     let turnLifecycle: ConversationTurnLifecycle?
-    /// Claude gateway 的可恢复序号。它只在完整 turn/thread 边界上存在，
-    /// 且必须等 MainActor 已把事件写入 Conversation/Session 状态后才能提交。
+    /// Runtime 的可恢复序号：Claude 使用完整 turn/thread 边界，Harness 使用 durable seq。
+    /// 必须等 MainActor 已把事件写入 Conversation/Session 状态后才能提交。
     let replayBoundarySequence: UInt64?
     /// App 进程内的 bridge sequence epoch。reset 后旧连接的迟到确认必须被拒绝，
     /// 否则会把刚清零的 cursor 又推进到上一代高水位。

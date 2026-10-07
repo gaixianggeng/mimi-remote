@@ -81,11 +81,11 @@ JSON 安全模式只返回 `version`、`service_ok` 和可选的安全 warning�
 
 ### macOS App 升级与回滚
 
-首个 DMG 不带自动更新。升级时下载目标正式版本的 DMG 和 SHA-256 文件，校验后用新 App 覆盖“应用程序”中的现有版本；不要先删除旧 App，也不要删除 `~/Library/Application Support/mimi-remote`。打开新版本后确认 service owner 仍是 `Mimi Remote Mac`，版本、Doctor、Codex 和已启用的 Claude channel 均正常。
+首个 DMG 不带自动更新。升级时下载目标正式版本的 DMG 和 SHA-256 文件，校验后用新 App 覆盖“应用程序”中的现有版本；不要先删除旧 App，也不要删除 `~/Library/Application Support/mimi-remote`。打开新版本后确认 service owner 仍是 `Mimi Remote Mac`，版本、Doctor、Codex 和已启用的 Claude channel 均正常。前门会按包内 agentd 二进制摘要判断是否换代；有活动共享连接或任务时会暂缓，结束任务并断开 Desktop SSH 页面后重启 App 服务即可再次尝试，不强制中断 backend。
 
-需要回滚时安装上一个仍可从正式 Release 获取、经过 Developer ID 签名和 Apple 公证的 DMG。优先只回滚 App 和内嵌二进制；除非确认新版本写入了旧版本无法读取的配置，否则继续复用现有配置。snapshot、ad-hoc 或未公证构建不能作为稳定回滚版本。
+需要回滚时安装上一个仍可从正式 Release 获取、经过 Developer ID 签名和 Apple 公证的 DMG。优先只回滚 App 和内嵌二进制；除非确认新版本写入了旧版本无法读取的配置，否则继续复用现有配置。若要回到不支持 Codex 前门的旧版，先按[共享 App Server](shared-ssh-app-server.md#macos-mac-app-前门)卸载前门并安全结束私有 backend，再替换 App。snapshot、ad-hoc 或未公证构建不能作为稳定回滚版本。
 
-移动或删除 App 前，先在菜单栏执行“退出并停止服务”。如果要回到 Homebrew，在设置中执行“停止 App 服务并恢复 Homebrew”，确认旧服务重新就绪后再移除 App，避免系统保留指向不存在 bundle 的 LaunchAgent 注册。
+永久移动或删除 App 前，先在菜单栏执行“退出并停止服务”，再用当前 App 内的 `agentd codex-front uninstall --stop-idle-backend` 安全卸载前门；命令失败时先结束共享任务和 Desktop SSH 页面，不要直接删除 App。如果要回到 Homebrew，在设置中执行“停止 App 服务并恢复 Homebrew”：App 会先确认私有 backend 空闲并卸载前门，失败则恢复 App 服务；确认 Homebrew 就绪后再移除 App。
 
 ### macOS Homebrew 升级
 
@@ -176,6 +176,18 @@ agentd logs
 
 `doctor --fix` 只执行可证明安全的局部修复；不会为了“修好”而重建项目列表或轮换外侧配对 Token。
 
+### 旧安装包读到新配置时先升级安装包
+
+配置由较新版本写入、实际运行的却是较旧安装包时，`agentd` 可能既认不出其中的取值，也不再支持对应的迁移。典型现象是 Mac App 报“后台服务首次启动失败 / 自动重新登记仍未恢复”，而 launchd 每 3 秒重拉一次、每次都立刻以退出码 1 结束：登记本身没有坏，换多少次登记都不会变。
+
+先用一次只读检查拿到 agentd 自己的判断：
+
+```bash
+agentd check-config --json
+```
+
+`code=config_requires_newer_version` 表示这份配置需要更新版本的 `agentd`，对应动作是安装最新发布包，而不是 `setup --force`：后者会重建配置并轮换配对 Token。反过来，已经移除的历史 transport（例如 `stdio`）会报 `config_invalid`：最新的 `agentd` 同样不支持它，升级安装包修不好，只能 `setup --force` 重置配置；其余 `config_invalid` 回到 `doctor --fix` 与 `agentd logs`。Mac App 在检测到拉起失败循环时会自动运行同一检查，并把 agentd 的原始报错和对应的下一步显示出来，不再只提示“服务记录可能已过期”。
+
 从历史产品目录升级时，如果新版默认配置不存在，`agentd` 会把 `codex-ipad-agent/config.json` 原样复制到 `mimi-remote/config.json`，保留旧文件和其中引用的绝对路径。两边都存在时永远使用新版目录；显式自定义配置时不自动迁移。
 
 ### 停止与异常恢复
@@ -254,7 +266,7 @@ agentd start
 
 Linux 桌面安装同时提供顶栏托盘、自启动入口和本机管理面板，使用方法与 GNOME/KDE/Waybar 支持边界见 [Linux 桌面托盘](linux-tray.md)。
 
-Linux Release 包同时包含二进制、user-systemd 模板和安装脚本，不使用 Homebrew。下面示例明确指定版本，校验 `checksums.txt` 后再安装，避免“latest”在无人确认时升级：
+Linux Release 包同时包含 agentd、同版本的 Tailcat 辅助程序、托盘、user-systemd 模板和安装脚本，不使用 Homebrew。下面示例明确指定版本，校验 `checksums.txt` 后再安装，避免“latest”在无人确认时升级：
 
 ```bash
 set -euo pipefail
@@ -326,12 +338,14 @@ Linux 升级时，按首次安装示例下载并校验目标版本，解压后�
 bash ./scripts/install-linux.sh upgrade
 ```
 
-脚本会自动保留上一版二进制和 unit；若新版本无法就绪会当场自动恢复。需要稍后主动回滚时，使用安装成功后保存到本机的脚本：
+脚本会同时校验并安装 agentd 与 mimi-tailcat-experiment，自动保留上一版两个二进制和 unit；若新版本无法就绪会当场恢复安装前版本及原有回滚备份。缺少辅助程序、无法执行或版本不一致的包会在修改安装前被拒绝。需要稍后主动回滚时，使用安装成功后保存到本机的脚本：
 
 ```bash
 bash "$HOME/.local/share/mimi-remote/install-linux.sh" rollback
 "$HOME/.local/bin/agentd" logs -n 200
 ```
+
+从没有 Tailcat 的旧安装升级时，回滚会恢复当时缺少辅助程序的状态并明确提示。若旧备份没有辅助程序且没有对应的缺失标记，安装器拒绝猜测版本，请从目标版本完整 Release 包重新安装。出现「未安装 mimi-tailcat-experiment」时，下载并校验包含该文件的 Linux Release，在解压目录执行 `bash ./scripts/install-linux.sh upgrade`，然后重试内置连接；不需要另装 Tailscale。
 
 如果 Codex CLI 不在模板的 `PATH` 中，先用 `command -v codex` 找到安装目录，再编辑 `~/.config/systemd/user/mimi-remote.service` 的 `Environment=PATH=...`，随后执行 `systemctl --user daemon-reload` 和重启。
 
@@ -408,7 +422,7 @@ gh api --method POST \
   -f "client_payload[release_tag]=$release_tag"
 ```
 
-该入口固定校验 GoReleaser `v2.15.3` 官方预编译包的 SHA-256，并拒绝当前 Go 版本偏离 `go.mod`。它会验证四个平台二进制的 Go 版本、GOOS/GOARCH、CGO 状态、可执行权限、许可证文件、systemd 模板和 Homebrew service；还会逐一核对 Formula 下载 URL 必须指向 `gaixianggeng/mimi-remote`，其中 SHA-256 必须与实际归档一致。普通安装用户不需要运行这个脚本。
+该入口固定校验 GoReleaser `v2.15.3` 官方预编译包的 SHA-256，并拒绝当前 Go 版本偏离 `go.mod`。它会验证四个平台二进制的 Go 版本、GOOS/GOARCH、CGO 状态、可执行权限、许可证文件、systemd 模板和 Homebrew service；还会逐一核对 Formula 下载 URL 必须指向 `gaixianggeng/mimi-remote`，其中 SHA-256 必须与实际归档一致。Linux 归档还必须包含独立 module 构建的 Tailcat 辅助程序；在 Linux 宿主执行产物门禁时，会用当前架构的真实二进制和本机临时 DERP 验证启动、配对信息与正常退出。该检查不使用生产中继或现有用户配置。普通安装用户不需要运行这个脚本。
 
 ### GitHub Release 成功、tap 更新失败
 

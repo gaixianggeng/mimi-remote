@@ -39,6 +39,32 @@ enum ComposerDraftScopeKey: Hashable {
 
 }
 
+struct ComposerTransientSelectionCheckpoint {
+    let instanceID: UUID
+    let scopeRevision: UInt64
+    let deliveryRevision: UInt64
+    let cachedDeliveryRevision: UInt64
+    let sendModeRevision: UInt64
+    let cachedSendModeRevision: UInt64
+
+    func restoration(
+        activeInstanceID: UUID?,
+        activeScope: ComposerDraftScopeKey,
+        selectedScope: ComposerDraftScopeKey,
+        scopeRevision: UInt64,
+        deliveryRevision: UInt64,
+        sendModeRevision: UInt64
+    ) -> (delivery: Bool, sendMode: Bool) {
+        let sameActivation = instanceID == activeInstanceID
+            && activeScope == selectedScope
+            && self.scopeRevision == scopeRevision
+        return (
+            delivery: sameActivation && self.deliveryRevision == deliveryRevision,
+            sendMode: sameActivation && self.sendModeRevision == sendModeRevision
+        )
+    }
+}
+
 enum ComposerTurnSettingsPolicy: Equatable {
     case editable
     case unavailable
@@ -241,6 +267,7 @@ struct ComposerModelSelectionCache {
 enum DefaultModelRuntime: String, CaseIterable, Hashable, Identifiable {
     case codex
     case claude
+    case deepseek
 
     var id: String { rawValue }
 
@@ -259,6 +286,8 @@ enum DefaultModelPreferences {
     static let codexReasoningEffortKey = "composer.defaultModel.codex.reasoningEffort"
     static let claudeModelOptionIDKey = "composer.defaultModel.claude.optionID"
     static let claudeReasoningEffortKey = "composer.defaultModel.claude.reasoningEffort"
+    static let deepSeekModelOptionIDKey = "composer.defaultModel.deepseek.optionID"
+    static let deepSeekReasoningEffortKey = "composer.defaultModel.deepseek.reasoningEffort"
 
     /// 默认值是本机偏好，不跟随 Host 或会话保存；只有“没有会话快照”时才会被 Composer 使用。
     static func options(
@@ -273,21 +302,31 @@ enum DefaultModelPreferences {
         guard available.isEmpty else {
             return available
         }
-        return runtime == "claude"
-            ? CodexAppServerModelOption.builtInClaudeFallback
-            : CodexAppServerModelOption.builtInFallback
+        switch runtime {
+        case "claude":
+            return CodexAppServerModelOption.builtInClaudeFallback
+        case "deepseek":
+            // Harness 模型目录是唯一事实；回退到 GPT 会让界面显示无法兑现的模型。
+            return []
+        default:
+            return CodexAppServerModelOption.builtInFallback
+        }
     }
 
     static func modelOptionIDKey(for runtimeProvider: String) -> String {
-        CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "claude"
-            ? claudeModelOptionIDKey
-            : codexModelOptionIDKey
+        switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) {
+        case "claude": claudeModelOptionIDKey
+        case "deepseek": deepSeekModelOptionIDKey
+        default: codexModelOptionIDKey
+        }
     }
 
     static func reasoningEffortKey(for runtimeProvider: String) -> String {
-        CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "claude"
-            ? claudeReasoningEffortKey
-            : codexReasoningEffortKey
+        switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) {
+        case "claude": claudeReasoningEffortKey
+        case "deepseek": deepSeekReasoningEffortKey
+        default: codexReasoningEffortKey
+        }
     }
 
     static func storedModelOptionID(
@@ -404,6 +443,128 @@ enum DefaultModelPreferences {
     }
 }
 
+/// 「默认发送方式」偏好。会话运行中再发一条消息时，默认排队到下一回合还是引导当前回复。
+///
+/// 只保留一个全局偏好，不按运行时分开存：引导的可用性只取决于会话是否运行中、有没有
+/// 活动 turn、权限选择是否需要新 turn，Codex 与 Claude 走的都是同一条 `turn/steer`。
+extension RunningTurnDelivery: Identifiable {
+    static let defaultStorageKey = "composer.defaultRunningTurnDelivery"
+    /// 没存过偏好时保持既有行为：排队最安全，不会改写正在生成的回复。
+    static let fallbackDefault: RunningTurnDelivery = .queued
+
+    var id: String { rawValue }
+
+    static func stored(_ rawValue: String) -> RunningTurnDelivery {
+        RunningTurnDelivery(rawValue: rawValue) ?? fallbackDefault
+    }
+
+    /// 切换会话、发送成功或引导可用性变化后，输入区该回到哪个发送方式。
+    ///
+    /// 引导只对当前正在生成的这一条回复生效，所以每次上下文重置都重新取偏好；
+    /// 当前不具备引导条件时必须回落排队，不能因为偏好选了引导就把消息发失败。
+    static func restoredSelection(
+        default preference: RunningTurnDelivery,
+        canUseGuidedFollowUp: Bool
+    ) -> RunningTurnDelivery {
+        canUseGuidedFollowUp ? preference : .queued
+    }
+
+    var title: String {
+        switch self {
+        case .queued:
+            return L10n.text("ui.queue")
+        case .guided:
+            return L10n.text("ui.guide")
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .queued:
+            return L10n.text("ui.default_send_method_queue_detail")
+        case .guided:
+            return L10n.text("ui.default_send_method_steer_detail")
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .queued:
+            return "clock"
+        case .guided:
+            return "text.bubble"
+        }
+    }
+
+    /// 输入区菜单里的「（默认）」跟随偏好，不再固定写在排队项上。
+    func menuTitle(isDefault: Bool, isGuidedAvailable: Bool) -> String {
+        switch self {
+        case .queued:
+            return isDefault ? L10n.text("ui.queue_default") : L10n.text("ui.queue_for_next_round")
+        case .guided:
+            guard isGuidedAvailable else {
+                return L10n.text("ui.guide_current_reply_no_active_round_currently")
+            }
+            return isDefault ? L10n.text("ui.steer_current_reply_default") : L10n.text("ui.lead_current_reply")
+        }
+    }
+}
+
+/// A temporary Queue/Steer choice belongs to one active reply, even when steering
+/// remains available while the session moves directly to another reply.
+struct RunningTurnDeliveryContext: Equatable {
+    let turnID: TurnID?
+    let canGuide: Bool
+}
+
+struct ComposerDeliverySelectionCache {
+    private(set) var scope: ComposerDraftScopeKey = .none
+    private(set) var context = RunningTurnDeliveryContext(turnID: nil, canGuide: false)
+    private(set) var configuredDefault: RunningTurnDelivery = .fallbackDefault
+    private(set) var selection: RunningTurnDelivery?
+    private(set) var revision: UInt64 = 0
+
+    func selection(for scope: ComposerDraftScopeKey, context: RunningTurnDeliveryContext, default configuredDefault: RunningTurnDelivery) -> RunningTurnDelivery? {
+        self.scope == scope && self.context == context && self.configuredDefault == configuredDefault ? selection : nil
+    }
+
+    mutating func selectionForActivation(
+        of scope: ComposerDraftScopeKey, context: RunningTurnDeliveryContext,
+        default configuredDefault: RunningTurnDelivery
+    ) -> RunningTurnDelivery? {
+        let restored = selection(for: scope, context: context, default: configuredDefault)
+        if restored == nil { clear() }
+        return restored
+    }
+
+    mutating func save(_ selection: RunningTurnDelivery, for scope: ComposerDraftScopeKey, context: RunningTurnDeliveryContext, default configuredDefault: RunningTurnDelivery) {
+        guard self.scope != scope || self.context != context || self.configuredDefault != configuredDefault || self.selection != selection else { return }
+        self.scope = scope
+        self.context = context
+        self.configuredDefault = configuredDefault
+        self.selection = selection
+        revision &+= 1
+    }
+
+    mutating func migrateScope(from previous: ComposerDraftScopeKey, to next: ComposerDraftScopeKey) {
+        guard scope == previous, selection != nil else { return }
+        scope = next
+    }
+
+    mutating func clear() {
+        guard selection != nil else { return }
+        selection = nil
+        revision &+= 1
+    }
+
+    mutating func clearIfUnchanged(revision: UInt64) -> ComposerDraftScopeKey? {
+        guard self.revision == revision, selection != nil else { return nil }
+        let affectedScope = scope
+        clear()
+        return affectedScope
+    }
+}
+
 enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
     case requestApproval
     case readOnly
@@ -455,19 +616,6 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
             return L10n.text("ui.approval_for_me")
         case .fullAccess:
             return L10n.text("ui.full_access")
-        }
-    }
-
-    var chipTitle: String {
-        switch self {
-        case .requestApproval:
-            return L10n.text("ui.permissions_request_approval")
-        case .readOnly:
-            return L10n.text("ui.permissions_read_only")
-        case .autoApprove:
-            return L10n.text("ui.permissions_approval_for_me")
-        case .fullAccess:
-            return L10n.text("ui.permissions_full_access")
         }
     }
 
@@ -602,9 +750,24 @@ enum ComposerSendMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+struct ComposerModeResetEvent: Equatable {
+    let scope: ComposerDraftScopeKey
+    let revision: UInt64
+}
+
+struct ComposerDeliveryResetEvent: Equatable {
+    let scope: ComposerDraftScopeKey
+    let revision: UInt64
+}
+
 struct ComposerSendModeCache {
     private var storedScope: ComposerDraftScopeKey = .none
     private var storedMode: ComposerSendMode = .standard
+    private(set) var revision: UInt64 = 0
+
+    func modeForReappearance(of scope: ComposerDraftScopeKey) -> ComposerSendMode {
+        storedScope == scope ? storedMode : .standard
+    }
 
     func modeForScopeActivation(
         previousScope: ComposerDraftScopeKey,
@@ -625,13 +788,35 @@ struct ComposerSendModeCache {
     }
 
     mutating func save(_ mode: ComposerSendMode, for scope: ComposerDraftScopeKey) {
+        guard storedScope != scope || storedMode != mode else { return }
         storedScope = scope
         storedMode = mode
+        revision &+= 1
+    }
+
+    mutating func migrateScope(
+        from previousScope: ComposerDraftScopeKey,
+        to nextScope: ComposerDraftScopeKey,
+        mode: ComposerSendMode
+    ) {
+        guard storedScope == previousScope, storedMode == mode else {
+            save(mode, for: nextScope)
+            return
+        }
+        storedScope = nextScope
+    }
+
+    mutating func clearSubmittedModeIfUnchanged(revision: UInt64) -> ComposerDraftScopeKey? {
+        guard self.revision == revision else { return nil }
+        let scope = storedScope
+        save(.standard, for: scope)
+        return scope
     }
 
     mutating func removeAll() {
         storedScope = .none
         storedMode = .standard
+        revision &+= 1
     }
 }
 

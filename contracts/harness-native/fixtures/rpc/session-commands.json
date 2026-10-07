@@ -1,0 +1,108 @@
+{
+  "provenance": {
+    "level": "live-capture",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.1.5-rc.2",
+    "upstreamTag": "dsh-v0.1.5-rc.2",
+    "profile": "web",
+    "transport": "http://127.0.0.1 loopback, cookie session after GET /?token=",
+    "modelFixture": "@deepseek-ai/dsh-llm-mock-server (scriptable OpenAI-compatible SSE)",
+    "capturedAt": "2026-09-18T18:18:26.439Z"
+  },
+  "note": "create / selectModel / prompt / cancel 的真实请求与成功返回。参数一律包在形参名 request 之下。",
+  "observations": [
+    {
+      "label": "session/create.request",
+      "value": {
+        "request": {
+          "workspaceId": "h00-workspace-0001"
+        }
+      }
+    },
+    {
+      "label": "session/create.result",
+      "value": {
+        "sessionId": "h00-session-0001",
+        "agentPreset": "standard"
+      },
+      "note": "agentPreset 在装配了名册时出现。"
+    },
+    {
+      "label": "session/selectModel.request",
+      "value": {
+        "request": {
+          "sessionId": "h00-session-0001",
+          "provider": "h00-loopback",
+          "model": "h00-mock-model"
+        }
+      }
+    },
+    {
+      "label": "session/selectModel.result",
+      "value": {
+        "selected": {
+          "provider": "h00-loopback",
+          "model": "h00-mock-model"
+        }
+      }
+    },
+    {
+      "label": "session/prompt.request",
+      "value": {
+        "request": {
+          "requestId": "h00-request-0001",
+          "sessionId": "h00-session-0001",
+          "mode": "queue",
+          "content": [
+            {
+              "type": "text",
+              "text": "H00 回环正文"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "label": "session/prompt.result",
+      "value": {
+        "accepted": true
+      }
+    },
+    {
+      "label": "session/cancel.request",
+      "value": {
+        "request": {
+          "sessionId": "h00-session-0001"
+        }
+      }
+    },
+    {
+      "label": "session/cancel.result",
+      "value": {
+        "accepted": true
+      }
+    },
+    {
+      "label": "workspace/create.request",
+      "value": {
+        "request": {
+          "path": "/h00/workspace"
+        }
+      }
+    },
+    {
+      "label": "workspace/create.result",
+      "value": {
+        "workspace": {
+          "workspaceId": "h00-workspace-0001",
+          "path": "/h00/workspace",
+          "title": "h00-workspace",
+          "sessionIds": [],
+          "createdAt": 1789754664283,
+          "updatedAt": 1789754664283
+        },
+        "created": true
+      }
+    }
+  ]
+}

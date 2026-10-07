@@ -102,6 +102,8 @@ final class StaticNetworkPathStatusSource: NetworkPathStatusSource {
 protocol SessionStoreAPIClient {
     func projects() async throws -> [AgentProject]
     func modelOptions() async throws -> [CodexAppServerModelOption]
+    /// 发送准备只读取目标 Runtime；模型菜单仍使用无参数入口聚合全部目录。
+    func modelOptions(runtimeProvider: String) async throws -> [CodexAppServerModelOption]
     func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary]
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse
@@ -262,6 +264,11 @@ extension SessionStoreAPIClient {
     }
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         []
+    }
+
+    func modelOptions(runtimeProvider: String) async throws -> [CodexAppServerModelOption] {
+        // 单 Runtime 客户端及旧注入继续沿用原目录；生产多 Runtime 客户端覆盖为定向查询。
+        try await modelOptions()
     }
 
     func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary] {

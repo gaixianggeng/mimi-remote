@@ -94,8 +94,8 @@ final class ProtocolContractTests: XCTestCase {
         legacy.preservesThreadPermissionSettings = false
         legacy.runtimeProvider = "claude"
         let claude = legacy.sanitizedForRuntimePolicy()
-        XCTAssertEqual(claude.approvalPolicy, .onRequest)
-        XCTAssertEqual(claude.sandboxMode, .workspaceWrite)
+        XCTAssertEqual(claude.approvalPolicy, .never)
+        XCTAssertEqual(claude.sandboxMode, .dangerFullAccess)
     }
 
     func testVersionAndPairingResponsesDecodeOptionalTailscaleMetadata() throws {

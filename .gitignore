@@ -3,6 +3,7 @@
 # Local agent/workflow state kept out of public releases
 .claude/
 .codex/
+.workbuddy-ai/
 openspec/
 .local-archive/
 

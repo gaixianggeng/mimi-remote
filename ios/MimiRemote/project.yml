@@ -112,9 +112,10 @@ targets:
         "ENABLE_HARDENED_RUNTIME[sdk=macosx*]": "YES"
         # UI 文案统一由显式 L10n key 管理，关闭编译器自动提取，避免 Xcode 把技术字符串写回目录。
         SWIFT_EMIT_LOC_STRINGS: "NO"
-        # 1.2 已通过审核；本次仅更新商店名称与截图，使用 1.2.1 通道。
+        # 2.0.0 对应主机业务、会话状态与 Runtime 边界重构（gh-522）。
+        # build 号仍由 App Store Connect 预检分配，这里的静态值只是本地兜底。
         CURRENT_PROJECT_VERSION: "100098"
-        MARKETING_VERSION: "1.2.1"
+        MARKETING_VERSION: "2.0.0"
   MimiCarStatusWidgetExtension:
     type: app-extension
     platform: iOS
@@ -141,7 +142,7 @@ targets:
         SKIP_INSTALL: "YES"
         TARGETED_DEVICE_FAMILY: "1,2"
         CURRENT_PROJECT_VERSION: "100098"
-        MARKETING_VERSION: "1.2.1"
+        MARKETING_VERSION: "2.0.0"
         SWIFT_EMIT_LOC_STRINGS: "NO"
   # 通知服务扩展：推送展示前在设备上把「Codex 消息」改写成会话标题（gh-418）。
   # 只依赖 Foundation / CryptoKit / UserNotifications，共享的四个源文件必须能在
@@ -178,7 +179,7 @@ targets:
         SKIP_INSTALL: "YES"
         TARGETED_DEVICE_FAMILY: "1,2"
         CURRENT_PROJECT_VERSION: "100098"
-        MARKETING_VERSION: "1.2.1"
+        MARKETING_VERSION: "2.0.0"
         SWIFT_EMIT_LOC_STRINGS: "NO"
   MimiRemoteTests:
     type: bundle.unit-test

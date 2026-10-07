@@ -1,0 +1,141 @@
+name: 缺陷报告 / Bug report
+description: 报告能在受支持构建上复现的问题 / Report a problem reproducible on a supported build
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先确认支持范围：**iOS / iPadOS 18 或更高版本**的正式签名包，或来自 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest)、Homebrew、官方安装脚本的 Mac、Linux、Windows 组件。
+
+        iOS 16/17 回移分支，以及未签名 / TrollStore / 越狱构建**不在支持范围**，相关问题不进入修复排期。详见[支持说明](https://github.com/gaixianggeng/mimi-remote/blob/main/docs/support.md)。
+
+        ---
+
+        Please confirm the baseline first: signed **iOS/iPadOS 18 or later** builds, or Mac / Linux / Windows components from GitHub Releases, Homebrew, or the official install scripts. Back-ports and unsigned / TrollStore / jailbroken builds are **out of scope**.
+
+  - type: dropdown
+    id: baseline
+    attributes:
+      label: 构建与支持基线 / Build and support baseline
+      description: 请如实选择；最后一项表示该构建不在支持范围 / Answer honestly; the last option is out of scope
+      options:
+        - iOS / iPadOS App，18 或更高版本（App Store / TestFlight / 本仓库源码）/ iOS or iPadOS app, 18 or later
+        - Mac App 或 agentd（GitHub Releases / Homebrew / 本仓库源码）/ Mac app or agentd
+        - Linux 托盘、安装脚本或 Windows 安装包（GitHub Releases / 官方脚本）/ Linux tray, install scripts, or Windows installer
+        - 其他（回移分支、未签名 / TrollStore / 越狱构建、改动过的包）/ Other (back-port, unsigned, TrollStore, jailbroken, modified)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 受影响的组件 / Affected component
+      description: 跨组件的问题选择最直接出问题的一项 / Pick the component that fails first
+      options:
+        - iOS / iPadOS App
+        - Mac App（含 App 托管的 agentd）/ Mac app (including app-managed agentd)
+        - agentd、CLI 与网关 / agentd, CLI, and gateway
+        - Linux 托盘或安装脚本 / Linux tray or install scripts
+        - Windows 安装器 / Windows installer
+        - 发布与打包 / Release and packaging
+        - 不确定 / Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本与获取方式 / Version and how it was obtained
+      description: 受影响组件的版本号，以及安装来源 / Version of the affected component and where it came from
+      placeholder: 例如 Mimi Remote 0.3.16（App Store）、agentd 0.3.16（GitHub Releases）
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: 设备与系统版本 / Device and OS version
+      description: "移动端填机型与 iOS / iPadOS 版本，宿主端填操作系统、版本与架构 / Mobile fills the model and iOS or iPadOS version; host fills the OS, version, and architecture"
+      placeholder: 例如 iPad Pro 13-inch (M5) / iPadOS 26.1，或 macOS 26.1（arm64）
+    validations:
+      required: true
+
+  - type: input
+    id: runtime
+    attributes:
+      label: 运行时与版本 / Runtime and version
+      description: Codex、Claude 或 DeepSeek 会话请注明；与本问题无关时写「不适用」/ Note the runtime for Codex, Claude, or DeepSeek sessions; write N/A when unrelated
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      description: 从启动组件开始的最小步骤 / Minimal steps starting from launching the component
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果 / Actual result
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果 / Expected result
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准 / Acceptance criteria
+      description: 逐条列出「怎样算修好了」，可以只写你的判断，归档时维护者会补齐 / One checkable item per line; a rough list is fine
+      placeholder: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+
+  - type: textarea
+    id: boundary
+    attributes:
+      label: 实现边界 / Scope boundary
+      description: 只应该修什么、不要顺手改什么；不确定可写「待确认」/ What should be fixed, and what should be left alone
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reproducibility
+    attributes:
+      label: 可复现性 / Reproducibility
+      options:
+        - 必现 / Always
+        - 偶发但可复现 / Intermittent but reproducible
+        - 只出现一次 / Happened once
+        - 不确定 / Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 脱敏证据 / Sanitized evidence
+      description: 可粘贴脱敏日志或说明截图内容；不要提交完整日志、Token、真实 Tailnet 地址、私有路径或会话标识 / Sanitized logs or screenshots only
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: 脱敏确认 / Redaction
+      options:
+        - label: 我已移除 Token、账号、用户数据、本机路径、真实 IP、设备与会话标识以及私有链接 / I removed tokens, account data, user data, local paths, real IPs, device and session identifiers, and private links
+          required: true

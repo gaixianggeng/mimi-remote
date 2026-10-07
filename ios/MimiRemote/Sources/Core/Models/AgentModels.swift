@@ -123,10 +123,6 @@ struct AgentSession: Identifiable, Codable, Hashable {
         return branch
     }
 
-    var isAppServerHistory: Bool {
-        status == "history"
-    }
-
     /// 新建页在首条消息前只保留本地草稿，不提前创建没有 rollout 的远端 thread。
     var isLocalDraft: Bool {
         source == "local" && status == "draft" && resumeID == nil
@@ -1197,7 +1193,15 @@ final class MessageRenderPlanCache {
             return range.upperBound > range.lowerBound && range.upperBound <= safeTailStart
         }
         let tail = String(decoding: content.utf8.dropFirst(safeTailStart), as: UTF8.self)
+        HostSwitchSignpost.begin(
+            "conversation_markdown_parse",
+            metadata: "mode=incremental bytes=\(tail.utf8.count)"
+        )
         let parsedTail = MarkdownParser.shared.parse(tail, baseByteOffset: safeTailStart)
+        HostSwitchSignpost.end(
+            "conversation_markdown_parse",
+            metadata: "mode=incremental blocks=\(parsedTail.blocks.count)"
+        )
         let mergedBlocks = renumber(reusableBlocks + parsedTail.blocks)
 
         return MessageRenderPlan(
@@ -1215,7 +1219,15 @@ final class MessageRenderPlanCache {
 #if DEBUG
         markdownParseInvocationCountForTesting += 1
 #endif
+        HostSwitchSignpost.begin(
+            "conversation_markdown_parse",
+            metadata: "mode=full bytes=\(contentByteCount)"
+        )
         let parsed = MarkdownParser.shared.parse(content)
+        HostSwitchSignpost.end(
+            "conversation_markdown_parse",
+            metadata: "mode=full blocks=\(parsed.blocks.count)"
+        )
         return MessageRenderPlan(
             messageKey: messageKey,
             content: content,
@@ -1710,6 +1722,8 @@ enum MessageRole: String, Codable, Hashable {
 enum MessageKind: String, Codable, Hashable {
     case message
     case commentary
+    // Harness 注入的上下文（工作区指令/技能目录/运行时快照等），system 侧的折叠内容。
+    case context = "context"
     case plan
     case reasoningSummary = "reasoning_summary"
     case commandSummary = "command_summary"
@@ -1742,6 +1756,8 @@ enum ConversationActivityCategory: String, Codable, Hashable {
     case editFile = "edit_file"
     case toolCall = "tool_call"
     case error
+    // Harness 注入上下文，非工具/思考类，展示为 system 侧可折叠条目。
+    case context = "context"
 }
 
 /// 命令在主时间线中的展示语义。协议能明确给出只读动作时展示为探索，
@@ -1936,15 +1952,16 @@ struct ConversationActivityPayload: Codable, Hashable {
             let status = Self.firstString(in: item, keys: ["status"])?.trimmedNonEmpty ?? "modified"
             let summary = filePaths.first.map(Self.shortPath) ?? L10n.text("ui.workspace")
             let title = filePaths.count > 1 ? L10n.plural("ui.files_modified_count", count: filePaths.count) : L10n.format("ui.modify_value", summary)
+            let output = ConversationActivityDetailText.output(from: item)
             self.init(
                 category: .editFile,
                 displayTitle: title,
                 subtitle: status,
                 status: status,
                 filePaths: filePaths,
-                outputPreview: historyOutputPreview,
-                outputDigest: historyOutputID.map(Self.stableDigest),
-                outputByteCount: historyOutputByteCount,
+                outputPreview: (historyOutputPreview ?? output).map { Self.truncatedText($0, limit: Self.outputPreviewLimit) },
+                outputDigest: historyOutputID.map(Self.stableDigest) ?? output.map(Self.stableDigest),
+                outputByteCount: historyOutputByteCount ?? output?.utf8.count,
                 historyOutputID: historyOutputID
             )
 
@@ -1952,15 +1969,16 @@ struct ConversationActivityPayload: Codable, Hashable {
             let identifier = Self.toolIdentifier(from: item, type: type)
             let presentation = Self.toolPresentation(from: item, type: type, identifier: identifier)
             let status = Self.firstString(in: item, keys: ["status"])?.trimmedNonEmpty
+            let output = ConversationActivityDetailText.output(from: item)
             self.init(
                 category: .toolCall,
                 displayTitle: presentation.title,
                 subtitle: presentation.subtitle,
                 status: status,
                 toolName: identifier,
-                outputPreview: historyOutputPreview,
-                outputDigest: historyOutputID.map(Self.stableDigest),
-                outputByteCount: historyOutputByteCount,
+                outputPreview: (historyOutputPreview ?? output).map { Self.truncatedText($0, limit: Self.outputPreviewLimit) },
+                outputDigest: historyOutputID.map(Self.stableDigest) ?? output.map(Self.stableDigest),
+                outputByteCount: historyOutputByteCount ?? output?.utf8.count,
                 historyOutputID: historyOutputID,
                 toolPresentationKind: presentation.kind
             )
@@ -1982,6 +2000,8 @@ struct ConversationActivityPayload: Codable, Hashable {
             return .fileChangeSummary
         case .error:
             return .error
+        case .context:
+            return .context
         }
     }
 
@@ -1996,6 +2016,8 @@ struct ConversationActivityPayload: Codable, Hashable {
         case .toolCall:
             return toolSummaryText
         case .error:
+            return subtitle ?? displayTitle
+        case .context:
             return subtitle ?? displayTitle
         }
     }
@@ -2324,6 +2346,15 @@ struct ConversationActivityPayload: Codable, Hashable {
         let tool = firstString(in: item, keys: ["tool", "name"])?.trimmedNonEmpty
         let normalizedNamespace = normalizedToolComponent(namespace)
         let normalizedTool = normalizedToolComponent(tool)
+
+        if normalizedNamespace == "claude" {
+            if normalizedTool == "websearch" {
+                return ToolPresentation(title: L10n.text("ui.web_search"), subtitle: nil, kind: .generic)
+            }
+            if ["taskcreate", "taskupdate", "todowrite"].contains(normalizedTool ?? "") {
+                return ToolPresentation(title: L10n.text("ui.update_plan"), subtitle: nil, kind: .generic)
+            }
+        }
 
         // collabAgentToolCall 与 collaboration namespace 表示真实子 Agent；
         // create_thread 等 Codex App 工具表示独立任务，两者必须先于通用工具映射判断。

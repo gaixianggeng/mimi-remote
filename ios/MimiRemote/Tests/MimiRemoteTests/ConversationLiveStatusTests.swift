@@ -204,17 +204,53 @@ final class ConversationLiveStatusTests: XCTestCase {
     }
 
     func testGlyphHoldsStaticFrameWhenNotAnimating() {
-        let first = ConversationLiveStatusGlyph.rayLengthFraction(index: 0, time: 10, animates: false)
-        let later = ConversationLiveStatusGlyph.rayLengthFraction(index: 0, time: 12.3, animates: false)
-        XCTAssertEqual(first, later)
-        XCTAssertEqual(
-            ConversationLiveStatusGlyph.rotationAngle(time: 3, animates: false),
-            ConversationLiveStatusGlyph.rotationAngle(time: 7, animates: false)
-        )
-        let animated = (0..<ConversationLiveStatusGlyph.rayCount).map {
-            ConversationLiveStatusGlyph.rayLengthFraction(index: $0, time: 10, animates: true)
+        for index in 0..<ConversationLiveStatusGlyph.dotCount {
+            let first = ConversationLiveStatusGlyph.dot(index: index, time: 10, animates: false)
+            let later = ConversationLiveStatusGlyph.dot(index: index, time: 12.3, animates: false)
+            XCTAssertEqual(first, later)
+            XCTAssertGreaterThan(first.radius, 0, "暂停时保留完整四点图标")
         }
-        XCTAssertTrue(animated.allSatisfy { (0.35...1).contains($0) })
+    }
+
+    func testGlyphChangesFormationAndStaysInsideItsFixedBounds() {
+        typealias Glyph = ConversationLiveStatusGlyph
+        XCTAssertNotEqual(
+            Glyph.dot(index: 0, time: 0, animates: true),
+            Glyph.dot(index: 0, time: 1.2, animates: true)
+        )
+        XCTAssertEqual(Glyph.dot(index: 3, time: 9, animates: true).radius, 0, accuracy: 1e-10)
+        for time in stride(from: 0.0, through: Glyph.loopDuration, by: 1.0 / 30) {
+            for index in 0..<Glyph.dotCount {
+                let dot = Glyph.dot(index: index, time: time, animates: true)
+                XCTAssertTrue(dot.x.isFinite && dot.y.isFinite && dot.radius.isFinite)
+                XCTAssertGreaterThanOrEqual(dot.radius, 0)
+                XCTAssertLessThanOrEqual(abs(dot.x) + dot.radius, 0.5)
+                XCTAssertLessThanOrEqual(abs(dot.y) + dot.radius, 0.5)
+            }
+        }
+    }
+
+    func testGlyphTransitionsAndLoopHaveNoPositionOrSizeJump() {
+        typealias Glyph = ConversationLiveStatusGlyph
+        let boundaries = [
+            Glyph.formationDuration,
+            Glyph.formationDuration + Glyph.transitionDuration,
+            Glyph.loopDuration - Glyph.transitionDuration,
+            Glyph.loopDuration
+        ]
+        for boundary in boundaries {
+            for index in 0..<Glyph.dotCount {
+                let before = Glyph.dot(index: index, time: boundary - 1e-6, animates: true)
+                let after = Glyph.dot(index: index, time: boundary + 1e-6, animates: true)
+                XCTAssertEqual(before.x, after.x, accuracy: 1e-5)
+                XCTAssertEqual(before.y, after.y, accuracy: 1e-5)
+                XCTAssertEqual(before.radius, after.radius, accuracy: 1e-5)
+                let nextLoop = Glyph.dot(index: index, time: boundary + Glyph.loopDuration + 1e-6, animates: true)
+                XCTAssertEqual(after.x, nextLoop.x, accuracy: 1e-5)
+                XCTAssertEqual(after.y, nextLoop.y, accuracy: 1e-5)
+                XCTAssertEqual(after.radius, nextLoop.radius, accuracy: 1e-5)
+            }
+        }
     }
 
     // MARK: - Fixtures

@@ -13,10 +13,10 @@
 - 内嵌 Go `agentd` 与 Rust `alleycat-claude-bridge`：构建阶段按目标架构编译并使用稳定 identifier 分别签名。
 - 单一 `HostStore`：统一管理服务 owner、迁移、就绪、错误和监控状态。
 - 小型 Client：命令执行、健康检查、ServiceManagement、Homebrew 和日志相互独立，便于测试与复用。
-- 自动网络：优先使用 Tailscale；未安装或不可用时启用同一局域网直连，并返回真实 LAN 地址而不是本机回环地址。
+- 独立网络控制：Tailscale、Tailcat 与局域网可以分别启用；配对只展示已经启用且本机地址可用的通道，不会为了生成二维码静默开启局域网。
 - 轻量监控：每 10 秒只请求 localhost `/healthz`，每 5 分钟才执行一次完整状态刷新。
 
-App 不读取或展示长期 Token。设置和配对只调用 `agentd ... --qr-only --json`，界面只接收短期配对票据。Claude Runtime 仍默认关闭；当前菜单栏设置尚未提供 Runtime 开关，启用时必须在私有备份后用 JSON 解析器只修改配置中的 `claude` 字段。
+App 不读取或展示长期 Token。设置和配对只调用 `agentd ... --qr-only --json`，界面只接收短期配对票据。菜单栏和设置按“AI 编程助手”与“连接方式”分组管理 Codex、Claude Code、Tailscale、Tailcat 和局域网；配置通过内嵌 `agentd` 原子更新，服务重载失败时按修改前快照回滚。
 
 ## 实现
 

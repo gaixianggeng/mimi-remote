@@ -2,8 +2,10 @@ import SwiftUI
 import UIKit
 
 struct MarkdownBlockView: View {
+    @EnvironmentObject private var themeStore: ThemeStore
     let block: MarkdownBlock
     let style: MarkdownStyle
+    var selectable = false
 
     private enum ListMetrics {
         // 缩短 marker 占位和 marker 到正文的间距，减少多层列表的 leading；
@@ -24,7 +26,7 @@ struct MarkdownBlockView: View {
         case let .paragraph(inline):
             inlineText(inline)
         case let .heading(level, inline):
-            inlineText(inline, font: style.headingFont(level: level))
+            inlineText(inline, font: style.headingFont(level: level), headingLevel: level)
                 .padding(.top, level <= 2 ? 4 : 2)
         case let .bulletList(items, tight):
             listStack(items: items, tight: tight) { _, item in
@@ -54,7 +56,11 @@ struct MarkdownBlockView: View {
         case let .blockquote(blocks):
             blockquote(blocks)
         case let .codeBlock(language, code):
-            codeBlock(language: language, code: code)
+            if selectable {
+                MessageSelectableText(document: .markdown([block], style: textStyle), style: textStyle)
+            } else {
+                codeBlock(language: language, code: code)
+            }
         case let .proposedPlan(blocks, isComplete):
             proposedPlan(blocks: blocks, isComplete: isComplete)
         case let .image(reference):
@@ -72,19 +78,32 @@ struct MarkdownBlockView: View {
     }
 
     @ViewBuilder
-    private func inlineText(_ inline: MarkdownInlineText, font: Font? = nil, expand: Bool = false) -> some View {
-        let text = Text(styledInlineText(inline))
-            .font(font ?? style.bodyFont)
-            .foregroundStyle(style.textColor)
-            .tint(style.linkColor)
-            .lineSpacing(style.textLineSpacing)
-            .fixedSize(horizontal: false, vertical: true)
-
-        if expand {
-            text.frame(maxWidth: .infinity, alignment: .leading)
+    private func inlineText(_ inline: MarkdownInlineText, font: Font? = nil, expand: Bool = false, headingLevel: Int? = nil, bold: Bool = false) -> some View {
+        if selectable {
+            let nativeFont = headingLevel.map { textStyle.headingFont(level: $0) } ?? textStyle.font(weight: bold ? .semibold : .regular)
+            MessageSelectableText(
+                document: MessageTextDocument(text: textStyle.inline(inline, font: nativeFont), codeBlocks: []),
+                style: textStyle,
+                fillsWidth: expand
+            )
         } else {
-            text
+            let text = Text(styledInlineText(inline))
+                .font(font ?? style.bodyFont)
+                .foregroundStyle(style.textColor)
+                .tint(style.linkColor)
+                .lineSpacing(style.textLineSpacing)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if expand {
+                text.frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                text
+            }
         }
+    }
+
+    private var textStyle: MessageTextStyle {
+        MessageTextStyle(markdown: style, fontPreset: themeStore.uiFontPreset, codeFontPreset: themeStore.codeFontPreset)
     }
 
     private func styledInlineText(_ inline: MarkdownInlineText) -> AttributedString {
@@ -93,6 +112,11 @@ struct MarkdownBlockView: View {
         // 的字体，才能让行内代码与 fenced code 一样从原先的 14pt 提升到 15pt。
         for run in attributed.runs where run.inlinePresentationIntent?.contains(.code) == true {
             attributed[run.range].font = style.codeFont
+        }
+        if style.underlinesLinks {
+            for run in attributed.runs where run.link != nil {
+                attributed[run.range].underlineStyle = .single
+            }
         }
         return attributed
     }
@@ -108,7 +132,7 @@ struct MarkdownBlockView: View {
                     marker(index, item)
                     VStack(alignment: .leading, spacing: tight ? 3 : style.blockSpacing) {
                         ForEach(item.blocks) { child in
-                            MarkdownBlockView(block: child, style: style)
+                            MarkdownBlockView(block: child, style: style, selectable: selectable)
                         }
                     }
                 }
@@ -124,7 +148,7 @@ struct MarkdownBlockView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(item.blocks) { child in
-                            MarkdownBlockView(block: child, style: style)
+                            MarkdownBlockView(block: child, style: style, selectable: selectable)
                         }
                     }
                 }
@@ -145,9 +169,13 @@ struct MarkdownBlockView: View {
                 .fill(style.quoteBar)
                 .frame(width: 3)
 
-            VStack(alignment: .leading, spacing: style.blockSpacing) {
-                ForEach(blocks) { child in
-                    MarkdownBlockView(block: child, style: style)
+            if selectable {
+                MessageMarkdownBody(blocks: blocks, style: style)
+            } else {
+                VStack(alignment: .leading, spacing: style.blockSpacing) {
+                    ForEach(blocks) { child in
+                        MarkdownBlockView(block: child, style: style)
+                    }
                 }
             }
         }
@@ -171,6 +199,8 @@ struct MarkdownBlockView: View {
                 } label: {
                     Image(systemName: "doc.on.doc")
                         .font(.caption.weight(.semibold))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(style.codeForeground.opacity(0.72))
@@ -208,9 +238,13 @@ struct MarkdownBlockView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: style.blockSpacing) {
-                ForEach(blocks) { child in
-                    MarkdownBlockView(block: child, style: style)
+            if selectable {
+                MessageMarkdownBody(blocks: blocks, style: style)
+            } else {
+                VStack(alignment: .leading, spacing: style.blockSpacing) {
+                    ForEach(blocks) { child in
+                        MarkdownBlockView(block: child, style: style)
+                    }
                 }
             }
         }
@@ -232,7 +266,7 @@ struct MarkdownBlockView: View {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 GridRow {
                     ForEach(Array(header.enumerated()), id: \.offset) { index, cell in
-                        inlineText(cell, font: style.bodyFont.weight(.semibold), expand: true)
+                        inlineText(cell, font: style.bodyFont.weight(.semibold), expand: true, bold: true)
                             .frame(minWidth: 96, alignment: alignment(for: alignments, index: index))
                     }
                 }

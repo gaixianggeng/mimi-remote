@@ -63,7 +63,12 @@ struct ComposerView: View {
     @AppStorage("agentd.developerMode") var developerModeEnabled = false
     @AppStorage(ComposerPermissionMode.defaultStorageKey) var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.resolved(rawValue: nil).rawValue
+    @AppStorage(RunningTurnDelivery.defaultStorageKey) var defaultRunningTurnDeliveryID = RunningTurnDelivery.fallbackDefault.rawValue
     @State var guidedFollowUpEnabled = false
+    @State var composerInstanceID = UUID()
+    @State var composerScopeRevision: UInt64 = 0
+    @State var followUpDeliveryChoiceRevision: UInt64 = 0
+    @State var sendModeChoiceRevision: UInt64 = 0
     @State var editingQueuedTurn: QueuedTurnEditorDraft?
     @State var showsQueuedTurnManager = false
     @State var isSelectingVoiceDraftText = false
@@ -286,8 +291,8 @@ struct ComposerView: View {
             guard activeComposerDraftScope == currentComposerDraftScope else {
                 return
             }
+            enforceComposerTurnSettingsPolicy()
             clampModelSelectionToSelectedSessionRuntime()
-            clampPermissionSelectionToSelectedSessionRuntime()
         }
         .onChange(of: modelOptionsForMenu) { _, _ in
             // model/list 刷新后能力元数据可能变化；立即清理当前模型已不支持的推理强度。
@@ -298,10 +303,29 @@ struct ComposerView: View {
         }
 
         return observedContent
-        .onChange(of: canUseGuidedFollowUp) { _, canGuide in
-            if !canGuide {
-                guidedFollowUpEnabled = false
-            }
+        .onChange(of: runningTurnDeliveryContext) { _, context in
+            // 引导只在当前 turn 内有效。即使可用性始终为 true，直接换到
+            // 下一条活动回复时也要丢弃上一条回复的一次性选择。
+            resetFollowUpDeliveryToDefault(canGuide: context.canGuide)
+        }
+        .onChange(of: defaultRunningTurnDeliveryID) { _, _ in
+            // 设置页改完默认发送方式，当前打开的输入区立即跟上，不必先切走再切回。
+            resetFollowUpDeliveryToDefault()
+        }
+        .onChange(of: sessionStore.appStore.activeHostScope) { _, _ in
+            resetFollowUpDeliveryToDefault()
+        }
+        .onChange(of: sessionStore.latestCompletedComposerModeReset) { _, event in
+            guard let event,
+                  sessionStore.activeComposerInstanceID == composerInstanceID,
+                  activeComposerDraftScope == event.scope,
+                  currentComposerDraftScope == event.scope else { return }
+            composerState.setSendMode(
+                sessionStore.composerSendModeCache.modeForReappearance(of: event.scope)
+            )
+        }
+        .onChange(of: sessionStore.latestCompletedComposerDeliveryReset) { _, event in
+            synchronizeCompletedComposerDeliveryReset(event)
         }
         .onChange(of: sessionStore.latestSatisfiedPermissionTurnBoundary) { _, boundary in
             guard let boundary,
@@ -314,10 +338,8 @@ struct ComposerView: View {
                 for: activeComposerDraftScope
             )
         }
-        .onChange(of: sessionStore.selectedSessionID) { _, _ in
-            // 引导是只对当前正在生成的回复生效的一次性选择。切换会话后恢复安全的
-            // 默认排队，避免把上一条会话的发送意图意外带到另一条运行中会话。
-            guidedFollowUpEnabled = false
+        .onChange(of: sessionStore.selectedSessionID) { previousID, nextID in
+            synchronizeFollowUpDeliveryForSelectionChange(previousID: previousID, nextID: nextID)
         }
         .onChange(of: sessionStore.selectedThreadGoal) { previousGoal, goal in
             syncGoalStatusBarExpansion(from: previousGoal, to: goal)
@@ -326,17 +348,24 @@ struct ComposerView: View {
             await autoDismissVoiceErrorIfNeeded(voiceInput.errorMessage)
         }
         .onAppear {
+            sessionStore.activeComposerInstanceID = composerInstanceID
             switchComposerDraftScope(to: currentComposerDraftScope)
+            restoreFollowUpDeliveryForReappearance()
+            composerState.setSendMode(
+                sessionStore.composerSendModeCache.modeForReappearance(of: activeComposerDraftScope)
+            )
             enforceComposerTurnSettingsPolicy()
             restorePendingUserInputFormStateFromCache()
             synchronizePendingUserInputPresentation(previous: nil, current: pendingUserInputSelectionIdentity)
             clampModelSelectionToSelectedSessionRuntime()
-            clampPermissionSelectionToSelectedSessionRuntime()
         }
         .task {
             await prepareComposer()
         }
         .onDisappear {
+            if sessionStore.activeComposerInstanceID == composerInstanceID {
+                sessionStore.activeComposerInstanceID = nil
+            }
             synchronizeComposerTextBeforeDraftScopeChange()
             sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
             sessionStore.saveComposerModelSelection(
@@ -394,6 +423,7 @@ struct ComposerView: View {
             return submitGoalDraft()
         }
         let submittedDraftScope = activeComposerDraftScope
+        let selectionCheckpoint = transientSelectionCheckpoint
         // 点击时就固定目标；Task 开始执行前，返回手势可能已经清空当前会话。
         let submissionContext = sessionStore.captureTurnSubmissionContext()
         let options = preparedTurnOptionsForSubmit()
@@ -416,8 +446,7 @@ struct ComposerView: View {
             if !accepted {
                 restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
             } else {
-                guidedFollowUpEnabled = false
-                resetComposerSendModeAfterSubmit()
+                restoreTransientSelectionsAfterSubmit(selectionCheckpoint)
             }
         }
         return true
@@ -430,6 +459,7 @@ struct ComposerView: View {
         // 防止 app-server 沿用上一轮规划协作状态。
         options.collaborationMode = .default
         let submittedDraftScope = activeComposerDraftScope
+        let selectionCheckpoint = transientSelectionCheckpoint
         let submissionContext = sessionStore.captureTurnSubmissionContext()
         guard let submitted = composerState.takeDraftForSubmit(
             isLoading: sessionStore.isLoading || sessionStore.isUpdatingThreadGoal,
@@ -460,8 +490,7 @@ struct ComposerView: View {
             if !accepted {
                 restoreSubmittedDraft(submitted, originalScope: submittedDraftScope)
             } else {
-                guidedFollowUpEnabled = false
-                resetComposerSendModeAfterSubmit()
+                restoreTransientSelectionsAfterSubmit(selectionCheckpoint)
             }
         }
         return true
@@ -501,6 +530,10 @@ struct ComposerView: View {
     }
 
     func enforceComposerTurnSettingsPolicy() {
+        if !RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+            // Harness 不消费 collaboration/goal 参数；恢复旧草稿时必须回到普通发送。
+            setSendMode(.standard)
+        }
         guard !composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
             return
         }
@@ -542,14 +575,28 @@ struct ComposerView: View {
 
         // 先切 scope 再恢复，避免 restore 触发的 onChange 把新会话草稿误写回旧 scope。
         activeComposerDraftScope = nextScope
+        if !isOptimisticHandoff {
+            composerScopeRevision &+= 1
+        }
         composerState.setSendMode(restoredSendMode)
-        persistComposerSendMode(restoredSendMode, for: nextScope)
+        if isOptimisticHandoff {
+            sessionStore.composerSendModeCache.migrateScope(
+                from: previousScope, to: nextScope, mode: restoredSendMode
+            )
+            sessionStore.composerDeliverySelectionCache.migrateScope(from: previousScope, to: nextScope)
+        } else {
+            persistComposerSendMode(restoredSendMode, for: nextScope)
+        }
         composerState.restoreDraftSnapshot(sessionStore.composerDraft(for: nextScope))
         restoreComposerModelSelection(for: nextScope)
         restoreComposerPermissionSelection(for: nextScope)
         clampModelSelectionToSelectedSessionRuntime()
         composerTextExternalRevision += 1
-        guidedFollowUpEnabled = false
+        if previousScope == .none || isOptimisticHandoff {
+            restoreFollowUpDeliveryForReappearance()
+        } else {
+            resetFollowUpDeliveryToDefault()
+        }
         measuredComposerTextHeight = 0
         isComposerTextComposing = false
         // iPad 的收起是用户对当前会话输入画布的显式选择；切会话时不自动改写。
@@ -565,7 +612,11 @@ struct ComposerView: View {
         else {
             return false
         }
-        return previousSessionID.hasPrefix("local:") && !nextSessionID.hasPrefix("local:")
+        guard previousSessionID.hasPrefix("local:"),
+              !nextSessionID.hasPrefix("local:"),
+              let commit = sessionStore.lastSelectionCommit,
+              case .identityReplacement(let replacedID) = commit.reason else { return false }
+        return replacedID == previousSessionID && commit.sessionID == nextSessionID
     }
 
     func persistComposerSendMode(_ mode: ComposerSendMode, for scope: ComposerDraftScopeKey) {
@@ -586,19 +637,12 @@ struct ComposerView: View {
     }
 
     func restoreComposerPermissionSelection(for scope: ComposerDraftScopeKey) {
-        if let snapshot = sessionStore.composerPermissionSelection(for: scope) {
-            composerState.restorePermissionSelectionSnapshot(snapshot)
-        } else if case .session(let sessionID) = scope,
-                  let boundary = sessionStore.latestPendingPermissionTurnBoundary(for: sessionID) {
-            // 重启后恢复最后一次提交的选择；FIFO 仍由 SessionStore 从第一条边界开始推进。
-            composerState.restorePermissionSelectionSnapshot(boundary.permissionSelection)
-        } else if case .session(let sessionID) = scope,
-                  !sessionID.hasPrefix("local:"),
-                  selectedSessionRuntimeProviderForModelMenu != "claude" {
-            composerState.preserveThreadPermissionSettings()
-        } else {
-            applyDefaultPermissionMode()
-        }
+        let snapshot = sessionStore.restoredComposerPermissionSelection(
+            for: scope,
+            runtimeProvider: selectedSessionRuntimeProviderForModelMenu,
+            defaultMode: ComposerPermissionMode.stored(defaultPermissionModeID)
+        )
+        composerState.restorePermissionSelectionSnapshot(snapshot)
         sessionStore.saveComposerPermissionSelection(
             composerState.permissionSelectionSnapshot(),
             for: scope
@@ -679,7 +723,8 @@ struct ComposerView: View {
         }
         return session.isRunning &&
             composerState.sendMode == .standard &&
-            sessionStore.canControlSession(session)
+            sessionStore.canControlSession(session) &&
+            !RuntimeFeatureSupport.isDeepSeek(composerRuntimeProvider)
     }
 
     var canUseGuidedFollowUp: Bool {
@@ -688,6 +733,13 @@ struct ComposerView: View {
             && session.activeTurnID != nil
             && !composerState.permissionSelectionRequiresNewTurn
             && !sessionStore.hasPendingPermissionTurnBoundaryForSelectedSession
+    }
+
+    var runningTurnDeliveryContext: RunningTurnDeliveryContext {
+        RunningTurnDeliveryContext(
+            turnID: sessionStore.selectedSession?.activeTurnID,
+            canGuide: canUseGuidedFollowUp
+        )
     }
 
     var runningTurnDeliveryForSubmit: RunningTurnDelivery {
@@ -1415,10 +1467,12 @@ struct ComposerView: View {
         Menu {
             if composerTurnSettingsPolicy == .unavailable {
                 Section {
-                    Button(action: {}) {
-                        Label(L10n.text("ui.planning_mode"), systemImage: "list.clipboard")
+                    if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+                        Button(action: {}) {
+                            Label(L10n.text("ui.planning_mode"), systemImage: "list.clipboard")
+                        }
+                        .disabled(true)
                     }
-                    .disabled(true)
 
                     Text(ComposerTurnSettingsPolicy.unavailableMenuNotice)
                 }
@@ -1427,22 +1481,26 @@ struct ComposerView: View {
             if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
                 runSettingsMenu
 
-                Divider()
+                if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+                    Divider()
 
-                Button {
-                    setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
-                } label: {
-                    Label(composerState.isPlanModeSelected ? L10n.text("ui.turn_off_planning_mode") : L10n.text("ui.planning_mode"), systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
+                    Button {
+                        setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
+                    } label: {
+                        Label(composerState.isPlanModeSelected ? L10n.text("ui.turn_off_planning_mode") : L10n.text("ui.planning_mode"), systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
+                    }
+                    .accessibilityIdentifier("composer.mode.plan")
                 }
-                .accessibilityIdentifier("composer.mode.plan")
             }
 
-            Button {
-                setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
-            } label: {
-                Label(composerState.isGoalModeSelected ? L10n.text("ui.close_target_task") : L10n.text("ui.target_task"), systemImage: composerState.isGoalModeSelected ? "checkmark" : "target")
+            if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+                Button {
+                    setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
+                } label: {
+                    Label(composerState.isGoalModeSelected ? L10n.text("ui.close_target_task") : L10n.text("ui.target_task"), systemImage: composerState.isGoalModeSelected ? "checkmark" : "target")
+                }
+                .accessibilityIdentifier("composer.mode.goal")
             }
-            .accessibilityIdentifier("composer.mode.goal")
 
             if foldsRunningFollowUpDeliveryIntoOptions {
                 Divider()
@@ -1520,10 +1578,13 @@ struct ComposerView: View {
             hiddenKeyboardShortcut(L10n.text("ui.open_the_references_panel"), key: "k", modifiers: [.command, .shift]) {
                 showsAddContentPanel = true
             }
-            hiddenKeyboardShortcut(L10n.text("ui.switch_target_mission_mode"), key: "g", modifiers: [.command, .shift]) {
-                setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
+            if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+                hiddenKeyboardShortcut(L10n.text("ui.switch_target_mission_mode"), key: "g", modifiers: [.command, .shift]) {
+                    setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
+                }
             }
-            if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
+            if composerTurnSettingsPolicy.allowsTurnSettingsEditing,
+               RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
                 hiddenKeyboardShortcut(L10n.text("ui.switch_planning_mode"), key: "p", modifiers: [.command, .shift]) {
                     setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
                 }
@@ -1594,8 +1655,11 @@ struct ComposerView: View {
     }
 
     var enabledSkillShortcuts: [SkillCapability] {
+        guard RuntimeFeatureSupport.supportsSkills(for: composerRuntimeProvider) else {
+            return []
+        }
         // 菜单直接消费 agentd capabilities，避免写死技能短语；排序后截断，保证菜单稳定且不拖慢 body。
-        (sessionStore.capabilityList?.skills ?? [])
+        return (sessionStore.capabilityList?.skills ?? [])
             .filter(\.enabled)
             .sorted { lhs, rhs in
                 lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
@@ -1603,7 +1667,10 @@ struct ComposerView: View {
     }
 
     var installedPluginShortcuts: [CodexPluginCapability] {
-        (sessionStore.capabilityList?.plugins ?? [])
+        guard RuntimeFeatureSupport.supportsSkills(for: composerRuntimeProvider) else {
+            return []
+        }
+        return (sessionStore.capabilityList?.plugins ?? [])
             .sorted { lhs, rhs in
                 if lhs.enabled != rhs.enabled {
                     return lhs.enabled && !rhs.enabled
@@ -1647,8 +1714,16 @@ struct ComposerView: View {
     }
 
     func setSendMode(_ mode: ComposerSendMode) {
+        guard mode == .standard
+            || RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider)
+        else {
+            return
+        }
         guard mode != .plan || composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
             return
+        }
+        if composerState.sendMode != mode {
+            sendModeChoiceRevision &+= 1
         }
         composerState.setSendMode(mode)
         let scope = activeComposerDraftScope == .none ? currentComposerDraftScope : activeComposerDraftScope
@@ -1687,12 +1762,12 @@ struct ComposerView: View {
                 Button {
                     selectFollowUpDelivery(guided: false)
                 } label: {
-                    Label(L10n.text("ui.queue_default"), systemImage: isGuidedSelected ? "clock" : "checkmark")
+                    Label(followUpDeliveryMenuTitle(.queued, isGuidedAvailable: isGuidedAvailable), systemImage: isGuidedSelected ? "clock" : "checkmark")
                 }
                 Button {
                     selectFollowUpDelivery(guided: true)
                 } label: {
-                    Label(isGuidedAvailable ? L10n.text("ui.lead_current_reply") : L10n.text("ui.guide_current_reply_no_active_round_currently"), systemImage: isGuidedSelected ? "checkmark" : "text.bubble")
+                    Label(followUpDeliveryMenuTitle(.guided, isGuidedAvailable: isGuidedAvailable), systemImage: isGuidedSelected ? "checkmark" : "text.bubble")
                 }
                 .disabled(!isGuidedAvailable)
             }
@@ -1745,6 +1820,11 @@ struct ComposerView: View {
             return
         }
         guidedFollowUpEnabled = guided
+        followUpDeliveryChoiceRevision &+= 1
+        sessionStore.composerDeliverySelectionCache.save(
+            guided ? .guided : .queued, for: activeComposerDraftScope,
+            context: runningTurnDeliveryContext, default: defaultRunningTurnDelivery
+        )
         UISelectionFeedbackGenerator().selectionChanged()
     }
 

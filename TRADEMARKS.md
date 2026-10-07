@@ -61,7 +61,7 @@ Mimi Remote 保持代码开放，同时让使用者能够判断软件和服务�
 
 #### 第三方标识
 
-`Codex`、`OpenAI`、`ChatGPT`、`Claude`、`Anthropic`、`GitHub`、`Tailscale` 以及仓库中出现的其他第三方名称和 Logo 归各自权利人所有。本政策不代表这些权利人，也不授予其标识的任何使用权。
+`Codex`、`OpenAI`、`ChatGPT`、`Claude`、`Anthropic`、`DeepSeek`、`深度求索`、`GitHub`、`Tailscale` 以及仓库中出现的其他第三方名称和 Logo 归各自权利人所有。本政策不代表这些权利人，也不授予其标识的任何使用权。
 
 ### 风险与优化
 
@@ -128,7 +128,7 @@ Only repositories, store listings, and accounts controlled by the official Mimi 
 
 #### Third-party marks
 
-`Codex`, `OpenAI`, `ChatGPT`, `Claude`, `Anthropic`, `GitHub`, `Tailscale`, and other third-party names and logos present in the repository belong to their respective owners. This policy does not represent those owners or grant any rights to their marks.
+`Codex`, `OpenAI`, `ChatGPT`, `Claude`, `Anthropic`, `DeepSeek`, `GitHub`, `Tailscale`, and other third-party names and logos present in the repository belong to their respective owners. This policy does not represent those owners or grant any rights to their marks.
 
 ### Risks and future changes
 

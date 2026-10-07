@@ -258,14 +258,14 @@ func TestProjectIDForThreadPrefersScopeID(t *testing.T) {
 	}
 	policy := newAppServerGatewayPolicy(router, "codex")
 	policy.allowThread(appServerGatewayAllowedThread{id: "thread-browse", cwd: financeDir, scopeID: browseScope.id})
-	if got := policy.projectIDForThread("thread-browse"); got != browseScope.id {
+	if got := policy.threadRouteFacts("thread-browse").projectID; got != browseScope.id {
 		t.Fatalf("browse-scope thread should route by scope id, got %q want %q", got, browseScope.id)
 	}
 	// 没有作用域 id 的旧记录退回根项目 id。
 	policy.mu.Lock()
 	policy.allowedThreads["thread-root"] = appServerGatewayAllowedThread{id: "thread-root", cwd: projectDir}
 	policy.mu.Unlock()
-	if got := policy.projectIDForThread("thread-root"); got != "demo" {
+	if got := policy.threadRouteFacts("thread-root").projectID; got != "demo" {
 		t.Fatalf("thread without scope id should fall back to root project, got %q", got)
 	}
 	// 只在全局缓存里的线程（断线后新连接）也能取到完整事实。
@@ -275,7 +275,7 @@ func TestProjectIDForThreadPrefersScopeID(t *testing.T) {
 	if facts.projectID != "demo" || facts.scopeID != "demo" || facts.cwd != projectDir || !facts.readOnly || facts.runtime != "codex" {
 		t.Fatalf("router-cache fallback facts wrong: %+v", facts)
 	}
-	if got := newAppServerGatewayPolicy(router, "codex").projectIDForThread("thread-unknown"); got != "" {
+	if got := newAppServerGatewayPolicy(router, "codex").threadRouteFacts("thread-unknown").projectID; got != "" {
 		t.Fatalf("unknown thread must not map to a project, got %q", got)
 	}
 }

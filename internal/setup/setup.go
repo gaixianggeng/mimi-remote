@@ -223,10 +223,8 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 				"TERM": "xterm-256color",
 			},
 		},
-		Claude: config.DefaultClaudeConfig(),
-		Session: config.SessionConfig{
-			OutputBufferBytes: 128 * 1024,
-		},
+		Claude:      config.DefaultClaudeConfig(),
+		Push:        pushConfigForSetup(originalConfig),
 		ScanRoots:   []string{scanRoot},
 		BrowseRoots: []string{browseRoot},
 	}
@@ -270,6 +268,22 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	result.BrowseRoot = browseRoot
 	result.AppServerSSHTarget = appServerSSHTarget
 	return result, nil
+}
+
+func pushConfigForSetup(original []byte) config.PushConfig {
+	defaults := config.DefaultPushConfig()
+	if len(original) == 0 {
+		return defaults
+	}
+	// --force 可以修复其他配置，但不能因此撤销用户已关闭通知或选择自建服务的意愿。
+	// 原文件无法解析时仍允许重建配置，保持 --force 的恢复用途。
+	document := struct {
+		Push config.PushConfig `json:"push"`
+	}{Push: defaults}
+	if json.Unmarshal(original, &document) != nil {
+		return defaults
+	}
+	return document.Push
 }
 
 func normalizeSetupAppServerSSHTarget(raw string) (string, error) {
@@ -324,8 +338,15 @@ func PairForNetwork(ctx context.Context, configPath string, network PairingNetwo
 }
 
 func ResultFromConfig(ctx context.Context, configPath string, cfg config.Config) Result {
-	result, _ := ResultFromConfigForNetwork(ctx, configPath, cfg, PairingNetworkAuto)
-	return result
+	result, err := ResultFromConfigForNetwork(ctx, configPath, cfg, PairingNetworkAuto)
+	if err == nil {
+		return result
+	}
+	_, port := splitListen(cfg.Listen)
+	if port == "" {
+		port = defaultAgentDPort
+	}
+	return Result{ConfigPath: configPath, Endpoint: httpEndpoint("127.0.0.1", port), Token: cfg.Auth.Token, Warnings: []string{err.Error()}}
 }
 
 func ResultFromConfigForNetwork(
@@ -344,6 +365,9 @@ func resultFromConfigForNetwork(
 	network PairingNetwork,
 	lookups pairingNetworkLookups,
 ) (Result, error) {
+	if !cfg.HasEnabledAgent() {
+		return Result{}, fmt.Errorf("全部 AI 编程助手已关闭，请先启用至少一个助手")
+	}
 	endpoint, warnings, err := pairingEndpoint(ctx, cfg, network, lookups)
 	if err != nil {
 		return Result{}, err
@@ -382,16 +406,6 @@ func resultFromConfigForNetwork(
 		AppServerSSHTarget:  cfg.AppServer.SSHTarget,
 		Warnings:            warnings,
 	}, nil
-}
-
-func ConnectURL(endpoint, token string) string {
-	now := time.Now().UTC()
-	return connectionURL("connect", endpoint, token, now, now.Add(defaultPairingURLTTL))
-}
-
-func PairURL(endpoint, token string) string {
-	now := time.Now().UTC()
-	return pairingURL(endpoint, token, now, now.Add(defaultPairingURLTTL))
 }
 
 func connectionURL(route, endpoint, token string, issuedAt, expiresAt time.Time) string {

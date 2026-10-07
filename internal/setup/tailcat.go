@@ -138,10 +138,6 @@ func commitTailcatConfiguration(
 	return changed, nil
 }
 
-func TailcatPair(configPath, pairAddress string) (Result, error) {
-	return TailcatPairWithManagedHost(configPath, pairAddress, "", "", "")
-}
-
 // TailcatPairWithManagedHost 只把 Mac 的随机安装 ID、稳定公钥和当前临时
 // 配对公钥加入二维码。它们都不是凭证；移动端仍需取得订阅权益和短期授权。
 func TailcatPairWithManagedHost(

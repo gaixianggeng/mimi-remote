@@ -6,7 +6,10 @@ struct ConnectionSettingsView: View {
     @EnvironmentObject private var appStore: AppStore
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
+    @EnvironmentObject private var lockScreenApprovalStore: LockScreenApprovalStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @AppStorage(WorkspaceSessionRuntimeChoice.preferenceKey)
+    private var preferredRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     // 重命名 sheet 与扫码 Cover 同样必须由当前显示的连接页持有：紧凑布局把这一页
     // push 进导航栈后，设置根层已经不在被呈现的层级里，挂在那里的 presenter 不会呈现。
@@ -41,9 +44,46 @@ struct ConnectionSettingsView: View {
                 transientPreferences: navigation.transientPreferences,
                 mode: .deviceHome,
                 onRequestProfileRename: { navigation.profileRenamePresentation.present($0) },
-                onRequestManualConnection: { isPresentingAddComputerForManualConnection = true },
+                onRequestManualConnection: {
+                    navigation.connectionDraft.beginAddingComputer()
+                    isPresentingAddComputerForManualConnection = true
+                },
                 probesRouteAutomatically: probesRouteAutomatically
             )
+
+            if isDevicesTab || showsAddComputerEntry {
+                Section {
+                    if showsAddComputerEntry {
+                        NavigationLink(value: SettingsDestination.lockScreenApproval) {
+                            ConnectionRowLabel(
+                                title: L10n.text("ui.push_lock_screen_approval"),
+                                value: lockScreenApprovalStore.notificationStatusDescription,
+                                systemImage: "bell"
+                            )
+                        }
+                        .settingsStandardListRow()
+                        .accessibilityIdentifier("settings.lockScreenApproval")
+                    }
+
+                    // 与「我的」页语言同一种选择行：标题一行、选项胶囊一行，选项文字与标题文字对齐。
+                    // 说明不再占一行（三行太重），交给旁白读。
+                    // 选项取 allCases，新增 Runtime 自动出现在这一行，不必再改这里。
+                    SettingsChoiceRow(
+                        title: L10n.text("ui.preferred_runtime"),
+                        // 选的是在电脑终端里跑的编程代理（Codex、Claude Code、DeepSeek），用终端图标；
+                        // 星光读成「AI 功能」，和这一行的含义对不上。
+                        systemImage: "terminal",
+                        options: WorkspaceSessionRuntimeChoice.allCases,
+                        selection: preferredRuntimeBinding
+                    )
+                    .settingsRow()
+                    .accessibilityHint(L10n.text("ui.preferred_runtime_description"))
+                    .accessibilityIdentifier("settings.preferredRuntime")
+                } header: {
+                    SettingsGroupHeader(title: L10n.text("ui.device_preferences"))
+                }
+                .settingsGroupRowStyle()
+            }
         }
         .navigationDestination(isPresented: $isPresentingAddComputerForManualConnection) {
             AddComputerView(qrScannerPresentation: qrScannerPresentation, navigation: navigation)
@@ -51,7 +91,6 @@ struct ConnectionSettingsView: View {
         .themedSettingsForm(tokens: tokens)
         // 普通操作和展开箭头保持中性；扫码按钮单独使用主操作色。
         .tint(tokens.secondaryText)
-        .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
         .frame(maxWidth: isDevicesTab ? 920 : 720)
         .frame(maxWidth: .infinity)
         .settingsCanvasBackground(tokens: tokens)
@@ -103,6 +142,13 @@ struct ConnectionSettingsView: View {
     private var showsAddComputerEntry: Bool {
         let model = appStore.connectionProfileSettingsModel
         return model.current != nil || !model.others.isEmpty
+    }
+
+    private var preferredRuntimeBinding: Binding<WorkspaceSessionRuntimeChoice> {
+        Binding(
+            get: { .stored(preferredRuntimeRawValue) },
+            set: { preferredRuntimeRawValue = $0.rawValue }
+        )
     }
 
     private var profileRenameRouteBinding: Binding<ConnectionProfileRenameRoute?> {

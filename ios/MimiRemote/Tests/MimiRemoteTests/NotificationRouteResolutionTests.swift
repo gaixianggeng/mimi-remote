@@ -375,6 +375,243 @@ final class NotificationRouteResolutionTests: XCTestCase {
         XCTAssertEqual(NotificationRouteDiagnostics.entries().last?.outcome, "opened")
     }
 
+    func testCodexRunningNotificationBypassesUnchangedHistoryCacheAndReconcilesCompletedTurn() async throws {
+        try await assertRunningNotificationBypassesHistoryCache(runtimeProvider: "codex")
+    }
+
+    func testClaudeRunningNotificationBypassesUnchangedHistoryCacheAndReconcilesCompletedTurn() async throws {
+        try await assertRunningNotificationBypassesHistoryCache(runtimeProvider: "claude")
+    }
+
+    func testNotificationReconcilesCompletedTurnWithoutVisibleMessages() async throws {
+        let project = makeProject(id: "proj_notification_empty_completed_turn")
+        let session = makeSession(
+            id: "thread-notification-empty-completed-turn",
+            projectID: project.id,
+            title: "无可见消息的完成轮次",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex",
+            activeTurnID: "turn-empty-completed"
+        )
+        let client = NotificationHistorySequenceClient(
+            project: project,
+            session: session,
+            historyResults: [
+                .success(notificationHistoryPage(turns: [("turn-empty-completed", .inProgress)])),
+                .success(notificationHistoryPage(
+                    turns: [("turn-empty-completed", .completed)],
+                    visibleTurnIDs: []
+                )),
+            ]
+        )
+        let store = makeStore(client: client)
+        prepareNotificationHistoryStore(store, project: project, session: session)
+        let didLoadCachedHistory = await store.loadHistory(for: session)
+        XCTAssertTrue(didLoadCachedHistory)
+
+        let outcome = await store.openSessionFromNotification(notificationRoute(for: session, store: store))
+
+        XCTAssertEqual(outcome, .opened)
+        XCTAssertEqual(client.historyRequestCount, 2)
+        XCTAssertNil(store.selectedSession?.activeTurnID)
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
+    }
+
+    func testNotificationDoesNotCompleteWhenLaterEmptyTurnIsNotTerminal() async throws {
+        for laterLifecycle in [ConversationTurnLifecycle.inProgress, .unknown] {
+            let suffix = laterLifecycle.rawValue
+            let project = makeProject(id: "proj_notification_empty_later_\(suffix)")
+            let session = makeSession(
+                id: "thread-notification-empty-later-\(suffix)",
+                projectID: project.id,
+                title: "后续无可见消息轮次",
+                status: "running",
+                source: "codex",
+                runtimeProvider: "codex",
+                activeTurnID: "turn-previous"
+            )
+            let client = NotificationHistorySequenceClient(
+                project: project,
+                session: session,
+                historyResults: [
+                    .success(notificationHistoryPage(turns: [("turn-previous", .inProgress)])),
+                    .success(notificationHistoryPage(
+                        turns: [
+                            ("turn-previous", .completed),
+                            ("turn-empty-later", laterLifecycle),
+                        ],
+                        visibleTurnIDs: ["turn-previous"]
+                    )),
+                ]
+            )
+            let store = makeStore(client: client)
+            prepareNotificationHistoryStore(store, project: project, session: session)
+            let didLoadCachedHistory = await store.loadHistory(for: session)
+            XCTAssertTrue(didLoadCachedHistory)
+
+            let outcome = await store.openSessionFromNotification(notificationRoute(for: session, store: store))
+
+            XCTAssertEqual(outcome, .opened)
+            XCTAssertEqual(client.historyRequestCount, 2)
+            XCTAssertEqual(
+                store.selectedSession?.activeTurnID,
+                "turn-previous",
+                "后续 \(laterLifecycle.rawValue) 空轮次存在时不能释放旧 activeTurnID"
+            )
+            XCTAssertEqual(store.selectedSession?.status, SessionStatus.running.rawValue)
+        }
+    }
+
+    func testNotificationTerminalHistoryDoesNotClearNewerActiveTurn() async throws {
+        let project = makeProject(id: "proj_notification_newer_turn")
+        let session = makeSession(
+            id: "thread-notification-newer-turn",
+            projectID: project.id,
+            title: "新一轮仍在运行",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex",
+            activeTurnID: "turn-new"
+        )
+        let client = NotificationHistorySequenceClient(
+            project: project,
+            session: session,
+            historyResults: [
+                .success(notificationHistoryPage(turns: [("turn-new", .inProgress)])),
+                .success(notificationHistoryPage(turns: [
+                    ("turn-old", .completed),
+                    ("turn-new", .inProgress),
+                ])),
+            ]
+        )
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+        prepareNotificationHistoryStore(store, project: project, session: session)
+        let didSelect = await store.selectSession(session)
+        XCTAssertTrue(didSelect)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        let didQueue = await store.sendTurn(CodexAppServerTurnPayload(prompt: "等待新一轮完成"))
+        XCTAssertTrue(didQueue)
+        XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn-new")
+        XCTAssertTrue(socket.sentTurns.isEmpty)
+
+        let outcome = await store.openSessionFromNotification(notificationRoute(for: session, store: store))
+
+        XCTAssertEqual(outcome, .opened)
+        XCTAssertEqual(client.historyRequestCount, 2)
+        XCTAssertEqual(store.selectedSession?.activeTurnID, "turn-new")
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.running.rawValue)
+        XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn-new")
+        XCTAssertEqual(store.selectedQueuedTurns.first?.dispatchState, .waiting)
+        XCTAssertTrue(socket.sentTurns.isEmpty, "旧完成不能越过新 active turn 的队列约束")
+    }
+
+    func testNotificationHistoryFailureKeepsRunningStateAndNextOpenRetriesAuthoritativeRead() async throws {
+        let project = makeProject(id: "proj_notification_history_retry")
+        let session = makeSession(
+            id: "thread-notification-history-retry",
+            projectID: project.id,
+            title: "失败后重试",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex",
+            activeTurnID: "turn-retry"
+        )
+        let client = NotificationHistorySequenceClient(
+            project: project,
+            session: session,
+            historyResults: [
+                .success(notificationHistoryPage(turns: [("turn-retry", .inProgress)])),
+                .failure(AgentAPIError.server(status: 503, message: "temporarily unavailable")),
+                .success(notificationHistoryPage(turns: [("turn-retry", .completed)])),
+            ]
+        )
+        let store = makeStore(client: client)
+        prepareNotificationHistoryStore(store, project: project, session: session)
+        let didLoadCachedHistory = await store.loadHistory(for: session)
+        XCTAssertTrue(didLoadCachedHistory)
+
+        let route = notificationRoute(for: session, store: store)
+        let failedRefreshOutcome = await store.openSessionFromNotification(route)
+
+        XCTAssertEqual(failedRefreshOutcome, .opened)
+        XCTAssertEqual(client.historyRequestCount, 2)
+        XCTAssertEqual(store.selectedSession?.activeTurnID, "turn-retry", "网络失败不能伪造完成")
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.running.rawValue)
+
+        let retryOutcome = await store.openSessionFromNotification(route)
+
+        XCTAssertEqual(retryOutcome, .opened)
+        XCTAssertEqual(client.historyRequestCount, 3, "同一已选会话再次从通知打开也必须补查")
+        XCTAssertNil(store.selectedSession?.activeTurnID)
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
+    }
+
+    func testNotificationReplacesOlderBypassHistoryJobAndIgnoresItsLateSnapshot() async throws {
+        let project = makeProject(id: "proj_notification_replaces_history_job")
+        let session = makeSession(
+            id: "thread-notification-replaces-history-job",
+            projectID: project.id,
+            title: "通知换代历史请求",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex",
+            activeTurnID: "turn-current"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [session])
+        )
+        let store = makeStore(client: client)
+        prepareNotificationHistoryStore(store, project: project, session: session)
+
+        let olderHistoryTask = Task {
+            await store.loadHistory(
+                for: session,
+                quiet: true,
+                force: true,
+                reason: .manualFull
+            )
+        }
+        await client.waitForHistoryRequestCount(1)
+
+        let notificationTask = Task {
+            await store.openSessionFromNotification(notificationRoute(for: session, store: store))
+        }
+        await client.waitForHistoryRequestCount(2)
+        client.resolveHistoryRequest(
+            at: 1,
+            with: notificationHistoryPage(turns: [("turn-current", .completed)])
+        )
+
+        let outcome = await notificationTask.value
+        XCTAssertEqual(outcome, .opened)
+        XCTAssertEqual(client.requestedMessageLimits.count, 2)
+        XCTAssertNil(store.selectedSession?.activeTurnID)
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
+
+        client.resolveHistoryRequest(
+            at: 0,
+            with: notificationHistoryPage(turns: [("turn-current", .inProgress)])
+        )
+        _ = await olderHistoryTask.value
+        XCTAssertNil(store.selectedSession?.activeTurnID, "被通知换代的旧快照迟到后不能复活当前轮次")
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
+    }
+
     func testAutomaticGenerationBumpDuringRefreshDoesNotSupersede() async {
         let project = makeProject(id: "proj_auto_bump")
         let target = makeSession(id: "thread-auto-bump", projectID: project.id, title: "目标", status: "history", source: "codex")
@@ -682,7 +919,9 @@ final class NotificationRouteResolutionTests: XCTestCase {
         client.rememberRuntimeRoute("", forSessionID: "thread-claude")
         XCTAssertEqual(client.rememberedRuntimeRoute(forSessionID: "thread-claude"), "claude")
         client.rememberRuntimeRoute("mystery-runtime", forSessionID: "thread-claude")
-        XCTAssertEqual(client.rememberedRuntimeRoute(forSessionID: "thread-claude"), "claude")
+        // 缺失 provider 沿用旧路由；显式未知 provider 必须拒绝，不能继续向另一通道发送。
+        XCTAssertEqual(client.rememberedRuntimeRoute(forSessionID: "thread-claude"), "mystery-runtime")
+        XCTAssertThrowsError(try bundle.runtime(forSessionID: "thread-claude"))
 
         client.rememberRuntimeRoute("anthropic", forSessionID: "thread-new")
         XCTAssertEqual(client.rememberedRuntimeRoute(forSessionID: "thread-new"), "claude")
@@ -691,6 +930,438 @@ final class NotificationRouteResolutionTests: XCTestCase {
         // 调用方明确断言 codex 才覆盖。
         client.rememberRuntimeRoute("codex", forSessionID: "thread-claude")
         XCTAssertEqual(client.rememberedRuntimeRoute(forSessionID: "thread-claude"), "codex")
+    }
+
+    func testHostActivationUsesClaudeWhenCodexChannelIsDisabled() async throws {
+        let project = makeProject(id: "claude-only-activation")
+        let config = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let codexTransport = FakeCodexAppServerTransport()
+        let claudeTransport = FakeCodexAppServerTransport()
+        let codex = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "token", runtimeProvider: "codex",
+            transportFactory: { codexTransport }, configProvider: { config }
+        )
+        let claude = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "token", runtimeProvider: "claude",
+            transportFactory: { claudeTransport }, configProvider: { config }
+        )
+        let bundle = AppServerRuntimeBundle(codexRuntime: codex, claudeRuntime: claude)
+
+        let activation = Task { try await bundle.prepareForHostActivation() }
+        let initialize = try await waitForFakeAppServerRequest(claudeTransport, method: "initialize")
+        transportResponse(
+            claudeTransport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-claude","platformFamily":"macos"}"#
+        )
+        try await activation.value
+
+        let codexMessages = await codexTransport.sentMessages()
+        let claudeReady = await claude.hasReadyConnectionForTesting()
+        XCTAssertTrue(codexMessages.isEmpty)
+        XCTAssertTrue(claudeReady)
+    }
+
+    func testPreparedRuntimeBundleRefreshesAgentAvailabilityWithoutChangingIdentity() async throws {
+        let project = makeProject(id: "runtime-config-refresh")
+        let claudeOnly = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let bothEnabled = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: true,
+            channels: [makeCodexChannelMetadata(), makeClaudeChannelMetadata()]
+        )
+        let provider = SequencedDirectConfigProvider([bothEnabled, claudeOnly])
+        let bundle = AppServerRuntimeBundle(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            requestTimeout: 2,
+            preparedConfig: claudeOnly,
+            configProvider: { try await provider.next() }
+        )
+
+        let initialCodexAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "codex")
+        let initialClaudeAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "claude")
+        XCTAssertFalse(initialCodexAvailable)
+        XCTAssertTrue(initialClaudeAvailable)
+        XCTAssertEqual(provider.callCount, 0, "preparedConfig 只作为首次缓存，不应立即重复请求")
+
+        try await bundle.refreshConfiguration()
+        let refreshedCodexAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "codex")
+        let refreshedClaudeAvailable = try await bundle.claude.channelAvailable(runtimeProvider: "claude")
+        XCTAssertTrue(refreshedCodexAvailable)
+        XCTAssertTrue(refreshedClaudeAvailable)
+
+        try await bundle.refreshConfiguration()
+        let disabledCodexAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "codex")
+        let remainingClaudeAvailable = try await bundle.claude.channelAvailable(runtimeProvider: "claude")
+        XCTAssertFalse(disabledCodexAvailable)
+        XCTAssertTrue(remainingClaudeAvailable)
+        XCTAssertEqual(provider.callCount, 2, "强制刷新必须读取新的服务端响应")
+    }
+
+    func testRuntimeBundleReconnectRefreshesChannelsAndSelectsNewAgent() async throws {
+        let project = makeProject(id: "runtime-reconnect-refresh")
+        let bothEnabled = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: true,
+            channels: [makeCodexChannelMetadata(), makeClaudeChannelMetadata()]
+        )
+        let claudeOnly = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let provider = SequencedDirectConfigProvider([claudeOnly])
+        let codexPool = FakeCodexAppServerTransportPool()
+        let claudePool = FakeCodexAppServerTransportPool()
+        let codex = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            runtimeProvider: "codex",
+            transportFactory: { codexPool.make() },
+            initialConfig: bothEnabled,
+            configProvider: { try await provider.next() }
+        )
+        let claude = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            runtimeProvider: "claude",
+            transportFactory: { claudePool.make() },
+            initialConfig: bothEnabled,
+            configProvider: { claudeOnly }
+        )
+        let bundle = AppServerRuntimeBundle(codexRuntime: codex, claudeRuntime: claude)
+
+        let firstActivation = Task { try await bundle.prepareForHostActivation() }
+        let firstTransport = try await waitForFakeAppServerTransport(in: codexPool, index: 0)
+        let firstInitialize = try await waitForFakeAppServerRequest(firstTransport, method: "initialize")
+        transportResponse(firstTransport, id: firstInitialize.id, result: #"{"userAgent":"fake-codex"}"#)
+        try await firstActivation.value
+        firstTransport.failReceive()
+        for _ in 0..<100 {
+            guard await codex.hasReadyConnectionForTesting() else { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let codexStillReady = await codex.hasReadyConnectionForTesting()
+        XCTAssertFalse(codexStillReady)
+
+        let secondActivation = Task { try await bundle.prepareForHostActivation() }
+        let secondTransport = try await waitForFakeAppServerTransport(in: claudePool, index: 0)
+        let secondInitialize = try await waitForFakeAppServerRequest(secondTransport, method: "initialize")
+        transportResponse(secondTransport, id: secondInitialize.id, result: #"{"userAgent":"fake-claude"}"#)
+        try await secondActivation.value
+
+        let reconnectedCodexAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "codex")
+        let reconnectedClaudeAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "claude")
+        XCTAssertFalse(reconnectedCodexAvailable)
+        XCTAssertTrue(reconnectedClaudeAvailable)
+        XCTAssertEqual(provider.callCount, 1)
+        XCTAssertNil(codexPool.transport(at: 1), "重连后已关闭的 Codex 不得再次初始化")
+    }
+
+    /// Claude-only 主机上只有 Claude 建立过 WebSocket。服务端后来开启 Codex 并让 Claude
+    /// 断线时，Codex 的配置缓存（能力判断的来源）从未被清空；普通刷新必须能发现新 Agent，
+    /// 且测试不能靠显式调用 refreshConfiguration 来替生产代码补步骤。
+    func testClaudeOnlyHostDiscoversNewlyEnabledCodexWithoutExplicitRefresh() async throws {
+        let project = makeProject(id: "claude-only-then-codex")
+        let claudeOnly = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let bothEnabled = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: true,
+            channels: [makeCodexChannelMetadata(), makeClaudeChannelMetadata()]
+        )
+        let provider = SequencedDirectConfigProvider([bothEnabled, bothEnabled])
+        let codexPool = FakeCodexAppServerTransportPool()
+        let claudePool = FakeCodexAppServerTransportPool()
+        let codex = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            runtimeProvider: "codex",
+            transportFactory: { codexPool.make() },
+            initialConfig: claudeOnly,
+            configProvider: { try await provider.next() }
+        )
+        let claude = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            runtimeProvider: "claude",
+            transportFactory: { claudePool.make() },
+            initialConfig: claudeOnly,
+            configProvider: { try await provider.next() }
+        )
+        let bundle = AppServerRuntimeBundle(codexRuntime: codex, claudeRuntime: claude)
+
+        // 只有 Claude 建连；Codex 通道此时关闭，不会有自己的 WebSocket。
+        let activation = Task { try await bundle.prepareForHostActivation() }
+        let claudeTransport = try await waitForFakeAppServerTransport(in: claudePool, index: 0)
+        let initialize = try await waitForFakeAppServerRequest(claudeTransport, method: "initialize")
+        transportResponse(claudeTransport, id: initialize.id, result: #"{"userAgent":"fake-claude"}"#)
+        try await activation.value
+        XCTAssertNil(codexPool.transport(at: 0), "Claude-only 主机不应为 Codex 建立连接")
+        XCTAssertEqual(provider.callCount, 0, "preparedConfig 只作为首次缓存，不应立即重复请求")
+
+        // daemon 重载后 Claude 断开，而 Codex 从未连接，因此只有 Claude 的缓存被清空。
+        claudeTransport.failReceive()
+        for _ in 0..<100 {
+            guard await claude.hasReadyConnectionForTesting() else { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let claudeStillReady = await claude.hasReadyConnectionForTesting()
+        XCTAssertFalse(claudeStillReady)
+
+        // 走普通能力查询：不调用 refreshConfiguration，也不能读 Codex 那份未失效的旧缓存。
+        let codexAvailable = try await bundle.channelAvailable(runtimeProvider: "codex")
+        XCTAssertTrue(codexAvailable, "Claude 断线后普通刷新必须能发现新开启的 Codex")
+        let claudeAvailable = try await bundle.channelAvailable(runtimeProvider: "claude")
+        XCTAssertTrue(claudeAvailable)
+        XCTAssertEqual(provider.callCount, 1, "失效后合并成一次配置读取")
+    }
+
+    /// 同一主机从 Claude-only 切到 Codex-only：新建入口与模型选择都要收敛到新的可用通道，
+    /// 而已有的 Claude thread 必须保留自己的 Runtime 归属，不能被自动改派给 Codex。
+    func testHostSwitchFromClaudeOnlyToCodexOnlyUpdatesAvailabilityAndKeepsClaudeRoute() async throws {
+        let project = makeProject(id: "claude-to-codex")
+        let claudeOnly = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        // Codex-only：没有 claude channel，Codex 走顶层 runtime.gatewayAvailable。
+        let codexOnly = makeDirectAppServerConfig(project: project, gatewayAvailable: true)
+        let provider = SequencedDirectConfigProvider([codexOnly, codexOnly])
+        let codexPool = FakeCodexAppServerTransportPool()
+        let claudePool = FakeCodexAppServerTransportPool()
+        let codex = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            runtimeProvider: "codex",
+            transportFactory: { codexPool.make() },
+            initialConfig: claudeOnly,
+            configProvider: { try await provider.next() }
+        )
+        let claude = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "token",
+            runtimeProvider: "claude",
+            transportFactory: { claudePool.make() },
+            initialConfig: claudeOnly,
+            configProvider: { try await provider.next() }
+        )
+        let bundle = AppServerRuntimeBundle(codexRuntime: codex, claudeRuntime: claude)
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: bundle)
+
+        let activation = Task { try await bundle.prepareForHostActivation() }
+        let claudeTransport = try await waitForFakeAppServerTransport(in: claudePool, index: 0)
+        let initialize = try await waitForFakeAppServerRequest(claudeTransport, method: "initialize")
+        transportResponse(claudeTransport, id: initialize.id, result: #"{"userAgent":"fake-claude"}"#)
+        try await activation.value
+        XCTAssertEqual(provider.callCount, 0)
+
+        // 切换前已存在的 Claude 会话。
+        bundle.routes.remember("claude", for: "thread-existing-claude")
+
+        claudeTransport.failReceive()
+        for _ in 0..<100 {
+            guard await claude.hasReadyConnectionForTesting() else { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let claudeStillReady = await claude.hasReadyConnectionForTesting()
+        XCTAssertFalse(claudeStillReady)
+
+        // 新建入口按生产路径查询：可用 Agent 收敛为 Codex。
+        let codexAvailable = try await client.runtimeChannelAvailable(runtimeProvider: "codex")
+        let claudeAvailable = try await client.runtimeChannelAvailable(runtimeProvider: "claude")
+        XCTAssertTrue(codexAvailable, "切换到 Codex-only 后必须认为 Codex 可用")
+        XCTAssertFalse(claudeAvailable, "已关闭的 Claude 通道不得继续报可用")
+        XCTAssertEqual(provider.callCount, 1, "两个查询共用一次合并后的配置读取")
+
+        // 模型选择随之更新，并且不再向已关闭的 Claude 发起连接。
+        let models = Task { try await client.modelOptions() }
+        let codexTransport = try await waitForFakeAppServerTransport(in: codexPool, index: 0)
+        let codexInitialize = try await waitForFakeAppServerRequest(codexTransport, method: "initialize")
+        transportResponse(codexTransport, id: codexInitialize.id, result: #"{"userAgent":"fake-codex"}"#)
+        let modelList = try await waitForFakeAppServerRequest(codexTransport, method: "model/list", after: 1)
+        transportResponse(
+            codexTransport,
+            id: modelList.id,
+            result: #"{"models":[{"id":"gpt-5-codex","title":"GPT-5 Codex","provider":"openai","isDefault":true}]}"#
+        )
+        let options = try await models.value
+        XCTAssertEqual(options.map(\.model), ["gpt-5-codex"])
+        XCTAssertEqual(options.first?.runtimeProvider, "codex")
+        XCTAssertNil(claudePool.transport(at: 1), "已关闭的 Claude 不得因模型刷新重新建连")
+
+        // 已有 Claude thread 保留原 Runtime 归属，不被改派给 Codex。
+        XCTAssertEqual(client.rememberedRuntimeRoute(forSessionID: "thread-existing-claude"), "claude")
+    }
+
+    func testModelOptionsUseClaudeWhenCodexChannelIsDisabled() async throws {
+        let project = makeProject(id: "claude-only-models")
+        let config = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let codexTransport = FakeCodexAppServerTransport()
+        let claudeTransport = FakeCodexAppServerTransport()
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(
+            codexRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787", token: "token", runtimeProvider: "codex",
+                transportFactory: { codexTransport }, configProvider: { config }
+            ),
+            claudeRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787", token: "token", runtimeProvider: "claude",
+                transportFactory: { claudeTransport }, configProvider: { config }
+            )
+        )
+
+        let models = Task { try await client.modelOptions() }
+        let initialize = try await waitForFakeAppServerRequest(claudeTransport, method: "initialize")
+        transportResponse(
+            claudeTransport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-claude","platformFamily":"macos"}"#
+        )
+        let modelList = try await waitForFakeAppServerRequest(claudeTransport, method: "model/list", after: 1)
+        transportResponse(
+            claudeTransport,
+            id: modelList.id,
+            result: #"{"models":[{"id":"claude-sonnet","title":"Claude Sonnet","provider":"anthropic","isDefault":true}]}"#
+        )
+
+        let options = try await models.value
+        XCTAssertEqual(options.map(\.model), ["claude-sonnet"])
+        XCTAssertEqual(options.first?.runtimeProvider, "claude")
+        let codexMessages = await codexTransport.sentMessages()
+        XCTAssertTrue(codexMessages.isEmpty)
+    }
+
+    func testPermissionProfilesDoNotInitializeCodexWhenCodexChannelIsDisabled() async throws {
+        let project = makeProject(id: "claude-only-permissions")
+        let config = makeDirectAppServerConfig(
+            project: project,
+            gatewayAvailable: false,
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let codexTransport = FakeCodexAppServerTransport()
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(
+            codexRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787", token: "token", runtimeProvider: "codex",
+                transportFactory: { codexTransport }, configProvider: { config }
+            ),
+            claudeRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787", token: "token", runtimeProvider: "claude",
+                transportFactory: { FakeCodexAppServerTransport() }, configProvider: { config }
+            )
+        )
+
+        let profiles = try await client.permissionProfiles(cwd: project.path)
+        let rateLimit = try await client.refreshRateLimit(runtimeProvider: "codex")
+        let tokenUsage = try await client.refreshAccountTokenUsage(forceRefresh: true)
+        let codexMessages = await codexTransport.sentMessages()
+
+        XCTAssertTrue(profiles.isEmpty)
+        XCTAssertNil(rateLimit)
+        XCTAssertEqual(tokenUsage, .unsupported)
+        XCTAssertTrue(codexMessages.isEmpty)
+    }
+
+    func testClaudeOnlySessionListAndNotificationFallbackNeverRequestCodex() async throws {
+        let project = makeProject(id: "claude-only-list")
+        let target = makeSession(
+            id: "thread-claude-only",
+            projectID: project.id,
+            title: "Claude only",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            workspaceSessions: [project.id: [target]],
+            runtimeChannelAvailability: ["codex": false, "claude": true]
+        )
+        let appStore = makeIsolatedAppStore()
+        let store = makeStore(client: client, appStore: appStore)
+        store.projects = [project]
+        let workspace = try XCTUnwrap(store.ensureWorkspaceForKnownProjectID(project.id))
+        let codexCompletionKey = store.workspaceSessionFirstPageKey(
+            for: workspace,
+            runtimeProvider: "codex"
+        )
+        store.workspaceSessionFirstPageCompletionByKey[codexCompletionKey] = WorkspaceSessionFirstPageCompletion(
+            consistency: .authoritative,
+            isPresentationWindowComplete: false,
+            continuationCursor: "codex-only-cursor",
+            scannedSessionIDs: [],
+            completedAt: Date(timeIntervalSince1970: 10)
+        )
+
+        let firstPage = try await store.sessionListFirstPage(
+            workspace: workspace,
+            limit: SessionStore.initialSessionPageLimit,
+            reuseRecent: false,
+            consistency: .authoritative,
+            source: .selectedProject
+        )
+        XCTAssertEqual(firstPage.page.sessions.map(\.id), [target.id])
+        XCTAssertNil(firstPage.requestedCursor, "Claude 首屏不能沿用 Codex 的 opaque cursor")
+        XCTAssertTrue(store.applyWorkspaceSessionFirstPage(
+            workspace: workspace,
+            page: firstPage.page,
+            runtimeProvider: firstPage.runtimeProvider,
+            consistency: .authoritative,
+            requestedCursor: firstPage.requestedCursor,
+            requestLineage: firstPage.requestLineage
+        ))
+        let claudeCompletionKey = store.workspaceSessionFirstPageKey(
+            for: workspace,
+            runtimeProvider: "claude"
+        )
+        XCTAssertEqual(
+            store.workspaceSessionFirstPageCompletionByKey[codexCompletionKey]?.continuationCursor,
+            "codex-only-cursor"
+        )
+        XCTAssertTrue(
+            store.workspaceSessionFirstPageCompletionByKey[claudeCompletionKey]?.isPresentationWindowComplete == true
+        )
+        XCTAssertEqual(
+            store.directoryScopedSessions(workspaceID: project.id, runtimeProvider: "claude").map(\.id),
+            [target.id]
+        )
+        XCTAssertTrue(
+            store.directoryScopedSessions(workspaceID: project.id, runtimeProvider: "codex").isEmpty
+        )
+
+        store.sessions = []
+        let route = SessionNotificationRoute.current(
+            profileID: appStore.notificationRoutingProfileID,
+            projectID: project.id,
+            sessionID: target.id
+        )
+        let notificationResult = try await store.listNotificationSession(
+            route,
+            workspace: workspace,
+            client: client,
+            hostScope: appStore.activeHostScope
+        )
+
+        XCTAssertEqual(notificationResult, .found(target))
+        XCTAssertEqual(client.requestedWorkspaceRuntimes, ["claude", "claude"])
+        XCTAssertEqual(client.requestedWorkspaceCursors, [nil, nil])
     }
 
     // MARK: - Helpers
@@ -702,6 +1373,100 @@ final class NotificationRouteResolutionTests: XCTestCase {
             logStore: LogStore(),
             clientFactory: { client },
             webSocketFactory: { MockWebSocketClient() }
+        )
+    }
+
+    private func assertRunningNotificationBypassesHistoryCache(runtimeProvider: String) async throws {
+        let project = makeProject(id: "proj_notification_\(runtimeProvider)_terminal")
+        let session = makeSession(
+            id: "thread-notification-\(runtimeProvider)-terminal",
+            projectID: project.id,
+            title: "\(runtimeProvider) 完成通知",
+            status: "running",
+            source: runtimeProvider,
+            runtimeProvider: runtimeProvider,
+            activeTurnID: "turn-active"
+        )
+        let client = NotificationHistorySequenceClient(
+            project: project,
+            session: session,
+            historyResults: [
+                .success(notificationHistoryPage(turns: [("turn-active", .inProgress)])),
+                .success(notificationHistoryPage(turns: [("turn-active", .completed)])),
+            ]
+        )
+        let store = makeStore(client: client)
+        prepareNotificationHistoryStore(store, project: project, session: session)
+
+        let didLoadInitialHistory = await store.loadHistory(for: session)
+        let didReuseInitialHistory = await store.loadHistory(for: session)
+        XCTAssertTrue(didLoadInitialHistory)
+        XCTAssertTrue(didReuseInitialHistory)
+        XCTAssertEqual(client.historyRequestCount, 1, "相同签名的普通历史加载应复用缓存")
+
+        let outcome = await store.openSessionFromNotification(notificationRoute(for: session, store: store))
+
+        XCTAssertEqual(outcome, .opened)
+        XCTAssertEqual(client.historyRequestCount, 2, "通知打开必须越过相同签名及近期首屏缓存")
+        XCTAssertNil(store.selectedSession?.activeTurnID)
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
+        XCTAssertTrue(store.canSendInSelectedSession, "终态对账后应允许继续输入")
+    }
+
+    private func prepareNotificationHistoryStore(
+        _ store: SessionStore,
+        project: AgentProject,
+        session: AgentSession
+    ) {
+        store.appStore.token = "test-token"
+        store.projects = [project]
+        store.sidebarProjects = [project]
+        store.recentWorkspaces = [AgentWorkspace(project: project)]
+        store.sessions = [session]
+        store.takeOverSession(session)
+    }
+
+    private func notificationRoute(for session: AgentSession, store: SessionStore) -> SessionNotificationRoute {
+        SessionNotificationRoute.current(
+            profileID: store.appStore.notificationRoutingProfileID,
+            projectID: session.projectID,
+            sessionID: session.id,
+            runtimeProvider: session.runtimeProvider ?? session.source
+        )
+    }
+
+    private func notificationHistoryPage(
+        turns: [(TurnID, ConversationTurnLifecycle)],
+        visibleTurnIDs: Set<TurnID>? = nil
+    ) -> HistoryMessagesPage {
+        let visibleTurns = visibleTurnIDs.map { allowed in
+            turns.filter { allowed.contains($0.0) }
+        } ?? turns
+        return HistoryMessagesPage(
+            messages: visibleTurns.enumerated().flatMap { index, turn in
+                let timestamp = TimeInterval(index * 2)
+                return [
+                    CodexHistoryMessage(
+                        id: "history-user-\(turn.0)",
+                        role: "user",
+                        content: "第 \(index + 1) 轮",
+                        createdAt: Date(timeIntervalSince1970: timestamp + 1),
+                        turnID: turn.0,
+                        itemID: "history-user-item-\(turn.0)",
+                        turnLifecycle: turn.1
+                    ),
+                    CodexHistoryMessage(
+                        id: "history-assistant-\(turn.0)",
+                        role: "assistant",
+                        content: turn.1.isTerminal ? "已完成" : "处理中",
+                        createdAt: Date(timeIntervalSince1970: timestamp + 2),
+                        turnID: turn.0,
+                        itemID: "history-assistant-item-\(turn.0)",
+                        turnLifecycle: turn.1
+                    ),
+                ]
+            },
+            turnStates: turns.map { HistoryTurnState(id: $0.0, lifecycle: $0.1) }
         )
     }
 
@@ -756,6 +1521,76 @@ final class NotificationRouteResolutionTests: XCTestCase {
     }
 }
 
+/// 依次返回缓存快照、权威快照或网络错误，验证通知打开不会复用旧历史。
+private final class NotificationHistorySequenceClient: SessionStoreAPIClient {
+    private let project: AgentProject
+    private let sessionResult: AgentSession
+    private let lock = NSLock()
+    private var historyResults: [Result<HistoryMessagesPage, Error>]
+    private var historyRequestCountStorage = 0
+
+    var historyRequestCount: Int {
+        lock.withLock { historyRequestCountStorage }
+    }
+
+    init(
+        project: AgentProject,
+        session: AgentSession,
+        historyResults: [Result<HistoryMessagesPage, Error>]
+    ) {
+        self.project = project
+        self.sessionResult = session
+        self.historyResults = historyResults
+    }
+
+    func projects() async throws -> [AgentProject] {
+        [project]
+    }
+
+    func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
+        [sessionResult]
+    }
+
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        SessionResponse(session: sessionResult)
+    }
+
+    func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func stopSession(id: String) async throws {
+        throw MockError.unimplemented
+    }
+
+    func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
+        try nextHistoryResult().get().messages
+    }
+
+    func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
+        try nextHistoryResult().get()
+    }
+
+    func messagesPage(
+        sessionID: String,
+        before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode
+    ) async throws -> HistoryMessagesPage {
+        try nextHistoryResult().get()
+    }
+
+    private func nextHistoryResult() -> Result<HistoryMessagesPage, Error> {
+        lock.withLock {
+            historyRequestCountStorage += 1
+            guard !historyResults.isEmpty else {
+                return .failure(MockError.unimplemented)
+            }
+            return historyResults.removeFirst()
+        }
+    }
+}
+
 /// 直读固定失败、列表按 runtime 分头返回，用于验证 runtime 感知的兜底顺序。
 private final class NotificationRuntimeListClient: SessionStoreAPIClient {
     private let projectsResult: [AgentProject]
@@ -801,6 +1636,10 @@ private final class NotificationRuntimeListClient: SessionStoreAPIClient {
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
         lock.withLock { requestedSessionIDsStorage.append(id) }
         throw readError
+    }
+
+    func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
+        pagesByRuntime[runtimeProvider] != nil
     }
 
     func rememberRuntimeRoute(_ runtimeProvider: String?, forSessionID sessionID: SessionID) {

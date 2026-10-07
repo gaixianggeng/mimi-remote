@@ -68,6 +68,10 @@ func (r *Router) tailcatLocalAction(w http.ResponseWriter, req *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(r.tailcat.Status(req.Context())))
 	case "pair":
+		if !r.cfg.HasEnabledAgent() {
+			writeError(w, http.StatusServiceUnavailable, "全部 AI 编程助手已关闭，请先启用助手")
+			return
+		}
 		status, err := r.tailcat.Pair(req.Context())
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, err.Error())

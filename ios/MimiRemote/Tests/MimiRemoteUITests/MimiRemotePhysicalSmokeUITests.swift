@@ -1,18 +1,32 @@
 import XCTest
 
+@MainActor
 final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     private var app: XCUIApplication!
     private let selectedValues = ["Selected", "已选择"]
+    private let h12Endpoint = "http://127.0.0.1:28787"
+    private let h12Token = "h12-local-fixture-token-not-secret"
 
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        // 使用只存在于 Debug 构建的内存样例，保证新安装、无真实历史数据的设备也能
-        // 完整覆盖 Composer；不会写入或替换用户保存的连接和会话。
-        app.launchArguments += [
-            "--debug-skip-pairing",
-            "--debug-seed-ui"
-        ]
+        if name.contains("testLiveH12FormalHarnessPathWithoutNativeFlag") {
+            // 这里故意不传 --test-native-harness。正式接入必须只靠宿主返回的
+            // channel 能力和用户已经启用的 Harness 模块进入原生客户端。
+            app.launchArguments += [
+                "--debug-skip-pairing",
+                "--debug-endpoint", h12Endpoint,
+                "--debug-token", h12Token
+            ]
+            XCTAssertFalse(app.launchArguments.contains("--test-native-harness"))
+        } else {
+            // 使用只存在于 Debug 构建的内存样例，保证新安装、无真实历史数据的设备也能
+            // 完整覆盖 Composer；不会写入或替换用户保存的连接和会话。
+            app.launchArguments += [
+                "--debug-skip-pairing",
+                "--debug-seed-ui"
+            ]
+        }
         if name.contains("testMCPToolApprovalShowsScopedTrustActions") {
             app.launchArguments.append("--debug-seed-mcp-approval-ui")
         }
@@ -59,6 +73,178 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         try presentQRScanner()
         assertScannerRemainsPresented()
         app.descendant(identifier: "qrScanner.close").tap()
+    }
+
+    /// 真实 Store/UI 验收：App 启动后由另一个客户端创建 Harness 会话，列表必须自行刷新；
+    /// 随后从 Composer 经过正式原生路由提交，并显示真实 Harness 的 durable 结果。
+    func testLiveH12FormalHarnessPathWithoutNativeFlag() async throws {
+        guard await isolatedH12AgentdIsRunning() else {
+            throw XCTSkip("隔离 H12 agentd 未运行")
+        }
+        let endpoint = h12Endpoint
+        let token = h12Token
+        let workspace = repositoryRootFromSourcePath()
+        let sessionID = "h12-ui-\(UUID().uuidString.lowercased())"
+
+        try enterWorkbenchIfNeeded()
+        try openH12WorkspaceIfNeeded()
+        _ = try await h12RPC(
+            endpoint: endpoint,
+            token: token,
+            method: "session/create",
+            args: [
+                "request": ["cwd": workspace, "sessionId": sessionID]
+            ],
+            cwd: workspace
+        )
+        _ = try await h12RPC(
+            endpoint: endpoint,
+            token: token,
+            method: "session/selectModel",
+            args: [
+                "request": [
+                    "sessionId": sessionID,
+                    "provider": "research-mock",
+                    "model": "fixture-model"
+                ]
+            ]
+        )
+        _ = try await h12RPC(
+            endpoint: endpoint,
+            token: token,
+            method: "session/prompt",
+            args: [
+                "request": [
+                    "requestId": "h12-ui-seed-\(UUID().uuidString.lowercased())",
+                    "sessionId": sessionID,
+                    "mode": "queue",
+                    "content": [[
+                        "type": "text",
+                        "text": "Create a visible external Harness session."
+                    ]]
+                ]
+            ]
+        )
+
+        let row = app.descendant(identifier: "sessions.row.\(sessionID)")
+        XCTAssertTrue(
+            row.waitForExistence(timeout: 30),
+            "另一端新建 Harness 会话后，列表应在不重启 App 的情况下出现"
+        )
+        row.tap()
+
+        let input = app.descendant(identifier: "composer.textInput")
+        XCTAssertTrue(input.waitForExistence(timeout: 20), "原生 Harness 会话应复用现有 Composer")
+        input.tap()
+        input.typeText("Continue through the formal Harness UI path.")
+        let send = app.descendant(identifier: "composer.send")
+        XCTAssertTrue(send.waitForExistence(timeout: 5) && send.isEnabled)
+        send.tap()
+
+        let completedAssistant = app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier == %@ AND label CONTAINS %@",
+                "conversation.message.assistant",
+                "fixture complete"
+            )
+        ).firstMatch
+        XCTAssertTrue(
+            completedAssistant.waitForExistence(timeout: 30),
+            "Composer 提交应通过真实 agentd/Harness transport 显示确定性模型结果"
+        )
+    }
+
+    /// H12 的会话页遵守正式产品边界：用户先明确打开工作区，目录才会展示该路径的会话。
+    /// 默认浏览根就是隔离 agentd 的 scan root，因此不使用额外测试开关或内存种子。
+    private func openH12WorkspaceIfNeeded() throws {
+        let needsWorkspace = app.descendant(identifier: "sessions.empty.needsWorkspace")
+        if needsWorkspace.waitForExistence(timeout: 10) {
+            let openWorkspaces = app.descendant(identifier: "sessions.empty.openWorkspaces")
+            XCTAssertTrue(openWorkspaces.waitForExistence(timeout: 5))
+            openWorkspaces.tap()
+
+            let emptyAction = app.descendant(identifier: "workspace.emptyAction")
+            XCTAssertTrue(emptyAction.waitForExistence(timeout: 10), "工作区页应提供打开目录入口")
+            emptyAction.tap()
+
+            let openCurrent = app.descendant(identifier: "workspace.open.current")
+            XCTAssertTrue(openCurrent.waitForExistence(timeout: 10), "目录浏览器应加载隔离 scan root")
+            for _ in 0..<50 where !openCurrent.isEnabled {
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            XCTAssertTrue(openCurrent.isEnabled, "隔离 scan root 应可直接打开")
+            openCurrent.tap()
+            XCTAssertTrue(
+                openCurrent.waitForNonExistence(timeout: 20),
+                "打开工作区完成后目录 Sheet 应关闭"
+            )
+        }
+
+        let sessionsNavigation = app.descendant(identifier: "sidebar.sessions")
+        XCTAssertTrue(sessionsNavigation.waitForExistence(timeout: 10), "工作区打开后应能返回会话页")
+        sessionsNavigation.tap()
+        let existingRows = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "sessions.row."))
+        XCTAssertTrue(
+            existingRows.firstMatch.waitForExistence(timeout: 20),
+            "正式工作区目录应先显示隔离 Harness 已有会话"
+        )
+    }
+
+    private func isolatedH12AgentdIsRunning() async -> Bool {
+        guard let url = URL(string: "\(h12Endpoint)/api/app-server/config") else { return false }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 2
+        request.setValue("Bearer \(h12Token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let channels = body["channels"] as? [[String: Any]] else { return false }
+            return channels.contains { $0["protocol"] as? String == "harness_native_v1" }
+        } catch {
+            return false
+        }
+    }
+
+    private func repositoryRootFromSourcePath() -> String {
+        var source = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 {
+            source.deleteLastPathComponent()
+        }
+        return source.path
+    }
+
+    private func h12RPC(
+        endpoint: String,
+        token: String,
+        method: String,
+        args: [String: Any],
+        cwd: String? = nil
+    ) async throws -> Any {
+        let url = try XCTUnwrap(URL(string: "\(endpoint)/api/harness/rpc"))
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var requestBody: [String: Any] = [
+            "rpcId": "h12-ui-rpc-\(UUID().uuidString.lowercased())",
+            "method": method,
+            "args": args
+        ]
+        if let cwd {
+            requestBody["cwd"] = cwd
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(http.statusCode, 200, "\(method) 应通过原生中继")
+        let body = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let result = try XCTUnwrap(body["result"] as? [String: Any])
+        XCTAssertEqual(result["ok"] as? Bool, true, "\(method) 返回失败：\(body)")
+        return result["value"] ?? NSNull()
     }
 
     /// 竖屏紧凑布局把连接页放进 Tab 导航栈；这里用真实点按守住扫码主操作，

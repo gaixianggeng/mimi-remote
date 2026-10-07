@@ -504,139 +504,6 @@ extension AgentEvent: Decodable {
     }
 }
 
-enum StructuredAgentEvent: Decodable, Hashable {
-    case sessionRow(DataFlowSessionRow, AgentEventMetadata)
-    case sessionStatus(String?, AgentEventMetadata)
-    case sessionContext(SessionContextSnapshot, AgentEventMetadata)
-    case goalUpdated(ThreadGoal, AgentEventMetadata)
-    case goalCleared(AgentEventMetadata)
-    case turnStarted(AgentEventMetadata)
-    case assistantDelta(AgentDelta, AgentEventMetadata)
-    case messageCompleted(AgentMessage, AgentEventMetadata)
-    case logDelta(LogDelta, AgentEventMetadata)
-    case diffUpdated(FileChangeSummary, AgentEventMetadata)
-    case approvalRequest(AgentApprovalRequest, AgentEventMetadata)
-    case approvalResolved(AgentEventMetadata)
-    case userInputRequest(AgentUserInputRequest, AgentEventMetadata)
-    case userInputResolved(AgentEventMetadata, skipped: Bool)
-    case turnCompleted(AgentEventMetadata)
-    case warning(AgentErrorPayload, AgentEventMetadata)
-    case error(AgentErrorPayload, AgentEventMetadata)
-    case unknown(String, AgentEventMetadata)
-
-    enum CodingKeys: String, CodingKey {
-        case type
-        case data
-        case row
-        case message
-        case delta
-        case log
-        case diff
-        case approval
-        case userInput = "user_input"
-        case skipped
-        case error
-        case warning
-        case meta
-        case seq
-        case sessionID = "session_id"
-        case turnID = "turn_id"
-        case itemID = "item_id"
-        case messageID = "message_id"
-        case clientMessageID = "client_message_id"
-        case revision
-        case createdAt = "created_at"
-        case status
-        case context
-        case goal
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let type = try container.decode(String.self, forKey: .type)
-        let metadata = try container.decodeIfPresent(AgentEventMetadata.self, forKey: .meta) ?? AgentEventMetadata(
-            seq: try container.decodeIfPresent(EventSequence.self, forKey: .seq),
-            sessionID: try container.decodeIfPresent(SessionID.self, forKey: .sessionID),
-            turnID: try container.decodeIfPresent(TurnID.self, forKey: .turnID),
-            itemID: try container.decodeIfPresent(AgentItemID.self, forKey: .itemID),
-            messageID: try container.decodeIfPresent(MessageID.self, forKey: .messageID),
-            clientMessageID: try container.decodeIfPresent(ClientMessageID.self, forKey: .clientMessageID),
-            revision: try container.decodeIfPresent(ModelRevision.self, forKey: .revision),
-            createdAt: try container.decodeIfPresent(Date.self, forKey: .createdAt)
-        )
-
-        switch type {
-        case "session_row":
-            self = .sessionRow(try container.decode(DataFlowSessionRow.self, forKey: .row), metadata)
-        case "session_status":
-            if let row = try container.decodeIfPresent(DataFlowSessionRow.self, forKey: .row) {
-                self = .sessionRow(row, metadata)
-            } else if let context = try container.decodeIfPresent(SessionContextSnapshot.self, forKey: .context) {
-                self = .sessionContext(context, metadata)
-            } else {
-                self = .sessionStatus(try container.decodeIfPresent(String.self, forKey: .status), metadata)
-            }
-        case "session_context":
-            self = .sessionContext(try container.decode(SessionContextSnapshot.self, forKey: .context), metadata)
-        case "goal_updated":
-            self = .goalUpdated(try container.decode(ThreadGoal.self, forKey: .goal), metadata)
-        case "goal_cleared":
-            self = .goalCleared(metadata)
-        case "turn_started":
-            self = .turnStarted(metadata)
-        case "assistant_delta":
-            self = .assistantDelta(try Self.decodeDelta(from: container), metadata)
-        case "message_completed":
-            self = .messageCompleted(try container.decode(AgentMessage.self, forKey: .message), metadata)
-        case "log_delta":
-            self = .logDelta(try Self.decodeLogDelta(from: container), metadata)
-        case "diff_updated":
-            self = .diffUpdated(try container.decode(FileChangeSummary.self, forKey: .diff), metadata)
-        case "approval_request":
-            self = .approvalRequest(try container.decode(AgentApprovalRequest.self, forKey: .approval), metadata)
-        case "approval_resolved":
-            self = .approvalResolved(metadata)
-        case "user_input_request":
-            self = .userInputRequest(try container.decode(AgentUserInputRequest.self, forKey: .userInput), metadata)
-        case "user_input_resolved":
-            self = .userInputResolved(metadata, skipped: try container.decodeIfPresent(Bool.self, forKey: .skipped) ?? false)
-        case "turn_completed":
-            self = .turnCompleted(metadata)
-        case "warning":
-            self = .warning(try Self.decodePayload(from: container, key: .warning, fallback: L10n.text("ui.unknown_warning")), metadata)
-        case "error":
-            self = .error(try Self.decodePayload(from: container, key: .error, fallback: L10n.text("ui.unknown_error")), metadata)
-        default:
-            self = .unknown(type, metadata)
-        }
-    }
-
-    private static func decodeDelta(from container: KeyedDecodingContainer<CodingKeys>) throws -> AgentDelta {
-        if let delta = try container.decodeIfPresent(AgentDelta.self, forKey: .delta) {
-            return delta
-        }
-        return AgentDelta(text: try container.decodeIfPresent(String.self, forKey: .data) ?? "", role: .assistant, kind: .message)
-    }
-
-    private static func decodeLogDelta(from container: KeyedDecodingContainer<CodingKeys>) throws -> LogDelta {
-        if let log = try container.decodeIfPresent(LogDelta.self, forKey: .log) {
-            return log
-        }
-        return LogDelta(text: try container.decodeIfPresent(String.self, forKey: .data) ?? "", stream: nil)
-    }
-
-    private static func decodePayload(
-        from container: KeyedDecodingContainer<CodingKeys>,
-        key: CodingKeys,
-        fallback: String
-    ) throws -> AgentErrorPayload {
-        if let payload = try container.decodeIfPresent(AgentErrorPayload.self, forKey: key) {
-            return payload
-        }
-        return AgentErrorPayload(message: try container.decodeIfPresent(String.self, forKey: key) ?? fallback, code: nil, retryable: nil)
-    }
-}
-
 extension AgentEventMetadata {
     static let empty = AgentEventMetadata(
         seq: nil,
@@ -767,12 +634,17 @@ struct CodexAppServerEventProjector {
                 deltaKeys: ["delta", "text"],
                 bufferSuffix: "reasoning-summary-\(summaryIndex)",
                 kind: .reasoningSummary,
-                activityCategory: .thinking,
-                usesDistinctBufferItemID: true
+                activityCategory: .thinking
             )
         case "item/reasoning/summaryPartAdded":
             // 这是新分段边界，本身没有可展示文本；后续 summaryTextDelta 会带 index。
             return nil
+        case "item/reasoning/textDelta":
+            return streamedSystemMessageEvent(
+                params: params, metadata: metadata, deltaKeys: ["delta", "text"],
+                bufferSuffix: "reasoning-content-\(firstInt(in: params, keys: ["contentIndex"]) ?? 0)",
+                kind: .reasoningSummary, activityCategory: .thinking
+            )
         case "thread/tokenUsage/updated":
             return tokenUsageContextEvent(params: params, metadata: metadata)
         case "thread/compacted":
@@ -809,9 +681,6 @@ struct CodexAppServerEventProjector {
             let event = completedUserMessageEvent(params: params, metadata: metadata)
                 ?? completedAgentMessageEvent(params: params, metadata: metadata)
                 ?? completedImageItemEvent(params: params, metadata: metadata)
-                // collabAgentToolCall 的 receiverThreadIds 是子会话关系的唯一可信来源。
-                // 必须先于通用工具活动投影处理，否则它会被 processItemCompleted 吞掉。
-                ?? collabSubagentContextEvent(params: params, metadata: metadata)
                 ?? completedProcessItemEvent(params: params, metadata: metadata)
                 ?? itemContextEvent(params: params, metadata: metadata)
             if let itemID = metadata.itemID {
@@ -1132,8 +1001,7 @@ struct CodexAppServerEventProjector {
         deltaKeys: [String],
         bufferSuffix: String,
         kind: MessageKind,
-        activityCategory: ConversationActivityCategory? = nil,
-        usesDistinctBufferItemID: Bool = false
+        activityCategory: ConversationActivityCategory? = nil
     ) -> AgentEvent? {
         guard let delta = firstString(in: params, keys: deltaKeys), !delta.isEmpty else {
             return nil
@@ -1145,8 +1013,21 @@ struct CodexAppServerEventProjector {
             suffix: bufferSuffix
         )
         streamedTextByKey[key, default: ""].append(contentsOf: delta)
-        guard let next = streamedTextByKey[key] else {
-            return nil
+        // summary parts 属于同一 item；累计正文复用完成事件的身份，避免展开后重复显示分段和终稿。
+        let next: String
+        if activityCategory == .thinking {
+            next = streamedTextByKey.filter {
+                $0.key.sessionID == key.sessionID && $0.key.turnID == key.turnID
+                    && $0.key.itemID == key.itemID && $0.key.suffix.hasPrefix("reasoning-")
+            }.sorted {
+                let left = ($0.key.suffix.hasPrefix("reasoning-summary-") ? 0 : 1,
+                            Int($0.key.suffix.split(separator: "-").last ?? "0") ?? 0)
+                let right = ($1.key.suffix.hasPrefix("reasoning-summary-") ? 0 : 1,
+                             Int($1.key.suffix.split(separator: "-").last ?? "0") ?? 0)
+                return left < right
+            }.map(\.value).joined(separator: "\n\n")
+        } else {
+            next = streamedTextByKey[key] ?? ""
         }
         let payload = activityCategory.map { category in
             ConversationActivityPayload(
@@ -1158,9 +1039,7 @@ struct CodexAppServerEventProjector {
         }
         return systemNoticeEvent(
             text: next,
-            itemID: usesDistinctBufferItemID
-                ? "\(metadata.itemID ?? "reasoning"):\(bufferSuffix)"
-                : (metadata.itemID ?? bufferSuffix),
+            itemID: metadata.itemID ?? bufferSuffix,
             kind: kind,
             metadata: metadata,
             activityPayload: payload
@@ -1333,7 +1212,7 @@ struct CodexAppServerEventProjector {
         else {
             return nil
         }
-        let content = payload.summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = payload.detailText(from: item)
         guard !content.isEmpty else {
             return nil
         }
@@ -1354,14 +1233,16 @@ struct CodexAppServerEventProjector {
             revision: metadata.revision ?? 0,
             sendStatus: .confirmed
         )
-        let context = contextTask(from: item, fallbackStatus: firstString(in: params, keys: ["status"])).map { task in
-            SessionContextSnapshot(
-                sessionID: metadata.sessionID,
-                threadID: metadata.sessionID,
-                tasks: [task],
-                updatedAt: Date()
-            )
-        }
+        let task = contextTask(from: item, fallbackStatus: firstString(in: params, keys: ["status"]))
+        let subagents = contextSubagents(from: item, parentThreadID: metadata.sessionID)
+        // 工具结果与子 Agent 关系一起交付，不能为了更新侧栏而吞掉时间线的完成正文。
+        let context = SessionContextSnapshot(
+            sessionID: metadata.sessionID,
+            threadID: metadata.sessionID,
+            tasks: task.map { [$0] } ?? [],
+            subagents: subagents,
+            updatedAt: Date()
+        )
         return .processItemCompleted(message, context, metadata)
     }
 
@@ -1432,28 +1313,6 @@ struct CodexAppServerEventProjector {
         )
     }
 
-    private func collabSubagentContextEvent(
-        params: [String: CodexAppServerJSONValue],
-        metadata: AgentEventMetadata
-    ) -> AgentEvent? {
-        guard let item = params["item"]?.objectValue else {
-            return nil
-        }
-        let subagents = contextSubagents(from: item, parentThreadID: metadata.sessionID)
-        guard !subagents.isEmpty else {
-            return nil
-        }
-        return .sessionContext(
-            SessionContextSnapshot(
-                sessionID: metadata.sessionID,
-                threadID: metadata.sessionID,
-                subagents: subagents,
-                updatedAt: Date()
-            ),
-            metadata
-        )
-    }
-
     private func contextSubagents(
         from item: [String: CodexAppServerJSONValue],
         parentThreadID: SessionID?
@@ -1516,6 +1375,8 @@ struct CodexAppServerEventProjector {
                 status: status
             )
         case "dynamicToolCall":
+            // 任务清单有独立投影，工具调用本身仅保留在时间线，避免重复任务。
+            guard !ClaudeTaskHistoryProjection.isTaskMutation(item) else { return nil }
             let namespace = firstString(in: item, keys: ["namespace"])
             let tool = firstString(in: item, keys: ["tool"]) ?? L10n.text("ui.dynamic_tools")
             let title = [namespace, tool].compactMap { $0 }.joined(separator: ".")

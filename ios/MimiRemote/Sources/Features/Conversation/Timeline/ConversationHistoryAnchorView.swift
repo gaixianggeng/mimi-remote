@@ -45,7 +45,16 @@ private struct ConversationBindAnchorViewKey: EnvironmentKey {
     static let defaultValue: @MainActor ([UUID], UIView) -> Void = { _, _ in }
 }
 
+private struct ConversationDetailedTranscriptKey: EnvironmentKey {
+    static let defaultValue = Binding.constant(false)
+}
+
 extension EnvironmentValues {
+    var conversationDetailedTranscript: Binding<Bool> {
+        get { self[ConversationDetailedTranscriptKey.self] }
+        set { self[ConversationDetailedTranscriptKey.self] = newValue }
+    }
+
     var conversationBindAnchorView: @MainActor ([UUID], UIView) -> Void {
         get { self[ConversationBindAnchorViewKey.self] }
         set { self[ConversationBindAnchorViewKey.self] = newValue }

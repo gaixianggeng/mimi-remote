@@ -140,13 +140,28 @@ extension SessionStore {
         var didRefreshRuntimeAvailability = false
         do {
             let client = try clientFactory()
-            // Claude 卡片以 config.channels 的真实可用性为准，不能依赖 model/list 是否成功。
+            // Runtime 入口以 config.channels 的真实可用性为准，不能依赖 model/list 是否成功。
             // 即使模型列表处于 5 分钟缓存期，也要重新读取轻量 channel 元数据。
-            let isClaudeRuntimeChannelAvailable = (try? await client.runtimeChannelAvailable(
-                runtimeProvider: "claude"
-            )) == true
+            //
+            // **codex 也要探测。** 它同样可能被关掉（host 侧 `HasEnabledAgent()` 就允许
+            // 只剩 claude），写死成"恒可用"会让选择器在一个 codex 通道不可用的主机上
+            // 仍然提供 codex，而真正能用的 claude 不会顶上来。
+            var availableRuntimeProviders: Set<String> = []
+            for provider in RuntimeFeatureSupport.runtimeProviders {
+                if (try? await client.runtimeChannelAvailable(runtimeProvider: provider)) == true {
+                    availableRuntimeProviders.insert(provider)
+                }
+            }
             guard appStore.activeHostScope == hostScope else { return }
-            self.isClaudeRuntimeChannelAvailable = isClaudeRuntimeChannelAvailable
+            self.availableRuntimeProviders = availableRuntimeProviders
+            if availableRuntimeProviders.contains(Self.nativeHarnessRuntimeProvider) {
+                // 用户已启用、agentd 能力兼容且 Harness 健康后，才建立宿主级事件流。
+                // 这只观察上游，不拥有或停止 Harness 正在执行的任务。
+                installNativeHarnessHostEvents()
+            } else {
+                stopNativeHarnessHostEvents()
+                stopNativeHarnessDirectory()
+            }
             didRefreshRuntimeAvailability = true
             if !force,
                let appServerModelOptionsLastRefresh,
@@ -158,6 +173,9 @@ extension SessionStore {
             let options = try await client.modelOptions()
             guard appStore.activeHostScope == hostScope else { return }
             appServerModelOptionsLastRefresh = Date()
+            for provider in RuntimeFeatureSupport.runtimeProviders {
+                turnModelRefreshByRuntime[provider] = (hostScope, Date())
+            }
             if !options.isEmpty || force {
                 appServerModelOptions = options
             }
@@ -167,12 +185,85 @@ extension SessionStore {
         } catch {
             guard appStore.activeHostScope == hostScope else { return }
             if !didRefreshRuntimeAvailability {
-                isClaudeRuntimeChannelAvailable = false
+                availableRuntimeProviders = ["codex"]
             }
             appServerModelOptionsLastRefresh = Date()
+            for provider in RuntimeFeatureSupport.runtimeProviders {
+                turnModelRefreshByRuntime[provider] = (hostScope, Date())
+            }
             if force {
                 setStatusMessage(L10n.text("ui.model_list_unavailable_continue_using_built_in_options"))
             }
+        }
+    }
+
+    private func prepareTurnModelOptions(runtimeProvider: String, hostScope: HostScope) async {
+        guard appStore.activeHostScope == hostScope else { return }
+        let provider = Self.normalizedRuntimeProvider(runtimeProvider)
+        guard RuntimeFeatureSupport.runtimeProviders.contains(provider) else { return }
+        if appServerModelOptions.contains(where: { Self.normalizedRuntimeProvider($0.runtimeProvider) == provider }) {
+            return
+        }
+        if let refresh = turnModelRefreshByRuntime[provider], refresh.hostScope == hostScope,
+           Date().timeIntervalSince(refresh.date) < 300 {
+            return
+        }
+        let requestID: UUID
+        let refreshDate: Date?
+        let task: Task<[CodexAppServerModelOption], Error>
+        if let pending = turnModelTasksByRuntime[provider], pending.hostScope == hostScope {
+            requestID = pending.id
+            refreshDate = pending.refreshDate
+            task = pending.task
+        } else {
+            do {
+                let client = try clientFactory()
+                requestID = UUID()
+                refreshDate = turnModelRefreshByRuntime[provider]?.date
+                task = Task { try await client.modelOptions(runtimeProvider: provider) }
+                turnModelTasksByRuntime[provider] = (hostScope, requestID, refreshDate, task)
+            } catch {
+                turnModelRefreshByRuntime[provider] = (hostScope, Date())
+                return
+            }
+        }
+        let result = await task.result
+        // 同一目标共享请求；旧主机或已被另一等待者收尾的请求不能清除新请求。
+        guard appStore.activeHostScope == hostScope,
+              turnModelTasksByRuntime[provider]?.id == requestID else { return }
+        turnModelTasksByRuntime.removeValue(forKey: provider)
+        // 强制菜单刷新已产生更新的成功/失败快照时，旧目标查询不能覆盖它。
+        guard turnModelRefreshByRuntime[provider]?.date == refreshDate else { return }
+        turnModelRefreshByRuntime[provider] = (hostScope, Date())
+        if case .success(let options) = result {
+            // 菜单与发送共用一份目录。兼容返回聚合目录的单 Runtime/测试客户端。
+            let refreshedProviders = Set(options.map { Self.normalizedRuntimeProvider($0.runtimeProvider) }).union([provider])
+            appServerModelOptions = appServerModelOptions.filter {
+                !refreshedProviders.contains(Self.normalizedRuntimeProvider($0.runtimeProvider))
+            } + options
+        }
+    }
+
+    /// 用户点到暂不可用的 Runtime 时只重探该通道；先尝试重读配置，避免沿用
+    /// Mac 端刚启用通道前的缓存。配置刷新失败仍可用旧快照重试健康探测，
+    /// 探测失败不撤销其他已确认可用的通道。
+    func retryRuntimeAvailability(_ runtimeProvider: String) async -> Bool {
+        let provider = Self.normalizedRuntimeProvider(runtimeProvider)
+        guard RuntimeFeatureSupport.runtimeProviders.contains(provider) else { return false }
+        let hostScope = appStore.activeHostScope
+        do {
+            _ = try? await appStore.activeRuntimeBundle?.refreshConfiguration()
+            let available = try await clientFactory().runtimeChannelAvailable(runtimeProvider: provider)
+            guard appStore.activeHostScope == hostScope else { return false }
+            if available {
+                availableRuntimeProviders.insert(provider)
+                if provider == Self.nativeHarnessRuntimeProvider {
+                    installNativeHarnessHostEvents()
+                }
+            }
+            return available
+        } catch {
+            return false
         }
     }
 
@@ -253,11 +344,20 @@ extension SessionStore {
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
             return resolved
         }
-        if appServerModelOptions.isEmpty {
-            await refreshAppServerModelOptions(expectedHostScope: submissionContext?.hostScope)
+        let isLocalDraft = submissionContext.map { $0.session?.isLocalDraft == true }
+            ?? (selectedSession?.isLocalDraft == true)
+        // 草稿的 nil 是 Codex 的兼容写法；部分目录不能把它隐式改成其他 Runtime。
+        // 草稿仍允许用户显式选择 Runtime，没有会话的新入口保留原有默认项推断。
+        let targetRuntimeProvider = lockedRuntimeProvider
+            ?? Self.explicitRuntimeProvider(resolved.options.runtimeProvider)
+            ?? (isLocalDraft ? "codex" : nil)
+        if appServerModelOptions.isEmpty || targetRuntimeProvider != nil {
+            await prepareTurnModelOptions(
+                runtimeProvider: targetRuntimeProvider ?? "codex",
+                hostScope: submissionContext?.hostScope ?? appStore.activeHostScope
+            )
         }
         let allOptions = appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : appServerModelOptions
-        let targetRuntimeProvider = lockedRuntimeProvider ?? Self.explicitRuntimeProvider(resolved.options.runtimeProvider)
         let options = targetRuntimeProvider.map { runtimeProvider in
             allOptions.filter { Self.normalizedRuntimeProvider($0.runtimeProvider) == runtimeProvider }
         } ?? allOptions
@@ -266,6 +366,13 @@ extension SessionStore {
             candidateOptions = CodexAppServerModelOption.builtInClaudeFallback
         } else if options.isEmpty, targetRuntimeProvider == "codex" {
             candidateOptions = CodexAppServerModelOption.builtInFallback
+        } else if let targetRuntimeProvider, targetRuntimeProvider != "codex", targetRuntimeProvider != "claude" {
+            // 第三方目录不可用时不能拿 GPT 作为兜底，也不能继续发送旧的跨通道模型。
+            candidateOptions = options
+            if options.isEmpty {
+                resolved.options.model = nil
+                resolved.options.modelProvider = nil
+            }
         } else {
             candidateOptions = options.isEmpty ? allOptions : options
         }
@@ -274,11 +381,15 @@ extension SessionStore {
            !requestedModel.isEmpty,
            let matched = candidateOptions.first(where: {
                $0.model.caseInsensitiveCompare(requestedModel) == .orderedSame
+                   && (!RuntimeFeatureSupport.isDeepSeek(targetRuntimeProvider)
+                       || resolved.options.modelProvider == nil
+                       || $0.provider == resolved.options.modelProvider)
            }) {
             // 目录命中后使用服务端返回的 canonical id/provider，避免旧草稿或跨渠道残留
             // 把不可识别 UUID/alias 直接送进 turn/start。
             resolved.options.model = matched.model
             resolved.options.modelProvider = matched.provider
+            resolveHarnessReasoningEffort(&resolved.options, model: matched)
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
             return resolved
         }
@@ -295,8 +406,21 @@ extension SessionStore {
         }
         resolved.options.model = selected.model
         resolved.options.modelProvider = selected.provider
+        resolveHarnessReasoningEffort(&resolved.options, model: selected)
         resolved.options = resolved.options.sanitizedForRuntimePolicy()
         return resolved
+    }
+
+    private func resolveHarnessReasoningEffort(
+        _ options: inout CodexAppServerTurnOptions,
+        model: CodexAppServerModelOption
+    ) {
+        guard RuntimeFeatureSupport.isDeepSeek(options.runtimeProvider) else { return }
+        // 跨模型切换不继承目录未声明的档位，避免把 Codex 的默认档位送到 Harness。
+        if let effort = options.reasoningEffort,
+           model.supportedReasoningEfforts.contains(effort.rawValue) { return }
+        options.reasoningEffort = model.defaultReasoningEffort
+            .flatMap(CodexAppServerReasoningEffort.init(rawValue:))
     }
 
     func updateSelectedThreadPermissionsForNextTurn(_ options: CodexAppServerTurnOptions) {
@@ -339,6 +463,10 @@ extension SessionStore {
         CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue)
     }
 
+    func isRuntimeAvailable(_ provider: String) -> Bool {
+        availableRuntimeProviders.contains(Self.normalizedRuntimeProvider(provider))
+    }
+
     static func payloadRuntimeProvider(_ normalizedRuntimeProvider: String) -> String? {
         normalizedRuntimeProvider == "codex" ? nil : normalizedRuntimeProvider
     }
@@ -369,29 +497,41 @@ extension SessionStore {
     }
 
     func loadEarlierHistory(sessionID: SessionID) async {
-        guard let session = sessionsByID[sessionID],
+        guard !Task.isCancelled,
+              let session = sessionsByID[sessionID],
               let cursor = historyPreviousCursorBySessionID[session.id],
               canLoadEarlierHistory(sessionID: session.id),
+              historyLoadJobsBySessionID[session.id] == nil,
               !loadingEarlierHistorySessionIDs.contains(session.id)
         else {
             return
         }
+        let hostScope = appStore.activeHostScope
+        let jobToken = historyLoadJobTokenBySessionID[session.id]
+        let pageToken = historyPageRequestTokenBySessionID[session.id]
+        // 翻页属于发起时的主机和首屏上下文；普通切换会话仍可更新原会话缓存。
+        let isCurrentContext = {
+            self.appStore.activeHostScope == hostScope
+                && self.historyLoadJobTokenBySessionID[session.id] == jobToken
+                && self.historyPageRequestTokenBySessionID[session.id] == pageToken
+        }
         loadingEarlierHistorySessionIDs.insert(session.id)
-        setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.load_older_messages"), fraction: 0.18)
+        showHistoryLoading(sessionID: session.id)
         defer {
-            loadingEarlierHistorySessionIDs.remove(session.id)
-            clearHistoryLoadProgress(sessionID: session.id)
+            if isCurrentContext() {
+                loadingEarlierHistorySessionIDs.remove(session.id)
+                hideHistoryLoading(sessionID: session.id)
+            }
         }
         do {
             let client = try clientFactory()
-            setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.request_history_paging"), fraction: 0.42)
             let page = try await client.messagesPage(
                 sessionID: session.id,
                 before: cursor,
                 limit: historyLoadedQualityBySessionID[session.id] == .summary ? economyHistoryPageLimit : fullHistoryPageLimit,
                 loadMode: historyLoadedQualityBySessionID[session.id] == .summary ? .economy : .full
             )
-            setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.parse_historical_messages"), fraction: 0.76)
+            guard !Task.isCancelled, isCurrentContext() else { return }
             ingestHistoryContext(page.context, fallbackSessionID: session.id)
             conversationStore.setHistory(
                 page.messages,
@@ -404,7 +544,6 @@ extension SessionStore {
                 authoritativeHistory: page.messages,
                 historyIsComplete: page.loadMode == .full && !page.hasMoreBefore
             )
-            setHistoryLoadProgress(sessionID: session.id, title: L10n.text("ui.update_interface"), fraction: 0.94)
             updateHistoryPageState(
                 sessionID: session.id,
                 page: page,
@@ -413,14 +552,28 @@ extension SessionStore {
             )
             historySessionsWithAdditionalPages.insert(session.id)
             appendHistoryItemEnrichment(page: page, sessionID: session.id)
-            setErrorMessage(nil)
+            setErrorMessage(nil, sessionID: session.id)
         } catch {
+            guard !Task.isCancelled, isCurrentContext() else { return }
+            if case HarnessTransportError.continuityLost = error {
+                // 首屏刷新失败也可能已经换了原生读取基线；只重建一次首屏 cursor，
+                // 保留已显示正文，下一次用户翻页再沿新上下文继续，避免递归重试。
+                _ = await loadHistory(
+                    for: session,
+                    quiet: selectedSessionID != session.id,
+                    loadMode: historyLoadedQualityBySessionID[session.id] == .summary ? .economy : .full,
+                    force: true,
+                    reason: .authoritativeReopen,
+                    allowPolicyRetry: false
+                )
+                return
+            }
             if case AgentAPIError.invalidResponse = error {
                 // 无效分页响应无法安全重试。保留已加载内容，但关闭入口，避免同一 cursor
                 // 被用户或自动流程反复请求。
                 closeHistoryPagination(sessionID: session.id)
             }
-            setErrorMessage(error.localizedDescription)
+            setErrorMessage(error.localizedDescription, sessionID: session.id)
         }
     }
 
@@ -607,7 +760,7 @@ extension SessionStore {
 
         if workspace == nil {
             // 冷启动时项目索引可能尚未建立；只补一次项目元数据，不进入 bootstrap 的循环重试。
-            let fetchedProjects = try await client.projects()
+            let fetchedProjects = try await workspaceHostClientFactory().projects()
             guard route.profileID == appStore.notificationRoutingProfileID else {
                 return .profileSwitched
             }
@@ -655,7 +808,8 @@ extension SessionStore {
         if case .userOpen = reason { notificationNavigation.userNavigated() }
         let previousSession = selectedSession
         let session = sessionForExplicitSelection(candidate)
-        let wasNoOpSelection = isNoOpHistorySelection(session)
+        let isNotificationOpen = reason == .notification
+        let wasNoOpSelection = !isNotificationOpen && isNoOpHistorySelection(session)
         guard let selectionLease = commitSelection(
             projectID: session.projectID,
             sessionID: session.id,
@@ -666,6 +820,7 @@ extension SessionStore {
         }
         // 选择提交意味着详情已经成为当前可见目标；历史加载即使随后失败，也不能让列表
         // 继续把用户刚打开过的完成结果标成未读。
+        HostSwitchSignpost.event("conversation_open")
         markHistorySessionRead(session.id)
         if let previousSession, previousSession.id != session.id {
             cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
@@ -706,12 +861,44 @@ extension SessionStore {
         }
 #endif
 
-        if session.isRunning && canControlSession(session) {
-            // 重新点回运行会话时，离开期间的输出先用 thread/read 快照一次性补齐；
-            // 随后的 WebSocket 只回放状态级 backlog，避免消息区把旧 delta 逐条直播。
-            let didRefreshHistory = await loadHistory(for: session)
-            guard isSelectionLeaseCurrent(selectionLease) else { return false }
-            connectWebSocket(session, replayBufferedEvents: !didRefreshHistory)
+        if isNotificationOpen {
+            // 推送与实时事件走不同链路。通知到达时本地签名可能还停在上一轮，
+            // 必须为通知目标重新取首屏，不能依赖挂起前所选会话的前台恢复。
+            if let previousJob = historyLoadJobsBySessionID[session.id] {
+                // 即使旧请求已绕过缓存，也可能早于这次通知；它不能代表通知后的快照。
+                cancelHistoryLoadJob(previousJob, sessionID: session.id)
+            }
+            let didRefreshHistory = await loadHistory(
+                for: session,
+                quiet: true,
+                showsProgress: true,
+                force: true,
+                reason: .authoritativeReopen
+            )
+            guard isSelectionLeaseCurrent(selectionLease),
+                  let refreshed = selectedSession else { return false }
+            if refreshed.isRunning && !canControlSession(refreshed) {
+                disconnectWebSocket()
+            } else {
+                connectWebSocket(
+                    refreshed,
+                    replayBufferedEvents: !didRefreshHistory,
+                    allowNonRunning: true
+                )
+            }
+        } else if session.isRunning && canControlSession(session) {
+            // 运行中的会话优先恢复实时订阅，不能让历史首屏网络耗时挡住 turn 状态和新输出。
+            // 先带 replay 接入保证历史加载期间产生的事件不会丢；随后权威历史快照负责去重/
+            // 对账，事件 reducer 的 stable id/seq 继续作为合并边界。
+            connectWebSocket(session, replayBufferedEvents: true)
+            if conversationStore.hasLoadedHistory(sessionID: session.id) {
+                // 已有可读缓存时不要让 selectSession 等网络；后台权威补齐即可。
+                // 页面立刻可交互，Socket 已经承担从当前时刻开始的实时增量。
+                scheduleQuietHistoryRefresh(for: session, showsProgress: true)
+            } else {
+                _ = await loadHistory(for: session)
+                guard isSelectionLeaseCurrent(selectionLease) else { return false }
+            }
         } else if session.isRunning {
             // 其他客户端正在运行：只读观察，不建立可发送的事件通道。
             await loadHistoryIfNeeded(for: session)
@@ -930,6 +1117,14 @@ extension SessionStore {
         guard !payload.isEmpty else {
             return false
         }
+        let diagnosticCorrelation = targetSession.map {
+            beginTurnDiagnostics(sessionID: $0.id)
+        } ?? AppDiagnosticCorrelation.make()
+        AppDiagnostics.record(
+            stage: .messageSend,
+            result: .started,
+            correlation: diagnosticCorrelation
+        )
         if let session = targetSession,
            isProtocolReadOnlySession(session) {
             setErrorMessage(L10n.text("ui.read_only"))
@@ -940,11 +1135,28 @@ extension SessionStore {
             setErrorMessage(notice.message)
             return false
         }
+        let preparationLease = submissionContext.selectionLease
+        if runningDelivery == .queued, isSelectionLeaseCurrent(preparationLease) {
+            // 模型目录可能走网络；从点击发送起就复用发送状态，并随页面租约释放。
+            sessionCreationLoadingLease = preparationLease
+            isLoading = true
+        }
+        defer {
+            if runningDelivery == .queued, isSubmissionHostCurrent(submissionContext),
+               sessionCreationLoadingLease == preparationLease {
+                sessionCreationLoadingLease = nil
+                isLoading = false
+            }
+        }
         let payload = runningDelivery == .queued
             ? await payloadResolvingRequiredModel(payload, submissionContext: submissionContext)
             : payload
         guard isSubmissionHostCurrent(submissionContext) else { return false }
         guard !isAwaitingSessionCreation(targetSession) else { return false }
+        if let error = RuntimeFeatureSupport.submissionError(for: payload) {
+            setErrorMessage(error)
+            return false
+        }
         let prompt = payload.previewText
 
         if let localDraft = targetSession, localDraft.isLocalDraft {
@@ -1105,12 +1317,19 @@ extension SessionStore {
             return
         }
         guard let socket = readyWebSocket(for: session) else {
+            AppDiagnostics.record(stage: .interrupt, result: .failed, reason: .notConnected)
             return
         }
         if !socket.sendCtrlC(expectedTurnID: activeTurnID) {
+            AppDiagnostics.record(stage: .interrupt, result: .failed, reason: .transport)
             setErrorMessage(L10n.text("ui.failed_to_stop_current_reply_websocket_not_connected"))
             return
         }
+        AppDiagnostics.record(
+            stage: .interrupt,
+            result: .started,
+            correlation: diagnosticCorrelation(sessionID: session.id)
+        )
         // 中断只停止当前 turn，不关闭 thread；等待匹配的 turn/completed 后，
         // 原会话仍可继续发送下一条消息。
         setStatusMessage(L10n.text("ui.stopping_current_reply"))
@@ -1130,6 +1349,7 @@ extension SessionStore {
             return
         }
         guard let socket = readyWebSocket(for: session) else {
+            AppDiagnostics.record(stage: .approval, result: .failed, reason: .notConnected)
             setErrorMessage(L10n.text("ui.approval_failed_websocket_not_connected"))
             return
         }
@@ -1141,10 +1361,16 @@ extension SessionStore {
         let isAccepting = normalizedDecision.lowercased().hasPrefix("accept")
         markApprovalDecisionPending(approval.id, sessionID: session.id)
         guard socket.sendApprovalDecision(approvalID: approval.id, decision: normalizedDecision, message: nil) else {
+            AppDiagnostics.record(stage: .approval, result: .failed, reason: .transport)
             clearPendingApprovalDecision(sessionID: session.id, approvalID: approval.id)
             setErrorMessage(L10n.text("ui.approval_sending_failed_websocket_not_connected"))
             return
         }
+        AppDiagnostics.record(
+            stage: .approval,
+            result: .started,
+            correlation: diagnosticCorrelation(sessionID: session.id)
+        )
         if normalizedDecision.caseInsensitiveCompare("acceptWithPermissionUpdate") == .orderedSame {
             setStatusMessage(L10n.text("ui.sent_decision_to_approve_and_remember_rules_awaiting"))
         } else {
@@ -1593,20 +1819,31 @@ extension SessionStore {
         do {
             let client = try clientFactory()
             try await client.stopSession(id: session.id)
-            updateSession(session.id) { item in
-                item.status = "closed"
-                item.pendingApproval = nil
-                item.activeTurnID = nil
-            }
-            clearForegroundActivity(sessionID: session.id)
-            clearRuntimeActivity(sessionID: session.id)
-            cancelQueuedRunningTurns(sessionID: session.id, markMessagesFailed: true)
-            conversationStore.appendSystem(L10n.text("ui.the_session_has_been_stopped"), sessionID: session.id)
-            disconnectWebSocket()
-            setStatusMessage(L10n.text("ui.session_stopped"))
+            applyStoppedSessionState(sessionID: session.id)
         } catch {
-            setErrorMessage(error.localizedDescription)
+            // 远端已经不认识这个 thread / turn 时重试不会成功。本地必须按「已停止」收敛，
+            // 否则会话会永久停在执行中并保留停止控件（gh-509）。
+            guard ControlCommandFailure.classify(error).isStaleTarget else {
+                setErrorMessage(error.localizedDescription)
+                return
+            }
+            applyStoppedSessionState(sessionID: session.id)
         }
+    }
+
+    /// 会话停止的本地收敛：远端确认停止与「远端已经不存在该 thread / turn」共用同一条路径。
+    private func applyStoppedSessionState(sessionID: SessionID) {
+        updateSession(sessionID) { item in
+            item.status = "closed"
+            item.pendingApproval = nil
+            item.activeTurnID = nil
+        }
+        clearForegroundActivity(sessionID: sessionID)
+        clearRuntimeActivity(sessionID: sessionID)
+        cancelQueuedRunningTurns(sessionID: sessionID, markMessagesFailed: true)
+        conversationStore.appendSystem(L10n.text("ui.the_session_has_been_stopped"), sessionID: sessionID)
+        disconnectWebSocket()
+        setStatusMessage(L10n.text("ui.session_stopped"))
     }
 
     func refreshSelectedThreadGoal() async {
@@ -1677,18 +1914,6 @@ extension SessionStore {
             setErrorMessage(error.localizedDescription)
             return false
         }
-    }
-
-    @discardableResult
-    func setSelectedThreadGoal(
-        objective: String?,
-        status: ThreadGoalStatus?,
-        tokenBudget: Int64?
-    ) async -> Bool {
-        guard let sessionID = selectedSessionID else {
-            return false
-        }
-        return await setThreadGoal(threadID: sessionID, objective: objective, status: status, tokenBudget: tokenBudget)
     }
 
     func updateSelectedThreadGoalStatus(_ status: ThreadGoalStatus) async {

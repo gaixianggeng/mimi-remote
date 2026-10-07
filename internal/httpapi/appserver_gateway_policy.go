@@ -236,7 +236,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 			}
 		}
 		if method == "thread/turns/list" {
-			if err := validateGatewayThreadTurnsListParams(params); err != nil {
+			if err := validateGatewayThreadTurnsListParams(p.runtimeID, params); err != nil {
 				return err
 			}
 			if err := p.rememberPendingThreadRequest(frame.ID, appServerGatewayPendingThreadRequest{
@@ -1207,7 +1207,7 @@ func validateGatewayThreadResumeParams(params map[string]any) error {
 	return nil
 }
 
-func validateGatewayThreadTurnsListParams(params map[string]any) error {
+func validateGatewayThreadTurnsListParams(runtimeID string, params map[string]any) error {
 	if value, ok := params["limit"]; ok {
 		if value != nil && !gatewayPositiveJSONNumber(value) {
 			return fmt.Errorf("thread/turns/list.limit 必须是正整数")
@@ -1359,6 +1359,7 @@ func sanitizedGatewayThreadParams(runtimeID string, method string, params map[st
 		} else {
 			safe["sandbox"] = sanitizedGatewayThreadSandbox(runtimeID, params)
 			workspaceWrite = normalizePolicyValue(safe["sandbox"].(string)) == "workspacewrite"
+			fullAccess = normalizePolicyValue(safe["sandbox"].(string)) == "dangerfullaccess"
 		}
 		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
 	}
@@ -1385,11 +1386,23 @@ func sanitizedGatewayInitialTurnsPage(page map[string]any) map[string]any {
 }
 
 func sanitizedGatewayThreadSandbox(runtimeID string, params map[string]any) string {
-	if normalizeAppServerRuntimeID(runtimeID) == "claude" {
+	switch normalizeAppServerRuntimeID(runtimeID) {
+	case "claude":
+		// bridge 支持完全访问时原样下发；是否真的可用由 channel 的 SandboxModes
+		// 与 bridge 版本探测表达，压缩层不做版本判断。
+		if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "dangerfullaccess" {
+			return "danger-full-access"
+		}
 		if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "readonly" {
 			return "read-only"
 		}
 		return "workspace-write"
+	case "deepseek":
+		// Harness 的沙盒由 Harness 自己管理，agentd 不转发也不可能施加沙盒参数
+		// （validateDeepSeekPermissionParams 只放行完全访问）。这里如实回完全访问：
+		// 既不能沿用下面的 Codex 默认值，也不能像先前那样压成 workspace-write——
+		// 那会在改写结果里造出一个没有人执行的约束，与"只读"是同一种谎。
+		return "danger-full-access"
 	}
 	if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "readonly" {
 		return "read-only"
@@ -1428,6 +1441,7 @@ func sanitizedGatewayTurnParams(runtimeID string, params map[string]any, cwd str
 			safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(runtimeID, params["sandboxPolicy"], cwd)
 			sandboxPolicy := safe["sandboxPolicy"].(map[string]any)
 			workspaceWrite = normalizePolicyValue(sandboxPolicy["type"].(string)) == "workspacewrite"
+			fullAccess = normalizePolicyValue(sandboxPolicy["type"].(string)) == "dangerfullaccess"
 		}
 		safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params, workspaceWrite, fullAccess)
 	}
@@ -1676,6 +1690,9 @@ func sanitizedGatewaySandboxPolicy(runtimeID string, raw any, cwd string) map[st
 	sandboxType, _ := gatewayStringParam(sandbox, "type")
 	normalizedType := normalizePolicyValue(sandboxType)
 	if normalizeAppServerRuntimeID(runtimeID) == "claude" {
+		if normalizedType == "dangerfullaccess" {
+			return map[string]any{"type": "dangerFullAccess"}
+		}
 		if normalizedType == "readonly" {
 			return map[string]any{
 				"type":          "readOnly",

@@ -8,9 +8,8 @@ import UIKit
 
 /// 锁屏审批提醒的客户端协调器。
 ///
-/// 这是一个**默认关闭的实验功能**：关闭状态下不请求通知授权、不注册 Device
-/// Token、不向 Provider 发送任何请求。首次开启必须先看到明确的数据披露并同意，
-/// 同意是绑定到具体收件主机的——中转地址变了，同意就要重新给一次。
+/// 用户偏好默认开启，注册状态单独维护。官方服务直接使用系统授权；
+/// 自定义服务仍需信任具体地址，地址变更后不能静默注册。
 @MainActor
 final class LockScreenApprovalStore: ObservableObject {
     enum Status: Equatable {
@@ -68,6 +67,7 @@ final class LockScreenApprovalStore: ObservableObject {
 		static let registeredProfileID = "lockScreenApproval.registeredProfileID"
 		static let registeredProviderURL = "lockScreenApproval.registeredProviderURL"
 		static let deviceTokenFingerprint = "lockScreenApproval.deviceTokenFingerprint"
+		static let registrationNeedsRepair = "messageNotifications.registrationNeedsRepair"
     }
 
 	private struct HostSupport {
@@ -83,6 +83,7 @@ final class LockScreenApprovalStore: ObservableObject {
 	}
 
     @Published private(set) var status: Status = .off
+	@Published private(set) var notificationsEnabled: Bool
 	@Published private var hostSupportByProfileID: [String: HostSupport] = [:]
     /// 最近一次锁屏决策的结果。UI 必须如实展示冲突、过期与未知，
     /// 把超时显示成成功比不显示更危险。
@@ -119,10 +120,14 @@ final class LockScreenApprovalStore: ObservableObject {
         self.center = center
         self.ticketStore = ticketStore
         self.environment = environment
+		self.notificationsEnabled = MessageNotificationPreferences.migrate(in: defaults)
 		self.clearNotificationTitleCache = clearNotificationTitleCache
 		self.providerClientFactory = providerClientFactory
 		self.requestAuthorization = requestAuthorization ?? {
-			try await center.requestAuthorization(options: [.alert, .sound, .badge])
+			// 设备 Token 回调也可能在后台到达；只有前台流程可以首次请求权限。
+			try await NotificationAuthorizationController.shared.authorize(
+				requestIfNeeded: UIApplication.shared.applicationState == .active
+			)
 		}
 		do {
 			let resolution = try Self.resolveIdentity(
@@ -164,7 +169,90 @@ final class LockScreenApprovalStore: ObservableObject {
 	/// 同意绑定规范化后的完整 Provider URL。即使 host 相同，端口或路径改变也要重来。
 	func hasConsented(for profileID: String?) -> Bool {
 		guard let providerURL = hostSupport(for: profileID)?.providerBaseURL else { return false }
-		return defaults.string(forKey: Key.consentedProviderURL) == providerURL
+		return providerIsOfficial(for: profileID)
+			|| defaults.string(forKey: Key.consentedProviderURL) == providerURL
+	}
+
+	/// 不等待网络就保存用户意愿，本地通知和并发注册均读取同一个选择。
+	func setNotificationsEnabled(_ enabled: Bool) {
+		defaults.set(enabled, forKey: MessageNotificationPreferences.key)
+		notificationsEnabled = enabled
+		if !enabled {
+			clearNotificationTitleCache()
+			// 本地待发通知立即开始清理；回调重新读取偏好，避免清理后来重新开启的通知。
+			center.getPendingNotificationRequests { [center, defaults] requests in
+				guard !MessageNotificationPreferences.isEnabled(in: defaults) else { return }
+				center.removePendingNotificationRequests(withIdentifiers: requests.map(\.identifier)
+					.filter(UserNotificationSessionReminderScheduler.isRuntimeNotificationID))
+			}
+			// APNs 没有回调时也必须让关闭操作能进入串行队列。
+			handleDeviceTokenFailure(CancellationError())
+		}
+	}
+
+	var hasPendingDisable: Bool { !notificationsEnabled && registeredProfileID != nil }
+
+	var notificationStatusDescription: String {
+		if hasPendingDisable { return L10n.text("ui.push_disable_incomplete") }
+		guard notificationsEnabled else { return L10n.text("ui.push_status_off") }
+		switch status {
+		case .active: return L10n.text("ui.push_status_on")
+		case .notificationsDenied: return L10n.text("ui.push_status_notifications_denied")
+		case .registering: return L10n.text("ui.push_status_registering")
+		case .unavailableOnHost: return L10n.text("ui.push_status_unavailable_on_host")
+		case .previousHostUnavailable: return L10n.text("ui.push_previous_host_unavailable")
+		case .off: return L10n.text("ui.push_status_waiting")
+		case .failed: return L10n.text("ui.push_status_unavailable")
+		}
+	}
+
+	/// 前台的首次连接和恢复共用此入口；已有绑定永远不会随当前电脑自动转移。
+	func synchronize(client: AgentAPIClient, profileID: String) async {
+		await withBindingOperation {
+			if !notificationsEnabled {
+				await clearOffStateArtifacts()
+				await performDisable(client: client, profileID: profileID, previousHostUnavailable: false)
+				return
+			}
+			guard registeredProfileID == nil || registeredProfileID == profileID else { return }
+			await refreshHostSupport(client: client, profileID: profileID)
+			guard notificationsEnabled else { return }
+			// 系统权限属于 App；旧电脑未配置远程推送时，本地通知也可以获得授权。
+			do {
+				guard try await requestNotificationAuthorization() else {
+					status = .notificationsDenied
+					return
+				}
+			} catch {
+				markRegistrationFailed()
+				return
+			}
+			guard notificationsEnabled else { return }
+			guard hostSupportsPush(for: profileID) else {
+				status = .unavailableOnHost
+				return
+			}
+			guard hasConsented(for: profileID) else {
+				status = .failed(message: L10n.text("ui.push_consent_required"))
+				return
+			}
+			if isEnabled,
+			   !defaults.bool(forKey: Key.registrationNeedsRepair),
+			   registeredProviderMatchesCurrentProvider(for: profileID),
+			   // 冷启动的 APNs 回调可能早于主机配置查询；不能用旧 Token 的有效期跳过补注册。
+			   cachedDeviceToken.map({ defaults.string(forKey: Key.deviceTokenFingerprint)
+				   == Self.deviceTokenFingerprint($0) }) ?? true,
+			   let expiry = defaults.object(forKey: Key.ticketExpiresAt) as? Date,
+			   expiry.timeIntervalSinceNow >= 7 * 24 * 60 * 60,
+			   case .active = status {
+				registerNotificationInfrastructure()
+				return
+			}
+			await performEnableUntilCurrentDeviceToken(
+				client: client, profileID: profileID, providerURL: nil,
+				previousClient: nil, previousClientProfileID: nil
+			)
+		}
 	}
 
 	func hostSupportsPush(for profileID: String?) -> Bool {
@@ -253,6 +341,7 @@ final class LockScreenApprovalStore: ObservableObject {
 		previousClientProfileID: String? = nil,
 		takeOverPreviousBinding: Bool = false
 	) async {
+		setNotificationsEnabled(true)
 		await withBindingOperation {
 			await performEnableUntilCurrentDeviceToken(
 				client: client,
@@ -283,7 +372,7 @@ final class LockScreenApprovalStore: ObservableObject {
 		)
 		// APNs 可能在上一次注册已经读取 cachedDeviceToken 后回调新 Token。
 		// 每次成功后重新比较，直到远端绑定与当前缓存一致。
-		while isEnabled, registeredProfileID == profileID {
+		while notificationsEnabled, isEnabled, registeredProfileID == profileID {
 			guard case .active = status,
 			      let token = cachedDeviceToken,
 			      defaults.string(forKey: Key.deviceTokenFingerprint) != Self.deviceTokenFingerprint(token)
@@ -308,6 +397,7 @@ final class LockScreenApprovalStore: ObservableObject {
 		previousClientProfileID: String?,
 		takeOverPreviousBinding: Bool = false
 	) async {
+		guard notificationsEnabled else { return }
 		guard let identity else {
 			status = .failed(message: L10n.text("ui.push_approval_result_unknown"))
 			return
@@ -332,7 +422,7 @@ final class LockScreenApprovalStore: ObservableObject {
 		let needsProviderSwitch = previousProviderURL != nil && previousProviderURL != baseURL
 		let needsBindingSwitch = needsProfileSwitch || needsProviderSwitch
 		let provider = providerClientFactory(baseURL)
-		guard defaults.string(forKey: Key.consentedProviderURL) == baseURL else {
+		guard hasConsented(for: profileID) else {
 			status = .failed(message: L10n.text("ui.push_consent_required"))
 			return
 		}
@@ -380,11 +470,13 @@ final class LockScreenApprovalStore: ObservableObject {
 		}
 		status = .registering
 		var issuedTicket: String?
+		var issuedExpiry: Date?
 		var persistedNewTicket = false
 		var previousUnregistrationAttempted = false
 		var newRegistrationAttempted = false
 		do {
 			let granted = try await requestNotificationAuthorization()
+			guard notificationsEnabled else { return }
 			guard granted else {
 				// 权限被拒时也要如实说明：不能一边关着权限一边宣称锁屏提醒已生效。
 				defaults.set(wasEnabled, forKey: Key.enabled)
@@ -393,6 +485,7 @@ final class LockScreenApprovalStore: ObservableObject {
 			}
 			registerNotificationInfrastructure()
 			let token = try await obtainDeviceToken()
+			guard notificationsEnabled else { return }
 			guard providerIsAuthorized(baseURL, for: profileID) else {
 				defaults.set(wasEnabled, forKey: Key.enabled)
 				status = .failed(message: L10n.text("ui.push_consent_required"))
@@ -404,6 +497,7 @@ final class LockScreenApprovalStore: ObservableObject {
 				environment: environment
 			)
 			issuedTicket = ticket.value
+			issuedExpiry = ticket.expiresAt
 			guard providerIsAuthorized(baseURL, for: profileID) else {
 				throw BindingError.providerChanged
 			}
@@ -444,6 +538,7 @@ final class LockScreenApprovalStore: ObservableObject {
 			}
 
 			defaults.set(true, forKey: Key.enabled)
+			defaults.removeObject(forKey: Key.registrationNeedsRepair)
 			defaults.set(ticket.expiresAt, forKey: Key.ticketExpiresAt)
 			defaults.set(profileID, forKey: Key.registeredProfileID)
 			defaults.set(baseURL, forKey: Key.registeredProviderURL)
@@ -484,15 +579,29 @@ final class LockScreenApprovalStore: ObservableObject {
 					platform: Self.currentPlatform
 				)
 			}
+			var revocationFailed = false
+			if let issuedTicket {
+				do { try await provider.revokeTicket(issuedTicket) }
+				catch { revocationFailed = true }
+			}
+			if previousTicket == nil, revocationFailed, let issuedTicket, let issuedExpiry {
+				// 首次注册响应丢失时，远端可能已经成功。撤销未确认前保留本机凭据，
+				// 关闭流程必须能在重启后继续重试，而不是把未知状态误报成关闭。
+				try? ticketStore.save(issuedTicket)
+				defaults.set(true, forKey: Key.enabled)
+				defaults.set(true, forKey: Key.registrationNeedsRepair)
+				defaults.set(profileID, forKey: Key.registeredProfileID)
+				defaults.set(baseURL, forKey: Key.registeredProviderURL)
+				defaults.set(issuedExpiry, forKey: Key.ticketExpiresAt)
+				markRegistrationFailed()
+				return
+			}
 			if persistedNewTicket {
 				if let previousTicket {
 					try? ticketStore.save(previousTicket)
 				} else {
 					try? ticketStore.delete()
 				}
-			}
-			if let issuedTicket {
-				try? await provider.revokeTicket(issuedTicket)
 			}
 			defaults.set(wasEnabled, forKey: Key.enabled)
 			switch error as? BindingError {
@@ -509,6 +618,7 @@ final class LockScreenApprovalStore: ObservableObject {
 	/// 只在 Provider 已经撤销旧 Ticket 之后调用。
 	private func clearStoredBinding() {
 		try? ticketStore.delete()
+		defaults.removeObject(forKey: Key.registrationNeedsRepair)
 		defaults.set(false, forKey: Key.enabled)
 		for key in [Key.ticketExpiresAt, Key.registeredProfileID, Key.registeredProviderURL, Key.deviceTokenFingerprint] {
 			defaults.removeObject(forKey: key)
@@ -522,10 +632,18 @@ final class LockScreenApprovalStore: ObservableObject {
 		profileID: String?,
 		previousHostUnavailable: Bool = false
 	) async {
+		// 旧调用方持有的 client 不能关闭后来切换到的另一台电脑。
+		if let profileID, let registeredProfileID, profileID != registeredProfileID {
+			markRegistrationFailed()
+			return
+		}
+		setNotificationsEnabled(false)
 		await withBindingOperation {
+			guard !notificationsEnabled else { return }
+			await clearOffStateArtifacts()
 			await performDisable(
 				client: client,
-				profileID: profileID,
+				profileID: profileID ?? registeredProfileID,
 				previousHostUnavailable: previousHostUnavailable
 			)
 		}
@@ -536,6 +654,11 @@ final class LockScreenApprovalStore: ObservableObject {
 		profileID: String?,
 		previousHostUnavailable: Bool
 	) async {
+		if registeredProfileID == nil {
+			status = .off
+			await clearOffStateArtifacts()
+			return
+		}
 		guard let identity else {
 			status = .failed(message: L10n.text("ui.push_approval_result_unknown"))
 			return
@@ -552,13 +675,22 @@ final class LockScreenApprovalStore: ObservableObject {
 			status = .failed(message: L10n.text("ui.push_approval_result_unknown"))
 			return
 		}
-		let ticket = ticketStore.load()
+		let ticket: String?
+		do {
+			ticket = try ticketStore.loadRequired()
+		} catch {
+			// 设备尚未解锁不等于没有凭据；不能因此跳过撤销并显示关闭成功。
+			markRegistrationFailed()
+			return
+		}
 		let registeredProviderURL = self.registeredProviderURL
 		if ticket != nil && registeredProviderURL == nil {
 			status = .failed(message: L10n.text("ui.push_approval_result_unknown"))
 			return
 		}
 		do {
+			// 任一远端撤销都可能成功但丢失响应；重新开启时不能复用旧有效期。
+			defaults.set(true, forKey: Key.registrationNeedsRepair)
 			if let client {
 				try await client.unregisterPushDevice(deviceID: identity.deviceID)
 			}
@@ -567,7 +699,7 @@ final class LockScreenApprovalStore: ObservableObject {
 			if let ticket, let registeredProviderURL {
 				do {
 					try await providerClientFactory(registeredProviderURL).revokeTicket(ticket)
-				} catch where client == nil {
+				} catch {
 					throw BindingError.previousBindingRevokeFailed
 				}
 			}
@@ -577,6 +709,7 @@ final class LockScreenApprovalStore: ObservableObject {
 			return
 		}
 		defaults.set(false, forKey: Key.enabled)
+		defaults.removeObject(forKey: Key.registrationNeedsRepair)
 		for key in [Key.ticketExpiresAt, Key.registeredProfileID, Key.registeredProviderURL, Key.deviceTokenFingerprint] {
 			defaults.removeObject(forKey: key)
 		}
@@ -588,6 +721,7 @@ final class LockScreenApprovalStore: ObservableObject {
 	/// 注销远程通知，并移走已经送达的审批卡片。
 	private func clearOffStateArtifacts() async {
 		clearNotificationTitleCache()
+		await UserNotificationSessionReminderScheduler.cancelRuntimeNotifications(on: center)
 		#if canImport(UIKit)
 		UIApplication.shared.unregisterForRemoteNotifications()
 		#endif
@@ -596,10 +730,10 @@ final class LockScreenApprovalStore: ObservableObject {
 
 	/// Ticket 剩余不足一周时在前台刷新，而不是等它过期后悄悄失去提醒能力。
 	func refreshTicketIfNeeded(client: AgentAPIClient, profileID: String) async {
-		guard isEnabled, registeredProfileID == profileID else { return }
+		guard notificationsEnabled, isEnabled, registeredProfileID == profileID else { return }
 		await withBindingOperation {
 			// 等待队列期间用户可能已经关闭功能或切换绑定，执行前必须重新确认。
-			guard isEnabled, registeredProfileID == profileID else { return }
+			guard notificationsEnabled, isEnabled, registeredProfileID == profileID else { return }
 			guard registeredProviderMatchesCurrentProvider(for: profileID),
 			      hasConsented(for: profileID) else {
 				status = .failed(message: L10n.text("ui.push_consent_required"))
@@ -607,7 +741,8 @@ final class LockScreenApprovalStore: ObservableObject {
 			}
 			if case .failed = status {
 				// 失败状态必须保持可重试，即使旧 Ticket 仍有较长的剩余时间。
-			} else if let expiry = defaults.object(forKey: Key.ticketExpiresAt) as? Date,
+			} else if !defaults.bool(forKey: Key.registrationNeedsRepair),
+			          let expiry = defaults.object(forKey: Key.ticketExpiresAt) as? Date,
 			          expiry.timeIntervalSinceNow >= 7 * 24 * 60 * 60 {
 				return
 			}
@@ -628,7 +763,7 @@ final class LockScreenApprovalStore: ObservableObject {
 		profileID: String
 	) async {
 		await withBindingOperation {
-			guard isEnabled,
+			guard notificationsEnabled, isEnabled,
 			      registeredProfileID == profileID,
 			      registeredProviderMatchesCurrentProvider(for: profileID),
 			      hasConsented(for: profileID),
@@ -653,7 +788,7 @@ final class LockScreenApprovalStore: ObservableObject {
 	func handleDeviceToken(_ token: Data) -> Bool {
 		let hex = token.map { String(format: "%02x", $0) }.joined()
 		let fingerprint = Self.deviceTokenFingerprint(hex)
-		let shouldRefresh = isEnabled &&
+		let shouldRefresh = notificationsEnabled && isEnabled &&
 			defaults.string(forKey: Key.deviceTokenFingerprint) != fingerprint
 		cachedDeviceToken = hex
         let waiting = deviceTokenContinuations
@@ -878,6 +1013,7 @@ final class LockScreenApprovalStore: ObservableObject {
     }
 
 	func registerNotificationInfrastructure() {
+		guard notificationsEnabled else { return }
 		LockScreenApprovalCategory.register(on: center)
 		#if canImport(UIKit)
 		UIApplication.shared.registerForRemoteNotifications()
@@ -941,7 +1077,7 @@ final class LockScreenApprovalStore: ObservableObject {
 	private func providerIsAuthorized(_ providerURL: String, for profileID: String) -> Bool {
 		hostSupport(for: profileID)?.enabled == true
 			&& hostSupport(for: profileID)?.providerBaseURL == providerURL
-			&& defaults.string(forKey: Key.consentedProviderURL) == providerURL
+			&& hasConsented(for: profileID)
 	}
 
 	private func acquireBindingOperation() async {

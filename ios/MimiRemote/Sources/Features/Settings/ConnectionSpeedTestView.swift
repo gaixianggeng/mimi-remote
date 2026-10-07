@@ -26,25 +26,23 @@ struct ConnectionSpeedTestView: View {
 
         Form {
             Section {
-                Picker(
-                    L10n.text("ui.connection_method"),
+                SettingsChoiceRow(
+                    title: L10n.text("ui.connection_method"),
+                    systemImage: "point.3.connected.trianglepath.dotted",
+                    options: ConnectionTestRoute.allCases,
                     selection: $transientPreferences.speedTestRoute
-                ) {
-                    Text(ConnectionTestRoute.tailscale.title).tag(ConnectionTestRoute.tailscale)
-                    Text(ConnectionTestRoute.tailcat.title).tag(ConnectionTestRoute.tailcat)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                )
+                .settingsRow()
                 .accessibilityIdentifier("settings.connectionSpeedTest.route")
             } header: {
-                Text(L10n.text("ui.connection_method"))
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.connection_method"), showsDivider: false)
             }
+            .settingsGroupRowStyle()
 
             benchmarkRecordingSection(tokens: tokens)
 
             Section {
-                HStack(alignment: .center, spacing: 12) {
+                HStack(alignment: .center, spacing: SettingsLayoutMetrics.iconSpacing) {
                     // 与设备首页同一套图标语言：18pt 符号 + 28pt 图标槽，不用彩色圆底。
                     Image(systemName: resultSystemImage)
                         .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
@@ -92,16 +90,17 @@ struct ConnectionSpeedTestView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(tokens.primaryActionForeground)
                 .settingsRow()
                 .disabled(!canRunTest)
                 .accessibilityIdentifier("settings.connectionSpeedTest.run")
             } header: {
-                Text(transientPreferences.speedTestRoute.title)
-                    .settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: transientPreferences.speedTestRoute.title)
             } footer: {
                 Text(testFooter)
                     .settingsSectionFooterStyle()
             }
+            .settingsGroupRowStyle()
 
             if let report = currentReport {
                 Section {
@@ -112,18 +111,18 @@ struct ConnectionSpeedTestView: View {
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
                 } header: {
-                    Text(L10n.text("ui.speed_test_results"))
-                        .settingsSectionHeaderStyle()
+                    SettingsGroupHeader(title: L10n.text("ui.speed_test_results"))
                 }
+                .settingsGroupRowStyle()
 
                 Section {
                     ForEach(report.stages) { stage in
                         ConnectionSpeedTestStageRow(stage: stage)
                     }
                 } header: {
-                    Text(L10n.text("ui.segmentation_takes_time"))
-                        .settingsSectionHeaderStyle()
+                    SettingsGroupHeader(title: L10n.text("ui.segmentation_takes_time"))
                 }
+                .settingsGroupRowStyle()
 
                 if let diagnostics = report.gatewayDiagnostics {
                     Section {
@@ -146,9 +145,9 @@ struct ConnectionSpeedTestView: View {
                             )
                         }
                     } header: {
-                        Text(L10n.text("ui.gateway_observation"))
-                            .settingsSectionHeaderStyle()
+                        SettingsGroupHeader(title: L10n.text("ui.gateway_observation"))
                     }
+                    .settingsGroupRowStyle()
                 }
             }
         }
@@ -205,15 +204,13 @@ struct ConnectionSpeedTestView: View {
                 .disabled(isTesting)
 
             if transientPreferences.recordsBenchmarkSamples {
-                Picker(
-                    L10n.text("ui.connection_benchmark_scenario"),
+                SettingsChoiceRow(
+                    title: L10n.text("ui.connection_benchmark_scenario"),
+                    systemImage: "chart.bar",
+                    options: ConnectionBenchmarkScenario.allCases,
                     selection: $transientPreferences.benchmarkScenario
-                ) {
-                    ForEach(ConnectionBenchmarkScenario.allCases) { scenario in
-                        Text(scenario.title).tag(scenario)
-                    }
-                }
-                .pickerStyle(.segmented)
+                )
+                .settingsRow()
                 .accessibilityIdentifier("settings.connectionSpeedTest.benchmark.scenario")
                 .disabled(isTesting)
 
@@ -242,8 +239,7 @@ struct ConnectionSpeedTestView: View {
                 }
             }
         } header: {
-            Text(L10n.text("ui.connection_benchmark_title"))
-                .settingsSectionHeaderStyle()
+            SettingsGroupHeader(title: L10n.text("ui.connection_benchmark_title"))
         } footer: {
             Group {
                 if transientPreferences.recordsBenchmarkSamples {
@@ -254,6 +250,7 @@ struct ConnectionSpeedTestView: View {
             }
             .settingsSectionFooterStyle()
         }
+        .settingsGroupRowStyle()
     }
 
     private func benchmarkProgressRow(
@@ -725,6 +722,15 @@ struct ConnectionSpeedTestView: View {
     }
 }
 
+extension ConnectionTestRoute: SettingsChoiceOption {
+    var id: String { rawValue }
+    var choiceTitle: String { title }
+}
+
+extension ConnectionBenchmarkScenario: SettingsChoiceOption {
+    var choiceTitle: String { title }
+}
+
 private extension ConnectionTestRoute {
     var title: String {
         switch self {
@@ -821,7 +827,7 @@ private struct ConnectionSpeedTestStageRow: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: SettingsLayoutMetrics.iconSpacing) {
             Image(systemName: stage.status.isFailed ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
                 .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
                 .foregroundStyle(stage.status.isFailed ? tokens.warning : tokens.success)

@@ -510,7 +510,6 @@ func clearSetupEnv(t *testing.T) {
 		"AGENTD_CODEX_AUTH_FILE",
 		"AGENTD_DEBUG_CODEX_HISTORY",
 		"AGENTD_DEV_INSECURE",
-		"AGENTD_OUTPUT_BUFFER_BYTES",
 		"AGENTD_PROJECTS",
 		"AGENTD_SCAN_ROOTS",
 		"AGENTD_BROWSE_ROOTS",
@@ -527,22 +526,4 @@ func hasWarning(warnings []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func assertPrivateTokenFile(t *testing.T, path string) {
-	t.Helper()
-	info, err := os.Lstat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
-		t.Fatalf("upstream token 必须是 0600 regular file：mode=%v", info.Mode())
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(strings.TrimSpace(string(raw))) != 64 {
-		t.Fatalf("upstream token 应为 32-byte hex：%q", raw)
-	}
 }

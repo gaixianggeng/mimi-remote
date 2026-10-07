@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use alleycat_bridge_core::{
@@ -204,6 +205,8 @@ pub struct ClaudeProcessHandle {
     /// Stable identity for this process instance. A thread can own several
     /// generations over its lifetime after crash recovery.
     generation: String,
+    // 外部进程续聊后，本进程内存中的 leaf 已过期；即使对方自然退出也不能直接复用。
+    requires_resume: AtomicBool,
     pid: Option<u32>,
     /// Sender end of the writer mpsc — closing this is the signal to the
     /// writer task to drop claude's stdin (which makes claude exit cleanly).
@@ -227,6 +230,8 @@ pub struct ClaudeProcessHandle {
     /// can diff and skip no-op writes (avoids burning a request RTT per turn
     /// when nothing changes).
     runtime_state: Arc<Mutex<RuntimeState>>,
+    // 沙箱和 Windows 工具开关由 argv 决定，退出完全访问时必须替换进程。
+    full_access: bool,
     /// Serializes the read → control request → cache write transaction for
     /// per-turn runtime overrides. The active-turn guard is registered later,
     /// so concurrent turn/start calls can otherwise race in this window.
@@ -333,7 +338,8 @@ impl ClaudeProcessHandle {
         args.push("stream-json".into());
         args.push("--include-partial-messages".into());
         args.push("--verbose".into());
-        apply_platform_security_args(&mut args);
+        let full_access = permission_mode.as_deref() == Some("bypassPermissions");
+        apply_platform_security_args(&mut args, full_access);
         if bypass_permissions {
             args.push("--dangerously-skip-permissions".into());
         } else {
@@ -457,6 +463,7 @@ impl ClaudeProcessHandle {
             claude_bin,
             thread_id,
             generation,
+            requires_resume: AtomicBool::new(false),
             pid,
             writer_tx,
             events_tx,
@@ -464,9 +471,14 @@ impl ClaudeProcessHandle {
             init_slot,
             pending_controls,
             runtime_state,
+            full_access,
             runtime_override_gate: Arc::new(Mutex::new(())),
             _tasks: tasks,
         })
+    }
+
+    pub fn uses_full_access(&self) -> bool {
+        self.full_access
     }
 
     /// Working directory claude was bound to at spawn time.
@@ -487,6 +499,14 @@ impl ClaudeProcessHandle {
     /// Stable identity for this child-process generation.
     pub fn generation(&self) -> &str {
         &self.generation
+    }
+
+    pub(crate) fn require_resume(&self) {
+        self.requires_resume.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn requires_resume(&self) -> bool {
+        self.requires_resume.load(Ordering::Acquire)
     }
 
     /// OS process id (when the spawn surfaced one).
@@ -830,7 +850,17 @@ impl ClaudeProcessHandle {
     }
 }
 
-fn apply_platform_security_args(args: &mut Vec<OsString>) {
+fn apply_platform_security_args(args: &mut Vec<OsString>, full_access: bool) {
+    if full_access {
+        // 只覆盖本次子进程，不改用户设置；完全访问同时取消 Mimi 的强制沙箱和禁用 shell。
+        args.push("--settings".into());
+        args.push(
+            serde_json::json!({"sandbox": {"enabled": false}})
+                .to_string()
+                .into(),
+        );
+        return;
+    }
     if cfg!(windows) {
         // Claude Code does not support its Bash sandbox on native Windows.
         // Do not silently run a shell outside the sandbox: disable the shell
@@ -1083,6 +1113,7 @@ impl ClaudeProcessHandle {
             claude_bin: PathBuf::from("/dev/null"),
             thread_id: "test-thread".into(),
             generation: "test-generation".into(),
+            requires_resume: AtomicBool::new(false),
             pid: None,
             writer_tx,
             events_tx,
@@ -1090,6 +1121,7 @@ impl ClaudeProcessHandle {
             init_slot: Arc::new(InitSlot::default()),
             pending_controls: Arc::new(Mutex::new(HashMap::new())),
             runtime_state: Arc::new(Mutex::new(RuntimeState::default())),
+            full_access: false,
             runtime_override_gate: Arc::new(Mutex::new(())),
             _tasks: Arc::new(TaskSet {
                 writer: Mutex::new(None),
@@ -1118,7 +1150,7 @@ mod tests {
     #[test]
     fn platform_security_never_runs_an_unsandboxed_windows_shell() {
         let mut args = Vec::new();
-        apply_platform_security_args(&mut args);
+        apply_platform_security_args(&mut args, false);
         let args: Vec<String> = args
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -1132,6 +1164,16 @@ mod tests {
                     .is_some_and(|settings| { settings.contains(r#""failIfUnavailable":true"#) })
             );
         }
+    }
+
+    #[test]
+    fn explicit_full_access_disables_sandbox_without_disabling_shell_tools() {
+        let mut args = Vec::new();
+        apply_platform_security_args(&mut args, true);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "--settings");
+        let settings: serde_json::Value = serde_json::from_str(args[1].to_str().unwrap()).unwrap();
+        assert_eq!(settings, serde_json::json!({"sandbox": {"enabled": false}}));
     }
 
     #[test]

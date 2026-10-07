@@ -30,9 +30,11 @@ extension CodexAppServerProtocolTests {
         ]))
 
         var projector = CodexAppServerEventProjector()
-        guard case .sessionContext(let context, let metadata) = projector.project(notification) else {
-            return XCTFail("expected live session context")
+        guard case .processItemCompleted(let message, let projectedContext, let metadata) = projector.project(notification) else {
+            return XCTFail("expected completed activity and live session context")
         }
+        let context = try XCTUnwrap(projectedContext)
+        XCTAssertEqual(message.content, "done")
         XCTAssertEqual(metadata.sessionID, "parent-thread")
         XCTAssertEqual(context.subagents.map(\.id), ["child-a", "child-b"])
         XCTAssertFalse(context.subagents.contains { $0.id == "tool-item-is-not-thread" })

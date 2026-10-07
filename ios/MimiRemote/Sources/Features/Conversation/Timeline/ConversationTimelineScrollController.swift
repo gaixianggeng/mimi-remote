@@ -49,6 +49,10 @@ final class ConversationTimelineScrollController {
     private(set) var hasUnseenTail = false
     private(set) var epoch = 0
 
+    var canReturnToTail: Bool {
+        isReadable && (mode == .readingHistory || hasUnseenTail || !isNearBottom)
+    }
+
     @ObservationIgnored let viewport = ConversationTimelineViewport()
     @ObservationIgnored private(set) var scope: ScopedSessionID?
     @ObservationIgnored private(set) var revision = 0
@@ -75,6 +79,7 @@ final class ConversationTimelineScrollController {
         case tail(animated: Bool, reason: ConversationTimelineScrollReason)
         case anchor
         case item(String)
+        case revealItem(String)
     }
 
     private struct LayoutKey: Hashable {
@@ -135,7 +140,11 @@ final class ConversationTimelineScrollController {
             // 首屏尚未交接时仍须完成初始定位，不能跳过解除正文遮罩的唯一入口。
             mode = isReadable ? .followingTail : .initialPositioning
         }
-        if liveTailChanged, mode == .readingHistory {
+        if snapshot.changes.contains(.presentation), isReadable {
+            // 用户改变展开层级时固定阅读位置，即使之前贴底也不跳到新增内容末尾。
+            mode = .readingHistory
+        }
+        if liveTailChanged, !snapshot.changes.contains(.presentation), mode == .readingHistory {
             hasUnseenTail = true
         }
         guard hasContent, !isInteracting else { return true }
@@ -150,7 +159,7 @@ final class ConversationTimelineScrollController {
                 pending = .tail(animated: snapshot.changes.contains(.localSubmission), reason: .snapshot)
             }
         case .readingHistory:
-            captureAnchor(restoringRows: snapshot.changes.contains(.historyPrepend) ? snapshot.rows : nil)
+            captureAnchor(restoringRows: snapshot.changes.containsHistoryChange ? snapshot.rows : nil)
         }
         return true
     }
@@ -182,7 +191,8 @@ final class ConversationTimelineScrollController {
         metrics = next
         isNearBottom = next.isNearBottom
         if isInteracting {
-            if let start = interactionStartOffset, next.contentOffsetY < start - 12 {
+            // 小幅上滑也应显示入口；缺失起点回调时仍以真实离底距离兜住。
+            if !next.isNearBottom || (interactionStartOffset.map { next.contentOffsetY < $0 - 12 } ?? false) {
                 mode = .readingHistory
             }
             return
@@ -307,10 +317,13 @@ final class ConversationTimelineScrollController {
         guard isActive, hasContent else { return }
         ConversationScrollDiagnostics.shared.record("return_tail")
         beginInput()
+        // 按钮点击是明确的新滚动意图，直接打断当前惯性，不等待可能迟到的 idle 回调。
+        isInteracting = false
+        interactionStartOffset = nil
         pending = .tail(animated: true, reason: .user)
-        guard !isInteracting else { return }
         mode = isReadable ? .followingTail : .initialPositioning
         hasUnseenTail = false
+        applyPending(allowProxyScroll: true)
         schedulePending()
     }
 
@@ -341,6 +354,14 @@ final class ConversationTimelineScrollController {
         cancelPending()
         releaseAnchor()
         expansion = nil
+    }
+
+    func revealItem(_ id: String) {
+        guard isActive, hasContent else { return }
+        beginInput()
+        mode = .readingHistory
+        pending = .revealItem(id)
+        schedulePending()
     }
 
     func beginLoadingEarlierHistory() {
@@ -444,7 +465,9 @@ final class ConversationTimelineScrollController {
     }
 
     private func applyPending(allowProxyScroll: Bool = false) {
-        guard isActive, !isInteracting, !viewport.isUserScrolling,
+        let explicitReturn: Bool
+        if case .tail(_, .user) = pending { explicitReturn = true } else { explicitReturn = false }
+        guard isActive, (explicitReturn || (!isInteracting && !viewport.isUserScrolling)),
               let pending, let execute, let scope,
               let current = metrics ?? viewport.metrics, current.contentHeight > 0 else { return }
         let target: ConversationTimelineScrollTarget
@@ -475,6 +498,11 @@ final class ConversationTimelineScrollController {
             }
             animated = false
             reason = .historyAnchor
+        case let .revealItem(id):
+            guard allowProxyScroll else { schedulePending(); return }
+            target = .anchorItem(id)
+            animated = false
+            reason = .user
         case let .item(id):
             guard allowProxyScroll else { schedulePending(); return }
             target = .item(id)
@@ -509,7 +537,11 @@ final class ConversationTimelineScrollController {
     }
 
     private func confirmInitialPosition() {
-        guard mode == .initialPositioning, attemptedInitialPosition, isTailVisible,
+        // 长 List 的尾部哨兵可能尚未实例化，不应让遮罩永久等待可见回调。
+        // 已挂载的原生视口实际到达底部时，也足以完成首次可读交接。
+        let hasMountedNativeViewport = viewport.scrollView?.window != nil
+        guard mode == .initialPositioning, attemptedInitialPosition,
+              isTailVisible || hasMountedNativeViewport,
               let current = viewport.metrics ?? metrics,
               abs(current.maximumOffsetY - current.contentOffsetY) <= 4 else { return }
         mode = .followingTail

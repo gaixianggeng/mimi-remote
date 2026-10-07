@@ -60,12 +60,12 @@ echo "==> iOS conversation regressions"
 # - ConversationDataFlowTests 的精确方法：只保留配对后的会话、流式事件、恢复、
 #   exactly-once、审批/中断、Host 隔离和 fake smoke；其余大集合不无条件进入 PR Gate。
 # - FileAttachmentModelsTests：文件上传、capability 状态矩阵、内部上下文编解码和旧服务端兼容。
-# - ConversationProcessGrouperTests：过程组边界、commentary 前后保留和 source order。
+# - ConversationTimelineProviderPresentationTests：Codex/Claude 默认与详细记录投影、锚点和全文入口。
 # - ConversationScrollStabilityTests：首屏可读交接、手势取消、阅读锚点和显式回到底部。
-# - ConversationTimelineRuntimeRegressionTests：原生 List 在 Codex/Claude 更新及历史前插后的视口。
+# - ConversationTimelineRuntimeRegressionTests：原生 List 在 Codex/Claude/DeepSeek 更新及历史前插后的视口。
 # - SessionListLifecycleCoordinatorTests：滚动冻结、idle 重排和完成/失败 Haptic exactly-once。
 # - SessionListPresentationTests：会话摘要、分支身份、时间格式和紧凑行数策略。
-# - ConversationSnapshotTests：用户气泡/助手文档流、复杂 Markdown、图片和过程组的关键视觉回归。
+# - ConversationSnapshotTests：用户气泡/助手文档流、复杂 Markdown、图片和活动行的关键视觉回归。
 # - MarkdownRenderingTests：proposed_plan 流式和完整渲染。
 # - PairingLinkTests：Endpoint allowlist、ATS 传输策略、Host capability 隔离和 stale lease。
 # - DoctorDiagnosticsTests：结构化 Doctor 响应、HTTP 错误和向后兼容。
@@ -75,16 +75,45 @@ echo "==> iOS conversation regressions"
 # - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
 # - NotificationTitleCacheTests、NotificationContentRewriterTests：会话标题的 App Group 本地缓存，
 #   以及通知扩展只用该缓存在设备上改写锁屏文案、缓存缺失时退回通用文案。
+test_result_bundle="$(mktemp -d "${TMPDIR:-/tmp}/mimi-conversation-tests.XXXXXX")/core.xcresult"
+test_status=0
 bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -quiet \
+  -resultBundlePath "$test_result_bundle" \
   -collect-test-diagnostics never \
   -testLanguage zh-Hans \
   -testRegion CN \
   -only-testing:MimiRemoteTests/AgentAPIClientRequestTests \
   -only-testing:MimiRemoteTests/CameraAttachmentTests \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
+  -only-testing:MimiRemoteTests/DeepSeekComposerPolicyTests \
+  -only-testing:MimiRemoteTests/DeepSeekSearchRoutingTests \
+  -only-testing:MimiRemoteTests/DeepSeekRuntimePresentationTests \
+  -only-testing:MimiRemoteTests/DefaultModelDisplayTests \
+  -only-testing:MimiRemoteTests/HarnessNativeRoutingSeamTests \
+  -only-testing:MimiRemoteTests/SessionObservationLeaseTests \
+  -only-testing:MimiRemoteTests/HarnessTransportTests \
+  -only-testing:MimiRemoteTests/HarnessSessionDirectoryTests \
+  -only-testing:MimiRemoteTests/HarnessDirectoryWiringTests \
+  -only-testing:MimiRemoteTests/HarnessSessionJournalTests \
+  -only-testing:MimiRemoteTests/HarnessSubmissionControllerTests \
+  -only-testing:MimiRemoteTests/HarnessPresentationProjectorTests \
+  -only-testing:MimiRemoteTests/HarnessEventClientTests \
+  -only-testing:MimiRemoteTests/HarnessStreamReconnectTests \
+  -only-testing:MimiRemoteTests/HarnessSnapshotBaselineTests \
+  -only-testing:MimiRemoteTests/HarnessSnapshotReplayTests \
+  -only-testing:MimiRemoteTests/HarnessInteractionStoreTests \
+  -only-testing:MimiRemoteTests/HarnessRecoveryCoordinatorTests \
+  -only-testing:MimiRemoteTests/HarnessHostEventObserverTests \
+  -only-testing:MimiRemoteTests/HarnessHistoryPageTests \
+  -only-testing:MimiRemoteTests/ClaudeTakeoverTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSharedLocalOpeningIdleThreadResumesToValidateWriter \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSharedSSHOpeningIdleThreadResumesToValidateWriter \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDirectIdleHistorySessionSendsThroughResumePath \
+  -only-testing:MimiRemoteTests/WriterConflictForkStoreTests \
+  -only-testing:MimiRemoteTests/ForkOnWriterConflictProtocolTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSteerTurnSurvivesLastObserverLeavingWhileThreadResumeIsPending \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStartTurnSurvivesLastObserverLeavingWhileThreadResumeIsPending \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStartTurnSurvivesLastObserverLeavingWhileTurnStartAcknowledgementIsPending \
@@ -95,6 +124,13 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testContinuationCreateACKDoesNotReplaceNewSessionSelection \
   -only-testing:MimiRemoteTests/ConversationLiveStatusTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testFirstSendPublishesPreparationBeforeAcknowledgementAndLiveSubscription \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTargetModelFailureCacheIsPerRuntimeAndCanExpire \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testForcedMenuRefreshSupersedesPendingTargetModelResult \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testConcurrentTargetModelPreparationSharesCatalog \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLocalCodexDraftDoesNotAdoptClaudeFromPartialModelCatalog \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDefaultModelResolutionCarriesRuntimeProviderBeforeCreate \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testModelListFailureFallsBackToBuiltInModelBeforeCreate \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testClaudeHistorySessionIgnoresStaleCodexModelSelectionBeforeResume \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testReopenShowsHistoryThenConnectionWithoutInventingNetworkFailure \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testHostChangeDuringModelLookupCancelsCapturedSubmission \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testHostSwitchSettlesPendingGuidanceInOriginalProfile \
@@ -115,6 +151,12 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDirectRuntimeKeepsStaleReplayedServerRequestSilentOnIdleThread \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTurnInterruptAcknowledgementPollsUntilAuthoritativeTerminalTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTargetedInterruptRecoveryWorksWithoutCachedActiveTurnAndProtectsNewerTurn \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleInterruptRealRuntimeDispatchesQueuedTurnAfterResume \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleInterruptRuntimeClearsPendingReplayAndRejectsLateRequests \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleInterruptRuntimePreservesSupersedingTurn \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testNonStaleInterruptRuntimeFailureKeepsActiveTurn \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleStopRealAPIClientsCloseRuntimeWithoutReleasingNextTurn \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleStopRealAPIClientDoesNotCloseSupersedingTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTerminalStreamStoreSeparatesSameSessionAcrossHostScopes \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testConversationStoreScopesSameSessionAndDelayedDeltaByProfile \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testWebSocketFailureAutoReconnectsWithLatestReplayWatermark \
@@ -130,9 +172,12 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRunningSendFailureNoRolloutFoundMarksLocalEchoFailedAndRetainsRetryPayload \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testApprovalDecisionSendsThroughCurrentWebSocket \
   -only-testing:MimiRemoteTests/LockScreenApprovalTests \
+  -only-testing:MimiRemoteTests/MessageNotificationTests \
   -only-testing:MimiRemoteTests/LockScreenApprovalRoutingTests \
   -only-testing:MimiRemoteTests/NotificationRoutingGateTests \
   -only-testing:MimiRemoteTests/NotificationRouteResolutionTests \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCompletionAwaitingReducerDoesNotOverwriteNewerActiveTurn \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testPagedHistoryRetainsInvisibleTurnStatesForCompletionRecovery \
   -only-testing:MimiRemoteTests/NotificationTitleCacheTests \
   -only-testing:MimiRemoteTests/NotificationContentRewriterTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreReplaysDirectAppServerEventStreamFixture \
@@ -141,6 +186,9 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testWorkbenchRestorationRouteRejectsSnapshotFromDifferentEndpoint \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testColdStartResolvedCandidateCannotCommitAfterUserSelectsAnotherSession \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLateGitStatusFromPreviousHostCannotOverwriteCurrentHostState \
+  -only-testing:MimiRemoteTests/WorkspaceGitStoreTests \
+  -only-testing:MimiRemoteTests/WorkspaceGitSummaryTests \
+  -only-testing:MimiRemoteTests/WorkspaceHostBoundaryTests \
   -only-testing:MimiRemoteTests/SessionArchiveReconciliationTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testManualWorkspaceRefreshRestartsFromFirstCursor \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testManualSessionLibraryRefreshRestartsDirectoryPageFromFirstCursor \
@@ -159,8 +207,9 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchiveOldTokenCannotClearNewPendingAndPendingArchiveBlocksPin \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchivedSessionMustUnarchiveRemotelyBeforePinning \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testMarkHistorySessionUnreadPersistsCompletionWatermark \
-  -only-testing:MimiRemoteTests/WorkspacePullRefreshTests/testPullRefreshPublishesSessionsWithoutRequestingWorkspaceGitSummaries \
-  -only-testing:MimiRemoteTests/ConversationProcessGrouperTests \
+  -only-testing:MimiRemoteTests/WorkspacePullRefreshTests \
+  -only-testing:MimiRemoteTests/ConversationTimelineProviderPresentationTests \
+  -only-testing:MimiRemoteTests/ConversationActivityDetailProjectionTests \
   -only-testing:MimiRemoteTests/ConversationScrollStabilityTests \
   -only-testing:MimiRemoteTests/ConversationTimelineRuntimeRegressionTests \
   -only-testing:MimiRemoteTests/SessionListLifecycleCoordinatorTests \
@@ -176,13 +225,22 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testUnavailableUserImageGalleryRemainsLegibleInLightTheme \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testSessionRuntimeBadgesInConversationList \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testProjectSessionDashboard \
-  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testCommentaryAndTrailingProcessRendering \
-  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testExpandedProcessGroupRendering \
+  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testCommentaryAndTrailingActivitiesRendering \
+  -only-testing:MimiRemoteTests/ConversationTimelineProviderPresentationSnapshotTests \
   -only-testing:MimiRemoteTests/MarkdownRenderingTests \
+  -only-testing:MimiRemoteTests/MessageTextSelectionTests \
   -only-testing:MimiRemoteTests/PairingLinkTests \
+  -only-testing:MimiRemoteTests/TailcatExperimentRoutingTests \
+  -only-testing:MimiRemoteTests/TailcatLocalEndpointProbeTests \
   -only-testing:MimiRemoteTests/DoctorDiagnosticsTests \
   -only-testing:MimiRemoteTests/ProtocolContractTests \
   -only-testing:MimiRemoteTests/ManagedConnectionEntitlementStoreTests \
   -only-testing:MimiRemoteTests/ManagedConnectionEntitlementAPIClientTests \
   -only-testing:MimiRemoteTests/ManagedConnectionStoreKitClientTests \
-  -only-testing:MimiRemoteTests/LocalizationTests
+  -only-testing:MimiRemoteTests/LocalizationTests || test_status=$?
+
+if [[ "$test_status" -ne 0 && -d "$test_result_bundle" ]]; then
+  # quiet 日志可能只列测试名；失败时保留具体断言，诊断失败也不能覆盖原退出码。
+  xcrun xcresulttool get test-results summary --path "$test_result_bundle" || true
+fi
+exit "$test_status"

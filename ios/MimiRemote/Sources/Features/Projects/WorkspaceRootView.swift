@@ -126,6 +126,12 @@ enum WorkspaceSessionAgeBoundary {
             now.timeIntervalSince(SessionIndexStore.orderingDate(for: session)) > staleInterval
         }
     }
+
+    /// 只有分界线上方确实有较新的会话时才值得画 12 小时分界。
+    static func showsBoundary(firstStaleIndex: Int?) -> Bool {
+        guard let firstStaleIndex else { return false }
+        return firstStaleIndex > 0
+    }
 }
 
 /// View 层只记录“哪次调用仍有资格回写”，真实请求复用继续由 SessionStore single-flight 决定。
@@ -246,6 +252,8 @@ struct WorkspaceRootView: View {
     let onOpenSession: (AgentSession) -> Void
     let manageConnections: (() -> Void)?
     let embedsNavigationStack: Bool
+    // 完整调用边界包含目录发布后的 Git 尾部工作；供确定性测试观察，不影响加载态。
+    private let onCatalogRefreshEvent: ((UUID, Bool) -> Void)?
     private let currentDate: () -> Date
 
     @State private var selectedWorkspaceID: String?
@@ -255,6 +263,7 @@ struct WorkspaceRootView: View {
     @State private var manualCatalogRefreshInvocationID: UUID?
     @State private var runtimeSessionPagesByKey: [WorkspaceSessionPresentationKey: WorkspaceRuntimeSessionPageState] = [:]
     @State private var sessionLoadStates: [WorkspaceSessionPresentationKey: WorkspaceSessionLoadState] = [:]
+    @State private var sessionRefreshOwner = WorkspaceSessionRefreshOwner()
     @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
     /// canonical Store 可以持有超采样得到的额外 root；这里仅记录每个工作区已经向用户展开多少条。
     /// key 带 HostScope、路径和 Runtime，避免跨 Mac、目录身份或引擎复用旧窗口。
@@ -276,12 +285,14 @@ struct WorkspaceRootView: View {
         embedsNavigationStack: Bool = true,
         appearanceStore: WorkspaceAppearanceStore? = nil,
         initialWorkspaceID: String? = nil,
+        onCatalogRefreshEvent: ((UUID, Bool) -> Void)? = nil,
         currentDate: @escaping () -> Date = Date.init
     ) {
         self.onStartSession = onStartSession
         self.onOpenSession = onOpenSession
         self.manageConnections = manageConnections
         self.embedsNavigationStack = embedsNavigationStack
+        self.onCatalogRefreshEvent = onCatalogRefreshEvent
         self.currentDate = currentDate
         _selectedSessionRuntime = selectedSessionRuntime
         _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
@@ -319,6 +330,7 @@ struct WorkspaceRootView: View {
                 navigationContent(tokens: tokens)
             }
         }
+        .onAppear { sessionRefreshOwner.activate() }
         .task(id: catalogRefreshScope) {
             // 后台会主动清空内存凭据；恢复完成发布 false 后，完整 scope 会确定性触发一次新刷新。
             guard !catalogRefreshScope.credentialsSuspended else {
@@ -332,14 +344,20 @@ struct WorkspaceRootView: View {
             synchronizeSelection()
         }
         .onChange(of: appStore.activeHostScope) { _, _ in
+            sessionRefreshOwner.cancelAll()
             cancelManualCatalogRefresh()
         }
         .onChange(of: appStore.isCredentialMemorySuspended) { _, isSuspended in
             if isSuspended {
+                sessionRefreshOwner.cancelAll()
                 cancelManualCatalogRefresh()
             }
         }
+        .onChange(of: selectedWorkspaceID) { _, _ in
+            sessionRefreshOwner.cancelAll()
+        }
         .onDisappear {
+            sessionRefreshOwner.deactivate()
             cancelManualCatalogRefresh()
         }
         .onChange(of: appStore.connectionProfiles) { _, _ in
@@ -383,11 +401,6 @@ struct WorkspaceRootView: View {
             pagerTransitionState.update(pagePosition: nil)
             synchronizeSelection()
         }
-        .onChange(of: sessionStore.hasClaudeRuntimeChannel) { _, isAvailable in
-            if !isAvailable, selectedSessionRuntime == .claude {
-                selectedSessionRuntime = .codex
-            }
-        }
         .sheet(isPresented: $isPresentingOpenWorkspace) {
             OpenWorkspaceSheet { workspaceID in
                 // 工作区页使用本地浏览选择；Sheet 成功打开目录后要显式切到新工作区，
@@ -412,6 +425,8 @@ struct WorkspaceRootView: View {
         }
         // 与侧栏 gutter、会话画布同底，宽屏下三块相邻面不出现同亮度色差。
         .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
+        // iPad 紧凑布局的设备入口浮在 TabView 上、归 Shell 所有；它要不要让位只有这里知道。
+        .workbenchRootShowsConnectionProgress(showsInPlaceConnectionProgress)
     }
 
     private func migrateLegacyWorkspaceAppearance() {
@@ -431,6 +446,13 @@ struct WorkspaceRootView: View {
     /// 设备入口是否占用胶囊行的横向预算。宽屏由顶栏或侧栏承载它，这一行就整条留给工作区。
     private var showsHostSwitcherInStrip: Bool {
         !usesTabletTopBarHostSwitcher && manageConnections != nil
+    }
+
+    /// 正文此刻是连接过渡或目录加载态：整块版面中央已经有一处"正在进行"的表达，
+    /// 设备入口就不该再叠一枚转圈。判据与 `workspaceBrowser` 的分支完全同源。
+    private var showsInPlaceConnectionProgress: Bool {
+        sessionStore.sidebarProjects.isEmpty
+            && (sessionStore.isEstablishingConnection || catalogLoad.state == .loading)
     }
 
     /// 宽度够时 Runtime 筛选器并入胶囊行，内容头部整条消失；不够时退回列表上方独立一行。
@@ -455,6 +477,7 @@ struct WorkspaceRootView: View {
                         ToolbarItem(placement: .topBarLeading) {
                             HostSwitcherMenu(
                                 presentation: .toolbar,
+                                suppressesProgressBadge: showsInPlaceConnectionProgress,
                                 manageConnections: manageConnections
                             )
                             .workbenchToolbarChromeCircle(tokens: tokens)
@@ -467,6 +490,7 @@ struct WorkspaceRootView: View {
                         ToolbarItem(placement: .topBarLeading) {
                             HostSwitcherMenu(
                                 presentation: .toolbar,
+                                suppressesProgressBadge: showsInPlaceConnectionProgress,
                                 manageConnections: manageConnections
                             )
                             .workbenchToolbarChromeCircle(tokens: tokens)
@@ -608,41 +632,47 @@ struct WorkspaceRootView: View {
     }
 
     private func workspaceLoadingState(tokens: ThemeTokens) -> some View {
-        VStack(spacing: 0) {
-            workspaceStrip(tokens: tokens)
-
-            Divider()
-                .overlay(tokens.border.opacity(0.7))
-
-            ProgressView(L10n.text("ui.loading_workspace"))
-                .font(themeStore.uiFont(.callout, weight: .medium))
-                .foregroundStyle(tokens.secondaryText)
-                .tint(tokens.primaryAction)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // 与连接过渡同一块版面：正文正中一处表达，顶部胶囊行的设备入口不再叠转圈。
+        workspaceWaitingPage(tokens: tokens) {
+            ConnectionWarmUpView(
+                headline: L10n.text("ui.loading_workspace"),
+                message: L10n.text("ui.reading_the_workspace_list_from_this_mac")
+            )
         }
-        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
         .accessibilityIdentifier("workspace.loadingState")
     }
 
     /// 与加载态同构：顶部保留工作区胶囊行的位置，正文换成连接过渡，
     /// 目录真正到手时替换的是同一块版面。
     private func workspaceConnectingState(tokens: ThemeTokens) -> some View {
+        workspaceWaitingPage(tokens: tokens) {
+            ConnectionWarmUpView(
+                message: L10n.text("ui.workspaces_on_this_mac_appear_as_soon_as")
+            )
+        }
+        .accessibilityIdentifier("workspace.connectingState")
+    }
+
+    /// 等待态的整页骨架：胶囊行照常在顶部，加载圆环铺在整页之上。
+    ///
+    /// 圆环对准的是整页正中（含胶囊行），而不是胶囊行下方剩余区域的正中——
+    /// 会话页的居中范围同样包含顶部搜索框，两页的圆环因此落在同一点，切 Tab 时不跳。
+    private func workspaceWaitingPage(
+        tokens: ThemeTokens,
+        @ViewBuilder indicator: () -> some View
+    ) -> some View {
         VStack(spacing: 0) {
             workspaceStrip(tokens: tokens)
 
             Divider()
                 .overlay(tokens.border.opacity(0.7))
 
-            ConnectionWarmUpView(
-                rowCount: 3,
-                message: L10n.text("ui.workspaces_on_this_mac_appear_as_soon_as")
-            )
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            Spacer(minLength: 0)
+        }
+        .overlay {
+            indicator()
         }
         .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
-        .accessibilityIdentifier("workspace.connectingState")
     }
 
     private func workspaceEmptyState(tokens: ThemeTokens) -> some View {
@@ -689,6 +719,7 @@ struct WorkspaceRootView: View {
                         .padding(.horizontal, 4)
                 }
                 .buttonStyle(.borderedProminent)
+                .foregroundStyle(tokens.primaryActionForeground)
                 .buttonBorderShape(.capsule)
                 .controlSize(.large)
                 .tint(tokens.primaryAction)
@@ -712,6 +743,7 @@ struct WorkspaceRootView: View {
                 // iPhone 保留原有工作区布局：设备入口与工作区文件夹胶囊共用这一行。
                 HostSwitcherMenu(
                     presentation: .toolbar,
+                    suppressesProgressBadge: showsInPlaceConnectionProgress,
                     manageConnections: manageConnections
                 )
                 .workbenchChromeCircle(tokens: tokens)
@@ -772,7 +804,10 @@ struct WorkspaceRootView: View {
 
                 WorkspaceRuntimePicker(
                     selection: $selectedSessionRuntime,
-                    claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
+                    availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+                    onRetryUnavailable: { choice in
+                        await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
+                    }
                 )
             }
         }
@@ -831,7 +866,6 @@ struct WorkspaceRootView: View {
                         unavailableCharacterIDs: [],
                         unavailableEmoji: [],
                         gitSummary: nil,
-                        runningSessionCount: 0,
                         isUnavailable: false,
                         isSelected: index == 0,
                         projectIndex: index,
@@ -848,7 +882,6 @@ struct WorkspaceRootView: View {
                 }
             } else {
                 ForEach(sessionStore.sidebarProjects) { project in
-                    let projectSessions = sessionStore.sessions(forProjectID: project.id)
                     let displayedCharacter = characterAssignments[project.id]
                         ?? appearanceStore.character(
                             style: iconStyle,
@@ -885,7 +918,6 @@ struct WorkspaceRootView: View {
                         unavailableCharacterIDs: unavailableCharacterIDs,
                         unavailableEmoji: unavailableEmoji,
                         gitSummary: sessionStore.workspaceGitSummaryByPath[project.path],
-                        runningSessionCount: projectSessions.filter(\.isRunning).count,
                         isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
                         isSelected: selectedWorkspaceID == project.id,
                         projectIndex: projectIndex,
@@ -1018,7 +1050,10 @@ struct WorkspaceRootView: View {
                 remoteHasMore: cachedPageState?.hasMore == true
             ),
             selectedRuntime: $selectedSessionRuntime,
-            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
+            availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+            onRetryUnavailable: { choice in
+                await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
+            },
             currentDate: currentDate,
             onRefreshSessions: {
                 Task {
@@ -1182,6 +1217,8 @@ struct WorkspaceRootView: View {
 
     private func refreshCatalog(refreshesGitSummaries: Bool = true) async {
         let invocationID = catalogLoad.begin()
+        onCatalogRefreshEvent?(invocationID, false)
+        defer { onCatalogRefreshEvent?(invocationID, true) }
         do {
             try await sessionStore.refreshWorkspaceCatalog()
             guard catalogLoad.isCurrent(invocationID) else {
@@ -1225,7 +1262,8 @@ struct WorkspaceRootView: View {
             // 取消或失效响应也必须留下总耗时，不能只依赖 Store 成功提交的日志。
             SessionListDiagnostics.refreshStage("manual_end", startedAt: startedAt, source: .workspaceForeground)
         }
-        guard !Task.isCancelled,
+        guard sessionRefreshOwner.isActive,
+              !appStore.isCredentialMemorySuspended,
               selectedWorkspaceID == projectID,
               let project = sessionStore.sidebarProjects.first(where: { $0.id == projectID })
         else {
@@ -1250,6 +1288,25 @@ struct WorkspaceRootView: View {
         project: AgentProject,
         presentationKey: WorkspaceSessionPresentationKey,
         restartFromFirst: Bool = false
+    ) async {
+        // 有效手动操作在进入 owner 前也可能被 SwiftUI 取消等待者。
+        // 页面 owner 的活动状态与 Store 的 Host/路径 lease 决定它是否还能启动。
+        guard !appStore.isCredentialMemorySuspended,
+              appStore.activeHostScope == presentationKey.hostScope,
+              sessionStore.sidebarProjects.contains(where: {
+                  $0.id == project.id && $0.path == presentationKey.workspacePath
+              }) else { return }
+        await sessionRefreshOwner.refresh(key: presentationKey, allowsCancelledWaiter: restartFromFirst) {
+            await performWorkspaceSessionsRefresh(
+                project: project, presentationKey: presentationKey, restartFromFirst: restartFromFirst
+            )
+        }
+    }
+
+    private func performWorkspaceSessionsRefresh(
+        project: AgentProject,
+        presentationKey: WorkspaceSessionPresentationKey,
+        restartFromFirst: Bool
     ) async {
         // 每个 Runtime 独立占有提交 token；切换筛选不会让旧请求覆盖当前 Runtime 的缓存。
         let invocationID = sessionLoadInvocationTokens.begin(for: presentationKey)
@@ -1358,7 +1415,6 @@ private struct WorkspaceProjectChip: View {
     let unavailableEmoji: Set<String>
     /// 胶囊本身不再展示 Git 摘要；这里只用来决定“Git 变更”菜单项是否可用。
     let gitSummary: GitStatusResponse?
-    let runningSessionCount: Int
     let isUnavailable: Bool
     let isSelected: Bool
     let projectIndex: Int
@@ -1520,30 +1576,7 @@ private struct WorkspaceProjectChip: View {
             size: size,
             tokens: tokens
         )
-        .overlay(alignment: .topTrailing) {
-            runningCountBadge
-        }
         .opacity(isUnavailable ? 0.62 : 1)
-    }
-
-    @ViewBuilder
-    private var runningCountBadge: some View {
-        if let badgeText = WorkspaceRunningCountBadge.displayText(for: runningSessionCount) {
-            // 数字明确说明这是工作区内的聚合数量，不再让一颗绿点同时冒充连接和会话状态。
-            Text(badgeText)
-                .font(themeStore.uiFont(size: 9, weight: .bold))
-                .foregroundStyle(runningCountForeground)
-                .monospacedDigit()
-                .frame(minWidth: 14, minHeight: 14)
-                .padding(.horizontal, badgeText.count > 1 ? 1.5 : 0)
-                .background(tokens.success, in: Capsule())
-                .overlay {
-                    Capsule()
-                        .stroke(tokens.background, lineWidth: 1.25)
-                }
-                .offset(x: 3, y: -3)
-                .accessibilityHidden(true)
-        }
     }
 
     @ViewBuilder
@@ -1570,24 +1603,10 @@ private struct WorkspaceProjectChip: View {
         }
     }
 
-    private var runningCountForeground: Color {
-        // Gruvbox Light 的暖白压在橄榄绿上只有约 3.22:1；纯黑可提升到约 5.38:1。
-        if tokens.preset == .gruvbox, tokens.resolvedScheme == .light {
-            return .black
-        }
-        return tokens.background
-    }
-
     private var accessibilitySummary: String {
-        let statusParts = [
-            isUnavailable ? L10n.text("ui.need_to_retry") : nil,
-            runningSessionCount > 0
-                ? L10n.format("ui.running_sessions_count", runningSessionCount)
-                : nil
-        ].compactMap { $0 }
-        let status = statusParts.isEmpty
-            ? L10n.text("ui.git_status_unknown")
-            : statusParts.joined(separator: ", ")
+        let status = isUnavailable
+            ? L10n.text("ui.need_to_retry")
+            : L10n.text("ui.git_status_unknown")
         let selected = isSelected ? L10n.text("ui.selected_b4f8bea5") : ""
         return L10n.format(
             "ui.workspace_card_summary",

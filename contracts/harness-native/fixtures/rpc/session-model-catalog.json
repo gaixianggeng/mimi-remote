@@ -1,0 +1,87 @@
+{
+  "provenance": {
+    "level": "upstream-source",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.1.5-rc.2",
+    "upstreamTag": "dsh-v0.1.5-rc.2",
+    "shapeSource": "packages/api/session-controller/src/index.ts#modelCatalog and types.ts#ModelCatalog",
+    "recordedValueCrossCheck": "session/list projections.values.modelSelection.next"
+  },
+  "note": "session/modelCatalog 无参数调用；真实返回 default/groups/routableProviders/failures。",
+  "evidenceLimit": {
+    "reason": "本文件的 result 观测曾被写成 session/list 的数据（{items:[SessionSummary…]}），与本文件 note、manifest.json 的 wire.methods（value: ModelCatalog）、架构文档 §2.4 三处矛盾。",
+    "cause": "c9950e10（首次冻结，upstream-source）里的形状是正确的；b855960a『用实跑采集替换源码推导』改写时把 session/list 内容粘进了本文件的 result。",
+    "repair": "恢复源码契约形状，但不再把它称为 live-capture。仓库没有保留可核对的 session/modelCatalog 原始响应，manifest 的文字记录不能替代原始采集证据。",
+    "digestCaveat": "fixtureDigests 只证明文件未被改动，不证明内容与文件名相符——它抓不到这类错误。这是本次缺陷能通过摘要校验的原因。",
+    "valueBasis": "provider/model 仅与 repo-recorded 的 session/list projections.values.modelSelection.next 交叉核对。未登记的 reasoning 档位字符串按 manifest.desensitization 降级为 <string:N>。这些值用于离线解析测试，不是原始 modelCatalog 响应的实采证明。",
+    "notInvented": "实跑只配置了一条回环路由，因此 routableProviders 只有一项、groups 只有一组。多 provider、同名模型跨 provider、failures 非空等边界不在本次采集里，由测试的本地形状覆盖，不写进本夹具。"
+  },
+  "observations": [
+    {
+      "label": "request",
+      "value": {},
+      "wireNote": "modelCatalog() 只有一个 signal 形参，被 typert 排除，因此 args 为空对象。"
+    },
+    {
+      "label": "result",
+      "value": {
+        "default": {
+          "provider": "h00-loopback",
+          "model": "h00-mock-model",
+          "reasoningEffort": "<string:8>"
+        },
+        "routableProviders": [
+          "h00-loopback"
+        ],
+        "groups": [
+          {
+            "id": "h00-loopback",
+            "name": "h00-loopback",
+            "models": [
+              {
+                "id": "h00-mock-model",
+                "name": "h00-mock-model",
+                "reasoning": {
+                  "efforts": [
+                    {
+                      "id": "<string:7>",
+                      "name": "<string:7>"
+                    },
+                    {
+                      "id": "<string:8>",
+                      "name": "<string:8>"
+                    }
+                  ],
+                  "defaultEffort": "<string:8>"
+                }
+              }
+            ]
+          }
+        ],
+        "failures": []
+      }
+    },
+    {
+      "label": "note",
+      "value": "routableProviders 含本机回环路由 h00-loopback，证明 llm-pi-ai 的手写路由会进入目录。"
+    }
+  ],
+  "negative": [
+    {
+      "case": "session/modelCatalog 传任何参数必须被拒绝",
+      "why": "modelCatalog 声明零参数，多一个键就必须失败。",
+      "request": {
+        "type": "client-request",
+        "rpcId": "rpc-fixture-0202",
+        "method": "session/modelCatalog",
+        "payload": {
+          "args": {
+            "request": {}
+          }
+        }
+      },
+      "expectedErrorCode": "gateway/arguments-invalid",
+      "liveConfirmed": false
+    }
+  ]
+}

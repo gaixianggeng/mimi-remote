@@ -1,13 +1,13 @@
 # 锁屏审批通知最小架构
 
-更新日期：2026-09-10
+更新日期：2026-09-22
 状态：四个阶段主体代码已完成。历史部署和 iPad 局部真机闭环见下文；当前正在按 #353 收尾。
 最新部署要求：与 Tailcat DERP 共用服务器，独立进程和密钥权限。已确认同机部署；最新代码的完整真机验收尚待完成。
 
 已确认的两条产品决策：
 
 1. 接受由维护者运营一个只转发固定格式任务消息的最小 APNs Provider。
-2. 消息提醒是**默认关闭的实验性功能**。只有用户在 App 内显式同意使用该中转服务后才注册 Device Token 并发送提醒；坚持纯本地部署的用户不开启即可，链路上不产生任何对外请求。
+2. 消息通知是默认开启的正式功能。首次成功连接电脑后直接请求系统通知权限；官方服务不再要求额外披露同意。自定义服务仍需确认具体地址。旧版明确关闭的选择保持不变（#419）。
 
 ## 目标
 
@@ -36,15 +36,23 @@ APNs 要求 Provider 通过 Apple 签发的私钥或证书向 APNs 发起请求�
 
 结论：接受一个只转发固定格式审批提醒的最小 Provider。它不接收提示词、代码、完整命令、文件内容、会话历史或 `agentd` 访问 Token；审批动作仍由设备通过现有私有网络直接提交给用户自己的 `agentd`。
 
-### 用户同意与功能开关
+### 通知偏好、系统权限与注册状态
 
-中转服务是可选项，不是默认链路。约束如下：
+- 设置保留一个“接收消息通知”开关，默认开启。偏好与系统权限、注册结果分别管理。
+- 首次成功连接并进入前台后直接弹系统授权框。拒绝后不重复请求，设置页提供系统设置入口。自动任务事件只查询权限，不弹框。
+- 官方通知服务自动注册，自定义地址必须明确确认。切换电脑不自动转移已有绑定，换绑仍由用户确认。
+- 本地自动任务通知和远程推送共用偏好；手动设置的定时会话提醒保持独立。关闭立即停止本地自动通知并撤销远程注册；失败保留重试信息，不误报关闭成功。
+- 偏好首次迁移：无旧记录默认开启；旧 true 保持开启；旧 false 保守保持关闭。后续只读新偏好。
+- agentd 缺省启用官方服务；显式 `push.enabled: false` 和自定义地址保持不变。首次 setup 使用相同默认值；没有已注册设备时不向通知服务发送请求。
+- 不改变最小数据传输、凭据校验、一次性审批和系统解锁要求。数据处理事实保留在隐私政策。
 
-- 功能位于 App 的高级 / 实验功能区，默认关闭。关闭状态下 App 不请求远程通知授权、不注册 Device Token、不向 Provider 发送任何请求。
-- 首次开启必须展示明确的同意说明：会离开设备的是什么（APNs Device Token、匿名主机与会话标签、审批类型枚举、到期时间）、不会离开设备的是什么（Prompt、源码、完整命令、文件内容、会话历史、`agentd` 访问 Token）、以及数据保留策略。未同意即不开启。
-- 关闭开关等价于撤销：App 注销 Device Token，`agentd` 删除本地 Ticket 并请求 Provider 把 Ticket ID 加入撤销表。
-- `agentd` 侧同样默认关闭（`push.enabled`）。Provider 未配置或用户未同意时，代码路径必须与今天完全一致，升级不产生任何静默上传。
-- 纯本地部署因此仍然成立：不开启该实验功能的用户，其审批链路依旧只经过自己的私有网络。
+### 验证默认通知流程
+
+1. 新安装配对并成功连接后，只出现系统通知授权框；允许后在设置查看通知状态。
+2. 分别验证拒绝权限、前往系统设置允许、关闭 App 内开关及重新开启。
+3. 关闭期间断开电脑连接或让通知服务不可用，确认显示未完成状态；恢复后确认重试成功。
+4. 用真机在后台、锁屏及 App 未运行状态运行任务，检查任务终态通知、点击定位及锁屏审批身份验证。
+5. 回归旧版开启、关闭、无记录的迁移，以及自定义服务地址变更和多电脑显式换绑。
 
 ### 现状基础与第二个前置条件
 
@@ -190,7 +198,7 @@ Apple 在通知界面空间有限时最多展示两个自定义动作，因此�
 建议按一个 Issue 内的四个可单独测试阶段推进：
 
 1. `agentd` approval broker：让 raw Codex 的活跃上游连接在 iOS 退到后台后有界存活，复用 gateway allowlist、response mapper、permissions 重写与 Claude replay 语义；不把旧 `CodexAppServerRuntime` 直接接回生产。
-2. `agentd` 安全动作层：增加设备注册、动作句柄状态机、Provider client 与审批生命周期挂钩；默认关闭，Provider 未配置时完全不影响现有行为。
+2. `agentd` 安全动作层：增加设备注册、动作句柄状态机、Provider client 与审批生命周期挂钩；默认使用官方服务，未注册设备时不发送通知。
 3. iOS / iPadOS：增加 Push Notifications capability、AppDelegate Device Token 回调、通知类别、后台动作处理和设置状态；复用现有通知路由与 Keychain Token。
 4. Provider：新增最小 Go 服务和 Docker 部署，只有 Ticket 注册/刷新/撤销与固定审批通知接口；不与 `agentd` 共用 APNs 私钥。
 
@@ -203,7 +211,7 @@ Apple 在通知界面空间有限时最多展示两个自定义动作，因此�
 - `ios/MimiRemote/Sources/MimiRemoteApp.swift`：通知 delegate、冷启动路由与后续 action 分流；
 - `ios/MimiRemote/Sources/Core/API/CodexAppServerTransport.swift`：现有 Allow / Deny JSON-RPC response，可作为动作最终落点。
 
-功能门禁建议使用 `capabilities.disabled` 与独立 `push.enabled` 配置双重控制。默认配置不开启 Provider，避免升级后无意上传 Device Token。
+功能门禁保留独立 `push.enabled` 配置。缺省使用官方服务，显式关闭保持关闭；App 获得系统通知权限并注册后才发送通知。
 
 ### Provider 部署与密钥
 
@@ -256,8 +264,8 @@ Provider 只记录：请求计数、延迟、限速、APNs HTTP 状态/原因、
 | 阶段 | 状态 | 说明 |
 | --- | --- | --- |
 | 一：`agentd` approval broker | 已完成 | Codex gateway 的上游连接升级为具名会话所有，客户端离线期间继续接住审批请求；Claude 复用常驻 bridge，并新增只读观察连接补上「agentd 不再读 bridge」的缺口。由 `app_server.approval_broker` 控制，默认关闭。 |
-| 二：`agentd` 安全动作层 | 已完成 | `internal/pushbridge`：设备注册表、一次性动作句柄状态机、Provider 客户端。由 `push.enabled` 控制，默认关闭；Provider 未配置时即使 enabled 也保持关闭。 |
-| 三：iOS / iPadOS | 已完成 | 远程通知授权与 `aps-environment`、Device Token 生命周期、通知类别与两个需身份验证的动作、实验功能开关与绑定收件主机的同意、Payload 白名单解码、前台恢复后的通知对账。 |
+| 二：`agentd` 安全动作层 | 已完成 | `internal/pushbridge`：设备注册表、一次性动作句柄状态机、Provider 客户端。由 `push.enabled` 控制，默认使用官方服务；显式关闭或 Provider 不可用时不发送通知。 |
+| 三：iOS / iPadOS | 已完成 | 远程通知授权与 `aps-environment`、Device Token 生命周期、通知类别与两个需身份验证的动作、默认开启的通知偏好与自定义服务地址信任确认、Payload 白名单解码、前台恢复后的通知对账。 |
 | 四：最小 Provider | 已完成并部署 | `cmd/mimi-push-provider`。 |
 
 ### 锁屏可直接放行的范围

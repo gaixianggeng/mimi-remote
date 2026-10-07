@@ -11,6 +11,7 @@ with tempfile.TemporaryDirectory(prefix='mimi-tray-install-') as temporary:
     xdg_data=base/'custom data home'
     env=dict(os.environ, HOME=str(task_home), XDG_DATA_HOME=str(xdg_data), MIMI_TRAY_NO_START='1')
     env.pop('XDG_CONFIG_HOME',None)
+    env.pop('MIMI_TRAY_INLINE_QR',None)
     tools_dir=base/'bin';tools_dir.mkdir()
     # Keep the self-test useful in root-owned CI containers without installing
     # into the real user's home or touching a real desktop bus.
@@ -45,6 +46,22 @@ with tempfile.TemporaryDirectory(prefix='mimi-tray-install-') as temporary:
     assert binary.stat().st_mode&0o777==0o755
     icons=xdg_data/'mimi-remote/icons'
     assert len(list(icons.glob('*-symbolic.svg')))==3
+    assert '--inline-qr' not in autostart.read_text()
+    env['MIMI_TRAY_INLINE_QR']='invalid'
+    run(two,'upgrade',False);assert version()=='1.0.0'
+    env['MIMI_TRAY_INLINE_QR']='1'
+    run(two,'upgrade')
+    assert '--inline-qr' in desktop.read_text() and '--inline-qr' in autostart.read_text()
+    env.pop('MIMI_TRAY_INLINE_QR')
+    run(two,'upgrade')
+    assert '--inline-qr' in autostart.read_text(),'upgrade dropped inline QR preference'
+    env['MIMI_TRAY_INLINE_QR']='0'
+    run(one,'upgrade')
+    assert '--inline-qr' not in autostart.read_text()
+    run(one,'rollback')
+    assert '--inline-qr' in autostart.read_text(),'rollback did not restore inline QR preference'
+    run(one,'upgrade')
+    env.pop('MIMI_TRAY_INLINE_QR')
     binary.write_text('#!/bin/sh\ncase "$1" in version) echo 1.0.0;; --quit) exit 9;; esac\n')
     binary.chmod(0o755)
     run(two,'upgrade',False);assert version()=='1.0.0' and desktop.exists() and autostart.exists()

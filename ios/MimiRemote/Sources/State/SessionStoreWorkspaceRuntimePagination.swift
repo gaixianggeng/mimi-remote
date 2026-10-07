@@ -1,6 +1,27 @@
 import Foundation
 
 extension SessionStore {
+    func availableSessionRuntimeProviders(
+        client: any SessionStoreAPIClient
+    ) async -> [String] {
+        var runtimes: [String] = []
+        for runtime in RuntimeFeatureSupport.runtimeProviders {
+            if (try? await client.runtimeChannelAvailable(runtimeProvider: runtime)) == true {
+                runtimes.append(runtime)
+            }
+        }
+        return runtimes
+    }
+
+    func primarySessionRuntimeProvider(
+        client: any SessionStoreAPIClient
+    ) async throws -> String {
+        guard let runtime = await availableSessionRuntimeProviders(client: client).first else {
+            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+        }
+        return runtime
+    }
+
     func workspaceDirectoryScopeKey(
         for workspace: AgentWorkspace,
         runtimeProvider: String
@@ -120,9 +141,20 @@ extension SessionStore {
         hostScope: HostScope,
         generation: Int
     ) async {
-        let includesClaude = (try? await client.runtimeChannelAvailable(runtimeProvider: "claude")) == true
-        for runtimeProvider in includesClaude ? ["codex", "claude"] : ["codex"] {
+        for runtimeProvider in RuntimeFeatureSupport.runtimeProviders {
+            if runtimeProvider != "codex",
+               (try? await client.runtimeChannelAvailable(runtimeProvider: runtimeProvider)) != true { continue }
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
+            // deepseek 由原生通道承接时走协调器：它管代次、single-flight 与失败保留旧页。
+            // 未启用时这段完全不参与，下面照旧走既有 app-server 路径。
+            if isNativeHarnessDirectoryEnabled,
+               Self.normalizedRuntimeProvider(runtimeProvider) == Self.nativeHarnessRuntimeProvider {
+                await refreshNativeHarnessDirectory(
+                    workspace: workspace,
+                    hostScope: hostScope
+                )
+                continue
+            }
             let result = await sessionLibraryPage(
                 workspace: workspace,
                 runtimeProvider: runtimeProvider,
@@ -173,7 +205,8 @@ extension SessionStore {
                 source: .workspaceForeground,
                 restartFromFirst: restartFromFirst,
                 client: lease.client,
-                hostScope: lease.scope
+                hostScope: lease.scope,
+                runtimeProvider: normalizedRuntime
             )
             canonicalFirstPageResult = result
             page = result.page
@@ -196,7 +229,8 @@ extension SessionStore {
            !isCurrentSessionListRequestLineage(
                requestLineage,
                workspace: workspace,
-               hostScope: lease.scope
+               hostScope: lease.scope,
+               runtimeProvider: normalizedRuntime
            ) {
             // 旧首屏即使稍后在 apply 阶段会被拒绝，也不能先覆盖目录成员集合。
             throw CancellationError()
@@ -215,6 +249,7 @@ extension SessionStore {
             _ = applyWorkspaceSessionFirstPage(
                 workspace: workspace,
                 page: page,
+                runtimeProvider: normalizedRuntime,
                 consistency: .authoritative,
                 requestedCursor: canonicalFirstPageResult.requestedCursor,
                 // Runtime 页面只拿到 Codex rows，不能整页替换并误删同工作区已缓存的

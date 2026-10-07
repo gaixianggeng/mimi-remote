@@ -80,18 +80,6 @@ struct PairingInfo: Codable, Equatable, Sendable {
     }
 }
 
-struct NetworkConfigurationResult: Codable, Equatable, Sendable {
-    let lanEnabled: Bool
-    let changed: Bool
-    let restartRequired: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case lanEnabled = "lan_enabled"
-        case changed
-        case restartRequired = "restart_required"
-    }
-}
-
 struct TailcatStatus: Codable, Equatable, Sendable {
     let enabled: Bool
     let running: Bool
@@ -116,6 +104,19 @@ enum ClaudeActivationPreference: String, Codable, Equatable, Sendable {
     case disabled
 }
 
+struct ClaudeModuleState: Codable, Equatable, Sendable {
+    let enabled: Bool?
+    let activation: ClaudeActivationPreference?
+    let claudeBin: String?
+    let environmentPresent: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, activation
+        case claudeBin = "claude_bin"
+        case environmentPresent = "environment_present"
+    }
+}
+
 struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
     let enabled: Bool
     let available: Bool
@@ -126,6 +127,34 @@ struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
     let restartRequired: Bool
     let reason: String
     let message: String
+    let previous: ClaudeModuleState?
+    let applied: ClaudeModuleState?
+
+    init(
+        enabled: Bool,
+        available: Bool,
+        preference: ClaudeActivationPreference,
+        previousEnabled: Bool,
+        previousPreference: ClaudeActivationPreference,
+        changed: Bool,
+        restartRequired: Bool,
+        reason: String,
+        message: String,
+        previous: ClaudeModuleState? = nil,
+        applied: ClaudeModuleState? = nil
+    ) {
+        self.enabled = enabled
+        self.available = available
+        self.preference = preference
+        self.previousEnabled = previousEnabled
+        self.previousPreference = previousPreference
+        self.changed = changed
+        self.restartRequired = restartRequired
+        self.reason = reason
+        self.message = message
+        self.previous = previous
+        self.applied = applied
+    }
 
     enum CodingKeys: String, CodingKey {
         case enabled = "claude_enabled"
@@ -137,6 +166,7 @@ struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
         case restartRequired = "restart_required"
         case reason
         case message
+        case previous, applied
     }
 }
 
@@ -223,6 +253,10 @@ struct AgentRuntimeStatusSnapshot: Codable, Equatable, Sendable {
     }
 
     var hasRetryableFailure: Bool {
+        hasOtherRetryableFailure || hasRejectedDeepSeekCredentials
+    }
+
+    var hasOtherRetryableFailure: Bool {
         runtimes.contains {
             guard $0.enabled else { return false }
             if $0.reason == "quota_refresh_in_progress" {
@@ -233,6 +267,37 @@ struct AgentRuntimeStatusSnapshot: Codable, Equatable, Sendable {
             }
             return $0.state == .unavailable
                 && $0.reason != "refresh_in_progress"
+        }
+    }
+
+    var hasRejectedDeepSeekCredentials: Bool {
+        runtimes.contains {
+            $0.id == "deepseek" && $0.enabled && $0.state == .signedOut
+                && $0.reason == "credentials_rejected"
+        }
+    }
+}
+
+/// Keeps the Mac's ordinary provider retry independent of DeepSeek's 30-second
+/// credential-renewal cooldown. Each kind gets at most one follow-up attempt.
+struct RuntimeStatusFollowUpState {
+    private(set) var didRetryOtherFailure = false
+    private(set) var didRetryRejectedCredentials = false
+
+    func delay(for snapshot: AgentRuntimeStatusSnapshot?) -> Duration? {
+        guard let snapshot else { return nil }
+        if snapshot.refreshing == true { return .seconds(2) }
+        if snapshot.hasOtherRetryableFailure && !didRetryOtherFailure { return .seconds(15) }
+        if snapshot.hasRejectedDeepSeekCredentials && !didRetryRejectedCredentials { return .seconds(32) }
+        return nil
+    }
+
+    mutating func markRetry(for snapshot: AgentRuntimeStatusSnapshot?) {
+        guard let snapshot else { return }
+        if snapshot.hasOtherRetryableFailure && !didRetryOtherFailure {
+            didRetryOtherFailure = true
+        } else if snapshot.hasRejectedDeepSeekCredentials && !didRetryRejectedCredentials {
+            didRetryRejectedCredentials = true
         }
     }
 }
@@ -262,6 +327,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
     let authMode: String?
     let planType: String?
     let reason: String?
+    let loginCommand: String?
     let rateLimits: AgentRuntimeRateLimits?
 
     enum CodingKeys: String, CodingKey {
@@ -274,6 +340,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         case authMode = "auth_mode"
         case planType = "plan_type"
         case reason
+        case loginCommand = "login_command"
         case rateLimits = "rate_limits"
     }
 
@@ -287,6 +354,7 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         authMode: String?,
         planType: String?,
         reason: String?,
+        loginCommand: String? = nil,
         rateLimits: AgentRuntimeRateLimits?
     ) {
         self.id = id
@@ -298,11 +366,22 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         self.authMode = authMode
         self.planType = planType
         self.reason = reason
+        self.loginCommand = loginCommand
         self.rateLimits = rateLimits
     }
 
     var effectivePlanType: String? {
         planType?.trimmedNonEmpty ?? rateLimits?.planType?.trimmedNonEmpty
+    }
+
+    var effectiveLoginCommand: String? {
+        // 旧 agentd 不返回此字段时保留原入口；新版本已按实际共享目录生成命令。
+        if let command = loginCommand?.trimmedNonEmpty { return command }
+        switch id.lowercased() {
+        case "codex": return "codex login"
+        case "claude": return "claude"
+        default: return nil
+        }
     }
 
     var startedDate: Date? {
@@ -368,7 +447,8 @@ struct AgentRuntimeRateLimitWindow: Codable, Equatable, Sendable {
     }
 
     var remainingFraction: Double? {
-        usedPercent.map { min(max(1 - $0 / 100, 0), 1) }
+        guard let usedPercent, usedPercent.isFinite else { return nil }
+        return min(max(1 - usedPercent / 100, 0), 1)
     }
 
     var remainingPercentText: String? {
@@ -414,6 +494,20 @@ private extension String {
     }
 }
 
+struct AgentNetworkStatus: Codable, Equatable, Sendable {
+    let mode: String
+    let allowLAN: Bool
+    let policyChecked: Bool
+    let policyOK: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case allowLAN = "allow_lan"
+        case policyChecked = "policy_checked"
+        case policyOK = "policy_ok"
+    }
+}
+
 struct AgentStatus: Codable, Equatable, Sendable {
     let processOK: Bool
     let serviceOK: Bool
@@ -428,6 +522,9 @@ struct AgentStatus: Codable, Equatable, Sendable {
     let doctor: AgentDoctorResults
     let pairExpires: String?
     let runtimeStatus: AgentRuntimeStatusSnapshot?
+    let networkStatus: AgentNetworkStatus?
+    let moduleStatus: AgentModuleStatus?
+    let moduleStatusState: AgentModuleStatusState?
 
     enum CodingKeys: String, CodingKey {
         case processOK = "process_ok"
@@ -443,6 +540,9 @@ struct AgentStatus: Codable, Equatable, Sendable {
         case doctor
         case pairExpires = "pair_expires"
         case runtimeStatus = "runtime_status"
+        case networkStatus = "network_status"
+        case moduleStatus = "module_status"
+        case moduleStatusState = "module_status_state"
     }
 
     init(
@@ -458,7 +558,10 @@ struct AgentStatus: Codable, Equatable, Sendable {
         doctorOK: Bool,
         doctor: AgentDoctorResults,
         pairExpires: String?,
-        runtimeStatus: AgentRuntimeStatusSnapshot? = nil
+        runtimeStatus: AgentRuntimeStatusSnapshot? = nil,
+        networkStatus: AgentNetworkStatus? = nil,
+        moduleStatus: AgentModuleStatus? = nil,
+        moduleStatusState: AgentModuleStatusState? = nil
     ) {
         self.processOK = processOK
         self.serviceOK = serviceOK
@@ -473,6 +576,9 @@ struct AgentStatus: Codable, Equatable, Sendable {
         self.doctor = doctor
         self.pairExpires = pairExpires
         self.runtimeStatus = runtimeStatus
+        self.networkStatus = networkStatus
+        self.moduleStatus = moduleStatus
+        self.moduleStatusState = moduleStatusState
     }
 
     init(from decoder: Decoder) throws {
@@ -499,6 +605,9 @@ struct AgentStatus: Codable, Equatable, Sendable {
             // 该快照，不能让健康检查、迁移和服务控制一起解码失败。
             runtimeStatus = nil
         }
+        networkStatus = try? container.decodeIfPresent(AgentNetworkStatus.self, forKey: .networkStatus)
+        moduleStatus = try? container.decodeIfPresent(AgentModuleStatus.self, forKey: .moduleStatus)
+        moduleStatusState = try? container.decodeIfPresent(AgentModuleStatusState.self, forKey: .moduleStatusState)
     }
 
     var hasAgentVersionMismatch: Bool {

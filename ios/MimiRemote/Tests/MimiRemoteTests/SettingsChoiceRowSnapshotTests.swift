@@ -34,9 +34,9 @@ final class SettingsChoiceRowSnapshotTests: XCTestCase {
             )
         }
         .padding(.horizontal, 16)
-        // 行本身不画底色，靠 Form 的页面底色。快照必须补上同一块底色，
+        // 行本身不画底色，靠所在分组的卡片底色（#615）。快照必须补上同一块底色，
         // 否则深色基线会变成「深色文字色画在白画布上」，看着全是错的。
-        .background(themeStore.tokens(for: .light).background)
+        .background(themeStore.tokens(for: .light).settingsGroupBackground)
         .environmentObject(themeStore)
         .environment(\.colorScheme, .light)
         .frame(width: cardWidth)
@@ -73,7 +73,7 @@ final class SettingsChoiceRowSnapshotTests: XCTestCase {
             initial: VoiceInputProvider.codex
         )
         .padding(.horizontal, 16)
-        .background(themeStore.tokens(for: .dark).background)
+        .background(themeStore.tokens(for: .dark).settingsGroupBackground)
         .environmentObject(themeStore)
         .environment(\.colorScheme, .dark)
         .frame(width: cardWidth)
@@ -105,7 +105,7 @@ final class SettingsChoiceRowSnapshotTests: XCTestCase {
             )
         }
         .padding(.horizontal, 16)
-        .background(themeStore.tokens(for: .dark).background)
+        .background(themeStore.tokens(for: .dark).settingsGroupBackground)
         .environmentObject(themeStore)
         .environment(\.colorScheme, .dark)
         .environment(\.dynamicTypeSize, .accessibility2)

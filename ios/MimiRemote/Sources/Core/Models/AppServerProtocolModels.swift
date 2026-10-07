@@ -54,10 +54,6 @@ enum CodexMimiTasksToolCatalog {
         ]),
     ])])
 
-    static func qualifiedName(_ function: String) -> String {
-        "\(namespace).\(function)"
-    }
-
     private static func tool(
         _ name: String,
         _ description: String,

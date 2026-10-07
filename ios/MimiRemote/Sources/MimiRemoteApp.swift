@@ -161,6 +161,11 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
         forNotificationIdentifier identifier: String,
         userInfo: [AnyHashable: Any]
     ) -> UNNotificationPresentationOptions {
+		if !MessageNotificationPreferences.isEnabled(),
+		   UserNotificationSessionReminderScheduler.isRuntimeNotificationID(identifier)
+			|| LockScreenApprovalNotification(userInfo: userInfo) != nil {
+			return []
+		}
         if let message = LockScreenApprovalNotification(userInfo: userInfo), message.event.isMessage,
            visibleMessageTagsByScene.values.contains(where: {
                $0.profile == message.profileID && $0.session == message.sessionTag
@@ -399,7 +404,7 @@ struct MimiRemoteApp: App {
             await lockScreenApprovalStore?.handleResolved(payload)
         }
 		// 先安装桥接回调，再触发 APNs 注册，避免冷启动立即返回的 Token 丢失。
-		if lockScreenApprovalStore.isEnabled {
+		if lockScreenApprovalStore.notificationsEnabled && lockScreenApprovalStore.isEnabled {
 			lockScreenApprovalStore.registerNotificationInfrastructure()
 		}
         // 尽早注册 delegate；冷启动点击会先进入 adapter 的 pendingRoute，等 RootView 消费。

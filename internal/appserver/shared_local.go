@@ -33,16 +33,23 @@ var sharedLocalDefaultReadyTimeout = 20 * time.Second
 type SharedLocalOptions struct {
 	CodexBin string
 	Env      map[string]string
+	// BackendCodexHome 为 Mac 前门指定独立 backend 身份目录，并供 ConnectOnly 校验实际连接身份。
+	BackendCodexHome string
+	// ConnectOnly 用于 Mac App 的 launchd 前门。前门不可用时不能由 agentd
+	// 重新绑定标准 socket，否则 Desktop SSH 仍可参与启动权竞争。
+	ConnectOnly bool
 }
 
 // SharedLocalTransport connects agentd to the same Codex control socket used by
 // local terminal clients. It never owns or stops the resident App Server.
 type SharedLocalTransport struct {
-	codexBin  string
-	env       map[string]string
-	socket    string
-	ensureMu  sync.Mutex
-	startOnce func(context.Context, SharedLocalOptions) error
+	codexBin            string
+	env                 map[string]string
+	socket              string
+	expectedBackendHome string
+	requireBackendHome  bool
+	ensureMu            sync.Mutex
+	startOnce           func(context.Context, SharedLocalOptions) error
 }
 
 // SupportsSharedLocalTransport reports whether this host can attach to Codex's
@@ -60,12 +67,32 @@ func NewSharedLocalTransport(options SharedLocalOptions) (*SharedLocalTransport,
 	if err != nil {
 		return nil, err
 	}
-	return &SharedLocalTransport{
-		codexBin:  strings.TrimSpace(options.CodexBin),
-		env:       cloneStringMap(options.Env),
-		socket:    socket,
-		startOnce: startSharedLocalAppServer,
-	}, nil
+	expectedBackendHome := ""
+	requireBackendHome := false
+	if runtime.GOOS == "darwin" && options.ConnectOnly {
+		if options.BackendCodexHome != "" {
+			expectedBackendHome, err = canonicalExistingDirectory(options.BackendCodexHome)
+			if err != nil {
+				return nil, fmt.Errorf("解析期望的 Codex backend CODEX_HOME 失败：%w", err)
+			}
+			requireBackendHome = true
+		} else {
+			// 空配置表示回退到公共 CODEX_HOME。旧 CLI 不报告 codexHome 时保持兼容；
+			// 新 CLI 一旦报告就必须匹配，避免误连仍在运行的旧隔离前门。
+			expectedBackendHome = filepath.Dir(filepath.Dir(socket))
+		}
+	}
+	transport := &SharedLocalTransport{
+		codexBin:            strings.TrimSpace(options.CodexBin),
+		env:                 cloneStringMap(options.Env),
+		socket:              socket,
+		expectedBackendHome: expectedBackendHome,
+		requireBackendHome:  requireBackendHome,
+	}
+	if !options.ConnectOnly {
+		transport.startOnce = startSharedLocalAppServer
+	}
+	return transport, nil
 }
 
 // SharedLocalSocketPath mirrors Codex's unix:// resolution: the control socket
@@ -108,6 +135,38 @@ func SharedLocalSocketPath(extraEnv map[string]string) (string, error) {
 	return path, nil
 }
 
+func canonicalExistingDirectory(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", errors.New("路径必须是绝对路径")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("目录不存在或不可访问：%w", err)
+	}
+	if !info.IsDir() {
+		return "", errors.New("路径不是目录")
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("解析目录规范路径失败：%w", err)
+	}
+	return filepath.Clean(canonical), nil
+}
+
+func validateExpectedBackendCodexHome(expected, reported string, required bool) error {
+	if expected == "" {
+		return nil
+	}
+	if reported == "" && !required {
+		return nil
+	}
+	reportedCanonical, err := canonicalExistingDirectory(reported)
+	if err != nil || reportedCanonical != expected {
+		return &SharedLocalSessionError{Kind: "backend_home", Err: errors.New("app-server 未报告期望的 CODEX_HOME")}
+	}
+	return nil
+}
+
 func (t *SharedLocalTransport) SocketPath() string {
 	if t == nil {
 		return ""
@@ -130,6 +189,29 @@ func (t *SharedLocalTransport) WebSocketHeaders() (http.Header, error) {
 }
 
 func (t *SharedLocalTransport) WebSocketDialer(timeout time.Duration) (websocket.Dialer, error) {
+	dialer, err := t.rawWebSocketDialer(timeout)
+	if err != nil {
+		return websocket.Dialer{}, err
+	}
+	rawDial := dialer.NetDialContext
+	dialer.NetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := rawDial(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		// startup 检查通过后，Desktop 仍可能重建 resident。业务连接必须验证
+		// 自己实际连接的 owner，不能把 agentd 启动时的检查当作永久授权。
+		if err := t.validateConnectionSession(ctx, conn); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return conn, nil
+	}
+	return dialer, nil
+}
+
+// rawWebSocketDialer 仅供登录环境探针和显式修复使用，业务连接不得绕过校验。
+func (t *SharedLocalTransport) rawWebSocketDialer(timeout time.Duration) (websocket.Dialer, error) {
 	if _, err := t.WebSocketURL(); err != nil {
 		return websocket.Dialer{}, err
 	}
@@ -172,6 +254,9 @@ func (t *SharedLocalTransport) EnsureReady(ctx context.Context) error {
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("检查 Codex control socket 失败：%w", err)
 	}
+	if t.startOnce == nil {
+		return errors.New("共享 Codex 前门尚未就绪；请检查 Mimi Remote Mac 的后台项目和前门诊断")
+	}
 	startErr := t.startOnce(ctx, SharedLocalOptions{CodexBin: t.codexBin, Env: t.env})
 	if startErr != nil {
 		// Another process may have won Codex's cross-process startup race after
@@ -207,7 +292,7 @@ func (t *SharedLocalTransport) probe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	dialer, err := t.WebSocketDialer(4 * time.Second)
+	dialer, err := t.rawWebSocketDialer(4 * time.Second)
 	if err != nil {
 		return err
 	}
@@ -223,12 +308,28 @@ func (t *SharedLocalTransport) probe(ctx context.Context) error {
 		_ = conn.SetReadDeadline(deadline)
 		_ = conn.SetWriteDeadline(deadline)
 	}
-	return initializeWebSocket(ctx, conn)
+	initializeResult, err := initializeWebSocketResult(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if err := validateExpectedBackendCodexHome(t.expectedBackendHome, initializeResult.CodexHome, t.requireBackendHome); err != nil {
+		return err
+	}
+	return validateSharedLocalSession(ctx, conn)
 }
 
 var sharedLocalUnitCounter atomic.Uint64
 
 func startSharedLocalAppServer(ctx context.Context, options SharedLocalOptions) error {
+	return startSharedLocalAppServerListening(ctx, options, "unix://")
+}
+
+// startSharedLocalAppServerListening 以 Desktop 相同的参数启动 resident，只替换监听地址。
+// 前门使用私有 backend socket；标准 control socket 由 launchd 持有。
+func startSharedLocalAppServerListening(ctx context.Context, options SharedLocalOptions, listen string) error {
+	if err := validateSharedLocalLaunchSession(ctx); err != nil {
+		return err
+	}
 	if _, err := CheckLocalCodex(ctx, options.CodexBin); err != nil {
 		return fmt.Errorf("拒绝启动不兼容的共享 Codex App Server：%w", err)
 	}
@@ -270,7 +371,7 @@ func startSharedLocalAppServer(ctx context.Context, options SharedLocalOptions) 
 			workingDirectory,
 			environmentFile,
 			resolvedBin,
-			[]string{"-c", "features.code_mode_host=true", "app-server", "--listen", "unix://"},
+			[]string{"-c", "features.code_mode_host=true", "app-server", "--listen", listen},
 		)
 		launchErr := runSystemdResidentCommand(
 			ctx,
@@ -286,7 +387,7 @@ func startSharedLocalAppServer(ctx context.Context, options SharedLocalOptions) 
 	}
 	return startResidentCommand(
 		resolvedBin,
-		[]string{"-c", "features.code_mode_host=true", "app-server", "--listen", "unix://"},
+		[]string{"-c", "features.code_mode_host=true", "app-server", "--listen", listen},
 		env,
 	)
 }

@@ -61,15 +61,6 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.text("ui.settings", language: .simplifiedChinese), "设置")
     }
 
-    func testRunningSessionCountAccessibilityCopyIsLocalized() {
-        let english = L10n.text("ui.running_sessions_count", language: .english)
-        let simplifiedChinese = L10n.text("ui.running_sessions_count", language: .simplifiedChinese)
-
-        XCTAssertEqual(L10n.formatTemplate(english, arguments: [1]), "Running sessions: 1")
-        XCTAssertEqual(L10n.formatTemplate(english, arguments: [3]), "Running sessions: 3")
-        XCTAssertEqual(L10n.formatTemplate(simplifiedChinese, arguments: [3]), "正在运行的会话：3")
-    }
-
     func testToolActivitySemanticLabelsAreLocalized() {
         let expectedValues: [(String, String, String)] = [
             ("ui.query_linear_issues", "Query Linear issues", "查询 Linear Issue"),
@@ -186,12 +177,11 @@ final class LocalizationTests: XCTestCase {
     func testSettingsLayoutMetricsUseOneVisualSystem() {
         XCTAssertEqual(SettingsLayoutMetrics.standardRowHeight, 52)
         XCTAssertEqual(SettingsLayoutMetrics.accessibilityRowHeight, 76)
-        XCTAssertEqual(SettingsLayoutMetrics.iconSlot, 28)
+        XCTAssertEqual(SettingsLayoutMetrics.iconSlot, 24)
+        XCTAssertEqual(SettingsLayoutMetrics.iconSpacing, 12)
+        // 会话行前导槽与设置行图标槽同宽；设置行在卡片里，图标到文字比会话行多留 4pt（#615）。
+        XCTAssertEqual(SessionIndexRowDensity.compact.stateGutterWidth, SettingsLayoutMetrics.iconSlot)
         XCTAssertEqual(SettingsLayoutMetrics.symbolPointSize, 18)
-        XCTAssertEqual(
-            SettingsLayoutMetrics.statusModuleCornerRadius,
-            WorkbenchPageLayout.contentPanelCornerRadius
-        )
     }
 
     func testTokenCountFormatterUsesProductCompactUnits() {

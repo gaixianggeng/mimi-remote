@@ -23,7 +23,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
-    @ScaledMetric(relativeTo: .caption) private var compactActionFontSize: CGFloat = 12
+    @ScaledMetric(relativeTo: .footnote) private var compactActionFontSize: CGFloat = 13
     @State private var isLoadingMoreSessions = false
 
     let statusLine: StatusLine
@@ -36,7 +36,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     let hasInitialSessionContent: Bool
     let canLoadMoreSessions: Bool
     @Binding var selectedRuntime: WorkspaceSessionRuntimeChoice
-    let claudeChannelAvailable: Bool
+    let availableRuntimeProviders: Set<String>
+    let onRetryUnavailable: (WorkspaceSessionRuntimeChoice) async -> Bool
     let currentDate: () -> Date
     let onRefreshSessions: () -> Void
     let onLoadMoreSessions: () async -> Void
@@ -65,7 +66,9 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         ? WorkbenchPageLayout.compactPadding
                         : WorkbenchPageLayout.regularPadding
                 )
-                .padding(.top, 16)
+                // 手机顶部项目条与 Runtime 筛选器属于同一组，少留一档空白。
+                // 宽屏没有第二条筛选行，仍保留原来的内容起始留白。
+                .padding(.top, hasCompactTabBar ? 8 : 16)
                 // 三个顶层页面消费同一个浮动栏 clearance；宽屏无 Tab Bar 时只保留常规页面留白。
                 // 只有按钮真的浮在内容之上时才追加让位高度；回到行内就不需要了。
                 .padding(
@@ -104,7 +107,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
-        // 分组只算一次：筛选行要用它决定计数该不该出现，列表要用它渲染分段。
+        // 分组只算一次，列表按状态渲染分段。
         let grouped = Dictionary(grouping: recentSessions) { session in
             WorkspaceSessionGroup.of(session, status: session.displayStatus(foregroundActivity: nil))
         }
@@ -112,14 +115,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
 
         return VStack(alignment: .leading, spacing: 8) {
             if !showsInlineRuntimePicker {
-                // 只有一个分组时筛选行就是那一段的标题，计数收在行尾；
-                // 有多个分组时每段各自带计数，头部再放一个总数只会重复。
-                recentSessionsHeader(
-                    showsCount: populatedGroups.count <= 1,
-                    countGroup: populatedGroups.count == 1 ? populatedGroups[0] : nil,
-                    rowDensity: rowDensity,
-                    tokens: tokens
-                )
+                recentSessionsHeader(tokens: tokens)
             }
 
             // 工作区状态紧贴第一条会话行，与列表共用左右内边距：
@@ -168,7 +164,6 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     ) -> some View {
         // 给唯一的一个分组加标题是纯噪声：窄屏由筛选行充当它的标题，宽屏由胶囊行承担身份。
         // 出现「需要处理 / 正在运行」等多个分段时，标题才真正在区分内容。
-        let branchValues = recentSessions.map(\.gitBranchName)
         let showsSectionHeaders = populatedGroups.count > 1
 
         VStack(alignment: .leading, spacing: WorkspaceSessionRowMetrics.sectionBoundarySpacing) {
@@ -186,7 +181,6 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     sessionGroupBody(
                         group,
                         sessions: sessions,
-                        branchValues: branchValues,
                         showsLoadMore: group == populatedGroups.last,
                         rowDensity: rowDensity,
                         tokens: tokens
@@ -202,35 +196,22 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
-        // 计数推到行尾，跟系统列表（「最近通话  12」）一致；贴在标题后面会读成标题的一部分。
-        //
-        // 分区标题是给内容分段的路标，不是页面标题。用正文墨色的 15pt 半粗时它和
-        // 会话标题同重，一屏里就出现两级都在喊的文字；计数更只是补充说明。
-        // 两者一起降到 13pt 次级/三级灰，扫读时先看到的仍然是会话本身。
-        HStack(spacing: 8) {
-            Text(group.title)
-                .font(themeStore.uiFont(.footnote, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText)
-
-            Spacer(minLength: 8)
-
-            Text("\(count)")
-                .font(themeStore.uiFont(.footnote))
-                .foregroundStyle(tokens.tertiaryText)
-                .monospacedDigit()
-        }
-        // 小节标题对齐前导状态列的左缘。这一列有了灰环兜底之后每行都有内容，
-        // 才有资格当基准线；没有兜底时对齐它，整段完成态会话会让标题悬在空白左边。
-        .padding(.horizontal, rowDensity.horizontalPadding)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(sessionCountAccessibilityLabel(for: group, count: count))
+        // 分区标题与会话 tab、设置页同一套排版（#563）。计数只是当前已展开窗口的数量，
+        // 行尾一排数字会把列表读成仪表盘；数量改由 VoiceOver 朗读。
+        Text(group.title)
+            .pageSectionHeaderStyle()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // 小节标题对齐前导图标左缘。
+            .padding(.horizontal, rowDensity.horizontalPadding)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(sessionCountAccessibilityLabel(for: group, count: count))
+            .accessibilityAddTraits(.isHeader)
     }
 
     @ViewBuilder
     private func sessionGroupBody(
         _ group: WorkspaceSessionGroup,
         sessions: [AgentSession],
-        branchValues: [String?],
         showsLoadMore: Bool,
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
@@ -243,7 +224,10 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             )
             : nil
 
-        if let firstStaleIndex {
+        // 分界线的意义是「上面是新的、下面是旧的」。最新一条就已超过 12 小时时上半边是空的，
+        // 它会退化成悬在列表顶部的标题，被读成整段列表的名字；此时不再分界。
+        if let firstStaleIndex,
+           WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: firstStaleIndex) {
             let currentSessions = Array(sessions.prefix(firstStaleIndex))
             let staleSessions = Array(sessions.dropFirst(firstStaleIndex))
 
@@ -256,7 +240,6 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 if !currentSessions.isEmpty {
                     sessionRowsStack(
                         sessions: currentSessions,
-                        branchValues: branchValues,
                         showsLoadMore: false,
                         rowDensity: rowDensity,
                         tokens: tokens
@@ -267,7 +250,6 @@ struct WorkspaceDetailView<StatusLine: View>: View {
 
                 sessionRowsStack(
                     sessions: staleSessions,
-                    branchValues: branchValues,
                     showsLoadMore: showsLoadMore,
                     rowDensity: rowDensity,
                     tokens: tokens
@@ -276,7 +258,6 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         } else {
             sessionRowsStack(
                 sessions: sessions,
-                branchValues: branchValues,
                 showsLoadMore: showsLoadMore,
                 rowDensity: rowDensity,
                 tokens: tokens
@@ -286,13 +267,10 @@ struct WorkspaceDetailView<StatusLine: View>: View {
 
     /// 会话行直接落在工作台画布上，不再套一张白卡。
     ///
-    /// 卡片本身没有错，错的是**混用**：会话 tab 已经是扁平行，同一条会话在工作区里
-    /// 换一套外壳，用户学到的规则就作废了。而且这一页真正需要卡片的是 Git 摘要、
-    /// worktree 这些异类模块——会话列表也占一张卡时，白面就不再表达任何层级。
-    /// 分组改由小节标题和留白承担，与会话 tab 完全同构。
+    /// 工作区身份已在胶囊行出现，会话总览只留标题、状态和一条次要信息。
+    /// 分组由小节标题和留白承担，不用卡片或逐行分隔线争夺注意力。
     private func sessionRowsStack(
         sessions: [AgentSession],
-        branchValues: [String?],
         showsLoadMore: Bool,
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
@@ -307,7 +285,9 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 Button {
                     onOpenSession(session)
                 } label: {
-                    // 工作区只负责提供会话数据和点击行为；行内信息层级由会话页组件统一维护。
+                    // 与会话 tab 同一种单行（#563）：标题 + 时间，宽屏 iPad 多一行摘要；需要处理或
+                    // 仍在运行时，状态文字占据时间的位置。顶部已按 Codex / Claude 筛选，每行来源
+                    // 相同，不再重复画来源标记，标题直接与分组标题对齐。
                     SessionIndexRow(
                         session: session,
                         foregroundActivity: foregroundActivity,
@@ -318,15 +298,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         isObserving: sessionStore.isSessionObserving(session),
                         isUnread: isUnread,
                         density: rowDensity,
-                        branch: SessionListPresentation.branchToDisplay(
-                            session.gitBranchName,
-                            among: branchValues
-                        ),
-                        // 这一页的项目是恒定的；没有区分价值的分支时用目录末段区分 worktree。
-                        identityFallback: .directory,
-                        // 无状态的行画一枚灰环兜底，让前导列每行都有内容——
-                        // 小节标题以这一列为基准线，列不能是稀疏的。
-                        showsIdleStateGlyph: true,
+                        leadingSlot: .none,
+                        showsSessionPreview: UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table,
                         currentDate: currentDate,
                         calendar: calendar,
                         locale: locale,
@@ -342,7 +315,10 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         status: session.displayStatus(foregroundActivity: foregroundActivity),
                         sessionStatus: session.status,
                         isUnread: isUnread,
-                        showsNeutralHistoryStatus: false
+                        showsNeutralHistoryStatus: false,
+                        identity: SessionListPresentation.normalizedBranch(session.gitBranchName).map {
+                            "\(L10n.text("ui.branch")) \($0)"
+                        } ?? SessionIndexRow.identityFallbackAccessibilityLabel(for: session, fallback: .directory)
                     )
                 )
                 .sessionRowActions(session)
@@ -399,39 +375,19 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     ///
     /// 新建按钮下沉右下之后这一行只剩筛选器，不再有两个元素争抢宽度，`ViewThatFits` 也就不需要了。
     /// 窄屏把 Runtime 降级成菜单：分段控件是这一屏第二颗灰胶囊，而多数人一天只用一个 Runtime。
-    private func recentSessionsHeader(
-        showsCount: Bool,
-        countGroup: WorkspaceSessionGroup?,
-        rowDensity: SessionIndexRowDensity,
-        tokens: ThemeTokens
-    ) -> some View {
+    private func recentSessionsHeader(tokens: ThemeTokens) -> some View {
         HStack(spacing: 12) {
             WorkspaceRuntimePopoverPicker(
                 selection: $selectedRuntime,
-                claudeChannelAvailable: claudeChannelAvailable
+                availableRuntimeProviders: availableRuntimeProviders,
+                onRetryUnavailable: onRetryUnavailable
             )
 
             Spacer(minLength: 8)
 
-            if showsCount {
-                Text("\(recentSessions.count)")
-                    .font(themeStore.uiFont(.footnote))
-                    .foregroundStyle(tokens.tertiaryText)
-                    .monospacedDigit()
-                    .padding(
-                        .trailing,
-                        hasBottomTabBar ? 4 : rowDensity.horizontalPadding
-                    )
-                    .accessibilityLabel(
-                        countGroup.map {
-                            sessionCountAccessibilityLabel(for: $0, count: recentSessions.count)
-                        } ?? L10n.plural("ui.sessions_count", count: recentSessions.count)
-                    )
-            }
-
             // 底部被浮动 Tab 栏占住时，新建按钮回到这一行的右端。
             // 这行本来就被菜单的 44pt 命中区撑满，多放一颗按钮不增加任何高度。
-            // 灰色计数和实色圆钮的视觉重量差得远，不会读成同一个东西。
+            // 计数只是当前已展开窗口的数量，省去它避免把筛选行读成仪表盘。
             if hasBottomTabBar {
                 newSessionButton(tokens: tokens)
             }
@@ -458,30 +414,37 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         // 浮起时可以画得实体一些；回到筛选行里必须收进 44pt 行高，也不该再投影——
         // 行内元素投影会读成一枚悬在纸面上的贴纸。
         let isFloating = !hasBottomTabBar
-        let diameter = isFloating
-            ? WorkspaceSessionFabMetrics.diameter
-            : WorkspaceSessionFabMetrics.inlineDiameter
+        let diameter = WorkspaceSessionFabMetrics.diameter
 
         return Button {
             // thread 创建时就绑定 runtime；这里必须把当前选择一路传到 SessionStore。
             onStartSession(selectedRuntime)
         } label: {
-            Image(systemName: "plus")
-                .font(.system(size: isFloating ? 24 : 18, weight: .medium))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(tokens.primaryActionForeground)
-                .frame(width: diameter, height: diameter)
-                .background(tokens.primaryAction, in: Circle())
-                .frame(
-                    minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
-                    minHeight: WorkbenchChromeIconMetrics.minimumHitTarget
-                )
-                .contentShape(Circle())
+            if isFloating {
+                Image(systemName: "plus")
+                    .font(.system(size: 24, weight: .medium))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(tokens.primaryActionForeground)
+                    .frame(width: diameter, height: diameter)
+                    .background(tokens.primaryAction, in: Circle())
+                    .frame(
+                        minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
+                        minHeight: WorkbenchChromeIconMetrics.minimumHitTarget
+                    )
+                    .contentShape(Circle())
+            } else {
+                // 手机上与会话 tab 顶栏的新建按钮同一种写法：磨砂圆 + 正文色加号（#563）。
+                // 过去这里是一颗紫色实心圆，同一个动作在两页长成两样。
+                WorkbenchChromeIcon(systemName: "plus")
+                    .foregroundStyle(tokens.primaryText)
+                    .workbenchChromeCircle(tokens: tokens)
+            }
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .disabled(!selectedRuntime.isAvailable(in: availableRuntimeProviders))
         .shadow(
             color: isFloating
-                ? tokens.primaryAction.opacity(colorScheme == .dark ? 0.34 : 0.28)
+                ? tokens.primaryActionShadow
                 : .clear,
             radius: isFloating ? 12 : 0,
             y: isFloating ? 5 : 0
@@ -498,8 +461,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         tokens: ThemeTokens
     ) -> some View {
         Text(L10n.text("ui.twelve_hours_ago"))
-            .font(themeStore.uiFont(.footnote, weight: .semibold))
-            .foregroundStyle(tokens.secondaryText)
+            .pageSectionHeaderStyle()
             .padding(.horizontal, rowDensity.horizontalPadding)
             .padding(.top, WorkspaceSessionRowMetrics.sectionBoundarySpacing)
             .padding(.bottom, WorkspaceSessionRowMetrics.sectionHeaderBottomSpacing)
@@ -515,19 +477,18 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     ) -> some View {
         VStack(spacing: 0) {
             ForEach(0..<3, id: \.self) { _ in
+                // 与单行会话行同形：一条标题占位，右端一小段时间占位。
                 HStack {
-                    VStack(alignment: .leading, spacing: 8) {
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(tokens.elevatedSurface)
-                            .frame(width: 210, height: 12)
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(tokens.elevatedSurface)
-                            .frame(width: 128, height: 9)
-                    }
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(tokens.elevatedSurface)
+                        .frame(width: 210, height: 12)
                     Spacer(minLength: 8)
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(tokens.elevatedSurface)
+                        .frame(width: 36, height: 9)
                 }
                 .padding(.horizontal, rowDensity.horizontalPadding)
-                .frame(minHeight: rowDensity.minimumHeight)
+                .frame(minHeight: SessionIndexRow.libraryRowMinimumHeight)
             }
         }
         .redacted(reason: .placeholder)

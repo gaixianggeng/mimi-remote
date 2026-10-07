@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -198,6 +199,77 @@ func TestConfigureClaudeRestoreWritesExactPreviousState(t *testing.T) {
 	if result.Enabled || result.Preference != ClaudeActivationAuto ||
 		result.Reason != "restored" {
 		t.Fatalf("回滚必须精确恢复 auto + disabled：%+v", result)
+	}
+}
+
+func TestRestoreClaudeRestoresMissingFieldsAndPreservesUnrelatedUpdates(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	writeClaudeDocument(t, configPath, map[string]any{
+		"auth": map[string]any{"token": "0123456789abcdef0123456789abcdef"},
+		"claude": map[string]any{
+			"bridge_bin":             filepath.Join(t.TempDir(), "missing-bridge"),
+			"max_concurrent_bridges": 3,
+		},
+	})
+
+	changed, err := ConfigureClaude(context.Background(), configPath, ClaudeActivationDisabled, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Previous.Enabled != nil || changed.Previous.Activation != nil ||
+		changed.Applied.Enabled == nil || changed.Applied.Activation == nil {
+		t.Fatalf("事务快照没有保留缺失字段：%+v", changed)
+	}
+	document := readClaudeConfigurationFixture(t, configPath)
+	document["future_top_level"] = map[string]any{"keep": "concurrent"}
+	writeClaudeDocument(t, configPath, document)
+
+	restored, err := RestoreClaude(configPath, changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Enabled || restored.Preference != ClaudeActivationAuto || !restored.Changed {
+		t.Fatalf("恢复结果异常：%+v", restored)
+	}
+	document = readClaudeConfigurationFixture(t, configPath)
+	claude := document["claude"].(map[string]any)
+	if _, ok := claude["enabled"]; ok {
+		t.Fatalf("原配置缺失 enabled，恢复后也必须缺失：%v", claude)
+	}
+	if _, ok := claude["activation"]; ok {
+		t.Fatalf("原配置缺失 activation，恢复后也必须缺失：%v", claude)
+	}
+	if document["future_top_level"].(map[string]any)["keep"] != "concurrent" {
+		t.Fatalf("无关并发更新不应丢失：%v", document)
+	}
+}
+
+func TestRestoreClaudeRejectsConflictingAppliedState(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	writeClaudeDocument(t, configPath, map[string]any{
+		"auth": map[string]any{"token": "0123456789abcdef0123456789abcdef"},
+		"claude": map[string]any{
+			"enabled":                false,
+			"activation":             "auto",
+			"bridge_bin":             filepath.Join(t.TempDir(), "missing-bridge"),
+			"max_concurrent_bridges": 3,
+		},
+	})
+
+	changed, err := ConfigureClaude(context.Background(), configPath, ClaudeActivationDisabled, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := readClaudeConfigurationFixture(t, configPath)
+	document["claude"].(map[string]any)["activation"] = "enabled"
+	writeClaudeDocument(t, configPath, document)
+
+	if _, err := RestoreClaude(configPath, changed); err == nil || !strings.Contains(err.Error(), "其他操作修改") {
+		t.Fatalf("冲突恢复必须拒绝覆盖新的意图，实际错误：%v", err)
+	}
+	document = readClaudeConfigurationFixture(t, configPath)
+	if document["claude"].(map[string]any)["activation"] != "enabled" {
+		t.Fatalf("冲突后的新配置被覆盖：%v", document)
 	}
 }
 
@@ -399,7 +471,7 @@ func TestProbeClaudeAuthStatusDoesNotTurnTimeoutIntoSignedOut(t *testing.T) {
 		context.Background(),
 		claude,
 		claudeCommandEnvironment(nil),
-		50*time.Millisecond,
+		500*time.Millisecond,
 	)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("输出 false 后超时必须保留 timeout 分类，got=%v", err)

@@ -17,7 +17,6 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
-	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
 func newWorktreeCleanupFixture(t *testing.T, count int) worktreeCleanupFixture {
@@ -59,28 +58,38 @@ func newWorktreeCleanupFixture(t *testing.T, count int) worktreeCleanupFixture {
 		Auth:          config.AuthConfig{Token: testToken},
 		WorktreesRoot: worktreesRoot,
 		Codex:         config.CodexConfig{Bin: "/bin/cat", Env: map[string]string{"TERM": "xterm-256color"}},
-		Session:       config.SessionConfig{OutputBufferBytes: 8 * 1024},
 		Projects:      []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: repo}},
 	}
 	registry, err := projects.NewRegistry(cfg.Projects)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := session.NewManager(session.Options{
-		CodexBin: cfg.Codex.Bin, Env: cfg.Codex.Env, OutputBuffer: cfg.Session.OutputBufferBytes,
-	})
-	t.Cleanup(manager.Shutdown)
 	router := &Router{
 		cfg:                         cfg,
 		projects:                    registry,
-		sessions:                    manager,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
 		managedWorktrees:            map[string]managedWorktree{},
 		managedWorktreeCleanupPlans: map[string]worktreeCleanupPlan{},
 	}
-	handler := auth.New(testToken, false).Middleware(http.HandlerFunc(router.worktreeCleanupHandler))
-	server := testServer{handler: handler, manager: manager}
+	handler := auth.NewWithOptions(testToken, false, auth.Options{}).Middleware(http.HandlerFunc(router.worktreeCleanupHandler))
+	server := testServer{handler: handler}
 	return worktreeCleanupFixture{server: server, router: router, repo: repo, worktreesRoot: worktreesRoot, worktrees: worktrees}
+}
+
+// registerGatewayThreadForTest 注入一条活跃 gateway thread，等价于一次真实的
+// thread/start：它是 managedWorktreeHasRunningSession 唯一的活输入。
+func registerGatewayThreadForTest(router *Router, id string, cwd string) {
+	router.gatewayThreadsMu.Lock()
+	defer router.gatewayThreadsMu.Unlock()
+	if router.gatewayThreads == nil {
+		router.gatewayThreads = map[string]appServerGatewayAllowedThread{}
+	}
+	router.gatewayThreads[id] = appServerGatewayAllowedThread{
+		id:       id,
+		cwd:      cwd,
+		scopeID:  workspaceIDForRealPath(cwd),
+		lastSeen: time.Now(),
+	}
 }
 
 func newManagedWorktreeGatewayPolicyForTest(router *Router) *appServerGatewayPolicy {
@@ -337,6 +346,7 @@ func TestCapabilityListDiscoversSkillsAndMCPWithoutSecrets(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("CODEX_HOME", "")
 	binDir := filepath.Join(t.TempDir(), "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -431,6 +441,118 @@ url = "https://docs.example.invalid/mcp"
 	data, _ := json.Marshal(response)
 	if strings.Contains(string(data), "should-not-leak") {
 		t.Fatalf("capability 响应不应暴露 env secret：%s", string(data))
+	}
+}
+
+func TestCapabilityListUsesSharedBackendCodexHome(t *testing.T) {
+	userHome := t.TempDir()
+	publicCodexHome := filepath.Join(userHome, ".codex")
+	backendCodexHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
+	t.Setenv("CODEX_HOME", publicCodexHome)
+
+	writeSkill := func(root string, name string) {
+		t.Helper()
+		dir := filepath.Join(root, "skills", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: "+name+"\n---\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeMCP := func(home string, name string) {
+		t.Helper()
+		if err := os.MkdirAll(home, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content := "[mcp_servers." + name + "]\nurl = \"https://example.invalid/mcp\"\n"
+		if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSkill(publicCodexHome, "public-codex-skill")
+	writeMCP(publicCodexHome, "public-mcp")
+	writeSkill(backendCodexHome, "backend-codex-skill")
+	writeMCP(backendCodexHome, "backend-mcp")
+	userAgentSkill := filepath.Join(userHome, ".agents", "skills", "user-agent")
+	if err := os.MkdirAll(userAgentSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userAgentSkill, "SKILL.md"), []byte("---\nname: user-agent\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	projectDir := t.TempDir()
+	repoSkill := filepath.Join(projectDir, ".agents", "skills", "repo-agent")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(repoSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoSkill, "SKILL.md"), []byte("---\nname: repo-agent\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.AppServer = config.AppServerConfig{Transport: "local", SharedCodexHome: backendCodexHome}
+		cfg.Projects = []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: projectDir}}
+	})
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodPost, "/api/capabilities/list", capabilityListRequest{Path: projectDir}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("capability list 应成功，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response capabilityListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if !containsSkill(response.Skills, "backend-codex-skill", "user") ||
+		!containsSkill(response.Skills, "user-agent", "user") ||
+		!containsSkill(response.Skills, "repo-agent", "repo") {
+		t.Fatalf("应读取 backend Codex、用户 .agents 和 repo .agents skills：%+v", response.Skills)
+	}
+	if containsSkill(response.Skills, "public-codex-skill", "user") {
+		t.Fatalf("不应混入公共 Codex home 的 skill：%+v", response.Skills)
+	}
+	if findMCP(response.MCPServers, "backend-mcp", "") == nil || findMCP(response.MCPServers, "public-mcp", "") != nil {
+		t.Fatalf("MCP 应只读取 backend Codex home：%+v", response.MCPServers)
+	}
+}
+
+func TestCapabilityListSSHRetainsLocalSummaryWithoutSharedHome(t *testing.T) {
+	userHome := t.TempDir()
+	sharedHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
+	for root, name := range map[string]string{
+		filepath.Join(userHome, ".codex"): "local-skill",
+		sharedHome:                        "shared-skill",
+	} {
+		dir := filepath.Join(root, "skills", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: "+name+"\n---\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	router := &Router{cfg: config.Config{
+		AppServer: config.AppServerConfig{Transport: "ssh", SharedCodexHome: sharedHome},
+	}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/list", strings.NewReader(`{}`))
+	router.capabilityListHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("capability list 应成功，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response capabilityListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if !containsSkill(response.Skills, "local-skill", "user") || containsSkill(response.Skills, "shared-skill", "user") {
+		t.Fatalf("SSH 应保留原本机摘要且忽略 shared_codex_home：%+v", response.Skills)
 	}
 }
 

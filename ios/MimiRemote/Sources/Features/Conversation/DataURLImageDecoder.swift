@@ -113,24 +113,12 @@ enum DataURLImageDecoder {
             else {
                 return nil
             }
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: boundedPixelSize,
-                kCGImageSourceShouldCacheImmediately: true,
-            ]
-            guard !Task.isCancelled,
-                  let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
-            else {
-                return nil
-            }
-            let image = UIImage(cgImage: cgImage)
-            cache.setObject(
-                image,
-                forKey: resolvedCacheKey,
-                cost: cgImage.bytesPerRow * cgImage.height
+            return makeThumbnail(
+                from: source,
+                cache: cache,
+                cacheKey: resolvedCacheKey,
+                maxPixelSize: boundedPixelSize
             )
-            return image
         }
         return await withTaskCancellationHandler {
             await decodeTask.value
@@ -239,24 +227,12 @@ enum RemoteURLImageLoader {
                 else {
                     return nil
                 }
-                let options: [CFString: Any] = [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceThumbnailMaxPixelSize: boundedPixelSize,
-                    kCGImageSourceShouldCacheImmediately: true,
-                ]
-                guard !Task.isCancelled,
-                      let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
-                else {
-                    return nil
-                }
-                let image = UIImage(cgImage: cgImage)
-                cache.setObject(
-                    image,
-                    forKey: resolvedCacheKey,
-                    cost: cgImage.bytesPerRow * cgImage.height
+                return makeThumbnail(
+                    from: source,
+                    cache: cache,
+                    cacheKey: resolvedCacheKey,
+                    maxPixelSize: boundedPixelSize
                 )
-                return image
             }
             return await withTaskCancellationHandler {
                 await decodeTask.value
@@ -315,4 +291,30 @@ enum RemoteURLImageLoader {
         let identity = MediaRequestIdentity(profileID: profileID, resourceID: cacheKey)
         return "\(identity.profileID.utf8.count):\(identity.profileID):remote:\(cacheKey):\(maxPixelSize)" as NSString
     }
+}
+
+
+/// 两个加载器（data URL 与远程 URL）此前各复制了一份完全相同的缩略图构造与缓存写入，
+/// 只有 CGImageSource 的来源不同。缓存由调用方传入，因为它分别属于各自的 enum。
+private func makeThumbnail(
+    from source: CGImageSource,
+    cache: NSCache<NSString, UIImage>,
+    cacheKey: NSString,
+    maxPixelSize: Int
+) -> UIImage? {
+    guard !Task.isCancelled else {
+        return nil
+    }
+    let options: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        kCGImageSourceShouldCacheImmediately: true,
+    ]
+    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+        return nil
+    }
+    let image = UIImage(cgImage: cgImage)
+    cache.setObject(image, forKey: cacheKey, cost: cgImage.bytesPerRow * cgImage.height)
+    return image
 }

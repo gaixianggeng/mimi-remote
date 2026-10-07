@@ -6,7 +6,7 @@ import SwiftUI
 extension ComposerView {
     func applyDefaultPermissionMode() {
         let stored = ComposerPermissionMode.stored(defaultPermissionModeID)
-        composerState.applyPermissionMode(safePermissionMode(stored))
+        composerState.applyPermissionMode(stored)
         sessionStore.saveComposerPermissionSelection(
             composerState.permissionSelectionSnapshot(),
             for: activeComposerDraftScope
@@ -26,14 +26,102 @@ extension ComposerView {
         }
     }
 
-    func setPermissionMode(_ mode: ComposerPermissionMode) {
-        let safeMode = safePermissionMode(mode)
-        // Claude 的安全降级只影响当前会话，不覆盖用户为 Codex 保存的“完全访问”默认值。
-        if selectedSessionRuntimeProviderForModelMenu != "claude" {
-            defaultPermissionModeID = safeMode.rawValue
+    var defaultRunningTurnDelivery: RunningTurnDelivery {
+        RunningTurnDelivery.stored(defaultRunningTurnDeliveryID)
+    }
+
+    /// 回到设置里的「默认发送方式」。`canGuide` 只在 onChange 里传，
+    /// 因为那一刻新的可用性还没写回视图，直接读计算属性会拿到旧值。
+    func resetFollowUpDeliveryToDefault(canGuide: Bool? = nil) {
+        sessionStore.composerDeliverySelectionCache.clear()
+        guidedFollowUpEnabled = RunningTurnDelivery.restoredSelection(
+            default: defaultRunningTurnDelivery,
+            canUseGuidedFollowUp: canGuide ?? canUseGuidedFollowUp
+        ) == .guided
+    }
+
+    func restoreFollowUpDeliveryForReappearance() {
+        let cachedSelection = sessionStore.composerDeliverySelectionCache.selectionForActivation(
+            of: activeComposerDraftScope, context: runningTurnDeliveryContext, default: defaultRunningTurnDelivery
+        )
+        let selection = cachedSelection ?? RunningTurnDelivery.restoredSelection(
+            default: defaultRunningTurnDelivery, canUseGuidedFollowUp: canUseGuidedFollowUp
+        )
+        guidedFollowUpEnabled = selection == .guided && canUseGuidedFollowUp
+    }
+
+    func synchronizeFollowUpDeliveryForSelectionChange(previousID: SessionID?, nextID: SessionID?) {
+        if let previousID, let nextID,
+           isOptimisticSessionHandoff(from: .session(previousID), to: .session(nextID)) {
+            return
         }
+        resetFollowUpDeliveryToDefault()
+    }
+
+    func synchronizeCompletedComposerDeliveryReset(_ event: ComposerDeliveryResetEvent?) {
+        guard let event,
+              sessionStore.activeComposerInstanceID == composerInstanceID,
+              activeComposerDraftScope == event.scope,
+              currentComposerDraftScope == event.scope else { return }
+        restoreFollowUpDeliveryForReappearance()
+    }
+
+    var transientSelectionCheckpoint: ComposerTransientSelectionCheckpoint {
+        ComposerTransientSelectionCheckpoint(
+            instanceID: composerInstanceID,
+            scopeRevision: composerScopeRevision,
+            deliveryRevision: followUpDeliveryChoiceRevision,
+            cachedDeliveryRevision: sessionStore.composerDeliverySelectionCache.revision,
+            sendModeRevision: sendModeChoiceRevision,
+            cachedSendModeRevision: sessionStore.composerSendModeCache.revision
+        )
+    }
+
+    func restoreTransientSelectionsAfterSubmit(_ checkpoint: ComposerTransientSelectionCheckpoint) {
+        // 同一会话恢复会推进 selectionGeneration，但没有切换输入区；只检查实际
+        // scope 的生命周期。切到别处再回来时，revision 能挡住旧完成回调。
+        let restoration = checkpoint.restoration(
+            activeInstanceID: sessionStore.activeComposerInstanceID,
+            activeScope: activeComposerDraftScope,
+            selectedScope: currentComposerDraftScope,
+            scopeRevision: composerScopeRevision,
+            deliveryRevision: followUpDeliveryChoiceRevision,
+            sendModeRevision: sendModeChoiceRevision
+        )
+        if restoration.delivery {
+            resetFollowUpDeliveryToDefault()
+        } else if let resolvedScope = sessionStore.composerDeliverySelectionCache.clearIfUnchanged(
+            revision: checkpoint.cachedDeliveryRevision
+        ) {
+            sessionStore.latestCompletedComposerDeliveryReset = ComposerDeliveryResetEvent(
+                scope: resolvedScope,
+                revision: sessionStore.composerDeliverySelectionCache.revision
+            )
+        }
+        if restoration.sendMode {
+            resetComposerSendModeAfterSubmit()
+        } else if let resolvedScope = sessionStore.composerSendModeCache.clearSubmittedModeIfUnchanged(
+            revision: checkpoint.cachedSendModeRevision
+        ) {
+            // 新输入区可能已重建；通知它从共享缓存读取复位后的模式。
+            sessionStore.latestCompletedComposerModeReset = ComposerModeResetEvent(
+                scope: resolvedScope,
+                revision: sessionStore.composerSendModeCache.revision
+            )
+        }
+    }
+
+    func followUpDeliveryMenuTitle(_ delivery: RunningTurnDelivery, isGuidedAvailable: Bool) -> String {
+        delivery.menuTitle(
+            isDefault: delivery == defaultRunningTurnDelivery,
+            isGuidedAvailable: isGuidedAvailable
+        )
+    }
+
+    func setPermissionMode(_ mode: ComposerPermissionMode) {
+        defaultPermissionModeID = mode.rawValue
         composerState.applyPermissionMode(
-            safeMode,
+            mode,
             sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
         )
         sessionStore.saveComposerPermissionSelection(
@@ -70,7 +158,7 @@ extension ComposerView {
     }
 
     var availablePermissionProfiles: [CodexAppServerPermissionProfileSummary] {
-        guard selectedSessionRuntimeProviderForModelMenu != "claude",
+        guard composerRuntimeProvider == "codex",
               sessionStore.permissionProfilesCWD == permissionProfileCWD
         else {
             return []
@@ -120,34 +208,12 @@ extension ComposerView {
     }
 
     var availablePermissionModes: [ComposerPermissionMode] {
-        if selectedSessionRuntimeProviderForModelMenu == "claude" {
-            return [.requestApproval, .readOnly, .autoApprove]
-        }
-        return ComposerPermissionMode.allCases
+        RuntimeFeatureSupport.permissionModes(for: composerRuntimeProvider)
     }
 
-    func safePermissionMode(_ mode: ComposerPermissionMode) -> ComposerPermissionMode {
-        // Claude 不支持“完全访问”，也不持久化自己的默认；当共享默认落在 fullAccess 时，
-        // 降级到“自动批准低风险操作”作为 Claude 的安全默认，而不是每轮都请求审批。
-        // autoApprove 仍是安全档（workspaceWrite + auto_review），绝不映射 bypassPermissions。
-        selectedSessionRuntimeProviderForModelMenu == "claude" && mode == .fullAccess
-            ? .autoApprove
-            : mode
-    }
-
-    func clampPermissionSelectionToSelectedSessionRuntime() {
-        let safeMode = safePermissionMode(composerState.permissionMode)
-        guard safeMode != composerState.permissionMode else {
-            return
-        }
-        composerState.applyPermissionMode(
-            safeMode,
-            sessionIsRunning: sessionStore.selectedSessionRequiresFreshPermissionTurn
-        )
-        sessionStore.saveComposerPermissionSelection(
-            composerState.permissionSelectionSnapshot(),
-            for: activeComposerDraftScope
-        )
+    var composerRuntimeProvider: String {
+        selectedSessionRuntimeProviderForModelMenu
+            ?? normalizedRuntimeProvider(composerState.turnOptions.runtimeProvider)
     }
 }
 import UIKit
@@ -350,6 +416,12 @@ extension ComposerView {
                 showsPermissionSettings: isPhoneComposer && composerTurnSettingsPolicy.allowsTurnSettingsEditing,
                 permissionModes: availablePermissionModes,
                 selectedPermissionMode: composerState.permissionMode,
+                showsAttachmentActions: RuntimeFeatureSupport.supportsAttachments(
+                    for: composerRuntimeProvider
+                ),
+                showsSkillActions: RuntimeFeatureSupport.supportsSkills(
+                    for: composerRuntimeProvider
+                ),
                 showsCameraAction: showsCameraAttachmentAction,
                 selectedSkillPaths: selectedSkillPaths,
                 onPickFile: {
@@ -453,7 +525,9 @@ extension ComposerView {
 
     private var composerContextControls: some View {
         HStack(spacing: 8) {
-            skillPickerButton
+            if RuntimeFeatureSupport.supportsSkills(for: composerRuntimeProvider) {
+                skillPickerButton
+            }
             if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
                 permissionMenu
             }

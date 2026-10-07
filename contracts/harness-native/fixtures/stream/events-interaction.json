@@ -1,0 +1,50 @@
+{
+  "provenance": {
+    "level": "live-capture",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.1.5-rc.2",
+    "upstreamTag": "dsh-v0.1.5-rc.2",
+    "profile": "web",
+    "transport": "http://127.0.0.1 loopback, cookie session after GET /?token=",
+    "modelFixture": "@deepseek-ai/dsh-llm-mock-server (scriptable OpenAI-compatible SSE)",
+    "capturedAt": "2026-09-18T18:18:26.439Z"
+  },
+  "note": "$events 宿主级交互流：ready 打开帧 + emit 增量帧。",
+  "observations": [
+    {
+      "label": "ready",
+      "value": {
+        "type": "ready",
+        "clientId": "h00-client-0001",
+        "host": {
+          "home": "/h00/home"
+        }
+      },
+      "note": "打开帧为 {type:\"ready\", clientId, host:{home}}。"
+    },
+    {
+      "label": "emit.api-session/added",
+      "value": null
+    },
+    {
+      "label": "emit.api-session/status",
+      "value": null
+    },
+    {
+      "label": "emit.api-session/activity",
+      "value": null
+    },
+    {
+      "label": "observedEventNames",
+      "value": [
+        "api-session/added",
+        "api-session/status",
+        "api-session/activity"
+      ]
+    },
+    {
+      "label": "openQuestion",
+      "value": "本次实测只证明创建会话的同一连接收到 api-session/added；它是否会推给另一条 $events 连接尚未验证，因此冷会话目录仍应保留前台 list 兜底。"
+    }
+  ]
+}

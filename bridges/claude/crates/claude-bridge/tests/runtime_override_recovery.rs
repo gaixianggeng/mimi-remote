@@ -263,6 +263,434 @@ async fn duplicate_resume_control_exit_recovers_with_spawn_time_overrides() {
     let _ = timeout(STEP_TIMEOUT, bridge_task).await;
 }
 
+#[tokio::test]
+async fn full_access_switch_restarts_same_session_and_restores_sandbox() {
+    let _guard = TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let fixture = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    let argv_log = fixture.path().join("argv.jsonl");
+    let turn_log = fixture.path().join("turns.log");
+    let _argv = EnvRestore::set("FAKE_CLAUDE_ARGV_LOG", &argv_log);
+    let _turns = EnvRestore::set("FAKE_CLAUDE_TURN_LOG", &turn_log);
+    let pool = Arc::new(ClaudePool::new(fake_claude_path()));
+    let codex_home = TempDir::new().unwrap();
+    let index = ThreadIndex::open_and_hydrate(codex_home.path())
+        .await
+        .unwrap();
+    let (client, bridge) = tokio::io::duplex(64 * 1024);
+    let (bridge_reader, bridge_writer) = tokio::io::split(bridge);
+    let bridge_pool = pool.clone();
+    let bridge_index: Arc<dyn ThreadIndexHandle> = index.clone();
+    let home_path = codex_home.path().to_path_buf();
+    let task = tokio::spawn(async move {
+        run_connection(
+            bridge_reader,
+            bridge_writer,
+            bridge_pool,
+            bridge_index,
+            home_path,
+        )
+        .await
+    });
+    let (reader, mut writer) = tokio::io::split(client);
+    let mut reader = BufReader::new(reader);
+    send(
+        &mut writer,
+        1,
+        "initialize",
+        json!({"clientInfo":{"name":"full-access","version":"1"}}),
+    )
+    .await;
+    let _ = await_response(&mut reader, 1).await;
+    send(&mut writer, 2, "thread/start", json!({"cwd":cwd.path()})).await;
+    let started = await_response(&mut reader, 2).await;
+    let thread_id = started["result"]["thread"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // fake 不写 Claude transcript，模拟真实 CLI 在首轮后留下的历史文件。
+    let transcript = index
+        .lookup(&thread_id)
+        .await
+        .unwrap()
+        .metadata
+        .claude_session_path;
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "").unwrap();
+
+    for (offset, sandbox, policy, reviewer) in [
+        (0, "dangerFullAccess", "never", "user"),
+        (1, "dangerFullAccess", "never", "user"),
+        (2, "readOnly", "on-request", "user"),
+        (3, "workspaceWrite", "on-request", "auto_review"),
+        (4, "dangerFullAccess", "never", "user"),
+    ] {
+        let id = 3 + offset;
+        send(&mut writer, id, "turn/start", json!({
+            "threadId":thread_id, "input":[{"type":"text","text":format!("turn-{offset}")}],
+            "sandboxPolicy":{"type":sandbox}, "approvalPolicy":policy, "approvalsReviewer":reviewer,
+        })).await;
+        let frames = collect_turn(&mut reader, id).await;
+        let response = frames
+            .iter()
+            .find(|f| f["id"].as_u64() == Some(id))
+            .unwrap();
+        assert!(response.get("error").is_none(), "{response:#?}");
+        let complete = frames
+            .iter()
+            .find(|f| f["method"] == "turn/completed")
+            .unwrap();
+        assert_eq!(complete["params"]["turn"]["status"], "completed");
+        let handle = pool.get(&thread_id).await.unwrap();
+        assert_eq!(handle.uses_full_access(), sandbox == "dangerFullAccess");
+        let (_, _, mode) = handle.runtime_snapshot().await;
+        assert_eq!(
+            mode.as_deref(),
+            Some(match sandbox {
+                "dangerFullAccess" => "bypassPermissions",
+                "readOnly" => "plan",
+                _ => "auto",
+            })
+        );
+    }
+    let argv = read_argv_log(&argv_log);
+    assert_eq!(
+        argv.len(),
+        3,
+        "只在进出完全访问时换代，普通档位沿用控制协议"
+    );
+    for position in [0, 2] {
+        assert!(has_arg_pair(
+            &argv[position],
+            "--permission-mode",
+            "bypassPermissions"
+        ));
+        assert!(has_arg_pair(
+            &argv[position],
+            "--settings",
+            r#"{"sandbox":{"enabled":false}}"#
+        ));
+        assert!(!argv[position].iter().any(|a| a == "--disallowedTools"));
+    }
+    assert!(has_arg_pair(&argv[1], "--permission-mode", "plan"));
+    for generation in &argv {
+        assert!(has_arg_pair(generation, "--resume", &thread_id));
+        assert!(has_arg_pair(
+            generation,
+            "--permission-prompt-tool",
+            "stdio"
+        ));
+    }
+    if cfg!(windows) {
+        assert!(argv[1].iter().any(|a| a == "--disallowedTools"));
+    } else {
+        let settings_index = argv[1].iter().position(|a| a == "--settings").unwrap();
+        let settings: Value = serde_json::from_str(&argv[1][settings_index + 1]).unwrap();
+        assert_eq!(settings["sandbox"]["enabled"], true);
+        assert_eq!(settings["sandbox"]["failIfUnavailable"], true);
+    }
+    assert_eq!(
+        std::fs::read_to_string(turn_log).unwrap(),
+        "turn-0\nturn-1\nturn-2\nturn-3\nturn-4\n"
+    );
+    drop(writer);
+    drop(reader);
+    let _ = timeout(STEP_TIMEOUT, task).await;
+}
+
+#[tokio::test]
+async fn concurrent_permission_selections_cannot_change_the_accepted_turn() {
+    use alleycat_claude_bridge::handlers::{
+        thread::handle_thread_start,
+        turn::{TurnError, handle_turn_start},
+    };
+    use alleycat_claude_bridge::state::ConnectionState;
+    let _guard = TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let fixture = TempDir::new().unwrap();
+    let script = fixture.path().join("slow.jsonl");
+    std::fs::write(&script, "{\"type\":\"sleep\",\"ms\":1000}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n").unwrap();
+    let _script = EnvRestore::set("FAKE_CLAUDE_SCRIPT", &script);
+    let pool = Arc::new(ClaudePool::new(fake_claude_path()));
+    let index = ThreadIndex::open_and_hydrate(fixture.path()).await.unwrap();
+    let (state, _rx) = ConnectionState::for_test(pool.clone(), index, Default::default());
+    let started = handle_thread_start(
+        &state,
+        serde_json::from_value(json!({"cwd":fixture.path()})).unwrap(),
+    )
+    .await
+    .unwrap();
+    let thread_id = started.thread.id;
+    let full = serde_json::from_value(json!({"threadId":thread_id,
+        "input":[{"type":"text","text":"full"}], "approvalPolicy":"never",
+        "sandboxPolicy":{"type":"dangerFullAccess"}}))
+    .unwrap();
+    let limited = serde_json::from_value(json!({"threadId":thread_id,
+        "input":[{"type":"text","text":"limited"}], "approvalPolicy":"on-request",
+        "sandboxPolicy":{"type":"readOnly"}}))
+    .unwrap();
+    let (full_result, limited_result) = tokio::join!(
+        handle_turn_start(&state, full),
+        handle_turn_start(&state, limited)
+    );
+    let expected_full = match (&full_result, &limited_result) {
+        (Ok(_), Err(TurnError::AlreadyActive { .. })) => true,
+        (Err(TurnError::AlreadyActive { .. }), Ok(_)) => false,
+        _ => panic!("同一会话必须只有一轮胜出：{full_result:?}, {limited_result:?}"),
+    };
+    let handle = pool.get(&thread_id).await.unwrap();
+    assert_eq!(handle.uses_full_access(), expected_full);
+    let (_, _, mode) = handle.runtime_snapshot().await;
+    assert_eq!(
+        mode.as_deref(),
+        Some(if expected_full {
+            "bypassPermissions"
+        } else {
+            "plan"
+        })
+    );
+    pool.release(&thread_id).await;
+}
+
+#[tokio::test]
+async fn permission_switch_preserves_pending_wakeup_and_cron_processes() {
+    use alleycat_claude_bridge::handlers::{
+        thread::handle_thread_start,
+        turn::{TurnError, handle_turn_start},
+    };
+    use alleycat_claude_bridge::state::ConnectionState;
+    let _guard = TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    for tool in ["ScheduleWakeup", "CronCreate"] {
+        let fixture = TempDir::new().unwrap();
+        let script = fixture.path().join("background.jsonl");
+        let turn_log = fixture.path().join("turns.log");
+        std::fs::write(
+            &script,
+            format!(
+                "{}\n{}\n",
+                json!({"type":"assistant", "session_id":"$SESSION", "uuid":"background-assistant", "message":{"content":[{"type":"tool_use",
+                "id":"background-tool", "name":tool, "input":{}}]}}),
+                json!({"type":"result", "subtype":"success", "is_error":false, "session_id":"$SESSION", "uuid":"background-result"})
+            ),
+        )
+        .unwrap();
+        let _script = EnvRestore::set("FAKE_CLAUDE_SCRIPT", &script);
+        let _log = EnvRestore::set("FAKE_CLAUDE_TURN_LOG", &turn_log);
+        let pool = Arc::new(ClaudePool::new(fake_claude_path()));
+        let index = ThreadIndex::open_and_hydrate(fixture.path()).await.unwrap();
+        let (state, _rx) = ConnectionState::for_test(pool.clone(), index, Default::default());
+        let thread_id = handle_thread_start(
+            &state,
+            serde_json::from_value(json!({"cwd":fixture.path()})).unwrap(),
+        )
+        .await
+        .unwrap()
+        .thread
+        .id;
+        let first = handle_turn_start(
+            &state,
+            serde_json::from_value(json!({"threadId":thread_id,
+            "input":[{"type":"text", "text":"schedule"}]}))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        timeout(STEP_TIMEOUT, async {
+            loop {
+                if state.thread_log(&thread_id).iter().any(|t| {
+                    t.id == first.turn.id && t.status == alleycat_codex_proto::TurnStatus::Completed
+                }) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let original = pool.get(&thread_id).await.unwrap();
+        let error = handle_turn_start(
+            &state,
+            serde_json::from_value(json!({"threadId":thread_id,
+            "input":[{"type":"text", "text":"switch"}], "approvalPolicy":"never",
+            "sandboxPolicy":{"type":"dangerFullAccess"}}))
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, TurnError::BackgroundWorkPending { .. }),
+            "{error:?}"
+        );
+        assert_eq!(error.rpc_data().unwrap()["accepted"], false);
+        assert!(Arc::ptr_eq(&original, &pool.get(&thread_id).await.unwrap()));
+        assert!(!original.has_exited());
+        assert_eq!(std::fs::read_to_string(&turn_log).unwrap(), "schedule\n");
+        pool.release(&thread_id).await;
+    }
+}
+
+#[tokio::test]
+async fn concurrent_prestart_resume_cannot_insert_ordinary_process_during_full_access_switch() {
+    use alleycat_claude_bridge::handlers::{
+        thread::{handle_thread_resume, handle_thread_start},
+        turn::handle_turn_start,
+    };
+    use alleycat_claude_bridge::state::ConnectionState;
+    let _guard = TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let fixture = TempDir::new().unwrap();
+    let _home = support::ClaudeHomeFixture::new();
+    let argv_log = fixture.path().join("argv.jsonl");
+    let _argv = EnvRestore::set("FAKE_CLAUDE_ARGV_LOG", &argv_log);
+    let launcher = Arc::new(ShutdownBarrierLauncher::default());
+    let pool = Arc::new(ClaudePool::with_launcher(
+        fake_claude_path(),
+        launcher.clone(),
+        Default::default(),
+    ));
+    let index = ThreadIndex::open_and_hydrate(fixture.path()).await.unwrap();
+    let (state, _rx) = ConnectionState::for_test(pool.clone(), index.clone(), Default::default());
+    let thread_id = handle_thread_start(
+        &state,
+        serde_json::from_value(json!({
+        "cwd":fixture.path(), "model":"sonnet"}))
+        .unwrap(),
+    )
+    .await
+    .unwrap()
+    .thread
+    .id;
+    let transcript = index
+        .lookup(&thread_id)
+        .await
+        .unwrap()
+        .metadata
+        .claude_session_path;
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "").unwrap();
+    let original = pool.get(&thread_id).await.unwrap();
+    original.wait_for_init(STEP_TIMEOUT).await.unwrap();
+    assert!(!original.uses_full_access());
+    let switch_state = state.clone();
+    let full = serde_json::from_value(json!({"threadId":thread_id,
+        "input":[{"type":"text", "text":"full"}], "approvalPolicy":"never",
+        "sandboxPolicy":{"type":"dangerFullAccess"}}))
+    .unwrap();
+    let switch = tokio::spawn(async move { handle_turn_start(&switch_state, full).await });
+    // 精确停在 pool 已移除旧 generation、shutdown 尚未返回的窗口。
+    timeout(STEP_TIMEOUT, launcher.entered.notified())
+        .await
+        .unwrap();
+    assert!(pool.get(&thread_id).await.is_none());
+    let resume_state = state.clone();
+    let params = serde_json::from_value(json!({"threadId":thread_id, "model":"sonnet"})).unwrap();
+    let mut resume = tokio::spawn(async move { handle_thread_resume(&resume_state, params).await });
+    let premature = timeout(Duration::from_millis(100), &mut resume).await;
+    launcher.release.notify_one();
+    assert!(
+        premature.is_err(),
+        "resume 必须等待换代完成，不能在空隙插入普通进程"
+    );
+    timeout(STEP_TIMEOUT, switch)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    timeout(STEP_TIMEOUT, resume)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let current = pool.get(&thread_id).await.unwrap();
+    assert!(current.uses_full_access());
+    assert_ne!(current.generation(), original.generation());
+    let argv = read_argv_log(&argv_log);
+    assert_eq!(argv.len(), 2);
+    assert!(has_arg_pair(
+        &argv[1],
+        "--permission-mode",
+        "bypassPermissions"
+    ));
+    assert!(has_arg_pair(
+        &argv[1],
+        "--settings",
+        r#"{"sandbox":{"enabled":false}}"#
+    ));
+    pool.release(&thread_id).await;
+}
+
+// 只延迟第一个进程的 shutdown，不改生产代码中的调度与进程池。
+#[derive(Default)]
+struct ShutdownBarrierLauncher {
+    first: std::sync::atomic::AtomicBool,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl alleycat_bridge_core::ProcessLauncher for ShutdownBarrierLauncher {
+    fn launch(
+        &self,
+        spec: alleycat_bridge_core::ProcessSpec,
+    ) -> futures::future::BoxFuture<'_, std::io::Result<Box<dyn alleycat_bridge_core::ChildProcess>>>
+    {
+        Box::pin(async move {
+            let child = alleycat_bridge_core::LocalLauncher.launch(spec).await?;
+            if self.first.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Ok(child);
+            }
+            Ok(Box::new(ShutdownBarrierChild {
+                child,
+                entered: self.entered.clone(),
+                release: self.release.clone(),
+            })
+                as Box<dyn alleycat_bridge_core::ChildProcess>)
+        })
+    }
+}
+
+struct ShutdownBarrierChild {
+    child: Box<dyn alleycat_bridge_core::ChildProcess>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl alleycat_bridge_core::ChildProcess for ShutdownBarrierChild {
+    fn take_stdin(&mut self) -> Option<alleycat_bridge_core::ChildStdin> {
+        self.child.take_stdin()
+    }
+    fn take_stdout(&mut self) -> Option<alleycat_bridge_core::ChildStdout> {
+        self.child.take_stdout()
+    }
+    fn take_stderr(&mut self) -> Option<alleycat_bridge_core::ChildStderr> {
+        self.child.take_stderr()
+    }
+    fn id(&self) -> Option<u32> {
+        self.child.id()
+    }
+    fn wait(
+        &mut self,
+    ) -> futures::future::BoxFuture<'_, std::io::Result<std::process::ExitStatus>> {
+        self.child.wait()
+    }
+    fn kill(&mut self) -> futures::future::BoxFuture<'_, std::io::Result<()>> {
+        Box::pin(async move {
+            self.entered.notify_one();
+            self.release.notified().await;
+            self.child.kill().await
+        })
+    }
+}
+
 async fn send<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     id: u64,

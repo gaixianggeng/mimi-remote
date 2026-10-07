@@ -8,10 +8,10 @@
 //!
 //! The translator owns three book-keeping tables:
 //!
-//! - `open_message_items: HashMap<u32, OpenItem>` — keyed by `content_block.index`
+//! - `open_message_items` — keyed by `(parent_tool_use_id, content_block.index)`
 //!   of the *parent* assistant message, holds the codex `item_id` we minted at
 //!   `content_block_start` for text blocks.
-//! - `open_thinking_items: HashMap<u32, OpenItem>` — same shape for `thinking`
+//! - `open_thinking_items` — same shape for `thinking`
 //!   blocks.
 //! - `open_tool_calls: HashMap<tool_use_id, OpenToolCall>` — pairs each
 //!   `tool_use` `content_block` with the later `user.message.content[
@@ -66,10 +66,14 @@ pub struct EventTranslatorState {
     turn_id: String,
     user_interrupt_requested: bool,
 
-    /// Open text content blocks keyed by their `content_block.index`.
-    open_message_items: HashMap<u32, OpenItem>,
-    /// Open thinking content blocks keyed by their `content_block.index`.
-    open_thinking_items: HashMap<u32, OpenItem>,
+    // 每条子 Agent 消息流都从 index 0 开始；正文缓存必须与工具缓存一样按 parent 隔离。
+    open_message_items: HashMap<(Option<String>, u32), OpenItem>,
+    open_thinking_items: HashMap<(Option<String>, u32), OpenItem>,
+    /// 当前每条 Claude assistant 流的 message id 与首个文本/思考块位置。
+    ///
+    /// live item 必须复用 disk replay 基于 `message.id` 生成的身份；parent
+    /// 用于隔离嵌套 Agent 的独立消息流，与正文和工具缓存使用相同的 parent。
+    active_assistant_messages: HashMap<Option<String>, ActiveAssistantMessage>,
     /// Open `tool_use` content blocks keyed by `tool_use_id` (Anthropic's
     /// `toolu_*`). Carries everything we need to resolve the matching
     /// `tool_result` later.
@@ -117,6 +121,19 @@ struct OpenItem {
 }
 
 #[derive(Debug, Clone)]
+struct ActiveAssistantMessage {
+    message_id: String,
+    first_text_block_index: Option<u32>,
+    first_thinking_block_index: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AssistantBlockKind {
+    Text,
+    Thinking,
+}
+
+#[derive(Debug, Clone)]
 struct OpenToolCall {
     item_id: String,
     kind: CodexToolKind,
@@ -125,6 +142,10 @@ struct OpenToolCall {
     /// etc.) don't carry the original string and translators need it to
     /// build canonical items or fall back to a Dynamic shape.
     tool_name: String,
+    /// Complete input included directly on `content_block_start`. Claude
+    /// usually streams `{}` plus deltas, but replayed/synthetic events can put
+    /// the only usable arguments here.
+    initial_input: Value,
     /// Raw streamed `input_json_delta` accumulator.
     input_buf: String,
     /// Cursor into `input_buf` for the Bash command-string streaming parser.
@@ -138,6 +159,23 @@ struct OpenToolCall {
     /// `parent_tool_use_id` of the opening `content_block_start`. Lifted onto
     /// every notification this tool call emits.
     parent_tool_use_id: Option<String>,
+}
+
+impl OpenToolCall {
+    fn arguments(&self) -> Value {
+        if self.input_buf.trim().is_empty() {
+            return self.initial_input.clone();
+        }
+        serde_json::from_str(&self.input_buf).unwrap_or_else(|_| self.initial_input.clone())
+    }
+
+    fn input_json(&self) -> String {
+        if self.input_buf.trim().is_empty() {
+            self.initial_input.to_string()
+        } else {
+            self.input_buf.clone()
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -154,6 +192,7 @@ impl EventTranslatorState {
             user_interrupt_requested: false,
             open_message_items: HashMap::new(),
             open_thinking_items: HashMap::new(),
+            active_assistant_messages: HashMap::new(),
             open_tool_calls: HashMap::new(),
             block_index_to_tool_id: HashMap::new(),
             subagent_parents: HashMap::new(),
@@ -231,9 +270,13 @@ impl EventTranslatorState {
     // ------------------------------------------------------------------
 
     fn translate_stream_event(&mut self, env: StreamEventEnvelope) -> Vec<ServerNotification> {
-        let parent = env.parent_tool_use_id.as_deref();
+        let parent_key = env.parent_tool_use_id;
+        let parent = parent_key.as_deref();
         match env.event {
-            RawAnthropicEvent::MessageStart { .. } => Vec::new(),
+            RawAnthropicEvent::MessageStart { message } => {
+                self.start_assistant_message(parent_key, &message);
+                Vec::new()
+            }
             RawAnthropicEvent::ContentBlockStart {
                 index,
                 content_block,
@@ -247,8 +290,56 @@ impl EventTranslatorState {
             RawAnthropicEvent::MessageDelta {
                 delta: _, usage, ..
             } => self.translate_message_delta_usage(usage),
-            RawAnthropicEvent::MessageStop => Vec::new(),
+            RawAnthropicEvent::MessageStop => {
+                self.active_assistant_messages.remove(&parent_key);
+                Vec::new()
+            }
         }
+    }
+
+    fn start_assistant_message(&mut self, parent: Option<String>, message: &Value) {
+        let Some(message_id) = message
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            self.active_assistant_messages.remove(&parent);
+            return;
+        };
+        self.active_assistant_messages.insert(
+            parent,
+            ActiveAssistantMessage {
+                message_id: message_id.to_string(),
+                first_text_block_index: None,
+                first_thinking_block_index: None,
+            },
+        );
+    }
+
+    fn assistant_block_item_id(
+        &mut self,
+        parent: Option<&str>,
+        block_index: u32,
+        kind: AssistantBlockKind,
+    ) -> Option<String> {
+        let parent_key = parent.map(str::to_string);
+        let message = self.active_assistant_messages.get_mut(&parent_key)?;
+        let (prefix, first_index) = match kind {
+            AssistantBlockKind::Text => ("assistant", &mut message.first_text_block_index),
+            AssistantBlockKind::Thinking => ("reasoning", &mut message.first_thinking_block_index),
+        };
+        let is_first = match first_index {
+            Some(first) => *first == block_index,
+            None => {
+                *first_index = Some(block_index);
+                true
+            }
+        };
+        Some(if is_first {
+            format!("{prefix}_{}", message.message_id)
+        } else {
+            format!("{prefix}_{}_block_{block_index}", message.message_id)
+        })
     }
 
     /// 嵌套 Agent 偶尔只发送完整 assistant 快照而没有对应 stream_event。
@@ -283,7 +374,8 @@ impl EventTranslatorState {
                 item_id: id.clone(),
                 kind: kind.clone(),
                 tool_name: name.clone(),
-                input_buf: input.to_string(),
+                initial_input: input.clone(),
+                input_buf: String::new(),
                 bash_cursor: 0,
                 bash_in_command_value: false,
                 bash_command_terminated: true,
@@ -322,9 +414,11 @@ impl EventTranslatorState {
     ) -> Vec<ServerNotification> {
         match block {
             ContentBlock::Text { .. } => {
-                let item_id = new_item_id();
+                let item_id = self
+                    .assistant_block_item_id(parent, index, AssistantBlockKind::Text)
+                    .unwrap_or_else(new_item_id);
                 self.open_message_items.insert(
-                    index,
+                    (parent.map(str::to_string), index),
                     OpenItem {
                         item_id: item_id.clone(),
                         accumulated: String::new(),
@@ -335,16 +429,18 @@ impl EventTranslatorState {
                     ThreadItem::AgentMessage {
                         id: item_id,
                         text: String::new(),
-                        phase: Some(serde_json::Value::String("final_answer".into())),
+                        phase: None,
                         memory_citation: None,
                     },
                     parent,
                 )]
             }
             ContentBlock::Thinking { thinking, .. } => {
-                let item_id = new_item_id();
+                let item_id = self
+                    .assistant_block_item_id(parent, index, AssistantBlockKind::Thinking)
+                    .unwrap_or_else(new_item_id);
                 self.open_thinking_items.insert(
-                    index,
+                    (parent.map(str::to_string), index),
                     OpenItem {
                         item_id: item_id.clone(),
                         accumulated: thinking,
@@ -370,9 +466,9 @@ impl EventTranslatorState {
                 // ItemStarted (Plan needs the plan text; Read/Grep/Glob need
                 // the file_path / pattern to build the command string and
                 // command_actions; WebSearch needs the query). Defer those
-                // to content_block_stop. AskUserQuestion / TodoUpdate emit
-                // no item here at all (handled later as a server request /
-                // turn/plan/updated).
+                // to content_block_stop. AskUserQuestion emits no item here;
+                // TodoUpdate starts a dynamic item after its full arguments
+                // are known and still updates the live plan on completion.
                 let defer_item_started = matches!(
                     kind,
                     CodexToolKind::PlanExit
@@ -395,6 +491,7 @@ impl EventTranslatorState {
                         item_id: item_id.clone(),
                         kind,
                         tool_name: name,
+                        initial_input: input,
                         input_buf: String::new(),
                         bash_cursor: 0,
                         bash_in_command_value: false,
@@ -418,7 +515,10 @@ impl EventTranslatorState {
     ) -> Vec<ServerNotification> {
         match delta {
             ContentBlockDelta::TextDelta { text } => {
-                let Some(item) = self.open_message_items.get_mut(&index) else {
+                let Some(item) = self
+                    .open_message_items
+                    .get_mut(&(parent.map(str::to_string), index))
+                else {
                     return Vec::new();
                 };
                 item.accumulated.push_str(&text);
@@ -433,7 +533,10 @@ impl EventTranslatorState {
                 )]
             }
             ContentBlockDelta::ThinkingDelta { thinking } => {
-                let Some(item) = self.open_thinking_items.get_mut(&index) else {
+                let Some(item) = self
+                    .open_thinking_items
+                    .get_mut(&(parent.map(str::to_string), index))
+                else {
                     return Vec::new();
                 };
                 item.accumulated.push_str(&thinking);
@@ -534,9 +637,8 @@ impl EventTranslatorState {
             // WebSearch (need full input to build command/query), Subagent
             // (need prompt before emitting CollabAgent),
             // AskUserQuestion (UI event is the requestUserInput round-trip),
-            // and TodoUpdate (collapses to turn/plan/updated) all emit
-            // nothing during input streaming. Their canonical item lands
-            // at content_block_stop / tool_result.
+            // and TodoUpdate all emit nothing during input streaming. Their
+            // canonical item lands at content_block_stop / tool_result.
             CodexToolKind::PlanExit
             | CodexToolKind::RequestUserInput
             | CodexToolKind::TodoUpdate
@@ -562,19 +664,20 @@ impl EventTranslatorState {
         parent: Option<&str>,
     ) -> Vec<ServerNotification> {
         // Text block close: emit item/completed AgentMessage.
-        if let Some(item) = self.open_message_items.remove(&index) {
+        let block_key = (parent.map(str::to_string), index);
+        if let Some(item) = self.open_message_items.remove(&block_key) {
             return vec![self.item_completed_with(
                 ThreadItem::AgentMessage {
                     id: item.item_id,
                     text: item.accumulated,
-                    phase: Some(serde_json::Value::String("final_answer".into())),
+                    phase: None,
                     memory_citation: None,
                 },
                 item.parent_tool_use_id.as_deref().or(parent),
             )];
         }
         // Thinking block close: emit item/completed Reasoning.
-        if let Some(item) = self.open_thinking_items.remove(&index) {
+        if let Some(item) = self.open_thinking_items.remove(&block_key) {
             return vec![self.item_completed_with(
                 ThreadItem::Reasoning {
                     id: item.item_id,
@@ -679,7 +782,8 @@ impl EventTranslatorState {
                 .get("is_error")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let inline_text = stringify_tool_result_content(entry.get("content"));
+            let raw_content = entry.get("content").cloned();
+            let inline_text = stringify_tool_result_content(raw_content.as_ref());
             let Some(call) = self.open_tool_calls.remove(tool_use_id) else {
                 tracing::warn!(
                     %tool_use_id,
@@ -693,6 +797,7 @@ impl EventTranslatorState {
             out.extend(self.complete_tool_call(
                 call,
                 inline_text,
+                raw_content.as_ref(),
                 tool_use_result.as_ref(),
                 is_error,
                 parent.as_deref(),
@@ -705,6 +810,7 @@ impl EventTranslatorState {
         &mut self,
         call: OpenToolCall,
         inline_content: String,
+        raw_content: Option<&Value>,
         tool_use_result: Option<&Value>,
         is_error: bool,
         parent: Option<&str>,
@@ -732,7 +838,7 @@ impl EventTranslatorState {
                 };
                 let item = ThreadItem::CommandExecution {
                     id: call.item_id.clone(),
-                    command: extract_bash_command(&call.input_buf),
+                    command: extract_bash_command(&call.input_json()),
                     cwd: String::new(),
                     process_id: None,
                     source: Default::default(),
@@ -750,8 +856,7 @@ impl EventTranslatorState {
                 } else {
                     PatchApplyStatus::Completed
                 };
-                let parsed_args: Value =
-                    serde_json::from_str(&call.input_buf).unwrap_or(Value::Null);
+                let parsed_args = call.arguments();
                 let changes = synthesize_file_changes(&call.tool_name, &parsed_args);
                 vec![self.item_completed_with(
                     ThreadItem::FileChange {
@@ -763,8 +868,7 @@ impl EventTranslatorState {
                 )]
             }
             CodexToolKind::Mcp { server, tool } => {
-                let parsed_input: Value =
-                    serde_json::from_str(&call.input_buf).unwrap_or(Value::Null);
+                let parsed_input = call.arguments();
                 let (result_payload, error) =
                     mcp_result_split(inline_content, tool_use_result.cloned(), is_error);
                 let item = ThreadItem::McpToolCall {
@@ -785,10 +889,9 @@ impl EventTranslatorState {
                 vec![self.item_completed_with(item, parent_for_call)]
             }
             CodexToolKind::Dynamic { namespace, tool } => {
-                let parsed_input: Value =
-                    serde_json::from_str(&call.input_buf).unwrap_or(Value::Null);
+                let parsed_input = call.arguments();
                 let content_items =
-                    build_dynamic_content_items(&inline_content, tool_use_result.cloned());
+                    build_dynamic_content_items(&inline_content, raw_content, tool_use_result);
                 vec![self.item_completed_with(
                     ThreadItem::DynamicToolCall {
                         id: call.item_id.clone(),
@@ -808,7 +911,12 @@ impl EventTranslatorState {
                 )]
             }
             CodexToolKind::PlanExit => {
-                let plan_text = parse_plan_text(&call.input_buf);
+                let plan_text = call
+                    .arguments()
+                    .get("plan")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 let mut out = vec![self.item_completed_with(
                     ThreadItem::Plan {
                         id: call.item_id.clone(),
@@ -833,7 +941,7 @@ impl EventTranslatorState {
             CodexToolKind::ExplorationRead
             | CodexToolKind::ExplorationSearch
             | CodexToolKind::ExplorationList => {
-                let parsed: Value = serde_json::from_str(&call.input_buf).unwrap_or(Value::Null);
+                let parsed = call.arguments();
                 let aggregated = cap_aggregated_output(inline_content);
                 let status = if is_error {
                     CommandExecutionStatus::Failed
@@ -851,23 +959,31 @@ impl EventTranslatorState {
                 vec![self.item_completed_with(item, parent_for_call)]
             }
             CodexToolKind::WebSearch => {
-                let parsed: Value = serde_json::from_str(&call.input_buf).unwrap_or(Value::Null);
-                let query = parsed
-                    .get("query")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
+                let parsed = call.arguments();
                 vec![self.item_completed_with(
-                    ThreadItem::WebSearch {
+                    ThreadItem::DynamicToolCall {
                         id: call.item_id.clone(),
-                        query,
-                        action: Some(serde_json::json!({"type": "search"})),
+                        namespace: Some("claude".to_string()),
+                        tool: call.tool_name.clone(),
+                        arguments: parsed,
+                        status: if is_error {
+                            DynamicToolCallStatus::Failed
+                        } else {
+                            DynamicToolCallStatus::Completed
+                        },
+                        content_items: build_dynamic_content_items(
+                            &inline_content,
+                            raw_content,
+                            tool_use_result,
+                        ),
+                        success: Some(!is_error),
+                        duration_ms: None,
                     },
                     parent_for_call,
                 )]
             }
             CodexToolKind::Subagent => {
-                let parsed: Value = serde_json::from_str(&call.input_buf).unwrap_or(Value::Null);
+                let parsed = call.arguments();
                 let (call_status, agent_status) = if is_error {
                     (
                         CollabAgentToolCallStatus::Failed,
@@ -885,19 +1001,44 @@ impl EventTranslatorState {
                     &parsed,
                     call_status,
                     agent_status,
+                    tool_result_message(&inline_content, tool_use_result),
                 );
                 vec![self.item_completed_with(item, parent_for_call)]
             }
             CodexToolKind::TodoUpdate => {
+                let parsed_input = call.arguments();
+                let mut out = vec![self.item_completed_with(
+                    ThreadItem::DynamicToolCall {
+                        id: call.item_id.clone(),
+                        namespace: Some("claude".to_string()),
+                        tool: call.tool_name.clone(),
+                        arguments: parsed_input.clone(),
+                        status: if is_error {
+                            DynamicToolCallStatus::Failed
+                        } else {
+                            DynamicToolCallStatus::Completed
+                        },
+                        content_items: build_dynamic_content_items(
+                            &inline_content,
+                            raw_content,
+                            tool_use_result,
+                        ),
+                        success: Some(!is_error),
+                        duration_ms: None,
+                    },
+                    parent_for_call,
+                )];
                 if is_error {
-                    return Vec::new();
+                    return out;
                 }
-                let parsed_input: Value =
-                    serde_json::from_str(&call.input_buf).unwrap_or(Value::Null);
-                let result_value = tool_use_result.cloned().unwrap_or_else(|| {
-                    serde_json::from_str::<Value>(&inline_content).unwrap_or(Value::Null)
-                });
-                self.apply_todo_tool(&call.tool_name, &parsed_input, &result_value)
+                let inline_result =
+                    serde_json::from_str::<Value>(&inline_content).unwrap_or(Value::Null);
+                let result_value = tool_use_result
+                    .filter(|result| claude_task_id(result).is_some())
+                    .cloned()
+                    .unwrap_or(inline_result);
+                out.extend(self.apply_todo_tool(&call.tool_name, &parsed_input, &result_value));
+                out
             }
             // The UI event for AskUserQuestion is the
             // `item/tool/requestUserInput` round-trip; the matching
@@ -928,22 +1069,11 @@ impl EventTranslatorState {
                     .or_else(|| input.get("description").and_then(Value::as_str))
                     .unwrap_or("")
                     .to_string();
-                // The new task id arrives in the tool_result. Try a few
-                // shapes — direct `{id}`, nested `{task: {id}}`, or string
-                // body — and fall back to a synthesized id so we still
-                // emit something rather than silently dropping the entry.
-                let task_id = result
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .or_else(|| result.get("taskId").and_then(Value::as_str))
-                    .or_else(|| {
-                        result
-                            .get("task")
-                            .and_then(|t| t.get("id"))
-                            .and_then(Value::as_str)
-                    })
-                    .map(str::to_string)
-                    .unwrap_or_else(|| format!("task-{}", self.todo_steps.len()));
+                // 任务 id 只能来自 Claude 的真实结果；缺失时动态工具项仍保留
+                // 原始结果，但不能伪造 id 污染后续 TaskUpdate 的关联。
+                let Some(task_id) = claude_task_id(result).map(str::to_string) else {
+                    return Vec::new();
+                };
                 let initial_status = input
                     .get("status")
                     .and_then(Value::as_str)
@@ -963,25 +1093,31 @@ impl EventTranslatorState {
                     .get("taskId")
                     .and_then(Value::as_str)
                     .map(str::to_string);
-                let new_status = input
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .map(parse_todo_status);
+                let raw_status = input.get("status").and_then(Value::as_str);
                 let Some(task_id) = task_id else {
                     return Vec::new();
                 };
-                let Some(new_status) = new_status else {
+                let Some(raw_status) = raw_status else {
                     return Vec::new();
                 };
-                let mut found = false;
-                for (id, step) in self.todo_steps.iter_mut() {
-                    if id == &task_id {
-                        step.status = new_status;
-                        found = true;
-                        break;
+                // Claude 用 `deleted` 表示移除任务，历史重建（ClaudeTaskHistoryProjection）
+                // 同样按删除处理；实时清单必须一致，否则恢复同一会话后任务会重新出现。
+                if raw_status == "deleted" {
+                    let before = self.todo_steps.len();
+                    self.todo_steps.retain(|(id, _)| id != &task_id);
+                    self.todo_steps.len() != before
+                } else {
+                    let new_status = parse_todo_status(raw_status);
+                    let mut found = false;
+                    for (id, step) in self.todo_steps.iter_mut() {
+                        if id == &task_id {
+                            step.status = new_status;
+                            found = true;
+                            break;
+                        }
                     }
+                    found
                 }
-                found
             }
             _ => false,
         };
@@ -1068,7 +1204,7 @@ impl EventTranslatorState {
                 ThreadItem::AgentMessage {
                     id: item.item_id,
                     text: item.accumulated,
-                    phase: Some(Value::String("final_answer".into())),
+                    phase: None,
                     memory_citation: None,
                 },
                 item.parent_tool_use_id.as_deref(),
@@ -1089,7 +1225,7 @@ impl EventTranslatorState {
 
         let tools = std::mem::take(&mut self.open_tool_calls);
         for (_, call) in tools {
-            out.extend(self.complete_tool_call(call, reason.to_string(), None, true, None));
+            out.extend(self.complete_tool_call(call, reason.to_string(), None, None, true, None));
         }
         self.block_index_to_tool_id.clear();
         self.subagent_parents.clear();
@@ -1325,13 +1461,27 @@ fn extract_bash_command(input_buf: &str) -> String {
 
 /// Map claude's TaskUpdate status string ("pending" | "in_progress" |
 /// "completed") to the codex `TurnPlanStepStatus` enum. Unknown values
-/// stay Pending — the bridge never invents new statuses.
+/// stay Pending — the bridge never invents new statuses. The `deleted`
+/// status is not a step status; callers remove the step before mapping.
 fn parse_todo_status(status: &str) -> TurnPlanStepStatus {
     match status {
         "in_progress" => TurnPlanStepStatus::InProgress,
         "completed" => TurnPlanStepStatus::Completed,
         _ => TurnPlanStepStatus::Pending,
     }
+}
+
+fn claude_task_id(result: &Value) -> Option<&str> {
+    result
+        .get("id")
+        .and_then(Value::as_str)
+        .or_else(|| result.get("taskId").and_then(Value::as_str))
+        .or_else(|| {
+            result
+                .get("task")
+                .and_then(|task| task.get("id"))
+                .and_then(Value::as_str)
+        })
 }
 
 /// Build a `Vec<FileUpdateChange>` from a claude file-mutating tool's
@@ -1462,16 +1612,6 @@ fn unified_addition(content: &str) -> String {
     out
 }
 
-/// Pull `arguments.plan` out of an ExitPlanMode tool's accumulated input
-/// buffer. Returns an empty string if the JSON isn't yet parseable or the
-/// `plan` field is missing/non-string.
-fn parse_plan_text(input_buf: &str) -> String {
-    serde_json::from_str::<Value>(input_buf)
-        .ok()
-        .and_then(|v| v.get("plan").and_then(|p| p.as_str()).map(str::to_string))
-        .unwrap_or_default()
-}
-
 /// Cap arbitrary tool output (a Read body, a Grep result) before stuffing
 /// it into `aggregated_output`. Multi-megabyte bodies otherwise inflate
 /// every notification round-trip.
@@ -1493,11 +1633,10 @@ fn cap_aggregated_output(mut text: String) -> String {
 
 /// Compose the deferred ItemStarted for kinds whose canonical shape
 /// requires the parsed input. Returns `None` for kinds whose
-/// ItemStarted is not produced at content_block_stop (PlanExit and
-/// Exploration*/WebSearch are the producers; AskUserQuestion and
-/// TodoUpdate emit nothing at all).
+/// ItemStarted is not produced at content_block_stop. AskUserQuestion stays
+/// silent because its request/response path owns the visible UI.
 fn build_deferred_started_item(call: &OpenToolCall, thread_id: &str) -> Option<ThreadItem> {
-    let parsed: Value = serde_json::from_str(&call.input_buf).unwrap_or(Value::Null);
+    let parsed = call.arguments();
     match call.kind {
         CodexToolKind::PlanExit => Some(ThreadItem::Plan {
             id: call.item_id.clone(),
@@ -1517,14 +1656,15 @@ fn build_deferred_started_item(call: &OpenToolCall, thread_id: &str) -> Option<T
             CommandExecutionStatus::InProgress,
             None,
         )),
-        CodexToolKind::WebSearch => Some(ThreadItem::WebSearch {
+        CodexToolKind::WebSearch | CodexToolKind::TodoUpdate => Some(ThreadItem::DynamicToolCall {
             id: call.item_id.clone(),
-            query: parsed
-                .get("query")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            action: Some(serde_json::json!({"type": "search"})),
+            namespace: Some("claude".to_string()),
+            tool: call.tool_name.clone(),
+            arguments: parsed,
+            status: DynamicToolCallStatus::InProgress,
+            content_items: None,
+            success: None,
+            duration_ms: None,
         }),
         CodexToolKind::Subagent => Some(build_subagent_item(
             &call.item_id,
@@ -1532,6 +1672,7 @@ fn build_deferred_started_item(call: &OpenToolCall, thread_id: &str) -> Option<T
             &parsed,
             CollabAgentToolCallStatus::InProgress,
             CollabAgentStatus::Running,
+            None,
         )),
         _ => None,
     }
@@ -1550,6 +1691,7 @@ fn build_subagent_item(
     args: &Value,
     call_status: CollabAgentToolCallStatus,
     agent_status: CollabAgentStatus,
+    result_message: Option<String>,
 ) -> ThreadItem {
     let prompt = args
         .get("prompt")
@@ -1562,7 +1704,7 @@ fn build_subagent_item(
         receiver_id.clone(),
         CollabAgentState {
             status: agent_status,
-            message: if label.is_empty() { None } else { Some(label) },
+            message: result_message.or_else(|| if label.is_empty() { None } else { Some(label) }),
         },
     );
     ThreadItem::CollabAgentToolCall {
@@ -1576,6 +1718,15 @@ fn build_subagent_item(
         reasoning_effort: None,
         agents_states,
     }
+}
+
+fn tool_result_message(inline_content: &str, tool_use_result: Option<&Value>) -> Option<String> {
+    if !inline_content.is_empty() {
+        return Some(inline_content.to_string());
+    }
+    tool_use_result
+        .filter(|value| !value.is_null())
+        .map(Value::to_string)
 }
 
 /// Build a `ThreadItem::CommandExecution` for one of the read-only
@@ -1858,19 +2009,28 @@ fn mcp_result_split(
 
 fn build_dynamic_content_items(
     inline_content: &str,
-    tool_use_result: Option<Value>,
+    raw_content: Option<&Value>,
+    tool_use_result: Option<&Value>,
 ) -> Option<Vec<Value>> {
-    if inline_content.is_empty() && tool_use_result.is_none() {
-        return None;
-    }
     let mut out = Vec::new();
-    if !inline_content.is_empty() {
-        out.push(json!({ "type": "text", "text": inline_content }));
+    if let Some(content) = raw_content {
+        out.extend(crate::translate::items::normalize_dynamic_tool_call_output(
+            content,
+        ));
     }
     if let Some(extra) = tool_use_result {
-        out.push(extra);
+        out.extend(crate::translate::items::normalize_dynamic_tool_call_output(
+            extra,
+        ));
     }
-    Some(out)
+    // 异常收口没有 tool_result，断流/中断原因只存在 inline_content 中。
+    // 正常结果已有结构化内容时不重复追加文本；媒体结果也不能回退成 base64 JSON。
+    if raw_content.is_none() && tool_use_result.is_none() && !inline_content.is_empty() {
+        out.extend(crate::translate::items::normalize_dynamic_tool_call_output(
+            &Value::String(inline_content.to_string()),
+        ));
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 fn parse_usage_breakdown(value: &Value) -> TokenUsageBreakdown {
@@ -2037,14 +2197,15 @@ fn tool_started_item(
             CommandExecutionStatus::InProgress,
             None,
         ),
-        CodexToolKind::WebSearch => ThreadItem::WebSearch {
+        CodexToolKind::WebSearch => ThreadItem::DynamicToolCall {
             id: item_id.to_string(),
-            query: args
-                .get("query")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            action: Some(serde_json::json!({"type": "search"})),
+            namespace: Some("claude".to_string()),
+            tool: tool_name.to_string(),
+            arguments: args.clone(),
+            status: DynamicToolCallStatus::InProgress,
+            content_items: None,
+            success: None,
+            duration_ms: None,
         },
         CodexToolKind::Subagent => build_subagent_item(
             item_id,
@@ -2057,12 +2218,10 @@ fn tool_started_item(
             args,
             CollabAgentToolCallStatus::InProgress,
             CollabAgentStatus::Running,
+            None,
         ),
-        // TodoUpdate is deferred and emits NO ItemStarted at all
-        // (turn/plan/updated is the only carrier). This arm is
-        // unreachable from the live path — kept to keep the match
-        // exhaustive for callers that go through the factory directly.
-        // RequestUserInput likewise is replaced by Section B.
+        // Both variants are deferred. TodoUpdate is still represented as a
+        // dynamic item at block stop; RequestUserInput uses its dedicated RPC.
         CodexToolKind::RequestUserInput | CodexToolKind::TodoUpdate => {
             ThreadItem::DynamicToolCall {
                 id: item_id.to_string(),
@@ -2106,6 +2265,19 @@ mod tests {
             uuid: "u1".into(),
             ttft_ms: None,
         })
+    }
+
+    fn message_start(id: &str) -> RawAnthropicEvent {
+        RawAnthropicEvent::MessageStart {
+            message: json!({"id": id, "role": "assistant", "content": []}),
+        }
+    }
+
+    fn started_item_id(events: &[ServerNotification]) -> &str {
+        match events.first() {
+            Some(ServerNotification::ItemStarted(notification)) => notification.item.id(),
+            other => panic!("expected ItemStarted, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2184,9 +2356,12 @@ mod tests {
         assert_eq!(started.len(), 1);
         match &started[0] {
             ServerNotification::ItemStarted(n) => match &n.item {
-                ThreadItem::AgentMessage { id, text, .. } => {
+                ThreadItem::AgentMessage {
+                    id, text, phase, ..
+                } => {
                     assert!(!id.is_empty());
                     assert_eq!(text, "");
+                    assert_eq!(phase, &None);
                     assert!(n.parent_item_id.is_none());
                 }
                 other => panic!("expected AgentMessage, got {other:?}"),
@@ -2208,11 +2383,341 @@ mod tests {
         }));
         match &stop[0] {
             ServerNotification::ItemCompleted(n) => match &n.item {
-                ThreadItem::AgentMessage { text, .. } => assert_eq!(text, "Hey"),
+                ThreadItem::AgentMessage { text, phase, .. } => {
+                    assert_eq!(text, "Hey");
+                    assert_eq!(phase, &None);
+                }
                 other => panic!("expected AgentMessage, got {other:?}"),
             },
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn message_id_makes_repeated_mixed_blocks_match_disk_replay() {
+        let mut s = state();
+        assert!(
+            s.translate(stream_event(message_start("msg_repeat")))
+                .is_empty()
+        );
+
+        let first = s.translate(stream_event(RawAnthropicEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlock::Text {
+                text: String::new(),
+            },
+        }));
+        let first_id = started_item_id(&first).to_string();
+        s.translate(stream_event(RawAnthropicEvent::ContentBlockDelta {
+            index: 0,
+            delta: ContentBlockDelta::TextDelta {
+                text: "same".into(),
+            },
+        }));
+        s.translate(stream_event(RawAnthropicEvent::ContentBlockStop {
+            index: 0,
+        }));
+
+        let thinking = s.translate(stream_event(RawAnthropicEvent::ContentBlockStart {
+            index: 1,
+            content_block: ContentBlock::Thinking {
+                thinking: "consider".into(),
+                signature: None,
+            },
+        }));
+        let thinking_id = started_item_id(&thinking).to_string();
+        s.translate(stream_event(RawAnthropicEvent::ContentBlockStop {
+            index: 1,
+        }));
+
+        let second = s.translate(stream_event(RawAnthropicEvent::ContentBlockStart {
+            index: 2,
+            content_block: ContentBlock::Text {
+                text: String::new(),
+            },
+        }));
+        let second_id = started_item_id(&second).to_string();
+        s.translate(stream_event(RawAnthropicEvent::ContentBlockDelta {
+            index: 2,
+            delta: ContentBlockDelta::TextDelta {
+                text: "same".into(),
+            },
+        }));
+        s.translate(stream_event(RawAnthropicEvent::ContentBlockStop {
+            index: 2,
+        }));
+
+        let disk = crate::translate::items::messages_text_to_turns(
+            &[
+                json!({
+                    "type": "user",
+                    "message": {"role": "user", "content": "q"},
+                    "timestamp": "2026-04-27T10:00:00Z"
+                })
+                .to_string(),
+                json!({
+                    "type": "assistant",
+                    "timestamp": "2026-04-27T10:00:01Z",
+                    "message": {
+                        "id": "msg_repeat",
+                        "content": [
+                            {"type": "text", "text": "same"},
+                            {"type": "thinking", "thinking": "consider"},
+                            {"type": "text", "text": "same"}
+                        ]
+                    }
+                })
+                .to_string(),
+            ]
+            .join("\n"),
+        );
+        let disk_ids: Vec<_> = disk[0].items.iter().skip(1).map(ThreadItem::id).collect();
+        assert_eq!(
+            vec![first_id.as_str(), thinking_id.as_str(), second_id.as_str()],
+            disk_ids
+        );
+        assert_eq!(first_id, "assistant_msg_repeat");
+        assert_eq!(thinking_id, "reasoning_msg_repeat");
+        assert_eq!(second_id, "assistant_msg_repeat_block_2");
+    }
+
+    #[test]
+    fn message_ids_are_parent_scoped_and_duplicate_starts_are_deterministic() {
+        let mut s = state();
+        for parent in ["parent-a", "parent-b"] {
+            s.subagent_parents
+                .insert(parent.to_string(), parent.to_string());
+            assert!(
+                s.translate(stream_event_with_parent(
+                    message_start(&format!("msg-{parent}")),
+                    parent
+                ))
+                .is_empty()
+            );
+        }
+
+        let first_a = s.translate(stream_event_with_parent(
+            RawAnthropicEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlock::Text {
+                    text: String::new(),
+                },
+            },
+            "parent-a",
+        ));
+        let duplicate_a = s.translate(stream_event_with_parent(
+            RawAnthropicEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlock::Text {
+                    text: String::new(),
+                },
+            },
+            "parent-a",
+        ));
+        let first_b = s.translate(stream_event_with_parent(
+            RawAnthropicEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlock::Text {
+                    text: String::new(),
+                },
+            },
+            "parent-b",
+        ));
+
+        assert_eq!(started_item_id(&first_a), "assistant_msg-parent-a");
+        assert_eq!(started_item_id(&duplicate_a), started_item_id(&first_a));
+        assert_eq!(started_item_id(&first_b), "assistant_msg-parent-b");
+    }
+
+    #[test]
+    fn content_block_without_message_start_keeps_uuid_fallback() {
+        let mut s = state();
+        let started = s.translate(stream_event(RawAnthropicEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlock::Text {
+                text: String::new(),
+            },
+        }));
+        assert!(Uuid::parse_str(started_item_id(&started)).is_ok());
+    }
+
+    #[test]
+    fn interleaved_parent_blocks_keep_their_deltas_and_completions() {
+        for thinking in [false, true] {
+            let mut s = state();
+            let streams = [
+                (None, "root"),
+                (Some("parent-a"), "a"),
+                (Some("parent-b"), "b"),
+            ];
+            for (parent, label) in streams {
+                if let Some(parent) = parent {
+                    s.subagent_parents.insert(parent.into(), parent.into());
+                }
+                s.start_assistant_message(parent.map(str::to_string), &json!({"id": label}));
+                s.translate_block_start(
+                    0,
+                    if thinking {
+                        ContentBlock::Thinking {
+                            thinking: String::new(),
+                            signature: None,
+                        }
+                    } else {
+                        ContentBlock::Text {
+                            text: String::new(),
+                        }
+                    },
+                    parent,
+                );
+            }
+            for (parent, label) in streams {
+                let expected_id = format!(
+                    "{}_{label}",
+                    if thinking { "reasoning" } else { "assistant" }
+                );
+                let delta = if thinking {
+                    ContentBlockDelta::ThinkingDelta {
+                        thinking: label.into(),
+                    }
+                } else {
+                    ContentBlockDelta::TextDelta { text: label.into() }
+                };
+                let events = s.translate_block_delta(0, delta, parent);
+                assert_eq!(events.len(), 1);
+                match &events[0] {
+                    ServerNotification::AgentMessageDelta(event) => {
+                        assert!(!thinking);
+                        assert_eq!(event.item_id, expected_id);
+                        assert_eq!(event.parent_item_id.as_deref(), parent);
+                        assert_eq!(event.delta, label);
+                    }
+                    ServerNotification::ReasoningTextDelta(event) => {
+                        assert!(thinking);
+                        assert_eq!(event.item_id, expected_id);
+                        assert_eq!(event.parent_item_id.as_deref(), parent);
+                        assert_eq!(event.delta, label);
+                    }
+                    event => panic!("unexpected delta: {event:?}"),
+                }
+            }
+            for (parent, label) in streams {
+                let events = s.translate_block_stop(0, parent);
+                assert_eq!(events.len(), 1);
+                let ServerNotification::ItemCompleted(event) = &events[0] else {
+                    panic!("expected completion: {:?}", events[0]);
+                };
+                assert_eq!(event.parent_item_id.as_deref(), parent);
+                match &event.item {
+                    ThreadItem::AgentMessage { id, text, .. } => {
+                        assert!(!thinking);
+                        assert_eq!(id, &format!("assistant_{label}"));
+                        assert_eq!(text, label);
+                    }
+                    ThreadItem::Reasoning { id, content, .. } => {
+                        assert!(thinking);
+                        assert_eq!(id, &format!("reasoning_{label}"));
+                        assert_eq!(content, &[label.to_string()]);
+                    }
+                    item => panic!("unexpected completed item: {item:?}"),
+                }
+                assert!(s.translate_block_stop(0, parent).is_empty());
+            }
+            assert!(s.abort_open_items("already completed").is_empty());
+        }
+    }
+
+    #[test]
+    fn aborted_dynamic_tools_keep_the_inline_failure_reason() {
+        for tool in ["WebFetch", "WebSearch", "TaskCreate", "TaskUpdate"] {
+            let mut s = state();
+            let input = json!({"query": "sample", "subject": "sample", "taskId": "1"});
+            s.translate_block_start(
+                0,
+                ContentBlock::ToolUse {
+                    id: "tool-aborted".into(),
+                    name: tool.into(),
+                    input: input.clone(),
+                },
+                None,
+            );
+            s.translate_block_stop(0, None);
+            let events = s.abort_open_items("probe-disconnected\nstream ended before tool_result");
+            assert_eq!(events.len(), 1, "{tool}");
+            let ServerNotification::ItemCompleted(event) = &events[0] else {
+                panic!("expected completion: {:?}", events[0]);
+            };
+            let ThreadItem::DynamicToolCall {
+                status,
+                content_items,
+                success,
+                arguments,
+                ..
+            } = &event.item
+            else {
+                panic!("expected dynamic tool: {:?}", event.item);
+            };
+            assert_eq!(*status, DynamicToolCallStatus::Failed);
+            assert_eq!(*success, Some(false));
+            assert_eq!(*arguments, input);
+            assert_eq!(
+                content_items.as_ref().unwrap(),
+                &vec![json!({
+                    "type": "inputText", "text": "probe-disconnected\nstream ended before tool_result"
+                })]
+            );
+            assert!(s.abort_open_items("must not complete twice").is_empty());
+        }
+    }
+
+    #[test]
+    fn empty_first_text_block_reserves_base_id_for_live_and_disk() {
+        let mut s = state();
+        s.translate(stream_event(message_start("msg_empty_first")));
+        let empty = s.translate(stream_event(RawAnthropicEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlock::Text {
+                text: String::new(),
+            },
+        }));
+        assert_eq!(started_item_id(&empty), "assistant_msg_empty_first");
+        s.translate(stream_event(RawAnthropicEvent::ContentBlockStop {
+            index: 0,
+        }));
+        let visible = s.translate(stream_event(RawAnthropicEvent::ContentBlockStart {
+            index: 2,
+            content_block: ContentBlock::Text {
+                text: "visible".into(),
+            },
+        }));
+        assert_eq!(
+            started_item_id(&visible),
+            "assistant_msg_empty_first_block_2"
+        );
+
+        let disk = crate::translate::items::messages_text_to_turns(
+            &[
+                json!({"type": "user", "message": {"role": "user", "content": "q"}})
+                    .to_string(),
+                json!({
+                    "type": "assistant",
+                    "message": {
+                        "id": "msg_empty_first",
+                        "content": [
+                            {"type": "text", "text": ""},
+                            {"type": "tool_use", "id": "toolu_gap", "name": "WebSearch", "input": {"query": "q"}},
+                            {"type": "text", "text": "visible"}
+                        ]
+                    }
+                })
+                .to_string(),
+            ]
+            .join("\n"),
+        );
+        assert!(disk[0].items.iter().any(|item| matches!(
+            item,
+            ThreadItem::AgentMessage { id, text, .. }
+                if id == "assistant_msg_empty_first_block_2" && text == "visible"
+        )));
     }
 
     #[test]
@@ -2418,11 +2923,15 @@ mod tests {
             ThreadItem::DynamicToolCall {
                 namespace,
                 tool,
+                arguments,
+                content_items,
                 success,
                 ..
             } => {
                 assert_eq!(namespace.as_deref(), Some("claude"));
                 assert_eq!(tool, "WebFetch");
+                assert_eq!(arguments["url"], "https://example.com");
+                assert_eq!(content_items.as_ref().unwrap()[0]["type"], "inputText");
                 assert_eq!(success, Some(true));
             }
             other => panic!("expected DynamicToolCall, got {other:?}"),
@@ -3075,7 +3584,7 @@ mod tests {
     }
 
     #[test]
-    fn web_search_tool_lifecycle_emits_web_search_item() {
+    fn web_search_tool_lifecycle_preserves_success_result_in_dynamic_item() {
         let mut s = state();
         let out = run_tool_lifecycle(
             &mut s,
@@ -3093,16 +3602,97 @@ mod tests {
             })
             .expect("WebSearch ItemStarted");
         match &started.item {
-            ThreadItem::WebSearch { query, action, .. } => {
-                assert_eq!(query, "rust async");
-                assert_eq!(action.as_ref().unwrap()["type"], "search");
+            ThreadItem::DynamicToolCall {
+                namespace,
+                tool,
+                arguments,
+                status,
+                ..
+            } => {
+                assert_eq!(namespace.as_deref(), Some("claude"));
+                assert_eq!(tool, "WebSearch");
+                assert_eq!(arguments["query"], "rust async");
+                assert_eq!(*status, DynamicToolCallStatus::InProgress);
             }
-            other => panic!("expected WebSearch, got {other:?}"),
+            other => panic!("expected DynamicToolCall, got {other:?}"),
         }
-        assert!(out.iter().any(|n| matches!(
-            n,
-            ServerNotification::ItemCompleted(c) if matches!(&c.item, ThreadItem::WebSearch { .. })
-        )));
+        let completed = out
+            .iter()
+            .find_map(|event| match event {
+                ServerNotification::ItemCompleted(item) => Some(&item.item),
+                _ => None,
+            })
+            .expect("WebSearch ItemCompleted");
+        match completed {
+            ThreadItem::DynamicToolCall {
+                status,
+                content_items,
+                success,
+                ..
+            } => {
+                assert_eq!(*status, DynamicToolCallStatus::Completed);
+                assert_eq!(*success, Some(true));
+                assert_eq!(content_items.as_ref().unwrap()[0]["type"], "inputText");
+                assert_eq!(
+                    content_items.as_ref().unwrap()[0]["text"],
+                    "{\"results\":[]}"
+                );
+            }
+            other => panic!("expected DynamicToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_search_failure_preserves_error_content() {
+        let mut s = state();
+        let out = run_tool_lifecycle(
+            &mut s,
+            "toolu_web_error",
+            "WebSearch",
+            r#"{"query":"private query"}"#,
+            "search unavailable",
+            true,
+        );
+        let item = out
+            .iter()
+            .find_map(|event| match event {
+                ServerNotification::ItemCompleted(item) => Some(&item.item),
+                _ => None,
+            })
+            .expect("WebSearch failure completion");
+        match item {
+            ThreadItem::DynamicToolCall {
+                status,
+                content_items,
+                success,
+                ..
+            } => {
+                assert_eq!(*status, DynamicToolCallStatus::Failed);
+                assert_eq!(*success, Some(false));
+                assert_eq!(
+                    content_items.as_ref().unwrap()[0]["text"],
+                    "search unavailable"
+                );
+            }
+            other => panic!("expected DynamicToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_search_preserves_structured_result_blocks() {
+        let result = json!([{
+            "type": "web_search_result",
+            "url": "https://example.com/result",
+            "title": "Result"
+        }]);
+        let content_items = build_dynamic_content_items("", Some(&result), None).unwrap();
+        assert_eq!(content_items[0]["type"], "inputText");
+        assert!(
+            content_items[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("web_search_result")
+        );
     }
 
     #[test]
@@ -3262,6 +3852,7 @@ mod tests {
                 assert!(matches!(status, CollabAgentToolCallStatus::Completed));
                 let state = agents_states.values().next().expect("agent state");
                 assert!(matches!(state.status, CollabAgentStatus::Completed));
+                assert_eq!(state.message.as_deref(), Some("subagent done"));
             }
             other => panic!("expected CollabAgentToolCall completion, got {other:?}"),
         }
@@ -3326,6 +3917,7 @@ mod tests {
                 assert!(matches!(status, CollabAgentToolCallStatus::Failed));
                 let state = agents_states.values().next().expect("agent state");
                 assert!(matches!(state.status, CollabAgentStatus::Errored));
+                assert_eq!(state.message.as_deref(), Some("agent crashed"));
             }
             other => panic!("expected CollabAgentToolCall, got {other:?}"),
         }
@@ -3378,14 +3970,35 @@ mod tests {
             plan_after_create.plan[0].status,
             TurnPlanStepStatus::Pending
         ));
-        // Disk-side ItemStarted/Completed must NOT fire for TodoUpdate.
-        assert!(
-            !create_out.iter().any(|n| matches!(
-                n,
-                ServerNotification::ItemStarted(_) | ServerNotification::ItemCompleted(_)
-            )),
-            "TodoUpdate must not emit ThreadItem notifications; got {create_out:?}"
-        );
+        let create_item = create_out
+            .iter()
+            .find_map(|event| match event {
+                ServerNotification::ItemCompleted(item) => Some(&item.item),
+                _ => None,
+            })
+            .expect("TaskCreate dynamic completion");
+        match create_item {
+            ThreadItem::DynamicToolCall {
+                namespace,
+                tool,
+                arguments,
+                status,
+                content_items,
+                success,
+                ..
+            } => {
+                assert_eq!(namespace.as_deref(), Some("claude"));
+                assert_eq!(tool, "TaskCreate");
+                assert_eq!(arguments["subject"], "write the plan");
+                assert_eq!(*status, DynamicToolCallStatus::Completed);
+                assert_eq!(*success, Some(true));
+                assert_eq!(
+                    content_items.as_ref().unwrap()[0]["text"],
+                    r#"{"id":"task-1","subject":"write the plan","status":"pending"}"#
+                );
+            }
+            other => panic!("expected DynamicToolCall, got {other:?}"),
+        }
 
         // TaskUpdate flips status to in_progress.
         let update_out = run_tool_lifecycle(
@@ -3446,6 +4059,86 @@ mod tests {
             !out.iter()
                 .any(|n| matches!(n, ServerNotification::TurnPlanUpdated(_))),
             "unknown taskId must not trigger an emit"
+        );
+    }
+
+    #[test]
+    fn task_create_without_real_id_keeps_result_without_fabricating_plan_step() {
+        let mut s = state();
+        let out = run_tool_lifecycle(
+            &mut s,
+            "toolu_tc_text",
+            "TaskCreate",
+            r#"{"subject":"write the plan"}"#,
+            "Task created",
+            false,
+        );
+        assert!(
+            !out.iter()
+                .any(|event| matches!(event, ServerNotification::TurnPlanUpdated(_))),
+            "missing Claude task id must not create a synthetic plan step"
+        );
+        assert!(out.iter().any(|event| matches!(
+            event,
+            ServerNotification::ItemCompleted(item)
+                if matches!(
+                    &item.item,
+                    ThreadItem::DynamicToolCall { content_items: Some(items), .. }
+                        if items[0]["text"] == "Task created"
+                )
+        )));
+    }
+
+    #[test]
+    fn task_update_deleted_removes_step_from_live_plan() {
+        let mut s = state();
+        for task_id in ["task-1", "task-2"] {
+            run_tool_lifecycle(
+                &mut s,
+                task_id,
+                "TaskCreate",
+                &format!(r#"{{"subject":"{task_id} subject"}}"#),
+                &format!(r#"{{"id":"{task_id}"}}"#),
+                false,
+            );
+        }
+        let deleted = run_tool_lifecycle(
+            &mut s,
+            "toolu_delete",
+            "TaskUpdate",
+            r#"{"taskId":"task-1","status":"deleted"}"#,
+            "{}",
+            false,
+        );
+        let plan = deleted
+            .iter()
+            .find_map(|n| match n {
+                ServerNotification::TurnPlanUpdated(n) => Some(n),
+                _ => None,
+            })
+            .expect("TurnPlanUpdated after deleting a task");
+        assert_eq!(
+            plan.plan.len(),
+            1,
+            "deleted task must leave the live plan: {:?}",
+            plan.plan
+        );
+        assert_eq!(plan.plan[0].step, "task-2 subject");
+
+        // 重复删除或删除不存在的任务都不产生可观察变化。
+        let orphan = run_tool_lifecycle(
+            &mut s,
+            "toolu_delete_orphan",
+            "TaskUpdate",
+            r#"{"taskId":"task-1","status":"deleted"}"#,
+            "{}",
+            false,
+        );
+        assert!(
+            !orphan
+                .iter()
+                .any(|n| matches!(n, ServerNotification::TurnPlanUpdated(_))),
+            "deleting a missing task must not emit"
         );
     }
 

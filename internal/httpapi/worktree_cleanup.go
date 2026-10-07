@@ -503,23 +503,29 @@ func (r *Router) managedWorktreeRepositoryIdentity(ctx context.Context, worktree
 	return identity, true
 }
 
+// gitResolvedDirectory 解析 git rev-parse 返回的目录：补全相对路径、解开符号链接并清理。
+// --git-dir 与 --git-common-dir 共用这份解析，此前各写了一遍。
+func gitResolvedDirectory(ctx context.Context, path string, revisionFlag string) (string, bool) {
+	output, _, err := runGitReadOnly(ctx, path, 16*1024, "rev-parse", revisionFlag)
+	if err != nil {
+		return "", false
+	}
+	dir := strings.TrimSpace(output)
+	if dir == "" {
+		return "", false
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(path, dir)
+	}
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", false
+	}
+	return filepath.Clean(realDir), true
+}
+
 func gitDirectory(ctx context.Context, path string) (string, bool) {
-	output, _, err := runGitReadOnly(ctx, path, 16*1024, "rev-parse", "--git-dir")
-	if err != nil {
-		return "", false
-	}
-	gitDir := strings.TrimSpace(output)
-	if gitDir == "" {
-		return "", false
-	}
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(path, gitDir)
-	}
-	realGitDir, err := filepath.EvalSymlinks(gitDir)
-	if err != nil {
-		return "", false
-	}
-	return filepath.Clean(realGitDir), true
+	return gitResolvedDirectory(ctx, path, "--git-dir")
 }
 
 func filesystemObjectIdentity(path string) (string, bool) {
@@ -573,22 +579,7 @@ func numericStatField(value reflect.Value) (string, bool) {
 }
 
 func gitCommonDirectory(ctx context.Context, path string) (string, bool) {
-	output, _, err := runGitReadOnly(ctx, path, 16*1024, "rev-parse", "--git-common-dir")
-	if err != nil {
-		return "", false
-	}
-	common := strings.TrimSpace(output)
-	if common == "" {
-		return "", false
-	}
-	if !filepath.IsAbs(common) {
-		common = filepath.Join(path, common)
-	}
-	realCommon, err := filepath.EvalSymlinks(common)
-	if err != nil {
-		return "", false
-	}
-	return filepath.Clean(realCommon), true
+	return gitResolvedDirectory(ctx, path, "--git-common-dir")
 }
 
 func (r *Router) managedWorktreeHasRunningSession(worktree managedWorktree) bool {
@@ -597,17 +588,6 @@ func (r *Router) managedWorktreeHasRunningSession(worktree managedWorktree) bool
 		return false
 	}
 	workspaceID := workspaceIDForRealPath(worktree.Path)
-	if r.sessions != nil {
-		for _, running := range r.sessions.ListUnsorted() {
-			snapshot := running.Snapshot()
-			if snapshot.Status != "running" && snapshot.Status != "stopping" {
-				continue
-			}
-			if snapshot.ProjectID == workspaceID || realPathWithin(checkoutPath, canonicalPathBestEffort(snapshot.Dir)) {
-				return true
-			}
-		}
-	}
 
 	// 生产主链路是 app-server gateway；它没有独立的运行态 REST 索引，因此
 	// 对仍在 24h 授权缓存中的同 scope thread 做保守阻止，宁可多保留一天，

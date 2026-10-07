@@ -1,0 +1,79 @@
+{
+  "provenance": {
+    "level": "live-capture",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.1.5-rc.2",
+    "upstreamTag": "dsh-v0.1.5-rc.2",
+    "profile": "web",
+    "transport": "http://127.0.0.1 loopback, cookie session after GET /?token=",
+    "modelFixture": "@deepseek-ai/dsh-llm-mock-server (scriptable OpenAI-compatible SSE)",
+    "capturedAt": "2026-09-18T18:18:26.439Z"
+  },
+  "note": "恢复语义实测：重连待重投基线、取消路径、断线与取消的区分。",
+  "observations": [
+    {
+      "label": "reconnectBaseline",
+      "value": {
+        "revision": 1,
+        "activeAttempt": {
+          "attemptId": "h00-attempt-0001",
+          "startedAfterSeq": 13,
+          "turn": 1,
+          "step": 1,
+          "nextIndex": 0,
+          "stream": []
+        }
+      },
+      "note": "客户端掉线后重新打开 follow，打开帧直接给出 activeAttempt（attemptId/startedAfterSeq/turn/step/nextIndex/stream），这就是待重投基线。"
+    },
+    {
+      "label": "reconnectSnapshotFrameTypes",
+      "value": [
+        "snapshot",
+        "event",
+        "assistant-stream",
+        "event",
+        "event"
+      ]
+    },
+    {
+      "label": "cancel.result",
+      "value": {
+        "accepted": true
+      }
+    },
+    {
+      "label": "cancel.turnEnd",
+      "value": {
+        "turn": 1,
+        "reason": {
+          "kind": "aborted",
+          "reason": {
+            "kind": "user"
+          }
+        }
+      }
+    },
+    {
+      "label": "abortedReasonShape",
+      "value": {
+        "kind": "aborted",
+        "reason": {
+          "kind": "user"
+        }
+      }
+    },
+    {
+      "label": "revisionContiguity",
+      "value": "assistant-stream 的 revision 在一条流上连续（实测 1..8），chunk.index 稠密（实测 0..6）；重连后 revision 从 1 重新开始并带 activeAttempt。"
+    },
+    {
+      "label": "notProven",
+      "value": [
+        "Host 重启后的 ready/close 语义未单独验证。",
+        "跨连接（另一条 $events）是否收到 api-session/added 未验证。",
+        "审批请求/应答帧未在本次采集出现。"
+      ]
+    }
+  ]
+}

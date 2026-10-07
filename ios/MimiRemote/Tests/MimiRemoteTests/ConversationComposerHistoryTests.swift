@@ -400,23 +400,26 @@ extension ConversationDataFlowTests {
             (.fullAccess, .never, "user", .dangerFullAccess)
         ]
 
-        for testCase in cases {
-            var composerState = ComposerState()
-            composerState.draft = "权限矩阵 \(testCase.mode.rawValue)"
-            composerState.applyPermissionMode(testCase.mode)
-            composerState.turnOptions.networkAccess = true
+        for runtime in ["codex", "claude"] {
+            for testCase in cases {
+                var composerState = ComposerState()
+                composerState.turnOptions.runtimeProvider = runtime
+                composerState.draft = "权限矩阵 \(testCase.mode.rawValue)"
+                composerState.applyPermissionMode(testCase.mode)
+                composerState.turnOptions.networkAccess = true
 
-            let submitted = try XCTUnwrap(composerState.takeDraftForSubmit(
-                isLoading: false,
-                turnOptionsOverride: composerState.turnOptions.sanitizedForStandardComposer()
-            ))
-            let options = submitted.payload.options
-            XCTAssertEqual(options.approvalPolicy, testCase.policy, "mode=\(testCase.mode)")
-            XCTAssertEqual(options.approvalsReviewer, testCase.reviewer, "mode=\(testCase.mode)")
-            XCTAssertEqual(options.sandboxMode, testCase.sandbox, "mode=\(testCase.mode)")
-            // 移动端所有权限预设都不打开 networkAccess，避免一次发送把网络权限带进 app-server。
-            XCTAssertFalse(options.networkAccess, "mode=\(testCase.mode)")
-            XCTAssertEqual(options.collaborationMode, .default, "mode=\(testCase.mode)")
+                let submitted = try XCTUnwrap(composerState.takeDraftForSubmit(
+                    isLoading: false,
+                    turnOptionsOverride: composerState.turnOptions.sanitizedForStandardComposer()
+                ))
+                let options = submitted.payload.options.sanitizedForRuntimePolicy()
+                XCTAssertEqual(options.approvalPolicy, testCase.policy, "mode=\(testCase.mode)")
+                XCTAssertEqual(options.approvalsReviewer, testCase.reviewer, "mode=\(testCase.mode)")
+                XCTAssertEqual(options.sandboxMode, testCase.sandbox, "mode=\(testCase.mode)")
+                // 移动端所有权限预设都不打开 networkAccess，避免一次发送把网络权限带进 app-server。
+                XCTAssertFalse(options.networkAccess, "mode=\(testCase.mode)")
+                XCTAssertEqual(options.collaborationMode, .default, "mode=\(testCase.mode)")
+            }
         }
     }
 
@@ -1699,20 +1702,20 @@ extension ConversationDataFlowTests {
             )
         ], sessionID: sessionID)
 
-        let items = ConversationTimelineItemBuilder.items(from: store.messages(for: sessionID))
+        let items = ConversationTimelineItemBuilder.items(from: store.messages(for: sessionID), showsDetailedTranscript: true)
 
-        XCTAssertEqual(items.count, 4)
-        guard case .message(let commentary) = items[1] else {
-            return XCTFail("history commentary 应作为完整正文放在最终 assistant 前")
+        XCTAssertEqual(items.count, 5)
+        guard case .processGroup = items[1], case .processMessage(let commentary) = items[2] else {
+            return XCTFail("展开后的 history commentary 应作为完整正文放在最终 assistant 前")
         }
         XCTAssertEqual(commentary.kind, .commentary)
         XCTAssertEqual(commentary.content, "我先调用一个子 agent。")
-        guard case .message(let plan) = items[2] else {
-            return XCTFail("计划卡应保留在服务端输入顺序中的原始位置")
+        guard case .message(let plan) = items[3] else {
+            return XCTFail("完整计划应作为主时间线消息保留在服务端输入顺序中的原始位置")
         }
         XCTAssertEqual(plan.kind, .plan)
         XCTAssertEqual(plan.content, "让子 agent 生成一个短笑话。")
-        guard case .message(let final) = items[3] else {
+        guard case .message(let final) = items[4] else {
             return XCTFail("最终 assistant 应保持独立展开")
         }
         XCTAssertEqual(final.role, .assistant)
@@ -2147,7 +2150,7 @@ extension ConversationDataFlowTests {
         let decoder = JSONDecoder()
 
         let event = try decoder.decode(
-            StructuredAgentEvent.self,
+            AgentEvent.self,
             from: Data(#"{"type":"assistant_delta","seq":42,"session_id":"sess_1","turn_id":"turn_1","item_id":"item_1","message_id":"msg_1","revision":3,"delta":{"text":"hello","role":"assistant","kind":"message"}}"#.utf8)
         )
 
@@ -2691,7 +2694,7 @@ extension ConversationDataFlowTests {
         let decoder = JSONDecoder()
 
         let stringDelta = try decoder.decode(
-            StructuredAgentEvent.self,
+            AgentEvent.self,
             from: Data(#"{"type":"assistant_delta","data":"字符串增量","seq":8,"session_id":"sess_1","message_id":"msg_1"}"#.utf8)
         )
         if case .assistantDelta(let delta, let meta) = stringDelta {
@@ -2703,7 +2706,7 @@ extension ConversationDataFlowTests {
         }
 
         let approval = try decoder.decode(
-            StructuredAgentEvent.self,
+            AgentEvent.self,
             from: Data(#"{"type":"approval_request","approval":{"id":"approval_1","title":"运行命令","body":"go test ./...","kind":"command","risk":"medium"},"seq":9,"session_id":"sess_1"}"#.utf8)
         )
         if case .approvalRequest(let request, let meta) = approval {
@@ -2716,7 +2719,7 @@ extension ConversationDataFlowTests {
         }
 
         let resolved = try decoder.decode(
-            StructuredAgentEvent.self,
+            AgentEvent.self,
             from: Data(#"{"type":"approval_resolved","seq":10,"session_id":"sess_1","item_id":"approval_1"}"#.utf8)
         )
         if case .approvalResolved(let meta) = resolved {

@@ -278,15 +278,24 @@ extension ConversationDataFlowTests {
     }
 
     func testSharedSSHOpeningIdleThreadResumesToValidateWriter() async throws {
+        try await assertOpeningIdleThreadValidatesWriter(transportName: "ssh")
+    }
+
+    func testSharedLocalOpeningIdleThreadResumesToValidateWriter() async throws {
+        try await assertOpeningIdleThreadValidatesWriter(transportName: "local")
+    }
+
+    private func assertOpeningIdleThreadValidatesWriter(transportName: String) async throws {
         let project = AgentProject(id: "shared-open", name: "Shared Open", path: "/tmp/shared-open")
         let transport = FakeCodexAppServerTransport()
         let runtime = CodexAppServerSessionRuntime(
             endpoint: "http://127.0.0.1:8787",
             token: "outer-token",
             transportFactory: { transport },
-            configProvider: { makeSharedSSHConfig(project: project) }
+            configProvider: { makeSharedSSHConfig(project: project, transportName: transportName) }
         )
         let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        defer { socket.disconnect() }
         var statuses: [WebSocketStatus] = []
         socket.onStatus = { statuses.append($0) }
 
@@ -320,12 +329,11 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(statuses.count, 2)
         XCTAssertEqual(statuses.first, .connecting)
         guard case .failed(let failureMessage) = statuses.last else {
-            XCTFail("SSH writer 检查失败必须以 failed 结束，当前为 \(statuses)")
+            XCTFail("\(transportName) writer 检查失败必须以 failed 结束，当前为 \(statuses)")
             return
         }
         XCTAssertTrue(SessionStore.isCodexActiveWriterConflict(failureMessage))
         XCTAssertFalse(statuses.contains(.connected), "writer 冲突确认前不能把 Composer 误判为可发送")
-        socket.disconnect()
     }
 
     func testSharedSSHResumeActiveThreadQueuesFirstPromptWithoutTurnStart() async throws {
@@ -1362,12 +1370,12 @@ extension ConversationDataFlowTests {
     }
 }
 
-private func makeSharedSSHConfig(project: AgentProject) -> CodexAppServerConfigResponse {
+private func makeSharedSSHConfig(project: AgentProject, transportName: String = "ssh") -> CodexAppServerConfigResponse {
     CodexAppServerConfigResponse(
         gatewayWSURL: "ws://127.0.0.1:7777/api/app-server/ws",
         runtime: CodexAppServerRuntimeMetadata(
             type: "codex_app_server",
-            transport: "ssh",
+            transport: transportName,
             managed: false,
             gatewayAvailable: true,
             upstreamConfigured: true,

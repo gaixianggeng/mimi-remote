@@ -49,10 +49,22 @@ final class ConversationTimelineViewport {
         self.scrollView = scrollView
     }
 
+    @discardableResult
+    func scrollToTail(animated: Bool) -> Bool {
+        guard let scrollView, let metrics else { return false }
+        // 显式回底直接使用 List 的原生视口；尾部哨兵暂未布局也能到达实际最底部。
+        scrollView.setContentOffset(
+            CGPoint(x: scrollView.contentOffset.x, y: metrics.maximumOffsetY), animated: animated
+        )
+        return true
+    }
+
     func bindAnchorView(_ messageIDs: [UUID], _ view: UIView) {
         // List 会复用同一个原生标记展示另一条消息。旧 UUID 不能继续读取这块
         // UIView 的新 frame；保留空注册，避免退回异步缓存的旧几何。
-        for (id, registered) in views where registered.value === view && !messageIDs.contains(id) {
+        // 折叠过程可能共享数百个消息 ID，逐项 Array.contains 会把一次绑定放大为平方级扫描。
+        let currentIDs = Set(messageIDs)
+        for (id, registered) in views where registered.value === view && !currentIDs.contains(id) {
             views[id] = WeakView(value: nil)
         }
         for id in messageIDs {

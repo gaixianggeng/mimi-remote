@@ -39,7 +39,7 @@ jobs:
     needs: source-trust
     if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: macos-26
-    timeout-minutes: 30
+    timeout-minutes: 40
     environment: production-release
     steps:
       - name: Checkout

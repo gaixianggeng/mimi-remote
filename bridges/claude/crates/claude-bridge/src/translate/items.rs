@@ -373,7 +373,7 @@ fn image_source_to_data_url(source: &Value) -> Option<String> {
     Some(format!("data:{media_type};base64,{data}"))
 }
 
-/// Claude Code 把 `/model` 等本地命令以顶层 `user` 记录写入 transcript，
+/// Claude Code 把本地命令和后台任务通知以顶层 `user` 记录写入 transcript，
 /// 但这些记录只服务 CLI 自身，不能在移动端伪装成用户发送的对话消息。
 /// 这里只识别完整的保留标签包装，避免误删普通文本中对标签的讨论。
 fn is_internal_user_content(content: &Value) -> bool {
@@ -383,11 +383,12 @@ fn is_internal_user_content(content: &Value) -> bool {
     is_internal_user_text(text)
 }
 
-/// Claude CLI 内部命令和中断标记会伪装成 user 文本；索引扫描和历史翻译必须
+/// Claude CLI 内部命令、后台任务通知和中断标记会伪装成 user 文本；索引扫描和历史翻译必须
 /// 复用同一判定，避免污染会话标题、用户气泡和 turn 锚点。
 pub(crate) fn is_internal_user_text(text: &str) -> bool {
     let text = text.trim();
     text == "[Request interrupted by user]"
+        || is_complete_reserved_tag(text, "task-notification")
         || is_complete_reserved_tag(text, "local-command-caveat")
         || is_complete_reserved_tag(text, "local-command-stdout")
         || is_complete_reserved_tag(text, "local-command-stderr")
@@ -430,11 +431,15 @@ fn fold_tool_results_into_calls(
             .get("is_error")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let inline = entry
-            .get("content")
-            .map(stringify_content)
-            .unwrap_or_default();
-        complete_tool_item(&mut items[idx], inline, tool_use_result.as_ref(), is_error);
+        let raw_content = entry.get("content");
+        let inline = raw_content.map(stringify_content).unwrap_or_default();
+        complete_tool_item(
+            &mut items[idx],
+            inline,
+            raw_content,
+            tool_use_result.as_ref(),
+            is_error,
+        );
     }
     Some(true)
 }
@@ -461,6 +466,7 @@ fn stringify_content(content: &Value) -> String {
 fn complete_tool_item(
     item: &mut ThreadItem,
     inline: String,
+    raw_content: Option<&Value>,
     tool_use_result: Option<&Value>,
     is_error: bool,
 ) {
@@ -534,10 +540,26 @@ fn complete_tool_item(
             agents_states,
             ..
         } => {
-            if is_error {
-                *status = CollabAgentToolCallStatus::Failed;
-                for state in agents_states.values_mut() {
+            *status = if is_error {
+                CollabAgentToolCallStatus::Failed
+            } else {
+                CollabAgentToolCallStatus::Completed
+            };
+            let result_message = if !inline.is_empty() {
+                Some(inline)
+            } else {
+                tool_use_result
+                    .filter(|value| !value.is_null())
+                    .map(Value::to_string)
+            };
+            for state in agents_states.values_mut() {
+                if is_error {
                     state.status = CollabAgentStatus::Errored;
+                } else {
+                    state.status = CollabAgentStatus::Completed;
+                }
+                if result_message.is_some() {
+                    state.message = result_message.clone();
                 }
             }
         }
@@ -559,9 +581,11 @@ fn complete_tool_item(
             // claude returns when the user rejects a tool use) and arbitrary
             // structured `tool_use_result` payloads need to be normalized
             // into that shape or the codex client errors on `thread/resume`.
-            let mut items = Vec::new();
-            if !inline.is_empty() {
-                items.push(serde_json::json!({"type": "inputText", "text": inline}));
+            let mut items = raw_content
+                .map(normalize_dynamic_tool_call_output)
+                .unwrap_or_default();
+            if raw_content.is_none() && !inline.is_empty() {
+                items.extend(normalize_dynamic_tool_call_output(&Value::String(inline)));
             }
             if let Some(extra) = tool_use_result {
                 items.extend(normalize_dynamic_tool_call_output(extra));
@@ -589,22 +613,47 @@ impl MergedAssistant {
         existing_items_len: usize,
     ) -> Vec<ThreadItem> {
         let mut out = Vec::new();
-        let mut text_acc = String::new();
-        let mut thinking_acc: Vec<String> = Vec::new();
-        let mut tool_items = Vec::new();
-        for block in &self.blocks {
+        let mut text_count = 0usize;
+        let mut thinking_count = 0usize;
+        for (block_index, block) in self.blocks.iter().enumerate() {
             let Some(t) = block.get("type").and_then(Value::as_str) else {
                 continue;
             };
             match t {
                 "text" => {
                     if let Some(s) = block.get("text").and_then(Value::as_str) {
-                        text_acc.push_str(s);
+                        let id = if text_count == 0 {
+                            format!("assistant_{}", self.message_id)
+                        } else {
+                            format!("assistant_{}_block_{block_index}", self.message_id)
+                        };
+                        text_count += 1;
+                        // 空首块虽然不展示，仍占用 live 已分配的 legacy base 身份；
+                        // 后续非空块必须继续使用原 block index 后缀才能与实时流一致。
+                        if s.is_empty() {
+                            continue;
+                        }
+                        out.push(ThreadItem::AgentMessage {
+                            id,
+                            text: s.to_string(),
+                            phase: None,
+                            memory_citation: None,
+                        });
                     }
                 }
                 "thinking" => {
                     if let Some(s) = block.get("thinking").and_then(Value::as_str) {
-                        thinking_acc.push(s.to_string());
+                        let id = if thinking_count == 0 {
+                            format!("reasoning_{}", self.message_id)
+                        } else {
+                            format!("reasoning_{}_block_{block_index}", self.message_id)
+                        };
+                        thinking_count += 1;
+                        out.push(ThreadItem::Reasoning {
+                            id,
+                            summary: Vec::new(),
+                            content: vec![s.to_string()],
+                        });
                     }
                 }
                 "tool_use" => {
@@ -617,31 +666,12 @@ impl MergedAssistant {
                     let input = block.get("input").cloned().unwrap_or(Value::Null);
                     let kind = classify(name);
                     if let Some(item) = tool_call_to_item(&kind, name, id.clone(), input) {
-                        tool_items.push((id, item));
+                        tool_call_index.insert(id, existing_items_len + out.len());
+                        out.push(item);
                     }
                 }
                 _ => {}
             }
-        }
-        // Final order: reasoning (if any) → agent message (if any) → tool_use items.
-        if !thinking_acc.is_empty() {
-            out.push(ThreadItem::Reasoning {
-                id: format!("reasoning_{}", self.message_id),
-                summary: Vec::new(),
-                content: thinking_acc,
-            });
-        }
-        if !text_acc.is_empty() {
-            out.push(ThreadItem::AgentMessage {
-                id: format!("assistant_{}", self.message_id),
-                text: text_acc,
-                phase: Some(serde_json::Value::String("final_answer".into())),
-                memory_citation: None,
-            });
-        }
-        for (tool_use_id, item) in tool_items {
-            tool_call_index.insert(tool_use_id, existing_items_len + out.len());
-            out.push(item);
         }
         out
     }
@@ -707,22 +737,20 @@ fn tool_call_to_item(
         CodexToolKind::ExplorationRead
         | CodexToolKind::ExplorationSearch
         | CodexToolKind::ExplorationList => build_exploration_disk_item(kind, tool_name, id, &args),
-        CodexToolKind::WebSearch => ThreadItem::WebSearch {
+        CodexToolKind::WebSearch | CodexToolKind::TodoUpdate => ThreadItem::DynamicToolCall {
             id,
-            query: args
-                .get("query")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            action: Some(serde_json::json!({"type": "search"})),
+            namespace: Some("claude".to_string()),
+            tool: tool_name.to_string(),
+            arguments: args,
+            status: DynamicToolCallStatus::InProgress,
+            content_items: None,
+            success: None,
+            duration_ms: None,
         },
         CodexToolKind::Subagent => build_subagent_disk_item(id, &args),
-        // TaskCreate / TaskUpdate / AskUserQuestion produce no
-        // ThreadItem on disk replay — the live notification streams
-        // (turn/plan/updated and item/tool/requestUserInput) carry the
-        // user-facing data; the surrounding UserMessage / AgentMessage
-        // records already preserve the question + answer text.
-        CodexToolKind::TodoUpdate | CodexToolKind::RequestUserInput => return None,
+        // AskUserQuestion stays on its dedicated request/response path; its
+        // surrounding messages already preserve the visible question/answer.
+        CodexToolKind::RequestUserInput => return None,
     })
 }
 
@@ -1193,6 +1221,92 @@ mod tests {
     }
 
     #[test]
+    fn task_notification_is_not_a_user_turn_or_rollback_anchor() {
+        let notification = "<task-notification>\n<task-id>old-shell</task-id>\n<status>stopped</status>\n</task-notification>";
+        let text = [
+            json!({
+                "type": "user",
+                "message": {"role": "user", "content": "先前的问题"},
+                "timestamp": "2026-09-23T14:26:23Z",
+                "uuid": "old-user"
+            }),
+            json!({
+                "type": "assistant",
+                "message": {"id": "old-reply", "content": [{"type": "text", "text": "先前的回复"}]},
+                "timestamp": "2026-09-23T14:47:08Z"
+            }),
+            json!({
+                "type": "user",
+                "promptId": "resume-notification",
+                "message": {"role": "user", "content": notification},
+                "timestamp": "2026-09-28T06:17:27Z",
+                "uuid": "internal-notification"
+            }),
+            json!({
+                "type": "user",
+                "message": {"role": "user", "content": "继续处理"},
+                "timestamp": "2026-09-28T06:18:00Z",
+                "uuid": "new-user"
+            }),
+        ]
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let turns = messages_text_to_turns(&text);
+        assert_eq!(turns.len(), 2);
+        assert!(matches!(
+            &turns[0].items[..],
+            [ThreadItem::UserMessage { .. }, ThreadItem::AgentMessage { text, .. }]
+                if text == "先前的回复"
+        ));
+        assert!(matches!(
+            &turns[1].items[..],
+            [ThreadItem::UserMessage { content, .. }]
+                if matches!(&content[0], UserInput::Text { text, .. } if text == "继续处理")
+        ));
+        assert_eq!(
+            list_user_message_ids_from_text(&text),
+            vec!["old-user", "new-user"]
+        );
+
+        let notification_only = json!({
+            "type": "user",
+            "message": {"role": "user", "content": notification},
+            "timestamp": "2026-09-28T06:17:27Z",
+            "uuid": "internal-notification"
+        })
+        .to_string();
+        assert!(messages_text_to_turns(&notification_only).is_empty());
+        assert!(list_user_message_ids_from_text(&notification_only).is_empty());
+    }
+
+    #[test]
+    fn discussion_of_task_notification_remains_a_user_message() {
+        for content in [
+            "请解释 <task-notification> 是什么",
+            "<task-notification>尚未闭合",
+            "<task-notification>示例</task-notification> 后面还有提问",
+        ] {
+            let text = json!({
+                "type": "user",
+                "message": {"role": "user", "content": content},
+                "timestamp": "2026-09-28T06:18:00Z",
+                "uuid": "real-user"
+            })
+            .to_string();
+            let turns = messages_text_to_turns(&text);
+            assert_eq!(turns.len(), 1, "{content}");
+            assert!(matches!(
+                &turns[0].items[0],
+                ThreadItem::UserMessage { content: inputs, .. }
+                    if matches!(&inputs[0], UserInput::Text { text, .. } if text == content)
+            ));
+            assert_eq!(list_user_message_ids_from_text(&text), vec!["real-user"]);
+        }
+    }
+
+    #[test]
     fn user_interrupt_marker_is_not_a_user_turn() {
         let records = vec![
             record(json!({
@@ -1446,6 +1560,109 @@ mod tests {
             .collect();
         assert!(kinds.contains(&"agent"));
         assert!(kinds.contains(&"reasoning"));
+    }
+
+    #[test]
+    fn assistant_blocks_keep_original_mixed_order_and_stable_first_ids() {
+        let records = vec![
+            record(json!({
+                "type": "user",
+                "message": {"role": "user", "content": "q"},
+                "timestamp": "2026-04-27T10:00:00Z"
+            })),
+            record(json!({
+                "type": "assistant",
+                "timestamp": "2026-04-27T10:00:01Z",
+                "message": {
+                    "id": "msg_mixed",
+                    "content": [
+                        {"type": "text", "text": "before"},
+                        {"type": "thinking", "thinking": "consider"},
+                        {"type": "tool_use", "id": "toolu_web", "name": "WebSearch", "input": {"query": "rust"}},
+                        {"type": "text", "text": "after"}
+                    ]
+                }
+            })),
+            record(json!({
+                "type": "user",
+                "timestamp": "2026-04-27T10:00:02Z",
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_web",
+                        "content": "search result",
+                        "is_error": false
+                    }]
+                }
+            })),
+        ];
+
+        let turns = records_to_turns(&records);
+        let items = &turns[0].items;
+        assert_eq!(items.len(), 5);
+        assert!(matches!(
+            &items[1],
+            ThreadItem::AgentMessage { id, text, phase, .. }
+                if id == "assistant_msg_mixed" && text == "before" && phase.is_none()
+        ));
+        assert!(matches!(
+            &items[2],
+            ThreadItem::Reasoning { id, content, .. }
+                if id == "reasoning_msg_mixed" && content == &["consider"]
+        ));
+        assert!(matches!(
+            &items[3],
+            ThreadItem::DynamicToolCall { tool, arguments, status, success, content_items, .. }
+                if tool == "WebSearch"
+                    && arguments["query"] == "rust"
+                    && *status == DynamicToolCallStatus::Completed
+                    && *success == Some(true)
+                    && content_items.as_ref().unwrap()[0]["text"] == "search result"
+        ));
+        assert!(matches!(
+            &items[4],
+            ThreadItem::AgentMessage { id, text, phase, .. }
+                if id == "assistant_msg_mixed_block_3" && text == "after" && phase.is_none()
+        ));
+    }
+
+    #[test]
+    fn web_search_disk_failure_preserves_arguments_and_error() {
+        let kind = classify("WebSearch");
+        let mut item = tool_call_to_item(
+            &kind,
+            "WebSearch",
+            "toolu_web_error".to_string(),
+            json!({"query": "private query"}),
+        )
+        .expect("WebSearch item");
+        let error = json!([{
+            "type": "web_search_error",
+            "message": "search unavailable"
+        }]);
+        complete_tool_item(&mut item, String::new(), Some(&error), None, true);
+
+        match item {
+            ThreadItem::DynamicToolCall {
+                arguments,
+                status,
+                content_items,
+                success,
+                ..
+            } => {
+                assert_eq!(arguments["query"], "private query");
+                assert_eq!(status, DynamicToolCallStatus::Failed);
+                assert_eq!(success, Some(false));
+                assert!(
+                    content_items.unwrap()[0]["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("search unavailable")
+                );
+            }
+            other => panic!("expected DynamicToolCall, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1779,7 +1996,41 @@ mod tests {
     }
 
     #[test]
-    fn task_create_and_update_produce_no_disk_items() {
+    fn disk_subagent_completion_preserves_summary_and_error() {
+        for (is_error, expected_status, message) in [
+            (false, CollabAgentStatus::Completed, "subagent summary"),
+            (true, CollabAgentStatus::Errored, "subagent failed"),
+        ] {
+            let mut item = build_subagent_disk_item(
+                format!("agent-{is_error}"),
+                &json!({"prompt": "do thing", "subagent_type": "Explore"}),
+            );
+            complete_tool_item(&mut item, message.to_string(), None, None, is_error);
+            match item {
+                ThreadItem::CollabAgentToolCall {
+                    status,
+                    agents_states,
+                    ..
+                } => {
+                    assert_eq!(
+                        status,
+                        if is_error {
+                            CollabAgentToolCallStatus::Failed
+                        } else {
+                            CollabAgentToolCallStatus::Completed
+                        }
+                    );
+                    let state = agents_states.values().next().expect("agent state");
+                    assert_eq!(state.status, expected_status);
+                    assert_eq!(state.message.as_deref(), Some(message));
+                }
+                other => panic!("expected CollabAgentToolCall, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn task_create_disk_item_preserves_arguments_result_and_status() {
         let records = vec![
             record(json!({
                 "type": "user",
@@ -1814,19 +2065,33 @@ mod tests {
             })),
         ];
         let turns = records_to_turns(&records);
-        // Replay must NOT produce a phantom DynamicToolCall card for
-        // TaskCreate. The only ThreadItem in the turn is the user
-        // anchor message.
-        let non_user_items: Vec<_> = turns
+        let task = turns[0]
+            .items
             .iter()
-            .flat_map(|t| t.items.iter())
-            .filter(|i| !matches!(i, ThreadItem::UserMessage { .. }))
-            .collect();
-        assert!(
-            non_user_items.is_empty(),
-            "TaskCreate must produce no disk item; got {:?}",
-            non_user_items
-        );
+            .find(|item| matches!(item, ThreadItem::DynamicToolCall { .. }))
+            .expect("TaskCreate dynamic item");
+        match task {
+            ThreadItem::DynamicToolCall {
+                namespace,
+                tool,
+                arguments,
+                status,
+                content_items,
+                success,
+                ..
+            } => {
+                assert_eq!(namespace.as_deref(), Some("claude"));
+                assert_eq!(tool, "TaskCreate");
+                assert_eq!(arguments["subject"], "step one");
+                assert_eq!(*status, DynamicToolCallStatus::Completed);
+                assert_eq!(*success, Some(true));
+                assert_eq!(
+                    content_items.as_ref().unwrap()[0]["text"],
+                    "{\"id\": \"task-1\"}"
+                );
+            }
+            other => panic!("expected DynamicToolCall, got {other:?}"),
+        }
     }
 
     #[test]

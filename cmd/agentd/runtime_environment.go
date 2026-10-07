@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
@@ -50,6 +51,9 @@ func ensureProcessUserEnvironment() error {
 // that older setups wrote. An explicit SSH target keeps the SSH transport.
 // Windows keeps its managed WebSocket process.
 func ensureAppServerTransportMigration(ctx context.Context, configPath string, target string) error {
+	if cfg, err := config.LoadForDoctor(configPath); err == nil && !cfg.Codex.IsEnabled() {
+		return nil
+	}
 	var err error
 	switch runtime.GOOS {
 	case "darwin":

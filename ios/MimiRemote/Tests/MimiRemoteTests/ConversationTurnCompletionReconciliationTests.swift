@@ -3,6 +3,77 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testCompletionAwaitingReducerDoesNotOverwriteNewerActiveTurn() async throws {
+        let fixture = try await makeTurnCompletionReconciliationFixture(
+            suffix: "reducer-boundary",
+            authoritativeTurnID: "turn-active",
+            lifecycle: .inProgress
+        )
+        let store = fixture.store
+        let reducer = store.eventReducer
+        let blocked = expectation(description: "reducer 暂停在旧完成事件之前")
+        let release = DispatchSemaphore(value: 0)
+        let blocker = Task.detached { await reducer.holdForCompletionBoundaryTest(blocked, release: release) }
+        defer { release.signal() }
+        await fulfillment(of: [blocked], timeout: 2)
+        let completion = Task {
+            await store.applyRuntimeEvent(
+                .turnCompleted(AgentEventMetadata(
+                    seq: 91, sessionID: fixture.sessionID, turnID: "turn-active",
+                    itemID: nil, messageID: nil, clientMessageID: nil, revision: nil, createdAt: nil
+                )),
+                lease: HostSessionLease(hostScope: store.appStore.activeHostScope, sessionID: fixture.sessionID)
+            )
+        }
+        for _ in 0..<100 {
+            if store.lastSeenEventSeqBySessionID[fixture.sessionID] == 91 { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(store.lastSeenEventSeqBySessionID[fixture.sessionID], 91)
+        // 模拟另一个已返回的权威刷新先发布新轮次；旧完成事件仍在等待 reducer。
+        store.updateSession(fixture.sessionID) {
+            $0.activeTurnID = "turn-new"
+            $0.status = SessionStatus.running.rawValue
+        }
+        release.signal()
+        await blocker.value
+        await completion.value
+
+        XCTAssertEqual(store.selectedSession?.activeTurnID, "turn-new")
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.running.rawValue)
+        XCTAssertTrue(fixture.socket.sentTurns.isEmpty)
+        XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn-active")
+    }
+
+    func testPagedHistoryRetainsInvisibleTurnStatesForCompletionRecovery() async throws {
+        let project = AgentProject(id: "turn-facts", name: "Turn facts", path: "/tmp/turn-facts")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "test-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+        let listTask = Task { try await client.sessionsPage(projectID: project.id, cursor: nil, limit: 20) }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake","platformFamily":"macos"}"#)
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(transport, id: list.id, result: #"{"data":[{"id":"thread-facts","cwd":"/tmp/turn-facts","status":{"type":"active"},"turns":[]}],"nextCursor":null}"#)
+        _ = try await listTask.value
+        let pageTask = Task { try await client.messagesPage(sessionID: "thread-facts", before: nil, limit: 50, loadMode: .full) }
+        let turns = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list", after: 3)
+        transportResponse(transport, id: turns.id, result: #"{"data":[{"id":"unknown","items":[]},{"id":"active","status":"inProgress","items":[]},{"id":"finished","status":"completed","items":[]},{"id":"timestamp-only","completedAt":1780490310,"items":[]}],"nextCursor":null}"#)
+        let page = try await pageTask.value
+
+        XCTAssertTrue(page.messages.isEmpty)
+        XCTAssertEqual(page.turnStates, [
+            HistoryTurnState(id: "timestamp-only", lifecycle: .completed),
+            HistoryTurnState(id: "finished", lifecycle: .completed),
+            HistoryTurnState(id: "active", lifecycle: .inProgress),
+            HistoryTurnState(id: "unknown", lifecycle: .unknown)
+        ])
+    }
+
     func testFinalAssistantMessageReconcilesCompletedActiveTurnAndDispatchesQueuedTurn() async throws {
         let fixture = try await makeTurnCompletionReconciliationFixture(
             suffix: "completed",
@@ -122,6 +193,14 @@ extension ConversationDataFlowTests {
         let requestCount = await history.requestCount()
         XCTAssertEqual(requestCount, 1)
         XCTAssertNil(fixture.store.selectedSession?.activeTurnID)
+    }
+}
+
+private extension EventReducer {
+    func holdForCompletionBoundaryTest(_ started: XCTestExpectation, release: DispatchSemaphore) {
+        started.fulfill()
+        // 有界阻塞只用于确定地制造 actor 交接窗口，不依赖调度速度或生产测试开关。
+        _ = release.wait(timeout: .now() + 5)
     }
 }
 

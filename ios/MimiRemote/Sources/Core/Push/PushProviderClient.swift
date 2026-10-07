@@ -6,8 +6,7 @@ import Foundation
 /// 交给 agentd——agentd 因此从不接触原始 Device Token，Provider 也从不接触 agentd
 /// 的访问 Token。两边都只拿到自己那一半。
 struct PushProviderClient {
-    /// 维护者运营的默认服务。设置页在同意前会展示真实收件主机；指向别处时
-    /// 用户会看到那个主机名而不是这行默认值。
+    /// 维护者运营的默认服务。默认流程只请求系统通知权限；自定义地址需单独确认。
     static let defaultBaseURL = "https://api.code89757.com/mimi-push"
 
     let baseURL: String

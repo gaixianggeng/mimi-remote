@@ -1,6 +1,57 @@
 import Foundation
 
 extension AppStore {
+    static func defaultConnectionRouteProbe(
+        endpoint: String,
+        token: String,
+        timeout: TimeInterval,
+        session: URLSession = .shared,
+        transportFactory: @escaping () -> CodexAppServerTransport = { URLSessionCodexAppServerTransport() }
+    ) async throws {
+        let config = try await AgentAPIClient(endpoint: endpoint, token: token, session: session)
+            .appServerConfig(timeout: timeout)
+        try await validateAvailableGateway(
+            endpoint: endpoint,
+            token: token,
+            timeout: timeout,
+            config: config,
+            transportFactory: transportFactory
+        )
+    }
+
+    static func validateAvailableGateway(
+        endpoint: String,
+        token: String,
+        timeout: TimeInterval,
+        config: CodexAppServerConfigResponse,
+        transportFactory: @escaping () -> CodexAppServerTransport,
+        harnessFactory: HarnessSessionClientFactory = HarnessSessionAPIClient.liveFactory
+    ) async throws {
+        guard let runtimeProvider = AppServerRuntimeBundle.preferredAvailableRuntimeProvider(in: config) else {
+            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+        }
+        if runtimeProvider == AppServerRuntimeBundle.nativeRuntimeProvider {
+            // Harness-only 宿主没有 app-server WebSocket。连接探测必须走原生 RPC；
+            // 如果 Harness 离线就如实失败，绝不能再把同一操作改投旧 DeepSeek 路径。
+            guard try AppServerRuntimeBundle.nativeHarnessIsConfigured(in: config),
+                  let harness = harnessFactory(endpoint, token),
+                  try await harness.channelAvailable() else {
+                throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+            }
+            return
+        }
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: endpoint,
+            token: token,
+            runtimeProvider: runtimeProvider,
+            transportFactory: transportFactory,
+            requestTimeout: timeout,
+            configProvider: { config }
+        )
+        // 连通性检查只建立无名短连接，不登记 thread，也不复用正式 RuntimeBundle。
+        try await runtime.validateDirectGateway()
+    }
+
     func testConnection(
         endpoint: String,
         token: String,

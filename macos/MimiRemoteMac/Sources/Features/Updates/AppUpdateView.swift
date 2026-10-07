@@ -43,6 +43,7 @@ struct AppUpdateNotice: View {
                     .font(.headline)
                 HStack {
                     Link("下载 Mac 更新", destination: release.downloadURL)
+                        .tint(Color.mimiMutedLink)
                     Spacer()
                     Button("稍后") { updates.deferUpdate() }
                 }

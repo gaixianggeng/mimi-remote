@@ -126,7 +126,7 @@ else
     # 公开说明和 App Store 文案只需要轻量静态门禁；产品源码、契约与发布
     # 脚本继续由下方语言 scope 覆盖，不能借文档路径绕过完整回归。
     case "$changed_path" in
-      README.md|README.zh-CN.md|CONTRIBUTING.md|docs/*|docs/**/*|scripts/check-docs-static.sh)
+      README.md|README.zh-CN.md|CONTRIBUTING.md|config.example.json|docs/*|docs/**/*|scripts/check-docs-static.sh)
         docs_scope=true
         continue
         ;;
@@ -142,16 +142,16 @@ else
     esac
 
     case "$changed_path" in
-      *.go|go.mod|go.sum|.goreleaser.yml|SKILL.md|packaging/*|packaging/**/*|contracts/mimi-protocol/*|contracts/mimi-protocol/**/*)
+      *.go|go.mod|go.sum|.goreleaser.yml|SKILL.md|packaging/*|packaging/**/*|contracts/mimi-protocol/*|contracts/mimi-protocol/**/*|contracts/harness-native/*|contracts/harness-native/**/*)
         go_scope=true
         ;;
-      scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/check-nightly-release.sh|scripts/generate-nightly-what-to-test.rb|scripts/check-packaging.sh|scripts/check-source-size.sh|scripts/check-mimi-protocol-contract.sh|scripts/check-macos-*|scripts/check-release-*|scripts/build-macos-installer.sh|scripts/build-windows-installer.ps1|scripts/check-windows-installer.ps1|scripts/test-windows-install.ps1|scripts/install-linux*.sh|scripts/test-install-linux*.sh|scripts/package-skill.sh|scripts/sign-agentd-dev-macos.sh|scripts/restart-agentd-dev-macos.sh|scripts/restart-agentd-dev-handoff-macos.sh|scripts/verify-release.sh)
+      scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/check-nightly-release.sh|scripts/generate-nightly-what-to-test.rb|scripts/check-packaging.sh|scripts/check-source-size.sh|scripts/check-mimi-protocol-contract.sh|scripts/check-harness-native-contract.sh|scripts/check-macos-*|scripts/check-release-*|scripts/build-macos-installer.sh|scripts/build-windows-installer.ps1|scripts/check-windows-installer.ps1|scripts/test-windows-install.ps1|scripts/install-linux*.sh|scripts/test-install-linux*.sh|scripts/package-skill.sh|scripts/sign-agentd-dev-macos.sh|scripts/restart-agentd-dev-macos.sh|scripts/restart-agentd-dev-handoff-macos.sh|scripts/verify-release.sh)
         go_scope=true
         ;;
     esac
 
     case "$changed_path" in
-      ios/MimiRemote/*|ios/MimiRemote/**/*|.xcodebuildmcp/*|.xcodebuildmcp/**/*|contracts/mimi-protocol/*|contracts/mimi-protocol/**/*|internal/protocolcontract/*|internal/protocolcontract/**/*)
+      ios/MimiRemote/*|ios/MimiRemote/**/*|.xcodebuildmcp/*|.xcodebuildmcp/**/*|contracts/mimi-protocol/*|contracts/mimi-protocol/**/*|internal/protocolcontract/*|internal/protocolcontract/**/*|contracts/harness-native/*|contracts/harness-native/**/*)
         ios_scope=true
         ;;
       scripts/ios-dev.sh|scripts/build-tailcat-mobile.sh|scripts/ios-device-lease.sh|scripts/ios-device-gui-handoff-macos.sh|scripts/test-ios-device-management.sh|scripts/test-tailcat-mobile-build.sh|scripts/test-ios-device-gui-handoff-macos.sh|scripts/testdata/ios-device-management/*|scripts/testdata/ios-device-management/**/*|scripts/testdata/tailcat-mobile/*|scripts/testdata/tailcat-mobile/**/*|scripts/ios_testflight_ci.sh|scripts/ios_testflight_local.sh|scripts/ios_asc_*|scripts/test-ios-asc-cli.sh|scripts/distribute_internal_build.rb|scripts/generate-nightly-what-to-test.rb|scripts/git-testflight-push|scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/check-nightly-release.sh|scripts/test-ios-localization-smoke.sh|scripts/check-ios-*|scripts/check-app-store-metadata.sh|scripts/check-source-size.sh|scripts/deploy-ipad.sh|config/release/ios-asc-cli.env|config/release/ios-testflight.local.env)

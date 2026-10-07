@@ -10,13 +10,17 @@ struct ConversationTimelineView: View {
     let layout: ConversationLayout
     let explicitSessionID: SessionID?
     let allowsTopUnderlap: Bool
+    let deepensTopScrollEdge: Bool
     @State private var expandedActivityIDs: Set<String> = []
-    @State private var expandedActivityGroupIDs: Set<String> = []
-    // nil 表示跟随状态默认值；显式 true/false 都是用户 override，状态切换时优先保留。
-    @State private var workGroupExpansionOverrides: [String: Bool] = [:]
+    @State private var expandedProcessMessageIDs: Set<UUID> = []
+    @State private var collapsedProcessMessageIDs: Set<UUID> = []
+    @State private var pendingFileActivityID: String?
     @State private var timelineItemCache = ConversationTimelineItemCache()
     @State private var presentedSnapshot = ConversationTimelineSnapshot.empty
     @State private var scrollController = ConversationTimelineScrollController()
+    @Environment(\.conversationDetailedTranscript) private var detailedTranscript
+
+    private var showsDetailedTranscript: Bool { detailedTranscript.wrappedValue }
 
     private let messageTailFollowThreshold: CGFloat = 120
     private static let timelineTailSentinelID = "__conversation_timeline_safe_tail__"
@@ -26,11 +30,13 @@ struct ConversationTimelineView: View {
     init(
         layout: ConversationLayout,
         sessionID: SessionID? = nil,
-        allowsTopUnderlap: Bool = false
+        allowsTopUnderlap: Bool = false,
+        deepensTopScrollEdge: Bool = false
     ) {
         self.layout = layout
         explicitSessionID = sessionID
         self.allowsTopUnderlap = allowsTopUnderlap
+        self.deepensTopScrollEdge = deepensTopScrollEdge
     }
 
     private var displayedSessionID: SessionID? {
@@ -41,6 +47,10 @@ struct ConversationTimelineView: View {
         let tokens = themeStore.tokens(for: colorScheme)
         let source = conversationStore.timelineSource(for: displayedSessionID ?? "__none__")
         let scope = source.scope
+        let displayedSession = displayedSessionID.flatMap { sessionStore.sessionsByID[$0] }
+        let timelineProvider = ConversationTimelineProvider(
+            runtimeProvider: displayedSession?.runtimeProvider ?? displayedSession?.source
+        )
         // body 只读来源与已发布列表；投影、旧位置捕获和发布在同一个 onChange 中完成。
         let timelineSnapshot = presentedSnapshot.scope == scope ? presentedSnapshot : .empty
         let timelineItems = timelineSnapshot.rows
@@ -49,20 +59,15 @@ struct ConversationTimelineView: View {
             hasTimelineContent: !timelineItems.isEmpty,
             presentationGeneration: scrollController.epoch
         )
-        let incomingIdentity = ConversationTimelineSnapshotIdentity(
-            scope: scope,
-            revision: source.revision,
-            isInteracting: scrollController.isInteracting
-        )
         let isTimelineReadable = timelineItems.isEmpty || scrollController.isReadable
         let activeUserDeliveryMessageID = Self.activeUserDeliveryMessageID(in: source.messages)
         let crossSessionOriginMessageID = Self.crossSessionOriginMessageID(
-            session: displayedSessionID.flatMap { sessionStore.sessionsByID[$0] },
+            session: displayedSession,
             messages: source.messages
         )
-        let isHistoryLoading = sessionStore.historyLoadProgress(sessionID: displayedSessionID) != nil
+        let isHistoryLoading = sessionStore.isShowingHistoryLoading(sessionID: displayedSessionID)
         let liveStatus = displayedSessionID.flatMap { sessionID -> ConversationLiveStatus? in
-            guard let session = sessionStore.sessionsByID[sessionID] else { return nil }
+            guard let session = displayedSession else { return nil }
             return ConversationLiveStatus.make(
                 session: session,
                 messages: source.messages,
@@ -72,12 +77,27 @@ struct ConversationTimelineView: View {
                 readiness: sessionStore.conversationReadiness(for: session)
             )
         }
+        let liveProcessID = liveStatus.flatMap { _ in
+            Self.liveProcessID(in: timelineItems, messages: source.messages, activeTurnID: displayedSession?.activeTurnID)
+        }
+        let activeTurn = liveStatus.map { _ in ConversationTimelineActiveTurn(id: displayedSession?.activeTurnID) }
+        let incomingIdentity = ConversationTimelineSnapshotIdentity(
+            scope: scope,
+            revision: source.revision,
+            isInteracting: scrollController.isInteracting,
+            provider: timelineProvider,
+            showsDetailedTranscript: showsDetailedTranscript,
+            expandedProcessMessageIDs: expandedProcessMessageIDs,
+            collapsedProcessMessageIDs: collapsedProcessMessageIDs,
+            activeTurn: activeTurn
+        )
         let isLoadingEarlierHistory = sessionStore.isLoadingEarlierHistory(sessionID: displayedSessionID)
         let shouldShowInlineHistoryLoading = Self.shouldShowInlineHistoryLoading(
             timelineItemsAreEmpty: timelineItems.isEmpty,
             isHistoryLoading: isHistoryLoading,
             isLoadingEarlierHistory: isLoadingEarlierHistory,
-            hasHistorySavingsNotice: explicitSessionID == nil && sessionStore.selectedHistorySavingsNotice != nil
+            hasHistorySavingsNotice: explicitSessionID == nil && sessionStore.selectedHistorySavingsNotice != nil,
+            liveStatusReadiness: liveStatus?.readiness
         )
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottom) {
@@ -103,12 +123,13 @@ struct ConversationTimelineView: View {
                             ForEach(timelineItems) { item in
                                 timelineListRow(
                                     item,
+                                    provider: timelineProvider,
+                                    liveStatus: item.id == liveProcessID ? liveStatus : nil,
                                     activeUserDeliveryMessageID: activeUserDeliveryMessageID,
-                                    crossSessionOriginMessageID: crossSessionOriginMessageID,
-                                    showsLiveStatus: liveStatus != nil
+                                    crossSessionOriginMessageID: crossSessionOriginMessageID
                                 )
                             }
-                            if let liveStatus {
+                            if let liveStatus, liveProcessID == nil {
                                 // 独立于 timelineItems 的尾部行：不参与条目 ID、历史锚点与分组投影，
                                 // 贴底跟随仍以下方哨兵为准，出现/消失只表现为内容高度变化。
                                 ConversationLiveStatusRow(status: liveStatus, layout: layout)
@@ -168,7 +189,10 @@ struct ConversationTimelineView: View {
                 .background(tokens.conversationCanvasBackground)
                 // 顶部正文进入导航层、底部正文经过 Composer 时都使用系统柔和虚化；
                 // 不再在任一边缘切出一整块与页面不同的实色底板。
-                .workbenchSoftConversationScrollEdges(allowsTopUnderlap: allowsTopUnderlap)
+                .workbenchSoftConversationScrollEdges(
+                    allowsTopUnderlap: allowsTopUnderlap,
+                    deepensTopEdge: deepensTopScrollEdge
+                )
                 .simultaneousGesture(TapGesture().onEnded {
                     KeyboardDismissal.dismiss()
                 })
@@ -185,6 +209,7 @@ struct ConversationTimelineView: View {
                 .onScrollPhaseChange { _, phase in
                     scrollController.phaseChanged(phase, epoch: timelineListIdentity.presentationGeneration)
                 }
+
 
                 if shouldShowReturnToTailButton(timelineItems: timelineItems) {
                     ConversationReturnToTailButton(
@@ -207,13 +232,13 @@ struct ConversationTimelineView: View {
                 }
             }
             .onChange(of: incomingIdentity, initial: true) { _, _ in
-                publishTimelineSource(source)
+                publishTimelineSource(source, provider: timelineProvider, activeTurn: activeTurn)
             }
             .onChange(of: timelineListIdentity, initial: true) { _, identity in
                 connectScrollCommands(proxy: proxy, epoch: identity.presentationGeneration)
             }
             .onAppear {
-                publishTimelineSource(source)
+                publishTimelineSource(source, provider: timelineProvider, activeTurn: activeTurn)
             }
             .environment(\.conversationMediaLayoutWillChange, scrollController.mediaLayoutWillChange)
             .environment(\.conversationBindAnchorView, anchorViewBinder())
@@ -227,15 +252,17 @@ struct ConversationTimelineView: View {
     @ViewBuilder
     private func timelineListRow(
         _ item: ConversationTimelineItem,
+        provider: ConversationTimelineProvider,
+        liveStatus: ConversationLiveStatus?,
         activeUserDeliveryMessageID: UUID?,
-        crossSessionOriginMessageID: UUID?,
-        showsLiveStatus: Bool
+        crossSessionOriginMessageID: UUID?
     ) -> some View {
         timelineRow(
             item,
+            provider: provider,
+            liveStatus: liveStatus,
             activeUserDeliveryMessageID: activeUserDeliveryMessageID,
-            crossSessionOriginMessageID: crossSessionOriginMessageID,
-            showsLiveStatus: showsLiveStatus
+            crossSessionOriginMessageID: crossSessionOriginMessageID
         )
         .modifier(ConversationHistoryAnchorGeometryModifier(
             // List 只实例化视口附近的少量 cell。持续量这些真实行，才能在派生行 ID
@@ -254,28 +281,19 @@ struct ConversationTimelineView: View {
     }
 
     private func outerAnchorMessageIDs(for item: ConversationTimelineItem) -> [UUID] {
-        switch item {
-        case .message(let message), .activity(let message):
-            return [message.id]
-        case .activityBatch(let group):
-            return expandedActivityGroupIDs.contains(group.id) ? [] : group.messages.map(\.id)
-        case .processGroup(let group):
-            return expandedActivityGroupIDs.contains(group.id) ? [] : [group.header.id] + group.activities.map(\.id)
-        case .workGroup(let group):
-            let isExpanded = workGroupExpansionOverrides[group.id] ?? group.defaultIsExpanded
-            return isExpanded ? [] : group.entries.flatMap(\.anchorMessageIDs)
-        }
+        item.anchorMessageIDs
     }
 
     @ViewBuilder
     private func timelineRow(
         _ item: ConversationTimelineItem,
+        provider: ConversationTimelineProvider,
+        liveStatus: ConversationLiveStatus?,
         activeUserDeliveryMessageID: UUID?,
-        crossSessionOriginMessageID: UUID?,
-        showsLiveStatus: Bool
+        crossSessionOriginMessageID: UUID?
     ) -> some View {
         switch item {
-        case .message(let message):
+        case .message(let message), .processMessage(let message):
             MessageRow(
                 message: message,
                 themeVersion: themeStore.themeVersion,
@@ -294,223 +312,104 @@ struct ConversationTimelineView: View {
                 }
             )
                 .equatable()
+                .padding(.leading, item.isProcessStep ? 12 : 0)
         case .activity(let message):
+            let itemID = ConversationTimelineItem.activityID(for: message)
             ConversationActivityRow(
                 message: message,
                 layout: layout,
-                isExpanded: expandedActivityIDs.contains(item.id),
+                provider: provider,
+                showsDetailedTranscript: showsDetailedTranscript,
+                isExpanded: showsDetailedTranscript || expandedActivityIDs.contains(itemID),
                 toggle: {
-                    toggleActivityDetails(itemID: item.id, scrollAnchorID: item.id)
+                    toggleActivityDetails(itemID: itemID)
                 }
             )
                 .equatable()
-        case .activityBatch(let group):
-            ConversationActivityBatchRow(
-                group: group,
-                layout: layout,
-                isExpanded: expandedActivityGroupIDs.contains(group.id),
-                expandedActivityIDs: expandedActivityIDs,
-                toggleGroup: {
-                    toggleActivityGroup(groupID: group.id)
-                },
-                toggleActivity: { message in
-                    toggleActivityDetails(
-                        itemID: ConversationTimelineItem.activityID(for: message),
-                        scrollAnchorID: group.id
-                    )
-                },
-                recordAnchorGeometry: anchorFrameRecorder()
-            )
-                .equatable()
+                .padding(.leading, 12)
         case .processGroup(let group):
             ConversationProcessGroupRow(
-                group: group,
-                layout: layout,
-                isExpanded: expandedActivityGroupIDs.contains(group.id),
-                expandedActivityIDs: expandedActivityIDs,
-                toggleGroup: {
-                    toggleActivityGroup(groupID: group.id)
-                },
-                toggleActivity: { message in
-                    toggleActivityDetails(
-                        itemID: ConversationTimelineItem.activityID(for: message),
-                        scrollAnchorID: group.id
-                    )
-                },
-                recordAnchorGeometry: anchorFrameRecorder()
+                group: group, layout: layout, liveStatus: liveStatus,
+                showsDetailedTranscript: showsDetailedTranscript,
+                toggle: { toggleProcess(group) }
             )
             .equatable()
-        case .workGroup(let group):
-            let isExpanded = workGroupExpansionOverrides[group.id] ?? group.defaultIsExpanded
-            ConversationWorkGroupRow(
-                group: group,
-                layout: layout,
-                isExpanded: isExpanded,
-                defersRunningProgressToLiveStatus: showsLiveStatus,
-                toggleGroup: {
-                    toggleWorkGroup(
-                        group: group,
-                        isCurrentlyExpanded: isExpanded
-                    )
-                }
-            ) {
-                ForEach(group.entries) { entry in
-                    workGroupEntryRow(
-                        entry,
-                        activeUserDeliveryMessageID: activeUserDeliveryMessageID,
-                        outerGroupID: group.id
-                    )
-                }
+        case .fileChanges(let changes):
+            Button {
+                showFileChanges(changes)
+            } label: {
+                Label(L10n.text("ui.view_file_changes"), systemImage: "doc.text.magnifyingglass")
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
+                    .foregroundStyle(workbenchSecondaryText)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("conversation.fileChanges.\(changes.id)")
+        }
+    }
+
+    private func toggleActivityDetails(itemID: String) {
+        guard !showsDetailedTranscript else { return }
+        let expanding = !expandedActivityIDs.contains(itemID)
+        if expanding {
+            // 用户进入单项详情后保留所属过程，避免完成事件打断正在阅读的内容。
+            for case .processGroup(let group) in presentedSnapshot.rows
+                where group.messages.contains(where: { ConversationTimelineItem.activityID(for: $0) == itemID }) {
+                expandedProcessMessageIDs.formUnion(group.messages.map(\.id))
+                collapsedProcessMessageIDs.subtract(group.messages.map(\.id))
             }
         }
+        scrollController.expansionChanged(itemID, isExpanded: expanding, isAnimated: false)
+        if expanding { expandedActivityIDs.insert(itemID) } else { expandedActivityIDs.remove(itemID) }
     }
 
-    @ViewBuilder
-    private func workGroupEntryRow(
-        _ entry: ConversationWorkGroupEntry,
-        activeUserDeliveryMessageID: UUID?,
-        outerGroupID: String
-    ) -> some View {
-        switch entry {
-        case .commentary(let message):
-            MessageRow(
-                message: message,
-                themeVersion: themeStore.themeVersion,
-                layout: layout,
-                showsActiveDeliveryStatus: message.id == activeUserDeliveryMessageID,
-                showsCrossSessionOrigin: false,
-                skills: sessionStore.capabilityList?.skills ?? [],
-                retry: { message in
-                    Task { await sessionStore.retryFailedUserMessage(message) }
-                },
-                stop: {
-                    sessionStore.interruptSelectedTurn()
-                },
-                previewFile: { path in
-                    try await sessionStore.previewFile(path: path)
-                }
-            )
-            .equatable()
-            .modifier(ConversationHistoryAnchorGeometryModifier(
-                isEnabled: true,
-                messageIDs: [message.id],
-                action: anchorFrameRecorder(),
-                bindView: anchorViewBinder()
-            ))
-        case .activity(let message):
-            ConversationActivityRow(
-                message: message,
-                layout: layout,
-                isExpanded: expandedActivityIDs.contains(entry.id),
-                toggle: {
-                    toggleActivityDetails(
-                        itemID: entry.id,
-                        scrollAnchorID: outerGroupID
-                    )
-                }
-            )
-            .equatable()
-            .modifier(ConversationHistoryAnchorGeometryModifier(
-                isEnabled: true,
-                messageIDs: [message.id],
-                action: anchorFrameRecorder(),
-                bindView: anchorViewBinder()
-            ))
-        case .activityBatch(let group):
-            ConversationActivityBatchRow(
-                group: group,
-                layout: layout,
-                isExpanded: expandedActivityGroupIDs.contains(group.id),
-                expandedActivityIDs: expandedActivityIDs,
-                toggleGroup: {
-                    toggleActivityGroup(
-                        groupID: group.id,
-                        scrollAnchorID: outerGroupID
-                    )
-                },
-                toggleActivity: { message in
-                    toggleActivityDetails(
-                        itemID: ConversationTimelineItem.activityID(for: message),
-                        scrollAnchorID: outerGroupID
-                    )
-                },
-                recordAnchorGeometry: anchorFrameRecorder()
-            )
-            .equatable()
-        case .processGroup(let group):
-            ConversationProcessGroupRow(
-                group: group,
-                layout: layout,
-                isExpanded: expandedActivityGroupIDs.contains(group.id),
-                expandedActivityIDs: expandedActivityIDs,
-                toggleGroup: {
-                    toggleActivityGroup(
-                        groupID: group.id,
-                        scrollAnchorID: outerGroupID
-                    )
-                },
-                toggleActivity: { message in
-                    toggleActivityDetails(
-                        itemID: ConversationTimelineItem.activityID(for: message),
-                        scrollAnchorID: outerGroupID
-                    )
-                },
-                recordAnchorGeometry: anchorFrameRecorder()
-            )
-            .equatable()
+    private func toggleProcess(_ group: ConversationProcessGroup) {
+        guard !showsDetailedTranscript else { return }
+        if group.isExpanded {
+            expandedProcessMessageIDs.subtract(group.messages.map(\.id))
+            collapsedProcessMessageIDs.formUnion(group.messages.map(\.id))
+        } else if let anchor = group.messages.first?.id {
+            expandedProcessMessageIDs.insert(anchor)
+            collapsedProcessMessageIDs.subtract(group.messages.map(\.id))
         }
     }
 
-    private func toggleActivityDetails(
-        itemID: String,
-        scrollAnchorID: String
-    ) {
-        let isExpanding = !expandedActivityIDs.contains(itemID)
-        scrollController.expansionChanged(scrollAnchorID, isExpanded: isExpanding, isAnimated: false)
-        if isExpanding {
-            expandedActivityIDs.insert(itemID)
+    private func showFileChanges(_ changes: ConversationFileChanges) {
+        let previousExpanded = expandedProcessMessageIDs
+        let previousCollapsed = collapsedProcessMessageIDs
+        expandedProcessMessageIDs.formUnion(changes.messageIDs)
+        for case .processGroup(let group) in presentedSnapshot.rows
+            where group.messages.contains(where: { changes.messageIDs.contains($0.id) }) {
+            collapsedProcessMessageIDs.subtract(group.messages.map(\.id))
+        }
+        let allChangesVisible = changes.messageIDs.allSatisfy {
+            presentedSnapshot.rowIDs.contains("activity:\($0.uuidString)")
+        }
+        let presentationChanged = previousExpanded != expandedProcessMessageIDs
+            || previousCollapsed != collapsedProcessMessageIDs
+        if allChangesVisible, !presentationChanged {
+            scrollController.revealItem(changes.firstActivityID)
         } else {
-            expandedActivityIDs.remove(itemID)
+            // 保留过程本身也会发布快照，定位必须在那之后执行，不能被 prepare 取消。
+            pendingFileActivityID = changes.firstActivityID
         }
     }
 
-    private func toggleActivityGroup(
-        groupID: String,
-        scrollAnchorID: String? = nil
-    ) {
-        let isExpanding = !expandedActivityGroupIDs.contains(groupID)
-        let isAnimated = !accessibilityReduceMotion
-        let input = scrollController.expansionChanged(scrollAnchorID ?? groupID, isExpanded: isExpanding, isAnimated: isAnimated)
-        withAnimation(
-            accessibilityReduceMotion ? nil : .spring(response: 0.32, dampingFraction: 1),
-            completionCriteria: .removed
-        ) {
-            if isExpanding {
-                expandedActivityGroupIDs.insert(groupID)
-            } else {
-                expandedActivityGroupIDs.remove(groupID)
-            }
-        } completion: {
-            if isAnimated { scrollController.expansionCompleted(input) }
-        }
-    }
-
-    private func toggleWorkGroup(
-        group: ConversationWorkGroup,
-        isCurrentlyExpanded: Bool
-    ) {
-        let isExpanding = !isCurrentlyExpanded
-        let isAnimated = !accessibilityReduceMotion
-        let input = scrollController.expansionChanged(group.id, isExpanded: isExpanding, isAnimated: isAnimated)
-        withAnimation(
-            accessibilityReduceMotion ? nil : .spring(response: 0.32, dampingFraction: 1),
-            completionCriteria: .removed
-        ) {
-            // 不删除等于默认值的 override：用户选择必须在 running→terminal 后继续优先。
-            workGroupExpansionOverrides[group.id] = isExpanding
-        } completion: {
-            if isAnimated { scrollController.expansionCompleted(input) }
-        }
+    /// 只把当前轮、最后一个用户输入之后的过程标题用于实时状态，不能点亮上一轮历史。
+    static func liveProcessID(
+        in rows: [ConversationTimelineItem], messages: [ConversationMessage], activeTurnID: TurnID?
+    ) -> String? {
+        let currentMessages = messages.suffix(from: messages.lastIndex(where: { $0.role == .user }) ?? messages.startIndex)
+        let currentIDs = Set(currentMessages.map(\.id))
+        return rows.reversed().compactMap { item -> ConversationProcessGroup? in
+            if case .processGroup(let group) = item { return group }
+            return nil
+        }.first { group in
+            (activeTurnID == nil || group.turnID == activeTurnID)
+                && group.lifecycle != .failed && group.lifecycle != .interrupted
+                && group.messages.contains { currentIDs.contains($0.id) }
+        }?.id
     }
 
     private static func activeUserDeliveryMessageID(in messages: [ConversationMessage]) -> UUID? {
@@ -549,12 +448,15 @@ struct ConversationTimelineView: View {
         timelineItemsAreEmpty: Bool,
         isHistoryLoading: Bool,
         isLoadingEarlierHistory: Bool,
-        hasHistorySavingsNotice: Bool
+        hasHistorySavingsNotice: Bool,
+        liveStatusReadiness: ConversationReadiness?
     ) -> Bool {
         !timelineItemsAreEmpty
             && isHistoryLoading
             && !isLoadingEarlierHistory
             && !hasHistorySavingsNotice
+            // 实时状态已表达同一段历史恢复，不再并排显示第二个等待提示。
+            && liveStatusReadiness != .loadingHistory
     }
 
     private var loadEarlierRow: some View {
@@ -629,9 +531,7 @@ struct ConversationTimelineView: View {
     }
 
     private func shouldShowReturnToTailButton(timelineItems: [ConversationTimelineItem]) -> Bool {
-        !timelineItems.isEmpty
-            && scrollController.isReadable
-            && (scrollController.mode == .readingHistory || scrollController.hasUnseenTail)
+        !timelineItems.isEmpty && scrollController.canReturnToTail
     }
 
     private var returnToTailAccessibilityLabel: String {
@@ -713,8 +613,13 @@ struct ConversationTimelineView: View {
     @ViewBuilder
     private func timelineEmptyState(isHistoryLoading: Bool) -> some View {
         if isHistoryLoading {
-            ProgressView(L10n.text("ui.loading_session_records"))
-                .accessibilityLabel(L10n.text("ui.loading_session_records"))
+            // 详情首屏只保留静态说明；列表页的加载圆环继续由 SessionListView 展示。
+            // 状态仍留在时间线行里，避免历史到达时改变滚动锚点或贴底逻辑。
+            Text(L10n.text("ui.loading_session_records"))
+                .font(themeStore.uiFont(.subheadline))
+                .foregroundStyle(workbenchSecondaryText)
+                .accessibilityIdentifier("conversation.historyLoading")
+                .allowsHitTesting(false)
         } else if let error = sessionStore.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
             ContentUnavailableView {
                 Label(L10n.text("ui.session_record_loading_failed"), systemImage: "exclamationmark.triangle")
@@ -743,16 +648,40 @@ struct ConversationTimelineView: View {
         themeStore.tokens(for: colorScheme).secondaryText
     }
 
-    private func publishTimelineSource(_ source: ConversationTimelineSourceSnapshot) {
+    private func publishTimelineSource(
+        _ source: ConversationTimelineSourceSnapshot,
+        provider: ConversationTimelineProvider,
+        activeTurn: ConversationTimelineActiveTurn?
+    ) {
+        HostSwitchSignpost.begin(
+            "conversation_timeline_projection",
+            metadata: "messages=\(source.messages.count) revision=\(source.revision) interacting=\(scrollController.isInteracting)"
+        )
         let snapshot = timelineItemCache.snapshot(
             from: source,
+            provider: provider,
+            showsDetailedTranscript: showsDetailedTranscript,
+            expandedProcessMessageIDs: presentedSnapshot.scope == source.scope ? expandedProcessMessageIDs : [],
+            collapsedProcessMessageIDs: presentedSnapshot.scope == source.scope ? collapsedProcessMessageIDs : [],
+            activeTurn: activeTurn,
             suspendingUpdates: scrollController.isInteracting
+        )
+        let reusedPresentedSnapshot = snapshot.scope == presentedSnapshot.scope
+            && snapshot.revision == presentedSnapshot.revision
+        let measuredProjectionMode: ConversationTimelineProjectionMode = reusedPresentedSnapshot
+            ? .reused
+            : snapshot.projectionMode
+        let measuredMessageCount = reusedPresentedSnapshot ? 0 : snapshot.projectedMessageCount
+        HostSwitchSignpost.end(
+            "conversation_timeline_projection",
+            metadata: "mode=\(measuredProjectionMode) projected=\(measuredMessageCount) rows=\(snapshot.rows.count)"
         )
         guard scrollController.prepare(snapshot) else { return }
         if presentedSnapshot.scope != snapshot.scope {
             expandedActivityIDs.removeAll()
-            expandedActivityGroupIDs.removeAll()
-            workGroupExpansionOverrides.removeAll()
+            expandedProcessMessageIDs.removeAll()
+            collapsedProcessMessageIDs.removeAll()
+            pendingFileActivityID = nil
         }
         if !snapshot.rows.isEmpty, presentedSnapshot.rows.isEmpty || presentedSnapshot.scope != snapshot.scope {
             HostSwitchSignpost.event("first_text_visible")
@@ -760,9 +689,13 @@ struct ConversationTimelineView: View {
         presentedSnapshot = snapshot
         ConversationScrollDiagnostics.shared.record(
             "projection",
-            "revision=\(snapshot.revision) rows=\(snapshot.rows.count) changes=\(snapshot.changes.rawValue)"
+            "revision=\(snapshot.revision) rows=\(snapshot.rows.count) changes=\(snapshot.changes.rawValue) mode=\(snapshot.projectionMode) projected=\(snapshot.projectedMessageCount)"
         )
         scrollController.snapshotWasPublished()
+        if let target = pendingFileActivityID, snapshot.rowIDs.contains(target) {
+            pendingFileActivityID = nil
+            scrollController.revealItem(target)
+        }
     }
 
     private func connectScrollCommands(proxy: ScrollViewProxy, epoch: Int) {
@@ -771,16 +704,14 @@ struct ConversationTimelineView: View {
         // 长列表首次定位不能依赖尾行已经实例化；proxy 接线与原生视口发现独立。
         controller.connect(epoch: epoch) { [weak controller] command in
             // 所有滚动副作用只从控制器到达此处，不反向观察 contentOffset 产生新命令。
+            if case .tail = command.target,
+               controller?.viewport.scrollToTail(animated: command.animated && !reduceMotion) == true {
+                return
+            }
             let apply = {
                 switch command.target {
                 case .tail:
-                    if !command.animated,
-                       let scrollView = controller?.viewport.scrollView,
-                       let metrics = controller?.viewport.metrics {
-                        scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: metrics.maximumOffsetY), animated: false)
-                    } else {
-                        proxy.scrollTo(Self.timelineTailSentinelID, anchor: .bottom)
-                    }
+                    proxy.scrollTo(Self.timelineTailSentinelID, anchor: .bottom)
                 case let .offset(offset):
                     guard let scrollView = controller?.viewport.scrollView else { return }
                     scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: offset), animated: false)
@@ -837,6 +768,11 @@ private struct ConversationTimelineSnapshotIdentity: Equatable {
     let scope: ScopedSessionID
     let revision: UInt64
     let isInteracting: Bool
+    let provider: ConversationTimelineProvider
+    let showsDetailedTranscript: Bool
+    let expandedProcessMessageIDs: Set<UUID>
+    let collapsedProcessMessageIDs: Set<UUID>
+    let activeTurn: ConversationTimelineActiveTurn?
 }
 
 struct ConversationHistoryAnchorGeometryModifier: ViewModifier {
@@ -845,8 +781,14 @@ struct ConversationHistoryAnchorGeometryModifier: ViewModifier {
     let messageIDs: [UUID]
     let action: ([UUID], CGRect) -> Void
     var bindView: (([UUID], UIView) -> Void)?
-    @State private var latestFrame = CGRect.null
-    @State private var isVisible = false
+    @State private var geometryState = GeometryState()
+
+    // 这些值只供锚点回调读取，不参与绘制。不能把逐帧变化的全局坐标设为
+    // 可观察状态，否则滚动每一帧都会重新计算整行及其 Markdown / 过程摘要。
+    private final class GeometryState {
+        var latestFrame = CGRect.null
+        var isVisible = false
+    }
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -854,15 +796,15 @@ struct ConversationHistoryAnchorGeometryModifier: ViewModifier {
             content.onGeometryChange(for: CGRect.self) { geometry in
                 geometry.frame(in: .global)
             } action: { frame in
-                latestFrame = frame
-                if isVisible {
+                geometryState.latestFrame = frame
+                if geometryState.isVisible {
                     action(messageIDs, frame)
                 }
             }
             .onScrollVisibilityChange(threshold: 0.01) { visible in
-                isVisible = visible
-                if visible, !latestFrame.isNull {
-                    action(messageIDs, latestFrame)
+                geometryState.isVisible = visible
+                if visible, !geometryState.latestFrame.isNull {
+                    action(messageIDs, geometryState.latestFrame)
                 } else if !visible {
                     action(messageIDs, .null)
                 }

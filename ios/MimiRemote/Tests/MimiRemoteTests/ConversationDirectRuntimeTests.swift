@@ -1642,10 +1642,8 @@ extension ConversationDataFlowTests {
         socket.disconnect()
     }
 
-    // 回归：Claude 通道的 thread/start / thread/resume 必须先按 runtime 策略把 .default 草稿的
-    // dangerFullAccess 降级为 workspace-write。旧行为原样携带 danger-full-access，gateway 以
-    // -32080 拒绝 resume，事件订阅进入确定性失败的重连死循环，Claude 会话永远打不开。
-    func testClaudeRuntimeThreadStartAndResumeDowngradeSandboxToWorkspaceWrite() async throws {
+    // 新建保留默认完全访问；被动恢复只建立连接，不能要求旧 bridge 支持完全访问。
+    func testClaudeRuntimeStartsWithFullAccessAndResumesWithoutPermissionEscalation() async throws {
         let project = AgentProject(id: "proj_claude_sandbox", name: "Claude Sandbox", path: "/tmp/claude-sandbox")
         let transport = FakeCodexAppServerTransport()
         let runtime = CodexAppServerSessionRuntime(
@@ -1676,8 +1674,8 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(threadStart.method, "thread/start")
         XCTAssertEqual(
             threadStart.params?.objectValue?["sandbox"]?.stringValue,
-            "workspace-write",
-            "Claude 通道 thread/start 不应携带 danger-full-access"
+            "danger-full-access",
+            "Claude 通道 thread/start 应保持用户的完全访问选择"
         )
         transport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thr_claude_sandbox","sessionId":"thr_claude_sandbox","preview":"","ephemeral":false,"modelProvider":"anthropic","createdAt":1780490700,"updatedAt":1780490701,"status":{"type":"idle"},"path":null,"cwd":"/tmp/claude-sandbox","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Claude 会话","turns":[]}}}"#)
 
@@ -1694,7 +1692,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(
             resume.params?.objectValue?["sandbox"]?.stringValue,
             "workspace-write",
-            "Claude 通道 thread/resume 不应携带 danger-full-access（gateway 会 -32080 拒绝并造成重连死循环）"
+            "Claude 被动恢复必须兼容尚未支持完全访问的 bridge"
         )
         transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"result":{"thread":{"id":"thr_claude_sandbox","sessionId":"thr_claude_sandbox","preview":"","ephemeral":false,"modelProvider":"anthropic","createdAt":1780490700,"updatedAt":1780490702,"status":{"type":"idle"},"path":null,"cwd":"/tmp/claude-sandbox","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Claude 会话","turns":[]}}}"#)
 
@@ -1706,6 +1704,19 @@ extension ConversationDataFlowTests {
             statuses.contains { if case .failed = $0 { return true } else { return false } },
             "Claude 会话 resume 不应进入 failed/重连"
         )
+        let beforeTurn = await transport.sentMessages().count
+        let turnTask = Task {
+            try await runtime.startTurn(
+                sessionID: "thr_claude_sandbox",
+                payload: CodexAppServerTurnPayload(prompt: "继续完全访问"),
+                clientMessageID: "client_full_after_resume"
+            )
+        }
+        let turnStart = try await waitForFakeAppServerRequest(transport, method: "turn/start", after: beforeTurn)
+        XCTAssertEqual(turnStart.params?.objectValue?["sandboxPolicy"]?.objectValue?["type"]?.stringValue, "dangerFullAccess")
+        XCTAssertEqual(turnStart.params?.objectValue?["approvalPolicy"]?.stringValue, "never")
+        transportResponse(transport, id: turnStart.id, result: #"{"turn":{"id":"turn_full_after_resume","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null}}"#)
+        _ = try await turnTask.value
         socket.disconnect()
     }
 

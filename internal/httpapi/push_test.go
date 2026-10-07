@@ -86,7 +86,7 @@ type pushFixtureOptions struct {
 
 func pushTestFixtureWith(t *testing.T, upstreamURL string, providerURL string, opts pushFixtureOptions) (*httptest.Server, *Router) {
 	t.Helper()
-	cfg, registry, manager, checker, projectDir := appServerGatewayBaseFixture(t)
+	cfg, registry, checker, projectDir := appServerGatewayBaseFixture(t)
 	if opts.projectDir != "" {
 		projectDir = opts.projectDir
 		cfg.Projects[0].Path = projectDir
@@ -111,7 +111,7 @@ func pushTestFixtureWith(t *testing.T, upstreamURL string, providerURL string, o
 		configPath = filepath.Join(t.TempDir(), "config.json")
 	}
 	handler, router := NewRouterWithInstallationIDAndOptions(
-		cfg, registry, manager, checker, "test", "install-push-test",
+		cfg, registry, checker, "test", "install-push-test",
 		RouterOptions{
 			ConfigPath:   configPath,
 			AppServerSSH: directWSTestTransport{upstreamURL: upstreamURL},

@@ -237,6 +237,7 @@ func runtimeStatusHasFailure(response runtimeStatusResponse) bool {
 	for _, runtime := range response.Runtimes {
 		if runtime.State == runtimeStateUnavailable ||
 			runtime.Reason == "quota_refresh_in_progress" ||
+			runtime.Reason == deepSeekCredentialsRejectedReason ||
 			runtime.RateLimits != nil &&
 				strings.EqualFold(runtime.RateLimits.Availability, "unavailable") {
 			return true
@@ -294,17 +295,18 @@ func (r *Router) storeClaudeRuntimeQuota(limits *runtimeRateLimits) {
 // runtimeAccountStatus 只包含菜单栏需要的脱敏状态。账号邮箱、Token、Keychain
 // 内容和上游原始错误都不能进入这个结构，避免 status CLI 或日志扩大凭据暴露面。
 type runtimeAccountStatus struct {
-	ID         string                 `json:"id"`
-	Title      string                 `json:"title"`
-	Enabled    bool                   `json:"enabled"`
-	State      runtimeConnectionState `json:"state"`
-	Transport  string                 `json:"transport,omitempty"`
-	Version    string                 `json:"version,omitempty"`
-	StartedAt  *time.Time             `json:"started_at,omitempty"`
-	AuthMode   string                 `json:"auth_mode,omitempty"`
-	PlanType   string                 `json:"plan_type,omitempty"`
-	Reason     string                 `json:"reason,omitempty"`
-	RateLimits *runtimeRateLimits     `json:"rate_limits,omitempty"`
+	ID           string                 `json:"id"`
+	Title        string                 `json:"title"`
+	Enabled      bool                   `json:"enabled"`
+	State        runtimeConnectionState `json:"state"`
+	Transport    string                 `json:"transport,omitempty"`
+	Version      string                 `json:"version,omitempty"`
+	StartedAt    *time.Time             `json:"started_at,omitempty"`
+	AuthMode     string                 `json:"auth_mode,omitempty"`
+	PlanType     string                 `json:"plan_type,omitempty"`
+	Reason       string                 `json:"reason,omitempty"`
+	LoginCommand string                 `json:"login_command,omitempty"`
+	RateLimits   *runtimeRateLimits     `json:"rate_limits,omitempty"`
 }
 
 type runtimeRateLimits struct {
@@ -408,6 +410,14 @@ func (r *Router) codexRuntimeStartTime() *time.Time {
 func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse {
 	codexResult := make(chan runtimeAccountStatus, 1)
 	claudeResult := make(chan runtimeAccountStatus, 1)
+	deepSeekResult := make(chan runtimeAccountStatus, 1)
+	if r.cfg.DeepSeek.Enabled {
+		go func() {
+			probeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+			defer cancel()
+			deepSeekResult <- r.probeDeepSeekRuntime(probeCtx)
+		}()
+	}
 	go func() {
 		probeCtx, cancel := context.WithTimeout(ctx, codexRuntimeProbeTimeout)
 		defer cancel()
@@ -422,16 +432,30 @@ func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse
 	codex := <-codexResult
 	claude := <-claudeResult
 	checkedAt := time.Now().UTC()
-	return runtimeStatusResponse{
+	response := runtimeStatusResponse{
 		CheckedAt: &checkedAt,
 		Runtimes: []runtimeAccountStatus{
 			codex,
 			claude,
 		},
 	}
+	if r.cfg.DeepSeek.Enabled {
+		response.Runtimes = append(response.Runtimes, <-deepSeekResult)
+	}
+	return response
 }
 
 func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
+	codex := runtimeAccountStatus{
+		ID: "codex", Title: "Codex", Enabled: r.cfg.Codex.IsEnabled(),
+		State: runtimeStateUnavailable, Reason: "refresh_in_progress",
+		Transport:    strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
+		StartedAt:    r.codexRuntimeStartTime(),
+		LoginCommand: r.codexRuntimeLoginCommand(),
+	}
+	if !codex.Enabled {
+		codex.State, codex.Reason, codex.StartedAt = runtimeStateDisabled, "disabled", nil
+	}
 	claude := runtimeAccountStatus{
 		ID:      "claude",
 		Title:   "Claude",
@@ -443,20 +467,36 @@ func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
 		claude.State = runtimeStateDisabled
 		claude.Reason = "disabled"
 	}
-	return runtimeStatusResponse{
+	response := runtimeStatusResponse{
 		Runtimes: []runtimeAccountStatus{
-			{
-				ID:        "codex",
-				Title:     "Codex",
-				Enabled:   true,
-				State:     runtimeStateUnavailable,
-				Transport: strings.ToLower(strings.TrimSpace(r.cfg.AppServer.Transport)),
-				StartedAt: r.codexRuntimeStartTime(),
-				Reason:    "refresh_in_progress",
-			},
+			codex,
 			claude,
 		},
 	}
+	if r.cfg.DeepSeek.Enabled {
+		response.Runtimes = append(response.Runtimes, runtimeAccountStatus{
+			ID: "deepseek", Title: "DeepSeek Harness", Enabled: true,
+			State: runtimeStateUnavailable, Reason: "refresh_in_progress",
+		})
+	}
+	return response
+}
+
+func (r *Router) codexRuntimeLoginCommand() string {
+	if !strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "local") {
+		return ""
+	}
+	home, ok := r.cfg.EffectiveLocalCodexHome()
+	if !ok {
+		return ""
+	}
+	bin := strings.TrimSpace(r.cfg.Codex.Bin)
+	if bin == "" {
+		bin = "codex"
+	}
+	// 只拼接固定的 login 子命令；目录和可执行路径均作为单个 shell 参数转义。
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+	return "CODEX_HOME=" + quote(home) + " " + quote(bin) + " login"
 }
 
 func runtimeStatusLoopbackRequest(req *http.Request) bool {
@@ -470,6 +510,11 @@ func runtimeStatusLoopbackRequest(req *http.Request) bool {
 }
 
 func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountStatus) {
+	// 登录指引只依赖已加载配置，未登录或后端不可用时也必须指向同一目录。
+	defer func() { status.LoginCommand = r.codexRuntimeLoginCommand() }()
+	if !r.cfg.Codex.IsEnabled() {
+		return runtimeAccountStatus{ID: "codex", Title: "Codex", State: runtimeStateDisabled, Reason: "disabled"}
+	}
 	status = runtimeAccountStatus{
 		ID:        "codex",
 		Title:     "Codex",
@@ -496,6 +541,10 @@ func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountSt
 		_ = response.Body.Close()
 	}
 	if err != nil {
+		var sessionErr *appserver.SharedLocalSessionError
+		if errors.As(err, &sessionErr) {
+			status.Reason = "shared_local_session_unavailable"
+		}
 		return status
 	}
 	defer conn.Close()
@@ -874,23 +923,7 @@ func (c *runtimeWebSocketRPC) initialize(ctx context.Context) (string, error) {
 }
 
 func (c *runtimeWebSocketRPC) initializeClient(ctx context.Context, name string, title string, version string) (string, error) {
-	var result struct {
-		UserAgent string `json:"userAgent"`
-	}
-	if err := c.call(ctx, "initialize", map[string]any{
-		"clientInfo": map[string]any{
-			"name":    name,
-			"title":   title,
-			"version": version,
-		},
-		"capabilities": map[string]any{},
-	}, &result); err != nil {
-		return "", err
-	}
-	if err := c.notify(ctx, "initialized", map[string]any{}); err != nil {
-		return "", err
-	}
-	return result.UserAgent, nil
+	return initializeJSONRPCClient(ctx, c, name, title, version)
 }
 
 func (c *runtimeWebSocketRPC) call(ctx context.Context, method string, params any, result any) error {

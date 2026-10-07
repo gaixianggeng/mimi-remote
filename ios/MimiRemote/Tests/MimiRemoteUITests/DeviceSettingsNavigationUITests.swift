@@ -13,6 +13,9 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
             "--debug-skip-pairing", "--debug-seed-store-ui",
             "--debug-open-devices", "-app.language", "zh-Hans"
         ]
+        if name.contains("RepairPairingBanner") {
+            app.launchArguments.append("--debug-show-repair-banner")
+        }
         if name.contains("ManagedConnection") {
             app.launchArguments.append("--debug-enable-managed-connection")
         }
@@ -91,7 +94,7 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
     }
 
     func testLockScreenApprovalSettingsRemainReachableAcrossRotation() throws {
-        // 消息提醒在设备页，排在当前电脑和其他电脑之间。
+        // 消息提醒与运行时选择同在设备页的「偏好设置」组。
         openDevices()
         let entry = element("settings.lockScreenApproval")
         scrollTo(entry)
@@ -114,6 +117,58 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         XCTAssertTrue(element("settings.profile.switch.debug-store-secondary").exists)
         XCTAssertFalse(element("settings.profile.switch.debug-store-primary").exists)
         capture("unavailable-device")
+    }
+
+    func testSwitchFailureDoesNotReplaceAddComputerFeedback() throws {
+        let previousClipboardItems = UIPasteboard.general.items
+        defer { UIPasteboard.general.items = previousClipboardItems }
+        UIPasteboard.general.items = []
+        element("settings.profile.switch.debug-store-secondary").tap()
+        openAddComputer()
+        XCTAssertFalse(element("settings.connection.error").exists)
+
+        let paste = element("settings.connection.pasteConnectionInfo")
+        scrollTo(paste)
+        paste.tap()
+        let error = element("settings.connection.error")
+        XCTAssertTrue(error.waitForExistence(timeout: 5))
+        XCTAssertTrue(error.label.contains("剪贴板"))
+
+        // 演示档案的切换会失败；它返回后仍只能看见添加页自己的粘贴错误。
+        Thread.sleep(forTimeInterval: 15)
+        XCTAssertTrue(error.exists)
+        XCTAssertTrue(error.label.contains("剪贴板"))
+    }
+
+    func testRepairPairingBannerPresentsScannerTwice() throws {
+        let repair = element("connection.repairPairing")
+        XCTAssertTrue(repair.waitForExistence(timeout: 10))
+
+        for _ in 0..<2 {
+            repair.tap()
+            let permission = XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.firstMatch
+            if permission.waitForExistence(timeout: 3) {
+                permission.buttons.allElementsBoundByIndex.last?.tap()
+            }
+            let closeScanner = element("qrScanner.close")
+            XCTAssertTrue(closeScanner.waitForExistence(timeout: 15))
+            closeScanner.tap()
+            XCTAssertTrue(element("settings.devices.page").waitForExistence(timeout: 8))
+            // 工作台背后也有一层「Mac 连接」导航栏；按画面中的 sheet 位置选返回键。
+            let sheetBack = app.navigationBars.buttons.allElementsBoundByIndex.first {
+                $0.frame.minY > app.frame.height * 0.2 && $0.frame.minX < app.frame.width * 0.4
+            }
+            XCTAssertNotNil(sheetBack)
+            sheetBack?.tap()
+            XCTAssertTrue(element("settings.close").waitForExistence(timeout: 8))
+            element("settings.close").tap()
+            XCTAssertTrue(repair.waitForExistence(timeout: 8))
+        }
+
+        // 回到普通设置入口时，不应残留上一轮扫码 Cover。
+        let me = element("compactTab.me").exists ? element("compactTab.me") : element("sidebar.me")
+        me.tap()
+        XCTAssertFalse(element("qrScanner.close").exists)
     }
 
     func testRenameDraftAndManualInputSurviveRotation() throws {
@@ -150,6 +205,22 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         XCTAssertTrue(displayName.waitForExistence(timeout: 12))
         XCTAssertEqual(displayName.value as? String, manualDraft)
         capture("manual-draft-portrait")
+    }
+
+    func testDefaultModelsShowEffectiveNameAndHonestUnknownState() throws {
+        openMe()
+        let row = element("settings.defaultModels")
+        scrollTo(row)
+        row.tap()
+        let codex = element("settings.defaultModels.model.codex")
+        let claude = element("settings.defaultModels.model.claude")
+        XCTAssertTrue(codex.waitForExistence(timeout: 8))
+        XCTAssertTrue(claude.waitForExistence(timeout: 8))
+        XCTAssertEqual(codex.value as? String, "GPT-6 Astra（跟随默认）")
+        let claudeValue = claude.value as? String ?? ""
+        XCTAssertTrue(claudeValue.contains("型号未确认") || claudeValue.contains("正在加载模型…"))
+        XCTAssertTrue(claudeValue.contains("跟随默认"))
+        capture("default-model-resolved-display")
     }
 
     func testAllSettingsDestinationsRemainReachable() throws {

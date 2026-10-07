@@ -167,6 +167,107 @@ fn listed_thread<'a>(response: &'a Value, id: &str) -> &'a Value {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn desktop_reclaim_overrides_loaded_process_and_refreshes_it_after_owner_exits() {
+    // 各入口独立发现新持有方，避免先 read 的标记掩盖 list / resume / turn 的遗漏。
+    for method in ["thread/list", "thread/read", "thread/resume", "turn/start"] {
+        let fixture = fixture();
+        let bridge = build_bridge(&fixture, ForeignSessionPolicy::Guard).await;
+        let old = bridge
+            .pool()
+            .acquire_for_resume(SESSION_ID.into(), fixture._dir.path(), None, None)
+            .await
+            .expect("previous mobile process");
+        write_registry_record(&fixture.sessions_dir, old.pid().unwrap(), Some("busy"));
+        let (mut writer, mut reader) = attach(&bridge, method).await;
+        let own = request(
+            &mut writer,
+            &mut reader,
+            1,
+            "thread/read",
+            json!({"threadId":SESSION_ID,"includeTurns":false}),
+        )
+        .await;
+        assert_eq!(
+            own["result"]["thread"]["canAcceptDirectInput"], true,
+            "{own}"
+        );
+
+        let record = write_registry_record(&fixture.sessions_dir, std::process::id(), Some("busy"));
+        let response = request(
+            &mut writer,
+            &mut reader,
+            2,
+            method,
+            json!({"threadId":SESSION_ID,"includeTurns":false,"excludeTurns":true,
+                "input":[{"type":"text","text":"must not send"}]}),
+        )
+        .await;
+        if method == "turn/start" {
+            assert_eq!(
+                response["error"]["data"]["reason"], "owned_elsewhere",
+                "{response}"
+            );
+        } else {
+            let thread = if method == "thread/list" {
+                listed_thread(&response, SESSION_ID)
+            } else {
+                &response["result"]["thread"]
+            };
+            assert_eq!(thread["canAcceptDirectInput"], false, "{response}");
+            assert_eq!(thread["claudeOwner"]["status"], "busy", "{response}");
+            assert_eq!(
+                thread["claudeOwner"]["pid"],
+                std::process::id(),
+                "{response}"
+            );
+        }
+        assert!(Arc::ptr_eq(
+            &bridge.pool().get(SESSION_ID).await.unwrap(),
+            &old
+        ));
+
+        // 桌面端自然退出后，旧进程仍在池中；首个发送必须换代并按同 id 恢复。
+        std::fs::remove_file(record).unwrap();
+        let started = request(
+            &mut writer,
+            &mut reader,
+            3,
+            "turn/start",
+            json!({"threadId":SESSION_ID,"input":[{"type":"text","text":"continue"}]}),
+        )
+        .await;
+        assert!(started.get("error").is_none(), "{started}");
+        let new = bridge.pool().get(SESSION_ID).await.unwrap();
+        assert_ne!(
+            new.generation(),
+            old.generation(),
+            "{method} must invalidate old context"
+        );
+        assert_eq!(new.thread_id(), SESSION_ID);
+        timeout(STEP_TIMEOUT, async {
+            loop {
+                let read = request(
+                    &mut writer,
+                    &mut reader,
+                    4,
+                    "thread/read",
+                    json!({"threadId":SESSION_ID,"includeTurns":false}),
+                )
+                .await;
+                if read["result"]["thread"]["status"]["type"] == "idle" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("turn completed");
+        bridge.pool().release(SESSION_ID).await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn held_session_is_read_only_and_turn_start_is_refused_until_owner_exits() {
     let fixture = fixture();
     // 用测试进程自己的 pid 冒充终端里的 `claude`：它一定活着，也不在进程池里。
