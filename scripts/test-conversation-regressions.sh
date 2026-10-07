@@ -108,6 +108,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/HarnessHistoryPageTests \
   -only-testing:MimiRemoteTests/ClaudeTakeoverTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
+  -only-testing:MimiRemoteTests/NewSessionBufferedReplyTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSharedLocalOpeningIdleThreadResumesToValidateWriter \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSharedSSHOpeningIdleThreadResumesToValidateWriter \
