@@ -107,11 +107,15 @@ function toolResult(body, id) {
 }
 function resultText(block) { return typeof block.content === 'string' ? block.content : block.content.filter(item => item.type === 'text').map(item => item.text).join(''); }
 function turnEnds(peer) { return peer.frames.filter(frame => frame.streamId === 'session/follow' && frame.value?.event?.type === 'turn/end').map(frame => frame.value.event); }
+const firstPrompt = 'Run the controlled fixture: read fixture.txt, ask for confirmation, then finish.';
+const deniedPrompt = 'Run the controlled denied-write fixture.';
+const cancelPrompt = 'Run the controlled cancellation fixture.';
 function latestUserPrompt(body) {
+  const fixturePrompts = new Set([firstPrompt, deniedPrompt, cancelPrompt]);
   return body.messages.filter(message => message.role === 'user').flatMap(message =>
     typeof message.content === 'string' ? [message.content]
       : (message.content ?? []).filter(block => block.type === 'text').map(block => block.text)
-  ).at(-1);
+  ).filter(text => fixturePrompts.has(text)).at(-1);
 }
 
 try {
@@ -145,9 +149,6 @@ try {
   b.open('session/follow', follow);
   // Opening snapshot 的真实类型在失败时仅写本地帧日志，避免打印会话标识。
   await until(() => [a, b].every(peer => peer.frames.some(frame => frame.streamId === 'session/follow' && frame.value?.type === 'snapshot')), 'both follow openings');
-  const firstPrompt = 'Run the controlled fixture: read fixture.txt, ask for confirmation, then finish.';
-  const deniedPrompt = 'Run the controlled denied-write fixture.';
-  const cancelPrompt = 'Run the controlled cancellation fixture.';
   const request = { sessionId, requestId: crypto.randomUUID(), mode: 'queue', content: [{ type: 'text', text: firstPrompt }] };
   await rpc('session/prompt', { request });
   const first = await until(() => waterfall(a), 'user question');

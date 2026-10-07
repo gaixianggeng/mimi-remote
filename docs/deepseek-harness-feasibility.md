@@ -7,6 +7,14 @@
 
 日期：2026-09-15。关联 [#492](https://github.com/gaixianggeng/mimi-remote/issues/492)、[#491](https://github.com/gaixianggeng/mimi-remote/issues/491)。本文交付调研和隔离实验，不声明已完成产品接入。
 
+## 2026-10-07 独立复验
+
+在 Mac arm64、Node `22.23.3`、npm `10.9.9`、隔离安装的 pnpm `11.7.0` 上，使用官方 `@deepseek-ai/dsh@0.1.5-rc.2`、231 个同版本 Harness 组件和 `@volcengine/ark-plan-api@0.1.0` 重跑本页的回环模拟实验。独立 `DSH_HOME` 中的 profile 使用 Harness 官方支持的 `patchReload: startup`；本次解析的 Cordis 为 `4.0.4`，默认 `live` 模式在启动时因 HMR service 不可用而退出。切换只影响这个测试 profile 的 patch 热重载，不改变服务协议或 Mimi 配置。
+
+修正实验脚本只按三条**精确 fixture 指令**识别模型请求中的用户任务，避免把 Harness 追加的 `<system-reminder>` 当作最新指令；请求次数、结果、拒绝权限和取消断言保持原样。复验返回 **10/10 PASS、7 次带工具的本地模拟模型请求、0 次真实模型请求**，拒绝写入的目标文件不存在；进程在 `finally` 中退出。锁文件 SHA-256 为 `4ad37eaf49369cc4b6e95e4877174d8ee70f804ff7e7fe1b734e08242f98dbf8`。完整帧、启动 token 和本机路径只留在专用本机缓存。
+
+初次直接安装后再追加 overrides 会留下 76 个嵌套 `rc.3` 组件；这个混合安装**没有用于复验**。先在新目录生成全 `rc.2` 锁文件，再 `npm ci`，实际安装树与锁文件均核实为 231/231 个 `rc.2` 组件。以下步骤已按这一发现更新；2026-09-15 的历史环境和锁文件哈希保留原记录。
+
 范围说明：本文已按 #492 在 2026-09-15 确认的范围更新。模型供应商、模型 endpoint、密钥、套餐、推理参数和模型调用均由 Harness 管理，供应商实调与编码效果对比不属于 #492 的验收项，也不是接入前置条件。早期版本中“先验证真实套餐，再决定接入”的结论已撤回；接口事实和隔离实验结果继续有效。
 
 ## 目标与结论
@@ -162,29 +170,36 @@ Mimi 已有的 project/browse_roots 授权、真实路径解析、thread ownersh
 
 ```bash
 task_cache="$(bash ./scripts/development-cache-path.sh gh-492-harness)"
-mkdir -p "$task_cache/runtime" "$task_cache/state" "$task_cache/workspace" "$task_cache/logs"
+mkdir -p "$task_cache/runtime-discovery" "$task_cache/runtime" "$task_cache/tools" \
+  "$task_cache/state" "$task_cache/workspace" "$task_cache/logs"
 printf '%s\n' isolated-gh-492 > "$task_cache/.gh-492-harness-smoke-root"
-npm install --prefix "$task_cache/runtime" --save-exact --no-audit --no-fund @deepseek-ai/dsh@0.1.5-rc.2
-node - "$task_cache/runtime" <<'JS'
+npm install --prefix "$task_cache/runtime-discovery" --save-exact --no-audit --no-fund @deepseek-ai/dsh@0.1.5-rc.2
+node - "$task_cache/runtime-discovery/package-lock.json" "$task_cache/runtime/package.json" <<'JS'
 const fs = require('node:fs');
-const path = require('node:path');
-const root = process.argv[2];
-const target = path.join(root, 'package.json');
-const manifest = JSON.parse(fs.readFileSync(target));
-const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json')));
-manifest.overrides = {};
+const lock = JSON.parse(fs.readFileSync(process.argv[2]));
+const manifest = { private: true, dependencies: { '@deepseek-ai/dsh': '0.1.5-rc.2' }, overrides: {} };
 for (const [name, pkg] of Object.entries(lock.packages)) {
   const moduleName = name.split('node_modules/').pop();
   if (moduleName.startsWith('@deepseek-ai/dsh') && pkg.version?.startsWith('0.')) {
     manifest.overrides[moduleName] = '0.1.5-rc.2';
   }
 }
-fs.writeFileSync(target, JSON.stringify(manifest, null, 2) + '\n');
+fs.writeFileSync(process.argv[3], JSON.stringify(manifest, null, 2) + '\n');
 JS
-npm install --prefix "$task_cache/runtime" --no-audit --no-fund
-env -i PATH="$PATH" LANG=en_US.UTF-8 DSH_HOME="$task_cache/state" \
+npm install --prefix "$task_cache/runtime" --package-lock-only --ignore-scripts --no-audit --no-fund
+npm ci --prefix "$task_cache/runtime" --no-audit --no-fund
+npm install --prefix "$task_cache/tools" --save-exact --no-audit --no-fund pnpm@11.7.0
+env -i PATH="$task_cache/tools/node_modules/.bin:$PATH" LANG=en_US.UTF-8 DSH_HOME="$task_cache/state" \
   "$task_cache/runtime/node_modules/.bin/dsh" plugin --profile web add @volcengine/ark-plan-api@0.1.0
-node docs/quality/gh-492-harness-smoke.mjs "$task_cache"
+node - "$task_cache/state/profiles/web/package.json" <<'JS'
+const fs = require('node:fs');
+const file = process.argv[2];
+const manifest = JSON.parse(fs.readFileSync(file));
+manifest.dsh.profile.patchReload = 'startup';
+fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n');
+JS
+env -i PATH="$task_cache/tools/node_modules/.bin:$PATH" LANG=en_US.UTF-8 \
+  node docs/quality/gh-492-harness-smoke.mjs "$task_cache"
 shasum -a 256 "$task_cache/runtime/package-lock.json"
 ```
 
