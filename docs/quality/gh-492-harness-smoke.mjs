@@ -107,6 +107,12 @@ function toolResult(body, id) {
 }
 function resultText(block) { return typeof block.content === 'string' ? block.content : block.content.filter(item => item.type === 'text').map(item => item.text).join(''); }
 function turnEnds(peer) { return peer.frames.filter(frame => frame.streamId === 'session/follow' && frame.value?.event?.type === 'turn/end').map(frame => frame.value.event); }
+function latestUserPrompt(body) {
+  return body.messages.filter(message => message.role === 'user').flatMap(message =>
+    typeof message.content === 'string' ? [message.content]
+      : (message.content ?? []).filter(block => block.type === 'text').map(block => block.text)
+  ).at(-1);
+}
 
 try {
   await writeFile(join(state, 'settings.yaml'), yaml.dump({ 'llm-pi-ai': { providers: { 'research-mock': { api: 'anthropic-messages', baseURL: `http://127.0.0.1:${mock.address().port}`, apiKeyEnv: 'MIMI_RESEARCH_MOCK_KEY', retryPolicy: { mode: 'normal', maxRetries: 0 }, models: [{ id: 'fixture-model', contextWindow: 100000, maxTokens: 1024 }] } } } }), { mode: 0o600 });
@@ -139,7 +145,10 @@ try {
   b.open('session/follow', follow);
   // Opening snapshot 的真实类型在失败时仅写本地帧日志，避免打印会话标识。
   await until(() => [a, b].every(peer => peer.frames.some(frame => frame.streamId === 'session/follow' && frame.value?.type === 'snapshot')), 'both follow openings');
-  const request = { sessionId, requestId: crypto.randomUUID(), mode: 'queue', content: [{ type: 'text', text: 'Run the controlled fixture: read fixture.txt, ask for confirmation, then finish.' }] };
+  const firstPrompt = 'Run the controlled fixture: read fixture.txt, ask for confirmation, then finish.';
+  const deniedPrompt = 'Run the controlled denied-write fixture.';
+  const cancelPrompt = 'Run the controlled cancellation fixture.';
+  const request = { sessionId, requestId: crypto.randomUUID(), mode: 'queue', content: [{ type: 'text', text: firstPrompt }] };
   await rpc('session/prompt', { request });
   const first = await until(() => waterfall(a), 'user question');
   const second = await until(() => waterfall(b), 'second observer question');
@@ -177,9 +186,8 @@ try {
   pass('new connection restores completed history');
   const callsBeforeRetry = modelCalls;
   await rpc('session/prompt', { request });
-  await delay(200);
-  assert.equal(modelCalls, callsBeforeRetry);
-  pass('observed prompt retry reuses requestId without another model request');
+  // A later, distinct prompt is the causal barrier: if this retry entered the queue,
+  // its model call must appear before the next prompt completes. A timer cannot prove that.
   const readResult = toolResult(requests[1], 'tool_fixture_1');
   assert(readResult && !readResult.is_error);
   assert(resultText(readResult).includes('1: controlled fixture\n'));
@@ -187,7 +195,7 @@ try {
   assert(answerResult && !answerResult.is_error);
   assert.deepEqual(JSON.parse(resultText(answerResult)), answer);
   pass('read result and structured user answer reach next model requests');
-  await rpc('session/prompt', { request: { ...request, requestId: crypto.randomUUID(), content: [{ type: 'text', text: 'Run the controlled denied-write fixture.' }] } });
+  await rpc('session/prompt', { request: { ...request, requestId: crypto.randomUUID(), content: [{ type: 'text', text: deniedPrompt }] } });
   const approval = await until(() => c.frames.find(frame => frame.value?.event === 'approval/request')?.value, 'permission approval');
   assert.equal(approval.request.toolName, 'write');
   assert.equal(modelCalls, 5);
@@ -195,17 +203,23 @@ try {
   await rpc('$events/result', { clientId: c.clientId, eventId: approval.eventId, outcome: { kind: 'result', value: 'rejected' } });
   await until(() => turnEnds(c).length === 2, 'denied-write completion');
   assert.equal(modelCalls, 6);
+  assert.equal(callsBeforeRetry, 3);
+  assert.deepEqual(requests.slice(0, 6).map(latestUserPrompt), [
+    firstPrompt, firstPrompt, firstPrompt, deniedPrompt, deniedPrompt, deniedPrompt,
+  ], 'the completed later prompt must not consume any model call from the retried request');
+  pass('observed prompt retry reuses requestId without another model request');
   assert(toolResult(requests[4], 'tool_fixture_4').is_error);
   assert(toolResult(requests[5], 'tool_fixture_5').is_error);
   assert.equal(await access(deniedPath).then(() => true, () => false), false);
   pass('outside-workspace write denied; escalation approval rejected; file absent');
-  await rpc('session/prompt', { request: { ...request, requestId: crypto.randomUUID(), content: [{ type: 'text', text: 'Run the controlled cancellation fixture.' }] } });
+  await rpc('session/prompt', { request: { ...request, requestId: crypto.randomUUID(), content: [{ type: 'text', text: cancelPrompt }] } });
   const waiting = await until(() => c.frames.find(frame => frame.value?.type === 'waterfall' && frame.value.request?.questions?.[0]?.id === 'cancel')?.value, 'cancel fixture question');
   await rpc('session/cancel', { request: { sessionId } });
   await until(() => c.frames.some(frame => frame.value?.type === 'cancel' && frame.value.eventId === waiting.eventId), 'cancel pending interaction');
   await until(() => turnEnds(c).length === 3, 'cancelled turn');
   assert.notEqual(turnEnds(c)[2].data.reason.kind, 'completed');
   assert.equal(modelCalls, 7);
+  assert.equal(latestUserPrompt(requests[6]), cancelPrompt);
   pass('session cancellation withdraws pending question and ends shared turn');
 } finally {
   // 无论断言或日志写入是否失败，都先释放本实验持有的连接与进程。

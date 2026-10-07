@@ -1,4 +1,9 @@
-# DeepSeek Harness 接入可行性调研（#492）
+# DeepSeek Harness 接入可行性调研（#492，历史实验记录）
+
+> 本文记录 2026-09-15 的 #492 隔离实验和当时的接入判断。Mimi 后续已通过 #499
+> 接入 Harness 原生通道，并删除旧 app-server 翻译层。下文“还需适配”的清单是当时状态，
+> 不代表当前产品缺口；现行协议与实现边界见 `docs/deepseek-harness-protocol.md`
+> 和 `docs/architecture/harness-native-client.md`。实验所用 Harness 版本固定为 0.1.5-rc.2。
 
 日期：2026-09-15。关联 [#492](https://github.com/gaixianggeng/mimi-remote/issues/492)、[#491](https://github.com/gaixianggeng/mimi-remote/issues/491)。本文交付调研和隔离实验，不声明已完成产品接入。
 
