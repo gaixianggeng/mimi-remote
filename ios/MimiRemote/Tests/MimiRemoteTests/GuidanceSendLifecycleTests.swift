@@ -69,9 +69,9 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         let sessionB = ComposerDraftScopeKey.session("session-b")
         let submitted = ComposerTransientSelectionCheckpoint(
             instanceID: instanceID,
-            scope: sessionA,
             scopeRevision: 4,
             deliveryRevision: 7,
+            cachedDeliveryRevision: 2,
             sendModeRevision: 3,
             cachedSendModeRevision: 2
         )
@@ -83,6 +83,14 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         )
         XCTAssertTrue(resumed.delivery)
         XCTAssertTrue(resumed.sendMode, "same-session resume may advance the selection lease")
+
+        let migrated = submitted.restoration(
+            activeInstanceID: instanceID,
+            activeScope: .session("server-session"), selectedScope: .session("server-session"),
+            scopeRevision: 4, deliveryRevision: 7, sendModeRevision: 3
+        )
+        XCTAssertTrue(migrated.delivery)
+        XCTAssertTrue(migrated.sendMode, "an optimistic ID handoff preserves this composer activation")
 
         let changedDelivery = submitted.restoration(
             activeInstanceID: instanceID,
@@ -130,7 +138,7 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         let submittedRevision = cache.revision
         cache.save(.plan, for: scope)
         XCTAssertEqual(cache.revision, submittedRevision, "reconstruction must not invalidate an unchanged choice")
-        XCTAssertTrue(cache.clearSubmittedModeIfUnchanged(for: scope, revision: submittedRevision))
+        XCTAssertEqual(cache.clearSubmittedModeIfUnchanged(revision: submittedRevision), scope)
         XCTAssertEqual(cache.modeForReappearance(of: scope), .standard)
         XCTAssertEqual(
             cache.modeForScopeActivation(
@@ -141,7 +149,7 @@ final class GuidanceSendLifecycleTests: XCTestCase {
         )
 
         cache.save(.goal, for: scope)
-        XCTAssertFalse(cache.clearSubmittedModeIfUnchanged(for: scope, revision: submittedRevision))
+        XCTAssertNil(cache.clearSubmittedModeIfUnchanged(revision: submittedRevision))
         XCTAssertEqual(cache.modeForReappearance(of: scope), .goal)
         XCTAssertEqual(
             cache.modeForScopeActivation(
@@ -151,6 +159,58 @@ final class GuidanceSendLifecycleTests: XCTestCase {
             .goal,
             "a newer choice must survive the old submission's completion"
         )
+    }
+
+    func testOneOffQueueSelectionSurvivesReconstructionButNotAnotherTurn() {
+        let scope = ComposerDraftScopeKey.session("session-a")
+        let turn = RunningTurnDeliveryContext(turnID: "turn-a", canGuide: true)
+        let nextTurn = RunningTurnDeliveryContext(turnID: "turn-b", canGuide: true)
+        var cache = ComposerDeliverySelectionCache()
+        cache.save(.queued, for: scope, context: turn, default: .guided)
+        let submittedRevision = cache.revision
+
+        XCTAssertEqual(cache.selection(for: scope, context: turn, default: .guided), .queued)
+        XCTAssertNil(cache.selection(for: scope, context: nextTurn, default: .guided))
+        XCTAssertNil(cache.selection(for: scope, context: turn, default: .queued))
+        XCTAssertEqual(cache.clearIfUnchanged(revision: submittedRevision), scope)
+        XCTAssertNil(cache.selection(for: scope, context: turn, default: .guided))
+
+        cache.save(.queued, for: scope, context: turn, default: .guided)
+        let olderRevision = cache.revision
+        cache.save(.guided, for: scope, context: turn, default: .guided)
+        XCTAssertNil(cache.clearIfUnchanged(revision: olderRevision))
+        XCTAssertEqual(cache.selection(for: scope, context: turn, default: .guided), .guided)
+    }
+
+    func testOneOffQueueSelectionMigratesWithOptimisticSessionIdentity() {
+        let local = ComposerDraftScopeKey.session("local:project:message")
+        let server = ComposerDraftScopeKey.session("server-session")
+        let turn = RunningTurnDeliveryContext(turnID: "turn-a", canGuide: true)
+        var cache = ComposerDeliverySelectionCache()
+        cache.save(.queued, for: local, context: turn, default: .guided)
+        let submittedRevision = cache.revision
+
+        cache.migrateScope(from: local, to: server)
+        XCTAssertEqual(cache.revision, submittedRevision)
+        XCTAssertEqual(cache.selection(for: server, context: turn, default: .guided), .queued)
+        XCTAssertEqual(cache.clearIfUnchanged(revision: submittedRevision), server)
+    }
+
+    func testSubmittedModeRevisionSurvivesOptimisticIdentityHandoff() {
+        let local = ComposerDraftScopeKey.session("local:project:message")
+        let server = ComposerDraftScopeKey.session("server-session")
+        var cache = ComposerSendModeCache()
+        cache.save(.goal, for: local)
+        let submittedRevision = cache.revision
+
+        cache.migrateScope(from: local, to: server, mode: .goal)
+        XCTAssertEqual(cache.revision, submittedRevision)
+        XCTAssertEqual(cache.clearSubmittedModeIfUnchanged(revision: submittedRevision), server)
+        XCTAssertEqual(cache.modeForReappearance(of: server), .standard)
+
+        cache.save(.goal, for: server)
+        XCTAssertNil(cache.clearSubmittedModeIfUnchanged(revision: submittedRevision))
+        XCTAssertEqual(cache.modeForReappearance(of: server), .goal)
     }
 
     func testSendMethodMenuMarksThePreferredOptionAsDefault() {

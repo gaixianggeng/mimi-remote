@@ -41,9 +41,9 @@ enum ComposerDraftScopeKey: Hashable {
 
 struct ComposerTransientSelectionCheckpoint {
     let instanceID: UUID
-    let scope: ComposerDraftScopeKey
     let scopeRevision: UInt64
     let deliveryRevision: UInt64
+    let cachedDeliveryRevision: UInt64
     let sendModeRevision: UInt64
     let cachedSendModeRevision: UInt64
 
@@ -56,7 +56,7 @@ struct ComposerTransientSelectionCheckpoint {
         sendModeRevision: UInt64
     ) -> (delivery: Bool, sendMode: Bool) {
         let sameActivation = instanceID == activeInstanceID
-            && scope == activeScope && scope == selectedScope
+            && activeScope == selectedScope
             && self.scopeRevision == scopeRevision
         return (
             delivery: sameActivation && self.deliveryRevision == deliveryRevision,
@@ -517,6 +517,45 @@ struct RunningTurnDeliveryContext: Equatable {
     let canGuide: Bool
 }
 
+struct ComposerDeliverySelectionCache {
+    private(set) var scope: ComposerDraftScopeKey = .none
+    private(set) var context = RunningTurnDeliveryContext(turnID: nil, canGuide: false)
+    private(set) var configuredDefault: RunningTurnDelivery = .fallbackDefault
+    private(set) var selection: RunningTurnDelivery?
+    private(set) var revision: UInt64 = 0
+
+    func selection(for scope: ComposerDraftScopeKey, context: RunningTurnDeliveryContext, default configuredDefault: RunningTurnDelivery) -> RunningTurnDelivery? {
+        self.scope == scope && self.context == context && self.configuredDefault == configuredDefault ? selection : nil
+    }
+
+    mutating func save(_ selection: RunningTurnDelivery, for scope: ComposerDraftScopeKey, context: RunningTurnDeliveryContext, default configuredDefault: RunningTurnDelivery) {
+        guard self.scope != scope || self.context != context || self.configuredDefault != configuredDefault || self.selection != selection else { return }
+        self.scope = scope
+        self.context = context
+        self.configuredDefault = configuredDefault
+        self.selection = selection
+        revision &+= 1
+    }
+
+    mutating func migrateScope(from previous: ComposerDraftScopeKey, to next: ComposerDraftScopeKey) {
+        guard scope == previous, selection != nil else { return }
+        scope = next
+    }
+
+    mutating func clear() {
+        guard selection != nil else { return }
+        selection = nil
+        revision &+= 1
+    }
+
+    mutating func clearIfUnchanged(revision: UInt64) -> ComposerDraftScopeKey? {
+        guard self.revision == revision, selection != nil else { return nil }
+        let affectedScope = scope
+        clear()
+        return affectedScope
+    }
+}
+
 enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
     case requestApproval
     case readOnly
@@ -707,6 +746,11 @@ struct ComposerModeResetEvent: Equatable {
     let revision: UInt64
 }
 
+struct ComposerDeliveryResetEvent: Equatable {
+    let scope: ComposerDraftScopeKey
+    let revision: UInt64
+}
+
 struct ComposerSendModeCache {
     private var storedScope: ComposerDraftScopeKey = .none
     private var storedMode: ComposerSendMode = .standard
@@ -741,15 +785,29 @@ struct ComposerSendModeCache {
         revision &+= 1
     }
 
-    mutating func clearSubmittedModeIfUnchanged(for scope: ComposerDraftScopeKey, revision: UInt64) -> Bool {
-        guard storedScope == scope, self.revision == revision else { return false }
+    mutating func migrateScope(
+        from previousScope: ComposerDraftScopeKey,
+        to nextScope: ComposerDraftScopeKey,
+        mode: ComposerSendMode
+    ) {
+        guard storedScope == previousScope, storedMode == mode else {
+            save(mode, for: nextScope)
+            return
+        }
+        storedScope = nextScope
+    }
+
+    mutating func clearSubmittedModeIfUnchanged(revision: UInt64) -> ComposerDraftScopeKey? {
+        guard self.revision == revision else { return nil }
+        let scope = storedScope
         save(.standard, for: scope)
-        return true
+        return scope
     }
 
     mutating func removeAll() {
         storedScope = .none
         storedMode = .standard
+        revision &+= 1
     }
 }
 

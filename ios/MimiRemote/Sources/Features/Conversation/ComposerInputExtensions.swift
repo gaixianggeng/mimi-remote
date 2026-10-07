@@ -33,18 +33,44 @@ extension ComposerView {
     /// 回到设置里的「默认发送方式」。`canGuide` 只在 onChange 里传，
     /// 因为那一刻新的可用性还没写回视图，直接读计算属性会拿到旧值。
     func resetFollowUpDeliveryToDefault(canGuide: Bool? = nil) {
+        sessionStore.composerDeliverySelectionCache.clear()
         guidedFollowUpEnabled = RunningTurnDelivery.restoredSelection(
             default: defaultRunningTurnDelivery,
             canUseGuidedFollowUp: canGuide ?? canUseGuidedFollowUp
         ) == .guided
     }
 
+    func restoreFollowUpDeliveryForReappearance() {
+        let selection = sessionStore.composerDeliverySelectionCache.selection(
+            for: activeComposerDraftScope, context: runningTurnDeliveryContext, default: defaultRunningTurnDelivery
+        ) ?? RunningTurnDelivery.restoredSelection(
+            default: defaultRunningTurnDelivery, canUseGuidedFollowUp: canUseGuidedFollowUp
+        )
+        guidedFollowUpEnabled = selection == .guided && canUseGuidedFollowUp
+    }
+
+    func synchronizeFollowUpDeliveryForSelectionChange(previousID: SessionID?, nextID: SessionID?) {
+        if let previousID, let nextID,
+           isOptimisticSessionHandoff(from: .session(previousID), to: .session(nextID)) {
+            return
+        }
+        resetFollowUpDeliveryToDefault()
+    }
+
+    func synchronizeCompletedComposerDeliveryReset(_ event: ComposerDeliveryResetEvent?) {
+        guard let event,
+              sessionStore.activeComposerInstanceID == composerInstanceID,
+              activeComposerDraftScope == event.scope,
+              currentComposerDraftScope == event.scope else { return }
+        restoreFollowUpDeliveryForReappearance()
+    }
+
     var transientSelectionCheckpoint: ComposerTransientSelectionCheckpoint {
         ComposerTransientSelectionCheckpoint(
             instanceID: composerInstanceID,
-            scope: activeComposerDraftScope,
             scopeRevision: composerScopeRevision,
             deliveryRevision: followUpDeliveryChoiceRevision,
+            cachedDeliveryRevision: sessionStore.composerDeliverySelectionCache.revision,
             sendModeRevision: sendModeChoiceRevision,
             cachedSendModeRevision: sessionStore.composerSendModeCache.revision
         )
@@ -63,16 +89,22 @@ extension ComposerView {
         )
         if restoration.delivery {
             resetFollowUpDeliveryToDefault()
+        } else if let resolvedScope = sessionStore.composerDeliverySelectionCache.clearIfUnchanged(
+            revision: checkpoint.cachedDeliveryRevision
+        ) {
+            sessionStore.latestCompletedComposerDeliveryReset = ComposerDeliveryResetEvent(
+                scope: resolvedScope,
+                revision: sessionStore.composerDeliverySelectionCache.revision
+            )
         }
         if restoration.sendMode {
             resetComposerSendModeAfterSubmit()
-        } else if sessionStore.composerSendModeCache.clearSubmittedModeIfUnchanged(
-                for: checkpoint.scope,
-                revision: checkpoint.cachedSendModeRevision
-            ) {
+        } else if let resolvedScope = sessionStore.composerSendModeCache.clearSubmittedModeIfUnchanged(
+            revision: checkpoint.cachedSendModeRevision
+        ) {
             // 新输入区可能已重建；通知它从共享缓存读取复位后的模式。
             sessionStore.latestCompletedComposerModeReset = ComposerModeResetEvent(
-                scope: checkpoint.scope,
+                scope: resolvedScope,
                 revision: sessionStore.composerSendModeCache.revision
             )
         }

@@ -321,6 +321,9 @@ struct ComposerView: View {
                 sessionStore.composerSendModeCache.modeForReappearance(of: event.scope)
             )
         }
+        .onChange(of: sessionStore.latestCompletedComposerDeliveryReset) { _, event in
+            synchronizeCompletedComposerDeliveryReset(event)
+        }
         .onChange(of: sessionStore.latestSatisfiedPermissionTurnBoundary) { _, boundary in
             guard let boundary,
                   activeComposerDraftScope == .session(boundary.sessionID) else {
@@ -332,10 +335,10 @@ struct ComposerView: View {
                 for: activeComposerDraftScope
             )
         }
-        .onChange(of: sessionStore.selectedSessionID) { _, _ in
+        .onChange(of: sessionStore.selectedSessionID) { previousID, nextID in
             // 引导是只对当前正在生成的回复生效的一次性选择。切换会话后回到设置里的
             // 默认发送方式，避免把上一条会话的临时发送意图带到另一条运行中会话。
-            resetFollowUpDeliveryToDefault()
+            synchronizeFollowUpDeliveryForSelectionChange(previousID: previousID, nextID: nextID)
         }
         .onChange(of: sessionStore.selectedThreadGoal) { previousGoal, goal in
             syncGoalStatusBarExpansion(from: previousGoal, to: goal)
@@ -346,6 +349,7 @@ struct ComposerView: View {
         .onAppear {
             sessionStore.activeComposerInstanceID = composerInstanceID
             switchComposerDraftScope(to: currentComposerDraftScope)
+            restoreFollowUpDeliveryForReappearance()
             composerState.setSendMode(
                 sessionStore.composerSendModeCache.modeForReappearance(of: activeComposerDraftScope)
             )
@@ -570,15 +574,28 @@ struct ComposerView: View {
 
         // 先切 scope 再恢复，避免 restore 触发的 onChange 把新会话草稿误写回旧 scope。
         activeComposerDraftScope = nextScope
-        composerScopeRevision &+= 1
+        if !isOptimisticHandoff {
+            composerScopeRevision &+= 1
+        }
         composerState.setSendMode(restoredSendMode)
-        persistComposerSendMode(restoredSendMode, for: nextScope)
+        if isOptimisticHandoff {
+            sessionStore.composerSendModeCache.migrateScope(
+                from: previousScope, to: nextScope, mode: restoredSendMode
+            )
+            sessionStore.composerDeliverySelectionCache.migrateScope(from: previousScope, to: nextScope)
+        } else {
+            persistComposerSendMode(restoredSendMode, for: nextScope)
+        }
         composerState.restoreDraftSnapshot(sessionStore.composerDraft(for: nextScope))
         restoreComposerModelSelection(for: nextScope)
         restoreComposerPermissionSelection(for: nextScope)
         clampModelSelectionToSelectedSessionRuntime()
         composerTextExternalRevision += 1
-        resetFollowUpDeliveryToDefault()
+        if previousScope == .none || isOptimisticHandoff {
+            restoreFollowUpDeliveryForReappearance()
+        } else {
+            resetFollowUpDeliveryToDefault()
+        }
         measuredComposerTextHeight = 0
         isComposerTextComposing = false
         // iPad 的收起是用户对当前会话输入画布的显式选择；切会话时不自动改写。
@@ -594,7 +611,11 @@ struct ComposerView: View {
         else {
             return false
         }
-        return previousSessionID.hasPrefix("local:") && !nextSessionID.hasPrefix("local:")
+        guard previousSessionID.hasPrefix("local:"),
+              !nextSessionID.hasPrefix("local:"),
+              let commit = sessionStore.lastSelectionCommit,
+              case .identityReplacement(let replacedID) = commit.reason else { return false }
+        return replacedID == previousSessionID && commit.sessionID == nextSessionID
     }
 
     func persistComposerSendMode(_ mode: ComposerSendMode, for scope: ComposerDraftScopeKey) {
@@ -1799,6 +1820,10 @@ struct ComposerView: View {
         }
         guidedFollowUpEnabled = guided
         followUpDeliveryChoiceRevision &+= 1
+        sessionStore.composerDeliverySelectionCache.save(
+            guided ? .guided : .queued, for: activeComposerDraftScope,
+            context: runningTurnDeliveryContext, default: defaultRunningTurnDelivery
+        )
         UISelectionFeedbackGenerator().selectionChanged()
     }
 
