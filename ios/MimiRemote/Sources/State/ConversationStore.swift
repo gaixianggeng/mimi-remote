@@ -660,10 +660,14 @@ final class ConversationStore: ObservableObject {
 
     func completeMessage(_ message: AgentMessage, metadata: AgentEventMetadata, fallbackSessionID: String) {
         let sessionID = firstNonEmpty(metadata.sessionID, message.sessionID, fallbackSessionID)
-        let scopedSessionID = scopedSessionID(for: sessionID)
         guard shouldAccept(metadata: metadata, sessionID: sessionID) else {
             return
         }
+        applyCompletedMessage(message, metadata: metadata, sessionID: sessionID)
+    }
+
+    private func applyCompletedMessage(_ message: AgentMessage, metadata: AgentEventMetadata, sessionID: String) {
+        let scopedSessionID = scopedSessionID(for: sessionID)
         flushPendingAssistantDelta(sessionID: sessionID)
         let stableID = message.id
         guard shouldApplyCompletedRevision(max(metadata.revision ?? message.revision, message.revision), stableID: stableID, sessionID: sessionID) else {
@@ -883,22 +887,37 @@ final class ConversationStore: ObservableObject {
         return candidates.count == 1 ? candidates.first : nil
     }
 
-    func markCurrentAssistantCompleted(metadata: AgentEventMetadata, fallbackSessionID: String) {
+    func markCurrentAssistantCompleted(metadata: AgentEventMetadata, fallbackSessionID: String, errorMessage: AgentMessage? = nil) {
         let sessionID = metadata.sessionID ?? fallbackSessionID
-        let scopedSessionID = scopedSessionID(for: sessionID)
         guard shouldAccept(metadata: metadata, sessionID: sessionID) else {
             return
         }
+        // 同一 completion 的助手终态和错误卡只校验一次序号；重复或迟到事件必须整组拒绝。
+        applyCurrentAssistantCompletion(metadata: metadata, sessionID: sessionID)
+        if let errorMessage {
+            applyCompletedMessage(errorMessage, metadata: metadata, sessionID: sessionID)
+        }
+    }
+
+    private func applyCurrentAssistantCompletion(metadata: AgentEventMetadata, sessionID: String) {
+        let scopedSessionID = scopedSessionID(for: sessionID)
         flushPendingAssistantDelta(sessionID: sessionID)
         let stableID = stableMessageID(prefix: "assistant", metadata: metadata, fallbackSessionID: sessionID)
-        guard var list = messagesByScopedSessionID[scopedSessionID],
-              let index = messageIndex(stableID: stableID, sessionID: sessionID) else {
+        guard var list = messagesByScopedSessionID[scopedSessionID] else {
             return
         }
-        list[index].sendStatus = .confirmed
-        list[index].updatedAt = metadata.createdAt ?? Date()
-        if let revision = metadata.revision {
-            list[index].revision = revision
+        // 原生 turn/completed 只有 Turn ID；按回合完成所有助手 Item，不能误完成随后开始的新回合。
+        let indices = list.indices.filter { index in
+            list[index].role == .assistant &&
+                (metadata.turnID.map { list[index].turnID == $0 } ?? (list[index].stableID == stableID))
+        }
+        guard !indices.isEmpty else { return }
+        for index in indices {
+            list[index].sendStatus = .confirmed
+            list[index].updatedAt = metadata.createdAt ?? Date()
+            if let revision = metadata.revision {
+                list[index].revision = revision
+            }
         }
         replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
     }

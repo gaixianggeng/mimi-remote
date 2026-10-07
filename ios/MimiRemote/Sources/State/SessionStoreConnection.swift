@@ -1528,8 +1528,8 @@ extension SessionStore {
             conversationStore.resolveLatestPendingApproval(sessionID: sessionID)
         case .resolveLatestPendingUserInput(let sessionID, let skipped):
             conversationStore.resolveLatestPendingUserInput(sessionID: sessionID, skipped: skipped)
-        case .markCurrentAssistantCompleted(let metadata, let fallbackSessionID):
-            conversationStore.markCurrentAssistantCompleted(metadata: metadata, fallbackSessionID: fallbackSessionID)
+        case .markCurrentAssistantCompleted(let metadata, let fallbackSessionID, let errorMessage):
+            conversationStore.markCurrentAssistantCompleted(metadata: metadata, fallbackSessionID: fallbackSessionID, errorMessage: errorMessage)
         }
     }
 

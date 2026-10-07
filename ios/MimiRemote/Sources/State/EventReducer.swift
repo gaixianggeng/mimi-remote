@@ -30,7 +30,7 @@ enum EventReducerMessageMutation {
     case system(String, SessionID, MessageKind, AgentEventMetadata?)
     case resolveLatestPendingApproval(SessionID)
     case resolveLatestPendingUserInput(SessionID, skipped: Bool)
-    case markCurrentAssistantCompleted(AgentEventMetadata, SessionID)
+    case markCurrentAssistantCompleted(AgentEventMetadata, SessionID, errorMessage: AgentMessage? = nil)
 }
 
 struct EventReducerLogAppend {
@@ -235,11 +235,9 @@ actor EventReducer {
             let id = metadata.sessionID ?? fallbackSessionID
             let lifecycle = metadata.turnLifecycle ?? .completed
             let sessionStatus = lifecycle == .failed ? SessionStatus.failed : .completed
-            if lifecycle == .failed, let error = metadata.turnError {
-                output.messageMutations.append(errorMessageMutation(
-                    error, metadata: metadata, sessionID: id, fallbackSessionID: fallbackSessionID
-                ))
-            }
+            let failureMessage = lifecycle == .failed ? metadata.turnError.map {
+                errorMessage($0, metadata: metadata, sessionID: id)
+            } : nil
             output.statusUpdates.append((id, sessionStatus.rawValue))
             output.pendingApprovalUpdates.append((id, nil))
             output.pendingUserInputUpdates.append((id, nil))
@@ -251,7 +249,7 @@ actor EventReducer {
             output.messageMutations.append(.resolveLatestPendingApproval(id))
             output.messageMutations.append(.resolveLatestPendingUserInput(id, skipped: false))
             output.messageMutations.append(.turnLifecycle(lifecycle, metadata, fallbackSessionID))
-            output.messageMutations.append(.markCurrentAssistantCompleted(metadata, fallbackSessionID))
+            output.messageMutations.append(.markCurrentAssistantCompleted(metadata, fallbackSessionID, errorMessage: failureMessage))
             output.activeTurnMutations.append(.clear(id, metadata.turnID))
             output.foregroundClears.append(id)
         case .warning(let payload, let metadata):
@@ -292,8 +290,8 @@ actor EventReducer {
                 sessionID: id,
                 seq: nil
             ))
-            output.messageMutations.append(errorMessageMutation(
-                payload, metadata: metadata, sessionID: id, fallbackSessionID: fallbackSessionID
+            output.messageMutations.append(.completed(
+                errorMessage(payload, metadata: metadata, sessionID: id), metadata, fallbackSessionID
             ))
             output.messageMutations.append(.resolveLatestPendingApproval(id))
             output.messageMutations.append(.resolveLatestPendingUserInput(id, skipped: false))
@@ -317,12 +315,11 @@ actor EventReducer {
         return output
     }
 
-    private func errorMessageMutation(
+    private func errorMessage(
         _ payload: AgentErrorPayload,
         metadata: AgentEventMetadata,
-        sessionID: SessionID,
-        fallbackSessionID: SessionID
-    ) -> EventReducerMessageMutation {
+        sessionID: SessionID
+    ) -> AgentMessage {
         let authenticationFailure = ClaudeAuthenticationRecovery.matches(payload)
         // error 通知、失败 completion 和历史 Turn 共用身份，重放或刷新只能更新同一张卡片。
         let stableID = metadata.turnID.map { "runtime-error:\($0)" }
@@ -330,26 +327,22 @@ actor EventReducer {
             ?? metadata.itemID
             ?? metadata.seq.map { "runtime-error:\($0)" }
             ?? "runtime-error:\(UUID().uuidString)"
-        return .completed(
-            AgentMessage(
-                id: stableID,
-                sessionID: sessionID,
-                turnID: metadata.turnID,
-                itemID: metadata.itemID,
-                role: .system,
-                kind: .error,
-                content: authenticationFailure
-                    ? ClaudeAuthenticationRecovery.recoveryMessage
-                    : L10n.format("ui.run_error_value", payload.message),
-                summary: authenticationFailure ? ClaudeAuthenticationRecovery.title : nil,
-                activityPayload: authenticationFailure ? ClaudeAuthenticationRecovery.activityPayload : nil,
-                createdAt: metadata.createdAt,
-                updatedAt: metadata.createdAt,
-                seq: metadata.seq,
-                revision: metadata.revision ?? 0
-            ),
-            metadata,
-            fallbackSessionID
+        return AgentMessage(
+            id: stableID,
+            sessionID: sessionID,
+            turnID: metadata.turnID,
+            itemID: metadata.itemID,
+            role: .system,
+            kind: .error,
+            content: authenticationFailure
+                ? ClaudeAuthenticationRecovery.recoveryMessage
+                : L10n.format("ui.run_error_value", payload.message),
+            summary: authenticationFailure ? ClaudeAuthenticationRecovery.title : nil,
+            activityPayload: authenticationFailure ? ClaudeAuthenticationRecovery.activityPayload : nil,
+            createdAt: metadata.createdAt,
+            updatedAt: metadata.createdAt,
+            seq: metadata.seq,
+            revision: metadata.revision ?? 0
         )
     }
 
