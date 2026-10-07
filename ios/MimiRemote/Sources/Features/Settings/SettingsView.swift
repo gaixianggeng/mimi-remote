@@ -352,6 +352,8 @@ struct SettingsView: View {
 
                 // 只有排队和引导两个选项，而且是运行中每天都会碰的行为：
                 // 就地切换比推一整页合适，和「优先使用」那行同一套写法。
+                // 选中项的说明不上屏：带着说明，胶囊在 iPhone 上排不进标题那一行，
+                // 整行变成标题、说明、胶囊三行（#538）。说明交给旁白读。
                 SettingsChoiceRow(
                     title: L10n.text("ui.default_send_method"),
                     systemImage: "paperplane",
@@ -361,7 +363,8 @@ struct SettingsView: View {
                         set: { defaultRunningTurnDeliveryID = $0.rawValue }
                     )
                 )
-                .settingsRow(.descriptive)
+                .settingsRow()
+                .accessibilityHint(RunningTurnDelivery.stored(defaultRunningTurnDeliveryID).detail)
                 .accessibilityIdentifier("settings.defaultSendMethod")
             } header: {
                 SettingsGroupHeader(title: L10n.text("ui.my_preferences"))
