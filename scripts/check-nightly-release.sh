@@ -252,7 +252,7 @@ fail_check("Release RELEASE_TAG 必须只来自 dispatch input") unless
   release.fetch("env").keys == ["RELEASE_TAG"]
 fail_check("release.yml 不得依赖 release-validation/readiness/attestation") if release.to_s.match?(/release-validation|readiness|attestation/i)
 release_jobs = release.fetch("jobs")
-expected_release_jobs = %w[source-trust verify verify-windows release publish-windows]
+expected_release_jobs = %w[source-trust verify-safety verify verify-windows release publish-windows]
 fail_check("Release jobs 集合存在未受 source-trust 约束的旁路") unless
   release_jobs.keys.sort == expected_release_jobs.sort
 release_trust = release_jobs.fetch("source-trust")
@@ -282,6 +282,38 @@ fail_check("Release trust step 含 continue-on-error、if 或其他旁路字段"
 fail_check("Release source-trust 没有调用统一来源校验入口") unless
   release_trust_step["run"] == "bash ./scripts/check-release-source.sh --check"
 
+release_safety = release_jobs.fetch("verify-safety")
+fail_check("Release 安全扫描 job 的来源、权限或 runner 不符合约束") unless
+  release_safety.keys.sort == %w[if name needs runs-on steps timeout-minutes] &&
+  release_safety["name"] == "Verify full-history repository safety" &&
+  release_safety["needs"] == "source-trust" &&
+  release_safety["if"] == "github.repository == 'gaixianggeng/mimi-remote'" &&
+  release_safety["runs-on"] == "ubuntu-latest" &&
+  release_safety["timeout-minutes"] == 10 &&
+  !release_safety.to_s.include?("secrets.")
+safety_steps = steps(release_safety)
+fail_check("Release 安全扫描必须依次安装工具并执行原样全历史扫描") unless
+  safety_steps.length == 4 &&
+  safety_steps.map { |item| item["name"] } == [
+    "Checkout verified release source", "Setup Go",
+    "Install repository safety tools", "Check public repository safety"
+  ]
+safety_checkout, safety_go, safety_install, safety_scan = safety_steps
+fail_check("Release 安全扫描必须 checkout 受信 tag SHA 的完整历史") unless
+  safety_checkout.keys.sort == %w[name uses with] &&
+  safety_checkout["uses"].to_s.start_with?("actions/checkout@") &&
+  safety_checkout.dig("with", "ref") == "${{ needs.source-trust.outputs.tag_sha }}" &&
+  safety_checkout.dig("with", "fetch-depth") == 0
+fail_check("Release 安全扫描的 Go 与 ripgrep 准备步骤不可跳过") unless
+  safety_go.keys.sort == %w[name uses with] &&
+  safety_go["uses"].to_s.start_with?("actions/setup-go@") &&
+  safety_go.dig("with", "go-version-file") == "go.mod" &&
+  safety_install.keys.sort == %w[name run] &&
+  safety_install["run"] == "command -v rg >/dev/null 2>&1 || sudo apt-get install -y ripgrep"
+fail_check("Release 全历史安全扫描不得降级、跳过或忽略失败") unless
+  safety_scan.keys.sort == %w[name run] &&
+  safety_scan["run"] == "bash ./scripts/check-public-repo-safety.sh --full-history"
+
 %w[verify verify-windows release publish-windows].each do |job_name|
   job = release_jobs.fetch(job_name)
   fail_check("Release #{job_name} 仓库条件不可放宽") unless
@@ -291,9 +323,18 @@ fail_check("Release source-trust 没有调用统一来源校验入口") unless
   fail_check("Release #{job_name} 没有绑定 production-release Environment") unless
     job["environment"] == "production-release"
 end
+%w[verify verify-windows].each do |job_name|
+  fail_check("Release #{job_name} 必须等待受信来源与全历史安全扫描") unless
+    Array(release_jobs.fetch(job_name)["needs"]).sort == %w[source-trust verify-safety].sort
+end
+fail_check("Release 发布必须等待全部来源、安全和构建门禁") unless
+  Array(release_jobs.fetch("release")["needs"]).sort ==
+    %w[source-trust verify-safety verify verify-windows].sort
+fail_check("Release macOS 验证不得重复在低内存 runner 扫描完整历史") if
+  steps(release_jobs.fetch("verify")).any? { |item| item["name"] == "Check public repository safety" }
 windows_publish = release_jobs.fetch("publish-windows")
 fail_check("Windows 发布 job 必须依赖已验证 artifact 和已创建的正式 Release") unless
-  Array(windows_publish["needs"]).sort == %w[release source-trust verify-windows].sort
+  Array(windows_publish["needs"]).sort == %w[release source-trust verify-safety verify-windows].sort
 fail_check("Windows 发布 job 必须使用 Windows runner 和最小 contents:write 权限") unless
   windows_publish["runs-on"] == "windows-latest" &&
   windows_publish["permissions"] == { "contents" => "write" }
@@ -411,7 +452,30 @@ self_test() {
   mutate_release 'repository_dispatch:' 'push:'
   mutate_release 'run: bash ./scripts/check-release-source.sh --check' 'run: echo bypassed'
   mutate_release 'needs: source-trust' 'needs: []'
+  mutate_release 'run: bash ./scripts/check-public-repo-safety.sh --full-history' 'run: echo bypassed'
+  mutate_release 'ref: ${{ needs.source-trust.outputs.tag_sha }}' 'ref: ${{ github.sha }}'
+  mutate_release '      - name: Check public repository safety
+        run:' '      - name: Check public repository safety
+        continue-on-error: true
+        run:'
+  mutate_release '  verify:
+    needs:
+      - source-trust
+      - verify-safety' '  verify:
+    needs: source-trust'
+  mutate_release '  verify-windows:
+    needs:
+      - source-trust
+      - verify-safety' '  verify-windows:
+    needs: source-trust'
+  mutate_release '  release:
+    needs:
+      - source-trust
+      - verify-safety' '  release:
+    needs:
+      - source-trust'
   mutate_release '      - source-trust
+      - verify-safety
       - release
       - verify-windows' '      - release
       - verify-windows'

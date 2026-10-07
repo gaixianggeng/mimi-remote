@@ -35,8 +35,35 @@ jobs:
         id: source
         run: bash ./scripts/check-release-source.sh --check
 
-  verify:
+  verify-safety:
+    name: Verify full-history repository safety
     needs: source-trust
+    if: github.repository == 'gaixianggeng/mimi-remote'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout verified release source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.source-trust.outputs.tag_sha }}
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install repository safety tools
+        run: command -v rg >/dev/null 2>&1 || sudo apt-get install -y ripgrep
+
+      - name: Check public repository safety
+        run: bash ./scripts/check-public-repo-safety.sh --full-history
+
+  verify:
+    needs:
+      - source-trust
+      - verify-safety
     if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: macos-26
     timeout-minutes: 40
@@ -81,9 +108,6 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
         run: bash ./scripts/check-macos-release-signing.sh
 
-      - name: Check public repository safety
-        run: bash ./scripts/check-public-repo-safety.sh
-
       - name: Check go mod tidy
         run: |
           go mod tidy
@@ -120,7 +144,9 @@ jobs:
         run: bash ./scripts/check-release-artifacts.sh
 
   verify-windows:
-    needs: source-trust
+    needs:
+      - source-trust
+      - verify-safety
     if: github.repository == 'gaixianggeng/mimi-remote'
     runs-on: windows-latest
     timeout-minutes: 35
@@ -193,6 +219,7 @@ jobs:
   release:
     needs:
       - source-trust
+      - verify-safety
       - verify
       - verify-windows
     if: github.repository == 'gaixianggeng/mimi-remote'
@@ -274,6 +301,7 @@ jobs:
   publish-windows:
     needs:
       - source-trust
+      - verify-safety
       - release
       - verify-windows
     if: github.repository == 'gaixianggeng/mimi-remote'
