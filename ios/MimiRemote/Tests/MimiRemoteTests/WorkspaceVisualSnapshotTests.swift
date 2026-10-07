@@ -25,6 +25,15 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
         )
     }
 
+    func testWideWorkspaceKeepsStripAndSessionRowsOnSharedTrack() async throws {
+        try await renderWorkspaceSnapshot(
+            width: 1_366,
+            height: 1_024,
+            hasBottomTabBar: false,
+            testName: "testWideWorkspaceKeepsStripAndSessionRowsOnSharedTrack"
+        )
+    }
+
     /// 窄屏形态与宽屏是两套头部：Runtime 降级成菜单、分段标题让位、筛选器不并入胶囊行。
     /// 画布固定在 iPhone 宽度即可覆盖，宿主仍是同一台 M5 iPad，基线不随运行设备漂移。
     func testCompactWorkspaceRuntimeMenuOnPhoneWidth() async throws {

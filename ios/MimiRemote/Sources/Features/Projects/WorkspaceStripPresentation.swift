@@ -28,8 +28,8 @@ enum WorkspaceStripLayout {
     /// iPhone 竖屏（393 / 345）、iPad 1/2 与 1/3 分屏落在阈值以下，退回列表上方独立一行。
     static let inlineRuntimePickerMinimumWidth: CGFloat = 640
 
-    static func minimumContentWidth(viewportWidth: CGFloat) -> CGFloat {
-        max(0, viewportWidth - horizontalPadding * 2)
+    static func minimumContentWidth(viewportWidth: CGFloat, contentPadding: CGFloat = horizontalPadding) -> CGFloat {
+        max(0, viewportWidth - contentPadding * 2)
     }
 
     /// 统一决定 Runtime 是否进入胶囊行，避免 Runtime 布局和行内新建入口分别判断。
@@ -37,7 +37,8 @@ enum WorkspaceStripLayout {
     static func usesInlineRuntimePicker(
         viewportWidth: CGFloat,
         showsHostSwitcherInStrip: Bool,
-        hasBottomTabBar: Bool
+        hasBottomTabBar: Bool,
+        contentPadding: CGFloat = horizontalPadding
     ) -> Bool {
         // 底部 Tab 栏时新建按钮必须留在筛选行，横屏 iPhone 也不能切到 inline 布局。
         guard !hasBottomTabBar else { return false }
@@ -45,7 +46,7 @@ enum WorkspaceStripLayout {
         let hostSwitcherBudget = showsHostSwitcherInStrip
             ? WorkbenchChromeIconMetrics.minimumHitTarget + chipSpacing
             : 0
-        let availableContentWidth = minimumContentWidth(viewportWidth: viewportWidth)
+        let availableContentWidth = minimumContentWidth(viewportWidth: viewportWidth, contentPadding: contentPadding)
         return availableContentWidth - hostSwitcherBudget >= inlineRuntimePickerMinimumWidth
     }
 

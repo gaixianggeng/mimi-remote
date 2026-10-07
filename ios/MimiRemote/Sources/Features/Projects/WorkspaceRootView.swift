@@ -245,6 +245,8 @@ struct WorkspaceRootView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
+    @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @StateObject private var appearanceStore: WorkspaceAppearanceStore
     @StateObject private var pagerTransitionState = WorkspacePagerTransitionState()
 
@@ -443,6 +445,16 @@ struct WorkspaceRootView: View {
         UIDevice.current.userInterfaceIdiom == .pad && manageConnections != nil
     }
 
+    private var stripContentPadding: CGFloat {
+        let pagePadding = hasCompactTabBar
+            ? WorkbenchPageLayout.compactPadding : WorkbenchPageLayout.regularPadding
+        let rowPadding = SessionIndexRowDensity.resolved(
+            availableWidth: workspaceStripContainerWidth,
+            dynamicTypeSize: dynamicTypeSize
+        ).horizontalPadding
+        return pagePadding + rowPadding
+    }
+
     /// 设备入口是否占用胶囊行的横向预算。宽屏由顶栏或侧栏承载它，这一行就整条留给工作区。
     private var showsHostSwitcherInStrip: Bool {
         !usesTabletTopBarHostSwitcher && manageConnections != nil
@@ -461,7 +473,8 @@ struct WorkspaceRootView: View {
         WorkspaceStripLayout.usesInlineRuntimePicker(
             viewportWidth: workspaceStripContainerWidth,
             showsHostSwitcherInStrip: showsHostSwitcherInStrip,
-            hasBottomTabBar: hasBottomTabBar
+            hasBottomTabBar: hasBottomTabBar,
+            contentPadding: stripContentPadding
         )
     }
 
@@ -811,8 +824,9 @@ struct WorkspaceRootView: View {
                 )
             }
         }
-        .padding(.horizontal, WorkspaceStripLayout.horizontalPadding)
+        .padding(.horizontal, stripContentPadding)
         .frame(height: WorkspaceStripLayout.stripHeight)
+        .frame(maxWidth: WorkspaceStripLayout.maxContentWidth, alignment: .leading)
         // 只观测已经排好的整行宽度，不参与布局协商；插不插筛选器都读到同一个值。
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
@@ -820,6 +834,7 @@ struct WorkspaceRootView: View {
             guard width > 0, workspaceStripContainerWidth != width else { return }
             workspaceStripContainerWidth = width
         }
+        .frame(maxWidth: .infinity, alignment: .center)
         .accessibilityLabel(L10n.text("ui.workspace_list"))
     }
 
