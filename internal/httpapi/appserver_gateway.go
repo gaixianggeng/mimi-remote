@@ -324,6 +324,7 @@ type appServerGatewayPolicy struct {
 	activeServerTurns     map[string]struct{}
 	pendingHistory        map[string]appServerGatewayPendingHistoryRequest
 	historyBudgets        map[string]appServerGatewayHistoryBudget
+	historyContinuations  map[string]time.Time
 	allowedThreads        map[string]appServerGatewayAllowedThread
 	globalListCursors     map[string]string
 	beforePendingRemember func()

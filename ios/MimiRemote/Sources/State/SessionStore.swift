@@ -537,6 +537,8 @@ final class SessionStore: ObservableObject {
     let historyFirstPageCacheTTL: TimeInterval = 4
     let historyPolicyRetryFallbackNanoseconds: UInt64 = 15_000_000_000
     let historyPolicyRetryMaxNanoseconds: UInt64 = 20_000_000_000
+    /// full 首页遇到 gateway 繁忙（预算/同请求占用）时原地退避的次数上限。
+    let historyPolicyBusyRetryLimit = 2
     static let optimisticSessionSource = "local"
     /// 项目侧栏只承担快速切换职责；每个项目固定展示最近 5 条，完整历史在工作区页分页查看。
     static let sessionPreviewLimit = 5
