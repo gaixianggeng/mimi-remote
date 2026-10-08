@@ -36,9 +36,9 @@ extension ComposerPermissionMode: SettingsChoiceOption {
     var choiceSystemImage: String? { systemImage }
 }
 
+/// 不提供 choiceSubtitle：「默认发送方式」那一行要和胶囊排在同一行，说明改由旁白读（#538）。
 extension RunningTurnDelivery: SettingsChoiceOption {
     var choiceTitle: String { title }
-    var choiceSubtitle: String? { detail }
     var choiceSystemImage: String? { systemImage }
 }
 
