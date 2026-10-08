@@ -5,10 +5,16 @@ package appserver
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestFrontDoorRuntimeUpdateSafetyAndVerification(t *testing.T) {
@@ -88,6 +94,52 @@ func TestFrontDoorRuntimeUpdateSafetyAndVerification(t *testing.T) {
 	}
 }
 
+func TestFrontDoorRuntimeVersionLegacyHomeCompatibility(t *testing.T) {
+	home := shortSharedLocalCodexHome(t)
+	otherHome := shortSharedLocalCodexHome(t)
+	for _, tc := range []struct {
+		name, reported      string
+		required, wantError bool
+	}{
+		{"legacy default", "", false, false},
+		{"isolated omission", "", true, true},
+		{"wrong default home", otherHome, false, true},
+		{"isolated match", home, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			socket := filepath.Join(home, "version.sock")
+			listener, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upgrader := websocket.Upgrader{}
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				var request map[string]any
+				if conn.ReadJSON(&request) != nil {
+					return
+				}
+				_ = conn.WriteJSON(map[string]any{"id": request["id"], "result": map[string]any{
+					"userAgent": "codex/0.149.1", "codexHome": tc.reported,
+				}})
+				_ = conn.ReadJSON(&request)
+			})}
+			go func() { _ = server.Serve(listener) }()
+			defer server.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			version, err := frontDoorRuntimeVersion(ctx, socket, home, tc.required)
+			if (err != nil) != tc.wantError || (!tc.wantError && version != "0.149.1") {
+				t.Fatalf("version=%q err=%v", version, err)
+			}
+		})
+	}
+}
+
 func TestFrontDoorRuntimeUpdateRechecksAfterLock(t *testing.T) {
 	reads, stops := 0, 0
 	_, err := updateFrontDoorRuntime(context.Background(), frontDoorUpdateOps{
@@ -104,5 +156,33 @@ func TestFrontDoorRuntimeUpdateRechecksAfterLock(t *testing.T) {
 	})
 	if err != nil || stops != 0 {
 		t.Fatalf("err=%v stops=%d", err, stops)
+	}
+}
+
+func TestConfirmedRuntimeRestartFailureDoesNotStartReplacement(t *testing.T) {
+	for _, failLock := range []bool{false, true} {
+		t.Run(fmt.Sprint("lock=", failLock), func(t *testing.T) {
+			unlocked, stopped := false, false
+			_, err := updateFrontDoorRuntime(context.Background(), frontDoorUpdateOps{
+				restart: true,
+				versions: func(context.Context) (CodexRuntimeVersions, error) {
+					return CodexRuntimeVersions{"0.161.0", "0.155.1", true}, nil
+				},
+				lock: func(context.Context) (func(), error) {
+					if failLock {
+						return nil, errors.New("locked")
+					}
+					return func() { unlocked = true }, nil
+				},
+				stop: func(context.Context) error { stopped = true; return errors.New("not exited") },
+				resume: func(context.Context) (string, error) {
+					t.Fatal("旧后台退出失败不能启动新版")
+					return "", nil
+				},
+			})
+			if err == nil || stopped == failLock || unlocked == failLock {
+				t.Fatalf("err=%v stopped=%v unlocked=%v", err, stopped, unlocked)
+			}
+		})
 	}
 }

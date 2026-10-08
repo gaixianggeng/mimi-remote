@@ -196,7 +196,9 @@ Mac App 安装版的 Codex backend 由前门启动。launchd 先启动 Mimi Remo
 
 更新 CLI 只替换已安装程序，运行中的共享后台会继续使用旧版。Mac 菜单栏和概览页会分别检查已安装版本与后台实际握手版本；发现已安装版本较新时显示“Codex 已更新，正在使用旧版”。版本不同不会直接把可用服务标记为故障。
 
-结束任务和排队消息，离开手机或平板的会话，并关闭终端和 Desktop 的共享页面后，点击“切换到新版”。Mimi 保持网关运行，只在共享连接已释放、后台空闲且确认可优雅退出时切换 Codex。正在使用中的后台保持不变，界面会说明如何重试；切换成功以新后台握手和版本一致为准。会话目录和记录保留。
+界面按 Mimi、Codex 和其他客户端显示共享连接数量。点击“切换到新版”会先询问确认；选择“取消”不执行操作，选择“断开并切换”后自动断开共享连接。运行中的任务可能中断，切换后需检查任务状态；已保存的会话记录会保留。连接数量仅为只读快照，不会阻止用户确认切换。
+
+Mimi 保持网关和公共连接入口运行，通过 Codex 的退出信号先停止旧后台。切换期间持有启动锁，确认旧进程退出后才允许启动新版；不使用 SIGKILL，不删除会话目录或 writer 锁。无法确认旧后台身份或退出时停止切换。成功以新后台握手和版本一致为准。
 
 也可在本机终端使用当前 Mac App 的管理命令：
 
@@ -205,7 +207,13 @@ Mac App 安装版的 Codex backend 由前门启动。launchd 先启动 Mimi Remo
 "/Applications/Mimi Remote Mac.app/Contents/Resources/agentd" codex-front update
 ```
 
-`runtime` 只读取版本，不启动后台。`update` 不下载或安装 CLI，不降级后台，也不停止 Mimi 网关。配置与已登记的共享目录不一致、旧二进制已不可确认或新版连接失败时会明确报错；先刷新状态或运行诊断，不用强杀或删除 socket 来绕过检查。
+`runtime` 只读取版本，不启动后台。默认 `update` 仅在共享连接已释放、后台空闲时切换；明确接受断开连接和可能中断任务后，可运行：
+
+```bash
+"/Applications/Mimi Remote Mac.app/Contents/Resources/agentd" codex-front update --restart
+```
+
+`update` 不下载或安装 CLI，不降级后台，也不停止 Mimi 网关。配置与已登记的共享目录不一致、旧二进制已不可确认或新版连接失败时会明确报错；先刷新状态或运行诊断，不用强杀或删除 socket 来绕过检查。
 
 ### 一次性修复旧的 Background resident
 

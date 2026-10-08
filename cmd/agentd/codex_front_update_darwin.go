@@ -17,11 +17,15 @@ import (
 func runCodexFrontRuntime(args []string, stdout io.Writer, update bool) error {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	configPath, label, plistPath := codexFrontFlags(fs)
+	restart := fs.Bool("restart", false, "已确认断开共享连接并可能中断任务，停止后台后切换新版")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return errors.New("Codex 版本管理不接受额外参数")
+	}
+	if *restart && !update {
+		return errors.New("--restart 仅适用于 codex-front update")
 	}
 	budget := 8 * time.Second
 	if update {
@@ -53,7 +57,9 @@ func runCodexFrontRuntime(args []string, stdout io.Writer, update bool) error {
 		return errors.New("共享 Codex 的运行配置已改变，请先运行诊断；当前后台保持不变。")
 	}
 	var versions appserver.CodexRuntimeVersions
-	if update {
+	if update && *restart {
+		versions, err = install.door.RestartRuntime(ctx)
+	} else if update {
 		versions, err = install.door.UpdateRuntime(ctx)
 	} else {
 		versions, err = install.door.RuntimeVersions(ctx)
@@ -61,5 +67,8 @@ func runCodexFrontRuntime(args []string, stdout io.Writer, update bool) error {
 	if err != nil {
 		return err
 	}
-	return json.NewEncoder(stdout).Encode(versions)
+	return json.NewEncoder(stdout).Encode(struct {
+		appserver.CodexRuntimeVersions
+		Connections *appserver.CodexRuntimeConnections `json:"connections,omitempty"`
+	}{versions, install.door.RuntimeConnections(ctx)})
 }

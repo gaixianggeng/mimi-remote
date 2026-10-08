@@ -5,12 +5,29 @@ struct CodexRuntimeVersions: Decodable, Equatable, Sendable {
     let installedVersion: String
     let runningVersion: String
     let updateAvailable: Bool
+    let connections: CodexRuntimeConnections?
+
+    init(installedVersion: String, runningVersion: String, updateAvailable: Bool,
+         connections: CodexRuntimeConnections? = nil) {
+        self.installedVersion = installedVersion
+        self.runningVersion = runningVersion
+        self.updateAvailable = updateAvailable
+        self.connections = connections
+    }
 
     enum CodingKeys: String, CodingKey {
         case installedVersion = "installed_version"
         case runningVersion = "running_version"
         case updateAvailable = "update_available"
+        case connections
     }
+}
+
+struct CodexRuntimeConnections: Decodable, Equatable, Sendable {
+    let mimi: Int
+    let codex: Int
+    let other: Int
+    var total: Int { mimi + codex + other }
 }
 
 @MainActor
@@ -24,6 +41,8 @@ final class CodexRuntimeUpdateStore {
     private(set) var updateFailed = false
     private let agent: AgentCommandClient
 
+    var hasSharedConnections: Bool { (versions?.connections?.total ?? 0) > 0 }
+
     init(agent: AgentCommandClient) {
         self.agent = agent
     }
@@ -35,21 +54,22 @@ final class CodexRuntimeUpdateStore {
         do {
             versions = try await agent.codexRuntimeVersions()
             error = nil
+            notice = nil
             updateFailed = false
         } catch {
             self.error = error.localizedDescription
         }
     }
 
-    func update() async {
-        guard !isChecking, !isUpdating, versions?.updateAvailable == true else { return }
+    func update(restart: Bool = false) async {
+        guard !isChecking, !isUpdating, (!hasSharedConnections || restart), versions?.updateAvailable == true else { return }
         isUpdating = true
         error = nil
         notice = nil
         updateFailed = false
         defer { isUpdating = false }
         do {
-            let result = try await agent.updateCodexRuntime()
+            let result = try await agent.updateCodexRuntime(restart)
             // 只有实际握手版本一致才呈现成功，不能把命令退出或旧快照当成更新完成。
             guard !result.updateAvailable, result.installedVersion == result.runningVersion else {
                 throw AgentClientError.commandFailed("Codex 尚未完成版本切换，请刷新状态后重试。")

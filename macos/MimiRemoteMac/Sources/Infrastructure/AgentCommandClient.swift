@@ -19,7 +19,7 @@ struct AgentCommandClient: Sendable {
     var codexRuntimeVersions: @Sendable () async throws -> CodexRuntimeVersions = {
         throw AgentClientError.commandFailed("请更新 Mimi Remote Mac 后检查 Codex 版本。")
     }
-    var updateCodexRuntime: @Sendable () async throws -> CodexRuntimeVersions = {
+    var updateCodexRuntime: @Sendable (_ restart: Bool) async throws -> CodexRuntimeVersions = { _ in
         throw AgentClientError.commandFailed("请更新 Mimi Remote Mac 后切换 Codex 版本。")
     }
     var configureClaude: @Sendable (
@@ -208,10 +208,10 @@ extension AgentCommandClient {
                     binary: binary, arguments: ["codex-front", "runtime"], timeout: .seconds(10)
                 ))
             },
-            updateCodexRuntime: {
+            updateCodexRuntime: { restart in
                 let binary = try requireEmbeddedBinary()
                 return try decode(CodexRuntimeVersions.self, from: try await execute(
-                    binary: binary, arguments: ["codex-front", "update"], timeout: .seconds(40)
+                    binary: binary, arguments: ["codex-front", "update"] + (restart ? ["--restart"] : []), timeout: .seconds(40)
                 ))
             },
             configureClaude: { preference, restoreEnabled in

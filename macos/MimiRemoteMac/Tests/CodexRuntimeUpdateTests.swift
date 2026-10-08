@@ -14,7 +14,7 @@ final class CodexRuntimeUpdateTests: XCTestCase {
     func testReportsSuccessOnlyAfterVerifiedVersionSwitch() async {
         var agent = AgentCommandClient.live()
         agent.codexRuntimeVersions = { Self.pending }
-        agent.updateCodexRuntime = { Self.current }
+        agent.updateCodexRuntime = { _ in Self.current }
         let store = CodexRuntimeUpdateStore(agent: agent)
         await store.refresh()
         XCTAssertEqual(store.versions, Self.pending)
@@ -28,7 +28,7 @@ final class CodexRuntimeUpdateTests: XCTestCase {
     func testBusyBackendKeepsVersionAndActionableError() async {
         var agent = AgentCommandClient.live()
         agent.codexRuntimeVersions = { Self.pending }
-        agent.updateCodexRuntime = {
+        agent.updateCodexRuntime = { _ in
             throw AgentClientError.commandFailed("请等待任务和排队消息完成后重试。")
         }
         let store = CodexRuntimeUpdateStore(agent: agent)
@@ -47,7 +47,7 @@ final class CodexRuntimeUpdateTests: XCTestCase {
             if await reads.next() == 1 { return Self.pending }
             throw AgentClientError.commandFailed("无法读取版本")
         }
-        agent.updateCodexRuntime = {
+        agent.updateCodexRuntime = { _ in
             throw AgentClientError.commandFailed("旧版已退出，新版尚未连接成功。")
         }
         let store = CodexRuntimeUpdateStore(agent: agent)
@@ -62,7 +62,7 @@ final class CodexRuntimeUpdateTests: XCTestCase {
     func testWrongVersionResponseCannotClaimSuccess() async {
         var agent = AgentCommandClient.live()
         agent.codexRuntimeVersions = { Self.pending }
-        agent.updateCodexRuntime = {
+        agent.updateCodexRuntime = { _ in
             CodexRuntimeVersions(installedVersion: "0.161.0", runningVersion: "0.155.1", updateAvailable: false)
         }
         let store = CodexRuntimeUpdateStore(agent: agent)
@@ -77,7 +77,7 @@ final class CodexRuntimeUpdateTests: XCTestCase {
         let reads = UpdateReadSequence()
         var agent = AgentCommandClient.live()
         agent.codexRuntimeVersions = { _ = await reads.next(); return Self.pending }
-        agent.updateCodexRuntime = {
+        agent.updateCodexRuntime = { _ in
             await gate.suspend()
             return Self.current
         }
@@ -99,11 +99,55 @@ final class CodexRuntimeUpdateTests: XCTestCase {
     func testCurrentRuntimeDoesNotRunUpdate() async {
         var agent = AgentCommandClient.live()
         agent.codexRuntimeVersions = { Self.current }
-        agent.updateCodexRuntime = { XCTFail("无需切换时不能调用管理命令"); return Self.current }
+        agent.updateCodexRuntime = { _ in XCTFail("无需切换时不能调用管理命令"); return Self.current }
         let store = CodexRuntimeUpdateStore(agent: agent)
         await store.refresh()
         await store.update()
         XCTAssertNil(store.notice)
+    }
+
+    func testConnectionsBlockUpdateUntilRecheckConfirmsReleased() async {
+        let reads = UpdateReadSequence()
+        let updates = UpdateReadSequence()
+        var agent = AgentCommandClient.live()
+        agent.codexRuntimeVersions = {
+            if await reads.next() == 1 {
+                return CodexRuntimeVersions(installedVersion: "0.161.0", runningVersion: "0.155.1",
+                    updateAvailable: true, connections: .init(mimi: 1, codex: 3, other: 0))
+            }
+            return Self.pending
+        }
+        agent.updateCodexRuntime = { _ in _ = await updates.next(); return Self.current }
+        let store = CodexRuntimeUpdateStore(agent: agent)
+        await store.refresh()
+        XCTAssertTrue(store.hasSharedConnections)
+        XCTAssertEqual(store.versions?.connections?.total, 4)
+        await store.update()
+        let blockedCalls = await updates.count
+        XCTAssertEqual(blockedCalls, 0)
+        await store.refresh()
+        XCTAssertFalse(store.hasSharedConnections)
+        await store.update()
+        let completedCalls = await updates.count
+        XCTAssertEqual(completedCalls, 1)
+    }
+
+    func testConfirmedRestartProceedsWithSharedConnections() async {
+        var agent = AgentCommandClient.live()
+        agent.codexRuntimeVersions = {
+            CodexRuntimeVersions(installedVersion: "0.161.0", runningVersion: "0.155.1",
+                updateAvailable: true, connections: .init(mimi: 1, codex: 3, other: 0))
+        }
+        agent.updateCodexRuntime = { restart in
+            XCTAssertTrue(restart, "必须将用户确认传给后台命令")
+            return Self.current
+        }
+        let store = CodexRuntimeUpdateStore(agent: agent)
+        await store.refresh()
+        await store.update(restart: true)
+        XCTAssertEqual(store.versions, Self.current)
+        XCTAssertNotNil(store.notice)
+        XCTAssertNil(store.error)
     }
 
     func testVersionResponseRequiresBothVersionsAndUpdateState() throws {
@@ -115,6 +159,9 @@ final class CodexRuntimeUpdateTests: XCTestCase {
         XCTAssertThrowsError(try decoder.decode(
             CodexRuntimeVersions.self, from: Data(#"{"update_available":true}"#.utf8)
         ))
+        let withConnections = try decoder.decode(CodexRuntimeVersions.self, from: Data(
+            #"{"installed_version":"0.161.0","running_version":"0.155.1","update_available":true,"connections":{"mimi":1,"codex":3,"other":0}}"#.utf8))
+        XCTAssertEqual(withConnections.connections, .init(mimi: 1, codex: 3, other: 0))
     }
 }
 

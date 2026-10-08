@@ -15,15 +15,21 @@ import (
 // StopIdleBackend 用于永久退出 Mac App 托管。先确认没有其它连接、活动回合或队列，
 // 再让私有 backend 退出；否则 Homebrew 会在标准 socket 启动第二个 writer。
 func (f *FrontDoor) StopIdleBackend(ctx context.Context) error {
-	return f.checkIdleBackend(ctx, true)
+	return f.checkIdleBackend(ctx, true, false)
+}
+
+// stopConfirmedBackend 仅用于用户明确确认断连及任务中断后的版本切换。
+// 使用 Codex 自身的退出协议，不发送 SIGKILL，也不删除会话目录或 writer 锁。
+func (f *FrontDoor) stopConfirmedBackend(ctx context.Context) error {
+	return f.checkIdleBackend(ctx, true, true)
 }
 
 // CanReload 只读确认已有私有 backend 没有连接、活动回合或队列。
 func (f *FrontDoor) CanReload(ctx context.Context) error {
-	return f.checkIdleBackend(ctx, false)
+	return f.checkIdleBackend(ctx, false, false)
 }
 
-func (f *FrontDoor) checkIdleBackend(ctx context.Context, stop bool) error {
+func (f *FrontDoor) checkIdleBackend(ctx context.Context, stop, confirmed bool) error {
 	info, err := os.Lstat(f.backend)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -58,6 +64,9 @@ func (f *FrontDoor) checkIdleBackend(ctx context.Context, stop bool) error {
 		if err != nil || !alive || current != process {
 			return errors.New("私有 Codex backend 进程身份已变化，拒绝回退 Homebrew")
 		}
+		if confirmed {
+			return nil
+		}
 		count, err := realSharedLocalRepairSocketNames(ctx, pid, f.backend)
 		if err != nil {
 			return fmt.Errorf("无法核对私有 Codex backend 的 socket 引用：%w", err)
@@ -70,8 +79,10 @@ func (f *FrontDoor) checkIdleBackend(ctx context.Context, stop bool) error {
 	if err := check(); err != nil {
 		return err
 	}
-	if err := requireSharedLocalRepairIdle(ctx, conn.RPC()); err != nil {
-		return err
+	if !confirmed {
+		if err := requireSharedLocalRepairIdle(ctx, conn.RPC()); err != nil {
+			return err
+		}
 	}
 	if err := check(); err != nil {
 		return err
@@ -95,6 +106,14 @@ func (f *FrontDoor) checkIdleBackend(ctx context.Context, stop bool) error {
 	defer deadline.Stop()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	var interrupt <-chan time.Time
+	if confirmed {
+		// 已验证版本的 Codex 收到 SIGHUP 后，再收到 SIGTERM 会结束 drain、退出并中断任务。
+		// 首先给 SIGHUP 一秒收尾；后续仍每次核对 PID 和启动时间，绝不误杀 replacement。
+		forceTicker := time.NewTicker(time.Second)
+		defer forceTicker.Stop()
+		interrupt = forceTicker.C
+	}
 	for {
 		current, alive, err := realSharedLocalRepairProcess(pid)
 		if err != nil {
@@ -107,7 +126,17 @@ func (f *FrontDoor) checkIdleBackend(ctx context.Context, stop bool) error {
 		case <-ctx.Done():
 			return fmt.Errorf("等待私有 Codex backend 退出已取消：%w", ctx.Err())
 		case <-deadline.C:
+			if confirmed {
+				return errors.New("Codex 后台尚未退出，未启动第二个后台；请稍后重新检查")
+			}
 			return errors.New("私有 Codex backend 退出超时；未发送强制退出信号")
+		case <-interrupt:
+			if err := check(); err != nil {
+				return err
+			}
+			if err := unix.Kill(pid, unix.SIGTERM); err != nil {
+				return fmt.Errorf("请求 Codex 中断任务并退出失败：%w", err)
+			}
 		case <-ticker.C:
 		}
 	}
