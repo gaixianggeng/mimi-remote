@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"os"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
@@ -17,7 +18,7 @@ import (
 func runCodexFrontRuntime(args []string, stdout io.Writer, update bool) error {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	configPath, label, plistPath := codexFrontFlags(fs)
-	restart := fs.Bool("restart", false, "已确认断开共享连接并可能中断任务，停止后台后切换新版")
+	restart := fs.Bool("restart", false, "已确认断开共享连接并可能中断任务，重启后台以修复设置或切换版本")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -57,10 +58,27 @@ func runCodexFrontRuntime(args []string, stdout io.Writer, update bool) error {
 		return errors.New("共享 Codex 的运行配置已改变，请先运行诊断；当前后台保持不变。")
 	}
 	var versions appserver.CodexRuntimeVersions
+	var reloadFrontDoor func(context.Context) error
+	if update {
+		versions, err = install.door.RuntimeVersions(ctx)
+		if err != nil {
+			return err
+		}
+		if versions.UpdateAvailable || versions.FeatureMismatch {
+			executable, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			reloadFrontDoor, err = prepareCodexFrontRecovery(install, *configPath, executable, defaultCodexFrontManagementOps())
+			if err != nil {
+				return errors.New("无法准备 Codex 连接修复，请从已安装的 Mimi Remote Mac 运行诊断后重试；后台保持不变。")
+			}
+		}
+	}
 	if update && *restart {
-		versions, err = install.door.RestartRuntime(ctx)
+		versions, err = install.door.RestartRuntime(ctx, reloadFrontDoor)
 	} else if update {
-		versions, err = install.door.UpdateRuntime(ctx)
+		versions, err = install.door.UpdateRuntime(ctx, reloadFrontDoor)
 	} else {
 		versions, err = install.door.RuntimeVersions(ctx)
 	}

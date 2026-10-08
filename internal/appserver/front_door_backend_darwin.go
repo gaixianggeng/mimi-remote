@@ -30,17 +30,14 @@ func (f *FrontDoor) CanReload(ctx context.Context) error {
 }
 
 func (f *FrontDoor) checkIdleBackend(ctx context.Context, stop, confirmed bool) error {
-	info, err := os.Lstat(f.backend)
+	socket, err := privateBackendSocketPath(f.backend)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("检查私有 Codex backend 失败：%w", err)
 	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return errors.New("私有 Codex backend 路径不是 socket，拒绝回退 Homebrew")
-	}
-	conn, err := dialSharedLocalRepairTransport(ctx, &SharedLocalTransport{socket: f.backend})
+	conn, err := dialSharedLocalRepairTransport(ctx, &SharedLocalTransport{socket: socket})
 	if err != nil {
 		return fmt.Errorf("无法确认私有 Codex backend 已空闲：%w", err)
 	}
@@ -67,7 +64,7 @@ func (f *FrontDoor) checkIdleBackend(ctx context.Context, stop, confirmed bool) 
 		if confirmed {
 			return nil
 		}
-		count, err := realSharedLocalRepairSocketNames(ctx, pid, f.backend)
+		count, err := realSharedLocalRepairSocketNames(ctx, pid, socket)
 		if err != nil {
 			return fmt.Errorf("无法核对私有 Codex backend 的 socket 引用：%w", err)
 		}

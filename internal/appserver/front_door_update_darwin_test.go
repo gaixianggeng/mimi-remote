@@ -18,8 +18,9 @@ import (
 )
 
 func TestFrontDoorRuntimeUpdateSafetyAndVerification(t *testing.T) {
-	pending := CodexRuntimeVersions{"0.161.0", "0.155.1", true}
-	current := CodexRuntimeVersions{"0.161.0", "0.161.0", false}
+	pending := CodexRuntimeVersions{"0.161.0", "0.155.1", true, false}
+	current := CodexRuntimeVersions{"0.161.0", "0.161.0", false, false}
+	featureMismatch := CodexRuntimeVersions{"0.161.0", "0.161.0", false, true}
 	for _, tc := range []struct {
 		name           string
 		initial, after CodexRuntimeVersions
@@ -28,12 +29,14 @@ func TestFrontDoorRuntimeUpdateSafetyAndVerification(t *testing.T) {
 		wantError      string
 	}{
 		{"success", pending, current, "", []string{"read", "lock", "read", "stop", "unlock", "resume", "read"}, ""},
+		{"same version feature repair", featureMismatch, current, "", []string{"read", "lock", "read", "stop", "unlock", "resume", "read"}, ""},
+		{"feature still mismatched", featureMismatch, featureMismatch, "", []string{"read", "lock", "read", "stop", "unlock", "resume", "read"}, "连接设置尚未恢复一致"},
 		{"already current", current, current, "", []string{"read"}, ""},
-		{"installed older", CodexRuntimeVersions{"0.155.1", "0.161.0", false}, current, "", []string{"read"}, ""},
+		{"installed older", CodexRuntimeVersions{"0.155.1", "0.161.0", false, false}, current, "", []string{"read"}, ""},
 		{"unknown version", pending, current, "read", []string{"read"}, "read failed"},
 		{"connected client", pending, current, "lock", []string{"read", "lock"}, "共享连接"},
 		{"active or queued work", pending, current, "stop", []string{"read", "lock", "read", "stop", "unlock"}, "排队消息"},
-		{"launch failure", pending, current, "resume", []string{"read", "lock", "read", "stop", "unlock", "resume"}, "新版尚未连接"},
+		{"launch failure", pending, current, "resume", []string{"read", "lock", "read", "stop", "unlock", "resume"}, "尚未重新连接"},
 		{"wrong replacement", pending, pending, "", []string{"read", "lock", "read", "stop", "unlock", "resume", "read"}, "尚未完成版本切换"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -146,9 +149,9 @@ func TestFrontDoorRuntimeUpdateRechecksAfterLock(t *testing.T) {
 		versions: func(context.Context) (CodexRuntimeVersions, error) {
 			reads++
 			if reads == 1 {
-				return CodexRuntimeVersions{"0.161.0", "0.155.1", true}, nil
+				return CodexRuntimeVersions{"0.161.0", "0.155.1", true, false}, nil
 			}
-			return CodexRuntimeVersions{"0.161.0", "0.161.0", false}, nil
+			return CodexRuntimeVersions{"0.161.0", "0.161.0", false, false}, nil
 		},
 		lock:   func(context.Context) (func(), error) { return func() {}, nil },
 		stop:   func(context.Context) error { stops++; return nil },
@@ -166,7 +169,7 @@ func TestConfirmedRuntimeRestartFailureDoesNotStartReplacement(t *testing.T) {
 			_, err := updateFrontDoorRuntime(context.Background(), frontDoorUpdateOps{
 				restart: true,
 				versions: func(context.Context) (CodexRuntimeVersions, error) {
-					return CodexRuntimeVersions{"0.161.0", "0.155.1", true}, nil
+					return CodexRuntimeVersions{"0.161.0", "0.155.1", true, false}, nil
 				},
 				lock: func(context.Context) (func(), error) {
 					if failLock {
@@ -182,6 +185,56 @@ func TestConfirmedRuntimeRestartFailureDoesNotStartReplacement(t *testing.T) {
 			})
 			if err == nil || stopped == failLock || unlocked == failLock {
 				t.Fatalf("err=%v stopped=%v unlocked=%v", err, stopped, unlocked)
+			}
+		})
+	}
+}
+
+func TestRuntimeRecoveryReloadsFrontDoorBeforeUnlock(t *testing.T) {
+	for _, failReload := range []bool{false, true} {
+		t.Run(fmt.Sprint("fail=", failReload), func(t *testing.T) {
+			locked, stopped, resumed := false, false, false
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var events []string
+			_, err := updateFrontDoorRuntime(ctx, frontDoorUpdateOps{
+				restart: true,
+				versions: func(context.Context) (CodexRuntimeVersions, error) {
+					return CodexRuntimeVersions{"0.161.0", "0.161.0", false, !resumed}, nil
+				},
+				lock: func(context.Context) (func(), error) {
+					locked = true
+					return func() { locked = false; events = append(events, "unlock") }, nil
+				},
+				stop: func(context.Context) error { stopped = true; cancel(); events = append(events, "stop"); return nil },
+				reloadFrontDoor: func(recoveryCtx context.Context) error {
+					if recoveryCtx.Err() != nil {
+						t.Fatal("旧后台退出后必须完成有界恢复，不能沿用已取消的请求")
+					}
+					if !locked || !stopped {
+						t.Fatal("换代前门必须在旧 backend 退出后且锁仍持有时执行")
+					}
+					events = append(events, "reload")
+					if failReload {
+						return errors.New("reload failed")
+					}
+					return nil
+				},
+				resume: func(context.Context) (string, error) {
+					if locked {
+						t.Fatal("重新连接前必须释放锁")
+					}
+					resumed = true
+					events = append(events, "resume")
+					return "0.161.0", nil
+				},
+			})
+			want := []string{"stop", "reload", "unlock", "resume"}
+			if failReload {
+				want = want[:3]
+			}
+			if (err != nil) != failReload || !reflect.DeepEqual(events, want) {
+				t.Fatalf("events=%v err=%v", events, err)
 			}
 		})
 	}

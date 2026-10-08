@@ -211,7 +211,7 @@ extension AgentCommandClient {
             updateCodexRuntime: { restart in
                 let binary = try requireEmbeddedBinary()
                 return try decode(CodexRuntimeVersions.self, from: try await execute(
-                    binary: binary, arguments: ["codex-front", "update"] + (restart ? ["--restart"] : []), timeout: .seconds(40)
+                    binary: binary, arguments: ["codex-front", "update"] + (restart ? ["--restart"] : []), timeout: .seconds(60)
                 ))
             },
             configureClaude: { preference, restoreEnabled in
