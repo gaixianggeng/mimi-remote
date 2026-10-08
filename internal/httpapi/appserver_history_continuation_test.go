@@ -141,6 +141,12 @@ func TestHistorySummaryFirstPageBypassesExhaustedGlobalBudget(t *testing.T) {
 		t.Fatalf("summary 响应仍须计入全局字节：before=%d got=%d", before, got)
 	}
 
+	pageID := json.RawMessage(`5`)
+	pageParams := map[string]any{"threadId": "thread-next", "itemsView": "summary", "cursor": "older", "limit": json.Number("10")}
+	if err := firstPage.reserveHistoryRequest(&pageID, "thread/turns/list", pageParams, 160); err == nil || err.data["scope"] != "global" {
+		t.Fatalf("带 cursor 的 summary 翻页不是首页，仍应受全局下行预算限制：%+v", err)
+	}
+
 	fullID := json.RawMessage(`4`)
 	fullParams := map[string]any{"threadId": "thread-next", "itemsView": "full", "limit": json.Number("10")}
 	if err := firstPage.reserveHistoryRequest(&fullID, "thread/turns/list", fullParams, 160); err == nil || err.data["scope"] != "global" {

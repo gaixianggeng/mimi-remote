@@ -77,6 +77,8 @@ func (p *appServerGatewayPolicy) pruneHistoryContinuationsLocked(now time.Time) 
 // summary 首页只含用户与 Agent 文本，是打开会话的第一屏。全局下行预算主要被后台
 // 按回合补齐的 items 用完；若连 summary 一起阻断，首屏会被上一个会话或本会话的
 // 补齐拖住，iPad 只能干等 15 秒。summary 响应仍计入全局字节，继续限制后台补齐。
+// 只放行不带 cursor 的首页：向上翻页若也放行，连续翻页会不断刷新阻断窗口，
+// 让全局预算失去上限并长期饿死 full/items 请求。
 func gatewayHistoryRequestBypassesGlobalBlock(request appServerGatewayPendingHistoryRequest) bool {
-	return request.method == "thread/turns/list" && request.itemsView == "summary"
+	return request.method == "thread/turns/list" && request.itemsView == "summary" && request.cursor == ""
 }
