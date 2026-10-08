@@ -112,10 +112,12 @@ func TestAppServerGatewayGlobalHistoryBudgetLimitsAcrossThreads(t *testing.T) {
 	firstPolicy.recordHistoryResponseBudget(appServerGatewayPendingHistoryRequest{method: "thread/turns/list", threadID: "thread-a", itemsView: "full"}, 700)
 	secondPolicy.recordHistoryResponseBudget(appServerGatewayPendingHistoryRequest{method: "thread/turns/list", threadID: "thread-b", itemsView: "full"}, 400)
 
+	// summary 首页不受全局阻断（见 TestHistorySummaryFirstPageBypassesExhaustedGlobalBudget），
+	// 这里用 full 验证跨 thread 共用下行预算。
 	id := json.RawMessage(`3`)
 	err := firstPolicy.reserveHistoryRequest(&id, "thread/turns/list", map[string]any{
 		"threadId":  "thread-c",
-		"itemsView": "summary",
+		"itemsView": "full",
 	}, 128)
 	if err == nil || !err.historyBudgetRejected || err.data["reason"] != "history_budget_limited" {
 		t.Fatalf("跨 thread 超过全局预算后应限流，err=%+v", err)

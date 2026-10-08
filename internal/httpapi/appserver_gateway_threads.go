@@ -232,6 +232,9 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 					}
 				}
 				p.recordHistoryResponseBudget(pending, len(payload))
+				if len(frame.Error) == 0 {
+					p.rememberHistoryContinuation(pending, frame.Result)
+				}
 			}
 		}
 	}

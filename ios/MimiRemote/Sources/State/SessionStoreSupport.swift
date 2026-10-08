@@ -275,6 +275,11 @@ struct HistoryPolicyFailure: Equatable {
         self.maxResponseBytes = maxResponseBytes
         self.itemsView = itemsView
     }
+
+    /// 预算或同请求占用只说明 gateway 此刻繁忙，与历史体量无关。
+    var isGatewayBusy: Bool {
+        reason == "history_budget_limited" || reason == "history_request_in_flight"
+    }
 }
 
 struct SessionListPolicyFailure: Equatable {
@@ -326,6 +331,8 @@ struct HistoryLoadJob {
     /// 非 nil 表示此 job 属于一次明确的前台/网络恢复代次。
     let recoveryGeneration: UInt64?
     let allowPolicyRetry: Bool
+    /// 本 job 是 gateway 繁忙后的第几次原地退避；0 表示首次请求。
+    let policyRetryAttempt: Int
     /// full 自适应缩页时本次尝试使用的 turn 页大小；nil 表示默认首屏（等价 ladder 顶端）。
     /// 供 history_response_too_large 回退时决定下一级更小的 full 页。
     let fullTurnPageLimit: Int?

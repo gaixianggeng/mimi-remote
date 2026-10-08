@@ -4687,16 +4687,22 @@ extension ConversationDataFlowTests {
             with: historyPolicyError(reason: "history_budget_limited", retryAfterMs: 1)
         )
         await client.waitForHistoryRequestCount(2)
+        // 第一次退避后仍被限流（后台补齐占着预算）：economy 命中同一预算，不能降级。
+        client.failHistoryRequest(
+            at: 1,
+            with: historyPolicyError(reason: "history_budget_limited", retryAfterMs: 1)
+        )
+        await client.waitForHistoryRequestCount(3)
 
-        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full])
-        XCTAssertEqual(client.requestedMessageLimits, [20, 20])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full, .full])
+        XCTAssertEqual(client.requestedMessageLimits, [20, 20, 20])
         XCTAssertNil(
             store.selectedHistorySavingsNotice,
             "临时预算冲突不是大历史，不能误导用户进入缩略历史提示"
         )
 
         client.resolveHistoryRequest(
-            at: 1,
+            at: 2,
             with: HistoryMessagesPage(messages: [
                 CodexHistoryMessage(
                     id: "claude-small-reply",
@@ -4710,6 +4716,44 @@ extension ConversationDataFlowTests {
 
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["少量历史"])
         XCTAssertNil(store.selectedHistorySavingsNotice)
+    }
+
+    func testFullHistoryBudgetThrottleExhaustedShowsFullFailureInsteadOfSummary() async {
+        let project = makeProject(id: "proj_claude_budget_exhausted")
+        let history = makeSession(
+            id: "claude_budget_exhausted",
+            projectID: project.id,
+            title: "持续限流",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "budget-exhausted"
+        )
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(history) }
+        for attempt in 0...store.historyPolicyBusyRetryLimit {
+            await client.waitForHistoryRequestCount(attempt + 1)
+            client.failHistoryRequest(
+                at: attempt,
+                with: historyPolicyError(reason: "history_budget_limited", retryAfterMs: 1)
+            )
+        }
+        await selectTask.value
+
+        XCTAssertEqual(
+            client.requestedMessageLoadModes,
+            Array(repeating: .full, count: store.historyPolicyBusyRetryLimit + 1),
+            "重试用尽也不能改发 economy：它命中同一预算，只会叠加缩略限流倒计时"
+        )
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .fullFailed)
     }
 
     func testSummaryHistoryPolicyFailureRetriesOnceAfterRetryAfter() async {

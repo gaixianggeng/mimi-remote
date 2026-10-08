@@ -481,6 +481,7 @@ extension SessionStore {
         reason: HistoryLoadReason = .automatic,
         successStatusMessage: String? = nil,
         allowPolicyRetry: Bool = true,
+        policyRetryAttempt: Int = 0,
         recoveryGeneration: UInt64? = nil,
         fullTurnPageLimit: Int? = nil,
         noticeMessageOverride: String? = nil
@@ -592,6 +593,7 @@ extension SessionStore {
             cachePolicy: cachePolicy,
             recoveryGeneration: recoveryGeneration,
             allowPolicyRetry: allowPolicyRetry,
+            policyRetryAttempt: policyRetryAttempt,
             fullTurnPageLimit: loadMode == .full ? fullTurnPageLimit : nil,
             task: task,
             showsProgress: shouldShowProgress,
@@ -857,13 +859,13 @@ extension SessionStore {
         }
         if let policyFailure = historyPolicyFailure(from: error) {
             switch job.loadMode {
-            case .full where (policyFailure.reason == "history_budget_limited"
-                              || policyFailure.reason == "history_request_in_flight")
-                && job.allowPolicyRetry:
-                // 预算/同请求占用只说明 gateway 此刻繁忙，与历史体量无关。
-                // 旧逻辑会把任何 full 策略失败都降级成 economy，随后 economy 又命中同一预算，
-                // 用户就会看到“15 秒后重试缩略历史”，即使 Claude 会话只有几条可见消息。
-                // 保持 full(summary-first) 语义原地退避一次，不制造错误的“大历史”判断。
+            case .full where policyFailure.isGatewayBusy
+                && job.allowPolicyRetry
+                && job.policyRetryAttempt < historyPolicyBusyRetryLimit:
+                // 预算/同请求占用只说明 gateway 此刻繁忙，与历史体量无关。economy 与 full
+                // 首页发的都是 summary 的 thread/turns/list，命中同一份预算：降级既绕不开限流，
+                // 还会把“繁忙”误报成“内容较大”、再叠加“15 秒后重试缩略历史”，最后停在
+                // 没有 item 补齐的缩略历史。因此保持 full(summary-first) 原地有限次退避。
                 let delay = policyFailure.retryAfterNanoseconds
                     ?? (policyFailure.reason == "history_request_in_flight"
                         ? 1_000_000_000
@@ -879,10 +881,17 @@ extension SessionStore {
                     force: true,
                     reason: .automatic,
                     successStatusMessage: effectiveQuiet ? nil : current.foregroundSuccessStatusMessage,
-                    allowPolicyRetry: false,
+                    policyRetryAttempt: job.policyRetryAttempt + 1,
                     recoveryGeneration: job.recoveryGeneration,
                     fullTurnPageLimit: job.fullTurnPageLimit
                 )
+            case .full where policyFailure.isGatewayBusy:
+                // 退避后仍繁忙：已有正文时保持现状，由下一次刷新兜底；首次打开给出可重试的
+                // 完整历史失败提示。两种情况都不降级缩略，也不显示体量类文案。
+                if !effectiveQuiet, !conversationStore.hasLoadedHistory(sessionID: sessionID) {
+                    setHistoryLoadNotice(sessionID: sessionID, kind: .fullFailed)
+                }
+                return false
             case .full:
                 // 低波及自适应缩页：仅当实际可分页的 thread/turns/list full
                 // 被 gateway 按体量阻断时才逐级缩页。老 agentd 回退到 thread/read 后

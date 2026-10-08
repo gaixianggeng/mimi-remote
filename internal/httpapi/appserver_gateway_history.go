@@ -58,11 +58,13 @@ func (p *appServerGatewayPolicy) reserveHistoryRequest(id *json.RawMessage, meth
 	if p.historyBudgets == nil {
 		p.historyBudgets = map[string]appServerGatewayHistoryBudget{}
 	}
+	continuationKey, continuation := p.historyContinuationLocked(pending, now)
 	aggregateKey, aggregateBudget, aggregateErr := p.checkHistoryItemsAggregateBudgetLocked(
 		id,
 		pending,
 		now,
 		requestBytes,
+		continuation,
 	)
 	if aggregateErr != nil {
 		p.releaseHistoryInflight(pending)
@@ -86,7 +88,7 @@ func (p *appServerGatewayPolicy) reserveHistoryRequest(id *json.RawMessage, meth
 			nil,
 		)
 	}
-	if appServerGatewayHistoryBudgetMaxRequests > 0 && budget.requests >= appServerGatewayHistoryBudgetMaxRequests {
+	if !continuation && appServerGatewayHistoryBudgetMaxRequests > 0 && budget.requests >= appServerGatewayHistoryBudgetMaxRequests {
 		budget.blockedUntil = now.Add(appServerGatewayHistoryBudgetWindow)
 		p.historyBudgets[budgetKey] = budget
 		p.releaseHistoryInflight(pending)
@@ -128,13 +130,20 @@ func (p *appServerGatewayPolicy) reserveHistoryRequest(id *json.RawMessage, meth
 			nil,
 		)
 	}
-	budget.requests++
+	if !continuation {
+		budget.requests++
+	}
 	budget.requestBytes += int64(requestBytes)
 	p.historyBudgets[budgetKey] = budget
 	if aggregateKey != "" {
-		aggregateBudget.requests++
+		if !continuation {
+			aggregateBudget.requests++
+		}
 		aggregateBudget.requestBytes += int64(requestBytes)
 		p.historyBudgets[aggregateKey] = aggregateBudget
+	}
+	if continuation {
+		delete(p.historyContinuations, continuationKey)
 	}
 	pending.createdAt = now
 	p.pendingHistory[key] = pending
@@ -146,6 +155,7 @@ func (p *appServerGatewayPolicy) checkHistoryItemsAggregateBudgetLocked(
 	request appServerGatewayPendingHistoryRequest,
 	now time.Time,
 	requestBytes int,
+	continuation bool,
 ) (string, appServerGatewayHistoryBudget, *appServerGatewayPolicyError) {
 	if request.method != "thread/items/list" {
 		return "", appServerGatewayHistoryBudget{}, nil
@@ -167,7 +177,7 @@ func (p *appServerGatewayPolicy) checkHistoryItemsAggregateBudgetLocked(
 			extra,
 		)
 	}
-	if appServerGatewayHistoryItemsAggregateMaxRequests > 0 &&
+	if !continuation && appServerGatewayHistoryItemsAggregateMaxRequests > 0 &&
 		budget.requests >= appServerGatewayHistoryItemsAggregateMaxRequests {
 		budget.blockedUntil = now.Add(appServerGatewayHistoryBudgetWindow)
 		p.historyBudgets[key] = budget
@@ -369,7 +379,8 @@ func gatewayHistoryBudgetSubject(request appServerGatewayPendingHistoryRequest) 
 	if request.method == "thread/items/list" {
 		// 首页会逐回合补齐 items。不同回合不能共用六次请求预算，否则十回合的
 		// 小首页也必然等待 15 秒；全局响应字节预算仍限制跨回合的总下行量。
-		// filterFingerprint 在 items 请求中保存 turnId；不包含 cursor，防止换页绕过限制。
+		// filterFingerprint 在 items 请求中保存 turnId；不包含 cursor，防止伪造换页绕过限制。
+		// 上游签发的续页另由 historyContinuations 放行次数预算。
 		encoded, _ := json.Marshal([]string{strings.TrimSpace(request.threadID), request.filterFingerprint})
 		return string(encoded)
 	}
@@ -446,6 +457,7 @@ func (p *appServerGatewayPolicy) pruneHistoryLocked(now time.Time) {
 			delete(p.historyBudgets, key)
 		}
 	}
+	p.pruneHistoryContinuationsLocked(now)
 }
 
 func (p *appServerGatewayPolicy) consumePendingHistoryRequest(id *json.RawMessage) (appServerGatewayPendingHistoryRequest, bool) {
@@ -523,7 +535,7 @@ func (r *Router) reserveHistoryGlobalBudget(id *json.RawMessage, request appServ
 	if budget.windowStarted.IsZero() || (now.Sub(budget.windowStarted) >= window && !budget.blockedUntil.After(now)) {
 		budget = appServerGatewayHistoryBudget{windowStarted: now}
 	}
-	if budget.blockedUntil.After(now) {
+	if budget.blockedUntil.After(now) && !gatewayHistoryRequestBypassesGlobalBlock(request) {
 		r.gatewayHistoryGlobalBudget = budget
 		return gatewayHistoryBudgetPolicyError(
 			id,
