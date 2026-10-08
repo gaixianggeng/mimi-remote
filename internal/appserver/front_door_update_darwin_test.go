@@ -101,13 +101,18 @@ func TestFrontDoorRuntimeVersionLegacyHomeCompatibility(t *testing.T) {
 	home := shortSharedLocalCodexHome(t)
 	otherHome := shortSharedLocalCodexHome(t)
 	for _, tc := range []struct {
-		name, reported      string
-		required, wantError bool
+		name, reported, userAgent string
+		required, wantError       bool
 	}{
-		{"legacy default", "", false, false},
-		{"isolated omission", "", true, true},
-		{"wrong default home", otherHome, false, true},
-		{"isolated match", home, true, false},
+		{"legacy default", "", "codex/0.149.1", false, false},
+		{"isolated omission", "", "codex/0.149.1", true, true},
+		{"wrong default home", otherHome, "codex/0.149.1", false, true},
+		{"isolated match", home, "codex/0.149.1", true, false},
+		{"Desktop name has spaces", "", "Codex Desktop/0.149.1 (Mac OS 27.2.0; arm64)", false, false},
+		{"Mimi name has spaces", "", "Mimi Remote/0.149.1 (Mac OS 27.2.0; arm64)", false, false},
+		{"unknown product version", "", "Codex Desktop/unknown (Mac OS 27.2.0; arm64)", false, true},
+		{"missing product version", "", "Codex Desktop/ (Mac OS 27.2.0; arm64)", false, true},
+		{"OS version is not product version", "", "Codex Desktop/unknown Mac OS 27.2.0", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			socket := filepath.Join(home, "version.sock")
@@ -127,7 +132,7 @@ func TestFrontDoorRuntimeVersionLegacyHomeCompatibility(t *testing.T) {
 					return
 				}
 				_ = conn.WriteJSON(map[string]any{"id": request["id"], "result": map[string]any{
-					"userAgent": "codex/0.149.1", "codexHome": tc.reported,
+					"userAgent": tc.userAgent, "codexHome": tc.reported,
 				}})
 				_ = conn.ReadJSON(&request)
 			})}

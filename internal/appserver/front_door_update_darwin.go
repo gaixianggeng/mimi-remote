@@ -78,16 +78,22 @@ func frontDoorRuntimeState(ctx context.Context, socket, expectedHome string, req
 	if err := validateExpectedBackendCodexHome(expectedHome, result.CodexHome, requireHome); err != nil {
 		return "", false, err
 	}
-	// userAgent 的首段形如 codex/0.161.0，后面还可能包含 OS 版本。
-	fields := strings.Fields(result.UserAgent)
-	if len(fields) == 0 {
+	// Desktop 连接后名称可能变为带空格的 Codex Desktop，不能按首个空白截断。
+	// 只在 OS 描述前的产品段读取版本，避免把 Mac OS 版本误认作 Codex 版本。
+	product, _, _ := strings.Cut(result.UserAgent, " (")
+	product = strings.TrimSpace(product)
+	if product == "" {
 		return "", false, errors.New("Codex initialize 未返回版本")
 	}
-	_, raw, ok := strings.Cut(fields[0], "/")
-	if !ok {
+	slash := strings.LastIndex(product, "/")
+	if slash < 1 {
 		return "", false, errors.New("Codex userAgent 版本格式无效")
 	}
-	version, ok := ParseCodexVersion(raw)
+	fields := strings.Fields(product[slash+1:])
+	if len(fields) == 0 {
+		return "", false, errors.New("Codex userAgent 版本无法识别")
+	}
+	version, ok := ParseCodexVersion(fields[0])
 	if !ok {
 		return "", false, errors.New("Codex userAgent 版本无法识别")
 	}
