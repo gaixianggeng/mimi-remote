@@ -224,7 +224,7 @@ func (f *FrontDoor) trackedDrainingOrphans(ctx context.Context) (map[sharedLocal
 }
 
 func canGracefullyDrainFrontDoorOrphan(ctx context.Context, process sharedLocalRepairProcess) error {
-	path, err := darwinProcessExecutable(process.PID)
+	path, err := darwinMappedCodexExecutable(ctx, process.PID)
 	if err != nil || !filepath.IsAbs(path) {
 		return errors.New("无法读取旧 Codex 的可执行文件")
 	}
@@ -239,21 +239,6 @@ func canGracefullyDrainFrontDoorOrphan(ctx context.Context, process sharedLocalR
 	// Codex 0.149.1 起已核对：重复 SIGHUP 不会把 drain 升级成强制退出。
 	_, err = CheckLocalCodex(ctx, path)
 	return err
-}
-
-func darwinProcessExecutable(pid int) (string, error) {
-	raw, err := unix.SysctlRaw("kern.procargs2", pid)
-	if err != nil {
-		return "", err
-	}
-	if len(raw) < 5 {
-		return "", errors.New("procargs2 过短")
-	}
-	end := bytes.IndexByte(raw[4:], 0)
-	if end <= 0 {
-		return "", errors.New("procargs2 缺少可执行路径")
-	}
-	return string(raw[4 : 4+end]), nil
 }
 
 func isPublicAppServerArgs(argv []string, public string) bool {

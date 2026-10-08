@@ -19,7 +19,12 @@ final class HostStore {
     private(set) var isUpdatingDiagnostics = false
     private(set) var isExportingDiagnostics = false
     private(set) var appliedFixes: [String] = []
-    private(set) var isBusy = false
+    private var isPerformingAction = false
+    private(set) var isBusy: Bool {
+        get { isPerformingAction || codexRuntimeUpdate.isUpdating }
+        set { isPerformingAction = newValue }
+    }
+    let codexRuntimeUpdate: CodexRuntimeUpdateStore
     private(set) var isStoppingForQuit = false
     private(set) var isRefreshingStatus = false
     private(set) var homebrewLoaded = false
@@ -131,6 +136,7 @@ final class HostStore {
         }
     ) {
         self.agent = agent
+        self.codexRuntimeUpdate = CodexRuntimeUpdateStore(agent: agent)
         self.services = services
         self.configCheck = configCheck
         self.homebrew = homebrew
