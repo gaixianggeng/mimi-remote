@@ -250,6 +250,8 @@ func (f *FrontDoor) dialBackend(ctx context.Context) (net.Conn, error) {
 	}
 	// 残留的 backend socket 文件交给 Codex 自己的探测处理：连接被拒才删除并重新绑定。
 	launchOptions := f.options
+	// 前门可能早于 CLI 安装或升级启动；每次创建 backend 都重新选择当前安装入口。
+	launchOptions.CodexBin = FrontDoorCodexBin(launchOptions.CodexBin, launchOptions.Env)
 	if launchOptions.BackendCodexHome != "" {
 		// 公共 socket 始终由原环境决定；只在启动私有 backend 时切换身份目录。
 		launchOptions.Env = cloneStringMap(f.options.Env)

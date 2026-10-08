@@ -16,6 +16,12 @@ struct AgentCommandClient: Sendable {
         throw AgentClientError.commandFailed("当前 agentd 不支持共享运行环境修复，请更新 App。")
     }
     var uninstallCodexFrontDoor: @Sendable () async throws -> Void = {}
+    var codexRuntimeVersions: @Sendable () async throws -> CodexRuntimeVersions = {
+        throw AgentClientError.commandFailed("请更新 Mimi Remote Mac 后检查 Codex 版本。")
+    }
+    var updateCodexRuntime: @Sendable () async throws -> CodexRuntimeVersions = {
+        throw AgentClientError.commandFailed("请更新 Mimi Remote Mac 后切换 Codex 版本。")
+    }
     var configureClaude: @Sendable (
         _ preference: ClaudeActivationPreference,
         _ restoreEnabled: Bool?
@@ -195,6 +201,18 @@ extension AgentCommandClient {
                     arguments: ["codex-front", "uninstall", "--stop-idle-backend"],
                     timeout: .seconds(40)
                 )
+            },
+            codexRuntimeVersions: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(CodexRuntimeVersions.self, from: try await execute(
+                    binary: binary, arguments: ["codex-front", "runtime"], timeout: .seconds(10)
+                ))
+            },
+            updateCodexRuntime: {
+                let binary = try requireEmbeddedBinary()
+                return try decode(CodexRuntimeVersions.self, from: try await execute(
+                    binary: binary, arguments: ["codex-front", "update"], timeout: .seconds(40)
+                ))
             },
             configureClaude: { preference, restoreEnabled in
                 let binary = try requireEmbeddedBinary()

@@ -34,6 +34,8 @@ struct MenuBarContentView: View {
             )
 
             AppUpdateNotice(updates: updates)
+            CodexRuntimeUpdateNotice(store: store)
+                .padding(.top, store.codexRuntimeUpdate.versions?.updateAvailable == true ? 8 : 0)
 
             Divider()
                 .opacity(0.45)

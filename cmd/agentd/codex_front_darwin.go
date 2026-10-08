@@ -77,7 +77,7 @@ func isInstalledMacAppAgentd(executable, home string) bool {
 
 func runCodexFront(args []string) error {
 	if len(args) < 2 {
-		return errors.New("用法：agentd codex-front serve|install|uninstall|status")
+		return errors.New("用法：agentd codex-front serve|install|uninstall|status|runtime|update")
 	}
 	sub := args[1]
 	rest := append([]string{args[0] + " " + sub}, args[2:]...)
@@ -90,8 +90,10 @@ func runCodexFront(args []string) error {
 		return runCodexFrontUninstall(rest, os.Stdout)
 	case "status":
 		return runCodexFrontStatus(rest, os.Stdout)
+	case "runtime", "update":
+		return runCodexFrontRuntime(rest, os.Stdout, sub == "update")
 	default:
-		return fmt.Errorf("未知子命令 %q，可用：serve、install、uninstall、status", sub)
+		return fmt.Errorf("未知子命令 %q，可用：serve、install、uninstall、status、runtime、update", sub)
 	}
 }
 

@@ -192,6 +192,21 @@ agentd 或单条 Mimi WebSocket 退出时只关闭自己的连接或对应 SSH p
 
 Mac App 安装版的 Codex backend 由前门启动。launchd 先启动 Mimi Remote Mac 主程序，再由它启动包内 agentd，因此授权主体仍是 Mimi Remote Mac（照片图库在 App 的“设置 → 文件访问”中允许）。Homebrew 版 resident 由 agentd 启动，授权主体是 agentd 本身。显式 SSH 模式下 resident 是 sshd 的子进程；若“远程登录”里开启了“允许远程用户完全访问磁盘”（macOS 默认勾选），它会继承 sshd 的完全磁盘访问。因此从 SSH 切到本机模式后，照片图库、Mail、Safari 等“完全磁盘访问”范围内的目录可能从可读变为需要授权；桌面、文稿、下载仍按首次访问时的系统提示授权。需要无人值守访问受保护目录时，按[安装、升级与回滚](install-upgrade-rollback.md)为 Mimi Remote Mac（Homebrew 版为 agentd）授予完全磁盘访问。
 
+### Codex CLI 升级后切换共享后台
+
+更新 CLI 只替换已安装程序，运行中的共享后台会继续使用旧版。Mac 菜单栏和概览页会分别检查已安装版本与后台实际握手版本；发现已安装版本较新时显示“Codex 已更新，正在使用旧版”。版本不同不会直接把可用服务标记为故障。
+
+结束任务和排队消息，离开手机或平板的会话，并关闭终端和 Desktop 的共享页面后，点击“切换到新版”。Mimi 保持网关运行，只在共享连接已释放、后台空闲且确认可优雅退出时切换 Codex。正在使用中的后台保持不变，界面会说明如何重试；切换成功以新后台握手和版本一致为准。会话目录和记录保留。
+
+也可在本机终端使用当前 Mac App 的管理命令：
+
+```bash
+"/Applications/Mimi Remote Mac.app/Contents/Resources/agentd" codex-front runtime
+"/Applications/Mimi Remote Mac.app/Contents/Resources/agentd" codex-front update
+```
+
+`runtime` 只读取版本，不启动后台。`update` 不下载或安装 CLI，不降级后台，也不停止 Mimi 网关。配置与已登记的共享目录不一致、旧二进制已不可确认或新版连接失败时会明确报错；先刷新状态或运行诊断，不用强杀或删除 socket 来绕过检查。
+
 ### 一次性修复旧的 Background resident
 
 `gh` 登录信息相同，不代表不同 macOS 安全会话都能读取登录钥匙串。旧 resident 由 SSH 创建时，后续 GUI agentd 即使改为直连，仍会复用旧进程的安全环境。重复新建任务或重启 agentd 不会改变这个环境。

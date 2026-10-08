@@ -56,6 +56,8 @@ private struct ServiceOverviewView: View {
                     }
                 }
             }
+            CodexRuntimeUpdateNotice(store: store, showsCurrentVersion: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .alert("恢复 Homebrew 服务？", isPresented: $confirmsRestore) {
             Button("取消", role: .cancel) {}

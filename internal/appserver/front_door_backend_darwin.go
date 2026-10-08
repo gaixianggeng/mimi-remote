@@ -82,6 +82,9 @@ func (f *FrontDoor) checkIdleBackend(ctx context.Context, stop bool) error {
 	if err := canGracefullyDrainFrontDoorOrphan(ctx, process); err != nil {
 		return fmt.Errorf("无法确认私有 Codex backend 的安全退出语义：%w", err)
 	}
+	if err := check(); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
