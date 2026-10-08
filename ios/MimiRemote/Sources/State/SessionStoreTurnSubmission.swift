@@ -119,6 +119,11 @@ extension SessionStore {
         ))
     }
 
+    /// 已提交的引导改发 turn/start 时只调整本地回显归属；pending 记录仍等待最终 outcome 收尾。
+    func handleGuidanceFallbackToTurnStart(clientMessageID: ClientMessageID, sessionID: SessionID) {
+        conversationStore.releaseGuidanceForTurnStart(clientMessageID: clientMessageID, sessionID: sessionID)
+    }
+
     func hasPendingGuidance(
         clientMessageID: ClientMessageID,
         sessionID: SessionID,
