@@ -25,6 +25,7 @@ permission_keys = (
     "NSLocalNetworkUsageDescription",
     "NSCameraUsageDescription",
     "NSMicrophoneUsageDescription",
+    "NSPhotoLibraryAddUsageDescription",
     "NSSpeechRecognitionUsageDescription",
 )
 cjk_pattern = re.compile(r"[\u3400-\u9fff]")

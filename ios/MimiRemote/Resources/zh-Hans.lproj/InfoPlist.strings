@@ -3,4 +3,5 @@
 "NSLocalNetworkUsageDescription" = "用于查找并连接你配置的开发环境。";
 "NSCameraUsageDescription" = "用于扫描配对二维码，或拍摄你选择附加到消息中的照片。";
 "NSMicrophoneUsageDescription" = "用于在消息输入框中将语音转换为文字。";
+"NSPhotoLibraryAddUsageDescription" = "用于在你选择时，把用户群二维码保存到照片图库。";
 "NSSpeechRecognitionUsageDescription" = "用于识别语音并填入消息输入框。";

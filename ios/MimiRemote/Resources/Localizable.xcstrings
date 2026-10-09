@@ -6647,6 +6647,210 @@
         }
       }
     },
+    "ui.community_add_instruction": {
+      "comment": "Explains how joining works: add the developer on WeChat, then get invited.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add the developer on WeChat with the note “Mimi”, and you’ll be invited to the group."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加开发者微信，备注「Mimi」，通过后拉你进群。"
+          }
+        }
+      }
+    },
+    "ui.community_copy_wechat_id": {
+      "comment": "Action row that copies the developer's WeChat ID.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy WeChat ID"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制微信号"
+          }
+        }
+      }
+    },
+    "ui.community_group_name": {
+      "comment": "Name of the user group shown under the WeChat QR code.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi Remote User Group"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi Remote 用户群"
+          }
+        }
+      }
+    },
+    "ui.community_photos_access_denied": {
+      "comment": "Shown when the app may not add photos, so the QR code could not be saved.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi doesn’t have permission to add photos. Allow it in Settings, or take a screenshot instead."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有添加照片的权限。可以在系统设置里允许 Mimi 添加照片，或者直接截屏保存。"
+          }
+        }
+      }
+    },
+    "ui.community_qr_accessibility_label": {
+      "comment": "VoiceOver label for the developer's WeChat QR code image.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Developer’s WeChat QR code"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开发者微信二维码"
+          }
+        }
+      }
+    },
+    "ui.community_qr_code_saved": {
+      "comment": "Brief confirmation after the WeChat QR code is saved to the photo library.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved to Photos"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存到相册"
+          }
+        }
+      }
+    },
+    "ui.community_save_failed": {
+      "comment": "Shown when saving the QR code to the photo library failed.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t save to Photos. Try again later, or take a screenshot instead."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没能保存到相册。可以稍后再试，或者直接截屏保存。"
+          }
+        }
+      }
+    },
+    "ui.community_save_qr_code": {
+      "comment": "Action row that saves the WeChat QR code to the photo library.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save QR Code to Photos"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存二维码到相册"
+          }
+        }
+      }
+    },
+    "ui.community_scan_help_pad": {
+      "comment": "Footer on iPad and Mac: scan the on-screen code with WeChat on a phone.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan the QR code above with WeChat on your phone."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用手机微信扫一扫上面的二维码即可添加。"
+          }
+        }
+      }
+    },
+    "ui.community_scan_help_phone": {
+      "comment": "Footer on iPhone: a code on the same screen can't be scanned, so save it and open it from the album in WeChat Scan.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can’t scan a code on this screen directly. Save it to Photos, then choose it from your album in WeChat Scan."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机屏幕上的二维码没法直接扫：先保存到相册，再在微信「扫一扫」里从相册选择它。"
+          }
+        }
+      }
+    },
+    "ui.community_search_help": {
+      "comment": "Footer line offering to search the copied WeChat ID instead of scanning.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can also copy the WeChat ID and search for it in WeChat."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "也可以复制微信号，在微信里搜索添加。"
+          }
+        }
+      }
+    },
+    "ui.community_wechat_id_copied": {
+      "comment": "Brief confirmation after the developer's WeChat ID is copied.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "WeChat ID Copied"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已复制微信号"
+          }
+        }
+      }
+    },
     "ui.compact_history_retry_seconds_count": {
       "comment": "Plural count used in the localized iOS UI.",
       "localizations": {
@@ -12014,6 +12218,23 @@
         }
       }
     },
+    "ui.feedback_and_community": {
+      "comment": "Section title on the Me tab for joining the user group and, later, sending feedback.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Feedback & Community"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "反馈与交流"
+          }
+        }
+      }
+    },
     "ui.file": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -15257,6 +15478,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "加入会话页"
+          }
+        }
+      }
+    },
+    "ui.join_user_group": {
+      "comment": "Row and page title that opens the developer's WeChat QR code for joining the user group.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Join the User Group"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加入用户群"
           }
         }
       }

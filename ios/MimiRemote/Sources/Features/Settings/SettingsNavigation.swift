@@ -13,6 +13,7 @@ enum SettingsDestination: Hashable {
     case appDiagnostics
     case doctor
     case support
+    case community
     case advanced
     case capabilities
     case about
@@ -183,6 +184,10 @@ struct SettingsDestinationView: View {
             DoctorView(showsHistoryDiagnostics: developerModeEnabled)
         case .support:
             LegalDocumentView(document: .support)
+        case .community:
+            if let contact = CommunityContact.bundled {
+                CommunitySettingsView(contact: contact)
+            }
         case .advanced:
             AdvancedDevelopmentSettingsView(developerModeEnabled: $developerModeEnabled)
         case .capabilities:

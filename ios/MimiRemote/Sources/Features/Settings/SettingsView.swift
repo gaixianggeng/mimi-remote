@@ -217,6 +217,9 @@ struct SettingsView: View {
         // 仅 Debug 构建读取该参数，Release 与普通设置导航保持不变。
         if ProcessInfo.processInfo.arguments.contains("--debug-open-mac-connection") {
             openDevices()
+        } else if ProcessInfo.processInfo.arguments.contains("--debug-open-community"),
+                  CommunityContact.bundled != nil {
+            navigation.mePath.append(.community)
         }
 #endif
     }
@@ -370,6 +373,22 @@ struct SettingsView: View {
                 SettingsGroupHeader(title: L10n.text("ui.my_preferences"))
             }
             .settingsGroupRowStyle()
+
+            if CommunityContact.bundled != nil {
+                Section {
+                    NavigationLink(value: SettingsDestination.community) {
+                        SettingsValueLabel(
+                            title: L10n.text("ui.join_user_group"),
+                            systemImage: "person.2"
+                        )
+                    }
+                    .settingsStandardListRow()
+                    .accessibilityIdentifier("settings.community")
+                } header: {
+                    SettingsGroupHeader(title: L10n.text("ui.feedback_and_community"))
+                }
+                .settingsGroupRowStyle()
+            }
 
             Section {
                 NavigationLink(value: SettingsDestination.diagnostics) {
