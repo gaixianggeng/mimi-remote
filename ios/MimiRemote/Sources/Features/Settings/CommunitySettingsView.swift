@@ -14,7 +14,10 @@ struct CommunityContact: Equatable {
     /// 可搜索的微信号；为空时不显示「复制微信号」。
     let weChatID: String?
 
-    static let bundled = CommunityContact.make(qrCodePayload: "", weChatID: "")
+    static let bundled = CommunityContact.make(
+        qrCodePayload: "https://u.wechat.com/EOXblOqhEHI1mskgGw5ehPo?s=2",
+        weChatID: nil
+    )
 
     static func make(qrCodePayload: String, weChatID: String?) -> CommunityContact? {
         let payload = qrCodePayload.trimmingCharacters(in: .whitespacesAndNewlines)
