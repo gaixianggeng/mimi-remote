@@ -66,6 +66,8 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
+    /// Harness 不支持 guidance，不会降级为 turn/start。
+    var onGuidanceFallbackToTurnStart: ((ClientMessageID?) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
     var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
     var onControlFailure: ((ControlCommandFailure) -> Void)?

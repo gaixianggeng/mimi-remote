@@ -1189,6 +1189,7 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
+    var onGuidanceFallbackToTurnStart: ((ClientMessageID?) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
     var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
     var onControlFailure: ((ControlCommandFailure) -> Void)?
@@ -1276,7 +1277,8 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
                 expectedTurnID: expectedTurnID,
                 acceptedHandler: onSendAccepted,
                 failureHandler: onSendFailure,
-                outcomeHandler: onTurnSendOutcome
+                outcomeHandler: onTurnSendOutcome,
+                fallbackHandler: onGuidanceFallbackToTurnStart
             )
         }
         // Harness 不支持 guidance：显式拒绝，不把它当普通 prompt 发出去。
@@ -1326,6 +1328,9 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         client.onTurnSendOutcome = { [weak self] clientMessageID, outcome in
             self?.onTurnSendOutcome?(clientMessageID, outcome)
         }
+        client.onGuidanceFallbackToTurnStart = { [weak self] clientMessageID in
+            self?.onGuidanceFallbackToTurnStart?(clientMessageID)
+        }
         client.onApprovalDecisionFailure = { [weak self] approvalID, message in
             self?.onApprovalDecisionFailure?(approvalID, message)
         }
@@ -1356,6 +1361,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
     var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
+    var onGuidanceFallbackToTurnStart: ((ClientMessageID?) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
     var onUserInputResponseFailure: ((String, String, Bool) -> Void)?
     var onControlFailure: ((ControlCommandFailure) -> Void)?
@@ -1574,7 +1580,8 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
             expectedTurnID: expectedTurnID,
             acceptedHandler: onSendAccepted,
             failureHandler: onSendFailure,
-            outcomeHandler: onTurnSendOutcome
+            outcomeHandler: onTurnSendOutcome,
+            fallbackHandler: onGuidanceFallbackToTurnStart
         )
     }
 
@@ -1585,7 +1592,8 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         expectedTurnID: TurnID,
         acceptedHandler: ((ClientMessageID?) -> Void)?,
         failureHandler: ((ClientMessageID?, String) -> Void)?,
-        outcomeHandler: ((ClientMessageID?, TurnSendOutcome) -> Void)?
+        outcomeHandler: ((ClientMessageID?, TurnSendOutcome) -> Void)?,
+        fallbackHandler: ((ClientMessageID?) -> Void)?
     ) -> Bool {
         guard let sessionID else {
             failureHandler?(clientMessageID, L10n.text("ui.direct_websocket_not_connected"))
@@ -1614,6 +1622,11 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
                 if case CodexAppServerSessionRuntimeError.missingActiveTurn = error {
                     // missingActiveTurn 来自 steerTurn 的 RPC 前本地校验，确定没有发送。
                     // 仅此情形安全降级成普通 turn/start；任何上游/网络错误都禁止自动重试。
+                    // 先让调用方把本地回显移出旧 turn，再发请求：新回合的 userMessage
+                    // 回显可能早于 ACK 到达，届时必须已能按 client ID 合并。
+                    await MainActor.run {
+                        fallbackHandler?(clientMessageID)
+                    }
                     do {
                         let turnID = try await runtime.startTurn(
                             sessionID: sessionID,

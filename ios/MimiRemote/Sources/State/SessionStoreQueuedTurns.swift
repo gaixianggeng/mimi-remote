@@ -551,6 +551,13 @@ extension SessionStore {
                 }
             }
         }
+        socket.onGuidanceFallbackToTurnStart = { [weak self] clientMessageID in
+            Task { @MainActor in
+                guard let self, let clientMessageID,
+                      self.isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation) else { return }
+                self.handleGuidanceFallbackToTurnStart(clientMessageID: clientMessageID, sessionID: sessionID)
+            }
+        }
         socket.onApprovalDecisionFailure = { _, _ in }
         socket.onUserInputResponseFailure = { _, _, _ in }
         socket.onControlFailure = { _ in }

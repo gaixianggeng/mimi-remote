@@ -359,7 +359,9 @@ extension ConversationDataFlowTests {
 
         let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
         var outcome: TurnSendOutcome?
+        var fallbackClientMessageIDs: [ClientMessageID?] = []
         socket.onTurnSendOutcome = { _, value in outcome = value }
+        socket.onGuidanceFallbackToTurnStart = { fallbackClientMessageIDs.append($0) }
         socket.connect(sessionID: "thr_guidance_resume_finished")
         let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 3)
 
@@ -383,6 +385,8 @@ extension ConversationDataFlowTests {
             result: #"{"thread":{"id":"thr_guidance_resume_finished","sessionId":"thr_guidance_resume_finished","preview":"running before background","ephemeral":false,"createdAt":1780491000,"updatedAt":1780491002,"status":{"type":"idle"},"path":null,"cwd":"/tmp/guidance-resume-finished","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"running before background","turns":[{"id":"turn_finished_in_background","items":[],"itemsView":{"type":"complete"},"status":"completed","error":null,"startedAt":1780491001,"completedAt":1780491002,"durationMs":1000}]}}"#
         )
         let turnStart = try await waitForFakeAppServerRequest(transport, method: "turn/start", after: 4)
+        // #639：降级通知必须先于 turn/start 送达，新回合回显才能找到已解绑的本地气泡。
+        XCTAssertEqual(fallbackClientMessageIDs, ["client_guidance_resume_finished"])
         let params = try XCTUnwrap(turnStart.params?.objectValue)
         XCTAssertEqual(params["clientUserMessageId"]?.stringValue, "client_guidance_resume_finished")
         XCTAssertEqual(params["input"]?.arrayValue?.first?.objectValue?["text"]?.stringValue, "回前台后继续问")
@@ -400,6 +404,124 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(requests.filter { $0.method == "turn/start" }.count, 1)
         XCTAssertTrue(requests.allSatisfy { $0.method != "turn/steer" })
         socket.disconnect()
+    }
+
+    /// #639：本地仍记着已结束的旧 turn 时引导发送，runtime 在 RPC 前降级为 turn/start。
+    /// 新回合的 userMessage 回显先于 ACK 到达，也只能与本地回显合并成一条。
+    func testDirectGuidanceFallbackEchoBeforeACKShowsSingleUserMessage() async throws {
+        try await assertDirectGuidanceFallbackShowsSingleUserMessage(echoBeforeACK: true)
+    }
+
+    func testDirectGuidanceFallbackACKBeforeEchoShowsSingleUserMessage() async throws {
+        try await assertDirectGuidanceFallbackShowsSingleUserMessage(echoBeforeACK: false)
+    }
+
+    private func assertDirectGuidanceFallbackShowsSingleUserMessage(echoBeforeACK: Bool) async throws {
+        let suffix = echoBeforeACK ? "echo_first" : "ack_first"
+        let project = makeProject(id: "proj_guidance_fallback_\(suffix)")
+        let running = makeSession(
+            id: "sess_guidance_fallback_\(suffix)",
+            projectID: project.id,
+            title: "Guidance Fallback Echo",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            activeTurnID: "turn_stale"
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let prompt = "可以"
+        let sent = await store.sendTurn(CodexAppServerTurnPayload(prompt: prompt), runningDelivery: .guided)
+        XCTAssertTrue(sent)
+        let clientMessageID = try XCTUnwrap(socket.sentGuidance.first?.clientMessageID)
+        XCTAssertEqual(socket.sentGuidance.first?.expectedTurnID, "turn_stale")
+        func userEchoes() -> [ConversationMessage] {
+            conversationStore.messages(for: running.id).filter { $0.role == .user && $0.content == prompt }
+        }
+        XCTAssertEqual(userEchoes().first?.turnID, "turn_stale")
+
+        socket.onGuidanceFallbackToTurnStart?(clientMessageID)
+        for _ in 0..<200 where userEchoes().first?.userDelivery == .guided {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertNil(userEchoes().first?.turnID)
+        XCTAssertNil(userEchoes().first?.userDelivery)
+
+        func emitServerEcho() {
+            socket.emitEvent(.messageCompleted(
+                AgentMessage(
+                    id: "appserver:turn_new:user_item",
+                    sessionID: running.id,
+                    clientMessageID: clientMessageID,
+                    turnID: "turn_new",
+                    itemID: "user_item",
+                    role: .user,
+                    content: prompt,
+                    createdAt: Date(),
+                    revision: 1,
+                    sendStatus: .confirmed
+                ),
+                AgentEventMetadata(
+                    seq: 1,
+                    sessionID: running.id,
+                    turnID: "turn_new",
+                    itemID: "user_item",
+                    messageID: nil,
+                    clientMessageID: clientMessageID,
+                    revision: 1,
+                    createdAt: nil
+                )
+            ))
+        }
+        func acknowledge() {
+            socket.onTurnSendOutcome?(clientMessageID, .accepted(turnID: "turn_new"))
+        }
+        if echoBeforeACK {
+            emitServerEcho()
+            for _ in 0..<200 where userEchoes().first?.sendStatus != .confirmed {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            acknowledge()
+        } else {
+            acknowledge()
+            for _ in 0..<200 where userEchoes().first?.turnID != "turn_new" {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            XCTAssertEqual(userEchoes().first?.sendStatus, .sent)
+            emitServerEcho()
+            for _ in 0..<200 where userEchoes().first?.sendStatus != .confirmed {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let echoes = userEchoes()
+        XCTAssertEqual(echoes.count, 1, "同一 client ID 只能显示一条用户消息")
+        XCTAssertEqual(echoes.first?.clientMessageID, clientMessageID)
+        XCTAssertEqual(echoes.first?.turnID, "turn_new")
+        XCTAssertEqual(echoes.first?.sendStatus, .confirmed)
+        XCTAssertNil(echoes.first?.userDelivery)
     }
 
     func testDirectGuidanceUncertainSteerFailureDoesNotFallbackToTurnStart() async throws {
@@ -437,8 +559,10 @@ extension ConversationDataFlowTests {
         let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
         var statuses: [WebSocketStatus] = []
         var outcome: TurnSendOutcome?
+        var fallbackClientMessageIDs: [ClientMessageID?] = []
         socket.onStatus = { statuses.append($0) }
         socket.onTurnSendOutcome = { _, value in outcome = value }
+        socket.onGuidanceFallbackToTurnStart = { fallbackClientMessageIDs.append($0) }
         socket.connect(sessionID: "thr_guidance_uncertain")
 
         let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 3)
@@ -481,6 +605,7 @@ extension ConversationDataFlowTests {
         let requests = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
         XCTAssertEqual(requests.filter { $0.method == "turn/steer" }.count, 1)
         XCTAssertTrue(requests.allSatisfy { $0.method != "turn/start" })
+        XCTAssertTrue(fallbackClientMessageIDs.isEmpty, "steer 已发出后的上游错误不是降级，本地回显必须保留原 turn")
         socket.disconnect()
     }
 

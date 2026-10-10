@@ -89,6 +89,7 @@ extension SessionStore {
         socket.onSendAccepted = { _ in }
         socket.onSendFailure = { _, _ in }
         socket.onTurnSendOutcome = { _, _ in }
+        socket.onGuidanceFallbackToTurnStart = { _ in }
         socket.onApprovalDecisionFailure = { _, _ in }
         socket.onUserInputResponseFailure = { _, _, _ in }
         socket.onControlFailure = { _ in }
@@ -322,6 +323,22 @@ extension SessionStore {
                 if isPendingGuidance {
                     self.stopQueuedSessionMonitoringIfIdle(sessionID: session.id)
                 }
+            }
+        }
+        socket.onGuidanceFallbackToTurnStart = { [weak self] clientMessageID in
+            Task { @MainActor in
+                guard let self, let clientMessageID else { return }
+                // 与 outcome 同一放行条件；这里不结束 pending guidance，最终 outcome 仍会到达。
+                guard self.isCurrentWebSocketConnection(
+                    sessionID: session.id,
+                    generation: connectionGeneration,
+                    hostScope: hostScope
+                ) || self.hasPendingGuidance(
+                    clientMessageID: clientMessageID,
+                    sessionID: session.id,
+                    hostScope: hostScope
+                ) else { return }
+                self.handleGuidanceFallbackToTurnStart(clientMessageID: clientMessageID, sessionID: session.id)
             }
         }
         socket.onApprovalDecisionFailure = { [weak self] approvalID, message in
