@@ -8,6 +8,58 @@ import UIKit
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testAuthoritativeCollaborationModeDoesNotOverrideActiveComposerChoice() {
+        XCTAssertEqual(
+            ComposerCollaborationModeSync.resolvedSendMode(
+                authoritativeMode: .plan,
+                currentMode: .standard,
+                userChoiceRevision: 4,
+                baselineRevision: 4
+            ),
+            .plan
+        )
+        XCTAssertNil(ComposerCollaborationModeSync.resolvedSendMode(
+            authoritativeMode: .default,
+            currentMode: .plan,
+            userChoiceRevision: 5,
+            baselineRevision: 4
+        ))
+        XCTAssertNil(ComposerCollaborationModeSync.resolvedSendMode(
+            authoritativeMode: .plan,
+            currentMode: .goal,
+            userChoiceRevision: 4,
+            baselineRevision: 4
+        ))
+        XCTAssertEqual(
+            ComposerCollaborationModeSync.resolvedSendMode(
+                authoritativeMode: .default,
+                currentMode: .plan,
+                userChoiceRevision: 4,
+                baselineRevision: 4
+            ),
+            .standard
+        )
+    }
+
+    func testSubmittedPlanResetIgnoresCachedModeUntilCurrentSessionChanges() {
+        let currentScope = ComposerDraftScopeKey.session("thread-current")
+        let otherScope = ComposerDraftScopeKey.session("thread-other")
+        var cache = ComposerSendModeCache()
+        cache.save(.standard, for: currentScope)
+        cache.suppressAuthoritativeMode(.plan, for: currentScope)
+
+        XCTAssertFalse(cache.shouldApplyAuthoritativeMode(.plan, for: currentScope))
+        XCTAssertTrue(cache.shouldApplyAuthoritativeMode(.plan, for: otherScope))
+        cache.save(.standard, for: otherScope)
+        cache.save(.standard, for: currentScope)
+        XCTAssertFalse(
+            cache.shouldApplyAuthoritativeMode(.plan, for: currentScope),
+            "其他会话的通知不能消费当前会话的提交后抑制状态"
+        )
+        XCTAssertTrue(cache.shouldApplyAuthoritativeMode(.default, for: currentScope))
+        XCTAssertTrue(cache.shouldApplyAuthoritativeMode(.plan, for: currentScope))
+    }
+
     func testAppleSpeechHealthMonitorOnlyArmsAfterSustainedAudibleInput() {
         var monitor = AppleSpeechHealthMonitor()
 

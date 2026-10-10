@@ -35,7 +35,7 @@ struct ModelReasoningGridLayout: Equatable {
     let kind: ModelReasoningGridKind
     let models: [CodexAppServerModelOption]
     let efforts: [CodexAppServerReasoningEffort]
-    let showsFastMode: Bool
+    let showsServiceTierControl: Bool
 
     var modelRowCount: Int {
         models.count
@@ -223,7 +223,9 @@ enum ModelReasoningGridCatalog {
             kind: kind,
             models: models,
             efforts: standardEfforts(for: kind, options: models),
-            showsFastMode: kind == .codex
+            showsServiceTierControl: source.contains {
+                !serviceTiers(for: $0, kind: kind).isEmpty
+            }
         )
     }
 
@@ -443,27 +445,94 @@ enum ModelReasoningGridCatalog {
         turnOptions.model = preservesServerDefault ? nil : option.model
         turnOptions.modelProvider = preservesServerDefault ? nil : option.provider
         turnOptions.reasoningEffort = effort
-
-        if CodexAppServerSessionRuntime.normalizedRuntimeProvider(turnOptions.runtimeProvider) != "codex" {
-            turnOptions.serviceTier = nil
+        turnOptions.serviceTier = normalizedServiceTier(
+            turnOptions.serviceTier,
+            option: option,
+            kind: nil
+        )
+        if option.supportsPersonality == false {
+            turnOptions.personality = nil
         }
     }
 
-    static func serviceTierForFastMode(_ isEnabled: Bool) -> String? {
-        isEnabled ? "priority" : nil
+    static func serviceTiers(
+        for option: CodexAppServerModelOption?,
+        kind: ModelReasoningGridKind? = nil
+    ) -> [CodexAppServerModelServiceTier] {
+        guard let option else { return [] }
+        let runtime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(option.runtimeProvider)
+        guard kind == .codex || (kind == nil && runtime == "codex") else {
+            // Claude bridge 偶尔会返回名为 standard 的目录值，但它不接受 Codex serviceTier。
+            return []
+        }
+        if let declared = option.serviceTiers {
+            return declared
+        }
+        // 0.155 之前的部分目录没有能力字段。仅在字段缺失时保留旧 Fast 行为；
+        // 当前目录返回空数组时必须尊重它，不能按套餐或模型名称推测权限。
+        return [CodexAppServerModelServiceTier(
+            id: "priority",
+            name: "Fast",
+            description: "Priority processing"
+        )]
     }
 
-    static func normalizedStandardServiceTier(
+    static func normalizedServiceTier(
         _ serviceTier: String?,
-        runtimeProvider: String?
+        option: CodexAppServerModelOption?,
+        kind: ModelReasoningGridKind? = nil,
+        runtimeProvider: String? = nil,
+        allowsUnlistedCodexTier: Bool = false
     ) -> String? {
-        guard CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "codex",
-              serviceTier == "priority"
-        else {
+        guard let serviceTier = serviceTier?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .appServerNilIfEmpty
+        else { return nil }
+        let runtime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(
+            option?.runtimeProvider ?? runtimeProvider
+        )
+        guard kind == .codex || (kind == nil && runtime == "codex") else {
             return nil
         }
-        return "priority"
+        // 开发者高级选项也服务于 API key 模型。协议允许自由字符串，因此只在
+        // 明确的开发者边界保留目录外值；普通模型菜单继续严格服从账号目录。
+        if allowsUnlistedCodexTier {
+            return serviceTier
+        }
+        let tiers = serviceTiers(for: option, kind: kind)
+        guard !tiers.isEmpty else { return nil }
+        return tiers.contains { $0.id == serviceTier } ? serviceTier : nil
     }
+
+    static func effectiveServiceTier(
+        selectedServiceTier: String?,
+        option: CodexAppServerModelOption?,
+        kind: ModelReasoningGridKind? = nil
+    ) -> CodexAppServerModelServiceTier? {
+        guard let option else { return nil }
+        let tiers = serviceTiers(for: option, kind: kind)
+        guard let effectiveID = selectedServiceTier ?? option.defaultServiceTier else { return nil }
+        return tiers.first { $0.id == effectiveID }
+    }
+
+    static func selectedOption(
+        modelID: String?,
+        options: [CodexAppServerModelOption]
+    ) -> CodexAppServerModelOption? {
+        guard let modelID = modelID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .appServerNilIfEmpty
+        else { return options.first }
+        return options.first { $0.model.caseInsensitiveCompare(modelID) == .orderedSame }
+            ?? options.first
+    }
+
+    static func isAcceleratedServiceTier(_ tier: CodexAppServerModelServiceTier?) -> Bool {
+        guard let tier else { return false }
+        // standard/default/auto 是基线路由，不应显示为已开启加速。
+        return !["standard", "default", "auto"].contains(tier.id.lowercased())
+    }
+
 }
 
 struct ModelReasoningGridPicker: View {
@@ -478,11 +547,35 @@ struct ModelReasoningGridPicker: View {
     let selection: ModelReasoningGridSelection
     let selectedModelID: String?
     let isRefreshing: Bool
-    let isFastMode: Bool
+    let selectedServiceTier: String?
     let onSelectModel: (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void
     let onSelectDefaultModel: (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void
-    let onFastModeChange: (Bool) -> Void
+    let onServiceTierChange: (String?) -> Void
     let onRefresh: () -> Void
+
+    init(
+        options: [CodexAppServerModelOption],
+        layout: ModelReasoningGridLayout,
+        selection: ModelReasoningGridSelection,
+        selectedModelID: String?,
+        isRefreshing: Bool,
+        selectedServiceTier: String?,
+        onSelectModel: @escaping (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void,
+        onSelectDefaultModel: @escaping (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void,
+        onServiceTierChange: @escaping (String?) -> Void,
+        onRefresh: @escaping () -> Void
+    ) {
+        self.options = options
+        self.layout = layout
+        self.selection = selection
+        self.selectedModelID = selectedModelID
+        self.isRefreshing = isRefreshing
+        self.selectedServiceTier = selectedServiceTier
+        self.onSelectModel = onSelectModel
+        self.onSelectDefaultModel = onSelectDefaultModel
+        self.onServiceTierChange = onServiceTierChange
+        self.onRefresh = onRefresh
+    }
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -533,11 +626,11 @@ struct ModelReasoningGridPicker: View {
             selection: selection,
             selectedModelID: selectedModelID,
             isRefreshing: isRefreshing,
-            isFastMode: isFastMode,
+            selectedServiceTier: selectedServiceTier,
             isInGridCorner: isInGridCorner,
             onSelectModel: onSelectModel,
             onSelectDefaultModel: onSelectDefaultModel,
-            onFastModeChange: onFastModeChange,
+            onServiceTierChange: onServiceTierChange,
             onRefresh: onRefresh
         )
     }
@@ -553,11 +646,11 @@ private struct ModelReasoningPickerHeader: View {
     let selection: ModelReasoningGridSelection
     let selectedModelID: String?
     let isRefreshing: Bool
-    let isFastMode: Bool
+    let selectedServiceTier: String?
     let isInGridCorner: Bool
     let onSelectModel: (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void
     let onSelectDefaultModel: (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void
-    let onFastModeChange: (Bool) -> Void
+    let onServiceTierChange: (String?) -> Void
     let onRefresh: () -> Void
 
     var body: some View {
@@ -566,17 +659,17 @@ private struct ModelReasoningPickerHeader: View {
                 // 标准网格把低频控制收进横纵轴交汇处，减少独立工具条造成的留白。
                 HStack(spacing: 4) {
                     allModelsMenu(isCompact: true)
-                    if layout.showsFastMode {
-                        fastModeToggle()
+                    if showsServiceTierControl {
+                        serviceTierMenu()
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else {
                 HStack(spacing: 8) {
                     allModelsMenu(isCompact: false)
-                    if layout.showsFastMode {
+                    if showsServiceTierControl {
                         Spacer(minLength: 8)
-                        fastModeToggle()
+                        serviceTierMenu()
                     }
                 }
             }
@@ -624,7 +717,7 @@ private struct ModelReasoningPickerHeader: View {
             .font(themeStore.uiFont(.caption, weight: .semibold))
             .foregroundStyle(tokens.accent)
             .padding(.horizontal, isCompact ? 0 : 10)
-            .frame(width: isCompact ? (layout.showsFastMode ? 64 : 96) : nil)
+            .frame(width: isCompact ? (showsServiceTierControl ? 64 : 96) : nil)
             .frame(minHeight: 44)
             .background(tokens.elevatedSurface.opacity(0.72), in: Capsule())
             .overlay {
@@ -638,17 +731,56 @@ private struct ModelReasoningPickerHeader: View {
         .accessibilityLabel(L10n.text("ui.all_models"))
     }
 
-    private func fastModeToggle() -> some View {
+    private var activeOption: CodexAppServerModelOption? {
+        // All Models 可以选中网格前三项之外的模型；速度能力必须从完整目录读取。
+        ModelReasoningGridCatalog.selectedOption(
+            modelID: selection.modelID,
+            options: options
+        )
+    }
+
+    private var serviceTiers: [CodexAppServerModelServiceTier] {
+        ModelReasoningGridCatalog.serviceTiers(for: activeOption, kind: layout.kind)
+    }
+
+    private var showsServiceTierControl: Bool {
+        !serviceTiers.isEmpty
+    }
+
+    private func serviceTierMenu() -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let fastImage = isFastMode ? "bolt.fill" : "bolt"
-        return Toggle(isOn: fastModeBinding) {
+        let effectiveTier = ModelReasoningGridCatalog.effectiveServiceTier(
+            selectedServiceTier: selectedServiceTier,
+            option: activeOption,
+            kind: layout.kind
+        )
+        let isAccelerated = ModelReasoningGridCatalog.isAcceleratedServiceTier(effectiveTier)
+        return Menu {
+            Button {
+                selectServiceTier(nil)
+            } label: {
+                Label(L10n.text("ui.default_option"), systemImage: selectedServiceTier == nil ? "checkmark" : "circle")
+            }
+            ForEach(serviceTiers) { tier in
+                Button {
+                    selectServiceTier(tier.id)
+                } label: {
+                    Label(
+                        tier.name,
+                        systemImage: selectedServiceTier == tier.id
+                            ? "checkmark"
+                            : (ModelReasoningGridCatalog.isAcceleratedServiceTier(tier) ? "bolt" : "circle")
+                    )
+                }
+            }
+        } label: {
             ZStack {
                 Circle()
-                    .fill(isFastMode ? tokens.accent : tokens.elevatedSurface.opacity(0.72))
+                    .fill(isAccelerated ? tokens.accent : tokens.elevatedSurface.opacity(0.72))
 
-                Image(systemName: fastImage)
+                Image(systemName: isAccelerated ? "bolt.fill" : "bolt")
                     .font(themeStore.uiFont(size: 14, weight: .semibold))
-                    .foregroundStyle(isFastMode ? tokens.primaryActionForeground : tokens.accent)
+                    .foregroundStyle(isAccelerated ? tokens.primaryActionForeground : tokens.accent)
             }
             .frame(
                 width: ModelReasoningGridMetrics.fastModeVisualDiameter,
@@ -657,7 +789,7 @@ private struct ModelReasoningPickerHeader: View {
             .overlay {
                 Circle()
                     .strokeBorder(
-                        isFastMode ? tokens.accent.opacity(0.88) : tokens.border.opacity(0.58),
+                        isAccelerated ? tokens.accent.opacity(0.88) : tokens.border.opacity(0.58),
                         lineWidth: 0.75
                     )
             }
@@ -668,11 +800,9 @@ private struct ModelReasoningPickerHeader: View {
             )
             .contentShape(Rectangle())
         }
-        .toggleStyle(.button)
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.quick_mode"))
-        .accessibilityValue(isFastMode ? L10n.text("ui.already_turned_on") : L10n.text("ui.closed"))
-        .accessibilityHint(L10n.text("ui.after_turning_it_on_the_priority_service_speed"))
+        .accessibilityLabel(L10n.text("ui.service_tier"))
+        .accessibilityValue(effectiveTier?.name ?? L10n.text("ui.default_option"))
     }
 
     @ViewBuilder
@@ -721,15 +851,10 @@ private struct ModelReasoningPickerHeader: View {
         options.first(where: \.isDefault) ?? options.first
     }
 
-    private var fastModeBinding: Binding<Bool> {
-        Binding(
-            get: { isFastMode },
-            set: { newValue in
-                guard newValue != isFastMode else { return }
-                UISelectionFeedbackGenerator().selectionChanged()
-                onFastModeChange(newValue)
-            }
-        )
+    private func selectServiceTier(_ tier: String?) {
+        guard tier != selectedServiceTier else { return }
+        UISelectionFeedbackGenerator().selectionChanged()
+        onServiceTierChange(tier)
     }
 
     private func select(

@@ -750,6 +750,23 @@ enum ComposerSendMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum ComposerCollaborationModeSync {
+    static func resolvedSendMode(
+        authoritativeMode: CodexAppServerTurnOptions.CollaborationMode?,
+        currentMode: ComposerSendMode,
+        userChoiceRevision: UInt64,
+        baselineRevision: UInt64
+    ) -> ComposerSendMode? {
+        guard let authoritativeMode,
+              userChoiceRevision == baselineRevision,
+              currentMode != .goal
+        else {
+            return nil
+        }
+        return authoritativeMode == .plan ? .plan : .standard
+    }
+}
+
 struct ComposerModeResetEvent: Equatable {
     let scope: ComposerDraftScopeKey
     let revision: UInt64
@@ -763,6 +780,9 @@ struct ComposerDeliveryResetEvent: Equatable {
 struct ComposerSendModeCache {
     private var storedScope: ComposerDraftScopeKey = .none
     private var storedMode: ComposerSendMode = .standard
+    private var suppressedAuthoritativeModes: [
+        ComposerDraftScopeKey: CodexAppServerTurnOptions.CollaborationMode
+    ] = [:]
     private(set) var revision: UInt64 = 0
 
     func modeForReappearance(of scope: ComposerDraftScopeKey) -> ComposerSendMode {
@@ -804,6 +824,27 @@ struct ComposerSendModeCache {
             return
         }
         storedScope = nextScope
+        if let suppressedMode = suppressedAuthoritativeModes.removeValue(forKey: previousScope) {
+            suppressedAuthoritativeModes[nextScope] = suppressedMode
+        }
+    }
+
+    mutating func suppressAuthoritativeMode(
+        _ mode: CodexAppServerTurnOptions.CollaborationMode?,
+        for scope: ComposerDraftScopeKey
+    ) {
+        suppressedAuthoritativeModes[scope] = mode
+    }
+
+    mutating func shouldApplyAuthoritativeMode(
+        _ mode: CodexAppServerTurnOptions.CollaborationMode,
+        for scope: ComposerDraftScopeKey
+    ) -> Bool {
+        guard let suppressedMode = suppressedAuthoritativeModes[scope] else { return true }
+        guard suppressedMode != mode else { return false }
+        // 同一会话出现不同值才算新的权威状态；此后恢复正常同步。
+        suppressedAuthoritativeModes.removeValue(forKey: scope)
+        return true
     }
 
     mutating func clearSubmittedModeIfUnchanged(revision: UInt64) -> ComposerDraftScopeKey? {
@@ -816,6 +857,7 @@ struct ComposerSendModeCache {
     mutating func removeAll() {
         storedScope = .none
         storedMode = .standard
+        suppressedAuthoritativeModes = [:]
         revision &+= 1
     }
 }

@@ -157,6 +157,9 @@ final class SessionStore: ObservableObject {
     @Published var appServerModelOptions: [CodexAppServerModelOption] = []
     @Published var appServerPermissionProfiles: [CodexAppServerPermissionProfileSummary] = []
     @Published var activePermissionProfileBySessionID: [SessionID: CodexAppServerActivePermissionProfile] = [:]
+    @Published private(set) var activeCollaborationModeBySessionID: [
+        SessionID: CodexAppServerTurnOptions.CollaborationMode
+    ] = [:]
     @Published var isRefreshingPermissionProfiles = false
     /// 当前主机实际可用的 Runtime 集合。Codex 恒为可用（它是 app-server 基线通道），
     /// 其余 provider 由 config.channels 的真实可用性决定；新增 Runtime 只扩这个集合，
@@ -1099,6 +1102,25 @@ final class SessionStore: ObservableObject {
 
     func saveComposerSendMode(_ mode: ComposerSendMode, for scope: ComposerDraftScopeKey) {
         composerSendModeCache.save(mode, for: scope)
+    }
+
+    func activeCollaborationMode(
+        for sessionID: SessionID
+    ) -> CodexAppServerTurnOptions.CollaborationMode? {
+        activeCollaborationModeBySessionID[sessionID]
+    }
+
+    func setActiveCollaborationMode(
+        _ mode: CodexAppServerTurnOptions.CollaborationMode,
+        for sessionID: SessionID
+    ) {
+        guard activeCollaborationModeBySessionID[sessionID] != mode else { return }
+        activeCollaborationModeBySessionID[sessionID] = mode
+    }
+
+    func clearActiveCollaborationModes() {
+        guard !activeCollaborationModeBySessionID.isEmpty else { return }
+        activeCollaborationModeBySessionID = [:]
     }
 
     var selectedQueuedTurns: [QueuedTurnEntry] {

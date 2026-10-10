@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		89E2AA2541B68687FEACB7A4 /* CodexAppServerMessagePhaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E58EA7F0AA5CD32AE8BF9BF6 /* CodexAppServerMessagePhaseTests.swift */; };
+		9D2CEEF1A9B8E1EBC861B746 /* CodexAppServerCollaborationModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D9A0058025EAE661A40B232 /* CodexAppServerCollaborationModeTests.swift */; };
 		01C54C61ECFCD945AA143C53 /* SessionStoreComposerPermissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF45F0AC4C6BA077701FE488 /* SessionStoreComposerPermissions.swift */; };
 		0209F743D168F03B03894AB0 /* FileAttachmentModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F55F20982430C816BB70A7F5 /* FileAttachmentModelsTests.swift */; };
 		037B9C95E0087324B0B93B82 /* CodexAppServerApprovalProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D536A7DD9FA51261421A61A /* CodexAppServerApprovalProjection.swift */; };
@@ -552,6 +554,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		E58EA7F0AA5CD32AE8BF9BF6 /* CodexAppServerMessagePhaseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerMessagePhaseTests.swift; sourceTree = "<group>"; };
+		8D9A0058025EAE661A40B232 /* CodexAppServerCollaborationModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerCollaborationModeTests.swift; sourceTree = "<group>"; };
 		001126768C40E81F1BDA0FCC /* LockScreenApprovalNotification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LockScreenApprovalNotification.swift; sourceTree = "<group>"; };
 		00BF9FE4AEE49C6DD13873AA /* testComposerStatusTrayCrowdedCompactWidth.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testComposerStatusTrayCrowdedCompactWidth.1.png; sourceTree = "<group>"; };
 		00CEAFC1347EB0EBEB69FEE6 /* RuntimeFeatureSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeFeatureSupport.swift; sourceTree = "<group>"; };
@@ -1232,6 +1236,8 @@
 				83CFAE116262795C7501365E /* CarStatusSnapshotTests.swift */,
 				FE88AF3AFFBFA21734BC5D1E /* ClaudeTakeoverTests.swift */,
 				8D05A1A4E037DC2EE90B7747 /* CodexAppServerConnectionReliabilityTests.swift */,
+				8D9A0058025EAE661A40B232 /* CodexAppServerCollaborationModeTests.swift */,
+				E58EA7F0AA5CD32AE8BF9BF6 /* CodexAppServerMessagePhaseTests.swift */,
 				FA34FDB7E26D6307E81C07CC /* CodexAppServerProtocolTests.swift */,
 				83F7464A43374774C86B4444 /* CodexAppServerSessionRuntimeSendLifecycleTests.swift */,
 				D88AD9E7215B27A20660B350 /* CommunityContactTests.swift */,
@@ -2325,6 +2331,8 @@
 				101A9079E24B09BCAB8B54FF /* CarStatusSnapshotTests.swift in Sources */,
 				55AA18B00A0BF1D39C94F8AF /* ClaudeTakeoverTests.swift in Sources */,
 				EB5D0D19189AB5059993D8C9 /* CodexAppServerConnectionReliabilityTests.swift in Sources */,
+				9D2CEEF1A9B8E1EBC861B746 /* CodexAppServerCollaborationModeTests.swift in Sources */,
+				89E2AA2541B68687FEACB7A4 /* CodexAppServerMessagePhaseTests.swift in Sources */,
 				523D4FE3642B0D171DB1647E /* CodexAppServerProtocolTests.swift in Sources */,
 				752ABA26217B3BF60613FE7B /* CodexAppServerSessionRuntimeSendLifecycleTests.swift in Sources */,
 				487ED2F53786724A4079A659 /* CommunityContactTests.swift in Sources */,

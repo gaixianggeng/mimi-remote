@@ -1222,6 +1222,20 @@ struct CodexAppServerActivePermissionProfile: Codable, Hashable {
     }
 }
 
+struct CodexAppServerModelServiceTier: Codable, Hashable, Identifiable {
+    let id: String
+    let name: String
+    let description: String?
+
+    init(id: String, name: String? = nil, description: String? = nil) {
+        let normalizedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.id = normalizedID
+        self.name = name?.trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
+            ?? normalizedID
+        self.description = description?.trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
+    }
+}
+
 struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
     let model: String
     let title: String
@@ -1231,6 +1245,11 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
     let isDefault: Bool
     let supportedReasoningEfforts: [String]
     let defaultReasoningEffort: String?
+    // nil 表示旧目录没有提供能力字段；空数组表示当前目录明确不提供任何速度档位。
+    // 两者必须区分，才能兼容旧 app-server，又不替当前账号猜测可用权限。
+    let serviceTiers: [CodexAppServerModelServiceTier]?
+    let defaultServiceTier: String?
+    let supportsPersonality: Bool?
     let hidden: Bool
 
     init(
@@ -1242,6 +1261,9 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
         isDefault: Bool = false,
         supportedReasoningEfforts: [String] = [],
         defaultReasoningEffort: String? = nil,
+        serviceTiers: [CodexAppServerModelServiceTier]? = nil,
+        defaultServiceTier: String? = nil,
+        supportsPersonality: Bool? = nil,
         hidden: Bool = false
     ) {
         let trimmedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1258,6 +1280,11 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .appServerNilIfEmpty
+        self.serviceTiers = serviceTiers.map(Self.normalizedServiceTiers)
+        self.defaultServiceTier = defaultServiceTier?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .appServerNilIfEmpty
+        self.supportsPersonality = supportsPersonality
         self.hidden = hidden
     }
 
@@ -1277,6 +1304,9 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             isDefault: isDefault,
             supportedReasoningEfforts: supportedReasoningEfforts,
             defaultReasoningEffort: defaultReasoningEffort,
+            serviceTiers: serviceTiers,
+            defaultServiceTier: defaultServiceTier,
+            supportsPersonality: supportsPersonality,
             hidden: hidden
         )
     }
@@ -1295,34 +1325,44 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             description: "Our most capable model for complex, demanding work.",
             isDefault: true,
             supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
-            defaultReasoningEffort: "medium"
+            defaultReasoningEffort: "medium",
+            serviceTiers: [],
+            supportsPersonality: false
         ),
         CodexAppServerModelOption(
-            id: "gpt-5.6-sol",
-            title: "GPT-5.6 Sol",
+            id: "gpt-6.1-sol",
+            title: "GPT-6.1 Sol",
             description: "Detail and polish",
             supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
-            defaultReasoningEffort: "xhigh"
+            defaultReasoningEffort: "xhigh",
+            serviceTiers: [],
+            supportsPersonality: false
         ),
         CodexAppServerModelOption(
-            id: "gpt-5.6-terra",
-            title: "GPT-5.6 Terra",
+            id: "gpt-6-sol",
+            title: "GPT-6 Sol",
             description: "Everyday workhorse",
             supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
-            defaultReasoningEffort: "medium"
+            defaultReasoningEffort: "medium",
+            serviceTiers: [],
+            supportsPersonality: false
         ),
         CodexAppServerModelOption(
-            id: "gpt-5.6-luna",
-            title: "GPT-5.6 Luna",
+            id: "gpt-6-luna",
+            title: "GPT-6 Luna",
             description: "Clear and repeatable",
             supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
-            defaultReasoningEffort: "medium"
+            defaultReasoningEffort: "medium",
+            serviceTiers: [],
+            supportsPersonality: false
         ),
-        CodexAppServerModelOption(id: "gpt-5.5", title: "GPT-5.5"),
-        CodexAppServerModelOption(id: "gpt-5-codex", title: "gpt-5-codex"),
-        CodexAppServerModelOption(id: "gpt-5.1-codex", title: "gpt-5.1-codex"),
-        CodexAppServerModelOption(id: "gpt-5", title: "gpt-5"),
-        CodexAppServerModelOption(id: "gpt-5.1", title: "gpt-5.1")
+        // GPT-5.5 对 ChatGPT 登录的 Codex 即将退役，但 API key 不受影响；
+        // 备用目录保留其显式 ID，不能在目录暂时不可用时强制改写既有选择。
+        CodexAppServerModelOption(id: "gpt-5.5", title: "GPT-5.5", serviceTiers: []),
+        CodexAppServerModelOption(id: "gpt-5-codex", title: "gpt-5-codex", serviceTiers: []),
+        CodexAppServerModelOption(id: "gpt-5.1-codex", title: "gpt-5.1-codex", serviceTiers: []),
+        CodexAppServerModelOption(id: "gpt-5", title: "gpt-5", serviceTiers: []),
+        CodexAppServerModelOption(id: "gpt-5.1", title: "gpt-5.1", serviceTiers: [])
     ]
 
     static let builtInClaudeFallback: [CodexAppServerModelOption] = [
@@ -1424,8 +1464,41 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             isDefault: object["isDefault"]?.boolValue ?? object["is_default"]?.boolValue ?? object["default"]?.boolValue ?? false,
             supportedReasoningEfforts: reasoningEfforts(in: object),
             defaultReasoningEffort: firstString(in: object, keys: ["defaultReasoningEffort", "default_reasoning_effort"]),
+            serviceTiers: serviceTiers(in: object),
+            defaultServiceTier: firstString(in: object, keys: ["defaultServiceTier", "default_service_tier"]),
+            supportsPersonality: object["supportsPersonality"]?.boolValue
+                ?? object["supports_personality"]?.boolValue,
             hidden: object["hidden"]?.boolValue ?? false
         )
+    }
+
+    private static func serviceTiers(
+        in object: [String: CodexAppServerJSONValue]
+    ) -> [CodexAppServerModelServiceTier]? {
+        let rawValue = object["serviceTiers"] ?? object["service_tiers"]
+        guard let rawValue else { return nil }
+        return (rawValue.arrayValue ?? []).compactMap { value in
+            if let id = value.stringValue {
+                return CodexAppServerModelServiceTier(id: id)
+            }
+            guard let tier = value.objectValue,
+                  let id = firstString(in: tier, keys: ["id"])
+            else {
+                return nil
+            }
+            return CodexAppServerModelServiceTier(
+                id: id,
+                name: firstString(in: tier, keys: ["name", "title", "label"]),
+                description: firstString(in: tier, keys: ["description", "summary"])
+            )
+        }
+    }
+
+    private static func normalizedServiceTiers(
+        _ tiers: [CodexAppServerModelServiceTier]
+    ) -> [CodexAppServerModelServiceTier] {
+        var seen: Set<String> = []
+        return tiers.filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
     }
 
     private static func reasoningEfforts(in object: [String: CodexAppServerJSONValue]) -> [String] {

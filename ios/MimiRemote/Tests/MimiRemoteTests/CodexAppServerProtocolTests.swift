@@ -1505,7 +1505,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         XCTAssertFalse(layout.contains(modelID: "fable"), "未返回的 alias 不应再被本地映射成具体模型")
         XCTAssertFalse(layout.contains(modelID: "claude-haiku-4-5-20251001"), "网格只展示运行时返回的前三个模型")
-        XCTAssertFalse(layout.showsFastMode)
+        XCTAssertFalse(layout.showsServiceTierControl)
         XCTAssertEqual(
             ModelReasoningGridCatalog.triggerTitle(for: "claude-fable-5", effort: .max, layout: layout),
             "Claude Fable 5 · Max"
@@ -1560,7 +1560,8 @@ final class CodexAppServerProtocolTests: XCTestCase {
     }
 
     func testCodexStandardMenuUsesModelSpecificFourthEffort() {
-        let options = CodexAppServerModelOption.builtInFallback.filter { $0.model.hasPrefix("gpt-5.6-") }
+        let currentIDs = Set(["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"])
+        let options = CodexAppServerModelOption.builtInFallback.filter { currentIDs.contains($0.model) }
         let sol = options[0]
         let terra = options[1]
         let luna = options[2]
@@ -1818,10 +1819,11 @@ final class CodexAppServerProtocolTests: XCTestCase {
             id: "haiku",
             provider: "anthropic",
             runtimeProvider: "claude",
-            supportedReasoningEfforts: []
+            supportedReasoningEfforts: [],
+            serviceTiers: [CodexAppServerModelServiceTier(id: "standard")]
         )
         var options = CodexAppServerTurnOptions.default
-        options.serviceTier = "priority"
+        options.serviceTier = "standard"
 
         ModelReasoningGridCatalog.applySelection(
             option: haiku,
@@ -1837,7 +1839,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
     }
 
     func testLeavingDeveloperMaxFallsBackToStandardCodexEffort() throws {
-        let sol = try XCTUnwrap(CodexAppServerModelOption.builtInFallback.first { $0.model == "gpt-5.6-sol" })
+        let sol = try XCTUnwrap(CodexAppServerModelOption.builtInFallback.first { $0.model == "gpt-6.1-sol" })
         let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: [sol])
 
         XCTAssertTrue(ModelReasoningGridCatalog.supports(.max, option: sol))
@@ -1848,30 +1850,6 @@ final class CodexAppServerProtocolTests: XCTestCase {
                 layout: layout
             ),
             .xhigh
-        )
-    }
-
-    func testFastModeIsTheOnlyStandardServiceTierEntry() {
-        XCTAssertEqual(ModelReasoningGridCatalog.serviceTierForFastMode(true), "priority")
-        XCTAssertNil(ModelReasoningGridCatalog.serviceTierForFastMode(false))
-        XCTAssertEqual(
-            ModelReasoningGridCatalog.normalizedStandardServiceTier(
-                "priority",
-                runtimeProvider: "codex"
-            ),
-            "priority"
-        )
-        XCTAssertNil(
-            ModelReasoningGridCatalog.normalizedStandardServiceTier(
-                "auto",
-                runtimeProvider: "codex"
-            )
-        )
-        XCTAssertNil(
-            ModelReasoningGridCatalog.normalizedStandardServiceTier(
-                "priority",
-                runtimeProvider: "claude"
-            )
         )
     }
 
@@ -1913,6 +1891,176 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(defaultOption.title, "Snake Default")
         XCTAssertEqual(defaultOption.provider, "openai")
         XCTAssertEqual(Set(parsed.map(\.model)), ["gpt-snake-default", "gpt-side"])
+    }
+
+    func testModelListParserKeepsServiceTierAndPersonalityCapabilities() throws {
+        let parsed = CodexAppServerModelOption.parseListResult(.object([
+            "data": .array([
+                .object([
+                    "id": .string("gpt-6.1-sol"),
+                    "displayName": .string("GPT-6.1 Sol"),
+                    "serviceTiers": .array([
+                        .object([
+                            "id": .string("priority"),
+                            "name": .string("Fast"),
+                            "description": .string("1.5x speed")
+                        ]),
+                        .object([
+                            "id": .string("ultrafast"),
+                            "name": .string("Ultrafast"),
+                            "description": .string("Maximum generation speed")
+                        ])
+                    ]),
+                    "defaultServiceTier": .string("priority"),
+                    "supportsPersonality": .bool(false)
+                ]),
+                .object(["id": .string("legacy-codex")])
+            ])
+        ]))
+
+        let current = try XCTUnwrap(parsed.first)
+        XCTAssertEqual(current.serviceTiers?.map(\.id), ["priority", "ultrafast"])
+        XCTAssertEqual(current.serviceTiers?.map(\.name), ["Fast", "Ultrafast"])
+        XCTAssertEqual(current.defaultServiceTier, "priority")
+        XCTAssertEqual(current.supportsPersonality, false)
+        XCTAssertNil(parsed.last?.serviceTiers)
+        XCTAssertNil(parsed.last?.supportsPersonality)
+    }
+
+    func testCatalogServiceTiersUseIDsAndClearUnsupportedModelSettings() throws {
+        let fast = CodexAppServerModelServiceTier(id: "priority", name: "Fast")
+        let ultrafast = CodexAppServerModelServiceTier(id: "ultrafast", name: "Ultrafast")
+        let model = CodexAppServerModelOption(
+            id: "gpt-6.1-sol",
+            runtimeProvider: "codex",
+            serviceTiers: [fast, ultrafast],
+            defaultServiceTier: "priority",
+            supportsPersonality: false
+        )
+
+        XCTAssertEqual(ModelReasoningGridCatalog.normalizedServiceTier(
+            "ultrafast", option: model
+        ), "ultrafast")
+        XCTAssertNil(ModelReasoningGridCatalog.normalizedServiceTier("ultra", option: model))
+        XCTAssertNil(ModelReasoningGridCatalog.normalizedServiceTier("default", option: model))
+        XCTAssertEqual(ModelReasoningGridCatalog.effectiveServiceTier(
+            selectedServiceTier: nil, option: model
+        )?.id, "priority")
+
+        var options = CodexAppServerTurnOptions.default
+        options.serviceTier = "flex"
+        options.personality = .friendly
+        ModelReasoningGridCatalog.applySelection(
+            option: model,
+            effort: .high,
+            preservesServerDefault: false,
+            fallbackRuntimeProvider: nil,
+            to: &options
+        )
+
+        XCTAssertNil(options.serviceTier)
+        XCTAssertNil(options.personality)
+        XCTAssertNil(options.turnParams(projectPath: "/tmp/project")["personality"] ?? nil)
+    }
+
+    func testServiceTierUsesFullModelCatalogBeyondGridRows() throws {
+        let standardModels = (1...3).map {
+            CodexAppServerModelOption(id: "model-\($0)", serviceTiers: [])
+        }
+        let fourth = CodexAppServerModelOption(
+            id: "model-4",
+            serviceTiers: [CodexAppServerModelServiceTier(id: "ultrafast", name: "Ultrafast")]
+        )
+        let options = standardModels + [fourth]
+        let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: options)
+
+        XCTAssertFalse(layout.contains(modelID: fourth.model))
+        XCTAssertTrue(layout.showsServiceTierControl)
+        let selected = try XCTUnwrap(ModelReasoningGridCatalog.selectedOption(
+            modelID: fourth.model,
+            options: options
+        ))
+        XCTAssertEqual(ModelReasoningGridCatalog.serviceTiers(
+            for: selected,
+            kind: layout.kind
+        ).map(\.id), ["ultrafast"])
+    }
+
+    func testServiceTierKeepsCatalogNeutralIDsAndRejectsNonCodexValues() {
+        let codex = CodexAppServerModelOption(
+            id: "gpt-catalog",
+            runtimeProvider: "codex",
+            serviceTiers: [
+                CodexAppServerModelServiceTier(id: "standard", name: "Standard"),
+                CodexAppServerModelServiceTier(id: "default", name: "Default"),
+                CodexAppServerModelServiceTier(id: "fast", name: "Fast")
+            ]
+        )
+        XCTAssertEqual(ModelReasoningGridCatalog.normalizedServiceTier(
+            "standard", option: codex
+        ), "standard")
+        XCTAssertEqual(ModelReasoningGridCatalog.normalizedServiceTier(
+            "default", option: codex
+        ), "default")
+        XCTAssertFalse(ModelReasoningGridCatalog.isAcceleratedServiceTier(
+            ModelReasoningGridCatalog.effectiveServiceTier(
+                selectedServiceTier: "standard",
+                option: codex
+            )
+        ))
+        XCTAssertTrue(ModelReasoningGridCatalog.isAcceleratedServiceTier(
+            ModelReasoningGridCatalog.effectiveServiceTier(
+                selectedServiceTier: "fast",
+                option: codex
+            )
+        ))
+
+        let claude = CodexAppServerModelOption(
+            id: "opus",
+            runtimeProvider: "claude",
+            serviceTiers: [CodexAppServerModelServiceTier(id: "standard")]
+        )
+        XCTAssertTrue(ModelReasoningGridCatalog.serviceTiers(for: claude).isEmpty)
+        XCTAssertNil(ModelReasoningGridCatalog.normalizedServiceTier(
+            "standard",
+            option: claude,
+            allowsUnlistedCodexTier: true
+        ))
+    }
+
+    func testDeveloperServiceTierPreservesAPIKeyProtocolValues() {
+        let codex = CodexAppServerModelOption(
+            id: "api-model",
+            runtimeProvider: "codex",
+            serviceTiers: [CodexAppServerModelServiceTier(id: "priority")]
+        )
+
+        XCTAssertNil(ModelReasoningGridCatalog.normalizedServiceTier("auto", option: codex))
+        XCTAssertEqual(ModelReasoningGridCatalog.normalizedServiceTier(
+            "auto",
+            option: codex,
+            allowsUnlistedCodexTier: true
+        ), "auto")
+        XCTAssertEqual(ModelReasoningGridCatalog.normalizedServiceTier(
+            "flex",
+            option: codex,
+            allowsUnlistedCodexTier: true
+        ), "flex")
+        XCTAssertEqual(ModelReasoningGridCatalog.normalizedServiceTier(
+            "vendor-tier",
+            option: nil,
+            runtimeProvider: "codex",
+            allowsUnlistedCodexTier: true
+        ), "vendor-tier")
+    }
+
+    func testBuiltInFallbackTracksCurrentModelsWithoutClaimingSpeedAccess() {
+        let fallback = CodexAppServerModelOption.builtInFallback
+        XCTAssertNotNil(fallback.first { $0.model == "gpt-6.1-sol" })
+        XCTAssertNotNil(fallback.first { $0.model == "gpt-6-sol" })
+        XCTAssertNotNil(fallback.first { $0.model == "gpt-6-luna" })
+        XCTAssertNotNil(fallback.first { $0.model == "gpt-5.5" })
+        XCTAssertTrue(fallback.prefix(4).allSatisfy { $0.serviceTiers?.isEmpty == true })
     }
 
     func testRequestBuilderBuildsThreadGoalRequests() throws {
