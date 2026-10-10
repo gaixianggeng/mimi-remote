@@ -99,10 +99,11 @@ extension ComposerView {
             )
         }
         if restoration.sendMode {
-            resetComposerSendModeAfterSubmit()
+            resetComposerSendModeAfterSubmit(submittedMode: checkpoint.submittedCollaborationMode)
         } else if let resolvedScope = sessionStore.composerSendModeCache.clearSubmittedModeIfUnchanged(
             revision: checkpoint.cachedSendModeRevision
         ) {
+            suppressSubmittedCollaborationMode(checkpoint.submittedCollaborationMode, for: resolvedScope)
             // 新输入区可能已重建；通知它从共享缓存读取复位后的模式。
             sessionStore.latestCompletedComposerModeReset = ComposerModeResetEvent(
                 scope: resolvedScope,

@@ -327,6 +327,11 @@ func collectGatewayInputPaths(method string, params map[string]any) (gatewayInpu
 				return paths, fmt.Errorf("%s.input.skill.path 不能为空", method)
 			}
 		case "image":
+			// fileId 属于上游附件仓库，当前网关无法按项目路径确认其归属。
+			// 即使同时带 url，也不能把未授权的附件引用静默透传给新版服务端。
+			if fileID, exists := obj["fileId"]; exists && fileID != nil {
+				return paths, fmt.Errorf("%s.input.image.fileId 尚未开放，请使用 image.url 或 localImage.path", method)
+			}
 			url, ok := gatewayStringParam(obj, "url")
 			if !ok {
 				return paths, fmt.Errorf("%s.input.image.url 不能为空", method)

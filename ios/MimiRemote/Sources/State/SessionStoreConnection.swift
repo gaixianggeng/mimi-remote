@@ -1101,6 +1101,9 @@ extension SessionStore {
                 activePermissionProfileBySessionID.removeValue(forKey: id)
             }
         }
+        if case .collaborationModeUpdated(let mode, let metadata) = event {
+            setActiveCollaborationMode(mode, for: metadata.sessionID ?? sessionID)
+        }
         let runtimeNotification = runtimeNotification(for: event, fallbackSessionID: sessionID)
         HostSwitchSignpost.event("runtime_event_reducer_started")
         let output = await eventReducer.reduce(
@@ -1558,6 +1561,7 @@ extension SessionStore {
              .sessionStatus(_, let metadata),
              .sessionContext(_, let metadata),
              .permissionProfileUpdated(_, let metadata),
+             .collaborationModeUpdated(_, let metadata),
              .goalUpdated(_, let metadata),
              .goalCleared(let metadata),
              .turnStarted(let metadata),
@@ -1731,7 +1735,8 @@ extension SessionStore {
             if turnOutputTokensBySessionID[sessionID] != next {
                 turnOutputTokensBySessionID[sessionID] = next
             }
-        case .permissionProfileUpdated, .goalUpdated, .goalCleared, .unknown:
+        case .permissionProfileUpdated, .collaborationModeUpdated,
+             .goalUpdated, .goalCleared, .unknown:
             return
         }
     }
@@ -2952,6 +2957,7 @@ extension SessionStore {
         turnModelRefreshByRuntime = [:]
         appServerPermissionProfiles = []
         activePermissionProfileBySessionID = [:]
+        clearActiveCollaborationModes()
         permissionProfilesCWD = nil
         permissionProfilesRefreshGeneration += 1
         permissionProfilesRefreshRequestedCWD = nil

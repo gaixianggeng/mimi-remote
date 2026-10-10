@@ -4,6 +4,70 @@ import SwiftUI
 // 模型目录过滤、默认值选择和会话 runtime 锁定集中在这里，避免 ComposerView
 // 同时承担视图布局与模型策略。成员保持 module-internal，供 ComposerView 跨文件扩展协作。
 extension ComposerView {
+    func preparedTurnOptionsForSubmit() -> CodexAppServerTurnOptions {
+        var options = developerModeEnabled
+            ? composerState.turnOptions
+            : composerState.turnOptions.sanitizedForStandardComposer()
+        options.modelSelectionPolicy = developerModeEnabled ? .allowUnlisted : .catalogOnly
+        if developerModeEnabled,
+           let effort = options.reasoningEffort,
+           !supportsReasoningEffort(effort, modelID: options.model ?? effectiveModelID) {
+            // 提交边界再兜底，避免目录刷新与发送之间的竞态把非法组合发给 runtime。
+            options.reasoningEffort = nil
+        } else if !developerModeEnabled {
+            normalizeModelControlsForStandardComposer(&options)
+        }
+        normalizeCatalogCapabilitiesForSubmit(
+            &options,
+            allowsUnlistedCodexTier: developerModeEnabled
+        )
+        // 普通发送也显式退出 Plan Mode，不能依赖 nil/absent。
+        options.collaborationMode = composerState.isPlanModeSelected ? .plan : .default
+        return options
+    }
+
+    func synchronizeAuthoritativeCollaborationMode() {
+        guard activeComposerDraftScope == currentComposerDraftScope,
+              case .session(let sessionID) = activeComposerDraftScope,
+              RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider),
+              let authoritativeMode = sessionStore.activeCollaborationMode(for: sessionID),
+              let mode = ComposerCollaborationModeSync.resolvedSendMode(
+                  authoritativeMode: authoritativeMode,
+                  currentMode: composerState.sendMode,
+                  userChoiceRevision: sendModeChoiceRevision,
+                  baselineRevision: collaborationModeSyncBaselineRevision
+              )
+        else {
+            return
+        }
+        guard sessionStore.composerSendModeCache.shouldApplyAuthoritativeMode(
+            authoritativeMode,
+            for: activeComposerDraftScope
+        ) else { return }
+        // 被动同步只更新当前 Composer 与本地重建缓存；不会触发 runtime settings 写入。
+        composerState.setSendMode(mode)
+        persistComposerSendMode(mode, for: activeComposerDraftScope)
+    }
+
+    var currentAuthoritativeCollaborationMode: CodexAppServerTurnOptions.CollaborationMode? {
+        guard case .session(let sessionID) = currentComposerDraftScope else { return nil }
+        return sessionStore.activeCollaborationMode(for: sessionID)
+    }
+
+    func suppressSubmittedCollaborationMode(
+        _ submittedMode: CodexAppServerTurnOptions.CollaborationMode?,
+        for scope: ComposerDraftScopeKey
+    ) {
+        guard case .session(let sessionID) = scope else { return }
+        sessionStore.composerSendModeCache.suppressAuthoritativeMode(
+            ComposerCollaborationModeSync.authoritativeModeToSuppressAfterSubmit(
+                submittedMode: submittedMode,
+                cachedAuthoritativeMode: sessionStore.activeCollaborationMode(for: sessionID)
+            ),
+            for: scope
+        )
+    }
+
     var unavailableModelControl: some View {
         Menu {
             Section {
@@ -46,7 +110,7 @@ extension ComposerView {
                 systemImage: usesCompactTitle ? nil : "cpu",
                 trailingSystemImage: ConversationLayout.compactComposerShowsFastModeIndicator(
                     usesCompactMetrics: usesCompactComposerMetrics,
-                    isFastModeSelected: isFastModeSelected
+                    isFastModeSelected: hasAcceleratedServiceTierSelected
                 ) ? "bolt.fill" : nil,
                 titleMaxWidth: usesCompactTitle
                     ? ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: availableWidth)
@@ -68,16 +132,16 @@ extension ComposerView {
                 selection: selectedModelGridSelection,
                 selectedModelID: composerState.turnOptions.model,
                 isRefreshing: sessionStore.isRefreshingAppServerModels,
-                isFastMode: isFastModeSelected,
+                selectedServiceTier: composerState.turnOptions.serviceTier,
                 onSelectModel: { option, effort in
                     selectModel(option, effort: effort)
                 },
                 onSelectDefaultModel: { option, effort in
                     selectDefaultModel(option, effort: effort)
                 },
-                onFastModeChange: { isEnabled in
+                onServiceTierChange: { serviceTier in
                     composerState.updateTurnOptions {
-                        $0.serviceTier = ModelReasoningGridCatalog.serviceTierForFastMode(isEnabled)
+                        $0.serviceTier = serviceTier
                     }
                 },
                 onRefresh: {
@@ -116,12 +180,24 @@ extension ComposerView {
         )
     }
 
-    var isFastModeSelected: Bool {
-        modelReasoningGridLayout.showsFastMode && composerState.turnOptions.serviceTier == "priority"
+    var selectedModelOption: CodexAppServerModelOption? {
+        modelOption(matching: effectiveModelID)
+    }
+
+    var effectiveServiceTier: CodexAppServerModelServiceTier? {
+        ModelReasoningGridCatalog.effectiveServiceTier(
+            selectedServiceTier: composerState.turnOptions.serviceTier,
+            option: selectedModelOption,
+            kind: modelReasoningGridLayout.kind
+        )
+    }
+
+    var hasAcceleratedServiceTierSelected: Bool {
+        ModelReasoningGridCatalog.isAcceleratedServiceTier(effectiveServiceTier)
     }
 
     func modelShortcutAccessibilityValue(for title: String) -> String {
-        isFastModeSelected ? "\(title) · \(L10n.text("ui.fast"))" : title
+        effectiveServiceTier.map { "\(title) · \($0.name)" } ?? title
     }
 
     var selectedModelGridSelection: ModelReasoningGridSelection {
@@ -227,6 +303,10 @@ extension ComposerView {
         return scoped
     }
 
+    var isUsingBuiltInModelFallback: Bool {
+        sessionStore.appServerModelOptions.isEmpty
+    }
+
     var selectedModelSummaryTitle: String {
         guard let model = composerState.turnOptions.model?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -283,6 +363,7 @@ extension ComposerView {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .appServerNilIfEmpty
         let unsupportedModel = !developerModeEnabled
+            && !isUsingBuiltInModelFallback
             && explicitModelID != nil
             && modelOption(matching: explicitModelID) == nil
         let normalizedEffort: CodexAppServerReasoningEffort?
@@ -299,11 +380,20 @@ extension ComposerView {
             )
         }
         let unsupportedEffort = composerState.turnOptions.reasoningEffort != normalizedEffort
-        let unsupportedServiceTier = runtimeProvider != "codex"
-            && composerState.turnOptions.serviceTier?
-            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let selectedOption = modelOption(matching: effectiveModelID)
+        let normalizedServiceTier = ModelReasoningGridCatalog.normalizedServiceTier(
+            composerState.turnOptions.serviceTier,
+            option: selectedOption,
+            kind: modelReasoningGridLayout.kind,
+            allowsUnlistedCodexTier: developerModeEnabled
+        )
+        let unsupportedServiceTier = composerState.turnOptions.serviceTier != normalizedServiceTier
+        let unsupportedPersonality = selectedOption?.supportsPersonality == false
+            && composerState.turnOptions.personality != nil
 
-        guard runtimeChanged || unsupportedModel || unsupportedEffort || unsupportedServiceTier else {
+        guard runtimeChanged || unsupportedModel || unsupportedEffort
+            || unsupportedServiceTier || unsupportedPersonality
+        else {
             return
         }
         composerState.updateTurnOptions { options in
@@ -314,8 +404,18 @@ extension ComposerView {
             } else if unsupportedEffort {
                 options.reasoningEffort = normalizedEffort
             }
-            if runtimeProvider != "codex" {
-                options.serviceTier = nil
+            let resultingOption = modelOption(matching: ModelReasoningGridCatalog.effectiveModelID(
+                selectedModelID: options.model,
+                options: modelOptionsForMenu
+            ))
+            options.serviceTier = ModelReasoningGridCatalog.normalizedServiceTier(
+                options.serviceTier,
+                option: resultingOption,
+                kind: modelReasoningGridLayout.kind,
+                allowsUnlistedCodexTier: developerModeEnabled
+            )
+            if resultingOption?.supportsPersonality == false {
+                options.personality = nil
             }
         }
     }
@@ -362,11 +462,41 @@ extension ComposerView {
             current: options.reasoningEffort,
             layout: modelReasoningGridLayout
         )
-        // 普通模式只有 Fast 会写 priority；auto/flex 仅属于开发者高级选项。
-        options.serviceTier = ModelReasoningGridCatalog.normalizedStandardServiceTier(
+        options.serviceTier = ModelReasoningGridCatalog.normalizedServiceTier(
             options.serviceTier,
-            runtimeProvider: options.runtimeProvider
+            option: option,
+            kind: modelReasoningGridLayout.kind
         )
+        if option?.supportsPersonality == false {
+            options.personality = nil
+        }
+    }
+
+    func normalizeCatalogCapabilitiesForSubmit(
+        _ options: inout CodexAppServerTurnOptions,
+        allowsUnlistedCodexTier: Bool = false
+    ) {
+        let modelID = ModelReasoningGridCatalog.effectiveModelID(
+            selectedModelID: options.model,
+            options: modelOptionsForMenu
+        )
+        if modelReasoningGridLayout.kind != .codex {
+            options.serviceTier = nil
+        }
+        guard let option = modelOption(matching: modelID) else {
+            // 开发者模式允许目录外 API key 模型；Codex 没有能力证据时保留显式参数。
+            return
+        }
+        options.serviceTier = ModelReasoningGridCatalog.normalizedServiceTier(
+            options.serviceTier,
+            option: option,
+            kind: modelReasoningGridLayout.kind,
+            runtimeProvider: options.runtimeProvider,
+            allowsUnlistedCodexTier: allowsUnlistedCodexTier
+        )
+        if option.supportsPersonality == false {
+            options.personality = nil
+        }
     }
 
     func modelOption(matching modelID: String?) -> CodexAppServerModelOption? {

@@ -85,7 +85,7 @@ final class DeepSeekRuntimePresentationTests: XCTestCase {
             ModelReasoningGridCatalog.effortTitle(.low, runtimeProvider: "codex"),
             "Light"
         )
-        XCTAssertFalse(layout.showsFastMode)
+        XCTAssertFalse(layout.showsServiceTierControl)
     }
 
     func testAdvancedOptionsKeepsOffOnlyForDeepSeekOrExistingSelection() {

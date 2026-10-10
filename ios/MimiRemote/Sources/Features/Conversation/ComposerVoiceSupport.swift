@@ -347,12 +347,18 @@ struct AdvancedTurnOptionsSheet: View {
     @State private var outputSchemaText: String
     @State private var errorMessage: String?
 
+    let modelOptions: [CodexAppServerModelOption]
     let onSave: (CodexAppServerTurnOptions) -> Void
 
-    init(options: CodexAppServerTurnOptions, onSave: @escaping (CodexAppServerTurnOptions) -> Void) {
+    init(
+        options: CodexAppServerTurnOptions,
+        modelOptions: [CodexAppServerModelOption],
+        onSave: @escaping (CodexAppServerTurnOptions) -> Void
+    ) {
         _draft = State(initialValue: options)
         _configText = State(initialValue: Self.jsonText(from: options.config))
         _outputSchemaText = State(initialValue: Self.jsonText(from: options.outputSchema))
+        self.modelOptions = modelOptions
         self.onSave = onSave
     }
 
@@ -387,10 +393,9 @@ struct AdvancedTurnOptionsSheet: View {
                     Picker(L10n.text("ui.service_tier"), selection: $draft.serviceTier) {
                         Text(L10n.text("ui.default_option"))
                             .tag(Optional<String>.none)
-                        // Service tier 是协议枚举值，展示时保持原值，不能参与本地化。
-                        Text(verbatim: "auto").tag(Optional("auto"))
-                        Text(verbatim: "priority").tag(Optional("priority"))
-                        Text(verbatim: "flex").tag(Optional("flex"))
+                        ForEach(serviceTierOptions) { tier in
+                            Text(tier.name).tag(Optional(tier.id))
+                        }
                     }
                 }
 
@@ -423,6 +428,8 @@ struct AdvancedTurnOptionsSheet: View {
                 }
             }
             .navigationTitle(L10n.text("ui.advanced_options"))
+            .onChange(of: draft.model) { _, _ in normalizeCatalogCapabilities() }
+            .onChange(of: draft.runtimeProvider) { _, _ in normalizeCatalogCapabilities() }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(L10n.text("ui.cancel")) { dismiss() }
@@ -448,6 +455,48 @@ struct AdvancedTurnOptionsSheet: View {
         }
     }
 
+    private var selectedModelOption: CodexAppServerModelOption? {
+        let modelID = draft.model?.trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
+        let runtime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(draft.runtimeProvider)
+        let scoped = modelOptions.filter {
+            CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeProvider) == runtime
+        }
+        if let modelID {
+            return scoped.first { $0.model.caseInsensitiveCompare(modelID) == .orderedSame }
+        }
+        return scoped.first(where: \.isDefault) ?? scoped.first
+    }
+
+    private var serviceTierOptions: [CodexAppServerModelServiceTier] {
+        guard CodexAppServerSessionRuntime.normalizedRuntimeProvider(draft.runtimeProvider) == "codex" else {
+            return []
+        }
+        var tiers = ModelReasoningGridCatalog.serviceTiers(for: selectedModelOption)
+        // 高级页也服务于 API key 模型；保留历史协议选项，不用账号目录裁掉可用值。
+        for id in ["auto", "priority", "flex"] where !tiers.contains(where: { $0.id == id }) {
+            tiers.append(CodexAppServerModelServiceTier(id: id))
+        }
+        if let selected = draft.serviceTier?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .appServerNilIfEmpty,
+           !tiers.contains(where: { $0.id == selected }) {
+            tiers.append(CodexAppServerModelServiceTier(id: selected))
+        }
+        return tiers
+    }
+
+    private func normalizeCatalogCapabilities() {
+        draft.serviceTier = ModelReasoningGridCatalog.normalizedServiceTier(
+            draft.serviceTier,
+            option: selectedModelOption,
+            runtimeProvider: draft.runtimeProvider,
+            allowsUnlistedCodexTier: true
+        )
+        if selectedModelOption?.supportsPersonality == false {
+            draft.personality = nil
+        }
+    }
+
     private func optionalStringBinding(_ keyPath: WritableKeyPath<CodexAppServerTurnOptions, String?>) -> Binding<String> {
         Binding(
             get: { draft[keyPath: keyPath] ?? "" },
@@ -460,6 +509,7 @@ struct AdvancedTurnOptionsSheet: View {
 
     private func apply() {
         do {
+            normalizeCatalogCapabilities()
             draft.config = try parseOptionalJSON(configText, requireObject: true, label: "config")
             draft.outputSchema = try parseOptionalJSON(outputSchemaText, requireObject: false, label: "outputSchema")
             onSave(draft)

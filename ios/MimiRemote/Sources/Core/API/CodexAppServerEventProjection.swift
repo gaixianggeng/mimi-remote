@@ -211,6 +211,7 @@ extension CodexAppServerSessionRuntime {
         case .sessionStatus(_, let metadata),
              .sessionContext(_, let metadata),
              .permissionProfileUpdated(_, let metadata),
+             .collaborationModeUpdated(_, let metadata),
              .goalCleared(let metadata),
              .turnStarted(let metadata),
              .assistantDelta(_, let metadata),
@@ -265,13 +266,19 @@ extension CodexAppServerSessionRuntime {
                 return
             }
             let settings = params["threadSettings"]?.objectValue ?? [:]
-            guard settings.keys.contains("activePermissionProfile") else {
-                return
+            if settings.keys.contains("activePermissionProfile") {
+                emit(.permissionProfileUpdated(
+                    CodexAppServerActivePermissionProfile(value: settings["activePermissionProfile"]),
+                    metadata(threadID: threadID, turnID: nil)
+                ))
             }
-            emit(.permissionProfileUpdated(
-                CodexAppServerActivePermissionProfile(value: settings["activePermissionProfile"]),
-                metadata(threadID: threadID, turnID: nil)
-            ))
+            if let mode = collaborationMode(from: settings["collaborationMode"]),
+               collaborationModeScopeMatches(
+                threadID: threadID,
+                cwd: settings["cwd"]?.stringValue
+               ) {
+                recordCollaborationModeUpdate(mode, threadID: threadID)
+            }
         case "thread/status/changed":
             guard let threadID = params["threadId"]?.stringValue,
                   let statusValue = params["status"] else {
@@ -378,6 +385,40 @@ extension CodexAppServerSessionRuntime {
             backfillActiveTurnFromLiveNotification(method: notification.method, params: params)
             break
         }
+    }
+
+    func collaborationMode(
+        from value: CodexAppServerJSONValue?
+    ) -> CodexAppServerTurnOptions.CollaborationMode? {
+        guard let rawMode = value?.objectValue?["mode"]?.stringValue else {
+            return nil
+        }
+        return CodexAppServerTurnOptions.CollaborationMode(rawValue: rawMode)
+    }
+
+    func collaborationModeScopeMatches(threadID: SessionID, cwd: String?) -> Bool {
+        guard let expectedCWD = contextsBySessionID[threadID]?.cwd,
+              let cwd else {
+            return false
+        }
+        return collaborationModeCWDMatches(expectedCWD, cwd)
+    }
+
+    func collaborationModeCWDMatches(_ lhs: String, _ rhs: String) -> Bool {
+        // cwd 属于远端宿主，可能是 Unix、Windows 盘符或 UNC；iOS 不能用本机路径规则改写。
+        lhs.trimmingCharacters(in: .whitespacesAndNewlines)
+            == rhs.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func recordCollaborationModeUpdate(
+        _ mode: CodexAppServerTurnOptions.CollaborationMode,
+        threadID: SessionID
+    ) {
+        collaborationModeGenerationBySessionID[threadID, default: 0] &+= 1
+        emit(.collaborationModeUpdated(
+            mode,
+            metadata(threadID: threadID, turnID: nil)
+        ))
     }
 
     func backfillActiveTurnFromLiveNotification(

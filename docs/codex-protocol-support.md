@@ -4,15 +4,39 @@
 
 `agentd` 不是 Codex app-server 的无条件透传代理。它只开放移动端当前需要、且能在项目 allowlist 内安全约束的协议能力；Codex 新增方法时默认不自动获得远程权限。
 
-当前协议基线固定为 Codex CLI `0.155.1`：
+当前协议基线固定为 Codex CLI `0.162.0`：
 
-- Client Request：164 个
+- Client Request：170 个
 - Server Request：11 个
-- Server Notification：82 个
+- Server Notification：84 个
 
 方法快照位于 `internal/httpapi/testdata/codex-protocol/`，CI 会在 Codex 版本或方法集合漂移时失败。
 
-该版本的共享服务可通过进程信号进入优雅退出，但没有对应的 JSON-RPC 交接接口。退出等待模型回合，不保证独立 `command/exec` 完成。`thread/unsubscribe` 仍只取消当前连接订阅，不能释放 Desktop 的其他连接。共享启动与修复边界见 [共享 App Server](shared-ssh-app-server.md)。
+已验证的 Codex `0.155.1` 共享服务可通过进程信号进入优雅退出。当前 `0.162.0` 协议仍没有 JSON-RPC 交接接口；不能把旧版本的信号实测直接作为新版退出行为已验证的证据。旧版退出等待模型回合，不保证独立 `command/exec` 完成。`thread/unsubscribe` 仍只取消当前连接订阅，不能释放 Desktop 的其他连接。共享启动与修复边界见 [共享 App Server](shared-ssh-app-server.md)。
+
+### 会话释放边界
+
+`0.155.1` 至 `0.162.0` 没有新增单会话 `thread/unload`、`thread/release` 或 `thread/detach` 请求。以下接口的含义不能混用：
+
+| 接口 | 可以确认的结果 | 不能据此确认 |
+| --- | --- | --- |
+| `thread/unsubscribe` | 当前连接的订阅状态：`notLoaded`、`notSubscribed` 或 `unsubscribed` | 所有连接均已退出、Thread 已立即卸载、其他客户端的 writer 已释放 |
+| `thread/closed` | 服务端发出的关闭通知；Mimi 清除本连接的恢复绑定 | 可以主动调用的释放请求、其他服务进程的持有状态 |
+| `thread/read`、分页历史 | 不订阅会话即可读取已保存内容 | 获得会话写入权 |
+| `thread/archive`、`thread/delete` | 归档或删除历史 | 无数据副作用的释放操作 |
+| `thread/backgroundTerminals/terminate` | 终止指定后台终端进程 | 释放 Thread 或 writer |
+
+最后一个上游订阅退出后仍可能有空闲宽限期。启用审批 broker 时，页面收到的 `unsubscribed` 还可能只代表页面退出：agentd 会为运行、排队和待审批任务保留上游订阅，空闲后才退订。不要用退订 ACK 显示“会话已完全释放”，也不要用删除锁文件或整服重启实现自动交接。
+
+2026-10-10 对 `0.162.0` 的隔离实测使用独立配置目录、Unix Socket 和本机假模型。两个连接订阅同一测试会话，首个连接退订后另一个仍能读取历史；最后连接退订后 0 至 3020 ms 的 11 次检查均为 loaded，第二个独立 App Server 恢复该会话仍返回 `-32600 active writer`。原 App Server 可再次恢复，并读回测试输入与回复。这证明退订不会立即全局释放；本次没有等待并验证 30 分钟最终卸载。测试进程已全部退出，未连接用户共享服务。
+
+### 新版字段兼容
+
+- 模型目录保留 `serviceTiers`、`defaultServiceTier` 和 `supportsPersonality`。速度选择发送目录返回的 ID；目录明确为空时不推测速度权限，旧目录缺字段时保留旧 Fast 兼容。
+- `personality` 用户入口已移除。模型明确不支持时清除旧值；未知模型和旧目录保留持久数据兼容。
+- `thread/resume` 与 `thread/settings/updated` 的有效 `collaborationMode` 同步到当前会话。缺失、未知模式或不匹配的工作区不覆盖已有状态；被动同步不写共享设置。
+- `partial_answer` 作为普通正文展示，后续工具和正文继续处理；只有回合终态结束运行状态。
+- 上游图片输入新增 `fileId`，但当前 Gateway 无法按项目路径验证其附件归属，因此明确拒绝该引用。继续使用已授权的 `image.url` 或 `localImage.path`，不无条件透传附件 ID。
 
 本文件只描述 Codex app-server 上游协议。Mimi iOS 与 `agentd` 自身 REST /
 WebSocket 的修订窗口、共享 fixtures 和更新命令见
@@ -127,7 +151,7 @@ Gateway 保持 Notification 透明转发，移动客户端第一批明确消费�
 - Skill 配置写入、Plugin 安装和 Marketplace；
 - realtime voice、remote control；
 - `thread/queue/delete`、`thread/queue/reorder`、`thread/queue/start`、`thread/queue/update`；
-- 已废弃的 `thread/rollback`。
+- 已从上游删除的 `thread/rollback`。
 
 这些能力不是“漏做”，而是当前远程安全边界的一部分。需要新增时，必须同时补 Go 参数清洗、thread/cwd 授权、客户端类型化处理和协议测试。
 

@@ -61,6 +61,7 @@ enum AgentEvent {
     case sessionStatus(String?, AgentEventMetadata)
     case sessionContext(SessionContextSnapshot, AgentEventMetadata)
     case permissionProfileUpdated(CodexAppServerActivePermissionProfile?, AgentEventMetadata)
+    case collaborationModeUpdated(CodexAppServerTurnOptions.CollaborationMode, AgentEventMetadata)
     case goalUpdated(ThreadGoal, AgentEventMetadata)
     case goalCleared(AgentEventMetadata)
     case turnStarted(AgentEventMetadata)
@@ -93,6 +94,8 @@ extension AgentEvent {
             return .sessionContext(context, metadata.withReplayBoundarySequence(sequence, epoch: epoch))
         case .permissionProfileUpdated(let profile, let metadata):
             return .permissionProfileUpdated(profile, metadata.withReplayBoundarySequence(sequence, epoch: epoch))
+        case .collaborationModeUpdated(let mode, let metadata):
+            return .collaborationModeUpdated(mode, metadata.withReplayBoundarySequence(sequence, epoch: epoch))
         case .goalUpdated(let goal, let metadata):
             return .goalUpdated(goal, metadata.withReplayBoundarySequence(sequence, epoch: epoch))
         case .goalCleared(let metadata):

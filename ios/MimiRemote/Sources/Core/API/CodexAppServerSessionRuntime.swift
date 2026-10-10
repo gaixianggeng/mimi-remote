@@ -210,6 +210,9 @@ actor CodexAppServerSessionRuntime {
     // app-server 只向「在当前 gateway 连接上 resume/start 过」的 thread 推送 turn 事件；记录本连接已
     // 经绑定的 thread，断线重连后这个集合随新连接清空，确保再次发送时会先补一次 thread/resume。
     var threadsResumedOnConnection: Set<SessionID> = []
+    // thread/resume 等待响应时 actor 会继续处理 settings/updated。每次权威模式更新都换代，
+    // 防止迟到的恢复快照覆盖恢复期间已经到达的新共享模式。
+    var collaborationModeGenerationBySessionID: [SessionID: UInt64] = [:]
     // actor 会在 await thread/resume 时重入；同一连接、同一 thread 的并发监听和发送必须等待同一任务，
     // 否则 gateway 会拒绝重复历史请求，进一步放大上游高负载。
     var threadResumeTasksBySessionID: [SessionID: CodexAppServerThreadResumeTask] = [:]
@@ -877,6 +880,9 @@ actor CodexAppServerSessionRuntime {
         // 不因旧 config 的方法清单不完整而关闭这条链路。
         let supportsThreadResume = true
         let usesThreadResume = !resumeID.isEmpty && supportsThreadResume
+        let collaborationModeGeneration = usesThreadResume
+            ? collaborationModeGenerationBySessionID[resumeID, default: 0]
+            : nil
         let spec: CodexAppServerRequestSpec
         if resumeID.isEmpty {
             spec = usesSharedServerQueue
@@ -925,6 +931,14 @@ actor CodexAppServerSessionRuntime {
         emitActivePermissionProfile(from: result, threadID: session.id)
         let cwd = session.dir
         contextsBySessionID[session.id] = CodexAppServerSessionContext(session: session, cwd: cwd, activeTurnID: session.activeTurnID)
+        if let collaborationModeGeneration {
+            emitActiveCollaborationMode(
+                from: result,
+                expectedThreadID: resumeID,
+                expectedCWD: project.path,
+                expectedGeneration: collaborationModeGeneration
+            )
+        }
         let turnPayload = CodexAppServerTurnPayload(input: payload.input, options: payload.turnOptions)
         if !turnPayload.isEmpty {
             // thread/start 后立刻 turn/start 仍沿用当前连接；但空会话没有立即 turn，
@@ -995,6 +1009,7 @@ actor CodexAppServerSessionRuntime {
         globalListVerifiedMissingSessionIDs.remove(id)
         if archived {
             contextsBySessionID.removeValue(forKey: id)
+            collaborationModeGenerationBySessionID.removeValue(forKey: id)
             pendingTurnStartObservationsBySessionID.removeValue(forKey: id)
             threadSubscriptionLeaseBySessionID.removeValue(forKey: id)
             cancelThreadUnsubscribeRetryTask(sessionID: id)
@@ -2065,6 +2080,7 @@ actor CodexAppServerSessionRuntime {
              .sessionStatus,
              .sessionContext,
              .permissionProfileUpdated,
+             .collaborationModeUpdated,
              .goalUpdated,
              .goalCleared,
              .turnStarted,
@@ -2760,6 +2776,7 @@ actor CodexAppServerSessionRuntime {
         connection: CodexAppServerConnection
     ) async throws {
         let usesSharedServerQueue = try await turnDeliveryMode() == .sharedServerQueue
+        let collaborationModeGeneration = collaborationModeGenerationBySessionID[sessionID, default: 0]
         var passiveResumeOptions = CodexAppServerTurnOptions.default
         // 被动监听/重连不能把 Mimi 的安全默认重新写进已有 Codex Thread；否则 Windows
         // managed permission profiles 会把原来的 :danger-full-access 静默改成 :workspace。
@@ -2819,6 +2836,12 @@ actor CodexAppServerSessionRuntime {
             emitActivePermissionProfile(from: result, threadID: session.id)
             let recoveredTerminalTurn = storeAuthoritativeTurnsSnapshot(session, thread: thread)
             emit(.session(session))
+            emitActiveCollaborationMode(
+                from: result,
+                expectedThreadID: sessionID,
+                expectedCWD: cwd,
+                expectedGeneration: collaborationModeGeneration
+            )
             if let recoveredTerminalTurn {
                 // 断线可能发生在最终 item/completed 与 turn/completed 之间。resume 返回的 turns
                 // 是当前连接的权威快照；确认旧 active turn 已进入终态后，补回完成事件，让上层
@@ -2850,6 +2873,25 @@ actor CodexAppServerSessionRuntime {
             CodexAppServerActivePermissionProfile(value: source["activePermissionProfile"]),
             metadata(threadID: threadID, turnID: nil)
         ))
+    }
+
+    func emitActiveCollaborationMode(
+        from result: CodexAppServerJSONValue?,
+        expectedThreadID: SessionID,
+        expectedCWD: String,
+        expectedGeneration: UInt64
+    ) {
+        guard collaborationModeGenerationBySessionID[expectedThreadID, default: 0] == expectedGeneration,
+              let response = result?.objectValue,
+              let thread = response["thread"]?.objectValue,
+              thread["id"]?.stringValue == expectedThreadID,
+              let responseCWD = response["cwd"]?.stringValue,
+              collaborationModeCWDMatches(responseCWD, expectedCWD),
+              let mode = collaborationMode(from: response["collaborationMode"])
+        else {
+            return
+        }
+        recordCollaborationModeUpdate(mode, threadID: expectedThreadID)
     }
 
     func clearThreadResumeTask(

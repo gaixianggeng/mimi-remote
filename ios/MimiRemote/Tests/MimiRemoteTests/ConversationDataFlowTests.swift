@@ -3586,7 +3586,7 @@ final class ConversationDataFlowTests: XCTestCase {
         let options = CodexAppServerModelOption.builtInFallback
             + CodexAppServerModelOption.builtInClaudeFallback
         let luna = try XCTUnwrap(
-            options.first { $0.model == "gpt-5.6-luna" }
+            options.first { $0.model == "gpt-6-luna" }
         )
         let opus = try XCTUnwrap(
             options.first { $0.model == "opus" }
@@ -3611,7 +3611,7 @@ final class ConversationDataFlowTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(codex.option.model, "gpt-5.6-luna")
+        XCTAssertEqual(codex.option.model, "gpt-6-luna")
         XCTAssertEqual(codex.effort, .max)
         XCTAssertEqual(claude.option.model, "opus")
         XCTAssertEqual(claude.effort, .xhigh)
@@ -3623,7 +3623,7 @@ final class ConversationDataFlowTests: XCTestCase {
             defaults: defaults,
             to: &codexTurnOptions
         )
-        XCTAssertEqual(codexTurnOptions.model, "gpt-5.6-luna")
+        XCTAssertEqual(codexTurnOptions.model, "gpt-6-luna")
         XCTAssertEqual(codexTurnOptions.reasoningEffort, .max)
         XCTAssertNil(codexTurnOptions.runtimeProvider)
 
@@ -3649,7 +3649,7 @@ final class ConversationDataFlowTests: XCTestCase {
         defaults.set(CodexAppServerReasoningEffort.ultra.rawValue, forKey: DefaultModelPreferences.codexReasoningEffortKey)
 
         let luna = try XCTUnwrap(
-            CodexAppServerModelOption.builtInFallback.first { $0.model == "gpt-5.6-luna" }
+            CodexAppServerModelOption.builtInFallback.first { $0.model == "gpt-6-luna" }
         )
         let selection = try XCTUnwrap(
             DefaultModelPreferences.resolvedSelection(
@@ -3659,7 +3659,7 @@ final class ConversationDataFlowTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(selection.option.model, "gpt-5.6-luna")
+        XCTAssertEqual(selection.option.model, "gpt-6-luna")
         XCTAssertEqual(selection.effort, .medium)
 
         var turnOptions = CodexAppServerTurnOptions.default
@@ -3669,7 +3669,7 @@ final class ConversationDataFlowTests: XCTestCase {
             defaults: defaults,
             to: &turnOptions
         )
-        XCTAssertEqual(turnOptions.model, "gpt-5.6-luna")
+        XCTAssertEqual(turnOptions.model, "gpt-6-luna")
         XCTAssertEqual(turnOptions.reasoningEffort, .medium)
     }
 

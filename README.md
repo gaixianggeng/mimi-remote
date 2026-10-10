@@ -55,6 +55,8 @@ flowchart LR
     Host <--> DeepSeek["DeepSeek Harness<br/>optional"]
 ```
 
+On Windows, the Codex App Server listens on a loopback WebSocket and is not exposed directly to the LAN.
+
 `agentd` on your computer authenticates the app and routes it to the selected runtime. There is no cloud account, session hosting, or application-level relay. Message notifications are on by default; they go through a small push service that receives only the APNs device token, anonymous short tags for the computer and session, the approval type, and an expiry, never prompts, code, or session content. See the [privacy policy](docs/privacy-policy.md). Keep `agentd` on a private network; do not expose its plain HTTP port to the public Internet.
 
 Mimi Remote is a session client. It is not a remote shell, and it does not run agents on iOS. Sessions created in Codex Desktop's ordinary "This Mac" mode are not shared; connect Desktop through the [shared App Server](docs/shared-ssh-app-server.md) to continue them on mobile.

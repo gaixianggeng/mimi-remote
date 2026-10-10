@@ -5,9 +5,23 @@ import XCTest
 @testable import MimiRemote
 
 // 固定视觉验收使用的模型组合，避免产品默认模型更新改变布局基线。
-private let codex56SnapshotModels = CodexAppServerModelOption.builtInFallback.filter {
-    $0.model.hasPrefix("gpt-5.6-")
-}
+private let codex56SnapshotModels = [
+    CodexAppServerModelOption(
+        id: "gpt-5.6-sol", title: "GPT-5.6 Sol",
+        supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+        defaultReasoningEffort: "xhigh"
+    ),
+    CodexAppServerModelOption(
+        id: "gpt-5.6-terra", title: "GPT-5.6 Terra",
+        supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+        defaultReasoningEffort: "medium"
+    ),
+    CodexAppServerModelOption(
+        id: "gpt-5.6-luna", title: "GPT-5.6 Luna",
+        supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+        defaultReasoningEffort: "medium"
+    )
+]
 
 // 图片基线验证服务端返回的版本化标题布局，不依赖产品的无版本 fallback。
 private let claudeCatalogSnapshotModels = [
@@ -210,7 +224,7 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.xhigh), "Extra High")
         XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.max), "Max")
         XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.ultra), "Ultra")
-        XCTAssertFalse(claudeLayout.showsFastMode)
+        XCTAssertFalse(claudeLayout.showsServiceTierControl)
         XCTAssertEqual(claudeLayout.standardContentHeight, 236)
     }
 
@@ -299,8 +313,8 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertEqual(codexOneRow.standardContentHeight, 132)
         XCTAssertEqual(claudeTwoRows.standardContentHeight, 184)
         XCTAssertEqual(codexThreeRows.standardContentHeight, 236)
-        XCTAssertTrue(codexOneRow.showsFastMode)
-        XCTAssertFalse(claudeTwoRows.showsFastMode)
+        XCTAssertTrue(codexOneRow.showsServiceTierControl)
+        XCTAssertFalse(claudeTwoRows.showsServiceTierControl)
         XCTAssertEqual(codexOneRow.efforts.last, .ultra)
         XCTAssertEqual(claudeTwoRows.efforts.last, .max)
 
@@ -386,10 +400,10 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 selection: ModelReasoningGridSelection(modelID: "gpt-5.6-terra", effort: .high),
                 selectedModelID: "gpt-5.6-terra",
                 isRefreshing: false,
-                isFastMode: true,
+                selectedServiceTier: "priority",
                 onSelectModel: { _, _ in },
                 onSelectDefaultModel: { _, _ in },
-                onFastModeChange: { _ in },
+                onServiceTierChange: { _ in },
                 onRefresh: {}
             )
         }
@@ -424,10 +438,10 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             selection: ModelReasoningGridSelection(modelID: "gpt-5.6-sol", effort: .xhigh),
             selectedModelID: "gpt-5.6-sol",
             isRefreshing: false,
-            isFastMode: false,
+            selectedServiceTier: nil,
             onSelectModel: { _, _ in },
             onSelectDefaultModel: { _, _ in },
-            onFastModeChange: { _ in },
+            onServiceTierChange: { _ in },
             onRefresh: {}
         )
         .environmentObject(themeStore)
@@ -457,10 +471,10 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             selection: ModelReasoningGridSelection(modelID: "gpt-5.6-sol", effort: .xhigh),
             selectedModelID: "gpt-5.6-sol",
             isRefreshing: false,
-            isFastMode: true,
+            selectedServiceTier: "priority",
             onSelectModel: { _, _ in },
             onSelectDefaultModel: { _, _ in },
-            onFastModeChange: { _ in },
+            onServiceTierChange: { _ in },
             onRefresh: {}
         )
         .environmentObject(themeStore)
@@ -687,10 +701,10 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             selection: selection,
             selectedModelID: selection.modelID,
             isRefreshing: false,
-            isFastMode: false,
+            selectedServiceTier: nil,
             onSelectModel: { _, _ in },
             onSelectDefaultModel: { _, _ in },
-            onFastModeChange: { _ in },
+            onServiceTierChange: { _ in },
             onRefresh: {}
         )
         .environmentObject(themeStore)

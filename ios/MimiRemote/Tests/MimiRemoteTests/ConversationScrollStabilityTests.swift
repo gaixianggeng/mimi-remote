@@ -152,8 +152,16 @@ final class ConversationScrollStabilityTests: XCTestCase {
         await drain()
         XCTAssertEqual(rig.commands.map(\.target), [.anchorItem(rig.snapshot.rowIDs[0])])
         // 模拟 scrollTo 重新实例化旧消息。之后只按它的实际 frame 纠正位置。
+        let correction = expectation(description: "前插历史后的原生阅读位置已补偿")
+        ConversationTimelineScrollController.testingCommandObserver = { record in
+            if record.reason == .historyAnchor, record.target == .offset(3_000) {
+                correction.fulfill()
+            }
+        }
+        defer { ConversationTimelineScrollController.testingCommandObserver = nil }
         _ = rig.addMarker(y: 3_100, id: rig.messages[0].id)
-        await drain()
+        // yield 次数无法确认合并任务已执行；等待真实补偿命令，仍精确断言最终位置。
+        await fulfillment(of: [correction], timeout: 1)
         XCTAssertEqual(rig.scrollView.contentOffset.y, 3_000, accuracy: 0.5)
         XCTAssertTrue(rig.commands.allSatisfy { $0.target != .tail })
 
