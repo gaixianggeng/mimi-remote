@@ -42,7 +42,7 @@ func TestDoctorArgumentsOnlyRequestFixWhenSelected(t *testing.T) {
 func TestActionArgumentsWaitForInteractiveServiceReadiness(t *testing.T) {
 	for _, action := range []string{"start", "restart"} {
 		arguments := actionArguments(action)
-		want := []string{action, "--wait", "20s", "--no-pair"}
+		want := []string{action, "--wait", "1m0s", "--no-pair"}
 		if len(arguments) != len(want) {
 			t.Fatalf("%s arguments = %#v", action, arguments)
 		}

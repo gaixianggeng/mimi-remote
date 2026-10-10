@@ -11,12 +11,16 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/windowslan"
 )
 
+// 策略查询经 PowerShell 读取防火墙和网络配置，登录后冷启动实测 8–11 秒。
+// 预算不足时 PowerShell 会被强杀，启动只剩 exit status 1（#456）。
+const windowsLANPolicyCheckTimeout = 30 * time.Second
+
 func ensurePlatformLANAccessAllowed() error {
 	agentPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("定位 agentd.exe 失败：%w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), windowsLANPolicyCheckTimeout)
 	defer cancel()
 	status, err := windowslan.Check(ctx, agentPath)
 	if err != nil {

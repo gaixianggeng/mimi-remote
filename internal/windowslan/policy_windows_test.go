@@ -4,6 +4,7 @@ package windowslan
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -22,6 +23,15 @@ func TestParseStatus(t *testing.T) {
 	}
 	if status.InterfaceLabel() != "WLAN" || status.CategoryLabel() != "Public" {
 		t.Fatalf("网络说明解析错误：%+v", status)
+	}
+}
+
+func TestCheckKeepsDeadlineWhenPolicyQueryIsKilled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := Check(ctx, `C:\Program Files\Mimi Remote\agentd.exe`)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("超时强杀 PowerShell 后必须保留 deadline 原因，而不是只剩退出码：%v", err)
 	}
 }
 

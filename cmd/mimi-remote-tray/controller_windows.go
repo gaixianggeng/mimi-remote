@@ -182,7 +182,7 @@ func (c *agentController) action(ctx context.Context, action string) error {
 func actionArguments(action string) []string {
 	arguments := []string{action}
 	if action == "start" || action == "restart" {
-		arguments = append(arguments, "--wait", "20s", "--no-pair")
+		arguments = append(arguments, "--wait", serviceReadyWait.String(), "--no-pair")
 	}
 	return arguments
 }
@@ -352,6 +352,10 @@ const (
 	statusQueueTimeout             = 25 * time.Second
 	backgroundStatusCommandTimeout = 12 * time.Second
 	manualStatusCommandTimeout     = runtimebudget.ManualCommandTimeout
+	// 启动就绪要覆盖 LAN 策略查询（最多 30 秒）与受管 Codex 初始化（最多 25 秒）；
+	// 20 秒时实测约 22 秒才开始监听，托盘会先报就绪失败（#456）。
+	serviceReadyWait    = 60 * time.Second
+	actionCommandBudget = serviceReadyWait + 15*time.Second
 )
 
 func statusContext() (context.Context, context.CancelFunc) {
@@ -359,5 +363,5 @@ func statusContext() (context.Context, context.CancelFunc) {
 }
 
 func actionContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 30*time.Second)
+	return context.WithTimeout(context.Background(), actionCommandBudget)
 }

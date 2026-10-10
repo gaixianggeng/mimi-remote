@@ -84,7 +84,7 @@ if (-not $assignment -or
         }
     }
 }
-foreach ($expected in @('up --no-pair --wait 30s', 'restart --no-pair --wait 30s')) {
+foreach ($expected in @('up --no-pair --wait 60s', 'restart --no-pair --wait 60s')) {
     if (-not $source.Contains($expected)) { throw "Installer source is missing the extended cold-start readiness window: $expected" }
 }
 $firewallSource = Get-Content -LiteralPath $firewall -Raw

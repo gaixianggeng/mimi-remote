@@ -74,3 +74,13 @@ func ignoreKilledProcessError(err error) error {
 	}
 	return err
 }
+
+// 只用于 agentd 已经主动终止子进程之后。Windows 的强制终止不产生信号，
+// 而是以固定退出码结束；在终止前就已退出的进程仍走 ignoreKilledProcessError。
+func ignoreStoppedProcessError(err error) error {
+	err = ignoreKilledProcessError(err)
+	if err != nil && isForcedTerminationExit(err) {
+		return nil
+	}
+	return err
+}

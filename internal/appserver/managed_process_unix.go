@@ -13,3 +13,6 @@ func terminateManagedProcess(cmd *exec.Cmd) {
 		_ = cmd.Process.Kill()
 	}
 }
+
+// Unix 的强制终止表现为 signal: killed，已由 ignoreKilledProcessError 处理。
+func isForcedTerminationExit(error) bool { return false }
