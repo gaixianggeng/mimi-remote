@@ -54,10 +54,16 @@ extension ComposerView {
         return sessionStore.activeCollaborationMode(for: sessionID)
     }
 
-    func suppressCachedAuthoritativeCollaborationMode(for scope: ComposerDraftScopeKey) {
+    func suppressSubmittedCollaborationMode(
+        _ submittedMode: CodexAppServerTurnOptions.CollaborationMode?,
+        for scope: ComposerDraftScopeKey
+    ) {
         guard case .session(let sessionID) = scope else { return }
         sessionStore.composerSendModeCache.suppressAuthoritativeMode(
-            sessionStore.activeCollaborationMode(for: sessionID),
+            ComposerCollaborationModeSync.authoritativeModeToSuppressAfterSubmit(
+                submittedMode: submittedMode,
+                cachedAuthoritativeMode: sessionStore.activeCollaborationMode(for: sessionID)
+            ),
             for: scope
         )
     }

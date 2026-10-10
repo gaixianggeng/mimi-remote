@@ -433,10 +433,11 @@ struct ComposerView: View {
             return submitGoalDraft()
         }
         let submittedDraftScope = activeComposerDraftScope
-        let selectionCheckpoint = transientSelectionCheckpoint
+        var selectionCheckpoint = transientSelectionCheckpoint
         // 点击时就固定目标；Task 开始执行前，返回手势可能已经清空当前会话。
         let submissionContext = sessionStore.captureTurnSubmissionContext()
         let options = preparedTurnOptionsForSubmit()
+        selectionCheckpoint.submittedCollaborationMode = options.collaborationMode
         guard let submitted = composerState.takeDraftForSubmit(isLoading: sessionStore.isLoading, turnOptionsOverride: options) else {
             return false
         }
@@ -469,7 +470,8 @@ struct ComposerView: View {
         // 防止 app-server 沿用上一轮规划协作状态。
         options.collaborationMode = .default
         let submittedDraftScope = activeComposerDraftScope
-        let selectionCheckpoint = transientSelectionCheckpoint
+        var selectionCheckpoint = transientSelectionCheckpoint
+        selectionCheckpoint.submittedCollaborationMode = options.collaborationMode
         let submissionContext = sessionStore.captureTurnSubmissionContext()
         guard let submitted = composerState.takeDraftForSubmit(
             isLoading: sessionStore.isLoading || sessionStore.isUpdatingThreadGoal,
@@ -663,11 +665,11 @@ struct ComposerView: View {
         )
     }
 
-    func resetComposerSendModeAfterSubmit() {
+    func resetComposerSendModeAfterSubmit(submittedMode: CodexAppServerTurnOptions.CollaborationMode?) {
         composerState.resetSendModeAfterSubmit()
         collaborationModeSyncBaselineRevision = sendModeChoiceRevision
         persistComposerSendMode(.standard, for: activeComposerDraftScope)
-        suppressCachedAuthoritativeCollaborationMode(for: activeComposerDraftScope)
+        suppressSubmittedCollaborationMode(submittedMode, for: activeComposerDraftScope)
     }
 
     func synchronizeComposerTextBeforeDraftScopeChange() {

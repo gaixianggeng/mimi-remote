@@ -280,4 +280,35 @@ extension ConversationDataFlowTests {
         )
         XCTAssertEqual(store.activeCollaborationMode(for: sessionID), .default)
     }
+
+    func testAcceptedPlanSendSuppressesSubmittedModeBeforeSettingsEcho() {
+        let scope = ComposerDraftScopeKey.session("thr_submitted_plan")
+        let cachedModes: [CodexAppServerTurnOptions.CollaborationMode?] = [.default, nil]
+        for cachedMode in cachedModes {
+            var cache = ComposerSendModeCache()
+            cache.save(.standard, for: scope)
+            // Plan 发送被接受、输入区已复位时，settings 通知尚未到达：缓存仍是旧值或为空。
+            cache.suppressAuthoritativeMode(
+                ComposerCollaborationModeSync.authoritativeModeToSuppressAfterSubmit(
+                    submittedMode: .plan,
+                    cachedAuthoritativeMode: cachedMode
+                ),
+                for: scope
+            )
+            XCTAssertFalse(
+                cache.shouldApplyAuthoritativeMode(.plan, for: scope),
+                "迟到的 Plan 回报来自本次提交，不能把已复位的输入区切回 Plan（缓存：\(String(describing: cachedMode))）"
+            )
+            XCTAssertTrue(cache.shouldApplyAuthoritativeMode(.default, for: scope))
+            XCTAssertTrue(cache.shouldApplyAuthoritativeMode(.plan, for: scope), "出现不同值后恢复正常同步")
+        }
+        XCTAssertEqual(
+            ComposerCollaborationModeSync.authoritativeModeToSuppressAfterSubmit(
+                submittedMode: nil,
+                cachedAuthoritativeMode: .plan
+            ),
+            .plan,
+            "没有记录提交模式时沿用缓存值"
+        )
+    }
 }

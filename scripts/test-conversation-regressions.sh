@@ -120,6 +120,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStorePublishesAuthoritativeCollaborationModePerSession \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testAuthoritativeCollaborationModeDoesNotOverrideActiveComposerChoice \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSubmittedPlanResetIgnoresCachedModeUntilCurrentSessionChanges \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testAcceptedPlanSendSuppressesSubmittedModeBeforeSettingsEcho \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testPartialAnswerAllowsMoreItemsUntilTurnCompleted \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testAgentMessageWithoutPhaseKeepsLegacyMessageProjection \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDirectIdleHistorySessionSendsThroughResumePath \

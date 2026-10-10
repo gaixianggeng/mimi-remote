@@ -46,6 +46,8 @@ struct ComposerTransientSelectionCheckpoint {
     let cachedDeliveryRevision: UInt64
     let sendModeRevision: UInt64
     let cachedSendModeRevision: UInt64
+    /// 本次 turn/start 实际提交的协作模式；发送被接受后据此忽略服务端回报的同一模式。
+    var submittedCollaborationMode: CodexAppServerTurnOptions.CollaborationMode?
 
     func restoration(
         activeInstanceID: UUID?,
@@ -764,6 +766,15 @@ enum ComposerCollaborationModeSync {
             return nil
         }
         return authoritativeMode == .plan ? .plan : .standard
+    }
+
+    /// 发送被接受后要忽略的权威模式。服务端随后回报的是本次提交的模式；发送前的缓存
+    /// 可能为空或仍是旧值，按缓存忽略会让迟到的 Plan 通知把已复位的输入区切回 Plan。
+    static func authoritativeModeToSuppressAfterSubmit(
+        submittedMode: CodexAppServerTurnOptions.CollaborationMode?,
+        cachedAuthoritativeMode: CodexAppServerTurnOptions.CollaborationMode?
+    ) -> CodexAppServerTurnOptions.CollaborationMode? {
+        submittedMode ?? cachedAuthoritativeMode
     }
 }
 
