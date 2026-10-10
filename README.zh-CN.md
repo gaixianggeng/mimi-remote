@@ -55,6 +55,8 @@ flowchart LR
     Host <--> DeepSeek["DeepSeek Harness<br/>可选"]
 ```
 
+Windows 上的 Codex App Server 只监听本机 loopback WebSocket，不向局域网直接开放。
+
 电脑上的 `agentd` 负责验证 App 的连接，并转到所选运行时。没有云账号、会话托管或应用层中转。消息通知默认开启，经由一个小型推送服务发送；它只接收 APNs 设备 Token、电脑与会话的匿名短标签、审批类型和过期时间，不接收提示词、代码或会话内容，详见[隐私政策](docs/privacy-policy.md)。`agentd` 只应在私有网络中访问，不要把它的明文 HTTP 端口暴露到公网。
 
 Mimi Remote 是会话客户端，不是远程 Shell，也不在 iOS 上运行 Agent。Codex Desktop 普通「This Mac」模式里的会话不会共享；要在移动端接着用，请按[共享 App Server](docs/shared-ssh-app-server.md) 接入 Desktop。
