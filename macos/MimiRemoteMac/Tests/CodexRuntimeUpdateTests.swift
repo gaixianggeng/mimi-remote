@@ -10,6 +10,14 @@ final class CodexRuntimeUpdateTests: XCTestCase {
     private nonisolated static let current = CodexRuntimeVersions(
         installedVersion: "0.161.0", runningVersion: "0.161.0", updateAvailable: false
     )
+    private nonisolated static let featureMismatch = CodexRuntimeVersions(
+        installedVersion: "0.161.0", runningVersion: "0.161.0", updateAvailable: false,
+        featureMismatch: true
+    )
+    private nonisolated static let featureFixed = CodexRuntimeVersions(
+        installedVersion: "0.161.0", runningVersion: "0.161.0", updateAvailable: false,
+        featureMismatch: false
+    )
 
     func testReportsSuccessOnlyAfterVerifiedVersionSwitch() async {
         var agent = AgentCommandClient.live()
@@ -106,6 +114,48 @@ final class CodexRuntimeUpdateTests: XCTestCase {
         XCTAssertNil(store.notice)
     }
 
+    func testSameVersionFeatureMismatchCanBeRepairedAfterConfirmation() async {
+        var agent = AgentCommandClient.live()
+        agent.codexRuntimeVersions = { Self.featureMismatch }
+        agent.updateCodexRuntime = { restart in
+            XCTAssertTrue(restart, "必须将用户确认传给后台修复命令")
+            return Self.featureFixed
+        }
+        let store = CodexRuntimeUpdateStore(agent: agent)
+        await store.refresh()
+        XCTAssertTrue(store.versions?.needsRecovery == true)
+        await store.update(restart: true)
+        XCTAssertEqual(store.versions, Self.featureFixed)
+        XCTAssertTrue(store.notice?.contains("连接已修复") == true)
+        XCTAssertNil(store.error)
+    }
+
+    func testRemainingFeatureMismatchCannotClaimSuccess() async {
+        var agent = AgentCommandClient.live()
+        agent.codexRuntimeVersions = { Self.featureMismatch }
+        agent.updateCodexRuntime = { _ in Self.featureMismatch }
+        let store = CodexRuntimeUpdateStore(agent: agent)
+        await store.refresh()
+        await store.update()
+        XCTAssertEqual(store.versions, Self.featureMismatch)
+        XCTAssertNil(store.notice)
+        XCTAssertTrue(store.error?.contains("尚未修复") == true)
+        XCTAssertTrue(store.updateFailed)
+    }
+
+    func testMissingFeatureResultCannotClaimKnownMismatchWasFixed() async {
+        var agent = AgentCommandClient.live()
+        agent.codexRuntimeVersions = { Self.featureMismatch }
+        agent.updateCodexRuntime = { _ in Self.current }
+        let store = CodexRuntimeUpdateStore(agent: agent)
+        await store.refresh()
+        await store.update()
+        XCTAssertEqual(store.versions, Self.featureMismatch)
+        XCTAssertNil(store.notice)
+        XCTAssertTrue(store.error?.contains("尚未修复") == true)
+        XCTAssertTrue(store.updateFailed)
+    }
+
     func testConnectionsBlockUpdateUntilRecheckConfirmsReleased() async {
         let reads = UpdateReadSequence()
         let updates = UpdateReadSequence()
@@ -152,13 +202,24 @@ final class CodexRuntimeUpdateTests: XCTestCase {
 
     func testVersionResponseRequiresBothVersionsAndUpdateState() throws {
         let decoder = JSONDecoder()
-        XCTAssertEqual(try decoder.decode(
+        let legacy = try decoder.decode(
             CodexRuntimeVersions.self,
             from: Data(#"{"installed_version":"0.161.0","running_version":"0.155.1","update_available":true}"#.utf8)
-        ), Self.pending)
+        )
+        XCTAssertEqual(legacy, Self.pending)
+        XCTAssertNil(legacy.featureMismatch)
+        XCTAssertTrue(legacy.needsRecovery)
+        let legacyCurrent = try decoder.decode(CodexRuntimeVersions.self, from: Data(
+            #"{"installed_version":"0.161.0","running_version":"0.161.0","update_available":false}"#.utf8))
+        XCTAssertNil(legacyCurrent.featureMismatch)
+        XCTAssertFalse(legacyCurrent.needsRecovery)
         XCTAssertThrowsError(try decoder.decode(
             CodexRuntimeVersions.self, from: Data(#"{"update_available":true}"#.utf8)
         ))
+        let featureMismatch = try decoder.decode(CodexRuntimeVersions.self, from: Data(
+            #"{"installed_version":"0.161.0","running_version":"0.161.0","update_available":false,"feature_mismatch":true}"#.utf8))
+        XCTAssertEqual(featureMismatch, Self.featureMismatch)
+        XCTAssertTrue(featureMismatch.needsRecovery)
         let withConnections = try decoder.decode(CodexRuntimeVersions.self, from: Data(
             #"{"installed_version":"0.161.0","running_version":"0.155.1","update_available":true,"connections":{"mimi":1,"codex":3,"other":0}}"#.utf8))
         XCTAssertEqual(withConnections.connections, .init(mimi: 1, codex: 3, other: 0))

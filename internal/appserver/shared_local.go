@@ -324,7 +324,7 @@ func startSharedLocalAppServer(ctx context.Context, options SharedLocalOptions) 
 	return startSharedLocalAppServerListening(ctx, options, "unix://")
 }
 
-// startSharedLocalAppServerListening 以 Desktop 相同的参数启动 resident，只替换监听地址。
+// startSharedLocalAppServerListening 沿用 Desktop 的启动方式；macOS 还保留 CLI 的模型发现设置。
 // 前门使用私有 backend socket；标准 control socket 由 launchd 持有。
 func startSharedLocalAppServerListening(ctx context.Context, options SharedLocalOptions, listen string) error {
 	if err := validateSharedLocalLaunchSession(ctx); err != nil {
@@ -348,6 +348,10 @@ func startSharedLocalAppServerListening(ctx context.Context, options SharedLocal
 		return err
 	}
 	env["PWD"] = workingDirectory
+	residentArgs, err := sharedLocalAppServerArgs(ctx, resolvedBin, env, listen)
+	if err != nil {
+		return err
+	}
 
 	if systemdRun, lookupErr := exec.LookPath("systemd-run"); lookupErr == nil {
 		socketPath, socketErr := SharedLocalSocketPath(env)
@@ -371,7 +375,7 @@ func startSharedLocalAppServerListening(ctx context.Context, options SharedLocal
 			workingDirectory,
 			environmentFile,
 			resolvedBin,
-			[]string{"-c", "features.code_mode_host=true", "app-server", "--listen", listen},
+			residentArgs,
 		)
 		launchErr := runSystemdResidentCommand(
 			ctx,
@@ -387,7 +391,7 @@ func startSharedLocalAppServerListening(ctx context.Context, options SharedLocal
 	}
 	return startResidentCommand(
 		resolvedBin,
-		[]string{"-c", "features.code_mode_host=true", "app-server", "--listen", listen},
+		residentArgs,
 		env,
 	)
 }

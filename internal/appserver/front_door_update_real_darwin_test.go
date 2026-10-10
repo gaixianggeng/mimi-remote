@@ -141,7 +141,7 @@ func testRealRuntimeUpgrade(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = door.UpdateRuntime(ctx)
+	_, err = door.UpdateRuntime(ctx, nil)
 	if err == nil || !strings.Contains(err.Error(), "共享连接") {
 		t.Fatalf("仍有连接却未拒绝: %v", err)
 	}
@@ -168,9 +168,9 @@ func testRealRuntimeUpgrade(t *testing.T, mode string) {
 	var after CodexRuntimeVersions
 	if mode == "idle" {
 		_ = busy.Close()
-		after, err = door.UpdateRuntime(ctx)
+		after, err = door.UpdateRuntime(ctx, nil)
 	} else {
-		after, err = door.RestartRuntime(ctx)
+		after, err = door.RestartRuntime(ctx, nil)
 	}
 	if err != nil {
 		t.Fatal(err)
