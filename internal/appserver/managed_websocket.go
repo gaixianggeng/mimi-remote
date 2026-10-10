@@ -252,7 +252,7 @@ func (p *ManagedWebSocketProcess) Shutdown(ctx context.Context) error {
 		terminateManagedProcess(p.cmd)
 		select {
 		case err := <-p.waitCh:
-			shutdownErr = ignoreKilledProcessError(err)
+			shutdownErr = ignoreStoppedProcessError(err)
 		case <-ctx.Done():
 			shutdownErr = ctx.Err()
 		case <-time.After(2 * time.Second):

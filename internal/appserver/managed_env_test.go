@@ -1,6 +1,7 @@
 package appserver
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -43,5 +44,17 @@ func TestBuildManagedEnvFiltersLegacyDesktopTransportAndOverlaysConfiguredValues
 	}
 	if values["CODEX_HOME"] != "/configured/codex" || counts["CODEX_HOME"] != 1 {
 		t.Fatalf("CODEX_HOME 必须沿用显式配置且不重复：value=%q count=%d", values["CODEX_HOME"], counts["CODEX_HOME"])
+	}
+}
+
+func TestIgnoreStoppedProcessErrorKeepsUnexpectedFailures(t *testing.T) {
+	if err := ignoreStoppedProcessError(nil); err != nil {
+		t.Fatalf("正常退出不能报错：%v", err)
+	}
+	if err := ignoreStoppedProcessError(errors.New("signal: killed")); err != nil {
+		t.Fatalf("主动 kill 的信号退出不能报错：%v", err)
+	}
+	if err := ignoreStoppedProcessError(errors.New("等待子进程失败")); err == nil {
+		t.Fatal("非终止导致的错误必须保留")
 	}
 }
