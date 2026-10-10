@@ -3,4 +3,5 @@
 "NSLocalNetworkUsageDescription" = "Allow Mimi Remote to find and connect to a development environment you configure.";
 "NSCameraUsageDescription" = "Allow Mimi Remote to scan pairing QR codes and take photos you choose to attach to messages.";
 "NSMicrophoneUsageDescription" = "Allow Mimi Remote to turn your speech into text in the message composer.";
+"NSPhotoLibraryAddUsageDescription" = "Allow Mimi Remote to save the user group QR code to your photo library when you choose to.";
 "NSSpeechRecognitionUsageDescription" = "Allow Mimi Remote to recognize speech and insert it into the message composer.";

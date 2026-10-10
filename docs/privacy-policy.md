@@ -1,6 +1,6 @@
 # Mimi Remote 隐私政策 / Privacy Policy
 
-生效日期 / Effective date：2026-09-22
+生效日期 / Effective date：2026-10-09
 
 ## 中文
 
@@ -46,13 +46,14 @@ Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd`
 - 相机：仅在用户打开配对扫码页，或在消息输入框中明确选择“相机”时使用。拍摄的照片会先在设备上重新编码并作为消息附件处理，不会自动保存到系统照片图库，也不会在后台使用相机。
 - 麦克风与语音识别：仅在用户主动录入语音时使用。用户可以选择设备端或 Codex 转写。设备端模式使用系统 SpeechAnalyzer 实时处理；系统可能下载并维护语言模型，但录音不会发送到模型提供方。Codex 模式会把录音发送到用户配置的主机，再由 `agentd` 使用用户自己的 Codex 登录态请求转写；相关处理受用户与服务提供方之间的条款约束。Mimi Remote 开发者不接收这些录音。
 - 照片与文件：仅处理用户通过系统选择器明确选择的内容；内容随后按用户指令发送到其 Mac 上的运行时。
+- 添加到照片图库：仅在用户于「加入用户群」页点击保存时，把开发者微信二维码写入照片图库。App 只申请添加权限，不读取图库内容。
 
 拒绝上述权限不会阻止用户通过手动输入、键盘输入或其他不需要该权限的方式使用对应核心功能。
 
 #### 保留、删除与撤回权限
 
 - 在 App 的连接管理中选择“忘记连接”或删除连接档案，会删除对应本地配置和 Keychain Token。
-- 用户可以在系统设置中随时撤回相机、麦克风、语音识别和本地网络权限。
+- 用户可以在系统设置中随时撤回相机、麦克风、语音识别、照片和本地网络权限。
 - 删除 App 会删除其沙盒中的配置和缓存。为确保连接凭据被明确删除，建议先在 App 内忘记所有连接；Keychain 项在卸载后的保留行为由 Apple 操作系统决定。
 - Mimi Remote 开发者没有用户账号或云端数据副本，因此没有可由开发者执行的远程数据删除流程。
 
@@ -108,13 +109,14 @@ Turning the switch off immediately stops automatic local task notifications and 
 - Camera: used only while you open the QR pairing scanner or explicitly choose Camera in the message composer. Captured photos are re-encoded on device and handled as message attachments. They are not automatically saved to your photo library, and the camera is not used in the background.
 - Microphone and speech recognition: used only when you actively dictate text. You can choose on-device or Codex transcription. On-device mode uses the system SpeechAnalyzer framework in real time; the system may download and maintain language models, but recordings are not sent to a model provider. Codex mode sends the recording to the host you configured, where `agentd` uses your own Codex session to request transcription under the terms between you and the service provider. The developer of Mimi Remote does not receive these recordings.
 - Photos and files: only items you explicitly choose through system pickers are processed, then sent to the runtime on your Mac as you direct.
+- Adding to the photo library: only when you tap Save on the Join the User Group screen, the developer's WeChat QR code is written to your photo library. The app requests add-only access and does not read your library.
 
 Declining a permission does not prevent use of alternatives such as manual pairing or keyboard input.
 
 #### Retention, deletion, and permission withdrawal
 
 - Choosing Forget Connection or deleting a connection profile removes its local configuration and Keychain token.
-- You can revoke camera, microphone, speech-recognition, and local-network access in system settings at any time.
+- You can revoke camera, microphone, speech-recognition, photos, and local-network access in system settings at any time.
 - Deleting the app removes configuration and caches in its sandbox. To explicitly remove connection credentials, forget all connections before uninstalling; post-uninstall Keychain behavior is controlled by the Apple operating system.
 - Mimi Remote has no developer account system or cloud copy of your data, so there is no remote data copy for the developer to delete.
 

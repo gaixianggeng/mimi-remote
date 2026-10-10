@@ -66,6 +66,8 @@
 	<string>Allow Mimi Remote to scan pairing QR codes and take photos you choose to attach to messages.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Allow Mimi Remote to turn your speech into text in the message composer.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Allow Mimi Remote to save the user group QR code to your photo library when you choose to.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Allow Mimi Remote to recognize speech and insert it into the message composer.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
