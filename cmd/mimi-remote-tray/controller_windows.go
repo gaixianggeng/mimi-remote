@@ -354,8 +354,11 @@ const (
 	manualStatusCommandTimeout     = runtimebudget.ManualCommandTimeout
 	// 启动就绪要覆盖 LAN 策略查询（最多 30 秒）与受管 Codex 初始化（最多 25 秒）；
 	// 20 秒时实测约 22 秒才开始监听，托盘会先报就绪失败（#456）。
-	serviceReadyWait    = 60 * time.Second
-	actionCommandBudget = serviceReadyWait + 15*time.Second
+	serviceReadyWait = 60 * time.Second
+	// restart 先停旧实例：等待 PID 退出最多 10 秒、同步计划任务最多 10 秒
+	// （cmd/agentd/windows_service.go），再加上配置检查与提交启动的余量。
+	serviceStopBudget   = 20 * time.Second
+	actionCommandBudget = serviceReadyWait + serviceStopBudget + 30*time.Second
 )
 
 func statusContext() (context.Context, context.CancelFunc) {
