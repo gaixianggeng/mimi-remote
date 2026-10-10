@@ -1,3 +1,4 @@
+account/gatewayOAuth/changed
 account/login/completed
 account/rateLimits/updated
 account/updated
@@ -53,6 +54,7 @@ thread/environment/disconnected
 thread/goal/cleared
 thread/goal/updated
 thread/name/updated
+thread/prediction/updated
 thread/project/updated
 thread/queue/changed
 thread/realtime/closed

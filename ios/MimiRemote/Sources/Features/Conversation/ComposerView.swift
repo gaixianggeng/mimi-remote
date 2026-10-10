@@ -69,6 +69,7 @@ struct ComposerView: View {
     @State var composerScopeRevision: UInt64 = 0
     @State var followUpDeliveryChoiceRevision: UInt64 = 0
     @State var sendModeChoiceRevision: UInt64 = 0
+    @State var collaborationModeSyncBaselineRevision: UInt64 = 0
     @State var editingQueuedTurn: QueuedTurnEditorDraft?
     @State var showsQueuedTurnManager = false
     @State var isSelectingVoiceDraftText = false
@@ -129,7 +130,10 @@ struct ComposerView: View {
             }
         }
         .sheet(isPresented: $showsAdvancedOptionsSheet) {
-            AdvancedTurnOptionsSheet(options: composerState.turnOptions) { options in
+            AdvancedTurnOptionsSheet(
+                options: composerState.turnOptions,
+                modelOptions: modelOptionsForMenu
+            ) { options in
                 composerState.updateTurnOptions { $0 = options }
             }
         }
@@ -323,6 +327,7 @@ struct ComposerView: View {
             composerState.setSendMode(
                 sessionStore.composerSendModeCache.modeForReappearance(of: event.scope)
             )
+            collaborationModeSyncBaselineRevision = sendModeChoiceRevision
         }
         .onChange(of: sessionStore.latestCompletedComposerDeliveryReset) { _, event in
             synchronizeCompletedComposerDeliveryReset(event)
@@ -341,6 +346,10 @@ struct ComposerView: View {
         .onChange(of: sessionStore.selectedSessionID) { previousID, nextID in
             synchronizeFollowUpDeliveryForSelectionChange(previousID: previousID, nextID: nextID)
         }
+        .onChange(of: currentAuthoritativeCollaborationMode) { _, _ in
+            // 只响应当前会话的新值，避免其他会话通知重新应用本会话的旧缓存。
+            synchronizeAuthoritativeCollaborationMode()
+        }
         .onChange(of: sessionStore.selectedThreadGoal) { previousGoal, goal in
             syncGoalStatusBarExpansion(from: previousGoal, to: goal)
         }
@@ -354,6 +363,7 @@ struct ComposerView: View {
             composerState.setSendMode(
                 sessionStore.composerSendModeCache.modeForReappearance(of: activeComposerDraftScope)
             )
+            synchronizeAuthoritativeCollaborationMode()
             enforceComposerTurnSettingsPolicy()
             restorePendingUserInputFormStateFromCache()
             synchronizePendingUserInputPresentation(previous: nil, current: pendingUserInputSelectionIdentity)
@@ -423,10 +433,11 @@ struct ComposerView: View {
             return submitGoalDraft()
         }
         let submittedDraftScope = activeComposerDraftScope
-        let selectionCheckpoint = transientSelectionCheckpoint
+        var selectionCheckpoint = transientSelectionCheckpoint
         // 点击时就固定目标；Task 开始执行前，返回手势可能已经清空当前会话。
         let submissionContext = sessionStore.captureTurnSubmissionContext()
         let options = preparedTurnOptionsForSubmit()
+        selectionCheckpoint.submittedCollaborationMode = options.collaborationMode
         guard let submitted = composerState.takeDraftForSubmit(isLoading: sessionStore.isLoading, turnOptionsOverride: options) else {
             return false
         }
@@ -459,7 +470,8 @@ struct ComposerView: View {
         // 防止 app-server 沿用上一轮规划协作状态。
         options.collaborationMode = .default
         let submittedDraftScope = activeComposerDraftScope
-        let selectionCheckpoint = transientSelectionCheckpoint
+        var selectionCheckpoint = transientSelectionCheckpoint
+        selectionCheckpoint.submittedCollaborationMode = options.collaborationMode
         let submissionContext = sessionStore.captureTurnSubmissionContext()
         guard let submitted = composerState.takeDraftForSubmit(
             isLoading: sessionStore.isLoading || sessionStore.isUpdatingThreadGoal,
@@ -579,6 +591,9 @@ struct ComposerView: View {
             composerScopeRevision &+= 1
         }
         composerState.setSendMode(restoredSendMode)
+        if !isOptimisticHandoff {
+            collaborationModeSyncBaselineRevision = sendModeChoiceRevision
+        }
         if isOptimisticHandoff {
             sessionStore.composerSendModeCache.migrateScope(
                 from: previousScope, to: nextScope, mode: restoredSendMode
@@ -599,6 +614,7 @@ struct ComposerView: View {
         }
         measuredComposerTextHeight = 0
         isComposerTextComposing = false
+        synchronizeAuthoritativeCollaborationMode()
         // iPad 的收起是用户对当前会话输入画布的显式选择；切会话时不自动改写。
         // iPhone 复用同一个编辑器，外部 revision 会把新会话草稿同步进 TextKit。
     }
@@ -649,9 +665,11 @@ struct ComposerView: View {
         )
     }
 
-    func resetComposerSendModeAfterSubmit() {
+    func resetComposerSendModeAfterSubmit(submittedMode: CodexAppServerTurnOptions.CollaborationMode?) {
         composerState.resetSendModeAfterSubmit()
+        collaborationModeSyncBaselineRevision = sendModeChoiceRevision
         persistComposerSendMode(.standard, for: activeComposerDraftScope)
+        suppressSubmittedCollaborationMode(submittedMode, for: activeComposerDraftScope)
     }
 
     func synchronizeComposerTextBeforeDraftScopeChange() {
@@ -695,26 +713,6 @@ struct ComposerView: View {
             return activeComposerDraftScope
         }
         return originalScope
-    }
-
-    func preparedTurnOptionsForSubmit() -> CodexAppServerTurnOptions {
-        var options = developerModeEnabled ? composerState.turnOptions : composerState.turnOptions.sanitizedForStandardComposer()
-        options.modelSelectionPolicy = developerModeEnabled ? .allowUnlisted : .catalogOnly
-        if developerModeEnabled,
-           let effort = options.reasoningEffort,
-           !supportsReasoningEffort(effort, modelID: options.model ?? effectiveModelID) {
-            // 提交边界再做一次兜底，避免模型列表刷新与点击发送之间的竞态把非法组合发给 runtime。
-            options.reasoningEffort = nil
-        } else if !developerModeEnabled {
-            normalizeModelControlsForStandardComposer(&options)
-        }
-        if composerState.isPlanModeSelected {
-            options.collaborationMode = .plan
-        } else {
-            // 普通发送也必须显式退出 Plan Mode，不能依赖 nil/absent。
-            options.collaborationMode = .default
-        }
-        return options
     }
 
     var canChooseRunningFollowUpDelivery: Bool {
@@ -1901,14 +1899,8 @@ struct ComposerView: View {
                     Button(summary.rawValue) { composerState.updateTurnOptions { $0.reasoningSummary = summary } }
                 }
             }
-            Section(L10n.text("ui.personality")) {
-                Button(L10n.text("ui.default_option")) { composerState.updateTurnOptions { $0.personality = nil } }
-                Button("none") { composerState.updateTurnOptions { $0.personality = CodexAppServerPersonality.none } }
-                Button("friendly") { composerState.updateTurnOptions { $0.personality = .friendly } }
-                Button("pragmatic") { composerState.updateTurnOptions { $0.personality = .pragmatic } }
-            }
         } label: {
-            Label(L10n.text("ui.summary_personality"), systemImage: "text.bubble")
+            Label(L10n.text("ui.summary"), systemImage: "text.bubble")
         }
     }
 

@@ -46,6 +46,8 @@ struct ComposerTransientSelectionCheckpoint {
     let cachedDeliveryRevision: UInt64
     let sendModeRevision: UInt64
     let cachedSendModeRevision: UInt64
+    /// 本次 turn/start 实际提交的协作模式；发送被接受后据此忽略服务端回报的同一模式。
+    var submittedCollaborationMode: CodexAppServerTurnOptions.CollaborationMode?
 
     func restoration(
         activeInstanceID: UUID?,
@@ -750,6 +752,32 @@ enum ComposerSendMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum ComposerCollaborationModeSync {
+    static func resolvedSendMode(
+        authoritativeMode: CodexAppServerTurnOptions.CollaborationMode?,
+        currentMode: ComposerSendMode,
+        userChoiceRevision: UInt64,
+        baselineRevision: UInt64
+    ) -> ComposerSendMode? {
+        guard let authoritativeMode,
+              userChoiceRevision == baselineRevision,
+              currentMode != .goal
+        else {
+            return nil
+        }
+        return authoritativeMode == .plan ? .plan : .standard
+    }
+
+    /// 发送被接受后要忽略的权威模式。服务端随后回报的是本次提交的模式；发送前的缓存
+    /// 可能为空或仍是旧值，按缓存忽略会让迟到的 Plan 通知把已复位的输入区切回 Plan。
+    static func authoritativeModeToSuppressAfterSubmit(
+        submittedMode: CodexAppServerTurnOptions.CollaborationMode?,
+        cachedAuthoritativeMode: CodexAppServerTurnOptions.CollaborationMode?
+    ) -> CodexAppServerTurnOptions.CollaborationMode? {
+        submittedMode ?? cachedAuthoritativeMode
+    }
+}
+
 struct ComposerModeResetEvent: Equatable {
     let scope: ComposerDraftScopeKey
     let revision: UInt64
@@ -763,6 +791,9 @@ struct ComposerDeliveryResetEvent: Equatable {
 struct ComposerSendModeCache {
     private var storedScope: ComposerDraftScopeKey = .none
     private var storedMode: ComposerSendMode = .standard
+    private var suppressedAuthoritativeModes: [
+        ComposerDraftScopeKey: CodexAppServerTurnOptions.CollaborationMode
+    ] = [:]
     private(set) var revision: UInt64 = 0
 
     func modeForReappearance(of scope: ComposerDraftScopeKey) -> ComposerSendMode {
@@ -804,6 +835,27 @@ struct ComposerSendModeCache {
             return
         }
         storedScope = nextScope
+        if let suppressedMode = suppressedAuthoritativeModes.removeValue(forKey: previousScope) {
+            suppressedAuthoritativeModes[nextScope] = suppressedMode
+        }
+    }
+
+    mutating func suppressAuthoritativeMode(
+        _ mode: CodexAppServerTurnOptions.CollaborationMode?,
+        for scope: ComposerDraftScopeKey
+    ) {
+        suppressedAuthoritativeModes[scope] = mode
+    }
+
+    mutating func shouldApplyAuthoritativeMode(
+        _ mode: CodexAppServerTurnOptions.CollaborationMode,
+        for scope: ComposerDraftScopeKey
+    ) -> Bool {
+        guard let suppressedMode = suppressedAuthoritativeModes[scope] else { return true }
+        guard suppressedMode != mode else { return false }
+        // 同一会话出现不同值才算新的权威状态；此后恢复正常同步。
+        suppressedAuthoritativeModes.removeValue(forKey: scope)
+        return true
     }
 
     mutating func clearSubmittedModeIfUnchanged(revision: UInt64) -> ComposerDraftScopeKey? {
@@ -816,6 +868,7 @@ struct ComposerSendModeCache {
     mutating func removeAll() {
         storedScope = .none
         storedMode = .standard
+        suppressedAuthoritativeModes = [:]
         revision &+= 1
     }
 }

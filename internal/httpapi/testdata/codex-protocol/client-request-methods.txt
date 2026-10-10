@@ -1,5 +1,9 @@
+account/bedrock/checkGovCloudRequirements
 account/bedrock/discover
 account/bedrock/setup
+account/gatewayOAuth/cancel
+account/gatewayOAuth/login
+account/gatewayOAuth/read
 account/login/cancel
 account/login/start
 account/logout
@@ -94,6 +98,7 @@ remoteControl/pairing/start
 remoteControl/pairing/status
 remoteControl/status/read
 review/start
+rollout/compress
 server/diagnostics
 skills/config/write
 skills/extraRoots/set
@@ -103,6 +108,7 @@ thread/archive
 thread/attachment/add
 thread/attachment/list
 thread/attachment/remove
+thread/attachmentOwner/list
 thread/backgroundTerminals/clean
 thread/backgroundTerminals/list
 thread/backgroundTerminals/terminate
@@ -121,6 +127,7 @@ thread/loaded/list
 thread/memoryMode/set
 thread/metadata/update
 thread/name/set
+thread/prediction/request
 thread/queue/add
 thread/queue/delete
 thread/queue/list
@@ -136,7 +143,6 @@ thread/realtime/start
 thread/realtime/stop
 thread/resume
 thread/revert
-thread/rollback
 thread/search
 thread/searchOccurrences
 thread/section/move

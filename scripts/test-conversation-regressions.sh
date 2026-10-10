@@ -112,6 +112,17 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSharedLocalOpeningIdleThreadResumesToValidateWriter \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSharedSSHOpeningIdleThreadResumesToValidateWriter \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testThreadResumeRestoresPlanModeWithoutWritingSharedMode \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testFailedThreadResumeDoesNotPublishCollaborationMode \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testResumeModeRequiresMatchingThreadCWD \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSettingsUpdateDuringResumeWinsOverResumeSnapshot \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testMissingNullAndUnknownModesDoNotReplaceAuthoritativeMode \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStorePublishesAuthoritativeCollaborationModePerSession \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testAuthoritativeCollaborationModeDoesNotOverrideActiveComposerChoice \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSubmittedPlanResetIgnoresCachedModeUntilCurrentSessionChanges \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testAcceptedPlanSendSuppressesSubmittedModeBeforeSettingsEcho \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testPartialAnswerAllowsMoreItemsUntilTurnCompleted \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testAgentMessageWithoutPhaseKeepsLegacyMessageProjection \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDirectIdleHistorySessionSendsThroughResumePath \
   -only-testing:MimiRemoteTests/WriterConflictForkStoreTests \
   -only-testing:MimiRemoteTests/ForkOnWriterConflictProtocolTests \
