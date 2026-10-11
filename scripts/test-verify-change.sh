@@ -164,6 +164,12 @@ assert_contains "$rust_shared_output" "-p alleycat-codex-proto"
 assert_contains "$rust_shared_output" "-p alleycat-bridge-core"
 assert_contains "$rust_shared_output" "-p alleycat-claude-bridge"
 
+claude_sdk_output="$(assert_plan claude_sdk bridges/claude-sdk/src/main.ts)"
+assert_contains "$claude_sdk_output" "bash ./scripts/check-claude-sdk-adapter.sh"
+assert_contains "$claude_sdk_output" "PR Gate scope：go=false, ios=false, rust=true, macos=false, docs=false"
+assert_not_contains "$claude_sdk_output" "cargo test"
+assert_not_contains "$claude_sdk_output" "没有验证映射"
+
 ios_full_output="$(assert_full_plan ios_full ios/MimiRemote/Sources/Features/Conversation/ConversationView.swift)"
 assert_contains "$ios_full_output" "test-conversation-regressions.sh"
 assert_contains "$ios_full_output" "--ios-only"

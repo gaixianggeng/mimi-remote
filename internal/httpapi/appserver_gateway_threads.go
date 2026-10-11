@@ -277,6 +277,11 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		p.completePendingThreadResponse(key, pending, threads)
 		return rewritten, true, nil
 	}
+	if pending.method == "thread/list" {
+		threads := p.threadsFromResult(frame.Result, pending)
+		p.completePendingThreadResponse(key, pending, threads)
+		return dropUnauthorizedScopedThreads(payload, threads), true, nil
+	}
 	if pending.method == "thread/turns/list" {
 		p.completePendingThreadResponse(key, pending, p.relatedThreadsFromResult(frame.Result, pending))
 		return payload, true, nil
@@ -1465,6 +1470,8 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 	}
 
 	out := make([]appServerGatewayAllowedThread, 0, len(threads))
+	var sameRepository *gatewaySameRepository
+	defer func() { sameRepository.close() }()
 	for _, item := range threads {
 		id := firstNonEmpty(item.ID, item.ThreadID, item.SessionID)
 		if strings.TrimSpace(id) == "" {
@@ -1475,14 +1482,27 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 		if !ok {
 			continue
 		}
+		readOnly := false
 		if pending.scopeID != "" && scope.id != pending.scopeID {
-			continue
+			// 按仓库列出的同仓 worktree 会话按自己的作用域授权，其他一律不登记。
+			if pending.method != "thread/list" {
+				continue
+			}
+			if sameRepository == nil {
+				sameRepository = newGatewaySameRepository(pending.cwd)
+			}
+			if !sameRepository.matches(scope.realPath) {
+				continue
+			}
+			// 与全局发现一致：只在 browse_roots 内可见的 worktree 只读。
+			readOnly = scope.browse
 		}
 		out = append(out, appServerGatewayAllowedThread{
 			id:                   strings.TrimSpace(id),
 			runtimeID:            normalizeAppServerRuntimeID(p.runtimeID),
-			canAcceptDirectInput: item.CanAcceptDirectInput != nil && *item.CanAcceptDirectInput,
-			directInputKnown:     item.CanAcceptDirectInput != nil,
+			canAcceptDirectInput: item.CanAcceptDirectInput != nil && *item.CanAcceptDirectInput && !readOnly,
+			directInputKnown:     item.CanAcceptDirectInput != nil || readOnly,
+			readOnly:             readOnly,
 			autoTitleEligible:    pending.method == "thread/start" && autoThreadTitleRuntimeSupported(p.runtimeID),
 			// browse 作用域用 canonical 路径绑定，避免同一目录的不同写法绕过精确匹配。
 			cwd:     scope.realPath,

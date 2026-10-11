@@ -195,6 +195,16 @@ is_rust_source_path() {
   return 1
 }
 
+# 基于 Claude Agent SDK 的 TypeScript 适配器（#655），与 Rust bridge 分开验证。
+is_claude_sdk_source_path() {
+  case "$1" in
+    bridges/claude-sdk/*|scripts/check-claude-sdk-adapter.sh)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 is_macos_source_path() {
   case "$1" in
     macos/MimiRemoteMac/*)
@@ -209,6 +219,7 @@ direct_go=false
 direct_ios=false
 direct_rust=false
 direct_macos=false
+direct_claude_sdk=false
 has_control=false
 has_contract=false
 has_harness_native_contract=false
@@ -313,6 +324,7 @@ for path in "${changed_paths[@]:-}"; do
   path_is_ios=false
   path_is_rust=false
   path_is_macos=false
+  path_is_claude_sdk=false
 
   if is_documentation_path "$path"; then
     path_is_documentation=true
@@ -342,6 +354,10 @@ for path in "${changed_paths[@]:-}"; do
     if is_macos_source_path "$path"; then
       path_is_macos=true
       direct_macos=true
+    fi
+    if is_claude_sdk_source_path "$path"; then
+      path_is_claude_sdk=true
+      direct_claude_sdk=true
     fi
   fi
   if is_control_path "$path"; then
@@ -462,7 +478,8 @@ for path in "${changed_paths[@]:-}"; do
      [[ "$path_is_go" == false ]] && \
      [[ "$path_is_ios" == false ]] && \
      [[ "$path_is_rust" == false ]] && \
-     [[ "$path_is_macos" == false ]]; then
+     [[ "$path_is_macos" == false ]] && \
+     [[ "$path_is_claude_sdk" == false ]]; then
     unknown_paths+=("$path")
   fi
 done
@@ -656,6 +673,10 @@ if [[ "$direct_rust" == true ]]; then
   [[ "$rust_core" == true ]] && rust_test_command+=" -p alleycat-bridge-core"
   [[ "$rust_claude" == true ]] && rust_test_command+=" -p alleycat-claude-bridge"
   add_check "Rust 只回归变更 crate 及其下游 crate" "$rust_test_command" "rust"
+fi
+
+if [[ "$direct_claude_sdk" == true ]]; then
+  add_check "Claude SDK 适配器：锁定依赖、类型检查与测试" "bash ./scripts/check-claude-sdk-adapter.sh" "claude-sdk"
 fi
 
 if [[ "$direct_macos" == true ]]; then

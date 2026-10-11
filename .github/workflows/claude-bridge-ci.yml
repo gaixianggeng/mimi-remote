@@ -9,6 +9,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "bridges/claude/**"
+      - "bridges/claude-sdk/**"
+      - "scripts/check-claude-sdk-adapter.sh"
       - ".github/workflows/claude-bridge-ci.yml"
   workflow_dispatch:
 
@@ -48,3 +50,19 @@ jobs:
             -p alleycat-codex-proto \
             -p alleycat-bridge-core \
             -p alleycat-claude-bridge
+
+  sdk-adapter:
+    # 基于 Claude Agent SDK 的新适配器（#655）；与 Rust bridge 同属 Claude 通道。
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: bridges/claude-sdk/.bun-version
+
+      - name: Typecheck and test SDK adapter
+        run: bash ./scripts/check-claude-sdk-adapter.sh

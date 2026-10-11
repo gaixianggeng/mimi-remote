@@ -68,6 +68,7 @@ assert_scope() {
 assert_scope go_only true false false false false internal/httpapi/router.go
 assert_scope ios_only false true false false false ios/MimiRemote/Sources/App/MimiRemoteApp.swift
 assert_scope rust_only false false true false false bridges/claude/crates/claude-bridge/src/main.rs
+assert_scope claude_sdk_adapter false false true false false bridges/claude-sdk/src/main.ts
 assert_scope macos_only false false false true false macos/MimiRemoteMac/Sources/App/MimiRemoteMacApp.swift
 assert_scope macos_runner false false false true false scripts/test-macos-app.sh
 assert_scope release true false false false false scripts/check-release-artifacts.sh
