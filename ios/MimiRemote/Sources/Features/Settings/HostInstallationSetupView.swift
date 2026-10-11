@@ -33,6 +33,16 @@ enum HostInstallationPlatform: String, CaseIterable, Identifiable {
         }
     }
 
+    /// 装好之后电脑上会发生什么：二维码出现在哪里，以及 Mac 可以用隔空投送接收下载链接。
+    var afterInstallNote: String {
+        switch self {
+        case .mac:
+            L10n.text("ui.host_after_install_note_mac")
+        case .windows:
+            L10n.text("ui.host_after_install_note_windows")
+        }
+    }
+
     var shareTitle: String {
         switch self {
         case .mac:
@@ -169,7 +179,7 @@ struct HostInstallationSetupView: View {
                 .foregroundStyle(tokens.primaryText)
                 .controlSize(.large)
                 .accessibilityIdentifier("settings.hostInstaller.share")
-                Text(L10n.text("ui.select_code_directory_then_computer_shows_qr"))
+                Text(transientPreferences.hostInstallationPlatform.afterInstallNote)
                     .font(themeStore.uiFont(.footnote))
                     .foregroundStyle(tokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -264,11 +274,23 @@ struct HostInstallerActivityView: UIViewControllerRepresentable {
 struct ConnectionActionLabel: View {
     let title: String
     let systemImage: String
+    /// 首次扫码要先等系统相机权限弹窗，中间约半秒按钮只会变灰；图标位换成小转圈，
+    /// 让人知道已经点中了（#554）。
+    var isBusy = false
+    /// 转圈颜色跟按钮文字色走；实心主按钮在深浅色下文字色不同，由调用方给出。
+    var busyTint: Color? = nil
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .accessibilityHidden(true)
+            if isBusy {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(busyTint)
+                    .accessibilityHidden(true)
+            } else {
+                Image(systemName: systemImage)
+                    .accessibilityHidden(true)
+            }
 
             Text(title)
                 .multilineTextAlignment(.center)

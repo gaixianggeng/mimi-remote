@@ -99,7 +99,7 @@ struct ConnectionSettingsView: View {
             hasCompactTabBar ? bottomChromeClearance : WorkbenchPageLayout.regularPadding,
             for: .scrollContent
         )
-        .navigationTitle(L10n.text(isDevicesTab ? "ui.devices" : "ui.mac_connection"))
+        .navigationTitle(L10n.text(navigationTitleKey))
         .accessibilityIdentifier("settings.devices.page")
         .navigationBarTitleDisplayMode(.inline)
         // 扫码 Cover 必须挂在当前真正显示的连接页上。挂在 SettingsView 根层时，
@@ -142,6 +142,14 @@ struct ConnectionSettingsView: View {
     private var showsAddComputerEntry: Bool {
         let model = appStore.connectionProfileSettingsModel
         return model.current != nil || !model.others.isEmpty
+    }
+
+    /// 一台电脑都没有时这一页是首次连接引导，Windows 用户也会看到，标题不写「Mac」（#554）。
+    private var navigationTitleKey: String {
+        if isDevicesTab {
+            return "ui.devices"
+        }
+        return showsAddComputerEntry ? "ui.mac_connection" : "ui.connect_computer"
     }
 
     private var preferredRuntimeBinding: Binding<WorkspaceSessionRuntimeChoice> {

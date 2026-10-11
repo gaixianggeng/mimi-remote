@@ -171,6 +171,8 @@ struct SessionListView: View {
     @State private var selectedStatus: SessionLibraryStatusFilter = .all
     @State private var keyboardSelectionID: SessionID?
     @State private var isNativeDirectoryListVisible = false
+    /// 空态「打开其他文件夹…」直接在会话页弹出目录浏览，不先跳去工作区页（#554）。
+    @State private var isPresentingOpenWorkspace = false
     /// 列表实际可用宽度。nil 表示还没测到，此时暂用 Shell 注入的页面身份作为种子。
     @State private var measuredContentWidth: CGFloat?
     @FocusState private var hasListKeyboardFocus: Bool
@@ -277,6 +279,9 @@ struct SessionListView: View {
             }
         }
         .listStyle(.plain)
+        .sheet(isPresented: $isPresentingOpenWorkspace) {
+            OpenWorkspaceSheet()
+        }
         // 与工作区共用同一条宽度判据；量到之后 rowDensity 就不再依赖页面身份。
         .onGeometryChange(for: CGFloat.self) { geometry in
             geometry.size.width
@@ -714,6 +719,18 @@ struct SessionListView: View {
         case .content, .connecting, .loading, .searching:
             // 等待态由 `sessionListCenteredLoading` 铺在整页上表达。
             EmptyView()
+        case .needsWorkspace where !sessionStore.projects.isEmpty:
+            // 新配对必然一个工作区都没打开；电脑端已经给出候选项目时直接列出来，
+            // 点一下就打开并加载它的会话，不再先跳去工作区页。
+            WorkspaceSuggestionsView(
+                projects: sessionStore.projects,
+                onOpen: { project in
+                    await sessionStore.openWorkspaceOutcome(path: project.path)
+                },
+                onBrowseOther: { isPresentingOpenWorkspace = true }
+            )
+            .padding(.vertical, 16)
+            .accessibilityIdentifier("sessions.empty.workspaceSuggestions")
         case .needsWorkspace:
             ContentUnavailableView {
                 Label(L10n.text("ui.no_workspace_has_been_opened_yet"), systemImage: "folder.badge.plus")

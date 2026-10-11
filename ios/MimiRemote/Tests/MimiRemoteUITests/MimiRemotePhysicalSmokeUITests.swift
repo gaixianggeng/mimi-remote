@@ -158,14 +158,21 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     /// 默认浏览根就是隔离 agentd 的 scan root，因此不使用额外测试开关或内存种子。
     private func openH12WorkspaceIfNeeded() throws {
         let needsWorkspace = app.descendant(identifier: "sessions.empty.needsWorkspace")
-        if needsWorkspace.waitForExistence(timeout: 10) {
-            let openWorkspaces = app.descendant(identifier: "sessions.empty.openWorkspaces")
-            XCTAssertTrue(openWorkspaces.waitForExistence(timeout: 5))
-            openWorkspaces.tap()
+        // scan root 下有子目录时，会话页空态直接列出候选项目（#554），「打开其他文件夹…」
+        // 在会话页就地弹出目录浏览；没有候选项目时仍是「前往工作区 → 打开文件夹」。
+        let suggestionsBrowse = app.descendant(identifier: "workspace.suggestions.browse")
+        if suggestionsBrowse.waitForExistence(timeout: 10) || needsWorkspace.exists {
+            if suggestionsBrowse.exists {
+                suggestionsBrowse.tap()
+            } else {
+                let openWorkspaces = app.descendant(identifier: "sessions.empty.openWorkspaces")
+                XCTAssertTrue(openWorkspaces.waitForExistence(timeout: 5))
+                openWorkspaces.tap()
 
-            let emptyAction = app.descendant(identifier: "workspace.emptyAction")
-            XCTAssertTrue(emptyAction.waitForExistence(timeout: 10), "工作区页应提供打开目录入口")
-            emptyAction.tap()
+                let emptyAction = app.descendant(identifier: "workspace.emptyAction")
+                XCTAssertTrue(emptyAction.waitForExistence(timeout: 10), "工作区页应提供打开文件夹入口")
+                emptyAction.tap()
+            }
 
             let openCurrent = app.descendant(identifier: "workspace.open.current")
             XCTAssertTrue(openCurrent.waitForExistence(timeout: 10), "目录浏览器应加载隔离 scan root")

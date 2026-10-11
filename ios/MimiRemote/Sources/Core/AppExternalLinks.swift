@@ -12,6 +12,8 @@ enum AppExternalLinks {
     static let privacyPolicy = makeURL("https://github.com/gaixianggeng/mimi-remote/blob/main/docs/privacy-policy.md")
     static let termsOfUse = makeURL("https://github.com/gaixianggeng/mimi-remote/blob/main/docs/terms-of-use.md")
     static let support = makeURL("https://github.com/gaixianggeng/mimi-remote/blob/main/docs/support.md")
+    /// 首次连接引导的前置条件：电脑上要先有能用的 Codex。与 README「Get started」第一步同一链接。
+    static let codexSetup = makeURL("https://learn.chatgpt.com/docs/codex/cli")
 
     private static func makeURL(_ value: String) -> URL {
         guard let url = URL(string: value), url.scheme == "https" else {

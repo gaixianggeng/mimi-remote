@@ -563,6 +563,17 @@ struct WorkspaceRootView: View {
                 workspaceConnectingState(tokens: tokens)
             } else if catalogLoad.state == .loading {
                 workspaceLoadingState(tokens: tokens)
+            } else if showsWorkspaceSuggestions {
+                ScrollView {
+                    WorkspaceSuggestionsView(
+                        projects: sessionStore.projects,
+                        onOpen: openSuggestedWorkspace,
+                        onBrowseOther: { isPresentingOpenWorkspace = true }
+                    )
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 24)
+                }
+                .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
             } else {
                 workspaceEmptyState(tokens: tokens)
             }
@@ -1096,6 +1107,22 @@ struct WorkspaceRootView: View {
             return nil
         }
         return sessionStore.sidebarProjects.first { $0.id == selectedWorkspaceID }
+    }
+
+    /// 一个工作区都没打开、但电脑端已经给出候选项目时，空态直接列出它们（#554）。
+    /// 目录加载失败时仍走原有的错误空态和「重新加载」。
+    private var showsWorkspaceSuggestions: Bool {
+        if case .failed = catalogLoad.state { return false }
+        return !sessionStore.projects.isEmpty
+    }
+
+    private func openSuggestedWorkspace(_ project: AgentProject) async -> WorkspaceOpenOutcome {
+        let outcome = await sessionStore.openWorkspaceOutcome(path: project.path)
+        if case .opened(let workspaceID) = outcome {
+            // 与「打开文件夹」Sheet 成功后的处理一致：显式切到新工作区。
+            selectWorkspace(id: workspaceID)
+        }
+        return outcome
     }
 
     private var emptyWorkspaceTitle: String {
