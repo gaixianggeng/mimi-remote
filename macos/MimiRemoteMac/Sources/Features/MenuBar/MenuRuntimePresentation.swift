@@ -45,6 +45,17 @@ enum MenuRuntimePresentation {
         }
     }
 
+    /// Codex 是主运行时；它不可用时菜单里原来只有「暂不可用」和「额度未知」，
+    /// 用户看不出是没装 Codex 还是别的问题（#554）。这里给出下一步。
+    static func codexUnavailableGuidance(for runtime: AgentRuntimeStatus?) -> String? {
+        guard let runtime, runtime.id == "codex", runtime.enabled,
+              runtime.state == .unavailable, runtime.reason != "refresh_in_progress"
+        else {
+            return nil
+        }
+        return "没有检测到可用的 Codex。还没装的话，请先在这台 Mac 上安装并登录 Codex（命令行版或 ChatGPT 桌面版），装好后点「刷新状态」；仍不可用就运行诊断。"
+    }
+
     static func detailText(
         for runtime: AgentRuntimeStatus?,
         missingDetail: String

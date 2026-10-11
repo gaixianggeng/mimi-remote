@@ -17,6 +17,32 @@ final class MenuRuntimePresentationTests: XCTestCase {
         }
     }
 
+    func testUnavailableCodexExplainsWhatToInstall() {
+        func codex(state: AgentRuntimeConnectionState, enabled: Bool = true, reason: String? = nil) -> AgentRuntimeStatus {
+            AgentRuntimeStatus(
+                id: "codex",
+                title: "Codex",
+                enabled: enabled,
+                state: state,
+                version: nil,
+                startedAt: nil,
+                authMode: nil,
+                planType: nil,
+                reason: reason,
+                rateLimits: nil
+            )
+        }
+
+        let guidance = MenuRuntimePresentation.codexUnavailableGuidance(for: codex(state: .unavailable))
+        XCTAssertTrue(guidance?.contains("安装并登录 Codex") == true)
+        // 正在检查、用户主动关闭、可用和其它运行时都不提示安装。
+        XCTAssertNil(MenuRuntimePresentation.codexUnavailableGuidance(for: codex(state: .unavailable, reason: "refresh_in_progress")))
+        XCTAssertNil(MenuRuntimePresentation.codexUnavailableGuidance(for: codex(state: .unavailable, enabled: false)))
+        XCTAssertNil(MenuRuntimePresentation.codexUnavailableGuidance(for: codex(state: .connected)))
+        XCTAssertNil(MenuRuntimePresentation.codexUnavailableGuidance(for: makeRuntime(id: "claude", state: .unavailable, authMode: "oauth")))
+        XCTAssertNil(MenuRuntimePresentation.codexUnavailableGuidance(for: nil))
+    }
+
     func testConnectedAPIKeyRuntimeUsesAPIKeyDetail() {
         let runtime = makeRuntime(state: .connected, authMode: "api_key")
 

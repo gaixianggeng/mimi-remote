@@ -88,7 +88,7 @@ bash scripts/check-macos-installer.sh \
 
 ### 首次启动
 
-1. 如果没有配置，选择项目扫描的代码根目录。App 将项目扫描范围设为该目录、文件浏览范围设为当前用户 Home，再调用安全的 `agentd setup --qr-only` 完成设置；有 Tailscale 时优先使用，否则自动启用局域网。
+1. 如果没有配置，App 启动时直接弹出首次设置窗口并切到前台（菜单栏 App 没有 Dock 图标，不弹窗时用户只会看到菜单栏多了一个图标）。用户选择代码文件夹后，App 将项目扫描范围设为该目录、文件浏览范围设为当前用户 Home，再调用安全的 `agentd setup --qr-only` 完成设置；有 Tailscale 时优先使用，否则自动启用局域网。设置成功后直接打开配对窗口显示二维码。窗口里同时提示这台 Mac 需要已安装并登录 Codex（命令行版或 ChatGPT 桌面版）。
 2. 如果检测到 `homebrew.mxcl.mimi-remote`，App 先保持旧服务运行并显示“等待接管”。
 3. 用户确认后，App 先跑 Doctor，再停止 Homebrew service、注册内嵌 LaunchAgent 并等待 readyz。
 4. 任一步失败都会尝试重新启动 Homebrew service；设置页也保留手动恢复入口。

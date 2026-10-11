@@ -1,7 +1,10 @@
+import AppKit
 import SwiftUI
 
 struct DashboardView: View {
     let store: HostStore
+    /// 首次启动时由系统直接弹出这个窗口；菜单栏 App 不会自动切到前台，窗口会落在别的 App 后面。
+    var activatesOnAppear = false
 
     var body: some View {
         ScrollView {
@@ -27,11 +30,18 @@ struct DashboardView: View {
             .padding(24)
         }
         .navigationTitle("Mimi Remote Mac")
+        .onAppear {
+            guard activatesOnAppear else { return }
+            DispatchQueue.main.async {
+                NSApplication.shared.activate(ignoringOtherApps: true)
+            }
+        }
     }
 }
 
 private struct ServiceOverviewView: View {
     let store: HostStore
+    @Environment(\.openWindow) private var openWindow
     @State private var confirmsRestore = false
 
     var body: some View {
@@ -46,6 +56,9 @@ private struct ServiceOverviewView: View {
             }
 
             HStack {
+                // 设置完成后用户最需要的是二维码；状态页也给一个直达入口，不必回菜单栏找。
+                Button("显示配对二维码") { openWindow(id: AppWindow.pairing.rawValue) }
+                    .buttonStyle(.borderedProminent)
                 Button("刷新状态") { Task { await store.refresh() } }
                 Button("重启服务") { Task { await store.restartService() } }
                     .disabled(store.owner != .macApp || store.isBusy)
