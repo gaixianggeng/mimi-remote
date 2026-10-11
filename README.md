@@ -28,10 +28,11 @@ Your macOS, Windows, or Linux computer keeps running the agent, the projects, an
 
 You need an iPhone or iPad on **iOS/iPadOS 18+** and a computer that stays awake while you connect: **macOS 15+**, **Windows 10/11 x64**, or **Linux** (x86_64 or ARM64 with a systemd user session).
 
-1. Install and sign in to [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) on that computer.
-2. Install the host from [Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest): `Mimi-Remote-Mac.dmg` on Mac, the `Mimi-Remote-Setup` installer on Windows, or the `linux` archive on Linux. The [installation guide](docs/install-upgrade-rollback.md) covers checksums, first-run setup, upgrades, and rollback.
-3. Install the app from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) where available, join [TestFlight](https://testflight.apple.com/join/jhGPbSk6), or [build it from source](ios/MimiRemote/README.md).
-4. Open the host's pairing action and scan the QR code in the app. From a terminal, `agentd pair --qr-only` shows the code without printing the long-lived token.
+1. Install and sign in to the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) on that computer. On a Mac, the ChatGPT desktop app also works.
+2. Install the host from [Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest): `Mimi-Remote-Mac.dmg` on Mac, the `Mimi-Remote-Setup` installer on Windows, or the `linux` archive on Linux. On a Mac, drag **Mimi Remote Mac** to Applications and open it; a setup window asks for your code folder and then shows a pairing QR code. The [installation guide](docs/install-upgrade-rollback.md) covers checksums, first-run setup, upgrades, and rollback.
+3. Install the app from the [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) where available, join [TestFlight](https://testflight.apple.com/join/jhGPbSk6), or [build it from source](ios/MimiRemote/README.md). On the home screen it is called **mimi**.
+4. Scan the QR code in the app. To show it again later, click the Mimi Remote icon in the Mac menu bar (or the Windows notification area) and choose the pairing item. If you can't scan, copy the pairing link from that window and paste it in the app. From a terminal, `agentd pair --qr-only` shows the code without printing the long-lived token.
+5. Pick a project. After connecting, the app lists the projects in your code folder; tap one to open it as a workspace and start a session.
 
 To add another computer, repeat these steps on it. To let Codex install, upgrade, or diagnose the host for you, use the [install-mimi-remote Skill](packaging/skill/install-mimi-remote).
 

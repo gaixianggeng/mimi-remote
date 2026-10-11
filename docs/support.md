@@ -11,7 +11,7 @@
 使用前请确认：
 
 - iPhone 或 iPad 运行 iOS / iPadOS 18 或更高版本。
-- Mac 运行 macOS 15 或更高版本，并已安装和登录 Codex CLI。
+- Mac 运行 macOS 15 或更高版本，并已安装和登录 Codex（Codex CLI 或 ChatGPT 桌面版均可）。
 - Mac 已从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 安装并启动 **Mimi Remote Mac**。
 - 移动设备能够通过局域网、Tailscale 私有网络或用户配置的 HTTPS 地址访问 Mac。
 
@@ -26,21 +26,23 @@ agentd up
 agentd status
 ```
 
-Mac App 首次设置会显示短期配对二维码，然后在移动端 App 的“Mac 连接”页面扫码。命令行用户可运行 `agentd pair` 重新生成二维码；也可以手动输入地址和访问 Token。
+首次打开 Mac App 会自动弹出设置窗口：选好代码文件夹后，窗口直接显示短期配对二维码。在移动端 App（主屏上叫 mimi）的“连接电脑”页面扫码；扫不了码时，在 Mac 的配对窗口点“复制配对链接”，再在 App 里点“粘贴配对链接”。命令行用户可运行 `agentd pair` 重新生成二维码；也可以手动输入地址和访问 Token。
+
+连上之后，App 会列出代码文件夹里的项目，点一下就打开为工作区，然后新建会话。新会话页提示没有可用的 Codex 时，先在 Mac 上安装并登录 Codex，再回到 App 重试。
 
 ### 实现
 
 连接失败时依次检查（下面都是界面操作，不要求命令行）：
 
-1. 看 Mac 菜单栏的 Mimi Remote 图标是否还在、是否显示已连接。图标不在就重新打开“应用程序”里的 **Mimi Remote Mac**。
+1. 看 Mac 菜单栏的 Mimi Remote 图标是否还在，点开后是否显示“Mac 服务运行中”。图标不在就重新打开“应用程序”里的 **Mimi Remote Mac**。
 2. 打开 Mac App 的窗口，按首屏提示处理：未配置时会提示先选择代码目录，服务未运行时窗口会给出启动入口。
 3. 确认移动设备与 Mac 的网络可达，且没有把私网 HTTP 地址替换成公网 HTTP。
-4. 在 App 中打开“设置 → 诊断与支持”，运行连接测速并查看失败阶段。
+4. 在 App 的“设备”页打开当前电脑的“连接诊断”，运行测速并查看失败阶段；更多信息在“我的 → 诊断与支持”。
 5. 二维码过期或配对失效时，在 Mac 菜单栏的 Mimi Remote 里点“配对设备…”，再点“刷新二维码”，然后在 App 里扫新码。
 
 命令行安装（服务器、自动化或故障恢复）用同一套检查：第 1、2 步换成 `agentd status`（必要时 `agentd doctor --fix`），第 5 步换成 `agentd pair`。
 
-删除本地连接资料：在“设置 → Mac 连接”中选择“忘记连接”或删除连接档案。这样会删除对应配置和 Keychain Token。删除 App 前建议先完成此操作。
+删除本地连接资料：在 App 的“设备”页打开这台电脑的菜单，选择“忘记这台电脑”。这样会删除对应配置和 Keychain Token。删除 App 前建议先完成此操作。
 
 ### 风险与优化
 
@@ -59,7 +61,7 @@ This page provides installation, connection, diagnostics, data-deletion, and con
 Before using the app, confirm that:
 
 - Your iPhone or iPad runs iOS/iPadOS 18 or later.
-- Your Mac runs macOS 15 or later, with Codex CLI installed and signed in.
+- Your Mac runs macOS 15 or later, with Codex installed and signed in (the Codex CLI or the ChatGPT desktop app).
 - **Mimi Remote Mac** is installed from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) and running.
 - The mobile device can reach the Mac over a local network, a private Tailscale network, or an HTTPS endpoint you configure.
 
@@ -74,21 +76,23 @@ agentd up
 agentd status
 ```
 
-The Mac app shows a short-lived pairing QR code during first-run setup; scan it from the Mac Connection screen on iPhone or iPad. Command-line users can run `agentd pair` to generate a new code. Manual endpoint and token entry are also available.
+The first time you open the Mac app, a setup window appears: choose your code folder and the window shows a short-lived pairing QR code. Scan it from the Connect a computer screen in the iPhone or iPad app (called mimi on the home screen). If you can't scan, copy the pairing link in the Mac pairing window and tap Paste pairing link in the app. Command-line users can run `agentd pair` to generate a new code. Manual endpoint and token entry are also available.
+
+Once connected, the app lists the projects in your code folder; tap one to open it as a workspace and start a session. If creating a new session says Codex isn't available, install and sign in to Codex on the Mac, then try again.
 
 ### Troubleshooting
 
 If connection fails, check these in order (all of them are in the UI; no command line required):
 
-1. Check the Mimi Remote icon in the Mac menu bar: it should still be there and report a connected state. If it is gone, reopen **Mimi Remote Mac** from Applications.
+1. Check the Mimi Remote icon in the Mac menu bar: it should still be there and, when opened, report that the Mac service is running. If it is gone, reopen **Mimi Remote Mac** from Applications.
 2. Open the Mac app window and follow what it shows: an unconfigured app asks you to choose a code directory first, and a stopped service offers a start action.
 3. Confirm network reachability and do not replace a private HTTP address with a public HTTP endpoint.
-4. Open Settings → Diagnostics & Support in the app, run the connection speed test, and inspect the failed stage.
+4. In the app's Devices tab, open Connection diagnostics for the current computer, run the speed test, and inspect the failed stage. More details are under Me → Diagnosis and Support.
 5. When the QR code expires or pairing stops working, open Mimi Remote in the Mac menu bar, choose the item with the QR-code icon, click the circular-arrow button in the pairing window, then scan the new code in the app.
 
 For command-line installs (servers, automation, or recovery), the same checks apply: replace steps 1–2 with `agentd status` (and `agentd doctor --fix` when needed), and step 5 with `agentd pair`.
 
-To remove local connection data, choose Forget Connection or delete the connection profile under Settings → Mac Connection. This removes its configuration and Keychain token. Do this before uninstalling if you want credentials explicitly removed.
+To remove local connection data, open the computer's menu in the app's Devices tab and choose Forget this computer. This removes its configuration and Keychain token. Do this before uninstalling if you want credentials explicitly removed.
 
 ### Contact and safe reporting
 

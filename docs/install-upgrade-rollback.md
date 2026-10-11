@@ -48,9 +48,9 @@ $agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
 
 ### macOS 首次安装（推荐）
 
-前置条件：macOS 15 或更高版本，已安装并登录 Codex CLI，Mac 与移动设备位于同一私有网络。不需要开启“远程登录”或配置 SSH：agentd 直接连接本机 Codex 的 control socket，只有想让 Codex Desktop 通过 SSH 主机接入同一个共享运行时时才需要它们，见[共享 App Server](shared-ssh-app-server.md)。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
+前置条件：macOS 15 或更高版本，已安装并登录 Codex（Codex CLI 或 ChatGPT 桌面版均可），Mac 与移动设备位于同一私有网络。不需要开启“远程登录”或配置 SSH：agentd 直接连接本机 Codex 的 control socket，只有想让 Codex Desktop 通过 SSH 主机接入同一个共享运行时时才需要它们，见[共享 App Server](shared-ssh-app-server.md)。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
 
-从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”，再从菜单栏选择代码目录并完成首次设置。安装包内已包含 `agentd` 和兼容的 `alleycat-claude-bridge`。
+从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”并打开。首次打开会自动弹出设置窗口：选好代码文件夹并点“完成设置并显示二维码”，窗口随后显示配对二维码，用移动端 App（主屏上叫 mimi）扫码即可。之后要再次显示二维码，点菜单栏的 Mimi Remote 图标，选“配对设备…”。安装包内已包含 `agentd` 和兼容的 `alleycat-claude-bridge`。
 
 检测到旧 `homebrew.mxcl.mimi-remote` 时，不要先手工停服。让 Mac App 执行接管：它会先跑 Doctor，停止 Homebrew service，注册内嵌 LaunchAgent 并等待就绪；失败时尝试恢复旧 Homebrew 服务。迁移保留 Application Support 中的配置、Token 和配对关系。
 
