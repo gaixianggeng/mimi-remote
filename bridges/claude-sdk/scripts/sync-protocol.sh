@@ -27,6 +27,32 @@ ROOT_TYPES=(
   v2/ThreadItemsListResponse
   v2/ThreadLoadedListParams
   v2/ThreadLoadedListResponse
+  v2/ThreadStartParams
+  v2/ThreadStartResponse
+  v2/ThreadResumeParams
+  v2/ThreadResumeResponse
+  v2/TurnStartParams
+  v2/TurnStartResponse
+  v2/TurnSteerParams
+  v2/TurnSteerResponse
+  v2/TurnInterruptParams
+  v2/TurnInterruptResponse
+  v2/TurnStartedNotification
+  v2/TurnCompletedNotification
+  v2/ItemStartedNotification
+  v2/ItemCompletedNotification
+  v2/AgentMessageDeltaNotification
+  v2/ReasoningTextDeltaNotification
+  v2/ThreadTokenUsageUpdatedNotification
+  v2/AccountRateLimitsUpdatedNotification
+  v2/ServerRequestResolvedNotification
+  v2/CommandExecutionRequestApprovalParams
+  v2/CommandExecutionRequestApprovalResponse
+  v2/FileChangeRequestApprovalParams
+  v2/FileChangeRequestApprovalResponse
+  v2/ToolRequestUserInputParams
+  v2/ToolRequestUserInputResponse
+  v2/ThreadStatusChangedNotification
 )
 
 actual_version="$("$CODEX_BIN" --version | awk '{print $NF}')"

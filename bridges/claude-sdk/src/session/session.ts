@@ -1,4 +1,4 @@
-import { isClientRequestResponse, type OutboundFrame } from "../rpc/frames.ts";
+import { isClientRequestResponse, notificationFrame, type OutboundFrame } from "../rpc/frames.ts";
 import { ReplayRing, type SequencedFrame } from "./ring.ts";
 
 export type AttachKind = "fresh" | "resumed" | "driftReload";
@@ -23,6 +23,9 @@ export class Session {
   private generation = 0;
   private detachedAt: number | undefined;
   private lastAttemptedSeq = 0;
+  /** 已发出、客户端尚未答复的服务端请求（审批、提问）。重连时由 serverRequest/replay 一次性补发。 */
+  private readonly outstanding = new Map<string, { method: string; params: unknown }>();
+  private busyCheck: (() => boolean) | undefined;
 
   constructor(readonly key: string, ring = new ReplayRing()) {
     this.ring = ring;
@@ -43,7 +46,11 @@ export class Session {
     if (cursor !== undefined) {
       const replay = this.ring.replayFrom(cursor);
       if (replay.ok) {
-        backlog = replay.frames.filter((entry) => !isClientRequestResponse(entry.frame));
+        // 未答复的请求只走 serverRequest/replay 一条路径恢复，环里的原帧不再重复投递，
+        // 否则同一个审批会弹两次。
+        backlog = replay.frames.filter(
+          (entry) => !isClientRequestResponse(entry.frame) && !this.isUnansweredRequest(entry.frame),
+        );
       } else {
         kind = "driftReload";
       }
@@ -85,9 +92,37 @@ export class Session {
     this.sink(entry.frame);
   }
 
-  /** 会话是否有进行中的工作；只读阶段没有，后续驱动对话时扩展。 */
+  /** 会话是否还有进行中的工作（订阅的 turn 在运行或有待答复的请求），有就不回收。 */
   isBusy(): boolean {
-    return false;
+    return this.outstanding.size > 0 || (this.busyCheck?.() ?? false);
+  }
+
+  setBusyCheck(check: () => boolean): void {
+    this.busyCheck = check;
+  }
+
+  publishRequest(id: string, method: string, params: unknown): void {
+    this.outstanding.set(id, { method, params });
+    this.publish({ jsonrpc: "2.0", id, method, params });
+  }
+
+  resolveRequest(id: string): void {
+    this.outstanding.delete(id);
+  }
+
+  hasOutstanding(id: string): boolean {
+    return this.outstanding.has(id);
+  }
+
+  /** attach 应答之后直接发给当前连接（不入环），列出仍待答复的请求。 */
+  sendReplay(generation: number): void {
+    if (generation !== this.generation || !this.sink || this.outstanding.size === 0) return;
+    const outstanding = [...this.outstanding].map(([id, entry]) => ({ id, method: entry.method, params: entry.params }));
+    this.sink(notificationFrame("serverRequest/replay", { outstanding }));
+  }
+
+  private isUnansweredRequest(frame: OutboundFrame): boolean {
+    return typeof frame.method === "string" && typeof frame.id === "string" && this.outstanding.has(frame.id);
   }
 
   detachedLongerThan(ms: number, now = Date.now()): boolean {

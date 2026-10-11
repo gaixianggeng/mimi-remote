@@ -5,12 +5,24 @@ import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import { RpcError } from "../rpc/frames.ts";
 import type { Catalog, HistoryStore, SessionRecord } from "../claude/catalog.ts";
 import { decodeCursor, encodeCursor, readDirection, readLimit, type Direction } from "../util/cursor.ts";
+import type { SessionHolder } from "../runtime/holders.ts";
 import { USER_AGENT } from "../version.ts";
+import { ownerSummary } from "./turns.ts";
 
 /** 旧 bridge 在 Thread 上附带的扩展字段，iOS 与 gateway 依赖它判断能否直接发送。 */
-export type AdapterThread = Thread & { canAcceptDirectInput: boolean };
+export type AdapterThread = Thread & { canAcceptDirectInput: boolean; claudeOwner?: Record<string, unknown> };
 
-export function toThread(record: SessionRecord, turns: Turn[] = []): AdapterThread {
+export interface LiveState {
+  canAcceptDirectInput: boolean;
+  status?: Thread["status"];
+  claudeOwner?: Record<string, unknown>;
+}
+
+export function toThread(
+  record: SessionRecord,
+  turns: Turn[] = [],
+  live: LiveState = { canAcceptDirectInput: false },
+): AdapterThread {
   return {
     id: record.id,
     sessionId: record.id,
@@ -28,7 +40,7 @@ export function toThread(record: SessionRecord, turns: Turn[] = []): AdapterThre
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     recencyAt: null,
-    status: { type: "notLoaded" },
+    status: live.status ?? { type: "notLoaded" },
     path: record.path,
     cwd: record.cwd,
     cliVersion: USER_AGENT,
@@ -40,8 +52,8 @@ export function toThread(record: SessionRecord, turns: Turn[] = []): AdapterThre
     gitInfo: record.gitBranch ? { sha: null, branch: record.gitBranch, originUrl: null } : null,
     name: record.name,
     turns,
-    // 只读阶段：对话驱动接入前不接受直接输入（#657）。
-    canAcceptDirectInput: false,
+    canAcceptDirectInput: live.canAcceptDirectInput,
+    ...(live.claudeOwner ? { claudeOwner: live.claudeOwner } : {}),
   };
 }
 
@@ -71,7 +83,25 @@ function compare(a: [number, string], b: [number, string]): number {
   return a[0] - b[0] || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0);
 }
 
-export function createThreadHandlers(catalog: Catalog, history: HistoryStore) {
+/** 会话的实时状态来源：占用登记与本适配器的运行时。缺省（只读模式）一律不可直接发送。 */
+export interface LiveSource {
+  holders(): Promise<Map<string, SessionHolder>>;
+  activeTurnId(threadId: string): string | undefined;
+}
+
+export function createThreadHandlers(catalog: Catalog, history: HistoryStore, liveSource?: LiveSource) {
+  const liveStates = async () => {
+    const holders = liveSource ? await liveSource.holders() : new Map<string, SessionHolder>();
+    return (threadId: string): LiveState => {
+      if (!liveSource) return { canAcceptDirectInput: false };
+      const holder = holders.get(threadId);
+      return {
+        canAcceptDirectInput: !holder,
+        ...(liveSource.activeTurnId(threadId) ? { status: { type: "active", activeFlags: [] } } : {}),
+        ...(holder ? { claudeOwner: ownerSummary(holder) } : {}),
+      };
+    };
+  };
   return {
     async list(raw: unknown): Promise<ThreadListResponse> {
       const params = asParams(raw);
@@ -99,8 +129,9 @@ export function createThreadHandlers(catalog: Catalog, history: HistoryStore) {
       const last = page[page.length - 1];
       const first = page[0];
       const hasMore = start >= 0 && start + limit < records.length;
+      const stateOf = await liveStates();
       return {
-        data: page.map((record) => toThread(record)),
+        data: page.map((record) => toThread(record, [], stateOf(record.id))),
         nextCursor: hasMore && last ? encodeCursor({ v: key(last)[0], id: last.id }) : null,
         backwardsCursor: first ? encodeCursor({ v: key(first)[0], id: first.id, incl: true }) : null,
       };
@@ -112,8 +143,9 @@ export function createThreadHandlers(catalog: Catalog, history: HistoryStore) {
       if (typeof threadId !== "string" || !threadId) throw RpcError.invalidParams("thread/read.threadId 不能为空");
       const record = await catalog.get(threadId);
       if (!record) throw RpcError.invalidParams(`找不到 Claude 会话 ${threadId}`);
-      const turns = params.includeTurns === true ? await history.turns(threadId) : [];
-      return { thread: toThread(record, turns) };
+      const running = liveSource?.activeTurnId(threadId) !== undefined;
+      const turns = params.includeTurns === true ? await history.turns(threadId, running) : [];
+      return { thread: toThread(record, turns, (await liveStates())(threadId)) };
     },
 
     loaded(): ThreadLoadedListResponse {

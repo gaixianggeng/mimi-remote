@@ -100,7 +100,7 @@ describe("socket server", () => {
     expect(list.result.data.map((thread: any) => thread.preview)).toEqual(["hello from fixture"]);
     expect(list._alleycat_seq).toBe(2);
 
-    client.send({ jsonrpc: "2.0", id: 3, method: "turn/start", params: {} });
+    client.send({ jsonrpc: "2.0", id: 3, method: "review/start", params: {} });
     const unsupported = await client.next();
     expect(unsupported.error.code).toBe(-32601);
     client.close();

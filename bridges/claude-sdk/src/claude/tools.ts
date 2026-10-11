@@ -168,6 +168,11 @@ function subagentLabel(args: Args): string {
   return parts.join(" · ");
 }
 
+/** 不在时间线上单独显示的工具：提问由 item/tool/requestUserInput 卡片承载。 */
+export function isHiddenTool(name: string): boolean {
+  return name === "AskUserQuestion";
+}
+
 /** 由 tool_use 块生成进行中的 item；结果到达后用 completeToolItem 补齐。 */
 export function toolUseItem(id: string, name: string, input: unknown, sessionId: string): ThreadItem {
   const args = (input && typeof input === "object" ? input : {}) as Args;

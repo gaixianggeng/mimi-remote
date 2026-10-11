@@ -3,6 +3,8 @@ import { Session } from "./session.ts";
 export interface RegistryOptions {
   /** 未连接且没有进行中工作的会话保留多久。 */
   idleTtlMs: number;
+  /** 会话被回收时通知（取消它对会话的订阅等）。 */
+  onExpire?: (session: Session) => void;
 }
 
 const DEFAULT_OPTIONS: RegistryOptions = { idleTtlMs: 600_000 };
@@ -12,12 +14,16 @@ export class SessionRegistry {
   private readonly sessions = new Map<string, Session>();
   private timer: ReturnType<typeof setInterval> | undefined;
 
+  /** 新建会话时的钩子（挂上忙碌判断等）。 */
+  onCreate: ((session: Session) => void) | undefined;
+
   constructor(private readonly options: RegistryOptions = DEFAULT_OPTIONS) {}
 
   resolve(key: string): { session: Session; existed: boolean } {
     const existing = this.sessions.get(key);
     if (existing) return { session: existing, existed: true };
     const session = new Session(key);
+    this.onCreate?.(session);
     this.sessions.set(key, session);
     return { session, existed: false };
   }
@@ -26,6 +32,7 @@ export class SessionRegistry {
     for (const [key, session] of this.sessions) {
       if (!session.isBusy() && session.detachedLongerThan(this.options.idleTtlMs, now)) {
         this.sessions.delete(key);
+        this.options.onExpire?.(session);
       }
     }
   }

@@ -1,6 +1,6 @@
 import { rm } from "node:fs/promises";
 import net from "node:net";
-import { createRouter } from "./app.ts";
+import { createApp, type App } from "./app.ts";
 import { serveConnection } from "./server/connection.ts";
 import { SessionRegistry } from "./session/registry.ts";
 import { ADAPTER_NAME, ADAPTER_VERSION } from "./version.ts";
@@ -14,20 +14,39 @@ const USAGE = `用法：
 // 日志只写 stderr：stdout 在 stdio 模式下是协议通道。agentd 会采集 stderr。
 const log = (message: string) => process.stderr.write(`[${ADAPTER_NAME}] ${message}\n`);
 
+/** 会话注册表与对话运行时的联动：忙碌的会话不回收，回收时取消订阅。 */
+function wire(app: App): SessionRegistry {
+  const registry = new SessionRegistry({
+    idleTtlMs: 600_000,
+    onExpire: (session) => app.manager.unsubscribeSession(session),
+  });
+  registry.onCreate = (session) => session.setBusyCheck(() => app.manager.isSessionBusy(session));
+  return registry;
+}
+
+function connectionDeps(app: App, registry: SessionRegistry) {
+  return {
+    registry,
+    router: app.router,
+    log,
+    onClientResponse: (_session: unknown, frame: Record<string, unknown>) => app.manager.handleClientResponse(frame),
+  };
+}
+
 async function serveSocket(socketPath: string): Promise<void> {
-  const registry = new SessionRegistry();
+  const app = createApp({ log });
+  const registry = wire(app);
   registry.startReaper();
-  const router = createRouter({ log });
   await rm(socketPath, { force: true });
   const server = net.createServer((socket) => {
     socket.on("error", () => socket.destroy());
-    serveConnection(socket, socket, { registry, router, log })
+    serveConnection(socket, socket, connectionDeps(app, registry))
       .catch((error) => log(`connection failed: ${error instanceof Error ? error.message : String(error)}`))
       .finally(() => socket.end());
   });
   const shutdown = () => {
     server.close();
-    void rm(socketPath, { force: true }).finally(() => process.exit(0));
+    void Promise.allSettled([app.manager.closeAll(), rm(socketPath, { force: true })]).finally(() => process.exit(0));
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
@@ -39,8 +58,9 @@ async function serveSocket(socketPath: string): Promise<void> {
 }
 
 async function serveStdio(): Promise<void> {
-  const registry = new SessionRegistry();
-  await serveConnection(process.stdin, process.stdout, { registry, router: createRouter({ log }), log });
+  const app = createApp({ log });
+  await serveConnection(process.stdin, process.stdout, connectionDeps(app, wire(app)));
+  await app.manager.closeAll();
 }
 
 async function main(argv: string[]): Promise<void> {

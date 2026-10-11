@@ -46,14 +46,19 @@ describe("messagesToTurns", () => {
     expect(turns[0]!.status).toBe("completed");
   });
 
-  test("text blocks of one API message split across records merge into one reply", () => {
+  test("each content block of one API message is its own item with an ordinal id", () => {
+    // transcript 每条记录是一个内容块；ID 规则与实时事件相同。
     const turns = translate([
       user("hi"),
-      assistant([{ type: "text", text: "Hello " }], "msg-x"),
-      assistant([{ type: "text", text: "there" }], "msg-x"),
+      assistant([{ type: "thinking", thinking: "" }], "msg-x"),
+      assistant([{ type: "text", text: "Hello" }], "msg-x"),
+      assistant([{ type: "text", text: "again" }], "msg-x"),
     ]);
-    const replies = turns[0]!.items.filter((item) => item.type === "agentMessage");
-    expect(replies.map((item) => item.type === "agentMessage" && item.text)).toEqual(["Hello there"]);
+    expect(turns[0]!.items.slice(1).map((item) => item.id)).toEqual([
+      "reasoning_msg_msg-x",
+      "assistant_msg_msg-x",
+      "assistant_msg_msg-x_1",
+    ]);
   });
 
   test("tool calls map to the same item kinds as the old bridge", () => {
