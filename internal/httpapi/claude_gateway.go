@@ -62,6 +62,36 @@ type appServerBridgeProbe struct {
 	Healthy   bool
 	Error     string
 	CheckedAt time.Time
+	// Adapter 非空表示探测到的是 SDK 适配器；能力以它的声明为准，不按旧 bridge 的版本门槛推断。
+	Adapter *claudebridge.AdapterCapabilities
+}
+
+// supportsMethod 判断已探测的 bridge 是否实现某个方法；旧 bridge 按版本门槛判断。
+func (p appServerBridgeProbe) supportsMethod(method string, legacy func(string) bool) bool {
+	if !p.Healthy {
+		return false
+	}
+	if p.Adapter != nil {
+		return p.Adapter.Supports(method)
+	}
+	return legacy(p.Version)
+}
+
+func (p appServerBridgeProbe) fullAccessAvailable() bool {
+	if !p.Healthy {
+		return false
+	}
+	if p.Adapter != nil {
+		return p.Adapter.FullAccess
+	}
+	return claudebridge.SupportsFullAccess(p.Version)
+}
+
+func (p appServerBridgeProbe) bridgeName() string {
+	if p.Adapter != nil {
+		return claudebridge.AdapterName
+	}
+	return "alleycat-claude-bridge"
 }
 
 func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
@@ -91,7 +121,8 @@ func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
 	}
 	probe.Path = path
 	// 版本门禁是协议安全边界，不能因为 cheap probe 跳过；--version 对兼容 bridge 是无副作用快速调用。
-	probe.Version = probeClaudeBridgeVersion(path, r.cfg.Claude.Args, r.cfg.Claude.Env)
+	var isAdapter bool
+	probe.Version, isAdapter = probeClaudeBridgeVersion(path, r.cfg.Claude.Args, r.cfg.Claude.Env)
 	if probe.Version == "" {
 		probe.Status = "missing_version"
 		probe.Error = claudebridge.UpgradeMessage("")
@@ -103,6 +134,16 @@ func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
 		probe.Error = claudebridge.UpgradeMessage(probe.Version)
 		r.setClaudeBridgeProbe(probe)
 		return probe
+	}
+	if isAdapter {
+		capabilities, err := probeClaudeAdapterCapabilities(path, r.cfg.Claude.Args, r.cfg.Claude.Env)
+		if err != nil {
+			probe.Status = "missing_capabilities"
+			probe.Error = "无法读取 Claude 适配器的能力声明：" + err.Error()
+			r.setClaudeBridgeProbe(probe)
+			return probe
+		}
+		probe.Adapter = &capabilities
 	}
 	probe.Status = "ready"
 	probe.Healthy = true
@@ -148,20 +189,34 @@ func resolveClaudeBridgePath(command string) (string, bool) {
 	return claudebridge.ResolveBinary(command)
 }
 
-func probeClaudeBridgeVersion(path string, args []string, env map[string]string) string {
+// probeClaudeBridgeVersion 返回版本号，以及输出是否来自 SDK 适配器。
+func probeClaudeBridgeVersion(path string, args []string, env map[string]string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, append(args, "--version")...)
+	cmd := exec.CommandContext(ctx, path, append(append([]string{}, args...), "--version")...)
 	cmd.Env = buildClaudeBridgeEnv(env)
 	output, err := cmd.Output()
 	if err != nil {
-		return ""
+		return "", false
 	}
-	version, ok := claudebridge.ParseVersion(string(bytes.TrimSpace(output)))
+	trimmed := string(bytes.TrimSpace(output))
+	version, ok := claudebridge.ParseVersion(trimmed)
 	if !ok {
-		return ""
+		return "", false
 	}
-	return version
+	return version, claudebridge.IsAdapterVersionOutput(trimmed)
+}
+
+func probeClaudeAdapterCapabilities(path string, args []string, env map[string]string) (claudebridge.AdapterCapabilities, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, append(append([]string{}, args...), "--capabilities")...)
+	cmd.Env = buildClaudeBridgeEnv(env)
+	output, err := cmd.Output()
+	if err != nil {
+		return claudebridge.AdapterCapabilities{}, err
+	}
+	return claudebridge.ParseAdapterCapabilities(bytes.TrimSpace(output))
 }
 
 func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Request) {

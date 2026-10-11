@@ -8,7 +8,23 @@ import { createHistoryHandlers } from "./handlers/history.ts";
 import { createThreadHandlers } from "./handlers/threads.ts";
 import type { InitializeResponse } from "./protocol/codex/InitializeResponse.ts";
 import { Router, type Handler, type Logger } from "./server/router.ts";
-import { USER_AGENT } from "./version.ts";
+import { ADAPTER_NAME, ADAPTER_VERSION, USER_AGENT } from "./version.ts";
+
+/**
+ * `--capabilities` 的能力声明。agentd 读它决定向客户端声明哪些方法与权限档位，
+ * 而不是按旧 bridge 的版本号门槛推断（两者版本号不在同一序列）。
+ */
+export interface CapabilityDeclaration {
+  name: string;
+  version: string;
+  methods: string[];
+  /** 是否支持完全访问（approvalPolicy never + dangerFullAccess）。 */
+  fullAccess: boolean;
+}
+
+export function capabilityDeclaration(router: Router): CapabilityDeclaration {
+  return { name: ADAPTER_NAME, version: ADAPTER_VERSION, methods: router.methods(), fullAccess: false };
+}
 
 /** 适配器自己的状态目录（Mimi 覆盖层）。 */
 export function defaultStateDir(): string {

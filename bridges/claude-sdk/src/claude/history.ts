@@ -25,6 +25,20 @@ const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
 // CLI 不把这些当作用户提问显示：本地命令输出、caveat、后台任务完成通知。
 const INTERNAL_PREFIXES = ["<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>", "<task-notification>"];
 
+/**
+ * 用户记录是否只是内部记录（本地命令输出、caveat、后台任务通知），CLI 不把它显示为提问。
+ * 活动时间与历史共用这条规则。
+ */
+export function isInternalUserContent(content: unknown): boolean {
+  const texts =
+    typeof content === "string"
+      ? [content]
+      : Array.isArray(content) && content.every((block) => (block as Block)?.type === "text")
+        ? (content as Block[]).map((block) => String(block.text ?? ""))
+        : [];
+  return texts.length > 0 && texts.every((text) => INTERNAL_PREFIXES.some((prefix) => text.trim().startsWith(prefix)));
+}
+
 function blocksOf(message: unknown): Block[] | string | undefined {
   const content = (message as { content?: unknown } | null)?.content;
   if (typeof content === "string") return content;
@@ -180,7 +194,8 @@ export function messagesToTurns(messages: readonly HistoryMessage[], options: Tr
         } else {
           turn.items.push({
             type: "agentMessage",
-            id: message.uuid,
+            // 一条记录里出现多个文本块时按块序号区分，保证 item ID 唯一。
+            id: index === 0 ? message.uuid : `${message.uuid}:${index}`,
             text: block.text,
             phase: null,
             memoryCitation: null,

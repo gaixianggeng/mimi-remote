@@ -544,25 +544,30 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 	if r.cfg.Claude.Enabled {
 		claudeSpec, _ := appServerRuntimeSpecFor(appServerRuntimeClaudeID)
 		probe := r.claudeBridgeProbe()
-		claudeRateLimitsAvailable := probe.Healthy && claudebridge.IsSupported(probe.Version)
+		claudeRateLimitsAvailable := probe.supportsMethod("account/rateLimits/read", claudebridge.IsSupported)
 		claudeMethods := appServerAllowedMethodListForRuntime(claudeSpec.ID)
-		// 完全访问只在 bridge 版本支持时声明；登记表给的是可靠基线，
+		// 完全访问只在 bridge 支持时声明；登记表给的是可靠基线，
 		// 这里按探测结果上调。
-		claudeFullAccessAvailable := probe.Healthy && claudebridge.SupportsFullAccess(probe.Version)
+		claudeFullAccessAvailable := probe.fullAccessAvailable()
+		if probe.Adapter != nil {
+			// SDK 适配器按自己的声明裁剪方法，没实现的方法不能出现在客户端菜单里。
+			claudeMethods = filterAppServerMethods(claudeMethods, probe.Adapter.Supports)
+		}
 		if !claudeRateLimitsAvailable {
 			claudeMethods = removeAppServerMethod(claudeMethods, "account/rateLimits/read")
 		}
-		if !probe.Healthy || !claudebridge.SupportsThreadItemsList(probe.Version) {
+		if !probe.supportsMethod("thread/items/list", claudebridge.SupportsThreadItemsList) {
 			claudeMethods = removeAppServerMethod(claudeMethods, "thread/items/list")
 		}
-		if !probe.Healthy || !claudebridge.SupportsThreadTakeover(probe.Version) {
+		claudeTakeoverAvailable := probe.supportsMethod("thread/takeover", claudebridge.SupportsThreadTakeover)
+		if !claudeTakeoverAvailable {
 			claudeMethods = removeAppServerMethod(claudeMethods, "thread/takeover")
 		}
 		// RateLimits 的登记基线是 false，实际是否可用由 bridge 探测决定。
 		claudeCapabilities := claudeSpec.Capabilities
 		claudeCapabilities.RateLimits = claudeRateLimitsAvailable
 		// 手动接管（#482）同样由 bridge 探测决定，登记表只给不依赖探测的基线。
-		claudeCapabilities.IdleTakeover = probe.Healthy && claudebridge.SupportsThreadTakeover(probe.Version)
+		claudeCapabilities.IdleTakeover = claudeTakeoverAvailable
 		// 权限档位同样以登记表为基线，只在 bridge 支持完全访问时上调；显式复制切片，
 		// 避免 append 写回登记表的底层数组而影响后续请求。
 		claudePolicy := claudeSpec.Policy
@@ -586,7 +591,7 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			Experimental:     claudeSpec.Experimental,
 			Lifecycle:        "per_connection",
 			Bridge: &appServerBridgeMetadata{
-				Name:           "alleycat-claude-bridge",
+				Name:           probe.bridgeName(),
 				Version:        probe.Version,
 				MinimumVersion: claudebridge.MinimumVersion,
 				Path:           probe.Path,
@@ -655,6 +660,16 @@ func removeAppServerMethod(methods []string, removed string) []string {
 	filtered := make([]string, 0, len(methods))
 	for _, method := range methods {
 		if method != removed {
+			filtered = append(filtered, method)
+		}
+	}
+	return filtered
+}
+
+func filterAppServerMethods(methods []string, keep func(string) bool) []string {
+	filtered := make([]string, 0, len(methods))
+	for _, method := range methods {
+		if keep(method) {
 			filtered = append(filtered, method)
 		}
 	}

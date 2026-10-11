@@ -77,7 +77,8 @@ export function createThreadHandlers(catalog: Catalog, history: HistoryStore) {
       const params = asParams(raw);
       const limit = readLimit(params.limit, 25, 200);
       const direction: Direction = readDirection(params.sortDirection, "desc");
-      const byCreated = params.sortKey === "created_at";
+      // 协议约定省略 sortKey 时按创建时间排序（旧 bridge 同样如此）。
+      const byCreated = params.sortKey === undefined || params.sortKey === null || params.sortKey === "created_at";
       const cursor = decodeCursor<ListCursor>(params.cursor, "thread/list.cursor");
       const archived = params.archived === true;
       const search = typeof params.searchTerm === "string" ? params.searchTerm.trim().toLowerCase() : "";

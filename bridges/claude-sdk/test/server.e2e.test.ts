@@ -84,6 +84,14 @@ describe("socket server", () => {
     expect(result.stdout.trim()).toMatch(/^mimi-claude-adapter \d+\.\d+\.\d+$/);
   });
 
+  test("--capabilities declares exactly the registered methods", () => {
+    const result = spawnSync(process.execPath, [entry, "--capabilities"], { encoding: "utf8", env });
+    const declared = JSON.parse(result.stdout);
+    expect(declared).toMatchObject({ name: "mimi-claude-adapter", fullAccess: false });
+    expect(declared.methods).toContain("thread/list");
+    expect(declared.methods).not.toContain("turn/start");
+  });
+
   test("attach acknowledges, stamps sequence numbers and resumes by key", async () => {
     const client = await Client.connect();
     client.send({ jsonrpc: "2.0", method: "_alleycat/attach", params: { sessionKey: "ipad-1", lastSeen: 0 } });
