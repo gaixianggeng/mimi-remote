@@ -39,6 +39,10 @@ export interface ConnectionDeps {
   registry: SessionRegistry;
   router: Router;
   log: Logger;
+  /** 客户端对服务端请求（审批、提问）的答复，带上连接代数以便只认当前连接。 */
+  onClientResponse?: (session: Session, generation: number, frame: Record<string, unknown>) => void;
+  /** 匿名连接结束：它的会话不在注册表里，不会被过期回收，需要在这里撤销订阅。 */
+  onAnonymousSessionEnd?: (session: Session) => void;
 }
 
 /**
@@ -75,6 +79,7 @@ export async function serveConnection(input: Readable, output: Writable, deps: C
         },
       });
       session.flushBacklog(outcome.backlog, outcome.generation);
+      session.sendReplay(outcome.generation);
     } else {
       const claimsAttach = parsed.ok && (parsed.value as { method?: unknown })?.method === ATTACH_METHOD;
       if (claimsAttach) deps.log("ignoring malformed attach preamble; serving an isolated session");
@@ -85,6 +90,7 @@ export async function serveConnection(input: Readable, output: Writable, deps: C
       }
     }
   }
+  const anonymous = !session || !outcome;
   if (!session || !outcome) {
     session = new Session("anonymous");
     outcome = session.attach(undefined, write, false);
@@ -104,9 +110,11 @@ export async function serveConnection(input: Readable, output: Writable, deps: C
         void task.finally(() => inflight.delete(task));
         return;
       }
-      case "notification":
       case "response":
-        // `initialized` 等通知无需处理；对服务端请求的应答在驱动对话阶段接入。
+        deps.onClientResponse?.(active, generation, value as Record<string, unknown>);
+        return;
+      case "notification":
+        // `initialized` 等通知无需处理。
         return;
       case "invalid":
         active.respond(errorFrame(null, { code: ErrorCode.invalidRequest, message: classified.reason }), generation);
@@ -130,5 +138,6 @@ export async function serveConnection(input: Readable, output: Writable, deps: C
     await Promise.allSettled([...inflight]);
   } finally {
     active.detach(generation);
+    if (anonymous) deps.onAnonymousSessionEnd?.(active);
   }
 }

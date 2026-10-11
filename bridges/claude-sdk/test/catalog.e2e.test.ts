@@ -137,7 +137,8 @@ describe("thread/list", () => {
     // 首条提问前的 worktree 提示不能变成预览。
     expect((byId.get(ids.nested) as any).preview).toBe("nested worktree task");
     expect((byId.get(ids.root) as any).name).toBe("Root session");
-    expect((byId.get(ids.root) as any).canAcceptDirectInput).toBe(false);
+    // 没有别的进程占用时可以直接发送。
+    expect((byId.get(ids.root) as any).canAcceptDirectInput).toBe(true);
   });
 
   test("activity time comes from the last message, not the file modification time", async () => {
@@ -193,15 +194,16 @@ describe("history", () => {
   });
 
   test("turns page newest first and items page within a turn", async () => {
+    // 运行中排队发出的消息归入当前 turn（与实时的 turn/steer 一致）。
     const page = await call("thread/turns/list", { threadId: ids.forked, limit: 1 });
-    expect(prompts(page.data)).toEqual(["queued follow-up"]);
+    expect(prompts(page.data)).toEqual(["kept branch prompt", "queued follow-up"]);
     const older = await call("thread/turns/list", { threadId: ids.forked, limit: 5, cursor: page.nextCursor });
-    expect(prompts(older.data)).toEqual(["kept branch prompt", "fork base"]);
+    expect(prompts(older.data)).toEqual(["fork base"]);
     const turnId = page.data[0].id;
     const items = await call("thread/items/list", { threadId: ids.forked, turnId, limit: 1 });
     expect(items.data[0].item.type).toBe("userMessage");
     const rest = await call("thread/items/list", { threadId: ids.forked, turnId, cursor: items.nextCursor });
-    expect(rest.data.map((entry: any) => entry.item.type)).toEqual(["agentMessage"]);
+    expect(rest.data.map((entry: any) => entry.item.type)).toEqual(["agentMessage", "userMessage", "agentMessage"]);
     expect(rest.nextCursor).toBeNull();
   });
 

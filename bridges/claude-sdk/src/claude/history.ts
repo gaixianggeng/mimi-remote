@@ -5,7 +5,8 @@ import type { ThreadItem } from "../protocol/codex/v2/ThreadItem.ts";
 import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import type { TurnStatus } from "../protocol/codex/v2/TurnStatus.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
-import { completeToolItem, toolUseItem, unfinishedToolItem, type ToolOutput } from "./tools.ts";
+import { ItemIdAllocator } from "./itemIds.ts";
+import { completeToolItem, isHiddenTool, toolUseItem, unfinishedToolItem, type ToolOutput } from "./tools.ts";
 
 /** SDK SessionMessage 中本模块用到的字段。 */
 export interface HistoryMessage {
@@ -119,8 +120,6 @@ interface TurnDraft {
   status: TurnStatus;
   startedAt: number | null;
   completedAt: number | null;
-  /** 最近一条 agentMessage 所属的 API 消息 id；同一消息拆成多条记录时合并文本。 */
-  lastTextMessageId: string | undefined;
 }
 
 export interface TranslateOptions {
@@ -131,6 +130,7 @@ export interface TranslateOptions {
 
 export function messagesToTurns(messages: readonly HistoryMessage[], options: TranslateOptions): Turn[] {
   const turns: TurnDraft[] = [];
+  const ids = new ItemIdAllocator();
   const toolIndex = new Map<string, { turn: TurnDraft; index: number }>();
   let current: TurnDraft | undefined;
 
@@ -141,7 +141,6 @@ export function messagesToTurns(messages: readonly HistoryMessage[], options: Tr
       status: "completed",
       startedAt: seconds(timestamp),
       completedAt: seconds(timestamp),
-      lastTextMessageId: undefined,
     };
     turns.push(draft);
     return draft;
@@ -153,7 +152,6 @@ export function messagesToTurns(messages: readonly HistoryMessage[], options: Tr
     if (message.isCompactSummary) {
       const turn = ensure(message);
       turn.items.push({ type: "contextCompaction", id: message.uuid });
-      turn.lastTextMessageId = undefined;
       continue;
     }
     const blocks = blocksOf(message.message);
@@ -176,7 +174,8 @@ export function messagesToTurns(messages: readonly HistoryMessage[], options: Tr
         continue;
       }
       if (prompt.kind === "internal") continue;
-      current = open(message.uuid, message.timestamp);
+      // 运行中排队发出的消息（实时侧的 turn/steer）归入当前 turn，与实时事件一致。
+      if (!message.isQueuedCommand || !current) current = open(message.uuid, message.timestamp);
       current.items.push({ type: "userMessage", id: message.uuid, clientId: null, content: prompt.input });
       continue;
     }
@@ -185,32 +184,24 @@ export function messagesToTurns(messages: readonly HistoryMessage[], options: Tr
     const turn = ensure(message);
     const apiMessageId = String((message.message as { id?: unknown })?.id ?? message.uuid);
     const assistantBlocks = typeof blocks === "string" ? [{ type: "text", text: blocks }] : blocks;
-    assistantBlocks.forEach((block, index) => {
+    // transcript 里每条记录是一个内容块；每个文本 / 思考块各自成为一个 item。
+    assistantBlocks.forEach((block) => {
       if (block.type === "text" && typeof block.text === "string") {
-        if (!block.text.trim()) return;
-        const last = turn.items[turn.items.length - 1];
-        if (last?.type === "agentMessage" && turn.lastTextMessageId === apiMessageId) {
-          turn.items[turn.items.length - 1] = { ...last, text: `${last.text}${block.text}` };
-        } else {
-          turn.items.push({
-            type: "agentMessage",
-            // 一条记录里出现多个文本块时按块序号区分，保证 item ID 唯一。
-            id: index === 0 ? message.uuid : `${message.uuid}:${index}`,
-            text: block.text,
-            phase: null,
-            memoryCitation: null,
-            delivery: null,
-            questions: null,
-          });
-        }
-        turn.lastTextMessageId = apiMessageId;
-      } else if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim()) {
-        turn.items.push({ type: "reasoning", id: `${message.uuid}:${index}`, summary: [], content: [block.thinking] });
-        turn.lastTextMessageId = undefined;
-      } else if (block.type === "tool_use" && typeof block.id === "string") {
+        turn.items.push({
+          type: "agentMessage",
+          id: ids.agentMessage(apiMessageId),
+          text: block.text,
+          phase: null,
+          memoryCitation: null,
+          delivery: null,
+          questions: null,
+        });
+      } else if (block.type === "thinking") {
+        const thinking = typeof block.thinking === "string" ? block.thinking : "";
+        turn.items.push({ type: "reasoning", id: ids.reasoning(apiMessageId), summary: [], content: thinking ? [thinking] : [] });
+      } else if (block.type === "tool_use" && typeof block.id === "string" && !isHiddenTool(String(block.name ?? ""))) {
         turn.items.push(toolUseItem(block.id, String(block.name ?? ""), block.input, options.sessionId));
         toolIndex.set(block.id, { turn, index: turn.items.length - 1 });
-        turn.lastTextMessageId = undefined;
       }
     });
     turn.completedAt = seconds(message.timestamp) ?? turn.completedAt;

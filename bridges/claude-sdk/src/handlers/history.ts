@@ -42,14 +42,14 @@ function viewOf(turn: Turn, view: unknown): Turn {
   return summarizeTurn(turn);
 }
 
-export function createHistoryHandlers(history: HistoryStore) {
+export function createHistoryHandlers(history: HistoryStore, isRunning: (threadId: string) => boolean = () => false) {
   return {
     async turns(raw: unknown): Promise<ThreadTurnsListResponse> {
       const { params, threadId } = threadIdOf(raw, "thread/turns/list");
       const limit = readLimit(params.limit, 10, 100);
       const direction = readDirection(params.sortDirection, "desc");
       const cursor = decodeCursor<PositionCursor>(params.cursor, "thread/turns/list.cursor");
-      const all = await history.turns(threadId);
+      const all = await history.turns(threadId, isRunning(threadId));
       const ordered = direction === "desc" ? [...all].reverse() : all;
       const start = startAfter(ordered, (turn) => turn.id, cursor);
       const page = ordered.slice(start, start + limit);
@@ -68,7 +68,7 @@ export function createHistoryHandlers(history: HistoryStore) {
       const limit = readLimit(params.limit, 50, 200);
       const direction = readDirection(params.sortDirection, "asc");
       const turnId = typeof params.turnId === "string" && params.turnId ? params.turnId : undefined;
-      const all = await history.turns(threadId);
+      const all = await history.turns(threadId, isRunning(threadId));
       const turns = turnId ? all.filter((turn) => turn.id === turnId) : all;
       if (turnId && turns.length === 0) throw RpcError.invalidParams(`找不到 turn ${turnId}`);
       const entries: ThreadItemEntry[] = turns.flatMap((turn) =>

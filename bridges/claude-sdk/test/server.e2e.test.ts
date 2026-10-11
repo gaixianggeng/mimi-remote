@@ -87,9 +87,9 @@ describe("socket server", () => {
   test("--capabilities declares exactly the registered methods", () => {
     const result = spawnSync(process.execPath, [entry, "--capabilities"], { encoding: "utf8", env });
     const declared = JSON.parse(result.stdout);
-    expect(declared).toMatchObject({ name: "mimi-claude-adapter", fullAccess: false });
-    expect(declared.methods).toContain("thread/list");
-    expect(declared.methods).not.toContain("turn/start");
+    expect(declared).toMatchObject({ name: "mimi-claude-adapter", fullAccess: true });
+    expect(declared.methods).toEqual(expect.arrayContaining(["thread/list", "turn/start", "turn/steer", "turn/interrupt"]));
+    expect(declared.methods).not.toContain("review/start");
   });
 
   test("attach acknowledges, stamps sequence numbers and resumes by key", async () => {
@@ -108,7 +108,7 @@ describe("socket server", () => {
     expect(list.result.data.map((thread: any) => thread.preview)).toEqual(["hello from fixture"]);
     expect(list._alleycat_seq).toBe(2);
 
-    client.send({ jsonrpc: "2.0", id: 3, method: "turn/start", params: {} });
+    client.send({ jsonrpc: "2.0", id: 3, method: "review/start", params: {} });
     const unsupported = await client.next();
     expect(unsupported.error.code).toBe(-32601);
     client.close();
