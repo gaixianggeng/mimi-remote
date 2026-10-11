@@ -39,11 +39,19 @@ class ScriptedQuery {
     }
   }
 
+  interrupts = 0;
+  /** 设置后切换模型会停在这里，模拟 turn/start 等待控制请求的窗口。 */
+  settingsGate: Promise<void> | undefined;
+
   async initializationResult() {
     return { pid: 1 };
   }
-  async interrupt() {}
-  async setModel() {}
+  async interrupt() {
+    this.interrupts += 1;
+  }
+  async setModel() {
+    await this.settingsGate;
+  }
   async setPermissionMode() {}
   async applyFlagSettings() {}
   close() {
@@ -158,6 +166,62 @@ describe("output attribution", () => {
     await settle();
     const completed = frames.filter((frame: any) => frame.method === "turn/completed").at(-1) as any;
     expect(completed.params.turn).toMatchObject({ id: turn.id, status: "interrupted" });
+  });
+
+  test("interrupting while a steer waits for its own round still reaches Claude", async () => {
+    const started = await call("thread/start", { cwd: sandbox });
+    const threadId = started.thread.id;
+    const { turn } = await call("turn/start", { threadId, input: text("first") });
+    await call("turn/steer", { threadId, expectedTurnId: turn.id, input: text("then this"), clientUserMessageId: null });
+    await settle();
+    const steer = script.sent.at(-1)!;
+    // 首条消息的结果到了，引导还没开始输出：current 暂时为空，turn 仍未结束。
+    for (const message of reply(turn.id, "msg_i", "first answer")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [turn.id] });
+    await settle();
+    expect(completedTurns()).not.toContain(turn.id);
+
+    await call("turn/interrupt", { threadId, turnId: turn.id });
+    expect(script.interrupts).toBe(1);
+    script.emit({ type: "result", subtype: "error_during_execution", user_message_uuids: [steer.uuid] });
+    await settle();
+    const completed = frames.filter((frame: any) => frame.method === "turn/completed").at(-1) as any;
+    expect(completed.params.turn).toMatchObject({ id: turn.id, status: "interrupted" });
+  });
+
+  test("overlapping turn/start calls admit one turn while settings are switching", async () => {
+    const started = await call("thread/start", { cwd: sandbox });
+    const threadId = started.thread.id;
+    const warm = await call("turn/start", { threadId, input: text("warm up") });
+    for (const message of reply(warm.turn.id, "msg_w", "ready")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [warm.turn.id] });
+    await settle();
+    const sentBefore = script.sent.length;
+
+    let release!: () => void;
+    script.settingsGate = new Promise<void>((resolve) => (release = resolve));
+    const outcomes = ["one", "two"].map((body) =>
+      call("turn/start", { threadId, input: text(body), model: "claude-other" }).then(
+        (result) => ({ ok: true as const, result }),
+        (error) => ({ ok: false as const, error }),
+      ),
+    );
+    await settle();
+    release();
+    const settled = await Promise.all(outcomes);
+    const accepted = settled.flatMap((outcome) => (outcome.ok ? [outcome.result] : []));
+    const rejected = settled.flatMap((outcome) => (outcome.ok ? [] : [outcome.error]));
+    expect(accepted).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].data).toMatchObject({ reason: "active_turn", activeTurnId: accepted[0].turn.id });
+    await settle();
+    expect(script.sent).toHaveLength(sentBefore + 1);
+
+    const turnId = accepted[0].turn.id;
+    for (const message of reply(turnId, "msg_o", "done")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [turnId] });
+    await settle();
+    expect(completedTurns()).toContain(turnId);
   });
 
   test("output without a user message uuid opens its own turn", async () => {

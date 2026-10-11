@@ -3,6 +3,7 @@ import net from "node:net";
 import { capabilityDeclaration, createApp, type App } from "./app.ts";
 import { serveConnection } from "./server/connection.ts";
 import { SessionRegistry } from "./session/registry.ts";
+import type { Session } from "./session/session.ts";
 import { ADAPTER_NAME, ADAPTER_VERSION } from "./version.ts";
 
 const USAGE = `用法：
@@ -30,7 +31,9 @@ function connectionDeps(app: App, registry: SessionRegistry) {
     registry,
     router: app.router,
     log,
-    onClientResponse: (_session: unknown, frame: Record<string, unknown>) => app.manager.handleClientResponse(frame),
+    onClientResponse: (session: Session, generation: number, frame: Record<string, unknown>) =>
+      app.manager.handleClientResponse(session, generation, frame),
+    onAnonymousSessionEnd: (session: Session) => app.manager.unsubscribeSession(session),
   };
 }
 

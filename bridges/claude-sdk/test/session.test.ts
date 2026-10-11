@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { PassThrough } from "node:stream";
+import { serveConnection } from "../src/server/connection.ts";
+import { Router } from "../src/server/router.ts";
 import { ReplayRing, SEQ_FIELD } from "../src/session/ring.ts";
 import { SessionRegistry } from "../src/session/registry.ts";
 import { Session } from "../src/session/session.ts";
@@ -86,5 +89,29 @@ describe("Session attach", () => {
     registry.resolve("detached");
     registry.sweep(Date.now() + 2_000);
     expect(registry.size).toBe(1);
+  });
+});
+
+describe("serveConnection", () => {
+  test("an anonymous session is released when its connection ends; an attached one is kept", async () => {
+    const ended: Session[] = [];
+    const deps = {
+      registry: new SessionRegistry(),
+      router: new Router(new Map(), () => {}),
+      log: () => {},
+      onAnonymousSessionEnd: (session: Session) => ended.push(session),
+    };
+    const anonymous = new PassThrough();
+    const servedAnonymous = serveConnection(anonymous, new PassThrough(), deps);
+    anonymous.end(`${JSON.stringify({ jsonrpc: "2.0", method: "initialized" })}\n`);
+    await servedAnonymous;
+    expect(ended.map((session) => session.key)).toEqual(["anonymous"]);
+
+    const attached = new PassThrough();
+    const servedAttached = serveConnection(attached, new PassThrough(), deps);
+    attached.end(`${JSON.stringify({ jsonrpc: "2.0", method: "_alleycat/attach", params: { sessionKey: "ipad-1" } })}\n`);
+    await servedAttached;
+    // 具名会话留给注册表按空闲期回收，断线可续。
+    expect(ended).toHaveLength(1);
   });
 });

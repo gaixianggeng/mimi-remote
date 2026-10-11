@@ -92,6 +92,8 @@ export class ThreadRuntime {
    * 输出与结果按消息 uuid 归属，而不是假设"一次 turn/start 对应下一个结果"。
    */
   private readonly commands = new Map<string, LiveTurn>();
+  /** turn/start 等待进程就绪、切换设置期间预占的 turn ID，让并发的 turn/start 同样被拒。 */
+  private reserved: string | undefined;
   private totalUsage: TurnUsage | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private pid: number | undefined;
@@ -109,7 +111,7 @@ export class ThreadRuntime {
   }
 
   get activeTurnId(): string | undefined {
-    return this.current?.id ?? this.commands.values().next().value?.id;
+    return this.current?.id ?? this.commands.values().next().value?.id ?? this.reserved;
   }
 
   get currentSettings(): RunSettings {
@@ -117,7 +119,11 @@ export class ThreadRuntime {
   }
 
   isBusy(): boolean {
-    return this.current !== undefined || this.commands.size > 0;
+    return this.current !== undefined || this.commands.size > 0 || this.reserved !== undefined;
+  }
+
+  isLoaded(): boolean {
+    return this.query !== undefined || this.isBusy();
   }
 
   async startTurn(request: TurnRequest): Promise<Turn> {
@@ -133,13 +139,19 @@ export class ThreadRuntime {
       });
     }
     const content = toClaudeContent(request.input);
-    this.settings = {
-      model: request.settings.model ?? this.settings.model,
-      effort: request.settings.effort ?? this.settings.effort,
-      permissionMode: request.settings.permissionMode ?? this.settings.permissionMode,
-    };
-    await this.ensureQuery();
+    // 检查与预占之间没有 await：第一个异步操作之前就占住，后来的 turn/start 看到的是 active_turn。
     const turnId = randomUUID();
+    this.reserved = turnId;
+    try {
+      this.settings = {
+        model: request.settings.model ?? this.settings.model,
+        effort: request.settings.effort ?? this.settings.effort,
+        permissionMode: request.settings.permissionMode ?? this.settings.permissionMode,
+      };
+      await this.ensureQuery();
+    } finally {
+      this.reserved = undefined;
+    }
     const turn = new LiveTurn(turnId, this.threadId, this.emit);
     this.current = turn;
     this.commands.set(turnId, turn);
@@ -180,9 +192,13 @@ export class ThreadRuntime {
   }
 
   async interrupt(turnId: string): Promise<void> {
-    const turn = this.current;
-    if (!turn || turn.id !== turnId || !this.query) return;
+    // 结果已吸收首条消息、引导还没开始输出时 current 暂时为空，turn 仍挂在 commands 名下。
+    const turn =
+      this.current?.id === turnId ? this.current : [...this.commands.values()].find((owner) => owner.id === turnId);
+    if (!turn || turn.finished || !this.query) return;
     turn.markInterrupted();
+    // 中断产生的结果要落到这个 turn 上收尾。
+    this.current ??= turn;
     await this.query.interrupt();
   }
 

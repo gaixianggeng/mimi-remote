@@ -86,7 +86,11 @@ export function createApp(options: AppOptions): App {
   });
   const holders = () => readHolders(manager.ownPids);
   const activeTurnId = (threadId: string) => manager.get(threadId)?.activeTurnId;
-  const threads = createThreadHandlers(catalog, history, { holders, activeTurnId });
+  const threads = createThreadHandlers(catalog, history, {
+    holders,
+    activeTurnId,
+    loadedThreadIds: () => manager.loadedThreadIds(),
+  });
   const historyHandlers = createHistoryHandlers(history, (threadId) => activeTurnId(threadId) !== undefined);
   const turns = createTurnHandlers({ manager, catalog, holders });
 

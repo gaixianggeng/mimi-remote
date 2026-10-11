@@ -83,6 +83,11 @@ export class ThreadManager {
     this.subscriptions.delete(session);
   }
 
+  /** thread/loaded/list：有常驻 Claude 进程或进行中 turn 的会话。 */
+  loadedThreadIds(): string[] {
+    return [...this.runtimes.values()].filter((runtime) => runtime.isLoaded()).map((runtime) => runtime.threadId).sort();
+  }
+
   isSessionBusy(session: Session): boolean {
     for (const threadId of this.subscriptions.get(session) ?? []) {
       if (this.runtimes.get(threadId)?.isBusy()) return true;
@@ -105,9 +110,13 @@ export class ThreadManager {
     });
   }
 
-  handleClientResponse(frame: Record<string, unknown>): void {
+  /**
+   * 请求 ID 可预测，只接受当前连接对自己收到过的请求的答复：别的会话或已被替换的旧连接
+   * 不能代为批准或拒绝。
+   */
+  handleClientResponse(session: Session, generation: number, frame: Record<string, unknown>): void {
     const id = String(frame.id);
-    if (!this.pending.has(id)) return;
+    if (!this.pending.has(id) || !session.isCurrent(generation) || !session.hasOutstanding(id)) return;
     if ("error" in frame) this.settle(id, { error: new Error(JSON.stringify(frame.error)) });
     else this.settle(id, { result: frame.result });
   }

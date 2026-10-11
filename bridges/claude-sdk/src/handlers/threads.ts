@@ -87,6 +87,7 @@ function compare(a: [number, string], b: [number, string]): number {
 export interface LiveSource {
   holders(): Promise<Map<string, SessionHolder>>;
   activeTurnId(threadId: string): string | undefined;
+  loadedThreadIds(): string[];
 }
 
 export function createThreadHandlers(catalog: Catalog, history: HistoryStore, liveSource?: LiveSource) {
@@ -150,8 +151,7 @@ export function createThreadHandlers(catalog: Catalog, history: HistoryStore, li
     },
 
     loaded(): ThreadLoadedListResponse {
-      // 只读阶段没有常驻的 Claude 进程。
-      return { data: [], nextCursor: null };
+      return { data: liveSource?.loadedThreadIds() ?? [], nextCursor: null };
     },
   };
 }

@@ -35,7 +35,7 @@ afterAll(async () => {
 class Client {
   readonly frames: OutboundFrame[] = [];
   readonly session = new Session(`client-${Math.random()}`);
-  private generation: number;
+  generation: number;
   private nextId = 1;
 
   constructor() {
@@ -74,7 +74,7 @@ class Client {
   }
 
   answer(request: any, result: unknown) {
-    app.manager.handleClientResponse({ id: request.id, result });
+    app.manager.handleClientResponse(this.session, this.generation, { id: request.id, result });
   }
 
   detach() {
@@ -163,6 +163,19 @@ describe("turn lifecycle", () => {
   });
 });
 
+describe("loaded threads", () => {
+  test("thread/loaded/list reports threads with a live Claude process", async () => {
+    const client = new Client();
+    const threadId = await newThread(client);
+    expect((await client.call("thread/loaded/list", {})).data).not.toContain(threadId);
+    const { turn } = await client.call("turn/start", { threadId, input: text("hello") });
+    expect((await client.call("thread/loaded/list", {})).data).toContain(threadId);
+    await client.turnCompleted(turn.id);
+    // turn 结束后进程在空闲关闭前仍常驻。
+    expect((await client.call("thread/loaded/list", {})).data).toContain(threadId);
+  });
+});
+
 describe("approvals", () => {
   test("an accepted command runs and the request is resolved for every subscriber", async () => {
     const client = new Client();
@@ -179,6 +192,27 @@ describe("approvals", () => {
     await client.turnCompleted(turn.id);
     const command = client.frames.find((frame: any) => frame.method === "item/completed" && frame.params.item.type === "commandExecution") as any;
     expect(command.params.item).toMatchObject({ status: "completed", command: "touch x" });
+  });
+
+  test("only the current connection that received a request can answer it", async () => {
+    const client = new Client();
+    const outsider = new Client();
+    const threadId = await newThread(client);
+    const { turn } = await client.call("turn/start", { threadId, input: text('TOOL Bash {"command":"touch y"}') });
+    const request = await client.waitFor((frame) => frame.method === "item/commandExecution/requestApproval");
+    // 没订阅这个会话的连接猜中了 ID，也不能代为批准。
+    outsider.answer(request, { decision: "accept" });
+    // 已被替换的旧连接同样不行。
+    const replaced = client.generation;
+    client.detach();
+    client.reattach(0);
+    app.manager.handleClientResponse(client.session, replaced, { id: request.id, result: { decision: "accept" } });
+    await Bun.sleep(50);
+    expect(client.frames.some((frame: any) => frame.method === "serverRequest/resolved")).toBe(false);
+    client.answer(request, { decision: "decline" });
+    await client.turnCompleted(turn.id);
+    const command = client.frames.find((frame: any) => frame.method === "item/completed" && frame.params.item.type === "commandExecution") as any;
+    expect(command.params.item.status).toBe("failed");
   });
 
   test("a declined command fails the tool call without failing the turn", async () => {

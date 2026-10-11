@@ -61,6 +61,11 @@ export class Session {
     return { kind, currentSeq, floorSeq, backlog, generation: this.generation };
   }
 
+  /** 这一代连接仍是会话当前的连接（未被替换、未断开）。 */
+  isCurrent(generation: number): boolean {
+    return generation === this.generation && this.sink !== undefined;
+  }
+
   detach(generation: number): void {
     if (generation !== this.generation) return;
     this.sink = undefined;

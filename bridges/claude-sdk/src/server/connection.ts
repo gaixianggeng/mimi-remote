@@ -39,8 +39,10 @@ export interface ConnectionDeps {
   registry: SessionRegistry;
   router: Router;
   log: Logger;
-  /** 客户端对服务端请求（审批、提问）的答复。 */
-  onClientResponse?: (session: Session, frame: Record<string, unknown>) => void;
+  /** 客户端对服务端请求（审批、提问）的答复，带上连接代数以便只认当前连接。 */
+  onClientResponse?: (session: Session, generation: number, frame: Record<string, unknown>) => void;
+  /** 匿名连接结束：它的会话不在注册表里，不会被过期回收，需要在这里撤销订阅。 */
+  onAnonymousSessionEnd?: (session: Session) => void;
 }
 
 /**
@@ -88,6 +90,7 @@ export async function serveConnection(input: Readable, output: Writable, deps: C
       }
     }
   }
+  const anonymous = !session || !outcome;
   if (!session || !outcome) {
     session = new Session("anonymous");
     outcome = session.attach(undefined, write, false);
@@ -108,7 +111,7 @@ export async function serveConnection(input: Readable, output: Writable, deps: C
         return;
       }
       case "response":
-        deps.onClientResponse?.(active, value as Record<string, unknown>);
+        deps.onClientResponse?.(active, generation, value as Record<string, unknown>);
         return;
       case "notification":
         // `initialized` 等通知无需处理。
@@ -135,5 +138,6 @@ export async function serveConnection(input: Readable, output: Writable, deps: C
     await Promise.allSettled([...inflight]);
   } finally {
     active.detach(generation);
+    if (anonymous) deps.onAnonymousSessionEnd?.(active);
   }
 }
