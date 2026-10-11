@@ -62,7 +62,10 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 		return validated, fmt.Errorf("dangerFullAccess 不允许通过 config 使用")
 	}
 	if runtimeID == "claude" && gatewayAllowsNoApproval(runtimeID, method, params) {
-		if probe := r.claudeBridgeProbe(); !probe.Healthy || !claudebridge.SupportsFullAccess(probe.Version) {
+		if probe := r.claudeBridgeProbe(); !probe.fullAccessAvailable() {
+			if probe.Adapter != nil {
+				return validated, fmt.Errorf("当前 Claude 适配器尚不支持完全访问")
+			}
 			return validated, fmt.Errorf("Claude 完全访问需要 bridge >= %s，请更新 Mimi Remote Mac 或 Claude bridge", claudebridge.FullAccessVersion)
 		}
 	}
