@@ -21,6 +21,10 @@ export class Router {
     return this.handlers.has(method);
   }
 
+  methods(): string[] {
+    return [...this.handlers.keys()].sort();
+  }
+
   async dispatch(request: RpcRequest, context: RequestContext): Promise<OutboundFrame> {
     const handler = this.handlers.get(request.method);
     if (!handler) {

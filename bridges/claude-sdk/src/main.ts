@@ -1,12 +1,13 @@
 import { rm } from "node:fs/promises";
 import net from "node:net";
-import { createApp, type App } from "./app.ts";
+import { capabilityDeclaration, createApp, type App } from "./app.ts";
 import { serveConnection } from "./server/connection.ts";
 import { SessionRegistry } from "./session/registry.ts";
 import { ADAPTER_NAME, ADAPTER_VERSION } from "./version.ts";
 
 const USAGE = `用法：
   ${ADAPTER_NAME} --version
+  ${ADAPTER_NAME} --capabilities  输出能力声明（JSON），供 agentd 探测
   ${ADAPTER_NAME} --socket <path>   在 Unix socket 上服务（agentd 常驻模式）
   ${ADAPTER_NAME}                   在标准输入输出上服务一条连接
 `;
@@ -66,6 +67,10 @@ async function serveStdio(): Promise<void> {
 async function main(argv: string[]): Promise<void> {
   if (argv.includes("--version") || argv.includes("-V")) {
     process.stdout.write(`${ADAPTER_NAME} ${ADAPTER_VERSION}\n`);
+    return;
+  }
+  if (argv.includes("--capabilities")) {
+    process.stdout.write(`${JSON.stringify(capabilityDeclaration(createApp({ log }).router))}\n`);
     return;
   }
   if (argv.includes("--help") || argv.includes("-h")) {

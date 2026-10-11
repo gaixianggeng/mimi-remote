@@ -18,13 +18,20 @@ function threadIdOf(raw: unknown, method: string): { params: Params; threadId: s
 
 interface PositionCursor extends Record<string, unknown> {
   id: string;
+  /** 条目在有序列表中的位置；与 id 一起校验，避免重复 id 或历史变化时定位错位。 */
+  pos?: number;
   incl?: boolean;
 }
 
-/** 按 id 定位游标：exclusive 时从它之后开始，inclusive 时包含它本身。 */
+/**
+ * 定位游标：优先用位置（位置上的条目 id 必须一致），否则退回按 id 查找（客户端给的
+ * item 锚点只有 id）。exclusive 时从它之后开始，inclusive 时包含它本身。
+ */
 function startAfter<T>(ordered: readonly T[], idOf: (entry: T) => string, cursor: PositionCursor | undefined): number {
   if (!cursor) return 0;
-  const index = ordered.findIndex((entry) => idOf(entry) === cursor.id);
+  const pos = cursor.pos;
+  const atPosition = typeof pos === "number" && Number.isInteger(pos) && pos >= 0 && pos < ordered.length;
+  const index = atPosition && idOf(ordered[pos]!) === cursor.id ? pos : ordered.findIndex((entry) => idOf(entry) === cursor.id);
   if (index < 0) throw RpcError.invalidParams("分页游标已失效");
   return cursor.incl ? index : index + 1;
 }
@@ -50,8 +57,9 @@ export function createHistoryHandlers(history: HistoryStore, isRunning: (threadI
       const first = page[0];
       return {
         data: page.map((turn) => viewOf(turn, params.itemsView)),
-        nextCursor: last && start + limit < ordered.length ? encodeCursor({ id: last.id }) : null,
-        backwardsCursor: first ? encodeCursor({ id: first.id, incl: true }) : null,
+        nextCursor: last && start + limit < ordered.length ? encodeCursor({ id: last.id, pos: start + page.length - 1 }) : null,
+        // 反向翻页时列表顺序相反，位置要换算到反向列表里。
+        backwardsCursor: first ? encodeCursor({ id: first.id, pos: ordered.length - 1 - start, incl: true }) : null,
       };
     },
 
@@ -84,8 +92,8 @@ export function createHistoryHandlers(history: HistoryStore, isRunning: (threadI
       const first = page[0];
       return {
         data: page,
-        nextCursor: last && start + limit < ordered.length ? encodeCursor({ id: last.item.id }) : null,
-        backwardsCursor: first ? encodeCursor({ id: first.item.id, incl: true }) : null,
+        nextCursor: last && start + limit < ordered.length ? encodeCursor({ id: last.item.id, pos: start + page.length - 1 }) : null,
+        backwardsCursor: first ? encodeCursor({ id: first.item.id, pos: ordered.length - 1 - start, incl: true }) : null,
       };
     },
   };

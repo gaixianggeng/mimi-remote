@@ -36,6 +36,16 @@ func main() {
 		return
 	}
 
+	// SDK 适配器的能力声明：内容取自 <executable>.capabilities，没有该文件时按失败退出。
+	if len(os.Args) == 2 && os.Args[1] == "--capabilities" {
+		declared, readErr := os.ReadFile(executable + ".capabilities")
+		if readErr != nil {
+			os.Exit(1)
+		}
+		_, _ = os.Stdout.Write(declared)
+		return
+	}
+
 	body := flag.String("body", "", "path to the shell script serving one connection")
 	socket := flag.String("socket", "", "unix socket to listen on")
 	tcpListen := flag.String("tcp-listen", "", "loopback TCP address to listen on")

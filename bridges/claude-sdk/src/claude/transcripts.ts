@@ -1,4 +1,5 @@
 import { open, readdir, stat } from "node:fs/promises";
+import { isInternalUserContent } from "./history.ts";
 import os from "node:os";
 import path from "node:path";
 
@@ -119,6 +120,11 @@ function conversationTimestamp(line: string): number | undefined {
     const record = JSON.parse(line) as Record<string, unknown>;
     if (record.type !== "user" && record.type !== "assistant") return undefined;
     if (record.isSidechain === true || record.isMeta === true) return undefined;
+    if (record.isCompactSummary === true || record.isVisibleInTranscriptOnly === true) return undefined;
+    // 本地命令输出、后台任务通知等内部记录不算对话活动，否则旧会话会因 CLI 空恢复被排到前面。
+    if (record.type === "user" && isInternalUserContent((record.message as { content?: unknown } | undefined)?.content)) {
+      return undefined;
+    }
     const ms = Date.parse(String(record.timestamp));
     return Number.isFinite(ms) ? ms : undefined;
   } catch {
