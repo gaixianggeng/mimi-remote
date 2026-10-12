@@ -24,7 +24,7 @@
   - 别处持有时会话只读：`thread/list`、`thread/resume` 带 `canAcceptDirectInput: false` 与 `claudeOwner` 摘要，`turn/start` 返回 `owned_elsewhere`。
   - **驱动中让出**：监听登记目录（目录事件 + 2 秒轮询兜底）。适配器握着进程时出现别的持有方（例如终端执行了 `claude --resume`），立即给自己的 CLI 发 SIGTERM，进行中的 turn 记为中断，不再写 transcript。实测终端进程启动后约 0.5 秒让出。
   - 持有方出现、退出或在空闲与执行之间切换时推送 `thread/status/changed`，附带与 Thread 同名的 `canAcceptDirectInput`、`claudeOwner`（含 `statusUpdatedAt`）和会话最后活动时间 `updatedAt`，客户端不用重新读取就能切换只读状态、刷新列表时间与未读水位。推送面向**全部已附着的连接**，不限该会话的订阅者：列表页不订阅任何会话，终端里的会话开始 / 结束处理也要能推到列表（#683）。常驻模式一启动就监听占用登记，不等第一个订阅。
-  - 会话的 `status` 在 `thread/list`、`thread/read`、`thread/resume` 与 `thread/status/changed` 里同源：本适配器有进行中的 turn，或别处持有方正在执行（`busy` / `shell`）→ `active`；本适配器有常驻进程，或持有方空闲 → `idle`；都没有 → `notLoaded`。持有方执行中时 `thread/read` 的最后一轮也按进行中呈现（没有结果的工具调用显示为进行中）。
+  - 会话的 `status` 在 `thread/list`、`thread/read`、`thread/resume` 与 `thread/status/changed` 里同源：本适配器有进行中的 turn，或别处持有方正在执行（`busy` / `shell`）→ `active`；本适配器有常驻进程，或持有方空闲 → `idle`；都没有 → `notLoaded`。历史里的最后一轮只在本适配器自己有进行中的 turn 时标为进行中；别处持有方执行时不合成进行中的 turn，避免客户端把它记成自己的活跃 turn、错过空闲推送后一直显示处理中。
   - **接管**：规则沿用旧 bridge（#451）——只结束全部明确空闲、且进程启动时间与登记 `startedAt` 吻合的持有方；先 SIGINT，5 秒后重查状态再 SIGTERM；持有方退出后若有新进程认领同一会话，报 `holder_respawned` 且不再发信号。失败以 `-32602` 返回 `{accepted, reason, claudeOwner, retryable}`。
   - CLI 自身行为：恢复一个生成到一半被结束的会话时，CLI 会补一条 `No response requested.`，与被中断的那条回复成为兄弟节点。历史按 CLI 继续的支线显示，与 `claude --resume` 一致。
 - **其余能力（#659）**：`model/list`、`account/rateLimits/read`、`thread/name/set`，见下面的对照表。

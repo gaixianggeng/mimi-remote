@@ -567,9 +567,12 @@ describe("ownership", () => {
       const listed = (await watcher.call("thread/list", { cwd: project, limit: 50 })).data.find((thread: any) => thread.id === threadId);
       expect(listed).toMatchObject({ status: { type: "active" }, canAcceptDirectInput: false, claudeOwner: { status: "busy", statusUpdatedAt: busySince } });
       expect(listed.updatedAt).toBe(running.params.updatedAt);
-      // thread/read 在持有方执行时把最后一轮当成进行中，与自己驱动时一致。
+      // thread/read 的状态同样是进行中，但不为别处持有方合成进行中的 turn：客户端会把它记成自己的
+      // 活跃 turn，错过空闲推送后一直显示处理中。
       const read = await watcher.call("thread/read", { threadId, includeTurns: true });
       expect(read.thread.status).toEqual({ type: "active", activeFlags: [] });
+      expect(read.thread.turns.length).toBeGreaterThan(0);
+      expect(read.thread.turns.some((turn: any) => turn.status === "inProgress")).toBe(false);
 
       terminal.register(threadId, "idle");
       const idle = await watcher.waitFor(statusOf("idle", false));

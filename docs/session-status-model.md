@@ -39,13 +39,16 @@ iPhone / iPad 上的会话列表、侧栏和工作区页对同一个会话回答
 - 持有方来自 Claude Code 自己写的占用登记（`<配置目录>/sessions/<pid>.json`，含 `status`、`statusUpdatedAt`）。
 - `thread/list`、`thread/read`、`thread/resume` 的 `status` 同源：本适配器有进行中的 turn 或持有方正在执行 → `active`；
   本适配器有常驻进程或持有方空闲 → `idle`；否则 `notLoaded`。`claudeOwner` 附 `statusUpdatedAt`。
+- 历史里的最后一轮只在本适配器自己在跑时标为进行中。电脑端持有方执行时不合成进行中的 turn：客户端会把它当成
+  自己的活跃 turn，一旦错过空闲推送（例如断线超过会话保留期）就会停在「处理中」。
 - 占用登记监听覆盖登记里出现过的每个会话，不限已订阅的会话；变化时向全部已附着连接广播
   `thread/status/changed`，带 `status`、`canAcceptDirectInput`、`claudeOwner` 和会话最后活动时间 `updatedAt`。
   网关按连接已授权的 thread 过滤，客户端只收到自己列表里有的会话。
 
 ### iOS
 
-- `thread/status/changed` 更新运行时缓存的会话快照（状态、持有方、`updatedAt` 只前移不倒退）。
+- `thread/status/changed` 更新运行时缓存的会话快照（状态、持有方、`updatedAt` 只前移不倒退）；转为非运行状态时
+  一并清掉缓存里的进行中 turn。
 - 运行时只为被页面订阅的会话开邮箱；没有邮箱的会话此前只缓冲。现在 `.session` 快照同时交给
   `sessionIndexObserver`（`AppServerRuntimeBundle` → `AppStore` → `SessionStore.applyLiveSessionIndexUpdate`），
   只更新 Store 里已有的行的状态、持有方、活跃 turn 与时间，不插入新行、不改标题与摘要，然后重新归并已读水位。
