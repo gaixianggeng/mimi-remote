@@ -14,13 +14,13 @@
 # Worktree 键取自当前 Worktree 物理路径的哈希，每个 Worktree 只读写自己的记录，
 # 不会把 A Worktree 的结果交给 B。
 
-IOS_BUILD_EVIDENCE_SCHEMA="1"
+IOS_BUILD_EVIDENCE_SCHEMA="2"
 IOS_BUILD_EVIDENCE_DIR_NAME="MimiBuildEvidence"
 IOS_BUILD_EVIDENCE_REASON=""
 IOS_BUILD_EVIDENCE_SUMMARY=""
 IOS_BUILD_EVIDENCE_ARGS=""
 # 参与比较的字段及顺序；任何一项不同都必须重新构建。
-IOS_BUILD_EVIDENCE_KEYS="schema worktree project scheme configuration build_settings destination simulator derived_data developer_dir xcode sdk host_arch go tailcat inputs"
+IOS_BUILD_EVIDENCE_KEYS="schema worktree project scheme configuration build_settings destination simulator derived_data developer_dir xcode toolchain sdk host_arch go tailcat build_env inputs"
 IOS_BUILD_EVIDENCE_GO_BIN="${TAILCAT_MOBILE_GO_BIN:-go}"
 IOS_BUILD_EVIDENCE_TAILCAT_MODULE="${TAILCAT_MOBILE_MODULE_DIR:-$ROOT_DIR/experiments/tailcat}"
 
@@ -62,10 +62,12 @@ ios_evidence_label() {
     derived_data) printf 'DerivedData' ;;
     developer_dir) printf 'Xcode 路径' ;;
     xcode) printf 'Xcode 版本' ;;
+    toolchain) printf 'Swift 工具链（TOOLCHAINS）' ;;
     sdk) printf 'Simulator SDK' ;;
     host_arch) printf '主机架构' ;;
     go) printf 'Go 工具链' ;;
     tailcat) printf 'Tailcat 框架' ;;
+    build_env) printf '构建相关环境变量' ;;
     inputs) printf '源码/资源/工程文件' ;;
     *) printf '%s' "$1" ;;
   esac
@@ -134,7 +136,8 @@ ios_evidence_args_are_neutral() {
 
 # 输出 “<mode> <git blob> <path>” 清单，按路径排序。纳入：
 # - 工程所在目录（SRCROOT，例如 ios/MimiRemote）下所有已跟踪与未忽略的未跟踪文件；
-# - project.pbxproj 中以 ../ 引用的工程外文件，以及 $SRCROOT/../ 形式的构建脚本；
+# - 解析到 SRCROOT 之外的工程输入：文件引用按分组层级与 sourceTree 计算，构建设置
+#   与脚本中的相对路径以 SRCROOT 为基准；无法唯一确定时不复用（见 external_input_paths）；
 # - Tailcat Go module 与统一入口、证据和 Tailcat 构建脚本自身。
 # 已跟踪且未改动的文件直接取索引中的 blob；改动、未跟踪或被忽略的工程外引用由
 # git hash-object 计算同一种 blob，因此提交前后同一内容得到同一清单。
@@ -146,6 +149,7 @@ ios_evidence_input_manifest() {
     scripts/ios-build-evidence.sh \
     scripts/build-tailcat-mobile.sh <<'RUBY'
 # encoding: utf-8
+require "json"
 require "open3"
 Encoding.default_external = Encoding::UTF_8
 STDOUT.set_encoding(Encoding::UTF_8)
@@ -160,8 +164,9 @@ project_argument = ARGV.fetch(1)
 fixed_inputs = ARGV.drop(2)
 
 def git(root, *arguments, stdin_data: nil)
-  # DEVELOPER_DIR 只用于选择 Xcode；指向测试或兼容性 Xcode 时不能让 macOS 的 git shim 失效。
-  environment = { "DEVELOPER_DIR" => nil }
+  # DEVELOPER_DIR、SDKROOT 与 TOOLCHAINS 只用于选择 Xcode 工具链；指向测试或兼容性
+  # 工具链时不能让 macOS 的 git shim 失效。
+  environment = { "DEVELOPER_DIR" => nil, "SDKROOT" => nil, "TOOLCHAINS" => nil }
   command = ["git", "-c", "core.quotepath=off", "--literal-pathspecs", "-C", root, *arguments]
   output, error, status = if stdin_data.nil?
     Open3.capture3(environment, *command)
@@ -170,6 +175,138 @@ def git(root, *arguments, stdin_data: nil)
   end
   fail_closed("git #{arguments.first} 失败：#{error.strip}") unless status.success?
   output
+end
+
+# 工程外输入按 Xcode 的实际规则解析：文件引用沿分组层级和 sourceTree 计算，
+# 构建设置与脚本里的相对路径以 SRCROOT 为基准。任何一处无法唯一确定（解析器不可用、
+# 未知 sourceTree、含变量或通配符、经过符号链接或不存在的目录、指向仓库外）都不复用：
+# 宁可重新构建，也不能给错误的文件算指纹。
+def external_input_paths(root, source_root, pbxproj, text)
+  begin
+    json, error, status = Open3.capture3("plutil", "-convert", "json", "-o", "-", pbxproj)
+  rescue SystemCallError
+    fail_closed("缺少 plutil，无法解析 project.pbxproj")
+  end
+  fail_closed("无法解析 project.pbxproj：#{error.strip}") unless status.success?
+  begin
+    data = JSON.parse(json)
+  rescue JSON::ParserError
+    fail_closed("无法解析 project.pbxproj")
+  end
+  objects = data["objects"]
+  project = objects.is_a?(Hash) ? objects[data["rootObject"]] : nil
+  fail_closed("project.pbxproj 缺少 PBXProject") unless project.is_a?(Hash) && project["isa"] == "PBXProject"
+  unless project["projectDirPath"].to_s.empty? && project["projectRoot"].to_s.empty?
+    fail_closed("工程设置了 projectDirPath 或 projectRoot，无法确认 SRCROOT")
+  end
+  main_group = project["mainGroup"]
+  parents = {}
+  built = {}
+  objects.each do |id, object|
+    next unless object.is_a?(Hash)
+    built[object["fileRef"]] = true if object["isa"] == "PBXBuildFile" && object["fileRef"]
+    next unless object["children"].is_a?(Array)
+    object["children"].each do |child|
+      fail_closed("工程分组结构异常：同一引用属于多个分组") if parents.key?(child) && parents[child] != id
+      parents[child] = id
+    end
+  end
+
+  # 返回未规范化的路径（保留 ..，用于对照文件系统解析），:skip 表示不是仓库输入，
+  # :orphan 表示不在任何分组中。
+  locations = {}
+  locate = lambda do |id, depth|
+    return locations[id] if locations.key?(id)
+    fail_closed("工程分组层级异常") if depth > 64
+    object = objects[id]
+    fail_closed("工程引用了不存在的对象") unless object.is_a?(Hash)
+    path = object["path"].to_s
+    fail_closed("工程引用路径含变量，无法确认：#{path}") if path.include?("$")
+    base = case object["sourceTree"]
+    when "<group>"
+      if id == main_group
+        source_root
+      elsif parents.key?(id)
+        locate.call(parents[id], depth + 1)
+      else
+        :orphan
+      end
+    when "SOURCE_ROOT" then source_root
+    when "<absolute>" then ""
+    when "BUILT_PRODUCTS_DIR", "SDKROOT", "DEVELOPER_DIR" then :skip
+    else
+      fail_closed("工程引用使用了无法确认的 sourceTree：#{object["sourceTree"]}（#{path}）")
+    end
+    location = if base.is_a?(Symbol) || path.empty?
+      base
+    elsif path.start_with?("/")
+      path
+    else
+      base.empty? ? path : File.join(base, path)
+    end
+    if object["sourceTree"] == "<absolute>" && !location.to_s.start_with?("/")
+      fail_closed("工程引用的绝对路径无效：#{path}")
+    end
+    locations[id] = location
+  end
+
+  candidates = []
+  objects.each do |id, object|
+    next unless object.is_a?(Hash)
+    case object["isa"]
+    when "PBXFileReference", "XCVersionGroup"
+      location = locate.call(id, 0)
+      if location == :orphan
+        fail_closed("参与构建的工程引用不在任何分组中：#{object["path"]}") if built[id]
+        next
+      end
+      next if location == :skip
+      candidates << [location, object["path"].to_s]
+    when "XCLocalSwiftPackageReference"
+      relative = object["relativePath"].to_s
+      fail_closed("本地 Swift Package 路径无法确认：#{relative}") if relative.empty? || relative.include?("$")
+      candidates << [relative.start_with?("/") ? relative : File.join(source_root, relative), relative]
+    when "XCBuildConfiguration"
+      settings = object["buildSettings"].is_a?(Hash) ? object["buildSettings"].values : []
+      settings.flatten.each do |value|
+        next unless value.is_a?(String) && (value == ".." || value.start_with?("../"))
+        candidates << [File.join(source_root, value), value]
+      end
+    end
+  end
+  # 脚本、构建设置与输入输出列表中以 SRCROOT / PROJECT_DIR 为基准的路径。
+  text.scan(/\$[({]?(?:SRCROOT|PROJECT_DIR)[)}]?(\/[^"'\s\x5c;,:)}]*)/).flatten.each do |suffix|
+    next unless suffix.split("/").include?("..")
+    candidates << [source_root + suffix, "$SRCROOT#{suffix}"]
+  end
+
+  external = []
+  candidates.each do |raw, display|
+    if raw.include?("$") || raw =~ /[*?\[]/
+      fail_closed("工程引用含变量或通配符，无法确认：#{display}")
+    end
+    lexical = File.expand_path(raw)
+    traverses = raw.split("/").include?("..")
+    inside_source = lexical == source_root || lexical.start_with?(source_root + "/")
+    next if inside_source && !traverses
+    fail_closed("工程引用的外部路径无法解析：#{display}") unless File.exist?(lexical)
+    if traverses
+      physical = begin
+        File.realpath(raw)
+      rescue SystemCallError
+        fail_closed("工程引用的外部路径经过不存在的目录，无法确认：#{display}")
+      end
+      unless File.realpath(lexical) == physical
+        fail_closed("工程引用的外部路径经过符号链接，无法确认实际文件：#{display}")
+      end
+    end
+    next if inside_source
+    unless lexical.start_with?(root + "/") && File.realpath(lexical).start_with?(root + "/")
+      fail_closed("工程引用了仓库外的路径：#{display}")
+    end
+    external << lexical.delete_prefix(root + "/")
+  end
+  external.uniq
 end
 
 project_path = File.expand_path(project_argument, root)
@@ -182,21 +319,7 @@ pbxproj = File.join(project_path, "project.pbxproj")
 fail_closed("缺少 project.pbxproj") unless File.file?(pbxproj)
 
 text = File.binread(pbxproj).force_encoding("UTF-8").scrub("?")
-references = text.scan(/\bpath = "?((?:\.\.\/)+[^";\n]+)"?;/).flatten
-references += text.scan(/\$[({]?(?:SRCROOT|PROJECT_DIR)[)}]?\/((?:\.\.\/)+[A-Za-z0-9._\/-]+)/).flatten
-external_inputs = []
-references.uniq.each do |reference|
-  relative = reference.sub(/\A(?:\.\.\/)+/, "")
-  if relative.empty? || relative.split("/").include?("..")
-    fail_closed("工程引用的外部路径无法解析：#{reference}")
-  end
-  if File.exist?(File.join(root, relative))
-    external_inputs << relative
-  elsif !File.exist?(File.join(source_root, relative))
-    # 只按“去掉前导 ../ 后相对仓库根目录”解析；解析不了就不复用，避免漏掉输入。
-    fail_closed("工程引用的外部路径无法解析：#{reference}")
-  end
-end
+external_inputs = external_input_paths(root, source_root, pbxproj, text)
 
 pathspecs = ([source_relative] + fixed_inputs + external_inputs).uniq
 index = {}
@@ -251,12 +374,105 @@ entries.keys.sort.each { |path| puts "#{entries[path]} #{path}" }
 RUBY
 }
 
+# 输出构建相关环境变量的摘要，每行 “NAME=<值的 SHA-256 前 16 位>”，按名称排序；
+# 一个都没设置时输出 none。run_xcodebuild 不清理环境：xcodebuild、工程里的脚本阶段
+# 和其中调用的 build-tailcat-mobile.sh 都继承调用方的全部环境变量。所以纳入：
+# - 选择工具链或 SDK 的 TOOLCHAINS、SDKROOT（DEVELOPER_DIR 已按实际 Xcode 路径记录）；
+# - 编译器与链接器直接读取、或与同名构建设置对应的 CC、CPATH、LIBRARY_PATH 等；
+# - Tailcat 构建脚本读取的 TAILCAT_MOBILE_*（只影响等待时长的 LOCK_WAIT_SECONDS 除外）；
+# - 工程文件、xcconfig、Info.plist、entitlements 与 Scheme 里以 $(NAME)、${NAME} 或
+#   $NAME 引用的名字：xcodebuild 会把同名环境变量当作最低优先级的构建设置。
+# PATH 不纳入：工程脚本会在前面固定追加工具目录，实际用到的 Xcode、Go 和 Tailcat
+# 已分别按路径、版本或指纹记录。只存哈希，避免把令牌等敏感值写进缓存。
+# XCODE_XCCONFIG_FILE 会以最高优先级覆盖构建设置，内容还可能 include 其他文件，
+# 设置时一律不复用：只打印原因并以 3 退出。
+ios_evidence_build_environment() {
+  ruby - "$ROOT_DIR" "$PROJECT_PATH" <<'RUBY'
+# encoding: utf-8
+require "digest"
+require "open3"
+Encoding.default_external = Encoding::UTF_8
+STDOUT.set_encoding(Encoding::UTF_8)
+
+def fail_closed(message)
+  puts message
+  exit 3
+end
+
+unless ENV.fetch("XCODE_XCCONFIG_FILE", "").empty?
+  fail_closed("环境变量 XCODE_XCCONFIG_FILE 会覆盖工程构建设置，无法确认构建结果")
+end
+root = File.realpath(ARGV.fetch(0))
+project_path = File.expand_path(ARGV.fetch(1), root)
+fail_closed("找不到工程：#{ARGV.fetch(1)}") unless File.directory?(project_path)
+source_root = File.dirname(File.realpath(project_path))
+source_relative = source_root == root ? "." : source_root.delete_prefix(root + "/")
+
+names = %w[
+  TOOLCHAINS SDKROOT CC CXX LD LDPLUSPLUS LIBTOOL SWIFT_EXEC
+  CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH OBJCPLUS_INCLUDE_PATH LIBRARY_PATH
+  IPHONEOS_DEPLOYMENT_TARGET MACOSX_DEPLOYMENT_TARGET
+]
+ENV.each_key do |name|
+  names << name if name.start_with?("TAILCAT_MOBILE_") && name != "TAILCAT_MOBILE_LOCK_WAIT_SECONDS"
+end
+output, error, status = Open3.capture3(
+  { "DEVELOPER_DIR" => nil, "SDKROOT" => nil, "TOOLCHAINS" => nil },
+  "git", "-c", "core.quotepath=off", "--literal-pathspecs", "-C", root,
+  "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", source_relative
+)
+fail_closed("git ls-files 失败：#{error.strip}") unless status.success?
+output.split("\0").uniq.each do |path|
+  next unless path =~ /\.(pbxproj|xcconfig|plist|entitlements|xcscheme)\z/
+  full_path = File.join(root, path)
+  next unless File.file?(full_path)
+  File.binread(full_path).force_encoding("UTF-8").scrub("?").scan(/\$[({]?([A-Za-z_][A-Za-z0-9_]*)/) do |match|
+    names << match.first
+  end
+end
+entries = (names.uniq - ["PATH"]).sort.select { |name| ENV.key?(name) }.map do |name|
+  "#{name}=#{Digest::SHA256.hexdigest(ENV.fetch(name))[0, 16]}"
+end
+puts(entries.empty? ? "none" : entries)
+RUBY
+}
+
+# 列出两份环境变量摘要中取值不同的名字，用于说明证据失效原因。
+ios_evidence_changed_environment_names() {
+  ruby -e '
+    parse = lambda do |value|
+      value.split(" / ").reject { |entry| entry.empty? || entry == "none" }.map { |entry| entry.split("=", 2) }.to_h
+    end
+    before = parse.call(ARGV.fetch(0))
+    after = parse.call(ARGV.fetch(1))
+    print((before.keys | after.keys).select { |name| before[name] != after[name] }.sort.join("、"))
+  ' "$1" "$2" 2>/dev/null || true
+}
+
+# TOOLCHAINS 指定的工具链按 xcrun 实际解析出的 swiftc 路径和版本记录：同一个标识
+# （例如 swift）在安装新工具链后会指向不同版本。未设置时由 Xcode 版本决定。
+ios_evidence_toolchain() {
+  local swiftc_path swiftc_version
+  if [[ -z "${TOOLCHAINS:-}" ]]; then
+    printf 'Xcode 默认'
+    return 0
+  fi
+  swiftc_path="$("$XCRUN_BIN" --find swiftc 2>/dev/null)" && [[ -n "$swiftc_path" ]] \
+    || { printf '无法解析 TOOLCHAINS=%s 对应的 Swift 工具链' "$TOOLCHAINS"; return 1; }
+  swiftc_version="$("$XCRUN_BIN" swiftc -version 2>&1)" \
+    || { printf '无法读取 TOOLCHAINS=%s 对应的 Swift 版本' "$TOOLCHAINS"; return 1; }
+  printf 'TOOLCHAINS=%s / %s / %s' "$TOOLCHAINS" "$swiftc_path" "$swiftc_version"
+}
+
 # 输出参与比较的 “key<TAB>value” 行。失败时只打印原因并返回 1。
 ios_evidence_values() {
   local inputs_digest="$1"
   local developer_dir xcode_version sdk_version sdk_build project_relative worktree_root tailcat_value
-  local go_version go_environment
+  local go_version go_environment toolchain_value build_environment
   worktree_root="$(ios_evidence_worktree_root)" || { printf '无法解析 Worktree 路径'; return 1; }
+  build_environment="$(ios_evidence_build_environment)" \
+    || { printf '%s' "${build_environment:-无法读取构建相关环境变量}"; return 1; }
+  toolchain_value="$(ios_evidence_toolchain)" || { printf '%s' "$toolchain_value"; return 1; }
   developer_dir="$(current_developer_dir 2>/dev/null || true)"
   if [[ -n "$developer_dir" && -d "$developer_dir" ]]; then
     developer_dir="$(cd "$developer_dir" && pwd -P)"
@@ -293,10 +509,12 @@ ios_evidence_values() {
   ios_evidence_emit derived_data "$SELECTED_DERIVED_DATA"
   ios_evidence_emit developer_dir "${developer_dir:-unknown}"
   ios_evidence_emit xcode "$xcode_version"
+  ios_evidence_emit toolchain "$toolchain_value"
   ios_evidence_emit sdk "iphonesimulator $sdk_version ($sdk_build)"
   ios_evidence_emit host_arch "$(uname -m)"
   ios_evidence_emit go "$go_version / $go_environment / GOTOOLCHAIN=${GOTOOLCHAIN:-auto}"
   ios_evidence_emit tailcat "$tailcat_value"
+  ios_evidence_emit build_env "$build_environment"
   ios_evidence_emit inputs "$inputs_digest"
 }
 
@@ -310,7 +528,7 @@ ios_evidence_snapshot() {
     return 1
   fi
   if ! values="$(ios_evidence_values "$(printf '%s\n' "$manifest" | ios_evidence_hash)")"; then
-    IOS_BUILD_EVIDENCE_REASON="无法确认工具链：${values:-读取失败}"
+    IOS_BUILD_EVIDENCE_REASON="无法确认工具链或构建环境：${values:-读取失败}"
     return 1
   fi
   IOS_BUILD_EVIDENCE_MANIFEST="$manifest"
@@ -327,6 +545,9 @@ ios_evidence_changed_labels() {
     case "$key" in
       scheme|configuration|simulator|xcode|sdk|host_arch|go)
         label="${label}（${old_value:-无} → ${new_value:-无}）"
+        ;;
+      build_env)
+        label="${label}（$(ios_evidence_changed_environment_names "$old_value" "$new_value")）"
         ;;
     esac
     labels="${labels:+${labels}、}$label"
@@ -374,7 +595,7 @@ ios_evidence_commit() {
   mv "$base.inputs.tmp.$$" "$base.inputs" || return 1
   input_count="$(printf '%s\n' "$IOS_BUILD_EVIDENCE_MANIFEST" | awk 'END { print NR }')"
   recorded_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  head="$(env -u DEVELOPER_DIR git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || printf unknown)"
+  head="$(env -u DEVELOPER_DIR -u SDKROOT -u TOOLCHAINS git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || printf unknown)"
   {
     ios_evidence_emit meta.action "$action"
     ios_evidence_emit meta.args "$IOS_BUILD_EVIDENCE_ARGS"
@@ -420,6 +641,6 @@ ios_evidence_check() {
   args="$(ios_evidence_field meta.args "$stored")"
   recorded_at="$(ios_evidence_field meta.recorded_at "$stored")"
   input_count="$(ios_evidence_field meta.input_count "$stored")"
-  IOS_BUILD_EVIDENCE_SUMMARY="本 Worktree 的 ${action:-unknown}${args:+（${args}）}于 ${recorded_at:-unknown} 在 ${SELECTED_NAME} 成功；输入指纹 $(ios_evidence_field inputs "$current_values" | cut -c 1-12)（${input_count:-?} 个文件）、Xcode/SDK、Go 工具链、目标、Scheme/配置与 Tailcat 框架指纹均一致"
+  IOS_BUILD_EVIDENCE_SUMMARY="本 Worktree 的 ${action:-unknown}${args:+（${args}）}于 ${recorded_at:-unknown} 在 ${SELECTED_NAME} 成功；输入指纹 $(ios_evidence_field inputs "$current_values" | cut -c 1-12)（${input_count:-?} 个文件）、Xcode/SDK、Swift 工具链、Go 工具链、构建相关环境变量、目标、Scheme/配置与 Tailcat 框架指纹均一致"
   return 0
 }

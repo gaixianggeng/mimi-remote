@@ -3,7 +3,7 @@
 - 开发过程中只运行与当前行为直接相关的最小检查。Go 优先运行变更 package 的测试；iOS 优先运行精确 XCTest selector、相关快照或静态检查。不要在每次微调后运行 quick、完整 XCTest 或全仓测试。
 - 完成最后一次代码修改后，交付或 push 前先根据下述条件选择模式。quick 先运行 `bash ./scripts/verify-change.sh --plan`，再运行一次 `bash ./scripts/verify-change.sh`；full 先运行 `bash ./scripts/verify-change.sh --plan --full`，再运行一次 `bash ./scripts/verify-change.sh --full`。计划与执行使用同一模式，选择 full 时不先执行 quick。
 - quick 是普通 Issue 的默认收尾。iOS quick 只在固定 `iPad Pro 13-inch (M5)` Simulator 上编译 App，不编译或运行整个 XCTest 测试包；需要回归测试时，在开发阶段运行与问题直接相关的 selector。
-- iOS quick 的 App 编译项可复用构建证据：本 Worktree 已通过 `bash ./scripts/ios-dev.sh` 在同一 M5 上成功执行 `test`、`build-for-testing` 或 `build`，且源码、资源、工程文件、Xcode/SDK、Go 工具链、目标、Scheme 和配置的指纹与当前完全一致时，quick 不再编译、也不占用设备租约。`--plan` 在该项下写明复用的证据或需要重建的原因；执行结果标为“通过（复用构建证据）”。证据缺失、任何输入变化或无法确认时照常构建。指纹口径见 [iOS 设备与构建](ios.md#构建证据复用)。full、PR Gate 和真机专项不复用。
+- iOS quick 的 App 编译项可复用构建证据：本 Worktree 已通过 `bash ./scripts/ios-dev.sh` 在同一 M5 上成功执行 `test`、`build-for-testing` 或 `build`，且源码、资源、工程文件、Xcode/SDK、Swift 与 Go 工具链、构建相关环境变量、目标、Scheme 和配置的指纹与当前完全一致时，quick 不再编译、也不占用设备租约。`--plan` 在该项下写明复用的证据或需要重建的原因；执行结果标为“通过（复用构建证据）”。证据缺失、任何输入变化或无法确认时照常构建。指纹口径见 [iOS 设备与构建](ios.md#构建证据复用)。full、PR Gate 和真机专项不复用。
 - 修改共享协议、跨栈接口或同一用户链路的多个产品栈，本身不要求本地 full。必须对接口兼容、错误语义和降级链路运行定向检查；只有同时命中下述 full 条件时才升级。
 - 只有以下任一条件成立时，才执行 `bash ./scripts/verify-change.sh --full`：
   - 修改鉴权、权限、持久化格式或迁移、消息 exactly-once、并发、重连等高风险语义；

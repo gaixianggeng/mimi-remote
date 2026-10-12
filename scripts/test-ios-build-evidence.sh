@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # iOS 构建证据自测：在临时 Git 仓库与 Worktree 中使用 fake xcodebuild/xcrun/go，
-# 覆盖复用、各类失效、失败与中途改动不记录、跨 Worktree 隔离、缓存清理和排队提示。
+# 覆盖复用、各类失效（含构建相关环境变量与工程外引用解析）、失败与中途改动不记录、
+# 跨 Worktree 隔离、缓存清理和排队提示。
 # 只使用临时目录里的租约与缓存，不接触真实设备、共享 DerivedData 或其他任务的租约。
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,7 +42,8 @@ unset IOS_TEST_DESTINATION IOS_SIMULATOR_ID IOS_SIMULATOR_NAME IOS_DEVICE_ID IOS
   TAILCAT_MOBILE_OUTPUT_DIR TAILCAT_MOBILE_MODULE_DIR GOTOOLCHAIN IOS_TEST_XCODE_VERSION \
   IOS_TEST_SIMULATOR_SDK_VERSION IOS_TEST_GO_VERSION IOS_TEST_XCODEBUILD_EXIT_CODE \
   IOS_TEST_XCODEBUILD_MUTATE_FILE IOS_TEST_XCODEBUILD_SLEEP_SECONDS IOS_TEST_XCODEBUILD_STARTED \
-  IOS_TEST_CREATE_APP IOS_TEST_PS_OUTPUT_FILE
+  IOS_TEST_CREATE_APP IOS_TEST_PS_OUTPUT_FILE IOS_TEST_SWIFT_VERSION TOOLCHAINS SDKROOT CC \
+  XCODE_XCCONFIG_FILE TAILCAT_MOBILE_TOOL_DIR MIMI_EVIDENCE_FLAG MIMI_UNRELATED_SETTING
 # 外部 xcodebuild 扫描改用 fixture：本机其他项目的真实 xcodebuild（例如 generic Simulator
 # 构建）会被启发式判为占用所有 Simulator，使结果取决于宿主机状态。-p 查询仍走真实 ps。
 export IOS_DEVICE_LEASE_PS_BIN="$FIXTURE_DIR/fake-ps.sh"
@@ -61,9 +63,11 @@ mkdir -p "$TEMP_DIR/Xcode-next.app/Contents/Developer"
 : > "$IOS_TEST_TAILCAT_BUILD_LOG"
 
 # 最小 Worktree：工程文件同时引用工程外资源和 $SRCROOT 构建脚本，证明这两类输入会被纳入。
+# 工程结构与真实工程一致：Resources 分组下的引用以 ../../../ 指向仓库根目录。
 worktree_a="$TEMP_DIR/worktree-a"
 mkdir -p "$worktree_a/scripts" "$worktree_a/ios/MimiRemote/MimiRemote.xcodeproj" \
-  "$worktree_a/ios/MimiRemote/Sources" "$worktree_a/docs" "$worktree_a/experiments/tailcat"
+  "$worktree_a/ios/MimiRemote/Sources" "$worktree_a/ios/MimiRemote/Resources" "$worktree_a/docs" \
+  "$worktree_a/experiments/tailcat"
 cp "$ROOT_DIR/scripts/ios-dev.sh" "$ROOT_DIR/scripts/ios-device-lease.sh" \
   "$ROOT_DIR/scripts/ios-build-evidence.sh" "$ROOT_DIR/scripts/development-cache-path.sh" \
   "$worktree_a/scripts/"
@@ -71,14 +75,22 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$worktree_a/scripts/build-tailcat-mobi
 cat > "$worktree_a/ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj" <<'PBXPROJ'
 // !$*UTF8*$!
 {
+  rootObject = PRJ;
   objects = {
+    PRJ = {isa = PBXProject; mainGroup = MAIN; projectDirPath = ""; projectRoot = ""; };
+    MAIN = {isa = PBXGroup; children = (RES); sourceTree = "<group>"; };
+    RES /* Resources */ = {isa = PBXGroup; children = (AAA); path = Resources; sourceTree = "<group>"; };
     AAA /* support.md */ = {isa = PBXFileReference; name = support.md; path = ../../../docs/support.md; sourceTree = "<group>"; };
     BBB /* Tailcat */ = {isa = PBXShellScriptBuildPhase; shellScript = "bash \"$SRCROOT/../../scripts/build-tailcat-mobile.sh\"\n"; };
-    CCC = {LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../../Frameworks"); };
+    CCC = {isa = XCBuildConfiguration; buildSettings = {LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../../Frameworks"); }; };
+    /* extra */
   };
 }
 PBXPROJ
 printf 'struct App {}\n' > "$worktree_a/ios/MimiRemote/Sources/App.swift"
+# Info.plist 引用的自定义构建设置可以由同名环境变量注入。
+printf '<plist><dict><key>Flag</key><string>$(MIMI_EVIDENCE_FLAG)</string></dict></plist>\n' \
+  > "$worktree_a/ios/MimiRemote/Resources/Info.plist"
 printf '# Support\n' > "$worktree_a/docs/support.md"
 printf '# Unrelated\n' > "$worktree_a/docs/unrelated.md"
 printf 'module example.invalid/tailcat\n' > "$worktree_a/experiments/tailcat/go.mod"
@@ -268,6 +280,43 @@ STATUS_SIMULATOR_ID=M5-26-UDID assert_rebuild "没有本 Worktree" "$worktree_a"
 STATUS_TARGET_MODE=auto assert_rebuild "只有显式 Simulator 构建可以复用" "$worktree_a"
 assert_reusable "$worktree_a"
 
+# 8b. ios-dev.sh 不清理环境，xcodebuild 与工程脚本继承全部变量：工具链选择、编译器、
+#     Tailcat 构建脚本读取的变量和工程引用的自定义设置变化都必须重建；无关变量与 PATH 不影响。
+assert_rebuild "Swift 工具链（TOOLCHAINS）" "$worktree_a" TOOLCHAINS=org.swift.fake
+assert_contains "$status_output" "构建相关环境变量（TOOLCHAINS）" "TOOLCHAINS 变化必须点名"
+assert_rebuild "无法确认工具链或构建环境：无法解析 TOOLCHAINS=missing 对应的 Swift 工具链" \
+  "$worktree_a" TOOLCHAINS=missing
+assert_rebuild "构建相关环境变量（CPATH）" "$worktree_a" CPATH="$TEMP_DIR/include"
+assert_rebuild "构建相关环境变量（CC）" "$worktree_a" CC=/usr/bin/false
+assert_rebuild "构建相关环境变量（TAILCAT_MOBILE_TOOL_DIR）" "$worktree_a" \
+  TAILCAT_MOBILE_TOOL_DIR="$TEMP_DIR/other-tools"
+assert_rebuild "构建相关环境变量（MIMI_EVIDENCE_FLAG）" "$worktree_a" MIMI_EVIDENCE_FLAG=1
+assert_rebuild "环境变量 XCODE_XCCONFIG_FILE 会覆盖工程构建设置" "$worktree_a" \
+  XCODE_XCCONFIG_FILE="$TEMP_DIR/override.xcconfig"
+assert_reusable "$worktree_a" MIMI_UNRELATED_SETTING=1 TAILCAT_MOBILE_LOCK_WAIT_SECONDS=5 \
+  PATH="$PATH:$TEMP_DIR/extra-bin"
+
+# 8c. 带 TOOLCHAINS 和注入设置的构建按同一环境复用；同一标识下工具链升级或取值变化都重建。
+#     证据只保存环境变量值的哈希，不保存原值。
+toolchain_output="$(TOOLCHAINS=org.swift.fake MIMI_EVIDENCE_FLAG=evidence-secret-value \
+  bash "$worktree_a/scripts/ios-dev.sh" build-for-testing)"
+assert_contains "$toolchain_output" "已记录构建证据：build-for-testing" "带构建环境的成功构建必须记录证据"
+a_record="$(grep -l "^worktree	$(cd "$worktree_a" && pwd -P)$" "$m5_derived/MimiBuildEvidence/"*.record)"
+assert_contains "$(cat "$a_record")" "TOOLCHAINS=org.swift.fake" "证据必须记录 TOOLCHAINS 标识"
+assert_not_contains "$(cat "$a_record")" "evidence-secret-value" "证据不得保存环境变量原值"
+assert_reusable "$worktree_a" TOOLCHAINS=org.swift.fake MIMI_EVIDENCE_FLAG=evidence-secret-value
+assert_rebuild "Swift 工具链（TOOLCHAINS）" "$worktree_a" TOOLCHAINS=org.swift.fake \
+  MIMI_EVIDENCE_FLAG=evidence-secret-value IOS_TEST_SWIFT_VERSION=10.0
+assert_rebuild "构建相关环境变量（MIMI_EVIDENCE_FLAG）" "$worktree_a" TOOLCHAINS=org.swift.fake \
+  MIMI_EVIDENCE_FLAG=other-value
+assert_rebuild "构建相关环境变量（MIMI_EVIDENCE_FLAG、TOOLCHAINS）" "$worktree_a"
+xcconfig_output="$(XCODE_XCCONFIG_FILE="$TEMP_DIR/override.xcconfig" \
+  bash "$worktree_a/scripts/ios-dev.sh" build-for-testing)"
+assert_contains "$xcconfig_output" "构建证据：本次不记录（无法确认工具链或构建环境：环境变量 XCODE_XCCONFIG_FILE" \
+  "XCODE_XCCONFIG_FILE 覆盖设置时不得记录证据"
+bash "$worktree_a/scripts/ios-dev.sh" build-for-testing >/dev/null
+assert_reusable "$worktree_a"
+
 # 9. 失败、改变构建的参数和构建中途改动都不记录，也不覆盖之前的成功证据。
 printf '// broken edit\n' >> "$worktree_a/ios/MimiRemote/Sources/App.swift"
 set +e
@@ -294,12 +343,66 @@ assert_rebuild "ios/MimiRemote/Sources/App.swift" "$worktree_a"
 git -C "$worktree_a" checkout -q -- ios/MimiRemote/Sources/App.swift
 assert_reusable "$worktree_a"
 
-# 10. 工程外引用无法解析时不复用。
-cp "$worktree_a/ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj" "$TEMP_DIR/project.pbxproj.backup"
-printf '    DDD = {isa = PBXFileReference; path = "../../../docs/missing.md"; };\n' \
-  >> "$worktree_a/ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj"
+# 10. 工程外引用按分组层级和 sourceTree 解析，不按“去掉前导 ../ 后相对仓库根目录”猜测；
+#     无法唯一确定时不复用并说明原因。
+project_file="$worktree_a/ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj"
+cp "$project_file" "$TEMP_DIR/project.pbxproj.backup"
+# $1 追加到 Resources 分组的 children，$2 是追加的对象定义。
+with_extra_references() {
+  cp "$TEMP_DIR/project.pbxproj.backup" "$project_file"
+  EXTRA_CHILDREN="$1" EXTRA_OBJECTS="$2" ruby -i -pe '
+    sub("children = (AAA);", "children = (AAA, #{ENV.fetch("EXTRA_CHILDREN")});")
+    sub("/* extra */", ENV.fetch("EXTRA_OBJECTS"))
+  ' "$project_file"
+}
+with_extra_references EXTRA \
+  'EXTRA = {isa = PBXFileReference; path = "../../../docs/missing.md"; sourceTree = "<group>"; };'
 assert_rebuild "无法确认构建输入：工程引用的外部路径无法解析：../../../docs/missing.md" "$worktree_a"
-cp "$TEMP_DIR/project.pbxproj.backup" "$worktree_a/ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj"
+with_extra_references EXTRA 'EXTRA = {isa = PBXFileReference; path = shared.md; sourceTree = CUSTOM_ROOT; };'
+assert_rebuild "工程引用使用了无法确认的 sourceTree：CUSTOM_ROOT" "$worktree_a"
+with_extra_references EXTRA \
+  'EXTRA = {isa = PBXShellScriptBuildPhase; shellScript = "bash \"$SRCROOT/../$(TOOLS_DIR)/run.sh\"\n"; };'
+assert_rebuild "工程引用含变量或通配符，无法确认：\$SRCROOT/../\$(TOOLS_DIR" "$worktree_a"
+# 分组目录是符号链接时，文件系统解析出的文件与按路径字面计算的不同，不能确定 Xcode 读哪一个。
+mkdir -p "$worktree_a/docs/nested"
+ln -s ../../../docs/nested "$worktree_a/ios/MimiRemote/Resources/Linked"
+printf 'shadow\n' > "$worktree_a/ios/MimiRemote/Resources/support.md"
+with_extra_references EXTRA \
+  'EXTRA = {isa = PBXGroup; children = (EXTRAFILE); path = Linked; sourceTree = "<group>"; }; EXTRAFILE = {isa = PBXFileReference; path = ../support.md; sourceTree = "<group>"; };'
+assert_rebuild "工程引用的外部路径经过符号链接，无法确认实际文件：../support.md" "$worktree_a"
+rm -rf "$worktree_a/ios/MimiRemote/Resources/Linked" "$worktree_a/ios/MimiRemote/Resources/support.md" \
+  "$worktree_a/docs/nested"
+cp "$TEMP_DIR/project.pbxproj.backup" "$project_file"
+assert_reusable "$worktree_a"
+
+# 10b. 引用实际指向 ios/Shared，而仓库根目录恰好也有 Shared：必须为 ios/Shared 算指纹。
+#      工程外分组下的普通子路径、以 SRCROOT 为基准的构建设置也必须纳入。
+mkdir -p "$worktree_a/ios/Shared" "$worktree_a/Shared" "$worktree_a/docs/group" "$worktree_a/config"
+printf 'real\n' > "$worktree_a/ios/Shared/notes.md"
+printf 'decoy\n' > "$worktree_a/Shared/notes.md"
+printf 'inner\n' > "$worktree_a/docs/group/inner.md"
+printf '<plist/>\n' > "$worktree_a/config/Extra-Info.plist"
+with_extra_references "EXTRA, EXTRAGROUP" \
+  'EXTRA = {isa = PBXFileReference; path = ../../Shared/notes.md; sourceTree = "<group>"; }; EXTRAGROUP = {isa = PBXGroup; children = (EXTRAINNER); path = ../../../docs/group; sourceTree = "<group>"; }; EXTRAINNER = {isa = PBXFileReference; path = inner.md; sourceTree = "<group>"; }; EXTRACFG = {isa = XCBuildConfiguration; buildSettings = {INFOPLIST_FILE = ../../config/Extra-Info.plist; }; };'
+git -C "$worktree_a" add -A
+git -C "$worktree_a" commit -qm "external references"
+bash "$worktree_a/scripts/ios-dev.sh" build-for-testing >/dev/null
+assert_reusable "$worktree_a"
+printf 'changed\n' >> "$worktree_a/Shared/notes.md"
+assert_reusable "$worktree_a"
+git -C "$worktree_a" checkout -q -- Shared/notes.md
+printf 'changed\n' >> "$worktree_a/ios/Shared/notes.md"
+assert_rebuild "ios/Shared/notes.md" "$worktree_a"
+git -C "$worktree_a" checkout -q -- ios/Shared/notes.md
+printf 'changed\n' >> "$worktree_a/docs/group/inner.md"
+assert_rebuild "docs/group/inner.md" "$worktree_a"
+git -C "$worktree_a" checkout -q -- docs/group/inner.md
+printf 'changed\n' >> "$worktree_a/config/Extra-Info.plist"
+assert_rebuild "config/Extra-Info.plist" "$worktree_a"
+git -C "$worktree_a" checkout -q -- config/Extra-Info.plist
+assert_reusable "$worktree_a"
+git -C "$worktree_a" reset -q --hard HEAD~1
+bash "$worktree_a/scripts/ios-dev.sh" build-for-testing >/dev/null
 assert_reusable "$worktree_a"
 
 # 11. 另一个 Worktree 共用同一 DerivedData，但不继承 A 的证据；B 构建覆盖共享产物
@@ -325,7 +428,7 @@ assert_equal "2" "$record_count" "每个 Worktree 必须使用独立证据文件
 
 # 12. 证据格式不符或 DerivedData 被清理时必须重建。
 a_record="$(grep -l "^worktree	$(cd "$worktree_a" && pwd -P)$" "$m5_derived/MimiBuildEvidence/"*.record)"
-sed 's/^schema	1$/schema	0/' "$a_record" > "$a_record.tmp"
+sed 's/^schema	2$/schema	0/' "$a_record" > "$a_record.tmp"
 mv "$a_record.tmp" "$a_record"
 assert_rebuild "证据格式已变化" "$worktree_a"
 rm -rf "$m5_derived"
@@ -337,4 +440,4 @@ assert_equal "0" "$quick_status" "清理缓存后 quick 必须重新构建并通
 assert_equal "$((builds_before_cleanup_rebuild + 1))" "$(build_count)" "清理缓存后必须重新构建"
 assert_reusable "$worktree_a"
 
-printf 'iOS 构建证据的复用、失效、失败不记录、跨 Worktree 隔离、缓存清理和排队提示检查通过。\n'
+printf 'iOS 构建证据的复用、失效（含构建环境与工程外引用）、失败不记录、跨 Worktree 隔离、缓存清理和排队提示检查通过。\n'
