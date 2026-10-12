@@ -156,6 +156,9 @@ enum WorkspaceSessionFabMetrics {
 
 /// 会话按「现在要不要你」分三段。三段共用标题与留白节奏，状态差异由
 /// 复用的会话行表达，避免把分组背景误读成会话状态。
+///
+/// 分组与侧栏「待你处理 / 进行中 / 最近」用同一套词（#546、#683）：同一个会话在侧栏和
+/// 工作区读到的是同一个名字，归类也都来自 `SessionActivityState`。
 enum WorkspaceSessionGroup: String, CaseIterable {
     case needsAttention
     case running
@@ -164,20 +167,24 @@ enum WorkspaceSessionGroup: String, CaseIterable {
     var title: String {
         switch self {
         case .needsAttention:
-            return L10n.text("ui.workspace_group_needs_attention")
+            return L10n.text("ui.needs_you")
         case .running:
-            return L10n.text("ui.workspace_group_running")
+            return L10n.text("ui.in_progress")
         case .recent:
-            return L10n.text("ui.workspace_group_recent")
+            return L10n.text("ui.recently")
         }
     }
 
-    static func of(_ session: AgentSession, status: AgentSessionDisplayStatus) -> WorkspaceSessionGroup {
-        // 失败和等待用户都属于「需要处理」，即使会话仍标记为运行中。
-        if status.tone == .danger || status.tone == .warning {
+    static func of(_ session: AgentSession) -> WorkspaceSessionGroup {
+        let state = session.activityState
+        // 失败和等待用户都属于「待你处理」，即使会话仍在跑；草稿与进行中同组。
+        if state.needsAttention {
             return .needsAttention
         }
-        return session.isRunning ? .running : .recent
+        if state.isRunning || state == .draft {
+            return .running
+        }
+        return .recent
     }
 
     static func orderedPopulatedGroups(from groups: Set<Self>) -> [Self] {

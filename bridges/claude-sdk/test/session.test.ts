@@ -92,6 +92,22 @@ describe("Session attach", () => {
   });
 });
 
+describe("SessionRegistry.publishAll", () => {
+  test("reaches every registered session plus unregistered subscribers, each exactly once", () => {
+    const registry = new SessionRegistry();
+    const attached = registry.resolve("ipad").session;
+    const anonymous = new Session("anonymous");
+    const seen = { attached: 0, anonymous: 0 };
+    attached.attach(undefined, () => (seen.attached += 1), false);
+    anonymous.attach(undefined, () => (seen.anonymous += 1), false);
+    // 订阅者里既有已注册的连接，也有匿名连接：已注册的不能重复收到。
+    registry.publishAll(note(1), [attached, anonymous, anonymous]);
+    expect(seen).toEqual({ attached: 1, anonymous: 1 });
+    registry.publishAll(note(2));
+    expect(seen).toEqual({ attached: 2, anonymous: 1 });
+  });
+});
+
 describe("serveConnection", () => {
   test("an anonymous session is released when its connection ends; an attached one is kept", async () => {
     const ended: Session[] = [];

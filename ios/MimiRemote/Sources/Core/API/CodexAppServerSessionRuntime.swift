@@ -226,6 +226,9 @@ actor CodexAppServerSessionRuntime {
     var eventMailboxesBySessionID: [
         SessionID: [UUID: CodexAppServerEventMailbox]
     ] = [:]
+    // 列表级实时更新（#683）：没有邮箱的会话收到权威快照（状态、持有方、标题）时交给它，
+    // 而不是只缓冲到被选中。由 AppServerRuntimeBundle 在建连时挂上，指向 SessionStore。
+    var sessionIndexObserver: (@Sendable (AgentSession) -> Void)?
     var pendingApprovalRequestsByID: [String: CodexAppServerServerRequest] = [:]
     var pendingUserInputRequestsByID: [String: CodexAppServerServerRequest] = [:]
     // notification 与 reverse server request 由两条 pump 投递。resolved/terminal 可能先落到 actor，
@@ -417,6 +420,10 @@ actor CodexAppServerSessionRuntime {
                 await self.shutdownForHostSwitch()
             }
         }
+    }
+
+    func setSessionIndexObserver(_ observer: (@Sendable (AgentSession) -> Void)?) {
+        sessionIndexObserver = observer
     }
 
     /// 主机切换结束或候选验证失败时显式释放连接和 pump。

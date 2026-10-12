@@ -57,6 +57,8 @@ extension CodexAppServerSessionRuntime {
                 mailbox.send(event)
             }
         } else {
+            // 没有页面订阅的会话：状态变化仍要让列表看到，缓冲区照旧保留，供随后打开详情时回放。
+            notifySessionIndex(for: event, sessionID: sessionID)
             var events = bufferedEventsBySessionID[sessionID] ?? []
             if let previous = events.last,
                event.contiguousPayloadByteCount == nil,
@@ -285,14 +287,26 @@ extension CodexAppServerSessionRuntime {
                 return
             }
             let status = sessionStatus(from: statusValue, forceRunning: false)
-            // Claude 适配器在持有方变化时（终端接手、持有方退出）附带与 Thread 同名的扩展字段，
-            // 输入框据此立即变为只读或恢复，不必等下一次 thread/read。
+            // Claude 适配器在持有方变化时（终端接手、持有方退出、空闲与执行切换）附带与 Thread 同名的
+            // 扩展字段，输入框据此立即变为只读或恢复，列表据此切换进行中 / 空闲，不必等下一次 thread/read。
+            // `updatedAt` 与 thread/list 同源：持有方跑完后列表时间和未读水位能立刻前移。
             let canAcceptDirectInput = params["canAcceptDirectInput"]?.boolValue
+            let updatedAt = date(from: params["updatedAt"])
+            let isRunningStatus = ["running", "waiting_for_approval", "waiting_for_input"].contains(status)
             _ = withUpdatedSession(threadID) { item in
                 item.status = status
+                if !isRunningStatus {
+                    // 线程已不在运行：缓存里的进行中 turn 一并清掉（Store 的事件归并对非运行状态同样清除）。
+                    // 电脑端持有方执行时打开会话，thread/read 会把最后一轮标成进行中；持有方转空闲或退出
+                    // 只推这条状态，不清的话快照会带着旧 turn 回到列表，一直显示「处理中」。
+                    item.activeTurnID = nil
+                }
                 if let canAcceptDirectInput {
                     item.canAcceptDirectInput = canAcceptDirectInput
                     item.claudeOwner = canAcceptDirectInput ? nil : claudeSessionOwner(from: params["claudeOwner"])
+                }
+                if let updatedAt, updatedAt > (item.updatedAt ?? .distantPast) {
+                    item.updatedAt = updatedAt
                 }
             }
             emit(.sessionStatus(status, metadata(threadID: threadID, turnID: nil)))
@@ -764,11 +778,15 @@ extension CodexAppServerSessionRuntime {
         guard let object = value?.objectValue else {
             return nil
         }
+        // statusUpdatedAt 是 Claude Code 登记里的毫秒时间戳。
+        let statusUpdatedAt = object["statusUpdatedAt"]?.intValue
+            .flatMap { $0 > 0 ? Date(timeIntervalSince1970: Double($0) / 1_000) : nil }
         return ClaudeSessionOwner(
             entrypoint: object["entrypoint"]?.stringValue,
             kind: object["kind"]?.stringValue,
             status: object["status"]?.stringValue,
-            pid: object["pid"]?.intValue
+            pid: object["pid"]?.intValue,
+            statusUpdatedAt: statusUpdatedAt
         )
     }
 

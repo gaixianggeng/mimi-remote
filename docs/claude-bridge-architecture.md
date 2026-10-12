@@ -114,5 +114,5 @@ sequenceDiagram
 - replay ring 是有界快速恢复层；超过窗口或 bridge/Mac 重启后，以本机 Claude JSONL 历史为准，运行中但尚未落盘的极短窗口仍可能无法恢复。
 - `CronCreate` 属于当前 Claude 进程内任务，会占用一个进程池槽位直到删除；需要在产品层展示后台任务状态，避免用户无感知地长期占用容量。
 - 当前不支持 `goal`、`archive`、`fork`，也没有 APNs 后台 push 和跨设备云同步。App 重新打开可以看到结果，不等于系统一定弹出通知。
-- 别处持有的会话目前只做只读 + 提示，Mac 上进行中的轮次要等持有方落盘、iOS 刷新后才可见；实时镜像（bridge 监听 JSONL 增量推 synthetic turn）是后续项。反方向（bridge 持有进程期间用户在终端 `--resume` 同一 id）bridge 管不了 CLI，仍会分叉。
+- 别处持有的会话只做只读 + 提示。SDK 适配器（#683）会把持有方的执行 / 空闲状态同步到 `thread/list` 的 `status` 并广播 `thread/status/changed`，列表能实时显示"电脑端运行中"；但 Mac 上进行中的轮次正文仍要等持有方落盘、iOS 读取历史后才可见，实时镜像（监听 JSONL 增量推 synthetic turn）仍是后续项。反方向（bridge 持有进程期间用户在终端 `--resume` 同一 id）由适配器让出（#658）。
 - 不对断线 turn 做自动重试，避免重复写文件或执行命令；后续优化优先补 run record、客户端确认 cursor 和明确的失败状态。
