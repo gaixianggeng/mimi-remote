@@ -257,6 +257,9 @@ struct WorkspaceRootView: View {
     // 完整调用边界包含目录发布后的 Git 尾部工作；供确定性测试观察，不影响加载态。
     private let onCatalogRefreshEvent: ((UUID, Bool) -> Void)?
     private let currentDate: () -> Date
+    /// 重建前最后浏览的工作区；当前选择失效时优先回到它，而不是列表第一项。
+    private let rememberedWorkspaceID: String?
+    private let onWorkspaceSelectionChange: ((String?) -> Void)?
 
     @State private var selectedWorkspaceID: String?
     @Binding private var selectedSessionRuntime: WorkspaceSessionRuntimeChoice
@@ -287,6 +290,7 @@ struct WorkspaceRootView: View {
         embedsNavigationStack: Bool = true,
         appearanceStore: WorkspaceAppearanceStore? = nil,
         initialWorkspaceID: String? = nil,
+        onWorkspaceSelectionChange: ((String?) -> Void)? = nil,
         onCatalogRefreshEvent: ((UUID, Bool) -> Void)? = nil,
         currentDate: @escaping () -> Date = Date.init
     ) {
@@ -296,9 +300,12 @@ struct WorkspaceRootView: View {
         self.embedsNavigationStack = embedsNavigationStack
         self.onCatalogRefreshEvent = onCatalogRefreshEvent
         self.currentDate = currentDate
+        self.rememberedWorkspaceID = initialWorkspaceID
+        self.onWorkspaceSelectionChange = onWorkspaceSelectionChange
         _selectedSessionRuntime = selectedSessionRuntime
         _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
-        // 正常入口仍由 synchronizeSelection 恢复选择；显式初值只服务于确定性的预览和视觉快照。
+        // 初值来自 Shell 记住的浏览选择（或预览、快照的固定值）：首帧分页就停在该工作区，
+        // 不会先渲染第一页再跳转；它不在目录中时由 synchronizeSelection 回落。
         _selectedWorkspaceID = State(initialValue: initialWorkspaceID)
     }
 
@@ -355,8 +362,9 @@ struct WorkspaceRootView: View {
                 cancelManualCatalogRefresh()
             }
         }
-        .onChange(of: selectedWorkspaceID) { _, _ in
+        .onChange(of: selectedWorkspaceID) { _, selectedID in
             sessionRefreshOwner.cancelAll()
+            onWorkspaceSelectionChange?(selectedID)
         }
         .onDisappear {
             sessionRefreshOwner.deactivate()
@@ -583,6 +591,21 @@ struct WorkspaceRootView: View {
     /// 要等落定才更新，滑到一半上方胶囊不动、松手才跳，正好丢掉跟手感。
     /// 分页物理特性（跟手、速度投射、可中断反向）由系统提供，不自己写 DragGesture。
     private func projectPager(tokens: ThemeTokens) -> some View {
+        ScrollViewReader { proxy in
+            projectPagerScrollView(tokens: tokens)
+                .onAppear {
+                    // 宽屏会话详情返回、切换布局容器时分页会整个重建：`scrollPosition(id:)` 不会把
+                    // 首帧之前已有的选择应用到 LazyHStack，正文会停在第一页而胶囊仍标着原工作区
+                    // （#501）。与胶囊行一致，出现后按当前选择主动定位一次，不带动画。
+                    DispatchQueue.main.async {
+                        guard let selectedWorkspaceID else { return }
+                        proxy.scrollTo(selectedWorkspaceID, anchor: .center)
+                    }
+                }
+        }
+    }
+
+    private func projectPagerScrollView(tokens: ThemeTokens) -> some View {
         // scrollTransition 闭包是 Sendable；先冻结成值类型快照，避免直接跨隔离域读取 Environment。
         let allowsSpatialMotion = !reduceMotion
         let projectCount = sessionStore.sidebarProjects.count
@@ -1114,25 +1137,13 @@ struct WorkspaceRootView: View {
     }
 
     private func synchronizeSelection() {
-        let projects = sessionStore.sidebarProjects
-        guard !projects.isEmpty else {
-            restoreWorkspaceSelection(nil)
-            return
-        }
-        if let selectedWorkspaceID,
-           projects.contains(where: { $0.id == selectedWorkspaceID }) {
-            return
-        }
-        if let selectedWorkspaceID {
-            let retainedID = sessionStore.retainedWorkspaceID(for: selectedWorkspaceID)
-            if projects.contains(where: { $0.id == retainedID }) {
-                restoreWorkspaceSelection(retainedID)
-                return
-            }
-        }
-        restoreWorkspaceSelection(sessionStore.selectedProjectID.flatMap { selectedID in
-            projects.contains(where: { $0.id == selectedID }) ? selectedID : nil
-        } ?? projects.first?.id)
+        restoreWorkspaceSelection(WorkspaceBrowseSelectionState.resolvedWorkspaceID(
+            current: selectedWorkspaceID,
+            retainedCurrent: selectedWorkspaceID.map { sessionStore.retainedWorkspaceID(for: $0) },
+            remembered: rememberedWorkspaceID,
+            activeProjectID: sessionStore.selectedProjectID,
+            projectIDs: sessionStore.sidebarProjects.map(\.id)
+        ))
     }
 
     private func removeWorkspace(_ project: AgentProject) {
