@@ -178,8 +178,7 @@ final class WorkspaceGitStoreTests: XCTestCase {
     func testHostOperationMessageKeepsGitReasonButDropsProtocolNoise() {
         XCTAssertEqual(
             UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 409, message: "nothing to commit, working tree clean")),
-            "nothing to commit, working tree clean",
-            "git 自己的说明用户能直接处理，只去掉 HTTP 外壳"
+            L10n.text("ui.git_nothing_to_commit")
         )
         XCTAssertEqual(
             UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 500, message: "app-server error -32603: internal")),
@@ -187,14 +186,62 @@ final class WorkspaceGitStoreTests: XCTestCase {
         )
         XCTAssertEqual(
             UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 409, message: "push rejected for https://example.invalid/repo.git")),
-            L10n.text("ui.error_rejected"),
-            "带地址的原因不上主界面"
+            L10n.text("ui.git_push_rejected_pull_first"),
+            "推送被拒要给出可操作的结论，且不带远端地址"
         )
         XCTAssertEqual(
             UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 401, message: "unauthorized")),
             ConnectionTerminationStatus.credentialsInvalid.message
         )
         XCTAssertEqual(UserFacingError.hostOperationMessage(for: URLError(.timedOut)), L10n.text("ui.error_timed_out"))
+    }
+
+    func testHostOperationMessageMapsCommonGitFailuresWithoutPathsOrRemotes() {
+        func message(_ status: Int, _ output: String) -> String {
+            UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: status, message: output))
+        }
+        XCTAssertEqual(
+            message(409, "error: failed to push some refs to 'git@github.com:owner/repo.git'\nhint: Updates were rejected because the remote contains work"),
+            L10n.text("ui.git_push_rejected_pull_first")
+        )
+        XCTAssertEqual(message(409, "fatal: '/srv/worktrees/feature' already exists"), L10n.text("ui.git_already_exists"))
+        XCTAssertEqual(
+            message(409, "fatal: 'feature' contains modified or untracked files, use --force to delete it"),
+            L10n.text("ui.git_local_changes_block")
+        )
+        XCTAssertEqual(
+            message(409, "CONFLICT (content): Merge conflict in Sources/Account/Login.swift"),
+            L10n.text("ui.git_merge_conflict")
+        )
+        for output in [message(409, "fatal: '/srv/worktrees/feature' already exists"), message(409, "error: failed to push some refs to 'git@github.com:owner/repo.git'")] {
+            XCTAssertFalse(output.contains("/srv"), output)
+            XCTAssertFalse(output.contains("github.com"), output)
+        }
+    }
+
+    func testHostOperationMessageUsesTheSameGateAsComputerReasons() {
+        func message(_ status: Int, _ output: String) -> String {
+            UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: status, message: output))
+        }
+        // 4xx 单行可读原因照常显示。
+        XCTAssertEqual(message(400, "branch name is invalid"), "branch name is invalid")
+        // 5xx、HTML 错误页、多行 stderr 都只给分类文案。
+        XCTAssertEqual(message(500, "branch is protected"), L10n.text("ui.error_host_error"))
+        XCTAssertEqual(
+            message(502, "<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>"),
+            L10n.text("ui.error_host_error")
+        )
+        XCTAssertEqual(message(400, "fatal: bad revision\nhint: try again"), L10n.text("ui.error_rejected"))
+        // 账号、仓库名、无后缀主机名不上主界面。
+        XCTAssertEqual(
+            message(403, "ERROR: Permission to owner/repo.git denied to someone."),
+            L10n.text("ui.error_permission_denied")
+        )
+        XCTAssertEqual(
+            message(400, "ssh: connect to host mac-mini port 22: Connection refused"),
+            L10n.text("ui.error_rejected")
+        )
+        XCTAssertEqual(message(400, "git.corp.example.co refused the connection"), L10n.text("ui.error_rejected"))
     }
 
     func testWorkspaceSessionLoadFailureUsesReadableCopy() {

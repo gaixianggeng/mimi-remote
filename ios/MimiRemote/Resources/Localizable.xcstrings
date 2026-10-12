@@ -6193,6 +6193,91 @@
         }
       }
     },
+    "ui.git_already_exists": {
+      "comment": "A branch or worktree with the requested name already exists.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A branch or worktree with that name already exists. Choose another name or remove the old one first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同名的分支或 Worktree 已存在，请换个名字或先删除旧的。"
+          }
+        }
+      }
+    },
+    "ui.git_local_changes_block": {
+      "comment": "A Git or worktree action is blocked by uncommitted local changes.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uncommitted changes are in the way. Commit or stash them, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有未提交的改动挡住了这次操作，请先提交或暂存后重试。"
+          }
+        }
+      }
+    },
+    "ui.git_merge_conflict": {
+      "comment": "Git merge or pull stopped on conflicts.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The merge has conflicts. Resolve them on your computer, then continue."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "合并出现冲突，请在电脑上解决冲突后再继续。"
+          }
+        }
+      }
+    },
+    "ui.git_nothing_to_commit": {
+      "comment": "Git reports there is nothing to commit.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "There’s nothing to commit."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有需要提交的改动。"
+          }
+        }
+      }
+    },
+    "ui.git_push_rejected_pull_first": {
+      "comment": "Git push failed because the remote has newer commits (non-fast-forward).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The remote has new commits, so the push was rejected. Pull and merge first, then push again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远端有新的提交，推送被拒绝。请先拉取并合并，再重新推送。"
+          }
+        }
+      }
+    },
     "ui.model_list_empty_using_built_in_options": {
       "comment": "Status after a manual model list refresh returned no models.",
       "localizations": {

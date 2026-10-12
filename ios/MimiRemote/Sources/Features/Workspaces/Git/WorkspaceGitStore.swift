@@ -614,19 +614,50 @@ final class WorkspaceGitStore: ObservableObject {
 extension UserFacingError {
     /// Git / Worktree 等电脑端操作的失败文案（#508）。
     ///
-    /// 这些接口的原因多是 git 自己的输出（「nothing to commit」「分支已存在」），用户据此就能处理，
-    /// 只去掉「HTTP 409：」外壳直接展示；带协议细节、地址、路径或凭据的原因退回分类文案，原文只留在日志。
+    /// agentd 会原样回传 git 的 stderr（多行、带远端地址和路径）。高频场景先按 git 的固定说法
+    /// 映射成可操作的本地化文案（推送被拒需先拉取、已存在、有未提交改动、合并冲突、没有可提交的改动），
+    /// 不受原文里地址 / 路径的影响；其余只有 4xx 且通过与 #691 同一套门槛的原文才直接展示，
+    /// 5xx、多行、HTML 错误页或带敏感信息的一律用分类文案。
     static func hostOperationMessage(for error: Error) -> String {
-        if case AgentAPIError.server(let status, let message) = error, status != 401 {
-            let reason = message.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !reason.isEmpty,
-               reason.count <= 300,
-               !containsTechnicalDetail(reason),
-               !containsSensitiveDetail(reason),
-               !AgentAPIError.isCredentialRejection(status: status, message: reason, authenticationChallenge: nil) {
-                return reason
-            }
+        guard case AgentAPIError.server(let status, let message) = error, status != 401 else {
+            return UserFacingError(error).message
+        }
+        if let known = gitOperationMessage(for: message) {
+            return known
+        }
+        if (400...499).contains(status), let reason = presentableComputerReason(message) {
+            return reason
         }
         return UserFacingError(error).message
+    }
+
+    static func gitOperationMessage(for output: String) -> String? {
+        let lowered = output.lowercased()
+        func containsAny(_ needles: [String]) -> Bool {
+            needles.contains { lowered.contains($0) }
+        }
+        if containsAny(["non-fast-forward", "fetch first", "updates were rejected"])
+            || (lowered.contains("rejected") && lowered.contains("push")) {
+            return L10n.text("ui.git_push_rejected_pull_first")
+        }
+        if containsAny(["merge conflict", "conflict (content)", "fix conflicts", "unmerged files"]) {
+            return L10n.text("ui.git_merge_conflict")
+        }
+        if containsAny([
+            "contains modified or untracked files",
+            "would be overwritten",
+            "commit your changes or stash them",
+            "uncommitted changes",
+            "local changes"
+        ]) {
+            return L10n.text("ui.git_local_changes_block")
+        }
+        if lowered.contains("already exists") {
+            return L10n.text("ui.git_already_exists")
+        }
+        if lowered.contains("nothing to commit") {
+            return L10n.text("ui.git_nothing_to_commit")
+        }
+        return nil
     }
 }
