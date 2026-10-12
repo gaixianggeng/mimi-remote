@@ -93,7 +93,7 @@ func TestResolveBinaryCLIPrefersSiblingAdapterOverOldBridgeConfig(t *testing.T) 
 	}
 
 	// 明确指向别的程序（例如开发时自己构建的适配器）时照用。
-	devAdapter := filepath.Join(root, "dev", "dist", "mimi-claude-adapter")
+	devAdapter := filepath.Join(root, "dev", "dist", "mimi-claude-adapter-dev"+filepath.Ext(AdapterBinaryName))
 	if err := os.MkdirAll(filepath.Dir(devAdapter), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -22,13 +21,15 @@ type claudeCodeVersionCache struct {
 }
 
 // version 返回适配器将要使用的 Claude Code 的版本：claude.env 里的 CLAUDE_BRIDGE_CLAUDE_BIN，
-// 否则 PATH 里的 claude。找不到或无法确认时返回 false，交给适配器起进程前的检查给出提示。
+// 否则按适配器环境里的 PATH 找 claude。找不到或无法确认时返回 false，交给适配器起进程前的检查给出提示。
 func (c *claudeCodeVersionCache) version(env map[string]string) (string, bool) {
 	bin := strings.TrimSpace(env["CLAUDE_BRIDGE_CLAUDE_BIN"])
 	if bin == "" {
 		bin = "claude"
 	}
-	path, err := exec.LookPath(bin)
+	// 与适配器起进程时同一份环境：claude.env 里的 PATH 可能指向另一处安装。
+	environment := buildClaudeBridgeEnv(env)
+	path, err := claudebridge.LookPathIn(bin, environment)
 	if err != nil {
 		return "", false
 	}
@@ -41,7 +42,7 @@ func (c *claudeCodeVersionCache) version(env map[string]string) (string, bool) {
 	if c.known != "" && c.path == path && c.modTime.Equal(info.ModTime()) && c.size == info.Size() {
 		return c.known, true
 	}
-	version, err := claudebridge.ClaudeCodeVersion(context.Background(), path, buildClaudeBridgeEnv(env))
+	version, err := claudebridge.ClaudeCodeVersion(context.Background(), path, environment)
 	if err != nil {
 		return "", false
 	}

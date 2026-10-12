@@ -113,6 +113,17 @@ func TestClaudeAdapterProbeChecksDeclaredClaudeCodeMinimum(t *testing.T) {
 	if probe := router.refreshClaudeBridgeProbe(true); !probe.Healthy {
 		t.Fatalf("找不到 claude 时不应在探测里拦：%+v", probe)
 	}
+
+	// 没有显式路径时按适配器环境里的 PATH 找 claude：claude.env.PATH 指向的旧版本也要拦下。
+	pathDir := t.TempDir()
+	pathClaude := copyFakeBridge(t, pathDir, "claude")
+	if err := os.WriteFile(pathClaude+".version", []byte("2.0.5 (Claude Code)"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	router.cfg.Claude.Env = map[string]string{"PATH": pathDir}
+	if probe := router.refreshClaudeBridgeProbe(true); probe.Healthy || probe.Status != "claude_unsupported" {
+		t.Fatalf("应按 claude.env.PATH 找到并拦下过旧的 claude：%+v", probe)
+	}
 }
 
 func TestClaudeGatewayReportsOutdatedClaudeCodeOnConnect(t *testing.T) {

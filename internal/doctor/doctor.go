@@ -15,6 +15,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
+	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/harnessclient"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
@@ -472,7 +473,9 @@ func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {
 	if !claudebridge.IsAdapterVersionOutput(string(output)) {
 		return Check{Name: "claude-bridge", OK: true, Message: fmt.Sprintf("Claude bridge %s 可用", version)}
 	}
-	capabilities, err := claudebridge.ReadAdapterCapabilities(ctx, bin, c.cfg.Claude.Args, nil)
+	// 与运行时相同的受限环境：claude.env 里的 PATH、代理等都要生效。
+	environment := claudeenv.Build(c.cfg.Claude.Env)
+	capabilities, err := claudebridge.ReadAdapterCapabilities(ctx, bin, c.cfg.Claude.Args, environment)
 	if err != nil {
 		return Check{Name: "claude-bridge", OK: false, Message: "无法读取 Claude 适配器的能力声明", Fix: "重新安装或升级 Mimi Remote"}
 	}
@@ -480,7 +483,11 @@ func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {
 	if claudeBin == "" {
 		claudeBin = "claude"
 	}
-	claudeVersion, err := claudebridge.ClaudeCodeVersion(ctx, claudeBin, nil)
+	claudeVersion := ""
+	claudePath, err := claudebridge.LookPathIn(claudeBin, environment)
+	if err == nil {
+		claudeVersion, err = claudebridge.ClaudeCodeVersion(ctx, claudePath, environment)
+	}
 	if err != nil {
 		return Check{Name: "claude-bridge", OK: false, Message: fmt.Sprintf("Claude 适配器 %s 可用，但无法确认 Claude Code 版本", version), Fix: "安装或升级 Claude Code 并登录"}
 	}
