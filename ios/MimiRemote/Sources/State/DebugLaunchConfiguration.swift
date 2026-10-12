@@ -86,6 +86,17 @@ struct DebugLaunchConfiguration {
         parse(arguments: processInfo.arguments, environment: processInfo.environment)
     }
 
+    /// 启动参数显式指定了落点页（打开种子会话的 `--debug-open-conversation` 除外）。
+    /// 壳层在 onAppear 就应用这些落点，种子工作台随后异步注入，不能再把页面拉回种子会话（#678）。
+    static func requestsExplicitRootRoute(arguments: [String] = ProcessInfo.processInfo.arguments) -> Bool {
+        let rootRoutes: Set<String> = [
+            "--debug-open-devices", "--debug-open-me", "--debug-open-sessions",
+            "--debug-open-workspaces", "--debug-open-settings", "--debug-open-mac-connection",
+            "--debug-open-community",
+        ]
+        return arguments.contains(where: rootRoutes.contains)
+    }
+
     static func parse(
         arguments: [String],
         environment: [String: String]

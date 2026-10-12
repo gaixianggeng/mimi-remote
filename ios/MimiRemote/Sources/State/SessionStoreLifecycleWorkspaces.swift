@@ -321,10 +321,12 @@ extension SessionStore {
             unreadCandidate.recencyAt = now.addingTimeInterval(-30)
             upsert(unreadCandidate)
         }
+        // 按「用户打开」提交会让壳层推入会话详情，覆盖已生效的 `--debug-open-*` 落点；
+        // 显式落点时改按恢复提交：种子会话仍是选中项，但不改变当前页面（#678）。
         _ = commitSelection(
             projectID: mimiDemo.id,
             sessionID: appStore.shouldSeedDebugQueuedTurnsUI ? runningSessionID : selectedSessionID,
-            reason: .userOpen
+            reason: DebugLaunchConfiguration.requestsExplicitRootRoute() ? .restoration : .userOpen
         )
         markHistorySessionRead(selectedSessionID)
         if appStore.shouldSeedDebugQueuedTurnsUI {

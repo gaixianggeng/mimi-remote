@@ -159,6 +159,9 @@ struct SkillSelectionContent: View {
             .buttonStyle(.bordered)
             .frame(minHeight: 44)
         }
+        // 先声明为容器：普通 VStack 上的标识会下发并覆盖子元素自己的标识，
+        // 「完成」按钮的 composer.skillPicker.done 就会丢失（#678）。
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("composer.skillPicker")
     }
 
@@ -242,9 +245,11 @@ struct SkillSelectionContent: View {
 
     private var doneButton: some View {
         Button(L10n.text("ui.complete"), action: onDone)
-            .buttonStyle(.borderedProminent)
-            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
-            .frame(minWidth: 64, minHeight: 44)
+            .buttonStyle(
+                SkillPickerDoneButtonStyle(
+                    foreground: themeStore.tokens(for: colorScheme).primaryActionForeground
+                )
+            )
             .accessibilityIdentifier("composer.skillPicker.done")
     }
 
@@ -304,6 +309,24 @@ struct SkillSelectionContent: View {
 
 /// 独立 Skill 入口的展示壳；`+` 面板直接嵌入 SkillSelectionContent，
 /// 两处因容器不同保留各自材质和尺寸，但列表视觉与行为完全一致。
+/// 外观沿用系统 borderedProminent 的胶囊（约 58×35pt、底色取当前 tint），
+/// 但可点区域与无障碍边框撑满 44pt。系统样式的胶囊就是按钮本身，挂在外层的
+/// frame 不算可点区域，iPadOS 27 上实测只有 34.5pt（#678）。
+private struct SkillPickerDoneButtonStyle: ButtonStyle {
+    let foreground: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(.tint, in: Capsule())
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .frame(minWidth: 64, minHeight: 44)
+            .contentShape(Rectangle())
+    }
+}
+
 struct SkillPickerPanel: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
