@@ -70,8 +70,11 @@ type fileReadResolvedPath struct {
 	codexClipboardImage   bool
 	// verifiedFile 非空时只能经 fd 读取解析阶段校验过的同一个文件，不按路径重新跟随链接。
 	verifiedFile os.FileInfo
-	// requireOwnedSingleLink 要求读取时的文件仍由当前用户拥有且只有一个链接（临时目录特例）。
-	requireOwnedSingleLink bool
+	// trustedRoot 是解析阶段确认的授权根（已解析符号链接）；读取时从这里逐级 O_NOFOLLOW 打开。
+	trustedRoot string
+	// relaxOwnerAndLinkCheck 为 true 时不要求读取的文件由当前用户拥有且只有一个链接。
+	// 默认严格：新的特例漏设字段时按严格规则拒绝，只有照片图库特例显式放宽。
+	relaxOwnerAndLinkCheck bool
 }
 
 var filePreviewImageExtensions = map[string]struct{}{
@@ -371,10 +374,10 @@ func allowedCodexClipboardImagePath(raw string, temporaryRoot string) (fileReadR
 		return fileReadResolvedPath{}, false
 	}
 	return fileReadResolvedPath{
-		realPath:               realPath,
-		codexClipboardImage:    true,
-		verifiedFile:           info,
-		requireOwnedSingleLink: true,
+		realPath:            realPath,
+		codexClipboardImage: true,
+		verifiedFile:        info,
+		trustedRoot:         realRoot,
 	}, true
 }
 
@@ -443,13 +446,21 @@ func resolveAllowedPhotosDerivativeImagePath(raw string) (fileReadResolvedPath, 
 	if !realPathWithin(realPicturesRoot, realPath) || !photosDerivativePathStructure(realPath) {
 		return fileReadResolvedPath{}, true, nil
 	}
-	// realPath 已解析掉所有符号链接，这里记录的就是通过边界校验的最终文件。照片图库内部
-	// 是否使用硬链接没有可靠依据，不额外要求单链接；读取时只复核仍是同一个普通文件。
+	// 这里的 Lstat 与上面的 EvalSymlinks 之间仍可能有上级目录被换成符号链接，所以记录的身份
+	// 只作辅助；真正的边界由读取阶段从 realPicturesRoot 逐级 O_NOFOLLOW 打开 realPath 保证。
+	// 照片图库内部是否使用硬链接没有可靠依据，因此放宽 owner/单链接要求；同一卷上预先放进
+	// derivatives、指向图库外 inode 的硬链接不在防护范围内。
 	info, err := os.Lstat(realPath)
 	if err != nil {
 		return fileReadResolvedPath{}, true, err
 	}
-	return fileReadResolvedPath{realPath: realPath, photosDerivativeImage: true, verifiedFile: info}, true, nil
+	return fileReadResolvedPath{
+		realPath:               realPath,
+		photosDerivativeImage:  true,
+		verifiedFile:           info,
+		trustedRoot:            realPicturesRoot,
+		relaxOwnerAndLinkCheck: true,
+	}, true, nil
 }
 
 func photosDerivativePathStructure(path string) bool {

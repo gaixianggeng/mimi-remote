@@ -267,6 +267,9 @@ func TestFileReadOnlyTreatsEPERMAsMacOSTCCCandidate(t *testing.T) {
 }
 
 func TestFileReadAllowsPhotosDerivativeImage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 无法证明读取的仍是解析时的文件，授权根之外的预览特例一律拒绝")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
