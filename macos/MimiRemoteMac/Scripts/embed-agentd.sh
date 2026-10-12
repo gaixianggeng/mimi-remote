@@ -6,8 +6,11 @@ bundle_root="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH"
 agentd_output="$bundle_root/Resources/agentd"
 tailcat_output="$bundle_root/Resources/mimi-tailcat-experiment"
 # agentd looks for the Claude bridge next to itself, so a complete install
-# needs no per-machine configuration and no separate `cargo install`.
+# needs no per-machine configuration and no separate `cargo install`. The SDK
+# adapter is the default since #660; the Rust bridge stays one release as the
+# fallback behind claude.legacy_bridge.
 bridge_output="$bundle_root/Resources/alleycat-claude-bridge"
+adapter_output="$bundle_root/Resources/mimi-claude-adapter"
 launch_agent_output="$bundle_root/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
 launch_agent_source="$SRCROOT/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
 configuration="${CONFIGURATION:-Debug}"
@@ -34,7 +37,7 @@ case "$configuration" in
     ;;
 esac
 
-log "开始构建内嵌 agentd/Tailcat/Claude bridge：configuration=${configuration} rust-profile=${rust_profile}"
+log "开始构建内嵌 agentd/Tailcat/Claude 适配器与旧 bridge：configuration=${configuration} rust-profile=${rust_profile}"
 
 find_go() {
   local candidate
@@ -216,6 +219,60 @@ fi
 chmod 0755 "$bridge_output"
 log "Claude bridge 已内嵌：archs=${architectures[*]} profile=${rust_profile}"
 
+# --- Claude 适配器 -----------------------------------------------------------
+# Bun 把 bridges/claude-sdk 编成单文件，每个架构一份再合成通用二进制。Bun 版本固定为
+# .bun-version：编出的文件内嵌 Bun 运行时，版本不同产物就不同。
+adapter_root="$project_root/bridges/claude-sdk"
+find_bun() {
+  local candidate
+  for candidate in "$(command -v bun 2>/dev/null || true)" "$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+required_bun="$(tr -d '[:space:]' < "$adapter_root/.bun-version")"
+bun_binary="$(find_bun || true)"
+if [[ -z "$bun_binary" ]]; then
+  echo "Mimi Remote Mac 构建失败：未找到 Bun，无法构建随包 Claude 适配器。" >&2
+  echo "安装 Bun ${required_bun} 后重试：https://bun.sh" >&2
+  exit 1
+fi
+bun_version="$("$bun_binary" --version)"
+if [[ "$bun_version" != "$required_bun" ]]; then
+  echo "Mimi Remote Mac 构建失败：Claude 适配器需要 Bun ${required_bun}，当前为 ${bun_version}。" >&2
+  exit 1
+fi
+
+adapter_started_at=$SECONDS
+# 依赖装进适配器自己的 node_modules，下载复用 Bun 的全局缓存；--omit optional 跳过 SDK
+# 附带的平台 CLI，适配器始终驱动用户自己安装的 claude。
+(cd "$adapter_root" && "$bun_binary" install --frozen-lockfile --omit optional >/dev/null)
+adapter_outputs=()
+for architecture in "${architectures[@]}"; do
+  case "$architecture" in
+    arm64) bun_target=bun-darwin-arm64 ;;
+    # macOS 15 支持的 Intel Mac 都有 AVX2，用标准 x64 运行时即可。
+    x86_64) bun_target=bun-darwin-x64 ;;
+  esac
+  adapter_build="$cache_root/claude-adapter/$architecture/mimi-claude-adapter"
+  mkdir -p "$(dirname "$adapter_build")"
+  log "构建 Claude 适配器：arch=${architecture} target=${bun_target}"
+  (cd "$adapter_root" && "$bun_binary" build --compile --minify --target="$bun_target" src/main.ts --outfile "$adapter_build" >/dev/null)
+  adapter_outputs+=("$adapter_build")
+done
+
+if [[ ${#adapter_outputs[@]} -eq 1 ]]; then
+  cp "${adapter_outputs[0]}" "$adapter_output"
+else
+  /usr/bin/lipo -create "${adapter_outputs[@]}" -output "$adapter_output"
+fi
+chmod 0755 "$adapter_output"
+log "Claude 适配器已内嵌：archs=${architectures[*]} bun=${bun_version} elapsed=$((SECONDS - adapter_started_at))s"
+
 entitlements_args=()
 if [[ -n "${CODE_SIGN_ENTITLEMENTS:-}" && -f "$SRCROOT/$CODE_SIGN_ENTITLEMENTS" ]]; then
   entitlements_args=(--entitlements "$SRCROOT/$CODE_SIGN_ENTITLEMENTS")
@@ -229,6 +286,11 @@ if [[ "${CODE_SIGNING_ALLOWED:-NO}" == "YES" && -n "${EXPANDED_CODE_SIGN_IDENTIT
   /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
     --identifier com.gaixianggeng.mimi.mac.claude-bridge \
     --options runtime --timestamp=none "$bridge_output"
+  # Bun 编译的适配器在 hardened runtime 下需要 JIT 等权限，见 ClaudeAdapter.entitlements。
+  /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
+    --identifier com.gaixianggeng.mimi.mac.claude-adapter \
+    --entitlements "$SRCROOT/Resources/ClaudeAdapter.entitlements" \
+    --options runtime --timestamp=none "$adapter_output"
   /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
     --identifier com.gaixianggeng.mimi.mac.tailcat \
     --options runtime --timestamp=none "$tailcat_output"
@@ -237,6 +299,8 @@ fi
 "$agentd_output" version >/dev/null
 "$tailcat_output" version >/dev/null
 "$bridge_output" --version >/dev/null
+"$adapter_output" --version >/dev/null
+"$adapter_output" --capabilities >/dev/null
 log "内嵌二进制 smoke check 通过"
 
 # This phase runs after Xcode has sealed the bundle, so the binaries it just

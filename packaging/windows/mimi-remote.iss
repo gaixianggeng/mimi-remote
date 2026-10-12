@@ -44,6 +44,7 @@ SignedUninstaller=no
 
 [Files]
 Source: "{#SourceDir}\agentd.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\mimi-claude-adapter.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\alleycat-claude-bridge.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\mimi-remote-tray.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\mimi-remote.ico"; DestDir: "{app}"; Flags: ignoreversion

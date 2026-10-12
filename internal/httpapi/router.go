@@ -114,6 +114,7 @@ type Router struct {
 	gatewayHistoryGlobalBudget appServerGatewayHistoryBudget
 	claudeMu                   sync.Mutex
 	claudeProbe                appServerBridgeProbe
+	claudeCode                 claudeCodeVersionCache
 	activeClaudeBridge         int
 	claudeBridge               *claudeBridgeSupervisor
 	// Harness 原生资源由独立 owner 关闭和限流，Router 只负责入口与组合。

@@ -11,6 +11,7 @@ on:
       - "bridges/claude/**"
       - "bridges/claude-sdk/**"
       - "scripts/check-claude-sdk-adapter.sh"
+      - "scripts/test-claude-adapter-windows.ps1"
       - ".github/workflows/claude-bridge-ci.yml"
   workflow_dispatch:
 
@@ -66,3 +67,37 @@ jobs:
 
       - name: Typecheck and test SDK adapter
         run: bash ./scripts/check-claude-sdk-adapter.sh
+
+      - name: Cross-compile packaged adapter targets
+        # 与 Mac App、Windows 安装包里的目标一致（#660），先在这里确认都能编出来。
+        working-directory: bridges/claude-sdk
+        run: |
+          for target in bun-darwin-arm64 bun-darwin-x64 bun-windows-x64-baseline; do
+            bun build --compile --minify --target="$target" src/main.ts --outfile "$RUNNER_TEMP/adapter-$target"
+          done
+
+  sdk-adapter-windows:
+    # Windows 上 agentd 用 --tcp-listen 启动适配器（#660）：编出与安装包相同的可执行文件并实际启动。
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: bridges/claude-sdk/.bun-version
+
+      - name: Build Windows adapter
+        shell: pwsh
+        working-directory: bridges/claude-sdk
+        run: |
+          bun install --frozen-lockfile --omit optional
+          if ($LASTEXITCODE -ne 0) { throw 'bun install failed.' }
+          bun build --compile --minify --target=bun-windows-x64-baseline src/main.ts --outfile "$env:RUNNER_TEMP\mimi-claude-adapter.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Claude adapter build failed.' }
+
+      - name: Smoke test over loopback TCP
+        shell: pwsh
+        run: ./scripts/test-claude-adapter-windows.ps1 -AdapterPath "$env:RUNNER_TEMP\mimi-claude-adapter.exe"

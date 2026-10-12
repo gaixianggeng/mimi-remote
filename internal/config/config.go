@@ -121,8 +121,11 @@ type CodexConfig struct {
 }
 
 type ClaudeConfig struct {
-	Enabled              bool              `json:"enabled"`
-	BridgeBin            string            `json:"bridge_bin"`
+	Enabled   bool   `json:"enabled"`
+	BridgeBin string `json:"bridge_bin"`
+	// LegacyBridge 是保留一个版本周期的回退开关（#660）：默认用随包的 SDK 适配器，
+	// 打开后改用旧 Rust bridge。
+	LegacyBridge         bool              `json:"legacy_bridge,omitempty"`
 	Args                 []string          `json:"args,omitempty"`
 	Env                  map[string]string `json:"env,omitempty"`
 	MaxConcurrentBridges int               `json:"max_concurrent_bridges"`
@@ -642,6 +645,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("AGENTD_CLAUDE_BRIDGE_BIN"); v != "" {
 		cfg.Claude.BridgeBin = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("AGENTD_CLAUDE_LEGACY_BRIDGE"); v != "" {
+		cfg.Claude.LegacyBridge = truthy(v)
 	}
 	if v := os.Getenv("AGENTD_CLAUDE_BRIDGE_ARGS"); v != "" {
 		cfg.Claude.Args = strings.Fields(v)

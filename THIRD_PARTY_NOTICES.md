@@ -51,6 +51,9 @@ Go 依赖版本以 `go.mod`、`go.sum` 为准；源码树包含 iOS 客户端时
 | `xctest-dynamic-overlay` | `1.9.0` | iOS 测试 |
 | `Simple Icons Linux / Tux SVG` | `16.27.0` | iOS 运行时资源 |
 | `Simple Icons DeepSeek SVG` | `16.27.0` | macOS 运行时资源 |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.296` | Claude 适配器（Mac App 与 Windows 安装包内的 `mimi-claude-adapter`） |
+| `zod` | `4.1.12` | Claude 适配器 |
+| `Bun runtime` | `1.2.22` | Claude 适配器单文件内嵌的运行时 |
 
 ## 公共领域视觉素材
 
@@ -2484,3 +2487,41 @@ LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+### @anthropic-ai/claude-agent-sdk 0.3.296
+
+Anthropic 专有许可，不是开源许可；随安装包正式发布前由维护者确认许可（#660）。适配器只驱动用户自己安装、未修改的 Claude Code，由用户用自己的账号登录，不读取 Claude 的登录凭据。
+
+```text
+© Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance.
+```
+
+### zod 4.1.12
+
+```text
+MIT License
+
+Copyright (c) 2025 Colin McDonnell
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### Bun runtime 1.2.22
+
+`bun build --compile` 把 Bun 运行时编进适配器单文件。Bun 本身按 MIT 许可发布；它静态链接的 JavaScriptCore 与 WebKit 组件按 LGPL-2.1 发布，其他随附组件各有许可。完整许可证清单见 Bun 仓库对应版本的 [LICENSE.md](https://github.com/oven-sh/bun/blob/bun-v1.2.22/LICENSE.md)，Bun 使用的 WebKit 源码见 [oven-sh/WebKit](https://github.com/oven-sh/WebKit)。适配器源码位于本仓库 `bridges/claude-sdk`，可按 `.bun-version` 指定的 Bun 版本重新构建。

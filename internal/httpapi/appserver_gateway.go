@@ -598,7 +598,7 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 				Status:         probe.Status,
 				Healthy:        probe.Healthy,
 				LastProbeError: probe.Error,
-				Fix:            claudebridge.InstallHint,
+				Fix:            claudeBridgeFix(probe),
 			},
 			Methods:      claudeMethods,
 			Capabilities: claudeCapabilities,

@@ -47,7 +47,7 @@ Swift Package Manager 依赖：
 运行时外部工具：
 
 - 用户本机自行安装和登录的 Codex CLI / app-server。
-- 用户显式启用实验通道时，自行安装和登录的 Claude Code；`alleycat-claude-bridge` 源码位于本仓库 `bridges/claude`。
+- 用户自行安装和登录的 Claude Code。Mac App 与 Windows 安装包随附的 Claude 适配器 `mimi-claude-adapter` 源码位于本仓库 `bridges/claude-sdk`，内含 Anthropic 专有许可的 Claude Agent SDK，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；回退用的旧 `alleycat-claude-bridge` 源码位于 `bridges/claude`。
 
 本仓库不打包用户的 Codex 凭证，也不托管第三方服务账号。
 

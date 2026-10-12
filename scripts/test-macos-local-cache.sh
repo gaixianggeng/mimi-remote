@@ -10,6 +10,7 @@ mkdir -p \
   "$fixture/experiments/tailcat" \
   "$fixture/macos/MimiRemoteMac/Scripts" \
   "$fixture/macos/MimiRemoteMac/Resources/LaunchAgents" \
+  "$fixture/bridges/claude-sdk" \
   "$TEMP_DIR/bin" \
   "$TEMP_DIR/go-root/bin"
 cp "$ROOT_DIR/scripts/development-cache-"*.sh "$fixture/scripts/"
@@ -17,6 +18,8 @@ cp "$ROOT_DIR/macos/MimiRemoteMac/Scripts/"{build-local,embed-agentd,install-loc
   "$fixture/macos/MimiRemoteMac/Scripts/"
 cp "$ROOT_DIR/macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist" \
   "$fixture/macos/MimiRemoteMac/Resources/LaunchAgents/"
+cp "$ROOT_DIR/bridges/claude-sdk/.bun-version" "$fixture/bridges/claude-sdk/"
+export FIXTURE_BUN_VERSION="$(tr -d '[:space:]' < "$ROOT_DIR/bridges/claude-sdk/.bun-version")"
 
 export PATH="$TEMP_DIR/bin:$PATH"
 export MIMI_DEVELOPMENT_CACHE_REPO_ROOT="$ROOT_DIR"
@@ -128,6 +131,38 @@ mkdir -p "$(dirname "$output")"
 cp /usr/bin/true "$output"
 chmod +x "$output"
 STUB
+cat > "$TEMP_DIR/bin/bun" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  --version)
+    printf '%s\n' "$FIXTURE_BUN_VERSION"
+    exit 0
+    ;;
+  install)
+    exit 0
+    ;;
+  build) ;;
+  *)
+    echo "未预期的 bun 调用：$*" >&2
+    exit 1
+    ;;
+esac
+output=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --outfile)
+      output="$2"
+      shift 2
+      ;;
+    *) shift ;;
+  esac
+done
+[[ -n "$output" ]] || { echo "bun build 缺少 --outfile" >&2; exit 1; }
+mkdir -p "$(dirname "$output")"
+cp /usr/bin/true "$output"
+chmod +x "$output"
+STUB
 chmod +x "$TEMP_DIR/bin/"* "$TEMP_DIR/go-root/bin/go"
 
 old_app="$MACOS_DERIVED_DATA_PATH/Build/Products/Release/Mimi Remote Mac.app"
@@ -164,6 +199,8 @@ tailcat_intermediate="$TEMP_DIR/embed/Debug/tailcat-go/arm64/mimi-tailcat-experi
 [[ ! -e "$TEMP_DIR/embed/Debug/tailcat-go/arm64/gocache" ]]
 [[ -x "$TEMP_DIR/embed-build/Mimi Remote Mac.app/Contents/Resources/agentd" ]]
 [[ -x "$TEMP_DIR/embed/Debug/rust/debug/aarch64-apple-darwin/aarch64-apple-darwin/debug/alleycat-claude-bridge" ]]
+[[ -x "$TEMP_DIR/embed/Debug/claude-adapter/arm64/mimi-claude-adapter" ]]
+[[ -x "$TEMP_DIR/embed-build/Mimi Remote Mac.app/Contents/Resources/mimi-claude-adapter" ]]
 
 caller_go_cache="$TEMP_DIR/caller-gocache"
 : > "$FIXTURE_GO_BUILD_LOG"

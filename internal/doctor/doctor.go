@@ -449,10 +449,10 @@ func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {
 		return Check{Name: "claude-bridge", OK: true, Message: "Claude Code experimental 通道未启用"}
 	}
 	configuredBin := strings.TrimSpace(c.cfg.Claude.BridgeBin)
-	bin, ok := claudebridge.ResolveBinary(configuredBin)
+	bin, ok := claudebridge.ResolveBinary(configuredBin, c.cfg.Claude.LegacyBridge)
 	if !ok {
 		if configuredBin == "" {
-			return Check{Name: "claude-bridge", OK: false, Message: "Claude bridge 未配置", Fix: "安装 alleycat-claude-bridge，或使用内置 bridge 的 Mimi Remote Mac"}
+			return Check{Name: "claude-bridge", OK: false, Message: "Claude bridge 未配置", Fix: "使用内置 Claude 适配器的 Mimi Remote Mac，或安装 alleycat-claude-bridge"}
 		}
 		return Check{Name: "claude-bridge", OK: false, Message: "未找到 Claude bridge", Fix: "安装 alleycat-claude-bridge，并把 claude.bridge_bin 配成绝对路径"}
 	}
@@ -469,7 +469,25 @@ func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {
 	if !claudebridge.IsSupported(version) {
 		return Check{Name: "claude-bridge", OK: false, Message: fmt.Sprintf("Claude bridge %s 低于最低兼容版本 %s", version, claudebridge.MinimumVersion), Fix: claudebridge.UpgradeMessage(version)}
 	}
-	return Check{Name: "claude-bridge", OK: true, Message: fmt.Sprintf("Claude bridge %s 可用", version)}
+	if !claudebridge.IsAdapterVersionOutput(string(output)) {
+		return Check{Name: "claude-bridge", OK: true, Message: fmt.Sprintf("Claude bridge %s 可用", version)}
+	}
+	capabilities, err := claudebridge.ReadAdapterCapabilities(ctx, bin, c.cfg.Claude.Args, nil)
+	if err != nil {
+		return Check{Name: "claude-bridge", OK: false, Message: "无法读取 Claude 适配器的能力声明", Fix: "重新安装或升级 Mimi Remote"}
+	}
+	claudeBin := strings.TrimSpace(c.cfg.Claude.Env["CLAUDE_BRIDGE_CLAUDE_BIN"])
+	if claudeBin == "" {
+		claudeBin = "claude"
+	}
+	claudeVersion, err := claudebridge.ClaudeCodeVersion(ctx, claudeBin, nil)
+	if err != nil {
+		return Check{Name: "claude-bridge", OK: false, Message: fmt.Sprintf("Claude 适配器 %s 可用，但无法确认 Claude Code 版本", version), Fix: "安装或升级 Claude Code 并登录"}
+	}
+	if !capabilities.ClaudeCodeSupported(claudeVersion) {
+		return Check{Name: "claude-bridge", OK: false, Message: claudebridge.ClaudeCodeUpgradeMessage(claudeVersion, capabilities.ClaudeCode.MinimumVersion), Fix: "在终端运行 claude update"}
+	}
+	return Check{Name: "claude-bridge", OK: true, Message: fmt.Sprintf("Claude 适配器 %s 可用（Claude Code %s）", version, claudeVersion)}
 }
 
 func isLoopbackListen(raw string) bool {
