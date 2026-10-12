@@ -34,6 +34,13 @@ fi
 if [[ -n "${IOS_TEST_XCODEBUILD_MUTATE_FILE:-}" ]]; then
   printf '// changed during build\n' >> "$IOS_TEST_XCODEBUILD_MUTATE_FILE"
 fi
+# 持有租约的模拟构建一直等到测试创建释放文件（最多约 60 秒），断言不依赖机器快慢。
+if [[ -n "${IOS_TEST_XCODEBUILD_RELEASE:-}" ]]; then
+  for _attempt in $(seq 1 600); do
+    [[ -f "$IOS_TEST_XCODEBUILD_RELEASE" ]] && break
+    sleep 0.1
+  done
+fi
 if [[ "${IOS_TEST_XCODEBUILD_SLEEP_SECONDS:-0}" != "0" ]]; then
   sleep "$IOS_TEST_XCODEBUILD_SLEEP_SECONDS"
 fi

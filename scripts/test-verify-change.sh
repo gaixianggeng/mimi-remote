@@ -114,6 +114,8 @@ run_ios_execution() {
   IOS_XCODEBUILD_BIN="$ROOT_DIR/scripts/testdata/ios-device-management/fake-xcodebuild.sh" \
   IOS_TAILCAT_BUILD_SCRIPT="$ROOT_DIR/scripts/testdata/ios-device-management/fake-tailcat-mobile-build.sh" \
   TAILCAT_MOBILE_GO_BIN="$ROOT_DIR/scripts/testdata/ios-device-management/fake-go.sh" \
+  IOS_DEVICE_LEASE_PS_BIN="$ROOT_DIR/scripts/testdata/ios-device-management/fake-ps.sh" \
+  IOS_TEST_PS_OUTPUT_FILE= \
   IOS_TEST_SIMULATORS_JSON="$ROOT_DIR/scripts/testdata/ios-device-management/simulators.json" \
   IOS_TEST_PHYSICAL_JSON="$ROOT_DIR/scripts/testdata/ios-device-management/no-physical-devices.json" \
   IOS_TEST_XCODEBUILD_LOG="$ios_execution_xcodebuild_log" \
