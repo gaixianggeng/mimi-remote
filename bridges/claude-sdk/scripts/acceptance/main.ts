@@ -19,6 +19,7 @@ import {
   channelCase,
   modelsCase,
   parityCase,
+  quotaCase,
   steerInterruptCase,
   worktreeCase,
   yieldTakeoverCase,
@@ -92,7 +93,7 @@ async function main(): Promise<number> {
     let rootThread: string | undefined;
     const cases: Array<{ name: string; title: string; run: () => Promise<CaseOutcome> }> = [
       { name: "channel", title: "Claude 通道接的是新适配器且健康", run: () => channelCase(ctx) },
-      { name: "models", title: "模型列表与额度", run: () => modelsCase(ctx) },
+      { name: "models", title: "模型列表", run: () => modelsCase(ctx) },
       {
         name: "turn",
         title: "发消息与流式回复",
@@ -102,6 +103,7 @@ async function main(): Promise<number> {
           return outcome;
         },
       },
+      { name: "quota", title: "额度（会话里上报）", run: () => quotaCase(ctx) },
       { name: "title", title: "新会话自动标题（Mimi 与 CLI 一致）", run: () => autoTitleCase(ctx, rootThread) },
       { name: "worktrees", title: "worktree 会话出现在所属仓库（含 CLI 建的）", run: () => worktreeCase(ctx, rootThread) },
       { name: "steer", title: "运行中补充与中断", run: () => steerInterruptCase(ctx) },

@@ -83,13 +83,21 @@ export async function modelsCase(ctx: Context): Promise<CaseOutcome> {
   const visible = data.filter((model) => !model.hidden).map((model) => model.id);
   const defaults = data.filter((model) => model.isDefault).map((model) => model.id);
   if (!visible.length || defaults.length !== 1) return fail(`可见 ${visible.join("、") || "无"}，默认 ${defaults.join("、") || "无"}`);
+  return pass(`可见模型 ${visible.join("、")}，默认 ${defaults[0]}`);
+}
+
+/**
+ * 额度只来自 Claude Code 在会话里上报的事件（#660，不读登录凭据）：放在第一轮对话之后检查，
+ * 应能读到 5 小时或 7 天窗口。
+ */
+export async function quotaCase(ctx: Context): Promise<CaseOutcome> {
   const limits = await ctx.client.call("account/rateLimits/read", {});
   if (limits.error) return fail(`account/rateLimits/read 失败：${limits.error.message}`);
   const snapshot = limits.result.rateLimits ?? {};
   const percent = (window: any) => (window ? `${window.usedPercent}%` : "—");
   const quota = `5 小时 ${percent(snapshot.primary)}、7 天 ${percent(snapshot.secondary)}（${snapshot.availability ?? "未知"}）`;
-  if (snapshot.availability === "unavailable") return fail(`额度不可用：${quota}`);
-  return pass(`可见模型 ${visible.join("、")}，默认 ${defaults[0]}；额度 ${quota}`);
+  if (!snapshot.primary && !snapshot.secondary) return fail(`跑过一轮对话后仍没有额度：${quota}`);
+  return pass(`额度 ${quota}`);
 }
 
 export async function basicTurnCase(ctx: Context): Promise<CaseOutcome & { threadId?: string }> {

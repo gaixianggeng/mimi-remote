@@ -4,6 +4,8 @@
 // - utilization 是 0...1 的比例，按 Claude Code `/usage` 的规则换成向下取整的百分比。
 // - 观测值只是部分信息（availability: partial）；只有 Claude 明确拒绝请求时才标记额度耗尽，
 //   allowed_warning 只是接近阈值。
+// - 额度只来自 Claude Code 在会话里自己上报的事件：不读取 Claude 的登录凭据，也不另外查询
+//   额度接口（#660）。适配器启动后、还没跑过回合时没有数据。
 import type { RateLimitSnapshot } from "../protocol/codex/v2/RateLimitSnapshot.ts";
 import type { RateLimitWindow } from "../protocol/codex/v2/RateLimitWindow.ts";
 
@@ -71,5 +73,23 @@ export function rateLimitSnapshot(info: unknown): RateLimitSnapshot | undefined 
     rateLimitReachedType: rejected ? "rejected" : null,
     availability: "partial",
     ...(hasPercent ? {} : { unavailableReason: "usage_percentage_unavailable" }),
+  } as RateLimitSnapshot;
+}
+
+/** 还没观测到额度时的回答：可用性未知，不是零额度。字段与旧 bridge 相同。 */
+export function unavailableRateLimits(): RateLimitSnapshot {
+  return {
+    limitId: "claude",
+    limitName: "Claude",
+    normalModelSlug: null,
+    primary: null,
+    secondary: null,
+    credits: null,
+    individualLimit: null,
+    spendControlReached: null,
+    planType: null,
+    rateLimitReachedType: null,
+    availability: "unavailable",
+    unavailableReason: "headless_statusline_unavailable",
   } as RateLimitSnapshot;
 }

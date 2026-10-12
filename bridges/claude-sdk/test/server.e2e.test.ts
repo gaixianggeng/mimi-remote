@@ -1,4 +1,4 @@
-// 以 agentd 的方式启动适配器进程：--socket 常驻，先 attach 再收发 JSON-RPC。
+// 以 agentd 的方式启动适配器进程：--socket（Windows 上 --tcp-listen）常驻，先 attach 再收发 JSON-RPC。
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -39,9 +39,10 @@ class Client {
     });
   }
 
-  static connect(): Promise<Client> {
+  static connect(target: string | net.TcpNetConnectOpts = socketPath): Promise<Client> {
     return new Promise((resolve, reject) => {
-      const socket = net.createConnection(socketPath, () => resolve(new Client(socket)));
+      const socket = typeof target === "string" ? net.createConnection(target) : net.createConnection(target);
+      socket.once("connect", () => resolve(new Client(socket)));
       socket.once("error", reject);
     });
   }
@@ -87,7 +88,7 @@ describe("socket server", () => {
   test("--capabilities declares exactly the registered methods", () => {
     const result = spawnSync(process.execPath, [entry, "--capabilities"], { encoding: "utf8", env });
     const declared = JSON.parse(result.stdout);
-    expect(declared).toMatchObject({ name: "mimi-claude-adapter", fullAccess: true });
+    expect(declared).toMatchObject({ name: "mimi-claude-adapter", fullAccess: true, claudeCode: { minimumVersion: "2.1.294" } });
     expect(declared.methods).toEqual(
       expect.arrayContaining(["initialized", "thread/list", "turn/start", "turn/steer", "turn/interrupt", "model/list", "account/rateLimits/read", "thread/name/set"]),
     );
@@ -132,5 +133,50 @@ describe("socket server", () => {
     const list = await client.next();
     expect(list.result.data).toHaveLength(1);
     client.close();
+  });
+});
+
+/** 与 agentd 在 Windows 上的做法相同：先占一个回环端口，释放后交给适配器绑定。 */
+async function freePort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve) => server.listen({ host: "127.0.0.1", port: 0 }, resolve));
+  const { port } = server.address() as net.AddressInfo;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+describe("tcp server", () => {
+  test("--tcp-listen serves the same protocol on a loopback port", async () => {
+    const port = await freePort();
+    const tcp = spawn(process.execPath, [entry, "--tcp-listen", `127.0.0.1:${port}`], {
+      env: { ...env, MIMI_CLAUDE_ADAPTER_STATE_DIR: path.join(sandbox, "state-tcp") },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    try {
+      let client: Client | undefined;
+      const deadline = Date.now() + 10_000;
+      while (!client) {
+        client = await Client.connect({ host: "127.0.0.1", port }).catch(() => undefined);
+        if (!client && Date.now() > deadline) throw new Error("adapter did not bind its tcp port");
+        if (!client) await Bun.sleep(25);
+      }
+      client.send({ jsonrpc: "2.0", method: "_alleycat/attach", params: { sessionKey: "windows-1", lastSeen: 0 } });
+      expect(await client.next()).toMatchObject({ method: "_alleycat/attached", params: { kind: "fresh" } });
+      client.send({ jsonrpc: "2.0", id: 1, method: "thread/list", params: {} });
+      const list = await client.next();
+      expect(list.result.data.map((thread: any) => thread.preview)).toEqual(["hello from fixture"]);
+      client.close();
+    } finally {
+      tcp.kill("SIGTERM");
+    }
+  });
+
+  test("non-loopback addresses and two transports are refused before binding", () => {
+    const outside = spawnSync(process.execPath, [entry, "--tcp-listen", "0.0.0.0:7777"], { encoding: "utf8", env });
+    expect(outside.status).toBe(1);
+    expect(outside.stderr).toContain("只能使用回环地址");
+    const both = spawnSync(process.execPath, [entry, "--socket", `${socketPath}-x`, "--tcp-listen", "127.0.0.1:7777"], { encoding: "utf8", env });
+    expect(both.status).toBe(1);
+    expect(both.stderr).toContain("只能选一个");
   });
 });

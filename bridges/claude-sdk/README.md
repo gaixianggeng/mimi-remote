@@ -7,7 +7,8 @@
 - **会话数据只有一份，归 Claude Code。** 列表、历史、标题都通过 SDK 读取，不再自己解析 transcript，也不保存第二份会话目录。Mimi 里看到的历史与 `claude --resume` 一致：分叉只显示 CLI 继续的那条支线，被 Claude 压缩掉的历史与 CLI 一样不显示。
 - **项目 = Git 仓库。** 按目录查询时，包含同仓库所有 worktree 的会话。
 - **活动时间取最后一条对话消息的时间戳**，不用文件修改时间（#653）。
-- **agentd 接口不变。** 启动参数（`--socket`、`--version`）、`_alleycat/attach` 握手、`_alleycat_seq` 序号和断线重放与旧 bridge 一致，切换只需改 `claude.bridge_bin`。
+- **agentd 接口不变。** 启动参数（`--socket`，Windows 上 `--tcp-listen <回环IP>:<端口>`；`--version`）、`_alleycat/attach` 握手、`_alleycat_seq` 序号和断线重放与旧 bridge 一致，切换只需改 `claude.bridge_bin`。
+- **不碰 Claude 的登录凭据。** 只驱动用户自己安装、未修改的 Claude Code，由用户用自己的账号登录；额度只来自 Claude Code 在会话里自己上报的事件（#660）。
 
 ## 当前阶段
 
@@ -25,7 +26,11 @@
   - 持有方出现、退出或在空闲与执行之间切换时，向订阅者推送 `thread/status/changed`，附带与 Thread 同名的 `canAcceptDirectInput`、`claudeOwner`，客户端不用重新读取就能切换只读状态。
   - **接管**：规则沿用旧 bridge（#451）——只结束全部明确空闲、且进程启动时间与登记 `startedAt` 吻合的持有方；先 SIGINT，5 秒后重查状态再 SIGTERM；持有方退出后若有新进程认领同一会话，报 `holder_respawned` 且不再发信号。失败以 `-32602` 返回 `{accepted, reason, claudeOwner, retryable}`。
   - CLI 自身行为：恢复一个生成到一半被结束的会话时，CLI 会补一条 `No response requested.`，与被中断的那条回复成为兄弟节点。历史按 CLI 继续的支线显示，与 `claude --resume` 一致。
-- **其余能力（#659）**：`model/list`、`account/rateLimits/read`、`thread/name/set`，见下面的对照表。默认配置仍使用 Rust bridge。
+- **其余能力（#659）**：`model/list`、`account/rateLimits/read`、`thread/name/set`，见下面的对照表。
+- **切换准备（#660）**：
+  - Claude Code 最低 2.1.294（`src/version.ts`），在 `--capabilities` 的 `claudeCode.minimumVersion` 里声明，供 agentd 预检提示；起 Claude 进程前再检查一次，未安装、版本无法确认或过旧时 `turn/start` 以 `-32603` 返回 `claude_missing`、`claude_version_unknown` 或 `claude_unsupported`，附升级提示。
+  - 首次常驻启动时迁移旧 bridge 里 Mimi 显示的名称：写成 custom-title（与 CLI `/rename` 相同），只补 Claude 侧没有标题或只有 AI 自动标题的会话，用户手动改过的保留；被别的进程占用的会话下次启动再补，全部完成后在覆盖层记下。
+  - 默认配置仍使用 Rust bridge，打包与默认切换见 #660。
 
 ## 与旧 bridge 的逐方法对照
 
@@ -38,7 +43,7 @@
 | `thread/start`、`thread/resume`、`turn/start`、`turn/steer`、`turn/interrupt` | iOS | 实现（#657） |
 | `thread/takeover` | iOS | 实现（#658），规则同旧 bridge |
 | `model/list` | iOS 模型选择 | 实现（#659）。读 Claude Code 自己的模型目录（initialize），整理规则同旧 bridge；缓存 10 分钟，失败退回别名 |
-| `account/rateLimits/read` | iOS 额度、agentd 菜单栏 | 实现（#659）。只读复用 Claude Code 的 OAuth 凭据查询套餐额度，不刷新令牌；查不到时退回会话里观测到的 `rate_limit_event` |
+| `account/rateLimits/read` | iOS 额度、agentd 菜单栏 | 实现（#659）。只用 Claude Code 在会话里上报的 `rate_limit_event`（5 小时与 7 天窗口），不读取 Claude 的登录凭据（#660）；适配器启动后还没跑过回合时返回不可用 |
 | `thread/name/set` | agentd 自动标题 | 实现（#659）。与 CLI `/rename` 相同，往 transcript 追加 custom-title，CLI 与桌面端看到同一个名字（旧 bridge 只写自己的索引）；不支持清除名称 |
 | `thread/archive`、`thread/unarchive` | 无（网关未开放） | 不实现。旧 bridge 的归档标记在首次启动时只读导入，列表照常过滤 |
 | `thread/fork`、`thread/compact/start`、`thread/rollback` | 无（网关未开放） | 不实现。需要时可用 SDK 的 `forkSession` 与 CLI 的 `/compact` |
@@ -51,7 +56,7 @@
 
 未实现的方法返回 `-32601`。旧 bridge 对 iPad 同样不开放这些方法，iPad 上 Claude 会话的改名、归档、分叉、压缩与技能列表在新旧实现下表现一致（都不提供）。
 
-非公开依赖共两处：占用登记（#658）与额度查询用的 OAuth usage 接口（`src/claude/usage.ts`）。SDK 的额度接口目前标为实验性，且需要另起 Claude 进程（可能顺带刷新令牌），稳定后再改用。
+非公开依赖只有一处：占用登记（#658）。额度不再查询 OAuth usage 接口（#660）；SDK 的额度接口仍标为实验性，且要另起 Claude 进程，稳定后再评估。
 
 ## 开发
 
@@ -75,7 +80,7 @@ agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置�
 
 ## 实机验收
 
-`bun run acceptance`（即 `bun scripts/acceptance/main.ts`）经本机 agentd 网关——与 iPhone 同一个入口、同一个令牌——对接真实的 Claude CLI 与 `~/.claude`，逐项检查：通道与能力声明、模型列表与额度、收发消息、新会话标题推送、worktree 会话（含 CLI 建的）出现在所属仓库、运行中补充与中断、命令审批、Claude 提问、终端 `claude --resume` 接手时让出/恢复/接管（用 tmux 模拟终端），以及历史与 CLI 视图逐条一致。
+`bun run acceptance`（即 `bun scripts/acceptance/main.ts`）经本机 agentd 网关——与 iPhone 同一个入口、同一个令牌——对接真实的 Claude CLI 与 `~/.claude`，逐项检查：通道与能力声明、模型列表、收发消息、会话上报的额度、新会话标题推送、worktree 会话（含 CLI 建的）出现在所属仓库、运行中补充与中断、命令审批、Claude 提问、终端 `claude --resume` 接手时让出/恢复/接管（用 tmux 模拟终端），以及历史与 CLI 视图逐条一致。
 
 - 会在 agentd 扫描根目录下临时建一个 `mimi-acceptance-<时间>` 仓库（含两种 worktree），每项只发很短的 Haiku 请求；结束时结束沙盒里的 Claude 进程，删除仓库与它产生的会话文件。`--keep` 保留现场，`--only turn,ownership` 只跑部分用例。
 - `--parity-repo <仓库目录> [--parity-limit N]` 额外只读对照该仓库最近 N 个已有会话（默认 5 个）。完整历史与 iPhone 共用网关的下行预算，被限流时会等待重试。
@@ -89,7 +94,7 @@ agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置�
 - macOS：`~/Library/Application Support/mimi-remote/claude-adapter/`
 - 可用 `MIMI_CLAUDE_ADAPTER_STATE_DIR` 覆盖
 
-首次启动时会只读导入旧 bridge 索引里的归档标记。
+首次启动时只读导入旧 bridge 索引里的归档标记，并按上面的规则迁移 Mimi 里的名称。旧索引位置与旧 bridge 相同：macOS `~/Library/Application Support/codex/claude-bridge/threads.json`，Windows `%APPDATA%\codex\config\claude-bridge\threads.json`，Linux `$XDG_CONFIG_HOME/codex/claude-bridge/threads.json`（默认 `~/.config`）；可用 `MIMI_CLAUDE_LEGACY_INDEX` 覆盖，设为空字符串则不读。
 
 ## 协议类型
 
@@ -102,4 +107,4 @@ bash scripts/sync-protocol.sh   # 可用 CODEX_BIN 指定 Codex CLI
 ## 依赖许可
 
 - 协议类型生成自 [OpenAI Codex](https://github.com/openai/codex)（Apache-2.0）。
-- `@anthropic-ai/claude-agent-sdk` 不是开源许可，使用受 Anthropic 法律协议约束。随 Mac App 分发前需确认许可（#660）。
+- `@anthropic-ai/claude-agent-sdk` 为 Anthropic 专有许可（保留所有权利，使用受 Anthropic 法律协议约束）。适配器只驱动用户自己安装、未修改的 Claude Code，由用户用自己的账号登录，不读取 Claude 的登录凭据。随安装包正式发布前由负责人确认许可（#660）。

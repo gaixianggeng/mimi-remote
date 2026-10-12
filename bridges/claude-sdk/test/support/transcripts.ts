@@ -86,6 +86,11 @@ export class TranscriptBuilder {
     return this.user(summary, { isCompactSummary: true, isVisibleInTranscriptOnly: true }, boundary);
   }
 
+  /** Claude Code 自动生成的标题（ai-title），SDK 同样读成 customTitle，但会被 custom-title 覆盖。 */
+  aiTitle(aiTitle: string): void {
+    this.records.push({ type: "ai-title", aiTitle, sessionId: this.sessionId });
+  }
+
   title(customTitle: string): void {
     this.records.push({ type: "custom-title", customTitle, sessionId: this.sessionId });
   }

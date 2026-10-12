@@ -2,15 +2,17 @@ import { rm } from "node:fs/promises";
 import net from "node:net";
 import { capabilityDeclaration, createApp, type App } from "./app.ts";
 import { serveConnection } from "./server/connection.ts";
+import { describeListen, parseListenArgs, type ListenTarget } from "./server/listen.ts";
 import { SessionRegistry } from "./session/registry.ts";
 import type { Session } from "./session/session.ts";
-import { logEnabled, logText, logger } from "./util/logging.ts";
+import { errorText, logEnabled, logText, logger } from "./util/logging.ts";
 import { ADAPTER_NAME, ADAPTER_VERSION } from "./version.ts";
 
 const USAGE = `用法：
   ${ADAPTER_NAME} --version
   ${ADAPTER_NAME} --capabilities  输出能力声明（JSON），供 agentd 探测
   ${ADAPTER_NAME} --socket <path>   在 Unix socket 上服务（agentd 常驻模式）
+  ${ADAPTER_NAME} --tcp-listen <回环IP>:<端口>   在本机回环 TCP 上服务（Windows 上的常驻模式）
   ${ADAPTER_NAME}                   在标准输入输出上服务一条连接
 `;
 
@@ -38,13 +40,14 @@ function connectionDeps(app: App, registry: SessionRegistry) {
   };
 }
 
-async function serveSocket(socketPath: string): Promise<void> {
+async function serve(target: ListenTarget): Promise<void> {
   const app = createApp({ log });
   const registry = wire(app);
   registry.startReaper();
   // 常驻模式下预热模型目录，让首个 model/list 命中缓存，而不是等 CLI 冷启动。
   app.models.warm();
-  await rm(socketPath, { force: true });
+  const removeSocket = () => (target.kind === "unix" ? rm(target.path, { force: true }) : Promise.resolve());
+  await removeSocket();
   const server = net.createServer((socket) => {
     socket.on("error", () => socket.destroy());
     serveConnection(socket, socket, connectionDeps(app, registry))
@@ -53,16 +56,19 @@ async function serveSocket(socketPath: string): Promise<void> {
   });
   const shutdown = () => {
     server.close();
-    void Promise.allSettled([app.manager.closeAll(), rm(socketPath, { force: true })]).finally(() => process.exit(0));
+    void Promise.allSettled([app.manager.closeAll(), removeSocket()]).finally(() => process.exit(0));
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(socketPath, () => resolve());
+    if (target.kind === "unix") server.listen(target.path, () => resolve());
+    else server.listen({ host: target.host, port: target.port, exclusive: true }, () => resolve());
   });
-  log(`listening on ${socketPath}`);
-  logger.info("adapter.start", { version: ADAPTER_VERSION, mode: "socket", debug: logEnabled("debug") });
+  log(`listening on ${describeListen(target, server.address())}`);
+  // 旧 bridge 里的 Mimi 名称：后台执行，不挡住连接。
+  void app.migrateLegacyNames().catch((error) => logger.warn("legacy.names.failed", { error: errorText(error) }));
+  logger.info("adapter.start", { version: ADAPTER_VERSION, mode: target.kind === "unix" ? "socket" : "tcp", debug: logEnabled("debug") });
 }
 
 async function serveStdio(): Promise<void> {
@@ -84,11 +90,9 @@ async function main(argv: string[]): Promise<void> {
     process.stdout.write(USAGE);
     return;
   }
-  const socketIndex = argv.indexOf("--socket");
-  if (socketIndex >= 0) {
-    const socketPath = argv[socketIndex + 1];
-    if (!socketPath) throw new Error("--socket 需要路径参数");
-    await serveSocket(socketPath);
+  const target = parseListenArgs(argv);
+  if (target) {
+    await serve(target);
     return;
   }
   await serveStdio();

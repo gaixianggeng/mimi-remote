@@ -17,6 +17,8 @@ export interface TurnHandlerDeps {
   catalog: Catalog;
   sessions: ClaudeSessions;
   holders(): Promise<Map<string, SessionHolder>>;
+  /** Claude Code 版本下限：起进程前确认，过旧时给出明确提示。 */
+  claudeCode: { ensure(): Promise<void> };
 }
 
 function asParams(value: unknown): Params {
@@ -160,6 +162,7 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       }
       const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : undefined;
       const runtime = manager.get(threadId) ?? (await openExisting(threadId, cwd, params)).runtime;
+      await deps.claudeCode.ensure();
       manager.subscribe(threadId, context.session);
       const settings = runSettingsFor(params);
       const turn = await runtime.startTurn({
