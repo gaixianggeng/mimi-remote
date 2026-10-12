@@ -73,6 +73,15 @@ bun run build   # 输出 dist/mimi-claude-adapter
 
 agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置的级别优先），再按级别分流：`debug`/`trace` 行只在 Mac App「诊断 → 详细记录（15 分钟）」窗口内写进本机调试日志 `~/Library/Logs/mimi-remote/agentd-debug.log`，其余行照旧进 agentd 的标准日志。同一个窗口内，网关拒绝请求时的方法名、规则代码与说明也写进这份调试日志。调试日志只按大小轮转，「清除…」会一起清掉，不进入「导出安全日志」。命令行也可以控制同一个窗口：`agentd diagnostics start|stop|status --json`。
 
+## 实机验收
+
+`bun run acceptance`（即 `bun scripts/acceptance/main.ts`）经本机 agentd 网关——与 iPhone 同一个入口、同一个令牌——对接真实的 Claude CLI 与 `~/.claude`，逐项检查：通道与能力声明、模型列表与额度、收发消息、新会话标题推送、worktree 会话（含 CLI 建的）出现在所属仓库、运行中补充与中断、命令审批、Claude 提问、终端 `claude --resume` 接手时让出/恢复/接管（用 tmux 模拟终端），以及历史与 CLI 视图逐条一致。
+
+- 会在 agentd 扫描根目录下临时建一个 `mimi-acceptance-<时间>` 仓库（含两种 worktree），每项只发很短的 Haiku 请求；结束时结束沙盒里的 Claude 进程，删除仓库与它产生的会话文件。`--keep` 保留现场，`--only turn,ownership` 只跑部分用例。
+- `--parity-repo <仓库目录> [--parity-limit N]` 额外只读对照该仓库最近 N 个已有会话（默认 5 个）。完整历史与 iPhone 共用网关的下行预算，被限流时会等待重试。
+- 运行期间测试会话的回合结束、审批请求会照常触发手机推送；沙盒清理后点开推送找不到会话。
+- 报告写到临时目录（`--report` 指定路径），有失败项时退出码为 1。
+
 ## 在开发机上试用
 
 把 agentd 配置里的 `claude.bridge_bin` 指向 `dist/mimi-claude-adapter`。驱动对话使用 `claude.env.CLAUDE_BRIDGE_CLAUDE_BIN` 指定的 claude（与旧 bridge 同一个配置项），未设置时用 PATH 里的 `claude`。适配器只读 Claude 数据，自身状态（Mimi 覆盖层，目前只有归档标记）写在：
