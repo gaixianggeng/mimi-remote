@@ -593,6 +593,49 @@ final class ClaudeTakeoverTests: XCTestCase {
         await runtime.shutdownForHostSwitch()
     }
 
+    /// #683：用户在 Mimi 回合进行中离开详情页，回合结束时列表也要收到终态，而不是停在运行中。
+    func testTurnCompletionForUnsubscribedSessionReachesTheIndexAsTerminal() async throws {
+        let fixture = await makeHeldStore(id: "claude_index_complete", supportsTakeover: true)
+        let (runtime, _, _) = makeTakeoverRuntime(session: fixture.held)
+        var driving = fixture.held
+        driving.canAcceptDirectInput = true
+        driving.claudeOwner = nil
+        await runtime.rememberForkedSession(driving)
+        let observed = ObservedSessions()
+        await runtime.setSessionIndexObserver { session in observed.append(session) }
+
+        func turnEvent(_ method: String, turnID: String, status: String) async {
+            await runtime.handle(CodexAppServerNotification(method: method, params: .object([
+                "threadId": .string(driving.id),
+                "turn": .object(["id": .string(turnID), "status": .string(status), "items": .array([])])
+            ])))
+        }
+
+        await turnEvent("turn/started", turnID: "turn-left-behind", status: "inProgress")
+        let running = try XCTUnwrap(observed.last)
+        XCTAssertEqual(running.activeTurnID, "turn-left-behind")
+        XCTAssertTrue(running.isRunning)
+
+        await turnEvent("turn/completed", turnID: "turn-left-behind", status: "completed")
+        let done = try XCTUnwrap(observed.last)
+        XCTAssertEqual(done.status, SessionStatus.completed.rawValue, "终态快照不能停在 running")
+        XCTAssertNil(done.activeTurnID)
+        XCTAssertEqual(done.activityState, .idle)
+
+        await turnEvent("turn/started", turnID: "turn-fails", status: "inProgress")
+        await turnEvent("turn/completed", turnID: "turn-fails", status: "failed")
+        let failed = try XCTUnwrap(observed.last)
+        XCTAssertEqual(failed.status, SessionStatus.failed.rawValue)
+        XCTAssertEqual(failed.activityState, .failed)
+
+        // 旧回合的迟到完成不能把新开始的回合写成终态。
+        await turnEvent("turn/started", turnID: "turn-new", status: "inProgress")
+        let before = observed.count
+        await turnEvent("turn/completed", turnID: "turn-fails", status: "completed")
+        XCTAssertFalse(observed.items(after: before).contains { $0.status == SessionStatus.completed.rawValue })
+        await runtime.shutdownForHostSwitch()
+    }
+
     private final class ObservedSessions: @unchecked Sendable {
         private let lock = NSLock()
         private var items: [AgentSession] = []
@@ -613,6 +656,12 @@ final class ClaudeTakeoverTests: XCTestCase {
             lock.lock()
             defer { lock.unlock() }
             return items.count
+        }
+
+        func items(after index: Int) -> [AgentSession] {
+            lock.lock()
+            defer { lock.unlock() }
+            return Array(items.dropFirst(index))
         }
     }
 

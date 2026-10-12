@@ -57,11 +57,8 @@ extension CodexAppServerSessionRuntime {
                 mailbox.send(event)
             }
         } else {
-            // 没有页面订阅的会话：快照仍要让列表看到（终端里的 Claude 开始 / 结束处理、别的页面
-            // 发起的会话跑完），否则要等下一次刷新。缓冲区照旧保留，供随后打开详情时回放。
-            if case .session(let session) = event {
-                sessionIndexObserver?(session)
-            }
+            // 没有页面订阅的会话：状态变化仍要让列表看到，缓冲区照旧保留，供随后打开详情时回放。
+            notifySessionIndex(for: event, sessionID: sessionID)
             var events = bufferedEventsBySessionID[sessionID] ?? []
             if let previous = events.last,
                event.contiguousPayloadByteCount == nil,

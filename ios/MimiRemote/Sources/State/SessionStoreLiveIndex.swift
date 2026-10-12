@@ -14,9 +14,10 @@ extension SessionStore {
     /// 只更新 Store 里已经存在的行；新会话仍由列表刷新带入，避免别的工作区的会话被插到当前列表头部。
     /// 当前有前台连接的会话由事件链路负责，这里不重复写。
     func applyLiveSessionIndexUpdate(_ incoming: AgentSession) {
-        guard sessionsByID[incoming.id] != nil, connectedSessionID != incoming.id else {
+        guard let existing = sessionsByID[incoming.id], connectedSessionID != incoming.id else {
             return
         }
+        let wasRunning = existing.isRunning
         var didChange = false
         var clearedApproval = false
         var clearedUserInput = false
@@ -60,5 +61,9 @@ extension SessionStore {
         contextStore.updateStatus(sessionID: incoming.id, status: incoming.status)
         // 运行 → 空闲在这里被观察到，才会按既有规则产生未读与"刚完成"。
         synchronizeHistoryReadStates()
+        if wasRunning, sessionsByID[incoming.id]?.isRunning == false {
+            // 与有页面订阅的会话一样，回合结束后补一次列表对账，取回服务端的权威时间与摘要。
+            scheduleSessionListReconciliation(projectID: existing.projectID)
+        }
     }
 }
