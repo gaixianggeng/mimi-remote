@@ -336,6 +336,8 @@ export class ThreadRuntime {
         for (const turn of turns) {
           turn.finish({ subtype: "error_process_exited", errors: ["Claude 进程已退出"], usage: undefined, contextWindow: null }, this.totalUsage);
         }
+        // 退出前 Claude 可能已经写好了标题，同样要推给订阅者。
+        if (turns.length) this.host.turnFinished(this.threadId);
       }
     }
   }

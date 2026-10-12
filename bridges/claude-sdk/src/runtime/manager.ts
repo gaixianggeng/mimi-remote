@@ -113,9 +113,14 @@ export class ThreadManager {
     return runtime;
   }
 
-  /** 已有 transcript 的会话：进程推迟到第一次 turn 再以 resume 拉起。 */
+  /**
+   * 已有 transcript 的会话：进程推迟到第一次 turn 再以 resume 拉起。title 是 transcript 里
+   * 此刻的标题：复用运行时也据此对齐缓存（客户端都断开时 CLI 可能改过名），变了就推给其他
+   * 订阅者；否则之后改回原名会被当成「没变」吞掉。读不到标题时保留已知的。
+   */
   open(threadId: string, cwd: string, settings: RunSettings, title: string | null = null): ThreadRuntime {
     if (!this.titles.has(threadId)) this.titles.set(threadId, title);
+    else if (title) this.titleChanged(threadId, title);
     const existing = this.runtimes.get(threadId);
     if (existing) return existing;
     const runtime = new ThreadRuntime(threadId, cwd, this.host, settings, true);
