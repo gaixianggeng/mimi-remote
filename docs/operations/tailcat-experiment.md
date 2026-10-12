@@ -4,7 +4,7 @@
 
 验证 iPad 不安装 Tailscale 客户端时，Mimi Remote 能否仅通过 Tailcat 连接 Mac 上的 `agentd`，并保持现有 HTTP、WebSocket、认证和大文件传输能力。
 
-本实验固定使用 Tailcat `v0.7.0`。Tailcat 不使用 Tailscale 控制平面，但仍使用 Tailscale 的网络库和 DERP 中继。
+本实验固定使用 Tailcat `v0.7.0`。Tailcat 不使用 Tailscale 控制平面，但仍使用 Tailscale 的网络库和 DERP 中继。未配置自定义中继时，使用上游常量 `DefaultDERPMapURL`（`https://tailcat.dev/derpmap.json`），即 Tailcat 项目提供、由 Tailscale 运营的免费限速公共中继；Mimi Remote 不运营该中继。
 
 ## 方案
 
@@ -130,5 +130,5 @@ bash ./scripts/ios-dev.sh run
   客户端版本、重新审查地址流经的二维码、日志和控制面（届时地址成为秘密）。
 - 本地生成的 XCFramework 约 137 MB；当前 Debug App 约 98 MB。此体积不能直接视为发布包体积，但需要在发布前单独评估。
 - 当前自动测试验证了 HTTP、WebSocket、认证、1 MB 以上二进制传输、重连和身份持久化。真实蜂窝网络、NAT 切换、后台恢复、耗电和长期稳定性仍需真机验证。
-- DERP 是外部依赖。中继不可用时，无法直连的设备会断开。国内自建 DERP Map 仍需在跨网络验收时确认地址、证书和可达性。
-- 该实验产物尚未补齐发布所需的完整第三方许可证清单，也未完成 App Store 审核评估。因此不得进入正式发布包。
+- DERP 是外部依赖。中继不可用时，无法直连的设备会断开。默认公共中继免费且限速，其可用性、容量和数据处理政策由 Tailscale 决定，不受 Mimi Remote 控制。国内自建 DERP Map 仍需在跨网络验收时确认地址、证书和可达性。
+- 当前 Mac 安装包、Linux 归档和 iOS App 构建已经包含 Tailcat 组件（宿主默认关闭），但 Tailcat 与 `tailscale.com` 依赖的许可证正文尚未并入 `THIRD_PARTY_NOTICES.md`，App Store 审核评估也未完成。补齐许可证清单还是从发布包移除，由维护者决定（#684）。隐私政策已说明默认中继的数据处理。

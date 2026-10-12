@@ -1,17 +1,17 @@
 Mimi Remote is a native mobile workspace for a computer you own or are authorized to use.
 
-Connect to your development environment, start or resume coding sessions, review changes, and confirm restricted actions while all commands continue to run on the computer you control.
+Connect to your development environment, start or resume coding sessions, review changes, and choose how each session handles restricted actions while all commands continue to run on the computer you control.
 
 Features:
 - Browse, search, create, and resume coding sessions
 - Review structured responses, reasoning, code blocks, images, and diffs
-- Confirm restricted development actions before they run
+- Choose a permission mode for each session; in approval modes, confirm restricted actions before they run (new sessions default to full access)
 - Inspect Git status and manage branches and worktrees
 - Use text, images, and optional voice input
 - Keep separate connection profiles for different computers
-- Connect over a local network, private network, or HTTPS
+- Connect over a local network, private network, HTTPS, or an optional experimental peer-to-peer connection
 
-Mimi Remote communicates directly with the host you configure. The app does not download or execute code on the mobile device and does not provide models, third-party accounts, subscriptions, cloud code execution, a VPN, traffic relay, or hosted project storage. Project content and connection credentials are not sent to the Mimi Remote developer.
+Mimi Remote communicates with the host you configure. Connections are usually direct; with the optional experimental peer-to-peer connection, end-to-end encrypted traffic may pass through a third-party relay when no direct path is available. The app does not download or execute code on the mobile device. The developer does not provide models, third-party accounts, subscriptions, cloud code execution, a VPN, a traffic relay service, or hosted project storage. Project content and connection credentials are not sent to the Mimi Remote developer.
 
 Requirements:
 - A computer with the Mimi companion service and a compatible developer runtime installed

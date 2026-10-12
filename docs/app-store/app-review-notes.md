@@ -4,7 +4,9 @@ Mimi Remote is a native developer-tool client for a computer owned by, or explic
 
 Version 1.2.1 updates the Simplified Chinese App Store name to Mimi Remote and replaces the Simplified Chinese screenshots. This metadata update does not add feature code; the selected build is built from the current main branch.
 
-The iOS app does not execute downloaded code, provide arbitrary shell access, provide AI models or subscriptions, operate a VPN, relay traffic, or host project data. Code execution occurs only on the configured host. The developer does not operate a service that receives prompts, source code, credentials, or model-provider traffic.
+The iOS app does not execute downloaded code, provide arbitrary shell access, provide AI models or subscriptions, operate a VPN, or host project data. Code execution occurs only on the configured host. The developer does not operate a traffic relay or a service that receives prompts, source code, credentials, or model-provider traffic. Message notifications use a developer-operated push service that receives only APNs routing data, anonymous tags, and fixed event types.
+
+An optional, experimental peer-to-peer connection is off by default and can be enabled only from the host computer. When no direct path is available, it forwards end-to-end encrypted traffic through a third-party DERP relay, by default one operated by Tailscale. The review steps below do not use it.
 
 The GitHub link on the Connection screen points to this project's public Release page and a free, signed and notarized macOS companion app. The iOS app only opens or shares the URL. It does not download, install, or execute the macOS binary on iOS, and no purchase or subscription is offered. App Review can use the manual Endpoint below without installing the macOS companion app.
 
@@ -35,7 +37,7 @@ Please use manual connection because normal QR tickets expire after 10 minutes a
 5. Open the prepared session, or create a new coding session.
 6. Send a prompt such as `Summarize this sample project without changing files.`
 7. Open the Changes or Inspector area to review the sample Git status and diff.
-8. Optional: request a small README edit and review the approval UI before accepting or declining it.
+8. Optional: new sessions default to Full File Access, which does not ask for approval. To see the approval UI, choose Ask for Approval in the composer's permission menu or in Settings → Default permissions, then request a small README edit and accept or decline it.
 9. Open Settings → Legal & Support to view the Privacy Policy, Terms of Use, and Support pages.
 10. Open Settings → Language to switch between English and Simplified Chinese without restarting the app.
 
