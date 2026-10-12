@@ -484,6 +484,51 @@ final class ClaudeTakeoverTests: XCTestCase {
         }
     }
 
+    func testOwnershipStatusNotificationTogglesReadOnlyWithoutRefetch() async throws {
+        let fixture = await makeHeldStore(id: "claude_ownership_push", supportsTakeover: true)
+        let (runtime, _, _) = makeTakeoverRuntime(session: fixture.held)
+        var driving = fixture.held
+        driving.canAcceptDirectInput = true
+        driving.claudeOwner = nil
+        await runtime.rememberForkedSession(driving)
+
+        func statusChanged(_ extra: [String: CodexAppServerJSONValue]) async {
+            var params: [String: CodexAppServerJSONValue] = [
+                "threadId": .string(driving.id), "status": .object(["type": .string("notLoaded")])
+            ]
+            params.merge(extra) { _, new in new }
+            await runtime.handle(CodexAppServerNotification(method: "thread/status/changed", params: .object(params)))
+        }
+
+        // 终端接手：适配器让出并推送只读标记与持有方摘要。
+        await statusChanged([
+            "canAcceptDirectInput": .bool(false),
+            "claudeOwner": .object([
+                "entrypoint": .string("cli"), "kind": .string("interactive"), "status": .string("busy"), "pid": .int(4242)
+            ])
+        ])
+        let yielded = try await replayRuntimeSession(runtime, id: driving.id)
+        XCTAssertFalse(yielded.allowsDirectInput)
+        XCTAssertEqual(yielded.claudeOwner?.pid, 4242)
+        fixture.store.upsert(yielded)
+        fixture.store.setSelectedSessionID(driving.id)
+        XCTAssertEqual(fixture.store.selectedOwnershipNotice?.owner.status, "busy")
+
+        // 不带扩展字段的普通状态通知不改变所有权。
+        await statusChanged([:])
+        let unchanged = try await replayRuntimeSession(runtime, id: driving.id)
+        XCTAssertFalse(unchanged.allowsDirectInput)
+
+        // 持有方退出：恢复可写，提示条消失。
+        await statusChanged(["canAcceptDirectInput": .bool(true), "claudeOwner": .null])
+        let released = try await replayRuntimeSession(runtime, id: driving.id)
+        XCTAssertTrue(released.allowsDirectInput)
+        XCTAssertNil(released.claudeOwner)
+        fixture.store.upsert(released)
+        XCTAssertNil(fixture.store.selectedOwnershipNotice)
+        await runtime.shutdownForHostSwitch()
+    }
+
     // MARK: - Fixtures
 
     private func makeTakeoverRuntime(session: AgentSession) -> (CodexAppServerSessionRuntime, FakeCodexAppServerTransport, AgentProject) {

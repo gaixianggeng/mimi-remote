@@ -1,10 +1,21 @@
-// 管理所有 Claude 会话运行时：订阅关系、事件扇出、服务端请求与客户端答复的配对。
+// 管理所有 Claude 会话运行时：订阅关系、事件扇出、服务端请求与客户端答复的配对，以及
+// "同一会话同一时刻只有一个驱动方"：别处接手时让出、客户端要求时接管。
 // 订阅了同一会话的每个连接（例如 iPad 与 iPhone）都收到事件和审批；谁先答复以谁为准，
 // 其余连接收到 serverRequest/resolved。
 import { randomUUID } from "node:crypto";
 import { notificationFrame } from "../rpc/frames.ts";
 import type { Session } from "../session/session.ts";
+import { holdersOf, ownerSummary, readHolders, sessionsDir, type OwnProcesses, type SessionHolder } from "./holders.ts";
+import { OwnershipWatcher } from "./ownership.ts";
 import type { RunSettings } from "./settings.ts";
+import {
+  DEFAULT_TAKEOVER_TIMEOUTS,
+  releaseForeignHolders,
+  systemTakeoverDeps,
+  type TakeoverDeps,
+  type TakeoverOutcome,
+  type TakeoverTimeouts,
+} from "./takeover.ts";
 import { ThreadRuntime, type RuntimeHost } from "./threadRuntime.ts";
 
 interface PendingRequest {
@@ -20,6 +31,11 @@ export interface ManagerOptions {
   log(message: string): void;
   idleCloseMs?: number;
   startQuery?: RuntimeHost["startQuery"];
+  /** 占用登记的兜底轮询间隔（目录事件之外）。 */
+  ownershipPollMs?: number;
+  takeoverTimeouts?: TakeoverTimeouts;
+  /** 测试可替换进程核对与信号。 */
+  takeoverDeps?: Partial<TakeoverDeps>;
 }
 
 export class ThreadManager {
@@ -29,18 +45,47 @@ export class ThreadManager {
   private readonly pending = new Map<string, PendingRequest>();
   private counter = 0;
   readonly ownPids = new Set<number>();
+  /** 本适配器自己的 Claude 进程：已知 pid，以及还没拿到 pid 的启动窗口。 */
+  readonly own: OwnProcesses = {
+    pids: this.ownPids,
+    startingSince: (threadId) => this.runtimes.get(threadId)?.startingSince,
+  };
   private readonly host: RuntimeHost;
+  private readonly ownership: OwnershipWatcher;
+  private readonly takeoverDeps: TakeoverDeps;
+  private readonly takeoverTimeouts: TakeoverTimeouts;
 
-  constructor(options: ManagerOptions) {
+  constructor(private readonly options: ManagerOptions) {
     this.host = {
       publish: (threadId, method, params) => this.publish(threadId, method, params),
       request: (threadId, method, params, signal) => this.request(threadId, method, params, signal),
       claudeExecutable: options.claudeExecutable,
       log: options.log,
       ownPids: this.ownPids,
+      processReady: () => void this.ownership.scanNow(),
       idleCloseMs: options.idleCloseMs ?? 10 * 60_000,
       ...(options.startQuery ? { startQuery: options.startQuery } : {}),
     };
+    this.ownership = new OwnershipWatcher({
+      dir: sessionsDir(),
+      tracked: () => this.trackedThreads(),
+      read: () => this.holders(),
+      onChange: (threadId, holder) => this.ownershipChanged(threadId, holder),
+      log: options.log,
+      ...(options.ownershipPollMs !== undefined ? { pollMs: options.ownershipPollMs } : {}),
+    });
+    this.takeoverDeps = { ...systemTakeoverDeps((threadId) => holdersOf(threadId, this.own)), ...options.takeoverDeps };
+    this.takeoverTimeouts = options.takeoverTimeouts ?? DEFAULT_TAKEOVER_TIMEOUTS;
+  }
+
+  /** 会话 ID → 别处持有方（不含本适配器自己的进程）。 */
+  holders(): Promise<Map<string, SessionHolder>> {
+    return readHolders(this.own);
+  }
+
+  /** 结束空闲的别处持有方，之后由调用方以同一 ID 续聊。 */
+  takeover(threadId: string): Promise<TakeoverOutcome> {
+    return releaseForeignHolders(threadId, this.takeoverDeps, this.takeoverTimeouts);
   }
 
   get(threadId: string): ThreadRuntime | undefined {
@@ -64,6 +109,7 @@ export class ThreadManager {
   }
 
   subscribe(threadId: string, session: Session): void {
+    this.ownership.start();
     const sessions = this.subscribers.get(threadId) ?? new Set<Session>();
     sessions.add(session);
     this.subscribers.set(threadId, sessions);
@@ -79,8 +125,52 @@ export class ThreadManager {
   }
 
   unsubscribeSession(session: Session): void {
-    for (const threadId of this.subscriptions.get(session) ?? []) this.subscribers.get(threadId)?.delete(session);
+    for (const threadId of this.subscriptions.get(session) ?? []) {
+      const sessions = this.subscribers.get(threadId);
+      sessions?.delete(session);
+      if (!sessions?.size && !this.runtimes.get(threadId)?.hasLiveProcess()) this.ownership.forget(threadId);
+    }
     this.subscriptions.delete(session);
+  }
+
+  private *trackedThreads(): Iterable<string> {
+    for (const [threadId, sessions] of this.subscribers) if (sessions.size) yield threadId;
+    for (const [threadId, runtime] of this.runtimes) {
+      if (runtime.hasLiveProcess() && !this.subscribers.get(threadId)?.size) yield threadId;
+    }
+  }
+
+  /**
+   * 持有方变化：别处接手且自己还握着进程时先让出（停进程、turn 记为中断），再把新的
+   * 可写状态与持有方摘要推给订阅者。字段与 Thread 上的扩展字段同名，客户端按同一套解析。
+   */
+  private async ownershipChanged(threadId: string, holder: SessionHolder | undefined): Promise<void> {
+    const runtime = this.runtimes.get(threadId);
+    if (holder && runtime?.hasLiveProcess()) {
+      // 扫描结果可能已经过时：持有方刚退出、并发的 turn/start 又拉起了自己的进程。停进程前
+      // 重读登记，确认同一个持有方（pid 与启动时间）仍在；不在就不让出，交给下一次扫描按最新
+      // 状态重新判断并推送。
+      const current = (await this.holders()).get(threadId);
+      if (!current || current.pid !== holder.pid || current.startedAt !== holder.startedAt) {
+        void this.ownership.scanNow();
+        return;
+      }
+      this.options.log(
+        `thread ${threadId.slice(0, 8)} continued by pid ${holder.pid} (${holder.entrypoint ?? "unknown"}); stopping the adapter's process`,
+      );
+      await runtime.yieldToHolder();
+    }
+    const status = runtime?.activeTurnId
+      ? { type: "active", activeFlags: [] }
+      : runtime?.hasLiveProcess()
+        ? { type: "idle" }
+        : { type: "notLoaded" };
+    this.publish(threadId, "thread/status/changed", {
+      threadId,
+      status,
+      canAcceptDirectInput: !holder,
+      claudeOwner: holder ? ownerSummary(holder) : null,
+    });
   }
 
   /** thread/loaded/list：有常驻 Claude 进程或进行中 turn 的会话。 */
@@ -132,6 +222,7 @@ export class ThreadManager {
   }
 
   async closeAll(): Promise<void> {
+    this.ownership.stop();
     await Promise.all([...this.runtimes.values()].map((runtime) => runtime.close()));
   }
 }

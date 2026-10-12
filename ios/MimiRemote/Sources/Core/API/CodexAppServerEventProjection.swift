@@ -285,8 +285,15 @@ extension CodexAppServerSessionRuntime {
                 return
             }
             let status = sessionStatus(from: statusValue, forceRunning: false)
+            // Claude 适配器在持有方变化时（终端接手、持有方退出）附带与 Thread 同名的扩展字段，
+            // 输入框据此立即变为只读或恢复，不必等下一次 thread/read。
+            let canAcceptDirectInput = params["canAcceptDirectInput"]?.boolValue
             _ = withUpdatedSession(threadID) { item in
                 item.status = status
+                if let canAcceptDirectInput {
+                    item.canAcceptDirectInput = canAcceptDirectInput
+                    item.claudeOwner = canAcceptDirectInput ? nil : claudeSessionOwner(from: params["claudeOwner"])
+                }
             }
             emit(.sessionStatus(status, metadata(threadID: threadID, turnID: nil)))
             emit(.sessionContext(statusContext(threadID: threadID, statusValue: statusValue), metadata(threadID: threadID, turnID: nil)))

@@ -7,7 +7,6 @@ import { ActivityClock, TranscriptIndex } from "./claude/transcripts.ts";
 import { createHistoryHandlers } from "./handlers/history.ts";
 import { createThreadHandlers } from "./handlers/threads.ts";
 import { createTurnHandlers } from "./handlers/turns.ts";
-import { readHolders } from "./runtime/holders.ts";
 import { ThreadManager, type ManagerOptions } from "./runtime/manager.ts";
 import type { InitializeResponse } from "./protocol/codex/InitializeResponse.ts";
 import { Router, type Handler, type Logger } from "./server/router.ts";
@@ -64,6 +63,8 @@ export interface AppOptions {
   claudeExecutable?: () => string;
   startQuery?: ManagerOptions["startQuery"];
   idleCloseMs?: number;
+  /** 测试用：占用登记轮询与接管的时限、进程核对。 */
+  ownership?: Pick<ManagerOptions, "ownershipPollMs" | "takeoverTimeouts" | "takeoverDeps">;
 }
 
 export interface App {
@@ -83,8 +84,9 @@ export function createApp(options: AppOptions): App {
     log: options.log,
     ...(options.startQuery ? { startQuery: options.startQuery } : {}),
     ...(options.idleCloseMs !== undefined ? { idleCloseMs: options.idleCloseMs } : {}),
+    ...options.ownership,
   });
-  const holders = () => readHolders(manager.ownPids);
+  const holders = () => manager.holders();
   const activeTurnId = (threadId: string) => manager.get(threadId)?.activeTurnId;
   const threads = createThreadHandlers(catalog, history, {
     holders,
@@ -110,6 +112,7 @@ export function createApp(options: AppOptions): App {
     ["thread/items/list", (params) => historyHandlers.items(params)],
     ["thread/start", (params, context) => turns.threadStart(params, context)],
     ["thread/resume", (params, context) => turns.threadResume(params, context)],
+    ["thread/takeover", (params, context) => turns.threadTakeover(params, context)],
     ["turn/start", (params, context) => turns.turnStart(params, context)],
     ["turn/steer", (params) => turns.turnSteer(params)],
     ["turn/interrupt", (params) => turns.turnInterrupt(params)],
