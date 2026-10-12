@@ -1,9 +1,10 @@
 import type { Catalog, SessionRecord } from "../claude/catalog.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
 import { RpcError } from "../rpc/frames.ts";
-import type { SessionHolder } from "../runtime/holders.ts";
+import { ownerSummary, type SessionHolder } from "../runtime/holders.ts";
 import type { ThreadManager } from "../runtime/manager.ts";
 import { runSettingsFor } from "../runtime/settings.ts";
+import { TakeoverError } from "../runtime/takeover.ts";
 import type { ThreadRuntime } from "../runtime/threadRuntime.ts";
 import type { RequestContext } from "../server/router.ts";
 import { toThread, type AdapterThread } from "./threads.ts";
@@ -45,10 +46,6 @@ function sandboxPolicyOf(params: Params): Record<string, unknown> {
   }
 }
 
-export function ownerSummary(holder: SessionHolder): Record<string, unknown> {
-  return { pid: holder.pid, entrypoint: holder.entrypoint, kind: holder.kind, status: holder.status, version: holder.version };
-}
-
 function newRecord(threadId: string, cwd: string): SessionRecord {
   const now = Math.floor(Date.now() / 1000);
   return { id: threadId, cwd, name: null, preview: "", createdAt: now, updatedAt: now, gitBranch: null, path: null, archived: false };
@@ -85,6 +82,19 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
     return { record, runtime: runtime ?? manager.open(threadId, cwd ?? record.cwd, runSettingsFor(params)) };
   }
 
+  async function resume(threadId: string, params: Params, context: RequestContext) {
+    const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : undefined;
+    const { record, runtime } = await openExisting(threadId, cwd, params);
+    manager.subscribe(threadId, context.session);
+    const holder = (await deps.holders()).get(threadId);
+    const thread = toThread(record, [], {
+      canAcceptDirectInput: !holder,
+      status: runtime.activeTurnId ? { type: "active", activeFlags: [] } : { type: "idle" },
+      ...(holder ? { claudeOwner: ownerSummary(holder) } : {}),
+    });
+    return { ...sessionResponse(thread, runtime, params), collaborationMode: null, turnsBackwardsCursor: null, itemsBackwardsCursor: null };
+  }
+
   return {
     threadStart(raw: unknown, context: RequestContext) {
       const params = asParams(raw);
@@ -95,19 +105,41 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       return sessionResponse(thread, runtime, params);
     },
 
-    async threadResume(raw: unknown, context: RequestContext) {
+    threadResume(raw: unknown, context: RequestContext) {
       const params = asParams(raw);
-      const threadId = requireString(params, "threadId", "thread/resume");
-      const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : undefined;
-      const { record, runtime } = await openExisting(threadId, cwd, params);
-      manager.subscribe(threadId, context.session);
-      const holder = (await deps.holders()).get(threadId);
-      const thread = toThread(record, [], {
-        canAcceptDirectInput: !holder,
-        status: runtime.activeTurnId ? { type: "active", activeFlags: [] } : { type: "idle" },
-        ...(holder ? { claudeOwner: ownerSummary(holder) } : {}),
-      });
-      return { ...sessionResponse(thread, runtime, params), collaborationMode: null, turnsBackwardsCursor: null, itemsBackwardsCursor: null };
+      return resume(requireString(params, "threadId", "thread/resume"), params, context);
+    },
+
+    /**
+     * 结束本机别处空闲的持有方（终端、桌面端），然后以同一 ID 续聊。没有持有方时等价于
+     * 普通 resume。响应与 thread/resume 同形状，多一个 takeover 摘要。
+     */
+    async threadTakeover(raw: unknown, context: RequestContext) {
+      const params = asParams(raw);
+      const threadId = requireString(params, "threadId", "thread/takeover");
+      // 先确认会话存在，不为一个不存在的 ID 去动任何进程。
+      if (!manager.get(threadId) && !(await catalog.get(threadId))) throw RpcError.invalidParams(`找不到 Claude 会话 ${threadId}`);
+      let outcome;
+      try {
+        outcome = await manager.takeover(threadId);
+      } catch (error) {
+        if (!(error instanceof TakeoverError)) throw error;
+        throw new RpcError(-32602, `takeover of thread \`${threadId}\` failed: ${error.message}`, {
+          accepted: false,
+          reason: error.reason,
+          threadId,
+          claudeOwner: ownerSummary(error.holder),
+          retryable: error.retryable,
+        });
+      }
+      const resumed = await resume(threadId, params, context);
+      const first = outcome.released ? outcome.holders[0] : undefined;
+      return {
+        ...resumed,
+        takeover: outcome.released
+          ? { released: true, ...(first ? { holder: ownerSummary(first) } : {}), signal: outcome.signal }
+          : { released: false },
+      };
     },
 
     async turnStart(raw: unknown, context: RequestContext) {

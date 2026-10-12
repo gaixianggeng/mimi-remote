@@ -24,6 +24,8 @@ export interface RuntimeHost {
   claudeExecutable(): string;
   log(message: string): void;
   ownPids: Set<number>;
+  /** 自己的 Claude 进程拿到 pid：此前被当作"可能是自己"的登记需要重新判断。 */
+  processReady(threadId: string): void;
   idleCloseMs: number;
   /** 测试可替换；默认用 SDK 的 query。 */
   startQuery?: typeof sdkQuery;
@@ -97,6 +99,7 @@ export class ThreadRuntime {
   private totalUsage: TurnUsage | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private pid: number | undefined;
+  private queryStartedAt = 0;
   private settings: RunSettings;
 
   constructor(
@@ -126,6 +129,33 @@ export class ThreadRuntime {
     return this.query !== undefined || this.isBusy();
   }
 
+  hasLiveProcess(): boolean {
+    return this.query !== undefined;
+  }
+
+  /** 进程已起、还不知道 pid 时返回起进程的时刻，见 OwnProcesses.startingSince。 */
+  get startingSince(): number | undefined {
+    return this.query && this.pid === undefined ? this.queryStartedAt : undefined;
+  }
+
+  /**
+   * 别的进程（终端 `claude --resume`、桌面端）接手了这个会话：立即停掉自己的进程，进行中的
+   * turn 记为中断。直接给 CLI 发 SIGTERM，不等 SDK 关闭输入后的宽限期，尽量不再写 transcript。
+   */
+  async yieldToHolder(): Promise<void> {
+    if (!this.query) return;
+    this.cancelIdleClose();
+    for (const turn of this.openTurns()) turn.markInterrupted();
+    if (this.pid !== undefined) {
+      try {
+        process.kill(this.pid, "SIGTERM");
+      } catch {
+        // 进程已经退出。
+      }
+    }
+    await this.stopQuery();
+  }
+
   async startTurn(request: TurnRequest): Promise<Turn> {
     // Claude 还在处理之前的消息（包括排队中的）时不接新 turn，客户端改用 turn/steer。
     const active = this.activeTurnId;
@@ -151,6 +181,15 @@ export class ThreadRuntime {
       await this.ensureQuery();
     } finally {
       this.reserved = undefined;
+    }
+    // 等待切换设置期间别处接手、进程已让出：不开 turn，客户端按持有方提示处理。
+    if (!this.input) {
+      throw new RpcError(INVALID_PARAMS, `thread \`${this.threadId}\` was continued by another local claude process`, {
+        accepted: false,
+        reason: "owned_elsewhere",
+        threadId: this.threadId,
+        retryable: true,
+      });
     }
     const turn = new LiveTurn(turnId, this.threadId, this.emit);
     this.current = turn;
@@ -216,14 +255,26 @@ export class ThreadRuntime {
     const fullAccessChanged =
       applied !== undefined && (applied.permissionMode === "bypassPermissions") !== (wanted.permissionMode === "bypassPermissions");
     if (this.query && fullAccessChanged) await this.stopQuery();
-    if (!this.query) {
+    const query = this.query;
+    if (!query) {
       this.startQuery(wanted);
       return;
     }
-    if (wanted.model && wanted.model !== applied?.model) await this.query.setModel(wanted.model);
-    if (wanted.permissionMode !== applied?.permissionMode) await this.query.setPermissionMode(wanted.permissionMode);
-    if (wanted.effort && wanted.effort !== applied?.effort) await this.query.applyFlagSettings({ effortLevel: wanted.effort });
-    this.applied = { ...wanted };
+    const steps: Array<() => Promise<unknown>> = [];
+    if (wanted.model && wanted.model !== applied?.model) steps.push(() => query.setModel(wanted.model));
+    if (wanted.permissionMode !== applied?.permissionMode) steps.push(() => query.setPermissionMode(wanted.permissionMode));
+    if (wanted.effort && wanted.effort !== applied?.effort) steps.push(() => query.applyFlagSettings({ effortLevel: wanted.effort }));
+    try {
+      for (const step of steps) {
+        // 切换途中进程被关闭（让出给别处）：不再对旧进程发控制请求，由调用方处理。
+        if (this.query !== query) return;
+        await step();
+      }
+    } catch (error) {
+      if (this.query === query) throw error;
+      return;
+    }
+    if (this.query === query) this.applied = { ...wanted };
   }
 
   private startQuery(settings: RunSettings): void {
@@ -246,6 +297,7 @@ export class ThreadRuntime {
     const query = (this.host.startQuery ?? sdkQuery)({ prompt: input, options });
     this.query = query;
     this.input = input;
+    this.queryStartedAt = Date.now();
     this.applied = { ...settings };
     this.transcriptExists = true;
     void query
@@ -255,6 +307,7 @@ export class ThreadRuntime {
         if (typeof pid === "number" && this.query === query) {
           this.pid = pid;
           this.host.ownPids.add(pid);
+          this.host.processReady(this.threadId);
         }
       })
       .catch(() => {});
@@ -273,11 +326,14 @@ export class ThreadRuntime {
         this.applied = undefined;
         if (this.pid !== undefined) this.host.ownPids.delete(this.pid);
         this.pid = undefined;
-        // 进程意外退出：结束悬着的 turn，下一次 turn/start 会以 resume 重新拉起。
-        const turn = this.current;
+        // 进程退出（意外或让出）：结束悬着的 turn，包括只挂着排队引导的 turn。下一次
+        // turn/start 会以 resume 重新拉起。
+        const turns = this.openTurns();
         this.current = undefined;
         this.commands.clear();
-        turn?.finish({ subtype: "error_process_exited", errors: ["Claude 进程已退出"], usage: undefined, contextWindow: null }, this.totalUsage);
+        for (const turn of turns) {
+          turn.finish({ subtype: "error_process_exited", errors: ["Claude 进程已退出"], usage: undefined, contextWindow: null }, this.totalUsage);
+        }
       }
     }
   }
@@ -307,6 +363,12 @@ export class ThreadRuntime {
       this.current = owner;
     }
     return this.current ?? this.openTurn();
+  }
+
+  private openTurns(): LiveTurn[] {
+    const turns = new Set<LiveTurn>(this.commands.values());
+    if (this.current) turns.add(this.current);
+    return [...turns].filter((turn) => !turn.finished);
   }
 
   private openTurn(): LiveTurn {

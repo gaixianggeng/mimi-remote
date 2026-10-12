@@ -44,7 +44,7 @@ class ScriptedQuery {
   settingsGate: Promise<void> | undefined;
 
   async initializationResult() {
-    return { pid: 1 };
+    return {};
   }
   async interrupt() {
     this.interrupts += 1;
@@ -222,6 +222,56 @@ describe("output attribution", () => {
     script.emit({ type: "result", subtype: "success", user_message_uuids: [turnId] });
     await settle();
     expect(completedTurns()).toContain(turnId);
+  });
+
+  test("a process exit finishes a turn that only owns a pending steer", async () => {
+    const started = await call("thread/start", { cwd: sandbox });
+    const threadId = started.thread.id;
+    const { turn } = await call("turn/start", { threadId, input: text("first") });
+    await call("turn/steer", { threadId, expectedTurnId: turn.id, input: text("and this"), clientUserMessageId: null });
+    for (const message of reply(turn.id, "msg_x", "first answer")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [turn.id] });
+    await settle();
+    expect(completedTurns()).not.toContain(turn.id);
+    script.close();
+    await settle();
+    expect(completedTurns()).toContain(turn.id);
+    // 不再有悬着的 turn：新 turn 照常开始（重新拉起进程）并收尾，不影响后面的用例。
+    const next = await call("turn/start", { threadId, input: text("next") });
+    for (const message of reply(next.turn.id, "msg_y", "next answer")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [next.turn.id] });
+    await settle();
+    expect(completedTurns()).toContain(next.turn.id);
+  });
+
+  test("a turn/start waiting on a settings switch is refused when the session is continued elsewhere", async () => {
+    const started = await call("thread/start", { cwd: sandbox });
+    const threadId = started.thread.id;
+    const warm = await call("turn/start", { threadId, input: text("warm up") });
+    for (const message of reply(warm.turn.id, "msg_v", "ready")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [warm.turn.id] });
+    await settle();
+
+    let release!: () => void;
+    script.settingsGate = new Promise<void>((resolve) => (release = resolve));
+    const pending = call("turn/start", { threadId, input: text("late"), model: "claude-other", approvalPolicy: "never" }).then(
+      () => undefined,
+      (error) => error,
+    );
+    await settle();
+    // 切换模型途中终端接手：进程被关闭，后续的权限切换不能再发给旧进程。
+    await app.manager.get(threadId)!.yieldToHolder();
+    release();
+    const rejected = await pending;
+    expect(rejected?.data).toMatchObject({ reason: "owned_elsewhere", retryable: true });
+    expect(app.manager.get(threadId)!.activeTurnId).toBeUndefined();
+
+    // 持有方离开后照常续聊（重新拉起进程），也给后面的用例留下活着的进程。
+    const next = await call("turn/start", { threadId, input: text("back") });
+    for (const message of reply(next.turn.id, "msg_w2", "welcome back")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [next.turn.id] });
+    await settle();
+    expect(completedTurns()).toContain(next.turn.id);
   });
 
   test("output without a user message uuid opens its own turn", async () => {

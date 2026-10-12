@@ -1,11 +1,13 @@
 // 真实 Agent SDK + 假 Claude CLI（test/support/fake-claude.ts）驱动完整的对话链路：
 // 事件序列、审批、提问、中断、引导、重连补发审批、占用检测、运行中切换模型。
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { App } from "../src/app.ts";
 import type { OutboundFrame } from "../src/rpc/frames.ts";
+import { pidAlive } from "../src/runtime/holders.ts";
 import { Session } from "../src/session/session.ts";
 
 const sandbox = realpathSync(mkdtempSync(path.join(os.tmpdir(), "mimi-adapter-runtime-")));
@@ -17,12 +19,19 @@ setDefaultTimeout(30_000);
 
 beforeAll(async () => {
   mkdirSync(project, { recursive: true });
+  mkdirSync(path.join(configDir, "sessions"), { recursive: true });
   writeFileSync(fakeClaude, `#!/bin/sh\nexec "${process.execPath}" "${path.join(import.meta.dir, "support", "fake-claude.ts")}" "$@"\n`);
   chmodSync(fakeClaude, 0o755);
   process.env.CLAUDE_CONFIG_DIR = configDir;
   process.env.MIMI_CLAUDE_LEGACY_INDEX = "";
   const { createApp } = await import("../src/app.ts");
-  app = createApp({ stateDir: path.join(sandbox, "state"), log: () => {}, claudeExecutable: () => fakeClaude, idleCloseMs: 60_000 });
+  app = createApp({
+    stateDir: path.join(sandbox, "state"),
+    log: () => {},
+    claudeExecutable: () => fakeClaude,
+    idleCloseMs: 60_000,
+    ownership: { ownershipPollMs: 200, takeoverTimeouts: { interruptGraceMs: 2_000, terminateGraceMs: 2_000, respawnGraceMs: 100 } },
+  });
 });
 
 afterAll(async () => {
@@ -292,6 +301,91 @@ describe("interrupt and steer", () => {
     const items = client.frames.filter((frame: any) => frame.method === "item/completed").map((frame: any) => frame.params.item);
     expect(items.some((item: any) => item.type === "userMessage" && item.clientId === "client-steer")).toBe(true);
     expect(items.some((item: any) => item.type === "agentMessage" && item.text === "steered: change course")).toBe(true);
+  });
+});
+
+/** 冒充终端里的交互式 claude：一个活进程 + 一份占用登记。SIGINT 即退出，与真实 CLI 一致。 */
+class TerminalHolder {
+  readonly child: ChildProcess = spawn("sleep", ["60"], { stdio: "ignore" });
+  readonly pid = this.child.pid!;
+  private readonly file = path.join(configDir, "sessions", `${this.pid}.json`);
+
+  constructor(sessionId: string, status: string) {
+    this.register(sessionId, status);
+  }
+
+  register(sessionId: string, status: string) {
+    writeFileSync(this.file, JSON.stringify({ pid: this.pid, sessionId, cwd: project, entrypoint: "cli", kind: "interactive", status, startedAt: Date.now() }));
+  }
+
+  exit() {
+    this.child.kill();
+    rmSync(this.file, { force: true });
+  }
+}
+
+const statusChange = (threadId: string, writable: boolean) => (frame: any) =>
+  frame.method === "thread/status/changed" && frame.params.threadId === threadId && frame.params.canAcceptDirectInput === writable;
+
+describe("single driver", () => {
+  test("a session continued elsewhere while the adapter drives it yields and becomes read-only", async () => {
+    const client = new Client();
+    const threadId = await newThread(client);
+    const { turn } = await client.call("turn/start", { threadId, input: text("SLOW") });
+    await client.waitFor((frame) => frame.method === "item/agentMessage/delta");
+    const terminal = new TerminalHolder(threadId, "busy");
+    try {
+      const completed = await client.turnCompleted(turn.id);
+      expect(completed.params.turn.status).toBe("interrupted");
+      const readOnly = await client.waitFor(statusChange(threadId, false));
+      expect(readOnly.params).toMatchObject({ status: { type: "notLoaded" }, claudeOwner: { pid: terminal.pid, status: "busy" } });
+      expect((await client.call("thread/loaded/list", {})).data).not.toContain(threadId);
+      const rejected = await client.call("turn/start", { threadId, input: text("mine") }).catch((error) => error);
+      expect(rejected.data).toMatchObject({ reason: "owned_elsewhere", claudeOwner: { pid: terminal.pid } });
+
+      // 终端退出后恢复可写，同一会话照常续聊。
+      terminal.exit();
+      const writable = await client.waitFor(statusChange(threadId, true));
+      expect(writable.params.claudeOwner).toBeNull();
+      const next = await client.call("turn/start", { threadId, input: text("back again") });
+      await client.turnCompleted(next.turn.id);
+    } finally {
+      terminal.exit();
+    }
+  });
+
+  test("takeover ends an idle terminal holder and continues the session here", async () => {
+    const client = new Client();
+    const threadId = await newThread(client);
+    const first = await client.call("turn/start", { threadId, input: text("seed") });
+    await client.turnCompleted(first.turn.id);
+    const terminal = new TerminalHolder(threadId, "idle");
+    try {
+      await client.waitFor(statusChange(threadId, false));
+      const result = await client.call("thread/takeover", { threadId });
+      expect(result.takeover).toMatchObject({ released: true, signal: "SIGINT", holder: { pid: terminal.pid, entrypoint: "cli" } });
+      expect(result.thread.canAcceptDirectInput).toBe(true);
+      expect(pidAlive(terminal.pid)).toBe(false);
+      const next = await client.call("turn/start", { threadId, input: text("continued here") });
+      await client.turnCompleted(next.turn.id);
+    } finally {
+      terminal.exit();
+    }
+  });
+
+  test("takeover refuses a holder that is still working and does not signal it", async () => {
+    const client = new Client();
+    const threadId = await newThread(client);
+    const first = await client.call("turn/start", { threadId, input: text("seed") });
+    await client.turnCompleted(first.turn.id);
+    const terminal = new TerminalHolder(threadId, "busy");
+    try {
+      const error = await client.call("thread/takeover", { threadId }).catch((caught) => caught);
+      expect(error.data).toMatchObject({ accepted: false, reason: "holder_busy", retryable: true, claudeOwner: { pid: terminal.pid } });
+      expect(pidAlive(terminal.pid)).toBe(true);
+    } finally {
+      terminal.exit();
+    }
   });
 });
 

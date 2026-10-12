@@ -5,9 +5,8 @@ import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import { RpcError } from "../rpc/frames.ts";
 import type { Catalog, HistoryStore, SessionRecord } from "../claude/catalog.ts";
 import { decodeCursor, encodeCursor, readDirection, readLimit, type Direction } from "../util/cursor.ts";
-import type { SessionHolder } from "../runtime/holders.ts";
+import { ownerSummary, type SessionHolder } from "../runtime/holders.ts";
 import { USER_AGENT } from "../version.ts";
-import { ownerSummary } from "./turns.ts";
 
 /** 旧 bridge 在 Thread 上附带的扩展字段，iOS 与 gateway 依赖它判断能否直接发送。 */
 export type AdapterThread = Thread & { canAcceptDirectInput: boolean; claudeOwner?: Record<string, unknown> };
