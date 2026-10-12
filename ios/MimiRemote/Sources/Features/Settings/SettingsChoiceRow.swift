@@ -314,8 +314,7 @@ struct SettingsOptionListView<Option: SettingsChoiceOption>: View {
             .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
-        .settingsDetailPage()
-        .settingsCanvasBackground(tokens: tokens)
+        .settingsDetailPage(tokens: tokens)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -407,8 +406,7 @@ struct LanguageSettingsView: View {
             .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
-        .settingsDetailPage()
-        .settingsCanvasBackground(tokens: tokens)
+        .settingsDetailPage(tokens: tokens)
         .navigationTitle(L10n.text("ui.language"))
         .navigationBarTitleDisplayMode(.inline)
     }

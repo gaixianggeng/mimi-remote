@@ -152,8 +152,7 @@ struct ConnectionSpeedTestView: View {
             }
         }
         .themedSettingsForm(tokens: tokens)
-        .settingsDetailPage()
-        .settingsCanvasBackground(tokens: tokens)
+        .settingsDetailPage(tokens: tokens)
         // 这一页还检查助手连通、鉴权和握手，叫「诊断」比「测速」更准确；
         // 分项指标与默认检测目标的重排留在下一轮。
         .navigationTitle(L10n.text("ui.connection_diagnostics"))
