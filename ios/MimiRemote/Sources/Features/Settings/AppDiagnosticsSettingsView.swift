@@ -178,7 +178,7 @@ struct AppDiagnosticsSettingsView: View {
             }
         }
         .themedSettingsForm(tokens: tokens)
-        .settingsDetailPage()
+        .settingsDetailPage(tokens: tokens)
         .navigationBarTitleDisplayMode(.inline)
         .navigationTitle(L10n.text("ui.app_diagnostics"))
         .confirmationDialog(
