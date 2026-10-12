@@ -142,7 +142,7 @@ func TestRestartNoPairDoesNotPrintLongLivedCredentials(t *testing.T) {
 	if !strings.Contains(stdout, "正在重启 Mimi Remote 助手") {
 		t.Fatalf("安全重启仍应输出进度：%q", stdout)
 	}
-	for _, forbidden := range []string{fixture.token, "Token：", "访问码：", "用 iPad 扫这个二维码"} {
+	for _, forbidden := range []string{fixture.token, "Token：", "访问码：", "用移动设备扫这个二维码"} {
 		if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
 			t.Fatalf("restart --no-pair 泄漏长期凭据或二维码 %q：stdout=%q stderr=%q", forbidden, stdout, stderr)
 		}
@@ -161,7 +161,7 @@ func TestStartNoPairDoesNotPrintLongLivedCredentials(t *testing.T) {
 	if !strings.Contains(stdout, "正在启动 Mimi Remote 后台服务") {
 		t.Fatalf("安全启动仍应输出进度：%q", stdout)
 	}
-	for _, forbidden := range []string{fixture.token, "Token：", "访问码：", "用 iPad 扫这个二维码"} {
+	for _, forbidden := range []string{fixture.token, "Token：", "访问码：", "用移动设备扫这个二维码"} {
 		if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
 			t.Fatalf("start --no-pair 泄漏长期凭据或二维码 %q：stdout=%q stderr=%q", forbidden, stdout, stderr)
 		}
@@ -186,7 +186,7 @@ func TestUpNoPairDoesNotPrintConnectionCredentials(t *testing.T) {
 		"Token：",
 		"访问码：",
 		"mimiremote://",
-		"用 iPad 扫这个二维码",
+		"用移动设备扫这个二维码",
 	} {
 		if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
 			t.Fatalf("up --no-pair 泄漏连接信息 %q：stdout=%q stderr=%q", forbidden, stdout, stderr)

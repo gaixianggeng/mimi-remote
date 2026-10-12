@@ -1632,7 +1632,7 @@ func printSetupResult(w io.Writer, result agentsetup.Result) {
 	fmt.Fprintln(w, "  1. agentd doctor --check-port")
 	fmt.Fprintln(w, "  2. agentd start")
 	fmt.Fprintln(w, "  3. agentd doctor")
-	fmt.Fprintln(w, "  4. iPad App 打开设置，扫码连接；二维码不可用时再手动输入 Endpoint 和 Token")
+	fmt.Fprintln(w, "  4. 在移动设备上的 Mimi Remote 打开设置，扫码连接；二维码不可用时再手动输入 Endpoint 和 Token")
 }
 
 func printPairResult(w io.Writer, result agentsetup.Result) {
@@ -1683,12 +1683,12 @@ func printQROnlyPairResult(w io.Writer, result agentsetup.Result) {
 
 func printServeConnection(w io.Writer, result agentsetup.Result) {
 	printWarnings(w, result.Warnings)
-	fmt.Fprintln(w, "\n用 iPad 扫这个二维码连接这台电脑：")
+	fmt.Fprintln(w, "\n用移动设备扫这个二维码连接这台电脑：")
 	printConnectionQRCode(w, result.PairURL)
 	if result.PairExpiresAt != "" {
 		fmt.Fprintf(w, "二维码 10 分钟内有效，有效期至：%s\n", result.PairExpiresAt)
 	}
-	fmt.Fprintln(w, "扫不了时，在 iPad 的“高级手动连接”里填写：")
+	fmt.Fprintln(w, "扫不了时，在移动设备的“高级手动连接”里填写：")
 	fmt.Fprintf(w, "  地址：%s\n", result.Endpoint)
 	fmt.Fprintf(w, "  访问码：%s\n", result.Token)
 	fmt.Fprintln(w)
