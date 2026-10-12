@@ -61,6 +61,25 @@ enum HostPlatform: String, Codable, Equatable {
             return .genericComputer
         }
     }
+
+    /// 二维码过期后去哪里刷新：Mac 在菜单栏，Windows 在任务栏通知区域，Linux 走托盘或 `agentd pair`。
+    /// 平台未知（首次连接、添加新电脑、旧版 agentd 未上报）时用同时覆盖各平台的说法，不能默认是 Mac（#673）。
+    var pairingQRCodeExpiredGuidance: String {
+        switch self {
+        case .apple:
+            return L10n.text("ui.the_pairing_qr_code_has_expired_please_re")
+        case .windows:
+            return L10n.text("ui.pairing_qr_expired_refresh_windows")
+        case .linux:
+            return L10n.text("ui.pairing_qr_expired_refresh_linux")
+        case .unknown:
+            return L10n.text("ui.pairing_qr_expired_refresh_generic")
+        }
+    }
+
+    static func isPairingQRCodeExpiredGuidance(_ message: String) -> Bool {
+        [HostPlatform.apple, .windows, .linux, .unknown].contains { $0.pairingQRCodeExpiredGuidance == message }
+    }
 }
 
 enum HostPlatformIconKind: Equatable {
