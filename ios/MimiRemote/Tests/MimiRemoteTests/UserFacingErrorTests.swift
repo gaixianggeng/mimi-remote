@@ -181,7 +181,19 @@ final class UserFacingErrorTests: XCTestCase {
                 "Run codex login; missing /Users/demo/.codex/auth.json",
                 "Run codex login on 192.0.2.10",
                 "Run codex login on build-mac.example.com",
-                "codex login failed for token abcdefghijklmnopqrstuvwx1234"
+                "codex login failed for token abcdefghijklmnopqrstuvwx1234",
+                // 第七轮复审的反例：全角冒号 / 等号后的路径、其他根目录、带端口或少见后缀的主机名、短凭据赋值。
+                "请先登录：/Users/demo/.codex/auth.json",
+                "Run codex login, config=/srv/codex/config.toml",
+                "codex login required under /root/.codex",
+                "codex login: check /mnt/data first",
+                "Run codex login; see /Library/Application Support/Codex",
+                "Run codex login on build-mac:8080",
+                "Run codex login on studio.home",
+                "Run codex login via relay.ai",
+                "codex login failed, key=abc123",
+                "codex login failed: token=short1",
+                "codex login failed for demo@example.invalid"
             ] {
                 let presented = UserFacingError(AgentAPIError.server(status: 500, message: message))
                 XCTAssertEqual(presented.category, .hostError, message)
@@ -192,6 +204,12 @@ final class UserFacingErrorTests: XCTestCase {
     }
 
     private func assertWhitelistedReasons() {
+        // 中文界面下，带路径的中文原因同样不能上主界面（全角冒号后紧跟路径）。
+        for message in ["请先登录：/Users/demo/.codex/auth.json", "请先登录，配置在 /root/.codex", "登录凭据 key=abc123 已失效"] {
+            let presented = UserFacingError(AgentAPIError.server(status: 500, message: message))
+            XCTAssertEqual(presented.category, .hostError, message)
+            XCTAssertTrue(presented.technicalDetail?.contains(message) == true, message)
+        }
         let codexLogin = "Codex 登录态已失效，请先在电脑上运行 codex login 后重试"
         let http = UserFacingError(AgentAPIError.server(status: 500, message: codexLogin))
         XCTAssertEqual(http.category, .described)

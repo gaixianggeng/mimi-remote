@@ -244,6 +244,10 @@
     {
       "value": "已停止",
       "reason": "Matches legacy Chinese text saying automatic reconnection stopped, so it is not shown as in-progress; the raw value is never rendered as product UI."
+    },
+    {
+      "value": "登录",
+      "reason": "Allowlist marker for computer-side sign-in reasons that may be shown verbatim; the literal itself is never rendered as product UI."
     }
   ],
   "uiLiteralAllowlist": [

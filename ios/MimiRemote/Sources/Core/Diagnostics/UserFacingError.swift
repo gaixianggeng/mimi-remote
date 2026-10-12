@@ -447,7 +447,7 @@ extension UserFacingError {
         "\\blog ?in (?:again|first|to)\\b",
         "\\bplease (?:log|sign) in\\b",
         "\\bsign in (?:again|first|to)\\b",
-        "\\u767B\\u5F55"
+        "登录"
     ].map { try! NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
 
     private static func matchesReadableReasonAllowlist(_ reason: String) -> Bool {
@@ -456,16 +456,32 @@ extension UserFacingError {
     }
 
     /// 上主界面的原文不能带地址、路径、主机名或疑似凭据；命中任意一项时退回分类文案，原文只留在详情。
+    /// 规则刻意从严：宁可多退回分类文案，也不把电脑上的路径、地址或凭据铺到主界面。
     private static let sensitiveDetailPatterns: [NSRegularExpression] = [
+        // 任意协议地址。
         "[a-z][a-z0-9+.-]*://",
-        "(?:^|[\\s(\"'])(?:~|/(?:Users|home|var|private|tmp|etc|opt|Volumes))/",
-        "\\b[A-Za-z]:\\\\",
+        // 绝对 / 家目录 / 相对路径：斜杠前可以是开头、空白、全角或半角标点、等号等任何非单词字符。
+        "(?:^|[^A-Za-z0-9_/])(?:~|\\.{1,2})?/[A-Za-z0-9_.~-]",
+        // Windows 盘符路径与 UNC 路径。
+        "\\b[A-Za-z]:[\\\\/]",
+        "\\\\\\\\[A-Za-z0-9_.-]+",
+        // IPv4 / IPv6。
         "\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b",
         "\\b[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}\\b",
-        "\\b[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.(?:com|net|org|io|dev|app|local|lan|internal|cn|ts\\.net)\\b",
-        "\\b(?:sk|ghp|gho|xox[a-z])[-_][A-Za-z0-9_-]{8,}",
-        "\\b(?:bearer|token|secret|password)\\b",
-        "\\b[A-Za-z0-9_\\-]{24,}\\b"
+        // 主机名：任何「名字.字母后缀」（含 .home、.ai、文件名等），带端口的主机，以及 localhost。
+        "\\b[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.[a-z]{2,}\\b",
+        "\\b[a-z0-9.-]+:\\d{2,5}\\b",
+        "\\blocalhost\\b",
+        // 邮箱。
+        "[^\\s@]+@[^\\s@]+",
+        // 凭据：常见前缀、关键字本身、任何 key=value / key: value 赋值。
+        "\\b(?:sk|ghp|gho|ghs|xox[a-z])[-_][A-Za-z0-9_-]{4,}",
+        "\\b(?:bearer|token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key|cookie|session[_-]?id)\\b",
+        "\\b[A-Za-z_][A-Za-z0-9_.-]*\\s*=\\s*\\S",
+        "\\b(?:key|auth|credential)s?\\s*:\\s*\\S",
+        // 长串或字母数字混排串（疑似 Token / ID）。
+        "\\b[A-Za-z0-9_\\-]{24,}\\b",
+        "\\b(?=[A-Za-z0-9_-]*\\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{12,}\\b"
     ].map { try! NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
 
     static func containsSensitiveDetail(_ text: String) -> Bool {
