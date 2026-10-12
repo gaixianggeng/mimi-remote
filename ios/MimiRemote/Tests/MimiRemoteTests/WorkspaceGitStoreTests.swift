@@ -186,8 +186,8 @@ final class WorkspaceGitStoreTests: XCTestCase {
         )
         XCTAssertEqual(
             UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 409, message: "push rejected for https://example.invalid/repo.git")),
-            L10n.text("ui.git_push_rejected_pull_first"),
-            "推送被拒要给出可操作的结论，且不带远端地址"
+            L10n.text("ui.error_rejected"),
+            "没有「落后于远端」的明确信号时不能说先拉取，也不显示远端地址"
         )
         XCTAssertEqual(
             UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 401, message: "unauthorized")),
@@ -217,6 +217,37 @@ final class WorkspaceGitStoreTests: XCTestCase {
             XCTAssertFalse(output.contains("/srv"), output)
             XCTAssertFalse(output.contains("github.com"), output)
         }
+    }
+
+    func testPushFailuresAreToldApartByWhatGitSaid() {
+        func message(_ output: String) -> String {
+            UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 409, message: output))
+        }
+        XCTAssertEqual(
+            message(" ! [remote rejected] main -> main (protected branch hook declined)\nerror: failed to push some refs"),
+            L10n.text("ui.git_push_remote_rejected")
+        )
+        XCTAssertEqual(
+            message(" ! [rejected] v1.0 -> v1.0 (already exists)\nhint: Updates were rejected because the tag already exists in the remote."),
+            L10n.text("ui.git_tag_already_exists")
+        )
+        XCTAssertEqual(
+            message(" ! [rejected] main -> main (fetch first)\nhint: Updates were rejected because the remote contains work"),
+            L10n.text("ui.git_push_rejected_pull_first")
+        )
+        XCTAssertNotEqual(message("error: remote origin already exists."), L10n.text("ui.git_already_exists"))
+        XCTAssertEqual(message("fatal: 'feature-stage' already exists"), L10n.text("ui.git_already_exists"))
+        XCTAssertEqual(message("fatal: 'release-tag' already exists"), L10n.text("ui.git_already_exists"))
+        XCTAssertEqual(message("fatal: tag 'v1.0' already exists"), L10n.text("ui.git_tag_already_exists"))
+        XCTAssertEqual(
+            message(" ! [rejected] refs/tags/v2 -> refs/tags/v2 (already exists)"),
+            L10n.text("ui.git_tag_already_exists")
+        )
+
+        XCTAssertFalse(UserFacingError.containsSensitiveDetail("Run codex login on the host machine"))
+        XCTAssertTrue(UserFacingError.containsSensitiveDetail("Connection to mac-mini closed by remote host."))
+        XCTAssertTrue(UserFacingError.containsSensitiveDetail("fatal: mac-mini:projects/repo does not appear to be a git repository"))
+        XCTAssertTrue(UserFacingError.containsSensitiveDetail("Authentication failed for user alice"))
     }
 
     func testHostOperationMessageUsesTheSameGateAsComputerReasons() {

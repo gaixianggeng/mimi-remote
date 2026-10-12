@@ -6278,6 +6278,40 @@
         }
       }
     },
+    "ui.git_push_remote_rejected": {
+      "comment": "The remote refused a push, for example a protected branch or a server-side hook. Pulling does not help.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The remote rejected this push, for example because the branch is protected or a server hook declined it. Check the details on your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远端拒绝了这次推送（例如受保护分支或服务器钩子），请在电脑上查看原因。"
+          }
+        }
+      }
+    },
+    "ui.git_tag_already_exists": {
+      "comment": "Pushing or creating a tag failed because a tag with that name already exists.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A tag with that name already exists. Use a different tag name."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同名标签已存在，请换一个标签名。"
+          }
+        }
+      }
+    },
     "ui.model_list_empty_using_built_in_options": {
       "comment": "Status after a manual model list refresh returned no models.",
       "localizations": {

@@ -636,8 +636,23 @@ extension UserFacingError {
         func containsAny(_ needles: [String]) -> Bool {
             needles.contains { lowered.contains($0) }
         }
-        if containsAny(["non-fast-forward", "fetch first", "updates were rejected"])
-            || (lowered.contains("rejected") && lowered.contains("push")) {
+        // 服务端钩子 / 受保护分支拒绝：拉取解决不了，不能说成「远端有新提交」。
+        if containsAny(["[remote rejected]", "hook declined", "protected branch"]) {
+            return L10n.text("ui.git_push_remote_rejected")
+        }
+        // 只认 git 关于标签已存在的固定说法，分支名或路径里带 tag 字样不算。
+        if lowered.range(of: "\\btag '[^']+' already exists", options: .regularExpression) != nil
+            || lowered.range(of: "refs/tags/\\S+[^\\n]*\\(already exists\\)", options: .regularExpression) != nil
+            || lowered.contains("the tag already exists in the remote") {
+            return L10n.text("ui.git_tag_already_exists")
+        }
+        // 只有明确的「落后于远端」信号才提示先拉取。
+        if containsAny([
+            "non-fast-forward",
+            "fetch first",
+            "remote contains work",
+            "tip of your current branch is behind"
+        ]) {
             return L10n.text("ui.git_push_rejected_pull_first")
         }
         if containsAny(["merge conflict", "conflict (content)", "fix conflicts", "unmerged files"]) {
@@ -652,7 +667,8 @@ extension UserFacingError {
         ]) {
             return L10n.text("ui.git_local_changes_block")
         }
-        if lowered.contains("already exists") {
+        // 「remote origin already exists」说的是远端配置，不是分支或 Worktree。
+        if lowered.contains("already exists"), !lowered.contains("remote ") {
             return L10n.text("ui.git_already_exists")
         }
         if lowered.contains("nothing to commit") {
