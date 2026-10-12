@@ -295,8 +295,15 @@ extension CodexAppServerSessionRuntime {
             // `updatedAt` 与 thread/list 同源：持有方跑完后列表时间和未读水位能立刻前移。
             let canAcceptDirectInput = params["canAcceptDirectInput"]?.boolValue
             let updatedAt = date(from: params["updatedAt"])
+            let isRunningStatus = ["running", "waiting_for_approval", "waiting_for_input"].contains(status)
             _ = withUpdatedSession(threadID) { item in
                 item.status = status
+                if !isRunningStatus {
+                    // 线程已不在运行：缓存里的进行中 turn 一并清掉（Store 的事件归并对非运行状态同样清除）。
+                    // 电脑端持有方执行时打开会话，thread/read 会把最后一轮标成进行中；持有方转空闲或退出
+                    // 只推这条状态，不清的话快照会带着旧 turn 回到列表，一直显示「处理中」。
+                    item.activeTurnID = nil
+                }
                 if let canAcceptDirectInput {
                     item.canAcceptDirectInput = canAcceptDirectInput
                     item.claudeOwner = canAcceptDirectInput ? nil : claudeSessionOwner(from: params["claudeOwner"])

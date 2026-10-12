@@ -534,7 +534,10 @@ final class ClaudeTakeoverTests: XCTestCase {
     func testStatusPushForUnsubscribedSessionReachesTheIndexObserverWithRunState() async throws {
         let fixture = await makeHeldStore(id: "claude_index_push", supportsTakeover: true)
         let (runtime, _, _) = makeTakeoverRuntime(session: fixture.held)
-        await runtime.rememberForkedSession(fixture.held)
+        // 电脑端执行时打开会话：thread/read 把最后一轮标成进行中，缓存里留下它的 turn ID。
+        var openedWhileBusy = fixture.held
+        openedWhileBusy.activeTurnID = "turn-read-while-busy"
+        await runtime.rememberForkedSession(openedWhileBusy)
         let observed = ObservedSessions()
         await runtime.setSessionIndexObserver { session in observed.append(session) }
 
@@ -567,6 +570,8 @@ final class ClaudeTakeoverTests: XCTestCase {
         let idle = try XCTUnwrap(observed.last)
         XCTAssertEqual(idle.status, SessionStatus.history.rawValue)
         XCTAssertFalse(idle.isRunning)
+        XCTAssertNil(idle.activeTurnID, "持有方空闲后不能留下读历史时的进行中 turn")
+        XCTAssertEqual(idle.activityState, .idle)
         XCTAssertEqual(idle.claudeOwner?.status, "idle")
         XCTAssertEqual(idle.updatedAt, Date(timeIntervalSince1970: 1_791_803_200))
         // 缓冲区里留给稍后打开详情回放的快照，与观察者拿到的是同一份状态。
