@@ -610,9 +610,9 @@ final class ThemeStoreTests: XCTestCase {
             store.preset = preset
             for scheme in [ColorScheme.light, .dark] {
                 let tokens = store.tokens(for: scheme)
-                let isDefaultDark = preset == .codex && scheme == .dark
+                // 运行态是前景，所有预设都走 accentText；默认主题与浅色下它仍等于 accent。
                 let active = rgba(tokens.tint(for: .active))
-                let expectedActive = rgba(isDefaultDark ? tokens.accent : tokens.primaryAction)
+                let expectedActive = rgba(tokens.accentText)
                 XCTAssertLessThan(colorDistance(active, expectedActive), 0.0001)
                 XCTAssertEqual(active.alpha, expectedActive.alpha, accuracy: 0.0001)
             }
@@ -663,16 +663,95 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(contrastRatio(sentTimestamp, canvas), 4.5)
         // WorkbenchChromeMaterial 的 Reduce Transparency 有可确定的合成底色。
         // 未选中的胶囊/按钮用次级文字；完整选中时文字过渡到主文字（工作区胶囊）
-        // 或主操作色（「我的」按钮），次级文字不会落在完整选中底上。
+        // 或强调前景色（「我的」按钮），次级文字不会落在完整选中底上。
         let restingChrome = tokens.elevatedSurface
         XCTAssertGreaterThanOrEqual(contrastRatio(tokens.secondaryText, restingChrome), 4.5)
         let selectedChrome = flatten(tokens.primaryText.opacity(0.14), over: tokens.elevatedSurface)
-        for text in [tokens.primaryText, tokens.primaryAction] {
+        for text in [tokens.primaryText, tokens.accentText] {
             XCTAssertGreaterThanOrEqual(contrastRatio(text, selectedChrome), 4.5)
         }
         let inactiveFill = tokens.composerInactiveActionSurface
         let inactiveGlyph = flatten(tokens.composerInactiveActionForeground, over: inactiveFill)
         XCTAssertGreaterThanOrEqual(contrastRatio(inactiveGlyph, inactiveFill), 3.0)
+    }
+
+    /// #416：强调色当小字前景时，每套深色都要在它实际落到的表面上达到 4.5:1。
+    /// `primaryAction` 只为按钮底色校准，GitHub / Xcode / Gruvbox / 青草深色压在浮层和
+    /// 选中磨砂胶囊上都不够；这些位置改用 accentText，这里逐个表面锁住。
+    func testAccentTextIsReadableSmallTextOnEveryDarkSurface() {
+        let store = ThemeStore(defaults: defaults)
+        store.mode = .dark
+        for preset in ThemePreset.allCases {
+            store.preset = preset
+            let tokens = store.tokens(for: .dark)
+            XCTAssertEqual(tokens.resolvedScheme, .dark)
+            let text = tokens.accentText
+            let base = tokens.background
+            let surfaces: [(String, Color)] = [
+                ("background", base),
+                ("contentPanelBackground", tokens.contentPanelBackground),
+                ("elevatedSurface", tokens.elevatedSurface),
+                ("inputBackground", tokens.inputBackground),
+                ("sidebarSurfaceBackground", tokens.sidebarSurfaceBackground),
+                ("composerControlSurface", tokens.composerControlSurface),
+                ("settingsGroupBackground", tokens.settingsGroupBackground),
+                // 新会话 Sheet 的工作区图标、空会话图标、「打开输入路径」都压在强调软底上。
+                ("accentSoft/background", flatten(tokens.accentSoft, over: base)),
+                ("accentSoft/surface", flatten(tokens.accentSoft, over: tokens.surface)),
+                // 侧栏运行态小胶囊：同色 9% 软底。
+                ("activeCapsule", flatten(text.opacity(0.09), over: tokens.contentPanelBackground)),
+                // 「我的」选中：WorkbenchChromeMaterial 在 Reduce Transparency 下的完整选中底。
+                ("selectedChrome", flatten(tokens.primaryText.opacity(0.14), over: tokens.elevatedSurface))
+            ]
+            for (name, surface) in surfaces {
+                XCTAssertGreaterThanOrEqual(
+                    contrastRatio(text, surface),
+                    4.5,
+                    "\(preset.rawValue) dark accentText on \(name)"
+                )
+            }
+
+            // Xcode 深色的选中底是不透明中灰蓝，连次级文字都压不住；这里只要求图形的 3:1。
+            let selection = flatten(tokens.selectionFill, over: base)
+            XCTAssertGreaterThanOrEqual(
+                contrastRatio(text, selection),
+                preset == .xcode ? 3.0 : 4.5,
+                "\(preset.rawValue) dark accentText on selectionFill"
+            )
+        }
+    }
+
+    /// accentText 只改动那四套深色：默认主题两种外观、所有浅色都保持原来的 accent，
+    /// 按钮底色 primaryAction 在每个预设、每种外观下都不变。
+    func testAccentTextLeavesDefaultThemeLightAppearancesAndButtonFillsUnchanged() {
+        let store = ThemeStore(defaults: defaults)
+        for preset in ThemePreset.allCases {
+            store.preset = preset
+            for scheme in [ColorScheme.light, .dark] {
+                store.mode = scheme == .light ? .light : .dark
+                let tokens = store.tokens(for: scheme)
+                let context = "\(preset.rawValue) \(scheme)"
+                XCTAssertLessThan(
+                    colorDistance(rgba(tokens.primaryAction), rgba(tokens.accent)),
+                    0.0001,
+                    "\(context) primaryAction 仍是按钮底色 accent"
+                )
+                guard preset == .codex || scheme == .light else {
+                    // 深色的强调前景必须比按钮底色更亮，否则就没有解决对比度。
+                    XCTAssertGreaterThan(
+                        relativeLuminance(rgba(tokens.accentText)),
+                        relativeLuminance(rgba(tokens.primaryAction)),
+                        context
+                    )
+                    continue
+                }
+                XCTAssertLessThan(
+                    colorDistance(rgba(tokens.accentText), rgba(tokens.accent)),
+                    0.0001,
+                    "\(context) accentText 应保持 accent"
+                )
+            }
+        }
     }
 
     func testWriterConflictCardStaysReadableInEveryPreset() {

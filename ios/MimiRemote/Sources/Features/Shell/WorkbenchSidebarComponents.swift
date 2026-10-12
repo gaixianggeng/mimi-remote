@@ -431,7 +431,7 @@ struct WorkbenchSidebarFooter: View {
             meButtonLabel
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isMeSelected ? tokens.primaryAction : tokens.secondaryText)
+        .foregroundStyle(isMeSelected ? tokens.accentText : tokens.secondaryText)
         .background {
             if usesFloatingSurface {
                 // 浮层侧栏与顶栏按钮、工作区胶囊共用同一档磨砂；选中态复用
@@ -634,7 +634,7 @@ struct SessionSidebarMonitorRow: View {
             // 与前后台恢复，避免自绘缺口圆环停留在静态帧。
             ProgressView()
                 .controlSize(.mini)
-                .tint(tokens.primaryAction)
+                .tint(tokens.tint(for: .active))
                 .accessibilityLabel(L10n.text("ui.in_progress"))
         case .justCompleted, .pinned, .recent:
             Color.clear

@@ -695,7 +695,7 @@ struct WorkspaceRootView: View {
         } else {
             isFailure = false
         }
-        let tint = isFailure ? tokens.warning : tokens.primaryAction
+        let tint = isFailure ? tokens.warning : tokens.accentText
 
         return VStack(spacing: 0) {
             Spacer(minLength: 40)

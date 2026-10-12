@@ -458,10 +458,43 @@ extension ThemeTokens {
         }
     }
 
-    /// 默认深色主操作是浅灰配黑字，浅色恢复产品紫色配白字。
-    /// 主操作与小面积强调共用 accent，同时满足“当填充”和“当前景”两种用法。
+    /// 主操作按钮、悬浮新建圆钮这类实心控件的底色，前景配 `primaryActionForeground`。
+    /// 默认深色是浅灰配黑字，浅色恢复产品紫色配白字。
+    ///
+    /// 它只为“当填充”校准：小字、小图标、文字按钮和进度指示要用 `accentText`。
+    /// 默认主题两种外观里两者同值，其它预设的深色主操作色压在浮层或选中底上
+    /// 不到 4.5:1，直接拿来当小字前景会读不清（#416）。
     var primaryAction: Color {
         accent
+    }
+
+    /// 强调色当小字、小图标、文字按钮或进度指示前景时用的那一档（#416）。
+    ///
+    /// GitHub、Xcode、Gruvbox、青草四套深色的 accent 是按白字/黑字按钮底校准的，
+    /// 压在 elevatedSurface 上只有 3.7–4.0:1，压在「我的」选中磨砂胶囊上只有 2.4–3.8:1。
+    /// 这里给它们各配一档同色相的浅色，在页面底、卡片、浮层、强调软底、半透明选中底
+    /// 和选中磨砂胶囊上都在 4.5:1 以上。例外是 Xcode 深色不透明的中灰蓝选中底 #515B70：
+    /// 连次级文字都压不住，这里只保证图形所需的 3:1（约 3.8:1），留给主题本身处理。
+    ///
+    /// 默认主题两种外观的 accent 本身已满足（深色 #D3D3D3、浅色 #4A144A），
+    /// 浅色各预设也沿用 accent，这次不改浅色外观。
+    var accentText: Color {
+        switch (preset, resolvedScheme) {
+        case (.github, .dark):
+            // Primer 深色色阶 blue-2 #79C0FF，与按钮底的 #2E82F7 同一条蓝。
+            return Color(red: 121.0 / 255.0, green: 192.0 / 255.0, blue: 255.0 / 255.0)
+        case (.xcode, .dark):
+            // Xcode 链接蓝 #5482FF 提亮到 #A9C1FF。
+            return Color(red: 169.0 / 255.0, green: 193.0 / 255.0, blue: 255.0 / 255.0)
+        case (.gruvbox, .dark):
+            // 主操作橙 #D68C38 同色相提亮到 #FFC583，仍明显区别于奶油色正文 #EBDBB2。
+            return Color(red: 255.0 / 255.0, green: 197.0 / 255.0, blue: 131.0 / 255.0)
+        case (.meadow, .dark):
+            // 鼠尾草绿 #6FAF86 提亮一档到 #80C599。
+            return Color(red: 128.0 / 255.0, green: 197.0 / 255.0, blue: 153.0 / 255.0)
+        case (.codex, _), (_, .light):
+            return accent
+        }
     }
 
     /// 主按钮默认白字，维持一致、清晰的操作语义。
@@ -644,8 +677,8 @@ extension ThemeTokens {
     func tint(for tone: AgentSessionStatusTone) -> Color {
         switch tone {
         case .active:
-            // 运行态文字/图标跟随主操作色；默认深色是浅灰，浅色是产品紫色。
-            return primaryAction
+            // 运行态文字/图标是前景，用 accentText 而不是按钮底色；默认深色是浅灰，浅色是产品紫色。
+            return accentText
         case .warning:
             return warning
         case .danger:

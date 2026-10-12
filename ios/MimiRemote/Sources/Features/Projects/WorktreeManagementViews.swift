@@ -639,7 +639,7 @@ struct WorktreeManagerRow: View {
                 if isRunning {
                     Text(L10n.text("ui.running"))
                         .font(themeStore.uiFont(size: 11, weight: .semibold))
-                        .foregroundStyle(tokens.primaryAction)
+                        .foregroundStyle(tokens.tint(for: .active))
                 }
             }
 
