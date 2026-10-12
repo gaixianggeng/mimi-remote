@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -82,5 +84,65 @@ func TestClaudeAdapterWithoutFullAccessRejectsNoApprovalRequests(t *testing.T) {
 	probe.Adapter.FullAccess = true
 	if !probe.fullAccessAvailable() {
 		t.Fatalf("声明了完全访问的适配器应开放：%+v", probe)
+	}
+}
+
+// 适配器声明了 Claude Code 下限：已知过旧时整条通道不可用并提示升级；找不到 claude 时不在
+// 探测里拦，交给适配器起进程前的检查。
+func TestClaudeAdapterProbeChecksDeclaredClaudeCodeMinimum(t *testing.T) {
+	bridgePath := writeTestAdapterBridge(t, `{"methods":["initialize","thread/start","turn/start"],"fullAccess":true,"claudeCode":{"minimumVersion":"2.1.294"}}`)
+	oldClaude := writeTestBridgeWithVersion(t, "2.0.5 (Claude Code)")
+	router := &Router{cfg: config.Config{Claude: config.ClaudeConfig{
+		Enabled:   true,
+		BridgeBin: bridgePath,
+		Env:       map[string]string{"CLAUDE_BRIDGE_CLAUDE_BIN": oldClaude},
+	}}}
+	probe := router.refreshClaudeBridgeProbe(true)
+	if probe.Healthy || probe.Status != "claude_unsupported" || !strings.Contains(probe.Error, "2.0.5") || !strings.Contains(probe.Error, "2.1.294") || !strings.Contains(probe.Error, "claude update") {
+		t.Fatalf("Claude Code 过旧时通道应不可用并提示升级：%+v", probe)
+	}
+	if fix := claudeBridgeFix(probe); fix != "在终端运行 claude update" {
+		t.Fatalf("修复建议应是升级 Claude Code：%q", fix)
+	}
+
+	router.cfg.Claude.Env["CLAUDE_BRIDGE_CLAUDE_BIN"] = writeTestBridgeWithVersion(t, "2.1.296 (Claude Code)")
+	if probe := router.refreshClaudeBridgeProbe(true); !probe.Healthy || probe.Status != "ready" {
+		t.Fatalf("满足下限时通道应可用：%+v", probe)
+	}
+	router.cfg.Claude.Env["CLAUDE_BRIDGE_CLAUDE_BIN"] = filepath.Join(t.TempDir(), "missing-claude")
+	if probe := router.refreshClaudeBridgeProbe(true); !probe.Healthy {
+		t.Fatalf("找不到 claude 时不应在探测里拦：%+v", probe)
+	}
+
+	// 没有显式路径时按适配器环境里的 PATH 找 claude：claude.env.PATH 指向的旧版本也要拦下。
+	pathDir := t.TempDir()
+	pathClaude := copyFakeBridge(t, pathDir, "claude")
+	if err := os.WriteFile(pathClaude+".version", []byte("2.0.5 (Claude Code)"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	router.cfg.Claude.Env = map[string]string{"PATH": pathDir}
+	if probe := router.refreshClaudeBridgeProbe(true); probe.Healthy || probe.Status != "claude_unsupported" {
+		t.Fatalf("应按 claude.env.PATH 找到并拦下过旧的 claude：%+v", probe)
+	}
+}
+
+func TestClaudeGatewayReportsOutdatedClaudeCodeOnConnect(t *testing.T) {
+	bridgePath := writeTestAdapterBridge(t, `{"methods":["initialize","thread/start","turn/start"],"fullAccess":true,"claudeCode":{"minimumVersion":"2.1.294"}}`)
+	oldClaude := writeTestBridgeWithVersion(t, "2.0.5 (Claude Code)")
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Claude.Enabled = true
+		cfg.Claude.BridgeBin = bridgePath
+		cfg.Claude.Env = map[string]string{"CLAUDE_BRIDGE_CLAUDE_BIN": oldClaude}
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	conn := dialAuthedGatewayRuntime(t, server.URL, "claude")
+	defer conn.Close()
+	raw := readGatewayRaw(t, conn)
+	if !bytes.Contains(raw, []byte(`"code":"CLAUDE_CODE_VERSION_UNSUPPORTED"`)) ||
+		!bytes.Contains(raw, []byte(`"bridgeStatus":"claude_unsupported"`)) ||
+		!bytes.Contains(raw, []byte("claude update")) {
+		t.Fatalf("Claude Code 过旧时握手应返回明确的错误码与升级提示：%s", raw)
 	}
 }

@@ -475,6 +475,7 @@ func clearAgentdEnv(t *testing.T) {
 		"AGENTD_SCAN_ROOTS",
 		"AGENTD_BROWSE_ROOTS",
 		"AGENTD_WORKTREES_ROOT",
+		"AGENTD_CLAUDE_LEGACY_BRIDGE",
 	} {
 		t.Setenv(key, "")
 	}

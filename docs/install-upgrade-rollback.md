@@ -87,6 +87,16 @@ JSON 安全模式只返回 `version`、`service_ok` 和可选的安全 warning�
 
 永久移动或删除 App 前，先在菜单栏执行“退出并停止服务”，再用当前 App 内的 `agentd codex-front uninstall --stop-idle-backend` 安全卸载前门；命令失败时先结束共享任务和 Desktop SSH 页面，不要直接删除 App。如果要回到 Homebrew，在设置中执行“停止 App 服务并恢复 Homebrew”：App 会先确认私有 backend 空闲并卸载前门，失败则恢复 App 服务；确认 Homebrew 就绪后再移除 App。
 
+### Claude 通道切回旧 bridge
+
+Mac App 与 Windows 安装包默认使用随包的 Claude 适配器（#660）。只是 Claude 通道在新版本里出问题时，不必回滚整个安装包，可以先切回随包的旧 Rust bridge：
+
+1. 在 agentd 配置（macOS `~/Library/Application Support/mimi-remote/config.json`，Windows `%APPDATA%\mimi-remote\config.json`）的 `claude` 段加上 `"legacy_bridge": true`，保持文件权限 `0600`。
+2. 重启服务：Mac App 用菜单栏重启服务；命令行运行 `agentd restart`。
+3. 运行 `agentd doctor`，`claude-bridge` 一项应显示旧 bridge 的版本。
+
+删除这一项或改为 `false` 并重启即恢复默认。命令行运行的 agentd 也可以用环境变量 `AGENTD_CLAUDE_LEGACY_BRIDGE=1`。这个开关保留一个版本周期，之后旧 bridge 从安装包中移除。适配器要求 Claude Code 2.1.294 或更新版本，过旧时先在终端运行 `claude update`，不需要切回旧 bridge。
+
 ### macOS Homebrew 升级
 
 先做本地备份。备份目录含 Token，不能上传到 Issue、PR 或网盘公开链接。

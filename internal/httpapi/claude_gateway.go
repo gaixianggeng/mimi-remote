@@ -107,7 +107,7 @@ func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
 	// An unset bridge_bin is no longer fatal: an installed app ships its own
 	// bridge next to agentd, so the common case needs no configuration at all.
 	bin := strings.TrimSpace(r.cfg.Claude.BridgeBin)
-	path, ok := resolveClaudeBridgePath(bin)
+	path, ok := resolveClaudeBridgePath(bin, r.cfg.Claude.LegacyBridge)
 	if !ok {
 		probe.Path = bin
 		if bin == "" {
@@ -145,6 +145,14 @@ func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
 			return probe
 		}
 		probe.Adapter = &capabilities
+		// 适配器声明了 Claude Code 下限：已知过旧时整条通道标为不可用，客户端连接时就能看到
+		// 升级提示，而不是等发出第一条消息才失败。找不到或无法确认版本时不在这里拦。
+		if version, ok := r.claudeCode.version(r.cfg.Claude.Env); ok && !capabilities.ClaudeCodeSupported(version) {
+			probe.Status = "claude_unsupported"
+			probe.Error = claudebridge.ClaudeCodeUpgradeMessage(version, capabilities.ClaudeCode.MinimumVersion)
+			r.setClaudeBridgeProbe(probe)
+			return probe
+		}
 	}
 	probe.Status = "ready"
 	probe.Healthy = true
@@ -187,15 +195,25 @@ func (r *Router) refreshClaudeBridgeProbeIfStale() {
 	}
 }
 
-// resolveClaudeBridgePath finds the bridge to run, preferring what the config
-// names and falling back to the copy shipped alongside agentd.
-//
-// The fallback is what makes an installed app self-contained: a fresh machine
-// has no `~/.cargo/bin`, and a config carrying an absolute path from whoever
-// set it up first would otherwise point at a binary that isn't there. Anyone
-// who does name a working bridge still gets exactly that one.
-func resolveClaudeBridgePath(command string) (string, bool) {
-	return claudebridge.ResolveBinary(command)
+// claudeBridgeFix 是给用户的修复建议：Claude Code 过旧时升级它；随安装包提供 bridge 的安装重新
+// 安装 Mimi Remote；只有自行安装旧 bridge 的环境（Homebrew、Linux 发布包）才需要 cargo。
+func claudeBridgeFix(probe appServerBridgeProbe) string {
+	switch {
+	case probe.Status == "claude_unsupported":
+		return "在终端运行 claude update"
+	case claudebridge.BundledAvailable():
+		return "重新安装或升级 Mimi Remote"
+	default:
+		return claudebridge.InstallHint
+	}
+}
+
+// resolveClaudeBridgePath finds the bridge to run: by default the SDK adapter
+// shipped alongside agentd, or the old Rust bridge when the legacy switch is on.
+// A config naming some other program (a locally built adapter, say) still gets
+// exactly that one; see claudebridge.ResolveBinary for the full rule.
+func resolveClaudeBridgePath(command string, legacy bool) (string, bool) {
+	return claudebridge.ResolveBinary(command, legacy)
 }
 
 // probeClaudeBridgeVersion 返回版本号，以及输出是否来自 SDK 适配器。
@@ -217,15 +235,7 @@ func probeClaudeBridgeVersion(path string, args []string, env map[string]string)
 }
 
 func probeClaudeAdapterCapabilities(path string, args []string, env map[string]string) (claudebridge.AdapterCapabilities, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, path, append(append([]string{}, args...), "--capabilities")...)
-	cmd.Env = buildClaudeBridgeEnv(env)
-	output, err := cmd.Output()
-	if err != nil {
-		return claudebridge.AdapterCapabilities{}, err
-	}
-	return claudebridge.ParseAdapterCapabilities(bytes.TrimSpace(output))
+	return claudebridge.ReadAdapterCapabilities(context.Background(), path, args, buildClaudeBridgeEnv(env))
 }
 
 func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Request) {
@@ -250,12 +260,14 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 			code = "CLAUDE_BRIDGE_VERSION_UNKNOWN"
 		case "unsupported_version":
 			code = "CLAUDE_BRIDGE_VERSION_UNSUPPORTED"
+		case "claude_unsupported":
+			code = "CLAUDE_CODE_VERSION_UNSUPPORTED"
 		}
 		writeGatewayRuntimeErrorWithData(client, code, firstNonEmpty(probe.Error, "Claude bridge 不可用"), map[string]any{
 			"bridgeStatus":   probe.Status,
 			"bridgeVersion":  probe.Version,
 			"minimumVersion": claudebridge.MinimumVersion,
-			"fix":            claudebridge.InstallHint,
+			"fix":            claudeBridgeFix(probe),
 		})
 		return
 	}

@@ -575,17 +575,17 @@ func TestResolveClaudeBridgeFallsBackToTheBundledCopy(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(sibling) })
 
 	missing := filepath.Join(t.TempDir(), "not-installed")
-	got, ok := resolveClaudeBridgePath(missing)
+	got, ok := resolveClaudeBridgePath(missing, false)
 	if !ok || got != sibling {
 		t.Fatalf("配置路径不存在时应回退到随包 bridge：got=%q ok=%v want=%q", got, ok, sibling)
 	}
-	if got, ok := resolveClaudeBridgePath(""); !ok || got != sibling {
+	if got, ok := resolveClaudeBridgePath("", false); !ok || got != sibling {
 		t.Fatalf("未配置时应使用随包 bridge：got=%q ok=%v", got, ok)
 	}
 
 	// 显式配置了一个能用的 bridge 时必须原样使用它，不能被随包的顶掉。
 	configured := writeTestBridge(t, "#!/bin/sh\nexit 0\n")
-	if got, ok := resolveClaudeBridgePath(configured); !ok || got != configured {
+	if got, ok := resolveClaudeBridgePath(configured, false); !ok || got != configured {
 		t.Fatalf("显式配置应优先：got=%q ok=%v want=%q", got, ok, configured)
 	}
 }

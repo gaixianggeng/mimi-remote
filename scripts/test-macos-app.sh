@@ -28,13 +28,13 @@ case "$architecture" in
     ;;
 esac
 
-for command_name in xcodebuild go cargo rustc; do
+for command_name in xcodebuild go cargo rustc bun; do
   command -v "$command_name" >/dev/null 2>&1 \
     || { echo "Mac App 测试失败：缺少 ${command_name}。" >&2; exit 1; }
 done
 
 # 必须通过真实 Scheme 运行测试，不只做 Swift 语法检查。这会同时
-# 编译 Mac App、内嵌 agentd / Claude bridge 和现有单测，但不读取发布签名凭据。
+# 编译 Mac App、内嵌 agentd / Claude 适配器与旧 bridge 和现有单测，但不读取发布签名凭据。
 log "开始真实 Scheme 测试：scheme=${scheme} configuration=${configuration} arch=${architecture}"
 log "DerivedData=${derived_data} embed-cache=${embed_cache}"
 bash "$ROOT_DIR/scripts/development-cache-lock.sh" "$cache_lock" -- \

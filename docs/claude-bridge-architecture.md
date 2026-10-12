@@ -1,5 +1,7 @@
 # Claude bridge 架构
 
+> #660 起默认使用基于 Claude Agent SDK 的适配器（`bridges/claude-sdk`，见其 [README](../bridges/claude-sdk/README.md)）。本文描述的 Rust bridge 保留一个版本周期，作为 `claude.legacy_bridge` 回退开关的实现，之后删除。
+
 更新日期：2026-09-12
 
 ## 目标
@@ -59,7 +61,7 @@ sequenceDiagram
 - Claude CLI 候选顺序为「已配置路径 → `PATH` 上的 `claude` → `~/.local/bin/claude` → `~/.npm-global/bin/claude`」（Windows 另有 npm shim 到原生 `claude.exe` 的映射）。启动检测只按路径收集候选（不逐个执行），再对全部候选并行执行 `--version`（各 3 秒超时）：启动失败或超时的候选直接排除，剩下的选正式三段式版本最高者，同版本按候选顺序；同一真实文件的不同写法只算一次。版本无法解析的候选不参与择优，只有全部候选都无法解析时才退回第一个能启动的候选并按 `claude_version_unknown` 报告；没有任何候选能启动时按 `claude_missing` 报告且不写配置。已配置路径版本落后或已不可用时，检测结果直接覆盖 `CLAUDE_BRIDGE_CLAUDE_BIN` 并要求重载服务，因此官方安装器自动升级后 Mimi 会跟随最新 CLI，不会被 LaunchAgent `PATH` 前列的 Homebrew/npm 旧安装钉住，模型目录与终端、Claude 桌面保持一致。不提供"固定某个版本"的配置项。
 - 开关变化由 Mac App 重新加载其管理的 LaunchAgent，并等待 Claude Runtime 达到目标状态；失败时恢复修改前的 `activation` / `enabled` 并再次加载服务。
 - 启用后，`agentd` 用 `--version` 探测 bridge；低于 `0.2.7`、无标准版本或二进制不存在时 fail closed。`0.2.7` 是首个支持运行期 `thread/list.refreshHistory` 的版本，旧版会静默忽略该字段，不能继续当作兼容实现。
-- bridge 与 iOS / Go 代码同仓维护，并随 Mac App 一起构建、签名和安装；`agentd` 优先使用显式配置，否则使用与自身同目录的 `alleycat-claude-bridge`。
+- bridge 与 iOS / Go 代码同仓维护，并随 Mac App 一起构建、签名和安装；`agentd` 默认使用与自身同目录的 `mimi-claude-adapter`，回退开关打开时使用 `alleycat-claude-bridge`；配置明确指向别的程序时照用，Mac App 内固定使用随包文件（规则见 `internal/claudebridge/binary.go`）。
 - `agentd` 监督一个 resident bridge，通过 Unix socket 为多次 WebSocket 连接复用同一进程。
 - iOS 每个 runtime 使用稳定 session key；重新连接携带最后处理的 sequence cursor。bridge session 保存有界 replay ring 和未完成的反向请求。
 - 每个 Claude thread 对应一个 Claude Code headless 进程和一个常驻事件驱动器。事件驱动器只跟 thread/process 生命周期绑定，不跟页面、WebSocket 或单个 turn 绑定。
