@@ -207,6 +207,8 @@ struct QRCodeScannerSheet: View {
                         Button(L10n.text("ui.use_manual_connection_instead"), action: chooseManualConnection)
                             .buttonStyle(.bordered)
                             .controlSize(.large)
+                            // 描边按钮的文字是前景，不跟按钮底色走（#416）；默认主题与浅色下两者同值。
+                            .tint(themeStore.tokens(for: colorScheme).accentText)
                     }
                 }
                 // 显式配对主操作底色与前景：默认深色的主操作是浅灰，只能配黑字。
