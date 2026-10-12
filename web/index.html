@@ -3,28 +3,100 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Mimi Remote — Leave your desk. Not your session.</title>
-  <meta name="description" content="Mimi Remote is a native iPhone and iPad app for Codex and Claude Code. Continue your computer's sessions anywhere, get notified when an agent needs you, and connect from any network with built-in Tailcat." />
+  <title>Mimi Remote — Codex &amp; Claude Code on iPhone and iPad</title>
+  <meta name="description" content="A native iPhone and iPad app for Codex and Claude Code. Follow, reply to and approve sessions running on your Mac, Windows or Linux computer. Open source." />
   <meta name="color-scheme" content="light dark" />
+  <meta name="apple-itunes-app" content="app-id=6778076511" />
+
+  <!-- One page, two languages: the markup is English, ?lang=zh renders Chinese.
+       Both URLs list the same alternates; the self-referencing canonical is added
+       by the script below so the Chinese URL is never folded into the English one. -->
+  <link rel="alternate" hreflang="en" href="https://remote.code89757.com/" />
+  <link rel="alternate" hreflang="zh-Hans" href="https://remote.code89757.com/?lang=zh" />
+  <link rel="alternate" hreflang="x-default" href="https://remote.code89757.com/" />
 
   <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Mimi Remote" />
   <meta property="og:url" content="https://remote.code89757.com/" />
-  <meta property="og:title" content="Mimi Remote — Leave your desk. Not your session." />
+  <meta property="og:title" content="Mimi Remote — Codex &amp; Claude Code on iPhone and iPad" />
   <meta property="og:description" content="A native iPhone and iPad app for Codex and Claude Code. Your computer keeps working; you follow along, reply and approve from anywhere." />
+  <meta property="og:locale" content="en_US" />
+  <meta property="og:locale:alternate" content="zh_CN" />
   <meta property="og:image" content="https://remote.code89757.com/assets/og.png" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="Mimi Remote on iPad and iPhone, with the headline “Leave your desk. Not your session.”" />
   <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Mimi Remote — Codex &amp; Claude Code on iPhone and iPad" />
+  <meta name="twitter:description" content="A native iPhone and iPad app for Codex and Claude Code. Your computer keeps working; you follow along, reply and approve from anywhere." />
+  <meta name="twitter:image" content="https://remote.code89757.com/assets/og.png" />
+  <meta name="twitter:image:alt" content="Mimi Remote on iPad and iPhone, with the headline “Leave your desk. Not your session.”" />
 
   <link rel="icon" type="image/png" href="./assets/app-icon-small.png" />
-  <link rel="apple-touch-icon" href="./assets/app-icon.png" />
+  <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png" />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://remote.code89757.com/#website",
+        "url": "https://remote.code89757.com/",
+        "name": "Mimi Remote",
+        "inLanguage": ["en", "zh-Hans"]
+      },
+      {
+        "@type": "MobileApplication",
+        "@id": "https://remote.code89757.com/#app",
+        "name": "Mimi Remote",
+        "url": "https://remote.code89757.com/",
+        "description": "A native iPhone and iPad app for Codex and Claude Code. Your Mac, Windows or Linux computer keeps running the sessions; you follow along, reply and approve from anywhere.",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "iOS 18.0 or later, iPadOS 18.0 or later",
+        "image": "https://remote.code89757.com/assets/app-icon.png",
+        "screenshot": [
+          "https://remote.code89757.com/assets/shots/ipad-approval-en-light.webp",
+          "https://remote.code89757.com/assets/shots/iphone-sessions-en-light.webp"
+        ],
+        "downloadUrl": "https://apps.apple.com/app/id6778076511",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD",
+          "url": "https://apps.apple.com/app/id6778076511"
+        },
+        "isAccessibleForFree": true,
+        "license": "https://github.com/gaixianggeng/mimi-remote/blob/main/LICENSE",
+        "sameAs": [
+          "https://apps.apple.com/us/app/mimi-remote/id6778076511",
+          "https://github.com/gaixianggeng/mimi-remote"
+        ],
+        "isPartOf": { "@id": "https://remote.code89757.com/#website" }
+      }
+    ]
+  }
+  </script>
+
+  <!-- Screenshots get their src from site.js (language + appearance); without JavaScript show the <noscript> copies. -->
+  <noscript><style>img[data-shot]:not([src]) { display: none; }</style></noscript>
 
   <!-- Settle appearance and language before first paint so nothing flashes. -->
   <script>
     (function () {
-      var d = document.documentElement, t, l, i, list;
+      var d = document.documentElement, h = document.head, t, l, q, i, list, link;
       try { t = localStorage.getItem("mimi-theme"); l = localStorage.getItem("mimi-lang"); } catch (e) {}
       /* ?lang=zh / ?lang=en makes a link open in one language without remembering it */
       list = /[?&]lang=(en|zh)\b/.exec(location.search);
-      if (list) l = list[1];
+      if (list) l = q = list[1];
+
+      /* Self-referencing canonical: ?lang=zh is the Chinese page; / and ?lang=en are English. */
+      link = document.createElement("link");
+      link.rel = "canonical";
+      link.href = "https://remote.code89757.com/" + (q === "zh" ? "?lang=zh" : "");
+      h.appendChild(link);
+
       if (t !== "light" && t !== "dark") {
         t = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
       }
@@ -40,9 +112,21 @@
       d.setAttribute("data-lang", l);
       d.lang = l === "zh" ? "zh-Hans" : "en";
       if (!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches)) d.classList.add("has-reveal");
+
+      /* Screenshots carry no src in the markup, so a Chinese or dark visit never downloads
+         English light copies first. Fetch the hero pair now; site.js sets every src. */
+      list = ["ipad-approval", "iphone-sessions"];
+      for (i = 0; i < list.length; i++) {
+        link = document.createElement("link");
+        link.rel = "preload";
+        link.as = "image";
+        link.href = "./assets/shots/" + list[i] + "-" + l + "-" + t + ".webp";
+        if (i === 0) link.setAttribute("fetchpriority", "high");
+        h.appendChild(link);
+      }
     })();
   </script>
-  <link rel="stylesheet" href="./styles.css?v=20260914" />
+  <link rel="stylesheet" href="./styles.css?v=20261012" />
 </head>
 <body>
   <a class="skip" href="#main" data-i18n="skip">Skip to content</a>
@@ -50,7 +134,7 @@
   <header class="header" id="top" data-header>
     <div class="wrap header__inner">
       <a class="brand" href="#top" aria-label="Mimi Remote">
-        <img src="./assets/app-icon-small.png" width="28" height="28" alt="" />
+        <img src="./assets/app-icon-256.webp" width="28" height="28" alt="" />
         <span>Mimi Remote</span>
       </a>
 
@@ -100,12 +184,16 @@
       <div class="wrap">
         <div class="stage reveal reveal--late">
           <div class="device device--ipad stage__ipad">
-            <img data-shot="ipad-approval" src="./assets/shots/ipad-approval-en-light.webp" width="1320" height="1760" fetchpriority="high"
+            <img data-shot="ipad-approval" width="1320" height="1760" fetchpriority="high"
                  data-i18n-alt="alt.heroIpad" alt="Mimi Remote on iPad: the session sidebar beside a conversation waiting for approval." />
+            <noscript><img src="./assets/shots/ipad-approval-en-light.webp" width="1320" height="1760"
+                 alt="Mimi Remote on iPad: the session sidebar beside a conversation waiting for approval." /></noscript>
           </div>
           <div class="device device--phone stage__phone">
-            <img data-shot="iphone-sessions" src="./assets/shots/iphone-sessions-en-light.webp" width="720" height="1565"
+            <img data-shot="iphone-sessions" width="720" height="1565"
                  data-i18n-alt="alt.heroPhone" alt="The session list on iPhone, with running work at the top." />
+            <noscript><img src="./assets/shots/iphone-sessions-en-light.webp" width="720" height="1565"
+                 alt="The session list on iPhone, with running work at the top." /></noscript>
           </div>
         </div>
       </div>
@@ -129,7 +217,7 @@
           <li class="ov reveal"><a href="#connect">
             <svg class="ov__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="12" r="2.3"/><circle cx="18.5" cy="12" r="2.3"/><path d="M8 12h8M8.2 10.6c2.2-4 5.4-4 7.6 0"/></svg>
             <h3 data-i18n="ov.3.t">Tailcat built in</h3>
-            <p data-i18n="ov.3.n">Reach your computer from any network, no VPN app needed.</p>
+            <p data-i18n="ov.3.n">Reach a Mac or Linux computer from any network, no VPN app needed.</p>
           </a></li>
           <li class="ov reveal"><a href="#notify">
             <svg class="ov__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16.5V11a6 6 0 1 1 12 0v5.5l1.6 2H4.4Z"/><path d="M10 21a2.2 2.2 0 0 0 4 0"/></svg>
@@ -176,8 +264,10 @@
           </div>
 
           <div class="device device--phone handoff__phone">
-            <img data-shot="iphone-conversation" src="./assets/shots/iphone-conversation-en-light.webp" width="720" height="1565" loading="lazy"
+            <img data-shot="iphone-conversation" width="720" height="1565" loading="lazy"
                  data-i18n-alt="alt.handoff" alt="The same conversation, continued on iPhone." />
+            <noscript><img src="./assets/shots/iphone-conversation-en-light.webp" width="720" height="1565" loading="lazy"
+                 alt="The same conversation, continued on iPhone." /></noscript>
           </div>
         </div>
 
@@ -220,8 +310,10 @@
         <div class="feature__visual reveal reveal--late">
           <div class="panel rise">
             <div class="device device--phone rise__device">
-              <img data-shot="iphone-mac-connection" src="./assets/shots/iphone-mac-connection-en-light.webp" width="720" height="1565" loading="lazy"
+              <img data-shot="iphone-mac-connection" width="720" height="1565" loading="lazy"
                    data-i18n-alt="alt.devices" alt="Mac Connection on iPhone, listing two saved computers." />
+              <noscript><img src="./assets/shots/iphone-mac-connection-en-light.webp" width="720" height="1565" loading="lazy"
+                   alt="Mac Connection on iPhone, listing two saved computers." /></noscript>
             </div>
           </div>
         </div>
@@ -234,7 +326,7 @@
         <div class="feature__copy reveal">
           <p class="eyebrow" data-i18n="connect.eyebrow">Remote connection</p>
           <h2 class="h2" data-i18n="connect.title">Reach your computer<br />from anywhere.</h2>
-          <p class="body" data-i18n="connect.body">Mimi has Tailcat built in. Generate a QR code on your computer, scan it with your phone, and you're paired — no VPN app to install. It goes peer-to-peer whenever the network allows and falls back to an encrypted relay when it doesn't. Private keys never leave your devices.</p>
+          <p class="body" data-i18n="connect.body">Mimi has Tailcat built in, in beta for Mac and Linux computers. Generate a QR code on your computer, scan it with your phone, and you're paired — no VPN app to install on your phone. It goes peer-to-peer whenever the network allows and falls back to an encrypted relay when it doesn't. Private keys never leave your devices.</p>
           <ul class="routes" role="list">
             <li class="route route--featured">
               <h3>Tailcat <span class="tag">Beta</span></h3>
@@ -293,7 +385,7 @@
           <p class="body" data-i18n="notify.body">When an agent wants to run a command, change files or needs your input, a notification arrives with the session's title. Finished replies, failures and interruptions come through too — and approvals can be answered right from the notification.</p>
           <p class="privacy">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>
-            <span data-i18n="notify.privacy">Off by default. Once on, only a fixed-format status leaves your computer — never your code, prompts or conversations. Session titles are filled in on your phone.</span>
+            <span data-i18n="notify.privacy">On by default, and you can turn them off in the app. Only a fixed-format status leaves your computer — never your code, prompts or conversations. Session titles are filled in on your phone.</span>
           </p>
         </div>
         <div class="feature__visual reveal reveal--late">
@@ -305,20 +397,20 @@
             </div>
             <div class="lock__stack" aria-hidden="true">
               <div class="note">
-                <img class="note__icon" src="./assets/app-icon-small.png" width="38" height="38" alt="" />
+                <img class="note__icon" src="./assets/app-icon-256.webp" width="38" height="38" alt="" loading="lazy" />
                 <p class="note__title" data-i18n="lock.n1.t">Open-source release</p>
                 <span class="note__time" data-i18n="lock.now">now</span>
                 <p class="note__body" data-i18n="lock.n1.b">Codex needs approval on Demo Mac Studio · Run a command</p>
                 <div class="note__actions"><span data-i18n="lock.allow">Allow Once</span><span data-i18n="lock.deny">Deny</span></div>
               </div>
               <div class="note">
-                <img class="note__icon" src="./assets/app-icon-small.png" width="38" height="38" alt="" />
+                <img class="note__icon" src="./assets/app-icon-256.webp" width="38" height="38" alt="" loading="lazy" />
                 <p class="note__title" data-i18n="lock.n2.t">Connection recovery</p>
                 <span class="note__time" data-i18n="lock.n2.time">2m ago</span>
                 <p class="note__body" data-i18n="lock.n2.b">Replied. Tap to view.</p>
               </div>
               <div class="note note--back">
-                <img class="note__icon" src="./assets/app-icon-small.png" width="38" height="38" alt="" />
+                <img class="note__icon" src="./assets/app-icon-256.webp" width="38" height="38" alt="" loading="lazy" />
                 <p class="note__title" data-i18n="lock.n3.t">Improve sample project documentation</p>
                 <span class="note__time" data-i18n="lock.n3.time">18m ago</span>
                 <p class="note__body" data-i18n="lock.n3.b">The task could not finish. Tap to see why.</p>
@@ -348,8 +440,10 @@
         <div class="feature__visual reveal reveal--late">
           <div class="panel float">
             <div class="device device--phone float__device">
-              <img data-shot="iphone-approval" src="./assets/shots/iphone-approval-en-light.webp" width="720" height="1565" loading="lazy"
+              <img data-shot="iphone-approval" width="720" height="1565" loading="lazy"
                    data-i18n-alt="alt.easy" alt="An approval card inside a conversation, with Deny, Allow Once, Allow for This Session and Always Allow This Tool." />
+              <noscript><img src="./assets/shots/iphone-approval-en-light.webp" width="720" height="1565" loading="lazy"
+                   alt="An approval card inside a conversation, with Deny, Allow Once, Allow for This Session and Always Allow This Tool." /></noscript>
             </div>
           </div>
         </div>
@@ -367,16 +461,22 @@
 
         <div class="panel showcase reveal">
           <div class="device device--phone showcase__phone showcase__phone--left">
-            <img data-shot="iphone-workspaces" data-shot-theme="light" src="./assets/shots/iphone-workspaces-en-light.webp" width="720" height="1565" loading="lazy"
+            <img data-shot="iphone-workspaces" data-shot-theme="light" width="720" height="1565" loading="lazy"
                  data-i18n-alt="alt.designLight" alt="The workspace tab on iPhone in light mode." />
+            <noscript><img src="./assets/shots/iphone-workspaces-en-light.webp" width="720" height="1565" loading="lazy"
+                 alt="The workspace tab on iPhone in light mode." /></noscript>
           </div>
           <div class="device device--ipad showcase__ipad">
-            <img data-shot="ipad-workspaces" src="./assets/shots/ipad-workspaces-en-light.webp" width="1320" height="1760" loading="lazy"
+            <img data-shot="ipad-workspaces" width="1320" height="1760" loading="lazy"
                  data-i18n-alt="alt.designIpad" alt="The workspace view on iPad." />
+            <noscript><img src="./assets/shots/ipad-workspaces-en-light.webp" width="1320" height="1760" loading="lazy"
+                 alt="The workspace view on iPad." /></noscript>
           </div>
           <div class="device device--phone showcase__phone showcase__phone--right">
-            <img data-shot="iphone-sessions" data-shot-theme="dark" src="./assets/shots/iphone-sessions-en-dark.webp" width="720" height="1565" loading="lazy"
+            <img data-shot="iphone-sessions" data-shot-theme="dark" width="720" height="1565" loading="lazy"
                  data-i18n-alt="alt.designDark" alt="The session list on iPhone in dark mode." />
+            <noscript><img src="./assets/shots/iphone-sessions-en-dark.webp" width="720" height="1565" loading="lazy"
+                 alt="The session list on iPhone in dark mode." /></noscript>
           </div>
         </div>
 
@@ -431,7 +531,7 @@
 
   <footer class="footer">
     <div class="wrap footer__inner">
-      <span class="footer__brand"><img src="./assets/app-icon-small.png" width="22" height="22" alt="" />Mimi Remote</span>
+      <span class="footer__brand"><img src="./assets/app-icon-256.webp" width="22" height="22" alt="" loading="lazy" />Mimi Remote</span>
       <nav class="footer__links" aria-label="Footer">
         <a href="https://github.com/gaixianggeng/mimi-remote" target="_blank" rel="noopener noreferrer">GitHub</a>
         <a href="https://github.com/gaixianggeng/mimi-remote#readme" data-href-zh="https://github.com/gaixianggeng/mimi-remote/blob/main/README.zh-CN.md" target="_blank" rel="noopener noreferrer" data-i18n="footer.docs">Docs</a>
@@ -443,6 +543,6 @@
     </div>
   </footer>
 
-  <script src="./site.js"></script>
+  <script src="./site.js?v=20261012"></script>
 </body>
 </html>

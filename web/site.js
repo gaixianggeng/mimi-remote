@@ -2,7 +2,8 @@
      1. language     [data-i18n] / [data-i18n-alt] / [data-i18n-label] / [data-href-zh]
      2. appearance   light <-> dark, remembered; follows the system until chosen
      3. screenshots  [data-shot="name"] -> ./assets/shots/name-<zh|en>-<light|dark>.webp
-                     ([data-shot-theme] pins one appearance regardless of the page's)
+                     ([data-shot-theme] pins one appearance regardless of the page's;
+                     the markup carries no src, so only the right copy is downloaded)
      4. polish       header hairline + reveal-on-scroll
 
    English lives in index.html and is read back from the markup on load, so each
@@ -17,8 +18,8 @@
   /* ---------------------------------------------------------- 1. language */
 
   var ZH = {
-    "meta.title": "Mimi Remote — 离开电脑，会话不断",
-    "meta.description": "Mimi Remote 是 Codex 与 Claude Code 的原生 iPhone、iPad 客户端：在任何地方接着电脑上的会话，Agent 需要你时及时提醒，内置 Tailcat 随时连回电脑。",
+    "meta.title": "Mimi Remote — 用 iPhone、iPad 继续 Codex 与 Claude Code",
+    "meta.description": "Mimi Remote 是 Codex 与 Claude Code 的原生 iPhone、iPad 客户端。任务在你的 Mac、Windows 或 Linux 电脑上运行，你在手机上随时跟进、回复和审批。开源。",
 
     "skip": "跳到正文",
 
@@ -43,7 +44,7 @@
     "ov.2.t": "多台电脑",
     "ov.2.n": "Mac、Windows、Linux 各自保存，轻点即可切换。",
     "ov.3.t": "内置 Tailcat",
-    "ov.3.n": "不用另装 VPN App，在任何网络都能连回电脑。",
+    "ov.3.n": "不用另装 VPN App，在任何网络都能连回 Mac 或 Linux 电脑。",
     "ov.4.t": "及时通知",
     "ov.4.n": "审批、回复与失败，锁屏第一时间提醒。",
     "ov.5.t": "顺手好用",
@@ -71,7 +72,7 @@
 
     "connect.eyebrow": "远程连接",
     "connect.title": "在哪里，<br>都能连回电脑。",
-    "connect.body": "Mimi 内置 Tailcat。在电脑上生成二维码，用手机扫一下就完成配对，不用另装 VPN App。网络允许时点对点直连，不允许时自动走加密中转；私钥始终只留在你自己的设备里。",
+    "connect.body": "Mimi 内置 Tailcat（Beta，适用于 Mac 与 Linux 电脑）。在电脑上生成二维码，用手机扫一下就完成配对，手机上不用另装 VPN App。网络允许时点对点直连，不允许时自动走加密中转；私钥始终只留在你自己的设备里。",
     "route.tc": "内置，扫码一次，之后在任何网络都能连。",
     "route.ts": "已经在用 tailnet？直接连就行。",
     "route.lan.t": "局域网",
@@ -83,7 +84,7 @@
     "notify.eyebrow": "通知",
     "notify.title": "需要你的时候，<br>第一时间知道。",
     "notify.body": "Agent 想运行命令、修改文件或需要你补充信息时，带着会话标题的通知会直接送达；任务回复、失败或中断也会及时提醒。审批在通知里就能允许或拒绝。",
-    "notify.privacy": "默认关闭。开启后，离开电脑的只有固定格式的状态信息，不含你的代码、提示词或对话；会话标题在手机本地补全。",
+    "notify.privacy": "默认开启，可随时在 App 中关闭。离开电脑的只有固定格式的状态信息，不含你的代码、提示词或对话；会话标题在手机本地补全。",
     "lock.date": "9月12日 星期六",
     "lock.now": "现在",
     "lock.n1.t": "整理开源发布说明",
