@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -92,14 +93,32 @@ func TestClaudeGatewayInheritsProxyEnvironmentAndAllowsConfigOverride(t *testing
 	}
 }
 
-// isolateProxyEnvironment 清掉运行测试的 shell 继承来的大小写代理变量，避免宿主的
-// no_proxy、https_proxy 等按小写优先规则盖过测试设定的值。t.Setenv 先登记还原宿主值。
+// isolateProxyEnvironment 清掉运行测试的 shell 继承来的代理变量，避免宿主的
+// no_proxy、https_proxy 等按小写优先规则盖过测试设定的值。claudeenv.Build 还会按
+// 大小写不敏感回退到 Http_Proxy 这类混合写法，所以也清掉进程环境里所有同组键。
+// t.Setenv 先登记还原宿主值。
 func isolateProxyEnvironment(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{
-		"https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
-		"all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY",
-	} {
+	aliases := []string{"https_proxy", "http_proxy", "all_proxy", "no_proxy"}
+	keys := map[string]struct{}{}
+	for _, alias := range aliases {
+		keys[alias] = struct{}{}
+		keys[strings.ToUpper(alias)] = struct{}{}
+	}
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		for _, alias := range aliases {
+			if key != "" && strings.EqualFold(key, alias) {
+				keys[key] = struct{}{}
+			}
+		}
+	}
+	sorted := make([]string, 0, len(keys))
+	for key := range keys {
+		sorted = append(sorted, key)
+	}
+	sort.Strings(sorted)
+	for _, key := range sorted {
 		t.Setenv(key, "")
 		if err := os.Unsetenv(key); err != nil {
 			t.Fatalf("unset %s: %v", key, err)

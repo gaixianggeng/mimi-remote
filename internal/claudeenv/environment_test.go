@@ -2,6 +2,7 @@ package claudeenv
 
 import (
 	"os"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -121,15 +122,32 @@ func TestProxyValuesReturnsAliasesForRedaction(t *testing.T) {
 
 // isolateProxyEnvironment removes every proxy alias inherited from the shell
 // running the tests, so Build only sees proxies the test sets explicitly.
+// Build also falls back to mixed-case spellings such as Http_Proxy, so every
+// process key that case-insensitively matches a proxy group is removed too.
 // t.Setenv registers restoration of the host value before the key is unset.
 func isolateProxyEnvironment(t *testing.T) {
 	t.Helper()
+	keys := map[string]struct{}{}
 	for _, aliases := range proxyAliases {
 		for _, key := range aliases {
-			t.Setenv(key, "")
-			if err := os.Unsetenv(key); err != nil {
-				t.Fatalf("unset %s: %v", key, err)
-			}
+			keys[key] = struct{}{}
+		}
+	}
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		if key != "" && proxyGroup(key) != nil {
+			keys[key] = struct{}{}
+		}
+	}
+	sorted := make([]string, 0, len(keys))
+	for key := range keys {
+		sorted = append(sorted, key)
+	}
+	sort.Strings(sorted)
+	for _, key := range sorted {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
 		}
 	}
 }
