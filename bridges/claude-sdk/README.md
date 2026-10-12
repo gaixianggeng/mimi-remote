@@ -25,7 +25,33 @@
   - 持有方出现、退出或在空闲与执行之间切换时，向订阅者推送 `thread/status/changed`，附带与 Thread 同名的 `canAcceptDirectInput`、`claudeOwner`，客户端不用重新读取就能切换只读状态。
   - **接管**：规则沿用旧 bridge（#451）——只结束全部明确空闲、且进程启动时间与登记 `startedAt` 吻合的持有方；先 SIGINT，5 秒后重查状态再 SIGTERM；持有方退出后若有新进程认领同一会话，报 `holder_respawned` 且不再发信号。失败以 `-32602` 返回 `{accepted, reason, claudeOwner, retryable}`。
   - CLI 自身行为：恢复一个生成到一半被结束的会话时，CLI 会补一条 `No response requested.`，与被中断的那条回复成为兄弟节点。历史按 CLI 继续的支线显示，与 `claude --resume` 一致。
-- 其余方法（模型、技能、额度、改名、归档等）返回 `-32601`，在 #659 补齐。默认配置仍使用 Rust bridge。
+- **其余能力（#659）**：`model/list`、`account/rateLimits/read`、`thread/name/set`，见下面的对照表。默认配置仍使用 Rust bridge。
+
+## 与旧 bridge 的逐方法对照
+
+依据是实际调用方：iOS 只能经 agentd 网关调用 Claude 通道白名单里的方法（`internal/httpapi/appserver_gateway.go` 的 `appServerClaudeAllowedMethods`），agentd 内部经匿名连接调用 `initialize`、`thread/read`、`thread/name/set`（自动标题）和 `account/rateLimits/read`（菜单栏额度）。适配器以 `--capabilities` 声明已实现的方法，网关只开放声明过的。
+
+| 方法 | 调用方 | 结论 |
+| --- | --- | --- |
+| `initialize` | iOS、agentd | 实现（#656） |
+| `thread/list`、`thread/read`、`thread/loaded/list`、`thread/turns/list`、`thread/items/list` | iOS；agentd（`thread/read`） | 实现（#656）。列表含同仓库全部 worktree，历史与 `claude --resume` 一致 |
+| `thread/start`、`thread/resume`、`turn/start`、`turn/steer`、`turn/interrupt` | iOS | 实现（#657） |
+| `thread/takeover` | iOS | 实现（#658），规则同旧 bridge |
+| `model/list` | iOS 模型选择 | 实现（#659）。读 Claude Code 自己的模型目录（initialize），整理规则同旧 bridge；缓存 10 分钟，失败退回别名 |
+| `account/rateLimits/read` | iOS 额度、agentd 菜单栏 | 实现（#659）。只读复用 Claude Code 的 OAuth 凭据查询套餐额度，不刷新令牌；查不到时退回会话里观测到的 `rate_limit_event` |
+| `thread/name/set` | agentd 自动标题 | 实现（#659）。与 CLI `/rename` 相同，往 transcript 追加 custom-title，CLI 与桌面端看到同一个名字（旧 bridge 只写自己的索引）；不支持清除名称 |
+| `thread/archive`、`thread/unarchive` | 无（网关未开放） | 不实现。旧 bridge 的归档标记在首次启动时只读导入，列表照常过滤 |
+| `thread/fork`、`thread/compact/start`、`thread/rollback` | 无（网关未开放） | 不实现。需要时可用 SDK 的 `forkSession` 与 CLI 的 `/compact` |
+| `skills/list`、`skills/config/write`、`skills/remote/list`、`skills/remote/export` | 无（网关未开放） | 不实现 |
+| `review/start`、`thread/backgroundTerminals/clean` | 无（网关未开放） | 不实现 |
+| `command/exec`、`command/exec/write`、`command/exec/resize`、`command/exec/terminate` | 无（网关未开放） | 不实现 |
+| `config/read`、`config/value/write`、`config/batchWrite`、`configRequirements/read`、`config/mcpServer/reload`、`mcpServerStatus/list`、`mcpServer/oauth/login` | 无（网关未开放） | 不实现 |
+| `account/read`、`account/login/start`、`account/login/cancel`、`account/logout` | 无（agentd 只对 Codex 调用 `account/read`） | 不实现 |
+| `feedback/upload`、`experimentalFeature/list`、`collaborationMode/list`、`mock/experimentalMethod` | 无（网关未开放） | 不实现 |
+
+未实现的方法返回 `-32601`。旧 bridge 对 iPad 同样不开放这些方法，iPad 上 Claude 会话的改名、归档、分叉、压缩与技能列表在新旧实现下表现一致（都不提供）。
+
+非公开依赖共两处：占用登记（#658）与额度查询用的 OAuth usage 接口（`src/claude/usage.ts`）。SDK 的额度接口目前标为实验性，且需要另起 Claude 进程（可能顺带刷新令牌），稳定后再改用。
 
 ## 开发
 

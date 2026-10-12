@@ -1,4 +1,5 @@
 import type { Catalog, SessionRecord } from "../claude/catalog.ts";
+import type { ClaudeSessions } from "../claude/sdk.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
 import { RpcError } from "../rpc/frames.ts";
 import { ownerSummary, type SessionHolder } from "../runtime/holders.ts";
@@ -14,6 +15,7 @@ type Params = Record<string, unknown>;
 export interface TurnHandlerDeps {
   manager: ThreadManager;
   catalog: Catalog;
+  sessions: ClaudeSessions;
   holders(): Promise<Map<string, SessionHolder>>;
 }
 
@@ -173,6 +175,22 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
         },
       });
       return { turn };
+    },
+
+    /**
+     * 改名与 CLI `/rename` 相同：往 transcript 追加 custom-title，CLI、桌面端和 Mimi 看到同一个
+     * 名字。Claude Code 不支持清除名称，空名称直接拒绝。agentd 的自动标题经匿名连接调用。
+     */
+    async threadSetName(raw: unknown) {
+      const params = asParams(raw);
+      const threadId = requireString(params, "threadId", "thread/name/set");
+      const name = typeof params.name === "string" ? params.name.trim() : "";
+      if (!name) throw RpcError.invalidParams("thread/name/set.name 不能为空：Claude Code 不支持清除会话名称");
+      const record = await catalog.get(threadId);
+      if (!record) throw RpcError.invalidParams(`找不到 Claude 会话 ${threadId}`);
+      await deps.sessions.rename(threadId, name, record.cwd);
+      manager.publish(threadId, "thread/name/updated", { threadId, threadName: name });
+      return {};
     },
 
     turnSteer(raw: unknown) {

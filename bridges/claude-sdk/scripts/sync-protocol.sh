@@ -53,6 +53,12 @@ ROOT_TYPES=(
   v2/ToolRequestUserInputParams
   v2/ToolRequestUserInputResponse
   v2/ThreadStatusChangedNotification
+  v2/ModelListParams
+  v2/ModelListResponse
+  v2/GetAccountRateLimitsResponse
+  v2/ThreadSetNameParams
+  v2/ThreadSetNameResponse
+  v2/ThreadNameUpdatedNotification
 )
 
 actual_version="$("$CODEX_BIN" --version | awk '{print $NF}')"
