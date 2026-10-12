@@ -171,7 +171,6 @@ struct InAppToastCard: View {
 
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -221,14 +220,15 @@ struct InAppToastCard: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background {
+            // 浮在任意正文之上，用实色底板保证对比度；阴影只挂在底板上，不能逐个落到文字上。
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(reduceTransparency ? AnyShapeStyle(tokens.elevatedSurface) : AnyShapeStyle(.regularMaterial))
+                .fill(tokens.elevatedSurface)
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.35 : 0.12), radius: 14, y: 6)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(borderColor(tokens: tokens), lineWidth: 1)
         }
-        .shadow(color: .black.opacity(colorScheme == .dark ? 0.35 : 0.12), radius: 14, y: 6)
         .gesture(
             DragGesture(minimumDistance: 12).onEnded { value in
                 // 向上轻扫收起，与系统通知横幅的手势一致。

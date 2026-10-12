@@ -110,6 +110,11 @@ final class UserFacingErrorTests: XCTestCase {
         XCTAssertEqual(presented.category, .unknown)
         XCTAssertEqual(presented.message, L10n.text("ui.error_unknown"))
         XCTAssertTrue(presented.technicalDetail?.contains("MockError") == true)
+
+        // 字符串出口拿到的是随系统语言变化的 Foundation 兜底句，同样不能原样展示。
+        let raw = UserFacingError(rawMessage: MockError.timeout.localizedDescription)
+        XCTAssertEqual(raw.category, .unknown)
+        XCTAssertEqual(raw.message, L10n.text("ui.error_unknown"))
     }
 
     // MARK: - 只有字符串的出口

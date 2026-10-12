@@ -103,7 +103,7 @@ extension UserFacingError {
             self = .described(rawDescription)
             return
         }
-        guard let category = Self.category(for: error) else {
+        guard let category = Self.category(for: error) ?? Self.categoryForUndescribedError(error) else {
             self.init(rawMessage: rawDescription)
             return
         }
@@ -350,6 +350,16 @@ extension UserFacingError {
         }
     }
 
+    /// 没有自带说明的 Swift 错误只会得到 Foundation 的兜底句「操作无法完成（X 错误 1。）」，
+    /// 该句随系统语言变化，不能靠字符串识别；按「既不是 LocalizedError、也没有本地化描述」判断。
+    private static func categoryForUndescribedError(_ error: Error) -> UserFacingErrorCategory? {
+        guard !(error is LocalizedError) else {
+            return nil
+        }
+        let nsError = error as NSError
+        return nsError.userInfo[NSLocalizedDescriptionKey] == nil ? .unknown : nil
+    }
+
     private static func technicalDetail(for error: Error, rawDescription: String) -> String {
         // 不是 LocalizedError 的 Swift 错误只有「操作无法完成 (X error N.)」这种描述，
         // 补上类型与 case，支持人员才能对上是哪一类失败。
@@ -378,8 +388,10 @@ extension UserFacingError {
         "-32[0-7]\\d{2}\\b",
         "request id",
         "\\b(?:thread|turn|model|review|account)/[a-z]+",
-        // Foundation 对非 LocalizedError 的默认描述：「…(Module.Type error 1.)」。
-        "\\([\\w.]+ error -?\\d+\\.\\)"
+        // Foundation 对非 LocalizedError 的默认描述：英文「…(Module.Type error 1.)」与
+        // 中文「…（Module.Type错误1。）」。中文写成转义，避免被当作界面文案。
+        "\\([\\w.]+ error -?\\d+\\.\\)",
+        "\\uFF08[\\w.]+\\u9519\\u8BEF-?\\d+\\u3002\\uFF09"
     ].map { try! NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
 
     static func containsTechnicalDetail(_ text: String) -> Bool {
