@@ -129,6 +129,16 @@ rm -f "$third_party_marker"
 [[ -f "$third_party_marker" ]] \
   || fail "完整历史模式必须执行第三方许可检查。"
 
+git -C "$repository" switch -q -c tailcat-dependency-change "$base_sha"
+mkdir -p "$repository/experiments/tailcat"
+printf 'module example.invalid/tailcat\n\ngo 1.25\n' > "$repository/experiments/tailcat/go.mod"
+git -C "$repository" add experiments/tailcat/go.mod
+git -C "$repository" commit -q -m tailcat-dependency-change
+tailcat_head="$(git -C "$repository" rev-parse HEAD)"
+tailcat_plan="$(cd "$repository" && bash ./scripts/check-public-repo-safety.sh \
+  --pull-request --base "$base_sha" --head "$tailcat_head" --plan)"
+assert_contains "$tailcat_plan" "third_party=true"
+
 old_history_repository="$test_root/old-history-repository"
 create_repository "$old_history_repository"
 printf -v old_secret 'github_pat_%040d' 1

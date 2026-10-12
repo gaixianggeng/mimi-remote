@@ -106,7 +106,7 @@ if [[ "$mode" == "pull-request" ]]; then
   third_party=false
   while IFS= read -r -d '' changed_path; do
     case "$changed_path" in
-      go.mod|go.sum|THIRD_PARTY_NOTICES.md|.goreleaser.yml|scripts/check-third-party-notices.sh|ios/MimiRemote/project.yml|ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj|ios/MimiRemote/MimiRemote.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved)
+      go.mod|go.sum|experiments/tailcat/go.mod|experiments/tailcat/go.sum|THIRD_PARTY_NOTICES.md|.goreleaser.yml|scripts/check-third-party-notices.sh|ios/MimiRemote/project.yml|ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj|ios/MimiRemote/MimiRemote.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved)
         third_party=true
         break
         ;;
