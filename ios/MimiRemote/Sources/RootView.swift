@@ -865,6 +865,8 @@ struct RootView: View {
             showingInspector: $showingLogInspector,
             restorationRoute: workbenchRouteBinding
         )
+        // 工作台挂载后才接管前台回复提醒；首次配置页仍走系统横幅（#510）。
+        .foregroundSessionNoticeToasts()
     }
 }
 

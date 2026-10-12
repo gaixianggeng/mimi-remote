@@ -1625,7 +1625,7 @@ extension SessionStore {
             case .failed:
                 notification = ("failed", "ui.session_failed", .failed)
             case .interrupted:
-                notification = ("stopped", "ui.session_stopped", .completed)
+                notification = ("stopped", "ui.session_stopped", .interrupted)
             default:
                 notification = ("completed", "ui.session_completed", .completed)
             }
