@@ -147,6 +147,14 @@ export class ThreadManager {
   private async ownershipChanged(threadId: string, holder: SessionHolder | undefined): Promise<void> {
     const runtime = this.runtimes.get(threadId);
     if (holder && runtime?.hasLiveProcess()) {
+      // 扫描结果可能已经过时：持有方刚退出、并发的 turn/start 又拉起了自己的进程。停进程前
+      // 重读登记，确认同一个持有方（pid 与启动时间）仍在；不在就不让出，交给下一次扫描按最新
+      // 状态重新判断并推送。
+      const current = (await this.holders()).get(threadId);
+      if (!current || current.pid !== holder.pid || current.startedAt !== holder.startedAt) {
+        void this.ownership.scanNow();
+        return;
+      }
       this.options.log(
         `thread ${threadId.slice(0, 8)} continued by pid ${holder.pid} (${holder.entrypoint ?? "unknown"}); stopping the adapter's process`,
       );
