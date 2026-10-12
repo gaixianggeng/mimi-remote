@@ -179,6 +179,33 @@ func TestDisablingLANKeepsEnabledTailscaleReachable(t *testing.T) {
 	}
 }
 
+// 旧配置没有 allow_lan，只是手动把 listen 写成 Tailscale 地址：IPv4（100.64.0.0/10）与
+// IPv6（fd7a:115c:a1e0::/48）都必须被识别为隐式 Tailscale 意图。首次经 CLI 修改网络转入
+// 模块控制后，Tailscale 两个地址族继续可达，局域网保持关闭，而不是只剩 loopback。
+func TestLegacyTailscaleListenKeepsTailscaleAfterModuleTakeover(t *testing.T) {
+	for _, listen := range []string{"100.64.0.2:8787", "[fd7a:115c:a1e0::2]:8787"} {
+		t.Run(listen, func(t *testing.T) {
+			path := writeNetworkToggleConfig(t, listen, `{}`)
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Tailscale listen 不需要 allow_lan：%v", err)
+			}
+			if cfg.HasNetworkModuleControls() || !cfg.TailscaleAccessEnabled() || cfg.LANAccessEnabled() {
+				t.Fatalf("legacy intent tailscale=%t lan=%t", cfg.TailscaleAccessEnabled(), cfg.LANAccessEnabled())
+			}
+
+			result := runNetworkToggle(t, path, "--lan-enabled=false")
+			if result.LANEnabled || !result.TailscaleEnabled {
+				t.Fatalf("takeover result %+v", result)
+			}
+			assertIngress(t, path, listen, true, false, []string{"0.0.0.0:8787"})
+			if cfg, err = config.Load(path); err != nil || !cfg.HasNetworkModuleControls() {
+				t.Fatalf("CLI 修改后应记录模块意图：%v", err)
+			}
+		})
+	}
+}
+
 // Tailscale 本就关闭时，关闭局域网必须真正收紧到 loopback：通配或 IPv6 通配 listen
 // 都不能让局域网继续对外监听。
 func TestDisablingLANWithoutTailscaleFallsBackToLoopback(t *testing.T) {
