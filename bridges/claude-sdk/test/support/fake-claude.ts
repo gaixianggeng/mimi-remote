@@ -11,6 +11,10 @@ import readline from "node:readline";
 type Json = Record<string, any>;
 
 const argv = process.argv.slice(2);
+if (argv.includes("--version")) {
+  process.stdout.write("2.1.296 (Claude Code)\n");
+  process.exit(0);
+}
 function flag(name: string): string | undefined {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;

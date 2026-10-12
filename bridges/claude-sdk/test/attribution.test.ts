@@ -71,6 +71,8 @@ beforeAll(async () => {
     stateDir: path.join(sandbox, "state"),
     log: () => {},
     claudeExecutable: () => "unused",
+    // 脚本化的 SDK 查询不启动真实 CLI，版本门槛直接放行。
+    probeClaudeCode: async () => ({ status: "ok", version: "9.9.9" }),
     startQuery: (({ prompt }: { prompt: AsyncIterable<unknown> }) => {
       script = new ScriptedQuery();
       script.attach(prompt);

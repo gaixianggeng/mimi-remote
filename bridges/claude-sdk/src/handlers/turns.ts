@@ -17,6 +17,8 @@ export interface TurnHandlerDeps {
   catalog: Catalog;
   sessions: ClaudeSessions;
   holders(): Promise<Map<string, SessionHolder>>;
+  /** Claude Code 版本下限：起进程前确认，过旧时给出明确提示。 */
+  claudeCode: { ensure(): Promise<void> };
 }
 
 function asParams(value: unknown): Params {
@@ -148,6 +150,9 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       const params = asParams(raw);
       const threadId = requireString(params, "threadId", "turn/start");
       const input = inputOf(params, "turn/start");
+      // 版本探测可能要几秒：放在占用检查之前，检查之后到起进程之间不留长等待，
+      // 否则终端在这段时间接手会话，适配器仍会起第二个写入方。
+      await deps.claudeCode.ensure();
       const holder = (await deps.holders()).get(threadId);
       if (holder) {
         throw new RpcError(-32602, `thread \`${threadId}\` is held by another local claude process`, {

@@ -1,20 +1,22 @@
 import os from "node:os";
 import path from "node:path";
 import { Catalog, HistoryStore } from "./claude/catalog.ts";
+import { ClaudeCodeVersionGate, type ClaudeCodeProbe } from "./claude/claudeCode.ts";
+import { legacyIndexPath, migrateLegacyNames, readLegacyIndex } from "./claude/legacy.ts";
 import { Overlay } from "./claude/overlay.ts";
 import { sdkSessions, type ClaudeSessions } from "./claude/sdk.ts";
 import { ActivityClock, TranscriptIndex } from "./claude/transcripts.ts";
 import { ModelCatalog, sdkModelDiscovery, type DiscoverModels } from "./claude/models.ts";
-import { RateLimitReader } from "./claude/usage.ts";
 import { createAccountHandlers } from "./handlers/account.ts";
 import { createHistoryHandlers } from "./handlers/history.ts";
-import type { RateLimitSnapshot } from "./protocol/codex/v2/RateLimitSnapshot.ts";
 import { createThreadHandlers } from "./handlers/threads.ts";
 import { createTurnHandlers } from "./handlers/turns.ts";
 import { ThreadManager, type ManagerOptions } from "./runtime/manager.ts";
+import { unavailableRateLimits } from "./runtime/rateLimits.ts";
 import type { InitializeResponse } from "./protocol/codex/InitializeResponse.ts";
 import { Router, type Handler, type Logger } from "./server/router.ts";
-import { ADAPTER_NAME, ADAPTER_VERSION, USER_AGENT } from "./version.ts";
+import { logger } from "./util/logging.ts";
+import { ADAPTER_NAME, ADAPTER_VERSION, MINIMUM_CLAUDE_CODE_VERSION, USER_AGENT } from "./version.ts";
 
 /**
  * `--capabilities` 的能力声明。agentd 读它决定向客户端声明哪些方法与权限档位，
@@ -26,6 +28,8 @@ export interface CapabilityDeclaration {
   methods: string[];
   /** 是否支持完全访问（approvalPolicy never + dangerFullAccess → bypassPermissions）。 */
   fullAccess: boolean;
+  /** agentd 预检按它提示用户升级 Claude Code。 */
+  claudeCode: { minimumVersion: string };
 }
 
 /** 客户端发来、适配器接受但不应答的通知；网关按声明开放，漏声明会被当成不支持。 */
@@ -33,7 +37,7 @@ const ACCEPTED_NOTIFICATIONS = ["initialized"];
 
 export function capabilityDeclaration(router: Router): CapabilityDeclaration {
   const methods = [...router.methods(), ...ACCEPTED_NOTIFICATIONS].sort();
-  return { name: ADAPTER_NAME, version: ADAPTER_VERSION, methods, fullAccess: true };
+  return { name: ADAPTER_NAME, version: ADAPTER_VERSION, methods, fullAccess: true, claudeCode: { minimumVersion: MINIMUM_CLAUDE_CODE_VERSION } };
 }
 
 /** 适配器自己的状态目录（Mimi 覆盖层）。 */
@@ -46,15 +50,6 @@ export function defaultStateDir(): string {
     return path.join(process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"), "mimi-remote", "claude-adapter");
   }
   return path.join(process.env.XDG_STATE_HOME ?? path.join(os.homedir(), ".local", "state"), "mimi-remote", "claude-adapter");
-}
-
-/** 旧 Rust bridge 的会话索引位置，只用于首次启动时导入归档标记。 */
-function legacyIndexPath(): string | undefined {
-  if (process.env.MIMI_CLAUDE_LEGACY_INDEX !== undefined) return process.env.MIMI_CLAUDE_LEGACY_INDEX || undefined;
-  if (process.platform === "darwin") {
-    return path.join(os.homedir(), "Library", "Application Support", "codex", "claude-bridge", "threads.json");
-  }
-  return undefined;
 }
 
 /** 驱动对话用的 claude：优先 agentd 传入的路径（与旧 bridge 同一个环境变量），否则 PATH 里的。 */
@@ -75,22 +70,26 @@ export interface AppOptions {
   ownership?: Pick<ManagerOptions, "ownershipPollMs" | "takeoverTimeouts" | "takeoverDeps">;
   /** 测试用：turn 收尾后检查标题的时间点。 */
   titleCheckDelaysMs?: number[];
-  /** 测试用：模型目录与额度的来源。 */
+  /** 测试用：模型目录的来源。 */
   discoverModels?: DiscoverModels;
-  fetchUsage?: () => Promise<RateLimitSnapshot>;
+  /** 测试用：Claude Code 版本探测。 */
+  probeClaudeCode?: (executable: string) => Promise<ClaudeCodeProbe>;
 }
 
 export interface App {
   router: Router;
   manager: ThreadManager;
   models: ModelCatalog;
+  /** 把旧 bridge 里的 Mimi 名称写成 custom-title（#660）；全部处理完后不再执行。 */
+  migrateLegacyNames(): Promise<void>;
 }
 
 export function createApp(options: AppOptions): App {
   const stateDir = options.stateDir ?? defaultStateDir();
   const sessions = options.sessions ?? sdkSessions;
   const transcripts = new TranscriptIndex();
-  const overlay = new Overlay(path.join(stateDir, "overlay.json"), legacyIndexPath());
+  const legacyIndex = legacyIndexPath();
+  const overlay = new Overlay(path.join(stateDir, "overlay.json"), legacyIndex);
   const catalog = new Catalog({ sessions, transcripts, activity: new ActivityClock(), overlay });
   const history = new HistoryStore({ sessions, transcripts });
   const claudeExecutable = options.claudeExecutable ?? defaultClaudeExecutable;
@@ -111,14 +110,10 @@ export function createApp(options: AppOptions): App {
     loadedThreadIds: () => manager.loadedThreadIds(),
   });
   const historyHandlers = createHistoryHandlers(history, (threadId) => activeTurnId(threadId) !== undefined);
-  const turns = createTurnHandlers({ manager, catalog, sessions, holders });
+  const claudeCode = new ClaudeCodeVersionGate(claudeExecutable, options.probeClaudeCode);
+  const turns = createTurnHandlers({ manager, catalog, sessions, holders, claudeCode });
   const models = new ModelCatalog({ discover: options.discoverModels ?? sdkModelDiscovery(claudeExecutable), log: options.log });
-  const rateLimits = new RateLimitReader({
-    ...(options.fetchUsage ? { fetch: options.fetchUsage } : {}),
-    observed: () => manager.observedRateLimits,
-    log: options.log,
-  });
-  const account = createAccountHandlers(models, rateLimits);
+  const account = createAccountHandlers(models, () => manager.observedRateLimits ?? unavailableRateLimits());
 
   const initialize: Handler = (): InitializeResponse => ({
     userAgent: USER_AGENT,
@@ -144,7 +139,30 @@ export function createApp(options: AppOptions): App {
     ["model/list", () => account.modelList()],
     ["account/rateLimits/read", () => account.rateLimitsRead()],
   ]);
-  return { router: new Router(handlers, options.log), manager, models };
+  async function migrateNames(): Promise<void> {
+    await overlay.load();
+    if (overlay.legacyNamesMigrated()) return;
+    const legacy = await readLegacyIndex(legacyIndex);
+    // 旧索引暂时读不了：不迁移也不记完成，下次启动连同归档标记一起重试。
+    if (legacy.status === "unreadable" || overlay.legacyImportPending()) {
+      logger.warn("legacy.index.unreadable", {});
+      return;
+    }
+    const result = await migrateLegacyNames({
+      threads: legacy.status === "ok" ? legacy.threads : [],
+      sessions,
+      transcriptPath: async (sessionId) => {
+        await transcripts.refresh();
+        return transcripts.get(sessionId)?.path;
+      },
+      heldElsewhere: async () => new Set((await manager.holders()).keys()),
+    });
+    if (result.renamed || result.kept || result.deferred) logger.info("legacy.names", { ...result });
+    // 有会话被占用或写入失败时不记完成，下次启动再试；已写过的会话因为有了 custom-title 不会重复写。
+    if (result.deferred === 0) await overlay.markLegacyNamesMigrated();
+  }
+
+  return { router: new Router(handlers, options.log), manager, models, migrateLegacyNames: migrateNames };
 }
 
 /** 只需要方法分发的场景（只读测试等）。 */
