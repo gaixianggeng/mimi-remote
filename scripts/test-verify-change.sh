@@ -136,15 +136,30 @@ assert_not_contains "$ios_execution_output" "复用构建证据"
 [[ ! -d "$ios_execution_lease_root/M5-27-UDID.lease" ]] \
   || fail "iOS quick 结束后必须释放固定 Simulator 租约。"
 # 输入未变时第二轮 quick 复用上一轮成功构建的证据：不再调用 xcodebuild，并在状态中写明。
+# 证据依赖 plutil 解析 project.pbxproj；没有可用解析器的主机（例如 Linux 上的
+# Repository safety）必须 fail-closed：照常构建并说明原因，而不是复用或失败。
 ios_execution_builds="$(awk 'END { print NR }' "$ios_execution_xcodebuild_log")"
 ios_execution_output="$(run_ios_execution)"
-assert_contains "$ios_execution_output" "<== 通过（复用构建证据）"
-assert_contains "$ios_execution_output" "复用构建证据：本 Worktree 的 build"
-assert_contains "$ios_execution_output" "其中 1 项复用构建证据，未重新编译"
-[[ "$(awk 'END { print NR }' "$ios_execution_xcodebuild_log")" == "$ios_execution_builds" ]] \
-  || fail "复用构建证据时不得再次调用 xcodebuild。"
 ios_execution_summary="$(printf '%s\n' "$ios_execution_output" | sed -n 's/^结果汇总：//p')"
-assert_contains "$(<"$ios_execution_summary")" "通过（复用构建证据） |"
+if plutil -convert json -o - "$ROOT_DIR/ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj" \
+  >/dev/null 2>&1; then
+  assert_contains "$ios_execution_output" "<== 通过（复用构建证据）"
+  assert_contains "$ios_execution_output" "复用构建证据：本 Worktree 的 build"
+  assert_contains "$ios_execution_output" "其中 1 项复用构建证据，未重新编译"
+  [[ "$(awk 'END { print NR }' "$ios_execution_xcodebuild_log")" == "$ios_execution_builds" ]] \
+    || fail "复用构建证据时不得再次调用 xcodebuild。"
+  assert_contains "$(<"$ios_execution_summary")" "通过（复用构建证据） |"
+else
+  assert_not_contains "$ios_execution_output" "复用构建证据"
+  # 两轮都无法记录证据：第二轮先报告没有证据，构建时再说明为何不记录。
+  assert_contains "$(cat "${ios_execution_summary%/*}"/*.log)" "构建证据不可复用："
+  assert_contains "$(cat "${ios_execution_summary%/*}"/*.log)" \
+    "构建证据：本次不记录（无法确认构建输入："
+  assert_contains "$(cat "${ios_execution_summary%/*}"/*.log)" "无法解析 project.pbxproj"
+  [[ "$(awk 'END { print NR }' "$ios_execution_xcodebuild_log")" == "$((ios_execution_builds + 1))" ]] \
+    || fail "无法确认构建输入时必须照常调用 xcodebuild。"
+  assert_not_contains "$(<"$ios_execution_summary")" "通过（复用构建证据）"
+fi
 
 tailcat_output="$(assert_plan tailcat experiments/tailcat/mobile/tailcatmobile/tailcatmobile.go)"
 assert_contains "$tailcat_output" "PR Gate scope：go=false, ios=true"

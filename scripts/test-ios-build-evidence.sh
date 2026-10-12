@@ -375,6 +375,15 @@ rm -rf "$worktree_a/ios/MimiRemote/Resources/Linked" "$worktree_a/ios/MimiRemote
 cp "$TEMP_DIR/project.pbxproj.backup" "$project_file"
 assert_reusable "$worktree_a"
 
+# 10a. pbxproj 解析器不可用或失败（例如 Linux 主机没有 plutil）时不复用，并说明原因。
+mkdir -p "$TEMP_DIR/broken-plutil-bin"
+printf '#!/usr/bin/env bash\necho "plutil unavailable" >&2\nexit 1\n' \
+  > "$TEMP_DIR/broken-plutil-bin/plutil"
+chmod +x "$TEMP_DIR/broken-plutil-bin/plutil"
+assert_rebuild "无法确认构建输入：无法解析 project.pbxproj：plutil unavailable" "$worktree_a" \
+  PATH="$TEMP_DIR/broken-plutil-bin:$PATH"
+assert_reusable "$worktree_a"
+
 # 10b. 引用实际指向 ios/Shared，而仓库根目录恰好也有 Shared：必须为 ios/Shared 算指纹。
 #      工程外分组下的普通子路径、以 SRCROOT 为基准的构建设置也必须纳入。
 mkdir -p "$worktree_a/ios/Shared" "$worktree_a/Shared" "$worktree_a/docs/group" "$worktree_a/config"
