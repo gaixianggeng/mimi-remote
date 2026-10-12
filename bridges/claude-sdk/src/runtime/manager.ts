@@ -39,7 +39,14 @@ export interface ManagerOptions {
   takeoverTimeouts?: TakeoverTimeouts;
   /** 测试可替换进程核对与信号。 */
   takeoverDeps?: Partial<TakeoverDeps>;
+  /** 会话当前的标题（Claude Code 的 AI 标题或 /rename），用于把标题变化推给客户端。 */
+  readTitle?: (threadId: string) => Promise<string | null>;
+  /** turn 收尾后检查标题的时间点（毫秒）。 */
+  titleCheckDelaysMs?: number[];
 }
+
+/** Claude Code 在第一轮前后异步生成 AI 标题，通常几秒内写入；稍后再看几次。 */
+const TITLE_CHECK_DELAYS_MS = [0, 2_000, 8_000, 30_000];
 
 export class ThreadManager {
   private readonly runtimes = new Map<string, ThreadRuntime>();
@@ -47,6 +54,8 @@ export class ThreadManager {
   private readonly subscriptions = new Map<Session, Set<string>>();
   private readonly pending = new Map<string, PendingRequest>();
   private counter = 0;
+  /** 已经推送给客户端（或客户端从会话快照里拿到）的标题。 */
+  private readonly titles = new Map<string, string | null>();
   private lastRateLimits: RateLimitSnapshot | undefined;
   readonly ownPids = new Set<number>();
   /** 本适配器自己的 Claude 进程：已知 pid，以及还没拿到 pid 的启动窗口。 */
@@ -67,6 +76,7 @@ export class ThreadManager {
       log: options.log,
       ownPids: this.ownPids,
       processReady: () => void this.ownership.scanNow(),
+      turnFinished: (threadId) => this.scheduleTitleChecks(threadId),
       idleCloseMs: options.idleCloseMs ?? 10 * 60_000,
       ...(options.startQuery ? { startQuery: options.startQuery } : {}),
     };
@@ -114,11 +124,18 @@ export class ThreadManager {
   create(cwd: string, settings: RunSettings): ThreadRuntime {
     const runtime = new ThreadRuntime(randomUUID(), cwd, this.host, settings, false);
     this.runtimes.set(runtime.threadId, runtime);
+    this.titles.set(runtime.threadId, null);
     return runtime;
   }
 
-  /** 已有 transcript 的会话：进程推迟到第一次 turn 再以 resume 拉起。 */
-  open(threadId: string, cwd: string, settings: RunSettings): ThreadRuntime {
+  /**
+   * 已有 transcript 的会话：进程推迟到第一次 turn 再以 resume 拉起。title 是 transcript 里
+   * 此刻的标题：复用运行时也据此对齐缓存（客户端都断开时 CLI 可能改过名），变了就推给其他
+   * 订阅者；否则之后改回原名会被当成「没变」吞掉。读不到标题时保留已知的。
+   */
+  open(threadId: string, cwd: string, settings: RunSettings, title: string | null = null): ThreadRuntime {
+    if (!this.titles.has(threadId)) this.titles.set(threadId, title);
+    else if (title) this.titleChanged(threadId, title);
     const existing = this.runtimes.get(threadId);
     if (existing) return existing;
     const runtime = new ThreadRuntime(threadId, cwd, this.host, settings, true);
@@ -197,6 +214,28 @@ export class ThreadManager {
       canAcceptDirectInput: !holder,
       claudeOwner: holder ? ownerSummary(holder) : null,
     });
+  }
+
+  /** 标题变了（agentd 改名、CLI /rename 或 Claude Code 的 AI 标题）：推给订阅者。 */
+  titleChanged(threadId: string, title: string): void {
+    if (this.titles.get(threadId) === title) return;
+    this.titles.set(threadId, title);
+    this.publish(threadId, "thread/name/updated", { threadId, threadName: title });
+  }
+
+  private scheduleTitleChecks(threadId: string): void {
+    const readTitle = this.options.readTitle;
+    if (!readTitle) return;
+    for (const delay of this.options.titleCheckDelaysMs ?? TITLE_CHECK_DELAYS_MS) {
+      const timer = setTimeout(() => {
+        void readTitle(threadId)
+          .then((title) => {
+            if (title) this.titleChanged(threadId, title);
+          })
+          .catch(() => {});
+      }, delay);
+      timer.unref?.();
+    }
   }
 
   /** thread/loaded/list：有常驻 Claude 进程或进行中 turn 的会话。 */

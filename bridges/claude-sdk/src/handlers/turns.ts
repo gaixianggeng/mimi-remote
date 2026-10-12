@@ -76,12 +76,12 @@ function sessionResponse(thread: AdapterThread, runtime: ThreadRuntime, params: 
 export function createTurnHandlers(deps: TurnHandlerDeps) {
   const { manager, catalog } = deps;
 
-  /** 已有会话：取 transcript 元数据并建立（或复用）运行时。 */
+  /** 已有会话：取 transcript 元数据并建立（或复用）运行时；复用时也按 transcript 对齐标题。 */
   async function openExisting(threadId: string, cwd: string | undefined, params: Params) {
     const runtime = manager.get(threadId);
     const record = (await catalog.get(threadId)) ?? (runtime ? newRecord(threadId, runtime.cwd) : undefined);
     if (!record) throw RpcError.invalidParams(`找不到 Claude 会话 ${threadId}`);
-    return { record, runtime: runtime ?? manager.open(threadId, cwd ?? record.cwd, runSettingsFor(params)) };
+    return { record, runtime: manager.open(threadId, cwd ?? record.cwd, runSettingsFor(params), record.name) };
   }
 
   async function resume(threadId: string, params: Params, context: RequestContext) {
@@ -189,7 +189,7 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       const record = await catalog.get(threadId);
       if (!record) throw RpcError.invalidParams(`找不到 Claude 会话 ${threadId}`);
       await deps.sessions.rename(threadId, name, record.cwd);
-      manager.publish(threadId, "thread/name/updated", { threadId, threadName: name });
+      manager.titleChanged(threadId, name);
       return {};
     },
 

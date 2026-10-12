@@ -2,7 +2,7 @@
 // 事件序列、审批、提问、中断、引导、重连补发审批、占用检测、运行中切换模型。
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { App } from "../src/app.ts";
@@ -32,6 +32,7 @@ beforeAll(async () => {
     claudeExecutable: () => fakeClaude,
     idleCloseMs: 60_000,
     ownership: { ownershipPollMs: 200, takeoverTimeouts: { interruptGraceMs: 2_000, terminateGraceMs: 2_000, respawnGraceMs: 100 } },
+    titleCheckDelaysMs: [0, 300],
   });
 });
 
@@ -408,6 +409,62 @@ describe("single driver", () => {
     } finally {
       terminal.exit();
     }
+  });
+});
+
+describe("titles", () => {
+  test("a title Claude Code generates during a turn reaches subscribers without a refetch", async () => {
+    const client = new Client();
+    const threadId = await newThread(client);
+    const first = await client.call("turn/start", { threadId, input: text("TITLE Fix the login flow") });
+    await client.turnCompleted(first.turn.id);
+    const pushed = await client.waitFor((frame) => frame.method === "thread/name/updated" && frame.params.threadId === threadId);
+    expect(pushed.params.threadName).toBe("Fix the login flow");
+    expect((await client.call("thread/read", { threadId })).thread.name).toBe("Fix the login flow");
+
+    // 同一个标题不重复推送。
+    const next = await client.call("turn/start", { threadId, input: text("again") });
+    await client.turnCompleted(next.turn.id);
+    await Bun.sleep(600);
+    const pushes = client.frames.filter((frame: any) => frame.method === "thread/name/updated" && frame.params.threadId === threadId);
+    expect(pushes).toHaveLength(1);
+  });
+
+  test("a title written before Claude exits mid-turn still reaches subscribers", async () => {
+    const client = new Client();
+    const threadId = await newThread(client);
+    const started = await client.call("turn/start", { threadId, input: text("CRASH Recover the build") });
+    const completed = await client.turnCompleted(started.turn.id);
+    expect(completed.params.turn.status).toBe("failed");
+    const pushed = await client.waitFor((frame) => frame.method === "thread/name/updated" && frame.params.threadId === threadId);
+    expect(pushed.params.threadName).toBe("Recover the build");
+  });
+
+  test("resuming a loaded thread re-syncs a title changed while no turn was running", async () => {
+    const client = new Client();
+    const watcher = new Client();
+    const threadId = await newThread(client);
+    const first = await client.call("turn/start", { threadId, input: text("TITLE First name") });
+    await client.turnCompleted(first.turn.id);
+    await client.waitFor((frame) => frame.method === "thread/name/updated" && frame.params.threadName === "First name");
+    await watcher.call("thread/resume", { threadId });
+    // 等这一轮之后的标题检查跑完，再模拟终端里的 /rename：运行时还在，但没有 turn 会触发检查。
+    await Bun.sleep(500);
+    const transcript = path.join(configDir, "projects", project.replace(/[^a-zA-Z0-9]/g, "-"), `${threadId}.jsonl`);
+    const rename = (name: string) => appendFileSync(transcript, `${JSON.stringify({ type: "custom-title", customTitle: name, sessionId: threadId })}\n`);
+    rename("Second name");
+    expect((await client.call("thread/resume", { threadId })).thread.name).toBe("Second name");
+    await watcher.waitFor((frame) => frame.method === "thread/name/updated" && frame.params.threadName === "Second name");
+
+    // 改回原名也要推送，不能因为缓存还停在旧值被当成没变。
+    const seen = client.frames.length;
+    rename("First name");
+    const next = await client.call("turn/start", { threadId, input: text("again") });
+    await client.turnCompleted(next.turn.id);
+    const back = await client.waitFor(
+      (frame) => client.frames.indexOf(frame) >= seen && frame.method === "thread/name/updated" && frame.params.threadName === "First name",
+    );
+    expect(back.params.threadId).toBe(threadId);
   });
 });
 

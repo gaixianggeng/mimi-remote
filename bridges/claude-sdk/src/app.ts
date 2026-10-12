@@ -73,6 +73,8 @@ export interface AppOptions {
   idleCloseMs?: number;
   /** 测试用：占用登记轮询与接管的时限、进程核对。 */
   ownership?: Pick<ManagerOptions, "ownershipPollMs" | "takeoverTimeouts" | "takeoverDeps">;
+  /** 测试用：turn 收尾后检查标题的时间点。 */
+  titleCheckDelaysMs?: number[];
   /** 测试用：模型目录与额度的来源。 */
   discoverModels?: DiscoverModels;
   fetchUsage?: () => Promise<RateLimitSnapshot>;
@@ -98,6 +100,8 @@ export function createApp(options: AppOptions): App {
     ...(options.startQuery ? { startQuery: options.startQuery } : {}),
     ...(options.idleCloseMs !== undefined ? { idleCloseMs: options.idleCloseMs } : {}),
     ...options.ownership,
+    readTitle: async (threadId) => (await sessions.info(threadId))?.customTitle?.trim() || null,
+    ...(options.titleCheckDelaysMs ? { titleCheckDelaysMs: options.titleCheckDelaysMs } : {}),
   });
   const holders = () => manager.holders();
   const activeTurnId = (threadId: string) => manager.get(threadId)?.activeTurnId;
