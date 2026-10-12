@@ -482,8 +482,12 @@ func TestPairWarnsWhenEndpointIsLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasWarning(result.Warnings, "本机地址") {
-		t.Fatalf("loopback endpoint 应提示真机 iPad 风险：%+v", result.Warnings)
+	if !hasWarning(result.Warnings, "本机地址") || !hasWarning(result.Warnings, "移动设备") {
+		t.Fatalf("loopback endpoint 应提示移动设备连接风险：%+v", result.Warnings)
+	}
+	// Windows 配对页会原样显示这些警告，不能和“移动设备”说明混用设备型号。
+	if hasWarning(result.Warnings, "iPad") {
+		t.Fatalf("配对警告不应限定 iPad：%+v", result.Warnings)
 	}
 }
 
