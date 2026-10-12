@@ -1174,12 +1174,14 @@ struct InitialConnectionSettingsSections: View {
         if honorsActiveConnectionTermination, let termination = appStore.connectionTermination {
             return termination.message
         }
-        if raw == L10n.text("ui.clipboard_does_not_contain_connection_info") {
+        if raw == L10n.text("ui.clipboard_does_not_contain_connection_info") ||
+            HostPlatform.isPairingQRCodeExpiredGuidance(raw) {
             return raw
         }
         let lowercased = raw.lowercased()
         if lowercased.contains("expired") || raw.contains("过期") {
-            return L10n.text("ui.the_pairing_qr_code_has_expired_please_re")
+            // 走到这里时已不知道二维码属于哪台电脑，只能给覆盖各平台的说法。
+            return HostPlatform.unknown.pairingQRCodeExpiredGuidance
         }
         if InitialConnectionErrorClassifier.isCredentialRejection(raw) {
             return L10n.text("ui.this_device_has_not_been_verified_by_mac")
@@ -1504,10 +1506,26 @@ struct InitialConnectionSettingsSections: View {
         } catch {
             isSavingConnection = false
             appStore.connectionStatus = .failed(error.localizedDescription)
-            appStore.lastError = error.localizedDescription
-            setConnectionAttemptError(error.localizedDescription, forAddComputer: errorBelongsToAddComputer)
-            return .rejected(error.localizedDescription)
+            let message = connectionAttemptMessage(for: error, intent: intent)
+            appStore.lastError = message
+            setConnectionAttemptError(message, forAddComputer: errorBelongsToAddComputer)
+            // 扫码页失败时仍全屏停留，指引要在这里就能看到，不能等用户关掉扫码页。
+            return .rejected(message)
         }
+    }
+
+    /// 二维码在本地就被判定过期，此时还没连上那台电脑。只有「重新配对当前电脑」能确定
+    /// 二维码来自哪个平台；首次连接和添加电脑扫的是另一台机器，必须用通用指引（#673）。
+    private func connectionAttemptMessage(for error: Error, intent: ConnectionQRCodeScanIntent) -> String {
+        guard (error as? PairingLinkError) == .expired else {
+            return error.localizedDescription
+        }
+        guard case .repairCurrentProfile = intent,
+              let platform = appStore.activeConnectionProfile?.hostPlatform
+        else {
+            return HostPlatform.unknown.pairingQRCodeExpiredGuidance
+        }
+        return platform.pairingQRCodeExpiredGuidance
     }
 
     private func refreshCommittedConnection(maxWait: TimeInterval, forAddComputer: Bool) async -> Bool {
