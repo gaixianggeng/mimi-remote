@@ -854,27 +854,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    /// #585：Desktop 异步提问的答复经真实历史投影后，显示为精简答复而不是协议载荷，
-    /// 并与紧随其后的普通引导按服务端顺序排列。
-    func testAsyncQuestionReplyRendersAsAnswerBubble() async throws {
-        let sessionID = QuestionReplyFixture.threadID
-        let appStore = makeSnapshotAppStore()
-        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
-        conversationStore.replaceHistorySnapshot(try await QuestionReplyFixture.fullHistory(), sessionID: sessionID)
-        let sessionStore = SessionStore(appStore: appStore, conversationStore: conversationStore, logStore: LogStore())
-        sessionStore.selectedSessionID = sessionID
-
-        try await assertStabilizedConversationSnapshot(
-            of: ConversationView()
-                .environmentObject(sessionStore)
-                .environmentObject(conversationStore)
-                .environmentObject(makeThemeStore())
-                .environment(\.colorScheme, .light)
-                .frame(width: 1024, height: 768),
-            size: CGSize(width: 1024, height: 768)
-        )
-    }
-
     func testEmptyConversationState() {
         let appStore = makeSnapshotAppStore()
         let conversationStore = makeSnapshotConversationStore(appStore: appStore)

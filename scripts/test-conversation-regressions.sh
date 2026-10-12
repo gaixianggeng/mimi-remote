@@ -239,7 +239,6 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testSessionRuntimeBadgesInConversationList \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testProjectSessionDashboard \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testCommentaryAndTrailingActivitiesRendering \
-  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testAsyncQuestionReplyRendersAsAnswerBubble \
   -only-testing:MimiRemoteTests/ConversationQuestionReplyTests \
   -only-testing:MimiRemoteTests/ConversationTimelineProviderPresentationSnapshotTests \
   -only-testing:MimiRemoteTests/MarkdownRenderingTests \

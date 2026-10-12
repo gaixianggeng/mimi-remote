@@ -201,7 +201,6 @@
 		6559D30A0E08074AEB1D65B4 /* CarStatusSnapshotMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = 332F6935AFF261FAA35F289A /* CarStatusSnapshotMapping.swift */; };
 		65C6551F210FD2511AE94162 /* ConversationTimelineSnapshotBoundaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69FF61DF80A028E3FED20D5A /* ConversationTimelineSnapshotBoundaryTests.swift */; };
 		671C4601FF0BC177E460C60F /* AgentRuntimeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52BCEEFCD8324800FC52F2DC /* AgentRuntimeModels.swift */; };
-		679B3FCDD3E54FDEFEDBAD8E /* testAsyncQuestionReplyRendersAsAnswerBubble.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 2F17CB0794B98AB63AD8EB4A /* testAsyncQuestionReplyRendersAsAnswerBubble.1.png */; };
 		6825B228E6299F7577E5BB5F /* SessionContextSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E68C2F3A2CDF72BEF743E31B /* SessionContextSidebarView.swift */; };
 		6825BD5E8CCFD10D4207F468 /* ConversationTimelineRuntimeRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E928737E10A4B6D2964A5DE /* ConversationTimelineRuntimeRegressionTests.swift */; };
 		68CD22C1EBAF6F4B256A5CFD /* testSessionStateRingSemanticsAndAlignment.light.png in Resources */ = {isa = PBXBuildFile; fileRef = 3045D0EB3BA4153934CFC712 /* testSessionStateRingSemanticsAndAlignment.light.png */; };
@@ -327,6 +326,7 @@
 		A4DBF3E94C42D2C505267C1E /* SessionListPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5441F059E674EFBF21A880EA /* SessionListPresentation.swift */; };
 		A559557E2F68BDFBD7F1EDEA /* AppDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = E60567EACACB519210EF763D /* AppDiagnostics.swift */; };
 		A59938EA3EE1686DFBC9B0C5 /* TailcatExperimentRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E29969A74C4C890BB458DC64 /* TailcatExperimentRoutingTests.swift */; };
+		A59DAF3A5F65D64FA3AA3FA9 /* testAsyncQuestionReplyRendersAsAnswerBubble.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 55FCFA9EBFD39BC69CAE776E /* testAsyncQuestionReplyRendersAsAnswerBubble.1.png */; };
 		A653DC4FA638B8EE96360C8F /* testModelPickerAdaptiveWidthAndAccessibilityLayouts.iphone-landscape-compact-height.png in Resources */ = {isa = PBXBuildFile; fileRef = ACF46F57503EB4138315D9E4 /* testModelPickerAdaptiveWidthAndAccessibilityLayouts.iphone-landscape-compact-height.png */; };
 		A6ECF6598F5FF2DC733E8E56 /* ConversationCommentaryRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6D12A6459F0F6B768F4F068 /* ConversationCommentaryRow.swift */; };
 		A71327B3931B9947D3A58A5E /* SessionStoreProjectsGit.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A44E24BB7F5E7F9FD31191 /* SessionStoreProjectsGit.swift */; };
@@ -660,7 +660,6 @@
 		2E4A0A29797384D5BD5002D1 /* testProjectSessionDashboard.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testProjectSessionDashboard.1.png; sourceTree = "<group>"; };
 		2E996FA32B5569185C7A0476 /* ConversationTimelineProviderPresentationSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationTimelineProviderPresentationSnapshotTests.swift; sourceTree = "<group>"; };
 		2EBD11FEEFA3EA7C03993BE1 /* testCompletedGoalStatusTrayRemainsVisibleAfterTurnFinishes.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testCompletedGoalStatusTrayRemainsVisibleAfterTurnFinishes.1.png; sourceTree = "<group>"; };
-		2F17CB0794B98AB63AD8EB4A /* testAsyncQuestionReplyRendersAsAnswerBubble.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testAsyncQuestionReplyRendersAsAnswerBubble.1.png; sourceTree = "<group>"; };
 		3045D0EB3BA4153934CFC712 /* testSessionStateRingSemanticsAndAlignment.light.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testSessionStateRingSemanticsAndAlignment.light.png; sourceTree = "<group>"; };
 		30AE77ACB3451FADCA7D9C99 /* NotificationTitleCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationTitleCache.swift; sourceTree = "<group>"; };
 		31112285F03CBD9AE20AD0C8 /* HostScope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostScope.swift; sourceTree = "<group>"; };
@@ -742,6 +741,7 @@
 		554F31B0074B97074AE97B31 /* AppExternalLinksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppExternalLinksTests.swift; sourceTree = "<group>"; };
 		5591601BA7CA64C8C0CF7931 /* direct_app_server_approval_stream.jsonl */ = {isa = PBXFileReference; path = direct_app_server_approval_stream.jsonl; sourceTree = "<group>"; };
 		55BE8A2883C5B158FC8D84FF /* SessionStoreQueuedTurns.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreQueuedTurns.swift; sourceTree = "<group>"; };
+		55FCFA9EBFD39BC69CAE776E /* testAsyncQuestionReplyRendersAsAnswerBubble.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testAsyncQuestionReplyRendersAsAnswerBubble.1.png; sourceTree = "<group>"; };
 		57040D514FF4A6CD6BF4E15B /* SessionStoreArchiveReconciliation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreArchiveReconciliation.swift; sourceTree = "<group>"; };
 		57B0D278D851C95B679B76DA /* ClaudeTaskHistoryProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeTaskHistoryProjection.swift; sourceTree = "<group>"; };
 		59173E15ED2D45E1BDE19304 /* testConnectedStateInDarkAppearance.connected-dark.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testConnectedStateInDarkAppearance.connected-dark.png"; sourceTree = "<group>"; };
@@ -1175,6 +1175,7 @@
 		266EBDD5C185C88A632DAF2A /* ConversationTimelineProviderPresentationSnapshotTests */ = {
 			isa = PBXGroup;
 			children = (
+				55FCFA9EBFD39BC69CAE776E /* testAsyncQuestionReplyRendersAsAnswerBubble.1.png */,
 				8027D4C0FE155D64E8320A42 /* testClaudeCompactAndDetailedActivityRows.1.png */,
 				4F8674BCA8C07B25B4C05A4E /* testCodexCompactAndDetailedActivityRows.1.png */,
 				8C1FF867459358BF1ADCBE27 /* testThreeLayerConversationAcrossLayouts.ipad-default.png */,
@@ -1475,7 +1476,6 @@
 			isa = PBXGroup;
 			children = (
 				190DA6E3F95C3577B94AB67C /* testAppearancePreview.1.png */,
-				2F17CB0794B98AB63AD8EB4A /* testAsyncQuestionReplyRendersAsAnswerBubble.1.png */,
 				977DCCE8164F84E5D8E96787 /* testCommentaryAndTrailingActivitiesRendering.1.png */,
 				2EBD11FEEFA3EA7C03993BE1 /* testCompletedGoalStatusTrayRemainsVisibleAfterTurnFinishes.1.png */,
 				73D66A2386FC885F7D813B26 /* testComposerStatusTrayCollapsedBlockedObserveDark.1.png */,
@@ -2161,7 +2161,7 @@
 				8EEEC2243F3EE20F96B3B62D /* direct_app_server_approval_stream.jsonl in Resources */,
 				8E170E7635D6973BC280CD96 /* testAccessibilityWorkspaceRowsGrowAndKeepDistinctPreview.1.png in Resources */,
 				439355570F5ED69354673D07 /* testAppearancePreview.1.png in Resources */,
-				679B3FCDD3E54FDEFEDBAD8E /* testAsyncQuestionReplyRendersAsAnswerBubble.1.png in Resources */,
+				A59DAF3A5F65D64FA3AA3FA9 /* testAsyncQuestionReplyRendersAsAnswerBubble.1.png in Resources */,
 				14C00C58DDC135A70798846A /* testClaudeCompactAndDetailedActivityRows.1.png in Resources */,
 				B505832379AACE70F1CD40C2 /* testCodexCompactAndDetailedActivityRows.1.png in Resources */,
 				4176782A69B7D1D87430E179 /* testCommentaryAndTrailingActivitiesRendering.1.png in Resources */,
