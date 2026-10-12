@@ -4,7 +4,11 @@ import { Catalog, HistoryStore } from "./claude/catalog.ts";
 import { Overlay } from "./claude/overlay.ts";
 import { sdkSessions, type ClaudeSessions } from "./claude/sdk.ts";
 import { ActivityClock, TranscriptIndex } from "./claude/transcripts.ts";
+import { ModelCatalog, sdkModelDiscovery, type DiscoverModels } from "./claude/models.ts";
+import { RateLimitReader } from "./claude/usage.ts";
+import { createAccountHandlers } from "./handlers/account.ts";
 import { createHistoryHandlers } from "./handlers/history.ts";
+import type { RateLimitSnapshot } from "./protocol/codex/v2/RateLimitSnapshot.ts";
 import { createThreadHandlers } from "./handlers/threads.ts";
 import { createTurnHandlers } from "./handlers/turns.ts";
 import { ThreadManager, type ManagerOptions } from "./runtime/manager.ts";
@@ -24,8 +28,12 @@ export interface CapabilityDeclaration {
   fullAccess: boolean;
 }
 
+/** 客户端发来、适配器接受但不应答的通知；网关按声明开放，漏声明会被当成不支持。 */
+const ACCEPTED_NOTIFICATIONS = ["initialized"];
+
 export function capabilityDeclaration(router: Router): CapabilityDeclaration {
-  return { name: ADAPTER_NAME, version: ADAPTER_VERSION, methods: router.methods(), fullAccess: true };
+  const methods = [...router.methods(), ...ACCEPTED_NOTIFICATIONS].sort();
+  return { name: ADAPTER_NAME, version: ADAPTER_VERSION, methods, fullAccess: true };
 }
 
 /** 适配器自己的状态目录（Mimi 覆盖层）。 */
@@ -65,11 +73,15 @@ export interface AppOptions {
   idleCloseMs?: number;
   /** 测试用：占用登记轮询与接管的时限、进程核对。 */
   ownership?: Pick<ManagerOptions, "ownershipPollMs" | "takeoverTimeouts" | "takeoverDeps">;
+  /** 测试用：模型目录与额度的来源。 */
+  discoverModels?: DiscoverModels;
+  fetchUsage?: () => Promise<RateLimitSnapshot>;
 }
 
 export interface App {
   router: Router;
   manager: ThreadManager;
+  models: ModelCatalog;
 }
 
 export function createApp(options: AppOptions): App {
@@ -79,8 +91,9 @@ export function createApp(options: AppOptions): App {
   const overlay = new Overlay(path.join(stateDir, "overlay.json"), legacyIndexPath());
   const catalog = new Catalog({ sessions, transcripts, activity: new ActivityClock(), overlay });
   const history = new HistoryStore({ sessions, transcripts });
+  const claudeExecutable = options.claudeExecutable ?? defaultClaudeExecutable;
   const manager = new ThreadManager({
-    claudeExecutable: options.claudeExecutable ?? defaultClaudeExecutable,
+    claudeExecutable,
     log: options.log,
     ...(options.startQuery ? { startQuery: options.startQuery } : {}),
     ...(options.idleCloseMs !== undefined ? { idleCloseMs: options.idleCloseMs } : {}),
@@ -94,7 +107,14 @@ export function createApp(options: AppOptions): App {
     loadedThreadIds: () => manager.loadedThreadIds(),
   });
   const historyHandlers = createHistoryHandlers(history, (threadId) => activeTurnId(threadId) !== undefined);
-  const turns = createTurnHandlers({ manager, catalog, holders });
+  const turns = createTurnHandlers({ manager, catalog, sessions, holders });
+  const models = new ModelCatalog({ discover: options.discoverModels ?? sdkModelDiscovery(claudeExecutable), log: options.log });
+  const rateLimits = new RateLimitReader({
+    ...(options.fetchUsage ? { fetch: options.fetchUsage } : {}),
+    observed: () => manager.observedRateLimits,
+    log: options.log,
+  });
+  const account = createAccountHandlers(models, rateLimits);
 
   const initialize: Handler = (): InitializeResponse => ({
     userAgent: USER_AGENT,
@@ -116,8 +136,11 @@ export function createApp(options: AppOptions): App {
     ["turn/start", (params, context) => turns.turnStart(params, context)],
     ["turn/steer", (params) => turns.turnSteer(params)],
     ["turn/interrupt", (params) => turns.turnInterrupt(params)],
+    ["thread/name/set", (params) => turns.threadSetName(params)],
+    ["model/list", () => account.modelList()],
+    ["account/rateLimits/read", () => account.rateLimitsRead()],
   ]);
-  return { router: new Router(handlers, options.log), manager };
+  return { router: new Router(handlers, options.log), manager, models };
 }
 
 /** 只需要方法分发的场景（只读测试等）。 */

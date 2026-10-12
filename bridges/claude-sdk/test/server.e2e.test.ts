@@ -88,7 +88,9 @@ describe("socket server", () => {
     const result = spawnSync(process.execPath, [entry, "--capabilities"], { encoding: "utf8", env });
     const declared = JSON.parse(result.stdout);
     expect(declared).toMatchObject({ name: "mimi-claude-adapter", fullAccess: true });
-    expect(declared.methods).toEqual(expect.arrayContaining(["thread/list", "turn/start", "turn/steer", "turn/interrupt"]));
+    expect(declared.methods).toEqual(
+      expect.arrayContaining(["initialized", "thread/list", "turn/start", "turn/steer", "turn/interrupt", "model/list", "account/rateLimits/read", "thread/name/set"]),
+    );
     expect(declared.methods).not.toContain("review/start");
   });
 

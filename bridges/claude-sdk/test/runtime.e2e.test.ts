@@ -405,6 +405,30 @@ describe("single driver", () => {
   });
 });
 
+describe("rename", () => {
+  test("thread/name/set writes the title Claude Code reads and notifies subscribers", async () => {
+    const client = new Client();
+    const watcher = new Client();
+    const threadId = await newThread(client);
+    const first = await client.call("turn/start", { threadId, input: text("seed") });
+    await client.turnCompleted(first.turn.id);
+    await watcher.call("thread/resume", { threadId });
+    // agentd 的自动标题经匿名连接调用，不订阅会话。
+    const internal = new Client();
+    expect(await internal.call("thread/name/set", { threadId, name: "  Fix the login flow  " })).toEqual({});
+    const notified = await watcher.waitFor((frame) => frame.method === "thread/name/updated" && frame.params.threadId === threadId);
+    expect(notified.params.threadName).toBe("Fix the login flow");
+    expect((await client.call("thread/read", { threadId })).thread.name).toBe("Fix the login flow");
+    const listed = (await client.call("thread/list", { cwd: project, limit: 50 })).data.find((thread: any) => thread.id === threadId);
+    expect(listed.name).toBe("Fix the login flow");
+
+    const empty = await client.call("thread/name/set", { threadId, name: "   " }).catch((error) => error);
+    expect(empty.code).toBe(-32602);
+    const missing = await client.call("thread/name/set", { threadId: "00000000-0000-4000-8000-000000000000", name: "x" }).catch((error) => error);
+    expect(missing.code).toBe(-32602);
+  });
+});
+
 describe("ownership", () => {
   test("a session held by another local Claude process is read-only", async () => {
     const client = new Client();

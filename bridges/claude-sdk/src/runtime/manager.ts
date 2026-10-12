@@ -3,10 +3,12 @@
 // 订阅了同一会话的每个连接（例如 iPad 与 iPhone）都收到事件和审批；谁先答复以谁为准，
 // 其余连接收到 serverRequest/resolved。
 import { randomUUID } from "node:crypto";
+import type { RateLimitSnapshot } from "../protocol/codex/v2/RateLimitSnapshot.ts";
 import { notificationFrame } from "../rpc/frames.ts";
 import type { Session } from "../session/session.ts";
 import { holdersOf, ownerSummary, readHolders, sessionsDir, type OwnProcesses, type SessionHolder } from "./holders.ts";
 import { OwnershipWatcher } from "./ownership.ts";
+import { mergeObservedRateLimits } from "./rateLimits.ts";
 import type { RunSettings } from "./settings.ts";
 import {
   DEFAULT_TAKEOVER_TIMEOUTS,
@@ -44,6 +46,7 @@ export class ThreadManager {
   private readonly subscriptions = new Map<Session, Set<string>>();
   private readonly pending = new Map<string, PendingRequest>();
   private counter = 0;
+  private lastRateLimits: RateLimitSnapshot | undefined;
   readonly ownPids = new Set<number>();
   /** 本适配器自己的 Claude 进程：已知 pid，以及还没拿到 pid 的启动窗口。 */
   readonly own: OwnProcesses = {
@@ -185,7 +188,15 @@ export class ThreadManager {
     return false;
   }
 
+  /** 会话里最近一次观测到的额度（rate_limit_event），account/rateLimits/read 的降级来源。 */
+  get observedRateLimits(): RateLimitSnapshot | undefined {
+    return this.lastRateLimits;
+  }
+
   publish(threadId: string, method: string, params: Record<string, unknown>): void {
+    if (method === "account/rateLimits/updated") {
+      this.lastRateLimits = mergeObservedRateLimits(this.lastRateLimits, params.rateLimits as RateLimitSnapshot);
+    }
     const frame = notificationFrame(method, params);
     for (const session of this.subscribers.get(threadId) ?? []) session.publish(frame);
   }

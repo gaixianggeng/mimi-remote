@@ -41,6 +41,8 @@ async function serveSocket(socketPath: string): Promise<void> {
   const app = createApp({ log });
   const registry = wire(app);
   registry.startReaper();
+  // 常驻模式下预热模型目录，让首个 model/list 命中缓存，而不是等 CLI 冷启动。
+  app.models.warm();
   await rm(socketPath, { force: true });
   const server = net.createServer((socket) => {
     socket.on("error", () => socket.destroy());
