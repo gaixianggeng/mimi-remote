@@ -16,6 +16,9 @@ type DiagnosticLogStatus struct {
 	MaxTotalBytes  int64      `json:"max_total_bytes"`
 	RetentionDays  int        `json:"retention_days"`
 	DroppedRecords int64      `json:"dropped_records,omitempty"`
+	// 本机调试日志：只在详细记录窗口内写入，不进入安全日志导出。
+	DebugBytes   int64 `json:"debug_bytes"`
+	DebugDropped int64 `json:"debug_dropped,omitempty"`
 }
 
 type DiagnosticLogController interface {

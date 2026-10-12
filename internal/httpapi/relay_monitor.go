@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
 	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"github.com/gorilla/websocket"
 )
@@ -571,15 +572,29 @@ func (m *relayMonitor) completeGatewayRPC(stats *relayGatewayConnectionStats, id
 	m.gateway.RPC.OutstandingMillisMax = maxOutstandingMillisAcross(m.active, now)
 }
 
-func (c *relayGatewayConnMonitor) recordPolicyError(direction string, payloadBytes int, policyDuration time.Duration) {
+func (c *relayGatewayConnMonitor) recordPolicyError(direction string, runtimeID string, payload []byte, policyErr *appServerGatewayPolicyError, policyDuration time.Duration) {
 	if c == nil || c.parent == nil {
 		return
 	}
-	c.parent.recordGatewayPolicyError(c.id, direction, payloadBytes, policyDuration)
+	c.parent.recordGatewayPolicyError(c.id, direction, runtimeID, payload, policyErr, policyDuration)
 }
 
-func (m *relayMonitor) recordGatewayPolicyError(id string, direction string, payloadBytes int, policyDuration time.Duration) {
-	diagnosticlog.Record("policy", "failed", diagnosticlog.Fields{Reference: diagnosticlog.Reference(id), Duration: policyDuration})
+func (m *relayMonitor) recordGatewayPolicyError(id string, direction string, runtimeID string, payload []byte, policyErr *appServerGatewayPolicyError, policyDuration time.Duration) {
+	payloadBytes := len(payload)
+	method := gatewayPolicyErrorMethod(payload, policyErr)
+	// 安全诊断日志只记白名单内的方法名（其余归为 other）；完整的方法名与原因只进本机调试日志。
+	diagnosticlog.Record("policy", "failed", diagnosticlog.Fields{Operation: diagnosticlog.Operation(method), Reference: diagnosticlog.Reference(id), Duration: policyDuration})
+	if debuglog.Enabled() {
+		reason, message := "", ""
+		if policyErr != nil {
+			message = policyErr.message
+			if value, ok := policyErr.data["reason"].(string); ok {
+				reason = value
+			}
+		}
+		debuglog.Printf("gateway", "policy rejected runtime=%s direction=%s method=%s reason=%s conn=%s message=%q",
+			runtimeID, direction, method, reason, diagnosticlog.Reference(id), message)
+	}
 	policyMillis := policyDuration.Milliseconds()
 	m.mu.Lock()
 	defer m.mu.Unlock()

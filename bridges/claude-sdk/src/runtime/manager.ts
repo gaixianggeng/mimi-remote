@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { RateLimitSnapshot } from "../protocol/codex/v2/RateLimitSnapshot.ts";
 import { notificationFrame } from "../rpc/frames.ts";
 import type { Session } from "../session/session.ts";
+import { errorText, logger } from "../util/logging.ts";
 import { holdersOf, ownerSummary, readHolders, sessionsDir, type OwnProcesses, type SessionHolder } from "./holders.ts";
 import { OwnershipWatcher } from "./ownership.ts";
 import { mergeObservedRateLimits } from "./rateLimits.ts";
@@ -87,8 +88,22 @@ export class ThreadManager {
   }
 
   /** 结束空闲的别处持有方，之后由调用方以同一 ID 续聊。 */
-  takeover(threadId: string): Promise<TakeoverOutcome> {
-    return releaseForeignHolders(threadId, this.takeoverDeps, this.takeoverTimeouts);
+  async takeover(threadId: string): Promise<TakeoverOutcome> {
+    const started = Date.now();
+    try {
+      const outcome = await releaseForeignHolders(threadId, this.takeoverDeps, this.takeoverTimeouts);
+      logger.debug("takeover", {
+        thread: threadId,
+        released: outcome.released,
+        ...(outcome.released ? { pid: outcome.holders[0]?.pid, signal: outcome.signal } : {}),
+        ms: Date.now() - started,
+      });
+      return outcome;
+    } catch (error) {
+      const reason = (error as { reason?: string }).reason;
+      logger.debug("takeover.refused", { thread: threadId, reason: reason ?? errorText(error), ms: Date.now() - started });
+      throw error;
+    }
   }
 
   get(threadId: string): ThreadRuntime | undefined {
@@ -113,6 +128,7 @@ export class ThreadManager {
 
   subscribe(threadId: string, session: Session): void {
     this.ownership.start();
+    if (!this.subscribers.get(threadId)?.has(session)) logger.debug("thread.subscribe", { thread: threadId, session: session.key });
     const sessions = this.subscribers.get(threadId) ?? new Set<Session>();
     sessions.add(session);
     this.subscribers.set(threadId, sessions);
@@ -128,6 +144,7 @@ export class ThreadManager {
   }
 
   unsubscribeSession(session: Session): void {
+    logger.debug("session.unsubscribe", { session: session.key, threads: this.subscriptions.get(session)?.size ?? 0 });
     for (const threadId of this.subscriptions.get(session) ?? []) {
       const sessions = this.subscribers.get(threadId);
       sessions?.delete(session);
@@ -149,18 +166,24 @@ export class ThreadManager {
    */
   private async ownershipChanged(threadId: string, holder: SessionHolder | undefined): Promise<void> {
     const runtime = this.runtimes.get(threadId);
+    logger.debug("ownership.changed", {
+      thread: threadId,
+      holder: holder?.pid ?? null,
+      entrypoint: holder?.entrypoint ?? null,
+      status: holder?.status ?? null,
+      adapterProcess: runtime?.hasLiveProcess() ?? false,
+    });
     if (holder && runtime?.hasLiveProcess()) {
       // 扫描结果可能已经过时：持有方刚退出、并发的 turn/start 又拉起了自己的进程。停进程前
       // 重读登记，确认同一个持有方（pid 与启动时间）仍在；不在就不让出，交给下一次扫描按最新
       // 状态重新判断并推送。
       const current = (await this.holders()).get(threadId);
       if (!current || current.pid !== holder.pid || current.startedAt !== holder.startedAt) {
+        logger.debug("ownership.stale", { thread: threadId, holder: holder.pid, current: current?.pid ?? null });
         void this.ownership.scanNow();
         return;
       }
-      this.options.log(
-        `thread ${threadId.slice(0, 8)} continued by pid ${holder.pid} (${holder.entrypoint ?? "unknown"}); stopping the adapter's process`,
-      );
+      // 让出的细节（会话 ID、pid）由 claude.yield 在 debug 级别记录，只在诊断窗口内落盘。
       await runtime.yieldToHolder();
     }
     const status = runtime?.activeTurnId
@@ -203,6 +226,7 @@ export class ThreadManager {
 
   private request(threadId: string, method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
     const id = `mimi-${++this.counter}`;
+    logger.debug("approval.request", { id, method, thread: threadId, subscribers: this.subscribers.get(threadId)?.size ?? 0 });
     return new Promise((resolve, reject) => {
       this.pending.set(id, { threadId, method, params, resolve, reject });
       for (const session of this.subscribers.get(threadId) ?? []) session.publishRequest(id, method, params);
@@ -217,7 +241,14 @@ export class ThreadManager {
    */
   handleClientResponse(session: Session, generation: number, frame: Record<string, unknown>): void {
     const id = String(frame.id);
-    if (!this.pending.has(id) || !session.isCurrent(generation) || !session.hasOutstanding(id)) return;
+    if (!this.pending.has(id) || !session.isCurrent(generation) || !session.hasOutstanding(id)) {
+      logger.debug("approval.response.ignored", {
+        id,
+        session: session.key,
+        reason: !this.pending.has(id) ? "not_pending" : !session.isCurrent(generation) ? "stale_connection" : "not_delivered",
+      });
+      return;
+    }
     if ("error" in frame) this.settle(id, { error: new Error(JSON.stringify(frame.error)) });
     else this.settle(id, { result: frame.result });
   }
@@ -226,6 +257,7 @@ export class ThreadManager {
     const request = this.pending.get(id);
     if (!request) return;
     this.pending.delete(id);
+    logger.debug("approval.settled", { id, thread: request.threadId, outcome: outcome.error ? "cancelled_or_error" : "answered" });
     for (const session of this.subscribers.get(request.threadId) ?? []) session.resolveRequest(id);
     if (outcome.error) request.reject(outcome.error);
     else request.resolve(outcome.result);

@@ -134,7 +134,7 @@ func (r *Router) processClientFrameToAppServer(ctx context.Context, client *webs
 	policyDuration := time.Since(policyStart)
 	monitor.logSessionListStage(payload, "request_policy", policyDuration)
 	if policyErr != nil {
-		monitor.recordPolicyError("client_to_upstream", len(payload), policyDuration)
+		monitor.recordPolicyError("client_to_upstream", policy.runtimeID, payload, policyErr, policyDuration)
 		if policyErr.historyBudgetRejected {
 			monitor.recordHistoryBudgetRejected()
 		}
@@ -191,7 +191,7 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 		policyDuration := time.Since(policyStart)
 		monitor.logSessionListStage(payload, "response_policy", policyDuration)
 		if policyErr != nil {
-			monitor.recordPolicyError("upstream_to_client", len(payload), policyDuration)
+			monitor.recordPolicyError("upstream_to_client", policy.runtimeID, payload, policyErr, policyDuration)
 			if policyErr.historyResponseBlocked {
 				monitor.recordHistoryResponseBlocked(len(payload), payload)
 			}

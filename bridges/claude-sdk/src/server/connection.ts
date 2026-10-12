@@ -3,6 +3,7 @@ import { ErrorCode, classifyFrame, errorFrame, type OutboundFrame } from "../rpc
 import { readLines } from "../rpc/lines.ts";
 import { SessionRegistry } from "../session/registry.ts";
 import { Session, type AttachOutcome } from "../session/session.ts";
+import { logger } from "../util/logging.ts";
 import type { Logger, Router } from "./router.ts";
 
 export const ATTACH_METHOD = "_alleycat/attach";
@@ -80,6 +81,13 @@ export async function serveConnection(input: Readable, output: Writable, deps: C
       });
       session.flushBacklog(outcome.backlog, outcome.generation);
       session.sendReplay(outcome.generation);
+      logger.debug("connection.attach", {
+        session: attach.sessionKey,
+        kind: outcome.kind,
+        lastSeen: attach.lastSeen ?? null,
+        currentSeq: outcome.currentSeq,
+        backlog: outcome.backlog.length,
+      });
     } else {
       const claimsAttach = parsed.ok && (parsed.value as { method?: unknown })?.method === ATTACH_METHOD;
       if (claimsAttach) deps.log("ignoring malformed attach preamble; serving an isolated session");
@@ -94,6 +102,7 @@ export async function serveConnection(input: Readable, output: Writable, deps: C
   if (!session || !outcome) {
     session = new Session("anonymous");
     outcome = session.attach(undefined, write, false);
+    logger.debug("connection.anonymous");
   }
 
   const active = session;
@@ -137,6 +146,7 @@ export async function serveConnection(input: Readable, output: Writable, deps: C
     }
     await Promise.allSettled([...inflight]);
   } finally {
+    logger.debug("connection.end", { session: active.key, inflight: inflight.size });
     active.detach(generation);
     if (anonymous) deps.onAnonymousSessionEnd?.(active);
   }

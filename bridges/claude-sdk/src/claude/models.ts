@@ -6,6 +6,7 @@
 // - 目录拿不到时退回 opus / sonnet / haiku 三个别名，由 CLI 自己解析。
 import { query as sdkQuery, type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import type { Model } from "../protocol/codex/v2/Model.ts";
+import { logger } from "../util/logging.ts";
 
 /** 协议认识的思考强度；CLI 给出的其他档位不转发，客户端不知道怎么展示。 */
 const KNOWN_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -244,11 +245,13 @@ export class ModelCatalog {
     if (this.models && now - this.fetchedAt < (this.options.ttlMs ?? 10 * 60_000)) return Promise.resolve(this.models);
     if (this.inFlight) return this.inFlight;
     if (now - this.failedAt < (this.options.failureCooldownMs ?? 15_000)) return Promise.resolve(this.models);
+    const started = Date.now();
     this.inFlight = this.options
       .discover(timeoutMs)
       .then((models) => {
         this.models = models;
         this.fetchedAt = Date.now();
+        logger.debug("models.discovered", { count: models.length, ms: Date.now() - started });
         return models;
       })
       .catch((error) => {

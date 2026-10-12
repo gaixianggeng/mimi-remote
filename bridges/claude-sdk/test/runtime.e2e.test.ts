@@ -8,6 +8,7 @@ import path from "node:path";
 import type { App } from "../src/app.ts";
 import type { OutboundFrame } from "../src/rpc/frames.ts";
 import { pidAlive } from "../src/runtime/holders.ts";
+import { configureLogging } from "../src/util/logging.ts";
 import { Session } from "../src/session/session.ts";
 
 const sandbox = realpathSync(mkdtempSync(path.join(os.tmpdir(), "mimi-adapter-runtime-")));
@@ -329,6 +330,9 @@ const statusChange = (threadId: string, writable: boolean) => (frame: any) =>
 
 describe("single driver", () => {
   test("a session continued elsewhere while the adapter drives it yields and becomes read-only", async () => {
+    // 默认 info 级别下，让出、占用变化等生命周期细节不能出现（只在诊断窗口的 debug 日志里）。
+    const infoLines: string[] = [];
+    const restoreLogging = configureLogging({ level: "info", sink: (line) => infoLines.push(line) });
     const client = new Client();
     const threadId = await newThread(client);
     const { turn } = await client.call("turn/start", { threadId, input: text("SLOW") });
@@ -349,7 +353,9 @@ describe("single driver", () => {
       expect(writable.params.claudeOwner).toBeNull();
       const next = await client.call("turn/start", { threadId, input: text("back again") });
       await client.turnCompleted(next.turn.id);
+      expect(infoLines.filter((line) => line.includes(threadId))).toEqual([]);
     } finally {
+      restoreLogging();
       terminal.exit();
     }
   });

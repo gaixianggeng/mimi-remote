@@ -7,6 +7,7 @@ import type { TurnStatus } from "../protocol/codex/v2/TurnStatus.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
 import { ItemIdAllocator } from "../claude/itemIds.ts";
 import { completeToolItem, isHiddenTool, toolUseItem, unfinishedToolItem, type ToolOutput } from "../claude/tools.ts";
+import { logger } from "../util/logging.ts";
 
 export type Emit = (method: string, params: Record<string, unknown>) => void;
 
@@ -262,6 +263,7 @@ export class LiveTurn {
         misalignment: null,
       };
     }
+    logger.debug("turn.complete", { thread: this.threadId, turn: this.id, status: this.status, subtype: outcome.subtype });
     this.emit("turn/completed", { threadId: this.threadId, turn });
     return turn;
   }
