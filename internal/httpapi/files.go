@@ -72,6 +72,8 @@ type fileReadResolvedPath struct {
 	requiredContentType string
 	// maxBytes 为特例路径收紧的大小上限；0 表示沿用 filePreviewMaxBytes。
 	maxBytes int64
+	// verifiedFile 非空时只能经 fd 读取解析阶段校验过的同一个文件，不按路径重新跟随链接。
+	verifiedFile os.FileInfo
 }
 
 var filePreviewImageExtensions = map[string]struct{}{
@@ -133,7 +135,12 @@ func (r *Router) fileReadHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	data, err := os.ReadFile(realPath)
+	var data []byte
+	if resolved.verifiedFile != nil {
+		data, err = readVerifiedXcodeBuildMCPScreenshot(realPath, resolved.verifiedFile, maxBytes)
+	} else {
+		data, err = os.ReadFile(realPath)
+	}
 	if err != nil {
 		r.writeFileReadError(w, path, err)
 		return
@@ -215,6 +222,7 @@ func (r *Router) resolveReadableFilePath(raw string) (fileReadResolvedPath, erro
 				realPath:            screenshot.realPath,
 				requiredContentType: screenshot.contentType,
 				maxBytes:            xcodeBuildMCPScreenshotMaxBytes,
+				verifiedFile:        screenshot.info,
 			}, nil
 		}
 	}

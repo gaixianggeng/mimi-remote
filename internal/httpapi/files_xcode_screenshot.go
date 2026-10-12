@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,8 @@ var xcodeBuildMCPScreenshotMaxBytes int64 = 16 << 20
 type xcodeBuildMCPScreenshot struct {
 	realPath    string
 	contentType string
+	// info 是解析时 Lstat 校验过的文件身份；读取时必须仍是同一个文件。
+	info os.FileInfo
 }
 
 // xcodeBuildMCPScreenshotContentType 返回截图文件名唯一允许的 MIME；不符合命名规则时返回空。
@@ -108,5 +111,26 @@ func resolveXcodeBuildMCPScreenshotPath(raw string, temporaryRoot string) (xcode
 	if filepath.Clean(filepath.Dir(realPath)) != filepath.Clean(realRoot) || filepath.Base(realPath) != name {
 		return xcodeBuildMCPScreenshot{}, true, errFilePathOutsideScope
 	}
-	return xcodeBuildMCPScreenshot{realPath: realPath, contentType: contentType}, true, nil
+	return xcodeBuildMCPScreenshot{realPath: realPath, contentType: contentType, info: info}, true, nil
+}
+
+// readVerifiedXcodeBuildMCPScreenshot 关闭解析与读取之间的窗口：同一用户的进程可以在
+// Lstat 校验之后把截图换成指向授权外文件的符号链接或硬链接，而按路径读取会跟随它。
+// 这里打开后用 fd 复核仍是解析时校验过的同一个单链接普通文件，读取也只从这个 fd 进行。
+func readVerifiedXcodeBuildMCPScreenshot(realPath string, expected os.FileInfo, maxBytes int64) ([]byte, error) {
+	file, err := os.Open(realPath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if expected == nil || !info.Mode().IsRegular() || !os.SameFile(info, expected) ||
+		!fileOwnedByCurrentUserWithSingleLink(info) {
+		return nil, errFilePathOutsideScope
+	}
+	// 多读 1 字节，让调用方的大小上限复核能发现读取期间被追加的文件。
+	return io.ReadAll(io.LimitReader(file, maxBytes+1))
 }

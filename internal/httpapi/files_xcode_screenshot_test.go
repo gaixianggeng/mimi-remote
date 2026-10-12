@@ -238,3 +238,48 @@ func TestFileReadXcodeBuildMCPScreenshotOnMacOS(t *testing.T) {
 		t.Fatalf("超过截图大小上限时应拒绝，got=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// 解析通过之后、读取之前，同一用户的进程把截图换成指向授权外文件的符号链接或硬链接：
+// 读取必须按 fd 复核为解析时的同一个文件并拒绝，不能读到授权外内容。
+func TestReadVerifiedXcodeBuildMCPScreenshotRejectsSwapAfterResolve(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("XcodeBuildMCP 截图特例只在 macOS 生效，Windows 没有 owner/硬链接校验")
+	}
+	secretContent := append(append([]byte{}, testXcodeScreenshotPNG...), []byte("outside-scope")...)
+	name := "screenshot_" + testXcodeScreenshotUUID + ".png"
+	for _, swap := range []struct {
+		label   string
+		replace func(secret, path string) error
+	}{
+		{"未替换", nil},
+		{"替换为符号链接", func(secret, path string) error { return os.Symlink(secret, path) }},
+		{"替换为硬链接", func(secret, path string) error { return os.Link(secret, path) }},
+	} {
+		t.Run(swap.label, func(t *testing.T) {
+			root := t.TempDir()
+			secret := writeTestXcodeScreenshot(t, t.TempDir(), "private.png", secretContent)
+			path := writeTestXcodeScreenshot(t, root, name, testXcodeScreenshotPNG)
+			got, candidate, err := resolveXcodeBuildMCPScreenshotPath(path, root)
+			if !candidate || err != nil {
+				t.Fatalf("截图应先通过解析：candidate=%v err=%v", candidate, err)
+			}
+			if swap.replace == nil {
+				data, err := readVerifiedXcodeBuildMCPScreenshot(got.realPath, got.info, xcodeBuildMCPScreenshotMaxBytes)
+				if err != nil || string(data) != string(testXcodeScreenshotPNG) {
+					t.Fatalf("未替换的截图应按原内容读取：len=%d err=%v", len(data), err)
+				}
+				return
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := swap.replace(secret, path); err != nil {
+				t.Skipf("当前文件系统不支持该替换方式：%v", err)
+			}
+			data, err := readVerifiedXcodeBuildMCPScreenshot(got.realPath, got.info, xcodeBuildMCPScreenshotMaxBytes)
+			if !errors.Is(err, errFilePathOutsideScope) || len(data) != 0 {
+				t.Fatalf("解析后被替换的截图必须按越界拒绝：len=%d err=%v", len(data), err)
+			}
+		})
+	}
+}
