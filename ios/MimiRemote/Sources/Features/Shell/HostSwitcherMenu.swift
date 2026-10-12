@@ -393,7 +393,7 @@ struct HostSwitcherMenu: View {
                 // 退后台或用户取消时保留原 Mac，不弹失败。
             } catch {
                 failedProfileID = profileID
-                switchErrorMessage = error.localizedDescription
+                switchErrorMessage = UserFacingError(error).message
             }
         }
     }

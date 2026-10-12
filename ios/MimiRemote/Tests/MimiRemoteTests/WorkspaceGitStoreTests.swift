@@ -162,6 +162,48 @@ final class WorkspaceGitStoreTests: XCTestCase {
             truncated: false, truncatedNote: nil
         )
     }
+
+    // MARK: - #508 失败文案
+
+    func testGitStatusFailureShowsReadableCopyInsteadOfRawTransportError() async {
+        let probe = WorkspaceGitClientProbe(status: status("unused"))
+        let store = WorkspaceGitStore(currentHostScope: { self.hostScope("a", generation: 1) }, clientFactory: { probe })
+        probe.statusHandler = { _ in throw URLError(.cannotConnectToHost) }
+
+        await store.refreshGitStatus(path: path)
+
+        XCTAssertEqual(store.gitStatusErrorByPath[path], L10n.text("ui.error_host_unreachable"))
+    }
+
+    func testHostOperationMessageKeepsGitReasonButDropsProtocolNoise() {
+        XCTAssertEqual(
+            UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 409, message: "nothing to commit, working tree clean")),
+            "nothing to commit, working tree clean",
+            "git 自己的说明用户能直接处理，只去掉 HTTP 外壳"
+        )
+        XCTAssertEqual(
+            UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 500, message: "app-server error -32603: internal")),
+            L10n.text("ui.error_host_error")
+        )
+        XCTAssertEqual(
+            UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 409, message: "push rejected for https://example.invalid/repo.git")),
+            L10n.text("ui.error_rejected"),
+            "带地址的原因不上主界面"
+        )
+        XCTAssertEqual(
+            UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 401, message: "unauthorized")),
+            ConnectionTerminationStatus.credentialsInvalid.message
+        )
+        XCTAssertEqual(UserFacingError.hostOperationMessage(for: URLError(.timedOut)), L10n.text("ui.error_timed_out"))
+    }
+
+    func testWorkspaceSessionLoadFailureUsesReadableCopy() {
+        XCTAssertEqual(
+            workspaceSessionLoadFailureDisposition(AgentAPIError.server(status: 503, message: "upstream unavailable")),
+            .failed(L10n.text("ui.error_host_error"))
+        )
+        XCTAssertEqual(workspaceSessionLoadFailureDisposition(CancellationError()), .cancelled)
+    }
 }
 
 /// 不实现任何会话 API；不支持的测试调用明确抛错，不用空成功掩盖错误路由。

@@ -75,7 +75,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitStatusErrorByPath[targetPath] = error.localizedDescription
+            gitStatusErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         await refreshGitStatus(path: targetPath, lease: lease)
@@ -99,7 +99,7 @@ final class WorkspaceGitStore: ObservableObject {
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitStatusErrorByPath[targetPath] = error.localizedDescription
+            gitStatusErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -248,7 +248,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isRunningGitAction = true
@@ -271,7 +271,7 @@ final class WorkspaceGitStore: ObservableObject {
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -286,7 +286,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isRunningGitAction = true
@@ -309,7 +309,7 @@ final class WorkspaceGitStore: ObservableObject {
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -324,7 +324,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isCommittingGitChanges = true
@@ -343,7 +343,7 @@ final class WorkspaceGitStore: ObservableObject {
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -358,7 +358,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isPushingGitBranch = true
@@ -379,7 +379,7 @@ final class WorkspaceGitStore: ObservableObject {
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -396,7 +396,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return false
         }
         isQuickPublishingGitChanges = true
@@ -423,7 +423,7 @@ final class WorkspaceGitStore: ObservableObject {
             return canApplyResult(lease)
         } catch {
             guard canApplyResult(lease) else { return false }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             // 组合动作可能已经完成本地 commit 但在 push 阶段失败，失败后必须重新读取真实 Git 状态。
             await refreshGitStatus(path: targetPath, lease: lease)
             return false
@@ -439,7 +439,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
+            gitTestFlightErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         await refreshGitTestFlightStatus(path: targetPath, lease: lease)
@@ -463,7 +463,7 @@ final class WorkspaceGitStore: ObservableObject {
             gitTestFlightErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
+            gitTestFlightErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -477,7 +477,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
+            gitTestFlightErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return false
         }
         isStartingGitTestFlightRelease = true
@@ -498,7 +498,7 @@ final class WorkspaceGitStore: ObservableObject {
             return true
         } catch {
             guard canApplyResult(lease) else { return false }
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
+            gitTestFlightErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return false
         }
     }
@@ -512,7 +512,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
+            gitTestFlightErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         while !Task.isCancelled {
@@ -541,7 +541,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isCreatingPullRequest = true
@@ -573,7 +573,7 @@ final class WorkspaceGitStore: ObservableObject {
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -587,7 +587,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            pullRequestStatusErrorByPath[targetPath] = error.localizedDescription
+            pullRequestStatusErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isRefreshingPullRequestStatus = true
@@ -606,7 +606,27 @@ final class WorkspaceGitStore: ObservableObject {
             pullRequestStatusErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            pullRequestStatusErrorByPath[targetPath] = error.localizedDescription
+            pullRequestStatusErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
+    }
+}
+
+extension UserFacingError {
+    /// Git / Worktree 等电脑端操作的失败文案（#508）。
+    ///
+    /// 这些接口的原因多是 git 自己的输出（「nothing to commit」「分支已存在」），用户据此就能处理，
+    /// 只去掉「HTTP 409：」外壳直接展示；带协议细节、地址、路径或凭据的原因退回分类文案，原文只留在日志。
+    static func hostOperationMessage(for error: Error) -> String {
+        if case AgentAPIError.server(let status, let message) = error, status != 401 {
+            let reason = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !reason.isEmpty,
+               reason.count <= 300,
+               !containsTechnicalDetail(reason),
+               !containsSensitiveDetail(reason),
+               !AgentAPIError.isCredentialRejection(status: status, message: reason, authenticationChallenge: nil) {
+                return reason
+            }
+        }
+        return UserFacingError(error).message
     }
 }

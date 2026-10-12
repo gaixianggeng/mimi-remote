@@ -174,7 +174,7 @@ enum WorkspaceSessionLoadFailureDisposition: Equatable {
 
 /// Session 首屏和 catalog/open 使用同一套明确取消分类，避免 URL transport 取消落入用户错误态。
 func workspaceSessionLoadFailureDisposition(_ error: Error) -> WorkspaceSessionLoadFailureDisposition {
-    isCancellationError(error) ? .cancelled : .failed(error.localizedDescription)
+    isCancellationError(error) ? .cancelled : .failed(UserFacingError(error).message)
 }
 
 struct WorkspaceCatalogRefreshScope: Equatable {
@@ -1213,7 +1213,7 @@ struct WorkspaceRootView: View {
                 sessionLoadStates[presentationKey] = .loaded
             } catch {
                 guard !isCancellationError(error) else { return }
-                sessionLoadStates[presentationKey] = .failed(error.localizedDescription)
+                sessionLoadStates[presentationKey] = .failed(UserFacingError(error).message)
             }
         }
 
@@ -1264,7 +1264,7 @@ struct WorkspaceRootView: View {
         } catch {
             catalogLoad.complete(
                 invocationID,
-                result: isCancellationError(error) ? .cancelled : .failed(error.localizedDescription),
+                result: isCancellationError(error) ? .cancelled : .failed(UserFacingError(error).message),
                 hasCachedProjects: !sessionStore.sidebarProjects.isEmpty
             )
         }

@@ -1946,8 +1946,8 @@ extension ConversationDataFlowTests {
         let timeout = URLError(.timedOut)
         XCTAssertEqual(
             workspaceSessionLoadFailureDisposition(timeout),
-            .failed(timeout.localizedDescription),
-            "超时仍必须进入可重试的真实失败态"
+            .failed(L10n.text("ui.error_timed_out")),
+            "超时仍必须进入可重试的真实失败态，文案用可读结论（#508）"
         )
     }
 

@@ -166,7 +166,7 @@ struct WorktreeManagerSheet: View {
         if case AgentAPIError.server(let status, _) = error, status == 404 || status == 405 {
             return L10n.text("ui.the_current_agentd_version_does_not_support_clean")
         }
-        return error.localizedDescription
+        return UserFacingError.hostOperationMessage(for: error)
     }
 }
 
@@ -347,7 +347,7 @@ struct WorktreeCleanupPreviewSheet: View {
             }
             dismiss()
         } catch {
-            executionError = error.localizedDescription
+            executionError = UserFacingError.hostOperationMessage(for: error)
         }
     }
 }

@@ -248,7 +248,7 @@ final class FileUploadStore: ObservableObject {
             tasks.removeValue(forKey: id)
             updateJob(id: id) {
                 $0.phase = .failed
-                $0.errorMessage = error.localizedDescription
+                $0.errorMessage = UserFacingError(error).message
                 // 用户主动选择的 URL 在本次编辑期间仍然有效，预处理与网络失败都允许原地重试。
                 $0.canRetry = true
             }
