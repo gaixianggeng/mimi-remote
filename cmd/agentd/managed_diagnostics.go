@@ -149,7 +149,8 @@ func (l *managedDiagnosticLogs) Clear() (httpapi.DiagnosticLogStatus, error) {
 			return err
 		}
 		if l.debugWriter != nil {
-			if err := l.debugWriter.clear(); err != nil {
+			// 先让调试日志队列里已有的行写完，再截断；否则清除前排队的记录会在清除后被写回。
+			if err := l.debug.Sync(l.debugWriter.clear); err != nil {
 				return err
 			}
 		}

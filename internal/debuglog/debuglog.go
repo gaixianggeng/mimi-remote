@@ -22,14 +22,22 @@ const (
 	maxLineBytes = 4096
 )
 
+// operation 是写入队列里的一项：一行日志，或一个控制操作（屏障）。
+type operation struct {
+	line    string
+	control func() error
+	done    chan error
+}
+
 type Sink struct {
 	out     io.Writer
 	enabled func() bool
 	now     func() time.Time
 	home    string
-	queue   chan string
+	queue   chan operation
 	done    chan struct{}
-	mu      sync.Mutex
+	// 入队与 Sync 只取读锁，Close 取写锁后才关闭队列，避免向已关闭的队列发送。
+	mu      sync.RWMutex
 	closed  bool
 	dropped atomic.Int64
 }
@@ -39,18 +47,35 @@ var current atomic.Pointer[Sink]
 // New 创建一个写入 out 的调试日志；enabled 决定此刻是否在诊断窗口内。
 func New(out io.Writer, enabled func() bool) *Sink {
 	home, _ := os.UserHomeDir()
-	s := &Sink{out: out, enabled: enabled, now: time.Now, home: home, queue: make(chan string, queueSize), done: make(chan struct{})}
+	s := &Sink{out: out, enabled: enabled, now: time.Now, home: home, queue: make(chan operation, queueSize), done: make(chan struct{})}
 	go s.writeLoop()
 	return s
 }
 
 func (s *Sink) writeLoop() {
 	defer close(s.done)
-	for line := range s.queue {
-		if _, err := io.WriteString(s.out, line+"\n"); err != nil {
+	for op := range s.queue {
+		if op.done != nil {
+			op.done <- op.control()
+			continue
+		}
+		if _, err := io.WriteString(s.out, op.line+"\n"); err != nil {
 			s.dropped.Add(1)
 		}
 	}
+}
+
+// Sync 是写入队列的屏障：之前排队的行全部写完后才执行 fn，返回 fn 的结果。用于清除文件，
+// 保证清除之前排队的记录不会在清除之后被写回。队列满时会等待写入，不丢弃屏障。
+func (s *Sink) Sync(fn func() error) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return fn()
+	}
+	done := make(chan error, 1)
+	s.queue <- operation{control: fn, done: done}
+	return <-done
 }
 
 // Install 设为进程内当前的调试日志，返回撤销函数。
@@ -79,13 +104,13 @@ func (s *Sink) enqueue(component, message string) {
 	if len(line) > maxLineBytes {
 		line = line[:maxLineBytes] + "…"
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.closed {
 		return
 	}
 	select {
-	case s.queue <- line:
+	case s.queue <- operation{line: line}:
 	default:
 		s.dropped.Add(1)
 	}

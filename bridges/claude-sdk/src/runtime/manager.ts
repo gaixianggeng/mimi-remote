@@ -92,7 +92,7 @@ export class ThreadManager {
     const started = Date.now();
     try {
       const outcome = await releaseForeignHolders(threadId, this.takeoverDeps, this.takeoverTimeouts);
-      logger.info("takeover", {
+      logger.debug("takeover", {
         thread: threadId,
         released: outcome.released,
         ...(outcome.released ? { pid: outcome.holders[0]?.pid, signal: outcome.signal } : {}),
@@ -101,7 +101,7 @@ export class ThreadManager {
       return outcome;
     } catch (error) {
       const reason = (error as { reason?: string }).reason;
-      logger.info("takeover.refused", { thread: threadId, reason: reason ?? errorText(error), ms: Date.now() - started });
+      logger.debug("takeover.refused", { thread: threadId, reason: reason ?? errorText(error), ms: Date.now() - started });
       throw error;
     }
   }
@@ -166,7 +166,7 @@ export class ThreadManager {
    */
   private async ownershipChanged(threadId: string, holder: SessionHolder | undefined): Promise<void> {
     const runtime = this.runtimes.get(threadId);
-    logger.info("ownership.changed", {
+    logger.debug("ownership.changed", {
       thread: threadId,
       holder: holder?.pid ?? null,
       entrypoint: holder?.entrypoint ?? null,
@@ -183,9 +183,7 @@ export class ThreadManager {
         void this.ownership.scanNow();
         return;
       }
-      this.options.log(
-        `thread ${threadId.slice(0, 8)} continued by pid ${holder.pid} (${holder.entrypoint ?? "unknown"}); stopping the adapter's process`,
-      );
+      // 让出的细节（会话 ID、pid）由 claude.yield 在 debug 级别记录，只在诊断窗口内落盘。
       await runtime.yieldToHolder();
     }
     const status = runtime?.activeTurnId

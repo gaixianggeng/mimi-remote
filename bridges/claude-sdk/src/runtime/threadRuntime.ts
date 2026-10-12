@@ -143,7 +143,7 @@ export class ThreadRuntime {
    */
   async yieldToHolder(): Promise<void> {
     if (!this.query) return;
-    logger.info("claude.yield", { thread: this.threadId, pid: this.pid ?? null, openTurns: this.openTurns().length });
+    logger.debug("claude.yield", { thread: this.threadId, pid: this.pid ?? null, openTurns: this.openTurns().length });
     this.cancelIdleClose();
     for (const turn of this.openTurns()) turn.markInterrupted();
     if (this.pid !== undefined) {
@@ -340,7 +340,7 @@ export class ThreadRuntime {
       logger.warn("claude.failed", { thread: this.threadId, pid: this.pid ?? null, error: errorText(error) });
     } finally {
       if (this.query === query) {
-        logger.info("claude.exit", { thread: this.threadId, pid: this.pid ?? null, openTurns: this.openTurns().length });
+        logger.debug("claude.exit", { thread: this.threadId, pid: this.pid ?? null, openTurns: this.openTurns().length });
         this.query = undefined;
         this.input = undefined;
         this.applied = undefined;

@@ -117,3 +117,50 @@ func TestLongLinesAreTruncated(t *testing.T) {
 		t.Fatalf("超长行没有截断：%d 字节", len(line))
 	}
 }
+
+type slowWriter struct {
+	mu    sync.Mutex
+	lines int
+	gate  chan struct{}
+}
+
+func (w *slowWriter) Write(p []byte) (int, error) {
+	<-w.gate
+	w.mu.Lock()
+	w.lines++
+	w.mu.Unlock()
+	return len(p), nil
+}
+
+func (w *slowWriter) count() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.lines
+}
+
+func TestSyncRunsAfterEveryEarlierQueuedLine(t *testing.T) {
+	writer := &slowWriter{gate: make(chan struct{})}
+	sink := New(writer, func() bool { return true })
+	restore := Install(sink)
+	defer restore()
+	for i := 0; i < 10; i++ {
+		Printf("gateway", "queued %d", i)
+	}
+	seen := make(chan int, 1)
+	go func() {
+		_ = sink.Sync(func() error {
+			seen <- writer.count()
+			return nil
+		})
+	}()
+	close(writer.gate)
+	select {
+	case written := <-seen:
+		if written != 10 {
+			t.Fatalf("屏障执行时应已写完之前排队的 10 行，实际 %d 行", written)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("屏障没有执行")
+	}
+	sink.Close()
+}
