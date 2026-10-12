@@ -354,6 +354,22 @@ describe("single driver", () => {
     }
   });
 
+  test("a stale holder from an earlier scan does not stop a process started after it left", async () => {
+    const client = new Client();
+    const threadId = await newThread(client);
+    const first = await client.call("turn/start", { threadId, input: text("seed") });
+    await client.turnCompleted(first.turn.id);
+    expect((await client.call("thread/loaded/list", {})).data).toContain(threadId);
+    // 扫描拿到的是已经退出的终端；回调到达时登记里已经没有它。
+    const stale = { pid: 999_999_999, entrypoint: "cli", kind: "interactive", status: "idle", version: null, startedAt: Date.now() };
+    await (app.manager as any).ownershipChanged(threadId, stale);
+    await Bun.sleep(300);
+    expect((await client.call("thread/loaded/list", {})).data).toContain(threadId);
+    expect(client.frames.some((frame: any) => frame.method === "thread/status/changed" && frame.params.canAcceptDirectInput === false)).toBe(false);
+    const next = await client.call("turn/start", { threadId, input: text("still mine") });
+    await client.turnCompleted(next.turn.id);
+  });
+
   test("takeover ends an idle terminal holder and continues the session here", async () => {
     const client = new Client();
     const threadId = await newThread(client);
