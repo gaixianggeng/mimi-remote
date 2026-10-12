@@ -101,12 +101,13 @@ if [[ "$mode" == "pull-request" ]]; then
 
   temporary_paths="$(mktemp "${TMPDIR:-/tmp}/mimi-public-safety-paths.XXXXXX")"
   # 许可证证明只取决于最终依赖图和打包入口；中间提交的 secret 由下方逐 tree 扫描兜底。
+  # Tailcat 门禁按实际编入的包枚举模块，源码新增 import 也会改变结果，所以其 .go 文件同样触发。
   git diff --name-only -z --no-renames "$merge_base" "$head_sha" > "$temporary_paths" \
     || fail "无法收集 PR 变更路径。"
   third_party=false
   while IFS= read -r -d '' changed_path; do
     case "$changed_path" in
-      go.mod|go.sum|experiments/tailcat/go.mod|experiments/tailcat/go.sum|THIRD_PARTY_NOTICES.md|.goreleaser.yml|scripts/check-third-party-notices.sh|ios/MimiRemote/project.yml|ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj|ios/MimiRemote/MimiRemote.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved)
+      go.mod|go.sum|experiments/tailcat/go.mod|experiments/tailcat/go.sum|experiments/tailcat/*.go|THIRD_PARTY_NOTICES.md|.goreleaser.yml|scripts/check-third-party-notices.sh|ios/MimiRemote/project.yml|ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj|ios/MimiRemote/MimiRemote.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved)
         third_party=true
         break
         ;;
