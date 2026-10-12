@@ -12,9 +12,15 @@ export interface AgentdConfig {
   codexEnabled: boolean;
 }
 
+/** 与 agentd 的 config.DefaultPath() 相同：AGENTD_CONFIG 优先，否则是平台默认位置。 */
 export function defaultConfigPath(): string {
-  if (process.env.MIMI_AGENTD_CONFIG) return process.env.MIMI_AGENTD_CONFIG;
-  return path.join(os.homedir(), "Library", "Application Support", "mimi-remote", "config.json");
+  const override = process.env.AGENTD_CONFIG?.trim();
+  if (override) return override;
+  const base =
+    process.platform === "darwin"
+      ? path.join(os.homedir(), "Library", "Application Support")
+      : process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), ".config");
+  return path.join(base, "mimi-remote", "config.json");
 }
 
 const expandHome = (value: string) => (value.startsWith("~") ? path.join(os.homedir(), value.slice(1)) : value);
@@ -27,7 +33,8 @@ export function loadAgentdConfig(file = defaultConfigPath()): AgentdConfig {
     listen: raw.listen,
     token,
     scanRoots: (Array.isArray(raw.scan_roots) ? raw.scan_roots : []).map((root: string) => expandHome(String(root))),
-    codexEnabled: raw.codex?.enabled === true,
+    // 旧配置没有 codex.enabled：agentd 视为启用。
+    codexEnabled: raw.codex?.enabled !== false,
   };
 }
 

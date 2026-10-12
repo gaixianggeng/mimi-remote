@@ -70,45 +70,47 @@ async function main(): Promise<number> {
   const stamp = path.basename(sandbox.root);
   console.log(`沙盒仓库：${sandbox.root.replace(os.homedir(), "~")}`);
 
-  const client = await GatewayClient.connect(config, `acceptance-${process.pid}`);
-  await client.initialize();
+  // 沙盒一建好就进入清理范围：连不上网关或初始化失败也不留下仓库和 worktree。
   const terminal = new Terminal(stamp, claudeBin);
-  const ctx: Context = {
-    config,
-    sandbox,
-    claudeBin,
-    client,
-    terminal,
-    created: [],
-    cwdOf: new Map(),
-    parityRepo: args.parityRepo,
-    parityLimit: args.parityLimit,
-  };
-
-  let rootThread: string | undefined;
-  const cases: Array<{ name: string; title: string; run: () => Promise<CaseOutcome> }> = [
-    { name: "channel", title: "Claude 通道接的是新适配器且健康", run: () => channelCase(ctx) },
-    { name: "models", title: "模型列表与额度", run: () => modelsCase(ctx) },
-    {
-      name: "turn",
-      title: "发消息与流式回复",
-      run: async () => {
-        const outcome = await basicTurnCase(ctx);
-        rootThread = outcome.threadId;
-        return outcome;
-      },
-    },
-    { name: "title", title: "新会话自动标题（Mimi 与 CLI 一致）", run: () => autoTitleCase(ctx, rootThread) },
-    { name: "worktrees", title: "worktree 会话出现在所属仓库（含 CLI 建的）", run: () => worktreeCase(ctx, rootThread) },
-    { name: "steer", title: "运行中补充与中断", run: () => steerInterruptCase(ctx) },
-    { name: "approvals", title: "命令审批（允许与拒绝）", run: () => approvalCase(ctx) },
-    { name: "ask", title: "Claude 提问", run: () => askUserCase(ctx) },
-    { name: "ownership", title: "终端接手时让出、恢复与接管", run: () => yieldTakeoverCase(ctx) },
-    { name: "parity", title: "历史与 CLI 视图一致", run: () => parityCase(ctx) },
-  ];
-
+  let client: GatewayClient | undefined;
   const results: Array<{ name: string; title: string; status: Status; detail: string; ms: number }> = [];
   try {
+    client = await GatewayClient.connect(config, `acceptance-${process.pid}`);
+    await client.initialize();
+    const ctx: Context = {
+      config,
+      sandbox,
+      claudeBin,
+      client,
+      terminal,
+      created: [],
+      cwdOf: new Map(),
+      parityRepo: args.parityRepo,
+      parityLimit: args.parityLimit,
+    };
+
+    let rootThread: string | undefined;
+    const cases: Array<{ name: string; title: string; run: () => Promise<CaseOutcome> }> = [
+      { name: "channel", title: "Claude 通道接的是新适配器且健康", run: () => channelCase(ctx) },
+      { name: "models", title: "模型列表与额度", run: () => modelsCase(ctx) },
+      {
+        name: "turn",
+        title: "发消息与流式回复",
+        run: async () => {
+          const outcome = await basicTurnCase(ctx);
+          rootThread = outcome.threadId;
+          return outcome;
+        },
+      },
+      { name: "title", title: "新会话自动标题（Mimi 与 CLI 一致）", run: () => autoTitleCase(ctx, rootThread) },
+      { name: "worktrees", title: "worktree 会话出现在所属仓库（含 CLI 建的）", run: () => worktreeCase(ctx, rootThread) },
+      { name: "steer", title: "运行中补充与中断", run: () => steerInterruptCase(ctx) },
+      { name: "approvals", title: "命令审批（允许与拒绝）", run: () => approvalCase(ctx) },
+      { name: "ask", title: "Claude 提问", run: () => askUserCase(ctx) },
+      { name: "ownership", title: "终端接手时让出、恢复与接管", run: () => yieldTakeoverCase(ctx) },
+      { name: "parity", title: "历史与 CLI 视图一致", run: () => parityCase(ctx) },
+    ];
+
     for (const item of cases) {
       if (args.only && !args.only.has(item.name)) continue;
       const started = Date.now();
@@ -125,7 +127,7 @@ async function main(): Promise<number> {
     }
   } finally {
     terminal.kill();
-    client.close();
+    client?.close();
     if (args.keep) {
       console.log(`保留沙盒：${sandbox.root}`);
     } else {

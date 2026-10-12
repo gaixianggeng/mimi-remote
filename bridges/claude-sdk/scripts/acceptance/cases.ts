@@ -99,11 +99,11 @@ export async function basicTurnCase(ctx: Context): Promise<CaseOutcome & { threa
   if (turn.status !== "completed" || !turn.text.includes("ACCEPT-OK")) {
     return { ...fail(`状态 ${turn.status}，回复 ${JSON.stringify(turn.text.slice(0, 80))}`), threadId };
   }
-  return { ...pass(`${turn.ms} ms 完成${streamed ? "，有流式输出" : "（未观察到流式增量）"}`), threadId };
+  if (!streamed) return { ...fail(`${turn.ms} ms 完成，但没有收到 item/agentMessage/delta 流式增量`), threadId };
+  return { ...pass(`${turn.ms} ms 完成，有流式输出`), threadId };
 }
 
 export async function autoTitleCase(ctx: Context, threadId: string | undefined): Promise<CaseOutcome> {
-  if (!ctx.config.codexEnabled) return skip("agentd 未启用 Codex，自动标题不会生成");
   if (!threadId) return skip("前一个用例没有建出会话");
   // 标题来自 Claude Code 自己生成的 AI 标题，或 agentd 用 Codex 生成后写回；两种都应很快推送到客户端。
   const updated = await ctx.client
@@ -111,7 +111,10 @@ export async function autoTitleCase(ctx: Context, threadId: string | undefined):
     .catch(() => undefined);
   if (!updated) {
     const info = await getSessionInfo(threadId);
-    return fail(`60 秒内没有收到标题推送；transcript 里的标题：${info?.customTitle ? `「${info.customTitle}」（已有标题，但没有推送给客户端，iPhone 要等刷新才看到）` : "没有"}`);
+    if (info?.customTitle) return fail(`60 秒内没有收到标题推送；transcript 里已有标题「${info.customTitle}」，iPhone 要等刷新才看到`);
+    // 两个来源都没出标题：agentd 关了 Codex 时不算 Mimi 的问题。
+    if (!ctx.config.codexEnabled) return skip("60 秒内 Claude Code 没有生成标题，agentd 也未启用 Codex 自动标题");
+    return fail("60 秒内没有收到标题推送，transcript 里也没有标题");
   }
   const name = String(updated.params.threadName ?? updated.params.name ?? "");
   const read = await ctx.client.call("thread/read", { threadId });
@@ -298,8 +301,11 @@ export async function yieldTakeoverCase(ctx: Context): Promise<CaseOutcome> {
   const back = await runTurn(ctx, threadId, "Reply with exactly: BACK-OK");
   if (back.status !== "completed" || !back.text.includes("BACK-OK")) return fail(`接管后续聊状态 ${back.status}`);
   steps.push(`接管（${takeover.result.takeover.signal}）后续聊正常`);
-  const forks = forkPoints(threadId);
-  steps.push(forks === 0 ? "transcript 无分叉" : `transcript 有 ${forks} 个分叉点（CLI 恢复被中断的回合时会自己补一个）`);
+  // 单一驱动方：两个进程同时写同一个会话会让 transcript 分叉，历史从此分岔。
+  const transcript = forkPoints(threadId);
+  if (!transcript) return fail(`${steps.join("；")}；找不到 transcript，无法检查分叉`);
+  if (transcript.forks) return fail(`${steps.join("；")}；transcript 有 ${transcript.forks} 个分叉点，两个进程同时写过这个会话`);
+  steps.push(transcript.synthetic ? `transcript 无分叉（CLI 恢复被结束的回合时补写了 ${transcript.synthetic} 条合成回复）` : "transcript 无分叉");
   return pass(steps.join("；"));
 }
 

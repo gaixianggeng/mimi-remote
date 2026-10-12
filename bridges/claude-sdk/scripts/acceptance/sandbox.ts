@@ -49,11 +49,15 @@ export function transcriptPath(sessionId: string): string | undefined {
   return undefined;
 }
 
-/** 分叉点：同一个父节点下出现多个对话子节点（排除侧链）。CLI 恢复中断回合时也会自己补一个。 */
-export function forkPoints(sessionId: string): number {
+/**
+ * 分叉点：同一个父节点下出现多个对话子节点（排除侧链），即两个进程同时写过这个会话。CLI 恢复
+ * 「生成到一半被结束的回合」时会自己补一条合成回复（model 为 <synthetic>，如「No response
+ * requested.」），它造成的分叉单独计数。找不到 transcript 时返回 undefined。
+ */
+export function forkPoints(sessionId: string): { forks: number; synthetic: number } | undefined {
   const file = transcriptPath(sessionId);
-  if (!file) return -1;
-  const children = new Map<string, number>();
+  if (!file) return undefined;
+  const children = new Map<string, { real: number; synthetic: number }>();
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (!line.trim()) continue;
     let record: any;
@@ -64,9 +68,18 @@ export function forkPoints(sessionId: string): number {
     }
     if (!record.uuid || record.isSidechain || (record.type !== "user" && record.type !== "assistant")) continue;
     const parent = record.parentUuid ?? "<root>";
-    children.set(parent, (children.get(parent) ?? 0) + 1);
+    const entry = children.get(parent) ?? { real: 0, synthetic: 0 };
+    if (record.type === "assistant" && record.message?.model === "<synthetic>") entry.synthetic += 1;
+    else entry.real += 1;
+    children.set(parent, entry);
   }
-  return [...children.values()].filter((count) => count > 1).length;
+  let forks = 0;
+  let synthetic = 0;
+  for (const entry of children.values()) {
+    if (entry.real > 1) forks += 1;
+    else if (entry.real + entry.synthetic > 1) synthetic += 1;
+  }
+  return { forks, synthetic };
 }
 
 export function resolveClaudeBin(): string {
