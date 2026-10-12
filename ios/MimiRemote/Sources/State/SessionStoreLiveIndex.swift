@@ -18,19 +18,36 @@ extension SessionStore {
             return
         }
         var didChange = false
+        var clearedApproval = false
+        var clearedUserInput = false
         updateSession(incoming.id) { item in
             let previous = item
             item.status = incoming.status
             item.activeTurnID = incoming.activeTurnID
             item.canAcceptDirectInput = incoming.canAcceptDirectInput
             item.claudeOwner = incoming.claudeOwner
+            // 待处理的审批 / 补充输入也以快照为准：别的客户端答复后会话转为运行或空闲，
+            // 这里不清掉旧请求，列表就会一直把它归在「待你处理」。仍在等待但快照没带载荷
+            // （列表快照不含请求正文）时保留已有的可操作请求。
+            let waitsForApproval = incoming.status == SessionStatus.waitingForApproval.rawValue
+            item.pendingApproval = waitsForApproval ? (incoming.pendingApproval ?? item.pendingApproval) : nil
+            let waitsForInput = incoming.status == SessionStatus.waitingForInput.rawValue
+            item.pendingUserInput = waitsForInput ? (incoming.pendingUserInput ?? item.pendingUserInput) : nil
             if let updatedAt = incoming.updatedAt, updatedAt > (item.updatedAt ?? .distantPast) {
                 item.updatedAt = updatedAt
             }
+            clearedApproval = previous.pendingApproval != nil && item.pendingApproval == nil
+            clearedUserInput = previous.pendingUserInput != nil && item.pendingUserInput == nil
             didChange = item != previous
         }
         guard didChange else {
             return
+        }
+        if clearedApproval {
+            clearPendingApprovalDecisions(sessionID: incoming.id)
+        }
+        if clearedUserInput {
+            clearPendingUserInputResponses(sessionID: incoming.id)
         }
         if incoming.status == SessionStatus.completed.rawValue {
             locallyCompletedSessionIDs.insert(incoming.id)

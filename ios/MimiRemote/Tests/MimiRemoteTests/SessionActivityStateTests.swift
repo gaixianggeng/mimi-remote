@@ -160,6 +160,26 @@ final class SessionActivityStateTests: XCTestCase {
         XCTAssertTrue(store.isHistorySessionUnread(done))
         XCTAssertNotNil(store.historyCompletionObservedAtBySessionID[held.id])
 
+        // 别的客户端答复了审批：快照转为运行，旧的待处理请求必须一起清掉，不能继续归在「待你处理」。
+        var awaiting = done
+        awaiting.status = SessionStatus.waitingForApproval.rawValue
+        awaiting.pendingApproval = ApprovalSummary(id: "approval-1", title: "Run tests", kind: "command", count: nil)
+        store.applyLiveSessionIndexUpdate(awaiting)
+        XCTAssertEqual(store.sessions.first { $0.id == held.id }?.activityState, .needsYou(.approval))
+        // 仍在等待、但快照不带请求正文时保留已有的可操作请求。
+        var stillWaiting = awaiting
+        stillWaiting.pendingApproval = nil
+        store.applyLiveSessionIndexUpdate(stillWaiting)
+        XCTAssertEqual(store.sessions.first { $0.id == held.id }?.pendingApproval?.id, "approval-1")
+        var answered = done
+        answered.status = SessionStatus.running.rawValue
+        answered.claudeOwner = busyOwner
+        store.applyLiveSessionIndexUpdate(answered)
+        let resumed = store.sessions.first { $0.id == held.id }
+        XCTAssertNil(resumed?.pendingApproval)
+        XCTAssertEqual(resumed?.activityState, .running(.computer(busyOwner)))
+        store.applyLiveSessionIndexUpdate(done)
+
         // 不在 Store 里的会话不会被插进来；更旧的时间不会倒退。
         var stranger = makeSession(id: "stranger", projectID: project.id, title: "x", status: "running", source: "claude", runtimeProvider: "claude")
         stranger.canAcceptDirectInput = false

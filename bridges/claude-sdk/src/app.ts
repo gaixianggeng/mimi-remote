@@ -105,15 +105,12 @@ export function createApp(options: AppOptions): App {
     readTitle: async (threadId) => (await sessions.info(threadId))?.customTitle?.trim() || null,
     ...(options.titleCheckDelaysMs ? { titleCheckDelaysMs: options.titleCheckDelaysMs } : {}),
     ...(options.broadcast ? { broadcast: options.broadcast } : {}),
-    // 与 thread/list 的 updatedAt 同源：最后一条对话消息的时间（秒）。
+    // 与 thread/list 的 updatedAt 同源：最后一条对话消息的时间（秒）。持有方变化不频繁，
+    // 每次都强制重扫：索引最多缓存 1 秒，活动时间又按文件大小缓存，一轮很短的回合在这个窗口里
+    // 结束时，沿用旧索引会把回合前的时间当成最新，列表就认不出这次完成。
     readActivity: async (threadId) => {
-      await transcripts.refresh();
-      let file = transcripts.get(threadId);
-      if (!file) {
-        // 刚建立的会话可能还没进索引（上一次扫描早于 transcript 落盘）；持有方变化不频繁，强制重扫一次。
-        await transcripts.refresh(true);
-        file = transcripts.get(threadId);
-      }
+      await transcripts.refresh(true);
+      const file = transcripts.get(threadId);
       const ms = file ? await activity.lastActivityMs(file) : undefined;
       return ms === undefined ? undefined : Math.floor(ms / 1000);
     },
