@@ -834,8 +834,17 @@ final class ThemeStore: ObservableObject {
     }
 
     func tokens(for systemColorScheme: ColorScheme) -> ThemeTokens {
+        tokens(resolvedScheme: resolvedScheme(for: systemColorScheme))
+    }
+
+    /// 背景固定为纯黑的页面（扫码相机与失败页）按当前预设的深色取色，
+    /// 不随 App 外观模式变化；否则浅色主题的深色主操作会压在黑底上读不清（#416）。
+    var alwaysDarkTokens: ThemeTokens {
+        tokens(resolvedScheme: .dark)
+    }
+
+    private func tokens(resolvedScheme scheme: ThemeResolvedScheme) -> ThemeTokens {
         // 主题只产出视觉 token，不读写消息或 session 数据，保证外观切换不影响会话状态。
-        let scheme = resolvedScheme(for: systemColorScheme)
         switch (preset, scheme) {
         case (.codex, .light):
             return codexLightTokens

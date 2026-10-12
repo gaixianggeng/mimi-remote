@@ -48,7 +48,6 @@ enum QRCodeScannerSubmissionResult: Equatable {
 
 struct QRCodeScannerSheet: View {
     @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
     @State private var scannerFailure: QRCodeScannerFailure?
     @State private var isCameraReady = false
     @State private var isSubmittingCode = false
@@ -164,7 +163,12 @@ struct QRCodeScannerSheet: View {
     }
 
     private func scannerFailureContent(_ failure: QRCodeScannerFailure) -> some View {
-        ZStack {
+        // 失败页始终铺纯黑底，按钮与文字都按深色取色；浅色主题的深色主操作压在黑底上读不清。
+        let tokens = themeStore.alwaysDarkTokens
+        // GitHub、Xcode、Gruvbox 深色主操作上的白字不到 4.5:1；复用冲突卡按每个预设校准过的黑白前景。
+        let prominentForeground = tokens.writerConflictPrimaryActionForeground
+
+        return ZStack {
             Color.black
 
             VStack(spacing: 18) {
@@ -186,7 +190,7 @@ struct QRCodeScannerSheet: View {
                     if failure.recoveryActions.contains(.openSettings) {
                         Button(L10n.text("ui.go_to_system_settings"), action: openAppSettings)
                             .buttonStyle(.borderedProminent)
-                            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
+                            .foregroundStyle(prominentForeground)
                             .controlSize(.large)
                     }
                     if failure.recoveryActions.contains(.retryScanning) {
@@ -195,30 +199,32 @@ struct QRCodeScannerSheet: View {
                             scannerFailure = nil
                         }
                         .buttonStyle(.borderedProminent)
-                        .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
+                        .foregroundStyle(prominentForeground)
                         .controlSize(.large)
                     }
                     if failure.recoveryActions.count == 1 {
                         Button(L10n.text("ui.use_manual_connection_instead"), action: chooseManualConnection)
                             .buttonStyle(.borderedProminent)
-                            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
+                            .foregroundStyle(prominentForeground)
                             .controlSize(.large)
                     } else {
                         Button(L10n.text("ui.use_manual_connection_instead"), action: chooseManualConnection)
                             .buttonStyle(.bordered)
                             .controlSize(.large)
-                            // 描边按钮的文字是前景，不跟按钮底色走（#416）；默认主题与浅色下两者同值。
-                            .tint(themeStore.tokens(for: colorScheme).accentText)
+                            // 描边按钮的文字是前景，不跟按钮底色走（#416）。
+                            .tint(tokens.accentText)
                     }
                 }
                 // 显式配对主操作底色与前景：默认深色的主操作是浅灰，只能配黑字。
-                .tint(themeStore.tokens(for: colorScheme).primaryAction)
+                .tint(tokens.primaryAction)
                 .frame(maxWidth: 320)
             }
             .foregroundStyle(.white)
             .padding(28)
             .frame(maxWidth: 440)
         }
+        // 系统按钮样式也按深色绘制，与 tokens 保持一致。
+        .environment(\.colorScheme, .dark)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("qrScanner.failure")
     }

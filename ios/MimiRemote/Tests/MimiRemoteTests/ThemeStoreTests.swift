@@ -753,6 +753,33 @@ final class ThemeStoreTests: XCTestCase {
         }
     }
 
+    /// 扫码失败页始终铺纯黑底：不论 App 外观模式，按钮都要按深色取色，
+    /// 否则浅色主题的深色主操作压在黑底上只有 1.4–4.0:1（#416）。
+    func testAlwaysDarkTokensStayReadableOnBlackInEveryPresetAndMode() {
+        let store = ThemeStore(defaults: defaults)
+        let black = Color.black
+        for preset in ThemePreset.allCases {
+            store.preset = preset
+            for mode in ThemeMode.allCases {
+                store.mode = mode
+                let tokens = store.alwaysDarkTokens
+                let context = "\(preset.rawValue) mode=\(mode.rawValue)"
+                XCTAssertEqual(tokens.resolvedScheme, .dark, context)
+                XCTAssertEqual(tokens.preset, preset, context)
+                // 实心按钮：底色在黑底上可辨；文字用按预设校准的黑白前景。
+                XCTAssertGreaterThanOrEqual(contrastRatio(tokens.primaryAction, black), 3.0, context)
+                XCTAssertGreaterThanOrEqual(
+                    contrastRatio(tokens.writerConflictPrimaryActionForeground, tokens.primaryAction),
+                    4.5,
+                    context
+                )
+                // 描边按钮：强调前景压在 20% 同色软底合成到黑底上。
+                let borderedFill = flatten(tokens.accentText.opacity(0.2), over: black)
+                XCTAssertGreaterThanOrEqual(contrastRatio(tokens.accentText, borderedFill), 4.5, context)
+            }
+        }
+    }
+
     func testWriterConflictCardStaysReadableInEveryPreset() {
         let store = ThemeStore(defaults: defaults)
         for preset in ThemePreset.allCases {
