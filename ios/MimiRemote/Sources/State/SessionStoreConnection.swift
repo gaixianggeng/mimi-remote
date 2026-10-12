@@ -556,8 +556,18 @@ extension SessionStore {
                 setWebSocketStatus(.failed(message))
                 if activeWriterConflict {
                     setErrorMessage(L10n.text("ui.codex_active_writer_conflict"))
+                } else if policyRejected {
+                    // 自动重连已停止：不能显示成「正在重连」，也不给只会重复被拒的重新连接按钮。
+                    setErrorMessage(
+                        L10n.format("ui.the_connection_was_rejected_by_server_policy_and", message),
+                        presentation: UserFacingError(
+                            category: .policyRejected,
+                            message: L10n.text("ui.error_connection_policy_rejected"),
+                            technicalDetail: message
+                        )
+                    )
                 } else {
-                    setErrorMessage(policyRejected ? L10n.format("ui.the_connection_was_rejected_by_server_policy_and", message) : message)
+                    setErrorMessage(message)
                 }
             }
         case .terminated(let reason):

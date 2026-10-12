@@ -53,7 +53,9 @@ final class UserFacingErrorTests: XCTestCase {
             UserFacingError(AgentAPIError.server(status: 403, message: "path outside allowlist")),
             .permissionDenied
         )
-        assertFriendly(UserFacingError(AgentAPIError.server(status: 404, message: "not found")), .unsupported)
+        // 404 是内容不存在（过期、删除、thread 已不在），不是电脑端版本过旧。
+        assertFriendly(UserFacingError(AgentAPIError.server(status: 404, message: "not found")), .notFound)
+        assertFriendly(UserFacingError(AgentAPIError.server(status: 405, message: "method not allowed")), .unsupported)
         assertFriendly(UserFacingError(AgentAPIError.server(status: 429, message: "slow down")), .rateLimited)
         assertFriendly(UserFacingError(AgentAPIError.server(status: 409, message: "conflict")), .rejected)
     }
@@ -117,7 +119,83 @@ final class UserFacingErrorTests: XCTestCase {
         XCTAssertEqual(raw.message, L10n.text("ui.error_unknown"))
     }
 
+    func testHistoryMediaAndOutput404MeanExpiredCacheNotOldVersion() {
+        let gone = AgentAPIError.server(status: 404, message: "history media expired")
+        XCTAssertEqual(
+            UserFacingError(gone, context: .historyMedia).message,
+            L10n.text("ui.the_historical_image_cache_has_expired_please_refresh")
+        )
+        XCTAssertEqual(
+            UserFacingError(gone, context: .historyOutput).message,
+            L10n.text("ui.the_historical_output_cache_has_expired_please_refresh")
+        )
+        let general = UserFacingError(gone)
+        XCTAssertEqual(general.category, .notFound)
+        XCTAssertEqual(general.message, L10n.text("ui.error_not_found"))
+        XCTAssertNotEqual(general.message, L10n.text("ui.error_unsupported"))
+        XCTAssertFalse(general.suggestsReconnect)
+    }
+
+    func testWhitelistedComputerReasonIsShownInsteadOfHiddenInDetails() {
+        let codexLogin = "Codex 登录态已失效，请先在电脑上运行 codex login 后重试"
+        let http = UserFacingError(AgentAPIError.server(status: 500, message: codexLogin))
+        XCTAssertEqual(http.category, .described)
+        XCTAssertEqual(http.message, codexLogin)
+        XCTAssertNotNil(http.technicalDetail)
+        XCTAssertFalse(http.suggestsReconnect, "登录态问题重连解决不了")
+
+        let rpc = CodexAppServerError(code: -32603, message: "Not logged in. Run codex login first.", data: nil)
+        XCTAssertEqual(
+            UserFacingError(CodexAppServerConnectionError.appServer(rpc)).message,
+            "Not logged in. Run codex login first."
+        )
+
+        // 不在白名单里的原因、带协议细节的原因、访问码失效，都不能顶替分类文案。
+        XCTAssertEqual(UserFacingError(AgentAPIError.server(status: 500, message: "internal error")).category, .hostError)
+        XCTAssertEqual(
+            UserFacingError(AgentAPIError.server(status: 500, message: "login failed: HTTP 502 from upstream")).category,
+            .hostError
+        )
+        XCTAssertEqual(
+            UserFacingError(AgentAPIError.server(status: 401, message: "please log in")).category,
+            .authenticationExpired
+        )
+    }
+
+    func testCarrierErrorsKeepTheirRecoverability() {
+        let rejected = UserFacingError(HarnessTransportError.carrier(
+            HarnessRemoteError(code: "gateway/arguments-invalid", message: nil, details: nil)
+        ))
+        XCTAssertEqual(rejected.category, .rejected)
+        XCTAssertFalse(rejected.suggestsReconnect, "确定性拒绝不能给只会重复失败的重连入口")
+
+        let recoverable = UserFacingError(HarnessTransportError.carrier(
+            HarnessRemoteError(code: "gateway/service-unavailable", message: nil, details: nil)
+        ))
+        XCTAssertEqual(recoverable.category, .hostError)
+        XCTAssertTrue(recoverable.suggestsReconnect)
+    }
+
     // MARK: - 只有字符串的出口
+
+    func testPolicyRejectionIsAStoppedStateInEveryLanguage() {
+        for language in [AppLanguage.simplifiedChinese, .english] {
+            let raw = String(
+                format: L10n.text("ui.the_connection_was_rejected_by_server_policy_and", language: language),
+                "app-server error -32080: gateway rejected thread/resume"
+            )
+            let presented = UserFacingError(rawMessage: raw)
+            XCTAssertEqual(presented.category, .policyRejected, "\(language): \(presented.message)")
+            XCTAssertFalse(presented.isInProgress, "已停止自动重连，不能显示成进度")
+            XCTAssertFalse(presented.suggestsReconnect, "重新连接只会再次被策略拒绝")
+            XCTAssertEqual(presented.technicalDetail, raw)
+        }
+    }
+
+    func testStoppedReconnectIsNotPresentedAsInProgress() {
+        let presented = UserFacingError(rawMessage: "WebSocket closed; automatic reconnect stopped after 5 attempts")
+        XCTAssertNotEqual(presented.category, .reconnecting)
+    }
 
     func testRawProtocolMessageKeepsActionPrefixAndMovesDetailsAside() {
         let raw = L10n.text("ui.approval_failed_websocket_not_connected")
@@ -267,6 +345,18 @@ final class OperationFeedbackStoreTests: XCTestCase {
         }
         XCTAssertEqual(store.operationFeedback?.kind, .failure, "重试仍失败时继续给出反馈")
         XCTAssertNotEqual(store.operationFeedback?.id, failure?.id, "重试是一次新的尝试")
+    }
+
+    func testConnectionResetDropsFailureFeedbackSoRetryCannotReachAnotherComputer() async {
+        let session = makeCodexSession()
+        let store = makeStore(client: MockSessionStoreClient(projects: [], sessions: [session]))
+        _ = await store.compactSessionContext(session)
+        XCTAssertNotNil(store.operationFeedback?.retry, "前置条件：失败提示带着捕获旧会话的重试")
+
+        store.resetConnectionForSettingsChange()
+
+        XCTAssertNil(store.operationFeedback, "换连接后旧主机的失败提示与重试不能留下")
+        XCTAssertNil(store.statusMessage)
     }
 
     func testStatusMessagesBecomeToastsUnlessMarkedSilent() {

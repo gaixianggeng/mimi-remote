@@ -24,6 +24,10 @@ enum UserFacingErrorCategory: String, Equatable, Sendable {
     case hostError
     /// 电脑明确拒绝了这次请求（参数、冲突、策略等）。
     case rejected
+    /// 要找的内容在电脑上已不存在（过期、被删除或 thread 已不在）。不是版本问题。
+    case notFound
+    /// 电脑端策略拒绝了连接，自动重连已停止；重复连接只会得到同一结论。
+    case policyRejected
     /// 电脑返回的数据无法解析。
     case invalidResponse
     /// 请求可能已经执行，客户端无法确认结果。
@@ -31,6 +35,14 @@ enum UserFacingErrorCategory: String, Equatable, Sendable {
     case unknown
     /// 原文本身就是可读的业务说明，不含协议细节，原样展示。
     case described
+}
+
+/// 发起请求的场景。同一个 HTTP 状态在不同请求里含义不同，例如历史图片 / 输出的 404
+/// 是缓存过期，而不是电脑端版本过旧。
+enum UserFacingErrorContext: Equatable, Sendable {
+    case general
+    case historyMedia
+    case historyOutput
 }
 
 struct UserFacingError: Equatable, Sendable {
@@ -76,8 +88,20 @@ struct UserFacingError: Equatable, Sendable {
 }
 
 extension UserFacingError {
-    init(_ error: Error) {
+    init(_ error: Error, context: UserFacingErrorContext = .general) {
         let rawDescription = error.localizedDescription
+        if case AgentAPIError.server(404, _) = error, context != .general {
+            let key = context == .historyMedia
+                ? "ui.the_historical_image_cache_has_expired_please_refresh"
+                : "ui.the_historical_output_cache_has_expired_please_refresh"
+            self.init(category: .notFound, message: L10n.text(key), technicalDetail: rawDescription)
+            return
+        }
+        if let reason = Self.readableServerReason(in: error) {
+            // 电脑端给出的可读原因（例如 Codex 未登录）比分类文案更有用，直接作为正文。
+            self.init(category: .described, message: reason, technicalDetail: rawDescription)
+            return
+        }
         if error is FileAccessAPIError {
             // 文件访问错误已有按错误码细分的可读说明，比通用分类更准确。
             self.init(
@@ -126,6 +150,11 @@ extension UserFacingError {
         }
         if let split = Self.actionPrefix(in: trimmed),
            !Self.containsTechnicalDetail(split.prefix) {
+            // 前缀本身已经给出结论（策略拒绝、已停止重连）时以前缀为准，余下的协议码只进详情。
+            if Self.category(forRawMessage: split.prefix) == .policyRejected {
+                self.init(category: .policyRejected, message: Self.message(for: .policyRejected), technicalDetail: trimmed)
+                return
+            }
             let category = Self.category(forRawMessage: split.remainder)
             self.init(
                 category: category,
@@ -177,6 +206,10 @@ extension UserFacingError {
             return L10n.text("ui.error_host_error")
         case .rejected:
             return L10n.text("ui.error_rejected")
+        case .notFound:
+            return L10n.text("ui.error_not_found")
+        case .policyRejected:
+            return L10n.text("ui.error_connection_policy_rejected")
         case .invalidResponse:
             return L10n.text("ui.error_invalid_response")
         case .outcomeUnknown:
@@ -279,7 +312,9 @@ extension UserFacingError {
             return .authenticationExpired
         case 403:
             return .permissionDenied
-        case 404, 405, 501:
+        case 404:
+            return .notFound
+        case 405, 501:
             return .unsupported
         case 408, 504:
             return .timedOut
@@ -342,7 +377,8 @@ extension UserFacingError {
         case .timedOut:
             return .timedOut
         case .carrier:
-            return .hostError
+            // 中继用 carrier 帧同时传达「上游临时不可用」和「权限 / 协议拒绝」；只有前者值得重连。
+            return harnessError.shouldReconnect ? .hostError : .rejected
         case .unsupportedInteraction:
             return .unsupported
         case .unattributedResponse, .cancelled:
@@ -368,6 +404,50 @@ extension UserFacingError {
         }
         let reflected = String(reflecting: error)
         return reflected == rawDescription ? rawDescription : "\(reflected) — \(rawDescription)"
+    }
+
+    // MARK: - 电脑端可读原因
+
+    /// 可以直接展示给用户的电脑端原因。只收白名单内的类别（模型账号登录态等需要用户在电脑上
+    /// 处理的事），并排除协议细节和 HTTP 通用短语；其余原因仍只进详情。
+    static func readableServerReason(in error: Error) -> String? {
+        let candidate: String?
+        switch error {
+        case AgentAPIError.server(let status, let message) where status != 401:
+            candidate = message
+        case CodexAppServerConnectionError.appServer(let appServerError):
+            candidate = appServerError.message
+        case let appServerError as CodexAppServerError:
+            candidate = appServerError.message
+        default:
+            candidate = nil
+        }
+        guard let reason = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !reason.isEmpty,
+              reason.count <= 240,
+              !reason.contains("\n"),
+              !containsTechnicalDetail(reason),
+              !isCredentialRejectionReason(reason) else {
+            return nil
+        }
+        let lowered = reason.lowercased()
+        return readableReasonMarkers.contains { lowered.contains($0) } ? reason : nil
+    }
+
+    /// 白名单：只有这些需要用户自己处理的原因才会进入正文。
+    private static let readableReasonMarkers = [
+        "codex login",
+        "claude auth login",
+        "not logged in",
+        "log in",
+        "logged in",
+        "sign in",
+        "登录"
+    ]
+
+    /// 访问码失效有专门的重新配对流程，不能被电脑端的原始说法替换掉。
+    private static func isCredentialRejectionReason(_ reason: String) -> Bool {
+        AgentAPIError.isCredentialRejection(status: 403, message: reason, authenticationChallenge: nil)
     }
 
     // MARK: - 字符串兜底分类
@@ -404,7 +484,11 @@ extension UserFacingError {
         func containsAny(_ needles: [String]) -> Bool {
             needles.contains { lowered.contains($0) }
         }
-        if containsAny(["重连", "重新接入", "正在连接", "reconnect", "is connecting"]) {
+        if containsAny(["policy", "策略"]) {
+            return .policyRejected
+        }
+        let reconnectStopped = containsAny(["已停止", "stopped"])
+        if !reconnectStopped, containsAny(["重连", "重新接入", "正在连接", "reconnect", "is connecting"]) {
             return .reconnecting
         }
         if containsAny(["超时", "timed out", "timeout"]) {

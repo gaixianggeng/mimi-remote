@@ -5921,6 +5921,23 @@
         }
       }
     },
+    "ui.error_connection_policy_rejected": {
+      "comment": "Shown when the computer's connection policy rejected the session and automatic reconnection stopped. No reconnect action is offered.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your computer’s policy rejected this connection, so automatic reconnection stopped. Check the settings on your computer, then open the session again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接被电脑端策略拒绝，已停止自动重连。请先在电脑上检查设置，再重新打开会话。"
+          }
+        }
+      }
+    },
     "ui.error_details_copied": {
       "comment": "Confirmation shown on the copy button after copying error details.",
       "localizations": {
@@ -5985,6 +6002,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "无法识别电脑返回的内容，请把电脑和本 App 都更新到最新版本。"
+          }
+        }
+      }
+    },
+    "ui.error_not_found": {
+      "comment": "Error category copy: the requested item no longer exists on the computer (expired or deleted). Not a version problem.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That content is no longer on your computer. It may have expired or been deleted. Refresh and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要找的内容在电脑上已不存在，可能已过期或被删除，请刷新后重试。"
           }
         }
       }
