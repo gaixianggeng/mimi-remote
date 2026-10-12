@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -60,5 +61,48 @@ func TestReadBridgeStdoutLineNoLimitReadsFullLine(t *testing.T) {
 	}
 	if string(bytes.TrimSpace(line)) != big {
 		t.Fatalf("无上限时应完整返回整行：len=%d want=%d", len(bytes.TrimSpace(line)), len(big))
+	}
+}
+
+func TestClaudeGatewayInheritsProxyEnvironmentAndAllowsConfigOverride(t *testing.T) {
+	isolateProxyEnvironment(t)
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:10808")
+	t.Setenv("http_proxy", "http://127.0.0.1:10808")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:10808")
+	t.Setenv("NO_PROXY", "localhost,127.0.0.1")
+	env := buildClaudeBridgeEnv(map[string]string{
+		"https_proxy": "http://127.0.0.1:18080",
+	})
+
+	values := map[string]string{}
+	for _, item := range env {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			canonical := strings.ToUpper(key)
+			if _, exists := values[canonical]; exists {
+				t.Fatalf("代理环境变量不应因大小写重复：%v", env)
+			}
+			values[canonical] = value
+		}
+	}
+	if values["HTTP_PROXY"] != "http://127.0.0.1:10808" ||
+		values["HTTPS_PROXY"] != "http://127.0.0.1:18080" ||
+		values["NO_PROXY"] != "localhost,127.0.0.1" {
+		t.Fatalf("Claude bridge 应继承代理并允许 claude.env 覆盖：%v", values)
+	}
+}
+
+// isolateProxyEnvironment 清掉运行测试的 shell 继承来的大小写代理变量，避免宿主的
+// no_proxy、https_proxy 等按小写优先规则盖过测试设定的值。t.Setenv 先登记还原宿主值。
+func isolateProxyEnvironment(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
+		"all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY",
+	} {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
+		}
 	}
 }
