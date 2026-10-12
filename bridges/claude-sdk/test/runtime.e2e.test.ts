@@ -35,8 +35,14 @@ beforeAll(async () => {
     idleCloseMs: 60_000,
     ownership: { ownershipPollMs: 200, takeoverTimeouts: { interruptGraceMs: 2_000, terminateGraceMs: 2_000, respawnGraceMs: 100 } },
     titleCheckDelaysMs: [0, 300],
-    broadcast: (frame) => {
-      for (const client of attachedClients) client.session.publish(frame);
+    // 与常驻模式的注册表广播同一语义：全部已附着连接，加上不在其中的订阅者，各发一次。
+    broadcast: (frame, subscribers) => {
+      const delivered = new Set<Session>();
+      for (const client of attachedClients) {
+        delivered.add(client.session);
+        client.session.publish(frame);
+      }
+      for (const session of subscribers) if (!delivered.has(session)) session.publish(frame);
     },
   });
   // 与常驻模式一致：登记监听从一开始就在，不等第一个订阅。
@@ -522,6 +528,23 @@ describe("ownership", () => {
     } finally {
       rmSync(registry, { force: true });
     }
+  });
+
+  test("an anonymous connection that subscribed to a session still hears its holder change", async () => {
+    // stdio 模式或没有 attach 的连接不在广播名单里，只能靠订阅关系收到推送。
+    const anonymous = new Client();
+    attachedClients.delete(anonymous);
+    const threadId = await newThread(anonymous);
+    const terminal = new TerminalHolder(threadId, "busy");
+    try {
+      const pushed = await anonymous.waitFor(statusChange(threadId, false));
+      expect(pushed.params).toMatchObject({ status: { type: "active" }, claudeOwner: { pid: terminal.pid } });
+      const count = anonymous.frames.filter(statusChange(threadId, false)).length;
+      expect(count).toBe(1);
+    } finally {
+      terminal.exit();
+    }
+    await anonymous.waitFor(statusChange(threadId, true));
   });
 
   test("a session held elsewhere reports running, idle and gone to clients that never subscribed to it", async () => {

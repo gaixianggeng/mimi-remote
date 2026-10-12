@@ -50,9 +50,22 @@ export class SessionRegistry {
     this.timer = undefined;
   }
 
-  /** 面向全部具名会话的通知（例如列表级的持有方变化），不区分谁订阅了哪个会话。 */
-  publishAll(frame: OutboundFrame): void {
-    for (const session of this.sessions.values()) session.publish(frame);
+  /**
+   * 面向全部具名会话的通知（例如列表级的持有方变化），不区分谁订阅了哪个会话。`alsoTo` 是
+   * 不在注册表里、但订阅了相关会话的连接（stdio 模式或没有 attach 的匿名连接）：同样要收到，
+   * 每个连接只发一次。
+   */
+  publishAll(frame: OutboundFrame, alsoTo: Iterable<Session> = []): void {
+    const delivered = new Set<Session>();
+    for (const session of this.sessions.values()) {
+      delivered.add(session);
+      session.publish(frame);
+    }
+    for (const session of alsoTo) {
+      if (delivered.has(session)) continue;
+      delivered.add(session);
+      session.publish(frame);
+    }
   }
 
   get size(): number {

@@ -45,9 +45,10 @@ export interface ManagerOptions {
   titleCheckDelaysMs?: number[];
   /**
    * 发给全部已附着连接的通知（持有方变化）。列表页不订阅任何会话，只有这样它才能知道终端里的
-   * 会话开始 / 结束处理。缺省时退回只发给该会话的订阅者。
+   * 会话开始 / 结束处理。`subscribers` 是该会话的订阅者：其中不在注册表里的匿名连接也要收到，
+   * 实现方负责去重。缺省时退回只发给订阅者。
    */
-  broadcast?: (frame: OutboundFrame) => void;
+  broadcast?: (frame: OutboundFrame, subscribers: Iterable<Session>) => void;
   /** 会话最后一条对话消息的时间（Unix 秒），随持有方变化一起推送，客户端据此刷新列表时间与未读。 */
   readActivity?: (threadId: string) => Promise<number | undefined>;
 }
@@ -225,8 +226,9 @@ export class ThreadManager {
       claudeOwner: holder ? ownerSummary(holder) : null,
       ...(updatedAt !== undefined ? { updatedAt } : {}),
     });
-    if (this.options.broadcast) this.options.broadcast(frame);
-    else for (const session of this.subscribers.get(threadId) ?? []) session.publish(frame);
+    const subscribers = this.subscribers.get(threadId) ?? new Set<Session>();
+    if (this.options.broadcast) this.options.broadcast(frame, subscribers);
+    else for (const session of subscribers) session.publish(frame);
   }
 
   /** 标题变了（agentd 改名、CLI /rename 或 Claude Code 的 AI 标题）：推给订阅者。 */

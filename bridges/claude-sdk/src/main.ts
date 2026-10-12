@@ -29,7 +29,7 @@ function wire(): { registry: SessionRegistry; app: App } {
     idleTtlMs: 600_000,
     onExpire: (session) => app?.manager.unsubscribeSession(session),
   });
-  app = createApp({ log, broadcast: (frame) => registry.publishAll(frame) });
+  app = createApp({ log, broadcast: (frame, subscribers) => registry.publishAll(frame, subscribers) });
   const created = app;
   registry.onCreate = (session) => session.setBusyCheck(() => created.manager.isSessionBusy(session));
   return { registry, app: created };
