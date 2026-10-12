@@ -460,25 +460,35 @@ extension UserFacingError {
     private static let sensitiveDetailPatterns: [NSRegularExpression] = [
         // 任意协议地址。
         "[a-z][a-z0-9+.-]*://",
-        // 绝对 / 家目录 / 相对路径：斜杠前可以是开头、空白、全角或半角标点、等号等任何非单词字符。
-        "(?:^|[^A-Za-z0-9_/])(?:~|\\.{1,2})?/[A-Za-z0-9_.~-]",
-        // Windows 盘符路径与 UNC 路径。
+        // 路径：斜杠前是开头或任何非单词字符（含全角标点、等号），斜杠后任意非空白字符（含中文目录）。
+        "(?:^|[^A-Za-z0-9_/])(?:~|\\.{1,2})?/[^\\s/]",
+        // Windows 盘符路径、UNC 路径与不带盘符的反斜杠路径。
         "\\b[A-Za-z]:[\\\\/]",
         "\\\\\\\\[A-Za-z0-9_.-]+",
-        // IPv4 / IPv6。
+        "\\\\[A-Za-z][^\\s\\\\]*\\\\",
+        // IPv4；IPv6 必须含「::」或十六进制字母，避免把 12:30:45 这类时间当成地址。
         "\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b",
-        "\\b[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}\\b",
-        // 主机名：任何「名字.字母后缀」（含 .home、.ai、文件名等），带端口的主机，以及 localhost。
+        "(?<![\\w:])(?=[0-9a-f:]*(?:::|[a-f][0-9a-f]*:|:[0-9a-f]*[a-f]))[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?![\\w:])",
+        // 主机名：任何「名字.字母后缀」、主机部分含字母的 host:port、localhost、ssh 输出里的 host / port。
         "\\b[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.[a-z]{2,}\\b",
-        "\\b[a-z0-9.-]+:\\d{2,5}\\b",
+        "\\b(?=[a-z0-9.-]*[a-z])[a-z0-9.-]+:\\d{2,5}\\b",
         "\\blocalhost\\b",
+        "\\b(?:host|hostname|port)\\s+\\S+",
+        // 账号与无后缀的局域网主机名（build-mac、mac-mini）。
+        "\\bdenied to\\s+\\S+",
+        "\\b[a-z0-9]+(?:-[a-z0-9]+)*-(?:mac|mini|pc|host|server|desktop|laptop|nas|box)\\b",
+        "\\b(?:mac|mini|imac|macbook)-[a-z0-9-]+\\b",
+        "(?:^|\\s)@[A-Za-z0-9_-]+",
         // 邮箱。
         "[^\\s@]+@[^\\s@]+",
-        // 凭据：常见前缀、关键字本身、任何 key=value / key: value 赋值。
-        "\\b(?:sk|ghp|gho|ghs|xox[a-z])[-_][A-Za-z0-9_-]{4,}",
-        "\\b(?:bearer|token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key|cookie|session[_-]?id)\\b",
-        "\\b[A-Za-z_][A-Za-z0-9_.-]*\\s*=\\s*\\S",
-        "\\b(?:key|auth|credential)s?\\s*:\\s*\\S",
+        // 凭据：常见前缀、关键字本身、中文凭据词、全半角赋值、关键字后紧跟的短值、Basic / Bearer。
+        "\\b(?:sk|ghp|gho|ghs|ghu|github_pat|glpat|xox[a-z])[-_][A-Za-z0-9_-]{4,}",
+        "\\b(?:bearer|token|secret|password|passwd|pwd|api[\\s_-]?key|access[_-]?key|cookie|session[_-]?id)\\b",
+        "(?:密码|口令|令牌|密钥|凭据|凭证|验证码|配对码)",
+        "\\b[A-Za-z_][A-Za-z0-9_.-]*\\s*[=＝]\\s*\\S",
+        "\\b(?:key|auth|authorization|credential|pass|passwd|password|pwd|token|secret)s?\\s*[:：]\\s*\\S",
+        "\\b(?:key|pass|password|token|secret)\\s+[A-Za-z0-9_-]*\\d[A-Za-z0-9_-]*\\b",
+        "\\b(?:basic|bearer)\\s+[A-Za-z0-9+/=._-]{6,}",
         // 长串或字母数字混排串（疑似 Token / ID）。
         "\\b[A-Za-z0-9_\\-]{24,}\\b",
         "\\b(?=[A-Za-z0-9_-]*\\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{12,}\\b"

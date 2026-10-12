@@ -155,6 +155,23 @@ final class UserFacingErrorTests: XCTestCase {
         withInterfaceLanguage(.simplifiedChinese) { assertWhitelistedReasons() }
     }
 
+    func testTimestampsInReadableReasonsAreNotMistakenForAddresses() {
+        withInterfaceLanguage(.english) {
+            let english = UserFacingError(AgentAPIError.server(status: 500, message: "Not logged in since 12:30:45"))
+            XCTAssertEqual(english.message, "Not logged in since 12:30:45")
+        }
+        withInterfaceLanguage(.simplifiedChinese) {
+            let chinese = UserFacingError(AgentAPIError.server(status: 500, message: "请于 09:30 前重新登录"))
+            XCTAssertEqual(chinese.message, "请于 09:30 前重新登录")
+        }
+        // 真正的地址仍然拦下。
+        XCTAssertTrue(UserFacingError.containsSensitiveDetail("connect to fe80::1"))
+        XCTAssertTrue(UserFacingError.containsSensitiveDetail("connect to 2001:db8:85a3:0:0:8a2e:370:7334"))
+        XCTAssertTrue(UserFacingError.containsSensitiveDetail("open localhost:4180"))
+        XCTAssertFalse(UserFacingError.containsSensitiveDetail("since 12:30:45"))
+        XCTAssertFalse(UserFacingError.containsSensitiveDetail("before 09:30"))
+    }
+
     func testChineseComputerReasonFallsBackOnEnglishInterface() {
         withInterfaceLanguage(.english) {
             let chinese = UserFacingError(AgentAPIError.server(status: 500, message: "Codex 登录态已失效，请先运行 codex login"))
@@ -193,7 +210,20 @@ final class UserFacingErrorTests: XCTestCase {
                 "Run codex login via relay.ai",
                 "codex login failed, key=abc123",
                 "codex login failed: token=short1",
-                "codex login failed for demo@example.invalid"
+                "codex login failed for demo@example.invalid",
+                // 最终复审的反例：无分隔符或全角写法的短凭据、无后缀主机名、账号、反斜杠路径。
+                "codex login failed with key abc123",
+                "codex login failed, API key abcd1234",
+                "codex login: Authorization: Basic dXNlcjpwYXNz",
+                "codex login failed, pass: hunter2",
+                "Please log in again, key：abc123",
+                "Please log in again, key＝abc123",
+                "Please sign in again: Permission to owner/repo denied to someuser.",
+                "Run codex login on build-mac",
+                "Run codex login on gais-mac-mini",
+                "Run codex login on [::1]:8080",
+                "codex login failed for @someuser",
+                "codex login failed: \\Users\\demo\\auth"
             ] {
                 let presented = UserFacingError(AgentAPIError.server(status: 500, message: message))
                 XCTAssertEqual(presented.category, .hostError, message)
@@ -205,7 +235,16 @@ final class UserFacingErrorTests: XCTestCase {
 
     private func assertWhitelistedReasons() {
         // 中文界面下，带路径的中文原因同样不能上主界面（全角冒号后紧跟路径）。
-        for message in ["请先登录：/Users/demo/.codex/auth.json", "请先登录，配置在 /root/.codex", "登录凭据 key=abc123 已失效"] {
+        for message in [
+            "请先登录：/Users/demo/.codex/auth.json",
+            "请先登录，配置在 /root/.codex",
+            "登录凭据 key=abc123 已失效",
+            "请先登录，密码 hunter2",
+            "请先登录，凭据：abc123",
+            "请先登录，配对码 482913",
+            "请在 mac-mini 上重新登录",
+            "Run codex login (~/文档/codex)"
+        ] {
             let presented = UserFacingError(AgentAPIError.server(status: 500, message: message))
             XCTAssertEqual(presented.category, .hostError, message)
             XCTAssertTrue(presented.technicalDetail?.contains(message) == true, message)

@@ -248,6 +248,14 @@
     {
       "value": "登录",
       "reason": "Allowlist marker for computer-side sign-in reasons that may be shown verbatim; the literal itself is never rendered as product UI."
+    },
+    {
+      "value": "(?:密码|口令|令牌|密钥|凭据|凭证|验证码|配对码)",
+      "reason": "Sensitive-detail regex used only to keep credentials out of shown computer-side reasons; never rendered as product UI."
+    },
+    {
+      "value": "\\\\b(?:key|auth|authorization|credential|pass|passwd|password|pwd|token|secret)s?\\\\s*[:：]\\\\s*\\\\S",
+      "reason": "Sensitive-detail regex used only to keep credentials out of shown computer-side reasons; never rendered as product UI."
     }
   ],
   "uiLiteralAllowlist": [
