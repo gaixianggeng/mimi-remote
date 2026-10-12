@@ -212,8 +212,8 @@ func TestPhotosDerivativeResolverPreservesCandidateErrorsAndRejectsEscape(t *tes
 		}
 		return path, nil
 	}
-	if resolved, candidate, err := resolveAllowedPhotosDerivativeImagePath(target); !candidate || err != nil || resolved != "" {
-		t.Fatalf("成功解析到 Pictures 外时必须拒绝：resolved=%q candidate=%v err=%v", resolved, candidate, err)
+	if resolved, candidate, err := resolveAllowedPhotosDerivativeImagePath(target); !candidate || err != nil || resolved.realPath != "" {
+		t.Fatalf("成功解析到 Pictures 外时必须拒绝：resolved=%q candidate=%v err=%v", resolved.realPath, candidate, err)
 	}
 }
 
@@ -367,14 +367,17 @@ func TestFileReadAllowsCodexClipboardTemporaryImageOnMacOS(t *testing.T) {
 }
 
 func TestAllowedCodexClipboardImagePathRejectsUnsafeVariants(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Codex 剪贴板临时路径只在 macOS 放行，Windows 没有 owner/硬链接校验")
+	}
 	tempRoot := t.TempDir()
 	validName := "codex-clipboard-9ba62714-bcfb-4693-805b-1be6e284e924.png"
 	validPath := filepath.Join(tempRoot, validName)
 	if err := os.WriteFile(validPath, []byte("not inspected by path resolver"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := allowedCodexClipboardImagePath(validPath, tempRoot); !ok || got == "" {
-		t.Fatalf("严格命名的普通文件应通过路径阶段校验：got=%q ok=%v", got, ok)
+	if got, ok := allowedCodexClipboardImagePath(validPath, tempRoot); !ok || got.realPath == "" || got.verifiedFile == nil {
+		t.Fatalf("严格命名的普通文件应通过路径阶段校验并记录文件身份：got=%q ok=%v", got.realPath, ok)
 	}
 
 	invalidNamePath := filepath.Join(tempRoot, "codex-clipboard-not-a-uuid.png")

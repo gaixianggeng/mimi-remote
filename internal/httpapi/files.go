@@ -68,6 +68,10 @@ type fileReadResolvedPath struct {
 	realPath              string
 	photosDerivativeImage bool
 	codexClipboardImage   bool
+	// verifiedFile 非空时只能经 fd 读取解析阶段校验过的同一个文件，不按路径重新跟随链接。
+	verifiedFile os.FileInfo
+	// requireOwnedSingleLink 要求读取时的文件仍由当前用户拥有且只有一个链接（临时目录特例）。
+	requireOwnedSingleLink bool
 }
 
 var filePreviewImageExtensions = map[string]struct{}{
@@ -125,9 +129,18 @@ func (r *Router) fileReadHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	data, err := os.ReadFile(realPath)
+	var data []byte
+	if resolved.verifiedFile != nil {
+		data, err = readVerifiedPreviewFile(realPath, resolved, filePreviewMaxBytes)
+	} else {
+		data, err = os.ReadFile(realPath)
+	}
 	if err != nil {
 		r.writeFileReadError(w, path, err)
+		return
+	}
+	if int64(len(data)) > filePreviewMaxBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "文件过大，暂不支持预览")
 		return
 	}
 	contentType := detectFileContentType(realPath, data)
@@ -171,20 +184,20 @@ func (r *Router) resolveReadableFilePath(raw string) (fileReadResolvedPath, erro
 	}
 	// iPad 只能拿到 Mac 上的文件路径，无法直接访问 Photos Library。
 	// 这里额外放行系统照片库的 derivatives 图片，保持预览可用，同时避免扩大成任意路径读取。
-	if realPath, candidate, err := resolveAllowedPhotosDerivativeImagePath(raw); candidate {
+	if resolved, candidate, err := resolveAllowedPhotosDerivativeImagePath(raw); candidate {
 		if err != nil {
 			return fileReadResolvedPath{}, err
 		}
-		if realPath == "" {
+		if resolved.realPath == "" {
 			return fileReadResolvedPath{}, errFilePathOutsideScope
 		}
-		return fileReadResolvedPath{realPath: realPath, photosDerivativeImage: true}, nil
+		return resolved, nil
 	}
 	// Codex 桌面端把剪贴板图片写到当前 macOS 用户的临时目录，再在会话里保存 localImage 路径。
 	// 只放行严格命名且可验证为图片的普通文件，不能把整个 /var/folders 暴露成 browse root。
 	if runtime.GOOS == "darwin" {
-		if realPath, ok := allowedCodexClipboardImagePath(raw, os.TempDir()); ok {
-			return fileReadResolvedPath{realPath: realPath, codexClipboardImage: true}, nil
+		if resolved, ok := allowedCodexClipboardImagePath(raw, os.TempDir()); ok {
+			return resolved, nil
 		}
 	}
 	return fileReadResolvedPath{}, errFilePathOutsideScope
@@ -323,38 +336,46 @@ func fileAccessDeniedMessage(domain string) string {
 	return "agentd 无法读取该文件。请检查该文件及父目录的读取权限后重试。"
 }
 
-func allowedCodexClipboardImagePath(raw string, temporaryRoot string) (string, bool) {
+// allowedCodexClipboardImagePath 返回可读取的剪贴板图片，并记录解析时校验过的文件身份；
+// 处理器只能经 fd 读取这个同一文件，见 readVerifiedPreviewFile。
+func allowedCodexClipboardImagePath(raw string, temporaryRoot string) (fileReadResolvedPath, bool) {
 	path := strings.TrimSpace(raw)
 	root := strings.TrimSpace(temporaryRoot)
 	if path == "" || root == "" || !isCodexClipboardImageName(filepath.Base(path)) {
-		return "", false
+		return fileReadResolvedPath{}, false
 	}
 
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return "", false
+		return fileReadResolvedPath{}, false
 	}
-	// 最终文件本身不允许是符号链接；否则攻击者可以用可信文件名指向任意文件。
+	// 最终文件本身不允许是符号链接、硬链接或他人创建的文件；否则可信文件名可以借道指向任意内容。
 	info, err := os.Lstat(abs)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return "", false
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() ||
+		!fileOwnedByCurrentUserWithSingleLink(info) {
+		return fileReadResolvedPath{}, false
 	}
 	realPath, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", false
+		return fileReadResolvedPath{}, false
 	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		realRoot, err = filepath.Abs(root)
 		if err != nil {
-			return "", false
+			return fileReadResolvedPath{}, false
 		}
 	}
 	if filepath.Clean(filepath.Dir(realPath)) != filepath.Clean(realRoot) ||
 		!isCodexClipboardImageName(filepath.Base(realPath)) {
-		return "", false
+		return fileReadResolvedPath{}, false
 	}
-	return realPath, true
+	return fileReadResolvedPath{
+		realPath:               realPath,
+		codexClipboardImage:    true,
+		verifiedFile:           info,
+		requireOwnedSingleLink: true,
+	}, true
 }
 
 func isCodexClipboardImageName(name string) bool {
@@ -382,46 +403,53 @@ func isCodexClipboardImageName(name string) bool {
 	return true
 }
 
-// resolveAllowedPhotosDerivativeImagePath 返回 (realPath, candidate, err)。candidate 表示
+// resolveAllowedPhotosDerivativeImagePath 返回 (resolved, candidate, err)。candidate 表示
 // 路径在结构上属于 Pictures 下某个 .photoslibrary 的 derivatives；此时解析失败要保留
-// ENOENT/EPERM，让调用方区分“照片图库被 macOS 拒绝”和“越界”。
-func resolveAllowedPhotosDerivativeImagePath(raw string) (string, bool, error) {
+// ENOENT/EPERM，让调用方区分“照片图库被 macOS 拒绝”和“越界”。resolved.realPath 为空表示
+// 解析到了授权范围外；非空时同时记录解析时的文件身份，处理器只能经 fd 读取这个同一文件。
+func resolveAllowedPhotosDerivativeImagePath(raw string) (fileReadResolvedPath, bool, error) {
 	path := strings.TrimSpace(raw)
 	if path == "" {
-		return "", false, nil
+		return fileReadResolvedPath{}, false, nil
 	}
 	if _, ok := filePreviewImageExtensions[strings.ToLower(filepath.Ext(path))]; !ok {
-		return "", false, nil
+		return fileReadResolvedPath{}, false, nil
 	}
 
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return "", false, nil
+		return fileReadResolvedPath{}, false, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", false, nil
+		return fileReadResolvedPath{}, false, nil
 	}
 	picturesRoot := filepath.Join(home, "Pictures")
 	if !realPathWithin(picturesRoot, abs) || !photosDerivativePathStructure(abs) {
-		return "", false, nil
+		return fileReadResolvedPath{}, false, nil
 	}
 
 	realPath, err := evalFileSymlinks(abs)
 	if err != nil {
-		return "", true, err
+		return fileReadResolvedPath{}, true, err
 	}
 	realPicturesRoot, err := evalFileSymlinks(picturesRoot)
 	if err != nil {
 		realPicturesRoot, err = filepath.Abs(picturesRoot)
 		if err != nil {
-			return "", true, err
+			return fileReadResolvedPath{}, true, err
 		}
 	}
 	if !realPathWithin(realPicturesRoot, realPath) || !photosDerivativePathStructure(realPath) {
-		return "", true, nil
+		return fileReadResolvedPath{}, true, nil
 	}
-	return realPath, true, nil
+	// realPath 已解析掉所有符号链接，这里记录的就是通过边界校验的最终文件。照片图库内部
+	// 是否使用硬链接没有可靠依据，不额外要求单链接；读取时只复核仍是同一个普通文件。
+	info, err := os.Lstat(realPath)
+	if err != nil {
+		return fileReadResolvedPath{}, true, err
+	}
+	return fileReadResolvedPath{realPath: realPath, photosDerivativeImage: true, verifiedFile: info}, true, nil
 }
 
 func photosDerivativePathStructure(path string) bool {
