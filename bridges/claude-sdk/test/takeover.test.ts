@@ -22,6 +22,7 @@ const holder = (pid: number, status: string | null, startedAt: number | null = N
   status,
   version: "2",
   startedAt,
+  statusUpdatedAt: null,
 });
 
 /** 可编排的进程世界：哪些 pid 活着、收到信号后谁退出、退出后谁重新认领。 */

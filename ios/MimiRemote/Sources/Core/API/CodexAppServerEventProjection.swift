@@ -57,6 +57,11 @@ extension CodexAppServerSessionRuntime {
                 mailbox.send(event)
             }
         } else {
+            // 没有页面订阅的会话：快照仍要让列表看到（终端里的 Claude 开始 / 结束处理、别的页面
+            // 发起的会话跑完），否则要等下一次刷新。缓冲区照旧保留，供随后打开详情时回放。
+            if case .session(let session) = event {
+                sessionIndexObserver?(session)
+            }
             var events = bufferedEventsBySessionID[sessionID] ?? []
             if let previous = events.last,
                event.contiguousPayloadByteCount == nil,
@@ -285,14 +290,19 @@ extension CodexAppServerSessionRuntime {
                 return
             }
             let status = sessionStatus(from: statusValue, forceRunning: false)
-            // Claude 适配器在持有方变化时（终端接手、持有方退出）附带与 Thread 同名的扩展字段，
-            // 输入框据此立即变为只读或恢复，不必等下一次 thread/read。
+            // Claude 适配器在持有方变化时（终端接手、持有方退出、空闲与执行切换）附带与 Thread 同名的
+            // 扩展字段，输入框据此立即变为只读或恢复，列表据此切换进行中 / 空闲，不必等下一次 thread/read。
+            // `updatedAt` 与 thread/list 同源：持有方跑完后列表时间和未读水位能立刻前移。
             let canAcceptDirectInput = params["canAcceptDirectInput"]?.boolValue
+            let updatedAt = date(from: params["updatedAt"])
             _ = withUpdatedSession(threadID) { item in
                 item.status = status
                 if let canAcceptDirectInput {
                     item.canAcceptDirectInput = canAcceptDirectInput
                     item.claudeOwner = canAcceptDirectInput ? nil : claudeSessionOwner(from: params["claudeOwner"])
+                }
+                if let updatedAt, updatedAt > (item.updatedAt ?? .distantPast) {
+                    item.updatedAt = updatedAt
                 }
             }
             emit(.sessionStatus(status, metadata(threadID: threadID, turnID: nil)))
@@ -764,11 +774,15 @@ extension CodexAppServerSessionRuntime {
         guard let object = value?.objectValue else {
             return nil
         }
+        // statusUpdatedAt 是 Claude Code 登记里的毫秒时间戳。
+        let statusUpdatedAt = object["statusUpdatedAt"]?.intValue
+            .flatMap { $0 > 0 ? Date(timeIntervalSince1970: Double($0) / 1_000) : nil }
         return ClaudeSessionOwner(
             entrypoint: object["entrypoint"]?.stringValue,
             kind: object["kind"]?.stringValue,
             status: object["status"]?.stringValue,
-            pid: object["pid"]?.intValue
+            pid: object["pid"]?.intValue,
+            statusUpdatedAt: statusUpdatedAt
         )
     }
 

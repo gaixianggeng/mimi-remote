@@ -529,6 +529,88 @@ final class ClaudeTakeoverTests: XCTestCase {
         await runtime.shutdownForHostSwitch()
     }
 
+    /// #683：没有被页面订阅的会话收到持有方状态推送时，运行时把快照交给列表观察者，
+    /// 并把 active / busy 读成"电脑端运行中"、把随附的最后活动时间写进会话。
+    func testStatusPushForUnsubscribedSessionReachesTheIndexObserverWithRunState() async throws {
+        let fixture = await makeHeldStore(id: "claude_index_push", supportsTakeover: true)
+        let (runtime, _, _) = makeTakeoverRuntime(session: fixture.held)
+        await runtime.rememberForkedSession(fixture.held)
+        let observed = ObservedSessions()
+        await runtime.setSessionIndexObserver { session in observed.append(session) }
+
+        func statusChanged(type: String, owner: [String: CodexAppServerJSONValue]?, updatedAt: Int64?) async {
+            var params: [String: CodexAppServerJSONValue] = [
+                "threadId": .string(fixture.held.id),
+                "status": .object(["type": .string(type), "activeFlags": .array([])]),
+                "canAcceptDirectInput": .bool(owner == nil)
+            ]
+            params["claudeOwner"] = owner.map { .object($0) } ?? .null
+            if let updatedAt { params["updatedAt"] = .int(updatedAt) }
+            await runtime.handle(CodexAppServerNotification(method: "thread/status/changed", params: .object(params)))
+        }
+
+        await statusChanged(type: "active", owner: [
+            "entrypoint": .string("claude-desktop"), "kind": .string("interactive"), "status": .string("busy"),
+            "pid": .int(4242), "statusUpdatedAt": .int(1_791_803_198_629)
+        ], updatedAt: 1_791_803_200)
+        let running = try XCTUnwrap(observed.last)
+        XCTAssertEqual(running.status, SessionStatus.running.rawValue)
+        XCTAssertTrue(running.isRunningOnComputer)
+        XCTAssertEqual(running.claudeOwner?.statusUpdatedAt, Date(timeIntervalSince1970: 1_791_803_198.629))
+        XCTAssertEqual(running.updatedAt, Date(timeIntervalSince1970: 1_791_803_200))
+        XCTAssertEqual(running.displayStatus(foregroundActivity: nil).title, L10n.text("ui.running_on_computer"))
+
+        // 持有方转空闲：回到只读的历史，时间不倒退；缓冲区里的快照与观察者拿到的一致。
+        await statusChanged(type: "idle", owner: [
+            "entrypoint": .string("claude-desktop"), "kind": .string("interactive"), "status": .string("idle"), "pid": .int(4242)
+        ], updatedAt: 1_791_803_100)
+        let idle = try XCTUnwrap(observed.last)
+        XCTAssertEqual(idle.status, SessionStatus.history.rawValue)
+        XCTAssertFalse(idle.isRunning)
+        XCTAssertEqual(idle.claudeOwner?.status, "idle")
+        XCTAssertEqual(idle.updatedAt, Date(timeIntervalSince1970: 1_791_803_200))
+        // 缓冲区里留给稍后打开详情回放的快照，与观察者拿到的是同一份状态。
+        let buffered = await runtime.bufferedEvents(sessionID: fixture.held.id, replayPolicy: .stateOnly)
+        let replayed = try XCTUnwrap(buffered.compactMap { event -> AgentSession? in
+            if case .session(let session) = event { return session }
+            return nil
+        }.last)
+        XCTAssertEqual(replayed.status, idle.status)
+        XCTAssertEqual(replayed.claudeOwner, idle.claudeOwner)
+        XCTAssertEqual(replayed.updatedAt, idle.updatedAt)
+
+        // 持有方退出：恢复可写。
+        await statusChanged(type: "notLoaded", owner: nil, updatedAt: nil)
+        let released = try XCTUnwrap(observed.last)
+        XCTAssertTrue(released.allowsDirectInput)
+        XCTAssertNil(released.claudeOwner)
+        XCTAssertEqual(observed.count, 3)
+        await runtime.shutdownForHostSwitch()
+    }
+
+    private final class ObservedSessions: @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [AgentSession] = []
+
+        func append(_ session: AgentSession) {
+            lock.lock()
+            defer { lock.unlock() }
+            items.append(session)
+        }
+
+        var last: AgentSession? {
+            lock.lock()
+            defer { lock.unlock() }
+            return items.last
+        }
+
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return items.count
+        }
+    }
+
     // MARK: - Fixtures
 
     private func makeTakeoverRuntime(session: AgentSession) -> (CodexAppServerSessionRuntime, FakeCodexAppServerTransport, AgentProject) {

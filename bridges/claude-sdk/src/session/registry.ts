@@ -1,3 +1,4 @@
+import type { OutboundFrame } from "../rpc/frames.ts";
 import { Session } from "./session.ts";
 
 export interface RegistryOptions {
@@ -47,6 +48,11 @@ export class SessionRegistry {
   stopReaper(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+  }
+
+  /** 面向全部具名会话的通知（例如列表级的持有方变化），不区分谁订阅了哪个会话。 */
+  publishAll(frame: OutboundFrame): void {
+    for (const session of this.sessions.values()) session.publish(frame);
   }
 
   get size(): number {

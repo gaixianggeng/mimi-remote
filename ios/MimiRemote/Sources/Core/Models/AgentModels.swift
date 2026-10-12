@@ -128,8 +128,20 @@ struct AgentSession: Identifiable, Codable, Hashable {
         source == "local" && status == "draft" && resumeID == nil
     }
 
+    /// 这一轮是否还在进行：本 App 的运行时在跑、等待审批 / 输入，或电脑上的 Claude Code 正在处理。
+    /// 分类细节见 `activityState`；这里只回答"要不要把它当成进行中"。
     var isRunning: Bool {
-        status == "running" || status == "waiting_for_approval" || status == "waiting_for_input"
+        status == "running" || status == "waiting_for_approval" || status == "waiting_for_input" || isRunningOnComputer
+    }
+
+    /// 会话正被电脑上的其他 Claude 进程（终端 / 桌面端）持有，这里只能旁观或等它空闲后接管。
+    var isHeldOnComputer: Bool {
+        canAcceptDirectInput == false && claudeOwner != nil
+    }
+
+    /// 持有方正在处理：列表里它是"进行中"，不是一条已经结束的历史（#683）。
+    var isRunningOnComputer: Bool {
+        isHeldOnComputer && claudeOwner?.isBusy == true
     }
 
     /// 旧 App Server 的普通顶层 thread 没有 capability 字段，继续沿用既有可写行为；
@@ -293,6 +305,16 @@ struct ClaudeSessionOwner: Codable, Hashable, Sendable {
     let kind: String?
     let status: String?
     let pid: Int?
+    /// 持有方最近一次在空闲与执行之间切换的时刻；列表据此显示电脑端已处理多久。旧 bridge 不带。
+    let statusUpdatedAt: Date?
+
+    init(entrypoint: String?, kind: String?, status: String?, pid: Int?, statusUpdatedAt: Date? = nil) {
+        self.entrypoint = entrypoint
+        self.kind = kind
+        self.status = status
+        self.pid = pid
+        self.statusUpdatedAt = statusUpdatedAt
+    }
 
     /// Claude Code 把执行中的进程标成 `busy` / `shell`；`-p` 进程不写状态。
     var isBusy: Bool {
@@ -470,33 +492,43 @@ struct RuntimeActivityDisplay: Equatable {
 
 extension AgentSession {
     func displayStatus(foregroundActivity: SessionForegroundActivity?) -> AgentSessionDisplayStatus {
-        // 侧栏和对话顶部共用这套优先级，避免同一个会话在不同入口显示成两种状态。
-        // 审批/输入是需要用户处理的状态，优先级高于流式输出；foreground activity 负责区分等待回复和正在回复。
-        if isLocalDraft {
+        // 侧栏、列表和对话顶部共用这套优先级，避免同一个会话在不同入口显示成两种状态。
+        // 分类来自 `activityState`：审批/输入是需要用户处理的状态，优先级高于流式输出；
+        // foreground activity 负责区分等待回复和正在回复；再往后才是在跑（谁在跑）与空闲。
+        let state = activityState
+        switch state {
+        case .draft:
             return AgentSessionDisplayStatus(title: L10n.text("ui.new_session"), systemImage: "square.and.pencil", tone: .neutral, showsSpinner: false)
-        }
-        if status == SessionStatus.waitingForApproval.rawValue || pendingApproval != nil {
+        case .needsYou(.approval):
             return AgentSessionDisplayStatus(title: L10n.text("ui.pending_approval"), systemImage: "checkmark.seal.fill", tone: .warning, showsSpinner: false)
-        }
-        if status == SessionStatus.waitingForInput.rawValue || pendingUserInput != nil {
+        case .needsYou(.userInput):
             return AgentSessionDisplayStatus(title: L10n.text("ui.to_be_entered"), systemImage: "keyboard", tone: .warning, showsSpinner: false)
+        case .running, .failed, .idle:
+            break
         }
         if let foregroundActivity {
             return foregroundActivity.displayStatus
         }
-        if activeTurnID != nil {
+        switch state {
+        case .running(.computer):
+            // 电脑上的 Claude Code / 桌面端在跑：是进行中，但不由这里驱动，文字点明在哪跑。
+            return AgentSessionDisplayStatus(title: L10n.text("ui.running_on_computer"), systemImage: "desktopcomputer", tone: .active, showsSpinner: true)
+        case .running(.mimi(hasActiveTurn: true)):
             return AgentSessionDisplayStatus(title: L10n.text("ui.processing"), systemImage: "bolt.fill", tone: .active, showsSpinner: false)
+        case .running(.mimi(hasActiveTurn: false)):
+            return AgentSessionDisplayStatus(title: L10n.text("ui.running"), systemImage: "circle.dotted", tone: .active, showsSpinner: true)
+        case .failed:
+            return AgentSessionDisplayStatus(title: L10n.text("ui.failed_status"), systemImage: "exclamationmark.triangle.fill", tone: .danger, showsSpinner: false)
+        case .draft, .needsYou, .idle:
+            break
         }
 
+        // 空闲态保留历史 / 完成 / 已结束 / 空闲的细分文案；它们只是展示差异，不是不同的活动状态。
         switch status {
-        case SessionStatus.running.rawValue:
-            return AgentSessionDisplayStatus(title: L10n.text("ui.running"), systemImage: "circle.dotted", tone: .active, showsSpinner: true)
         case SessionStatus.history.rawValue:
             return AgentSessionDisplayStatus(title: L10n.text("ui.history"), systemImage: "clock.arrow.circlepath", tone: .neutral, showsSpinner: false)
         case SessionStatus.completed.rawValue:
             return AgentSessionDisplayStatus(title: L10n.text("ui.complete"), systemImage: "checkmark.circle", tone: .complete, showsSpinner: false)
-        case SessionStatus.failed.rawValue:
-            return AgentSessionDisplayStatus(title: L10n.text("ui.failed_status"), systemImage: "exclamationmark.triangle.fill", tone: .danger, showsSpinner: false)
         case SessionStatus.closed.rawValue:
             return AgentSessionDisplayStatus(title: L10n.text("ui.ended"), systemImage: "checkmark.circle", tone: .neutral, showsSpinner: false)
         case SessionStatus.idle.rawValue:

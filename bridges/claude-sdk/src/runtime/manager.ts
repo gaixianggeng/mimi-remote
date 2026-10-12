@@ -4,10 +4,10 @@
 // 其余连接收到 serverRequest/resolved。
 import { randomUUID } from "node:crypto";
 import type { RateLimitSnapshot } from "../protocol/codex/v2/RateLimitSnapshot.ts";
-import { notificationFrame } from "../rpc/frames.ts";
+import { notificationFrame, type OutboundFrame } from "../rpc/frames.ts";
 import type { Session } from "../session/session.ts";
 import { errorText, logger } from "../util/logging.ts";
-import { holdersOf, ownerSummary, readHolders, sessionsDir, type OwnProcesses, type SessionHolder } from "./holders.ts";
+import { holdersOf, liveThreadStatus, ownerSummary, readHolders, sessionsDir, type OwnProcesses, type SessionHolder } from "./holders.ts";
 import { OwnershipWatcher } from "./ownership.ts";
 import { mergeObservedRateLimits } from "./rateLimits.ts";
 import type { RunSettings } from "./settings.ts";
@@ -43,6 +43,13 @@ export interface ManagerOptions {
   readTitle?: (threadId: string) => Promise<string | null>;
   /** turn 收尾后检查标题的时间点（毫秒）。 */
   titleCheckDelaysMs?: number[];
+  /**
+   * 发给全部已附着连接的通知（持有方变化）。列表页不订阅任何会话，只有这样它才能知道终端里的
+   * 会话开始 / 结束处理。缺省时退回只发给该会话的订阅者。
+   */
+  broadcast?: (frame: OutboundFrame) => void;
+  /** 会话最后一条对话消息的时间（Unix 秒），随持有方变化一起推送，客户端据此刷新列表时间与未读。 */
+  readActivity?: (threadId: string) => Promise<number | undefined>;
 }
 
 /** Claude Code 在第一轮前后异步生成 AI 标题，通常几秒内写入；稍后再看几次。 */
@@ -143,6 +150,11 @@ export class ThreadManager {
     return runtime;
   }
 
+  /** 常驻模式一启动就盯住占用登记，列表级的持有方变化不必等到有人订阅。 */
+  startOwnershipWatcher(): void {
+    this.ownership.start();
+  }
+
   subscribe(threadId: string, session: Session): void {
     this.ownership.start();
     if (!this.subscribers.get(threadId)?.has(session)) logger.debug("thread.subscribe", { thread: threadId, session: session.key });
@@ -162,11 +174,7 @@ export class ThreadManager {
 
   unsubscribeSession(session: Session): void {
     logger.debug("session.unsubscribe", { session: session.key, threads: this.subscriptions.get(session)?.size ?? 0 });
-    for (const threadId of this.subscriptions.get(session) ?? []) {
-      const sessions = this.subscribers.get(threadId);
-      sessions?.delete(session);
-      if (!sessions?.size && !this.runtimes.get(threadId)?.hasLiveProcess()) this.ownership.forget(threadId);
-    }
+    for (const threadId of this.subscriptions.get(session) ?? []) this.subscribers.get(threadId)?.delete(session);
     this.subscriptions.delete(session);
   }
 
@@ -178,8 +186,9 @@ export class ThreadManager {
   }
 
   /**
-   * 持有方变化：别处接手且自己还握着进程时先让出（停进程、turn 记为中断），再把新的
-   * 可写状态与持有方摘要推给订阅者。字段与 Thread 上的扩展字段同名，客户端按同一套解析。
+   * 持有方变化：别处接手且自己还握着进程时先让出（停进程、turn 记为中断），再把新的运行状态、
+   * 可写状态与持有方摘要推给全部连接（没有广播通道时只推给订阅者）。字段与 Thread 上的扩展
+   * 字段同名，客户端按同一套解析；`status` 与 thread/list 同源，持有方正在执行就是 active。
    */
   private async ownershipChanged(threadId: string, holder: SessionHolder | undefined): Promise<void> {
     const runtime = this.runtimes.get(threadId);
@@ -203,17 +212,21 @@ export class ThreadManager {
       // 让出的细节（会话 ID、pid）由 claude.yield 在 debug 级别记录，只在诊断窗口内落盘。
       await runtime.yieldToHolder();
     }
-    const status = runtime?.activeTurnId
-      ? { type: "active", activeFlags: [] }
-      : runtime?.hasLiveProcess()
-        ? { type: "idle" }
-        : { type: "notLoaded" };
-    this.publish(threadId, "thread/status/changed", {
+    const status = liveThreadStatus({
+      ownTurnActive: runtime?.activeTurnId !== undefined,
+      ownProcessLive: runtime?.hasLiveProcess() ?? false,
+      holder,
+    });
+    const updatedAt = await this.options.readActivity?.(threadId).catch(() => undefined);
+    const frame = notificationFrame("thread/status/changed", {
       threadId,
       status,
       canAcceptDirectInput: !holder,
       claudeOwner: holder ? ownerSummary(holder) : null,
+      ...(updatedAt !== undefined ? { updatedAt } : {}),
     });
+    if (this.options.broadcast) this.options.broadcast(frame);
+    else for (const session of this.subscribers.get(threadId) ?? []) session.publish(frame);
   }
 
   /** 标题变了（agentd 改名、CLI /rename 或 Claude Code 的 AI 标题）：推给订阅者。 */

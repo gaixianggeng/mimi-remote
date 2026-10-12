@@ -3,6 +3,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { claudeConfigDir } from "../claude/transcripts.ts";
+import type { ThreadStatus } from "../protocol/codex/v2/ThreadStatus.ts";
 
 export interface SessionHolder {
   pid: number;
@@ -12,6 +13,8 @@ export interface SessionHolder {
   version: string | null;
   /** CLI 自身启动时刻（epoch 毫秒）；接管前用它核对 pid 没有被别的进程复用。 */
   startedAt: number | null;
+  /** `status` 最近一次变化的时刻（epoch 毫秒）；客户端据此显示"已处理多久"。 */
+  statusUpdatedAt: number | null;
 }
 
 export interface HolderRecord extends SessionHolder {
@@ -45,13 +48,36 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
-/** 回给客户端的摘要：不带 cwd、启动时间，客户端只需要知道谁在持有、是否在执行。 */
+/** 回给客户端的摘要：不带 cwd、启动时间，客户端只需要知道谁在持有、是否在执行、执行了多久。 */
 export function ownerSummary(holder: SessionHolder): Record<string, unknown> {
-  return { pid: holder.pid, entrypoint: holder.entrypoint, kind: holder.kind, status: holder.status, version: holder.version };
+  return {
+    pid: holder.pid,
+    entrypoint: holder.entrypoint,
+    kind: holder.kind,
+    status: holder.status,
+    version: holder.version,
+    statusUpdatedAt: holder.statusUpdatedAt,
+  };
 }
 
 export function isBusyHolder(holder: SessionHolder): boolean {
   return holder.status === "busy" || holder.status === "shell";
+}
+
+/**
+ * 会话此刻的运行状态，三方来源合成一个答案：本适配器的 turn、本适配器的常驻进程、别处的持有方。
+ * 持有方正在执行（终端 / 桌面端里 Claude 在跑）同样是 `active`——客户端据此把它排进"进行中"，
+ * 而不是当成一条已经结束的历史；持有方空闲算 `idle`（已加载、没在跑）。
+ */
+export function liveThreadStatus(input: {
+  ownTurnActive: boolean;
+  ownProcessLive: boolean;
+  holder: SessionHolder | undefined;
+}): ThreadStatus {
+  if (input.ownTurnActive) return { type: "active", activeFlags: [] };
+  if (input.holder && isBusyHolder(input.holder)) return { type: "active", activeFlags: [] };
+  if (input.ownProcessLive || input.holder) return { type: "idle" };
+  return { type: "notLoaded" };
 }
 
 const text = (value: unknown) => (typeof value === "string" && value ? value : null);
@@ -67,6 +93,7 @@ function parseRecord(raw: string): HolderRecord | undefined {
   const sessionId = record.sessionId;
   if (!Number.isInteger(pid) || pid <= 0 || typeof sessionId !== "string" || !sessionId) return undefined;
   const startedAt = Number(record.startedAt);
+  const statusUpdatedAt = Number(record.statusUpdatedAt);
   return {
     sessionId,
     pid,
@@ -75,6 +102,7 @@ function parseRecord(raw: string): HolderRecord | undefined {
     status: text(record.status),
     version: text(record.version),
     startedAt: Number.isFinite(startedAt) && startedAt > 0 ? startedAt : null,
+    statusUpdatedAt: Number.isFinite(statusUpdatedAt) && statusUpdatedAt > 0 ? statusUpdatedAt : null,
   };
 }
 

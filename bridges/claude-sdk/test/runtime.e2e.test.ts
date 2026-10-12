@@ -16,6 +16,8 @@ const configDir = path.join(sandbox, "claude");
 const project = path.join(sandbox, "project");
 const fakeClaude = path.join(sandbox, "claude-fake");
 let app: App;
+/** 当前测试里所有已附着的客户端；列表级广播（持有方变化）发给它们每一个。 */
+const attachedClients = new Set<Client>();
 setDefaultTimeout(30_000);
 
 beforeAll(async () => {
@@ -33,7 +35,12 @@ beforeAll(async () => {
     idleCloseMs: 60_000,
     ownership: { ownershipPollMs: 200, takeoverTimeouts: { interruptGraceMs: 2_000, terminateGraceMs: 2_000, respawnGraceMs: 100 } },
     titleCheckDelaysMs: [0, 300],
+    broadcast: (frame) => {
+      for (const client of attachedClients) client.session.publish(frame);
+    },
   });
+  // 与常驻模式一致：登记监听从一开始就在，不等第一个订阅。
+  app.manager.startOwnershipWatcher();
 });
 
 afterAll(async () => {
@@ -52,6 +59,7 @@ class Client {
   constructor() {
     this.session.setBusyCheck(() => app.manager.isSessionBusy(this.session));
     this.generation = this.session.attach(undefined, (frame) => this.frames.push(frame), false).generation;
+    attachedClients.add(this);
   }
 
   async call(method: string, params: Record<string, unknown>): Promise<any> {
@@ -316,8 +324,11 @@ class TerminalHolder {
     this.register(sessionId, status);
   }
 
-  register(sessionId: string, status: string) {
-    writeFileSync(this.file, JSON.stringify({ pid: this.pid, sessionId, cwd: project, entrypoint: "cli", kind: "interactive", status, startedAt: Date.now() }));
+  register(sessionId: string, status: string, statusUpdatedAt = Date.now()) {
+    writeFileSync(
+      this.file,
+      JSON.stringify({ pid: this.pid, sessionId, cwd: project, entrypoint: "cli", kind: "interactive", status, startedAt: Date.now(), statusUpdatedAt }),
+    );
   }
 
   exit() {
@@ -343,7 +354,8 @@ describe("single driver", () => {
       const completed = await client.turnCompleted(turn.id);
       expect(completed.params.turn.status).toBe("interrupted");
       const readOnly = await client.waitFor(statusChange(threadId, false));
-      expect(readOnly.params).toMatchObject({ status: { type: "notLoaded" }, claudeOwner: { pid: terminal.pid, status: "busy" } });
+      // 终端里的 Claude 正在跑：对客户端来说这个会话仍是进行中（active），只是不由这里驱动。
+      expect(readOnly.params).toMatchObject({ status: { type: "active" }, claudeOwner: { pid: terminal.pid, status: "busy" } });
       expect((await client.call("thread/loaded/list", {})).data).not.toContain(threadId);
       const rejected = await client.call("turn/start", { threadId, input: text("mine") }).catch((error) => error);
       expect(rejected.data).toMatchObject({ reason: "owned_elsewhere", claudeOwner: { pid: terminal.pid } });
@@ -504,11 +516,49 @@ describe("ownership", () => {
     try {
       const list = await client.call("thread/list", { cwd: project, limit: 50 });
       const listed = list.data.find((thread: any) => thread.id === threadId);
-      expect(listed).toMatchObject({ canAcceptDirectInput: false, claudeOwner: { entrypoint: "cli", status: "busy" } });
+      expect(listed).toMatchObject({ canAcceptDirectInput: false, status: { type: "active" }, claudeOwner: { entrypoint: "cli", status: "busy" } });
       const rejected = await client.call("turn/start", { threadId, input: text("blocked") }).catch((error) => error);
       expect(rejected.data).toMatchObject({ reason: "owned_elsewhere", retryable: true });
     } finally {
       rmSync(registry, { force: true });
+    }
+  });
+
+  test("a session held elsewhere reports running, idle and gone to clients that never subscribed to it", async () => {
+    const owner = new Client();
+    const threadId = await newThread(owner);
+    const first = await owner.call("turn/start", { threadId, input: text("seed") });
+    await owner.turnCompleted(first.turn.id);
+    // 这个客户端代表只开着列表页的 iPad：没有 resume 过该会话，照样要收到持有方变化。
+    const watcher = new Client();
+    const statusOf = (type: string, writable: boolean) => (frame: any) =>
+      frame.method === "thread/status/changed" && frame.params.threadId === threadId && frame.params.status?.type === type && frame.params.canAcceptDirectInput === writable;
+    const busySince = Date.now() - 5_000;
+    const terminal = new TerminalHolder(threadId, "busy");
+    terminal.register(threadId, "busy", busySince);
+    try {
+      const running = await watcher.waitFor(statusOf("active", false));
+      expect(running.params.claudeOwner).toMatchObject({ pid: terminal.pid, entrypoint: "cli", status: "busy", statusUpdatedAt: busySince });
+      // 列表时间与 thread/list 同源，客户端不用再读一次就能刷新排序与未读水位。
+      expect(typeof running.params.updatedAt).toBe("number");
+      const listed = (await watcher.call("thread/list", { cwd: project, limit: 50 })).data.find((thread: any) => thread.id === threadId);
+      expect(listed).toMatchObject({ status: { type: "active" }, canAcceptDirectInput: false, claudeOwner: { status: "busy", statusUpdatedAt: busySince } });
+      expect(listed.updatedAt).toBe(running.params.updatedAt);
+      // thread/read 在持有方执行时把最后一轮当成进行中，与自己驱动时一致。
+      const read = await watcher.call("thread/read", { threadId, includeTurns: true });
+      expect(read.thread.status).toEqual({ type: "active", activeFlags: [] });
+
+      terminal.register(threadId, "idle");
+      const idle = await watcher.waitFor(statusOf("idle", false));
+      expect(idle.params.claudeOwner).toMatchObject({ pid: terminal.pid, status: "idle" });
+
+      terminal.exit();
+      const gone = await watcher.waitFor(statusOf("notLoaded", true));
+      expect(gone.params.claudeOwner).toBeNull();
+      // 全程没有人订阅过这个会话，推送完全来自登记监听的广播。
+      expect((await watcher.call("thread/loaded/list", {})).data).not.toContain(threadId);
+    } finally {
+      terminal.exit();
     }
   });
 });

@@ -688,7 +688,10 @@ struct SessionSidebarMonitorRow: View {
     }
 
     private func runningDuration(at now: Date) -> String {
+        // 电脑端在跑时没有本端的 turn 开始时间，用持有方切到执行态的时刻。
+        let computerBusySince = session.isRunningOnComputer ? session.claudeOwner?.statusUpdatedAt : nil
         let start = runtimeActivitySnapshot?.turnStartedAt
+            ?? computerBusySince
             ?? session.updatedAt
             ?? session.createdAt
             ?? now

@@ -2,7 +2,7 @@ import type { Catalog, SessionRecord } from "../claude/catalog.ts";
 import type { ClaudeSessions } from "../claude/sdk.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
 import { RpcError } from "../rpc/frames.ts";
-import { ownerSummary, type SessionHolder } from "../runtime/holders.ts";
+import { liveThreadStatus, ownerSummary, type SessionHolder } from "../runtime/holders.ts";
 import type { ThreadManager } from "../runtime/manager.ts";
 import { runSettingsFor } from "../runtime/settings.ts";
 import { TakeoverError } from "../runtime/takeover.ts";
@@ -91,9 +91,11 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
     const { record, runtime } = await openExisting(threadId, cwd, params);
     manager.subscribe(threadId, context.session);
     const holder = (await deps.holders()).get(threadId);
+    // 刚 resume 的会话至少算 idle（本连接已附着）；持有方正在执行时与列表一致报 active。
+    const status = liveThreadStatus({ ownTurnActive: runtime.activeTurnId !== undefined, ownProcessLive: true, holder });
     const thread = toThread(record, [], {
       canAcceptDirectInput: !holder,
-      status: runtime.activeTurnId ? { type: "active", activeFlags: [] } : { type: "idle" },
+      status,
       ...(holder ? { claudeOwner: ownerSummary(holder) } : {}),
     });
     return { ...sessionResponse(thread, runtime, params), collaborationMode: null, turnsBackwardsCursor: null, itemsBackwardsCursor: null };

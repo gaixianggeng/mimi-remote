@@ -1,5 +1,7 @@
-// 盯着占用登记目录，发现被关注的会话换了持有方（终端 `claude --resume` 接手、持有方退出、
-// 空闲与执行切换）就回调。目录事件让反应在毫秒级；轮询兜底，防止事件丢失或目录稍后才出现。
+// 盯着占用登记目录，发现会话换了持有方（终端 `claude --resume` 接手、持有方退出、空闲与执行
+// 切换）就回调。关注范围是"有订阅或有常驻进程的会话"加上"登记里出现过的每个会话"：列表页没有
+// 订阅任何会话，终端里开着的会话开始 / 结束处理也要能推到列表。目录事件让反应在毫秒级；
+// 轮询兜底，防止事件丢失或目录稍后才出现。
 import { watch, type FSWatcher } from "node:fs";
 import { isBusyHolder, type SessionHolder } from "./holders.ts";
 
@@ -44,11 +46,6 @@ export class OwnershipWatcher {
     this.watcher = undefined;
   }
 
-  /** 不再关注的会话下次重新关注时，按客户端拿到的最新状态重新起算。 */
-  forget(threadId: string): void {
-    this.known.delete(threadId);
-  }
-
   /** 立即扫一次（例如自己的进程刚拿到 pid）；返回本次扫描完成的 Promise。 */
   scanNow(): Promise<void> {
     if (this.scanning) {
@@ -89,8 +86,7 @@ export class OwnershipWatcher {
   }
 
   private async scan(): Promise<void> {
-    const tracked = [...this.options.tracked()];
-    if (!tracked.length) return;
+    const tracked = new Set(this.options.tracked());
     let holders: Map<string, SessionHolder>;
     try {
       holders = await this.options.read();
@@ -98,11 +94,15 @@ export class OwnershipWatcher {
       this.options.log(`ownership scan failed: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
-    for (const threadId of tracked) {
+    // 上次见过持有方、这次登记里没有了的会话也要扫到，否则"持有方退出"推不出去。
+    const candidates = new Set([...tracked, ...holders.keys(), ...this.known.keys()]);
+    for (const threadId of candidates) {
       const holder = holders.get(threadId);
       const key = stateKey(holder);
       if ((this.known.get(threadId) ?? "") === key) continue;
-      this.known.set(threadId, key);
+      // 不再被关注、也没有持有方的会话不留记录，known 只随登记与订阅增长。
+      if (key === "" && !tracked.has(threadId)) this.known.delete(threadId);
+      else this.known.set(threadId, key);
       try {
         await this.options.onChange(threadId, holder);
       } catch (error) {

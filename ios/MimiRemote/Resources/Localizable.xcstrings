@@ -5083,6 +5083,23 @@
         }
       }
     },
+    "ui.running_on_computer": {
+      "comment": "Session list status label: the session is being processed by Claude Code / Claude Desktop on the computer, not by this app.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running on computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑端运行中"
+          }
+        }
+      }
+    },
     "ui.claude_owner_vscode": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -41373,57 +41390,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "猪八戒"
-          }
-        }
-      }
-    },
-    "ui.workspace_group_needs_attention": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Needs Attention"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "需要处理"
-          }
-        }
-      }
-    },
-    "ui.workspace_group_recent": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Recent"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "最近会话"
-          }
-        }
-      }
-    },
-    "ui.workspace_group_running": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Running"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在运行"
           }
         }
       }
