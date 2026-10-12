@@ -711,11 +711,10 @@ final class ThemeStoreTests: XCTestCase {
                 )
             }
 
-            // Xcode 深色的选中底是不透明中灰蓝，连次级文字都压不住；这里只要求图形的 3:1。
-            let selection = flatten(tokens.selectionFill, over: base)
+            // 贴边侧栏选中的「我的」压在选中底上；Xcode 深色的选中底是不透明中灰蓝，同样要 4.5:1。
             XCTAssertGreaterThanOrEqual(
-                contrastRatio(text, selection),
-                preset == .xcode ? 3.0 : 4.5,
+                contrastRatio(text, flatten(tokens.selectionFill, over: base)),
+                4.5,
                 "\(preset.rawValue) dark accentText on selectionFill"
             )
         }
