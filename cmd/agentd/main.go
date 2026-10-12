@@ -1081,7 +1081,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			return fmt.Errorf("监听 %s 失败：%w", address, err)
 		}
 		if cfg.HasNetworkModuleControls() {
-			listener = networkaccess.Wrap(listener, networkaccess.Policy{Tailscale: cfg.TailscaleAccessEnabled(), LAN: cfg.LANAccessEnabled()})
+			listener = networkaccess.Wrap(listener, moduleIngressPolicy(cfg))
 		}
 		listeners = append(listeners, listener)
 	}

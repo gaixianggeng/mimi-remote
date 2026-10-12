@@ -4,7 +4,10 @@ package networkaccess
 
 import (
 	"net"
+	"net/netip"
 	"strings"
+
+	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
 type Policy struct{ Tailscale, LAN bool }
@@ -12,6 +15,14 @@ type Policy struct{ Tailscale, LAN bool }
 func IsTailscaleIPv4(ip net.IP) bool {
 	v4 := ip.To4()
 	return v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127
+}
+
+// isTailscaleAddress covers both tailnet families. The iOS client prefers the
+// MagicDNS name, which may resolve to the Tailscale IPv6 address, so an
+// IPv4-only check would reject the Tailscale route the client tries first.
+func isTailscaleAddress(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	return ok && tailscaleinfo.IsTailscaleAddress(addr)
 }
 
 // Allows uses kernel socket addresses, not Host/X-Forwarded-For. Checking the
@@ -25,8 +36,8 @@ func (p Policy) Allows(local, remote net.IP) bool {
 	if local.IsLoopback() && remote.IsLoopback() {
 		return true
 	}
-	if IsTailscaleIPv4(local) || IsTailscaleIPv4(remote) {
-		return p.Tailscale && IsTailscaleIPv4(local) && IsTailscaleIPv4(remote)
+	if isTailscaleAddress(local) || isTailscaleAddress(remote) {
+		return p.Tailscale && isTailscaleAddress(local) && isTailscaleAddress(remote)
 	}
 	return p.LAN && local.To4() != nil && remote.To4() != nil &&
 		local.IsPrivate() && remote.IsPrivate() && !local.IsLoopback() && !remote.IsLoopback()

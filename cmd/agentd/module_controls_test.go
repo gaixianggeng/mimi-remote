@@ -28,7 +28,8 @@ func TestModuleListenersAllOffRemainLocalAndDisabledCodexDoesNotStart(t *testing
 }
 
 // 原配置绑定 IPv6 loopback 时，模块开关第一次接管监听不能把 ::1 丢掉；
-// 否则只改一个模块开关就会让走 ::1 的本机客户端失去连接。
+// 否则只改一个模块开关就会让走 ::1 的本机客户端失去连接。外部连接开启时，
+// 双栈通配监听已经接受 ::1，不再重复绑定（Linux 上会与通配监听冲突）。
 func TestModuleListenersPreserveIPv6Loopback(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -36,7 +37,7 @@ func TestModuleListenersPreserveIPv6Loopback(t *testing.T) {
 		want  []string
 	}{
 		{"off", false, []string{"127.0.0.1:8787", "[::1]:8787"}},
-		{"on", true, []string{"0.0.0.0:8787", "[::1]:8787"}},
+		{"on", true, []string{"0.0.0.0:8787"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			allow := tc.allow
