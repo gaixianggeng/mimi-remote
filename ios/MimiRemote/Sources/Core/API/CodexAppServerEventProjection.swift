@@ -1530,6 +1530,21 @@ extension CodexAppServerSessionRuntime {
             guard !text.isEmpty || hasRichInput else {
                 return nil
             }
+            if !hasRichInput, let reply = CodexAsyncQuestionReply(text: text) {
+                // 异步提问的答复与实时事件使用同一映射：保留 Item 身份和序号，只换类型与正文。
+                return CodexHistoryMessage(
+                    id: messageID,
+                    role: "user",
+                    kind: .questionReply,
+                    content: reply.displayText,
+                    createdAt: itemCreatedAt ?? estimatedAt ?? startedAt ?? itemCompletedAt ?? completedAt,
+                    clientMessageID: item["clientId"]?.stringValue,
+                    turnID: turnID,
+                    itemID: itemID,
+                    timelineOrdinal: timelineOrdinal,
+                    isTimestampFallback: itemCreatedAt == nil && itemCompletedAt == nil && estimatedAt != nil
+                )
+            }
             // 自动环境文本可以为空，但不能因此丢弃同一消息中的图片或文件。
             let hasAttachmentOnlyRequest = hasRichInput
                 && ConversationUserMessagePresentation.displayContent(from: text).isEmpty

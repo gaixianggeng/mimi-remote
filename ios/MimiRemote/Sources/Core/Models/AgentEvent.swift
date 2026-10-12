@@ -909,7 +909,9 @@ struct CodexAppServerEventProjector {
         }
         .joined(separator: " ")
         .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isVisibleAppServerUserMessageText(content) else {
+        // Desktop 对异步提问的答复以 userMessage 回传；映射为答复类型，正文只保留答案。
+        let questionReply = CodexAsyncQuestionReply(text: content)
+        guard questionReply != nil || isVisibleAppServerUserMessageText(content) else {
             return nil
         }
         let itemID = metadata.itemID ?? item["id"]?.stringValue
@@ -924,7 +926,8 @@ struct CodexAppServerEventProjector {
             turnID: metadata.turnID,
             itemID: itemID,
             role: .user,
-            content: content,
+            kind: questionReply == nil ? .message : .questionReply,
+            content: questionReply?.displayText ?? content,
             createdAt: Date(),
             seq: metadata.seq,
             revision: metadata.revision ?? 0,

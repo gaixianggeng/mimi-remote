@@ -36,6 +36,7 @@
 - `personality` 用户入口已移除。模型明确不支持时清除旧值；未知模型和旧目录保留持久数据兼容。
 - `thread/resume` 与 `thread/settings/updated` 的有效 `collaborationMode` 同步到当前会话。缺失、未知模式或不匹配的工作区不覆盖已有状态；被动同步不写共享设置。
 - `partial_answer` 作为普通正文展示，后续工具和正文继续处理；只有回合终态结束运行状态。
+- 异步提问 `request_user_input_async` 以 `agentMessage`（`delivery: "async"`、`questions`）到达，按普通正文展示。协议没有答复 Item；Desktop 把答复包成 `<send_user_message_question_reply>` 的 `userMessage` 引导当前回合。实时事件与历史读取都只在完整包装可解析时映射为答复类型，保留原 Item 身份与序号，只展示答案；残缺或混入其他正文时仍按普通用户消息处理。
 - 上游图片输入新增 `fileId`，但当前 Gateway 无法按项目路径验证其附件归属，因此明确拒绝该引用。继续使用已授权的 `image.url` 或 `localImage.path`，不无条件透传附件 ID。
 
 本文件只描述 Codex app-server 上游协议。Mimi iOS 与 `agentd` 自身 REST /

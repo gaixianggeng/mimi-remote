@@ -66,6 +66,7 @@ echo "==> iOS conversation regressions"
 # - SessionListLifecycleCoordinatorTests：滚动冻结、idle 重排和完成/失败 Haptic exactly-once。
 # - SessionListPresentationTests：会话摘要、分支身份、时间格式和紧凑行数策略。
 # - ConversationSnapshotTests：用户气泡/助手文档流、复杂 Markdown、图片和活动行的关键视觉回归。
+# - ConversationQuestionReplyTests：Desktop 异步提问答复的结构化投影，以及实时、重进和分页历史的一致顺序。
 # - MarkdownRenderingTests：proposed_plan 流式和完整渲染。
 # - PairingLinkTests：Endpoint allowlist、ATS 传输策略、Host capability 隔离和 stale lease。
 # - DoctorDiagnosticsTests：结构化 Doctor 响应、HTTP 错误和向后兼容。
@@ -238,6 +239,8 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testSessionRuntimeBadgesInConversationList \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testProjectSessionDashboard \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testCommentaryAndTrailingActivitiesRendering \
+  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testAsyncQuestionReplyRendersAsAnswerBubble \
+  -only-testing:MimiRemoteTests/ConversationQuestionReplyTests \
   -only-testing:MimiRemoteTests/ConversationTimelineProviderPresentationSnapshotTests \
   -only-testing:MimiRemoteTests/MarkdownRenderingTests \
   -only-testing:MimiRemoteTests/MessageTextSelectionTests \
