@@ -170,6 +170,13 @@ final class UserFacingErrorTests: XCTestCase {
         XCTAssertTrue(UserFacingError.containsSensitiveDetail("open localhost:4180"))
         XCTAssertFalse(UserFacingError.containsSensitiveDetail("since 12:30:45"))
         XCTAssertFalse(UserFacingError.containsSensitiveDetail("before 09:30"))
+        // 单独的端口号、「这台主机」这类说法不是地址；带主机名的 host / host:port 仍拦下。
+        XCTAssertFalse(UserFacingError.containsSensitiveDetail("Port 8787 is already in use"))
+        XCTAssertFalse(UserFacingError.containsSensitiveDetail("Not logged in. Run codex login on this host first"))
+        XCTAssertFalse(UserFacingError.containsSensitiveDetail("Run codex login on the host machine"))
+        XCTAssertTrue(UserFacingError.containsSensitiveDetail("ssh: connect to host mac-mini port 22"))
+        XCTAssertTrue(UserFacingError.containsSensitiveDetail("ssh: connect to host buildbox.lan"))
+        XCTAssertTrue(UserFacingError.containsSensitiveDetail("listen on build-mac:8787"))
     }
 
     func testChineseComputerReasonFallsBackOnEnglishInterface() {
