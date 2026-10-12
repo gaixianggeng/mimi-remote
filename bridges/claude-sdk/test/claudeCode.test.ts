@@ -1,11 +1,13 @@
 // Claude Code 版本下限（#660）：探测、比较、缓存，以及过旧时 turn/start 给出明确提示。
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { App } from "../src/app.ts";
 import { ClaudeCodeVersionGate, compareVersions, probeClaudeCodeVersion, type ClaudeCodeProbe } from "../src/claude/claudeCode.ts";
 import { Session } from "../src/session/session.ts";
+import { TranscriptBuilder } from "./support/transcripts.ts";
 import { MINIMUM_CLAUDE_CODE_VERSION } from "../src/version.ts";
 
 const sandbox = realpathSync(mkdtempSync(path.join(os.tmpdir(), "mimi-adapter-claude-code-")));
@@ -87,5 +89,62 @@ describe("turn/start", () => {
       error: { code: -32603, data: { reason: "claude_unsupported", version: "2.0.1", minimumVersion: MINIMUM_CLAUDE_CODE_VERSION } },
     });
     expect(app.manager.loadedThreadIds()).toEqual([]);
+  });
+});
+
+describe("ownership during the version check", () => {
+  let app: App;
+  let holder: ChildProcess | undefined;
+  let starts = 0;
+  const sessionId = "88888888-8888-4888-8888-888888888888";
+  const configDir = path.join(sandbox, "claude-race");
+  const project = path.join(sandbox, "race-project");
+
+  beforeAll(async () => {
+    mkdirSync(path.join(configDir, "sessions"), { recursive: true });
+    const session = new TranscriptBuilder(sessionId, project);
+    session.user("existing conversation");
+    session.write(configDir);
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    process.env.MIMI_CLAUDE_LEGACY_INDEX = "";
+    const { createApp } = await import("../src/app.ts");
+    app = createApp({
+      stateDir: path.join(sandbox, "state-race"),
+      log: () => {},
+      claudeExecutable: () => "unused",
+      // 版本探测期间终端接手了这个会话。
+      probeClaudeCode: async () => {
+        holder = spawn("sleep", ["60"], { stdio: "ignore" });
+        writeFileSync(
+          path.join(configDir, "sessions", `${holder.pid}.json`),
+          JSON.stringify({ pid: holder.pid, sessionId, cwd: project, entrypoint: "cli", kind: "interactive", status: "idle", startedAt: Date.now() }),
+        );
+        return { status: "ok", version: "2.1.296" };
+      },
+      startQuery: (() => {
+        starts += 1;
+        throw new Error("no Claude process should start while another process holds the session");
+      }) as never,
+    });
+  });
+
+  afterAll(async () => {
+    holder?.kill();
+    await app?.manager.closeAll();
+    delete process.env.CLAUDE_CONFIG_DIR;
+    delete process.env.MIMI_CLAUDE_LEGACY_INDEX;
+  });
+
+  test("a holder that appears while Claude Code's version is checked still blocks the turn", async () => {
+    // 同一文件里别的分组会在 afterAll 清掉配置目录：用例开始时再设一次。
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    const session = new Session("race");
+    const { generation } = session.attach(undefined, () => {}, false);
+    const response = await app.router.dispatch(
+      { id: 1, method: "turn/start", params: { threadId: sessionId, cwd: project, input: [{ type: "text", text: "hi", text_elements: [] }] } },
+      { session, generation },
+    );
+    expect(response).toMatchObject({ error: { code: -32602, data: { reason: "owned_elsewhere", retryable: true } } });
+    expect(starts).toBe(0);
   });
 });

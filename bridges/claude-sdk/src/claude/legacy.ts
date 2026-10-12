@@ -34,23 +34,35 @@ export function legacyIndexPathFor(platform: NodeJS.Platform, env: NodeJS.Proces
   return pathApi.join(configDir, "claude-bridge", "threads.json");
 }
 
-/** 读不到或格式不对时返回空列表：旧索引只是迁移来源，不能挡住启动。 */
-export async function readLegacyThreads(file: string | undefined): Promise<LegacyThread[]> {
-  if (!file) return [];
-  const raw = await readFile(file, "utf8").catch(() => undefined);
-  if (raw === undefined) return [];
+/**
+ * 旧索引的读取结果。none：没有可迁移的来源（未配置或文件不存在），可以当作迁移完成；
+ * unreadable：暂时读不了或格式不对，不能当作完成，下次启动再试。
+ */
+export type LegacyIndex = { status: "ok"; threads: LegacyThread[] } | { status: "none" } | { status: "unreadable" };
+
+export async function readLegacyIndex(file: string | undefined): Promise<LegacyIndex> {
+  if (!file) return { status: "none" };
+  let raw: string;
+  try {
+    raw = await readFile(file, "utf8");
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? { status: "none" } : { status: "unreadable" };
+  }
   let threads: unknown;
   try {
     threads = (JSON.parse(raw) as { threads?: unknown }).threads;
   } catch {
-    return [];
+    return { status: "unreadable" };
   }
-  if (!Array.isArray(threads)) return [];
-  return threads.flatMap((row: Record<string, unknown> | null) => {
-    if (!row || typeof row !== "object" || typeof row.threadId !== "string") return [];
-    const name = typeof row.name === "string" && row.name.trim() ? row.name.trim() : null;
-    return [{ threadId: row.threadId, name, archived: row.archived === true }];
-  });
+  if (!Array.isArray(threads)) return { status: "unreadable" };
+  return {
+    status: "ok",
+    threads: threads.flatMap((row: Record<string, unknown> | null) => {
+      if (!row || typeof row !== "object" || typeof row.threadId !== "string") return [];
+      const name = typeof row.name === "string" && row.name.trim() ? row.name.trim() : null;
+      return [{ threadId: row.threadId, name, archived: row.archived === true }];
+    }),
+  };
 }
 
 export interface NameMigrationDeps {

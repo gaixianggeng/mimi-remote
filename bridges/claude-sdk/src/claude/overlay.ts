@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { readLegacyThreads } from "./legacy.ts";
+import { readLegacyIndex } from "./legacy.ts";
 
 interface OverlayFile {
   version: 1;
@@ -17,6 +17,8 @@ interface OverlayFile {
 export class Overlay {
   private data: OverlayFile = { version: 1, archived: {} };
   private loaded: Promise<void> | undefined;
+  /** 首次启动时旧索引读不了：归档标记还没导入，覆盖层先不落盘。 */
+  private importPending = false;
 
   constructor(
     private readonly file: string,
@@ -37,6 +39,10 @@ export class Overlay {
     return this.data.legacyNamesMigratedAt !== undefined;
   }
 
+  legacyImportPending(): boolean {
+    return this.importPending;
+  }
+
   async markLegacyNamesMigrated(): Promise<void> {
     await this.load();
     this.data.legacyNamesMigratedAt = Math.floor(Date.now() / 1000);
@@ -54,17 +60,19 @@ export class Overlay {
       };
       return;
     }
-    this.data = { version: 1, archived: await this.importLegacyArchived() };
-    await this.save();
-  }
-
-  private async importLegacyArchived(): Promise<Record<string, number>> {
+    const legacy = await readLegacyIndex(this.legacyIndex);
+    if (legacy.status === "unreadable") {
+      // 先不落盘：下次启动覆盖层文件仍不存在，会重新导入。
+      this.importPending = true;
+      return;
+    }
     const now = Math.floor(Date.now() / 1000);
     const archived: Record<string, number> = {};
-    for (const thread of await readLegacyThreads(this.legacyIndex)) {
+    for (const thread of legacy.status === "ok" ? legacy.threads : []) {
       if (thread.archived) archived[thread.threadId] = now;
     }
-    return archived;
+    this.data = { version: 1, archived };
+    await this.save();
   }
 
   private async save(): Promise<void> {

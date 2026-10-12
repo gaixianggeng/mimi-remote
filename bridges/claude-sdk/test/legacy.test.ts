@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync }
 import os from "node:os";
 import path from "node:path";
 import type { App } from "../src/app.ts";
-import { hasCustomTitle, legacyIndexPathFor, readLegacyThreads } from "../src/claude/legacy.ts";
+import { hasCustomTitle, legacyIndexPathFor, readLegacyIndex } from "../src/claude/legacy.ts";
 import { TranscriptBuilder } from "./support/transcripts.ts";
 
 const sandbox = realpathSync(mkdtempSync(path.join(os.tmpdir(), "mimi-adapter-legacy-")));
@@ -25,17 +25,25 @@ describe("legacy index", () => {
     expect(legacyIndexPathFor("linux", { XDG_CONFIG_HOME: "relative" }, "/home/a")).toBe("/home/a/.config/codex/claude-bridge/threads.json");
   });
 
-  test("rows without a thread id are skipped and unreadable files read as empty", async () => {
+  test("rows without a thread id are skipped; a missing source differs from an unreadable one", async () => {
     const file = path.join(sandbox, "rows.json");
     writeFileSync(file, JSON.stringify({ threads: [{ threadId: "a", name: "  Named  ", archived: true }, { threadId: "b", name: "  " }, { name: "orphan" }, null] }));
-    expect(await readLegacyThreads(file)).toEqual([
-      { threadId: "a", name: "Named", archived: true },
-      { threadId: "b", name: null, archived: false },
-    ]);
+    expect(await readLegacyIndex(file)).toEqual({
+      status: "ok",
+      threads: [
+        { threadId: "a", name: "Named", archived: true },
+        { threadId: "b", name: null, archived: false },
+      ],
+    });
+    // 没有来源：可以当作迁移完成。
+    expect(await readLegacyIndex(path.join(sandbox, "missing.json"))).toEqual({ status: "none" });
+    expect(await readLegacyIndex(undefined)).toEqual({ status: "none" });
+    // 暂时读不了或格式不对：不能当作完成。
     writeFileSync(file, "{");
-    expect(await readLegacyThreads(file)).toEqual([]);
-    expect(await readLegacyThreads(path.join(sandbox, "missing.json"))).toEqual([]);
-    expect(await readLegacyThreads(undefined)).toEqual([]);
+    expect(await readLegacyIndex(file)).toEqual({ status: "unreadable" });
+    writeFileSync(file, JSON.stringify({ threads: "nope" }));
+    expect(await readLegacyIndex(file)).toEqual({ status: "unreadable" });
+    expect(await readLegacyIndex(sandbox)).toEqual({ status: "unreadable" });
   });
 
   test("a custom-title record is found even when it straddles two read chunks", async () => {
@@ -130,5 +138,34 @@ describe("name migration", () => {
     expect(statSync(files.untitled!).size).toBe(untitledSize);
     const done = JSON.parse(await Bun.file(path.join(sandbox, "state", "overlay.json")).text());
     expect(typeof done.legacyNamesMigratedAt).toBe("number");
+  });
+
+  test("an index that cannot be read yet is retried on the next start, archive marks included", async () => {
+    const lateId = "77777777-7777-4777-8777-777777777777";
+    const late = new TranscriptBuilder(lateId, project);
+    late.user("question for late");
+    late.write(configDir);
+    const lateIndex = path.join(sandbox, "legacy", "late.json");
+    const stateDir = path.join(sandbox, "state-late");
+    writeFileSync(lateIndex, "{ half written");
+    process.env.MIMI_CLAUDE_LEGACY_INDEX = lateIndex;
+    try {
+      const { createApp } = await import("../src/app.ts");
+      const first = createApp({ stateDir, log: () => {}, claudeExecutable: () => "unused" });
+      await first.migrateLegacyNames();
+      expect(await titleOf(lateId)).toBeUndefined();
+      expect(await Bun.file(path.join(stateDir, "overlay.json")).exists()).toBe(false);
+
+      writeFileSync(lateIndex, JSON.stringify({ threads: [{ threadId: lateId, name: "Mimi late", archived: true }] }));
+      const second = createApp({ stateDir, log: () => {}, claudeExecutable: () => "unused" });
+      await second.migrateLegacyNames();
+      expect(await titleOf(lateId)).toBe("Mimi late");
+      const overlay = JSON.parse(await Bun.file(path.join(stateDir, "overlay.json")).text());
+      expect(Object.keys(overlay.archived)).toEqual([lateId]);
+      expect(typeof overlay.legacyNamesMigratedAt).toBe("number");
+      await Promise.all([first.manager.closeAll(), second.manager.closeAll()]);
+    } finally {
+      process.env.MIMI_CLAUDE_LEGACY_INDEX = legacyIndex;
+    }
   });
 });

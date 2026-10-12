@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { Catalog, HistoryStore } from "./claude/catalog.ts";
 import { ClaudeCodeVersionGate, type ClaudeCodeProbe } from "./claude/claudeCode.ts";
-import { legacyIndexPath, migrateLegacyNames, readLegacyThreads } from "./claude/legacy.ts";
+import { legacyIndexPath, migrateLegacyNames, readLegacyIndex } from "./claude/legacy.ts";
 import { Overlay } from "./claude/overlay.ts";
 import { sdkSessions, type ClaudeSessions } from "./claude/sdk.ts";
 import { ActivityClock, TranscriptIndex } from "./claude/transcripts.ts";
@@ -142,8 +142,14 @@ export function createApp(options: AppOptions): App {
   async function migrateNames(): Promise<void> {
     await overlay.load();
     if (overlay.legacyNamesMigrated()) return;
+    const legacy = await readLegacyIndex(legacyIndex);
+    // 旧索引暂时读不了：不迁移也不记完成，下次启动连同归档标记一起重试。
+    if (legacy.status === "unreadable" || overlay.legacyImportPending()) {
+      logger.warn("legacy.index.unreadable", {});
+      return;
+    }
     const result = await migrateLegacyNames({
-      threads: await readLegacyThreads(legacyIndex),
+      threads: legacy.status === "ok" ? legacy.threads : [],
       sessions,
       transcriptPath: async (sessionId) => {
         await transcripts.refresh();

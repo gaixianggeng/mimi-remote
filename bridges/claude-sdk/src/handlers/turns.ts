@@ -150,6 +150,9 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       const params = asParams(raw);
       const threadId = requireString(params, "threadId", "turn/start");
       const input = inputOf(params, "turn/start");
+      // 版本探测可能要几秒：放在占用检查之前，检查之后到起进程之间不留长等待，
+      // 否则终端在这段时间接手会话，适配器仍会起第二个写入方。
+      await deps.claudeCode.ensure();
       const holder = (await deps.holders()).get(threadId);
       if (holder) {
         throw new RpcError(-32602, `thread \`${threadId}\` is held by another local claude process`, {
@@ -162,7 +165,6 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       }
       const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : undefined;
       const runtime = manager.get(threadId) ?? (await openExisting(threadId, cwd, params)).runtime;
-      await deps.claudeCode.ensure();
       manager.subscribe(threadId, context.session);
       const settings = runSettingsFor(params);
       const turn = await runtime.startTurn({
