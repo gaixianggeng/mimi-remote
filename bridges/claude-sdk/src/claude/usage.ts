@@ -13,6 +13,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { RateLimitSnapshot } from "../protocol/codex/v2/RateLimitSnapshot.ts";
 import type { RateLimitWindow } from "../protocol/codex/v2/RateLimitWindow.ts";
+import { logger } from "../util/logging.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -255,15 +256,18 @@ export class RateLimitReader {
   private refresh(now: number): Promise<RateLimitSnapshot | undefined> {
     if (this.inFlight) return this.inFlight;
     if (now - this.failedAt < (this.options.retryMs ?? 15_000)) return Promise.resolve(undefined);
+    const started = Date.now();
     this.inFlight = (this.options.fetch ?? (() => fetchUsageSnapshot()))()
       .then((snapshot) => {
         this.cached = { snapshot, at: Date.now() };
+        logger.debug("usage.fetched", { ms: Date.now() - started });
         return snapshot;
       })
       .catch((error) => {
         this.failedAt = Date.now();
         // 只记失败原因，不记凭据或响应内容。
         this.options.log(`Claude usage unavailable (${error instanceof UsageError ? error.reason : "error"}); using observed rate limits`);
+        logger.debug("usage.unavailable", { reason: error instanceof UsageError ? error.reason : "error", ms: Date.now() - started });
         return undefined;
       })
       .finally(() => {

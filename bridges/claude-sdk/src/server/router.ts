@@ -1,5 +1,6 @@
 import { ErrorCode, RpcError, errorFrame, resultFrame, type OutboundFrame, type RpcRequest } from "../rpc/frames.ts";
 import type { Session } from "../session/session.ts";
+import { errorText, logEnabled, logger } from "../util/logging.ts";
 
 export interface RequestContext {
   session: Session;
@@ -26,6 +27,22 @@ export class Router {
   }
 
   async dispatch(request: RpcRequest, context: RequestContext): Promise<OutboundFrame> {
+    const started = performance.now();
+    const response = await this.route(request, context);
+    if (logEnabled("debug")) {
+      const code = (response as { error?: { code?: number } }).error?.code;
+      logger.debug("rpc", {
+        method: request.method,
+        id: String(request.id),
+        session: context.session.key,
+        ms: Math.round(performance.now() - started),
+        ...(code === undefined ? {} : { error: code }),
+      });
+    }
+    return response;
+  }
+
+  private async route(request: RpcRequest, context: RequestContext): Promise<OutboundFrame> {
     const handler = this.handlers.get(request.method);
     if (!handler) {
       return errorFrame(request.id, {
@@ -45,6 +62,7 @@ export class Router {
       }
       const message = error instanceof Error ? error.message : String(error);
       this.log(`method ${request.method} failed: ${message}`);
+      logger.warn("rpc.failed", { method: request.method, error: errorText(error) });
       return errorFrame(request.id, { code: ErrorCode.internalError, message });
     }
   }

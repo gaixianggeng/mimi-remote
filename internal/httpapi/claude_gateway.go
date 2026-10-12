@@ -22,6 +22,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
+	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
 )
 
 const claudeBridgePolicyErrorCode = -32081
@@ -155,6 +156,14 @@ func (r *Router) setClaudeBridgeProbe(probe appServerBridgeProbe) {
 	r.claudeMu.Lock()
 	r.claudeProbe = probe
 	r.claudeMu.Unlock()
+	if debuglog.Enabled() {
+		methods := -1
+		if probe.Adapter != nil {
+			methods = len(probe.Adapter.Methods)
+		}
+		debuglog.Printf("claude-bridge", "probe bin=%s name=%s version=%s status=%s healthy=%t adapter_methods=%d error=%q",
+			filepath.Base(probe.Path), probe.bridgeName(), probe.Version, probe.Status, probe.Healthy, methods, probe.Error)
+	}
 }
 
 func (r *Router) claudeBridgeProbe() appServerBridgeProbe {
@@ -565,7 +574,7 @@ func copyClientFramesToClaudeBridge(client *websocket.Conn, stdin io.Writer, cli
 		policyDuration := time.Since(policyStart)
 		if policyErr != nil {
 			if monitor != nil {
-				monitor.recordPolicyError("client_to_upstream", len(payload), policyDuration)
+				monitor.recordPolicyError("client_to_upstream", policy.runtimeID, payload, policyErr, policyDuration)
 			}
 			if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
 				return "client_policy_error_write_failed"
@@ -649,7 +658,7 @@ func forwardClaudeBridgeFrame(payload []byte, client *websocket.Conn, clientWrit
 	policyDuration := time.Since(policyStart)
 	if policyErr != nil {
 		if monitor != nil {
-			monitor.recordPolicyError("upstream_to_client", len(payload), policyDuration)
+			monitor.recordPolicyError("upstream_to_client", policy.runtimeID, payload, policyErr, policyDuration)
 		}
 		if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
 			return "upstream_policy_error_write_failed", true
@@ -744,21 +753,46 @@ func pingClientGateway(ctx context.Context, client *websocket.Conn, clientWriteM
 	}
 }
 
+// claudeAdapterLogLevelEnv 控制 SDK 适配器输出到 stderr 的日志级别。agentd 默认让它输出
+// debug 行，由 captureClaudeBridgeStderr 决定是否落盘（只在详细记录窗口内）；用户在
+// claude.env 里显式设置的级别优先。旧 Rust bridge 不认这个变量，没有影响。
+const claudeAdapterLogLevelEnv = "MIMI_CLAUDE_ADAPTER_LOG"
+
 func buildClaudeBridgeEnv(extra map[string]string) []string {
-	return claudeenv.Build(extra)
+	environment := claudeenv.Build(extra)
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, claudeAdapterLogLevelEnv+"=") {
+			return environment
+		}
+	}
+	return append(environment, claudeAdapterLogLevelEnv+"=debug")
 }
 
+// claudeBridgeDebugLine 识别适配器的 debug / trace 行（格式 "[mimi-claude-adapter] debug …"）。
+func claudeBridgeDebugLine(line string) bool {
+	_, rest, ok := strings.Cut(line, "] ")
+	return ok && (strings.HasPrefix(rest, "debug ") || strings.HasPrefix(rest, "trace "))
+}
+
+// captureClaudeBridgeStderr 把 bridge 的 stderr 分流：详细记录窗口内全部写进本机调试日志；
+// debug / trace 行只进调试日志，其余照旧进标准日志。
 func captureClaudeBridgeStderr(stderr io.Reader, sensitiveValues []string) {
 	scanner := bufio.NewScanner(stderr)
+	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for scanner.Scan() {
 		line := sanitizeClaudeBridgeDiagnostic(scanner.Text(), sensitiveValues)
 		if line == "" {
 			continue
 		}
-		log.Printf("claude bridge stderr: %s", line)
+		debuglog.Printf("claude-bridge", "%s", line)
+		if !claudeBridgeDebugLine(line) {
+			log.Printf("claude bridge stderr: %s", line)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		log.Printf("claude bridge stderr scanner error err=%v", err)
+		// 超长行让 Scanner 停下后也要继续排空管道，否则 bridge 写 stderr 会被阻塞。
+		_, _ = io.Copy(io.Discard, stderr)
 	}
 }
 

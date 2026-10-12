@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -80,6 +81,15 @@ private struct DiagnosticLogsPane: View {
     @State private var presentsExporter = false
     @State private var exportError: String?
 
+    private func revealDebugLog() {
+        let url = AgentdSupervisorCommand.debugLogURL(homeDirectoryURL: FileManager.default.homeDirectoryForCurrentUser)
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(url.deletingLastPathComponent())
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
@@ -114,6 +124,16 @@ private struct DiagnosticLogsPane: View {
                     Label("仅记录在当前 Mac，不会自动上传。", systemImage: "desktopcomputer")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("详细记录期间，还会在本机调试日志里记下关键处的方法名、会话 ID 与错误原因，便于排查 Claude 通道等问题；不含消息内容，也不会进入安全日志导出。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        Button("在访达中显示调试日志") { revealDebugLog() }
+                            .controlSize(.small)
+                    }
 
                     if let status = store.diagnosticsStatus {
                         Divider()
@@ -254,6 +274,11 @@ private struct DiagnosticCapacityView: View {
             Text("当前文件 \(Self.bytes(status.currentBytes))，上一文件 \(Self.bytes(status.previousBytes))")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
+            if status.debugBytes > 0 {
+                Text("本机调试日志 \(Self.bytes(status.debugBytes))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
             if status.droppedRecords > 0 {
                 Label(
                     "有 \(status.droppedRecords) 条记录未保存，报告可能不完整。",

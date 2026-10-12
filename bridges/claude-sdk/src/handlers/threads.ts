@@ -7,6 +7,7 @@ import type { Catalog, HistoryStore, SessionRecord } from "../claude/catalog.ts"
 import { decodeCursor, encodeCursor, readDirection, readLimit, type Direction } from "../util/cursor.ts";
 import { ownerSummary, type SessionHolder } from "../runtime/holders.ts";
 import { USER_AGENT } from "../version.ts";
+import { logger } from "../util/logging.ts";
 
 /** 旧 bridge 在 Thread 上附带的扩展字段，iOS 与 gateway 依赖它判断能否直接发送。 */
 export type AdapterThread = Thread & { canAcceptDirectInput: boolean; claudeOwner?: Record<string, unknown> };
@@ -127,6 +128,14 @@ export function createThreadHandlers(catalog: Catalog, history: HistoryStore, li
           })
         : 0;
       const page = start < 0 ? [] : records.slice(start, start + limit);
+      logger.debug("thread.list", {
+        cwd: typeof params.cwd === "string" ? params.cwd : null,
+        matched: records.length,
+        returned: page.length,
+        sort: byCreated ? "created_at" : "updated_at",
+        search: search ? true : undefined,
+        cursor: cursor ? true : undefined,
+      });
       const last = page[page.length - 1];
       const first = page[0];
       const hasMore = start >= 0 && start + limit < records.length;

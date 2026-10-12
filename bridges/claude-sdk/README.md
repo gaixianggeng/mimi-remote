@@ -69,7 +69,9 @@ bun run build   # 输出 dist/mimi-claude-adapter
 
 测试只读合成夹具（`CLAUDE_CONFIG_DIR` 指向临时目录），不接触真实的 `~/.claude`。对话测试用 `test/support/fake-claude.ts` 模拟 Claude CLI（按真实 CLI 的控制协议录制实现），不调用模型。
 
-诊断：设置 `MIMI_CLAUDE_ADAPTER_TRACE=1` 时，每条 SDK 消息的类型与归属标记（不含正文）写到 stderr，agentd 会收进日志。
+诊断（#666）：日志只写 stderr，格式固定为 `[mimi-claude-adapter] <级别> <事件> key=value …`，级别由 `MIMI_CLAUDE_ADAPTER_LOG`（`error`/`warn`/`info`/`debug`/`trace`，默认 `info`）控制；`MIMI_CLAUDE_ADAPTER_TRACE=1` 额外输出每条 SDK 消息的类型与归属标记（`trace`）。关键处的 `debug` 打点覆盖：连接附着与断开、每个 RPC 的方法/耗时/错误码、会话列表的匹配数、turn 的开始/引导/中断/收尾、审批的发出/答复/撤回、占用变化/让出/接管、Claude 进程的启动/就绪/退出与设置切换、模型目录与额度查询。只记 ID、方法名、耗时与状态，不记消息正文、提示词、工具输入输出与凭据，用户主目录写成 `~`。
+
+agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置的级别优先），再按级别分流：`debug`/`trace` 行只在 Mac App「诊断 → 详细记录（15 分钟）」窗口内写进本机调试日志 `~/Library/Logs/mimi-remote/agentd-debug.log`，其余行照旧进 agentd 的标准日志。同一个窗口内，网关拒绝请求时的方法名、规则代码与说明也写进这份调试日志。调试日志只按大小轮转，「清除…」会一起清掉，不进入「导出安全日志」。命令行也可以控制同一个窗口：`agentd diagnostics start|stop|status --json`。
 
 ## 在开发机上试用
 

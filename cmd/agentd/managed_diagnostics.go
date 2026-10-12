@@ -3,15 +3,27 @@ package main
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
 	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"github.com/gaixianggeng/mimi-remote/internal/httpapi"
 )
 
+// debugLogFileName 是与安全诊断日志同目录的本机调试日志。
+const debugLogFileName = "agentd-debug.log"
+
 type managedDiagnosticLogs struct {
 	writer   *rotatingLogWriter
 	recorder *diagnosticlog.Recorder
+	// 调试日志跟随同一个详细记录窗口；只按大小轮转，不参与安全日志的保留与导出。
+	debugWriter *rotatingLogWriter
+	debug       *debuglog.Sink
+}
+
+func debugLogPath(diagnosticPath string) string {
+	return filepath.Join(filepath.Dir(diagnosticPath), debugLogFileName)
 }
 
 // 配置或运行环境在 HTTP 启动前失败时也留固定故障码；不能把原始错误写进报告。
@@ -48,8 +60,16 @@ func configureServeFileLogging(path string) (*managedDiagnosticLogs, func(), err
 		_ = writer.Close()
 		return nil, nil, err
 	}
+	debugWriter, err := newRotatingLogWriter(debugLogPath(writer.path), defaultManagedLogMaxBytes)
+	if err != nil {
+		recorder.Close()
+		_ = writer.Close()
+		return nil, nil, err
+	}
 	removeRecorder := diagnosticlog.Install(recorder)
-	logs := &managedDiagnosticLogs{writer: writer, recorder: recorder}
+	debug := debuglog.New(debugWriter, func() bool { return recorder.ExpiresAt() != nil })
+	removeDebug := debuglog.Install(debug)
+	logs := &managedDiagnosticLogs{writer: writer, recorder: recorder, debugWriter: debugWriter, debug: debug}
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -66,10 +86,13 @@ func configureServeFileLogging(path string) (*managedDiagnosticLogs, func(), err
 		}
 	}()
 	return logs, func() {
+		removeDebug()
 		removeRecorder()
 		close(stop)
 		<-done
+		debug.Close()
 		recorder.Close()
+		_ = debugWriter.Close()
 		_ = writer.Close()
 	}, nil
 }
@@ -98,6 +121,14 @@ func (l *managedDiagnosticLogs) Status() (httpapi.DiagnosticLogStatus, error) {
 		status.PreviousBytes = info.Size()
 	}
 	status.TotalBytes = status.CurrentBytes + status.PreviousBytes
+	if l.debugWriter != nil {
+		bytes, err := l.debugWriter.totalBytes()
+		if err != nil {
+			return status, err
+		}
+		status.DebugBytes = bytes
+		status.DebugDropped = l.debug.Dropped()
+	}
 	return status, nil
 }
 
@@ -116,6 +147,11 @@ func (l *managedDiagnosticLogs) Clear() (httpapi.DiagnosticLogStatus, error) {
 	if err := l.recorder.Sync(func() error {
 		if err := l.writer.clear(); err != nil {
 			return err
+		}
+		if l.debugWriter != nil {
+			if err := l.debugWriter.clear(); err != nil {
+				return err
+			}
 		}
 		l.recorder.ClearError()
 		return nil

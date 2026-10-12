@@ -17,6 +17,7 @@ import { LiveTurn, type TurnUsage } from "./liveTurn.ts";
 import { rateLimitSnapshot } from "./rateLimits.ts";
 import type { RunSettings } from "./settings.ts";
 import { toClaudeContent } from "./userInput.ts";
+import { errorText, logEnabled, logger } from "../util/logging.ts";
 
 export interface RuntimeHost {
   publish(threadId: string, method: string, params: Record<string, unknown>): void;
@@ -38,8 +39,6 @@ export interface TurnRequest {
 }
 
 const INVALID_PARAMS = -32602;
-/** 诊断：把每条 SDK 消息的类型与归属标记写到 stderr（不含正文）。 */
-const TRACE = process.env.MIMI_CLAUDE_ADAPTER_TRACE === "1";
 
 function usageOf(raw: unknown): TurnUsage | undefined {
   if (!raw || typeof raw !== "object") return undefined;
@@ -144,6 +143,7 @@ export class ThreadRuntime {
    */
   async yieldToHolder(): Promise<void> {
     if (!this.query) return;
+    logger.info("claude.yield", { thread: this.threadId, pid: this.pid ?? null, openTurns: this.openTurns().length });
     this.cancelIdleClose();
     for (const turn of this.openTurns()) turn.markInterrupted();
     if (this.pid !== undefined) {
@@ -194,6 +194,7 @@ export class ThreadRuntime {
     const turn = new LiveTurn(turnId, this.threadId, this.emit);
     this.current = turn;
     this.commands.set(turnId, turn);
+    logger.debug("turn.start", { thread: this.threadId, turn: turnId, model: this.settings.model ?? null });
     this.cancelIdleClose();
     turn.begin();
     turn.userMessage(turnId, request.clientUserMessageId, request.input);
@@ -217,6 +218,7 @@ export class ThreadRuntime {
     }
     const content = toClaudeContent(input);
     const id = randomUUID();
+    logger.debug("turn.steer", { thread: this.threadId, turn: turn.id, message: id });
     turn.userMessage(id, clientUserMessageId, input);
     this.commands.set(id, turn);
     this.input.push({
@@ -234,6 +236,7 @@ export class ThreadRuntime {
     // 结果已吸收首条消息、引导还没开始输出时 current 暂时为空，turn 仍挂在 commands 名下。
     const turn =
       this.current?.id === turnId ? this.current : [...this.commands.values()].find((owner) => owner.id === turnId);
+    logger.debug("turn.interrupt", { thread: this.threadId, turn: turnId, found: Boolean(turn && !turn.finished), process: Boolean(this.query) });
     if (!turn || turn.finished || !this.query) return;
     turn.markInterrupted();
     // 中断产生的结果要落到这个 turn 上收尾。
@@ -261,6 +264,12 @@ export class ThreadRuntime {
       return;
     }
     const steps: Array<() => Promise<unknown>> = [];
+    logger.debug("claude.settings", {
+      thread: this.threadId,
+      model: wanted.model && wanted.model !== applied?.model ? wanted.model : undefined,
+      permission: wanted.permissionMode !== applied?.permissionMode ? wanted.permissionMode : undefined,
+      effort: wanted.effort && wanted.effort !== applied?.effort ? wanted.effort : undefined,
+    });
     if (wanted.model && wanted.model !== applied?.model) steps.push(() => query.setModel(wanted.model));
     if (wanted.permissionMode !== applied?.permissionMode) steps.push(() => query.setPermissionMode(wanted.permissionMode));
     if (wanted.effort && wanted.effort !== applied?.effort) steps.push(() => query.applyFlagSettings({ effortLevel: wanted.effort }));
@@ -292,8 +301,16 @@ export class ThreadRuntime {
       ...(this.transcriptExists ? { resume: this.threadId } : { sessionId: this.threadId }),
       canUseTool: (toolName, toolInput, context) => this.canUseTool(toolName, toolInput, context),
       env: { ...process.env, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" },
-      stderr: (data) => this.host.log(`claude[${this.threadId.slice(0, 8)}]: ${data.trimEnd()}`),
+      stderr: (data) => logger.debug("claude.stderr", { thread: this.threadId, text: data.trimEnd().slice(0, 500) }),
     };
+    logger.debug("claude.start", {
+      thread: this.threadId,
+      mode: this.transcriptExists ? "resume" : "new",
+      cwd: this.cwd,
+      model: settings.model ?? null,
+      permission: settings.permissionMode,
+      effort: settings.effort ?? null,
+    });
     const query = (this.host.startQuery ?? sdkQuery)({ prompt: input, options });
     this.query = query;
     this.input = input;
@@ -307,6 +324,7 @@ export class ThreadRuntime {
         if (typeof pid === "number" && this.query === query) {
           this.pid = pid;
           this.host.ownPids.add(pid);
+          logger.debug("claude.ready", { thread: this.threadId, pid, ms: Date.now() - this.queryStartedAt });
           this.host.processReady(this.threadId);
         }
       })
@@ -319,8 +337,10 @@ export class ThreadRuntime {
       for await (const message of query) this.onMessage(message);
     } catch (error) {
       this.host.log(`thread ${this.threadId} query failed: ${error instanceof Error ? error.message : String(error)}`);
+      logger.warn("claude.failed", { thread: this.threadId, pid: this.pid ?? null, error: errorText(error) });
     } finally {
       if (this.query === query) {
+        logger.info("claude.exit", { thread: this.threadId, pid: this.pid ?? null, openTurns: this.openTurns().length });
         this.query = undefined;
         this.input = undefined;
         this.applied = undefined;
@@ -381,7 +401,7 @@ export class ThreadRuntime {
 
   private onMessage(message: SDKMessage): void {
     const record = message as unknown as Record<string, unknown>;
-    if (TRACE) this.trace(record);
+    this.trace(record);
     // 子代理内部的消息不进主时间线（历史侧同样只取主链）。
     if (record.parent_tool_use_id) return;
     switch (message.type) {
@@ -403,6 +423,13 @@ export class ThreadRuntime {
         for (const uuid of consumed) this.commands.delete(uuid);
         const turn = this.current;
         this.current = undefined;
+        logger.debug("claude.result", {
+          thread: this.threadId,
+          subtype: String(record.subtype),
+          consumed: consumed.length,
+          turn: turn?.id ?? null,
+          pendingMessages: this.commands.size,
+        });
         if (!turn) return;
         const usage = usageOf(record.usage);
         if (usage) this.totalUsage = addUsage(this.totalUsage, usage);
@@ -437,7 +464,9 @@ export class ThreadRuntime {
     }
   }
 
+  /** 每条 SDK 消息的类型与归属标记（不含正文），只在 trace 级别输出。 */
   private trace(record: Record<string, unknown>): void {
+    if (!logEnabled("trace")) return;
     const event = record.event as { type?: unknown } | undefined;
     const fields = [
       String(record.type),
@@ -446,7 +475,7 @@ export class ThreadRuntime {
       Array.isArray(record.user_message_uuids) ? `uuids=${record.user_message_uuids.map((id) => String(id).slice(0, 8)).join(",")}` : "",
       `current=${this.current?.id.slice(0, 8) ?? "-"}`,
     ];
-    this.host.log(`trace ${this.threadId.slice(0, 8)} ${fields.filter(Boolean).join(" ")}`);
+    logger.trace("sdk.message", { thread: this.threadId, detail: fields.filter(Boolean).join(" ") });
   }
 
   private async canUseTool(
@@ -455,6 +484,7 @@ export class ThreadRuntime {
     context: Parameters<NonNullable<Options["canUseTool"]>>[2],
   ): Promise<PermissionResult> {
     const turn = this.current;
+    logger.debug("approval.ask", { thread: this.threadId, turn: turn?.id ?? null, tool: toolName });
     if (!turn) return { behavior: "deny", message: "no active turn to approve this tool call" };
     const spec = serverRequestFor(
       {

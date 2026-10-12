@@ -43,3 +43,22 @@ func recordGatewayLifecycle(connectionID, method string, payload []byte) {
 	}
 	diagnosticlog.Record(stage, outcome, diagnosticlog.Fields{Reference: diagnosticlog.Reference(connectionID + ":" + frame.Params.ThreadID + ":" + turnID)})
 }
+
+// gatewayPolicyErrorMethod 取被拒帧的方法名。响应帧没有 method，用拦截记录里的原请求方法；
+// 超大的帧（多是被拦的历史响应）不为取方法名去完整解析。
+func gatewayPolicyErrorMethod(payload []byte, policyErr *appServerGatewayPolicyError) string {
+	if len(payload) <= 64<<10 {
+		var frame struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal(payload, &frame) == nil && frame.Method != "" {
+			return frame.Method
+		}
+	}
+	if policyErr != nil {
+		if method, ok := policyErr.data["method"].(string); ok && method != "" {
+			return method
+		}
+	}
+	return "response"
+}

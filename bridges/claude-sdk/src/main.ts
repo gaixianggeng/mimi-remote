@@ -4,6 +4,7 @@ import { capabilityDeclaration, createApp, type App } from "./app.ts";
 import { serveConnection } from "./server/connection.ts";
 import { SessionRegistry } from "./session/registry.ts";
 import type { Session } from "./session/session.ts";
+import { logEnabled, logText, logger } from "./util/logging.ts";
 import { ADAPTER_NAME, ADAPTER_VERSION } from "./version.ts";
 
 const USAGE = `用法：
@@ -13,8 +14,8 @@ const USAGE = `用法：
   ${ADAPTER_NAME}                   在标准输入输出上服务一条连接
 `;
 
-// 日志只写 stderr：stdout 在 stdio 模式下是协议通道。agentd 会采集 stderr。
-const log = (message: string) => process.stderr.write(`[${ADAPTER_NAME}] ${message}\n`);
+// 日志只写 stderr：stdout 在 stdio 模式下是协议通道。agentd 会采集 stderr 并按级别分流。
+const log = (message: string) => logText("info", message);
 
 /** 会话注册表与对话运行时的联动：忙碌的会话不回收，回收时取消订阅。 */
 function wire(app: App): SessionRegistry {
@@ -61,6 +62,7 @@ async function serveSocket(socketPath: string): Promise<void> {
     server.listen(socketPath, () => resolve());
   });
   log(`listening on ${socketPath}`);
+  logger.info("adapter.start", { version: ADAPTER_VERSION, mode: "socket", debug: logEnabled("debug") });
 }
 
 async function serveStdio(): Promise<void> {
@@ -93,6 +95,6 @@ async function main(argv: string[]): Promise<void> {
 }
 
 main(process.argv.slice(2)).catch((error) => {
-  log(error instanceof Error ? (error.stack ?? error.message) : String(error));
+  logText("error", error instanceof Error ? (error.stack ?? error.message) : String(error));
   process.exit(1);
 });
