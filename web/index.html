@@ -114,14 +114,14 @@
       if (!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches)) d.classList.add("has-reveal");
 
       /* Screenshots carry no src in the markup, so a Chinese or dark visit never downloads
-         English light copies first. Fetch the hero pair now; site.js sets every src. */
+         English light copies first. Start the hero pair now at default priority, so they
+         don't compete with the stylesheet; site.js sets every src. */
       list = ["ipad-approval", "iphone-sessions"];
       for (i = 0; i < list.length; i++) {
         link = document.createElement("link");
         link.rel = "preload";
         link.as = "image";
         link.href = "./assets/shots/" + list[i] + "-" + l + "-" + t + ".webp";
-        if (i === 0) link.setAttribute("fetchpriority", "high");
         h.appendChild(link);
       }
     })();
