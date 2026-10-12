@@ -14,6 +14,8 @@ usage() {
 只运行受影响栈的最小检查。--plan 只打印计划；--full 升级为受影响栈的完整本地回归。
 执行时只输出分项状态与有限的失败日志；完整计划、结果和日志保存在输出的临时目录。
 quick 与 full 选择一轮执行，专项测试是否被覆盖仍需核对；不跨轮复用旧结果。
+唯一例外：quick 的 iOS App 编译项可复用本 Worktree 输入指纹完全一致的成功构建证据，
+--plan 会说明复用哪项证据或需要重建的原因；full 不复用。
 EOF
 }
 
@@ -420,7 +422,7 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    scripts/ios-dev.sh|scripts/build-tailcat-mobile.sh|scripts/ios-device-lease.sh|scripts/ios-device-gui-handoff-macos.sh|scripts/test-ios-device-management.sh|scripts/test-tailcat-mobile-build.sh|scripts/test-ios-device-gui-handoff-macos.sh|scripts/testdata/ios-device-management/*|scripts/testdata/tailcat-mobile/*)
+    scripts/ios-dev.sh|scripts/build-tailcat-mobile.sh|scripts/ios-device-lease.sh|scripts/ios-build-evidence.sh|scripts/ios-device-gui-handoff-macos.sh|scripts/test-ios-device-management.sh|scripts/test-ios-build-evidence.sh|scripts/test-tailcat-mobile-build.sh|scripts/test-ios-device-gui-handoff-macos.sh|scripts/testdata/ios-device-management/*|scripts/testdata/tailcat-mobile/*)
       has_ios_device_control=true
       ;;
   esac
@@ -445,7 +447,7 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    scripts/development-cache-path.sh|scripts/development-cache-lock.sh|scripts/test-development-cache.sh|scripts/test-macos-local-cache.sh|scripts/ios-dev.sh|scripts/build-tailcat-mobile.sh|scripts/test-macos-app.sh|macos/MimiRemoteMac/Scripts/build-local.sh|macos/MimiRemoteMac/Scripts/install-local.sh)
+    scripts/development-cache-path.sh|scripts/development-cache-lock.sh|scripts/test-development-cache.sh|scripts/test-macos-local-cache.sh|scripts/ios-dev.sh|scripts/ios-build-evidence.sh|scripts/build-tailcat-mobile.sh|scripts/test-macos-app.sh|macos/MimiRemoteMac/Scripts/build-local.sh|macos/MimiRemoteMac/Scripts/install-local.sh)
       has_development_cache_control=true
       ;;
   esac
@@ -487,6 +489,9 @@ done
 checks=()
 check_reasons=()
 check_domains=()
+ios_quick_target_env="IOS_TARGET_MODE=simulator IOS_SIMULATOR_ID= IOS_SIMULATOR_NAME='iPad Pro 13-inch (M5)'"
+ios_quick_check_command=""
+ios_evidence_status=""
 
 add_check() {
   local reason="$1"
@@ -589,7 +594,7 @@ if [[ "$has_ios_privacy_control" == true ]]; then
   add_check "iOS 网络与隐私边界变化必须执行专项静态检查" "bash ./scripts/check-ios-network-security.sh && bash ./scripts/check-ios-privacy-manifest.sh" "ios"
 fi
 if [[ "$has_ios_device_control" == true ]]; then
-  add_check "iOS 目标、Tailcat 构建、租约和真机 GUI 交接变化使用专项自测" "bash ./scripts/test-tailcat-mobile-build.sh && bash ./scripts/test-ios-device-management.sh && bash ./scripts/test-ios-device-gui-handoff-macos.sh" "ios"
+  add_check "iOS 目标、Tailcat 构建、租约、构建证据和真机 GUI 交接变化使用专项自测" "bash ./scripts/test-tailcat-mobile-build.sh && bash ./scripts/test-ios-device-management.sh && bash ./scripts/test-ios-build-evidence.sh && bash ./scripts/test-ios-device-gui-handoff-macos.sh" "ios"
 fi
 if [[ "$has_ios_asc_control" == true ]]; then
   add_check "App Store Connect CLI 封装变化使用本地 fake ASC 自测" "bash ./scripts/test-ios-asc-cli.sh"
@@ -657,8 +662,11 @@ if [[ "$direct_ios" == true ]]; then
   else
     # quick 只证明生产 App 能在固定 M5 Simulator 上编译。整个 XCTest 测试包会随
     # 项目增长而持续变慢；问题相关 selector 应在开发阶段单独执行，完整集合交给 full/CI。
-    add_check "iOS quick 只编译 App，不编译或运行 XCTest" \
-      "IOS_TARGET_MODE=simulator IOS_SIMULATOR_ID= IOS_SIMULATOR_NAME='iPad Pro 13-inch (M5)' bash ./scripts/ios-dev.sh build" "ios"
+    # 开发阶段的定向测试已在同一 M5 上编译过完全相同的输入时，ios-dev.sh 复用该
+    # 构建证据，不再排队占用设备；证据缺失或任何输入变化时照常构建。
+    add_check "iOS quick 只编译 App，不编译或运行 XCTest；输入完全一致时复用本 Worktree 的成功构建证据" \
+      "IOS_BUILD_EVIDENCE_REUSE=1 ${ios_quick_target_env} bash ./scripts/ios-dev.sh build" "ios"
+    ios_quick_check_command="IOS_BUILD_EVIDENCE_REUSE=1 ${ios_quick_target_env} bash ./scripts/ios-dev.sh build"
   fi
 fi
 
@@ -762,7 +770,11 @@ print_plan() {
     echo "覆盖核对：Go/Rust full 扩大本轮 package/crate 测试集；iOS full 构建 App 并运行核心 selector。"
     echo "专项缺项：对照实际命令、目标、配置与 selector 补齐；不能把 full 当作所有专项均已覆盖。"
   fi
-  echo "结果复用：本轮重新执行计划，不自动引用此前或其他 Worktree 的通过记录。"
+  if [[ -n "$ios_quick_check_command" ]]; then
+    echo "结果复用：只有 iOS App 编译项可复用本 Worktree 输入指纹完全一致的成功构建证据；其他检查本轮重新执行，不引用此前或其他 Worktree 的通过记录。"
+  else
+    echo "结果复用：本轮重新执行计划，不自动引用此前或其他 Worktree 的通过记录。"
+  fi
   echo "安全检查：普通 PR 由 CI 增量扫描，main push/手动安全工作流扫描完整历史；安全门自身变更仍本地完整检查。"
   echo "CI 交接：核对 PR 最新受检提交及必需检查；不同工具链结果分开记录。等待时保持 Verify，成功和失败均回原任务收尾。"
   echo "等待方式：由执行工具挂起等待完成，不反复读取无变化日志；未确认宿主完成事件时不承诺自动恢复。"
@@ -781,10 +793,27 @@ print_plan() {
     if [[ "$index" -lt "$preflight_count" && -n "${check_domains[$index]}" ]]; then
       echo "   前置失败阻塞：${check_domains[$index]}"
     fi
+    if [[ -n "$ios_evidence_status" && "${checks[$index]}" == "$ios_quick_check_command" ]]; then
+      echo "   构建证据：${ios_evidence_status}"
+    fi
   done
 }
 
+# 只在本机变更集的 --plan 中预判构建证据；执行时由检查本身重新判定并写入日志。
+# 显式 paths file 用于计划自检，与本机构建状态无关，不读取证据。
+resolve_ios_evidence_status() {
+  local output status=0
+  [[ "$plan_only" -eq 1 && -z "$paths_file" && -n "$ios_quick_check_command" ]] || return 0
+  output="$(bash -c "${ios_quick_target_env} bash ./scripts/ios-dev.sh build-evidence" 2>&1)" || status=$?
+  output="$(printf '%s\n' "$output" | awk 'NF { print; exit }')"
+  case "$status" in
+    0|3) ios_evidence_status="$output" ;;
+    *) ios_evidence_status="无法检查（${output:-退出码 ${status}}）；执行时按正常构建处理" ;;
+  esac
+}
+
 if [[ "$plan_only" -eq 1 ]]; then
+  resolve_ios_evidence_status
   print_plan
   exit 0
 fi
@@ -814,6 +843,7 @@ for index in "${!checks[@]}"; do
   result_seconds+=("0")
 done
 overall_started="$SECONDS"
+reused_count=0
 current_index=-1
 check_pid=""
 blocked_domains=" "
@@ -909,14 +939,26 @@ for index in "${!checks[@]}"; do
   check_pid=""
   result_codes[$index]="$check_code"
   result_seconds[$index]="$((SECONDS - started))"
+  reused_evidence=""
   case "$check_code" in
-    0) result_states[$index]="通过" ;;
+    0)
+      result_states[$index]="通过"
+      # 只有 iOS quick 编译项会复用证据；状态和控制台都写明复用了哪一项，避免误读为本轮已编译。
+      if [[ "${checks[$index]}" == "$ios_quick_check_command" ]]; then
+        reused_evidence="$(grep -m 1 '^==> 复用构建证据：' "$result_dir/$((index + 1)).log" || true)"
+      fi
+      if [[ -n "$reused_evidence" ]]; then
+        result_states[$index]="通过（复用构建证据）"
+        reused_count=$((reused_count + 1))
+      fi
+      ;;
     75) result_states[$index]="阻塞" ;;
     124) result_states[$index]="超时" ;;
     130|143) result_states[$index]="取消" ;;
     *) result_states[$index]="失败" ;;
   esac
   echo "<== ${result_states[$index]}，用时 ${result_seconds[$index]}s，退出码 ${check_code}"
+  [[ -z "$reused_evidence" ]] || echo "    ${reused_evidence#==> }"
   if [[ "$check_code" -ne 0 ]]; then
     # 75 仅表示暂时阻塞；其他检查真正失败时，不能让最早的设备占用掩盖失败。
     if [[ "$overall_code" -eq 0 || ( "$overall_code" -eq 75 && "$check_code" -ne 75 ) ]]; then
@@ -935,7 +977,9 @@ for index in "${!checks[@]}"; do
 done
 
 if [[ "$overall_code" -eq 0 ]]; then
-  echo "分层验证通过：${#checks[@]} 项，总用时 $((SECONDS - overall_started))s。"
+  reused_note=""
+  [[ "$reused_count" -eq 0 ]] || reused_note="（其中 ${reused_count} 项复用构建证据，未重新编译）"
+  echo "分层验证通过：${#checks[@]} 项${reused_note}，总用时 $((SECONDS - overall_started))s。"
 else
   echo "分层验证未通过：存在失败、阻塞、超时或取消；仅重跑受影响检查，不把剩余项记为通过。"
 fi

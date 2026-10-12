@@ -24,6 +24,12 @@ case "$*" in
   "simctl list devices booted -j")
     printf '{"devices":{}}\n'
     ;;
+  "--sdk iphonesimulator --show-sdk-version")
+    printf '%s\n' "${IOS_TEST_SIMULATOR_SDK_VERSION:-99.0}"
+    ;;
+  "--sdk iphonesimulator --show-sdk-build-version")
+    printf '%s\n' "${IOS_TEST_SIMULATOR_SDK_BUILD:-99A1}"
+    ;;
   "devicectl list devices --json-output - --quiet --timeout 5")
     /bin/cat "$PHYSICAL_JSON"
     ;;

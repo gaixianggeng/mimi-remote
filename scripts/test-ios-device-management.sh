@@ -16,6 +16,8 @@ export IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/xcodebuild.log"
 export IOS_TEST_GUI_HANDOFF_LOG="$TEMP_DIR/gui-handoff.log"
 export IOS_DEVICE_GUI_HANDOFF_BIN="$FIXTURE_DIR/fake-gui-handoff.sh"
 export IOS_TAILCAT_BUILD_SCRIPT="$FIXTURE_DIR/fake-tailcat-mobile-build.sh"
+# Simulator 构建会记录构建证据并读取 Go 工具链身份；固定为 fake，避免依赖本机 Go。
+export TAILCAT_MOBILE_GO_BIN="$FIXTURE_DIR/fake-go.sh"
 export IOS_TEST_TAILCAT_BUILD_LOG="$TEMP_DIR/tailcat-mobile-build.log"
 : > "$IOS_TEST_TAILCAT_BUILD_LOG"
 : > "$IOS_TEST_GUI_HANDOFF_LOG"
@@ -24,6 +26,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   expected_device_handoff_count="1"
 fi
 unset IOS_TEST_DESTINATION IOS_SIMULATOR_ID IOS_SIMULATOR_NAME IOS_DEVICE_ID IOS_DEVICE_NAME IOS_TARGET_MODE
+unset IOS_BUILD_EVIDENCE_REUSE IOS_DEVICE_LEASE_WAIT_SECONDS
 unset DEVELOPER_DIR IOS_OPEN_BIN IOS_TEST_OPEN_LOG IOS_TEST_OPEN_FAIL
 
 fail() {
