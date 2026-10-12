@@ -136,7 +136,62 @@ final class UserFacingErrorTests: XCTestCase {
         XCTAssertFalse(general.suggestsReconnect)
     }
 
+    /// 在指定界面语言下执行，结束后恢复原设置。
+    private func withInterfaceLanguage(_ language: AppLanguage, _ body: () -> Void) {
+        let defaults = UserDefaults.standard
+        let previous = defaults.string(forKey: AppLanguage.preferenceKey)
+        defaults.set(language.rawValue, forKey: AppLanguage.preferenceKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: AppLanguage.preferenceKey)
+            } else {
+                defaults.removeObject(forKey: AppLanguage.preferenceKey)
+            }
+        }
+        body()
+    }
+
     func testWhitelistedComputerReasonIsShownInsteadOfHiddenInDetails() {
+        withInterfaceLanguage(.simplifiedChinese) { assertWhitelistedReasons() }
+    }
+
+    func testChineseComputerReasonFallsBackOnEnglishInterface() {
+        withInterfaceLanguage(.english) {
+            let chinese = UserFacingError(AgentAPIError.server(status: 500, message: "Codex 登录态已失效，请先运行 codex login"))
+            XCTAssertEqual(chinese.category, .hostError, "未本地化的中文原因不上英文界面")
+            XCTAssertNotNil(chinese.technicalDetail)
+            let english = UserFacingError(AgentAPIError.server(status: 500, message: "Not logged in. Run codex login first."))
+            XCTAssertEqual(english.message, "Not logged in. Run codex login first.")
+        }
+    }
+
+    func testReadableReasonNeedsWholeWordsAndNoSensitiveDetail() {
+        withInterfaceLanguage(.english) {
+            // 子串误中：catalog in / design in / assign in 都不是登录说明。
+            for message in [
+                "catalog index failed in catalog in workspace",
+                "design in progress",
+                "could not assign in the current state"
+            ] {
+                XCTAssertEqual(UserFacingError(AgentAPIError.server(status: 500, message: message)).category, .hostError, message)
+            }
+            // 命中白名单但带地址、路径、IP、主机名或疑似凭据：退回分类文案，原文只留在详情。
+            for message in [
+                "Please log in at https://example.invalid/login",
+                "Run codex login; missing /Users/demo/.codex/auth.json",
+                "Run codex login on 192.0.2.10",
+                "Run codex login on build-mac.example.com",
+                "codex login failed for token abcdefghijklmnopqrstuvwx1234"
+            ] {
+                let presented = UserFacingError(AgentAPIError.server(status: 500, message: message))
+                XCTAssertEqual(presented.category, .hostError, message)
+                XCTAssertFalse(presented.message.contains("codex login"), message)
+                XCTAssertTrue(presented.technicalDetail?.contains(message) == true, message)
+            }
+        }
+    }
+
+    private func assertWhitelistedReasons() {
         let codexLogin = "Codex 登录态已失效，请先在电脑上运行 codex login 后重试"
         let http = UserFacingError(AgentAPIError.server(status: 500, message: codexLogin))
         XCTAssertEqual(http.category, .described)
@@ -190,6 +245,23 @@ final class UserFacingErrorTests: XCTestCase {
             XCTAssertFalse(presented.suggestsReconnect, "重新连接只会再次被策略拒绝")
             XCTAssertEqual(presented.technicalDetail, raw)
         }
+    }
+
+    func testPolicyWordAloneIsNotAConnectionPolicyRejection() {
+        for raw in [
+            "审批失败：JSON-RPC -32602 invalid sandbox policy",
+            "Approval failed: JSON-RPC -32602 invalid sandbox policy",
+            "app-server error -32603: approval policy unavailable",
+            "审批失败：app-server 错误 -32602：沙箱策略无效"
+        ] {
+            let presented = UserFacingError(rawMessage: raw)
+            XCTAssertNotEqual(presented.category, .policyRejected, raw)
+            XCTAssertNotEqual(presented.message, L10n.text("ui.error_connection_policy_rejected"), raw)
+        }
+        XCTAssertEqual(
+            UserFacingError(rawMessage: "审批失败：JSON-RPC -32602 invalid sandbox policy").category,
+            .rejected
+        )
     }
 
     func testStoppedReconnectIsNotPresentedAsInProgress() {

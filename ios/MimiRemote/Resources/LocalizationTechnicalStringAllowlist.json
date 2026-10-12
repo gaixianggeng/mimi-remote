@@ -242,16 +242,8 @@
       "reason": "Matches legacy Chinese transport/parse error text so it can be translated into user-facing copy; the raw value is never rendered as product UI."
     },
     {
-      "value": "策略",
-      "reason": "Matches legacy Chinese policy-rejection error text so it can be shown as a stopped connection; the raw value is never rendered as product UI."
-    },
-    {
       "value": "已停止",
       "reason": "Matches legacy Chinese text saying automatic reconnection stopped, so it is not shown as in-progress; the raw value is never rendered as product UI."
-    },
-    {
-      "value": "登录",
-      "reason": "Matches computer-side reasons about model account sign-in that may be shown verbatim; the literal itself is never rendered as product UI."
     }
   ],
   "uiLiteralAllowlist": [

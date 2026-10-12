@@ -144,17 +144,16 @@ extension UserFacingError {
     /// 动作前缀，让用户仍知道是哪一步没有完成。
     init(rawMessage: String) {
         let trimmed = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if Self.isConnectionPolicyRejection(trimmed) {
+            self.init(category: .policyRejected, message: Self.message(for: .policyRejected), technicalDetail: trimmed)
+            return
+        }
         guard Self.containsTechnicalDetail(trimmed) else {
             self = .described(trimmed)
             return
         }
         if let split = Self.actionPrefix(in: trimmed),
            !Self.containsTechnicalDetail(split.prefix) {
-            // 前缀本身已经给出结论（策略拒绝、已停止重连）时以前缀为准，余下的协议码只进详情。
-            if Self.category(forRawMessage: split.prefix) == .policyRejected {
-                self.init(category: .policyRejected, message: Self.message(for: .policyRejected), technicalDetail: trimmed)
-                return
-            }
             let category = Self.category(forRawMessage: split.remainder)
             self.init(
                 category: category,
@@ -430,24 +429,72 @@ extension UserFacingError {
               !isCredentialRejectionReason(reason) else {
             return nil
         }
-        let lowered = reason.lowercased()
-        return readableReasonMarkers.contains { lowered.contains($0) } ? reason : nil
+        guard matchesReadableReasonAllowlist(reason), !containsSensitiveDetail(reason) else {
+            return nil
+        }
+        // 原因是电脑端写的，没有随 App 语言本地化；非中文界面遇到中文原因时退回分类文案。
+        if !interfaceIsChinese, reason.range(of: "\\p{Han}", options: .regularExpression) != nil {
+            return nil
+        }
+        return reason
     }
 
-    /// 白名单：只有这些需要用户自己处理的原因才会进入正文。
-    private static let readableReasonMarkers = [
-        "codex login",
-        "claude auth login",
-        "not logged in",
-        "log in",
-        "logged in",
-        "sign in",
-        "登录"
-    ]
+    /// 白名单：只有这些需要用户自己处理的原因才会进入正文。英文按整词匹配，
+    /// 避免「catalog in」「design in」这类子串误中。
+    private static let readableReasonAllowlist: [NSRegularExpression] = [
+        "\\b(?:codex|claude(?: auth)?) login\\b",
+        "\\bnot logged in\\b",
+        "\\blog ?in (?:again|first|to)\\b",
+        "\\bplease (?:log|sign) in\\b",
+        "\\bsign in (?:again|first|to)\\b",
+        "\\u767B\\u5F55"
+    ].map { try! NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+
+    private static func matchesReadableReasonAllowlist(_ reason: String) -> Bool {
+        let range = NSRange(reason.startIndex..., in: reason)
+        return readableReasonAllowlist.contains { $0.firstMatch(in: reason, options: [], range: range) != nil }
+    }
+
+    /// 上主界面的原文不能带地址、路径、主机名或疑似凭据；命中任意一项时退回分类文案，原文只留在详情。
+    private static let sensitiveDetailPatterns: [NSRegularExpression] = [
+        "[a-z][a-z0-9+.-]*://",
+        "(?:^|[\\s(\"'])(?:~|/(?:Users|home|var|private|tmp|etc|opt|Volumes))/",
+        "\\b[A-Za-z]:\\\\",
+        "\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b",
+        "\\b[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}\\b",
+        "\\b[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.(?:com|net|org|io|dev|app|local|lan|internal|cn|ts\\.net)\\b",
+        "\\b(?:sk|ghp|gho|xox[a-z])[-_][A-Za-z0-9_-]{8,}",
+        "\\b(?:bearer|token|secret|password)\\b",
+        "\\b[A-Za-z0-9_\\-]{24,}\\b"
+    ].map { try! NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+
+    static func containsSensitiveDetail(_ text: String) -> Bool {
+        let range = NSRange(text.startIndex..., in: text)
+        return sensitiveDetailPatterns.contains { $0.firstMatch(in: text, options: [], range: range) != nil }
+    }
+
+    /// 当前界面语言是否为中文：以分类文案自身是否含汉字为准，与 L10n 的实际取值保持一致。
+    private static var interfaceIsChinese: Bool {
+        message(for: .unknown).range(of: "\\p{Han}", options: .regularExpression) != nil
+    }
 
     /// 访问码失效有专门的重新配对流程，不能被电脑端的原始说法替换掉。
     private static func isCredentialRejectionReason(_ reason: String) -> Bool {
         AgentAPIError.isCredentialRejection(status: 403, message: reason, authenticationChallenge: nil)
+    }
+
+    /// 连接被电脑端策略拒绝。只认 App 自己拼出的那句固定说法（中英两种界面语言的模板前缀），
+    /// 不按「policy / 策略」关键字猜：沙箱策略、审批策略等参数错误也会带这些词，却不是连接被拒。
+    static func isConnectionPolicyRejection(_ text: String) -> Bool {
+        let key = "ui.the_connection_was_rejected_by_server_policy_and"
+        return [AppLanguage.english, .simplifiedChinese].contains { language in
+            let template = L10n.text(key, language: language)
+            guard let placeholder = template.range(of: "%@") else {
+                return false
+            }
+            let prefix = String(template[..<placeholder.lowerBound])
+            return !prefix.isEmpty && text.hasPrefix(prefix)
+        }
     }
 
     // MARK: - 字符串兜底分类
@@ -483,9 +530,6 @@ extension UserFacingError {
         let lowered = text.lowercased()
         func containsAny(_ needles: [String]) -> Bool {
             needles.contains { lowered.contains($0) }
-        }
-        if containsAny(["policy", "策略"]) {
-            return .policyRejected
         }
         let reconnectStopped = containsAny(["已停止", "stopped"])
         if !reconnectStopped, containsAny(["重连", "重新接入", "正在连接", "reconnect", "is connecting"]) {
