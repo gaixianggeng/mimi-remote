@@ -1530,8 +1530,9 @@ extension CodexAppServerSessionRuntime {
             guard !text.isEmpty || hasRichInput else {
                 return nil
             }
-            if !hasRichInput, let reply = CodexAsyncQuestionReply(text: text) {
-                // 异步提问的答复与实时事件使用同一映射：保留 Item 身份和序号，只换类型与正文。
+            let isTextOnly = inputs.allSatisfy { if case .text = $0 { true } else { false } }
+            if isTextOnly, let reply = CodexAsyncQuestionReply(text: text) {
+                // 异步提问的答复与实时事件使用同一映射：只认纯文本输入，保留 Item 身份和序号，只换类型与正文。
                 return CodexHistoryMessage(
                     id: messageID,
                     role: "user",

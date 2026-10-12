@@ -19,20 +19,20 @@
         }
       }
     },
-    "ui.question_reply_no_answer": {
-      "comment": "Shown when the user's answer to an agent question is empty.",
+    "ui.question_reply_skipped": {
+      "comment": "Shown in place of an answer when the user skipped one of the agent's questions.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No answer provided"
+            "value": "Skipped"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "未填写回答"
+            "value": "已跳过"
           }
         }
       }

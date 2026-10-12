@@ -5,8 +5,9 @@ import Foundation
 /// app-server 协议没有独立的答复 Item：Desktop 把 `[{questionItemId, question, answer}]`
 /// 包进固定标签，作为普通 `userMessage` 引导当前回合。实时事件和历史读取都在投影入口
 /// 用这里的结构化结果映射为 `MessageKind.questionReply`，协议标签、JSON 和调用标识
-/// 不进入时间线。只接受完整包装且每项都带答案字段的文本；残缺标签、正文中讨论标签或附带
-/// 其他内容时保持普通用户消息，不能误吞用户真实输入。
+/// 不进入时间线。跳过的问题（答案缺失、为 null 或空白）仍属于答复，显示为“已跳过”。
+/// 只有包装残缺、JSON 结构无法解析、正文中讨论标签、附带其他内容，或没有任何一项能
+/// 关联到异步提问时，才保持普通用户消息，不能误吞用户真实输入。
 struct CodexAsyncQuestionReply: Equatable {
     struct Answer: Equatable {
         /// 对应提问 `agentMessage` 的 Item ID（即 `request_user_input_async` 的 call id）。
@@ -14,7 +15,7 @@ struct CodexAsyncQuestionReply: Equatable {
         /// 同一次提问中第几个问题；旧载荷缺失时为 nil。
         let questionIndex: Int?
         let question: String?
-        /// 去除首尾空白后的答案；空答案保留为 nil，展示时使用本地化占位而不是回退原始载荷。
+        /// 去除首尾空白后的答案；跳过的问题为 nil，展示时使用本地化占位而不是回退原始载荷。
         let answer: String?
     }
 
@@ -56,19 +57,27 @@ struct CodexAsyncQuestionReply: Equatable {
                 answer: answer.isEmpty ? nil : answer
             ))
         }
+        // 用户手动粘贴的同形文本通常不带 Desktop 生成的提问标识；至少一项能关联到异步提问才识别。
+        guard answers.contains(where: { $0.questionItemID != nil }) else {
+            return nil
+        }
         self.answers = answers
     }
 
     /// 时间线、复制和检索只使用用户选择或填写的答案；多问题按提问顺序逐行列出。
     var displayText: String {
         answers
-            .map { $0.answer ?? L10n.text("ui.question_reply_no_answer") }
+            .map { $0.answer ?? L10n.text("ui.question_reply_skipped") }
             .joined(separator: "\n")
     }
 
+    /// 返回 nil 表示答案字段类型无法识别（整条回退原文）；跳过的问题返回空串。
     private static func answerText(_ value: Any?) -> String? {
         let parts: [String]
-        if let text = value as? String {
+        if value == nil || value is NSNull {
+            // Desktop 允许跳过问题：字段缺失或为 null 都按跳过处理。
+            parts = []
+        } else if let text = value as? String {
             parts = [text]
         } else if let texts = value as? [String] {
             // 多选题可能返回数组；每个选项单独成行，不能拼成看似单个答案的文本。

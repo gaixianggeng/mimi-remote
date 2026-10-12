@@ -22,14 +22,48 @@ final class ConversationQuestionReplyTests: XCTestCase {
         ])
         XCTAssertEqual(reply.displayText, Fixture.answer)
 
-        // 多问题、多选答案逐行保留；空答案使用本地化占位，不能回退成原始载荷。
+        // 多问题、多选答案逐行保留。
         let multiple = try XCTUnwrap(CodexAsyncQuestionReply(text: Fixture.envelope([
             ["questionItemId": Fixture.questionReference(index: 0), "question": "范围", "answer": ["iPad", "iPhone"]],
-            ["questionItemId": Fixture.questionReference(index: 1), "question": "备注", "answer": "  "],
+            ["questionItemId": Fixture.questionReference(index: 1), "question": "备注", "answer": "补充说明"],
         ])))
         XCTAssertEqual(multiple.answers.map(\.questionItemID), [Fixture.questionItemID, Fixture.questionItemID])
         XCTAssertEqual(multiple.answers.map(\.questionIndex), [0, 1])
-        XCTAssertEqual(multiple.displayText, "iPad\niPhone\n" + L10n.text("ui.question_reply_no_answer"))
+        XCTAssertEqual(multiple.displayText, "iPad\niPhone\n补充说明")
+    }
+
+    func testSkippedAnswersStayStructuredInsteadOfFallingBackToRawPayload() throws {
+        let skipped = L10n.text("ui.question_reply_skipped")
+        // 部分跳过：答案字段缺失、为 null 或空白都按跳过显示，其余答案保留。
+        let partial = try XCTUnwrap(CodexAsyncQuestionReply(text: Fixture.envelope([
+            ["questionItemId": Fixture.questionReference(index: 0), "question": "范围", "answer": "iPad"],
+            ["questionItemId": Fixture.questionReference(index: 1), "question": "备注"],
+            ["questionItemId": Fixture.questionReference(index: 2), "question": "截止", "answer": NSNull()],
+            ["questionItemId": Fixture.questionReference(index: 3), "question": "说明", "answer": "  "],
+        ])))
+        XCTAssertEqual(partial.answers.map(\.answer), ["iPad", nil, nil, nil])
+        XCTAssertEqual(partial.displayText, ["iPad", skipped, skipped, skipped].joined(separator: "\n"))
+
+        // 全部跳过、仅一题且为 null：仍是答复，只显示跳过占位。
+        let allSkipped = try XCTUnwrap(CodexAsyncQuestionReply(text: Fixture.envelope([
+            ["questionItemId": Fixture.questionReference(index: 0)],
+            ["questionItemId": Fixture.questionReference(index: 1), "answer": NSNull()],
+        ])))
+        XCTAssertEqual(allSkipped.displayText, [skipped, skipped].joined(separator: "\n"))
+        let onlyNull = try XCTUnwrap(CodexAsyncQuestionReply(text: Fixture.envelope([
+            ["questionItemId": Fixture.questionReference(index: 0), "question": Fixture.questionTitle, "answer": NSNull()],
+        ])))
+        XCTAssertEqual(onlyNull.displayText, skipped)
+
+        // 历史与实时投影同样映射为答复，不回退成原始载荷。
+        let text = Fixture.envelope([["questionItemId": Fixture.questionReference(index: 0), "answer": NSNull()]])
+        var projector = CodexAppServerEventProjector()
+        let live = try projectedMessage(projector.project(Fixture.notification(
+            "item/completed",
+            item: Fixture.userItem(id: "user_reply", clientID: "client_reply", text: text)
+        )))
+        XCTAssertEqual(live.kind, .questionReply)
+        XCTAssertEqual(live.content, skipped)
     }
 
     func testReplyEnvelopeRejectsIncompleteOrMixedText() {
@@ -44,8 +78,11 @@ final class ConversationQuestionReplyTests: XCTestCase {
             Fixture.wrapped("not json"),
             Fixture.wrapped("[]"),
             Fixture.wrapped(#"{"answer":"对象不是数组"}"#),
+            // 没有任何一项关联到异步提问：通常是用户手动粘贴的同形文本。
             Fixture.wrapped(#"[{"question":"缺少答案"}]"#),
-            Fixture.wrapped(#"[{"answer":42}]"#),
+            Fixture.envelope([["questionItemId": "opaque", "answer": "好"]]),
+            // 答案字段类型无法识别时整条视为结构不完整。
+            Fixture.envelope([["questionItemId": Fixture.questionReference(index: 0), "answer": 42]]),
         ]
         for text in rejected {
             XCTAssertNil(CodexAsyncQuestionReply(text: text), text)
@@ -55,10 +92,29 @@ final class ConversationQuestionReplyTests: XCTestCase {
             }
         }
 
-        // 关联标识不是异步提问结构时只放弃关联，答案仍按结构化答复展示。
-        let opaque = CodexAsyncQuestionReply(text: Fixture.envelope([["questionItemId": "opaque", "answer": "好"]]))
-        XCTAssertNil(opaque?.answers.first?.questionItemID)
-        XCTAssertEqual(opaque?.displayText, "好")
+        // 至少一项能关联到异步提问时，其余无法关联的项只放弃关联，答案照常展示。
+        let mixed = CodexAsyncQuestionReply(text: Fixture.envelope([
+            ["questionItemId": Fixture.questionReference(index: 0), "answer": "好"],
+            ["questionItemId": "opaque", "answer": "也好"],
+        ]))
+        XCTAssertEqual(mixed?.answers.map(\.questionItemID), [Fixture.questionItemID, nil])
+        XCTAssertEqual(mixed?.displayText, "好\n也好")
+    }
+
+    func testReplyWithNonTextInputStaysOrdinaryMessageInLiveAndHistory() async throws {
+        // 实时路径会把 mention 拼进正文，历史路径则忽略它；两条路径都只认纯文本输入才能保持一致。
+        var item = Fixture.replyItem
+        item["content"] = [
+            ["type": "text", "text": Fixture.replyEnvelope(answer: Fixture.answer), "text_elements": [Any]()],
+            ["type": "mention", "name": "README.md", "path": "/tmp/question-reply/README.md"],
+        ]
+        var projector = CodexAppServerEventProjector()
+        let live = try projectedMessage(projector.project(Fixture.notification("item/completed", item: item)))
+        let history = try await Fixture.projectedHistory(turns: [
+            Fixture.turn(id: Fixture.turnID, startedAt: Fixture.startedAt, completedAt: Fixture.completedAt, items: [item])
+        ])
+        XCTAssertEqual(live.kind, .message)
+        XCTAssertEqual(history.map(\.kind), [.message])
     }
 
     // MARK: - 投影
