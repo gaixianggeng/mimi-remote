@@ -1509,7 +1509,8 @@ struct InitialConnectionSettingsSections: View {
             let message = connectionAttemptMessage(for: error, intent: intent)
             appStore.lastError = message
             setConnectionAttemptError(message, forAddComputer: errorBelongsToAddComputer)
-            return .rejected(error.localizedDescription)
+            // 扫码页失败时仍全屏停留，指引要在这里就能看到，不能等用户关掉扫码页。
+            return .rejected(message)
         }
     }
 
