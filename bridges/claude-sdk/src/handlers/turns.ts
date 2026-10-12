@@ -81,7 +81,7 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
     const runtime = manager.get(threadId);
     const record = (await catalog.get(threadId)) ?? (runtime ? newRecord(threadId, runtime.cwd) : undefined);
     if (!record) throw RpcError.invalidParams(`找不到 Claude 会话 ${threadId}`);
-    return { record, runtime: runtime ?? manager.open(threadId, cwd ?? record.cwd, runSettingsFor(params)) };
+    return { record, runtime: runtime ?? manager.open(threadId, cwd ?? record.cwd, runSettingsFor(params), record.name) };
   }
 
   async function resume(threadId: string, params: Params, context: RequestContext) {
@@ -189,7 +189,7 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       const record = await catalog.get(threadId);
       if (!record) throw RpcError.invalidParams(`找不到 Claude 会话 ${threadId}`);
       await deps.sessions.rename(threadId, name, record.cwd);
-      manager.publish(threadId, "thread/name/updated", { threadId, threadName: name });
+      manager.titleChanged(threadId, name);
       return {};
     },
 

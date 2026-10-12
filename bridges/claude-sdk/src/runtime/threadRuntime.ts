@@ -26,6 +26,8 @@ export interface RuntimeHost {
   ownPids: Set<number>;
   /** 自己的 Claude 进程拿到 pid：此前被当作"可能是自己"的登记需要重新判断。 */
   processReady(threadId: string): void;
+  /** 一个 turn 收尾：Claude Code 会异步生成 AI 标题，由管理器检查并推送。 */
+  turnFinished(threadId: string): void;
   idleCloseMs: number;
   /** 测试可替换；默认用 SDK 的 query。 */
   startQuery?: typeof sdkQuery;
@@ -417,6 +419,7 @@ export class ThreadRuntime {
         for (const [uuid, owner] of this.commands) if (owner === turn) this.commands.delete(uuid);
         const errors = Array.isArray(record.errors) ? record.errors.map(String) : [];
         turn.finish({ subtype: String(record.subtype), errors, usage, contextWindow: contextWindowOf(record.modelUsage) }, this.totalUsage);
+        this.host.turnFinished(this.threadId);
         this.scheduleIdleClose();
         return;
       }

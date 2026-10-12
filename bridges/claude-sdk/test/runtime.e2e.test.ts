@@ -31,6 +31,7 @@ beforeAll(async () => {
     claudeExecutable: () => fakeClaude,
     idleCloseMs: 60_000,
     ownership: { ownershipPollMs: 200, takeoverTimeouts: { interruptGraceMs: 2_000, terminateGraceMs: 2_000, respawnGraceMs: 100 } },
+    titleCheckDelaysMs: [0, 300],
   });
 });
 
@@ -402,6 +403,25 @@ describe("single driver", () => {
     } finally {
       terminal.exit();
     }
+  });
+});
+
+describe("titles", () => {
+  test("a title Claude Code generates during a turn reaches subscribers without a refetch", async () => {
+    const client = new Client();
+    const threadId = await newThread(client);
+    const first = await client.call("turn/start", { threadId, input: text("TITLE Fix the login flow") });
+    await client.turnCompleted(first.turn.id);
+    const pushed = await client.waitFor((frame) => frame.method === "thread/name/updated" && frame.params.threadId === threadId);
+    expect(pushed.params.threadName).toBe("Fix the login flow");
+    expect((await client.call("thread/read", { threadId })).thread.name).toBe("Fix the login flow");
+
+    // 同一个标题不重复推送。
+    const next = await client.call("turn/start", { threadId, input: text("again") });
+    await client.turnCompleted(next.turn.id);
+    await Bun.sleep(600);
+    const pushes = client.frames.filter((frame: any) => frame.method === "thread/name/updated" && frame.params.threadId === threadId);
+    expect(pushes).toHaveLength(1);
   });
 });
 

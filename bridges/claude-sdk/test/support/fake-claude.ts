@@ -1,7 +1,7 @@
 // 测试用的假 Claude CLI：实现 SDK 依赖的 stream-json 与控制协议（按真实 CLI 的帧录制而来），
 // 行为由提示词脚本化。也写 transcript 与占用登记，让历史与持有方检测走真实路径。
 //   TOOL <Name> <json>  先请求权限再执行；ASK 走 AskUserQuestion；SLOW 慢速输出，可被中断或引导；
-//   THINK 先输出思考；其他输入原样回显（带当前模型）。
+//   THINK 先输出思考；TITLE <名字> 写一条 ai-title 记录；其他输入原样回显（带当前模型）。
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -180,6 +180,10 @@ async function runTurn(message: Json) {
       return result("error_during_execution", "");
     }
     return result("success", "slow done");
+  }
+  if (text.startsWith("TITLE ")) {
+    // 真实 CLI 会异步生成 AI 标题，写成一条 ai-title 记录（SDK 读成会话名）。
+    appendFileSync(transcript, `${JSON.stringify({ type: "ai-title", aiTitle: text.slice("TITLE ".length), sessionId })}\n`);
   }
   await apiMessage([{ type: "text", text: `echo[${model}]: ${text}` }]);
   return result("success", text);
