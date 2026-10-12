@@ -44,7 +44,7 @@ extension SessionStore {
             return current
         } catch {
             guard appStore.activeHostScope == hostScope else { return nil }
-            setErrorMessage(error.localizedDescription)
+            setErrorMessage(for: error)
             return nil
         }
     }
@@ -139,7 +139,7 @@ extension SessionStore {
         guard !isNetworkUnavailable else {
             networkSuspendedSessionID = session.id
             setWebSocketStatus(.disconnected)
-            setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"))
+            setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"), presentation: .silent)
             return
         }
         guard let credentialFingerprint = appStore.authenticatedCredentialFingerprint else {
@@ -517,7 +517,7 @@ extension SessionStore {
                     correlation: correlation
                 )
                 suspendWebSocketForNetworkLoss(sessionID: sessionID)
-                setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"))
+                setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"), presentation: .silent)
                 return
             }
             let policyRejected = Self.isDeterministicGatewayPolicyFailure(message)
@@ -594,7 +594,7 @@ extension SessionStore {
                     correlation: correlation
                 )
                 suspendWebSocketForNetworkLoss(sessionID: sessionID)
-                setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"))
+                setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"), presentation: .silent)
                 return
             }
             let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
@@ -720,7 +720,7 @@ extension SessionStore {
         socket?.disconnect()
         setWebSocketStatus(.terminated(reason))
         setErrorMessage(reason.message)
-        setStatusMessage(reason.message)
+        setStatusMessage(reason.message, presentation: .silent)
     }
 
     func disconnectWebSocket(cancelReconnect: Bool = true) {
@@ -815,7 +815,7 @@ extension SessionStore {
         }
         guard !isNetworkUnavailable else {
             suspendWebSocketForNetworkLoss(sessionID: sessionID)
-            setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"))
+            setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"), presentation: .silent)
             return
         }
 
@@ -833,7 +833,7 @@ extension SessionStore {
         let delay = webSocketReconnectDelayNanoseconds(attempt)
         setWebSocketStatus(.connecting)
         setErrorMessage(L10n.format("ui.websocket_disconnected_and_reconnecting_automatically_value", reason))
-        setStatusMessage(L10n.format("ui.websocket_value_th_reconnection", attempt))
+        setStatusMessage(L10n.format("ui.websocket_value_th_reconnection", attempt), presentation: .silent)
         let reconnectSleep = webSocketReconnectSleep
 
         // 重连任务只服务当前选中的会话；切项目/停止/返回列表都会取消它。
@@ -961,7 +961,7 @@ extension SessionStore {
             if terminateConnectionIfCredentialsInvalid(error) {
                 return nil
             }
-            setStatusMessage(L10n.format("ui.snapshot_refresh_failed_before_reconnection_value", error.localizedDescription))
+            reportOperationFailure(error, presentation: .silent) { L10n.format("ui.snapshot_refresh_failed_before_reconnection_value", $0) }
             return current
         }
     }
@@ -1354,7 +1354,7 @@ extension SessionStore {
         do {
             // 运行态通知不持久化：它只是实时提示，不应该在会话列表状态里留下“待处理任务”的假象。
             guard let session = sessionsByID[notification.sessionID] else {
-                setStatusMessage(L10n.text("ui.notification_scheduling_failed_the_corresponding_session_cannot_be"))
+                setStatusMessage(L10n.text("ui.notification_scheduling_failed_the_corresponding_session_cannot_be"), presentation: .silent)
                 return
             }
             let route = SessionNotificationRoute.current(
@@ -1367,7 +1367,7 @@ extension SessionStore {
             guard appStore.activeHostScope == hostScope else {
                 return
             }
-            setStatusMessage(L10n.format("ui.notification_scheduling_failed_value", error.localizedDescription))
+            reportOperationFailure(error, presentation: .silent) { L10n.format("ui.notification_scheduling_failed_value", $0) }
         }
     }
 
@@ -1447,7 +1447,7 @@ extension SessionStore {
             setStatusMessage(statusMessage)
         }
         if let errorMessage = output.errorMessage {
-            setErrorMessage(errorMessage)
+            setErrorMessage(errorMessage, presentation: output.errorPresentation)
         }
         if output.disconnectWebSocket {
             disconnectWebSocket()
@@ -2527,7 +2527,7 @@ extension SessionStore {
             guard reportForeground else { return }
             if sessions(forProjectID: workspace.id).isEmpty {
                 // 首屏还没有可展示数据时保留一个友好错误标记，让 bootstrap 按 cooldown 继续自愈。
-                setStatusMessage(message)
+                setStatusMessage(message, presentation: .silent)
                 setErrorMessage(message, origin: .connectionProbe)
             } else {
                 // 已有列表时继续展示旧数据，同时给出准确等待时间；不能让旧缓存看起来像已刷新成功。
@@ -2547,7 +2547,7 @@ extension SessionStore {
         case .available, .indeterminate:
             clearWorkspaceUnavailable(workspace.id)
             if reportForeground {
-                setErrorMessage(error.localizedDescription, origin: .connectionProbe)
+                setErrorMessage(for: error, origin: .connectionProbe)
             }
         }
     }
@@ -2736,7 +2736,8 @@ extension SessionStore {
         selectedSessionID = value
     }
 
-    func setStatusMessage(_ value: String?) {
+    func setStatusMessage(_ value: String?, presentation: StatusFeedbackPresentation = .toast) {
+        publishStatusFeedback(value, presentation: presentation)
         guard statusMessage != value else {
             return
         }
@@ -2757,7 +2758,8 @@ extension SessionStore {
     func setErrorMessage(
         _ value: String?,
         origin: SessionErrorOrigin = .userAction,
-        sessionID: SessionID? = nil
+        sessionID: SessionID? = nil,
+        presentation: UserFacingError? = nil
     ) {
         // active writer 既可能在连接阶段返回，也可能在已连接后的
         // thread/resume / turn/start 发送回调中返回。统一在用户错误出口映射，
@@ -2777,6 +2779,10 @@ extension SessionStore {
         // 来源要先于去重更新：同一条文案可能先由探测写入、随后由用户操作再次触发，
         // 此时它已经是用户在等的结果，不能继续按探测失败静默处理。
         errorMessageOrigin = userFacingValue == nil ? .userAction : origin
+        let nextPresentation = resolvedErrorPresentation(
+            for: userFacingValue, isActiveWriterConflict: activeWriterConflict, explicit: presentation
+        )
+        if errorPresentation != nextPresentation { errorPresentation = nextPresentation }
         guard errorMessage != userFacingValue else {
             return
         }

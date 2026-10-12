@@ -162,6 +162,8 @@ struct UnifiedWorkbenchShell: View {
                 networkUnavailableBanner(tokens: tokens)
             }
         }
+        // 所有 setStatusMessage 写入口的统一可见呈现（#508）。
+        .operationFeedbackToasts()
     }
 
     private var sheetPresentationBinding: Binding<WorkbenchSheetPresentation?> {

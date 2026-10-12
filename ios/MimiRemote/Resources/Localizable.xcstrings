@@ -5870,6 +5870,23 @@
         }
       }
     },
+    "ui.copy_error_details": {
+      "comment": "Button that copies the technical error details and app version.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy Details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制详情"
+          }
+        }
+      }
+    },
     "ui.default": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -5883,6 +5900,295 @@
           "stringUnit": {
             "state": "translated",
             "value": "默认"
+          }
+        }
+      }
+    },
+    "ui.error_connection_lost": {
+      "comment": "Error category copy: the live connection to the computer dropped. May follow an action prefix such as “Approval failed: ”.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lost the connection to your computer. Try again in a moment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与电脑的连接已断开，请稍后重试。"
+          }
+        }
+      }
+    },
+    "ui.error_details_copied": {
+      "comment": "Confirmation shown on the copy button after copying error details.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Details Copied"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已复制详情"
+          }
+        }
+      }
+    },
+    "ui.error_host_error": {
+      "comment": "Error category copy: the service on the computer failed (server errors).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Something went wrong on your computer. Try again in a moment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑上的服务出了点问题，请稍后重试。"
+          }
+        }
+      }
+    },
+    "ui.error_host_unreachable": {
+      "comment": "Error category copy: the paired computer can't be reached. Raw transport details stay in Details.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can’t reach your computer. Make sure it’s on, online, and running Mimi Remote."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂时连不上你的电脑。请确认电脑已开机、联网，且 Mimi Remote 正在运行。"
+          }
+        }
+      }
+    },
+    "ui.error_invalid_response": {
+      "comment": "Error category copy: the computer's response could not be parsed, usually a version mismatch.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t read the response from your computer. Update Mimi Remote on both devices."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法识别电脑返回的内容，请把电脑和本 App 都更新到最新版本。"
+          }
+        }
+      }
+    },
+    "ui.error_offline": {
+      "comment": "Error category copy: this iPhone/iPad has no network. Shown instead of raw URL errors.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This device is offline. Mimi Remote retries automatically once the network is back."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备当前没有网络连接，恢复网络后会自动重试。"
+          }
+        }
+      }
+    },
+    "ui.error_outcome_unknown": {
+      "comment": "Error category copy: the request may or may not have run on the computer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t confirm whether your computer received the request. Refresh before trying again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法确认电脑是否已收到请求，请刷新后再决定是否重试。"
+          }
+        }
+      }
+    },
+    "ui.error_permission_denied": {
+      "comment": "Error category copy: the computer refused the action for permission reasons (not an expired access code).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your computer denied this action. Check the permission settings on your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑拒绝了这项操作，请检查电脑上的权限设置。"
+          }
+        }
+      }
+    },
+    "ui.error_rate_limited": {
+      "comment": "Error category copy: too many requests.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Too many requests. Try again shortly."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请求过于频繁，请稍后再试。"
+          }
+        }
+      }
+    },
+    "ui.error_reconnecting": {
+      "comment": "Progress copy shown while the app reconnects automatically. Not an error; no “Error” prefix.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconnecting to your computer. You can continue in a moment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在重新连接电脑，稍后即可继续。"
+          }
+        }
+      }
+    },
+    "ui.error_rejected": {
+      "comment": "Error category copy: the computer rejected the request (invalid input, conflict, policy).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your computer couldn’t complete this request. Check it and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑未能完成这个请求，请检查后重试。"
+          }
+        }
+      }
+    },
+    "ui.error_run_failed": {
+      "comment": "Banner copy when a run fails with a technical runtime error; the original text is under Details.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This run didn’t finish. Show details to see why."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本轮运行没有完成，可展开详情查看原因。"
+          }
+        }
+      }
+    },
+    "ui.error_timed_out": {
+      "comment": "Error category copy: the computer didn't answer in time.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your computer took too long to respond. Try again in a moment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑响应超时，请稍后重试。"
+          }
+        }
+      }
+    },
+    "ui.error_unknown": {
+      "comment": "Generic fallback when an error has no better category. Raw details stay in Details.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The action didn’t complete. Try again in a moment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作没有完成，请稍后重试。"
+          }
+        }
+      }
+    },
+    "ui.error_unsupported": {
+      "comment": "Error category copy: the computer-side version doesn't support the action.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi Remote on your computer doesn’t support this yet. Update it to the latest version and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑上的 Mimi Remote 暂不支持这项操作，请更新到最新版本后重试。"
+          }
+        }
+      }
+    },
+    "ui.model_list_empty_using_built_in_options": {
+      "comment": "Status after a manual model list refresh returned no models.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your computer didn’t return a model list. Using the built-in options."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑没有返回模型列表，继续使用内置选项。"
+          }
+        }
+      }
+    },
+    "ui.reconnect": {
+      "comment": "Button on the conversation error banner that refreshes the session and reconnects.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconnect"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新连接"
           }
         }
       }

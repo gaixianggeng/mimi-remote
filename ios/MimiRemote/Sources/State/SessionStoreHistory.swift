@@ -354,7 +354,10 @@ extension SessionStore {
                     allowNonRunning: resume == nil && !payload.isEmpty
                 )
                 // 恢复反馈属于页面生命周期状态，不是服务端 transcript 内容，避免它参与历史排序。
-                setStatusMessage(resume == nil ? L10n.text("ui.session_started") : L10n.text("ui.this_historical_conversation_has_been_continued"))
+                setStatusMessage(
+                    resume == nil ? L10n.text("ui.session_started") : L10n.text("ui.this_historical_conversation_has_been_continued"),
+                    presentation: .silent
+                )
                 setErrorMessage(nil)
             }
             if queuesInitialInput {
@@ -424,7 +427,7 @@ extension SessionStore {
                isSelectionLeaseCurrent(optimisticSelectionLease) {
                 // 保留协议原始错误进入统一出口。若先翻译成提示文案，writer 冲突标记会丢失，
                 // Composer 仍会错误地保持可发送状态。
-                setErrorMessage(error.localizedDescription)
+                setErrorMessage(for: error)
             }
             return false
         }
@@ -908,7 +911,7 @@ extension SessionStore {
                     let retryMessage = fullHistoryLadderRetryNotice(policyFailure)
                     if !effectiveQuiet {
                         setHistoryLoadNotice(sessionID: sessionID, kind: .loadingFull, message: retryMessage)
-                        setStatusMessage(retryMessage)
+                        setStatusMessage(retryMessage, presentation: .silent)
                     }
                     return await loadHistory(
                         for: session,
@@ -929,7 +932,7 @@ extension SessionStore {
                 let message = fullHistoryOversizeNotice(policyFailure, sessionID: sessionID)
                 if !effectiveQuiet {
                     setHistoryLoadNotice(sessionID: sessionID, kind: .loadingSummary, message: message)
-                    setStatusMessage(message)
+                    setStatusMessage(message, presentation: .silent)
                 }
                 return await loadHistory(
                     for: session,
@@ -950,7 +953,7 @@ extension SessionStore {
                 let message = L10n.plural("ui.compact_history_retry_seconds_count", count: seconds)
                 if !effectiveQuiet {
                     setHistoryLoadNotice(sessionID: sessionID, kind: .loadingSummary, message: message)
-                    setStatusMessage(message)
+                    setStatusMessage(message, presentation: .silent)
                 }
                 try? await Task.sleep(nanoseconds: delay)
                 guard !Task.isCancelled else {
@@ -977,13 +980,13 @@ extension SessionStore {
         if job.loadMode == .full {
             if !effectiveQuiet {
                 setHistoryLoadNotice(sessionID: sessionID, kind: .fullFailed)
-                setStatusMessage(L10n.format("ui.full_history_loading_failed_value", error.localizedDescription))
+                reportOperationFailure(error, presentation: .silent) { L10n.format("ui.full_history_loading_failed_value", $0) }
             }
         } else {
             // 终态失败必须离开“正在加载”横幅，否则重连触发的静默刷新会让界面永远停在加载中。
             if !effectiveQuiet {
                 setHistoryLoadNotice(sessionID: sessionID, kind: .summaryFailed)
-                setErrorMessage(L10n.format("ui.thumbnail_history_loading_failed_value", error.localizedDescription))
+                setErrorMessage(for: error) { L10n.format("ui.thumbnail_history_loading_failed_value", $0) }
             }
         }
         return false
@@ -1526,7 +1529,7 @@ extension SessionStore {
                 requestLineage: result.requestLineage
             )
             if updateStatusMessage, canReportForeground() {
-                setStatusMessage(L10n.plural("ui.sessions_loaded_count", count: filteredSessions.count))
+                setStatusMessage(L10n.plural("ui.sessions_loaded_count", count: filteredSessions.count), presentation: .silent)
             }
             // 手动刷新/切换工作区成功时可以清掉旧错误；发送后的后台刷新不能抢掉刚产生的发送失败提示。
             if clearErrorOnSuccess, canReportForeground() {
@@ -3258,7 +3261,7 @@ extension SessionStore {
         }
         insertExpandedProjectID(projectID)
         disconnectWebSocket()
-        setStatusMessage(L10n.text("ui.session_started"))
+        setStatusMessage(L10n.text("ui.session_started"), presentation: .silent)
         setErrorMessage(nil)
         return true
     }
