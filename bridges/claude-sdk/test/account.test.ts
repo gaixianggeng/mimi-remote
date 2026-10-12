@@ -121,6 +121,17 @@ describe("model catalog", () => {
     await catalog.list();
     expect(calls).toBe(2);
 
+    // 预热的长查询还没完成时，前台请求按自己的时限先用别名回答，查询完成后再用目录。
+    let release!: (models: ModelInfo[]) => void;
+    const slow = new ModelCatalog({ discover: () => new Promise<ModelInfo[]>((resolve) => (release = resolve)), log: () => {} });
+    slow.warm();
+    const started = Date.now();
+    expect((await slow.list(30)).map((model) => model.id)).toEqual(fallbackModels().map((model) => model.id));
+    expect(Date.now() - started).toBeLessThan(1_000);
+    release(CATALOG);
+    await Bun.sleep(5);
+    expect((await slow.list(30)).some((model) => model.id === "fable")).toBe(true);
+
     const empty = new ModelCatalog({ discover: async () => [], log: () => {} });
     expect((await empty.list()).map((model) => [model.id, model.isDefault])).toEqual(fallbackModels().map((model) => [model.id, model.isDefault]));
   });
@@ -284,7 +295,21 @@ describe("handlers", () => {
     ]);
   });
 
+  test("single-window observations are merged instead of replacing each other", async () => {
+    app.manager.publish("t", "account/rateLimits/updated", {
+      rateLimits: rateLimitSnapshot({ status: "allowed", rateLimitType: "five_hour", utilization: 0.3, resetsAt: 1 })!,
+    });
+    app.manager.publish("t", "account/rateLimits/updated", {
+      rateLimits: rateLimitSnapshot({ status: "allowed", rateLimitType: "seven_day", utilization: 0.6, resetsAt: 2 })!,
+    });
+    const merged = app.manager.observedRateLimits!;
+    expect(merged.primary).toEqual({ usedPercent: 30, windowDurationMins: 300, resetsAt: 1 });
+    expect(merged.secondary).toEqual({ usedPercent: 60, windowDurationMins: 10_080, resetsAt: 2 });
+    expect((merged as any).unavailableReason).toBeUndefined();
+  });
+
   test("account/rateLimits/read falls back to the last limits observed in a session", async () => {
+    (app.manager as any).lastRateLimits = undefined;
     expect((await call("account/rateLimits/read")).rateLimits).toMatchObject({ availability: "unavailable" });
     const observed = rateLimitSnapshot({ status: "allowed", unifiedWindows: { seven_day: { utilization: 0.2, resetsAt: 9 } } })!;
     app.manager.publish("any-thread", "account/rateLimits/updated", { rateLimits: observed });

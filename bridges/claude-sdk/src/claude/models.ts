@@ -219,8 +219,17 @@ export class ModelCatalog {
 
   constructor(private readonly options: ModelCatalogOptions) {}
 
+  /**
+   * 每个请求按自己的时限等待：并发请求共用一次查询（例如启动预热给了 30 秒），超时就先用缓存
+   * 或别名回答，查询在后台继续完成并填充缓存。
+   */
   async list(timeoutMs = 10_000): Promise<Model[]> {
-    const models = await this.load(timeoutMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<ModelInfo[] | undefined>((resolve) => {
+      timer = setTimeout(() => resolve(this.models), timeoutMs);
+      timer.unref?.();
+    });
+    const models = await Promise.race([this.load(timeoutMs), deadline]).finally(() => clearTimeout(timer));
     const data = models ? catalogModels(models) : [];
     return data.length ? data : fallbackModels();
   }

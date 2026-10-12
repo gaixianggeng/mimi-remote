@@ -8,6 +8,7 @@ import { notificationFrame } from "../rpc/frames.ts";
 import type { Session } from "../session/session.ts";
 import { holdersOf, ownerSummary, readHolders, sessionsDir, type OwnProcesses, type SessionHolder } from "./holders.ts";
 import { OwnershipWatcher } from "./ownership.ts";
+import { mergeObservedRateLimits } from "./rateLimits.ts";
 import type { RunSettings } from "./settings.ts";
 import {
   DEFAULT_TAKEOVER_TIMEOUTS,
@@ -193,7 +194,9 @@ export class ThreadManager {
   }
 
   publish(threadId: string, method: string, params: Record<string, unknown>): void {
-    if (method === "account/rateLimits/updated") this.lastRateLimits = params.rateLimits as RateLimitSnapshot;
+    if (method === "account/rateLimits/updated") {
+      this.lastRateLimits = mergeObservedRateLimits(this.lastRateLimits, params.rateLimits as RateLimitSnapshot);
+    }
     const frame = notificationFrame(method, params);
     for (const session of this.subscribers.get(threadId) ?? []) session.publish(frame);
   }

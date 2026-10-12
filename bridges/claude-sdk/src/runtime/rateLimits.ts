@@ -28,6 +28,23 @@ function windowOf(name: string, raw: unknown): RateLimitWindow | null {
   };
 }
 
+/**
+ * 合并先后观测到的额度：单窗口形式的事件每次只带一个窗口，后一个不能把前一个已知的窗口
+ * 覆盖成空。每个窗口保留最近一次的值，额度耗尽状态以最新事件为准。
+ */
+export function mergeObservedRateLimits(previous: RateLimitSnapshot | undefined, next: RateLimitSnapshot): RateLimitSnapshot {
+  if (!previous) return next;
+  const primary = next.primary ?? previous.primary;
+  const secondary = next.secondary ?? previous.secondary;
+  const { unavailableReason: _, ...rest } = next as RateLimitSnapshot & { unavailableReason?: string };
+  return {
+    ...rest,
+    primary,
+    secondary,
+    ...(primary || secondary ? {} : { unavailableReason: "usage_percentage_unavailable" }),
+  } as RateLimitSnapshot;
+}
+
 export function rateLimitSnapshot(info: unknown): RateLimitSnapshot | undefined {
   if (!info || typeof info !== "object") return undefined;
   const record = info as Record<string, unknown>;
