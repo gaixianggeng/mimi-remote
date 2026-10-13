@@ -2,10 +2,16 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 自定义母图必须成对传入，避免新浅色造型与仓库中的旧深色造型混配。
+if [[ "$#" -ne 0 && "$#" -ne 2 ]]; then
+  echo "用法：bash ./scripts/generate-app-icons.sh [<浅色母图> <深色母图>]" >&2
+  exit 2
+fi
+
 DEFAULT_MASTER="$ROOT_DIR/ios/MimiRemote/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-ios-marketing-1024x1024@1x.png"
 DEFAULT_DARK_MASTER="$ROOT_DIR/ios/MimiRemote/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-ios-dark-1024x1024.png"
-MASTER_PATH="${1:-$DEFAULT_MASTER}"
-DARK_MASTER_PATH="${2:-$DEFAULT_DARK_MASTER}"
+MASTER_PATH="${1-$DEFAULT_MASTER}"
+DARK_MASTER_PATH="${2-$DEFAULT_DARK_MASTER}"
 
 if ! command -v sips >/dev/null 2>&1; then
   echo "缺少 macOS 系统命令：sips" >&2
