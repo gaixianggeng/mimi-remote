@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -130,6 +131,86 @@ func TestInstallClaudeApprovalObserverRejectsStaleForegroundEpoch(t *testing.T) 
 		t.Fatalf("当前代际应允许安装 observer：ok=%v replaced=%p", ok, replaced)
 	}
 	current.close("test_done")
+}
+
+func TestClaudeApprovalObserverSweepKeepsAuthorizedIdleRoute(t *testing.T) {
+	observer := testClaudeApprovalObserver(t, &Router{}, "session-authorized")
+	observer.startedAt = time.Now()
+	observer.policy.mu.Lock()
+	observer.policy.allowedThreads["thread-1"] = appServerGatewayAllowedThread{
+		id: "thread-1", runtimeID: "claude", scopeID: "demo",
+	}
+	observer.policy.mu.Unlock()
+	if reason := observer.sweepCloseReason(time.Now().Add(time.Minute)); reason != "" {
+		t.Fatalf("有已授权 thread 时空闲 observer 应保活：%s", reason)
+	}
+}
+
+func TestClaudeApprovalObserverSweepReclaimsUnauthorizedIdleAndHonorsTTL(t *testing.T) {
+	observer := testClaudeApprovalObserver(t, &Router{}, "session-sweep")
+	observer.startedAt = time.Now()
+	if reason := observer.sweepCloseReason(time.Now().Add(time.Minute)); reason != "observer_idle" {
+		t.Fatalf("无授权的空闲 observer 应回收：%s", reason)
+	}
+	observer.policy.mu.Lock()
+	observer.policy.allowedThreads["thread-1"] = appServerGatewayAllowedThread{
+		id: "thread-1", runtimeID: "claude", scopeID: "demo",
+	}
+	observer.policy.mu.Unlock()
+	if reason := observer.sweepCloseReason(observer.startedAt.Add(claudeObserverTTL + time.Second)); reason != "observer_ttl" {
+		t.Fatalf("有授权也不能越过 24h TTL：%s", reason)
+	}
+}
+
+func TestClaudeApprovalObserverHolderWaitingRequiresLocalThreadAuthorization(t *testing.T) {
+	provider := newFakePushProvider(t)
+	server, router := pushTestFixture(t, "ws://unused", provider.server.URL)
+	supported := true
+	registerPushDeviceWithCapability(t, server, "device-a", &supported)
+	projectDir := router.cfg.Projects[0].Path
+	scope, ok := router.gatewayScopeForPath(projectDir)
+	if !ok {
+		t.Fatal("测试项目必须具有 gateway scope")
+	}
+
+	observer := testClaudeApprovalObserver(t, router, "session-local-auth")
+	observer.policy.mu.Lock()
+	observer.policy.allowedThreads["thread-a"] = appServerGatewayAllowedThread{
+		id: "thread-a", runtimeID: "claude", cwd: projectDir, scopeID: scope.id,
+	}
+	observer.policy.mu.Unlock()
+	// B 只属于另一条连接留下的全局缓存，不能成为当前 observer 的授权来源。
+	router.allowGatewayThread(appServerGatewayAllowedThread{
+		id: "thread-b", runtimeID: "claude", cwd: projectDir, scopeID: scope.id,
+	})
+	waitingFrame := func(threadID string, updatedAt int64) []byte {
+		return []byte(`{"method":"thread/status/changed","params":{"threadId":"` + threadID +
+			`","status":{"type":"active","activeFlags":["waitingOnUserInput"]},"canAcceptDirectInput":false,` +
+			`"claudeOwner":{"pid":42,"status":"waiting","waitingKind":"input","statusUpdatedAt":` +
+			fmt.Sprint(updatedAt) + `}}}`)
+	}
+	observer.observe(waitingFrame("thread-b", 1700000000000))
+	time.Sleep(50 * time.Millisecond)
+	if provider.count() != 0 {
+		t.Fatalf("仅全局授权的 thread-b 不得由当前 observer 推送，got=%d", provider.count())
+	}
+
+	observer.observe(waitingFrame("thread-a", 1700000001000))
+	notification := provider.waitFor(t, pushbridge.EventHolderWaiting)
+	actionID, _ := notification["action_id"].(string)
+	status, route := getPushActionRoute(t, server, actionID, "device-a")
+	if status != 200 || route["thread_id"] != "thread-a" {
+		t.Fatalf("本地授权 thread-a 应正常推送并定位：status=%d route=%v", status, route)
+	}
+
+	// 状态广播门禁不能改变审批请求的既有 pending 登记链路。
+	observer.observe([]byte(`{"id":"approval-a","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"item-a"}}`))
+	observer.mu.Lock()
+	pending := len(observer.pending)
+	observer.mu.Unlock()
+	if pending != 1 {
+		t.Fatalf("审批 pending 登记不应受状态广播门禁影响：%d", pending)
+	}
 }
 
 func TestClaudeApprovalObserverReplacementRevokesOnlyStaleActions(t *testing.T) {

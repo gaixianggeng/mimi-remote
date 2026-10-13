@@ -5,6 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 NOTICES="THIRD_PARTY_NOTICES.md"
+TAILCAT_MODULE_DIR="experiments/tailcat"
+# 发布包始终包含 Tailcat；检出不完整时必须失败，不能把漏检当成许可清单齐全。
+if [[ ! -f "$TAILCAT_MODULE_DIR/go.mod" ]]; then
+  echo "第三方许可门禁失败：缺少 Tailcat module 的 go.mod：${TAILCAT_MODULE_DIR}/go.mod。" >&2
+  exit 1
+fi
 PACKAGE_RESOLVED="ios/MimiRemote/MimiRemote.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
 
 for command_name in go ruby rg awk; do
@@ -51,7 +57,6 @@ validate_go_module_license() {
   local version="$2"
   local module_json
   local module_dir
-  local license_file=""
 
   if ! module_json="$(go mod download -json "$module@$version")"; then
     echo "第三方许可门禁失败：无法下载 $module $version 的模块元数据。" >&2
@@ -66,7 +71,27 @@ validate_go_module_license() {
     exit 1
   fi
 
-  for candidate in LICENSE LICENSE.txt COPYING; do
+  validate_go_module_dir_license "$module" "$version" "$module_dir"
+}
+
+validate_notice_body_matches_file() {
+  local name="$1"
+  local version="$2"
+  local file="$3"
+  if [[ "$(notice_license_body "$name" "$version")" != "$(cat "$file")" ]]; then
+    echo "第三方许可门禁失败：$name $version 的许可证正文与模块源码不一致。" >&2
+    exit 1
+  fi
+}
+
+validate_go_module_dir_license() {
+  local module="$1"
+  local version="$2"
+  local module_dir="$3"
+  local candidate
+  local license_file=""
+
+  for candidate in LICENSE LICENSE.txt LICENSE.md COPYING; do
     if [[ -f "$module_dir/$candidate" ]]; then
       license_file="$module_dir/$candidate"
       break
@@ -76,11 +101,7 @@ validate_go_module_license() {
     echo "第三方许可门禁失败：$module $version 没有可识别的许可证文件。" >&2
     exit 1
   fi
-
-  if [[ "$(notice_license_body "$module" "$version")" != "$(cat "$license_file")" ]]; then
-    echo "第三方许可门禁失败：$module $version 的许可证正文与模块源码不一致。" >&2
-    exit 1
-  fi
+  validate_notice_body_matches_file "$module" "$version" "$license_file"
 }
 
 validate_swift_license_checksum() {
@@ -113,6 +134,102 @@ validate_swift_license_checksum() {
   fi
 }
 
+# Tailcat 是独立 Go module，只统计发布包实际编入的模块。目标与发布构建保持一致：
+# Mac 安装包（macos/MimiRemoteMac/Scripts/embed-agentd.sh）与 Linux 归档（.goreleaser.yml）
+# 的辅助程序关闭 CGO；iOS 框架由 scripts/build-tailcat-mobile.sh 用 gomobile 绑定，gobind
+# 生成的代码另外引用 golang.org/x/mobile/bind/seq。字段：GOOS GOARCH CGO_ENABLED 构建标签 包列表。
+TAILCAT_BUILD_TARGETS=(
+  "darwin arm64 0 - ./cmd/mimi-tailcat-experiment"
+  "darwin amd64 0 - ./cmd/mimi-tailcat-experiment"
+  "linux amd64 0 - ./cmd/mimi-tailcat-experiment"
+  "linux arm64 0 - ./cmd/mimi-tailcat-experiment"
+  "ios arm64 1 ios ./mobile/tailcatmobile golang.org/x/mobile/bind/seq"
+  "ios amd64 1 ios ./mobile/tailcatmobile golang.org/x/mobile/bind/seq"
+)
+
+# 输出“模块路径、版本、模块目录、包目录”，以制表符分隔；只含第三方模块的包。
+tailcat_linked_packages() {
+  local target goos goarch cgo tags packages
+  local template='{{if and .Module (not .Module.Main)}}{{.Module.Path}}{{"\t"}}{{.Module.Version}}{{"\t"}}{{.Module.Dir}}{{"\t"}}{{.Dir}}{{end}}'
+  for target in "${TAILCAT_BUILD_TARGETS[@]}"; do
+    read -r goos goarch cgo tags packages <<<"$target"
+    [[ "$tags" != "-" ]] || tags=""
+    # packages 有意按空格拆成多个包参数。
+    # shellcheck disable=SC2086
+    (
+      cd "$TAILCAT_MODULE_DIR"
+      GOTOOLCHAIN=auto GOOS="$goos" GOARCH="$goarch" CGO_ENABLED="$cgo" \
+        go list -mod=readonly -deps -tags="$tags" -f "$template" $packages
+    ) || return 1
+  done
+}
+
+# 模块内被编入的包所在子目录（不含模块根目录）如果自带许可证或 NOTICE，必须单独列出正文，
+# 条目名为“模块路径/相对文件路径”。
+tailcat_subdirectory_licenses() {
+  local linked="$1"
+  local module version module_dir package_dir dir candidate
+  while IFS=$'\t' read -r module version module_dir package_dir; do
+    [[ -n "$module" ]] || continue
+    dir="$package_dir"
+    while [[ "$dir" == "$module_dir"/* ]]; do
+      for candidate in "$dir"/LICENSE* "$dir"/LICENCE* "$dir"/COPYING* "$dir"/NOTICE*; do
+        [[ -f "$candidate" ]] || continue
+        printf '%s\t%s\t%s\n' "$module/${candidate#"$module_dir"/}" "$version" "$candidate"
+      done
+      dir="${dir%/*}"
+    done
+  done <<<"$linked" | LC_ALL=C sort -u
+}
+
+validate_tailcat_notices() {
+  local go_version go_root linked modules subdirectory_licenses
+  local module version module_dir candidate name file
+
+  # Tailcat module 要求比根 module 更新的 Go；与发布构建一样允许自动选择工具链。
+  if ! go_version="$(cd "$TAILCAT_MODULE_DIR" && GOTOOLCHAIN=auto go env GOVERSION)" \
+    || ! go_root="$(cd "$TAILCAT_MODULE_DIR" && GOTOOLCHAIN=auto go env GOROOT)"; then
+    echo "第三方许可门禁失败：无法解析 Tailcat module 的 Go 工具链。" >&2
+    exit 1
+  fi
+  require_notice_entry "Go standard library/runtime" "$go_version"
+  if [[ "$(notice_license_body "Go standard library/runtime" "$go_version")" != "$(cat "$go_root/LICENSE")" ]]; then
+    echo "第三方许可门禁失败：Go standard library/runtime $go_version 的许可证正文与 Tailcat 使用的 Go 工具链不一致。" >&2
+    exit 1
+  fi
+
+  if ! linked="$(tailcat_linked_packages)"; then
+    echo "第三方许可门禁失败：无法枚举 Tailcat 发布构建编入的 Go 包。" >&2
+    exit 1
+  fi
+  linked="$(LC_ALL=C sort -u <<<"$linked")"
+  if [[ -z "$linked" ]]; then
+    echo "第三方许可门禁失败：Tailcat 发布构建没有枚举到任何第三方模块，构建目标可能已失效。" >&2
+    exit 1
+  fi
+
+  modules="$(cut -f1-3 <<<"$linked" | LC_ALL=C sort -u)"
+  while IFS=$'\t' read -r module version module_dir; do
+    [[ -n "$module" ]] || continue
+    require_notice_entry "$module" "$version"
+    validate_go_module_dir_license "$module" "$version" "$module_dir"
+    # Apache-2.0 等许可证要求随分发保留 NOTICE；模块根目录有 NOTICE 时单独列出正文。
+    for candidate in "$module_dir"/NOTICE*; do
+      [[ -f "$candidate" ]] || continue
+      name="$module/${candidate##*/}"
+      require_notice_entry "$name" "$version"
+      validate_notice_body_matches_file "$name" "$version" "$candidate"
+    done
+  done <<<"$modules"
+
+  subdirectory_licenses="$(tailcat_subdirectory_licenses "$linked")"
+  while IFS=$'\t' read -r name version file; do
+    [[ -n "$name" ]] || continue
+    require_notice_entry "$name" "$version"
+    validate_notice_body_matches_file "$name" "$version" "$file"
+  done <<<"$subdirectory_licenses"
+}
+
 go_version="$(go env GOVERSION)"
 require_notice_entry "Go standard library/runtime" "$go_version"
 if [[ "$(notice_license_body "Go standard library/runtime" "$go_version")" != "$(cat "$(go env GOROOT)/LICENSE")" ]]; then
@@ -129,6 +246,8 @@ while read -r module version; do
   require_notice_entry "$module" "$version"
   validate_go_module_license "$module" "$version"
 done <<<"$go_modules"
+
+validate_tailcat_notices
 
 if [[ -d ios ]]; then
   if [[ ! -f "$PACKAGE_RESOLVED" ]]; then

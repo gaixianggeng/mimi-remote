@@ -393,6 +393,14 @@ final class AppServerRuntimeBundle {
         self.harness = harness
     }
 
+    /// 列表级实时更新：两个 Runtime 对没有被页面订阅的会话收到权威快照时交给同一个观察者（#683）。
+    func setSessionIndexObserver(_ observer: (@Sendable (AgentSession) -> Void)?) {
+        Task { [codex, claude] in
+            await codex.setSessionIndexObserver(observer)
+            await claude.setSessionIndexObserver(observer)
+        }
+    }
+
     /// 该 provider 是否由原生客户端承接；不是则返回 `nil`。
     func nativeClient(for provider: String?) -> HarnessSessionClient? {
         guard let harness else { return nil }

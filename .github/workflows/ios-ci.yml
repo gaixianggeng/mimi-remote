@@ -29,8 +29,10 @@ on:
       - "scripts/ios-dev.sh"
       - "scripts/build-tailcat-mobile.sh"
       - "scripts/ios-device-lease.sh"
+      - "scripts/ios-build-evidence.sh"
       - "scripts/ios-device-gui-handoff-macos.sh"
       - "scripts/test-ios-device-management.sh"
+      - "scripts/test-ios-build-evidence.sh"
       - "scripts/test-tailcat-mobile-build.sh"
       - "scripts/test-ios-device-gui-handoff-macos.sh"
       - "scripts/testdata/ios-device-management/**"
@@ -39,6 +41,7 @@ on:
       - "scripts/check-critical-regressions.sh"
       - "scripts/test-ios-localization-smoke.sh"
       - "scripts/check-ios-localization.sh"
+      - "scripts/test-check-ios-localization.sh"
       - "scripts/check-ios-network-security.sh"
       - "scripts/check-ios-privacy-manifest.sh"
       - "scripts/check-app-store-metadata.sh"
@@ -148,6 +151,9 @@ jobs:
       - name: Check iOS device selection and leases
         run: bash ./scripts/test-ios-device-management.sh
 
+      - name: Check iOS build evidence reuse
+        run: bash ./scripts/test-ios-build-evidence.sh
+
       - name: Check Tailcat mobile build cache
         run: bash ./scripts/test-tailcat-mobile-build.sh
 
@@ -167,6 +173,9 @@ jobs:
 
       - name: Check iOS localization
         run: bash ./scripts/check-ios-localization.sh
+
+      - name: Test iOS localization check
+        run: bash ./scripts/test-check-ios-localization.sh
 
       - name: Check App Store metadata
         run: bash ./scripts/check-app-store-metadata.sh

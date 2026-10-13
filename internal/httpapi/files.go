@@ -68,6 +68,17 @@ type fileReadResolvedPath struct {
 	realPath              string
 	photosDerivativeImage bool
 	codexClipboardImage   bool
+	// verifiedFile 非空时只能经 fd 读取解析阶段校验过的同一个文件，不按路径重新跟随链接。
+	verifiedFile os.FileInfo
+	// trustedRoot 是解析阶段确认的授权根（已解析符号链接）；读取时从这里逐级 O_NOFOLLOW 打开。
+	trustedRoot string
+	// relaxOwnerAndLinkCheck 为 true 时不要求读取的文件由当前用户拥有且只有一个链接。
+	// 默认严格：新的特例漏设字段时按严格规则拒绝，只有照片图库特例显式放宽。
+	relaxOwnerAndLinkCheck bool
+	// requiredContentType 非空时，文件头识别出的 MIME 必须与之完全一致，不能只相信扩展名。
+	requiredContentType string
+	// maxBytes 为特例路径收紧的大小上限；0 表示沿用 filePreviewMaxBytes。
+	maxBytes int64
 }
 
 var filePreviewImageExtensions = map[string]struct{}{
@@ -120,20 +131,40 @@ func (r *Router) fileReadHandler(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "仅支持普通文件预览")
 		return
 	}
-	if stat.Size() > filePreviewMaxBytes {
+	maxBytes := filePreviewMaxBytes
+	if resolved.maxBytes > 0 && resolved.maxBytes < maxBytes {
+		maxBytes = resolved.maxBytes
+	}
+	if stat.Size() > maxBytes {
 		writeError(w, http.StatusRequestEntityTooLarge, "文件过大，暂不支持预览")
 		return
 	}
 
-	data, err := os.ReadFile(realPath)
+	var data []byte
+	if resolved.verifiedFile != nil {
+		data, err = readVerifiedPreviewFile(realPath, resolved, maxBytes)
+	} else {
+		data, err = os.ReadFile(realPath)
+	}
 	if err != nil {
 		r.writeFileReadError(w, path, err)
+		return
+	}
+	if int64(len(data)) > maxBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "文件过大，暂不支持预览")
 		return
 	}
 	contentType := detectFileContentType(realPath, data)
 	if resolved.codexClipboardImage {
 		// 剪贴板临时目录不属于项目授权根，不能只相信扩展名；必须用文件头再次确认。
 		contentType = detectFileContentTypeFromBytes(data)
+	}
+	if resolved.requiredContentType != "" {
+		contentType = detectFileContentTypeFromBytes(data)
+		if contentType != resolved.requiredContentType {
+			writeError(w, http.StatusBadRequest, "仅支持图片预览")
+			return
+		}
 	}
 	if (resolved.photosDerivativeImage || resolved.codexClipboardImage) &&
 		!strings.HasPrefix(contentType, "image/") {
@@ -171,20 +202,34 @@ func (r *Router) resolveReadableFilePath(raw string) (fileReadResolvedPath, erro
 	}
 	// iPad 只能拿到 Mac 上的文件路径，无法直接访问 Photos Library。
 	// 这里额外放行系统照片库的 derivatives 图片，保持预览可用，同时避免扩大成任意路径读取。
-	if realPath, candidate, err := resolveAllowedPhotosDerivativeImagePath(raw); candidate {
+	if resolved, candidate, err := resolveAllowedPhotosDerivativeImagePath(raw); candidate {
 		if err != nil {
 			return fileReadResolvedPath{}, err
 		}
-		if realPath == "" {
+		if resolved.realPath == "" {
 			return fileReadResolvedPath{}, errFilePathOutsideScope
 		}
-		return fileReadResolvedPath{realPath: realPath, photosDerivativeImage: true}, nil
+		return resolved, nil
 	}
 	// Codex 桌面端把剪贴板图片写到当前 macOS 用户的临时目录，再在会话里保存 localImage 路径。
 	// 只放行严格命名且可验证为图片的普通文件，不能把整个 /var/folders 暴露成 browse root。
 	if runtime.GOOS == "darwin" {
-		if realPath, ok := allowedCodexClipboardImagePath(raw, os.TempDir()); ok {
-			return fileReadResolvedPath{realPath: realPath, codexClipboardImage: true}, nil
+		if resolved, ok := allowedCodexClipboardImagePath(raw, os.TempDir()); ok {
+			return resolved, nil
+		}
+		// XcodeBuildMCP 模拟器截图同样落在该临时目录。只认临时目录直属、严格命名、当前用户
+		// 创建的普通图片；已被系统清理的截图保留 ENOENT，客户端会显示“文件已不存在”。
+		if screenshot, candidate, err := resolveXcodeBuildMCPScreenshotPath(raw, os.TempDir()); candidate {
+			if err != nil {
+				return fileReadResolvedPath{}, err
+			}
+			return fileReadResolvedPath{
+				realPath:            screenshot.realPath,
+				requiredContentType: screenshot.contentType,
+				maxBytes:            xcodeBuildMCPScreenshotMaxBytes,
+				verifiedFile:        screenshot.info,
+				trustedRoot:         filepath.Dir(screenshot.realPath),
+			}, nil
 		}
 	}
 	return fileReadResolvedPath{}, errFilePathOutsideScope
@@ -323,38 +368,46 @@ func fileAccessDeniedMessage(domain string) string {
 	return "agentd 无法读取该文件。请检查该文件及父目录的读取权限后重试。"
 }
 
-func allowedCodexClipboardImagePath(raw string, temporaryRoot string) (string, bool) {
+// allowedCodexClipboardImagePath 返回可读取的剪贴板图片，并记录解析时校验过的文件身份；
+// 处理器只能经 fd 读取这个同一文件，见 readVerifiedPreviewFile。
+func allowedCodexClipboardImagePath(raw string, temporaryRoot string) (fileReadResolvedPath, bool) {
 	path := strings.TrimSpace(raw)
 	root := strings.TrimSpace(temporaryRoot)
 	if path == "" || root == "" || !isCodexClipboardImageName(filepath.Base(path)) {
-		return "", false
+		return fileReadResolvedPath{}, false
 	}
 
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return "", false
+		return fileReadResolvedPath{}, false
 	}
-	// 最终文件本身不允许是符号链接；否则攻击者可以用可信文件名指向任意文件。
+	// 最终文件本身不允许是符号链接、硬链接或他人创建的文件；否则可信文件名可以借道指向任意内容。
 	info, err := os.Lstat(abs)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return "", false
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() ||
+		!fileOwnedByCurrentUserWithSingleLink(info) {
+		return fileReadResolvedPath{}, false
 	}
 	realPath, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", false
+		return fileReadResolvedPath{}, false
 	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		realRoot, err = filepath.Abs(root)
 		if err != nil {
-			return "", false
+			return fileReadResolvedPath{}, false
 		}
 	}
 	if filepath.Clean(filepath.Dir(realPath)) != filepath.Clean(realRoot) ||
 		!isCodexClipboardImageName(filepath.Base(realPath)) {
-		return "", false
+		return fileReadResolvedPath{}, false
 	}
-	return realPath, true
+	return fileReadResolvedPath{
+		realPath:            realPath,
+		codexClipboardImage: true,
+		verifiedFile:        info,
+		trustedRoot:         realRoot,
+	}, true
 }
 
 func isCodexClipboardImageName(name string) bool {
@@ -382,46 +435,61 @@ func isCodexClipboardImageName(name string) bool {
 	return true
 }
 
-// resolveAllowedPhotosDerivativeImagePath 返回 (realPath, candidate, err)。candidate 表示
+// resolveAllowedPhotosDerivativeImagePath 返回 (resolved, candidate, err)。candidate 表示
 // 路径在结构上属于 Pictures 下某个 .photoslibrary 的 derivatives；此时解析失败要保留
-// ENOENT/EPERM，让调用方区分“照片图库被 macOS 拒绝”和“越界”。
-func resolveAllowedPhotosDerivativeImagePath(raw string) (string, bool, error) {
+// ENOENT/EPERM，让调用方区分“照片图库被 macOS 拒绝”和“越界”。resolved.realPath 为空表示
+// 解析到了授权范围外；非空时同时记录解析时的文件身份，处理器只能经 fd 读取这个同一文件。
+func resolveAllowedPhotosDerivativeImagePath(raw string) (fileReadResolvedPath, bool, error) {
 	path := strings.TrimSpace(raw)
 	if path == "" {
-		return "", false, nil
+		return fileReadResolvedPath{}, false, nil
 	}
 	if _, ok := filePreviewImageExtensions[strings.ToLower(filepath.Ext(path))]; !ok {
-		return "", false, nil
+		return fileReadResolvedPath{}, false, nil
 	}
 
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return "", false, nil
+		return fileReadResolvedPath{}, false, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", false, nil
+		return fileReadResolvedPath{}, false, nil
 	}
 	picturesRoot := filepath.Join(home, "Pictures")
 	if !realPathWithin(picturesRoot, abs) || !photosDerivativePathStructure(abs) {
-		return "", false, nil
+		return fileReadResolvedPath{}, false, nil
 	}
 
 	realPath, err := evalFileSymlinks(abs)
 	if err != nil {
-		return "", true, err
+		return fileReadResolvedPath{}, true, err
 	}
 	realPicturesRoot, err := evalFileSymlinks(picturesRoot)
 	if err != nil {
 		realPicturesRoot, err = filepath.Abs(picturesRoot)
 		if err != nil {
-			return "", true, err
+			return fileReadResolvedPath{}, true, err
 		}
 	}
 	if !realPathWithin(realPicturesRoot, realPath) || !photosDerivativePathStructure(realPath) {
-		return "", true, nil
+		return fileReadResolvedPath{}, true, nil
 	}
-	return realPath, true, nil
+	// 这里的 Lstat 与上面的 EvalSymlinks 之间仍可能有上级目录被换成符号链接，所以记录的身份
+	// 只作辅助；真正的边界由读取阶段从 realPicturesRoot 逐级 O_NOFOLLOW 打开 realPath 保证。
+	// 照片图库内部是否使用硬链接没有可靠依据，因此放宽 owner/单链接要求；同一卷上预先放进
+	// derivatives、指向图库外 inode 的硬链接不在防护范围内。
+	info, err := os.Lstat(realPath)
+	if err != nil {
+		return fileReadResolvedPath{}, true, err
+	}
+	return fileReadResolvedPath{
+		realPath:               realPath,
+		photosDerivativeImage:  true,
+		verifiedFile:           info,
+		trustedRoot:            realPicturesRoot,
+		relaxOwnerAndLinkCheck: true,
+	}, true, nil
 }
 
 func photosDerivativePathStructure(path string) bool {

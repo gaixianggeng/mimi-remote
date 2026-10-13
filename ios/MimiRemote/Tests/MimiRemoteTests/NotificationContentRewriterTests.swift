@@ -63,6 +63,24 @@ final class NotificationContentRewriterTests: XCTestCase {
         }
     }
 
+    func testComputerWaitingRewriteKeepsDetailsRoutingAndUsesLocalizedBody() throws {
+        for language in [AppLanguage.simplifiedChinese, .english] {
+            let content = systemContent(title: "Claude", body: "old", event: "holder.waiting", runtime: "claude", sessionTag: messageTag)
+            let originalPayload = content.userInfo as NSDictionary
+            let notification = try XCTUnwrap(LockScreenApprovalNotification(userInfo: content.userInfo))
+            XCTAssertTrue(NotificationContentRewriter.rewrite(
+                content, notification: notification, entry: makeEntry(title: "Task"),
+                localize: { L10n.text($0, language: language) }
+            ))
+            XCTAssertEqual(content.title, "Task")
+            XCTAssertEqual(content.body, L10n.text("ui.notification_holder_waiting_body", language: language))
+            XCTAssertNotEqual(content.body, "ui.notification_holder_waiting_body")
+            XCTAssertEqual(content.categoryIdentifier, "MIMI_APPROVAL_DETAILS")
+            XCTAssertEqual(content.threadIdentifier, messageTag)
+            XCTAssertEqual(content.userInfo as NSDictionary, originalPayload)
+        }
+    }
+
     func testApprovalRewriteInEnglishDropsSessionSuffix() throws {
         let content = systemContent(
             title: "Claude Code needs approval on A1C3",

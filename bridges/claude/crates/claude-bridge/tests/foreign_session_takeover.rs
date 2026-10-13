@@ -491,7 +491,7 @@ async fn takeover_interrupts_registered_holder_and_resumes_writable() {
         &mut reader,
         4,
         "turn/start",
-        json!({"threadId": SESSION_ID, "input": [{"type": "text", "text": "继续"}]}),
+        json!({"threadId": SESSION_ID, "sandboxPolicy":{"type":"dangerFullAccess"},"input": [{"type": "text", "text": "继续"}]}),
     )
     .await;
     assert!(started.get("error").is_none(), "{started}");

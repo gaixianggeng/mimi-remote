@@ -525,7 +525,7 @@ struct CreateWorktreeSheet: View {
                     }
                 }
 
-                if let message = sessionStore.errorMessage, !message.isEmpty {
+                if let message = sessionStore.userFacingErrorMessage, !message.isEmpty {
                     Section {
                         Label(message, systemImage: "exclamationmark.triangle.fill")
                             .font(themeStore.uiFont(size: 13, weight: .medium))
@@ -639,7 +639,7 @@ struct WorktreeManagerRow: View {
                 if isRunning {
                     Text(L10n.text("ui.running"))
                         .font(themeStore.uiFont(size: 11, weight: .semibold))
-                        .foregroundStyle(tokens.primaryAction)
+                        .foregroundStyle(tokens.tint(for: .active))
                 }
             }
 

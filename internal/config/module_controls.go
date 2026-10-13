@@ -18,7 +18,7 @@ func (c Config) TailscaleAccessEnabled() bool {
 		return *c.Network.AllowTailscale
 	}
 	ip := c.configuredListenIP()
-	return c.Network.AllowLAN || (ip != nil && (ip.IsUnspecified() || isModuleTailscaleIPv4(ip)))
+	return c.Network.AllowLAN || (ip != nil && (ip.IsUnspecified() || isTailscaleListenIP(ip)))
 }
 
 func (c Config) LANAccessEnabled() bool {
@@ -35,11 +35,6 @@ func (c Config) configuredListenIP() net.IP {
 		return nil
 	}
 	return net.ParseIP(strings.Trim(host, "[]"))
-}
-
-func isModuleTailscaleIPv4(ip net.IP) bool {
-	v4 := ip.To4()
-	return v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127
 }
 
 // In managed mode listen supplies the port, not an unrestricted bind. The

@@ -29,6 +29,13 @@ func TestPolicyIndependentIngress(t *testing.T) {
 		{"external to loopback rejected", "127.0.0.1", "100.64.0.3", true, true, false},
 		{"unknown address rejected", "bad", "127.0.0.1", true, true, false},
 		{"external IPv6 rejected", "fd00::2", "fd00::3", true, true, false},
+		// MagicDNS 可能解析到 Tailscale IPv6；它与 Tailscale IPv4 同属 Tailscale 意图。
+		{"TS IPv6 only", "fd7a:115c:a1e0::2", "fd7a:115c:a1e0::3", true, false, true},
+		{"TS IPv6 blocked while LAN on", "fd7a:115c:a1e0::2", "fd7a:115c:a1e0::3", false, true, false},
+		{"TS IPv6 peer cannot bypass via LAN IPv6 destination", "fd00::2", "fd7a:115c:a1e0::3", true, true, false},
+		{"external IPv6 peer cannot use TS IPv6 destination", "fd7a:115c:a1e0::2", "fd00::3", true, true, false},
+		{"link-local IPv6 rejected", "fe80::2", "fe80::3", true, true, false},
+		{"mapped TS IPv4", "::ffff:100.64.0.2", "::ffff:100.64.0.3", true, false, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -13,6 +13,11 @@ func TestModuleControlDefaultsAndNetworkCompatibility(t *testing.T) {
 	}{
 		{"127.0.0.1:8787", false, false}, {"100.64.0.2:8787", false, true},
 		{"192.168.50.2:8787", true, false}, {"0.0.0.0:8787", true, true},
+		// Tailscale IPv6 与 IPv4 一致：旧配置手动绑定 tailnet 地址即隐式开启 Tailscale、
+		// 不开启局域网；fd7a:115c:a1e0::/48 之外的 ULA 不是 Tailscale。
+		{"[fd7a:115c:a1e0::2]:8787", false, true}, {"[fd7a:115c:a1e0:ab12:4843:cd96:6258:b240]:8787", false, true},
+		{"[::ffff:100.64.0.2]:8787", false, true}, {"[fd7a:115c:a1e1::2]:8787", false, false},
+		{"[fd00::2]:8787", false, false}, {"[::1]:8787", false, false},
 	}
 	for _, tt := range tests {
 		cfg := Config{Listen: tt.listen}

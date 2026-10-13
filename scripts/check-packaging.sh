@@ -37,6 +37,7 @@ for required_file in \
   scripts/check-critical-regressions.sh \
   scripts/check-pr-gate.sh \
   scripts/check-macos-installer.sh \
+  scripts/check-macos-notices.sh \
   scripts/build-windows-installer.ps1 \
   scripts/check-windows-installer.ps1 \
   scripts/test-windows-install.ps1 \
@@ -66,6 +67,7 @@ bash -n \
   scripts/check-critical-regressions.sh \
   scripts/check-pr-gate.sh \
   scripts/check-macos-installer.sh \
+  scripts/check-macos-notices.sh \
   scripts/check-release-prerequisites.sh \
   scripts/check-macos-release-signing.sh \
   scripts/check-release-artifacts.sh \
@@ -81,6 +83,7 @@ bash -n \
   scripts/verify-release.sh
 bash ./scripts/check-release-prerequisites.sh --self-test >/dev/null
 bash ./scripts/check-macos-release-signing.sh --self-test >/dev/null
+bash ./scripts/check-macos-notices.sh --self-test >/dev/null
 bash ./scripts/restart-agentd-dev-macos.sh --self-test >/dev/null
 bash ./scripts/verify-release.sh --self-test >/dev/null
 bash ./scripts/install-linux.sh --self-test >/dev/null

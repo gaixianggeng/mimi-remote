@@ -191,7 +191,7 @@ struct NewSessionSheet: View {
 
                     Image(systemName: "checkmark.circle.fill")
                         .font(themeStore.uiFont(size: 20, weight: .semibold))
-                        .foregroundStyle(tokens.primaryAction)
+                        .foregroundStyle(tokens.accentText)
                 }
                 .padding(.horizontal, 14)
                 .frame(maxWidth: .infinity, minHeight: 64)
@@ -230,7 +230,7 @@ struct NewSessionSheet: View {
         HStack(spacing: 12) {
             Image(systemName: "folder.fill")
                 .font(themeStore.uiFont(size: 17, weight: .semibold))
-                .foregroundStyle(tokens.primaryAction)
+                .foregroundStyle(tokens.accentText)
                 .frame(width: 38, height: 38)
                 .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
 
@@ -332,7 +332,7 @@ struct NewSessionSheet: View {
         lastWorkspaceID = project.id
         await sessionStore.startNewSession(in: project, runtimeProvider: choice.runtimeProvider)
         guard let sessionID = sessionStore.selectedSessionID else {
-            creationErrorMessage = sessionStore.errorMessage ?? L10n.text("ui.creation_failed_please_try_again_later")
+            creationErrorMessage = sessionStore.userFacingErrorMessage ?? L10n.text("ui.creation_failed_please_try_again_later")
             return
         }
         leaveSheetForCreatedSession(sessionID)

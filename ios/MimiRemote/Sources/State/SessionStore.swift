@@ -147,7 +147,11 @@ final class SessionStore: ObservableObject {
     /// 目标 Mac、Tailscale 或 agentd 可达，因此 Widget 的在线判断必须同时依赖这份证据。
     var carStatusLastSuccessfulHostObservationAt: Date?
     @Published var statusMessage: String?
+    /// `statusMessage` 的可见呈现，见 `SessionStoreOperationFeedback.swift`（#508）。
+    @Published var operationFeedback: OperationFeedback?
     @Published var errorMessage: String?
+    /// `errorMessage` 的用户文案与技术详情；界面只读这一份，原始描述留给逻辑判断与诊断。
+    @Published var errorPresentation: UserFacingError?
     /// `errorMessage` 当前这条的来源，由 `setErrorMessage` 维护。预热窗口只压探测失败，
     /// 用户主动操作的失败任何时候都要照常展示。
     @Published var errorMessageOrigin: SessionErrorOrigin = .userAction
@@ -771,6 +775,7 @@ final class SessionStore: ObservableObject {
         reloadSessionControlStates()
         reloadSessionReminders()
         reloadQueuedTurns()
+        installSessionIndexObserver()
         self.networkReachabilityStatus = self.networkPathStatusSource.currentStatus
         self.networkPathStatusSource.onStatusChange = { [weak self] update in
             Task { @MainActor in

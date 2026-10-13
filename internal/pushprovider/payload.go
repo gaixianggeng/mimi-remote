@@ -24,6 +24,9 @@ const (
 	completedPushEvent      = "turn.completed"
 	failedPushEvent         = "turn.failed"
 	interruptedPushEvent    = "turn.interrupted"
+	holderWaitingPushEvent  = "holder.waiting"
+	holderWaitingTitleKey   = "ui.notification_holder_waiting_title"
+	holderWaitingBodyKey    = "ui.notification_holder_waiting_body"
 )
 
 // Runtime 与 ApprovalKind 是 Codex 与 Claude Code 两条链路共用的枚举。任何一端
@@ -41,11 +44,12 @@ var (
 		"elicitation": {},
 	}
 	allowedEvents = map[string]struct{}{
-		approvalPushEvent:    {},
-		resolvedPushEvent:    {},
-		completedPushEvent:   {},
-		failedPushEvent:      {},
-		interruptedPushEvent: {},
+		approvalPushEvent:      {},
+		resolvedPushEvent:      {},
+		completedPushEvent:     {},
+		failedPushEvent:        {},
+		interruptedPushEvent:   {},
+		holderWaitingPushEvent: {},
 	}
 )
 
@@ -73,7 +77,7 @@ const (
 )
 
 func (n ApprovalNotification) Validate(now time.Time) error {
-	if n.isTurnMessage() && n.ApprovalKind != "" {
+	if n.isMessage() && n.ApprovalKind != "" {
 		return errors.New("消息通知不能包含审批类型")
 	}
 	if n.Version != 1 {
@@ -85,7 +89,10 @@ func (n ApprovalNotification) Validate(now time.Time) error {
 	if _, ok := allowedRuntimes[n.Runtime]; !ok {
 		return errors.New("不支持的 runtime")
 	}
-	if !n.isTurnMessage() {
+	if n.Event == holderWaitingPushEvent && n.Runtime != "claude" {
+		return errors.New("holder.waiting 只支持 claude")
+	}
+	if !n.isMessage() {
 		if _, ok := allowedApprovalKinds[n.ApprovalKind]; !ok {
 			return errors.New("不支持的 approval_kind")
 		}
@@ -113,7 +120,7 @@ func (n ApprovalNotification) Validate(now time.Time) error {
 		return errors.New("expires_at 已过期")
 	}
 	maxExpiry := approvalMaxExpiry
-	if n.isTurnMessage() {
+	if n.isMessage() {
 		maxExpiry = 24 * time.Hour
 	}
 	if expiry.Sub(now) > maxExpiry {
@@ -192,6 +199,15 @@ func BuildAPNsPayload(n ApprovalNotification) ([]byte, error) {
 		// 允许设备上的通知扩展按 thread-id 查本机缓存改写成会话标题。这里不多带
 		// 任何字段：标题不在 Payload 里，缓存未命中或旧版 App 没有扩展时仍显示通用文案。
 		aps["mutable-content"] = 1
+	case holderWaitingPushEvent:
+		aps["thread-id"] = n.SessionTag
+		aps["category"] = ApprovalDetailsCategory
+		aps["sound"] = "default"
+		aps["alert"] = map[string]any{
+			"title-loc-key": holderWaitingTitleKey,
+			"loc-key":       holderWaitingBodyKey,
+		}
+		aps["mutable-content"] = 1
 	case resolvedPushEvent:
 		// 其它设备已经处理完毕：只唤醒 App 清理旧通知，不再打扰用户。
 		aps["content-available"] = 1
@@ -232,6 +248,7 @@ func CollapseID(actionID string) string {
 	return hex.EncodeToString(digest[:])[:32]
 }
 
-func (n ApprovalNotification) isTurnMessage() bool {
-	return n.Event == completedPushEvent || n.Event == failedPushEvent || n.Event == interruptedPushEvent
+func (n ApprovalNotification) isMessage() bool {
+	return n.Event == completedPushEvent || n.Event == failedPushEvent ||
+		n.Event == interruptedPushEvent || n.Event == holderWaitingPushEvent
 }

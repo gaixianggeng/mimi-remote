@@ -1,5 +1,5 @@
 // 一个 Claude 会话的运行时：常驻的 SDK query（流式输入）+ 当前 turn。模型、权限模式、
-// 思考强度在 turn 之间通过 SDK 控制接口切换，不重启进程；只有进出完全访问时重启。
+// 思考强度在 turn 之间通过 SDK 控制接口切换，不重启进程；执行边界变化时重启。
 import { randomUUID, type UUID } from "node:crypto";
 import {
   query as sdkQuery,
@@ -15,6 +15,7 @@ import { serverRequestFor } from "./approvals.ts";
 import { InputQueue } from "./inputQueue.ts";
 import { LiveTurn, type TurnUsage } from "./liveTurn.ts";
 import { rateLimitSnapshot } from "./rateLimits.ts";
+import { sandboxOptions } from "./sandboxPolicy.ts";
 import type { RunSettings } from "./settings.ts";
 import { toClaudeContent } from "./userInput.ts";
 import { errorText, logEnabled, logger } from "../util/logging.ts";
@@ -174,13 +175,18 @@ export class ThreadRuntime {
     // 检查与预占之间没有 await：第一个异步操作之前就占住，后来的 turn/start 看到的是 active_turn。
     const turnId = randomUUID();
     this.reserved = turnId;
+    const previousSettings = this.settings;
     try {
       this.settings = {
         model: request.settings.model ?? this.settings.model,
         effort: request.settings.effort ?? this.settings.effort,
         permissionMode: request.settings.permissionMode ?? this.settings.permissionMode,
+        executionPolicy: request.settings.executionPolicy ?? this.settings.executionPolicy,
       };
       await this.ensureQuery();
+    } catch (error) {
+      this.settings = previousSettings;
+      throw error;
     } finally {
       this.reserved = undefined;
     }
@@ -259,10 +265,11 @@ export class ThreadRuntime {
     const applied = this.applied;
     const fullAccessChanged =
       applied !== undefined && (applied.permissionMode === "bypassPermissions") !== (wanted.permissionMode === "bypassPermissions");
-    if (this.query && fullAccessChanged) await this.stopQuery();
+    const policyChanged = applied !== undefined && JSON.stringify(applied.executionPolicy) !== JSON.stringify(wanted.executionPolicy);
+    if (this.query && (fullAccessChanged || policyChanged)) await this.stopQuery();
     const query = this.query;
     if (!query) {
-      this.startQuery(wanted);
+      await this.startQuery(wanted);
       return;
     }
     const steps: Array<() => Promise<unknown>> = [];
@@ -288,9 +295,11 @@ export class ThreadRuntime {
     if (this.query === query) this.applied = { ...wanted };
   }
 
-  private startQuery(settings: RunSettings): void {
+  private async startQuery(settings: RunSettings): Promise<void> {
+    const policyOptions = await sandboxOptions(settings.executionPolicy, this.cwd);
     const input = new InputQueue();
     const options: Options = {
+      ...policyOptions,
       cwd: this.cwd,
       includePartialMessages: true,
       pathToClaudeCodeExecutable: this.host.claudeExecutable(),
@@ -496,7 +505,8 @@ export class ThreadRuntime {
         toolName,
         input,
         toolUseID: context.toolUseID,
-        ...(context.suggestions ? { suggestions: context.suggestions } : {}),
+        // 会话授权建议可能增加可写目录或网络范围，受限档位只能批准本次调用。
+        ...(this.settings.executionPolicy.type === "dangerFullAccess" && context.suggestions ? { suggestions: context.suggestions } : {}),
         ...(context.decisionReason ? { decisionReason: context.decisionReason } : {}),
         ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
       },

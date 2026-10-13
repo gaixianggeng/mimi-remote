@@ -149,7 +149,7 @@ async fn control_cancel_request_resolves_mobile_approval_without_reply() {
             "jsonrpc": "2.0",
             "id": 3,
             "method": "turn/start",
-            "params": {
+            "params": {"sandboxPolicy":{"type":"dangerFullAccess"},
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": "request then cancel approval"}]
             }

@@ -611,6 +611,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     private var requestedSessionArchivesStorage: [RequestedSessionArchive] = []
     var requestedSessionForks: [RequestedSessionFork] = []
     var requestedThreadNames: [RequestedThreadName] = []
+    /// 非 nil 时 `setThreadName` 在记录请求后抛出该错误，用于验证重命名失败的反馈。
+    var setThreadNameError: Error?
     var requestedThreadGoalSets: [RequestedThreadGoalSet] = []
     var requestedSessionReviews: [RequestedSessionReview] = []
     var requestedMessageSessionIDs: [String] = []
@@ -1230,6 +1232,9 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func setThreadName(threadID: String, name: String) async throws {
         requestedThreadNames.append(RequestedThreadName(threadID: threadID, name: name))
+        if let setThreadNameError {
+            throw setThreadNameError
+        }
     }
 
     func startReview(

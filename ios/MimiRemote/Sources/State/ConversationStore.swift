@@ -1984,7 +1984,7 @@ final class ConversationStore: ObservableObject {
         switch kind {
         case .reasoningSummary, .plan, .commandSummary, .fileChangeSummary, .context:
             return kind.rawValue
-        case .message, .commentary, .approval, .userInput, .warning, .error:
+        case .message, .commentary, .approval, .userInput, .questionReply, .warning, .error:
             return nil
         }
     }
