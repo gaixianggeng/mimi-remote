@@ -11,7 +11,7 @@
   --surface:     #FFFFFF;
   --ink:         #1D1D1F;
   --ink-2:       #58575D;
-  --ink-3:       #8A8990;
+  --ink-3:       #6E6D74;   /* ≥ 4.5:1 on --bg and --panel */
   --line:        rgba(29, 29, 31, 0.09);
   --line-2:      rgba(29, 29, 31, 0.17);
   --accent-ink:  #6B2573;
@@ -45,7 +45,7 @@
   --surface:     #242424;
   --ink:         #F5F5F7;
   --ink-2:       #A7A7AD;
-  --ink-3:       #77777D;
+  --ink-3:       #838389;   /* ≥ 4.5:1 on --bg and --panel */
   --line:        rgba(255, 255, 255, 0.08);
   --line-2:      rgba(255, 255, 255, 0.17);
   --accent-ink:  #D4B0DB;
@@ -217,6 +217,8 @@ svg { flex: none; }
   background: #000;
 }
 .device img { display: block; position: relative; height: auto; background: var(--panel); }
+/* Screenshots wait for site.js to pick the language and appearance; keep their box, hide the alt text. */
+.device img[data-shot]:not([src]) { visibility: hidden; }
 /* iPhone 17 Pro: 1206 × 2622 screen, bezel 3.3% of the width, 126 × 37 pt island 11 pt below the screen top */
 .device--phone { border-radius: 16.1% / 7.68%; }
 .device--phone::before { padding: 0.95%; }

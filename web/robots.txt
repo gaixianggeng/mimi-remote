@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://remote.code89757.com/sitemap.xml
