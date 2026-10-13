@@ -15,6 +15,11 @@ launch_agent_output="$bundle_root/Library/LaunchAgents/com.gaixianggeng.mimi.mac
 launch_agent_source="$SRCROOT/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
 configuration="${CONFIGURATION:-Debug}"
 
+# Debug 与发布构建都从当前源码复制；缺失、复制失败或空白声明必须阻断构建。
+mkdir -p "$bundle_root/Resources"
+cp "$project_root/THIRD_PARTY_NOTICES.md" "$bundle_root/Resources/THIRD_PARTY_NOTICES.md"
+bash "$project_root/scripts/check-macos-notices.sh" "$TARGET_BUILD_DIR/$WRAPPER_NAME"
+
 log() {
   printf '[embed-agentd %s] %s\n' "$(date '+%H:%M:%S')" "$*"
 }

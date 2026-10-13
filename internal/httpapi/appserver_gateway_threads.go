@@ -173,7 +173,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		if p.enforcesInboundThreadAuthorization() && !p.inboundNotificationAllowed(&frame) {
 			return payload, false, nil
 		}
-		p.notifyTurnMessage(&frame)
+		p.notifyMessage(&frame)
 		p.trackUpstreamTurnLifecycle(&frame)
 		p.clearPendingServerRequestsForNotification(&frame)
 		if filtered, changed := p.sanitizeReplayedServerRequests(payload, &frame); changed {
@@ -360,6 +360,29 @@ func (p *appServerGatewayPolicy) approvalObservationSnapshot() (
 		pending[requestID] = request
 	}
 	return active, pending
+}
+
+// hasAuthorizedThreadRoute 只看本连接已经建立的授权。observer 可以据此继续读取
+// 同一 bridge 的状态广播，但不能借全局缓存扩大到这条连接从未见过的 thread。
+func (p *appServerGatewayPolicy) hasAuthorizedThreadRoute() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.allowedThreads) > 0
+}
+
+// locallyAllowsThread 不回退 Router 全局缓存。共享 Claude bridge 会把状态广播给
+// 多条连接；observer 只能接收断线前由本连接建立授权的 thread。
+func (p *appServerGatewayPolicy) locallyAllowsThread(threadID string) bool {
+	if p == nil || strings.TrimSpace(threadID) == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.allowedThreads[threadID]
+	return ok
 }
 
 func sanitizeThreadForkResponse(payload []byte) ([]byte, json.RawMessage, error) {

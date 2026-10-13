@@ -232,6 +232,29 @@ func TestProviderDeliversApprovalWithoutContent(t *testing.T) {
 	}
 }
 
+func TestProviderDeliversHolderWaitingAsFixedDetailsMessage(t *testing.T) {
+	fake := newFakeAPNs(t)
+	_, httpServer := newTestServer(t, fake)
+	ticket := issueTestTicket(t, httpServer.URL)
+	body := approvalBody(ticket, map[string]any{
+		"event":         holderWaitingPushEvent,
+		"runtime":       "claude",
+		"approval_kind": "",
+		"expires_at":    time.Now().Add(23 * time.Hour).UTC().Format(time.RFC3339),
+	})
+	status, response := postJSON(t, httpServer.URL+"/v1/notify", body)
+	if status != http.StatusOK {
+		t.Fatalf("holder.waiting 投递失败 status=%d body=%v", status, response)
+	}
+	request := fake.last(t)
+	aps, _ := request.Payload["aps"].(map[string]any)
+	alert, _ := aps["alert"].(map[string]any)
+	if aps["category"] != ApprovalDetailsCategory || alert["title-loc-key"] != holderWaitingTitleKey ||
+		alert["loc-key"] != holderWaitingBodyKey || len(alert) != 2 {
+		t.Fatalf("holder.waiting 必须使用固定无动作消息：aps=%v", aps)
+	}
+}
+
 func TestProviderUsesDetailsCategoryForNonActionableKinds(t *testing.T) {
 	for _, kind := range []string{"permission", "user_input", "elicitation"} {
 		t.Run(kind, func(t *testing.T) {

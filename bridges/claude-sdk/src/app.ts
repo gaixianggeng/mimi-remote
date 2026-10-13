@@ -74,6 +74,8 @@ export interface AppOptions {
   discoverModels?: DiscoverModels;
   /** 测试用：Claude Code 版本探测。 */
   probeClaudeCode?: (executable: string) => Promise<ClaudeCodeProbe>;
+  /** 发给全部已附着连接的通知；常驻模式由 main 接到会话注册表。 */
+  broadcast?: ManagerOptions["broadcast"];
 }
 
 export interface App {
@@ -88,9 +90,10 @@ export function createApp(options: AppOptions): App {
   const stateDir = options.stateDir ?? defaultStateDir();
   const sessions = options.sessions ?? sdkSessions;
   const transcripts = new TranscriptIndex();
+  const activity = new ActivityClock();
   const legacyIndex = legacyIndexPath();
   const overlay = new Overlay(path.join(stateDir, "overlay.json"), legacyIndex);
-  const catalog = new Catalog({ sessions, transcripts, activity: new ActivityClock(), overlay });
+  const catalog = new Catalog({ sessions, transcripts, activity, overlay });
   const history = new HistoryStore({ sessions, transcripts });
   const claudeExecutable = options.claudeExecutable ?? defaultClaudeExecutable;
   const manager = new ThreadManager({
@@ -101,12 +104,23 @@ export function createApp(options: AppOptions): App {
     ...options.ownership,
     readTitle: async (threadId) => (await sessions.info(threadId))?.customTitle?.trim() || null,
     ...(options.titleCheckDelaysMs ? { titleCheckDelaysMs: options.titleCheckDelaysMs } : {}),
+    ...(options.broadcast ? { broadcast: options.broadcast } : {}),
+    // 与 thread/list 的 updatedAt 同源：最后一条对话消息的时间（秒）。持有方变化不频繁，
+    // 每次都强制重扫：索引最多缓存 1 秒，活动时间又按文件大小缓存，一轮很短的回合在这个窗口里
+    // 结束时，沿用旧索引会把回合前的时间当成最新，列表就认不出这次完成。
+    readActivity: async (threadId) => {
+      await transcripts.refresh(true);
+      const file = transcripts.get(threadId);
+      const ms = file ? await activity.lastActivityMs(file) : undefined;
+      return ms === undefined ? undefined : Math.floor(ms / 1000);
+    },
   });
   const holders = () => manager.holders();
   const activeTurnId = (threadId: string) => manager.get(threadId)?.activeTurnId;
   const threads = createThreadHandlers(catalog, history, {
     holders,
     activeTurnId,
+    hasLiveProcess: (threadId) => manager.get(threadId)?.hasLiveProcess() ?? false,
     loadedThreadIds: () => manager.loadedThreadIds(),
   });
   const historyHandlers = createHistoryHandlers(history, (threadId) => activeTurnId(threadId) !== undefined);

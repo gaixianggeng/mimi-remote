@@ -11,10 +11,11 @@ struct LockScreenApprovalNotification: Equatable, Sendable {
         case completed = "turn.completed"
         case failed = "turn.failed"
         case interrupted = "turn.interrupted"
+        case holderWaiting = "holder.waiting"
 
         var isMessage: Bool {
             switch self {
-            case .completed, .failed, .interrupted: return true
+            case .completed, .failed, .interrupted, .holderWaiting: return true
             case .pending, .resolved: return false
             }
         }
@@ -67,6 +68,7 @@ struct LockScreenApprovalNotification: Equatable, Sendable {
               version == Self.currentVersion,
               let event = (payload["event"] as? String).flatMap(Event.init(rawValue:)),
               let runtime = (payload["runtime"] as? String).flatMap(Runtime.init(rawValue:)),
+              event != .holderWaiting || runtime == .claude,
               let kind = Self.notificationKind(payload["approval_kind"], event: event),
               let actionID = Self.opaqueIdentifier(payload["action_id"]),
               let deviceID = Self.opaqueIdentifier(payload["device_id"]),

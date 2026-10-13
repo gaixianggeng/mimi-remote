@@ -2,7 +2,7 @@
 // 压缩后只显示压缩之后、排队消息、活动时间不受 mtime 影响。全程不碰真实 ~/.claude。
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, utimesSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Router } from "../src/server/router.ts";
@@ -170,6 +170,31 @@ describe("thread/list", () => {
     expect(byDefault.data.map((thread: any) => thread.id)).toEqual(byCreated.data.map((thread: any) => thread.id));
     const created = byDefault.data.map((thread: any) => thread.createdAt);
     expect([...created].sort((a, b) => b - a)).toEqual(created);
+  });
+
+  test("a holder elsewhere turns the listed status into active or idle and carries its timing", async () => {
+    const sessions = path.join(configDir, "sessions");
+    mkdirSync(sessions, { recursive: true });
+    const registry = path.join(sessions, `${process.pid}.json`);
+    const since = 1_757_000_000_000;
+    const record = (status: string) => JSON.stringify({ pid: process.pid, sessionId: ids.root, cwd: repo, entrypoint: "claude-desktop", kind: "interactive", status, startedAt: since - 60_000, statusUpdatedAt: since });
+    const listed = async () => (await call("thread/list", { cwd: repo, limit: 50 })).data.find((thread: any) => thread.id === ids.root);
+    try {
+      writeFileSync(registry, record("busy"));
+      expect(await listed()).toMatchObject({
+        status: { type: "active", activeFlags: [] },
+        canAcceptDirectInput: false,
+        claudeOwner: { entrypoint: "claude-desktop", status: "busy", statusUpdatedAt: since },
+      });
+      writeFileSync(registry, record("idle"));
+      expect(await listed()).toMatchObject({ status: { type: "idle" }, canAcceptDirectInput: false, claudeOwner: { status: "idle" } });
+    } finally {
+      rmSync(registry, { force: true });
+    }
+    const released = await listed();
+    expect(released.status).toEqual({ type: "notLoaded" });
+    expect(released.canAcceptDirectInput).toBe(true);
+    expect(released.claudeOwner).toBeUndefined();
   });
 
   test("search matches titles and previews", async () => {

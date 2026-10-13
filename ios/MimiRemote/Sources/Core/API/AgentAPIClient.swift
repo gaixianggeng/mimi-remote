@@ -630,12 +630,14 @@ struct AgentAPIClient {
             let ticket: String
             let expiresAt: String
             let platform: String
+            let supportsHolderWaiting = true
 
             enum CodingKeys: String, CodingKey {
                 case deviceID = "device_id"
                 case ticket
                 case expiresAt = "expires_at"
                 case platform
+                case supportsHolderWaiting = "supports_holder_waiting"
             }
         }
         let formatter = ISO8601DateFormatter()

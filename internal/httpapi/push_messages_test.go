@@ -30,11 +30,117 @@ func TestTurnMessageClassification(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			frame := appServerGatewayFrame{Method: tc.method, Params: json.RawMessage(tc.params)}
-			got, ok := turnMessageFromFrame(&frame)
+			got, ok := terminalMessageFromFrame(&frame)
 			if ok != (tc.event != "") || got.Event != tc.event {
 				t.Fatalf("got %+v %v", got, ok)
 			}
 		})
+	}
+}
+
+func TestHolderWaitingMessageClassification(t *testing.T) {
+	valid := []struct {
+		kind string
+		flag string
+	}{
+		{kind: "permission", flag: "waitingOnApproval"},
+		{kind: "input", flag: "waitingOnUserInput"},
+		{kind: "other", flag: "waitingOnUserInput"},
+	}
+	for _, tc := range valid {
+		t.Run(tc.kind, func(t *testing.T) {
+			params := `{"threadId":"thread-1","status":{"type":"active","activeFlags":["` + tc.flag + `"]},` +
+				`"canAcceptDirectInput":false,"claudeOwner":{"pid":42,"status":"waiting","waitingKind":"` + tc.kind +
+				`","statusUpdatedAt":1700000000123,"waitingFor":"PRIVATE"}}`
+			message, ok := holderWaitingMessageFromFrame(&appServerGatewayFrame{
+				Method: "thread/status/changed", Params: json.RawMessage(params),
+			})
+			if !ok || message.Event != pushbridge.EventHolderWaiting ||
+				message.MessageID != "holder-waiting:42:1700000000123" {
+				t.Fatalf("分类失败：ok=%v message=%+v", ok, message)
+			}
+			if strings.Contains(message.MessageID, "PRIVATE") {
+				t.Fatal("等待原文不得进入消息")
+			}
+		})
+	}
+
+	invalid := []string{
+		`{"threadId":"thread-1","status":{"type":"idle"},"canAcceptDirectInput":false,"claudeOwner":{"pid":42,"status":"waiting","waitingKind":"input","statusUpdatedAt":1700000000123}}`,
+		`{"threadId":"thread-1","status":{"type":"active","activeFlags":[]},"canAcceptDirectInput":false,"claudeOwner":{"pid":42,"status":"waiting","waitingKind":"input","statusUpdatedAt":1700000000123}}`,
+		`{"threadId":"thread-1","status":{"type":"active","activeFlags":["waitingOnUserInput"]},"canAcceptDirectInput":true,"claudeOwner":{"pid":42,"status":"waiting","waitingKind":"input","statusUpdatedAt":1700000000123}}`,
+		`{"threadId":"thread-1","status":{"type":"active","activeFlags":["waitingOnUserInput"]},"canAcceptDirectInput":false,"claudeOwner":{"pid":0,"status":"waiting","waitingKind":"input","statusUpdatedAt":1700000000123}}`,
+		`{"threadId":"thread-1","status":{"type":"active","activeFlags":["waitingOnUserInput"]},"canAcceptDirectInput":false,"claudeOwner":{"pid":42,"status":"waiting","waitingKind":"input"}}`,
+		`{"threadId":"thread-1","status":{"type":"active","activeFlags":["waitingOnUserInput"]},"canAcceptDirectInput":false,"claudeOwner":{"pid":42,"status":"waiting","waitingKind":"future","statusUpdatedAt":1700000000123}}`,
+	}
+	for index, params := range invalid {
+		if message, ok := holderWaitingMessageFromFrame(&appServerGatewayFrame{
+			Method: "thread/status/changed", Params: json.RawMessage(params),
+		}); ok {
+			t.Fatalf("非法 waiting[%d] 被接受：%+v", index, message)
+		}
+	}
+}
+
+func TestAuthorizedClaudeHolderWaitingNotifiesOnlyCapableDeviceAndRoutesReadOnly(t *testing.T) {
+	provider := newFakePushProvider(t)
+	server, router := pushTestFixture(t, "ws://unused", provider.server.URL)
+	registerPushDevice(t, server, "device-old")
+	supported := true
+	registerPushDeviceWithCapability(t, server, "device-new", &supported)
+	projectDir := router.cfg.Projects[0].Path
+	scope, _ := router.gatewayScopeForPath(projectDir)
+	router.allowGatewayThread(appServerGatewayAllowedThread{
+		id: "thread-1", runtimeID: "claude", cwd: projectDir, scopeID: scope.id, readOnly: true,
+	})
+	policy := newAppServerGatewayPolicy(router, "claude")
+	payload := []byte(`{"method":"thread/status/changed","params":{"threadId":"thread-1","status":{"type":"active","activeFlags":["waitingOnApproval"]},"canAcceptDirectInput":false,"claudeOwner":{"pid":42,"status":"waiting","waitingKind":"permission","statusUpdatedAt":1700000000123,"waitingFor":"PRIVATE PROMPT"}}}`)
+	if _, forward, err := policy.observeUpstreamFrame(websocket.TextMessage, payload); err != nil || !forward {
+		t.Fatalf("waiting frame rejected: forward=%v err=%v", forward, err)
+	}
+	notification := provider.waitFor(t, pushbridge.EventHolderWaiting)
+	if notification["device_id"] != "device-new" || notification["approval_kind"] != "" {
+		t.Fatalf("等待提醒投递对象或类型错误：%v", notification)
+	}
+	encoded, _ := json.Marshal(notification)
+	if strings.Contains(string(encoded), "PRIVATE") || strings.Contains(string(encoded), "waitingFor") {
+		t.Fatalf("Provider 请求泄漏等待正文：%s", encoded)
+	}
+	actionID := notification["action_id"].(string)
+	status, route := getPushActionRoute(t, server, actionID, "device-new")
+	if status != http.StatusOK || route["runtime"] != "claude" || route["thread_id"] != "thread-1" ||
+		route["kind"] != pushbridge.RouteKindMessage || route["state"] != "" {
+		t.Fatalf("等待提醒路由错误：status=%d route=%v", status, route)
+	}
+	if status, _ := postDecide(t, server, actionID, "device-new", "allow"); status != http.StatusNotFound {
+		t.Fatalf("等待提醒不能产生审批动作，got=%d", status)
+	}
+	if status, _ := getPushActionRoute(t, server, actionID, "device-old"); status != http.StatusForbidden {
+		t.Fatalf("旧设备不应取得等待提醒路由，got=%d", status)
+	}
+
+	policy.observeUpstreamFrame(websocket.TextMessage, payload)
+	next := []byte(strings.Replace(string(payload), "1700000000123", "1700000001123", 1))
+	policy.observeUpstreamFrame(websocket.TextMessage, next)
+	deadline := time.Now().Add(3 * time.Second)
+	for provider.count() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if provider.count() != 2 {
+		t.Fatalf("同 episode 应去重、新 episode 应再推一次，got=%d", provider.count())
+	}
+
+	unauthorized := []byte(strings.Replace(string(next), "thread-1", "thread-private", 1))
+	if _, forward, _ := policy.observeUpstreamFrame(websocket.TextMessage, unauthorized); forward {
+		t.Fatal("未授权 Claude thread 的 waiting 不应转发或推送")
+	}
+	codex := newAppServerGatewayPolicy(router, "codex")
+	if _, forward, err := codex.observeUpstreamFrame(websocket.TextMessage, next); err != nil || !forward {
+		t.Fatalf("Codex 状态帧仍应按既有规则转发：forward=%v err=%v", forward, err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if provider.count() != 2 {
+		t.Fatalf("未授权或非 Claude waiting 不得推送，got=%d", provider.count())
 	}
 }
 

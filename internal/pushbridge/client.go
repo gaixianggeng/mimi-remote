@@ -40,6 +40,7 @@ type Notification struct {
 const (
 	EventApprovalPending  = "approval.pending"
 	EventApprovalResolved = "approval.resolved"
+	EventHolderWaiting    = "holder.waiting"
 )
 
 type Client struct {
