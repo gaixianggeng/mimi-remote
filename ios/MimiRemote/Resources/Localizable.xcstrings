@@ -1,6 +1,42 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.question_reply_label": {
+      "comment": "Label on the user's answer to an agent question in the conversation timeline.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Answered"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已回答"
+          }
+        }
+      }
+    },
+    "ui.question_reply_skipped": {
+      "comment": "Shown in place of an answer when the user skipped one of the agent's questions.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skipped"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已跳过"
+          }
+        }
+      }
+    },
     "ui.default_model_inherited_name": {
       "comment": "Model name for the inherited default option, distinct from pinning the same model.",
       "extractionState": "manual",
@@ -973,7 +1009,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "access code"
+            "value": "Access code"
           }
         },
         "zh-Hans": {
@@ -1024,7 +1060,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "access token"
+            "value": "Access token"
           }
         },
         "zh-Hans": {
@@ -1144,7 +1180,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "action"
+            "value": "Action"
           }
         },
         "zh-Hans": {
@@ -1246,7 +1282,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "add"
+            "value": "Add"
           }
         },
         "zh-Hans": {
@@ -2448,7 +2484,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "always allowed"
+            "value": "Always Allowed"
           }
         },
         "zh-Hans": {
@@ -3465,7 +3501,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "approve once"
+            "value": "Approve Once"
           }
         },
         "zh-Hans": {
@@ -3482,7 +3518,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "approve this request"
+            "value": "Approve this request"
           }
         },
         "zh-Hans": {
@@ -3687,7 +3723,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "automatic"
+            "value": "Automatic"
           }
         },
         "zh-Hans": {
@@ -3755,7 +3791,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "autoscroll"
+            "value": "Autoscroll"
           }
         },
         "zh-Hans": {
@@ -3857,7 +3893,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "base branch"
+            "value": "Base branch"
           }
         },
         "zh-Hans": {
@@ -3891,7 +3927,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "basic connectivity"
+            "value": "Basic connectivity"
           }
         },
         "zh-Hans": {
@@ -3960,7 +3996,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "blocked"
+            "value": "Blocked"
           }
         },
         "zh-Hans": {
@@ -3977,7 +4013,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "blocked"
+            "value": "Blocked"
           }
         },
         "zh-Hans": {
@@ -4062,7 +4098,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "branch"
+            "value": "Branch"
           }
         },
         "zh-Hans": {
@@ -4113,7 +4149,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "budget"
+            "value": "Budget"
           }
         },
         "zh-Hans": {
@@ -4488,7 +4524,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "candidate time"
+            "value": "Candidate time"
           }
         },
         "zh-Hans": {
@@ -4539,7 +4575,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "change"
+            "value": "Change"
           }
         },
         "zh-Hans": {
@@ -4815,7 +4851,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "checkout does not match the registered Git repository"
+            "value": "Checkout does not match the registered Git repository"
           }
         },
         "zh-Hans": {
@@ -4832,7 +4868,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "checkout no longer exists, please use Clear Lost Registration instead."
+            "value": "Checkout no longer exists, please use Clear Lost Registration instead."
           }
         },
         "zh-Hans": {
@@ -5534,7 +5570,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "click page"
+            "value": "Click page"
           }
         },
         "zh-Hans": {
@@ -5791,7 +5827,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "code font"
+            "value": "Code font"
           }
         },
         "zh-Hans": {
@@ -6857,7 +6893,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "command"
+            "value": "Command"
           }
         },
         "zh-Hans": {
@@ -6874,7 +6910,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "command execution"
+            "value": "Command execution"
           }
         },
         "zh-Hans": {
@@ -7523,7 +7559,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "configured"
+            "value": "Configured"
           }
         },
         "zh-Hans": {
@@ -7779,7 +7815,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "connect"
+            "value": "Connect"
           }
         },
         "zh-Hans": {
@@ -7934,7 +7970,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "connection address"
+            "value": "Connection address"
           }
         },
         "zh-Hans": {
@@ -8184,7 +8220,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "connection status"
+            "value": "Connection status"
           }
         },
         "zh-Hans": {
@@ -8454,7 +8490,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "continue searching"
+            "value": "Continue Searching"
           }
         },
         "zh-Hans": {
@@ -8797,7 +8833,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "create"
+            "value": "Create"
           }
         },
         "zh-Hans": {
@@ -9190,7 +9226,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "current request"
+            "value": "Current request"
           }
         },
         "zh-Hans": {
@@ -9207,7 +9243,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "current session"
+            "value": "Current session"
           }
         },
         "zh-Hans": {
@@ -9362,7 +9398,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "custom goal"
+            "value": "Custom goal"
           }
         },
         "zh-Hans": {
@@ -10360,7 +10396,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "diff not staged"
+            "value": "Diff not staged"
           }
         },
         "zh-Hans": {
@@ -10377,7 +10413,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "diff staged"
+            "value": "Diff staged"
           }
         },
         "zh-Hans": {
@@ -10462,7 +10498,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "direct WebSocket not connected"
+            "value": "Direct WebSocket not connected"
           }
         },
         "zh-Hans": {
@@ -10581,7 +10617,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "display name"
+            "value": "Display name"
           }
         },
         "zh-Hans": {
@@ -10615,7 +10651,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "docs: Update project documentation"
+            "value": "docs: update project documentation"
           }
         },
         "zh-Hans": {
@@ -11347,7 +11383,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "dynamic tools"
+            "value": "Dynamic tools"
           }
         },
         "zh-Hans": {
@@ -11555,7 +11591,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "ended"
+            "value": "Ended"
           }
         },
         "zh-Hans": {
@@ -11743,7 +11779,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "entrance"
+            "value": "Entrance"
           }
         },
         "zh-Hans": {
@@ -11760,7 +11796,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "entry"
+            "value": "Entry"
           }
         },
         "zh-Hans": {
@@ -11777,7 +11813,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "environment"
+            "value": "Environment"
           }
         },
         "zh-Hans": {
@@ -12016,7 +12052,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "expanded state"
+            "value": "Expanded state"
           }
         },
         "zh-Hans": {
@@ -12189,7 +12225,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "failed"
+            "value": "Failed"
           }
         },
         "zh-Hans": {
@@ -12495,7 +12531,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "failure link"
+            "value": "Failure link"
           }
         },
         "zh-Hans": {
@@ -13282,7 +13318,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "font"
+            "value": "Font"
           }
         },
         "zh-Hans": {
@@ -13299,7 +13335,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "font size"
+            "value": "Font size"
           }
         },
         "zh-Hans": {
@@ -13435,7 +13471,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "free"
+            "value": "Free"
           }
         },
         "zh-Hans": {
@@ -13622,7 +13658,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "generate"
+            "value": "Generate"
           }
         },
         "zh-Hans": {
@@ -13673,7 +13709,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "generated image"
+            "value": "Generated image"
           }
         },
         "zh-Hans": {
@@ -14339,7 +14375,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "high"
+            "value": "High"
           }
         },
         "zh-Hans": {
@@ -14374,7 +14410,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "historical diagnosis"
+            "value": "Historical Diagnosis"
           }
         },
         "zh-Hans": {
@@ -14493,7 +14529,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "history"
+            "value": "History"
           }
         },
         "zh-Hans": {
@@ -15141,7 +15177,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "instructions"
+            "value": "Instructions"
           }
         },
         "zh-Hans": {
@@ -15932,7 +15968,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "just observe"
+            "value": "Just observe"
           }
         },
         "zh-Hans": {
@@ -16174,7 +16210,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "light color"
+            "value": "Light Color"
           }
         },
         "zh-Hans": {
@@ -16191,7 +16227,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "limit"
+            "value": "Limit"
           }
         },
         "zh-Hans": {
@@ -16208,7 +16244,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "list"
+            "value": "List"
           }
         },
         "zh-Hans": {
@@ -16243,7 +16279,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "list resources"
+            "value": "List resources"
           }
         },
         "zh-Hans": {
@@ -16277,7 +16313,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "listening address"
+            "value": "Listening address"
           }
         },
         "zh-Hans": {
@@ -16863,7 +16899,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "local"
+            "value": "Local"
           }
         },
         "zh-Hans": {
@@ -16999,7 +17035,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "low"
+            "value": "Low"
           }
         },
         "zh-Hans": {
@@ -17435,7 +17471,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "management"
+            "value": "Management"
           }
         },
         "zh-Hans": {
@@ -17573,7 +17609,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "mark blocking"
+            "value": "Mark Blocking"
           }
         },
         "zh-Hans": {
@@ -18309,7 +18345,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "model"
+            "value": "Model"
           }
         },
         "zh-Hans": {
@@ -18931,7 +18967,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "new session"
+            "value": "New Session"
           }
         },
         "zh-Hans": {
@@ -18999,7 +19035,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "next turn"
+            "value": "Next turn"
           }
         },
         "zh-Hans": {
@@ -19752,7 +19788,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "normal"
+            "value": "Normal"
           }
         },
         "zh-Hans": {
@@ -20009,7 +20045,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "observe"
+            "value": "Observe"
           }
         },
         "zh-Hans": {
@@ -20179,7 +20215,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "open"
+            "value": "Open"
           }
         },
         "zh-Hans": {
@@ -20369,7 +20405,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "open path"
+            "value": "Open Path"
           }
         },
         "zh-Hans": {
@@ -20712,7 +20748,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "original source"
+            "value": "Original source"
           }
         },
         "zh-Hans": {
@@ -20917,7 +20953,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "path"
+            "value": "Path"
           }
         },
         "zh-Hans": {
@@ -20969,7 +21005,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "pause"
+            "value": "Pause"
           }
         },
         "zh-Hans": {
@@ -21089,7 +21125,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "permission mode"
+            "value": "Permission mode"
           }
         },
         "zh-Hans": {
@@ -21107,7 +21143,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "permission status"
+            "value": "Permission status"
           }
         },
         "zh-Hans": {
@@ -21192,7 +21228,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "personal"
+            "value": "Personal"
           }
         },
         "zh-Hans": {
@@ -21261,7 +21297,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "pictures"
+            "value": "Pictures"
           }
         },
         "zh-Hans": {
@@ -21295,7 +21331,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "pin to top"
+            "value": "Pin to Top"
           }
         },
         "zh-Hans": {
@@ -21363,7 +21399,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "plan"
+            "value": "Plan"
           }
         },
         "zh-Hans": {
@@ -21397,7 +21433,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "planning mode"
+            "value": "Planning mode"
           }
         },
         "zh-Hans": {
@@ -22000,7 +22036,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "press button"
+            "value": "Press button"
           }
         },
         "zh-Hans": {
@@ -22187,7 +22223,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "process update"
+            "value": "Process update"
           }
         },
         "zh-Hans": {
@@ -23871,7 +23907,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "raw output"
+            "value": "Raw Output"
           }
         },
         "zh-Hans": {
@@ -23888,7 +23924,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "re-pair"
+            "value": "Re-pair"
           }
         },
         "zh-Hans": {
@@ -24143,7 +24179,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "reasoning summary"
+            "value": "Reasoning summary"
           }
         },
         "zh-Hans": {
@@ -24213,7 +24249,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "recent output"
+            "value": "Recent output"
           }
         },
         "zh-Hans": {
@@ -24367,7 +24403,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "recheck"
+            "value": "Recheck"
           }
         },
         "zh-Hans": {
@@ -24692,7 +24728,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "refresh status"
+            "value": "Refresh Status"
           }
         },
         "zh-Hans": {
@@ -24864,7 +24900,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "reject"
+            "value": "Reject"
           }
         },
         "zh-Hans": {
@@ -24898,7 +24934,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "relative base branch"
+            "value": "Relative base branch"
           }
         },
         "zh-Hans": {
@@ -24915,7 +24951,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "release branch"
+            "value": "Release branch"
           }
         },
         "zh-Hans": {
@@ -24932,7 +24968,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "reload"
+            "value": "Reload"
           }
         },
         "zh-Hans": {
@@ -24967,7 +25003,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "remaining %@ tok"
+            "value": "Remaining %@ tok"
           }
         },
         "zh-Hans": {
@@ -24984,7 +25020,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "reminder"
+            "value": "Reminder"
           }
         },
         "zh-Hans": {
@@ -25908,7 +25944,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "review goals"
+            "value": "Review goals"
           }
         },
         "zh-Hans": {
@@ -26455,7 +26491,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "runtime"
+            "value": "Runtime"
           }
         },
         "zh-Hans": {
@@ -26574,7 +26610,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "runtime summary"
+            "value": "Runtime summary"
           }
         },
         "zh-Hans": {
@@ -26625,7 +26661,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "save"
+            "value": "Save"
           }
         },
         "zh-Hans": {
@@ -26985,7 +27021,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "screenshot"
+            "value": "Screenshot"
           }
         },
         "zh-Hans": {
@@ -27585,7 +27621,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "send"
+            "value": "Send"
           }
         },
         "zh-Hans": {
@@ -27929,7 +27965,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "serif"
+            "value": "Serif"
           }
         },
         "zh-Hans": {
@@ -28031,7 +28067,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "session"
+            "value": "Session"
           }
         },
         "zh-Hans": {
@@ -28099,7 +28135,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "session error"
+            "value": "Session error"
           }
         },
         "zh-Hans": {
@@ -28202,7 +28238,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "session name"
+            "value": "Session name"
           }
         },
         "zh-Hans": {
@@ -28636,7 +28672,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "settings"
+            "value": "Settings"
           }
         },
         "zh-Hans": {
@@ -29080,7 +29116,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "short window"
+            "value": "Short window"
           }
         },
         "zh-Hans": {
@@ -29097,7 +29133,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "shortcut phrase"
+            "value": "Shortcut phrase"
           }
         },
         "zh-Hans": {
@@ -29457,7 +29493,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "skip"
+            "value": "Skip"
           }
         },
         "zh-Hans": {
@@ -29491,7 +29527,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "slowest link"
+            "value": "Slowest link"
           }
         },
         "zh-Hans": {
@@ -29733,7 +29769,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "start"
+            "value": "Start"
           }
         },
         "zh-Hans": {
@@ -30076,7 +30112,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "status read"
+            "value": "Status read"
           }
         },
         "zh-Hans": {
@@ -30179,7 +30215,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "stop"
+            "value": "Stop"
           }
         },
         "zh-Hans": {
@@ -30914,7 +30950,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "system"
+            "value": "System"
           }
         },
         "zh-Hans": {
@@ -31101,7 +31137,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "take over"
+            "value": "Take Over"
           }
         },
         "zh-Hans": {
@@ -31917,7 +31953,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "text attachment"
+            "value": "Text attachment"
           }
         },
         "zh-Hans": {
@@ -35272,7 +35308,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "tomorrow"
+            "value": "Tomorrow"
           }
         },
         "zh-Hans": {
@@ -35596,7 +35632,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "turn on"
+            "value": "Turn on"
           }
         },
         "zh-Hans": {
@@ -36039,7 +36075,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "undo hunk"
+            "value": "Undo hunk"
           }
         },
         "zh-Hans": {
@@ -36107,7 +36143,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "unknown"
+            "value": "Unknown"
           }
         },
         "zh-Hans": {
@@ -36141,7 +36177,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "unknown error"
+            "value": "Unknown error"
           }
         },
         "zh-Hans": {
@@ -36209,7 +36245,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "unknown warning"
+            "value": "Unknown warning"
           }
         },
         "zh-Hans": {
@@ -36243,7 +36279,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "unnamed session"
+            "value": "Unnamed session"
           }
         },
         "zh-Hans": {
@@ -36414,7 +36450,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "update plan"
+            "value": "Update plan"
           }
         },
         "zh-Hans": {
@@ -38459,7 +38495,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "waiting for input"
+            "value": "Waiting for input"
           }
         },
         "zh-Hans": {
@@ -38612,7 +38648,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "web search"
+            "value": "Web search"
           }
         },
         "zh-Hans": {
@@ -38697,7 +38733,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "weekly window"
+            "value": "Weekly window"
           }
         },
         "zh-Hans": {
@@ -38714,7 +38750,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "will always be allowed"
+            "value": "Will always be allowed"
           }
         },
         "zh-Hans": {
@@ -38935,7 +38971,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "workspace"
+            "value": "Workspace"
           }
         },
         "zh-Hans": {
@@ -42859,7 +42895,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "writable"
+            "value": "Writable"
           }
         },
         "zh-Hans": {

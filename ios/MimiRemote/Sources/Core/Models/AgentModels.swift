@@ -1804,6 +1804,8 @@ enum MessageKind: String, Codable, Hashable {
     case fileChangeSummary = "file_change_summary"
     case approval
     case userInput = "user_input"
+    // 用户对 Agent 异步提问的答复（role 为 user）；正文只保存答案，不是新的用户请求。
+    case questionReply = "question_reply"
     case warning
     case error
 }

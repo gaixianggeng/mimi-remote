@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
+	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
 const (
@@ -1141,9 +1143,10 @@ func validateAgentListen(raw string, allowLAN bool) error {
 	return fmt.Errorf("listen 不能绑定公网或非私有地址：%q", host)
 }
 
+// isTailscaleListenIP 对 Tailscale 两个地址族一视同仁：IPv4 100.64.0.0/10 与 IPv6
+// fd7a:115c:a1e0::/48。手动写成 Tailscale IPv6 的 listen 与 IPv4 一样只在 tailnet 内可达，
+// 既不需要 allow_lan，也必须被识别为 Tailscale 意图；其他 IPv6 ULA 仍按局域网处理。
 func isTailscaleListenIP(ip net.IP) bool {
-	if v4 := ip.To4(); v4 != nil {
-		return v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127
-	}
-	return false
+	addr, ok := netip.AddrFromSlice(ip)
+	return ok && tailscaleinfo.IsTailscaleAddress(addr)
 }

@@ -53,6 +53,8 @@ bash ./scripts/verify-change.sh --full
 - CI、脚本和发布控制面只运行语法检查及对应的无设备自测；
 - Go 默认只测试直接变更的 package；
 - iOS 默认固定 `iPad Pro 13-inch (M5)`，只编译 App，不编译或运行整个 XCTest 测试包；
+  本 Worktree 已通过统一入口在同一 M5 上成功编译完全相同的输入（例如定向 XCTest）时，
+  复用该构建证据而不重复编译和排队，`--plan` 会说明复用或重建的原因；
 - Rust、Mac App、共享契约和打包改动只进入各自的必要门禁；
 - 未映射路径会明确失败，不会被静默当作通过。
 

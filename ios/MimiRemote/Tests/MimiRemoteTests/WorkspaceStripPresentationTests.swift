@@ -151,6 +151,98 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         )
     }
 
+    /// #501：宽屏会话详情返回时工作区根视图会重建，必须回到进入前浏览的工作区。
+    func testRebuiltWorkspaceRootRestoresRememberedSourceInsteadOfFirstWorkspace() {
+        var state = WorkspaceBrowseSelectionState()
+        let projectIDs = ["workspace-first", "workspace-second", "workspace-third"]
+
+        state.record("workspace-second")
+        // 返回后的新根视图没有局部选择；活动会话所属工作区也不能抢走浏览来源。
+        XCTAssertEqual(
+            WorkspaceBrowseSelectionState.resolvedWorkspaceID(
+                current: nil,
+                retainedCurrent: nil,
+                remembered: state.workspaceID,
+                activeProjectID: "workspace-third",
+                projectIDs: projectIDs
+            ),
+            "workspace-second"
+        )
+
+        // 连续进入、返回不同工作区时，每次恢复最近一次的来源。
+        state.record("workspace-third")
+        XCTAssertEqual(
+            WorkspaceBrowseSelectionState.resolvedWorkspaceID(
+                current: nil,
+                retainedCurrent: nil,
+                remembered: state.workspaceID,
+                activeProjectID: nil,
+                projectIDs: projectIDs
+            ),
+            "workspace-third"
+        )
+    }
+
+    func testWorkspaceBrowseSelectionSurvivesTransientEmptyCatalogAndResetsForHostChange() {
+        var state = WorkspaceBrowseSelectionState()
+        state.record("workspace-second")
+
+        // 重连或加载期间目录为空，根视图会把局部选择清成 nil；记住的来源不能被覆盖。
+        state.record(nil)
+        XCTAssertEqual(state.workspaceID, "workspace-second")
+        XCTAssertNil(
+            WorkspaceBrowseSelectionState.resolvedWorkspaceID(
+                current: nil,
+                retainedCurrent: nil,
+                remembered: state.workspaceID,
+                activeProjectID: nil,
+                projectIDs: []
+            )
+        )
+        XCTAssertEqual(
+            WorkspaceBrowseSelectionState.resolvedWorkspaceID(
+                current: nil,
+                retainedCurrent: nil,
+                remembered: state.workspaceID,
+                activeProjectID: nil,
+                projectIDs: ["workspace-first", "workspace-second"]
+            ),
+            "workspace-second"
+        )
+
+        state.reset()
+        XCTAssertNil(state.workspaceID)
+    }
+
+    func testWorkspaceSelectionResolutionKeepsCurrentAndFallsBackInOrder() {
+        let projectIDs = ["workspace-first", "workspace-second", "workspace-third"]
+        func resolve(
+            current: String? = nil,
+            retainedCurrent: String? = nil,
+            remembered: String? = nil,
+            activeProjectID: String? = nil
+        ) -> String? {
+            WorkspaceBrowseSelectionState.resolvedWorkspaceID(
+                current: current,
+                retainedCurrent: retainedCurrent,
+                remembered: remembered,
+                activeProjectID: activeProjectID,
+                projectIDs: projectIDs
+            )
+        }
+
+        // 目录刷新后当前选择仍在：保持不动。
+        XCTAssertEqual(resolve(current: "workspace-third", remembered: "workspace-second"), "workspace-third")
+        // 当前工作区身份被替换：跟随替换后的同一工作区。
+        XCTAssertEqual(
+            resolve(current: "workspace-old", retainedCurrent: "workspace-third", remembered: "workspace-second"),
+            "workspace-third"
+        )
+        // 记住的来源已被移除：沿用原有的活动工作区与第一项回落。
+        XCTAssertEqual(resolve(remembered: "workspace-removed", activeProjectID: "workspace-second"), "workspace-second")
+        XCTAssertEqual(resolve(remembered: "workspace-removed"), "workspace-first")
+    }
+
     func testBottomTabBarMappingUsesDeviceSizeClassAndSystemGeneration() {
         XCTAssertTrue(
             WorkbenchPageLayout.hasBottomTabBar(
