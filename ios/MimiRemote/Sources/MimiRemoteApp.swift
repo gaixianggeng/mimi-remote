@@ -105,6 +105,9 @@ struct SessionNotificationRoute: Equatable, Hashable {
 @MainActor
 final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @Published private(set) var pendingRoute: SessionNotificationRoute?
+    /// App 在前台时代替系统横幅的回复轻提示（#510）。所有前台窗口共用同一条，点按、超时或
+    /// 目标会话变为可见时清空。
+    @Published private(set) var foregroundNotice: ForegroundSessionNotice?
     private(set) var pendingRouteIntent: UUID?
     var navigationOwnership: NotificationNavigationOwnership { approvalInbox.navigationOwnership }
     /// 锁屏审批走独立收件箱：它的动作要提交决策，而不是打开某个会话。
@@ -113,6 +116,18 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
     private var approvalInboxObservation: AnyCancellable?
     private var visibleSessionRoutesByScene: [UUID: SessionNotificationRoute] = [:]
     private var visibleMessageTagsByScene: [UUID: (profile: String, session: String)] = [:]
+    /// 此刻处于前台、挂着工作台的 Scene，以及“现在能否让用户看到轻提示”的判断。
+    /// 没有任何一个能显示时（还没进入工作台；控制中心、通知中心盖住 App 使 Scene 变为
+    /// inactive；工作台上正盖着 sheet 等模态页面）回复类通知仍交给系统横幅，不能静默丢掉。
+    private var inAppNoticeHosts: [UUID: @MainActor () -> Bool] = [:]
+    /// Scene 最近一次登记为前台的顺序；多窗口时轻提示交给最近激活、且此刻能显示的那个窗口。
+    private var inAppNoticeHostOrder: [UUID] = []
+    /// 以轻提示呈现、同时留在通知中心（`.list`）的回复提醒。用户点按轻提示或自己打开该会话后
+    /// 从通知中心清掉，避免前台使用时持续累积；审批与定时提醒从不登记在这里。
+    private var listedReplyNotificationIDs: [ForegroundSessionNotice.Target: [String]] = [:]
+    var removeDeliveredNotifications: @MainActor ([String]) -> Void = { identifiers in
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: identifiers)
+    }
 
     override init() {
         super.init()
@@ -155,31 +170,213 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
         } else {
             visibleSessionRoutesByScene.removeValue(forKey: sceneID)
         }
+        // 用户自己打开了提示对应的会话，轻提示已经没有意义。
+        if let notice = foregroundNotice, isTargetVisible(notice.target) {
+            foregroundNotice = nil
+        }
+        for target in listedReplyNotificationIDs.keys where isTargetVisible(target) {
+            removeListedReplyNotifications(for: target)
+        }
+    }
+
+    /// 每个 Scene 登记自己能否显示轻提示：工作台已挂载且 Scene 处于 active 时登记，
+    /// `canPresent` 在通知到达那一刻再确认没有模态页面挡住提示。
+    /// 全部窗口都离开前台时立即收起旧提示，回到前台不残留过期内容。
+    func setInAppNoticeHostAvailable(
+        _ available: Bool,
+        for sceneID: UUID,
+        canPresent: @escaping @MainActor () -> Bool = { true }
+    ) {
+        let wasHost = inAppNoticeHosts[sceneID] != nil
+        if available {
+            inAppNoticeHosts[sceneID] = canPresent
+            if !wasHost {
+                inAppNoticeHostOrder.removeAll { $0 == sceneID }
+                inAppNoticeHostOrder.append(sceneID)
+            }
+        } else {
+            inAppNoticeHosts.removeValue(forKey: sceneID)
+            inAppNoticeHostOrder.removeAll { $0 == sceneID }
+        }
+        // 负责显示的窗口离开前台、或已经没有前台窗口时收起提示；通知本身已留在通知中心。
+        if let notice = foregroundNotice,
+           inAppNoticeHosts.isEmpty || (!available && notice.hostSceneID == sceneID) {
+            foregroundNotice = nil
+        }
+    }
+
+    func foregroundPresentation(
+        forNotificationIdentifier identifier: String,
+        userInfo: [AnyHashable: Any]
+    ) -> ForegroundNotificationPresentation {
+        let message = LockScreenApprovalNotification(userInfo: userInfo)
+        let isRuntimeNotification = UserNotificationSessionReminderScheduler.isRuntimeNotificationID(identifier)
+        if !MessageNotificationPreferences.isEnabled(), isRuntimeNotification || message != nil {
+            return .quiet
+        }
+        if let message {
+            // 审批推送有时效，必须当场看到；只有回复类消息改成轻提示。
+            guard let tone = ForegroundSessionNotice.Tone(event: message.event) else {
+                return .system
+            }
+            return replyPresentation(
+                tone: tone,
+                target: .message(profileTag: message.profileID, sessionTag: message.sessionTag)
+            )
+        }
+        guard isRuntimeNotification, let route = SessionNotificationRoute(userInfo: userInfo) else {
+            // 定时提醒、路由缺失或状态不确定时继续提醒，避免把真正需要处理的后台事件静默掉。
+            return .system
+        }
+        if isTargetVisible(.route(route)) {
+            // 目标会话就在眼前：审批卡片和回复都已经显示在页面里。
+            return .quiet
+        }
+        // 旧版已排队的运行态通知没有类别键，无法确认是回复类时按系统横幅兜底。
+        guard let kind = SessionRuntimeNotification.Kind(notificationUserInfo: userInfo),
+              let tone = ForegroundSessionNotice.Tone(runtimeKind: kind) else {
+            return .system
+        }
+        return replyPresentation(tone: tone, target: .route(route))
     }
 
     func presentationOptions(
         forNotificationIdentifier identifier: String,
         userInfo: [AnyHashable: Any]
     ) -> UNNotificationPresentationOptions {
-		if !MessageNotificationPreferences.isEnabled(),
-		   UserNotificationSessionReminderScheduler.isRuntimeNotificationID(identifier)
-			|| LockScreenApprovalNotification(userInfo: userInfo) != nil {
-			return []
-		}
-        if let message = LockScreenApprovalNotification(userInfo: userInfo), message.event.isMessage,
-           visibleMessageTagsByScene.values.contains(where: {
-               $0.profile == message.profileID && $0.session == message.sessionTag
-           }) {
-            return []
+        foregroundPresentation(forNotificationIdentifier: identifier, userInfo: userInfo).options
+    }
+
+    /// `willPresent` 的主线程部分：决定呈现方式，需要轻提示时发布给前台窗口。
+    func presentInForeground(
+        identifier: String,
+        title: String,
+        subtitle: String,
+        body: String,
+        userInfo: [AnyHashable: Any]
+    ) -> UNNotificationPresentationOptions {
+        let presentation = foregroundPresentation(forNotificationIdentifier: identifier, userInfo: userInfo)
+        if case .inApp(let tone, let target) = presentation {
+            listedReplyNotificationIDs[target, default: []].append(identifier)
+            foregroundNotice = ForegroundSessionNotice(
+                requestIdentifier: identifier,
+                tone: tone,
+                target: target,
+                title: title,
+                subtitle: subtitle,
+                body: body,
+                userInfo: userInfo,
+                hostSceneID: presentingNoticeSceneID()
+            )
         }
-        guard UserNotificationSessionReminderScheduler.isRuntimeNotificationID(identifier),
-              let route = SessionNotificationRoute(userInfo: userInfo),
-              visibleSessionRoutesByScene.values.contains(route)
-        else {
-            // 路由缺失或状态不确定时继续提醒，避免把真正需要处理的后台事件静默掉。
-            return [.banner, .sound]
+        NotificationRouteDiagnostics.record(
+            stage: NotificationRouteDiagnostics.Stage.foreground,
+            outcome: presentation.diagnosticOutcome
+        )
+        return presentation.options
+    }
+
+    func dismissForegroundNotice(_ id: UUID) {
+        guard foregroundNotice?.id == id else { return }
+        foregroundNotice = nil
+    }
+
+    /// 轻提示点按与点系统横幅走同一个入口，不另建跳转逻辑。
+    func openForegroundNotice(_ notice: ForegroundSessionNotice) async {
+        dismissForegroundNotice(notice.id)
+        // 用户已经通过轻提示去看这个会话，通知中心里同一会话的回复提醒随之清掉。
+        removeListedReplyNotifications(for: notice.target)
+        NotificationRouteDiagnostics.record(
+            stage: NotificationRouteDiagnostics.Stage.foreground,
+            outcome: "in_app_opened"
+        )
+        await handleNotificationOpen(
+            userInfo: notice.userInfo,
+            actionIdentifier: UNNotificationDefaultActionIdentifier,
+            requestIdentifier: notice.requestIdentifier
+        )
+    }
+
+    private func replyPresentation(
+        tone: ForegroundSessionNotice.Tone,
+        target: ForegroundSessionNotice.Target
+    ) -> ForegroundNotificationPresentation {
+        if isTargetVisible(target) {
+            return .quiet
         }
-        return []
+        guard presentingNoticeSceneID() != nil else {
+            return .system
+        }
+        return .inApp(tone, target)
+    }
+
+    private func removeListedReplyNotifications(for target: ForegroundSessionNotice.Target) {
+        guard let identifiers = listedReplyNotificationIDs.removeValue(forKey: target),
+              !identifiers.isEmpty else { return }
+        removeDeliveredNotifications(identifiers)
+    }
+
+    /// 最近激活、且此刻没有被模态页面挡住的前台窗口。
+    private func presentingNoticeSceneID() -> UUID? {
+        inAppNoticeHostOrder.last { inAppNoticeHosts[$0]?() == true }
+    }
+
+    private func isTargetVisible(_ target: ForegroundSessionNotice.Target) -> Bool {
+        switch target {
+        case .route(let route):
+            return visibleSessionRoutesByScene.values.contains(route)
+        case .message(let profileTag, let sessionTag):
+            return visibleMessageTagsByScene.values.contains {
+                $0.profile == profileTag && $0.session == sessionTag
+            }
+        }
+    }
+
+    /// 通知点击的唯一入口：系统横幅、通知中心与 App 内轻提示的点按都从这里进入。
+    func handleNotificationOpen(
+        userInfo: [AnyHashable: Any],
+        actionIdentifier: String,
+        requestIdentifier: String
+    ) async {
+        // 自定义允许/拒绝动作必须在系统给出的通知响应窗口内完成。completion 只有
+        // 在 agentd 返回后才调用，App 即使没有进入前台也能提交决策。
+        if let delivery = LockScreenApprovalDelivery(
+            userInfo: userInfo,
+            actionIdentifier: actionIdentifier,
+            requestIdentifier: requestIdentifier
+        ) {
+            // 只记事件、类型和截短的 action_id；这是整条路由诊断链的起点。
+            NotificationRouteDiagnostics.record(
+                stage: NotificationRouteDiagnostics.Stage.received,
+                outcome: delivery.notification.event.rawValue,
+                reason: delivery.decision.map { "\(delivery.notification.kind.rawValue)/\($0.rawValue)" }
+                    ?? delivery.notification.kind.rawValue,
+                correlation: NotificationRouteDiagnostics.shortReference(delivery.notification.actionID)
+            )
+            if delivery.decision != nil, let handleApprovalAction {
+                await handleApprovalAction(delivery)
+            } else {
+                _ = approvalInbox.receive(
+                    userInfo: userInfo,
+                    actionIdentifier: actionIdentifier,
+                    requestIdentifier: requestIdentifier
+                )
+            }
+            return
+        }
+        let accepted = receive(userInfo: userInfo)
+        // 本地运行态通知没有 action_id，用会话标签摘要做关联；无法解码的载荷也要留痕，
+        // 否则“点了没反应”在诊断里会是一片空白。
+        NotificationRouteDiagnostics.record(
+            stage: NotificationRouteDiagnostics.Stage.received,
+            outcome: accepted ? "session_route" : "rejected",
+            reason: accepted ? nil : "undecodable_payload",
+            correlation: pendingRoute.flatMap {
+                NotificationRouteDiagnostics.shortReference(
+                    LockScreenApprovalRouting.messageSessionTag(threadID: $0.sessionID)
+                )
+            }
+        )
     }
 
     nonisolated func userNotificationCenter(
@@ -189,50 +386,15 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
     ) {
         let userInfo = response.notification.request.content.userInfo
         let actionIdentifier = response.actionIdentifier
-		Task { @MainActor [weak self] in
-				defer { completionHandler() }
-				guard let self else { return }
-				let requestIdentifier = response.notification.request.identifier
-				// 自定义允许/拒绝动作必须在系统给出的通知响应窗口内完成。completion 只有
-			// 在 agentd 返回后才调用，App 即使没有进入前台也能提交决策。
-				if let delivery = LockScreenApprovalDelivery(
-					userInfo: userInfo,
-					actionIdentifier: actionIdentifier,
-					requestIdentifier: requestIdentifier
-				) {
-				// 只记事件、类型和截短的 action_id；这是整条路由诊断链的起点。
-				NotificationRouteDiagnostics.record(
-					stage: NotificationRouteDiagnostics.Stage.received,
-					outcome: delivery.notification.event.rawValue,
-					reason: delivery.decision.map { "\(delivery.notification.kind.rawValue)/\($0.rawValue)" }
-						?? delivery.notification.kind.rawValue,
-					correlation: NotificationRouteDiagnostics.shortReference(delivery.notification.actionID)
-				)
-				if delivery.decision != nil, let handleApprovalAction {
-					await handleApprovalAction(delivery)
-				} else {
-						_ = self.approvalInbox.receive(
-							userInfo: userInfo,
-							actionIdentifier: actionIdentifier,
-							requestIdentifier: requestIdentifier
-					)
-				}
-				return
-			}
-			let accepted = self.receive(userInfo: userInfo)
-			// 本地运行态通知没有 action_id，用会话标签摘要做关联；无法解码的载荷也要留痕，
-			// 否则“点了没反应”在诊断里会是一片空白。
-			NotificationRouteDiagnostics.record(
-				stage: NotificationRouteDiagnostics.Stage.received,
-				outcome: accepted ? "session_route" : "rejected",
-				reason: accepted ? nil : "undecodable_payload",
-				correlation: self.pendingRoute.flatMap {
-					NotificationRouteDiagnostics.shortReference(
-						LockScreenApprovalRouting.messageSessionTag(threadID: $0.sessionID)
-					)
-				}
-			)
-		}
+        let requestIdentifier = response.notification.request.identifier
+        Task { @MainActor [weak self] in
+            defer { completionHandler() }
+            await self?.handleNotificationOpen(
+                userInfo: userInfo,
+                actionIdentifier: actionIdentifier,
+                requestIdentifier: requestIdentifier
+            )
+        }
     }
 
     nonisolated func userNotificationCenter(
@@ -242,8 +404,11 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
     ) {
         let request = notification.request
         Task { @MainActor [weak self] in
-            let options = self?.presentationOptions(
-                forNotificationIdentifier: request.identifier,
+            let options = self?.presentInForeground(
+                identifier: request.identifier,
+                title: request.content.title,
+                subtitle: request.content.subtitle,
+                body: request.content.body,
                 userInfo: request.content.userInfo
             ) ?? [.banner, .sound]
             completionHandler(options)

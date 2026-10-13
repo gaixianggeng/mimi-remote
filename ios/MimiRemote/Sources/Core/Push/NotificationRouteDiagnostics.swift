@@ -27,6 +27,8 @@ enum NotificationRouteDiagnostics {
         static let reconcile = "reconcile"
         /// 锁屏标题缓存的写入结论（#418）：written / cleared / failed / unavailable。
         static let titleCache = "title_cache"
+        /// App 在前台收到通知时的呈现结论（#510）：quiet / system / in_app，以及轻提示被点按。
+        static let foreground = "foreground"
     }
 
     static let capacity = 200

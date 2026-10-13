@@ -851,6 +851,7 @@ struct SessionRuntimeNotification: Equatable {
         case approval
         case completed
         case failed
+        case interrupted
     }
 
     let id: String
@@ -1127,7 +1128,7 @@ struct UserNotificationSessionReminderScheduler: SessionReminderScheduling {
         content.title = notification.title
         content.body = notification.body
         content.sound = .default
-        content.userInfo = route.userInfo
+        content.userInfo = notification.notificationUserInfo(route: route)
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         let notificationID = Self.runtimeNotificationID(
