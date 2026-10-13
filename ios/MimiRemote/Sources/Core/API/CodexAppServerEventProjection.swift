@@ -824,7 +824,8 @@ extension CodexAppServerSessionRuntime {
             kind: object["kind"]?.stringValue,
             status: object["status"]?.stringValue,
             pid: object["pid"]?.intValue,
-            statusUpdatedAt: statusUpdatedAt
+            statusUpdatedAt: statusUpdatedAt,
+            waitingKind: object["waitingKind"]?.stringValue.flatMap(ClaudeSessionOwner.WaitingKind.init(rawValue:))
         )
     }
 

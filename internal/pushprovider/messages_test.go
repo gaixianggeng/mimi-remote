@@ -77,6 +77,42 @@ func TestTurnMessagePayloadHasOnlyDetailsAndNoContent(t *testing.T) {
 	}
 }
 
+func TestHolderWaitingPayloadUsesFixedReadOnlyAlert(t *testing.T) {
+	now := time.Now()
+	notification := ApprovalNotification{
+		Version: 1, Event: holderWaitingPushEvent, ActionID: "route-123", DeviceID: "device-123",
+		ProfileID: "profile-123", Runtime: "claude", HostTag: "ABCD", SessionTag: "0123456789ABCDEF",
+		ExpiresAt: now.Add(23 * time.Hour).UTC().Format(time.RFC3339),
+	}
+	if err := notification.Validate(now); err != nil {
+		t.Fatal(err)
+	}
+	aps := decodeAPS(t, notification)
+	if got, want := sortedKeys(aps), []string{"alert", "category", "mutable-content", "sound", "thread-id"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected holder waiting aps keys: got=%v want=%v", got, want)
+	}
+	if aps["category"] != ApprovalDetailsCategory || aps["sound"] != "default" ||
+		aps["mutable-content"] != float64(1) || aps["thread-id"] != notification.SessionTag {
+		t.Fatalf("holder waiting aps 必须是只读可定位提醒：%v", aps)
+	}
+	wantAlert := map[string]any{
+		"title-loc-key": holderWaitingTitleKey,
+		"loc-key":       holderWaitingBodyKey,
+	}
+	if !reflect.DeepEqual(aps["alert"], wantAlert) {
+		t.Fatalf("holder waiting 必须使用固定且无参数的本地化文案：%v", aps["alert"])
+	}
+	notification.Runtime = "codex"
+	if notification.Validate(now) == nil {
+		t.Fatal("holder.waiting 不应接受非 Claude runtime")
+	}
+	notification.Runtime = "claude"
+	notification.ApprovalKind = "permission"
+	if notification.Validate(now) == nil {
+		t.Fatal("holder.waiting 不应携带审批类型")
+	}
+}
+
 // 给消息加 mutable-content 不能顺带改动审批与 resolved 的 Payload。
 func TestApprovalAndResolvedPayloadsUnchangedByMessageRewrite(t *testing.T) {
 	now := time.Now()

@@ -131,7 +131,8 @@ struct AgentSession: Identifiable, Codable, Hashable {
     /// 这一轮是否还在进行：本 App 的运行时在跑、等待审批 / 输入，或电脑上的 Claude Code 正在处理。
     /// 分类细节见 `activityState`；这里只回答"要不要把它当成进行中"。
     var isRunning: Bool {
-        status == "running" || status == "waiting_for_approval" || status == "waiting_for_input" || isRunningOnComputer
+        status == "running" || status == "waiting_for_approval" || status == "waiting_for_input"
+            || isRunningOnComputer || isWaitingOnComputer
     }
 
     /// 会话正被电脑上的其他 Claude 进程（终端 / 桌面端）持有，这里只能旁观或等它空闲后接管。
@@ -142,6 +143,10 @@ struct AgentSession: Identifiable, Codable, Hashable {
     /// 持有方正在处理：列表里它是"进行中"，不是一条已经结束的历史（#683）。
     var isRunningOnComputer: Bool {
         isHeldOnComputer && claudeOwner?.isBusy == true
+    }
+
+    var isWaitingOnComputer: Bool {
+        isHeldOnComputer && claudeOwner?.waitingReason != nil
     }
 
     /// 旧 App Server 的普通顶层 thread 没有 capability 字段，继续沿用既有可写行为；
@@ -301,19 +306,54 @@ struct AgentSession: Identifiable, Codable, Hashable {
 
 /// 正持有某个 Claude 会话的本机进程摘要，来自 bridge 的 `claudeOwner`。
 struct ClaudeSessionOwner: Codable, Hashable, Sendable {
+    /// 只接收适配器归一后的类别，电脑端对话框的自由文本不进入客户端。
+    enum WaitingKind: String, Codable, Hashable, Sendable, CaseIterable {
+        case permission, input, other
+
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: raw) ?? .other
+        }
+
+        var title: String {
+            switch self {
+            case .permission: return L10n.text("ui.computer_waiting_permission_title")
+            case .input: return L10n.text("ui.computer_waiting_input_title")
+            case .other: return L10n.text("ui.computer_waiting_other_title")
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .permission: return L10n.text("ui.computer_waiting_permission_message")
+            case .input: return L10n.text("ui.computer_waiting_input_message")
+            case .other: return L10n.text("ui.computer_waiting_other_message")
+            }
+        }
+    }
+
     let entrypoint: String?
     let kind: String?
     let status: String?
     let pid: Int?
     /// 持有方最近一次在空闲与执行之间切换的时刻；列表据此显示电脑端已处理多久。旧 bridge 不带。
     let statusUpdatedAt: Date?
+    let waitingKind: WaitingKind?
 
-    init(entrypoint: String?, kind: String?, status: String?, pid: Int?, statusUpdatedAt: Date? = nil) {
+    init(
+        entrypoint: String?, kind: String?, status: String?, pid: Int?,
+        statusUpdatedAt: Date? = nil, waitingKind: WaitingKind? = nil
+    ) {
         self.entrypoint = entrypoint
         self.kind = kind
         self.status = status
         self.pid = pid
         self.statusUpdatedAt = statusUpdatedAt
+        self.waitingKind = waitingKind
+    }
+
+    var waitingReason: WaitingKind? {
+        status == "waiting" ? (waitingKind ?? .other) : nil
     }
 
     /// Claude Code 把执行中的进程标成 `busy` / `shell`；`-p` 进程不写状态。
@@ -503,6 +543,8 @@ extension AgentSession {
             return AgentSessionDisplayStatus(title: L10n.text("ui.pending_approval"), systemImage: "checkmark.seal.fill", tone: .warning, showsSpinner: false)
         case .needsYou(.userInput):
             return AgentSessionDisplayStatus(title: L10n.text("ui.to_be_entered"), systemImage: "keyboard", tone: .warning, showsSpinner: false)
+        case .needsYou(.computer(let reason)):
+            return AgentSessionDisplayStatus(title: reason.title, systemImage: "desktopcomputer", tone: .warning, showsSpinner: false)
         case .running, .failed, .idle:
             break
         }

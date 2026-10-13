@@ -132,12 +132,21 @@ func pushTestFixtureWith(t *testing.T, upstreamURL string, providerURL string, o
 
 func registerPushDevice(t *testing.T, server *httptest.Server, deviceID string) {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{
+	registerPushDeviceWithCapability(t, server, deviceID, nil)
+}
+
+func registerPushDeviceWithCapability(t *testing.T, server *httptest.Server, deviceID string, supports *bool) map[string]any {
+	t.Helper()
+	requestBody := map[string]any{
 		"device_id":  deviceID,
 		"ticket":     "mpt1.1.opaque-ticket",
 		"platform":   "ios",
 		"expires_at": time.Now().Add(30 * 24 * time.Hour).UTC().Format(time.RFC3339),
-	})
+	}
+	if supports != nil {
+		requestBody["supports_holder_waiting"] = *supports
+	}
+	body, err := json.Marshal(requestBody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,6 +163,11 @@ func registerPushDevice(t *testing.T, server *httptest.Server, deviceID string) 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("注册设备失败 status=%d", resp.StatusCode)
 	}
+	var response map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	return response
 }
 
 func postDecide(t *testing.T, server *httptest.Server, actionID string, deviceID string, decision string) (int, map[string]any) {
@@ -387,6 +401,45 @@ func TestPushStatusReportsActionableKinds(t *testing.T) {
 	devices, _ := body["devices"].([]any)
 	if len(devices) != 1 {
 		t.Fatalf("应报告一台已注册设备：%v", body["devices"])
+	}
+	device, _ := devices[0].(map[string]any)
+	if supported, exists := device["supports_holder_waiting"]; !exists || supported != false {
+		t.Fatalf("旧注册必须显式回显 supports_holder_waiting=false：%v", device)
+	}
+}
+
+func TestPushDeviceHolderWaitingCapabilityEchoAndLegacyRefresh(t *testing.T) {
+	provider := newFakePushProvider(t)
+	server, _ := pushTestFixture(t, "ws://unused", provider.server.URL)
+	supported := true
+	if response := registerPushDeviceWithCapability(t, server, "device-a", &supported); response["supports_holder_waiting"] != true {
+		t.Fatalf("POST 必须回显新能力：%v", response)
+	}
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/api/push/status", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("读取 push status 失败：%d", resp.StatusCode)
+	}
+	var status map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	devices, _ := status["devices"].([]any)
+	if len(devices) != 1 {
+		t.Fatalf("GET status 设备数量异常：%v", devices)
+	}
+	device, _ := devices[0].(map[string]any)
+	if device["supports_holder_waiting"] != true {
+		t.Fatalf("GET status 必须回显新能力：%v", device)
+	}
+	// 旧请求没有这个字段，刷新同一设备时必须回到 false，不能沿用旧值。
+	if response := registerPushDeviceWithCapability(t, server, "device-a", nil); response["supports_holder_waiting"] != false {
+		t.Fatalf("旧请求刷新必须回显 false：%v", response)
 	}
 }
 

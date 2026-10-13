@@ -326,14 +326,24 @@ class TerminalHolder {
   readonly pid = this.child.pid!;
   private readonly file = path.join(configDir, "sessions", `${this.pid}.json`);
 
-  constructor(sessionId: string, status: string) {
-    this.register(sessionId, status);
+  constructor(sessionId: string, status: string, waitingFor?: unknown) {
+    this.register(sessionId, status, Date.now(), waitingFor);
   }
 
-  register(sessionId: string, status: string, statusUpdatedAt = Date.now()) {
+  register(sessionId: string, status: string, statusUpdatedAt = Date.now(), waitingFor?: unknown) {
     writeFileSync(
       this.file,
-      JSON.stringify({ pid: this.pid, sessionId, cwd: project, entrypoint: "cli", kind: "interactive", status, startedAt: Date.now(), statusUpdatedAt }),
+      JSON.stringify({
+        pid: this.pid,
+        sessionId,
+        cwd: project,
+        entrypoint: "cli",
+        kind: "interactive",
+        status,
+        ...(waitingFor !== undefined ? { waitingFor } : {}),
+        startedAt: Date.now(),
+        statusUpdatedAt,
+      }),
     );
   }
 
@@ -511,6 +521,101 @@ describe("rename", () => {
 });
 
 describe("ownership", () => {
+  test("computer holder transitions expose stable waiting categories without leaking raw reasons", async () => {
+    const owner = new Client();
+    const threadId = await newThread(owner);
+    const first = await owner.call("turn/start", { threadId, input: text("seed") });
+    await owner.turnCompleted(first.turn.id);
+    const watcher = new Client();
+    const terminal = new TerminalHolder(threadId, "busy");
+    const next = async (status: string, statusUpdatedAt: number, waitingFor?: unknown) => {
+      const start = watcher.frames.length;
+      terminal.register(threadId, status, statusUpdatedAt, waitingFor);
+      return watcher.waitFor(
+        (frame) =>
+          watcher.frames.indexOf(frame) >= start &&
+          frame.method === "thread/status/changed" &&
+          frame.params.threadId === threadId &&
+          frame.params.claudeOwner?.status === status &&
+          frame.params.claudeOwner?.statusUpdatedAt === statusUpdatedAt,
+      );
+    };
+
+    try {
+      const busy = await watcher.waitFor(
+        (frame: any) => frame.method === "thread/status/changed" && frame.params.threadId === threadId && frame.params.claudeOwner?.status === "busy",
+      );
+      expect(busy.params.status).toEqual({ type: "active", activeFlags: [] });
+
+      const permissionSince = Date.now() + 1_000;
+      const permission = await next("waiting", permissionSince, "permission prompt");
+      expect(permission.params).toMatchObject({
+        status: { type: "active", activeFlags: ["waitingOnApproval"] },
+        claudeOwner: { waitingKind: "permission", statusUpdatedAt: permissionSince },
+      });
+      expect(JSON.stringify(permission)).not.toContain("permission prompt");
+      expect(JSON.stringify(permission)).not.toContain("waitingFor");
+
+      const permissionList = (await watcher.call("thread/list", { cwd: project, limit: 50 })).data.find((thread: any) => thread.id === threadId);
+      const permissionRead = (await watcher.call("thread/read", { threadId })).thread;
+      for (const snapshot of [permissionList, permissionRead]) {
+        expect(snapshot).toMatchObject({
+          status: { type: "active", activeFlags: ["waitingOnApproval"] },
+          claudeOwner: { waitingKind: "permission", statusUpdatedAt: permissionSince },
+        });
+      }
+
+      const idleSince = permissionSince + 1_000;
+      const idle = await next("idle", idleSince, "input needed");
+      expect(idle.params.status).toEqual({ type: "idle" });
+      expect(idle.params.claudeOwner.waitingKind).toBeUndefined();
+
+      const inputSince = idleSince + 1_000;
+      const input = await next("waiting", inputSince, "input needed");
+      expect(input.params).toMatchObject({
+        status: { type: "active", activeFlags: ["waitingOnUserInput"] },
+        claudeOwner: { waitingKind: "input", statusUpdatedAt: inputSince },
+      });
+      const inputList = (await watcher.call("thread/list", { cwd: project, limit: 50 })).data.find((thread: any) => thread.id === threadId);
+      const inputRead = (await watcher.call("thread/read", { threadId })).thread;
+      expect(inputList.status).toEqual(inputRead.status);
+      expect(inputList.claudeOwner).toEqual(inputRead.claudeOwner);
+
+      const dialog = await next("waiting", inputSince + 1_000, "dialog open");
+      expect(dialog.params).toMatchObject({
+        status: { type: "active", activeFlags: ["waitingOnUserInput"] },
+        claudeOwner: { waitingKind: "other" },
+      });
+
+      const sandboxRequest = await next("waiting", inputSince + 2_000, "sandbox request");
+      expect(sandboxRequest.params).toMatchObject({
+        status: { type: "active", activeFlags: ["waitingOnApproval"] },
+        claudeOwner: { waitingKind: "permission" },
+      });
+
+      const privateReason = "future reason with private free text";
+      const unknown = await next("waiting", inputSince + 3_000, privateReason);
+      expect(unknown.params).toMatchObject({
+        status: { type: "active", activeFlags: ["waitingOnUserInput"] },
+        claudeOwner: { waitingKind: "other" },
+      });
+      expect(JSON.stringify(unknown)).not.toContain(privateReason);
+      expect(JSON.stringify(unknown)).not.toContain("waitingFor");
+
+      const error = await owner.call("thread/takeover", { threadId }).catch((caught) => caught);
+      expect(error.data).toMatchObject({
+        accepted: false,
+        reason: "holder_state_unknown",
+        retryable: true,
+        claudeOwner: { pid: terminal.pid, waitingKind: "other" },
+      });
+      expect(JSON.stringify(error.data)).not.toContain(privateReason);
+      expect(pidAlive(terminal.pid)).toBe(true);
+    } finally {
+      terminal.exit();
+    }
+  });
+
   test("a session held by another local Claude process is read-only", async () => {
     const client = new Client();
     const threadId = await newThread(client);

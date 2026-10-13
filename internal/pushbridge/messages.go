@@ -13,24 +13,24 @@ const (
 	maxMessages          = maxRoutes
 )
 
-// TurnMessage 只保留打开任务所需的本机路由。正文和错误详情不进入推送。
+// Message 只保留打开任务所需的本机路由。正文和错误详情不进入推送。
 // ScopeID/CWD/ReadOnly 是推送时从线程授权记录截下的快照：agentd 重启后授权缓存
 // 为空，定位时要靠它们按当前作用域配置重新推导线程授权。
-type TurnMessage struct {
+type Message struct {
 	Runtime   string
 	ThreadID  string
 	ProjectID string
 	ScopeID   string
 	CWD       string
 	ReadOnly  bool
-	TurnID    string
+	MessageID string `json:"message_id,omitempty"`
 	Event     string
 }
 
-// PrepareTurnMessage 按 runtime/thread/turn 去重。错误事件和随后的失败终态
-// 属于同一轮，不能弹两次；路由有数量和时间上限，也不赋予任何审批权限。
-func (m *Manager) PrepareTurnMessage(message TurnMessage) PreparedDelivery {
-	if !m.Enabled() || strings.TrimSpace(message.ThreadID) == "" || strings.TrimSpace(message.TurnID) == "" {
+// PrepareMessage 按 runtime/thread/message identity 去重。错误事件和随后的失败终态
+// 属于同一轮，不能弹两次；等待状态的同一 episode 也只弹一次。
+func (m *Manager) PrepareMessage(message Message) PreparedDelivery {
+	if !m.Enabled() || strings.TrimSpace(message.ThreadID) == "" || strings.TrimSpace(message.MessageID) == "" {
 		return nil
 	}
 	if message.Runtime != "codex" && message.Runtime != "claude" {
@@ -38,10 +38,23 @@ func (m *Manager) PrepareTurnMessage(message TurnMessage) PreparedDelivery {
 	}
 	switch message.Event {
 	case EventTurnCompleted, EventTurnFailed, EventTurnInterrupted:
+	case EventHolderWaiting:
+		if message.Runtime != "claude" {
+			return nil
+		}
 	default:
 		return nil
 	}
 	devices := m.devices.Active()
+	if message.Event == EventHolderWaiting {
+		filtered := make([]Device, 0, len(devices))
+		for _, device := range devices {
+			if device.SupportsHolderWaiting {
+				filtered = append(filtered, device)
+			}
+		}
+		devices = filtered
+	}
 	if len(devices) == 0 {
 		return nil
 	}
@@ -59,7 +72,7 @@ func (m *Manager) PrepareTurnMessage(message TurnMessage) PreparedDelivery {
 		ScopeID:   message.ScopeID,
 		CWD:       message.CWD,
 		ReadOnly:  message.ReadOnly,
-		TurnID:    message.TurnID,
+		MessageID: message.MessageID,
 		Event:     message.Event,
 		CreatedAt: now,
 		ExpiresAt: now.Add(messageTTL),
@@ -80,19 +93,19 @@ func (m *Manager) PrepareTurnMessage(message TurnMessage) PreparedDelivery {
 	}
 }
 
-func (m *Manager) MessageRoute(id, deviceID string) (TurnMessage, bool) {
+func (m *Manager) MessageRoute(id, deviceID string) (Message, bool) {
 	record, outcome := m.LocateRoute(id, deviceID)
 	if outcome != OutcomeProceed || record.Kind != RouteKindMessage {
-		return TurnMessage{}, false
+		return Message{}, false
 	}
-	return TurnMessage{
+	return Message{
 		Runtime:   record.Runtime,
 		ThreadID:  record.ThreadID,
 		ProjectID: record.ProjectID,
 		ScopeID:   record.ScopeID,
 		CWD:       record.CWD,
 		ReadOnly:  record.ReadOnly,
-		TurnID:    record.TurnID,
+		MessageID: record.effectiveMessageID(),
 		Event:     record.Event,
 	}, true
 }

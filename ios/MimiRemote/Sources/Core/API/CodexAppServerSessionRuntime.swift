@@ -1712,7 +1712,9 @@ actor CodexAppServerSessionRuntime {
                     "entrypoint": owner.entrypoint.map { .string($0) } ?? .null,
                     "kind": owner.kind.map { .string($0) } ?? .null,
                     "status": owner.status.map { .string($0) } ?? .null,
-                    "pid": owner.pid.map { .int(Int64($0)) } ?? .null
+                    "pid": owner.pid.map { .int(Int64($0)) } ?? .null,
+                    "statusUpdatedAt": owner.statusUpdatedAt.map { .int(Int64($0.timeIntervalSince1970 * 1_000)) } ?? .null,
+                    "waitingKind": owner.waitingKind.map { .string($0.rawValue) } ?? .null
                 ]) } ?? .null
             ]
         }

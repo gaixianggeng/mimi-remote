@@ -10,6 +10,7 @@ enum SessionActivityState: Equatable, Hashable {
     enum Attention: Equatable, Hashable {
         case approval
         case userInput
+        case computer(ClaudeSessionOwner.WaitingKind)
     }
 
     /// 谁在驱动这一轮。
@@ -63,6 +64,10 @@ extension AgentSession {
     var activityState: SessionActivityState {
         if isLocalDraft {
             return .draft
+        }
+        // 外部等待只有状态摘要，不代表手机持有可执行的审批或输入请求。
+        if isHeldOnComputer, let reason = claudeOwner?.waitingReason {
+            return .needsYou(.computer(reason))
         }
         if status == SessionStatus.waitingForApproval.rawValue || pendingApproval != nil {
             return .needsYou(.approval)

@@ -255,7 +255,7 @@ final class ClaudeTakeoverTests: XCTestCase {
             calls += 1
             return CodexAppServerThreadTakeoverResult(released: true, canAcceptDirectInput: true)
         }
-        let statuses: [String?] = ["busy", "shell", nil, "unknown"]
+        let statuses: [String?] = ["busy", "shell", "waiting", nil, "unknown"]
         for status in statuses {
             fixture.store.updateSession(fixture.held.id) { current in
                 current.claudeOwner = ClaudeSessionOwner(entrypoint: "cli", kind: "interactive", status: status, pid: 4242)
@@ -344,9 +344,12 @@ final class ClaudeTakeoverTests: XCTestCase {
         )
         let limits = try JSONDecoder().decode(RateLimitSummary.self, from: Data("{}".utf8))
 
-        for status: String? in ["busy", "shell", nil, "idle"] {
+        for status: String? in ["busy", "shell", "waiting", nil, "idle"] {
             var held = fixture.held
-            held.claudeOwner = ClaudeSessionOwner(entrypoint: "cli", kind: "interactive", status: status, pid: 4242)
+            held.claudeOwner = ClaudeSessionOwner(
+                entrypoint: "cli", kind: "interactive", status: status, pid: 4242,
+                statusUpdatedAt: Date(timeIntervalSince1970: 1_000), waitingKind: status == "waiting" ? .input : nil
+            )
             fixture.store.upsert(held)
             await runtime.rememberForkedSession(held)
             fixture.store.setSelectedSessionID(nil)
@@ -590,6 +593,37 @@ final class ClaudeTakeoverTests: XCTestCase {
         XCTAssertTrue(released.allowsDirectInput)
         XCTAssertNil(released.claudeOwner)
         XCTAssertEqual(observed.count, 3)
+        await runtime.shutdownForHostSwitch()
+    }
+
+    func testComputerWaitingStatusPushProjectsAReadOnlyReason() async throws {
+        let fixture = await makeHeldStore(id: "claude_waiting_push", supportsTakeover: true)
+        let (runtime, _, _) = makeTakeoverRuntime(session: fixture.held)
+        await runtime.rememberForkedSession(fixture.held)
+        let observed = ObservedSessions()
+        await runtime.setSessionIndexObserver { session in observed.append(session) }
+        for raw in ["permission", "input", "other", "future_reason"] {
+            await runtime.handle(CodexAppServerNotification(method: "thread/status/changed", params: .object([
+                "threadId": .string(fixture.held.id),
+                "status": .object(["type": .string("active"), "activeFlags": .array([.string(raw == "permission" ? "waitingOnApproval" : "waitingOnUserInput")])]),
+                "canAcceptDirectInput": .bool(false),
+                "claudeOwner": .object([
+                    "entrypoint": .string("cli"), "status": .string("waiting"), "pid": .int(4242),
+                    "waitingKind": .string(raw), "statusUpdatedAt": .int(1_791_803_198_629)
+                ])
+            ])))
+            let projected = try XCTUnwrap(observed.last)
+            let reason = ClaudeSessionOwner.WaitingKind(rawValue: raw) ?? .other
+            XCTAssertEqual(projected.activityState, .needsYou(.computer(reason)))
+            XCTAssertEqual(projected.claudeOwner?.statusUpdatedAt, Date(timeIntervalSince1970: 1_791_803_198.629))
+            XCTAssertNil(projected.pendingApproval)
+            XCTAssertNil(projected.pendingUserInput)
+            fixture.store.upsert(projected)
+            let notice = try XCTUnwrap(fixture.store.selectedOwnershipNotice)
+            XCTAssertEqual(notice.title, reason.title)
+            XCTAssertEqual(notice.message, reason.message)
+            XCTAssertFalse(notice.canTakeOver)
+        }
         await runtime.shutdownForHostSwitch()
     }
 
