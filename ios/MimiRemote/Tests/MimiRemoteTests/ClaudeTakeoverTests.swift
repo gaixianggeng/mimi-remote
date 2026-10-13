@@ -622,17 +622,243 @@ final class ClaudeTakeoverTests: XCTestCase {
         XCTAssertNil(done.activeTurnID)
         XCTAssertEqual(done.activityState, .idle)
 
+        await runtime.handle(CodexAppServerNotification(method: "thread/name/updated", params: .object([
+            "threadId": .string(driving.id), "threadName": .string("完成后改名")
+        ])))
+        await runtime.handle(CodexAppServerNotification(method: "thread/status/changed", params: .object([
+            "threadId": .string(driving.id), "status": .object(["type": .string("idle")]),
+            "updatedAt": .int(1)
+        ])))
+        let settled = try XCTUnwrap(observed.last)
+        XCTAssertEqual(settled.status, SessionStatus.completed.rawValue, "迟到的 idle 不能抹掉明确终态")
+        XCTAssertEqual(settled.title, "完成后改名")
+        XCTAssertEqual(settled.updatedAt, done.updatedAt, "保留终态时不能把本地完成时间回退到旧 idle")
+        let cachedSession = await runtime.contextsBySessionID[driving.id]?.session
+        let cachedDone = try XCTUnwrap(cachedSession)
+        XCTAssertEqual(cachedDone.status, SessionStatus.completed.rawValue, "canonical 缓存必须与列表终态一致")
+
+        let newerRemoteTime = try XCTUnwrap(done.updatedAt).addingTimeInterval(1)
+        await runtime.handle(CodexAppServerNotification(method: "thread/status/changed", params: .object([
+            "threadId": .string(driving.id), "status": .object(["type": .string("idle")]),
+            "updatedAt": .double(newerRemoteTime.timeIntervalSince1970)
+        ])))
+        XCTAssertEqual(observed.last?.status, SessionStatus.history.rawValue, "更新的远端活动应结束旧终态保留")
+
         await turnEvent("turn/started", turnID: "turn-fails", status: "inProgress")
         await turnEvent("turn/completed", turnID: "turn-fails", status: "failed")
         let failed = try XCTUnwrap(observed.last)
         XCTAssertEqual(failed.status, SessionStatus.failed.rawValue)
         XCTAssertEqual(failed.activityState, .failed)
+        await runtime.handle(CodexAppServerNotification(method: "thread/status/changed", params: .object([
+            "threadId": .string(driving.id), "status": .object(["type": .string("notLoaded")])
+        ])))
+        XCTAssertEqual(observed.last?.status, SessionStatus.failed.rawValue)
+        let beforeLateResolved = observed.count
+        await runtime.emitApprovalResolved(sessionID: driving.id)
+        XCTAssertEqual(observed.count, beforeLateResolved, "迟到 resolved 不能把终态恢复为 running")
 
         // 旧回合的迟到完成不能把新开始的回合写成终态。
         await turnEvent("turn/started", turnID: "turn-new", status: "inProgress")
         let before = observed.count
         await turnEvent("turn/completed", turnID: "turn-fails", status: "completed")
         XCTAssertFalse(observed.items(after: before).contains { $0.status == SessionStatus.completed.rawValue })
+        await runtime.shutdownForHostSwitch()
+    }
+
+    func testSubscribedTurnCompletionPublishesCanonicalTerminalBeforeBusinessEvent() async throws {
+        let fixture = await makeHeldStore(id: "claude_terminal_order", supportsTakeover: true)
+        let (runtime, _, _) = makeTakeoverRuntime(session: fixture.held)
+        var running = fixture.held
+        running.status = SessionStatus.running.rawValue
+        running.activeTurnID = "turn-order"
+        running.canAcceptDirectInput = true
+        running.claudeOwner = nil
+        await runtime.rememberForkedSession(running)
+        let stream = await runtime.attachEvents(sessionID: running.id)
+        defer { stream.cancel() }
+
+        await runtime.handle(CodexAppServerNotification(method: "turn/completed", params: .object([
+            "threadId": .string(running.id),
+            "turn": .object(["id": .string("turn-order"), "status": .string("failed")])
+        ])))
+
+        var iterator = stream.makeAsyncIterator()
+        guard case .session(let terminal)? = await iterator.next() else {
+            return XCTFail("终态业务事件前应先发布 canonical session")
+        }
+        XCTAssertEqual(terminal.status, SessionStatus.failed.rawValue)
+        XCTAssertNil(terminal.activeTurnID)
+        guard case .turnCompleted(let metadata)? = await iterator.next() else {
+            return XCTFail("canonical session 后应发布 turnCompleted")
+        }
+        XCTAssertEqual(metadata.turnLifecycle, .failed)
+        await runtime.shutdownForHostSwitch()
+    }
+
+    func testUnsubscribedReplayedInteractionsSynchronizeAndResolveCanonicalSession() async throws {
+        let fixture = await makeHeldStore(id: "claude_pending_index", supportsTakeover: true)
+        let (runtime, _, _) = makeTakeoverRuntime(session: fixture.held)
+        var running = fixture.held
+        running.status = SessionStatus.running.rawValue
+        running.activeTurnID = "turn-pending"
+        running.canAcceptDirectInput = true
+        running.claudeOwner = nil
+        await runtime.rememberForkedSession(running)
+        let observed = ObservedSessions()
+        await runtime.setSessionIndexObserver { observed.append($0) }
+
+        func replay(id: String, method: String, itemID: String, extra: [String: CodexAppServerJSONValue]) async {
+            var params = extra
+            params["threadId"] = .string(running.id)
+            params["turnId"] = .string("turn-pending")
+            params["itemId"] = .string(itemID)
+            await runtime.handle(CodexAppServerNotification(method: "serverRequest/replay", params: .object([
+                "outstanding": .array([.object([
+                    "id": .string(id), "method": .string(method), "params": .object(params)
+                ])])
+            ])))
+        }
+
+        await replay(
+            id: "approval-wire", method: "item/commandExecution/requestApproval", itemID: "approval-card",
+            extra: ["command": .string("swift test")]
+        )
+        XCTAssertEqual(observed.last?.status, SessionStatus.waitingForApproval.rawValue)
+        XCTAssertEqual(observed.last?.pendingApproval?.id, "approval-card")
+        await runtime.handle(CodexAppServerNotification(method: "serverRequest/resolved", params: .object([
+            "threadId": .string(running.id), "requestId": .string("approval-wire")
+        ])))
+        XCTAssertEqual(observed.last?.status, SessionStatus.running.rawValue)
+        XCTAssertNil(observed.last?.pendingApproval)
+
+        await replay(
+            id: "input-wire", method: "item/tool/requestUserInput", itemID: "input-card",
+            extra: ["questions": .array([.object([
+                "id": .string("scope"), "header": .string("范围"), "question": .string("处理哪里？"),
+                "isOther": .bool(true), "isSecret": .bool(false), "options": .array([])
+            ])])]
+        )
+        XCTAssertEqual(observed.last?.status, SessionStatus.waitingForInput.rawValue)
+        XCTAssertEqual(observed.last?.pendingUserInput?.id, "input-card")
+        await runtime.handle(CodexAppServerNotification(method: "serverRequest/resolved", params: .object([
+            "threadId": .string(running.id), "requestId": .string("input-wire")
+        ])))
+        XCTAssertEqual(observed.last?.status, SessionStatus.running.rawValue)
+        XCTAssertNil(observed.last?.pendingUserInput)
+
+        let old = CodexAppServerServerRequest(
+            id: .string("old-wire"), method: "item/commandExecution/requestApproval",
+            params: .object(["threadId": .string(running.id), "turnId": .string("turn-pending"), "itemId": .string("old-card")])
+        )
+        let new = CodexAppServerServerRequest(
+            id: .string("new-wire"), method: "item/commandExecution/requestApproval",
+            params: .object(["threadId": .string(running.id), "turnId": .string("turn-pending"), "itemId": .string("new-card")])
+        )
+        await runtime.handle(old)
+        await runtime.handle(new)
+        await runtime.handle(CodexAppServerNotification(method: "serverRequest/resolved", params: .object([
+            "threadId": .string(running.id), "requestId": .string("old-wire")
+        ])))
+        XCTAssertEqual(observed.last?.status, SessionStatus.waitingForApproval.rawValue)
+        XCTAssertEqual(observed.last?.pendingApproval?.id, "new-card", "旧 resolved 不能清掉更新的同类请求")
+        await runtime.handle(CodexAppServerNotification(method: "serverRequest/resolved", params: .object([
+            "threadId": .string(running.id), "requestId": .string("new-wire")
+        ])))
+
+        let remaining = CodexAppServerServerRequest(
+            id: .string("remaining-wire"), method: "item/commandExecution/requestApproval",
+            params: .object(["threadId": .string(running.id), "turnId": .string("turn-pending"), "itemId": .string("remaining-card")])
+        )
+        let newest = CodexAppServerServerRequest(
+            id: .string("newest-wire"), method: "item/commandExecution/requestApproval",
+            params: .object(["threadId": .string(running.id), "turnId": .string("turn-pending"), "itemId": .string("newest-card")])
+        )
+        await runtime.handle(remaining)
+        await runtime.handle(newest)
+        await runtime.handle(CodexAppServerNotification(method: "serverRequest/resolved", params: .object([
+            "threadId": .string(running.id), "requestId": .string("newest-wire")
+        ])))
+        XCTAssertEqual(observed.last?.status, SessionStatus.waitingForApproval.rawValue)
+        XCTAssertEqual(observed.last?.pendingApproval?.id, "remaining-card", "当前请求解决后应恢复仍未解决的同类请求")
+
+        let refreshed = try await runtime.agentSession(from: [
+            "id": .string(running.id), "cwd": .string(running.dir),
+            "status": .object(["type": .string("active"), "activeFlags": .array([.string("waitingOnApproval")])]),
+            "updatedAt": .int(4_000_000_000),
+            "turns": .array([.object([
+                "id": .string("turn-fresh"), "status": .string("inProgress"), "items": .array([])
+            ])])
+        ], projects: [], fallbackProject: nil)
+        XCTAssertEqual(refreshed.status, SessionStatus.waitingForApproval.rawValue)
+        XCTAssertEqual(refreshed.activeTurnID, "turn-fresh")
+        XCTAssertNil(refreshed.pendingApproval, "更新一轮的权威快照不能继承旧审批 payload")
+        await runtime.shutdownForHostSwitch()
+    }
+
+    func testTurnIndependentMCPKeepsBaseStatusThroughRequestAndResolution() async throws {
+        let fixture = await makeHeldStore(id: "claude_independent_mcp", supportsTakeover: true)
+        let (runtime, _, _) = makeTakeoverRuntime(session: fixture.held)
+        var completed = fixture.held
+        completed.status = SessionStatus.completed.rawValue
+        completed.activeTurnID = nil
+        completed.canAcceptDirectInput = true
+        completed.claudeOwner = nil
+        await runtime.rememberForkedSession(completed)
+        let stream = await runtime.attachEvents(sessionID: completed.id)
+        defer { stream.cancel() }
+        let request = CodexAppServerServerRequest(
+            id: .string("oauth-wire"), method: "mcpServer/elicitation/request",
+            params: .object([
+                "threadId": .string(completed.id), "serverName": .string("calendar"),
+                "mode": .string("url"), "message": .string("请完成授权"),
+                "url": .string("https://example.test/oauth")
+            ])
+        )
+
+        await runtime.handle(request)
+        var iterator = stream.makeAsyncIterator()
+        _ = await iterator.next()
+        guard case .approvalRequest(_, _)? = await iterator.next(),
+              case .session(let pending)? = await iterator.next() else {
+            return XCTFail("独立 MCP 请求后应以 canonical session 收敛")
+        }
+        XCTAssertEqual(pending.status, SessionStatus.completed.rawValue)
+        XCTAssertEqual(pending.pendingApproval?.id, "oauth-wire")
+
+        await runtime.handle(CodexAppServerNotification(method: "serverRequest/resolved", params: .object([
+            "threadId": .string(completed.id), "requestId": .string("oauth-wire")
+        ])))
+        _ = await iterator.next()
+        guard case .approvalResolved(_)? = await iterator.next(),
+              case .session(let resolved)? = await iterator.next() else {
+            return XCTFail("独立 MCP resolved 后应以 canonical session 收敛")
+        }
+        XCTAssertEqual(resolved.status, SessionStatus.completed.rawValue)
+        XCTAssertNil(resolved.pendingApproval)
+        let cached = await runtime.contextsBySessionID[completed.id]?.session
+        XCTAssertEqual(cached?.status, SessionStatus.completed.rawValue)
+        XCTAssertNil(cached?.pendingApproval)
+        await runtime.shutdownForHostSwitch()
+    }
+
+    func testResolvedWithoutCanonicalContextStillPublishesBusinessEvent() async throws {
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://localhost:8787", token: "test-token")
+        let stream = await runtime.attachEvents(sessionID: "missing-context")
+        defer { stream.cancel() }
+        await runtime.rememberPendingApprovalRequest(CodexAppServerServerRequest(
+            id: .string("missing-wire"), method: "item/commandExecution/requestApproval",
+            params: .object(["threadId": .string("missing-context"), "itemId": .string("missing-card")])
+        ))
+
+        await runtime.handle(CodexAppServerNotification(method: "serverRequest/resolved", params: .object([
+            "threadId": .string("missing-context"), "requestId": .string("missing-wire")
+        ])))
+
+        var iterator = stream.makeAsyncIterator()
+        guard case .approvalResolved(let metadata)? = await iterator.next() else {
+            return XCTFail("缺少 canonical context 时仍需交付 resolved 业务事件")
+        }
+        XCTAssertEqual(metadata.sessionID, "missing-context")
         await runtime.shutdownForHostSwitch()
     }
 

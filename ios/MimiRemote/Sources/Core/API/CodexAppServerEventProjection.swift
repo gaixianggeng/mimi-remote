@@ -292,9 +292,16 @@ extension CodexAppServerSessionRuntime {
             // `updatedAt` 与 thread/list 同源：持有方跑完后列表时间和未读水位能立刻前移。
             let canAcceptDirectInput = params["canAcceptDirectInput"]?.boolValue
             let updatedAt = date(from: params["updatedAt"])
-            let isRunningStatus = ["running", "waiting_for_approval", "waiting_for_input"].contains(status)
+            let owner = claudeSessionOwner(from: params["claudeOwner"])
+            let cached = contextsBySessionID[threadID]?.session
+            let keepsTerminal = status == SessionStatus.history.rawValue
+                && cached.map { isTerminalSessionStatus($0.status) && $0.activeTurnID == nil } == true
+                && owner?.isBusy != true
+                && !(updatedAt.map { $0 > (cached?.updatedAt ?? .distantPast) } ?? false)
+            let effectiveStatus = keepsTerminal ? (cached?.status ?? status) : status
+            let isRunningStatus = ["running", "waiting_for_approval", "waiting_for_input"].contains(effectiveStatus)
             _ = withUpdatedSession(threadID) { item in
-                item.status = status
+                item.status = effectiveStatus
                 if !isRunningStatus {
                     // 线程已不在运行：缓存里的进行中 turn 一并清掉（Store 的事件归并对非运行状态同样清除）。
                     // 电脑端持有方执行时打开会话，thread/read 会把最后一轮标成进行中；持有方转空闲或退出
@@ -303,14 +310,17 @@ extension CodexAppServerSessionRuntime {
                 }
                 if let canAcceptDirectInput {
                     item.canAcceptDirectInput = canAcceptDirectInput
-                    item.claudeOwner = canAcceptDirectInput ? nil : claudeSessionOwner(from: params["claudeOwner"])
+                    item.claudeOwner = canAcceptDirectInput ? nil : owner
                 }
                 if let updatedAt, updatedAt > (item.updatedAt ?? .distantPast) {
                     item.updatedAt = updatedAt
                 }
             }
-            emit(.sessionStatus(status, metadata(threadID: threadID, turnID: nil)))
-            emit(.sessionContext(statusContext(threadID: threadID, statusValue: statusValue), metadata(threadID: threadID, turnID: nil)))
+            emit(.sessionStatus(effectiveStatus, metadata(threadID: threadID, turnID: nil)))
+            let context = keepsTerminal
+                ? SessionContextSnapshot(sessionID: threadID, threadID: threadID, status: SessionContextStatus(type: effectiveStatus), updatedAt: Date())
+                : statusContext(threadID: threadID, statusValue: statusValue)
+            emit(.sessionContext(context, metadata(threadID: threadID, turnID: nil)))
         case "thread/closed":
             guard let threadID = params["threadId"]?.stringValue else {
                 return
@@ -389,19 +399,16 @@ extension CodexAppServerSessionRuntime {
                 // 旧 turn 的完成通知可能晚于下一轮 turn/started；不能因此清掉当前新 turn。
                 return
             }
+            let turn = params["turn"]?.objectValue ?? params
+            let completedAt = firstDate(in: turn, keys: ["completedAt", "completed_at", "updatedAt", "updated_at"]) ?? Date()
             _ = withUpdatedSession(threadID) { item in
                 item.activeTurnID = nil
-                item.status = "running"
+                let lifecycle = historyTurnLifecycle(turn, isInProgress: false, completedAt: nil)
+                item.status = lifecycle == .failed ? SessionStatus.failed.rawValue : SessionStatus.completed.rawValue
+                item.pendingApproval = nil
+                item.pendingUserInput = nil
+                item.updatedAt = max(item.updatedAt ?? .distantPast, completedAt)
             }
-            emit(.sessionContext(
-                SessionContextSnapshot(
-                    sessionID: threadID,
-                    threadID: threadID,
-                    status: SessionContextStatus(type: "active"),
-                    updatedAt: Date()
-                ),
-                metadata(threadID: threadID, turnID: nil)
-            ))
         default:
             backfillActiveTurnFromLiveNotification(method: notification.method, params: params)
             break
@@ -487,6 +494,10 @@ extension CodexAppServerSessionRuntime {
         contextsBySessionID[sessionID] = context
         emit(.session(session))
         return session
+    }
+
+    func isTerminalSessionStatus(_ status: String) -> Bool {
+        status == SessionStatus.completed.rawValue || status == SessionStatus.failed.rawValue
     }
 
     @discardableResult
@@ -711,19 +722,42 @@ extension CodexAppServerSessionRuntime {
         // thread/list 可能不带 turns，此时沿用本地 activeTurnID；但 thread/read/resume 一旦带回
         // turns，就以服务端 turns 为准。即使 turns 里没有 inProgress，也要清掉旧缓存，避免引导发到旧 turn。
         let remoteActiveTurnID = activeTurnID(from: thread)
+        let hasAuthoritativeTurns = remoteActiveTurnID != nil
+        let hasRemoteActiveTurn = remoteActiveTurnID.flatMap { $0 } != nil
         let activeTurnID: TurnID?
         if let remoteActiveTurnID {
             activeTurnID = remoteActiveTurnID
         } else {
             activeTurnID = cached?.activeTurnID
         }
-        // 列表/历史读偶发把正在执行的 turn 读成 history。本地记着进行中的 turn（activeTurnID 非空）、
-        // 或刚在时间窗内收到过该 thread 的实时通知时，才在这一瞬间保留运行态，避免侧栏角标抖动；
-        // 没有活跃迹象的残留态（例如被放弃的审批等待）必须允许权威 history 把它降级，
-        // 否则 stale 审批态会一直挂着清不掉。
+        // 列表/历史读偶发把正在执行的 turn 读成 history；明确终态也可能紧接着被迟到的 idle 覆盖。
+        // 只保留仍有活跃证据的运行态，或没有更新远端时间的终态；更新的远端快照仍可正常收敛为 history。
+        let updatedAt = date(from: thread["updatedAt"])
+        let remoteIsNewer = updatedAt.map { $0 > (cached?.updatedAt ?? .distantPast) } ?? false
+        let cachedIsTerminal = cached.map { isTerminalSessionStatus($0.status) } == true
+        let keepsTerminal = status == SessionStatus.history.rawValue
+            && cachedIsTerminal && cached?.activeTurnID == nil
+            && !hasRemoteActiveTurn
+            && !remoteIsNewer
         let shouldKeepCachedStatus = status == "history"
+            && !cachedIsTerminal
+            && !remoteIsNewer
+            && (!hasAuthoritativeTurns || (hasRemoteActiveTurn && activeTurnID == cached?.activeTurnID))
             && (activeTurnID != nil || hasRecentLiveSignal(sessionID: id))
-        let effectiveStatus = shouldKeepCachedStatus ? (cached?.status ?? status) : status
+        let effectiveStatus = keepsTerminal || shouldKeepCachedStatus
+            ? (cached?.status ?? status)
+            : (status == "history" && hasRemoteActiveTurn ? "running" : status)
+        let effectiveActiveTurnID = ["running", "waiting_for_approval", "waiting_for_input"].contains(effectiveStatus)
+            ? activeTurnID
+            : nil
+        let preservesPendingPayload = effectiveActiveTurnID == cached?.activeTurnID
+        let preservesIndependentApproval = effectiveActiveTurnID == nil
+            && pendingApprovalRequestsByID.values.contains {
+                approvalSessionID(for: $0) == id && isTurnIndependentMCPElicitation($0)
+            }
+        let effectiveUpdatedAt = keepsTerminal
+            ? [cached?.updatedAt, updatedAt].compactMap { $0 }.max()
+            : updatedAt
         let goal = thread["goal"]?.objectValue.flatMap { ThreadGoal(object: $0) } ?? cached?.goal
         let rateLimit = rateLimitSummary(fromSnapshot: thread["rateLimit"]?.objectValue)
             ?? rateLimitSummary(fromSnapshot: thread["rate_limit"]?.objectValue)
@@ -742,7 +776,7 @@ extension CodexAppServerSessionRuntime {
             parentThreadID: ownership.parentThreadID,
             isSubagent: ownership.isSubagent
         )
-        return AgentSession(
+        var session = AgentSession(
             id: id,
             projectID: projectID,
             project: projectName,
@@ -753,14 +787,16 @@ extension CodexAppServerSessionRuntime {
             runtimeProvider: runtimeProvider,
             resumeID: id,
             createdAt: ownership.createdAt,
-            updatedAt: date(from: thread["updatedAt"]),
+            updatedAt: effectiveUpdatedAt,
             recencyAt: date(from: thread["recencyAt"]),
             preview: preview,
-            activeTurnID: activeTurnID,
+            activeTurnID: effectiveActiveTurnID,
             lastSeq: nil,
             revision: 0,
             usage: cached?.usage,
             rateLimit: rateLimit,
+            pendingApproval: preservesPendingPayload || preservesIndependentApproval ? cached?.pendingApproval : nil,
+            pendingUserInput: preservesPendingPayload ? cached?.pendingUserInput : nil,
             goal: goal,
             appServerSessionID: nonEmpty(thread["sessionId"]?.stringValue),
             parentThreadID: ownership.parentThreadID,
@@ -771,6 +807,8 @@ extension CodexAppServerSessionRuntime {
             claudeOwner: claudeSessionOwner(from: thread["claudeOwner"]),
             context: context
         )
+        if preservesIndependentApproval { session.pendingApproval = cached?.pendingApproval }
+        return session
     }
 
     /// bridge 只在会话被 Mac 上其他 Claude 进程持有时附带 `claudeOwner`。
