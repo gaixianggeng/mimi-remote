@@ -50,7 +50,7 @@ $agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
 
 前置条件：macOS 15 或更高版本，已安装并登录 Codex（Codex CLI 或 ChatGPT 桌面版均可），Mac 与移动设备位于同一私有网络。不需要开启“远程登录”或配置 SSH：agentd 直接连接本机 Codex 的 control socket，只有想让 Codex Desktop 通过 SSH 主机接入同一个共享运行时时才需要它们，见[共享 App Server](shared-ssh-app-server.md)。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
 
-从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”并打开。首次打开会自动弹出设置窗口：选好代码文件夹并点“完成设置并显示二维码”，窗口随后显示配对二维码，用移动端 App（主屏上叫 mimi）扫码即可。之后要再次显示二维码，点菜单栏的 Mimi Remote 图标，选“配对设备…”。安装包内已包含 `agentd` 和兼容的 `alleycat-claude-bridge`。
+从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”并打开。首次打开会自动弹出设置窗口：选好代码文件夹并点“完成设置并显示二维码”，窗口随后显示配对二维码，用移动端 App（主屏上叫 mimi）扫码即可。之后要再次显示二维码，点菜单栏的 Mimi Remote 图标，选“配对设备…”。安装包内已包含 `agentd`、默认使用的 Claude 适配器 `mimi-claude-adapter`、回退用的 `alleycat-claude-bridge`，以及实验性 Tailcat 辅助程序 `mimi-tailcat-experiment`（默认关闭）。
 
 检测到旧 `homebrew.mxcl.mimi-remote` 时，不要先手工停服。让 Mac App 执行接管：它会先跑 Doctor，停止 Homebrew service，注册内嵌 LaunchAgent 并等待就绪；失败时尝试恢复旧 Homebrew 服务。迁移保留 Application Support 中的配置、Token 和配对关系。
 
@@ -86,6 +86,16 @@ JSON 安全模式只返回 `version`、`service_ok` 和可选的安全 warning�
 需要回滚时安装上一个仍可从正式 Release 获取、经过 Developer ID 签名和 Apple 公证的 DMG。优先只回滚 App 和内嵌二进制；除非确认新版本写入了旧版本无法读取的配置，否则继续复用现有配置。若要回到不支持 Codex 前门的旧版，先按[共享 App Server](shared-ssh-app-server.md#macos-mac-app-前门)卸载前门并安全结束私有 backend，再替换 App。snapshot、ad-hoc 或未公证构建不能作为稳定回滚版本。
 
 永久移动或删除 App 前，先在菜单栏执行“退出并停止服务”，再用当前 App 内的 `agentd codex-front uninstall --stop-idle-backend` 安全卸载前门；命令失败时先结束共享任务和 Desktop SSH 页面，不要直接删除 App。如果要回到 Homebrew，在设置中执行“停止 App 服务并恢复 Homebrew”：App 会先确认私有 backend 空闲并卸载前门，失败则恢复 App 服务；确认 Homebrew 就绪后再移除 App。
+
+### Claude 通道切回旧 bridge
+
+Mac App 与 Windows 安装包默认使用随包的 Claude 适配器（#660）。只是 Claude 通道在新版本里出问题时，不必回滚整个安装包，可以先切回随包的旧 Rust bridge：
+
+1. 在 agentd 配置（macOS `~/Library/Application Support/mimi-remote/config.json`，Windows `%APPDATA%\mimi-remote\config.json`）的 `claude` 段加上 `"legacy_bridge": true`，保持文件权限 `0600`。
+2. 重启服务：Mac App 用菜单栏重启服务；命令行运行 `agentd restart`。
+3. 运行 `agentd doctor`，`claude-bridge` 一项应显示旧 bridge 的版本。
+
+删除这一项或改为 `false` 并重启即恢复默认。命令行运行的 agentd 也可以用环境变量 `AGENTD_CLAUDE_LEGACY_BRIDGE=1`。这个开关保留一个版本周期，之后旧 bridge 从安装包中移除。适配器要求 Claude Code 2.1.294 或更新版本，过旧时先在终端运行 `claude update`，不需要切回旧 bridge。
 
 ### macOS Homebrew 升级
 

@@ -16,6 +16,12 @@ export IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/xcodebuild.log"
 export IOS_TEST_GUI_HANDOFF_LOG="$TEMP_DIR/gui-handoff.log"
 export IOS_DEVICE_GUI_HANDOFF_BIN="$FIXTURE_DIR/fake-gui-handoff.sh"
 export IOS_TAILCAT_BUILD_SCRIPT="$FIXTURE_DIR/fake-tailcat-mobile-build.sh"
+# Simulator 构建会记录构建证据并读取 Go 工具链身份；固定为 fake，避免依赖本机 Go。
+export TAILCAT_MOBILE_GO_BIN="$FIXTURE_DIR/fake-go.sh"
+# 外部 xcodebuild 扫描默认使用不返回进程的 fixture，避免本机其他项目的真实
+# xcodebuild 让所有 Simulator 被判为占用；外部占用用例单独提供进程列表。
+export IOS_DEVICE_LEASE_PS_BIN="$FIXTURE_DIR/fake-ps.sh"
+unset IOS_TEST_PS_OUTPUT_FILE
 export IOS_TEST_TAILCAT_BUILD_LOG="$TEMP_DIR/tailcat-mobile-build.log"
 : > "$IOS_TEST_TAILCAT_BUILD_LOG"
 : > "$IOS_TEST_GUI_HANDOFF_LOG"
@@ -24,6 +30,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   expected_device_handoff_count="1"
 fi
 unset IOS_TEST_DESTINATION IOS_SIMULATOR_ID IOS_SIMULATOR_NAME IOS_DEVICE_ID IOS_DEVICE_NAME IOS_TARGET_MODE
+unset IOS_BUILD_EVIDENCE_REUSE IOS_DEVICE_LEASE_WAIT_SECONDS
 unset DEVELOPER_DIR IOS_OPEN_BIN IOS_TEST_OPEN_LOG IOS_TEST_OPEN_FAIL
 
 fail() {
@@ -454,16 +461,19 @@ assert_contains "$(cat "$IOS_TEST_XCODEBUILD_LOG")" "platform=iOS Simulator,id=M
 
 : > "$IOS_TEST_XCODEBUILD_LOG"
 holder_started="$TEMP_DIR/holder-started"
-IOS_TEST_XCODEBUILD_SLEEP_SECONDS=3 \
+holder_release="$TEMP_DIR/holder-release"
+# 构建前会先计算构建证据指纹；用开始/释放文件同步，而不是假设固定秒数内进入 xcodebuild。
+IOS_TEST_XCODEBUILD_RELEASE="$holder_release" \
 IOS_TEST_XCODEBUILD_STARTED="$holder_started" \
 bash "$ROOT_DIR/scripts/ios-dev.sh" build >"$TEMP_DIR/holder.log" 2>&1 &
 holder_pid=$!
 
-for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+for _attempt in $(seq 1 600); do
   [[ -f "$holder_started" ]] && break
   sleep 0.1
 done
 [[ -f "$holder_started" ]] || {
+  touch "$holder_release"
   wait "$holder_pid" || true
   fail "未观察到持有租约的模拟构建"
 }
@@ -486,31 +496,34 @@ assert_equal "75" "$busy_status" "固定快照设备忙时必须明确失败"
 assert_contains "$(cat "$busy_output")" "未切换到其他测试设备" \
   "快照测试忙时不得改用 iPad mini"
 
+touch "$holder_release"
 wait "$holder_pid"
 [[ ! -d "$IOS_DEVICE_LEASE_ROOT/M5-27-UDID.lease" ]] || fail "进程正常结束后必须释放租约"
 
 m5_26_started="$TEMP_DIR/m5-26-started"
 m5_27_started="$TEMP_DIR/m5-27-started"
+m5_release="$TEMP_DIR/m5-release"
 IOS_TARGET_MODE=simulator \
 IOS_SIMULATOR_ID="M5-26-UDID" \
 IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/m5-26-xcodebuild.log" \
-IOS_TEST_XCODEBUILD_SLEEP_SECONDS=2 \
+IOS_TEST_XCODEBUILD_RELEASE="$m5_release" \
 IOS_TEST_XCODEBUILD_STARTED="$m5_26_started" \
 bash "$ROOT_DIR/scripts/ios-dev.sh" build >"$TEMP_DIR/m5-26-build.log" 2>&1 &
 m5_26_pid=$!
 IOS_TARGET_MODE=simulator \
 IOS_SIMULATOR_ID="M5-27-UDID" \
 IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/m5-27-xcodebuild.log" \
-IOS_TEST_XCODEBUILD_SLEEP_SECONDS=2 \
+IOS_TEST_XCODEBUILD_RELEASE="$m5_release" \
 IOS_TEST_XCODEBUILD_STARTED="$m5_27_started" \
 bash "$ROOT_DIR/scripts/ios-dev.sh" build >"$TEMP_DIR/m5-27-build.log" 2>&1 &
 m5_27_pid=$!
 
-for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+for _attempt in $(seq 1 600); do
   [[ -f "$m5_26_started" && -f "$m5_27_started" ]] && break
   sleep 0.1
 done
 [[ -f "$m5_26_started" && -f "$m5_27_started" ]] || {
+  touch "$m5_release"
   wait "$m5_26_pid" || true
   wait "$m5_27_pid" || true
   fail "未观察到两个 Runtime 的同名 M5 并发持有独立租约"
@@ -524,6 +537,7 @@ assert_contains "$multi_m5_status" "dev-simulator-derived/M5-27-UDID" \
 assert_equal "2" "$(printf '%s\n' "$multi_m5_status" | awk '$1 == "leased" && index($0, "iPad Pro 13-inch (M5)") { count += 1 } END { print count + 0 }')" \
   "两个 Runtime 的同名 M5 必须分别持有租约"
 
+touch "$m5_release"
 wait "$m5_26_pid"
 wait "$m5_27_pid"
 [[ ! -d "$IOS_DEVICE_LEASE_ROOT/M5-26-UDID.lease" ]] || fail "M5-26 构建结束后必须释放租约"

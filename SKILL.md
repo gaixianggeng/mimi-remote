@@ -207,7 +207,7 @@ agentd pair --qr-only
 
 Linux 使用 `"$HOME/.local/bin/agentd" pair --qr-only`。
 
-短期 Pair 链接是单次兑换票据，不直接包含长期 Token。失败、过期或已使用时重新生成；扫码不可用时才使用高级手动连接，不让用户把 Token 粘贴到模型对话中。
+短期 Pair 链接是单次兑换票据，不直接包含长期 Token。失败、过期或已使用时重新生成；扫码不可用时才使用手动连接，不让用户把 Token 粘贴到模型对话中。
 
 至少验证：
 

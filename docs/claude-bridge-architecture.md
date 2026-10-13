@@ -1,6 +1,8 @@
 # Claude bridge 架构
 
-更新日期：2026-09-12
+> #660 起默认使用基于 Claude Agent SDK 的适配器（`bridges/claude-sdk`，见其 [README](../bridges/claude-sdk/README.md)）。本文描述的 Rust bridge 保留一个版本周期，作为 `claude.legacy_bridge` 回退开关的实现，之后删除。
+
+更新日期：2026-10-12
 
 ## 目标
 
@@ -59,7 +61,7 @@ sequenceDiagram
 - Claude CLI 候选顺序为「已配置路径 → `PATH` 上的 `claude` → `~/.local/bin/claude` → `~/.npm-global/bin/claude`」（Windows 另有 npm shim 到原生 `claude.exe` 的映射）。启动检测只按路径收集候选（不逐个执行），再对全部候选并行执行 `--version`（各 3 秒超时）：启动失败或超时的候选直接排除，剩下的选正式三段式版本最高者，同版本按候选顺序；同一真实文件的不同写法只算一次。版本无法解析的候选不参与择优，只有全部候选都无法解析时才退回第一个能启动的候选并按 `claude_version_unknown` 报告；没有任何候选能启动时按 `claude_missing` 报告且不写配置。已配置路径版本落后或已不可用时，检测结果直接覆盖 `CLAUDE_BRIDGE_CLAUDE_BIN` 并要求重载服务，因此官方安装器自动升级后 Mimi 会跟随最新 CLI，不会被 LaunchAgent `PATH` 前列的 Homebrew/npm 旧安装钉住，模型目录与终端、Claude 桌面保持一致。不提供"固定某个版本"的配置项。
 - 开关变化由 Mac App 重新加载其管理的 LaunchAgent，并等待 Claude Runtime 达到目标状态；失败时恢复修改前的 `activation` / `enabled` 并再次加载服务。
 - 启用后，`agentd` 用 `--version` 探测 bridge；低于 `0.2.7`、无标准版本或二进制不存在时 fail closed。`0.2.7` 是首个支持运行期 `thread/list.refreshHistory` 的版本，旧版会静默忽略该字段，不能继续当作兼容实现。
-- bridge 与 iOS / Go 代码同仓维护，并随 Mac App 一起构建、签名和安装；`agentd` 优先使用显式配置，否则使用与自身同目录的 `alleycat-claude-bridge`。
+- bridge 与 iOS / Go 代码同仓维护，并随 Mac App 一起构建、签名和安装；`agentd` 默认使用与自身同目录的 `mimi-claude-adapter`，回退开关打开时使用 `alleycat-claude-bridge`；配置明确指向别的程序时照用，Mac App 内固定使用随包文件（规则见 `internal/claudebridge/binary.go`）。
 - `agentd` 监督一个 resident bridge，通过 Unix socket 为多次 WebSocket 连接复用同一进程。
 - iOS 每个 runtime 使用稳定 session key；重新连接携带最后处理的 sequence cursor。bridge session 保存有界 replay ring 和未完成的反向请求。
 - 每个 Claude thread 对应一个 Claude Code headless 进程和一个常驻事件驱动器。事件驱动器只跟 thread/process 生命周期绑定，不跟页面、WebSocket 或单个 turn 绑定。
@@ -76,8 +78,8 @@ sequenceDiagram
 - `agentd` 对 Claude 使用比 Codex 更小的独立方法白名单。
 - thread、cwd、项目、`browse_roots` 和 managed Worktree 继续使用同一套授权投影。
 - 审批反向 RPC 必须与待处理请求匹配；未知反向请求 fail closed。
-- Claude channel 只声明 `read-only` 和 `workspace-write` sandbox，不声明移动端 `danger-full-access`。
-- 网络默认关闭，不开放 `bypass permissions`，不提供任意 SSH 或 Shell 入口。
+- bridge `>= 0.2.13` 时，Claude channel 额外提供完全访问：请求 `danger-full-access` + `approvalPolicy=never` 时，会话以 Claude Code 的 bypass permissions 运行（#496）。iOS 新会话默认就是这一档，见 [SECURITY.md](../SECURITY.md)。其他档位只声明 `read-only` 和 `workspace-write` sandbox。
+- 非完全访问档位下网络默认关闭；bridge 级 bypass permissions 始终强制关闭，会话级 bypass 只在用户选择完全访问时生效；不提供任意 SSH 或 Shell 入口。
 
 ### 状态与上下文
 
@@ -104,13 +106,13 @@ sequenceDiagram
 
 - 并发进程上限默认 3，避免一台开发机被大量连接拖垮。
 - 不建设云端 relay、模型代理或共享账号，因此项目本身不承担 Claude token 成本。
-- 客户端只展示 Claude Code headless 实际提供的额度信息；拿不到百分比时明确显示不可用，不抓取 Anthropic 私有网页接口，也不把缺失值伪造成 `0%`。
+- 客户端请求额度（`account/rateLimits/read`）时，本 bridge 先只读读取本机 Claude Code 的 OAuth 凭据（`~/.claude/.credentials.json` 或 macOS 钥匙串），调用 Anthropic 未公开的 `api/oauth/usage` 接口，结果在内存缓存 5 分钟；失败时退回 Claude Code headless 上报的 `rate_limit_event`。凭据不写磁盘、不进日志。拿不到百分比时明确显示不可用，不把缺失值伪造成 `0%`。默认的 SDK 适配器不读取凭据；合规风险见 [Claude 用量查询合规分析](claude-usage-compliance.md)。
 
 ## 风险与优化
 
 - Claude Code headless 协议和事件字段可能变化，需要 bridge 版本门禁与兼容测试持续跟进。
 - replay ring 是有界快速恢复层；超过窗口或 bridge/Mac 重启后，以本机 Claude JSONL 历史为准，运行中但尚未落盘的极短窗口仍可能无法恢复。
 - `CronCreate` 属于当前 Claude 进程内任务，会占用一个进程池槽位直到删除；需要在产品层展示后台任务状态，避免用户无感知地长期占用容量。
-- 当前不支持 `goal`、`archive`、`fork`，也没有 APNs 后台 push 和跨设备云同步。App 重新打开可以看到结果，不等于系统一定弹出通知。
-- 别处持有的会话目前只做只读 + 提示，Mac 上进行中的轮次要等持有方落盘、iOS 刷新后才可见；实时镜像（bridge 监听 JSONL 增量推 synthetic turn）是后续项。反方向（bridge 持有进程期间用户在终端 `--resume` 同一 id）bridge 管不了 CLI，仍会分叉。
+- 当前不支持 `goal`、`archive`、`fork`，也没有跨设备云同步。审批请求和任务完成、失败、中断会经消息通知推送（#419，见[安全审批推送架构](secure-approval-push-architecture.md)）；通知未授权或推送失败时，App 重新打开可以看到结果，但系统不一定弹出通知。
+- 别处持有的会话只做只读 + 提示。SDK 适配器（#683）会把持有方的执行 / 空闲状态同步到 `thread/list` 的 `status` 并广播 `thread/status/changed`，列表能实时显示"电脑端运行中"；但 Mac 上进行中的轮次正文仍要等持有方落盘、iOS 读取历史后才可见，实时镜像（监听 JSONL 增量推 synthetic turn）仍是后续项。反方向（bridge 持有进程期间用户在终端 `--resume` 同一 id）由适配器让出（#658）。
 - 不对断线 turn 做自动重试，避免重复写文件或执行命令；后续优化优先补 run record、客户端确认 cursor 和明确的失败状态。

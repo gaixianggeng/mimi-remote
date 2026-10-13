@@ -684,7 +684,7 @@ struct SessionListView: View {
             isSearching: sessionStore.isSessionSearchActive && sessionStore.isSearchingRemoteSessionResults,
             isFiltering: sessionStore.isSessionSearchActive || selectedWorkspaceID != "all" || selectedStatus != .all,
             isNetworkUnavailable: sessionStore.isNetworkUnavailable,
-            errorMessage: sessionStore.errorMessage,
+            errorMessage: sessionStore.userFacingErrorMessage,
             connectionStatus: appStore.connectionStatus,
             hasLoadedWorkspaceCatalog: sessionStore.loadedWorkspaceCatalogScope == appStore.activeHostScope,
             isEstablishingConnection: sessionStore.isEstablishingConnection
@@ -1263,6 +1263,8 @@ struct SessionReviewSheet: View {
                 dismiss()
             } else {
                 submissionError = sessionStore.statusMessage ?? L10n.text("ui.review_failed_to_start_please_try_again_later")
+                // 失败原因已在弹窗内展示，收起顶部同一条提示，关掉弹窗后不再重复出现。
+                sessionStore.dismissOperationFeedback()
             }
         }
     }
@@ -1275,6 +1277,8 @@ struct SessionRenameSheet: View {
     let session: AgentSession
     @State private var name: String
     @State private var isSaving = false
+    /// 最近一次保存失败的原因。就地展示并保留输入，「保存」即重试入口（#508）。
+    @State private var failure: OperationFeedback?
 
     init(session: AgentSession) {
         self.session = session
@@ -1284,12 +1288,21 @@ struct SessionRenameSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section(L10n.text("ui.session_name")) {
+                Section {
                     TextField(L10n.text("ui.enter_name"), text: $name)
                         .textInputAutocapitalization(.sentences)
                         .submitLabel(.done)
                         .onSubmit(save)
+                } header: {
+                    Text(L10n.text("ui.session_name"))
+                } footer: {
+                    if let failure {
+                        OperationFailureFootnote(feedback: failure)
+                    }
                 }
+            }
+            .onChange(of: name) { _, _ in
+                failure = nil
             }
             .navigationTitle(L10n.text("ui.rename_session"))
             .navigationBarTitleDisplayMode(.inline)
@@ -1315,11 +1328,16 @@ struct SessionRenameSheet: View {
         guard !isSaving, !normalizedName.isEmpty else { return }
         isSaving = true
         Task {
-            let didRename = await sessionStore.renameSession(session, name: normalizedName)
+            let failure = await sessionStore.renameSessionReportingFailure(session, name: normalizedName)
             isSaving = false
-            if didRename {
+            guard let failure else {
                 dismiss()
+                return
             }
+            // 弹窗挡住了顶部提示：原因改在输入框下方展示，并收起被遮住的那一条，避免关闭后重复弹出。
+            self.failure = failure
+            sessionStore.dismissOperationFeedback(id: failure.id)
+            AccessibilityNotification.Announcement(failure.message).post()
         }
     }
 }

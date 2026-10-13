@@ -106,14 +106,16 @@ APP_PATH="$MOUNT_DIR/Mimi Remote Mac.app"
 APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/Mimi Remote Mac"
 AGENT_PATH="$APP_PATH/Contents/Resources/agentd"
 BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"
+ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-claude-adapter"
 TAILCAT_PATH="$APP_PATH/Contents/Resources/mimi-tailcat-experiment"
 LAUNCH_AGENT_PATH="$APP_PATH/Contents/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
 INFO_PLIST_PATH="$APP_PATH/Contents/Info.plist"
 
-if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -x "$TAILCAT_PATH" || ! -f "$LAUNCH_AGENT_PATH" ]]; then
-  echo "Mac 安装包校验失败：DMG 缺少 App、agentd、Claude bridge、Tailcat 或 LaunchAgent。" >&2
+if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -x "$ADAPTER_PATH" || ! -x "$TAILCAT_PATH" || ! -f "$LAUNCH_AGENT_PATH" ]]; then
+  echo "Mac 安装包校验失败：DMG 缺少 App、agentd、Claude 适配器、旧 Claude bridge、Tailcat 或 LaunchAgent。" >&2
   exit 1
 fi
+bash "$ROOT_DIR/scripts/check-macos-notices.sh" "$APP_PATH"
 if [[ ! -L "$MOUNT_DIR/Applications" || "$(readlink "$MOUNT_DIR/Applications")" != "/Applications" ]]; then
   echo "Mac 安装包校验失败：DMG 缺少 Applications 拖放入口。" >&2
   exit 1
@@ -180,7 +182,16 @@ fi
 
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign --verify --strict --verbose=2 "$BRIDGE_PATH"
+codesign --verify --strict --verbose=2 "$ADAPTER_PATH"
 codesign --verify --strict --verbose=2 "$TAILCAT_PATH"
+# Bun 编译的适配器在 hardened runtime 下必须带 JIT 等权限，否则一启动就被系统终止。
+adapter_entitlements="$(codesign -d --entitlements - --xml "$ADAPTER_PATH" 2>/dev/null || true)"
+for adapter_entitlement in com.apple.security.cs.allow-jit com.apple.security.cs.allow-unsigned-executable-memory; do
+  if ! grep -Fq "$adapter_entitlement" <<<"$adapter_entitlements"; then
+    echo "Mac 安装包校验失败：Claude 适配器签名缺少 ${adapter_entitlement}。" >&2
+    exit 1
+  fi
+done
 plutil -lint "$LAUNCH_AGENT_PATH" >/dev/null
 
 # 主 App 通过 agentd supervisor 承担隐私授权责任：LaunchAgent 只能启动主可执行文件的
@@ -239,6 +250,19 @@ else
   exit 1
 fi
 
+adapter_version_output="$(run_native_version_probe "$ADAPTER_PATH" --version)"
+if [[ "$adapter_version_output" =~ ^mimi-claude-adapter[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+  adapter_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+else
+  echo "Mac 安装包校验失败：Claude 适配器未返回标准版本：${adapter_version_output}" >&2
+  exit 1
+fi
+adapter_capabilities="$(run_native_version_probe "$ADAPTER_PATH" --capabilities)"
+if ! grep -Fq '"turn/start"' <<<"$adapter_capabilities" || ! grep -Fq '"minimumVersion"' <<<"$adapter_capabilities"; then
+  echo "Mac 安装包校验失败：Claude 适配器的能力声明不完整：${adapter_capabilities:0:200}" >&2
+  exit 1
+fi
+
 minimum_version_source="$ROOT_DIR/internal/claudebridge/version.go"
 minimum_bridge_version="$(
   sed -nE 's/^[[:space:]]*MinimumVersion[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' \
@@ -284,6 +308,10 @@ while IFS= read -r -d '' candidate_path; do
     fi
 
     binary_sdk="$(awk '$1 == "sdk" { print $2; exit }' <<<"$build_metadata")"
+    # Claude 适配器的两个切片是 Bun 上游预编译的运行时，各自的 SDK 由上游决定，不要求一致。
+    if [[ "$candidate_path" == "$ADAPTER_PATH" ]]; then
+      continue
+    fi
     if [[ -z "$reference_sdk" ]]; then
       reference_sdk="$binary_sdk"
       reference_sdk_arch="$binary_arch"
@@ -299,7 +327,7 @@ if [[ "$macho_count" -eq 0 ]]; then
   exit 1
 fi
 
-for binary_path in "$APP_EXECUTABLE_PATH" "$AGENT_PATH" "$BRIDGE_PATH" "$TAILCAT_PATH"; do
+for binary_path in "$APP_EXECUTABLE_PATH" "$AGENT_PATH" "$BRIDGE_PATH" "$ADAPTER_PATH" "$TAILCAT_PATH"; do
   binary_archs="$(lipo -archs "$binary_path")"
   for required_arch in arm64 x86_64; do
     if [[ " $binary_archs " != *" $required_arch "* ]]; then
@@ -312,30 +340,35 @@ done
 app_signing_details="$(codesign -d --verbose=4 "$APP_PATH" 2>&1)"
 agent_signing_details="$(codesign -d --verbose=4 "$AGENT_PATH" 2>&1)"
 bridge_signing_details="$(codesign -d --verbose=4 "$BRIDGE_PATH" 2>&1)"
+adapter_signing_details="$(codesign -d --verbose=4 "$ADAPTER_PATH" 2>&1)"
 tailcat_signing_details="$(codesign -d --verbose=4 "$TAILCAT_PATH" 2>&1)"
 # 先完整读取 codesign 输出，避免 pipefail 将 awk 提前退出造成的 SIGPIPE 误判为签名失败。
 app_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$app_signing_details")"
 agent_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$agent_signing_details")"
 bridge_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$bridge_signing_details")"
+adapter_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$adapter_signing_details")"
 tailcat_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$tailcat_signing_details")"
 if [[ "$app_identifier" != "com.gaixianggeng.mimi.mac" \
   || "$agent_identifier" != "com.gaixianggeng.mimi.mac.agentd" \
   || "$bridge_identifier" != "com.gaixianggeng.mimi.mac.claude-bridge" \
+  || "$adapter_identifier" != "com.gaixianggeng.mimi.mac.claude-adapter" \
   || "$tailcat_identifier" != "com.gaixianggeng.mimi.mac.tailcat" ]]; then
-  echo "Mac 安装包校验失败：App、agentd、Claude bridge 或 Tailcat 签名 identifier 不稳定。" >&2
+  echo "Mac 安装包校验失败：App、agentd、Claude 适配器、旧 bridge 或 Tailcat 签名 identifier 不稳定。" >&2
   exit 1
 fi
 
 app_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$app_signing_details")"
 agent_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$agent_signing_details")"
 bridge_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$bridge_signing_details")"
+adapter_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$adapter_signing_details")"
 tailcat_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$tailcat_signing_details")"
 if [[ "$REQUIRE_TEAM_SIGNING" == "1" ]]; then
   if [[ ! "$app_team_identifier" =~ ^[A-Z0-9]+$ \
     || "$agent_team_identifier" != "$app_team_identifier" \
     || "$bridge_team_identifier" != "$app_team_identifier" \
+    || "$adapter_team_identifier" != "$app_team_identifier" \
     || "$tailcat_team_identifier" != "$app_team_identifier" ]]; then
-    echo "Mac 安装包校验失败：App、agentd、Claude bridge 与 Tailcat 必须使用同一非空 Team ID 签名。" >&2
+    echo "Mac 安装包校验失败：App、agentd、Claude 适配器、旧 bridge 与 Tailcat 必须使用同一非空 Team ID 签名。" >&2
     exit 1
   fi
 fi
@@ -345,8 +378,9 @@ if [[ "$REQUIRE_NOTARIZATION" == "1" ]]; then
   if ! grep -Fq 'Authority=Developer ID Application:' <<<"$app_signing_details" \
     || ! grep -Fq 'Authority=Developer ID Application:' <<<"$agent_signing_details" \
     || ! grep -Fq 'Authority=Developer ID Application:' <<<"$bridge_signing_details" \
+    || ! grep -Fq 'Authority=Developer ID Application:' <<<"$adapter_signing_details" \
     || ! grep -Fq 'Authority=Developer ID Application:' <<<"$tailcat_signing_details"; then
-    echo "Mac 安装包校验失败：App、agentd、Claude bridge 或 Tailcat 不是有效的 Developer ID Application 签名。" >&2
+    echo "Mac 安装包校验失败：App、agentd、Claude 适配器、旧 bridge 或 Tailcat 不是有效的 Developer ID Application 签名。" >&2
     exit 1
   fi
   xcrun stapler validate "$DMG_PATH"
@@ -358,4 +392,4 @@ team_summary=""
 if [[ "$REQUIRE_TEAM_SIGNING" == "1" ]]; then
   team_summary="、Team ID ${app_team_identifier} 一致"
 fi
-echo "Mac 安装包校验通过：已枚举 ${macho_count} 个 Mach-O，全部已签名、包含 arm64 且 macOS 构建元数据可读取；universal App、agentd、Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、Tailcat、LaunchAgent、拖放入口和签名结构完整${team_summary}。"
+echo "Mac 安装包校验通过：已枚举 ${macho_count} 个 Mach-O，全部已签名、包含 arm64 且 macOS 构建元数据可读取；universal App、agentd、Claude 适配器 ${adapter_version}、旧 Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、Tailcat、LaunchAgent、拖放入口和签名结构完整${team_summary}。"

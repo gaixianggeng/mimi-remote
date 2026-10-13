@@ -84,6 +84,12 @@ jobs:
       - name: Install universal macOS Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
+      - name: Setup Bun
+        # 安装包内嵌的 Claude 适配器用 Bun 编译，版本固定为 .bun-version（#660）。
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: bridges/claude-sdk/.bun-version
+
       - name: Install repository safety tools
         run: command -v rg >/dev/null 2>&1 || brew install ripgrep
 
@@ -162,6 +168,18 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Read Bun version
+        id: bun-version
+        shell: pwsh
+        run: '"version=$((Get-Content bridges/claude-sdk/.bun-version -Raw).Trim())" >> $env:GITHUB_OUTPUT'
+
+      - name: Setup Bun (baseline)
+        # Bun 1.2.22 在 Windows 上交叉下载 baseline 运行时后解压失败；直接安装 baseline 版，
+        # 编译目标与它自己相同，不再下载。版本仍来自 .bun-version（#660）。
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v${{ steps.bun-version.outputs.version }}/bun-windows-x64-baseline.zip
 
       - name: Install Inno Setup
         shell: pwsh
@@ -243,6 +261,12 @@ jobs:
 
       - name: Install universal macOS Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Setup Bun
+        # 安装包内嵌的 Claude 适配器用 Bun 编译，版本固定为 .bun-version（#660）。
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: bridges/claude-sdk/.bun-version
 
       - name: Build Codex Skill package
         run: bash ./scripts/package-skill.sh dist-skill

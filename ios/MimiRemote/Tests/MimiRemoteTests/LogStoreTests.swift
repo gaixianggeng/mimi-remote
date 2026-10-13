@@ -263,7 +263,7 @@ final class LogStoreTests: XCTestCase {
             "App 版本：1.0 (31)",
             "会话 ID：sess_export",
             "会话标题：导出会话",
-            "当前 Mac：工作室 Mac"
+            "当前电脑：工作室 Mac"
         ])
         XCTAssertEqual(Array(sections.dropFirst()).joined(separator: "\n\n"), cachedLog)
         XCTAssertFalse(payload.content.contains("super-secret-token"))

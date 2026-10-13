@@ -195,7 +195,7 @@ struct AddComputerView: View {
         .themedSettingsForm(tokens: tokens)
         // 普通操作和展开箭头保持中性；扫码按钮单独使用主操作色。
         .tint(tokens.secondaryText)
-        .settingsDetailPage()
+        .settingsDetailPage(tokens: tokens)
         .navigationTitle(L10n.text("ui.add_mac"))
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.addComputer.page")

@@ -37,6 +37,7 @@ for required_file in \
   scripts/check-critical-regressions.sh \
   scripts/check-pr-gate.sh \
   scripts/check-macos-installer.sh \
+  scripts/check-macos-notices.sh \
   scripts/build-windows-installer.ps1 \
   scripts/check-windows-installer.ps1 \
   scripts/test-windows-install.ps1 \
@@ -66,6 +67,7 @@ bash -n \
   scripts/check-critical-regressions.sh \
   scripts/check-pr-gate.sh \
   scripts/check-macos-installer.sh \
+  scripts/check-macos-notices.sh \
   scripts/check-release-prerequisites.sh \
   scripts/check-macos-release-signing.sh \
   scripts/check-release-artifacts.sh \
@@ -81,6 +83,7 @@ bash -n \
   scripts/verify-release.sh
 bash ./scripts/check-release-prerequisites.sh --self-test >/dev/null
 bash ./scripts/check-macos-release-signing.sh --self-test >/dev/null
+bash ./scripts/check-macos-notices.sh --self-test >/dev/null
 bash ./scripts/restart-agentd-dev-macos.sh --self-test >/dev/null
 bash ./scripts/verify-release.sh --self-test >/dev/null
 bash ./scripts/install-linux.sh --self-test >/dev/null
@@ -196,8 +199,17 @@ grep -Fq 'com.gaixianggeng.mimi.mac.claude-bridge' scripts/build-macos-installer
   || fail "Mac 安装包构建没有为内嵌 Claude bridge 设置稳定签名 identifier。"
 grep -Fq 'com.gaixianggeng.mimi.mac.tailcat' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有为内嵌 Tailcat 设置稳定签名 identifier。"
-grep -Fq 'for binary_path in "$AGENT_PATH" "$BRIDGE_PATH" "$TAILCAT_PATH"' scripts/build-macos-installer.sh \
+grep -Fq 'for binary_path in "$AGENT_PATH" "$BRIDGE_PATH" "$ADAPTER_PATH" "$TAILCAT_PATH"' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有在公证前直接校验内嵌二进制签名。"
+# Claude 适配器（#660 起默认）：稳定 identifier，并且签名时带 JIT 权限，否则在 hardened runtime 下一启动就被终止。
+grep -Fq 'com.gaixianggeng.mimi.mac.claude-adapter' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有为内嵌 Claude 适配器设置稳定签名 identifier。"
+grep -Fq -- '--entitlements "$ADAPTER_ENTITLEMENTS"' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有给 Claude 适配器加上 JIT 权限。"
+grep -Fq 'com.apple.security.cs.allow-jit' macos/MimiRemoteMac/Resources/ClaudeAdapter.entitlements \
+  || fail "Claude 适配器的 entitlements 缺少 JIT 权限。"
+grep -Fq 'ClaudeAdapter.entitlements' macos/MimiRemoteMac/Scripts/embed-agentd.sh \
+  || fail "本地构建没有给内嵌 Claude 适配器加上 JIT 权限。"
 # 照片图库权限曾随 Codex shared daemon supervisor 一起移除；现在由 agentd supervisor 让主 App
 # 承担隐私授权责任，照片权限必须由主 App 声明并申请。
 grep -Fq 'com.apple.security.personal-information.photos-library' \
@@ -236,6 +248,10 @@ grep -Fq 'main_executable_count' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验 Contents/MacOS 主可执行文件唯一性。"
 grep -Fq 'BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验内嵌 Claude bridge。"
+grep -Fq 'ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-claude-adapter"' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有校验内嵌 Claude 适配器。"
+grep -Fq 'com.apple.security.cs.allow-jit' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有校验 Claude 适配器的 JIT 权限。"
 grep -Fq 'TAILCAT_PATH="$APP_PATH/Contents/Resources/mimi-tailcat-experiment"' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验内嵌 Tailcat。"
 grep -Fq 'codesign --verify --strict --verbose=2 "$candidate_path"' scripts/check-macos-installer.sh \

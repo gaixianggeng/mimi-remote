@@ -86,7 +86,10 @@ assert_not_contains "$nested_docs_output" "cargo test"
 
 ios_output="$(assert_plan ios_only ios/MimiRemote/Sources/Features/Conversation/ConversationView.swift)"
 assert_contains "$ios_output" "iOS quick 只编译 App，不编译或运行 XCTest"
-assert_contains "$ios_output" "IOS_TARGET_MODE=simulator IOS_SIMULATOR_ID= IOS_SIMULATOR_NAME='iPad Pro 13-inch (M5)' bash ./scripts/ios-dev.sh build"
+assert_contains "$ios_output" "IOS_BUILD_EVIDENCE_REUSE=1 IOS_TARGET_MODE=simulator IOS_SIMULATOR_ID= IOS_SIMULATOR_NAME='iPad Pro 13-inch (M5)' bash ./scripts/ios-dev.sh build"
+assert_contains "$ios_output" "结果复用：只有 iOS App 编译项可复用本 Worktree 输入指纹完全一致的成功构建证据"
+# 显式 paths file 只做计划自检，不读取本机构建证据。
+assert_not_contains "$ios_output" "构建证据："
 assert_contains "$ios_output" "当前：quick；只在最后一次代码修改后执行一次"
 assert_contains "$ios_output" "自动高风险信号：未检测到"
 assert_contains "$ios_output" "docs=false"
@@ -105,17 +108,23 @@ printf '%s\0' ios/MimiRemote/Sources/Features/Conversation/ConversationView.swif
   > "$ios_execution_paths"
 : > "$ios_execution_xcodebuild_log"
 : > "$ios_execution_tailcat_log"
-ios_execution_output="$(
+run_ios_execution() {
+  # 缓存与租约都指向临时目录：构建证据写在该 DerivedData 下，不触碰共享缓存。
   IOS_XCRUN_BIN="$ROOT_DIR/scripts/testdata/ios-device-management/fake-xcrun.sh" \
   IOS_XCODEBUILD_BIN="$ROOT_DIR/scripts/testdata/ios-device-management/fake-xcodebuild.sh" \
   IOS_TAILCAT_BUILD_SCRIPT="$ROOT_DIR/scripts/testdata/ios-device-management/fake-tailcat-mobile-build.sh" \
+  TAILCAT_MOBILE_GO_BIN="$ROOT_DIR/scripts/testdata/ios-device-management/fake-go.sh" \
+  IOS_DEVICE_LEASE_PS_BIN="$ROOT_DIR/scripts/testdata/ios-device-management/fake-ps.sh" \
+  IOS_TEST_PS_OUTPUT_FILE= \
   IOS_TEST_SIMULATORS_JSON="$ROOT_DIR/scripts/testdata/ios-device-management/simulators.json" \
   IOS_TEST_PHYSICAL_JSON="$ROOT_DIR/scripts/testdata/ios-device-management/no-physical-devices.json" \
   IOS_TEST_XCODEBUILD_LOG="$ios_execution_xcodebuild_log" \
   IOS_TEST_TAILCAT_BUILD_LOG="$ios_execution_tailcat_log" \
   IOS_DEVICE_LEASE_ROOT="$ios_execution_lease_root" \
+  MIMI_DEVELOPMENT_CACHE_ROOT="$test_root/ios-execution-cache" \
   bash ./scripts/verify-change.sh --paths-file "$ios_execution_paths"
-)"
+}
+ios_execution_output="$(run_ios_execution)"
 assert_contains "$ios_execution_output" "iOS quick 只编译 App，不编译或运行 XCTest"
 assert_contains "$(<"$ios_execution_xcodebuild_log")" \
   "-destination platform=iOS Simulator,id=M5-27-UDID"
@@ -123,8 +132,34 @@ assert_contains "$(<"$ios_execution_xcodebuild_log")" \
   "CODE_SIGNING_ALLOWED=NO build"
 assert_not_contains "$(<"$ios_execution_xcodebuild_log")" "build-for-testing"
 assert_contains "$(<"$ios_execution_tailcat_log")" "build"
+assert_not_contains "$ios_execution_output" "复用构建证据"
 [[ ! -d "$ios_execution_lease_root/M5-27-UDID.lease" ]] \
   || fail "iOS quick 结束后必须释放固定 Simulator 租约。"
+# 输入未变时第二轮 quick 复用上一轮成功构建的证据：不再调用 xcodebuild，并在状态中写明。
+# 证据依赖 plutil 解析 project.pbxproj；没有可用解析器的主机（例如 Linux 上的
+# Repository safety）必须 fail-closed：照常构建并说明原因，而不是复用或失败。
+ios_execution_builds="$(awk 'END { print NR }' "$ios_execution_xcodebuild_log")"
+ios_execution_output="$(run_ios_execution)"
+ios_execution_summary="$(printf '%s\n' "$ios_execution_output" | sed -n 's/^结果汇总：//p')"
+if plutil -convert json -o - "$ROOT_DIR/ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj" \
+  >/dev/null 2>&1; then
+  assert_contains "$ios_execution_output" "<== 通过（复用构建证据）"
+  assert_contains "$ios_execution_output" "复用构建证据：本 Worktree 的 build"
+  assert_contains "$ios_execution_output" "其中 1 项复用构建证据，未重新编译"
+  [[ "$(awk 'END { print NR }' "$ios_execution_xcodebuild_log")" == "$ios_execution_builds" ]] \
+    || fail "复用构建证据时不得再次调用 xcodebuild。"
+  assert_contains "$(<"$ios_execution_summary")" "通过（复用构建证据） |"
+else
+  assert_not_contains "$ios_execution_output" "复用构建证据"
+  # 两轮都无法记录证据：第二轮先报告没有证据，构建时再说明为何不记录。
+  assert_contains "$(cat "${ios_execution_summary%/*}"/*.log)" "构建证据不可复用："
+  assert_contains "$(cat "${ios_execution_summary%/*}"/*.log)" \
+    "构建证据：本次不记录（无法确认构建输入："
+  assert_contains "$(cat "${ios_execution_summary%/*}"/*.log)" "无法解析 project.pbxproj"
+  [[ "$(awk 'END { print NR }' "$ios_execution_xcodebuild_log")" == "$((ios_execution_builds + 1))" ]] \
+    || fail "无法确认构建输入时必须照常调用 xcodebuild。"
+  assert_not_contains "$(<"$ios_execution_summary")" "通过（复用构建证据）"
+fi
 
 tailcat_output="$(assert_plan tailcat experiments/tailcat/mobile/tailcatmobile/tailcatmobile.go)"
 assert_contains "$tailcat_output" "PR Gate scope：go=false, ios=true"
@@ -163,6 +198,12 @@ rust_shared_output="$(assert_plan rust_shared bridges/claude/crates/codex-proto/
 assert_contains "$rust_shared_output" "-p alleycat-codex-proto"
 assert_contains "$rust_shared_output" "-p alleycat-bridge-core"
 assert_contains "$rust_shared_output" "-p alleycat-claude-bridge"
+
+claude_sdk_output="$(assert_plan claude_sdk bridges/claude-sdk/src/main.ts)"
+assert_contains "$claude_sdk_output" "bash ./scripts/check-claude-sdk-adapter.sh"
+assert_contains "$claude_sdk_output" "PR Gate scope：go=false, ios=false, rust=true, macos=false, docs=false"
+assert_not_contains "$claude_sdk_output" "cargo test"
+assert_not_contains "$claude_sdk_output" "没有验证映射"
 
 ios_full_output="$(assert_full_plan ios_full ios/MimiRemote/Sources/Features/Conversation/ConversationView.swift)"
 assert_contains "$ios_full_output" "test-conversation-regressions.sh"
@@ -358,6 +399,11 @@ SH
 cat > "$execution_root/scripts/ios-dev.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'ios %s\n' "$*" >> "$VERIFY_TEST_CALLS"
+if [[ "${1:-}" == "build-evidence" ]]; then
+  printf '%s\n' "${VERIFY_TEST_EVIDENCE_STATUS:-需要重新构建：fake reason}"
+  exit "${VERIFY_TEST_EVIDENCE_EXIT:-3}"
+fi
+[[ "${VERIFY_TEST_IOS_REUSE:-0}" != "1" ]] || printf '==> 复用构建证据：fake evidence\n'
 if [[ -n "${VERIFY_TEST_HOLD:-}" ]]; then
   mkdir "$VERIFY_TEST_HOLD.lease"
   trap 'rm -rf "$VERIFY_TEST_HOLD.lease"' EXIT
@@ -477,4 +523,32 @@ kill -TERM "$unrelated_pid"
 wait "$unrelated_pid" 2>/dev/null || true
 unrelated_pid=""
 
-echo "分层验证自测通过：范围与来源、full 覆盖边界、失败汇总、有限日志、阻塞、取消和进程清理均符合预期。"
+# 执行层：iOS 编译项复用证据时，汇总与控制台必须写明，不能显示成普通“通过”。
+run_execution_case VERIFY_TEST_IOS_REUSE=1
+[[ "$execution_code" -eq 0 ]] || fail "复用证据的 quick 应返回零。"
+assert_contains "$(<"$execution_summary")" "通过（复用构建证据） |"
+assert_contains "$(<"$execution_output")" "复用构建证据：fake evidence"
+assert_contains "$(<"$execution_output")" "其中 1 项复用构建证据"
+
+# 本机变更集的 --plan 会预判构建证据；状态命令失败时只提示，不让计划失败。
+mkdir -p "$execution_root/ios/MimiRemote/Sources"
+printf 'struct Example {}\n' > "$execution_root/ios/MimiRemote/Sources/Example.swift"
+: > "$execution_calls"
+evidence_plan_output="$(cd "$execution_root" && VERIFY_TEST_CALLS="$execution_calls" \
+  bash ./scripts/verify-change.sh --plan --base HEAD)"
+assert_contains "$evidence_plan_output" "构建证据：需要重新构建：fake reason"
+[[ "$(<"$execution_calls")" == "ios build-evidence" ]] \
+  || fail "--plan 只能读取构建证据状态，不得发起构建：$(<"$execution_calls")"
+evidence_plan_output="$(cd "$execution_root" && VERIFY_TEST_CALLS="$execution_calls" \
+  VERIFY_TEST_EVIDENCE_STATUS="可复用：fake evidence" VERIFY_TEST_EVIDENCE_EXIT=0 \
+  bash ./scripts/verify-change.sh --plan --base HEAD)"
+assert_contains "$evidence_plan_output" "构建证据：可复用：fake evidence"
+evidence_plan_output="$(cd "$execution_root" && VERIFY_TEST_CALLS="$execution_calls" \
+  VERIFY_TEST_EVIDENCE_STATUS="找不到 M5" VERIFY_TEST_EVIDENCE_EXIT=4 \
+  bash ./scripts/verify-change.sh --plan --base HEAD)"
+assert_contains "$evidence_plan_output" "构建证据：无法检查（找不到 M5）；执行时按正常构建处理"
+evidence_full_output="$(cd "$execution_root" && VERIFY_TEST_CALLS="$execution_calls" \
+  bash ./scripts/verify-change.sh --plan --full --base HEAD)"
+assert_not_contains "$evidence_full_output" "构建证据："
+
+echo "分层验证自测通过：范围与来源、full 覆盖边界、构建证据复用标注、失败汇总、有限日志、阻塞、取消和进程清理均符合预期。"

@@ -68,6 +68,7 @@ assert_scope() {
 assert_scope go_only true false false false false internal/httpapi/router.go
 assert_scope ios_only false true false false false ios/MimiRemote/Sources/App/MimiRemoteApp.swift
 assert_scope rust_only false false true false false bridges/claude/crates/claude-bridge/src/main.rs
+assert_scope claude_sdk_adapter false false true false false bridges/claude-sdk/src/main.ts
 assert_scope macos_only false false false true false macos/MimiRemoteMac/Sources/App/MimiRemoteMacApp.swift
 assert_scope macos_runner false false false true false scripts/test-macos-app.sh
 assert_scope release true false false false false scripts/check-release-artifacts.sh
@@ -90,7 +91,10 @@ assert_scope docs_runner false false false false true scripts/check-docs-static.
 assert_scope ios_device_lease false true false false false scripts/ios-device-lease.sh
 assert_scope ios_device_gui_handoff false true false false false scripts/ios-device-gui-handoff-macos.sh
 assert_scope ios_device_management false true false false false scripts/test-ios-device-management.sh
+assert_scope ios_build_evidence false true false false false scripts/ios-build-evidence.sh
+assert_scope ios_build_evidence_test false true false false false scripts/test-ios-build-evidence.sh
 assert_scope ios_device_fixture false true false false false scripts/testdata/ios-device-management/simulators.json
+assert_scope ios_localization_selftest false true false false false scripts/test-check-ios-localization.sh
 assert_scope tailcat_source false true false false false experiments/tailcat/mobile/tailcatmobile/tailcatmobile.go
 assert_scope tailcat_builder false true false false false scripts/build-tailcat-mobile.sh
 assert_scope tailcat_fixture false true false false false scripts/testdata/tailcat-mobile/fake-go.sh

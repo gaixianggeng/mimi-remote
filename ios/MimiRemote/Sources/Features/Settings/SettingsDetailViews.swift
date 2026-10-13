@@ -138,7 +138,7 @@ struct ConnectionProfileRenameSheet: View {
                 }
             }
             .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
-            .settingsDetailPage()
+            .settingsDetailPage(tokens: themeStore.tokens(for: colorScheme))
             .navigationTitle(L10n.text("ui.rename_mac"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -370,7 +370,7 @@ struct CapabilitiesView: View {
             .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
-        .settingsDetailPage()
+        .settingsDetailPage(tokens: tokens)
         .navigationTitle(L10n.text("ui.ability"))
         .tint(tokens.accent)
         .task {
@@ -777,8 +777,7 @@ struct AppearanceView: View {
             .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
-        .settingsDetailPage()
-        .settingsCanvasBackground(tokens: tokens)
+        .settingsDetailPage(tokens: tokens)
         .navigationTitle(L10n.text("ui.personalization"))
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.colorScheme, resolvedColorScheme)
@@ -1236,8 +1235,7 @@ struct DefaultModelSettingsView: View {
             }
         }
         .themedSettingsForm(tokens: tokens)
-        .settingsDetailPage()
-        .settingsCanvasBackground(tokens: tokens)
+        .settingsDetailPage(tokens: tokens)
         .navigationTitle(L10n.text("ui.default_model"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
@@ -1636,7 +1634,7 @@ struct TailcatExperimentSettingsView: View {
             .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
-        .settingsDetailPage()
+        .settingsDetailPage(tokens: tokens)
         // 首页那一行叫「连接方式」，进来的页面也叫这个名字，不让人怀疑走错了。
         .navigationTitle(L10n.text("ui.connection_method"))
         .navigationBarTitleDisplayMode(.inline)

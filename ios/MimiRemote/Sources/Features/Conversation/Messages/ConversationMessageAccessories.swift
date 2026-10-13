@@ -337,6 +337,8 @@ struct RuntimeSummaryCard: View {
                 return L10n.text("ui.additional_information_has_been_submitted")
             }
             return L10n.text("ui.waiting_for_additional_information")
+        case .questionReply:
+            return L10n.text("ui.question_reply_label")
         case .error:
             return L10n.text("ui.abnormal_operation")
         case .warning:
@@ -373,6 +375,8 @@ struct RuntimeSummaryCard: View {
             return "exclamationmark.shield"
         case .userInput:
             return "questionmark.bubble"
+        case .questionReply:
+            return "arrowshape.turn.up.left"
         case .error:
             return "exclamationmark.triangle"
         case .warning:

@@ -74,6 +74,11 @@ struct AgentdSupervisorCommand: Equatable {
         )
     }
 
+    /// agentd 在安全诊断日志旁写的本机调试日志，只在「详细记录」窗口内写入。
+    static func debugLogURL(homeDirectoryURL: URL) -> URL {
+        homeDirectoryURL.appending(path: "Library/Logs/mimi-remote/agentd-debug.log", directoryHint: .notDirectory)
+    }
+
     static func frontDoor(bundleURL: URL, homeDirectoryURL: URL, configPath: String?) -> Self {
         let executableURL = bundleURL.appending(
             path: agentdRelativePath,

@@ -1366,7 +1366,12 @@ final class PairingLinkTests: XCTestCase {
             }
             XCTAssertEqual(host, "example.com")
             XCTAssertTrue(error.localizedDescription.contains("HTTPS"))
-            XCTAssertTrue(error.localizedDescription.contains("agentd pair"))
+            // 安全的替代做法是扫码配对；电脑可能是 Windows 或 Linux，不能只写 Mac 上的命令（#673）。
+            XCTAssertEqual(
+                error.localizedDescription,
+                L10n.format("ui.the_public_http_address_value_has_been_blocked", "example.com")
+            )
+            XCTAssertFalse(error.localizedDescription.contains("Mac"))
         }
     }
 

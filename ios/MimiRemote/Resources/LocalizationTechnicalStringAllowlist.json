@@ -208,6 +208,54 @@
     {
       "value": "用量受限",
       "reason": "Legacy remote rate-limit marker used only for classification; the raw value is never rendered as product UI."
+    },
+    {
+      "value": "重连",
+      "reason": "Matches legacy Chinese transport/parse error text so it can be translated into user-facing copy; the raw value is never rendered as product UI."
+    },
+    {
+      "value": "重新接入",
+      "reason": "Matches legacy Chinese transport/parse error text so it can be translated into user-facing copy; the raw value is never rendered as product UI."
+    },
+    {
+      "value": "正在连接",
+      "reason": "Matches legacy Chinese transport/parse error text so it can be translated into user-facing copy; the raw value is never rendered as product UI."
+    },
+    {
+      "value": "未连接",
+      "reason": "Matches legacy Chinese transport/parse error text so it can be translated into user-facing copy; the raw value is never rendered as product UI."
+    },
+    {
+      "value": "断开",
+      "reason": "Matches legacy Chinese transport/parse error text so it can be translated into user-facing copy; the raw value is never rendered as product UI."
+    },
+    {
+      "value": "传输失败",
+      "reason": "Matches legacy Chinese transport/parse error text so it can be translated into user-facing copy; the raw value is never rendered as product UI."
+    },
+    {
+      "value": "解析",
+      "reason": "Matches legacy Chinese transport/parse error text so it can be translated into user-facing copy; the raw value is never rendered as product UI."
+    },
+    {
+      "value": "无效响应",
+      "reason": "Matches legacy Chinese transport/parse error text so it can be translated into user-facing copy; the raw value is never rendered as product UI."
+    },
+    {
+      "value": "已停止",
+      "reason": "Matches legacy Chinese text saying automatic reconnection stopped, so it is not shown as in-progress; the raw value is never rendered as product UI."
+    },
+    {
+      "value": "登录",
+      "reason": "Allowlist marker for computer-side sign-in reasons that may be shown verbatim; the literal itself is never rendered as product UI."
+    },
+    {
+      "value": "(?:密码|口令|令牌|密钥|凭据|凭证|验证码|配对码)",
+      "reason": "Sensitive-detail regex used only to keep credentials out of shown computer-side reasons; never rendered as product UI."
+    },
+    {
+      "value": "\\\\b(?:key|auth|authorization|credential|pass|passwd|password|pwd|token|secret)s?\\\\s*[:：]\\\\s*\\\\S",
+      "reason": "Sensitive-detail regex used only to keep credentials out of shown computer-side reasons; never rendered as product UI."
     }
   ],
   "uiLiteralAllowlist": [

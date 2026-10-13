@@ -2,10 +2,12 @@ package main
 
 import (
 	"net"
+	"net/netip"
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
+	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
 // agentNetworkStatus is deliberately a sanitized snapshot. In particular it
@@ -56,9 +58,10 @@ func configuredAgentNetworkMode(cfg config.Config) string {
 	return "specific"
 }
 
+// isTailscaleStatusIP 与配置校验、模块意图使用同一判定：Tailscale IPv4 与 IPv6 都算。
 func isTailscaleStatusIP(ip net.IP) bool {
-	ipv4 := ip.To4()
-	return ipv4 != nil && ipv4[0] == 100 && ipv4[1] >= 64 && ipv4[1] <= 127
+	addr, ok := netip.AddrFromSlice(ip)
+	return ok && tailscaleinfo.IsTailscaleAddress(addr)
 }
 
 func networkPolicyDoctorCheck(status agentNetworkStatus) doctor.Check {

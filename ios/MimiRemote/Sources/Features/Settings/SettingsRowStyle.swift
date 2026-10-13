@@ -19,8 +19,11 @@ extension View {
         modifier(SettingsRowModifier(kind: kind))
     }
 
-    func settingsDetailPage(width: CGFloat = 720) -> some View {
-        modifier(SettingsDetailPageModifier(width: width))
+    /// 内容收到 `width` 居中，画布底色由这里在收窄之后铺满整个详情栏（#676）。
+    /// 页面上 `themedSettingsForm` 挂的背景只跟着 Form 走，iPad 宽屏时会被收窄成中间一列，
+    /// 两侧露出导航容器的底色；调用方不要再在后面手补 `settingsCanvasBackground`。
+    func settingsDetailPage(tokens: ThemeTokens, width: CGFloat = 720) -> some View {
+        modifier(SettingsDetailPageModifier(tokens: tokens, width: width))
     }
 
     /// 分组标题在四个一级页面（会话、工作区、设备、我的）、iPad 侧栏与整条设置链路
@@ -95,6 +98,7 @@ private struct SettingsDetailPageModifier: ViewModifier {
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
 
+    let tokens: ThemeTokens
     let width: CGFloat
 
     func body(content: Content) -> some View {
@@ -108,6 +112,8 @@ private struct SettingsDetailPageModifier: ViewModifier {
             )
             .frame(maxWidth: width)
             .frame(maxWidth: .infinity)
+            // 必须挂在撑满的 frame 之后：挂在前面只会铺到中间那一列。
+            .settingsCanvasBackground(tokens: tokens)
             .contentMargins(
                 .bottom,
                 hasCompactTabBar ? max(bottomChromeClearance, SettingsLayoutMetrics.sectionSpacing) : SettingsLayoutMetrics.sectionSpacing,

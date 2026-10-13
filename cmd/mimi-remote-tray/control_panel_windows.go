@@ -840,7 +840,7 @@ func (p *controlPanel) syncPairingControls() {
 	color := rgbColor(80, 40, 118)
 	background := rgbColor(242, 237, 248)
 	title := "扫码连接设备"
-	summary := "使用 iPad 或 iPhone 上的 Mimi Remote 扫描左侧二维码。"
+	summary := "使用移动设备上的 Mimi Remote 扫描左侧二维码。"
 	endpoint := "连接地址：—"
 	expiry := "有效期：—"
 	warning := "二维码只包含短期票据，不包含长期访问凭据。"

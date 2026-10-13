@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
 	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 )
 
@@ -203,5 +204,69 @@ func TestDiagnosticReadIsBoundedAndRejectsPreviousSymlink(t *testing.T) {
 	data, _ = os.ReadFile(target)
 	if string(data) != "preserve" {
 		t.Fatal("不得修改符号链接目标")
+	}
+}
+
+func waitForFileContaining(t *testing.T, path string, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		data, _ := os.ReadFile(path)
+		if strings.Contains(string(data), want) {
+			return string(data)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s 里等不到 %q，当前内容：%q", filepath.Base(path), want, data)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestDebugLogFollowsTheDetailWindowAndStaysOutOfTheSafeExport(t *testing.T) {
+	dir := t.TempDir()
+	logs, closeLogs, err := configureServeFileLogging(filepath.Join(dir, "agentd.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeLogs()
+	debugPath := filepath.Join(dir, debugLogFileName)
+
+	debuglog.Printf("gateway", "before window")
+	if _, err := logs.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	debuglog.Printf("gateway", "policy rejected method=thread/name/set")
+	content := waitForFileContaining(t, debugPath, "policy rejected method=thread/name/set")
+	if strings.Contains(content, "before window") {
+		t.Fatalf("窗口开启前的调试行不应落盘：%q", content)
+	}
+	status, err := logs.Status()
+	if err != nil || status.DebugBytes == 0 {
+		t.Fatalf("状态里应报告调试日志大小：%+v err=%v", status, err)
+	}
+	lines, err := logs.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range lines {
+		if strings.Contains(line, "thread/name/set") {
+			t.Fatalf("调试日志不能进入安全导出：%q", line)
+		}
+	}
+
+	if _, err := logs.SetEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	debuglog.Printf("gateway", "after window")
+	if _, err := logs.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	status, err = logs.Status()
+	if err != nil || status.DebugBytes != 0 {
+		t.Fatalf("清除后调试日志应为空：%+v err=%v", status, err)
+	}
+	data, _ := os.ReadFile(debugPath)
+	if strings.Contains(string(data), "after window") || strings.Contains(string(data), "thread/name/set") {
+		t.Fatalf("清除后不应留下调试内容：%q", data)
 	}
 }

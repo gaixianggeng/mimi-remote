@@ -16,7 +16,9 @@ struct ConversationMessageContent: View {
 
     var body: some View {
         Group {
-            if shouldRenderUserImages {
+            if isQuestionReply {
+                questionReplySurface
+            } else if shouldRenderUserImages {
                 userImageBubbleSurface
             } else if isAssistantDocument {
                 assistantDocumentSurface
@@ -86,6 +88,41 @@ struct ConversationMessageContent: View {
                     },
                     stop: stop
                 )
+
+            MessageTimestampCaption(
+                text: message.displayTimestampText,
+                isFallback: message.isTimestampFallback,
+                foreground: timestampForeground,
+                details: message.timestampCaptionText
+            )
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// 异步提问的答复在投影层已映射为独立类型，正文只有答案。用“已回答”标识与普通
+    /// 用户请求区分，避免与紧随其后的引导消息看起来像两条独立请求。
+    private var questionReplySurface: some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrowshape.turn.up.left")
+                        .imageScale(.small)
+                    Text(L10n.text("ui.question_reply_label"))
+                }
+                .font(themeStore.uiFont(.caption, weight: .semibold))
+                .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+                renderContent
+            }
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(background, in: shape)
+            .contentShape(.interaction, shape)
+            .contentShape(.contextMenuPreview, shape)
+            .messageContextMenu(for: message)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("conversation.message.questionReply")
 
             MessageTimestampCaption(
                 text: message.displayTimestampText,
@@ -273,6 +310,10 @@ struct ConversationMessageContent: View {
 
     private var isAssistantDocument: Bool {
         message.role == .assistant && message.kind == .message
+    }
+
+    private var isQuestionReply: Bool {
+        message.role == .user && message.kind == .questionReply
     }
 
     private var isPlainUserMessage: Bool {

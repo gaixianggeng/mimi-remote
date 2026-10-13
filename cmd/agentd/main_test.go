@@ -142,7 +142,7 @@ func TestRestartNoPairDoesNotPrintLongLivedCredentials(t *testing.T) {
 	if !strings.Contains(stdout, "正在重启 Mimi Remote 助手") {
 		t.Fatalf("安全重启仍应输出进度：%q", stdout)
 	}
-	for _, forbidden := range []string{fixture.token, "Token：", "访问码：", "用 iPad 扫这个二维码"} {
+	for _, forbidden := range []string{fixture.token, "Token：", "访问码：", serveConnectionQRHeading} {
 		if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
 			t.Fatalf("restart --no-pair 泄漏长期凭据或二维码 %q：stdout=%q stderr=%q", forbidden, stdout, stderr)
 		}
@@ -161,7 +161,7 @@ func TestStartNoPairDoesNotPrintLongLivedCredentials(t *testing.T) {
 	if !strings.Contains(stdout, "正在启动 Mimi Remote 后台服务") {
 		t.Fatalf("安全启动仍应输出进度：%q", stdout)
 	}
-	for _, forbidden := range []string{fixture.token, "Token：", "访问码：", "用 iPad 扫这个二维码"} {
+	for _, forbidden := range []string{fixture.token, "Token：", "访问码：", serveConnectionQRHeading} {
 		if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
 			t.Fatalf("start --no-pair 泄漏长期凭据或二维码 %q：stdout=%q stderr=%q", forbidden, stdout, stderr)
 		}
@@ -186,7 +186,7 @@ func TestUpNoPairDoesNotPrintConnectionCredentials(t *testing.T) {
 		"Token：",
 		"访问码：",
 		"mimiremote://",
-		"用 iPad 扫这个二维码",
+		serveConnectionQRHeading,
 	} {
 		if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
 			t.Fatalf("up --no-pair 泄漏连接信息 %q：stdout=%q stderr=%q", forbidden, stdout, stderr)
@@ -849,6 +849,27 @@ func TestServeConnectionIsNotPrintedToRegularFile(t *testing.T) {
 	output := string(raw)
 	if strings.Contains(output, "secret-token") || strings.Contains(output, "mimiremote://connect") {
 		t.Fatalf("serve 不应把连接凭证写入非交互式日志输出：%q", output)
+	}
+}
+
+func TestPrintServeConnectionUsesMobileManualConnectionWording(t *testing.T) {
+	var output bytes.Buffer
+	printServeConnection(&output, agentsetup.Result{
+		Endpoint: "http://100.64.0.1:8787",
+		Token:    "secret-token",
+		PairURL:  "mimiremote://pair?ticket=short-lived",
+	})
+	text := output.String()
+	// 与 iOS 手动连接表单的入口和字段名保持一致，用户照着终端说明能找到对应位置。
+	for _, want := range []string{serveConnectionQRHeading, "“手动连接”", "连接地址：http://100.64.0.1:8787", "访问码：secret-token"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("连接说明缺少 %q：%q", want, text)
+		}
+	}
+	for _, stale := range []string{"iPad", "高级手动连接"} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("连接说明仍包含过时文案 %q：%q", stale, text)
+		}
 	}
 }
 

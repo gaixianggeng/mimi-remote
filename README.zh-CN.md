@@ -41,10 +41,10 @@ Agent、项目和会话都留在你的 macOS、Windows 或 Linux 电脑上运行
 | 运行时 | 移动端能力 | 配置 |
 | --- | --- | --- |
 | **Codex** | 主运行时：会话、实时进度、审批、任务控制和项目工具。 | 安装并登录 Codex CLI。 |
-| **Claude Code**（实验） | 会话与审批，控制项少于 Codex；不支持目标、归档和 fork。 | 安装并登录 Claude Code。Mimi Remote Mac 已内置 bridge，检测到 Claude Code 已登录后自动开启；Linux 和 Homebrew 宿主需单独安装 bridge（[Skill 步骤](packaging/skill/install-mimi-remote/SKILL.md)）。 |
+| **Claude Code**（实验） | 会话与审批，控制项少于 Codex；不支持目标、归档和 fork。 | 安装并登录 Claude Code。Mimi Remote Mac 与 Windows 安装包已内置 Claude 适配器：Mac App 检测到 Claude Code 已登录后自动开启，其他宿主需手动开启；Linux 和 Homebrew 宿主需单独安装旧 bridge（[Skill 步骤](packaging/skill/install-mimi-remote/SKILL.md)）。 |
 | **DeepSeek Harness** | 文本会话与实时进度；不支持附件、Skills、计划、目标和归档。 | 在宿主上运行 Harness，再从 Mimi Remote Mac 连接。执行权限由 Harness 自己管理。 |
 
-技术细节：[Claude bridge](docs/claude-bridge-architecture.md) · [DeepSeek Harness 接入协议](docs/deepseek-harness-protocol.md)。
+技术细节：[Claude 适配器](bridges/claude-sdk/README.md) · [旧 Claude bridge](docs/claude-bridge-architecture.md) · [DeepSeek Harness 接入协议](docs/deepseek-harness-protocol.md)。
 
 ## 工作原理
 
@@ -58,7 +58,11 @@ flowchart LR
 
 Windows 上的 Codex App Server 只监听本机 loopback WebSocket，不向局域网直接开放。
 
-电脑上的 `agentd` 负责验证 App 的连接，并转到所选运行时。没有云账号、会话托管或应用层中转。消息通知默认开启，经由一个小型推送服务发送；它只接收 APNs 设备 Token、电脑与会话的匿名短标签、审批类型和过期时间，不接收提示词、代码或会话内容，详见[隐私政策](docs/privacy-policy.md)。`agentd` 只应在私有网络中访问，不要把它的明文 HTTP 端口暴露到公网。
+电脑上的 `agentd` 负责验证 App 的连接，并转到所选运行时。没有云账号、会话托管或应用层中转。消息通知默认开启，经由一个小型推送服务发送；它只接收 APNs 设备 Token、随机编号与电脑和会话的匿名短标签、运行时与事件类型（如待审批、任务完成）和过期时间，不接收提示词、代码或会话内容，详见[隐私政策](docs/privacy-policy.md)。`agentd` 只应在私有网络中访问，不要把它的明文 HTTP 端口暴露到公网。
+
+Mac 与 Linux 宿主还提供实验性 Tailcat 连接（默认关闭），开启后手机无需安装 Tailscale 也能连到宿主。每次连接都会先通过 DERP 中继发现对端并完成初始握手，随后在网络允许时将端到端加密的流量切换为直连；无法直连时继续经中继转发。即使随后直连，中继也会处理建立连接所需的网络元数据。默认中继由 Tailscale 运营，不由 Mimi Remote 运营，也可以在宿主上改为自建中继。
+
+新会话默认使用「完全文件访问」权限档位，Agent 执行命令和修改文件时不会逐条询问。需要逐条确认时，在 App 设置的「默认权限」中改为「请求审批」。风险说明见 [SECURITY.md](SECURITY.md)。
 
 Mimi Remote 是会话客户端，不是远程 Shell，也不在 iOS 上运行 Agent。Codex Desktop 普通「This Mac」模式里的会话不会共享；要在移动端接着用，请按[共享 App Server](docs/shared-ssh-app-server.md) 接入 Desktop。
 

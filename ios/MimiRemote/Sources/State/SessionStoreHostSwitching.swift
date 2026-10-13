@@ -23,6 +23,9 @@ extension SessionStore {
         }
         setErrorMessage(nil)
         setStatusMessage(nil)
+        // setStatusMessage(nil) 只收起信息提示；失败提示的重试闭包捕获的是旧主机上的会话，
+        // 换连接后再点「重试」会把旧 thread ID 发给当前主机，所以连接边界上一并收起。
+        dismissOperationFeedback()
     }
 
     @discardableResult
@@ -346,6 +349,8 @@ extension SessionStore {
         }
         setErrorMessage(nil)
         setStatusMessage(nil)
+        // 同上：旧主机的失败提示（及其重试闭包）不能带到新主机。
+        dismissOperationFeedback()
         return didChange
     }
 

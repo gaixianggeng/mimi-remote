@@ -10,7 +10,7 @@
 
 - `SwiftUI + Observation`：原生菜单栏、Dashboard、配对、诊断和设置界面。
 - `SMAppService`：注册 App bundle 内的 LaunchAgent；登录后同时启动菜单栏 App 和 `agentd`。
-- 内嵌 Go `agentd` 与 Rust `alleycat-claude-bridge`：构建阶段按目标架构编译并使用稳定 identifier 分别签名。
+- 内嵌 Go `agentd`、Claude 适配器 `mimi-claude-adapter`（Bun 编译 `bridges/claude-sdk`，#660 起默认）与旧 Rust `alleycat-claude-bridge`（回退开关使用，保留一个版本周期）：构建阶段按目标架构编译，用稳定 identifier 分别签名；适配器另带 `Resources/ClaudeAdapter.entitlements` 里的 JIT 权限。从源码构建需要 Go、Rust 和 `bridges/claude-sdk/.bun-version` 指定版本的 Bun。
 - 单一 `HostStore`：统一管理服务 owner、迁移、就绪、错误和监控状态。
 - 小型 Client：命令执行、健康检查、ServiceManagement、Homebrew 和日志相互独立，便于测试与复用。
 - 独立网络控制：Tailscale、Tailcat 与局域网可以分别启用；配对只展示已经启用且本机地址可用的通道，不会为了生成二维码静默开启局域网。
@@ -51,7 +51,7 @@ bash macos/MimiRemoteMac/Scripts/install-local.sh "/Applications/Mimi Remote Mac
 
 ### 正式安装包
 
-正式 tag 的 Release workflow 会生成 `Mimi-Remote-Mac.dmg` 和 SHA-256 文件。DMG 内的 App 同时包含 universal `agentd` 和 `alleycat-claude-bridge`。维护者可在没有发布凭据时先验证完整的 universal 构建链路：
+正式 tag 的 Release workflow 会生成 `Mimi-Remote-Mac.dmg` 和 SHA-256 文件。DMG 内的 App 同时包含 universal `agentd`、`mimi-claude-adapter` 和 `alleycat-claude-bridge`。维护者可在没有发布凭据时先验证完整的 universal 构建链路：
 
 ```bash
 bash scripts/build-macos-installer.sh \
@@ -95,7 +95,8 @@ bash scripts/check-macos-installer.sh \
 
 ### Claude Runtime
 
-- 正式 Mac App 使用与 `agentd` 同目录的随包 bridge，不要求用户单独安装 Rust 或运行 `cargo install`。
+- 正式 Mac App 默认使用随包的 Claude 适配器，不要求用户安装 Bun、Rust 或运行 `cargo install`。需要回退时在配置的 `claude` 里设 `"legacy_bridge": true`（或环境变量 `AGENTD_CLAUDE_LEGACY_BRIDGE=1`）并重启服务，改用随包的旧 Rust bridge；该开关保留一个版本周期。
+- 适配器要求 Claude Code 2.1.294 或更新版本：启动检测、连接握手和发送消息时都会检查，过旧时提示运行 `claude update`。
 - `agentd` 监督一个 resident bridge；每个 Claude thread 对应一个 Claude Code headless 进程。移动端重连使用稳定 session 和事件 cursor，不重复提交 `turn/start`。
 - App 启动时会检测随包 bridge、Claude CLI 和登录态；三项都可用且用户没有明确关闭时自动启用 Claude，否则保持关闭。用户可在设置页明确开启或关闭，明确关闭会在后续启动中保留。
 - 设置变更通过内嵌 `agentd` 原子更新私有配置并重新加载 App 管理的 LaunchAgent；重载失败会恢复原设置。始终保持 `CLAUDE_BRIDGE_BYPASS_PERMISSIONS=false`，Claude 失败不影响 Codex 主通道。

@@ -75,6 +75,7 @@ final class LockScreenApprovalStore: ObservableObject {
 		let providerBaseURL: String?
 		let providerHost: String?
 		let providerIsOfficial: Bool
+		let registeredDeviceSupportsHolderWaiting: Bool?
 	}
 
 	private struct IdentityResolution {
@@ -245,6 +246,19 @@ final class LockScreenApprovalStore: ObservableObject {
 			   let expiry = defaults.object(forKey: Key.ticketExpiresAt) as? Date,
 			   expiry.timeIntervalSinceNow >= 7 * 24 * 60 * 60,
 			   case .active = status {
+				// App 升级后复用有效 Ticket 补登记能力；旧 agentd 未返回字段时等待其升级。
+				if hostSupport(for: profileID)?.registeredDeviceSupportsHolderWaiting == false {
+					do {
+						guard let ticket = try ticketStore.loadRequired() else { throw AgentAPIError.invalidResponse }
+						_ = try await client.registerPushDevice(
+							deviceID: deviceID, ticket: ticket,
+							expiresAt: expiry, platform: Self.currentPlatform
+						)
+					} catch {
+						status = .failed(message: L10n.text("ui.push_status_unavailable"))
+						return
+					}
+				}
 				registerNotificationInfrastructure()
 				return
 			}
@@ -291,7 +305,9 @@ final class LockScreenApprovalStore: ObservableObject {
 				providerHost: providerHost,
 				providerIsOfficial: providerBaseURL == Self.normalizedProviderURL(
 					PushProviderClient.defaultBaseURL
-				)
+				),
+				registeredDeviceSupportsHolderWaiting: response.devices?
+					.first { $0.deviceID == deviceID }?.supportsHolderWaiting
 			)
 			hostSupportByProfileID[profileID] = support
 			if !support.enabled, !isEnabled || registeredProfileID == profileID {
@@ -313,7 +329,8 @@ final class LockScreenApprovalStore: ObservableObject {
 				enabled: false,
 				providerBaseURL: nil,
 				providerHost: nil,
-				providerIsOfficial: false
+				providerIsOfficial: false,
+				registeredDeviceSupportsHolderWaiting: nil
 			)
 			if !isEnabled || registeredProfileID == profileID {
 				status = .unavailableOnHost
