@@ -212,7 +212,7 @@ struct HostSwitcherMenu: View {
                 )
             }
             // 健康连接是页面正常工作的基线，不再叠一枚容易与任务状态混淆的绿点。
-            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryAction)
+            .foregroundStyle(themeStore.tokens(for: colorScheme).accentText)
             // 磨砂圆交给调用方：放在导航栏里必须用不参与布局的
             // `workbenchToolbarChromeCircle`，放在自由浮层里才能用带真实尺寸的
             // `workbenchChromeCircle`。这里统一画会让导航栏那一路撑坏安全区。
@@ -234,7 +234,7 @@ struct HostSwitcherMenu: View {
         case .progress:
             ProgressView()
                 .controlSize(.mini)
-                .tint(tokens.primaryAction)
+                .tint(tokens.accentText)
                 .frame(width: 14, height: 14)
                 .background(tokens.background, in: Circle())
                 .offset(x: 5, y: 5)

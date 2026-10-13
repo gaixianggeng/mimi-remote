@@ -276,7 +276,7 @@ struct ConversationActivityRow: View, Equatable {
         if case AgentAPIError.server(let status, _) = error, status == 404 {
             return L10n.text("ui.the_historical_output_cache_has_expired_please_refresh")
         }
-        return error.localizedDescription
+        return UserFacingError(error, context: .historyOutput).message
     }
 
     private func activityDetailLine(_ label: String, value: String, monospaced: Bool = false) -> some View {

@@ -136,6 +136,8 @@ func TestPairingNetworkForEndpointClassifiesRemoteNetwork(t *testing.T) {
 		want     PairingNetwork
 	}{
 		{endpoint: "http://100.100.20.30:8787", want: PairingNetworkTailscale},
+		{endpoint: "http://[fd7a:115c:a1e0::2]:8787", want: PairingNetworkTailscale},
+		{endpoint: "http://[fd00::2]:8787", want: ""},
 		{endpoint: "http://192.168.31.20:8787", want: PairingNetworkLAN},
 		{endpoint: "http://10.0.0.8:8787", want: PairingNetworkLAN},
 		{endpoint: "http://127.0.0.1:8787", want: ""},
@@ -144,6 +146,43 @@ func TestPairingNetworkForEndpointClassifiesRemoteNetwork(t *testing.T) {
 		if got := pairingNetworkForEndpoint(testCase.endpoint); got != testCase.want {
 			t.Fatalf("网络类型识别错误：endpoint=%s got=%q want=%q", testCase.endpoint, got, testCase.want)
 		}
+	}
+}
+
+// 旧配置手动把 listen 写成 Tailscale 地址时，IPv4 与 IPv6 的配对选择一致：服务只在该地址
+// 上监听，所以自动和显式 Tailscale 配对都使用它；局域网未启用时拒绝；Tailscale 未连接时
+// 不生成不可达的二维码。
+func TestPairingEndpointUsesConfiguredTailscaleListenForBothFamilies(t *testing.T) {
+	for _, testCase := range []struct{ listen, endpoint string }{
+		{listen: "100.127.16.9:8787", endpoint: "http://100.127.16.9:8787"},
+		{listen: "[fd7a:115c:a1e0::2]:8787", endpoint: "http://[fd7a:115c:a1e0::2]:8787"},
+	} {
+		t.Run(testCase.listen, func(t *testing.T) {
+			cfg := config.Config{Listen: testCase.listen}
+			connected := pairingNetworkLookups{
+				tailscaleIP: func(context.Context) string { return "100.127.16.9" },
+				lanIP:       func() string { return "192.168.31.20" },
+			}
+			for _, network := range []PairingNetwork{PairingNetworkAuto, PairingNetworkTailscale} {
+				endpoint, _, err := pairingEndpoint(context.Background(), cfg, network, connected)
+				if err != nil || endpoint != testCase.endpoint {
+					t.Fatalf("%s 配对 endpoint=%q err=%v，期望 %s", network, endpoint, err, testCase.endpoint)
+				}
+				if got := pairingNetworkForEndpoint(endpoint); got != PairingNetworkTailscale {
+					t.Fatalf("%s 应识别为 Tailscale，实际 %q", endpoint, got)
+				}
+			}
+			if _, _, err := pairingEndpoint(context.Background(), cfg, PairingNetworkLAN, connected); err == nil ||
+				!strings.Contains(err.Error(), "尚未启用局域网") {
+				t.Fatalf("未开启 LAN 时必须拒绝局域网配对：%v", err)
+			}
+			disconnected := connected
+			disconnected.tailscaleIP = func(context.Context) string { return "" }
+			if _, _, err := pairingEndpoint(context.Background(), cfg, PairingNetworkAuto, disconnected); err == nil ||
+				!strings.Contains(err.Error(), "未检测到 Tailscale") {
+				t.Fatalf("Tailscale 未连接且未开启 LAN 时必须报错：%v", err)
+			}
+		})
 	}
 }
 

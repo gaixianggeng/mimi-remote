@@ -38,7 +38,8 @@ struct ConversationView: View {
                 || (sessionStore.isEstablishingConnection
                     && sessionStore.errorMessageOrigin == .connectionProbe)
                 ? nil
-                : sessionStore.errorMessage
+                : sessionStore.errorMessage,
+            errorPresentation: sessionStore.errorPresentation
         )
 
         GeometryReader { proxy in
@@ -164,7 +165,7 @@ struct ConversationView: View {
 
     @ViewBuilder
     private func topStatusStrip(model: ConversationScreenModel, layout: ConversationLayout) -> some View {
-        if model.errorMessage != nil
+        if model.errorPresentation != nil
             || model.historySavingsNotice != nil
             || model.quotaNotice != nil {
             statusStripContainer(model: model)
@@ -175,34 +176,25 @@ struct ConversationView: View {
     }
 
     private func statusStripContainer(model: ConversationScreenModel) -> some View {
-        let message = model.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return VStack(spacing: 8) {
+        VStack(spacing: 8) {
             if let notice = model.historySavingsNotice {
                 historySavingsBanner(notice)
             }
             if let notice = model.quotaNotice {
                 quotaLimitBanner(notice)
             }
-            if let message, !message.isEmpty {
-                HStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    errorChip(message)
-                    Spacer(minLength: 0)
-                }
+            if let presentation = model.errorPresentation {
+                // 原先的红色「错误：…」胶囊会把 HTTP / WebSocket 原文直接铺出来，也没有关闭或重试入口。
+                ErrorPresentationBanner(
+                    presentation: presentation,
+                    isReconnecting: sessionStore.isRefreshingSelectedSession,
+                    onReconnect: {
+                        Task { await sessionStore.retryAfterErrorPresentation() }
+                    },
+                    onDismiss: { sessionStore.dismissErrorMessage() }
+                )
             }
         }
-    }
-
-    private func errorChip(_ message: String) -> some View {
-        Label(L10n.format("ui.error_value", message), systemImage: "exclamationmark.triangle")
-            .foregroundStyle(.red)
-            .font(themeStore.uiFont(.caption, weight: .medium))
-            .lineLimit(2)
-            .minimumScaleFactor(0.86)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(statusChipBackground)
-            .clipShape(Capsule())
     }
 
     private func historySavingsBanner(_ notice: HistorySavingsNotice) -> some View {
@@ -406,10 +398,6 @@ struct ConversationView: View {
                 .controlSize(.small)
             }
         }
-    }
-
-    private var statusChipBackground: Color {
-        themeStore.tokens(for: colorScheme).elevatedSurface
     }
 
     private func composerReadabilityBackdrop(tokens: ThemeTokens) -> some View {

@@ -79,11 +79,20 @@ final class LockScreenApprovalTests: XCTestCase {
             "profile_id": LockScreenApprovalRouting.profileTag(installationID: "installation-1"),
             "session_tag": LockScreenApprovalRouting.messageSessionTag(threadID: "thread-2"),
         ])
+        // 没有能显示轻提示的前台窗口时（未进入工作台或 Scene inactive），仍由系统横幅兜底。
         XCTAssertEqual(adapter.presentationOptions(forNotificationIdentifier: "remote-id", userInfo: otherTask), [.banner, .sound])
         adapter.setVisibleSessionRoute(route, for: scene, installationID: "other-mac")
         XCTAssertEqual(adapter.presentationOptions(forNotificationIdentifier: "remote-id", userInfo: userInfo), [.banner, .sound])
         adapter.setVisibleSessionRoute(nil, for: scene)
         XCTAssertEqual(adapter.presentationOptions(forNotificationIdentifier: "remote-id", userInfo: userInfo), [.banner, .sound])
+        // 工作台在前台时，没在看的任务改为 App 内轻提示，不再弹横幅或响铃，只留在通知中心（#510）。
+        adapter.setInAppNoticeHostAvailable(true, for: scene)
+        XCTAssertEqual(adapter.presentationOptions(forNotificationIdentifier: "remote-id", userInfo: otherTask), [.list])
+        XCTAssertEqual(
+            adapter.presentationOptions(forNotificationIdentifier: "remote-id", userInfo: payload()),
+            [.banner, .sound],
+            "审批推送有时效，前台仍走系统横幅"
+        )
     }
 
     func testDecodesWellFormedApproval() throws {
