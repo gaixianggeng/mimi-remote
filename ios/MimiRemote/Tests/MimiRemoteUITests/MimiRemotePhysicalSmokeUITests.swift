@@ -824,7 +824,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
 
         try selectMode(identifier: "composer.mode.plan")
         rotate(to: .landscapeLeft)
-        assertModeSelected(expectedValues: ["planning mode", "计划模式"])
+        assertModeSelected(expectedValues: ["Planning mode", "计划模式"])
         try selectMode(identifier: "composer.mode.plan")
 
         try selectMode(identifier: "composer.mode.goal")
