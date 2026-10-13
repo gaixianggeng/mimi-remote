@@ -34,9 +34,11 @@ describe("执行策略", () => {
     expect(executionPolicyFor(undefined)).toEqual({ type: "workspaceWrite", networkAccess: false });
     expect(executionPolicyFor("read-only")).toEqual({ type: "readOnly", networkAccess: false });
     expect(executionPolicyFor("danger-full-access")).toEqual({ type: "dangerFullAccess" });
-    for (const raw of [{ type: "externalSandbox" }, { type: "workspaceWrite", networkAccess: "false" }, { type: "workspaceWrite", writableRoots: ["relative"] }, { type: "workspaceWrite", writableRoots: ["/tmp/*"] }, { type: "workspaceWrite", excludeSlashTmp: true }]) {
+    for (const raw of [{ type: "externalSandbox" }, { type: "workspaceWrite", networkAccess: "false" }, { type: "workspaceWrite", writableRoots: ["relative"] }, { type: "workspaceWrite", writableRoots: ["/tmp/*"] }, { type: "workspaceWrite", excludeSlashTmp: true }, { type: "workspaceWrite", excludeTmpdirEnvVar: true }]) {
       expect(() => executionPolicyFor(raw)).toThrow();
     }
+    // App 按协议总会带上两个临时目录开关；显式为 false 时照常接受。
+    expect(executionPolicyFor({ type: "workspaceWrite", networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false })).toEqual({ type: "workspaceWrite", networkAccess: false });
   });
 
   test("Bash 显式设置可写根、禁止出网、禁止脱离沙箱，不加载会扩大边界的本机配置", async () => {

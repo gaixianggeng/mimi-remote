@@ -21,7 +21,7 @@ export function executionPolicyFor(raw: unknown): ExecutionPolicy {
   if (policy.type === "readOnly" || policy.type === "read-only") return { type: "readOnly", networkAccess };
   if (policy.type !== "workspaceWrite" && policy.type !== "workspace-write") throw RpcError.invalidParams("不支持此 sandboxPolicy");
   // Claude 的 Bash 沙箱固定保留自己的临时目录，不能声称支持 Codex 的禁用临时目录选项。
-  if (policy.excludeTmpdirEnv === true || policy.excludeSlashTmp === true) {
+  if (policy.excludeTmpdirEnvVar === true || policy.excludeSlashTmp === true) {
     throw RpcError.invalidParams("Claude 不支持禁用沙箱临时目录；未启动执行");
   }
   const roots = policy.writableRoots;
