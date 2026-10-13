@@ -87,6 +87,17 @@ final class ForegroundNotificationPresentationTests: XCTestCase {
                 .messagesDisabled: .quiet,
             ]
         ))
+        samples.append(Sample(
+            name: "远程电脑端等待确认",
+            identifier: "remote-holder-waiting",
+            userInfo: remotePayload(event: "holder.waiting", runtime: "claude"),
+            expected: [
+                .noHost: .system,
+                .targetHidden: .system,
+                .targetVisibleInOtherScene: .system,
+                .messagesDisabled: .quiet,
+            ]
+        ))
         for (kind, tone) in [
             (SessionRuntimeNotification.Kind.completed, ForegroundSessionNotice.Tone.completed),
             (.failed, .failed),
@@ -541,7 +552,7 @@ final class ForegroundNotificationPresentationTests: XCTestCase {
         SessionRuntimeNotification(id: "event", sessionID: route.sessionID, title: "Title", body: "Body", kind: kind)
     }
 
-    private func remotePayload(event: String, kind: String = "") -> [AnyHashable: Any] {
+    private func remotePayload(event: String, kind: String = "", runtime: String = "codex") -> [AnyHashable: Any] {
         [
             "mimi": [
                 "version": 1,
@@ -549,7 +560,7 @@ final class ForegroundNotificationPresentationTests: XCTestCase {
                 "action_id": "act-0123456789abcdef",
                 "device_id": "dev-abc123",
                 "profile_id": LockScreenApprovalRouting.profileTag(installationID: installationID),
-                "runtime": "codex",
+                "runtime": runtime,
                 "approval_kind": kind,
                 "host_tag": "A1C3",
                 "session_tag": LockScreenApprovalRouting.messageSessionTag(threadID: route.sessionID),

@@ -53,7 +53,8 @@ struct ForegroundSessionNotice: Identifiable, Equatable {
             case .completed: self = .completed
             case .failed: self = .failed
             case .interrupted: self = .interrupted
-            case .pending, .resolved: return nil
+            // 电脑端在等你确认，与审批一样需要当场看到，继续走系统横幅。
+            case .pending, .resolved, .holderWaiting: return nil
             }
         }
 
