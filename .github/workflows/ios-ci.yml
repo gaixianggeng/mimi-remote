@@ -29,8 +29,10 @@ on:
       - "scripts/ios-dev.sh"
       - "scripts/build-tailcat-mobile.sh"
       - "scripts/ios-device-lease.sh"
+      - "scripts/ios-build-evidence.sh"
       - "scripts/ios-device-gui-handoff-macos.sh"
       - "scripts/test-ios-device-management.sh"
+      - "scripts/test-ios-build-evidence.sh"
       - "scripts/test-tailcat-mobile-build.sh"
       - "scripts/test-ios-device-gui-handoff-macos.sh"
       - "scripts/testdata/ios-device-management/**"
@@ -147,6 +149,9 @@ jobs:
 
       - name: Check iOS device selection and leases
         run: bash ./scripts/test-ios-device-management.sh
+
+      - name: Check iOS build evidence reuse
+        run: bash ./scripts/test-ios-build-evidence.sh
 
       - name: Check Tailcat mobile build cache
         run: bash ./scripts/test-tailcat-mobile-build.sh
