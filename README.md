@@ -22,7 +22,7 @@ Your macOS, Windows, or Linux computer keeps running the agent, the projects, an
 
 <p align="center"><img src="web/assets/readme-2.0-iphone-sessions-en.png" alt="Mimi Remote session list on iPhone" width="24%" /> &nbsp;&nbsp;&nbsp; <img src="web/assets/readme-2.0-ipad-sessions-en.png" alt="Mimi Remote multi-column session workspace on iPad" width="70%" /></p>
 
-<p align="center"><sub>Screenshots show the Simplified Chinese interface with sample data. The app is also available in English.</sub></p>
+<p align="center"><sub>Screenshots show the English interface with sample data. The app is also available in Simplified Chinese.</sub></p>
 
 ## Get started
 

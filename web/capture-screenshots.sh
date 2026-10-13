@@ -65,7 +65,7 @@ command -v xcrun >/dev/null || fail "missing xcrun"
 command -v cwebp >/dev/null || fail "missing cwebp (brew install webp)"
 [[ -z "$APP_PATH" || -d "$APP_PATH" ]] || fail "--app is not an .app directory: $APP_PATH"
 
-# 输出 "UDID<TAB>状态<TAB>名称"：给了 UDID 就按 UDID 找，否则按机型名的先后顺序找第一台可用设备。
+# 输出 "UDID<TAB>状态<TAB>名称"：显式 UDID 原样选择；自动选择只找已开机设备，避免关机的首选机型挡住回退。
 IFS=$'\t' read -r SIMULATOR_ID INITIAL_STATE SIMULATOR_NAME < <(
   xcrun simctl list devices available -j | WANT_ID="$SIMULATOR_ID" WANT_NAMES="$DEFAULT_NAMES" python3 -c '
 import json, os, sys
@@ -74,7 +74,7 @@ devices = [d for group in json.load(sys.stdin)["devices"].values() for d in grou
 if want_id:
     matches = [d for d in devices if d["udid"] == want_id]
 else:
-    matches = [d for name in want_names for d in devices if d["name"] == name]
+    matches = [d for name in want_names for d in devices if d["name"] == name and d["state"] == "Booted"]
 if matches:
     d = matches[0]
     print(d["udid"] + "\t" + d["state"] + "\t" + d["name"])
