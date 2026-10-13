@@ -11,38 +11,8 @@ extension CodexAppServerSessionRuntime {
         switch event {
         case .session(let session):
             observer(session)
-        case .turnCompleted(let metadata):
-            // turn/completed 投影出的会话快照有意保留 running（终态由随后的 .turnCompleted 交给 Store
-            // 的事件归并）。列表观察者只接快照，这里按 Store 同一规则补一份终态快照，否则行会停在运行中。
-            if let snapshot = terminalIndexSnapshot(for: metadata, sessionID: sessionID) {
-                observer(snapshot)
-            }
         default:
             break
         }
-    }
-
-    /// 与 EventReducer 对 .turnCompleted 的归并一致：失败记 failed，其余（完成、中断）记 completed；
-    /// 清掉进行中 turn 与待处理请求。缓存里已经是另一轮新 turn 时不覆盖。
-    func terminalIndexSnapshot(for metadata: AgentEventMetadata, sessionID: SessionID) -> AgentSession? {
-        let id = metadata.sessionID ?? sessionID
-        guard var session = contextsBySessionID[id]?.session else {
-            return nil
-        }
-        if let activeTurnID = session.activeTurnID,
-           let completedTurnID = metadata.turnID,
-           activeTurnID != completedTurnID {
-            return nil
-        }
-        let lifecycle = metadata.turnLifecycle ?? .completed
-        session.status = lifecycle == .failed ? SessionStatus.failed.rawValue : SessionStatus.completed.rawValue
-        session.activeTurnID = nil
-        session.pendingApproval = nil
-        session.pendingUserInput = nil
-        let completedAt = metadata.createdAt ?? Date()
-        if completedAt > (session.updatedAt ?? .distantPast) {
-            session.updatedAt = completedAt
-        }
-        return session
     }
 }

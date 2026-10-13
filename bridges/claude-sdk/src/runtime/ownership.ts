@@ -3,7 +3,7 @@
 // 订阅任何会话，终端里开着的会话开始 / 结束处理也要能推到列表。目录事件让反应在毫秒级；
 // 轮询兜底，防止事件丢失或目录稍后才出现。
 import { watch, type FSWatcher } from "node:fs";
-import { isBusyHolder, type SessionHolder } from "./holders.ts";
+import { ownerSummary, type SessionHolder } from "./holders.ts";
 
 export interface OwnershipWatcherOptions {
   dir: string;
@@ -15,9 +15,9 @@ export interface OwnershipWatcherOptions {
   pollMs?: number;
 }
 
-/** 客户端关心的只有"谁在持有、是否在执行"。 */
+/** 去重覆盖客户端收到的整份摘要，避免同一进程的新一轮执行沿用旧起点。 */
 function stateKey(holder: SessionHolder | undefined): string {
-  return holder ? `${holder.pid}:${isBusyHolder(holder) ? "busy" : (holder.status ?? "")}` : "";
+  return holder ? JSON.stringify(ownerSummary(holder)) : "";
 }
 
 export class OwnershipWatcher {
