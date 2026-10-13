@@ -8,7 +8,7 @@
 
 <p align="center"><a href="README.zh-CN.md">简体中文</a> · <a href="https://apps.apple.com/us/app/mimi-remote/id6778076511">App Store</a> · <a href="https://testflight.apple.com/join/jhGPbSk6">TestFlight</a> · <a href="https://github.com/gaixianggeng/mimi-remote/releases/latest">Host releases</a></p>
 
-<p align="center"><img src="web/assets/readme-2.0-hero-zh.png" alt="Mimi Remote preview showing session handoff, saved computers and runtimes, projects, sessions, and dark appearance" width="100%" /></p>
+<p align="center"><img src="web/assets/readme-2.0-hero-en.png" alt="Mimi Remote preview showing session handoff, saved computers and runtimes, projects, sessions, and dark appearance" width="100%" /></p>
 
 Your macOS, Windows, or Linux computer keeps running the agent, the projects, and the sessions. Mimi Remote connects to it over a trusted local network or Tailscale so you can keep working from your phone or tablet. Mimi Remote is an independent project, unaffiliated with OpenAI, Anthropic, DeepSeek, or Tailscale.
 
@@ -20,9 +20,9 @@ Your macOS, Windows, or Linux computer keeps running the agent, the projects, an
 - **Switch computers:** pair several hosts, each with its own credentials, and pick the active one in **Devices**. Sessions stay on the computer that owns them.
 - **Use either screen:** a compact view on iPhone, a multi-column workspace on iPad.
 
-<p align="center"><img src="web/assets/readme-2.0-iphone-sessions-zh.png" alt="Mimi Remote session list on iPhone" width="24%" /> &nbsp;&nbsp;&nbsp; <img src="web/assets/readme-2.0-ipad-sessions-zh.png" alt="Mimi Remote multi-column session workspace on iPad" width="70%" /></p>
+<p align="center"><img src="web/assets/readme-2.0-iphone-sessions-en.png" alt="Mimi Remote session list on iPhone" width="24%" /> &nbsp;&nbsp;&nbsp; <img src="web/assets/readme-2.0-ipad-sessions-en.png" alt="Mimi Remote multi-column session workspace on iPad" width="70%" /></p>
 
-<p align="center"><sub>Screenshots show the Simplified Chinese interface with sample data. The app is also available in English.</sub></p>
+<p align="center"><sub>Screenshots show the English interface with sample data. The app is also available in Simplified Chinese.</sub></p>
 
 ## Get started
 

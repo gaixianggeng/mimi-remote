@@ -139,7 +139,7 @@
     "alt.heroIpad": "iPad 上的 Mimi Remote：左侧是会话侧栏，右侧对话正在等待审批。",
     "alt.heroPhone": "iPhone 上的会话列表，进行中的任务排在最上方。",
     "alt.handoff": "同一段对话，在 iPhone 上接着进行。",
-    "alt.devices": "iPhone 上的「Mac 连接」页面，列出两台已保存的电脑。",
+    "alt.devices": "iPhone 上的「电脑连接」页面，列出当前电脑和另一台已保存的电脑。",
     "alt.easy": "对话中的审批卡片：拒绝、仅允许一次、本会话允许、始终允许此工具。",
     "alt.designLight": "浅色模式下 iPhone 的工作区。",
     "alt.designIpad": "iPad 上的工作区视图。",
