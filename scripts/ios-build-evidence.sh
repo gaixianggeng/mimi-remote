@@ -14,13 +14,13 @@
 # Worktree 键取自当前 Worktree 物理路径的哈希，每个 Worktree 只读写自己的记录，
 # 不会把 A Worktree 的结果交给 B。
 
-IOS_BUILD_EVIDENCE_SCHEMA="2"
+IOS_BUILD_EVIDENCE_SCHEMA="3"
 IOS_BUILD_EVIDENCE_DIR_NAME="MimiBuildEvidence"
 IOS_BUILD_EVIDENCE_REASON=""
 IOS_BUILD_EVIDENCE_SUMMARY=""
 IOS_BUILD_EVIDENCE_ARGS=""
 # 参与比较的字段及顺序；任何一项不同都必须重新构建。
-IOS_BUILD_EVIDENCE_KEYS="schema worktree project scheme configuration build_settings destination simulator derived_data developer_dir xcode toolchain sdk host_arch go tailcat build_env inputs"
+IOS_BUILD_EVIDENCE_KEYS="schema worktree project scheme configuration build_settings destination simulator derived_data developer_dir xcode xcodebuild xcrun toolchain sdk host_arch go tailcat build_env inputs"
 IOS_BUILD_EVIDENCE_GO_BIN="${TAILCAT_MOBILE_GO_BIN:-go}"
 IOS_BUILD_EVIDENCE_TAILCAT_MODULE="${TAILCAT_MOBILE_MODULE_DIR:-$ROOT_DIR/experiments/tailcat}"
 
@@ -62,6 +62,8 @@ ios_evidence_label() {
     derived_data) printf 'DerivedData' ;;
     developer_dir) printf 'Xcode 路径' ;;
     xcode) printf 'Xcode 版本' ;;
+    xcodebuild) printf 'xcodebuild 执行文件' ;;
+    xcrun) printf 'xcrun 执行文件' ;;
     toolchain) printf 'Swift 工具链（TOOLCHAINS）' ;;
     sdk) printf 'Simulator SDK' ;;
     host_arch) printf '主机架构' ;;
@@ -464,11 +466,23 @@ ios_evidence_toolchain() {
   printf 'TOOLCHAINS=%s / %s / %s' "$TOOLCHAINS" "$swiftc_path" "$swiftc_version"
 }
 
+# 版本号相同的包装脚本可能注入不同构建参数，所以同时记录实际路径与文件内容。
+# 路径不变但包装脚本被改写时也必须重新构建；无法确认执行文件时不复用证据。
+ios_evidence_executable_identity() {
+  local executable
+  executable="$(command -v "$1")" || return 1
+  ruby -rdigest -e '
+    path = File.realpath(ARGV.fetch(0))
+    abort unless File.file?(path) && File.executable?(path)
+    puts "#{path} / #{Digest::SHA256.file(path).hexdigest}"
+  ' "$executable" 2>/dev/null
+}
+
 # 输出参与比较的 “key<TAB>value” 行。失败时只打印原因并返回 1。
 ios_evidence_values() {
   local inputs_digest="$1"
   local developer_dir xcode_version sdk_version sdk_build project_relative worktree_root tailcat_value
-  local go_version go_environment toolchain_value build_environment
+  local go_version go_environment toolchain_value build_environment xcodebuild_identity xcrun_identity
   worktree_root="$(ios_evidence_worktree_root)" || { printf '无法解析 Worktree 路径'; return 1; }
   build_environment="$(ios_evidence_build_environment)" \
     || { printf '%s' "${build_environment:-无法读取构建相关环境变量}"; return 1; }
@@ -479,6 +493,10 @@ ios_evidence_values() {
   fi
   xcode_version="$("$XCODEBUILD_BIN" -version 2>/dev/null)" \
     || { printf '无法读取 Xcode 版本'; return 1; }
+  xcodebuild_identity="$(ios_evidence_executable_identity "$XCODEBUILD_BIN")" \
+    || { printf '无法确认 xcodebuild 执行文件'; return 1; }
+  xcrun_identity="$(ios_evidence_executable_identity "$XCRUN_BIN")" \
+    || { printf '无法确认 xcrun 执行文件'; return 1; }
   sdk_version="$("$XCRUN_BIN" --sdk iphonesimulator --show-sdk-version 2>/dev/null)" \
     || { printf '无法读取 Simulator SDK 版本'; return 1; }
   sdk_build="$("$XCRUN_BIN" --sdk iphonesimulator --show-sdk-build-version 2>/dev/null)" \
@@ -509,6 +527,8 @@ ios_evidence_values() {
   ios_evidence_emit derived_data "$SELECTED_DERIVED_DATA"
   ios_evidence_emit developer_dir "${developer_dir:-unknown}"
   ios_evidence_emit xcode "$xcode_version"
+  ios_evidence_emit xcodebuild "$xcodebuild_identity"
+  ios_evidence_emit xcrun "$xcrun_identity"
   ios_evidence_emit toolchain "$toolchain_value"
   ios_evidence_emit sdk "iphonesimulator $sdk_version ($sdk_build)"
   ios_evidence_emit host_arch "$(uname -m)"

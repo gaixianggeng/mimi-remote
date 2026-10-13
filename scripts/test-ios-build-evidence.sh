@@ -280,6 +280,18 @@ STATUS_SIMULATOR_ID=M5-26-UDID assert_rebuild "没有本 Worktree" "$worktree_a"
 STATUS_TARGET_MODE=auto assert_rebuild "只有显式 Simulator 构建可以复用" "$worktree_a"
 assert_reusable "$worktree_a"
 
+# 同版本工具换路径，或同一路径的包装脚本换内容，都不能沿用原工具的构建证据。
+cp "$IOS_XCODEBUILD_BIN" "$TEMP_DIR/alternate-xcodebuild"
+cp "$IOS_XCRUN_BIN" "$TEMP_DIR/alternate-xcrun"
+assert_rebuild "xcodebuild 执行文件" "$worktree_a" IOS_XCODEBUILD_BIN="$TEMP_DIR/alternate-xcodebuild"
+assert_rebuild "xcrun 执行文件" "$worktree_a" IOS_XCRUN_BIN="$TEMP_DIR/alternate-xcrun"
+IOS_XCODEBUILD_BIN="$TEMP_DIR/alternate-xcodebuild" bash "$worktree_a/scripts/ios-dev.sh" build-for-testing >/dev/null
+assert_reusable "$worktree_a" IOS_XCODEBUILD_BIN="$TEMP_DIR/alternate-xcodebuild"
+printf '\n# changed wrapper settings\n' >> "$TEMP_DIR/alternate-xcodebuild"
+assert_rebuild "xcodebuild 执行文件" "$worktree_a" IOS_XCODEBUILD_BIN="$TEMP_DIR/alternate-xcodebuild"
+bash "$worktree_a/scripts/ios-dev.sh" build-for-testing >/dev/null
+assert_reusable "$worktree_a"
+
 # 8b. ios-dev.sh 不清理环境，xcodebuild 与工程脚本继承全部变量：工具链选择、编译器、
 #     Tailcat 构建脚本读取的变量和工程引用的自定义设置变化都必须重建；无关变量与 PATH 不影响。
 assert_rebuild "Swift 工具链（TOOLCHAINS）" "$worktree_a" TOOLCHAINS=org.swift.fake
@@ -437,7 +449,7 @@ assert_equal "2" "$record_count" "每个 Worktree 必须使用独立证据文件
 
 # 12. 证据格式不符或 DerivedData 被清理时必须重建。
 a_record="$(grep -l "^worktree	$(cd "$worktree_a" && pwd -P)$" "$m5_derived/MimiBuildEvidence/"*.record)"
-sed 's/^schema	2$/schema	0/' "$a_record" > "$a_record.tmp"
+sed 's/^schema	[0-9][0-9]*$/schema	0/' "$a_record" > "$a_record.tmp"
 mv "$a_record.tmp" "$a_record"
 assert_rebuild "证据格式已变化" "$worktree_a"
 rm -rf "$m5_derived"
