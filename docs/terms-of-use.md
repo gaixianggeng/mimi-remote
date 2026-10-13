@@ -10,7 +10,7 @@ Mimi Remote 是连接用户自有或获授权电脑（macOS、Windows 或 Linux�
 
 ### 方案
 
-- Mimi Remote 本身不提供 AI 模型、AI 账号、AI 订阅、云端代码执行、VPN 或项目托管服务。可选的实验性 Tailcat 连接在无法直连时经第三方中继转发加密流量，默认中继由 Tailscale 运营，详见[隐私政策](privacy-policy.md)。
+- Mimi Remote 本身不提供 AI 模型、AI 账号、AI 订阅、云端代码执行、VPN 或项目托管服务。可选的实验性 Tailcat 连接每次先经第三方中继发现对端并完成初始握手，网络允许时再将加密流量切换为直连，否则继续经中继转发。随后直连也会产生初始连接阶段的网络元数据。默认中继由 Tailscale 运营，详见[隐私政策](privacy-policy.md)。
 - 用户自行安装、配置和维护电脑上的 `agentd`（Mimi Remote 宿主）、Codex，以及可选的 Claude Code、DeepSeek Harness 等运行时，并自行承担相关账号、网络和第三方服务费用。第三方运行时的使用须遵守其提供方条款。
 - 用户只能连接自己拥有或已获明确授权访问的设备、项目和账号。
 

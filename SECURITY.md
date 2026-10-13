@@ -11,7 +11,7 @@ Mimi Remote / `agentd` 的默认安全边界是：用户自己的 iPhone / iPad 
 - 本机开发环境。
 - 局域网中的可信设备。
 - Tailscale 等私有网络。
-- 实验性 Tailcat 连接（默认关闭）。流量经 WireGuard 端到端加密；无法直连时经 DERP 中继转发。默认中继是 Tailcat 上游提供、由 Tailscale 运营的公共中继（`https://tailcat.dev/derpmap.json`），也可以改为自建中继。中继方看不到连接内容，但能看到双方 IP、公钥、连接时间和流量大小。
+- 实验性 Tailcat 连接（默认关闭）。流量经 WireGuard 端到端加密；每次连接先经 DERP 中继发现对端并完成初始握手，网络允许时再切换为直连，否则继续经中继转发。默认中继是 Tailcat 上游提供、由 Tailscale 运营的公共中继（`https://tailcat.dev/derpmap.json`），也可以改为自建中继。中继方看不到连接内容，但能看到双方 IP、公钥、连接时间和流量大小；随后直连也不会消除初始连接阶段产生的网络元数据。
 
 不建议支持的使用方式：
 

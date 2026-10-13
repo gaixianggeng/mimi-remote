@@ -11,7 +11,7 @@ Features:
 - Keep separate connection profiles for different computers
 - Connect over a local network, private network, HTTPS, or an optional experimental peer-to-peer connection
 
-Mimi Remote communicates with the host you configure. Connections are usually direct; with the optional experimental peer-to-peer connection, end-to-end encrypted traffic may pass through a third-party relay when no direct path is available. The app does not download or execute code on the mobile device. The developer does not provide models, third-party accounts, subscriptions, cloud code execution, a VPN, a traffic relay service, or hosted project storage. Project content and connection credentials are not sent to the Mimi Remote developer.
+Mimi Remote communicates with the host you configure. The optional experimental peer-to-peer connection first contacts a third-party relay for discovery and the initial handshake, then switches encrypted traffic to a direct path when available; otherwise, the relay continues forwarding it. The relay processes connection metadata even when traffic later becomes direct. The app does not download or execute code on the mobile device. The developer does not provide models, third-party accounts, subscriptions, cloud code execution, a VPN, a traffic relay service, or hosted project storage. Project content and connection credentials are not sent to the Mimi Remote developer.
 
 Requirements:
 - A computer with the Mimi companion service and a compatible developer runtime installed

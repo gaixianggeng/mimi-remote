@@ -6,7 +6,7 @@ Version 1.2.1 updates the Simplified Chinese App Store name to Mimi Remote and r
 
 The iOS app does not execute downloaded code, provide arbitrary shell access, provide AI models or subscriptions, operate a VPN, or host project data. Code execution occurs only on the configured host. The developer does not operate a traffic relay or a service that receives prompts, source code, credentials, or model-provider traffic. Message notifications use a developer-operated push service that receives only APNs routing data, anonymous tags, and fixed event types.
 
-An optional, experimental peer-to-peer connection is off by default and can be enabled only from the host computer. When no direct path is available, it forwards end-to-end encrypted traffic through a third-party DERP relay, by default one operated by Tailscale. The review steps below do not use it.
+An optional, experimental peer-to-peer connection is off by default and can be enabled only from the host computer. Every connection first contacts a third-party DERP relay for discovery and the initial handshake, then switches end-to-end encrypted traffic to a direct path when available. Otherwise, the relay continues forwarding that traffic. The relay processes connection metadata even for connections that later become direct. By default, the relay is operated by Tailscale. The review steps below do not use it.
 
 The GitHub link on the Connection screen points to this project's public Release page and a free, signed and notarized macOS companion app. The iOS app only opens or shares the URL. It does not download, install, or execute the macOS binary on iOS, and no purchase or subscription is offered. App Review can use the manual Endpoint below without installing the macOS companion app.
 

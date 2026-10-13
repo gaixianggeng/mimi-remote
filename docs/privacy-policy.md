@@ -31,9 +31,9 @@ Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd`
 
 App 内置 Tailcat 客户端。Tailcat 是 Tailscale 发布的开源点对点连接库。只有用户在电脑端的 Mimi Remote 中开启 Tailcat 并扫码配对后，App 才会使用这条连接。
 
-- 连接经 WireGuard 端到端加密。能直连时，设备与电脑点对点通信；不能直连时，加密数据包经 DERP 中继服务器转发。
+- 连接经 WireGuard 端到端加密。每次连接都会先通过 DERP 中继服务器发现对端并完成初始握手，随后在网络允许时将加密流量切换为设备与电脑的点对点直连；无法直连时继续经中继转发。
 - 默认中继是 Tailcat 上游提供、由 Tailscale 运营的公共中继；用户也可以在电脑端改为自己配置的中继。Mimi Remote 开发者不运营默认中继，也不接收经中继转发的内容。
-- 中继服务器无法读取连接内容，但会处理转发所需的网络元数据，例如双方 IP 地址、连接公钥、连接时间和流量大小，并按其运营方的政策处理。
+- 中继服务器无法读取连接内容，但会处理建立连接及转发所需的网络元数据，例如双方 IP 地址、连接公钥、连接时间和流量大小，并按其运营方的政策处理。即使流量随后转为直连，初始连接阶段也会联系中继并产生这些网络元数据。
 - 「Mimi 托管连接」尚未开放。开放前会先更新本政策和 App Store 隐私披露。
 
 #### 消息通知
@@ -103,9 +103,9 @@ Connections may use a local network, a private network such as Tailscale, the ex
 
 The app includes a Tailcat client. Tailcat is an open-source peer-to-peer connection library published by Tailscale. The app uses this connection only after you turn on Tailcat in Mimi Remote on your computer and pair by scanning its QR code.
 
-- The connection is end-to-end encrypted with WireGuard. When a direct path is available, your device and computer talk peer to peer. Otherwise, encrypted packets are forwarded through a DERP relay server.
+- The connection is end-to-end encrypted with WireGuard. Every connection first uses a DERP relay server for peer discovery and the initial handshake, then switches encrypted traffic to a direct peer-to-peer path when available. Otherwise, the relay continues forwarding that traffic.
 - By default, the relay is the public relay provided by the Tailcat project and operated by Tailscale. You can switch to a relay you configure on your computer. The developer of Mimi Remote does not operate the default relay and does not receive content forwarded through it.
-- Relay servers cannot read the connection content, but they process network metadata needed for forwarding, such as both peers' IP addresses, connection public keys, connection times, and traffic volume, under their operator's policies.
+- Relay servers cannot read the connection content, but they process network metadata needed to establish and relay the connection, such as both peers' IP addresses, connection public keys, connection times, and traffic volume, under their operator's policies. The initial connection phase contacts the relay and produces this metadata even when traffic later moves to a direct path.
 - Mimi Managed Connection is not yet available. This policy and the App Store privacy disclosure will be updated before it launches.
 
 #### Message notifications
