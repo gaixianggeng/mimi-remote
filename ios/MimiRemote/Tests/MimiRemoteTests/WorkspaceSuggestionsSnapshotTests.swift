@@ -81,3 +81,28 @@ final class WorkspaceSuggestionsSnapshotTests: SimplifiedChineseSnapshotTestCase
         #endif
     }
 }
+
+/// 候选项目的路径要隐去电脑上的用户名，Linux 与 Windows 电脑同样适用。
+@MainActor
+final class WorkspaceSuggestionPathTests: XCTestCase {
+    func testCompactPathHidesHomeDirectoryOnEveryHostPlatform() {
+        let cases: [(String, String)] = [
+            ("/Users/alice/code/repo", "~/code/repo"),
+            ("/Users/alice", "~"),
+            ("/home/alice/code/repo", "~/code/repo"),
+            ("/root/code/repo", "~/code/repo"),
+            (#"C:\Users\alice\code\repo"#, #"~\code\repo"#),
+            (#"d:\users\Alice"#, "~"),
+            ("C:/Users/alice/code/repo", "~/code/repo"),
+        ]
+        for (path, expected) in cases {
+            XCTAssertEqual(WorkspaceSuggestionsView.compactPath(path), expected, path)
+        }
+    }
+
+    func testCompactPathKeepsPathsOutsideHomeDirectories() {
+        for path in ["/opt/code/repo", "/rootfs/repo", "/home", #"D:\code\repo"#, "relative/repo"] {
+            XCTAssertEqual(WorkspaceSuggestionsView.compactPath(path), path)
+        }
+    }
+}

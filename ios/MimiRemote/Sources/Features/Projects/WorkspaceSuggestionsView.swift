@@ -148,13 +148,33 @@ struct WorkspaceSuggestionsView: View {
         }
     }
 
-    /// 隐去本机用户名：降低视觉噪音，也避免屏幕共享时反复露出完整路径。
+    /// 隐去电脑上的用户名：降低视觉噪音，也避免屏幕共享时反复露出完整路径。
+    /// 覆盖 macOS `/Users/<名>`、Linux `/home/<名>` 与 `/root`、Windows `<盘符>:\Users\<名>`。
     static func compactPath(_ path: String) -> String {
-        let components = path.split(separator: "/", omittingEmptySubsequences: true)
-        guard path.hasPrefix("/"), components.count >= 2, components.first == "Users" else {
+        if path.hasPrefix("/") {
+            let components = path.split(separator: "/", omittingEmptySubsequences: true)
+            let homeDepth: Int
+            switch components.first {
+            case "Users", "home": homeDepth = 2
+            case "root": homeDepth = 1
+            default: return path
+            }
+            guard components.count >= homeDepth else { return path }
+            return homeRelativePath(components.dropFirst(homeDepth), separator: "/")
+        }
+        // Windows 路径两种分隔符都可能出现，盘符与 Users 不区分大小写。
+        let components = path.split(whereSeparator: { $0 == "\\" || $0 == "/" })
+        guard components.count >= 3,
+              components[0].count == 2,
+              components[0].first?.isLetter == true,
+              components[0].last == ":",
+              components[1].caseInsensitiveCompare("Users") == .orderedSame else {
             return path
         }
-        let relativeComponents = components.dropFirst(2)
-        return relativeComponents.isEmpty ? "~" : "~/" + relativeComponents.joined(separator: "/")
+        return homeRelativePath(components.dropFirst(3), separator: path.contains("\\") ? "\\" : "/")
+    }
+
+    private static func homeRelativePath(_ components: ArraySlice<Substring>, separator: String) -> String {
+        components.isEmpty ? "~" : "~" + separator + components.joined(separator: separator)
     }
 }
