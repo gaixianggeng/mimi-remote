@@ -1,12 +1,15 @@
 // turn / thread 参数 → Claude 运行设置。映射规则与旧 bridge 一致，iOS 的权限档位语义不变。
 import type { EffortLevel, PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 
+import { executionPolicyFor, type ExecutionPolicy } from "./sandboxPolicy.ts";
+
 type Params = Record<string, unknown>;
 
 export interface RunSettings {
   model: string | undefined;
   effort: EffortLevel | undefined;
   permissionMode: PermissionMode;
+  executionPolicy: ExecutionPolicy;
 }
 
 function collaborationModeName(value: unknown): string | undefined {
@@ -59,5 +62,5 @@ function effortFor(value: unknown): EffortLevel | undefined {
 
 export function runSettingsFor(params: Params): RunSettings {
   const model = typeof params.model === "string" && params.model.trim() ? params.model.trim() : undefined;
-  return { model, effort: effortFor(params.effort), permissionMode: permissionModeFor(params) };
+  return { model, effort: effortFor(params.effort), permissionMode: permissionModeFor(params), executionPolicy: executionPolicyFor(params.sandboxPolicy ?? params.sandbox) };
 }
