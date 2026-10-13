@@ -52,7 +52,7 @@ struct LoadingOrbit: View {
     static let restingArc = Arc(start: 0, length: 0.25)
 
     var body: some View {
-        let tint = themeStore.tokens(for: colorScheme).primaryAction
+        let tint = themeStore.tokens(for: colorScheme).accentText
         let diameter = size.diameter
         let lineWidth = Self.lineWidth(diameter: diameter)
         let animates = !reduceMotion

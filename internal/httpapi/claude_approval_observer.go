@@ -24,8 +24,8 @@ import (
 // 请求并触发推送。它是只读的 —— 不向客户端转发任何东西，也不缓存会话内容；
 // 真正的重放仍由 bridge 在下次 attach 时完成。
 //
-// 有界且不持久化：没有待审批请求也没有活跃 turn 时立刻释放；TTL 到期强制释放；
-// 新客户端接入同名会话时立刻让位；agentd 重启后全部消失。
+// 有界且不持久化：还有已授权 thread 时保留读取状态广播；无授权、无待审批且
+// 无活跃 turn 时释放；TTL 到期强制释放；新客户端接入同名会话时立刻让位。
 const (
 	// 与 Codex 一样覆盖长任务，空闲时仍在下一次 sweep 回收。
 	claudeObserverTTL           = 24 * time.Hour
@@ -193,13 +193,19 @@ func (o *claudeApprovalObserver) pump(ctx context.Context) {
 
 // observe 只做两件事：让 policy 登记/清理待审批请求，以及在新请求出现时推送。
 func (o *claudeApprovalObserver) observe(payload []byte) {
+	var frame appServerGatewayFrame
+	if json.Unmarshal(payload, &frame) != nil {
+		return
+	}
+	// Claude 常驻 bridge 会向全部连接广播 holder 状态。前台连接可以使用 Router
+	// 全局缓存恢复授权，后台 observer 只能沿用本连接断开前的本地授权集合。
+	if strings.TrimSpace(frame.Method) == "thread/status/changed" &&
+		!o.policy.locallyAllowsThread(appServerGatewayThreadIDFromParams(frame.Params)) {
+		return
+	}
 	_, _, policyErr := o.policy.observeUpstreamFrame(websocket.TextMessage, payload)
 	if policyErr != nil {
 		// 观察期没有客户端可以回错误。策略拒绝的帧直接忽略，不影响 bridge。
-		return
-	}
-	var frame appServerGatewayFrame
-	if json.Unmarshal(payload, &frame) != nil {
 		return
 	}
 	method := strings.TrimSpace(frame.Method)
@@ -350,20 +356,29 @@ func (o *claudeApprovalObserver) sweep(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			o.mu.Lock()
-			idle := len(o.activeTurns) == 0 && len(o.pending) == 0
-			expired := now.Sub(o.startedAt) > claudeObserverTTL
-			o.mu.Unlock()
-			if idle {
-				o.close("observer_idle")
-				return
-			}
-			if expired {
-				o.close("observer_ttl")
+			if reason := o.sweepCloseReason(now); reason != "" {
+				o.close(reason)
 				return
 			}
 		}
 	}
+}
+
+func (o *claudeApprovalObserver) sweepCloseReason(now time.Time) string {
+	if o == nil {
+		return "observer_idle"
+	}
+	o.mu.Lock()
+	idle := len(o.activeTurns) == 0 && len(o.pending) == 0
+	expired := now.Sub(o.startedAt) > claudeObserverTTL
+	o.mu.Unlock()
+	if expired {
+		return "observer_ttl"
+	}
+	if idle && (o.policy == nil || !o.policy.hasAuthorizedThreadRoute()) {
+		return "observer_idle"
+	}
+	return ""
 }
 
 func (o *claudeApprovalObserver) close(reason string) {

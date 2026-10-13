@@ -858,7 +858,7 @@ struct OpenWorkspaceSheet: View {
                     } label: {
                         Text(isOpening ? L10n.text("ui.opening") : L10n.text("ui.open_the_input_path"))
                             .font(themeStore.uiFont(size: 14, weight: .semibold))
-                            .foregroundStyle(canOpenTypedPath ? tokens.primaryAction : tokens.tertiaryText)
+                            .foregroundStyle(canOpenTypedPath ? tokens.accentText : tokens.tertiaryText)
                             .frame(maxWidth: .infinity, minHeight: 42)
                             .background(
                                 canOpenTypedPath ? tokens.accentSoft : tokens.accentSoft.opacity(0.5),
@@ -1824,7 +1824,7 @@ private struct SessionRow: View, Equatable {
         // 侧栏只让运行、等待、失败等需要处理的状态使用强色；完成/历史态退到中性色。
         switch tone {
         case .active:
-            return tokens.primaryAction
+            return tokens.tint(for: .active)
         case .warning:
             return tokens.warning
         case .danger:

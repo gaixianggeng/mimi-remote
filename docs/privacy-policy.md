@@ -1,12 +1,12 @@
 # Mimi Remote 隐私政策 / Privacy Policy
 
-生效日期 / Effective date：2026-10-09
+生效日期 / Effective date：2026-10-12
 
 ## 中文
 
 ### 目标
 
-本政策说明 Mimi Remote iPhone、iPad 与 Mac Catalyst 客户端如何处理数据。Mimi Remote 是连接用户自有或获授权 Mac 开发环境的独立第三方开发者工具，不提供 AI 模型、AI 订阅、云端代码执行、VPN 或开发者运营的项目托管服务。
+本政策说明 Mimi Remote iPhone、iPad 与 Mac Catalyst 客户端如何处理数据。Mimi Remote 是连接用户自有或获授权电脑（macOS、Windows 或 Linux）开发环境的独立第三方开发者工具，不提供 AI 模型、AI 订阅、云端代码执行、VPN 或开发者运营的项目托管服务。
 
 ### 方案
 
@@ -14,18 +14,27 @@ Mimi Remote 开发者不收集、上传、出售或共享用户的个人数据�
 
 App 仅在完成用户明确请求时处理以下数据：
 
-- 连接资料：用户配置的 `agentd` 地址、连接名称与访问 Token。Token 保存在系统 Keychain 中。
+- 连接资料：用户配置的 `agentd` 地址、连接名称与访问 Token。Token 保存在系统 Keychain 中。使用实验性 Tailcat 连接时，本机 Tailcat 客户端密钥与连接地址也保存在 Keychain 中。
 - 本地状态：语言、外观、权限偏好、最近工作区、会话索引、恢复路由、待发送草稿及诊断历史。
-- 开发内容：提示词、会话、代码、Diff、图片、日志和工具结果仅在设备与用户配置的 Mac 之间传输，不发送给 Mimi Remote 开发者。
+- 开发内容：提示词、会话、代码、Diff、图片、日志和工具结果仅在设备与用户配置的电脑之间传输，不发送给 Mimi Remote 开发者。
 - 本地通知：仅保存打开指定连接、项目和会话所需的路由标识，不包含 Token、消息正文或工作目录。
 
 ### 实现
 
-#### 用户配置的 Mac 与外部工具
+#### 用户配置的电脑与外部工具
 
 Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd` 在用户控制的计算机上调用用户自行安装、配置并登录的兼容开发运行时。相关工具可能按照用户与其提供方之间的条款处理提示词、代码和输出。Mimi Remote 开发者不接收这些内容，也不托管第三方账号凭据。
 
-连接可使用局域网、Tailscale 等私有网络或用户配置的 HTTPS 地址。Mimi Remote 不运营用于查看或保存工作内容的中继服务；网络基础设施提供方可能按照其自身政策处理加密连接所必需的网络元数据。
+连接可使用局域网、Tailscale 等私有网络、实验性 Tailcat 连接或用户配置的 HTTPS 地址。Mimi Remote 不运营用于查看或保存工作内容的中继服务；网络基础设施提供方可能按照其自身政策处理加密连接所必需的网络元数据。
+
+#### 实验性 Tailcat 连接（可选，默认关闭）
+
+App 内置 Tailcat 客户端。Tailcat 是 Tailscale 发布的开源点对点连接库。只有用户在电脑端的 Mimi Remote 中开启 Tailcat 并扫码配对后，App 才会使用这条连接。
+
+- 连接经 WireGuard 端到端加密。每次连接都会先通过 DERP 中继服务器发现对端并完成初始握手，随后在网络允许时将加密流量切换为设备与电脑的点对点直连；无法直连时继续经中继转发。
+- 默认中继是 Tailcat 上游提供、由 Tailscale 运营的公共中继；用户也可以在电脑端改为自己配置的中继。Mimi Remote 开发者不运营默认中继，也不接收经中继转发的内容。
+- 中继服务器无法读取连接内容，但会处理建立连接及转发所需的网络元数据，例如双方 IP 地址、连接公钥、连接时间和流量大小，并按其运营方的政策处理。即使流量随后转为直连，初始连接阶段也会联系中继并产生这些网络元数据。
+- 「Mimi 托管连接」尚未开放。开放前会先更新本政策和 App Store 隐私披露。
 
 #### 消息通知
 
@@ -33,7 +42,7 @@ Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd`
 
 官方通知服务不需要额外授权弹窗。自定义服务需要确认具体服务地址，地址变化后重新确认。开启后：
 
-- 会离开设备的只有：本次安装的 APNs 设备 Token、电脑与会话的匿名短标签、审批类型枚举、请求过期时间。
+- 发送给该服务的只有：本次安装的 APNs 设备 Token（服务把它换成加密的推送凭据，由电脑保存）、随机安装编号与一次性通知编号、电脑与会话的匿名短标签、运行时类型（Codex 或 Claude）、事件类型枚举（如待审批、任务完成、失败或中断）、审批类型枚举、请求过期时间。
 - 不会离开设备的包括：提示词、回复、模型输出、完整命令、文件路径、diff、源码、文件内容、会话历史，以及 `agentd` 访问 Token。
 - 用户的「允许」与「拒绝」不经过该服务，仍由设备通过私有网络直接提交给自己的 `agentd`。
 
@@ -45,21 +54,21 @@ Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd`
 
 - 相机：仅在用户打开配对扫码页，或在消息输入框中明确选择“相机”时使用。拍摄的照片会先在设备上重新编码并作为消息附件处理，不会自动保存到系统照片图库，也不会在后台使用相机。
 - 麦克风与语音识别：仅在用户主动录入语音时使用。用户可以选择设备端或 Codex 转写。设备端模式使用系统 SpeechAnalyzer 实时处理；系统可能下载并维护语言模型，但录音不会发送到模型提供方。Codex 模式会把录音发送到用户配置的主机，再由 `agentd` 使用用户自己的 Codex 登录态请求转写；相关处理受用户与服务提供方之间的条款约束。Mimi Remote 开发者不接收这些录音。
-- 照片与文件：仅处理用户通过系统选择器明确选择的内容；内容随后按用户指令发送到其 Mac 上的运行时。
+- 照片与文件：仅处理用户通过系统选择器明确选择的内容；内容随后按用户指令发送到其电脑上的运行时。
 - 添加到照片图库：仅在用户于「加入用户群」页点击保存时，把开发者微信二维码写入照片图库。App 只申请添加权限，不读取图库内容。
 
 拒绝上述权限不会阻止用户通过手动输入、键盘输入或其他不需要该权限的方式使用对应核心功能。
 
 #### 保留、删除与撤回权限
 
-- 在 App 的连接管理中选择“忘记连接”或删除连接档案，会删除对应本地配置和 Keychain Token。
+- 在 App 的「设备」页（或设置中的「电脑连接」）选择「忘记这台电脑」或删除连接档案，会删除对应本地配置和 Keychain Token。
 - 用户可以在系统设置中随时撤回相机、麦克风、语音识别、照片和本地网络权限。
 - 删除 App 会删除其沙盒中的配置和缓存。为确保连接凭据被明确删除，建议先在 App 内忘记所有连接；Keychain 项在卸载后的保留行为由 Apple 操作系统决定。
 - Mimi Remote 开发者没有用户账号或云端数据副本，因此没有可由开发者执行的远程数据删除流程。
 
 ### 风险与优化
 
-用户应只连接自己拥有或获授权访问的 Mac，并保护连接 Token、审核凭据、项目内容和日志。不要把 Token、真实 Tailnet 地址或私有代码提交到公开 Issue。
+用户应只连接自己拥有或获授权访问的电脑，并保护连接 Token、审核凭据、项目内容和日志。不要把 Token、真实 Tailnet 地址或私有代码提交到公开 Issue。
 
 如果未来加入账号、云同步、开发者遥测、崩溃上报、远程推送正文或开发者运营的中继服务，本政策和 App Store 隐私披露会在功能上线前同步更新。
 
@@ -69,7 +78,7 @@ Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd`
 
 ### Purpose
 
-This policy explains how the Mimi Remote client for iPhone, iPad, and Mac Catalyst handles data. Mimi Remote is an independent third-party developer tool that connects to a Mac you own or are authorized to use. It does not provide AI models, AI subscriptions, cloud code execution, a VPN, or developer-operated project hosting.
+This policy explains how the Mimi Remote client for iPhone, iPad, and Mac Catalyst handles data. Mimi Remote is an independent third-party developer tool that connects to a computer (macOS, Windows, or Linux) you own or are authorized to use. It does not provide AI models, AI subscriptions, cloud code execution, a VPN, or developer-operated project hosting.
 
 ### Approach
 
@@ -77,18 +86,27 @@ The developer of Mimi Remote does not collect, upload, sell, or share personal d
 
 The app processes the following data only to perform actions you request:
 
-- Connection data: the `agentd` address, connection name, and access token you configure. Tokens are stored in the system Keychain.
+- Connection data: the `agentd` address, connection name, and access token you configure. Tokens are stored in the system Keychain. When you use the experimental Tailcat connection, the app's Tailcat client key and connection address are also stored in the Keychain.
 - Local state: language, appearance and permission preferences, recent workspaces, session indexes, restoration routes, queued drafts, and diagnostic history.
-- Development content: prompts, conversations, code, diffs, images, logs, and tool results travel only between your device and the Mac you configure. They are not sent to the developer of Mimi Remote.
+- Development content: prompts, conversations, code, diffs, images, logs, and tool results travel only between your device and the computer you configure. They are not sent to the developer of Mimi Remote.
 - Local notifications: only routing identifiers needed to open a connection, project, and session are stored. Tokens, message bodies, and working-directory paths are excluded.
 
 ### Implementation
 
-#### Your Mac and external tools
+#### Your computer and external tools
 
 Mimi Remote connects directly to an `agentd` endpoint that you enter or import by QR code. On your computer, `agentd` invokes compatible developer runtimes that you install, configure, and authenticate. Those tools may process prompts, code, and output under the terms between you and their providers. The developer of Mimi Remote does not receive this content or host third-party account credentials.
 
-Connections may use a local network, a private network such as Tailscale, or an HTTPS endpoint you configure. Mimi Remote does not operate a relay that reads or stores your work. Network infrastructure providers may process network metadata required to carry the encrypted connection under their own policies.
+Connections may use a local network, a private network such as Tailscale, the experimental Tailcat connection, or an HTTPS endpoint you configure. Mimi Remote does not operate a relay that reads or stores your work. Network infrastructure providers may process network metadata required to carry the encrypted connection under their own policies.
+
+#### Experimental Tailcat connection (optional, off by default)
+
+The app includes a Tailcat client. Tailcat is an open-source peer-to-peer connection library published by Tailscale. The app uses this connection only after you turn on Tailcat in Mimi Remote on your computer and pair by scanning its QR code.
+
+- The connection is end-to-end encrypted with WireGuard. Every connection first uses a DERP relay server for peer discovery and the initial handshake, then switches encrypted traffic to a direct peer-to-peer path when available. Otherwise, the relay continues forwarding that traffic.
+- By default, the relay is the public relay provided by the Tailcat project and operated by Tailscale. You can switch to a relay you configure on your computer. The developer of Mimi Remote does not operate the default relay and does not receive content forwarded through it.
+- Relay servers cannot read the connection content, but they process network metadata needed to establish and relay the connection, such as both peers' IP addresses, connection public keys, connection times, and traffic volume, under their operator's policies. The initial connection phase contacts the relay and produces this metadata even when traffic later moves to a direct path.
+- Mimi Managed Connection is not yet available. This policy and the App Store privacy disclosure will be updated before it launches.
 
 #### Message notifications
 
@@ -96,7 +114,7 @@ Message notifications are enabled by default. After the first successful compute
 
 The official notification service does not require an additional agreement dialog. Custom service addresses require confirmation, including when the address changes. When enabled:
 
-- What leaves your device: the APNs device token for this install, anonymous short tags for the Mac and the session, the approval kind as a fixed enum, and the request expiry.
+- What the service receives: the APNs device token for this install (exchanged for an encrypted push credential that your computer stores), random installation and one-time notification identifiers, anonymous short tags for the computer and the session, the runtime type (Codex or Claude), the event type as a fixed enum (such as approval pending, task completed, failed, or interrupted), the approval kind as a fixed enum, and the request expiry.
 - What never leaves: prompts, replies, model output, full commands, file paths, diffs, source code, file contents, session history, and your `agentd` access token.
 - Your allow and deny actions do not pass through the service. They go straight from your device to your own `agentd` over your private network.
 
@@ -108,21 +126,21 @@ Turning the switch off immediately stops automatic local task notifications and 
 
 - Camera: used only while you open the QR pairing scanner or explicitly choose Camera in the message composer. Captured photos are re-encoded on device and handled as message attachments. They are not automatically saved to your photo library, and the camera is not used in the background.
 - Microphone and speech recognition: used only when you actively dictate text. You can choose on-device or Codex transcription. On-device mode uses the system SpeechAnalyzer framework in real time; the system may download and maintain language models, but recordings are not sent to a model provider. Codex mode sends the recording to the host you configured, where `agentd` uses your own Codex session to request transcription under the terms between you and the service provider. The developer of Mimi Remote does not receive these recordings.
-- Photos and files: only items you explicitly choose through system pickers are processed, then sent to the runtime on your Mac as you direct.
+- Photos and files: only items you explicitly choose through system pickers are processed, then sent to the runtime on your computer as you direct.
 - Adding to the photo library: only when you tap Save on the Join the User Group screen, the developer's WeChat QR code is written to your photo library. The app requests add-only access and does not read your library.
 
 Declining a permission does not prevent use of alternatives such as manual pairing or keyboard input.
 
 #### Retention, deletion, and permission withdrawal
 
-- Choosing Forget Connection or deleting a connection profile removes its local configuration and Keychain token.
+- Choosing Forget this computer from the Devices tab (or Computer connection in Settings), or deleting a connection profile, removes its local configuration and Keychain token.
 - You can revoke camera, microphone, speech-recognition, photos, and local-network access in system settings at any time.
 - Deleting the app removes configuration and caches in its sandbox. To explicitly remove connection credentials, forget all connections before uninstalling; post-uninstall Keychain behavior is controlled by the Apple operating system.
 - Mimi Remote has no developer account system or cloud copy of your data, so there is no remote data copy for the developer to delete.
 
 ### Risks and future changes
 
-Connect only to Macs you own or are authorized to use. Protect connection tokens, review credentials, project content, and logs. Never post tokens, real Tailnet addresses, or private code in public issues.
+Connect only to computers you own or are authorized to use. Protect connection tokens, review credentials, project content, and logs. Never post tokens, real Tailnet addresses, or private code in public issues.
 
 If accounts, cloud sync, developer telemetry, crash reporting, remote notification content, or a developer-operated relay are introduced, this policy and the App Store privacy disclosure will be updated before those features are released.
 

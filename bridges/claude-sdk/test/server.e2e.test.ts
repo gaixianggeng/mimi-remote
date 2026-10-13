@@ -20,7 +20,7 @@ let child: ChildProcess;
 
 class Client {
   private buffer = "";
-  private waiters: Array<(frame: any) => void> = [];
+  private waiters: Array<{ matches(frame: any): boolean; resolve(frame: any): void }> = [];
   private queue: any[] = [];
 
   private constructor(private readonly socket: net.Socket) {
@@ -31,8 +31,8 @@ class Client {
       while (index >= 0) {
         const frame = JSON.parse(this.buffer.slice(0, index));
         this.buffer = this.buffer.slice(index + 1);
-        const waiter = this.waiters.shift();
-        if (waiter) waiter(frame);
+        const waiterIndex = this.waiters.findIndex((waiter) => waiter.matches(frame));
+        if (waiterIndex >= 0) this.waiters.splice(waiterIndex, 1)[0]!.resolve(frame);
         else this.queue.push(frame);
         index = this.buffer.indexOf("\n");
       }
@@ -52,9 +52,18 @@ class Client {
   }
 
   next(): Promise<any> {
-    const queued = this.queue.shift();
-    if (queued) return Promise.resolve(queued);
-    return new Promise((resolve) => this.waiters.push(resolve));
+    return this.nextMatching(() => true);
+  }
+
+  /** TCP 连接可能穿插所有权通知；按 id 取请求响应，并保留其他帧供后续断言。 */
+  response(id: string | number): Promise<any> {
+    return this.nextMatching((frame) => frame.id === id);
+  }
+
+  private nextMatching(matches: (frame: any) => boolean): Promise<any> {
+    const queuedIndex = this.queue.findIndex(matches);
+    if (queuedIndex >= 0) return Promise.resolve(this.queue.splice(queuedIndex, 1)[0]);
+    return new Promise((resolve) => this.waiters.push({ matches, resolve }));
   }
 
   close(): void {
@@ -163,7 +172,7 @@ describe("tcp server", () => {
       client.send({ jsonrpc: "2.0", method: "_alleycat/attach", params: { sessionKey: "windows-1", lastSeen: 0 } });
       expect(await client.next()).toMatchObject({ method: "_alleycat/attached", params: { kind: "fresh" } });
       client.send({ jsonrpc: "2.0", id: 1, method: "thread/list", params: {} });
-      const list = await client.next();
+      const list = await client.response(1);
       expect(list.result.data.map((thread: any) => thread.preview)).toEqual(["hello from fixture"]);
       client.close();
     } finally {

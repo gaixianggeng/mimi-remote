@@ -824,7 +824,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
 
         try selectMode(identifier: "composer.mode.plan")
         rotate(to: .landscapeLeft)
-        assertModeSelected(expectedValues: ["planning mode", "计划模式"])
+        assertModeSelected(expectedValues: ["Planning mode", "计划模式"])
         try selectMode(identifier: "composer.mode.plan")
 
         try selectMode(identifier: "composer.mode.goal")
@@ -1158,6 +1158,96 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             // 恢复共享的 SceneStorage 状态，避免影响后续 UI 用例。
             showSidebar.tap()
         }
+    }
+
+    /// #501：宽屏会话详情会替换工作区根视图，返回时必须回到进入前浏览的工作区，
+    /// 不能落回列表第一项；横竖屏和侧栏收起展开也不能丢掉这份浏览选择。
+    func testWideIPadWorkspaceSessionReturnRestoresSourceWorkspace() throws {
+        try XCTSkipUnless(
+            UIDevice.current.userInterfaceIdiom == .pad,
+            "工作区宽屏详情返回只在 iPad regular width 下验收。"
+        )
+        try relaunchDirectlyIntoWorkspaces()
+
+        let first = (workspaceID: "debug-mimi-demo", sessionID: "debug-session-layout")
+        let second = (workspaceID: "debug-sample-app", sessionID: "debug-session-workspace")
+        for (orientation, name) in [
+            (UIDeviceOrientation.landscapeLeft, "landscape"),
+            (.portrait, "portrait")
+        ] {
+            rotate(to: orientation)
+            // 非首个工作区进入详情再返回；随后换到首个工作区，确认每次恢复的都是对应来源。
+            openWorkspaceSessionAndReturn(source: second, other: first, context: "\(name)-second")
+            openWorkspaceSessionAndReturn(source: first, other: second, context: "\(name)-first")
+            openWorkspaceSessionAndReturn(source: second, other: first, context: "\(name)-second-again")
+        }
+
+        // 浏览选择不跟随横竖屏切换或侧栏收起展开重置。
+        rotate(to: .landscapeLeft)
+        assertWorkspaceBrowsing(second, other: first, context: "rotate-landscape")
+        guard let collapseSidebar = firstExistingButton(
+            labels: ["收起会话列表", "Collapse conversation list"],
+            timeout: 5
+        ) else {
+            XCTFail("宽屏工作区应能收起浮动侧栏")
+            return
+        }
+        collapseSidebar.tap()
+        let showSidebar = app.descendant(identifier: "sidebar.show")
+        XCTAssertTrue(showSidebar.waitForExistence(timeout: 8), "收起侧栏后应展示恢复入口")
+        assertWorkspaceBrowsing(second, other: first, context: "sidebar-collapsed")
+        showSidebar.tap()
+        XCTAssertTrue(showSidebar.waitForNonExistence(timeout: 8), "展开侧栏后恢复入口应消失")
+        assertWorkspaceBrowsing(second, other: first, context: "sidebar-expanded")
+        rotate(to: .portrait)
+        assertWorkspaceBrowsing(second, other: first, context: "rotate-portrait")
+    }
+
+    private func openWorkspaceSessionAndReturn(
+        source: (workspaceID: String, sessionID: String),
+        other: (workspaceID: String, sessionID: String),
+        context: String
+    ) {
+        let chip = app.descendant(identifier: "workspace.card.\(source.workspaceID)")
+        XCTAssertTrue(chip.waitForExistence(timeout: 10), "\(context)：应展示来源工作区胶囊")
+        chip.tap()
+        assertWorkspaceBrowsing(source, other: other, context: "\(context)-before")
+
+        app.descendant(identifier: "workspace.session.\(source.sessionID)").tap()
+        let workspaceBack = app.descendant(identifier: "sessionDetail.workspaceBack")
+        XCTAssertTrue(workspaceBack.waitForExistence(timeout: 12), "\(context)：应进入会话详情")
+        workspaceBack.tap()
+        XCTAssertTrue(workspaceBack.waitForNonExistence(timeout: 8), "\(context)：应回到工作区")
+        assertWorkspaceBrowsing(source, other: other, context: "\(context)-after")
+    }
+
+    /// 胶囊选中态和分页正文必须同时停在来源工作区：只看胶囊无法发现正文仍停在第一页。
+    private func assertWorkspaceBrowsing(
+        _ source: (workspaceID: String, sessionID: String),
+        other: (workspaceID: String, sessionID: String),
+        context: String
+    ) {
+        let chip = app.descendant(identifier: "workspace.card.\(source.workspaceID)")
+        let otherChip = app.descendant(identifier: "workspace.card.\(other.workspaceID)")
+        let session = app.descendant(identifier: "workspace.session.\(source.sessionID)")
+        let otherSession = app.descendant(identifier: "workspace.session.\(other.sessionID)")
+        XCTAssertTrue(waitFor(chip, "exists == true AND selected == true"), "\(context)：来源工作区应保持选中")
+        XCTAssertTrue(waitFor(session, "hittable == true"), "\(context)：正文应显示来源工作区的会话")
+        // 回退发生在返回后的下一轮布局；稍等后再确认没有被重置到另一项。
+        RunLoop.current.run(until: Date().addingTimeInterval(1.5))
+        XCTAssertTrue(chip.isSelected, "\(context)：来源工作区选择不应被重置")
+        XCTAssertFalse(otherChip.isSelected, "\(context)：另一工作区不应被选中")
+        XCTAssertTrue(session.isHittable, "\(context)：分页不应跳回其他工作区")
+        XCTAssertFalse(otherSession.exists && otherSession.isHittable, "\(context)：不应显示其他工作区的会话")
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "workspace-return-\(context)"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
+    private func waitFor(_ element: XCUIElement, _ format: String, timeout: TimeInterval = 8) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: format), object: element)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
     }
 
     func testSelectedWorkspaceRemoveDirectoryConfirmationAnchorsToCardAcrossIPadLayouts() throws {

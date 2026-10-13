@@ -544,7 +544,7 @@ struct ConversationTimelineView: View {
             Image(systemName: "bubble.left.and.bubble.right.fill")
                 .font(themeStore.uiFont(size: 24, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(tokens.primaryAction)
+                .foregroundStyle(tokens.accentText)
                 .frame(width: 52, height: 52)
                 .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
@@ -563,7 +563,7 @@ struct ConversationTimelineView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "folder")
                         .font(themeStore.uiFont(.caption, weight: .semibold))
-                        .foregroundStyle(tokens.primaryAction)
+                        .foregroundStyle(tokens.accentText)
 
                     Text(directoryPath)
                         .font(themeStore.uiFont(.caption))

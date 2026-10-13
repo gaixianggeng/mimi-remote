@@ -18,7 +18,7 @@
 | App Store iPhone 6.5" | 1242 × 2688（竖） | iPhone 17 Pro | 与往期提交一致；RGB，无透明通道 |
 | App Store iPhone 6.9"（可选） | 1320 × 2868（竖） | iPhone 17 Pro | 新机型主尺寸 |
 | App Store iPad 13" | 2064 × 2752（竖） | iPad Pro 13" | 截图本身是竖屏 3:4 |
-| 官网总览横幅 | 2400 × 1400 | iPad + iPhone | 替换 `web/assets/promo-overview-*.png` |
+| 官网总览横幅 | 2400 × 1400 | iPad + iPhone | 官网当前不用横幅；旧 `promo-overview-*.png` 已于 2026-10 删除 |
 | 官网分享图 OG | 1200 × 630 | iPhone | 替换 `web/assets/og.png` |
 
 大多数工具不支持任意像素，按比例出图（iPhone ≈ 9:19.5，iPad 3:4，横幅 12:7）后再放大/裁切到上表尺寸。

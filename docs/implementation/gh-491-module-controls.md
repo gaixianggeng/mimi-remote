@@ -14,23 +14,26 @@ The header describes the **Mac service**, not connected mobile devices. Agent de
 
 - `codex.enabled` is optional. Absence retains legacy enabled behavior. `codex.activation` records `auto`, `enabled`, or `disabled`. Automatic reconciliation must not override an explicit disabled preference.
 - `network.allow_tailscale` is optional. Absence retains the legacy listener behavior. The first explicit connection change records both effective Tailscale and LAN intentions, preserving the unselected connection.
+- Without `network.allow_tailscale`, the effective intentions come from the legacy config. Tailscale is on for `allow_lan`, a wildcard `listen`, or a `listen` on a Tailscale address. IPv4 `100.64.0.0/10` and IPv6 `fd7a:115c:a1e0::/48` are treated the same way: neither needs `allow_lan`, and neither turns LAN on. LAN is on for `allow_lan`, a wildcard, or a private IPv4 `listen`. A hand-written Tailscale IPv6 `listen` therefore keeps Tailscale on when the first explicit change moves the config onto module controls, instead of leaving only loopback. Other IPv6 ULAs are still treated as LAN and still require `allow_lan`.
 - Codex and network writes use one parsed snapshot, preserve unknown JSON fields and tokens, and commit via the existing private-file byte-CAS transaction. Restore commands compare the fields they changed against the applied state before restoring the original nullable preferences. They refuse to overwrite a newer conflicting choice and preserve unrelated edits.
 - Existing Claude and Tailcat control paths remain responsible for their respective configuration and runtime lifecycle. Switching an agent does not delete the other agent's enabled configuration.
 
 ## Network boundary
 
-With explicit module controls, `listen` supplies the port. At least one enabled external direct connection uses an IPv4 wildcard socket **wrapped by a connection policy**; the wildcard alone is not the security boundary. Both external switches off binds loopback only. The policy is checked before HTTP or WebSocket handling:
+With explicit module controls, `listen` supplies the port. At least one enabled external direct connection uses separate `tcp4` (`0.0.0.0`) and `tcp6` (`[::]`) wildcard sockets **wrapped by a connection policy**; the wildcard alone is not the security boundary. Both external switches off binds loopback only, plus `::1` when the configuration bound IPv6 loopback. The IPv6 wildcard already accepts `::1`, so it is not bound a second time. IPv4-mapped IPv6 support is not required; when the OS has no IPv6 support, only the added IPv6 wildcard is skipped. Port conflicts and permission errors still fail startup. The policy is checked before HTTP or WebSocket handling:
 
 | Socket local and remote addresses | Required intent |
 | --- | --- |
 | Both loopback | Always allowed; existing local authentication still applies |
-| Both Tailscale `100.64.0.0/10` IPv4 | Tailscale enabled |
+| Both Tailscale `100.64.0.0/10` IPv4 or `fd7a:115c:a1e0::/48` IPv6 | Tailscale enabled |
 | Both private RFC1918 IPv4, neither loopback | LAN enabled |
-| Mixed Tailscale/LAN, public, unknown, or external IPv6 | Rejected |
+| Mixed Tailscale/LAN, public, unknown, or other IPv6 (ULA, link-local, global) | Rejected |
+
+Disabling one direct connection only changes the policy. It never rewrites `listen` to loopback, so an enabled Tailscale connection remains reachable after LAN is disabled (#529), for wildcard, Tailscale-address and loopback `listen` values alike. Local control and the Tailcat sidecar always connect to `127.0.0.1:<port>`, which every listener set covers. Tailscale IPv6 is accepted because the iOS client tries the MagicDNS name first, and that name may resolve to the Tailscale IPv6 address.
 
 This uses actual TCP addresses, not Host or forwarded headers. A Tailscale source cannot use a LAN destination to bypass a disabled Tailscale module. Tailcat retains its separately authenticated sidecar and loopback control paths. No system Tailscale, system interfaces, routes, or firewall rules are changed by the Mac switches. All three connection methods can be enabled simultaneously.
 
-This is an IPv4 application ingress boundary, not a system firewall or protection against malicious same-user local forwarding. Availability means a local usable interface address is present, **not** that a phone is online or an end-to-end path has passed a test. Reconnecting/changing interfaces should be followed by a status refresh; explicit controls no longer depend on the old saved Tailscale bind address.
+This is an application ingress boundary for IPv4 and Tailscale IPv6, not a system firewall or protection against malicious same-user local forwarding. Availability means a local usable interface address is present, **not** that a phone is online or an end-to-end path has passed a test. Reconnecting/changing interfaces should be followed by a status refresh; explicit controls no longer depend on the old saved Tailscale bind address.
 
 ## Pairing and changes in behavior
 

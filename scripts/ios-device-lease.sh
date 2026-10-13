@@ -9,6 +9,7 @@ IOS_DEVICE_LEASE_TASK_ID="${IOS_DEVICE_LEASE_TASK_ID:-${CODEX_THREAD_ID:-unknown
 IOS_DEVICE_LEASE_WORKTREE="${IOS_DEVICE_LEASE_WORKTREE:-${ROOT_DIR:-unknown}}"
 IOS_DEVICE_LEASE_WAIT_SECONDS="${IOS_DEVICE_LEASE_WAIT_SECONDS:-0}"
 IOS_DEVICE_LEASE_POLL_SECONDS="${IOS_DEVICE_LEASE_POLL_SECONDS:-1}"
+IOS_DEVICE_LEASE_PROGRESS_SECONDS="${IOS_DEVICE_LEASE_PROGRESS_SECONDS:-30}"
 IOS_DEVICE_LEASE_ACQUIRE_GRACE_SECONDS="${IOS_DEVICE_LEASE_ACQUIRE_GRACE_SECONDS:-10}"
 
 IOS_DEVICE_LEASE_ACTIVE_DIR=""
@@ -45,6 +46,38 @@ ios_lease_metadata_value() {
     fi
   done < "$lease_dir/metadata"
   return 1
+}
+
+ios_lease_format_duration() {
+  local total="$1"
+  if (( total >= 3600 )); then
+    printf '%dh%02dm%02ds' "$((total / 3600))" "$((total % 3600 / 60))" "$((total % 60))"
+  elif (( total >= 60 )); then
+    printf '%dm%02ds' "$((total / 60))" "$((total % 60))"
+  else
+    printf '%ds' "$total"
+  fi
+}
+
+# 一行说明占用者：排队时需要知道是谁、做什么、已经占用多久，才能判断等待还是协调。
+ios_lease_owner_summary() {
+  local lease_dir="$1"
+  local owner_pid task command started_epoch now summary
+  owner_pid="$(ios_lease_metadata_value "$lease_dir" pid 2>/dev/null || printf unknown)"
+  task="$(ios_lease_metadata_value "$lease_dir" task 2>/dev/null || printf unknown)"
+  command="$(ios_lease_metadata_value "$lease_dir" command 2>/dev/null || true)"
+  started_epoch="$(ios_lease_metadata_value "$lease_dir" started_epoch 2>/dev/null || true)"
+  summary="PID ${owner_pid}，Task ${task}"
+  if [[ "$started_epoch" =~ ^[0-9]+$ ]]; then
+    now="$(date '+%s')"
+    (( now >= started_epoch )) \
+      && summary="${summary}，已占用 $(ios_lease_format_duration "$((now - started_epoch))")"
+  fi
+  if [[ -n "$command" ]]; then
+    (( ${#command} > 120 )) && command="${command:0:117}..."
+    summary="${summary}，命令 ${command}"
+  fi
+  printf '%s\n' "$summary"
 }
 
 ios_lease_process_start() {
@@ -143,7 +176,11 @@ ios_lease_find_external_xcodebuild() {
       printf '%s\t%s\n' "$pid" "$process_command"
       return 0
     fi
-  done < <("$IOS_DEVICE_LEASE_PS_BIN" -axo pid=,command= 2>/dev/null || true)
+  done < <(
+    # 先按子串预筛：不含 xcodebuild 的进程在下方循环中总会被跳过。机器上常有数千个
+    # 进程，逐行交给 bash 匹配会让每次租约尝试多花数秒，排队轮询也随之变慢。
+    { "$IOS_DEVICE_LEASE_PS_BIN" -axo pid=,command= 2>/dev/null || true; } | grep -F xcodebuild || true
+  )
   return 1
 }
 
@@ -158,7 +195,7 @@ ios_lease_read_state() {
     if ios_lease_owner_is_alive "$lease_dir"; then
       owner_pid="$(ios_lease_metadata_value "$lease_dir" pid 2>/dev/null || true)"
       if [[ -f "$lease_dir/metadata" ]]; then
-        IOS_DEVICE_LEASE_BUSY_DETAIL="租约占用：PID ${owner_pid:-unknown}，Task $(ios_lease_metadata_value "$lease_dir" task 2>/dev/null || printf unknown)"
+        IOS_DEVICE_LEASE_BUSY_DETAIL="租约占用：$(ios_lease_owner_summary "$lease_dir")"
       else
         IOS_DEVICE_LEASE_BUSY_DETAIL="租约正在建立，等待 owner metadata"
       fi
@@ -219,7 +256,11 @@ ios_lease_try_acquire() {
 
   if ! mkdir "$lease_dir" 2>/dev/null; then
     if ios_lease_owner_is_alive "$lease_dir"; then
-      IOS_DEVICE_LEASE_BUSY_DETAIL="$device_name 已被 PID $(ios_lease_metadata_value "$lease_dir" pid 2>/dev/null || printf unknown) 占用"
+      if [[ -f "$lease_dir/metadata" ]]; then
+        IOS_DEVICE_LEASE_BUSY_DETAIL="$device_name 已被占用：$(ios_lease_owner_summary "$lease_dir")"
+      else
+        IOS_DEVICE_LEASE_BUSY_DETAIL="$device_name 的租约正在建立，等待 owner metadata"
+      fi
       return 1
     fi
     ios_lease_cleanup_stale "$lease_dir"
@@ -246,6 +287,7 @@ ios_lease_try_acquire() {
     printf 'command\t%s\n' "$(ios_lease_safe_field "$lease_command")"
     printf 'derived_data\t%s\n' "$(ios_lease_safe_field "$derived_data_path")"
     printf 'started_at\t%s\n' "$started_at"
+    printf 'started_epoch\t%s\n' "$(date '+%s')"
     printf 'kind\t%s\n' "$device_kind"
     printf 'device_id\t%s\n' "$device_id"
     printf 'device_name\t%s\n' "$(ios_lease_safe_field "$device_name")"
@@ -263,23 +305,47 @@ ios_lease_acquire_wait() {
   local device_name="$3"
   local lease_command="$4"
   local derived_data_path="$5"
-  local started_epoch now_epoch
+  local started_epoch now_epoch waited=0 announced=0 last_progress=0
   if [[ ! "$IOS_DEVICE_LEASE_WAIT_SECONDS" =~ ^[0-9]+$ ]]; then
     echo "IOS_DEVICE_LEASE_WAIT_SECONDS 必须是非负整数：$IOS_DEVICE_LEASE_WAIT_SECONDS" >&2
+    return 2
+  fi
+  if [[ ! "$IOS_DEVICE_LEASE_PROGRESS_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "IOS_DEVICE_LEASE_PROGRESS_SECONDS 必须是正整数：$IOS_DEVICE_LEASE_PROGRESS_SECONDS" >&2
     return 2
   fi
   started_epoch="$(date '+%s')"
 
   while true; do
     if ios_lease_try_acquire "$device_kind" "$device_id" "$device_name" "$lease_command" "$derived_data_path"; then
+      if [[ "$announced" == "1" ]]; then
+        now_epoch="$(date '+%s')"
+        echo "==> 已获得设备租约：${device_name}，排队 $(ios_lease_format_duration "$((now_epoch - started_epoch))")" >&2
+      fi
       return 0
     fi
     now_epoch="$(date '+%s')"
-    if (( now_epoch - started_epoch >= IOS_DEVICE_LEASE_WAIT_SECONDS )); then
+    waited=$((now_epoch - started_epoch))
+    if (( waited >= IOS_DEVICE_LEASE_WAIT_SECONDS )); then
       echo "设备忙，未切换到其他测试设备：$device_name ($device_id)" >&2
       echo "$IOS_DEVICE_LEASE_BUSY_DETAIL" >&2
+      if (( IOS_DEVICE_LEASE_WAIT_SECONDS == 0 )); then
+        echo "需要排队时设置 IOS_DEVICE_LEASE_WAIT_SECONDS=<秒>，占用结束后自动继续；超时仍按阻塞（75）处理。" >&2
+      else
+        echo "已排队 $(ios_lease_format_duration "$waited")，达到 IOS_DEVICE_LEASE_WAIT_SECONDS=${IOS_DEVICE_LEASE_WAIT_SECONDS}。" >&2
+      fi
       echo "查看占用：bash ./scripts/ios-dev.sh leases" >&2
       return 75
+    fi
+    # 等待期间只在开始和每个进度间隔输出一次，避免刷屏，也让调用方知道仍在排队。
+    if [[ "$announced" == "0" ]]; then
+      echo "==> 设备忙，排队等待租约（最长 ${IOS_DEVICE_LEASE_WAIT_SECONDS}s，不切换设备）：$device_name ($device_id)" >&2
+      echo "    $IOS_DEVICE_LEASE_BUSY_DETAIL" >&2
+      announced=1
+      last_progress="$waited"
+    elif (( waited - last_progress >= IOS_DEVICE_LEASE_PROGRESS_SECONDS )); then
+      echo "    仍在排队：已等待 $(ios_lease_format_duration "$waited") / ${IOS_DEVICE_LEASE_WAIT_SECONDS}s · $IOS_DEVICE_LEASE_BUSY_DETAIL" >&2
+      last_progress="$waited"
     fi
     sleep "$IOS_DEVICE_LEASE_POLL_SECONDS"
   done
@@ -321,6 +387,10 @@ ios_lease_print_status() {
         value="$(ios_lease_metadata_value "$lease_dir" "$key" 2>/dev/null || true)"
         [[ -n "$value" ]] && printf '  %-12s %s\n' "$key:" "$value"
       done
+      value="$(ios_lease_metadata_value "$lease_dir" started_epoch 2>/dev/null || true)"
+      if [[ "$state" == "leased" && "$value" =~ ^[0-9]+$ ]]; then
+        printf '  %-12s %s\n' "held_for:" "$(ios_lease_format_duration "$(( $(date '+%s') - value ))")"
+      fi
       [[ "$state" == "stale" ]] && printf '  note:        %s\n' "$detail"
       ;;
     external)

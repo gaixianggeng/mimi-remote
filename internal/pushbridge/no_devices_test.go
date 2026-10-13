@@ -36,8 +36,8 @@ func TestEnabledManagerWithoutDevicesNeverContactsProvider(t *testing.T) {
 			t.Fatal("没有设备时不能签发审批通知")
 		}
 		for _, event := range []string{EventTurnCompleted, EventTurnFailed, EventTurnInterrupted} {
-			if send := manager.PrepareTurnMessage(TurnMessage{
-				Runtime: "codex", ThreadID: "thread", TurnID: event, Event: event,
+			if send := manager.PrepareMessage(Message{
+				Runtime: "codex", ThreadID: "thread", MessageID: "turn:" + event, Event: event,
 			}); send != nil {
 				send(t.Context())
 				t.Error("没有设备时不能创建消息投递")

@@ -9,6 +9,8 @@ pub mod pool;
 pub mod server;
 pub mod session;
 pub mod state;
+#[cfg(all(test, unix))]
+mod test_support;
 pub mod thread_index;
 
 pub use envelope::{

@@ -966,10 +966,11 @@ struct SessionOwnershipNotice: Equatable {
     var failureMessage: String?
 
     var title: String {
-        L10n.text("ui.session_owned_elsewhere_title")
+        owner.waitingReason?.title ?? L10n.text("ui.session_owned_elsewhere_title")
     }
 
     var message: String {
+        if let reason = owner.waitingReason { return reason.message }
         if let failureMessage { return failureMessage }
         if owner.isBusy { return L10n.text("ui.take_over_claude_wait_until_idle") }
         if owner.status != "idle" { return L10n.text("ui.take_over_claude_state_unknown") }

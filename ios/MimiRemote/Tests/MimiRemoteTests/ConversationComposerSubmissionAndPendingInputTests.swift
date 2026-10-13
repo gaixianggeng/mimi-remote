@@ -664,12 +664,11 @@ extension ConversationDataFlowTests {
             sessionID: "thr_terminal_form",
             replayPolicy: .stateOnly
         )
-        var iterator = reattached.makeAsyncIterator()
+        // 结束测试生产端后排空已入队事件，不依赖 Runtime 是否需要额外的 session 快照。
+        await runtime.finishAttachedEventStreams()
         var replayed: [AgentEvent] = []
-        for _ in 0..<2 {
-            if let event = await iterator.next() {
-                replayed.append(event)
-            }
+        for await event in reattached {
+            replayed.append(event)
         }
         reattached.cancel()
         XCTAssertFalse(replayed.contains {

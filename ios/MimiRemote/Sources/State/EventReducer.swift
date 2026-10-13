@@ -15,6 +15,9 @@ struct EventReducerOutput {
     var logAppends: [EventReducerLogAppend] = []
     var statusMessage: String?
     var errorMessage: String?
+    /// `errorMessage` 的界面呈现。运行时 error 通知的原文来自模型服务或 agentd，
+    /// 可能夹带 HTTP / 协议细节；顶部提示只给一句结论，原文进「详情」（#508）。
+    var errorPresentation: UserFacingError?
     var disconnectWebSocket = false
 }
 
@@ -285,6 +288,9 @@ actor EventReducer {
             output.errorMessage = isClaudeAuthenticationFailure
                 ? ClaudeAuthenticationRecovery.title
                 : payload.message
+            output.errorPresentation = isClaudeAuthenticationFailure
+                ? nil
+                : UserFacingError(runtimeFailureMessage: payload.message)
             output.logAppends.append(EventReducerLogAppend(
                 text: "\n[agentd] \(payload.message)\n",
                 sessionID: id,

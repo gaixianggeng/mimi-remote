@@ -109,7 +109,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     ) -> some View {
         // 分组只算一次，列表按状态渲染分段。
         let grouped = Dictionary(grouping: recentSessions) { session in
-            WorkspaceSessionGroup.of(session, status: session.displayStatus(foregroundActivity: nil))
+            WorkspaceSessionGroup.of(session)
         }
         let populatedGroups = WorkspaceSessionGroup.orderedPopulatedGroups(from: Set(grouped.keys))
 

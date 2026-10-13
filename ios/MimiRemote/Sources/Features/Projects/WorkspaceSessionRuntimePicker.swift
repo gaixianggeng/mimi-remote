@@ -144,7 +144,7 @@ struct WorkspaceRuntimePicker: View {
                     // 选中态使用品牌色文字和描边，不再与右侧“新建会话”争抢实色主操作层级。
                     .foregroundStyle(
                         isSelected
-                            ? tokens.primaryAction
+                            ? tokens.accentText
                             : (isAvailable ? tokens.secondaryText : tokens.tertiaryText)
                     )
                     .opacity(
@@ -366,7 +366,7 @@ struct WorkspaceRuntimePopoverPicker: View {
             if choice == selection {
                 Image(systemName: "checkmark")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(tokens.primaryAction)
+                    .foregroundStyle(tokens.accentText)
                     .accessibilityHidden(true)
             }
         }

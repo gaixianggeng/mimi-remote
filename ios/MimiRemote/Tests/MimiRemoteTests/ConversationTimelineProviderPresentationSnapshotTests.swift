@@ -46,6 +46,54 @@ final class ConversationTimelineProviderPresentationSnapshotTests: SimplifiedChi
         .frame(width: width, height: 640)
     }
 
+    /// #585：Desktop 异步提问的答复经真实历史投影后显示为“已回答”精简气泡，
+    /// 不出现协议载荷，并排在紧随其后的普通引导消息之前。只渲染消息行本身，
+    /// 不含滚动边缘和输入框材质，避免不同 Simulator 系统版本的合成差异。
+    func testAsyncQuestionReplyRendersAsAnswerBubble() async throws {
+        let dependencies = makeDependencies()
+        let store = dependencies.sessionStore.conversationStore
+        store.replaceHistorySnapshot(
+            try await QuestionReplyFixture.fullHistory(),
+            sessionID: QuestionReplyFixture.threadID
+        )
+        let rows = store.messages(for: QuestionReplyFixture.threadID).filter {
+            ["call_async_question", "user_reply", "user_follow_up"].contains($0.itemID ?? "")
+        }
+        XCTAssertEqual(rows.map(\.kind), [.message, .questionReply, .message])
+        let layout = ConversationLayout(containerWidth: 820, horizontalSizeClass: .regular)
+        let view = VStack(spacing: 0) {
+            ForEach(rows) { message in
+                MessageRow(
+                    message: message,
+                    themeVersion: dependencies.themeStore.themeVersion,
+                    layout: layout,
+                    showsActiveDeliveryStatus: false,
+                    showsCrossSessionOrigin: false,
+                    skills: [],
+                    retry: { _ in },
+                    stop: {},
+                    previewFile: { URL(fileURLWithPath: $0) }
+                )
+                .padding(layout.messageRowInsets)
+            }
+            Spacer(minLength: 0)
+        }
+        .environmentObject(dependencies.sessionStore)
+        .environmentObject(store)
+        .environmentObject(dependencies.themeStore)
+        .environment(\.colorScheme, .light)
+        .background(dependencies.themeStore.tokens(for: .light).background)
+
+        assertSnapshot(
+            of: view,
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 820, height: 460),
+                traits: UITraitCollection(displayScale: 2)
+            )
+        )
+    }
+
     func testCodexCompactAndDetailedActivityRows() {
         assertSnapshot(
             of: activityRows(provider: .codex),
