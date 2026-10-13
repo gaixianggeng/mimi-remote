@@ -332,7 +332,7 @@ struct NewSessionSheet: View {
         lastWorkspaceID = project.id
         await sessionStore.startNewSession(in: project, runtimeProvider: choice.runtimeProvider)
         guard let sessionID = sessionStore.selectedSessionID else {
-            creationErrorMessage = sessionStore.errorMessage ?? L10n.text("ui.creation_failed_please_try_again_later")
+            creationErrorMessage = sessionStore.userFacingErrorMessage ?? L10n.text("ui.creation_failed_please_try_again_later")
             return
         }
         leaveSheetForCreatedSession(sessionID)
