@@ -40,10 +40,10 @@ To add another computer, repeat these steps on it. To let Codex install, upgrade
 | Runtime | On mobile | Setup |
 | --- | --- | --- |
 | **Codex** | Main runtime: sessions, live progress, approvals, task controls, and project tools. | Install and sign in to Codex CLI. |
-| **Claude Code** (experimental) | Sessions and approvals, with fewer controls than Codex. No goals, archive, or fork. | Install and sign in to Claude Code. Mimi Remote Mac includes the bridge and turns it on once Claude Code is signed in; Linux and Homebrew hosts install the bridge separately ([Skill steps](packaging/skill/install-mimi-remote/SKILL.md)). |
+| **Claude Code** (experimental) | Sessions and approvals, with fewer controls than Codex. No goals, archive, or fork. | Install and sign in to Claude Code. Mimi Remote Mac and the Windows installer include the Claude adapter; the Mac app turns it on once Claude Code is signed in, and other hosts turn it on manually. Linux and Homebrew hosts install the legacy bridge separately ([Skill steps](packaging/skill/install-mimi-remote/SKILL.md)). |
 | **DeepSeek Harness** | Text sessions and live progress. No attachments, Skills, plans, goals, or archive. | Run Harness on the host, then connect it from Mimi Remote Mac. Harness manages its own execution permissions. |
 
-Technical details: [Claude bridge](docs/claude-bridge-architecture.md) · [DeepSeek Harness protocol](docs/deepseek-harness-protocol.md).
+Technical details: [Claude adapter](bridges/claude-sdk/README.md) · [legacy Claude bridge](docs/claude-bridge-architecture.md) · [DeepSeek Harness protocol](docs/deepseek-harness-protocol.md).
 
 ## How it works
 
@@ -57,7 +57,11 @@ flowchart LR
 
 On Windows, the Codex App Server listens on a loopback WebSocket and is not exposed directly to the LAN.
 
-`agentd` on your computer authenticates the app and routes it to the selected runtime. There is no cloud account, session hosting, or application-level relay. Message notifications are on by default; they go through a small push service that receives only the APNs device token, anonymous short tags for the computer and session, the approval type, and an expiry, never prompts, code, or session content. See the [privacy policy](docs/privacy-policy.md). Keep `agentd` on a private network; do not expose its plain HTTP port to the public Internet.
+`agentd` on your computer authenticates the app and routes it to the selected runtime. There is no cloud account, session hosting, or application-level relay. Message notifications are on by default; they go through a small push service that receives only the APNs device token, random identifiers and anonymous short tags for the computer and session, the runtime and event type (such as an approval request or a finished task), and an expiry, never prompts, code, or session content. See the [privacy policy](docs/privacy-policy.md). Keep `agentd` on a private network; do not expose its plain HTTP port to the public Internet.
+
+Mac and Linux hosts also offer an experimental Tailcat connection, off by default, that lets the app reach the host without the Tailscale app. Every connection first contacts a DERP relay for discovery and its initial handshake, then moves end-to-end encrypted traffic to a direct path when available. Otherwise, the relay continues forwarding that traffic. The relay processes connection metadata even when traffic later moves to a direct path. The default relay is operated by Tailscale, not by Mimi Remote; you can configure your own relay on the host.
+
+New sessions use the Full File Access permission mode by default, so agents run commands and edit files without asking each time. To confirm actions one by one, change Default permissions to Ask for Approval in the app's settings. See [SECURITY.md](SECURITY.md) for the risks.
 
 Mimi Remote is a session client. It is not a remote shell, and it does not run agents on iOS. Sessions created in Codex Desktop's ordinary "This Mac" mode are not shared; connect Desktop through the [shared App Server](docs/shared-ssh-app-server.md) to continue them on mobile.
 
