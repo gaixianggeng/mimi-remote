@@ -68,6 +68,12 @@ type fileReadResolvedPath struct {
 	realPath              string
 	photosDerivativeImage bool
 	codexClipboardImage   bool
+	// requiredContentType 非空时，文件头识别出的 MIME 必须与之完全一致，不能只相信扩展名。
+	requiredContentType string
+	// maxBytes 为特例路径收紧的大小上限；0 表示沿用 filePreviewMaxBytes。
+	maxBytes int64
+	// verifiedFile 非空时只能经 fd 读取解析阶段校验过的同一个文件，不按路径重新跟随链接。
+	verifiedFile os.FileInfo
 }
 
 var filePreviewImageExtensions = map[string]struct{}{
@@ -120,20 +126,40 @@ func (r *Router) fileReadHandler(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "仅支持普通文件预览")
 		return
 	}
-	if stat.Size() > filePreviewMaxBytes {
+	maxBytes := filePreviewMaxBytes
+	if resolved.maxBytes > 0 && resolved.maxBytes < maxBytes {
+		maxBytes = resolved.maxBytes
+	}
+	if stat.Size() > maxBytes {
 		writeError(w, http.StatusRequestEntityTooLarge, "文件过大，暂不支持预览")
 		return
 	}
 
-	data, err := os.ReadFile(realPath)
+	var data []byte
+	if resolved.verifiedFile != nil {
+		data, err = readVerifiedXcodeBuildMCPScreenshot(realPath, resolved.verifiedFile, maxBytes)
+	} else {
+		data, err = os.ReadFile(realPath)
+	}
 	if err != nil {
 		r.writeFileReadError(w, path, err)
+		return
+	}
+	if int64(len(data)) > maxBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "文件过大，暂不支持预览")
 		return
 	}
 	contentType := detectFileContentType(realPath, data)
 	if resolved.codexClipboardImage {
 		// 剪贴板临时目录不属于项目授权根，不能只相信扩展名；必须用文件头再次确认。
 		contentType = detectFileContentTypeFromBytes(data)
+	}
+	if resolved.requiredContentType != "" {
+		contentType = detectFileContentTypeFromBytes(data)
+		if contentType != resolved.requiredContentType {
+			writeError(w, http.StatusBadRequest, "仅支持图片预览")
+			return
+		}
 	}
 	if (resolved.photosDerivativeImage || resolved.codexClipboardImage) &&
 		!strings.HasPrefix(contentType, "image/") {
@@ -185,6 +211,19 @@ func (r *Router) resolveReadableFilePath(raw string) (fileReadResolvedPath, erro
 	if runtime.GOOS == "darwin" {
 		if realPath, ok := allowedCodexClipboardImagePath(raw, os.TempDir()); ok {
 			return fileReadResolvedPath{realPath: realPath, codexClipboardImage: true}, nil
+		}
+		// XcodeBuildMCP 模拟器截图同样落在该临时目录。只认临时目录直属、严格命名、当前用户
+		// 创建的普通图片；已被系统清理的截图保留 ENOENT，客户端会显示“文件已不存在”。
+		if screenshot, candidate, err := resolveXcodeBuildMCPScreenshotPath(raw, os.TempDir()); candidate {
+			if err != nil {
+				return fileReadResolvedPath{}, err
+			}
+			return fileReadResolvedPath{
+				realPath:            screenshot.realPath,
+				requiredContentType: screenshot.contentType,
+				maxBytes:            xcodeBuildMCPScreenshotMaxBytes,
+				verifiedFile:        screenshot.info,
+			}, nil
 		}
 	}
 	return fileReadResolvedPath{}, errFilePathOutsideScope

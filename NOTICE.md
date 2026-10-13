@@ -6,9 +6,9 @@
 
 ## 项目归属
 
-Mimi Remote 是独立开发的第三方客户端。它连接用户自己 Mac 上运行的 `agentd`，再由 `agentd` 连接用户本机的 Codex CLI / app-server 环境。
+Mimi Remote 是独立开发的第三方客户端。它连接用户自己电脑（macOS、Windows 或 Linux）上运行的 `agentd`，再由 `agentd` 连接用户本机的 Codex CLI / app-server，以及用户自行安装并选择启用的 Claude Code、DeepSeek Harness 等运行时。
 
-本项目不隶属于 OpenAI 或 Anthropic，也没有获得这些公司的赞助、背书或官方授权。`Codex`、`OpenAI`、`Claude`、`Anthropic` 等名称和界面内对应的服务标识，只用于描述兼容的用户自有工具链及区分用户主动选择的运行时。相关商标和标识归各自权利人所有，不构成合作或背书。
+本项目不隶属于 OpenAI、Anthropic、DeepSeek（深度求索）或 Tailscale，也没有获得这些公司的赞助、背书或官方授权。`Codex`、`OpenAI`、`Claude`、`Anthropic`、`DeepSeek`、`Tailscale`、`Tailcat` 等名称和界面内对应的服务标识，只用于描述兼容的用户自有工具链及区分用户主动选择的运行时或连接方式。相关商标和标识归各自权利人所有，不构成合作或背书。
 
 ## 开源许可
 
@@ -26,14 +26,17 @@ Copyright (c) 2026 Gaixiang Geng
 
 完整版权声明、NOTICE 和许可证正文见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，该文件会随 `agentd` 发布压缩包和 iOS App 一起分发。
 
-Go 依赖：
+Go 依赖（主模块 `go.mod` 的直接依赖；间接依赖见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）：
 
 - Go standard library / runtime
 - `github.com/creack/pty`
 - `github.com/gorilla/websocket`
 - `github.com/skip2/go-qrcode`
+- `github.com/godbus/dbus/v5`（Linux 托盘）
+- `github.com/google/uuid`
 - `golang.org/x/image`
-- `golang.org/x/text`（间接依赖）
+- `golang.org/x/sys`
+- `modernc.org/sqlite`
 
 Swift Package Manager 依赖：
 
@@ -48,6 +51,11 @@ Swift Package Manager 依赖：
 
 - 用户本机自行安装和登录的 Codex CLI / app-server。
 - 用户自行安装和登录的 Claude Code。Mac App 与 Windows 安装包随附的 Claude 适配器 `mimi-claude-adapter` 源码位于本仓库 `bridges/claude-sdk`，内含 Anthropic 专有许可的 Claude Agent SDK，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；回退用的旧 `alleycat-claude-bridge` 源码位于 `bridges/claude`。
+- 用户自行安装和运行的 DeepSeek Harness。`agentd` 只连接用户指定的本机 Harness，不安装、启动或配置它。
+
+随附的连接组件：
+
+- 实验性 Tailcat 连接。Mac 安装包与 Linux 归档随附 Tailcat 辅助程序 `mimi-tailcat-experiment`，iOS App 内置 Tailcat 客户端框架；两者源码位于本仓库 `experiments/tailcat`，依赖 Tailscale 发布的 `github.com/tailscale/tailcat`（BSD-3-Clause）与 `tailscale.com` 等模块。这些依赖的许可证正文尚未并入 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，补齐前以各上游仓库的许可证文件为准。Tailcat 默认使用 Tailscale 运营的公共 DERP 中继，数据处理说明见[隐私政策](docs/privacy-policy.md)。
 
 本仓库不打包用户的 Codex 凭证，也不托管第三方服务账号。
 
@@ -61,7 +69,7 @@ iOS 与 macOS 菜单栏中的 Codex 运行时标识使用 OpenAI 官方品牌资
 
 iOS 与 macOS 菜单栏中的 Claude 运行时标识取自 Simple Icons（https://github.com/simple-icons/simple-icons ，仓库按 CC0-1.0 发布）的 `icons/claude.svg`，图形路径与上游逐字节一致，仅按该项目元数据中登记的品牌色 `#D97757` 补充填充色并重新换行，未改动图形本身。CC0-1.0 覆盖的是路径数据，`Claude`、`Anthropic` 相关标识和商标仍归 Anthropic 所有，不代表 Anthropic 对本项目的赞助或背书。
 
-macOS 菜单栏中的 DeepSeek 标识取自 Simple Icons（https://github.com/simple-icons/simple-icons ，仓库按 CC0-1.0 发布）的 `icons/deepseek.svg`，图形路径与上游逐字节一致，仅按该项目元数据中登记的品牌色 `#5786FE` 补充填充色并重新换行，未改动图形本身。该标识只用于标注尚未接入的运行时，界面中不提供任何 DeepSeek 功能。CC0-1.0 覆盖的是路径数据，`DeepSeek` 相关标识和商标仍归其权利人所有，不代表 DeepSeek 对本项目的赞助或背书。
+iOS 中的 DeepSeek 运行时标识使用深度求索在其官方 API 文档站发布的矢量标记原件（https://api-docs.deepseek.com/img/favicon.svg ），未做裁切、改绘或改色。macOS 菜单栏中的 DeepSeek 标识取自 Simple Icons（https://github.com/simple-icons/simple-icons ，仓库按 CC0-1.0 发布）的 `icons/deepseek.svg`，图形路径与上游逐字节一致，仅按该项目元数据中登记的品牌色 `#5786FE` 补充填充色并重新换行，未改动图形本身。两处标识只用于帮助用户识别其自行安装运行的可选 DeepSeek Harness 运行时；Mimi Remote 不提供 DeepSeek 模型、账号或 API 服务。CC0-1.0 只覆盖 Simple Icons 的路径数据，`DeepSeek`、`深度求索` 相关标识和商标仍归其权利人所有，不代表其对本项目的赞助或背书。
 
 iOS 首次连接页使用 GitHub 官方 Brand Toolkit 提供的黑白 Invertocat 标识，仅用于链接本项目的公开 Release 页面。该标识及 GitHub 商标归 GitHub, Inc. 所有，不代表 GitHub 对本项目的赞助或背书。
 

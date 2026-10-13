@@ -44,6 +44,24 @@ final class LockScreenApprovalTests: XCTestCase {
     }
 
     @MainActor
+    func testComputerWaitingNotificationIsClaudeOnlyAndCannotApprove() throws {
+        let userInfo = payload(overrides: ["event": "holder.waiting", "runtime": "claude", "approval_kind": ""])
+        let notification = try XCTUnwrap(LockScreenApprovalNotification(userInfo: userInfo))
+        XCTAssertEqual(notification.event, .holderWaiting)
+        XCTAssertEqual(notification.kind, .message)
+        for action in [LockScreenApprovalCategory.allowActionID, LockScreenApprovalCategory.denyActionID, LockScreenApprovalCategory.detailsActionID] {
+            let delivery = try XCTUnwrap(LockScreenApprovalDelivery(userInfo: userInfo, actionIdentifier: action))
+            XCTAssertNil(delivery.decision)
+        }
+        XCTAssertNil(LockScreenApprovalNotification(userInfo: payload(overrides: ["event": "holder.waiting", "approval_kind": ""])))
+        XCTAssertNil(LockScreenApprovalNotification(userInfo: payload(overrides: ["event": "holder.waiting", "runtime": "claude"])))
+        XCTAssertEqual(
+            LockScreenApprovalRouting.detailsErrorMessage(AgentAPIError.server(status: 410, message: ""), for: notification),
+            L10n.text("ui.push_message_route_expired")
+        )
+    }
+
+    @MainActor
     func testVisibleMessageIsQuietOnlyForMatchingMacAndTask() {
         XCTAssertEqual(LockScreenApprovalRouting.messageSessionTag(threadID: "thread-1"), "9E61BAD1E6C4DDAF")
         let adapter = SessionNotificationResponseAdapter()
@@ -875,6 +893,48 @@ extension LockScreenApprovalTests {
         XCTAssertEqual(try fixture.tickets.loadRequired(), "ticket-old")
     }
 
+    @MainActor
+    func testSynchronizeUpgradesExistingDeviceCapabilityWithoutRotatingTicket() async throws {
+        let fixture = try await makeRebindFixture()
+        defer { fixture.tearDown() }
+        let expiry = Date().addingTimeInterval(30 * 86400)
+        fixture.defaults.set(expiry, forKey: "lockScreenApproval.ticketExpiresAt")
+        fixture.defaults.set(connectionCredentialFingerprint("abcdef"), forKey: "lockScreenApproval.deviceTokenFingerprint")
+        fixture.defaults.set(false, forKey: "messageNotifications.registrationNeedsRepair")
+        await fixture.store.refreshHostSupport(client: fixture.oldClient, profileID: "profile-old")
+        fixture.store.recordConsent(for: "profile-old")
+
+        // 旧 agentd 不返回能力字段：保留绑定；升级后明确 false 才补登记。
+        for capability: Bool? in [nil, false, true] {
+            RebindURLProtocol.setStatusDevice(fixture.store.deviceID, supportsHolderWaiting: capability)
+            RebindURLProtocol.clearRecordedRequests()
+            await fixture.store.synchronize(client: fixture.oldClient, profileID: "profile-old")
+            let requests = RebindURLProtocol.recordedRequests
+            XCTAssertEqual(requests, capability == false
+                ? ["GET profile-old.example /api/push/status", "POST profile-old.example /api/push/devices"]
+                : ["GET profile-old.example /api/push/status"])
+            if capability == false {
+                let body = try XCTUnwrap(RebindURLProtocol.registeredBodies.last)
+                XCTAssertEqual(body["supports_holder_waiting"] as? Bool, true)
+                XCTAssertEqual(body["ticket"] as? String, "ticket-old")
+                XCTAssertEqual(body["device_id"] as? String, fixture.store.deviceID)
+            }
+            XCTAssertEqual(try fixture.tickets.loadRequired(), "ticket-old")
+            XCTAssertEqual(fixture.store.registeredProfileID, "profile-old")
+            XCTAssertEqual(fixture.store.status, .active(expiresAt: expiry))
+        }
+
+        // 补登记失败不能注销设备或轮换 Ticket；下次恢复前台仍可重试。
+        RebindURLProtocol.setStatusDevice(fixture.store.deviceID, supportsHolderWaiting: false)
+        RebindURLProtocol.fail("POST profile-old.example /api/push/devices", status: 503)
+        RebindURLProtocol.clearRecordedRequests()
+        await fixture.store.synchronize(client: fixture.oldClient, profileID: "profile-old")
+        guard case .failed = fixture.store.status else { return XCTFail("补登记失败应明确返回") }
+        XCTAssertEqual(try fixture.tickets.loadRequired(), "ticket-old")
+        XCTAssertTrue(fixture.store.isEnabled)
+        XCTAssertEqual(RebindURLProtocol.revokedTickets, [])
+    }
+
     /// 旧 agentd 拒绝注销（重装后 Token 失效的典型表现）：撤销刚签发的新 Ticket、
     /// 保留旧绑定，并进入“旧电脑联系不上”状态，而不是把 401 原样丢给用户。
     @MainActor
@@ -1049,6 +1109,21 @@ private final class RebindURLProtocol: URLProtocol {
     private static var requests: [String] = []
     private static var revoked: [String] = []
     private static var failures: [String: Int] = [:]
+    private static var statusDevice: [String: Any]?
+    private static var registrations: [[String: Any]] = []
+
+    static var registeredBodies: [[String: Any]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return registrations
+    }
+
+    static func setStatusDevice(_ deviceID: String, supportsHolderWaiting: Bool?) {
+        lock.lock()
+        defer { lock.unlock() }
+        statusDevice = ["device_id": deviceID]
+        if let supportsHolderWaiting { statusDevice?["supports_holder_waiting"] = supportsHolderWaiting }
+    }
 
     static var recordedRequests: [String] {
         lock.lock()
@@ -1072,6 +1147,7 @@ private final class RebindURLProtocol: URLProtocol {
         lock.lock()
         requests.removeAll()
         revoked.removeAll()
+        registrations.removeAll()
         lock.unlock()
     }
 
@@ -1080,6 +1156,8 @@ private final class RebindURLProtocol: URLProtocol {
         requests.removeAll()
         revoked.removeAll()
         failures.removeAll()
+        registrations.removeAll()
+        statusDevice = nil
         lock.unlock()
     }
 
@@ -1102,6 +1180,11 @@ private final class RebindURLProtocol: URLProtocol {
            let ticket = object["ticket"] as? String {
             Self.revoked.append(ticket)
         }
+        if method == "POST", url.path.hasSuffix("/api/push/devices"), let body,
+           let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+            Self.registrations.append(object)
+        }
+        let statusDevice = Self.statusDevice
         let failure = Self.failures[key]
         Self.lock.unlock()
 
@@ -1109,7 +1192,9 @@ private final class RebindURLProtocol: URLProtocol {
         let payload: String
         switch url.path {
         case let path where path.hasSuffix("/api/push/status"):
-            payload = #"{"enabled":true,"provider_configured":true,"provider_url":"\#(Self.providerURL)"}"#
+            var object: [String: Any] = ["enabled": true, "provider_configured": true, "provider_url": Self.providerURL]
+            if let statusDevice { object["devices"] = [statusDevice] }
+            payload = String(data: try! JSONSerialization.data(withJSONObject: object), encoding: .utf8)!
         case let path where path.hasSuffix("/api/push/devices") && method == "POST":
             payload = #"{"device_id":"dev","expires_at":"2099-01-01T00:00:00Z","needs_refresh":false}"#
         case let path where path.hasSuffix("/api/push/devices"):

@@ -59,7 +59,7 @@ extension SessionStore {
             return
         } catch {
             if reportsErrors {
-                setErrorMessage(error.localizedDescription)
+                setErrorMessage(for: error)
             }
         }
     }
@@ -180,7 +180,7 @@ extension SessionStore {
                 appServerModelOptions = options
             }
             if force {
-                setStatusMessage(options.isEmpty ? L10n.text("ui.app_server_model_list_not_found_continue_using") : L10n.text("ui.model_list_refreshed"))
+                setStatusMessage(options.isEmpty ? L10n.text("ui.model_list_empty_using_built_in_options") : L10n.text("ui.model_list_refreshed"))
             }
         } catch {
             guard appStore.activeHostScope == hostScope else { return }
@@ -434,7 +434,7 @@ extension SessionStore {
         do {
             client = try clientFactory()
         } catch {
-            setErrorMessage(error.localizedDescription)
+            setErrorMessage(for: error)
             return
         }
         Task { @MainActor [weak self] in
@@ -443,7 +443,7 @@ extension SessionStore {
             } catch is CancellationError {
                 return
             } catch {
-                self?.setErrorMessage(error.localizedDescription)
+                self?.setErrorMessage(for: error)
             }
         }
     }
@@ -573,7 +573,7 @@ extension SessionStore {
                 // 被用户或自动流程反复请求。
                 closeHistoryPagination(sessionID: session.id)
             }
-            setErrorMessage(error.localizedDescription, sessionID: session.id)
+            setErrorMessage(for: error, sessionID: session.id)
         }
     }
 
@@ -1764,7 +1764,7 @@ extension SessionStore {
             if let reconnectSessionID, sessionsByID[reconnectSessionID] != nil {
                 networkSuspendedSessionID = reconnectSessionID
             }
-            setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"))
+            setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"), presentation: .silent)
             return
         }
         if let reconnectSessionID, selectedSessionID == reconnectSessionID {
@@ -1824,7 +1824,7 @@ extension SessionStore {
             // 远端已经不认识这个 thread / turn 时重试不会成功。本地必须按「已停止」收敛，
             // 否则会话会永久停在执行中并保留停止控件（gh-509）。
             guard ControlCommandFailure.classify(error).isStaleTarget else {
-                setErrorMessage(error.localizedDescription)
+                setErrorMessage(for: error)
                 return
             }
             applyStoppedSessionState(sessionID: session.id)
@@ -1911,7 +1911,7 @@ extension SessionStore {
         } catch {
             guard appStore.activeHostScope == hostScope else { return false }
             threadGoalErrorMessage = error.localizedDescription
-            setErrorMessage(error.localizedDescription)
+            setErrorMessage(for: error)
             return false
         }
     }
@@ -1941,7 +1941,7 @@ extension SessionStore {
             setStatusMessage(L10n.text("ui.target_cleared"))
         } catch {
             threadGoalErrorMessage = error.localizedDescription
-            setErrorMessage(error.localizedDescription)
+            setErrorMessage(for: error)
         }
     }
 

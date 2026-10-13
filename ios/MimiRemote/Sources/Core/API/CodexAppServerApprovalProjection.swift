@@ -79,6 +79,9 @@ extension CodexAppServerSessionRuntime {
                     if let affected = approvalSessionID(for: request), !resolved.approvalSessionIDs.contains(affected) {
                         resolved.approvalSessionIDs.append(affected)
                     }
+                    if !resolved.approvalRequests.contains(where: { $0.id == request.id }) {
+                        resolved.approvalRequests.append(request)
+                    }
                     removePendingApprovalRequest(request)
                 }
             }
@@ -86,6 +89,9 @@ extension CodexAppServerSessionRuntime {
                 if let request = pendingUserInputRequestsByID.removeValue(forKey: key) {
                     if let affected = approvalSessionID(for: request), !resolved.userInputSessionIDs.contains(affected) {
                         resolved.userInputSessionIDs.append(affected)
+                    }
+                    if !resolved.userInputRequests.contains(where: { $0.id == request.id }) {
+                        resolved.userInputRequests.append(request)
                     }
                     removePendingUserInputRequest(request)
                 }
@@ -107,7 +113,71 @@ extension CodexAppServerSessionRuntime {
         return CodexAppServerResolvedServerRequests(approvalSessionIDs: approvalSessionIDs, userInputSessionIDs: userInputSessionIDs)
     }
 
-    func emitApprovalResolved(sessionID: SessionID) {
+    @discardableResult
+    func applyPendingInteractionToSession(_ event: AgentEvent, preservingStatus: Bool = false) -> AgentSession? {
+        switch event {
+        case .approvalRequest(let request, let metadata):
+            guard let sessionID = metadata.sessionID else { return nil }
+            return withUpdatedSession(sessionID) { session in
+                if !preservingStatus { session.status = SessionStatus.waitingForApproval.rawValue }
+                session.activeTurnID = metadata.turnID ?? session.activeTurnID
+                session.pendingApproval = ApprovalSummary(
+                    id: request.id, title: request.title, body: request.body, kind: request.kind,
+                    risk: request.risk, count: nil, availableDecisions: request.availableDecisions,
+                    persistentPermissionRules: request.persistentPermissionRules
+                )
+            }
+        case .userInputRequest(let request, let metadata):
+            guard let sessionID = metadata.sessionID else { return nil }
+            return withUpdatedSession(sessionID) { session in
+                if !preservingStatus { session.status = SessionStatus.waitingForInput.rawValue }
+                session.activeTurnID = metadata.turnID ?? session.activeTurnID
+                session.pendingUserInput = request
+            }
+        default:
+            return nil
+        }
+    }
+
+    func interactionPreservesBaseStatus(_ request: CodexAppServerServerRequest) -> Bool {
+        guard isTurnIndependentMCPElicitation(request),
+              let sessionID = approvalSessionID(for: request) else { return false }
+        return contextsBySessionID[sessionID]?.activeTurnID == nil
+    }
+
+    func emitPendingInteraction(_ event: AgentEvent, request: CodexAppServerServerRequest) {
+        let preservesStatus = interactionPreservesBaseStatus(request)
+        let canonical = applyPendingInteractionToSession(event, preservingStatus: preservesStatus)
+        emit(event)
+        // EventReducer 会把 request 解释成 turn 内等待态；独立 MCP 需用 canonical 快照恢复原状态。
+        if preservesStatus, let canonical { emit(.session(canonical)) }
+    }
+
+    @discardableResult
+    func emitApprovalResolved(
+        sessionID: SessionID,
+        resolvedApprovalID: String? = nil,
+        preservingStatus: Bool = false
+    ) -> Bool {
+        let context = contextsBySessionID[sessionID]
+        let currentID = context?.session.pendingApproval?.id
+        if let resolvedApprovalID, let currentID, currentID != resolvedApprovalID {
+            return false
+        }
+        let isTerminal = context.map {
+            isTerminalSessionStatus($0.session.status) || $0.session.status == SessionStatus.closed.rawValue
+        } == true
+        let shouldPreserveStatus = preservingStatus
+            || (isTerminal && currentID != nil && context?.activeTurnID == nil)
+        guard !isTerminal || shouldPreserveStatus else { return false }
+        let updated = withUpdatedSession(sessionID) { session in
+            session.pendingApproval = nil
+            if !shouldPreserveStatus {
+                session.status = session.pendingUserInput == nil
+                    ? SessionStatus.running.rawValue
+                    : SessionStatus.waitingForInput.rawValue
+            }
+        }
         emit(.approvalResolved(AgentEventMetadata(
             seq: nil,
             sessionID: sessionID,
@@ -118,9 +188,36 @@ extension CodexAppServerSessionRuntime {
             revision: nil,
             createdAt: Date()
         )))
+        if shouldPreserveStatus, let updated { emit(.session(updated)) }
+        return true
     }
 
-    func emitUserInputResolved(sessionID: SessionID, skipped: Bool) {
+    @discardableResult
+    func emitUserInputResolved(
+        sessionID: SessionID,
+        skipped: Bool,
+        resolvedRequestID: String? = nil,
+        preservingStatus: Bool = false
+    ) -> Bool {
+        let context = contextsBySessionID[sessionID]
+        let currentID = context?.session.pendingUserInput?.id
+        if let resolvedRequestID, let currentID, currentID != resolvedRequestID {
+            return false
+        }
+        let isTerminal = context.map {
+            isTerminalSessionStatus($0.session.status) || $0.session.status == SessionStatus.closed.rawValue
+        } == true
+        let shouldPreserveStatus = preservingStatus
+            || (isTerminal && currentID != nil && context?.activeTurnID == nil)
+        guard !isTerminal || shouldPreserveStatus else { return false }
+        let updated = withUpdatedSession(sessionID) { session in
+            session.pendingUserInput = nil
+            if !shouldPreserveStatus {
+                session.status = session.pendingApproval == nil
+                    ? SessionStatus.running.rawValue
+                    : SessionStatus.waitingForApproval.rawValue
+            }
+        }
         emit(.userInputResolved(AgentEventMetadata(
             seq: nil,
             sessionID: sessionID,
@@ -131,6 +228,26 @@ extension CodexAppServerSessionRuntime {
             revision: nil,
             createdAt: Date()
         ), skipped: skipped))
+        if shouldPreserveStatus, let updated { emit(.session(updated)) }
+        return true
+    }
+
+    func remainingPendingApprovalRequest(sessionID: SessionID, turnID: TurnID?) -> CodexAppServerServerRequest? {
+        Set(pendingApprovalRequestsByID.values).first {
+            approvalSessionID(for: $0) == sessionID && pendingRequest($0, matchesTurnID: turnID)
+        }
+    }
+
+    func remainingPendingUserInputRequest(sessionID: SessionID, turnID: TurnID?) -> CodexAppServerServerRequest? {
+        Set(pendingUserInputRequestsByID.values).first {
+            approvalSessionID(for: $0) == sessionID && pendingRequest($0, matchesTurnID: turnID)
+        }
+    }
+
+    func pendingRequest(_ request: CodexAppServerServerRequest, matchesTurnID turnID: TurnID?) -> Bool {
+        guard let turnID else { return approvalTurnID(for: request) == nil }
+        return approvalTurnID(for: request) == turnID
+            || (approvalTurnID(for: request) == nil && !isTurnIndependentMCPElicitation(request))
     }
 
     func pendingApprovalStorageKeys(for request: CodexAppServerServerRequest) -> [String] {

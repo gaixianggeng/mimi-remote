@@ -10,6 +10,8 @@ export interface SessionHolder {
   entrypoint: string | null;
   kind: string | null;
   status: string | null;
+  /** Claude Code 等待的原因；只在进程登记内部读取，对客户端仅公开归类后的 waitingKind。 */
+  waitingFor?: string | null;
   version: string | null;
   /** CLI 自身启动时刻（epoch 毫秒）；接管前用它核对 pid 没有被别的进程复用。 */
   startedAt: number | null;
@@ -55,6 +57,7 @@ export function ownerSummary(holder: SessionHolder): Record<string, unknown> {
     entrypoint: holder.entrypoint,
     kind: holder.kind,
     status: holder.status,
+    ...(holder.status === "waiting" ? { waitingKind: waitingKind(holder.waitingFor) } : {}),
     version: holder.version,
     statusUpdatedAt: holder.statusUpdatedAt,
   };
@@ -62,6 +65,15 @@ export function ownerSummary(holder: SessionHolder): Record<string, unknown> {
 
 export function isBusyHolder(holder: SessionHolder): boolean {
   return holder.status === "busy" || holder.status === "shell";
+}
+
+type WaitingKind = "permission" | "input" | "other";
+
+/** 原始等待原因可能包含未来值，只公开稳定类别，避免把自由文本带进 thread frame。 */
+function waitingKind(waitingFor: string | null | undefined): WaitingKind {
+  if (waitingFor === "permission prompt" || waitingFor === "sandbox request") return "permission";
+  if (waitingFor === "input needed") return "input";
+  return "other";
 }
 
 /**
@@ -74,6 +86,10 @@ export function liveThreadStatus(input: {
   ownProcessLive: boolean;
   holder: SessionHolder | undefined;
 }): ThreadStatus {
+  if (input.holder?.status === "waiting") {
+    const flag = waitingKind(input.holder.waitingFor) === "permission" ? "waitingOnApproval" : "waitingOnUserInput";
+    return { type: "active", activeFlags: [flag] };
+  }
   if (input.ownTurnActive) return { type: "active", activeFlags: [] };
   if (input.holder && isBusyHolder(input.holder)) return { type: "active", activeFlags: [] };
   if (input.ownProcessLive || input.holder) return { type: "idle" };
@@ -100,6 +116,7 @@ function parseRecord(raw: string): HolderRecord | undefined {
     entrypoint: text(record.entrypoint),
     kind: text(record.kind),
     status: text(record.status),
+    waitingFor: typeof record.waitingFor === "string" ? record.waitingFor : null,
     version: text(record.version),
     startedAt: Number.isFinite(startedAt) && startedAt > 0 ? startedAt : null,
     statusUpdatedAt: Number.isFinite(statusUpdatedAt) && statusUpdatedAt > 0 ? statusUpdatedAt : null,
@@ -131,12 +148,19 @@ export async function readHolderRecords(own: OwnProcesses): Promise<HolderRecord
   });
 }
 
-/** 会话 ID → 别处持有方。同一会话有多个进程时取正在执行的那个，客户端提示更准确。 */
+function holderPriority(holder: SessionHolder): number {
+  if (holder.status === "waiting") return 3;
+  if (isBusyHolder(holder)) return 2;
+  if (holder.status === "idle") return 1;
+  return 0;
+}
+
+/** 会话 ID → 别处持有方。同一会话有多个进程时依次取等待、执行、空闲的那个。 */
 export async function readHolders(own: OwnProcesses): Promise<Map<string, SessionHolder>> {
   const holders = new Map<string, SessionHolder>();
   for (const { sessionId, ...holder } of await readHolderRecords(own)) {
     const existing = holders.get(sessionId);
-    if (existing && isBusyHolder(existing) && !isBusyHolder(holder)) continue;
+    if (existing && holderPriority(existing) > holderPriority(holder)) continue;
     holders.set(sessionId, holder);
   }
   return holders;

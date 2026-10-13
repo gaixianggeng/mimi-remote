@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"syscall"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -18,7 +20,7 @@ func TestModuleListenersAllOffRemainLocalAndDisabledCodexDoesNotStart(t *testing
 		t.Fatalf("off listeners %v", got)
 	}
 	cfg.Network.AllowTailscale = &on
-	if got := moduleListenAddresses(cfg); !reflect.DeepEqual(got, []string{"0.0.0.0:8787"}) {
+	if got := moduleListenAddresses(cfg); !reflect.DeepEqual(got, []string{"0.0.0.0:8787", "[::]:8787"}) {
 		t.Fatalf("gated listeners %v", got)
 	}
 	resident, err := prepareAgentAppServerRuntime(cfg)
@@ -28,7 +30,8 @@ func TestModuleListenersAllOffRemainLocalAndDisabledCodexDoesNotStart(t *testing
 }
 
 // 原配置绑定 IPv6 loopback 时，模块开关第一次接管监听不能把 ::1 丢掉；
-// 否则只改一个模块开关就会让走 ::1 的本机客户端失去连接。
+// 否则只改一个模块开关就会让走 ::1 的本机客户端失去连接。外部连接开启时，
+// IPv6 通配监听已经接受 ::1，不再重复绑定（Linux 上会与通配监听冲突）。
 func TestModuleListenersPreserveIPv6Loopback(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -36,7 +39,7 @@ func TestModuleListenersPreserveIPv6Loopback(t *testing.T) {
 		want  []string
 	}{
 		{"off", false, []string{"127.0.0.1:8787", "[::1]:8787"}},
-		{"on", true, []string{"0.0.0.0:8787", "[::1]:8787"}},
+		{"on", true, []string{"0.0.0.0:8787", "[::]:8787"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			allow := tc.allow
@@ -54,6 +57,23 @@ func TestModuleListenersPreserveIPv6Loopback(t *testing.T) {
 	cfg := config.Config{Listen: "100.64.0.2:8787", Network: config.NetworkConfig{AllowTailscale: &off}}
 	if got := moduleListenAddresses(cfg); !reflect.DeepEqual(got, []string{"127.0.0.1:8787"}) {
 		t.Fatalf("IPv4 配置不应增加监听：%v", got)
+	}
+}
+
+func TestUnavailableModuleIPv6DoesNotHideOtherListenerFailures(t *testing.T) {
+	for _, code := range []syscall.Errno{syscall.EAFNOSUPPORT, syscall.EPROTONOSUPPORT, syscall.EADDRNOTAVAIL} {
+		err := fmt.Errorf("listen: %w", code)
+		if !unavailableModuleIPv6("[::]:8787", err) {
+			t.Fatalf("IPv6 unavailable should keep IPv4 running: %v", err)
+		}
+		if unavailableModuleIPv6("0.0.0.0:8787", err) || unavailableModuleIPv6("[::1]:8787", err) {
+			t.Fatalf("configured listener failure must remain visible: %v", err)
+		}
+	}
+	for _, err := range []error{nil, syscall.EADDRINUSE, syscall.EACCES} {
+		if unavailableModuleIPv6("[::]:8787", err) {
+			t.Fatalf("port conflict or permission failure must not be ignored: %v", err)
+		}
 	}
 }
 
