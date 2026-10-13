@@ -24,6 +24,20 @@ case "$*" in
   "simctl list devices booted -j")
     printf '{"devices":{}}\n'
     ;;
+  "--sdk iphonesimulator --show-sdk-version")
+    printf '%s\n' "${IOS_TEST_SIMULATOR_SDK_VERSION:-99.0}"
+    ;;
+  "--sdk iphonesimulator --show-sdk-build-version")
+    printf '%s\n' "${IOS_TEST_SIMULATOR_SDK_BUILD:-99A1}"
+    ;;
+  # 构建证据按 TOOLCHAINS 解析 swiftc；IOS_TEST_SWIFT_VERSION 模拟同一标识下的工具链升级。
+  "--find swiftc")
+    [[ "${TOOLCHAINS:-}" != "missing" ]] || exit 1
+    printf '/fake/Toolchains/%s.xctoolchain/usr/bin/swiftc\n' "${TOOLCHAINS:-XcodeDefault}"
+    ;;
+  "swiftc -version")
+    printf 'Apple Swift version %s (fake %s)\n' "${IOS_TEST_SWIFT_VERSION:-9.9}" "${TOOLCHAINS:-XcodeDefault}"
+    ;;
   "devicectl list devices --json-output - --quiet --timeout 5")
     /bin/cat "$PHYSICAL_JSON"
     ;;

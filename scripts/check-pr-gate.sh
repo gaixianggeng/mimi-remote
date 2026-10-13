@@ -91,6 +91,8 @@ assert_scope docs_runner false false false false true scripts/check-docs-static.
 assert_scope ios_device_lease false true false false false scripts/ios-device-lease.sh
 assert_scope ios_device_gui_handoff false true false false false scripts/ios-device-gui-handoff-macos.sh
 assert_scope ios_device_management false true false false false scripts/test-ios-device-management.sh
+assert_scope ios_build_evidence false true false false false scripts/ios-build-evidence.sh
+assert_scope ios_build_evidence_test false true false false false scripts/test-ios-build-evidence.sh
 assert_scope ios_device_fixture false true false false false scripts/testdata/ios-device-management/simulators.json
 assert_scope ios_localization_selftest false true false false false scripts/test-check-ios-localization.sh
 assert_scope tailcat_source false true false false false experiments/tailcat/mobile/tailcatmobile/tailcatmobile.go

@@ -26,6 +26,8 @@ TAILCAT_MOBILE_BUILD_SCRIPT="${IOS_TAILCAT_BUILD_SCRIPT:-$ROOT_DIR/scripts/build
 
 # shellcheck source=./ios-device-lease.sh
 source "$ROOT_DIR/scripts/ios-device-lease.sh"
+# shellcheck source=./ios-build-evidence.sh
+source "$ROOT_DIR/scripts/ios-build-evidence.sh"
 
 SELECTED_KIND=""
 SELECTED_ID=""
@@ -43,6 +45,7 @@ usage() {
   bash ./scripts/ios-dev.sh test-destination
   bash ./scripts/ios-dev.sh test-derived-data-path
   bash ./scripts/ios-dev.sh leases
+  bash ./scripts/ios-dev.sh build-evidence
 
 默认目标：
   build/run: USB 真机 → 本地网络真机 → 无可达真机时固定 iPad Simulator
@@ -68,13 +71,21 @@ usage() {
   IOS_DERIVED_DATA_PATH   覆盖本次 Simulator DerivedData
   IOS_DEVICE_DERIVED_DATA_PATH 覆盖本次真机 DerivedData
   MIMI_DEVELOPMENT_CACHE_ROOT  覆盖同仓库 Worktree 共用的开发缓存根目录
-  IOS_DEVICE_LEASE_WAIT_SECONDS 固定测试设备忙时的等待秒数，默认 0（明确失败）
+  IOS_DEVICE_LEASE_WAIT_SECONDS 固定测试设备或显式 Simulator 忙时的排队秒数，
+                          默认 0（明确失败，退出码 75）；等待期间输出占用者和进度
+  IOS_BUILD_EVIDENCE_REUSE=1 仅供 verify-change quick：显式 Simulator build 的输入、
+                          工具链、目标和配置与本 Worktree 的成功构建证据完全一致时，
+                          不占用设备、不调用 xcodebuild，直接复用该编译结论
 
 兼容别名：destination / prepare、derived-data-path 仍分别等同于
 test-destination、test-derived-data-path。
 
 租约按 UDID 跨 Worktree 原子占用，并记录 PID、Codex Task、Worktree、命令、
 DerivedData 和开始时间。脚本不会创建、擦除或删除 Simulator，也不会关闭其他任务的设备。
+
+构建证据：Simulator 上成功的 build、build-for-testing、test（只带测试筛选与报告
+参数）会在本次 DerivedData 下记录本 Worktree 的输入指纹；build-evidence 只读显示
+quick 能否复用以及不能复用的原因。
 EOF
 }
 
@@ -401,6 +412,23 @@ acquire_selected_target() {
 select_and_acquire_build_target() {
   local lease_command="$1"
   local attempts=0
+  local effective_mode simulator_record_value device_id device_name
+  effective_mode="$(effective_target_mode)" || return
+  if [[ "$effective_mode" == "simulator" ]]; then
+    # 显式 Simulator 只有一个目标，不存在跨设备选择；与固定测试目标一样按
+    # IOS_DEVICE_LEASE_WAIT_SECONDS 排队，预算为 0 时保持立即返回 75。
+    simulator_record_value="$(build_simulator_record)" || return
+    IFS=$'\t' read -r device_id device_name <<< "$simulator_record_value"
+    select_target simulator "$device_id" "$device_name" "" "显式 Simulator 覆盖"
+    ios_lease_acquire_wait \
+      simulator \
+      "$SELECTED_ID" \
+      "$SELECTED_NAME" \
+      "$lease_command" \
+      "$SELECTED_DERIVED_DATA" || return
+    ios_lease_install_traps
+    return
+  fi
   while (( attempts < 16 )); do
     select_available_build_target || return
     if acquire_selected_target "$lease_command"; then
@@ -518,6 +546,66 @@ run_xcodebuild() {
     "$action"
 }
 
+# Simulator 构建统一从这里进入：构建前后各计算一次输入指纹，只有 xcodebuild
+# 成功且两次指纹一致时才写入构建证据；失败、取消或中途改动都不会留下证据。
+run_simulator_xcodebuild() {
+  local action="$1"
+  shift
+  local status=0 before_values=""
+  if ! ios_evidence_args_are_neutral "$action" "$@"; then
+    echo "    构建证据：本次不记录（${IOS_BUILD_EVIDENCE_REASON}）"
+  elif ios_evidence_snapshot; then
+    before_values="$IOS_BUILD_EVIDENCE_VALUES"
+  else
+    echo "    构建证据：本次不记录（${IOS_BUILD_EVIDENCE_REASON}）"
+  fi
+  run_xcodebuild "$action" "$@" || status=$?
+  if [[ "$status" -eq 0 && -n "$before_values" ]]; then
+    ios_evidence_commit "$action" "$before_values" \
+      || echo "警告：构建证据写入失败；本次构建结果不受影响，下次 quick 会重新构建。" >&2
+  fi
+  return "$status"
+}
+
+select_build_evidence_target() {
+  local effective_mode simulator_record_value device_id device_name
+  effective_mode="$(effective_target_mode)" || return 1
+  if [[ "$effective_mode" != "simulator" ]]; then
+    IOS_BUILD_EVIDENCE_REASON="只有显式 Simulator 构建可以复用构建证据（当前目标模式：${effective_mode}）"
+    return 1
+  fi
+  if ! simulator_record_value="$(build_simulator_record 2>/dev/null)"; then
+    IOS_BUILD_EVIDENCE_REASON="找不到目标 Simulator：${SIMULATOR_ID:-$SIMULATOR_NAME}"
+    return 1
+  fi
+  IFS=$'\t' read -r device_id device_name <<< "$simulator_record_value"
+  select_target simulator "$device_id" "$device_name" "" "显式 Simulator 覆盖"
+}
+
+# quick 专用：证据有效时不取租约、不调用 xcodebuild；否则说明原因并返回 1。
+try_reuse_build_evidence() {
+  if [[ $# -gt 0 ]]; then
+    echo "==> 构建证据不可复用：带额外 xcodebuild 参数的构建总是重新执行；继续正常构建"
+    return 1
+  fi
+  if select_build_evidence_target && ios_evidence_check; then
+    echo "==> 复用构建证据：${IOS_BUILD_EVIDENCE_SUMMARY}"
+    echo "    未占用设备租约，未调用 xcodebuild；任何输入或环境变化都会重新构建。"
+    return 0
+  fi
+  echo "==> 构建证据不可复用：${IOS_BUILD_EVIDENCE_REASON}；继续正常构建"
+  return 1
+}
+
+print_build_evidence_status() {
+  if select_build_evidence_target && ios_evidence_check; then
+    printf '可复用：%s\n' "$IOS_BUILD_EVIDENCE_SUMMARY"
+    return 0
+  fi
+  printf '需要重新构建：%s\n' "$IOS_BUILD_EVIDENCE_REASON"
+  return 3
+}
+
 run_device_action() {
   local action="$1"
   shift
@@ -617,17 +705,27 @@ case "$command_name" in
     require_command ruby
     print_lease_status
     ;;
+  build-evidence)
+    require_command "$XCODEBUILD_BIN"
+    require_command "$XCRUN_BIN"
+    require_command ruby
+    require_command git
+    print_build_evidence_status
+    ;;
   build)
     require_command "$XCODEBUILD_BIN"
     require_command "$XCRUN_BIN"
     require_command "$IOS_DEVICE_LEASE_PS_BIN"
     require_command ruby
+    if [[ "${IOS_BUILD_EVIDENCE_REUSE:-0}" == "1" ]] && try_reuse_build_evidence "$@"; then
+      exit 0
+    fi
     select_and_acquire_build_target "$lease_command"
     ensure_tailcat_mobile
     if [[ "$SELECTED_KIND" == "device" ]]; then
       run_device_action build "$@"
     else
-      run_xcodebuild build "$@"
+      run_simulator_xcodebuild build "$@"
     fi
     ;;
   build-for-testing|test)
@@ -637,7 +735,7 @@ case "$command_name" in
     require_command ruby
     acquire_fixed_test_target "$lease_command"
     ensure_tailcat_mobile
-    run_xcodebuild "$command_name" "$@"
+    run_simulator_xcodebuild "$command_name" "$@"
     ;;
   run)
     require_command "$XCODEBUILD_BIN"
@@ -656,7 +754,7 @@ case "$command_name" in
     fi
     open_simulator_ui
     "$XCRUN_BIN" simctl bootstatus "$SELECTED_ID" -b
-    run_xcodebuild build "$@"
+    run_simulator_xcodebuild build "$@"
 
     app_path="$SELECTED_DERIVED_DATA/Build/Products/$CONFIGURATION-iphonesimulator/MimiRemote.app"
     if [[ ! -d "$app_path" ]]; then
