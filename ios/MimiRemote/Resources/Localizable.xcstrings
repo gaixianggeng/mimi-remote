@@ -1,6 +1,42 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.question_reply_label": {
+      "comment": "Label on the user's answer to an agent question in the conversation timeline.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Answered"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已回答"
+          }
+        }
+      }
+    },
+    "ui.question_reply_skipped": {
+      "comment": "Shown in place of an answer when the user skipped one of the agent's questions.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skipped"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已跳过"
+          }
+        }
+      }
+    },
     "ui.default_model_inherited_name": {
       "comment": "Model name for the inherited default option, distinct from pinning the same model.",
       "extractionState": "manual",
