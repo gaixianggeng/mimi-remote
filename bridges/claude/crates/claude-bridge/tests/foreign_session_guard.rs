@@ -199,7 +199,7 @@ async fn desktop_reclaim_overrides_loaded_process_and_refreshes_it_after_owner_e
             2,
             method,
             json!({"threadId":SESSION_ID,"includeTurns":false,"excludeTurns":true,
-                "input":[{"type":"text","text":"must not send"}]}),
+                "sandboxPolicy":{"type":"dangerFullAccess"},"input":[{"type":"text","text":"must not send"}]}),
         )
         .await;
         if method == "turn/start" {
@@ -233,7 +233,7 @@ async fn desktop_reclaim_overrides_loaded_process_and_refreshes_it_after_owner_e
             &mut reader,
             3,
             "turn/start",
-            json!({"threadId":SESSION_ID,"input":[{"type":"text","text":"continue"}]}),
+            json!({"threadId":SESSION_ID,"sandboxPolicy":{"type":"dangerFullAccess"},"input":[{"type":"text","text":"continue"}]}),
         )
         .await;
         assert!(started.get("error").is_none(), "{started}");
@@ -321,7 +321,7 @@ async fn held_session_is_read_only_and_turn_start_is_refused_until_owner_exits()
         &mut reader,
         3,
         "turn/start",
-        json!({"threadId": SESSION_ID, "input": [{"type": "text", "text": "hi"}]}),
+        json!({"threadId": SESSION_ID, "sandboxPolicy":{"type":"dangerFullAccess"},"input": [{"type": "text", "text": "hi"}]}),
     )
     .await;
     let error = refused

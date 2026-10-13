@@ -145,7 +145,7 @@ async fn process_exit_closes_tool_reaps_generation_and_cold_recovers() {
             "jsonrpc": "2.0",
             "id": 3,
             "method": "turn/start",
-            "params": {
+            "params": {"sandboxPolicy":{"type":"dangerFullAccess"},
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": "first generation"}]
             }
@@ -179,7 +179,7 @@ async fn process_exit_closes_tool_reaps_generation_and_cold_recovers() {
             "jsonrpc": "2.0",
             "id": 4,
             "method": "turn/start",
-            "params": {
+            "params": {"sandboxPolicy":{"type":"dangerFullAccess"},
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": "cold recover"}]
             }
