@@ -250,6 +250,25 @@ final class WorkspaceGitStoreTests: XCTestCase {
         XCTAssertTrue(UserFacingError.containsSensitiveDetail("Authentication failed for user alice"))
     }
 
+    func testTagPushWithoutAdviceStillExplainsTheConflict() {
+        let output = "To /srv/repos/remote.git\n ! [rejected]        v1.0 -> v1.0 (already exists)\nerror: failed to push some refs to '/srv/repos/remote.git'"
+        XCTAssertEqual(
+            UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 409, message: output)),
+            L10n.text("ui.git_tag_already_exists")
+        )
+        XCTAssertNil(UserFacingError.gitOperationMessage(for: "fatal: remote origin already exists"))
+    }
+
+    func testBranchInUseByAnotherWorktreeExplainsHowToReleaseIt() {
+        for phrase in ["already checked out", "already used by worktree"] {
+            let output = "Preparing worktree (checking out 'main')\nfatal: 'main' is \(phrase) at '/srv/worktrees/private-project'"
+            let message = UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 409, message: output))
+            XCTAssertEqual(message, L10n.text("ui.git_branch_in_use"))
+            XCTAssertFalse(message.contains("/srv"))
+            XCTAssertFalse(message.contains("private-project"))
+        }
+    }
+
     func testHostOperationMessageUsesTheSameGateAsComputerReasons() {
         func message(_ status: Int, _ output: String) -> String {
             UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: status, message: output))

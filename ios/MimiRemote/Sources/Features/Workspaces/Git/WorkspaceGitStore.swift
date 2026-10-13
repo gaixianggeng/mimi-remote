@@ -643,6 +643,8 @@ extension UserFacingError {
         // 只认 git 关于标签已存在的固定说法，分支名或路径里带 tag 字样不算。
         if lowered.range(of: "\\btag '[^']+' already exists", options: .regularExpression) != nil
             || lowered.range(of: "refs/tags/\\S+[^\\n]*\\(already exists\\)", options: .regularExpression) != nil
+            // advice.pushUpdateRejected=false 时没有 hint，只剩标准推送状态行。
+            || lowered.range(of: #"(?m)^\s*! \[rejected\]\s+\S+ -> \S+ \(already exists\)$"#, options: .regularExpression) != nil
             || lowered.contains("the tag already exists in the remote") {
             return L10n.text("ui.git_tag_already_exists")
         }
@@ -666,6 +668,10 @@ extension UserFacingError {
             "local changes"
         ]) {
             return L10n.text("ui.git_local_changes_block")
+        }
+        // 分支正被另一个 Worktree 使用时，换名字或拉取都不能解除占用；也不暴露电脑路径。
+        if lowered.range(of: #"(?m)^fatal: '[^'\n]+' is already (?:checked out|used by worktree) at '[^\n]+'$"#, options: .regularExpression) != nil {
+            return L10n.text("ui.git_branch_in_use")
         }
         // 「remote origin already exists」说的是远端配置，不是分支或 Worktree。
         if lowered.contains("already exists"), !lowered.contains("remote ") {

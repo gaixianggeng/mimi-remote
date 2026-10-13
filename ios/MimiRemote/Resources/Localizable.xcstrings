@@ -6210,6 +6210,23 @@
         }
       }
     },
+    "ui.git_branch_in_use": {
+      "comment": "The requested branch is checked out in another worktree.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This branch is already in use by another worktree. Switch that worktree to a different branch, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个分支正在另一个 Worktree 中使用，请先在那个 Worktree 中切换到其他分支，再重试。"
+          }
+        }
+      }
+    },
     "ui.git_local_changes_block": {
       "comment": "A Git or worktree action is blocked by uncommitted local changes.",
       "localizations": {
