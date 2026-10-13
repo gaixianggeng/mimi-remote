@@ -101,10 +101,11 @@ func (r *Router) resolveApprovalNotifications(runtime string, sessionKey string,
 }
 
 type pushDeviceRegisterRequest struct {
-	DeviceID  string `json:"device_id"`
-	Ticket    string `json:"ticket"`
-	ExpiresAt string `json:"expires_at"`
-	Platform  string `json:"platform,omitempty"`
+	DeviceID              string `json:"device_id"`
+	Ticket                string `json:"ticket"`
+	ExpiresAt             string `json:"expires_at"`
+	Platform              string `json:"platform,omitempty"`
+	SupportsHolderWaiting bool   `json:"supports_holder_waiting,omitempty"`
 }
 
 func (r *Router) pushDeviceHandler(w http.ResponseWriter, req *http.Request) {
@@ -134,19 +135,21 @@ func (r *Router) pushRegisterDevice(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	device, err := r.push.Devices().Register(pushbridge.Device{
-		ID:        strings.TrimSpace(body.DeviceID),
-		Ticket:    strings.TrimSpace(body.Ticket),
-		Platform:  strings.TrimSpace(body.Platform),
-		ExpiresAt: expiry,
+		ID:                    strings.TrimSpace(body.DeviceID),
+		Ticket:                strings.TrimSpace(body.Ticket),
+		Platform:              strings.TrimSpace(body.Platform),
+		SupportsHolderWaiting: body.SupportsHolderWaiting,
+		ExpiresAt:             expiry,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"device_id":     device.ID,
-		"expires_at":    device.ExpiresAt.UTC().Format(time.RFC3339),
-		"needs_refresh": device.NeedsRefresh(time.Now()),
+		"device_id":               device.ID,
+		"expires_at":              device.ExpiresAt.UTC().Format(time.RFC3339),
+		"needs_refresh":           device.NeedsRefresh(time.Now()),
+		"supports_holder_waiting": device.SupportsHolderWaiting,
 	})
 }
 
@@ -182,10 +185,11 @@ func (r *Router) pushStatusHandler(w http.ResponseWriter, req *http.Request) {
 	devices := []map[string]any{}
 	for _, device := range r.push.Devices().Active() {
 		devices = append(devices, map[string]any{
-			"device_id":     device.ID,
-			"platform":      device.Platform,
-			"expires_at":    device.ExpiresAt.UTC().Format(time.RFC3339),
-			"needs_refresh": device.NeedsRefresh(time.Now()),
+			"device_id":               device.ID,
+			"platform":                device.Platform,
+			"expires_at":              device.ExpiresAt.UTC().Format(time.RFC3339),
+			"needs_refresh":           device.NeedsRefresh(time.Now()),
+			"supports_holder_waiting": device.SupportsHolderWaiting,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

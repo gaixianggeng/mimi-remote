@@ -102,6 +102,38 @@ final class SessionActivityStateTests: XCTestCase {
         )
     }
 
+    func testComputerWaitingShowsReasonWithoutAnActionableRequestOnEverySurface() throws {
+        var held = makeSession(id: "held", projectID: "p", title: "held", status: "running", source: "claude", runtimeProvider: "claude")
+        held.canAcceptDirectInput = false
+        for reason in ClaudeSessionOwner.WaitingKind.allCases {
+            held.claudeOwner = ClaudeSessionOwner(entrypoint: "cli", kind: "interactive", status: "waiting", pid: 7, waitingKind: reason)
+            XCTAssertEqual(held.activityState, .needsYou(.computer(reason)))
+            XCTAssertTrue(held.isRunning)
+            XCTAssertTrue(held.isWaitingOnComputer)
+            XCTAssertFalse(held.isRunningOnComputer)
+            XCTAssertFalse(held.allowsDirectInput)
+            XCTAssertNil(held.pendingApproval)
+            XCTAssertNil(held.pendingUserInput)
+            let status = held.displayStatus(foregroundActivity: nil)
+            XCTAssertEqual(status.title, reason.title)
+            XCTAssertEqual(status.tone, .warning)
+            XCTAssertFalse(status.showsSpinner)
+            XCTAssertEqual(WorkspaceSessionGroup.of(held), .needsAttention)
+            XCTAssertEqual(SessionListPresentation.sidebarSections(sessions: [held]).map(\.kind), [.needYou])
+            for language in [AppLanguage.simplifiedChinese, .english] {
+                for suffix in ["title", "message"] {
+                    let key = "ui.computer_waiting_\(reason.rawValue)_\(suffix)"
+                    XCTAssertNotEqual(L10n.text(key, language: language), key)
+                }
+            }
+        }
+        let legacy = try JSONDecoder().decode(ClaudeSessionOwner.self, from: Data(#"{"status":"waiting"}"#.utf8))
+        held.claudeOwner = legacy
+        XCTAssertEqual(held.activityState, .needsYou(.computer(.other)))
+        let future = try JSONDecoder().decode(ClaudeSessionOwner.self, from: Data(#"{"status":"waiting","waitingKind":"future_reason"}"#.utf8))
+        XCTAssertEqual(future.waitingReason, .other)
+    }
+
     func testWorkspaceGroupsShareTheSidebarVocabulary() {
         XCTAssertEqual(WorkspaceSessionGroup.needsAttention.title, L10n.text("ui.needs_you"))
         XCTAssertEqual(WorkspaceSessionGroup.running.title, L10n.text("ui.in_progress"))

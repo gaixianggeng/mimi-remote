@@ -29,14 +29,16 @@ const (
 )
 
 type LocateRecord struct {
-	ID           string    `json:"id"`
-	Kind         string    `json:"kind"`
-	Runtime      string    `json:"runtime"`
-	ThreadID     string    `json:"thread_id"`
-	ProjectID    string    `json:"project_id"`
-	ScopeID      string    `json:"scope_id,omitempty"`
-	CWD          string    `json:"cwd,omitempty"`
-	ReadOnly     bool      `json:"read_only,omitempty"`
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	Runtime   string `json:"runtime"`
+	ThreadID  string `json:"thread_id"`
+	ProjectID string `json:"project_id"`
+	ScopeID   string `json:"scope_id,omitempty"`
+	CWD       string `json:"cwd,omitempty"`
+	ReadOnly  bool   `json:"read_only,omitempty"`
+	MessageID string `json:"message_id,omitempty"`
+	// TurnID 只用于读取 #706 前已经落盘的记录。
 	TurnID       string    `json:"turn_id,omitempty"`
 	Event        string    `json:"event,omitempty"`
 	ApprovalKind string    `json:"approval_kind,omitempty"`
@@ -49,9 +51,20 @@ func (r LocateRecord) allowsDevice(deviceID string) bool {
 	return deviceAllowed(r.DeviceIDs, deviceID)
 }
 
-func (r LocateRecord) sameTurn(other LocateRecord) bool {
+func (r LocateRecord) effectiveMessageID() string {
+	if strings.TrimSpace(r.MessageID) != "" {
+		return r.MessageID
+	}
+	if strings.TrimSpace(r.TurnID) != "" {
+		return "turn:" + r.TurnID
+	}
+	return ""
+}
+
+func (r LocateRecord) sameMessage(other LocateRecord) bool {
 	return r.Kind == RouteKindMessage && other.Kind == RouteKindMessage &&
-		r.Runtime == other.Runtime && r.ThreadID == other.ThreadID && r.TurnID == other.TurnID
+		r.Runtime == other.Runtime && r.ThreadID == other.ThreadID &&
+		r.effectiveMessageID() != "" && r.effectiveMessageID() == other.effectiveMessageID()
 }
 
 // RouteStore 与设备注册表放在同一目录、同样的权限。path 为空时只保留内存视图，
@@ -103,8 +116,8 @@ func (s *RouteStore) load(now time.Time) {
 	}
 }
 
-// Insert 在同一临界区内完成过期清理、按 turn 去重和容量淘汰，返回 false 表示
-// 这条 turn 已经推送过（包括重启前落盘的记录），调用方不得再次打扰用户。
+// Insert 在同一临界区内完成过期清理、按消息身份去重和容量淘汰，返回 false 表示
+// 这条消息已经推送过（包括重启前落盘的记录），调用方不得再次打扰用户。
 func (s *RouteStore) Insert(now time.Time, record LocateRecord) bool {
 	if strings.TrimSpace(record.ID) == "" {
 		return false
@@ -115,7 +128,7 @@ func (s *RouteStore) Insert(now time.Time, record LocateRecord) bool {
 			delete(s.records, id)
 			continue
 		}
-		if existing.sameTurn(record) {
+		if existing.sameMessage(record) {
 			s.mu.Unlock()
 			return false
 		}

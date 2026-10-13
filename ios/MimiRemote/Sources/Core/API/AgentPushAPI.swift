@@ -29,12 +29,14 @@ struct PushDeviceSummary: Decodable, Equatable {
     let platform: String?
     let expiresAt: String?
     let needsRefresh: Bool?
+    let supportsHolderWaiting: Bool?
 
     enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
         case platform
         case expiresAt = "expires_at"
         case needsRefresh = "needs_refresh"
+        case supportsHolderWaiting = "supports_holder_waiting"
     }
 }
 
@@ -42,11 +44,13 @@ struct PushDeviceRegistrationResponse: Decodable, Equatable {
     let deviceID: String
     let expiresAt: String
     let needsRefresh: Bool
+    let supportsHolderWaiting: Bool?
 
     enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
         case expiresAt = "expires_at"
         case needsRefresh = "needs_refresh"
+        case supportsHolderWaiting = "supports_holder_waiting"
     }
 }
 
