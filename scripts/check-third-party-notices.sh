@@ -5,6 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 NOTICES="THIRD_PARTY_NOTICES.md"
+TAILCAT_MODULE_DIR="experiments/tailcat"
+# 发布包始终包含 Tailcat；检出不完整时必须失败，不能把漏检当成许可清单齐全。
+if [[ ! -f "$TAILCAT_MODULE_DIR/go.mod" ]]; then
+  echo "第三方许可门禁失败：缺少 Tailcat module 的 go.mod：${TAILCAT_MODULE_DIR}/go.mod。" >&2
+  exit 1
+fi
 PACKAGE_RESOLVED="ios/MimiRemote/MimiRemote.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
 
 for command_name in go ruby rg awk; do
@@ -132,7 +138,6 @@ validate_swift_license_checksum() {
 # Mac 安装包（macos/MimiRemoteMac/Scripts/embed-agentd.sh）与 Linux 归档（.goreleaser.yml）
 # 的辅助程序关闭 CGO；iOS 框架由 scripts/build-tailcat-mobile.sh 用 gomobile 绑定，gobind
 # 生成的代码另外引用 golang.org/x/mobile/bind/seq。字段：GOOS GOARCH CGO_ENABLED 构建标签 包列表。
-TAILCAT_MODULE_DIR="experiments/tailcat"
 TAILCAT_BUILD_TARGETS=(
   "darwin arm64 0 - ./cmd/mimi-tailcat-experiment"
   "darwin amd64 0 - ./cmd/mimi-tailcat-experiment"
@@ -181,7 +186,6 @@ validate_tailcat_notices() {
   local go_version go_root linked modules subdirectory_licenses
   local module version module_dir candidate name file
 
-  [[ -d "$TAILCAT_MODULE_DIR" ]] || return 0
   # Tailcat module 要求比根 module 更新的 Go；与发布构建一样允许自动选择工具链。
   if ! go_version="$(cd "$TAILCAT_MODULE_DIR" && GOTOOLCHAIN=auto go env GOVERSION)" \
     || ! go_root="$(cd "$TAILCAT_MODULE_DIR" && GOTOOLCHAIN=auto go env GOROOT)"; then

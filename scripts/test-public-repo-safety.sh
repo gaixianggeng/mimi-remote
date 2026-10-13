@@ -255,6 +255,22 @@ if (cd "$missing_repository" && bash ./scripts/check-public-repo-safety.sh --ful
   fail "Full history must fail closed when a reachable blob is missing."
 fi
 
+# 使用真实许可脚本检查不完整检出，缺目录 / 缺 go.mod 必须在依赖枚举前明确失败。
+notices_repository="$test_root/notices-repository"
+mkdir -p "$notices_repository/scripts"
+cp scripts/check-third-party-notices.sh "$notices_repository/scripts/"
+for missing_tailcat in directory go.mod; do
+  if [[ "$missing_tailcat" == go.mod ]]; then
+    mkdir -p "$notices_repository/experiments/tailcat"
+  fi
+  if (cd "$notices_repository" && bash ./scripts/check-third-party-notices.sh) \
+    >"$test_root/notices-missing.output" 2>&1; then
+    fail "Tailcat ${missing_tailcat} 缺失时许可门禁必须失败。"
+  fi
+  assert_contains "$(<"$test_root/notices-missing.output")" "缺少 Tailcat module 的 go.mod"
+  assert_not_contains "$(<"$test_root/notices-missing.output")" "第三方许可门禁通过。"
+done
+
 rm -rf "$test_root"
 trap - EXIT
 
