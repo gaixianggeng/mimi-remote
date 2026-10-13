@@ -14,6 +14,8 @@ mkdir -p \
   "$TEMP_DIR/bin" \
   "$TEMP_DIR/go-root/bin"
 cp "$ROOT_DIR/scripts/development-cache-"*.sh "$fixture/scripts/"
+cp "$ROOT_DIR/scripts/check-macos-notices.sh" "$fixture/scripts/"
+cp "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$fixture/"
 cp "$ROOT_DIR/macos/MimiRemoteMac/Scripts/"{build-local,embed-agentd,install-local}.sh \
   "$fixture/macos/MimiRemoteMac/Scripts/"
 cp "$ROOT_DIR/macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist" \
@@ -183,6 +185,7 @@ embed_env=(
   "SRCROOT=$fixture/macos/MimiRemoteMac"
   "TARGET_BUILD_DIR=$TEMP_DIR/embed-build"
   "CONTENTS_FOLDER_PATH=Mimi Remote Mac.app/Contents"
+  "WRAPPER_NAME=Mimi Remote Mac.app"
   "ARCHS=arm64"
   "CONFIGURATION=Debug"
   "MACOS_EMBED_CACHE_DIR=$TEMP_DIR/embed"
@@ -190,6 +193,8 @@ embed_env=(
 )
 embed_script="$fixture/macos/MimiRemoteMac/Scripts/embed-agentd.sh"
 env -u GOCACHE "${embed_env[@]}" bash "$embed_script" >/dev/null
+bundled_notices="$TEMP_DIR/embed-build/Mimi Remote Mac.app/Contents/Resources/THIRD_PARTY_NOTICES.md"
+cmp "$fixture/THIRD_PARTY_NOTICES.md" "$bundled_notices"
 
 agentd_intermediate="$TEMP_DIR/embed/Debug/go/arm64/agentd"
 tailcat_intermediate="$TEMP_DIR/embed/Debug/tailcat-go/arm64/mimi-tailcat-experiment"
@@ -207,5 +212,21 @@ caller_go_cache="$TEMP_DIR/caller-gocache"
 env "GOCACHE=$caller_go_cache" "${embed_env[@]}" bash "$embed_script" >/dev/null
 [[ "$(sed -n '1p' "$FIXTURE_GO_BUILD_LOG")" == "$caller_go_cache"$'\t'"$agentd_intermediate" ]]
 [[ "$(sed -n '2p' "$FIXTURE_GO_BUILD_LOG")" == "$caller_go_cache"$'\t'"$tailcat_intermediate" ]]
+
+# Release 必须覆盖共享产物内的旧副本，不能沿用先前 Debug/其他分支的文本。
+printf '\nUpdated source notices\n' >> "$fixture/THIRD_PARTY_NOTICES.md"
+env "${embed_env[@]}" CONFIGURATION=Release bash "$embed_script" >/dev/null
+cmp "$fixture/THIRD_PARTY_NOTICES.md" "$bundled_notices"
+printf ' \t\n' > "$fixture/THIRD_PARTY_NOTICES.md"
+if env "${embed_env[@]}" bash "$embed_script" > "$TEMP_DIR/blank-notices.log" 2>&1; then
+  echo "Mac 内嵌自测失败：空白许可源文件被放行。" >&2
+  exit 1
+fi
+grep -Fq '源码缺少非空许可声明' "$TEMP_DIR/blank-notices.log"
+rm "$fixture/THIRD_PARTY_NOTICES.md"
+if env "${embed_env[@]}" bash "$embed_script" > "$TEMP_DIR/missing-notices.log" 2>&1; then
+  echo "Mac 内嵌自测失败：缺失许可源文件被放行。" >&2
+  exit 1
+fi
 
 echo "Mac 安装锁、内嵌产物隔离和 Go 全局缓存继承自测通过。"

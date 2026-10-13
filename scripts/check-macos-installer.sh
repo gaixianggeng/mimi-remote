@@ -115,6 +115,7 @@ if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -x "$AD
   echo "Mac 安装包校验失败：DMG 缺少 App、agentd、Claude 适配器、旧 Claude bridge、Tailcat 或 LaunchAgent。" >&2
   exit 1
 fi
+bash "$ROOT_DIR/scripts/check-macos-notices.sh" "$APP_PATH"
 if [[ ! -L "$MOUNT_DIR/Applications" || "$(readlink "$MOUNT_DIR/Applications")" != "/Applications" ]]; then
   echo "Mac 安装包校验失败：DMG 缺少 Applications 拖放入口。" >&2
   exit 1
