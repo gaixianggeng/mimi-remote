@@ -23,6 +23,126 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(8);
 static TEST_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 #[tokio::test]
+async fn unsupported_sandbox_is_rejected_before_spawn_and_never_inherits_full_access() {
+    let _guard = TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let _home = support::ClaudeHomeFixture::new();
+    for mode in ["guarded", "inherit"] {
+        let fixture = TempDir::new().unwrap();
+        let argv_log = fixture.path().join("argv.jsonl");
+        let turn_log = fixture.path().join("turns.log");
+        let _mode = EnvRestore::set("CLAUDE_BRIDGE_SANDBOX_POLICY", std::path::Path::new(mode));
+        let _argv = EnvRestore::set("FAKE_CLAUDE_ARGV_LOG", &argv_log);
+        let _turns = EnvRestore::set("FAKE_CLAUDE_TURN_LOG", &turn_log);
+        let pool = Arc::new(ClaudePool::new(fake_claude_path()));
+        let index = ThreadIndex::open_and_hydrate(fixture.path()).await.unwrap();
+        let (client, bridge) = tokio::io::duplex(64 * 1024);
+        let (bridge_reader, bridge_writer) = tokio::io::split(bridge);
+        let bridge_pool = pool.clone();
+        let home = fixture.path().to_path_buf();
+        let task = tokio::spawn(async move {
+            run_connection(bridge_reader, bridge_writer, bridge_pool, index, home).await
+        });
+        let (reader, mut writer) = tokio::io::split(client);
+        let mut reader = BufReader::new(reader);
+        send(
+            &mut writer,
+            1,
+            "initialize",
+            json!({"clientInfo":{"name":"sandbox-policy","version":"1"}}),
+        )
+        .await;
+        assert!(await_response(&mut reader, 1).await.get("error").is_none());
+        send(
+            &mut writer,
+            2,
+            "thread/start",
+            json!({"cwd":fixture.path()}),
+        )
+        .await;
+        let response = await_response(&mut reader, 2).await;
+        let thread_id = response["result"]["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(pool.is_empty().await);
+        for (offset, extra) in [
+            json!({}),
+            json!({"sandboxPolicy":null}),
+            json!({"sandboxPolicy":{"type":"readOnly"}}),
+            json!({"sandboxPolicy":{"type":"workspaceWrite", "writableRoots":[fixture.path()], "networkAccess":false}}),
+            json!({"sandboxPolicy":{"type":"workspaceWrite", "writableRoots":[fixture.path()], "networkAccess":true}}),
+            json!({"sandboxPolicy":{"type":"externalSandbox"}}),
+            json!({"sandboxPolicy":{"type":"dangerFullAccess", "networkAccess":false}}),
+            json!({"sandboxPolicy":{"type":"dangerFullAccess", "writableRoots":[fixture.path()]}}),
+            json!({"sandboxPolicy":{"type":"dangerFullAccess"}, "permissionProfile":{"id":"limited"}}),
+        ].into_iter().enumerate() {
+            let id = 10 + offset as u64;
+            let mut params = json!({"threadId":thread_id, "input":[{"type":"text","text":"must not execute"}], "approvalPolicy":"never"});
+            params.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            send(&mut writer, id, "turn/start", params).await;
+            let response = await_response(&mut reader, id).await;
+            assert_eq!(response["error"]["code"], -32602, "{mode}: {response}");
+            assert_eq!(response["error"]["data"], json!({
+                "accepted":false, "reason":"sandbox_policy_unsupported", "retryable":false,
+                "requiredAdapter":"mimi-claude-adapter"
+            }));
+            assert!(pool.is_empty().await);
+            assert!(!argv_log.exists(), "拒绝前不能启动 CLI");
+            assert!(!turn_log.exists(), "拒绝前不能写入用户消息");
+        }
+        send(
+            &mut writer,
+            30,
+            "turn/start",
+            json!({"threadId":thread_id,
+            "input":[{"type":"text","text":"explicit full access"}], "approvalPolicy":"never",
+            "sandboxPolicy":{"type":"dangerFullAccess"}}),
+        )
+        .await;
+        let frames = collect_turn(&mut reader, 30).await;
+        assert!(
+            frames
+                .iter()
+                .find(|f| f["id"] == 30)
+                .unwrap()
+                .get("error")
+                .is_none()
+        );
+        assert!(frames.iter().any(
+            |f| f["method"] == "turn/completed" && f["params"]["turn"]["status"] == "completed"
+        ));
+        let original = pool.get(&thread_id).await.unwrap();
+        assert!(original.uses_full_access());
+        send(
+            &mut writer,
+            31,
+            "turn/start",
+            json!({"threadId":thread_id,
+            "input":[{"type":"text","text":"must not inherit"}]}),
+        )
+        .await;
+        let response = await_response(&mut reader, 31).await;
+        assert_eq!(
+            response["error"]["data"]["reason"],
+            "sandbox_policy_unsupported"
+        );
+        assert!(Arc::ptr_eq(&original, &pool.get(&thread_id).await.unwrap()));
+        assert_eq!(read_argv_log(&argv_log).len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&turn_log).unwrap(),
+            "explicit full access\n"
+        );
+        pool.release(&thread_id).await;
+        drop(writer);
+        drop(reader);
+        let _ = timeout(STEP_TIMEOUT, task).await;
+    }
+}
+
+#[tokio::test]
 async fn cold_start_unsupported_effort_control_uses_runtime_fallback() {
     let _test_guard = TEST_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
@@ -94,7 +214,8 @@ async fn cold_start_unsupported_effort_control_uses_runtime_fallback() {
         json!({
             "threadId": thread_id,
             "input": [{"type": "text", "text": "old cli fallback"}],
-            "effort": "high"
+            "effort": "high",
+            "sandboxPolicy": {"type":"dangerFullAccess"}
         }),
     )
     .await;
@@ -223,7 +344,8 @@ async fn duplicate_resume_control_exit_recovers_with_spawn_time_overrides() {
             "threadId": thread_id,
             "input": [{"type": "text", "text": "recover exactly once"}],
             "model": "opus",
-            "effort": "high"
+            "effort": "high",
+            "sandboxPolicy": {"type":"dangerFullAccess"}
         }),
     )
     .await;
@@ -264,7 +386,7 @@ async fn duplicate_resume_control_exit_recovers_with_spawn_time_overrides() {
 }
 
 #[tokio::test]
-async fn full_access_switch_restarts_same_session_and_restores_sandbox() {
+async fn restricted_switch_is_rejected_without_replacing_full_access_process() {
     let _guard = TEST_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -333,6 +455,20 @@ async fn full_access_switch_restarts_same_session_and_restores_sandbox() {
             "threadId":thread_id, "input":[{"type":"text","text":format!("turn-{offset}")}],
             "sandboxPolicy":{"type":sandbox}, "approvalPolicy":policy, "approvalsReviewer":reviewer,
         })).await;
+        if sandbox != "dangerFullAccess" {
+            let original = pool.get(&thread_id).await.unwrap();
+            let response = await_response(&mut reader, id).await;
+            assert_eq!(
+                response["error"]["data"]["reason"],
+                "sandbox_policy_unsupported"
+            );
+            assert!(Arc::ptr_eq(&original, &pool.get(&thread_id).await.unwrap()));
+            assert_eq!(
+                original.runtime_snapshot().await.2.as_deref(),
+                Some("bypassPermissions")
+            );
+            continue;
+        }
         let frames = collect_turn(&mut reader, id).await;
         let response = frames
             .iter()
@@ -357,44 +493,22 @@ async fn full_access_switch_restarts_same_session_and_restores_sandbox() {
         );
     }
     let argv = read_argv_log(&argv_log);
-    assert_eq!(
-        argv.len(),
-        3,
-        "只在进出完全访问时换代，普通档位沿用控制协议"
-    );
-    for position in [0, 2] {
-        assert!(has_arg_pair(
-            &argv[position],
-            "--permission-mode",
-            "bypassPermissions"
-        ));
-        assert!(has_arg_pair(
-            &argv[position],
-            "--settings",
-            r#"{"sandbox":{"enabled":false}}"#
-        ));
-        assert!(!argv[position].iter().any(|a| a == "--disallowedTools"));
-    }
-    assert!(has_arg_pair(&argv[1], "--permission-mode", "plan"));
-    for generation in &argv {
-        assert!(has_arg_pair(generation, "--resume", &thread_id));
-        assert!(has_arg_pair(
-            generation,
-            "--permission-prompt-tool",
-            "stdio"
-        ));
-    }
-    if cfg!(windows) {
-        assert!(argv[1].iter().any(|a| a == "--disallowedTools"));
-    } else {
-        let settings_index = argv[1].iter().position(|a| a == "--settings").unwrap();
-        let settings: Value = serde_json::from_str(&argv[1][settings_index + 1]).unwrap();
-        assert_eq!(settings["sandbox"]["enabled"], true);
-        assert_eq!(settings["sandbox"]["failIfUnavailable"], true);
-    }
+    assert_eq!(argv.len(), 1, "受限请求不得替换完全访问进程");
+    assert!(has_arg_pair(
+        &argv[0],
+        "--permission-mode",
+        "bypassPermissions"
+    ));
+    assert!(has_arg_pair(
+        &argv[0],
+        "--settings",
+        r#"{"sandbox":{"enabled":false}}"#
+    ));
+    assert!(!argv[0].iter().any(|a| a == "--disallowedTools"));
+    assert!(has_arg_pair(&argv[0], "--resume", &thread_id));
     assert_eq!(
         std::fs::read_to_string(turn_log).unwrap(),
-        "turn-0\nturn-1\nturn-2\nturn-3\nturn-4\n"
+        "turn-0\nturn-1\nturn-4\n"
     );
     drop(writer);
     drop(reader);
@@ -438,21 +552,13 @@ async fn concurrent_permission_selections_cannot_change_the_accepted_turn() {
         handle_turn_start(&state, full),
         handle_turn_start(&state, limited)
     );
-    let expected_full = match (&full_result, &limited_result) {
-        (Ok(_), Err(TurnError::AlreadyActive { .. })) => true,
-        (Err(TurnError::AlreadyActive { .. }), Ok(_)) => false,
-        _ => panic!("同一会话必须只有一轮胜出：{full_result:?}, {limited_result:?}"),
-    };
+    assert!(full_result.is_ok(), "{full_result:?}");
+    assert!(matches!(limited_result, Err(TurnError::SandboxUnsupported)));
     let handle = pool.get(&thread_id).await.unwrap();
-    assert_eq!(handle.uses_full_access(), expected_full);
-    let (_, _, mode) = handle.runtime_snapshot().await;
+    assert!(handle.uses_full_access());
     assert_eq!(
-        mode.as_deref(),
-        Some(if expected_full {
-            "bypassPermissions"
-        } else {
-            "plan"
-        })
+        handle.runtime_snapshot().await.2.as_deref(),
+        Some("bypassPermissions")
     );
     pool.release(&thread_id).await;
 }
@@ -498,7 +604,8 @@ async fn permission_switch_preserves_pending_wakeup_and_cron_processes() {
         let first = handle_turn_start(
             &state,
             serde_json::from_value(json!({"threadId":thread_id,
-            "input":[{"type":"text", "text":"schedule"}]}))
+            "input":[{"type":"text", "text":"schedule"}],
+            "sandboxPolicy":{"type":"dangerFullAccess"}}))
             .unwrap(),
         )
         .await

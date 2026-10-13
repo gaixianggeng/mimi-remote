@@ -210,7 +210,9 @@ describe("approvals", () => {
     const { turn } = await client.call("turn/start", { threadId, input: text('TOOL Bash {"command":"touch x"}') });
     const request = await client.waitFor((frame) => frame.method === "item/commandExecution/requestApproval");
     expect(request.params).toMatchObject({ threadId, turnId: turn.id, command: "touch x", toolName: "Bash" });
-    expect(request.params.availableDecisions).toEqual(["accept", "acceptWithPermissionUpdate", "decline"]);
+    // 受限请求不提供可扩大文件 / 网络范围的会话权限建议。
+    expect(request.params.availableDecisions).toEqual(["accept", "decline"]);
+    expect(request.params.permissionSuggestions).toEqual([]);
     await watcher.waitFor((frame) => frame.method === "item/commandExecution/requestApproval" && frame.id === request.id);
     client.answer(request, { decision: "accept" });
     await watcher.waitFor((frame) => frame.method === "serverRequest/resolved" && frame.params.requestId === request.id);

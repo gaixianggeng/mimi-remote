@@ -12,6 +12,14 @@
 
 Amp、Pi、OpenCode、Droid、Hermes 和 Alleycat daemon 不属于 Mimi Remote 当前范围，因此没有一并导入。
 
+## 执行边界（#488）
+
+旧 Rust bridge 无法逐条兑现 `writableRoots` 与 `networkAccess`。`turn/start` 只接受明确的 `sandboxPolicy: {"type":"dangerFullAccess"}`，审批模式仍按原规则处理。省略策略、只读、工作区写入、附加限制或 `permissionProfile` 都会在取进程、修改运行时和发送用户消息前拒绝，不继承上一轮的完全访问。
+
+拒绝使用 JSON-RPC `-32602`，附带 `accepted:false`、`reason:"sandbox_policy_unsupported"`、`retryable:false` 和 `requiredAdapter:"mimi-claude-adapter"`。错误提示用户改用 SDK 通道。`CLAUDE_BRIDGE_SANDBOX_POLICY=guarded|inherit` 均不豁免此检查。会话列表与历史读取不受影响。
+
+Linux、Homebrew 安装及 `legacy_bridge` 回退仍使用此旧通道，因此无法继续执行受限轮次。需要受限执行时应使用 [SDK 适配器](../claude-sdk/README.md#受限执行边界488)；切换完全访问必须由用户明确选择，bridge 不自动提升权限。
+
 ## 构建与验证
 
 从仓库根目录执行：

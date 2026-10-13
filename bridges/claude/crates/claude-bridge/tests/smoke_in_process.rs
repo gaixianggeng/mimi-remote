@@ -138,7 +138,7 @@ async fn initialize_thread_start_turn_start_against_fake_claude() {
             "jsonrpc": "2.0",
             "id": 3,
             "method": "turn/start",
-            "params": {
+            "params": {"sandboxPolicy":{"type":"dangerFullAccess"},
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": "say hi"}]
             }
@@ -338,7 +338,7 @@ async fn turn_after_eviction_resumes_cleanly() {
         &mut client_writer,
         &json!({
             "jsonrpc":"2.0","id":3,"method":"turn/start",
-            "params":{"threadId":thread_id,"input":[{"type":"text","text":"first"}]}
+            "params":{"sandboxPolicy":{"type":"dangerFullAccess"},"threadId":thread_id,"input":[{"type":"text","text":"first"}]}
         }),
     )
     .await
@@ -392,7 +392,7 @@ async fn turn_after_eviction_resumes_cleanly() {
         &mut client_writer,
         &json!({
             "jsonrpc":"2.0","id":5,"method":"turn/start",
-            "params":{"threadId":thread_id,"input":[{"type":"text","text":"second"}]}
+            "params":{"sandboxPolicy":{"type":"dangerFullAccess"},"threadId":thread_id,"input":[{"type":"text","text":"second"}]}
         }),
     )
     .await
