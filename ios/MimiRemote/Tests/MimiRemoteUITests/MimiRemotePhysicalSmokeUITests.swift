@@ -383,7 +383,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     func testWideIPadFloatingSidebarSurfaceKeepsNavigationUsable() throws {
-        rotate(to: .landscapeLeft)
+        try rotate(to: .landscapeLeft)
+        try skipUnlessRegularWorkbenchWidth("浮动侧栏")
 
         if firstExistingButton(
             labels: ["收起会话列表", "Collapse conversation list"],
@@ -466,7 +467,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             UIDevice.current.userInterfaceIdiom == .pad,
             "Inspector 的 sheet / attached 切换只在 iPad 验收。"
         )
-        rotate(to: .portrait)
+        try rotate(to: .portrait)
+        try skipUnlessRegularWorkbenchWidth("独立 Inspector 入口")
         try openComposerIfNeeded()
 
         let inspectorButton = app.descendant(identifier: "sessionDetail.inspector")
@@ -476,10 +478,10 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let inspectorContent = app.descendant(identifier: "sessionInspector.content")
         XCTAssertTrue(inspectorContent.waitForExistence(timeout: 10), "竖屏中等宽度应打开 Inspector Sheet")
 
-        rotate(to: .landscapeLeft)
+        try rotate(to: .landscapeLeft)
         XCTAssertTrue(inspectorContent.waitForExistence(timeout: 10), "旋转后 Inspector 内容不应丢失")
 
-        rotate(to: .portrait)
+        try rotate(to: .portrait)
         XCTAssertTrue(inspectorContent.waitForExistence(timeout: 10), "返回中等宽度后 Inspector 应保持展示")
 
         let closeButton = app.descendant(identifier: "sessionDetail.inspector")
@@ -493,6 +495,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             UIDevice.current.userInterfaceIdiom == .pad,
             "浮动侧栏拖动只在 iPad regular width 下验收。"
         )
+        try skipUnlessRegularWorkbenchWidth("浮动侧栏拖动")
         try enterWorkbenchIfNeeded()
 
         if firstExistingButton(
@@ -637,29 +640,29 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         }
         codex.tap()
         XCTAssertTrue(
-            waitForControlValue(detailVoiceInput, containing: ["Codex"]),
+            waitForSelectedOption(in: detailVoiceInput, labeled: ["Codex"]),
             "在语言详情页选择 Codex 后应立即保存设备级偏好"
         )
 
-        rotate(to: .landscapeLeft)
+        try rotate(to: .landscapeLeft)
         let landscapeVoiceInput = app.descendant(identifier: "settings.language.detail.voiceInput")
         XCTAssertTrue(
             scrollUntilHittable(landscapeVoiceInput),
             "横屏后语言详情页应仍能找到语音输入选择组件"
         )
         XCTAssertTrue(
-            waitForControlValue(landscapeVoiceInput, containing: ["Codex"]),
+            waitForSelectedOption(in: landscapeVoiceInput, labeled: ["Codex"]),
             "横屏后语音输入选择不应丢失"
         )
 
-        rotate(to: .portrait)
+        try rotate(to: .portrait)
         let portraitVoiceInput = app.descendant(identifier: "settings.language.detail.voiceInput")
         XCTAssertTrue(
             scrollUntilHittable(portraitVoiceInput),
             "竖屏后语言详情页应仍能找到语音输入选择组件"
         )
         XCTAssertTrue(
-            waitForControlValue(portraitVoiceInput, containing: ["Codex"]),
+            waitForSelectedOption(in: portraitVoiceInput, labeled: ["Codex"]),
             "竖屏后语音输入选择不应丢失"
         )
 
@@ -673,9 +676,9 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             }
             onDevice.tap()
             XCTAssertTrue(
-                waitForControlValue(
-                    portraitVoiceInput,
-                    containing: ["On-device", "设备端"]
+                waitForSelectedOption(
+                    in: portraitVoiceInput,
+                    labeled: ["On-device", "设备端"]
                 ),
                 "测试结束时应恢复原语音提供方"
             )
@@ -727,8 +730,14 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
 
         XCTAssertGreaterThanOrEqual(tokenUsage.frame.height, 150, "Token 模块应完整容纳圆环与点格图")
         XCTAssertGreaterThan(tokenUsage.frame.width, 250, "Token 模块应使用完整分组宽度")
-        XCTAssertLessThan(tokenQuota.frame.midX, tokenActivity.frame.midX, "当前剩余应稳定位于活动列左侧")
-        XCTAssertLessThan(tokenQuota.frame.minX, tokenActivity.frame.minX, "Token 两个主模块不得回退为上下堆叠")
+        // 只有一个额度窗口时配额栏是一条进度条，任何宽度都上下排；放得下两栏才左右排
+        //（SettingsView 的 ViewThatFits，#678）。两种布局都不能让两块互相重叠。
+        if tokenQuota.frame.maxY <= tokenActivity.frame.minY + 1 {
+            XCTAssertLessThan(tokenQuota.frame.midY, tokenActivity.frame.midY, "上下排时当前剩余应在活动列上方")
+        } else {
+            XCTAssertLessThan(tokenQuota.frame.midX, tokenActivity.frame.midX, "当前剩余应稳定位于活动列左侧")
+            XCTAssertLessThan(tokenQuota.frame.minX, tokenActivity.frame.minX, "左右排时两个主模块不得错位")
+        }
         if macDevices.exists {
             XCTAssertGreaterThanOrEqual(macDevices.frame.height, 52, "设备摘要按内容自然增高")
         }
@@ -774,12 +783,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     func testMacConnectionExposesTailcatModeToggle() throws {
-        try enterWorkbenchIfNeeded()
-        try openSettings()
-
-        let macConnection = app.descendant(identifier: "settings.connectionManagement")
-        XCTAssertTrue(macConnection.waitForExistence(timeout: 5), "我的页面应提供 Mac 连接入口")
-        macConnection.tap()
+        try openMacConnection()
 
         let experimentalFeatures = app.descendant(identifier: "settings.connection.tailcat")
         XCTAssertTrue(
@@ -806,12 +810,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     func testMacConnectionOffersTailscaleAndTailcatSpeedRoutes() throws {
-        try enterWorkbenchIfNeeded()
-        try openSettings()
-
-        let macConnection = app.descendant(identifier: "settings.connectionManagement")
-        XCTAssertTrue(macConnection.waitForExistence(timeout: 5), "我的页面应提供 Mac 连接入口")
-        macConnection.tap()
+        try openMacConnection()
 
         let speedTest = app.descendant(identifier: "settings.connectionSpeedTest")
         XCTAssertTrue(scrollUntilHittable(speedTest, maximumSwipes: 8), "Mac 连接页应提供统一测速入口")
@@ -830,12 +829,12 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         try openComposerIfNeeded()
 
         try selectMode(identifier: "composer.mode.plan")
-        rotate(to: .landscapeLeft)
+        try rotate(to: .landscapeLeft)
         assertModeSelected(expectedValues: ["Planning mode", "计划模式"])
         try selectMode(identifier: "composer.mode.plan")
 
         try selectMode(identifier: "composer.mode.goal")
-        rotate(to: .portrait)
+        try rotate(to: .portrait)
         assertModeSelected(expectedValues: ["Goal mode", "目标模式"])
 
         let model = app.descendant(identifier: "composer.model")
@@ -849,7 +848,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         assertCompactModelPickerFitsWindow(modelPicker)
         dismissPresentedMenuOrPopover()
 
-        rotate(to: .landscapeLeft)
+        try rotate(to: .landscapeLeft)
         let landscapeModel = app.descendant(identifier: "composer.model")
         XCTAssertTrue(landscapeModel.waitForExistence(timeout: 10), "横屏后 Composer 应保留模型入口")
         landscapeModel.tap()
@@ -908,7 +907,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         }
 
         let picker = app.descendant(identifier: "composer.cameraAttachmentPicker")
-        let cancel = firstExistingButton(labels: ["Cancel", "取消"], timeout: 15)
+        // iPadOS 27 起系统相机的关闭按钮是「关闭」（标识 DismissButton），旧系统是「取消」（#678）。
+        let cancel = firstExistingButton(labels: ["DismissButton", "Cancel", "取消"], timeout: 15)
         let pickerIsPresented = picker.exists || cancel != nil
 
         XCTAssertTrue(pickerIsPresented, "点击相机后应稳定展示系统相机界面")
@@ -1011,6 +1011,15 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     func testWorkspaceCharacterIconsRenderAndPickerCanOpen() throws {
+        // 角色数随风格不同：《西游记》20 个，名画、三国等 10 个；默认风格在 #459 改成了名画。
+        // 先切到《西游记》再验收，结束时恢复原风格，不永久改变设备上的偏好（#678）。
+        let originalStyleID = try selectWorkspaceIconStyle("journey")
+        defer {
+            if let originalStyleID, originalStyleID != "journey" {
+                dismissPresentedMenuOrPopover()
+                _ = try? selectWorkspaceIconStyle(originalStyleID)
+            }
+        }
         // 角色图测试直接进入目标页，避免真机上恢复路由与底部栏布局差异造成误报。
         app.terminate()
         app.launchArguments.append("--debug-open-workspaces")
@@ -1074,11 +1083,14 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(hostSwitcher.waitForExistence(timeout: 10), "工作区应保留当前布局对应的主机切换入口")
         assertMinimumTouchTarget(hostSwitcher, named: "工作区主机切换入口")
         hostSwitcher.tap()
-        XCTAssertNotNil(
-            firstExistingButton(labels: ["检查主机状态", "Check Host Status"], timeout: 6),
-            "主机入口改色后仍应打开原有连接菜单"
-        )
-        dismissPresentedMenuOrPopover()
+        let checkHostStatus = firstExistingButton(labels: ["检查主机状态", "Check Host Status"], timeout: 6)
+        XCTAssertNotNil(checkHostStatus, "主机入口改色后仍应打开原有连接菜单")
+        // 主机菜单从左上角的入口原位展开，会同时盖住入口本身和通用关闭位置（窗口 4%/8%），
+        // 点在那里只会点中菜单标题行，后面的长按就落到菜单项上。改为点菜单外右侧中部的空白（#678）。
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.6)).tap()
+        if let checkHostStatus {
+            XCTAssertTrue(checkHostStatus.waitForNonExistence(timeout: 5), "主机菜单应能关闭")
+        }
 
         let openDirectory = app.descendant(identifier: "workspace.toolbar.openDirectory")
         XCTAssertTrue(openDirectory.waitForExistence(timeout: 8), "工作区顶栏应保留打开目录入口")
@@ -1109,7 +1121,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             "工作区宽屏返回按钮只在 iPad regular width 下验收。"
         )
         try relaunchDirectlyIntoWorkspaces()
-        rotate(to: .landscapeLeft)
+        try rotate(to: .landscapeLeft)
+        try skipUnlessRegularWorkbenchWidth("工作区宽屏返回按钮")
 
         let workspaceBrowser = app.descendant(identifier: "workspace.browser")
         XCTAssertTrue(workspaceBrowser.waitForExistence(timeout: 10), "工作区内容应保持可访问")
@@ -1182,7 +1195,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             (UIDeviceOrientation.landscapeLeft, "landscape"),
             (.portrait, "portrait")
         ] {
-            rotate(to: orientation)
+            try rotate(to: orientation)
+            try skipUnlessRegularWorkbenchWidth("宽屏工作区详情返回")
             // 非首个工作区进入详情再返回；随后换到首个工作区，确认每次恢复的都是对应来源。
             openWorkspaceSessionAndReturn(source: second, other: first, context: "\(name)-second")
             openWorkspaceSessionAndReturn(source: first, other: second, context: "\(name)-first")
@@ -1190,7 +1204,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         }
 
         // 浏览选择不跟随横竖屏切换或侧栏收起展开重置。
-        rotate(to: .landscapeLeft)
+        try rotate(to: .landscapeLeft)
         assertWorkspaceBrowsing(second, other: first, context: "rotate-landscape")
         guard let collapseSidebar = firstExistingButton(
             labels: ["收起会话列表", "Collapse conversation list"],
@@ -1206,7 +1220,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         showSidebar.tap()
         XCTAssertTrue(showSidebar.waitForNonExistence(timeout: 8), "展开侧栏后恢复入口应消失")
         assertWorkspaceBrowsing(second, other: first, context: "sidebar-expanded")
-        rotate(to: .portrait)
+        try rotate(to: .portrait)
         assertWorkspaceBrowsing(second, other: first, context: "rotate-portrait")
     }
 
@@ -1269,7 +1283,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             (UIDeviceOrientation.landscapeLeft, "landscape-sidebar"),
             (.portrait, "portrait")
         ] {
-            rotate(to: orientation)
+            try rotate(to: orientation)
 
             let source = app.descendant(identifier: "workspace.card.\(projectID)")
             XCTAssertTrue(source.waitForExistence(timeout: 10), "旋转后工作区项目胶囊应保持可见")
@@ -1330,16 +1344,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(picker.waitForExistence(timeout: 8), "外观设置应展示工作区图标风格")
         assertMinimumTouchTarget(picker, named: "工作区图标风格")
 
-        let expectedStyleIdentifiers = [
-            "journey",
-            "threeKingdoms",
-            "classicCharacters",
-            "redChamber",
-            "onePiece",
-            "naruto",
-            "worldArt",
-            "emoji"
-        ]
+        let expectedStyleIdentifiers = Self.workspaceStyleIdentifiers
         var optionFrames: [CGRect] = []
         var originalStyleID: String?
         for styleID in expectedStyleIdentifiers {
@@ -1468,6 +1473,37 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         if rowCenters.count == 2 {
             XCTAssertGreaterThan(rowCenters[1] - rowCenters[0], 44, "两行风格不应重叠")
         }
+    }
+
+    private static let workspaceStyleIdentifiers = [
+        "journey",
+        "threeKingdoms",
+        "classicCharacters",
+        "redChamber",
+        "onePiece",
+        "naruto",
+        "worldArt",
+        "emoji"
+    ]
+
+    /// 在外观设置里选中指定的工作区图标风格，返回原先选中的风格，供收尾恢复。
+    private func selectWorkspaceIconStyle(_ styleID: String) throws -> String? {
+        try enterWorkbenchIfNeeded()
+        try openWorkspaceAppearanceSettings()
+        let picker = app.descendant(identifier: "settings.workspaceIconStyle")
+        XCTAssertTrue(picker.waitForExistence(timeout: 8), "外观设置应展示工作区图标风格")
+        let original = Self.workspaceStyleIdentifiers.first { id in
+            scrollToWorkspaceStyleOption(id, in: picker).map(isSelected) ?? false
+        }
+        guard let target = scrollToWorkspaceStyleOption(styleID, in: picker) else {
+            XCTFail("工作区图标风格应提供 \(styleID)")
+            return original
+        }
+        if !isSelected(target) {
+            target.tap()
+            XCTAssertTrue(waitUntilSelected(target), "选择 \(styleID) 后应立即保存")
+        }
+        return original
     }
 
     private func scrollToWorkspaceStyleOption(
@@ -1754,11 +1790,26 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
     }
 
-    private func rotate(to orientation: UIDeviceOrientation) {
+    /// 系统模拟旋转在部分 iPadOS 27 beta 真机上不可靠：屏幕不转，App 被缩进一个小窗口
+    ///（#678 在 iPad mini 上实测 585×744）。此时后续的坐标与布局断言都没有意义，
+    /// 直接跳过并写明实测窗口，而不是报成产品失败。
+    private func rotate(to orientation: UIDeviceOrientation) throws {
         XCUIDevice.shared.orientation = orientation
         XCTAssertTrue(
             app.windows.firstMatch.waitForExistence(timeout: 8),
             "旋转后主窗口应继续存在"
+        )
+        guard orientation.isLandscape || orientation.isPortrait else { return }
+        let deadline = Date().addingTimeInterval(4)
+        var frame = app.frame
+        repeat {
+            frame = app.frame
+            if (frame.width > frame.height) == orientation.isLandscape { return }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        } while Date() < deadline
+        throw XCTSkip(
+            "系统模拟旋转未生效：请求\(orientation.isLandscape ? "横屏" : "竖屏")，"
+                + "App 窗口 \(Int(frame.width))×\(Int(frame.height))pt"
         )
     }
 
@@ -1853,6 +1904,59 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
                 }
             ),
             object: app
+        )
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    /// 容器窄于 860pt（`WorkbenchSidebarSurfaceMetrics.minimumContainerWidth`）时 App 走紧凑四 Tab，
+    /// 没有浮动侧栏和独立 Inspector 入口；iPad mini 竖屏 744pt 就在这一档（#678）。
+    /// 跳过原因带上实测宽度：系统模拟旋转异常时窗口会缩成一小块，也能一眼看出来。
+    private func skipUnlessRegularWorkbenchWidth(_ feature: String) throws {
+        let width = app.frame.width
+        try XCTSkipUnless(
+            width >= 860,
+            "\(feature)需要 ≥860pt 的非紧凑布局，当前窗口宽 \(Int(width))pt"
+        )
+    }
+
+    /// Mac 连接在紧凑布局里是独立的「设备」Tab，「我的」页不再重复这个入口；
+    /// 宽屏侧栏布局才从「我的」页的连接卡片进入（#678）。
+    private func openMacConnection() throws {
+        try enterWorkbenchIfNeeded()
+        let devicesTab = app.descendant(identifier: "compactTab.devices")
+        if devicesTab.waitForExistence(timeout: 3) {
+            devicesTab.tap()
+        } else {
+            try openSettings()
+            let macConnection = app.descendant(identifier: "settings.connectionManagement")
+            XCTAssertTrue(macConnection.waitForExistence(timeout: 5), "我的页面应提供 Mac 连接入口")
+            macConnection.tap()
+        }
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.devices.page").waitForExistence(timeout: 8),
+            "应进入 Mac 连接页"
+        )
+    }
+
+    /// 选项行是「容器 + 胶囊」（#402），容器本身不带 value；选中项看胶囊按钮的 isSelected（#678）。
+    private func waitForSelectedOption(
+        in row: XCUIElement,
+        labeled labels: [String],
+        timeout: TimeInterval = 6
+    ) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                block: { object, _ in
+                    guard let candidate = object as? XCUIElement, candidate.exists else {
+                        return false
+                    }
+                    return labels.contains { label in
+                        let option = candidate.buttons[label]
+                        return option.exists && option.isSelected
+                    }
+                }
+            ),
+            object: row
         )
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
     }

@@ -83,9 +83,16 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
         XCTAssertTrue(element("settings.language.detail.voiceInput").waitForExistence(timeout: 12))
         if expectsCompactNavigation {
+            // 详情页按设计隐藏顶部 Tab 条，先回到「我的」再切 Tab；
+            // 切回后重新进入语言详情，确认选择已保存而不是只留在页面状态里（#678）。
+            app.navigationBars.buttons.firstMatch.tap()
+            XCTAssertTrue(element("settings.language").waitForExistence(timeout: 8))
             openDevices()
             XCTAssertTrue(element("settings.profile.debug-store-primary").waitForExistence(timeout: 8))
             openMe()
+            let languageAgain = element("settings.language")
+            scrollTo(languageAgain)
+            languageAgain.tap()
             XCTAssertTrue(element("settings.language.detail.voiceInput").waitForExistence(timeout: 8))
             if let alternativeLabel {
                 XCTAssertTrue(element("settings.language.detail.voiceInput").buttons[alternativeLabel].isSelected)
