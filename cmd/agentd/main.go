@@ -1072,13 +1072,16 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	listenAddresses := moduleListenAddresses(cfg)
 	listeners := make([]net.Listener, 0, len(listenAddresses))
 	for _, address := range listenAddresses {
-		listener, err := net.Listen("tcp", address)
+		listener, err := listenModuleAddress(cfg, address)
 		if err != nil {
 			for _, opened := range listeners {
 				_ = opened.Close()
 			}
 			_ = shutdownServeResources(apiRouter, appServerRuntime)
 			return fmt.Errorf("监听 %s 失败：%w", address, err)
+		}
+		if listener == nil {
+			continue
 		}
 		if cfg.HasNetworkModuleControls() {
 			listener = networkaccess.Wrap(listener, moduleIngressPolicy(cfg))

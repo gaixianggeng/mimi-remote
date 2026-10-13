@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -36,9 +38,9 @@ func moduleListenAddresses(cfg config.Config) []string {
 	if cfg.TailscaleAccessEnabled() || cfg.LANAccessEnabled() {
 		// Every socket accepted on this listener is checked by networkaccess.
 		// Wildcard alone is never the module-control security boundary.
-		// Go 在 "tcp" 网络上监听 0.0.0.0 时创建双栈 [::] socket，已经接受 ::1；
-		// 再单独绑定 [::1] 在 macOS 上多余，在 Linux 上会因同端口通配监听而 EADDRINUSE。
-		return []string{net.JoinHostPort("0.0.0.0", port)}
+		// IPv4 映射可能被系统禁用，不能假定单个 tcp 通配 socket 同时接收 IPv6。
+		// listenModuleAddress 按 tcp4/tcp6 分开绑定，两者可共用端口，::1 由 IPv6 通配覆盖。
+		return []string{net.JoinHostPort("0.0.0.0", port), net.JoinHostPort("::", port)}
 	}
 	addresses := []string{net.JoinHostPort("127.0.0.1", port)}
 	// 两种外部直连都关闭时只监听 loopback。若原配置绑定的是 IPv6 loopback
@@ -48,6 +50,32 @@ func moduleListenAddresses(cfg config.Config) []string {
 		addresses = append(addresses, net.JoinHostPort("::1", port))
 	}
 	return addresses
+}
+
+// 模块控制使用独立地址族，既不依赖 IPv4 映射，也不会让 IPv6 通配抢占 IPv4 端口。
+// 旧配置仍沿用原来的 tcp 语义；系统完全没有 IPv6 时只跳过新增的 IPv6 通配监听。
+func listenModuleAddress(cfg config.Config, address string) (net.Listener, error) {
+	network := "tcp"
+	if cfg.HasNetworkModuleControls() {
+		host, _, _ := net.SplitHostPort(address)
+		if ip := net.ParseIP(host); ip != nil {
+			network = "tcp4"
+			if ip.To4() == nil {
+				network = "tcp6"
+			}
+		}
+	}
+	listener, err := net.Listen(network, address)
+	if cfg.HasNetworkModuleControls() && unavailableModuleIPv6(address, err) {
+		return nil, nil
+	}
+	return listener, err
+}
+
+func unavailableModuleIPv6(address string, err error) bool {
+	host, _, _ := net.SplitHostPort(address)
+	return host == "::" && (errors.Is(err, syscall.EAFNOSUPPORT) ||
+		errors.Is(err, syscall.EPROTONOSUPPORT) || errors.Is(err, syscall.EADDRNOTAVAIL))
 }
 
 // moduleIngressPolicy 是模块控制下每个 accept 的连接都要通过的入口策略，与

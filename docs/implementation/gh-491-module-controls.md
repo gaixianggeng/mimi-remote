@@ -20,7 +20,7 @@ The header describes the **Mac service**, not connected mobile devices. Agent de
 
 ## Network boundary
 
-With explicit module controls, `listen` supplies the port. At least one enabled external direct connection uses a wildcard socket (Go listens on `0.0.0.0` as dual-stack `[::]`) **wrapped by a connection policy**; the wildcard alone is not the security boundary. Both external switches off binds loopback only, plus `::1` when the configuration bound IPv6 loopback. The dual-stack wildcard already accepts `::1`, so it is not bound a second time. The policy is checked before HTTP or WebSocket handling:
+With explicit module controls, `listen` supplies the port. At least one enabled external direct connection uses separate `tcp4` (`0.0.0.0`) and `tcp6` (`[::]`) wildcard sockets **wrapped by a connection policy**; the wildcard alone is not the security boundary. Both external switches off binds loopback only, plus `::1` when the configuration bound IPv6 loopback. The IPv6 wildcard already accepts `::1`, so it is not bound a second time. IPv4-mapped IPv6 support is not required; when the OS has no IPv6 support, only the added IPv6 wildcard is skipped. Port conflicts and permission errors still fail startup. The policy is checked before HTTP or WebSocket handling:
 
 | Socket local and remote addresses | Required intent |
 | --- | --- |

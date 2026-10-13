@@ -106,8 +106,7 @@ func assertIngress(t *testing.T, path, listen string, tailscale, lan bool, wantL
 	}
 }
 
-// listenersCover 判断某个本机地址能否被监听集合接收。Go 在 "tcp" 网络上监听 0.0.0.0
-// 时创建双栈 socket，因此 IPv4 通配同样覆盖 IPv6 本机地址。
+// 模块控制分开绑定地址族，IPv4 通配不再被当作 IPv6 监听。
 func listenersCover(listeners []string, local net.IP) bool {
 	for _, address := range listeners {
 		host, _, err := net.SplitHostPort(address)
@@ -115,7 +114,7 @@ func listenersCover(listeners []string, local net.IP) bool {
 			continue
 		}
 		bound := net.ParseIP(host)
-		if bound != nil && (bound.IsUnspecified() || bound.Equal(local)) {
+		if bound != nil && (bound.To4() != nil) == (local.To4() != nil) && (bound.IsUnspecified() || bound.Equal(local)) {
 			return true
 		}
 	}
@@ -130,7 +129,7 @@ func TestDisablingLANKeepsEnabledTailscaleReachable(t *testing.T) {
 	for _, listen := range []string{"0.0.0.0:8787", "[::]:8787", "100.64.0.2:8787", "127.0.0.1:8787", "[::1]:8787"} {
 		for _, network := range []string{`{"allow_lan":true}`, `{"allow_lan":true,"allow_tailscale":true}`} {
 			t.Run(listen+" "+network, func(t *testing.T) {
-				wildcard := []string{"0.0.0.0:8787"}
+				wildcard := []string{"0.0.0.0:8787", "[::]:8787"}
 				loopback := []string{"127.0.0.1:8787"}
 				if strings.HasPrefix(listen, "[::1]") {
 					loopback = append(loopback, "[::1]:8787")
@@ -198,7 +197,7 @@ func TestLegacyTailscaleListenKeepsTailscaleAfterModuleTakeover(t *testing.T) {
 			if result.LANEnabled || !result.TailscaleEnabled {
 				t.Fatalf("takeover result %+v", result)
 			}
-			assertIngress(t, path, listen, true, false, []string{"0.0.0.0:8787"})
+			assertIngress(t, path, listen, true, false, []string{"0.0.0.0:8787", "[::]:8787"})
 			if cfg, err = config.Load(path); err != nil || !cfg.HasNetworkModuleControls() {
 				t.Fatalf("CLI 修改后应记录模块意图：%v", err)
 			}
@@ -216,7 +215,7 @@ func TestDisablingLANWithoutTailscaleFallsBackToLoopback(t *testing.T) {
 				loopback = append(loopback, "[::1]:8787")
 			}
 			path := writeNetworkToggleConfig(t, listen, `{"allow_lan":true,"allow_tailscale":false}`)
-			assertIngress(t, path, listen, false, true, []string{"0.0.0.0:8787"})
+			assertIngress(t, path, listen, false, true, []string{"0.0.0.0:8787", "[::]:8787"})
 			result := runNetworkToggle(t, path, "--lan-enabled=false")
 			if !result.Changed || result.LANEnabled || result.TailscaleEnabled {
 				t.Fatalf("disable LAN result %+v", result)
@@ -227,7 +226,7 @@ func TestDisablingLANWithoutTailscaleFallsBackToLoopback(t *testing.T) {
 }
 
 // 计算出的监听集合必须能在同一端口上同时绑定，并让本机控制面（127.0.0.1）与 IPv6
-// loopback 客户端连上。Tailscale 开启时双栈通配已覆盖 ::1，不能再重复绑定 [::1]。
+// loopback 客户端连上。Tailscale 开启时分别绑定 tcp4/tcp6 通配，不依赖 IPv4 映射。
 func TestModuleListenersBindTogetherAndAcceptLoopback(t *testing.T) {
 	ipv6 := false
 	if probe, err := net.Listen("tcp", "[::1]:0"); err == nil {
@@ -278,10 +277,13 @@ func bindModuleListenersOnFreePort(t *testing.T, listen string, tailscale bool) 
 		var listeners []net.Listener
 		lastErr = nil
 		for _, address := range moduleListenAddresses(cfg) {
-			listener, err := net.Listen("tcp", address)
+			listener, err := listenModuleAddress(cfg, address)
 			if err != nil {
 				lastErr = fmt.Errorf("listen %s: %w", address, err)
 				break
+			}
+			if listener == nil {
+				continue
 			}
 			listeners = append(listeners, listener)
 		}
