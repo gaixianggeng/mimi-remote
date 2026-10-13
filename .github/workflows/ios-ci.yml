@@ -41,6 +41,7 @@ on:
       - "scripts/check-critical-regressions.sh"
       - "scripts/test-ios-localization-smoke.sh"
       - "scripts/check-ios-localization.sh"
+      - "scripts/test-check-ios-localization.sh"
       - "scripts/check-ios-network-security.sh"
       - "scripts/check-ios-privacy-manifest.sh"
       - "scripts/check-app-store-metadata.sh"
@@ -172,6 +173,9 @@ jobs:
 
       - name: Check iOS localization
         run: bash ./scripts/check-ios-localization.sh
+
+      - name: Test iOS localization check
+        run: bash ./scripts/test-check-ios-localization.sh
 
       - name: Check App Store metadata
         run: bash ./scripts/check-app-store-metadata.sh

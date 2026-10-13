@@ -94,6 +94,7 @@ assert_scope ios_device_management false true false false false scripts/test-ios
 assert_scope ios_build_evidence false true false false false scripts/ios-build-evidence.sh
 assert_scope ios_build_evidence_test false true false false false scripts/test-ios-build-evidence.sh
 assert_scope ios_device_fixture false true false false false scripts/testdata/ios-device-management/simulators.json
+assert_scope ios_localization_selftest false true false false false scripts/test-check-ios-localization.sh
 assert_scope tailcat_source false true false false false experiments/tailcat/mobile/tailcatmobile/tailcatmobile.go
 assert_scope tailcat_builder false true false false false scripts/build-tailcat-mobile.sh
 assert_scope tailcat_fixture false true false false false scripts/testdata/tailcat-mobile/fake-go.sh

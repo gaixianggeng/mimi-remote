@@ -21136,24 +21136,6 @@
         }
       }
     },
-    "ui.permission_status": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "extractionState": "stale",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Permission status"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "权限状态"
-          }
-        }
-      }
-    },
     "ui.permissions_approval_for_me": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -37786,7 +37768,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@: update%@"
+            "value": "%@: update %@"
           }
         },
         "zh-Hans": {
@@ -43294,24 +43276,6 @@
         }
       }
     },
-    "ui.experimental_features": {
-      "comment": "Title for the settings destination that explains opt-in experimental capabilities.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Experimental Features"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "实验功能"
-          }
-        }
-      }
-    },
     "ui.connection_speed_test_route_tailcat": {
       "comment": "Tailcat route label in the unified connection speed test.",
       "localizations": {
@@ -43594,24 +43558,6 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Use this named permission profile" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用此命名权限档案" } }
-      }
-    },
-    "ui.step_value_value": {
-      "comment": "VoiceOver label for a numbered setup step. The first value is the step number and the second is its instruction.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Step %1$@: %2$@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "第 %1$@ 步：%2$@"
-          }
-        }
       }
     },
     "ui.managed_devices_added_detail": {
