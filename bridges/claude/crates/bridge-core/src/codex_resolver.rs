@@ -443,11 +443,9 @@ mod tests {
 
     #[cfg(unix)]
     fn write_fake_codex(path: &Path, version: &str) {
-        use std::os::unix::fs::PermissionsExt;
-
-        std::fs::write(path, format!("#!/bin/sh\nprintf '%s\\n' '{version}'\n")).unwrap();
-        let mut permissions = std::fs::metadata(path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(path, permissions).unwrap();
+        crate::test_support::write_executable_script(
+            path,
+            &format!("#!/bin/sh\nprintf '%s\\n' '{version}'\n"),
+        );
     }
 }
