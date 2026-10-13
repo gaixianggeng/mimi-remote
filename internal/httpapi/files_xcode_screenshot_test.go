@@ -264,7 +264,7 @@ func TestReadVerifiedXcodeBuildMCPScreenshotRejectsSwapAfterResolve(t *testing.T
 				t.Fatalf("截图应先通过解析：candidate=%v err=%v", candidate, err)
 			}
 			if swap.replace == nil {
-				data, err := readVerifiedXcodeBuildMCPScreenshot(got.realPath, got.info, xcodeBuildMCPScreenshotMaxBytes)
+				data, err := readVerifiedPreviewFile(got.realPath, fileReadResolvedPath{verifiedFile: got.info, trustedRoot: filepath.Dir(got.realPath)}, xcodeBuildMCPScreenshotMaxBytes)
 				if err != nil || string(data) != string(testXcodeScreenshotPNG) {
 					t.Fatalf("未替换的截图应按原内容读取：len=%d err=%v", len(data), err)
 				}
@@ -276,7 +276,7 @@ func TestReadVerifiedXcodeBuildMCPScreenshotRejectsSwapAfterResolve(t *testing.T
 			if err := swap.replace(secret, path); err != nil {
 				t.Skipf("当前文件系统不支持该替换方式：%v", err)
 			}
-			data, err := readVerifiedXcodeBuildMCPScreenshot(got.realPath, got.info, xcodeBuildMCPScreenshotMaxBytes)
+			data, err := readVerifiedPreviewFile(got.realPath, fileReadResolvedPath{verifiedFile: got.info, trustedRoot: filepath.Dir(got.realPath)}, xcodeBuildMCPScreenshotMaxBytes)
 			if !errors.Is(err, errFilePathOutsideScope) || len(data) != 0 {
 				t.Fatalf("解析后被替换的截图必须按越界拒绝：len=%d err=%v", len(data), err)
 			}
