@@ -326,7 +326,7 @@
         <div class="feature__copy reveal">
           <p class="eyebrow" data-i18n="connect.eyebrow">Remote connection</p>
           <h2 class="h2" data-i18n="connect.title">Reach your computer<br />from anywhere.</h2>
-          <p class="body" data-i18n="connect.body">Mimi has Tailcat built in, in beta for Mac and Linux computers. Generate a QR code on your computer, scan it with your phone, and you're paired — no VPN app to install on your phone. It goes peer-to-peer whenever the network allows and falls back to an encrypted relay when it doesn't. Private keys never leave your devices.</p>
+          <p class="body" data-i18n="connect.body">Mimi has Tailcat built in, in beta for Mac and Linux computers. Generate a QR code on your computer, scan it with your phone, and you're paired — no VPN app to install on your phone. Every connection first contacts a DERP relay for discovery and the initial handshake, then switches encrypted traffic to a direct path when available. Otherwise, the relay continues forwarding it. The relay processes connection metadata even when traffic later becomes direct. Private keys never leave your devices.</p>
           <ul class="routes" role="list">
             <li class="route route--featured">
               <h3>Tailcat <span class="tag">Beta</span></h3>
@@ -345,7 +345,7 @@
         <div class="feature__visual reveal reveal--late">
           <div class="panel diagram">
             <svg viewBox="24 84 486 290" role="img" data-i18n-label="label.diagram"
-                 aria-label="Your phone connects to your computer peer-to-peer, and falls back to an encrypted relay when a direct path isn't available.">
+                 aria-label="Your phone first contacts a DERP relay to establish the connection, then switches encrypted traffic to a direct path when available, or continues through the relay.">
               <g class="rd-node">
                 <rect x="40" y="100" width="86" height="172" rx="20" />
                 <rect class="rd-screen" x="48" y="108" width="70" height="156" rx="13" />

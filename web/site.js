@@ -72,7 +72,7 @@
 
     "connect.eyebrow": "远程连接",
     "connect.title": "在哪里，<br>都能连回电脑。",
-    "connect.body": "Mimi 内置 Tailcat（Beta，适用于 Mac 与 Linux 电脑）。在电脑上生成二维码，用手机扫一下就完成配对，手机上不用另装 VPN App。网络允许时点对点直连，不允许时自动走加密中转；私钥始终只留在你自己的设备里。",
+    "connect.body": "Mimi 内置 Tailcat（Beta，适用于 Mac 与 Linux 电脑）。在电脑上生成二维码，用手机扫一下就完成配对，手机上不用另装 VPN App。每次连接先经 DERP 中继发现对端并完成初始握手，网络允许时再将加密流量切换为直连，否则继续经中继转发。即使随后直连，中继也会处理初始连接阶段的网络元数据；私钥始终只留在你自己的设备里。",
     "route.tc": "内置，扫码一次，之后在任何网络都能连。",
     "route.ts": "已经在用 tailnet？直接连就行。",
     "route.lan.t": "局域网",
