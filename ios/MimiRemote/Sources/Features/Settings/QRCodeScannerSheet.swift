@@ -5,6 +5,9 @@ import UIKit
 enum QRCodeScannerRecoveryAction: Equatable {
     case openSettings
     case retryScanning
+    /// 电脑配对窗口里的「复制配对链接」与二维码是同一条链接。Mac App 不显示地址和访问码，
+    /// 扫不了码的 DMG 用户只能走这一条，所以它排在手动输入地址前面（#554）。
+    case pasteLink
     case manualConnection
 }
 enum QRCodeScannerFailure: Equatable {
@@ -32,11 +35,11 @@ enum QRCodeScannerFailure: Equatable {
     var recoveryActions: [QRCodeScannerRecoveryAction] {
         switch self {
         case .permissionDenied, .permissionRestricted:
-            return [.openSettings, .manualConnection]
+            return [.openSettings, .pasteLink, .manualConnection]
         case .cameraUnavailable, .configurationFailed:
-            return [.manualConnection]
+            return [.pasteLink, .manualConnection]
         case .rejectedCode:
-            return [.retryScanning, .manualConnection]
+            return [.retryScanning, .pasteLink, .manualConnection]
         }
     }
 }
@@ -48,11 +51,19 @@ enum QRCodeScannerSubmissionResult: Equatable {
 
 struct QRCodeScannerSheet: View {
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scannerFailure: QRCodeScannerFailure?
     @State private var isCameraReady = false
     @State private var isSubmittingCode = false
     @State private var completionMessage: String?
     @State private var submissionTask: Task<Void, Never>?
+    /// 相机对着屏幕一直没识别到时才出现的求助卡片；过去扫码页永不超时，也没有下一步（#554）。
+    @State private var showsScanHelp = false
+    /// 粘贴的配对链接不经过相机：验证期间不渲染取景器，免得没有相机的设备又把失败页翻回来。
+    @State private var isUsingPastedLink = false
+
+    /// 相机就绪后这么久还没识别到二维码，就给出「扫不到怎么办」。
+    static let scanHelpDelay: Duration = .seconds(20)
 
     let onDismiss: () -> Void
     let onChooseManualConnection: () -> Void
@@ -64,6 +75,8 @@ struct QRCodeScannerSheet: View {
                 if let scannerFailure {
                     scannerFailureContent(scannerFailure)
                         .transition(.opacity)
+                } else if isUsingPastedLink {
+                    pastedLinkStatusContent
                 } else {
                     scannerContent
                 }
@@ -126,6 +139,84 @@ struct QRCodeScannerSheet: View {
                     message: L10n.text("ui.verifying_mac_connection"),
                     showsProgress: true
                 )
+            } else if isScanningEnabled {
+                scanGuidance
+            }
+        }
+        .task(id: isScanningEnabled) {
+            guard isScanningEnabled, !showsScanHelp else { return }
+            do {
+                try await Task.sleep(for: Self.scanHelpDelay)
+            } catch {
+                return
+            }
+            guard isScanningEnabled else { return }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                showsScanHelp = true
+            }
+            // 卡片出现在取景器上，旁白用户看不到画面变化，需要主动播报。
+            UIAccessibility.post(notification: .announcement, argument: L10n.text("ui.scan_help_title"))
+        }
+    }
+
+    /// 取景框下方常驻一句「对准哪里」；久扫不到时换成求助卡片，给出两条不依赖相机的出路。
+    private var scanGuidance: some View {
+        VStack(spacing: 12) {
+            Spacer(minLength: 0)
+            if showsScanHelp {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(L10n.text("ui.scan_help_title"))
+                        .font(.headline)
+                    Text(L10n.text("ui.scan_help_not_installed"))
+                    Text(L10n.text("ui.scan_help_expired"))
+                    HStack(spacing: 10) {
+                        recoveryButton(.pasteLink, isPrimary: true)
+                        recoveryButton(.manualConnection, isPrimary: false)
+                    }
+                    .tint(themeStore.alwaysDarkTokens.primaryAction)
+                    // 帮助卡压在相机画面的黑底上，按钮与失败页一样按深色取色。
+                    .environment(\.colorScheme, .dark)
+                    .padding(.top, 4)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.white)
+                .padding(18)
+                .frame(maxWidth: 440, alignment: .leading)
+                .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .transition(.opacity)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("qrScanner.help")
+            } else {
+                Text(L10n.text("ui.scan_guidance_aim"))
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.black.opacity(0.55), in: Capsule())
+                    .accessibilityIdentifier("qrScanner.guidance")
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 40)
+    }
+
+    private var pastedLinkStatusContent: some View {
+        ZStack {
+            Color.black
+            if let completionMessage {
+                scannerStatusCard(
+                    title: L10n.text("ui.connection_successful"),
+                    message: completionMessage,
+                    systemImage: "checkmark.circle.fill"
+                )
+                .accessibilityIdentifier("qrScanner.connectionSuccess")
+            } else {
+                scannerStatusCard(
+                    title: L10n.text("ui.pairing_link_received"),
+                    message: L10n.text("ui.verifying_mac_connection"),
+                    showsProgress: true
+                )
             }
         }
     }
@@ -165,8 +256,6 @@ struct QRCodeScannerSheet: View {
     private func scannerFailureContent(_ failure: QRCodeScannerFailure) -> some View {
         // 失败页始终铺纯黑底，按钮与文字都按深色取色；浅色主题的深色主操作压在黑底上读不清。
         let tokens = themeStore.alwaysDarkTokens
-        // GitHub、Xcode、Gruvbox 深色主操作上的白字不到 4.5:1；复用冲突卡按每个预设校准过的黑白前景。
-        let prominentForeground = tokens.writerConflictPrimaryActionForeground
 
         return ZStack {
             Color.black
@@ -187,32 +276,9 @@ struct QRCodeScannerSheet: View {
                 }
 
                 VStack(spacing: 10) {
-                    if failure.recoveryActions.contains(.openSettings) {
-                        Button(L10n.text("ui.go_to_system_settings"), action: openAppSettings)
-                            .buttonStyle(.borderedProminent)
-                            .foregroundStyle(prominentForeground)
-                            .controlSize(.large)
-                    }
-                    if failure.recoveryActions.contains(.retryScanning) {
-                        Button(L10n.text("ui.continue_to_scan_the_code")) {
-                            isCameraReady = false
-                            scannerFailure = nil
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .foregroundStyle(prominentForeground)
-                        .controlSize(.large)
-                    }
-                    if failure.recoveryActions.count == 1 {
-                        Button(L10n.text("ui.use_manual_connection_instead"), action: chooseManualConnection)
-                            .buttonStyle(.borderedProminent)
-                            .foregroundStyle(prominentForeground)
-                            .controlSize(.large)
-                    } else {
-                        Button(L10n.text("ui.use_manual_connection_instead"), action: chooseManualConnection)
-                            .buttonStyle(.bordered)
-                            .controlSize(.large)
-                            // 描边按钮的文字是前景，不跟按钮底色走（#416）。
-                            .tint(tokens.accentText)
+                    // 第一个恢复动作是主按钮，其余是次按钮，顺序即推荐顺序。
+                    ForEach(Array(failure.recoveryActions.enumerated()), id: \.offset) { index, action in
+                        recoveryButton(action, isPrimary: index == 0)
                     }
                 }
                 // 显式配对主操作底色与前景：默认深色的主操作是浅灰，只能配黑字。
@@ -227,6 +293,70 @@ struct QRCodeScannerSheet: View {
         .environment(\.colorScheme, .dark)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("qrScanner.failure")
+    }
+
+    @ViewBuilder
+    private func recoveryButton(_ action: QRCodeScannerRecoveryAction, isPrimary: Bool) -> some View {
+        let button = Button {
+            switch action {
+            case .openSettings:
+                openAppSettings()
+            case .retryScanning:
+                isCameraReady = false
+                isUsingPastedLink = false
+                scannerFailure = nil
+            case .pasteLink:
+                pastePairingLink()
+            case .manualConnection:
+                chooseManualConnection()
+            }
+        } label: {
+            Text(recoveryTitle(action))
+                .frame(maxWidth: .infinity)
+        }
+        .controlSize(.large)
+
+        // 恢复按钮只出现在黑底上（失败页、扫码帮助卡），统一按深色取色。
+        let tokens = themeStore.alwaysDarkTokens
+        if isPrimary {
+            button
+                .buttonStyle(.borderedProminent)
+                // GitHub、Xcode、Gruvbox 深色主操作上的白字不到 4.5:1；复用冲突卡按预设校准过的黑白前景。
+                .foregroundStyle(tokens.writerConflictPrimaryActionForeground)
+        } else {
+            button
+                .buttonStyle(.bordered)
+                // 描边按钮的文字是前景，不跟按钮底色走（#416）。
+                .tint(tokens.accentText)
+        }
+    }
+
+    private func recoveryTitle(_ action: QRCodeScannerRecoveryAction) -> String {
+        switch action {
+        case .openSettings:
+            L10n.text("ui.go_to_system_settings")
+        case .retryScanning:
+            L10n.text("ui.continue_to_scan_the_code")
+        case .pasteLink:
+            L10n.text("ui.paste_pairing_link")
+        case .manualConnection:
+            L10n.text("ui.use_manual_connection_instead")
+        }
+    }
+
+    /// 粘贴的链接与扫到的二维码走同一条提交流程：同样的「已识别 / 正在验证」反馈，
+    /// 验证通过后同样关闭扫码页。
+    private func pastePairingLink() {
+        guard let value = UIPasteboard.general.string?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !value.isEmpty else {
+            scannerFailure = .rejectedCode(L10n.text("ui.clipboard_does_not_contain_connection_info"))
+            return
+        }
+        scannerFailure = nil
+        showsScanHelp = false
+        isUsingPastedLink = true
+        submit(value)
     }
 
     private func chooseManualConnection() {

@@ -28,10 +28,11 @@ Agent、项目和会话都留在你的 macOS、Windows 或 Linux 电脑上运行
 
 你需要一台 **iOS / iPadOS 18+** 的 iPhone 或 iPad，以及一台连接期间保持唤醒的电脑：**macOS 15+**、**Windows 10/11 x64**，或 **Linux**（x86_64 或 ARM64，需要 systemd 用户会话）。
 
-1. 在这台电脑上安装并登录 [Codex CLI](https://learn.chatgpt.com/docs/codex/cli)。
-2. 从 [Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 安装宿主：Mac 用 `Mimi-Remote-Mac.dmg`，Windows 用 `Mimi-Remote-Setup` 安装程序，Linux 用 `linux` 归档。校验、首次配置、升级和回滚见[安装文档](docs/install-upgrade-rollback.md)。
-3. 在已上架地区从 [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) 安装 App，或加入 [TestFlight](https://testflight.apple.com/join/jhGPbSk6)，也可以[从源码构建](ios/MimiRemote/README.md)。
-4. 打开宿主的配对入口，用 App 扫描二维码。在终端里运行 `agentd pair --qr-only` 也能显示二维码，且不会打印长期访问码。
+1. 在这台电脑上安装并登录 [Codex CLI](https://learn.chatgpt.com/docs/codex/cli)。Mac 上用 ChatGPT 桌面版也可以。
+2. 从 [Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 安装宿主：Mac 用 `Mimi-Remote-Mac.dmg`，Windows 用 `Mimi-Remote-Setup` 安装程序，Linux 用 `linux` 归档。Mac 上把 **Mimi Remote Mac** 拖进「应用程序」后打开，首次设置窗口会让你选代码文件夹，完成后直接显示配对二维码。校验、首次配置、升级和回滚见[安装文档](docs/install-upgrade-rollback.md)。
+3. 在已上架地区从 [App Store](https://apps.apple.com/us/app/mimi-remote/id6778076511) 安装 App，或加入 [TestFlight](https://testflight.apple.com/join/jhGPbSk6)，也可以[从源码构建](ios/MimiRemote/README.md)。App 在主屏上叫 **mimi**。
+4. 用 App 扫描二维码。以后要再次显示，点 Mac 菜单栏（Windows 任务栏右下角）的 Mimi Remote 图标，选「配对设备…」。扫不了码时，在配对窗口点「复制配对链接」，再到 App 里粘贴。在终端里运行 `agentd pair --qr-only` 也能显示二维码，且不会打印长期访问码。
+5. 选一个项目。连上之后，App 会列出代码文件夹里的项目，点一下就打开为工作区，然后新建会话。
 
 要添加另一台电脑，在那台电脑上重复以上步骤。想让 Codex 代你安装、升级或排查宿主，可以使用 [install-mimi-remote Skill](packaging/skill/install-mimi-remote)。
 
