@@ -985,8 +985,16 @@ extension SessionStore {
         } else {
             // 终态失败必须离开“正在加载”横幅，否则重连触发的静默刷新会让界面永远停在加载中。
             if !effectiveQuiet {
-                setHistoryLoadNotice(sessionID: sessionID, kind: .summaryFailed)
-                setErrorMessage(for: error) { L10n.format("ui.thumbnail_history_loading_failed_value", $0) }
+                // 同一次失败只留状态条这一处提示：原因写成可读文案，原文仍进 errorMessage 供重试与诊断，
+                // 会话页据 coveredErrorMessage 不再并排显示错误条（#718）。
+                let format: (String) -> String = { L10n.format("ui.thumbnail_history_loading_failed_value", $0) }
+                setHistoryLoadNotice(
+                    sessionID: sessionID,
+                    kind: .summaryFailed,
+                    message: format(UserFacingError(error).message),
+                    coveredErrorMessage: format(error.localizedDescription)
+                )
+                setErrorMessage(for: error, format: format)
             }
         }
         return false
@@ -1221,7 +1229,12 @@ extension SessionStore {
         hideHistoryLoading(sessionID: sessionID)
     }
 
-    func setHistoryLoadNotice(sessionID: SessionID, kind: HistorySavingsNotice.Kind, message customMessage: String? = nil) {
+    func setHistoryLoadNotice(
+        sessionID: SessionID,
+        kind: HistorySavingsNotice.Kind,
+        message customMessage: String? = nil,
+        coveredErrorMessage: String? = nil
+    ) {
         let defaultMessage: String
         switch kind {
         case .loadingFull:
@@ -1236,7 +1249,12 @@ extension SessionStore {
             defaultMessage = L10n.text("ui.the_thumbnail_history_loading_failed_possibly_due_to")
         }
         let message = customMessage ?? defaultMessage
-        historySavingsNoticesBySessionID[sessionID] = HistorySavingsNotice(sessionID: sessionID, kind: kind, message: message)
+        historySavingsNoticesBySessionID[sessionID] = HistorySavingsNotice(
+            sessionID: sessionID,
+            kind: kind,
+            message: message,
+            coveredErrorMessage: coveredErrorMessage
+        )
     }
 
     func deferredFullHistoryNotice(sessionID: SessionID) -> String? {

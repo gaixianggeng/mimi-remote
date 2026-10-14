@@ -4828,6 +4828,9 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy, .economy])
         XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .summaryFailed)
         XCTAssertNotNil(store.errorMessage)
+        // #718：状态条写可读原因并记下它覆盖的错误原文，会话页据此不再并排显示错误条。
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.coveredErrorMessage, store.errorMessage)
+        XCTAssertFalse(store.selectedHistorySavingsNotice?.message.contains("-32080") ?? true)
     }
 
     func testWrappedHarnessHistoryCancellationDoesNotShowFailureNotice() async {

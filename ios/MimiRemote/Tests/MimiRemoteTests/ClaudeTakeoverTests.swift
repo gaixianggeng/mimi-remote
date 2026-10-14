@@ -532,6 +532,177 @@ final class ClaudeTakeoverTests: XCTestCase {
         await runtime.shutdownForHostSwitch()
     }
 
+    /// #718：Claude 网关按连接授权会话，重连后没先拉列表就读历史会被拒为「未由当前 gateway 连接授权」。
+    /// 运行时在同一连接上按会话目录拉列表让网关重新授权，再重试一次。
+    func testUnauthorizedHistoryReadReauthorizesOnCurrentConnectionAndRetriesOnce() async throws {
+        let (runtime, transport, session) = try await makeReauthorizationRuntime(id: "claude_reauthorize")
+        let page = Task {
+            try await runtime.messagesPageFromTurnPages(
+                sessionID: session.id, before: nil, limit: 20, loadMode: .economy,
+                projects: [AgentProject(id: session.projectID, name: "Takeover", path: session.dir)],
+                canHydrateTurnItems: false, recoveringInterruptedTurnID: nil
+            )
+        }
+        try await initializeTakeoverRuntime(transport)
+        let rejected = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        transportErrorResponse(
+            transport, id: rejected.id, code: -32080,
+            message: "thread/turns/list.threadId 未由当前 gateway 连接授权"
+        )
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list")
+        XCTAssertEqual(list.params?.objectValue?["cwd"]?.stringValue, session.dir, "按会话所在目录拉列表")
+        let sentBeforeRetry = await transport.sentMessages().count
+        transportResponse(transport, id: list.id, result: #"{"data":[{"id":"\#(session.id)"}],"nextCursor":null}"#)
+        let retried = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list", after: sentBeforeRetry)
+        XCTAssertEqual(retried.params?.objectValue?["threadId"]?.stringValue, session.id)
+        transportResponse(transport, id: retried.id, result: #"{"data":[],"nextCursor":null}"#)
+        _ = try await page.value
+        await runtime.shutdownForHostSwitch()
+    }
+
+    /// 列表里找不到这个会话（已删除或超出可翻页数）时不再重试，照常报原错误。
+    func testUnauthorizedHistoryReadSurfacesErrorWhenListingCannotAuthorize() async throws {
+        let (runtime, transport, session) = try await makeReauthorizationRuntime(id: "claude_reauthorize_missing")
+        let page = Task {
+            try await runtime.messagesPageFromTurnPages(
+                sessionID: session.id, before: nil, limit: 20, loadMode: .economy,
+                projects: [AgentProject(id: session.projectID, name: "Takeover", path: session.dir)],
+                canHydrateTurnItems: false, recoveringInterruptedTurnID: nil
+            )
+        }
+        try await initializeTakeoverRuntime(transport)
+        let rejected = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        transportErrorResponse(
+            transport, id: rejected.id, code: -32080,
+            message: "thread/turns/list.threadId 未由当前 gateway 连接授权"
+        )
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list")
+        let sentAfterList = await transport.sentMessages().count
+        transportResponse(transport, id: list.id, result: #"{"data":[{"id":"someone-else"}],"nextCursor":null}"#)
+        do {
+            _ = try await page.value
+            XCTFail("找不到会话时应报原错误")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("-32080"), "\(error)")
+        }
+        let methods = await transport.sentMessages().dropFirst(sentAfterList).compactMap { message -> String? in
+            (try? decodeAppServerRequest(message))?.method
+        }
+        XCTAssertFalse(methods.contains("thread/turns/list"), "授权失败后不再重试")
+        await runtime.shutdownForHostSwitch()
+    }
+
+    /// 同一目录的两个会话同时被拒：网关会把参数相同的并发列表当成重复请求拒绝，
+    /// 运行时只翻一次列表，后到的会话直接复用这次翻到的授权结果。
+    func testConcurrentUnauthorizedReadsInSameDirectoryShareOneListing() async throws {
+        let (runtime, transport, first) = try await makeReauthorizationRuntime(id: "claude_reauthorize_a")
+        var second = makeSession(
+            id: "claude_reauthorize_b", projectID: first.projectID, title: "reauthorize", status: "history",
+            source: "claude", runtimeProvider: "claude"
+        )
+        second.canAcceptDirectInput = true
+        await runtime.rememberForkedSession(second)
+        let project = AgentProject(id: first.projectID, name: "Takeover", path: first.dir)
+        func load(_ id: SessionID) -> Task<HistoryMessagesPage, Error> {
+            Task {
+                try await runtime.messagesPageFromTurnPages(
+                    sessionID: id, before: nil, limit: 20, loadMode: .economy, projects: [project],
+                    canHydrateTurnItems: false, recoveringInterruptedTurnID: nil
+                )
+            }
+        }
+        let pages = [load(first.id), load(second.id)]
+        // 两个读请求几乎同时发出，按数量等待，不按发送顺序找。
+        func sent(_ method: String, atLeast count: Int) async throws -> [CodexAppServerRequest] {
+            for _ in 0..<400 {
+                let found = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+                    .filter { $0.method == method }
+                if found.count >= count { return found }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            XCTFail("等待 \(count) 个 \(method) 超时")
+            return []
+        }
+        try await initializeTakeoverRuntime(transport)
+        for request in try await sent("thread/turns/list", atLeast: 2).prefix(2) {
+            transportErrorResponse(
+                transport, id: request.id, code: -32080,
+                message: "thread/turns/list.threadId 未由当前 gateway 连接授权"
+            )
+        }
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list")
+        transportResponse(
+            transport, id: list.id,
+            result: #"{"data":[{"id":"\#(first.id)"},{"id":"\#(second.id)"}],"nextCursor":null}"#
+        )
+        for request in try await sent("thread/turns/list", atLeast: 4).dropFirst(2) {
+            transportResponse(transport, id: request.id, result: #"{"data":[],"nextCursor":null}"#)
+        }
+        for page in pages { _ = try await page.value }
+        let listCount = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+            .filter { $0.method == "thread/list" }.count
+        XCTAssertEqual(listCount, 1, "同一连接、同一目录只翻一次列表")
+        await runtime.shutdownForHostSwitch()
+    }
+
+    /// Codex 会话不在 State DB 索引里时，与普通列表一样改用扫描找回再授权（#719 评审）。
+    func testCodexReauthorizationFallsBackToScanWhenIndexMissesThread() async throws {
+        let project = AgentProject(id: "proj_codex_reauthorize", name: "Codex", path: "/tmp/proj_codex_reauthorize")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://localhost:8787", token: "test-token",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(project: project, allowedMethods: [
+                    "initialize", "initialized", "thread/list", "thread/read", "thread/turns/list"
+                ])
+            }
+        )
+        let session = makeSession(
+            id: "codex_reauthorize", projectID: project.id, title: "codex", status: "history", source: "codex"
+        )
+        await runtime.rememberForkedSession(session)
+        let page = Task {
+            try await runtime.messagesPageFromTurnPages(
+                sessionID: session.id, before: nil, limit: 20, loadMode: .economy, projects: [project],
+                canHydrateTurnItems: false, recoveringInterruptedTurnID: nil
+            )
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake","platformFamily":"macos"}"#)
+        let rejected = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        transportErrorResponse(
+            transport, id: rejected.id, code: -32080,
+            message: "thread/turns/list.threadId 未由当前 gateway 连接授权"
+        )
+        let indexed = try await waitForFakeAppServerRequest(transport, method: "thread/list")
+        XCTAssertEqual(indexed.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+        let afterIndexed = await transport.sentMessages().count
+        transportResponse(transport, id: indexed.id, result: #"{"data":[],"nextCursor":null}"#)
+        let scanned = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: afterIndexed)
+        XCTAssertEqual(scanned.params?.objectValue?["useStateDbOnly"]?.boolValue, false, "索引缺漏时改用扫描")
+        let afterScan = await transport.sentMessages().count
+        transportResponse(transport, id: scanned.id, result: #"{"data":[{"id":"\#(session.id)"}],"nextCursor":null}"#)
+        let retried = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list", after: afterScan)
+        transportResponse(transport, id: retried.id, result: #"{"data":[],"nextCursor":null}"#)
+        _ = try await page.value
+        await runtime.shutdownForHostSwitch()
+    }
+
+    private func makeReauthorizationRuntime(
+        id: String
+    ) async throws -> (CodexAppServerSessionRuntime, FakeCodexAppServerTransport, AgentSession) {
+        var session = makeSession(
+            id: id, projectID: "proj_\(id)", title: "reauthorize", status: "history",
+            source: "claude", runtimeProvider: "claude"
+        )
+        session.canAcceptDirectInput = true
+        let (runtime, transport, _) = makeTakeoverRuntime(session: session)
+        // 已知会话的目录，历史页不再先发 thread/read，直接读 turns。
+        await runtime.rememberForkedSession(session)
+        return (runtime, transport, session)
+    }
+
     /// #706：电脑端执行中或等确认时打开的会话，命令按"仍在处理"显示；持有方停下只推状态，
     /// 打开着的会话要静默补拉一次历史。仍在处理的状态切换（等确认 → 执行）不补拉。
     func testOpenSessionReloadsHistoryOnceWhenComputerHolderStops() async throws {
