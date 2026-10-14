@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
 func newHistoryContinuationTestPolicy() *appServerGatewayPolicy {
@@ -58,6 +61,86 @@ func TestHistoryContinuationPagesSkipRequestCountLimit(t *testing.T) {
 			}
 		})
 	}
+}
+
+// 冷启动时全局索引与项目列表顺序翻十余页：沿上游签发的 cursor 续页不能在第 7 页被拒，
+// 否则 iPad 会弹限流提示并拖慢首屏。全局发现走 gateway 换发的 cursor，项目列表直接透传。
+func TestThreadListContinuationPagesSkipRequestCountLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		global bool
+	}{{"global discovery", true}, {"project list", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy, projectDir := newThreadListContinuationTestPolicy(t)
+			clientCursor := ""
+			for page := 0; page < appServerGatewayHistoryBudgetMaxRequests*3; page++ {
+				params := map[string]any{"limit": 50, "sortKey": "updated_at", "sortDirection": "desc"}
+				if !tc.global {
+					params["cwd"] = projectDir
+				}
+				if clientCursor != "" {
+					params["cursor"] = clientCursor
+				}
+				request, _ := json.Marshal(map[string]any{"id": page + 1, "method": "thread/list", "params": params})
+				if _, err := policy.validateClientFrame(websocket.TextMessage, request); err != nil {
+					t.Fatalf("沿签发的 cursor 翻页不应撞上次数上限：page=%d err=%+v", page, err)
+				}
+				upstreamCursor := fmt.Sprintf("upstream-%d", page+1)
+				response := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"data":[],"nextCursor":%q}}`, page+1, upstreamCursor))
+				forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, response)
+				if !forward || policyErr != nil {
+					t.Fatalf("列表页应正常透传：forward=%v err=%+v", forward, policyErr)
+				}
+				var decoded struct {
+					Result struct {
+						NextCursor string `json:"nextCursor"`
+					} `json:"result"`
+				}
+				if err := json.Unmarshal(forwarded, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				clientCursor = decoded.Result.NextCursor
+				if tc.global == (clientCursor == upstreamCursor) {
+					t.Fatalf("全局发现必须换发 cursor、项目列表直接透传：global=%v cursor=%q", tc.global, clientCursor)
+				}
+			}
+		})
+	}
+}
+
+func TestThreadListInventedCursorsStillCountTowardLimit(t *testing.T) {
+	policy, projectDir := newThreadListContinuationTestPolicy(t)
+	for attempt := 0; attempt <= appServerGatewayHistoryBudgetMaxRequests; attempt++ {
+		request, _ := json.Marshal(map[string]any{"id": attempt + 1, "method": "thread/list", "params": map[string]any{
+			"cwd": projectDir, "limit": 50, "cursor": fmt.Sprintf("invented-%d", attempt),
+		}})
+		_, err := policy.validateClientFrame(websocket.TextMessage, request)
+		if attempt == appServerGatewayHistoryBudgetMaxRequests {
+			if err == nil || err.data["reason"] != "history_budget_limited" {
+				t.Fatalf("未经签发的 cursor 仍应受次数限制：%+v", err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatalf("attempt=%d err=%+v", attempt, err)
+		}
+		id := json.RawMessage(fmt.Sprint(attempt + 1))
+		policy.consumePendingHistoryRequest(&id)
+	}
+}
+
+func newThreadListContinuationTestPolicy(t *testing.T) (*appServerGatewayPolicy, string) {
+	t.Helper()
+	projectDir := t.TempDir()
+	registry, err := projects.NewRegistry([]config.ProjectConfig{{ID: "project", Name: "Project", Path: projectDir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := &Router{
+		monitor: newRelayMonitor(), projects: registry,
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	return newAppServerGatewayPolicy(router, "claude"), projectDir
 }
 
 func TestHistoryContinuationCursorIsSingleUse(t *testing.T) {

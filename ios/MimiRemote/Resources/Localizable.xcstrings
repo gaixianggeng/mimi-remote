@@ -7253,13 +7253,13 @@
               "one": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "The server is rate-limiting requests. Compact history will retry in %lld second."
+                  "value": "Your computer is rate-limiting requests. Compact history will retry in %lld second."
                 }
               },
               "other": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "The server is rate-limiting requests. Compact history will retry in %lld seconds."
+                  "value": "Your computer is rate-limiting requests. Compact history will retry in %lld seconds."
                 }
               }
             }
@@ -7271,7 +7271,7 @@
               "other": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "服务器临时限流，%lld 秒后自动重试缩略历史。"
+                  "value": "电脑端临时限流，%lld 秒后自动重试缩略历史。"
                 }
               }
             }
@@ -33950,13 +33950,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Compact history could not be loaded, possibly because the network is unstable or the server is rate-limiting requests."
+            "value": "Compact history could not be loaded, possibly because the network is unstable or your computer is rate-limiting requests."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "缩略历史加载失败，可能是网络不稳或服务器限流。"
+            "value": "缩略历史加载失败，可能是网络不稳或电脑端限流。"
           }
         }
       }
