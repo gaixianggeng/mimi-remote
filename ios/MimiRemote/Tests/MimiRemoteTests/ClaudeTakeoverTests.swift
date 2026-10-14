@@ -532,6 +532,49 @@ final class ClaudeTakeoverTests: XCTestCase {
         await runtime.shutdownForHostSwitch()
     }
 
+    /// #706：电脑端执行中或等确认时打开的会话，命令按"仍在处理"显示；持有方停下只推状态，
+    /// 打开着的会话要静默补拉一次历史。仍在处理的状态切换（等确认 → 执行）不补拉。
+    func testOpenSessionReloadsHistoryOnceWhenComputerHolderStops() async throws {
+        let fixture = await makeHeldStore(id: "claude_holder_stop_reload", supportsTakeover: true)
+        let store = fixture.store
+        let id = fixture.held.id
+        XCTAssertEqual(store.selectedSessionID, id)
+        let lease = HostSessionLease(hostScope: store.appStore.activeHostScope, sessionID: id)
+        func push(_ status: String, waitingKind: ClaudeSessionOwner.WaitingKind? = nil) async throws {
+            var session = try XCTUnwrap(store.sessionsByID[id])
+            session.claudeOwner = ClaudeSessionOwner(
+                entrypoint: "cli", kind: "interactive", status: status, pid: 4242, waitingKind: waitingKind
+            )
+            session.canAcceptDirectInput = false
+            await store.applyRuntimeEvent(.session(session), lease: lease)
+        }
+        func historyRequests() -> Int {
+            fixture.client.requestedMessageSessionIDs.filter { $0 == id }.count
+        }
+        func settle() async throws {
+            for _ in 0..<20 { await Task.yield() }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        try await push("waiting", waitingKind: .permission)
+        try await settle()
+        let baseline = historyRequests()
+
+        try await push("busy")
+        try await settle()
+        XCTAssertEqual(historyRequests(), baseline, "等确认转为执行时持有方仍在处理，不补拉")
+
+        try await push("idle")
+        for _ in 0..<100 where historyRequests() == baseline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(historyRequests(), baseline + 1, "持有方停下后补拉一次历史")
+
+        try await push("idle")
+        try await settle()
+        XCTAssertEqual(historyRequests(), baseline + 1, "已经停下的会话再收到空闲快照不重复补拉")
+    }
+
     /// #683：没有被页面订阅的会话收到持有方状态推送时，运行时把快照交给列表观察者，
     /// 并把 active / busy 读成"电脑端运行中"、把随附的最后活动时间写进会话。
     func testStatusPushForUnsubscribedSessionReachesTheIndexObserverWithRunState() async throws {

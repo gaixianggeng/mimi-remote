@@ -1115,6 +1115,17 @@ extension SessionStore {
             setActiveCollaborationMode(mode, for: metadata.sessionID ?? sessionID)
         }
         let runtimeNotification = runtimeNotification(for: event, fallbackSessionID: sessionID)
+        // 电脑端持有方的状态变化先以会话快照落地（随后才是 sessionStatus），这里在快照落地前
+        // 记下它是否还在执行或等确认，落地后据此判断是否刚停下（#706）。
+        let computerHolderWorkingSessionID: SessionID? = {
+            guard case .session(let session) = event,
+                  let current = sessionsByID[session.id],
+                  current.isRunningOnComputer || current.isWaitingOnComputer
+            else {
+                return nil
+            }
+            return session.id
+        }()
         HostSwitchSignpost.event("runtime_event_reducer_started")
         let output = await eventReducer.reduce(
             event,
@@ -1136,6 +1147,13 @@ extension SessionStore {
         }
         applyEventReducerOutput(output)
         HostSwitchSignpost.event("runtime_event_store_committed")
+        if let id = computerHolderWorkingSessionID,
+           let updated = sessionsByID[id],
+           !updated.isRunningOnComputer,
+           !updated.isWaitingOnComputer,
+           !updated.isRunning {
+            scheduleHistoryReconcileAfterComputerHolderStopped(sessionID: id)
+        }
         if case .turnCompleted(let metadata) = event {
             scheduleMissingAssistantReplyBackfillIfNeeded(
                 turnMetadata: metadata,
