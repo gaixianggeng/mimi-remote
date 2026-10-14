@@ -209,6 +209,8 @@ actor CodexAppServerSessionRuntime {
     var mimiTaskExpectedDeliveries: [SessionID: CodexMimiTaskExpectedDelivery] = [:]
     var projector = CodexAppServerEventProjector()
     var contextsBySessionID: [SessionID: CodexAppServerSessionContext] = [:]
+    /// 按「连接 | 会话」合并进行中的授权恢复（#718）。
+    var threadReauthorizationTasks: [String: Task<Bool, Never>] = [:]
     // app-server 只向「在当前 gateway 连接上 resume/start 过」的 thread 推送 turn 事件；记录本连接已
     // 经绑定的 thread，断线重连后这个集合随新连接清空，确保再次发送时会先补一次 thread/resume。
     var threadsResumedOnConnection: Set<SessionID> = []
@@ -3367,6 +3369,16 @@ actor CodexAppServerSessionRuntime {
         do {
             return try await firstConnection.send(request, timeout: timeout)
         } catch {
+            if let threadID = Self.unauthorizedThreadID(in: request, error: error),
+               await reauthorizeThread(threadID, on: firstConnection) {
+                // 网关重新授权后在同一条连接上重试一次；仍失败按常规错误处理（#718）。
+                do {
+                    return try await firstConnection.send(request, timeout: timeout)
+                } catch {
+                    await retireCurrentConnectionAfterRecoverableError(firstConnection, error: error)
+                    throw error
+                }
+            }
             if await recoverConnectionAfterStaleInitialization(firstConnection, error: error) {
                 let secondConnection = try await ensureConnection()
                 do {

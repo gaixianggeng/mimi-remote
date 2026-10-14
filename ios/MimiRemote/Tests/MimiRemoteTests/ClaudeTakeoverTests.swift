@@ -532,6 +532,80 @@ final class ClaudeTakeoverTests: XCTestCase {
         await runtime.shutdownForHostSwitch()
     }
 
+    /// #718：Claude 网关按连接授权会话，重连后没先拉列表就读历史会被拒为「未由当前 gateway 连接授权」。
+    /// 运行时在同一连接上按会话目录拉列表让网关重新授权，再重试一次。
+    func testUnauthorizedHistoryReadReauthorizesOnCurrentConnectionAndRetriesOnce() async throws {
+        let (runtime, transport, session) = try await makeReauthorizationRuntime(id: "claude_reauthorize")
+        let page = Task {
+            try await runtime.messagesPageFromTurnPages(
+                sessionID: session.id, before: nil, limit: 20, loadMode: .economy,
+                projects: [AgentProject(id: session.projectID, name: "Takeover", path: session.dir)],
+                canHydrateTurnItems: false, recoveringInterruptedTurnID: nil
+            )
+        }
+        try await initializeTakeoverRuntime(transport)
+        let rejected = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        transportErrorResponse(
+            transport, id: rejected.id, code: -32080,
+            message: "thread/turns/list.threadId 未由当前 gateway 连接授权"
+        )
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list")
+        XCTAssertEqual(list.params?.objectValue?["cwd"]?.stringValue, session.dir, "按会话所在目录拉列表")
+        let sentBeforeRetry = await transport.sentMessages().count
+        transportResponse(transport, id: list.id, result: #"{"data":[{"id":"\#(session.id)"}],"nextCursor":null}"#)
+        let retried = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list", after: sentBeforeRetry)
+        XCTAssertEqual(retried.params?.objectValue?["threadId"]?.stringValue, session.id)
+        transportResponse(transport, id: retried.id, result: #"{"data":[],"nextCursor":null}"#)
+        _ = try await page.value
+        await runtime.shutdownForHostSwitch()
+    }
+
+    /// 列表里找不到这个会话（已删除或超出可翻页数）时不再重试，照常报原错误。
+    func testUnauthorizedHistoryReadSurfacesErrorWhenListingCannotAuthorize() async throws {
+        let (runtime, transport, session) = try await makeReauthorizationRuntime(id: "claude_reauthorize_missing")
+        let page = Task {
+            try await runtime.messagesPageFromTurnPages(
+                sessionID: session.id, before: nil, limit: 20, loadMode: .economy,
+                projects: [AgentProject(id: session.projectID, name: "Takeover", path: session.dir)],
+                canHydrateTurnItems: false, recoveringInterruptedTurnID: nil
+            )
+        }
+        try await initializeTakeoverRuntime(transport)
+        let rejected = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        transportErrorResponse(
+            transport, id: rejected.id, code: -32080,
+            message: "thread/turns/list.threadId 未由当前 gateway 连接授权"
+        )
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list")
+        let sentAfterList = await transport.sentMessages().count
+        transportResponse(transport, id: list.id, result: #"{"data":[{"id":"someone-else"}],"nextCursor":null}"#)
+        do {
+            _ = try await page.value
+            XCTFail("找不到会话时应报原错误")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("-32080"), "\(error)")
+        }
+        let methods = await transport.sentMessages().dropFirst(sentAfterList).compactMap { message -> String? in
+            (try? decodeAppServerRequest(message))?.method
+        }
+        XCTAssertFalse(methods.contains("thread/turns/list"), "授权失败后不再重试")
+        await runtime.shutdownForHostSwitch()
+    }
+
+    private func makeReauthorizationRuntime(
+        id: String
+    ) async throws -> (CodexAppServerSessionRuntime, FakeCodexAppServerTransport, AgentSession) {
+        var session = makeSession(
+            id: id, projectID: "proj_\(id)", title: "reauthorize", status: "history",
+            source: "claude", runtimeProvider: "claude"
+        )
+        session.canAcceptDirectInput = true
+        let (runtime, transport, _) = makeTakeoverRuntime(session: session)
+        // 已知会话的目录，历史页不再先发 thread/read，直接读 turns。
+        await runtime.rememberForkedSession(session)
+        return (runtime, transport, session)
+    }
+
     /// #706：电脑端执行中或等确认时打开的会话，命令按"仍在处理"显示；持有方停下只推状态，
     /// 打开着的会话要静默补拉一次历史。仍在处理的状态切换（等确认 → 执行）不补拉。
     func testOpenSessionReloadsHistoryOnceWhenComputerHolderStops() async throws {

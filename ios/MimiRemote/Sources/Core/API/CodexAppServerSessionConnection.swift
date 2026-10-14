@@ -204,3 +204,73 @@ extension CodexAppServerSessionRuntime {
         for mailbox in mailboxes { mailbox.finishFromProducer() }
     }
 }
+
+// MARK: - 会话授权恢复（#718）
+
+extension CodexAppServerSessionRuntime {
+    static let threadReauthorizationPageLimit = 50
+    static let threadReauthorizationMaxPages = 5
+
+    /// 网关只放行当前连接上已经授权过的会话：Claude 通道每条新连接的授权表都是空的，agentd 重启后
+    /// Codex broker 也会丢失授权。读会话被以「未由当前 gateway 连接授权」拒绝时返回其 threadId。
+    nonisolated static func unauthorizedThreadID(
+        in request: CodexAppServerRequestSpec,
+        error: Error
+    ) -> SessionID? {
+        guard case CodexAppServerConnectionError.appServer(let appError) = error,
+              appError.code == -32080,
+              appError.message.contains("未由当前 gateway 连接授权"),
+              let threadID = request.params?.objectValue?["threadId"]?.stringValue,
+              !threadID.isEmpty
+        else {
+            return nil
+        }
+        return threadID
+    }
+
+    /// 在同一条连接上用列表让网关重新授权这个会话；同一连接、同一会话的并发恢复合并成一次，
+    /// 避免几个历史请求同时失败时重复翻列表、又被网关当成重复请求拒绝。
+    func reauthorizeThread(_ threadID: SessionID, on connection: CodexAppServerConnection) async -> Bool {
+        let key = "\(ObjectIdentifier(connection).hashValue)|\(threadID)"
+        if let running = threadReauthorizationTasks[key] {
+            return await running.value
+        }
+        let task = Task { await self.listUntilThreadAuthorized(threadID, on: connection) }
+        threadReauthorizationTasks[key] = task
+        let authorized = await task.value
+        threadReauthorizationTasks.removeValue(forKey: key)
+        return authorized
+    }
+
+    /// 优先按会话所在目录列（范围小、命中快）；目录不在授权项目里（例如 managed worktree）时
+    /// 改用受控全局发现。翻到会话即止，最多翻有限几页，找不到就按原错误处理。
+    private func listUntilThreadAuthorized(_ threadID: SessionID, on connection: CodexAppServerConnection) async -> Bool {
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: (try? await projects()) ?? [])
+        let limit = Self.threadReauthorizationPageLimit
+        let knownCWD: String? = contextsBySessionID[threadID]?.cwd
+        let scopedCWD = knownCWD.flatMap { cwd in
+            (try? builder.threadList(cwd: cwd, limit: limit)) == nil ? nil : cwd
+        }
+        var cursor: String?
+        for _ in 0..<Self.threadReauthorizationMaxPages {
+            let request: CodexAppServerRequestSpec
+            if let scopedCWD, let scoped = try? builder.threadList(cwd: scopedCWD, limit: limit, cursor: cursor) {
+                request = scoped
+            } else {
+                request = builder.controlledGlobalThreadList(limit: limit, cursor: cursor)
+            }
+            guard let object = (try? await connection.send(request, timeout: longRunningRequestTimeout))??.objectValue else {
+                return false
+            }
+            let ids = (object["data"]?.arrayValue ?? []).compactMap { $0.objectValue?["id"]?.stringValue }
+            if ids.contains(threadID) {
+                return true
+            }
+            guard let next = object["nextCursor"]?.stringValue, !next.isEmpty else {
+                return false
+            }
+            cursor = next
+        }
+        return false
+    }
+}
