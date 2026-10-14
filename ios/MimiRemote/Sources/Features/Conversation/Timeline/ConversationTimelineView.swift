@@ -538,6 +538,14 @@ struct ConversationTimelineView: View {
         scrollController.hasUnseenTail ? L10n.text("ui.return_to_the_bottom_to_view_new_messages") : L10n.text("ui.back_to_latest_news")
     }
 
+    /// 当前会话的历史加载失败已由顶部状态条展示（只看详情页本身的会话，不看分栏里的其他会话）。
+    private var historyFailureIsShownInStatusStrip: Bool {
+        guard explicitSessionID == nil, let notice = sessionStore.selectedHistorySavingsNotice else {
+            return false
+        }
+        return notice.kind == .summaryFailed || notice.kind == .fullFailed
+    }
+
     private var emptyState: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         return VStack(spacing: 14) {
@@ -620,11 +628,18 @@ struct ConversationTimelineView: View {
                 .foregroundStyle(workbenchSecondaryText)
                 .accessibilityIdentifier("conversation.historyLoading")
                 .allowsHitTesting(false)
+        } else if historyFailureIsShownInStatusStrip {
+            // 顶部状态条已经写明原因并带重试；这里只说结论，不重复原因，也不显示新会话占位（#718）。
+            Text(L10n.text("ui.session_record_loading_failed"))
+                .font(themeStore.uiFont(.subheadline))
+                .foregroundStyle(workbenchSecondaryText)
+                .accessibilityIdentifier("conversation.historyLoadFailed")
         } else if let error = sessionStore.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
             ContentUnavailableView {
                 Label(L10n.text("ui.session_record_loading_failed"), systemImage: "exclamationmark.triangle")
             } description: {
-                Text(error)
+                // 只展示翻译后的结论；原始错误在顶部错误条的「显示详情」里（#508）。
+                Text(sessionStore.errorPresentation?.message ?? UserFacingError(rawMessage: error).message)
             } actions: {
                 Button(L10n.text("ui.try_again")) {
                     Task { await sessionStore.refreshCurrentContext() }

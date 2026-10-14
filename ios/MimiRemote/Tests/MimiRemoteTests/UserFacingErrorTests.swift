@@ -574,4 +574,30 @@ final class OperationFeedbackStoreTests: XCTestCase {
         XCTAssertNil(model.errorMessage)
         XCTAssertNil(model.errorPresentation)
     }
+
+    /// #718：历史加载失败的状态条已写明原因并带重试，同一次失败不再并排显示错误条；
+    /// 状态条之后发生的其他失败（例如发送失败）仍照常显示。
+    func testHistoryFailureNoticeHidesOnlyTheErrorItCovers() {
+        let raw = "缩略历史加载失败：app-server 错误 -32080: thread/read.threadId 未由当前 gateway 连接授权"
+        let notice = HistorySavingsNotice(
+            sessionID: "session", kind: .summaryFailed,
+            message: "缩略历史加载失败：电脑上的服务出了点问题，请稍后重试。",
+            coveredErrorMessage: raw
+        )
+        func model(errorMessage: String) -> ConversationScreenModel {
+            ConversationScreenModel(
+                selectedSession: nil, selectedProject: nil, foregroundActivity: nil,
+                runtimeActivitySnapshot: nil, historySavingsNotice: notice, quotaNotice: nil,
+                webSocketStatus: .connected, errorMessage: errorMessage,
+                errorPresentation: UserFacingError(rawMessage: errorMessage)
+            )
+        }
+        let covered = model(errorMessage: raw)
+        XCTAssertNil(covered.errorMessage)
+        XCTAssertNil(covered.errorPresentation)
+
+        let other = model(errorMessage: "发送失败：网络连接已中断")
+        XCTAssertNotNil(other.errorMessage)
+        XCTAssertNotNil(other.errorPresentation)
+    }
 }

@@ -1000,6 +1000,15 @@ struct HistorySavingsNotice: Equatable {
     let sessionID: SessionID
     let kind: Kind
     let message: String
+    /// 加载失败时这条状态条已经说明过的错误原文。会话页据此不再并排显示同一次失败的错误条（#718）。
+    let coveredErrorMessage: String?
+
+    init(sessionID: SessionID, kind: Kind, message: String, coveredErrorMessage: String? = nil) {
+        self.sessionID = sessionID
+        self.kind = kind
+        self.message = message
+        self.coveredErrorMessage = coveredErrorMessage
+    }
 }
 
 struct HistorySavingsNoticeStore {
