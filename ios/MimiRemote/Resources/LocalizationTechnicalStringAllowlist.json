@@ -70,6 +70,10 @@
       "reason": "Matches an upstream protocol/error payload and is not displayed as product UI."
     },
     {
+      "value": "未由当前 gateway 连接授权",
+      "reason": "Matches an upstream protocol/error payload and is not displayed as product UI."
+    },
+    {
       "value": "稍后重试",
       "reason": "Matches an upstream protocol/error payload and is not displayed as product UI."
     },
