@@ -1246,6 +1246,39 @@ extension SessionStore {
         return L10n.text("ui.the_full_history_will_be_restored_after_the_current_turn")
     }
 
+    /// 电脑端持有方停下（执行完、被拒或退出）时只推状态，不推它那一轮工具调用的结果；打开会话时
+    /// 按"持有方仍在处理"显示为进行中的命令会一直停在进行中。打开着的会话静默补拉一次历史，
+    /// 让它们收敛到真实结果（#706）。
+    func scheduleHistoryReconcileAfterComputerHolderStopped(sessionID: SessionID) {
+        guard selectedSessionID == sessionID,
+              historyLoadJobsBySessionID[sessionID] == nil,
+              let session = sessionsByID[sessionID],
+              !session.isRunning
+        else {
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            await Task.yield()
+            guard self.selectedSessionID == sessionID,
+                  self.historyLoadJobsBySessionID[sessionID] == nil,
+                  let latestSession = self.sessionsByID[sessionID],
+                  !latestSession.isRunning
+            else {
+                return
+            }
+            _ = await self.loadHistory(
+                for: latestSession,
+                quiet: true,
+                loadMode: .full,
+                force: true,
+                reason: .automatic
+            )
+        }
+    }
+
     /// full 响应只在 Turn 运行期间因过程项临时膨胀时才进入该路径。完成事件已经先把
     /// session 更新为 completed；这里异步补拉，避免历史网络请求阻塞事件队列和完成通知。
     func scheduleDeferredFullHistoryReloadAfterTurnCompletion(sessionID: SessionID) {

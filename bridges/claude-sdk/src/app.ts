@@ -11,6 +11,7 @@ import { createAccountHandlers } from "./handlers/account.ts";
 import { createHistoryHandlers } from "./handlers/history.ts";
 import { createThreadHandlers } from "./handlers/threads.ts";
 import { createTurnHandlers } from "./handlers/turns.ts";
+import { isHolderWorking } from "./runtime/holders.ts";
 import { ThreadManager, type ManagerOptions } from "./runtime/manager.ts";
 import { unavailableRateLimits } from "./runtime/rateLimits.ts";
 import type { InitializeResponse } from "./protocol/codex/InitializeResponse.ts";
@@ -123,7 +124,11 @@ export function createApp(options: AppOptions): App {
     hasLiveProcess: (threadId) => manager.get(threadId)?.hasLiveProcess() ?? false,
     loadedThreadIds: () => manager.loadedThreadIds(),
   });
-  const historyHandlers = createHistoryHandlers(history, (threadId) => activeTurnId(threadId) !== undefined);
+  const historyHandlers = createHistoryHandlers(
+    history,
+    (threadId) => activeTurnId(threadId) !== undefined,
+    async (threadId) => isHolderWorking((await holders()).get(threadId)),
+  );
   const claudeCode = new ClaudeCodeVersionGate(claudeExecutable, options.probeClaudeCode);
   const turns = createTurnHandlers({ manager, catalog, sessions, holders, claudeCode });
   const models = new ModelCatalog({ discover: options.discoverModels ?? sdkModelDiscovery(claudeExecutable), log: options.log });

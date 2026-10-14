@@ -5,7 +5,7 @@ import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import { RpcError } from "../rpc/frames.ts";
 import type { Catalog, HistoryStore, SessionRecord } from "../claude/catalog.ts";
 import { decodeCursor, encodeCursor, readDirection, readLimit, type Direction } from "../util/cursor.ts";
-import { liveThreadStatus, ownerSummary, type SessionHolder } from "../runtime/holders.ts";
+import { isHolderWorking, liveThreadStatus, ownerSummary, type SessionHolder } from "../runtime/holders.ts";
 import { USER_AGENT } from "../version.ts";
 import { logger } from "../util/logging.ts";
 
@@ -165,7 +165,8 @@ export function createThreadHandlers(catalog: Catalog, history: HistoryStore, li
       // 客户端会把它记成自己的活跃 turn，持有方的空闲 / 退出推送一旦错过（断线超过会话保留期），
       // 列表快照又不带 turns，就会一直显示「处理中」。电脑端在跑由 status 与 claudeOwner 表达。
       const running = liveSource?.activeTurnId(threadId) !== undefined;
-      const turns = params.includeTurns === true ? await history.turns(threadId, running) : [];
+      const holderActive = !running && isHolderWorking(holder);
+      const turns = params.includeTurns === true ? await history.turns(threadId, running, holderActive) : [];
       return { thread: toThread(record, turns, liveStateOf(threadId, holder)) };
     },
 
