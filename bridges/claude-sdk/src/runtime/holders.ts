@@ -67,6 +67,11 @@ export function isBusyHolder(holder: SessionHolder): boolean {
   return holder.status === "busy" || holder.status === "shell";
 }
 
+/** 持有方还在处理这一轮：正在执行，或停在确认 / 输入上。它最后发出的工具调用不能算中断。 */
+export function isHolderWorking(holder: SessionHolder | undefined): boolean {
+  return holder !== undefined && (isBusyHolder(holder) || holder.status === "waiting");
+}
+
 type WaitingKind = "permission" | "input" | "other";
 
 /** 原始等待原因可能包含未来值，只公开稳定类别，避免把自由文本带进 thread frame。 */

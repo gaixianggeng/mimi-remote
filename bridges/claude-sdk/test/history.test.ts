@@ -106,6 +106,20 @@ describe("messagesToTurns", () => {
     expect(running.items[1]!.type === "commandExecution" && running.items[1]!.status).toBe("inProgress");
   });
 
+  test("a holder elsewhere keeps its last pending tool call in progress without synthesizing a running turn", () => {
+    const messages = [
+      user("first"),
+      assistant([{ type: "tool_use", id: "t1", name: "Bash", input: { command: "sleep 9" } }]),
+      user("second"),
+      assistant([{ type: "tool_use", id: "t2", name: "Bash", input: { command: "touch x" } }]),
+    ];
+    const [earlier, last] = messagesToTurns(messages, { sessionId: "session-1", running: false, holderActive: true });
+    expect(earlier!.items[1]!.type === "commandExecution" && earlier!.items[1]!.status).toBe("failed");
+    expect(last!.items[1]!.type === "commandExecution" && last!.items[1]!.status).toBe("inProgress");
+    expect(last!.status).not.toBe("inProgress");
+    expect(last!.status).toBe(translate(messages)[1]!.status);
+  });
+
   test("interrupt markers end the turn as interrupted and are not shown", () => {
     const turns = translate([user("long task"), assistant([{ type: "text", text: "working" }]), user("[Request interrupted by user]")]);
     expect(turns).toHaveLength(1);
