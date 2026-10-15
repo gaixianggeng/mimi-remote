@@ -246,13 +246,31 @@ final class FileUploadStore: ObservableObject {
                 return
             }
             tasks.removeValue(forKey: id)
+            let failure = Self.uploadFailure(for: error)
             updateJob(id: id) {
                 $0.phase = .failed
-                $0.errorMessage = error.localizedDescription
-                // 用户主动选择的 URL 在本次编辑期间仍然有效，预处理与网络失败都允许原地重试。
-                $0.canRetry = true
+                $0.errorMessage = failure.message
+                // 用户主动选择的 URL 在本次编辑期间仍然有效，预处理与网络失败都允许原地重试；
+                // 文件本身被电脑端拒收时，原样重试只会再失败一次。
+                $0.canRetry = failure.canRetry
             }
         }
+    }
+
+    /// 电脑端对文件本身的拒收（过大、类型不支持或内容无效）要告诉用户换文件，
+    /// 不能落到「请检查后重试」的通用分类。
+    static func uploadFailure(for error: Error) -> (message: String, canRetry: Bool) {
+        if case AgentAPIError.server(let status, _) = error {
+            switch status {
+            case 413:
+                return (L10n.text("ui.file_upload_too_large"), false)
+            case 415:
+                return (L10n.text("ui.file_upload_unsupported"), false)
+            default:
+                break
+            }
+        }
+        return (UserFacingError(error).message, true)
     }
 
     private func updateJob(id: UUID, _ update: (inout FileUploadJob) -> Void) {

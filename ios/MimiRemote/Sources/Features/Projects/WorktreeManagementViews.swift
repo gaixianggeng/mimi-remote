@@ -166,7 +166,7 @@ struct WorktreeManagerSheet: View {
         if case AgentAPIError.server(let status, _) = error, status == 404 || status == 405 {
             return L10n.text("ui.the_current_agentd_version_does_not_support_clean")
         }
-        return error.localizedDescription
+        return UserFacingError.hostOperationMessage(for: error)
     }
 }
 
@@ -186,6 +186,7 @@ struct WorktreeCleanupPreviewSheet: View {
     @State private var isExecuting = false
     @State private var isShowingDestructiveConfirmation = false
     @State private var executionError: String?
+    @State private var isPlanInvalidated = false
     let rootProjectID: String
 
     init(preview: WorktreeCleanupResponse, rootProjectID: String) {
@@ -217,7 +218,7 @@ struct WorktreeCleanupPreviewSheet: View {
     private var isPlanExecutable: Bool {
         // 只有 dry-run 响应里的 plan_id 可以执行一次。执行响应即使还带着旧候选，
         // 也只能用于展示结果，不能再次选择并提交已经消费的计划。
-        preview.dryRun && !preview.hasPartialFailure
+        preview.dryRun && !preview.hasPartialFailure && !isPlanInvalidated
     }
 
     var body: some View {
@@ -346,9 +347,32 @@ struct WorktreeCleanupPreviewSheet: View {
                 return
             }
             dismiss()
+        } catch where WorktreeCleanupResponse.requiresFreshPlan(error) {
+            // 计划过期或候选状态已变化：同一份预览再删必然再失败。作废旧计划、清空选择，
+            // 就地重新 dry-run；用户确认新结果后再选择删除。
+            isPlanInvalidated = true
+            selectedPaths = []
+            do {
+                preview = try await sessionStore.previewManagedWorktreeCleanup()
+                isPlanInvalidated = false
+                executionError = L10n.text("ui.worktree_cleanup_preview_refreshed")
+            } catch {
+                executionError = L10n.text("ui.worktree_cleanup_preview_stale")
+            }
         } catch {
-            executionError = error.localizedDescription
+            executionError = UserFacingError.hostOperationMessage(for: error)
         }
+    }
+}
+
+extension WorktreeCleanupResponse {
+    /// agentd 只在计划不存在 / 已过期、路径不属于计划或 Worktree 状态变化时返回 409，
+    /// 三者都必须重新 dry-run。
+    static func requiresFreshPlan(_ error: Error) -> Bool {
+        if case AgentAPIError.server(409, _) = error {
+            return true
+        }
+        return false
     }
 }
 

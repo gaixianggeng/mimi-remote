@@ -1362,7 +1362,7 @@ extension SessionStore {
         do {
             lease = try captureWorkspaceHostLease()
         } catch {
-            worktreeBranchErrorByPath[trimmed] = error.localizedDescription
+            worktreeBranchErrorByPath[trimmed] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isRefreshingWorktreeBranches = true
@@ -1379,7 +1379,7 @@ extension SessionStore {
             worktreeBranchErrorByPath.removeValue(forKey: response.path)
         } catch {
             guard !Task.isCancelled, appStore.activeHostScope == lease.scope else { return }
-            worktreeBranchErrorByPath[trimmed] = error.localizedDescription
+            worktreeBranchErrorByPath[trimmed] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -1388,7 +1388,7 @@ extension SessionStore {
         do {
             lease = try captureWorkspaceHostLease()
         } catch {
-            worktreeErrorMessage = error.localizedDescription
+            worktreeErrorMessage = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isRefreshingWorktrees = true
@@ -1402,7 +1402,7 @@ extension SessionStore {
             worktreeErrorMessage = nil
         } catch {
             guard !Task.isCancelled, appStore.activeHostScope == lease.scope else { return }
-            worktreeErrorMessage = error.localizedDescription
+            worktreeErrorMessage = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -1412,7 +1412,7 @@ extension SessionStore {
         do {
             lease = try captureWorkspaceHostLease()
         } catch {
-            worktreeErrorMessage = error.localizedDescription
+            worktreeErrorMessage = UserFacingError.hostOperationMessage(for: error)
             return 0
         }
         isPruningWorktrees = true
@@ -1456,7 +1456,7 @@ extension SessionStore {
             return count
         } catch {
             guard !Task.isCancelled, appStore.activeHostScope == lease.scope else { return 0 }
-            worktreeErrorMessage = error.localizedDescription
+            worktreeErrorMessage = UserFacingError.hostOperationMessage(for: error)
             return 0
         }
     }
@@ -1470,7 +1470,7 @@ extension SessionStore {
             return response
         } catch {
             try requireCurrentWorkspaceHost(lease)
-            worktreeErrorMessage = error.localizedDescription
+            worktreeErrorMessage = UserFacingError.hostOperationMessage(for: error)
             throw error
         }
     }
@@ -1540,7 +1540,7 @@ extension SessionStore {
             return response
         } catch {
             try requireCurrentWorkspaceHost(lease)
-            worktreeErrorMessage = error.localizedDescription
+            worktreeErrorMessage = UserFacingError.hostOperationMessage(for: error)
             throw error
         }
     }
@@ -1596,7 +1596,7 @@ extension SessionStore {
         do {
             lease = try captureWorkspaceHostLease()
         } catch {
-            worktreeErrorMessage = error.localizedDescription
+            worktreeErrorMessage = UserFacingError.hostOperationMessage(for: error)
             return false
         }
         isDeletingWorktree = true
@@ -1630,7 +1630,7 @@ extension SessionStore {
             return true
         } catch {
             guard !Task.isCancelled, appStore.activeHostScope == lease.scope else { return false }
-            worktreeErrorMessage = error.localizedDescription
+            worktreeErrorMessage = UserFacingError.hostOperationMessage(for: error)
             return false
         }
     }

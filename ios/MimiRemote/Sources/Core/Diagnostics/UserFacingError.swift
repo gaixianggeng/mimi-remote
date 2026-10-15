@@ -421,15 +421,25 @@ extension UserFacingError {
         default:
             candidate = nil
         }
-        guard let reason = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !reason.isEmpty,
-              reason.count <= 240,
-              !reason.contains("\n"),
-              !containsTechnicalDetail(reason),
-              !isCredentialRejectionReason(reason) else {
+        guard let reason = candidate.flatMap(presentableComputerReason),
+              matchesReadableReasonAllowlist(reason) else {
             return nil
         }
-        guard matchesReadableReasonAllowlist(reason), !containsSensitiveDetail(reason) else {
+        return reason
+    }
+
+    /// 电脑端原文能否直接上主界面的统一门槛：单行、不超过 240 字、不是 HTML 错误页、
+    /// 没有协议细节、地址、路径、主机名或凭据，也不是访问码失效；非中文界面不显示中文原文。
+    /// 通过时返回去掉首尾空白的原文。
+    static func presentableComputerReason(_ text: String) -> String? {
+        let reason = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reason.isEmpty,
+              reason.count <= 240,
+              !reason.contains("\n"),
+              !reason.contains("<"),
+              !containsTechnicalDetail(reason),
+              !containsSensitiveDetail(reason),
+              !isCredentialRejectionReason(reason) else {
             return nil
         }
         // 原因是电脑端写的，没有随 App 语言本地化；非中文界面遇到中文原因时退回分类文案。
@@ -476,6 +486,7 @@ extension UserFacingError {
         "\\bhostname\\s+\\S+",
         // 「host 名字」只在名字像主机名（含数字、点或连字符）时算，避免误伤「on this host first」。
         "\\bhost\\s+[A-Za-z0-9_]*[.0-9-][A-Za-z0-9_.-]*",
+        "\\b(?:for|by) user\\s+\\S+",
         // 账号与无后缀的局域网主机名（build-mac、mac-mini）。
         "\\bdenied to\\s+\\S+",
         "\\b[a-z0-9]+(?:-[a-z0-9]+)*-(?:mac|mini|pc|host|server|desktop|laptop|nas|box)\\b",

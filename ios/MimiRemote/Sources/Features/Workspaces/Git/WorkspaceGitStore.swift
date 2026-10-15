@@ -75,7 +75,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitStatusErrorByPath[targetPath] = error.localizedDescription
+            gitStatusErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         await refreshGitStatus(path: targetPath, lease: lease)
@@ -99,7 +99,7 @@ final class WorkspaceGitStore: ObservableObject {
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitStatusErrorByPath[targetPath] = error.localizedDescription
+            gitStatusErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -248,7 +248,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isRunningGitAction = true
@@ -271,7 +271,7 @@ final class WorkspaceGitStore: ObservableObject {
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -286,7 +286,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isRunningGitAction = true
@@ -309,7 +309,7 @@ final class WorkspaceGitStore: ObservableObject {
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -324,7 +324,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isCommittingGitChanges = true
@@ -343,7 +343,7 @@ final class WorkspaceGitStore: ObservableObject {
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -358,7 +358,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isPushingGitBranch = true
@@ -379,7 +379,7 @@ final class WorkspaceGitStore: ObservableObject {
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -396,7 +396,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return false
         }
         isQuickPublishingGitChanges = true
@@ -423,7 +423,7 @@ final class WorkspaceGitStore: ObservableObject {
             return canApplyResult(lease)
         } catch {
             guard canApplyResult(lease) else { return false }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             // 组合动作可能已经完成本地 commit 但在 push 阶段失败，失败后必须重新读取真实 Git 状态。
             await refreshGitStatus(path: targetPath, lease: lease)
             return false
@@ -439,7 +439,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
+            gitTestFlightErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         await refreshGitTestFlightStatus(path: targetPath, lease: lease)
@@ -463,7 +463,7 @@ final class WorkspaceGitStore: ObservableObject {
             gitTestFlightErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
+            gitTestFlightErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
     }
 
@@ -477,7 +477,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
+            gitTestFlightErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return false
         }
         isStartingGitTestFlightRelease = true
@@ -498,7 +498,7 @@ final class WorkspaceGitStore: ObservableObject {
             return true
         } catch {
             guard canApplyResult(lease) else { return false }
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
+            gitTestFlightErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return false
         }
     }
@@ -512,7 +512,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
+            gitTestFlightErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         while !Task.isCancelled {
@@ -541,7 +541,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isCreatingPullRequest = true
@@ -573,8 +573,19 @@ final class WorkspaceGitStore: ObservableObject {
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            gitActionErrorByPath[targetPath] = error.localizedDescription
+            gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
+            if Self.isExistingPullRequestError(error) {
+                // 已有 PR 时错误原文里的链接不上主界面；刷新状态让面板直接显示那个 PR。
+                await refreshPullRequestStatus(path: targetPath)
+            }
         }
+    }
+
+    static func isExistingPullRequestError(_ error: Error) -> Bool {
+        guard case AgentAPIError.server(_, let message) = error else {
+            return false
+        }
+        return UserFacingError.gitOperationMessage(for: message) == L10n.text("ui.git_pull_request_already_exists")
     }
 
     func refreshPullRequestStatus(path: String) async {
@@ -587,7 +598,7 @@ final class WorkspaceGitStore: ObservableObject {
         do {
             lease = try captureHostLease()
         } catch {
-            pullRequestStatusErrorByPath[targetPath] = error.localizedDescription
+            pullRequestStatusErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
             return
         }
         isRefreshingPullRequestStatus = true
@@ -606,7 +617,85 @@ final class WorkspaceGitStore: ObservableObject {
             pullRequestStatusErrorByPath.removeValue(forKey: targetPath)
         } catch {
             guard canApplyResult(lease) else { return }
-            pullRequestStatusErrorByPath[targetPath] = error.localizedDescription
+            pullRequestStatusErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
         }
+    }
+}
+
+extension UserFacingError {
+    /// Git / Worktree 等电脑端操作的失败文案（#508）。
+    ///
+    /// agentd 会原样回传 git 的 stderr（多行、带远端地址和路径）。高频场景先按 git 的固定说法
+    /// 映射成可操作的本地化文案（推送被拒需先拉取、已存在、有未提交改动、合并冲突、没有可提交的改动），
+    /// 不受原文里地址 / 路径的影响；其余只有 4xx 且通过与 #691 同一套门槛的原文才直接展示，
+    /// 5xx、多行、HTML 错误页或带敏感信息的一律用分类文案。
+    static func hostOperationMessage(for error: Error) -> String {
+        guard case AgentAPIError.server(let status, let message) = error, status != 401 else {
+            return UserFacingError(error).message
+        }
+        if let known = gitOperationMessage(for: message) {
+            return known
+        }
+        if (400...499).contains(status), let reason = presentableComputerReason(message) {
+            return reason
+        }
+        return UserFacingError(error).message
+    }
+
+    static func gitOperationMessage(for output: String) -> String? {
+        let lowered = output.lowercased()
+        func containsAny(_ needles: [String]) -> Bool {
+            needles.contains { lowered.contains($0) }
+        }
+        // 服务端钩子 / 受保护分支拒绝：拉取解决不了，不能说成「远端有新提交」。
+        if containsAny(["[remote rejected]", "hook declined", "protected branch"]) {
+            return L10n.text("ui.git_push_remote_rejected")
+        }
+        // 只认 git 关于标签已存在的固定说法，分支名或路径里带 tag 字样不算。
+        if lowered.range(of: "\\btag '[^']+' already exists", options: .regularExpression) != nil
+            || lowered.range(of: "refs/tags/\\S+[^\\n]*\\(already exists\\)", options: .regularExpression) != nil
+            // advice.pushUpdateRejected=false 时没有 hint，只剩标准推送状态行。
+            || lowered.range(of: #"(?m)^\s*! \[rejected\]\s+\S+ -> \S+ \(already exists\)$"#, options: .regularExpression) != nil
+            || lowered.contains("the tag already exists in the remote") {
+            return L10n.text("ui.git_tag_already_exists")
+        }
+        // 只有明确的「落后于远端」信号才提示先拉取。
+        if containsAny([
+            "non-fast-forward",
+            "fetch first",
+            "remote contains work",
+            "tip of your current branch is behind"
+        ]) {
+            return L10n.text("ui.git_push_rejected_pull_first")
+        }
+        if containsAny(["merge conflict", "conflict (content)", "fix conflicts", "unmerged files"]) {
+            return L10n.text("ui.git_merge_conflict")
+        }
+        if containsAny([
+            "contains modified or untracked files",
+            "would be overwritten",
+            "commit your changes or stash them",
+            "uncommitted changes",
+            "local changes"
+        ]) {
+            return L10n.text("ui.git_local_changes_block")
+        }
+        // 分支正被另一个 Worktree 使用时，换名字或拉取都不能解除占用；也不暴露电脑路径。
+        if lowered.range(of: #"(?m)^fatal: '[^'\n]+' is already (?:checked out|used by worktree) at '[^\n]+'$"#, options: .regularExpression) != nil {
+            return L10n.text("ui.git_branch_in_use")
+        }
+        // gh pr create 对已有 PR 的分支报「a pull request for branch … already exists」，与同名分支无关。
+        if lowered.contains("a pull request for branch"), lowered.contains("already exists") {
+            return L10n.text("ui.git_pull_request_already_exists")
+        }
+        // 只认 git 关于分支 / Worktree 已存在的固定说法；「remote origin already exists」这类
+        // 远端配置或其他工具的「already exists」不算，退回通用处理。
+        if lowered.range(of: #"fatal: (?:a branch named '[^'\n]+'|'[^'\n]+') already exists"#, options: .regularExpression) != nil {
+            return L10n.text("ui.git_already_exists")
+        }
+        if lowered.contains("nothing to commit") {
+            return L10n.text("ui.git_nothing_to_commit")
+        }
+        return nil
     }
 }

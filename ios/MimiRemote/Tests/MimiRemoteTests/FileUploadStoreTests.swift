@@ -91,6 +91,23 @@ final class FileUploadStoreTests: XCTestCase {
             pageImageDataURLs: []
         )
     }
+
+    /// 电脑端拒收文件本身时要提示换文件，且不能提供必然再失败的原地重试。
+    func testRejectedFileTellsUserToChooseAnotherFileAndCannotRetry() {
+        let tooLarge = FileUploadStore.uploadFailure(for: AgentAPIError.server(status: 413, message: "文件不能超过 20 MiB"))
+        XCTAssertEqual(tooLarge.message, L10n.text("ui.file_upload_too_large"))
+        XCTAssertFalse(tooLarge.canRetry)
+
+        let unsupported = FileUploadStore.uploadFailure(
+            for: AgentAPIError.server(status: 415, message: "不支持该文件类型：仅支持 PDF、文本和常见源码文件")
+        )
+        XCTAssertEqual(unsupported.message, L10n.text("ui.file_upload_unsupported"))
+        XCTAssertFalse(unsupported.canRetry)
+
+        let offline = FileUploadStore.uploadFailure(for: URLError(.notConnectedToInternet))
+        XCTAssertEqual(offline.message, UserFacingError(URLError(.notConnectedToInternet)).message)
+        XCTAssertTrue(offline.canRetry, "网络失败仍可原地重试")
+    }
 }
 
 private final class HangingFileUploadURLProtocol: URLProtocol {

@@ -6246,6 +6246,159 @@
         }
       }
     },
+    "ui.git_already_exists": {
+      "comment": "A branch or worktree with the requested name already exists.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A branch or worktree with that name already exists. Choose another name or remove the old one first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同名的分支或 Worktree 已存在，请换个名字或先删除旧的。"
+          }
+        }
+      }
+    },
+    "ui.git_pull_request_already_exists": {
+      "comment": "Creating a pull request failed because the branch already has one; the panel then shows the existing pull request.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This branch already has a pull request."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个分支已经有拉取请求。"
+          }
+        }
+      }
+    },
+    "ui.git_branch_in_use": {
+      "comment": "The requested branch is checked out in another worktree.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This branch is already in use by another worktree. Switch that worktree to a different branch, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个分支正在另一个 Worktree 中使用，请先在那个 Worktree 中切换到其他分支，再重试。"
+          }
+        }
+      }
+    },
+    "ui.git_local_changes_block": {
+      "comment": "A Git or worktree action is blocked by uncommitted local changes.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uncommitted changes are in the way. Commit or stash them, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有未提交的改动挡住了这次操作，请先提交或暂存后重试。"
+          }
+        }
+      }
+    },
+    "ui.git_merge_conflict": {
+      "comment": "Git merge or pull stopped on conflicts.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The merge has conflicts. Resolve them on your computer, then continue."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "合并出现冲突，请在电脑上解决冲突后再继续。"
+          }
+        }
+      }
+    },
+    "ui.git_nothing_to_commit": {
+      "comment": "Git reports there is nothing to commit.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "There’s nothing to commit."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有需要提交的改动。"
+          }
+        }
+      }
+    },
+    "ui.git_push_rejected_pull_first": {
+      "comment": "Git push failed because the remote has newer commits (non-fast-forward).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The remote has new commits, so the push was rejected. Pull and merge first, then push again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远端有新的提交，推送被拒绝。请先拉取并合并，再重新推送。"
+          }
+        }
+      }
+    },
+    "ui.git_push_remote_rejected": {
+      "comment": "The remote refused a push, for example a protected branch or a server-side hook. Pulling does not help.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The remote rejected this push, for example because the branch is protected or a server hook declined it. Check the details on your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远端拒绝了这次推送（例如受保护分支或服务器钩子），请在电脑上查看原因。"
+          }
+        }
+      }
+    },
+    "ui.git_tag_already_exists": {
+      "comment": "Pushing or creating a tag failed because a tag with that name already exists.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A tag with that name already exists. Use a different tag name."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同名标签已存在，请换一个标签名。"
+          }
+        }
+      }
+    },
     "ui.model_list_empty_using_built_in_options": {
       "comment": "Status after a manual model list refresh returned no models.",
       "localizations": {
@@ -13033,6 +13186,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "当前电脑已切换，请为当前电脑重新选择文件。"
+          }
+        }
+      }
+    },
+    "ui.file_upload_too_large": {
+      "comment": "Upload rejected by the computer because the file exceeds its size limit; retrying the same file cannot succeed.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file is larger than your computer accepts. Choose a smaller file."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件超过电脑端的上传大小上限，请选择更小的文件。"
+          }
+        }
+      }
+    },
+    "ui.file_upload_unsupported": {
+      "comment": "Upload rejected by the computer because the file type is unsupported or its content is invalid (for example an empty file or a damaged PDF).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your computer can't accept this file: the type isn't supported or the content is invalid. Choose a PDF, text, or source file."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑端无法接收这个文件：类型不支持或内容无效。请换成 PDF、文本或源码文件。"
           }
         }
       }
@@ -42675,6 +42862,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@；%@：%@。请重新生成清理预览。"
+          }
+        }
+      }
+    },
+    "ui.worktree_cleanup_preview_refreshed": {
+      "comment": "Worktree cleanup was rejected because the preview expired or a worktree changed; the app re-evaluated automatically.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The cleanup preview was out of date and has been re-evaluated. Review the list and select again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理预览已过期或 Worktree 状态有变化，已重新评估。请确认列表后重新选择。"
+          }
+        }
+      }
+    },
+    "ui.worktree_cleanup_preview_stale": {
+      "comment": "Worktree cleanup preview expired and the automatic re-evaluation also failed.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The cleanup preview is out of date and could not be refreshed. Close this sheet and generate a new preview."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理预览已失效且未能重新评估，请关闭后重新生成预览。"
           }
         }
       }
