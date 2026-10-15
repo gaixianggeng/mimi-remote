@@ -856,7 +856,9 @@ extension SessionStore {
         }
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else {
-            setStatusMessage(L10n.format("ui.debug_session_value_selected", session.title))
+            // 打开会话不是需要反馈的操作：浮层会在竖屏 iPad 盖住详情页左上角的
+            // 「工作区」返回按钮约 4 秒（#501），只更新状态文案。
+            setStatusMessage(L10n.format("ui.debug_session_value_selected", session.title), presentation: .silent)
             return true
         }
 #endif
