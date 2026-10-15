@@ -294,6 +294,41 @@ final class WorkspaceGitStoreTests: XCTestCase {
         XCTAssertEqual(message(400, "git.corp.example.co refused the connection"), L10n.text("ui.error_rejected"))
     }
 
+    func testExistingPullRequestIsNotReportedAsBranchCollision() async {
+        let probe = WorkspaceGitClientProbe(status: status("unused"))
+        let store = WorkspaceGitStore(currentHostScope: { self.hostScope("a", generation: 1) }, clientFactory: { probe })
+        let existingURL = "https://github.com/owner/repo/pull/7"
+        probe.createPullRequestHandler = { _ in
+            throw AgentAPIError.server(
+                status: 502,
+                message: "a pull request for branch \"feature\" into branch \"main\" already exists:\n\(existingURL)"
+            )
+        }
+        probe.pullRequestStatusHandler = { path in
+            GitPullRequestStatusResponse(path: path, branch: "feature", exists: true, title: "Existing", url: existingURL, isDraft: false)
+        }
+
+        await store.createPullRequest(path: path, title: "New")
+
+        XCTAssertEqual(store.gitActionErrorByPath[path], L10n.text("ui.git_pull_request_already_exists"))
+        XCTAssertEqual(store.pullRequestURLByPath[path], existingURL, "面板应改为显示已有的 PR")
+        XCTAssertNotEqual(
+            UserFacingError.hostOperationMessage(for: AgentAPIError.server(status: 409, message: "label \"bug\" already exists")),
+            L10n.text("ui.git_already_exists"),
+            "其他工具的 already exists 不能说成同名分支或 Worktree"
+        )
+        XCTAssertEqual(
+            UserFacingError.gitOperationMessage(for: "fatal: a branch named 'feature' already exists"),
+            L10n.text("ui.git_already_exists")
+        )
+    }
+
+    func testWorktreeCleanupConflictRequiresAFreshPlan() {
+        XCTAssertTrue(WorktreeCleanupResponse.requiresFreshPlan(AgentAPIError.server(status: 409, message: "清理计划不存在或已过期，请重新 dry-run")))
+        XCTAssertFalse(WorktreeCleanupResponse.requiresFreshPlan(AgentAPIError.server(status: 500, message: "boom")))
+        XCTAssertFalse(WorktreeCleanupResponse.requiresFreshPlan(URLError(.timedOut)))
+    }
+
     func testWorkspaceSessionLoadFailureUsesReadableCopy() {
         XCTAssertEqual(
             workspaceSessionLoadFailureDisposition(AgentAPIError.server(status: 503, message: "upstream unavailable")),
@@ -310,6 +345,8 @@ private final class WorkspaceGitClientProbe: WorkspaceGitAPIClient {
     var summaryPaths: [String] = []
     var quickPublishPaths: [String] = []
     var statusHandler: (@MainActor (String) async throws -> GitStatusResponse)?
+    var createPullRequestHandler: (@MainActor (String) async throws -> GitPullRequestResponse)?
+    var pullRequestStatusHandler: (@MainActor (String) async throws -> GitPullRequestStatusResponse)?
 
     init(status: GitStatusResponse) { self.status = status }
 
@@ -354,10 +391,12 @@ private final class WorkspaceGitClientProbe: WorkspaceGitAPIClient {
     }
 
     func gitCreatePullRequest(path: String, title: String, body: String, draft: Bool) async throws -> GitPullRequestResponse {
+        if let createPullRequestHandler { return try await createPullRequestHandler(path) }
         throw AgentAPIError.invalidResponse
     }
 
     func gitPullRequestStatus(path: String) async throws -> GitPullRequestStatusResponse {
+        if let pullRequestStatusHandler { return try await pullRequestStatusHandler(path) }
         throw AgentAPIError.invalidResponse
     }
 }

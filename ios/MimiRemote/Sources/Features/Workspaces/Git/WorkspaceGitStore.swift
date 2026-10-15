@@ -574,7 +574,18 @@ final class WorkspaceGitStore: ObservableObject {
         } catch {
             guard canApplyResult(lease) else { return }
             gitActionErrorByPath[targetPath] = UserFacingError.hostOperationMessage(for: error)
+            if Self.isExistingPullRequestError(error) {
+                // 已有 PR 时错误原文里的链接不上主界面；刷新状态让面板直接显示那个 PR。
+                await refreshPullRequestStatus(path: targetPath)
+            }
         }
+    }
+
+    static func isExistingPullRequestError(_ error: Error) -> Bool {
+        guard case AgentAPIError.server(_, let message) = error else {
+            return false
+        }
+        return UserFacingError.gitOperationMessage(for: message) == L10n.text("ui.git_pull_request_already_exists")
     }
 
     func refreshPullRequestStatus(path: String) async {
@@ -673,8 +684,13 @@ extension UserFacingError {
         if lowered.range(of: #"(?m)^fatal: '[^'\n]+' is already (?:checked out|used by worktree) at '[^\n]+'$"#, options: .regularExpression) != nil {
             return L10n.text("ui.git_branch_in_use")
         }
-        // 「remote origin already exists」说的是远端配置，不是分支或 Worktree。
-        if lowered.contains("already exists"), !lowered.contains("remote ") {
+        // gh pr create 对已有 PR 的分支报「a pull request for branch … already exists」，与同名分支无关。
+        if lowered.contains("a pull request for branch"), lowered.contains("already exists") {
+            return L10n.text("ui.git_pull_request_already_exists")
+        }
+        // 只认 git 关于分支 / Worktree 已存在的固定说法；「remote origin already exists」这类
+        // 远端配置或其他工具的「already exists」不算，退回通用处理。
+        if lowered.range(of: #"fatal: (?:a branch named '[^'\n]+'|'[^'\n]+') already exists"#, options: .regularExpression) != nil {
             return L10n.text("ui.git_already_exists")
         }
         if lowered.contains("nothing to commit") {

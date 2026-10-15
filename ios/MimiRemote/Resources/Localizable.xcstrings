@@ -6263,6 +6263,23 @@
         }
       }
     },
+    "ui.git_pull_request_already_exists": {
+      "comment": "Creating a pull request failed because the branch already has one; the panel then shows the existing pull request.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This branch already has a pull request."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个分支已经有拉取请求。"
+          }
+        }
+      }
+    },
     "ui.git_branch_in_use": {
       "comment": "The requested branch is checked out in another worktree.",
       "localizations": {
@@ -13169,6 +13186,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "当前电脑已切换，请为当前电脑重新选择文件。"
+          }
+        }
+      }
+    },
+    "ui.file_upload_too_large": {
+      "comment": "Upload rejected by the computer because the file exceeds its size limit; retrying the same file cannot succeed.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file is larger than your computer accepts. Choose a smaller file."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件超过电脑端的上传大小上限，请选择更小的文件。"
+          }
+        }
+      }
+    },
+    "ui.file_upload_unsupported": {
+      "comment": "Upload rejected by the computer because the file type is unsupported or its content is invalid (for example an empty file or a damaged PDF).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your computer can't accept this file: the type isn't supported or the content is invalid. Choose a PDF, text, or source file."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑端无法接收这个文件：类型不支持或内容无效。请换成 PDF、文本或源码文件。"
           }
         }
       }
@@ -42811,6 +42862,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@；%@：%@。请重新生成清理预览。"
+          }
+        }
+      }
+    },
+    "ui.worktree_cleanup_preview_refreshed": {
+      "comment": "Worktree cleanup was rejected because the preview expired or a worktree changed; the app re-evaluated automatically.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The cleanup preview was out of date and has been re-evaluated. Review the list and select again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理预览已过期或 Worktree 状态有变化，已重新评估。请确认列表后重新选择。"
+          }
+        }
+      }
+    },
+    "ui.worktree_cleanup_preview_stale": {
+      "comment": "Worktree cleanup preview expired and the automatic re-evaluation also failed.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The cleanup preview is out of date and could not be refreshed. Close this sheet and generate a new preview."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理预览已失效且未能重新评估，请关闭后重新生成预览。"
           }
         }
       }
