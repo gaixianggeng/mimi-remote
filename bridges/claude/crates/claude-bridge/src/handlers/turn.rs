@@ -194,6 +194,8 @@ enum BeginDriverTurnError {
 pub enum TurnError {
     #[error("invalid params: {0}")]
     InvalidParams(String),
+    #[error("旧 Claude bridge 无法兑现受限执行边界，请改用 mimi-claude-adapter；请求未执行")]
+    SandboxUnsupported,
     #[error("thread `{0}` is not loaded; call thread/start or thread/resume first")]
     ThreadNotLoaded(String),
     #[error("expected_turn_id `{expected}` does not match active turn `{actual}`")]
@@ -228,6 +230,7 @@ impl TurnError {
     pub fn rpc_code(&self) -> i64 {
         match self {
             TurnError::InvalidParams(_)
+            | TurnError::SandboxUnsupported
             | TurnError::TurnIdMismatch { .. }
             | TurnError::ThreadNotLoaded(_)
             | TurnError::NoActiveTurn(_)
@@ -243,6 +246,12 @@ impl TurnError {
 
     pub fn rpc_data(&self) -> Option<serde_json::Value> {
         match self {
+            TurnError::SandboxUnsupported => Some(serde_json::json!({
+                "accepted": false,
+                "reason": "sandbox_policy_unsupported",
+                "retryable": false,
+                "requiredAdapter": "mimi-claude-adapter",
+            })),
             TurnError::ModelRejected { model, message } => Some(serde_json::json!({
                 "accepted": false,
                 "field": "model",
@@ -300,6 +309,18 @@ pub async fn handle_turn_start(
     state: &Arc<ConnectionState>,
     params: p::TurnStartParams,
 ) -> Result<p::TurnStartResponse, TurnError> {
+    // 旧通道只有 permission-mode，不能证明可写根和网络限制。必须在取进程、
+    // 修改 runtime 或写入用户消息前拒绝；缺省也不能继承上一轮的完全访问。
+    let explicit_full_access = params.sandbox_policy.as_ref().is_some_and(|policy| {
+        policy.as_object().is_some_and(|fields| {
+            fields.len() == 1
+                && fields.get("type").and_then(serde_json::Value::as_str)
+                    == Some("dangerFullAccess")
+        })
+    });
+    if !explicit_full_access || params.permission_profile.is_some() {
+        return Err(TurnError::SandboxUnsupported);
+    }
     let start_gate = thread_process_gate(&params.thread_id);
     let _start_guard = start_gate.lock().await;
     let envelope = translate_user_input(&params.input)
@@ -1718,6 +1739,7 @@ mod tests {
             &state,
             p::TurnStartParams {
                 thread_id: "missing".into(),
+                sandbox_policy: Some(serde_json::json!({"type": "dangerFullAccess"})),
                 input: vec![p::UserInput::Text {
                     text: "hi".into(),
                     text_elements: Vec::new(),

@@ -13,14 +13,44 @@ import (
 // 不消耗次数预算，但仍受阻断窗口、请求字节、响应字节和全局下行预算约束。
 // cursor 一次性有效：重放同一 cursor 的重试照常计数，伪造的 cursor 不在表中也照常计数。
 // 续页记录与 pending 历史请求同寿命，过期后按普通请求计数。
+//
+// 会话列表同理：冷启动时全局索引与项目列表按 50 条一页顺序翻页，十余页在 15 秒内
+// 是常态，第 7 页起被拒会让 iPad 弹出限流提示并拖慢首屏。全局发现返回给 iPad 的是
+// gateway 换发的 cursor，但请求在预算检查前已换回上游 cursor，所以这里统一按上游
+// cursor 记账，两条路径都能命中。
 const appServerGatewayHistoryContinuationMax = 512
 
 func gatewayHistoryRequestTracksContinuation(request appServerGatewayPendingHistoryRequest) bool {
-	return request.method == "thread/turns/list" || request.method == "thread/items/list"
+	switch request.method {
+	case "thread/turns/list", "thread/items/list", "thread/list":
+		return true
+	default:
+		return false
+	}
 }
 
 func gatewayHistoryContinuationKey(request appServerGatewayPendingHistoryRequest, cursor string) string {
-	encoded, _ := json.Marshal([]string{gatewayHistoryBudgetSubject(request), request.method, request.itemsView, cursor})
+	encoded, _ := json.Marshal([]string{
+		gatewayHistoryBudgetSubject(request), request.method, request.itemsView, request.continuationQuery, cursor,
+	})
+	return string(encoded)
+}
+
+// gatewayThreadListContinuationQuery 把决定列表内容的参数（排序、归档、来源、搜索词等）
+// 归一成续页键的一部分：换了查询条件再带旧 cursor 只能按普通请求计数。
+// 排除的字段不改变查询本身：cursor 单独入键，cwd 已是预算 subject；limit 允许续页调整页长；
+// useStateDbOnly / refreshHistory 只选数据来源与是否重扫——Claude 首页走索引并要求重扫，
+// 续页改为扫描且不再重扫，同一条页链里本来就会变化。
+func gatewayThreadListContinuationQuery(params map[string]any) string {
+	query := make(map[string]any, len(params))
+	for key, value := range params {
+		switch key {
+		case "cursor", "cwd", "limit", "useStateDbOnly", "refreshHistory":
+			continue
+		}
+		query[key] = value
+	}
+	encoded, _ := json.Marshal(query)
 	return string(encoded)
 }
 

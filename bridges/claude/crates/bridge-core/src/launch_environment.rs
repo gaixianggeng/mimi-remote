@@ -797,18 +797,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn mise_provider_is_project_aware_when_available() {
-        use std::os::unix::fs::PermissionsExt;
-
         let temp = tempfile::tempdir().expect("tempdir");
         let bin = temp.path().join("mise");
-        std::fs::write(
+        crate::test_support::write_executable_script(
             &bin,
             "#!/bin/sh\nprintf '{\"FROM_MISE\":\"%s\"}' \"$PWD\"\n",
-        )
-        .expect("write mise");
-        let mut perms = std::fs::metadata(&bin).expect("metadata").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&bin, perms).expect("chmod");
+        );
 
         let project = temp.path().join("project");
         std::fs::create_dir(&project).expect("project dir");

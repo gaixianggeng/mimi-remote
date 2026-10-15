@@ -1,10 +1,40 @@
 package pushbridge
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestDeviceStoreLoadsLegacyCapabilityAsFalseAndPersistsTrue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "push-devices.json")
+	expires := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339Nano)
+	legacy := `[{"id":"device-a","ticket":"ticket","expires_at":"` + expires +
+		`","registered_at":"` + expires + `","refreshed_at":"` + expires + `"}]`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewDeviceStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, ok := store.Get("device-a")
+	if !ok || device.SupportsHolderWaiting {
+		t.Fatalf("旧落盘设备必须默认不支持 holder waiting：ok=%v device=%+v", ok, device)
+	}
+	device.SupportsHolderWaiting = true
+	if _, err := store.Register(device); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewDeviceStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device, ok := reloaded.Get("device-a"); !ok || !device.SupportsHolderWaiting {
+		t.Fatalf("新能力必须跨重启持久化：ok=%v device=%+v", ok, device)
+	}
+}
 
 // 投递失败回报的是发请求时的 Ticket 快照。期间手机已用新 Ticket 重新注册同一设备时，
 // 旧 Ticket 的失效回报不能把新注册删掉；只有记录仍是那张 Ticket 才删除并落盘。

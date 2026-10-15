@@ -105,6 +105,8 @@ struct CodexAppServerConnectionAttempt {
 struct CodexAppServerResolvedServerRequests {
     var approvalSessionIDs: [SessionID] = []
     var userInputSessionIDs: [SessionID] = []
+    var approvalRequests: [CodexAppServerServerRequest] = []
+    var userInputRequests: [CodexAppServerServerRequest] = []
 }
 
 struct CodexMimiTaskCallIdentity: Hashable {
@@ -207,6 +209,8 @@ actor CodexAppServerSessionRuntime {
     var mimiTaskExpectedDeliveries: [SessionID: CodexMimiTaskExpectedDelivery] = [:]
     var projector = CodexAppServerEventProjector()
     var contextsBySessionID: [SessionID: CodexAppServerSessionContext] = [:]
+    /// 按「连接 | 列表范围」合并进行中的授权恢复，值为该次翻到的会话（#718）。
+    var threadReauthorizationTasks: [String: Task<Set<SessionID>, Never>] = [:]
     // app-server 只向「在当前 gateway 连接上 resume/start 过」的 thread 推送 turn 事件；记录本连接已
     // 经绑定的 thread，断线重连后这个集合随新连接清空，确保再次发送时会先补一次 thread/resume。
     var threadsResumedOnConnection: Set<SessionID> = []
@@ -226,6 +230,9 @@ actor CodexAppServerSessionRuntime {
     var eventMailboxesBySessionID: [
         SessionID: [UUID: CodexAppServerEventMailbox]
     ] = [:]
+    // 列表级实时更新（#683）：没有邮箱的会话收到权威快照（状态、持有方、标题）时交给它，
+    // 而不是只缓冲到被选中。由 AppServerRuntimeBundle 在建连时挂上，指向 SessionStore。
+    var sessionIndexObserver: (@Sendable (AgentSession) -> Void)?
     var pendingApprovalRequestsByID: [String: CodexAppServerServerRequest] = [:]
     var pendingUserInputRequestsByID: [String: CodexAppServerServerRequest] = [:]
     // notification 与 reverse server request 由两条 pump 投递。resolved/terminal 可能先落到 actor，
@@ -417,6 +424,10 @@ actor CodexAppServerSessionRuntime {
                 await self.shutdownForHostSwitch()
             }
         }
+    }
+
+    func setSessionIndexObserver(_ observer: (@Sendable (AgentSession) -> Void)?) {
+        sessionIndexObserver = observer
     }
 
     /// 主机切换结束或候选验证失败时显式释放连接和 pump。
@@ -1703,7 +1714,9 @@ actor CodexAppServerSessionRuntime {
                     "entrypoint": owner.entrypoint.map { .string($0) } ?? .null,
                     "kind": owner.kind.map { .string($0) } ?? .null,
                     "status": owner.status.map { .string($0) } ?? .null,
-                    "pid": owner.pid.map { .int(Int64($0)) } ?? .null
+                    "pid": owner.pid.map { .int(Int64($0)) } ?? .null,
+                    "statusUpdatedAt": owner.statusUpdatedAt.map { .int(Int64($0.timeIntervalSince1970 * 1_000)) } ?? .null,
+                    "waitingKind": owner.waitingKind.map { .string($0.rawValue) } ?? .null
                 ]) } ?? .null
             ]
         }
@@ -3356,6 +3369,17 @@ actor CodexAppServerSessionRuntime {
         do {
             return try await firstConnection.send(request, timeout: timeout)
         } catch {
+            if let threadID = Self.unauthorizedThreadID(in: request, error: error),
+               await reauthorizeThread(threadID, on: firstConnection) {
+                // 授权在翻列表所用的当前连接上生效，重试也走当前连接；仍失败按常规错误处理（#718）。
+                let current = try await ensureConnection()
+                do {
+                    return try await current.send(request, timeout: timeout)
+                } catch {
+                    await retireCurrentConnectionAfterRecoverableError(current, error: error)
+                    throw error
+                }
+            }
             if await recoverConnectionAfterStaleInitialization(firstConnection, error: error) {
                 let secondConnection = try await ensureConnection()
                 do {
@@ -3595,11 +3619,40 @@ actor CodexAppServerSessionRuntime {
         if notification.method == "serverRequest/resolved" {
             // resolved 通知本身不区分 approval 和 requestUserInput/MCP form。必须根据本地挂起表
             // 投影对应的 resolved 事件，否则 MCP 表单已回答后补充信息卡仍会留在 UI。
-            for sessionID in resolved.approvalSessionIDs {
-                emitApprovalResolved(sessionID: sessionID)
+            for request in resolved.approvalRequests {
+                if let sessionID = approvalSessionID(for: request) {
+                    let didResolve = emitApprovalResolved(
+                        sessionID: sessionID,
+                        resolvedApprovalID: approvalID(for: request),
+                        preservingStatus: interactionPreservesBaseStatus(request)
+                    )
+                    if didResolve,
+                       let remaining = remainingPendingApprovalRequest(
+                           sessionID: sessionID,
+                           turnID: approvalTurnID(for: request)
+                       ),
+                       let event = projector.project(remaining) {
+                        emitPendingInteraction(event, request: remaining)
+                    }
+                }
             }
-            for sessionID in resolved.userInputSessionIDs {
-                emitUserInputResolved(sessionID: sessionID, skipped: false)
+            for request in resolved.userInputRequests {
+                if let sessionID = approvalSessionID(for: request) {
+                    let didResolve = emitUserInputResolved(
+                        sessionID: sessionID,
+                        skipped: false,
+                        resolvedRequestID: userInputRequestID(for: request),
+                        preservingStatus: interactionPreservesBaseStatus(request)
+                    )
+                    if didResolve,
+                       let remaining = remainingPendingUserInputRequest(
+                           sessionID: sessionID,
+                           turnID: approvalTurnID(for: request)
+                       ),
+                       let event = projector.project(remaining) {
+                        emitPendingInteraction(event, request: remaining)
+                    }
+                }
             }
             return
         }
@@ -3708,7 +3761,7 @@ actor CodexAppServerSessionRuntime {
         if isUserInputServerRequest(request) {
             guard let event = projector.project(request) else { return }
             rememberPendingUserInputRequest(request)
-            emit(event)
+            emitPendingInteraction(event, request: request)
             return
         }
         if isStaleReplayedApproval(request) {
@@ -3718,7 +3771,7 @@ actor CodexAppServerSessionRuntime {
             return
         }
         rememberPendingApprovalRequest(request)
-        emit(event)
+        emitPendingInteraction(event, request: request)
     }
 
     /// Re-deliver the server requests a reconnect found still waiting.
@@ -3752,7 +3805,7 @@ actor CodexAppServerSessionRuntime {
             if isUserInputServerRequest(request) {
                 guard let event = projector.project(request) else { continue }
                 rememberPendingUserInputRequest(request)
-                emit(event)
+                emitPendingInteraction(event, request: request)
                 continue
             }
             if isStaleReplayedApproval(request) {
@@ -3762,7 +3815,7 @@ actor CodexAppServerSessionRuntime {
                 continue
             }
             rememberPendingApprovalRequest(request)
-            emit(event)
+            emitPendingInteraction(event, request: request)
         }
     }
 

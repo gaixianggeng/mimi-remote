@@ -969,6 +969,8 @@ struct AccountTokenUsageCard: View {
             activityBody(tokens: tokens, gridHeight: gridHeight)
             activityCaptionArea(tokens: tokens)
         }
+        // 先声明为容器，标识才只属于这一列；否则会覆盖点格的 settings.tokenActivity.grid（#678）。
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.tokenUsage.activity")
     }
 

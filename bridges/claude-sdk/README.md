@@ -14,8 +14,8 @@
 
 - **只读（#656）**：`initialize`、`thread/list`、`thread/read`、`thread/loaded/list`、`thread/turns/list`、`thread/items/list`。
 - **对话（#657）**：`thread/start`、`thread/resume`、`turn/start`、`turn/steer`、`turn/interrupt`。
-  - 每个会话一个常驻的 SDK `query()`（流式输入），使用 Claude Code 自带的系统提示词和全部设置来源，与 CLI 一致。
-  - 模型、权限模式、思考强度在 turn 之间通过 SDK 控制接口切换；只有进出完全访问时重启进程。
+  - 每个会话一个常驻的 SDK `query()`（流式输入），使用 Claude Code 自带的系统提示词。完全访问沿用 CLI 的设置来源；受限档位按下方执行边界隔离设置。
+  - 模型、权限模式、思考强度在 turn 之间通过 SDK 控制接口切换；执行边界或完全访问状态变化时重启进程。
   - 审批（`canUseTool`）映射为 `item/commandExecution/requestApproval`、`item/fileChange/requestApproval`；`AskUserQuestion` 映射为 `item/tool/requestUserInput`。请求发给订阅该会话的所有连接，先答复者生效，其余收到 `serverRequest/resolved`；重连时由 `serverRequest/replay` 补发未答复的请求。
   - 引导以人工输入的 `now` 优先级并入当前 turn。turn 要等名下所有消息（含引导）都被 Claude 的结果吸收才收尾；输出与结果按 `user_message_uuid` 归属，CLI 队列里还有未完成的消息时拒绝新的 `turn/start`。
   - 已知差异：引导消息在 transcript 里是普通的用户记录，重新加载历史时显示为单独一轮，实时显示时在同一轮里。
@@ -23,14 +23,15 @@
   - 占用登记（`<配置目录>/sessions/<pid>.json`，Claude Code 为每个活进程写的文件）是唯一没有公开接口的依赖，只读。自己起的进程按 pid 排除；拿到 pid 之前，同一会话新出现的登记先不算别处，避免把自己当成别人。
   - 别处持有时会话只读：`thread/list`、`thread/resume` 带 `canAcceptDirectInput: false` 与 `claudeOwner` 摘要，`turn/start` 返回 `owned_elsewhere`。
   - **驱动中让出**：监听登记目录（目录事件 + 2 秒轮询兜底）。适配器握着进程时出现别的持有方（例如终端执行了 `claude --resume`），立即给自己的 CLI 发 SIGTERM，进行中的 turn 记为中断，不再写 transcript。实测终端进程启动后约 0.5 秒让出。
-  - 持有方出现、退出或在空闲与执行之间切换时，向订阅者推送 `thread/status/changed`，附带与 Thread 同名的 `canAcceptDirectInput`、`claudeOwner`，客户端不用重新读取就能切换只读状态。
+  - 持有方出现、退出或在空闲与执行之间切换时推送 `thread/status/changed`，附带与 Thread 同名的 `canAcceptDirectInput`、`claudeOwner`（含 `statusUpdatedAt`）和会话最后活动时间 `updatedAt`，客户端不用重新读取就能切换只读状态、刷新列表时间与未读水位。推送面向**全部已附着的连接**，不限该会话的订阅者：列表页不订阅任何会话，终端里的会话开始 / 结束处理也要能推到列表（#683）。常驻模式一启动就监听占用登记，不等第一个订阅。
+  - 会话的 `status` 在 `thread/list`、`thread/read`、`thread/resume` 与 `thread/status/changed` 里同源：本适配器有进行中的 turn，或别处持有方正在执行（`busy` / `shell`）→ `active`；本适配器有常驻进程，或持有方空闲 → `idle`；都没有 → `notLoaded`。历史里的最后一轮只在本适配器自己有进行中的 turn 时标为进行中；别处持有方执行时不合成进行中的 turn，避免客户端把它记成自己的活跃 turn、错过空闲推送后一直显示处理中。
   - **接管**：规则沿用旧 bridge（#451）——只结束全部明确空闲、且进程启动时间与登记 `startedAt` 吻合的持有方；先 SIGINT，5 秒后重查状态再 SIGTERM；持有方退出后若有新进程认领同一会话，报 `holder_respawned` 且不再发信号。失败以 `-32602` 返回 `{accepted, reason, claudeOwner, retryable}`。
   - CLI 自身行为：恢复一个生成到一半被结束的会话时，CLI 会补一条 `No response requested.`，与被中断的那条回复成为兄弟节点。历史按 CLI 继续的支线显示，与 `claude --resume` 一致。
 - **其余能力（#659）**：`model/list`、`account/rateLimits/read`、`thread/name/set`，见下面的对照表。
 - **切换准备（#660）**：
   - Claude Code 最低 2.1.294（`src/version.ts`），在 `--capabilities` 的 `claudeCode.minimumVersion` 里声明，供 agentd 预检提示；起 Claude 进程前再检查一次，未安装、版本无法确认或过旧时 `turn/start` 以 `-32603` 返回 `claude_missing`、`claude_version_unknown` 或 `claude_unsupported`，附升级提示。
   - 首次常驻启动时迁移旧 bridge 里 Mimi 显示的名称：写成 custom-title（与 CLI `/rename` 相同），只补 Claude 侧没有标题或只有 AI 自动标题的会话，用户手动改过的保留；被别的进程占用的会话下次启动再补，全部完成后在覆盖层记下；旧索引暂时读不了或格式不对时（与文件不存在不同）不记完成，归档标记与名称都在下次启动重试。
-  - Mac App 与 Windows 安装包随附适配器（`mimi-claude-adapter`），agentd 默认使用它；配置 `claude.legacy_bridge: true` 或环境变量 `AGENTD_CLAUDE_LEGACY_BRIDGE=1` 切回旧 Rust bridge，保留一个版本周期。Linux 与 Homebrew 发布包不随附适配器，继续使用单独安装的旧 bridge。
+  - Mac App 与 Windows 安装包随附适配器（`mimi-claude-adapter`），agentd 默认使用它；配置 `claude.legacy_bridge: true` 或环境变量 `AGENTD_CLAUDE_LEGACY_BRIDGE=1` 切回旧 Rust bridge，保留一个版本周期。Linux 与 Homebrew 发布包不随附适配器，继续使用单独安装的旧 bridge；旧通道从 #488 起明确拒绝受限轮次，详见 [旧通道执行边界](../claude/README.md#执行边界488)。
 
 ## 与旧 bridge 的逐方法对照
 
@@ -86,6 +87,24 @@ agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置�
 - `--parity-repo <仓库目录> [--parity-limit N]` 额外只读对照该仓库最近 N 个已有会话（默认 5 个）。完整历史与 iPhone 共用网关的下行预算，被限流时会等待重试。
 - 运行期间测试会话的回合结束、审批请求会照常触发手机推送；沙盒清理后点开推送找不到会话。
 - 报告写到临时目录（`--report` 指定路径），有失败项时退出码为 1。
+
+## 受限执行边界（#488）
+
+`workspaceWrite` 把 `writableRoots` 映射为 Bash 沙箱可写根。根必须存在且包含 `cwd`，否则拒绝执行。`readOnly` 在 Bash 沙箱中拒绝所有文件写入，并在 `PreToolUse` 拒绝原生文件编辑。文件工具逐次解析真实路径，拒绝根外路径、指向根外的软链接（含悬空链接）与无法确认全部位置的硬链接。
+
+`networkAccess=false` 同时禁止 Bash 出网、WebFetch 和 WebSearch。Bash 不允许脱离沙箱重试；沙箱不可用时 CLI 失败退出。原生 Windows 不支持 Bash 沙箱，因此受限档位禁用 shell，保留带路径检查的文件工具。未核实边界的 MCP、插件与子代理工具会被拒绝。审批只允许本次调用，不能通过权限建议扩大可写目录或网络范围。
+
+受限子进程不加载 user / project / local 设置，不启动本地 MCP；这些设置内的 hook、额外目录、allow rule 与 CLAUDE.md 不会自动加载。适配器不修改这些文件。完全访问的行为保持不变。CLI 自身的登录、模型请求、transcript 和会话状态写入不属于工具沙箱；`networkAccess=false` 指工具出网，不是切断模型 API。
+
+工作区模式仍使用 Claude 自带的临时目录。`excludeTmpdirEnv=true` 或 `excludeSlashTmp=true` 无法等价兑现，直接拒绝。历史环境变量 `CLAUDE_BRIDGE_SANDBOX_POLICY=guarded|inherit` 不会放宽 TS 适配器的边界；两种取值使用相同限制。
+
+原生验收固定 Claude Code **2.1.294**、SDK **0.3.296**。测试使用隔离配置和本机脚本化模型端点，真实执行 CLI 工具，不消耗模型额度。以下命令从本目录运行：
+
+```bash
+MIMI_CLAUDE_POLICY_TEST_BIN="$(command -v claude)" bun test test/sandboxPolicy.native.test.ts
+```
+
+验收包含两种环境变量取值下的工作区 / 只读模式、内外写入、软链接外写、网络拒绝，以及本机配置试图放宽边界的情况。普通 `bun test` 跳过此项；macOS 已实测，Linux 与原生 Windows 的运行态验收分别记录，不能用 macOS 结果替代。
 
 ## 在开发机上试用
 

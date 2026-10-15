@@ -47,6 +47,9 @@ enum MimiRemoteMacMain {
 struct MimiRemoteMacApp: App {
     @State private var store: HostStore
     @State private var updates: AppUpdateStore
+    /// 菜单栏 App 没有 Dock 图标，首次打开时如果什么窗口都不出现，用户只会看到右上角
+    /// 多了一个小图标，结论往往是「装了但没装上」（#554）。还没有配置时直接弹出首次设置窗口。
+    private let presentsSetupAtLaunch: Bool
 
     init() {
 #if DEBUG
@@ -57,6 +60,13 @@ struct MimiRemoteMacApp: App {
         let store = HostStore.live()
 #endif
         _store = State(initialValue: store)
+        // 单测以 App 为宿主启动，CI 上没有配置文件，不能因此弹出窗口。
+        let isRunningTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+#if DEBUG
+        presentsSetupAtLaunch = !usesSeedUI && !isRunningTests && !store.hasConfiguration()
+#else
+        presentsSetupAtLaunch = !isRunningTests && !store.hasConfiguration()
+#endif
         let updates = AppUpdateStore()
         _updates = State(initialValue: updates)
 #if DEBUG
@@ -65,7 +75,7 @@ struct MimiRemoteMacApp: App {
         Task { @MainActor in
             await store.bootstrap()
         }
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+        if !isRunningTests {
             Task { await updates.runAutomaticChecks() }
         }
     }
@@ -86,9 +96,10 @@ struct MimiRemoteMacApp: App {
         .menuBarExtraStyle(.window)
 
         Window("Mimi Remote Mac", id: AppWindow.dashboard.rawValue) {
-            DashboardView(store: store)
+            DashboardView(store: store, activatesOnAppear: presentsSetupAtLaunch)
         }
         .defaultSize(width: 560, height: 520)
+        .defaultLaunchBehavior(presentsSetupAtLaunch ? .presented : .automatic)
 
         Window("配对设备", id: AppWindow.pairing.rawValue) {
             PairingView(store: store)

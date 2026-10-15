@@ -775,6 +775,7 @@ final class SessionStore: ObservableObject {
         reloadSessionControlStates()
         reloadSessionReminders()
         reloadQueuedTurns()
+        installSessionIndexObserver()
         self.networkReachabilityStatus = self.networkPathStatusSource.currentStatus
         self.networkPathStatusSource.onStatusChange = { [weak self] update in
             Task { @MainActor in

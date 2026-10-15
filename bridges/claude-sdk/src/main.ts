@@ -19,14 +19,20 @@ const USAGE = `用法：
 // 日志只写 stderr：stdout 在 stdio 模式下是协议通道。agentd 会采集 stderr 并按级别分流。
 const log = (message: string) => logText("info", message);
 
-/** 会话注册表与对话运行时的联动：忙碌的会话不回收，回收时取消订阅。 */
-function wire(app: App): SessionRegistry {
+/**
+ * 会话注册表与对话运行时的联动：忙碌的会话不回收，回收时取消订阅；列表级通知（持有方变化）
+ * 广播给注册表里的全部会话。注册表先于 app 建立，app 通过闭包延迟引用它。
+ */
+function wire(): { registry: SessionRegistry; app: App } {
+  let app: App | undefined;
   const registry = new SessionRegistry({
     idleTtlMs: 600_000,
-    onExpire: (session) => app.manager.unsubscribeSession(session),
+    onExpire: (session) => app?.manager.unsubscribeSession(session),
   });
-  registry.onCreate = (session) => session.setBusyCheck(() => app.manager.isSessionBusy(session));
-  return registry;
+  app = createApp({ log, broadcast: (frame, subscribers) => registry.publishAll(frame, subscribers) });
+  const created = app;
+  registry.onCreate = (session) => session.setBusyCheck(() => created.manager.isSessionBusy(session));
+  return { registry, app: created };
 }
 
 function connectionDeps(app: App, registry: SessionRegistry) {
@@ -41,9 +47,10 @@ function connectionDeps(app: App, registry: SessionRegistry) {
 }
 
 async function serve(target: ListenTarget): Promise<void> {
-  const app = createApp({ log });
-  const registry = wire(app);
+  const { registry, app } = wire();
   registry.startReaper();
+  // 列表页不订阅会话；要让终端里的会话开始 / 结束处理推到列表，登记监听必须从一开始就在。
+  app.manager.startOwnershipWatcher();
   // 常驻模式下预热模型目录，让首个 model/list 命中缓存，而不是等 CLI 冷启动。
   app.models.warm();
   const removeSocket = () => (target.kind === "unix" ? rm(target.path, { force: true }) : Promise.resolve());
@@ -72,8 +79,9 @@ async function serve(target: ListenTarget): Promise<void> {
 }
 
 async function serveStdio(): Promise<void> {
-  const app = createApp({ log });
-  await serveConnection(process.stdin, process.stdout, connectionDeps(app, wire(app)));
+  const { registry, app } = wire();
+  app.manager.startOwnershipWatcher();
+  await serveConnection(process.stdin, process.stdout, connectionDeps(app, registry));
   await app.manager.closeAll();
 }
 

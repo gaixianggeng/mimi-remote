@@ -165,7 +165,7 @@ struct VoiceMicButton: View {
             // 空闲态和其它工具按钮保持中性；录音、准备和转写才使用主题紫表达活动状态。
             .foregroundStyle(
                 state.isActive
-                    ? tokens.primaryAction
+                    ? tokens.accentText
                     : (usesPhoneStyle ? tokens.conversationPrimaryText : tokens.primaryText)
             )
             .frame(width: 44, height: 44)

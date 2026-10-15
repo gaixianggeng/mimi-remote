@@ -71,7 +71,7 @@ final class PairingLinkTests: XCTestCase {
 
     func testQRCodeScannerPermissionFailuresOfferSettingsAndManualRecovery() {
         for failure in [QRCodeScannerFailure.permissionDenied, .permissionRestricted] {
-            XCTAssertEqual(failure.recoveryActions, [.openSettings, .manualConnection])
+            XCTAssertEqual(failure.recoveryActions, [.openSettings, .pasteLink, .manualConnection])
         }
     }
 
@@ -82,6 +82,8 @@ final class PairingLinkTests: XCTestCase {
         ]
 
         for failure in failures {
+            // 没有相机时先给配对链接：Mac App 不显示地址和访问码，手动输入排在最后（#554）。
+            XCTAssertEqual(failure.recoveryActions.first, .pasteLink)
             XCTAssertTrue(failure.recoveryActions.contains(.manualConnection))
             XCTAssertFalse(failure.recoveryActions.contains(.openSettings))
         }
@@ -91,7 +93,7 @@ final class PairingLinkTests: XCTestCase {
         let failure = QRCodeScannerFailure.rejectedCode("二维码已过期")
 
         XCTAssertEqual(failure.message, "二维码已过期")
-        XCTAssertEqual(failure.recoveryActions, [.retryScanning, .manualConnection])
+        XCTAssertEqual(failure.recoveryActions, [.retryScanning, .pasteLink, .manualConnection])
         XCTAssertEqual(
             QRCodeScannerSubmissionResult.accepted("已添加并切换到这台 Mac"),
             .accepted("已添加并切换到这台 Mac")

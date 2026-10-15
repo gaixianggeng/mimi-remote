@@ -5,7 +5,7 @@ import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import { RpcError } from "../rpc/frames.ts";
 import type { Catalog, HistoryStore, SessionRecord } from "../claude/catalog.ts";
 import { decodeCursor, encodeCursor, readDirection, readLimit, type Direction } from "../util/cursor.ts";
-import { ownerSummary, type SessionHolder } from "../runtime/holders.ts";
+import { isHolderWorking, liveThreadStatus, ownerSummary, type SessionHolder } from "../runtime/holders.ts";
 import { USER_AGENT } from "../version.ts";
 import { logger } from "../util/logging.ts";
 
@@ -87,21 +87,28 @@ function compare(a: [number, string], b: [number, string]): number {
 export interface LiveSource {
   holders(): Promise<Map<string, SessionHolder>>;
   activeTurnId(threadId: string): string | undefined;
+  hasLiveProcess(threadId: string): boolean;
   loadedThreadIds(): string[];
 }
 
 export function createThreadHandlers(catalog: Catalog, history: HistoryStore, liveSource?: LiveSource) {
-  const liveStates = async () => {
-    const holders = liveSource ? await liveSource.holders() : new Map<string, SessionHolder>();
-    return (threadId: string): LiveState => {
-      if (!liveSource) return { canAcceptDirectInput: false };
-      const holder = holders.get(threadId);
-      return {
-        canAcceptDirectInput: !holder,
-        ...(liveSource.activeTurnId(threadId) ? { status: { type: "active", activeFlags: [] } } : {}),
-        ...(holder ? { claudeOwner: ownerSummary(holder) } : {}),
-      };
+  // 持有方正在执行时也报 active：列表里它是"进行中"，不是历史；持有方空闲报 idle。
+  const liveStateOf = (threadId: string, holder: SessionHolder | undefined): LiveState => {
+    if (!liveSource) return { canAcceptDirectInput: false };
+    return {
+      canAcceptDirectInput: !holder,
+      status: liveThreadStatus({
+        ownTurnActive: liveSource.activeTurnId(threadId) !== undefined,
+        ownProcessLive: liveSource.hasLiveProcess(threadId),
+        holder,
+      }),
+      ...(holder ? { claudeOwner: ownerSummary(holder) } : {}),
     };
+  };
+  const readHolders = async () => (liveSource ? await liveSource.holders() : new Map<string, SessionHolder>());
+  const liveStates = async () => {
+    const holders = await readHolders();
+    return (threadId: string): LiveState => liveStateOf(threadId, holders.get(threadId));
   };
   return {
     async list(raw: unknown): Promise<ThreadListResponse> {
@@ -153,9 +160,14 @@ export function createThreadHandlers(catalog: Catalog, history: HistoryStore, li
       if (typeof threadId !== "string" || !threadId) throw RpcError.invalidParams("thread/read.threadId 不能为空");
       const record = await catalog.get(threadId);
       if (!record) throw RpcError.invalidParams(`找不到 Claude 会话 ${threadId}`);
+      const holder = (await readHolders()).get(threadId);
+      // 只有本适配器自己在跑的 turn 才把最后一轮标成进行中。别处持有方执行时不合成进行中的 turn：
+      // 客户端会把它记成自己的活跃 turn，持有方的空闲 / 退出推送一旦错过（断线超过会话保留期），
+      // 列表快照又不带 turns，就会一直显示「处理中」。电脑端在跑由 status 与 claudeOwner 表达。
       const running = liveSource?.activeTurnId(threadId) !== undefined;
-      const turns = params.includeTurns === true ? await history.turns(threadId, running) : [];
-      return { thread: toThread(record, turns, (await liveStates())(threadId)) };
+      const holderActive = !running && isHolderWorking(holder);
+      const turns = params.includeTurns === true ? await history.turns(threadId, running, holderActive) : [];
+      return { thread: toThread(record, turns, liveStateOf(threadId, holder)) };
     },
 
     loaded(): ThreadLoadedListResponse {

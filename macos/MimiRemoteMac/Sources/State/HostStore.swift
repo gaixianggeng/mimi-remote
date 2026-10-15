@@ -158,6 +158,9 @@ final class HostStore {
         )
     }
 
+    /// 同步判断是否已完成首次设置；App 启动时据此决定是否直接弹出设置窗口（#554）。
+    func hasConfiguration() -> Bool { agent.configExists() }
+
     func bootstrap() async {
         guard !didBootstrap else { return }
         didBootstrap = true

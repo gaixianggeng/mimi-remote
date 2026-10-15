@@ -191,7 +191,7 @@ struct NewSessionSheet: View {
 
                     Image(systemName: "checkmark.circle.fill")
                         .font(themeStore.uiFont(size: 20, weight: .semibold))
-                        .foregroundStyle(tokens.primaryAction)
+                        .foregroundStyle(tokens.accentText)
                 }
                 .padding(.horizontal, 14)
                 .frame(maxWidth: .infinity, minHeight: 64)
@@ -230,7 +230,7 @@ struct NewSessionSheet: View {
         HStack(spacing: 12) {
             Image(systemName: "folder.fill")
                 .font(themeStore.uiFont(size: 17, weight: .semibold))
-                .foregroundStyle(tokens.primaryAction)
+                .foregroundStyle(tokens.accentText)
                 .frame(width: 38, height: 38)
                 .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
 

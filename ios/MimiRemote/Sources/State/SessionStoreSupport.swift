@@ -851,6 +851,7 @@ struct SessionRuntimeNotification: Equatable {
         case approval
         case completed
         case failed
+        case interrupted
     }
 
     let id: String
@@ -966,10 +967,11 @@ struct SessionOwnershipNotice: Equatable {
     var failureMessage: String?
 
     var title: String {
-        L10n.text("ui.session_owned_elsewhere_title")
+        owner.waitingReason?.title ?? L10n.text("ui.session_owned_elsewhere_title")
     }
 
     var message: String {
+        if let reason = owner.waitingReason { return reason.message }
         if let failureMessage { return failureMessage }
         if owner.isBusy { return L10n.text("ui.take_over_claude_wait_until_idle") }
         if owner.status != "idle" { return L10n.text("ui.take_over_claude_state_unknown") }
@@ -998,6 +1000,15 @@ struct HistorySavingsNotice: Equatable {
     let sessionID: SessionID
     let kind: Kind
     let message: String
+    /// 加载失败时这条状态条已经说明过的错误原文。会话页据此不再并排显示同一次失败的错误条（#718）。
+    let coveredErrorMessage: String?
+
+    init(sessionID: SessionID, kind: Kind, message: String, coveredErrorMessage: String? = nil) {
+        self.sessionID = sessionID
+        self.kind = kind
+        self.message = message
+        self.coveredErrorMessage = coveredErrorMessage
+    }
 }
 
 struct HistorySavingsNoticeStore {
@@ -1126,7 +1137,7 @@ struct UserNotificationSessionReminderScheduler: SessionReminderScheduling {
         content.title = notification.title
         content.body = notification.body
         content.sound = .default
-        content.userInfo = route.userInfo
+        content.userInfo = notification.notificationUserInfo(route: route)
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         let notificationID = Self.runtimeNotificationID(

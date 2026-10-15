@@ -129,6 +129,38 @@ rm -f "$third_party_marker"
 [[ -f "$third_party_marker" ]] \
   || fail "完整历史模式必须执行第三方许可检查。"
 
+git -C "$repository" switch -q -c tailcat-dependency-change "$base_sha"
+mkdir -p "$repository/experiments/tailcat"
+printf 'module example.invalid/tailcat\n\ngo 1.25\n' > "$repository/experiments/tailcat/go.mod"
+git -C "$repository" add experiments/tailcat/go.mod
+git -C "$repository" commit -q -m tailcat-dependency-change
+tailcat_head="$(git -C "$repository" rev-parse HEAD)"
+tailcat_plan="$(cd "$repository" && bash ./scripts/check-public-repo-safety.sh \
+  --pull-request --base "$base_sha" --head "$tailcat_head" --plan)"
+assert_contains "$tailcat_plan" "third_party=true"
+
+# Tailcat 门禁按编入的包枚举依赖：只改源码 import、不动 go.mod/go.sum 也必须触发。
+git -C "$repository" switch -q -c tailcat-source-change "$base_sha"
+mkdir -p "$repository/experiments/tailcat/cmd/example"
+printf 'package main\n\nfunc main() {}\n' > "$repository/experiments/tailcat/cmd/example/main.go"
+git -C "$repository" add experiments/tailcat/cmd/example/main.go
+git -C "$repository" commit -q -m tailcat-source-change
+tailcat_source_head="$(git -C "$repository" rev-parse HEAD)"
+tailcat_source_plan="$(cd "$repository" && bash ./scripts/check-public-repo-safety.sh \
+  --pull-request --base "$base_sha" --head "$tailcat_source_head" --plan)"
+assert_contains "$tailcat_source_plan" "third_party=true"
+
+# Tailcat 目录下的非 Go 文档不改变依赖图，不应拖慢普通 PR。
+git -C "$repository" switch -q -c tailcat-doc-change "$base_sha"
+mkdir -p "$repository/experiments/tailcat"
+printf 'notes\n' > "$repository/experiments/tailcat/README.md"
+git -C "$repository" add experiments/tailcat/README.md
+git -C "$repository" commit -q -m tailcat-doc-change
+tailcat_doc_head="$(git -C "$repository" rev-parse HEAD)"
+tailcat_doc_plan="$(cd "$repository" && bash ./scripts/check-public-repo-safety.sh \
+  --pull-request --base "$base_sha" --head "$tailcat_doc_head" --plan)"
+assert_contains "$tailcat_doc_plan" "third_party=false"
+
 old_history_repository="$test_root/old-history-repository"
 create_repository "$old_history_repository"
 printf -v old_secret 'github_pat_%040d' 1
@@ -222,6 +254,22 @@ if (cd "$missing_repository" && bash ./scripts/check-public-repo-safety.sh --ful
   >"$test_root/missing-blob.output" 2>&1; then
   fail "Full history must fail closed when a reachable blob is missing."
 fi
+
+# 使用真实许可脚本检查不完整检出，缺目录 / 缺 go.mod 必须在依赖枚举前明确失败。
+notices_repository="$test_root/notices-repository"
+mkdir -p "$notices_repository/scripts"
+cp scripts/check-third-party-notices.sh "$notices_repository/scripts/"
+for missing_tailcat in directory go.mod; do
+  if [[ "$missing_tailcat" == go.mod ]]; then
+    mkdir -p "$notices_repository/experiments/tailcat"
+  fi
+  if (cd "$notices_repository" && bash ./scripts/check-third-party-notices.sh) \
+    >"$test_root/notices-missing.output" 2>&1; then
+    fail "Tailcat ${missing_tailcat} 缺失时许可门禁必须失败。"
+  fi
+  assert_contains "$(<"$test_root/notices-missing.output")" "缺少 Tailcat module 的 go.mod"
+  assert_not_contains "$(<"$test_root/notices-missing.output")" "第三方许可门禁通过。"
+done
 
 rm -rf "$test_root"
 trap - EXIT

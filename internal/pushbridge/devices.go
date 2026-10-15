@@ -26,12 +26,13 @@ const (
 var errTooManyDevices = errors.New("已注册设备数量达到上限")
 
 type Device struct {
-	ID           string    `json:"id"`
-	Ticket       string    `json:"ticket"`
-	Platform     string    `json:"platform,omitempty"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	RegisteredAt time.Time `json:"registered_at"`
-	RefreshedAt  time.Time `json:"refreshed_at"`
+	ID                    string    `json:"id"`
+	Ticket                string    `json:"ticket"`
+	Platform              string    `json:"platform,omitempty"`
+	SupportsHolderWaiting bool      `json:"supports_holder_waiting,omitempty"`
+	ExpiresAt             time.Time `json:"expires_at"`
+	RegisteredAt          time.Time `json:"registered_at"`
+	RefreshedAt           time.Time `json:"refreshed_at"`
 }
 
 // NeedsRefresh 让 App 在 Ticket 剩余不足一周时前台刷新，而不是等它过期后

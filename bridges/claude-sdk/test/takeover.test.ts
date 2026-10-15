@@ -22,6 +22,7 @@ const holder = (pid: number, status: string | null, startedAt: number | null = N
   status,
   version: "2",
   startedAt,
+  statusUpdatedAt: null,
 });
 
 /** 可编排的进程世界：哪些 pid 活着、收到信号后谁退出、退出后谁重新认领。 */
@@ -92,6 +93,7 @@ describe("releaseForeignHolders", () => {
     const cases: Array<[SessionHolder[], TakeoverReason, boolean]> = [
       [[holder(4242, "busy")], "holder_busy", true],
       [[holder(4242, "shell")], "holder_busy", true],
+      [[{ ...holder(4242, "waiting"), waitingFor: "input needed" }], "holder_state_unknown", true],
       [[holder(4242, null)], "holder_state_unknown", true],
       [[holder(4242, "idle", null)], "holder_unverified", false],
       // 多个持有方里只要有一个在忙，连空闲的那个也不动。
@@ -153,8 +155,11 @@ describe("session registry", () => {
     children.push(child);
     return child.pid!;
   };
-  const register = (pid: number, sessionId: string, status: string, startedAt = Date.now()) =>
-    writeFileSync(path.join(sessions, `${pid}.json`), JSON.stringify({ pid, sessionId, status, startedAt, entrypoint: "cli", kind: "interactive" }));
+  const register = (pid: number, sessionId: string, status: string, startedAt = Date.now(), waitingFor?: unknown) =>
+    writeFileSync(
+      path.join(sessions, `${pid}.json`),
+      JSON.stringify({ pid, sessionId, status, startedAt, entrypoint: "cli", kind: "interactive", ...(waitingFor !== undefined ? { waitingFor } : {}) }),
+    );
   const own = (pids: number[] = [], starting: Record<string, number> = {}): OwnProcesses => ({
     pids: new Set(pids),
     startingSince: (sessionId) => starting[sessionId],
@@ -171,18 +176,25 @@ describe("session registry", () => {
     rmSync(sandbox, { recursive: true, force: true });
   });
 
-  test("dead, own and corrupt registrations are not foreign holders; a busy holder wins the summary", async () => {
-    const [idle, busy, mine] = [live(), live(), live()];
+  test("dead, own and corrupt registrations are filtered; waiting, busy and idle holders win in that order", async () => {
+    const [idle, busy, waiting, workingIdle, workingBusy, unknown, resting, mine] = [live(), live(), live(), live(), live(), live(), live(), live()];
     register(idle, "shared", "idle");
     register(busy, "shared", "busy");
+    register(waiting, "shared", "waiting", Date.now(), "sandbox request");
+    register(workingIdle, "working", "idle");
+    register(workingBusy, "working", "shell");
+    register(unknown, "resting", "future");
+    register(resting, "resting", "idle");
     register(mine, "mine", "busy");
     register(999_999_999, "stale", "idle");
     writeFileSync(path.join(sessions, "broken.json"), "{");
 
     const holders = await readHolders(own([mine]));
-    expect([...holders.keys()]).toEqual(["shared"]);
-    expect(holders.get("shared")).toMatchObject({ pid: busy, status: "busy" });
-    expect((await holdersOf("shared", own([mine]))).map((entry) => entry.pid).sort()).toEqual([idle, busy].sort());
+    expect([...holders.keys()].sort()).toEqual(["resting", "shared", "working"]);
+    expect(holders.get("shared")).toMatchObject({ pid: waiting, status: "waiting", waitingFor: "sandbox request" });
+    expect(holders.get("working")).toMatchObject({ pid: workingBusy, status: "shell" });
+    expect(holders.get("resting")).toMatchObject({ pid: resting, status: "idle" });
+    expect((await holdersOf("shared", own([mine]))).map((entry) => entry.pid).sort()).toEqual([idle, busy, waiting].sort());
   });
 
   test("a registration that may be the adapter's own starting process is deferred", async () => {

@@ -23,6 +23,7 @@ enum NotificationContentRewriter {
         case .completed: return "push.message.body.completed.titled"
         case .failed: return "push.message.body.failed.titled"
         case .interrupted: return "push.message.body.interrupted.titled"
+        case .holderWaiting: return "ui.notification_holder_waiting_body"
         case .pending:
             guard notification.kind != .message else { return nil }
             return "push.approval.body.\(notification.kind.rawValue).titled"

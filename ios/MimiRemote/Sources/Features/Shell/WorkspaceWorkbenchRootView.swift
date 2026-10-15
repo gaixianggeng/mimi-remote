@@ -28,6 +28,41 @@ struct WorkspaceRuntimeSelectionState {
     }
 }
 
+/// 工作区浏览选择同理：宽屏会话详情、横竖屏切换布局容器都会替换工作区根视图，
+/// 根视图里的局部选择随之重建；Shell 记住最后浏览的工作区，重建时据此恢复（#501）。
+struct WorkspaceBrowseSelectionState: Equatable {
+    private(set) var workspaceID: String?
+
+    /// 目录暂时为空（重连、加载中）时根视图会把选择清成 nil，这不代表用户离开了该工作区；
+    /// 忽略 nil，目录恢复后仍能回到原来的工作区。
+    mutating func record(_ workspaceID: String?) {
+        guard let workspaceID else { return }
+        self.workspaceID = workspaceID
+    }
+
+    /// 切换电脑后旧 ID 不再属于当前目录；普通导航不调用此方法。
+    mutating func reset() {
+        workspaceID = nil
+    }
+
+    /// 根视图重建或目录变化后的选择顺序：仍在目录中的当前选择 → 身份替换后的同一工作区 →
+    /// Shell 记住的浏览来源 → 活动会话所在工作区 → 列表第一项。
+    static func resolvedWorkspaceID(
+        current: String?,
+        retainedCurrent: String?,
+        remembered: String?,
+        activeProjectID: String?,
+        projectIDs: [String]
+    ) -> String? {
+        for candidate in [current, retainedCurrent, remembered, activeProjectID] {
+            if let candidate, projectIDs.contains(candidate) {
+                return candidate
+            }
+        }
+        return projectIDs.first
+    }
+}
+
 struct WorkspaceWorkbenchRootView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
@@ -37,6 +72,7 @@ struct WorkspaceWorkbenchRootView: View {
     let onManageConnections: () -> Void
     let onOpenSession: (AgentSession) -> Void
     @Binding var selectedRuntime: WorkspaceSessionRuntimeChoice
+    @Binding var browseSelection: WorkspaceBrowseSelectionState
 
     var body: some View {
         WorkspaceRootView(
@@ -47,7 +83,9 @@ struct WorkspaceWorkbenchRootView: View {
             embedsNavigationStack: WorkspaceRootView.shouldEmbedNavigationStack(
                 usesCompactNavigation: usesCompactNavigation
             ),
-            appearanceStore: workspaceAppearanceStore
+            appearanceStore: workspaceAppearanceStore,
+            initialWorkspaceID: browseSelection.workspaceID,
+            onWorkspaceSelectionChange: { browseSelection.record($0) }
         )
     }
 

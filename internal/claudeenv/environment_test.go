@@ -1,11 +1,14 @@
 package claudeenv
 
 import (
+	"os"
+	"sort"
 	"strings"
 	"testing"
 )
 
 func TestBuildUsesDeterministicProxyAliasPrecedence(t *testing.T) {
+	isolateProxyEnvironment(t)
 	t.Setenv("HTTPS_PROXY", "https://inherited-upper.example:8443")
 	t.Setenv("https_proxy", "https://inherited-lower.example:8443")
 	environment := Build(map[string]string{
@@ -43,6 +46,7 @@ func TestBuildUsesDeterministicProxyAliasPrecedence(t *testing.T) {
 }
 
 func TestBuildAllowsConfiguredEmptyProxyToClearInheritedValue(t *testing.T) {
+	isolateProxyEnvironment(t)
 	t.Setenv("HTTPS_PROXY", "http://inherited.example:8080")
 	environment := Build(map[string]string{"https_proxy": ""})
 	values := environmentMap(environment)
@@ -65,6 +69,28 @@ func TestBuildIncludesWindowsProfileAndForcesPermissions(t *testing.T) {
 	}
 	if values["CLAUDE_BRIDGE_BYPASS_PERMISSIONS"] != "false" {
 		t.Fatalf("permission bypass must be forced off: %v", values)
+	}
+}
+
+func TestBuildDoesNotInheritAnthropicEnvironment(t *testing.T) {
+	for _, key := range []string{
+		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+	} {
+		t.Setenv(key, "inherited-"+strings.ToLower(key))
+	}
+	const configured = "https://configured.example"
+	environment := Build(map[string]string{"ANTHROPIC_BASE_URL": configured})
+	for _, item := range environment {
+		key, value, _ := strings.Cut(item, "=")
+		if !strings.HasPrefix(strings.ToUpper(key), "ANTHROPIC_") {
+			continue
+		}
+		if key != "ANTHROPIC_BASE_URL" || value != configured {
+			t.Fatalf("host ANTHROPIC_* must not reach Claude; only claude.env may set them: %q", item)
+		}
+	}
+	if environmentMap(environment)["ANTHROPIC_BASE_URL"] != configured {
+		t.Fatalf("configured ANTHROPIC_* from claude.env should still be forwarded: %v", environment)
 	}
 }
 
@@ -91,6 +117,38 @@ func TestProxyValuesReturnsAliasesForRedaction(t *testing.T) {
 	})
 	if len(values) != 2 || values[0] != "http://alice:hunter2@proxy.example:8080" {
 		t.Fatalf("proxy values should be returned longest-first: %v", values)
+	}
+}
+
+// isolateProxyEnvironment removes every proxy alias inherited from the shell
+// running the tests, so Build only sees proxies the test sets explicitly.
+// Build also falls back to mixed-case spellings such as Http_Proxy, so every
+// process key that case-insensitively matches a proxy group is removed too.
+// t.Setenv registers restoration of the host value before the key is unset.
+func isolateProxyEnvironment(t *testing.T) {
+	t.Helper()
+	keys := map[string]struct{}{}
+	for _, aliases := range proxyAliases {
+		for _, key := range aliases {
+			keys[key] = struct{}{}
+		}
+	}
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		if key != "" && proxyGroup(key) != nil {
+			keys[key] = struct{}{}
+		}
+	}
+	sorted := make([]string, 0, len(keys))
+	for key := range keys {
+		sorted = append(sorted, key)
+	}
+	sort.Strings(sorted)
+	for _, key := range sorted {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
+		}
 	}
 }
 

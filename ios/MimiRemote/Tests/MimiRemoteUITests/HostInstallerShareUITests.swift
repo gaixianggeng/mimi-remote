@@ -33,7 +33,14 @@ final class HostInstallerShareUITests: XCTestCase {
         if !platform.waitForExistence(timeout: 3) {
             // 只有没展开时才点标题；已展开时再点反而会把内容收起。
             let disclosure = element("settings.hostInstaller.disclosure")
-            XCTAssertTrue(disclosure.waitForExistence(timeout: 10), "连接页应提供「首次安装」入口")
+            // 真机上常有已保存的电脑，连接页就不再显示首次安装；同一套安装说明在「添加电脑」页（#678）。
+            let addComputer = element("settings.connection.otherAddMethods")
+            if !disclosure.waitForExistence(timeout: 3), addComputer.waitForExistence(timeout: 3) {
+                scrollTo(addComputer)
+                addComputer.tap()
+                XCTAssertTrue(element("settings.addComputer.page").waitForExistence(timeout: 8))
+            }
+            XCTAssertTrue(disclosure.waitForExistence(timeout: 10), "连接页或「添加电脑」页应提供安装说明入口")
             scrollTo(disclosure)
             disclosure.tap()
             XCTAssertTrue(platform.waitForExistence(timeout: 5), "展开后应出现平台选择器")

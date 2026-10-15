@@ -250,6 +250,9 @@ func TestValidateRestrictsAgentListenToExplicitPrivateScopes(t *testing.T) {
 	}{
 		{name: "loopback", listen: "127.0.0.1:8787"},
 		{name: "tailscale", listen: "100.100.20.30:8787"},
+		{name: "tailscale IPv6", listen: "[fd7a:115c:a1e0::2]:8787"},
+		{name: "IPv6 ULA missing opt in", listen: "[fd00::2]:8787", wantErr: true},
+		{name: "IPv6 ULA next to tailscale missing opt in", listen: "[fd7a:115c:a1e1::2]:8787", wantErr: true},
 		{name: "private LAN opt in", listen: "192.168.1.20:8787", allowLAN: true},
 		{name: "wildcard opt in", listen: "0.0.0.0:8787", allowLAN: true},
 		{name: "private LAN missing opt in", listen: "192.168.1.20:8787", wantErr: true},

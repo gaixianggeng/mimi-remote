@@ -126,6 +126,11 @@ export interface TranslateOptions {
   sessionId: string;
   /** 会话是否仍有进程在写入；决定没有结果的工具调用显示为进行中还是中断。 */
   running: boolean;
+  /**
+   * 别处持有方（终端 / 桌面端）正在执行或停在确认上：最后一轮没有结果的工具调用仍在等，
+   * 显示为进行中而不是中断；但不把这一轮合成为进行中，回合状态只由本适配器的 turn 决定。
+   */
+  holderActive?: boolean;
 }
 
 export function messagesToTurns(messages: readonly HistoryMessage[], options: TranslateOptions): Turn[] {
@@ -210,10 +215,11 @@ export function messagesToTurns(messages: readonly HistoryMessage[], options: Tr
   const lastTurn = turns[turns.length - 1];
   return turns.map((draft) => {
     const running = options.running && draft === lastTurn;
+    const toolsPending = (options.running || options.holderActive === true) && draft === lastTurn;
     const items = draft.items.map((item) => {
       const pending = toolIndex.get(item.id);
       const unfinished = pending && "status" in item && item.status === "inProgress";
-      return unfinished ? unfinishedToolItem(item, running) : item;
+      return unfinished ? unfinishedToolItem(item, toolsPending) : item;
     });
     const status: TurnStatus = running && draft.status === "completed" ? "inProgress" : draft.status;
     const durationMs =

@@ -79,23 +79,26 @@ const HISTORY_CACHE_SIZE = 8;
 
 /** 历史按 transcript 大小缓存：文件没变就不重新解析，分页请求不会反复读大文件。 */
 export class HistoryStore {
-  private readonly cache = new Map<string, { size: number; running: boolean; turns: Turn[] }>();
+  private readonly cache = new Map<string, { size: number; running: boolean; holderActive: boolean; turns: Turn[] }>();
 
   constructor(private readonly deps: Pick<CatalogDeps, "sessions" | "transcripts">) {}
 
-  /** `running`：会话仍有 turn 在运行，最后一轮没有结果的工具调用显示为进行中。 */
-  async turns(sessionId: string, running = false): Promise<Turn[]> {
+  /**
+   * `running`：会话仍有 turn 在运行，最后一轮没有结果的工具调用显示为进行中。
+   * `holderActive`：别处持有方正在执行或等确认，只让这些工具调用保持进行中，不改回合状态。
+   */
+  async turns(sessionId: string, running = false, holderActive = false): Promise<Turn[]> {
     await this.deps.transcripts.refresh();
     const size = this.deps.transcripts.get(sessionId)?.size ?? -1;
     const cached = this.cache.get(sessionId);
-    if (cached && cached.size === size && cached.running === running && size >= 0) {
+    if (cached && cached.size === size && cached.running === running && cached.holderActive === holderActive && size >= 0) {
       this.cache.delete(sessionId);
       this.cache.set(sessionId, cached);
       return cached.turns;
     }
     const messages = await this.deps.sessions.messages(sessionId);
-    const turns = messagesToTurns(messages, { sessionId, running });
-    this.cache.set(sessionId, { size, running, turns });
+    const turns = messagesToTurns(messages, { sessionId, running, holderActive });
+    this.cache.set(sessionId, { size, running, holderActive, turns });
     while (this.cache.size > HISTORY_CACHE_SIZE) {
       const oldest = this.cache.keys().next().value;
       if (oldest === undefined) break;

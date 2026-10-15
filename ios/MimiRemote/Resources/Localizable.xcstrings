@@ -1,6 +1,42 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.question_reply_label": {
+      "comment": "Label on the user's answer to an agent question in the conversation timeline.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Answered"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已回答"
+          }
+        }
+      }
+    },
+    "ui.question_reply_skipped": {
+      "comment": "Shown in place of an answer when the user skipped one of the agent's questions.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skipped"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已跳过"
+          }
+        }
+      }
+    },
     "ui.default_model_inherited_name": {
       "comment": "Model name for the inherited default option, distinct from pinning the same model.",
       "extractionState": "manual",
@@ -973,7 +1009,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "access code"
+            "value": "Access code"
           }
         },
         "zh-Hans": {
@@ -1024,7 +1060,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "access token"
+            "value": "Access token"
           }
         },
         "zh-Hans": {
@@ -1144,7 +1180,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "action"
+            "value": "Action"
           }
         },
         "zh-Hans": {
@@ -1246,7 +1282,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "add"
+            "value": "Add"
           }
         },
         "zh-Hans": {
@@ -1779,13 +1815,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "After selecting an authorized working directory, the most recently opened projects will be retained here."
+            "value": "After you open a project folder on your computer, recent workspaces stay here."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "选择已授权的工作目录后，这里会保留最近打开的项目。"
+            "value": "打开电脑上的项目文件夹后，最近用过的工作区会留在这里。"
           }
         }
       }
@@ -2448,7 +2484,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "always allowed"
+            "value": "Always Allowed"
           }
         },
         "zh-Hans": {
@@ -3465,7 +3501,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "approve once"
+            "value": "Approve Once"
           }
         },
         "zh-Hans": {
@@ -3482,7 +3518,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "approve this request"
+            "value": "Approve this request"
           }
         },
         "zh-Hans": {
@@ -3687,7 +3723,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "automatic"
+            "value": "Automatic"
           }
         },
         "zh-Hans": {
@@ -3755,7 +3791,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "autoscroll"
+            "value": "Autoscroll"
           }
         },
         "zh-Hans": {
@@ -3857,7 +3893,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "base branch"
+            "value": "Base branch"
           }
         },
         "zh-Hans": {
@@ -3891,7 +3927,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "basic connectivity"
+            "value": "Basic connectivity"
           }
         },
         "zh-Hans": {
@@ -3960,7 +3996,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "blocked"
+            "value": "Blocked"
           }
         },
         "zh-Hans": {
@@ -3977,7 +4013,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "blocked"
+            "value": "Blocked"
           }
         },
         "zh-Hans": {
@@ -4062,7 +4098,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "branch"
+            "value": "Branch"
           }
         },
         "zh-Hans": {
@@ -4113,7 +4149,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "budget"
+            "value": "Budget"
           }
         },
         "zh-Hans": {
@@ -4488,7 +4524,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "candidate time"
+            "value": "Candidate time"
           }
         },
         "zh-Hans": {
@@ -4539,7 +4575,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "change"
+            "value": "Change"
           }
         },
         "zh-Hans": {
@@ -4815,7 +4851,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "checkout does not match the registered Git repository"
+            "value": "Checkout does not match the registered Git repository"
           }
         },
         "zh-Hans": {
@@ -4832,7 +4868,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "checkout no longer exists, please use Clear Lost Registration instead."
+            "value": "Checkout no longer exists, please use Clear Lost Registration instead."
           }
         },
         "zh-Hans": {
@@ -5079,6 +5115,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "终端里的 Claude Code"
+          }
+        }
+      }
+    },
+    "ui.running_on_computer": {
+      "comment": "Session list status label: the session is being processed by Claude Code / Claude Desktop on the computer, not by this app.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running on computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑端运行中"
           }
         }
       }
@@ -5517,7 +5570,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "click page"
+            "value": "Click page"
           }
         },
         "zh-Hans": {
@@ -5774,7 +5827,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "code font"
+            "value": "Code font"
           }
         },
         "zh-Hans": {
@@ -6976,7 +7029,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "command"
+            "value": "Command"
           }
         },
         "zh-Hans": {
@@ -6993,7 +7046,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "command execution"
+            "value": "Command execution"
           }
         },
         "zh-Hans": {
@@ -7336,13 +7389,13 @@
               "one": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "The server is rate-limiting requests. Compact history will retry in %lld second."
+                  "value": "Your computer is rate-limiting requests. Compact history will retry in %lld second."
                 }
               },
               "other": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "The server is rate-limiting requests. Compact history will retry in %lld seconds."
+                  "value": "Your computer is rate-limiting requests. Compact history will retry in %lld seconds."
                 }
               }
             }
@@ -7354,7 +7407,7 @@
               "other": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "服务器临时限流，%lld 秒后自动重试缩略历史。"
+                  "value": "电脑端临时限流，%lld 秒后自动重试缩略历史。"
                 }
               }
             }
@@ -7642,7 +7695,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "configured"
+            "value": "Configured"
           }
         },
         "zh-Hans": {
@@ -7898,7 +7951,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "connect"
+            "value": "Connect"
           }
         },
         "zh-Hans": {
@@ -8053,7 +8106,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "connection address"
+            "value": "Connection address"
           }
         },
         "zh-Hans": {
@@ -8303,7 +8356,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "connection status"
+            "value": "Connection status"
           }
         },
         "zh-Hans": {
@@ -8573,7 +8626,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "continue searching"
+            "value": "Continue Searching"
           }
         },
         "zh-Hans": {
@@ -8916,7 +8969,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "create"
+            "value": "Create"
           }
         },
         "zh-Hans": {
@@ -9309,7 +9362,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "current request"
+            "value": "Current request"
           }
         },
         "zh-Hans": {
@@ -9326,7 +9379,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "current session"
+            "value": "Current session"
           }
         },
         "zh-Hans": {
@@ -9481,7 +9534,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "custom goal"
+            "value": "Custom goal"
           }
         },
         "zh-Hans": {
@@ -10479,7 +10532,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "diff not staged"
+            "value": "Diff not staged"
           }
         },
         "zh-Hans": {
@@ -10496,7 +10549,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "diff staged"
+            "value": "Diff staged"
           }
         },
         "zh-Hans": {
@@ -10581,7 +10634,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "direct WebSocket not connected"
+            "value": "Direct WebSocket not connected"
           }
         },
         "zh-Hans": {
@@ -10649,13 +10702,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Directory not yet opened"
+            "value": "No workspaces yet"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "还没有打开的目录"
+            "value": "还没有工作区"
           }
         }
       }
@@ -10700,7 +10753,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "display name"
+            "value": "Display name"
           }
         },
         "zh-Hans": {
@@ -10734,7 +10787,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "docs: Update project documentation"
+            "value": "docs: update project documentation"
           }
         },
         "zh-Hans": {
@@ -11466,7 +11519,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "dynamic tools"
+            "value": "Dynamic tools"
           }
         },
         "zh-Hans": {
@@ -11674,7 +11727,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "ended"
+            "value": "Ended"
           }
         },
         "zh-Hans": {
@@ -11862,7 +11915,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "entrance"
+            "value": "Entrance"
           }
         },
         "zh-Hans": {
@@ -11879,7 +11932,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "entry"
+            "value": "Entry"
           }
         },
         "zh-Hans": {
@@ -11896,7 +11949,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "environment"
+            "value": "Environment"
           }
         },
         "zh-Hans": {
@@ -12135,7 +12188,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "expanded state"
+            "value": "Expanded state"
           }
         },
         "zh-Hans": {
@@ -12308,7 +12361,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "failed"
+            "value": "Failed"
           }
         },
         "zh-Hans": {
@@ -12614,7 +12667,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "failure link"
+            "value": "Failure link"
           }
         },
         "zh-Hans": {
@@ -13333,13 +13386,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "First open a project directory on your Mac and then create a session."
+            "value": "Open a project folder on your computer in Workspace first, then start a session."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "先打开一个 Mac 上的项目目录，再创建会话。"
+            "value": "先在工作区打开电脑上的一个项目文件夹，再新建会话。"
           }
         }
       }
@@ -13401,7 +13454,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "font"
+            "value": "Font"
           }
         },
         "zh-Hans": {
@@ -13418,7 +13471,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "font size"
+            "value": "Font size"
           }
         },
         "zh-Hans": {
@@ -13554,7 +13607,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "free"
+            "value": "Free"
           }
         },
         "zh-Hans": {
@@ -13741,7 +13794,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "generate"
+            "value": "Generate"
           }
         },
         "zh-Hans": {
@@ -13792,7 +13845,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "generated image"
+            "value": "Generated image"
           }
         },
         "zh-Hans": {
@@ -14458,7 +14511,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "high"
+            "value": "High"
           }
         },
         "zh-Hans": {
@@ -14493,7 +14546,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "historical diagnosis"
+            "value": "Historical Diagnosis"
           }
         },
         "zh-Hans": {
@@ -14612,7 +14665,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "history"
+            "value": "History"
           }
         },
         "zh-Hans": {
@@ -15260,7 +15313,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "instructions"
+            "value": "Instructions"
           }
         },
         "zh-Hans": {
@@ -15550,13 +15603,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "It is recommended to scan the Tailscale QR code generated by agentd pair on Mac."
+            "value": "Scanning or pasting a pairing link is usually all you need. On command-line installs, run agentd pair to see the address and access code."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "推荐扫描 Mac 上 agentd pair 生成的 Tailscale 二维码。"
+            "value": "通常扫码或粘贴配对链接就够了。命令行安装的电脑可运行 agentd pair 查看地址和访问码。"
           }
         }
       }
@@ -16051,7 +16104,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "just observe"
+            "value": "Just observe"
           }
         },
         "zh-Hans": {
@@ -16293,7 +16346,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "light color"
+            "value": "Light Color"
           }
         },
         "zh-Hans": {
@@ -16310,7 +16363,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "limit"
+            "value": "Limit"
           }
         },
         "zh-Hans": {
@@ -16327,7 +16380,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "list"
+            "value": "List"
           }
         },
         "zh-Hans": {
@@ -16362,7 +16415,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "list resources"
+            "value": "List resources"
           }
         },
         "zh-Hans": {
@@ -16396,7 +16449,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "listening address"
+            "value": "Listening address"
           }
         },
         "zh-Hans": {
@@ -16982,7 +17035,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "local"
+            "value": "Local"
           }
         },
         "zh-Hans": {
@@ -17118,7 +17171,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "low"
+            "value": "Low"
           }
         },
         "zh-Hans": {
@@ -17314,13 +17367,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Requires macOS 15 or later. Open the DMG, then drag Mimi Remote to Applications."
+            "value": "Requires macOS 15 or later. Open the DMG, drag Mimi Remote Mac to Applications, then open it."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "需要 macOS 15 或更高版本。打开 DMG 后，将 Mimi Remote 拖入“应用程序”。"
+            "value": "需要 macOS 15 或更高版本。打开 DMG，把 Mimi Remote Mac 拖进“应用程序”，再打开它。"
           }
         }
       }
@@ -17554,7 +17607,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "management"
+            "value": "Management"
           }
         },
         "zh-Hans": {
@@ -17622,13 +17675,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Manual connection"
+            "value": "Enter address manually"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "手动连接"
+            "value": "手动输入地址"
           }
         }
       }
@@ -17692,7 +17745,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "mark blocking"
+            "value": "Mark Blocking"
           }
         },
         "zh-Hans": {
@@ -18428,7 +18481,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "model"
+            "value": "Model"
           }
         },
         "zh-Hans": {
@@ -19050,7 +19103,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "new session"
+            "value": "New Session"
           }
         },
         "zh-Hans": {
@@ -19118,7 +19171,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "next turn"
+            "value": "Next turn"
           }
         },
         "zh-Hans": {
@@ -19871,7 +19924,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "normal"
+            "value": "Normal"
           }
         },
         "zh-Hans": {
@@ -20128,7 +20181,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "observe"
+            "value": "Observe"
           }
         },
         "zh-Hans": {
@@ -20179,13 +20232,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Once the directory is open, you can browse projects and create sessions here."
+            "value": "A workspace is a project folder on your computer. Open one to browse it and start sessions."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "打开目录后，可以在这里浏览项目和创建会话。"
+            "value": "工作区就是电脑上的一个项目文件夹。打开一个，就能浏览项目、新建会话。"
           }
         }
       }
@@ -20298,7 +20351,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "open"
+            "value": "Open"
           }
         },
         "zh-Hans": {
@@ -20315,13 +20368,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sessions are loaded by workspace directory. Go to Workspace and open or add a directory first."
+            "value": "A workspace is a project folder on your computer. Sessions are listed by workspace, so open one first."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "会话按工作区目录加载。请先前往工作区打开或加入一个目录。"
+            "value": "工作区就是电脑上的一个项目文件夹。会话按工作区显示，先打开一个。"
           }
         }
       }
@@ -20419,13 +20472,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Open directory"
+            "value": "Open folder"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "打开目录"
+            "value": "打开文件夹"
           }
         }
       }
@@ -20488,13 +20541,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "open path"
+            "value": "Open Folder"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "打开路径"
+            "value": "打开文件夹"
           }
         }
       }
@@ -20642,13 +20695,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Open workspace"
+            "value": "Open folder"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "打开工作区"
+            "value": "打开文件夹"
           }
         }
       }
@@ -20831,7 +20884,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "original source"
+            "value": "Original source"
           }
         },
         "zh-Hans": {
@@ -21036,7 +21089,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "path"
+            "value": "Path"
           }
         },
         "zh-Hans": {
@@ -21088,7 +21141,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "pause"
+            "value": "Pause"
           }
         },
         "zh-Hans": {
@@ -21208,31 +21261,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "permission mode"
+            "value": "Permission mode"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "权限模式"
-          }
-        }
-      }
-    },
-    "ui.permission_status": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "extractionState": "stale",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "permission status"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "权限状态"
           }
         }
       }
@@ -21311,7 +21346,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "personal"
+            "value": "Personal"
           }
         },
         "zh-Hans": {
@@ -21380,7 +21415,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "pictures"
+            "value": "Pictures"
           }
         },
         "zh-Hans": {
@@ -21414,7 +21449,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "pin to top"
+            "value": "Pin to Top"
           }
         },
         "zh-Hans": {
@@ -21482,7 +21517,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "plan"
+            "value": "Plan"
           }
         },
         "zh-Hans": {
@@ -21516,7 +21551,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "planning mode"
+            "value": "Planning mode"
           }
         },
         "zh-Hans": {
@@ -22119,7 +22154,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "press button"
+            "value": "Press button"
           }
         },
         "zh-Hans": {
@@ -22306,7 +22341,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "process update"
+            "value": "Process update"
           }
         },
         "zh-Hans": {
@@ -23990,7 +24025,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "raw output"
+            "value": "Raw Output"
           }
         },
         "zh-Hans": {
@@ -24007,7 +24042,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "re-pair"
+            "value": "Re-pair"
           }
         },
         "zh-Hans": {
@@ -24262,7 +24297,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "reasoning summary"
+            "value": "Reasoning summary"
           }
         },
         "zh-Hans": {
@@ -24332,7 +24367,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "recent output"
+            "value": "Recent output"
           }
         },
         "zh-Hans": {
@@ -24486,7 +24521,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "recheck"
+            "value": "Recheck"
           }
         },
         "zh-Hans": {
@@ -24811,7 +24846,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "refresh status"
+            "value": "Refresh Status"
           }
         },
         "zh-Hans": {
@@ -24983,7 +25018,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "reject"
+            "value": "Reject"
           }
         },
         "zh-Hans": {
@@ -25017,7 +25052,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "relative base branch"
+            "value": "Relative base branch"
           }
         },
         "zh-Hans": {
@@ -25034,7 +25069,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "release branch"
+            "value": "Release branch"
           }
         },
         "zh-Hans": {
@@ -25051,7 +25086,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "reload"
+            "value": "Reload"
           }
         },
         "zh-Hans": {
@@ -25086,7 +25121,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "remaining %@ tok"
+            "value": "Remaining %@ tok"
           }
         },
         "zh-Hans": {
@@ -25103,7 +25138,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "reminder"
+            "value": "Reminder"
           }
         },
         "zh-Hans": {
@@ -26027,7 +26062,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "review goals"
+            "value": "Review goals"
           }
         },
         "zh-Hans": {
@@ -26574,7 +26609,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "runtime"
+            "value": "Runtime"
           }
         },
         "zh-Hans": {
@@ -26693,7 +26728,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "runtime summary"
+            "value": "Runtime summary"
           }
         },
         "zh-Hans": {
@@ -26727,13 +26762,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This runtime is not available on the current host."
+            "value": "Codex isn't available on this computer yet. Install and sign in to Codex on the computer (on a Mac, the ChatGPT desktop app also works), then try again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "当前主机尚未启用此运行时。"
+            "value": "这台电脑上还没有可用的 Codex。请在电脑上安装并登录 Codex（Mac 上也可以用 ChatGPT 桌面版），再回来重试。"
           }
         }
       }
@@ -26744,7 +26779,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "save"
+            "value": "Save"
           }
         },
         "zh-Hans": {
@@ -27104,7 +27139,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "screenshot"
+            "value": "Screenshot"
           }
         },
         "zh-Hans": {
@@ -27385,23 +27420,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "选择 Base"
-          }
-        }
-      }
-    },
-    "ui.select_code_directory_then_computer_shows_qr": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Choose a code directory, then your computer will show a pairing QR code."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择代码目录后，电脑会显示配对二维码。"
           }
         }
       }
@@ -27704,7 +27722,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "send"
+            "value": "Send"
           }
         },
         "zh-Hans": {
@@ -28048,7 +28066,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "serif"
+            "value": "Serif"
           }
         },
         "zh-Hans": {
@@ -28150,7 +28168,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "session"
+            "value": "Session"
           }
         },
         "zh-Hans": {
@@ -28218,7 +28236,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "session error"
+            "value": "Session error"
           }
         },
         "zh-Hans": {
@@ -28321,7 +28339,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "session name"
+            "value": "Session name"
           }
         },
         "zh-Hans": {
@@ -28755,7 +28773,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "settings"
+            "value": "Settings"
           }
         },
         "zh-Hans": {
@@ -29199,7 +29217,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "short window"
+            "value": "Short window"
           }
         },
         "zh-Hans": {
@@ -29216,7 +29234,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "shortcut phrase"
+            "value": "Shortcut phrase"
           }
         },
         "zh-Hans": {
@@ -29576,7 +29594,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "skip"
+            "value": "Skip"
           }
         },
         "zh-Hans": {
@@ -29610,7 +29628,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "slowest link"
+            "value": "Slowest link"
           }
         },
         "zh-Hans": {
@@ -29852,7 +29870,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "start"
+            "value": "Start"
           }
         },
         "zh-Hans": {
@@ -30195,7 +30213,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "status read"
+            "value": "Status read"
           }
         },
         "zh-Hans": {
@@ -30298,7 +30316,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "stop"
+            "value": "Stop"
           }
         },
         "zh-Hans": {
@@ -31033,7 +31051,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "system"
+            "value": "System"
           }
         },
         "zh-Hans": {
@@ -31067,13 +31085,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tailscale address"
+            "value": "Computer address"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tailscale 地址"
+            "value": "电脑的连接地址"
           }
         }
       }
@@ -31220,7 +31238,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "take over"
+            "value": "Take Over"
           }
         },
         "zh-Hans": {
@@ -32036,7 +32054,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "text attachment"
+            "value": "Text attachment"
           }
         },
         "zh-Hans": {
@@ -34000,13 +34018,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The session will run in the selected directory"
+            "value": "The session runs in the selected workspace's folder"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "会话会在所选目录中运行"
+            "value": "会话会在所选工作区的文件夹里运行"
           }
         }
       }
@@ -34068,13 +34086,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Compact history could not be loaded, possibly because the network is unstable or the server is rate-limiting requests."
+            "value": "Compact history could not be loaded, possibly because the network is unstable or your computer is rate-limiting requests."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "缩略历史加载失败，可能是网络不稳或服务器限流。"
+            "value": "缩略历史加载失败，可能是网络不稳或电脑端限流。"
           }
         }
       }
@@ -35391,7 +35409,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "tomorrow"
+            "value": "Tomorrow"
           }
         },
         "zh-Hans": {
@@ -35715,7 +35733,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "turn on"
+            "value": "Turn on"
           }
         },
         "zh-Hans": {
@@ -36158,7 +36176,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "undo hunk"
+            "value": "Undo hunk"
           }
         },
         "zh-Hans": {
@@ -36226,7 +36244,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "unknown"
+            "value": "Unknown"
           }
         },
         "zh-Hans": {
@@ -36260,7 +36278,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "unknown error"
+            "value": "Unknown error"
           }
         },
         "zh-Hans": {
@@ -36328,7 +36346,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "unknown warning"
+            "value": "Unknown warning"
           }
         },
         "zh-Hans": {
@@ -36362,7 +36380,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "unnamed session"
+            "value": "Unnamed session"
           }
         },
         "zh-Hans": {
@@ -36533,7 +36551,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "update plan"
+            "value": "Update plan"
           }
         },
         "zh-Hans": {
@@ -36810,13 +36828,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Use manual connection instead"
+            "value": "Enter address manually"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "改用手动连接"
+            "value": "手动输入地址"
           }
         }
       }
@@ -37869,7 +37887,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@: update%@"
+            "value": "%@: update %@"
           }
         },
         "zh-Hans": {
@@ -38578,7 +38596,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "waiting for input"
+            "value": "Waiting for input"
           }
         },
         "zh-Hans": {
@@ -38731,7 +38749,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "web search"
+            "value": "Web search"
           }
         },
         "zh-Hans": {
@@ -38816,7 +38834,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "weekly window"
+            "value": "Weekly window"
           }
         },
         "zh-Hans": {
@@ -38833,7 +38851,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "will always be allowed"
+            "value": "Will always be allowed"
           }
         },
         "zh-Hans": {
@@ -39054,7 +39072,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "workspace"
+            "value": "Workspace"
           }
         },
         "zh-Hans": {
@@ -41853,57 +41871,6 @@
         }
       }
     },
-    "ui.workspace_group_needs_attention": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Needs Attention"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "需要处理"
-          }
-        }
-      }
-    },
-    "ui.workspace_group_recent": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Recent"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "最近会话"
-          }
-        }
-      }
-    },
-    "ui.workspace_group_running": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Running"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在运行"
-          }
-        }
-      }
-    },
     "ui.workspace_icon": {
       "comment": "Title for choosing a workspace Emoji icon.",
       "localizations": {
@@ -43029,7 +42996,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "writable"
+            "value": "Writable"
           }
         },
         "zh-Hans": {
@@ -43166,13 +43133,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "You can directly paste the absolute path in the development environment; the directory must be within the authorized range (default is user Home)."
+            "value": "You can paste a full path from your computer. By default, only folders inside your home folder can be opened."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "可直接粘贴开发环境中的绝对路径；目录需在已授权范围内（默认是用户 Home）。"
+            "value": "可以直接粘贴电脑上的完整路径；默认只能打开用户主目录（Home）里的文件夹。"
           }
         }
       }
@@ -43424,24 +43391,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "可能已过期"
-          }
-        }
-      }
-    },
-    "ui.experimental_features": {
-      "comment": "Title for the settings destination that explains opt-in experimental capabilities.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Experimental Features"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "实验功能"
           }
         }
       }
@@ -43728,24 +43677,6 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Use this named permission profile" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用此命名权限档案" } }
-      }
-    },
-    "ui.step_value_value": {
-      "comment": "VoiceOver label for a numbered setup step. The first value is the step number and the second is its instruction.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Step %1$@: %2$@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "第 %1$@ 步：%2$@"
-          }
-        }
       }
     },
     "ui.managed_devices_added_detail": {
@@ -44255,8 +44186,176 @@
     "ui.install_on_your_computer": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Install on your computer" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "安装电脑端助手" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Install Mimi Remote on your computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "安装 Mimi Remote 电脑端" } }
+      }
+    },
+    "ui.connect_computer": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connect a computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连接电脑" } }
+      }
+    },
+    "ui.first_connection_intro": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Continue the Codex sessions on your computer from here. Connect once by following these three steps." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "在这里继续电脑上的 Codex 会话。按下面三步连接一次就好。" } }
+      }
+    },
+    "ui.first_connection_step_prepare": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Prepare your computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "在电脑上准备" } }
+      }
+    },
+    "ui.first_connection_step_open_qr": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Open the pairing QR code on your computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "在电脑上打开配对二维码" } }
+      }
+    },
+    "ui.first_connection_step_scan": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scan to connect" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫码连接" } }
+      }
+    },
+    "ui.first_connection_step_accessibility": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Step %1$@: %2$@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "第 %1$@ 步：%2$@" } }
+      }
+    },
+    "ui.first_connection_install_codex": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Install and sign in to Codex" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "安装并登录 Codex" } }
+      }
+    },
+    "ui.first_connection_codex_note": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mimi Remote works through Codex on your computer. Install the Codex CLI and sign in once; on a Mac, the ChatGPT desktop app also works." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi Remote 通过电脑上的 Codex 工作。装好 Codex 命令行版并登录一次；Mac 上用 ChatGPT 桌面版也可以。" } }
+      }
+    },
+    "ui.first_connection_open_qr_detail": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Open Mimi Remote on your computer and choose a code folder when asked; the QR code appears next. Later, click its icon and choose the item with the QR code symbol (menu bar on a Mac, notification area on Windows)." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "在电脑上打开 Mimi Remote，按提示选好代码文件夹，就会显示二维码。以后点它的图标、选「配对设备…」也能打开（Mac 在屏幕右上角菜单栏，Windows 在任务栏右下角）。" } }
+      }
+    },
+    "ui.paste_pairing_link": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Paste pairing link" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "粘贴配对链接" } }
+      }
+    },
+    "ui.first_connection_paste_hint": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Can't scan? Copy the pairing link in the pairing window on your computer, then tap Paste pairing link here." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫不了码？在电脑的配对窗口点「复制配对链接」，再回到这里点「粘贴配对链接」。" } }
+      }
+    },
+    "ui.host_after_install_note_mac": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "You can AirDrop the link to your Mac. After installing, open Mimi Remote Mac and choose a code folder when asked; the pairing QR code appears next." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "可以用隔空投送把链接发到 Mac。装好后打开 Mimi Remote Mac，按提示选好代码文件夹，就会显示配对二维码。" } }
+      }
+    },
+    "ui.host_after_install_note_windows": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "After installing, open Mimi Remote and finish setup; the pairing QR code appears next." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "装好后打开 Mimi Remote，按提示完成设置，就会显示配对二维码。" } }
+      }
+    },
+    "ui.scan_guidance_aim": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Point the camera at the QR code shown by Mimi Remote on your computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "对准电脑上 Mimi Remote 显示的二维码" } }
+      }
+    },
+    "ui.scan_help_title": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Still not scanning?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "一直扫不到？" } }
+      }
+    },
+    "ui.scan_help_not_installed": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No QR code on your computer yet? Install and open Mimi Remote there first, following the steps on the connection page." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "电脑上还没有二维码：先按连接页的步骤在电脑上装好并打开 Mimi Remote。" } }
+      }
+    },
+    "ui.scan_help_expired": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "QR code expired? Refresh it in the pairing window on your computer." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "二维码过期了：在电脑的配对窗口点「刷新二维码」。" } }
+      }
+    },
+    "ui.pairing_link_received": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Pairing link received" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已读取配对链接" } }
+      }
+    },
+    "ui.workspace_definition_open_one": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "A workspace is a project folder on your computer. Open one to see its sessions or start a new one." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "工作区就是电脑上的一个项目文件夹。打开一个，就能看到它的会话，也能新建会话。" } }
+      }
+    },
+    "ui.projects_on_this_computer": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Projects on this computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑上的项目" } }
+      }
+    },
+    "ui.projects_on_this_computer_footnote": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "These are the projects in the code folder chosen during setup on your computer. For anything else, use Open another folder." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这些是电脑端设置时所选代码文件夹里的项目。不在这里的，用「打开其他文件夹…」。" } }
+      }
+    },
+    "ui.open_other_folder": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Open another folder…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "打开其他文件夹…" } }
+      }
+    },
+    "ui.open_this_project_as_workspace": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Opens this project folder as a workspace" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "把这个项目文件夹打开为工作区" } }
+      }
+    },
+    "ui.usage_help": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Help" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用帮助" } }
       }
     },
     "ui.other_computers": {
@@ -44617,6 +44716,142 @@
       "comment": "A bullet point.",
       "isCommentAutoGenerated": true,
       "shouldTranslate": false
+    },
+    "ui.computer_waiting_permission_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for approval on computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑端等你确认"
+          }
+        }
+      }
+    },
+    "ui.computer_waiting_permission_message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Approve or decline the permission request on your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在电脑上处理权限请求。"
+          }
+        }
+      }
+    },
+    "ui.computer_waiting_input_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for input on computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑端等你输入"
+          }
+        }
+      }
+    },
+    "ui.computer_waiting_input_message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Provide the requested input on your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在电脑上补充所需输入。"
+          }
+        }
+      }
+    },
+    "ui.computer_waiting_other_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs your attention on computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑端等你处理"
+          }
+        }
+      }
+    },
+    "ui.computer_waiting_other_message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Respond to the open prompt on your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在电脑上处理打开的对话框。"
+          }
+        }
+      }
+    },
+    "ui.notification_holder_waiting_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code needs your attention"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑端等待你处理"
+          }
+        }
+      }
+    },
+    "ui.notification_holder_waiting_body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code is waiting on your computer. Tap to view."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑端正在等待你处理，点按查看。"
+          }
+        }
+      }
     }
   },
   "version": "1.1"

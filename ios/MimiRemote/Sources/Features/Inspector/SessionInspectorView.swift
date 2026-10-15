@@ -260,6 +260,8 @@ private struct RuntimeActivityPanelView: View {
             return L10n.text("ui.approval")
         case .userInput:
             return L10n.text("ui.supplementary_information")
+        case .questionReply:
+            return L10n.text("ui.question_reply_label")
         case .error:
             return L10n.text("ui.abnormal_operation")
         case .warning:
@@ -287,6 +289,8 @@ private struct RuntimeActivityPanelView: View {
             return "checkmark.seal"
         case .userInput:
             return "questionmark.bubble"
+        case .questionReply:
+            return "arrowshape.turn.up.left"
         case .error:
             return "exclamationmark.triangle"
         case .warning:

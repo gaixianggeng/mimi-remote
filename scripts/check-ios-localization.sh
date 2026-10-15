@@ -1,6 +1,49 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# JSON 不规定重复成员如何处理：Xcode 的 xcstringstool 保留第一份，Python 的
+# json.loads 保留最后一份，两边看到的文案可能不同，而且下面的检查读不到被覆盖的那份。
+# 因此在任何解析之前先拒绝重复 key（任意层级）。用法：--check-duplicates <file>...
+check_duplicate_keys() {
+  python3 - "$@" <<'PY'
+import json
+import sys
+
+failed = False
+for path in sys.argv[1:]:
+    duplicates = []
+
+    def collect(pairs, _duplicates=duplicates):
+        seen = set()
+        for key, _ in pairs:
+            if key in seen:
+                _duplicates.append(key)
+            seen.add(key)
+        return dict(pairs)
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            json.load(handle, object_pairs_hook=collect)
+    except (OSError, ValueError) as error:
+        print(f"Could not read String Catalog {path}: {error}", file=sys.stderr)
+        failed = True
+        continue
+    for key in sorted(set(duplicates)):
+        print(f"String Catalog has a duplicate key (Xcode keeps the first copy): {path}: {key}", file=sys.stderr)
+        failed = True
+sys.exit(1 if failed else 0)
+PY
+}
+
+if [[ "${1:-}" == "--check-duplicates" ]]; then
+  shift
+  [[ $# -gt 0 ]] || { echo "--check-duplicates requires at least one file" >&2; exit 2; }
+  check_duplicate_keys "$@"
+  exit
+fi
+
+check_duplicate_keys ios/MimiRemote/Resources/Localizable.xcstrings
+
 # Reject new visible Chinese literals in Swift. Protocol/error matching is explicitly
 # documented in the allowlist because changing those values would break compatibility.
 python3 - <<'PY'

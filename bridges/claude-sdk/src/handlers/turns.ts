@@ -2,7 +2,7 @@ import type { Catalog, SessionRecord } from "../claude/catalog.ts";
 import type { ClaudeSessions } from "../claude/sdk.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
 import { RpcError } from "../rpc/frames.ts";
-import { ownerSummary, type SessionHolder } from "../runtime/holders.ts";
+import { liveThreadStatus, ownerSummary, type SessionHolder } from "../runtime/holders.ts";
 import type { ThreadManager } from "../runtime/manager.ts";
 import { runSettingsFor } from "../runtime/settings.ts";
 import { TakeoverError } from "../runtime/takeover.ts";
@@ -37,19 +37,6 @@ function inputOf(params: Params, method: string): UserInput[] {
   return params.input as UserInput[];
 }
 
-function sandboxPolicyOf(params: Params): Record<string, unknown> {
-  const raw = params.sandboxPolicy ?? params.sandbox;
-  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
-  switch (raw) {
-    case "read-only":
-      return { type: "readOnly" };
-    case "danger-full-access":
-      return { type: "dangerFullAccess" };
-    default:
-      return { type: "workspaceWrite" };
-  }
-}
-
 function newRecord(threadId: string, cwd: string): SessionRecord {
   const now = Math.floor(Date.now() / 1000);
   return { id: threadId, cwd, name: null, preview: "", createdAt: now, updatedAt: now, gitBranch: null, path: null, archived: false };
@@ -68,7 +55,7 @@ function sessionResponse(thread: AdapterThread, runtime: ThreadRuntime, params: 
     instructionSources: [],
     approvalPolicy: params.approvalPolicy ?? "on-request",
     approvalsReviewer: params.approvalsReviewer ?? "user",
-    sandbox: sandboxPolicyOf(params),
+    sandbox: settings.executionPolicy,
     reasoningEffort: settings.effort ?? null,
     permissionProfile: { type: "disabled" },
     activePermissionProfile: null,
@@ -91,9 +78,11 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
     const { record, runtime } = await openExisting(threadId, cwd, params);
     manager.subscribe(threadId, context.session);
     const holder = (await deps.holders()).get(threadId);
+    // 刚 resume 的会话至少算 idle（本连接已附着）；持有方正在执行时与列表一致报 active。
+    const status = liveThreadStatus({ ownTurnActive: runtime.activeTurnId !== undefined, ownProcessLive: true, holder });
     const thread = toThread(record, [], {
       canAcceptDirectInput: !holder,
-      status: runtime.activeTurnId ? { type: "active", activeFlags: [] } : { type: "idle" },
+      status,
       ...(holder ? { claudeOwner: ownerSummary(holder) } : {}),
     });
     return { ...sessionResponse(thread, runtime, params), collaborationMode: null, turnsBackwardsCursor: null, itemsBackwardsCursor: null };
@@ -174,9 +163,10 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
           ...(settings.model ? { model: settings.model } : {}),
           ...(settings.effort ? { effort: settings.effort } : {}),
           // turn 级权限只在客户端明确给出时覆盖（保留会话权限的请求不带这些字段）。
-          ...("approvalPolicy" in params || "sandboxPolicy" in params || "collaborationMode" in params
+          ...("approvalPolicy" in params || "sandboxPolicy" in params || "sandbox" in params || "collaborationMode" in params
             ? { permissionMode: settings.permissionMode }
             : {}),
+          ...("sandboxPolicy" in params || "sandbox" in params ? { executionPolicy: settings.executionPolicy } : {}),
         },
       });
       return { turn };

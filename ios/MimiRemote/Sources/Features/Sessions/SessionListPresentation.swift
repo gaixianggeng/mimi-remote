@@ -546,12 +546,14 @@ enum SessionListPresentation {
             return consumed
         }
 
-        let needYou = consume { session in
-            session.pendingApproval != nil
-                || session.pendingUserInput != nil
+        // 分类来自 SessionActivityState：等待审批 / 输入的会话即使还没拿到请求载荷也归「待你处理」；
+        // 「进行中」含本 App 的运行时、电脑上正在处理的 Claude Code，以及尚未发送首条消息的本地草稿
+        // （草稿固定留在这里，不能被 recent 上限截掉）。
+        let needYou = consume { $0.activityState.needsYou }
+        let running = consume { session in
+            let state = session.activityState
+            return state.isRunning || state == .draft
         }
-        // 本地草稿代表尚未发送首条消息的新会话，也应固定留在“进行中”，不能被 recent 上限截掉。
-        let running = consume { $0.isRunning || $0.isLocalDraft }
         let completionCandidates = unclaimed.enumerated().compactMap { index, session -> (AgentSession, Date, Int)? in
             guard let completionDate = completionObservedAtByID[session.id] else { return nil }
             let age = now.timeIntervalSince(completionDate)

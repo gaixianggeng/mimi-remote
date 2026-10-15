@@ -2,7 +2,7 @@
 // 压缩后只显示压缩之后、排队消息、活动时间不受 mtime 影响。全程不碰真实 ~/.claude。
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, utimesSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Router } from "../src/server/router.ts";
@@ -15,6 +15,7 @@ const repo = path.join(sandbox, "repo");
 const nestedWorktree = path.join(repo, ".claude", "worktrees", "feature");
 const siblingWorktree = path.join(sandbox, "repo-sibling");
 const otherProject = path.join(sandbox, "other");
+const pendingProject = path.join(sandbox, "pending");
 
 const ids = {
   root: "11111111-1111-4111-8111-111111111111",
@@ -24,6 +25,7 @@ const ids = {
   forked: "55555555-5555-4555-8555-555555555555",
   compacted: "66666666-6666-4666-8666-666666666666",
   multiBlock: "77777777-7777-4777-8777-777777777777",
+  pending: "88888888-8888-4888-8888-888888888888",
 };
 
 let router: Router;
@@ -42,7 +44,7 @@ async function call(method: string, params: unknown): Promise<any> {
 }
 
 beforeAll(async () => {
-  for (const dir of [repo, otherProject]) execFileSync("mkdir", ["-p", dir]);
+  for (const dir of [repo, otherProject, pendingProject]) execFileSync("mkdir", ["-p", dir]);
   git(repo, "init", "-q", "-b", "main");
   git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init");
   git(repo, "worktree", "add", "-q", "-b", "feature", nestedWorktree);
@@ -116,6 +118,12 @@ beforeAll(async () => {
   multiBlock.user("<local-command-stdout>Set model to haiku</local-command-stdout>");
   multiBlock.write(configDir);
 
+  // 最后一轮停在一条还没有结果的命令上：电脑端在执行或等确认时，它不能被显示成中断。
+  const pending = new TranscriptBuilder(ids.pending, pendingProject, "main", Date.parse("2026-09-10T00:00:00Z"));
+  pending.user("run it");
+  pending.assistant([{ type: "tool_use", id: "toolu_pending", name: "Bash", input: { command: "touch x" } }]);
+  pending.write(configDir);
+
   process.env.CLAUDE_CONFIG_DIR = configDir;
   process.env.MIMI_CLAUDE_LEGACY_INDEX = "";
   const { createRouter } = await import("../src/app.ts");
@@ -172,6 +180,31 @@ describe("thread/list", () => {
     expect([...created].sort((a, b) => b - a)).toEqual(created);
   });
 
+  test("a holder elsewhere turns the listed status into active or idle and carries its timing", async () => {
+    const sessions = path.join(configDir, "sessions");
+    mkdirSync(sessions, { recursive: true });
+    const registry = path.join(sessions, `${process.pid}.json`);
+    const since = 1_757_000_000_000;
+    const record = (status: string) => JSON.stringify({ pid: process.pid, sessionId: ids.root, cwd: repo, entrypoint: "claude-desktop", kind: "interactive", status, startedAt: since - 60_000, statusUpdatedAt: since });
+    const listed = async () => (await call("thread/list", { cwd: repo, limit: 50 })).data.find((thread: any) => thread.id === ids.root);
+    try {
+      writeFileSync(registry, record("busy"));
+      expect(await listed()).toMatchObject({
+        status: { type: "active", activeFlags: [] },
+        canAcceptDirectInput: false,
+        claudeOwner: { entrypoint: "claude-desktop", status: "busy", statusUpdatedAt: since },
+      });
+      writeFileSync(registry, record("idle"));
+      expect(await listed()).toMatchObject({ status: { type: "idle" }, canAcceptDirectInput: false, claudeOwner: { status: "idle" } });
+    } finally {
+      rmSync(registry, { force: true });
+    }
+    const released = await listed();
+    expect(released.status).toEqual({ type: "notLoaded" });
+    expect(released.canAcceptDirectInput).toBe(true);
+    expect(released.claudeOwner).toBeUndefined();
+  });
+
   test("search matches titles and previews", async () => {
     const result = await call("thread/list", { searchTerm: "SIBLING" });
     expect(result.data.map((thread: any) => thread.id)).toEqual([ids.sibling]);
@@ -217,6 +250,48 @@ describe("history", () => {
     } while (cursor && seen.length < 20);
     expect(seen).toHaveLength(4);
     expect(new Set(seen).size).toBe(4);
+  });
+
+  test("a holder still working elsewhere keeps the last pending tool call in progress", async () => {
+    const sessions = path.join(configDir, "sessions");
+    mkdirSync(sessions, { recursive: true });
+    const registry = path.join(sessions, `${process.pid}.json`);
+    const record = (status: string, waitingFor?: string) =>
+      JSON.stringify({
+        pid: process.pid,
+        sessionId: ids.pending,
+        cwd: pendingProject,
+        entrypoint: "claude-desktop",
+        kind: "interactive",
+        status,
+        ...(waitingFor ? { waitingFor } : {}),
+        startedAt: 1_757_000_000_000,
+        statusUpdatedAt: 1_757_000_060_000,
+      });
+    const lastTurn = async (method: "thread/turns/list" | "thread/read") => {
+      const turns =
+        method === "thread/read"
+          ? (await call("thread/read", { threadId: ids.pending, includeTurns: true })).thread.turns
+          : (await call("thread/turns/list", { threadId: ids.pending, sortDirection: "asc", itemsView: "full" })).data;
+      const turn = turns[turns.length - 1];
+      return { turn: turn.status, tool: turn.items.find((item: any) => item.type === "commandExecution")?.status };
+    };
+    try {
+      writeFileSync(registry, record("waiting", "permission prompt"));
+      for (const method of ["thread/turns/list", "thread/read"] as const) {
+        const { turn, tool } = await lastTurn(method);
+        expect(tool).toBe("inProgress");
+        // 别处持有方的回合不合成进行中，避免客户端把它当成自己的活跃 turn。
+        expect(turn).not.toBe("inProgress");
+      }
+      writeFileSync(registry, record("busy"));
+      expect((await lastTurn("thread/turns/list")).tool).toBe("inProgress");
+      writeFileSync(registry, record("idle"));
+      expect((await lastTurn("thread/turns/list")).tool).toBe("failed");
+    } finally {
+      rmSync(registry, { force: true });
+    }
+    expect((await lastTurn("thread/turns/list")).tool).toBe("failed");
   });
 
   test("thread/read returns metadata, optionally with turns", async () => {

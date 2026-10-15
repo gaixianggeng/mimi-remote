@@ -18,7 +18,7 @@ final class LocalizationTests: XCTestCase {
         }
 
         XCTAssertEqual(AppLanguage.stored(), .english)
-        XCTAssertEqual(L10n.text("ui.settings"), "settings")
+        XCTAssertEqual(L10n.text("ui.settings"), "Settings")
         XCTAssertEqual(
             L10n.format("ui.awaiting_approval_value_value", "Review diff", " · Low risk"),
             "Awaiting approval: Review diff · Low risk"
@@ -57,7 +57,7 @@ final class LocalizationTests: XCTestCase {
     }
 
     func testExplicitLanguageLookupSwitchesCatalogWithoutRestart() {
-        XCTAssertEqual(L10n.text("ui.settings", language: .english), "settings")
+        XCTAssertEqual(L10n.text("ui.settings", language: .english), "Settings")
         XCTAssertEqual(L10n.text("ui.settings", language: .simplifiedChinese), "设置")
     }
 
@@ -158,9 +158,31 @@ final class LocalizationTests: XCTestCase {
         )
     }
 
+    func testStandaloneEnglishLabelsStartWithCapitalLetter() {
+        // #465：标签栏、会话状态与审批卡按钮独立显示，英文首字母必须大写，
+        // 与同一行的 Devices、Processing、Allow Once 保持一致。
+        let expectedValues: [(String, String)] = [
+            ("ui.session", "Session"),
+            ("ui.workspace", "Workspace"),
+            ("ui.devices", "Devices"),
+            ("ui.me", "Me"),
+            ("ui.ended", "Ended"),
+            ("ui.processing", "Processing"),
+            ("ui.reject", "Reject"),
+            ("ui.approve_once", "Approve Once"),
+            ("ui.allow_once", "Allow Once")
+        ]
+
+        for (key, english) in expectedValues {
+            XCTAssertEqual(L10n.text(key, language: .english), english, key)
+        }
+        // 拼进句子的片段保持小写，例如「This closes the idle session in another Claude Code process…」。
+        XCTAssertEqual(L10n.text("ui.claude_owner_other", language: .english), "another Claude Code process")
+    }
+
     func testSessionRowStatefulActionLabelsAreLocalized() {
         let expectedValues: [(String, String, String)] = [
-            ("ui.pin_to_top", "pin to top", "置顶"),
+            ("ui.pin_to_top", "Pin to Top", "置顶"),
             ("ui.unpin", "Unpin", "取消置顶"),
             ("ui.mark_as_read", "Mark as Read", "标记为已读"),
             ("ui.mark_as_unread", "Mark as Unread", "标记为未读"),

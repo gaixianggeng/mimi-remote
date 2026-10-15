@@ -13,15 +13,15 @@ import (
 	"time"
 )
 
-func TestTurnMessageDeduplicatesConcurrentTerminalEventsAndCannotApprove(t *testing.T) {
+func TestMessageDeduplicatesConcurrentTerminalEventsAndCannotApprove(t *testing.T) {
 	manager, provider := newTestManager(t, true, "one", "two")
-	message := TurnMessage{Runtime: "codex", ThreadID: "thread", ProjectID: "project", TurnID: "turn", Event: EventTurnFailed}
+	message := Message{Runtime: "codex", ThreadID: "thread", ProjectID: "project", MessageID: "turn:turn", Event: EventTurnFailed}
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if send := manager.PrepareTurnMessage(message); send != nil {
+			if send := manager.PrepareMessage(message); send != nil {
 				send(context.Background())
 			}
 		}()
@@ -32,7 +32,7 @@ func TestTurnMessageDeduplicatesConcurrentTerminalEventsAndCannotApprove(t *test
 		t.Fatalf("want one per device, got %d", len(got))
 	}
 	message.Event = EventTurnCompleted
-	if manager.PrepareTurnMessage(message) != nil {
+	if manager.PrepareMessage(message) != nil {
 		t.Fatal("failure followed by completed must not notify twice")
 	}
 	for _, sent := range got {
@@ -56,20 +56,100 @@ func TestTurnMessageDeduplicatesConcurrentTerminalEventsAndCannotApprove(t *test
 	}
 }
 
-func TestTurnMessageExpiryCapacityAndDisabledMode(t *testing.T) {
+func TestHolderWaitingFiltersCapabilityAndDeduplicatesEpisodesAcrossRestart(t *testing.T) {
+	legacyOnly, legacyProvider := newTestManager(t, true, "legacy")
+	legacyMessage := Message{
+		Runtime: "claude", ThreadID: "thread", MessageID: "holder-waiting:7:1700000000000",
+		Event: EventHolderWaiting,
+	}
+	if legacyOnly.PrepareMessage(legacyMessage) != nil || len(legacyProvider.events(EventHolderWaiting)) != 0 {
+		t.Fatal("只有旧客户端时不得创建 holder.waiting 投递或路由")
+	}
+
+	dir := t.TempDir()
+	manager, provider := newTestManagerInDir(t, dir, true, "old", "new")
+	device, _ := manager.Devices().Get("new")
+	device.SupportsHolderWaiting = true
+	if _, err := manager.Devices().Register(device); err != nil {
+		t.Fatal(err)
+	}
+	message := Message{
+		Runtime: "claude", ThreadID: "thread", MessageID: "holder-waiting:42:1700000000000",
+		Event: EventHolderWaiting,
+	}
+	if delivery := manager.PrepareMessage(message); delivery == nil {
+		t.Fatal("支持等待提醒的设备应收到投递")
+	} else {
+		delivery(context.Background())
+	}
+	got := provider.events(EventHolderWaiting)
+	if len(got) != 1 || got[0].DeviceID != "new" {
+		t.Fatalf("holder.waiting 只能发给声明能力的设备：%+v", got)
+	}
+	record, outcome := manager.LocateRoute(got[0].ActionID, "new")
+	if outcome != OutcomeProceed || len(record.DeviceIDs) != 1 || record.DeviceIDs[0] != "new" {
+		t.Fatalf("定位记录必须只绑定实际收件设备：outcome=%s record=%+v", outcome, record)
+	}
+	if _, outcome := manager.LocateRoute(got[0].ActionID, "old"); outcome != OutcomeForbidden {
+		t.Fatalf("旧客户端不应取得等待提醒路由：%s", outcome)
+	}
+	if manager.PrepareMessage(message) != nil {
+		t.Fatal("同一等待 episode 不应重复推送")
+	}
+
+	restarted, restartedProvider := newTestManagerInDir(t, dir, true)
+	if restarted.PrepareMessage(message) != nil {
+		t.Fatal("同一等待 episode 在重启后不应重复推送")
+	}
+	message.MessageID = "holder-waiting:42:1700000001000"
+	if delivery := restarted.PrepareMessage(message); delivery == nil {
+		t.Fatal("新的等待 episode 应再次推送")
+	} else {
+		delivery(context.Background())
+	}
+	if got := restartedProvider.events(EventHolderWaiting); len(got) != 1 || got[0].DeviceID != "new" {
+		t.Fatalf("新 episode 投递异常：%+v", got)
+	}
+	// 终态提醒继续覆盖新旧设备。
+	terminal := Message{Runtime: "claude", ThreadID: "thread", MessageID: "turn:done", Event: EventTurnCompleted}
+	restarted.PrepareMessage(terminal)(context.Background())
+	if got := restartedProvider.events(EventTurnCompleted); len(got) != 2 {
+		t.Fatalf("终态提醒不应受新能力过滤，got=%d", len(got))
+	}
+}
+
+func TestLegacyTurnIDRecordDeduplicatesNewMessageIdentity(t *testing.T) {
+	dir := t.TempDir()
+	manager, _ := newTestManagerInDir(t, dir, true, "one")
+	now := time.Now()
+	if !manager.Routes().Insert(now, LocateRecord{
+		ID: "legacy-route", Kind: RouteKindMessage, Runtime: "codex", ThreadID: "thread", TurnID: "legacy-turn",
+		DeviceIDs: []string{"one"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}) {
+		t.Fatal("旧格式记录插入失败")
+	}
+	manager.Routes().Flush()
+	restarted, _ := newTestManagerInDir(t, dir, true)
+	message := Message{Runtime: "codex", ThreadID: "thread", MessageID: "turn:legacy-turn", Event: EventTurnCompleted}
+	if restarted.PrepareMessage(message) != nil {
+		t.Fatal("旧 turn_id 落盘记录必须与新 message_id 跨重启去重")
+	}
+}
+
+func TestMessageExpiryCapacityAndDisabledMode(t *testing.T) {
 	manager, provider := newTestManager(t, true, "one")
 	now := time.Now()
 	manager.now = func() time.Time { return now }
-	message := TurnMessage{Runtime: "claude", ThreadID: "thread", TurnID: "first", Event: EventTurnCompleted}
-	manager.PrepareTurnMessage(message)(context.Background())
+	message := Message{Runtime: "claude", ThreadID: "thread", MessageID: "turn:first", Event: EventTurnCompleted}
+	manager.PrepareMessage(message)(context.Background())
 	first := provider.events(EventTurnCompleted)[0].ActionID
 	now = now.Add(24*time.Hour + time.Second)
 	if _, ok := manager.MessageRoute(first, "one"); ok {
 		t.Fatal("expired route accepted")
 	}
 	for i := 0; i < maxMessages+2; i++ {
-		message.TurnID = fmt.Sprint(i)
-		if manager.PrepareTurnMessage(message) == nil {
+		message.MessageID = "turn:" + fmt.Sprint(i)
+		if manager.PrepareMessage(message) == nil {
 			t.Fatal("could not enqueue")
 		}
 		now = now.Add(time.Second)
@@ -78,11 +158,11 @@ func TestTurnMessageExpiryCapacityAndDisabledMode(t *testing.T) {
 		t.Fatalf("unbounded routes: %d", manager.routes.Len())
 	}
 	disabled, _ := newTestManager(t, false, "one")
-	if disabled.PrepareTurnMessage(message) != nil {
+	if disabled.PrepareMessage(message) != nil {
 		t.Fatal("disabled notifications sent")
 	}
 	message.Event = "unknown"
-	if manager.PrepareTurnMessage(message) != nil {
+	if manager.PrepareMessage(message) != nil {
 		t.Fatal("unknown event accepted")
 	}
 }
@@ -91,11 +171,11 @@ func TestTurnMessageExpiryCapacityAndDisabledMode(t *testing.T) {
 func TestMessageRouteSurvivesRestartForOriginalDevicesOnly(t *testing.T) {
 	dir := t.TempDir()
 	manager, provider := newTestManagerInDir(t, dir, true, "one", "two")
-	message := TurnMessage{
+	message := Message{
 		Runtime: "codex", ThreadID: "thread", ProjectID: "ws_abc", ScopeID: "ws_abc",
-		CWD: "/tmp/worktree", ReadOnly: true, TurnID: "turn", Event: EventTurnCompleted,
+		CWD: "/tmp/worktree", ReadOnly: true, MessageID: "turn:turn", Event: EventTurnCompleted,
 	}
-	manager.PrepareTurnMessage(message)(context.Background())
+	manager.PrepareMessage(message)(context.Background())
 	sent := provider.events(EventTurnCompleted)
 	if len(sent) != 2 {
 		t.Fatalf("want one push per device, got %d", len(sent))
@@ -111,7 +191,7 @@ func TestMessageRouteSurvivesRestartForOriginalDevicesOnly(t *testing.T) {
 		record.ProjectID != "ws_abc" || record.ScopeID != "ws_abc" || record.CWD != "/tmp/worktree" || !record.ReadOnly {
 		t.Fatalf("route lost across restart: %+v %s", record, outcome)
 	}
-	if route, ok := restarted.MessageRoute(id, "one"); !ok || route.TurnID != "turn" || route.ScopeID != "ws_abc" {
+	if route, ok := restarted.MessageRoute(id, "one"); !ok || route.MessageID != "turn:turn" || route.ScopeID != "ws_abc" {
 		t.Fatalf("message route lost across restart: %+v %v", route, ok)
 	}
 	if _, outcome := restarted.LocateRoute(id, "two"); outcome != OutcomeForbidden {
@@ -126,7 +206,7 @@ func TestMessageRouteSurvivesRestartForOriginalDevicesOnly(t *testing.T) {
 	if _, outcome := restarted.LocateRoute("act-unknown", "one"); outcome != OutcomeNotFound {
 		t.Fatalf("unknown id must be not found: %s", outcome)
 	}
-	if restarted.PrepareTurnMessage(message) != nil {
+	if restarted.PrepareMessage(message) != nil {
 		t.Fatal("turn pushed before restart was pushed again")
 	}
 	if _, ok := restarted.Actions().Get(id); ok {
@@ -140,8 +220,8 @@ func TestMessageRouteTTLIsNotExtendedByReload(t *testing.T) {
 	manager, provider := newTestManagerInDir(t, dir, true, "one")
 	origin := time.Now().Add(-23 * time.Hour)
 	manager.now = func() time.Time { return origin }
-	message := TurnMessage{Runtime: "claude", ThreadID: "thread", TurnID: "turn", Event: EventTurnCompleted}
-	manager.PrepareTurnMessage(message)(context.Background())
+	message := Message{Runtime: "claude", ThreadID: "thread", MessageID: "turn:turn", Event: EventTurnCompleted}
+	manager.PrepareMessage(message)(context.Background())
 	id := provider.events(EventTurnCompleted)[0].ActionID
 
 	restarted, _ := newTestManagerInDir(t, dir, true)
@@ -160,8 +240,8 @@ func TestMessageRouteTTLIsNotExtendedByReload(t *testing.T) {
 
 	// 磁盘上已经过期的记录在加载时就丢弃，不会以任何形式回到内存。
 	manager.now = func() time.Time { return time.Now().Add(-messageTTL - time.Hour) }
-	message.TurnID = "stale"
-	manager.PrepareTurnMessage(message)(context.Background())
+	message.MessageID = "turn:stale"
+	manager.PrepareMessage(message)(context.Background())
 	stale := provider.events(EventTurnCompleted)[1].ActionID
 	reloaded, _ := newTestManagerInDir(t, dir, true)
 	if _, ok := reloaded.Routes().Get(stale); ok {
@@ -175,8 +255,8 @@ func TestRouteCapEvictsOldestAndOrderPersistsAcrossRestart(t *testing.T) {
 	now := time.Now()
 	manager.now = func() time.Time { return now }
 	for i := 0; i < maxRoutes+2; i++ {
-		message := TurnMessage{Runtime: "codex", ThreadID: "thread", TurnID: fmt.Sprint(i), Event: EventTurnCompleted}
-		manager.PrepareTurnMessage(message)(context.Background())
+		message := Message{Runtime: "codex", ThreadID: "thread", MessageID: "turn:" + fmt.Sprint(i), Event: EventTurnCompleted}
+		manager.PrepareMessage(message)(context.Background())
 		now = now.Add(time.Second)
 	}
 	sent := provider.events(EventTurnCompleted)
@@ -209,8 +289,8 @@ func TestRouteStoreToleratesCorruptFilesAndKeepsPrivateFields(t *testing.T) {
 		if manager.Routes().Len() != 0 {
 			t.Fatalf("corrupt file %d produced records", index)
 		}
-		message := TurnMessage{Runtime: "codex", ThreadID: "thread", ProjectID: "demo", TurnID: fmt.Sprint(index), Event: EventTurnFailed}
-		manager.PrepareTurnMessage(message)(context.Background())
+		message := Message{Runtime: "codex", ThreadID: "thread", ProjectID: "demo", MessageID: "turn:" + fmt.Sprint(index), Event: EventTurnFailed}
+		manager.PrepareMessage(message)(context.Background())
 		id := provider.events(EventTurnFailed)[0].ActionID
 		if _, outcome := manager.LocateRoute(id, "one"); outcome != OutcomeProceed {
 			t.Fatalf("store unusable after corrupt file %d: %s", index, outcome)
@@ -233,7 +313,7 @@ func TestRouteStoreToleratesCorruptFilesAndKeepsPrivateFields(t *testing.T) {
 		}
 		allowed := map[string]bool{
 			"id": true, "kind": true, "runtime": true, "thread_id": true, "project_id": true, "scope_id": true,
-			"cwd": true, "read_only": true, "turn_id": true, "event": true, "approval_kind": true,
+			"cwd": true, "read_only": true, "message_id": true, "turn_id": true, "event": true, "approval_kind": true,
 			"device_ids": true, "created_at": true, "expires_at": true,
 		}
 		for key := range records[0] {
