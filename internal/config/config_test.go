@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -114,6 +115,48 @@ func TestLoadRejectsExplicitZeroClaudeBridgeLimitFromEnvironment(t *testing.T) {
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("an explicit zero bridge limit from the environment must remain invalid")
+	}
+}
+
+// 回退开关（#660）：默认关闭（用随包 SDK 适配器）；配置文件或环境变量都能打开。
+func TestLoadReadsClaudeLegacyBridgeSwitch(t *testing.T) {
+	clearAgentdEnv(t)
+	projectDir := t.TempDir()
+	cfg := defaults()
+	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
+	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: projectDir}}
+	write := func(cfg Config) string {
+		raw, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(raw, []byte("legacy_bridge")) != cfg.Claude.LegacyBridge {
+			t.Fatalf("开关只在打开时写进配置：%s", raw)
+		}
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	path := write(cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Claude.LegacyBridge {
+		t.Fatal("回退开关默认应关闭")
+	}
+	t.Setenv("AGENTD_CLAUDE_LEGACY_BRIDGE", "1")
+	if loaded, err = Load(path); err != nil || !loaded.Claude.LegacyBridge {
+		t.Fatalf("环境变量应能打开回退开关：%+v err=%v", loaded.Claude, err)
+	}
+	t.Setenv("AGENTD_CLAUDE_LEGACY_BRIDGE", "")
+
+	cfg.Claude.LegacyBridge = true
+	if loaded, err = Load(write(cfg)); err != nil || !loaded.Claude.LegacyBridge {
+		t.Fatalf("配置文件应能打开回退开关：%+v err=%v", loaded.Claude, err)
 	}
 }
 

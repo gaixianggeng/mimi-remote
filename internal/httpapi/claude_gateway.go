@@ -22,6 +22,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
+	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
 )
 
 const claudeBridgePolicyErrorCode = -32081
@@ -62,6 +63,36 @@ type appServerBridgeProbe struct {
 	Healthy   bool
 	Error     string
 	CheckedAt time.Time
+	// Adapter 非空表示探测到的是 SDK 适配器；能力以它的声明为准，不按旧 bridge 的版本门槛推断。
+	Adapter *claudebridge.AdapterCapabilities
+}
+
+// supportsMethod 判断已探测的 bridge 是否实现某个方法；旧 bridge 按版本门槛判断。
+func (p appServerBridgeProbe) supportsMethod(method string, legacy func(string) bool) bool {
+	if !p.Healthy {
+		return false
+	}
+	if p.Adapter != nil {
+		return p.Adapter.Supports(method)
+	}
+	return legacy(p.Version)
+}
+
+func (p appServerBridgeProbe) fullAccessAvailable() bool {
+	if !p.Healthy {
+		return false
+	}
+	if p.Adapter != nil {
+		return p.Adapter.FullAccess
+	}
+	return claudebridge.SupportsFullAccess(p.Version)
+}
+
+func (p appServerBridgeProbe) bridgeName() string {
+	if p.Adapter != nil {
+		return claudebridge.AdapterName
+	}
+	return "alleycat-claude-bridge"
 }
 
 func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
@@ -76,7 +107,7 @@ func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
 	// An unset bridge_bin is no longer fatal: an installed app ships its own
 	// bridge next to agentd, so the common case needs no configuration at all.
 	bin := strings.TrimSpace(r.cfg.Claude.BridgeBin)
-	path, ok := resolveClaudeBridgePath(bin)
+	path, ok := resolveClaudeBridgePath(bin, r.cfg.Claude.LegacyBridge)
 	if !ok {
 		probe.Path = bin
 		if bin == "" {
@@ -91,7 +122,8 @@ func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
 	}
 	probe.Path = path
 	// 版本门禁是协议安全边界，不能因为 cheap probe 跳过；--version 对兼容 bridge 是无副作用快速调用。
-	probe.Version = probeClaudeBridgeVersion(path, r.cfg.Claude.Args, r.cfg.Claude.Env)
+	var isAdapter bool
+	probe.Version, isAdapter = probeClaudeBridgeVersion(path, r.cfg.Claude.Args, r.cfg.Claude.Env)
 	if probe.Version == "" {
 		probe.Status = "missing_version"
 		probe.Error = claudebridge.UpgradeMessage("")
@@ -104,6 +136,24 @@ func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
 		r.setClaudeBridgeProbe(probe)
 		return probe
 	}
+	if isAdapter {
+		capabilities, err := probeClaudeAdapterCapabilities(path, r.cfg.Claude.Args, r.cfg.Claude.Env)
+		if err != nil {
+			probe.Status = "missing_capabilities"
+			probe.Error = "无法读取 Claude 适配器的能力声明：" + err.Error()
+			r.setClaudeBridgeProbe(probe)
+			return probe
+		}
+		probe.Adapter = &capabilities
+		// 适配器声明了 Claude Code 下限：已知过旧时整条通道标为不可用，客户端连接时就能看到
+		// 升级提示，而不是等发出第一条消息才失败。找不到或无法确认版本时不在这里拦。
+		if version, ok := r.claudeCode.version(r.cfg.Claude.Env); ok && !capabilities.ClaudeCodeSupported(version) {
+			probe.Status = "claude_unsupported"
+			probe.Error = claudebridge.ClaudeCodeUpgradeMessage(version, capabilities.ClaudeCode.MinimumVersion)
+			r.setClaudeBridgeProbe(probe)
+			return probe
+		}
+	}
 	probe.Status = "ready"
 	probe.Healthy = true
 	r.setClaudeBridgeProbe(probe)
@@ -114,6 +164,14 @@ func (r *Router) setClaudeBridgeProbe(probe appServerBridgeProbe) {
 	r.claudeMu.Lock()
 	r.claudeProbe = probe
 	r.claudeMu.Unlock()
+	if debuglog.Enabled() {
+		methods := -1
+		if probe.Adapter != nil {
+			methods = len(probe.Adapter.Methods)
+		}
+		debuglog.Printf("claude-bridge", "probe bin=%s name=%s version=%s status=%s healthy=%t adapter_methods=%d error=%q",
+			filepath.Base(probe.Path), probe.bridgeName(), probe.Version, probe.Status, probe.Healthy, methods, probe.Error)
+	}
 }
 
 func (r *Router) claudeBridgeProbe() appServerBridgeProbe {
@@ -137,31 +195,47 @@ func (r *Router) refreshClaudeBridgeProbeIfStale() {
 	}
 }
 
-// resolveClaudeBridgePath finds the bridge to run, preferring what the config
-// names and falling back to the copy shipped alongside agentd.
-//
-// The fallback is what makes an installed app self-contained: a fresh machine
-// has no `~/.cargo/bin`, and a config carrying an absolute path from whoever
-// set it up first would otherwise point at a binary that isn't there. Anyone
-// who does name a working bridge still gets exactly that one.
-func resolveClaudeBridgePath(command string) (string, bool) {
-	return claudebridge.ResolveBinary(command)
+// claudeBridgeFix 是给用户的修复建议：Claude Code 过旧时升级它；随安装包提供 bridge 的安装重新
+// 安装 Mimi Remote；只有自行安装旧 bridge 的环境（Homebrew、Linux 发布包）才需要 cargo。
+func claudeBridgeFix(probe appServerBridgeProbe) string {
+	switch {
+	case probe.Status == "claude_unsupported":
+		return "在终端运行 claude update"
+	case claudebridge.BundledAvailable():
+		return "重新安装或升级 Mimi Remote"
+	default:
+		return claudebridge.InstallHint
+	}
 }
 
-func probeClaudeBridgeVersion(path string, args []string, env map[string]string) string {
+// resolveClaudeBridgePath finds the bridge to run: by default the SDK adapter
+// shipped alongside agentd, or the old Rust bridge when the legacy switch is on.
+// A config naming some other program (a locally built adapter, say) still gets
+// exactly that one; see claudebridge.ResolveBinary for the full rule.
+func resolveClaudeBridgePath(command string, legacy bool) (string, bool) {
+	return claudebridge.ResolveBinary(command, legacy)
+}
+
+// probeClaudeBridgeVersion 返回版本号，以及输出是否来自 SDK 适配器。
+func probeClaudeBridgeVersion(path string, args []string, env map[string]string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, append(args, "--version")...)
+	cmd := exec.CommandContext(ctx, path, append(append([]string{}, args...), "--version")...)
 	cmd.Env = buildClaudeBridgeEnv(env)
 	output, err := cmd.Output()
 	if err != nil {
-		return ""
+		return "", false
 	}
-	version, ok := claudebridge.ParseVersion(string(bytes.TrimSpace(output)))
+	trimmed := string(bytes.TrimSpace(output))
+	version, ok := claudebridge.ParseVersion(trimmed)
 	if !ok {
-		return ""
+		return "", false
 	}
-	return version
+	return version, claudebridge.IsAdapterVersionOutput(trimmed)
+}
+
+func probeClaudeAdapterCapabilities(path string, args []string, env map[string]string) (claudebridge.AdapterCapabilities, error) {
+	return claudebridge.ReadAdapterCapabilities(context.Background(), path, args, buildClaudeBridgeEnv(env))
 }
 
 func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Request) {
@@ -186,12 +260,14 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 			code = "CLAUDE_BRIDGE_VERSION_UNKNOWN"
 		case "unsupported_version":
 			code = "CLAUDE_BRIDGE_VERSION_UNSUPPORTED"
+		case "claude_unsupported":
+			code = "CLAUDE_CODE_VERSION_UNSUPPORTED"
 		}
 		writeGatewayRuntimeErrorWithData(client, code, firstNonEmpty(probe.Error, "Claude bridge 不可用"), map[string]any{
 			"bridgeStatus":   probe.Status,
 			"bridgeVersion":  probe.Version,
 			"minimumVersion": claudebridge.MinimumVersion,
-			"fix":            claudebridge.InstallHint,
+			"fix":            claudeBridgeFix(probe),
 		})
 		return
 	}
@@ -510,7 +586,7 @@ func copyClientFramesToClaudeBridge(client *websocket.Conn, stdin io.Writer, cli
 		policyDuration := time.Since(policyStart)
 		if policyErr != nil {
 			if monitor != nil {
-				monitor.recordPolicyError("client_to_upstream", len(payload), policyDuration)
+				monitor.recordPolicyError("client_to_upstream", policy.runtimeID, payload, policyErr, policyDuration)
 			}
 			if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
 				return "client_policy_error_write_failed"
@@ -594,7 +670,7 @@ func forwardClaudeBridgeFrame(payload []byte, client *websocket.Conn, clientWrit
 	policyDuration := time.Since(policyStart)
 	if policyErr != nil {
 		if monitor != nil {
-			monitor.recordPolicyError("upstream_to_client", len(payload), policyDuration)
+			monitor.recordPolicyError("upstream_to_client", policy.runtimeID, payload, policyErr, policyDuration)
 		}
 		if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
 			return "upstream_policy_error_write_failed", true
@@ -689,21 +765,46 @@ func pingClientGateway(ctx context.Context, client *websocket.Conn, clientWriteM
 	}
 }
 
+// claudeAdapterLogLevelEnv 控制 SDK 适配器输出到 stderr 的日志级别。agentd 默认让它输出
+// debug 行，由 captureClaudeBridgeStderr 决定是否落盘（只在详细记录窗口内）；用户在
+// claude.env 里显式设置的级别优先。旧 Rust bridge 不认这个变量，没有影响。
+const claudeAdapterLogLevelEnv = "MIMI_CLAUDE_ADAPTER_LOG"
+
 func buildClaudeBridgeEnv(extra map[string]string) []string {
-	return claudeenv.Build(extra)
+	environment := claudeenv.Build(extra)
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, claudeAdapterLogLevelEnv+"=") {
+			return environment
+		}
+	}
+	return append(environment, claudeAdapterLogLevelEnv+"=debug")
 }
 
+// claudeBridgeDebugLine 识别适配器的 debug / trace 行（格式 "[mimi-claude-adapter] debug …"）。
+func claudeBridgeDebugLine(line string) bool {
+	_, rest, ok := strings.Cut(line, "] ")
+	return ok && (strings.HasPrefix(rest, "debug ") || strings.HasPrefix(rest, "trace "))
+}
+
+// captureClaudeBridgeStderr 把 bridge 的 stderr 分流：详细记录窗口内全部写进本机调试日志；
+// debug / trace 行只进调试日志，其余照旧进标准日志。
 func captureClaudeBridgeStderr(stderr io.Reader, sensitiveValues []string) {
 	scanner := bufio.NewScanner(stderr)
+	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for scanner.Scan() {
 		line := sanitizeClaudeBridgeDiagnostic(scanner.Text(), sensitiveValues)
 		if line == "" {
 			continue
 		}
-		log.Printf("claude bridge stderr: %s", line)
+		debuglog.Printf("claude-bridge", "%s", line)
+		if !claudeBridgeDebugLine(line) {
+			log.Printf("claude bridge stderr: %s", line)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		log.Printf("claude bridge stderr scanner error err=%v", err)
+		// 超长行让 Scanner 停下后也要继续排空管道，否则 bridge 写 stderr 会被阻塞。
+		_, _ = io.Copy(io.Discard, stderr)
 	}
 }
 

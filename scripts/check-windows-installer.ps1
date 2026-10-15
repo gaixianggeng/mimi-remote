@@ -7,15 +7,16 @@ $metadataPath = "$installer.metadata.json"
 if (-not (Test-Path -LiteralPath $metadataPath)) { throw "Missing metadata: $metadataPath" }
 $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
 if ($metadata.installer -ne [IO.Path]::GetFileName($installer)) { throw 'Metadata installer name does not match artifact.' }
-foreach ($binary in @('agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe')) {
+foreach ($binary in @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe')) {
     if ($metadata.binaries -notcontains $binary) { throw "Metadata does not declare embedded binary: $binary" }
 }
 if ($metadata.assets -notcontains 'mimi-remote.ico') { throw 'Metadata does not declare the Windows application icon.' }
-foreach ($payload in @('agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico')) {
+foreach ($payload in @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico')) {
     $payloadHash = $metadata.payload_sha256.$payload
     if ($payloadHash -notmatch '^[0-9a-f]{64}$') { throw "Metadata is missing a valid payload SHA-256: $payload" }
 }
 if ($metadata.rust_crt -ne 'static') { throw 'Metadata must declare a static Rust CRT.' }
+if ($metadata.bun_version -notmatch '^\d+\.\d+\.\d+$') { throw 'Metadata must declare the Bun version the Claude adapter was built with.' }
 $actualHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($metadata.sha256 -ne $actualHash) { throw 'Installer SHA-256 does not match metadata.' }
 $checksumPath = "$installer.sha256"

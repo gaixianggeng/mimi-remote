@@ -171,6 +171,8 @@ struct SessionListView: View {
     @State private var selectedStatus: SessionLibraryStatusFilter = .all
     @State private var keyboardSelectionID: SessionID?
     @State private var isNativeDirectoryListVisible = false
+    /// 空态「打开其他文件夹…」直接在会话页弹出目录浏览，不先跳去工作区页（#554）。
+    @State private var isPresentingOpenWorkspace = false
     /// 列表实际可用宽度。nil 表示还没测到，此时暂用 Shell 注入的页面身份作为种子。
     @State private var measuredContentWidth: CGFloat?
     @FocusState private var hasListKeyboardFocus: Bool
@@ -277,6 +279,9 @@ struct SessionListView: View {
             }
         }
         .listStyle(.plain)
+        .sheet(isPresented: $isPresentingOpenWorkspace) {
+            OpenWorkspaceSheet()
+        }
         // 与工作区共用同一条宽度判据；量到之后 rowDensity 就不再依赖页面身份。
         .onGeometryChange(for: CGFloat.self) { geometry in
             geometry.size.width
@@ -679,7 +684,7 @@ struct SessionListView: View {
             isSearching: sessionStore.isSessionSearchActive && sessionStore.isSearchingRemoteSessionResults,
             isFiltering: sessionStore.isSessionSearchActive || selectedWorkspaceID != "all" || selectedStatus != .all,
             isNetworkUnavailable: sessionStore.isNetworkUnavailable,
-            errorMessage: sessionStore.errorMessage,
+            errorMessage: sessionStore.userFacingErrorMessage,
             connectionStatus: appStore.connectionStatus,
             hasLoadedWorkspaceCatalog: sessionStore.loadedWorkspaceCatalogScope == appStore.activeHostScope,
             isEstablishingConnection: sessionStore.isEstablishingConnection
@@ -714,6 +719,18 @@ struct SessionListView: View {
         case .content, .connecting, .loading, .searching:
             // 等待态由 `sessionListCenteredLoading` 铺在整页上表达。
             EmptyView()
+        case .needsWorkspace where !sessionStore.projects.isEmpty:
+            // 新配对必然一个工作区都没打开；电脑端已经给出候选项目时直接列出来，
+            // 点一下就打开并加载它的会话，不再先跳去工作区页。
+            WorkspaceSuggestionsView(
+                projects: sessionStore.projects,
+                onOpen: { project in
+                    await sessionStore.openWorkspaceOutcome(path: project.path)
+                },
+                onBrowseOther: { isPresentingOpenWorkspace = true }
+            )
+            .padding(.vertical, 16)
+            .accessibilityIdentifier("sessions.empty.workspaceSuggestions")
         case .needsWorkspace:
             ContentUnavailableView {
                 Label(L10n.text("ui.no_workspace_has_been_opened_yet"), systemImage: "folder.badge.plus")
@@ -1246,6 +1263,8 @@ struct SessionReviewSheet: View {
                 dismiss()
             } else {
                 submissionError = sessionStore.statusMessage ?? L10n.text("ui.review_failed_to_start_please_try_again_later")
+                // 失败原因已在弹窗内展示，收起顶部同一条提示，关掉弹窗后不再重复出现。
+                sessionStore.dismissOperationFeedback()
             }
         }
     }
@@ -1258,6 +1277,8 @@ struct SessionRenameSheet: View {
     let session: AgentSession
     @State private var name: String
     @State private var isSaving = false
+    /// 最近一次保存失败的原因。就地展示并保留输入，「保存」即重试入口（#508）。
+    @State private var failure: OperationFeedback?
 
     init(session: AgentSession) {
         self.session = session
@@ -1267,12 +1288,21 @@ struct SessionRenameSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section(L10n.text("ui.session_name")) {
+                Section {
                     TextField(L10n.text("ui.enter_name"), text: $name)
                         .textInputAutocapitalization(.sentences)
                         .submitLabel(.done)
                         .onSubmit(save)
+                } header: {
+                    Text(L10n.text("ui.session_name"))
+                } footer: {
+                    if let failure {
+                        OperationFailureFootnote(feedback: failure)
+                    }
                 }
+            }
+            .onChange(of: name) { _, _ in
+                failure = nil
             }
             .navigationTitle(L10n.text("ui.rename_session"))
             .navigationBarTitleDisplayMode(.inline)
@@ -1298,11 +1328,16 @@ struct SessionRenameSheet: View {
         guard !isSaving, !normalizedName.isEmpty else { return }
         isSaving = true
         Task {
-            let didRename = await sessionStore.renameSession(session, name: normalizedName)
+            let failure = await sessionStore.renameSessionReportingFailure(session, name: normalizedName)
             isSaving = false
-            if didRename {
+            guard let failure else {
                 dismiss()
+                return
             }
+            // 弹窗挡住了顶部提示：原因改在输入框下方展示，并收起被遮住的那一条，避免关闭后重复弹出。
+            self.failure = failure
+            sessionStore.dismissOperationFeedback(id: failure.id)
+            AccessibilityNotification.Announcement(failure.message).post()
         }
     }
 }

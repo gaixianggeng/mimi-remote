@@ -835,13 +835,14 @@ final class SessionListPresentationTests: XCTestCase {
         )
         XCTAssertEqual(Set(sections.map(\.kind)).count, sections.count)
         XCTAssertEqual(sections.map(\.id), sections.map { $0.kind.rawValue })
-        XCTAssertEqual(sections[0].sessions.map(\.id), ["need-approval", "need-input"])
-        XCTAssertEqual(sections[1].sessions.map(\.id), ["running", "waiting-without-payload"])
+        // 等待输入但还没拿到请求载荷的会话也归「待你处理」：三个表面对它的读法必须一致（#683）。
+        XCTAssertEqual(sections[0].sessions.map(\.id), ["need-approval", "need-input", "waiting-without-payload"])
+        XCTAssertEqual(sections[1].sessions.map(\.id), ["running"])
         XCTAssertEqual(sections[2].sessions.map(\.id), ["completed"])
         XCTAssertEqual(sections[3].sessions.map(\.id), ["pinned"])
         XCTAssertEqual(sections[4].sessions.map(\.id), ["recent"])
         XCTAssertEqual(sections.flatMap(\.sessions).map(\.id), [
-            "need-approval", "need-input", "running", "waiting-without-payload", "completed", "pinned", "recent",
+            "need-approval", "need-input", "waiting-without-payload", "running", "completed", "pinned", "recent",
         ])
     }
 

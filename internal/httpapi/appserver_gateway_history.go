@@ -213,10 +213,11 @@ func gatewayHistoryRequestFromParams(method string, params map[string]any) (appS
 		return appServerGatewayPendingHistoryRequest{
 			method: method, cwd: cwd, cursor: gatewayOptionalStringParam(params, "cursor"),
 			limit: gatewayOptionalInt64Param(params, "limit"), sortKey: gatewayOptionalStringParam(params, "sortKey"),
-			sortDirection:  gatewayOptionalStringParam(params, "sortDirection"),
-			itemsView:      "list",
-			useStateDBOnly: gatewayOptionalBoolFingerprintParam(params, "useStateDbOnly"),
-			refreshHistory: gatewayOptionalBoolFingerprintParam(params, "refreshHistory"),
+			sortDirection:     gatewayOptionalStringParam(params, "sortDirection"),
+			itemsView:         "list",
+			useStateDBOnly:    gatewayOptionalBoolFingerprintParam(params, "useStateDbOnly"),
+			refreshHistory:    gatewayOptionalBoolFingerprintParam(params, "refreshHistory"),
+			continuationQuery: gatewayThreadListContinuationQuery(params),
 		}, true
 	case "thread/search":
 		// 搜索没有 cwd/threadId，请求指纹必须包含完整的安全参数；预算 subject 则使用固定

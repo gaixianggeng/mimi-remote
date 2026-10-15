@@ -3,15 +3,17 @@ package httpapi
 import (
 	"errors"
 	"fmt"
-	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"log"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
+	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
+	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 )
 
 // claudeBridgeStartTimeout bounds how long we wait for a freshly spawned bridge
@@ -178,6 +180,7 @@ func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string
 		return fmt.Errorf("启动 Claude bridge 失败：%w", err)
 	}
 	s.startedAt = time.Now().UTC()
+	debuglog.Printf("claude-bridge", "started bin=%s pid=%d", filepath.Base(bin), cmd.Process.Pid)
 	go captureClaudeBridgeStderr(stderr, claudeenv.ProxyValues(bridgeEnvironment))
 
 	done := make(chan struct{})
@@ -216,9 +219,11 @@ func (s *claudeBridgeSupervisor) reap(cmd *exec.Cmd, done chan struct{}) {
 	if err != nil {
 		log.Printf("claude bridge exited err=%v", err)
 		diagnosticlog.Record("bridge", "failed", diagnosticlog.Fields{})
+		debuglog.Printf("claude-bridge", "exited pid=%d err=%v", cmd.Process.Pid, err)
 	} else {
 		log.Printf("claude bridge exited")
 		diagnosticlog.Record("bridge", "stopped", diagnosticlog.Fields{})
+		debuglog.Printf("claude-bridge", "exited pid=%d", cmd.Process.Pid)
 	}
 	close(done)
 }

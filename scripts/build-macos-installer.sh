@@ -310,22 +310,26 @@ xcodebuild \
 APP_PATH="$DERIVED_DATA/Build/Products/Release/Mimi Remote Mac.app"
 AGENT_PATH="$APP_PATH/Contents/Resources/agentd"
 BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"
+ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-claude-adapter"
 TAILCAT_PATH="$APP_PATH/Contents/Resources/mimi-tailcat-experiment"
-if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -x "$TAILCAT_PATH" ]]; then
-  echo "Mac 安装包构建失败：Release App、内嵌 agentd、Claude bridge 或 Tailcat 不存在。" >&2
+ADAPTER_ENTITLEMENTS="$ROOT_DIR/macos/MimiRemoteMac/Resources/ClaudeAdapter.entitlements"
+if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -x "$ADAPTER_PATH" || ! -x "$TAILCAT_PATH" ]]; then
+  echo "Mac 安装包构建失败：Release App、内嵌 agentd、Claude 适配器、旧 Claude bridge 或 Tailcat 不存在。" >&2
   exit 1
 fi
 
 APP_ARCHS="$(lipo -archs "$APP_PATH/Contents/MacOS/Mimi Remote Mac")"
 AGENT_ARCHS="$(lipo -archs "$AGENT_PATH")"
 BRIDGE_ARCHS="$(lipo -archs "$BRIDGE_PATH")"
+ADAPTER_ARCHS="$(lipo -archs "$ADAPTER_PATH")"
 TAILCAT_ARCHS="$(lipo -archs "$TAILCAT_PATH")"
 for required_arch in arm64 x86_64; do
   if [[ " $APP_ARCHS " != *" $required_arch "* \
     || " $AGENT_ARCHS " != *" $required_arch "* \
     || " $BRIDGE_ARCHS " != *" $required_arch "* \
+    || " $ADAPTER_ARCHS " != *" $required_arch "* \
     || " $TAILCAT_ARCHS " != *" $required_arch "* ]]; then
-    echo "Mac 安装包构建失败：App/agentd/Claude bridge/Tailcat 缺少 ${required_arch}，App=${APP_ARCHS} agentd=${AGENT_ARCHS} bridge=${BRIDGE_ARCHS} tailcat=${TAILCAT_ARCHS}。" >&2
+    echo "Mac 安装包构建失败：App/agentd/Claude 适配器/旧 bridge/Tailcat 缺少 ${required_arch}，App=${APP_ARCHS} agentd=${AGENT_ARCHS} adapter=${ADAPTER_ARCHS} bridge=${BRIDGE_ARCHS} tailcat=${TAILCAT_ARCHS}。" >&2
     exit 1
   fi
 done
@@ -393,7 +397,7 @@ elif [[ "$DEVELOPMENT_SIGNING" == "1" ]]; then
   fi
 fi
 
-echo "==> 从内到外签名 Tailcat、Claude bridge、agentd 与 App"
+echo "==> 从内到外签名 Tailcat、Claude 适配器与旧 bridge、agentd 与 App"
 if [[ "$SNAPSHOT" == "1" || "$DEVELOPMENT_SIGNING" == "1" ]]; then
   codesign --force \
     --sign "$CODESIGN_IDENTITY" \
@@ -407,6 +411,13 @@ if [[ "$SNAPSHOT" == "1" || "$DEVELOPMENT_SIGNING" == "1" ]]; then
     --options runtime \
     "${CODESIGN_TIMESTAMP[@]}" \
     "$BRIDGE_PATH"
+  codesign --force \
+    --sign "$CODESIGN_IDENTITY" \
+    --identifier com.gaixianggeng.mimi.mac.claude-adapter \
+    --options runtime \
+    "${CODESIGN_TIMESTAMP[@]}" \
+    --entitlements "$ADAPTER_ENTITLEMENTS" \
+    "$ADAPTER_PATH"
   codesign --force \
     --sign "$CODESIGN_IDENTITY" \
     --identifier com.gaixianggeng.mimi.mac.agentd \
@@ -438,6 +449,14 @@ else
   codesign --force \
     --sign "$CODESIGN_IDENTITY" \
     --keychain "$KEYCHAIN_PATH" \
+    --identifier com.gaixianggeng.mimi.mac.claude-adapter \
+    --options runtime \
+    "${CODESIGN_TIMESTAMP[@]}" \
+    --entitlements "$ADAPTER_ENTITLEMENTS" \
+    "$ADAPTER_PATH"
+  codesign --force \
+    --sign "$CODESIGN_IDENTITY" \
+    --keychain "$KEYCHAIN_PATH" \
     --identifier com.gaixianggeng.mimi.mac.agentd \
     --options runtime \
     "${CODESIGN_TIMESTAMP[@]}" \
@@ -452,7 +471,7 @@ else
     "$APP_PATH"
 fi
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-for binary_path in "$AGENT_PATH" "$BRIDGE_PATH" "$TAILCAT_PATH"; do
+for binary_path in "$AGENT_PATH" "$BRIDGE_PATH" "$ADAPTER_PATH" "$TAILCAT_PATH"; do
   # --deep 不会可靠拒绝 Resources 下新增的裸 Mach-O，发布前必须直接验证。
   codesign --verify --strict --verbose=2 "$binary_path"
 done

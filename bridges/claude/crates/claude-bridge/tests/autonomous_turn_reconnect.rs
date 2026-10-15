@@ -130,7 +130,7 @@ async fn autonomous_reply_survives_disconnect_and_rehydrates_complete_history() 
             "jsonrpc":"2.0",
             "id":3,
             "method":"turn/start",
-            "params":{
+            "params":{"sandboxPolicy":{"type":"dangerFullAccess"},
                 "threadId":thread_id,
                 "input":[{"type":"text","text":"稍后回复我"}]
             }

@@ -27,6 +27,22 @@ final class AgentDiagnosticsTests: XCTestCase {
         XCTAssertEqual(status.droppedRecords, 0)
     }
 
+    func testStatusDecodesDebugLogSizeAndDefaultsItForOlderAgents() throws {
+        let current = #"{"enabled":true,"current_bytes":10,"previous_bytes":0,"total_bytes":10,"max_total_bytes":10485760,"retention_days":7,"debug_bytes":4096}"#
+        let older = #"{"enabled":true,"current_bytes":10,"previous_bytes":0,"total_bytes":10,"max_total_bytes":10485760,"retention_days":7}"#
+
+        XCTAssertEqual(try JSONDecoder().decode(AgentDiagnosticsStatus.self, from: Data(current.utf8)).debugBytes, 4096)
+        XCTAssertEqual(try JSONDecoder().decode(AgentDiagnosticsStatus.self, from: Data(older.utf8)).debugBytes, 0)
+    }
+
+    func testDebugLogSitsNextToTheAgentdLog() {
+        let home = URL(filePath: "/Users/tester", directoryHint: .isDirectory)
+        XCTAssertEqual(
+            AgentdSupervisorCommand.debugLogURL(homeDirectoryURL: home).path,
+            "/Users/tester/Library/Logs/mimi-remote/agentd-debug.log"
+        )
+    }
+
     func testExportDecodesOrderedSafeLines() throws {
         let raw = #"{"lines":["{\"level\":\"error\",\"code\":\"upstream_failed\"}","{\"level\":\"info\",\"event\":\"request_completed\"}"]}"#
 

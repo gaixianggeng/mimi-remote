@@ -95,7 +95,7 @@ async fn binary_stdio_initialize_thread_start_turn_start() {
             "jsonrpc": "2.0",
             "id": 3,
             "method": "turn/start",
-            "params": {
+            "params": {"sandboxPolicy":{"type":"dangerFullAccess"},
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": "say hi"}],
                 "clientUserMessageId": "client-smoke-binary"

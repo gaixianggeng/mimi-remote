@@ -321,10 +321,12 @@ extension SessionStore {
             unreadCandidate.recencyAt = now.addingTimeInterval(-30)
             upsert(unreadCandidate)
         }
+        // 按「用户打开」提交会让壳层推入会话详情，覆盖已生效的 `--debug-open-*` 落点；
+        // 显式落点时改按恢复提交：种子会话仍是选中项，但不改变当前页面（#678）。
         _ = commitSelection(
             projectID: mimiDemo.id,
             sessionID: appStore.shouldSeedDebugQueuedTurnsUI ? runningSessionID : selectedSessionID,
-            reason: .userOpen
+            reason: DebugLaunchConfiguration.requestsExplicitRootRoute() ? .restoration : .userOpen
         )
         markHistorySessionRead(selectedSessionID)
         if appStore.shouldSeedDebugQueuedTurnsUI {
@@ -635,7 +637,12 @@ extension SessionStore {
                         )
                     }
                     disconnectWebSocket()
-                    setStatusMessage(sidebarProjects.isEmpty ? L10n.text("ui.no_workspace_has_been_opened_yet") : L10n.plural("ui.recent_workspaces_loaded_count", count: sidebarProjects.count))
+                    setStatusMessage(
+                        sidebarProjects.isEmpty
+                            ? L10n.text("ui.no_workspace_has_been_opened_yet")
+                            : L10n.plural("ui.recent_workspaces_loaded_count", count: sidebarProjects.count),
+                        presentation: .silent
+                    )
                     setErrorMessage(nil)
                 }
                 await reconcilePersistedQueuedTurns()
@@ -708,7 +715,7 @@ extension SessionStore {
                     "ui.counts_joined",
                     L10n.plural("ui.recent_workspaces_loaded_count", count: sidebarProjects.count),
                     L10n.plural("ui.sessions_loaded_count", count: filteredSessions.count)
-                ))
+                ), presentation: .silent)
                 setErrorMessage(nil)
             }
         } catch {
@@ -741,7 +748,7 @@ extension SessionStore {
                     reportForeground: isSelectionLeaseCurrent(foregroundLease)
                 )
             } else if isSelectionLeaseCurrent(foregroundLease) {
-                setErrorMessage(error.localizedDescription, origin: .connectionProbe)
+                setErrorMessage(for: error, origin: .connectionProbe)
             }
         }
     }
@@ -1036,7 +1043,7 @@ extension SessionStore {
             return true
         } catch {
             if isSelectionLeaseCurrent(openIntent) {
-                setErrorMessage(error.localizedDescription)
+                setErrorMessage(for: error)
             }
             return false
         }
@@ -1155,11 +1162,14 @@ extension SessionStore {
             return true
         } catch {
             guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return false }
-            let message = L10n.format("ui.duplicate_session_failed_value", error.localizedDescription)
             if allowActiveWriterConflict {
-                writerConflictForkErrorByLease[sourceConflictLease] = message
+                // writer 冲突卡片没有详情入口，暂保留服务端原因原文，便于判断能否改为复制。
+                writerConflictForkErrorByLease[sourceConflictLease] = L10n.format(
+                    "ui.duplicate_session_failed_value",
+                    error.localizedDescription
+                )
             } else {
-                setStatusMessage(message)
+                reportOperationFailure(error) { L10n.format("ui.duplicate_session_failed_value", $0) }
             }
             return false
         }
@@ -1267,7 +1277,7 @@ extension SessionStore {
             } catch {
                 guard !Task.isCancelled, appStore.activeHostScope == hostScope,
                       isSelectionLeaseCurrent(workspaceSelectionLease) else { return false }
-                setStatusMessage(L10n.format("ui.native_fork_is_not_available_use_prompt_worktree", error.localizedDescription))
+                setStatusMessage(L10n.format("ui.native_fork_is_not_available_use_prompt_worktree", UserFacingError(error).message))
             }
 
             var options = CodexAppServerTurnOptions.default
@@ -1289,7 +1299,7 @@ extension SessionStore {
             return started
         } catch {
             if isSelectionLeaseCurrent(handoffIntent) {
-                setErrorMessage(error.localizedDescription)
+                setErrorMessage(for: error)
             }
             return false
         }

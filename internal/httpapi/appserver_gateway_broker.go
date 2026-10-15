@@ -541,7 +541,7 @@ func (b *codexGatewayBroker) pumpUpstream(ctx context.Context) {
 		policyDuration := time.Since(policyStart)
 		sink := b.currentSink()
 		if policyErr != nil {
-			sink.monitorOrNil().recordPolicyError("upstream_to_client", len(payload), policyDuration)
+			sink.monitorOrNil().recordPolicyError("upstream_to_client", b.policy.runtimeID, payload, policyErr, policyDuration)
 			if policyErr.historyResponseBlocked {
 				sink.monitorOrNil().recordHistoryResponseBlocked(len(payload), payload)
 			}

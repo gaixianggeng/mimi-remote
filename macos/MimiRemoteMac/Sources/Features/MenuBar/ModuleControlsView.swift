@@ -308,7 +308,14 @@ private struct ModuleDetailView: View {
     }
 
     @ViewBuilder private var agentDetail: some View {
-        if let runtime = store.runtime(for: module) {
+        if let guidance = MenuRuntimePresentation.codexUnavailableGuidance(for: store.runtime(for: module)) {
+            Text(guidance)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Link("如何安装 Codex", destination: OnboardingView.codexSetupURL)
+                .font(.caption)
+        } else if let runtime = store.runtime(for: module) {
             if let version = runtime.version { Text(version).font(.caption).textSelection(.enabled) }
             if let plan = runtime.effectivePlanType { Text(plan).font(.caption).foregroundStyle(.secondary) }
             if runtime.enabled, store.status?.runtimeStatus?.isExpired() == false,

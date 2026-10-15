@@ -117,6 +117,21 @@ func (w *rotatingLogWriter) rotate() error {
 	return w.open()
 }
 
+// totalBytes 返回当前文件与 previous 的总大小。
+func (w *rotatingLogWriter) totalBytes() (int64, error) {
+	w.mu.Lock()
+	size := w.size
+	w.mu.Unlock()
+	info, err := os.Lstat(w.previous)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return size, nil
+		}
+		return size, err
+	}
+	return size + info.Size(), nil
+}
+
 func (w *rotatingLogWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

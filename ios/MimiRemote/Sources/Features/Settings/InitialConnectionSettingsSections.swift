@@ -361,7 +361,7 @@ struct InitialConnectionSettingsSections: View {
             // 忘记当前电脑后仍会留下已保存的其它电脑；此时由这一组承接确认弹窗。
             otherComputersSection(model.others, ownsPresentation: true)
         } else {
-            addComputerSection(tokens: tokens)
+            firstConnectionGuideSections(tokens: tokens)
 
 #if DEBUG
             // 调试入口只在还没有任何电脑时出现，不混在日常设备管理里。
@@ -819,33 +819,41 @@ struct InitialConnectionSettingsSections: View {
         return "\(outcome) · \(ConnectionRouteFormatting.compactTimeText(report.startedAt))"
     }
 
+    /// Mac Catalyst 上本机助手可以免扫码直连；检测到时在扫码按钮上方说明。
+    @ViewBuilder
+    private func localAgentDetectionRow(tokens: ThemeTokens) -> some View {
+#if targetEnvironment(macCatalyst)
+        if appStore.localAgentDetected {
+            VStack(alignment: .leading, spacing: 5) {
+                Label(
+                    appStore.isUsingLocalConnection ? L10n.text("ui.directly_connected_through_local_assistant") : L10n.text("ui.assistant_has_been_detected_on_this_mac"),
+                    systemImage: "checkmark.circle.fill"
+                )
+                .font(themeStore.uiFont(.body, weight: .semibold))
+                .foregroundStyle(tokens.success)
+                if !appStore.isConfigured {
+                    Text(localAgentPairingHint)
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+#endif
+    }
+
     /// 添加电脑是一次性流程：扫码是唯一主操作，安装指引与手动地址都排在它下面。
     private func addComputerSection(tokens: ThemeTokens) -> some View {
         connectionPresentationSection {
-#if targetEnvironment(macCatalyst)
-            if appStore.localAgentDetected {
-                VStack(alignment: .leading, spacing: 5) {
-                    Label(
-                        appStore.isUsingLocalConnection ? L10n.text("ui.directly_connected_through_local_assistant") : L10n.text("ui.assistant_has_been_detected_on_this_mac"),
-                        systemImage: "checkmark.circle.fill"
-                    )
-                    .font(themeStore.uiFont(.body, weight: .semibold))
-                    .foregroundStyle(tokens.success)
-                    if !appStore.isConfigured {
-                        Text(localAgentPairingHint)
-                            .font(themeStore.uiFont(.footnote))
-                            .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-#endif
+            localAgentDetectionRow(tokens: tokens)
             // 扫码是唯一主按钮；粘贴是它旁边的次级图标按钮，两者同一行等高。
             ConnectionPrimaryActionsLayout(layoutDirection: layoutDirection) {
                 Button(action: beginScanningHost) {
                     ConnectionActionLabel(
                         title: L10n.text("ui.scan_qr_code_on_computer"),
-                        systemImage: "qrcode.viewfinder"
+                        systemImage: "qrcode.viewfinder",
+                        isBusy: qrScannerPresentation.isRequestingCameraAuthorization,
+                        busyTint: tokens.primaryActionForeground
                     )
                     .frame(maxHeight: .infinity)
                 }
@@ -895,6 +903,114 @@ struct InitialConnectionSettingsSections: View {
             manualConnectionRow(tokens: tokens)
         } header: {
             SettingsGroupHeader(title: L10n.text("ui.add_mac"), showsDivider: false)
+        } footer: {
+            Text(connectionSectionFooter)
+                .settingsSectionFooterStyle()
+        }
+    }
+
+    /// 一台电脑都没有时，这一页就是第一次上手的全部说明（#554）：先说电脑上要准备什么，
+    /// 再说二维码在电脑上哪里打开，最后才是扫码。扫码排在第一位时，用户会去扫一个此刻还不存在的码。
+    /// Mac App 不显示地址和访问码，DMG 用户扫不了码时唯一能走的是「复制配对链接 → 粘贴」，
+    /// 所以粘贴在这里是写明文字的次按钮，而不是只有图标；地址 + 访问码收在最后一行。
+    @ViewBuilder
+    private func firstConnectionGuideSections(tokens: ThemeTokens) -> some View {
+        Section {
+            SettingsExternalLinkRow(
+                title: L10n.text("ui.first_connection_install_codex"),
+                systemImage: "terminal",
+                destination: AppExternalLinks.codexSetup,
+                accessibilityHint: L10n.text("ui.first_connection_codex_note")
+            )
+            .accessibilityIdentifier("settings.firstConnection.codex")
+
+            HostInstallationSetupView(transientPreferences: transientPreferences)
+        } header: {
+            FirstConnectionStepHeader(
+                step: 1,
+                title: L10n.text("ui.first_connection_step_prepare"),
+                intro: L10n.text("ui.first_connection_intro")
+            )
+        } footer: {
+            Text(L10n.text("ui.first_connection_codex_note"))
+                .settingsSectionFooterStyle()
+        }
+        .settingsGroupRowStyle()
+
+        Section {
+            Text(L10n.text("ui.first_connection_open_qr_detail"))
+                .settingsDetailFont()
+                .foregroundStyle(tokens.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, 14)
+                .settingsRow()
+                .accessibilityIdentifier("settings.firstConnection.openQRCode")
+        } header: {
+            FirstConnectionStepHeader(step: 2, title: L10n.text("ui.first_connection_step_open_qr"))
+        }
+        .settingsGroupRowStyle()
+
+        connectionPresentationSection {
+            localAgentDetectionRow(tokens: tokens)
+
+            VStack(spacing: 10) {
+                Button(action: beginScanningHost) {
+                    ConnectionActionLabel(
+                        title: L10n.text("ui.scan_qr_code_on_computer"),
+                        systemImage: "qrcode.viewfinder",
+                        isBusy: qrScannerPresentation.isRequestingCameraAuthorization,
+                        busyTint: tokens.primaryActionForeground
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(tokens.primaryAction)
+                .controlSize(.large)
+                .foregroundStyle(tokens.primaryActionForeground)
+                .accessibilityIdentifier("settings.connection.scanQRCode")
+
+                Button(action: pasteConnectionInfo) {
+                    ConnectionActionLabel(
+                        title: L10n.text("ui.paste_pairing_link"),
+                        systemImage: "doc.on.clipboard"
+                    )
+                }
+                // 与安装说明里的分享按钮同一种次按钮：中性底、正文色文字。
+                .buttonStyle(.bordered)
+                .tint(tokens.secondaryText)
+                .foregroundStyle(tokens.primaryText)
+                .controlSize(.large)
+                .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
+                .accessibilityIdentifier("settings.connection.pasteConnectionInfo")
+            }
+            .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
+            .padding(.top, SettingsLayoutMetrics.rowHorizontalInset)
+            .padding(.bottom, 8)
+            .listRowSeparator(.hidden)
+
+            if !isShowingAdvancedManualConnection {
+                connectionErrorMessageRow(addComputerErrorMessage, tokens: tokens)
+            }
+
+            Text(L10n.text("ui.first_connection_paste_hint"))
+                .font(themeStore.uiFont(.footnote))
+                .foregroundStyle(tokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 12)
+                .settingsRow()
+                .listRowSeparator(.hidden, edges: .top)
+                .accessibilityIdentifier("settings.firstConnection.pasteHint")
+
+            manualConnectionRow(tokens: tokens)
+
+            // 还没连上时进不了「我的」，首启页自己给出支持页入口。
+            SettingsExternalLinkRow(
+                title: L10n.text("ui.usage_help"),
+                systemImage: "questionmark.circle",
+                destination: AppExternalLinks.support
+            )
+            .accessibilityIdentifier("settings.firstConnection.help")
+        } header: {
+            FirstConnectionStepHeader(step: 3, title: L10n.text("ui.first_connection_step_scan"))
         } footer: {
             Text(connectionSectionFooter)
                 .settingsSectionFooterStyle()
@@ -1174,12 +1290,14 @@ struct InitialConnectionSettingsSections: View {
         if honorsActiveConnectionTermination, let termination = appStore.connectionTermination {
             return termination.message
         }
-        if raw == L10n.text("ui.clipboard_does_not_contain_connection_info") {
+        if raw == L10n.text("ui.clipboard_does_not_contain_connection_info") ||
+            HostPlatform.isPairingQRCodeExpiredGuidance(raw) {
             return raw
         }
         let lowercased = raw.lowercased()
         if lowercased.contains("expired") || raw.contains("过期") {
-            return L10n.text("ui.the_pairing_qr_code_has_expired_please_re")
+            // 走到这里时已不知道二维码属于哪台电脑，只能给覆盖各平台的说法。
+            return HostPlatform.unknown.pairingQRCodeExpiredGuidance
         }
         if InitialConnectionErrorClassifier.isCredentialRejection(raw) {
             return L10n.text("ui.this_device_has_not_been_verified_by_mac")
@@ -1504,10 +1622,26 @@ struct InitialConnectionSettingsSections: View {
         } catch {
             isSavingConnection = false
             appStore.connectionStatus = .failed(error.localizedDescription)
-            appStore.lastError = error.localizedDescription
-            setConnectionAttemptError(error.localizedDescription, forAddComputer: errorBelongsToAddComputer)
-            return .rejected(error.localizedDescription)
+            let message = connectionAttemptMessage(for: error, intent: intent)
+            appStore.lastError = message
+            setConnectionAttemptError(message, forAddComputer: errorBelongsToAddComputer)
+            // 扫码页失败时仍全屏停留，指引要在这里就能看到，不能等用户关掉扫码页。
+            return .rejected(message)
         }
+    }
+
+    /// 二维码在本地就被判定过期，此时还没连上那台电脑。只有「重新配对当前电脑」能确定
+    /// 二维码来自哪个平台；首次连接和添加电脑扫的是另一台机器，必须用通用指引（#673）。
+    private func connectionAttemptMessage(for error: Error, intent: ConnectionQRCodeScanIntent) -> String {
+        guard (error as? PairingLinkError) == .expired else {
+            return error.localizedDescription
+        }
+        guard case .repairCurrentProfile = intent,
+              let platform = appStore.activeConnectionProfile?.hostPlatform
+        else {
+            return HostPlatform.unknown.pairingQRCodeExpiredGuidance
+        }
+        return platform.pairingQRCodeExpiredGuidance
     }
 
     private func refreshCommittedConnection(maxWait: TimeInterval, forAddComputer: Bool) async -> Bool {

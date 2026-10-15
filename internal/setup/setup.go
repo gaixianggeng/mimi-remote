@@ -378,7 +378,7 @@ func resultFromConfigForNetwork(
 	}
 	token := strings.TrimSpace(cfg.Auth.Token)
 	if token == "" {
-		warnings = append(warnings, "配置中没有 auth.token，iPad 无法完成鉴权；请重新执行 agentd setup --force")
+		warnings = append(warnings, "配置中没有 auth.token，移动设备无法完成鉴权；请重新执行 agentd setup --force")
 	}
 	scanRoot := ""
 	if len(cfg.ScanRoots) > 0 {
@@ -533,11 +533,11 @@ func endpointForListen(ctx context.Context, listen string) (string, []string) {
 			host = ip
 		} else {
 			host = "127.0.0.1"
-			warnings = append(warnings, "agentd 绑定在所有网卡，但未检测到 Tailscale IP；请确认 iPad 能访问这台电脑")
+			warnings = append(warnings, "agentd 绑定在所有网卡，但未检测到 Tailscale IP；请确认移动设备能访问这台电脑")
 		}
 	}
 	if isLoopbackHost(host) {
-		warnings = append(warnings, "当前 Endpoint 是本机地址，只适合这台电脑本机或模拟器；iPad 真机建议先安装并登录 Tailscale，或显式启用受限的局域网访问")
+		warnings = append(warnings, "当前 Endpoint 是本机地址，只适合这台电脑本机或模拟器；移动设备连接前建议先安装并登录 Tailscale，或显式启用受限的局域网访问")
 	}
 	return (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}).String(), warnings
 }

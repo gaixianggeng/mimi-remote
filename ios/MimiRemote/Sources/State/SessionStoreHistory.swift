@@ -354,7 +354,10 @@ extension SessionStore {
                     allowNonRunning: resume == nil && !payload.isEmpty
                 )
                 // 恢复反馈属于页面生命周期状态，不是服务端 transcript 内容，避免它参与历史排序。
-                setStatusMessage(resume == nil ? L10n.text("ui.session_started") : L10n.text("ui.this_historical_conversation_has_been_continued"))
+                setStatusMessage(
+                    resume == nil ? L10n.text("ui.session_started") : L10n.text("ui.this_historical_conversation_has_been_continued"),
+                    presentation: .silent
+                )
                 setErrorMessage(nil)
             }
             if queuesInitialInput {
@@ -424,7 +427,7 @@ extension SessionStore {
                isSelectionLeaseCurrent(optimisticSelectionLease) {
                 // 保留协议原始错误进入统一出口。若先翻译成提示文案，writer 冲突标记会丢失，
                 // Composer 仍会错误地保持可发送状态。
-                setErrorMessage(error.localizedDescription)
+                setErrorMessage(for: error)
             }
             return false
         }
@@ -908,7 +911,7 @@ extension SessionStore {
                     let retryMessage = fullHistoryLadderRetryNotice(policyFailure)
                     if !effectiveQuiet {
                         setHistoryLoadNotice(sessionID: sessionID, kind: .loadingFull, message: retryMessage)
-                        setStatusMessage(retryMessage)
+                        setStatusMessage(retryMessage, presentation: .silent)
                     }
                     return await loadHistory(
                         for: session,
@@ -929,7 +932,7 @@ extension SessionStore {
                 let message = fullHistoryOversizeNotice(policyFailure, sessionID: sessionID)
                 if !effectiveQuiet {
                     setHistoryLoadNotice(sessionID: sessionID, kind: .loadingSummary, message: message)
-                    setStatusMessage(message)
+                    setStatusMessage(message, presentation: .silent)
                 }
                 return await loadHistory(
                     for: session,
@@ -950,7 +953,7 @@ extension SessionStore {
                 let message = L10n.plural("ui.compact_history_retry_seconds_count", count: seconds)
                 if !effectiveQuiet {
                     setHistoryLoadNotice(sessionID: sessionID, kind: .loadingSummary, message: message)
-                    setStatusMessage(message)
+                    setStatusMessage(message, presentation: .silent)
                 }
                 try? await Task.sleep(nanoseconds: delay)
                 guard !Task.isCancelled else {
@@ -977,13 +980,21 @@ extension SessionStore {
         if job.loadMode == .full {
             if !effectiveQuiet {
                 setHistoryLoadNotice(sessionID: sessionID, kind: .fullFailed)
-                setStatusMessage(L10n.format("ui.full_history_loading_failed_value", error.localizedDescription))
+                reportOperationFailure(error, presentation: .silent) { L10n.format("ui.full_history_loading_failed_value", $0) }
             }
         } else {
             // 终态失败必须离开“正在加载”横幅，否则重连触发的静默刷新会让界面永远停在加载中。
             if !effectiveQuiet {
-                setHistoryLoadNotice(sessionID: sessionID, kind: .summaryFailed)
-                setErrorMessage(L10n.format("ui.thumbnail_history_loading_failed_value", error.localizedDescription))
+                // 同一次失败只留状态条这一处提示：原因写成可读文案，原文仍进 errorMessage 供重试与诊断，
+                // 会话页据 coveredErrorMessage 不再并排显示错误条（#718）。
+                let format: (String) -> String = { L10n.format("ui.thumbnail_history_loading_failed_value", $0) }
+                setHistoryLoadNotice(
+                    sessionID: sessionID,
+                    kind: .summaryFailed,
+                    message: format(UserFacingError(error).message),
+                    coveredErrorMessage: format(error.localizedDescription)
+                )
+                setErrorMessage(for: error, format: format)
             }
         }
         return false
@@ -1218,7 +1229,12 @@ extension SessionStore {
         hideHistoryLoading(sessionID: sessionID)
     }
 
-    func setHistoryLoadNotice(sessionID: SessionID, kind: HistorySavingsNotice.Kind, message customMessage: String? = nil) {
+    func setHistoryLoadNotice(
+        sessionID: SessionID,
+        kind: HistorySavingsNotice.Kind,
+        message customMessage: String? = nil,
+        coveredErrorMessage: String? = nil
+    ) {
         let defaultMessage: String
         switch kind {
         case .loadingFull:
@@ -1233,7 +1249,12 @@ extension SessionStore {
             defaultMessage = L10n.text("ui.the_thumbnail_history_loading_failed_possibly_due_to")
         }
         let message = customMessage ?? defaultMessage
-        historySavingsNoticesBySessionID[sessionID] = HistorySavingsNotice(sessionID: sessionID, kind: kind, message: message)
+        historySavingsNoticesBySessionID[sessionID] = HistorySavingsNotice(
+            sessionID: sessionID,
+            kind: kind,
+            message: message,
+            coveredErrorMessage: coveredErrorMessage
+        )
     }
 
     func deferredFullHistoryNotice(sessionID: SessionID) -> String? {
@@ -1241,6 +1262,39 @@ extension SessionStore {
             return nil
         }
         return L10n.text("ui.the_full_history_will_be_restored_after_the_current_turn")
+    }
+
+    /// 电脑端持有方停下（执行完、被拒或退出）时只推状态，不推它那一轮工具调用的结果；打开会话时
+    /// 按"持有方仍在处理"显示为进行中的命令会一直停在进行中。打开着的会话静默补拉一次历史，
+    /// 让它们收敛到真实结果（#706）。
+    func scheduleHistoryReconcileAfterComputerHolderStopped(sessionID: SessionID) {
+        guard selectedSessionID == sessionID,
+              historyLoadJobsBySessionID[sessionID] == nil,
+              let session = sessionsByID[sessionID],
+              !session.isRunning
+        else {
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            await Task.yield()
+            guard self.selectedSessionID == sessionID,
+                  self.historyLoadJobsBySessionID[sessionID] == nil,
+                  let latestSession = self.sessionsByID[sessionID],
+                  !latestSession.isRunning
+            else {
+                return
+            }
+            _ = await self.loadHistory(
+                for: latestSession,
+                quiet: true,
+                loadMode: .full,
+                force: true,
+                reason: .automatic
+            )
+        }
     }
 
     /// full 响应只在 Turn 运行期间因过程项临时膨胀时才进入该路径。完成事件已经先把
@@ -1526,7 +1580,7 @@ extension SessionStore {
                 requestLineage: result.requestLineage
             )
             if updateStatusMessage, canReportForeground() {
-                setStatusMessage(L10n.plural("ui.sessions_loaded_count", count: filteredSessions.count))
+                setStatusMessage(L10n.plural("ui.sessions_loaded_count", count: filteredSessions.count), presentation: .silent)
             }
             // 手动刷新/切换工作区成功时可以清掉旧错误；发送后的后台刷新不能抢掉刚产生的发送失败提示。
             if clearErrorOnSuccess, canReportForeground() {
@@ -3258,7 +3312,7 @@ extension SessionStore {
         }
         insertExpandedProjectID(projectID)
         disconnectWebSocket()
-        setStatusMessage(L10n.text("ui.session_started"))
+        setStatusMessage(L10n.text("ui.session_started"), presentation: .silent)
         setErrorMessage(nil)
         return true
     }

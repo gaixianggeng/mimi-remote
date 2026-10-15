@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
@@ -69,7 +70,7 @@ func pairingEndpoint(
 		listensEverywhere := configuredIP != nil && configuredIP.IsUnspecified()
 
 		switch {
-		case isTailscaleIPv4(configuredIP):
+		case isTailscaleListenIP(configuredIP):
 			if strings.TrimSpace(lookups.tailscaleIP(ctx)) != "" {
 				return httpEndpoint(configuredIP.String(), port), nil, nil
 			}
@@ -99,11 +100,11 @@ func pairingEndpoint(
 
 	switch network {
 	case PairingNetworkTailscale:
-		if !cfg.Network.AllowLAN && !listensEverywhere && !isTailscaleIPv4(configuredIP) {
+		if !cfg.Network.AllowLAN && !listensEverywhere && !isTailscaleListenIP(configuredIP) {
 			return "", nil, fmt.Errorf("当前服务未监听 Tailscale；请先调整 agentd 网络配置")
 		}
 		host := ""
-		if isTailscaleIPv4(configuredIP) {
+		if isTailscaleListenIP(configuredIP) {
 			host = configuredIP.String()
 		} else {
 			host = strings.TrimSpace(lookups.tailscaleIP(ctx))
@@ -143,13 +144,21 @@ func pairingNetworkForEndpoint(endpoint string) PairingNetwork {
 	}
 	ip := net.ParseIP(strings.Trim(parsed.Hostname(), "[]"))
 	switch {
-	case isTailscaleIPv4(ip):
+	case isTailscaleListenIP(ip):
 		return PairingNetworkTailscale
 	case isPrivateLANIPv4(ip):
 		return PairingNetworkLAN
 	default:
 		return ""
 	}
+}
+
+// isTailscaleListenIP 判断配置的 listen 或配对 Endpoint 是否位于 Tailscale 地址上，
+// IPv4 100.64.0.0/10 与 IPv6 fd7a:115c:a1e0::/48 一致处理：手动写成 Tailscale IPv6
+// 的 listen 只能经该地址连接，配对必须使用它。自动探测的配对地址仍只取 IPv4。
+func isTailscaleListenIP(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	return ok && tailscaleinfo.IsTailscaleAddress(addr)
 }
 
 func isTailscaleIPv4(ip net.IP) bool {

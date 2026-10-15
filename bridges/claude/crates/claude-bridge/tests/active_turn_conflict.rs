@@ -94,7 +94,7 @@ async fn active_thread_is_projected_and_second_turn_is_rejected_before_acceptanc
 
     send(
         &mut client_writer,
-        json!({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"threadId":thread_id,"input":[{"type":"text","text":"first"}]}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sandboxPolicy":{"type":"dangerFullAccess"},"threadId":thread_id,"input":[{"type":"text","text":"first"}]}}),
     )
     .await;
     let first = response(&mut client_reader, 3).await;
@@ -120,7 +120,7 @@ async fn active_thread_is_projected_and_second_turn_is_rejected_before_acceptanc
 
     send(
         &mut client_writer,
-        json!({"jsonrpc":"2.0","id":5,"method":"turn/start","params":{"threadId":thread_id,"input":[{"type":"text","text":"second"}]}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"turn/start","params":{"sandboxPolicy":{"type":"dangerFullAccess"},"threadId":thread_id,"input":[{"type":"text","text":"second"}]}}),
     )
     .await;
     let conflict = response(&mut client_reader, 5).await;

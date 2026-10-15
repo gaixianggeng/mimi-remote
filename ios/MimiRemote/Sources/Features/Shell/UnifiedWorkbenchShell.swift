@@ -44,6 +44,7 @@ struct UnifiedWorkbenchShell: View {
     @AppStorage(WorkspaceSessionRuntimeChoice.preferenceKey)
     private var preferredWorkspaceRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
     @State private var workspaceRuntimeSelection = WorkspaceRuntimeSelectionState()
+    @State private var workspaceBrowseSelection = WorkspaceBrowseSelectionState()
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -111,6 +112,7 @@ struct UnifiedWorkbenchShell: View {
             .onChange(of: appStore.activeHostScope.profileID) { _, _ in
                 synchronizeSidebarLifecycle()
                 workspaceRuntimeSelection.reset()
+                workspaceBrowseSelection.reset()
             }
             .onChange(of: preferredWorkspaceRuntimeRawValue) { _, _ in
                 workspaceRuntimeSelection.reset()
@@ -162,6 +164,8 @@ struct UnifiedWorkbenchShell: View {
                 networkUnavailableBanner(tokens: tokens)
             }
         }
+        // 所有 setStatusMessage 写入口的统一可见呈现（#508）。
+        .operationFeedbackToasts()
     }
 
     private var sheetPresentationBinding: Binding<WorkbenchSheetPresentation?> {
@@ -1050,7 +1054,8 @@ struct UnifiedWorkbenchShell: View {
                     )
                 },
                 set: { workspaceRuntimeSelection.manualRuntime = $0 }
-            )
+            ),
+            browseSelection: $workspaceBrowseSelection
         )
     }
 

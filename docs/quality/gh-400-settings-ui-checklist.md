@@ -21,7 +21,7 @@
 
 - `SettingsRowStyle` 为 `Form` 设置 52pt 基础行高，并在辅助功能字号下切换为 76pt。
 - `settingsRow(.descriptive)` 为说明行设置 76pt 下限。所有行只使用最小高度，没有固定内容高度。
-- `settingsDetailPage()` 统一 720pt 最大宽度、Form 底部滚动留白和紧凑 Tab 的底栏避让。
+- `settingsDetailPage(tokens:)` 统一 720pt 最大宽度、Form 底部滚动留白和紧凑 Tab 的底栏避让，并在收窄之后铺满画布底色，iPad 宽屏两侧不露出容器底色（#676）。
 - `themedSettingsForm` 统一使用 24pt 组间距。
 - `settingsScrollContent()` 统一法律页和诊断页的 720pt 最大宽度、16pt 横向内边距和 24pt 底部留白。
 - `SettingsValueLabel`、`ConnectionRowLabel`、选项行、能力行和测速阶段行已使用 28pt 图标槽、18pt 普通图标及 12pt 图文间距。

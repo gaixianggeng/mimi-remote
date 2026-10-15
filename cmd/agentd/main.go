@@ -115,7 +115,7 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
-	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
+	browseRoot := fs.String("browse-root", "", "移动设备浏览目录或打开 workspace 时的授权根目录，默认使用用户 Home")
 	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale；Windows 的 LAN 需要显式启用")
 	appServerSSHTarget := fs.String("app-server-ssh-target", "", "共享 Codex App Server 的 SSH 目标；macOS 默认 127.0.0.1，Linux 仅显式指定时使用")
 	force := fs.Bool("force", false, "覆盖已有配置并重新生成 token")
@@ -205,7 +205,7 @@ func runUp(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
-	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
+	browseRoot := fs.String("browse-root", "", "移动设备浏览目录或打开 workspace 时的授权根目录，默认使用用户 Home")
 	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale；Windows 的 LAN 需要显式启用")
 	appServerSSHTarget := fs.String("app-server-ssh-target", "", "共享 Codex App Server 的 SSH 目标；macOS 默认 127.0.0.1，Linux 仅显式指定时使用")
 	waitTimeout := fs.Duration("wait", 10*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
@@ -1072,7 +1072,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	listenAddresses := moduleListenAddresses(cfg)
 	listeners := make([]net.Listener, 0, len(listenAddresses))
 	for _, address := range listenAddresses {
-		listener, err := net.Listen("tcp", address)
+		listener, err := listenModuleAddress(cfg, address)
 		if err != nil {
 			for _, opened := range listeners {
 				_ = opened.Close()
@@ -1080,8 +1080,11 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			_ = shutdownServeResources(apiRouter, appServerRuntime)
 			return fmt.Errorf("监听 %s 失败：%w", address, err)
 		}
+		if listener == nil {
+			continue
+		}
 		if cfg.HasNetworkModuleControls() {
-			listener = networkaccess.Wrap(listener, networkaccess.Policy{Tailscale: cfg.TailscaleAccessEnabled(), LAN: cfg.LANAccessEnabled()})
+			listener = networkaccess.Wrap(listener, moduleIngressPolicy(cfg))
 		}
 		listeners = append(listeners, listener)
 	}
@@ -1632,7 +1635,7 @@ func printSetupResult(w io.Writer, result agentsetup.Result) {
 	fmt.Fprintln(w, "  1. agentd doctor --check-port")
 	fmt.Fprintln(w, "  2. agentd start")
 	fmt.Fprintln(w, "  3. agentd doctor")
-	fmt.Fprintln(w, "  4. iPad App 打开设置，扫码连接；二维码不可用时再手动输入 Endpoint 和 Token")
+	fmt.Fprintln(w, "  4. 在移动设备上的 Mimi Remote 打开设置，扫码连接；二维码不可用时选择“手动连接”，把 Endpoint 填入连接地址、Token 填入访问码")
 }
 
 func printPairResult(w io.Writer, result agentsetup.Result) {
@@ -1681,15 +1684,18 @@ func printQROnlyPairResult(w io.Writer, result agentsetup.Result) {
 	printWarnings(w, safeResult.Warnings)
 }
 
+// serveConnectionQRHeading 同时用于 --no-pair 泄漏测试，避免文案调整后断言静默失效。
+const serveConnectionQRHeading = "用移动设备扫这个二维码连接这台电脑："
+
 func printServeConnection(w io.Writer, result agentsetup.Result) {
 	printWarnings(w, result.Warnings)
-	fmt.Fprintln(w, "\n用 iPad 扫这个二维码连接这台电脑：")
+	fmt.Fprintln(w, "\n"+serveConnectionQRHeading)
 	printConnectionQRCode(w, result.PairURL)
 	if result.PairExpiresAt != "" {
 		fmt.Fprintf(w, "二维码 10 分钟内有效，有效期至：%s\n", result.PairExpiresAt)
 	}
-	fmt.Fprintln(w, "扫不了时，在 iPad 的“高级手动连接”里填写：")
-	fmt.Fprintf(w, "  地址：%s\n", result.Endpoint)
+	fmt.Fprintln(w, "扫不了时，在移动设备上的 Mimi Remote 选择“手动连接”，填写：")
+	fmt.Fprintf(w, "  连接地址：%s\n", result.Endpoint)
 	fmt.Fprintf(w, "  访问码：%s\n", result.Token)
 	fmt.Fprintln(w)
 }

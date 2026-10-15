@@ -41,7 +41,7 @@ struct ManagedConnectionSubscriptionView: View {
             subscriptionInformationSection
         }
         .themedSettingsForm(tokens: tokens)
-        .settingsDetailPage()
+        .settingsDetailPage(tokens: tokens)
         .navigationTitle(L10n.text("ui.managed_subscription_title"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)

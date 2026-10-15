@@ -969,6 +969,8 @@ struct AccountTokenUsageCard: View {
             activityBody(tokens: tokens, gridHeight: gridHeight)
             activityCaptionArea(tokens: tokens)
         }
+        // 先声明为容器，标识才只属于这一列；否则会覆盖点格的 settings.tokenActivity.grid（#678）。
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.tokenUsage.activity")
     }
 
@@ -1346,7 +1348,7 @@ struct DiagnosticsAndSupportSettingsView: View {
             .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
-        .settingsDetailPage()
+        .settingsDetailPage(tokens: tokens)
         .navigationBarTitleDisplayMode(.inline)
         .navigationTitle(L10n.text("ui.diagnosis_and_support"))
     }
@@ -1398,7 +1400,7 @@ struct AdvancedDevelopmentSettingsView: View {
             if !enabled { ConversationScrollDiagnostics.shared.stop() }
         }
         .themedSettingsForm(tokens: tokens)
-        .settingsDetailPage()
+        .settingsDetailPage(tokens: tokens)
         .navigationBarTitleDisplayMode(.inline)
         .navigationTitle(L10n.text("ui.advanced_and_development"))
     }
@@ -1448,7 +1450,7 @@ struct AboutAndLegalSettingsView: View {
             .settingsGroupRowStyle()
         }
         .themedSettingsForm(tokens: tokens)
-        .settingsDetailPage()
+        .settingsDetailPage(tokens: tokens)
         .navigationBarTitleDisplayMode(.inline)
         .navigationTitle(L10n.text("ui.about_and_legal"))
     }

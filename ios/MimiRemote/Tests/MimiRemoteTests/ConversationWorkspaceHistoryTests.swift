@@ -4196,9 +4196,10 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(notice.message, L10n.text("ui.the_complete_history_failed_to_load_the_content"))
         XCTAssertFalse(notice.message.contains("过大"), "普通超时不能推断为内容过大")
         XCTAssertFalse(notice.message.localizedCaseInsensitiveContains("too large"), "Generic failures must not imply oversized history")
+        // 状态文案只给可读结论（#508），原始错误留在反馈详情里。
         XCTAssertEqual(
             store.statusMessage,
-            L10n.format("ui.full_history_loading_failed_value", MockError.timeout.localizedDescription)
+            L10n.format("ui.full_history_loading_failed_value", UserFacingError(MockError.timeout).message)
         )
         XCTAssertFalse(store.isRefreshingSelectedSession)
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["已缓存历史"])
@@ -4827,6 +4828,9 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy, .economy])
         XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .summaryFailed)
         XCTAssertNotNil(store.errorMessage)
+        // #718：状态条写可读原因并记下它覆盖的错误原文，会话页据此不再并排显示错误条。
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.coveredErrorMessage, store.errorMessage)
+        XCTAssertFalse(store.selectedHistorySavingsNotice?.message.contains("-32080") ?? true)
     }
 
     func testWrappedHarnessHistoryCancellationDoesNotShowFailureNotice() async {

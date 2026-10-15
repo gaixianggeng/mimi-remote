@@ -641,13 +641,8 @@ extension SessionStore {
     }
 
     private func setSessionArchiveError(archived: Bool, error: Error) {
-        setErrorMessage(
-            L10n.format(
-                "ui.value_failed_value",
-                L10n.text(archived ? "ui.archive" : "ui.unarchive"),
-                error.localizedDescription
-            )
-        )
+        let action = L10n.text(archived ? "ui.archive" : "ui.unarchive")
+        setErrorMessage(for: error) { L10n.format("ui.value_failed_value", action, $0) }
     }
 
     func supportsCodexThreadManagement(_ session: AgentSession) -> Bool {
@@ -658,55 +653,67 @@ extension SessionStore {
 
     @discardableResult
     func renameSession(_ session: AgentSession, name: String) async -> Bool {
+        await renameSessionReportingFailure(session, name: name) == nil
+    }
+
+    /// 重命名会话；失败时返回已经写入状态通道的失败反馈，成功返回 nil。
+    ///
+    /// 重命名弹窗需要就地展示失败原因并保留输入，不能只依赖会被后续写入覆盖的全局提示（#508）。
+    func renameSessionReportingFailure(_ session: AgentSession, name: String) async -> OperationFeedback? {
         let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard supportsCodexThreadManagement(session), !normalized.isEmpty else {
-            setStatusMessage(L10n.text("ui.session_name_cannot_be_empty"))
-            return false
+            return reportOperationFailure(.described(L10n.text("ui.session_name_cannot_be_empty")))
         }
         guard normalized.utf8.count <= 256 else {
-            setStatusMessage(L10n.text("ui.session_name_cannot_exceed_256_bytes"))
-            return false
+            return reportOperationFailure(.described(L10n.text("ui.session_name_cannot_exceed_256_bytes")))
         }
         let lease: ProjectsGitHostLease
         do {
             lease = try captureProjectsGitHostLease()
         } catch {
-            setStatusMessage(L10n.format("ui.rename_failed_value", error.localizedDescription))
-            return false
+            return reportOperationFailure(error) { L10n.format("ui.rename_failed_value", $0) }
         }
         do {
             try await lease.client.setThreadName(threadID: session.id, name: normalized)
-            guard canApplyProjectsGitResult(lease) else { return false }
+            guard canApplyProjectsGitResult(lease) else { return Self.staleHostOperationFeedback }
             // 名称由 app-server 持久化；再读一次权威 thread，立即刷新侧栏，不维护第二份本地标题。
             let refreshed = try? await lease.client.session(id: session.id, afterSeq: nil)
-            guard canApplyProjectsGitResult(lease) else { return false }
+            guard canApplyProjectsGitResult(lease) else { return Self.staleHostOperationFeedback }
             if let refreshed {
                 upsert(refreshed.session)
             }
             setStatusMessage(L10n.format("ui.session_renamed_to_value", normalized))
-            return true
+            return nil
         } catch {
-            guard canApplyProjectsGitResult(lease) else { return false }
-            setStatusMessage(L10n.format("ui.rename_failed_value", error.localizedDescription))
-            return false
+            guard canApplyProjectsGitResult(lease) else { return Self.staleHostOperationFeedback }
+            return reportOperationFailure(error) { L10n.format("ui.rename_failed_value", $0) }
         }
+    }
+
+    /// 结果返回时电脑已经切换：不写入任何提示（不属于当前电脑），但调用方仍需知道没有成功。
+    private static var staleHostOperationFeedback: OperationFeedback {
+        OperationFeedback(kind: .failure, message: L10n.text("ui.error_unknown"))
     }
 
     @discardableResult
     func compactSessionContext(_ session: AgentSession) async -> Bool {
         guard supportsCodexThreadManagement(session) else {
-            setStatusMessage(L10n.text("ui.the_current_running_channel_does_not_support_manual"))
+            reportOperationFailure(.described(L10n.text("ui.the_current_running_channel_does_not_support_manual")))
             return false
         }
         guard !session.isRunning else {
-            setStatusMessage(L10n.text("ui.please_wait_for_the_current_turn_to_complete"))
+            reportOperationFailure(.described(L10n.text("ui.please_wait_for_the_current_turn_to_complete")))
             return false
+        }
+        // 压缩失败多为链路或电脑端暂时性问题，提示上直接给出重试，不必再去菜单里找一遍。
+        let retry = OperationFeedback.Retry(title: L10n.text("ui.retry")) { [weak self] in
+            _ = await self?.compactSessionContext(session)
         }
         let lease: ProjectsGitHostLease
         do {
             lease = try captureProjectsGitHostLease()
         } catch {
-            setStatusMessage(L10n.format("ui.context_compression_failed_value", error.localizedDescription))
+            reportOperationFailure(error, retry: retry) { L10n.format("ui.context_compression_failed_value", $0) }
             return false
         }
         do {
@@ -716,7 +723,7 @@ extension SessionStore {
             return true
         } catch {
             guard canApplyProjectsGitResult(lease) else { return false }
-            setStatusMessage(L10n.format("ui.context_compression_failed_value", error.localizedDescription))
+            reportOperationFailure(error, retry: retry) { L10n.format("ui.context_compression_failed_value", $0) }
             return false
         }
     }
@@ -725,11 +732,11 @@ extension SessionStore {
     func startReview(_ session: AgentSession, target: CodexAppServerReviewTarget) async -> Bool {
         let latestSession = sessionsByID[session.id] ?? session
         guard supportsCodexThreadManagement(latestSession) else {
-            setStatusMessage(L10n.text("ui.the_current_running_channel_does_not_support_codex"))
+            reportOperationFailure(.described(L10n.text("ui.the_current_running_channel_does_not_support_codex")))
             return false
         }
         guard !latestSession.isRunning else {
-            setStatusMessage(L10n.text("ui.please_wait_until_the_current_turn_is_completed"))
+            reportOperationFailure(.described(L10n.text("ui.please_wait_until_the_current_turn_is_completed")))
             return false
         }
 
@@ -737,7 +744,7 @@ extension SessionStore {
         do {
             normalizedTarget = try target.validatedInlineTarget()
         } catch {
-            setStatusMessage(L10n.format("ui.review_target_is_invalid_value", error.localizedDescription))
+            reportOperationFailure(error) { L10n.format("ui.review_target_is_invalid_value", $0) }
             return false
         }
 
@@ -745,7 +752,7 @@ extension SessionStore {
         do {
             lease = try captureProjectsGitHostLease()
         } catch {
-            setStatusMessage(L10n.format("ui.review_startup_failed_value", error.localizedDescription))
+            reportOperationFailure(error) { L10n.format("ui.review_startup_failed_value", $0) }
             return false
         }
         do {
@@ -760,7 +767,7 @@ extension SessionStore {
             return true
         } catch {
             guard canApplyProjectsGitResult(lease) else { return false }
-            setStatusMessage(L10n.format("ui.review_startup_failed_value", error.localizedDescription))
+            reportOperationFailure(error) { L10n.format("ui.review_startup_failed_value", $0) }
             return false
         }
     }
@@ -833,7 +840,7 @@ extension SessionStore {
                 setStatusMessage(L10n.text("ui.the_in_app_reminder_has_been_saved_the"))
             }
         } catch {
-            setStatusMessage(L10n.format("ui.reminder_saved_but_notification_scheduling_failed_value", error.localizedDescription))
+            reportOperationFailure(error) { L10n.format("ui.reminder_saved_but_notification_scheduling_failed_value", $0) }
         }
     }
 
@@ -920,7 +927,7 @@ extension SessionStore {
         do {
             lease = try captureProjectsGitHostLease()
         } catch {
-            setErrorMessage(error.localizedDescription, origin: .connectionProbe)
+            setErrorMessage(for: error, origin: .connectionProbe)
             return
         }
         var requestToken: Int?
@@ -974,7 +981,7 @@ extension SessionStore {
                !isCurrentSessionPageRequest(projectID: projectID, token: requestToken) {
                 return
             }
-            setErrorMessage(error.localizedDescription, origin: .connectionProbe)
+            setErrorMessage(for: error, origin: .connectionProbe)
         }
     }
 
@@ -1250,7 +1257,7 @@ extension SessionStore {
             }
             stopAllQueuedSessionMonitoring()
             suspendWebSocketForNetworkLoss()
-            setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"))
+            setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"), presentation: .silent)
             return
         }
 
@@ -1398,9 +1405,16 @@ extension SessionStore {
     }
 
     func sessionListPollingDelayNanoseconds() -> UInt64 {
-        webSocketStatus == .connected
-            ? sessionListConnectedPollingDelayNanoseconds
-            : sessionListDisconnectedPollingDelayNanoseconds
+        // 快档只补偿「本该有前台事件流却断开」的选中会话：断开期间它的输出与状态只能靠轮询。
+        // 停在列表页、看电脑端持有或其他只读会话时本来就没有可写事件流，行状态另有运行时
+        // 推送（#683）；这时也用快档，常驻轮询会把列表翻页压进 gateway 的次数预算（#716）。
+        guard webSocketStatus != .connected,
+              let session = selectedSession,
+              !session.isLocalDraft,
+              canControlSession(session) else {
+            return sessionListConnectedPollingDelayNanoseconds
+        }
+        return sessionListDisconnectedPollingDelayNanoseconds
     }
 
 }

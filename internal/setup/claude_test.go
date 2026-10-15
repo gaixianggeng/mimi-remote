@@ -58,6 +58,31 @@ func TestConfigureClaudeAutoEnablesReadyRuntimeAndPreservesConfig(t *testing.T) 
 	}
 }
 
+func TestConfigureClaudeAutoReportsOutdatedClaudeCodeForAdapter(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("本测试使用 Unix 可执行脚本模拟 Claude CLI")
+	}
+	configPath := writeClaudeConfigurationFixture(t, 0, false)
+	root := filepath.Dir(configPath)
+	// 换成 SDK 适配器：它声明需要 Claude Code 2.1.294，夹具里的 CLI 是 2.1.220。
+	adapter := filepath.Join(root, "mimi-claude-adapter")
+	writeExecutableFixture(t, adapter,
+		"if [ \"$1\" = \"--capabilities\" ]; then printf '%s\\n' '{\"methods\":[\"initialize\"],\"fullAccess\":true,\"claudeCode\":{\"minimumVersion\":\"2.1.294\"}}'; exit 0; fi\n"+
+			"printf 'mimi-claude-adapter 0.3.0\\n'\n")
+	document := readClaudeConfigurationFixture(t, configPath)
+	document["claude"].(map[string]any)["bridge_bin"] = adapter
+	writeClaudeDocument(t, configPath, document)
+
+	result, err := ConfigureClaude(context.Background(), configPath, ClaudeActivationAuto, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Enabled || result.Available || result.Reason != "claude_unsupported" ||
+		!strings.Contains(result.Message, "2.1.220") || !strings.Contains(result.Message, "2.1.294") || !strings.Contains(result.Message, "claude update") {
+		t.Fatalf("Claude Code 低于适配器下限时应保持关闭并提示升级：%+v", result)
+	}
+}
+
 func TestConfigureClaudeAutoKeepsRuntimeOffWhenSignedOut(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("本测试使用 Unix 可执行脚本模拟 Claude CLI")

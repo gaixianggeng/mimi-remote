@@ -9,6 +9,8 @@ struct AgentDiagnosticsStatus: Decodable, Equatable, Sendable {
     let maxTotalBytes: Int64
     let retentionDays: Int
     let droppedRecords: Int64
+    /// 本机调试日志的大小；只在详细记录窗口内写入，不进入安全日志导出。旧版 agentd 不返回。
+    let debugBytes: Int64
 
     private enum CodingKeys: String, CodingKey {
         case enabled
@@ -19,6 +21,7 @@ struct AgentDiagnosticsStatus: Decodable, Equatable, Sendable {
         case maxTotalBytes = "max_total_bytes"
         case retentionDays = "retention_days"
         case droppedRecords = "dropped_records"
+        case debugBytes = "debug_bytes"
     }
 
     init(
@@ -29,7 +32,8 @@ struct AgentDiagnosticsStatus: Decodable, Equatable, Sendable {
         totalBytes: Int64,
         maxTotalBytes: Int64,
         retentionDays: Int,
-        droppedRecords: Int64 = 0
+        droppedRecords: Int64 = 0,
+        debugBytes: Int64 = 0
     ) {
         self.enabled = enabled
         self.expiresAt = expiresAt
@@ -39,6 +43,7 @@ struct AgentDiagnosticsStatus: Decodable, Equatable, Sendable {
         self.maxTotalBytes = maxTotalBytes
         self.retentionDays = retentionDays
         self.droppedRecords = droppedRecords
+        self.debugBytes = debugBytes
     }
 
     init(from decoder: Decoder) throws {
@@ -51,6 +56,7 @@ struct AgentDiagnosticsStatus: Decodable, Equatable, Sendable {
         maxTotalBytes = try container.decode(Int64.self, forKey: .maxTotalBytes)
         retentionDays = try container.decode(Int.self, forKey: .retentionDays)
         droppedRecords = try container.decodeIfPresent(Int64.self, forKey: .droppedRecords) ?? 0
+        debugBytes = try container.decodeIfPresent(Int64.self, forKey: .debugBytes) ?? 0
     }
 
     var expirationDate: Date? {

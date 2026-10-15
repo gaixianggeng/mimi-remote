@@ -1,0 +1,22 @@
+{
+  "name": "mimi-claude-adapter",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Mimi Remote 的 Claude 通道适配器，基于官方 Claude Agent SDK",
+  "scripts": {
+    "build": "bun build --compile --minify src/main.ts --outfile dist/mimi-claude-adapter",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "sync-protocol": "bash scripts/sync-protocol.sh",
+    "acceptance": "bun scripts/acceptance/main.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.296",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@types/bun": "1.2.22",
+    "typescript": "5.9.3"
+  }
+}

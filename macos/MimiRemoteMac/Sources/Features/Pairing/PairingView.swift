@@ -219,7 +219,9 @@ private struct PairingIntroduction: View {
                     // 大字号里字距要收紧，否则标题看起来是散的。
                     .tracking(-0.5)
 
-                Text("在 iPhone 或 iPad 上打开 Mimi Remote，然后扫描下方二维码。")
+                // iOS 主屏上的名字是 mimi，App Store 里叫 Mimi Remote；两个名字都写出来，
+                // 用户在手机上才找得到（#554）。扫不了码时，复制下方链接到手机上粘贴即可。
+                Text("在 iPhone 或 iPad 上打开 mimi（App Store 里叫 Mimi Remote），扫描下方二维码。扫不了码就点「复制配对链接」，在手机上粘贴。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

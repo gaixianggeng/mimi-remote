@@ -18,7 +18,7 @@ $windowsDocs = @(
 )
 foreach ($path in @($iss, $register, $firewall, $signing, $icon, $build, $check, $releaseWorkflow) + $windowsDocs) { if (-not (Test-Path -LiteralPath $path)) { throw "Missing required packaging file: $path" } }
 $source = Get-Content -LiteralPath $iss -Raw
-foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico', 'SetupIconFile=mimi-remote.ico', 'UninstallDisplayIcon={app}\mimi-remote.ico', 'IconFilename: "{app}\mimi-remote.ico"', '{userstartup}\Mimi Remote', 'Parameters: "--show"', 'register-service.ps1', 'configure-firewall.ps1', 'PrivilegesRequired=lowest', 'Flags: unchecked', 'GetCustomSetupExitCode', 'PrivateLanFirewallRule', 'PrivateLanNetworkProfileIsReady', 'StopTrayApp', 'ConfigureLANAccess(False)', 'ConfigureLANAccess(True)', 'OutputBaseFilename={#MyOutputBaseFilename}', 'SignTool={#MySignTool}', 'SignedUninstaller=yes', 'SignedUninstaller=no')) {
+foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico', 'SetupIconFile=mimi-remote.ico', 'UninstallDisplayIcon={app}\mimi-remote.ico', 'IconFilename: "{app}\mimi-remote.ico"', '{userstartup}\Mimi Remote', 'Parameters: "--show"', 'register-service.ps1', 'configure-firewall.ps1', 'PrivilegesRequired=lowest', 'Flags: unchecked', 'GetCustomSetupExitCode', 'PrivateLanFirewallRule', 'PrivateLanNetworkProfileIsReady', 'StopTrayApp', 'ConfigureLANAccess(False)', 'ConfigureLANAccess(True)', 'OutputBaseFilename={#MyOutputBaseFilename}', 'SignTool={#MySignTool}', 'SignedUninstaller=yes', 'SignedUninstaller=no')) {
     if (-not $source.Contains($expected)) { throw "Installer source is missing required policy: $expected" }
 }
 if ($source.Contains('no longer supports Windows as the agentd host') -or $source.Contains('function InitializeSetup(): Boolean')) {
@@ -95,6 +95,8 @@ if ($source -match '(?m)^\[InstallDelete\]$') { throw 'Installer must not delete
 foreach ($script in @($register, $firewall, $signing, $build, $check)) { [void][scriptblock]::Create((Get-Content -LiteralPath $script -Raw)) }
 $buildSource = Get-Content -LiteralPath $build -Raw
 if (-not $buildSource.Contains('target-feature=+crt-static')) { throw 'Windows release bridge must use a static Rust CRT.' }
+if (-not $buildSource.Contains('--target=bun-windows-x64-baseline')) { throw 'Windows release must build the Claude adapter with the baseline Bun runtime.' }
+if (-not $buildSource.Contains('The signed Claude adapter failed its version probe.')) { throw 'Signed release builds must re-run the Claude adapter after Authenticode signing.' }
 if (-not $buildSource.Contains('/DMySignTool=mimi-authenticode')) { throw 'Release builds must register the Inno Setup Authenticode signing tool.' }
 if (-not $buildSource.Contains('[switch]$AllowUnsignedRelease')) { throw 'Unsigned release builds must require an explicit switch.' }
 if (-not $buildSource.Contains("'unsigned-release'")) { throw 'Unsigned release builds must record their signing mode in metadata.' }

@@ -531,7 +531,7 @@ func preflightClaude(ctx context.Context, cfg config.Config) claudePreflightResu
 		SystemProxySource:  systemProxy.Source,
 		ProxyMismatch:      proxyMismatch,
 	}
-	bridge, ok := claudebridge.ResolveBinary(cfg.Claude.BridgeBin)
+	bridge, ok := claudebridge.ResolveBinary(cfg.Claude.BridgeBin, cfg.Claude.LegacyBridge)
 	if !ok {
 		baseResult.Reason = "bridge_missing"
 		baseResult.Message = "App 内没有可用的 Claude bridge，请重新安装 Mimi Remote。"
@@ -557,6 +557,17 @@ func preflightClaude(ctx context.Context, cfg config.Config) claudePreflightResu
 		baseResult.Message = "Claude bridge 版本不兼容，请升级 Mimi Remote。"
 		return baseResult
 	}
+	// SDK 适配器（#660 起默认）声明了它要求的 Claude Code 最低版本。
+	var adapter *claudebridge.AdapterCapabilities
+	if claudebridge.IsAdapterVersionOutput(string(bridgeVersionOutput)) {
+		capabilities, err := claudebridge.ReadAdapterCapabilities(ctx, bridge, cfg.Claude.Args, commandEnvironment)
+		if err != nil {
+			baseResult.Reason = "bridge_capabilities_unknown"
+			baseResult.Message = "无法读取 Claude 适配器的能力声明，请重新安装 Mimi Remote。"
+			return baseResult
+		}
+		adapter = &capabilities
+	}
 
 	configuredClaudeBin := strings.TrimSpace(cfg.Claude.Env[claudeBinaryEnvKey])
 	claude, err := resolveClaudeBin(ctx, configuredClaudeBin, commandEnvironment)
@@ -574,6 +585,11 @@ func preflightClaude(ctx context.Context, cfg config.Config) claudePreflightResu
 	}
 	claudeVersion := claude.version
 	baseResult.ClaudeVersion = claudeVersion
+	if adapter != nil && !adapter.ClaudeCodeSupported(claudeVersion) {
+		baseResult.Reason = "claude_unsupported"
+		baseResult.Message = claudebridge.ClaudeCodeUpgradeMessage(claudeVersion, adapter.ClaudeCode.MinimumVersion)
+		return baseResult
+	}
 	loggedIn, authErr := probeClaudeAuthStatus(ctx, claudeBin, commandEnvironment, 5*time.Second)
 	baseResult.LoggedIn = loggedIn
 	if authErr != nil {

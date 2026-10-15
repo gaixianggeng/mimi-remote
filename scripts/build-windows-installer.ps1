@@ -10,7 +10,8 @@ param(
     [switch]$AllowUnsignedRelease,
     [ValidateSet('x86_64-pc-windows-msvc', 'x86_64-pc-windows-gnullvm', 'x86_64-pc-windows-gnu')]
     [string]$RustTarget = 'x86_64-pc-windows-msvc',
-    [string]$BridgeBinary
+    [string]$BridgeBinary,
+    [string]$AdapterBinary
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,6 +27,8 @@ if (-not $Snapshot -and -not $PfxPath -and -not $AllowUnsignedRelease) {
 }
 if ($BridgeBinary -and -not $Snapshot) { throw '-BridgeBinary is accepted only for local snapshot builds; release builds must compile the bridge from source.' }
 if ($BridgeBinary) { $BridgeBinary = (Resolve-Path -LiteralPath $BridgeBinary).Path }
+if ($AdapterBinary -and -not $Snapshot) { throw '-AdapterBinary is accepted only for local snapshot builds; release builds must compile the adapter from source.' }
+if ($AdapterBinary) { $AdapterBinary = (Resolve-Path -LiteralPath $AdapterBinary).Path }
 if ($PfxPath -and -not (Test-Path -LiteralPath $PfxPath -PathType Leaf)) { throw "PFX file not found: $PfxPath" }
 if ($PfxPath -and -not $PfxPassword) { $PfxPassword = $env:WINDOWS_SIGN_PFX_PASSWORD }
 if ($PfxPath -and -not $PfxPassword) { throw 'PFX password is required via -PfxPassword or WINDOWS_SIGN_PFX_PASSWORD.' }
@@ -54,7 +57,16 @@ if ($PfxPath) {
     $signtool = Find-Tool 'signtool.exe' $sdkSignTools
     if (-not (Test-Path -LiteralPath $signingScript -PathType Leaf)) { throw "Signing wrapper not found: $signingScript" }
 }
-foreach ($tool in @('go', 'cargo')) { if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required tool not found: $tool" } }
+$requiredTools = @('go', 'cargo')
+if (-not $AdapterBinary) { $requiredTools += 'bun' }
+foreach ($tool in $requiredTools) { if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required tool not found: $tool" } }
+# Claude 适配器内嵌 Bun 运行时：版本固定为 bridges/claude-sdk/.bun-version，版本不同产物就不同。
+$adapterRoot = Join-Path $root 'bridges\claude-sdk'
+$requiredBun = (Get-Content -LiteralPath (Join-Path $adapterRoot '.bun-version') -Raw).Trim()
+if (-not $AdapterBinary) {
+    $bunVersion = (& bun --version).Trim()
+    if ($bunVersion -ne $requiredBun) { throw "The Claude adapter requires Bun $requiredBun, found $bunVersion." }
+}
 
 $output = if ([IO.Path]::IsPathRooted($OutputDirectory)) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $root $OutputDirectory }
 $iconSource = Join-Path $root 'packaging\windows\mimi-remote.ico'
@@ -85,11 +97,32 @@ try {
         }
         Copy-Item -LiteralPath (Join-Path $root "target\$RustTarget\release\alleycat-claude-bridge.exe") -Destination $stage
     }
+    # SDK 适配器是 #660 起的默认 Claude 通道；上面的旧 Rust bridge 保留一个版本周期作为回退。
+    $adapterPath = Join-Path $stage 'mimi-claude-adapter.exe'
+    if ($AdapterBinary) {
+        Copy-Item -LiteralPath $AdapterBinary -Destination $adapterPath
+    } else {
+        Push-Location $adapterRoot
+        try {
+            & bun install --frozen-lockfile --omit optional
+            if ($LASTEXITCODE -ne 0) { throw 'bun install failed for the Claude adapter.' }
+            # baseline 运行时不要求 AVX2：Windows 10 仍支持更老的 CPU。
+            & bun build --compile --minify --target=bun-windows-x64-baseline src/main.ts --outfile $adapterPath
+            if ($LASTEXITCODE -ne 0) { throw 'Claude adapter build failed.' }
+        } finally {
+            Pop-Location
+        }
+    }
+    & $adapterPath --version
+    if ($LASTEXITCODE -ne 0) { throw 'The Claude adapter failed its version probe.' }
     if ($PfxPath) {
         foreach ($file in (Get-ChildItem -LiteralPath $stage -Filter '*.exe')) {
             & $signtool sign /fd SHA256 /f $PfxPath /p $PfxPassword /tr http://timestamp.digicert.com /td SHA256 $file.FullName
             if ($LASTEXITCODE -ne 0) { throw "Signing failed: $($file.Name)" }
         }
+        # 签名会改写可执行文件：再跑一次适配器，确认它的内嵌程序没有被破坏。
+        & $adapterPath --version
+        if ($LASTEXITCODE -ne 0) { throw 'The signed Claude adapter failed its version probe.' }
     }
     $outputBaseName = if ($AllowUnsignedRelease) { "Mimi-Remote-Setup-$Version-unsigned" } else { "Mimi-Remote-Setup-$Version" }
     $isccArgs = @(
@@ -114,11 +147,11 @@ try {
     if (-not (Test-Path -LiteralPath $setup)) { throw "Expected installer was not produced: $setup" }
     $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
     $payloadHashes = [ordered]@{}
-    foreach ($payloadName in @('agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico')) {
+    foreach ($payloadName in @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico')) {
         $payloadHashes[$payloadName] = (Get-FileHash -LiteralPath (Join-Path $stage $payloadName) -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     $signingMode = if ($Snapshot) { 'unsigned-snapshot' } elseif ($PfxPath) { 'authenticode-pfx' } else { 'unsigned-release' }
-    [ordered]@{ product = 'Mimi Remote'; version = $Version; installer = [IO.Path]::GetFileName($setup); sha256 = $hash; signing = $signingMode; rust_target = $RustTarget; rust_crt = 'static'; binaries = @('agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe'); assets = @('mimi-remote.ico'); payload_sha256 = $payloadHashes } | ConvertTo-Json | Set-Content -LiteralPath "$setup.metadata.json" -Encoding utf8
+    [ordered]@{ product = 'Mimi Remote'; version = $Version; installer = [IO.Path]::GetFileName($setup); sha256 = $hash; signing = $signingMode; rust_target = $RustTarget; rust_crt = 'static'; bun_version = $requiredBun; binaries = @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe'); assets = @('mimi-remote.ico'); payload_sha256 = $payloadHashes } | ConvertTo-Json | Set-Content -LiteralPath "$setup.metadata.json" -Encoding utf8
     "$hash  $([IO.Path]::GetFileName($setup))" | Set-Content -LiteralPath "$setup.sha256" -Encoding ascii
     Write-Host "Created $setup"
 } finally {

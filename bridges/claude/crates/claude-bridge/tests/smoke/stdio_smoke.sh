@@ -119,7 +119,7 @@ text_only_send() {
   if [ -z "$thread_id" ] || [ "$thread_id" = "null" ]; then
     return 1
   fi
-  printf '{"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"threadId":"%s","input":[{"type":"text","text":"reply with the single word: hi"}]}}\n' "$thread_id" >&7
+  printf '{"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sandboxPolicy":{"type":"dangerFullAccess"},"threadId":"%s","input":[{"type":"text","text":"reply with the single word: hi"}]}}\n' "$thread_id" >&7
   if ! wait_for_id 3 "$out" >/dev/null; then
     echo "    turn/start never responded" >&2
     return 1

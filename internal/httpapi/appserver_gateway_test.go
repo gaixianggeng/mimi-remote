@@ -451,33 +451,6 @@ func TestClaudeGatewayForcesBypassPermissionsOff(t *testing.T) {
 	}
 }
 
-func TestClaudeGatewayInheritsProxyEnvironmentAndAllowsConfigOverride(t *testing.T) {
-	t.Setenv("HTTP_PROXY", "http://127.0.0.1:10808")
-	t.Setenv("http_proxy", "http://127.0.0.1:10808")
-	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:10808")
-	t.Setenv("NO_PROXY", "localhost,127.0.0.1")
-	env := buildClaudeBridgeEnv(map[string]string{
-		"https_proxy": "http://127.0.0.1:18080",
-	})
-
-	values := map[string]string{}
-	for _, item := range env {
-		key, value, ok := strings.Cut(item, "=")
-		if ok {
-			canonical := strings.ToUpper(key)
-			if _, exists := values[canonical]; exists {
-				t.Fatalf("代理环境变量不应因大小写重复：%v", env)
-			}
-			values[canonical] = value
-		}
-	}
-	if values["HTTP_PROXY"] != "http://127.0.0.1:10808" ||
-		values["HTTPS_PROXY"] != "http://127.0.0.1:18080" ||
-		values["NO_PROXY"] != "localhost,127.0.0.1" {
-		t.Fatalf("Claude bridge 应继承代理并允许 claude.env 覆盖：%v", values)
-	}
-}
-
 func TestClaudeGatewayRedactsProxyCredentialsFromDiagnostics(t *testing.T) {
 	proxy := "http://alice:hunter%402@proxy.example:8080"
 	line := sanitizeClaudeBridgeDiagnostic(
@@ -575,17 +548,17 @@ func TestResolveClaudeBridgeFallsBackToTheBundledCopy(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(sibling) })
 
 	missing := filepath.Join(t.TempDir(), "not-installed")
-	got, ok := resolveClaudeBridgePath(missing)
+	got, ok := resolveClaudeBridgePath(missing, false)
 	if !ok || got != sibling {
 		t.Fatalf("配置路径不存在时应回退到随包 bridge：got=%q ok=%v want=%q", got, ok, sibling)
 	}
-	if got, ok := resolveClaudeBridgePath(""); !ok || got != sibling {
+	if got, ok := resolveClaudeBridgePath("", false); !ok || got != sibling {
 		t.Fatalf("未配置时应使用随包 bridge：got=%q ok=%v", got, ok)
 	}
 
 	// 显式配置了一个能用的 bridge 时必须原样使用它，不能被随包的顶掉。
 	configured := writeTestBridge(t, "#!/bin/sh\nexit 0\n")
-	if got, ok := resolveClaudeBridgePath(configured); !ok || got != configured {
+	if got, ok := resolveClaudeBridgePath(configured, false); !ok || got != configured {
 		t.Fatalf("显式配置应优先：got=%q ok=%v want=%q", got, ok, configured)
 	}
 }

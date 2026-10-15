@@ -57,8 +57,23 @@ final class AppStore: ObservableObject {
     var activeRouteEndpoint: String?
     var isTailcatExperimentModeEnabled = false
     var tailcatExperimentEndpoint: String?
-    private(set) var activeRuntimeBundle: AppServerRuntimeBundle?
+    private(set) var activeRuntimeBundle: AppServerRuntimeBundle? {
+        didSet {
+            if let activeRuntimeBundle, activeRuntimeBundle !== oldValue {
+                installSessionIndexObserver(on: activeRuntimeBundle)
+            }
+        }
+    }
     private var activeRuntimeIdentity: String?
+    /// SessionStore 注入：Runtime 对没有被页面订阅的会话收到的权威快照（#683）。
+    /// 只保存一份；bundle 换代（切主机、快速切换）时由 `activeRuntimeBundle` 的 didSet 重新挂上。
+    var sessionIndexObserver: ((AgentSession) -> Void)? {
+        didSet {
+            if let activeRuntimeBundle {
+                installSessionIndexObserver(on: activeRuntimeBundle)
+            }
+        }
+    }
     private var credentialSuspensionTask: Task<Void, Never>?
     private var credentialLifecycleGeneration: UInt64 = 0
     // 仅由 AppStoreCapabilities extension 使用，用 generation 拒绝迟到的协商响应。
@@ -1870,6 +1885,16 @@ final class AppStore: ObservableObject {
         activeRuntimeIdentity = identity
         activeRuntimeBundle = bundle
         return bundle
+    }
+
+    /// 退役 bundle 的迟到快照不能写进新主机的列表：回调时核对它仍是当前 bundle。
+    private func installSessionIndexObserver(on bundle: AppServerRuntimeBundle) {
+        bundle.setSessionIndexObserver { [weak self, weak bundle] session in
+            Task { @MainActor in
+                guard let self, let bundle, self.activeRuntimeBundle === bundle else { return }
+                self.sessionIndexObserver?(session)
+            }
+        }
     }
 
     private func resetDirectRuntime() {
