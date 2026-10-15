@@ -2101,7 +2101,8 @@ extension SessionStore {
                     projectID: workspace.id,
                     preserveAllLoaded: preserveAllLoaded
                 ),
-                projectID: workspace.id
+                projectID: workspace.id,
+                runtimeProvider: runtimeProvider
             )
         }
         updateWorkspaceSessionFirstPageState(
@@ -2770,9 +2771,11 @@ extension SessionStore {
         SessionIndexStore.replacingSessions(current, with: fresh, projectID: projectID)
     }
 
-    func replaceSessionsIfChanged(with fresh: [AgentSession], projectID: String?) {
+    func replaceSessionsIfChanged(with fresh: [AgentSession], projectID: String?, runtimeProvider: String? = nil) {
         let nextFresh = fresh.map(sessionPreparedForStorage)
-        let next = Self.replacingSessions(sessions, with: nextFresh, projectID: projectID)
+        let next = SessionIndexStore.replacingSessions(
+            sessions, with: nextFresh, projectID: projectID, runtimeProvider: runtimeProvider
+        )
         ingestSessionContexts(next)
         guard next != sessions else {
             return
