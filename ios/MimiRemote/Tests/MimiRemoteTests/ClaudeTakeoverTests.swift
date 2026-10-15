@@ -746,6 +746,32 @@ final class ClaudeTakeoverTests: XCTestCase {
         XCTAssertEqual(historyRequests(), baseline + 1, "已经停下的会话再收到空闲快照不重复补拉")
     }
 
+    /// #716：快档轮询只补偿本该有前台事件流却断开的会话。列表页和电脑端持有的只读会话
+    /// 本来就没有可写事件流，也用快档会让常驻轮询撞上 gateway 的列表次数预算。
+    func testSessionListPollsFastOnlyWhileAnExpectedLiveStreamIsDown() async throws {
+        let fixture = await makeHeldStore(id: "claude_poll_cadence", supportsTakeover: true)
+        let store = fixture.store
+        let fast = store.sessionListDisconnectedPollingDelayNanoseconds
+        let normal = store.sessionListConnectedPollingDelayNanoseconds
+        XCTAssertEqual(store.selectedSessionID, fixture.held.id)
+
+        store.setWebSocketStatus(.disconnected)
+        XCTAssertEqual(store.sessionListPollingDelayNanoseconds(), normal, "电脑端持有的会话没有可写事件流")
+
+        store.updateSession(fixture.held.id) { session in
+            session.canAcceptDirectInput = true
+            session.claudeOwner = nil
+        }
+        XCTAssertEqual(store.sessionListPollingDelayNanoseconds(), fast, "可控会话的事件流断开时靠轮询兜底")
+
+        store.setWebSocketStatus(.connected)
+        XCTAssertEqual(store.sessionListPollingDelayNanoseconds(), normal)
+
+        store.setWebSocketStatus(.disconnected)
+        store.selectedSessionID = nil
+        XCTAssertEqual(store.sessionListPollingDelayNanoseconds(), normal, "列表页没有选中会话")
+    }
+
     /// #683：没有被页面订阅的会话收到持有方状态推送时，运行时把快照交给列表观察者，
     /// 并把 active / busy 读成"电脑端运行中"、把随附的最后活动时间写进会话。
     func testStatusPushForUnsubscribedSessionReachesTheIndexObserverWithRunState() async throws {

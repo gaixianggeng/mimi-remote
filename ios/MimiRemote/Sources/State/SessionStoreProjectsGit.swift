@@ -1405,9 +1405,16 @@ extension SessionStore {
     }
 
     func sessionListPollingDelayNanoseconds() -> UInt64 {
-        webSocketStatus == .connected
-            ? sessionListConnectedPollingDelayNanoseconds
-            : sessionListDisconnectedPollingDelayNanoseconds
+        // 快档只补偿「本该有前台事件流却断开」的选中会话：断开期间它的输出与状态只能靠轮询。
+        // 停在列表页、看电脑端持有或其他只读会话时本来就没有可写事件流，行状态另有运行时
+        // 推送（#683）；这时也用快档，常驻轮询会把列表翻页压进 gateway 的次数预算（#716）。
+        guard webSocketStatus != .connected,
+              let session = selectedSession,
+              !session.isLocalDraft,
+              canControlSession(session) else {
+            return sessionListConnectedPollingDelayNanoseconds
+        }
+        return sessionListDisconnectedPollingDelayNanoseconds
     }
 
 }

@@ -371,6 +371,8 @@ type appServerGatewayPendingHistoryRequest struct {
 	useStateDBOnly    string
 	refreshHistory    string
 	filterFingerprint string
+	// continuationQuery 只用于续页记账：同一条页链必须是同一个列表查询。
+	continuationQuery string
 	includeTurns      bool
 	fingerprint       string
 	inflightOwner     string
