@@ -74,12 +74,19 @@ func TestThreadListContinuationPagesSkipRequestCountLimit(t *testing.T) {
 			policy, projectDir := newThreadListContinuationTestPolicy(t)
 			clientCursor := ""
 			for page := 0; page < appServerGatewayHistoryBudgetMaxRequests*3; page++ {
-				params := map[string]any{"limit": 50, "sortKey": "updated_at", "sortDirection": "desc"}
+				// Claude 首页走索引（快速首屏）或要求重扫（权威首屏），续页改为普通扫描：
+				// 数据来源变化不影响续页身份。
+				params := map[string]any{"limit": 50, "sortKey": "updated_at", "sortDirection": "desc", "useStateDbOnly": false}
 				if !tc.global {
 					params["cwd"] = projectDir
 				}
-				if clientCursor != "" {
+				switch {
+				case clientCursor != "":
 					params["cursor"] = clientCursor
+				case tc.global:
+					params["useStateDbOnly"] = true
+				default:
+					params["refreshHistory"] = true
 				}
 				request, _ := json.Marshal(map[string]any{"id": page + 1, "method": "thread/list", "params": params})
 				if _, err := policy.validateClientFrame(websocket.TextMessage, request); err != nil {
@@ -105,6 +112,35 @@ func TestThreadListContinuationPagesSkipRequestCountLimit(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// 续页只属于签发它的查询：换了排序或筛选再带旧 cursor，是另一条查询的翻页，照常计数。
+func TestThreadListContinuationIsBoundToOriginatingQuery(t *testing.T) {
+	policy, projectDir := newThreadListContinuationTestPolicy(t)
+	issued := ""
+	for attempt := 0; attempt <= appServerGatewayHistoryBudgetMaxRequests; attempt++ {
+		// 每页都换排序：每个 cursor 都被拿去翻另一条查询，因此每次都要计数。
+		params := map[string]any{"cwd": projectDir, "limit": 50, "sortKey": "updated_at"}
+		if attempt%2 == 1 {
+			params["sortKey"] = "recency_at"
+		}
+		if issued != "" {
+			params["cursor"] = issued
+		}
+		request, _ := json.Marshal(map[string]any{"id": attempt + 1, "method": "thread/list", "params": params})
+		_, err := policy.validateClientFrame(websocket.TextMessage, request)
+		if attempt == appServerGatewayHistoryBudgetMaxRequests {
+			if err == nil || err.data["reason"] != "history_budget_limited" {
+				t.Fatalf("换了查询条件的 cursor 不能免计数：%+v", err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatalf("attempt=%d err=%+v", attempt, err)
+		}
+		issued = fmt.Sprintf("upstream-%d", attempt+1)
+		respondHistoryPage(t, policy, attempt+1, issued)
 	}
 }
 
