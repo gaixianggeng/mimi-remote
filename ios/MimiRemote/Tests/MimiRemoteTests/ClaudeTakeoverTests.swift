@@ -21,6 +21,71 @@ final class ClaudeTakeoverTests: XCTestCase {
         let sockets: SocketRecorder
     }
 
+    /// #722：适配器读不到工作目录时给空串，不能冲掉已知目录，否则下一次发送会在本地被 allowlist 拒绝。
+    func testEmptyThreadCWDKeepsKnownWorkingDirectory() async throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/tmp/repo")
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://localhost:8787", token: "test-token", runtimeProvider: "claude"
+        )
+        let created = try await runtime.agentSession(
+            from: ["id": .string("claude_empty_cwd"), "cwd": .string(project.path)],
+            projects: [project], fallbackProject: nil
+        )
+        await runtime.rememberForkedSession(created)
+
+        let metadata: [String: CodexAppServerJSONValue] = ["id": .string(created.id), "cwd": .string("")]
+        let context = await runtime.contextForHistoryThread(metadata, sessionID: created.id, projects: [project])
+        XCTAssertEqual(context?.environment?.cwd, project.path)
+        let reprojected = try await runtime.agentSession(from: metadata, projects: [project], fallbackProject: nil)
+        XCTAssertEqual(reprojected.dir, project.path)
+        XCTAssertEqual(reprojected.projectID, project.id)
+
+        // 真的拿不到目录时，提示不能是一个冒号后面什么都没有。
+        XCTAssertEqual(
+            CodexAppServerRequestBuilderError.pathNotAllowlisted("").errorDescription,
+            L10n.text("ui.working_directory_unknown")
+        )
+    }
+
+    /// #722：历史会话续聊时 resume 先把会话投影成运行中；首个 turn 被明确拒绝后必须撤回，
+    /// 否则额度刷新重放整条会话，界面会停在「运行中 / 思考中」。
+    func testRejectedFirstTurnAfterResumeDoesNotLeaveSessionRunning() async throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/tmp/repo")
+        let transport = FakeCodexAppServerTransport()
+        let config = makeDirectAppServerConfig(project: project, channels: [makeClaudeChannelMetadata(methods: [
+            "initialize", "initialized", "thread/resume", "turn/start"
+        ])])
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://localhost:8787", token: "test-token", runtimeProvider: "claude",
+            transportFactory: { transport }, configProvider: { config }
+        )
+        let threadID = "claude_rejected_first_turn"
+        let create = Task {
+            try await runtime.createSession(CreateSessionRequest(
+                projectID: project.id, prompt: "continue", resumeID: threadID, clientMessageID: "client-rejected"
+            ))
+        }
+        try await initializeTakeoverRuntime(transport)
+        let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume")
+        // 适配器读不到工作目录时回空串；turn/start 仍要带发起 resume 的项目目录。
+        transportResponse(transport, id: resume.id, result: #"{"thread":{"id":"\#(threadID)","cwd":"","status":{"type":"idle"},"turns":[]}}"#)
+        let start = try await waitForFakeAppServerRequest(transport, method: "turn/start")
+        XCTAssertEqual(start.params?.objectValue?["cwd"]?.stringValue, project.path)
+        transportErrorResponse(transport, id: start.id, code: -32602, message: "rejected before start")
+        do {
+            _ = try await create.value
+            XCTFail("首个 turn 被拒绝时 createSession 应抛错")
+        } catch {}
+
+        await runtime.applyAccountRateLimit(try JSONDecoder().decode(RateLimitSummary.self, from: Data("{}".utf8)))
+        let replayed = await runtime.bufferedEvents(sessionID: threadID, replayPolicy: .stateOnly).compactMap { event -> AgentSession? in
+            if case .session(let session) = event { return session }
+            return nil
+        }
+        XCTAssertEqual(replayed.last?.status, SessionStatus.history.rawValue)
+        XCTAssertNil(replayed.last?.activeTurnID)
+    }
+
     func testThreadTakeoverBuilderSendsOnlyThreadAndAllowlistedCWD() throws {
         let project = AgentProject(id: "repo", name: "Repo", path: "/tmp/repo")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])

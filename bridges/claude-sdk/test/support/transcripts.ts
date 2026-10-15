@@ -95,13 +95,23 @@ export class TranscriptBuilder {
     this.records.push({ type: "custom-title", customTitle, sessionId: this.sessionId });
   }
 
-  write(configDir: string, encodedDir = encodeProjectDir(this.cwd)): string {
+  /**
+   * `messageFirst` 按 Claude Code 真实的字段顺序写：`message` 在 `cwd` 之前。默认把元数据
+   * 写在前面，大消息也不会把 `cwd` 挤出 SDK 的头部读取窗口。
+   */
+  write(configDir: string, encodedDir = encodeProjectDir(this.cwd), options: { messageFirst?: boolean } = {}): string {
     const dir = path.join(configDir, "projects", encodedDir);
     mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `${this.sessionId}.jsonl`);
-    writeFileSync(file, `${this.records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+    const order = options.messageFirst ? messageFirst : (record: Record_) => record;
+    writeFileSync(file, `${this.records.map((record) => JSON.stringify(order(record))).join("\n")}\n`);
     return file;
   }
+}
+
+function messageFirst(record: Record_): Record_ {
+  const { parentUuid, isSidechain, type, message, ...rest } = record;
+  return message === undefined ? record : { parentUuid, isSidechain, type, message, ...rest };
 }
 
 /** Claude 的项目目录名：绝对路径里非字母数字字符替换成 `-`。 */

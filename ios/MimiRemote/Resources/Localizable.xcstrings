@@ -38913,6 +38913,23 @@
         }
       }
     },
+    "ui.working_directory_unknown": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't find this session's working directory. Refresh the session list and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有找到这个会话的工作目录。请刷新会话列表后重试。"
+          }
+        }
+      }
+    },
     "ui.working_for_value": {
       "comment": "Running work group title with a compact duration.",
       "localizations": {

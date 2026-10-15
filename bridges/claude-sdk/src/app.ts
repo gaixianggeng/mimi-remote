@@ -5,7 +5,7 @@ import { ClaudeCodeVersionGate, type ClaudeCodeProbe } from "./claude/claudeCode
 import { legacyIndexPath, migrateLegacyNames, readLegacyIndex } from "./claude/legacy.ts";
 import { Overlay } from "./claude/overlay.ts";
 import { sdkSessions, type ClaudeSessions } from "./claude/sdk.ts";
-import { ActivityClock, TranscriptIndex } from "./claude/transcripts.ts";
+import { ActivityClock, TranscriptIndex, WorkingDirectories } from "./claude/transcripts.ts";
 import { ModelCatalog, sdkModelDiscovery, type DiscoverModels } from "./claude/models.ts";
 import { createAccountHandlers } from "./handlers/account.ts";
 import { createHistoryHandlers } from "./handlers/history.ts";
@@ -92,9 +92,10 @@ export function createApp(options: AppOptions): App {
   const sessions = options.sessions ?? sdkSessions;
   const transcripts = new TranscriptIndex();
   const activity = new ActivityClock();
+  const directories = new WorkingDirectories();
   const legacyIndex = legacyIndexPath();
   const overlay = new Overlay(path.join(stateDir, "overlay.json"), legacyIndex);
-  const catalog = new Catalog({ sessions, transcripts, activity, overlay });
+  const catalog = new Catalog({ sessions, transcripts, activity, directories, overlay });
   const history = new HistoryStore({ sessions, transcripts });
   const claudeExecutable = options.claudeExecutable ?? defaultClaudeExecutable;
   const manager = new ThreadManager({

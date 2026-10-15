@@ -2,10 +2,11 @@ import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import { messagesToTurns } from "./history.ts";
 import type { Overlay } from "./overlay.ts";
 import type { ClaudeSessions, SessionInfo } from "./sdk.ts";
-import type { ActivityClock, TranscriptIndex } from "./transcripts.ts";
+import type { ActivityClock, TranscriptIndex, WorkingDirectories } from "./transcripts.ts";
 
 export interface SessionRecord {
   id: string;
+  /** 协议要求是字符串；确实读不到时为空串，网关和 iOS 都按缺失处理。 */
   cwd: string;
   name: string | null;
   preview: string;
@@ -22,6 +23,7 @@ export interface CatalogDeps {
   sessions: ClaudeSessions;
   transcripts: TranscriptIndex;
   activity: ActivityClock;
+  directories: WorkingDirectories;
   overlay: Overlay;
 }
 
@@ -59,9 +61,11 @@ export class Catalog {
     const file = this.deps.transcripts.get(info.sessionId);
     const activityMs = file ? await this.deps.activity.lastActivityMs(file) : undefined;
     const updatedMs = activityMs ?? info.lastModified;
+    // SDK 不带 dir 时只看 transcript 头部，首条消息带图会漏掉 cwd（#722）。
+    const cwd = info.cwd || (file ? await this.deps.directories.firstCwd(file) : undefined);
     return {
       id: info.sessionId,
-      cwd: info.cwd ?? "",
+      cwd: cwd ?? "",
       // customTitle 同时涵盖 /rename 与 Claude 自动生成的标题；没有标题时 summary
       // 退化为提问原文，只能当 preview，不能冒充标题。
       name: info.customTitle?.trim() || null,

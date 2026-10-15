@@ -706,7 +706,8 @@ extension CodexAppServerSessionRuntime {
         guard let id = thread["id"]?.stringValue else {
             throw AgentAPIError.invalidResponse
         }
-        let cwd = thread["cwd"]?.stringValue ?? fallbackProject?.path ?? ""
+        // 适配器读不到工作目录时给空串（#722）；同一 thread 的目录不会变，空串不能覆盖已知值。
+        let cwd = nonEmpty(thread["cwd"]?.stringValue, contextsBySessionID[id]?.cwd, fallbackProject?.path) ?? ""
         let project = gatewayAnnotatedProject(from: thread, projects: projects)
             ?? projectFor(cwd: cwd, projects: projects)
             ?? fallbackProject
