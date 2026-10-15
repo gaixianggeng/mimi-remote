@@ -2099,9 +2099,11 @@ extension SessionStore {
                 with: pageSessionsPreservingLoadedWindow(
                     pageSessions,
                     projectID: workspace.id,
+                    runtimeProvider: runtimeProvider,
                     preserveAllLoaded: preserveAllLoaded
                 ),
-                projectID: workspace.id
+                projectID: workspace.id,
+                runtimeProvider: runtimeProvider
             )
         }
         updateWorkspaceSessionFirstPageState(
@@ -2770,9 +2772,11 @@ extension SessionStore {
         SessionIndexStore.replacingSessions(current, with: fresh, projectID: projectID)
     }
 
-    func replaceSessionsIfChanged(with fresh: [AgentSession], projectID: String?) {
+    func replaceSessionsIfChanged(with fresh: [AgentSession], projectID: String?, runtimeProvider: String? = nil) {
         let nextFresh = fresh.map(sessionPreparedForStorage)
-        let next = Self.replacingSessions(sessions, with: nextFresh, projectID: projectID)
+        let next = SessionIndexStore.replacingSessions(
+            sessions, with: nextFresh, projectID: projectID, runtimeProvider: runtimeProvider
+        )
         ingestSessionContexts(next)
         guard next != sessions else {
             return
@@ -2809,11 +2813,12 @@ extension SessionStore {
     func pageSessionsPreservingLoadedWindow(
         _ fresh: [AgentSession],
         projectID: String,
+        runtimeProvider: String? = nil,
         preserveAllLoaded: Bool = false
     ) -> [AgentSession] {
         acknowledgeRecentActivityProjections(in: fresh)
         let freshIDs = Set(fresh.map(\.id))
-        recordRunningSessionsMissingFromFreshPage(freshIDs: freshIDs, projectID: projectID)
+        recordRunningSessionsMissingFromFreshPage(freshIDs: freshIDs, projectID: projectID, runtimeProvider: runtimeProvider)
         var result = pageSessionsPreservingSelection(fresh, projectID: projectID)
         var knownIDs = Set(result.map(\.id))
         // 生命周期合并必须读取 canonical sessions；`sessions(forProjectID:)` 是顶层展示投影，
@@ -2892,14 +2897,17 @@ extension SessionStore {
         return result
     }
 
-    func recordRunningSessionsMissingFromFreshPage(freshIDs: Set<SessionID>, projectID: String) {
-        let runningSessions = canonicalSessions(forProjectID: projectID).filter(\.isRunning)
+    func recordRunningSessionsMissingFromFreshPage(freshIDs: Set<SessionID>, projectID: String, runtimeProvider: String? = nil) {
+        // 只结算本页 Runtime：Codex 首屏既不能给同工作区的 Claude 会话累加缺失，也不能清掉它的计数（#721）。
+        let inRuntime = { (session: AgentSession) in SessionIndexStore.isSession(session, inRuntime: runtimeProvider) }
+        let runningSessions = canonicalSessions(forProjectID: projectID).filter { $0.isRunning && inRuntime($0) }
         let runningIDs = Set(runningSessions.map(\.id))
 
         // 当前页重新出现、或实时事件已把它改成终态时，连续缺失计数立即失效。
         let resolvedSessionIDs: [SessionID] = missingRunningSessionStateByID.compactMap { element in
             let (sessionID, state) = element
             guard state.projectID == projectID,
+                  sessionsByID[sessionID].map(inRuntime) ?? true,
                   freshIDs.contains(sessionID) || !runningIDs.contains(sessionID) else {
                 return nil
             }
