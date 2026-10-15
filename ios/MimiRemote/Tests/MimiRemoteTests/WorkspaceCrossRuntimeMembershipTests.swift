@@ -75,6 +75,41 @@ final class WorkspaceCrossRuntimeMembershipTests: XCTestCase {
         )
     }
 
+    func testCodexFirstPagesDoNotSettleRunningClaudeMissCounter() async throws {
+        let project = makeProject(id: "gh-721-running-miss")
+        let codex = makeRuntimeSession("gh-721-codex-poll", project: project, runtime: "codex", updatedAt: 40)
+        let runningClaude = makeSession(
+            id: "gh-721-claude-running", projectID: project.id, title: "运行中的 Claude", status: "running",
+            source: "claude", runtimeProvider: "claude", updatedAt: Date(timeIntervalSince1970: 30)
+        )
+        let store = makeStore(project: project, workspaceSessions: [codex, runningClaude])
+        _ = try await store.workspaceRuntimeSessionsPage(
+            projectID: project.id, runtimeProvider: "claude", cursor: nil, limit: 20
+        )
+        let workspace = try XCTUnwrap(store.ensureWorkspaceForKnownProjectID(project.id))
+
+        // Claude 自己的首屏短暂漏掉它一次，宽限计数从 1 开始。
+        store.recordRunningSessionsMissingFromFreshPage(freshIDs: [], projectID: project.id, runtimeProvider: "claude")
+        XCTAssertEqual(store.missingRunningSessionStateByID[runningClaude.id]?.consecutiveRefreshMisses, 1)
+
+        // 多轮 Codex 轮询既不能继续累加，也不能把这次缺失当成已恢复清零。
+        for _ in 0..<4 {
+            store.applyWorkspaceSessionFirstPage(
+                workspace: workspace,
+                page: SessionsPage(sessions: [codex]),
+                runtimeProvider: "codex",
+                consistency: .authoritative,
+                restartsFromFirst: true
+            )
+        }
+        XCTAssertEqual(
+            store.missingRunningSessionStateByID[runningClaude.id]?.consecutiveRefreshMisses,
+            1,
+            "缺失宽限只能由 Claude 自己的首屏结算"
+        )
+        XCTAssertTrue(claudeIDs(in: store, project: project).contains(runningClaude.id))
+    }
+
     private func makeRuntimeSession(
         _ id: String,
         project: AgentProject,

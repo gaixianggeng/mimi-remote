@@ -9,7 +9,6 @@ struct SessionIndexStore {
         projectID: String?,
         runtimeProvider: String? = nil
     ) -> [AgentSession] {
-        let replacedRuntime = runtimeProvider.map(CodexAppServerSessionRuntime.normalizedRuntimeProvider)
         let scopedFresh: [AgentSession]
         if let projectID {
             scopedFresh = fresh.filter { $0.projectID == projectID }
@@ -33,13 +32,16 @@ struct SessionIndexStore {
             guard session.projectID == projectID else {
                 return true
             }
-            guard let replacedRuntime else {
-                return false
-            }
-            return CodexAppServerSessionRuntime.normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
-                != replacedRuntime
+            return !isSession(session, inRuntime: runtimeProvider)
         }
         return scopedFresh + kept
+    }
+
+    /// 首屏按 Runtime 分别请求；替换与缺失计数都只能作用于本页 Runtime 的会话。nil 表示不限 Runtime。
+    static func isSession(_ session: AgentSession, inRuntime runtimeProvider: String?) -> Bool {
+        guard let runtimeProvider else { return true }
+        return CodexAppServerSessionRuntime.normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
+            == CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
     }
 
     static func sortedSessions(_ items: [AgentSession]) -> [AgentSession] {
