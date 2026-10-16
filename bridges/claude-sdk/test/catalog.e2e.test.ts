@@ -2,7 +2,7 @@
 // 压缩后只显示压缩之后、排队消息、活动时间不受 mtime 影响。全程不碰真实 ~/.claude。
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Router } from "../src/server/router.ts";
@@ -16,6 +16,7 @@ const nestedWorktree = path.join(repo, ".claude", "worktrees", "feature");
 const siblingWorktree = path.join(sandbox, "repo-sibling");
 const otherProject = path.join(sandbox, "other");
 const pendingProject = path.join(sandbox, "pending");
+const screenshotProject = path.join(sandbox, "screenshot");
 
 const ids = {
   root: "11111111-1111-4111-8111-111111111111",
@@ -26,10 +27,12 @@ const ids = {
   compacted: "66666666-6666-4666-8666-666666666666",
   multiBlock: "77777777-7777-4777-8777-777777777777",
   pending: "88888888-8888-4888-8888-888888888888",
+  screenshot: "99999999-9999-4999-8999-999999999999",
 };
 
 let router: Router;
 let rootFile = "";
+let screenshotFile = "";
 
 function git(cwd: string, ...args: string[]) {
   execFileSync("git", args, { cwd, stdio: "ignore", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
@@ -44,7 +47,7 @@ async function call(method: string, params: unknown): Promise<any> {
 }
 
 beforeAll(async () => {
-  for (const dir of [repo, otherProject, pendingProject]) execFileSync("mkdir", ["-p", dir]);
+  for (const dir of [repo, otherProject, pendingProject, screenshotProject]) execFileSync("mkdir", ["-p", dir]);
   git(repo, "init", "-q", "-b", "main");
   git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init");
   git(repo, "worktree", "add", "-q", "-b", "feature", nestedWorktree);
@@ -123,6 +126,15 @@ beforeAll(async () => {
   pending.user("run it");
   pending.assistant([{ type: "tool_use", id: "toolu_pending", name: "Bash", input: { command: "touch x" } }]);
   pending.write(configDir);
+
+  // 首条消息带截图：按 Claude Code 的字段顺序，cwd 落在 SDK 头部 64 KB 窗口之外（#722）。
+  const screenshot = new TranscriptBuilder(ids.screenshot, screenshotProject, "main", Date.parse("2026-09-11T00:00:00Z"));
+  screenshot.user([
+    { type: "text", text: "what is wrong here" },
+    { type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(300 * 1024) } },
+  ]);
+  screenshot.assistant([{ type: "text", text: "looking" }]);
+  screenshotFile = screenshot.write(configDir, undefined, { messageFirst: true });
 
   process.env.CLAUDE_CONFIG_DIR = configDir;
   process.env.MIMI_CLAUDE_LEGACY_INDEX = "";
@@ -203,6 +215,20 @@ describe("thread/list", () => {
     expect(released.status).toEqual({ type: "notLoaded" });
     expect(released.canAcceptDirectInput).toBe(true);
     expect(released.claudeOwner).toBeUndefined();
+  });
+
+  test("a session whose first message carries a screenshot still reports its working directory", async () => {
+    // 前提：cwd 确实在头部 64 KB 之外，SDK 自己读不到。
+    expect(readFileSync(screenshotFile, "utf8").indexOf('"cwd"')).toBeGreaterThan(64 * 1024);
+    const { getSessionInfo } = await import("@anthropic-ai/claude-agent-sdk");
+    expect((await getSessionInfo(ids.screenshot))?.cwd).toBeUndefined();
+
+    const global = await call("thread/list", { limit: 50 });
+    expect(global.data.find((thread: any) => thread.id === ids.screenshot)?.cwd).toBe(screenshotProject);
+    const read = await call("thread/read", { threadId: ids.screenshot });
+    expect(read.thread.cwd).toBe(screenshotProject);
+    const scoped = await call("thread/list", { cwd: screenshotProject, limit: 50 });
+    expect(scoped.data.map((thread: any) => thread.cwd)).toEqual([screenshotProject]);
   });
 
   test("search matches titles and previews", async () => {

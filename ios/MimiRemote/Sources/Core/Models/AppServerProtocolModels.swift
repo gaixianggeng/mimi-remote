@@ -377,6 +377,9 @@ enum CodexAppServerRequestBuilderError: LocalizedError, Equatable {
         switch self {
         case .projectNotAllowlisted(let id):
             return L10n.format("ui.item_not_in_remote_allowlist_value", id)
+        case .pathNotAllowlisted(let path) where path.isEmpty:
+            // 空路径不是越权，而是会话元数据缺工作目录（#722）；显示空冒号只会让人困惑。
+            return L10n.text("ui.working_directory_unknown")
         case .pathNotAllowlisted(let path):
             return L10n.format("ui.working_directory_is_not_in_remote_allowlist_value", path)
         case .unsafeParameter(let reason):

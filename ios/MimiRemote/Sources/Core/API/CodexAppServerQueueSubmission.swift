@@ -32,6 +32,28 @@ extension CodexAppServerSessionRuntime {
         )
     }
 
+    /// createSession 在 thread/start 或 resume 后先用 forceRunning 把会话投影成运行中，再发首个 turn。
+    /// 首个 turn 确定没有发出时必须撤回这层乐观态：否则额度刷新等整会话重放会把它推回界面，
+    /// 停在「运行中 / 思考中」却没有任何 turn（#722）。写出后才断线的 uncertain 仍保留运行态。
+    func submitInitialTurnOutcome(
+        sessionID: SessionID,
+        payload: CodexAppServerTurnPayload,
+        clientMessageID: ClientMessageID?,
+        restingStatus: String
+    ) async throws -> CodexAppServerTurnSubmissionOutcome {
+        do {
+            return try await submitTurnOutcome(sessionID: sessionID, payload: payload, clientMessageID: clientMessageID)
+        } catch {
+            if case .rejected = CodexAppServerSessionWebSocketClient.turnSendOutcome(for: error) {
+                _ = withUpdatedSession(sessionID) { item in
+                    guard item.activeTurnID == nil else { return }
+                    item.status = restingStatus
+                }
+            }
+            throw error
+        }
+    }
+
     func submitSharedServerQueuedTurn(
         sessionID: SessionID,
         payload: CodexAppServerTurnPayload,

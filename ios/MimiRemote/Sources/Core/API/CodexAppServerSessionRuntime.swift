@@ -978,10 +978,11 @@ actor CodexAppServerSessionRuntime {
         }
 
         if !turnPayload.isEmpty, !usesSharedServerQueue {
-            _ = try await submitTurnOutcome(
+            _ = try await submitInitialTurnOutcome(
                 sessionID: session.id,
                 payload: turnPayload,
-                clientMessageID: payload.clientMessageID
+                clientMessageID: payload.clientMessageID,
+                restingStatus: sessionStatus(from: thread["status"], forceRunning: false)
             )
             // 通知可能在 turn/start ACK 前已经把会话推进到 terminal/closed/下一轮。
             // 直接采用 Runtime 的最新投影，不能用 ACK 再无条件覆盖。

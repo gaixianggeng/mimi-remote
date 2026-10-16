@@ -112,6 +112,66 @@ async function readLastActivity(file: string, size: number): Promise<number | un
   }
 }
 
+const CWD_SCAN_CHUNK_BYTES = 256 * 1024;
+const CWD_SCAN_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * 会话工作目录的兜底来源。SDK 的 `getSessionInfo` 和不带 dir 的 `listSessions` 只在
+ * transcript 头部 64 KB 里找 `cwd`；首条消息带截图时那一行有几百 KB，`cwd` 排在
+ * `message` 之后落到窗口外，SDK 就返回空（#722）。这里按行读到第一条带 `cwd` 的记录
+ * 为止。工作目录写定后不会再变：找到就按路径常驻缓存；没找到按文件大小缓存，文件长大再读。
+ */
+export class WorkingDirectories {
+  private readonly cache = new Map<string, { size: number; cwd: string | undefined }>();
+
+  async firstCwd(file: TranscriptFile): Promise<string | undefined> {
+    const cached = this.cache.get(file.path);
+    if (cached && (cached.cwd !== undefined || cached.size === file.size)) return cached.cwd;
+    const cwd = await readFirstCwd(file.path);
+    this.cache.set(file.path, { size: file.size, cwd });
+    return cwd;
+  }
+}
+
+async function readFirstCwd(file: string): Promise<string | undefined> {
+  const handle = await open(file, "r").catch(() => undefined);
+  if (!handle) return undefined;
+  try {
+    const chunk = Buffer.alloc(CWD_SCAN_CHUNK_BYTES);
+    let partial: Buffer[] = [];
+    let position = 0;
+    while (position < CWD_SCAN_MAX_BYTES) {
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
+      if (bytesRead === 0) break;
+      position += bytesRead;
+      let rest = chunk.subarray(0, bytesRead);
+      for (let newline = rest.indexOf(0x0a); newline >= 0; newline = rest.indexOf(0x0a)) {
+        const found = recordCwd(Buffer.concat([...partial, rest.subarray(0, newline)]));
+        if (found !== undefined) return found;
+        partial = [];
+        rest = rest.subarray(newline + 1);
+      }
+      // chunk 下一轮会被覆盖，跨块的半行必须复制出来。
+      if (rest.length > 0) partial.push(Buffer.from(rest));
+    }
+    // 读到文件末尾时，最后一行可能没有换行符。
+    return partial.length > 0 ? recordCwd(Buffer.concat(partial)) : undefined;
+  } finally {
+    await handle.close();
+  }
+}
+
+function recordCwd(line: Buffer): string | undefined {
+  // 先按字节粗筛，绝大多数记录不用解析；嵌套在工具参数里的 cwd 不算，只认顶层字段。
+  if (line.indexOf('"cwd"') < 0) return undefined;
+  try {
+    const record = JSON.parse(line.toString("utf8")) as Record<string, unknown>;
+    return typeof record.cwd === "string" && path.isAbsolute(record.cwd) ? record.cwd : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function conversationTimestamp(line: string): number | undefined {
   if (!line.includes('"timestamp"') || !(line.includes('"type":"user"') || line.includes('"type":"assistant"'))) {
     return undefined;
