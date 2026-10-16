@@ -134,6 +134,142 @@ final class ConnectionStatusReconciliationTests: XCTestCase {
         }
     }
 
+    // MARK: - 配对成功后不再沿用上一轮配对失败（#730）
+
+    private static let expiredTicketLink = URL(
+        string: "mimiremote://pair?endpoint=http%3A%2F%2F100.64.0.1%3A8787"
+            + "&issued_at=2020-01-01T00%3A00%3A00Z&expires_at=2020-01-01T00%3A10%3A00Z&pair_sig=test-signature"
+    )!
+    private static let tokenLink = URL(
+        string: "mimiremote://pair?endpoint=http%3A%2F%2F100.64.0.1%3A8787&token=test-token"
+    )!
+    private static let secondComputerLink = URL(
+        string: "mimiremote://pair?endpoint=http%3A%2F%2F100.64.0.2%3A8787&token=second-token"
+    )!
+
+    func testSuccessfulPreparedChangeReplacesStaleFailedStatus() async throws {
+        let (store, appStore) = makePairingStores()
+        appStore.connectionStatus = .failed("旧错误")
+        appStore.lastError = "旧错误"
+
+        do {
+            try await store.performPreparedConnectionChange { throw URLError(.cannotConnectToHost) }
+            XCTFail("准备失败必须抛出")
+        } catch {}
+        XCTAssertEqual(appStore.connectionStatus, .failed("旧错误"), "准备失败照旧回滚到准备前的展示状态")
+
+        try await store.performPreparedConnectionChange {
+            try await appStore.prepareConnectionSettings(endpoint: "http://100.64.0.1:8787", token: "new-token")
+        }
+
+        XCTAssertEqual(appStore.connectionStatus, .connected(ActiveConnectionRoute.configured.statusTitle))
+        XCTAssertNil(appStore.lastError)
+        XCTAssertEqual(sessionListPresentation(store, appStore), .needsWorkspace, "不能再整页显示上一轮的「会话服务不可用」")
+    }
+
+    func testExternalPairingLinkSucceedingAfterFailureShowsConnectedSessionList() async throws {
+        let (store, appStore) = makePairingStores()
+
+        await openPairingLinkLikeApp(Self.expiredTicketLink, store: store, appStore: appStore)
+        XCTAssertEqual(
+            sessionListPresentation(store, appStore),
+            .runtimeUnavailable(PairingLinkError.expired.localizedDescription),
+            "前置条件：失败的外部链接留下全局 .failed"
+        )
+
+        await openPairingLinkLikeApp(Self.tokenLink, store: store, appStore: appStore)
+
+        XCTAssertEqual(appStore.connectionProfiles.count, 1)
+        XCTAssertEqual(appStore.connectionStatus, .connected(ActiveConnectionRoute.configured.statusTitle))
+        XCTAssertNil(appStore.lastError)
+        XCTAssertEqual(sessionListPresentation(store, appStore), .needsWorkspace)
+    }
+
+    func testAddComputerScanSucceedingAfterFailureShowsConnectedSessionList() async throws {
+        let (store, appStore) = makePairingStores()
+        try await store.applyPairingURL(Self.tokenLink)
+        let firstProfileID = try XCTUnwrap(appStore.activeConnectionProfileID)
+
+        await scanAddComputerLinkLikeSettings(Self.expiredTicketLink, store: store, appStore: appStore)
+        XCTAssertEqual(appStore.activeConnectionProfileID, firstProfileID)
+        guard case .failed = appStore.connectionStatus else {
+            return XCTFail("前置条件：扫码失败留下全局 .failed：\(appStore.connectionStatus)")
+        }
+
+        await scanAddComputerLinkLikeSettings(Self.secondComputerLink, store: store, appStore: appStore)
+
+        XCTAssertEqual(appStore.connectionProfiles.count, 2)
+        XCTAssertNotEqual(appStore.activeConnectionProfileID, firstProfileID)
+        XCTAssertEqual(appStore.connectionStatus, .connected(ActiveConnectionRoute.configured.statusTitle))
+        XCTAssertNil(appStore.lastError)
+        XCTAssertEqual(sessionListPresentation(store, appStore), .needsWorkspace)
+    }
+
+    /// 按 `MimiRemoteApp.onOpenURL` 的流程：成功后等首屏，失败时写入全局 .failed。
+    private func openPairingLinkLikeApp(_ url: URL, store: SessionStore, appStore: AppStore) async {
+        do {
+            let wasConfigured = appStore.isConfigured
+            _ = try await store.applyPairingURL(url)
+            _ = await store.refreshAfterConnectionCommit(maxWait: wasConfigured ? 10 : 45)
+        } catch {
+            appStore.connectionStatus = .failed(error.localizedDescription)
+            appStore.lastError = error.localizedDescription
+        }
+    }
+
+    /// 按设置页「添加电脑」扫码（`applyScannedConnection`）的流程：成功后等首屏，失败时写入全局 .failed。
+    private func scanAddComputerLinkLikeSettings(_ url: URL, store: SessionStore, appStore: AppStore) async {
+        do {
+            _ = try await store.addConnectionProfile(pairingURL: url, displayName: "")
+            _ = await store.refreshAfterConnectionCommit(maxWait: 10)
+        } catch {
+            appStore.connectionStatus = .failed(error.localizedDescription)
+            appStore.lastError = error.localizedDescription
+        }
+    }
+
+    private func sessionListPresentation(_ store: SessionStore, _ appStore: AppStore) -> SessionListPresentationState {
+        SessionListPresentationState.resolve(
+            hasVisibleSessions: !store.sessions.isEmpty,
+            hasOpenedWorkspace: !store.sidebarProjects.isEmpty,
+            isLoading: store.isLoading,
+            isSearching: false,
+            isFiltering: false,
+            isNetworkUnavailable: store.isNetworkUnavailable,
+            errorMessage: store.errorMessage,
+            connectionStatus: appStore.connectionStatus,
+            hasLoadedWorkspaceCatalog: store.loadedWorkspaceCatalogScope == appStore.activeHostScope,
+            isEstablishingConnection: store.isEstablishingConnection
+        )
+    }
+
+    private func makePairingStores() -> (SessionStore, AppStore) {
+        let suiteName = "ConnectionStatusReconciliationTests.Pairing.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            fatalError("无法创建隔离测试 UserDefaults suite: \(suiteName)")
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in }
+        )
+        let client = MockSessionStoreClient(projects: [makeProject(id: "proj_new_pairing")], sessions: [])
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() },
+            webSocketReconnectDelayNanoseconds: { _ in 0 }
+        )
+        return (store, appStore)
+    }
+
     func testBriefRouteSummaryOnlyNamesDirectOrRelayWithLatency() {
         let relay = makeDiagnostic(path: "derp", latencyMillis: 42, derpRegionCode: "sha", requestLatencyMillis: 180)
         XCTAssertEqual(

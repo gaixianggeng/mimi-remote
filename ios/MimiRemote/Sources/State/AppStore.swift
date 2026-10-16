@@ -872,6 +872,9 @@ final class AppStore: ObservableObject {
             committedAt: prepared.validatedAt,
             capabilityNegotiation: prepared.capabilityNegotiation
         )
+        // prepare 已对这组凭据验证过 version、config 和 gateway 初始化，提交成功就是「已连接」。
+        // 不在这里改写的话，上一轮配对失败留下的 .failed 会被新连接继承，会话页整页报旧错误（#730）。
+        connectionStatus = .connected(activeConnectionRoute.statusTitle)
         lastError = nil
         HostSwitchSignpost.event("host_commit")
 
