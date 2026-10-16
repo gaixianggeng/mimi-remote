@@ -186,6 +186,9 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 				payload = redacted
 			}
 		}
+		if p.enforcesInboundThreadAuthorization() && strings.TrimSpace(frame.Method) == "item/completed" {
+			p.router.observeAgentProducedFiles(payload)
+		}
 		p.allowRelatedThreadsFromNotification(frame.Params)
 		return payload, true, nil
 	}
@@ -235,6 +238,10 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 				if len(frame.Error) == 0 {
 					p.rememberHistoryContinuation(pending, frame.Result)
 				}
+			}
+			// 只有确实转发给客户端、且 thread 已按本连接授权的历史，才能成为会话引用授权的证据。
+			if len(frame.Error) == 0 && p.enforcesInboundThreadAuthorization() {
+				p.router.observeAgentProducedFiles(payload)
 			}
 		}
 	}

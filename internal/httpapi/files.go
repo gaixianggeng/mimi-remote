@@ -232,6 +232,13 @@ func (r *Router) resolveReadableFilePath(raw string) (fileReadResolvedPath, erro
 			}, nil
 		}
 	}
+	// AI 在已授权会话里提到、写在系统临时目录的文件按精确路径放行；临时目录本身仍不授权。
+	if resolved, candidate, err := r.resolveSessionReferencedTemporaryFile(raw); candidate {
+		if err != nil {
+			return fileReadResolvedPath{}, err
+		}
+		return resolved, nil
+	}
 	return fileReadResolvedPath{}, errFilePathOutsideScope
 }
 

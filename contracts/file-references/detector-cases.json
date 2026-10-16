@@ -1,0 +1,60 @@
+{
+  "description": "助手正文里的文件路径识别用例。iOS ConversationFileReferenceDetector 与 agentd 会话引用授权（internal/httpapi/session_file_references.go）都读这份表，任何一边改规则都要同步更新。expected 为去重后按出现顺序排列的路径；两侧测试都不施加 iOS chip 的 5 条上限。",
+  "cases": [
+    {
+      "name": "inline code, file URL with query, duplicates and non-preview entries",
+      "text": "已生成：\n- `/tmp/report.pdf`\n- file:///tmp/chart.png?download=1\n- /tmp/report.pdf\n- /tmp/source.swift:12\n- https://example.com/file.pdf\n- /tmp/output",
+      "expected": ["/tmp/report.pdf", "/tmp/chart.png"]
+    },
+    {
+      "name": "assistant reply listing generated images under a temp folder",
+      "text": "I've made 6 versions:\n\n- **Side by side:** `/tmp/icon-work/row.png`\n- **On your home screen:** `/tmp/icon-work/sheet.png`",
+      "expected": ["/tmp/icon-work/row.png", "/tmp/icon-work/sheet.png"]
+    },
+    {
+      "name": "markdown link and percent-encoded image destination",
+      "text": "[报告](/private/tmp/claude-501/proj/session/scratchpad/report.pdf) 和 ![截图](file:///var/folders/ab/cd/T/shot%20one.png)",
+      "expected": ["/private/tmp/claude-501/proj/session/scratchpad/report.pdf", "/var/folders/ab/cd/T/shot one.png"]
+    },
+    {
+      "name": "paths with spaces and mixed extensions",
+      "text": "看 /repo/screen.png 和 /repo/report.pdf，再对比 file:///repo/nested/photo.webp。\n## photo one.jpeg: /Users/me/Pictures/Photos Library.photoslibrary/resources/derivatives/2/photo one.jpeg",
+      "expected": [
+        "/repo/screen.png",
+        "/repo/report.pdf",
+        "/repo/nested/photo.webp",
+        "/Users/me/Pictures/Photos Library.photoslibrary/resources/derivatives/2/photo one.jpeg"
+      ]
+    },
+    {
+      "name": "full-width colon before the path and full stop after it",
+      "text": "已保存到：/tmp/out/结果.png。请查看",
+      "expected": ["/tmp/out/结果.png"]
+    },
+    {
+      "name": "uppercase extension, longest extension first, quoted path",
+      "text": "/tmp/A.PNG then /tmp/b.jpeg and \"/tmp/q.json\"",
+      "expected": ["/tmp/A.PNG", "/tmp/b.jpeg", "/tmp/q.json"]
+    },
+    {
+      "name": "fragment, file URL with host and escaped space",
+      "text": "/tmp/a.pdf#page=2, file://localhost/tmp/x.png and /tmp/my\\ file.md",
+      "expected": ["/tmp/a.pdf", "/tmp/x.png", "/tmp/my file.md"]
+    },
+    {
+      "name": "dots inside directory names",
+      "text": "see /tmp/v1.2/report.txt",
+      "expected": ["/tmp/v1.2/report.txt"]
+    },
+    {
+      "name": "not a path start or not a preview extension",
+      "text": "abc/tmp/x.png //tmp/y.png http://host/tmp/z.png /tmp/w.pngs",
+      "expected": []
+    },
+    {
+      "name": "full-width closing parenthesis is not an extension terminator",
+      "text": "（见 /tmp/x.png）",
+      "expected": []
+    }
+  ]
+}

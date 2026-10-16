@@ -430,6 +430,30 @@ final class MarkdownRenderingTests: XCTestCase {
         XCTAssertEqual(references.map(\.name), ["screen.png", "photo.webp", "photo one.jpeg"])
     }
 
+    /// 与 agentd 会话引用授权读同一份用例：iOS 识别出的 chip 必须正是 agentd 会登记授权的路径。
+    func testFileReferenceDetectorMatchesSharedAgentdCases() throws {
+        struct Fixture: Decodable {
+            struct Case: Decodable {
+                let name: String
+                let text: String
+                let expected: [String]
+            }
+            let cases: [Case]
+        }
+        var root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<4 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("contracts/file-references/detector-cases.json"))
+        let fixture = try JSONDecoder().decode(Fixture.self, from: data)
+        XCTAssertFalse(fixture.cases.isEmpty)
+        for testCase in fixture.cases {
+            XCTAssertEqual(
+                ConversationFileReferenceDetector.references(in: testCase.text, limit: 64).map(\.path),
+                testCase.expected,
+                testCase.name
+            )
+        }
+    }
+
     func testMixedAndOrderedTaskItemsKeepCheckboxState() {
         let result = MarkdownParser.shared.parse("""
         - [x] 已完成
