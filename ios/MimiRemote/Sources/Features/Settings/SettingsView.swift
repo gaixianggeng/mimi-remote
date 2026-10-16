@@ -1419,7 +1419,7 @@ struct AboutAndLegalSettingsView: View {
                 Link(destination: URL(string: "https://beian.miit.gov.cn/")!) {
                     SettingsValueLabel(
                         title: L10n.text("ui.app_filing_number"),
-                        value: "苏ICP备2026066024号-2A",
+                        value: L10n.text("ui.app_filing_number_value"),
                         systemImage: "checkmark.shield"
                     )
                 }
