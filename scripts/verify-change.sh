@@ -172,7 +172,7 @@ is_go_source_path() {
       ;;
   esac
   case "$1" in
-    *.go|go.mod|go.sum|cmd/*|internal/*|contracts/mimi-protocol/*|contracts/harness-native/*)
+    *.go|go.mod|go.sum|cmd/*|internal/*|contracts/mimi-protocol/*|contracts/harness-native/*|contracts/file-references/*)
       return 0
       ;;
   esac
@@ -181,7 +181,7 @@ is_go_source_path() {
 
 is_ios_source_path() {
   case "$1" in
-    ios/MimiRemote/*|experiments/tailcat/*|contracts/mimi-protocol/*|internal/protocolcontract/*|contracts/harness-native/*)
+    ios/MimiRemote/*|experiments/tailcat/*|contracts/mimi-protocol/*|internal/protocolcontract/*|contracts/harness-native/*|contracts/file-references/*)
       return 0
       ;;
   esac
@@ -338,6 +338,10 @@ for path in "${changed_paths[@]:-}"; do
       case "$path" in
         contracts/mimi-protocol/*|contracts/harness-native/*)
           # 共享 fixture 由专用契约检查覆盖；quick 不再重复一次全仓 Go test。
+          ;;
+        contracts/file-references/*)
+          # 文件路径识别用例只由 internal/httpapi 的 Go 测试与 iOS XCTest 读取。
+          add_go_package_for_path "internal/httpapi/session_file_references.go"
           ;;
         *)
           add_go_package_for_path "$path"

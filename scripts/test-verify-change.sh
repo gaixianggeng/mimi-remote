@@ -185,6 +185,12 @@ assert_not_contains "$harness_fixture_output" "没有验证映射"
 # 与 contracts/mimi-protocol 同样由专用契约检查覆盖，quick 不再重复一次全仓 Go test。
 assert_not_contains "$harness_fixture_output" "Go 受影响范围使用完整回归"
 
+# 文件路径识别用例由 Go（internal/httpapi）和 iOS 测试共同读取，不能落进 unknown_paths。
+file_reference_output="$(assert_plan file_reference_cases contracts/file-references/detector-cases.json)"
+assert_contains "$file_reference_output" "go test ./internal/httpapi -count=1"
+assert_contains "$file_reference_output" "ios-dev.sh build"
+assert_not_contains "$file_reference_output" "没有验证映射"
+
 harness_manifest_output="$(assert_plan harness_manifest contracts/harness-native/manifest.json)"
 assert_contains "$harness_manifest_output" "bash ./scripts/check-harness-native-contract.sh"
 assert_not_contains "$harness_manifest_output" "没有验证映射"
