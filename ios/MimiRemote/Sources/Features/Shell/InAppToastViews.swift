@@ -125,31 +125,81 @@ private struct InAppToastHost: ViewModifier {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.inAppNoticePlacement) private var placement
     @State private var showsDetail = false
+    /// 提示顶边的全局界线（导航栏、页面常驻卡片的下沿）。只在提示出现、宿主尺寸或常驻区域
+    /// 变化时重新测量：宿主随 SessionStore 的每次发布重算，不能每次都遍历窗口。
+    @State private var boundaryMeasurement: BoundaryMeasurement?
 
     func body(content: Content) -> some View {
         content.overlay(alignment: .top) {
-            ZStack {
-                if let toast {
-                    InAppToastCard(toast: toast, showsDetail: $showsDetail, onDismiss: { onDismiss(toast.id) })
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                        .frame(maxWidth: 560)
-                        .transition(
-                            reduceMotion
-                                ? .opacity
-                                : .move(edge: .top).combined(with: .opacity)
-                        )
-                        .id(toast.id)
-                        .task(id: toast.id) {
-                            showsDetail = false
-                            AccessibilityNotification.Announcement(toast.accessibilityAnnouncement).post()
-                            await autoDismiss(toast)
+            GeometryReader { proxy in
+                let hostFrame = proxy.frame(in: .global)
+                toastLayer(hostMinY: hostFrame.minY)
+                    .onChange(
+                        of: PlacementInputs(
+                            toastID: toast?.id,
+                            hostFrame: hostFrame,
+                            protectedRegionBottom: placement?.protectedRegionBottom
+                        ),
+                        initial: true
+                    ) { _, inputs in
+                        boundaryMeasurement = inputs.toastID.map {
+                            BoundaryMeasurement(toastID: $0, boundary: placement?.topBoundary())
                         }
-                }
+                    }
             }
-            .animation(reduceMotion ? .easeInOut(duration: 0.15) : .snappy(duration: 0.28), value: toast?.id)
         }
+    }
+
+    private struct BoundaryMeasurement {
+        let toastID: AnyHashable
+        let boundary: CGFloat?
+    }
+
+    private struct PlacementInputs: Equatable {
+        let toastID: AnyHashable?
+        let hostFrame: CGRect
+        let protectedRegionBottom: CGFloat?
+    }
+
+    private func toastLayer(hostMinY: CGFloat) -> some View {
+        ZStack {
+            if let toast {
+                InAppToastCard(toast: toast, showsDetail: $showsDetail, onDismiss: { onDismiss(toast.id) })
+                    .padding(.horizontal, 16)
+                    .padding(
+                        .top,
+                        InAppNoticePlacement.toastTopPadding(
+                            boundary: topBoundary(for: toast),
+                            hostMinY: hostMinY
+                        )
+                    )
+                    .frame(maxWidth: 560)
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .move(edge: .top).combined(with: .opacity)
+                    )
+                    .id(toast.id)
+                    .task(id: toast.id) {
+                        showsDetail = false
+                        AccessibilityNotification.Announcement(toast.accessibilityAnnouncement).post()
+                        await autoDismiss(toast)
+                    }
+            }
+        }
+        // GeometryReader 把子视图放在左上角；提示仍按原来的方式水平居中。
+        .frame(maxWidth: .infinity, alignment: .top)
+        .animation(reduceMotion ? .easeInOut(duration: 0.15) : .snappy(duration: 0.28), value: toast?.id)
+    }
+
+    /// 新提示出现的这一帧 onChange 还没跑，直接量一次，避免先落在导航栏上再跳下来。
+    private func topBoundary(for toast: InAppToast) -> CGFloat? {
+        if let boundaryMeasurement, boundaryMeasurement.toastID == toast.id {
+            return boundaryMeasurement.boundary
+        }
+        return placement?.topBoundary()
     }
 
     private func autoDismiss(_ toast: InAppToast) async {
@@ -284,10 +334,166 @@ struct InAppToastCard: View {
     }
 }
 
+/// 页面内常驻卡片的语气：决定图标和描边颜色。
+enum InlineNoticeTone: Equatable {
+    case neutral
+    case warning
+    case failure
+    /// 进行中的状态（加载、自动重连），图标换成进度指示。
+    case progress
+}
+
+/// 页面内的常驻提示卡片（#738）。
+///
+/// 与 App 内轻提示（`InAppToastCard`，前台回复提醒用的也是它）同一套版式：图标列、粗体标题加一行
+/// 说明、右上角关闭、按钮排在说明下方。区别只在于它留在内容流里，不自动收起、不加投影。
+/// 会话页顶部的缩略历史、额度、错误三张卡片都用它；需要用户操作或表示持续状态的提示不再各画一套。
+struct InlineNoticeCard<Actions: View>: View {
+    let tone: InlineNoticeTone
+    let systemImage: String?
+    let title: String
+    let subtitle: String?
+    let technicalDetail: String?
+    let hasActions: Bool
+    let onClose: (() -> Void)?
+    let closeAccessibilityIdentifier: String
+    let actions: () -> Actions
+
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var showsDetail = false
+
+    init(
+        tone: InlineNoticeTone,
+        systemImage: String? = nil,
+        title: String,
+        subtitle: String? = nil,
+        technicalDetail: String? = nil,
+        hasActions: Bool = true,
+        onClose: (() -> Void)? = nil,
+        closeAccessibilityIdentifier: String = "inlineNotice.close",
+        @ViewBuilder actions: @escaping () -> Actions
+    ) {
+        self.tone = tone
+        self.systemImage = systemImage
+        self.title = title
+        self.subtitle = subtitle
+        self.technicalDetail = technicalDetail
+        self.hasActions = hasActions
+        self.onClose = onClose
+        self.closeAccessibilityIdentifier = closeAccessibilityIdentifier
+        self.actions = actions
+    }
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                FeedbackStatusIcon(style: iconStyle, systemImage: systemImage, tokens: tokens, tintOverride: iconTint(tokens))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(themeStore.uiFont(.caption))
+                            .foregroundStyle(tokens.secondaryText)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if let onClose {
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(tokens.secondaryText)
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(L10n.text("ui.close"))
+                    .accessibilityIdentifier(closeAccessibilityIdentifier)
+                }
+            }
+            if hasActions || technicalDetail != nil {
+                // 只包按钮这一行：放不下（大字号、窄屏）时改成竖排，不截断按钮文字。
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        actionRow
+                        Spacer(minLength: 0)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        actionRow
+                    }
+                }
+                .padding(.leading, 32)
+            }
+            if showsDetail, let technicalDetail {
+                TechnicalDetailPanel(detail: technicalDetail)
+                    .padding(.leading, 32)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(tokens.elevatedSurface)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(borderColor(tokens), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+        .onChange(of: title) { _, _ in
+            showsDetail = false
+        }
+    }
+
+    @ViewBuilder
+    private var actionRow: some View {
+        actions()
+        if technicalDetail != nil {
+            TechnicalDetailToggle(isExpanded: $showsDetail)
+        }
+    }
+
+    private var iconStyle: InAppToast.Style {
+        switch tone {
+        case .neutral, .warning:
+            return .info
+        case .failure:
+            return .failure
+        case .progress:
+            return .progress
+        }
+    }
+
+    private func iconTint(_ tokens: ThemeTokens) -> Color? {
+        tone == .warning ? tokens.warning : nil
+    }
+
+    private func borderColor(_ tokens: ThemeTokens) -> Color {
+        switch tone {
+        case .failure:
+            // 与失败轻提示同一道描边。
+            return Color.red.opacity(0.35)
+        case .warning:
+            return tokens.warning.opacity(0.42)
+        case .neutral, .progress:
+            return tokens.border
+        }
+    }
+}
+
 /// 会话页顶部的错误横幅：取代原来的红色「错误：…」胶囊。
 ///
 /// 只展示翻译后的结论；原始错误收在「显示详情」里，可复制。链路类失败直接给出「重新连接」，
-/// 进行中的自动重连改用中性样式和进度指示。
+/// 进行中的自动重连改用中性样式和进度指示。版式与轻提示一致（`InlineNoticeCard`）。
 struct ErrorPresentationBanner: View {
     let presentation: UserFacingError
     let isReconnecting: Bool
@@ -296,59 +502,17 @@ struct ErrorPresentationBanner: View {
 
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
-    @State private var showsDetail = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let style: InAppToast.Style = presentation.isInProgress ? .progress : .failure
-        VStack(alignment: .leading, spacing: 8) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 10) {
-                    message(style: style, tokens: tokens)
-                    Spacer(minLength: 0)
-                    actions(tokens: tokens)
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    message(style: style, tokens: tokens)
-                    actions(tokens: tokens)
-                        .padding(.leading, 32)
-                }
-            }
-            if showsDetail, let detail = presentation.technicalDetail {
-                TechnicalDetailPanel(detail: detail)
-                    .padding(.leading, 32)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(style == .failure ? Color.red.opacity(0.08) : tokens.elevatedSurface)
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(style == .failure ? Color.red.opacity(0.3) : tokens.border, lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("conversation.errorBanner")
-        .onChange(of: presentation.message, initial: true) { _, message in
-            showsDetail = false
-            AccessibilityNotification.Announcement(message).post()
-        }
-    }
-
-    private func message(style: InAppToast.Style, tokens: ThemeTokens) -> some View {
-        HStack(alignment: .center, spacing: 10) {
-            FeedbackStatusIcon(style: style, systemImage: nil, tokens: tokens)
-            Text(presentation.message)
-                .font(themeStore.uiFont(.caption, weight: .medium))
-                .foregroundStyle(tokens.primaryText)
-                .lineLimit(3)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func actions(tokens: ThemeTokens) -> some View {
-        HStack(spacing: 8) {
+        InlineNoticeCard(
+            tone: presentation.isInProgress ? .progress : .failure,
+            title: presentation.message,
+            technicalDetail: presentation.technicalDetail,
+            hasActions: presentation.suggestsReconnect,
+            onClose: onDismiss,
+            closeAccessibilityIdentifier: "conversation.errorBanner.close"
+        ) {
             if presentation.suggestsReconnect {
                 Button(action: onReconnect) {
                     Label(L10n.text("ui.reconnect"), systemImage: "arrow.clockwise")
@@ -359,18 +523,10 @@ struct ErrorPresentationBanner: View {
                 .disabled(isReconnecting)
                 .accessibilityIdentifier("conversation.errorBanner.reconnect")
             }
-            if presentation.technicalDetail != nil {
-                TechnicalDetailToggle(isExpanded: $showsDetail)
-            }
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 24, height: 24)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .accessibilityLabel(L10n.text("ui.close"))
-            .accessibilityIdentifier("conversation.errorBanner.close")
+        }
+        .accessibilityIdentifier("conversation.errorBanner")
+        .onChange(of: presentation.message, initial: true) { _, message in
+            AccessibilityNotification.Announcement(message).post()
         }
     }
 }
@@ -379,6 +535,8 @@ private struct FeedbackStatusIcon: View {
     let style: InAppToast.Style
     let systemImage: String?
     let tokens: ThemeTokens
+    /// 页面内卡片的警示色（额度）不在轻提示的样式里，由调用方直接给。
+    var tintOverride: Color? = nil
 
     var body: some View {
         Group {
@@ -388,7 +546,7 @@ private struct FeedbackStatusIcon: View {
             } else {
                 Image(systemName: systemImage ?? defaultSymbol)
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(tint)
+                    .foregroundStyle(tintOverride ?? tint)
             }
         }
         .frame(width: 22, height: 22)

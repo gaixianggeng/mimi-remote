@@ -76,7 +76,17 @@ extension SessionStore {
         await refreshUsage(runtimeProvider: "claude", reportsErrors: false)
     }
 
-    func refreshCurrentContext() async {
+    /// 刷新由谁发起（#738）。
+    enum CurrentContextRefreshOrigin: Equatable {
+        /// 顶栏、会话菜单「刷新当前会话」和用量刷新：用户自己发起的常规操作，内容已在页面上，
+        /// 不出「正在加载完整历史」这类过渡卡片，成功也不弹提示。
+        case routine
+        /// 错误横幅「重新连接」、加载失败后的「重试」：用户点的控件会随之消失，必须继续看到
+        /// 进行中的状态和结果，沿用原有的进度卡片与成功提示。
+        case recovery
+    }
+
+    func refreshCurrentContext(origin: CurrentContextRefreshOrigin = .recovery) async {
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else {
             setStatusMessage(L10n.text("ui.debug_ui_sample_will_not_connect_to_the"))
@@ -87,6 +97,12 @@ extension SessionStore {
             await refreshAll(autoAttach: false)
             return
         }
+        guard origin == .routine else {
+            await refreshSelectedSessionContent(session)
+            return
+        }
+        quietHistoryRefreshSessionIDs.insert(session.id)
+        defer { quietHistoryRefreshSessionIDs.remove(session.id) }
         await refreshSelectedSessionContent(session)
     }
 
