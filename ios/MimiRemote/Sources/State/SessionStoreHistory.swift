@@ -834,7 +834,14 @@ extension SessionStore {
             }
         }
         if let effectiveSuccessStatusMessage {
-            setStatusMessage(effectiveSuccessStatusMessage)
+            // 会话页的历史卡片已经在说「当前显示缩略历史」并带「加载完整内容」时，同一件事
+            // 不再另弹一条轻提示；手动刷新的成功也不弹（#738）。文案仍写入状态，只是不弹出。
+            let cardStatesResult = historySavingsNoticesBySessionID[sessionID]?.kind == .summaryLoaded
+            let isQuietRefresh = quietHistoryRefreshSessionIDs.contains(sessionID)
+            setStatusMessage(
+                effectiveSuccessStatusMessage,
+                presentation: cardStatesResult || isQuietRefresh ? .silent : .toast
+            )
         }
         return true
     }
@@ -920,7 +927,7 @@ extension SessionStore {
                         loadMode: .full,
                         force: true,
                         reason: .automatic,
-                        successStatusMessage: effectiveQuiet ? nil : L10n.text("ui.request_full_history"),
+                        successStatusMessage: effectiveQuiet ? nil : L10n.text("ui.full_history_loaded"),
                         recoveryGeneration: job.recoveryGeneration,
                         fullTurnPageLimit: nextTurnPageLimit,
                         noticeMessageOverride: effectiveQuiet ? nil : retryMessage
@@ -1247,6 +1254,13 @@ extension SessionStore {
             defaultMessage = L10n.text("ui.currently_showing_abbreviated_history")
         case .summaryFailed:
             defaultMessage = L10n.text("ui.the_thumbnail_history_loading_failed_possibly_due_to")
+        }
+        switch kind {
+        case .loadingFull, .loadingSummary:
+            // 手动刷新时内容已经在页面上，过渡状态只由刷新按钮的禁用态表达，不在顶部插一张卡片。
+            if quietHistoryRefreshSessionIDs.contains(sessionID) { return }
+        case .fullFailed, .summaryLoaded, .summaryFailed:
+            break
         }
         let message = customMessage ?? defaultMessage
         historySavingsNoticesBySessionID[sessionID] = HistorySavingsNotice(

@@ -1212,7 +1212,7 @@ struct UnifiedWorkbenchShell: View {
                         tokens: tokens,
                         isDisabled: sessionStore.isRefreshingSelectedSession || sessionStore.isLoading
                     ) {
-                        Task { await sessionStore.refreshCurrentContext() }
+                        Task { await sessionStore.refreshCurrentContext(origin: .routine) }
                     }
                 }
                 // 顶栏按钮各自独立，用固定间隔把磨砂圆之间的距离钉死，不靠系统按内容估算。

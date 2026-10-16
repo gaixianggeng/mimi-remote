@@ -933,7 +933,7 @@ struct ComposerView: View {
                 },
                 onRefreshUsage: {
                     Task {
-                        await sessionStore.refreshCurrentContext()
+                        await sessionStore.refreshCurrentContext(origin: .routine)
                     }
                 },
                 onEditGoal: {

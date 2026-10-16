@@ -279,7 +279,7 @@ struct CurrentSessionRefreshMenuButton: View {
 
     var body: some View {
         Button {
-            Task { await sessionStore.refreshCurrentContext() }
+            Task { await sessionStore.refreshCurrentContext(origin: .routine) }
         } label: {
             Label(L10n.text("ui.refresh_current_session"), systemImage: "arrow.clockwise")
         }
