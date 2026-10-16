@@ -192,6 +192,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		p.allowRelatedThreadsFromNotification(frame.Params)
 		return payload, true, nil
 	}
+	observeHistoryGrants := false
 	if gatewayFrameIsResponse(&frame) {
 		p.rememberAccountTokenUsageResponse(&frame, time.Now())
 		if pending, ok := p.consumePendingHistoryRequest(frame.ID); ok {
@@ -239,12 +240,20 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 					p.rememberHistoryContinuation(pending, frame.Result)
 				}
 			}
-			// 只有确实转发给客户端、且 thread 已按本连接授权的历史，才能成为会话引用授权的证据。
-			if len(frame.Error) == 0 && p.enforcesInboundThreadAuthorization() {
-				p.router.observeAgentProducedFiles(payload)
-			}
+			observeHistoryGrants = len(frame.Error) == 0 && p.enforcesInboundThreadAuthorization()
 		}
 	}
+	forwardPayload, forward, policyErr := p.finishUpstreamThreadResponse(payload, frame)
+	// 会话引用授权只能来自最终真正转发给客户端的历史：thread/read 作用域校验、
+	// list/search 裁剪都通过之后才登记，被拒绝或阻断的响应不能留下文件授权。
+	if observeHistoryGrants && forward && policyErr == nil {
+		p.router.observeAgentProducedFiles(forwardPayload)
+	}
+	return forwardPayload, forward, policyErr
+}
+
+// finishUpstreamThreadResponse 处理 thread 类响应的授权校验与裁剪，返回最终转发的 payload。
+func (p *appServerGatewayPolicy) finishUpstreamThreadResponse(payload []byte, frame appServerGatewayFrame) ([]byte, bool, *appServerGatewayPolicyError) {
 	if !p.hasPendingThreadResponses() {
 		return payload, true, nil
 	}

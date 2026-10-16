@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -120,16 +121,33 @@ func (s *sessionFileGrantStore) grant(paths []string) {
 	if s == nil || len(paths) == 0 {
 		return
 	}
+	// 先在锁外筛选、去重并封顶：一页历史或不分页的 thread/resume 可能带上成千上万条路径，
+	// 一次最多登记 maxEntries 条，超出部分反正会被立即淘汰。
 	roots := s.lexicalRoots()
-	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pruneLocked(now)
+	accepted := make([]string, 0, min(len(paths), max(s.maxEntries, 0)))
+	seen := map[string]struct{}{}
 	for _, raw := range paths {
+		if s.maxEntries > 0 && len(accepted) >= s.maxEntries {
+			break
+		}
 		path, ok := sessionFileGrantPath(raw)
 		if !ok || !pathStrictlyWithinAny(roots, path) {
 			continue
 		}
+		if _, duplicate := seen[path]; duplicate {
+			continue
+		}
+		seen[path] = struct{}{}
+		accepted = append(accepted, path)
+	}
+	if len(accepted) == 0 {
+		return
+	}
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(now)
+	for _, path := range accepted {
 		s.lastSeen[path] = now
 	}
 	s.enforceLimitLocked()
@@ -164,17 +182,29 @@ func (s *sessionFileGrantStore) pruneLocked(now time.Time) {
 	}
 }
 
-// enforceLimitLocked 超出容量时淘汰最久未被再次提到的路径。
+// enforceLimitLocked 超出容量时一次排序淘汰最久未被再次提到的路径，开销为 O(n log n)，
+// 不随超出条数逐条重扫整张表。
 func (s *sessionFileGrantStore) enforceLimitLocked() {
-	for s.maxEntries > 0 && len(s.lastSeen) > s.maxEntries {
-		oldestPath := ""
-		var oldest time.Time
-		for path, seen := range s.lastSeen {
-			if oldestPath == "" || seen.Before(oldest) {
-				oldestPath, oldest = path, seen
-			}
+	excess := len(s.lastSeen) - s.maxEntries
+	if s.maxEntries <= 0 || excess <= 0 {
+		return
+	}
+	type entry struct {
+		path string
+		seen time.Time
+	}
+	entries := make([]entry, 0, len(s.lastSeen))
+	for path, seen := range s.lastSeen {
+		entries = append(entries, entry{path: path, seen: seen})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if !entries[i].seen.Equal(entries[j].seen) {
+			return entries[i].seen.Before(entries[j].seen)
 		}
-		delete(s.lastSeen, oldestPath)
+		return entries[i].path < entries[j].path
+	})
+	for _, oldest := range entries[:excess] {
+		delete(s.lastSeen, oldest.path)
 	}
 }
 

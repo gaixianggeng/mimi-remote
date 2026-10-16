@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +14,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
 type sharedFileReferenceCase struct {
@@ -242,7 +246,37 @@ func newSessionFileGrantPolicyForTest(t *testing.T, runtimeID string) (*appServe
 	return policy, router, root
 }
 
+// skipWhereSessionFileGrantsDisabled：Windows 上 newSessionFileGrantStore 返回 nil（没有逐级
+// O_NOFOLLOW 读取），iOS 也只识别 "/" 开头的路径，正向用例在那里不成立；关闭行为由
+// TestSessionFileGrantsDisabledOnWindows 单独断言。
+func skipWhereSessionFileGrantsDisabled(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不开放会话引用授权")
+	}
+}
+
+func TestSessionFileGrantsDisabledOnWindows(t *testing.T) {
+	store := newSessionFileGrantStore()
+	if runtime.GOOS != "windows" {
+		if store == nil {
+			t.Fatal("非 Windows 平台应启用会话引用授权")
+		}
+		return
+	}
+	if store != nil {
+		t.Fatal("Windows 不应启用会话引用授权")
+	}
+	router := &Router{sessionFileGrants: store}
+	path := filepath.Join(os.TempDir(), "mentioned.png")
+	router.observeAgentProducedFiles(agentMessageNotification("thread", "见 "+path))
+	if _, candidate, err := router.resolveSessionReferencedTemporaryFile(path); candidate || err != nil {
+		t.Fatalf("Windows 上任何路径都不应走会话引用授权：candidate=%v err=%v", candidate, err)
+	}
+}
+
 func TestGatewayRecordsSessionFileGrantsOnlyFromAuthorizedAgentItems(t *testing.T) {
+	skipWhereSessionFileGrantsDisabled(t)
 	for _, runtimeID := range []string{"codex", "claude"} {
 		policy, router, root := newSessionFileGrantPolicyForTest(t, runtimeID)
 		allowedPath := filepath.Join(root, "allowed.png")
@@ -272,6 +306,7 @@ func TestGatewayRecordsSessionFileGrantsOnlyFromAuthorizedAgentItems(t *testing.
 }
 
 func TestGatewayRecordsSessionFileGrantsFromForwardedHistoryPages(t *testing.T) {
+	skipWhereSessionFileGrantsDisabled(t)
 	policy, router, root := newSessionFileGrantPolicyForTest(t, "codex")
 	referenced := filepath.Join(root, "history.pdf")
 	requestID := json.RawMessage(`301`)
@@ -296,5 +331,96 @@ func TestGatewayRecordsSessionFileGrantsFromForwardedHistoryPages(t *testing.T) 
 		string(strayText)+`}]}]}}`))
 	if router.sessionFileGrants.granted(stray) {
 		t.Fatal("未登记的响应不能产生授权")
+	}
+}
+
+// thread/read 的响应要先通过只读子会话的作用域校验才会转发；校验失败的响应即使带着 AI
+// 提到的文件，也不能留下授权。
+func TestGatewayDoesNotGrantFilesFromRejectedThreadReadResponse(t *testing.T) {
+	skipWhereSessionFileGrantsDisabled(t)
+	policy, router, root := newSessionFileGrantPolicyForTest(t, "codex")
+	projectDir := t.TempDir()
+	registry, err := projects.NewRegistry([]config.ProjectConfig{{ID: "project", Name: "Project", Path: projectDir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.projects = registry
+	policy.allowThread(appServerGatewayAllowedThread{
+		id: "child", runtimeID: "codex", cwd: projectDir, scopeID: "project", readOnly: true,
+	})
+
+	readThread := func(requestID string, responseThreadID string, mentioned string) ([]byte, bool, *appServerGatewayPolicyError) {
+		t.Helper()
+		id := json.RawMessage(requestID)
+		if err := policy.rememberPendingThreadRequest(&id, appServerGatewayPendingThreadRequest{
+			method: "thread/read", threadID: "child",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := policy.reserveHistoryRequest(&id, "thread/read", map[string]any{
+			"threadId": "child", "includeTurns": true,
+		}, 128); err != nil {
+			t.Fatalf("history 请求应可登记：%+v", err)
+		}
+		thread, _ := json.Marshal(map[string]any{
+			"id": responseThreadID, "cwd": projectDir,
+			"turns": []any{map[string]any{"id": "turn", "items": []any{
+				map[string]any{"type": "agentMessage", "id": "a", "text": "见 " + mentioned},
+			}}},
+		})
+		return policy.observeUpstreamFrame(websocket.TextMessage,
+			[]byte(`{"id":`+requestID+`,"result":{"thread":`+string(thread)+`}}`))
+	}
+
+	rejected := filepath.Join(root, "other-thread.png")
+	if _, forward, policyErr := readThread("401", "other", rejected); forward || policyErr == nil {
+		t.Fatalf("返回别的 thread 时响应应被拒绝：forward=%v err=%+v", forward, policyErr)
+	}
+	if router.sessionFileGrants.granted(rejected) {
+		t.Fatal("被拒绝的 thread/read 响应不能登记文件授权")
+	}
+
+	accepted := filepath.Join(root, "child.png")
+	if _, forward, policyErr := readThread("402", "child", accepted); !forward || policyErr != nil {
+		t.Fatalf("同一 thread 的响应应转发：forward=%v err=%+v", forward, policyErr)
+	}
+	if !router.sessionFileGrants.granted(accepted) {
+		t.Fatal("通过校验并转发的 thread/read 响应应登记文件授权")
+	}
+}
+
+// 一页历史可能带上成千上万条路径：单次最多登记 maxEntries 条，淘汰一次完成。
+func TestSessionFileGrantStoreBoundsWorkForHugePages(t *testing.T) {
+	root := t.TempDir()
+	store := newSessionFileGrantStoreWithRoots([]string{root})
+	now := time.Unix(1_000, 0)
+	store.now = func() time.Time { return now }
+	store.maxEntries = 100
+
+	var older []string
+	for index := 0; index < 60; index++ {
+		older = append(older, filepath.Join(root, fmt.Sprintf("older-%03d.png", index)))
+	}
+	store.grant(older)
+
+	now = now.Add(time.Minute)
+	var huge []string
+	for index := 0; index < 20_000; index++ {
+		huge = append(huge, filepath.Join(root, fmt.Sprintf("page-%05d.png", index)))
+	}
+	store.grant(huge)
+
+	if got := len(store.lastSeen); got != store.maxEntries {
+		t.Fatalf("授权表应保持在容量上限：got=%d want=%d", got, store.maxEntries)
+	}
+	for _, path := range older {
+		if store.granted(path) {
+			t.Fatalf("更早被提到的路径应先被淘汰：%s", path)
+		}
+	}
+	for index, path := range huge {
+		if store.granted(path) != (index < store.maxEntries) {
+			t.Fatalf("单次只应登记前 %d 条路径：index=%d granted=%v", store.maxEntries, index, store.granted(path))
+		}
 	}
 }
