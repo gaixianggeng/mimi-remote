@@ -87,6 +87,8 @@ extension SessionStore {
             await refreshAll(autoAttach: false)
             return
         }
+        quietHistoryRefreshSessionIDs.insert(session.id)
+        defer { quietHistoryRefreshSessionIDs.remove(session.id) }
         await refreshSelectedSessionContent(session)
     }
 

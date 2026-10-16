@@ -89,6 +89,92 @@ final class InAppNoticeRulesTests: XCTestCase {
         XCTAssertEqual(store.operationFeedback?.message, L10n.text("ui.full_history_loaded"))
     }
 
+    // MARK: - 手动刷新当前会话
+
+    func testManualRefreshOfCodexSessionShowsNoTopNotice() async {
+        await assertManualRefreshIsQuiet(source: "codex", runtimeProvider: nil)
+    }
+
+    func testManualRefreshOfClaudeSessionShowsNoTopNotice() async {
+        await assertManualRefreshIsQuiet(source: "claude", runtimeProvider: "claude")
+    }
+
+    /// 刷新是用户自己触发的常规操作：加载中不插「正在加载完整历史」「正在切换缩略历史」卡片，
+    /// 成功不弹提示；体量超限退回缩略时，只留下表示最终状态的「当前显示缩略历史」卡片。
+    private func assertManualRefreshIsQuiet(
+        source: String,
+        runtimeProvider: String?,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let project = makeProject(id: "proj_notice_refresh_\(source)")
+        let session = makeSession(
+            id: "\(source)_notice_refresh",
+            projectID: project.id,
+            title: "刷新当前会话",
+            status: "history",
+            source: source,
+            runtimeProvider: runtimeProvider,
+            resumeID: "refresh"
+        )
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [session]))
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(session) }
+        await client.waitForHistoryRequestCount(1)
+        client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(messages: [assistantMessage(id: "rollout:open", content: "打开时的历史")])
+        )
+        await selectTask.value
+        store.dismissOperationFeedback(id: store.operationFeedback?.id)
+
+        // 第一次刷新：完整历史直接成功。
+        let refreshTask = Task { await store.refreshCurrentContext() }
+        await client.waitForHistoryRequestCount(2)
+        XCTAssertEqual(client.requestedMessageLoadModes.last, .full, file: file, line: line)
+        XCTAssertNil(store.selectedHistorySavingsNotice, "刷新进行中不应插入「正在加载完整历史」卡片", file: file, line: line)
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [assistantMessage(id: "rollout:refresh", content: "刷新后的历史")])
+        )
+        await refreshTask.value
+
+        XCTAssertNil(store.selectedHistorySavingsNotice, file: file, line: line)
+        XCTAssertNil(store.operationFeedback, "刷新成功不弹顶部提示", file: file, line: line)
+        XCTAssertEqual(store.statusMessage, L10n.text("ui.the_current_session_has_been_refreshed"), file: file, line: line)
+
+        // 第二次刷新：完整历史超限，自动退回缩略。
+        let oversizeTask = Task { await store.refreshCurrentContext() }
+        await client.waitForHistoryRequestCount(3)
+        client.failHistoryRequest(at: 2, with: historyPolicyError(reason: "history_response_too_large"))
+        await client.waitForHistoryRequestCount(4)
+        XCTAssertEqual(client.requestedMessageLoadModes.last, .economy, file: file, line: line)
+        XCTAssertNil(store.selectedHistorySavingsNotice, "退回缩略途中不应插入「正在切换缩略历史」卡片", file: file, line: line)
+        client.resolveHistoryRequest(at: 3, with: summaryPage(content: "刷新后的缩略历史"))
+        await oversizeTask.value
+
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .summaryLoaded, file: file, line: line)
+        XCTAssertNil(store.operationFeedback, "不再弹「已自动加载缩略历史」", file: file, line: line)
+        XCTAssertTrue(store.quietHistoryRefreshSessionIDs.isEmpty, file: file, line: line)
+
+        // 刷新之外的入口不受影响：点卡片里的「加载完整内容」仍显示加载卡片。
+        let fullTask = Task { await store.loadFullHistoryForSelectedSession() }
+        await client.waitForHistoryRequestCount(5)
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingFull, file: file, line: line)
+        client.resolveHistoryRequest(
+            at: 4,
+            with: HistoryMessagesPage(messages: [assistantMessage(id: "rollout:full", content: "完整历史")])
+        )
+        await fullTask.value
+    }
+
     // MARK: - 位置
 
     func testToastTopPaddingClearsBoundaryOrFallsBackToHostTop() {

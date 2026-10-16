@@ -514,6 +514,9 @@ final class SessionStore: ObservableObject {
     /// 运行中的 full 历史可能暂时携带大量过程输出。命中网关单包上限后先显示 summary，
     /// 等对应 Turn 完成再补拉 canonical full，避免把临时膨胀误判成永久大历史。
     var deferredFullHistorySessionIDs: Set<SessionID> = []
+    /// 用户点「刷新当前会话」期间的会话（#738）。刷新是常规操作：这期间不出「正在加载完整历史」
+    /// 「正在切换缩略历史」这类过渡卡片，成功也不弹提示；失败和最终的缩略状态照常显示。
+    var quietHistoryRefreshSessionIDs: Set<SessionID> = []
     var freshEmptyHistorySignatureBySessionID: [SessionID: HistoryLoadSignature] = [:]
     var initialHistoryLoadingSessionIDs: Set<SessionID> = []
     @Published var visibleHistoryLoadingSessionIDs: Set<SessionID> = []
