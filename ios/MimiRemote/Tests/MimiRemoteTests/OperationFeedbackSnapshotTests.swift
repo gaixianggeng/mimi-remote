@@ -6,6 +6,7 @@ import XCTest
 
 /// #508：失败反馈的视觉基线。覆盖会话页错误横幅（宽屏 / iPhone）、顶部轻提示（含详情展开）
 /// 与重命名弹窗里的就地失败说明；主界面文案里不应出现 HTTP / WebSocket 等原文。
+/// #738：会话页的缩略历史、额度卡片与轻提示同一套版式。
 @MainActor
 final class OperationFeedbackSnapshotTests: SimplifiedChineseSnapshotTestCase {
     override func setUpWithError() throws {
@@ -76,6 +77,48 @@ final class OperationFeedbackSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 )
             },
             as: .image(precision: 0.98, layout: .fixed(width: 560, height: 110))
+        )
+    }
+
+    /// #738：会话页的常驻卡片与轻提示同一套版式（图标列、粗体标题、右上角关闭、按钮在下）。
+    func testCompactHistoryCardOnIPhoneDark() {
+        assertSnapshot(
+            of: host(width: 390, height: 130, colorScheme: .dark) {
+                InlineNoticeCard(
+                    tone: .neutral,
+                    systemImage: "doc.text.magnifyingglass",
+                    title: L10n.text("ui.currently_showing_abbreviated_history"),
+                    onClose: {}
+                ) {
+                    Button {} label: {
+                        Label(L10n.text("ui.load_full_history"), systemImage: "arrow.down.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+            },
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 130))
+        )
+    }
+
+    func testQuotaCardOnIPhoneLight() {
+        assertSnapshot(
+            of: host(width: 390, height: 150, colorScheme: .light) {
+                InlineNoticeCard(
+                    tone: .warning,
+                    systemImage: "speedometer",
+                    title: L10n.text("ui.quota_has_been_exhausted"),
+                    subtitle: L10n.text("ui.this_sending_was_blocked_by_codex_quota_limit"),
+                    onClose: {}
+                ) {
+                    Button {} label: {
+                        Label(L10n.text("ui.refresh_status"), systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+            },
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 150))
         )
     }
 

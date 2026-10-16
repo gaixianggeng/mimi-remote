@@ -199,91 +199,46 @@ struct ConversationView: View {
         }
     }
 
+    // 缩略历史、额度、错误三张卡片与轻提示同一套版式（`InlineNoticeCard`，#738），
+    // 但留在内容流里常驻：它们表示当前状态或等用户操作，不会自己消失。
     private func historySavingsBanner(_ notice: HistorySavingsNotice) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        return ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 10) {
-                historySavingsBannerMessage(notice)
-                Spacer(minLength: 0)
-                historySavingsBannerActions(notice)
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                historySavingsBannerMessage(notice)
-                historySavingsBannerActions(notice)
-            }
+        let tone: InlineNoticeTone
+        let systemImage: String?
+        switch notice.kind {
+        case .loadingFull, .loadingSummary:
+            tone = .progress
+            systemImage = nil
+        case .fullFailed, .summaryFailed:
+            tone = .failure
+            systemImage = nil
+        case .summaryLoaded:
+            tone = .neutral
+            systemImage = "doc.text.magnifyingglass"
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tokens.elevatedSurface)
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(tokens.border, lineWidth: 1)
+        let canDismiss = notice.kind == .summaryLoaded || notice.kind == .summaryFailed
+        return InlineNoticeCard(
+            tone: tone,
+            systemImage: systemImage,
+            title: notice.message,
+            // 进行中由图标的进度指示表达，不再放一枚禁用的「加载中」按钮。
+            hasActions: notice.kind != .loadingSummary,
+            onClose: canDismiss ? { sessionStore.dismissSelectedHistorySavingsNotice() } : nil,
+            closeAccessibilityIdentifier: "conversation.historyNotice.close"
+        ) {
+            historySavingsBannerActions(notice)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func historySavingsBannerMessage(_ notice: HistorySavingsNotice) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        return HStack(alignment: .center, spacing: 10) {
-            Image(systemName: notice.kind == .summaryLoaded ? "doc.text.magnifyingglass" : "gauge.with.dots.needle.33percent")
-                .font(themeStore.uiFont(.body, weight: .semibold))
-                .foregroundStyle(tokens.accent)
-                .frame(width: 22, height: 22)
-            Text(notice.message)
-                .font(themeStore.uiFont(.caption, weight: .medium))
-                .foregroundStyle(tokens.primaryText)
-                .lineLimit(3)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        .accessibilityIdentifier("conversation.historyNotice")
     }
 
     private func quotaLimitBanner(_ notice: CodexQuotaNotice) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        return ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 10) {
-                quotaLimitBannerMessage(notice)
-                Spacer(minLength: 0)
-                quotaLimitBannerActions(notice)
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                quotaLimitBannerMessage(notice)
-                quotaLimitBannerActions(notice)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tokens.warning.opacity(0.12))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(tokens.warning.opacity(0.42), lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func quotaLimitBannerMessage(_ notice: CodexQuotaNotice) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        return HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "speedometer")
-                .font(themeStore.uiFont(.body, weight: .semibold))
-                .foregroundStyle(tokens.warning)
-                .frame(width: 22, height: 22)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(notice.title)
-                    .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                Text(notice.message)
-                    .font(themeStore.uiFont(.caption2, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-            }
-            .lineLimit(3)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func quotaLimitBannerActions(_ notice: CodexQuotaNotice) -> some View {
-        HStack(spacing: 8) {
+        InlineNoticeCard(
+            tone: .warning,
+            systemImage: "speedometer",
+            title: notice.title,
+            subtitle: notice.message,
+            onClose: notice.canDismiss ? { sessionStore.dismissErrorMessage() } : nil,
+            closeAccessibilityIdentifier: "conversation.quotaNotice.close"
+        ) {
             Button {
                 Task {
                     await sessionStore.refreshSelectedUsage()
@@ -295,110 +250,78 @@ struct ConversationView: View {
             .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
             .controlSize(.small)
             .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
-
-            if notice.canDismiss {
-                Button {
-                    sessionStore.dismissErrorMessage()
-                } label: {
-                    Label(L10n.text("ui.close"), systemImage: "xmark.circle")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
         }
+        .accessibilityIdentifier("conversation.quotaNotice")
     }
 
     @ViewBuilder
     private func historySavingsBannerActions(_ notice: HistorySavingsNotice) -> some View {
-        HStack(spacing: 8) {
-            switch notice.kind {
-            case .loadingFull:
-                Button {
-                    Task {
-                        await sessionStore.loadSummaryHistoryForSelectedSession()
-                    }
-                } label: {
-                    Label(L10n.text("ui.view_abbreviated_version_only"), systemImage: "text.justify")
+        switch notice.kind {
+        case .loadingFull:
+            Button {
+                Task {
+                    await sessionStore.loadSummaryHistoryForSelectedSession()
                 }
-                .buttonStyle(.borderedProminent)
-                .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
-                .controlSize(.small)
-                .disabled(sessionStore.isRefreshingSelectedSession)
-
-            case .fullFailed:
-                Button {
-                    Task {
-                        await sessionStore.loadFullHistoryForSelectedSession()
-                    }
-                } label: {
-                    Label(L10n.text("ui.retry_full_history"), systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.borderedProminent)
-                .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
-                .controlSize(.small)
-                .disabled(sessionStore.isRefreshingSelectedSession)
-
-                Button {
-                    Task {
-                        await sessionStore.loadSummaryHistoryForSelectedSession()
-                    }
-                } label: {
-                    Label(L10n.text("ui.view_abbreviated_version_only"), systemImage: "text.justify")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(sessionStore.isRefreshingSelectedSession)
-
-            case .loadingSummary:
-                Button {} label: {
-                    Label(L10n.text("ui.loading_3667cb10"), systemImage: "hourglass")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(true)
-
-            case .summaryLoaded:
-                Button {
-                    Task {
-                        await sessionStore.loadFullHistoryForSelectedSession()
-                    }
-                } label: {
-                    Label(L10n.text("ui.load_full_history"), systemImage: "arrow.down.circle")
-                }
-                .buttonStyle(.borderedProminent)
-                .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
-                .controlSize(.small)
-                .disabled(sessionStore.isRefreshingSelectedSession)
-
-                Button {
-                    sessionStore.dismissSelectedHistorySavingsNotice()
-                } label: {
-                    Label(L10n.text("ui.close"), systemImage: "xmark.circle")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-
-            case .summaryFailed:
-                Button {
-                    Task {
-                        await sessionStore.loadSummaryHistoryForSelectedSession()
-                    }
-                } label: {
-                    Label(L10n.text("ui.try_again_abbreviated_version"), systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.borderedProminent)
-                .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
-                .controlSize(.small)
-                .disabled(sessionStore.isRefreshingSelectedSession)
-
-                Button {
-                    sessionStore.dismissSelectedHistorySavingsNotice()
-                } label: {
-                    Label(L10n.text("ui.close"), systemImage: "xmark.circle")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+            } label: {
+                Label(L10n.text("ui.view_abbreviated_version_only"), systemImage: "text.justify")
             }
+            .buttonStyle(.borderedProminent)
+            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
+            .controlSize(.small)
+            .disabled(sessionStore.isRefreshingSelectedSession)
+
+        case .fullFailed:
+            Button {
+                Task {
+                    await sessionStore.loadFullHistoryForSelectedSession()
+                }
+            } label: {
+                Label(L10n.text("ui.retry_full_history"), systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.borderedProminent)
+            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
+            .controlSize(.small)
+            .disabled(sessionStore.isRefreshingSelectedSession)
+
+            Button {
+                Task {
+                    await sessionStore.loadSummaryHistoryForSelectedSession()
+                }
+            } label: {
+                Label(L10n.text("ui.view_abbreviated_version_only"), systemImage: "text.justify")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(sessionStore.isRefreshingSelectedSession)
+
+        case .loadingSummary:
+            EmptyView()
+
+        case .summaryLoaded:
+            Button {
+                Task {
+                    await sessionStore.loadFullHistoryForSelectedSession()
+                }
+            } label: {
+                Label(L10n.text("ui.load_full_history"), systemImage: "arrow.down.circle")
+            }
+            .buttonStyle(.borderedProminent)
+            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
+            .controlSize(.small)
+            .disabled(sessionStore.isRefreshingSelectedSession)
+
+        case .summaryFailed:
+            Button {
+                Task {
+                    await sessionStore.loadSummaryHistoryForSelectedSession()
+                }
+            } label: {
+                Label(L10n.text("ui.try_again_abbreviated_version"), systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.borderedProminent)
+            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryActionForeground)
+            .controlSize(.small)
+            .disabled(sessionStore.isRefreshingSelectedSession)
         }
     }
 
