@@ -41,7 +41,9 @@ type Router struct {
 	historyMedia   *appServerHistoryMediaStore
 	historyOutput  *appServerHistoryMediaStore
 	fileUploads    *fileUploadStore
-	capabilities   capabilityRegistry
+	// sessionFileGrants 记录已授权会话里 AI 提到的临时目录文件，供 /api/files/read 精确放行。
+	sessionFileGrants *sessionFileGrantStore
+	capabilities      capabilityRegistry
 	// tailscalePathLookup 只在连接验证/测速时读取一次本机 Tailscale 状态。
 	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
 	tailscalePathLookup tailscaleNetworkPathLookup
@@ -206,6 +208,7 @@ func NewRouterWithInstallationIDAndOptions(
 		historyMedia:                newAppServerHistoryMediaStore(),
 		historyOutput:               newAppServerHistoryOutputStore(),
 		fileUploads:                 fileUploads,
+		sessionFileGrants:           newSessionFileGrantStore(),
 		capabilities:                newCapabilityRegistry(cfg, fileUploads),
 		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},

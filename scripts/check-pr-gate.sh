@@ -78,6 +78,7 @@ assert_scope ios_release false true false false false scripts/ios_testflight_ci.
 assert_scope ios_asc_pin false true false false false config/release/ios-asc-cli.env
 assert_scope ios_asc_test false true false false false scripts/test-ios-asc-cli.sh
 assert_scope mimi_contract true true false false false contracts/mimi-protocol/contract.json
+assert_scope file_reference_cases true true false false false contracts/file-references/detector-cases.json
 assert_scope mimi_contract_generator true true false false false internal/protocolcontract/cmd/generate/main.go
 assert_scope mimi_contract_checker true false false false false scripts/check-mimi-protocol-contract.sh
 assert_scope critical_runner true true false false false scripts/test-conversation-regressions.sh
