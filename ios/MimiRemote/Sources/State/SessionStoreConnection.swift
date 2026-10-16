@@ -2090,7 +2090,7 @@ extension SessionStore {
     }
 
     /// 把会话快照归并到本机已读水位。初次见到的旧历史直接建立已读基线，避免升级后
-    /// 所有旧会话一起亮点；只有观察到运行结束或稳定完成版本变化时才产生未读。
+    /// 所有旧会话一起亮点；只有观察到运行结束或稳定完成版本前进时才产生未读。
     func synchronizeHistoryReadStates() {
         var next = historyReadStateBySessionID
         var didChange = false
@@ -2119,8 +2119,17 @@ extension SessionStore {
                 }
 
                 if let latest = state.latestCompletion {
-                    if latest.representsSameCompletion(as: version) {
-                        let wasRead = state.readCompletion?.representsSameCompletion(as: latest) == true
+                    let isSameCompletion = latest.representsSameCompletion(as: version)
+                    // 没观察到运行、时间也没前进（#653 升级后 Mac 端把 mtime 纠正回真实对话时间）时
+                    // 按同一次完成归并：沿用已读与手动未读；纠正后不晚于已读水位的也算已读。
+                    let isBackdated = !isSameCompletion
+                        && !completedAfterObservedRunning
+                        && version.hasNoNewActivity(since: latest)
+                    if isSameCompletion || isBackdated {
+                        let wasRead = state.readCompletion.map { read in
+                            read.representsSameCompletion(as: latest)
+                                || (isBackdated && version.hasNoNewActivity(since: read))
+                        } == true
                         let wasManuallyUnread = state.manualUnreadCompletion?
                             .representsSameCompletion(as: latest) == true
                         let merged = latest.merging(version)

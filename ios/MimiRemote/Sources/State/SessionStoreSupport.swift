@@ -497,6 +497,33 @@ struct SessionCompletionVersion: Codable, Equatable {
         return false
     }
 
+    /// 与 `other` 的差别只是活动时间没有前进：没有新完成的 turn，序号没有推进，
+    /// 决定先后的时间水位不晚于对方。Mac 端把文件 mtime 纠正为最后一条真实对话时间（#653）
+    /// 会让时间往回走，这种变化不可能带来新结果。
+    func hasNoNewActivity(since other: SessionCompletionVersion) -> Bool {
+        guard turnID == nil else {
+            return false
+        }
+        if let revision, let otherRevision = other.revision, revision > otherRevision {
+            return false
+        }
+        if let lastSeq, let otherLastSeq = other.lastSeq, lastSeq > otherLastSeq {
+            return false
+        }
+        // 与 `representsSameCompletion` 同一优先级：共有 recencyAt 时只看它；
+        // 共有 revision / lastSeq 时由序号决定先后，不按时间判断。
+        if let recencyAt, let otherRecencyAt = other.recencyAt {
+            return recencyAt <= otherRecencyAt
+        }
+        if (revision != nil && other.revision != nil) || (lastSeq != nil && other.lastSeq != nil) {
+            return false
+        }
+        if let updatedAt, let otherUpdatedAt = other.updatedAt {
+            return updatedAt <= otherUpdatedAt
+        }
+        return false
+    }
+
     /// 同一次完成从实时态过渡到完整列表快照时，把新出现的稳定字段并入同一水位。
     func merging(_ other: SessionCompletionVersion) -> SessionCompletionVersion {
         SessionCompletionVersion(
