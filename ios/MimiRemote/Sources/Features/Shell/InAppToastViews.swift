@@ -125,31 +125,81 @@ private struct InAppToastHost: ViewModifier {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.inAppNoticePlacement) private var placement
     @State private var showsDetail = false
+    /// 提示顶边的全局界线（导航栏、页面常驻卡片的下沿）。只在提示出现、宿主尺寸或常驻区域
+    /// 变化时重新测量：宿主随 SessionStore 的每次发布重算，不能每次都遍历窗口。
+    @State private var boundaryMeasurement: BoundaryMeasurement?
 
     func body(content: Content) -> some View {
         content.overlay(alignment: .top) {
-            ZStack {
-                if let toast {
-                    InAppToastCard(toast: toast, showsDetail: $showsDetail, onDismiss: { onDismiss(toast.id) })
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                        .frame(maxWidth: 560)
-                        .transition(
-                            reduceMotion
-                                ? .opacity
-                                : .move(edge: .top).combined(with: .opacity)
-                        )
-                        .id(toast.id)
-                        .task(id: toast.id) {
-                            showsDetail = false
-                            AccessibilityNotification.Announcement(toast.accessibilityAnnouncement).post()
-                            await autoDismiss(toast)
+            GeometryReader { proxy in
+                let hostFrame = proxy.frame(in: .global)
+                toastLayer(hostMinY: hostFrame.minY)
+                    .onChange(
+                        of: PlacementInputs(
+                            toastID: toast?.id,
+                            hostFrame: hostFrame,
+                            protectedRegionBottom: placement?.protectedRegionBottom
+                        ),
+                        initial: true
+                    ) { _, inputs in
+                        boundaryMeasurement = inputs.toastID.map {
+                            BoundaryMeasurement(toastID: $0, boundary: placement?.topBoundary())
                         }
-                }
+                    }
             }
-            .animation(reduceMotion ? .easeInOut(duration: 0.15) : .snappy(duration: 0.28), value: toast?.id)
         }
+    }
+
+    private struct BoundaryMeasurement {
+        let toastID: AnyHashable
+        let boundary: CGFloat?
+    }
+
+    private struct PlacementInputs: Equatable {
+        let toastID: AnyHashable?
+        let hostFrame: CGRect
+        let protectedRegionBottom: CGFloat?
+    }
+
+    private func toastLayer(hostMinY: CGFloat) -> some View {
+        ZStack {
+            if let toast {
+                InAppToastCard(toast: toast, showsDetail: $showsDetail, onDismiss: { onDismiss(toast.id) })
+                    .padding(.horizontal, 16)
+                    .padding(
+                        .top,
+                        InAppNoticePlacement.toastTopPadding(
+                            boundary: topBoundary(for: toast),
+                            hostMinY: hostMinY
+                        )
+                    )
+                    .frame(maxWidth: 560)
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .move(edge: .top).combined(with: .opacity)
+                    )
+                    .id(toast.id)
+                    .task(id: toast.id) {
+                        showsDetail = false
+                        AccessibilityNotification.Announcement(toast.accessibilityAnnouncement).post()
+                        await autoDismiss(toast)
+                    }
+            }
+        }
+        // GeometryReader 把子视图放在左上角；提示仍按原来的方式水平居中。
+        .frame(maxWidth: .infinity, alignment: .top)
+        .animation(reduceMotion ? .easeInOut(duration: 0.15) : .snappy(duration: 0.28), value: toast?.id)
+    }
+
+    /// 新提示出现的这一帧 onChange 还没跑，直接量一次，避免先落在导航栏上再跳下来。
+    private func topBoundary(for toast: InAppToast) -> CGFloat? {
+        if let boundaryMeasurement, boundaryMeasurement.toastID == toast.id {
+            return boundaryMeasurement.boundary
+        }
+        return placement?.topBoundary()
     }
 
     private func autoDismiss(_ toast: InAppToast) async {

@@ -169,6 +169,8 @@ struct ConversationView: View {
             || model.historySavingsNotice != nil
             || model.quotaNotice != nil {
             statusStripContainer(model: model)
+                // 卡片里有「加载完整内容」「重新连接」等按钮，一次性提示落在它下方（#738）。
+                .inAppNoticeProtectedRegion()
                 .padding(.horizontal, layout.horizontalInset)
                 .padding(.top, 10)
                 .padding(.bottom, 6)

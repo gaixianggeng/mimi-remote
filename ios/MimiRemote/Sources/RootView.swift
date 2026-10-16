@@ -867,6 +867,8 @@ struct RootView: View {
         )
         // 工作台挂载后才接管前台回复提醒；首次配置页仍走系统横幅（#510）。
         .foregroundSessionNoticeToasts()
+        // 操作反馈和回复提醒都落在当前页导航栏与会话页状态卡片之下（#738）。
+        .inAppNoticePlacementScope()
     }
 }
 

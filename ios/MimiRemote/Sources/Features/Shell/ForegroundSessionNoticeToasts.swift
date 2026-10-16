@@ -108,7 +108,7 @@ private final class WeakWindowBox {
 }
 
 /// 只为拿到工作台所在的 UIWindow；本身不参与布局和命中。
-private struct HostWindowReader: UIViewRepresentable {
+struct HostWindowReader: UIViewRepresentable {
     let onWindowChange: (UIWindow) -> Void
 
     func makeUIView(context: Context) -> ReaderView {
