@@ -1,5 +1,12 @@
 import Foundation
 
+/// 外部配对链接在首次配对页上的进度；失败只保留原始描述，文案由页面统一友好化。
+enum PairingLinkAttempt: Equatable {
+    case idle
+    case connecting
+    case failed(String)
+}
+
 // 多 Mac 连接变更、Profile 清理和暖快照恢复共享同一事务边界。
 extension SessionStore {
     func resetConnectionForSettingsChange(clearData: Bool = false) {
@@ -141,6 +148,31 @@ extension SessionStore {
             // 档案凭据已经按 AppStore 的事务边界删除；本地队列清理失败不回滚凭据，
             // 只显式提示残留，避免界面误以为 Mac 连接仍然存在。
             reportQueuedTurnStorageError(error)
+        }
+    }
+
+    /// 系统相机扫码或其它 App 打开的配对链接。配对仍在 App 层执行，停在哪一页都能连上；
+    /// 但首次配对页按 #557 只显示本页操作的反馈、不读全局 `lastError`，所以还没有任何电脑时
+    /// 要把进度和失败原因经 `pairingLinkAttempt` 交给它，否则失败时页面毫无变化（#728）。
+    func openPairingLink(_ url: URL) async {
+        let wasConfigured = appStore.isConfigured
+        let reportsToFirstConnectionPage = appStore.connectionProfiles.isEmpty
+        if reportsToFirstConnectionPage {
+            pairingLinkAttempt = .connecting
+        }
+        do {
+            _ = try await applyPairingURL(url)
+            if reportsToFirstConnectionPage {
+                pairingLinkAttempt = .idle
+            }
+            // 首次 URL 配对要覆盖 Tailscale / gateway 冷启动窗口；已有档案修复只做短等待。
+            _ = await refreshAfterConnectionCommit(maxWait: wasConfigured ? 10 : 45)
+        } catch {
+            appStore.connectionStatus = .failed(error.localizedDescription)
+            appStore.lastError = error.localizedDescription
+            if reportsToFirstConnectionPage {
+                pairingLinkAttempt = .failed(error.localizedDescription)
+            }
         }
     }
 

@@ -203,6 +203,10 @@ struct InitialConnectionSettingsSections: View {
         get { draft.isSavingConnection }
         nonmutating set { draft.isSavingConnection = newValue }
     }
+    /// 系统相机扫码等外部链接正在配对（只在还没有任何电脑时发布，#728）。
+    private var isOpeningPairingLink: Bool {
+        sessionStore.pairingLinkAttempt == .connecting
+    }
     private var isAddingConnectionProfile: Bool {
         get { draft.isAddingConnectionProfile }
         nonmutating set { draft.isAddingConnectionProfile = newValue }
@@ -296,6 +300,19 @@ struct InitialConnectionSettingsSections: View {
             draft.pendingRepairRequest = false
             guard mode == .deviceHome else { return }
             beginRepairingCurrentProfile()
+        }
+        // 外部链接由 App 层配对，这一页只显示进度和结果：开始时清掉上一轮反馈，
+        // 失败原因写进本页错误行后立即消费，避免以后回到这一页又看到旧错误（#728）。
+        .task(id: sessionStore.pairingLinkAttempt) {
+            switch sessionStore.pairingLinkAttempt {
+            case .idle:
+                return
+            case .connecting:
+                connectionAttemptError = nil
+            case .failed(let message):
+                connectionAttemptError = message
+                sessionStore.pairingLinkAttempt = .idle
+            }
         }
         .onChange(of: appStore.activeConnectionProfileID) { _, _ in
             loadInitialConnectionIfNeeded()
@@ -956,9 +973,11 @@ struct InitialConnectionSettingsSections: View {
             VStack(spacing: 10) {
                 Button(action: beginScanningHost) {
                     ConnectionActionLabel(
-                        title: L10n.text("ui.scan_qr_code_on_computer"),
+                        title: isOpeningPairingLink
+                            ? L10n.text("ui.connecting")
+                            : L10n.text("ui.scan_qr_code_on_computer"),
                         systemImage: "qrcode.viewfinder",
-                        isBusy: qrScannerPresentation.isRequestingCameraAuthorization,
+                        isBusy: qrScannerPresentation.isRequestingCameraAuthorization || isOpeningPairingLink,
                         busyTint: tokens.primaryActionForeground
                     )
                 }
@@ -982,7 +1001,9 @@ struct InitialConnectionSettingsSections: View {
                 .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
                 .accessibilityIdentifier("settings.connection.pasteConnectionInfo")
             }
-            .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
+            .disabled(
+                isSavingConnection || isOpeningPairingLink || qrScannerPresentation.isRequestingCameraAuthorization
+            )
             .padding(.top, SettingsLayoutMetrics.rowHorizontalInset)
             .padding(.bottom, 8)
             .listRowSeparator(.hidden)
@@ -1202,6 +1223,7 @@ struct InitialConnectionSettingsSections: View {
 
     private var canSubmit: Bool {
         !isSavingConnection &&
+        !isOpeningPairingLink &&
         !isConnectionTesting &&
         endpointTransportAssessment.isAllowed &&
         !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

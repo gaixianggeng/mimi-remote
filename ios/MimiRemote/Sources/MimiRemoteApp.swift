@@ -596,17 +596,7 @@ struct MimiRemoteApp: App {
                 .environmentObject(managedConnectionDeviceStore)
                 .onOpenURL { url in
                     Task { @MainActor in
-                        do {
-                            let wasConfigured = appStore.isConfigured
-                            _ = try await sessionStore.applyPairingURL(url)
-                            // 首次 URL 配对要覆盖 Tailscale / gateway 冷启动窗口；已有档案修复只做短等待。
-                            _ = await sessionStore.refreshAfterConnectionCommit(
-                                maxWait: wasConfigured ? 10 : 45
-                            )
-                        } catch {
-                            appStore.connectionStatus = .failed(error.localizedDescription)
-                            appStore.lastError = error.localizedDescription
-                        }
+                        await sessionStore.openPairingLink(url)
                     }
                 }
         }

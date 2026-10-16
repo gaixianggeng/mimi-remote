@@ -226,6 +226,8 @@ final class SessionStore: ObservableObject {
     @Published var queuedTurnStorageErrorMessage: String?
     /// 只驱动主机选择器和写操作禁用态，不承载探活结果，避免状态圆点刷新整棵工作台。
     @Published private(set) var connectionSwitchTargetProfileID: String?
+    /// 外部配对链接在首次配对页上的进度，只由 `openPairingLink` 发布、首次配对页消费（#728）。
+    @Published var pairingLinkAttempt: PairingLinkAttempt = .idle
     @Published private(set) var latestFileUploadCompletion: FileUploadCompletionEvent?
     /// 首次连接这台电脑的预热窗口。冷启动的隧道建立、agentd 网关上游就绪都允许失败重试，
     /// 窗口内的失败是过程而不是结论，界面必须给出连接过渡而不是错误态。
