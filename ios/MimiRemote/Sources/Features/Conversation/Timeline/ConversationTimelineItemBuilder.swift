@@ -101,8 +101,7 @@ struct ConversationTimelineItemBuilder {
         let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
         switch message.kind {
         case .approval:
-            return content.hasPrefix(L10n.text("ui.approval_approved")) || content.hasPrefix(L10n.text("ui.approved")) ||
-                content.hasPrefix(L10n.text("ui.approval_rejected")) || content.hasPrefix(L10n.text("ui.rejected"))
+            return message.approvalOutcome != .pending
         case .userInput:
             return content.hasPrefix(L10n.text("ui.additional_information_has_been_submitted")) || content.hasPrefix(L10n.text("ui.boot_input_submitted")) ||
                 content.hasPrefix(L10n.text("ui.additional_information_skipped")) || content.hasPrefix(L10n.text("ui.boot_input_skipped"))
@@ -190,6 +189,35 @@ struct ConversationTimelineItemBuilder {
         return isCompletedAssistantMessage(next) ? .completed : .unknown
     }
 
+}
+
+/// 时间线里一条审批记录的处理结果（#750）。正文由 `EventReducer` / `ConversationStore`
+/// 按固定前缀写入，这里集中判断，时间线分组、卡片和过程行共用同一结论。
+enum ConversationApprovalOutcome: Equatable {
+    case pending
+    case approved
+    case declined
+    /// 远端只告诉我们请求已清理（`serverRequest/resolved`、回合结束或中断），不知道具体决定。
+    case resolved
+}
+
+extension ConversationMessage {
+    var approvalOutcome: ConversationApprovalOutcome? {
+        guard kind == .approval else {
+            return nil
+        }
+        let content = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if content.hasPrefix(L10n.text("ui.approval_approved")) || content.hasPrefix(L10n.text("ui.approved")) {
+            return .approved
+        }
+        if content.hasPrefix(L10n.text("ui.approval_rejected")) || content.hasPrefix(L10n.text("ui.rejected")) {
+            return .declined
+        }
+        if content.hasPrefix(L10n.text("ui.approval_resolved")) {
+            return .resolved
+        }
+        return .pending
+    }
 }
 
 private extension Collection {

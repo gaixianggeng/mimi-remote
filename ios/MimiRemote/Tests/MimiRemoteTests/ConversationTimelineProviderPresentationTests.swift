@@ -366,6 +366,50 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         XCTAssertEqual(try group(in: rows[7]).messages.map(\.id), [third.id])
     }
 
+    func testResolvedApprovalJoinsProcessInsteadOfStayingAsPendingCard() throws {
+        // #750：远端清理审批请求后正文改写为「审批已解决：…」，不能继续当成待处理交互留在主时间线。
+        let command = makeActivity(id: "command", turnID: "same", category: .runCommand, title: "运行命令")
+        let resolved = makeMessage(
+            id: "approval",
+            turnID: "same",
+            role: .system,
+            kind: .approval,
+            content: L10n.format("ui.approval_resolved_value", "Agent 请求执行命令")
+        )
+        let rows = ConversationTimelineItemBuilder.items(from: [command, resolved])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(try group(in: rows[0]).messages.map(\.id), [command.id, resolved.id])
+    }
+
+    func testApprovalOutcomeRecognizesEveryWrittenPrefix() {
+        func approval(_ content: String) -> ConversationMessage {
+            makeMessage(id: UUID().uuidString, turnID: "turn", role: .system, kind: .approval, content: content)
+        }
+        let pending = L10n.format(
+            "ui.awaiting_approval_value_value",
+            "运行 curl",
+            L10n.format("ui.risk_value", ApprovalRiskText.localized("high"))
+        )
+        XCTAssertEqual(approval(pending).approvalOutcome, .pending)
+        XCTAssertEqual(approval(L10n.format("ui.approval_resolved_value", "运行 curl")).approvalOutcome, .resolved)
+        XCTAssertEqual(approval(L10n.text("ui.approval_resolved")).approvalOutcome, .resolved)
+        XCTAssertEqual(approval("\(L10n.text("ui.approval_approved"))：运行 curl").approvalOutcome, .approved)
+        XCTAssertEqual(approval("\(L10n.text("ui.approved"))：运行 curl").approvalOutcome, .approved)
+        XCTAssertEqual(approval("\(L10n.text("ui.approval_rejected"))：运行 curl").approvalOutcome, .declined)
+        XCTAssertEqual(approval("\(L10n.text("ui.rejected"))：运行 curl").approvalOutcome, .declined)
+        XCTAssertNil(
+            makeMessage(id: "input", turnID: "turn", role: .system, kind: .userInput, content: "请选择").approvalOutcome
+        )
+    }
+
+    func testApprovalRiskTextLocalizesKnownLevelsAndKeepsOthers() {
+        XCTAssertEqual(ApprovalRiskText.localized("high"), L10n.text("ui.high"))
+        XCTAssertEqual(ApprovalRiskText.localized(" HIGH "), L10n.text("ui.high"))
+        XCTAssertEqual(ApprovalRiskText.localized("low"), L10n.text("ui.low"))
+        XCTAssertEqual(ApprovalRiskText.localized("critical"), "critical")
+        XCTAssertNotEqual(L10n.text("ui.high"), "high")
+    }
+
     func testPlainAnswerHasNoEmptyProcessAndLegacyHistoryOnlyGroupsKnownSegments() throws {
         let answer = makeMessage(id: "answer", turnID: "", role: .assistant, kind: .message, content: "你好")
         XCTAssertEqual(ConversationTimelineItemBuilder.items(from: [answer]).count, 1)

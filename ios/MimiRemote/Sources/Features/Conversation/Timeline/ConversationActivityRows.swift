@@ -333,13 +333,16 @@ struct ConversationActivityRow: View, Equatable {
         case .fileChangeSummary:
             return message.content.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? L10n.text("ui.file_changes")
         case .approval:
-            if isApprovedInteraction {
+            switch message.approvalOutcome {
+            case .approved:
                 return L10n.text("ui.approval_approved")
-            }
-            if isDeclinedInteraction {
+            case .declined:
                 return L10n.text("ui.approval_rejected")
+            case .resolved:
+                return L10n.text("ui.approval_resolved")
+            case .pending, nil:
+                return L10n.text("ui.approval_status")
             }
-            return L10n.text("ui.approval_status")
         case .userInput:
             return isSkippedInteraction ? L10n.text("ui.additional_information_skipped") : L10n.text("ui.additional_information_has_been_submitted")
         default:
@@ -488,13 +491,11 @@ struct ConversationActivityRow: View, Equatable {
     }
 
     private var isApprovedInteraction: Bool {
-        message.kind == .approval &&
-            (message.content.hasPrefix(L10n.text("ui.approval_approved")) || message.content.hasPrefix(L10n.text("ui.approved")))
+        message.approvalOutcome == .approved
     }
 
     private var isDeclinedInteraction: Bool {
-        message.kind == .approval &&
-            (message.content.hasPrefix(L10n.text("ui.approval_rejected")) || message.content.hasPrefix(L10n.text("ui.rejected")))
+        message.approvalOutcome == .declined
     }
 
     private var isSkippedInteraction: Bool {

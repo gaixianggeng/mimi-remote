@@ -193,7 +193,7 @@ actor EventReducer {
                 ),
                 id
             ))
-            let risk = request.risk.map { L10n.format("ui.risk_value", $0) } ?? ""
+            let risk = request.risk.map { L10n.format("ui.risk_value", ApprovalRiskText.localized($0)) } ?? ""
             output.messageMutations.append(.system(L10n.format("ui.awaiting_approval_value_value", request.title, risk), id, .approval, metadata))
         case .approvalResolved(let metadata):
             let id = metadata.sessionID ?? fallbackSessionID
@@ -410,5 +410,21 @@ actor EventReducer {
         // 同时匹配两个稳定片段，避免误隐藏其他包含 Skill 描述的可操作警告。
         return normalized.contains("skill descriptions were shortened")
             && normalized.contains("skills context budget")
+    }
+}
+
+/// 审批风险等级的界面文案。协议值只有 high / low 两档有固定译文，其他值原样显示（#750）。
+/// 时间线正文与审批卡徽标共用，避免同一屏一处「高」一处「high」。
+enum ApprovalRiskText {
+    static func localized(_ risk: String) -> String {
+        let trimmed = risk.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmed.lowercased() {
+        case "high":
+            return L10n.text("ui.high")
+        case "low":
+            return L10n.text("ui.low")
+        default:
+            return trimmed
+        }
     }
 }
