@@ -136,7 +136,7 @@ final class InAppNoticeRulesTests: XCTestCase {
         store.dismissOperationFeedback(id: store.operationFeedback?.id)
 
         // 第一次刷新：完整历史直接成功。
-        let refreshTask = Task { await store.refreshCurrentContext() }
+        let refreshTask = Task { await store.refreshCurrentContext(origin: .routine) }
         await client.waitForHistoryRequestCount(2)
         XCTAssertEqual(client.requestedMessageLoadModes.last, .full, file: file, line: line)
         XCTAssertNil(store.selectedHistorySavingsNotice, "刷新进行中不应插入「正在加载完整历史」卡片", file: file, line: line)
@@ -151,7 +151,7 @@ final class InAppNoticeRulesTests: XCTestCase {
         XCTAssertEqual(store.statusMessage, L10n.text("ui.the_current_session_has_been_refreshed"), file: file, line: line)
 
         // 第二次刷新：完整历史超限，自动退回缩略。
-        let oversizeTask = Task { await store.refreshCurrentContext() }
+        let oversizeTask = Task { await store.refreshCurrentContext(origin: .routine) }
         await client.waitForHistoryRequestCount(3)
         client.failHistoryRequest(at: 2, with: historyPolicyError(reason: "history_response_too_large"))
         await client.waitForHistoryRequestCount(4)
@@ -173,6 +173,79 @@ final class InAppNoticeRulesTests: XCTestCase {
             with: HistoryMessagesPage(messages: [assistantMessage(id: "rollout:full", content: "完整历史")])
         )
         await fullTask.value
+    }
+
+    func testReconnectFromCodexErrorBannerKeepsProgressFeedback() async {
+        await assertReconnectShowsProgress(source: "codex", runtimeProvider: nil)
+    }
+
+    func testReconnectFromClaudeErrorBannerKeepsProgressFeedback() async {
+        await assertReconnectShowsProgress(source: "claude", runtimeProvider: "claude")
+    }
+
+    /// 错误横幅「重新连接」是恢复动作：点完横幅就消失，必须继续看到进行中的卡片和成功结果，
+    /// 不能套用常规刷新的静默规则。
+    private func assertReconnectShowsProgress(
+        source: String,
+        runtimeProvider: String?,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let project = makeProject(id: "proj_notice_reconnect_\(source)")
+        let session = makeSession(
+            id: "\(source)_notice_reconnect",
+            projectID: project.id,
+            title: "重新连接",
+            status: "history",
+            source: source,
+            runtimeProvider: runtimeProvider,
+            resumeID: "reconnect"
+        )
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [session]))
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(session) }
+        await client.waitForHistoryRequestCount(1)
+        client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(messages: [assistantMessage(id: "rollout:open", content: "打开时的历史")])
+        )
+        await selectTask.value
+        store.dismissOperationFeedback(id: store.operationFeedback?.id)
+        store.setErrorMessage(L10n.text("ui.approval_failed_websocket_not_connected"))
+        XCTAssertNotNil(store.errorPresentation, file: file, line: line)
+
+        let reconnectTask = Task { await store.retryAfterErrorPresentation() }
+        await client.waitForHistoryRequestCount(2)
+        XCTAssertNil(store.errorPresentation, "点「重新连接」后错误横幅收起", file: file, line: line)
+        XCTAssertTrue(store.quietHistoryRefreshSessionIDs.isEmpty, file: file, line: line)
+        XCTAssertEqual(
+            store.selectedHistorySavingsNotice?.kind,
+            .loadingFull,
+            "横幅收起后要由加载卡片接上进行中的状态",
+            file: file,
+            line: line
+        )
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [assistantMessage(id: "rollout:reconnect", content: "重连后的历史")])
+        )
+        await reconnectTask.value
+
+        XCTAssertNil(store.selectedHistorySavingsNotice, file: file, line: line)
+        XCTAssertEqual(
+            store.operationFeedback?.message,
+            L10n.text("ui.the_current_session_has_been_refreshed"),
+            "重连成功仍要告诉用户结果",
+            file: file,
+            line: line
+        )
     }
 
     // MARK: - 位置
