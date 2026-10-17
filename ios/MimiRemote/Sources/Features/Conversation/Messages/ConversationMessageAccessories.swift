@@ -322,13 +322,16 @@ struct RuntimeSummaryCard: View {
         case .fileChangeSummary:
             return L10n.text("ui.file_changes")
         case .approval:
-            if isApprovedApproval {
+            switch message.approvalOutcome {
+            case .approved:
                 return L10n.text("ui.approval_approved")
-            }
-            if isDeclinedApproval {
+            case .declined:
                 return L10n.text("ui.approval_rejected")
+            case .resolved:
+                return L10n.text("ui.approval_resolved")
+            case .pending, nil:
+                return L10n.text("ui.waiting_for_approval")
             }
-            return L10n.text("ui.waiting_for_approval")
         case .userInput:
             if message.content.hasPrefix(L10n.text("ui.additional_information_skipped")) || message.content.hasPrefix(L10n.text("ui.boot_input_skipped")) {
                 return L10n.text("ui.supplementary_information_skipped")
@@ -366,13 +369,16 @@ struct RuntimeSummaryCard: View {
         case .fileChangeSummary:
             return "doc.text.magnifyingglass"
         case .approval:
-            if isApprovedApproval {
+            switch message.approvalOutcome {
+            case .approved:
                 return "checkmark.circle"
-            }
-            if isDeclinedApproval {
+            case .declined:
                 return "xmark.circle"
+            case .resolved:
+                return "checkmark.shield"
+            case .pending, nil:
+                return "exclamationmark.shield"
             }
-            return "exclamationmark.shield"
         case .userInput:
             return "questionmark.bubble"
         case .questionReply:
@@ -403,13 +409,17 @@ struct RuntimeSummaryCard: View {
         case .plan:
             return tokens.accent
         case .approval:
-            if isApprovedApproval {
+            switch message.approvalOutcome {
+            case .approved:
                 return tokens.success
-            }
-            if isDeclinedApproval {
+            case .declined:
                 return .red
+            case .resolved:
+                // 不知道具体决定，只表达「已处理」，不借用成功或警示色。
+                return tokens.secondaryText
+            case .pending, nil:
+                return tokens.warning
             }
-            return tokens.warning
         case .userInput:
             return tokens.accent
         case .error:
@@ -440,13 +450,16 @@ struct RuntimeSummaryCard: View {
         case .plan:
             return tokens.accent.opacity(0.08)
         case .approval:
-            if isApprovedApproval {
+            switch message.approvalOutcome {
+            case .approved:
                 return tokens.success.opacity(0.10)
-            }
-            if isDeclinedApproval {
+            case .declined:
                 return Color.red.opacity(0.10)
+            case .resolved:
+                return tokens.systemBubble
+            case .pending, nil:
+                return tokens.warning.opacity(0.12)
             }
-            return tokens.warning.opacity(0.12)
         case .error:
             return Color.red.opacity(0.10)
         case .warning:
@@ -456,14 +469,6 @@ struct RuntimeSummaryCard: View {
         default:
             return tokens.systemBubble
         }
-    }
-
-    private var isApprovedApproval: Bool {
-        message.content.hasPrefix(L10n.text("ui.approval_approved")) || message.content.hasPrefix(L10n.text("ui.approved"))
-    }
-
-    private var isDeclinedApproval: Bool {
-        message.content.hasPrefix(L10n.text("ui.approval_rejected")) || message.content.hasPrefix(L10n.text("ui.rejected"))
     }
 
     private var tokens: ThemeTokens {

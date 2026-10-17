@@ -131,16 +131,7 @@ struct PendingApprovalActionCard: View {
         guard let risk = approval.risk?.trimmingCharacters(in: .whitespacesAndNewlines), !risk.isEmpty else {
             return nil
         }
-        let localizedRisk: String
-        switch risk.lowercased() {
-        case "high":
-            localizedRisk = L10n.text("ui.high")
-        case "low":
-            localizedRisk = L10n.text("ui.low")
-        default:
-            localizedRisk = risk
-        }
-        return L10n.format("ui.risk_badge_value", localizedRisk)
+        return L10n.format("ui.risk_badge_value", ApprovalRiskText.localized(risk))
     }
 
     private func riskTone(tokens: ThemeTokens) -> Color {

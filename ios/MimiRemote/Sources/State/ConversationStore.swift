@@ -449,7 +449,8 @@ final class ConversationStore: ObservableObject {
         metadata: AgentEventMetadata? = nil,
         createdAt: Date? = nil
     ) {
-        if kind == .approval, text.hasPrefix(L10n.text("ui.awaiting_approval")), upsertPendingApprovalMessage(text, sessionID: sessionID) {
+        let approvalState = kind == .approval ? ConversationApprovalOutcome.classify(text) : nil
+        if approvalState == .pending, upsertPendingApprovalMessage(text, sessionID: sessionID) {
             return
         }
         if kind == .userInput,
@@ -466,21 +467,21 @@ final class ConversationStore: ObservableObject {
             content: text,
             createdAt: metadata?.createdAt ?? createdAt ?? Date(),
             sendStatus: .confirmed,
-            revision: metadata?.revision
+            revision: metadata?.revision,
+            approvalState: approvalState
         ), sessionID: sessionID)
     }
 
     func resolveLatestPendingApproval(sessionID: String) {
         guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)],
-              let index = list.lastIndex(where: { message in
-                  message.kind == .approval && message.content.hasPrefix(L10n.text("ui.awaiting_approval"))
-              }) else {
+              let index = list.lastIndex(where: { $0.approvalOutcome == .pending }) else {
             return
         }
         // 远端审批、turn 完成或中断只告诉我们 request 已清理，不一定告诉最终按钮决策；
         // 用中性文案收口，避免时间线长期停在“等待审批”。
-        let title = pendingApprovalTitle(from: list[index].content)
+        let title = ConversationApprovalOutcome.pendingTitle(from: list[index].content)
         list[index].content = title.isEmpty ? L10n.text("ui.approval_resolved") : L10n.format("ui.approval_resolved_value", title)
+        list[index].approvalState = .resolved
         list[index].updatedAt = Date()
         replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
     }
@@ -532,12 +533,12 @@ final class ConversationStore: ObservableObject {
         guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)] else {
             return false
         }
-        let title = pendingApprovalTitle(from: text)
+        let title = ConversationApprovalOutcome.pendingTitle(from: text)
         if let index = list.lastIndex(where: { message in
-            guard message.kind == .approval, message.content.hasPrefix(L10n.text("ui.awaiting_approval")) else {
+            guard message.approvalOutcome == .pending else {
                 return false
             }
-            return message.content == text || pendingApprovalTitle(from: message.content) == title
+            return message.content == text || ConversationApprovalOutcome.pendingTitle(from: message.content) == title
         }) {
             if list[index].content != text {
                 list[index].content = text
@@ -546,18 +547,6 @@ final class ConversationStore: ObservableObject {
             return true
         }
         return false
-    }
-
-    private func pendingApprovalTitle(from text: String) -> String {
-        let prefix = L10n.text("ui.awaiting_approval")
-        guard text.hasPrefix(prefix) else {
-            return text
-        }
-        var value = String(text.dropFirst(prefix.count))
-        if let range = value.range(of: L10n.format("ui.risk_value", "")) {
-            value = String(value[..<range.lowerBound])
-        }
-        return value
     }
 
     func resetLiveTranscript(sessionID: String) {
