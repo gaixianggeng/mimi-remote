@@ -146,6 +146,10 @@ printf '# 每晚集合\n' > "$root/config/ios-tests/nightly-classes.txt"
 expect_check_fail "未归属的测试类" "$root" "GammaSnapshotTests 既不在 PR 集合也不在每晚集合"
 
 new_fixture
+printf 'bash x \\\n  # -only-testing:MimiRemoteTests/AlphaTests \\\n#-only-testing:MimiRemoteTests/AlphaTests\n' > "$root/scripts/test-conversation-regressions.sh"
+expect_check_fail "注释掉的 selector" "$root" "AlphaTests 既不在 PR 集合也不在每晚集合"
+
+new_fixture
 printf 'bash x \\\n  -only-testing:MimiRemoteTests/AlphaTests/testOne\n' > "$root/scripts/test-conversation-regressions.sh"
 expect_check_fail "只选部分方法" "$root" "AlphaTests 只有部分方法进入 PR 集合"
 printf 'GammaSnapshotTests\nAlphaTests\n' > "$root/config/ios-tests/nightly-classes.txt"

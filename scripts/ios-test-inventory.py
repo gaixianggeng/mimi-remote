@@ -306,10 +306,15 @@ def read_quarantine(path: Path, errors: list[str]) -> list[QuarantineEntry]:
     return entries
 
 
+SHELL_COMMENT = re.compile(r"(?:^|(?<=\s))#.*$")
+
+
 def read_pr_selectors(path: Path) -> list[tuple[int, str, str | None]]:
     selectors = []
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        for match in SELECTOR.finditer(line):
+        # 注释掉的 -only-testing 不会传给 xcodebuild，不能算作 PR 覆盖。
+        active = SHELL_COMMENT.sub("", line)
+        for match in SELECTOR.finditer(active):
             selectors.append((line_number, match.group(1), match.group(2)))
     return selectors
 
