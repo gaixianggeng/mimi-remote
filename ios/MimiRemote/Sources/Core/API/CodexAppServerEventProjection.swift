@@ -720,7 +720,7 @@ extension CodexAppServerSessionRuntime {
         // id 是协议字段，缺 name/preview 时只给稳定占位标题，不能把 id 伪装成会话名。
         let title = [name, previewTitle].compactMap { $0 }.first(where: { !$0.isEmpty }) ?? ""
         let cached = contextsBySessionID[id]?.session
-        // thread/list 可能不带 turns，此时沿用本地 activeTurnID；但 thread/read/resume 一旦带回
+        // thread/list 不带 turns（Codex 给空数组），此时沿用本地 activeTurnID；但 thread/read/resume 一旦带回
         // turns，就以服务端 turns 为准。即使 turns 里没有 inProgress，也要清掉旧缓存，避免引导发到旧 turn。
         let remoteActiveTurnID = activeTurnID(from: thread)
         let hasAuthoritativeTurns = remoteActiveTurnID != nil
@@ -1439,7 +1439,9 @@ extension CodexAppServerSessionRuntime {
     }
 
     func activeTurnID(from thread: [String: CodexAppServerJSONValue]) -> TurnID?? {
-        guard let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue) else {
+        // Codex 只在 resume/fork/read(includeTurns) 填充 turns，其余响应恒为空数组；空数组
+        // 不能证明运行中的线程没有当前 turn，否则列表刷新会清掉 activeTurnID（#751）。
+        guard let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue), !turns.isEmpty else {
             return nil
         }
         let activeTurnID = turns.last { turn in

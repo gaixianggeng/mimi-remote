@@ -183,6 +183,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRecoveryForceLoadReplacesOlderReuseRecentRequest \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRunningQueuedDeliverySendsOneMessageAfterEachCompletedTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRunningQueueDoesNotDispatchMerelyBecauseWebSocketReconnected \
+  -only-testing:MimiRemoteTests/QueuedTurnActiveTurnGapTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testFailedRunningMessageRetryReusesClientMessageID \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRunningSendFailureNoRolloutFoundMarksLocalEchoFailedAndRetainsRetryPayload \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testApprovalDecisionSendsThroughCurrentWebSocket \

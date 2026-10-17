@@ -1243,7 +1243,8 @@ extension SessionStore {
                 }
                 // 已经可靠落盘的队列消息就是一次用户活动；无需等待稍后的 WebSocket 派发才更新最近顺序。
                 setSessionRecentActivityProjection(sessionID: session.id, clientMessageID: clientMessageID)
-                setStatusMessage(session.activeTurnID == nil ? L10n.text("ui.saved_to_this_machine_and_preparing_to_send") : L10n.text("ui.saved_to_this_machine_and_will_be_sent"))
+                // 运行中即使暂时缺 turn ID 也要等当前回复结束（#751），提示不能说「正在准备发送」。
+                setStatusMessage(session.isRunning ? L10n.text("ui.saved_to_this_machine_and_will_be_sent") : L10n.text("ui.saved_to_this_machine_and_preparing_to_send"))
                 ensureQueuedSessionMonitoring(sessionID: session.id)
                 dispatchNextQueuedRunningTurnIfIdle(sessionID: session.id)
                 return true

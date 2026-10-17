@@ -3366,6 +3366,13 @@ extension SessionStore {
             next.activeTurnID = existing?.activeTurnID ?? next.activeTurnID
             next.pendingApproval = existing?.pendingApproval ?? next.pendingApproval
             next.pendingUserInput = existing?.pendingUserInput ?? next.pendingUserInput
+        } else if next.activeTurnID == nil,
+                  Self.isRunningStatus(next.status),
+                  let existingTurnID = existing?.activeTurnID,
+                  receivesLiveTurnEvents(for: next.id) {
+            // 运行中快照（thread/list、不带 turns 的 thread/read）只说明线程还在跑，不说明当前
+            // turn 已结束。仍在接收实时事件时，turn 只由 turn/completed 等事件结束（#751）。
+            next.activeTurnID = existingTurnID
         }
         if let userInput = next.pendingUserInput,
            isUserInputResponsePending(userInput, sessionID: next.id) {
@@ -3413,6 +3420,25 @@ extension SessionStore {
         case .connecting, .connected:
             // 长任务运行中，thread/list 偶尔会返回滞后的 idle/notLoaded 快照。
             // 当前 iPad 仍有活动实时连接时，以本地运行态为准，避免下一次发送误走历史 resume。
+            return true
+        case .disconnected, .failed, .terminated:
+            return false
+        }
+    }
+
+    /// 本端仍在实时接收该会话的事件：选中会话的前台连接，或排队消息的后台监听连接。
+    func receivesLiveTurnEvents(for sessionID: SessionID) -> Bool {
+        if queuedSessionReadyIDs.contains(sessionID) {
+            return true
+        }
+        guard sessionID == selectedSessionID,
+              connectedSessionID == sessionID,
+              webSocket != nil
+        else {
+            return false
+        }
+        switch webSocketStatus {
+        case .connecting, .connected:
             return true
         case .disconnected, .failed, .terminated:
             return false

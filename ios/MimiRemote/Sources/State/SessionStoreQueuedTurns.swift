@@ -221,6 +221,8 @@ extension SessionStore {
     func cancelAllTurnCompletionReconciliations() {
         turnCompletionReconciliationJobsBySessionID.values.forEach { $0.task.cancel() }
         turnCompletionReconciliationJobsBySessionID.removeAll()
+        queuedTurnActiveTurnProbesBySessionID.values.forEach { $0.task.cancel() }
+        queuedTurnActiveTurnProbesBySessionID.removeAll()
     }
 
     @discardableResult
@@ -232,7 +234,10 @@ extension SessionStore {
         return true
     }
 
-    func dispatchNextQueuedRunningTurnIfIdle(sessionID: SessionID) {
+    func dispatchNextQueuedRunningTurnIfIdle(
+        sessionID: SessionID,
+        allowsRunningWithoutActiveTurn: Bool = false
+    ) {
         guard let session = sessionsByID[sessionID],
               !queuedTurnAwaitingStartSessionIDs.contains(sessionID),
               queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] == nil,
@@ -262,6 +267,11 @@ extension SessionStore {
         guard usesServerQueue || session.activeTurnID == nil else { return }
         guard usesServerQueue || canControlSession(session) else {
             setStatusMessage(L10n.text("ui.message_to_be_sent_is_waiting_please_take"))
+            return
+        }
+        if !usesServerQueue, session.isRunning, !allowsRunningWithoutActiveTurn {
+            // 运行中却没有本地 turn ID 不等于空闲：直连 turn/start 会被插进进行中的回合（#751）。
+            probeActiveTurnBeforeQueuedDispatch(sessionID: sessionID)
             return
         }
 
