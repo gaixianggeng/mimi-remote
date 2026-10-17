@@ -107,7 +107,8 @@ final class AppleVoiceStartupWatchdogTests: XCTestCase {
             try await coordinator.prewarm()
         }
 
-        let deadline = ContinuousClock.now + .milliseconds(250)
+        // 只是等后台 prewarm 开始；托管 runner 满载时 250ms 不够（#741），条件满足即返回。
+        let deadline = ContinuousClock.now + .seconds(5)
         while !backend.hasStartedPreparation, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(1))
         }

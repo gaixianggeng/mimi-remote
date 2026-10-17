@@ -122,8 +122,10 @@ extension ConversationDataFlowTests {
                 )
             )
         }
-        for _ in 0..<100 where store.historyItemEnrichmentBySessionID[sessionID] != nil {
-            await Task.yield()
+        // 7 页依次合并；托管 runner 满载时 100 次 yield 不够（#741 实测只合并到 5 页），按条件等待并设上限。
+        let enrichmentDeadline = ContinuousClock.now + .seconds(5)
+        while store.historyItemEnrichmentBySessionID[sessionID] != nil, ContinuousClock.now < enrichmentDeadline {
+            try? await Task.sleep(for: .milliseconds(5))
         }
 
         XCTAssertEqual(client.requestedItemContinuations.count, expectedRequestCount)
