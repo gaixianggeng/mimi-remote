@@ -37,6 +37,8 @@ struct UnifiedWorkbenchShell: View {
     @State private var transcriptPresentation = ConversationTranscriptPresentation()
     @State private var notificationVisibilitySceneID = UUID()
     @State private var navigationBindingScheduler = WorkbenchNavigationBindingScheduler()
+    @State private var layoutModeCommitGate = WorkbenchLayoutModeCommitGate()
+    @State private var composerLayoutHandoff = ComposerLayoutHandoff()
     @StateObject private var sidebarHighlightCoordinator = SessionSidebarHighlightCoordinator()
     @State private var didApplyDebugLaunchRoute = false
     @State private var selectedRelatedSubagent: SessionContextSubagent?
@@ -51,15 +53,24 @@ struct UnifiedWorkbenchShell: View {
 
         GeometryReader { proxy in
             let interfaceIdiom = UIDevice.current.userInterfaceIdiom
-            let layout = WorkbenchLayout(
-                containerWidth: proxy.size.width,
-                horizontalSizeClass: horizontalSizeClass,
-                isPad: interfaceIdiom == .pad,
-                isPhone: interfaceIdiom == .phone,
-                // 相机权限、扫码和重命名期间保留呈现宿主；关闭后再切换导航容器，
-                // 防止系统把仍在编辑的 sheet 当作旧视图的一部分销毁。
-                keepsCompactNavigation: settingsModalIsPresented ? lastCompactNavigation : nil
-            )
+            let makeLayout = { (keepsCompactNavigation: Bool?) in
+                WorkbenchLayout(
+                    containerWidth: proxy.size.width,
+                    horizontalSizeClass: horizontalSizeClass,
+                    isPad: interfaceIdiom == .pad,
+                    isPhone: interfaceIdiom == .phone,
+                    keepsCompactNavigation: keepsCompactNavigation
+                )
+            }
+            // 相机权限、扫码和重命名期间保留呈现宿主；关闭后再切换导航容器，
+            // 防止系统把仍在编辑的 sheet 当作旧视图的一部分销毁。
+            let proposedLayout = makeLayout(settingsModalIsPresented ? lastCompactNavigation : nil)
+            // 越过分界时先按已提交的导航形态排版，换树交给 layoutModeCommitGate（#755）。
+            let layout = lastCompactNavigation.map { committed in
+                committed == proposedLayout.usesCompactNavigation
+                    ? proposedLayout
+                    : makeLayout(committed)
+            } ?? proposedLayout
 
             Group {
                 if layout.usesCompactNavigation {
@@ -117,12 +128,10 @@ struct UnifiedWorkbenchShell: View {
             .onChange(of: preferredWorkspaceRuntimeRawValue) { _, _ in
                 workspaceRuntimeSelection.reset()
             }
-            .onChange(of: layout.usesCompactNavigation) { _, usesCompactNavigation in
-                lastCompactNavigation = usesCompactNavigation
-                handleLayoutModeChange(
-                    usesCompactNavigation: usesCompactNavigation,
-                    layout: layout
-                )
+            .onChange(of: proposedLayout.usesCompactNavigation) { _, _ in
+                layoutModeCommitGate.request {
+                    commitLayoutMode(proposedLayout)
+                }
             }
             .onChange(of: layout.usesAttachedInspector) { _, _ in
                 handleRelatedPresentationChange(layout: layout)
@@ -155,6 +164,11 @@ struct UnifiedWorkbenchShell: View {
                 transcriptPresentation.reset()
                 updateVisibleSessionNotificationRoute(nil)
             }
+        }
+        .environment(\.composerLayoutHandoff, composerLayoutHandoff)
+        .background {
+            WorkbenchSizeTransitionObserver(gate: layoutModeCommitGate)
+                .accessibilityHidden(true)
         }
         .background(tokens.background.ignoresSafeArea())
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -1402,6 +1416,22 @@ struct UnifiedWorkbenchShell: View {
             presentSheet(.settings)
         }
 #endif
+    }
+
+    /// 导航同步与换树同属一个无动画事务：紧凑栈第一帧就带着当前会话，不会先显示根页再 push。
+    private func commitLayoutMode(_ layout: WorkbenchLayout) {
+        guard layout.usesCompactNavigation != lastCompactNavigation else { return }
+        composerLayoutHandoff.capture()
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            lastCompactNavigation = layout.usesCompactNavigation
+            handleLayoutModeChange(
+                usesCompactNavigation: layout.usesCompactNavigation,
+                layout: layout
+            )
+        }
+        layoutModeCommitGate.layoutCommittedTreeWithoutAnimation()
     }
 
     private func handleLayoutModeChange(

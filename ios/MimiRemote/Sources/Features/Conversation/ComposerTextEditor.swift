@@ -43,6 +43,16 @@ final class ComposerTextSubmitBridge {
         self.textView = textView
     }
 
+    /// 外壳换树前读取：旧编辑器此时仍在窗口里，焦点是真实状态（#755）。
+    var isEditing: Bool {
+        activeTextView?.isFirstResponder == true
+    }
+
+    /// 恢复面板时用来找当前窗口的呈现链。
+    var hostWindow: UIWindow? {
+        textView?.window
+    }
+
     func snapshotForSubmit() -> ComposerTextSubmitSnapshot? {
         guard let textView = activeTextView else {
             return nil
