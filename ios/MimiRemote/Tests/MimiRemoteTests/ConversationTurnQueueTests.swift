@@ -158,6 +158,8 @@ extension ConversationDataFlowTests {
 
         let didQueue = await store.sendTurn(CodexAppServerTurnPayload(prompt: "等旧任务完成后发送"))
         XCTAssertTrue(didQueue)
+        // 运行中缺 turn ID 时先读最新 Turn（#751）；mock 没有 Turn，确认后才按空闲派发。
+        try await waitForSentTurnCount(1, socket: sockets[0])
         let clientMessageID = try XCTUnwrap(sockets[0].sentTurns.first?.clientMessageID)
         sockets[0].onTurnSendOutcome?(
             clientMessageID,
@@ -1077,7 +1079,8 @@ extension ConversationDataFlowTests {
 
         XCTAssertTrue(queued)
         XCTAssertFalse(guided)
-        XCTAssertEqual(sockets[0].sentTurns.count, 1)
+        // 运行中缺 turn ID 时先读最新 Turn（#751）；服务端没有任何 Turn 才按空闲派发。
+        try await waitForSentTurnCount(1, socket: sockets[0])
         XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "排队下一轮")
         XCTAssertTrue(sockets[0].sentGuidance.isEmpty)
         XCTAssertEqual(store.errorMessage, L10n.text("ui.failed_to_guide_conversation_there_is_no_active"))
@@ -1451,6 +1454,7 @@ extension ConversationDataFlowTests {
 
         let sentImmediately = await store.sendTurn(CodexAppServerTurnPayload(prompt: "发送中消息"))
         XCTAssertTrue(sentImmediately)
+        try await waitForSentTurnCount(1, socket: socket)
         socket.onSendAccepted?(socket.sentTurns.first?.clientMessageID)
         try await Task.sleep(nanoseconds: 60_000_000)
         socket.emitEvent(.turnStarted(AgentEventMetadata(
@@ -1690,6 +1694,7 @@ extension ConversationDataFlowTests {
         let acceptedSend = await store.sendTurn(CodexAppServerTurnPayload(prompt: "已经 accepted 的消息"))
 
         XCTAssertTrue(acceptedSend)
+        try await waitForSentTurnCount(1, socket: sockets[0])
         let acceptedEcho = try XCTUnwrap(conversationStore.messages(for: running.id).first { $0.content == "已经 accepted 的消息" })
         let acceptedClientMessageID = try XCTUnwrap(acceptedEcho.clientMessageID)
         sockets[0].onSendAccepted?(acceptedClientMessageID)
@@ -1750,6 +1755,7 @@ extension ConversationDataFlowTests {
 
         let sent = await store.sendTurn(payload)
         XCTAssertTrue(sent)
+        try await waitForSentTurnCount(1, socket: sockets[0])
         let localEcho = try XCTUnwrap(conversationStore.messages(for: running.id).first { $0.role == .user })
         let clientMessageID = try XCTUnwrap(localEcho.clientMessageID)
         XCTAssertEqual(localEcho.sendStatus, .sending)

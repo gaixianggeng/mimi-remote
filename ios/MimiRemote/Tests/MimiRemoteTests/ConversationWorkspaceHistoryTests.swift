@@ -2838,6 +2838,7 @@ extension ConversationDataFlowTests {
 
         let didSend = await store.sendPrompt("iPad 继续下一步")
         XCTAssertTrue(didSend)
+        try await waitForSentTurnCount(1, socket: socket)
 
         XCTAssertEqual(store.selectedSession?.preview, "iPad 继续下一步")
         XCTAssertEqual(store.sessions(forProjectID: project.id).first?.preview, "iPad 继续下一步")
@@ -3101,6 +3102,7 @@ extension ConversationDataFlowTests {
 
         let didSend = await store.sendPrompt("接管后发送")
         XCTAssertTrue(didSend)
+        try await waitForSentTurnCount(1, socket: socket)
         XCTAssertEqual(socket.sentTurns.map { $0.payload.previewText }, ["接管后发送"])
     }
 

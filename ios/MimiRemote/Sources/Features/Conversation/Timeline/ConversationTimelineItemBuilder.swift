@@ -101,8 +101,7 @@ struct ConversationTimelineItemBuilder {
         let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
         switch message.kind {
         case .approval:
-            return content.hasPrefix(L10n.text("ui.approval_approved")) || content.hasPrefix(L10n.text("ui.approved")) ||
-                content.hasPrefix(L10n.text("ui.approval_rejected")) || content.hasPrefix(L10n.text("ui.rejected"))
+            return message.approvalOutcome != .pending
         case .userInput:
             return content.hasPrefix(L10n.text("ui.additional_information_has_been_submitted")) || content.hasPrefix(L10n.text("ui.boot_input_submitted")) ||
                 content.hasPrefix(L10n.text("ui.additional_information_skipped")) || content.hasPrefix(L10n.text("ui.boot_input_skipped"))

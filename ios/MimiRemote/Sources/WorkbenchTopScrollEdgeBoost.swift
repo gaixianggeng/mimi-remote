@@ -143,3 +143,67 @@ struct WorkbenchTopScrollEdgeBoostModifier: ViewModifier {
             }
     }
 }
+
+/// iPad 浮动侧栏列表上沿的收边（#754）。
+///
+/// 浮层侧栏的设备入口排在列表上方、不在列表后方，正文上滚时会在列表视口上沿被直接裁掉，
+/// 半行字切在一条看不见的线上。这里在视口上沿叠一段侧栏实色的渐隐，让上滚的行先淡出再离开。
+///
+/// 不用材质，也不靠系统 scroll edge：浮层侧栏底是实色，同色渐隐和对内容做 alpha mask 看起来
+/// 一样，却不用让整张 List 离屏合成；系统 soft edge 强度固定且偏弱（见上方加深层），在实色上
+/// 只会刷出一条发灰的带子。强度沿用正文上滚的同一条 smoothstep 曲线，贴顶静止时整层不绘制，
+/// 首行不会被洗淡。
+struct WorkbenchSidebarTopScrollEdgeFade: ViewModifier {
+    let color: Color
+
+    @State private var intensity: Double = 0
+
+    /// 渐隐长度，约半行高。太短读成一条硬线，太长会把视口最上面一整行洗白。
+    static let fadeHeight: CGFloat = 20
+
+    /// 采样点数与加深层一致，smoothstep 收边看不出分段。
+    private static let sampleCount: Int = 9
+
+    func body(content: Content) -> some View {
+        content
+            .onScrollGeometryChange(for: Double.self) { geometry in
+                WorkbenchTopScrollEdgeBoostRamp.intensity(
+                    forUnderlap: geometry.contentOffset.y + geometry.contentInsets.top
+                )
+            } action: { _, newIntensity in
+                intensity = newIntensity
+            }
+            .overlay(alignment: .top) {
+                if intensity > 0 {
+                    LinearGradient(
+                        stops: Self.stops(color: color, intensity: intensity),
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: Self.fadeHeight)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                }
+            }
+    }
+
+    /// 上沿满色、下沿全透明，两端斜率为 0，不会读出一条横线。
+    private static func stops(color: Color, intensity: Double) -> [Gradient.Stop] {
+        var stops: [Gradient.Stop] = []
+        stops.reserveCapacity(sampleCount)
+        let lastIndex: CGFloat = CGFloat(sampleCount - 1)
+        for index in 0..<sampleCount {
+            let progress: CGFloat = CGFloat(index) / lastIndex
+            let eased: CGFloat = progress * progress * (3.0 - 2.0 * progress)
+            let alpha: Double = Double(1.0 - eased) * intensity
+            stops.append(Gradient.Stop(color: color.opacity(alpha), location: progress))
+        }
+        return stops
+    }
+}
+
+extension View {
+    func workbenchSidebarTopScrollEdgeFade(color: Color) -> some View {
+        modifier(WorkbenchSidebarTopScrollEdgeFade(color: color))
+    }
+}
