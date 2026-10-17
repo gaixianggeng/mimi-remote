@@ -106,6 +106,15 @@ xcodebuild 对不存在的 `-only-testing` 类名或方法会静默执行 0 个�
 `MimiRemoteTests`，用 xcresult 按类统计实际执行数；任何应执行的类执行 0 个、执行数与源码清单
 不一致，或存在失败用例，都返回非零。
 
+失败的用例自动重试一次（`-retry-tests-on-failure -test-iterations 2`）：
+
+- 两次都失败才算失败，任务变红。
+- 重试后通过的记为抖动，不让任务失败，但会列在运行摘要的按类统计表和抖动清单里，并在 GitHub
+  Actions 上生成 warning 注解。抖动不能放着不管：要么按条件等待修正测试，要么登记隔离清单和 Issue。
+- 快照不享受重试：重录模式下首次比对失败就已写入新图，重试必然通过，所以只要有快照被重录，
+  任务就判失败。
+- PR Gate 的 iOS 回归不重试。
+
 每晚任务是 `.github/workflows/ios-full-tests.yml`：每天北京时间 03:40 在 GitHub 托管的
 `macos-26` 上运行该入口，Simulator 与 PR Gate 的 iOS 回归相同（iOS 26.2 的 M5），
 `check-critical-regressions.sh` 校验两边 runtime 一致。修改该工作流、全量入口、测试归属或隔离

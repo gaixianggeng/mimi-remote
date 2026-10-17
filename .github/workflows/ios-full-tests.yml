@@ -62,8 +62,9 @@ jobs:
           echo "IOS_TEST_DESTINATION=$destination" >> "$GITHUB_ENV"
 
       - name: Run full MimiRemoteTests
-        # 全部类（含 13 个快照类）按类核对执行数；不匹配的快照就地重录并作为 artifact 上传，
-        # 对应用例仍判失败。重录图需逐张核对后再提交，见 docs/critical-user-journey-regressions.md。
+        # 全部类（含 13 个快照类）按类核对执行数；失败用例重试一次，重试后通过的记为抖动（warning），
+        # 两次都失败才判失败。不匹配的快照就地重录并作为 artifact 上传，只要有重录就判失败。
+        # 重录图需逐张核对后再提交，见 docs/critical-user-journey-regressions.md。
         run: >-
           bash ./scripts/test-ios-full-suite.sh
           --result-dir "$RUNNER_TEMP/ios-full-suite"

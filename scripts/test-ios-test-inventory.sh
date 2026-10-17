@@ -188,13 +188,15 @@ write_results() {
   local path="$1"
   local gamma_cases="$2"
   local alpha_three_result="$3"
+  # 第 4 个参数是 testThree 的附加 JSON 字段，用来模拟 -retry-tests-on-failure 的 Repetition 子节点。
+  local alpha_three_extra="${4:-}"
   cat > "$path" <<EOF
 {"testNodes":[{"nodeType":"Test Plan","name":"MimiRemote","children":[
   {"nodeType":"Unit test bundle","name":"MimiRemoteTests","children":[
     {"nodeType":"Test Suite","name":"AlphaTests","children":[
       {"nodeType":"Test Case","name":"testOne()","nodeIdentifier":"AlphaTests/testOne()","result":"Passed"},
       {"nodeType":"Test Case","name":"testTwo()","nodeIdentifier":"AlphaTests/testTwo()","result":"Skipped"},
-      {"nodeType":"Test Case","name":"testThree()","nodeIdentifier":"AlphaTests/testThree()","result":"${alpha_three_result}"}
+      {"nodeType":"Test Case","name":"testThree()","nodeIdentifier":"AlphaTests/testThree()","result":"${alpha_three_result}"${alpha_three_extra}}
     ]}${gamma_cases}
   ]}
 ]}]}
@@ -206,8 +208,16 @@ gamma=',{"nodeType":"Test Suite","name":"GammaSnapshotTests","children":[{"nodeT
 write_results "$work_root/pass.json" "$gamma" "Passed"
 python3 "$inventory" --root "$root" verify-results "$work_root/pass.json" --markdown "$work_root/summary.md" \
   > "$work_root/out.txt" 2>&1 || { cat "$work_root/out.txt" >&2; fail "全部执行且通过时应成功。"; }
-grep -Fq '| AlphaTests | 3 | 0 | 3 | 3 | 2 | 0 | 1 |' "$work_root/summary.md" \
+grep -Fq '| AlphaTests | 3 | 0 | 3 | 3 | 2 | 0 | 0 | 1 |' "$work_root/summary.md" \
   || { cat "$work_root/summary.md" >&2; fail "按类统计表不正确。"; }
+
+retry=',"children":[{"nodeType":"Repetition","name":"First Run","result":"Failed"},{"nodeType":"Repetition","name":"Retry 1","result":"Passed"}]'
+write_results "$work_root/flaky.json" "$gamma" "Passed" "$retry"
+python3 "$inventory" --root "$root" verify-results "$work_root/flaky.json" --markdown "$work_root/flaky.md" \
+  > "$work_root/out.txt" 2>&1 || { cat "$work_root/out.txt" >&2; fail "重试后通过的用例不应让任务失败。"; }
+grep -Fq '| AlphaTests | 3 | 0 | 3 | 3 | 2 | 1 | 0 | 1 |' "$work_root/flaky.md" \
+  || { cat "$work_root/flaky.md" >&2; fail "重试后通过的用例没有计入抖动列。"; }
+grep -Fq -- "- AlphaTests/testThree" "$work_root/flaky.md" || fail "抖动用例没有列在摘要里。"
 
 write_results "$work_root/zero.json" "" "Passed"
 if python3 "$inventory" --root "$root" verify-results "$work_root/zero.json" > "$work_root/out.txt" 2>&1; then
@@ -216,10 +226,11 @@ fi
 grep -Fq "GammaSnapshotTests 应执行 1 个用例，实际执行 0 个" "$work_root/out.txt" \
   || { cat "$work_root/out.txt" >&2; fail "执行 0 个缺少明确提示。"; }
 
-write_results "$work_root/failed.json" "$gamma" "Failed"
+retry_failed=',"children":[{"nodeType":"Repetition","name":"First Run","result":"Failed"},{"nodeType":"Repetition","name":"Retry 1","result":"Failed"}]'
+write_results "$work_root/failed.json" "$gamma" "Failed" "$retry_failed"
 if python3 "$inventory" --root "$root" verify-results "$work_root/failed.json" > "$work_root/out.txt" 2>&1; then
   fail "存在失败用例时应失败。"
 fi
 grep -Fq -- "- AlphaTests/testThree" "$work_root/out.txt" || fail "失败用例没有列出。"
 
-echo "iOS 测试清单自测通过：${fixture_index} 个夹具覆盖失效 selector、文件名 selector、归属、隔离、工程登记与按类执行数。"
+echo "iOS 测试清单自测通过：${fixture_index} 个夹具覆盖失效 selector、文件名 selector、归属、隔离、工程登记、按类执行数与重试抖动。"

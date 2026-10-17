@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -484,7 +485,12 @@ def command_skip_args(args: argparse.Namespace) -> int:
     return 0
 
 
-def collect_results(node: dict, results: dict[str, dict[str, str]], suite: str | None = None) -> None:
+def collect_results(
+    node: dict,
+    results: dict[str, dict[str, str]],
+    flaky: set[str],
+    suite: str | None = None,
+) -> None:
     node_type = node.get("nodeType")
     name = node.get("name", "")
     if node_type == "Test Suite":
@@ -495,10 +501,17 @@ def collect_results(node: dict, results: dict[str, dict[str, str]], suite: str |
         class_name = parts[-2] if len(parts) >= 2 else (suite or "?")
         method = parts[-1] if parts else name
         method = re.sub(r"\(\)$", "", method)
-        results.setdefault(class_name, {})[method] = node.get("result", "unknown")
+        result = node.get("result", "unknown")
+        results.setdefault(class_name, {})[method] = result
+        # -retry-tests-on-failure 下，重试后通过的用例结果是 Passed，失败的那次以 Repetition 子节点保留。
+        if result == "Passed" and any(
+            child.get("nodeType") == "Repetition" and child.get("result") == "Failed"
+            for child in node.get("children", []) or []
+        ):
+            flaky.add(f"{class_name}/{method}")
         return
     for child in node.get("children", []) or []:
-        collect_results(child, results, suite)
+        collect_results(child, results, flaky, suite)
 
 
 def command_verify_results(args: argparse.Namespace) -> int:
@@ -509,8 +522,9 @@ def command_verify_results(args: argparse.Namespace) -> int:
         return 1
     payload = json.loads(Path(args.tests_json).read_text(encoding="utf-8"))
     results: dict[str, dict[str, str]] = {}
+    flaky: set[str] = set()
     for node in payload.get("testNodes", []):
-        collect_results(node, results)
+        collect_results(node, results, flaky)
 
     quarantined: dict[str, set[str]] = {}
     for entry in plan.quarantine:
@@ -518,15 +532,22 @@ def command_verify_results(args: argparse.Namespace) -> int:
 
     runnable = plan.inventory.runnable_classes()
     problems: list[str] = []
-    lines = ["| 类 | 清单 | 隔离 | 应执行 | 实际执行 | 通过 | 失败 | 跳过 |", "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
-    totals = [0, 0, 0, 0, 0, 0, 0]
+    lines = [
+        "| 类 | 清单 | 隔离 | 应执行 | 实际执行 | 通过 | 其中重试后通过 | 失败 | 跳过 |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    totals = [0, 0, 0, 0, 0, 0, 0, 0]
     for name in sorted(runnable):
         expected_methods = set(runnable[name]) - quarantined.get(name, set())
         executed = results.get(name, {})
         passed = sum(1 for value in executed.values() if value == "Passed")
+        retried = sum(1 for method in executed if f"{name}/{method}" in flaky)
         failed = sum(1 for value in executed.values() if value == "Failed")
         skipped = sum(1 for value in executed.values() if value == "Skipped")
-        row = [len(runnable[name]), len(quarantined.get(name, ())), len(expected_methods), len(executed), passed, failed, skipped]
+        row = [
+            len(runnable[name]), len(quarantined.get(name, ())), len(expected_methods), len(executed),
+            passed, retried, failed, skipped,
+        ]
         totals = [a + b for a, b in zip(totals, row)]
         lines.append(f"| {name} | " + " | ".join(str(value) for value in row) + " |")
         if expected_methods and not executed:
@@ -543,6 +564,13 @@ def command_verify_results(args: argparse.Namespace) -> int:
         problems.append(f"结果里出现静态清单之外的类 {name}，解析器与编译结果不一致。")
     lines.append("| **合计** | " + " | ".join(f"**{value}**" for value in totals) + " |")
 
+    if flaky:
+        lines += [
+            "",
+            f"重试后通过（抖动，不计失败，需分诊：修测试，或登记隔离与 Issue）：{len(flaky)} 个",
+            "",
+        ]
+        lines += [f"- {case}" for case in sorted(flaky)]
     report = "\n".join(lines)
     if args.markdown:
         Path(args.markdown).write_text(report + "\n", encoding="utf-8")
@@ -557,6 +585,9 @@ def command_verify_results(args: argparse.Namespace) -> int:
         print(f"\n失败用例（{len(failed_cases)}）：")
         for case in failed_cases:
             print(f"- {case}")
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        for case in sorted(flaky):
+            print(f"::warning title=抖动用例（重试后通过）::{case}")
     if problems:
         print(f"\n执行数校验失败（{len(problems)}）：", file=sys.stderr)
         for problem in problems:

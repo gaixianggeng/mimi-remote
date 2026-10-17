@@ -10,14 +10,16 @@ usage() {
   bash ./scripts/test-ios-full-suite.sh [--result-dir <目录>] [--record-failed-snapshots]
 
 在固定的 iPad Pro 13-inch (M5) Simulator 上运行全量 MimiRemoteTests（含全部视觉快照类），
-只对 config/ios-tests/quarantine.tsv 中登记的单个用例传 -skip-testing。跑完后按类核对
-实际执行数：任何一个应执行的类执行 0 个、执行数与源码清单不一致，或有失败用例，都返回非零。
+只对 config/ios-tests/quarantine.tsv 中登记的单个用例传 -skip-testing。失败的用例重试一次：
+重试后通过的记为抖动，列在摘要里但不算失败；两次都失败才算失败。跑完后按类核对实际
+执行数：任何一个应执行的类执行 0 个、执行数与源码清单不一致，或有失败用例，都返回非零。
 
 结果目录保存 full.xcresult、tests.json 与按类统计的 summary.md；默认放在临时目录。
 在 GitHub Actions 中会把统计表追加到 $GITHUB_STEP_SUMMARY。
 
 --record-failed-snapshots 让不匹配的快照就地重录，并把重录的 PNG 按仓库相对路径复制到
-结果目录的 rerecorded-snapshots/；对应用例仍记为失败，退出码不变。快照基线只认每晚任务
+结果目录的 rerecorded-snapshots/。重录后的重试会对着新图通过，所以只要有快照被重录，
+就单独判失败，不算抖动。快照基线只认每晚任务
 的环境（GitHub 托管 macos-26 + iOS 26.2 的 M5 Simulator），本机不同版本的 Xcode 不要用它
 重录。
 EOF
@@ -25,6 +27,7 @@ EOF
 
 result_dir=""
 record_failed_snapshots=false
+snapshot_status=0
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --result-dir)
@@ -86,6 +89,8 @@ bash ./scripts/ios-dev.sh test \
   -collect-test-diagnostics never \
   -testLanguage zh-Hans \
   -testRegion CN \
+  -retry-tests-on-failure \
+  -test-iterations 2 \
   ${skip_args[@]+"${skip_args[@]}"} || test_status=$?
 
 if [[ ! -d "$result_bundle" ]]; then
@@ -118,6 +123,10 @@ if [[ "$record_failed_snapshots" == true ]]; then
   done < "$rerecorded_list"
   rerecorded_count="$(grep -c . "$rerecorded_list" || true)"
   echo "重录快照：${rerecorded_count} 张（清单：${rerecorded_list}）"
+  if [[ "$rerecorded_count" -gt 0 ]]; then
+    # 首次比对失败时已写入新图，重试会对着新图通过；快照不匹配一律判失败，不算抖动。
+    snapshot_status=1
+  fi
   if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     {
       echo
@@ -135,5 +144,9 @@ fi
 echo "结果目录：$result_dir"
 if [[ "$test_status" -ne 0 ]]; then
   exit "$test_status"
+fi
+if [[ "$snapshot_status" -ne 0 ]]; then
+  echo "有快照与基线不匹配并已重录；逐张核对 rerecorded-snapshots/ 后再提交。" >&2
+  exit "$snapshot_status"
 fi
 exit "$verify_status"
