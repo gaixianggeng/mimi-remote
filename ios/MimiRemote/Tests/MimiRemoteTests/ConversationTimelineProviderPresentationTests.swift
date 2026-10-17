@@ -402,6 +402,68 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testApprovalResolvedInChineseStaysResolvedAfterSwitchingToEnglish() throws {
+        // #750 评审：App 可以运行时切语言，已写入的正文仍是中文；结果不能按当前语言重新推断。
+        let defaults = UserDefaults.standard
+        let previousLanguage = defaults.string(forKey: AppLanguage.preferenceKey)
+        defer {
+            if let previousLanguage {
+                defaults.set(previousLanguage, forKey: AppLanguage.preferenceKey)
+            } else {
+                defaults.removeObject(forKey: AppLanguage.preferenceKey)
+            }
+        }
+        defaults.set(AppLanguage.simplifiedChinese.rawValue, forKey: AppLanguage.preferenceKey)
+        let store = ConversationStore()
+        let sessionID = "sess_language_switch"
+        let metadata = AgentEventMetadata(
+            seq: nil, sessionID: sessionID, turnID: "turn", itemID: "approval",
+            messageID: nil, clientMessageID: nil, revision: nil, createdAt: nil
+        )
+        store.appendSystem(
+            L10n.format("ui.awaiting_approval_value_value", "运行 curl", L10n.format("ui.risk_value", "高")),
+            sessionID: sessionID,
+            kind: .approval,
+            metadata: metadata
+        )
+        store.resolveLatestPendingApproval(sessionID: sessionID)
+
+        defaults.set(AppLanguage.english.rawValue, forKey: AppLanguage.preferenceKey)
+        let resolved = try XCTUnwrap(store.messages(for: sessionID).last)
+        XCTAssertEqual(resolved.content, "审批已解决：运行 curl")
+        XCTAssertEqual(resolved.approvalState, .resolved)
+        XCTAssertEqual(resolved.approvalOutcome, .resolved)
+        let command = makeActivity(id: "command", turnID: "turn", category: .runCommand, title: "Run command")
+        let rows = ConversationTimelineItemBuilder.items(from: [command, resolved])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(try group(in: rows[0]).messages.map(\.id), [command.id, resolved.id])
+    }
+
+    func testApprovalTextWithoutStoredStateIsRecognizedInEverySupportedLanguage() {
+        // 历史回放等没有记录结果的消息，按全部已支持语言识别，不随当前界面语言变化。
+        for language in [AppLanguage.simplifiedChinese, .english] {
+            let resolved = L10n.formatTemplate(
+                L10n.text("ui.approval_resolved_value", language: language),
+                arguments: ["curl"]
+            )
+            let approved = "\(L10n.text("ui.approval_approved", language: language)): curl"
+            let declined = "\(L10n.text("ui.approval_rejected", language: language)): curl"
+            XCTAssertEqual(ConversationApprovalOutcome.classify(resolved), .resolved, language.rawValue)
+            XCTAssertEqual(ConversationApprovalOutcome.classify(approved), .approved, language.rawValue)
+            XCTAssertEqual(ConversationApprovalOutcome.classify(declined), .declined, language.rawValue)
+            let pending = L10n.formatTemplate(
+                L10n.text("ui.awaiting_approval_value_value", language: language),
+                arguments: [
+                    "curl",
+                    L10n.formatTemplate(L10n.text("ui.risk_value", language: language), arguments: ["high"])
+                ]
+            )
+            XCTAssertEqual(ConversationApprovalOutcome.classify(pending), .pending, language.rawValue)
+            XCTAssertEqual(ConversationApprovalOutcome.pendingTitle(from: pending), "curl", language.rawValue)
+        }
+    }
+
     func testApprovalRiskTextLocalizesKnownLevelsAndKeepsOthers() {
         XCTAssertEqual(ApprovalRiskText.localized("high"), L10n.text("ui.high"))
         XCTAssertEqual(ApprovalRiskText.localized(" HIGH "), L10n.text("ui.high"))

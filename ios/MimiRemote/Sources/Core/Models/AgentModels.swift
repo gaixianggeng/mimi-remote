@@ -1628,6 +1628,8 @@ struct ConversationMessage: Identifiable, Hashable {
     var turnLifecycle: ConversationTurnLifecycle?
     var userDelivery: UserMessageDelivery?
     var isTimestampFallback: Bool
+    /// 审批记录写入时记下的处理结果，与界面语言无关（#750）。
+    var approvalState: ConversationApprovalOutcome?
     private(set) var contentRevision: UInt64
     private(set) var contentDigest: UInt64
     private(set) var contentByteCount: Int
@@ -1659,7 +1661,8 @@ struct ConversationMessage: Identifiable, Hashable {
         timelineOrdinal: Int64? = nil,
         turnLifecycle: ConversationTurnLifecycle? = nil,
         userDelivery: UserMessageDelivery? = nil,
-        isTimestampFallback: Bool = false
+        isTimestampFallback: Bool = false,
+        approvalState: ConversationApprovalOutcome? = nil
     ) {
         self.id = id
         self.stableID = stableID
@@ -1679,6 +1682,7 @@ struct ConversationMessage: Identifiable, Hashable {
         self.turnLifecycle = turnLifecycle
         self.userDelivery = userDelivery
         self.isTimestampFallback = isTimestampFallback
+        self.approvalState = approvalState
         self.appendedContentForFingerprint = nil
         let fingerprint = Self.makeRenderFingerprint(for: content)
         self.contentRevision = 0
@@ -1704,6 +1708,7 @@ struct ConversationMessage: Identifiable, Hashable {
             && lhs.turnLifecycle == rhs.turnLifecycle
             && lhs.userDelivery == rhs.userDelivery
             && lhs.isTimestampFallback == rhs.isTimestampFallback
+            && lhs.approvalState == rhs.approvalState
             && lhs.contentDigest == rhs.contentDigest
             && lhs.contentByteCount == rhs.contentByteCount
     }
@@ -1726,6 +1731,7 @@ struct ConversationMessage: Identifiable, Hashable {
         hasher.combine(turnLifecycle)
         hasher.combine(userDelivery)
         hasher.combine(isTimestampFallback)
+        hasher.combine(approvalState)
         hasher.combine(contentDigest)
         hasher.combine(contentByteCount)
     }
