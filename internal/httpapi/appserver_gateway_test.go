@@ -2340,7 +2340,7 @@ func TestAppServerHistoryOutputDehydrationCoversToolAndFileChange(t *testing.T) 
 		`{"type":"fileChange","id":"file-1","changes":[{"path":"Sources/App.swift","kind":"update","diff":` + strconv.Quote(largeDiff) + `}]}` +
 		`] }]}}`)
 
-	rewritten, changed := router.dehydrateOversizedHistoryOutputs(payload)
+	rewritten, changed := router.dehydrateHistoryOutputs(payload, appServerHistoryOutputMinItemBytes)
 	if !changed {
 		t.Fatal("MCP result 与 file diff 应被外置")
 	}

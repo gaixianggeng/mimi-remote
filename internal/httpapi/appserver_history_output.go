@@ -9,7 +9,13 @@ import (
 	"time"
 )
 
-const appServerHistoryOutputURLPrefix = "agentd-history-output://"
+const (
+	appServerHistoryOutputURLPrefix = "agentd-history-output://"
+	// 普通过程页达到 64 KiB 后，8 KiB 以上的单项输出改为按需读取。
+	// 短输出保留内联；超过硬上限时仍沿用更小的既有兜底阈值。
+	appServerHistoryInlinePageBytes   = 64 << 10
+	appServerHistoryInlineOutputBytes = 8 << 10
+)
 
 var (
 	appServerHistoryOutputTTL                = 30 * time.Minute
@@ -64,10 +70,9 @@ func historyOutputFilenameSuffix(contentType string) string {
 	return ".txt"
 }
 
-// dehydrateOversizedHistoryOutputs 只处理已超过 gateway full cap 的响应。
-// 它不裁剪用户/助手消息，只把可恢复的过程输出外置到短期、鉴权的缓存；
-// 老客户端仍能读到原字段中的短预览，新客户端可按需打开完整内容。
-func (r *Router) dehydrateOversizedHistoryOutputs(payload []byte) ([]byte, bool) {
+// dehydrateHistoryOutputs 不裁剪用户/助手消息，只把可恢复的大过程输出外置到
+// 已有的短期鉴权缓存。原字段保留预览，完整输出仍可通过引用按需打开。
+func (r *Router) dehydrateHistoryOutputs(payload []byte, minimumItemBytes int) ([]byte, bool) {
 	if r == nil || r.historyOutput == nil || len(payload) == 0 {
 		return payload, false
 	}
@@ -86,7 +91,7 @@ func (r *Router) dehydrateOversizedHistoryOutputs(payload []byte) ([]byte, bool)
 	if err := decoder.Decode(&root); err != nil {
 		return payload, false
 	}
-	if !r.dehydrateHistoryOutputValue(root) {
+	if !r.dehydrateHistoryOutputValue(root, minimumItemBytes) {
 		return payload, false
 	}
 	rewritten, err := json.Marshal(root)
@@ -96,12 +101,12 @@ func (r *Router) dehydrateOversizedHistoryOutputs(payload []byte) ([]byte, bool)
 	return rewritten, true
 }
 
-func (r *Router) dehydrateHistoryOutputValue(value any) bool {
+func (r *Router) dehydrateHistoryOutputValue(value any, minimumItemBytes int) bool {
 	switch typed := value.(type) {
 	case map[string]any:
-		changed := r.dehydrateHistoryOutputItem(typed)
+		changed := r.dehydrateHistoryOutputItem(typed, minimumItemBytes)
 		for _, child := range typed {
-			if r.dehydrateHistoryOutputValue(child) {
+			if r.dehydrateHistoryOutputValue(child, minimumItemBytes) {
 				changed = true
 			}
 		}
@@ -109,7 +114,7 @@ func (r *Router) dehydrateHistoryOutputValue(value any) bool {
 	case []any:
 		changed := false
 		for _, child := range typed {
-			if r.dehydrateHistoryOutputValue(child) {
+			if r.dehydrateHistoryOutputValue(child, minimumItemBytes) {
 				changed = true
 			}
 		}
@@ -119,7 +124,7 @@ func (r *Router) dehydrateHistoryOutputValue(value any) bool {
 	}
 }
 
-func (r *Router) dehydrateHistoryOutputItem(item map[string]any) bool {
+func (r *Router) dehydrateHistoryOutputItem(item map[string]any, minimumItemBytes int) bool {
 	if _, alreadyRedacted := item["historyOutputRef"]; alreadyRedacted {
 		return false
 	}
@@ -165,7 +170,7 @@ func (r *Router) dehydrateHistoryOutputItem(item map[string]any) bool {
 	default:
 		return false
 	}
-	if len(data) < appServerHistoryOutputMinItemBytes || replace == nil {
+	if len(data) < minimumItemBytes || replace == nil {
 		return false
 	}
 	id, ok := r.historyOutput.put(contentType, data)

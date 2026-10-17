@@ -5,6 +5,119 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testLongHistoryFirstPresentationAndCachedReopenForBothProviders() async throws {
+        for runtime in ["codex", "claude"] {
+            try await assertLongHistoryFirstPresentationAndCachedReopen(runtime: runtime)
+        }
+    }
+
+    func testLongProseHistoryFirstPresentationAndCachedReopenForBothProviders() async throws {
+        for runtime in ["codex", "claude"] {
+            try await assertLongHistoryFirstPresentationAndCachedReopen(runtime: runtime, includesCode: false)
+        }
+    }
+
+    private func assertLongHistoryFirstPresentationAndCachedReopen(runtime: String, includesCode: Bool = true) async throws {
+        let project = makeProject(id: "loading-\(runtime)")
+        var session = makeSession(id: "loading-\(runtime)", projectID: project.id,
+                                  title: "长历史", status: "history", source: runtime, runtimeProvider: runtime)
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [session]))
+        let appStore = makeIsolatedAppStore()
+        let conversationStore = ConversationStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
+        let store = SessionStore(appStore: appStore, conversationStore: conversationStore,
+                                 logStore: LogStore(), clientFactory: { client })
+        store.projects = [project]
+        store.sessions = [session]
+        var unit = "## \(runtime) 的分析\n\n完整说明、**重点**与[链接](https://example.com)。\n\n- 核对数据\n- 保留结果\n\n```swift\nlet value = \"长回答 🌿\"\n```\n\n"
+        if !includesCode {
+            unit = "## \(runtime) 的分析\n\n完整说明、**重点**与[链接](https://example.com)。\n\n这里给出完整结论与后续步骤，保留长段落和列表的阅读排版。\n\n- 核对数据\n- 保留结果\n\n"
+        }
+        let messages: [CodexHistoryMessage] = (0..<20).map { index in
+            let answer = String(repeating: unit, count: index == 19 ? 320 : 8) + "结束标记-\(index)"
+            return CodexHistoryMessage(
+                id: "\(runtime)-message-\(index)", role: index.isMultiple(of: 2) ? "user" : "assistant",
+                content: index.isMultiple(of: 2) ? "问题 \(index)" : answer,
+                createdAt: Date(timeIntervalSince1970: Double(index)),
+                turnID: "turn-\(index / 2)", itemID: "item-\(index)", timelineOrdinal: Int64(index * 100),
+                turnLifecycle: .completed
+            )
+        }
+        let continuation = HistoryTurnItemsContinuation(
+            turnID: "turn-9", turn: ["id": .string("turn-9"), "status": .string("completed")],
+            turnIndex: 9, itemOffset: 0, cursor: nil, pageLimit: 50,
+            threadIsActive: false, isLatestTurn: true, hasVisibleUserMessageBefore: true
+        )
+        let themeSuiteName = "LongHistoryLoadingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: themeSuiteName))
+        let host = UIHostingController(rootView: ConversationView()
+            .environmentObject(store).environmentObject(conversationStore)
+            .environmentObject(ThemeStore(defaults: defaults)))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 420, height: 820)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        host.view.frame = window.bounds
+        defer {
+            window.isHidden = true
+            store.returnToSessionList()
+            defaults.removePersistentDomain(forName: themeSuiteName)
+        }
+        let select = Task { await store.selectSession(session) }
+        await client.waitForHistoryRequestCount(1)
+        host.view.layoutIfNeeded()
+        let responseAt = ProcessInfo.processInfo.systemUptime
+        client.resolveHistoryRequest(at: 0, with: HistoryMessagesPage(
+            messages: messages, itemContinuations: [continuation]
+        ))
+        _ = await select.value
+        let mergedAt = ProcessInfo.processInfo.systemUptime
+        await client.waitForHistoryItemRequestCount(1)
+        let initialScrollView = try await waitForConversationTimelineAtBottom(in: host.view, timeout: 12)
+        let readableAt = ProcessInfo.processInfo.systemUptime
+        XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view), "大回答不能一直被定位遮罩盖住")
+        XCTAssertLessThanOrEqual(distanceFromBottom(initialScrollView), 4)
+        XCTAssertEqual(conversationStore.messages(for: session.id).last?.content, messages.last?.content)
+        XCTAssertNotNil(store.historyItemEnrichmentBySessionID[session.id], "首屏可读不依赖补齐请求结束")
+        print("History screen fixture: provider=\(runtime), code=\(includesCode), bytes=\(messages.reduce(0) { $0 + $1.content.utf8.count }), response-to-merge=\(mergedAt - responseAt)s, merge-to-readable=\(readableAt - mergedAt)s")
+
+        // 把补齐请求保持为未完成，直接检查已有正文是否会重新被遮住。
+        for _ in 0..<8 {
+            try await Task.sleep(for: .milliseconds(16))
+            host.view.layoutIfNeeded()
+            XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view))
+        }
+        client.resolveHistoryItemRequest(at: 0, with: HistoryTurnItemsPage(
+            messages: Array(messages.suffix(2)), itemIDs: ["item-18", "item-19"], continuation: nil
+        ))
+        for _ in 0..<100 where store.historyItemEnrichmentBySessionID[session.id] != nil { await Task.yield() }
+        store.returnToSessionList()
+        host.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        // 元数据变更强制后台对账，验收重入是否仍能立即使用已有正文。
+        session.updatedAt = try XCTUnwrap(session.updatedAt).addingTimeInterval(1)
+        store.sessions = [session]
+        store.historyFirstPageCacheByKey.removeAll()
+        let reopenAt = ProcessInfo.processInfo.systemUptime
+        _ = await store.selectSession(session)
+        await client.waitForHistoryRequestCount(2)
+        let reopenedScrollView = try await waitForConversationTimelineAtBottom(in: host.view, timeout: 12)
+        let reopenedReadableAt = ProcessInfo.processInfo.systemUptime
+        XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view))
+        XCTAssertFalse(store.isShowingHistoryLoading(sessionID: session.id), "后台对账不能重新显示加载状态")
+        XCTAssertLessThanOrEqual(distanceFromBottom(reopenedScrollView), 4)
+        XCTAssertEqual(conversationStore.messages(for: session.id).last?.content, messages.last?.content)
+        print("History cached reopen fixture: provider=\(runtime), code=\(includesCode), reopen-to-readable=\(reopenedReadableAt - reopenAt)s, network-still-pending=true")
+        client.resolveHistoryRequest(at: 1, with: HistoryMessagesPage(messages: messages))
+        for _ in 0..<16 {
+            try await Task.sleep(for: .milliseconds(16))
+            host.view.layoutIfNeeded()
+            XCTAssertFalse(conversationTimelineIsStabilizing(in: host.view), "同正文后台对账不能闪回遮罩")
+            XCTAssertLessThanOrEqual(distanceFromBottom(reopenedScrollView), 4)
+        }
+    }
+
     func testInitialTimelineRemainsReadableWhileItemEnrichmentIsPending() async throws {
         ConversationScrollDiagnostics.shared.start()
         defer { ConversationScrollDiagnostics.shared.stop() }
