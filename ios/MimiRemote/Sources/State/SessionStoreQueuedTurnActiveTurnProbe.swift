@@ -6,9 +6,9 @@ struct QueuedTurnActiveTurnProbe {
 }
 
 enum QueuedTurnActiveTurnProbeResult {
-    /// 权威页给出了最新 Turn 的事实。
+    /// 权威页给出了最新 Turn 的明确状态：进行中或终态。
     case latest(HistoryTurnState, snapshotSeq: EventSequence?)
-    /// 运行时读不了 Turn 页，或服务端没有任何 Turn：没有可插入的进行中回合。
+    /// 运行时读不了 Turn 页、服务端没有任何 Turn，或有限重试后最新 Turn 仍无法识别状态。
     case inconclusive
     /// 状态已变化、请求持续失败或任务被取消：保持等待，由下一次派发触发重新确认。
     case abandoned
@@ -17,7 +17,8 @@ enum QueuedTurnActiveTurnProbeResult {
 // #751：会话仍在运行、本地却没有 activeTurnID 时，排队项不能按空闲派发。Codex 0.163 对进行中
 // 回合收到的 turn/start 不会排到下一回合，而是插进当前回合，原任务的回复随之丢失。派发前先读
 // 最新 Turn 的权威页：仍在进行就补回 turn 继续等待；已终态就复用 turn/completed 收敛并推进 FIFO。
-// 读不到任何 Turn 事实时保留原先按空闲派发的行为，避免过期的运行态把队列永久卡住。
+// 状态无法识别的 Turn 不绑定为当前回合，有限退避后再读；读不到任何明确 Turn 事实时保留原先按空闲
+// 派发的行为，避免过期的运行态或兼容 runtime 的旧 Turn 把队列永久卡住。
 extension SessionStore {
     func probeActiveTurnBeforeQueuedDispatch(sessionID: SessionID) {
         guard queuedTurnActiveTurnProbesBySessionID[sessionID] == nil else {
@@ -73,6 +74,7 @@ extension SessionStore {
         hostScope: HostScope,
         retryDelays: [UInt64]
     ) async -> QueuedTurnActiveTurnProbeResult {
+        var sawUnknownLatestTurn = false
         for delay in [0] + retryDelays {
             if delay > 0 {
                 do {
@@ -91,6 +93,12 @@ extension SessionStore {
                 else {
                     return .inconclusive
                 }
+                guard latest.lifecycle != .unknown else {
+                    // 缺失或无法识别的状态既不能证明仍在运行（绑定后可能永远等不到 turn/completed），
+                    // 也不能证明已结束（立即派发可能插进当前回合）；退避后再读，用尽才按空闲派发。
+                    sawUnknownLatestTurn = true
+                    continue
+                }
                 return .latest(latest, snapshotSeq: page.snapshotSeq)
             } catch is CancellationError {
                 return .abandoned
@@ -101,7 +109,7 @@ extension SessionStore {
                 continue
             }
         }
-        return .abandoned
+        return sawUnknownLatestTurn ? .inconclusive : .abandoned
     }
 
     private func applyQueuedTurnActiveTurnProbe(
@@ -132,7 +140,8 @@ extension SessionStore {
                 sendsNotification: false
             )
         case .latest(let latest, _):
-            // 仍在进行：补回 turn，排队项与入队时就看到 activeTurnID 一样等待它的 turn/completed。
+            // 只有明确 inProgress 才会走到这里（unknown 已在探测阶段排除）：补回 turn，排队项与
+            // 入队时就看到 activeTurnID 一样等待它的 turn/completed。
             updateSession(sessionID) { item in
                 item.activeTurnID = latest.id
             }

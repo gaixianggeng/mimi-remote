@@ -131,16 +131,83 @@ final class QueuedTurnActiveTurnGapTests: XCTestCase {
         try await waitForSentTurnCount(1, socket: fixture.socket)
     }
 
+    func testUnknownLatestTurnIsNotBoundAndIsProbedAgainUntilItIsInProgress() async throws {
+        let fixture = try await makeConnectedFixture(
+            suffix: "unknown-then-running",
+            activeTurnID: nil,
+            latestTurnSequence: [
+                HistoryTurnState(id: "turn_unknown", lifecycle: .unknown),
+                HistoryTurnState(id: "turn_sleep", lifecycle: .inProgress)
+            ]
+        )
+        let store = fixture.store
+        let socket = fixture.socket
+
+        let queued = await store.sendTurn(CodexAppServerTurnPayload(prompt: "等状态明确后再决定"))
+        XCTAssertTrue(queued)
+        try await waitForSelectedActiveTurnID("turn_sleep", store: store)
+        let probeCount = await fixture.latestTurnRequests.count
+        XCTAssertEqual(probeCount, 2, "unknown 状态必须重新确认，不能直接绑定或派发")
+        XCTAssertTrue(socket.sentTurns.isEmpty)
+        XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn_sleep")
+
+        socket.emitEvent(.turnCompleted(turnMetadata(sessionID: fixture.session.id, turnID: "turn_sleep", seq: 1)))
+        try await waitForSentTurnCount(1, socket: socket)
+    }
+
+    func testUnknownLatestTurnWaitsForRetryInsteadOfDispatchingImmediately() async throws {
+        let fixture = try await makeConnectedFixture(
+            suffix: "unknown-pending",
+            activeTurnID: nil,
+            latestTurnSequence: [HistoryTurnState(id: "turn_unknown", lifecycle: .unknown)],
+            retryDelays: [60_000_000_000]
+        )
+        let store = fixture.store
+        defer { store.cancelAllTurnCompletionReconciliations() }
+
+        let queued = await store.sendTurn(CodexAppServerTurnPayload(prompt: "不能直接插进可能仍在运行的回合"))
+        XCTAssertTrue(queued)
+        for _ in 0..<80 {
+            if await fixture.latestTurnRequests.count >= 1 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertTrue(fixture.socket.sentTurns.isEmpty)
+        XCTAssertNil(store.selectedSession?.activeTurnID)
+        XCTAssertNil(store.selectedQueuedTurns.first?.expectedTurnID)
+        XCTAssertEqual(store.selectedQueuedTurns.first?.dispatchState, .waiting)
+    }
+
+    func testUnknownLatestTurnFallsBackToIdleDispatchAfterBoundedRetries() async throws {
+        let fixture = try await makeConnectedFixture(
+            suffix: "unknown-forever",
+            activeTurnID: nil,
+            latestTurnSequence: [HistoryTurnState(id: "turn_old", lifecycle: .unknown)],
+            retryDelays: [0, 0]
+        )
+
+        let queued = await fixture.store.sendTurn(CodexAppServerTurnPayload(prompt: "兼容 runtime 的旧 Turn 不能卡住队列"))
+        XCTAssertTrue(queued)
+        try await waitForSentTurnCount(1, socket: fixture.socket)
+        let probeCount = await fixture.latestTurnRequests.count
+        XCTAssertEqual(probeCount, 3, "首读加两次退避重试后才放弃")
+        XCTAssertNil(fixture.store.selectedSession?.activeTurnID, "unknown Turn 不能被绑定为当前回合")
+    }
+
     private struct ConnectedFixture {
         let session: AgentSession
         let store: SessionStore
         let socket: MockWebSocketClient
+        let latestTurnRequests: LatestTurnRequestLog
     }
 
     private func makeConnectedFixture(
         suffix: String,
         activeTurnID: TurnID?,
         latestTurn: HistoryTurnState? = nil,
+        latestTurnSequence: [HistoryTurnState]? = nil,
+        retryDelays: [UInt64] = [0],
         supportsLatestTurnHistoryPage: Bool = true
     ) async throws -> ConnectedFixture {
         let project = makeProject(id: "proj-turn-gap-\(suffix)")
@@ -152,13 +219,16 @@ final class QueuedTurnActiveTurnGapTests: XCTestCase {
             source: "codex",
             activeTurnID: activeTurnID
         )
-        let latestPage = HistoryMessagesPage(messages: [], turnStates: latestTurn.map { [$0] } ?? [])
+        let requestLog = LatestTurnRequestLog(turns: latestTurnSequence ?? (latestTurn.map { [$0] } ?? []))
         let client = MockSessionStoreClient(
             projects: [project],
             sessions: [session],
             messagesResult: [],
             supportsLatestTurnHistoryPage: supportsLatestTurnHistoryPage,
-            latestTurnHistoryHandler: { _ in latestPage }
+            latestTurnHistoryHandler: { _ in
+                let turn = await requestLog.next()
+                return HistoryMessagesPage(messages: [], turnStates: turn.map { [$0] } ?? [])
+            }
         )
         let appStore = makeIsolatedAppStore()
         appStore.token = "test-token"
@@ -174,14 +244,14 @@ final class QueuedTurnActiveTurnGapTests: XCTestCase {
                 return socket
             }
         )
-        store.turnCompletionReconciliationDelaysNanoseconds = [0]
+        store.turnCompletionReconciliationDelaysNanoseconds = retryDelays
         await store.refreshAll(autoAttach: false)
         store.takeOverSession(session)
         await store.selectSession(session)
         let socket = try XCTUnwrap(sockets.first)
         socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
-        return ConnectedFixture(session: session, store: store, socket: socket)
+        return ConnectedFixture(session: session, store: store, socket: socket, latestTurnRequests: requestLog)
     }
 
     private func turnMetadata(sessionID: SessionID, turnID: TurnID, seq: EventSequence) -> AgentEventMetadata {
@@ -195,6 +265,22 @@ final class QueuedTurnActiveTurnGapTests: XCTestCase {
             revision: nil,
             createdAt: nil
         )
+    }
+}
+
+/// 按顺序返回最新 Turn，用完后重复最后一个；同时记录探测次数。
+private actor LatestTurnRequestLog {
+    private let turns: [HistoryTurnState]
+    private(set) var count = 0
+
+    init(turns: [HistoryTurnState]) {
+        self.turns = turns
+    }
+
+    func next() -> HistoryTurnState? {
+        defer { count += 1 }
+        guard !turns.isEmpty else { return nil }
+        return turns[min(count, turns.count - 1)]
     }
 }
 
