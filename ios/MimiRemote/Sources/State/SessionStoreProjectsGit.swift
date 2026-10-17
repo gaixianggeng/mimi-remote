@@ -1087,18 +1087,18 @@ extension SessionStore {
             // 已删除的会话（反之亦然）。
             var discoveredByRuntime: [String: Set<SessionID>] = [:]
             var completedRuntimes: Set<String> = []
-            // 分页结果先在本地累积，整趟遍历结束后一次提交。每页各自合并会在翻页的
-            // 十几秒里让所有观察 SessionStore 的界面（含隐藏的 Tab）反复整体重算。
+            // 各渠道先取第一页再补后续页，避免 Claude 首屏排在 Codex 四页之后。
+            // 只在首轮与遍历结束时发布，兼顾首屏速度和隐藏 Tab 的重算成本；请求仍串行。
             var discoveredSessions: [AgentSession] = []
-            for runtimeProvider in RuntimeFeatureSupport.runtimeProviders {
-                // 旧 agentd 可能只拒绝 Codex 的无 cwd thread/list。这个能力缓存只能
-                // 跳过 Codex；Harness 和 Claude 各有独立目录，不能被它一起永久关闭。
-                if runtimeProvider == "codex", controlledGlobalDiscoveryUnavailable {
-                    continue
-                }
-                var cursor: String?
-                var runtimeReachedEnd = false
-                for pageIndex in 0..<4 {
+            var cursorsByRuntime: [String: String] = [:]
+            // 旧 agentd 的能力缓存只跳过 Codex，其他渠道仍须独立发现。
+            var pendingRuntimes = RuntimeFeatureSupport.runtimeProviders.filter {
+                $0 != "codex" || !controlledGlobalDiscoveryUnavailable
+            }
+            for pageIndex in 0..<4 {
+                var continuingRuntimes: [String] = []
+                for runtimeProvider in pendingRuntimes {
+                    let cursor = cursorsByRuntime[runtimeProvider]
                     guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
                     let hostRequestStartedAt = sessionListNow()
                     do {
@@ -1108,7 +1108,9 @@ extension SessionStore {
                             cursor: cursor,
                             limit: 50
                         )
-                        guard appStore.connectionGeneration == generation else { return }
+                        guard appStore.activeHostScope == hostScope,
+                              appStore.connectionGeneration == generation,
+                              !Task.isCancelled else { return }
                         reconcileArchivedSessions(page.sessions, snapshot: archiveSnapshot)
                         recordCarStatusHostObservation(at: sessionListNow())
                         let pageSessionIDs = Set(page.sessions.map(\.id))
@@ -1118,10 +1120,11 @@ extension SessionStore {
                         guard page.hasMore,
                               let nextCursor = page.nextCursor,
                               nextCursor != cursor else {
-                            runtimeReachedEnd = !page.hasMore
-                            break
+                            if !page.hasMore { completedRuntimes.insert(runtimeProvider) }
+                            continue
                         }
-                        cursor = nextCursor
+                        cursorsByRuntime[runtimeProvider] = nextCursor
+                        continuingRuntimes.append(runtimeProvider)
                     } catch {
                         guard appStore.activeHostScope == hostScope,
                               appStore.connectionGeneration == generation,
@@ -1141,24 +1144,19 @@ extension SessionStore {
                                 invalidateCarStatusHostObservation(ifNotNewerThan: hostRequestStartedAt)
                             }
                         }
-                        break
                     }
                 }
-                if runtimeReachedEnd {
-                    completedRuntimes.insert(runtimeProvider)
+                pendingRuntimes = continuingRuntimes
+                if pageIndex == 0, !pendingRuntimes.isEmpty {
+                    // 首屏仅增加已确认的结果。删除旧会话仍在各渠道完整遍历后统一结算。
+                    publishControlledGlobalSessions(discoveredSessions, ids: discoveredSessionIDs)
                 }
+                if pendingRuntimes.isEmpty { break }
             }
             guard appStore.activeHostScope == hostScope,
                   appStore.connectionGeneration == generation,
                   !Task.isCancelled else { return }
-            // 先发布授权 ID 再合并 Session，确保目录归属判断能识别全局结果。
-            let expandedControlledIDs = controlledGlobalSessionIDs.union(discoveredSessionIDs)
-            if expandedControlledIDs != controlledGlobalSessionIDs {
-                controlledGlobalSessionIDs = expandedControlledIDs
-            }
-            // 全局发现只携带根项目归属。只有同 ID 已被对应 cwd 查询确认时，
-            // 才沿用工作区 identity；不能根据父子路径关系猜测归属。
-            mergeSessionPage(discoveredSessions.map(alignGlobalSessionToKnownDirectoryScope))
+            publishControlledGlobalSessions(discoveredSessions, ids: discoveredSessionIDs)
             if !completedRuntimes.isEmpty {
                 // 完整遍历是删除旧授权 ID 的唯一证据；分页上限、重复 cursor 或错误时
                 // 只合并本次已见项，避免把尚未扫到的外部 Worktree 从列表误删。
@@ -1219,6 +1217,15 @@ extension SessionStore {
                 generation: generation
             )
         }
+    }
+
+    private func publishControlledGlobalSessions(_ discovered: [AgentSession], ids: Set<SessionID>) {
+        // 先发布授权 ID，再合并会话；工作区归属只沿用已被精确 cwd 查询确认的 identity。
+        let expandedIDs = controlledGlobalSessionIDs.union(ids)
+        if expandedIDs != controlledGlobalSessionIDs {
+            controlledGlobalSessionIDs = expandedIDs
+        }
+        mergeSessionPage(discovered.map(alignGlobalSessionToKnownDirectoryScope))
     }
 
     func isControlledGlobalDiscoveryUnavailable(_ error: Error) -> Bool {
