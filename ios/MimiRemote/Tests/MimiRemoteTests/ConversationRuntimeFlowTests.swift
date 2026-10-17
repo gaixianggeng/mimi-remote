@@ -987,8 +987,8 @@ extension ConversationDataFlowTests {
 
         let sentAfterStaleStatus = await store.sendTurn(CodexAppServerTurnPayload(prompt: "after stale status"))
         XCTAssertTrue(sentAfterStaleStatus)
+        try await waitForSentTurnCount(1, socket: sockets[1])
         XCTAssertTrue(sockets[0].sentTurns.isEmpty)
-        XCTAssertEqual(sockets[1].sentTurns.count, 1)
     }
 
     func testConnectedRunningSessionIgnoresStaleHistoryRefreshBeforeNextSend() async throws {
@@ -3043,7 +3043,7 @@ extension ConversationDataFlowTests {
         let sent = await store.sendTurn(payload)
 
         XCTAssertTrue(sent)
-        XCTAssertEqual(sockets[0].sentTurns.count, 1)
+        try await waitForSentTurnCount(1, socket: sockets[0])
         let localEcho = try XCTUnwrap(conversationStore.messages(for: running.id).first { $0.clientMessageID != nil })
         let clientMessageID = try XCTUnwrap(localEcho.clientMessageID)
         XCTAssertTrue(payloadContainsInlineImage(localEcho.turnPayload))
@@ -3093,6 +3093,7 @@ extension ConversationDataFlowTests {
 
         let sent = await store.sendTurn(CodexAppServerTurnPayload(prompt: "从输入框提交"))
         XCTAssertTrue(sent)
+        try await waitForSentTurnCount(1, socket: sockets[0])
         let localEcho = try XCTUnwrap(conversationStore.messages(for: running.id).first { $0.role == .user })
         let clientMessageID = try XCTUnwrap(localEcho.clientMessageID)
         XCTAssertEqual(localEcho.sendStatus, .sending)
