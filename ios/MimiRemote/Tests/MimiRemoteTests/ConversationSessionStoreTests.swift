@@ -3294,7 +3294,7 @@ extension ConversationDataFlowTests {
         )
     }
 
-    func testSelectingRunningSessionRefreshesHistoryAndSuppressesBufferedMessageReplay() async throws {
+    func testSelectingRunningSessionReplaysBufferedEventsAndRefreshesHistory() async throws {
         let project = makeProject(id: "proj_live_resume")
         let running = makeSession(id: "sess_live_resume", projectID: project.id, title: "运行中", status: "running", source: "codex")
         let refreshedHistory = [
@@ -3350,7 +3350,8 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedMessageSessionIDs, [running.id])
         XCTAssertEqual(client.requestedMessageCursors, [nil])
         XCTAssertEqual(sockets.count, 1)
-        XCTAssertEqual(try XCTUnwrap(sockets.first).replayBufferedEventsByConnect, [false])
+        // #521 起运行中会话先带 replay 接入，避免历史加载期间漏事件；随后的权威历史负责去重。
+        XCTAssertEqual(try XCTUnwrap(sockets.first).replayBufferedEventsByConnect, [true])
         XCTAssertEqual(conversationStore.messages(for: running.id).suffix(refreshedHistory.count).map(\.content), refreshedHistory.map(\.content))
     }
 
@@ -3991,7 +3992,11 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedMessageSessionIDs, [history.id])
         XCTAssertEqual(store.selectedSessionID, history.id)
         XCTAssertFalse(conversationStore.hasLoadedHistory(sessionID: history.id))
-        XCTAssertTrue(store.statusMessage?.contains("HTTP 404") == true)
+        // d647eec2 起历史读取失败按原因给出用户文案，不再暴露 HTTP 状态码。
+        XCTAssertEqual(
+            store.statusMessage,
+            L10n.format("ui.full_history_loading_failed_value", L10n.text("ui.error_not_found"))
+        )
     }
 
     func testSelectingHistorySessionKeepsSelectionWhenNoRolloutFound() async {
@@ -4024,7 +4029,10 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.selectedSessionID, history.id)
         XCTAssertFalse(conversationStore.hasLoadedHistory(sessionID: history.id))
         // 历史读取失败只影响历史面板，不应把会话选择清掉或伪装成仍在运行的 turn。
-        XCTAssertTrue(store.statusMessage?.contains("no rollout found") == true)
+        XCTAssertEqual(
+            store.statusMessage,
+            L10n.format("ui.full_history_loading_failed_value", L10n.text("ui.error_not_found"))
+        )
         XCTAssertNil(store.selectedForegroundActivity)
     }
 

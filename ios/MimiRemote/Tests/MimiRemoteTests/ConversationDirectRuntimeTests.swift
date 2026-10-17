@@ -940,7 +940,8 @@ extension ConversationDataFlowTests {
 
     func testMultiRuntimeModelOptionsKeepCodexWhenClaudeFails() async throws {
         let project = AgentProject(id: "proj_multi_models", name: "Multi Models", path: "/tmp/multi-models")
-        let config = makeDirectAppServerConfig(project: project, channels: [makeClaudeChannelMetadata()])
+        // #524 起 Codex 模型列表也先按 channel 判定可用性，配置里必须同时声明两条通道。
+        let config = makeDirectAppServerConfig(project: project, channels: [makeCodexChannelMetadata(), makeClaudeChannelMetadata()])
         let codexTransport = FakeCodexAppServerTransport()
         let claudeTransport = FakeCodexAppServerTransport()
         let codex = CodexAppServerSessionRuntime(

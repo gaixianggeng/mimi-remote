@@ -4237,7 +4237,8 @@ extension ConversationDataFlowTests {
             at: 1,
             with: HistoryMessagesPage(
                 messages: [
-                    CodexHistoryMessage(id: "rollout:summary", role: "assistant", content: "缩略历史", createdAt: Date(timeIntervalSince1970: 20))
+                    // 缩略与完整首屏是同一条 rollout item 的两种视图（MIM-232 起首屏按 item 合并）。
+                    CodexHistoryMessage(id: "rollout:answer", role: "assistant", content: "缩略历史", createdAt: Date(timeIntervalSince1970: 20))
                 ],
                 loadMode: .economy,
                 notice: "当前显示缩略历史。"
@@ -4269,7 +4270,7 @@ extension ConversationDataFlowTests {
             at: 2,
             with: HistoryMessagesPage(
                 messages: [
-                    CodexHistoryMessage(id: "rollout:full-current", role: "assistant", content: "完整历史", createdAt: Date(timeIntervalSince1970: 30))
+                    CodexHistoryMessage(id: "rollout:answer", role: "assistant", content: "完整历史", createdAt: Date(timeIntervalSince1970: 30))
                 ]
             )
         )
@@ -4597,8 +4598,10 @@ extension ConversationDataFlowTests {
             at: 1,
             with: HistoryMessagesPage(
                 messages: [
+                    // 缩略与完整首屏来自同一批 thread turns，同一条回答的 item ID 相同；
+                    // MIM-232 起首屏按 item 合并，完整视图据此覆盖缩略内容。
                     CodexHistoryMessage(
-                        id: "rollout:running-summary",
+                        id: "rollout:running-answer",
                         role: "assistant",
                         content: "运行中的缩略历史",
                         createdAt: Date(timeIntervalSince1970: 20)
@@ -4633,7 +4636,7 @@ extension ConversationDataFlowTests {
             with: HistoryMessagesPage(
                 messages: [
                     CodexHistoryMessage(
-                        id: "rollout:completed-full",
+                        id: "rollout:running-answer",
                         role: "assistant",
                         content: "完成后的完整历史",
                         createdAt: Date(timeIntervalSince1970: 30)

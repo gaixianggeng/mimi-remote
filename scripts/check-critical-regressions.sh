@@ -9,7 +9,7 @@ fail() {
   exit 1
 }
 
-for command_name in bash grep sed; do
+for command_name in bash grep sed python3; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "缺少命令 ${command_name}。"
 done
@@ -203,6 +203,14 @@ for test_entry in "${critical_swift_tests[@]}"; do
   grep -Fq "$test_name" "$map_doc" \
     || fail "${map_doc} 未记录 ${test_name}。"
 done
+
+# 上面的映射只钉住高价值用例；下面的完整性检查覆盖全部测试类：每个 XCTestCase 类都要
+# 归属 PR 集合或每晚集合，方法级 selector 与隔离条目必须指向现存方法（#741）。
+bash ./scripts/check-ios-test-selectors.sh
+grep -Fq 'bash ./scripts/check-ios-test-selectors.sh' .github/workflows/ios-ci.yml \
+  || fail "iOS CI 没有在回归前执行 selector 完整性检查。"
+grep -Fq 'ios-test-inventory.py" skip-args' "$runner" \
+  || fail "iOS runner 没有跳过隔离清单中的用例。"
 
 grep -Fq 'bash ./scripts/check-critical-regressions.sh' scripts/check-pr-gate.sh \
   || fail "PR Gate 自检没有调用关键链路映射检查。"

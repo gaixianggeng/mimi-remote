@@ -1,0 +1,7 @@
+# 隔离清单：已知失败或抖动、暂时不能作为门禁信号的单个用例。
+#
+# 每行 4 列，用 Tab 分隔：Class/testMethod、原因、负责人（@GitHub 用户名）、Issue（#编号）。
+# 只能隔离单个方法，不能整类跳过；用例修好后同步删除对应行。
+# 每晚全量任务与 PR 回归都会对这里的条目传 -skip-testing，scripts/ios-test-inventory.py
+# 会校验每条都指向现存方法且四列齐全。
+ConversationDataFlowTests/testRepeatedProjectRefreshDoesNotPublishUnchangedProjections	数据未变的重复刷新多发两次 objectWillChange（loadedWorkspaceCatalogScope、errorMessageOrigin 无条件写入），属产品缺陷	@gaixianggeng	#749

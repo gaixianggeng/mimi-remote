@@ -237,6 +237,7 @@ has_ios_device_control=false
 has_tailcat_source=false
 has_ios_asc_control=false
 has_critical_mapping_control=false
+has_ios_test_inventory_control=false
 has_linear_polling_control=false
 has_agentd_restart_control=false
 has_development_cache_control=false
@@ -441,6 +442,12 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
+    # 新增、删除或改名测试都可能让 selector 静默落空或让测试类失去归属。
+    ios/MimiRemote/Tests/MimiRemoteTests/*|ios/MimiRemote/MimiRemote.xcodeproj/project.pbxproj|config/ios-tests/*|scripts/ios-test-inventory.py|scripts/check-ios-test-selectors.sh|scripts/test-ios-test-inventory.sh|scripts/test-ios-full-suite.sh|scripts/test-conversation-regressions.sh)
+      has_ios_test_inventory_control=true
+      ;;
+  esac
+  case "$path" in
     scripts/check-linear-polling-safety.sh|scripts/install-linear-poll-guard.sh|config/automations/*)
       has_linear_polling_control=true
       ;;
@@ -605,6 +612,9 @@ if [[ "$has_ios_asc_control" == true ]]; then
 fi
 if [[ "$has_critical_mapping_control" == true && "$has_gate_control" == false && "$mode" != "full" && "$has_repository_security_control" == false ]]; then
   add_check "关键用户链路 selector 变化执行静态映射自检" "bash ./scripts/check-critical-regressions.sh"
+fi
+if [[ "$has_ios_test_inventory_control" == true && "$has_gate_control" == false && "$mode" != "full" && "$has_repository_security_control" == false ]]; then
+  add_check "iOS 测试类、selector、每晚集合与隔离清单保持一致" "bash ./scripts/test-ios-test-inventory.sh && bash ./scripts/check-ios-test-selectors.sh"
 fi
 if [[ "$has_linear_polling_control" == true ]]; then
   add_check "Linear 自动化变化保持本地 guard 和单轮调用约束" "bash ./scripts/check-linear-polling-safety.sh"
