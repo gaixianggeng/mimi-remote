@@ -14,6 +14,7 @@ ConversationDataFlowTests
 # 视觉快照：基线与 Xcode / Simulator 版本绑定，只在固定环境比对。
 ConnectionSettingsSnapshotTests
 ConversationSnapshotTests
+FloatingSidebarHeaderSnapshotTests
 InAppNoticePlacementSnapshotTests
 OperationFeedbackSnapshotTests
 SettingsChoiceRowSnapshotTests
