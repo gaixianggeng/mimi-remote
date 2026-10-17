@@ -211,6 +211,18 @@ grep -Fq 'bash ./scripts/check-ios-test-selectors.sh' .github/workflows/ios-ci.y
   || fail "iOS CI 没有在回归前执行 selector 完整性检查。"
 grep -Fq 'ios-test-inventory.py" skip-args' "$runner" \
   || fail "iOS runner 没有跳过隔离清单中的用例。"
+full_workflow=".github/workflows/ios-full-tests.yml"
+[[ -f "$full_workflow" ]] || fail "缺少每晚全量 XCTest 工作流 ${full_workflow}。"
+grep -Fq -- '- cron:' "$full_workflow" || fail "每晚全量 XCTest 工作流缺少 schedule。"
+grep -Fq 'bash ./scripts/test-ios-full-suite.sh' "$full_workflow" \
+  || fail "每晚全量 XCTest 工作流没有调用 test-ios-full-suite.sh。"
+grep -Fq 'runs-on: macos-26' "$full_workflow" \
+  || fail "每晚全量 XCTest 必须与 PR 回归使用同一 macOS runner 镜像。"
+# 快照基线以每晚任务的 Simulator 为准；它与 PR 回归的 runtime 一旦分叉，两边会互相判红。
+ci_runtime="$(grep -o 'com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]*' .github/workflows/ios-ci.yml | sort -u)"
+full_runtime="$(grep -o 'com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]*' "$full_workflow" | sort -u)"
+[[ -n "$ci_runtime" && "$ci_runtime" == "$full_runtime" ]] \
+  || fail "每晚全量 XCTest 与 PR 回归必须使用同一个 Simulator runtime（当前 ${ci_runtime:-无} vs ${full_runtime:-无}）。"
 
 grep -Fq 'bash ./scripts/check-critical-regressions.sh' scripts/check-pr-gate.sh \
   || fail "PR Gate 自检没有调用关键链路映射检查。"

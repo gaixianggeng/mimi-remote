@@ -1,0 +1,83 @@
+name: iOS Full Tests
+
+on:
+  schedule:
+    # 每天北京时间 03:40 运行（UTC 19:40），与 02:30 的 Nightly Internal TestFlight 错开。
+    - cron: "40 19 * * *"
+  workflow_dispatch:
+  pull_request:
+    # 快照基线只认本工作流的环境；改动全量任务本身、测试归属/隔离清单或快照基线的 PR
+    # 都在同一环境完整验证一次。普通 PR 仍只跑 PR Gate 的 iOS 子集。
+    paths:
+      - ".github/workflows/ios-full-tests.yml"
+      - "scripts/test-ios-full-suite.sh"
+      - "scripts/ios-test-inventory.py"
+      - "config/ios-tests/**"
+      - "ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-full-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  full-xctest:
+    name: Full MimiRemoteTests
+    # 与 PR Gate 的 iOS 回归使用同一 runner 镜像与同一台 iOS 26.2 M5 Simulator，
+    # 仓库里的快照基线以这个环境为准。
+    runs-on: macos-26
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          clean: true
+
+      - name: Setup Go for Tailcat
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: experiments/tailcat/go.mod
+          cache-dependency-path: experiments/tailcat/go.sum
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Resolve fixed CI simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 必须与 ios-ci.yml 的 PR 回归保持同一 runtime（check-critical-regressions.sh 校验）。
+          simulator_id="$(xcrun simctl list devices available -j | ruby -rjson -e '
+            devices = JSON.parse(STDIN.read).fetch("devices").fetch("com.apple.CoreSimulator.SimRuntime.iOS-26-2", [])
+            device = devices.find { |item| item["isAvailable"] && item["name"] == "iPad Pro 13-inch (M5)" }
+            abort "Missing iPad Pro 13-inch (M5) on iOS 26.2" unless device
+            puts device.fetch("udid")
+          ')"
+          destination="$(IOS_TEST_DESTINATION="platform=iOS Simulator,id=$simulator_id" bash ./scripts/ios-dev.sh test-destination)"
+          echo "Resolved exact test target: $destination"
+          echo "IOS_TEST_DESTINATION=$destination" >> "$GITHUB_ENV"
+
+      - name: Run full MimiRemoteTests
+        # 全部类（含 13 个快照类）按类核对执行数；不匹配的快照就地重录并作为 artifact 上传，
+        # 对应用例仍判失败。重录图需逐张核对后再提交，见 docs/critical-user-journey-regressions.md。
+        run: >-
+          bash ./scripts/test-ios-full-suite.sh
+          --result-dir "$RUNNER_TEMP/ios-full-suite"
+          --record-failed-snapshots
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-full-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ios-full-suite/summary.md
+            ${{ runner.temp }}/ios-full-suite/tests.json
+            ${{ runner.temp }}/ios-full-suite/rerecorded-snapshots.txt
+            ${{ runner.temp }}/ios-full-suite/rerecorded-snapshots/
+          if-no-files-found: ignore
+          retention-days: 14

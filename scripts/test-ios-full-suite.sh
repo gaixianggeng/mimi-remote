@@ -7,7 +7,7 @@ cd "$ROOT_DIR"
 usage() {
   cat <<'EOF'
 用法：
-  bash ./scripts/test-ios-full-suite.sh [--result-dir <目录>]
+  bash ./scripts/test-ios-full-suite.sh [--result-dir <目录>] [--record-failed-snapshots]
 
 在固定的 iPad Pro 13-inch (M5) Simulator 上运行全量 MimiRemoteTests（含全部视觉快照类），
 只对 config/ios-tests/quarantine.tsv 中登记的单个用例传 -skip-testing。跑完后按类核对
@@ -15,16 +15,26 @@ usage() {
 
 结果目录保存 full.xcresult、tests.json 与按类统计的 summary.md；默认放在临时目录。
 在 GitHub Actions 中会把统计表追加到 $GITHUB_STEP_SUMMARY。
+
+--record-failed-snapshots 让不匹配的快照就地重录，并把重录的 PNG 按仓库相对路径复制到
+结果目录的 rerecorded-snapshots/；对应用例仍记为失败，退出码不变。快照基线只认每晚任务
+的环境（GitHub 托管 macos-26 + iOS 26.2 的 M5 Simulator），本机不同版本的 Xcode 不要用它
+重录。
 EOF
 }
 
 result_dir=""
+record_failed_snapshots=false
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --result-dir)
       [[ "$#" -ge 2 ]] || { echo "--result-dir 缺少目录。" >&2; exit 2; }
       result_dir="$2"
       shift 2
+      ;;
+    --record-failed-snapshots)
+      record_failed_snapshots=true
+      shift
       ;;
     -h|--help)
       usage
@@ -59,6 +69,16 @@ while IFS= read -r skip_arg; do
 done < <(python3 ./scripts/ios-test-inventory.py skip-args)
 echo "==> iOS full XCTest（隔离 ${#skip_args[@]} 个用例）"
 
+snapshot_dir="ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__"
+if [[ "$record_failed_snapshots" == true ]]; then
+  # xcodebuild 把 TEST_RUNNER_ 前缀的变量去掉前缀后传给测试进程；SnapshotTesting 只重写不匹配的基线。
+  export TEST_RUNNER_SNAPSHOT_TESTING_RECORD=failed
+  [[ -z "$(git status --porcelain -- "$snapshot_dir")" ]] || {
+    echo "${snapshot_dir} 有未提交改动，重录前请先清理，避免混入重录结果。" >&2
+    exit 2
+  }
+fi
+
 test_status=0
 bash ./scripts/ios-dev.sh test \
   -quiet \
@@ -85,6 +105,27 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" && -f "$result_dir/summary.md" ]]; then
     echo
     cat "$result_dir/summary.md"
   } >> "$GITHUB_STEP_SUMMARY"
+fi
+
+if [[ "$record_failed_snapshots" == true ]]; then
+  rerecorded_list="$result_dir/rerecorded-snapshots.txt"
+  git status --porcelain --untracked-files=all -- "$snapshot_dir" \
+    | sed -E 's/^.{3}//' > "$rerecorded_list"
+  while IFS= read -r snapshot_path; do
+    [[ -n "$snapshot_path" ]] || continue
+    mkdir -p "$result_dir/rerecorded-snapshots/$(dirname "$snapshot_path")"
+    cp "$snapshot_path" "$result_dir/rerecorded-snapshots/$snapshot_path"
+  done < "$rerecorded_list"
+  rerecorded_count="$(grep -c . "$rerecorded_list" || true)"
+  echo "重录快照：${rerecorded_count} 张（清单：${rerecorded_list}）"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      echo
+      echo "## 重录快照（${rerecorded_count} 张，需逐张核对后再提交）"
+      echo
+      sed 's/^/- /' "$rerecorded_list"
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
 fi
 
 if [[ "$test_status" -ne 0 ]]; then
