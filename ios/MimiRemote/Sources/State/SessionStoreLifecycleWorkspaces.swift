@@ -581,7 +581,8 @@ extension SessionStore {
             recordCarStatusHostObservation(at: sessionListNow())
             setProjectsIfChanged(fetchedProjects)
             reloadRecentWorkspaces()
-            loadedWorkspaceCatalogScope = appStore.activeHostScope
+            let catalogScope = appStore.activeHostScope
+            if loadedWorkspaceCatalogScope != catalogScope { loadedWorkspaceCatalogScope = catalogScope }
             if let requestedProjectID,
                sidebarProjectsByID[requestedProjectID] == nil,
                let project = projectsByID[requestedProjectID] {
