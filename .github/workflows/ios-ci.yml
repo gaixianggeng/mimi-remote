@@ -39,6 +39,11 @@ on:
       - "scripts/testdata/tailcat-mobile/**"
       - "scripts/test-conversation-regressions.sh"
       - "scripts/check-critical-regressions.sh"
+      - "scripts/ios-test-inventory.py"
+      - "scripts/check-ios-test-selectors.sh"
+      - "scripts/test-ios-test-inventory.sh"
+      - "scripts/test-ios-full-suite.sh"
+      - "config/ios-tests/**"
       - "scripts/test-ios-localization-smoke.sh"
       - "scripts/check-ios-localization.sh"
       - "scripts/test-check-ios-localization.sh"
@@ -185,6 +190,13 @@ jobs:
 
       - name: Check source size
         run: bash ./scripts/check-source-size.sh
+
+      - name: Check iOS test selectors
+        # xcodebuild 对失效的类名或方法 selector 静默执行 0 个；先静态拦住，
+        # 并要求每个测试类归属 PR 集合或每晚集合（#741）。
+        run: |
+          bash ./scripts/test-ios-test-inventory.sh
+          bash ./scripts/check-ios-test-selectors.sh
 
       - name: Run core regressions
         # 根模块 Go 与共享契约由独立 Go CI 覆盖；这里已单独验证 Tailcat module。

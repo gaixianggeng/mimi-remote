@@ -1402,13 +1402,17 @@ extension ConversationDataFlowTests {
         store.takeOverSession(running)
         await store.selectSession(running)
         XCTAssertEqual(sockets.count, 1)
+        // #521 起选中运行中会话时先带 replay 接入，由随后的权威历史去重；
+        // 这里只约束前台恢复之后新发起的连接。
+        let connectCountsBeforeForeground = sockets.map(\.replayBufferedEventsByConnect.count)
 
         await store.refreshAll(autoAttach: true)
 
         XCTAssertGreaterThanOrEqual(sockets.count, 1)
-        for socket in sockets {
+        for (index, socket) in sockets.enumerated() {
+            let earlierConnects = index < connectCountsBeforeForeground.count ? connectCountsBeforeForeground[index] : 0
             XCTAssertFalse(
-                socket.replayBufferedEventsByConnect.contains(true),
+                socket.replayBufferedEventsByConnect.dropFirst(earlierConnects).contains(true),
                 "前台恢复重连不应要求完整回放 backlog"
             )
         }
