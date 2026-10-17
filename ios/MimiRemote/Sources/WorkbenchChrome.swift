@@ -924,22 +924,26 @@ struct WorkbenchSidebarContainer<
     @ViewBuilder
     var body: some View {
         if usesFloatingSurface {
-            content
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    floatingHeader
+            // 顶部设备入口与列表上下排开，不能用 safeAreaInset 让列表滚进它后方：那块区域没有底色、
+            // 也没有滚动边缘处理，滚到底后分组标题和行会与「当前电脑」、用量圆环叠字（#754）。
+            // 列表视口从标题区下沿开始，静止时首行位置不变；上滚后由列表上沿的渐隐收边。
+            VStack(spacing: 0) {
+                floatingHeader
+                content
+                    .workbenchSidebarTopScrollEdgeFade(color: tokens.sidebarSurfaceBackground)
+            }
+            .background(floatingSurfaceBackground)
+            .clipShape(sidebarShape)
+            .overlay {
+                // 普通对比度依靠内容表面与工作区底色表达层级，避免描边或模糊阴影制造第三层颜色。
+                // Increased Contrast 仍保留明确边界，不能只依赖轻微色差。
+                if colorSchemeContrast == .increased {
+                    sidebarShape.stroke(tokens.border, lineWidth: 1)
                 }
-                .background(floatingSurfaceBackground)
-                .clipShape(sidebarShape)
-                .overlay {
-                    // 普通对比度依靠内容表面与工作区底色表达层级，避免描边或模糊阴影制造第三层颜色。
-                    // Increased Contrast 仍保留明确边界，不能只依赖轻微色差。
-                    if colorSchemeContrast == .increased {
-                        sidebarShape.stroke(tokens.border, lineWidth: 1)
-                    }
-                }
-                .padding(WorkbenchSidebarSurfaceMetrics.outerInset)
-                // 浮层外围保持透明，直接透出同一块工作区背景；不能再绘制独立 sidebar column 底板。
-                .toolbar(.hidden, for: .navigationBar)
+            }
+            .padding(WorkbenchSidebarSurfaceMetrics.outerInset)
+            // 浮层外围保持透明，直接透出同一块工作区背景；不能再绘制独立 sidebar column 底板。
+            .toolbar(.hidden, for: .navigationBar)
         } else {
             content
                 .background(tokens.sidebarBackground.ignoresSafeArea())
