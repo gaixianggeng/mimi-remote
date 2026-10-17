@@ -160,6 +160,9 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexContinuationUsesIndexWithoutRepairingFirstPageRows \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexGlobalDiscoveryUsesIndexAcrossPages \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexGlobalDiscoveryFallsBackWhenIndexUnsupported \
+  -only-testing:MimiRemoteTests/SessionStorePublishBudgetTests \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testGlobalLibraryPublishesAllRuntimeFirstPagesBeforeBackfill \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testGlobalLibraryFirstPageFailureDoesNotBlockOtherRuntimeFirstPages \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testScanFallbackContinuationKeepsItsQueryModeForDirectoryAndGlobalLists \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testGlobalIndexRepairsKnownMissingSessionsAcrossFilteredAndCompletePages \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerSessionRuntimeReconnectsAfterTransportReceiveFailure \
