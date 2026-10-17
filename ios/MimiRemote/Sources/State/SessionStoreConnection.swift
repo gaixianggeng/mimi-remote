@@ -2815,7 +2815,9 @@ extension SessionStore {
         }
         // 来源要先于去重更新：同一条文案可能先由探测写入、随后由用户操作再次触发，
         // 此时它已经是用户在等的结果，不能继续按探测失败静默处理。
-        errorMessageOrigin = userFacingValue == nil ? .userAction : origin
+        // 只在值变化时写入，避免重复刷新清空错误时空发布 objectWillChange。
+        let nextOrigin: SessionErrorOrigin = userFacingValue == nil ? .userAction : origin
+        if errorMessageOrigin != nextOrigin { errorMessageOrigin = nextOrigin }
         let nextPresentation = resolvedErrorPresentation(
             for: userFacingValue, isActiveWriterConflict: activeWriterConflict, explicit: presentation
         )
