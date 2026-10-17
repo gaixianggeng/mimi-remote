@@ -76,6 +76,8 @@ echo "==> iOS conversation regressions"
 # - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
 # - NotificationTitleCacheTests、NotificationContentRewriterTests：会话标题的 App Group 本地缓存，
 #   以及通知扩展只用该缓存在设备上改写锁屏文案、缓存缺失时退回通用文案。
+# - WorkbenchLayoutModeCommitTests：iPad 旋转跨 860pt 时换树等系统尺寸过渡结束，
+#   以及输入框焦点、面板跨换树交接（#755）。
 #
 # 每个测试类必须整类出现在下面的 selector 里，或登记在 config/ios-tests/nightly-classes.txt
 # 由每晚全量任务执行；scripts/check-ios-test-selectors.sh 校验类名、方法与归属。
@@ -205,6 +207,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testPagedHistoryRetainsInvisibleTurnStatesForCompletionRecovery \
   -only-testing:MimiRemoteTests/NotificationTitleCacheTests \
   -only-testing:MimiRemoteTests/NotificationContentRewriterTests \
+  -only-testing:MimiRemoteTests/WorkbenchLayoutModeCommitTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreReplaysDirectAppServerEventStreamFixture \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreSendsUserInputAnswersThroughExistingSocket \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRunningTurnLifecycleKeepsEchoAndFinalAssistantStable \

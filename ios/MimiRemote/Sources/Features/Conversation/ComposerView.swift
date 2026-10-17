@@ -25,6 +25,7 @@ struct ComposerView: View {
     @Environment(\.dynamicTypeSize) var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     @Environment(\.accessibilityReduceTransparency) var reduceTransparency
+    @Environment(\.composerLayoutHandoff) var composerLayoutHandoff
     @State var composerState = ComposerState()
     @State var activeComposerDraftScope = ComposerDraftScopeKey.none
     @State var composerTextExternalRevision = 0
@@ -368,6 +369,7 @@ struct ComposerView: View {
             restorePendingUserInputFormStateFromCache()
             synchronizePendingUserInputPresentation(previous: nil, current: pendingUserInputSelectionIdentity)
             clampModelSelectionToSelectedSessionRuntime()
+            attachLayoutHandoff()
         }
         .task {
             await prepareComposer()
@@ -376,6 +378,7 @@ struct ComposerView: View {
             if sessionStore.activeComposerInstanceID == composerInstanceID {
                 sessionStore.activeComposerInstanceID = nil
             }
+            composerLayoutHandoff?.unregister(composerInstanceID)
             synchronizeComposerTextBeforeDraftScopeChange()
             sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
             sessionStore.saveComposerModelSelection(
