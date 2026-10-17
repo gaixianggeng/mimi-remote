@@ -6,7 +6,7 @@ import Combine
 /// 所有观察它的界面（包括没显示的 Tab）整体重算，所以这里约束发布次数，而不只是最终数据。
 @MainActor
 final class SessionStorePublishBudgetTests: XCTestCase {
-    func testControlledGlobalDiscoveryMergesAllPagesInSinglePublish() async {
+    func testControlledGlobalDiscoveryPublishesFirstPagesAndBackfillInTwoBatches() async {
         let project = makeProject(id: "proj_publish_budget")
         let codexPages: [String: SessionsPage] = [
             "": SessionsPage(
@@ -65,8 +65,8 @@ final class SessionStorePublishBudgetTests: XCTestCase {
         )
         XCTAssertEqual(
             sessionsPublishCount,
-            1,
-            "全局发现翻页期间不能逐页发布；每次发布都会让整个工作台重算一轮"
+            2,
+            "跨渠道首屏与补全各发布一次，不能让每个分页都触发整个工作台重算"
         )
     }
 
