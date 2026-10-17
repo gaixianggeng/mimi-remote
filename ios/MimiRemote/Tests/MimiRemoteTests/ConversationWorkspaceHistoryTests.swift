@@ -128,9 +128,7 @@ extension ConversationDataFlowTests {
             at: 2,
             with: HistoryTurnItemsPage(messages: [], itemIDs: [], continuation: nil)
         )
-        for _ in 0..<100 where store.historyItemEnrichmentBySessionID[session.id] != nil {
-            await Task.yield()
-        }
+        await waitForHistoryItemEnrichmentToFinish(in: store, sessionID: session.id)
 
         XCTAssertNil(store.historyItemEnrichmentBySessionID[session.id])
         XCTAssertEqual(store.historyLoadedQualityBySessionID[session.id], .full)

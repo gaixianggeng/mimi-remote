@@ -47,9 +47,7 @@ extension ConversationDataFlowTests {
             itemIDs: ["item-only"],
             continuation: nil
         ))
-        for _ in 0..<100 where store.historyItemEnrichmentBySessionID[sessionID] != nil {
-            await Task.yield()
-        }
+        await waitForHistoryItemEnrichmentToFinish(in: store, sessionID: sessionID)
 
         XCTAssertEqual(client.requestedItemContinuations.count, 1)
         XCTAssertEqual(conversationStore.messages(for: sessionID).map(\.content), ["唯一内容"])
@@ -122,11 +120,7 @@ extension ConversationDataFlowTests {
                 )
             )
         }
-        // 7 页依次合并；托管 runner 满载时 100 次 yield 不够（#741 实测只合并到 5 页），按条件等待并设上限。
-        let enrichmentDeadline = ContinuousClock.now + .seconds(5)
-        while store.historyItemEnrichmentBySessionID[sessionID] != nil, ContinuousClock.now < enrichmentDeadline {
-            try? await Task.sleep(for: .milliseconds(5))
-        }
+        await waitForHistoryItemEnrichmentToFinish(in: store, sessionID: sessionID)
 
         XCTAssertEqual(client.requestedItemContinuations.count, expectedRequestCount)
         let messages = conversationStore.messages(for: sessionID)
@@ -204,9 +198,7 @@ extension ConversationDataFlowTests {
             itemIDs: ["B"],
             continuation: initial
         ))
-        for _ in 0..<100 where store.historyItemEnrichmentBySessionID[sessionID] != nil {
-            await Task.yield()
-        }
+        await waitForHistoryItemEnrichmentToFinish(in: store, sessionID: sessionID)
 
         XCTAssertEqual(client.requestedItemContinuations.count, 2)
         XCTAssertEqual(conversationStore.messages(for: sessionID).map(\.content), ["A", "B"])
@@ -293,5 +285,19 @@ extension ConversationDataFlowTests {
 
         XCTAssertNil(store.historyPreviousCursorBySessionID[sessionID])
         XCTAssertFalse(store.historyHasMoreBeforeBySessionID[sessionID] == true)
+    }
+}
+
+/// 等历史 Item 补齐跑完。按条件轮询并设上限，不按 yield 次数计：托管 macOS runner 跑全量时
+/// 100 次 `Task.yield()` 不够合并完（#741 在 CI 实测只合并到一部分页）。条件满足即返回。
+@MainActor
+func waitForHistoryItemEnrichmentToFinish(
+    in store: SessionStore,
+    sessionID: String,
+    timeout: Duration = .seconds(5)
+) async {
+    let deadline = ContinuousClock.now + timeout
+    while store.historyItemEnrichmentBySessionID[sessionID] != nil, ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(5))
     }
 }
