@@ -5,6 +5,54 @@ import XCTest
 
 @MainActor
 final class MessageTextSelectionTests: XCTestCase {
+    func testLongHistoryAnswerKeepsCompleteTextAndReportsRenderingCost() {
+        for repetitions in [40, 320] {
+            let content = String(repeating: "## 一段较长的回复\n\n这里保留完整的说明、**重点**和[链接](https://example.com)，用于检查长回答的首次解析与布局。\n\n- 第一个步骤\n- 第二个步骤\n\n```swift\nlet message = \"完整内容 🌿\"\n```\n\n", count: repetitions) + "最终答案结束标记"
+            let start = ProcessInfo.processInfo.systemUptime
+            let blocks = MarkdownParser.shared.parse(content).blocks
+            let parsedAt = ProcessInfo.processInfo.systemUptime
+            let document = MessageTextDocument.markdown(blocks, style: style)
+            let builtAt = ProcessInfo.processInfo.systemUptime
+            let view = MessageTextView()
+            view.apply(document, style: style)
+            let size = view.measuredSize(width: 360, fillsWidth: true)
+            let laidOutAt = ProcessInfo.processInfo.systemUptime
+            XCTAssertTrue(document.text.string.hasSuffix("最终答案结束标记"))
+            XCTAssertEqual(document.codeBlocks.count, repetitions)
+            XCTAssertTrue(size.height.isFinite && size.height > 0)
+            print("History answer fixture: bytes=\(content.utf8.count), parse=\(parsedAt - start)s, document=\(builtAt - parsedAt)s, layout=\(laidOutAt - builtAt)s")
+        }
+    }
+
+    func testRepeatedContentKeepsSelectionAndStyleChangesStillRebuildText() throws {
+        let view = MessageTextView()
+        let content = MessageTextContent.markdown(MarkdownParser.shared.parse("正文 **重点** 与[链接](https://example.com)。").blocks)
+        view.apply(content: content, style: style)
+        let originalSize = view.measuredSize(width: 360, fillsWidth: true)
+        view.frame = CGRect(origin: .zero, size: originalSize)
+        let window = host(view)
+        defer { view.resignFirstResponder(); window.isHidden = true }
+        view.beginSelection()
+        let selection = NSRange(location: 0, length: 2)
+        view.selectedRange = selection
+        view.apply(content: content, style: style)
+        XCTAssertEqual(view.selectedRange, selection)
+        XCTAssertTrue(view.isSelectingMessageText)
+        XCTAssertEqual(view.measuredSize(width: 360, fillsWidth: true), originalSize)
+        let originalFont = try XCTUnwrap(view.textStorage.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)
+
+        var enlarged = MessageTextStyle(markdown: .make(role: .assistant, colorScheme: .dark, fontScale: 1.4))
+        enlarged.fontPreset = .serif
+        view.apply(content: content, style: enlarged)
+        let enlargedFont = try XCTUnwrap(view.textStorage.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)
+        XCTAssertGreaterThan(enlargedFont.pointSize, originalFont.pointSize)
+        XCTAssertNotEqual(enlargedFont.fontDescriptor, originalFont.fontDescriptor)
+        XCTAssertTrue(view.textStorage.string.contains("重点"))
+        view.apply(content: .plain("新会话的正文"), style: enlarged)
+        XCTAssertEqual(view.textStorage.string, "新会话的正文", "复用原生视图时不能显示前一条消息")
+        XCTAssertFalse(view.isSelectingMessageText)
+    }
+
     private var style: MessageTextStyle {
         MessageTextStyle(markdown: .make(role: .assistant, colorScheme: .light))
     }

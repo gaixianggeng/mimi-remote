@@ -11,7 +11,7 @@ struct MessageMarkdownBody: View {
         VStack(alignment: .leading, spacing: style.blockSpacing) {
             ForEach(segments) { segment in
                 if segment.isText {
-                    MessageSelectableText(document: .markdown(segment.blocks, style: textStyle), style: textStyle, fillsWidth: fillsWidth)
+                    MessageSelectableText(content: .markdown(segment.blocks), style: textStyle, fillsWidth: fillsWidth)
                 } else if let block = segment.blocks.first {
                     MarkdownBlockView(block: block, style: style, selectable: true)
                 }
@@ -47,7 +47,7 @@ struct MessagePlainText: View {
 
     var body: some View {
         let textStyle = MessageTextStyle(markdown: style, fontPreset: themeStore.uiFontPreset, codeFontPreset: themeStore.codeFontPreset)
-        MessageSelectableText(document: .plain(text, style: textStyle), style: textStyle, fillsWidth: fillsWidth)
+        MessageSelectableText(content: .plain(text), style: textStyle, fillsWidth: fillsWidth)
     }
 }
 
