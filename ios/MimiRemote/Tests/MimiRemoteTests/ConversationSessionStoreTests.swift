@@ -4389,7 +4389,8 @@ extension ConversationDataFlowTests {
         store.sessionSearchQuery = "旧关键词"
         try await Task.sleep(nanoseconds: 5_000_000)
         store.sessionSearchQuery = "needle"
-        for _ in 0..<100 where client.requestedThreadSearchQueries.isEmpty {
+        // 请求先记录、结果后合并；托管 runner 满载时两者之间有可见间隔（#741），所以等结果真正进列表。
+        for _ in 0..<500 where store.sessionLibrarySessions.map(\.id) != [remote.id] {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
 
