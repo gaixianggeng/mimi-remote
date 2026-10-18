@@ -9,8 +9,16 @@ import { isHolderWorking, liveThreadStatus, ownerSummary, type SessionHolder } f
 import { USER_AGENT } from "../version.ts";
 import { logger } from "../util/logging.ts";
 
-/** 旧 bridge 在 Thread 上附带的扩展字段，iOS 与 gateway 依赖它判断能否直接发送。 */
-export type AdapterThread = Thread & { canAcceptDirectInput: boolean; claudeOwner?: Record<string, unknown> };
+/**
+ * 旧 bridge 在 Thread 上附带的扩展字段，iOS 与 gateway 依赖它判断能否直接发送。
+ * `spawnedFromThreadId` 是 Claude 桌面版"主会话派生会话"的父会话 ID，只用于列表分组。
+ * 不复用 `parentThreadId`：协议里它专指子 Agent，网关会据此把会话强制成只读。
+ */
+export type AdapterThread = Thread & {
+  canAcceptDirectInput: boolean;
+  claudeOwner?: Record<string, unknown>;
+  spawnedFromThreadId?: string;
+};
 
 export interface LiveState {
   canAcceptDirectInput: boolean;
@@ -54,6 +62,7 @@ export function toThread(
     turns,
     canAcceptDirectInput: live.canAcceptDirectInput,
     ...(live.claudeOwner ? { claudeOwner: live.claudeOwner } : {}),
+    ...(record.spawnedFromId ? { spawnedFromThreadId: record.spawnedFromId } : {}),
   };
 }
 

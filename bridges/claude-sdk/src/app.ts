@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { Catalog, HistoryStore } from "./claude/catalog.ts";
 import { ClaudeCodeVersionGate, type ClaudeCodeProbe } from "./claude/claudeCode.ts";
+import { DesktopSpawnIndex } from "./claude/desktopSpawns.ts";
 import { legacyIndexPath, migrateLegacyNames, readLegacyIndex } from "./claude/legacy.ts";
 import { Overlay } from "./claude/overlay.ts";
 import { sdkSessions, type ClaudeSessions } from "./claude/sdk.ts";
@@ -95,7 +96,8 @@ export function createApp(options: AppOptions): App {
   const directories = new WorkingDirectories();
   const legacyIndex = legacyIndexPath();
   const overlay = new Overlay(path.join(stateDir, "overlay.json"), legacyIndex);
-  const catalog = new Catalog({ sessions, transcripts, activity, directories, overlay });
+  const desktopSpawns = new DesktopSpawnIndex();
+  const catalog = new Catalog({ sessions, transcripts, activity, directories, overlay, desktopSpawns });
   const history = new HistoryStore({ sessions, transcripts });
   const claudeExecutable = options.claudeExecutable ?? defaultClaudeExecutable;
   const manager = new ThreadManager({
