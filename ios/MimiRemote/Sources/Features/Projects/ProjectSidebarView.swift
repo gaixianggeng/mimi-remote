@@ -1485,6 +1485,7 @@ private struct ProjectSessionRows: View {
                     Task { await sessionStore.selectSession(session) }
                 }
                 .sessionRowActions(session)
+                .sessionHierarchy(session, store: sessionStore, leadingInset: 10)
                 .padding(.leading, 30)
                 .sidebarListRow()
         }

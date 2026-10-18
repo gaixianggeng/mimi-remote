@@ -305,6 +305,16 @@ extension SessionStore {
         sessionWorkspaceIDs = nil
         setExpandedProjectIDs([mimiDemo.id])
         replaceSessionsIfChanged(with: seededSessions, projectID: nil)
+        if ProcessInfo.processInfo.arguments.contains("--debug-seed-hierarchy-ui") {
+            // 只为父子列表的点击回归注入内存关系；不创建真实子任务或修改普通样例。
+            contextStore.upsert(SessionContextSnapshot(
+                sessionID: selectedSessionID,
+                subagents: [
+                    SessionContextSubagent(id: "debug-child-layout", nickname: L10n.text("ui.check_connection_recovery_test"), status: "completed"),
+                    SessionContextSubagent(id: "debug-child-review", nickname: L10n.text("ui.review_goals"), status: "running")
+                ]
+            ), fallbackSessionID: selectedSessionID)
+        }
         if appStore.shouldSeedDebugHistoryUnreadUI,
            var unreadCandidate = seededSessions.first(where: { $0.id == historySessionID }) {
             // 先让未选中的历史会话经历一次“运行中 → 新完成”，以复用生产判定链路。

@@ -331,6 +331,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 )
                 .sessionRowActions(session)
                 .accessibilityIdentifier("workspace.session.\(session.id)")
+                .sessionHierarchy(session, store: sessionStore, leadingInset: rowDensity.horizontalPadding)
             }
 
             // 加载入口只跟在最后一段的末尾；12 小时边界存在时自然落在旧会话那一段底部。

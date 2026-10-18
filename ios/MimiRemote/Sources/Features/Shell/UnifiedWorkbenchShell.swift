@@ -826,7 +826,7 @@ struct UnifiedWorkbenchShell: View {
             }
         }
         .sessionRowActions(session)
-        .sessionRowSwipeActions(session)
+        .sessionHierarchy(session, store: sessionStore, leadingInset: 36, showsSwipeActions: true)
         .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)

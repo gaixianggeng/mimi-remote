@@ -907,7 +907,7 @@ struct SessionListView: View {
             )
             .accessibilityIdentifier("sessions.row.\(session.id)")
             .sessionRowActions(session)
-            .sessionRowSwipeActions(session)
+            .sessionHierarchy(session, store: sessionStore, leadingInset: rowDensity.horizontalPadding, showsSwipeActions: true)
             .listRowInsets(
                 .init(
                     top: 0,
