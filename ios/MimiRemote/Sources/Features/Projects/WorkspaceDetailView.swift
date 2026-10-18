@@ -107,11 +107,15 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
-        // 分组只算一次，列表按状态渲染分段。
+        // 分组只算一次，列表按状态渲染分段。派生家族先在整份列表上分好，再随领头成员落段，
+        // 运行中的子会话因此和已完成的父会话留在同一段里。
         let grouped = Dictionary(grouping: recentSessions) { session in
             WorkspaceSessionGroup.of(session)
         }
-        let populatedGroups = WorkspaceSessionGroup.orderedPopulatedGroups(from: Set(grouped.keys))
+        let sections = SessionHierarchy.sectionedFamilies(
+            WorkspaceSessionGroup.orderedPopulatedGroups(from: Set(grouped.keys))
+                .map { (key: $0, sessions: grouped[$0] ?? []) }
+        )
 
         return VStack(alignment: .leading, spacing: 8) {
             if !showsInlineRuntimePicker {
@@ -143,8 +147,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     .frame(maxWidth: .infinity, minHeight: 150)
             } else {
                 groupedSessionSections(
-                    populatedGroups: populatedGroups,
-                    grouped: grouped,
+                    sections: sections,
                     rowDensity: rowDensity,
                     tokens: tokens
                 )
@@ -157,33 +160,34 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     /// 分段本身取代了原来那条“运行中 · 刚刚活跃”摘要——它只描述第一条，却读起来像在描述整个列表。
     @ViewBuilder
     private func groupedSessionSections(
-        populatedGroups: [WorkspaceSessionGroup],
-        grouped: [WorkspaceSessionGroup: [AgentSession]],
+        sections: [SessionFamilySection<WorkspaceSessionGroup>],
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
         // 给唯一的一个分组加标题是纯噪声：窄屏由筛选行充当它的标题，宽屏由胶囊行承担身份。
         // 出现「需要处理 / 正在运行」等多个分段时，标题才真正在区分内容。
-        let showsSectionHeaders = populatedGroups.count > 1
+        let showsSectionHeaders = sections.count > 1
         let identityFallback = SessionListPresentation.workspaceIdentityFallback(among: recentSessions)
 
         VStack(alignment: .leading, spacing: WorkspaceSessionRowMetrics.sectionBoundarySpacing) {
-            ForEach(populatedGroups, id: \.self) { group in
-                let sessions = grouped[group] ?? []
+            ForEach(sections) { section in
+                let group = section.key
                 VStack(alignment: .leading, spacing: WorkspaceSessionRowMetrics.sectionHeaderBottomSpacing) {
                     if showsSectionHeaders {
+                        // 计数只数这个状态本身的会话；随家族一起带进来的父子不改变它的含义。
                         sectionHeader(
                             group,
-                            count: sessions.count,
+                            count: section.families.flatMap(\.members)
+                                .filter { WorkspaceSessionGroup.of($0) == group }.count,
                             rowDensity: rowDensity,
                             tokens: tokens
                         )
                     }
                     sessionGroupBody(
                         group,
-                        sessions: sessions,
+                        families: section.families,
                         identityFallback: identityFallback,
-                        showsLoadMore: group == populatedGroups.last,
+                        showsLoadMore: group == sections.last?.key,
                         rowDensity: rowDensity,
                         tokens: tokens
                     )
@@ -213,14 +217,13 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     @ViewBuilder
     private func sessionGroupBody(
         _ group: WorkspaceSessionGroup,
-        sessions: [AgentSession],
+        families: [SessionFamily],
         identityFallback: SessionIndexRowIdentityFallback,
         showsLoadMore: Bool,
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
-        // 先分好派生家族，再按家族里最近活动的成员判断 12 小时边界，父子不会被拆到边界两侧。
-        let families = SessionHierarchy.families(sessions)
+        // 按家族里最近活动的成员判断 12 小时边界，父子不会被拆到边界两侧。
         let firstStaleIndex = group == .recent
             ? WorkspaceSessionAgeBoundary.firstStaleIndex(
                 in: families.map(\.leader),

@@ -9,6 +9,8 @@ struct SessionFamily: Identifiable, Equatable {
     let leader: AgentSession
 
     var id: SessionID { root.id }
+
+    var members: [AgentSession] { [root] + children }
 }
 
 /// 列表里实际渲染的一行。
@@ -123,6 +125,14 @@ enum SessionHierarchy {
     }
 }
 
+/// 分段列表里的一段家族；`key` 是调用方自己的分段标识。
+struct SessionFamilySection<Key: Hashable>: Identifiable {
+    let key: Key
+    let families: [SessionFamily]
+
+    var id: Key { key }
+}
+
 /// 按日期分段的历史列表里的一段家族。
 struct SessionHistoryFamilyGroup: Identifiable, Equatable {
     let bucket: SessionHistoryDateBucket
@@ -132,6 +142,28 @@ struct SessionHistoryFamilyGroup: Identifiable, Equatable {
 }
 
 extension SessionHierarchy {
+    /// 分段列表（需要处理 / 进行中 / 置顶 / 最近等）先在整份列表上分好家族，再按领头成员所在的段落位。
+    /// 先分段再分家族的话，正在运行的子会话会和已完成的父会话拆到两段，父行的收起也管不到它。
+    /// 领头成员是按段顺序最先出现的那条，所以家族只会整体前移到更靠前的段；成员全被带走的段直接省略。
+    static func sectionedFamilies<Key: Hashable>(
+        _ sections: [(key: Key, sessions: [AgentSession])]
+    ) -> [SessionFamilySection<Key>] {
+        var sectionBySessionID: [SessionID: Key] = [:]
+        for section in sections {
+            for session in section.sessions where sectionBySessionID[session.id] == nil {
+                sectionBySessionID[session.id] = section.key
+            }
+        }
+        var familiesByKey: [Key: [SessionFamily]] = [:]
+        for family in families(sections.flatMap(\.sessions)) {
+            guard let key = sectionBySessionID[family.leader.id] else { continue }
+            familiesByKey[key, default: []].append(family)
+        }
+        return sections.compactMap { section in
+            familiesByKey[section.key].map { SessionFamilySection(key: section.key, families: $0) }
+        }
+    }
+
     /// 先在整段历史上分好家族，再按家族里最近活动的成员归入日期段。
     /// 若先分日期再分家族，今天派生的子会话会和昨天的父会话被拆到两段。
     static func historyFamilyGroups(
@@ -139,7 +171,14 @@ extension SessionHierarchy {
         now: Date = Date(),
         calendar: Calendar = .autoupdatingCurrent
     ) -> [SessionHistoryFamilyGroup] {
-        let families = families(sessions)
+        historyFamilyGroups(families: families(sessions), now: now, calendar: calendar)
+    }
+
+    static func historyFamilyGroups(
+        families: [SessionFamily],
+        now: Date = Date(),
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> [SessionHistoryFamilyGroup] {
         var familyByLeaderID: [SessionID: SessionFamily] = [:]
         for family in families {
             familyByLeaderID[family.leader.id] = family
@@ -154,5 +193,32 @@ extension SessionHierarchy {
                 families: group.sessions.compactMap { familyByLeaderID[$0.id] }
             )
         }
+    }
+}
+
+/// 会话页三类分段的家族视图：进行中、置顶、按日期分段的历史。
+struct SessionListFamilyPartition: Equatable {
+    let active: [SessionFamily]
+    let pinned: [SessionFamily]
+    let historyGroups: [SessionHistoryFamilyGroup]
+
+    init(_ partition: SessionListPartition, now: Date, calendar: Calendar) {
+        enum Section { case active, pinned, history }
+        let sectioned = SessionHierarchy.sectionedFamilies([
+            (key: Section.active, sessions: partition.active),
+            (key: Section.pinned, sessions: partition.pinned),
+            (key: Section.history, sessions: partition.history)
+        ])
+        func families(_ section: Section) -> [SessionFamily] {
+            sectioned.first { $0.key == section }?.families ?? []
+        }
+        active = families(.active)
+        pinned = families(.pinned)
+        historyGroups = SessionHierarchy.historyFamilyGroups(families: families(.history), now: now, calendar: calendar)
+    }
+
+    /// 屏幕上的家族顺序，供方向键导航使用。
+    var orderedFamilies: [SessionFamily] {
+        active + pinned + historyGroups.flatMap(\.families)
     }
 }

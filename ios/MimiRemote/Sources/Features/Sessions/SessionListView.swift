@@ -193,7 +193,7 @@ struct SessionListView: View {
         let visibleSessions = self.visibleSessions
         let dominantProject = SessionListPresentation.dominantIdentity(visibleSessions.map(\.project))
         let sessionPartition = makeSessionPartition(visibleSessions: visibleSessions)
-        let historyDateGroups = makeHistoryDateGroups(sessionPartition: sessionPartition)
+        let familyPartition = makeFamilyPartition(sessionPartition: sessionPartition)
         let lifecycleInput = makeLifecycleInput(visibleSessions: visibleSessions)
         let presentationState = makePresentationState(hasVisibleSessions: !visibleSessions.isEmpty)
         // 宽屏把搜索放进顶栏；紧凑导航和辅助功能字号使用 navigationBarDrawer
@@ -209,25 +209,25 @@ struct SessionListView: View {
             }
 
             if presentationState == .content {
-                if !sessionPartition.active.isEmpty {
+                if !familyPartition.active.isEmpty {
                     sessionSection(
                         title: L10n.text("ui.in_progress"),
-                        families: SessionHierarchy.families(sessionPartition.active),
+                        families: familyPartition.active,
                         dominantProject: dominantProject,
                         tokens: tokens
                     )
                 }
 
-                if !sessionPartition.pinned.isEmpty {
+                if !familyPartition.pinned.isEmpty {
                     sessionSection(
                         title: L10n.text("ui.pinned"),
-                        families: SessionHierarchy.families(sessionPartition.pinned),
+                        families: familyPartition.pinned,
                         dominantProject: dominantProject,
                         tokens: tokens
                     )
                 }
 
-                ForEach(historyDateGroups) { group in
+                ForEach(familyPartition.historyGroups) { group in
                     sessionSection(
                         title: dateBucketTitle(group.bucket),
                         families: group.families,
@@ -615,14 +615,11 @@ struct SessionListView: View {
         )
     }
 
-    private func makeHistoryDateGroups(
+    /// 先在整份可见列表上分好派生家族，再按领头成员落到进行中 / 置顶 / 日期段。
+    private func makeFamilyPartition(
         sessionPartition: SessionListPartition
-    ) -> [SessionHistoryFamilyGroup] {
-        SessionHierarchy.historyFamilyGroups(
-            sessionPartition.history,
-            now: Date(),
-            calendar: .autoupdatingCurrent
-        )
+    ) -> SessionListFamilyPartition {
+        SessionListFamilyPartition(sessionPartition, now: Date(), calendar: .autoupdatingCurrent)
     }
 
     /// 密度以实测宽度为准，与工作区使用同一条规则。
@@ -936,13 +933,9 @@ struct SessionListView: View {
         // 键盘事件发生在 body 求值之外，按当前筛选快照重新计算一次即可；正文渲染仍复用
         // body 内的单份投影，避免每个 Section 重复过滤和排序。
         let partition = makeSessionPartition(visibleSessions: visibleSessions)
-        let dateGroups = makeHistoryDateGroups(sessionPartition: partition)
         // 方向键顺序与屏幕上的行一致：收起的父会话跳过它的子会话。
-        let families = SessionHierarchy.families(partition.active)
-            + SessionHierarchy.families(partition.pinned)
-            + dateGroups.flatMap(\.families)
         return SessionHierarchy.rows(
-            families,
+            makeFamilyPartition(sessionPartition: partition).orderedFamilies,
             collapsedRootIDs: sessionStore.sessionHierarchyExpansion.collapsedRootIDs
         ).map(\.session)
     }

@@ -100,6 +100,44 @@ final class SessionHierarchyPresentationTests: XCTestCase {
         XCTAssertEqual(groups.last?.families.map(\.root.id), ["old"])
     }
 
+    func testActiveChildPullsItsFamilyIntoTheEarlierSection() {
+        // 子会话在跑、父会话已完成：整个家族随领头的子会话进入「进行中」，父行的收起也能管到它。
+        let sections = SessionHierarchy.sectionedFamilies([
+            (key: "active", sessions: [session("child", spawnedFrom: "root")]),
+            (key: "history", sessions: [session("root"), session("other")])
+        ])
+        XCTAssertEqual(sections.map(\.key), ["active", "history"])
+        XCTAssertEqual(sections[0].families.map(\.root.id), ["root"])
+        XCTAssertEqual(sections[0].families.first?.children.map(\.id), ["child"])
+        XCTAssertEqual(sections[1].families.map(\.root.id), ["other"])
+
+        // 成员全被带走的段不再出现，避免留下空标题。
+        let emptied = SessionHierarchy.sectionedFamilies([
+            (key: "active", sessions: [session("child", spawnedFrom: "root")]),
+            (key: "history", sessions: [session("root")])
+        ])
+        XCTAssertEqual(emptied.map(\.key), ["active"])
+    }
+
+    func testSessionListPartitionKeepsFamiliesTogetherAcrossLifecycleSections() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Shanghai"))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 18, hour: 12)))
+        let partition = SessionListFamilyPartition(
+            SessionListPartition(
+                active: [session("child", spawnedFrom: "root")],
+                pinned: [],
+                history: [session("root", recencyAt: now), session("other", recencyAt: now)]
+            ),
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(partition.active.map(\.root.id), ["root"])
+        XCTAssertEqual(partition.active.first?.children.map(\.id), ["child"])
+        XCTAssertEqual(partition.historyGroups.flatMap(\.families).map(\.root.id), ["other"])
+        XCTAssertEqual(partition.orderedFamilies.map(\.root.id), ["root", "other"])
+    }
+
     func testThreadListFieldProjectsIntoTheSession() async throws {
         let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
         let project = AgentProject(id: "repo", name: "Repo", path: "/tmp/repo")
