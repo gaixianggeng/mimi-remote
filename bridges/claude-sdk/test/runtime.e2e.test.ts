@@ -186,6 +186,18 @@ describe("turn lifecycle", () => {
     expect(items[1].content).toEqual(["considering options"]);
     expect(client.frames.some((frame: any) => frame.method === "item/reasoning/textDelta")).toBe(true);
   });
+
+  test("a skill attached after the text reaches Claude as the leading command", async () => {
+    const client = new Client();
+    const threadId = await newThread(client);
+    const input = [...text("summarize the change"), { type: "skill", name: "review", path: path.join(project, ".claude", "skills", "review", "SKILL.md") }];
+    const { turn } = await client.call("turn/start", { threadId, input });
+    await client.turnCompleted(turn.id);
+    const items = client.frames.filter((frame: any) => frame.method === "item/completed").map((frame: any) => frame.params.item);
+    // 实时回显保留客户端的输入；CLI 收到的消息以 `/名称` 开头才会展开技能。
+    expect(items[0].content).toEqual(input);
+    expect(items.at(-1).text).toBe("echo[fake-a]: /review\nsummarize the change");
+  });
 });
 
 describe("loaded threads", () => {
