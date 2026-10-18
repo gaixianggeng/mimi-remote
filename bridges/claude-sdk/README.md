@@ -97,7 +97,7 @@ agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置�
 
 受限子进程不加载 user / project / local 设置，不启动本地 MCP；这些设置内的 hook、额外目录、allow rule 与 CLAUDE.md 不会自动加载。适配器不修改这些文件。完全访问的行为保持不变。
 
-受限档位的用户技能（`~/.claude/skills`）、项目技能（`.claude/skills`）与项目命令（`.claude/commands`）经适配器合成的本地插件加载（#775，`src/claude/skillPlugin.ts`）：每次起进程在临时目录生成只含 `skills/`、`commands/` 的插件，条目软链接回原位置，同名技能用户级优先，进程退出后删除。插件技能在 CLI 里登记为 `mimi:名称`，裸 `/名称` 只在 SKILL.md 写了 name 时才展开，所以适配器把命令位置的 `/名称` 改写成 `/mimi:名称`，历史里按 `/名称` 显示。技能只供用户主动调用：模型看不到技能列表（`skills: []`），Skill 工具被拒。技能 frontmatter 与插件里的命令 hook 在沙箱外执行，受限档位用 `disableAllHooks` 关闭（不影响适配器自己的 SDK 回调 hook）；技能内联的 `` !`命令` `` 在 Bash 沙箱内执行，原生 Windows 没有沙箱，换成占位文本。CLI 自身的登录、模型请求、transcript 和会话状态写入不属于工具沙箱；`networkAccess=false` 指工具出网，不是切断模型 API。
+受限档位的用户技能与命令（`~/.claude/skills`、`~/.claude/commands`）、项目技能与命令（从 `cwd` 向上到 git 根各级的 `.claude/skills`、`.claude/commands`）经适配器合成的本地插件加载（#775，`src/claude/skillPlugin.ts`）：每次起进程在临时目录生成只含 `skills/`、`commands/` 的插件，技能软链接回原位置、命令文件复制进来，同名时用户级优先、项目目录近的优先（与 CLI 实测一致），进程退出后删除。插件技能在 CLI 里登记为 `mimi:名称`，裸 `/名称` 只在 SKILL.md 写了 name 时才展开，所以适配器把命令位置的 `/名称`（目录名或 frontmatter 里的 name）改写成 `/mimi:名称`；历史里显示 CLI 实际执行的 `/mimi:名称`。技能只供用户主动调用：模型看不到技能列表（`skills: []`），Skill 工具被拒。技能 frontmatter 与插件里的命令 hook 在沙箱外执行，受限档位用 `disableAllHooks` 关闭（不影响适配器自己的 SDK 回调 hook）；技能内联的 `` !`命令` `` 在 Bash 沙箱内执行，原生 Windows 没有沙箱，换成占位文本。CLI 自身的登录、模型请求、transcript 和会话状态写入不属于工具沙箱；`networkAccess=false` 指工具出网，不是切断模型 API。
 
 工作区模式仍使用 Claude 自带的临时目录。`excludeTmpdirEnv=true` 或 `excludeSlashTmp=true` 无法等价兑现，直接拒绝。历史环境变量 `CLAUDE_BRIDGE_SANDBOX_POLICY=guarded|inherit` 不会放宽 TS 适配器的边界；两种取值使用相同限制。
 
