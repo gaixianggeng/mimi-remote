@@ -2,13 +2,12 @@ import QuickLook
 import SwiftUI
 
 /// 结果层只保留一个轻量入口；状态刷新不比较隐藏的完整工具输出。
+/// 实时计时与阶段只在时间线尾部的状态行出现，分组头保持静态（#537）。
 struct ConversationProcessGroupRow: View, Equatable {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let group: ConversationProcessGroup
     let layout: ConversationLayout
-    let liveStatus: ConversationLiveStatus?
     let showsDetailedTranscript: Bool
     let toggle: () -> Void
 
@@ -18,21 +17,13 @@ struct ConversationProcessGroupRow: View, Equatable {
             && lhs.group.lifecycle == rhs.group.lifecycle
             && lhs.group.failedCount == rhs.group.failedCount
             && lhs.layout == rhs.layout
-            && lhs.liveStatus == rhs.liveStatus
             && lhs.showsDetailedTranscript == rhs.showsDetailedTranscript
     }
 
     var body: some View {
         HStack(spacing: 0) {
             Button(action: toggle) {
-                if let liveStatus {
-                    SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { context in
-                        header(text: liveStatus.text(at: context.date, includesTokens: false),
-                               warning: liveStatus.isWarning(at: context.date))
-                    }
-                } else {
-                    header(text: group.title, warning: group.lifecycle == .failed || group.failedCount > 0)
-                }
+                header(text: group.title, warning: group.lifecycle == .failed || group.failedCount > 0)
             }
             .buttonStyle(.plain)
             .disabled(showsDetailedTranscript)
@@ -48,14 +39,8 @@ struct ConversationProcessGroupRow: View, Equatable {
     private func header(text: String, warning: Bool) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
         return HStack(spacing: 8) {
-            if let liveStatus {
-                ConversationLiveStatusGlyph(tint: warning ? tokens.warning : tokens.accent,
-                                            animates: liveStatus.animates && !reduceMotion)
-                    .frame(width: 16, height: 18)
-            }
             Text(text)
                 .font(themeStore.uiFont(size: 14, weight: .medium))
-                .monospacedDigit()
                 .lineLimit(1)
             if group.failedCount > 0 {
                 Text(L10n.plural("ui.items_unsuccessful_count", count: group.failedCount))
@@ -115,7 +100,6 @@ struct ConversationActivityRow: View, Equatable {
             Spacer(minLength: layout.messageSideSpacer)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 2)
         .quickLookPreview($historyOutputPreviewURL)
     }
 
@@ -134,10 +118,10 @@ struct ConversationActivityRow: View, Equatable {
                 rowContent
             }
 
-            if isExpanded, hasExpandableDetails {
+            if isExpanded, hasExpandableDetails, !isReasoning {
                 expandedDetails
                     .padding(.leading, 22)
-                    .padding(.top, 3)
+                    .padding(.bottom, 6)
             }
         }
     }
@@ -146,12 +130,13 @@ struct ConversationActivityRow: View, Equatable {
         HStack(alignment: isReasoning ? .top : .firstTextBaseline, spacing: 8) {
             activityMarker
 
-            if isReasoning, provider == .codex {
+            if isReasoning {
+                // 两个渠道都直接显示思考内容：折叠时一行预览，展开后在原位读全文。
                 Text(reasoningText)
                     .font(themeStore.uiFont(size: activityTitleSize))
                     .italic()
                     .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(isExpanded ? nil : 3)
+                    .lineLimit(isExpanded ? nil : (dynamicTypeSize.isAccessibilitySize ? 3 : 1))
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
@@ -160,7 +145,8 @@ struct ConversationActivityRow: View, Equatable {
                         .font(themeStore.uiFont(size: activityTitleSize, weight: .medium))
                         .foregroundStyle(activityTint)
                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
-                        .truncationMode(.middle)
+                        // 命令开头最能说明在做什么；路径和工具名保留首尾。
+                        .truncationMode(isRawCommandTitle ? .tail : .middle)
                     if let detail = activityDetail {
                         Text(detail)
                             .font(themeStore.uiFont(size: activityDetailSize))
@@ -180,8 +166,9 @@ struct ConversationActivityRow: View, Equatable {
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
             }
         }
-        // 只有可展开行是操作控件；视觉仍保持紧凑，但触控区至少 44pt。
-        .frame(minHeight: hasExpandableDetails ? 44 : 28)
+        .padding(.vertical, 4)
+        // 展开后的步骤首尾相接、整行可点；单行步骤保持紧凑，触控区不低于 36pt。
+        .frame(minHeight: hasExpandableDetails ? 36 : 28)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(activityAccessibilityDescription)
@@ -209,7 +196,7 @@ struct ConversationActivityRow: View, Equatable {
                 if !status.isEmpty {
                     activityDetailLine(L10n.text("ui.status"), value: status)
                 }
-                if let detailText = fullDetailText, !isReasoning || provider == .claude {
+                if let detailText = fullDetailText {
                     Text(detailText)
                         .font(themeStore.uiFont(.caption2).monospaced())
                         .foregroundStyle(tokens.secondaryText)
@@ -295,10 +282,16 @@ struct ConversationActivityRow: View, Equatable {
     @ViewBuilder
     private var activityMarker: some View {
         if isRunning {
-            ProgressView()
-                .controlSize(.mini)
-                .tint(activityTint)
-                .frame(width: 14, height: 16)
+            // 转圈没有文字基线；借一个隐藏字符与标题首行对齐，单行步骤里也居中在文字行上。
+            Text(verbatim: "\u{2007}")
+                .font(themeStore.uiFont(size: activityTitleSize, weight: .medium))
+                .hidden()
+                .frame(width: 14)
+                .overlay {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(activityTint)
+                }
         } else {
             Image(systemName: markerSymbol)
                 .font(themeStore.uiFont(
@@ -315,15 +308,18 @@ struct ConversationActivityRow: View, Equatable {
     }
 
     private var reasoningText: String {
-        ConversationActivityPresentationText.reasoningText(
-            for: message,
-            isExpanded: isExpanded
-        )
+        isExpanded
+            ? ConversationActivityPresentationText.reasoningText(for: message, isExpanded: true)
+            : ConversationActivityPresentationText.reasoningPreview(for: message)
+    }
+
+    private var isRawCommandTitle: Bool {
+        message.activityPayload.map(ConversationActivityPresentationText.isRawCommandTitle) ?? false
     }
 
     private var activityTitle: String {
         if let payload = message.activityPayload {
-            return payload.displayTitle
+            return ConversationActivityPresentationText.title(for: payload)
         }
         switch message.kind {
         case .commentary:
@@ -358,21 +354,15 @@ struct ConversationActivityRow: View, Equatable {
         case .editFile:
             return payload.filePaths.isEmpty ? payload.displayStatusText : payload.filePaths.prefix(4).joined(separator: ", ")
         case .runCommand:
-            let exit = payload.exitCode.flatMap { code in
-                code == 0 ? nil : L10n.format("ui.exit_code_value", code)
-            }
+            // 工作目录几乎每行相同，只在展开详情里显示。
             return compactActivityDetail(
-                provider == .claude ? payload.displayStatusText : exit,
-                payload.cwd,
+                ConversationActivityPresentationText.noteworthyStatus(for: payload),
                 compactOutputPreview
             )
         case .toolCall:
-            let status = provider == .claude
-                ? payload.displayStatusText
-                : (payload.displayStatusText == L10n.text("ui.completed_status") ? nil : payload.displayStatusText)
             return compactActivityDetail(
                 payload.subtitle?.conversationActivityTrimmedNonEmpty,
-                status,
+                ConversationActivityPresentationText.noteworthyStatus(for: payload),
                 compactOutputPreview
             )
         case .thinking:
@@ -410,12 +400,10 @@ struct ConversationActivityRow: View, Equatable {
 
     private var hasExpandableDetails: Bool {
         if isReasoning {
-            if provider == .claude {
-                return fullDetailText != nil
-            }
-            let summary = ConversationActivityPresentationText.reasoningText(for: message, isExpanded: false)
+            let preview = ConversationActivityPresentationText.reasoningPreview(for: message)
             let full = ConversationActivityPresentationText.reasoningText(for: message, isExpanded: true)
-            return full != summary || summary.count > 160 || summary.filter { $0 == "\n" }.count >= 3
+            // 预览只有一行；超过约一行宽度的内容也给展开入口。
+            return full != preview || preview.count > ConversationActivityPresentationText.reasoningPreviewExpandableLength
         }
         guard let payload = message.activityPayload else {
             return false
@@ -440,7 +428,7 @@ struct ConversationActivityRow: View, Equatable {
     }
 
     private var activityAccessibilityDescription: String {
-        if isReasoning, provider == .codex, isExpanded {
+        if isReasoning {
             return reasoningText
         }
         return message.activityPayload?.accessibilityDescription ?? [
@@ -537,6 +525,60 @@ enum ProcessedActivitySymbol {
 }
 
 enum ConversationActivityPresentationText {
+    /// 约等于 iPhone 竖屏一行能放下的中文字数。
+    static let reasoningPreviewExpandableLength = 24
+
+    /// 折叠态只取思考内容的第一段非空行；没有正文时退回条目标题。
+    static func reasoningPreview(for message: ConversationMessage) -> String {
+        let text = reasoningText(for: message, isExpanded: false)
+        return text.split(separator: "\n", omittingEmptySubsequences: true)
+            .lazy
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty }
+            ?? message.activityPayload?.displayTitle
+            ?? text
+    }
+
+    /// 成功与进行中已由图标、转圈和底部状态行表达；只有异常或等待需要文字。
+    static func noteworthyStatus(for payload: ConversationActivityPayload) -> String? {
+        guard !payload.isInProgress else { return nil }
+        if let code = payload.exitCode, code != 0 {
+            return L10n.format("ui.exit_code_value", code)
+        }
+        guard let status = payload.displayStatusText, status != L10n.text("ui.completed_status") else {
+            return nil
+        }
+        return status
+    }
+
+    /// 没有动作摘要的命令直接以命令作标题。
+    static func isRawCommandTitle(_ payload: ConversationActivityPayload) -> Bool {
+        guard payload.category == .runCommand,
+              let command = payload.command?.conversationActivityTrimmedNonEmpty else {
+            return false
+        }
+        return payload.displayTitle == L10n.format("ui.run_value", command)
+    }
+
+    /// 开头切到工作目录的 `cd … &&` 不含信息，还会在截断后挤掉真正的命令；
+    /// 完整命令仍在展开详情中。
+    static func title(for payload: ConversationActivityPayload) -> String {
+        guard isRawCommandTitle(payload), let command = payload.command?.conversationActivityTrimmedNonEmpty else {
+            return payload.displayTitle
+        }
+        return L10n.format("ui.run_value", commandWithoutLeadingDirectoryChange(command))
+    }
+
+    static func commandWithoutLeadingDirectoryChange(_ command: String) -> String {
+        guard let range = command.range(
+            of: #"^cd\s+(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s*&&\s*"#,
+            options: .regularExpression
+        ), range.upperBound < command.endIndex else {
+            return command
+        }
+        return String(command[range.upperBound...])
+    }
+
     static func reasoningText(for message: ConversationMessage, isExpanded: Bool) -> String {
         let payload = message.activityPayload
         let source: String
