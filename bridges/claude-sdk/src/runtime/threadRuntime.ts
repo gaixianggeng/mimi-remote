@@ -7,6 +7,7 @@ import {
   type PermissionResult,
   type Query,
   type SDKMessage,
+  type SlashCommand,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
@@ -30,6 +31,8 @@ export interface RuntimeHost {
   processReady(threadId: string): void;
   /** 一个 turn 收尾：Claude Code 会异步生成 AI 标题，由管理器检查并推送。 */
   turnFinished(threadId: string): void;
+  /** system/init 里 CLI 标为终端专用的命令名，命令目录据此隐藏。 */
+  terminalCommands?(names: string[]): void;
   idleCloseMs: number;
   /** 测试可替换；默认用 SDK 的 query。 */
   startQuery?: typeof sdkQuery;
@@ -133,6 +136,16 @@ export class ThreadRuntime {
 
   hasLiveProcess(): boolean {
     return this.query !== undefined;
+  }
+
+  /**
+   * 常驻进程的命令目录（含 MCP 命令与运行中发现的技能）。只在进程的设置来源与请求一致时可用：
+   * 受限档位不加载本机设置，两种进程认识的命令不同。
+   */
+  liveCommands(loadsSettings: boolean): Promise<SlashCommand[]> | undefined {
+    if (!this.query || !this.applied) return undefined;
+    if ((this.applied.executionPolicy.type === "dangerFullAccess") !== loadsSettings) return undefined;
+    return this.query.supportedCommands();
   }
 
   /** 进程已起、还不知道 pid 时返回起进程的时刻，见 OwnProcesses.startingSince。 */
@@ -463,6 +476,11 @@ export class ThreadRuntime {
       }
       case "system":
         if (record.subtype === "compact_boundary") this.turnFor(record).onCompactBoundary(String(record.uuid));
+        else if (record.subtype === "init") {
+          // 字段只在有终端专用命令时出现，缺省即为空。
+          const terminal = Array.isArray(record.terminal_slash_commands) ? record.terminal_slash_commands.map(String) : [];
+          this.host.terminalCommands?.(terminal);
+        }
         else if (record.subtype === "session_state_changed") {
           const status = threadStatus(record.state);
           if (status) this.emit("thread/status/changed", { threadId: this.threadId, status });

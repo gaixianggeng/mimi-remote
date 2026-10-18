@@ -730,6 +730,8 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 		sanitized = sanitizedGatewaySkillsListParams(params, validated.cwd)
 	case "permissionProfile/list":
 		sanitized = sanitizedGatewayPermissionProfileListParams(params, validated.cwd)
+	case "slashCommand/list":
+		sanitized = sanitizedGatewaySlashCommandListParams(params, validated.cwd)
 	case "plugin/installed":
 		sanitized = sanitizedGatewayPluginInstalledParams(validated.cwd)
 	case "thread/list":
@@ -803,6 +805,18 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 func sanitizedGatewaySkillsListParams(params map[string]any, cwd string) map[string]any {
 	// 移动端只能扫描一个已经授权的工作区，不能借 skills/list 枚举任意目录。
 	safe := map[string]any{"cwds": []any{cwd}}
+	if forceReload, ok := gatewayBoolParam(params, "forceReload"); ok {
+		safe["forceReload"] = forceReload
+	}
+	return safe
+}
+
+func sanitizedGatewaySlashCommandListParams(params map[string]any, cwd string) map[string]any {
+	// 只转发授权后的 cwd、执行边界类型与刷新标记；writableRoots 等字段对命令目录没有意义。
+	safe := map[string]any{"cwd": cwd}
+	if sandboxType, ok := gatewaySlashCommandSandboxType(params["sandboxPolicy"]); ok {
+		safe["sandboxPolicy"] = map[string]any{"type": sandboxType}
+	}
 	if forceReload, ok := gatewayBoolParam(params, "forceReload"); ok {
 		safe["forceReload"] = forceReload
 	}

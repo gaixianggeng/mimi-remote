@@ -6,8 +6,10 @@ import { legacyIndexPath, migrateLegacyNames, readLegacyIndex } from "./claude/l
 import { Overlay } from "./claude/overlay.ts";
 import { sdkSessions, type ClaudeSessions } from "./claude/sdk.ts";
 import { ActivityClock, TranscriptIndex, WorkingDirectories } from "./claude/transcripts.ts";
+import { CommandCatalog, sdkCommandDiscovery, type DiscoverCommands } from "./claude/commands.ts";
 import { ModelCatalog, sdkModelDiscovery, type DiscoverModels } from "./claude/models.ts";
 import { createAccountHandlers } from "./handlers/account.ts";
+import { createCommandHandlers } from "./handlers/commands.ts";
 import { createHistoryHandlers } from "./handlers/history.ts";
 import { createThreadHandlers } from "./handlers/threads.ts";
 import { createTurnHandlers } from "./handlers/turns.ts";
@@ -73,6 +75,8 @@ export interface AppOptions {
   titleCheckDelaysMs?: number[];
   /** 测试用：模型目录的来源。 */
   discoverModels?: DiscoverModels;
+  /** 测试用：没有常驻进程时命令目录的来源。 */
+  discoverCommands?: DiscoverCommands;
   /** 测试用：Claude Code 版本探测。 */
   probeClaudeCode?: (executable: string) => Promise<ClaudeCodeProbe>;
   /** 发给全部已附着连接的通知；常驻模式由 main 接到会话注册表。 */
@@ -134,6 +138,14 @@ export function createApp(options: AppOptions): App {
   const turns = createTurnHandlers({ manager, catalog, sessions, holders, claudeCode });
   const models = new ModelCatalog({ discover: options.discoverModels ?? sdkModelDiscovery(claudeExecutable), log: options.log });
   const account = createAccountHandlers(models, () => manager.observedRateLimits ?? unavailableRateLimits());
+  const commands = createCommandHandlers(
+    new CommandCatalog({
+      discover: options.discoverCommands ?? sdkCommandDiscovery(claudeExecutable),
+      live: (cwd, loadsSettings) => manager.liveCommands(cwd, loadsSettings),
+      terminal: () => manager.terminalCommands,
+      log: options.log,
+    }),
+  );
 
   const initialize: Handler = (): InitializeResponse => ({
     userAgent: USER_AGENT,
@@ -157,6 +169,7 @@ export function createApp(options: AppOptions): App {
     ["turn/interrupt", (params) => turns.turnInterrupt(params)],
     ["thread/name/set", (params) => turns.threadSetName(params)],
     ["model/list", () => account.modelList()],
+    ["slashCommand/list", (params) => commands.list(params)],
     ["account/rateLimits/read", () => account.rateLimitsRead()],
   ]);
   async function migrateNames(): Promise<void> {
