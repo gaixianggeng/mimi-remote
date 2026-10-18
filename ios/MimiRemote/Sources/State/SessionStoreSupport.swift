@@ -1908,6 +1908,8 @@ extension SessionStore {
         if existing.isSubagentThread || result.isSubagentThread {
             result.isSubagent = true
         }
+        // 派生来源不会改变；只带部分字段的快照不能把已知的父会话抹掉。
+        result.spawnedFromThreadID = result.spawnedFromThreadID ?? existing.spawnedFromThreadID
         return result
     }
 

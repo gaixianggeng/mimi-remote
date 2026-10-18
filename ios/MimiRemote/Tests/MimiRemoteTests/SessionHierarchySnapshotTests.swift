@@ -3,23 +3,24 @@ import SwiftUI
 import XCTest
 @testable import MimiRemote
 
+/// 派生会话用真实的会话行渲染：子行缩进、连接线停在图标前，父行尾部是展开按钮。
 @MainActor
 final class SessionHierarchySnapshotTests: SimplifiedChineseSnapshotTestCase {
     func testExpandedHierarchyOnPhoneWidth() throws {
-        try snapshot(width: 393, expanded: true)
+        try snapshot(width: 393, collapsed: false)
     }
 
-    func testCollapsedHierarchyInDarkSidebar() throws {
-        try snapshot(width: 320, expanded: false, colorScheme: .dark)
+    func testCollapsedHierarchyInDarkMode() throws {
+        try snapshot(width: 393, collapsed: true, colorScheme: .dark)
     }
 
-    func testAccessibilityHierarchyWrapsChildTitles() throws {
-        try snapshot(width: 393, expanded: true, dynamicTypeSize: .accessibility2)
+    func testAccessibilityHierarchyKeepsConnectorWithRowHeight() throws {
+        try snapshot(width: 393, collapsed: false, dynamicTypeSize: .accessibility2)
     }
 
     private func snapshot(
         width: CGFloat,
-        expanded: Bool,
+        collapsed: Bool,
         colorScheme: ColorScheme = .light,
         dynamicTypeSize: DynamicTypeSize = .large,
         file: StaticString = #filePath,
@@ -31,40 +32,42 @@ final class SessionHierarchySnapshotTests: SimplifiedChineseSnapshotTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let theme = ThemeStore(defaults: defaults)
         let tokens = theme.tokens(for: colorScheme)
-        let parent = AgentSession(
-            id: "parent", projectID: "demo", project: "Demo", dir: "/tmp/demo",
-            title: "检查 App 体验", status: "history", source: "codex", resumeID: "parent",
-            createdAt: nil, updatedAt: nil
-        )
-        let context = SessionContextSnapshot(subagents: [
-            SessionContextSubagent(id: "layout", nickname: "检查 iPad 布局与横竖屏切换", status: "completed"),
-            SessionContextSubagent(id: "review", nickname: "复核会话状态和消息顺序", status: "waiting_for_input"),
-            SessionContextSubagent(id: "tests", nickname: "补充列表与导航回归测试", status: "failed")
-        ])
-        let view = VStack(spacing: 8) {
-            SessionHierarchyGroup(
-                isExpanded: .constant(expanded),
-                parent: parent,
-                children: SessionHierarchyPresentation.children(of: parent, sessions: [parent], context: context),
-                unreadIDs: ["layout"],
-                onOpenChild: { _ in }
-            ) {
-                Text(parent.title)
-                    .font(theme.uiFont(.subheadline))
-                    .foregroundStyle(tokens.primaryText)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .padding(.leading, 12)
+        let expansion = SessionHierarchyExpansionStore()
+        if collapsed { expansion.toggle("root") }
+        let density = SessionIndexRowDensity.compact
+        let sessions = [
+            session("root", title: "测试用例覆盖检查", status: "history"),
+            session("child-ci", title: "#741 全量 iOS XCTest 跑绿与 selector 归属", status: "running", spawnedFrom: "root"),
+            session("child-ui", title: "修复 #755 iPad 旋转空白闪现", status: "history", spawnedFrom: "root"),
+            session("other", title: "产品宣传视频策划", status: "history")
+        ]
+
+        let view = VStack(spacing: 0) {
+            SessionHierarchyForEach(sessions: sessions, expansion: expansion) { row, _ in
+                SessionIndexRow(
+                    session: row.session,
+                    foregroundActivity: nil,
+                    isSelected: false,
+                    isPinned: false,
+                    isArchived: false,
+                    reminder: nil,
+                    isObserving: false,
+                    isUnread: row.session.id == "child-ui",
+                    density: density,
+                    leadingSlot: .runtimeIcon
+                )
+                .sessionHierarchyRow(
+                    row,
+                    expansion: expansion,
+                    guideX: density.horizontalPadding + density.stateGutterWidth / 2,
+                    contentInset: density.horizontalPadding + SessionIndexRowDensity.runtimeIconInset
+                )
             }
-            Text("整理下一版发布计划")
-                .font(theme.uiFont(.subheadline))
-                .foregroundStyle(tokens.listTitleText)
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .padding(.leading, 12)
             Spacer(minLength: 0)
         }
-        .padding(12)
-        .frame(width: width, height: dynamicTypeSize.isAccessibilitySize ? 620 : 280)
-        .background(tokens.sidebarBackground)
+        .padding(.vertical, 12)
+        .frame(width: width, height: dynamicTypeSize.isAccessibilitySize ? 560 : 240)
+        .background(tokens.background)
         .environmentObject(theme)
         .environment(\.colorScheme, colorScheme)
         .environment(\.dynamicTypeSize, dynamicTypeSize)
@@ -73,6 +76,24 @@ final class SessionHierarchySnapshotTests: SimplifiedChineseSnapshotTestCase {
             of: view,
             as: .image(precision: 0.99, layout: .sizeThatFits),
             file: file, testName: testName, line: line
+        )
+    }
+
+    private func session(_ id: SessionID, title: String, status: String, spawnedFrom: String? = nil) -> AgentSession {
+        AgentSession(
+            id: id,
+            projectID: "demo",
+            project: "Demo",
+            dir: "/tmp/demo",
+            title: title,
+            status: status,
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: id,
+            createdAt: Date(timeIntervalSince1970: 1_792_200_000),
+            updatedAt: Date(timeIntervalSince1970: 1_792_200_000),
+            activeTurnID: status == "running" ? "\(id)-turn" : nil,
+            spawnedFromThreadID: spawnedFrom
         )
     }
 }

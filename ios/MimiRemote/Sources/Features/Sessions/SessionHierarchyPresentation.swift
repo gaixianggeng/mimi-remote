@@ -1,115 +1,158 @@
 import Foundation
 
-struct SessionHierarchyChild: Identifiable, Equatable {
-    let relation: SessionContextSubagent
-    let session: AgentSession
+/// 一个父会话和挂在它下面的派生会话。
+struct SessionFamily: Identifiable, Equatable {
+    let root: AgentSession
+    /// 按列表原有顺序排列；多级派生已摊平到最顶层的祖先下。
+    let children: [AgentSession]
+    /// 决定家族位置的成员：列表原顺序里最先出现的那一条（父子中最近活动的会话）。
+    let leader: AgentSession
 
-    var id: String { relation.id }
+    var id: SessionID { root.id }
 }
 
-/// 只投影已经发现的直接子会话；不读取历史，也不把普通 fork 或相同目录当成父子关系。
-enum SessionHierarchyPresentation {
-    static func children(
-        of parent: AgentSession,
-        sessions: [AgentSession],
-        context: SessionContextSnapshot?
-    ) -> [SessionHierarchyChild] {
-        let parentIDs = identifiers(for: parent)
-        let provider = runtimeProvider(for: parent)
-        // 原生 Harness 还没有子会话详情所需的 session(snapshot)；先保留其现有列表，
-        // 避免暴露点击后必然失败的入口。Codex / Claude 复用既有子会话读取链路。
-        guard provider != AppServerRuntimeBundle.nativeRuntimeProvider else { return [] }
-        let candidates = sessions.filter {
-            runtimeProvider(for: $0) == provider && $0.id != parent.id
-        }
-        var seen: Set<SessionID> = []
-        var result: [SessionHierarchyChild] = []
+/// 列表里实际渲染的一行。
+struct SessionHierarchyRow: Identifiable, Equatable {
+    enum Role: Equatable {
+        /// 顶层会话；`childCount` 为 0 时就是普通会话行。
+        case root(childCount: Int, isExpanded: Bool)
+        case child(parent: AgentSession, isLast: Bool)
+    }
 
-        func append(_ relation: SessionContextSubagent, known: AgentSession?) {
-            guard let id = nonEmpty(relation.id), id == relation.id,
-                  !parentIDs.contains(id),
-                  seen.insert(known?.id ?? id).inserted else { return }
-            var relation = relation
-            relation.parentThreadID = relation.parentThreadID ?? parent.resumeID ?? parent.id
-            relation.sessionID = relation.sessionID ?? known?.appServerSessionID
-            relation.nickname = nonEmpty(relation.nickname) ?? known?.agentNickname
-            relation.role = nonEmpty(relation.role) ?? known?.agentRole
-            // 展示关系不提升权限；详情仍需 parent/child 双方明确允许才能写入。
-            if known?.canAcceptDirectInput == false || relation.canAcceptDirectInput == false {
-                relation.canAcceptDirectInput = false
-            } else {
-                relation.canAcceptDirectInput = relation.canAcceptDirectInput ?? known?.canAcceptDirectInput
+    let session: AgentSession
+    let role: Role
+
+    var id: SessionID { session.id }
+
+    var isChild: Bool {
+        if case .child = role { return true }
+        return false
+    }
+}
+
+/// Claude 桌面版"主会话派生会话"的列表分组。只按会话自带的 `spawnedFromThreadID`
+/// 分组，不按标题、目录或普通 fork 猜测关系；没有派生来源的会话保持原样。
+enum SessionHierarchy {
+    /// 防御异常数据里的环；真实派生链只有几层。
+    private static let maxAncestorDepth = 16
+
+    /// 输入顺序就是列表原来的排序（置顶、运行优先、时间等规则都已生效）。
+    /// 每个家族放在最先出现的成员的位置，相当于按父子中最近活动的会话排序；
+    /// 父会话不在同一份输入里时，子会话保持平铺，不会消失。
+    static func families(_ sessions: [AgentSession]) -> [SessionFamily] {
+        guard sessions.contains(where: { $0.spawnedFromThreadID != nil }) else {
+            return sessions.map { SessionFamily(root: $0, children: [], leader: $0) }
+        }
+        var byThreadID: [String: AgentSession] = [:]
+        for session in sessions {
+            for key in threadKeys(session) where byThreadID[key] == nil {
+                byThreadID[key] = session
             }
-            let title = known.map(SessionListPresentation.titleDisplayText)
-                .flatMap(nonEmpty) ?? nonEmpty(relation.nickname) ?? nonEmpty(relation.role)
-                ?? L10n.text("ui.sub_agent")
-            let status = normalizedStatus(relation.status ?? known?.status)
-            let display = AgentSession(
-                id: known?.id ?? id,
-                projectID: parent.projectID,
-                project: parent.project,
-                dir: known?.dir ?? parent.dir,
-                title: title,
-                status: status,
-                source: parent.source,
-                runtimeProvider: parent.runtimeProvider,
-                resumeID: known?.resumeID ?? id,
-                createdAt: known?.createdAt,
-                updatedAt: known?.updatedAt,
-                parentThreadID: relation.parentThreadID,
-                isSubagent: true,
-                canAcceptDirectInput: relation.canAcceptDirectInput
-            )
-            result.append(SessionHierarchyChild(relation: relation, session: display))
         }
 
-        // 上下文中的 receiver 列表可早于 child 的列表索引到达，先保留其稳定顺序。
-        for relation in (context ?? parent.context)?.subagents ?? [] {
-            if let declaredParent = nonEmpty(relation.parentThreadID),
-               !parentIDs.contains(declaredParent) { continue }
-            let known = candidates.first { identifiers(for: $0).contains(relation.id) }
-            if let declaredParent = known.flatMap({ nonEmpty($0.parentThreadID ?? $0.context?.parentThreadID) }),
-               !parentIDs.contains(declaredParent) { continue }
-            append(relation, known: known)
+        var rootIDBySessionID: [SessionID: SessionID] = [:]
+        for session in sessions {
+            rootIDBySessionID[session.id] = rootID(of: session, byThreadID: byThreadID)
         }
-        // 目录索引可能先发现 child；缺失父上下文时也应能显示，不能要求先打开父会话。
-        for child in candidates {
-            guard let parentID = nonEmpty(child.parentThreadID ?? child.context?.parentThreadID),
-                  parentIDs.contains(parentID) else { continue }
-            append(SessionContextSubagent(
-                id: child.resumeID ?? child.id,
-                parentThreadID: parentID,
-                sessionID: child.appServerSessionID,
-                nickname: child.agentNickname,
-                role: child.agentRole,
-                status: child.status,
-                canAcceptDirectInput: child.canAcceptDirectInput
-            ), known: child)
+
+        var order: [SessionID] = []
+        var leaderByRootID: [SessionID: AgentSession] = [:]
+        var childrenByRootID: [SessionID: [AgentSession]] = [:]
+        var sessionByID: [SessionID: AgentSession] = [:]
+        for session in sessions {
+            sessionByID[session.id] = sessionByID[session.id] ?? session
+            let rootID = rootIDBySessionID[session.id] ?? session.id
+            if leaderByRootID[rootID] == nil {
+                leaderByRootID[rootID] = session
+                order.append(rootID)
+            }
+            if rootID != session.id {
+                childrenByRootID[rootID, default: []].append(session)
+            }
         }
-        return result
+        return order.compactMap { rootID in
+            guard let root = sessionByID[rootID], let leader = leaderByRootID[rootID] else { return nil }
+            return SessionFamily(root: root, children: childrenByRootID[rootID] ?? [], leader: leader)
+        }
     }
 
-    private static func identifiers(for session: AgentSession) -> Set<String> {
-        Set([session.id, session.resumeID, session.context?.threadID].compactMap(nonEmpty))
+    static func rows(_ families: [SessionFamily], collapsedRootIDs: Set<SessionID>) -> [SessionHierarchyRow] {
+        var rows: [SessionHierarchyRow] = []
+        rows.reserveCapacity(families.reduce(0) { $0 + 1 + $1.children.count })
+        for family in families {
+            let isExpanded = !collapsedRootIDs.contains(family.root.id)
+            rows.append(SessionHierarchyRow(
+                session: family.root,
+                role: .root(childCount: family.children.count, isExpanded: isExpanded)
+            ))
+            guard isExpanded else { continue }
+            for child in family.children {
+                rows.append(SessionHierarchyRow(
+                    session: child,
+                    role: .child(parent: family.root, isLast: child.id == family.children.last?.id)
+                ))
+            }
+        }
+        return rows
     }
 
-    private static func runtimeProvider(for session: AgentSession) -> String {
+    /// 沿派生链向上，找同一份输入里能找到的最顶层祖先；直接父会话不在输入里时保持平铺。
+    private static func rootID(of session: AgentSession, byThreadID: [String: AgentSession]) -> SessionID {
+        var current = session
+        var visited: Set<SessionID> = [session.id]
+        for _ in 0..<maxAncestorDepth {
+            guard let parentThreadID = current.spawnedFromThreadID,
+                  let parent = byThreadID[parentThreadID],
+                  // 派生关系只在同一运行时内成立，不同渠道的同名 ID 不能串起来。
+                  runtimeKey(parent) == runtimeKey(session) else {
+                break
+            }
+            // 成环说明数据异常；整条链都按平铺处理，避免同一会话同时出现在两个家族里。
+            guard visited.insert(parent.id).inserted else { return session.id }
+            current = parent
+        }
+        return current.id
+    }
+
+    private static func threadKeys(_ session: AgentSession) -> [String] {
+        [session.resumeID, session.id].compactMap { $0 }
+    }
+
+    private static func runtimeKey(_ session: AgentSession) -> String {
         CodexAppServerSessionRuntime.normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
     }
+}
 
-    private static func nonEmpty(_ value: String?) -> String? {
-        guard let text = value?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
-        return text
-    }
+/// 按日期分段的历史列表里的一段家族。
+struct SessionHistoryFamilyGroup: Identifiable, Equatable {
+    let bucket: SessionHistoryDateBucket
+    let families: [SessionFamily]
 
-    private static func normalizedStatus(_ status: String?) -> String {
-        switch status?.lowercased() {
-        case "active", "running", "inprogress", "in_progress", "started": return "running"
-        case "complete", "completed", "success", "succeeded": return "completed"
-        case "systemerror", "errored", "error", "failed": return "failed"
-        case "waiting", "waiting_for_input": return "waiting_for_input"
-        case "waiting_for_approval": return "waiting_for_approval"
-        default: return "history"
+    var id: SessionHistoryDateBucket { bucket }
+}
+
+extension SessionHierarchy {
+    /// 先在整段历史上分好家族，再按家族里最近活动的成员归入日期段。
+    /// 若先分日期再分家族，今天派生的子会话会和昨天的父会话被拆到两段。
+    static func historyFamilyGroups(
+        _ sessions: [AgentSession],
+        now: Date = Date(),
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> [SessionHistoryFamilyGroup] {
+        let families = families(sessions)
+        var familyByLeaderID: [SessionID: SessionFamily] = [:]
+        for family in families {
+            familyByLeaderID[family.leader.id] = family
+        }
+        return SessionListPresentation.historyDateGroups(
+            sessions: families.map(\.leader),
+            now: now,
+            calendar: calendar
+        ).map { group in
+            SessionHistoryFamilyGroup(
+                bucket: group.bucket,
+                families: group.sessions.compactMap { familyByLeaderID[$0.id] }
+            )
         }
     }
 }

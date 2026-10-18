@@ -1,147 +1,168 @@
 import XCTest
 @testable import MimiRemote
 
+/// Claude 桌面版派生会话的列表分组：只认 `spawnedFromThreadID`，父会话不在同一列表时平铺。
 final class SessionHierarchyPresentationTests: XCTestCase {
-    func testKnownChildAppearsWithoutOpeningParentHistory() {
-        let parent = session("parent")
-        let child = session("child", parent: "parent", status: "running")
-        let rows = children(parent, [parent, child])
-        XCTAssertEqual(rows.map(\.id), ["child"])
-        XCTAssertEqual(rows.first?.session.status, "running")
-        XCTAssertEqual(rows.first?.relation.parentThreadID, "parent")
+    func testFamilyTakesThePositionOfItsMostRecentMember() {
+        // 输入顺序就是列表排序：子会话最近活动，所以整个家族排到它的位置。
+        let sessions = [
+            session("child-a", spawnedFrom: "root"),
+            session("other"),
+            session("root"),
+            session("child-b", spawnedFrom: "root")
+        ]
+        let families = SessionHierarchy.families(sessions)
+        XCTAssertEqual(families.map(\.root.id), ["root", "other"])
+        XCTAssertEqual(families.first?.children.map(\.id), ["child-a", "child-b"])
+        XCTAssertEqual(families.first?.leader.id, "child-a")
+
+        let rows = SessionHierarchy.rows(families, collapsedRootIDs: [])
+        XCTAssertEqual(rows.map(\.id), ["root", "child-a", "child-b", "other"])
+        XCTAssertEqual(rows[0].role, .root(childCount: 2, isExpanded: true))
+        XCTAssertEqual(rows[1].role, .child(parent: sessions[2], isLast: false))
+        XCTAssertEqual(rows[2].role, .child(parent: sessions[2], isLast: true))
+        XCTAssertEqual(rows[3].role, .root(childCount: 0, isExpanded: true))
     }
 
-    func testLiveRelationAppearsBeforeChildIndexArrives() {
-        let parent = session("parent")
-        let context = SessionContextSnapshot(subagents: [
-            SessionContextSubagent(id: "child", nickname: "检查布局", status: "inProgress")
+    func testCollapsedRootHidesItsChildren() {
+        let families = SessionHierarchy.families([session("root"), session("child", spawnedFrom: "root")])
+        let rows = SessionHierarchy.rows(families, collapsedRootIDs: ["root"])
+        XCTAssertEqual(rows.map(\.id), ["root"])
+        XCTAssertEqual(rows.first?.role, .root(childCount: 1, isExpanded: false))
+    }
+
+    func testChildStaysFlatWhenItsParentIsNotInTheList() {
+        let families = SessionHierarchy.families([session("child", spawnedFrom: "elsewhere"), session("other")])
+        XCTAssertEqual(families.map(\.root.id), ["child", "other"])
+        XCTAssertTrue(families.allSatisfy(\.children.isEmpty))
+    }
+
+    func testGrandchildrenAttachToTheTopAncestorWithOneIndent() {
+        let families = SessionHierarchy.families([
+            session("grandchild", spawnedFrom: "child"),
+            session("root"),
+            session("child", spawnedFrom: "root")
         ])
-        let row = children(parent, [parent], context).first
-        XCTAssertEqual(row?.session.title, "检查布局")
-        XCTAssertEqual(row?.session.status, "running")
-        XCTAssertNil(row?.relation.canAcceptDirectInput)
-        XCTAssertEqual(row?.session.allowsDirectInput, false)
+        XCTAssertEqual(families.map(\.root.id), ["root"])
+        XCTAssertEqual(families.first?.children.map(\.id), ["grandchild", "child"])
+
+        // 中间那层不在列表里时，链断开：孙会话找不到父会话，保持平铺。
+        let broken = SessionHierarchy.families([session("grandchild", spawnedFrom: "child"), session("root")])
+        XCTAssertEqual(broken.map(\.root.id), ["grandchild", "root"])
     }
 
-    func testKnownIdentityDeduplicatesContextAliasesAndDirectory() {
-        let parent = session("parent")
-        var child = session("codex_child", parent: "parent", resumeID: "child")
-        child.title = "**检查布局**\n第二行"
-        let context = SessionContextSnapshot(subagents: [
-            SessionContextSubagent(id: "child", nickname: "worker", status: "completed"),
-            SessionContextSubagent(id: "codex_child")
+    func testCyclesAndSelfReferencesStayFlat() {
+        let families = SessionHierarchy.families([
+            session("a", spawnedFrom: "b"),
+            session("b", spawnedFrom: "a"),
+            session("self", spawnedFrom: "self")
         ])
-        let rows = children(parent, [parent, child], context)
-        XCTAssertEqual(rows.count, 1)
-        XCTAssertEqual(rows.first?.session.id, child.id)
-        XCTAssertEqual(rows.first?.session.title, "检查布局 第二行")
-        XCTAssertEqual(rows.first?.session.status, "completed")
+        XCTAssertEqual(families.map(\.root.id), ["a", "b", "self"])
+        XCTAssertTrue(families.allSatisfy(\.children.isEmpty))
+        XCTAssertNil(session("self", spawnedFrom: "self").spawnedFromThreadID)
     }
 
-    func testParentThreadAliasFindsChild() {
-        let parent = session("codex_parent", resumeID: "parent-thread")
-        let child = session("child", parent: "parent-thread")
-        XCTAssertEqual(children(parent, [parent, child]).map(\.id), ["child"])
+    func testParentMatchesByThreadIDAndOnlyWithinTheSameRuntime() {
+        // App 内会话 ID 可能与线程 ID 不同；派生来源记录的是线程 ID。
+        let root = session("app-root", resumeID: "thread-root")
+        let child = session("child", spawnedFrom: "thread-root")
+        XCTAssertEqual(SessionHierarchy.families([root, child]).map(\.root.id), ["app-root"])
+
+        let codexRoot = session("thread-root", runtime: "codex")
+        XCTAssertEqual(SessionHierarchy.families([codexRoot, child]).map(\.root.id), ["thread-root", "child"])
     }
 
-    func testMissingParentAndSourceOnlySubagentAreNotGuessedFromDirectory() {
-        let parent = session("parent")
-        var sourceOnly = session("source-only")
-        sourceOnly.isSubagent = true
-        let orphan = session("orphan", parent: "absent")
-        XCTAssertTrue(children(parent, [parent, sourceOnly, orphan]).isEmpty)
+    func testListsWithoutSpawnedSessionsKeepTheirOrder() {
+        let sessions = [session("b"), session("a"), session("c")]
+        let families = SessionHierarchy.families(sessions)
+        XCTAssertEqual(families.map(\.root.id), ["b", "a", "c"])
+        XCTAssertEqual(SessionHierarchy.rows(families, collapsedRootIDs: []).map(\.id), ["b", "a", "c"])
     }
 
-    func testOrdinaryForkStaysOutsideChildList() {
-        let parent = session("parent")
-        let fork = session("fork", context: SessionContextSnapshot(sources: [
-            SessionContextSource(id: "fork", kind: "fork", label: "parent")
-        ]))
-        XCTAssertTrue(children(parent, [parent, fork]).isEmpty)
-        XCTAssertFalse(fork.isSubagentThread)
-        XCTAssertTrue(fork.allowsDirectInput)
+    func testHistoryGroupsPlaceTheFamilyByItsMostRecentMember() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Shanghai"))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 18, hour: 12)))
+        let yesterday = now.addingTimeInterval(-26 * 3_600)
+        // 今天派生的子会话不能和昨天的父会话被拆到两段。
+        let groups = SessionHierarchy.historyFamilyGroups(
+            [
+                session("child", spawnedFrom: "root", recencyAt: now.addingTimeInterval(-600)),
+                session("root", recencyAt: yesterday),
+                session("old", recencyAt: yesterday)
+            ],
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(groups.map(\.bucket), [.today, .yesterday])
+        XCTAssertEqual(groups.first?.families.map(\.root.id), ["root"])
+        XCTAssertEqual(groups.first?.families.first?.children.map(\.id), ["child"])
+        XCTAssertEqual(groups.last?.families.map(\.root.id), ["old"])
     }
 
-    func testWrongParentAndSelfReferencesAreExcluded() {
-        let parent = session("parent")
-        let child = session("wrong-parent", parent: "other")
-        let context = SessionContextSnapshot(subagents: [
-            SessionContextSubagent(id: "parent"),
-            SessionContextSubagent(id: "wrong-parent"),
-            SessionContextSubagent(id: "different", parentThreadID: "other"),
-            SessionContextSubagent(id: " padded "),
-            SessionContextSubagent(id: "")
-        ])
-        XCTAssertTrue(children(parent, [parent, child], context).isEmpty)
+    func testThreadListFieldProjectsIntoTheSession() async throws {
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        let project = AgentProject(id: "repo", name: "Repo", path: "/tmp/repo")
+        let thread: [String: CodexAppServerJSONValue] = [
+            "id": .string("child-thread"),
+            "sessionId": .string("child-thread"),
+            "cwd": .string(project.path),
+            "name": .string("派生会话"),
+            "status": .object(["type": .string("idle")]),
+            "canAcceptDirectInput": .bool(true),
+            "spawnedFromThreadId": .string("root-thread"),
+            "mimiRemote": .object([
+                "projectId": .string(project.id),
+                "projectName": .string(project.name),
+                "projectPath": .string(project.path),
+                "readOnly": .bool(false)
+            ])
+        ]
+        let session = try await runtime.agentSession(from: thread, projects: [project], fallbackProject: nil)
+        XCTAssertEqual(session.spawnedFromThreadID, "root-thread")
+        // 派生会话是完整会话：不是子 Agent，也不因此变成只读。
+        XCTAssertFalse(session.isSubagentThread)
+        XCTAssertTrue(session.allowsDirectInput)
     }
 
-    func testProvidersDoNotShareChildrenEvenWhenParentIDsMatch() {
-        let parent = session("parent")
-        let claude = session("claude-child", parent: "parent", provider: "claude")
-        XCTAssertTrue(children(parent, [parent, claude]).isEmpty)
-        let claudeParent = session("parent", provider: "claude")
-        XCTAssertEqual(children(claudeParent, [claudeParent, claude]).map(\.id), ["claude-child"])
-        let unknownProvider = session("unknown-child", parent: "parent", provider: "custom-runtime")
-        XCTAssertTrue(children(parent, [parent, unknownProvider]).isEmpty)
-        let nativeParent = session("parent", provider: AppServerRuntimeBundle.nativeRuntimeProvider)
-        let nativeChild = session("native-child", parent: "parent", provider: AppServerRuntimeBundle.nativeRuntimeProvider)
-        XCTAssertTrue(children(nativeParent, [nativeParent, nativeChild]).isEmpty,
-                      "原生通道尚无子会话快照入口，不应显示无法打开的行")
-    }
+    @MainActor
+    func testPartialSnapshotsKeepTheKnownSpawnSource() {
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { DelayedCreateSessionClient(projects: [], sessions: []) }
+        )
+        let known = session("child", spawnedFrom: "root")
+        let partial = session("child")
+        XCTAssertEqual(store.sessionPreservingSubagentOwnership(partial, withKnown: known).spawnedFromThreadID, "root")
 
-    func testContextAndDirectoryUpdatesDoNotDuplicateOrReorderChildren() {
-        let parent = session("parent")
-        var a = session("a", parent: "parent", status: "running")
-        let b = session("b", parent: "parent")
-        let context = SessionContextSnapshot(subagents: [SessionContextSubagent(id: "b")])
-        XCTAssertEqual(children(parent, [parent, a, b], context).map(\.id), ["b", "a"])
-        a.status = "completed"
-        XCTAssertEqual(children(parent, [parent, a, b], context).last?.session.status, "completed")
-    }
-
-    func testDisplayMergeNeverOverridesExplicitReadOnlyCapability() {
-        let parent = session("parent")
-        var child = session("child", parent: "parent")
-        child.canAcceptDirectInput = false
-        let context = SessionContextSnapshot(subagents: [
-            SessionContextSubagent(id: "child", canAcceptDirectInput: true)
-        ])
-        XCTAssertEqual(children(parent, [parent, child], context).first?.relation.canAcceptDirectInput, false)
-        XCTAssertEqual(child.canAcceptDirectInput, false)
-    }
-
-    func testWaitingAndFailureStatesRemainVisible() {
-        let parent = session("parent")
-        let context = SessionContextSnapshot(subagents: [
-            SessionContextSubagent(id: "approval", status: "waiting_for_approval"),
-            SessionContextSubagent(id: "failed", status: "systemError")
-        ])
-        let rows = children(parent, [parent], context)
-        XCTAssertEqual(rows.map(\.session.status), ["waiting_for_approval", "failed"])
-        XCTAssertEqual(rows.map { $0.session.displayStatus(foregroundActivity: nil).tone }, [.warning, .danger])
-    }
-
-    private func children(
-        _ parent: AgentSession,
-        _ sessions: [AgentSession],
-        _ context: SessionContextSnapshot? = nil
-    ) -> [SessionHierarchyChild] {
-        SessionHierarchyPresentation.children(of: parent, sessions: sessions, context: context)
+        let workspace = AgentWorkspace(
+            id: "demo", name: "Demo", path: "/tmp/demo",
+            rootProjectID: "demo", rootProjectName: "Demo", rootProjectPath: "/tmp/demo", lastOpenedAt: Date()
+        )
+        XCTAssertEqual(store.session(known, in: workspace).spawnedFromThreadID, "root", "工作区投影不得丢掉派生来源")
     }
 
     private func session(
-        _ id: String,
-        parent: String? = nil,
+        _ id: SessionID,
+        spawnedFrom: String? = nil,
         resumeID: String? = nil,
-        status: String = "history",
-        provider: String = "codex",
-        context: SessionContextSnapshot? = nil
+        runtime: String = "claude",
+        recencyAt: Date? = nil
     ) -> AgentSession {
         AgentSession(
-            id: id, projectID: "demo", project: "Demo", dir: "/tmp/demo",
-            title: id, status: status, source: provider, runtimeProvider: provider,
-            resumeID: resumeID ?? id, createdAt: nil, updatedAt: nil,
-            parentThreadID: parent, context: context
+            id: id,
+            projectID: "demo",
+            project: "Demo",
+            dir: "/tmp/demo",
+            title: id,
+            status: "history",
+            source: runtime,
+            runtimeProvider: runtime,
+            resumeID: resumeID ?? id,
+            createdAt: nil,
+            updatedAt: recencyAt,
+            recencyAt: recencyAt,
+            spawnedFromThreadID: spawnedFrom
         )
     }
 }

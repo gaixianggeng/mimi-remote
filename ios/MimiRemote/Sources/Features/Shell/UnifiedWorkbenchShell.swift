@@ -709,14 +709,18 @@ struct UnifiedWorkbenchShell: View {
 
             ForEach(sections) { section in
                 Section {
-                    // index 只判断相邻项目，行身份仍用 session.id，避免刷新时重建已选中行。
-                    ForEach(Array(section.sessions.enumerated()), id: \.element.id) { index, session in
+                    // previous 只判断相邻项目，行身份仍用 session.id，避免刷新时重建已选中行。
+                    SessionHierarchyForEach(
+                        sessions: section.sessions,
+                        expansion: sessionStore.sessionHierarchyExpansion
+                    ) { row, previous in
                         sidebarSessionLink(
-                            session,
+                            row,
                             kind: section.kind,
-                            startsProjectGroup: SessionListPresentation.startsSidebarProjectGroup(
-                                for: session,
-                                previousSession: index > 0 ? section.sessions[index - 1] : nil
+                            // 子会话跟随父会话，不另起项目组，也不重复画项目图标。
+                            startsProjectGroup: row.isChild ? false : SessionListPresentation.startsSidebarProjectGroup(
+                                for: row.session,
+                                previousSession: previous
                             ),
                             layout: layout
                         )
@@ -792,11 +796,12 @@ struct UnifiedWorkbenchShell: View {
 
     @ViewBuilder
     private func sidebarSessionLink(
-        _ session: AgentSession,
+        _ row: SessionHierarchyRow,
         kind: SessionSidebarSectionKind,
         startsProjectGroup: Bool,
         layout: WorkbenchLayout
     ) -> some View {
+        let session = row.session
         Group {
             if layout.usesFloatingSidebarSurface {
                 Button {
@@ -826,7 +831,9 @@ struct UnifiedWorkbenchShell: View {
             }
         }
         .sessionRowActions(session)
-        .sessionHierarchy(session, store: sessionStore, leadingInset: 36, showsSwipeActions: true)
+        // 竖线对齐行首的状态标记；子行缩进后，它的状态标记正好落在父行图标下方。
+        .sessionHierarchyRow(row, expansion: sessionStore.sessionHierarchyExpansion, guideX: 14, contentInset: 8)
+        .sessionRowSwipeActions(session)
         .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)

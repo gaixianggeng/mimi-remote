@@ -219,9 +219,11 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
+        // 先分好派生家族，再按家族里最近活动的成员判断 12 小时边界，父子不会被拆到边界两侧。
+        let families = SessionHierarchy.families(sessions)
         let firstStaleIndex = group == .recent
             ? WorkspaceSessionAgeBoundary.firstStaleIndex(
-                in: sessions,
+                in: families.map(\.leader),
                 excludingSessionIDs: sessionStore.pinnedSessionIDs,
                 now: currentDate()
             )
@@ -231,8 +233,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         // 它会退化成悬在列表顶部的标题，被读成整段列表的名字；此时不再分界。
         if let firstStaleIndex,
            WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: firstStaleIndex) {
-            let currentSessions = Array(sessions.prefix(firstStaleIndex))
-            let staleSessions = Array(sessions.dropFirst(firstStaleIndex))
+            let currentFamilies = Array(families.prefix(firstStaleIndex))
+            let staleFamilies = Array(families.dropFirst(firstStaleIndex))
 
             // 12 小时是和「正在运行 / 最近会话」同级的信息分组边界，因此就用同一种小节标题。
             //
@@ -240,9 +242,9 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             // 有了卡，时间标签既不能切进白面，又没有别的地方可去，只好悬空并伪装底色
             // （伪装色还错了一版）。列表扁平之后这些问题一起消失，标签回到它本来的身份。
             VStack(alignment: .leading, spacing: 0) {
-                if !currentSessions.isEmpty {
+                if !currentFamilies.isEmpty {
                     sessionRowsStack(
-                        sessions: currentSessions,
+                        families: currentFamilies,
                         identityFallback: identityFallback,
                         showsLoadMore: false,
                         rowDensity: rowDensity,
@@ -253,7 +255,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 staleBoundaryHeader(rowDensity: rowDensity, tokens: tokens)
 
                 sessionRowsStack(
-                    sessions: staleSessions,
+                    families: staleFamilies,
                     identityFallback: identityFallback,
                     showsLoadMore: showsLoadMore,
                     rowDensity: rowDensity,
@@ -262,7 +264,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             }
         } else {
             sessionRowsStack(
-                sessions: sessions,
+                families: families,
                 identityFallback: identityFallback,
                 showsLoadMore: showsLoadMore,
                 rowDensity: rowDensity,
@@ -276,7 +278,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     /// 工作区身份已在胶囊行出现，会话总览只留标题、状态和一条次要信息。
     /// 分组由小节标题和留白承担，不用卡片或逐行分隔线争夺注意力。
     private func sessionRowsStack(
-        sessions: [AgentSession],
+        families: [SessionFamily],
         identityFallback: SessionIndexRowIdentityFallback,
         showsLoadMore: Bool,
         rowDensity: SessionIndexRowDensity,
@@ -285,7 +287,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         // 行与行之间不再画分隔线，只靠留白分开——逐行横线会把列表读成一张表格。
         // 线只保留在分组边界（小节标题上方的留白）和"显示更多"入口之前。
         VStack(spacing: 0) {
-            ForEach(sessions, id: \.id) { session in
+            SessionHierarchyForEach(families: families, expansion: sessionStore.sessionHierarchyExpansion) { row, _ in
+                let session = row.session
                 let foregroundActivity = sessionStore.foregroundActivity(for: session.id)
                 let isUnread = unreadHistorySessionIDs.contains(session.id)
 
@@ -331,7 +334,12 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 )
                 .sessionRowActions(session)
                 .accessibilityIdentifier("workspace.session.\(session.id)")
-                .sessionHierarchy(session, store: sessionStore, leadingInset: rowDensity.horizontalPadding)
+                .sessionHierarchyRow(
+                    row,
+                    expansion: sessionStore.sessionHierarchyExpansion,
+                    guideX: rowDensity.horizontalPadding + 4,
+                    contentInset: rowDensity.horizontalPadding
+                )
             }
 
             // 加载入口只跟在最后一段的末尾；12 小时边界存在时自然落在旧会话那一段底部。

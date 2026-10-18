@@ -254,9 +254,9 @@ extension SessionStore {
 
         // TODO(工作区行样式评审): 只用于 A/B/C 三版对比截图，需要十行左右才能看出密度差别。
         // 定稿后连同 --debug-seed-dense-workspace-ui 一起删除。
-        let seededSessions: [AgentSession] = appStore.shouldSeedDebugDenseWorkspaceUI
+        let seededSessions: [AgentSession] = (appStore.shouldSeedDebugDenseWorkspaceUI
             ? sessions + debugDenseWorkspaceSessions(workspace: mimiDemo, now: now)
-            : sessions
+            : sessions) + debugSpawnedSessions(parentID: claudeSessionID, workspace: mimiDemo, now: now)
 
         isLoading = false
         setErrorMessage(nil)
@@ -305,16 +305,6 @@ extension SessionStore {
         sessionWorkspaceIDs = nil
         setExpandedProjectIDs([mimiDemo.id])
         replaceSessionsIfChanged(with: seededSessions, projectID: nil)
-        if ProcessInfo.processInfo.arguments.contains("--debug-seed-hierarchy-ui") {
-            // 只为父子列表的点击回归注入内存关系；不创建真实子任务或修改普通样例。
-            contextStore.upsert(SessionContextSnapshot(
-                sessionID: selectedSessionID,
-                subagents: [
-                    SessionContextSubagent(id: "debug-child-layout", nickname: L10n.text("ui.check_connection_recovery_test"), status: "completed"),
-                    SessionContextSubagent(id: "debug-child-review", nickname: L10n.text("ui.review_goals"), status: "running")
-                ]
-            ), fallbackSessionID: selectedSessionID)
-        }
         if appStore.shouldSeedDebugHistoryUnreadUI,
            var unreadCandidate = seededSessions.first(where: { $0.id == historySessionID }) {
             // 先让未选中的历史会话经历一次“运行中 → 新完成”，以复用生产判定链路。
@@ -401,6 +391,33 @@ extension SessionStore {
 
     /// TODO(工作区行样式评审): 定稿后删除。
     /// 标题长度、分支长度和状态分布刻意贴近真机首屏，否则密度和截断问题看不出来。
+    /// `--debug-seed-hierarchy-ui`：给 Claude 样例会话挂两个桌面版派生会话，只用于父子列表的
+    /// 视觉与点击验收；普通 Debug 种子和快照不受影响。
+    func debugSpawnedSessions(parentID: SessionID, workspace: AgentWorkspace, now: Date) -> [AgentSession] {
+        guard ProcessInfo.processInfo.arguments.contains("--debug-seed-hierarchy-ui") else { return [] }
+        let children: [(String, String, SessionStatus, TimeInterval)] = [
+            ("debug-session-claude-child-review", L10n.text("ui.review_goals"), .running, 2),
+            ("debug-session-claude-child-test", L10n.text("ui.check_connection_recovery_test"), .completed, 9)
+        ]
+        return children.map { id, title, status, minutesAgo in
+            AgentSession(
+                id: id,
+                projectID: workspace.id,
+                project: workspace.name,
+                dir: workspace.path,
+                title: title,
+                status: status.rawValue,
+                source: "debug",
+                runtimeProvider: "claude",
+                resumeID: id,
+                createdAt: now.addingTimeInterval(-60 * (minutesAgo + 20)),
+                updatedAt: now.addingTimeInterval(-60 * minutesAgo),
+                activeTurnID: status == .running ? "\(id)-turn" : nil,
+                spawnedFromThreadID: parentID
+            )
+        }
+    }
+
     func debugDenseWorkspaceSessions(workspace: AgentWorkspace, now: Date) -> [AgentSession] {
         let fixtures: [(String, String, String, Int, String)] = [
             (L10n.text("ui.waiting_to_confirm_deployment_permission"), "main", SessionStatus.waitingForApproval.rawValue, 2, L10n.text("ui.agent_is_waiting_for_you_to_approve_writing_launchd_configuration")),
