@@ -738,6 +738,13 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         return try await bundle.codex.permissionProfiles(cwd: cwd)
     }
 
+    func claudeSlashCommands(cwd: String, sandboxMode: CodexAppServerSandboxMode, forceReload: Bool) async throws -> [ClaudeSlashCommand] {
+        guard try await bundle.channelAvailable(runtimeProvider: "claude") else {
+            throw ClaudeSlashCommandCatalogError.unsupported
+        }
+        return try await bundle.claude.slashCommands(cwd: cwd, sandboxMode: sandboxMode, forceReload: forceReload)
+    }
+
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
         if let native = bundle.nativeClient(for: runtimeProvider) {
             guard try await bundle.nativeHarnessConfigured() else { return false }

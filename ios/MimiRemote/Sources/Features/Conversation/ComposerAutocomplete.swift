@@ -73,12 +73,14 @@ struct ComposerSkillQuery: Equatable {
     }
 }
 
-/// `/` 菜单里的客户端动作。只调用输入框已有入口，不发消息、不消耗模型回合。
+/// `/` 菜单里的动作。App 自己的动作只调用输入框已有入口，不发消息、不消耗模型回合；
+/// 运行时命令（Claude Code 自带的命令与技能）只把 `/名称 ` 插进草稿，由运行时自己解析。
 enum ComposerSlashCommandAction: Hashable {
     case model
     case permission(ComposerPermissionMode)
     case plan
     case compact
+    case runtimeCommand(String)
 }
 
 struct ComposerSlashCommand: Identifiable, Hashable {
@@ -91,12 +93,18 @@ struct ComposerSlashCommand: Identifiable, Hashable {
     var isCurrent = false
     /// 暂时不能执行的原因（如回合进行中）；非空时置灰且不响应选择。
     var unavailableReason: String?
+    /// 同样能输入的别名（如 Claude 的 `/cost` 对应 `/usage`），参与筛选。
+    var aliases: [String] = []
 
     var id: String {
-        if case .permission(let mode) = action {
+        switch action {
+        case .permission(let mode):
             return "\(name).\(mode.rawValue)"
+        case .runtimeCommand:
+            return "runtime.\(name)"
+        default:
+            return name
         }
-        return name
     }
 }
 
@@ -119,7 +127,7 @@ enum ComposerAutocompleteSuggestion: Identifiable {
         let texts: [String]
         switch self {
         case .command(let command):
-            names = [command.name]
+            names = [command.name] + command.aliases
             texts = [command.title, command.detail]
         case .skill(let skill):
             names = [skill.name, skill.presentationName]

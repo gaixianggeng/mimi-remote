@@ -185,6 +185,8 @@ final class SessionStore: ObservableObject {
     @Published var capabilityList: CapabilityListResponse?
     @Published var isRefreshingCapabilities = false
     @Published var capabilityErrorMessage: String?
+    /// Claude 会话 `/` 菜单的命令目录，按主机、工作区与执行边界分开缓存（#765）。
+    @Published var claudeSlashCommandCatalogs: [ClaudeSlashCommandCatalogKey: ClaudeSlashCommandCatalogState] = [:]
     @Published var isCreatingWorktree = false
     @Published var duplicatingSessionIDs: Set<SessionID> = []
     @Published var writerConflictForkAvailabilityByLease: [HostSessionLease: WriterConflictForkAvailability] = [:]
