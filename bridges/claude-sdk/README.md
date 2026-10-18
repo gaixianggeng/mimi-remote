@@ -19,7 +19,7 @@
   - 审批（`canUseTool`）映射为 `item/commandExecution/requestApproval`、`item/fileChange/requestApproval`；`AskUserQuestion` 映射为 `item/tool/requestUserInput`。请求发给订阅该会话的所有连接，先答复者生效，其余收到 `serverRequest/resolved`；重连时由 `serverRequest/replay` 补发未答复的请求。
   - 引导以人工输入的 `now` 优先级并入当前 turn。turn 要等名下所有消息（含引导）都被 Claude 的结果吸收才收尾；输出与结果按 `user_message_uuid` 归属，CLI 队列里还有未完成的消息时拒绝新的 `turn/start`。
   - 已知差异：引导消息在 transcript 里是普通的用户记录，重新加载历史时显示为单独一轮，实时显示时在同一轮里。
-  - 输入转换（`src/runtime/userInput.ts`）：CLI 只在消息以 `/名称` 开头时执行命令，内容数组只检查最后一个块（2.1.294–2.1.301 实测）。所以第一个技能提到开头、正文作为参数；其余技能留作参数里的 `/名称` 文本；文本以 `/` 开头且带图片时，图片排在前面、文本合成最后一块（#773）。受限档位不加载项目与用户设置，这些技能不展开，消息原样交给模型。
+  - 输入转换（`src/runtime/userInput.ts`）：CLI 只在消息以 `/名称` 开头时执行命令，内容数组只检查最后一个块（2.1.294–2.1.301 实测）。所以第一个技能提到开头、正文作为参数；其余技能留作参数里的 `/名称` 文本；文本以 `/` 开头且带图片时，图片排在前面、文本合成最后一块（#773）。受限档位的技能经合成插件加载，命令位置的 `/名称` 发送前改写成 `/mimi:名称`（见[受限执行边界](#受限执行边界488)）。
 - **单一驱动方（#658）**：`thread/takeover`。同一会话同一时刻只有一个 Claude 进程在写。
   - 占用登记（`<配置目录>/sessions/<pid>.json`，Claude Code 为每个活进程写的文件）是唯一没有公开接口的依赖，只读。自己起的进程按 pid 排除；拿到 pid 之前，同一会话新出现的登记先不算别处，避免把自己当成别人。
   - 别处持有时会话只读：`thread/list`、`thread/resume` 带 `canAcceptDirectInput: false` 与 `claudeOwner` 摘要，`turn/start` 返回 `owned_elsewhere`。
@@ -95,7 +95,9 @@ agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置�
 
 `networkAccess=false` 同时禁止 Bash 出网、WebFetch 和 WebSearch。Bash 不允许脱离沙箱重试；沙箱不可用时 CLI 失败退出。原生 Windows 不支持 Bash 沙箱，因此受限档位禁用 shell，保留带路径检查的文件工具。未核实边界的 MCP、插件与子代理工具会被拒绝。审批只允许本次调用，不能通过权限建议扩大可写目录或网络范围。
 
-受限子进程不加载 user / project / local 设置，不启动本地 MCP；这些设置内的 hook、额外目录、allow rule 与 CLAUDE.md 不会自动加载。适配器不修改这些文件。完全访问的行为保持不变。CLI 自身的登录、模型请求、transcript 和会话状态写入不属于工具沙箱；`networkAccess=false` 指工具出网，不是切断模型 API。
+受限子进程不加载 user / project / local 设置，不启动本地 MCP；这些设置内的 hook、额外目录、allow rule 与 CLAUDE.md 不会自动加载。适配器不修改这些文件。完全访问的行为保持不变。
+
+受限档位的用户技能（`~/.claude/skills`）、项目技能（`.claude/skills`）与项目命令（`.claude/commands`）经适配器合成的本地插件加载（#775，`src/claude/skillPlugin.ts`）：每次起进程在临时目录生成只含 `skills/`、`commands/` 的插件，条目软链接回原位置，同名技能用户级优先，进程退出后删除。插件技能在 CLI 里登记为 `mimi:名称`，裸 `/名称` 只在 SKILL.md 写了 name 时才展开，所以适配器把命令位置的 `/名称` 改写成 `/mimi:名称`，历史里按 `/名称` 显示。技能只供用户主动调用：模型看不到技能列表（`skills: []`），Skill 工具被拒。技能 frontmatter 与插件里的命令 hook 在沙箱外执行，受限档位用 `disableAllHooks` 关闭（不影响适配器自己的 SDK 回调 hook）；技能内联的 `` !`命令` `` 在 Bash 沙箱内执行，原生 Windows 没有沙箱，换成占位文本。CLI 自身的登录、模型请求、transcript 和会话状态写入不属于工具沙箱；`networkAccess=false` 指工具出网，不是切断模型 API。
 
 工作区模式仍使用 Claude 自带的临时目录。`excludeTmpdirEnv=true` 或 `excludeSlashTmp=true` 无法等价兑现，直接拒绝。历史环境变量 `CLAUDE_BRIDGE_SANDBOX_POLICY=guarded|inherit` 不会放宽 TS 适配器的边界；两种取值使用相同限制。
 
@@ -105,7 +107,7 @@ agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置�
 MIMI_CLAUDE_POLICY_TEST_BIN="$(command -v claude)" bun test test/sandboxPolicy.native.test.ts
 ```
 
-验收包含两种环境变量取值下的工作区 / 只读模式、内外写入、软链接外写、网络拒绝，以及本机配置试图放宽边界的情况。普通 `bun test` 跳过此项；macOS 已实测，Linux 与原生 Windows 的运行态验收分别记录，不能用 macOS 结果替代。
+验收包含两种环境变量取值下的工作区 / 只读模式、内外写入、软链接外写、网络拒绝，本机配置试图放宽边界的情况，以及经合成插件加载的项目技能展开、用户技能加载、技能自带的命令 hook 不执行、模型看不到技能列表。普通 `bun test` 跳过此项；macOS 已实测，Linux 与原生 Windows 的运行态验收分别记录，不能用 macOS 结果替代。
 
 ## 在开发机上试用
 

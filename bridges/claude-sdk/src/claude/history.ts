@@ -6,6 +6,7 @@ import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import type { TurnStatus } from "../protocol/codex/v2/TurnStatus.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
 import { ItemIdAllocator } from "./itemIds.ts";
+import { SKILL_PLUGIN_NAME } from "./skillPlugin.ts";
 import { completeToolItem, isHiddenTool, toolUseItem, unfinishedToolItem, type ToolOutput } from "./tools.ts";
 
 /** SDK SessionMessage 中本模块用到的字段。 */
@@ -23,6 +24,8 @@ type Block = Record<string, unknown> & { type?: unknown };
 const INTERRUPT_MARKER = /^\[Request interrupted by user[^\]]*\]$/;
 const COMMAND_NAME = /<command-name>([\s\S]*?)<\/command-name>/;
 const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
+// 受限档位的技能经合成插件执行，CLI 记作 `/mimi:名称`；按用户输入的 `/名称` 显示（#775）。
+const SKILL_PLUGIN_PREFIX = new RegExp(`^/?${SKILL_PLUGIN_NAME}:`);
 // CLI 不把这些当作用户提问显示：本地命令输出、caveat、后台任务完成通知。
 const INTERNAL_PREFIXES = ["<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>", "<task-notification>"];
 
@@ -70,7 +73,7 @@ function classifyUserText(text: string): Prompt | undefined {
   if (INTERNAL_PREFIXES.some((prefix) => trimmed.startsWith(prefix))) return { kind: "internal" };
   const command = COMMAND_NAME.exec(trimmed);
   if (command) {
-    const name = command[1]!.trim();
+    const name = command[1]!.trim().replace(SKILL_PLUGIN_PREFIX, "/");
     const args = COMMAND_ARGS.exec(trimmed)?.[1]?.trim();
     const display = `${name.startsWith("/") ? name : `/${name}`}${args ? ` ${args}` : ""}`;
     return { kind: "prompt", input: [{ type: "text", text: display, text_elements: [] }] };

@@ -139,6 +139,17 @@ describe("messagesToTurns", () => {
     ]);
   });
 
+  test("restricted-mode skill commands show without the synthetic plugin prefix", () => {
+    const turns = translate([
+      user("<command-message>mimi:review</command-message>\n<command-name>/mimi:review</command-name>\n<command-args>check this</command-args>"),
+      user("<command-name>/other:review</command-name>"),
+    ]);
+    expect(turns.map((turn) => turn.items[0]!.type === "userMessage" && turn.items[0]!.content)).toEqual([
+      [{ type: "text", text: "/review check this", text_elements: [] }],
+      [{ type: "text", text: "/other:review", text_elements: [] }],
+    ]);
+  });
+
   test("a compaction summary becomes a context compaction item", () => {
     const turns = translate([
       user("This session is being continued from a previous conversation...", { isCompactSummary: true }),

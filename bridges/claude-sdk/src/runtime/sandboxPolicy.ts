@@ -57,7 +57,8 @@ function contains(root: string, target: string): boolean {
 const FILE_WRITES: Record<string, string> = { Write: "file_path", Edit: "file_path", NotebookEdit: "notebook_path" };
 const LOCAL_TOOLS = new Set(["Read", "Glob", "Grep", "Bash", "AskUserQuestion", "TodoWrite", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskOutput", "TaskStop", "EnterPlanMode", "ExitPlanMode"]);
 
-export async function sandboxOptions(policy: ExecutionPolicy, cwd: string, platform: NodeJS.Platform = process.platform): Promise<Partial<Options>> {
+/** skillPlugin：用户与项目技能的合成插件目录（见 claude/skillPlugin），只在受限档位使用。 */
+export async function sandboxOptions(policy: ExecutionPolicy, cwd: string, platform: NodeJS.Platform = process.platform, skillPlugin?: string): Promise<Partial<Options>> {
   // 完全访问沿用原行为，不额外改变 bypass permissions。
   if (policy.type === "dangerFullAccess") return {};
   const directory = await realpath(cwd);
@@ -70,6 +71,13 @@ export async function sandboxOptions(policy: ExecutionPolicy, cwd: string, platf
     // 防止本机 / 项目 allowWrite、excludedCommands、MCP 或命令 hook 扩大本次声明。
     // 只覆盖子进程启动参数，不改用户文件。CLAUDE_BRIDGE_SANDBOX_POLICY 不参与边界选择。
     settingSources: [],
+    // 用户与项目技能、项目命令只经合成插件加载，只供用户以 `/名称` 主动调用：模型看不到技能列表，
+    // Skill 工具也不在下面的本地工具白名单里（#775）。
+    ...(skillPlugin ? { plugins: [{ type: "local" as const, path: skillPlugin, skipMcpDiscovery: true }] } : {}),
+    skills: [],
+    // 技能 frontmatter 与插件里的命令 hook 在沙箱外执行（实测），受限档位一律不跑；下面的 SDK 回调
+    // hook 不受影响。原生 Windows 没有 Bash 沙箱，技能里的 !`命令` 换成占位文本，其余照常展开。
+    settings: { disableAllHooks: true, ...(platform === "win32" ? { disableSkillShellExecution: true } : {}) },
     strictMcpConfig: true,
     mcpServers: {},
     // 原生 Windows 没有 Claude Bash 沙箱；保留可核对路径的文件工具，明确禁用 shell。
