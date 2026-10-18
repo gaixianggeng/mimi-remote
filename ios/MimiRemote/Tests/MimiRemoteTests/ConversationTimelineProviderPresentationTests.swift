@@ -592,6 +592,30 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         XCTAssertEqual(ConversationActivityPresentationText.reasoningText(for: claude, isExpanded: true), thinking)
     }
 
+    func testReasoningAccessibilityLabelKeepsStatusHiddenFromRow() {
+        func message(status: String) -> ConversationMessage {
+            let thinking = "Checking the guide.\n\nThen searching."
+            return ConversationMessage(
+                stableID: "thinking-a11y", turnID: "turn", role: .system, kind: .reasoningSummary,
+                content: thinking, sendStatus: .confirmed,
+                activityPayload: ConversationActivityPayload(
+                    category: .thinking, displayTitle: L10n.text("ui.reasoning_summary"), subtitle: thinking, status: status
+                )
+            )
+        }
+        let separator = L10n.text("ui.list_separator")
+
+        XCTAssertEqual(
+            ConversationActivityPresentationText.reasoningAccessibilityLabel(for: message(status: "inProgress"), isExpanded: false),
+            "Checking the guide.\(separator)\(L10n.text("ui.in_progress"))",
+            "视觉上去掉的进行中状态，旁白仍要读出"
+        )
+        XCTAssertEqual(
+            ConversationActivityPresentationText.reasoningAccessibilityLabel(for: message(status: "failed"), isExpanded: true),
+            "Checking the guide.\n\nThen searching.\(separator)\(L10n.text("ui.failed_status"))"
+        )
+    }
+
     func testCompactStepDetailOnlyNamesNoteworthyStatus() {
         func status(_ status: String, exitCode: Int? = nil) -> String? {
             ConversationActivityPresentationText.noteworthyStatus(for: ConversationActivityPayload(

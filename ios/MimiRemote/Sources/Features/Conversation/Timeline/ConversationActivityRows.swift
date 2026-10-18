@@ -429,7 +429,7 @@ struct ConversationActivityRow: View, Equatable {
 
     private var activityAccessibilityDescription: String {
         if isReasoning {
-            return reasoningText
+            return ConversationActivityPresentationText.reasoningAccessibilityLabel(for: message, isExpanded: isExpanded)
         }
         return message.activityPayload?.accessibilityDescription ?? [
             activityTitle,
@@ -537,6 +537,16 @@ enum ConversationActivityPresentationText {
             .first { !$0.isEmpty }
             ?? message.activityPayload?.displayTitle
             ?? text
+    }
+
+    /// 视觉上只显示思考内容，旁白仍要读出进行中、失败或中断等状态。
+    static func reasoningAccessibilityLabel(for message: ConversationMessage, isExpanded: Bool) -> String {
+        [
+            isExpanded ? reasoningText(for: message, isExpanded: true) : reasoningPreview(for: message),
+            message.activityPayload?.displayStatusText,
+        ]
+            .compactMap { $0?.conversationActivityTrimmedNonEmpty }
+            .joined(separator: L10n.text("ui.list_separator"))
     }
 
     /// 成功与进行中已由图标、转圈和底部状态行表达；只有异常或等待需要文字。
