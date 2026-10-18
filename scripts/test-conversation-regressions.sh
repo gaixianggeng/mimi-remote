@@ -172,6 +172,9 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexContinuationUsesIndexWithoutRepairingFirstPageRows \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexGlobalDiscoveryUsesIndexAcrossPages \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexGlobalDiscoveryFallsBackWhenIndexUnsupported \
+  -only-testing:MimiRemoteTests/SessionStorePublishBudgetTests \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testGlobalLibraryPublishesAllRuntimeFirstPagesBeforeBackfill \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testGlobalLibraryFirstPageFailureDoesNotBlockOtherRuntimeFirstPages \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testScanFallbackContinuationKeepsItsQueryModeForDirectoryAndGlobalLists \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testGlobalIndexRepairsKnownMissingSessionsAcrossFilteredAndCompletePages \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerSessionRuntimeReconnectsAfterTransportReceiveFailure \
@@ -259,6 +262,8 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationTimelineProviderPresentationSnapshotTests \
   -only-testing:MimiRemoteTests/MarkdownRenderingTests \
   -only-testing:MimiRemoteTests/MessageTextSelectionTests \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLongHistoryFirstPresentationAndCachedReopenForBothProviders \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLongProseHistoryFirstPresentationAndCachedReopenForBothProviders \
   -only-testing:MimiRemoteTests/PairingLinkTests \
   -only-testing:MimiRemoteTests/TailcatExperimentRoutingTests \
   -only-testing:MimiRemoteTests/TailcatLocalEndpointProbeTests \

@@ -1,6 +1,20 @@
 import SwiftUI
 import UIKit
 
+enum MessageTextContent: Equatable {
+    case plain(String)
+    case markdown([MarkdownBlock])
+    case attributed(NSAttributedString)
+
+    func document(style: MessageTextStyle) -> MessageTextDocument {
+        switch self {
+        case let .plain(text): return .plain(text, style: style)
+        case let .markdown(blocks): return .markdown(blocks, style: style)
+        case let .attributed(text): return MessageTextDocument(text: text, codeBlocks: [])
+        }
+    }
+}
+
 struct MessageTextDocument {
     struct CodeBlock {
         let range: NSRange
@@ -22,7 +36,7 @@ struct MessageTextDocument {
     }
 }
 
-struct MessageTextStyle {
+struct MessageTextStyle: Equatable {
     let markdown: MarkdownStyle
     var fontPreset: ThemeUIFontPreset = .system
     var codeFontPreset: ThemeCodeFontPreset = .systemMono

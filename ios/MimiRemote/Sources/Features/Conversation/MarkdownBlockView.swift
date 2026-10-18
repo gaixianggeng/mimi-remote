@@ -57,7 +57,7 @@ struct MarkdownBlockView: View {
             blockquote(blocks)
         case let .codeBlock(language, code):
             if selectable {
-                MessageSelectableText(document: .markdown([block], style: textStyle), style: textStyle)
+                MessageSelectableText(content: .markdown([block]), style: textStyle)
             } else {
                 codeBlock(language: language, code: code)
             }
@@ -82,7 +82,7 @@ struct MarkdownBlockView: View {
         if selectable {
             let nativeFont = headingLevel.map { textStyle.headingFont(level: $0) } ?? textStyle.font(weight: bold ? .semibold : .regular)
             MessageSelectableText(
-                document: MessageTextDocument(text: textStyle.inline(inline, font: nativeFont), codeBlocks: []),
+                content: .attributed(textStyle.inline(inline, font: nativeFont)),
                 style: textStyle,
                 fillsWidth: expand
             )

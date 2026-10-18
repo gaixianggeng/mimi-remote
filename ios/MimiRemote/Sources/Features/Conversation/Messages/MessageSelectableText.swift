@@ -22,7 +22,7 @@ extension EnvironmentValues {
 struct MessageSelectableText: UIViewRepresentable {
     @Environment(\.messageTextActions) private var actions
     @Environment(\.openURL) private var openURL
-    let document: MessageTextDocument
+    let content: MessageTextContent
     let style: MessageTextStyle
     var fillsWidth = true
 
@@ -33,7 +33,7 @@ struct MessageSelectableText: UIViewRepresentable {
     func updateUIView(_ textView: MessageTextView, context: Context) {
         textView.messageActions = actions
         textView.openLink = { openURL($0) }
-        textView.apply(document, style: style)
+        textView.apply(content: content, style: style)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: MessageTextView, context: Context) -> CGSize? {
@@ -68,6 +68,7 @@ final class MessageTextView: UITextView, UITextViewDelegate, UIEditMenuInteracti
     private var pressLocation = CGPoint.zero
     private var document = MessageTextDocument(text: NSAttributedString(string: ""), codeBlocks: [])
     private var messageStyle: MessageTextStyle?
+    private var renderedContent: MessageTextContent?
     private var codeBackgrounds: [UIView] = []
     private var codeLabels: [UILabel] = []
     private var codeCopyButtons: [UIButton] = []
@@ -114,7 +115,16 @@ final class MessageTextView: UITextView, UITextViewDelegate, UIEditMenuInteracti
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    func apply(content: MessageTextContent, style: MessageTextStyle) {
+        // SwiftUI 会为尺寸探测和状态更新多次计算 body。正文与样式不变时，
+        // 沿用当前 TextKit 文档，避免重复构建整段富文本、重设代码控件和触发布局。
+        guard renderedContent != content || messageStyle != style else { return }
+        apply(content.document(style: style), style: style)
+        renderedContent = content
+    }
+
     func apply(_ updated: MessageTextDocument, style: MessageTextStyle) {
+        renderedContent = nil
         messageStyle = style
         tintColor = style.linkColor
         linkTextAttributes = [.foregroundColor: style.linkColor]

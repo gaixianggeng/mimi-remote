@@ -200,13 +200,15 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 				if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
 					payload = redacted
 				}
-				if !pending.redactOnly &&
-					appServerGatewayHistoryResponseCapBytes > 0 &&
-					len(payload) > appServerGatewayHistoryResponseCapBytes {
-					// 单个 turn 仍可能因命令、MCP 或 diff 输出超过 full cap。
-					// 只在原响应必然被阻断时把这些过程输出改成短预览 + 鉴权引用，
-					// 普通历史继续原样透传，不为小响应增加缓存或协议复杂度。
-					if dehydrated, changed := p.router.dehydrateOversizedHistoryOutputs(payload); changed {
+				overHardCap := appServerGatewayHistoryResponseCapBytes > 0 && len(payload) > appServerGatewayHistoryResponseCapBytes
+				if !pending.redactOnly && (overHardCap || len(payload) > appServerHistoryInlinePageBytes) {
+					// 按回合分页仍会携带很大的工具输出；在耗尽网络与手机解析预算前，
+					// 复用按需读取。问答正文保持完整，不等到 5 MiB 硬上限才减负。
+					minimumItemBytes := appServerHistoryInlineOutputBytes
+					if overHardCap {
+						minimumItemBytes = appServerHistoryOutputMinItemBytes
+					}
+					if dehydrated, changed := p.router.dehydrateHistoryOutputs(payload, minimumItemBytes); changed {
 						payload = dehydrated
 					}
 				}
