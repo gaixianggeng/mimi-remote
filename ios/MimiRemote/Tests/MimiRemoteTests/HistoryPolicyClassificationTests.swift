@@ -48,6 +48,52 @@ final class HistoryPolicyClassificationTests: XCTestCase {
             XCTAssertNotNil(failure, message)
             XCTAssertNil(failure?.reason, message)
         }
+
+        // 丢了 data 的同请求占用仍按繁忙处理，与带 reason 的 history_request_in_flight 一致。
+        let inFlight = store.historyPolicyFailure(from: gatewayRejection(
+            "thread/turns/list 相同历史或列表请求仍在执行，请稍后重试"
+        ))
+        XCTAssertEqual(inFlight?.reason, "history_request_in_flight")
+        XCTAssertEqual(inFlight?.isGatewayBusy, true)
+    }
+
+    func testFullHistoryLegacyInFlightRejectionRetriesFullWithoutSummaryNotice() async {
+        let project = makeProject(id: "proj_claude_legacy_in_flight")
+        let history = makeSession(
+            id: "claude_small_legacy_in_flight",
+            projectID: project.id,
+            title: "Claude 小会话",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "small"
+        )
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let conversationStore = ConversationStore()
+        let store = makeStore(client: client, conversationStore: conversationStore)
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+        client.failHistoryRequest(
+            at: 0,
+            with: gatewayRejection("thread/turns/list 相同历史或列表请求仍在执行，请稍后重试")
+        )
+        await client.waitForHistoryRequestCount(2)
+
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full], "同请求占用是繁忙，不能改发 economy")
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(id: "claude-small-reply", role: "assistant", content: "少量历史", createdAt: Date(timeIntervalSince1970: 30))
+            ])
+        )
+        await selectTask.value
+
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["少量历史"])
+        XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 
     func testFullHistoryAuthorizationRejectionShowsFullFailureInsteadOfSummary() async {

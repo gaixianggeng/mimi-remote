@@ -1085,14 +1085,21 @@ extension SessionStore {
         }
 
         let data = appServerError?.data?.objectValue
-        let reason = data?["reason"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let structuredReason = data?["reason"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let reason: String?
         // 结构化 reason 是权威分类：网关的限流、同请求占用与体量阻断都带 history_* reason，
         // 其他 reason（如 thread_read_scope_mismatch）与历史体量无关。
-        if let reason, !reason.isEmpty {
-            guard appServerError?.code == -32080, reason.hasPrefix("history_") else {
+        if let structuredReason, !structuredReason.isEmpty {
+            guard appServerError?.code == -32080, structuredReason.hasPrefix("history_") else {
                 return nil
             }
-        } else if !Self.isLegacyHistoryPolicyMessage(message) {
+            reason = structuredReason
+        } else if message.contains("-32080"), message.contains("相同历史或列表请求仍在执行") {
+            // 丢了 data 的同请求占用与 history_request_in_flight 同义：按繁忙原地重试，不能走体量降级。
+            reason = "history_request_in_flight"
+        } else if Self.isLegacyHistoryPolicyMessage(message) {
+            reason = nil
+        } else {
             return nil
         }
 
