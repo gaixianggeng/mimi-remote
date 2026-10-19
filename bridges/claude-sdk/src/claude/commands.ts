@@ -5,7 +5,9 @@
 import { query as sdkQuery, type SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import { RpcError } from "../rpc/frames.ts";
 import { sandboxOptions, type ExecutionPolicy } from "../runtime/sandboxPolicy.ts";
-import { logger } from "../util/logging.ts";
+import { errorText, logger } from "../util/logging.ts";
+import { createSkillPlugin, SKILL_PLUGIN_NAME } from "./skillPlugin.ts";
+import { claudeConfigDir } from "./transcripts.ts";
 
 export interface CommandEntry {
   name: string;
@@ -27,6 +29,10 @@ function typeable(name: string): boolean {
   return /^[^\s/]+$/.test(name) && !name.startsWith("__");
 }
 
+/** 受限档位经合成插件加载的技能与命令登记为 `mimi:名称`，CLI 在说明前加 `(mimi) `，菜单里不必重复。 */
+const PLUGIN_PREFIX = `${SKILL_PLUGIN_NAME}:`;
+const PLUGIN_LABEL = `(${SKILL_PLUGIN_NAME}) `;
+
 function shortened(text: string): string {
   const line = text.trim().replace(/\s+/g, " ");
   return line.length > DESCRIPTION_LIMIT ? `${line.slice(0, DESCRIPTION_LIMIT - 1)}…` : line;
@@ -47,9 +53,11 @@ export function catalogCommands(commands: readonly SlashCommand[], terminal: Rea
     if (existing && (existing.builtin || !builtin)) continue;
     const aliases = (command.aliases ?? []).map((alias) => alias.trim()).filter((alias) => typeable(alias) && alias !== name);
     const hint = command.argumentHint?.trim();
+    let description = command.description ?? "";
+    if (name.startsWith(PLUGIN_PREFIX) && description.startsWith(PLUGIN_LABEL)) description = description.slice(PLUGIN_LABEL.length);
     byName.set(name, {
       builtin,
-      entry: { name, description: shortened(command.description ?? ""), argumentHint: hint ? hint : null, aliases },
+      entry: { name, description: shortened(description), argumentHint: hint ? hint : null, aliases },
     });
   }
   return [...byName.values()].map((value) => value.entry);
@@ -68,35 +76,53 @@ export type DiscoverCommands = (cwd: string, policy: ExecutionPolicy, timeoutMs:
 /**
  * 起一个不带工具、不启动 MCP、不跑 hooks、不保存会话的 Claude 进程，只读 initialize 返回的
  * 命令目录，不发送任何消息。MCP 提供的命令因此不在其中，有常驻进程时以它为准。
- * 设置来源取自运行时同一个 sandboxOptions：完全访问不传 settingSources（SDK 缺省加载全部来源，
- * 与 CLI 相同），受限档位传 []，目录与该档位下真正跑起来的会话一致。
+ * 技能与命令的来源与运行时相同（同一个 sandboxOptions）：完全访问不传 settingSources（SDK 缺省
+ * 加载 user / project / local，与 CLI 相同）；受限档位不加载设置，用户与项目的技能和命令经同一个
+ * 合成插件加载，CLI 里登记为 `mimi:名称`（实测 2.1.301），与运行时实际执行的命令名一致。
  */
-export function sdkCommandDiscovery(claudeExecutable: () => string, startQuery: typeof sdkQuery = sdkQuery): DiscoverCommands {
+export function sdkCommandDiscovery(
+  claudeExecutable: () => string,
+  startQuery: typeof sdkQuery = sdkQuery,
+  configDir: () => string = claudeConfigDir,
+): DiscoverCommands {
   return async (cwd, policy, timeoutMs) => {
-    const { settingSources } = await sandboxOptions(policy, cwd);
-    const abortController = new AbortController();
-    const idle: AsyncIterable<never> = {
-      [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => {}) }),
-    };
-    const query = startQuery({
-      prompt: idle,
-      options: {
-        abortController,
-        cwd,
-        pathToClaudeCodeExecutable: claudeExecutable(),
-        tools: [],
-        strictMcpConfig: true,
-        persistSession: false,
-        settings: { disableAllHooks: true },
-        ...(settingSources ? { settingSources } : {}),
-      },
-    });
-    const timer = setTimeout(() => abortController.abort(), timeoutMs);
+    // 生成失败只是目录里少了这些技能，与运行时一样照常读取。
+    const plugin = loadsSettings(policy)
+      ? undefined
+      : await createSkillPlugin(cwd, configDir()).catch((error) => {
+          logger.warn("commands.skills_unavailable", { error: errorText(error) });
+          return undefined;
+        });
     try {
-      return await query.supportedCommands();
+      const { settingSources, plugins, skills, settings } = await sandboxOptions(policy, cwd, process.platform, plugin?.path);
+      const abortController = new AbortController();
+      const idle: AsyncIterable<never> = {
+        [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => {}) }),
+      };
+      const query = startQuery({
+        prompt: idle,
+        options: {
+          abortController,
+          cwd,
+          pathToClaudeCodeExecutable: claudeExecutable(),
+          tools: [],
+          strictMcpConfig: true,
+          persistSession: false,
+          settings: { ...(settings && typeof settings === "object" ? settings : {}), disableAllHooks: true },
+          ...(settingSources ? { settingSources } : {}),
+          ...(plugins ? { plugins } : {}),
+          ...(skills ? { skills } : {}),
+        },
+      });
+      const timer = setTimeout(() => abortController.abort(), timeoutMs);
+      try {
+        return await query.supportedCommands();
+      } finally {
+        clearTimeout(timer);
+        query.close();
+      }
     } finally {
-      clearTimeout(timer);
-      query.close();
+      await plugin?.dispose().catch(() => {});
     }
   };
 }

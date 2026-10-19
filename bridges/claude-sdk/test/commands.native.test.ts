@@ -10,7 +10,7 @@ const executable = process.env.MIMI_CLAUDE_POLICY_TEST_BIN;
 const native = executable ? describe : describe.skip;
 
 native("Claude Code 命令目录发现", () => {
-  test("完全访问列出用户与项目的命令和技能，受限档位只有内置", async () => {
+  test("完全访问按原名、受限档位按合成插件的 mimi: 名称列出用户与项目的命令和技能", async () => {
     const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "mimi-native-commands-")));
     const config = path.join(root, "config");
     const cwd = path.join(root, "workspace");
@@ -30,11 +30,16 @@ native("Claude Code 命令目录发现", () => {
     try {
       const discover = sdkCommandDiscovery(() => executable!);
       const probes = ["mimi-user-probe", "mimi-project-probe", "mimi-skill-probe"];
+      const qualified = probes.map((probe) => `mimi:${probe}`);
       const full = (await discover(cwd, { type: "dangerFullAccess" }, 30_000)).map((command) => command.name);
       expect(full).toEqual(expect.arrayContaining([...probes, "compact"]));
-      const restricted = (await discover(cwd, { type: "workspaceWrite", networkAccess: false }, 30_000)).map((command) => command.name);
-      expect(restricted).toContain("compact");
-      for (const probe of probes) expect(restricted).not.toContain(probe);
+      for (const name of qualified) expect(full).not.toContain(name);
+      // 受限档位不加载设置，经运行时同一个合成插件加载，名字与运行时改写后执行的 `/mimi:名称` 一致。
+      const restricted = await discover(cwd, { type: "workspaceWrite", networkAccess: false }, 30_000);
+      const names = restricted.map((command) => command.name);
+      expect(names).toEqual(expect.arrayContaining([...qualified, "compact"]));
+      for (const probe of probes) expect(names).not.toContain(probe);
+      expect(restricted.find((command) => command.name === "mimi:mimi-skill-probe")?.aliases).toContain("mimi-skill-probe");
     } finally {
       for (const key of keys) {
         if (saved[key] === undefined) delete process.env[key];

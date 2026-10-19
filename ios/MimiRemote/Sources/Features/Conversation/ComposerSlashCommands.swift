@@ -121,23 +121,12 @@ extension ComposerView {
         )
     }
 
-    /// 排在 App 自己的命令之后。与 App 命令同名的条目不列出（App 入口优先，例如 `/model` 打开选择器）。
+    /// 排在 App 自己的命令之后，规则见 ComposerSlashCommand.runtimeCommands。
     func claudeSlashCommands(excluding localCommands: [ComposerSlashCommand]) -> [ComposerSlashCommand] {
-        let localNames = Set(localCommands.map(\.name))
-        return sessionStore.claudeSlashCommands(for: claudeSlashCommandCatalogKey)
-            .filter { command in
-                !localNames.contains(command.name) && localNames.isDisjoint(with: command.aliases)
-            }
-            .map { command in
-                ComposerSlashCommand(
-                    action: .runtimeCommand(command.name),
-                    name: command.name,
-                    title: command.argumentHint ?? "",
-                    detail: command.description,
-                    systemImage: "terminal",
-                    aliases: command.aliases
-                )
-            }
+        ComposerSlashCommand.runtimeCommands(
+            sessionStore.claudeSlashCommands(for: claudeSlashCommandCatalogKey),
+            excludingNames: Set(localCommands.map(\.name))
+        )
     }
 
     func refreshClaudeSlashCommandCatalog() async {

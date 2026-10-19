@@ -122,6 +122,28 @@ struct ComposerSlashCommand: Identifiable, Hashable {
     }
 }
 
+extension ComposerSlashCommand {
+    /// Claude Code 自带的命令与技能。与 App 命令同名的条目不列出（App 入口优先，例如 `/model` 打开选择器）；
+    /// 只是别名撞名时保留条目、去掉该别名：受限档位的技能登记为 `mimi:名称`，原名只作别名（#775）。
+    static func runtimeCommands(
+        _ commands: [ClaudeSlashCommand],
+        excludingNames localNames: Set<String>
+    ) -> [ComposerSlashCommand] {
+        commands
+            .filter { !localNames.contains($0.name) }
+            .map { command in
+                ComposerSlashCommand(
+                    action: .runtimeCommand(command.name),
+                    name: command.name,
+                    title: command.argumentHint ?? "",
+                    detail: command.description,
+                    systemImage: "terminal",
+                    aliases: command.aliases.filter { !localNames.contains($0) }
+                )
+            }
+    }
+}
+
 enum ComposerAutocompleteSuggestion: Identifiable {
     case command(ComposerSlashCommand)
     case skill(SkillCapability)

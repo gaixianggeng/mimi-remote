@@ -18,6 +18,11 @@ final class ClaudeSlashCommandCatalogTests: XCTestCase {
                 "argumentHint": .string(" "),
                 "aliases": .array([.string("cost")])
             ]),
+            .object([
+                "name": .string("mimi:proj-skill"),
+                "description": .string("project skill"),
+                "aliases": .array([.string("proj-skill")])
+            ]),
             .object(["name": .string("claude.ai Notion:page (MCP)"), "description": .string("spaces")]),
             .object(["name": .string("a/b")]),
             .object(["name": .string("compact"), "description": .string("duplicate")]),
@@ -25,7 +30,8 @@ final class ClaudeSlashCommandCatalogTests: XCTestCase {
         ])])
         XCTAssertEqual(ClaudeSlashCommand.parseListResult(result), [
             ClaudeSlashCommand(name: "compact", description: "Free up context", argumentHint: "<instructions>", aliases: []),
-            ClaudeSlashCommand(name: "usage", description: "Show usage", argumentHint: nil, aliases: ["cost"])
+            ClaudeSlashCommand(name: "usage", description: "Show usage", argumentHint: nil, aliases: ["cost"]),
+            ClaudeSlashCommand(name: "mimi:proj-skill", description: "project skill", argumentHint: nil, aliases: ["proj-skill"])
         ])
         XCTAssertEqual(ClaudeSlashCommand.parseListResult(nil), [])
     }
@@ -99,6 +105,22 @@ final class ClaudeSlashCommandCatalogTests: XCTestCase {
         await store.refreshClaudeSlashCommands(for: legacy)
         XCTAssertEqual(store.claudeSlashCommands(for: legacy), [])
         XCTAssertEqual(client.requests.filter { $0.cwd == "/legacy" }.count, 1, "旧主机不反复探测")
+    }
+
+    func testRuntimeCommandsSkipLocalNamesButKeepPluginSkillsWithCollidingAliases() {
+        let commands = ComposerSlashCommand.runtimeCommands(
+            [
+                ClaudeSlashCommand(name: "plan", description: "", argumentHint: nil, aliases: []),
+                ClaudeSlashCommand(name: "mimi:plan", description: "project skill", argumentHint: "<task>", aliases: ["plan"]),
+                ClaudeSlashCommand(name: "usage", description: "Show usage", argumentHint: nil, aliases: ["cost"])
+            ],
+            excludingNames: ["model", "permissions", "plan"]
+        )
+        XCTAssertEqual(commands.map(\.name), ["mimi:plan", "usage"], "与 App 命令同名的条目不列出")
+        XCTAssertEqual(commands.first?.aliases, [], "受限档位的插件技能保留，只去掉撞名的别名")
+        XCTAssertEqual(commands.first?.title, "<task>")
+        XCTAssertEqual(commands.first?.action, .runtimeCommand("mimi:plan"))
+        XCTAssertEqual(commands.last?.aliases, ["cost"])
     }
 
     func testRuntimeCommandsMatchAliasesAndKeepDistinctIdentities() {

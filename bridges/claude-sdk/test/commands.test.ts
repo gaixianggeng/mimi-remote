@@ -1,6 +1,8 @@
 // slashCommand/list 的整理规则与缓存（#765）。常驻进程与真实 SDK 链路见 runtime.e2e.test.ts。
 import { describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import type { SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import { CommandCatalog, catalogCommands, sdkCommandDiscovery, type DiscoverCommands } from "../src/claude/commands.ts";
 import { createCommandHandlers } from "../src/handlers/commands.ts";
@@ -31,6 +33,22 @@ describe("catalogCommands", () => {
       { name: "compact", description: "compact command", argumentHint: "<instructions>", aliases: [] },
       { name: "usage", description: "usage command", argumentHint: null, aliases: ["cost", "stats"] },
       { name: "my-skill", description: "my-skill command", argumentHint: null, aliases: [] },
+    ]);
+  });
+
+  test("lists restricted-mode plugin skills under their mimi: names without the plugin label", () => {
+    const entries = catalogCommands(
+      [
+        command("mimi:proj-skill", { description: "(mimi) project skill", argumentHint: "<y>", aliases: ["proj-skill"] }),
+        command("mimi:other-name", { description: "(mimi) name differs", aliases: ["other-name", "mimi:dir-name"] }),
+        command("other-plugin:tool", { description: "(other-plugin) keeps its label" }),
+      ],
+      new Set(),
+    );
+    expect(entries).toEqual([
+      { name: "mimi:proj-skill", description: "project skill", argumentHint: "<y>", aliases: ["proj-skill"] },
+      { name: "mimi:other-name", description: "name differs", argumentHint: null, aliases: ["other-name", "mimi:dir-name"] },
+      { name: "other-plugin:tool", description: "(other-plugin) keeps its label", argumentHint: null, aliases: [] },
     ]);
   });
 
@@ -121,26 +139,49 @@ describe("CommandCatalog", () => {
 });
 
 describe("sdkCommandDiscovery", () => {
-  // 目录要与该档位下真正跑起来的会话一致：设置来源取自运行时同一个 sandboxOptions，
-  // 完全访问不传（SDK 缺省加载 user / project / local，与 CLI 相同），受限档位传 []。
-  test("uses the runtime's setting sources for each execution policy", async () => {
-    const seen: Array<Record<string, unknown>> = [];
+  // 目录要与该档位下真正跑起来的会话一致：选项取自运行时同一个 sandboxOptions。完全访问不传
+  // settingSources（SDK 缺省加载 user / project / local，与 CLI 相同）；受限档位不加载设置，
+  // 用户与项目技能经运行时同一个合成插件加载。
+  test("passes the runtime's skill sources for each execution policy and removes the plugin afterwards", async () => {
+    const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "mimi-commands-discovery-")));
+    const config = path.join(root, "config");
+    const cwd = path.join(root, "workspace");
+    mkdirSync(path.join(config, "skills", "user-skill"), { recursive: true });
+    mkdirSync(path.join(cwd, ".claude", "commands"), { recursive: true });
+    writeFileSync(path.join(config, "skills", "user-skill", "SKILL.md"), "---\nname: user-skill\n---\nu\n");
+    writeFileSync(path.join(cwd, ".claude", "commands", "proj-cmd.md"), "p\n");
+    const seen: Array<{ options: Record<string, unknown>; pluginExists: boolean }> = [];
     const startQuery = ((args: { options: Record<string, unknown> }) => {
-      seen.push(args.options);
+      const plugins = args.options.plugins as Array<{ path: string }> | undefined;
+      seen.push({ options: args.options, pluginExists: plugins ? existsSync(path.join(plugins[0]!.path, "skills", "user-skill")) : false });
       return { supportedCommands: async () => [command("compact")], close: () => {} };
     }) as unknown as Parameters<typeof sdkCommandDiscovery>[1];
-    const discover = sdkCommandDiscovery(() => "claude", startQuery);
-    const cwd = os.tmpdir();
-    for (const policy of [FULL, RESTRICTED, { type: "readOnly", networkAccess: false } as ExecutionPolicy]) {
-      expect((await discover(cwd, policy, 1_000)).map((entry) => entry.name)).toEqual(["compact"]);
-      const options = seen.at(-1)!;
-      const runtime = await sandboxOptions(policy, cwd);
-      expect("settingSources" in options).toBe("settingSources" in runtime);
-      expect(options.settingSources).toEqual(runtime.settingSources);
-      expect(options).toMatchObject({ cwd, tools: [], strictMcpConfig: true, persistSession: false, settings: { disableAllHooks: true } });
+    const discover = sdkCommandDiscovery(() => "claude", startQuery, () => config);
+    try {
+      for (const policy of [FULL, RESTRICTED, { type: "readOnly", networkAccess: false } as ExecutionPolicy]) {
+        expect((await discover(cwd, policy, 1_000)).map((entry) => entry.name)).toEqual(["compact"]);
+        const { options, pluginExists } = seen.at(-1)!;
+        const plugin = (options.plugins as Array<{ path: string }> | undefined)?.[0]?.path;
+        const runtime = await sandboxOptions(policy, cwd, process.platform, plugin);
+        for (const key of ["settingSources", "plugins", "skills"] as const) {
+          expect(key in options).toBe(key in runtime);
+          expect(options[key]).toEqual(runtime[key]);
+        }
+        expect(options.settings).toMatchObject({ ...(runtime.settings as object | undefined), disableAllHooks: true });
+        expect(options).toMatchObject({ cwd, tools: [], strictMcpConfig: true, persistSession: false });
+        if (policy.type === "dangerFullAccess") {
+          expect(plugin).toBeUndefined();
+        } else {
+          // 插件在读取期间存在，读完即删。
+          expect(pluginExists).toBe(true);
+          expect(existsSync(plugin!)).toBe(false);
+        }
+      }
+      expect("settingSources" in seen[0]!.options).toBe(false);
+      expect(seen[1]!.options.settingSources).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
-    expect("settingSources" in seen[0]!).toBe(false);
-    expect(seen[1]!.settingSources).toEqual([]);
   });
 });
 
