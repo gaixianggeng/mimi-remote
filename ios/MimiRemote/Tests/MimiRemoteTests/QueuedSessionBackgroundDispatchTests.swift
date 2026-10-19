@@ -189,6 +189,60 @@ final class QueuedSessionBackgroundDispatchTests: XCTestCase {
         }
     }
 
+    // MARK: - #803 后台排队发送结果的错误归属
+
+    func testBackgroundQueuedWriterConflictOutcomeStaysWithOriginalSession() async throws {
+        let outcomes: [TurnSendOutcome] = [.uncertain(message: writerConflict), .rejected(message: writerConflict)]
+        for (index, outcome) in outcomes.enumerated() {
+            let fixture = try await makeLeftQueueFixture(suffix: "outcome-\(index)")
+            let store = fixture.store
+            let originalID = fixture.original.id
+            store.setErrorMessage("当前会话原有提示")
+            let background = try XCTUnwrap(fixture.log.latest(connectedTo: originalID))
+            background.emitStatus(.connected)
+            background.emitEvent(.turnCompleted(turnMetadata(
+                sessionID: originalID,
+                turnID: try XCTUnwrap(fixture.original.activeTurnID)
+            )))
+            try await waitForSentTurnCount(1, socket: background)
+            let clientMessageID = try XCTUnwrap(background.sentTurns.first?.clientMessageID)
+
+            background.onTurnSendOutcome?(clientMessageID, outcome)
+
+            try await waitUntil("排队消息按结果收口") {
+                fixture.conversationStore.messages(for: originalID).contains {
+                    $0.clientMessageID == clientMessageID && $0.sendStatus == .failed
+                }
+            }
+            XCTAssertTrue(store.hasActiveWriterConflict(sessionID: originalID), "冲突记到排队项所属会话")
+            XCTAssertFalse(store.hasActiveWriterConflict(sessionID: fixture.other.id))
+            XCTAssertEqual(store.selectedSessionID, fixture.other.id)
+            XCTAssertTrue(store.canSendInSelectedSession, "当前会话仍可发送")
+            XCTAssertEqual(store.errorMessage, "当前会话原有提示", "当前会话的提示不被覆盖")
+        }
+    }
+
+    func testForegroundQueuedWriterConflictStillShowsOnCurrentSession() async throws {
+        let fixture = try await makeLeftQueueFixture(suffix: "foreground", leaveTo: nil)
+        let store = fixture.store
+        let originalID = fixture.original.id
+        let foreground = try XCTUnwrap(fixture.log.latest(connectedTo: originalID))
+        foreground.emitEvent(.turnCompleted(turnMetadata(
+            sessionID: originalID,
+            turnID: try XCTUnwrap(fixture.original.activeTurnID)
+        )))
+        try await waitForSentTurnCount(1, socket: foreground)
+        let clientMessageID = try XCTUnwrap(foreground.sentTurns.first?.clientMessageID)
+
+        foreground.onTurnSendOutcome?(clientMessageID, .rejected(message: writerConflict))
+
+        try await waitUntil("前台失败照常提示") {
+            store.errorMessage == L10n.text("ui.codex_active_writer_conflict")
+        }
+        XCTAssertTrue(store.hasActiveWriterConflict(sessionID: originalID))
+        XCTAssertFalse(store.canSendInSelectedSession)
+    }
+
     // MARK: - Fixture
 
     private enum LeaveDestination: CustomStringConvertible {
@@ -211,10 +265,10 @@ final class QueuedSessionBackgroundDispatchTests: XCTestCase {
         let log: SocketLog
     }
 
-    /// 在运行中的原会话里排队一条消息，然后离开到列表或另一个运行中的会话。
+    /// 在运行中的原会话里排队一条消息，然后离开到列表或另一个运行中的会话；`nil` 表示留在原会话。
     private func makeLeftQueueFixture(
         suffix: String,
-        leaveTo destination: LeaveDestination = .otherSession,
+        leaveTo destination: LeaveDestination? = .otherSession,
         reconnectDelay: ((Int) -> UInt64)? = nil,
         reconnectSleep: @escaping (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) },
         networkPathStatusSource: (any NetworkPathStatusSource)? = nil
@@ -259,6 +313,8 @@ final class QueuedSessionBackgroundDispatchTests: XCTestCase {
             await store.selectSession(other)
             try XCTUnwrap(log.latest(connectedTo: other.id)).emitStatus(.connected)
             try await waitForWebSocketStatus(.connected, store: store)
+        case nil:
+            break
         }
         return LeftQueueFixture(
             store: store,
