@@ -68,10 +68,74 @@ func (p *appServerGatewayPolicy) prunePendingThreadsLocked(now time.Time) {
 			// 或连接关闭释放。pending 总量上限继续约束异常连接的内存占用。
 			continue
 		}
-		if pending.createdAt.IsZero() || now.Sub(pending.createdAt) > appServerGatewayPendingThreadTTL {
-			delete(p.pendingThreads, id)
+		if !pending.expired && (pending.createdAt.IsZero() || now.Sub(pending.createdAt) > appServerGatewayPendingThreadTTL) {
+			// 过期只改状态不删除：上游迟早会回这个 id，删掉登记就等于把迟到的
+			// 全局列表、搜索结果原样放行。条目继续占用总量上限，响应或关闭时释放。
+			pending.expired = true
+			p.pendingThreads[id] = pending
 		}
 	}
+}
+
+// requestIDInFlight 判断请求 id 是否仍在等上游响应。响应只能按 id 认领，同 id 的
+// 两条请求同时在途时，先到的响应会被当成另一条处理，真正的响应就对不上登记了。
+func (p *appServerGatewayPolicy) requestIDInFlight(id *json.RawMessage) bool {
+	key := gatewayRequestIDKey(id)
+	if key == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	p.prunePendingThreadsLocked(now)
+	p.prunePendingClientRequestsLocked(now)
+	if _, ok := p.pendingThreads[key]; ok {
+		return true
+	}
+	_, ok := p.pendingClientRequests[key]
+	return ok
+}
+
+// unroutableResponseReason 在成功响应进入裁剪与授权前做认领检查，返回非空即整帧丢弃：
+//   - late：登记已超过网关等待时长，客户端早已放弃，不再裁剪、登记或下发；
+//   - unmatched：本连接没有任何在途请求认领这个 id，例如 bridge 断线重放上一条
+//     连接的响应，或同 id 的另一条响应已经先认领。
+//
+// 错误响应不带会话数据，仍走原路径释放登记并下发，broker 也靠它撤销启动占位。
+func (p *appServerGatewayPolicy) unroutableResponseReason(frame *appServerGatewayFrame, tracked bool) (string, appServerGatewayPendingThreadRequest) {
+	key := gatewayRequestIDKey(frame.ID)
+	if key == "" || len(frame.Error) > 0 {
+		return "", appServerGatewayPendingThreadRequest{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	p.prunePendingThreadsLocked(now)
+	p.pruneHistoryLocked(now)
+	pending, ok := p.pendingThreads[key]
+	if ok && pending.expired {
+		// managed checkout 与 fork 从不过期，这里没有 lease 需要释放。
+		delete(p.pendingThreads, key)
+		return "late", pending
+	}
+	_, history := p.pendingHistory[key]
+	if !ok && !history && !tracked {
+		return "unmatched", appServerGatewayPendingThreadRequest{}
+	}
+	return "", appServerGatewayPendingThreadRequest{}
+}
+
+func logGatewayDroppedResponse(runtimeID string, reason string, id *json.RawMessage, requestMethod string, pending appServerGatewayPendingThreadRequest) {
+	method := pending.method
+	if method == "" {
+		method = requestMethod
+	}
+	waited := ""
+	if !pending.createdAt.IsZero() {
+		waited = time.Since(pending.createdAt).Round(time.Millisecond).String()
+	}
+	log.Printf("app-server gateway 丢弃上游响应 reason=%s runtime=%s method=%s id=%s waited=%s",
+		reason, normalizeAppServerRuntimeID(runtimeID), method, sanitizeGatewayDiagnostic(gatewayRequestIDKey(id)), waited)
 }
 
 func (p *appServerGatewayPolicy) allowedThread(threadID string) (appServerGatewayAllowedThread, bool) {
@@ -189,7 +253,13 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 	}
 	observeHistoryGrants := false
 	if gatewayFrameIsResponse(&frame) {
-		p.rememberAccountTokenUsageResponse(&frame, time.Now())
+		clientRequest, tracked := p.consumePendingClientRequest(frame.ID)
+		if reason, pending := p.unroutableResponseReason(&frame, tracked); reason != "" {
+			p.cancelPendingHistoryRequest(frame.ID)
+			logGatewayDroppedResponse(p.runtimeID, reason, frame.ID, clientRequest.method, pending)
+			return payload, false, nil
+		}
+		p.rememberAccountTokenUsageResponse(&frame, clientRequest.method, time.Now())
 		if pending, ok := p.consumePendingHistoryRequest(frame.ID); ok {
 			if len(frame.Error) == 0 && len(frame.Result) > 0 {
 				if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
@@ -806,10 +876,12 @@ func gatewayFrameIsResponse(frame *appServerGatewayFrame) bool {
 		(len(frame.Result) > 0 || len(frame.Error) > 0)
 }
 
-func (p *appServerGatewayPolicy) rememberPendingClientRequest(id *json.RawMessage, method string) error {
+// rememberPendingClientRequest 登记一条即将转发给上游的请求。成功响应要由这张表、
+// pendingThreads 或 pendingHistory 认领，都对不上就丢弃（见 unroutableResponseReason）。
+func (p *appServerGatewayPolicy) rememberPendingClientRequest(id *json.RawMessage, method string) {
 	key := gatewayRequestIDKey(id)
 	if key == "" {
-		return fmt.Errorf("%s 请求缺少 id", method)
+		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -819,10 +891,18 @@ func (p *appServerGatewayPolicy) rememberPendingClientRequest(id *json.RawMessag
 		p.pendingClientRequests = map[string]appServerGatewayPendingClientRequest{}
 	}
 	if _, exists := p.pendingClientRequests[key]; !exists && len(p.pendingClientRequests) >= appServerGatewayPendingClientRequestMax {
-		return fmt.Errorf("gateway pending client request 过多")
+		// 满载只说明上游积压了大量没回的请求。挤掉最旧的一条，不拒绝新请求：
+		// 被挤掉的那条若之后才回，只会作为对不上的响应被丢弃。
+		oldestKey := ""
+		var oldest time.Time
+		for candidate, pending := range p.pendingClientRequests {
+			if oldestKey == "" || pending.createdAt.Before(oldest) {
+				oldestKey, oldest = candidate, pending.createdAt
+			}
+		}
+		delete(p.pendingClientRequests, oldestKey)
 	}
 	p.pendingClientRequests[key] = appServerGatewayPendingClientRequest{method: method, createdAt: now}
-	return nil
 }
 
 func (p *appServerGatewayPolicy) consumePendingClientRequest(id *json.RawMessage) (appServerGatewayPendingClientRequest, bool) {

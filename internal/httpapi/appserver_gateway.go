@@ -124,8 +124,12 @@ var (
 	appServerGatewayPongWait = appServerGatewayPingPeriod +
 		appServerGatewayLargeFrameMaxWriteWindow + appServerGatewayWriteWindow +
 		appServerGatewayPongGrace
-	appServerGatewayPendingThreadTTL              = 30 * time.Second
-	appServerGatewayPendingThreadMax              = 128
+	// iOS 等会话类请求最长 60 秒（longRunningRequestTimeout）。网关的等待必须更长：
+	// 客户端仍在等的 thread/start、thread/list 响应要完成裁剪与授权登记；只有过了
+	// 这个时长才到的响应才按迟到丢弃（见 prunePendingThreadsLocked）。
+	appServerGatewayPendingThreadTTL = 2 * time.Minute
+	appServerGatewayPendingThreadMax = 128
+	// 在途请求表登记每条转发给上游的请求 id，TTL 同样覆盖客户端的最长等待。
 	appServerGatewayPendingClientRequestTTL       = 2 * time.Minute
 	appServerGatewayPendingClientRequestMax       = 256
 	appServerGatewayPendingServerRequestTTL       = 24 * time.Hour
@@ -346,6 +350,10 @@ type appServerGatewayPendingThreadRequest struct {
 	threadID            string
 	managedWorktreePath string
 	createdAt           time.Time
+	// expired 表示已超过网关等待时长，客户端早已放弃。登记保留到响应到达或连接
+	// 关闭：迟到的成功响应据此丢弃，同 id 的新请求也据此拒绝，不能因为登记消失
+	// 就把未裁剪的响应原样放行。
+	expired bool
 }
 
 type appServerGatewayPendingClientRequest struct {

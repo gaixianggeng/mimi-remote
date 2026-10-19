@@ -52,6 +52,11 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	if !p.methodAllowed(method) {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server method 不允许：" + method}
 	}
+	if p.requestIDInFlight(frame.ID) {
+		// 在任何登记或 lease 之前拒绝：响应只能按 id 认领，两条同 id 请求同时在途时，
+		// 裁剪和授权会落到错误的那条响应上。
+		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server request id 重复：同 id 的请求仍在等待上游响应"}
+	}
 	params, err := decodeGatewayParams(frame.Params)
 	if err != nil {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
@@ -82,15 +87,13 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
-	if frame.ID != nil && normalizeAppServerRuntimeID(p.runtimeID) == "codex" && method == "account/usage/read" {
-		if err := p.rememberPendingClientRequest(frame.ID, method); err != nil {
-			return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
-		}
-	}
 	if p.isClosed() {
 		p.cancelPendingHistoryRequest(frame.ID)
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server gateway 连接已关闭"}
+	}
+	if frame.ID != nil {
+		p.rememberPendingClientRequest(frame.ID, method)
 	}
 	if method == "initialize" {
 		// 只有完整通过策略校验并即将转发的 initialize 才能更新连接能力。
