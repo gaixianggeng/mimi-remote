@@ -381,6 +381,9 @@ extension SessionStore {
                 recoveredSession.status = "running"
                 recoveredSession.activeTurnID = activeTurnID
                 recoveredSession = sessionPreservingActiveApproval(recoveredSession)
+                // 本机上一轮的完成标记不能压过这份权威快照：电脑端已经开始新一轮，
+                // 会话必须保持进行中，下一条消息才会进入排队（#805）。
+                clearLocalCompletionMark(recoveredSession.id)
                 upsert(recoveredSession)
                 if let optimisticSessionID, let clientMessageID {
                     conversationStore.updateSendStatus(
@@ -400,7 +403,7 @@ extension SessionStore {
                 if let optimisticSelectionLease,
                    isSelectionLeaseCurrent(optimisticSelectionLease) {
                     connectWebSocket(recoveredSession, replayBufferedEvents: true)
-                    setStatusMessage(error.localizedDescription)
+                    setStatusMessage(L10n.text("ui.a_reply_is_still_in_progress_this_message_was_not_sent"))
                     setErrorMessage(nil)
                 }
                 return false
