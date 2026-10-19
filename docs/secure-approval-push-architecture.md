@@ -23,6 +23,7 @@
 - 回复和失败通知只有查看详情，不能获得审批权限。点击后通过原私有连接获取本机路由，并打开来源 Mac 和任务。App 正在展示该任务时不播放声音或横幅。
 - 通知定位记录落盘在设备注册表旁（`push-routes.json`，权限 0600），只含 runtime、线程 id、作用域 id、工作目录、设备集与到期时间，不含正文、标题或 Token；最多 256 条、按原始推送时刻保留 24 小时，Mac 服务重启既不清空也不延长有效期，重启前已推送的 turn 不会再推一次。定位记录不赋予任何审批权限：审批句柄仍只在内存、重启即作废，已在另一台设备处理完的审批照样能定位到会话，只是 `state` 说明它不可再操作。点开通知时 agentd 按当前作用域配置重新推导该线程的授权，路径已不在项目、browse root 或 worktree 之内则不补种。失效通知不执行任何操作，用户仍可在任务列表查看历史。此版本不是持久化消息收件箱。
 - 锁屏显示会话标题（2026-09-10，#418）：`turn.*` 消息与审批一样带 `aps.mutable-content: 1`，允许设备上的 Notification Service Extension（`com.gaixianggeng.mimi.notificationservice`）在展示前改写标题、副标题和正文。标题与项目名只来自 App 写在 App Group 里的本地缓存，键是会话匿名标签（即 `aps.thread-id`）；Provider 与 APNs 收到的仍然只有本地化 key 和匿名标签，从不接触标题。缓存未命中或旧版 App 没有该扩展时，照常显示通用文案。
+- DeepSeek 回复提醒（2026-10-19，#568）：DeepSeek 走原生 Harness 中继，不经 app-server 网关，App 断开后 agentd 原本看不到任何会话事件。现在手机经 agentd 提交 `session/prompt` 前，agentd 先登记这次 `requestId`，再自己对该会话开一条只读 `session/follow`（不取 assistantStream）；看到 `user/message.source.rpcId` 等于这次提交后，下一条 `turn/end` 按 `reason.kind` 映射为 `turn.completed`（completed）、`turn.interrupted`（aborted）或 `turn.failed`（其它），经同一个 pushbridge 入口投递，随后退订。只提醒包含 Mimi 提交的回合；每会话一条、全局最多 16 条、最长 6 小时；开场快照的 `header.cwd` 不在授权范围内时不推送。设备须在注册时声明 `supports_deepseek_messages`，旧版 App 不会收到 `runtime=deepseek`（它们没有对应标题文案）。点开通知时定位接口只校验目录仍在授权范围内，不往网关线程缓存里补种：原生中继每次请求都按 Harness 会话摘要重新授权。
 
 ## 方案
 

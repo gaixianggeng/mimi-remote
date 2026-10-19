@@ -121,7 +121,9 @@ type Router struct {
 	activeClaudeBridge         int
 	claudeBridge               *claudeBridgeSupervisor
 	// Harness 原生资源由独立 owner 关闭和限流，Router 只负责入口与组合。
+	// harnessTurnPush 在手机离线后继续观察经 Mimi 提交的 DeepSeek 回合，结束时推送提醒。
 	harnessNative                 harnessNativeResources
+	harnessTurnPush               harnessTurnPushWatchers
 	tailcat                       tailcatSidecar
 	managedPairing                managedPairingService
 	tailcatLocalToken             string
@@ -348,6 +350,8 @@ func (r *Router) Shutdown() {
 	}
 	r.shutdownOnce.Do(func() {
 		r.harnessNative.shutdown()
+		// 观察订阅可能正在投递回合提醒，必须先于 push.Close 退出。
+		r.harnessTurnPush.shutdown()
 		r.shutdownCodexGateways()
 		if r.push != nil {
 			// 等在途通知投递结束并落盘定位记录，之后才拆运行时与临时目录。

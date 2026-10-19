@@ -570,6 +570,22 @@
         }
       }
     },
+    "push.message.title.deepseek": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek message"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 消息"
+          }
+        }
+      }
+    },
     "$%@": {
       "shouldTranslate": false
     },
