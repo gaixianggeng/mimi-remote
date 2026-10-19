@@ -163,12 +163,20 @@ extension SessionStore {
             // 只剩 claude），写死成"恒可用"会让选择器在一个 codex 通道不可用的主机上
             // 仍然提供 codex，而真正能用的 claude 不会顶上来。
             var availableRuntimeProviders: Set<String> = []
+            var unprobedProviders: Set<String> = []
             for provider in RuntimeFeatureSupport.runtimeProviders {
-                if (try? await client.runtimeChannelAvailable(runtimeProvider: provider)) == true {
-                    availableRuntimeProviders.insert(provider)
+                do {
+                    if try await client.runtimeChannelAvailable(runtimeProvider: provider) {
+                        availableRuntimeProviders.insert(provider)
+                    }
+                } catch {
+                    unprobedProviders.insert(provider)
                 }
             }
             guard appStore.activeHostScope == hostScope else { return }
+            // 探测抛错只说明这次没探成（回前台换代、Harness 健康探测失败），不等于通道关闭：
+            // 沿用上一次的结论，只有明确返回 false 才撤下，避免可用通道挂上「点击重新检查」（#777）。
+            availableRuntimeProviders.formUnion(self.availableRuntimeProviders.intersection(unprobedProviders))
             self.availableRuntimeProviders = availableRuntimeProviders
             if availableRuntimeProviders.contains(Self.nativeHarnessRuntimeProvider) {
                 // 用户已启用、agentd 能力兼容且 Harness 健康后，才建立宿主级事件流。
@@ -189,11 +197,23 @@ extension SessionStore {
             let options = try await client.modelOptions()
             guard appStore.activeHostScope == hostScope else { return }
             appServerModelOptionsLastRefresh = Date()
+            // 聚合目录里某个 Runtime 缺席（次要通道这次没拉成）时，不能记成已刷新，也不能清掉
+            // 它上一份目录；否则菜单会落到内置兜底，直到强制刷新才变成真实目录（#778）。
+            let refreshedProviders = Set(options.map { Self.normalizedRuntimeProvider($0.runtimeProvider) })
             for provider in RuntimeFeatureSupport.runtimeProviders {
-                turnModelRefreshByRuntime[provider] = (hostScope, Date())
+                if refreshedProviders.contains(provider) {
+                    turnModelRefreshByRuntime[provider] = (hostScope, Date())
+                } else {
+                    turnModelRefreshByRuntime.removeValue(forKey: provider)
+                }
             }
-            if !options.isEmpty || force {
-                appServerModelOptions = options
+            if !options.isEmpty {
+                appServerModelOptions = options + appServerModelOptions.filter {
+                    let provider = Self.normalizedRuntimeProvider($0.runtimeProvider)
+                    return !refreshedProviders.contains(provider) && availableRuntimeProviders.contains(provider)
+                }
+            } else if force {
+                appServerModelOptions = []
             }
             if force {
                 setStatusMessage(options.isEmpty ? L10n.text("ui.model_list_empty_using_built_in_options") : L10n.text("ui.model_list_refreshed"))
@@ -213,7 +233,8 @@ extension SessionStore {
         }
     }
 
-    private func prepareTurnModelOptions(runtimeProvider: String, hostScope: HostScope) async {
+    /// 发送解析与 Composer 共用：目录里还没有该 Runtime 时按 Runtime 定向补拉一次。
+    func prepareTurnModelOptions(runtimeProvider: String, hostScope: HostScope) async {
         guard appStore.activeHostScope == hostScope else { return }
         let provider = Self.normalizedRuntimeProvider(runtimeProvider)
         guard RuntimeFeatureSupport.runtimeProviders.contains(provider) else { return }
