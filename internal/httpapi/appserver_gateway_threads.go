@@ -2,9 +2,6 @@ package httpapi
 
 import (
 	"bytes"
-	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,8 +11,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-
-	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
 func (p *appServerGatewayPolicy) rememberPendingThreadResponseWithManagedUse(id *json.RawMessage, method string, cwd string, scopeID string, managedWorktreePath string) error {
@@ -576,191 +571,6 @@ func gatewayResolutionRequestKeys(rawParams json.RawMessage) []string {
 	return keys
 }
 
-func (p *appServerGatewayPolicy) resolveGlobalListCursor(params map[string]any) error {
-	raw, exists := params["cursor"]
-	if !exists || raw == nil {
-		return nil
-	}
-	token, ok := raw.(string)
-	token = strings.TrimSpace(token)
-	if !ok || token == "" {
-		return fmt.Errorf("thread/list.cursor 必须是非空字符串")
-	}
-	p.mu.Lock()
-	upstream, found := p.globalListCursors[token]
-	p.mu.Unlock()
-	if !found || strings.TrimSpace(upstream) == "" {
-		return fmt.Errorf("thread/list.cursor 已失效或不属于当前授权连接")
-	}
-	params["cursor"] = upstream
-	return nil
-}
-
-func (p *appServerGatewayPolicy) storeGlobalListCursor(upstream string) (string, error) {
-	upstream = strings.TrimSpace(upstream)
-	if upstream == "" {
-		return "", nil
-	}
-	raw := make([]byte, 18)
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("生成 thread/list 安全 cursor 失败")
-	}
-	token := "mimi_" + base64.RawURLEncoding.EncodeToString(raw)
-	p.mu.Lock()
-	if p.globalListCursors == nil || len(p.globalListCursors) >= appServerGatewayGlobalCursorMax {
-		// cursor 只在当前 gateway 连接内有效。容量到顶时整体换代比逐项 LRU 更简单，
-		// 旧页继续请求会明确失败，不会退回接受 upstream 原始 cursor。
-		p.globalListCursors = map[string]string{}
-	}
-	p.globalListCursors[token] = upstream
-	p.mu.Unlock()
-	return token, nil
-}
-
-func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
-	payload []byte,
-	pending appServerGatewayPendingThreadRequest,
-) ([]byte, []appServerGatewayAllowedThread, error) {
-	var response map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &response); err != nil {
-		return nil, nil, fmt.Errorf("thread/list response 无效")
-	}
-	var resultFields map[string]json.RawMessage
-	if raw := response["result"]; len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &resultFields) != nil {
-		return nil, nil, fmt.Errorf("thread/list response.result 必须是对象")
-	}
-	dataRaw, ok := resultFields["data"]
-	if !ok || bytes.Equal(bytes.TrimSpace(dataRaw), []byte("null")) {
-		return nil, nil, fmt.Errorf("thread/list response.data 必须是数组")
-	}
-	var rawItems []json.RawMessage
-	if err := json.Unmarshal(dataRaw, &rawItems); err != nil {
-		return nil, nil, fmt.Errorf("thread/list response.data 必须是数组")
-	}
-
-	limit := int64(appServerGatewayThreadListMaxLimit)
-	if pending.responseLimitSet {
-		limit = pending.responseLimit
-	}
-	if limit <= 0 || limit > appServerGatewayThreadListMaxLimit {
-		limit = appServerGatewayThreadListMaxLimit
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	var projectByCommonDir map[string]projects.Project
-	projectByPath := map[string]projects.Project{}
-	safeItems := make([]map[string]any, 0, min(len(rawItems), int(limit)))
-	allowedThreads := make([]appServerGatewayAllowedThread, 0, cap(safeItems))
-	for _, rawItem := range rawItems {
-		if int64(len(safeItems)) >= limit || ctx.Err() != nil {
-			break
-		}
-		var itemFields map[string]json.RawMessage
-		var thread appServerGatewayThreadWire
-		if json.Unmarshal(rawItem, &itemFields) != nil || json.Unmarshal(rawItem, &thread) != nil {
-			continue
-		}
-		threadIDRaw := firstNonEmptyRaw(thread.ID, thread.ThreadID, thread.SessionID)
-		cwdRaw := firstNonEmptyRaw(thread.CWD, thread.Path)
-		threadID := strings.TrimSpace(threadIDRaw)
-		cwd := strings.TrimSpace(cwdRaw)
-		if threadID == "" || threadID != threadIDRaw || cwd == "" || cwd != cwdRaw || !filepath.IsAbs(cwd) {
-			continue
-		}
-		scope, ok := p.router.gatewayScopeForPath(cwd)
-		if !ok {
-			continue
-		}
-		info, err := os.Stat(scope.realPath)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		project := scope.project
-		if strings.TrimSpace(project.ID) == "" && scope.browse {
-			var resolved bool
-			project, resolved = projectByPath[scope.realPath]
-			if !resolved {
-				if commonDir, ok := gitCommonDirectory(ctx, scope.realPath); ok {
-					if projectByCommonDir == nil {
-						projectByCommonDir = p.authorizedProjectsByGitCommonDir(ctx)
-					}
-					project = projectByCommonDir[commonDir]
-				}
-				projectByPath[scope.realPath] = project
-			}
-		}
-		if strings.TrimSpace(project.ID) == "" {
-			continue
-		}
-
-		// 外部 browse-root Worktree 和所有显式 parent 子会话都只有“可读发现”资格。
-		// 上游即使声明 canAcceptDirectInput=true，也不能越过 Phase 1 父会话管理边界。
-		forceReadOnly := scope.browse || strings.TrimSpace(thread.ParentThreadID) != ""
-		canAccept := false
-		directInputKnown := forceReadOnly || thread.CanAcceptDirectInput != nil
-		if thread.CanAcceptDirectInput != nil && !forceReadOnly {
-			canAccept = *thread.CanAcceptDirectInput
-		}
-
-		safeThread := copyGatewayRawFields(itemFields,
-			"id", "sessionId", "threadId", "parentThreadId", "cwd", "path",
-			"name", "preview", "status", "modelProvider", "source", "threadSource",
-			"agentNickname", "agentRole", "gitInfo", "createdAt", "updatedAt", "recencyAt",
-			"canAcceptDirectInput",
-			// Claude bridge 在会话被本机其他 Claude 进程持有时附带的持有方摘要
-			// （entrypoint/kind/status/pid），只用于展示"正在 Mac 上运行"，不参与授权。
-			"claudeOwner",
-			// Claude 桌面版"主会话派生会话"的父会话 ID，只用于列表分组展示。
-			// 它不是 parentThreadId：派生会话是完整会话，不因此变成只读。
-			"spawnedFromThreadId",
-		)
-		if forceReadOnly {
-			safeThread["canAcceptDirectInput"] = false
-		}
-		safeThread["mimiRemote"] = map[string]any{
-			"projectId":   project.ID,
-			"projectName": project.Name,
-			"projectPath": project.Path,
-			"discovery":   "global",
-			"readOnly":    forceReadOnly,
-		}
-		safeItems = append(safeItems, safeThread)
-		allowedThreads = append(allowedThreads, appServerGatewayAllowedThread{
-			id:                   threadID,
-			runtimeID:            normalizeAppServerRuntimeID(p.runtimeID),
-			cwd:                  scope.realPath,
-			scopeID:              scope.id,
-			canAcceptDirectInput: canAccept,
-			directInputKnown:     directInputKnown,
-			readOnly:             forceReadOnly,
-		})
-	}
-
-	safeResult := map[string]any{"data": safeItems}
-	if rawCursor, exists := resultFields["nextCursor"]; exists && !bytes.Equal(bytes.TrimSpace(rawCursor), []byte("null")) {
-		var upstreamCursor string
-		if json.Unmarshal(rawCursor, &upstreamCursor) == nil && strings.TrimSpace(upstreamCursor) != "" {
-			cursor, err := p.storeGlobalListCursor(upstreamCursor)
-			if err != nil {
-				return nil, nil, err
-			}
-			safeResult["nextCursor"] = cursor
-		}
-	} else if exists {
-		safeResult["nextCursor"] = nil
-	}
-	safeResponse := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      response["id"],
-		"result":  safeResult,
-	}
-	rewritten, err := json.Marshal(safeResponse)
-	if err != nil {
-		return nil, nil, fmt.Errorf("重写 thread/list response 失败：%w", err)
-	}
-	return rewritten, allowedThreads, nil
-}
-
 func (p *appServerGatewayPolicy) enforceReadOnlyThreadResponse(payload []byte, threadID string) []byte {
 	allowed, ok := p.allowedThread(threadID)
 	if !ok || !allowed.readOnly {
@@ -838,53 +648,6 @@ func (p *appServerGatewayPolicy) validateReadOnlyThreadResponse(
 		return fmt.Errorf("thread/read 返回的只读子会话 cwd 不可用")
 	}
 	return nil
-}
-
-func (p *appServerGatewayPolicy) authorizedProjectsByGitCommonDir(ctx context.Context) map[string]projects.Project {
-	grouped := map[string][]projects.Project{}
-	out := map[string]projects.Project{}
-	for _, project := range p.router.projects.List() {
-		commonDir, ok := gitCommonDirectory(ctx, project.RealPath)
-		if !ok {
-			continue
-		}
-		grouped[commonDir] = append(grouped[commonDir], project)
-	}
-	for commonDir, candidates := range grouped {
-		if project, ok := selectAuthorizedProjectForGitCommonDir(commonDir, candidates); ok {
-			out[commonDir] = project
-		}
-	}
-	return out
-}
-
-func selectAuthorizedProjectForGitCommonDir(commonDir string, candidates []projects.Project) (projects.Project, bool) {
-	if len(candidates) == 1 {
-		return candidates[0], true
-	}
-
-	var primary projects.Project
-	primaryCount := 0
-	for _, project := range candidates {
-		// linked worktree 的 .git 是指向 common-dir/worktrees/* 的文件；只有普通
-		// 主工作树的 .git 目录（或其目录 symlink）会解析到仓库 common-dir。
-		// 多 Project 共仓时据此稳定归属到唯一主项目，缺失或重复主项目仍 fail-closed。
-		gitMarker := filepath.Join(project.RealPath, ".git")
-		info, err := os.Stat(gitMarker)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		realGitMarker, err := filepath.EvalSymlinks(gitMarker)
-		if err != nil || filepath.Clean(realGitMarker) != filepath.Clean(commonDir) {
-			continue
-		}
-		primary = project
-		primaryCount++
-	}
-	if primaryCount != 1 {
-		return projects.Project{}, false
-	}
-	return primary, true
 }
 
 func copyGatewayRawFields(src map[string]json.RawMessage, keys ...string) map[string]any {

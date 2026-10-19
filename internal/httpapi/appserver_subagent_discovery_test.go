@@ -69,7 +69,10 @@ func TestAuthorizedProjectsByGitCommonDirUsesUniquePrimaryProject(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	projectByCommonDir := policy.authorizedProjectsByGitCommonDir(ctx)
+	projectByCommonDir, settled := policy.authorizedProjectsByGitCommonDir(ctx)
+	if !settled {
+		t.Fatal("项目 Git 归属应在预算内判定完")
+	}
 	commonDir, ok := gitCommonDirectory(ctx, externalWorktree)
 	if !ok {
 		t.Fatal("外部 Worktree 应能解析 Git 共享目录")
@@ -81,7 +84,7 @@ func TestAuthorizedProjectsByGitCommonDirUsesUniquePrimaryProject(t *testing.T) 
 
 	t.Run("multiple worktrees without primary fail closed", func(t *testing.T) {
 		ambiguous := newPolicy(t, projectConfigs[1:])
-		if got := ambiguous.authorizedProjectsByGitCommonDir(ctx); len(got) != 0 {
+		if got, _ := ambiguous.authorizedProjectsByGitCommonDir(ctx); len(got) != 0 {
 			t.Fatalf("缺少主工作树时不得猜测 Project 归属：%+v", got)
 		}
 	})
@@ -91,13 +94,14 @@ func TestAuthorizedProjectsByGitCommonDirUsesUniquePrimaryProject(t *testing.T) 
 			{ID: "root-b", Name: "Root B", Path: projectDir},
 			projectConfigs[1],
 		})
-		if got := duplicate.authorizedProjectsByGitCommonDir(ctx); len(got) != 0 {
+		if got, _ := duplicate.authorizedProjectsByGitCommonDir(ctx); len(got) != 0 {
 			t.Fatalf("同一路径重复配置为多个 Project 时不得猜测归属：%+v", got)
 		}
 	})
 }
 
 func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t *testing.T) {
+	relaxGlobalListGitWait(t)
 	browseRoot := t.TempDir()
 	var projectDir string
 	var externalWorktree string
