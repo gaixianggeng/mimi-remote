@@ -2757,9 +2757,11 @@ extension SessionStore {
     /// App 回前台或网络恢复时，不能复用“签名没变化”的旧快照。Claude 自主 turn 可能在
     /// detached 期间完成，而 thread/list 的 revision 尚未及时更新；每个恢复代次必须绕过缓存
     /// 拉一次完整历史。成功后只需状态回放，失败时由调用方保留 full replay 兜底。
+    /// 与列表刷新并行的调用方传 `reconcilesSessionState: false`，等列表落地后再自行校准状态。
     func reconcileHistoryForRecovery(
         sessionID: SessionID,
-        generation: UInt64
+        generation: UInt64,
+        reconcilesSessionState: Bool = true
     ) async -> Bool {
         if reconciledRecoveryGenerationBySessionID[sessionID] == generation {
             // 必须返回本代请求结果，不能用旧 full snapshot 冒充本次成功。
@@ -2790,7 +2792,7 @@ extension SessionStore {
         let didLoadFullHistory = didLoad && historyLoadedQualityBySessionID[sessionID] == .full
         reconciledRecoveryGenerationBySessionID[sessionID] = generation
         recoveryHistorySucceededBySessionID[sessionID] = didLoadFullHistory
-        if didLoadFullHistory, let refreshed = sessionsByID[sessionID] {
+        if didLoadFullHistory, reconcilesSessionState, let refreshed = sessionsByID[sessionID] {
             // 历史内容和 thread 状态是两个权威面；随后再校准一次状态，清除陈旧 running。
             await reconcileSessionStateAfterHistoryRefresh(refreshed)
         }
