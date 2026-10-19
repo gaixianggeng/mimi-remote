@@ -647,10 +647,8 @@ extension SessionStore {
         }
         setErrorMessage(nil)
         disconnectWebSocket()
-        if let previousSession, supportsCodexThreadManagement(previousSession) {
-            if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
-                ensureQueuedSessionMonitoring(sessionID: previousSession.id)
-            }
+        if let previousSession {
+            continueQueuedMonitoringAfterLeaving(previousSession)
         }
     }
 
@@ -870,12 +868,8 @@ extension SessionStore {
         if wasNoOpSelection {
             return true
         }
-        if let previousSession,
-           previousSession.id != session.id,
-           supportsCodexThreadManagement(previousSession) {
-            if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
-                ensureQueuedSessionMonitoring(sessionID: previousSession.id)
-            }
+        if let previousSession, previousSession.id != session.id {
+            continueQueuedMonitoringAfterLeaving(previousSession)
         }
         if let previousSession,
            previousSession.id != session.id,
