@@ -82,6 +82,7 @@ type pushFixtureOptions struct {
 	configPath string
 	projectDir string
 	seedThread bool
+	customize  func(*config.Config)
 }
 
 func pushTestFixtureWith(t *testing.T, upstreamURL string, providerURL string, opts pushFixtureOptions) (*httptest.Server, *Router) {
@@ -105,6 +106,9 @@ func pushTestFixtureWith(t *testing.T, upstreamURL string, providerURL string, o
 		Enabled:     true,
 		ProviderURL: providerURL,
 		Environment: "sandbox",
+	}
+	if opts.customize != nil {
+		opts.customize(&cfg)
 	}
 	configPath := opts.configPath
 	if configPath == "" {
