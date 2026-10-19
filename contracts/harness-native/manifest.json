@@ -209,6 +209,15 @@
       "at_0_1_5_rc_2": "装配了 agent 名册时返回 {sessionId, agentPreset}",
       "impact": "agentPreset 是可选字段，客户端不得假设其存在。",
       "liveConfirmed": true
+    },
+    {
+      "area": "用户取消的持久结算",
+      "at_0_1_5_rc_2": "assistant/attempt；end.outcome.eventType 同为 assistant/attempt",
+      "at_0_2_1_alpha_1": "有可见输出时为 assistant/message + data.interrupted=true（正文是已下发前缀，无 usage），end.outcome.eventType 为 assistant/message；无可见输出时仍为 assistant/attempt",
+      "impact": "end 帧与正常结算同形，只看 eventType 会把半截内容当成完整回复；必须按 outcome.seq 处持久记录的 data.interrupted 判定，不按版本号猜格式。",
+      "liveConfirmed": true,
+      "liveEvidence": "#809 三渠道验收（2026-10-19）：经 agentd 中继的 deepseek-flash 会话，首个 text-delta 后 session/cancel，2/2 复现；无可见输出分支属源码级（dsh-agent-loop interruptedBlocks()）。",
+      "fixture": "fixtures/stream/assistant-stream-cancel.json"
     }
   ],
   "assistantStream": {
@@ -222,8 +231,17 @@
     "endOutcome": {
       "shape": "{kind:'committed', eventType, seq}",
       "seqMeaning": "该次提交在持久日志里的 seq。",
-      "eventTypeRule": "正常结算（turn/end 为 completed 或 error）-> assistant/message；用户中止（turn/end 为 aborted）-> assistant/attempt。",
-      "cancelIsNotAbandoned": "用户取消不产生 kind:'abandoned'，它照样 committed，只能靠 eventType 区分。消费者不得把 kind:'committed' 当成『有完整正文』。",
+      "eventTypeRule": "正常结算（turn/end 为 completed 或 error）-> assistant/message；用户中止（turn/end 为 aborted）在 0.1.5-rc.2 -> assistant/attempt。",
+      "cancelIsNotAbandoned": "用户取消不产生 kind:'abandoned'，它照样 committed。消费者不得把 kind:'committed' 当成『有完整正文』。",
+      "cancelSettlementShapes": {
+        "rule": "按 outcome.seq 处持久记录的字段判定，不按版本号：assistant/attempt 表示没有提交可见消息；assistant/message 且 data.interrupted === true 表示正文是被取消前的前缀。",
+        "observedVersions": {
+          "0.1.5-rc.2": "assistant/attempt（实测）",
+          "0.2.1-alpha.1": "有可见输出 -> assistant/message + interrupted:true（实测 2/2）；无可见输出 -> assistant/attempt（源码级）"
+        },
+        "endFrameCarriesNoInterruptionMark": true,
+        "fixture": "fixtures/stream/assistant-stream-cancel.json"
+      },
       "liveConfirmed": true,
       "evidence": "只读 session/page 回读三个真实会话：completed->assistant/message@seq16；error->assistant/message@seq16；aborted(user)->assistant/attempt@seq16。",
       "abandonedUnobserved": true
@@ -258,7 +276,7 @@
     "root": "contracts/harness-native/fixtures",
     "desensitization": "协议常量（类型名、事件名、枚举值、键名、工具名、模型与供应方名）原样保留；用户数据（会话标识、路径、正文、工具参数、标题）替换为虚构夹具值。未登记字符串降级为 <string:N> 形式。",
     "digestAlgorithm": "sha256",
-    "digestNote": "H00 采集版本为 @deepseek-ai/dsh 0.1.5-rc.2（npm dist-tag latest，tag dsh-v0.1.5-rc.2）。逐文件 SHA-256 见 fixtureDigests；任一夹具被改写都必须同步更新摘要。",
+    "digestNote": "H00 采集版本为 @deepseek-ai/dsh 0.1.5-rc.2（npm dist-tag latest，tag dsh-v0.1.5-rc.2）。fixtures/stream/assistant-stream-cancel.json 由 #809 按 0.2.1-alpha.1 实测事实与安装包源码重建，版本记在该夹具的 provenance。逐文件 SHA-256 见 fixtureDigests；任一夹具被改写都必须同步更新摘要。",
     "files": [
       "fixtures/rpc/session-list.json",
       "fixtures/rpc/session-search.json",
@@ -270,6 +288,7 @@
       "fixtures/stream/mux-carrier.json",
       "fixtures/stream/follow-frames.json",
       "fixtures/stream/assistant-stream.json",
+      "fixtures/stream/assistant-stream-cancel.json",
       "fixtures/stream/durable-events.json",
       "fixtures/stream/events-interaction.json",
       "fixtures/stream/control-frames.json",
@@ -287,6 +306,7 @@
     "fixtures/stream/mux-carrier.json": "c81c4965766593c51979e6d398bccb3a34fad10531957b4eb159868f7223af92",
     "fixtures/stream/follow-frames.json": "0ed185ce83536a289c2cc27945231717ebb398ca8842593c74fdd2b31d475aac",
     "fixtures/stream/assistant-stream.json": "0797c10222574d70896d97debe423d0e19ca17114e2d69445553f7d97b11263c",
+    "fixtures/stream/assistant-stream-cancel.json": "fd27b2a5ab94e9b133bfdc9a15af87d12295e6be15ff970936a66ababbfbbe66",
     "fixtures/stream/durable-events.json": "d07fb3393ee2a2969aa870b923d5019eb4a2fe7761920c975de16e748a5f489e",
     "fixtures/stream/events-interaction.json": "3af7b060e462e842a4e571bcbd9273fd4d535c8b018cec5feb17788b7d73e619",
     "fixtures/stream/control-frames.json": "27bd9abcf07720185593d89ef6066b3e971655b8062c8060e52b64e0ed8f769b",
@@ -307,6 +327,7 @@
     {"case": "waterfall 帧缺 agentId 时不得认领唯一活跃会话", "expected": "不认领", "liveConfirmed": false},
     {"case": "wire chunk.type 不得出现 *_chunks（那是持久压缩记录的名字）", "expected": "按 StreamChunk 词表分支", "liveConfirmed": true},
     {"case": "用户取消的回合 outcome 仍是 committed，不得据此当作有完整正文", "expected": "按 eventType 区分 assistant/attempt", "liveConfirmed": true},
+    {"case": "0.2.x 取消落成 assistant/message + interrupted:true 时，eventType 为 assistant/message 也不得当作完整回复", "expected": "按持久记录 data.interrupted 判定为中断，保留前缀并显示中断标记", "liveConfirmed": true},
     {"case": "正文不得等 block-end 才渲染，必须按 text-delta 累积", "expected": "增量累积", "liveConfirmed": true},
     {"case": "session/page 的 throughSeq 不得写死或猜值，必须取自本次 follow 的 snapshot.cursor", "expected": "取自 snapshot.cursor", "liveConfirmed": true}
   ],

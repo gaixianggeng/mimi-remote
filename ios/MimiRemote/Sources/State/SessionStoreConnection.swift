@@ -3000,6 +3000,7 @@ extension SessionStore {
         turnModelTasksByRuntime.values.forEach { $0.task.cancel() }
         turnModelTasksByRuntime = [:]
         turnModelRefreshByRuntime = [:]
+        retainedModelCatalogProviders = []
         appServerPermissionProfiles = []
         activePermissionProfileBySessionID = [:]
         clearActiveCollaborationModes()
@@ -3008,6 +3009,7 @@ extension SessionStore {
         permissionProfilesRefreshRequestedCWD = nil
         isRefreshingPermissionProfiles = false
         availableRuntimeProviders = ["codex"]
+        threadGoalRuntimeProviders = ["codex"]
         accountRateLimitsByRuntime = [:]
         accountTokenUsage = nil
         accountTokenActivity = .idle

@@ -22,8 +22,10 @@ import Foundation
 ///
 /// 关键事实（实测，见 `stream/assistant-stream.json`）：
 /// - `outcome.kind` **恒为** `committed`，**用户取消也是 committed**
-///   （`run.aborted-by-user` 的 end 帧）。所以**不能**用 kind 判断"有完整正文"，
-///   只能看 `eventType`：正常结算 `assistant/message`，被取消 `assistant/attempt`。
+///   （`run.aborted-by-user` 的 end 帧）。所以**不能**用 kind 判断"有完整正文"。
+///   `eventType` 只说明有没有提交持久消息：`assistant/attempt` 没有；`assistant/message`
+///   有，但 0.2.x 的取消也走这里，正文是否被中断要看同 seq 持久记录的
+///   `interrupted`（`HarnessDurableEvent.isInterruptedAssistantMessage`）。
 /// - `revision` 连续递增（start 为 1），跳号即断档，必须重开 follow。
 /// - 重连后 revision **从 1 重新开始**，并带 `activeAttempt` 基线
 ///   （`recovery/recovery-semantics.json` 的 `reconnectBaseline`）。
@@ -288,9 +290,9 @@ struct HarnessSessionJournal: Equatable {
         attempt.lastRevision = frame.revision ?? attempt.lastRevision
         attempt.outcome = frame.outcome
         // 结算绑定：`outcome.seq` 指向持久日志里的那条记录。
-        // `kind` 不可用（取消也是 committed），只能用 eventType 区分：
-        //   assistant/message  → 正常文本结算
-        //   assistant/attempt  → 用户取消，不产生 assistant/message
+        // `kind` 不可用（取消也是 committed），eventType 只区分有没有持久消息：
+        //   assistant/message  → 提交了消息；0.2.x 取消时它带 interrupted: true
+        //   assistant/attempt  → 没有提交可见消息（0.1.5 的用户取消等）
         attempt.settledSeq = frame.outcome?.seq
         attempt.isSettled = true
         activeAttempt = attempt
@@ -393,11 +395,14 @@ struct HarnessJournalAttempt: Equatable {
         self.nextChunkIndex = nextChunkIndex
     }
 
-    /// 是否产生了完整正文。
+    /// 是否提交了一条持久助手消息（直播身份据此与 durable 记录对齐）。
     ///
     /// **不能用 `outcome.kind == "committed"` 判断**：用户取消也是 committed
     /// （实测 `run.aborted-by-user`）。只有 `eventType == "assistant/message"` 才说明
-    /// 上一条是正常结算的助手消息；`assistant/attempt` 表示被取消。
+    /// 持久日志里有这条消息；`assistant/attempt` 表示没有。
+    ///
+    /// 为 true 也不代表正文完整：0.2.x 的取消同样提交 `assistant/message`，只在持久记录上
+    /// 标 `interrupted: true`。中断标记由那条记录的投影负责。
     var producedAssistantMessage: Bool {
         guard isSettled else { return false }
         return outcome?.eventType == HarnessWireSettlement.assistantMessage

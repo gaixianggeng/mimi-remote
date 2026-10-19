@@ -24,6 +24,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.channelAvailable(runtimeProvider: runtimeProvider)
     }
 
+    func runtimeSupportsThreadGoals(runtimeProvider: String) async throws -> Bool {
+        try await runtime.threadGoalsSupported(runtimeProvider: runtimeProvider)
+    }
+
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse {
         try await runtime.capabilities(path: path, forceReload: forceReload)
     }
@@ -769,7 +773,9 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
                     secondaryOptions = try await native.modelOptions()
                 } else {
                     guard let runtime = secondary.runtime else { continue }
-                    guard (try? await runtime.channelAvailable(runtimeProvider: secondary.provider)) == true else {
+                    // 与 runtimeChannelAvailable 一样走 bundle 的共享快照：Claude actor 自己的缓存
+                    // 会错过 Codex 侧的失效信号，聚合目录就静默少了 Claude 这一半（#778）。
+                    guard (try? await bundle.channelAvailable(runtimeProvider: secondary.provider)) == true else {
                         continue
                     }
                     secondaryOptions = try await runtime.modelOptions()
@@ -821,6 +827,15 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         // 直接用 `bundle.codex.channelAvailable` 就会丢掉 Claude 那一侧的失效信号——
         // 表现为切换 Agent 后可用性仍停在旧配置（Codex 已可用却报不可用）。
         return try await bundle.channelAvailable(runtimeProvider: runtimeProvider)
+    }
+
+    func runtimeSupportsThreadGoals(runtimeProvider: String) async throws -> Bool {
+        // 原生 Harness 不消费 goal 参数；app-server 通道读共享快照里的声明。
+        guard bundle.nativeClient(for: runtimeProvider) == nil else { return false }
+        return CodexAppServerSessionRuntime.supportsThreadGoals(
+            runtimeProvider: runtimeProvider,
+            in: try await bundle.currentConfiguration()
+        )
     }
 
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {

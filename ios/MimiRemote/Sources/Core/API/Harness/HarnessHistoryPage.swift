@@ -146,6 +146,9 @@ enum HarnessHistoryProjection {
             ) else { continue }
             guard projected.activityPayload?.category == .toolCall else {
                 messages.append(projected)
+                if event.isInterruptedAssistantMessage {
+                    messages.append(interruptionMarker(after: projected, event: event))
+                }
                 continue
             }
             if let index = toolIndexByID[projected.id] {
@@ -295,6 +298,24 @@ enum HarnessHistoryProjection {
             content: text,
             createdAt: date(from: event),
             seq: event.seq.map(EventSequence.init)
+        )
+    }
+
+    /// 被中断回复后的标记行。与实时投影同一身份（`interruptionMarkerID`），
+    /// 重开会话时原位覆盖实时那条，不新增，也不因历史页只带正文而丢掉。
+    private static func interruptionMarker(
+        after assistant: CodexHistoryMessage,
+        event: HarnessDurableEvent
+    ) -> CodexHistoryMessage {
+        let id = HarnessPresentationProjector.interruptionMarkerID(forAssistantMessageID: assistant.id)
+        return CodexHistoryMessage(
+            id: id,
+            role: "system",
+            kind: .warning,
+            content: L10n.text("harness.reply_interrupted"),
+            createdAt: date(from: event),
+            itemID: id,
+            sendStatus: .confirmed
         )
     }
 

@@ -82,6 +82,7 @@ type pushFixtureOptions struct {
 	configPath string
 	projectDir string
 	seedThread bool
+	customize  func(*config.Config)
 }
 
 func pushTestFixtureWith(t *testing.T, upstreamURL string, providerURL string, opts pushFixtureOptions) (*httptest.Server, *Router) {
@@ -105,6 +106,9 @@ func pushTestFixtureWith(t *testing.T, upstreamURL string, providerURL string, o
 		Enabled:     true,
 		ProviderURL: providerURL,
 		Environment: "sandbox",
+	}
+	if opts.customize != nil {
+		opts.customize(&cfg)
 	}
 	configPath := opts.configPath
 	if configPath == "" {
@@ -137,14 +141,23 @@ func registerPushDevice(t *testing.T, server *httptest.Server, deviceID string) 
 
 func registerPushDeviceWithCapability(t *testing.T, server *httptest.Server, deviceID string, supports *bool) map[string]any {
 	t.Helper()
+	capabilities := map[string]any{}
+	if supports != nil {
+		capabilities["supports_holder_waiting"] = *supports
+	}
+	return registerPushDeviceWithFields(t, server, deviceID, capabilities)
+}
+
+func registerPushDeviceWithFields(t *testing.T, server *httptest.Server, deviceID string, capabilities map[string]any) map[string]any {
+	t.Helper()
 	requestBody := map[string]any{
 		"device_id":  deviceID,
 		"ticket":     "mpt1.1.opaque-ticket",
 		"platform":   "ios",
 		"expires_at": time.Now().Add(30 * 24 * time.Hour).UTC().Format(time.RFC3339),
 	}
-	if supports != nil {
-		requestBody["supports_holder_waiting"] = *supports
+	for key, value := range capabilities {
+		requestBody[key] = value
 	}
 	body, err := json.Marshal(requestBody)
 	if err != nil {

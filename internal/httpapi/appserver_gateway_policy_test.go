@@ -1405,7 +1405,7 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 	}
 
 	threadList := []byte(fmt.Sprintf(
-		`{"id":63,"method":"thread/list","params":{"cwd":%q,"limit":20,"cursor":"next","sortKey":"updated_at","sortDirection":"desc","archived":false,%s}}`,
+		`{"id":6302,"method":"thread/list","params":{"cwd":%q,"limit":20,"cursor":"next","sortKey":"updated_at","sortDirection":"desc","archived":false,%s}}`,
 		projectDir,
 		dangerousTail,
 	))
