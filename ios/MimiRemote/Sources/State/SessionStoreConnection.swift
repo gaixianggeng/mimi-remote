@@ -3005,6 +3005,7 @@ extension SessionStore {
         turnModelTasksByRuntime.values.forEach { $0.task.cancel() }
         turnModelTasksByRuntime = [:]
         turnModelRefreshByRuntime = [:]
+        retainedModelCatalogProviders = []
         appServerPermissionProfiles = []
         activePermissionProfileBySessionID = [:]
         clearActiveCollaborationModes()

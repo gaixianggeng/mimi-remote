@@ -655,7 +655,7 @@ func TestClaudeGatewayAttachesNamedSessionAndResumesFromClientCursor(t *testing.
 IFS= read -r line
 printf '%%s\n' "$line" >> %q
 printf '{"jsonrpc":"2.0","method":"_alleycat/attached","params":{"sessionKey":"dev-1","kind":"fresh","currentSeq":0,"floorSeq":0}}\n'
-printf '{"jsonrpc":"2.0","id":42,"result":{"ok":true},"_alleycat_seq":7}\n'
+printf '{"jsonrpc":"2.0","method":"account/rateLimits/updated","params":{},"_alleycat_seq":7}\n'
 while IFS= read -r line; do :; done
 `, attachPath))
 	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
@@ -767,7 +767,7 @@ printf '%%s\n' "$line" >> %q
 printf '{"jsonrpc":"2.0","method":"_alleycat/attached","params":{"sessionKey":"dev-2","kind":"fresh","currentSeq":0,"floorSeq":0}}\n'
 if [ ! -f %q ]; then
   : > %q
-  printf '{"jsonrpc":"2.0","id":9,"result":{"ok":true},"_alleycat_seq":7}\n'
+  printf '{"jsonrpc":"2.0","method":"account/rateLimits/updated","params":{},"_alleycat_seq":7}\n'
 fi
 while IFS= read -r line; do :; done
 `, attachPath, markPath, markPath))
@@ -2830,8 +2830,8 @@ func TestAppServerGatewayObservesThreadResponseOnlyWithPendingRequest(t *testing
 		projectDir,
 	))
 
-	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload); !forward || policyErr != nil {
-		t.Fatalf("普通上游响应应继续转发：forward=%v err=%+v", forward, policyErr)
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload); forward || policyErr != nil {
+		t.Fatalf("没有在途请求认领的上游响应应丢弃：forward=%v err=%+v", forward, policyErr)
 	}
 	if _, ok := router.gatewayThread("codex", "thread-pending"); ok {
 		t.Fatal("没有 pending thread 请求时，上游业务帧不应创建授权")

@@ -178,6 +178,9 @@ func (b *codexGatewayBroker) interceptThreadSubscription(payload []byte, frame *
 	if _, err := b.policy.validateClientFrame(websocket.TextMessage, payload); err != nil {
 		return false, nil
 	}
+	// 这次校验只用来判断能否本地应答，不转发。撤销它登记的在途 id：本地应答不会
+	// 有上游响应，退回通用路径时也不能被当成重复 id 拒绝。
+	b.policy.consumePendingClientRequest(frame.ID)
 	b.mu.Lock()
 	if b.closed || !b.threadNeedsSubscriptionLocked(threadID) {
 		b.mu.Unlock()

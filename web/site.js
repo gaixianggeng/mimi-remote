@@ -18,8 +18,8 @@
   /* ---------------------------------------------------------- 1. language */
 
   var ZH = {
-    "meta.title": "Mimi Remote — 用 iPhone、iPad 继续 Codex 与 Claude Code",
-    "meta.description": "Mimi Remote 是 Codex 与 Claude Code 的原生 iPhone、iPad 客户端。任务在你的 Mac、Windows 或 Linux 电脑上运行，你在手机上随时跟进、回复和审批。开源。",
+    "meta.title": "Mimi Remote — 用 iPhone、iPad 遥控 Codex 与 Claude Code",
+    "meta.description": "用手机遥控电脑上的 Codex 和 Claude Code。Agent 继续在你的 Mac、Windows 或 Linux 电脑上运行，你在 iPhone、iPad 上看进度、回消息、批权限。开源免费。",
 
     "skip": "跳到正文",
 
@@ -30,13 +30,13 @@
     "nav.design": "设计",
     "nav.get": "下载",
 
-    "hero.eyebrow": "为 Codex 与 Claude Code 打造",
-    "hero.title": "离开电脑，<br>会话不断。",
-    "hero.lede": "Mimi Remote 是 Codex 与 Claude Code 的原生 iPhone、iPad 客户端。任务继续在你的电脑上运行，你在任何地方都能跟进进度、继续对话、处理审批。",
+    "hero.eyebrow": "iPhone 与 iPad App",
+    "hero.title": "用手机，遥控电脑上的<br>Codex 和 Claude&nbsp;Code。",
+    "hero.lede": "Codex 和 Claude Code 继续在你的 Mac、Windows 或 Linux 电脑上干活。你在 iPhone、iPad 上看进度、回消息、批权限——不用远程桌面，也不用敲终端。",
     "cta.appstore": "在 App Store 下载",
     "cta.testflight": "加入 TestFlight 测试",
     "cta.host": "下载电脑端",
-    "hero.meta": "iPhone 与 iPad · 支持 Mac、Windows、Linux 电脑 · 开源",
+    "hero.meta": "<span>开源免费</span> · <span>无需注册</span> · <span>支持 Mac、Windows、Linux 电脑</span>",
 
     "overview.title": "为离开电脑的每个时刻<br>而设计。",
     "ov.1.t": "无缝接力",
