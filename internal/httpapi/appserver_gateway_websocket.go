@@ -142,6 +142,9 @@ func (r *Router) processClientFrameToAppServer(ctx context.Context, client *webs
 		if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
 			return "client_policy_error_write_failed", true
 		}
+		if policyErr.resetConnection {
+			return appServerGatewayTrackingExhaustedReason, true
+		}
 		return "", false
 	}
 	if cachedPayload, ok := policy.cachedAccountTokenUsageResponse(payload, time.Now()); ok {

@@ -1026,7 +1026,13 @@ func (r *Router) runCodexGatewayBrokerClient(
 	reason := <-sink.done
 	cancel()
 	_ = client.Close()
-	broker.detach(sink)
+	if reason == appServerGatewayTrackingExhaustedReason {
+		// policy 跨重连复用；只摘 sink 会让下一次重连继续卡在同一批超时登记上。
+		// 关闭上游后旧响应不可能再到达，iOS 重连时拿到新的上游连接和空登记。
+		broker.close(reason)
+	} else {
+		broker.detach(sink)
+	}
 	monitor.finish(reason)
 }
 
