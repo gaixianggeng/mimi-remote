@@ -10,8 +10,21 @@ import (
 )
 
 // gatewayGitCommonDirectory 是全局发现解析 Git common-dir 的唯一入口；测试替换它来
-// 模拟慢 Git 或卡住的 Git。
-var gatewayGitCommonDirectory = gitCommonDirectory
+// 模拟慢 Git、卡住或失败的 Git。
+var gatewayGitCommonDirectory = resolveGatewayGitCommonDirectory
+
+// resolveGatewayGitCommonDirectory 返回 path 的 Git common-dir。Git 明确回答“不是仓库”时
+// 返回空目录和 nil；超时、进程起不来等没有结论的情况返回错误，不能当作“不在仓库”。
+func resolveGatewayGitCommonDirectory(ctx context.Context, path string) (string, error) {
+	dir, err := gitResolvedDirectoryResult(ctx, path, "--git-common-dir")
+	if err != nil && isGitRepositoryMissingError(err) {
+		return "", nil
+	}
+	return dir, err
+}
+
+// gitOwnershipMarkerNone 表示目录向上没有任何 .git 标记：确定不在仓库，不必调用 Git。
+const gitOwnershipMarkerNone = "none"
 
 const (
 	// 指纹覆盖了常见的仓库/Worktree 变化；TTL 只兜底指纹看不到的情况（如仓库内部损坏后修复）。
@@ -90,15 +103,15 @@ func (c *gatewayGitOwnershipCache) resolve(path string, marker string) *gatewayG
 	go func() {
 		slots <- struct{}{}
 		ctx, cancel := context.WithTimeout(context.Background(), gatewayGitOwnershipResolveTimeout)
-		commonDir, ok := gatewayGitCommonDirectory(ctx, path)
-		timedOut := !ok && ctx.Err() != nil
+		commonDir, err := gatewayGitCommonDirectory(ctx, path)
 		cancel()
 		<-slots
 
-		entry := gatewayGitOwnershipEntry{marker: marker, commonDir: commonDir, ok: ok, checkedAt: time.Now()}
+		// Git 没给出结论（超时、进程起不来等）时不是“不在仓库”，不能缓存成否定结果。
+		settled := err == nil
+		entry := gatewayGitOwnershipEntry{marker: marker, commonDir: commonDir, ok: settled && commonDir != "", checkedAt: time.Now()}
 		c.mu.Lock()
-		if !timedOut {
-			// 超时不是“不在仓库”的结论，不能缓存成否定结果。
+		if settled {
 			if c.entries == nil || len(c.entries) >= gatewayGitOwnershipCacheMax {
 				// 与全局 cursor 表一致：容量到顶时整体换代，代价只是下一轮重新查询 Git。
 				c.entries = map[string]gatewayGitOwnershipEntry{}
@@ -106,7 +119,7 @@ func (c *gatewayGitOwnershipCache) resolve(path string, marker string) *gatewayG
 			c.entries[path] = entry
 		}
 		flight.entry = entry
-		flight.settled = !timedOut
+		flight.settled = settled
 		delete(c.inflight, key)
 		c.mu.Unlock()
 		close(flight.done)
@@ -114,7 +127,7 @@ func (c *gatewayGitOwnershipCache) resolve(path string, marker string) *gatewayG
 	return flight
 }
 
-// gitOwnershipMarker 返回 path 向上最近的 .git 标记指纹；找不到时为 "none"。
+// gitOwnershipMarker 返回 path 向上最近的 .git 标记指纹；找不到时为 gitOwnershipMarkerNone。
 // .git 目录只取对象身份：提交、加锁会频繁改动目录 mtime，但不会改变仓库归属。
 // .git 文件（linked worktree）再带上大小与 mtime，指向别的仓库时一定会变。
 func gitOwnershipMarker(path string) string {
@@ -130,7 +143,7 @@ func gitOwnershipMarker(path string) string {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "none"
+			return gitOwnershipMarkerNone
 		}
 		dir = parent
 	}
@@ -152,6 +165,10 @@ func (r *Router) gatewayGitCommonDirs(ctx context.Context, paths []string) []gat
 	now := time.Now()
 	for index, path := range paths {
 		marker := gitOwnershipMarker(path)
+		if marker == gitOwnershipMarkerNone {
+			results[index] = gatewayGitCommonDirResult{settled: true}
+			continue
+		}
 		if entry, hit := r.gatewayGitOwnership.lookup(path, marker, now); hit {
 			results[index] = gatewayGitCommonDirResult{commonDir: entry.commonDir, ok: entry.ok, settled: true}
 			continue

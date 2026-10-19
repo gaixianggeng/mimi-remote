@@ -89,8 +89,8 @@ func TestGlobalThreadListDoesNotScanProjectsForNonRepository(t *testing.T) {
 	if err != nil || len(allowed) != 0 {
 		t.Fatalf("普通目录不能通过 Git 归属获得全局发现权限：allowed=%d err=%v", len(allowed), err)
 	}
-	if got := gitCalls(); got != 1 {
-		t.Fatalf("目录不属于 Git 仓库时不应继续扫描项目：calls=%d", got)
+	if got := gitCalls(); got != 0 {
+		t.Fatalf("目录向上没有 .git 标记时不必调用 Git，也不应继续扫描项目：calls=%d", got)
 	}
 }
 
@@ -126,8 +126,8 @@ func TestGlobalThreadListResolvesRepeatedWorkspaceOncePerPage(t *testing.T) {
 	if err != nil || len(allowed) != 0 {
 		t.Fatalf("下一次响应不能沿用失效的仓库归属：allowed=%d err=%v", len(allowed), err)
 	}
-	if got := gitCalls(); got != 3 {
-		t.Errorf(".git 标记变化后只重新判定该目录一次：total calls=%d", got)
+	if got := gitCalls(); got != 2 {
+		t.Errorf(".git 标记消失后按文件系统即可判定不在仓库，不必再调用 Git：total calls=%d", got)
 	}
 }
 
