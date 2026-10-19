@@ -10,6 +10,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
+import { runsAsClaudeCommand } from "../claude/skillCommand.ts";
 import { claudeConfigDir } from "../claude/transcripts.ts";
 import { RpcError } from "../rpc/frames.ts";
 import { serverRequestFor } from "./approvals.ts";
@@ -19,7 +20,7 @@ import { rateLimitSnapshot } from "./rateLimits.ts";
 import { createSkillPlugin, type SkillPlugin } from "../claude/skillPlugin.ts";
 import { type ExecutionPolicy, sandboxOptions } from "./sandboxPolicy.ts";
 import type { RunSettings } from "./settings.ts";
-import { qualifySkillCommand, toClaudeContent } from "./userInput.ts";
+import { qualifySkillCommand, type SkillCheck, toClaudeContent } from "./userInput.ts";
 import { errorText, logEnabled, logger } from "../util/logging.ts";
 
 export interface RuntimeHost {
@@ -175,7 +176,8 @@ export class ThreadRuntime {
         retryable: false,
       });
     }
-    const content = toClaudeContent(request.input);
+    const promoted = new Set<string>();
+    const content = toClaudeContent(request.input, this.skillCheck(promoted));
     // 检查与预占之间没有 await：第一个异步操作之前就占住，后来的 turn/start 看到的是 active_turn。
     const turnId = randomUUID();
     this.reserved = turnId;
@@ -203,8 +205,8 @@ export class ThreadRuntime {
         retryable: true,
       });
     }
-    // 进程可能刚按新的执行边界重启，按它实际加载的技能改写命令。
-    const message = qualifySkillCommand(content, this.skillPlugin?.names);
+    // 进程可能刚按新的执行边界重启，按它的档位与实际加载的技能改写命令。
+    const message = this.commandFor(content, promoted);
     const turn = new LiveTurn(turnId, this.threadId, this.emit);
     this.current = turn;
     this.commands.set(turnId, turn);
@@ -230,7 +232,8 @@ export class ThreadRuntime {
         activeTurnId: turn.id,
       });
     }
-    const content = qualifySkillCommand(toClaudeContent(input), this.skillPlugin?.names);
+    const promoted = new Set<string>();
+    const content = this.commandFor(toClaudeContent(input, this.skillCheck(promoted)), promoted);
     const id = randomUUID();
     logger.debug("turn.steer", { thread: this.threadId, turn: turn.id, message: id });
     turn.userMessage(id, clientUserMessageId, input);
@@ -244,6 +247,28 @@ export class ThreadRuntime {
       origin: { kind: "human" },
     });
     return { turnId: turn.id };
+  }
+
+  /**
+   * 技能附件能否写成开头的 `/名称`。受限档位不加载用户与项目设置，这些技能改经合成插件加载，查找范围与
+   * 优先顺序和完全访问档相同（见 claude/skillPlugin），所以两档用同一条规则；promoted 记下提前的技能名。
+   */
+  private skillCheck(promoted: Set<string>): SkillCheck {
+    const configDir = claudeConfigDir();
+    return (skill) => {
+      const runs = runsAsClaudeCommand(skill, this.cwd, configDir);
+      if (runs) promoted.add(skill.name);
+      return runs;
+    };
+  }
+
+  /**
+   * 受限档位的技能在 CLI 里登记为 `mimi:名称`，开头的 `/名称` 改写成带前缀的形式。提前的技能即使插件没能
+   * 生成也带前缀：CLI 找不到时按原文交给模型（实测），不会落到同名的内置命令或自带技能上。
+   */
+  private commandFor(content: ReturnType<typeof toClaudeContent>, promoted: ReadonlySet<string>): ReturnType<typeof toClaudeContent> {
+    if (this.settings.executionPolicy.type === "dangerFullAccess") return content;
+    return qualifySkillCommand(content, new Set([...promoted, ...(this.skillPlugin?.names ?? [])]));
   }
 
   async interrupt(turnId: string): Promise<void> {

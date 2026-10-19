@@ -19,7 +19,7 @@
   - 审批（`canUseTool`）映射为 `item/commandExecution/requestApproval`、`item/fileChange/requestApproval`；`AskUserQuestion` 映射为 `item/tool/requestUserInput`。请求发给订阅该会话的所有连接，先答复者生效，其余收到 `serverRequest/resolved`；重连时由 `serverRequest/replay` 补发未答复的请求。
   - 引导以人工输入的 `now` 优先级并入当前 turn。turn 要等名下所有消息（含引导）都被 Claude 的结果吸收才收尾；输出与结果按 `user_message_uuid` 归属，CLI 队列里还有未完成的消息时拒绝新的 `turn/start`。
   - 已知差异：引导消息在 transcript 里是普通的用户记录，重新加载历史时显示为单独一轮，实时显示时在同一轮里。
-  - 输入转换（`src/runtime/userInput.ts`）：CLI 只在消息以 `/名称` 开头时执行命令，内容数组只检查最后一个块（2.1.294–2.1.301 实测）。所以第一个技能提到开头、正文作为参数；其余技能留作参数里的 `/名称` 文本；文本以 `/` 开头且带图片时，图片排在前面、文本合成最后一块（#773）。受限档位的技能经合成插件加载，命令位置的 `/名称` 发送前改写成 `/mimi:名称`（见[受限执行边界](#受限执行边界488)）。
+  - 输入转换（`src/runtime/userInput.ts`）：CLI 只在消息以 `/名称` 开头时执行命令，内容数组只检查最后一个块（2.1.294–2.1.301 实测）。CLI 只认名字：用户与项目技能会遮蔽同名的内置命令和自带技能，同名技能用户级优先、离 cwd 近的优先。所以只有附件的 path 是 CLI 加载的用户或项目技能、且这个名字在这些目录里（含 frontmatter 的 name 与自定义命令）只有它一处定义时，才把它提到开头、正文作为参数（`src/claude/skillCommand.ts`）；其余技能排在正文之后作为 `/名称` 文本，没有正文垫在前面时报参数错误。文本以 `/` 开头且带图片时，图片排在前面、文本合成最后一块（#773）。受限档位的用户与项目技能经合成插件加载、查找规则相同，所以按同一条规则提前，发送前改写成 `/mimi:名称`（见[受限执行边界](#受限执行边界488)）。
 - **单一驱动方（#658）**：`thread/takeover`。同一会话同一时刻只有一个 Claude 进程在写。
   - 占用登记（`<配置目录>/sessions/<pid>.json`，Claude Code 为每个活进程写的文件）是唯一没有公开接口的依赖，只读。自己起的进程按 pid 排除；拿到 pid 之前，同一会话新出现的登记先不算别处，避免把自己当成别人。
   - 别处持有时会话只读：`thread/list`、`thread/resume` 带 `canAcceptDirectInput: false` 与 `claudeOwner` 摘要，`turn/start` 返回 `owned_elsewhere`。

@@ -187,16 +187,27 @@ describe("turn lifecycle", () => {
     expect(client.frames.some((frame: any) => frame.method === "item/reasoning/textDelta")).toBe(true);
   });
 
-  test("a skill attached after the text reaches Claude as the leading command", async () => {
-    const client = new Client();
-    const threadId = await newThread(client);
-    const input = [...text("summarize the change"), { type: "skill", name: "review", path: path.join(project, ".claude", "skills", "review", "SKILL.md") }];
-    const { turn } = await client.call("turn/start", { threadId, input });
-    await client.turnCompleted(turn.id);
-    const items = client.frames.filter((frame: any) => frame.method === "item/completed").map((frame: any) => frame.params.item);
-    // 实时回显保留客户端的输入；CLI 收到的消息以 `/名称` 开头才会展开技能。
-    expect(items[0].content).toEqual(input);
-    expect(items.at(-1).text).toBe("echo[fake-a]: /review\nsummarize the change");
+  test("a project skill attached after the text reaches Claude as the leading command, plugin-qualified when restricted", async () => {
+    const repo = path.join(sandbox, "skill-repo");
+    const file = path.join(repo, ".claude", "skills", "review", "SKILL.md");
+    mkdirSync(path.join(repo, ".git"), { recursive: true });
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "---\ndescription: review\n---\n\nreview the change\n");
+    const input = [...text("summarize the change"), { type: "skill", name: "review", path: file }];
+    const replies: Record<string, string> = {};
+    for (const sandboxMode of ["danger-full-access", "workspace-write"]) {
+      const client = new Client();
+      const started = await client.call("thread/start", { cwd: repo, model: "fake-a", approvalPolicy: "on-request", sandbox: sandboxMode });
+      const { turn } = await client.call("turn/start", { threadId: started.thread.id, input });
+      await client.turnCompleted(turn.id);
+      const items = client.frames.filter((frame: any) => frame.method === "item/completed").map((frame: any) => frame.params.item);
+      // 实时回显保留客户端的输入；CLI 收到的消息以 `/名称` 开头才会展开技能。
+      expect(items[0].content).toEqual(input);
+      replies[sandboxMode] = items.at(-1).text;
+    }
+    expect(replies["danger-full-access"]).toBe("echo[fake-a]: /review\nsummarize the change");
+    // 受限档位经合成插件加载项目技能（#775），命令带插件前缀。
+    expect(replies["workspace-write"]).toBe("echo[fake-a]: /mimi:review\nsummarize the change");
   });
 });
 

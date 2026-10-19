@@ -180,29 +180,57 @@ test("无效边界不会污染下一轮继承的设置", async () => {
   }
 });
 
-test("受限进程加载项目技能并把技能命令改写成插件前缀；完全访问不用插件，进程退出后删除插件目录", async () => {
+test("受限档位提前合成插件里的技能并改写成插件前缀，插件外的技能不提前；完全访问不用插件，进程退出后删除插件目录", async () => {
   const workspaceWithSkills = path.join(root, "skills-workspace");
-  await mkdir(path.join(workspaceWithSkills, ".claude", "skills", "probe-review"), { recursive: true });
-  await writeFile(path.join(workspaceWithSkills, ".claude", "skills", "probe-review", "SKILL.md"), "review");
+  // git 根限定技能查找范围，不受临时目录上级的影响。
+  await mkdir(path.join(workspaceWithSkills, ".git"), { recursive: true });
+  const skillFile = path.join(workspaceWithSkills, ".claude", "skills", "probe-review", "SKILL.md");
+  await mkdir(path.dirname(skillFile), { recursive: true });
+  await writeFile(skillFile, "review");
+  // 不在 Claude Code 查找范围里的技能（例如 Codex 的技能，#370）。
+  const foreignFile = path.join(root, "codex-skills", "probe-foreign", "SKILL.md");
+  await mkdir(path.dirname(foreignFile), { recursive: true });
+  await writeFile(foreignFile, "foreign");
   const harness = runtimeHarness();
   const restricted = runSettingsFor({ sandboxPolicy: { type: "workspaceWrite", writableRoots: [workspaceWithSkills] } });
   const runtime = new ThreadRuntime("skills", workspaceWithSkills, harness.host, restricted, false);
-  const skillInput: UserInput[] = [{ type: "text", text: "看看这次改动", text_elements: [] }, { type: "skill", name: "probe-review", path: "/unused" }];
+  const body: UserInput = { type: "text", text: "看看这次改动", text_elements: [] };
+  const skillInput: UserInput[] = [body, { type: "skill", name: "probe-review", path: skillFile }];
   try {
     await complete(runtime, harness, {}, skillInput);
     const plugin = harness.calls[0]!.plugins![0]!;
     expect(plugin).toMatchObject({ type: "local", skipMcpDiscovery: true });
     expect(existsSync(path.join(plugin.path, "skills", "probe-review", "SKILL.md"))).toBe(true);
     expect(harness.sent[0]).toBe("/mimi:probe-review\n看看这次改动");
+    await complete(runtime, harness, {}, [body, { type: "skill", name: "probe-foreign", path: foreignFile }]);
+    expect(harness.sent[1]).toBe("看看这次改动\n/probe-foreign");
     // 内置命令与普通文本不改写。
     await complete(runtime, harness, {}, [{ type: "text", text: "/compact", text_elements: [] }]);
-    expect(harness.sent[1]).toBe("/compact");
+    expect(harness.sent[2]).toBe("/compact");
 
     await complete(runtime, harness, runSettingsFor({ sandbox: "danger-full-access", approvalPolicy: "never" }), skillInput);
     expect(harness.calls[1]!.plugins).toBeUndefined();
-    expect(harness.sent[2]).toBe("/probe-review\n看看这次改动");
+    expect(harness.sent[3]).toBe("/probe-review\n看看这次改动");
     expect(existsSync(plugin.path)).toBe(false);
   } finally {
     await runtime.close();
+  }
+
+  // 插件没能生成时，提前的技能照样带前缀：CLI 找不到就按原文交给模型，不会落到同名的内置命令上。
+  const failing = runtimeHarness();
+  const fallback = new ThreadRuntime("skills-fallback", workspaceWithSkills, failing.host, restricted, false);
+  // os.tmpdir() 在 macOS / Linux 读 TMPDIR，在 Windows 读 TEMP / TMP。
+  const saved = Object.fromEntries(["TMPDIR", "TEMP", "TMP"].map((key) => [key, process.env[key]]));
+  for (const key of Object.keys(saved)) process.env[key] = path.join(root, "missing-tmp");
+  try {
+    await complete(fallback, failing, {}, skillInput);
+    expect(failing.calls[0]!.plugins).toBeUndefined();
+    expect(failing.sent[0]).toBe("/mimi:probe-review\n看看这次改动");
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await fallback.close();
   }
 });
