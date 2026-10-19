@@ -12,12 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tailcattest"
 	"github.com/gorilla/websocket"
 	"tailscale.com/tstest/integration"
 )
 
 func TestForwarderRecoversAfterHostRestartWithoutChangingEndpoint(t *testing.T) {
-	t.Setenv("TS_DEBUG_ALWAYS_USE_DERP", "1")
+	tailcattest.ForceDERP(t)
 	for _, trigger := range []string{"http", "disco-ping", "established-websocket"} {
 		t.Run(trigger, func(t *testing.T) {
 			backend := newAgentdFixture(t)
@@ -109,8 +110,8 @@ func TestForwarderRecoversAfterHostRestartWithoutChangingEndpoint(t *testing.T) 
 					if pingErr != nil {
 						t.Fatal(pingErr)
 					}
-					if result.Path == "unknown" {
-						t.Fatal("恢复后仍无法诊断路径")
+					if result.Path != "derp" || result.DERPRegionCode != tailcattest.AddressRegionCode(t, address) {
+						t.Fatalf("恢复后的链路没有经过测试 DERP：%+v", result)
 					}
 				} else {
 					// 多条新连接同时失败，必须共用恢复，不能相互抢占同身份 DERP 连接。

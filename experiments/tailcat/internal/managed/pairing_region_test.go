@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tailcattest"
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
 	"github.com/tailscale/tailcat"
 	"tailscale.com/tailcfg"
@@ -57,7 +58,7 @@ func TestPairingRegionUsesCurrentStableHostOrDiscovery(t *testing.T) {
 }
 
 func TestPairingSkipsDiscoveryRotatesIdentityAndStillConnects(t *testing.T) {
-	t.Setenv("TS_DEBUG_ALWAYS_USE_DERP", "1")
+	tailcattest.ForceDERP(t)
 	derpMap := integration.RunDERPAndSTUN(t, t.Logf, "127.0.0.1")
 	var mapRequests atomic.Int32
 	discovery := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
