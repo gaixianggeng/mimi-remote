@@ -284,6 +284,153 @@ final class ConversationTimelineProviderPresentationSnapshotTests: SimplifiedChi
         )
     }
 
+    // MARK: - 时间线等待提示（#782）
+
+    private enum WaitingHint: String, CaseIterable {
+        /// 运行中、首次历史补齐尚未订阅：实时状态行显示「正在恢复会话…」。
+        case restoringRunning = "restoring-running"
+        /// 已完成会话补齐历史：同一样式显示「正在加载会话记录」。
+        case loadingCompleted = "loading-completed"
+        /// 运行中已连接、后台仍在刷新历史：尾部只有实时状态行。
+        case refreshingLive = "refreshing-live"
+    }
+
+    private struct WaitingHintFixture {
+        let view: AnyView
+        let sessionStore: SessionStore
+        let sessionID: SessionID
+        let completedSession: AgentSession
+    }
+
+    /// #782：等待提示统一为实时状态行的圆点 + 灰字，不用胶囊和系统转圈；
+    /// 运行中后台刷新历史时，时间线尾部只有一行。
+    func testTimelineWaitingHintsShareLiveStatusStyle() async throws {
+        for hint in WaitingHint.allCases {
+            try await assertStabilizedConversationSnapshot(
+                of: makeWaitingHintFixture(hint).view,
+                size: CGSize(width: 390, height: 420),
+                named: hint.rawValue
+            )
+        }
+    }
+
+    /// #782：本轮结束而历史仍在补齐时，尾部提示原地换成加载提示，不增减行、不离开底部；
+    /// 补齐后提示消失仍贴底。
+    func testTailWaitingHintSwitchKeepsRowHeightAndBottomPin() async throws {
+        let fixture = makeWaitingHintFixture(.refreshingLive)
+        let host = UIHostingController(rootView: fixture.view)
+        host.safeAreaRegions = []
+        let windowScene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        )
+        let window = UIWindow(windowScene: windowScene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 420)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+
+        let liveContentHeight = try await waitForConversationTimelineAtBottom(in: host.view).contentSize.height
+
+        fixture.sessionStore.sessions = [fixture.completedSession]
+        try await settleLayout(host.view)
+        let loading = try await waitForConversationTimelineAtBottom(in: host.view)
+        XCTAssertEqual(loading.contentSize.height, liveContentHeight, accuracy: 1, "实时状态换成加载提示不能增减行")
+        XCTAssertLessThanOrEqual(distanceFromBottom(loading), 4, "提示切换后仍贴底")
+
+        fixture.sessionStore.hideHistoryLoading(sessionID: fixture.sessionID)
+        try await settleLayout(host.view)
+        let settled = try await waitForConversationTimelineAtBottom(in: host.view)
+        XCTAssertLessThan(settled.contentSize.height, liveContentHeight - 1, "历史补齐后加载提示消失")
+        XCTAssertLessThanOrEqual(distanceFromBottom(settled), 4, "提示消失后仍贴底")
+    }
+
+    private func settleLayout(_ view: UIView) async throws {
+        for _ in 0..<12 {
+            view.layoutIfNeeded()
+            try await Task.sleep(nanoseconds: 16_000_000)
+        }
+    }
+
+    private func makeWaitingHintFixture(_ hint: WaitingHint) -> WaitingHintFixture {
+        let dependencies = makeDependencies()
+        let sessionStore = dependencies.sessionStore
+        let store = sessionStore.conversationStore
+        let sessionID: SessionID = "snapshot-waiting-hint"
+        let date = Date(timeIntervalSince1970: 1_782_879_660)
+        store.setHistory((1...4).flatMap { turn in [
+            CodexHistoryMessage(
+                role: "user", content: "第 \(turn) 轮：会话里的等待提示为什么有两种样式？",
+                createdAt: date, turnID: "turn-\(turn)"
+            ),
+            CodexHistoryMessage(
+                role: "assistant",
+                content: "已核对时间线尾部的提示行。\n\n恢复会话与加载记录共用同一行样式，运行中只保留实时状态。",
+                createdAt: date, turnID: "turn-\(turn)"
+            )
+        ] }, sessionID: sessionID)
+        func session(status: String, activeTurnID: TurnID?) -> AgentSession {
+            AgentSession(
+                id: sessionID, projectID: "mimi", project: "mimi", dir: "/Users/me/code/mimi",
+                title: "等待提示", status: status, source: "codex", runtimeProvider: "codex",
+                resumeID: "thread-\(sessionID)", createdAt: date, updatedAt: date, activeTurnID: activeTurnID
+            )
+        }
+        // 新一轮还没有消息：状态行不带时长，快照不随当前时间变化。
+        let running = session(status: "running", activeTurnID: "turn-5")
+        let completed = session(status: "completed", activeTurnID: nil)
+        switch hint {
+        case .restoringRunning:
+            sessionStore.sessions = [running]
+            sessionStore.historyLoadJobsBySessionID[sessionID] = pendingHistoryLoadJob(for: running)
+            XCTAssertEqual(sessionStore.conversationReadiness(for: running), .loadingHistory)
+        case .loadingCompleted:
+            sessionStore.sessions = [completed]
+        case .refreshingLive:
+            sessionStore.sessions = [running]
+            sessionStore.webSocketStatusLease = HostSessionLease(
+                hostScope: sessionStore.appStore.activeHostScope, sessionID: sessionID
+            )
+            sessionStore.webSocketStatus = .connected
+            XCTAssertEqual(sessionStore.conversationReadiness(for: running), .live)
+        }
+        sessionStore.showHistoryLoading(sessionID: sessionID)
+        let view = ConversationTimelineView(
+            layout: ConversationLayout(containerWidth: 390, horizontalSizeClass: .compact),
+            sessionID: sessionID
+        )
+        .environmentObject(sessionStore)
+        .environmentObject(store)
+        .environmentObject(dependencies.themeStore)
+        .environment(\.conversationDetailedTranscript, .constant(false))
+        .environment(\.colorScheme, .light)
+        // 圆点动画只在前台活跃时运行；固定为非活跃，快照截到静止的四点图标。
+        .environment(\.scenePhase, .inactive)
+        .background(dependencies.themeStore.tokens(for: .light).conversationCanvasBackground)
+        .hidingTopScrollEdgeForSnapshot()
+        .frame(width: 390, height: 420)
+        return WaitingHintFixture(
+            view: AnyView(view), sessionStore: sessionStore, sessionID: sessionID, completedSession: completed
+        )
+    }
+
+    private func pendingHistoryLoadJob(for session: AgentSession) -> HistoryLoadJob {
+        HistoryLoadJob(
+            token: 1,
+            sessionSignature: HistoryLoadSignature(session: session),
+            loadMode: .full,
+            cachePolicy: .reuseRecent,
+            recoveryGeneration: nil,
+            allowPolicyRetry: false,
+            policyRetryAttempt: 0,
+            fullTurnPageLimit: nil,
+            task: Task { throw CancellationError() },
+            showsProgress: true,
+            requiresForegroundReporting: false,
+            foregroundSuccessStatusMessage: nil,
+            foregroundSelectionLease: nil
+        )
+    }
+
     private func makeDependencies() -> (sessionStore: SessionStore, themeStore: ThemeStore) {
         let suiteName = "ConversationTimelineProviderSnapshots.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
