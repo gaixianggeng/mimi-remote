@@ -47,6 +47,74 @@ final class HostSwitchSlowHandshakeTests: XCTestCase {
         XCTAssertFalse(fixture.store.sessions.contains { $0.id == FakeHost.a.sessionID })
     }
 
+    func testCancellingSlowSwitchKeepsCurrentHost() async throws {
+        let fixture = try await makeHostSwitchFixture(testName: "CancelSlowHost")
+        defer { fixture.tearDown() }
+        fixture.gateway.setBehavior(.b, FakeHostBehavior(hangsHandshake: true))
+
+        let slowSwitch = Task { @MainActor in
+            try await fixture.store.switchConnectionProfile(id: FakeHost.b.profileID)
+        }
+        defer { slowSwitch.cancel() }
+        try await waitUntil { fixture.gateway.connectCount(.b) == 1 }
+        XCTAssertTrue(fixture.store.isConnectionSwitchInProgress)
+
+        let startedAt = Date()
+        fixture.store.cancelConnectionSwitch()
+        do {
+            _ = try await slowSwitch.value
+            XCTFail("取消后不能提交")
+        } catch is CancellationError {
+            // 用户取消不显示为切换失败。
+        } catch {
+            XCTFail("取消应以 CancellationError 结束：\(error)")
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 1, "取消不能等满握手时限")
+        XCTAssertFalse(fixture.store.isConnectionSwitchInProgress)
+        XCTAssertNil(fixture.store.connectionSwitchTargetProfileID)
+        XCTAssertEqual(fixture.appStore.activeConnectionProfileID, FakeHost.a.profileID)
+        XCTAssertEqual(fixture.appStore.connectionStatus, .connected(FakeHost.a.displayName))
+        XCTAssertEqual(fixture.initialSocket.disconnectCallCount, 0, "取消的候选不能拆掉当前电脑的链路")
+        XCTAssertEqual(fixture.store.webSocketStatus, .connected)
+        try await waitUntil { fixture.gateway.openConnectionCount(.b) == 0 }
+    }
+
+    func testLatestChoiceWinsWhenSeveralArriveWhileOneHostHangs() async throws {
+        let fixture = try await makeHostSwitchFixture(testName: "LatestChoiceWins")
+        defer { fixture.tearDown() }
+        fixture.gateway.setBehavior(.b, FakeHostBehavior(hangsHandshake: true))
+
+        let slowSwitch = Task { @MainActor in
+            try await fixture.store.switchConnectionProfile(id: FakeHost.b.profileID)
+        }
+        defer { slowSwitch.cancel() }
+        try await waitUntil { fixture.gateway.connectCount(.b) == 1 }
+
+        // 两次改选在挂起的候选回收前先后到达：只有最后一次（留在 A）生效。
+        let staleChoice = Task { @MainActor in
+            try await fixture.store.switchConnectionProfile(id: FakeHost.c.profileID)
+        }
+        let latestChoice = Task { @MainActor in
+            try await fixture.store.switchConnectionProfile(id: FakeHost.a.profileID)
+        }
+        _ = try await latestChoice.value
+        do {
+            _ = try await staleChoice.value
+            XCTFail("被后来的选择取代的请求不能提交")
+        } catch is CancellationError {
+            // 预期路径。
+        } catch {
+            XCTFail("被取代的请求应以取消结束：\(error)")
+        }
+        let slowOutcome = await slowSwitch.result
+        XCTAssertThrowsError(try slowOutcome.get()) { XCTAssertTrue($0 is CancellationError, "\($0)") }
+        XCTAssertEqual(fixture.appStore.activeConnectionProfileID, FakeHost.a.profileID)
+        XCTAssertFalse(fixture.store.isConnectionSwitchInProgress)
+        try await waitUntil {
+            fixture.gateway.openConnectionCount(.b) == 0 && fixture.gateway.openConnectionCount(.c) == 0
+        }
+    }
+
     func testRepeatedSwitchingStaysAvailableWhileOneHostHangs() async throws {
         let fixture = try await makeHostSwitchFixture(testName: "RepeatedSwitching")
         defer { fixture.tearDown() }
@@ -425,10 +493,9 @@ private func makeHostSwitchFixture(
     )
     appStore.connectionStatus = .connected(FakeHost.a.displayName)
 
-    var clients: [String: MockSessionStoreClient] = [:]
-    for host in FakeHost.allCases {
-        clients[host.profileID] = MockSessionStoreClient(projects: [host.project], sessions: [host.session])
-    }
+    let clients = Dictionary(uniqueKeysWithValues: FakeHost.allCases.map { host in
+        (host.profileID, MockSessionStoreClient(projects: [host.project], sessions: [host.session]))
+    })
     var sockets: [MockWebSocketClient] = []
     let store = SessionStore(
         appStore: appStore,

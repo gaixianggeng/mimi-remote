@@ -1646,17 +1646,18 @@ final class AppStore: ObservableObject {
             guard remaining > 0.25 else {
                 throw URLError(.timedOut)
             }
+            // 预热剩余时间只约束这次网关握手。它曾被当作整个 Bundle 的请求超时，提交后
+            // 列表与发送都只剩几秒、超时又不淘汰连接，切过去就一直加载（#801）。
             let bundle = AppServerRuntimeBundle(
                 endpoint: activeEndpoint,
                 token: token,
-                // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破 8 秒总 deadline。
-                requestTimeout: remaining,
                 preparedConfig: config,
                 harnessFactory: nativeHarnessFactory,
                 transportFactory: gatewayTransportFactory
             )
             do {
-                try await bundle.prepareForHostActivation()
+                // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破预热总时限。
+                try await bundle.prepareForHostActivation(handshakeTimeout: remaining)
                 try Task.checkCancellation()
                 guard deadline.timeIntervalSinceNow > 0 else {
                     throw URLError(.timedOut)
