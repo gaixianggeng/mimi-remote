@@ -186,6 +186,29 @@ describe("turn lifecycle", () => {
     expect(items[1].content).toEqual(["considering options"]);
     expect(client.frames.some((frame: any) => frame.method === "item/reasoning/textDelta")).toBe(true);
   });
+
+  test("a project skill attached after the text reaches Claude as the leading command only with full access", async () => {
+    const repo = path.join(sandbox, "skill-repo");
+    const file = path.join(repo, ".claude", "skills", "review", "SKILL.md");
+    mkdirSync(path.join(repo, ".git"), { recursive: true });
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "---\ndescription: review\n---\n\nreview the change\n");
+    const input = [...text("summarize the change"), { type: "skill", name: "review", path: file }];
+    const replies: Record<string, string> = {};
+    for (const sandboxMode of ["danger-full-access", "workspace-write"]) {
+      const client = new Client();
+      const started = await client.call("thread/start", { cwd: repo, model: "fake-a", approvalPolicy: "on-request", sandbox: sandboxMode });
+      const { turn } = await client.call("turn/start", { threadId: started.thread.id, input });
+      await client.turnCompleted(turn.id);
+      const items = client.frames.filter((frame: any) => frame.method === "item/completed").map((frame: any) => frame.params.item);
+      // 实时回显保留客户端的输入；CLI 收到的消息以 `/名称` 开头才会展开技能。
+      expect(items[0].content).toEqual(input);
+      replies[sandboxMode] = items.at(-1).text;
+    }
+    expect(replies["danger-full-access"]).toBe("echo[fake-a]: /review\nsummarize the change");
+    // 受限档位不加载项目技能，`/review` 只会落到别的命令上，留在正文之后。
+    expect(replies["workspace-write"]).toBe("echo[fake-a]: summarize the change\n/review");
+  });
 });
 
 describe("loaded threads", () => {

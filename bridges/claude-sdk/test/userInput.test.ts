@@ -1,0 +1,85 @@
+// UserInput[] → Claude 消息内容。CLI 只在消息以 `/名称` 开头时展开技能；内容数组只检查最后一个块
+// （以 Claude Code 2.1.294 / 2.1.296 / 2.1.301 + 脚本化模型端点实测）。
+import { describe, expect, test } from "bun:test";
+import type { UserInput } from "../src/protocol/codex/v2/UserInput.ts";
+import { type SkillCheck, toClaudeContent } from "../src/runtime/userInput.ts";
+
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const text = (value: string): UserInput => ({ type: "text", text: value, text_elements: [] });
+const skill = (name: string): UserInput => ({ type: "skill", name, path: `/skills/${name}/SKILL.md` });
+const mention = (name: string): UserInput => ({ type: "mention", name, path: `/project/${name}` });
+const image: UserInput = { type: "image", url: `data:image/png;base64,${PNG}` };
+const imageBlock = { type: "image", source: { type: "base64", media_type: "image/png", data: PNG } } as const;
+/** 所有技能都能确认身份 / 都不能 / 只有这些名字能。 */
+const all: SkillCheck = () => true;
+const none: SkillCheck = () => false;
+const only = (...names: string[]): SkillCheck => (input) => names.includes(input.name);
+
+describe("技能作为命令", () => {
+  test("iOS 的正文在前、技能在后，发给 CLI 时技能在开头、正文作为参数", () => {
+    expect(toClaudeContent([text("总结这次改动"), skill("review")], all)).toBe("/review\n总结这次改动");
+    expect(toClaudeContent([text("第一行\n第二行"), skill("review")], all)).toBe("/review\n第一行\n第二行");
+  });
+
+  test("只有技能或技能已在开头时不变", () => {
+    expect(toClaudeContent([skill("review")], all)).toBe("/review");
+    expect(toClaudeContent([skill("review"), text("总结")], all)).toBe("/review\n总结");
+  });
+
+  test("多个技能只有第一个作为命令，其余排在正文之后作为参数文本", () => {
+    expect(toClaudeContent([text("总结"), skill("review"), skill("lint")], all)).toBe("/review\n总结\n/lint");
+    expect(toClaudeContent([text("总结"), skill("review"), text("再检查"), skill("lint")], all)).toBe("/review\n总结\n再检查\n/lint");
+  });
+
+  test("提及跟在原来的文本后面", () => {
+    expect(toClaudeContent([text("看看"), mention("main.ts"), skill("review")], all)).toBe("/review\n看看 @main.ts");
+  });
+
+  test("带图片时图片在前、命令文本作为最后一块，图片不丢", () => {
+    expect(toClaudeContent([text("这张截图"), image, skill("review")], all)).toEqual([imageBlock, { type: "text", text: "/review\n这张截图" }]);
+    // 被图片隔开的多段文本合成一块，否则最后一块不以 `/` 开头。
+    expect(toClaudeContent([text("前"), image, text("后"), skill("review")], all)).toEqual([imageBlock, { type: "text", text: "/review\n前\n后" }]);
+    expect(toClaudeContent([image, skill("review")], all)).toEqual([imageBlock, { type: "text", text: "/review" }]);
+  });
+
+  test("手输的 /命令 带图片时同样把图片移到前面", () => {
+    expect(toClaudeContent([text("/explain 这里为什么报错"), image], none)).toEqual([imageBlock, { type: "text", text: "/explain 这里为什么报错" }]);
+  });
+});
+
+describe("确认不了身份的技能不放在开头", () => {
+  test("排在正文之后，作为文本交给模型", () => {
+    expect(toClaudeContent([text("总结"), skill("compact")], none)).toBe("总结\n/compact");
+    // 其他客户端把技能放在最前面时也挪到正文之后，CLI 不会把它当命令。
+    expect(toClaudeContent([skill("compact"), text("总结")], none)).toBe("总结\n/compact");
+    expect(toClaudeContent([mention("main.ts"), skill("compact")], none)).toBe("@main.ts\n/compact");
+    expect(toClaudeContent([text("看图"), image, skill("compact")], none)).toEqual([{ type: "text", text: "看图" }, imageBlock, { type: "text", text: "/compact" }]);
+  });
+
+  test("跳过确认不了的技能，提前第一个能确认的", () => {
+    expect(toClaudeContent([text("总结"), skill("codex-only"), skill("review")], only("review"))).toBe("/review\n总结\n/codex-only");
+  });
+
+  test("没有正文垫在前面时报参数错误，不发送裸的 /名称", () => {
+    expect(() => toClaudeContent([skill("compact")], none)).toThrow("无法确认技能 compact");
+    expect(() => toClaudeContent([text("  "), skill("compact")], none)).toThrow("无法确认技能 compact");
+    expect(() => toClaudeContent([image, skill("compact")], none)).toThrow("无法确认技能 compact");
+  });
+});
+
+describe("没有命令时保持原样", () => {
+  test("纯文本按行拼接，提及用空格", () => {
+    expect(toClaudeContent([text("a"), text("b"), mention("c")], none)).toBe("a\nb @c");
+  });
+
+  test("文本与图片保持原来的穿插顺序", () => {
+    expect(toClaudeContent([text("看图"), image], none)).toEqual([{ type: "text", text: "看图" }, imageBlock]);
+    expect(toClaudeContent([text("前"), image, text("后")], none)).toEqual([{ type: "text", text: "前" }, imageBlock, { type: "text", text: "后" }]);
+    expect(toClaudeContent([image], none)).toEqual([imageBlock]);
+  });
+
+  test("空输入与不支持的输入报参数错误", () => {
+    expect(() => toClaudeContent([], all)).toThrow("input 不能为空");
+    expect(() => toClaudeContent([{ type: "audio", url: "data:audio/wav;base64,AA==" }], all)).toThrow("不支持的输入类型");
+  });
+});

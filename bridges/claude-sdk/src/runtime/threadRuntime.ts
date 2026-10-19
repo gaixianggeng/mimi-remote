@@ -10,14 +10,16 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
+import { runsAsClaudeCommand } from "../claude/skillCommand.ts";
+import { claudeConfigDir } from "../claude/transcripts.ts";
 import { RpcError } from "../rpc/frames.ts";
 import { serverRequestFor } from "./approvals.ts";
 import { InputQueue } from "./inputQueue.ts";
 import { LiveTurn, type TurnUsage } from "./liveTurn.ts";
 import { rateLimitSnapshot } from "./rateLimits.ts";
-import { sandboxOptions } from "./sandboxPolicy.ts";
+import { type ExecutionPolicy, sandboxOptions } from "./sandboxPolicy.ts";
 import type { RunSettings } from "./settings.ts";
-import { toClaudeContent } from "./userInput.ts";
+import { type SkillCheck, toClaudeContent } from "./userInput.ts";
 import { errorText, logEnabled, logger } from "../util/logging.ts";
 
 export interface RuntimeHost {
@@ -171,7 +173,7 @@ export class ThreadRuntime {
         retryable: false,
       });
     }
-    const content = toClaudeContent(request.input);
+    const content = toClaudeContent(request.input, this.skillCheck(request.settings.executionPolicy ?? this.settings.executionPolicy));
     // 检查与预占之间没有 await：第一个异步操作之前就占住，后来的 turn/start 看到的是 active_turn。
     const turnId = randomUUID();
     this.reserved = turnId;
@@ -224,7 +226,7 @@ export class ThreadRuntime {
         activeTurnId: turn.id,
       });
     }
-    const content = toClaudeContent(input);
+    const content = toClaudeContent(input, this.skillCheck(this.settings.executionPolicy));
     const id = randomUUID();
     logger.debug("turn.steer", { thread: this.threadId, turn: turn.id, message: id });
     turn.userMessage(id, clientUserMessageId, input);
@@ -238,6 +240,16 @@ export class ThreadRuntime {
       origin: { kind: "human" },
     });
     return { turnId: turn.id };
+  }
+
+  /**
+   * 技能附件能否写成开头的 `/名称`。受限档位不加载用户与项目设置，CLI 里没有这些技能，`/名称` 只会落到
+   * 内置命令或自带技能上，所以一律不当命令。
+   */
+  private skillCheck(policy: ExecutionPolicy): SkillCheck {
+    if (policy.type !== "dangerFullAccess") return () => false;
+    const configDir = claudeConfigDir();
+    return (skill) => runsAsClaudeCommand(skill, this.cwd, configDir);
   }
 
   async interrupt(turnId: string): Promise<void> {
