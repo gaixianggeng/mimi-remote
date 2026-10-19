@@ -1126,7 +1126,8 @@ extension SessionStore {
         clearForegroundActivity(sessionID: sessionID)
         queuedTurnAwaitingStartSessionIDs.remove(sessionID)
         queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
-        setErrorMessage(L10n.format("ui.the_result_of_the_message_to_be_sent", message))
+        // 排队项可能由后台连接替原会话派发；错误和 writer 冲突只归属原会话，不能落到当前页面。
+        setErrorMessage(L10n.format("ui.the_result_of_the_message_to_be_sent", message), sessionID: sessionID)
         return true
     }
 
@@ -1212,7 +1213,7 @@ extension SessionStore {
         )
         clearForegroundActivity(sessionID: sessionID)
         clearSessionListProjection(sessionID: sessionID, clientMessageID: clientMessageID)
-        setErrorMessage(L10n.format("ui.sending_failed_value", message))
+        setErrorMessage(L10n.format("ui.sending_failed_value", message), sessionID: sessionID)
         stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
         return true
     }
