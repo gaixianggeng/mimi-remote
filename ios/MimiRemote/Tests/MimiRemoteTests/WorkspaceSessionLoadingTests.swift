@@ -2303,9 +2303,10 @@ private final class FastThenAuthoritativeSessionListClient: SessionStoreAPIClien
 }
 
 /// 先等待 authoritative 才能覆盖“fast task 已结束、owner 尚未清 key”的真实调度窗口；超时会取消底层任务，避免测试永久挂住。
+/// 上限只用来防挂死：托管 macOS runner 满载时 1 秒会误判超时（#741），正常情况任务完成即返回。
 private func awaitFastThenAuthoritativeTask(
     _ task: Task<Void, Error>,
-    timeoutNanoseconds: UInt64 = 1_000_000_000
+    timeoutNanoseconds: UInt64 = 10_000_000_000
 ) async throws {
     try await withThrowingTaskGroup(of: Void.self) { group in
         group.addTask {
@@ -2331,7 +2332,7 @@ private func awaitFastThenAuthoritativeTask(
 private func waitForAuthoritativeFirstPageWaiter(
     in store: SessionStore,
     projectID: String,
-    attempts: Int = 100
+    attempts: Int = 1_000
 ) async throws {
     for _ in 0..<attempts {
         if store.sessionFirstPageLoadingConsistencyByProjectID[projectID] == .authoritative,

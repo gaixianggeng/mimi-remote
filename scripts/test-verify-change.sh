@@ -283,7 +283,15 @@ assert_contains "$asc_control_output" "test-ios-asc-cli.sh"
 
 critical_control_output="$(assert_plan critical_control scripts/test-conversation-regressions.sh)"
 assert_contains "$critical_control_output" "check-critical-regressions.sh"
+assert_contains "$critical_control_output" "check-ios-test-selectors.sh"
 assert_not_contains "$critical_control_output" "ios-dev.sh build-for-testing"
+
+test_inventory_output="$(assert_plan test_inventory config/ios-tests/nightly-classes.txt)"
+assert_contains "$test_inventory_output" "bash ./scripts/test-ios-test-inventory.sh && bash ./scripts/check-ios-test-selectors.sh"
+assert_not_contains "$test_inventory_output" "ios-dev.sh build-for-testing"
+
+new_test_class_output="$(assert_plan new_test_class ios/MimiRemote/Tests/MimiRemoteTests/NewFeatureTests.swift)"
+assert_contains "$new_test_class_output" "check-ios-test-selectors.sh"
 
 linear_control_output="$(assert_plan linear_control config/automations/mimi-linear-issue.prompt.md)"
 assert_contains "$linear_control_output" "check-linear-polling-safety.sh"

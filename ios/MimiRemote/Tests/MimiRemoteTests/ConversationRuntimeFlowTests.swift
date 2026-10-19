@@ -1378,6 +1378,8 @@ extension ConversationDataFlowTests {
         var options = CodexAppServerTurnOptions.default
         options.model = "gpt-5-codex"
         options.serviceTier = "priority"
+        // 完全访问会在发送前把 on-request 归一化为 never（#496）；用工作区沙箱保留显式审批选项。
+        options.sandboxMode = .workspaceWrite
         options.approvalPolicy = .onRequest
         let payload = CodexAppServerTurnPayload(input: [
             .text("分析截图"),
