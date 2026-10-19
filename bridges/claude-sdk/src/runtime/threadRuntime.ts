@@ -122,12 +122,12 @@ export class ThreadRuntime {
    */
   private cliActive = false;
   /**
-   * 后台任务完成通知的 run_id（#797）：最近送达、还没有续写认领的一个，以及当前这一轮开始（system/init）
-   * 时记下的那一个。续写的输出不带 user_message_uuid，回合 ID 按 notificationTurnId 由它生成，与历史
-   * 切分规则一致。按进程计。
+   * 最近送达、还没有续写认领的后台任务完成通知的 run_id（#797）。续写的输出不带 user_message_uuid，
+   * 回合 ID 按 notificationTurnId 由它生成，与历史切分规则一致。按进程计。
    */
   private notificationRunId: string | undefined;
-  private roundRunId: string | undefined;
+  /** 由完成通知开出、还没收尾的续写回合，以及它认领的 run_id。 */
+  private continuation: { turn: LiveTurn; runId: string } | undefined;
   private pid: number | undefined;
   private queryStartedAt = 0;
   private settings: RunSettings;
@@ -403,7 +403,7 @@ export class ThreadRuntime {
     this.backgroundTasks = new Set();
     this.cliActive = false;
     this.notificationRunId = undefined;
-    this.roundRunId = undefined;
+    this.continuation = undefined;
     this.applied = { ...settings };
     this.transcriptExists = true;
     void query
@@ -447,6 +447,7 @@ export class ThreadRuntime {
         // 主动关闭时已按原因记过；剩下的是进程自己退出（崩溃或被结束）。
         this.dropBackgroundTasks("exited");
         this.cliActive = false;
+        this.continuation = undefined;
         this.query = undefined;
         this.input = undefined;
         this.applied = undefined;
@@ -495,28 +496,31 @@ export class ThreadRuntime {
       }
       this.current = owner;
     }
-    return this.current ?? this.openTurn(uuid ? undefined : this.claimNotificationTurnId());
+    return this.current ?? (uuid ? this.openTurn() : this.openContinuation());
   }
 
   /**
-   * 续写回合的 ID：取这一轮开始时记下的通知，没有 system/init 时退回最近送达的一个。几条通知连着送达时
-   * CLI 只给最后一条的那一轮输出，所以记最近的一个；历史侧同样把回合归给最后一条通知。
+   * 开出续写回合：认领最近送达的通知（没有时与普通的无 uuid 输出一样用随机 ID）。几条通知连着送达时
+   * CLI 只给最后一条的那一轮输出，所以认领最近的一个；历史侧同样把回合归给最后一条通知。
    */
-  private claimNotificationTurnId(): string | undefined {
-    const runId = this.roundRunId ?? this.notificationRunId;
-    this.roundRunId = undefined;
-    if (runId === this.notificationRunId) this.notificationRunId = undefined;
-    return runId ? notificationTurnId(this.threadId, runId) : undefined;
+  private openContinuation(): LiveTurn {
+    const runId = this.notificationRunId;
+    this.notificationRunId = undefined;
+    const turn = this.openTurn(runId ? notificationTurnId(this.threadId, runId) : undefined);
+    this.continuation = runId ? { turn, runId } : undefined;
+    return turn;
   }
 
   /**
    * 一轮开始（system/init）。回应用户消息的一轮开始时，之前送达的通知要么已并进前面的回合、要么已单独
-   * 回复过（CLI 按顺序处理排队的输入），不会再触发续写。
+   * 回复过（CLI 按顺序处理排队的输入），不会再触发续写。由通知触发的一轮现在就开出续写回合：首帧输出前
+   * 模型可能排队、重试很久，这期间它就是活动回合，turn/start 被拒、turn/interrupt 与 turn/steer 能找到它，
+   * 输出也不会挂到期间新开的回合上。
    */
   private roundStarted(record: Record<string, unknown>): void {
     const answersUser = Array.isArray(record.user_message_uuids) && record.user_message_uuids.length > 0;
     if (answersUser) this.notificationRunId = undefined;
-    this.roundRunId = answersUser ? undefined : this.notificationRunId;
+    else if (this.notificationRunId && !this.current) this.openContinuation();
   }
 
   private openTurns(): LiveTurn[] {
@@ -555,21 +559,29 @@ export class ThreadRuntime {
             ? [record.user_message_uuid]
             : [];
         for (const uuid of consumed) this.commands.delete(uuid);
-        const turn = this.current;
-        this.current = undefined;
-        // 这一轮结束；由通知触发、却没有输出的一轮（几条通知连着送达时的前几条）不再留给后面的续写。
-        this.roundRunId = undefined;
         const origin = record.origin as { kind?: unknown; runId?: unknown } | undefined;
         const fromNotification = origin?.kind === "task-notification";
         if (fromNotification && origin.runId === this.notificationRunId) this.notificationRunId = undefined;
+        const turn = this.current;
+        // 几条通知连着送达时，CLI 先为前几条各跑一轮（没有输出），结果带更早的 run_id，回复在最后一条那一轮：
+        // 续写回合在 init 时已为最后一条开出，留给那一轮收尾。
+        const earlierRound =
+          fromNotification &&
+          typeof origin.runId === "string" &&
+          turn !== undefined &&
+          this.continuation?.turn === turn &&
+          origin.runId !== this.continuation.runId &&
+          !turn.explicitlyInterrupted;
+        if (!earlierRound) this.current = undefined;
         logger.debug("claude.result", {
           thread: this.threadId,
           subtype: String(record.subtype),
           consumed: consumed.length,
           turn: turn?.id ?? null,
           pendingMessages: this.commands.size,
+          ...(earlierRound ? { earlierRound } : {}),
         });
-        if (!turn) return;
+        if (!turn || earlierRound) return;
         const usage = usageOf(record.usage);
         if (usage) this.totalUsage = addUsage(this.totalUsage, usage);
         // 这个 turn 名下还有没被回应的引导消息：Claude 会接着处理它们，turn 不收尾。
@@ -584,6 +596,7 @@ export class ThreadRuntime {
         for (const [uuid, owner] of this.commands) if (owner === turn) this.commands.delete(uuid);
         const errors = Array.isArray(record.errors) ? record.errors.map(String) : [];
         turn.finish({ subtype: String(record.subtype), errors, usage, contextWindow: contextWindowOf(record.modelUsage) }, this.totalUsage);
+        if (this.continuation?.turn === turn) this.continuation = undefined;
         this.host.turnFinished(this.threadId);
         this.scheduleIdleClose();
         return;
@@ -683,7 +696,22 @@ export class ThreadRuntime {
   private cliStateChanged(state: unknown): void {
     const wasActive = this.cliActive;
     this.cliActive = state === "running" || state === "requires_action";
+    if (state === "idle") this.finishAbandonedContinuation();
     if (wasActive && state === "idle" && this.query && !this.isBusy() && !this.backgroundTasks.size) this.scheduleIdleClose();
+  }
+
+  /**
+   * 兜底：续写回合在等的那一轮没有来（只跑了更早通知的空轮），CLI 却已回到 idle。照常收尾，不让它一直
+   * 作为活动回合挡住新的 turn/start。名下还有引导没回应时不动，引导那一轮会收尾它。
+   */
+  private finishAbandonedContinuation(): void {
+    const turn = this.continuation?.turn;
+    if (!turn || turn.finished || this.current !== turn || [...this.commands.values()].includes(turn)) return;
+    logger.debug("claude.continuation_abandoned", { thread: this.threadId, turn: turn.id });
+    this.current = undefined;
+    this.continuation = undefined;
+    turn.finish({ subtype: "success", errors: [], usage: undefined, contextWindow: null }, this.totalUsage);
+    this.host.turnFinished(this.threadId);
   }
 
   /** 进程即将结束：仍在运行的后台任务会随之中止，记下原因，便于解释之后没有出现的续写。 */

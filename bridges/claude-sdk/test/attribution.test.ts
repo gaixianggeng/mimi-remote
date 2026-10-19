@@ -280,6 +280,40 @@ describe("continuation after a background task (#797)", () => {
     expect(completed.params.turn).toMatchObject({ id: continuation, status: "interrupted" });
   });
 
+  test("the continuation is the active turn from the moment its round begins, before any output", async () => {
+    const threadId = await idleThread();
+    script.emit(notification("run-w"));
+    script.emit(round());
+    await settle();
+    // 首帧输出前（模型排队、重试）：新的 turn/start 不能被接受，否则续写的输出会挂到它名下。
+    const continuation = notificationTurnId(threadId, "run-w");
+    expect(startedTurns().at(-1)).toBe(continuation);
+    expect(app.manager.get(threadId)!.activeTurnId).toBe(continuation);
+    const rejected = await call("turn/start", { threadId, input: text("something new") }).catch((error) => error);
+    expect(rejected.data).toMatchObject({ reason: "active_turn", activeTurnId: continuation });
+
+    const interruptsBefore = script.interrupts;
+    await call("turn/interrupt", { threadId, turnId: continuation });
+    expect(script.interrupts).toBe(interruptsBefore + 1);
+    script.emit({ type: "result", subtype: "error_during_execution", origin: { kind: "task-notification", runId: "run-w" } });
+    await settle();
+    const completed = frames.filter((frame: any) => frame.method === "turn/completed").at(-1) as any;
+    expect(completed.params.turn).toMatchObject({ id: continuation, status: "interrupted" });
+  });
+
+  test("a continuation left waiting for a later round is closed when the CLI goes idle without one", async () => {
+    const threadId = await idleThread();
+    script.emit(notification("run-late"));
+    script.emit(round());
+    // 只有一轮属于更早的通知、没有输出，之后 CLI 直接回到 idle：续写不能一直挂着挡住新的 turn/start。
+    script.emit({ type: "result", subtype: "success", origin: { kind: "task-notification", runId: "run-earlier" } });
+    script.emit({ type: "system", subtype: "session_state_changed", state: "idle" });
+    await settle();
+    const continuation = notificationTurnId(threadId, "run-late");
+    expect(completedTurns().at(-1)).toBe(continuation);
+    expect(app.manager.get(threadId)!.activeTurnId).toBeUndefined();
+  });
+
   test("a steer that Claude answers after the continuation's own result still completes the continuation", async () => {
     const threadId = await idleThread();
     script.emit(notification("run-s"));
@@ -307,6 +341,7 @@ describe("continuation after a background task (#797)", () => {
 
   test("notifications arriving together continue under the last one; the empty round of the first does not take the id", async () => {
     const threadId = await idleThread();
+    const startedBefore = startedTurns().length;
     script.emit(notification("run-1"));
     script.emit(notification("run-2"));
     // CLI 为第一条通知跑了一轮空的，回复出现在最后一条通知的那一轮。
@@ -316,7 +351,7 @@ describe("continuation after a background task (#797)", () => {
     for (const message of reply(undefined, "msg_both", "both finished")) script.emit(message);
     script.emit({ type: "result", subtype: "success", origin: { kind: "task-notification", runId: "run-2" } });
     await settle();
-    expect(startedTurns().at(-1)).toBe(notificationTurnId(threadId, "run-2"));
+    expect(startedTurns().slice(startedBefore)).toEqual([notificationTurnId(threadId, "run-2")]);
     expect(completedTurns().at(-1)).toBe(notificationTurnId(threadId, "run-2"));
   });
 
