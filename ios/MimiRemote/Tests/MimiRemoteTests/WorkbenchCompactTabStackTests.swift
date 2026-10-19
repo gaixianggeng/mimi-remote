@@ -37,7 +37,7 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
             route: .session(id: "workspace-session", source: .workspaces)
         )
 
-        // 横屏后从侧栏打开另一个会话，宽屏不会改写紧凑栈。
+        // 横屏后从侧栏打开另一个会话。
         state.reduce(
             .open(.session("sidebar-session"), source: .sessions),
             usesCompactNavigation: false,
@@ -98,6 +98,61 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         state.reduce(.compactTabChanged(.me), usesCompactNavigation: true, selectedSessionID: "sidebar-session")
 
         assertTappingWorkspacesShowsList(&state, selectedSessionID: "sidebar-session")
+    }
+
+    func testRotationWhileOnMeReturnsToWideDetailOnItsTab() {
+        var state = WorkbenchNavigationState(
+            route: .session(id: "workspace-session", source: .workspaces)
+        )
+        state.reduce(
+            .open(.session("sidebar-session"), source: .sessions),
+            usesCompactNavigation: false,
+            selectedSessionID: "workspace-session"
+        )
+        state.reduce(.open(.me, source: nil), usesCompactNavigation: false, selectedSessionID: "sidebar-session")
+        state.reduce(.compactTabChanged(.me), usesCompactNavigation: true, selectedSessionID: "sidebar-session")
+
+        let effect = state.reduce(
+            .compactTabChanged(.sessions),
+            usesCompactNavigation: true,
+            selectedSessionID: "sidebar-session"
+        )
+
+        XCTAssertNil(effect)
+        XCTAssertEqual(state.selection, .session("sidebar-session"))
+        XCTAssertEqual(state.compactSessionPath, [.session("sidebar-session")])
+        XCTAssertTrue(state.compactWorkspacePath.isEmpty)
+    }
+
+    func testIdentityReplacementInWideMeKeepsReplacementForCompactTab() {
+        var state = WorkbenchNavigationState(
+            route: .session(id: "local:new-session", source: .workspaces)
+        )
+        state.reduce(.open(.me, source: nil), usesCompactNavigation: false, selectedSessionID: "local:new-session")
+        state.reduce(
+            .selectionCommitted(SessionSelectionCommit(
+                sequence: 1,
+                projectID: "project",
+                sessionID: "real-session",
+                reason: .identityReplacement(previousID: "local:new-session")
+            )),
+            usesCompactNavigation: false,
+            selectedSessionID: "real-session"
+        )
+        XCTAssertEqual(state.selection, .me)
+        XCTAssertEqual(state.compactWorkspacePath, [.session("real-session")])
+
+        state.reduce(.compactTabChanged(.me), usesCompactNavigation: true, selectedSessionID: "real-session")
+        let effect = state.reduce(
+            .compactTabChanged(.workspaces),
+            usesCompactNavigation: true,
+            selectedSessionID: "real-session"
+        )
+
+        XCTAssertNil(effect)
+        XCTAssertEqual(state.selection, .session("real-session"))
+        XCTAssertEqual(state.route, .session(id: "real-session", source: .workspaces))
+        XCTAssertEqual(state.compactWorkspacePath, [.session("real-session")])
     }
 
     func testLeavingDetailThroughMeThenOtherTabDropsDetail() {
