@@ -24,7 +24,7 @@ export function createCommandHandlers(catalog: CommandCatalog) {
       }
       // 缺省与 turn/start 相同按 workspaceWrite 处理：受限档位不加载本机设置，目录只有内置命令。
       const policy = executionPolicyFor(params.sandboxPolicy);
-      const data = await catalog.list(cwd, policy.type === "dangerFullAccess", params.forceReload === true);
+      const data = await catalog.list(cwd, policy, params.forceReload === true);
       return { data };
     },
   };

@@ -29,7 +29,7 @@
   - CLI 自身行为：恢复一个生成到一半被结束的会话时，CLI 会补一条 `No response requested.`，与被中断的那条回复成为兄弟节点。历史按 CLI 继续的支线显示，与 `claude --resume` 一致。
 - **其余能力（#659）**：`model/list`、`account/rateLimits/read`、`thread/name/set`，见下面的对照表。
 - **斜杠命令目录（#765）**：`slashCommand/list`（`cwd`、与下一次 `turn/start` 相同的 `sandboxPolicy`、可选 `forceReload`）返回 `{ data: [{ name, description, argumentHint, aliases }] }`，供 iPad 的 `/` 菜单展示。客户端只把 `/名称 ` 插进草稿、按普通文本发送，由 Claude Code 自己解析，适配器不执行命令。
-  - 来源：同一工作区、同样设置来源的常驻进程的 `supportedCommands()`（含 MCP 命令与运行中发现的技能）；没有时另起一个不带工具、不启动 MCP、不跑 hooks、不保存会话的进程，只读 initialize 的目录，按（工作区, 是否加载本机设置）缓存 5 分钟，失败后冷却 15 秒。受限档位不加载 user / project / local 设置，目录只有 Claude Code 内置的命令与技能。
+  - 来源：同一工作区、同样设置来源的常驻进程的 `supportedCommands()`（含 MCP 命令与运行中发现的技能）；没有时另起一个不带工具、不启动 MCP、不跑 hooks、不保存会话的进程，只读 initialize 的目录，按（工作区, 是否加载本机设置）缓存 5 分钟，失败后冷却 15 秒。设置来源取自运行时同一个 `sandboxOptions`：完全访问不传 `settingSources`（SDK 缺省加载 user / project / local，与 CLI 相同），受限档位传 `[]`，目录只有 Claude Code 内置的命令与技能。
   - 隐藏：CLI 在 `system/init` 里标为终端专用的命令（`terminal_slash_commands`，适配器跑过回合后才知道）；`/clear`（实测会让 CLI 换一个新会话 ID，Mimi 里的会话不再更新）、`/model`、`/effort`（只改 CLI 进程，客户端的选择器不知道）；名字含空白或以 `__` 开头的条目。同名条目取 CLI 自己的那一行。
   - 实测（Claude Code 2.1.301，经 `ThreadRuntime` 的流式输入）：纯文本消息以 `/名称 参数` 开头时，自定义命令、技能、`/context`、`/compact` 都按命令执行，本地命令的输出以 assistant 消息返回；同一消息带图片时不解析；`.skill` 输入排在正文之后时转成 `正文\n/名称`，不在开头，不会被识别。
 - **切换准备（#660）**：
@@ -109,7 +109,7 @@ agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置�
 MIMI_CLAUDE_POLICY_TEST_BIN="$(command -v claude)" bun test test/sandboxPolicy.native.test.ts
 ```
 
-验收包含两种环境变量取值下的工作区 / 只读模式、内外写入、软链接外写、网络拒绝，以及本机配置试图放宽边界的情况。普通 `bun test` 跳过此项；macOS 已实测，Linux 与原生 Windows 的运行态验收分别记录，不能用 macOS 结果替代。
+验收包含两种环境变量取值下的工作区 / 只读模式、内外写入、软链接外写、网络拒绝，以及本机配置试图放宽边界的情况。命令目录发现的原生用例同样用这个开关：`bun test test/commands.native.test.ts`（只读 initialize，不调用模型），核对完全访问能列出用户与项目的命令和技能、受限档位不能。普通 `bun test` 跳过这些用例；macOS 已实测，Linux 与原生 Windows 的运行态验收分别记录，不能用 macOS 结果替代。
 
 ## 在开发机上试用
 

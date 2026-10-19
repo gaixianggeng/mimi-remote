@@ -4,6 +4,7 @@
 // 被解析；带图片的消息、写在正文之后的 `/名称` 都按原文交给模型。
 import { query as sdkQuery, type SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import { RpcError } from "../rpc/frames.ts";
+import { sandboxOptions, type ExecutionPolicy } from "../runtime/sandboxPolicy.ts";
 import { logger } from "../util/logging.ts";
 
 export interface CommandEntry {
@@ -54,20 +55,30 @@ export function catalogCommands(commands: readonly SlashCommand[], terminal: Rea
   return [...byName.values()].map((value) => value.entry);
 }
 
-/** loadsSettings：会话是否加载 user / project / local 设置。受限档位不加载（见 sandboxPolicy），目录也不同。 */
-export type DiscoverCommands = (cwd: string, loadsSettings: boolean, timeoutMs: number) => Promise<SlashCommand[]>;
+/**
+ * 会话是否加载 user / project / local 设置：只有完全访问加载，受限档位一律不加载（见
+ * sandboxOptions），两种会话认识的命令不同，目录分开缓存。
+ */
+export function loadsSettings(policy: ExecutionPolicy): boolean {
+  return policy.type === "dangerFullAccess";
+}
+
+export type DiscoverCommands = (cwd: string, policy: ExecutionPolicy, timeoutMs: number) => Promise<SlashCommand[]>;
 
 /**
  * 起一个不带工具、不启动 MCP、不跑 hooks、不保存会话的 Claude 进程，只读 initialize 返回的
  * 命令目录，不发送任何消息。MCP 提供的命令因此不在其中，有常驻进程时以它为准。
+ * 设置来源取自运行时同一个 sandboxOptions：完全访问不传 settingSources（SDK 缺省加载全部来源，
+ * 与 CLI 相同），受限档位传 []，目录与该档位下真正跑起来的会话一致。
  */
-export function sdkCommandDiscovery(claudeExecutable: () => string): DiscoverCommands {
-  return async (cwd, loadsSettings, timeoutMs) => {
+export function sdkCommandDiscovery(claudeExecutable: () => string, startQuery: typeof sdkQuery = sdkQuery): DiscoverCommands {
+  return async (cwd, policy, timeoutMs) => {
+    const { settingSources } = await sandboxOptions(policy, cwd);
     const abortController = new AbortController();
     const idle: AsyncIterable<never> = {
       [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => {}) }),
     };
-    const query = sdkQuery({
+    const query = startQuery({
       prompt: idle,
       options: {
         abortController,
@@ -77,7 +88,7 @@ export function sdkCommandDiscovery(claudeExecutable: () => string): DiscoverCom
         strictMcpConfig: true,
         persistSession: false,
         settings: { disableAllHooks: true },
-        ...(loadsSettings ? {} : { settingSources: [] }),
+        ...(settingSources ? { settingSources } : {}),
       },
     });
     const timer = setTimeout(() => abortController.abort(), timeoutMs);
@@ -119,14 +130,15 @@ export class CommandCatalog {
 
   constructor(private readonly options: CommandCatalogOptions) {}
 
-  async list(cwd: string, loadsSettings: boolean, forceReload = false): Promise<CommandEntry[]> {
-    const live = this.options.live?.(cwd, loadsSettings);
-    const commands = live ? await live.catch(() => this.load(cwd, loadsSettings, forceReload)) : await this.load(cwd, loadsSettings, forceReload);
+  async list(cwd: string, policy: ExecutionPolicy, forceReload = false): Promise<CommandEntry[]> {
+    const live = this.options.live?.(cwd, loadsSettings(policy));
+    const commands = live ? await live.catch(() => this.load(cwd, policy, forceReload)) : await this.load(cwd, policy, forceReload);
     return catalogCommands(commands, this.options.terminal());
   }
 
-  private load(cwd: string, loadsSettings: boolean, forceReload: boolean): Promise<SlashCommand[]> {
-    const key = `${loadsSettings ? "settings" : "isolated"}\0${cwd}`;
+  private load(cwd: string, policy: ExecutionPolicy, forceReload: boolean): Promise<SlashCommand[]> {
+    const settings = loadsSettings(policy);
+    const key = `${settings ? "settings" : "isolated"}\0${cwd}`;
     const now = Date.now();
     const cached = this.entries.get(key) ?? { fetchedAt: 0, failedAt: 0 };
     if (cached.inFlight) return cached.inFlight;
@@ -138,11 +150,11 @@ export class CommandCatalog {
     }
     const started = Date.now();
     cached.inFlight = this.options
-      .discover(cwd, loadsSettings, this.options.timeoutMs ?? 15_000)
+      .discover(cwd, policy, this.options.timeoutMs ?? 15_000)
       .then((commands) => {
         cached.commands = commands;
         cached.fetchedAt = Date.now();
-        logger.debug("commands.discovered", { count: commands.length, settings: loadsSettings, ms: Date.now() - started });
+        logger.debug("commands.discovered", { count: commands.length, settings, ms: Date.now() - started });
         return commands;
       })
       .catch((error) => {
