@@ -619,7 +619,12 @@ final class AppStore: ObservableObject {
     }
 
     @discardableResult
-    func commitConnectionSettings(_ prepared: PreparedConnectionSettings) async throws -> Bool {
+    /// `isStillCurrent` 在凭据写入的 await 之后、改写当前电脑之前再核对一次：提交途中被取消
+    /// 或改选的切换回滚凭据并按取消结束，已被放弃的电脑不能生效（#801）。
+    func commitConnectionSettings(
+        _ prepared: PreparedConnectionSettings,
+        isStillCurrent: () -> Bool = { true }
+    ) async throws -> Bool {
         let normalizedEndpoint = try Self.validatedEndpoint(prepared.endpoint)
         let normalizedActiveEndpoint = try Self.validatedEndpoint(prepared.activeEndpoint)
         let acceptsHostDeviceName = ConnectionProfile.acceptsHostDeviceName(
@@ -821,8 +826,8 @@ final class AppStore: ObservableObject {
                 usesEphemeralLocalCredential = true
             }
         }
-        guard credentialLifecycle == credentialLifecycleGeneration, !Task.isCancelled else {
-            // App 在 Keychain await 期间进入后台时，候选提交必须回滚，A 的元数据和 Runtime 不变。
+        guard credentialLifecycle == credentialLifecycleGeneration, !Task.isCancelled, isStillCurrent() else {
+            // App 在 Keychain await 期间进入后台或切换被取消时，候选提交必须回滚，A 的元数据和 Runtime 不变。
             if usesEphemeralLocalCredential {
                 await credentialVault.rollbackMemory(credentialReceipt, profileID: targetProfile.id)
             } else {

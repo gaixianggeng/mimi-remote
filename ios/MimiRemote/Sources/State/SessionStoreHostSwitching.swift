@@ -319,8 +319,11 @@ extension SessionStore {
                 throw CancellationError()
             }
             try await tailcatExperimentController?.stagePreparedRouteIfNeeded(prepared, appStore: appStore)
-            guard isNavigationCurrent() else { throw CancellationError() }
-            let committed = try await commitPreparedConnection(prepared)
+            // stage 和提交里的凭据写入都会 await，取消或改选可能正落在这期间；只撤销已结束的
+            // prepare 任务拦不住，提交门前必须再核对代次（#801）。
+            let isOperationCurrent = { self.connectionChangeGeneration == operationGeneration }
+            guard isNavigationCurrent(), isOperationCurrent() else { throw CancellationError() }
+            let committed = try await commitPreparedConnection(prepared, isStillCurrent: isOperationCurrent)
             await tailcatExperimentController?.commitPreparedRouteIfNeeded(prepared, appStore: appStore)
             preparedCandidate = nil
             return committed
@@ -385,13 +388,16 @@ extension SessionStore {
         preparedConnectionTask?.cancel()
     }
 
-    func commitPreparedConnection(_ prepared: PreparedConnectionSettings) async throws -> Bool {
+    func commitPreparedConnection(
+        _ prepared: PreparedConnectionSettings,
+        isStillCurrent: () -> Bool = { true }
+    ) async throws -> Bool {
         // 必须先原子提交 Keychain/endpoint，再退役旧连接。若 Keychain 写入失败，
         // 旧 WebSocket、runtime bundle、connectionGeneration 和当前会话数据都保持不变。
         let previousHostScope = appStore.activeHostScope
         let previousProfileID = previousHostScope.profileID
         let previousWarmSnapshot = makeHostWarmSnapshot(profileID: previousProfileID)
-        let didChange = try await appStore.commitConnectionSettings(prepared)
+        let didChange = try await appStore.commitConnectionSettings(prepared, isStillCurrent: isStillCurrent)
         if didChange {
             for sessionID in Array(queuedRunningTurnsBySessionID.keys) {
                 markDispatchingQueuedTurnsNeedsConfirmation(
