@@ -39,7 +39,7 @@ function inputOf(params: Params, method: string): UserInput[] {
 
 function newRecord(threadId: string, cwd: string): SessionRecord {
   const now = Math.floor(Date.now() / 1000);
-  return { id: threadId, cwd, name: null, preview: "", createdAt: now, updatedAt: now, gitBranch: null, path: null, archived: false };
+  return { id: threadId, cwd, name: null, preview: "", createdAt: now, updatedAt: now, gitBranch: null, path: null, archived: false, spawnedFromId: null };
 }
 
 /** thread/start 与 thread/resume 共用的响应：会话本体 + 当前生效的运行设置。 */

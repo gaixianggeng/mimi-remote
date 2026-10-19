@@ -1079,6 +1079,8 @@ struct ComposerView: View {
                 composerCard(tokens: tokens)
             }
         }
+        // 补全候选浮在输入卡上方，不改变卡片高度，聊天列表不会被挤动（#765）。
+        .overlay(alignment: .top) { composerAutocompleteOverlay }
         .layoutPriority(1)
         .animation(
             composerMotionAnimation,
@@ -1112,10 +1114,8 @@ struct ComposerView: View {
     }
 
     func expandedPhoneComposerContent(tokens: ThemeTokens) -> some View {
-        let skillSuggestions = filteredSkillSuggestions
-        return VStack(alignment: .leading, spacing: composerCardSpacing) {
-            composerTextArea(tokens: tokens, skillSuggestions: skillSuggestions)
-            skillAutocompletePanel(skills: skillSuggestions)
+        VStack(alignment: .leading, spacing: composerCardSpacing) {
+            composerTextArea(tokens: tokens)
             voiceReviewNotice
         }
         // 水平保留 10pt 阅读边距，与参考输入光标位置对齐；竖向由外层 8pt 统一控制，避免单行态
@@ -1125,15 +1125,13 @@ struct ComposerView: View {
 
     func composerCard(tokens: ThemeTokens) -> some View {
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
-        let skillSuggestions = filteredSkillSuggestions
         return VStack(alignment: .leading, spacing: composerCardSpacing) {
             // iPad、iPad mini 与 Catalyst 有稳定的横向空间，直接展示发送上下文；
             // iPhone 则统一收进底部「+」，不再保留需要二次展开的“快捷”状态。
             if !isPhoneComposer {
                 composerContextControlsRow
             }
-            composerTextArea(tokens: tokens, skillSuggestions: skillSuggestions)
-            skillAutocompletePanel(skills: skillSuggestions)
+            composerTextArea(tokens: tokens)
             voiceReviewNotice
             primaryComposerToolbar
         }
@@ -1170,7 +1168,7 @@ struct ComposerView: View {
             .shadow(color: Color.black.opacity(shadowOpacity), radius: 6, y: 2)
     }
 
-    func composerTextArea(tokens: ThemeTokens, skillSuggestions: [SkillCapability]) -> some View {
+    func composerTextArea(tokens: ThemeTokens) -> some View {
         ZStack(alignment: .topLeading) {
             ComposerTextView(
                 text: composerDraftBinding,
@@ -1203,7 +1201,7 @@ struct ComposerView: View {
                         endHoldToTalk()
                     }
                 },
-                skillAutocompleteActive: activeSkillQuery != nil && !skillSuggestions.isEmpty,
+                skillAutocompleteActive: !autocompleteSuggestions.isEmpty,
                 onSkillQueryChange: { query in
                     if query != activeSkillQuery {
                         activeSkillQuery = query
@@ -1211,10 +1209,10 @@ struct ComposerView: View {
                     }
                 },
                 onSkillAutocompleteMove: { offset in
-                    moveSkillSuggestion(by: offset)
+                    moveAutocompleteSelection(by: offset)
                 },
                 onSkillAutocompleteCommit: {
-                    commitSelectedSkillSuggestion()
+                    commitAutocompleteSelection()
                 },
                 onSkillAutocompleteDismiss: {
                     activeSkillQuery = nil
@@ -1245,58 +1243,6 @@ struct ComposerView: View {
                 clearVoiceTransientStatus()
             }
         )
-    }
-
-    @ViewBuilder
-    func skillAutocompletePanel(skills: [SkillCapability]) -> some View {
-        if activeSkillQuery != nil, !skills.isEmpty {
-            SkillAutocompletePanel(
-                skills: skills,
-                selectedIndex: min(selectedSkillSuggestionIndex, skills.count - 1),
-                onSelect: { skill in
-                    selectSkillFromAutocomplete(skill)
-                }
-            )
-            .environmentObject(themeStore)
-            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topLeading)))
-        }
-    }
-
-    var filteredSkillSuggestions: [SkillCapability] {
-        guard let activeSkillQuery else { return [] }
-        let query = activeSkillQuery.query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matches = enabledSkillShortcuts.filter { skill in
-            guard !selectedSkillPaths.contains(skill.path) else { return false }
-            return query.isEmpty
-                || skill.name.localizedCaseInsensitiveContains(query)
-                || skill.presentationName.localizedCaseInsensitiveContains(query)
-        }
-        return Array(matches.prefix(5))
-    }
-
-    func moveSkillSuggestion(by offset: Int) {
-        let suggestions = filteredSkillSuggestions
-        guard !suggestions.isEmpty else { return }
-        let count = suggestions.count
-        selectedSkillSuggestionIndex = (selectedSkillSuggestionIndex + offset + count) % count
-        UISelectionFeedbackGenerator().selectionChanged()
-    }
-
-    func commitSelectedSkillSuggestion() {
-        let suggestions = filteredSkillSuggestions
-        guard !suggestions.isEmpty else { return }
-        let index = min(selectedSkillSuggestionIndex, suggestions.count - 1)
-        selectSkillFromAutocomplete(suggestions[index])
-    }
-
-    func selectSkillFromAutocomplete(_ skill: SkillCapability) {
-        guard let query = activeSkillQuery else { return }
-        if let updatedText = composerTextSubmitBridge.replaceText(in: query.replacementRange, with: "") {
-            composerState.draft = updatedText
-        }
-        addSkillAttachment(skill, closesPanel: false)
-        activeSkillQuery = nil
-        selectedSkillSuggestionIndex = 0
     }
 
     func composerCardBorderColor(_ tokens: ThemeTokens) -> Color {
