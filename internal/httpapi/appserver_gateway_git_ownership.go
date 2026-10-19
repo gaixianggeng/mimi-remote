@@ -13,11 +13,12 @@ import (
 // 模拟慢 Git、卡住或失败的 Git。
 var gatewayGitCommonDirectory = resolveGatewayGitCommonDirectory
 
-// resolveGatewayGitCommonDirectory 返回 path 的 Git common-dir。Git 明确回答“不是仓库”时
-// 返回空目录和 nil；超时、进程起不来等没有结论的情况返回错误，不能当作“不在仓库”。
+// resolveGatewayGitCommonDirectory 返回 path 的 Git common-dir。Git 跑完却解析不出仓库
+// （不是仓库、.git 文件指向已删除的仓库等）时返回空目录和 nil；进程起不来、被终止或
+// 超时这类没有结论的情况返回错误，不能当作“不在仓库”。
 func resolveGatewayGitCommonDirectory(ctx context.Context, path string) (string, error) {
 	dir, err := gitResolvedDirectoryResult(ctx, path, "--git-common-dir")
-	if err != nil && isGitRepositoryMissingError(err) {
+	if err != nil && gitCommandExitedWithVerdict(err) {
 		return "", nil
 	}
 	return dir, err

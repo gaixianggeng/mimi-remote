@@ -271,6 +271,21 @@ func TestGlobalThreadListBrokenWorktreeIsSettledAsNonRepository(t *testing.T) {
 	}
 }
 
+func TestGatewayGitCommonDirectoryDistinguishesVerdictFromFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Git 跑完并给出“不是仓库”：确定结论。
+	dir, err := resolveGatewayGitCommonDirectory(ctx, t.TempDir())
+	if err != nil || dir != "" {
+		t.Fatalf("非仓库目录应得到确定的否定结论：dir=%q err=%v", dir, err)
+	}
+	// 进程根本没起来：没有结论，不能当作“不是仓库”。
+	_, _, err = runCommand(ctx, t.TempDir(), 1024, "mimi-definitely-missing-git")
+	if err == nil || gitCommandExitedWithVerdict(err) {
+		t.Fatalf("进程起不来不能被当作 Git 的结论：err=%v", err)
+	}
+}
+
 func TestGlobalListRetryCursorForFirstPageOmitsUpstreamCursor(t *testing.T) {
 	policy := &appServerGatewayPolicy{runtimeID: "codex"}
 	token, err := policy.storeGlobalListRetryCursor("")
