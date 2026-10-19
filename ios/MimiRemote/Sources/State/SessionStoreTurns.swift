@@ -1742,6 +1742,10 @@ extension SessionStore {
         isAppInBackground = true
         networkRecoveryTask?.cancel()
         networkRecoveryTask = nil
+        // 全局发现跨页沿用的 cursor 只在签发它的网关连接内有效，回后台随即丢弃 Runtime bundle。
+        // 旧遍历不能在回前台后用旧 bundle 重连续翻；下一轮从首页开始（#792）。
+        sessionLibraryIndexRefreshJob?.task.cancel()
+        sessionLibraryIndexRefreshJob = nil
         guard connectionTermination == nil, !appStore.requiresRePairing else {
             return
         }
