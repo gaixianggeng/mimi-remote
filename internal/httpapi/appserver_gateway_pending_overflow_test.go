@@ -28,12 +28,16 @@ func limitGatewayPendingTracking(t *testing.T, clientMax int, threadMax int) {
 	})
 }
 
+// expireGatewayPendingTracking 让登记在下一次检查时必定已过期。不能靠极小 TTL 加
+// sleep：Windows 上 time.Now 的单调读数按系统时钟中断推进（默认约 15.6 ms），
+// 相隔几毫秒的两次读数可能完全相同，经过时间为 0，不大于 1 ns，登记就不算过期。
+// 负 TTL 对任何 >= 0 的经过时间都成立，不依赖时钟前进。
 func expireGatewayPendingTracking(t *testing.T) {
 	t.Helper()
 	oldClientTTL := appServerGatewayPendingClientRequestTTL
 	oldThreadTTL := appServerGatewayPendingThreadTTL
-	appServerGatewayPendingClientRequestTTL = time.Nanosecond
-	appServerGatewayPendingThreadTTL = time.Nanosecond
+	appServerGatewayPendingClientRequestTTL = -time.Nanosecond
+	appServerGatewayPendingThreadTTL = -time.Nanosecond
 	t.Cleanup(func() {
 		appServerGatewayPendingClientRequestTTL = oldClientTTL
 		appServerGatewayPendingThreadTTL = oldThreadTTL
@@ -111,7 +115,6 @@ func TestAppServerGatewayFullTableWithExpiredEntriesAsksForReset(t *testing.T) {
 			for _, request := range tc.requests {
 				mustValidateClientFrame(t, policy, request)
 			}
-			time.Sleep(time.Millisecond)
 			_, policyErr := policy.validateClientFrame(websocket.TextMessage, []byte(tc.overflow))
 			if policyErr == nil || !strings.Contains(policyErr.message, "重置") {
 				t.Fatalf("上游长期不回导致登记占满时，应要求重置连接而不是永久拒绝：%+v", policyErr)
@@ -128,7 +131,6 @@ func assertGatewayResetsConnection(t *testing.T, conn *websocket.Conn) {
 		`{"id":1,"method":"model/list","params":{}}`,
 		`{"id":2,"method":"model/list","params":{}}`,
 	} {
-		time.Sleep(5 * time.Millisecond)
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
 			t.Fatal(err)
 		}
@@ -200,7 +202,6 @@ func TestAppServerGatewayResetErrorKeepsRequestID(t *testing.T) {
 	expireGatewayPendingTracking(t)
 	policy, _ := newInboundPolicyForTest(t, appServerRuntimeCodexID)
 	mustValidateClientFrame(t, policy, `{"id":1,"method":"model/list","params":{}}`)
-	time.Sleep(time.Millisecond)
 	_, policyErr := policy.validateClientFrame(websocket.TextMessage, []byte(`{"id":"next","method":"model/list","params":{}}`))
 	if policyErr == nil || policyErr.id == nil || string(*policyErr.id) != `"next"` {
 		t.Fatalf("重置错误应带上触发请求的 id，客户端才能结束等待：%+v", policyErr)
@@ -208,5 +209,23 @@ func TestAppServerGatewayResetErrorKeepsRequestID(t *testing.T) {
 	var probe json.RawMessage
 	if json.Unmarshal(*policyErr.id, &probe) != nil {
 		t.Fatal("错误 id 应是合法 JSON")
+	}
+}
+
+// 模拟 Windows 粗粒度时钟：检查时刻与登记时刻读数完全相同（经过时间为 0），
+// 测试用的过期设置仍必须生效，用例才不依赖平台时钟精度。
+func TestGatewayPendingTrackingExpiryHelperIgnoresClockGranularity(t *testing.T) {
+	expireGatewayPendingTracking(t)
+	policy, _ := newInboundPolicyForTest(t, appServerRuntimeCodexID)
+	mustValidateClientFrame(t, policy, `{"id":1,"method":"thread/list","params":{"limit":50}}`)
+
+	policy.mu.Lock()
+	defer policy.mu.Unlock()
+	clientRequest := policy.pendingClientRequests["1"]
+	thread := policy.pendingThreads["1"]
+	policy.prunePendingClientRequestsLocked(clientRequest.createdAt)
+	policy.prunePendingThreadsLocked(thread.createdAt)
+	if !policy.pendingClientRequests["1"].expired || !policy.pendingThreads["1"].expired {
+		t.Fatal("经过时间为 0 时登记也应按过期处理")
 	}
 }
