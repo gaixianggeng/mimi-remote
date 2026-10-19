@@ -2581,6 +2581,43 @@
         }
       }
     },
+    "ui.app_filing_number": {
+      "comment": "APP registration number shown in About & Legal with a link to the MIIT filing system.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App filing number"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APP 备案号"
+          }
+        }
+      }
+    },
+    "ui.app_filing_number_value": {
+      "comment": "Official APP registration identifier. Keep the complete identifier unchanged in every language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "苏ICP备2026066024号-2A"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "苏ICP备2026066024号-2A"
+          }
+        }
+      },
+      "shouldTranslate": false
+    },
     "ui.app_server_credentials_file": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
