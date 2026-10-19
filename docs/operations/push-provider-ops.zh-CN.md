@@ -116,6 +116,9 @@ curl --fail --silent --show-error http://127.0.0.1:8087/healthz
 Payload 里仍然没有标题；标题由设备上的通知扩展从 App Group 本地缓存改写。两个方向都向后兼容：
 旧版 App 没有该扩展时照常显示通用文案，旧 Provider 配新 App 时也只是不改写标题。部署命令见下文「部署与升级」。
 
+DeepSeek 回复提醒（#568）同样先更新 Provider：旧 Provider 对 `runtime=deepseek` 回 400，agentd 只记日志、
+不删设备，所以先装新 agentd 也安全，只是收不到提醒。Provider 只接受 DeepSeek 的 `turn.*`，审批与等待提醒仍拒绝。
+
 最小验收：开启“消息提醒”后发送一个延迟完成的任务并锁屏；确认只收到一次回复提醒，点击能打开来源任务。
 另测失败、自动重试、需要输入、当前任务前台静默、审批允许/拒绝，以及锁屏提醒显示会话标题、缓存缺失时退回通用文案。真实 APNs 投递仍须真机验证。
 

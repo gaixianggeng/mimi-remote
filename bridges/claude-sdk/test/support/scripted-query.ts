@@ -29,6 +29,8 @@ export class ScriptedQuery {
   }
 
   interrupts = 0;
+  /** 适配器交给 SDK 的工具审批回调，测试直接调用来模拟 Claude 请求审批。 */
+  canUseTool: ((name: string, input: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown>) | undefined;
   /** 设置后切换模型会停在这里，模拟 turn/start 等待控制请求的窗口。 */
   settingsGate: Promise<void> | undefined;
 
