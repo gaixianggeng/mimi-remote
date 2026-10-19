@@ -101,6 +101,28 @@ final class RuntimeCatalogRefreshTests: XCTestCase {
         XCTAssertEqual(store.appServerModelOptions.map(\.model), ["gpt-live"], "通道已关闭时不再保留旧目录")
     }
 
+    func testRetainedCatalogIsRecheckedAndClearedWhenRuntimeNowReturnsEmpty() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            modelOptions: [Self.codexOption, Self.claudeOption],
+            runtimeChannelAvailability: ["codex": true, "claude": true]
+        )
+        let store = makeStore(client: client)
+        await store.refreshAppServerModelOptions(force: true)
+
+        // Claude 这次成功返回空目录：聚合结果里看不出来，只能先沿用，再由定向补拉确认。
+        client.modelOptionsResult = [Self.codexOption]
+        client.modelOptionsByRuntime["claude"] = []
+        await store.refreshAppServerModelOptions(force: true)
+        await store.prepareTurnModelOptions(runtimeProvider: "claude", hostScope: store.appStore.activeHostScope)
+
+        XCTAssertEqual(client.targetedModelOptionsRequests, ["claude"], "沿用的旧目录不能挡住定向补拉")
+        XCTAssertEqual(store.appServerModelOptions.map(\.model), ["gpt-live"], "电脑端已移除的模型不能一直可选")
+
+        await store.prepareTurnModelOptions(runtimeProvider: "codex", hostScope: store.appStore.activeHostScope)
+        XCTAssertEqual(client.targetedModelOptionsRequests, ["claude"], "聚合目录已确认的 Runtime 不重复补拉")
+    }
+
     private static let codexOption = CodexAppServerModelOption(
         id: "gpt-live", provider: "openai", runtimeProvider: "codex", isDefault: true
     )

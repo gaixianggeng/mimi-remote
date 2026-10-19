@@ -215,6 +215,9 @@ extension SessionStore {
             } else if force {
                 appServerModelOptions = []
             }
+            // 聚合结果分不清「该 Runtime 成功返回空目录」与「这次没拉成」，沿用的旧条目要等定向补拉确认。
+            retainedModelCatalogProviders = Set(appServerModelOptions.map { Self.normalizedRuntimeProvider($0.runtimeProvider) })
+                .subtracting(refreshedProviders)
             if force {
                 setStatusMessage(options.isEmpty ? L10n.text("ui.model_list_empty_using_built_in_options") : L10n.text("ui.model_list_refreshed"))
             }
@@ -238,7 +241,8 @@ extension SessionStore {
         guard appStore.activeHostScope == hostScope else { return }
         let provider = Self.normalizedRuntimeProvider(runtimeProvider)
         guard RuntimeFeatureSupport.runtimeProviders.contains(provider) else { return }
-        if appServerModelOptions.contains(where: { Self.normalizedRuntimeProvider($0.runtimeProvider) == provider }) {
+        if appServerModelOptions.contains(where: { Self.normalizedRuntimeProvider($0.runtimeProvider) == provider }),
+           !retainedModelCatalogProviders.contains(provider) {
             return
         }
         if let refresh = turnModelRefreshByRuntime[provider], refresh.hostScope == hostScope,
@@ -278,6 +282,7 @@ extension SessionStore {
             appServerModelOptions = appServerModelOptions.filter {
                 !refreshedProviders.contains(Self.normalizedRuntimeProvider($0.runtimeProvider))
             } + options
+            retainedModelCatalogProviders.subtract(refreshedProviders)
         }
     }
 
