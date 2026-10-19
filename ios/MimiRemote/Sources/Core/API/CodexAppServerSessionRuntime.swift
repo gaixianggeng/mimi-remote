@@ -24,6 +24,7 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
     case invalidGatewayURL
     case gatewayUnavailable
     case threadSearchUnavailable
+    case threadGoalsUnavailable
     case projectNotFound(String)
     case projectRequired
     case sessionNotFound(SessionID)
@@ -44,6 +45,8 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
             return L10n.text("ui.agentd_does_not_enable_app_server_gateway_please")
         case .threadSearchUnavailable:
             return L10n.text("ui.currently_agentd_or_codex_app_server_does_not")
+        case .threadGoalsUnavailable:
+            return L10n.text("ui.the_current_running_channel_does_not_support_goals")
         case .projectNotFound(let projectID):
             return L10n.format("ui.the_project_does_not_exist_or_is_not", projectID)
         case .projectRequired:
@@ -808,6 +811,7 @@ actor CodexAppServerSessionRuntime {
     }
 
     func threadGoal(threadID: SessionID) async throws -> ThreadGoal? {
+        try await requireThreadGoalSupport()
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
         let result = try await sendRecoveringFromStaleInitialization(builder.threadGoalGet(threadID: threadID))
         guard let goal = threadGoal(from: result) else {
@@ -827,6 +831,7 @@ actor CodexAppServerSessionRuntime {
         status: ThreadGoalStatus? = nil,
         tokenBudget: Int64? = nil
     ) async throws -> ThreadGoal {
+        try await requireThreadGoalSupport()
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
         let normalizedObjective = objective?.trimmingCharacters(in: .whitespacesAndNewlines)
         let result = try await sendRecoveringFromStaleInitialization(builder.threadGoalSet(
@@ -844,6 +849,7 @@ actor CodexAppServerSessionRuntime {
     }
 
     func clearThreadGoal(threadID: SessionID) async throws {
+        try await requireThreadGoalSupport()
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
         _ = try await sendRecoveringFromStaleInitialization(builder.threadGoalClear(threadID: threadID))
         clearThreadGoalLocal(threadID: threadID)
@@ -2205,6 +2211,10 @@ actor CodexAppServerSessionRuntime {
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
             throw CancellationError()
         }
+        // 通道没声明目标能力（如 Claude）时不发 thread/goal/get，否则每次打开都会被网关拒一次（#791）。
+        guard supportsThreadGoals(in: config) else {
+            return
+        }
         // 目标状态是增强信息，不应该卡住实时事件连接。旧 app-server 可能不支持 thread/goal/get，
         // 慢链路也可能延迟响应；后台刷新即可，连接状态先进入 connected。
         Task {
@@ -3548,6 +3558,41 @@ actor CodexAppServerSessionRuntime {
             return methods.contains(method)
         }
         return config.policy.allowedMethods.contains(method)
+    }
+
+    static let threadGoalMethods = ["thread/goal/get", "thread/goal/set", "thread/goal/clear"]
+
+    /// 目标任务按通道声明判断，不按 Runtime 名称写死（#791）。channel 显式声明 goals=false，
+    /// 或 methods 缺少任一 thread/goal/* 方法，就视为不支持；Claude 通道正是如此（#371）。
+    /// 旧 agentd 没有该 runtime 的 channel 或 methods 时，Codex 保持原先照常请求的行为。
+    static func supportsThreadGoals(runtimeProvider raw: String, in config: CodexAppServerConfigResponse) -> Bool {
+        let runtime = normalizedRuntimeProvider(raw)
+        let channel = config.channels.first { channel in
+            normalizedRuntimeProvider(channel.runtimeID ?? channel.id) == runtime ||
+                normalizedRuntimeProvider(channel.provider) == runtime
+        }
+        if channel?.capabilities?["goals"] == false {
+            return false
+        }
+        guard let methods = channel?.methods else {
+            return runtime == "codex"
+        }
+        return threadGoalMethods.allSatisfy(methods.contains)
+    }
+
+    func supportsThreadGoals(in config: CodexAppServerConfigResponse) -> Bool {
+        Self.supportsThreadGoals(runtimeProvider: runtimeProvider, in: config)
+    }
+
+    func threadGoalsSupported(runtimeProvider: String) async throws -> Bool {
+        Self.supportsThreadGoals(runtimeProvider: runtimeProvider, in: try await ensureConfig())
+    }
+
+    /// 入口已按能力隐藏；这里兜住排队目标、旧草稿等残留路径，确保不支持的通道一条 goal 请求都不发。
+    func requireThreadGoalSupport() async throws {
+        guard supportsThreadGoals(in: try await ensureConfig()) else {
+            throw CodexAppServerSessionRuntimeError.threadGoalsUnavailable
+        }
     }
 
     /// 上游在连接重建或线程卸载时可能发送 thread/closed 或 notLoaded。这里只清理当前

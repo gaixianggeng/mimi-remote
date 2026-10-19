@@ -163,13 +163,18 @@ extension SessionStore {
             // 只剩 claude），写死成"恒可用"会让选择器在一个 codex 通道不可用的主机上
             // 仍然提供 codex，而真正能用的 claude 不会顶上来。
             var availableRuntimeProviders: Set<String> = []
+            var threadGoalRuntimeProviders: Set<String> = []
             for provider in RuntimeFeatureSupport.runtimeProviders {
                 if (try? await client.runtimeChannelAvailable(runtimeProvider: provider)) == true {
                     availableRuntimeProviders.insert(provider)
+                    if (try? await client.runtimeSupportsThreadGoals(runtimeProvider: provider)) == true {
+                        threadGoalRuntimeProviders.insert(provider)
+                    }
                 }
             }
             guard appStore.activeHostScope == hostScope else { return }
             self.availableRuntimeProviders = availableRuntimeProviders
+            self.threadGoalRuntimeProviders = threadGoalRuntimeProviders
             if availableRuntimeProviders.contains(Self.nativeHarnessRuntimeProvider) {
                 // 用户已启用、agentd 能力兼容且 Harness 健康后，才建立宿主级事件流。
                 // 这只观察上游，不拥有或停止 Harness 正在执行的任务。
@@ -202,6 +207,7 @@ extension SessionStore {
             guard appStore.activeHostScope == hostScope else { return }
             if !didRefreshRuntimeAvailability {
                 availableRuntimeProviders = ["codex"]
+                threadGoalRuntimeProviders = ["codex"]
             }
             appServerModelOptionsLastRefresh = Date()
             for provider in RuntimeFeatureSupport.runtimeProviders {
@@ -273,6 +279,10 @@ extension SessionStore {
             guard appStore.activeHostScope == hostScope else { return false }
             if available {
                 availableRuntimeProviders.insert(provider)
+                if (try? await clientFactory().runtimeSupportsThreadGoals(runtimeProvider: provider)) == true,
+                   appStore.activeHostScope == hostScope {
+                    threadGoalRuntimeProviders.insert(provider)
+                }
                 if provider == Self.nativeHarnessRuntimeProvider {
                     installNativeHarnessHostEvents()
                 }
@@ -481,6 +491,10 @@ extension SessionStore {
 
     func isRuntimeAvailable(_ provider: String) -> Bool {
         availableRuntimeProviders.contains(Self.normalizedRuntimeProvider(provider))
+    }
+
+    func supportsThreadGoals(runtimeProvider: String?) -> Bool {
+        RuntimeFeatureSupport.supportsGoals(for: runtimeProvider ?? "codex", declaredBy: threadGoalRuntimeProviders)
     }
 
     static func payloadRuntimeProvider(_ normalizedRuntimeProvider: String) -> String? {

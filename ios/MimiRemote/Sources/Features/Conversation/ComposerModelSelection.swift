@@ -4,6 +4,11 @@ import SwiftUI
 // 模型目录过滤、默认值选择和会话 runtime 锁定集中在这里，避免 ComposerView
 // 同时承担视图布局与模型策略。成员保持 module-internal，供 ComposerView 跨文件扩展协作。
 extension ComposerView {
+    /// 目标模式只对通道声明了 thread/goal/* 的 Runtime 开放；规划模式不受影响（#791）。
+    var supportsGoalMode: Bool {
+        sessionStore.supportsThreadGoals(runtimeProvider: composerRuntimeProvider)
+    }
+
     func preparedTurnOptionsForSubmit() -> CodexAppServerTurnOptions {
         var options = developerModeEnabled
             ? composerState.turnOptions
@@ -29,7 +34,7 @@ extension ComposerView {
     func synchronizeAuthoritativeCollaborationMode() {
         guard activeComposerDraftScope == currentComposerDraftScope,
               case .session(let sessionID) = activeComposerDraftScope,
-              RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider),
+              RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider),
               let authoritativeMode = sessionStore.activeCollaborationMode(for: sessionID),
               let mode = ComposerCollaborationModeSync.resolvedSendMode(
                   authoritativeMode: authoritativeMode,

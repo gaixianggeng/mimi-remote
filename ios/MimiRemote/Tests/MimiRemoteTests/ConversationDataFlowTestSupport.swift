@@ -534,6 +534,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let modelOptionsResult: [CodexAppServerModelOption]
     let modelOptionsError: Error?
     var runtimeChannelAvailability: [String: Bool]
+    /// 各 Runtime 通道是否声明 thread/goal/*；默认与真实 agentd 一致，只有 Codex 声明（#791）。
+    var runtimeThreadGoalSupport: [String: Bool] = ["codex": true]
     let rateLimitsByRuntime: [String: RateLimitSummary]
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)?
@@ -761,6 +763,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
         runtimeChannelAvailability[runtimeProvider] ?? false
+    }
+
+    func runtimeSupportsThreadGoals(runtimeProvider: String) async throws -> Bool {
+        runtimeThreadGoalSupport[runtimeProvider] ?? false
     }
 
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {

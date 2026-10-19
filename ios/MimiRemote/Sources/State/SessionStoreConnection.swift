@@ -3008,6 +3008,7 @@ extension SessionStore {
         permissionProfilesRefreshRequestedCWD = nil
         isRefreshingPermissionProfiles = false
         availableRuntimeProviders = ["codex"]
+        threadGoalRuntimeProviders = ["codex"]
         accountRateLimitsByRuntime = [:]
         accountTokenUsage = nil
         accountTokenActivity = .idle
