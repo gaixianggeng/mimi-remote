@@ -16,6 +16,7 @@
 - **对话（#657）**：`thread/start`、`thread/resume`、`turn/start`、`turn/steer`、`turn/interrupt`。
   - 每个会话一个常驻的 SDK `query()`（流式输入），使用 Claude Code 自带的系统提示词。完全访问沿用 CLI 的设置来源；受限档位按下方执行边界隔离设置。
   - 模型、权限模式、思考强度在 turn 之间通过 SDK 控制接口切换；执行边界或完全访问状态变化时重启进程。
+  - 空闲回收：turn 收尾后进程空闲 10 分钟即关闭，下一次 `turn/start` 以 resume 重新拉起。后台任务（Bash `run_in_background`、后台子代理等）属于这个进程，进程一关就随之结束、完成后的续写也不会发生，所以按 SDK 的 `background_tasks_changed`（不含 ambient 任务）判断：仍有任务在跑时不关闭，全部结束后重新计时（#796）。让出、执行边界变化重启、适配器退出或进程自己退出时仍有后台任务，记一条 warn 日志 `claude.background_tasks_dropped`（任务数与原因）。
   - 审批（`canUseTool`）映射为 `item/commandExecution/requestApproval`、`item/fileChange/requestApproval`；`AskUserQuestion` 映射为 `item/tool/requestUserInput`。请求发给订阅该会话的所有连接，先答复者生效，其余收到 `serverRequest/resolved`；重连时由 `serverRequest/replay` 补发未答复的请求。
   - 引导以人工输入的 `now` 优先级并入当前 turn。turn 要等名下所有消息（含引导）都被 Claude 的结果吸收才收尾；输出与结果按 `user_message_uuid` 归属，CLI 队列里还有未完成的消息时拒绝新的 `turn/start`。
   - 已知差异：引导消息在 transcript 里是普通的用户记录，重新加载历史时显示为单独一轮，实时显示时在同一轮里。
@@ -112,7 +113,7 @@ agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置�
 MIMI_CLAUDE_POLICY_TEST_BIN="$(command -v claude)" bun test test/sandboxPolicy.native.test.ts
 ```
 
-验收包含两种环境变量取值下的工作区 / 只读模式、内外写入、软链接外写、网络拒绝，本机配置试图放宽边界的情况，以及经合成插件加载的项目技能展开、用户技能加载、技能自带的命令 hook 不执行、模型看不到技能列表。命令目录发现的原生用例同样用这个开关：`bun test test/commands.native.test.ts`（只读 initialize，不调用模型），核对完全访问按原名、受限档位按 `mimi:名称` 列出用户与项目的命令和技能。普通 `bun test` 跳过这些用例；macOS 已实测，Linux 与原生 Windows 的运行态验收分别记录，不能用 macOS 结果替代。
+验收包含两种环境变量取值下的工作区 / 只读模式、内外写入、软链接外写、网络拒绝，本机配置试图放宽边界的情况，以及经合成插件加载的项目技能展开、用户技能加载、技能自带的命令 hook 不执行、模型看不到技能列表。命令目录发现的原生用例同样用这个开关：`bun test test/commands.native.test.ts`（只读 initialize，不调用模型），核对完全访问按原名、受限档位按 `mimi:名称` 列出用户与项目的命令和技能。后台任务的原生用例 `bun test test/backgroundTasks.native.test.ts` 让模型以 `run_in_background` 跑一条比空闲时限长的命令，核对命令照常完成、完成通知触发的续写作为新的一轮到达客户端、之后照常空闲关闭（#796，2.1.294 与 2.1.301 实测）。普通 `bun test` 跳过这些用例；macOS 已实测，Linux 与原生 Windows 的运行态验收分别记录，不能用 macOS 结果替代。
 
 ## 在开发机上试用
 
