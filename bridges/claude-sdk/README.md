@@ -20,6 +20,7 @@
   - 审批（`canUseTool`）映射为 `item/commandExecution/requestApproval`、`item/fileChange/requestApproval`；`AskUserQuestion` 映射为 `item/tool/requestUserInput`。请求发给订阅该会话的所有连接，先答复者生效，其余收到 `serverRequest/resolved`；重连时由 `serverRequest/replay` 补发未答复的请求。
   - 引导以人工输入的 `now` 优先级并入当前 turn。turn 要等名下所有消息（含引导）都被 Claude 的结果吸收才收尾；输出与结果按 `user_message_uuid` 归属，CLI 队列里还有未完成的消息时拒绝新的 `turn/start`。
   - 已知差异：引导消息在 transcript 里是普通的用户记录，重新加载历史时显示为单独一轮，实时显示时在同一轮里。
+  - 后台任务完成后的续写（#797）：CLI 为完成通知单独跑一轮，输出不带 `user_message_uuid`，transcript 里通知那条记录的 uuid 实时侧也拿不到。两边都按会话 ID 与任务这次运行的 `run_id`（实时 `task_notification` 帧、通知记录的 `origin.runId`）生成同一个回合 ID（`src/claude/itemIds.ts` 的 `notificationTurnId`），客户端无论从实时事件还是历史得知这一轮，都能停止它、向它补充消息。通知触发的一轮在 `system/init` 时就开出续写回合（不等首帧输出），首帧前的排队、重试期间它就是活动回合，`turn/start` 被拒，输出不会挂到别的回合上。几条通知连着送达时只有一段回复，回合归最后一条（CLI 为前几条各跑一轮空的，它们的结果不收尾续写回合，CLI 回到 idle 时兜底收尾）；回合进行中送达的通知被 CLI 并进当前回合（SDK 标为排队消息），不另开回合。向续写补充的消息由 CLI 排在续写自己的结果之后单独回应，实时仍并进这个回合，重新加载历史时按上一条的已知差异单独显示。2.1.294 与 2.1.301 实测。
   - 输入转换（`src/runtime/userInput.ts`）：CLI 只在消息以 `/名称` 开头时执行命令，内容数组只检查最后一个块（2.1.294–2.1.301 实测）。CLI 只认名字：用户与项目技能会遮蔽同名的内置命令和自带技能，同名技能用户级优先、离 cwd 近的优先。所以只有附件的 path 是 CLI 加载的用户或项目技能、且这个名字在这些目录里（含 frontmatter 的 name 与自定义命令）只有它一处定义时，才把它提到开头、正文作为参数（`src/claude/skillCommand.ts`）；其余技能排在正文之后作为 `/名称` 文本，没有正文垫在前面时报参数错误。文本以 `/` 开头且带图片时，图片排在前面、文本合成最后一块（#773）。受限档位的用户与项目技能经合成插件加载、查找规则相同，所以按同一条规则提前，发送前改写成 `/mimi:名称`（见[受限执行边界](#受限执行边界488)）。
 - **单一驱动方（#658）**：`thread/takeover`。同一会话同一时刻只有一个 Claude 进程在写。
   - 占用登记（`<配置目录>/sessions/<pid>.json`，Claude Code 为每个活进程写的文件）是唯一没有公开接口的依赖，只读。自己起的进程按 pid 排除；拿到 pid 之前，同一会话新出现的登记先不算别处，避免把自己当成别人。
@@ -113,7 +114,7 @@ agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置�
 MIMI_CLAUDE_POLICY_TEST_BIN="$(command -v claude)" bun test test/sandboxPolicy.native.test.ts
 ```
 
-验收包含两种环境变量取值下的工作区 / 只读模式、内外写入、软链接外写、网络拒绝，本机配置试图放宽边界的情况，以及经合成插件加载的项目技能展开、用户技能加载、技能自带的命令 hook 不执行、模型看不到技能列表。命令目录发现的原生用例同样用这个开关：`bun test test/commands.native.test.ts`（只读 initialize，不调用模型），核对完全访问按原名、受限档位按 `mimi:名称` 列出用户与项目的命令和技能。后台任务的原生用例 `bun test test/backgroundTasks.native.test.ts` 让模型以 `run_in_background` 跑一条比空闲时限长的命令，核对命令照常完成、完成通知触发的续写作为新的一轮到达客户端、之后照常空闲关闭（#796，2.1.294 与 2.1.301 实测）。普通 `bun test` 跳过这些用例；macOS 已实测，Linux 与原生 Windows 的运行态验收分别记录，不能用 macOS 结果替代。
+验收包含两种环境变量取值下的工作区 / 只读模式、内外写入、软链接外写、网络拒绝，本机配置试图放宽边界的情况，以及经合成插件加载的项目技能展开、用户技能加载、技能自带的命令 hook 不执行、模型看不到技能列表。命令目录发现的原生用例同样用这个开关：`bun test test/commands.native.test.ts`（只读 initialize，不调用模型），核对完全访问按原名、受限档位按 `mimi:名称` 列出用户与项目的命令和技能。后台任务的原生用例 `bun test test/backgroundTasks.native.test.ts` 让模型以 `run_in_background` 跑后台命令：比空闲时限长的命令照常完成、完成通知触发的续写作为新的一轮到达客户端、之后照常空闲关闭（#796）；续写输出到一半时，历史报告的进行中回合与实时相同，按这个 ID 停止与补充消息都生效（#797）。2.1.294 与 2.1.301 实测。普通 `bun test` 跳过这些用例；macOS 已实测，Linux 与原生 Windows 的运行态验收分别记录，不能用 macOS 结果替代。
 
 ## 在开发机上试用
 
