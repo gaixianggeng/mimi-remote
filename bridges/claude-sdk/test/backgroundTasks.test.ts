@@ -1,6 +1,6 @@
 // 后台任务与空闲关闭（#796）：后台任务属于 Claude 进程，进程一关任务就随之结束、续写也不会发生。
 // 用脚本化的 Query 控制 background_tasks_changed 与续写的到达顺序，空闲时限压到几百毫秒。
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -60,6 +60,8 @@ async function settle() {
 
 /** 等过空闲时限：到点的关闭也要来得及走完。 */
 const pastIdleClose = () => Bun.sleep(IDLE_CLOSE_MS * 2.5);
+// 每个用例要等过几次空闲时限；机器繁忙时计时器会延后，默认 5 秒不够。
+setDefaultTimeout(20_000);
 
 const text = (value: string) => [{ type: "text", text: value, text_elements: [] }];
 
