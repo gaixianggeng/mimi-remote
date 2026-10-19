@@ -112,6 +112,11 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 		validated.cwdScope = scope
 		validated.cwdScopeOK = true
 	}
+	if method == "slashCommand/list" {
+		if err := validateGatewaySlashCommandListParams(params); err != nil {
+			return validated, err
+		}
+	}
 	if method == "plugin/installed" {
 		cwd, err := gatewaySingleListCWD(params, method)
 		if err != nil {
@@ -220,6 +225,43 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 	return validated, nil
 }
 
+// slashCommand/list 只读命令目录：sandboxPolicy 只用来选出该执行边界下 Claude Code 认识的命令
+// （受限档位不加载本机设置），不授予任何执行权限，因此只校验形状，转发时也只保留 type。
+func validateGatewaySlashCommandListParams(params map[string]any) error {
+	if value, exists := params["sandboxPolicy"]; exists && value != nil {
+		if _, ok := gatewaySlashCommandSandboxType(value); !ok {
+			return fmt.Errorf("slashCommand/list.sandboxPolicy.type 必须是 readOnly、workspaceWrite 或 dangerFullAccess")
+		}
+	}
+	if _, exists := params["forceReload"]; exists {
+		if _, ok := gatewayBoolParam(params, "forceReload"); !ok {
+			return fmt.Errorf("slashCommand/list.forceReload 必须是布尔值")
+		}
+	}
+	return nil
+}
+
+func gatewaySlashCommandSandboxType(value any) (string, bool) {
+	policy, ok := value.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	sandboxType, ok := gatewayStringParam(policy, "type")
+	if !ok {
+		return "", false
+	}
+	switch normalizePolicyValue(sandboxType) {
+	case "readonly":
+		return "readOnly", true
+	case "workspacewrite":
+		return "workspaceWrite", true
+	case "dangerfullaccess":
+		return "dangerFullAccess", true
+	default:
+		return "", false
+	}
+}
+
 func gatewaySingleListCWD(params map[string]any, method string) (string, error) {
 	raw, ok := params["cwds"]
 	if !ok {
@@ -248,7 +290,7 @@ func gatewayMethodNeedsManagedPendingUse(method string) bool {
 
 func requiresGatewayCWD(method string) bool {
 	switch method {
-	case "thread/list", "thread/start", "thread/resume", "thread/fork", "thread/takeover", "turn/start", "permissionProfile/list":
+	case "thread/list", "thread/start", "thread/resume", "thread/fork", "thread/takeover", "turn/start", "permissionProfile/list", "slashCommand/list":
 		return true
 	default:
 		return false

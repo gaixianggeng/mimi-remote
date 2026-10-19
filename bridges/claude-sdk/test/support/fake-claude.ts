@@ -2,7 +2,7 @@
 // 行为由提示词脚本化。也写 transcript 与占用登记，让历史与持有方检测走真实路径。
 //   TOOL <Name> <json>  先请求权限再执行；ASK 走 AskUserQuestion；SLOW 慢速输出，可被中断或引导；
 //   THINK 先输出思考；TITLE <名字> 写一条 ai-title 记录；CRASH <名字> 写完 ai-title 不回结果直接退出；
-//   其他输入原样回显（带当前模型）。
+//   COMMANDS 推送 commands_changed（运行中发现新技能）；其他输入原样回显（带当前模型）。
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -51,6 +51,14 @@ function record(type: "user" | "assistant", message: Json, uuid = randomUUID(), 
   appendFileSync(transcript, `${JSON.stringify(entry)}\n`);
   return uuid;
 }
+
+/** initialize 返回的命令目录；color 在 system/init 里标为终端专用，与真实 CLI 相同。 */
+const COMMANDS: Json[] = [
+  { name: "compact", description: "Free up context by summarizing the conversation so far", argumentHint: "<optional custom summarization instructions>", builtin: true },
+  { name: "clear", description: "Start a new session with empty context", argumentHint: "[name]", aliases: ["reset", "new"], builtin: true },
+  { name: "color", description: "Set the prompt bar color for this session", argumentHint: "[red|blue]", builtin: true },
+  { name: "fake-skill", description: "Project skill", argumentHint: "<words>" },
+];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const pendingControl = new Map<string, (response: Json) => void>();
@@ -147,7 +155,7 @@ async function runTurn(message: Json) {
   stamped = false;
   interrupted = false;
   register("busy");
-  out({ type: "system", subtype: "init", session_id: sessionId, cwd, model, permissionMode, tools: [], mcp_servers: [], uuid: randomUUID() });
+  out({ type: "system", subtype: "init", session_id: sessionId, cwd, model, permissionMode, tools: [], mcp_servers: [], slash_commands: COMMANDS.map((command) => command.name), terminal_slash_commands: ["color"], uuid: randomUUID() });
   out({ type: "system", subtype: "session_state_changed", state: "running", session_id: sessionId, uuid: randomUUID() });
   out({ type: "rate_limit_event", rate_limit_info: { status: "allowed", unifiedWindows: { five_hour: { utilization: 0.25, resetsAt: 1_800_000_000 } } }, session_id: sessionId, uuid: randomUUID() });
 
@@ -162,6 +170,11 @@ async function runTurn(message: Json) {
     const { decision } = await toolTurn("AskUserQuestion", input);
     await apiMessage([{ type: "text", text: `picked ${JSON.stringify(decision.updatedInput?.answers ?? null)}` }]);
     return result("success", "asked");
+  }
+  if (text === "COMMANDS") {
+    out({ type: "system", subtype: "commands_changed", commands: [...COMMANDS, { name: "fake-dynamic", description: "Found while working", argumentHint: "" }], session_id: sessionId, uuid: randomUUID() });
+    await apiMessage([{ type: "text", text: "commands changed" }]);
+    return result("success", "commands");
   }
   if (text === "THINK") {
     await apiMessage([{ type: "thinking", thinking: "considering options" }, { type: "text", text: "thought it through" }]);
@@ -223,7 +236,7 @@ rl.on("line", (line) => {
     if (subtype === "set_permission_mode") permissionMode = frame.request.mode;
     const response =
       subtype === "initialize"
-        ? { commands: [], agents: [], output_style: "default", available_output_styles: ["default"], models: [], account: {}, pid: process.pid, current_permission_mode: permissionMode, session_state: "idle", capabilities: [] }
+        ? { commands: COMMANDS, agents: [], output_style: "default", available_output_styles: ["default"], models: [], account: {}, pid: process.pid, current_permission_mode: permissionMode, session_state: "idle", capabilities: [] }
         : {};
     out({ type: "control_response", response: { subtype: "success", request_id: frame.request_id, response } });
     return;

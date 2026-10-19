@@ -91,6 +91,12 @@ struct ComposerAutocompletePanel: View {
             HStack(spacing: 9) {
                 rowContent(suggestion, tokens: tokens)
                 Spacer(minLength: 8)
+                // 标出由 Claude Code 自己解析的命令：选中只补全文字，发送后才执行。靠右对齐，不随说明长短漂移。
+                if case .command(let command) = suggestion, case .runtimeCommand = command.action {
+                    Text("Claude")
+                        .font(themeStore.uiFont(size: 9, weight: .bold))
+                        .foregroundStyle(tokens.secondaryText)
+                }
                 if case .command(let command) = suggestion, command.isCurrent {
                     Text(L10n.text("ui.slash_command_current"))
                         .font(themeStore.uiFont(.caption2, weight: .semibold))

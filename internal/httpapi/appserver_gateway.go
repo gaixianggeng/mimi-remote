@@ -215,6 +215,9 @@ var appServerClaudeAllowedMethods = map[string]struct{}{
 	"turn/interrupt":          {},
 	"model/list":              {},
 	"account/rateLimits/read": {},
+	// Claude 专用（SDK 适配器）：输入框 `/` 菜单的命令目录，只读。cwd 同样必须来自授权工作区；
+	// 旧 Rust bridge 没有这个方法，channel 只在适配器声明时开放。
+	"slashCommand/list": {},
 }
 
 type appServerConfigResponse struct {
@@ -560,6 +563,9 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		}
 		if !probe.supportsMethod("thread/items/list", claudebridge.SupportsThreadItemsList) {
 			claudeMethods = removeAppServerMethod(claudeMethods, "thread/items/list")
+		}
+		if !probe.supportsMethod("slashCommand/list", func(string) bool { return false }) {
+			claudeMethods = removeAppServerMethod(claudeMethods, "slashCommand/list")
 		}
 		claudeTakeoverAvailable := probe.supportsMethod("thread/takeover", claudebridge.SupportsThreadTakeover)
 		if !claudeTakeoverAvailable {

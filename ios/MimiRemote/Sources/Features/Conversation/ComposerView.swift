@@ -403,6 +403,7 @@ struct ComposerView: View {
         await sessionStore.refreshAppServerModelOptions()
         await sessionStore.refreshCapabilities()
         await refreshPermissionProfilesForCurrentCWD()
+        await refreshClaudeSlashCommandCatalog()
     }
 
     @MainActor

@@ -29,6 +29,10 @@
   - **接管**：规则沿用旧 bridge（#451）——只结束全部明确空闲、且进程启动时间与登记 `startedAt` 吻合的持有方；先 SIGINT，5 秒后重查状态再 SIGTERM；持有方退出后若有新进程认领同一会话，报 `holder_respawned` 且不再发信号。失败以 `-32602` 返回 `{accepted, reason, claudeOwner, retryable}`。
   - CLI 自身行为：恢复一个生成到一半被结束的会话时，CLI 会补一条 `No response requested.`，与被中断的那条回复成为兄弟节点。历史按 CLI 继续的支线显示，与 `claude --resume` 一致。
 - **其余能力（#659）**：`model/list`、`account/rateLimits/read`、`thread/name/set`，见下面的对照表。
+- **斜杠命令目录（#765）**：`slashCommand/list`（`cwd`、与下一次 `turn/start` 相同的 `sandboxPolicy`、可选 `forceReload`）返回 `{ data: [{ name, description, argumentHint, aliases }] }`，供 iPad 的 `/` 菜单展示。客户端只把 `/名称 ` 插进草稿、按普通文本发送，由 Claude Code 自己解析，适配器不执行命令。
+  - 来源：同一工作区、同样设置来源的常驻进程的 `supportedCommands()`（含 MCP 命令与运行中发现的技能）；没有时另起一个不带工具、不启动 MCP、不跑 hooks、不保存会话的进程，只读 initialize 的目录，按（工作区, 是否加载本机设置）缓存 5 分钟，失败后冷却 15 秒。技能与命令的来源取自运行时同一个 `sandboxOptions`：完全访问不传 `settingSources`（SDK 缺省加载 user / project / local，与 CLI 相同）；受限档位不加载设置，用户与项目的技能和命令经运行时同一个合成插件加载（#775），目录里登记为 `mimi:名称`（原名作别名，说明前的 `(mimi) ` 去掉），与运行时改写后实际执行的 `/mimi:名称` 一致。
+  - 隐藏：CLI 在 `system/init` 里标为终端专用的命令（`terminal_slash_commands`，适配器跑过回合后才知道）；`/clear`（实测会让 CLI 换一个新会话 ID，Mimi 里的会话不再更新）、`/model`、`/effort`（只改 CLI 进程，客户端的选择器不知道）；名字含空白或以 `__` 开头的条目。同名条目取 CLI 自己的那一行。
+  - 实测（Claude Code 2.1.301，经 `ThreadRuntime` 的流式输入）：纯文本消息以 `/名称 参数` 开头时，自定义命令、技能、`/context`、`/compact` 都按命令执行，本地命令的输出以 assistant 消息返回；同一消息带图片时不解析；`.skill` 输入排在正文之后时转成 `正文\n/名称`，不在开头，不会被识别。
 - **切换准备（#660）**：
   - Claude Code 最低 2.1.294（`src/version.ts`），在 `--capabilities` 的 `claudeCode.minimumVersion` 里声明，供 agentd 预检提示；起 Claude 进程前再检查一次，未安装、版本无法确认或过旧时 `turn/start` 以 `-32603` 返回 `claude_missing`、`claude_version_unknown` 或 `claude_unsupported`，附升级提示。
   - 首次常驻启动时迁移旧 bridge 里 Mimi 显示的名称：写成 custom-title（与 CLI `/rename` 相同），只补 Claude 侧没有标题或只有 AI 自动标题的会话，用户手动改过的保留；被别的进程占用的会话下次启动再补，全部完成后在覆盖层记下；旧索引暂时读不了或格式不对时（与文件不存在不同）不记完成，归档标记与名称都在下次启动重试。
@@ -46,6 +50,7 @@
 | `thread/takeover` | iOS | 实现（#658），规则同旧 bridge |
 | `model/list` | iOS 模型选择 | 实现（#659）。读 Claude Code 自己的模型目录（initialize），整理规则同旧 bridge；缓存 10 分钟，失败退回别名 |
 | `account/rateLimits/read` | iOS 额度、agentd 菜单栏 | 实现（#659）。只用 Claude Code 在会话里上报的 `rate_limit_event`（5 小时与 7 天窗口），不读取 Claude 的登录凭据（#660）；适配器启动后还没跑过回合时返回不可用 |
+| `slashCommand/list` | iOS `/` 菜单 | 实现（#765）。适配器专有方法，规则见上 |
 | `thread/name/set` | agentd 自动标题 | 实现（#659）。与 CLI `/rename` 相同，往 transcript 追加 custom-title，CLI 与桌面端看到同一个名字（旧 bridge 只写自己的索引）；不支持清除名称 |
 | `thread/archive`、`thread/unarchive` | 无（网关未开放） | 不实现。旧 bridge 的归档标记在首次启动时只读导入，列表照常过滤 |
 | `thread/fork`、`thread/compact/start`、`thread/rollback` | 无（网关未开放） | 不实现。需要时可用 SDK 的 `forkSession` 与 CLI 的 `/compact` |
@@ -107,7 +112,7 @@ agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置�
 MIMI_CLAUDE_POLICY_TEST_BIN="$(command -v claude)" bun test test/sandboxPolicy.native.test.ts
 ```
 
-验收包含两种环境变量取值下的工作区 / 只读模式、内外写入、软链接外写、网络拒绝，本机配置试图放宽边界的情况，以及经合成插件加载的项目技能展开、用户技能加载、技能自带的命令 hook 不执行、模型看不到技能列表。普通 `bun test` 跳过此项；macOS 已实测，Linux 与原生 Windows 的运行态验收分别记录，不能用 macOS 结果替代。
+验收包含两种环境变量取值下的工作区 / 只读模式、内外写入、软链接外写、网络拒绝，本机配置试图放宽边界的情况，以及经合成插件加载的项目技能展开、用户技能加载、技能自带的命令 hook 不执行、模型看不到技能列表。命令目录发现的原生用例同样用这个开关：`bun test test/commands.native.test.ts`（只读 initialize，不调用模型），核对完全访问按原名、受限档位按 `mimi:名称` 列出用户与项目的命令和技能。普通 `bun test` 跳过这些用例；macOS 已实测，Linux 与原生 Windows 的运行态验收分别记录，不能用 macOS 结果替代。
 
 ## 在开发机上试用
 

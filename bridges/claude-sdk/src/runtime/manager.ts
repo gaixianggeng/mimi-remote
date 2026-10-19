@@ -19,6 +19,7 @@ import {
   type TakeoverOutcome,
   type TakeoverTimeouts,
 } from "./takeover.ts";
+import type { SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import { ThreadRuntime, type RuntimeHost } from "./threadRuntime.ts";
 
 interface PendingRequest {
@@ -65,6 +66,7 @@ export class ThreadManager {
   /** 已经推送给客户端（或客户端从会话快照里拿到）的标题。 */
   private readonly titles = new Map<string, string | null>();
   private lastRateLimits: RateLimitSnapshot | undefined;
+  private terminal: ReadonlySet<string> = new Set();
   readonly ownPids = new Set<number>();
   /** 本适配器自己的 Claude 进程：已知 pid，以及还没拿到 pid 的启动窗口。 */
   readonly own: OwnProcesses = {
@@ -85,6 +87,9 @@ export class ThreadManager {
       ownPids: this.ownPids,
       processReady: () => void this.ownership.scanNow(),
       turnFinished: (threadId) => this.scheduleTitleChecks(threadId),
+      terminalCommands: (names) => {
+        this.terminal = new Set(names);
+      },
       idleCloseMs: options.idleCloseMs ?? 10 * 60_000,
       ...(options.startQuery ? { startQuery: options.startQuery } : {}),
     };
@@ -126,6 +131,21 @@ export class ThreadManager {
 
   get(threadId: string): ThreadRuntime | undefined {
     return this.runtimes.get(threadId);
+  }
+
+  /** CLI 最近一次声明的终端专用命令；终端命令都是内置的，各会话相同。 */
+  get terminalCommands(): ReadonlySet<string> {
+    return this.terminal;
+  }
+
+  /** 同一工作区、同样设置来源的常驻进程的命令目录；没有时返回 undefined，由调用方另起进程读取。 */
+  liveCommands(cwd: string, loadsSettings: boolean): Promise<SlashCommand[]> | undefined {
+    for (const runtime of this.runtimes.values()) {
+      if (runtime.cwd !== cwd) continue;
+      const commands = runtime.liveCommands(loadsSettings);
+      if (commands) return commands;
+    }
+    return undefined;
   }
 
   /** 新会话：ID 由适配器生成，第一次 turn 时以同一 ID 创建 Claude 会话。 */
