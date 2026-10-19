@@ -267,6 +267,9 @@ struct ComposerView: View {
         .onChange(of: composerTurnSettingsPolicy) { _, _ in
             enforceComposerTurnSettingsPolicy()
         }
+        .onChange(of: supportsGoalMode) { _, _ in
+            enforceComposerTurnSettingsPolicy()
+        }
         .onChange(of: pendingUserInputSelectionIdentity) { previous, current in
             synchronizePendingUserInputPresentation(previous: previous, current: current)
         }
@@ -401,7 +404,7 @@ struct ComposerView: View {
         clampModelSelectionToSelectedSessionRuntime()
         restoreComposerPermissionSelection(for: currentComposerDraftScope)
         voiceInput.prewarm()
-        await sessionStore.refreshAppServerModelOptions()
+        await refreshModelOptionsForComposerRuntime()
         await sessionStore.refreshCapabilities()
         await refreshPermissionProfilesForCurrentCWD()
         await refreshClaudeSlashCommandCatalog()
@@ -547,8 +550,10 @@ struct ComposerView: View {
     }
 
     func enforceComposerTurnSettingsPolicy() {
-        if !RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
-            // Harness 不消费 collaboration/goal 参数；恢复旧草稿时必须回到普通发送。
+        if !RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider)
+            || (composerState.isGoalModeSelected && !supportsGoalMode) {
+            // Harness 不消费 collaboration/goal 参数，未声明目标能力的通道也发不了 goal；
+            // 恢复旧草稿时必须回到普通发送。
             setSendMode(.standard)
         }
         guard !composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
@@ -1420,7 +1425,7 @@ struct ComposerView: View {
         Menu {
             if composerTurnSettingsPolicy == .unavailable {
                 Section {
-                    if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+                    if RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider) {
                         Button(action: {}) {
                             Label(L10n.text("ui.planning_mode"), systemImage: "list.clipboard")
                         }
@@ -1434,7 +1439,7 @@ struct ComposerView: View {
             if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
                 runSettingsMenu
 
-                if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+                if RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider) {
                     Divider()
 
                     Button {
@@ -1446,7 +1451,7 @@ struct ComposerView: View {
                 }
             }
 
-            if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+            if supportsGoalMode {
                 Button {
                     setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
                 } label: {
@@ -1532,13 +1537,13 @@ struct ComposerView: View {
             hiddenKeyboardShortcut(L10n.text("ui.open_the_references_panel"), key: "k", modifiers: [.command, .shift]) {
                 showsAddContentPanel = true
             }
-            if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+            if supportsGoalMode {
                 hiddenKeyboardShortcut(L10n.text("ui.switch_target_mission_mode"), key: "g", modifiers: [.command, .shift]) {
                     setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
                 }
             }
             if composerTurnSettingsPolicy.allowsTurnSettingsEditing,
-               RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+               RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider) {
                 hiddenKeyboardShortcut(L10n.text("ui.switch_planning_mode"), key: "p", modifiers: [.command, .shift]) {
                     setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
                 }
@@ -1669,8 +1674,11 @@ struct ComposerView: View {
 
     func setSendMode(_ mode: ComposerSendMode) {
         guard mode == .standard
-            || RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider)
+            || RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider)
         else {
+            return
+        }
+        guard mode != .goal || supportsGoalMode else {
             return
         }
         guard mode != .plan || composerTurnSettingsPolicy.allowsTurnSettingsEditing else {

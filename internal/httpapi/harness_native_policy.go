@@ -224,6 +224,9 @@ type harnessNativeParsedArgs struct {
 	// CreateCWD 是 session/create 的目标目录。创建时还没有 sessionId，
 	// 授权依据只能是这个 cwd——它是 create 唯一可以据以判断"允许建在哪"的输入。
 	CreateCWD string
+	// PromptRequestID 是 session/prompt 的 requestId，回复提醒据此在 durable 日志里
+	// 认出这次提交（user/message.source.rpcId）。
+	PromptRequestID string
 }
 
 // harnessNativeArgsForMethod 按方法严格解析参数，并返回转发参数与授权目标。
@@ -382,8 +385,9 @@ func harnessNativeArgsForMethod(method string, raw json.RawMessage) (harnessNati
 			forward["clientTimeZone"] = tz
 		}
 		return harnessNativeParsedArgs{
-			Forward:   map[string]any{"request": forward},
-			SessionID: sessionID,
+			Forward:         map[string]any{"request": forward},
+			SessionID:       sessionID,
+			PromptRequestID: requestID,
 		}, nil
 
 	case harnessNativeMethodSessionCancel:

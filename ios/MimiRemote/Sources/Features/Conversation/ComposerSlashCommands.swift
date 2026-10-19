@@ -88,7 +88,7 @@ extension ComposerView {
                 ))
             }
         }
-        if canEditTurnSettings, RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+        if canEditTurnSettings, RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider) {
             commands.append(ComposerSlashCommand(
                 action: .plan,
                 name: "plan",

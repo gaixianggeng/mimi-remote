@@ -49,6 +49,9 @@ final class AppStore: ObservableObject {
     private let routeVersionProbe: ConnectionRouteVersionProbe?
     private let agentAPISession: URLSession
     private let gatewayProbeTransportFactory: () -> CodexAppServerTransport
+    /// 切换预热的候选 Bundle 使用的网关传输；nil 时走 Runtime 默认的 URLSession 传输。
+    private let gatewayTransportFactory: (() -> CodexAppServerTransport)?
+    private let hostSwitchPreparationTimeout: TimeInterval
     private let usesDefaultRouteProbe: Bool
     var ephemeralLocalProfileID: String?
     private var isConnectionPreflightRunning = false
@@ -99,6 +102,8 @@ final class AppStore: ObservableObject {
         routeVersionProbe: ConnectionRouteVersionProbe? = nil,
         agentAPISession: URLSession = .shared,
         gatewayProbeTransportFactory: @escaping () -> CodexAppServerTransport = { URLSessionCodexAppServerTransport() },
+        gatewayTransportFactory: (() -> CodexAppServerTransport)? = nil,
+        hostSwitchPreparationTimeout: TimeInterval = 8,
         allowsEphemeralLocalCredentialFallback: Bool? = nil
     ) {
         self.defaults = defaults
@@ -114,6 +119,8 @@ final class AppStore: ObservableObject {
         self.localAgentPairingClaim = localAgentPairingClaim ?? Self.defaultLocalAgentPairingClaim
         self.agentAPISession = agentAPISession
         self.gatewayProbeTransportFactory = gatewayProbeTransportFactory
+        self.gatewayTransportFactory = gatewayTransportFactory
+        self.hostSwitchPreparationTimeout = hostSwitchPreparationTimeout
         self.routeProbe = routeProbe ?? { endpoint, token, timeout in
             try await Self.defaultConnectionRouteProbe(
                 endpoint: endpoint,
@@ -612,7 +619,12 @@ final class AppStore: ObservableObject {
     }
 
     @discardableResult
-    func commitConnectionSettings(_ prepared: PreparedConnectionSettings) async throws -> Bool {
+    /// `isStillCurrent` 在凭据写入的 await 之后、改写当前电脑之前再核对一次：提交途中被取消
+    /// 或改选的切换回滚凭据并按取消结束，已被放弃的电脑不能生效（#801）。
+    func commitConnectionSettings(
+        _ prepared: PreparedConnectionSettings,
+        isStillCurrent: () -> Bool = { true }
+    ) async throws -> Bool {
         let normalizedEndpoint = try Self.validatedEndpoint(prepared.endpoint)
         let normalizedActiveEndpoint = try Self.validatedEndpoint(prepared.activeEndpoint)
         let acceptsHostDeviceName = ConnectionProfile.acceptsHostDeviceName(
@@ -814,8 +826,8 @@ final class AppStore: ObservableObject {
                 usesEphemeralLocalCredential = true
             }
         }
-        guard credentialLifecycle == credentialLifecycleGeneration, !Task.isCancelled else {
-            // App 在 Keychain await 期间进入后台时，候选提交必须回滚，A 的元数据和 Runtime 不变。
+        guard credentialLifecycle == credentialLifecycleGeneration, !Task.isCancelled, isStillCurrent() else {
+            // App 在 Keychain await 期间进入后台或切换被取消时，候选提交必须回滚，A 的元数据和 Runtime 不变。
             if usesEphemeralLocalCredential {
                 await credentialVault.rollbackMemory(credentialReceipt, profileID: targetProfile.id)
             } else {
@@ -1609,8 +1621,8 @@ final class AppStore: ObservableObject {
         hostDeviceName: String?,
         adoptsHostDeviceName: Bool
     ) async throws -> PreparedConnectionSettings {
-        let deadline = Date().addingTimeInterval(8)
-        let client = AgentAPIClient(endpoint: activeEndpoint, token: token)
+        let deadline = Date().addingTimeInterval(hostSwitchPreparationTimeout)
+        let client = AgentAPIClient(endpoint: activeEndpoint, token: token, session: agentAPISession)
         HostSwitchSignpost.begin("switch_prepare")
         defer { HostSwitchSignpost.end("switch_prepare") }
 
@@ -1639,16 +1651,18 @@ final class AppStore: ObservableObject {
             guard remaining > 0.25 else {
                 throw URLError(.timedOut)
             }
+            // 预热剩余时间只约束这次网关握手。它曾被当作整个 Bundle 的请求超时，提交后
+            // 列表与发送都只剩几秒、超时又不淘汰连接，切过去就一直加载（#801）。
             let bundle = AppServerRuntimeBundle(
                 endpoint: activeEndpoint,
                 token: token,
-                // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破 8 秒总 deadline。
-                requestTimeout: remaining,
                 preparedConfig: config,
-                harnessFactory: nativeHarnessFactory
+                harnessFactory: nativeHarnessFactory,
+                transportFactory: gatewayTransportFactory
             )
             do {
-                try await bundle.prepareForHostActivation()
+                // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破预热总时限。
+                try await bundle.prepareForHostActivation(handshakeTimeout: remaining)
                 try Task.checkCancellation()
                 guard deadline.timeIntervalSinceNow > 0 else {
                     throw URLError(.timedOut)

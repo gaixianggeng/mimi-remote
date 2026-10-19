@@ -33,6 +33,20 @@ type Device struct {
 	ExpiresAt             time.Time `json:"expires_at"`
 	RegisteredAt          time.Time `json:"registered_at"`
 	RefreshedAt           time.Time `json:"refreshed_at"`
+	// SupportsDeepSeekMessages 由能解码 runtime=deepseek 的 App 声明。旧版 App 包里
+	// 没有对应的标题文案，系统会把本地化 key 原样显示在锁屏上，所以不能发给它们。
+	SupportsDeepSeekMessages bool `json:"supports_deepseek_messages,omitempty"`
+}
+
+// acceptsMessage 按设备声明的能力过滤回复提醒；Codex/Claude 终态对所有设备开放。
+func (d Device) acceptsMessage(message Message) bool {
+	if message.Event == EventHolderWaiting && !d.SupportsHolderWaiting {
+		return false
+	}
+	if message.Runtime == RuntimeDeepSeek && !d.SupportsDeepSeekMessages {
+		return false
+	}
+	return true
 }
 
 // NeedsRefresh 让 App 在 Ticket 剩余不足一周时前台刷新，而不是等它过期后

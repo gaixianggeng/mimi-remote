@@ -570,6 +570,22 @@
         }
       }
     },
+    "push.message.title.deepseek": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek message"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 消息"
+          }
+        }
+      }
+    },
     "$%@": {
       "shouldTranslate": false
     },
@@ -896,6 +912,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "将在主机执行已通过预检的 git testflight-push。它会核对远端 commit，并使用主机本地的签名与 App Store Connect 配置完成内部发布。"
+          }
+        }
+      }
+    },
+    "ui.a_reply_is_still_in_progress_this_message_was_not_sent": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A reply is still in progress, so this message wasn't sent. Retry to queue it; it sends when the reply finishes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前回复还在进行，这条未发出。重试会排队，回复结束后自动发送。"
+          }
+        }
+      }
+    },
+    "ui.a_reply_is_still_in_progress_try_again_after_it_finishes": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A reply is still in progress. Try again after it finishes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前回复还在进行，请等它结束后再试。"
           }
         }
       }
@@ -4517,6 +4567,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "撤销"
+          }
+        }
+      }
+    },
+    "ui.cancel_computer_switch": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel Switch"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消切换"
           }
         }
       }
@@ -30620,6 +30687,23 @@
         }
       }
     },
+    "ui.stop_did_not_take_effect_turn_not_started": {
+      "comment": "Shown when a stop request was not accepted because the turn had not started on the computer yet; the reply keeps running.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop didn't take effect: the turn hasn't started on the computer yet. Try stopping again in a moment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止没有生效：电脑上的回合还没开始，请稍后再点停止。"
+          }
+        }
+      }
+    },
     "ui.stop_recording": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -32902,6 +32986,23 @@
         }
       }
     },
+    "ui.the_current_running_channel_does_not_support_goals": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The current running channel does not support goals"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前运行通道不支持目标"
+          }
+        }
+      }
+    },
     "ui.the_current_running_channel_does_not_support_manual": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -33920,6 +34021,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "提醒时间已过，未保存提醒 %@"
+          }
+        }
+      }
+    },
+    "ui.the_reply_just_finished_this_message_was_not_sent_please_retry": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The reply just finished, so this message wasn't sent. Please retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复刚刚结束，这条未发出，请重试。"
           }
         }
       }
@@ -44839,6 +44957,13 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "A partial output was interrupted and remains unconfirmed." } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "一条临时输出已中断，且仍未确认。" } }
+      }
+    },
+    "harness.reply_interrupted": {
+      "comment": "Shown after a DeepSeek reply that the user stopped; the reply above is the partial text that had already streamed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Reply interrupted. The content above is incomplete." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "回复已中断，以上内容不完整。" } }
       }
     },
     "harness.previous_submission_unconfirmed": {

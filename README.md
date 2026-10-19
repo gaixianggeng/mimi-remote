@@ -2,27 +2,39 @@
 
 <h1 align="center">Mimi Remote</h1>
 
-<p align="center"><strong>Continue your computer's agent sessions on iPhone and iPad.</strong></p>
+<p align="center"><strong>Remote control for Codex and Claude Code.</strong></p>
 
-<p align="center">An open-source mobile workspace for Codex, with optional Claude Code and DeepSeek Harness.</p>
+<p align="center">Your Mac, Windows, or Linux computer keeps running the agent. From your iPhone or iPad, you watch the progress, reply, and approve. Free, open source, no cloud account.</p>
 
-<p align="center"><a href="README.zh-CN.md">简体中文</a> · <a href="https://apps.apple.com/us/app/mimi-remote/id6778076511">App Store</a> · <a href="https://testflight.apple.com/join/jhGPbSk6">TestFlight</a> · <a href="https://github.com/gaixianggeng/mimi-remote/releases/latest">Host releases</a></p>
+<p align="center"><a href="README.zh-CN.md">简体中文</a> · <a href="https://remote.code89757.com/">Website</a> · <a href="https://apps.apple.com/us/app/mimi-remote/id6778076511">App Store</a> · <a href="https://testflight.apple.com/join/jhGPbSk6">TestFlight</a> · <a href="https://github.com/gaixianggeng/mimi-remote/releases/latest">Desktop downloads</a></p>
 
-<p align="center"><img src="web/assets/readme-2.0-hero-en.png" alt="Mimi Remote preview showing session handoff, saved computers and runtimes, projects, sessions, and dark appearance" width="100%" /></p>
+<p align="center"><img src="web/assets/shots/iphone-sessions-en-light.webp" alt="The session list on iPhone, with running work at the top" width="34%" /> &nbsp;&nbsp; <img src="web/assets/shots/ipad-approval-en-light.webp" alt="A session on iPad waiting for approval, with Reject, Allow Once, Allow for This Session, and Always Allow This Tool" width="56%" /></p>
 
-Your macOS, Windows, or Linux computer keeps running the agent, the projects, and the sessions. Mimi Remote connects to it over a trusted local network or Tailscale so you can keep working from your phone or tablet. Mimi Remote is an independent project, unaffiliated with OpenAI, Anthropic, DeepSeek, or Tailscale.
+Codex, Claude Code, your projects, and your sessions all stay on your own computer. Mimi Remote connects to it over a trusted local network or Tailscale and turns the conversation, tool steps, approvals, and changes into a native iPhone and iPad interface. Mimi Remote is an independent project, unaffiliated with OpenAI, Anthropic, DeepSeek, or Tailscale.
 
 ## What you can do
 
-- **Continue the same conversation:** follow live replies, tool activity, and task status, then send a follow-up without re-explaining the project.
-- **Stay in control:** answer prompts, handle approvals, queue the next instruction, or interrupt a running turn.
+- **Watch it work:** follow live replies, tool steps, and task status. Pick up a session you started on your computer without re-explaining the project.
+- **Step in anytime:** answer the agent's questions, approve or reject the commands it wants to run, queue the next instruction, or interrupt a running turn. When it needs you, a notification reaches your lock screen.
 - **Finish the work:** with Codex, review changes and use Worktree and Git actions from the app.
-- **Switch computers:** pair several hosts, each with its own credentials, and pick the active one in **Devices**. Sessions stay on the computer that owns them.
+- **One phone, several computers:** pair several computers, each with its own credentials, and pick the active one in **Devices**. Sessions stay on the computer that owns them.
+- **One app, several agents:** control both Codex and Claude Code, and optionally DeepSeek Harness. See [Runtimes](#runtimes) for what each one supports.
 - **Use either screen:** a compact view on iPhone, a multi-column workspace on iPad.
 
-<p align="center"><img src="web/assets/readme-2.0-iphone-sessions-en.png" alt="Mimi Remote session list on iPhone" width="24%" /> &nbsp;&nbsp;&nbsp; <img src="web/assets/readme-2.0-ipad-sessions-en.png" alt="Mimi Remote multi-column session workspace on iPad" width="70%" /></p>
+<p align="center"><img src="web/assets/shots/iphone-conversation-en-light.webp" alt="A conversation on iPhone, with a reply and the View process entry" width="34%" /> &nbsp;&nbsp; <img src="web/assets/shots/ipad-workspaces-en-light.webp" alt="The iPad workspace view: projects across the top, sessions grouped into running and recent" width="56%" /></p>
 
 <p align="center"><sub>Screenshots show the English interface with sample data. The app is also available in Simplified Chinese.</sub></p>
+
+## How it differs from remote desktop and SSH
+
+| | Remote desktop | SSH + tmux | Mimi Remote |
+| --- | --- | --- | --- |
+| What you see on the phone | Your whole desktop, zoomed in to read | Terminal text | Conversation, tool steps, approvals, and changes laid out for the phone |
+| How you reply and approve | Click and type on a tiny screen | Type and press keys in a terminal | A composer and buttons |
+| When the agent needs you | No alert | Needs extra setup | A lock-screen notification |
+| First connection | Install remote-control software and sign in | Enable SSH, set up keys, install tmux | Install Mimi Remote on the computer, scan a QR code |
+
+Mimi Remote controls agent sessions only. To operate the whole computer or an arbitrary shell from your phone, a remote desktop or SSH client is the better fit.
 
 ## Get started
 
@@ -65,6 +77,26 @@ Mac and Linux hosts also offer an experimental Tailcat connection, off by defaul
 New sessions use the Full File Access permission mode by default, so agents run commands and edit files without asking each time. To confirm actions one by one, change Default permissions to Ask for Approval in the app's settings. See [SECURITY.md](SECURITY.md) for the risks.
 
 Mimi Remote is a session client. It is not a remote shell, and it does not run agents on iOS. Sessions created in Codex Desktop's ordinary "This Mac" mode are not shared; connect Desktop through the [shared App Server](docs/shared-ssh-app-server.md) to continue them on mobile.
+
+## FAQ
+
+**Do I sign in to OpenAI or Anthropic on my phone?**\
+No. The app only connects to the computer you paired. The agent uses the Codex or Claude Code sign-in already on that computer, and Mimi Remote never handles those credentials.
+
+**Does my computer need to stay on?**\
+Yes. The agent runs on the computer, so it has to stay awake and online while you connect.
+
+**Where are my sessions stored?**\
+On your computer, by Codex, Claude Code, or DeepSeek Harness. Mimi Remote has no cloud account and does not host sessions.
+
+**How do I connect when I'm not on the same network?**\
+Put your phone and computer on the same private network with Tailscale. Mac and Linux computers can also try the experimental Tailcat connection described in [How it works](#how-it-works).
+
+**Does it cost anything?**\
+The iPhone and iPad app and the computer software are free and open source, with no in-app purchases or subscriptions. Model usage counts against the Codex or Claude Code account on your computer.
+
+**How is this different from the official mobile remote features from OpenAI and Anthropic?**\
+Each official feature serves its own agent. Mimi Remote connects to both Codex and Claude Code (and DeepSeek Harness) in one app, works with Mac, Windows, and Linux computers and switches between several of them, gives you a multi-column workspace on iPad, and is fully open source. The official features change quickly, so pick whatever fits the tools and accounts you use.
 
 ## Contributing
 

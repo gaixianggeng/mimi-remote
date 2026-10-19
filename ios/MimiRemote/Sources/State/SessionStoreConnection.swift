@@ -1413,9 +1413,14 @@ extension SessionStore {
                 item.status = status
             }
             if status == SessionStatus.completed.rawValue {
-                locallyCompletedSessionIDs.insert(id)
+                // 完成时间由运行时随终态 session 快照带来；这里的 Store 时间可能是本地预览投影。
+                markSessionLocallyCompleted(
+                    id,
+                    completedTurnIDs: [sessionsByID[id]?.activeTurnID, Self.clearedTurnID(in: output, sessionID: id)],
+                    updatedAt: nil
+                )
             } else if Self.isRunningStatus(status) {
-                locallyCompletedSessionIDs.remove(id)
+                clearLocalCompletionMark(id)
             }
             if !Self.isRunningStatus(status) {
                 clearRuntimeActivity(sessionID: id)
@@ -3001,6 +3006,7 @@ extension SessionStore {
         turnModelTasksByRuntime.values.forEach { $0.task.cancel() }
         turnModelTasksByRuntime = [:]
         turnModelRefreshByRuntime = [:]
+        retainedModelCatalogProviders = []
         appServerPermissionProfiles = []
         activePermissionProfileBySessionID = [:]
         clearActiveCollaborationModes()
@@ -3009,6 +3015,7 @@ extension SessionStore {
         permissionProfilesRefreshRequestedCWD = nil
         isRefreshingPermissionProfiles = false
         availableRuntimeProviders = ["codex"]
+        threadGoalRuntimeProviders = ["codex"]
         accountRateLimitsByRuntime = [:]
         accountTokenUsage = nil
         accountTokenActivity = .idle
@@ -3029,6 +3036,7 @@ extension SessionStore {
         contextWindowUsageBySessionID = [:]
         dismissedContextWindowNoticeSessionIDs = []
         locallyCompletedSessionIDs = []
+        locallyCompletedSessionMarks = [:]
         locallyCompletedGoalThreadIDs = []
         runtimeEventFlushTasks.values.forEach { $0.cancel() }
         runtimeEventFlushTasks = [:]
@@ -3146,25 +3154,6 @@ extension SessionStore {
             item.goal = nil
         }
         contextStore.clearGoal(sessionID: sessionID)
-    }
-
-    func sessionPreservingLocalCompletedStatus(_ incoming: AgentSession) -> AgentSession {
-        var next = incoming
-        if next.status == SessionStatus.completed.rawValue {
-            locallyCompletedSessionIDs.insert(next.id)
-            return next
-        }
-        guard Self.isRunningStatus(next.status),
-              locallyCompletedSessionIDs.contains(next.id)
-        else {
-            return next
-        }
-        // 列表刷新可能落后于实时 turn/completed；这时不要让旧 running 快照把 UI 拉回运行态。
-        next.status = SessionStatus.completed.rawValue
-        next.activeTurnID = nil
-        next.pendingApproval = nil
-        next.pendingUserInput = nil
-        return next
     }
 
     func sessionPreservingLocalCompletedGoal(_ incoming: AgentSession) -> AgentSession {

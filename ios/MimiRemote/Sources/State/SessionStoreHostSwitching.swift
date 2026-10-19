@@ -7,6 +7,17 @@ enum PairingLinkAttempt: Equatable {
     case failed(String)
 }
 
+/// 换电脑请求之间的取代关系（#801）。一台电脑握手慢时，用户可以改选或取消，
+/// 不必等它的预热时限耗尽；配对、改地址等其它连接变更仍然互斥。
+struct ConnectionSwitchSupersession {
+    /// 最新一次换电脑选择；排队中的旧选择被唤醒后发现自己不是最新就放弃。
+    var latestRequestID: UUID?
+    /// 在途的连接变更是不是换电脑：只有换电脑可以被新的换电脑取代。
+    var inFlightIsSwitch = false
+    /// 等在途变更回收的请求，变更结束时统一唤醒。
+    var idleWaiters: [CheckedContinuation<Void, Never>] = []
+}
+
 // 多 Mac 连接变更、Profile 清理和暖快照恢复共享同一事务边界。
 extension SessionStore {
     func resetConnectionForSettingsChange(clearData: Bool = false) {
@@ -91,6 +102,7 @@ extension SessionStore {
             notificationNavigation.userNavigated()
         }
         HostSwitchSignpost.event("host_switch_tap")
+        try await supersedeInFlightConnectionSwitch()
         // 快速入口只执行 version + config 和一次可复用 initialize。验证或提交失败时，
         // commitPreparedConnection 不会运行，当前 Mac 的页面和 WebSocket 保持不变。
         return try await performPreparedConnectionChange(
@@ -105,6 +117,31 @@ extension SessionStore {
             }
             return try await self.appStore.prepareConnectionProfileSwitch(id: id)
         }
+    }
+
+    /// 新的换电脑选择取代在途的换电脑：旧候选在提交门前失效，等它回收后再开始，
+    /// 同一时刻仍只有一个 prepare 在改写连接状态。旧候选没提交，当前电脑的链路始终保留。
+    private func supersedeInFlightConnectionSwitch() async throws {
+        let requestID = UUID()
+        connectionSwitchSupersession.latestRequestID = requestID
+        while inFlightConnectionChangeGeneration != nil {
+            guard connectionSwitchSupersession.inFlightIsSwitch else {
+                throw ConnectionProfileError.operationInProgress
+            }
+            invalidatePreparedConnectionChange()
+            await withCheckedContinuation { connectionSwitchSupersession.idleWaiters.append($0) }
+            guard connectionSwitchSupersession.latestRequestID == requestID, !Task.isCancelled else {
+                throw CancellationError()
+            }
+        }
+    }
+
+    /// 菜单里的「取消切换」：撤销在途和排队中的换电脑，留在当前电脑。
+    func cancelConnectionSwitch() {
+        connectionSwitchSupersession.latestRequestID = nil
+        guard inFlightConnectionChangeGeneration != nil,
+              connectionSwitchSupersession.inFlightIsSwitch else { return }
+        invalidatePreparedConnectionChange()
     }
 
     func deleteConnectionProfile(id: String) async throws {
@@ -249,7 +286,7 @@ extension SessionStore {
         isNavigationCurrent: () -> Bool = { true },
         _ prepare: @escaping () async throws -> PreparedConnectionSettings
     ) async throws -> Bool {
-        let operationGeneration = try beginPreparedConnectionChange()
+        let operationGeneration = try beginPreparedConnectionChange(isSwitch: switchTargetProfileID != nil)
         if let switchTargetProfileID {
             connectionSwitchTargetGeneration = operationGeneration
             setConnectionSwitchTargetProfileID(switchTargetProfileID)
@@ -282,8 +319,11 @@ extension SessionStore {
                 throw CancellationError()
             }
             try await tailcatExperimentController?.stagePreparedRouteIfNeeded(prepared, appStore: appStore)
-            guard isNavigationCurrent() else { throw CancellationError() }
-            let committed = try await commitPreparedConnection(prepared)
+            // stage 和提交里的凭据写入都会 await，取消或改选可能正落在这期间；只撤销已结束的
+            // prepare 任务拦不住，提交门前必须再核对代次（#801）。
+            let isOperationCurrent = { self.connectionChangeGeneration == operationGeneration }
+            guard isNavigationCurrent(), isOperationCurrent() else { throw CancellationError() }
+            let committed = try await commitPreparedConnection(prepared, isStillCurrent: isOperationCurrent)
             await tailcatExperimentController?.commitPreparedRouteIfNeeded(prepared, appStore: appStore)
             preparedCandidate = nil
             return committed
@@ -305,14 +345,16 @@ extension SessionStore {
                 appStore.lastConnectionTestReport = previousReport
                 appStore.recentConnectionTestReports = previousRecentReports
             }
-            if Task.isCancelled || error is CancellationError {
+            // 被改选、取消或退后台撤销的候选，底层可能以 URLError.cancelled 等形式结束；
+            // 统一按取消上报，界面不把用户自己的改选显示成切换失败（#801）。
+            if Task.isCancelled || error is CancellationError || operationGeneration != connectionChangeGeneration {
                 throw CancellationError()
             }
             throw error
         }
     }
 
-    func beginPreparedConnectionChange() throws -> Int {
+    func beginPreparedConnectionChange(isSwitch: Bool = false) throws -> Int {
         guard !isAppInBackground else {
             throw CancellationError()
         }
@@ -321,6 +363,7 @@ extension SessionStore {
         }
         connectionChangeGeneration += 1
         inFlightConnectionChangeGeneration = connectionChangeGeneration
+        connectionSwitchSupersession.inFlightIsSwitch = isSwitch
         return connectionChangeGeneration
     }
 
@@ -332,6 +375,10 @@ extension SessionStore {
             setConnectionSwitchTargetProfileID(nil)
         }
         inFlightConnectionChangeGeneration = nil
+        connectionSwitchSupersession.inFlightIsSwitch = false
+        let waiters = connectionSwitchSupersession.idleWaiters
+        connectionSwitchSupersession.idleWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 
     func invalidatePreparedConnectionChange() {
@@ -341,13 +388,16 @@ extension SessionStore {
         preparedConnectionTask?.cancel()
     }
 
-    func commitPreparedConnection(_ prepared: PreparedConnectionSettings) async throws -> Bool {
+    func commitPreparedConnection(
+        _ prepared: PreparedConnectionSettings,
+        isStillCurrent: () -> Bool = { true }
+    ) async throws -> Bool {
         // 必须先原子提交 Keychain/endpoint，再退役旧连接。若 Keychain 写入失败，
         // 旧 WebSocket、runtime bundle、connectionGeneration 和当前会话数据都保持不变。
         let previousHostScope = appStore.activeHostScope
         let previousProfileID = previousHostScope.profileID
         let previousWarmSnapshot = makeHostWarmSnapshot(profileID: previousProfileID)
-        let didChange = try await appStore.commitConnectionSettings(prepared)
+        let didChange = try await appStore.commitConnectionSettings(prepared, isStillCurrent: isStillCurrent)
         if didChange {
             for sessionID in Array(queuedRunningTurnsBySessionID.keys) {
                 markDispatchingQueuedTurnsNeedsConfirmation(
