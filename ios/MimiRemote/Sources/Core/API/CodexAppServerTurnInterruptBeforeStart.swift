@@ -61,13 +61,15 @@ extension CodexAppServerSessionRuntime {
             _ = try await sendRecoveringFromStaleInitialization(spec)
             return true
         } catch {
-            guard ControlCommandFailure.classify(error).isStaleTarget else { throw error }
+            // 等满时限后，上一轮可能仍占着 active turn；与首次拒绝同类，不能当普通错误放走。
+            guard Self.isTurnNotYetActiveError(error, turnID: turnID) else { throw error }
             if hasObservedTerminal(sessionID: sessionID, turnID: turnID) {
                 // 重发途中回合已以真实终态结束，不能再叠一条合成的 interrupted。
                 return false
             }
             if signal == .started {
                 // 上游确认开始过，现在又说没有进行中的回合：它已经结束，沿用 gh-509 的收敛。
+                // 若是 active turn 不符，原样报错（不归为 staleTarget）。
                 throw error
             }
             // 等满时限仍没看到 turn/started：既不能确认回合结束，也不能确认已停下。
@@ -99,6 +101,7 @@ extension CodexAppServerSessionRuntime {
 
     func hasObservedTerminal(sessionID: SessionID, turnID: TurnID) -> Bool {
         terminalTurnTombstonesByKey[terminalTurnTombstoneKey(sessionID: sessionID, turnID: turnID)] != nil
+            || threadClosedActiveTurnIDBySessionID[sessionID] == turnID
     }
 
     func waitForTurnStartedSignal(
@@ -150,6 +153,11 @@ extension CodexAppServerSessionRuntime {
             guard turnID != nil else { return }
             signal = .terminal
         case "thread/closed":
+            // thread/closed 不带 turnId，不会留下 turn 墓碑。可能先于拒绝回包到达、此时还没有
+            // 等待者，所以记下关闭时的进行中回合（updateContext 随后才清掉它）。
+            if let activeTurnID = contextsBySessionID[threadID]?.activeTurnID {
+                threadClosedActiveTurnIDBySessionID[threadID] = activeTurnID
+            }
             signal = .terminal
         default:
             return

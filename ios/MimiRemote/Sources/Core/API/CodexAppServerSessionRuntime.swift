@@ -281,6 +281,7 @@ actor CodexAppServerSessionRuntime {
     // turn/start ACK 之后、turn/started 之前的 turn/interrupt 会被 Codex 拒绝（#808）。
     // 记下每个 thread 最近一次 turn/started，停止请求据此等回合开始后重发。
     var lastStartedTurnIDBySessionID: [SessionID: TurnID] = [:]
+    var threadClosedActiveTurnIDBySessionID: [SessionID: TurnID] = [:]
     var turnStartedWaitersByToken: [UUID: CodexAppServerTurnStartedWaiter] = [:]
     var pendingForkReconciliationsByToken: [UUID: CodexAppServerPendingForkReconciliation] = [:]
     let requestTimeout: TimeInterval
