@@ -236,28 +236,6 @@ func TestClaudeGatewayDropsReplayedResponseWithoutInflightRequest(t *testing.T) 
 	}
 }
 
-func TestAppServerGatewayInflightRequestTableEvictsOldestWhenFull(t *testing.T) {
-	oldMax := appServerGatewayPendingClientRequestMax
-	appServerGatewayPendingClientRequestMax = 2
-	t.Cleanup(func() { appServerGatewayPendingClientRequestMax = oldMax })
-
-	policy, _ := newInboundPolicyForTest(t, appServerRuntimeCodexID)
-	for _, id := range []string{"1", "2", "3"} {
-		mustValidateClientFrame(t, policy, `{"id":`+id+`,"method":"model/list","params":{}}`)
-	}
-	if policy.requestIDInFlight(rawMessagePointer(json.RawMessage(`1`))) {
-		t.Fatal("满载时应挤掉最旧的在途登记，而不是拒绝新请求")
-	}
-	if _, forward, _ := policy.observeUpstreamFrame(websocket.TextMessage, []byte(`{"id":1,"result":{"data":[]}}`)); forward {
-		t.Fatal("被挤掉的请求再回响应时只能按对不上丢弃")
-	}
-	for _, id := range []string{"2", "3"} {
-		if _, forward, _ := policy.observeUpstreamFrame(websocket.TextMessage, []byte(`{"id":`+id+`,"result":{"data":[]}}`)); !forward {
-			t.Fatalf("仍在表内的请求 %s 应照常下发", id)
-		}
-	}
-}
-
 func TestAppServerGatewayForkProcessesResponseAfterThreadTTL(t *testing.T) {
 	policy, projectDir := newInboundPolicyForTest(t, appServerRuntimeCodexID)
 	cwd := strconvQuoteForTest(projectDir)

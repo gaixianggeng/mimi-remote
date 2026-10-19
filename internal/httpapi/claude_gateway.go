@@ -591,6 +591,11 @@ func copyClientFramesToClaudeBridge(client *websocket.Conn, stdin io.Writer, cli
 			if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
 				return "client_policy_error_write_failed"
 			}
+			if policyErr.resetConnection {
+				// 新连接用新的 policy；bridge 不会把旧连接的响应交给新连接，
+				// 断线重放的旧响应也因没有在途请求认领而被丢弃。
+				return appServerGatewayTrackingExhaustedReason
+			}
 			continue
 		}
 		compacted, err := compactJSONLine(forwardPayload)

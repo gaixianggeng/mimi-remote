@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -52,10 +53,10 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	if !p.methodAllowed(method) {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server method 不允许：" + method}
 	}
-	if p.requestIDInFlight(frame.ID) {
+	if err := p.admitClientRequest(frame.ID); err != nil {
 		// 在任何登记或 lease 之前拒绝：响应只能按 id 认领，两条同 id 请求同时在途时，
 		// 裁剪和授权会落到错误的那条响应上。
-		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server request id 重复：同 id 的请求仍在等待上游响应"}
+		return nil, gatewayPolicyErrorFromAdmission(frame.ID, err)
 	}
 	params, err := decodeGatewayParams(frame.Params)
 	if err != nil {
@@ -75,7 +76,7 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	}
 	if err := p.validateThreadCapability(&frame, method, params, validated); err != nil {
 		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
-		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+		return nil, gatewayPolicyErrorFromAdmission(frame.ID, err)
 	}
 	if policyErr := p.reserveHistoryRequest(frame.ID, method, params, len(payload)); policyErr != nil {
 		p.forgetPending(frame.ID)
@@ -102,6 +103,17 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	}
 	logGatewayForwardedClientTurnSummary(method, rewritten)
 	return rewritten, nil
+}
+
+// gatewayPolicyErrorFromAdmission 把登记失败转成客户端错误；登记耗尽时要求调用方
+// 写回错误后关闭连接。
+func gatewayPolicyErrorFromAdmission(id *json.RawMessage, err error) *appServerGatewayPolicyError {
+	policyErr := &appServerGatewayPolicyError{id: id, message: err.Error()}
+	if errors.Is(err, errGatewayPendingTrackingExhausted) {
+		policyErr.resetConnection = true
+		policyErr.data = map[string]any{"reason": appServerGatewayTrackingExhaustedReason}
+	}
+	return policyErr
 }
 
 func (p *appServerGatewayPolicy) methodAllowed(method string) bool {

@@ -130,6 +130,7 @@ var (
 	appServerGatewayPendingThreadTTL = 2 * time.Minute
 	appServerGatewayPendingThreadMax = 128
 	// 在途请求表登记每条转发给上游的请求 id，TTL 同样覆盖客户端的最长等待。
+	// 两张表都只在响应到达或连接关闭时释放；满载且已有超时未回的登记时重置连接。
 	appServerGatewayPendingClientRequestTTL       = 2 * time.Minute
 	appServerGatewayPendingClientRequestMax       = 256
 	appServerGatewayPendingServerRequestTTL       = 24 * time.Hour
@@ -315,6 +316,8 @@ type appServerGatewayPolicyError struct {
 	target                 string
 	historyResponseBlocked bool
 	historyBudgetRejected  bool
+	// resetConnection 表示写回错误后必须关闭连接（broker 连同上游一起关闭）。
+	resetConnection bool
 }
 
 type appServerGatewayPolicy struct {
@@ -359,6 +362,9 @@ type appServerGatewayPendingThreadRequest struct {
 type appServerGatewayPendingClientRequest struct {
 	method    string
 	createdAt time.Time
+	// expired 与 pendingThreads 同义：客户端已放弃，但上游仍可能回这个 id，
+	// 登记保留，id 不可复用，迟到的成功响应丢弃。
+	expired bool
 }
 
 type appServerGatewayPendingServerRequest struct {
