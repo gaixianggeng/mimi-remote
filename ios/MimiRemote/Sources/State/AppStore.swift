@@ -65,6 +65,9 @@ final class AppStore: ObservableObject {
         }
     }
     private var activeRuntimeIdentity: String?
+    /// 会话 → Runtime 路由跨 bundle 重建沿用：回后台清凭据也会丢弃 bundle，表若随之清空，
+    /// 回前台后 Claude 会话的请求会默认落到 Codex 通道并被网关拒绝（#784）。
+    let runtimeRoutes = AppServerRuntimeRouteStore()
     /// SessionStore 注入：Runtime 对没有被页面订阅的会话收到的权威快照（#683）。
     /// 只保存一份；bundle 换代（切主机、快速切换）时由 `activeRuntimeBundle` 的 didSet 重新挂上。
     var sessionIndexObserver: ((AgentSession) -> Void)? {
@@ -1637,7 +1640,8 @@ final class AppStore: ObservableObject {
                 // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破 8 秒总 deadline。
                 requestTimeout: remaining,
                 preparedConfig: config,
-                harnessFactory: nativeHarnessFactory
+                harnessFactory: nativeHarnessFactory,
+                routes: runtimeRoutes
             )
             do {
                 try await bundle.prepareForHostActivation()
@@ -1883,7 +1887,8 @@ final class AppStore: ObservableObject {
         let bundle = AppServerRuntimeBundle(
             endpoint: endpoint,
             token: token,
-            harnessFactory: nativeHarnessFactory
+            harnessFactory: nativeHarnessFactory,
+            routes: runtimeRoutes
         )
         activeRuntimeIdentity = identity
         activeRuntimeBundle = bundle

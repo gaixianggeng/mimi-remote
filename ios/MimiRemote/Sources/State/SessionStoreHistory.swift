@@ -3537,6 +3537,9 @@ extension SessionStore {
         }
         sessionsByID = byID
         sessionIndexByID = indexByID
+        // 冷启动恢复快照、首屏只拉 Codex 等路径里，会话会先于对应 Runtime 的列表回到 Store；
+        // 用它补齐路由表，避免只带会话 ID 的请求默认落到 Codex 通道（#784）。
+        appStore.runtimeRoutes.rememberMissing(sessions)
         synchronizeHistoryReadStates()
         pruneSessionScopedState(validSessionIDs: Set(byID.keys))
 
