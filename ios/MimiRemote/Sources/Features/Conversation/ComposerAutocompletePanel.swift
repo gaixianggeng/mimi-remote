@@ -134,7 +134,8 @@ struct ComposerAutocompletePanel: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
-                    Text("/\(command.name)")
+                    // 命令名是用户要输入的标识，不翻译。
+                    Text(verbatim: "/\(command.name)")
                         .font(themeStore.uiFont(.caption, weight: .semibold))
                         .foregroundStyle(tokens.primaryText)
                     Text(command.title)
@@ -150,8 +151,8 @@ struct ComposerAutocompletePanel: View {
         case .skill(let skill):
             SkillIconView(metadata: SkillVisualMetadata(capability: skill), size: 28)
             VStack(alignment: .leading, spacing: 1) {
-                // `$` 沿用技能展示名；`/` 用技能 ID，与终端里输入的命令一致。
-                Text(trigger == .command ? "/\(skill.name)" : "$\(skill.presentationName)")
+                // `$` 沿用技能展示名；`/` 用技能 ID，与终端里输入的命令一致，均不翻译。
+                Text(verbatim: trigger == .command ? "/\(skill.name)" : "$\(skill.presentationName)")
                     .font(themeStore.uiFont(.caption, weight: .semibold))
                     .foregroundStyle(tokens.primaryText)
                     .lineLimit(1)
@@ -163,8 +164,9 @@ struct ComposerAutocompletePanel: View {
                 }
             }
             if trigger == .command {
-                Text("Skill")
+                Text("SKILL")
                     .font(themeStore.uiFont(size: 9, weight: .bold))
+                    .tracking(0.8)
                     .foregroundStyle(tokens.secondaryText)
             }
         }

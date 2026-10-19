@@ -106,6 +106,20 @@ struct ComposerSlashCommand: Identifiable, Hashable {
             return name
         }
     }
+
+    /// `/permissions` 里标「当前」的档位，与工具栏权限标签同一口径：沿用会话权限时按服务端报告的
+    /// 内置档位判断；选了自定义权限配置时没有对应档位。
+    static func currentPermissionMode(
+        preservesThreadSettings: Bool,
+        selectedMode: ComposerPermissionMode,
+        selectedProfileID: String?,
+        activeProfileID: String?
+    ) -> ComposerPermissionMode? {
+        if preservesThreadSettings {
+            return activeProfileID.flatMap(ComposerPermissionMode.init(builtInPermissionProfileID:))
+        }
+        return selectedProfileID == nil ? selectedMode : nil
+    }
 }
 
 enum ComposerAutocompleteSuggestion: Identifiable {

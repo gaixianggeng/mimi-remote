@@ -71,7 +71,12 @@ extension ComposerView {
         }
         // 系统 Menu 无法用代码弹出，权限档位直接作为候选平铺，选中即生效。
         if canEditTurnSettings, availablePermissionModes.count > 1 {
-            let followsThread = composerState.turnOptions.preservesThreadPermissionSettings
+            let currentMode = ComposerSlashCommand.currentPermissionMode(
+                preservesThreadSettings: composerState.turnOptions.preservesThreadPermissionSettings,
+                selectedMode: composerState.permissionMode,
+                selectedProfileID: selectedPermissionProfileID,
+                activeProfileID: activePermissionProfile?.id
+            )
             for mode in availablePermissionModes {
                 commands.append(ComposerSlashCommand(
                     action: .permission(mode),
@@ -79,7 +84,7 @@ extension ComposerView {
                     title: mode.title,
                     detail: mode.detail,
                     systemImage: mode.systemImage,
-                    isCurrent: !followsThread && selectedPermissionProfileID == nil && composerState.permissionMode == mode
+                    isCurrent: mode == currentMode
                 ))
             }
         }

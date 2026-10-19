@@ -101,6 +101,43 @@ final class ComposerAutocompleteTests: XCTestCase {
         XCTAssertEqual(Set(ids).count, ComposerPermissionMode.allCases.count)
     }
 
+    func testCurrentPermissionModeFollowsInheritedThreadProfile() {
+        XCTAssertEqual(
+            ComposerSlashCommand.currentPermissionMode(
+                preservesThreadSettings: true,
+                selectedMode: .fullAccess,
+                selectedProfileID: nil,
+                activeProfileID: ":read-only"
+            ),
+            .readOnly,
+            "沿用会话权限时按服务端报告的内置档位标当前，不看本地默认档位"
+        )
+        XCTAssertNil(ComposerSlashCommand.currentPermissionMode(
+            preservesThreadSettings: true,
+            selectedMode: .fullAccess,
+            selectedProfileID: nil,
+            activeProfileID: "team-custom"
+        ))
+        XCTAssertNil(ComposerSlashCommand.currentPermissionMode(
+            preservesThreadSettings: true,
+            selectedMode: .fullAccess,
+            selectedProfileID: nil,
+            activeProfileID: nil
+        ))
+        XCTAssertEqual(ComposerSlashCommand.currentPermissionMode(
+            preservesThreadSettings: false,
+            selectedMode: .requestApproval,
+            selectedProfileID: nil,
+            activeProfileID: ":read-only"
+        ), .requestApproval)
+        XCTAssertNil(ComposerSlashCommand.currentPermissionMode(
+            preservesThreadSettings: false,
+            selectedMode: .requestApproval,
+            selectedProfileID: "team-custom",
+            activeProfileID: nil
+        ))
+    }
+
     private func match(_ text: String, cursor: Int? = nil) -> ComposerSkillQuery? {
         ComposerSkillQuery.match(
             text: text,
