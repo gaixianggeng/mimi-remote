@@ -71,13 +71,13 @@ echo "==> iOS conversation regressions"
 # - ConversationQuestionReplyTests：Desktop 异步提问答复的结构化投影，以及实时、重进和分页历史的一致顺序。
 # - MarkdownRenderingTests：proposed_plan 流式和完整渲染。
 # - PairingLinkTests：Endpoint allowlist、ATS 传输策略、Host capability 隔离和 stale lease。
+# - HostSwitchSlowHandshakeTests：一台电脑握手挂起时可改选或取消，连续切换可用，提交后的请求不继承预热剩余时间（#801）。
 # - DoctorDiagnosticsTests：结构化 Doctor 响应、HTTP 错误和向后兼容。
 # - ProtocolContractTests：iOS/agentd 当前、上一版和明确不兼容的版本窗口。
 # - ManagedConnectionEntitlementStoreTests、ManagedConnectionEntitlementAPIClientTests、
 #   ManagedConnectionStoreKitClientTests：订阅状态机、服务端授权契约和 StoreKit 适配。
 # - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
 # - RuntimeRouteRetentionTests：回前台重建 bundle 后会话仍走所属 Runtime，重新授权不为别的 Runtime 翻列表（#784）。
-# - HostSwitchSlowHandshakeTests：一台电脑握手挂起时可改选或取消，连续切换可用，提交后的请求不继承预热剩余时间（#801）。
 # - NotificationTitleCacheTests、NotificationContentRewriterTests：会话标题的 App Group 本地缓存，
 #   以及通知扩展只用该缓存在设备上改写锁屏文案、缓存缺失时退回通用文案。
 # - WorkbenchLayoutModeCommitTests：iPad 旋转跨 860pt 时换树等系统尺寸过渡结束，
@@ -214,7 +214,6 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/NotificationRoutingGateTests \
   -only-testing:MimiRemoteTests/NotificationRouteResolutionTests \
   -only-testing:MimiRemoteTests/RuntimeRouteRetentionTests \
-  -only-testing:MimiRemoteTests/HostSwitchSlowHandshakeTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCompletionAwaitingReducerDoesNotOverwriteNewerActiveTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testPagedHistoryRetainsInvisibleTurnStatesForCompletionRecovery \
   -only-testing:MimiRemoteTests/NotificationTitleCacheTests \
@@ -273,6 +272,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLongHistoryFirstPresentationAndCachedReopenForBothProviders \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLongProseHistoryFirstPresentationAndCachedReopenForBothProviders \
   -only-testing:MimiRemoteTests/PairingLinkTests \
+  -only-testing:MimiRemoteTests/HostSwitchSlowHandshakeTests \
   -only-testing:MimiRemoteTests/TailcatExperimentRoutingTests \
   -only-testing:MimiRemoteTests/TailcatLocalEndpointProbeTests \
   -only-testing:MimiRemoteTests/DoctorDiagnosticsTests \
