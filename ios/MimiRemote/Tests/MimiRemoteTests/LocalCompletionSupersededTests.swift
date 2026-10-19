@@ -86,11 +86,72 @@ final class LocalCompletionSupersededTests: XCTestCase {
         try await assertActiveTurnConflictQueuesNextMessage(source: "claude")
     }
 
+    func testCodexConflictOlderThanObservedCompletionKeepsSessionCompleted() async throws {
+        try await assertStaleConflictKeepsObservedCompletion(source: "codex")
+    }
+
+    func testClaudeConflictOlderThanObservedCompletionKeepsSessionCompleted() async throws {
+        try await assertStaleConflictKeepsObservedCompletion(source: "claude")
+    }
+
     // MARK: - Helpers
 
-    private func assertActiveTurnConflictQueuesNextMessage(source: String) async throws {
-        let project = makeProject(id: "proj-local-completion-conflict-\(source)")
-        let sessionID = "sess-local-completion-conflict-\(source)"
+    /// resume 等待期间电脑端那一轮已经结束，且 turn/completed 先于冲突结果落地：冲突快照比本地完成旧，
+    /// 不能把已结束的回合恢复成进行中，否则后续消息会一直排在不存在的回合后面。
+    private func assertStaleConflictKeepsObservedCompletion(source: String) async throws {
+        let fixture = await makeConflictFixture(suffix: "stale-\(source)", source: source)
+        let store = fixture.store
+        let client = fixture.client
+        let sessionID = fixture.session.id
+
+        let firstSend = Task { await store.sendPrompt("第一条") }
+        await client.waitForCreateRequestCount(1)
+        applyRuntimeCompletion(of: fixture.session, turnID: "turn-mac", completedAt: completedAt.addingTimeInterval(90), in: store)
+        var staleConflict = fixture.session
+        staleConflict.status = SessionStatus.running.rawValue
+        staleConflict.activeTurnID = "turn-mac"
+        staleConflict.updatedAt = completedAt.addingTimeInterval(60)
+        client.resolveCreate(with: .failure(
+            CodexAppServerSessionRuntimeError.activeTurnConflict(session: staleConflict, activeTurnID: "turn-mac")
+        ))
+        let firstDelivered = await firstSend.value
+
+        XCTAssertFalse(firstDelivered)
+        XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue, "turn-mac 的完成已经落地，冲突快照是旧的")
+        XCTAssertNil(store.selectedSession?.activeTurnID)
+        XCTAssertEqual(
+            fixture.conversationStore.messages(for: sessionID).first { $0.content == "第一条" }?.sendStatus,
+            .failed
+        )
+        XCTAssertEqual(store.statusMessage, L10n.text("ui.the_reply_just_finished_this_message_was_not_sent_please_retry"))
+
+        let secondSend = Task { await store.sendPrompt("第二条") }
+        for _ in 0..<200 {
+            if store.queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false || client.createPayloads.count >= 2 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        if client.createPayloads.count >= 2 {
+            client.resolveCreate(with: .failure(MockError.unimplemented), at: 1)
+        }
+        _ = await secondSend.value
+
+        XCTAssertEqual(client.createPayloads.count, 2, "回合已结束，第二条应直接 resume 发送")
+        XCTAssertTrue(store.queuedRunningTurnsBySessionID[sessionID]?.isEmpty ?? true, "不能排在已结束的回合后面")
+    }
+
+    private struct ConflictFixture {
+        let store: SessionStore
+        let client: DelayedCreateSessionClient
+        let conversationStore: ConversationStore
+        let session: AgentSession
+    }
+
+    /// 本机跑完一轮的会话已被选中，等待用户再发一条（发送会走 resume）。
+    private func makeConflictFixture(suffix: String, source: String) async -> ConflictFixture {
+        let project = makeProject(id: "proj-local-completion-conflict-\(suffix)")
+        let sessionID = "sess-local-completion-conflict-\(suffix)"
         let completed = makeSession(
             id: sessionID,
             projectID: project.id,
@@ -117,6 +178,16 @@ final class LocalCompletionSupersededTests: XCTestCase {
         await store.selectSession(completed)
         observeLocalCompletion(of: completed, turnID: "turn-ipad", in: store)
         XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
+        return ConflictFixture(store: store, client: client, conversationStore: conversationStore, session: completed)
+    }
+
+    private func assertActiveTurnConflictQueuesNextMessage(source: String) async throws {
+        let fixture = await makeConflictFixture(suffix: source, source: source)
+        let store = fixture.store
+        let client = fixture.client
+        let conversationStore = fixture.conversationStore
+        let completed = fixture.session
+        let sessionID = completed.id
 
         var authoritative = completed
         authoritative.status = SessionStatus.running.rawValue
@@ -201,13 +272,23 @@ final class LocalCompletionSupersededTests: XCTestCase {
         return CompletedFixture(store: store, base: running)
     }
 
-    /// 与运行时投影 turn/completed 的顺序一致：先发终态 session 快照（updatedAt 取回合完成时间），
-    /// 再发 turn/completed 事件。
+    /// Store 里先是进行中的 `turnID`，随后收到它的完成。
     private func observeLocalCompletion(of session: AgentSession, turnID: TurnID, in store: SessionStore) {
         store.updateSession(session.id) { item in
             item.status = SessionStatus.running.rawValue
             item.activeTurnID = turnID
         }
+        applyRuntimeCompletion(of: session, turnID: turnID, completedAt: completedAt, in: store)
+    }
+
+    /// 与运行时投影 turn/completed 的顺序一致：先发终态 session 快照（updatedAt 取回合完成时间），
+    /// 再发 turn/completed 事件。
+    private func applyRuntimeCompletion(
+        of session: AgentSession,
+        turnID: TurnID,
+        completedAt: Date,
+        in store: SessionStore
+    ) {
         var completed = session
         completed.status = SessionStatus.completed.rawValue
         completed.activeTurnID = nil

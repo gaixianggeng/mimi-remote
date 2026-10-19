@@ -20,26 +20,31 @@ struct SessionLocalCompletionMark: Equatable {
         }
     }
 
+    /// 这次完成是否晚于快照：快照里的进行中回合已经看到结束，或快照时间早于完成时间。
+    func isNewer(than snapshot: AgentSession) -> Bool {
+        if let turnID = Self.normalizedTurnID(snapshot.activeTurnID), completedTurnIDs.contains(turnID) {
+            // 已经看到结束的回合不会重新开始；同一 turn 的 running 快照只能是落后的。
+            return true
+        }
+        if let snapshotUpdatedAt = snapshot.updatedAt, let updatedAt, snapshotUpdatedAt < updatedAt {
+            return true
+        }
+        return false
+    }
+
     /// running 快照是否晚于这次完成。
     ///
     /// Codex 的 thread/list 不带 turns，Claude 列表行只有最后一条对话时间，所以两类证据都要认：
     /// 更晚的 updatedAt，或时间不早于完成、且不是已结束回合的进行中 turn。
     func isSuperseded(by incoming: AgentSession) -> Bool {
-        let incomingTurnID = Self.normalizedTurnID(incoming.activeTurnID)
-        if let incomingTurnID, completedTurnIDs.contains(incomingTurnID) {
-            // 已经看到结束的回合不会重新开始；同一 turn 的 running 快照只能是落后的。
+        guard !isNewer(than: incoming) else {
             return false
         }
-        if let incomingUpdatedAt = incoming.updatedAt, let updatedAt {
-            if incomingUpdatedAt > updatedAt {
-                return true
-            }
-            if incomingUpdatedAt < updatedAt {
-                return false
-            }
+        if let incomingUpdatedAt = incoming.updatedAt, let updatedAt, incomingUpdatedAt > updatedAt {
+            return true
         }
         // 时间相同或无法比较时，只有已知完成回合之外的进行中 turn 才算新一轮的证据。
-        return incomingTurnID != nil && !completedTurnIDs.isEmpty
+        return Self.normalizedTurnID(incoming.activeTurnID) != nil && !completedTurnIDs.isEmpty
     }
 
     private static func normalizedTurnID(_ value: TurnID?) -> TurnID? {
@@ -63,6 +68,18 @@ extension SessionStore {
     func clearLocalCompletionMark(_ sessionID: SessionID) {
         locallyCompletedSessionIDs.remove(sessionID)
         locallyCompletedSessionMarks.removeValue(forKey: sessionID)
+    }
+
+    /// resume 发现进行中回合（activeTurnConflict）时让本地完成标记让位，下一条消息才会排队。
+    /// 但等待 resume 期间这一轮的 turn/completed 可能已经先落地：此时冲突快照是旧的，保留标记，
+    /// 写入时按已完成处理，否则后续消息会排在已经结束的回合后面。
+    /// 返回冲突快照是否仍是当前状态。
+    func releaseLocalCompletionMark(forConflict snapshot: AgentSession) -> Bool {
+        if locallyCompletedSessionMarks[snapshot.id]?.isNewer(than: snapshot) == true {
+            return false
+        }
+        clearLocalCompletionMark(snapshot.id)
+        return true
     }
 
     /// turn/completed 归并出的 `.clear` 带着刚结束的 turn ID。

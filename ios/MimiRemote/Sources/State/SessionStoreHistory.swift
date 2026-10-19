@@ -381,9 +381,9 @@ extension SessionStore {
                 recoveredSession.status = "running"
                 recoveredSession.activeTurnID = activeTurnID
                 recoveredSession = sessionPreservingActiveApproval(recoveredSession)
-                // 本机上一轮的完成标记不能压过这份权威快照：电脑端已经开始新一轮，
-                // 会话必须保持进行中，下一条消息才会进入排队（#805）。
-                clearLocalCompletionMark(recoveredSession.id)
+                // 电脑端开始的新一轮要压过本机上一轮的完成标记，下一条消息才会排队；
+                // 等待期间这一轮已在本地完成时，冲突快照是旧的，仍按已完成写入（#805）。
+                let conflictIsCurrent = releaseLocalCompletionMark(forConflict: recoveredSession)
                 upsert(recoveredSession)
                 if let optimisticSessionID, let clientMessageID {
                     conversationStore.updateSendStatus(
@@ -403,7 +403,9 @@ extension SessionStore {
                 if let optimisticSelectionLease,
                    isSelectionLeaseCurrent(optimisticSelectionLease) {
                     connectWebSocket(recoveredSession, replayBufferedEvents: true)
-                    setStatusMessage(L10n.text("ui.a_reply_is_still_in_progress_this_message_was_not_sent"))
+                    setStatusMessage(conflictIsCurrent
+                        ? L10n.text("ui.a_reply_is_still_in_progress_this_message_was_not_sent")
+                        : L10n.text("ui.the_reply_just_finished_this_message_was_not_sent_please_retry"))
                     setErrorMessage(nil)
                 }
                 return false

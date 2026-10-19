@@ -33890,6 +33890,23 @@
         }
       }
     },
+    "ui.the_reply_just_finished_this_message_was_not_sent_please_retry": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The reply just finished, so this message wasn't sent. Please retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复刚刚结束，这条未发出，请重试。"
+          }
+        }
+      }
+    },
     "ui.the_request_for_additional_information_has_expired_value": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
