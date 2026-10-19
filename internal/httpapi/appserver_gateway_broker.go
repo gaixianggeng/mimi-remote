@@ -68,6 +68,40 @@ func (s *codexGatewaySink) finish(reason string) {
 	})
 }
 
+// abort 结束 sink 并立即关闭底层连接。切网后旧连接收不到 FIN，往它写的帧会
+// 一直卡到写超时（大帧最长 75 秒）；关掉 net.Conn 才能让这些写入马上失败。
+func (s *codexGatewaySink) abort(reason string) {
+	if s == nil {
+		return
+	}
+	s.finish(reason)
+	if s.conn != nil {
+		_ = s.conn.Close()
+	}
+}
+
+// writeFramesLocked 在调用方已持有 writeMu 时依次写出重放帧。
+func (s *codexGatewaySink) writeFramesLocked(frames [][]byte) error {
+	for _, frame := range frames {
+		if err := writeWebSocketFrame(s.conn, nil, websocket.TextMessage, frame); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *codexGatewaySink) lockWrites() {
+	if s.writeMu != nil {
+		s.writeMu.Lock()
+	}
+}
+
+func (s *codexGatewaySink) unlockWrites() {
+	if s.writeMu != nil {
+		s.writeMu.Unlock()
+	}
+}
+
 type codexGatewayBroker struct {
 	router   *Router
 	key      string
@@ -80,12 +114,18 @@ type codexGatewayBroker struct {
 	policy        *appServerGatewayPolicy
 	cancel        context.CancelFunc
 
-	mu          sync.Mutex
-	sink        *codexGatewaySink
-	closed      bool
-	closeReason string
-	createdAt   time.Time
-	detachedAt  time.Time
+	mu   sync.Mutex
+	sink *codexGatewaySink
+	// attaching 统计已断开旧 sink、尚未发布新 sink 的接管。期间旧 handler 的
+	// detach 不能把会话当成客户端离线：既不能回收 broker，也不能补发离线提醒；
+	// 泵送也要等新 sink 发布，不能把帧写进已经断开的旧连接。
+	attaching int
+	// attachSettled 在 attaching 归零时广播，L 是 mu。通过 attachSettledLocked 取用。
+	attachSettled *sync.Cond
+	closed        bool
+	closeReason   string
+	createdAt     time.Time
+	detachedAt    time.Time
 	// activeTurns 记录仍在跑的 turn。客户端离线且没有活跃 turn、也没有待审批
 	// 请求时，继续持有上游连接没有意义，立即回收。
 	activeTurns map[string]struct{}
@@ -237,8 +277,24 @@ func (b *codexGatewayBroker) attach(sink *codexGatewaySink) bool {
 	if b == nil || sink == nil {
 		return false
 	}
+	// 同名会话的新连接到达，说明旧连接多半已随切网失联。它可能正卡在大帧写入里，
+	// 它的 handler 也可能握着 clientFrameMu 等同一把写锁。先断开它，下面取锁才不用
+	// 等旧连接的写超时。
+	b.mu.Lock()
+	b.attaching++
+	stale := b.sink
+	b.mu.Unlock()
+	if stale != sink {
+		stale.abort("broker_sink_replaced")
+	}
+
 	b.clientFrameMu.Lock()
 	b.mu.Lock()
+	b.attaching--
+	if b.attaching == 0 {
+		// 唤醒等待接管结果的泵送；它们要等本函数放开 b.mu 后才能看到新 sink 或 closed。
+		b.attachSettledLocked().Broadcast()
+	}
 	if b.closed {
 		b.mu.Unlock()
 		b.clientFrameMu.Unlock()
@@ -248,21 +304,19 @@ func (b *codexGatewayBroker) attach(sink *codexGatewaySink) bool {
 	b.sink = sink
 	b.detachedAt = time.Time{}
 	frames := b.replayFramesLocked(sink)
-	var replayErr error
-	for _, frame := range frames {
-		if err := writeWebSocketFrame(sink.conn, sink.writeMu, websocket.TextMessage, frame); err != nil {
-			replayErr = err
-			break
-		}
-	}
+	// 先拿新 sink 的写锁再放开 b.mu：泵送只能在 b.mu 下看到新 sink，随后的实时帧
+	// 会排在重放帧之后。写入本身不持有 b.mu，慢连接拖不住泵送和下一次接管。
+	sink.lockWrites()
 	b.mu.Unlock()
 	b.clientFrameMu.Unlock()
+	replayErr := sink.writeFramesLocked(frames)
+	sink.unlockWrites()
 
 	if previous != nil && previous != sink {
-		previous.finish("broker_sink_replaced")
+		previous.abort("broker_sink_replaced")
 	}
 	if replayErr != nil {
-		sink.finish(gatewayCloseReason("client_replay_write", replayErr))
+		sink.abort(gatewayCloseReason("client_replay_write", replayErr))
 	}
 	return true
 }
@@ -366,6 +420,14 @@ func (b *codexGatewayBroker) rewriteInitializeResponse(payload []byte) []byte {
 	return rewritten
 }
 
+// attachSettledLocked 按需创建接管完成的条件变量。调用方必须持有 b.mu。
+func (b *codexGatewayBroker) attachSettledLocked() *sync.Cond {
+	if b.attachSettled == nil {
+		b.attachSettled = sync.NewCond(&b.mu)
+	}
+	return b.attachSettled
+}
+
 // replayFramesLocked 只重放 policy 仍认为待处理的请求。policy 已经实现了
 // resolved / turn 结束 / thread 关闭 / TTL 的全部清理规则，这里不复制第二套判定。
 func (b *codexGatewayBroker) replayFramesLocked(sink *codexGatewaySink) [][]byte {
@@ -395,8 +457,8 @@ func (b *codexGatewayBroker) detach(sink *codexGatewaySink) {
 		return
 	}
 	b.mu.Lock()
-	if b.sink != sink {
-		// 已经被新连接接管，旧 handler 退出不影响 broker。
+	if b.sink != sink || b.attaching > 0 {
+		// 已经或正在被新连接接管，旧 handler 退出不影响 broker。
 		b.mu.Unlock()
 		return
 	}
@@ -493,6 +555,7 @@ func (b *codexGatewayBroker) close(reason string) {
 		return
 	}
 	b.closed = true
+	b.attachSettledLocked().Broadcast()
 	for _, release := range b.subscriptionReleases {
 		close(release.done)
 	}
@@ -563,27 +626,35 @@ func (b *codexGatewayBroker) pumpUpstream(ctx context.Context) {
 		b.observeLifecycle(messageType, forwardPayload)
 		pendingKey := serverRequestFrameKey(forwardPayload)
 		b.mu.Lock()
+		// 接管途中旧 sink 已经断开、新 sink 还没发布。等接管落定再取 sink，这一帧才会
+		// 交给新连接，而不是写进注定失败的旧连接后丢掉。
+		for b.attaching > 0 && !b.closed {
+			b.attachSettledLocked().Wait()
+		}
 		sink = b.sink
 		if sink == nil {
 			b.mu.Unlock()
 			// 离线期间只保留审批帧；会话内容由 iOS 重连后走权威历史补齐。
 			continue
 		}
-		if pendingKey != "" && b.pendingDelivered[pendingKey] == sink {
-			b.mu.Unlock()
-			continue
+		if pendingKey != "" {
+			if b.pendingDelivered[pendingKey] == sink {
+				b.mu.Unlock()
+				continue
+			}
+			// 写之前登记：接管若发生在写入期间，新 sink 由 attach 重放这条审批，
+			// 不会漏；旧 sink 的这次写入失败也不影响新 sink 的登记。
+			b.pendingDelivered[pendingKey] = sink
 		}
+		b.mu.Unlock()
+		// 不持有 b.mu 写客户端。切网后旧连接收不到 FIN，大帧写入最长要等 75 秒；
+		// 持锁写会让同名会话的新连接卡在 attach 上，连 initialize 都得不到应答。
 		writeStart := time.Now()
 		if err := writeWebSocketFrame(sink.conn, sink.writeMu, messageType, forwardPayload); err != nil {
-			b.mu.Unlock()
 			// 客户端写失败只摘掉 sink：上游 turn 仍在跑，broker 必须活着接住后续审批。
 			sink.finish(gatewayCloseReason("client_write", err))
 			continue
 		}
-		if pendingKey != "" {
-			b.pendingDelivered[pendingKey] = sink
-		}
-		b.mu.Unlock()
 		sink.monitor.recordForward("upstream_to_client", len(payload), len(forwardPayload), policyDuration, time.Since(writeStart), forwardPayload)
 	}
 }

@@ -119,7 +119,9 @@ type Router struct {
 	claudeProbe                appServerBridgeProbe
 	claudeCode                 claudeCodeVersionCache
 	activeClaudeBridge         int
-	claudeBridge               *claudeBridgeSupervisor
+	// claudeForeground 按具名会话登记当前前台连接，由 claudeMu 保护。
+	claudeForeground map[string]*claudeForegroundLease
+	claudeBridge     *claudeBridgeSupervisor
 	// Harness 原生资源由独立 owner 关闭和限流，Router 只负责入口与组合。
 	harnessNative                 harnessNativeResources
 	tailcat                       tailcatSidecar

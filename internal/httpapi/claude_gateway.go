@@ -271,11 +271,16 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 		})
 		return
 	}
-	if !r.acquireClaudeBridgeSlot() {
+	// The bridge outlives this connection, so a client that names a session
+	// resumes the one it had; an unnamed client gets an isolated session and
+	// today's semantics.
+	sessionKey := claudeGatewaySessionKey(req)
+	lease, ok := r.claimClaudeForeground(sessionKey, client)
+	if !ok {
 		writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_LIMIT_EXCEEDED", "Claude bridge 并发数已达上限，请稍后重试")
 		return
 	}
-	defer r.releaseClaudeBridgeSlot()
+	defer r.releaseClaudeForeground(lease)
 
 	ctx, cancel := context.WithCancel(req.Context())
 	defer cancel()
@@ -299,17 +304,23 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 			upstream.Close()
 		}
 	}()
+	if !r.setClaudeForegroundUpstream(lease, upstream) {
+		return
+	}
 
-	// The bridge outlives this connection, so a client that names a session
-	// resumes the one it had; an unnamed client gets an isolated session and
-	// today's semantics.
-	sessionKey := claudeGatewaySessionKey(req)
-	// 新客户端自己 attach 同一个 bridge 会话并拿到 serverRequest/replay，
-	// 离线期间的观察连接必须先让位，避免两条连接同时读同一个会话。
-	observerEpoch := r.stopClaudeApprovalObserver(sessionKey)
 	reader := bufio.NewReaderSize(upstream, 64*1024)
 	var upstreamWriteMu sync.Mutex
+	var observerEpoch uint64
 	if sessionKey != "" {
+		lease.attachMu.Lock()
+		if r.claudeForegroundSuperseded(lease) {
+			// 同名会话的新连接已经接管。这里再 attach 会把 bridge 会话切回本连接。
+			lease.attachMu.Unlock()
+			return
+		}
+		// 新客户端自己 attach 同一个 bridge 会话并拿到 serverRequest/replay，
+		// 离线期间的观察连接必须先让位，避免两条连接同时读同一个会话。
+		observerEpoch = r.stopClaudeApprovalObserver(sessionKey)
 		clientCursor, hasClientCursor := claudeGatewayLastSeen(req)
 		attachResult, err := r.attachClaudeBridgeSession(
 			reader,
@@ -319,6 +330,7 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 			clientCursor,
 			hasClientCursor,
 		)
+		lease.attachMu.Unlock()
 		if err != nil {
 			log.Printf("claude bridge attach failed session=%s err=%v", sanitizeGatewayDiagnostic(sessionKey), err)
 			writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_UNAVAILABLE", "连接 Claude bridge 会话失败")
@@ -395,8 +407,9 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 	}
 	_ = upstream.SetReadDeadline(time.Time{})
 	// 客户端走了不等于审批结束：把 bridge 连接交给只读观察者，它继续接住
-	// 离线期间到达的审批请求并触发提醒。
-	observerStarted := readerReleased && r.startClaudeApprovalObserver(
+	// 离线期间到达的审批请求并触发提醒。被同名新连接接管时客户端并没有离开，
+	// 不需要观察者，也不能为它补发离线提醒。
+	observerStarted := readerReleased && r.handOffClaudeForegroundUpstream(lease) && r.startClaudeApprovalObserver(
 		sessionKey,
 		upstream,
 		&upstreamWriteMu,
@@ -551,28 +564,6 @@ func (r *Router) attachClaudeBridgeSession(
 		r.claudeBridge.forgetCursor(sessionKey)
 	}
 	return result, nil
-}
-
-func (r *Router) acquireClaudeBridgeSlot() bool {
-	limit := r.cfg.Claude.MaxConcurrentBridges
-	if limit <= 0 {
-		limit = 3
-	}
-	r.claudeMu.Lock()
-	defer r.claudeMu.Unlock()
-	if r.activeClaudeBridge >= limit {
-		return false
-	}
-	r.activeClaudeBridge++
-	return true
-}
-
-func (r *Router) releaseClaudeBridgeSlot() {
-	r.claudeMu.Lock()
-	if r.activeClaudeBridge > 0 {
-		r.activeClaudeBridge--
-	}
-	r.claudeMu.Unlock()
 }
 
 func copyClientFramesToClaudeBridge(client *websocket.Conn, stdin io.Writer, clientWriteMu *sync.Mutex, stdinWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) string {
