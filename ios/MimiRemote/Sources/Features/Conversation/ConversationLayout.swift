@@ -28,6 +28,11 @@ struct ConversationLayout: Equatable {
         EdgeInsets(top: 10, leading: horizontalInset, bottom: 10, trailing: horizontalInset)
     }
 
+    /// 展开后的过程步骤连成一张紧凑列表：不叠加消息级间距，行距由步骤行自身决定。
+    var processStepRowInsets: EdgeInsets {
+        EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset)
+    }
+
     static func usesCompactComposerMetrics(
         availableWidth: CGFloat?,
         horizontalSizeClass: UserInterfaceSizeClass?

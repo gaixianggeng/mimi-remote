@@ -276,6 +276,8 @@ final class SessionStore: ObservableObject {
     let conversationStore: ConversationStore
     let logStore: LogStore
     let contextStore: SessionContextStore
+    /// 派生会话分组的展开状态；单独发布，切换时不触发整个 SessionStore 重算。
+    let sessionHierarchyExpansion = SessionHierarchyExpansionStore()
     let eventReducer: EventReducer
     let recentWorkspaceStore: RecentWorkspaceStore
     let workspaceAppearanceStore: WorkspaceAppearanceStore
