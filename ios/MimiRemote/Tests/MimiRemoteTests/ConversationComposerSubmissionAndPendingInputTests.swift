@@ -69,46 +69,83 @@ extension ConversationDataFlowTests {
         )
     }
 
+    /// #835：档位只看输入卡宽度，iPhone 与 iPad 同宽同样；典型场景落在规则文档写明的档位。
+    func testComposerLayoutTierDependsOnlyOnComposerWidth() {
+        XCTAssertEqual(ComposerLayoutTier.tier(forWidth: 359), .narrow, "iPhone SE 竖屏")
+        XCTAssertEqual(ComposerLayoutTier.tier(forWidth: 386), .narrow, "iPhone 17 竖屏")
+        XCTAssertEqual(ComposerLayoutTier.tier(forWidth: 479), .narrow)
+        XCTAssertEqual(ComposerLayoutTier.tier(forWidth: 480), .medium)
+        XCTAssertEqual(ComposerLayoutTier.tier(forWidth: 680), .medium, "iPhone 横屏输入卡上限")
+        XCTAssertEqual(ComposerLayoutTier.tier(forWidth: 699), .medium)
+        XCTAssertEqual(ComposerLayoutTier.tier(forWidth: 700), .wide)
+        XCTAssertEqual(ComposerLayoutTier.tier(forWidth: 712), .wide, "iPad mini 竖屏")
+        XCTAssertEqual(ComposerLayoutTier.tier(forWidth: 940), .wide, "大 iPad 全屏上限")
+        XCTAssertTrue(ConversationLayout.usesCompactComposerMetrics(availableWidth: 520, horizontalSizeClass: .regular))
+        XCTAssertFalse(
+            ConversationLayout.usesCompactComposerMetrics(availableWidth: 712, horizontalSizeClass: .compact),
+            "size class 不再参与判断，只看宽度"
+        )
+    }
+
+    /// 跨档要越过阈值 16pt：拖动分屏线或台前调度窗口时不会在 480 / 700 附近来回跳。
+    func testComposerLayoutTierAppliesHysteresisAroundBreakpoints() {
+        XCTAssertEqual(ComposerLayoutTier.baseTier(width: 490, previous: .narrow), .narrow)
+        XCTAssertEqual(ComposerLayoutTier.baseTier(width: 496, previous: .narrow), .medium)
+        XCTAssertEqual(ComposerLayoutTier.baseTier(width: 470, previous: .medium), .medium)
+        XCTAssertEqual(ComposerLayoutTier.baseTier(width: 463, previous: .medium), .narrow)
+        XCTAssertEqual(ComposerLayoutTier.baseTier(width: 710, previous: .medium), .medium)
+        XCTAssertEqual(ComposerLayoutTier.baseTier(width: 716, previous: .medium), .wide)
+        XCTAssertEqual(ComposerLayoutTier.baseTier(width: 690, previous: .wide), .wide)
+        XCTAssertEqual(ComposerLayoutTier.baseTier(width: 683, previous: .wide), .medium)
+        XCTAssertEqual(ComposerLayoutTier.baseTier(width: 300, previous: .wide), .narrow, "跨两档时直接落到目标档")
+        XCTAssertEqual(ComposerLayoutTier.baseTier(width: 490, previous: nil), .medium, "首次没有迟滞")
+    }
+
+    func testComposerLayoutTierDropsOneLevelForAccessibilityTextSizes() {
+        XCTAssertEqual(
+            ComposerLayoutTier.resolve(width: 940, previousBase: nil, dynamicTypeSize: .accessibility1, fallsBackToNarrow: false),
+            .medium
+        )
+        XCTAssertEqual(
+            ComposerLayoutTier.resolve(width: 600, previousBase: nil, dynamicTypeSize: .accessibility3, fallsBackToNarrow: false),
+            .narrow
+        )
+        XCTAssertEqual(
+            ComposerLayoutTier.resolve(width: 386, previousBase: nil, dynamicTypeSize: .accessibility5, fallsBackToNarrow: false),
+            .narrow
+        )
+        XCTAssertEqual(
+            ComposerLayoutTier.resolve(width: 940, previousBase: nil, dynamicTypeSize: .xxxLarge, fallsBackToNarrow: false),
+            .wide,
+            "非辅助功能字号不降档"
+        )
+        XCTAssertEqual(
+            ComposerLayoutTier.resolve(width: nil, previousBase: nil, dynamicTypeSize: .large, fallsBackToNarrow: true),
+            .narrow
+        )
+    }
+
     func testCompactComposerModelTitleUsesDeterministicWidthPolicy() {
-        XCTAssertFalse(ConversationLayout.compactComposerShowsModelTitle(availableWidth: nil))
-        XCTAssertFalse(ConversationLayout.compactComposerShowsModelTitle(availableWidth: 379))
-        XCTAssertTrue(ConversationLayout.compactComposerShowsModelTitle(availableWidth: 380))
-        XCTAssertTrue(ConversationLayout.compactComposerShowsModelTitle(availableWidth: 520))
-        XCTAssertFalse(ConversationLayout.phoneComposerShowsModelTitle(availableWidth: nil))
-        XCTAssertTrue(ConversationLayout.phoneComposerShowsModelTitle(availableWidth: 296))
-        XCTAssertTrue(ConversationLayout.phoneComposerShowsModelTitle(availableWidth: 320))
-        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 296), 36)
-        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 320), 48)
-        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 350), 64)
-        XCTAssertEqual(ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: 380), 88)
-        XCTAssertFalse(
-            ConversationLayout.compactComposerShowsInlineDeliveryControl(
-                isPhone: true,
-                availableWidth: 390,
-                canChooseDelivery: true
-            )
-        )
-        XCTAssertFalse(
-            ConversationLayout.compactComposerShowsInlineDeliveryControl(
-                isPhone: false,
-                availableWidth: 320,
-                canChooseDelivery: true
-            )
-        )
-        XCTAssertFalse(
-            ConversationLayout.compactComposerShowsInlineDeliveryControl(
-                isPhone: false,
-                availableWidth: 439,
-                canChooseDelivery: true
-            )
-        )
-        XCTAssertTrue(
-            ConversationLayout.compactComposerShowsInlineDeliveryControl(
-                isPhone: false,
-                availableWidth: 440,
-                canChooseDelivery: true
-            )
-        )
+        // #835：模型名只看档位与宽度。窄档不足 340 只留图标，中、宽档始终显示名称。
+        XCTAssertFalse(ConversationLayout.composerShowsModelTitle(tier: .narrow, availableWidth: nil))
+        XCTAssertFalse(ConversationLayout.composerShowsModelTitle(tier: .narrow, availableWidth: 308))
+        XCTAssertFalse(ConversationLayout.composerShowsModelTitle(tier: .narrow, availableWidth: 339))
+        XCTAssertTrue(ConversationLayout.composerShowsModelTitle(tier: .narrow, availableWidth: 340))
+        XCTAssertTrue(ConversationLayout.composerShowsModelTitle(tier: .medium, availableWidth: nil))
+        XCTAssertTrue(ConversationLayout.composerShowsModelTitle(tier: .wide, availableWidth: 940))
+        XCTAssertEqual(ConversationLayout.composerModelTitleMaxWidth(tier: .narrow, availableWidth: 350), 64)
+        XCTAssertEqual(ConversationLayout.composerModelTitleMaxWidth(tier: .narrow, availableWidth: 386), 88)
+        XCTAssertEqual(ConversationLayout.composerModelTitleMaxWidth(tier: .medium, availableWidth: 600), 160)
+        XCTAssertEqual(ConversationLayout.composerModelTitleMaxWidth(tier: .wide, availableWidth: 940), 220)
+        // 运行中的投递方式：窄档收进「选项」，中、宽档平铺；不能选择时任何档位都不出现。
+        XCTAssertFalse(ConversationLayout.composerShowsInlineDeliveryControl(tier: .narrow, canChooseDelivery: true))
+        XCTAssertTrue(ConversationLayout.composerShowsInlineDeliveryControl(tier: .medium, canChooseDelivery: true))
+        XCTAssertTrue(ConversationLayout.composerShowsInlineDeliveryControl(tier: .wide, canChooseDelivery: true))
+        XCTAssertFalse(ConversationLayout.composerShowsInlineDeliveryControl(tier: .wide, canChooseDelivery: false))
+        // 上下文圆环：窄档不足 360 收进「选项」。
+        XCTAssertFalse(ConversationLayout.composerShowsContextRing(tier: .narrow, availableWidth: 349))
+        XCTAssertTrue(ConversationLayout.composerShowsContextRing(tier: .narrow, availableWidth: 359), "iPhone SE 竖屏")
+        XCTAssertTrue(ConversationLayout.composerShowsContextRing(tier: .medium, availableWidth: nil))
         XCTAssertFalse(
             ConversationLayout.compactComposerShowsFastModeIndicator(
                 usesCompactMetrics: true,

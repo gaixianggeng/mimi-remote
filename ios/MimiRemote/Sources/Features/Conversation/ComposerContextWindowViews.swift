@@ -49,26 +49,9 @@ struct ContextWindowRemainingWedge: Shape {
     }
 }
 
-extension ConversationLayout {
-    /// 紧凑工具栏的宽度预算已经按「+ / 模型 / 设置 / 语音 / 发送」排满；
-    /// 只有在模型标题拿到最宽档、仍有余量时才放入上下文圆环，更窄时靠低余量提示兜底。
-    static func compactComposerShowsContextRing(isPhone: Bool, availableWidth: CGFloat?) -> Bool {
-        guard let availableWidth else {
-            return false
-        }
-        return availableWidth >= (isPhone ? 360 : compactComposerModelTitleMinimumWidth)
-    }
-}
-
 extension ComposerView {
     var showsContextWindowRingInToolbar: Bool {
-        guard usesCompactComposerMetrics else {
-            return true
-        }
-        return ConversationLayout.compactComposerShowsContextRing(
-            isPhone: isPhoneComposer,
-            availableWidth: availableWidth
-        )
+        ConversationLayout.composerShowsContextRing(tier: composerTier, availableWidth: availableWidth)
     }
 
     // 与紧凑工具栏的其他控件一样先在独立栈帧里擦除类型，避免真机收集泛型元数据时栈溢出。
@@ -91,7 +74,7 @@ extension ComposerView {
                     usage: usage,
                     tint: usage.isLow ? tokens.warning : tokens.conversationSecondaryText
                 )
-                .frame(width: usesCompactComposerMetrics ? 32 : 44, height: 44)
+                .frame(width: usesNarrowComposerLayout ? 32 : 44, height: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))

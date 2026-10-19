@@ -277,10 +277,8 @@ struct ComposerToolbarControlLabel: View {
             if let systemImage {
                 Image(systemName: systemImage)
                     .font(
-                        themeStore.uiFont(
-                            size: usesPhoneStyle ? 17 : 16,
-                            weight: usesPhoneStyle ? .medium : .semibold
-                        )
+                        // 工具栏图标所有档位统一 17pt（#835 规则 3.6）。
+                        themeStore.uiFont(size: 17, weight: .medium)
                     )
             }
             if let title {
@@ -414,7 +412,7 @@ extension ComposerView {
                 pluginShortcuts: installedPluginShortcuts,
                 capabilityErrorMessage: sessionStore.capabilityErrorMessage,
                 isRefreshingCapabilities: sessionStore.isRefreshingCapabilities,
-                showsPermissionSettings: isPhoneComposer && composerTurnSettingsPolicy.allowsTurnSettingsEditing,
+                showsPermissionSettings: false,  // 「+」只管加内容；窄档权限进「选项」（#835 D3）
                 permissionModes: availablePermissionModes,
                 selectedPermissionMode: composerState.permissionMode,
                 showsAttachmentActions: RuntimeFeatureSupport.supportsAttachments(
@@ -577,8 +575,8 @@ extension ComposerView {
         VoiceInputProvider.resolved(rawValue: voiceInputProviderRawValue)
     }
 
-    var isPhoneComposer: Bool {
-        UIDevice.current.userInterfaceIdiom == .phone
+    var usesNarrowComposerLayout: Bool {
+        composerTier == .narrow
     }
 
     var isIPadComposer: Bool {
@@ -592,7 +590,7 @@ extension ComposerView {
     /// iPad 可保留附件并收起；正在录音、转写、等待语音确认或 Skill 自动完成时，
     /// 必须继续展示完整编辑器，避免移除 UITextView 破坏进行中的输入上下文。
     var canCollapseIPadComposer: Bool {
-        isIPadComposer &&
+        isIPadComposer && !usesNarrowComposerLayout &&
             !composerState.voiceDraftNeedsReview &&
             !isVoicePressActive &&
             !voiceInput.isPreparing &&
@@ -637,7 +635,7 @@ extension ComposerView {
     }
 
     func resetPhoneComposerAfterSubmit() {
-        guard isPhoneComposer else { return }
+        guard usesNarrowComposerLayout else { return }
         // takeDraftForSubmit 已清空稳定草稿；iPhone 不再移除编辑器，而是同步清空同一个
         // UITextView 并回到一行。先清 UIKit 再失焦，防止旧正文被结束编辑回调写回。
         composerTextExternalRevision += 1
@@ -816,7 +814,7 @@ extension ComposerView {
            let session = sessionStore.selectedSession,
            let request = session.pendingUserInput {
             let runtimePresentation = SessionRuntimePresentation(session: session)
-            if isPhoneComposer {
+            if usesNarrowComposerLayout {
                 PendingUserInputResumeButton(
                     request: request,
                     runtimePresentation: runtimePresentation,
@@ -900,7 +898,7 @@ extension ComposerView {
         }
         pendingUserInputFormState.activate(presentation.id)
         persistPendingUserInputFormState()
-        if isPhoneComposer {
+        if usesNarrowComposerLayout {
             presentedPendingUserInput = presentation
         }
     }
@@ -944,7 +942,7 @@ extension ComposerView {
         } else {
             title = isGoalMode ? L10n.text("ui.send_target") : isPlanMode ? L10n.text("ui.generate_plan") : isGuidedFollowUp ? L10n.text("ui.guide") : L10n.text("ui.send")
         }
-        let usesPhonePrimaryStyle = isPhoneComposer && !showLabels
+        let usesPhonePrimaryStyle = !showLabels  // 所有档位统一实心圆 ↑ / ■（#835 D5）
         let standardSendSymbol = usesPhonePrimaryStyle ? "arrow.up" : "paperplane.fill"
         let symbol = composerState.voiceDraftNeedsReview ? "checkmark.circle.fill" : (isGoalMode ? "target" : isPlanMode ? "list.clipboard" : isGuidedFollowUp ? "text.bubble.fill" : standardSendSymbol)
         let enabled = canSubmitDraft
@@ -1070,7 +1068,7 @@ extension ComposerView {
 
     var composerMinHeight: CGFloat {
         ComposerTextLayoutPolicy.minimumHeight(
-            isPhone: isPhoneComposer,
+            isPhone: usesNarrowComposerLayout,
             usesCompactMetrics: usesCompactComposerMetrics,
             fontLineHeight: composerUIFont.lineHeight
         )
@@ -1078,7 +1076,7 @@ extension ComposerView {
 
     var composerMaxHeight: CGFloat {
         ComposerTextLayoutPolicy.maximumHeight(
-            isPhone: isPhoneComposer,
+            isPhone: usesNarrowComposerLayout,
             usesCompactMetrics: usesCompactComposerMetrics,
             fontLineHeight: composerUIFont.lineHeight
         )
