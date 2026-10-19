@@ -203,6 +203,20 @@ struct WorkbenchNavigationState: Equatable {
         usesCompactNavigation: Bool,
         selectedSessionID: SessionID?
     ) -> WorkbenchNavigationEffect? {
+        let effect = apply(
+            event,
+            usesCompactNavigation: usesCompactNavigation,
+            selectedSessionID: selectedSessionID
+        )
+        alignCompactPathsWithRoute()
+        return effect
+    }
+
+    private mutating func apply(
+        _ event: WorkbenchNavigationEvent,
+        usesCompactNavigation: Bool,
+        selectedSessionID: SessionID?
+    ) -> WorkbenchNavigationEffect? {
         switch event {
         case .open(let destination, let requestedSource):
             return open(
@@ -332,7 +346,7 @@ struct WorkbenchNavigationState: Equatable {
         case .compactTabChanged(let tab):
             compactSelectedTab = tab
             guard !tab.isGlobalSettings else {
-                // “我的”和“设备”是全局入口，切入时保留当前会话/工作区路由和两个 Tab 的历史栈。
+                // “我的”和“设备”是全局入口，切入时保留当前路由及其所在 Tab 的历史栈。
                 selection = tab.destination
                 return nil
             }
@@ -361,6 +375,28 @@ struct WorkbenchNavigationState: Equatable {
                 pendingSessionSelectionID = nil
             }
             return nil
+        }
+    }
+
+    /// 紧凑栈始终是路由的投影。详情页会隐藏 Tab 栏，用户不可能把详情“留”在另一个 Tab 里；
+    /// 那里的残留栈只来自通知、旋转后的侧栏选择等程序化跳转，下次点那个 Tab 就会打开早已
+    /// 离开的旧会话（#787），所以路由不指向的 Tab 一律清空。宽屏打开会话或替换乐观 ID 时
+    /// 不改写紧凑栈，路由所在 Tab 的栈顶可能落后于路由；改成路由会话，转回紧凑布局时无论
+    /// Shell 是否重放路由（停在“我的”“设备”时不重放），都打开同一个详情。紧凑布局不挂载
+    /// 于宽屏，这里的改写在宽屏期间不可见。
+    private mutating func alignCompactPathsWithRoute() {
+        guard case .session(let sessionID, let source) = route else {
+            compactSessionPath = []
+            compactWorkspacePath = []
+            return
+        }
+        switch source {
+        case .sessions:
+            compactSessionPath = Self.path(compactSessionPath, endingAt: sessionID)
+            compactWorkspacePath = []
+        case .workspaces:
+            compactWorkspacePath = Self.path(compactWorkspacePath, endingAt: sessionID)
+            compactSessionPath = []
         }
     }
 
@@ -573,6 +609,19 @@ struct WorkbenchNavigationState: Equatable {
             updatedPath.append(destination)
         }
         return updatedPath
+    }
+
+    /// 栈顶详情已属于该会话时原样保留（子 Agent 页属于它的父会话），否则只留该会话。
+    private static func path(
+        _ path: [AppDestination],
+        endingAt sessionID: SessionID
+    ) -> [AppDestination] {
+        switch path.last {
+        case .session(sessionID), .subagent(sessionID, _):
+            return path
+        default:
+            return [.session(sessionID)]
+        }
     }
 
     private static func isSessionDetailDestination(_ destination: AppDestination) -> Bool {
