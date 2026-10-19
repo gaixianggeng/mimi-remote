@@ -129,6 +129,7 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 								"id": "thread-root", "cwd": projectDir, "name": "Root",
 								"canAcceptDirectInput": true,
 								"claudeOwner":          map[string]any{"entrypoint": "cli", "status": "busy", "pid": 4242},
+								"spawnedFromThreadId":  "thread-desktop-parent",
 								"secretUpstreamField":  "must-not-leak",
 							},
 							map[string]any{
@@ -259,6 +260,7 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 				SessionID            string         `json:"sessionId"`
 				CanAcceptDirectInput *bool          `json:"canAcceptDirectInput"`
 				ClaudeOwner          map[string]any `json:"claudeOwner"`
+				SpawnedFromThreadID  string         `json:"spawnedFromThreadId"`
 				SecretUpstreamField  string         `json:"secretUpstreamField"`
 				MimiRemote           struct {
 					ProjectID string `json:"projectId"`
@@ -310,6 +312,10 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 		}
 		if item.SecretUpstreamField != "" {
 			t.Fatalf("白名单外字段不得透传：%s", item.SecretUpstreamField)
+		}
+		// 派生来源只用于分组展示，必须透传，且不能让父会话或自身变成只读。
+		if item.SpawnedFromThreadID != "thread-desktop-parent" {
+			t.Fatalf("spawnedFromThreadId 必须透传：%+v", item)
 		}
 	}
 	if child := byID["thread-root-child"]; !child.readOnly || child.canInput == nil || *child.canInput {

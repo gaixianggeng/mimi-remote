@@ -3029,6 +3029,7 @@ extension SessionStore {
             canAcceptDirectInput: item.canAcceptDirectInput,
             // 别处持有的摘要和只读标记必须一起进工作区投影，否则输入框灰了却没有原因提示。
             claudeOwner: item.claudeOwner,
+            spawnedFromThreadID: item.spawnedFromThreadID,
             context: item.context
         )
     }
@@ -3536,6 +3537,9 @@ extension SessionStore {
         }
         sessionsByID = byID
         sessionIndexByID = indexByID
+        // 冷启动恢复快照、首屏只拉 Codex 等路径里，会话会先于对应 Runtime 的列表回到 Store；
+        // 用它补齐路由表，避免只带会话 ID 的请求默认落到 Codex 通道（#784）。
+        appStore.runtimeRoutesForActiveHost().rememberMissing(sessions)
         synchronizeHistoryReadStates()
         pruneSessionScopedState(validSessionIDs: Set(byID.keys))
 

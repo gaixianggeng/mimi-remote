@@ -37,6 +37,12 @@ enum SessionIndexRowDensity: Equatable {
     /// 图标到文字多留 4pt（#615），会话与工作区的行文字仍落在同一条竖线上。
     var stateGutterWidth: CGFloat { 24 }
 
+    /// 来源图标的绘制尺寸，在前导槽里居中。
+    static let runtimeIconSize: CGFloat = 11
+
+    /// 前导槽左缘到来源图标的距离；派生会话的连接线停在图标之前。
+    static var runtimeIconInset: CGFloat { (compact.stateGutterWidth - runtimeIconSize) / 2 }
+
     /// 状态字形在槽内的绘制尺寸，比槽略小以便居中。
     var stateGlyphSize: CGFloat { 16 }
 
@@ -808,7 +814,7 @@ struct SessionIndexRow: View {
         case .runtimeIcon:
             RuntimeBrandMarkIcon(
                 mark: SessionRuntimePresentation(session: session).brandMark,
-                size: 11
+                size: SessionIndexRowDensity.runtimeIconSize
             )
             .frame(width: density.stateGutterWidth, height: density.stateGutterWidth)
         case .none:

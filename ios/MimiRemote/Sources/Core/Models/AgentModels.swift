@@ -112,6 +112,9 @@ struct AgentSession: Identifiable, Codable, Hashable {
     /// Claude 会话正被 Mac 上其他 Claude 进程（终端 / Claude 桌面）持有时，bridge 附带的
     /// 持有方摘要；此时 `canAcceptDirectInput` 一定为 false。只用于展示，不参与授权判断。
     var claudeOwner: ClaudeSessionOwner?
+    /// Claude 桌面版"主会话派生会话"的父会话线程 ID，只用于列表分组展示。
+    /// 派生会话是完整会话，和 `parentThreadID`（子 Agent，只读）无关，不参与授权。
+    var spawnedFromThreadID: String?
     let context: SessionContextSnapshot?
 
     /// 会话列表只认有名称的分支；空白值和 detached HEAD 不应伪装成可读分支。
@@ -197,6 +200,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         agentRole: String? = nil,
         canAcceptDirectInput: Bool? = nil,
         claudeOwner: ClaudeSessionOwner? = nil,
+        spawnedFromThreadID: String? = nil,
         context: SessionContextSnapshot? = nil
     ) {
         self.id = id
@@ -240,6 +244,10 @@ struct AgentSession: Identifiable, Codable, Hashable {
         self.agentRole = agentRole
         self.canAcceptDirectInput = canAcceptDirectInput
         self.claudeOwner = claudeOwner
+        let normalizedSpawnedFrom = spawnedFromThreadID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.spawnedFromThreadID = normalizedSpawnedFrom?.isEmpty == false && normalizedSpawnedFrom != id
+            ? normalizedSpawnedFrom
+            : nil
         self.context = context
     }
 
@@ -300,6 +308,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         case agentRole = "agent_role"
         case canAcceptDirectInput = "can_accept_direct_input"
         case claudeOwner = "claude_owner"
+        case spawnedFromThreadID = "spawned_from_thread_id"
         case context
     }
 }

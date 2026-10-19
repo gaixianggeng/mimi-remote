@@ -1460,7 +1460,11 @@ private struct ProjectSessionRows: View {
                 .sidebarListRow()
         }
 
-        ForEach(snapshot.visibleSessions) { session in
+        SessionHierarchyForEach(
+            sessions: snapshot.visibleSessions,
+            expansion: sessionStore.sessionHierarchyExpansion
+        ) { row, _ in
+            let session = row.session
             let isPinned = sessionStore.isSessionPinned(session.id)
             let isArchived = sessionStore.isSessionArchived(session.id)
             let reminder = sessionStore.sessionReminder(for: session.id)
@@ -1485,6 +1489,7 @@ private struct ProjectSessionRows: View {
                     Task { await sessionStore.selectSession(session) }
                 }
                 .sessionRowActions(session)
+                .sessionHierarchyRow(row, expansion: sessionStore.sessionHierarchyExpansion, guideX: 13, contentInset: 10)
                 .padding(.leading, 30)
                 .sidebarListRow()
         }

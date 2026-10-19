@@ -806,6 +806,8 @@ extension CodexAppServerSessionRuntime {
             agentRole: nonEmpty(thread["agentRole"]?.stringValue),
             canAcceptDirectInput: thread["canAcceptDirectInput"]?.boolValue,
             claudeOwner: claudeSessionOwner(from: thread["claudeOwner"]),
+            // 派生来源只在 thread/list 上出现；状态推送与历史分页的 thread 不带它，沿用已知值。
+            spawnedFromThreadID: nonEmpty(thread["spawnedFromThreadId"]?.stringValue) ?? cached?.spawnedFromThreadID,
             context: context
         )
         if preservesIndependentApproval { session.pendingApproval = cached?.pendingApproval }

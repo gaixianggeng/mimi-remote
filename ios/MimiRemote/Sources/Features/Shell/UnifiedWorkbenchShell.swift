@@ -688,6 +688,16 @@ struct UnifiedWorkbenchShell: View {
 
     private func sidebarListContent(tokens: ThemeTokens, layout: WorkbenchLayout, now: Date) -> some View {
         let sections = sidebarMonitorSections(now: now)
+        // 派生家族先在全部分区上分好，再随领头成员落区；计数只数留在本区、本来就属于本区的会话。
+        // 行的状态样式按会话自己原来的分区画，已完成的父会话跟着运行中的子会话前移时不会显示成运行中。
+        let sectionByKind = Dictionary(sections.map { ($0.kind, $0) }, uniquingKeysWith: { first, _ in first })
+        var kindBySessionID: [SessionID: SessionSidebarSectionKind] = [:]
+        for section in sections {
+            for session in section.sessions where kindBySessionID[session.id] == nil {
+                kindBySessionID[session.id] = section.kind
+            }
+        }
+        let familySections = SessionHierarchy.sectionedFamilies(sections.map { (key: $0.kind, sessions: $0.sessions) })
 
         return List(selection: selectionBinding(layout: layout)) {
             Section {
@@ -707,16 +717,22 @@ struct UnifiedWorkbenchShell: View {
                 )
             }
 
-            ForEach(sections) { section in
+            ForEach(familySections) { familySection in
+                let section = sectionByKind[familySection.key]
+                    ?? SessionSidebarSection(kind: familySection.key, sessions: [])
                 Section {
-                    // index 只判断相邻项目，行身份仍用 session.id，避免刷新时重建已选中行。
-                    ForEach(Array(section.sessions.enumerated()), id: \.element.id) { index, session in
+                    // previous 只判断相邻项目，行身份仍用 session.id，避免刷新时重建已选中行。
+                    SessionHierarchyForEach(
+                        families: familySection.families,
+                        expansion: sessionStore.sessionHierarchyExpansion
+                    ) { row, previous in
                         sidebarSessionLink(
-                            session,
-                            kind: section.kind,
-                            startsProjectGroup: SessionListPresentation.startsSidebarProjectGroup(
-                                for: session,
-                                previousSession: index > 0 ? section.sessions[index - 1] : nil
+                            row,
+                            kind: kindBySessionID[row.session.id] ?? section.kind,
+                            // 子会话跟随父会话，不另起项目组，也不重复画项目图标。
+                            startsProjectGroup: row.isChild ? false : SessionListPresentation.startsSidebarProjectGroup(
+                                for: row.session,
+                                previousSession: previous
                             ),
                             layout: layout
                         )
@@ -738,7 +754,9 @@ struct UnifiedWorkbenchShell: View {
                         .listRowBackground(Color.clear)
                     }
                 } header: {
-                    Text("\(sidebarSectionTitle(section.kind)) \(section.sessions.count + section.overflowCount)")
+                    let ownCount = familySection.families.flatMap(\.members)
+                        .filter { kindBySessionID[$0.id] == familySection.key }.count
+                    Text("\(sidebarSectionTitle(section.kind)) \(ownCount + section.overflowCount)")
                         .pageSectionHeaderStyle()
                 }
             }
@@ -792,11 +810,12 @@ struct UnifiedWorkbenchShell: View {
 
     @ViewBuilder
     private func sidebarSessionLink(
-        _ session: AgentSession,
+        _ row: SessionHierarchyRow,
         kind: SessionSidebarSectionKind,
         startsProjectGroup: Bool,
         layout: WorkbenchLayout
     ) -> some View {
+        let session = row.session
         Group {
             if layout.usesFloatingSidebarSurface {
                 Button {
@@ -805,7 +824,8 @@ struct UnifiedWorkbenchShell: View {
                     sidebarSessionRow(
                         session,
                         kind: kind,
-                        startsProjectGroup: startsProjectGroup
+                        startsProjectGroup: startsProjectGroup,
+                        isHierarchyChild: row.isChild
                     )
                         .contentShape(Rectangle())
                 }
@@ -820,12 +840,15 @@ struct UnifiedWorkbenchShell: View {
                     sidebarSessionRow(
                         session,
                         kind: kind,
-                        startsProjectGroup: startsProjectGroup
+                        startsProjectGroup: startsProjectGroup,
+                        isHierarchyChild: row.isChild
                     )
                 }
             }
         }
         .sessionRowActions(session)
+        // 竖线对齐行首的状态标记；子行缩进后，它的状态标记正好落在父行图标下方。
+        .sessionHierarchyRow(row, expansion: sessionStore.sessionHierarchyExpansion, guideX: 14, contentInset: 8)
         .sessionRowSwipeActions(session)
         .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
         .listRowSeparator(.hidden)
@@ -835,7 +858,8 @@ struct UnifiedWorkbenchShell: View {
     private func sidebarSessionRow(
         _ session: AgentSession,
         kind: SessionSidebarSectionKind,
-        startsProjectGroup: Bool
+        startsProjectGroup: Bool,
+        isHierarchyChild: Bool
     ) -> some View {
         SessionSidebarMonitorRow(
             session: session,
@@ -844,7 +868,8 @@ struct UnifiedWorkbenchShell: View {
             isRecentlyCompleted: sidebarHighlightCoordinator.highlightedSessionID == session.id,
             completionObservedAt: sessionStore.historyCompletionObservedAtBySessionID[session.id],
             // 各分区只在组头显示项目头像；运行分区同时隐藏后续同项目的重复状态菊花。
-            showsStateMarker: kind != .running || startsProjectGroup,
+            // 派生子会话例外：它们挂在父会话下，自己的运行状态必须看得见。
+            showsStateMarker: kind != .running || startsProjectGroup || isHierarchyChild,
             projectIcon: startsProjectGroup
                 ? sidebarProjectIcons[session.projectID]
                     ?? workspaceAppearanceStore.projectIconContent(

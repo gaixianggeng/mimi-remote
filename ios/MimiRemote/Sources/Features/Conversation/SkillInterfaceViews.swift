@@ -1,41 +1,6 @@
 import SwiftUI
 import UIKit
 
-struct ComposerSkillQuery: Equatable {
-    let query: String
-    let replacementRange: NSRange
-
-    static func match(text: String, selectedRange: NSRange) -> ComposerSkillQuery? {
-        let source = text as NSString
-        guard selectedRange.length == 0,
-              selectedRange.location >= 0,
-              selectedRange.location <= source.length
-        else {
-            return nil
-        }
-
-        let prefixRange = NSRange(location: 0, length: selectedRange.location)
-        let whitespace = source.rangeOfCharacter(
-            from: .whitespacesAndNewlines,
-            options: .backwards,
-            range: prefixRange
-        )
-        let tokenStart = whitespace.location == NSNotFound ? 0 : NSMaxRange(whitespace)
-        let tokenRange = NSRange(location: tokenStart, length: selectedRange.location - tokenStart)
-        guard tokenRange.length > 0 else {
-            return nil
-        }
-        let token = source.substring(with: tokenRange)
-        guard token.hasPrefix("$") else {
-            return nil
-        }
-        return ComposerSkillQuery(
-            query: String(token.dropFirst()),
-            replacementRange: tokenRange
-        )
-    }
-}
-
 struct SkillVisualMetadata: Hashable {
     let name: String
     let displayName: String
@@ -612,72 +577,6 @@ struct SkillInvocationCard: View {
                 .foregroundStyle(tint)
                 .symbolEffect(.appear, options: reduceMotion ? .nonRepeating : .nonRepeating)
         }
-    }
-}
-
-struct SkillAutocompletePanel: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-
-    let skills: [SkillCapability]
-    let selectedIndex: Int
-    let onSelect: (SkillCapability) -> Void
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Label(L10n.text("ui.select_skill"), systemImage: "wand.and.stars")
-                Spacer()
-                Text(L10n.text("ui.select_confirm_esc_close"))
-            }
-            .font(themeStore.uiFont(.caption2, weight: .semibold))
-            .foregroundStyle(tokens.secondaryText)
-            .padding(.horizontal, 8)
-            .padding(.bottom, 2)
-
-            ForEach(Array(skills.enumerated()), id: \.element.id) { index, skill in
-                Button {
-                    onSelect(skill)
-                } label: {
-                    HStack(spacing: 9) {
-                        SkillIconView(metadata: SkillVisualMetadata(capability: skill), size: 28)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("$\(skill.presentationName)")
-                                .font(themeStore.uiFont(.caption, weight: .semibold))
-                                .foregroundStyle(tokens.primaryText)
-                            if let description = skill.presentationDescription {
-                                Text(description)
-                                    .font(themeStore.uiFont(.caption2))
-                                    .foregroundStyle(tokens.secondaryText)
-                                    .lineLimit(1)
-                            }
-                        }
-                        Spacer(minLength: 8)
-                        if index == selectedIndex {
-                            Image(systemName: "return")
-                                .foregroundStyle(tokens.accent)
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(
-                        index == selectedIndex ? tokens.selectionFill : .clear,
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(8)
-        .background(WorkbenchMaterial.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(tokens.border.opacity(0.9), lineWidth: 1)
-        }
-        .shadow(color: Color.black.opacity(0.18), radius: 16, y: 7)
     }
 }
 

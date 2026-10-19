@@ -3,7 +3,7 @@ import XCTest
 @testable import MimiRemote
 
 final class DeviceTabNavigationTests: XCTestCase {
-    func testDevicesTabPreservesSessionRouteAndBothCompactPaths() {
+    func testDevicesTabPreservesSessionRouteAndItsCompactPath() {
         var state = WorkbenchNavigationState(
             route: .session(id: "workspace-session", source: .workspaces)
         )
@@ -20,6 +20,9 @@ final class DeviceTabNavigationTests: XCTestCase {
 
         let sessionsPath = state.compactSessionPath
         let workspacePath = state.compactWorkspacePath
+        // 路由已回到工作区详情，会话 Tab 的旧栈不再保留（#787）。
+        XCTAssertTrue(sessionsPath.isEmpty)
+        XCTAssertEqual(workspacePath, [.session("workspace-session")])
         let route = state.route
         let effect = state.reduce(
             .compactTabChanged(.devices),

@@ -211,6 +211,8 @@ actor CodexAppServerSessionRuntime {
     var contextsBySessionID: [SessionID: CodexAppServerSessionContext] = [:]
     /// 按「连接 | 列表范围」合并进行中的授权恢复，值为该次翻到的会话（#718）。
     var threadReauthorizationTasks: [String: Task<Set<SessionID>, Never>] = [:]
+    /// bundle 注入的「会话归哪个 Runtime」查询；为空或查不到时按原逻辑重新授权（#784）。
+    var threadRuntimeOwnerLookup: (@Sendable (SessionID) -> String?)?
     // app-server 只向「在当前 gateway 连接上 resume/start 过」的 thread 推送 turn 事件；记录本连接已
     // 经绑定的 thread，断线重连后这个集合随新连接清空，确保再次发送时会先补一次 thread/resume。
     var threadsResumedOnConnection: Set<SessionID> = []
