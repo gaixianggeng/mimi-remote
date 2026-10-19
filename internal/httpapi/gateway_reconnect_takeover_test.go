@@ -156,8 +156,13 @@ func TestClaudeGatewayTakeoverIsScopedToSameSession(t *testing.T) {
 
 	extra := dialAuthedGatewaySession(t, server.URL, "claude", "dev-3-claude")
 	t.Cleanup(func() { _ = extra.Close() })
-	if err := claudeRoundTrip(extra, projectDir); err == nil || !strings.Contains(err.Error(), "CLAUDE_BRIDGE_LIMIT_EXCEEDED") {
-		t.Fatalf("不同会话超过上限仍应被拒绝，got=%v", err)
+	// 网关写完拒绝帧就关闭连接，只能先读、不能先写：Windows 上向已关闭的对端写入
+	// 会引来 RST，RST 会丢掉接收缓冲里尚未读出的拒绝帧。拒绝前网关可能先重探 bridge
+	// 版本（自身 2 秒超时），读等待不能和它一样短。
+	_ = extra.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_, raw, err := extra.ReadMessage()
+	if err != nil || !bytes.Contains(raw, []byte("CLAUDE_BRIDGE_LIMIT_EXCEEDED")) {
+		t.Fatalf("不同会话超过上限仍应被拒绝，got=%s err=%v", raw, err)
 	}
 	for i, conn := range conns {
 		if err := claudeRoundTrip(conn, projectDir); err != nil {
