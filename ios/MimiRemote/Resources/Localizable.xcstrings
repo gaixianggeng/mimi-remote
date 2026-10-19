@@ -30552,6 +30552,23 @@
         }
       }
     },
+    "ui.stop_did_not_take_effect_turn_not_started": {
+      "comment": "Shown when a stop request was not accepted because the turn had not started on the computer yet; the reply keeps running.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop didn't take effect: the turn hasn't started on the computer yet. Try stopping again in a moment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止没有生效：电脑上的回合还没开始，请稍后再点停止。"
+          }
+        }
+      }
+    },
     "ui.stop_recording": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
