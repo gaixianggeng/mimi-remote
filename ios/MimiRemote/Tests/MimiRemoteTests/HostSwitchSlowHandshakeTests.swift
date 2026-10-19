@@ -115,6 +115,75 @@ final class HostSwitchSlowHandshakeTests: XCTestCase {
         }
     }
 
+    func testCancelWhileCommitIsSuspendedKeepsCurrentHost() async throws {
+        let fixture = try await makeHostSwitchFixture(testName: "CancelDuringCommit")
+        defer { fixture.tearDown() }
+        let slowSwitch = try await suspendSwitchInCommit(to: .c, fixture: fixture)
+        defer { slowSwitch.cancel() }
+
+        fixture.store.cancelConnectionSwitch()
+        fixture.keychain.releaseReads()
+        do {
+            _ = try await slowSwitch.value
+            XCTFail("提交途中被取消的切换不能生效")
+        } catch is CancellationError {
+            // 取消越过提交门之前的最后一次 await 也要生效。
+        } catch {
+            XCTFail("取消应以 CancellationError 结束：\(error)")
+        }
+        XCTAssertEqual(fixture.appStore.activeConnectionProfileID, FakeHost.a.profileID)
+        XCTAssertEqual(fixture.initialSocket.disconnectCallCount, 0, "被取消的候选不能拆掉当前电脑的链路")
+        XCTAssertFalse(fixture.store.isConnectionSwitchInProgress)
+        try await waitUntil { fixture.gateway.openConnectionCount(.c) == 0 }
+    }
+
+    func testReselectWhileCommitIsSuspendedNeverActivatesSupersededHost() async throws {
+        let fixture = try await makeHostSwitchFixture(testName: "ReselectDuringCommit", preparationTimeout: 1.5)
+        defer { fixture.tearDown() }
+        fixture.gateway.setBehavior(.b, FakeHostBehavior(hangsHandshake: true))
+        let slowSwitch = try await suspendSwitchInCommit(to: .c, fixture: fixture)
+        defer { slowSwitch.cancel() }
+
+        // 提交 C 停在凭据保管库时改选 B；B 握手挂起、超时失败后应退回 A，而不是留在已被放弃的 C。
+        let replacement = Task { @MainActor in
+            try await fixture.store.switchConnectionProfile(id: FakeHost.b.profileID)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        fixture.keychain.releaseReads()
+        let staleOutcome = await slowSwitch.result
+        XCTAssertThrowsError(try staleOutcome.get(), "被改选的切换不能提交") {
+            XCTAssertTrue($0 is CancellationError, "\($0)")
+        }
+        let replacementOutcome = await replacement.result
+        XCTAssertThrowsError(try replacementOutcome.get(), "B 握手挂起，应在时限内失败")
+        XCTAssertEqual(fixture.appStore.activeConnectionProfileID, FakeHost.a.profileID)
+        XCTAssertEqual(fixture.initialSocket.disconnectCallCount, 0)
+        XCTAssertFalse(fixture.store.isConnectionSwitchInProgress)
+    }
+
+    /// 让切换到 `host` 的预热走完，并停在提交里对凭据保管库的 await 上。
+    private func suspendSwitchInCommit(
+        to host: FakeHost,
+        fixture: HostSwitchFixture
+    ) async throws -> Task<Bool, Error> {
+        fixture.gateway.setBehavior(host, FakeHostBehavior(initializeDelay: 0.3))
+        let pendingSwitch = Task { @MainActor in
+            try await fixture.store.switchConnectionProfile(id: host.profileID)
+        }
+        try await waitUntil { fixture.gateway.connectCount(host) == 1 }
+        // 预热已读过目标电脑的访问码；用一次未缓存的读取把保管库 actor 占住。
+        fixture.keychain.blockReads(account: "agentd-profile.\(FakeHost.a.profileID)")
+        let vault = fixture.appStore.credentialVault
+        Task.detached { _ = try? await vault.token(for: FakeHost.a.profileID) }
+        try await waitUntil { fixture.keychain.isBlocking }
+        try await waitUntil { fixture.gateway.initializeAnswerCount(host) == 1 }
+        // initialize 应答后预热即结束，提交随即排在被占住的保管库后面。
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(fixture.appStore.activeConnectionProfileID, FakeHost.a.profileID, "提交应停在保管库上")
+        XCTAssertTrue(fixture.store.isConnectionSwitchInProgress)
+        return pendingSwitch
+    }
+
     func testRepeatedSwitchingStaysAvailableWhileOneHostHangs() async throws {
         let fixture = try await makeHostSwitchFixture(testName: "RepeatedSwitching")
         defer { fixture.tearDown() }
@@ -254,6 +323,8 @@ private struct FakeHostBehavior {
     var hangsHandshake = false
     /// 握手完成后普通 RPC（这里用 model/list）的响应延迟。
     var rpcDelay: TimeInterval = 0
+    /// initialize 的响应延迟，给用例留出在预热结束前布置现场的时间。
+    var initializeDelay: TimeInterval = 0
 }
 
 private final class FakeHostGateway: @unchecked Sendable {
@@ -261,6 +332,7 @@ private final class FakeHostGateway: @unchecked Sendable {
     private var behaviors: [FakeHost: FakeHostBehavior] = [:]
     private var connects: [FakeHost: Int] = [:]
     private var closes: [FakeHost: Int] = [:]
+    private var initializeAnswers: [FakeHost: Int] = [:]
 
     func setBehavior(_ host: FakeHost, _ behavior: FakeHostBehavior) {
         lock.withLock { behaviors[host] = behavior }
@@ -283,6 +355,15 @@ private final class FakeHostGateway: @unchecked Sendable {
 
     func connectCount(_ host: FakeHost) -> Int {
         lock.withLock { connects[host] ?? 0 }
+    }
+
+    func recordInitializeAnswer(_ host: FakeHost?) {
+        guard let host else { return }
+        lock.withLock { initializeAnswers[host, default: 0] += 1 }
+    }
+
+    func initializeAnswerCount(_ host: FakeHost) -> Int {
+        lock.withLock { initializeAnswers[host] ?? 0 }
     }
 
     func openConnectionCount(_ host: FakeHost) -> Int {
@@ -324,7 +405,14 @@ private final class FakeHostGatewayTransport: CodexAppServerTransport, @unchecke
         let id = try jsonFragment(for: request.id)
         switch request.method {
         case "initialize":
-            continuation.yield(#"{"id":\#(id),"result":{"userAgent":"fake-host","platformFamily":"macos"}}"#)
+            let continuation = continuation
+            let gateway = gateway
+            let delay = behavior.initializeDelay
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                gateway.recordInitializeAnswer(host)
+                continuation.yield(#"{"id":\#(id),"result":{"userAgent":"fake-host","platformFamily":"macos"}}"#)
+            }
         default:
             let continuation = continuation
             let delay = behavior.rpcDelay
@@ -449,8 +537,10 @@ private struct HostSwitchFixture {
     let store: SessionStore
     let gateway: FakeHostGateway
     let initialSocket: MockWebSocketClient
+    let keychain: GatedKeychainOperations
 
     func tearDown() {
+        keychain.releaseReads()
         FakeHostURLProtocol.uninstall(gateway)
         defaults.removePersistentDomain(forName: suiteName)
     }
@@ -477,10 +567,11 @@ private func makeHostSwitchFixture(
     defaults.set(try JSONEncoder().encode(profiles), forKey: "agentd.connectionProfiles.v2")
     defaults.set(FakeHost.a.profileID, forKey: "agentd.activeConnectionProfileID.v1")
     defaults.set(FakeHost.a.endpoint, forKey: "agentd.endpoint")
-    let keychain = TestKeychainOperations()
+    let storedKeychain = TestKeychainOperations()
     for host in FakeHost.allCases {
-        keychain.setData(Data("token-\(host.rawValue)".utf8), account: "agentd-profile.\(host.profileID)")
+        storedKeychain.setData(Data("token-\(host.rawValue)".utf8), account: "agentd-profile.\(host.profileID)")
     }
+    let keychain = GatedKeychainOperations(wrapping: storedKeychain)
 
     let gateway = FakeHostGateway()
     FakeHostURLProtocol.install(gateway)
@@ -526,6 +617,59 @@ private func makeHostSwitchFixture(
         appStore: appStore,
         store: store,
         gateway: gateway,
-        initialSocket: socket
+        initialSocket: socket,
+        keychain: keychain
     )
+}
+
+/// 可以把某个账号的 Keychain 读取卡住的包装：凭据保管库 actor 被这次读取占住时，
+/// 切换提交里对保管库的 await 就停在那里，用例可以在「提交途中」改选或取消。
+private final class GatedKeychainOperations: KeychainOperating, @unchecked Sendable {
+    private let wrapped: TestKeychainOperations
+    private let lock = NSLock()
+    private var blockedAccount: String?
+    private var gate = DispatchSemaphore(value: 0)
+    private var blockingCount = 0
+
+    init(wrapping wrapped: TestKeychainOperations) {
+        self.wrapped = wrapped
+    }
+
+    var isBlocking: Bool { lock.withLock { blockingCount > 0 } }
+
+    func blockReads(account: String) {
+        lock.withLock {
+            blockedAccount = account
+            gate = DispatchSemaphore(value: 0)
+        }
+    }
+
+    func releaseReads() {
+        let (gate, waiters) = lock.withLock { () -> (DispatchSemaphore, Int) in
+            blockedAccount = nil
+            return (self.gate, blockingCount)
+        }
+        for _ in 0..<waiters { gate.signal() }
+    }
+
+    func copyMatching(_ query: CFDictionary, result: UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus {
+        let account = (query as NSDictionary)[kSecAttrAccount as String] as? String
+        let gate = lock.withLock { () -> DispatchSemaphore? in
+            guard let account, account == blockedAccount else { return nil }
+            blockingCount += 1
+            return self.gate
+        }
+        if let gate {
+            _ = gate.wait(timeout: .now() + 10)
+            lock.withLock { blockingCount -= 1 }
+        }
+        return wrapped.copyMatching(query, result: result)
+    }
+
+    func update(_ query: CFDictionary, attributesToUpdate: CFDictionary) -> OSStatus {
+        wrapped.update(query, attributesToUpdate: attributesToUpdate)
+    }
+
+    func add(_ attributes: CFDictionary) -> OSStatus { wrapped.add(attributes) }
+    func delete(_ query: CFDictionary) -> OSStatus { wrapped.delete(query) }
 }
