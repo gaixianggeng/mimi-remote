@@ -43,6 +43,31 @@ final class LockScreenApprovalTests: XCTestCase {
         XCTAssertNil(LockScreenApprovalNotification(userInfo: payload(overrides: ["approval_kind": "message"])))
     }
 
+    /// DeepSeek 只有回合终态提醒（#568）：能解码、只能打开详情，审批与等待提醒一律拒收。
+    @MainActor
+    func testDeepSeekMessageNotificationsDecodeAndOnlyOpenDetails() throws {
+        for event in ["turn.completed", "turn.failed", "turn.interrupted"] {
+            let userInfo = payload(overrides: [
+                "event": event, "runtime": "deepseek", "approval_kind": "", "session_tag": "0123456789ABCDEF",
+            ])
+            let notification = try XCTUnwrap(LockScreenApprovalNotification(userInfo: userInfo))
+            XCTAssertEqual(notification.runtime, .deepseek)
+            XCTAssertEqual(notification.kind, .message)
+            let delivery = try XCTUnwrap(LockScreenApprovalDelivery(
+                userInfo: userInfo, actionIdentifier: LockScreenApprovalCategory.allowActionID
+            ))
+            XCTAssertNil(delivery.decision)
+        }
+        XCTAssertNil(LockScreenApprovalNotification(userInfo: payload(overrides: ["runtime": "deepseek"])))
+        XCTAssertNil(LockScreenApprovalNotification(userInfo: payload(overrides: [
+            "event": "holder.waiting", "runtime": "deepseek", "approval_kind": "",
+        ])))
+        XCTAssertNil(LockScreenApprovalNotification(userInfo: payload(overrides: [
+            "event": "approval.resolved", "runtime": "deepseek",
+        ])))
+        XCTAssertEqual(NotificationContentRewriter.runtimeDisplayName(.deepseek), "DeepSeek")
+    }
+
     @MainActor
     func testComputerWaitingNotificationIsClaudeOnlyAndCannotApprove() throws {
         let userInfo = payload(overrides: ["event": "holder.waiting", "runtime": "claude", "approval_kind": ""])
@@ -380,6 +405,7 @@ final class LockScreenApprovalTests: XCTestCase {
         let keys = [
             "push.message.title.codex",
             "push.message.title.claude",
+            "push.message.title.deepseek",
             "push.message.body.completed",
             "push.message.body.failed",
             "push.message.body.interrupted",
@@ -925,6 +951,7 @@ extension LockScreenApprovalTests {
             if capability == false {
                 let body = try XCTUnwrap(RebindURLProtocol.registeredBodies.last)
                 XCTAssertEqual(body["supports_holder_waiting"] as? Bool, true)
+                XCTAssertEqual(body["supports_deepseek_messages"] as? Bool, true)
                 XCTAssertEqual(body["ticket"] as? String, "ticket-old")
                 XCTAssertEqual(body["device_id"] as? String, fixture.store.deviceID)
             }
@@ -932,6 +959,18 @@ extension LockScreenApprovalTests {
             XCTAssertEqual(fixture.store.registeredProfileID, "profile-old")
             XCTAssertEqual(fixture.store.status, .active(expiresAt: expiry))
         }
+
+        // 只缺 DeepSeek 回复提醒能力（已支持等待提醒的旧版 App 升级后）同样补登记一次。
+        RebindURLProtocol.setStatusDevice(
+            fixture.store.deviceID, supportsHolderWaiting: true, supportsDeepSeekMessages: false
+        )
+        RebindURLProtocol.clearRecordedRequests()
+        await fixture.store.synchronize(client: fixture.oldClient, profileID: "profile-old")
+        XCTAssertEqual(RebindURLProtocol.recordedRequests, [
+            "GET profile-old.example /api/push/status", "POST profile-old.example /api/push/devices",
+        ])
+        XCTAssertEqual(RebindURLProtocol.registeredBodies.last?["supports_deepseek_messages"] as? Bool, true)
+        XCTAssertEqual(try fixture.tickets.loadRequired(), "ticket-old")
 
         // 补登记失败不能注销设备或轮换 Ticket；下次恢复前台仍可重试。
         RebindURLProtocol.setStatusDevice(fixture.store.deviceID, supportsHolderWaiting: false)
@@ -1127,11 +1166,16 @@ private final class RebindURLProtocol: URLProtocol {
         return registrations
     }
 
-    static func setStatusDevice(_ deviceID: String, supportsHolderWaiting: Bool?) {
+    static func setStatusDevice(
+        _ deviceID: String,
+        supportsHolderWaiting: Bool?,
+        supportsDeepSeekMessages: Bool? = nil
+    ) {
         lock.lock()
         defer { lock.unlock() }
         statusDevice = ["device_id": deviceID]
         if let supportsHolderWaiting { statusDevice?["supports_holder_waiting"] = supportsHolderWaiting }
+        if let supportsDeepSeekMessages { statusDevice?["supports_deepseek_messages"] = supportsDeepSeekMessages }
     }
 
     static var recordedRequests: [String] {

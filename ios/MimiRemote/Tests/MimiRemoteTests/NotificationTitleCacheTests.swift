@@ -206,11 +206,13 @@ final class NotificationTitleCacheTests: XCTestCase {
             makeSession(id: "thread-2", title: "   ", resumeID: nil),
             makeSession(id: "draft-1", title: "草稿", resumeID: nil, source: "local", status: "draft"),
             makeSession(id: "thread-3", title: "Claude 任务", resumeID: "thread-3", runtimeProvider: "claude"),
+            makeSession(id: "session-4", title: "DeepSeek 任务", resumeID: nil, runtimeProvider: "deepseek"),
         ]
         let tag = profileTag("p1")
         let entries = NotificationTitleCacheWriter.entries(sessions: sessions, profileTag: tag, hostName: "Studio")
 
-        XCTAssertEqual(entries.count, 3, "thread-1 按 id 与 resumeID 各登记一次，thread-3 的 resumeID 与 id 相同只登记一次")
+        XCTAssertEqual(entries.count, 4, "thread-1 按 id 与 resumeID 各登记一次，thread-3 的 resumeID 与 id 相同只登记一次")
+        XCTAssertEqual(entries[key("p1", "session-4")]?.runtime, "deepseek")
         XCTAssertEqual(entries[key("p1", "thread-1")]?.title, "重构登录页")
         XCTAssertEqual(entries[key("p1", "resume-1")]?.title, "重构登录页")
         XCTAssertEqual(entries[key("p1", "thread-1")]?.runtime, "codex")

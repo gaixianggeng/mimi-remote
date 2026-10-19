@@ -118,6 +118,49 @@ func TestHolderWaitingFiltersCapabilityAndDeduplicatesEpisodesAcrossRestart(t *t
 	}
 }
 
+func TestDeepSeekTurnMessageReachesOnlyCapableDevices(t *testing.T) {
+	legacyOnly, legacyProvider := newTestManager(t, true, "legacy")
+	message := Message{Runtime: RuntimeDeepSeek, ThreadID: "session", MessageID: "turn:3", Event: EventTurnCompleted}
+	if legacyOnly.PrepareMessage(message) != nil || len(legacyProvider.events(EventTurnCompleted)) != 0 {
+		t.Fatal("只有旧客户端时不得创建 DeepSeek 投递或路由")
+	}
+
+	manager, provider := newTestManager(t, true, "old", "new")
+	device, _ := manager.Devices().Get("new")
+	device.SupportsDeepSeekMessages = true
+	if _, err := manager.Devices().Register(device); err != nil {
+		t.Fatal(err)
+	}
+	delivery := manager.PrepareMessage(message)
+	if delivery == nil {
+		t.Fatal("声明 DeepSeek 能力的设备应收到回复提醒")
+	}
+	delivery(context.Background())
+	got := provider.events(EventTurnCompleted)
+	if len(got) != 1 || got[0].DeviceID != "new" || got[0].Runtime != RuntimeDeepSeek {
+		t.Fatalf("DeepSeek 提醒只能发给声明能力的设备：%+v", got)
+	}
+	if route, ok := manager.MessageRoute(got[0].ActionID, "new"); !ok || route.Runtime != RuntimeDeepSeek || route.ThreadID != "session" {
+		t.Fatalf("DeepSeek 定位记录错误：ok=%v route=%+v", ok, route)
+	}
+	if _, outcome := manager.LocateRoute(got[0].ActionID, "old"); outcome != OutcomeForbidden {
+		t.Fatalf("旧客户端不应取得 DeepSeek 路由：%s", outcome)
+	}
+	message.Event = EventTurnFailed
+	if manager.PrepareMessage(message) != nil {
+		t.Fatal("同一 DeepSeek 回合不应重复推送")
+	}
+	waiting := Message{Runtime: RuntimeDeepSeek, ThreadID: "session", MessageID: "holder-waiting:1:2", Event: EventHolderWaiting}
+	if manager.PrepareMessage(waiting) != nil {
+		t.Fatal("DeepSeek 没有 holder.waiting 语义")
+	}
+	codex := Message{Runtime: "codex", ThreadID: "thread", MessageID: "turn:codex", Event: EventTurnCompleted}
+	manager.PrepareMessage(codex)(context.Background())
+	if got := provider.events(EventTurnCompleted); len(got) != 3 {
+		t.Fatalf("Codex 终态不应受 DeepSeek 能力过滤，got=%d", len(got))
+	}
+}
+
 func TestLegacyTurnIDRecordDeduplicatesNewMessageIdentity(t *testing.T) {
 	dir := t.TempDir()
 	manager, _ := newTestManagerInDir(t, dir, true, "one")
