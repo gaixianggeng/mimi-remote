@@ -588,6 +588,15 @@ extension SessionStore {
         socket.connect(sessionID: sessionID, replayBufferedEvents: true)
     }
 
+    /// 离开会话后由后台连接等当前回合结束再派发排队消息。Codex、Claude 与 DeepSeek
+    /// 共用这条链路；只读会话和本地草稿不新建后台连接。
+    func continueQueuedMonitoringAfterLeaving(_ session: AgentSession) {
+        guard !session.isLocalDraft,
+              !isProtocolReadOnlySession(session),
+              queuedRunningTurnsBySessionID[session.id]?.isEmpty == false else { return }
+        ensureQueuedSessionMonitoring(sessionID: session.id)
+    }
+
     func ensureAllQueuedSessionMonitoring() {
         let sessionIDs = Set(queuedRunningTurnsBySessionID.keys)
             .union(queuedTurnAwaitingStartSessionIDs)
