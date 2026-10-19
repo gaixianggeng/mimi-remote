@@ -404,23 +404,28 @@ final class AppServerRuntimeBundle {
 
     /// 快速切换已经拿到 config，候选 Runtime 必须复用它，不能在提交后再次请求
     /// `/api/app-server/config`。Codex 连接在 prepare 阶段初始化；Claude 按实际使用延迟建连。
+    /// `requestTimeout` 是提交后长期使用的请求超时，默认与普通 Runtime 一致；预热时限
+    /// 只交给 `prepareForHostActivation(handshakeTimeout:)`（#801）。
     init(
         endpoint: String,
         token: String,
-        requestTimeout: TimeInterval,
+        requestTimeout: TimeInterval = 20,
         preparedConfig: CodexAppServerConfigResponse,
         harnessFactory: HarnessSessionClientFactory? = nil,
         // 两个入参解决的是不同问题，都要留：preparedConfig 是「已经拿到的那份快照」，
         // configProvider 是「快照失效后去哪再取」。默认 provider 只回 preparedConfig，
         // 因此快速切换链路仍然不会重新打一次 /api/app-server/config。
         configProvider suppliedConfigProvider: (() async throws -> CodexAppServerConfigResponse)? = nil,
-        routes: AppServerRuntimeRouteStore = AppServerRuntimeRouteStore()
+        routes: AppServerRuntimeRouteStore = AppServerRuntimeRouteStore(),
+        transportFactory: (() -> CodexAppServerTransport)? = nil
     ) {
         let configProvider = suppliedConfigProvider ?? { preparedConfig }
+        let transportFactory = transportFactory ?? { URLSessionCodexAppServerTransport() }
         codex = CodexAppServerSessionRuntime(
             endpoint: endpoint,
             token: token,
             runtimeProvider: "codex",
+            transportFactory: transportFactory,
             requestTimeout: requestTimeout,
             initialConfig: preparedConfig,
             configProvider: configProvider
@@ -429,6 +434,7 @@ final class AppServerRuntimeBundle {
             endpoint: endpoint,
             token: token,
             runtimeProvider: "claude",
+            transportFactory: transportFactory,
             requestTimeout: requestTimeout,
             initialConfig: preparedConfig,
             configProvider: configProvider
@@ -655,7 +661,7 @@ final class AppServerRuntimeBundle {
         return refreshed
     }
 
-    func prepareForHostActivation() async throws {
+    func prepareForHostActivation(handshakeTimeout: TimeInterval? = nil) async throws {
         let config = try await currentConfiguration()
         guard let preferred = Self.preferredAvailableRuntimeProvider(in: config) else {
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
@@ -672,7 +678,7 @@ final class AppServerRuntimeBundle {
             // agentd，也不把协议改回 app-server。
             return
         }
-        try await runtime(for: preferred).prepareForHostActivation()
+        try await runtime(for: preferred).prepareForHostActivation(handshakeTimeout: handshakeTimeout)
     }
 
     func shutdownForHostSwitch() async {

@@ -1,7 +1,8 @@
 import Foundation
 
 extension CodexAppServerSessionRuntime {
-    func ensureConnection() async throws -> CodexAppServerConnection {
+    /// `handshakeTimeout` 只用于这次新建连接的 initialize，不改变之后请求的超时（#801）。
+    func ensureConnection(handshakeTimeout: TimeInterval? = nil) async throws -> CodexAppServerConnection {
         if let connection {
             if await connection.isReadyForRequests() { return connection }
             await retireConnection(connection)
@@ -24,7 +25,7 @@ extension CodexAppServerSessionRuntime {
         let task = Task { [next, gatewayURL, token] in
             let notifications = await next.notifications()
             let serverRequests = await next.serverRequests()
-            try await next.connect(url: gatewayURL, token: token)
+            try await next.connect(url: gatewayURL, token: token, initializeTimeout: handshakeTimeout)
             return CodexAppServerPreparedConnection(
                 connection: next,
                 notifications: notifications,

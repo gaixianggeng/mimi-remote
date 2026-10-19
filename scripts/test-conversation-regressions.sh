@@ -73,6 +73,7 @@ echo "==> iOS conversation regressions"
 # - ConversationQuestionReplyTests：Desktop 异步提问答复的结构化投影，以及实时、重进和分页历史的一致顺序。
 # - MarkdownRenderingTests：proposed_plan 流式和完整渲染。
 # - PairingLinkTests：Endpoint allowlist、ATS 传输策略、Host capability 隔离和 stale lease。
+# - HostSwitchSlowHandshakeTests：一台电脑握手挂起时可改选或取消，连续切换可用，提交后的请求不继承预热剩余时间（#801）。
 # - DoctorDiagnosticsTests：结构化 Doctor 响应、HTTP 错误和向后兼容。
 # - ProtocolContractTests：iOS/agentd 当前、上一版和明确不兼容的版本窗口。
 # - ManagedConnectionEntitlementStoreTests、ManagedConnectionEntitlementAPIClientTests、
@@ -80,6 +81,8 @@ echo "==> iOS conversation regressions"
 # - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
 # - RuntimeRouteRetentionTests：回前台重建 bundle 后会话仍走所属 Runtime，重新授权不为别的 Runtime 翻列表（#784）。
 # - LocalCompletionSupersededTests：本地完成标记只挡落后快照，电脑端开始的新一轮能恢复进行中并让发送排队（#805）。
+# - ForegroundRecoveryHistoryOrderingTests：回前台时当前会话的恢复历史与列表刷新并行，列表慢或失败不拖住它，
+#   状态点读仍在列表落地之后（#790）。
 # - ThreadGoalCapabilityTests：目标任务按通道声明的 thread/goal/* 能力使用，Claude 不发也不显示（#791）。
 # - CodexTurnInterruptBeforeStartTests：turn/start 响应后、turn/started 前的停止等回合开始后重发，
 #   不把这段窗口里的 no active turn 当成已停止（#808）。
@@ -226,6 +229,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/NotificationRoutingGateTests \
   -only-testing:MimiRemoteTests/NotificationRouteResolutionTests \
   -only-testing:MimiRemoteTests/RuntimeRouteRetentionTests \
+  -only-testing:MimiRemoteTests/ForegroundRecoveryHistoryOrderingTests \
   -only-testing:MimiRemoteTests/ThreadGoalCapabilityTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCompletionAwaitingReducerDoesNotOverwriteNewerActiveTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testPagedHistoryRetainsInvisibleTurnStatesForCompletionRecovery \
@@ -286,6 +290,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLongHistoryFirstPresentationAndCachedReopenForBothProviders \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLongProseHistoryFirstPresentationAndCachedReopenForBothProviders \
   -only-testing:MimiRemoteTests/PairingLinkTests \
+  -only-testing:MimiRemoteTests/HostSwitchSlowHandshakeTests \
   -only-testing:MimiRemoteTests/TailcatExperimentRoutingTests \
   -only-testing:MimiRemoteTests/TailcatLocalEndpointProbeTests \
   -only-testing:MimiRemoteTests/DoctorDiagnosticsTests \
