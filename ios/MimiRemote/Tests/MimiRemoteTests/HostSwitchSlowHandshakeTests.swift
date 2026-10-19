@@ -43,7 +43,7 @@ final class HostSwitchSlowHandshakeTests: XCTestCase {
 
         let refreshed = await fixture.store.refreshAfterConnectionCommit(maxWait: 2)
         XCTAssertTrue(refreshed)
-        XCTAssertTrue(fixture.store.sessions.contains { $0.id == FakeHost.c.sessionID })
+        XCTAssertEqual(fixture.store.projects.map(\.id), [FakeHost.c.project.id], "工作区目录来自新电脑")
         XCTAssertFalse(fixture.store.sessions.contains { $0.id == FakeHost.a.sessionID })
     }
 
@@ -148,7 +148,10 @@ final class HostSwitchSlowHandshakeTests: XCTestCase {
             XCTAssertFalse(fixture.store.isConnectionSwitchInProgress, "第 \(round) 次")
             let refreshed = await fixture.store.refreshAfterConnectionCommit(maxWait: 2)
             XCTAssertTrue(refreshed, "第 \(round) 次刷新")
-            XCTAssertTrue(fixture.store.sessions.contains { $0.id == target.sessionID }, "第 \(round) 次列表")
+            // 新配对的电脑没有打开过的工作区时会话列表本就为空（#554），这里核对工作区目录
+            // 每次都来自当前电脑，另一台的会话也不会留在列表里。
+            XCTAssertEqual(fixture.store.projects.map(\.id), [target.project.id], "第 \(round) 次工作区")
+            XCTAssertNil(fixture.store.errorMessage, "第 \(round) 次")
             XCTAssertFalse(fixture.store.sessions.contains { $0.id == other.sessionID }, "第 \(round) 次列表串写")
         }
 
