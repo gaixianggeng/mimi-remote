@@ -469,6 +469,11 @@ extension SessionStore {
                 case .connected:
                     self?.queuedSessionReadyIDs.insert(sessionID)
                     self?.queuedSessionReconnectAttemptBySessionID.removeValue(forKey: sessionID)
+                    // 与前台 .connected 一致：连上即说明 writer 已可用，否则确认重试后仍被冲突挡住派发。
+                    // 只在确有冲突时清，避免用户停在别的页面时空发布。
+                    if self?.hasActiveWriterConflict(sessionID: sessionID) == true {
+                        self?.setActiveWriterConflict(false, sessionID: sessionID)
+                    }
                     if let self, let currentSocket = self.queuedSessionSockets[sessionID] {
                         self.dispatchPendingGuidance(sessionID: sessionID, socket: currentSocket)
                     }
@@ -616,6 +621,7 @@ extension SessionStore {
               !queuedTurnAwaitingStartSessionIDs.contains(sessionID),
               queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] == nil,
               pendingGuidanceBySessionID[sessionID]?.isEmpty != false else { return }
+        queuedSessionReconnectAttemptBySessionID.removeValue(forKey: sessionID)
         guard queuedSessionSockets[sessionID] != nil || queuedSessionReconnectTasks[sessionID] != nil else {
             return
         }
@@ -624,7 +630,8 @@ extension SessionStore {
 
     func stopQueuedSessionMonitoring(
         sessionID: SessionID,
-        preservingPendingGuidance: Bool = true
+        preservingPendingGuidance: Bool = true,
+        preservingReconnectBudget: Bool = false
     ) {
         // 用户重入原会话时允许前台连接接管展示，但已经提交的 steer 必须由旧连接等到 ACK。
         guard !preservingPendingGuidance
@@ -635,7 +642,9 @@ extension SessionStore {
         )
         queuedSessionSocketGenerationByID[sessionID, default: 0] += 1
         queuedSessionReconnectTasks.removeValue(forKey: sessionID)?.cancel()
-        queuedSessionReconnectAttemptBySessionID.removeValue(forKey: sessionID)
+        if !preservingReconnectBudget {
+            queuedSessionReconnectAttemptBySessionID.removeValue(forKey: sessionID)
+        }
         queuedSessionReadyIDs.remove(sessionID)
         queuedSessionCredentialFingerprintByID.removeValue(forKey: sessionID)
         let socket = queuedSessionSockets.removeValue(forKey: sessionID)
@@ -724,13 +733,21 @@ extension SessionStore {
         socket?.disconnect()
     }
 
-    func stopAllQueuedSessionMonitoring() {
+    /// 回后台与断网只是暂停：保留各会话已用的重试预算，恢复后用尽的队列只再试一次。
+    /// 切换电脑、凭据失效等真正的拆除才清零。
+    func stopAllQueuedSessionMonitoring(preservingReconnectBudget: Bool = false) {
         failAllPendingGuidance()
         let sessionIDs = Set(queuedSessionSockets.keys).union(queuedSessionReconnectTasks.keys)
         for sessionID in sessionIDs {
-            stopQueuedSessionMonitoring(sessionID: sessionID, preservingPendingGuidance: false)
+            stopQueuedSessionMonitoring(
+                sessionID: sessionID,
+                preservingPendingGuidance: false,
+                preservingReconnectBudget: preservingReconnectBudget
+            )
         }
-        queuedSessionReconnectAttemptBySessionID.removeAll()
+        if !preservingReconnectBudget {
+            queuedSessionReconnectAttemptBySessionID.removeAll()
+        }
     }
 
     func markDispatchingQueuedTurnsNeedsConfirmation(
