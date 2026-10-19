@@ -1,4 +1,5 @@
 import type { Turn } from "../protocol/codex/v2/Turn.ts";
+import type { DesktopSpawnIndex } from "./desktopSpawns.ts";
 import { messagesToTurns } from "./history.ts";
 import type { Overlay } from "./overlay.ts";
 import type { ClaudeSessions, SessionInfo } from "./sdk.ts";
@@ -17,6 +18,8 @@ export interface SessionRecord {
   gitBranch: string | null;
   path: string | null;
   archived: boolean;
+  /** Claude 桌面版记录的派生来源（父会话 ID）；只用于列表分组展示，不参与权限。 */
+  spawnedFromId: string | null;
 }
 
 export interface CatalogDeps {
@@ -25,6 +28,8 @@ export interface CatalogDeps {
   activity: ActivityClock;
   directories: WorkingDirectories;
   overlay: Overlay;
+  /** 缺省时不读桌面版元数据，所有会话都没有派生来源。 */
+  desktopSpawns?: DesktopSpawnIndex;
 }
 
 const toSeconds = (ms: number) => Math.floor(ms / 1000);
@@ -54,7 +59,7 @@ export class Catalog {
   }
 
   private async prepare(): Promise<void> {
-    await Promise.all([this.deps.overlay.load(), this.deps.transcripts.refresh()]);
+    await Promise.all([this.deps.overlay.load(), this.deps.transcripts.refresh(), this.deps.desktopSpawns?.refresh()]);
   }
 
   private async toRecord(info: SessionInfo): Promise<SessionRecord> {
@@ -75,6 +80,7 @@ export class Catalog {
       gitBranch: info.gitBranch ?? null,
       path: file?.path ?? null,
       archived: this.deps.overlay.isArchived(info.sessionId),
+      spawnedFromId: this.deps.desktopSpawns?.parentOf(info.sessionId) ?? null,
     };
   }
 }

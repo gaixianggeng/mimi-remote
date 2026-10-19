@@ -17,6 +17,7 @@ const siblingWorktree = path.join(sandbox, "repo-sibling");
 const otherProject = path.join(sandbox, "other");
 const pendingProject = path.join(sandbox, "pending");
 const screenshotProject = path.join(sandbox, "screenshot");
+const desktopDir = path.join(sandbox, "desktop-sessions");
 
 const ids = {
   root: "11111111-1111-4111-8111-111111111111",
@@ -136,14 +137,26 @@ beforeAll(async () => {
   screenshot.assistant([{ type: "text", text: "looking" }]);
   screenshotFile = screenshot.write(configDir, undefined, { messageFirst: true });
 
+  // Claude 桌面版的会话元数据：nested 由 root 派生；sibling 的父会话不在桌面版里，不算派生。
+  const desktopOrg = path.join(desktopDir, "account", "org");
+  mkdirSync(desktopOrg, { recursive: true });
+  const desktopMeta = (local: string, cli: string, extra: Record<string, unknown> = {}) =>
+    writeFileSync(path.join(desktopOrg, `local_${local}.json`), JSON.stringify({ sessionId: `local_${local}`, cliSessionId: cli, ...extra }));
+  desktopMeta("root", ids.root);
+  desktopMeta("nested", ids.nested, { spawnedFrom: { sessionId: "local_root", taskId: "task_1", title: "nested" } });
+  desktopMeta("sibling", ids.sibling, { spawnedFrom: { sessionId: "local_missing" } });
+  writeFileSync(path.join(desktopOrg, "local_partial.json"), "{\"sessionId\":");
+
   process.env.CLAUDE_CONFIG_DIR = configDir;
   process.env.MIMI_CLAUDE_LEGACY_INDEX = "";
+  process.env.MIMI_CLAUDE_DESKTOP_SESSIONS_DIR = desktopDir;
   const { createRouter } = await import("../src/app.ts");
   router = createRouter({ stateDir: path.join(sandbox, "state"), log: () => {} });
 });
 
 afterAll(() => {
   delete process.env.CLAUDE_CONFIG_DIR;
+  delete process.env.MIMI_CLAUDE_DESKTOP_SESSIONS_DIR;
   rmSync(sandbox, { recursive: true, force: true });
 });
 
@@ -159,6 +172,17 @@ describe("thread/list", () => {
     expect((byId.get(ids.root) as any).name).toBe("Root session");
     // 没有别的进程占用时可以直接发送。
     expect((byId.get(ids.root) as any).canAcceptDirectInput).toBe(true);
+  });
+
+  test("sessions spawned from a desktop main session carry the parent thread id", async () => {
+    const result = await call("thread/list", { cwd: repo, limit: 50 });
+    const byId = new Map(result.data.map((thread: any) => [thread.id, thread]));
+    expect((byId.get(ids.nested) as any).spawnedFromThreadId).toBe(ids.root);
+    // 派生会话是完整会话，不是子 Agent：不能借用 parentThreadId，也不因此变成只读。
+    expect((byId.get(ids.nested) as any).parentThreadId).toBeNull();
+    expect((byId.get(ids.nested) as any).canAcceptDirectInput).toBe(true);
+    expect("spawnedFromThreadId" in (byId.get(ids.root) as any)).toBe(false);
+    expect("spawnedFromThreadId" in (byId.get(ids.sibling) as any)).toBe(false);
   });
 
   test("activity time comes from the last message, not the file modification time", async () => {
