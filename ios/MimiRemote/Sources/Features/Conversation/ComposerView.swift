@@ -111,6 +111,7 @@ struct ComposerView: View {
             voiceErrorMessage
             voiceNoticeMessage
             attachmentErrorNotice
+            contextWindowNotice
             FileUploadJobsStrip(store: sessionStore.fileUploadStore, scope: activeComposerDraftScope)
                 .environmentObject(themeStore)
             attachmentStrip
@@ -1311,6 +1312,7 @@ struct ComposerView: View {
                 }
                 followUpDeliveryMenu
                 Spacer(minLength: 0)
+                contextWindowRingControl
                 composerOptionsMenu
                 voiceMicControl
                 sendButton(showLabels: true)
@@ -1387,10 +1389,13 @@ struct ComposerView: View {
     @inline(never)
     func compactToolControlsBox() -> AnyView {
         return AnyView(
-            CompactComposerToolControlsShell(
-                optionsControl: compactOptionsControlBox(),
-                microphoneControl: compactMicrophoneControlBox()
-            )
+            HStack(spacing: 2) {
+                compactContextWindowControlBox()
+                CompactComposerToolControlsShell(
+                    optionsControl: compactOptionsControlBox(),
+                    microphoneControl: compactMicrophoneControlBox()
+                )
+            }
         )
     }
 
@@ -1454,6 +1459,7 @@ struct ComposerView: View {
                 Divider()
                 followUpDeliveryMenuItems
             }
+            contextWindowOptionsMenuFallback
         } label: {
             composerToolbarControlLabel(
                 title: usesCompactComposerMetrics ? nil : L10n.text("ui.options"),

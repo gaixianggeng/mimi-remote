@@ -1755,6 +1755,7 @@ extension SessionStore {
                 return
             }
             let sessionID = metadata.sessionID ?? fallbackSessionID
+            recordContextWindowUsage(sample, sessionID: sessionID)
             let next = TurnOutputTokenCounter.applying(
                 sample,
                 turnID: metadata.turnID,
@@ -3025,6 +3026,8 @@ extension SessionStore {
         foregroundActivityBySessionID = [:]
         runtimeActivityBySessionID = [:]
         turnOutputTokensBySessionID = [:]
+        contextWindowUsageBySessionID = [:]
+        dismissedContextWindowNoticeSessionIDs = []
         locallyCompletedSessionIDs = []
         locallyCompletedGoalThreadIDs = []
         runtimeEventFlushTasks.values.forEach { $0.cancel() }
