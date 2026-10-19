@@ -29,9 +29,14 @@ func limitGatewayPendingTracking(t *testing.T, clientMax int, threadMax int) {
 }
 
 // expireGatewayPendingTracking 让登记在下一次检查时必定已过期。不能靠极小 TTL 加
-// sleep：Windows 上 time.Now 的单调读数按系统时钟中断推进（默认约 15.6 ms），
-// 相隔几毫秒的两次读数可能完全相同，经过时间为 0，不大于 1 ns，登记就不算过期。
-// 负 TTL 对任何 >= 0 的经过时间都成立，不依赖时钟前进。
+// sleep，原因有两个：
+//   - 客户端两次写之间的 sleep 不等于服务端两次处理之间的间隔。Claude 路径先升级
+//     WebSocket、再启动并连上 bridge，之后才开始读客户端帧，先到的两帧会被背靠背
+//     处理，间隔只有微秒级。
+//   - Windows 上 time.Now 的单调读数按系统时钟中断推进（默认约 15.6 ms），微秒到
+//     几毫秒的间隔常读成 0，0 不大于 1 ns，登记就不算过期。
+//
+// 负 TTL 对任何 >= 0 的经过时间都成立，不依赖时钟前进，也不依赖帧到达节奏。
 func expireGatewayPendingTracking(t *testing.T) {
 	t.Helper()
 	oldClientTTL := appServerGatewayPendingClientRequestTTL
