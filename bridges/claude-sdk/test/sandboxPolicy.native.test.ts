@@ -8,23 +8,10 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createSkillPlugin } from "../src/claude/skillPlugin.ts";
 import { executionPolicyFor, sandboxOptions } from "../src/runtime/sandboxPolicy.ts";
 import { qualifySkillCommand } from "../src/runtime/userInput.ts";
+import { type Block, isolatedClaudeEnv, modelResponse as response } from "./support/model-endpoint.ts";
 
 const executable = process.env.MIMI_CLAUDE_POLICY_TEST_BIN;
 const native = executable ? describe : describe.skip;
-type Block = { type: string; id?: string; name?: string; input?: Record<string, unknown>; text?: string };
-
-function response(model: string, content: Block[], stream: boolean): Response {
-  const message = { id: "msg_policy", type: "message", role: "assistant", model, content, stop_reason: content[0]?.type === "tool_use" ? "tool_use" : "end_turn", stop_sequence: null, usage: { input_tokens: 10, output_tokens: 10 } };
-  if (!stream) return Response.json(message);
-  const events: [string, unknown][] = [["message_start", { type: "message_start", message: { ...message, content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } } }]];
-  content.forEach((block, index) => {
-    events.push(["content_block_start", { type: "content_block_start", index, content_block: block.type === "tool_use" ? { ...block, input: {} } : { ...block, text: "" } }]);
-    events.push(["content_block_delta", { type: "content_block_delta", index, delta: block.type === "tool_use" ? { type: "input_json_delta", partial_json: JSON.stringify(block.input) } : { type: "text_delta", text: block.text } }]);
-    events.push(["content_block_stop", { type: "content_block_stop", index }]);
-  });
-  events.push(["message_delta", { type: "message_delta", delta: { stop_reason: message.stop_reason, stop_sequence: null }, usage: { output_tokens: 10 } }], ["message_stop", { type: "message_stop" }]);
-  return new Response(events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
-}
 
 native("Claude Code 原生边界验收", () => {
   for (const mode of ["guarded", "inherit"]) for (const type of ["workspaceWrite", "readOnly"]) {
@@ -78,7 +65,7 @@ native("Claude Code 原生边界验收", () => {
           ...options, cwd, pathToClaudeCodeExecutable: executable!, model: "claude-sonnet-4-6", maxTurns: 3,
           // 有意用 default 和全部同意，证明拒绝不依赖 plan 或人工拒绝。
           permissionMode: "default", canUseTool: async (_name, input) => ({ behavior: "allow", updatedInput: input }),
-          env: { ...process.env, CLAUDE_CONFIG_DIR: config, CLAUDE_BRIDGE_SANDBOX_POLICY: mode, ANTHROPIC_API_KEY: "test-only", ANTHROPIC_AUTH_TOKEN: "", ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}`, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+          env: { ...process.env, ...isolatedClaudeEnv(config, server.port!), CLAUDE_BRIDGE_SANDBOX_POLICY: mode },
         } });
         let finished = false;
         for await (const message of run) {

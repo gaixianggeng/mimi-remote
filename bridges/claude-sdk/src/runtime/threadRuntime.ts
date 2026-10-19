@@ -49,6 +49,9 @@ export interface TurnRequest {
 
 const INVALID_PARAMS = -32602;
 
+/** 主动结束进程的原因：空闲回收、让出给别处持有方、执行边界变化重启、适配器退出。 */
+type StopReason = "idle" | "yield" | "restart" | "close";
+
 function usageOf(raw: unknown): TurnUsage | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const usage = raw as Record<string, unknown>;
@@ -106,6 +109,12 @@ export class ThreadRuntime {
   private reserved: string | undefined;
   private totalUsage: TurnUsage | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * 进程里仍在运行的后台任务（Bash run_in_background、后台子代理等），取自 background_tasks_changed，
+   * 不含 ambient 任务。任务属于这个进程：进程一关就随之结束，完成通知触发的续写也不会发生（#796）。
+   * 按进程计，进程起停时清空。
+   */
+  private backgroundTasks: ReadonlySet<string> = new Set();
   private pid: number | undefined;
   private queryStartedAt = 0;
   private settings: RunSettings;
@@ -174,7 +183,7 @@ export class ThreadRuntime {
         // 进程已经退出。
       }
     }
-    await this.stopQuery();
+    await this.stopQuery("yield");
   }
 
   async startTurn(request: TurnRequest): Promise<Turn> {
@@ -298,7 +307,7 @@ export class ThreadRuntime {
 
   async close(): Promise<void> {
     this.cancelIdleClose();
-    await this.stopQuery();
+    await this.stopQuery("close");
   }
 
   private readonly emit = (method: string, params: Record<string, unknown>) =>
@@ -310,7 +319,7 @@ export class ThreadRuntime {
     const fullAccessChanged =
       applied !== undefined && (applied.permissionMode === "bypassPermissions") !== (wanted.permissionMode === "bypassPermissions");
     const policyChanged = applied !== undefined && JSON.stringify(applied.executionPolicy) !== JSON.stringify(wanted.executionPolicy);
-    if (this.query && (fullAccessChanged || policyChanged)) await this.stopQuery();
+    if (this.query && (fullAccessChanged || policyChanged)) await this.stopQuery("restart");
     const query = this.query;
     if (!query) {
       await this.startQuery(wanted);
@@ -378,6 +387,7 @@ export class ThreadRuntime {
     this.input = input;
     this.skillPlugin = skillPlugin;
     this.queryStartedAt = Date.now();
+    this.backgroundTasks = new Set();
     this.applied = { ...settings };
     this.transcriptExists = true;
     void query
@@ -418,6 +428,8 @@ export class ThreadRuntime {
     } finally {
       if (this.query === query) {
         logger.debug("claude.exit", { thread: this.threadId, pid: this.pid ?? null, openTurns: this.openTurns().length });
+        // 主动关闭时已按原因记过；剩下的是进程自己退出（崩溃或被结束）。
+        this.dropBackgroundTasks("exited");
         this.query = undefined;
         this.input = undefined;
         this.applied = undefined;
@@ -440,9 +452,10 @@ export class ThreadRuntime {
     }
   }
 
-  private async stopQuery(): Promise<void> {
+  private async stopQuery(reason: StopReason): Promise<void> {
     const query = this.query;
     if (!query) return;
+    this.dropBackgroundTasks(reason);
     this.input?.close();
     query.close();
     await this.pump;
@@ -537,6 +550,7 @@ export class ThreadRuntime {
           const terminal = Array.isArray(record.terminal_slash_commands) ? record.terminal_slash_commands.map(String) : [];
           this.host.terminalCommands?.(terminal);
         }
+        else if (record.subtype === "background_tasks_changed") this.backgroundTasksChanged(record.tasks);
         else if (record.subtype === "session_state_changed") {
           const status = threadStatus(record.state);
           if (status) this.emit("thread/status/changed", { threadId: this.threadId, status });
@@ -593,10 +607,37 @@ export class ThreadRuntime {
     }
   }
 
+  /**
+   * background_tasks_changed 是全量的电平信号：每次用新集合替换旧的。ambient 任务（内部监视等）
+   * 不算活动，与 SDK 的建议一致。全部结束且没有进行中的 turn 时重新计时空闲关闭；续写的 turn
+   * 收尾时会自己计时。
+   */
+  private backgroundTasksChanged(tasks: unknown): void {
+    const live = Array.isArray(tasks)
+      ? tasks.flatMap((task) => {
+          const entry = task as { task_id?: unknown; ambient?: unknown } | null;
+          return entry && typeof entry.task_id === "string" && entry.ambient !== true ? [entry.task_id] : [];
+        })
+      : [];
+    const hadTasks = this.backgroundTasks.size > 0;
+    this.backgroundTasks = new Set(live);
+    logger.debug("claude.background_tasks", { thread: this.threadId, count: live.length });
+    if (hadTasks && !live.length && this.query && !this.isBusy()) this.scheduleIdleClose();
+  }
+
+  /** 进程即将结束：仍在运行的后台任务会随之中止，记下原因，便于解释之后没有出现的续写。 */
+  private dropBackgroundTasks(reason: StopReason | "exited"): void {
+    if (this.backgroundTasks.size) {
+      logger.warn("claude.background_tasks_dropped", { thread: this.threadId, count: this.backgroundTasks.size, reason });
+    }
+    this.backgroundTasks = new Set();
+  }
+
+  /** 后台任务还在运行时不关闭：到点时跳过，任务全部结束后再重新计时。 */
   private scheduleIdleClose(): void {
     this.cancelIdleClose();
     this.idleTimer = setTimeout(() => {
-      if (!this.isBusy()) void this.stopQuery();
+      if (!this.isBusy() && !this.backgroundTasks.size) void this.stopQuery("idle");
     }, this.host.idleCloseMs);
     this.idleTimer.unref?.();
   }
