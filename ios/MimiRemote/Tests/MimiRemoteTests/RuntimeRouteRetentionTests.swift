@@ -55,6 +55,52 @@ final class RuntimeRouteRetentionTests: XCTestCase {
         XCTAssertNil(routes.runtimeProvider(for: "blank"))
     }
 
+    /// 评审 #786：路由只在同一档案内沿用。换到另一台 Mac 后同名会话不能沿用旧档案的 Runtime，
+    /// 旧 bundle 迟到的列表写入也只落在旧档案的表里。
+    func testProfileSwitchUsesSeparateRoutesAndOldBundleWritesStayInOldProfile() async throws {
+        let suiteName = "RuntimeRouteRetentionTests.ProfileSwitch.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("http://100.64.0.10:8787", forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations(itemData: Data("token-a".utf8))
+        let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+        let profileARoutes = store.runtimeRoutesForActiveHost()
+        let profileABundle = store.runtimeBundle(endpoint: store.connectionEndpoint, token: store.token)
+        XCTAssertTrue(profileABundle.routes === profileARoutes)
+        profileARoutes.remember("claude", for: "shared-id")
+
+        try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.20:8787/",
+            token: "token-b",
+            profileTarget: .newProfile(id: "mac-b", displayName: "工作室 Mac")
+        ))
+        profileABundle.routes.remember("claude", for: "late-from-a")
+        let profileBRoutes = store.runtimeRoutesForActiveHost()
+        let profileBBundle = store.runtimeBundle(endpoint: store.connectionEndpoint, token: store.token)
+
+        XCTAssertFalse(profileBRoutes === profileARoutes)
+        XCTAssertTrue(profileBBundle.routes === profileBRoutes)
+        XCTAssertNil(profileBRoutes.runtimeProvider(for: "shared-id"))
+        XCTAssertNil(profileBRoutes.runtimeProvider(for: "late-from-a"))
+        XCTAssertTrue(try profileBBundle.runtime(forSessionID: "shared-id") === profileBBundle.codex)
+    }
+
+    func testRememberMissingFromCarriesKnownRoutesWithoutOverwriting() {
+        let previous = AppServerRuntimeRouteStore()
+        previous.remember("claude", for: "carried")
+        previous.remember("claude", for: "conflict")
+        let next = AppServerRuntimeRouteStore()
+        next.remember("codex", for: "conflict")
+
+        next.rememberMissing(from: previous)
+
+        XCTAssertEqual(next.runtimeProvider(for: "carried"), "claude")
+        XCTAssertEqual(next.runtimeProvider(for: "conflict"), "codex")
+        next.removeAll()
+        XCTAssertNil(next.runtimeProvider(for: "carried"))
+    }
+
     func testSessionStoreFillsRoutesForSessionsKnownBeforeTheirRuntimeList() throws {
         let appStore = makeIsolatedAppStore()
         let store = SessionStore(appStore: appStore, conversationStore: ConversationStore(), logStore: LogStore())
@@ -65,7 +111,7 @@ final class RuntimeRouteRetentionTests: XCTestCase {
             source: "claude", runtimeProvider: "claude"
         ))
 
-        XCTAssertEqual(appStore.runtimeRoutes.runtimeProvider(for: "claude-restored"), "claude")
+        XCTAssertEqual(appStore.runtimeRoutesForActiveHost().runtimeProvider(for: "claude-restored"), "claude")
         let bundle = appStore.runtimeBundle(endpoint: "http://127.0.0.1:8787", token: "token")
         XCTAssertTrue(try bundle.runtime(forSessionID: "claude-restored") === bundle.claude)
     }

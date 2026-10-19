@@ -344,7 +344,8 @@ extension SessionStore {
     func commitPreparedConnection(_ prepared: PreparedConnectionSettings) async throws -> Bool {
         // 必须先原子提交 Keychain/endpoint，再退役旧连接。若 Keychain 写入失败，
         // 旧 WebSocket、runtime bundle、connectionGeneration 和当前会话数据都保持不变。
-        let previousProfileID = appStore.activeHostScope.profileID
+        let previousHostScope = appStore.activeHostScope
+        let previousProfileID = previousHostScope.profileID
         let previousWarmSnapshot = makeHostWarmSnapshot(profileID: previousProfileID)
         let didChange = try await appStore.commitConnectionSettings(prepared)
         if didChange {
@@ -373,6 +374,13 @@ extension SessionStore {
                 await hostWarmSnapshotCache.store(previousWarmSnapshot)
             }
             clearConnectionData()
+            let activeHostScope = appStore.activeHostScope
+            if activeHostScope.profileID != previousHostScope.profileID
+                || activeHostScope.installationID != previousHostScope.installationID {
+                // 提交到清空旧数据之间，旧主机的会话可能已被补进新档案的路由表；换档案时清掉，
+                // 再由暖快照和新主机列表补齐（#784）。
+                appStore.runtimeRoutesForActiveHost().removeAll()
+            }
             if let warmSnapshot = hostWarmSnapshotCache.snapshot(for: appStore.activeHostScope.profileID) {
                 applyHostWarmSnapshot(warmSnapshot)
                 HostSwitchSignpost.event("warm_snapshot_visible")

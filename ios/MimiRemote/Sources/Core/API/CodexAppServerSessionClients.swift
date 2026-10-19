@@ -284,11 +284,30 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
     }
 }
 
-/// 会话属于哪个 Runtime 是会话 ID 本身的事实，与连接、端点和 Token 无关。由 AppStore 持有一份，
+/// 会话属于哪个 Runtime 与连接、端点和 Token 无关。AppStore 按连接档案各持有一份，
 /// 跨 bundle 重建（回后台清凭据、Tailcat 换端口、切路由）沿用；只用锁保护，可跨 actor 读。
 final class AppServerRuntimeRouteStore: @unchecked Sendable {
     private var lock = NSLock()
     private var runtimeBySessionID: [SessionID: String] = [:]
+
+    /// 同一档案换用候选 bundle 时，把旧表已知的路由带进新表（只补缺）。
+    func rememberMissing(from other: AppServerRuntimeRouteStore) {
+        guard other !== self else { return }
+        other.lock.lock()
+        let known = other.runtimeBySessionID
+        other.lock.unlock()
+        lock.lock()
+        defer { lock.unlock() }
+        for (sessionID, runtime) in known where runtimeBySessionID[sessionID] == nil {
+            runtimeBySessionID[sessionID] = runtime
+        }
+    }
+
+    func removeAll() {
+        lock.lock()
+        runtimeBySessionID.removeAll()
+        lock.unlock()
+    }
 
     /// 用本地已知会话（列表缓存、恢复快照）补齐缺失的路由（#784）。网络学到的路由优先，
     /// 这里不覆盖；provider 与 source 都认不出 Runtime 时跳过，不替未知会话写成 Codex。

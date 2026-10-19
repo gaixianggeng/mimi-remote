@@ -65,9 +65,11 @@ final class AppStore: ObservableObject {
         }
     }
     private var activeRuntimeIdentity: String?
-    /// 会话 → Runtime 路由跨 bundle 重建沿用：回后台清凭据也会丢弃 bundle，表若随之清空，
-    /// 回前台后 Claude 会话的请求会默认落到 Codex 通道并被网关拒绝（#784）。
-    let runtimeRoutes = AppServerRuntimeRouteStore()
+    /// 会话 → Runtime 路由按连接档案（Profile + Mac 安装身份）保留，同一档案的 bundle 重建沿用：
+    /// 回后台清凭据也会丢弃 bundle，表若随之清空，回前台后 Claude 会话的请求会默认落到 Codex（#784）。
+    /// 换档案就换一份新表，旧 bundle 的迟到写入只落在旧表里。
+    private var runtimeRoutes = AppServerRuntimeRouteStore()
+    private var runtimeRoutesHostKey: String?
     /// SessionStore 注入：Runtime 对没有被页面订阅的会话收到的权威快照（#683）。
     /// 只保存一份；bundle 换代（切主机、快速切换）时由 `activeRuntimeBundle` 的 didSet 重新挂上。
     var sessionIndexObserver: ((AgentSession) -> Void)? {
@@ -875,6 +877,9 @@ final class AppStore: ObservableObject {
             committedAt: prepared.validatedAt,
             capabilityNegotiation: prepared.capabilityNegotiation
         )
+        if let candidateRuntime {
+            adoptRuntimeRoutes(candidateRuntime.routes)
+        }
         // prepare 已对这组凭据验证过 version、config 和 gateway 初始化，提交成功就是「已连接」。
         // 不在这里改写的话，上一轮配对失败留下的 .failed 会被新连接继承，会话页整页报旧错误（#730）。
         connectionStatus = .connected(activeConnectionRoute.statusTitle)
@@ -1640,8 +1645,7 @@ final class AppStore: ObservableObject {
                 // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破 8 秒总 deadline。
                 requestTimeout: remaining,
                 preparedConfig: config,
-                harnessFactory: nativeHarnessFactory,
-                routes: runtimeRoutes
+                harnessFactory: nativeHarnessFactory
             )
             do {
                 try await bundle.prepareForHostActivation()
@@ -1878,6 +1882,30 @@ final class AppStore: ObservableObject {
         resetDirectRuntime()
     }
 
+    /// 当前档案的路由表；Profile 或 Mac 安装身份变化时换一份新表。
+    func runtimeRoutesForActiveHost() -> AppServerRuntimeRouteStore {
+        let key = Self.routesHostKey(for: activeHostScope)
+        if runtimeRoutesHostKey != key {
+            runtimeRoutes = AppServerRuntimeRouteStore()
+            runtimeRoutesHostKey = key
+        }
+        return runtimeRoutes
+    }
+
+    /// 快速切换的候选 bundle 自带路由表，提交后登记为当前档案的表；仍是同一档案时带上旧表已知的路由。
+    private func adoptRuntimeRoutes(_ routes: AppServerRuntimeRouteStore) {
+        let key = Self.routesHostKey(for: activeHostScope)
+        if runtimeRoutesHostKey == key {
+            routes.rememberMissing(from: runtimeRoutes)
+        }
+        runtimeRoutes = routes
+        runtimeRoutesHostKey = key
+    }
+
+    private static func routesHostKey(for scope: HostScope) -> String {
+        "\(scope.profileID)\n\(scope.installationID)"
+    }
+
     /// 按 (endpoint, token) 复用同一个 Runtime bundle。非 private：路由扩展要用它。
     func runtimeBundle(endpoint: String, token: String) -> AppServerRuntimeBundle {
         let identity = runtimeIdentity(endpoint: endpoint, token: token)
@@ -1888,7 +1916,7 @@ final class AppStore: ObservableObject {
             endpoint: endpoint,
             token: token,
             harnessFactory: nativeHarnessFactory,
-            routes: runtimeRoutes
+            routes: runtimeRoutesForActiveHost()
         )
         activeRuntimeIdentity = identity
         activeRuntimeBundle = bundle
