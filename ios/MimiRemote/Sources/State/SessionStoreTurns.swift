@@ -1786,6 +1786,7 @@ extension SessionStore {
             setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"), presentation: .silent)
             return
         }
+        var recoveryHistory: Task<Bool, Never>?
         if let reconnectSessionID, selectedSessionID == reconnectSessionID {
             // 后台挂起前收到最终回答时，turn/completed 可能落在断线窗口。先重启轻量
             // 最新 Turn 对账，与前台刷新并行；精确终态会保护后续陈旧 running 列表。
@@ -1793,17 +1794,29 @@ extension SessionStore {
                 sessionID: reconnectSessionID,
                 hostScope: foregroundSelectionLease.hostScope
             )
+            // 完整历史走会话所属 Runtime 的通道（路由跨 bundle 沿用），不依赖工作区列表结果。
+            // 与列表刷新并行发出，别的 Runtime 列表慢或失败时不再拖住它（#790）。
+            recoveryHistory = Task {
+                await reconcileHistoryForRecovery(
+                    sessionID: reconnectSessionID,
+                    generation: recoveryGeneration,
+                    reconcilesSessionState: false
+                )
+            }
         }
         // 回前台同样可能赶上 gateway 还没恢复；做几秒的高频重试，避免单次失败后又卡到下次切换。
         // 正常情况下首次 refreshAll 就成功（errorMessage 为 nil），立即返回，不会有额外开销。
         await refreshUntilLoaded(maxWait: 10, autoAttach: false)
         guard !Task.isCancelled, !isAppInBackground else { return }
-        var didReconcileFullHistory = false
-        if let reconnectSessionID, selectedSessionID == reconnectSessionID {
-            didReconcileFullHistory = await reconcileHistoryForRecovery(
-                sessionID: reconnectSessionID,
-                generation: recoveryGeneration
-            )
+        let didReconcileFullHistory = await recoveryHistory?.value ?? false
+        if didReconcileFullHistory,
+           recoveryGeneration == recoveryHistoryGeneration,
+           let reconnectSessionID,
+           selectedSessionID == reconnectSessionID,
+           let session = sessionsByID[reconnectSessionID],
+           !session.isLocalDraft {
+            // 状态点读必须在列表落地之后：列表请求发出更早，晚到的快照不能盖掉点读结果。
+            await reconcileSessionStateAfterHistoryRefresh(session)
         }
         guard !Task.isCancelled, !isAppInBackground else { return }
         ensureAllQueuedSessionMonitoring()
