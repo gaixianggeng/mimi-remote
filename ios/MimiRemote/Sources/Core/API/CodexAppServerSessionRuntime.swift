@@ -283,10 +283,16 @@ actor CodexAppServerSessionRuntime {
     // SessionStore 会一直保留旧 activeTurnID。按被中断的 turn 去重保存有界恢复任务，
     // 只在权威 turns 快照确认终态后补发完成事件。
     var turnInterruptRecoveryTasksBySessionID: [SessionID: CodexAppServerTurnInterruptRecoveryTask] = [:]
+    // turn/start ACK 之后、turn/started 之前的 turn/interrupt 会被 Codex 拒绝（#808）。
+    // 记下每个 thread 最近一次 turn/started，停止请求据此等回合开始后重发。
+    var lastStartedTurnIDBySessionID: [SessionID: TurnID] = [:]
+    var threadClosedActiveTurnIDBySessionID: [SessionID: TurnID] = [:]
+    var turnStartedWaitersByToken: [UUID: CodexAppServerTurnStartedWaiter] = [:]
     var pendingForkReconciliationsByToken: [UUID: CodexAppServerPendingForkReconciliation] = [:]
     let requestTimeout: TimeInterval
     let longRunningRequestTimeout: TimeInterval
     let turnInterruptRecoveryDelaysNanoseconds: [UInt64]
+    let turnStartedSignalTimeoutNanoseconds: UInt64
     let gatewayDefaults: UserDefaults
     var rateLimitRequestTimeout: TimeInterval {
         // Claude 首次读取可能需要通过交互式 `/status` 刷新 Keychain 凭据；
@@ -309,6 +315,7 @@ actor CodexAppServerSessionRuntime {
         longRunningRequestTimeout: TimeInterval = 60,
         gatewayDefaults: UserDefaults = .standard,
         turnInterruptRecoveryDelaysNanoseconds: [UInt64] = [400_000_000, 1_000_000_000, 2_000_000_000],
+        turnStartedSignalTimeoutNanoseconds: UInt64 = 10_000_000_000,
         deprecationDiagnosticSink: @escaping (CodexAppServerDeprecationDiagnostic) -> Void = {
             CodexAppServerProtocolDiagnostics.recordDeprecation($0)
         },
@@ -323,6 +330,7 @@ actor CodexAppServerSessionRuntime {
         self.requestTimeout = requestTimeout
         self.longRunningRequestTimeout = longRunningRequestTimeout
         self.turnInterruptRecoveryDelaysNanoseconds = turnInterruptRecoveryDelaysNanoseconds
+        self.turnStartedSignalTimeoutNanoseconds = turnStartedSignalTimeoutNanoseconds
         self.gatewayDefaults = gatewayDefaults
         self.deprecationDiagnosticSink = deprecationDiagnosticSink
         self.config = initialConfig
@@ -448,6 +456,7 @@ actor CodexAppServerSessionRuntime {
         accountTokenUsageRefreshTask?.cancel()
         accountTokenUsageRefreshTask = nil
         cancelAllTurnInterruptRecoveryTasks()
+        cancelAllTurnStartedWaiters()
         guard let activeConnection = connection else {
             notificationPumpTask?.cancel()
             notificationPumpTask = nil
@@ -1014,7 +1023,7 @@ actor CodexAppServerSessionRuntime {
             return
         }
         let spec = CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).turnInterrupt(threadID: id, turnID: activeTurnID)
-        _ = try await sendRecoveringFromStaleInitialization(spec)
+        _ = try await sendTurnInterruptAwaitingTurnStart(spec, sessionID: id, turnID: activeTurnID)
         _ = withUpdatedSession(id) { item in
             item.status = "closed"
             item.activeTurnID = nil
@@ -3053,7 +3062,9 @@ actor CodexAppServerSessionRuntime {
             throw CodexAppServerSessionRuntimeError.missingActiveTurn(sessionID)
         }
         let spec = CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).turnInterrupt(threadID: sessionID, turnID: turnID)
-        _ = try await sendRecoveringFromStaleInitialization(spec)
+        guard try await sendTurnInterruptAwaitingTurnStart(spec, sessionID: sessionID, turnID: turnID) else {
+            return
+        }
         scheduleTurnInterruptRecovery(sessionID: sessionID, turnID: turnID)
     }
 
@@ -3646,6 +3657,7 @@ actor CodexAppServerSessionRuntime {
         updateTerminalInteractionBarrier(from: notification)
         recordLiveSignal(from: notification)
         recordPendingTurnStartBoundary(from: notification)
+        recordTurnStartedSignal(from: notification)
         invalidateThreadResumeBinding(from: notification)
         if runtimeProvider == "claude",
            notification.method == "turn/completed" {

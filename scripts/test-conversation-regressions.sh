@@ -61,6 +61,8 @@ echo "==> iOS conversation regressions"
 # - ClaudeSlashCommandCatalogTests：Claude 会话 `/` 菜单命令目录的解析、请求与按键缓存。
 # - ConversationDataFlowTests 的精确方法：只保留配对后的会话、流式事件、恢复、
 #   exactly-once、审批/中断、Host 隔离和 fake smoke；其余大集合不无条件进入 PR Gate。
+# - QueuedSessionBackgroundDispatchTests：离开会话后排队消息的后台连接，覆盖重连退避与停止、
+#   错误只归属原会话和各 Runtime 的离开监听。
 # - FileAttachmentModelsTests：文件上传、capability 状态矩阵、内部上下文编解码和旧服务端兼容。
 # - ConversationTimelineProviderPresentationTests：Codex/Claude 默认与详细记录投影、锚点和全文入口。
 # - ConversationScrollStabilityTests：首屏可读交接、手势取消、阅读锚点和显式回到底部。
@@ -78,6 +80,8 @@ echo "==> iOS conversation regressions"
 # - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
 # - RuntimeRouteRetentionTests：回前台重建 bundle 后会话仍走所属 Runtime，重新授权不为别的 Runtime 翻列表（#784）。
 # - ThreadGoalCapabilityTests：目标任务按通道声明的 thread/goal/* 能力使用，Claude 不发也不显示（#791）。
+# - CodexTurnInterruptBeforeStartTests：turn/start 响应后、turn/started 前的停止等回合开始后重发，
+#   不把这段窗口里的 no active turn 当成已停止（#808）。
 # - NotificationTitleCacheTests、NotificationContentRewriterTests：会话标题的 App Group 本地缓存，
 #   以及通知扩展只用该缓存在设备上改写锁屏文案、缓存缺失时退回通用文案。
 # - RuntimeCatalogRefreshTests：Runtime 探测失败不撤下可用通道、选择器重探，以及模型目录缺席 Runtime 的补齐（#777/#778）。
@@ -198,6 +202,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testNonStaleInterruptRuntimeFailureKeepsActiveTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleStopRealAPIClientsCloseRuntimeWithoutReleasingNextTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleStopRealAPIClientDoesNotCloseSupersedingTurn \
+  -only-testing:MimiRemoteTests/CodexTurnInterruptBeforeStartTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTerminalStreamStoreSeparatesSameSessionAcrossHostScopes \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testConversationStoreScopesSameSessionAndDelayedDeltaByProfile \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testWebSocketFailureAutoReconnectsWithLatestReplayWatermark \
@@ -210,6 +215,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRunningQueuedDeliverySendsOneMessageAfterEachCompletedTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRunningQueueDoesNotDispatchMerelyBecauseWebSocketReconnected \
   -only-testing:MimiRemoteTests/QueuedTurnActiveTurnGapTests \
+  -only-testing:MimiRemoteTests/QueuedSessionBackgroundDispatchTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testFailedRunningMessageRetryReusesClientMessageID \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRunningSendFailureNoRolloutFoundMarksLocalEchoFailedAndRetainsRetryPayload \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testApprovalDecisionSendsThroughCurrentWebSocket \
