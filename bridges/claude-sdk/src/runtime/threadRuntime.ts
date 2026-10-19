@@ -11,14 +11,17 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
+import { runsAsClaudeCommand } from "../claude/skillCommand.ts";
+import { claudeConfigDir } from "../claude/transcripts.ts";
 import { RpcError } from "../rpc/frames.ts";
 import { serverRequestFor } from "./approvals.ts";
 import { InputQueue } from "./inputQueue.ts";
 import { LiveTurn, type TurnUsage } from "./liveTurn.ts";
 import { rateLimitSnapshot } from "./rateLimits.ts";
-import { sandboxOptions } from "./sandboxPolicy.ts";
+import { createSkillPlugin, type SkillPlugin } from "../claude/skillPlugin.ts";
+import { type ExecutionPolicy, sandboxOptions } from "./sandboxPolicy.ts";
 import type { RunSettings } from "./settings.ts";
-import { toClaudeContent } from "./userInput.ts";
+import { qualifySkillCommand, type SkillCheck, toClaudeContent } from "./userInput.ts";
 import { errorText, logEnabled, logger } from "../util/logging.ts";
 
 export interface RuntimeHost {
@@ -106,6 +109,8 @@ export class ThreadRuntime {
   private pid: number | undefined;
   private queryStartedAt = 0;
   private settings: RunSettings;
+  /** 当前受限进程加载的技能插件；进程退出后删除。 */
+  private skillPlugin: SkillPlugin | undefined;
 
   constructor(
     readonly threadId: string,
@@ -184,7 +189,8 @@ export class ThreadRuntime {
         retryable: false,
       });
     }
-    const content = toClaudeContent(request.input);
+    const promoted = new Set<string>();
+    const content = toClaudeContent(request.input, this.skillCheck(promoted));
     // 检查与预占之间没有 await：第一个异步操作之前就占住，后来的 turn/start 看到的是 active_turn。
     const turnId = randomUUID();
     this.reserved = turnId;
@@ -212,6 +218,8 @@ export class ThreadRuntime {
         retryable: true,
       });
     }
+    // 进程可能刚按新的执行边界重启，按它的档位与实际加载的技能改写命令。
+    const message = this.commandFor(content, promoted);
     const turn = new LiveTurn(turnId, this.threadId, this.emit);
     this.current = turn;
     this.commands.set(turnId, turn);
@@ -220,7 +228,7 @@ export class ThreadRuntime {
     turn.begin();
     turn.userMessage(turnId, request.clientUserMessageId, request.input);
     // 用户消息的 uuid 取 turn ID：transcript 里这条记录就是历史 turn 的锚点，实时与历史 ID 一致。
-    this.input!.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid: turnId as UUID });
+    this.input!.push({ type: "user", message: { role: "user", content: message }, parent_tool_use_id: null, uuid: turnId as UUID });
     return turn.snapshot();
   }
 
@@ -237,7 +245,8 @@ export class ThreadRuntime {
         activeTurnId: turn.id,
       });
     }
-    const content = toClaudeContent(input);
+    const promoted = new Set<string>();
+    const content = this.commandFor(toClaudeContent(input, this.skillCheck(promoted)), promoted);
     const id = randomUUID();
     logger.debug("turn.steer", { thread: this.threadId, turn: turn.id, message: id });
     turn.userMessage(id, clientUserMessageId, input);
@@ -251,6 +260,28 @@ export class ThreadRuntime {
       origin: { kind: "human" },
     });
     return { turnId: turn.id };
+  }
+
+  /**
+   * 技能附件能否写成开头的 `/名称`。受限档位不加载用户与项目设置，这些技能改经合成插件加载，查找范围与
+   * 优先顺序和完全访问档相同（见 claude/skillPlugin），所以两档用同一条规则；promoted 记下提前的技能名。
+   */
+  private skillCheck(promoted: Set<string>): SkillCheck {
+    const configDir = claudeConfigDir();
+    return (skill) => {
+      const runs = runsAsClaudeCommand(skill, this.cwd, configDir);
+      if (runs) promoted.add(skill.name);
+      return runs;
+    };
+  }
+
+  /**
+   * 受限档位的技能在 CLI 里登记为 `mimi:名称`，开头的 `/名称` 改写成带前缀的形式。提前的技能即使插件没能
+   * 生成也带前缀：CLI 找不到时按原文交给模型（实测），不会落到同名的内置命令或自带技能上。
+   */
+  private commandFor(content: ReturnType<typeof toClaudeContent>, promoted: ReadonlySet<string>): ReturnType<typeof toClaudeContent> {
+    if (this.settings.executionPolicy.type === "dangerFullAccess") return content;
+    return qualifySkillCommand(content, new Set([...promoted, ...(this.skillPlugin?.names ?? [])]));
   }
 
   async interrupt(turnId: string): Promise<void> {
@@ -309,7 +340,14 @@ export class ThreadRuntime {
   }
 
   private async startQuery(settings: RunSettings): Promise<void> {
-    const policyOptions = await sandboxOptions(settings.executionPolicy, this.cwd);
+    const skillPlugin = await this.skillPluginFor(settings.executionPolicy);
+    let policyOptions: Partial<Options>;
+    try {
+      policyOptions = await sandboxOptions(settings.executionPolicy, this.cwd, process.platform, skillPlugin?.path);
+    } catch (error) {
+      await skillPlugin?.dispose().catch(() => {});
+      throw error;
+    }
     const input = new InputQueue();
     const options: Options = {
       ...policyOptions,
@@ -338,6 +376,7 @@ export class ThreadRuntime {
     const query = (this.host.startQuery ?? sdkQuery)({ prompt: input, options });
     this.query = query;
     this.input = input;
+    this.skillPlugin = skillPlugin;
     this.queryStartedAt = Date.now();
     this.applied = { ...settings };
     this.transcriptExists = true;
@@ -353,10 +392,24 @@ export class ThreadRuntime {
         }
       })
       .catch(() => {});
-    this.pump = this.runPump(query);
+    this.pump = this.runPump(query, skillPlugin);
   }
 
-  private async runPump(query: Query): Promise<void> {
+  /**
+   * 受限档位不加载设置来源，用户与项目技能改经合成插件加载（#775）。生成失败只是少了技能，
+   * 不影响执行边界，记日志后照常启动。
+   */
+  private async skillPluginFor(policy: ExecutionPolicy): Promise<SkillPlugin | undefined> {
+    if (policy.type === "dangerFullAccess") return undefined;
+    try {
+      return await createSkillPlugin(this.cwd, claudeConfigDir());
+    } catch (error) {
+      logger.warn("claude.skills_unavailable", { thread: this.threadId, error: errorText(error) });
+      return undefined;
+    }
+  }
+
+  private async runPump(query: Query, skillPlugin: SkillPlugin | undefined): Promise<void> {
     try {
       for await (const message of query) this.onMessage(message);
     } catch (error) {
@@ -381,6 +434,9 @@ export class ThreadRuntime {
         // 退出前 Claude 可能已经写好了标题，同样要推给订阅者。
         if (turns.length) this.host.turnFinished(this.threadId);
       }
+      // 进程已退出，插件目录不再被读取。
+      if (this.skillPlugin === skillPlugin) this.skillPlugin = undefined;
+      await skillPlugin?.dispose().catch(() => {});
     }
   }
 
