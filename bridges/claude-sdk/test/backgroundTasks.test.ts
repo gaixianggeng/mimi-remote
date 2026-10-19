@@ -1,5 +1,5 @@
 // 后台任务与空闲关闭（#796）：后台任务属于 Claude 进程，进程一关任务就随之结束、续写也不会发生。
-// 用脚本化的 Query 控制 background_tasks_changed 与续写的到达顺序，空闲时限压到几十毫秒。
+// 用脚本化的 Query 控制 background_tasks_changed 与续写的到达顺序，空闲时限压到几百毫秒。
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -11,7 +11,8 @@ import { configureLogging } from "../src/util/logging.ts";
 import { ScriptedQuery } from "./support/scripted-query.ts";
 
 const sandbox = realpathSync(mkdtempSync(path.join(os.tmpdir(), "mimi-adapter-background-")));
-const IDLE_CLOSE_MS = 100;
+// 留出余量：Windows 计时器精度约 15 ms，settle() 在那里接近 80 ms。
+const IDLE_CLOSE_MS = 250;
 
 let app: App;
 let script: ScriptedQuery;
@@ -58,7 +59,7 @@ async function settle() {
 }
 
 /** 等过空闲时限：到点的关闭也要来得及走完。 */
-const pastIdleClose = () => Bun.sleep(IDLE_CLOSE_MS * 3);
+const pastIdleClose = () => Bun.sleep(IDLE_CLOSE_MS * 2.5);
 
 const text = (value: string) => [{ type: "text", text: value, text_elements: [] }];
 
