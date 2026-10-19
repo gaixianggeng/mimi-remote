@@ -203,6 +203,20 @@ struct WorkbenchNavigationState: Equatable {
         usesCompactNavigation: Bool,
         selectedSessionID: SessionID?
     ) -> WorkbenchNavigationEffect? {
+        let effect = apply(
+            event,
+            usesCompactNavigation: usesCompactNavigation,
+            selectedSessionID: selectedSessionID
+        )
+        discardCompactPathsDetachedFromRoute()
+        return effect
+    }
+
+    private mutating func apply(
+        _ event: WorkbenchNavigationEvent,
+        usesCompactNavigation: Bool,
+        selectedSessionID: SessionID?
+    ) -> WorkbenchNavigationEffect? {
         switch event {
         case .open(let destination, let requestedSource):
             return open(
@@ -332,7 +346,7 @@ struct WorkbenchNavigationState: Equatable {
         case .compactTabChanged(let tab):
             compactSelectedTab = tab
             guard !tab.isGlobalSettings else {
-                // “我的”和“设备”是全局入口，切入时保留当前会话/工作区路由和两个 Tab 的历史栈。
+                // “我的”和“设备”是全局入口，切入时保留当前路由及其所在 Tab 的历史栈。
                 selection = tab.destination
                 return nil
             }
@@ -361,6 +375,26 @@ struct WorkbenchNavigationState: Equatable {
                 pendingSessionSelectionID = nil
             }
             return nil
+        }
+    }
+
+    /// 详情页会隐藏 Tab 栏，用户不可能把详情“留”在另一个 Tab 里；那里的残留栈只来自通知、
+    /// 旋转后的侧栏选择等程序化跳转。下次点那个 Tab 若按残留栈恢复，就会打开一个早已离开的
+    /// 旧会话（#787）。所以只保留路由当前指向的那条栈：路由指向列表或另一个 Tab 时清空。
+    private mutating func discardCompactPathsDetachedFromRoute() {
+        let routeDetail: (sessionID: SessionID, source: WorkbenchRootPage)? = switch route {
+        case .session(let id, let source): (id, source)
+        case .sessions, .workspaces: nil
+        }
+        func isAttached(_ path: [AppDestination], to page: WorkbenchRootPage) -> Bool {
+            guard let routeDetail, routeDetail.source == page else { return false }
+            return Self.detailSessionID(in: path) == routeDetail.sessionID
+        }
+        if !compactSessionPath.isEmpty, !isAttached(compactSessionPath, to: .sessions) {
+            compactSessionPath = []
+        }
+        if !compactWorkspacePath.isEmpty, !isAttached(compactWorkspacePath, to: .workspaces) {
+            compactWorkspacePath = []
         }
     }
 
@@ -573,6 +607,18 @@ struct WorkbenchNavigationState: Equatable {
             updatedPath.append(destination)
         }
         return updatedPath
+    }
+
+    /// 栈顶详情所属的会话；子 Agent 页属于它的父会话。
+    private static func detailSessionID(in path: [AppDestination]) -> SessionID? {
+        switch path.last {
+        case .session(let id):
+            return id
+        case .subagent(let parentID, _):
+            return parentID
+        case .sessions, .workspaces, .me, .devices, nil:
+            return nil
+        }
     }
 
     private static func isSessionDetailDestination(_ destination: AppDestination) -> Bool {
