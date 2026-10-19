@@ -5,7 +5,7 @@ import type { ThreadItem } from "../protocol/codex/v2/ThreadItem.ts";
 import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import type { TurnStatus } from "../protocol/codex/v2/TurnStatus.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
-import { ItemIdAllocator } from "./itemIds.ts";
+import { ItemIdAllocator, notificationTurnId } from "./itemIds.ts";
 import { completeToolItem, isHiddenTool, toolUseItem, unfinishedToolItem, type ToolOutput } from "./tools.ts";
 
 /** SDK SessionMessage 中本模块用到的字段。 */
@@ -16,6 +16,8 @@ export interface HistoryMessage {
   timestamp?: string;
   isCompactSummary?: boolean;
   isQueuedCommand?: boolean;
+  /** 用户记录的来源；后台任务完成通知带 `{ kind: "task-notification", runId }`。 */
+  origin?: unknown;
 }
 
 type Block = Record<string, unknown> & { type?: unknown };
@@ -23,8 +25,9 @@ type Block = Record<string, unknown> & { type?: unknown };
 const INTERRUPT_MARKER = /^\[Request interrupted by user[^\]]*\]$/;
 const COMMAND_NAME = /<command-name>([\s\S]*?)<\/command-name>/;
 const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
+const TASK_NOTIFICATION = "<task-notification>";
 // CLI 不把这些当作用户提问显示：本地命令输出、caveat、后台任务完成通知。
-const INTERNAL_PREFIXES = ["<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>", "<task-notification>"];
+const INTERNAL_PREFIXES = ["<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>", TASK_NOTIFICATION];
 
 /**
  * 用户记录是否只是内部记录（本地命令输出、caveat、后台任务通知），CLI 不把它显示为提问。
@@ -61,12 +64,13 @@ function imageUrl(block: Block): string | undefined {
   return typeof source.url === "string" ? source.url : undefined;
 }
 
-type Prompt = { kind: "prompt"; input: UserInput[] } | { kind: "interrupt" } | { kind: "internal" };
+type Prompt = { kind: "prompt"; input: UserInput[] } | { kind: "interrupt" } | { kind: "notification" } | { kind: "internal" };
 
-/** 判断一条用户消息在 CLI 里显示成什么：真实提问、中断标记，或不显示的内部记录。 */
+/** 判断一条用户消息在 CLI 里显示成什么：真实提问、中断标记、后台任务完成通知，或不显示的内部记录。 */
 function classifyUserText(text: string): Prompt | undefined {
   const trimmed = text.trim();
   if (INTERRUPT_MARKER.test(trimmed)) return { kind: "interrupt" };
+  if (trimmed.startsWith(TASK_NOTIFICATION)) return { kind: "notification" };
   if (INTERNAL_PREFIXES.some((prefix) => trimmed.startsWith(prefix))) return { kind: "internal" };
   const command = COMMAND_NAME.exec(trimmed);
   if (command) {
@@ -114,6 +118,14 @@ function toolOutput(block: Block): ToolOutput {
   return { text: texts.join("\n"), images, isError: block.is_error === true };
 }
 
+/** 通知记录带 run_id 时按共用规则生成回合 ID；旧版 CLI 没有时退回记录自己的 uuid。 */
+function notificationTurnIdOf(message: HistoryMessage, sessionId: string): string {
+  const origin = message.origin as { kind?: unknown; runId?: unknown } | null | undefined;
+  return origin?.kind === "task-notification" && typeof origin.runId === "string" && origin.runId
+    ? notificationTurnId(sessionId, origin.runId)
+    : message.uuid;
+}
+
 interface TurnDraft {
   id: string;
   items: ThreadItem[];
@@ -137,6 +149,8 @@ export function messagesToTurns(messages: readonly HistoryMessage[], options: Tr
   const turns: TurnDraft[] = [];
   const ids = new ItemIdAllocator();
   const toolIndex = new Map<string, { turn: TurnDraft; index: number }>();
+  /** 由后台任务完成通知开出的回合。 */
+  const notificationTurns = new Set<TurnDraft>();
   let current: TurnDraft | undefined;
 
   const open = (id: string, timestamp: string | undefined): TurnDraft => {
@@ -176,6 +190,17 @@ export function messagesToTurns(messages: readonly HistoryMessage[], options: Tr
       const prompt = userPrompt(rest);
       if (prompt.kind === "interrupt") {
         if (current) current.status = "interrupted";
+        continue;
+      }
+      if (prompt.kind === "notification") {
+        // 回合进行中送达的通知被 CLI 并进当前回合（SDK 标为排队消息），实时侧也不另开回合。
+        if (message.isQueuedCommand && current) continue;
+        // 回合之间送达的通知让 Claude 自己接着回复，实时侧为它开一个没有用户消息的回合，ID 规则见
+        // notificationTurnId。几条通知连着送达时只有一段回复，实时那一轮的结果归最后一条通知，回合也归它。
+        const id = notificationTurnIdOf(message, options.sessionId);
+        if (current && notificationTurns.has(current) && current.items.length === 0) current.id = id;
+        else current = open(id, message.timestamp);
+        notificationTurns.add(current);
         continue;
       }
       if (prompt.kind === "internal") continue;

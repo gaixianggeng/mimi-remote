@@ -597,14 +597,26 @@ enum HarnessWireAssistantFrame {
 
 /// durable settlement 的 `outcome.eventType` 取值。
 ///
-/// **这是区分"正常结算"与"用户取消"的唯一依据。** `outcome.kind` 两者都是
-/// `committed`（实测 `run.aborted-by-user` 的 end 帧），拿 kind 判断会把被取消的
-/// 输出当成一条完整正文。
+/// 它只说明这次 attempt **有没有提交持久消息**，不说明消息是否完整。`outcome.kind`
+/// 两者都是 `committed`（实测 `run.aborted-by-user` 的 end 帧），拿 kind 判断会把被取消的
+/// 输出当成一条完整正文；0.2.x 的取消还会提交一条带 `interrupted: true` 的消息，
+/// 见 `HarnessDurableEvent.isInterruptedAssistantMessage`。
 enum HarnessWireSettlement {
-    /// 正常结算的助手消息。
+    /// 提交了持久助手消息。正文可能是被取消前的前缀（0.2.x）。
     static let assistantMessage = "assistant/message"
-    /// 用户取消：持久日志里记的是 attempt，不是 message。
+    /// 没有提交可见消息：0.1.5 的用户取消，或 0.2.x 无可见输出时的取消、失败与重试。
     static let assistantAttempt = "assistant/attempt"
+}
+
+extension HarnessDurableEvent {
+    /// 被用户取消、只含已下发前缀的助手消息（契约 §2.7「取消的两种持久落盘形态」）。
+    ///
+    /// 0.2.x 取消时若已有可见输出，上游把前缀定稿成 `assistant/message` 并标
+    /// `interrupted: true`；结算帧的 `eventType` 与正常完成同形，只有这个字段能区分。
+    /// 按字段判定而不是按版本号：同一安装在无可见输出时仍会落 `assistant/attempt`。
+    var isInterruptedAssistantMessage: Bool {
+        type == HarnessWireSettlement.assistantMessage && data?["interrupted"]?.boolValue == true
+    }
 }
 
 /// assistant-stream 帧。

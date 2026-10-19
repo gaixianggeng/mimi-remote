@@ -30,6 +30,7 @@ struct PushDeviceSummary: Decodable, Equatable {
     let expiresAt: String?
     let needsRefresh: Bool?
     let supportsHolderWaiting: Bool?
+    let supportsDeepSeekMessages: Bool?
 
     enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
@@ -37,6 +38,7 @@ struct PushDeviceSummary: Decodable, Equatable {
         case expiresAt = "expires_at"
         case needsRefresh = "needs_refresh"
         case supportsHolderWaiting = "supports_holder_waiting"
+        case supportsDeepSeekMessages = "supports_deepseek_messages"
     }
 }
 
@@ -45,12 +47,14 @@ struct PushDeviceRegistrationResponse: Decodable, Equatable {
     let expiresAt: String
     let needsRefresh: Bool
     let supportsHolderWaiting: Bool?
+    let supportsDeepSeekMessages: Bool?
 
     enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
         case expiresAt = "expires_at"
         case needsRefresh = "needs_refresh"
         case supportsHolderWaiting = "supports_holder_waiting"
+        case supportsDeepSeekMessages = "supports_deepseek_messages"
     }
 }
 

@@ -17,8 +17,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tailcattest"
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
 	"tailscale.com/derp/derpserver"
+	"tailscale.com/net/stun/stuntest"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
@@ -26,7 +28,7 @@ import (
 
 func TestPairingHostReconnectsThroughStrictDERPAfterAdmission(t *testing.T) {
 	// 关闭 UDP，避免同机 Tailcat 两端直连后让健康检查产生假阳性。
-	t.Setenv("TS_DEBUG_ALWAYS_USE_DERP", "1")
+	tailcattest.ForceDERP(t)
 
 	admission := newAdmissionFixture(t)
 	derp, region := startStrictDERP(t, admission.server.URL)
@@ -129,7 +131,7 @@ func TestPairingHostReconnectsThroughStrictDERPAfterAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diagnostic.Path != "derp" {
+	if diagnostic.Path != "derp" || diagnostic.DERPRegionCode != tailcattest.AddressRegionCode(t, pairAddress) {
 		t.Fatalf("链路没有经过指定 DERP：%+v", diagnostic)
 	}
 
@@ -246,6 +248,11 @@ func startForwarderUntil(t *testing.T, timeout time.Duration, config tunnel.Forw
 
 func startStrictDERP(t *testing.T, verifyURL string) (*derpserver.Server, *tailcfg.DERPRegion) {
 	t.Helper()
+	// 区域必须带 STUN：没有 STUN 时 netcheck 报告 IPv4 无法发送并触发 Rebind，
+	// 而 magicsock 强制 DERP 的分支换上新的阻塞连接时不关闭旧连接，之后引擎
+	// Close 会一直等待旧连接上的接收协程。这条分支只在强制 DERP 调试开关下出现。
+	stunAddr, stunCleanup := stuntest.Serve(t)
+	t.Cleanup(stunCleanup)
 	server := derpserver.New(key.NewNode(), logger.Discard)
 	server.SetVerifyClientURL(verifyURL)
 	server.SetVerifyClientURLFailOpen(false)
@@ -268,7 +275,7 @@ func startStrictDERP(t *testing.T, verifyURL string) (*derpserver.Server, *tailc
 			HostName:         "127.0.0.1",
 			IPv4:             "127.0.0.1",
 			IPv6:             "none",
-			STUNPort:         -1,
+			STUNPort:         stunAddr.Port,
 			DERPPort:         port,
 			InsecureForTests: true,
 		}},

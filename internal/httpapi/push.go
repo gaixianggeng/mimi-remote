@@ -106,6 +106,8 @@ type pushDeviceRegisterRequest struct {
 	ExpiresAt             string `json:"expires_at"`
 	Platform              string `json:"platform,omitempty"`
 	SupportsHolderWaiting bool   `json:"supports_holder_waiting,omitempty"`
+	// 能解码 runtime=deepseek 回复提醒的 App 才声明；旧版 App 不会收到 DeepSeek 推送。
+	SupportsDeepSeekMessages bool `json:"supports_deepseek_messages,omitempty"`
 }
 
 func (r *Router) pushDeviceHandler(w http.ResponseWriter, req *http.Request) {
@@ -135,21 +137,23 @@ func (r *Router) pushRegisterDevice(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	device, err := r.push.Devices().Register(pushbridge.Device{
-		ID:                    strings.TrimSpace(body.DeviceID),
-		Ticket:                strings.TrimSpace(body.Ticket),
-		Platform:              strings.TrimSpace(body.Platform),
-		SupportsHolderWaiting: body.SupportsHolderWaiting,
-		ExpiresAt:             expiry,
+		ID:                       strings.TrimSpace(body.DeviceID),
+		Ticket:                   strings.TrimSpace(body.Ticket),
+		Platform:                 strings.TrimSpace(body.Platform),
+		SupportsHolderWaiting:    body.SupportsHolderWaiting,
+		SupportsDeepSeekMessages: body.SupportsDeepSeekMessages,
+		ExpiresAt:                expiry,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"device_id":               device.ID,
-		"expires_at":              device.ExpiresAt.UTC().Format(time.RFC3339),
-		"needs_refresh":           device.NeedsRefresh(time.Now()),
-		"supports_holder_waiting": device.SupportsHolderWaiting,
+		"device_id":                  device.ID,
+		"expires_at":                 device.ExpiresAt.UTC().Format(time.RFC3339),
+		"needs_refresh":              device.NeedsRefresh(time.Now()),
+		"supports_holder_waiting":    device.SupportsHolderWaiting,
+		"supports_deepseek_messages": device.SupportsDeepSeekMessages,
 	})
 }
 
@@ -185,11 +189,12 @@ func (r *Router) pushStatusHandler(w http.ResponseWriter, req *http.Request) {
 	devices := []map[string]any{}
 	for _, device := range r.push.Devices().Active() {
 		devices = append(devices, map[string]any{
-			"device_id":               device.ID,
-			"platform":                device.Platform,
-			"expires_at":              device.ExpiresAt.UTC().Format(time.RFC3339),
-			"needs_refresh":           device.NeedsRefresh(time.Now()),
-			"supports_holder_waiting": device.SupportsHolderWaiting,
+			"device_id":                  device.ID,
+			"platform":                   device.Platform,
+			"expires_at":                 device.ExpiresAt.UTC().Format(time.RFC3339),
+			"needs_refresh":              device.NeedsRefresh(time.Now()),
+			"supports_holder_waiting":    device.SupportsHolderWaiting,
+			"supports_deepseek_messages": device.SupportsDeepSeekMessages,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -308,6 +313,11 @@ func (r *Router) restoreGatewayThreadAuthorization(record pushbridge.LocateRecor
 	scope, ok := r.gatewayScopeForPath(cwd)
 	if !ok || strings.TrimSpace(scope.id) == "" {
 		return false
+	}
+	if record.Runtime == pushbridge.RuntimeDeepSeek {
+		// DeepSeek 不经 app-server 网关：原生中继每次请求都按 Harness 会话摘要重新授权，
+		// 没有可补种的线程缓存。这里只回答目录是否仍在授权范围内。
+		return true
 	}
 	r.allowGatewayThread(appServerGatewayAllowedThread{
 		id:        threadID,

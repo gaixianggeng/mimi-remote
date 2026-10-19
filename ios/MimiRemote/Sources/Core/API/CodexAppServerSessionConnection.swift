@@ -298,7 +298,7 @@ extension CodexAppServerSessionRuntime {
         var cursor: String?
         for _ in 0..<Self.threadReauthorizationMaxPages {
             let request = builder.controlledGlobalThreadList(limit: limit, cursor: cursor)
-            guard let object = (try? await sendRecoveringFromStaleInitialization(request, timeout: longRunningRequestTimeout))??.objectValue else {
+            guard let object = (try? await sendControlledGlobalThreadList(request, cursor: cursor))??.objectValue else {
                 break
             }
             seen.formUnion((object["data"]?.arrayValue ?? []).compactMap { $0.objectValue?["id"]?.stringValue })
@@ -307,5 +307,60 @@ extension CodexAppServerSessionRuntime {
             cursor = next
         }
         return seen
+    }
+}
+
+/// 受控全局发现 cursor 的签发连接（#792）。弱引用：连接退役释放后，cursor 自然判为失效。
+struct CodexAppServerGlobalListCursorIssuer {
+    weak var connection: CodexAppServerConnection?
+}
+
+/// 受控全局发现的 cursor 已不属于当前网关连接（#792）。调用方应从首页重走，不当作普通失败。
+struct ControlledGlobalListCursorExpiredError: Error {}
+
+extension CodexAppServerSessionRuntime {
+    static let globalListCursorIssuerLimit = 64
+
+    /// 无 cwd 的 thread/list 续页只能发给签发 cursor 的那条网关连接：gateway 按连接保存 cursor 表，
+    /// 换连接必然被拒（#792）。签发连接已退役时不为续页新建连接，换连接重试也不重放旧 cursor。
+    func sendControlledGlobalThreadList(
+        _ request: CodexAppServerRequestSpec,
+        cursor: String?
+    ) async throws -> CodexAppServerJSONValue? {
+        let issuer = cursor.flatMap { globalListCursorIssuers[$0] }
+        if let issuer, issuer.connection.map({ $0 !== connection }) ?? true {
+            throw ControlledGlobalListCursorExpiredError()
+        }
+        var servingConnection: CodexAppServerConnection?
+        do {
+            let result = try await sendRecoveringFromStaleInitialization(
+                request,
+                timeout: longRunningRequestTimeout
+            ) { candidate in
+                if let issuer, issuer.connection !== candidate {
+                    throw ControlledGlobalListCursorExpiredError()
+                }
+                servingConnection = candidate
+            }
+            rememberGlobalListCursor(result?.objectValue?["nextCursor"]?.stringValue, issuedBy: servingConnection)
+            return result
+        } catch let error where Self.isGatewayGlobalListCursorRejection(error) {
+            // gateway 的 cursor 表整体换代时同样拒绝；对调用方是同一种「从首页重来」。
+            throw ControlledGlobalListCursorExpiredError()
+        }
+    }
+
+    func rememberGlobalListCursor(_ cursor: String?, issuedBy connection: CodexAppServerConnection?) {
+        guard let cursor, !cursor.isEmpty, let connection else { return }
+        if globalListCursorIssuers.count >= Self.globalListCursorIssuerLimit {
+            // 与 gateway 一样整体换代；查不到签发者的 cursor 照常发出，由 gateway 裁决。
+            globalListCursorIssuers.removeAll(keepingCapacity: true)
+        }
+        globalListCursorIssuers[cursor] = CodexAppServerGlobalListCursorIssuer(connection: connection)
+    }
+
+    nonisolated static func isGatewayGlobalListCursorRejection(_ error: Error) -> Bool {
+        guard case CodexAppServerConnectionError.appServer(let appError) = error else { return false }
+        return appError.code == -32080 && appError.message.contains("thread/list.cursor")
     }
 }

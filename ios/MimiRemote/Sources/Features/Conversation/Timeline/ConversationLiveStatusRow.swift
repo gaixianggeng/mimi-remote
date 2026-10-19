@@ -1,14 +1,22 @@
 import SwiftUI
 
-/// 时间线尾部的“进行中”状态行：圆点动画 + `时长 · 当前阶段…`。
+/// 时间线尾部唯一的等待提示行：圆点动画 + 灰字。
+/// 运行中显示 `时长 · 当前阶段…` 或恢复、连接等准备阶段；没有运行状态、只在补齐历史时
+/// 显示「正在加载会话记录」。两种内容共用这一行，切换时不增减行（#782）。
 struct ConversationLiveStatusRow: View {
+    enum Content: Equatable {
+        case live(ConversationLiveStatus)
+        case historyLoading
+    }
+
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
 
     static let accessibilityIdentifier = "conversation.timeline.live-status"
+    static let historyLoadingAccessibilityIdentifier = "conversation.historyLoading"
 
-    let status: ConversationLiveStatus
+    let content: Content
     let layout: ConversationLayout
 
     var body: some View {
@@ -16,15 +24,16 @@ struct ConversationLiveStatusRow: View {
         HStack(spacing: 0) {
             // 文字每秒刷新一次；圆点自己的动画时钟独立运行，互不牵连。
             SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { context in
-                let isWarning = status.isWarning(at: context.date)
+                let isWarning = content.isWarning(at: context.date)
+                let text = content.text(at: context.date)
                 HStack(alignment: .center, spacing: 8) {
                     ConversationLiveStatusGlyph(
                         tint: isWarning ? tokens.warning : tokens.accent,
-                        animates: status.animates && !reduceMotion
+                        animates: content.animates && !reduceMotion
                     )
                     .frame(width: 16, height: 18)
 
-                    Text(status.text(at: context.date, includesTokens: false))
+                    Text(text)
                         .font(themeStore.uiFont(size: 14, weight: .medium))
                         .monospacedDigit()
                         .foregroundStyle(isWarning ? tokens.warning : tokens.secondaryText)
@@ -33,7 +42,7 @@ struct ConversationLiveStatusRow: View {
                         .contentTransition(.identity)
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(status.text(at: context.date, includesTokens: false))
+                .accessibilityLabel(text)
             }
             .frame(minHeight: 32, alignment: .leading)
             .frame(maxWidth: layout.assistantBubbleMaxWidth, alignment: .leading)
@@ -42,7 +51,45 @@ struct ConversationLiveStatusRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 2)
-        .accessibilityIdentifier(Self.accessibilityIdentifier)
+        .accessibilityIdentifier(content.accessibilityIdentifier)
+    }
+}
+
+extension ConversationLiveStatusRow.Content {
+    var animates: Bool {
+        switch self {
+        case .live(let status):
+            return status.animates
+        case .historyLoading:
+            return true
+        }
+    }
+
+    func isWarning(at now: Date) -> Bool {
+        switch self {
+        case .live(let status):
+            return status.isWarning(at: now)
+        case .historyLoading:
+            return false
+        }
+    }
+
+    func text(at now: Date) -> String {
+        switch self {
+        case .live(let status):
+            return status.text(at: now, includesTokens: false)
+        case .historyLoading:
+            return L10n.text("ui.loading_session_records")
+        }
+    }
+
+    var accessibilityIdentifier: String {
+        switch self {
+        case .live:
+            return ConversationLiveStatusRow.accessibilityIdentifier
+        case .historyLoading:
+            return ConversationLiveStatusRow.historyLoadingAccessibilityIdentifier
+        }
     }
 }
 

@@ -589,29 +589,6 @@ final class ConversationDataFlowTests: XCTestCase {
         )
     }
 
-    func testHistoryRestorationDoesNotShowTwoWaitingIndicators() {
-        XCTAssertFalse(
-            ConversationTimelineView.shouldShowInlineHistoryLoading(
-                timelineItemsAreEmpty: false,
-                isHistoryLoading: true,
-                isLoadingEarlierHistory: false,
-                hasHistorySavingsNotice: false,
-                liveStatusReadiness: .loadingHistory
-            ),
-            "实时状态已显示恢复历史时，不再增加同一请求的加载提示"
-        )
-        XCTAssertTrue(
-            ConversationTimelineView.shouldShowInlineHistoryLoading(
-                timelineItemsAreEmpty: false,
-                isHistoryLoading: true,
-                isLoadingEarlierHistory: false,
-                hasHistorySavingsNotice: false,
-                liveStatusReadiness: .live
-            ),
-            "已连接的运行状态不能遮掉独立的历史刷新反馈"
-        )
-    }
-
     func testConversationTimelineBatchedRuntimeUpdatesStayDetachedWhileReadingHistory() {
         let scope = ScopedSessionID(profileID: "timeline-controller", sessionID: "batched-updates")
         let controller = makeTimelineControllerReadingHistory(scope: scope)

@@ -233,10 +233,19 @@ func (r *Router) harnessNativeForwardWrite(
 		writeHarnessNativeFailure(w, authErr)
 		return
 	}
-	r.harnessNativeCallWrite(w, ctx, upstream, rpcID, method, parsed.Forward)
+	if method != harnessNativeMethodSessionPrompt {
+		r.harnessNativeCallWrite(w, ctx, upstream, rpcID, method, parsed.Forward)
+		return
+	}
+	// 回复提醒的登记必须早于提交：上游可能在 HTTP 响应之前就写下这次的 user/message。
+	finish := r.beginHarnessTurnPush(parsed.SessionID, parsed.PromptRequestID)
+	err := r.harnessNativeCallWrite(w, ctx, upstream, rpcID, method, parsed.Forward)
+	// 只有上游明确拒绝才撤回登记；传输失败时提交可能已经落地，仍要等它的回合结束。
+	var remoteErr *harnessclient.RemoteError
+	finish(!errors.As(err, &remoteErr))
 }
 
-// harnessNativeCallWrite 执行转发并把结果原样下发。
+// harnessNativeCallWrite 执行转发并把结果原样下发，返回上游错误（成功为 nil）。
 //
 // 写方法的**业务失败**（HTTP 200 + result.ok=false）与只读同样处理：如实回给客户端，
 // 让它自己决定是否降级。传输层失败才是 502——那种情况连"上游说了什么"都拿不到。
@@ -247,13 +256,14 @@ func (r *Router) harnessNativeCallWrite(
 	rpcID string,
 	method string,
 	forward any,
-) {
+) error {
 	raw, err := upstream.CallRaw(ctx, method, forward)
 	if err != nil {
 		writeHarnessNativeUpstreamFailure(w, rpcID, err)
-		return
+		return err
 	}
 	writeHarnessNativeResult(w, rpcID, raw)
+	return nil
 }
 
 // harnessNativeCreateAllowed 判断 create 的目标目录是否落在本次声明的授权范围内。

@@ -22,7 +22,7 @@ struct NotificationTitleCache: Codable, Equatable {
 
         let title: String
         let project: String
-        /// "codex" / "claude"。扩展改写时以推送里的 runtime 为准，这里仅作兜底。
+        /// "codex" / "claude" / "deepseek"。扩展改写时以推送里的 runtime 为准，这里仅作兜底。
         let runtime: String
         /// 连接档案的显示名，只在用户有多个档案时进入副标题。
         let hostName: String

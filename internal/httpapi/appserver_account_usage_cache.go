@@ -82,15 +82,16 @@ func (p *appServerGatewayPolicy) cachedAccountTokenUsageResponse(requestPayload 
 	return payload, true
 }
 
-func (p *appServerGatewayPolicy) rememberAccountTokenUsageResponse(frame *appServerGatewayFrame, now time.Time) {
+// rememberAccountTokenUsageResponse 的 requestMethod 来自在途请求表：调用方已经按
+// 响应 id 认领过对应请求。
+func (p *appServerGatewayPolicy) rememberAccountTokenUsageResponse(frame *appServerGatewayFrame, requestMethod string, now time.Time) {
 	if p == nil ||
 		normalizeAppServerRuntimeID(p.runtimeID) != "codex" ||
 		frame == nil ||
 		!gatewayFrameIsResponse(frame) {
 		return
 	}
-	pending, ok := p.consumePendingClientRequest(frame.ID)
-	if !ok || pending.method != "account/usage/read" || len(frame.Error) > 0 || len(frame.Result) == 0 {
+	if requestMethod != "account/usage/read" || len(frame.Error) > 0 || len(frame.Result) == 0 {
 		return
 	}
 	p.router.storeAccountTokenUsageResult(frame.Result, now)

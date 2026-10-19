@@ -96,12 +96,15 @@ func TestAppServerGatewayKeepsForkPendingUntilResponseOrClose(t *testing.T) {
 	}
 	policy.mu.Lock()
 	policy.prunePendingThreadsLocked(time.Now())
-	_, keptFork := policy.pendingThreads["fork"]
-	_, keptList := policy.pendingThreads["list"]
+	fork, keptFork := policy.pendingThreads["fork"]
+	list, keptList := policy.pendingThreads["list"]
 	policy.mu.Unlock()
 
-	if !keptFork || keptList {
-		t.Fatalf("fork 应保留到响应或连接关闭，普通列表应按 30 秒清理：fork=%t list=%t", keptFork, keptList)
+	if !keptFork || fork.expired {
+		t.Fatalf("fork 应原样保留到响应或连接关闭：kept=%t expired=%t", keptFork, fork.expired)
+	}
+	if !keptList || !list.expired {
+		t.Fatalf("普通列表超过等待时长后应转为迟到标记，保留到响应或关闭：kept=%t expired=%t", keptList, list.expired)
 	}
 
 	policy.close()

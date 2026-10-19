@@ -631,6 +631,7 @@ struct AgentAPIClient {
             let expiresAt: String
             let platform: String
             let supportsHolderWaiting = true
+            let supportsDeepSeekMessages = true
 
             enum CodingKeys: String, CodingKey {
                 case deviceID = "device_id"
@@ -638,6 +639,7 @@ struct AgentAPIClient {
                 case expiresAt = "expires_at"
                 case platform
                 case supportsHolderWaiting = "supports_holder_waiting"
+                case supportsDeepSeekMessages = "supports_deepseek_messages"
             }
         }
         let formatter = ISO8601DateFormatter()
