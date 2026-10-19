@@ -243,6 +243,71 @@ final class QueuedSessionBackgroundDispatchTests: XCTestCase {
         XCTAssertFalse(store.canSendInSelectedSession)
     }
 
+    // MARK: - #804 离开会话后的排队监听
+
+    func testLeavingRunningSessionKeepsQueuedMonitoringForEveryRuntime() async throws {
+        let runtimes: [(source: String, provider: String?)] = [("codex", nil), ("claude", "claude")]
+        for runtime in runtimes {
+            for destination in [LeaveDestination.sessionList, .otherSession] {
+                let fixture = try await makeLeftQueueFixture(
+                    suffix: "leave-\(runtime.source)-\(destination)",
+                    source: runtime.source,
+                    runtimeProvider: runtime.provider,
+                    leaveTo: destination
+                )
+                let originalID = fixture.original.id
+                XCTAssertNotNil(
+                    fixture.store.queuedSessionSockets[originalID],
+                    "\(runtime.source) 会话离开到 \(destination) 后仍要有后台排队连接"
+                )
+                guard let background = fixture.log.latest(connectedTo: originalID),
+                      fixture.store.queuedSessionSockets[originalID] != nil else {
+                    continue
+                }
+                background.emitStatus(.connected)
+                background.emitEvent(.turnCompleted(turnMetadata(
+                    sessionID: originalID,
+                    turnID: try XCTUnwrap(fixture.original.activeTurnID)
+                )))
+                try await waitForSentTurnCount(1, socket: background)
+                XCTAssertEqual(background.sentTurns.first?.payload.textPrompt, "后台排队")
+            }
+        }
+    }
+
+    func testLeavingReadOnlySessionDoesNotOpenQueuedMonitoring() async throws {
+        let project = makeProject(id: "proj_bg_queue_read_only")
+        var readOnly = makeSession(
+            id: "sess_bg_queue_read_only", projectID: project.id, title: "只读",
+            status: "running", source: "claude", runtimeProvider: "claude", activeTurnID: "turn-read-only"
+        )
+        readOnly.canAcceptDirectInput = false
+        let other = makeSession(
+            id: "sess_bg_queue_read_only_other", projectID: project.id, title: "另一会话",
+            status: "running", source: "codex", activeTurnID: "turn-read-only-other"
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let log = SocketLog()
+        let store = SessionStore(
+            appStore: appStore, conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [readOnly, other], messagesResult: []) },
+            webSocketFactory: { log.make() }
+        )
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(readOnly)
+        store.queuedRunningTurnsBySessionID[readOnly.id] = [QueuedTurnEntry(
+            sessionID: readOnly.id,
+            payload: CodexAppServerTurnPayload(prompt: "只读残留"),
+            clientMessageID: "client-read-only",
+            intent: .standard
+        )]
+
+        store.returnToSessionList()
+
+        XCTAssertNil(store.queuedSessionSockets[readOnly.id], "只读会话离开时不新增后台连接")
+    }
+
     // MARK: - Fixture
 
     private enum LeaveDestination: CustomStringConvertible {
@@ -268,6 +333,8 @@ final class QueuedSessionBackgroundDispatchTests: XCTestCase {
     /// 在运行中的原会话里排队一条消息，然后离开到列表或另一个运行中的会话；`nil` 表示留在原会话。
     private func makeLeftQueueFixture(
         suffix: String,
+        source: String = "codex",
+        runtimeProvider: String? = nil,
         leaveTo destination: LeaveDestination? = .otherSession,
         reconnectDelay: ((Int) -> UInt64)? = nil,
         reconnectSleep: @escaping (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) },
@@ -276,7 +343,8 @@ final class QueuedSessionBackgroundDispatchTests: XCTestCase {
         let project = makeProject(id: "proj_bg_queue_\(suffix)")
         let original = makeSession(
             id: "sess_bg_queue_original_\(suffix)", projectID: project.id, title: "原会话",
-            status: "running", source: "codex", activeTurnID: "turn-original-\(suffix)"
+            status: "running", source: source, runtimeProvider: runtimeProvider,
+            activeTurnID: "turn-original-\(suffix)"
         )
         let other = makeSession(
             id: "sess_bg_queue_other_\(suffix)", projectID: project.id, title: "另一会话",
