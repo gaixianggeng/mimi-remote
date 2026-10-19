@@ -2,13 +2,16 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -446,11 +449,7 @@ func TestCodexGatewayBrokerReconnectIsNotBlockedByStaleSinkWrite(t *testing.T) {
 	// 旧连接切网失联：服务端对它的写入卡住。泵送随后写这条大帧时会卡在旧 sink 上，
 	// 旧实现要等大帧写窗（最长 75 秒）才放开 broker。
 	firstServerConn.stall()
-	const sentinel = `{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thread-1","turnId":"turn-sentinel"}}`
 	if err := writer.write(brokerLargeDeltaFrame(300 << 10)); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.write(sentinel); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -488,12 +487,14 @@ func TestCodexGatewayBrokerReconnectIsNotBlockedByStaleSinkWrite(t *testing.T) {
 		}
 	}()
 
-	// 接管窗口里泵送读到的帧（这里是 sentinel）必须交给新连接，不能写进已断开的旧连接。
+	// 先等 initialize 应答（说明新连接已接管完成），再让上游推 sentinel：泵送必须已经
+	// 离开旧 sink 的写入，后续帧照常交给新连接。
+	const sentinel = `{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thread-1","turnId":"turn-sentinel"}}`
 	var initElapsed time.Duration
 	approvals := 0
 	sawSentinel := false
 	deadline := time.Now().Add(10 * time.Second)
-	for !sawSentinel || initElapsed == 0 {
+	for !sawSentinel {
 		_ = second.SetReadDeadline(deadline)
 		_, payload, err := second.ReadMessage()
 		if err != nil {
@@ -512,6 +513,9 @@ func TestCodexGatewayBrokerReconnectIsNotBlockedByStaleSinkWrite(t *testing.T) {
 		switch {
 		case string(frame.ID) == `"init-2"` && frame.Method == "":
 			initElapsed = time.Since(start)
+			if err := writer.write(sentinel); err != nil {
+				t.Fatal(err)
+			}
 		case frame.Method == "execCommandApproval":
 			approvals++
 		case frame.Method == "turn/started" && frame.Params.TurnID == "turn-sentinel":
@@ -643,4 +647,155 @@ func TestCodexGatewayBrokerDetachDuringTakeoverKeepsSession(t *testing.T) {
 	if broker.currentSink() != newSink {
 		t.Fatal("新 sink 应成为当前连接")
 	}
+}
+
+// slowCloseConn 让第一次 Close 停在 entered 与 release 之间，后续 Close 直接返回。
+// 用它把较早的接管卡在「已断开旧 sink、还没拿到 clientFrameMu」的窗口里。
+type slowCloseConn struct {
+	net.Conn
+	closes  atomic.Int32
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *slowCloseConn) Close() error {
+	if c.closes.Add(1) == 1 {
+		close(c.entered)
+		<-c.release
+	}
+	return c.Conn.Close()
+}
+
+func slowClosingWebSocket(t *testing.T) (*websocket.Conn, *slowCloseConn) {
+	t.Helper()
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		conn, err := upgrader.Upgrade(w, req, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	slow := &slowCloseConn{entered: make(chan struct{}), release: make(chan struct{})}
+	dialer := websocket.Dialer{NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		slow.Conn = conn
+		return slow, nil
+	}}
+	conn, _, err := dialer.Dial(wsURL(server.URL, "/"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		select {
+		case <-slow.release:
+		default:
+			close(slow.release)
+		}
+		_ = conn.Close()
+	})
+	return conn, slow
+}
+
+func newOrderingTestBroker(t *testing.T) (*codexGatewayBroker, *slowCloseConn) {
+	t.Helper()
+	conn, slow := slowClosingWebSocket(t)
+	broker := &codexGatewayBroker{
+		sink:             &codexGatewaySink{conn: conn, done: make(chan string, 1)},
+		activeTurns:      map[string]struct{}{"thread-1": {}},
+		pending:          map[string][]byte{},
+		pendingDelivered: map[string]*codexGatewaySink{},
+	}
+	return broker, slow
+}
+
+func expectSinkFinished(t *testing.T, sink *codexGatewaySink, want bool, message string) {
+	t.Helper()
+	select {
+	case reason := <-sink.done:
+		if !want {
+			t.Fatalf("%s：不应被结束，reason=%s", message, reason)
+		}
+	default:
+		if want {
+			t.Fatalf("%s：应被结束", message)
+		}
+	}
+}
+
+// 同名会话的两次重连重叠时，以到达顺序为准：较早的接管被抢先后不能再发布自己的
+// sink，否则会把更新的连接顶掉、留下旧连接。
+func TestCodexGatewayBrokerConcurrentAttachKeepsLatestArrival(t *testing.T) {
+	broker, slow := newOrderingTestBroker(t)
+	older := &codexGatewaySink{done: make(chan string, 1)}
+	newer := &codexGatewaySink{done: make(chan string, 1)}
+
+	olderAttached := make(chan bool, 1)
+	go func() { olderAttached <- broker.attach(older) }()
+	select {
+	case <-slow.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("较早的接管没有进入断开旧 sink 的窗口")
+	}
+	if !broker.attach(newer) {
+		t.Fatal("较晚的接管应成功")
+	}
+	close(slow.release)
+	select {
+	case ok := <-olderAttached:
+		if !ok {
+			t.Fatal("broker 未关闭，较早的接管不应返回 false（调用方会另起上游）")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("较早的接管没有结束")
+	}
+
+	if broker.currentSink() != newer {
+		t.Fatal("较晚到达的连接应保持为当前 sink")
+	}
+	expectSinkFinished(t, older, true, "较早到达的连接")
+	expectSinkFinished(t, newer, false, "较晚到达的连接")
+}
+
+// 较早的接管仍在途时，已经发布的最新连接若断开，detach 必须照常生效：
+// 较早的接管不会再发布，跳过 detach 会留下一个永远不会被摘掉的死 sink。
+func TestCodexGatewayBrokerLatestSinkDetachHonoredWhileOlderAttachPending(t *testing.T) {
+	broker, slow := newOrderingTestBroker(t)
+	older := &codexGatewaySink{done: make(chan string, 1)}
+	newer := &codexGatewaySink{done: make(chan string, 1)}
+
+	olderAttached := make(chan bool, 1)
+	go func() { olderAttached <- broker.attach(older) }()
+	select {
+	case <-slow.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("较早的接管没有进入断开旧 sink 的窗口")
+	}
+	if !broker.attach(newer) {
+		t.Fatal("较晚的接管应成功")
+	}
+	broker.detach(newer)
+	close(slow.release)
+	select {
+	case <-olderAttached:
+	case <-time.After(3 * time.Second):
+		t.Fatal("较早的接管没有结束")
+	}
+
+	broker.mu.Lock()
+	sink, detachedAt := broker.sink, broker.detachedAt
+	broker.mu.Unlock()
+	if sink != nil || detachedAt.IsZero() {
+		t.Fatal("最新连接断开后会话应标为离线，不能残留死 sink")
+	}
+	expectSinkFinished(t, older, true, "较早到达的连接")
 }

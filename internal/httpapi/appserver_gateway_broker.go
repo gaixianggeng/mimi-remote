@@ -116,16 +116,15 @@ type codexGatewayBroker struct {
 
 	mu   sync.Mutex
 	sink *codexGatewaySink
-	// attaching 统计已断开旧 sink、尚未发布新 sink 的接管。期间旧 handler 的
-	// detach 不能把会话当成客户端离线：既不能回收 broker，也不能补发离线提醒；
-	// 泵送也要等新 sink 发布，不能把帧写进已经断开的旧连接。
-	attaching int
-	// attachSettled 在 attaching 归零时广播，L 是 mu。通过 attachSettledLocked 取用。
-	attachSettled *sync.Cond
-	closed        bool
-	closeReason   string
-	createdAt     time.Time
-	detachedAt    time.Time
+	// attachSeq 是最近一次开始的接管序号，sinkSeq 是当前 sink 来自哪次接管（初始 sink
+	// 为 0）。只有最晚开始的接管能发布 sink；两者不等表示最新接管还在途，此时旧
+	// handler 的 detach 不能把会话当成客户端离线，既不回收 broker，也不补发离线提醒。
+	attachSeq   uint64
+	sinkSeq     uint64
+	closed      bool
+	closeReason string
+	createdAt   time.Time
+	detachedAt  time.Time
 	// activeTurns 记录仍在跑的 turn。客户端离线且没有活跃 turn、也没有待审批
 	// 请求时，继续持有上游连接没有意义，立即回收。
 	activeTurns map[string]struct{}
@@ -273,6 +272,9 @@ func (r *Router) forgetCodexGatewayBroker(key string, broker *codexGatewayBroker
 
 // attach 让新连接接管 broker。旧 sink 先被终止：同名会话只应有一条在线连接，
 // 否则上游响应会分裂到两个客户端。
+//
+// 返回 false 只表示 broker 已关闭，调用方需要另起上游。被更晚到达的同名连接抢先时
+// 返回 true，但 sink 已被结束，调用方照常进入客户端循环并立即退出。
 func (b *codexGatewayBroker) attach(sink *codexGatewaySink) bool {
 	if b == nil || sink == nil {
 		return false
@@ -281,7 +283,8 @@ func (b *codexGatewayBroker) attach(sink *codexGatewaySink) bool {
 	// 它的 handler 也可能握着 clientFrameMu 等同一把写锁。先断开它，下面取锁才不用
 	// 等旧连接的写超时。
 	b.mu.Lock()
-	b.attaching++
+	b.attachSeq++
+	seq := b.attachSeq
 	stale := b.sink
 	b.mu.Unlock()
 	if stale != sink {
@@ -290,18 +293,22 @@ func (b *codexGatewayBroker) attach(sink *codexGatewaySink) bool {
 
 	b.clientFrameMu.Lock()
 	b.mu.Lock()
-	b.attaching--
-	if b.attaching == 0 {
-		// 唤醒等待接管结果的泵送；它们要等本函数放开 b.mu 后才能看到新 sink 或 closed。
-		b.attachSettledLocked().Broadcast()
-	}
 	if b.closed {
 		b.mu.Unlock()
 		b.clientFrameMu.Unlock()
 		return false
 	}
+	if seq != b.attachSeq {
+		// 更晚到达的同名连接已经开始接管。取锁顺序不等于到达顺序：本次接管若在
+		// 断开旧 sink 后被抢先，再发布就会顶掉更新的连接，所以按到达顺序让位。
+		b.mu.Unlock()
+		b.clientFrameMu.Unlock()
+		sink.abort("broker_sink_replaced")
+		return true
+	}
 	previous := b.sink
 	b.sink = sink
+	b.sinkSeq = seq
 	b.detachedAt = time.Time{}
 	frames := b.replayFramesLocked(sink)
 	// 先拿新 sink 的写锁再放开 b.mu：泵送只能在 b.mu 下看到新 sink，随后的实时帧
@@ -420,14 +427,6 @@ func (b *codexGatewayBroker) rewriteInitializeResponse(payload []byte) []byte {
 	return rewritten
 }
 
-// attachSettledLocked 按需创建接管完成的条件变量。调用方必须持有 b.mu。
-func (b *codexGatewayBroker) attachSettledLocked() *sync.Cond {
-	if b.attachSettled == nil {
-		b.attachSettled = sync.NewCond(&b.mu)
-	}
-	return b.attachSettled
-}
-
 // replayFramesLocked 只重放 policy 仍认为待处理的请求。policy 已经实现了
 // resolved / turn 结束 / thread 关闭 / TTL 的全部清理规则，这里不复制第二套判定。
 func (b *codexGatewayBroker) replayFramesLocked(sink *codexGatewaySink) [][]byte {
@@ -457,7 +456,7 @@ func (b *codexGatewayBroker) detach(sink *codexGatewaySink) {
 		return
 	}
 	b.mu.Lock()
-	if b.sink != sink || b.attaching > 0 {
+	if b.sink != sink || b.attachSeq != b.sinkSeq {
 		// 已经或正在被新连接接管，旧 handler 退出不影响 broker。
 		b.mu.Unlock()
 		return
@@ -555,7 +554,6 @@ func (b *codexGatewayBroker) close(reason string) {
 		return
 	}
 	b.closed = true
-	b.attachSettledLocked().Broadcast()
 	for _, release := range b.subscriptionReleases {
 		close(release.done)
 	}
@@ -625,12 +623,11 @@ func (b *codexGatewayBroker) pumpUpstream(ctx context.Context) {
 		forwardPayload = b.rewriteInitializeResponse(forwardPayload)
 		b.observeLifecycle(messageType, forwardPayload)
 		pendingKey := serverRequestFrameKey(forwardPayload)
+		// 接管途中（旧 sink 已断开、新 sink 未发布）读到的帧会写给旧 sink 并失败，与离线
+		// 期间一样丢弃：新连接的请求要等接管完成才会发出，会话内容由重连后的权威历史
+		// 补齐，待审批帧则由 attach 重放。这里不能等接管落定：旧 handler 可能握着
+		// clientFrameMu 等一个只有泵送才能读到的退订 ACK。
 		b.mu.Lock()
-		// 接管途中旧 sink 已经断开、新 sink 还没发布。等接管落定再取 sink，这一帧才会
-		// 交给新连接，而不是写进注定失败的旧连接后丢掉。
-		for b.attaching > 0 && !b.closed {
-			b.attachSettledLocked().Wait()
-		}
 		sink = b.sink
 		if sink == nil {
 			b.mu.Unlock()
