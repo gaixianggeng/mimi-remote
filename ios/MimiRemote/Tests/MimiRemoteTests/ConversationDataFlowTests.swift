@@ -2188,9 +2188,9 @@ final class ConversationDataFlowTests: XCTestCase {
         let secondGroup = ConversationProcessGroup(messages: [message(output: "first chunk\nsecond chunk", digest: 2)], lifecycle: .inProgress, isExpanded: false)
         let expandedGroup = ConversationProcessGroup(messages: secondGroup.messages, lifecycle: .inProgress, isExpanded: true)
         let layout = ConversationLayout(containerWidth: 1_024, horizontalSizeClass: .regular)
-        let before = ConversationProcessGroupRow(group: firstGroup, layout: layout, liveStatus: nil, showsDetailedTranscript: false, toggle: {})
-        let after = ConversationProcessGroupRow(group: secondGroup, layout: layout, liveStatus: nil, showsDetailedTranscript: false, toggle: {})
-        let expanded = ConversationProcessGroupRow(group: expandedGroup, layout: layout, liveStatus: nil, showsDetailedTranscript: false, toggle: {})
+        let before = ConversationProcessGroupRow(group: firstGroup, layout: layout, showsDetailedTranscript: false, toggle: {})
+        let after = ConversationProcessGroupRow(group: secondGroup, layout: layout, showsDetailedTranscript: false, toggle: {})
+        let expanded = ConversationProcessGroupRow(group: expandedGroup, layout: layout, showsDetailedTranscript: false, toggle: {})
         XCTAssertEqual(before, after, "隐藏输出增量不应重绘过程标题")
         XCTAssertNotEqual(before, expanded)
     }
