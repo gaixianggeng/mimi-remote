@@ -1733,7 +1733,7 @@ extension SessionStore {
         }
 
         cancelWebSocketReconnect(resetAttempts: false)
-        stopAllQueuedSessionMonitoring()
+        stopAllQueuedSessionMonitoring(preservingReconnectBudget: true)
         webSocketConnectionGeneration += 1
         let socket = webSocket
         webSocket = nil

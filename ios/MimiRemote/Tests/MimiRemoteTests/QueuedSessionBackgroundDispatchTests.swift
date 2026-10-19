@@ -35,10 +35,21 @@ final class QueuedSessionBackgroundDispatchTests: XCTestCase {
             XCTAssertTrue(store.canSendInSelectedSession)
             XCTAssertEqual(store.errorMessage, "当前会话原有提示")
 
-            // 用户确认后才重新建立后台连接。
+            // 用户确认后才重新建立后台连接；连上即说明 writer 已释放，排队消息照常派发。
             XCTAssertTrue(store.retryQueuedTurn(clientMessageID: item.clientMessageID))
             XCTAssertEqual(fixture.log.sockets.count, socketCount + 1)
-            XCTAssertEqual(fixture.log.sockets.last?.connectedSessionIDs.last, fixture.original.id)
+            let retried = try XCTUnwrap(fixture.log.sockets.last)
+            XCTAssertEqual(retried.connectedSessionIDs.last, fixture.original.id)
+            retried.emitStatus(.connected)
+            try await waitUntil("后台连上后清掉原会话的冲突") {
+                !store.hasActiveWriterConflict(sessionID: fixture.original.id)
+            }
+            retried.emitEvent(.turnCompleted(turnMetadata(
+                sessionID: fixture.original.id,
+                turnID: try XCTUnwrap(fixture.original.activeTurnID)
+            )))
+            try await waitForSentTurnCount(1, socket: retried)
+            XCTAssertEqual(retried.sentTurns.first?.payload.textPrompt, "后台排队")
         }
     }
 
@@ -97,6 +108,59 @@ final class QueuedSessionBackgroundDispatchTests: XCTestCase {
         XCTAssertEqual(fixture.log.sockets.count, initialSocketCount + limit + 1)
     }
 
+    func testExhaustedRetryBudgetSurvivesBackgroundAndNetworkSuspension() async throws {
+        for suspendsNetwork in [false, true] {
+            let pathSource = TestNetworkPathStatusSource(initialStatus: .satisfied)
+            let fixture = try await makeLeftQueueFixture(
+                suffix: "budget-\(suspendsNetwork)",
+                reconnectDelay: { _ in 0 },
+                reconnectSleep: { _ in },
+                networkPathStatusSource: pathSource
+            )
+            let store = fixture.store
+            let originalID = fixture.original.id
+            let limit = SessionStore.maximumQueuedSessionReconnectAttempts
+            for attempt in 0...limit {
+                let socketCount = fixture.log.sockets.count
+                try XCTUnwrap(fixture.log.latest(connectedTo: originalID)).emitStatus(.failed("app-server WebSocket 未连接"))
+                if attempt < limit {
+                    try await waitUntil("第 \(attempt + 1) 次失败后重建连接") {
+                        fixture.log.sockets.count > socketCount
+                    }
+                } else {
+                    try await waitUntil("预算用尽后停止") {
+                        store.queuedSessionSockets[originalID] == nil
+                    }
+                }
+            }
+            let socketCountBeforeSuspension = fixture.log.sockets.count
+            func originalSocketsSinceSuspension() -> [MockWebSocketClient] {
+                fixture.log.sockets.dropFirst(socketCountBeforeSuspension).filter {
+                    $0.connectedSessionIDs.last == originalID
+                }
+            }
+
+            if suspendsNetwork {
+                pathSource.emit(.unsatisfied)
+                try await waitForNetworkReachability(.unsatisfied, store: store)
+                pathSource.emit(.satisfied)
+            } else {
+                store.suspendForBackground()
+                await store.resumeFromForeground()
+            }
+            try await waitUntil("恢复后对原会话再试一次") {
+                !originalSocketsSinceSuspension().isEmpty
+            }
+            try XCTUnwrap(originalSocketsSinceSuspension().last).emitStatus(.failed("app-server WebSocket 未连接"))
+            try await waitUntil("这次失败后停止") {
+                store.queuedSessionSockets[originalID] == nil
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+            XCTAssertEqual(originalSocketsSinceSuspension().count, 1, "挂起恢复不能重新开始一轮退避")
+            XCTAssertNil(store.queuedSessionReconnectTasks[originalID])
+        }
+    }
+
     func testPendingBackgroundReconnectStopsWhenQueueClearsOrSessionReopens() async throws {
         for reopensSession in [false, true] {
             for destination in [LeaveDestination.sessionList, .otherSession] {
@@ -152,7 +216,8 @@ final class QueuedSessionBackgroundDispatchTests: XCTestCase {
         suffix: String,
         leaveTo destination: LeaveDestination = .otherSession,
         reconnectDelay: ((Int) -> UInt64)? = nil,
-        reconnectSleep: @escaping (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }
+        reconnectSleep: @escaping (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) },
+        networkPathStatusSource: (any NetworkPathStatusSource)? = nil
     ) async throws -> LeftQueueFixture {
         let project = makeProject(id: "proj_bg_queue_\(suffix)")
         let original = makeSession(
@@ -174,7 +239,8 @@ final class QueuedSessionBackgroundDispatchTests: XCTestCase {
             },
             webSocketFactory: { log.make() },
             webSocketReconnectDelayNanoseconds: reconnectDelay,
-            webSocketReconnectSleep: reconnectSleep
+            webSocketReconnectSleep: reconnectSleep,
+            networkPathStatusSource: networkPathStatusSource
         )
         await store.refreshAll(autoAttach: false)
         store.takeOverSession(original)
@@ -200,6 +266,19 @@ final class QueuedSessionBackgroundDispatchTests: XCTestCase {
             original: original,
             other: other,
             log: log
+        )
+    }
+
+    private func turnMetadata(sessionID: SessionID, turnID: TurnID) -> AgentEventMetadata {
+        AgentEventMetadata(
+            seq: 1,
+            sessionID: sessionID,
+            turnID: turnID,
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
         )
     }
 
