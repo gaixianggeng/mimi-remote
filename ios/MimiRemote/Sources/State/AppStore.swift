@@ -49,6 +49,9 @@ final class AppStore: ObservableObject {
     private let routeVersionProbe: ConnectionRouteVersionProbe?
     private let agentAPISession: URLSession
     private let gatewayProbeTransportFactory: () -> CodexAppServerTransport
+    /// 切换预热的候选 Bundle 使用的网关传输；nil 时走 Runtime 默认的 URLSession 传输。
+    private let gatewayTransportFactory: (() -> CodexAppServerTransport)?
+    private let hostSwitchPreparationTimeout: TimeInterval
     private let usesDefaultRouteProbe: Bool
     var ephemeralLocalProfileID: String?
     private var isConnectionPreflightRunning = false
@@ -99,6 +102,8 @@ final class AppStore: ObservableObject {
         routeVersionProbe: ConnectionRouteVersionProbe? = nil,
         agentAPISession: URLSession = .shared,
         gatewayProbeTransportFactory: @escaping () -> CodexAppServerTransport = { URLSessionCodexAppServerTransport() },
+        gatewayTransportFactory: (() -> CodexAppServerTransport)? = nil,
+        hostSwitchPreparationTimeout: TimeInterval = 8,
         allowsEphemeralLocalCredentialFallback: Bool? = nil
     ) {
         self.defaults = defaults
@@ -114,6 +119,8 @@ final class AppStore: ObservableObject {
         self.localAgentPairingClaim = localAgentPairingClaim ?? Self.defaultLocalAgentPairingClaim
         self.agentAPISession = agentAPISession
         self.gatewayProbeTransportFactory = gatewayProbeTransportFactory
+        self.gatewayTransportFactory = gatewayTransportFactory
+        self.hostSwitchPreparationTimeout = hostSwitchPreparationTimeout
         self.routeProbe = routeProbe ?? { endpoint, token, timeout in
             try await Self.defaultConnectionRouteProbe(
                 endpoint: endpoint,
@@ -1609,8 +1616,8 @@ final class AppStore: ObservableObject {
         hostDeviceName: String?,
         adoptsHostDeviceName: Bool
     ) async throws -> PreparedConnectionSettings {
-        let deadline = Date().addingTimeInterval(8)
-        let client = AgentAPIClient(endpoint: activeEndpoint, token: token)
+        let deadline = Date().addingTimeInterval(hostSwitchPreparationTimeout)
+        let client = AgentAPIClient(endpoint: activeEndpoint, token: token, session: agentAPISession)
         HostSwitchSignpost.begin("switch_prepare")
         defer { HostSwitchSignpost.end("switch_prepare") }
 
@@ -1645,7 +1652,8 @@ final class AppStore: ObservableObject {
                 // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破 8 秒总 deadline。
                 requestTimeout: remaining,
                 preparedConfig: config,
-                harnessFactory: nativeHarnessFactory
+                harnessFactory: nativeHarnessFactory,
+                transportFactory: gatewayTransportFactory
             )
             do {
                 try await bundle.prepareForHostActivation()

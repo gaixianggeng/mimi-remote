@@ -410,13 +410,16 @@ final class AppServerRuntimeBundle {
         // configProvider 是「快照失效后去哪再取」。默认 provider 只回 preparedConfig，
         // 因此快速切换链路仍然不会重新打一次 /api/app-server/config。
         configProvider suppliedConfigProvider: (() async throws -> CodexAppServerConfigResponse)? = nil,
-        routes: AppServerRuntimeRouteStore = AppServerRuntimeRouteStore()
+        routes: AppServerRuntimeRouteStore = AppServerRuntimeRouteStore(),
+        transportFactory: (() -> CodexAppServerTransport)? = nil
     ) {
         let configProvider = suppliedConfigProvider ?? { preparedConfig }
+        let transportFactory = transportFactory ?? { URLSessionCodexAppServerTransport() }
         codex = CodexAppServerSessionRuntime(
             endpoint: endpoint,
             token: token,
             runtimeProvider: "codex",
+            transportFactory: transportFactory,
             requestTimeout: requestTimeout,
             initialConfig: preparedConfig,
             configProvider: configProvider
@@ -425,6 +428,7 @@ final class AppServerRuntimeBundle {
             endpoint: endpoint,
             token: token,
             runtimeProvider: "claude",
+            transportFactory: transportFactory,
             requestTimeout: requestTimeout,
             initialConfig: preparedConfig,
             configProvider: configProvider
