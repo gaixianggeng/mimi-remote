@@ -57,6 +57,7 @@ echo "==> iOS conversation regressions"
 # - AgentAPIClientRequestTests：全部 REST 调用的路径、方法、鉴权、JSON 字段和超时契约。
 # - CameraAttachmentTests：相机可用性、权限恢复和现有图片压缩上限。
 # - CodexAppServerProtocolTests：JSON-RPC payload、collaborationMode、目标/steer 协议。
+# - ComposerAutocompleteTests：输入框 `/` 命令与 `$` 技能补全的触发、替换范围和排序。
 # - ConversationDataFlowTests 的精确方法：只保留配对后的会话、流式事件、恢复、
 #   exactly-once、审批/中断、Host 隔离和 fake smoke；其余大集合不无条件进入 PR Gate。
 # - FileAttachmentModelsTests：文件上传、capability 状态矩阵、内部上下文编解码和旧服务端兼容。
@@ -89,6 +90,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/AgentAPIClientRequestTests \
   -only-testing:MimiRemoteTests/CameraAttachmentTests \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
+  -only-testing:MimiRemoteTests/ComposerAutocompleteTests \
   -only-testing:MimiRemoteTests/DeepSeekComposerPolicyTests \
   -only-testing:MimiRemoteTests/DeepSeekSearchRoutingTests \
   -only-testing:MimiRemoteTests/DeepSeekRuntimePresentationTests \
