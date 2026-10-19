@@ -710,6 +710,9 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 			// Claude bridge 在会话被本机其他 Claude 进程持有时附带的持有方摘要
 			// （entrypoint/kind/status/pid），只用于展示"正在 Mac 上运行"，不参与授权。
 			"claudeOwner",
+			// Claude 桌面版"主会话派生会话"的父会话 ID，只用于列表分组展示。
+			// 它不是 parentThreadId：派生会话是完整会话，不因此变成只读。
+			"spawnedFromThreadId",
 		)
 		if forceReadOnly {
 			safeThread["canAcceptDirectInput"] = false

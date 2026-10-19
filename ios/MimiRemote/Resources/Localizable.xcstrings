@@ -6938,6 +6938,57 @@
         }
       }
     },
+    "ui.child_session_of": {
+      "comment": "Session hierarchy accessibility label.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sub-session of %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "子会话，所属：%@"
+          }
+        }
+      }
+    },
+    "ui.collapse_child_sessions_count": {
+      "comment": "Session hierarchy accessibility label.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collapse sub-sessions (%@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "收起 %@ 个子会话"
+          }
+        }
+      }
+    },
+    "ui.expand_child_sessions_count": {
+      "comment": "Session hierarchy accessibility label.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expand sub-sessions (%@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开 %@ 个子会话"
+          }
+        }
+      }
+    },
     "ui.collapse_conversation_list": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

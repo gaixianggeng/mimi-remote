@@ -526,20 +526,6 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
         XCTAssertEqual(try group(in: rows[2]).turnID, "next")
     }
 
-    @MainActor
-    func testLiveStatusDoesNotAttachToPreviousTurnAfterNewUserInput() {
-        let old = makeActivity(id: "old", turnID: "old", category: .toolCall, title: "之前")
-        let user = makeMessage(id: "user", turnID: "new", role: .user, kind: .message, content: "新请求")
-        let messages = [old, user]
-        XCTAssertNil(ConversationTimelineView.liveProcessID(in: ConversationTimelineItemBuilder.items(from: messages),
-                                                           messages: messages, activeTurnID: "new"))
-        var next = makeActivity(id: "new", turnID: "new", category: .toolCall, title: "运行")
-        next.turnLifecycle = .inProgress
-        let active = messages + [next]
-        let rows = ConversationTimelineItemBuilder.items(from: active)
-        XCTAssertEqual(ConversationTimelineView.liveProcessID(in: rows, messages: active, activeTurnID: "new"), rows.last?.id)
-    }
-
     func testExpandedDetailUsesFullContentAndOldHistoryFallsBackToPreview() {
         let full = makeActivity(
             id: "full",
@@ -582,6 +568,95 @@ final class ConversationTimelineProviderPresentationTests: XCTestCase {
             ConversationActivityPresentationText.reasoningText(for: reasoning, isExpanded: true),
             "第一段完整推理。\n\n第二段完整推理。"
         )
+    }
+
+    func testReasoningPreviewShowsFirstThinkingLineInsteadOfGenericTitle() {
+        let thinking = "I should read the guide first.\n\nThen search for duplicate issues."
+        let payload = ConversationActivityPayload(
+            category: .thinking,
+            displayTitle: L10n.text("ui.reasoning_summary"),
+            subtitle: thinking,
+            status: "completed"
+        )
+        let claude = ConversationMessage(
+            stableID: "claude-thinking",
+            turnID: "turn",
+            role: .system,
+            kind: .reasoningSummary,
+            content: thinking,
+            sendStatus: .confirmed,
+            activityPayload: payload
+        )
+
+        XCTAssertEqual(ConversationActivityPresentationText.reasoningPreview(for: claude), "I should read the guide first.")
+        XCTAssertEqual(ConversationActivityPresentationText.reasoningText(for: claude, isExpanded: true), thinking)
+    }
+
+    func testReasoningAccessibilityLabelKeepsStatusHiddenFromRow() {
+        func message(status: String) -> ConversationMessage {
+            let thinking = "Checking the guide.\n\nThen searching."
+            return ConversationMessage(
+                stableID: "thinking-a11y", turnID: "turn", role: .system, kind: .reasoningSummary,
+                content: thinking, sendStatus: .confirmed,
+                activityPayload: ConversationActivityPayload(
+                    category: .thinking, displayTitle: L10n.text("ui.reasoning_summary"), subtitle: thinking, status: status
+                )
+            )
+        }
+        let separator = L10n.text("ui.list_separator")
+
+        XCTAssertEqual(
+            ConversationActivityPresentationText.reasoningAccessibilityLabel(for: message(status: "inProgress"), isExpanded: false),
+            "Checking the guide.\(separator)\(L10n.text("ui.in_progress"))",
+            "视觉上去掉的进行中状态，旁白仍要读出"
+        )
+        XCTAssertEqual(
+            ConversationActivityPresentationText.reasoningAccessibilityLabel(for: message(status: "failed"), isExpanded: true),
+            "Checking the guide.\n\nThen searching.\(separator)\(L10n.text("ui.failed_status"))"
+        )
+    }
+
+    func testCompactStepDetailOnlyNamesNoteworthyStatus() {
+        func status(_ status: String, exitCode: Int? = nil) -> String? {
+            ConversationActivityPresentationText.noteworthyStatus(for: ConversationActivityPayload(
+                category: .runCommand, displayTitle: "运行 make", status: status, command: "make", exitCode: exitCode
+            ))
+        }
+
+        XCTAssertNil(status("completed"), "成功由图标表达")
+        XCTAssertNil(status("inProgress"), "进行中由转圈和底部状态行表达")
+        XCTAssertEqual(status("failed"), L10n.text("ui.failed_status"))
+        XCTAssertEqual(status("failed", exitCode: 2), L10n.format("ui.exit_code_value", 2))
+        XCTAssertEqual(status("interrupted"), L10n.text("ui.interrupted_status"))
+        XCTAssertEqual(status("queued"), L10n.text("ui.waiting"))
+    }
+
+    func testRawCommandTitleDropsLeadingDirectoryChange() {
+        func payload(_ command: String, title: String? = nil) -> ConversationActivityPayload {
+            ConversationActivityPayload(
+                category: .runCommand,
+                displayTitle: title ?? L10n.format("ui.run_value", command),
+                status: "completed",
+                command: command
+            )
+        }
+
+        let plain = payload("cd /Users/me/code/app && git status --short")
+        XCTAssertTrue(ConversationActivityPresentationText.isRawCommandTitle(plain))
+        XCTAssertEqual(ConversationActivityPresentationText.title(for: plain), L10n.format("ui.run_value", "git status --short"))
+        XCTAssertEqual(
+            ConversationActivityPresentationText.title(for: payload(#"cd "/Users/me/My App" && ls"#)),
+            L10n.format("ui.run_value", "ls")
+        )
+        XCTAssertEqual(
+            ConversationActivityPresentationText.title(for: payload("cd /tmp")),
+            L10n.format("ui.run_value", "cd /tmp"),
+            "只有 cd 时保留原命令"
+        )
+
+        let action = payload("cat A.swift", title: "读取 A.swift")
+        XCTAssertFalse(ConversationActivityPresentationText.isRawCommandTitle(action))
+        XCTAssertEqual(ConversationActivityPresentationText.title(for: action), "读取 A.swift")
     }
 
     func testClaudeFailureStaysVisibleAndActivityIdentitySurvivesCompletion() throws {

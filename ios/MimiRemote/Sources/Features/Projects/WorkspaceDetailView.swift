@@ -107,11 +107,15 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
-        // 分组只算一次，列表按状态渲染分段。
+        // 分组只算一次，列表按状态渲染分段。派生家族先在整份列表上分好，再随领头成员落段，
+        // 运行中的子会话因此和已完成的父会话留在同一段里。
         let grouped = Dictionary(grouping: recentSessions) { session in
             WorkspaceSessionGroup.of(session)
         }
-        let populatedGroups = WorkspaceSessionGroup.orderedPopulatedGroups(from: Set(grouped.keys))
+        let sections = SessionHierarchy.sectionedFamilies(
+            WorkspaceSessionGroup.orderedPopulatedGroups(from: Set(grouped.keys))
+                .map { (key: $0, sessions: grouped[$0] ?? []) }
+        )
 
         return VStack(alignment: .leading, spacing: 8) {
             if !showsInlineRuntimePicker {
@@ -143,8 +147,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     .frame(maxWidth: .infinity, minHeight: 150)
             } else {
                 groupedSessionSections(
-                    populatedGroups: populatedGroups,
-                    grouped: grouped,
+                    sections: sections,
                     rowDensity: rowDensity,
                     tokens: tokens
                 )
@@ -157,33 +160,34 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     /// 分段本身取代了原来那条“运行中 · 刚刚活跃”摘要——它只描述第一条，却读起来像在描述整个列表。
     @ViewBuilder
     private func groupedSessionSections(
-        populatedGroups: [WorkspaceSessionGroup],
-        grouped: [WorkspaceSessionGroup: [AgentSession]],
+        sections: [SessionFamilySection<WorkspaceSessionGroup>],
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
         // 给唯一的一个分组加标题是纯噪声：窄屏由筛选行充当它的标题，宽屏由胶囊行承担身份。
         // 出现「需要处理 / 正在运行」等多个分段时，标题才真正在区分内容。
-        let showsSectionHeaders = populatedGroups.count > 1
+        let showsSectionHeaders = sections.count > 1
         let identityFallback = SessionListPresentation.workspaceIdentityFallback(among: recentSessions)
 
         VStack(alignment: .leading, spacing: WorkspaceSessionRowMetrics.sectionBoundarySpacing) {
-            ForEach(populatedGroups, id: \.self) { group in
-                let sessions = grouped[group] ?? []
+            ForEach(sections) { section in
+                let group = section.key
                 VStack(alignment: .leading, spacing: WorkspaceSessionRowMetrics.sectionHeaderBottomSpacing) {
                     if showsSectionHeaders {
+                        // 计数只数这个状态本身的会话；随家族一起带进来的父子不改变它的含义。
                         sectionHeader(
                             group,
-                            count: sessions.count,
+                            count: section.families.flatMap(\.members)
+                                .filter { WorkspaceSessionGroup.of($0) == group }.count,
                             rowDensity: rowDensity,
                             tokens: tokens
                         )
                     }
                     sessionGroupBody(
                         group,
-                        sessions: sessions,
+                        families: section.families,
                         identityFallback: identityFallback,
-                        showsLoadMore: group == populatedGroups.last,
+                        showsLoadMore: group == sections.last?.key,
                         rowDensity: rowDensity,
                         tokens: tokens
                     )
@@ -213,15 +217,16 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     @ViewBuilder
     private func sessionGroupBody(
         _ group: WorkspaceSessionGroup,
-        sessions: [AgentSession],
+        families: [SessionFamily],
         identityFallback: SessionIndexRowIdentityFallback,
         showsLoadMore: Bool,
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
+        // 按家族里最近活动的成员判断 12 小时边界，父子不会被拆到边界两侧。
         let firstStaleIndex = group == .recent
             ? WorkspaceSessionAgeBoundary.firstStaleIndex(
-                in: sessions,
+                in: families.map(\.leader),
                 excludingSessionIDs: sessionStore.pinnedSessionIDs,
                 now: currentDate()
             )
@@ -231,8 +236,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         // 它会退化成悬在列表顶部的标题，被读成整段列表的名字；此时不再分界。
         if let firstStaleIndex,
            WorkspaceSessionAgeBoundary.showsBoundary(firstStaleIndex: firstStaleIndex) {
-            let currentSessions = Array(sessions.prefix(firstStaleIndex))
-            let staleSessions = Array(sessions.dropFirst(firstStaleIndex))
+            let currentFamilies = Array(families.prefix(firstStaleIndex))
+            let staleFamilies = Array(families.dropFirst(firstStaleIndex))
 
             // 12 小时是和「正在运行 / 最近会话」同级的信息分组边界，因此就用同一种小节标题。
             //
@@ -240,9 +245,9 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             // 有了卡，时间标签既不能切进白面，又没有别的地方可去，只好悬空并伪装底色
             // （伪装色还错了一版）。列表扁平之后这些问题一起消失，标签回到它本来的身份。
             VStack(alignment: .leading, spacing: 0) {
-                if !currentSessions.isEmpty {
+                if !currentFamilies.isEmpty {
                     sessionRowsStack(
-                        sessions: currentSessions,
+                        families: currentFamilies,
                         identityFallback: identityFallback,
                         showsLoadMore: false,
                         rowDensity: rowDensity,
@@ -253,7 +258,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 staleBoundaryHeader(rowDensity: rowDensity, tokens: tokens)
 
                 sessionRowsStack(
-                    sessions: staleSessions,
+                    families: staleFamilies,
                     identityFallback: identityFallback,
                     showsLoadMore: showsLoadMore,
                     rowDensity: rowDensity,
@@ -262,7 +267,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             }
         } else {
             sessionRowsStack(
-                sessions: sessions,
+                families: families,
                 identityFallback: identityFallback,
                 showsLoadMore: showsLoadMore,
                 rowDensity: rowDensity,
@@ -276,7 +281,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     /// 工作区身份已在胶囊行出现，会话总览只留标题、状态和一条次要信息。
     /// 分组由小节标题和留白承担，不用卡片或逐行分隔线争夺注意力。
     private func sessionRowsStack(
-        sessions: [AgentSession],
+        families: [SessionFamily],
         identityFallback: SessionIndexRowIdentityFallback,
         showsLoadMore: Bool,
         rowDensity: SessionIndexRowDensity,
@@ -285,7 +290,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         // 行与行之间不再画分隔线，只靠留白分开——逐行横线会把列表读成一张表格。
         // 线只保留在分组边界（小节标题上方的留白）和"显示更多"入口之前。
         VStack(spacing: 0) {
-            ForEach(sessions, id: \.id) { session in
+            SessionHierarchyForEach(families: families, expansion: sessionStore.sessionHierarchyExpansion) { row, _ in
+                let session = row.session
                 let foregroundActivity = sessionStore.foregroundActivity(for: session.id)
                 let isUnread = unreadHistorySessionIDs.contains(session.id)
 
@@ -331,6 +337,12 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 )
                 .sessionRowActions(session)
                 .accessibilityIdentifier("workspace.session.\(session.id)")
+                .sessionHierarchyRow(
+                    row,
+                    expansion: sessionStore.sessionHierarchyExpansion,
+                    guideX: rowDensity.horizontalPadding + 4,
+                    contentInset: rowDensity.horizontalPadding
+                )
             }
 
             // 加载入口只跟在最后一段的末尾；12 小时边界存在时自然落在旧会话那一段底部。
