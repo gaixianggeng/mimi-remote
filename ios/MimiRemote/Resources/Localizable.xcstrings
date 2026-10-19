@@ -44789,6 +44789,13 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "一条临时输出已中断，且仍未确认。" } }
       }
     },
+    "harness.reply_interrupted": {
+      "comment": "Shown after a DeepSeek reply that the user stopped; the reply above is the partial text that had already streamed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Reply interrupted. The content above is incomplete." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "回复已中断，以上内容不完整。" } }
+      }
+    },
     "harness.previous_submission_unconfirmed": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "The previous submission is still unconfirmed. Reconcile it or wait for redelivery." } },

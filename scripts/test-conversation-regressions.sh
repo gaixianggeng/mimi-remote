@@ -118,6 +118,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/HarnessSessionJournalTests \
   -only-testing:MimiRemoteTests/HarnessSubmissionControllerTests \
   -only-testing:MimiRemoteTests/HarnessPresentationProjectorTests \
+  -only-testing:MimiRemoteTests/HarnessInterruptedSettlementTests \
   -only-testing:MimiRemoteTests/HarnessEventClientTests \
   -only-testing:MimiRemoteTests/HarnessStreamReconnectTests \
   -only-testing:MimiRemoteTests/HarnessSnapshotBaselineTests \
