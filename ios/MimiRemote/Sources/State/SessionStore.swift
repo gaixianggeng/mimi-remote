@@ -434,6 +434,7 @@ final class SessionStore: ObservableObject {
     var queuedSessionCredentialFingerprintByID: [SessionID: String] = [:]
     var queuedSessionReadyIDs: Set<SessionID> = []
     var queuedSessionReconnectTasks: [SessionID: Task<Void, Never>] = [:]
+    var queuedSessionReconnectAttemptBySessionID: [SessionID: Int] = [:]
     var queuedTurnStartedIDBySessionID: [SessionID: TurnID] = [:]
     var queuedTurnAwaitingStartSessionIDs: Set<SessionID> = []
     // shared queue 的 started 事件可能早于 queue/add 回调。按 client ID 保留 RPC 门闩，

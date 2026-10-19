@@ -1279,7 +1279,7 @@ extension SessionStore {
             guard connectionTermination == nil, !appStore.requiresRePairing else {
                 return
             }
-            stopAllQueuedSessionMonitoring()
+            stopAllQueuedSessionMonitoring(preservingReconnectBudget: true)
             suspendWebSocketForNetworkLoss()
             setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"), presentation: .silent)
             return
