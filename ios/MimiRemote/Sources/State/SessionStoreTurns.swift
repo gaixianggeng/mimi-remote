@@ -1797,7 +1797,8 @@ extension SessionStore {
             // 完整历史走会话所属 Runtime 的通道（路由跨 bundle 沿用），不依赖工作区列表结果。
             // 与列表刷新并行发出，别的 Runtime 列表慢或失败时不再拖住它（#790）。
             recoveryHistory = Task {
-                await reconcileHistoryForRecovery(
+                guard !Task.isCancelled else { return false }
+                return await reconcileHistoryForRecovery(
                     sessionID: reconnectSessionID,
                     generation: recoveryGeneration,
                     reconcilesSessionState: false
@@ -1807,9 +1808,20 @@ extension SessionStore {
         // 回前台同样可能赶上 gateway 还没恢复；做几秒的高频重试，避免单次失败后又卡到下次切换。
         // 正常情况下首次 refreshAll 就成功（errorMessage 为 nil），立即返回，不会有额外开销。
         await refreshUntilLoaded(maxWait: 10, autoAttach: false)
-        guard !Task.isCancelled, !isAppInBackground else { return }
+        guard !Task.isCancelled, !isAppInBackground else {
+            // 并行的恢复历史不继承本任务的取消。撤掉本代 job，迟到响应才不会在后台落地。
+            recoveryHistory?.cancel()
+            if let reconnectSessionID,
+               let job = historyLoadJobsBySessionID[reconnectSessionID],
+               job.recoveryGeneration == recoveryGeneration {
+                cancelHistoryLoadJob(job, sessionID: reconnectSessionID)
+            }
+            return
+        }
         let didReconcileFullHistory = await recoveryHistory?.value ?? false
         if didReconcileFullHistory,
+           !Task.isCancelled,
+           !isAppInBackground,
            recoveryGeneration == recoveryHistoryGeneration,
            let reconnectSessionID,
            selectedSessionID == reconnectSessionID,

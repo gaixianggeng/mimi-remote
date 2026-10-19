@@ -113,6 +113,40 @@ final class ForegroundRecoveryHistoryOrderingTests: XCTestCase {
         XCTAssertEqual(fixture.socket.replayBufferedEventsByConnect.last, false)
     }
 
+    /// 评审 #815：列表刷新期间又回后台时，并行发出的恢复历史要随前台恢复一起撤掉，
+    /// 迟到的响应不能在后台落地页面。
+    func testBackgroundDuringListRefreshCancelsParallelRecoveryHistory() async {
+        let fixture = makeFixture(status: SessionStatus.idle.rawValue)
+        let client = fixture.client
+        let store = fixture.store
+        await enterBackgroundWithSelectedSession(fixture)
+        client.historyPage = recoveredHistoryPage()
+        client.blocksHistory = true
+        client.listBehavior = .blocked
+        let connectsBeforeResume = fixture.socket.connectedSessionIDs.count
+
+        let resumeTask = Task { await store.resumeFromForeground() }
+        await waitUntil("工作区列表进入阻塞") { client.blockedListCount == 1 }
+        await waitUntil("恢复历史已发出") { client.blockedHistoryCount == 1 }
+        // 与 RootView 回后台一致：先取消前台恢复任务，再挂起 Store。
+        resumeTask.cancel()
+        store.suspendForBackground()
+        client.releaseBlockedLists(with: fixture.listPage)
+        await resumeTask.value
+
+        XCTAssertNil(store.historyLoadJobsBySessionID[fixture.session.id], "提前退出时撤掉本代恢复历史")
+        client.releaseBlockedHistory()
+        await waitUntil("迟到的历史响应已返回") {
+            store.historyFirstPageCacheByKey.keys.contains { $0.sessionID == fixture.session.id }
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertFalse(hasRecoveredAnswer(store, fixture.session.id), "后台不落地迟到的恢复历史")
+        XCTAssertTrue(store.isAppInBackground)
+        XCTAssertNil(store.connectedSessionID)
+        XCTAssertEqual(fixture.socket.connectedSessionIDs.count, connectsBeforeResume)
+    }
+
     // MARK: - Fixture
 
     private struct Fixture {
