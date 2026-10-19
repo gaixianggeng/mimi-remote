@@ -468,6 +468,7 @@ extension SessionStore {
                 switch status {
                 case .connected:
                     self?.queuedSessionReadyIDs.insert(sessionID)
+                    self?.queuedSessionReconnectAttemptBySessionID.removeValue(forKey: sessionID)
                     if let self, let currentSocket = self.queuedSessionSockets[sessionID] {
                         self.dispatchPendingGuidance(sessionID: sessionID, socket: currentSocket)
                     }
@@ -475,8 +476,11 @@ extension SessionStore {
                 case .failed(let message):
                     self?.queuedSessionReadyIDs.remove(sessionID)
                     _ = self?.failPendingGuidanceConnection(sessionID: sessionID, message: message)
-                    self?.setStatusMessage(L10n.format("ui.failed_to_connect_to_queue_to_be_sent", message))
-                    self?.scheduleQueuedSessionReconnect(sessionID: sessionID, generation: generation)
+                    self?.handleQueuedSessionConnectionFailure(
+                        sessionID: sessionID,
+                        generation: generation,
+                        message: message
+                    )
                 case .terminated(let reason):
                     guard let self else { return }
                     self.queuedSessionReadyIDs.remove(sessionID)
@@ -484,7 +488,11 @@ extension SessionStore {
                     let socketFingerprint = self.queuedSessionCredentialFingerprintByID[sessionID]
                     if reason == .credentialsInvalid,
                        !self.appStore.isCurrentCredentialFingerprint(socketFingerprint) {
-                        self.scheduleQueuedSessionReconnect(sessionID: sessionID, generation: generation)
+                        self.scheduleQueuedSessionReconnect(
+                            sessionID: sessionID,
+                            generation: generation,
+                            reason: reason.message
+                        )
                         return
                     }
                     self.terminateConnection(reason)
@@ -494,7 +502,11 @@ extension SessionStore {
                         sessionID: sessionID,
                         message: L10n.text("ui.sending_failed_websocket_not_connected")
                     )
-                    self?.scheduleQueuedSessionReconnect(sessionID: sessionID, generation: generation)
+                    self?.scheduleQueuedSessionReconnect(
+                        sessionID: sessionID,
+                        generation: generation,
+                        reason: L10n.text("ui.the_connection_has_been_lost")
+                    )
                 case .connecting:
                     break
                 }
@@ -614,16 +626,83 @@ extension SessionStore {
         )
         queuedSessionSocketGenerationByID[sessionID, default: 0] += 1
         queuedSessionReconnectTasks.removeValue(forKey: sessionID)?.cancel()
+        queuedSessionReconnectAttemptBySessionID.removeValue(forKey: sessionID)
         queuedSessionReadyIDs.remove(sessionID)
         queuedSessionCredentialFingerprintByID.removeValue(forKey: sessionID)
         let socket = queuedSessionSockets.removeValue(forKey: sessionID)
         socket?.disconnect()
     }
 
-    func scheduleQueuedSessionReconnect(sessionID: SessionID, generation: Int) {
+    /// 后台排队连接与前台共用指数退避；连续失败到上限（约一分钟）后停止自动重连，
+    /// 等打开会话、刷新、回前台或网络恢复时再试。
+    static let maximumQueuedSessionReconnectAttempts = 6
+
+    func handleQueuedSessionConnectionFailure(sessionID: SessionID, generation: Int, message: String) {
+        // writer 冲突与网关策略拒绝对同样的连接参数是确定性的，与前台主连接一样不再重连。
+        let activeWriterConflict = Self.isCodexActiveWriterConflict(message)
+        guard activeWriterConflict || Self.isDeterministicGatewayPolicyFailure(message) else {
+            scheduleQueuedSessionReconnect(sessionID: sessionID, generation: generation, reason: message)
+            return
+        }
+        guard isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation) else { return }
+        if activeWriterConflict {
+            setActiveWriterConflict(true, sessionID: sessionID)
+        }
+        stopQueuedSessionReconnect(sessionID: sessionID, generation: generation, reason: message, requiresConfirmation: true)
+    }
+
+    func scheduleQueuedSessionReconnect(sessionID: SessionID, generation: Int, reason: String) {
         guard isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation),
               queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false
                 || queuedTurnAwaitingStartSessionIDs.contains(sessionID) else { return }
+        let attempt = queuedSessionReconnectAttemptBySessionID[sessionID, default: 0] + 1
+        guard attempt <= Self.maximumQueuedSessionReconnectAttempts else {
+            stopQueuedSessionReconnect(sessionID: sessionID, generation: generation, reason: reason, requiresConfirmation: false)
+            return
+        }
+        queuedSessionReconnectAttemptBySessionID[sessionID] = attempt
+        retireQueuedSessionSocket(sessionID: sessionID, generation: generation)
+        let delay = webSocketReconnectDelayNanoseconds(attempt)
+        let reconnectSleep = webSocketReconnectSleep
+        // 用户在看别的页面；中间重试不弹提示，只在停止重连时说明一次。
+        queuedSessionReconnectTasks[sessionID] = Task { @MainActor [weak self] in
+            do {
+                try await reconnectSleep(delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.queuedSessionReconnectTasks.removeValue(forKey: sessionID)
+            self.ensureQueuedSessionMonitoring(sessionID: sessionID)
+        }
+    }
+
+    /// 停止原会话的后台重连。确定性拒绝要等用户处理（例如先在电脑上关闭会话）后确认重试，
+    /// 所以把队首改为待确认并记下原因；暂时性失败保持等待，由后续入口重新触发。
+    func stopQueuedSessionReconnect(
+        sessionID: SessionID,
+        generation: Int,
+        reason: String,
+        requiresConfirmation: Bool
+    ) {
+        retireQueuedSessionSocket(sessionID: sessionID, generation: generation)
+        let detail = Self.isCodexActiveWriterConflict(reason) ? L10n.text("ui.codex_active_writer_conflict") : reason
+        let message = UserFacingError(
+            rawMessage: L10n.format("ui.failed_to_connect_to_queue_to_be_sent", detail)
+        ).message
+        if requiresConfirmation {
+            _ = mutateAndPersistQueuedTurns {
+                guard var queue = queuedRunningTurnsBySessionID[sessionID],
+                      queue.first?.dispatchState == .waiting else { return }
+                queue[0].dispatchState = .needsConfirmation
+                queue[0].lastError = message
+                queuedRunningTurnsBySessionID[sessionID] = queue
+            }
+        }
+        setStatusMessage(message)
+    }
+
+    private func retireQueuedSessionSocket(sessionID: SessionID, generation: Int) {
         markDispatchingQueuedTurnsNeedsConfirmation(
             sessionID: sessionID,
             message: L10n.text("ui.the_connection_has_been_interrupted_sending_results_requires")
@@ -631,19 +710,9 @@ extension SessionStore {
         let socket = queuedSessionSockets.removeValue(forKey: sessionID)
         queuedSessionCredentialFingerprintByID.removeValue(forKey: sessionID)
         queuedSessionSocketGenerationByID[sessionID, default: generation] += 1
+        queuedSessionReconnectTasks.removeValue(forKey: sessionID)?.cancel()
         socket?.onStatus = nil
         socket?.disconnect()
-        queuedSessionReconnectTasks[sessionID]?.cancel()
-        queuedSessionReconnectTasks[sessionID] = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: 1_000_000_000)
-            } catch {
-                return
-            }
-            guard let self else { return }
-            self.queuedSessionReconnectTasks.removeValue(forKey: sessionID)
-            self.ensureQueuedSessionMonitoring(sessionID: sessionID)
-        }
     }
 
     func stopAllQueuedSessionMonitoring() {
@@ -652,6 +721,7 @@ extension SessionStore {
         for sessionID in sessionIDs {
             stopQueuedSessionMonitoring(sessionID: sessionID, preservingPendingGuidance: false)
         }
+        queuedSessionReconnectAttemptBySessionID.removeAll()
     }
 
     func markDispatchingQueuedTurnsNeedsConfirmation(

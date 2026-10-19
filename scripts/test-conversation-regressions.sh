@@ -61,6 +61,8 @@ echo "==> iOS conversation regressions"
 # - ClaudeSlashCommandCatalogTests：Claude 会话 `/` 菜单命令目录的解析、请求与按键缓存。
 # - ConversationDataFlowTests 的精确方法：只保留配对后的会话、流式事件、恢复、
 #   exactly-once、审批/中断、Host 隔离和 fake smoke；其余大集合不无条件进入 PR Gate。
+# - QueuedSessionBackgroundDispatchTests：离开会话后排队消息的后台连接，覆盖重连退避与停止、
+#   错误只归属原会话和各 Runtime 的离开监听。
 # - FileAttachmentModelsTests：文件上传、capability 状态矩阵、内部上下文编解码和旧服务端兼容。
 # - ConversationTimelineProviderPresentationTests：Codex/Claude 默认与详细记录投影、锚点和全文入口。
 # - ConversationScrollStabilityTests：首屏可读交接、手势取消、阅读锚点和显式回到底部。
@@ -204,6 +206,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRunningQueuedDeliverySendsOneMessageAfterEachCompletedTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRunningQueueDoesNotDispatchMerelyBecauseWebSocketReconnected \
   -only-testing:MimiRemoteTests/QueuedTurnActiveTurnGapTests \
+  -only-testing:MimiRemoteTests/QueuedSessionBackgroundDispatchTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testFailedRunningMessageRetryReusesClientMessageID \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testRunningSendFailureNoRolloutFoundMarksLocalEchoFailedAndRetainsRetryPayload \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testApprovalDecisionSendsThroughCurrentWebSocket \
