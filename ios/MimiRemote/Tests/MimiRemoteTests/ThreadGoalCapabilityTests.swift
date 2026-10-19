@@ -284,5 +284,15 @@ final class ThreadGoalCapabilityTests: XCTestCase {
             RuntimeFeatureSupport.supportsGoals(for: "deepseek", declaredBy: ["deepseek"]),
             "Harness 不消费 goal 参数，即使声明也不开放"
         )
+
+        // 与可用性同一口径（#777）：探测抛错只是这次没探成，沿用上一次的目标能力结论。
+        client.runtimeThreadGoalSupport["claude"] = false
+        client.runtimeChannelErrors = ["claude"]
+        await store.refreshAppServerModelOptions()
+        XCTAssertTrue(store.supportsThreadGoals(runtimeProvider: "claude"))
+        // 明确探到不再声明时才撤下。
+        client.runtimeChannelErrors = []
+        await store.refreshAppServerModelOptions()
+        XCTAssertFalse(store.supportsThreadGoals(runtimeProvider: "claude"))
     }
 }
