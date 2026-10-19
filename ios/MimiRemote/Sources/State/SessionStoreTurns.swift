@@ -164,10 +164,19 @@ extension SessionStore {
             // 仍然提供 codex，而真正能用的 claude 不会顶上来。
             var availableRuntimeProviders: Set<String> = []
             var unprobedProviders: Set<String> = []
+            var threadGoalRuntimeProviders: Set<String> = []
+            var unprobedGoalProviders: Set<String> = []
             for provider in RuntimeFeatureSupport.runtimeProviders {
                 do {
                     if try await client.runtimeChannelAvailable(runtimeProvider: provider) {
                         availableRuntimeProviders.insert(provider)
+                        do {
+                            if try await client.runtimeSupportsThreadGoals(runtimeProvider: provider) {
+                                threadGoalRuntimeProviders.insert(provider)
+                            }
+                        } catch {
+                            unprobedGoalProviders.insert(provider)
+                        }
                     }
                 } catch {
                     unprobedProviders.insert(provider)
@@ -177,7 +186,12 @@ extension SessionStore {
             // 探测抛错只说明这次没探成（回前台换代、Harness 健康探测失败），不等于通道关闭：
             // 沿用上一次的结论，只有明确返回 false 才撤下，避免可用通道挂上「点击重新检查」（#777）。
             availableRuntimeProviders.formUnion(self.availableRuntimeProviders.intersection(unprobedProviders))
+            // 目标能力（#791）同一口径：没探成的 Runtime 沿用上一次的声明结论。
+            threadGoalRuntimeProviders.formUnion(
+                self.threadGoalRuntimeProviders.intersection(unprobedProviders.union(unprobedGoalProviders))
+            )
             self.availableRuntimeProviders = availableRuntimeProviders
+            self.threadGoalRuntimeProviders = threadGoalRuntimeProviders
             if availableRuntimeProviders.contains(Self.nativeHarnessRuntimeProvider) {
                 // 用户已启用、agentd 能力兼容且 Harness 健康后，才建立宿主级事件流。
                 // 这只观察上游，不拥有或停止 Harness 正在执行的任务。
@@ -225,6 +239,7 @@ extension SessionStore {
             guard appStore.activeHostScope == hostScope else { return }
             if !didRefreshRuntimeAvailability {
                 availableRuntimeProviders = ["codex"]
+                threadGoalRuntimeProviders = ["codex"]
             }
             appServerModelOptionsLastRefresh = Date()
             for provider in RuntimeFeatureSupport.runtimeProviders {
@@ -299,6 +314,10 @@ extension SessionStore {
             guard appStore.activeHostScope == hostScope else { return false }
             if available {
                 availableRuntimeProviders.insert(provider)
+                if (try? await clientFactory().runtimeSupportsThreadGoals(runtimeProvider: provider)) == true,
+                   appStore.activeHostScope == hostScope {
+                    threadGoalRuntimeProviders.insert(provider)
+                }
                 if provider == Self.nativeHarnessRuntimeProvider {
                     installNativeHarnessHostEvents()
                 }
@@ -647,10 +666,8 @@ extension SessionStore {
         }
         setErrorMessage(nil)
         disconnectWebSocket()
-        if let previousSession, supportsCodexThreadManagement(previousSession) {
-            if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
-                ensureQueuedSessionMonitoring(sessionID: previousSession.id)
-            }
+        if let previousSession {
+            continueQueuedMonitoringAfterLeaving(previousSession)
         }
     }
 
@@ -870,12 +887,8 @@ extension SessionStore {
         if wasNoOpSelection {
             return true
         }
-        if let previousSession,
-           previousSession.id != session.id,
-           supportsCodexThreadManagement(previousSession) {
-            if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
-                ensureQueuedSessionMonitoring(sessionID: previousSession.id)
-            }
+        if let previousSession, previousSession.id != session.id {
+            continueQueuedMonitoringAfterLeaving(previousSession)
         }
         if let previousSession,
            previousSession.id != session.id,
@@ -1894,104 +1907,4 @@ extension SessionStore {
         disconnectWebSocket()
         setStatusMessage(L10n.text("ui.session_stopped"))
     }
-
-    func refreshSelectedThreadGoal() async {
-        guard let sessionID = selectedSessionID else {
-            return
-        }
-        isUpdatingThreadGoal = true
-        threadGoalErrorMessage = nil
-        defer { isUpdatingThreadGoal = false }
-        do {
-            let goal = try await clientFactory().threadGoal(threadID: sessionID)
-            if let goal {
-                applyThreadGoal(goal, fallbackSessionID: sessionID)
-            } else {
-                clearThreadGoal(sessionID: sessionID)
-            }
-        } catch {
-            threadGoalErrorMessage = error.localizedDescription
-        }
-    }
-
-    @discardableResult
-    func setThreadGoal(
-        threadID: SessionID,
-        objective: String?,
-        status: ThreadGoalStatus?,
-        tokenBudget: Int64?,
-        expectedHostScope: HostScope? = nil
-    ) async -> Bool {
-        let hostScope = expectedHostScope ?? appStore.activeHostScope
-        guard appStore.activeHostScope == hostScope else { return false }
-        if let session = sessionsByID[threadID],
-           isProtocolReadOnlySession(session) {
-            threadGoalErrorMessage = L10n.text("ui.read_only")
-            return false
-        }
-        let normalizedObjective = objective?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let normalizedObjective, normalizedObjective.isEmpty {
-            threadGoalErrorMessage = L10n.text("ui.target_content_cannot_be_empty")
-            return false
-        }
-        if let tokenBudget, tokenBudget <= 0 {
-            threadGoalErrorMessage = L10n.text("ui.token_budget_must_be_greater_than_0")
-            return false
-        }
-        isUpdatingThreadGoal = true
-        threadGoalErrorMessage = nil
-        defer {
-            if appStore.activeHostScope == hostScope { isUpdatingThreadGoal = false }
-        }
-        do {
-            let goal = try await clientFactory().setThreadGoal(
-                threadID: threadID,
-                objective: normalizedObjective,
-                status: status,
-                tokenBudget: tokenBudget
-            )
-            guard appStore.activeHostScope == hostScope else { return false }
-            if let status, status != .complete {
-                clearLocalCompletedGoalMark(goal, sessionID: threadID)
-            }
-            applyThreadGoal(goal, fallbackSessionID: threadID, respectsLocalCompletion: false)
-            setStatusMessage(L10n.text("ui.goal_updated"))
-            return true
-        } catch {
-            guard appStore.activeHostScope == hostScope else { return false }
-            threadGoalErrorMessage = error.localizedDescription
-            setErrorMessage(for: error)
-            return false
-        }
-    }
-
-    func updateSelectedThreadGoalStatus(_ status: ThreadGoalStatus) async {
-        guard let sessionID = selectedSessionID else {
-            return
-        }
-        _ = await setThreadGoal(threadID: sessionID, objective: nil, status: status, tokenBudget: nil)
-    }
-
-    func clearSelectedThreadGoal() async {
-        guard let sessionID = selectedSessionID else {
-            return
-        }
-        if let session = sessionsByID[sessionID],
-           isProtocolReadOnlySession(session) {
-            threadGoalErrorMessage = L10n.text("ui.read_only")
-            return
-        }
-        isUpdatingThreadGoal = true
-        threadGoalErrorMessage = nil
-        defer { isUpdatingThreadGoal = false }
-        do {
-            try await clientFactory().clearThreadGoal(threadID: sessionID)
-            clearThreadGoal(sessionID: sessionID)
-            setStatusMessage(L10n.text("ui.target_cleared"))
-        } catch {
-            threadGoalErrorMessage = error.localizedDescription
-            setErrorMessage(for: error)
-        }
-    }
-
 }

@@ -80,6 +80,7 @@ echo "==> iOS conversation regressions"
 # - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
 # - RuntimeRouteRetentionTests：回前台重建 bundle 后会话仍走所属 Runtime，重新授权不为别的 Runtime 翻列表（#784）。
 # - LocalCompletionSupersededTests：本地完成标记只挡落后快照，电脑端开始的新一轮能恢复进行中并让发送排队（#805）。
+# - ThreadGoalCapabilityTests：目标任务按通道声明的 thread/goal/* 能力使用，Claude 不发也不显示（#791）。
 # - CodexTurnInterruptBeforeStartTests：turn/start 响应后、turn/started 前的停止等回合开始后重发，
 #   不把这段窗口里的 no active turn 当成已停止（#808）。
 # - NotificationTitleCacheTests、NotificationContentRewriterTests：会话标题的 App Group 本地缓存，
@@ -225,6 +226,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/NotificationRoutingGateTests \
   -only-testing:MimiRemoteTests/NotificationRouteResolutionTests \
   -only-testing:MimiRemoteTests/RuntimeRouteRetentionTests \
+  -only-testing:MimiRemoteTests/ThreadGoalCapabilityTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCompletionAwaitingReducerDoesNotOverwriteNewerActiveTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testPagedHistoryRetainsInvisibleTurnStatesForCompletionRecovery \
   -only-testing:MimiRemoteTests/NotificationTitleCacheTests \
