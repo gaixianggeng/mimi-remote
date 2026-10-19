@@ -72,6 +72,7 @@ function reply(uuid: string | undefined, messageId: string, body: string): Array
 
 const backgroundTasks = (tasks: Array<Record<string, unknown>>) => ({ type: "system", subtype: "background_tasks_changed", tasks });
 const bashTask = { task_id: "bash_1", task_type: "local_bash", description: "sleep 900 && echo done" };
+const sessionState = (state: string) => ({ type: "system", subtype: "session_state_changed", state });
 
 /** 开一个会话，跑一轮在后台启动任务的 turn；返回会话 ID 与该轮 turn ID。 */
 async function startBackgroundTurn(tasks: Array<Record<string, unknown>>) {
@@ -124,6 +125,39 @@ describe("background tasks and idle close", () => {
     await settle();
     // 刚结束时还在宽限里：从这一刻重新计时，而不是沿用回合结束时的计时。
     expect(runtime.hasLiveProcess()).toBe(true);
+    await pastIdleClose();
+    expect(runtime.hasLiveProcess()).toBe(false);
+  });
+
+  test("the continuation is not idle before its first output, however long Claude takes to start replying", async () => {
+    const { turnId, runtime } = await startBackgroundTurn([bashTask]);
+    // 实测顺序：任务离开电平集合 → CLI 报 running → 续写的 init；第一帧输出可能因排队、重试迟迟不来。
+    script.emit({ type: "system", subtype: "task_notification", task_id: "bash_1", status: "completed", output_file: "", summary: "done" });
+    script.emit(backgroundTasks([]));
+    script.emit(sessionState("running"));
+    script.emit({ type: "system", subtype: "init" });
+    await pastIdleClose();
+    expect(runtime.hasLiveProcess()).toBe(true);
+
+    for (const message of reply(undefined, "msg_late", "background finished")) script.emit(message);
+    script.emit({ type: "result", subtype: "success" });
+    script.emit(sessionState("idle"));
+    await settle();
+    const continuation = (frames.filter((frame: any) => frame.method === "turn/completed").at(-1) as any).params.turn.id;
+    expect(continuation).not.toBe(turnId);
+    await pastIdleClose();
+    expect(runtime.hasLiveProcess()).toBe(false);
+  });
+
+  test("a round that ends without output still starts the idle timer once the CLI is idle", async () => {
+    const { runtime } = await startBackgroundTurn([bashTask]);
+    script.emit(backgroundTasks([]));
+    script.emit(sessionState("running"));
+    await pastIdleClose();
+    expect(runtime.hasLiveProcess()).toBe(true);
+    // 这一轮没有任何输出就结束（没有 turn 可收尾）：CLI 回到 idle 后照常计时。
+    script.emit({ type: "result", subtype: "success" });
+    script.emit(sessionState("idle"));
     await pastIdleClose();
     expect(runtime.hasLiveProcess()).toBe(false);
   });

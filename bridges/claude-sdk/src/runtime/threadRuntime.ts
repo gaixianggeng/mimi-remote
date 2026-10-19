@@ -117,6 +117,11 @@ export class ThreadRuntime {
    */
   private backgroundTasks: ReadonlySet<string> = new Set();
   /**
+   * CLI 自己报告的会话状态（session_state_changed）是否为执行中。完成通知触发的续写在第一帧输出前还没有
+   * turn，排队、重试时这段可能很长；CLI 报 running 期间同样不做空闲关闭。按进程计。
+   */
+  private cliActive = false;
+  /**
    * 后台任务完成通知的 run_id（#797）：最近送达、还没有续写认领的一个，以及当前这一轮开始（system/init）
    * 时记下的那一个。续写的输出不带 user_message_uuid，回合 ID 按 notificationTurnId 由它生成，与历史
    * 切分规则一致。按进程计。
@@ -396,6 +401,7 @@ export class ThreadRuntime {
     this.skillPlugin = skillPlugin;
     this.queryStartedAt = Date.now();
     this.backgroundTasks = new Set();
+    this.cliActive = false;
     this.notificationRunId = undefined;
     this.roundRunId = undefined;
     this.applied = { ...settings };
@@ -440,6 +446,7 @@ export class ThreadRuntime {
         logger.debug("claude.exit", { thread: this.threadId, pid: this.pid ?? null, openTurns: this.openTurns().length });
         // 主动关闭时已按原因记过；剩下的是进程自己退出（崩溃或被结束）。
         this.dropBackgroundTasks("exited");
+        this.cliActive = false;
         this.query = undefined;
         this.input = undefined;
         this.applied = undefined;
@@ -595,6 +602,7 @@ export class ThreadRuntime {
           if (typeof record.run_id === "string" && record.run_id && record.skip_transcript !== true) this.notificationRunId = record.run_id;
         }
         else if (record.subtype === "session_state_changed") {
+          this.cliStateChanged(record.state);
           const status = threadStatus(record.state);
           if (status) this.emit("thread/status/changed", { threadId: this.threadId, status });
         }
@@ -668,6 +676,16 @@ export class ThreadRuntime {
     if (hadTasks && !live.length && this.query && !this.isBusy()) this.scheduleIdleClose();
   }
 
+  /**
+   * CLI 从执行中回到 idle：这时才算真的空闲，重新计时。通知触发的一轮可能没有任何输出就结束（没有
+   * turn 可收尾，结果帧不会计时），只能靠这里。
+   */
+  private cliStateChanged(state: unknown): void {
+    const wasActive = this.cliActive;
+    this.cliActive = state === "running" || state === "requires_action";
+    if (wasActive && state === "idle" && this.query && !this.isBusy() && !this.backgroundTasks.size) this.scheduleIdleClose();
+  }
+
   /** 进程即将结束：仍在运行的后台任务会随之中止，记下原因，便于解释之后没有出现的续写。 */
   private dropBackgroundTasks(reason: StopReason | "exited"): void {
     if (this.backgroundTasks.size) {
@@ -676,11 +694,11 @@ export class ThreadRuntime {
     this.backgroundTasks = new Set();
   }
 
-  /** 后台任务还在运行时不关闭：到点时跳过，任务全部结束后再重新计时。 */
+  /** 后台任务还在运行、CLI 仍在执行时不关闭：到点时跳过，任务全部结束或 CLI 回到 idle 后再重新计时。 */
   private scheduleIdleClose(): void {
     this.cancelIdleClose();
     this.idleTimer = setTimeout(() => {
-      if (!this.isBusy() && !this.backgroundTasks.size) void this.stopQuery("idle");
+      if (!this.isBusy() && !this.backgroundTasks.size && !this.cliActive) void this.stopQuery("idle");
     }, this.host.idleCloseMs);
     this.idleTimer.unref?.();
   }
