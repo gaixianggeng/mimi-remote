@@ -403,7 +403,7 @@ struct ComposerView: View {
         clampModelSelectionToSelectedSessionRuntime()
         restoreComposerPermissionSelection(for: currentComposerDraftScope)
         voiceInput.prewarm()
-        await sessionStore.refreshAppServerModelOptions()
+        await refreshModelOptionsForComposerRuntime()
         await sessionStore.refreshCapabilities()
         await refreshPermissionProfilesForCurrentCWD()
         await refreshClaudeSlashCommandCatalog()

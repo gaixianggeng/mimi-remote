@@ -13,6 +13,7 @@ enum NotificationContentRewriter {
         switch runtime {
         case .codex: return "Codex"
         case .claude: return "Claude Code"
+        case .deepseek: return "DeepSeek"
         }
     }
 

@@ -570,6 +570,22 @@
         }
       }
     },
+    "push.message.title.deepseek": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek message"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 消息"
+          }
+        }
+      }
+    },
     "$%@": {
       "shouldTranslate": false
     },
@@ -44788,6 +44804,13 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "A partial output was interrupted and remains unconfirmed." } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "一条临时输出已中断，且仍未确认。" } }
+      }
+    },
+    "harness.reply_interrupted": {
+      "comment": "Shown after a DeepSeek reply that the user stopped; the reply above is the partial text that had already streamed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Reply interrupted. The content above is incomplete." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "回复已中断，以上内容不完整。" } }
       }
     },
     "harness.previous_submission_unconfirmed": {

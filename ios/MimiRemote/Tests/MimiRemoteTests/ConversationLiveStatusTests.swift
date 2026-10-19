@@ -253,7 +253,39 @@ final class ConversationLiveStatusTests: XCTestCase {
         }
     }
 
+    // MARK: - 时间线尾部只保留一个等待提示（#782）
+
+    /// 实时状态行在任何连接阶段都已占据时间线尾部；后台补齐历史不再另起第二行。
+    @MainActor
+    func testLiveStatusRowAbsorbsHistoryLoadingInEveryReadiness() {
+        let readinesses: [ConversationReadiness] = [
+            .sending, .loadingHistory, .connecting, .live, .observing,
+            .reconnecting, .disconnected, .failed, .unavailable(.credentialsInvalid)
+        ]
+        for readiness in readinesses {
+            XCTAssertFalse(
+                showsInlineHistoryLoading(liveStatusReadiness: readiness),
+                "\(readiness) 时尾部只保留实时状态行"
+            )
+        }
+        XCTAssertTrue(
+            showsInlineHistoryLoading(liveStatusReadiness: nil),
+            "没有实时状态行的已完成会话补齐历史时仍显示加载提示"
+        )
+    }
+
     // MARK: - Fixtures
+
+    @MainActor
+    private func showsInlineHistoryLoading(liveStatusReadiness: ConversationReadiness?) -> Bool {
+        ConversationTimelineView.shouldShowInlineHistoryLoading(
+            timelineItemsAreEmpty: false,
+            isHistoryLoading: true,
+            isLoadingEarlierHistory: false,
+            hasHistorySavingsNotice: false,
+            liveStatusReadiness: liveStatusReadiness
+        )
+    }
 
     private func sample(total: Int, last: Int?) -> AppServerTokenUsageSample {
         AppServerTokenUsageSample(

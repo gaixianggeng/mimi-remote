@@ -533,6 +533,8 @@ final class SessionStore: ObservableObject {
     var appServerModelOptionsLastRefresh: Date?
     // 只缓存目标目录的读取状态；模型数据仍统一存于 appServerModelOptions。
     var turnModelRefreshByRuntime: [String: (hostScope: HostScope, date: Date)] = [:]
+    // 聚合刷新没带回、沿用上一份目录的 Runtime；定向补拉确认前不算已有目录（#778）。
+    var retainedModelCatalogProviders: Set<String> = []
     var turnModelTasksByRuntime: [String: (hostScope: HostScope, id: UUID, refreshDate: Date?, task: Task<[CodexAppServerModelOption], Error>)] = [:]
     var permissionProfilesCWD: String?
     var permissionProfilesRefreshRequestedCWD: String?

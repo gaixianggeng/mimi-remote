@@ -1077,7 +1077,6 @@ extension SessionStore {
     func historyPolicyFailure(from error: Error) -> HistoryPolicyFailure? {
         let underlying = (error as? HistoryFirstPageFetchFailure)?.underlying ?? error
         let message = underlying.localizedDescription
-        let lowerMessage = message.lowercased()
         let appServerError: CodexAppServerError?
         if case CodexAppServerConnectionError.appServer(let error) = underlying {
             appServerError = error
@@ -1086,22 +1085,21 @@ extension SessionStore {
         }
 
         let data = appServerError?.data?.objectValue
-        let reason = data?["reason"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let isHistoryReason = reason?.hasPrefix("history_") == true
-        let isLegacyHistoryPolicyMessage =
-            lowerMessage.contains("-32080")
-            && (
-                lowerMessage.contains("thread/turns/list")
-                || lowerMessage.contains("thread/read")
-                || lowerMessage.contains("history response")
-                || lowerMessage.contains("limit/itemsview")
-                || message.contains("历史响应")
-                || message.contains("临时限流")
-                || message.contains("响应过大")
-                || message.contains("内容过大")
-            )
-        let isGatewayHistoryPolicy = appServerError?.code == -32080 && (isHistoryReason || isLegacyHistoryPolicyMessage)
-        guard isGatewayHistoryPolicy || isLegacyHistoryPolicyMessage else {
+        let structuredReason = data?["reason"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let reason: String?
+        // 结构化 reason 是权威分类：网关的限流、同请求占用与体量阻断都带 history_* reason，
+        // 其他 reason（如 thread_read_scope_mismatch）与历史体量无关。
+        if let structuredReason, !structuredReason.isEmpty {
+            guard appServerError?.code == -32080, structuredReason.hasPrefix("history_") else {
+                return nil
+            }
+            reason = structuredReason
+        } else if message.contains("-32080"), message.contains("相同历史或列表请求仍在执行") {
+            // 丢了 data 的同请求占用与 history_request_in_flight 同义：按繁忙原地重试，不能走体量降级。
+            reason = "history_request_in_flight"
+        } else if Self.isLegacyHistoryPolicyMessage(message) {
+            reason = nil
+        } else {
             return nil
         }
 
@@ -1135,6 +1133,23 @@ extension SessionStore {
             maxResponseBytes: (maxResponseBytes.map { $0 > 0 } == true) ? maxResponseBytes : nil,
             itemsView: (itemsView?.isEmpty == false) ? itemsView : nil
         )
+    }
+
+    /// 旧版 agentd 的历史策略拒绝不带 reason，只能按措辞识别：限流与预算类都含「thread/method」（授权与参数
+    /// 校验文案不含），体量阻断写「history response 过大」。不能凭方法名判断——「thread/read.threadId 未由当前
+    /// gateway 连接授权」这类授权拒绝同样带方法名，误判后小会话会被降级成缩略历史并显示体量文案（#785）。
+    nonisolated static func isLegacyHistoryPolicyMessage(_ message: String) -> Bool {
+        guard message.contains("-32080") else {
+            return false
+        }
+        let lowerMessage = message.lowercased()
+        return lowerMessage.contains("history response")
+            || lowerMessage.contains("limit/itemsview")
+            || lowerMessage.contains("thread/method")
+            || message.contains("历史响应")
+            || message.contains("临时限流")
+            || message.contains("响应过大")
+            || message.contains("内容过大")
     }
 
     func boundedHistoryPolicyRetryNanoseconds(_ nanoseconds: UInt64) -> UInt64 {

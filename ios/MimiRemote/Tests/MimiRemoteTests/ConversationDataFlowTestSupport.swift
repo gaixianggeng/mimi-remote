@@ -531,11 +531,16 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let gitPullRequestResults: [String: Result<GitPullRequestResponse, Error>]
     let gitPullRequestStatusResults: [String: Result<GitPullRequestStatusResponse, Error>]
     let messagesError: Error?
-    let modelOptionsResult: [CodexAppServerModelOption]
+    var modelOptionsResult: [CodexAppServerModelOption]
     let modelOptionsError: Error?
     var runtimeChannelAvailability: [String: Bool]
     /// 各 Runtime 通道是否声明 thread/goal/*；默认与真实 agentd 一致，只有 Codex 声明（#791）。
     var runtimeThreadGoalSupport: [String: Bool] = ["codex": true]
+    /// 探测抛错（不是返回 false）的 Runtime，模拟回前台换代窗口里没探成。
+    var runtimeChannelErrors: Set<String> = []
+    /// 按 Runtime 定向查询的目录；未设置的 Runtime 沿用聚合目录。
+    var modelOptionsByRuntime: [String: [CodexAppServerModelOption]] = [:]
+    private(set) var targetedModelOptionsRequests: [String] = []
     let rateLimitsByRuntime: [String: RateLimitSummary]
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)?
@@ -761,8 +766,19 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         return modelOptionsResult
     }
 
+    func modelOptions(runtimeProvider: String) async throws -> [CodexAppServerModelOption] {
+        targetedModelOptionsRequests.append(runtimeProvider)
+        if let options = modelOptionsByRuntime[runtimeProvider] {
+            return options
+        }
+        return try await modelOptions()
+    }
+
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
-        runtimeChannelAvailability[runtimeProvider] ?? false
+        if runtimeChannelErrors.contains(runtimeProvider) {
+            throw MockError.unimplemented
+        }
+        return runtimeChannelAvailability[runtimeProvider] ?? false
     }
 
     func runtimeSupportsThreadGoals(runtimeProvider: String) async throws -> Bool {

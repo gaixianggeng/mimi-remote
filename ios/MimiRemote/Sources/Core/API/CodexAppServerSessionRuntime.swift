@@ -269,6 +269,8 @@ actor CodexAppServerSessionRuntime {
     var globalListVerifiedMissingSessionIDs: Set<SessionID> = []
     // 游标属于生成它的查询模式；扫描回退后沿原链继续，不能把 opaque cursor 交给索引查询。
     var threadListScanCursors: Set<CodexAppServerScanCursor> = []
+    // 受控全局发现的 cursor 由签发它的网关连接独占；记下签发连接，换连接后不再重放（#792）。
+    var globalListCursorIssuers: [String: CodexAppServerGlobalListCursorIssuer] = [:]
     var recencySortUnavailable = false
     var turnStartTasksBySessionID: [
         SessionID: (token: UUID, task: Task<CodexAppServerTurnStartOutcome, Error>)
@@ -547,9 +549,9 @@ actor CodexAppServerSessionRuntime {
             && !threadListScanCursors.contains(.init(cwd: nil, cursor: cursor))
         var page: SessionsPage
         do {
-            let result = try await sendRecoveringFromStaleInitialization(
+            let result = try await sendControlledGlobalThreadList(
                 builder.controlledGlobalThreadList(limit: limit, cursor: cursor, useStateDBOnly: useIndex),
-                timeout: longRunningRequestTimeout
+                cursor: cursor
             )
             page = threadListPage(from: result, projects: projects, fallbackProject: nil)
             if !useIndex { rememberThreadListScanCursor(page, cwd: nil) }
@@ -563,9 +565,9 @@ actor CodexAppServerSessionRuntime {
             // 没有已知缺口的带游标空页直接续读；完整空首屏或已知缺口才确认历史。
             let needsEmptyPageVerification = cursor == nil && page.sessions.isEmpty && !page.hasMore
             if useIndex, needsEmptyPageVerification || !repairCandidates.isEmpty {
-                let scanned = try await sendRecoveringFromStaleInitialization(
+                let scanned = try await sendControlledGlobalThreadList(
                     builder.controlledGlobalThreadList(limit: limit, cursor: cursor),
-                    timeout: longRunningRequestTimeout
+                    cursor: cursor
                 )
                 page = threadListPage(from: scanned, projects: projects, fallbackProject: nil)
                 rememberThreadListScanCursor(page, cwd: nil)
@@ -576,9 +578,9 @@ actor CodexAppServerSessionRuntime {
         } catch {
             guard useIndex, shouldFallbackFromStateDBOnlyList(error) else { throw error }
             stateDBOnlyListUnavailable = true
-            let result = try await sendRecoveringFromStaleInitialization(
+            let result = try await sendControlledGlobalThreadList(
                 builder.controlledGlobalThreadList(limit: limit, cursor: cursor),
-                timeout: longRunningRequestTimeout
+                cursor: cursor
             )
             page = threadListPage(from: result, projects: projects, fallbackProject: nil)
             rememberThreadListScanCursor(page, cwd: nil)
@@ -3376,9 +3378,12 @@ actor CodexAppServerSessionRuntime {
 
     func sendRecoveringFromStaleInitialization(
         _ request: CodexAppServerRequestSpec,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        // 每次真正发出前交出所用连接；绑定连接的请求（全局列表 cursor，#792）在这里拒绝换连接重放。
+        beforeSend: (CodexAppServerConnection) throws -> Void = { _ in }
     ) async throws -> CodexAppServerJSONValue? {
         let firstConnection = try await ensureConnection()
+        try beforeSend(firstConnection)
         do {
             return try await firstConnection.send(request, timeout: timeout)
         } catch {
@@ -3386,6 +3391,7 @@ actor CodexAppServerSessionRuntime {
                await reauthorizeThread(threadID, on: firstConnection) {
                 // 授权在翻列表所用的当前连接上生效，重试也走当前连接；仍失败按常规错误处理（#718）。
                 let current = try await ensureConnection()
+                try beforeSend(current)
                 do {
                     return try await current.send(request, timeout: timeout)
                 } catch {
@@ -3395,6 +3401,7 @@ actor CodexAppServerSessionRuntime {
             }
             if await recoverConnectionAfterStaleInitialization(firstConnection, error: error) {
                 let secondConnection = try await ensureConnection()
+                try beforeSend(secondConnection)
                 do {
                     return try await secondConnection.send(request, timeout: timeout)
                 } catch {

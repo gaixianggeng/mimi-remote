@@ -237,7 +237,9 @@ export class ThreadRuntime {
    * 没有工具调用时会被推迟成下一轮，与"引导当前 turn"的语义不符。
    */
   steer(expectedTurnId: string, input: UserInput[], clientUserMessageId: string | null): { turnId: string } {
-    const turn = this.current;
+    // 引导打断输出后，结果只吸收了首条消息、引导还没开始输出：current 暂时为空，turn 仍挂在
+    // commands 名下，turn/start 也以它拒绝。这时的引导同样并入它（#798）。
+    const turn = this.current ?? [...this.commands.values()].find((owner) => !owner.finished);
     if (!turn || !this.input) throw new RpcError(INVALID_PARAMS, `thread \`${this.threadId}\` has no active turn`);
     if (turn.id !== expectedTurnId) {
       throw new RpcError(INVALID_PARAMS, `active turn is \`${turn.id}\`, not \`${expectedTurnId}\``, {

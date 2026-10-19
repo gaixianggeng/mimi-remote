@@ -9,8 +9,10 @@ const (
 	EventTurnCompleted   = "turn.completed"
 	EventTurnFailed      = "turn.failed"
 	EventTurnInterrupted = "turn.interrupted"
-	messageTTL           = routeTTL
-	maxMessages          = maxRoutes
+	// RuntimeDeepSeek 只投递回合终态；DeepSeek 没有 holder.waiting 语义。
+	RuntimeDeepSeek = "deepseek"
+	messageTTL      = routeTTL
+	maxMessages     = maxRoutes
 )
 
 // Message 只保留打开任务所需的本机路由。正文和错误详情不进入推送。
@@ -33,7 +35,9 @@ func (m *Manager) PrepareMessage(message Message) PreparedDelivery {
 	if !m.Enabled() || strings.TrimSpace(message.ThreadID) == "" || strings.TrimSpace(message.MessageID) == "" {
 		return nil
 	}
-	if message.Runtime != "codex" && message.Runtime != "claude" {
+	switch message.Runtime {
+	case "codex", "claude", RuntimeDeepSeek:
+	default:
 		return nil
 	}
 	switch message.Event {
@@ -45,15 +49,11 @@ func (m *Manager) PrepareMessage(message Message) PreparedDelivery {
 	default:
 		return nil
 	}
-	devices := m.devices.Active()
-	if message.Event == EventHolderWaiting {
-		filtered := make([]Device, 0, len(devices))
-		for _, device := range devices {
-			if device.SupportsHolderWaiting {
-				filtered = append(filtered, device)
-			}
+	devices := make([]Device, 0, MaxDevices)
+	for _, device := range m.devices.Active() {
+		if device.acceptsMessage(message) {
+			devices = append(devices, device)
 		}
-		devices = filtered
 	}
 	if len(devices) == 0 {
 		return nil

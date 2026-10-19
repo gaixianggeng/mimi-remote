@@ -80,6 +80,7 @@ echo "==> iOS conversation regressions"
 # - ThreadGoalCapabilityTests：目标任务按通道声明的 thread/goal/* 能力使用，Claude 不发也不显示（#791）。
 # - NotificationTitleCacheTests、NotificationContentRewriterTests：会话标题的 App Group 本地缓存，
 #   以及通知扩展只用该缓存在设备上改写锁屏文案、缓存缺失时退回通用文案。
+# - RuntimeCatalogRefreshTests：Runtime 探测失败不撤下可用通道、选择器重探，以及模型目录缺席 Runtime 的补齐（#777/#778）。
 # - WorkbenchLayoutModeCommitTests：iPad 旋转跨 860pt 时换树等系统尺寸过渡结束，
 #   以及输入框焦点、面板跨换树交接（#755）。
 #
@@ -108,6 +109,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ComposerAutocompleteTests \
   -only-testing:MimiRemoteTests/ClaudeSlashCommandCatalogTests \
   -only-testing:MimiRemoteTests/DeepSeekComposerPolicyTests \
+  -only-testing:MimiRemoteTests/RuntimeCatalogRefreshTests \
   -only-testing:MimiRemoteTests/DeepSeekSearchRoutingTests \
   -only-testing:MimiRemoteTests/DeepSeekRuntimePresentationTests \
   -only-testing:MimiRemoteTests/DefaultModelDisplayTests \
@@ -119,6 +121,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/HarnessSessionJournalTests \
   -only-testing:MimiRemoteTests/HarnessSubmissionControllerTests \
   -only-testing:MimiRemoteTests/HarnessPresentationProjectorTests \
+  -only-testing:MimiRemoteTests/HarnessInterruptedSettlementTests \
   -only-testing:MimiRemoteTests/HarnessEventClientTests \
   -only-testing:MimiRemoteTests/HarnessStreamReconnectTests \
   -only-testing:MimiRemoteTests/HarnessSnapshotBaselineTests \
@@ -127,6 +130,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/HarnessRecoveryCoordinatorTests \
   -only-testing:MimiRemoteTests/HarnessHostEventObserverTests \
   -only-testing:MimiRemoteTests/HarnessHistoryPageTests \
+  -only-testing:MimiRemoteTests/HistoryPolicyClassificationTests \
   -only-testing:MimiRemoteTests/ClaudeTakeoverTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
   -only-testing:MimiRemoteTests/NewSessionBufferedReplyTests \
@@ -179,6 +183,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexGlobalDiscoveryUsesIndexAcrossPages \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexGlobalDiscoveryFallsBackWhenIndexUnsupported \
   -only-testing:MimiRemoteTests/SessionStorePublishBudgetTests \
+  -only-testing:MimiRemoteTests/ControlledGlobalCursorLifecycleTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testGlobalLibraryPublishesAllRuntimeFirstPagesBeforeBackfill \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testGlobalLibraryFirstPageFailureDoesNotBlockOtherRuntimeFirstPages \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testScanFallbackContinuationKeepsItsQueryModeForDirectoryAndGlobalLists \

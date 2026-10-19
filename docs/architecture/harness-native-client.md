@@ -199,10 +199,27 @@ opt-in `assistantStream:true` 时 snapshot 必须带 `assistantStream` 基线，
 
 - `outcome.seq` 就是该次提交在持久日志里的 seq。
 - `outcome.eventType` 就是那条事件的 type：正常结算（`turn/end` 为 `completed` 或 `error`）→
-  **`assistant/message`**；**用户中止**（`turn/end` 为 `aborted`）→ **`assistant/attempt`**。
-- **取消不产生 `kind:'abandoned'`**，它照样 `committed`，只能靠 `eventType` 区分。
+  **`assistant/message`**；**用户中止**（`turn/end` 为 `aborted`）在 0.1.5-rc.2 → **`assistant/attempt`**。
+- **取消不产生 `kind:'abandoned'`**，它照样 `committed`。
   消费者**不得**把 `kind:'committed'` 直接当成「有完整正文」。
 - `kind:'abandoned'` 在本次采集中未出现，属源码级，不得当作已实测。
+
+**取消的持久落盘有两种形态（#809）。** 判定只看持久记录的字段，不按 Harness 版本号猜格式：
+
+| 形态 | 版本 | 持久记录（`outcome.seq` 处） | `end.outcome.eventType` | 正文 |
+|---|---|---|---|---|
+| attempt | 0.1.5-rc.2 的用户取消（实测）；0.2.x 无可见输出时的取消（源码级） | `assistant/attempt`，`data` 为 `{turn,step,stream}` | `assistant/attempt` | 没有持久消息 |
+| 中断消息 | 0.2.1-alpha.1（2/2 实测） | `assistant/message`，`data` 键为 `interrupted,message,step,stream,turn`，`interrupted === true`，没有 `usage` | `assistant/message` | 取消前已下发的前缀 |
+
+- 0.2.x 的 `end` 帧与正常结算**完全同形**，帧本身不带中断标记，所以 `eventType == assistant/message`
+  也**不**代表回复完整。必须读 `outcome.seq` 处持久记录的 `data.interrupted`。
+- 同一安装在两种形态之间切换：上游取消分支里，可见前缀非空才写中断消息，为空仍写 `assistant/attempt`
+  （`dsh-agent-loop` 的 `interruptedBlocks()`）。
+- 两种形态都伴随同一轮的 `turn/end`，`reason` 为 `{kind:'aborted', reason:{kind:'user'}}`。
+- 客户端呈现：中断消息保留前缀（与 Codex、Claude 停止后保留已输出内容一致），并在其后显示中断标记；
+  实时与历史页用同一个标记身份，重开会话不丢也不重复。`turn/end` 为 `aborted` 时轮次收口为「已中断」。
+- 夹具：`stream/assistant-stream-cancel.json`（三种回放：0.1.5 attempt、0.2.x 中断消息、0.2.x 无可见输出）。
+  原始帧未保留，回放按实测事实与 0.2.1-alpha.1 安装包源码重建，级别记为 `upstream-source`。
 
 `revision` 必须连续（`expected = previous + 1`，`start` 为 1），跳号即载体失败，必须重开 follow。
 `index` 稠密递增（从 0 开始），`end` 也带 `index`，接在最后一个 chunk 之后。
@@ -265,6 +282,12 @@ opt-in `assistantStream:true` 时 snapshot 必须带 `assistantStream` 基线，
 | 错误词表 | 无 `session/writer-held` | 新增 `session/writer-held` | 错误映射需容忍未知 code | 源码级 |
 | `session/updateQueue` | 同步，仅作用于 live Agent | 返回 Promise，会先 resume 冷会话 | 语义变化，非 wire 形状变化 | 源码级 |
 | `session/create` 的 `agentPreset` | 装配了 agent 名册时返回 `{sessionId, agentPreset}` | — | 可选字段，客户端不得假设其存在 | ✅ 实测返回 `agentPreset:"standard"` |
+
+`0.2.1-alpha.1`（2026-10-19，#809 端到端验收）另有一项落盘差异：
+
+| 区域 | 0.1.5-rc.2 | 0.2.1-alpha.1 | 影响 | 实跑复核 |
+|---|---|---|---|---|
+| 用户取消的持久结算 | `assistant/attempt`，`end.outcome.eventType` 同为 `assistant/attempt` | 有可见输出时为 `assistant/message` + `interrupted: true`（正文是前缀），`end.outcome.eventType` 为 `assistant/message`；无可见输出时仍为 `assistant/attempt` | 只看 `eventType` 会把半截内容当成完整回复；必须按 `data.interrupted` 判定（见 §2.7） | ✅ 2/2 实测；无可见输出分支属源码级 |
 
 **结论（实跑后更新）**：控制流帧结构**已按 0.1.5-rc.2 实测**，`baseline` 含 `queues` 一项可以按该版本实现。
 但两版本差异是真实的，所以：
