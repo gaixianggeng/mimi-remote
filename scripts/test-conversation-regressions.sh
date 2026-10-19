@@ -73,6 +73,7 @@ echo "==> iOS conversation regressions"
 # - ConversationQuestionReplyTests：Desktop 异步提问答复的结构化投影，以及实时、重进和分页历史的一致顺序。
 # - MarkdownRenderingTests：proposed_plan 流式和完整渲染。
 # - PairingLinkTests：Endpoint allowlist、ATS 传输策略、Host capability 隔离和 stale lease。
+# - HostSwitchSlowHandshakeTests：一台电脑握手挂起时可改选或取消，连续切换可用，提交后的请求不继承预热剩余时间（#801）。
 # - DoctorDiagnosticsTests：结构化 Doctor 响应、HTTP 错误和向后兼容。
 # - ProtocolContractTests：iOS/agentd 当前、上一版和明确不兼容的版本窗口。
 # - ManagedConnectionEntitlementStoreTests、ManagedConnectionEntitlementAPIClientTests、
@@ -284,6 +285,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLongHistoryFirstPresentationAndCachedReopenForBothProviders \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testLongProseHistoryFirstPresentationAndCachedReopenForBothProviders \
   -only-testing:MimiRemoteTests/PairingLinkTests \
+  -only-testing:MimiRemoteTests/HostSwitchSlowHandshakeTests \
   -only-testing:MimiRemoteTests/TailcatExperimentRoutingTests \
   -only-testing:MimiRemoteTests/TailcatLocalEndpointProbeTests \
   -only-testing:MimiRemoteTests/DoctorDiagnosticsTests \

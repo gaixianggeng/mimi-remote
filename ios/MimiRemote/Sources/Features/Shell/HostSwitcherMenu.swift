@@ -119,14 +119,23 @@ struct HostSwitcherMenu: View {
                         systemImage: menuSystemImage(for: profile)
                     )
                 }
+                // 一台电脑握手慢时仍可改选其他电脑（#801）；只禁用当前电脑和正在切过去的那台。
                 .disabled(
                     profile.id == appStore.activeConnectionProfileID ||
-                        sessionStore.isConnectionSwitchInProgress
+                        profile.id == sessionStore.connectionSwitchTargetProfileID
                 )
             }
 
             if !appStore.connectionProfiles.isEmpty {
                 Divider()
+            }
+
+            if sessionStore.isConnectionSwitchInProgress {
+                Button {
+                    sessionStore.cancelConnectionSwitch()
+                } label: {
+                    Label(L10n.text("ui.cancel_computer_switch"), systemImage: "xmark.circle")
+                }
             }
 
             Button {
@@ -378,7 +387,7 @@ struct HostSwitcherMenu: View {
 
     private func switchToProfile(_ profileID: String) {
         guard profileID != appStore.activeConnectionProfileID,
-              !sessionStore.isConnectionSwitchInProgress else {
+              profileID != sessionStore.connectionSwitchTargetProfileID else {
             return
         }
         hostStatusStore.cancel()
@@ -390,7 +399,7 @@ struct HostSwitcherMenu: View {
                 HostSwitchSignpost.event("session_index_visible")
                 failedProfileID = nil
             } catch is CancellationError {
-                // 退后台或用户取消时保留原 Mac，不弹失败。
+                // 退后台、用户取消或被新的选择取代时保留原 Mac，不弹失败。
             } catch {
                 failedProfileID = profileID
                 switchErrorMessage = UserFacingError(error).message

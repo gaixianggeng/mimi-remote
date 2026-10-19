@@ -411,6 +411,7 @@ final class SessionStore: ObservableObject {
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?
+    var connectionSwitchSupersession = ConnectionSwitchSupersession()
     var preparedConnectionTask: Task<PreparedConnectionSettings, Error>?
     var lastSeenEventSeqBySessionID: [SessionID: EventSequence] = [:]
     var historySnapshotSeqBySessionID: [SessionID: EventSequence] = [:]

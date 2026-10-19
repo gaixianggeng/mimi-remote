@@ -431,9 +431,10 @@ actor CodexAppServerSessionRuntime {
 
     /// 候选主机只初始化共享 gateway，不 resume thread、不拉取任何业务数据。
     /// 提交后 SessionStore 会直接复用这条连接，避免 bootstrap 再次 initialize。
-    func prepareForHostActivation() async throws {
+    /// `handshakeTimeout` 只约束这次握手；提交后的请求仍用 Runtime 的常规超时（#801）。
+    func prepareForHostActivation(handshakeTimeout: TimeInterval? = nil) async throws {
         try await withTaskCancellationHandler {
-            _ = try await ensureConnection()
+            _ = try await ensureConnection(handshakeTimeout: handshakeTimeout)
         } onCancel: {
             Task {
                 await self.shutdownForHostSwitch()

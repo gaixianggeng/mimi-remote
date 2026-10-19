@@ -631,7 +631,9 @@ struct InitialConnectionSettingsSections: View {
                     // 列表里只连一台：点它是把当前电脑换成这台，文案直说「切换」。
                     // 画成描边小胶囊：只有一个粗体词时读起来像标签，不像按钮；
                     // 不用填充，填充底色已经留给「当前电脑」这类选中状态。
-                    let isSwitchDisabled = isSavingConnection || profileOperationID != nil
+                    // 另一台还在验证时可以直接改选这台，新选择取代旧的（#801）。
+                    let isSwitchDisabled = isSavingConnection
+                        || (profileOperationID != nil && !sessionStore.isConnectionSwitchInProgress)
                     Button {
                         Task { await switchConnectionProfile(id: item.id) }
                     } label: {
@@ -1504,7 +1506,8 @@ struct InitialConnectionSettingsSections: View {
 
     private func switchConnectionProfile(id: String) async {
         profileOperationID = id
-        defer { profileOperationID = nil }
+        // 被改选取代的旧切换会晚一步结束，不能清掉新选择的进度。
+        defer { if profileOperationID == id { profileOperationID = nil } }
         do {
             _ = try await sessionStore.switchConnectionProfile(id: id)
             endpoint = appStore.endpoint
