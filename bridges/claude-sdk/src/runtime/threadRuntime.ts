@@ -11,6 +11,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
+import { notificationTurnId } from "../claude/itemIds.ts";
 import { runsAsClaudeCommand } from "../claude/skillCommand.ts";
 import { claudeConfigDir } from "../claude/transcripts.ts";
 import { RpcError } from "../rpc/frames.ts";
@@ -115,6 +116,13 @@ export class ThreadRuntime {
    * 按进程计，进程起停时清空。
    */
   private backgroundTasks: ReadonlySet<string> = new Set();
+  /**
+   * 后台任务完成通知的 run_id（#797）：最近送达、还没有续写认领的一个，以及当前这一轮开始（system/init）
+   * 时记下的那一个。续写的输出不带 user_message_uuid，回合 ID 按 notificationTurnId 由它生成，与历史
+   * 切分规则一致。按进程计。
+   */
+  private notificationRunId: string | undefined;
+  private roundRunId: string | undefined;
   private pid: number | undefined;
   private queryStartedAt = 0;
   private settings: RunSettings;
@@ -388,6 +396,8 @@ export class ThreadRuntime {
     this.skillPlugin = skillPlugin;
     this.queryStartedAt = Date.now();
     this.backgroundTasks = new Set();
+    this.notificationRunId = undefined;
+    this.roundRunId = undefined;
     this.applied = { ...settings };
     this.transcriptExists = true;
     void query
@@ -463,7 +473,8 @@ export class ThreadRuntime {
 
   /**
    * 输出归属：每一轮输出的第一帧带 user_message_uuid，指明它回应的是哪条消息。
-   * 没有 uuid 的输出（后台任务完成后 Claude 自己继续）开一个没有用户消息的 turn。
+   * 没有 uuid 的输出（后台任务完成后 Claude 自己继续）开一个没有用户消息的 turn；由完成通知触发时，
+   * 回合 ID 与历史里这段续写的回合相同，客户端按任一来源都能停止它、向它补充消息。
    */
   private turnFor(record: Record<string, unknown>): LiveTurn {
     const uuid = typeof record.user_message_uuid === "string" ? record.user_message_uuid : undefined;
@@ -477,7 +488,28 @@ export class ThreadRuntime {
       }
       this.current = owner;
     }
-    return this.current ?? this.openTurn();
+    return this.current ?? this.openTurn(uuid ? undefined : this.claimNotificationTurnId());
+  }
+
+  /**
+   * 续写回合的 ID：取这一轮开始时记下的通知，没有 system/init 时退回最近送达的一个。几条通知连着送达时
+   * CLI 只给最后一条的那一轮输出，所以记最近的一个；历史侧同样把回合归给最后一条通知。
+   */
+  private claimNotificationTurnId(): string | undefined {
+    const runId = this.roundRunId ?? this.notificationRunId;
+    this.roundRunId = undefined;
+    if (runId === this.notificationRunId) this.notificationRunId = undefined;
+    return runId ? notificationTurnId(this.threadId, runId) : undefined;
+  }
+
+  /**
+   * 一轮开始（system/init）。回应用户消息的一轮开始时，之前送达的通知要么已并进前面的回合、要么已单独
+   * 回复过（CLI 按顺序处理排队的输入），不会再触发续写。
+   */
+  private roundStarted(record: Record<string, unknown>): void {
+    const answersUser = Array.isArray(record.user_message_uuids) && record.user_message_uuids.length > 0;
+    if (answersUser) this.notificationRunId = undefined;
+    this.roundRunId = answersUser ? undefined : this.notificationRunId;
   }
 
   private openTurns(): LiveTurn[] {
@@ -486,8 +518,8 @@ export class ThreadRuntime {
     return [...turns].filter((turn) => !turn.finished);
   }
 
-  private openTurn(): LiveTurn {
-    const turn = new LiveTurn(randomUUID(), this.threadId, this.emit);
+  private openTurn(id: string = randomUUID()): LiveTurn {
+    const turn = new LiveTurn(id, this.threadId, this.emit);
     this.current = turn;
     this.cancelIdleClose();
     turn.begin();
@@ -518,6 +550,11 @@ export class ThreadRuntime {
         for (const uuid of consumed) this.commands.delete(uuid);
         const turn = this.current;
         this.current = undefined;
+        // 这一轮结束；由通知触发、却没有输出的一轮（几条通知连着送达时的前几条）不再留给后面的续写。
+        this.roundRunId = undefined;
+        const origin = record.origin as { kind?: unknown; runId?: unknown } | undefined;
+        const fromNotification = origin?.kind === "task-notification";
+        if (fromNotification && origin.runId === this.notificationRunId) this.notificationRunId = undefined;
         logger.debug("claude.result", {
           thread: this.threadId,
           subtype: String(record.subtype),
@@ -529,9 +566,10 @@ export class ThreadRuntime {
         const usage = usageOf(record.usage);
         if (usage) this.totalUsage = addUsage(this.totalUsage, usage);
         // 这个 turn 名下还有没被回应的引导消息：Claude 会接着处理它们，turn 不收尾。
-        // 用户明确中断时例外，立即收尾。
+        // 用户明确中断时例外，立即收尾。续写那一轮的结果本来就没有用户消息可吸收，带着通知来源，
+        // 同样说明 CLI 会回报 uuid：引导排在它之后单独一轮，回应完再收尾（#797）。
         const pendingSteer = [...this.commands.values()].some((owner) => owner === turn);
-        if (consumed.length && pendingSteer && !turn.explicitlyInterrupted) {
+        if ((consumed.length || fromNotification) && pendingSteer && !turn.explicitlyInterrupted) {
           turn.continueAfterSteer();
           return;
         }
@@ -549,8 +587,13 @@ export class ThreadRuntime {
           // 字段只在有终端专用命令时出现，缺省即为空。
           const terminal = Array.isArray(record.terminal_slash_commands) ? record.terminal_slash_commands.map(String) : [];
           this.host.terminalCommands?.(terminal);
+          this.roundStarted(record);
         }
         else if (record.subtype === "background_tasks_changed") this.backgroundTasksChanged(record.tasks);
+        else if (record.subtype === "task_notification") {
+          // skip_transcript 的任务不写进 transcript，也不会触发续写。
+          if (typeof record.run_id === "string" && record.run_id && record.skip_transcript !== true) this.notificationRunId = record.run_id;
+        }
         else if (record.subtype === "session_state_changed") {
           const status = threadStatus(record.state);
           if (status) this.emit("thread/status/changed", { threadId: this.threadId, status });
