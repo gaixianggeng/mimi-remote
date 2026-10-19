@@ -17,6 +17,7 @@ ConversationSnapshotTests
 FloatingSidebarHeaderSnapshotTests
 InAppNoticePlacementSnapshotTests
 OperationFeedbackSnapshotTests
+SessionHierarchySnapshotTests
 SettingsChoiceRowSnapshotTests
 SettingsConnectionCardSnapshotTests
 SkillModelPickerSnapshotTests
@@ -63,6 +64,7 @@ PendingUserInputSheetSnapshotTests
 PushInstallationIdentityTests
 ResponsiveLayoutTests
 SessionActivityStateTests
+SessionHierarchyPresentationTests
 SessionHistoryReadStateTests
 SessionStatusIndicatorSnapshotTests
 SessionStorePermissionUpdateTests
@@ -70,6 +72,7 @@ SettingsRowStyleTests
 TailscaleStableHostnameTests
 ThemeStoreTests
 UserFacingErrorTests
+WorkbenchCompactTabStackTests
 WorkbenchTopScrollEdgeTests
 WorkspaceAppearanceStoreTests
 WorkspaceCrossRuntimeMembershipTests
