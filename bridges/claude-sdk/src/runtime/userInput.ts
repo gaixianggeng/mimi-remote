@@ -1,5 +1,5 @@
-// Codex UserInput[] → Claude 用户消息内容。文本按行拼接，技能写成 `/名称` 并把第一个技能
-// 提到开头（让 CLI 当命令执行），提及写成 `@名称`，图片转 base64 图片块；只有一段文本时用字符串。
+// Codex UserInput[] → Claude 用户消息内容。文本按行拼接，技能写成 `/名称`，能确认身份的第一个
+// 技能提到开头（让 CLI 当命令执行），提及写成 `@名称`，图片转 base64 图片块；只有一段文本时用字符串。
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
@@ -42,14 +42,25 @@ function imageFromFile(file: string): ContentBlock {
   return { type: "image", source: { type: "base64", media_type: mediaType, data } };
 }
 
+/** 技能附件写成 `/名称` 放在开头时，CLI 执行的是否就是这个附件；由运行时按执行边界与技能目录判断。 */
+export type SkillCheck = (skill: { name: string; path: string }) => boolean;
+
 /**
- * 第一个技能提到最前。CLI 只在消息以 `/名称` 开头时展开技能，后面的正文（换行或空格分隔）
- * 作为参数；iOS 按"正文在前、附件在后"发送，原样拼接会变成 `正文\n/名称`，技能不生效。
- * 一条消息只能执行一个命令，其余技能留在原位置，作为参数里的 `/名称` 文本交给模型。
+ * 能确认身份的第一个技能提到最前。CLI 只在消息以 `/名称` 开头时展开技能，后面的正文（换行或空格
+ * 分隔）作为参数；iOS 按"正文在前、附件在后"发送，原样拼接会变成 `正文\n/名称`，技能不生效。
+ * 一条消息只能执行一个命令。其余技能排到正文之后，作为 `/名称` 文本交给模型：CLI 只认名字，确认
+ * 不了身份的技能出现在开头，会按名字执行别的技能或内置命令。
  */
-function skillFirst(inputs: readonly UserInput[]): readonly UserInput[] {
-  const index = inputs.findIndex((input) => input.type === "skill");
-  return index > 0 ? [inputs[index]!, ...inputs.slice(0, index), ...inputs.slice(index + 1)] : inputs;
+function orderSkills(inputs: readonly UserInput[], canRun: SkillCheck): UserInput[] {
+  const command = inputs.find((input) => input.type === "skill" && canRun(input));
+  const others = inputs.filter((input) => input !== command && input.type !== "skill");
+  const skills = inputs.filter((input) => input !== command && input.type === "skill");
+  // 没有正文或提及垫在前面时，其余技能仍会落在开头。宁可报错也不让 CLI 按名字执行。
+  const leading = others.some((input) => (input.type === "text" && input.text.trim()) || input.type === "mention");
+  if (!command && skills[0]?.type === "skill" && !leading) {
+    throw RpcError.invalidParams(`无法确认技能 ${skills[0].name} 在 Claude Code 里对应的命令，请输入正文后再发送`);
+  }
+  return [...(command ? [command] : []), ...others, ...skills];
 }
 
 /**
@@ -63,7 +74,7 @@ function commandLast(blocks: ContentBlock[]): ContentBlock[] {
   return [...blocks.filter((block) => block.type === "image"), { type: "text", text }];
 }
 
-export function toClaudeContent(inputs: readonly UserInput[]): string | ContentBlock[] {
+export function toClaudeContent(inputs: readonly UserInput[], canRun: SkillCheck): string | ContentBlock[] {
   if (!inputs.length) throw RpcError.invalidParams("input 不能为空");
   const blocks: ContentBlock[] = [];
   let text = "";
@@ -71,7 +82,7 @@ export function toClaudeContent(inputs: readonly UserInput[]): string | ContentB
     if (text) blocks.push({ type: "text", text });
     text = "";
   };
-  for (const input of skillFirst(inputs)) {
+  for (const input of orderSkills(inputs, canRun)) {
     switch (input.type) {
       case "text":
         text = appendLine(text, input.text);
