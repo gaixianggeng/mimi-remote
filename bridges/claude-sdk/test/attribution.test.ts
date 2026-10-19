@@ -40,6 +40,8 @@ class ScriptedQuery {
   }
 
   interrupts = 0;
+  /** 适配器交给 SDK 的工具审批回调，测试直接调用来模拟 Claude 请求审批。 */
+  canUseTool: ((name: string, input: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown>) | undefined;
   /** 设置后切换模型会停在这里，模拟 turn/start 等待控制请求的窗口。 */
   settingsGate: Promise<void> | undefined;
 
@@ -73,8 +75,9 @@ beforeAll(async () => {
     claudeExecutable: () => "unused",
     // 脚本化的 SDK 查询不启动真实 CLI，版本门槛直接放行。
     probeClaudeCode: async () => ({ status: "ok", version: "9.9.9" }),
-    startQuery: (({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+    startQuery: (({ prompt, options }: { prompt: AsyncIterable<unknown>; options: { canUseTool?: ScriptedQuery["canUseTool"] } }) => {
       script = new ScriptedQuery();
+      script.canUseTool = options.canUseTool;
       script.attach(prompt);
       return script;
     }) as never,
@@ -156,6 +159,92 @@ describe("output attribution", () => {
     script.emit({ type: "result", subtype: "success", user_message_uuids: [next.turn.id] });
     await settle();
     expect(completedTurns()).toEqual([turn.id, next.turn.id]);
+  });
+
+  test("a steer sent before Claude answers the previous steer joins the same turn", async () => {
+    const started = await call("thread/start", { cwd: sandbox });
+    const threadId = started.thread.id;
+    const { turn } = await call("turn/start", { threadId, input: text("first") });
+    await call("turn/steer", { threadId, expectedTurnId: turn.id, input: text("also this"), clientUserMessageId: "gap-1" });
+    await settle();
+    const firstSteer = script.sent.at(-1)!;
+
+    // 引导打断了第一段输出，中间结果只吸收首条消息；引导那一轮还没开始输出。
+    for (const message of reply(turn.id, "msg_g1", "partial")) script.emit(message);
+    script.emit({ type: "user", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } });
+    script.emit({ type: "result", subtype: "error_during_execution", user_message_uuids: [turn.id] });
+    await settle();
+
+    // 这段空档里再补一句：并入同一个 turn，以 now 优先级送达 CLI。
+    const accepted = await call("turn/steer", { threadId, expectedTurnId: turn.id, input: text("and that"), clientUserMessageId: "gap-2" });
+    expect(accepted).toEqual({ turnId: turn.id });
+    await settle();
+    const secondSteer = script.sent.at(-1)!;
+    expect(secondSteer).toMatchObject({ priority: "now", origin: { kind: "human" } });
+    const echoed = frames.filter(
+      (frame: any) => frame.method === "item/completed" && frame.params.item.type === "userMessage" && frame.params.item.clientId === "gap-2",
+    ) as any[];
+    expect(echoed.map((frame) => [frame.params.turnId, frame.params.item.id])).toEqual([[turn.id, secondSteer.uuid]]);
+    // 期望的 turn 不符时仍按原规则拒绝，不发给 CLI。
+    const mismatch = await call("turn/steer", { threadId, expectedTurnId: "stale", input: text("x"), clientUserMessageId: null }).catch(
+      (error) => error,
+    );
+    expect(mismatch.data).toMatchObject({ reason: "turn_id_mismatch", activeTurnId: turn.id });
+
+    // Claude 先回应第一条引导；第二条还没回应，turn 继续。
+    for (const message of reply(firstSteer.uuid, "msg_g2", "answer to steer")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [firstSteer.uuid] });
+    await settle();
+    expect(completedTurns()).not.toContain(turn.id);
+
+    // 回应第二条时的审批同样归属这个 turn。
+    script.emit({ type: "stream_event", event: { type: "message_start", message: { id: "msg_g3" } }, user_message_uuid: secondSteer.uuid });
+    await settle();
+    const cancel = new AbortController();
+    const decision = script.canUseTool!("Bash", { command: "ls" }, { signal: cancel.signal, toolUseID: "toolu_gap" });
+    const approval = frames.find((frame: any) => frame.method === "item/commandExecution/requestApproval") as any;
+    expect(approval.params).toMatchObject({ threadId, turnId: turn.id });
+    cancel.abort();
+    await decision;
+    script.emit({ type: "assistant", message: { id: "msg_g3", content: [{ type: "text", text: "answer to second steer" }] } });
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [secondSteer.uuid] });
+    await settle();
+
+    expect(completedTurns().filter((id) => id === turn.id)).toHaveLength(1);
+    const completed = frames.find((frame: any) => frame.method === "turn/completed" && frame.params.turn.id === turn.id) as any;
+    expect(completed.params.turn.status).toBe("completed");
+    expect(agentTexts().filter(([turnId]) => turnId === turn.id)).toEqual([
+      [turn.id, "partial"],
+      [turn.id, "answer to steer"],
+      [turn.id, "answer to second steer"],
+    ]);
+    // 每条消息只发给 CLI 一次。
+    expect(script.sent.map((message) => message.uuid)).toEqual([turn.id, firstSteer.uuid, secondSteer.uuid]);
+  });
+
+  test("Claude answering both gap steers in one round completes the turn once", async () => {
+    const started = await call("thread/start", { cwd: sandbox });
+    const threadId = started.thread.id;
+    const { turn } = await call("turn/start", { threadId, input: text("first") });
+    await call("turn/steer", { threadId, expectedTurnId: turn.id, input: text("also this"), clientUserMessageId: null });
+    for (const message of reply(turn.id, "msg_m1", "partial")) script.emit(message);
+    script.emit({ type: "result", subtype: "error_during_execution", user_message_uuids: [turn.id] });
+    await settle();
+    await call("turn/steer", { threadId, expectedTurnId: turn.id, input: text("and that"), clientUserMessageId: null });
+    await settle();
+    const [, firstSteer, secondSteer] = script.sent;
+
+    for (const message of reply(firstSteer!.uuid, "msg_m2", "both answered")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [firstSteer!.uuid, secondSteer!.uuid] });
+    await settle();
+    expect(completedTurns().filter((id) => id === turn.id)).toHaveLength(1);
+    expect(agentTexts().filter(([turnId]) => turnId === turn.id).map(([, body]) => body)).toEqual(["partial", "both answered"]);
+    // 全部消息都已回应：可以开始新 turn。
+    const next = await call("turn/start", { threadId, input: text("next") });
+    for (const message of reply(next.turn.id, "msg_m3", "next answer")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [next.turn.id] });
+    await settle();
+    expect(completedTurns()).toContain(next.turn.id);
   });
 
   test("an explicit interrupt ends the turn even with a steer pending", async () => {
