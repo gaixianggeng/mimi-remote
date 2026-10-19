@@ -59,21 +59,31 @@ final class ControlledGlobalCursorLifecycleTests: XCTestCase {
         await fixture.store.refreshSessionLibraryIndex(authoritative: true)
         XCTAssertTrue(fixture.store.sessions.contains { $0.id == fixture.stale.id }, "首轮应发现两条 Claude 会话")
 
-        // 第二轮：续页 cursor 已随连接换代失效，从首页重走后完整遍历，stale 已不在。
+        // 第二轮：第 4 个请求的 cursor 已随连接换代失效；从首页重走，满 4 页才走完，stale 已不在。
+        // 4 页上限必须按重走后的页数计，否则重走排不进预算、也走不完。
         fixture.log.reset()
         fixture.script.set { cursor, firstPageCount in
-            switch (cursor, firstPageCount) {
-            case (nil, 1):
-                return SessionsPage(sessions: [fixture.live], nextCursor: "claude-old", hasMore: true)
-            case ("claude-old", _):
+            guard let cursor else {
+                let pass = firstPageCount == 1 ? "old" : "new"
+                return SessionsPage(sessions: [fixture.live], nextCursor: "\(pass)-2", hasMore: true)
+            }
+            switch cursor {
+            case "old-4":
                 throw ControlledGlobalListCursorExpiredError()
-            default:
+            case "new-4":
                 return SessionsPage(sessions: [fixture.live])
+            default:
+                let parts = cursor.split(separator: "-")
+                let next = (Int(parts[1]) ?? 0) + 1
+                return SessionsPage(sessions: [], nextCursor: "\(parts[0])-\(next)", hasMore: true)
             }
         }
         await fixture.store.refreshSessionLibraryIndex(authoritative: true)
 
-        XCTAssertEqual(fixture.log.cursors(runtimeProvider: "claude"), [nil, "claude-old", nil])
+        XCTAssertEqual(
+            fixture.log.cursors(runtimeProvider: "claude"),
+            [nil, "old-2", "old-3", "old-4", nil, "new-2", "new-3", "new-4"]
+        )
         XCTAssertFalse(
             fixture.store.sessions.contains { $0.id == fixture.stale.id },
             "重走后完整遍历仍是撤权证据，已消失的会话要移除"

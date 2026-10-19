@@ -1093,11 +1093,14 @@ extension SessionStore {
             var discoveredSessions: [AgentSession] = []
             var cursorsByRuntime: [String: String] = [:]
             var cursorRestartedRuntimes: Set<String> = []
+            // 4 页上限按渠道计，cursor 失效从首页重走时重新计数，重走的遍历也能走完（#792）。
+            var pageCountByRuntime: [String: Int] = [:]
             // 旧 agentd 的能力缓存只跳过 Codex，其他渠道仍须独立发现。
             var pendingRuntimes = RuntimeFeatureSupport.runtimeProviders.filter {
                 $0 != "codex" || !controlledGlobalDiscoveryUnavailable
             }
-            for pageIndex in 0..<4 {
+            var round = 0
+            while !pendingRuntimes.isEmpty {
                 var continuingRuntimes: [String] = []
                 for runtimeProvider in pendingRuntimes {
                     let cursor = cursorsByRuntime[runtimeProvider]
@@ -1119,9 +1122,11 @@ extension SessionStore {
                         discoveredSessionIDs.formUnion(pageSessionIDs)
                         discoveredByRuntime[runtimeProvider, default: []].formUnion(pageSessionIDs)
                         discoveredSessions.append(contentsOf: page.sessions)
+                        pageCountByRuntime[runtimeProvider, default: 0] += 1
                         guard page.hasMore,
                               let nextCursor = page.nextCursor,
-                              nextCursor != cursor else {
+                              nextCursor != cursor,
+                              pageCountByRuntime[runtimeProvider, default: 0] < 4 else {
                             if !page.hasMore { completedRuntimes.insert(runtimeProvider) }
                             continue
                         }
@@ -1140,12 +1145,13 @@ extension SessionStore {
                             // 连接换代后 cursor 已失效（#792）：本渠道从首页重走一次，不当作普通失败。
                             // 已见的会话仍算本轮证据，撤权照旧只认完整遍历。
                             cursorsByRuntime[runtimeProvider] = nil
+                            pageCountByRuntime[runtimeProvider] = 0
                             continuingRuntimes.append(runtimeProvider)
                             continue
                         }
                         // 旧 agentd 对 Codex 无 cwd thread/list 的能力拒绝只缓存 Codex。
                         // 其他 runtime 仍须在本轮和后续刷新中继续各走自己的目录。
-                        if pageIndex == 0, runtimeProvider == "codex", isControlledGlobalDiscoveryUnavailable(error) {
+                        if round == 0, runtimeProvider == "codex", isControlledGlobalDiscoveryUnavailable(error) {
                             controlledGlobalDiscoveryUnavailable = true
                         }
                         if !isCancellationError(error) {
@@ -1158,11 +1164,11 @@ extension SessionStore {
                     }
                 }
                 pendingRuntimes = continuingRuntimes
-                if pageIndex == 0, !pendingRuntimes.isEmpty {
+                if round == 0, !pendingRuntimes.isEmpty {
                     // 首屏仅增加已确认的结果。删除旧会话仍在各渠道完整遍历后统一结算。
                     publishControlledGlobalSessions(discoveredSessions, ids: discoveredSessionIDs)
                 }
-                if pendingRuntimes.isEmpty { break }
+                round += 1
             }
             guard appStore.activeHostScope == hostScope,
                   appStore.connectionGeneration == generation,
