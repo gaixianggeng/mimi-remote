@@ -506,22 +506,29 @@ func (r *Router) managedWorktreeRepositoryIdentity(ctx context.Context, worktree
 // gitResolvedDirectory 解析 git rev-parse 返回的目录：补全相对路径、解开符号链接并清理。
 // --git-dir 与 --git-common-dir 共用这份解析，此前各写了一遍。
 func gitResolvedDirectory(ctx context.Context, path string, revisionFlag string) (string, bool) {
+	dir, err := gitResolvedDirectoryResult(ctx, path, revisionFlag)
+	return dir, err == nil && dir != ""
+}
+
+// gitResolvedDirectoryResult 与 gitResolvedDirectory 相同，但保留 Git 命令错误，让调用方
+// 区分“Git 给出了结论”（含解析不出目录）与“Git 没跑成”（超时、进程起不来等）。
+func gitResolvedDirectoryResult(ctx context.Context, path string, revisionFlag string) (string, error) {
 	output, _, err := runGitReadOnly(ctx, path, 16*1024, "rev-parse", revisionFlag)
 	if err != nil {
-		return "", false
+		return "", err
 	}
 	dir := strings.TrimSpace(output)
 	if dir == "" {
-		return "", false
+		return "", nil
 	}
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(path, dir)
 	}
 	realDir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		return "", false
+		return "", nil
 	}
-	return filepath.Clean(realDir), true
+	return filepath.Clean(realDir), nil
 }
 
 func gitDirectory(ctx context.Context, path string) (string, bool) {

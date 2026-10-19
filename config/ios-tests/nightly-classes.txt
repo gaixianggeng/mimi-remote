@@ -1,0 +1,80 @@
+# 每晚集合：不在 PR Gate 整类执行的 MimiRemoteTests 测试类。
+#
+# 每晚任务运行全量 MimiRemoteTests（不按本清单筛选），本清单负责给每个测试类明确
+# 归属：scripts/ios-test-inventory.py 要求每个含用例的 XCTestCase 类要么在
+# scripts/test-conversation-regressions.sh 里整类进入 PR 集合，要么登记在这里。
+# 只有部分方法进入 PR 集合的类也必须登记，其余方法由每晚任务覆盖。
+#
+# 新增测试类时二选一：关键链路且执行快的放进 PR 集合，其余加到下面对应分组。
+# 按真实类名登记（不是文件名），一行一个，# 之后为注释。
+
+# 部分方法在 PR 集合，其余方法每晚执行。
+ConversationDataFlowTests
+
+# 视觉快照：基线与 Xcode / Simulator 版本绑定，只在固定环境比对。
+ConnectionSettingsSnapshotTests
+ConversationSnapshotTests
+FloatingSidebarHeaderSnapshotTests
+InAppNoticePlacementSnapshotTests
+OperationFeedbackSnapshotTests
+SessionHierarchySnapshotTests
+SettingsChoiceRowSnapshotTests
+SettingsConnectionCardSnapshotTests
+SkillModelPickerSnapshotTests
+WorkspaceSuggestionsSnapshotTests
+WorkspaceVisualSnapshotTests
+WriterConflictCardSnapshotTests
+
+# 其余单元测试。
+AppDiagnosticsTests
+AppExternalLinksTests
+AppleVoiceStartupWatchdogTests
+CarStatusSnapshotTests
+CodexAppServerConnectionReliabilityTests
+CommunityContactTests
+ComposerStatusTrayBehaviorTests
+ConnectionBenchmarkTests
+ConnectionProfileRenameTests
+ConnectionProfileRouteTests
+ConnectionSettingsDraftTests
+ConnectionStatusReconciliationTests
+ConversationMessageDeliveryUncertaintyTests
+ConversationTimelineSnapshotBoundaryTests
+DataURLImageDecoderTests
+DeviceTabNavigationTests
+ExternalPairingLinkTests
+FileUploadStoreTests
+FloatingSidebarPresentationTests
+ForegroundNotificationPresentationTests
+GitQuickPublishTests
+HarnessConnectLifecycleTests
+HostStatusStoreTests
+HostWarmSnapshotTests
+InAppNoticeRulesTests
+LogStoreTests
+ManagedConnectionDeviceAPIClientTests
+ManagedConnectionDeviceStoreTests
+ManagedConnectionEventAPIClientTests
+ManagedPairingContractTests
+MimiInteractionFeedbackTests
+NewSessionPresentationSourceTests
+OperationFeedbackStoreTests
+PendingApprovalCardSnapshotTests
+PendingUserInputSheetSnapshotTests
+PushInstallationIdentityTests
+ResponsiveLayoutTests
+SessionActivityStateTests
+SessionHierarchyPresentationTests
+SessionHistoryReadStateTests
+SessionStatusIndicatorSnapshotTests
+SessionStorePermissionUpdateTests
+SettingsRowStyleTests
+TailscaleStableHostnameTests
+ThemeStoreTests
+UserFacingErrorTests
+WorkbenchCompactTabStackTests
+WorkbenchTopScrollEdgeTests
+WorkspaceAppearanceStoreTests
+WorkspaceCrossRuntimeMembershipTests
+WorkspaceStripPresentationTests
+WorkspaceSuggestionPathTests

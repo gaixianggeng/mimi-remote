@@ -1415,6 +1415,17 @@ struct AboutAndLegalSettingsView: View {
 
         Form {
             Section {
+                // APP 备案号区别于官网备案号，保留完整后缀并链接官方查询入口。
+                Link(destination: URL(string: "https://beian.miit.gov.cn/")!) {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.app_filing_number"),
+                        value: L10n.text("ui.app_filing_number_value"),
+                        systemImage: "checkmark.shield"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.appFiling")
+
                 NavigationLink(value: SettingsDestination.privacyPolicy) {
                     SettingsValueLabel(
                         title: L10n.text("ui.privacy_policy"),

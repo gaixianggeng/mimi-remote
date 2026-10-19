@@ -2581,6 +2581,43 @@
         }
       }
     },
+    "ui.app_filing_number": {
+      "comment": "APP registration number shown in About & Legal with a link to the MIIT filing system.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App filing number"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APP 备案号"
+          }
+        }
+      }
+    },
+    "ui.app_filing_number_value": {
+      "comment": "Official APP registration identifier. Keep the complete identifier unchanged in every language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "苏ICP备2026066024号-2A"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "苏ICP备2026066024号-2A"
+          }
+        }
+      },
+      "shouldTranslate": false
+    },
     "ui.app_server_credentials_file": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -29686,6 +29723,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "滑动"
+          }
+        }
+      }
+    },
+    "ui.slash_command_compact_detail": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Summarize earlier turns to free up context"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "总结早先的对话，腾出上下文空间"
+          }
+        }
+      }
+    },
+    "ui.slash_command_current": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前"
+          }
+        }
+      }
+    },
+    "ui.slash_command_plan_detail": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plan first on the next message"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一条消息先生成计划"
           }
         }
       }

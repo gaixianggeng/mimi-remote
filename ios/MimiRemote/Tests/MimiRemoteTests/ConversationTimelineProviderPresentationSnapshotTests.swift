@@ -18,6 +18,68 @@ final class ConversationTimelineProviderPresentationSnapshotTests: SimplifiedChi
         }
     }
 
+    /// #779 / #537：运行中的过程步骤紧凑排列，思考行直接显示内容，成功与进行中不再写成文字；
+    /// 实时状态行固定在本轮所有步骤之后，分组头只保留静态标题。
+    func testRunningProcessStepsStayCompactAboveLiveStatus() async throws {
+        for (name, scheme) in [("phone-dark", ColorScheme.dark), ("phone-light", ColorScheme.light)] {
+            try await assertStabilizedConversationSnapshot(
+                of: runningClaudeConversation(width: 390, scheme: scheme),
+                size: CGSize(width: 390, height: 480), named: name
+            )
+        }
+    }
+
+    private func runningClaudeConversation(width: CGFloat, scheme: ColorScheme) -> some View {
+        let dependencies = makeDependencies()
+        let store = dependencies.sessionStore.conversationStore
+        let date = Date(timeIntervalSince1970: 1_782_879_660)
+        func step(
+            _ category: ConversationActivityCategory, _ title: String, subtitle: String? = nil,
+            status: String, content: String, preview: String? = nil, command: String? = nil
+        ) -> CodexHistoryMessage {
+            CodexHistoryMessage(
+                role: "system",
+                kind: category == .thinking ? .reasoningSummary : .commandSummary,
+                content: content,
+                activityPayload: ConversationActivityPayload(
+                    category: category, displayTitle: title, subtitle: subtitle, status: status,
+                    command: command, outputPreview: preview
+                ),
+                createdAt: date, turnID: "turn-live"
+            )
+        }
+        let firstThought = "先读问题归档规则，再看模型列表从哪里合并了 Codex 模型。\n\n规则要求先查重。"
+        let secondThought = "规则要求先查重，然后按关键词搜索相关问题。"
+        let read = "cd /Users/me/code/mimi && cat docs/operations/agent-guides/issues.md && git log --oneline -3"
+        let search = "git fetch -q origin && gh issue list --search 模型列表 --json number,title"
+        store.setHistory([
+            CodexHistoryMessage(role: "user", content: "模型列表里混进了 Codex 的模型，帮我查一下", createdAt: date, turnID: "turn-live"),
+            step(.thinking, L10n.text("ui.reasoning_summary"), subtitle: firstThought, status: "completed", content: firstThought),
+            step(.runCommand, L10n.format("ui.run_value", read), status: "completed",
+                 content: "# GitHub 问题归档与执行\n\n### 目标", preview: "# GitHub 问题归档与执行", command: read),
+            step(.thinking, L10n.text("ui.reasoning_summary"), subtitle: secondThought, status: "completed", content: secondThought),
+            step(.runCommand, L10n.format("ui.run_value", search), status: "inProgress", content: "", command: search)
+        ], sessionID: "snapshot-running")
+        // 未被选中的会话只读观察：状态行文案与图形都不随时间变化，快照稳定。
+        dependencies.sessionStore.sessions = [AgentSession(
+            id: "snapshot-running", projectID: "mimi", project: "mimi", dir: "/Users/me/code/mimi",
+            title: "模型列表混入 Codex 模型", status: "running", source: "claude", runtimeProvider: "claude",
+            resumeID: "thread-snapshot-running", createdAt: date, updatedAt: date, activeTurnID: "turn-live"
+        )]
+        return ConversationTimelineView(
+            layout: ConversationLayout(containerWidth: width, horizontalSizeClass: .compact),
+            sessionID: "snapshot-running"
+        )
+        .environmentObject(dependencies.sessionStore)
+        .environmentObject(store)
+        .environmentObject(dependencies.themeStore)
+        .environment(\.conversationDetailedTranscript, .constant(false))
+        .environment(\.colorScheme, scheme)
+        .background(dependencies.themeStore.tokens(for: scheme).conversationCanvasBackground)
+        .hidingTopScrollEdgeForSnapshot()
+        .frame(width: width, height: 480)
+    }
+
     private func processConversation(width: CGFloat, detailed: Bool, scheme: ColorScheme) -> some View {
         let dependencies = makeDependencies()
         let store = dependencies.sessionStore.conversationStore
@@ -43,6 +105,7 @@ final class ConversationTimelineProviderPresentationSnapshotTests: SimplifiedChi
         .environmentObject(dependencies.themeStore)
         .environment(\.conversationDetailedTranscript, .constant(detailed))
         .environment(\.colorScheme, scheme)
+        .hidingTopScrollEdgeForSnapshot()
         .frame(width: width, height: 640)
     }
 
@@ -235,5 +298,18 @@ final class ConversationTimelineProviderPresentationSnapshotTests: SimplifiedChi
             SessionStore(appStore: appStore, conversationStore: conversationStore, logStore: LogStore()),
             ThemeStore(defaults: defaults)
         )
+    }
+}
+
+private extension View {
+    /// PR Gate 的 iOS 26.2 静止时不画顶部滚动边缘虚化，本机 iOS 27.2 会画；时间线快照只比对
+    /// 正文与行距，关掉顶部边缘效果，两个版本录出的基线才能互相通过。
+    @ViewBuilder
+    func hidingTopScrollEdgeForSnapshot() -> some View {
+        if #available(iOS 26.0, *) {
+            scrollEdgeEffectHidden(true, for: .top)
+        } else {
+            self
+        }
     }
 }

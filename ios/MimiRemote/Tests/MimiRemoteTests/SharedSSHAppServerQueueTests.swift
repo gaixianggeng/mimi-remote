@@ -12,9 +12,14 @@ extension ConversationDataFlowTests {
             configProvider: { makeDirectAppServerConfig(project: project, channels: [makeClaudeChannelMetadata()]) }
         )
         let transport = try await prepareEmptySharedThread(runtime: runtime, pool: pool, project: project)
+        // #496 起 Claude 与 Codex 都把“完全访问”当作显式免审批，默认草稿已无法区分两边策略；
+        // 这里用未指定 provider 的工作区草稿（approval never）验证 Claude 运行时仍套用自己的审批规则。
+        var options = CodexAppServerTurnOptions.default
+        options.approvalPolicy = .never
+        options.sandboxMode = .workspaceWrite
         let send = Task {
             try await runtime.startTurnOutcome(sessionID: "thread-reconcile",
-                                              payload: CodexAppServerTurnPayload(prompt: "Claude"),
+                                              payload: CodexAppServerTurnPayload(prompt: "Claude", options: options),
                                               clientMessageID: "claude-message")
         }
         let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume")

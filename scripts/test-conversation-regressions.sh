@@ -57,6 +57,8 @@ echo "==> iOS conversation regressions"
 # - AgentAPIClientRequestTests：全部 REST 调用的路径、方法、鉴权、JSON 字段和超时契约。
 # - CameraAttachmentTests：相机可用性、权限恢复和现有图片压缩上限。
 # - CodexAppServerProtocolTests：JSON-RPC payload、collaborationMode、目标/steer 协议。
+# - ComposerAutocompleteTests：输入框 `/` 命令与 `$` 技能补全的触发、替换范围和排序。
+# - ClaudeSlashCommandCatalogTests：Claude 会话 `/` 菜单命令目录的解析、请求与按键缓存。
 # - ConversationDataFlowTests 的精确方法：只保留配对后的会话、流式事件、恢复、
 #   exactly-once、审批/中断、Host 隔离和 fake smoke；其余大集合不无条件进入 PR Gate。
 # - FileAttachmentModelsTests：文件上传、capability 状态矩阵、内部上下文编解码和旧服务端兼容。
@@ -74,11 +76,23 @@ echo "==> iOS conversation regressions"
 # - ManagedConnectionEntitlementStoreTests、ManagedConnectionEntitlementAPIClientTests、
 #   ManagedConnectionStoreKitClientTests：订阅状态机、服务端授权契约和 StoreKit 适配。
 # - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
+# - RuntimeRouteRetentionTests：回前台重建 bundle 后会话仍走所属 Runtime，重新授权不为别的 Runtime 翻列表（#784）。
 # - NotificationTitleCacheTests、NotificationContentRewriterTests：会话标题的 App Group 本地缓存，
 #   以及通知扩展只用该缓存在设备上改写锁屏文案、缓存缺失时退回通用文案。
 # - RuntimeCatalogRefreshTests：Runtime 探测失败不撤下可用通道、选择器重探，以及模型目录缺席 Runtime 的补齐（#777/#778）。
 # - WorkbenchLayoutModeCommitTests：iPad 旋转跨 860pt 时换树等系统尺寸过渡结束，
 #   以及输入框焦点、面板跨换树交接（#755）。
+#
+# 每个测试类必须整类出现在下面的 selector 里，或登记在 config/ios-tests/nightly-classes.txt
+# 由每晚全量任务执行；scripts/check-ios-test-selectors.sh 校验类名、方法与归属。
+# config/ios-tests/quarantine.tsv 中隔离的单个用例在这里同样跳过。
+quarantine_output="$(python3 "$ROOT_DIR/scripts/ios-test-inventory.py" skip-args)"
+quarantine_skip_args=()
+while IFS= read -r skip_arg; do
+  if [[ -n "$skip_arg" ]]; then
+    quarantine_skip_args+=("$skip_arg")
+  fi
+done <<<"$quarantine_output"
 test_result_bundle="$(mktemp -d "${TMPDIR:-/tmp}/mimi-conversation-tests.XXXXXX")/core.xcresult"
 test_status=0
 bash "$ROOT_DIR/scripts/ios-dev.sh" test \
@@ -87,9 +101,12 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -collect-test-diagnostics never \
   -testLanguage zh-Hans \
   -testRegion CN \
+  ${quarantine_skip_args[@]+"${quarantine_skip_args[@]}"} \
   -only-testing:MimiRemoteTests/AgentAPIClientRequestTests \
   -only-testing:MimiRemoteTests/CameraAttachmentTests \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
+  -only-testing:MimiRemoteTests/ComposerAutocompleteTests \
+  -only-testing:MimiRemoteTests/ClaudeSlashCommandCatalogTests \
   -only-testing:MimiRemoteTests/DeepSeekComposerPolicyTests \
   -only-testing:MimiRemoteTests/RuntimeCatalogRefreshTests \
   -only-testing:MimiRemoteTests/DeepSeekSearchRoutingTests \
@@ -197,6 +214,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/LockScreenApprovalRoutingTests \
   -only-testing:MimiRemoteTests/NotificationRoutingGateTests \
   -only-testing:MimiRemoteTests/NotificationRouteResolutionTests \
+  -only-testing:MimiRemoteTests/RuntimeRouteRetentionTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCompletionAwaitingReducerDoesNotOverwriteNewerActiveTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testPagedHistoryRetainsInvisibleTurnStatesForCompletionRecovery \
   -only-testing:MimiRemoteTests/NotificationTitleCacheTests \
@@ -228,7 +246,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDeletedProfileIgnoresLateArchiveSuccessWithoutResurrectingPreferences \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchiveOldTokenCannotClearNewPendingAndPendingArchiveBlocksPin \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchivedSessionMustUnarchiveRemotelyBeforePinning \
-  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testMarkHistorySessionUnreadPersistsCompletionWatermark \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testMarkHistorySessionUnreadKeepsCompletionObservationPersisted \
   -only-testing:MimiRemoteTests/WorkspacePullRefreshTests \
   -only-testing:MimiRemoteTests/ConversationTimelineProviderPresentationTests \
   -only-testing:MimiRemoteTests/ConversationActivityDetailProjectionTests \
@@ -245,7 +263,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testMixedActivityAndImageConversationRendering \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testSingleImageMediaCardAlignmentAcrossLayouts \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testUnavailableUserImageGalleryRemainsLegibleInLightTheme \
-  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testSessionRuntimeBadgesInConversationList \
+  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testSessionRuntimeIconsInPhoneConversationRows \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testProjectSessionDashboard \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testCommentaryAndTrailingActivitiesRendering \
   -only-testing:MimiRemoteTests/ConversationQuestionReplyTests \

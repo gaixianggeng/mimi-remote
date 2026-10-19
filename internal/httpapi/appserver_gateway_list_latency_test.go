@@ -20,6 +20,7 @@ import (
 )
 
 func TestGlobalThreadListDoesNotRepeatGitBeforeQueuedReply(t *testing.T) {
+	relaxGlobalListGitWait(t)
 	browseRoot := t.TempDir()
 	var listPayload []byte
 	reply := []byte(`{"method":"item/agentMessage/delta","params":{"threadId":"thread-0","itemId":"reply","delta":"OK"}}`)
@@ -88,8 +89,8 @@ func TestGlobalThreadListDoesNotScanProjectsForNonRepository(t *testing.T) {
 	if err != nil || len(allowed) != 0 {
 		t.Fatalf("普通目录不能通过 Git 归属获得全局发现权限：allowed=%d err=%v", len(allowed), err)
 	}
-	if got := gitCalls(); got != 1 {
-		t.Fatalf("目录不属于 Git 仓库时不应继续扫描项目：calls=%d", got)
+	if got := gitCalls(); got != 0 {
+		t.Fatalf("目录向上没有 .git 标记时不必调用 Git，也不应继续扫描项目：calls=%d", got)
 	}
 }
 
@@ -116,7 +117,7 @@ func TestGlobalThreadListResolvesRepeatedWorkspaceOncePerPage(t *testing.T) {
 		t.Errorf("每页只需查询主项目和外部 Worktree 各一次：calls=%d", got)
 	}
 
-	// 归属只在当前响应内复用。目录不再属于原仓库时，下一页必须重新判定。
+	// 归属跨响应复用，但绑定目录的 .git 标记。目录不再属于原仓库时，下一页必须重新判定。
 	marker := filepath.Join(worktreeDir, ".git")
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
@@ -125,13 +126,23 @@ func TestGlobalThreadListResolvesRepeatedWorkspaceOncePerPage(t *testing.T) {
 	if err != nil || len(allowed) != 0 {
 		t.Fatalf("下一次响应不能沿用失效的仓库归属：allowed=%d err=%v", len(allowed), err)
 	}
-	if got := gitCalls(); got != 3 {
-		t.Errorf("未匹配目录也只在本页查询一次：total calls=%d", got)
+	if got := gitCalls(); got != 2 {
+		t.Errorf(".git 标记消失后按文件系统即可判定不在仓库，不必再调用 Git：total calls=%d", got)
 	}
+}
+
+// relaxGlobalListGitWait 让不以等待预算为测试对象的用例不受机器负载影响：冷缓存下
+// 真实 Git 在 CI 上可能超过生产预算，本页会按“未判定完”返回，断言就测不到裁剪本身。
+func relaxGlobalListGitWait(t *testing.T) {
+	t.Helper()
+	original := appServerGatewayGlobalListGitWait
+	appServerGatewayGlobalListGitWait = time.Minute
+	t.Cleanup(func() { appServerGatewayGlobalListGitWait = original })
 }
 
 func globalListLatencyPolicy(t *testing.T, projectDir, browseRoot string) *appServerGatewayPolicy {
 	t.Helper()
+	relaxGlobalListGitWait(t)
 	registry, err := projects.NewRegistry([]config.ProjectConfig{{ID: "project", Name: "Project", Path: projectDir}})
 	if err != nil {
 		t.Fatal(err)
