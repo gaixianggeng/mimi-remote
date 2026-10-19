@@ -769,7 +769,9 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
                     secondaryOptions = try await native.modelOptions()
                 } else {
                     guard let runtime = secondary.runtime else { continue }
-                    guard (try? await runtime.channelAvailable(runtimeProvider: secondary.provider)) == true else {
+                    // 与 runtimeChannelAvailable 一样走 bundle 的共享快照：Claude actor 自己的缓存
+                    // 会错过 Codex 侧的失效信号，聚合目录就静默少了 Claude 这一半（#778）。
+                    guard (try? await bundle.channelAvailable(runtimeProvider: secondary.provider)) == true else {
                         continue
                     }
                     secondaryOptions = try await runtime.modelOptions()

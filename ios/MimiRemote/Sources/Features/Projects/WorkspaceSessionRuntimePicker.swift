@@ -93,6 +93,18 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
         if runtimeProviders.isEmpty { return choice == .codex }
         return runtimeProviders.contains(choice.runtimeProvider)
     }
+
+    /// 选择器出现时静默重探暂不可用的 Runtime：回前台换代窗口里没探成的通道，
+    /// 不能一直挂着「点击重新检查」等用户手动点；真正关闭的通道重探后仍不可用（#777）。
+    static func recheckUnavailable(
+        in runtimeProviders: Set<String>,
+        using retry: (Self) async -> Bool
+    ) async {
+        for choice in allCases where !choice.isAvailable(in: runtimeProviders) {
+            guard !Task.isCancelled else { return }
+            _ = await retry(choice)
+        }
+    }
 }
 
 /// 独立子视图保持 Runtime 选择的布局、命中区和辅助功能语义稳定。
@@ -218,6 +230,12 @@ struct WorkspaceRuntimePicker: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(L10n.text("ui.runtime_provider"))
         .accessibilityIdentifier("workspace.sessions.runtimePicker")
+        .task {
+            await WorkspaceSessionRuntimeChoice.recheckUnavailable(
+                in: availableRuntimeProviders,
+                using: onRetryUnavailable
+            )
+        }
     }
 
     private func select(_ choice: WorkspaceSessionRuntimeChoice) {
@@ -278,6 +296,12 @@ struct WorkspaceRuntimePopoverPicker: View {
         .popover(isPresented: $isPresented, arrowEdge: .top) {
             popoverContent(tokens: tokens)
                 .presentationCompactAdaptation(.popover)
+                .task {
+                    await WorkspaceSessionRuntimeChoice.recheckUnavailable(
+                        in: availableRuntimeProviders,
+                        using: onRetryUnavailable
+                    )
+                }
         }
     }
 
