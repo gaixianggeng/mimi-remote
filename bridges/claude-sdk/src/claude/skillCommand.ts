@@ -8,7 +8,7 @@ import path from "node:path";
 type SkillInput = { name: string; path: string };
 
 /** 能作为 `/名称` 输入的名字：不含空白、`/`、插件前缀用的 `:`。 */
-function typeable(name: string): boolean {
+export function typeable(name: string): boolean {
   return /^[^\s/:]+$/.test(name) && !name.startsWith(".");
 }
 
@@ -21,7 +21,7 @@ function real(target: string): string | undefined {
 }
 
 /** 与 CLI 相同的项目目录：从 cwd 逐级向上直到 git 根（含 worktree 的 `.git` 文件），不在仓库里时到文件系统根。 */
-function projectDirs(cwd: string): string[] {
+export function projectDirs(cwd: string): string[] {
   const dirs: string[] = [];
   for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
     dirs.push(dir);
@@ -37,7 +37,7 @@ function entries(dir: string): string[] {
   }
 }
 
-function frontmatterName(file: string): string | undefined {
+export function frontmatterName(file: string): string | undefined {
   let text: string;
   try {
     text = readFileSync(file, "utf8");
@@ -53,7 +53,8 @@ function frontmatterName(file: string): string | undefined {
  * 只有附件的 path 就是 CLI 加载的用户或项目技能、且这个名字在这些目录里只有它一处定义时才返回 true。
  * 不复现 CLI 的优先级：同名定义（其他技能目录、其他技能 frontmatter 里的 name、自定义命令）只要不止一处
  * 就不当命令。path 不在 CLI 加载的目录里（例如 Codex 的技能，#370）同样不当命令。插件与托管策略里的
- * 技能不核对。只适用于加载用户与项目设置的完全访问档。
+ * 技能不核对。完全访问档由 CLI 直接加载这些目录；受限档位经合成插件加载同一批技能（见 skillPlugin，
+ * 查找范围与本文件共用），同样适用。
  */
 export function runsAsClaudeCommand(skill: SkillInput, cwd: string, configDir: string): boolean {
   const { name } = skill;

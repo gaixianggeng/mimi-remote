@@ -187,7 +187,7 @@ describe("turn lifecycle", () => {
     expect(client.frames.some((frame: any) => frame.method === "item/reasoning/textDelta")).toBe(true);
   });
 
-  test("a project skill attached after the text reaches Claude as the leading command only with full access", async () => {
+  test("a project skill attached after the text reaches Claude as the leading command, plugin-qualified when restricted", async () => {
     const repo = path.join(sandbox, "skill-repo");
     const file = path.join(repo, ".claude", "skills", "review", "SKILL.md");
     mkdirSync(path.join(repo, ".git"), { recursive: true });
@@ -206,8 +206,8 @@ describe("turn lifecycle", () => {
       replies[sandboxMode] = items.at(-1).text;
     }
     expect(replies["danger-full-access"]).toBe("echo[fake-a]: /review\nsummarize the change");
-    // 受限档位不加载项目技能，`/review` 只会落到别的命令上，留在正文之后。
-    expect(replies["workspace-write"]).toBe("echo[fake-a]: summarize the change\n/review");
+    // 受限档位经合成插件加载项目技能（#775），命令带插件前缀。
+    expect(replies["workspace-write"]).toBe("echo[fake-a]: /mimi:review\nsummarize the change");
   });
 });
 

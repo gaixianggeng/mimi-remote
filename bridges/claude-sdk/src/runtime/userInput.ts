@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
 import { RpcError } from "../rpc/frames.ts";
+import { SKILL_PLUGIN_NAME } from "../claude/skillPlugin.ts";
 
 type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
 type ContentBlock =
@@ -72,6 +73,22 @@ function commandLast(blocks: ContentBlock[]): ContentBlock[] {
   if (!texts[0]?.text.startsWith("/") || texts.length === blocks.length) return blocks;
   const text = texts.map((block) => block.text).reduce(appendLine);
   return [...blocks.filter((block) => block.type === "image"), { type: "text", text }];
+}
+
+/**
+ * 受限档位的技能与命令来自合成插件，CLI 里登记为 `mimi:名称`：带前缀总能展开，裸 `/名称` 只在
+ * SKILL.md 写了 name 时才展开（实测）。把命令位置（字符串开头或最后一个文本块开头）的 `/名称`
+ * 改写成带前缀的形式；已带前缀、内置命令和插件里没有的名字保持原样。
+ */
+export function qualifySkillCommand(content: string | ContentBlock[], names: ReadonlySet<string> | undefined): string | ContentBlock[] {
+  if (!names?.size) return content;
+  const qualify = (text: string) =>
+    text.replace(/^\/([^\s/:]+)(?=\s|$)/, (command, name: string) => (names.has(name) ? `/${SKILL_PLUGIN_NAME}:${name}` : command));
+  if (typeof content === "string") return qualify(content);
+  const last = content.at(-1);
+  if (last?.type !== "text") return content;
+  const text = qualify(last.text);
+  return text === last.text ? content : [...content.slice(0, -1), { type: "text", text }];
 }
 
 export function toClaudeContent(inputs: readonly UserInput[], canRun: SkillCheck): string | ContentBlock[] {

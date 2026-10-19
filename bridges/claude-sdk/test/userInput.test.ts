@@ -2,7 +2,7 @@
 // （以 Claude Code 2.1.294 / 2.1.296 / 2.1.301 + 脚本化模型端点实测）。
 import { describe, expect, test } from "bun:test";
 import type { UserInput } from "../src/protocol/codex/v2/UserInput.ts";
-import { type SkillCheck, toClaudeContent } from "../src/runtime/userInput.ts";
+import { qualifySkillCommand, type SkillCheck, toClaudeContent } from "../src/runtime/userInput.ts";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 const text = (value: string): UserInput => ({ type: "text", text: value, text_elements: [] });
@@ -81,5 +81,36 @@ describe("没有命令时保持原样", () => {
   test("空输入与不支持的输入报参数错误", () => {
     expect(() => toClaudeContent([], all)).toThrow("input 不能为空");
     expect(() => toClaudeContent([{ type: "audio", url: "data:audio/wav;base64,AA==" }], all)).toThrow("不支持的输入类型");
+  });
+});
+
+describe("受限档位的技能命令带插件前缀", () => {
+  const names = new Set(["review", "deploy"]);
+
+  test("命令位置的 /名称 改写成 /mimi:名称，正文与换行不变", () => {
+    expect(qualifySkillCommand("/review", names)).toBe("/mimi:review");
+    expect(qualifySkillCommand("/review 总结", names)).toBe("/mimi:review 总结");
+    expect(qualifySkillCommand(toClaudeContent([text("总结"), skill("review")], all), names)).toBe("/mimi:review\n总结");
+  });
+
+  test("已带前缀、插件里没有、不在开头或没有前缀分隔的名字保持原样", () => {
+    expect(qualifySkillCommand("/mimi:review 总结", names)).toBe("/mimi:review 总结");
+    expect(qualifySkillCommand("/compact", names)).toBe("/compact");
+    expect(qualifySkillCommand("先看 /review", names)).toBe("先看 /review");
+    expect(qualifySkillCommand("/reviewer", names)).toBe("/reviewer");
+    expect(qualifySkillCommand("/review/x", names)).toBe("/review/x");
+  });
+
+  test("带图片时只改最后一个文本块；最后一块不是文本时不改", () => {
+    expect(qualifySkillCommand(toClaudeContent([text("这张截图"), image, skill("review")], all), names)).toEqual([imageBlock, { type: "text", text: "/mimi:review\n这张截图" }]);
+    // CLI 只检查最后一个块，最后是图片时不会当命令执行，也就不改写。
+    const imageLast = [{ type: "text" as const, text: "/review" }, imageBlock];
+    expect(qualifySkillCommand(imageLast, names)).toBe(imageLast);
+  });
+
+  test("没有插件时原样返回", () => {
+    const content = toClaudeContent([text("总结"), skill("review")], all);
+    expect(qualifySkillCommand(content, undefined)).toBe(content);
+    expect(qualifySkillCommand(content, new Set())).toBe(content);
   });
 });
