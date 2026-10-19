@@ -79,6 +79,8 @@ echo "==> iOS conversation regressions"
 #   ManagedConnectionStoreKitClientTests：订阅状态机、服务端授权契约和 StoreKit 适配。
 # - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
 # - RuntimeRouteRetentionTests：回前台重建 bundle 后会话仍走所属 Runtime，重新授权不为别的 Runtime 翻列表（#784）。
+# - CodexTurnInterruptBeforeStartTests：turn/start 响应后、turn/started 前的停止等回合开始后重发，
+#   不把这段窗口里的 no active turn 当成已停止（#808）。
 # - NotificationTitleCacheTests、NotificationContentRewriterTests：会话标题的 App Group 本地缓存，
 #   以及通知扩展只用该缓存在设备上改写锁屏文案、缓存缺失时退回通用文案。
 # - RuntimeCatalogRefreshTests：Runtime 探测失败不撤下可用通道、选择器重探，以及模型目录缺席 Runtime 的补齐（#777/#778）。
@@ -199,6 +201,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testNonStaleInterruptRuntimeFailureKeepsActiveTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleStopRealAPIClientsCloseRuntimeWithoutReleasingNextTurn \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleStopRealAPIClientDoesNotCloseSupersedingTurn \
+  -only-testing:MimiRemoteTests/CodexTurnInterruptBeforeStartTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testTerminalStreamStoreSeparatesSameSessionAcrossHostScopes \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testConversationStoreScopesSameSessionAndDelayedDeltaByProfile \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testWebSocketFailureAutoReconnectsWithLatestReplayWatermark \
