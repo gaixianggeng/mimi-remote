@@ -1049,10 +1049,11 @@ extension SessionStore {
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else { return }
 #endif
-        guard appStore.activeHostScope == hostScope else { return }
+        // 后台没有可用的 Runtime bundle；被取消的遍历也不算刷新过，回前台的轮询才会从首页重走（#792）。
+        guard appStore.activeHostScope == hostScope, !isAppInBackground else { return }
         let generation = appStore.connectionGeneration
         defer {
-            if appStore.activeHostScope == hostScope {
+            if appStore.activeHostScope == hostScope, !Task.isCancelled {
                 lastSessionLibraryIndexRefreshAt = sessionListNow()
             }
         }
@@ -1091,6 +1092,7 @@ extension SessionStore {
             // 只在首轮与遍历结束时发布，兼顾首屏速度和隐藏 Tab 的重算成本；请求仍串行。
             var discoveredSessions: [AgentSession] = []
             var cursorsByRuntime: [String: String] = [:]
+            var cursorRestartedRuntimes: Set<String> = []
             // 旧 agentd 的能力缓存只跳过 Codex，其他渠道仍须独立发现。
             var pendingRuntimes = RuntimeFeatureSupport.runtimeProviders.filter {
                 $0 != "codex" || !controlledGlobalDiscoveryUnavailable
@@ -1131,6 +1133,15 @@ extension SessionStore {
                               !Task.isCancelled else {
                             // Host 已切换或任务已取消：旧 Host 的迟到错误不得污染新 Host 证据。
                             return
+                        }
+                        if cursor != nil,
+                           error is ControlledGlobalListCursorExpiredError,
+                           cursorRestartedRuntimes.insert(runtimeProvider).inserted {
+                            // 连接换代后 cursor 已失效（#792）：本渠道从首页重走一次，不当作普通失败。
+                            // 已见的会话仍算本轮证据，撤权照旧只认完整遍历。
+                            cursorsByRuntime[runtimeProvider] = nil
+                            continuingRuntimes.append(runtimeProvider)
+                            continue
                         }
                         // 旧 agentd 对 Codex 无 cwd thread/list 的能力拒绝只缓存 Codex。
                         // 其他 runtime 仍须在本轮和后续刷新中继续各走自己的目录。
