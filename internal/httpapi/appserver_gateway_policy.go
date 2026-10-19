@@ -129,11 +129,13 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 				if value, ok := params["limit"]; ok && value != nil {
 					limit, _ = gatewayJSONNumberInt64(value)
 				}
+				upstreamCursor, _ := params["cursor"].(string)
 				return p.rememberPendingThreadRequest(frame.ID, appServerGatewayPendingThreadRequest{
 					method:           method,
 					responseLimit:    limit,
 					responseLimitSet: true,
 					globalDiscovery:  true,
+					upstreamCursor:   upstreamCursor,
 				})
 			}
 		}

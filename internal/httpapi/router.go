@@ -88,6 +88,7 @@ type Router struct {
 	accountTokenUsageCacheTTL time.Duration
 	gatewayThreadsMu          sync.Mutex
 	gatewayThreads            map[string]appServerGatewayAllowedThread
+	gatewayGitOwnership       gatewayGitOwnershipCache
 	mimiTaskClaimsMu          sync.Mutex
 	mimiTaskClaims            map[string]mimiTaskDynamicClaim
 	codexGatewayMu            sync.Mutex

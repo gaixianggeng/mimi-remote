@@ -342,6 +342,7 @@ type appServerGatewayPendingThreadRequest struct {
 	responseLimit       int64
 	responseLimitSet    bool
 	globalDiscovery     bool
+	upstreamCursor      string
 	threadID            string
 	managedWorktreePath string
 	createdAt           time.Time
