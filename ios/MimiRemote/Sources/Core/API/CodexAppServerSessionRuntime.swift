@@ -56,7 +56,7 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
         case .missingActiveTurn(let sessionID):
             return L10n.format("ui.there_is_no_interruptible_active_turn_for_the", sessionID)
         case .activeTurnConflict:
-            return L10n.text("ui.please_wait_for_the_current_turn_to_complete")
+            return L10n.text("ui.a_reply_is_still_in_progress_try_again_after_it_finishes")
         case .approvalNotFound(let approvalID):
             return L10n.format("ui.approval_request_has_expired_value", approvalID)
         case .userInputRequestNotFound(let requestID):

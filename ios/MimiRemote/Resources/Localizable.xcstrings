@@ -916,6 +916,40 @@
         }
       }
     },
+    "ui.a_reply_is_still_in_progress_this_message_was_not_sent": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A reply is still in progress, so this message wasn't sent. Retry to queue it; it sends when the reply finishes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前回复还在进行，这条未发出。重试会排队，回复结束后自动发送。"
+          }
+        }
+      }
+    },
+    "ui.a_reply_is_still_in_progress_try_again_after_it_finishes": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A reply is still in progress. Try again after it finishes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前回复还在进行，请等它结束后再试。"
+          }
+        }
+      }
+    },
     "ui.a_secure_channel_is_being_established_content_appears": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -33919,6 +33953,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "提醒时间已过，未保存提醒 %@"
+          }
+        }
+      }
+    },
+    "ui.the_reply_just_finished_this_message_was_not_sent_please_retry": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The reply just finished, so this message wasn't sent. Please retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复刚刚结束，这条未发出，请重试。"
           }
         }
       }

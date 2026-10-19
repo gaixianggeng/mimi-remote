@@ -424,6 +424,8 @@ final class SessionStore: ObservableObject {
 #endif
     var deliveredRuntimeNotificationIDs: Set<String> = []
     var locallyCompletedSessionIDs: Set<SessionID> = []
+    /// 本地完成的凭据：只让落后的 running 快照让路，不挡住电脑端随后开始的新一轮（#805）。
+    var locallyCompletedSessionMarks: [SessionID: SessionLocalCompletionMark] = [:]
     var locallyCompletedGoalThreadIDs: Set<SessionID> = []
     var historyReadStateBySessionID: [SessionID: SessionHistoryReadState] = [:]
     var sessionArchiveMutationToken: UInt64 = 0

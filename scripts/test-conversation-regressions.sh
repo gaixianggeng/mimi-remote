@@ -80,6 +80,7 @@ echo "==> iOS conversation regressions"
 #   ManagedConnectionStoreKitClientTests：订阅状态机、服务端授权契约和 StoreKit 适配。
 # - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
 # - RuntimeRouteRetentionTests：回前台重建 bundle 后会话仍走所属 Runtime，重新授权不为别的 Runtime 翻列表（#784）。
+# - LocalCompletionSupersededTests：本地完成标记只挡落后快照，电脑端开始的新一轮能恢复进行中并让发送排队（#805）。
 # - ForegroundRecoveryHistoryOrderingTests：回前台时当前会话的恢复历史与列表刷新并行，列表慢或失败不拖住它，
 #   状态点读仍在列表落地之后（#790）。
 # - ThreadGoalCapabilityTests：目标任务按通道声明的 thread/goal/* 能力使用，Claude 不发也不显示（#791）。
@@ -245,6 +246,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/WorkspaceGitSummaryTests \
   -only-testing:MimiRemoteTests/WorkspaceHostBoundaryTests \
   -only-testing:MimiRemoteTests/SessionArchiveReconciliationTests \
+  -only-testing:MimiRemoteTests/LocalCompletionSupersededTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testManualWorkspaceRefreshRestartsFromFirstCursor \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testManualSessionLibraryRefreshRestartsDirectoryPageFromFirstCursor \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testWorkspacePageDropsLocallyArchivedCacheWhileKeepingProtectedRows \

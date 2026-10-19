@@ -51,9 +51,13 @@ extension SessionStore {
             clearPendingUserInputResponses(sessionID: incoming.id)
         }
         if incoming.status == SessionStatus.completed.rawValue {
-            locallyCompletedSessionIDs.insert(incoming.id)
+            markSessionLocallyCompleted(
+                incoming.id,
+                completedTurnIDs: [existing.activeTurnID],
+                updatedAt: incoming.updatedAt
+            )
         } else if Self.isRunningStatus(incoming.status) {
-            locallyCompletedSessionIDs.remove(incoming.id)
+            clearLocalCompletionMark(incoming.id)
         }
         if !Self.isRunningStatus(incoming.status) {
             clearRuntimeActivity(sessionID: incoming.id)
