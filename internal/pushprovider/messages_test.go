@@ -77,6 +77,40 @@ func TestTurnMessagePayloadHasOnlyDetailsAndNoContent(t *testing.T) {
 	}
 }
 
+func TestDeepSeekAcceptsOnlyTurnMessages(t *testing.T) {
+	now := time.Now()
+	base := ApprovalNotification{
+		Version: 1, ActionID: "route-123", DeviceID: "device-123", ProfileID: "profile-123",
+		Runtime: "deepseek", HostTag: "ABCD", SessionTag: "0123456789ABCDEF",
+		ExpiresAt: now.Add(23 * time.Hour).UTC().Format(time.RFC3339),
+	}
+	for _, event := range []string{completedPushEvent, failedPushEvent, interruptedPushEvent} {
+		message := base
+		message.Event = event
+		if err := message.Validate(now); err != nil {
+			t.Fatalf("%s: %v", event, err)
+		}
+		alert := decodeAPS(t, message)["alert"].(map[string]any)
+		if alert["title-loc-key"] != "push.message.title.deepseek" {
+			t.Fatalf("DeepSeek 标题 key 错误：%v", alert)
+		}
+	}
+	waiting := base
+	waiting.Event = holderWaitingPushEvent
+	if waiting.Validate(now) == nil {
+		t.Fatal("DeepSeek 不应接受 holder.waiting")
+	}
+	for _, event := range []string{approvalPushEvent, resolvedPushEvent} {
+		approval := base
+		approval.Event = event
+		approval.ApprovalKind = "command"
+		approval.ExpiresAt = now.Add(5 * time.Minute).UTC().Format(time.RFC3339)
+		if approval.Validate(now) == nil {
+			t.Fatalf("DeepSeek 不应接受 %s", event)
+		}
+	}
+}
+
 func TestHolderWaitingPayloadUsesFixedReadOnlyAlert(t *testing.T) {
 	now := time.Now()
 	notification := ApprovalNotification{

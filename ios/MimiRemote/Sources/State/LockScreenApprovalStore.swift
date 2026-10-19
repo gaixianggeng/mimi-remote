@@ -76,6 +76,14 @@ final class LockScreenApprovalStore: ObservableObject {
 		let providerHost: String?
 		let providerIsOfficial: Bool
 		let registeredDeviceSupportsHolderWaiting: Bool?
+		let registeredDeviceSupportsDeepSeekMessages: Bool?
+
+		/// 本机设备在这台 agentd 上的登记缺少当前 App 已支持的推送能力。nil 表示旧
+		/// agentd 不回报该字段，补登记也无从生效，等它升级。
+		var registeredDeviceNeedsCapabilityRefresh: Bool {
+			registeredDeviceSupportsHolderWaiting == false
+				|| registeredDeviceSupportsDeepSeekMessages == false
+		}
 	}
 
 	private struct IdentityResolution {
@@ -247,7 +255,7 @@ final class LockScreenApprovalStore: ObservableObject {
 			   expiry.timeIntervalSinceNow >= 7 * 24 * 60 * 60,
 			   case .active = status {
 				// App 升级后复用有效 Ticket 补登记能力；旧 agentd 未返回字段时等待其升级。
-				if hostSupport(for: profileID)?.registeredDeviceSupportsHolderWaiting == false {
+				if hostSupport(for: profileID)?.registeredDeviceNeedsCapabilityRefresh == true {
 					do {
 						guard let ticket = try ticketStore.loadRequired() else { throw AgentAPIError.invalidResponse }
 						_ = try await client.registerPushDevice(
@@ -299,6 +307,7 @@ final class LockScreenApprovalStore: ObservableObject {
 				: PushProviderClient.defaultBaseURL
 			let providerBaseURL = Self.normalizedProviderURL(advertisedProviderURL)
 			let providerHost = providerBaseURL.flatMap { URL(string: $0)?.host }
+			let registeredDevice = response.devices?.first { $0.deviceID == deviceID }
 			let support = HostSupport(
 				enabled: response.enabled && response.providerConfigured && providerBaseURL != nil,
 				providerBaseURL: providerBaseURL,
@@ -306,8 +315,8 @@ final class LockScreenApprovalStore: ObservableObject {
 				providerIsOfficial: providerBaseURL == Self.normalizedProviderURL(
 					PushProviderClient.defaultBaseURL
 				),
-				registeredDeviceSupportsHolderWaiting: response.devices?
-					.first { $0.deviceID == deviceID }?.supportsHolderWaiting
+				registeredDeviceSupportsHolderWaiting: registeredDevice?.supportsHolderWaiting,
+				registeredDeviceSupportsDeepSeekMessages: registeredDevice?.supportsDeepSeekMessages
 			)
 			hostSupportByProfileID[profileID] = support
 			if !support.enabled, !isEnabled || registeredProfileID == profileID {
@@ -330,7 +339,8 @@ final class LockScreenApprovalStore: ObservableObject {
 				providerBaseURL: nil,
 				providerHost: nil,
 				providerIsOfficial: false,
-				registeredDeviceSupportsHolderWaiting: nil
+				registeredDeviceSupportsHolderWaiting: nil,
+				registeredDeviceSupportsDeepSeekMessages: nil
 			)
 			if !isEnabled || registeredProfileID == profileID {
 				status = .unavailableOnHost
