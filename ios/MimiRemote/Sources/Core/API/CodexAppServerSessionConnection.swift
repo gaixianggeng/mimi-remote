@@ -228,9 +228,18 @@ extension CodexAppServerSessionRuntime {
         return threadID
     }
 
+    func setThreadRuntimeOwnerLookup(_ lookup: (@Sendable (SessionID) -> String?)?) {
+        threadRuntimeOwnerLookup = lookup
+    }
+
     /// 用列表让网关在当前连接上重新授权这个会话。同一连接、同一列表范围（目录或全局）同时只翻一次：
     /// 网关会把参数相同的并发列表当成重复请求拒绝；后到的会话先等前一次翻完，已被翻到（即已授权）就直接成功。
     func reauthorizeThread(_ threadID: SessionID, on connection: CodexAppServerConnection) async -> Bool {
+        if let owner = threadRuntimeOwnerLookup?(threadID),
+           Self.normalizedRuntimeProvider(owner) != runtimeProvider {
+            // 别的 Runtime 的会话不会出现在本通道列表里，翻满也找不到，只会拖慢回前台（#784）。
+            return false
+        }
         let scopedCWD = contextsBySessionID[threadID]?.cwd
         let key = "\(ObjectIdentifier(connection).hashValue)|\(scopedCWD ?? "")"
         while let running = threadReauthorizationTasks[key] {

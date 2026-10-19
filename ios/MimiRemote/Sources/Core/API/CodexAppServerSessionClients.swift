@@ -284,9 +284,50 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
     }
 }
 
-final class AppServerRuntimeRouteStore {
+/// 会话属于哪个 Runtime 与连接、端点和 Token 无关。AppStore 按连接档案各持有一份，
+/// 跨 bundle 重建（回后台清凭据、Tailcat 换端口、切路由）沿用；只用锁保护，可跨 actor 读。
+final class AppServerRuntimeRouteStore: @unchecked Sendable {
     private var lock = NSLock()
     private var runtimeBySessionID: [SessionID: String] = [:]
+
+    /// 同一档案换用候选 bundle 时，把旧表已知的路由带进新表（只补缺）。
+    func rememberMissing(from other: AppServerRuntimeRouteStore) {
+        guard other !== self else { return }
+        other.lock.lock()
+        let known = other.runtimeBySessionID
+        other.lock.unlock()
+        lock.lock()
+        defer { lock.unlock() }
+        for (sessionID, runtime) in known where runtimeBySessionID[sessionID] == nil {
+            runtimeBySessionID[sessionID] = runtime
+        }
+    }
+
+    func removeAll() {
+        lock.lock()
+        runtimeBySessionID.removeAll()
+        lock.unlock()
+    }
+
+    /// 用本地已知会话（列表缓存、恢复快照）补齐缺失的路由（#784）。网络学到的路由优先，
+    /// 这里不覆盖；provider 与 source 都认不出 Runtime 时跳过，不替未知会话写成 Codex。
+    func rememberMissing(_ sessions: [AgentSession]) {
+        let knownRuntimes: Set<String> = ["codex", "claude", "deepseek"]
+        lock.lock()
+        defer { lock.unlock() }
+        for session in sessions where runtimeBySessionID[session.id] == nil {
+            if let explicit = session.runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !explicit.isEmpty {
+                runtimeBySessionID[session.id] = CodexAppServerSessionRuntime.normalizedRuntimeProvider(explicit)
+                continue
+            }
+            let source = session.source.trimmingCharacters(in: .whitespacesAndNewlines)
+            let sourceRuntime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(source)
+            if !source.isEmpty, knownRuntimes.contains(sourceRuntime) {
+                runtimeBySessionID[session.id] = sourceRuntime
+            }
+        }
+    }
 
     func remember(_ session: AgentSession) {
         remember(runtimeProvider: session.runtimeProvider, source: session.source, for: session.id)
@@ -340,13 +381,21 @@ final class AppServerRuntimeBundle {
     /// 原生 Harness 接缝。正式 App 总是注入；测试可留空，此时 `deepseek` 显式失败，
     /// 不会回退到任何 actor。
     let harness: HarnessSessionClient?
-    let routes = AppServerRuntimeRouteStore()
+    /// 默认每个 bundle 一份；App 内由 AppStore 传入跨 bundle 沿用的那份（#784）。
+    let routes: AppServerRuntimeRouteStore
 
-    init(endpoint: String, token: String, harnessFactory: HarnessSessionClientFactory? = nil) {
+    init(
+        endpoint: String,
+        token: String,
+        harnessFactory: HarnessSessionClientFactory? = nil,
+        routes: AppServerRuntimeRouteStore = AppServerRuntimeRouteStore()
+    ) {
         codex = CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "codex")
         claude = CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "claude")
         let native = harnessFactory?(endpoint, token)
         harness = native
+        self.routes = routes
+        installThreadRuntimeOwnerLookup()
     }
 
     /// 快速切换已经拿到 config，候选 Runtime 必须复用它，不能在提交后再次请求
@@ -360,7 +409,8 @@ final class AppServerRuntimeBundle {
         // 两个入参解决的是不同问题，都要留：preparedConfig 是「已经拿到的那份快照」，
         // configProvider 是「快照失效后去哪再取」。默认 provider 只回 preparedConfig，
         // 因此快速切换链路仍然不会重新打一次 /api/app-server/config。
-        configProvider suppliedConfigProvider: (() async throws -> CodexAppServerConfigResponse)? = nil
+        configProvider suppliedConfigProvider: (() async throws -> CodexAppServerConfigResponse)? = nil,
+        routes: AppServerRuntimeRouteStore = AppServerRuntimeRouteStore()
     ) {
         let configProvider = suppliedConfigProvider ?? { preparedConfig }
         codex = CodexAppServerSessionRuntime(
@@ -381,16 +431,31 @@ final class AppServerRuntimeBundle {
         )
         let native = harnessFactory?(endpoint, token)
         harness = native
+        self.routes = routes
+        installThreadRuntimeOwnerLookup()
     }
 
     init(
         codexRuntime: CodexAppServerSessionRuntime,
         claudeRuntime: CodexAppServerSessionRuntime,
-        harness: HarnessSessionClient? = nil
+        harness: HarnessSessionClient? = nil,
+        routes: AppServerRuntimeRouteStore = AppServerRuntimeRouteStore()
     ) {
         codex = codexRuntime
         claude = claudeRuntime
         self.harness = harness
+        self.routes = routes
+        installThreadRuntimeOwnerLookup()
+    }
+
+    /// 重新授权翻列表前先问路由表：已知属于另一个 Runtime 的会话不会出现在本通道的列表里（#784）。
+    private func installThreadRuntimeOwnerLookup() {
+        let routes = routes
+        let lookup: @Sendable (SessionID) -> String? = { routes.runtimeProvider(for: $0) }
+        Task { [codex, claude] in
+            await codex.setThreadRuntimeOwnerLookup(lookup)
+            await claude.setThreadRuntimeOwnerLookup(lookup)
+        }
     }
 
     /// 列表级实时更新：两个 Runtime 对没有被页面订阅的会话收到权威快照时交给同一个观察者（#683）。
