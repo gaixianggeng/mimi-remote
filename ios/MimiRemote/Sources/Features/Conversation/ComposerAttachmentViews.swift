@@ -15,6 +15,9 @@ struct AttachmentPreviewSheet: View {
     @State private var localImagePreviewError: String?
 
     let item: CodexAppServerUserInput
+    /// 只有输入框草稿里的图片附件提供标注；会话历史里的图片保持只读（#829）。
+    var onAnnotate: ((UIImage) -> Void)? = nil
+    @State private var isAnnotating = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -35,6 +38,30 @@ struct AttachmentPreviewSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(L10n.text("ui.close")) { dismiss() }
                 }
+                if onAnnotate != nil, embeddedImage != nil {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            isAnnotating = true
+                        } label: {
+                            Label(L10n.text("ui.annotate_image"), systemImage: "pencil.tip.crop.circle")
+                        }
+                        .accessibilityIdentifier("attachmentPreview.annotate")
+                    }
+                }
+            }
+        }
+        .fullScreenCover(isPresented: $isAnnotating) {
+            if let embeddedImage {
+                ImageAnnotationEditor(
+                    image: embeddedImage,
+                    onCancel: { isAnnotating = false },
+                    onDone: { annotated in
+                        isAnnotating = false
+                        onAnnotate?(annotated)
+                        dismiss()
+                    }
+                )
+                .environmentObject(themeStore)
             }
         }
         .task(id: previewMediaRequestIdentity) {

@@ -74,6 +74,7 @@ struct ComposerView: View {
     @State var editingQueuedTurn: QueuedTurnEditorDraft?
     @State var showsQueuedTurnManager = false
     @State var isSelectingVoiceDraftText = false
+    @State var clipboardImageState = ComposerClipboardImageState()
     /// 上一次提交的宽度档位，只用于迟滞判断（#835）。
     @State var composerLayoutBaseTier: ComposerLayoutTier?
 
@@ -114,6 +115,7 @@ struct ComposerView: View {
             voiceNoticeMessage
             attachmentErrorNotice
             contextWindowNotice
+            clipboardImageNotice
             FileUploadJobsStrip(store: sessionStore.fileUploadStore, scope: activeComposerDraftScope)
                 .environmentObject(themeStore)
             attachmentStrip
@@ -142,7 +144,7 @@ struct ComposerView: View {
             }
         }
         .sheet(item: $previewingAttachment) { item in
-            AttachmentPreviewSheet(item: item)
+            AttachmentPreviewSheet(item: item, onAnnotate: annotationHandler(for: item))
                 .environmentObject(themeStore)
         }
         .sheet(item: $goalEditor) { draft in
@@ -242,6 +244,8 @@ struct ComposerView: View {
         }
 
         let scopeObservedContent = presentedContent
+        .onReceive(Self.clipboardRefreshPublisher) { _ in refreshClipboardImageAvailability() }
+        .onChange(of: activeComposerDraftScope, initial: true) { _, _ in refreshClipboardImageAvailability() }
         .onChange(of: availableWidth, initial: true) { _, width in
             guard let width else { return }
             composerLayoutBaseTier = ComposerLayoutTier.baseTier(width: width, previous: composerLayoutBaseTier)
@@ -434,6 +438,10 @@ struct ComposerView: View {
         }
         guard !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope) else {
             attachmentErrorMessage = L10n.text("ui.wait_for_file_upload_to_complete")
+            return false
+        }
+        guard !clipboardImageState.isPreparing(activeComposerDraftScope) else {
+            attachmentErrorMessage = L10n.text("ui.wait_for_image_processing_to_complete")
             return false
         }
         let pendingPayload = CodexAppServerTurnPayload(
@@ -771,6 +779,7 @@ struct ComposerView: View {
             && hasComposerContentForSubmit
             && !sessionStore.isLoading
             && !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope)
+            && !clipboardImageState.isPreparing(activeComposerDraftScope)
     }
 
     var canSubmitGoalDraft: Bool {
@@ -779,6 +788,7 @@ struct ComposerView: View {
             && !sessionStore.isLoading
             && !sessionStore.isUpdatingThreadGoal
             && !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope)
+            && !clipboardImageState.isPreparing(activeComposerDraftScope)
     }
 
     var hasNonWhitespaceComposerTextForSubmit: Bool {
@@ -1235,7 +1245,8 @@ struct ComposerView: View {
                 },
                 onSkillAutocompleteDismiss: {
                     activeSkillQuery = nil
-                }
+                },
+                onPasteImages: composerPasteImagesHandler
             )
             .frame(height: composerTextHeight)
 
