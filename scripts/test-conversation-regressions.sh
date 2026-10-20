@@ -58,6 +58,7 @@ echo "==> iOS conversation regressions"
 # - CameraAttachmentTests：相机可用性、权限恢复和现有图片压缩上限。
 # - CodexAppServerProtocolTests：JSON-RPC payload、collaborationMode、目标/steer 协议。
 # - ComposerAutocompleteTests：输入框 `/` 命令与 `$` 技能补全的触发、替换范围和排序。
+# - ComposerMetadataBudgetTests：输入框组合类型的嵌套层数与值大小，防止真机打开会话时主线程栈溢出（#852）。
 # - ClaudeSlashCommandCatalogTests：Claude 会话 `/` 菜单命令目录的解析、请求与按键缓存。
 # - ConversationDataFlowTests 的精确方法：只保留配对后的会话、流式事件、恢复、
 #   exactly-once、审批/中断、Host 隔离和 fake smoke；其余大集合不无条件进入 PR Gate。
@@ -115,6 +116,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/CameraAttachmentTests \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
   -only-testing:MimiRemoteTests/ComposerAutocompleteTests \
+  -only-testing:MimiRemoteTests/ComposerMetadataBudgetTests \
   -only-testing:MimiRemoteTests/ClaudeSlashCommandCatalogTests \
   -only-testing:MimiRemoteTests/DeepSeekComposerPolicyTests \
   -only-testing:MimiRemoteTests/RuntimeCatalogRefreshTests \
