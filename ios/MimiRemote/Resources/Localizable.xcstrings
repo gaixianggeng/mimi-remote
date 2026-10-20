@@ -30167,6 +30167,40 @@
         }
       }
     },
+    "ui.sidebar_all_quiet": {
+      "comment": "Sidebar quiet state shown when no session needs you, is running, or just finished.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All quiet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一切安静"
+          }
+        }
+      }
+    },
+    "ui.sidebar_all_quiet_accessibility": {
+      "comment": "VoiceOver label for the sidebar quiet state.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All quiet. No sessions need you, are running, or just finished."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一切安静，没有等你处理、正在运行或刚完成的会话"
+          }
+        }
+      }
+    },
     "ui.simplified_chinese": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
