@@ -47,6 +47,8 @@ struct UnifiedWorkbenchShell: View {
     private var preferredWorkspaceRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
     @State private var workspaceRuntimeSelection = WorkspaceRuntimeSelectionState()
     @State private var workspaceBrowseSelection = WorkspaceBrowseSelectionState()
+    @State private var sessionHistory = WorkbenchSessionHistory()
+    @State private var isSessionJumpPanelPresented = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -109,6 +111,15 @@ struct UnifiedWorkbenchShell: View {
                         opensConnectionForRepair: settingsSheetOpensRepair
                     )
                 }
+            }
+            .focusedSceneValue(\.workbenchCommands, keyboardCommandActions(layout: layout))
+            .sheet(isPresented: $isSessionJumpPanelPresented) {
+                SessionJumpPanel(
+                    sections: sidebarMonitorSections(now: Date()),
+                    allSessions: SessionStore.sortedSessions(sessionStore.openedWorkspaceSessionLibrarySessions),
+                    onOpen: { openSession($0, source: .sessions, layout: layout) }
+                )
+                .environmentObject(themeStore)
             }
             .onAppear {
                 lastCompactNavigation = layout.usesCompactNavigation
@@ -917,18 +928,7 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func sidebarSectionTitle(_ kind: SessionSidebarSectionKind) -> String {
-        switch kind {
-        case .needYou:
-            return L10n.text("ui.needs_you")
-        case .running:
-            return L10n.text("ui.in_progress")
-        case .justCompleted:
-            return L10n.text("ui.just_completed")
-        case .pinned:
-            return L10n.text("ui.pinned")
-        case .recent:
-            return L10n.text("ui.recently")
-        }
+        kind.localizedTitle
     }
 
     private func sidebarFooter(
@@ -1597,7 +1597,53 @@ struct UnifiedWorkbenchShell: View {
         _ commit: SessionSelectionCommit,
         layout: WorkbenchLayout
     ) {
+        recordSessionHistory(commit)
         applyNavigation(.selectionCommitted(commit), layout: layout)
+    }
+
+    private func recordSessionHistory(_ commit: SessionSelectionCommit) {
+        guard let sessionID = commit.sessionID else { return }
+        switch commit.reason {
+        case .identityReplacement(let previousID):
+            sessionHistory.replace(previousID, with: sessionID)
+        case .userOpen, .notification, .restoration:
+            sessionHistory.visit(sessionID)
+        case .invalidation:
+            break
+        }
+    }
+
+    /// 外接键盘快捷键（#828）：⌘O / ⌘F 跳转，⌘1～9 侧栏前 9 条，⌘N 新建，⌘. 停止，⌘[ / ⌘] 前后会话。
+    private func keyboardCommandActions(layout: WorkbenchLayout) -> WorkbenchCommandActions {
+        let sidebarShortcuts = sidebarMonitorSections(now: Date())
+            .flatMap(\.sessions)
+            .prefix(9)
+            .map { WorkbenchCommandActions.SidebarShortcut(id: $0.id, title: $0.title) }
+        let visibleID = navigationState.visibleSessionID(usesCompactNavigation: layout.usesCompactNavigation)
+        let canStop = sessionStore.selectedSession.map { session in
+            session.id == visibleID && session.isRunning && session.activeTurnID != nil
+                && sessionStore.canControlSession(session)
+        } ?? false
+        let stopCurrentReply: (() -> Void)? = canStop ? { sessionStore.interruptSelectedTurn() } : nil
+        return WorkbenchCommandActions(
+            sidebarShortcuts: Array(sidebarShortcuts),
+            openJumpPanel: { isSessionJumpPanelPresented = true },
+            openSession: { open(.session($0), source: .sessions, layout: layout) },
+            newSession: { presentSheet(.newSession) },
+            stopCurrentReply: stopCurrentReply,
+            goBack: sessionHistory.canGoBack ? { stepSessionHistory(back: true, layout: layout) } : nil,
+            goForward: sessionHistory.canGoForward ? { stepSessionHistory(back: false, layout: layout) } : nil
+        )
+    }
+
+    private func stepSessionHistory(back: Bool, layout: WorkbenchLayout) {
+        var history = sessionHistory
+        let isAvailable: (SessionID) -> Bool = { id in sessionStore.sessions.contains { $0.id == id } }
+        let target = back ? history.goBack(isAvailable: isAvailable) : history.goForward(isAvailable: isAvailable)
+        sessionHistory = history
+        if let target {
+            open(.session(target), source: .sessions, layout: layout)
+        }
     }
 
     private func applyNavigation(
