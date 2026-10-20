@@ -145,6 +145,39 @@ final class RuntimeCatalogRefreshTests: XCTestCase {
         XCTAssertFalse(store.modelCatalogIsMissing(runtimeProvider: "claude"))
     }
 
+    func testDefaultModelCatalogWaitsForInFlightAggregateRefresh() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            modelOptionsError: URLError(.timedOut),
+            runtimeChannelAvailability: ["codex": true, "claude": true]
+        )
+        client.modelOptionsByRuntime = ["codex": [Self.codexOption], "claude": [Self.claudeOption]]
+        let aggregateGate = PreparedConnectionGate()
+        let targetedGate = PreparedConnectionGate()
+        client.modelOptionsGate = aggregateGate
+        client.targetedModelOptionsGate = targetedGate
+        let store = makeStore(client: client)
+
+        // 设置页根层的聚合刷新在途，随后失败；默认模型页在它收尾前打开。
+        let aggregate = Task { await store.refreshAppServerModelOptions() }
+        await aggregateGate.waitUntilStarted()
+        let page = Task {
+            await store.refreshDefaultModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
+        }
+        // 让页面任务先跑到第一个挂起点（修复前是定向请求，修复后是等聚合刷新收尾），再放行聚合失败。
+        for _ in 0..<5 { await Task.yield() }
+        await aggregateGate.release()
+        await aggregate.value
+        await targetedGate.waitUntilStarted()
+        await targetedGate.release()
+        await page.value
+
+        XCTAssertEqual(
+            Set(store.appServerModelOptions.map(\.model)), ["gpt-live", "opus"],
+            "聚合刷新失败不能让同时发出的定向结果被当成过期丢掉"
+        )
+    }
+
     func testDefaultModelCatalogSkipsRuntimesAlreadyInCatalog() async {
         let client = MockSessionStoreClient(
             projects: [], sessions: [],

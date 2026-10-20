@@ -14,6 +14,15 @@ extension SessionStore {
     /// 缺目录的 Runtime 要越过它定向补拉，否则会一直停在「型号未确认」直到退出重进。
     func refreshDefaultModelCatalog(runtimeProviders: [String], force: Bool) async {
         let hostScope = appStore.activeHostScope
+        // 设置页根层或发送路径可能正有一次聚合刷新在途：这里的刷新会被它去重直接跳过；
+        // 它失败时还会改写各 Runtime 的补拉时间，让并发发出的定向结果被当成过期丢掉。
+        // 先等它收尾，再按结果判断还缺谁。
+        if isRefreshingAppServerModels {
+            for await isRefreshing in $isRefreshingAppServerModels.values where !isRefreshing {
+                break
+            }
+        }
+        guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
         await refreshAppServerModelOptions(force: force, expectedHostScope: hostScope)
         for provider in runtimeProviders where modelCatalogIsMissing(runtimeProvider: provider) {
             guard appStore.activeHostScope == hostScope else { return }
