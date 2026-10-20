@@ -92,6 +92,8 @@ echo "==> iOS conversation regressions"
 # - RuntimeCatalogRefreshTests：Runtime 探测失败不撤下可用通道、选择器重探，以及模型目录缺席 Runtime 的补齐（#777/#778）。
 # - WorkbenchLayoutModeCommitTests：iPad 旋转跨 860pt 时换树等系统尺寸过渡结束，
 #   以及输入框焦点、面板跨换树交接（#755）。
+# - WorkbenchShellMetadataBudgetTests：工作台壳层布局分支与会话详情的组合类型大小和嵌套层数，
+#   防止 iPad 宽屏打开会话时壳层占满真机主线程栈（#865）。
 #
 # 每个测试类必须整类出现在下面的 selector 里，或登记在 config/ios-tests/nightly-classes.txt
 # 由每晚全量任务执行；scripts/check-ios-test-selectors.sh 校验类名、方法与归属。
@@ -117,6 +119,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
   -only-testing:MimiRemoteTests/ComposerAutocompleteTests \
   -only-testing:MimiRemoteTests/ComposerMetadataBudgetTests \
+  -only-testing:MimiRemoteTests/WorkbenchShellMetadataBudgetTests \
   -only-testing:MimiRemoteTests/ClaudeSlashCommandCatalogTests \
   -only-testing:MimiRemoteTests/DeepSeekComposerPolicyTests \
   -only-testing:MimiRemoteTests/RuntimeCatalogRefreshTests \

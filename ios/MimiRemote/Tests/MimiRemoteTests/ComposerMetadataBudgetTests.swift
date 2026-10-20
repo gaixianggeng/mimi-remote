@@ -18,17 +18,17 @@ import XCTest
 @MainActor
 final class ComposerMetadataBudgetTests: XCTestCase {
     func testTypeMetricsParseNestedGenericNames() {
-        let metrics = ComposerTypeMetrics(
+        let metrics = ViewTypeMetrics(
             ModifiedContent<HStack<TupleView<(Text, Optional<Text>)>>, _PaddingLayout>.self
         )
 
         // ModifiedContent → HStack → TupleView → 元组 → Optional：解析失效时预算会形同虚设。
         XCTAssertEqual(metrics.depth, 5, metrics.summary("fixture"))
-        XCTAssertEqual(ComposerTypeMetrics.nestingDepth(of: "Swift.Optional<(Swift.Int) -> Swift.String>"), 2)
+        XCTAssertEqual(ViewTypeMetrics.nestingDepth(of: "Swift.Optional<(Swift.Int) -> Swift.String>"), 2)
     }
 
     func testComposerBodyStaysWithinDeviceStackBudget() {
-        let metrics = ComposerTypeMetrics(ComposerView.Body.self)
+        let metrics = ViewTypeMetrics(ComposerView.Body.self)
 
         XCTAssertGreaterThan(metrics.depth, 20, metrics.summary("ComposerView.Body"))
         XCTAssertLessThanOrEqual(metrics.size, 14 * 1024, metrics.summary("ComposerView.Body"))
@@ -36,7 +36,7 @@ final class ComposerMetadataBudgetTests: XCTestCase {
     }
 
     func testComposerInputRowOnlyHoldsErasedCards() {
-        let metrics = ComposerTypeMetrics.result(of: ComposerView.composerInputRow)
+        let metrics = ViewTypeMetrics.result(of: ComposerView.composerInputRow)
 
         XCTAssertLessThanOrEqual(metrics.size, 1024, metrics.summary("composerInputRow"))
         XCTAssertLessThanOrEqual(metrics.depth, 16, metrics.summary("composerInputRow"))
@@ -44,16 +44,16 @@ final class ComposerMetadataBudgetTests: XCTestCase {
 
     func testComposerToolbarsOnlyHoldErasedControls() {
         // 宽档与紧凑档两条分支都在这个类型里；任一分支直接平铺 Menu 都会超过预算。
-        let metrics = ComposerTypeMetrics.value(of: \ComposerView.primaryComposerToolbar)
+        let metrics = ViewTypeMetrics.value(of: \ComposerView.primaryComposerToolbar)
 
         XCTAssertLessThanOrEqual(metrics.depth, 8, metrics.summary("primaryComposerToolbar"))
     }
 
     func testComposerCardsStayWithinMetadataDepthBudget() {
         let cards = [
-            ("composerCard", ComposerTypeMetrics.result(of: ComposerView.composerCard)),
-            ("phoneComposerCard", ComposerTypeMetrics.result(of: ComposerView.phoneComposerCard)),
-            ("collapsedIPadComposerCard", ComposerTypeMetrics.result(of: ComposerView.collapsedIPadComposerCard)),
+            ("composerCard", ViewTypeMetrics.result(of: ComposerView.composerCard)),
+            ("phoneComposerCard", ViewTypeMetrics.result(of: ComposerView.phoneComposerCard)),
+            ("collapsedIPadComposerCard", ViewTypeMetrics.result(of: ComposerView.collapsedIPadComposerCard)),
         ]
 
         for (label, metrics) in cards {
@@ -78,7 +78,8 @@ final class ComposerMetadataBudgetTests: XCTestCase {
 
 /// 组合类型的嵌套层数与值大小。嵌套层数按完整类型名的尖括号和元组括号计算，
 /// 与运行时递归解析泛型实参的深度一致；opaque 返回类型在这里已经展开成实际类型。
-private struct ComposerTypeMetrics {
+/// 输入框与工作台壳层（WorkbenchShellMetadataBudgetTests）的栈预算共用。
+struct ViewTypeMetrics {
     let name: String
     let size: Int
     let depth: Int
