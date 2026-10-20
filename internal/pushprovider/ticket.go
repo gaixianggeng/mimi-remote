@@ -25,7 +25,24 @@ const (
 	ticketPrefix        = "mpt1"
 	ticketMaxLifetime   = 30 * 24 * time.Hour
 	ticketMaxEncodedLen = 2048
+	// 单个活动的更新 Token 只活到活动结束（系统上限 8 小时活跃 + 4 小时锁屏保留），
+	// Ticket 不必比它活得更久，撤销表里的记录也因此更短。
+	activityUpdateTicketLifetime = 24 * time.Hour
 )
+
+// Ticket 的用途（#830）。通知 Ticket 保持 v1 原格式、不带 kind，已发出的 Ticket
+// 与旧客户端都不受影响。Live Activity 的两类 Token 用 v2 并在密文里写明用途：
+// 旧版 Provider 只认 v1，回滚后会直接拒绝 v2，不会把活动 Token 当成通知 Token 投递。
+const (
+	ticketKindNotification   = ""
+	ticketKindActivityUpdate = "activity_update"
+	// push-to-start Token（iOS 17.2+）只能用来远程启动活动，不能更新或结束某个活动。
+	ticketKindActivityStart = "activity_start"
+)
+
+func isActivityTicketKind(kind string) bool {
+	return kind == ticketKindActivityUpdate || kind == ticketKindActivityStart
+}
 
 var (
 	errTicketMalformed = errors.New("push ticket 格式无效")
@@ -45,6 +62,8 @@ type TicketClaims struct {
 	InstallDigest string `json:"idg"`
 	IssuedAt      int64  `json:"iat"`
 	ExpiresAt     int64  `json:"exp"`
+	// Kind 为空即通知 Ticket；只有 v2 Ticket 带 kind。
+	Kind string `json:"kind,omitempty"`
 }
 
 func (c TicketClaims) Expiry() time.Time { return time.Unix(c.ExpiresAt, 0).UTC() }
@@ -91,6 +110,12 @@ func (s *TicketSealer) Seal(claims TicketClaims) (string, error) {
 		return "", errTicketKeyUnkown
 	}
 	claims.Version = 1
+	if claims.Kind != ticketKindNotification {
+		if !isActivityTicketKind(claims.Kind) {
+			return "", fmt.Errorf("未知 ticket 用途 %q", claims.Kind)
+		}
+		claims.Version = 2
+	}
 	plaintext, err := json.Marshal(claims)
 	if err != nil {
 		return "", err
@@ -136,7 +161,13 @@ func (s *TicketSealer) Open(ticket string, now time.Time) (TicketClaims, error) 
 	if err := json.Unmarshal(plaintext, &claims); err != nil {
 		return TicketClaims{}, errTicketMalformed
 	}
-	if claims.Version != 1 || claims.ID == "" || claims.DeviceToken == "" || claims.Topic == "" {
+	if claims.ID == "" || claims.DeviceToken == "" || claims.Topic == "" {
+		return TicketClaims{}, errTicketMalformed
+	}
+	switch {
+	case claims.Version == 1 && claims.Kind == ticketKindNotification:
+	case claims.Version == 2 && isActivityTicketKind(claims.Kind):
+	default:
 		return TicketClaims{}, errTicketMalformed
 	}
 	if claims.ExpiresAt <= now.Unix() {
@@ -146,9 +177,17 @@ func (s *TicketSealer) Open(ticket string, now time.Time) (TicketClaims, error) 
 }
 
 func (s *TicketSealer) Issue(environment string, topic string, deviceToken string, installDigest string, now time.Time) (string, TicketClaims, error) {
+	return s.IssueKind(ticketKindNotification, environment, topic, deviceToken, installDigest, now)
+}
+
+func (s *TicketSealer) IssueKind(kind string, environment string, topic string, deviceToken string, installDigest string, now time.Time) (string, TicketClaims, error) {
 	id, err := randomTicketID()
 	if err != nil {
 		return "", TicketClaims{}, err
+	}
+	lifetime := s.lifetime
+	if kind == ticketKindActivityUpdate && lifetime > activityUpdateTicketLifetime {
+		lifetime = activityUpdateTicketLifetime
 	}
 	claims := TicketClaims{
 		ID:            id,
@@ -157,7 +196,8 @@ func (s *TicketSealer) Issue(environment string, topic string, deviceToken strin
 		DeviceToken:   deviceToken,
 		InstallDigest: installDigest,
 		IssuedAt:      now.Unix(),
-		ExpiresAt:     now.Add(s.lifetime).Unix(),
+		ExpiresAt:     now.Add(lifetime).Unix(),
+		Kind:          kind,
 	}
 	ticket, err := s.Seal(claims)
 	if err != nil {

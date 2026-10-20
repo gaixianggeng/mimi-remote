@@ -8,9 +8,9 @@
 
 `cmd/mimi-push-provider` 是一个单进程 Go 服务，只做三件事：
 
-1. 用设备提交的 APNs Token 换一张不透明 Push Ticket；
+1. 用设备提交的 APNs Token（含 Live Activity Token）换一张不透明 Push Ticket；
 2. 撤销 Ticket；
-3. 按固定枚举向 APNs 发送审批、回复完成、任务失败或中断提醒。
+3. 按固定枚举向 APNs 发送审批、回复完成、任务失败或中断提醒，以及启动、更新、结束 Live Activity（#830）。
 
 它不托管账号、不托管会话、不中继代码、不代理审批动作。用户的「允许 / 拒绝」始终由设备通过私有网络直接提交给自己的 `agentd`，不经过这里。
 
@@ -121,6 +121,106 @@ DeepSeek 回复提醒（#568）同样先更新 Provider：旧 Provider 对 `runt
 
 最小验收：开启“消息提醒”后发送一个延迟完成的任务并锁屏；确认只收到一次回复提醒，点击能打开来源任务。
 另测失败、自动重试、需要输入、当前任务前台静默、审批允许/拒绝，以及锁屏提醒显示会话标题、缓存缺失时退回通用文案。真实 APNs 投递仍须真机验证。
+
+## Live Activity（#830）
+
+锁屏与灵动岛的回合进度经同一个 Provider 投递。Provider 只接收状态枚举、计数、时间戳和匿名短标签；
+会话标题由设备上的 Widget 扩展按短标签从 App Group 本地缓存查，Payload 与日志里都没有标题。
+
+### Ticket 用途
+
+`POST /v1/ticket` 新增可选字段 `kind`，其余字段与响应不变：
+
+| `kind` | 用途 | apns-topic | Ticket 有效期 |
+| --- | --- | --- | --- |
+| 省略、`""` 或 `notification` | 通知（原有行为） | `<Bundle ID>` | 原有设置（默认 30 天） |
+| `activity_update` | 某一个活动的更新 Token，只能发 update / end | `<Bundle ID>.push-type.liveactivity` | 不超过 24 小时 |
+| `activity_start` | iOS 17.2+ 的 push-to-start Token，只能发 start | `<Bundle ID>.push-type.liveactivity` | 原有设置 |
+
+- 通知 Ticket 仍是 v1 格式，明文里没有 `kind`。升级前签发的 Ticket 继续可用，旧客户端不受影响。
+- 两类活动 Ticket 用 v2 格式并在密文里写明用途。活动 Token 上限是 400 个十六进制字符，通知 Token 仍是 200。
+- 用途不符的 Ticket 一律回 `400 ticket_kind_mismatch`，包括活动 Ticket 调 `/v1/notify`、更新 Ticket 发 start 等情况。
+- 撤销沿用 `/v1/ticket/revoke`，撤销表不变。
+
+### `POST /v1/notify/liveactivity`
+
+```json
+{
+  "version": 1,
+  "event": "update",
+  "ticket": "mpt1.<…>",
+  "content_state": {
+    "status": "running",
+    "running_count": 2,
+    "needs_you_count": 1,
+    "started_at": 1700000000,
+    "focus_session_tag": "7D92"
+  },
+  "stale_date": 1700001800,
+  "expires_at": "2026-10-20T12:00:00Z"
+}
+```
+
+| 字段 | 规则 |
+| --- | --- |
+| `event` | `start` / `update` / `end` |
+| `content_state.status` | `running` / `needsYou` / `completed` / `failed`，区分大小写 |
+| `running_count`、`needs_you_count` | 整数 0–99。agentd 发送前自行截断 |
+| `started_at` | Unix 秒，不早于 24 小时前、不晚于 5 分钟后 |
+| `focus_session_tag` | 最需要关注的会话的匿名短标签，规则同 `session_tag`（大写十六进制，≤16 位） |
+| `attributes_type`、`attributes` | 仅 start，且必填。`attributes_type` 必须是 `MimiTurnActivityAttributes`，`attributes` 只有 `host_tag` 一个字段 |
+| `stale_date` | 可选，Unix 秒，晚于当前且不超过 12 小时；end 不能带 |
+| `dismissal_date` | 仅 end，可选，Unix 秒，不超过 4 小时后；早于当前表示立即移除 |
+| `expires_at` | RFC3339，不超过 12 小时；与 Ticket 到期取较早者，作为 `apns-expiration` |
+
+任何未知字段，包括 `content_state` 和 `attributes` 内部的字段，都会回 `400 invalid_body`。取值越界回 `400 invalid_request`，两种情况都不触发投递。
+
+Provider 生成的 APNs 请求：
+
+- Header：`apns-push-type: liveactivity`，`apns-topic` 取 Ticket 里的 `<Bundle ID>.push-type.liveactivity`，不带 `apns-collapse-id`。
+- `apns-priority`：普通 update 用 5，不占系统的高优先级预算；start、end 和 `status=needsYou` 的 update 用 10。
+- `aps.timestamp` 取 Provider 收到请求的时间，`aps.event` 与请求相同。`aps.content-state` 的键是 `status`、`runningCount`、`needsYouCount`、`startedAt`、`focusSessionTag`。
+- start 另带 `attributes-type`、`attributes.hostTag`、`input-push-token: 1`，以及 Apple 要求的 `alert`。`alert` 只用扁平本地化键 `title-loc-key: push.liveactivity.start.title` 与 `loc-key: push.liveactivity.start.body`，不带参数和声音。
+- end 带 `dismissal-date`，update 与 start 可以带 `stale-date`。
+
+App 端（阶段二）必须对齐的约定：
+
+- ActivityAttributes 的 Swift 类型名是 `MimiTurnActivityAttributes`，属性名与上面的键一致。
+- `startedAt` 是 Unix 秒，应声明为整数。系统用默认 Codable 策略解码，声明成 `Date` 会按 2001 年参考时间解释。
+- 两个 start 文案 key 需要放进 App 的本地化表。
+
+### 频率与合并
+
+- 限速沿用原有令牌桶参数（突发 20、每秒 2 条），但 Live Activity 单独按设备计数：同一安装的所有活动共用一个桶，与审批通知的额度互不挤占。
+- 同一活动（同一张更新 Ticket）的 update 至少间隔 5 秒。窗口内的请求回 `202 {"accepted":true,"coalesced":true}`，只保留最后一条，窗口结束时以它收到时的 `timestamp` 发出。
+- 以下情况不等窗口：end，以及从其它状态转入 `needsYou` 的 update。它们立即发出，并丢弃窗口里更旧的 update。已处于 `needsYou` 时，计数变化照常合并。
+- start 不合并，只受限速约束。
+- 合并后延迟发出的 update 没有调用方等待结果。发出前会重新检查撤销表；APNs 判定 Token 失效时照常自动撤销，调用方下一次请求会得到 `403 ticket_revoked`。
+
+### 响应与失效
+
+响应码与 `/v1/notify` 一致：`200 delivered:true`；APNs 协议级拒绝回 `200 delivered:false + reason`；
+Token 永久失效回 `410 reason:unregistered` 并自动撤销 Ticket；传输故障回 `502`。活动 Ticket 在
+`Unregistered`、`BadDeviceToken`、`DeviceTokenNotForTopic` 之外还认 `ExpiredToken`（活动结束后其更新 Token 会过期）。
+通知路径的判定不变。
+
+日志只含环境、事件枚举和 APNs 状态与原因，不记录 `content_state`、Ticket、Token 或 Payload。
+新增指标计数：`ticket_issued_activity_update`、`ticket_issued_activity_start`、`liveactivity_delivered_<event>`、
+`liveactivity_coalesced`、`liveactivity_rejected_{ticket,ticket_kind,schema,revoked}`、`notify_rejected_ticket_kind`。
+
+### 部署注意事项
+
+- **先部署 Provider，再发布阶段二的 agentd 与 App。** 旧 Provider 不认 `kind`，按未知字段回 400；也没有 `/v1/notify/liveactivity`。部署须由维护者单独确认，沿用上文「部署与升级」的备份与回滚流程。
+- 不新增环境变量、密钥或持久数据。`liveactivity` topic 由 `MIMI_PUSH_TOPIC` 自动派生，nginx 的 `/mimi-push/` 前缀已覆盖新路径。
+- APNs Key 必须对 `<Bundle ID>.push-type.liveactivity` 有效。Team Scoped (All topics) 的 Key 满足要求；换成 Topic 限定的 Key 时需要勾选该 topic。
+- 回滚到旧 Provider 时，通知 Ticket 不受影响，活动 Ticket 会回 `401 invalid_ticket`。旧版只认 v1，不会把活动 Token 当成通知 Token 投递。重新升级后，活动 Ticket 在有效期内恢复可用。
+- 重启会丢掉进程内的合并状态，每个活动最多丢失一条尚未发出的中间态 update。下一次状态变化会覆盖它。
+
+最小验收（部署后、阶段二之前）：
+
+1. 用测试 Token 分别签发 `activity_update` 和 `activity_start` Ticket，确认响应字段与原有一致。
+2. 用活动 Ticket 调 `/v1/notify` 应回 `400 ticket_kind_mismatch`。原有通知 Ticket 的审批提醒照常 `delivered:true`。
+3. 测试 Token 打 `/v1/notify/liveactivity` 应回 `410 unregistered` 或 `delivered:false`，说明请求已到达 APNs。真实锁屏显示要等阶段二用真机验证。
 
 ## 密钥
 

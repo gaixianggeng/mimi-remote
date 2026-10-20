@@ -663,14 +663,14 @@ extension ComposerView {
             let capability = enabledSkillShortcuts.first { $0.path == path || $0.name == name }
             SkillAttachmentToken(
                 metadata: SkillVisualMetadata(name: name, path: path, capability: capability),
-                onOpen: canPreviewAttachment(item) ? { previewingAttachment = item } : nil,
+                onOpen: canPreviewAttachment(item) ? { previewAttachment(item, at: index) } : nil,
                 onRemove: { removeAttachment(item, at: index) }
             )
             .environmentObject(themeStore)
         } else {
             HStack(spacing: 6) {
                 Button {
-                    previewingAttachment = item
+                    previewAttachment(item, at: index)
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: attachmentSymbol(for: item))

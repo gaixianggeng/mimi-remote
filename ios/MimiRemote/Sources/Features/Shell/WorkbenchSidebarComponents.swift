@@ -540,6 +540,9 @@ struct SessionSidebarMonitorRow: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.calendar) private var calendar
+    @Environment(\.locale) private var locale
+    @Environment(\.timeZone) private var timeZone
     /// 侧栏最近条目比导航入口低一档：标题 subheadline 15、时间 footnote 13；
     /// 同样先跟随系统字号，再叠应用内比例（#563）。
     @ScaledMetric(relativeTo: .subheadline) private var titlePointSize: CGFloat = 15
@@ -647,25 +650,23 @@ struct SessionSidebarMonitorRow: View {
         Group {
             switch kind {
             case .needYou:
-                Text(
-                    session.pendingApproval != nil
-                        ? L10n.text("ui.pending_approval")
-                        : L10n.text("ui.waiting_for_input")
-                )
+                // 与会话页、工作区页和对话顶部同一份状态文案（#546）：审批载荷还没到时
+                // 也按活动状态写「待审批」，失败写「失败」。
+                Text(session.displayStatus(foregroundActivity: nil).title)
             case .running:
                 TimelineView(.periodic(from: .now, by: 30)) { context in
                     Text(runningDuration(at: context.date))
                 }
             case .justCompleted:
                 if let date = completionObservedAt {
-                    TimelineView(.periodic(from: .now, by: 30)) { context in
-                        Text(compactRelativeDuration(from: date, to: context.date))
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(timestampText(for: date, now: context.date))
                     }
                 }
             case .pinned, .recent:
                 if let date = session.recencyAt ?? session.updatedAt ?? session.createdAt {
-                    TimelineView(.periodic(from: .now, by: 30)) { context in
-                        Text(compactRelativeDuration(from: date, to: context.date))
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(timestampText(for: date, now: context.date))
                     }
                 }
             }
@@ -701,13 +702,18 @@ struct SessionSidebarMonitorRow: View {
         return "\(seconds / 3_600)h"
     }
 
-    private func compactRelativeDuration(from date: Date, to now: Date) -> String {
-        let seconds = max(0, Int(now.timeIntervalSince(date)))
-        if seconds < 60 { return "<1m" }
-        if seconds < 3_600 { return "\(seconds / 60)m" }
-        if seconds < 86_400 { return "\(seconds / 3_600)h" }
-        return "\(seconds / 86_400)d"
+    /// 与会话页、工作区页的会话行同一种时间写法（今天 HH:mm / 昨天 / 月日），
+    /// iPad 横屏一屏之内同一条会话不再出现「6m」和「22:15」两种表示（#546）。
+    private func timestampText(for date: Date, now: Date) -> String {
+        SessionListPresentation.timestampText(
+            for: date,
+            now: now,
+            calendar: calendar,
+            locale: locale,
+            timeZone: timeZone
+        )
     }
+
 }
 
 struct CodexUsageRingMetrics {
