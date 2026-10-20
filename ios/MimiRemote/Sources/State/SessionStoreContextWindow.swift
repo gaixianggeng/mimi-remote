@@ -40,6 +40,19 @@ extension SessionStore {
         return usage.isLow && !dismissedContextWindowNoticeSessionIDs.contains(session.id)
     }
 
+    /// 随会话分页状态一起修剪：被移出列表的会话不再保留用量和提示关闭状态，
+    /// 之后重新载入时以服务端补发的用量为准。
+    func pruneContextWindowState(validSessionIDs: Set<SessionID>) {
+        let usage = contextWindowUsageBySessionID.filter { validSessionIDs.contains($0.key) }
+        if usage != contextWindowUsageBySessionID {
+            contextWindowUsageBySessionID = usage
+        }
+        let dismissed = dismissedContextWindowNoticeSessionIDs.intersection(validSessionIDs)
+        if dismissed != dismissedContextWindowNoticeSessionIDs {
+            dismissedContextWindowNoticeSessionIDs = dismissed
+        }
+    }
+
     func dismissContextWindowNotice(sessionID: SessionID) {
         dismissedContextWindowNoticeSessionIDs.insert(sessionID)
     }

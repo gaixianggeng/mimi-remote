@@ -105,6 +105,21 @@ final class ContextWindowUsageTests: XCTestCase {
         XCTAssertEqual(store.contextWindowUsageBySessionID[id]?.usedTokens, 100_000)
     }
 
+    @MainActor
+    func testPruningDropsUsageAndDismissalForEvictedSessions() {
+        let store = makeStore()
+        let sample = sample(total: 1, last: breakdown(input: 1, output: 1, total: 250_000), window: 272_000)
+        store.recordContextWindowUsage(sample, sessionID: "kept")
+        store.recordContextWindowUsage(sample, sessionID: "evicted")
+        store.dismissContextWindowNotice(sessionID: "kept")
+        store.dismissContextWindowNotice(sessionID: "evicted")
+
+        store.pruneContextWindowState(validSessionIDs: ["kept"])
+
+        XCTAssertEqual(Set(store.contextWindowUsageBySessionID.keys), ["kept"])
+        XCTAssertEqual(store.dismissedContextWindowNoticeSessionIDs, ["kept"])
+    }
+
     // MARK: - Helpers
 
     @MainActor
