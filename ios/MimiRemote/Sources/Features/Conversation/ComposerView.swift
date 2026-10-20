@@ -114,7 +114,7 @@ struct ComposerView: View {
             voiceErrorMessage
             voiceNoticeMessage
             attachmentErrorNotice
-            contextWindowNotice
+            contextWindowNoticeBox()
             clipboardImageNotice
             FileUploadJobsStrip(store: sessionStore.fileUploadStore, scope: activeComposerDraftScope)
                 .environmentObject(themeStore)
@@ -1104,11 +1104,11 @@ struct ComposerView: View {
     func composerInputRow(tokens: ThemeTokens) -> some View {
         Group {
             if usesNarrowComposerLayout {
-                phoneComposerCard(tokens: tokens)
+                phoneComposerCardBox(tokens: tokens)
             } else if usesCollapsedIPadComposer {
-                collapsedIPadComposerCard(tokens: tokens)
+                collapsedIPadComposerCardBox(tokens: tokens)
             } else {
-                composerCard(tokens: tokens)
+                composerCardBox(tokens: tokens)
             }
         }
         // 补全候选浮在输入卡上方，不改变卡片高度，聊天列表不会被挤动（#765）。
@@ -1336,20 +1336,18 @@ struct ComposerView: View {
         if usesCompactComposerMetrics {
             compactPrimaryComposerToolbar(showsModelTitle: compactToolbarShowsModelTitle)
         } else {
+            // 宽档与紧凑档共用同一组擦除边界：两条分支都在 `primaryComposerToolbar`
+            // 的组合类型里，任一分支直接平铺复杂控件，都会让真机解析元数据时栈溢出（#852）。
             HStack(spacing: 10) {
-                addContentButton
+                addContentControlBox()
                 // 模型永不收起：不能改设置时也留锁定图标，与窄、中档一致（#835）。
-                if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
-                    modelPickerControl
-                } else {
-                    unavailableModelControl
-                }
-                followUpDeliveryMenu
+                modelControlBox(showsTitle: true)
+                deliveryControlBox()
                 Spacer(minLength: 0)
-                contextWindowRingControl
-                composerOptionsMenu
-                voiceMicControl
-                sendButton(showLabels: false)
+                contextWindowControlBox()
+                optionsControlBox()
+                microphoneControlBox()
+                submitControlBox()
             }
             .frame(maxWidth: .infinity)
         }
@@ -1376,73 +1374,9 @@ struct ComposerView: View {
         CompactComposerToolbarShell(
             leadingControls: compactLeadingControlsBox(showsModelTitle: showsModelTitle),
             toolControls: compactToolControlsBox(),
-            submitControl: compactSubmitControlBox(),
+            submitControl: submitControlBox(),
             spacing: usesNarrowComposerLayout ? 6 : 10
         )
-    }
-
-    @inline(never)
-    func compactLeadingControlsBox(showsModelTitle: Bool) -> AnyView {
-        // iPhone 运行态把投递方式收进设置菜单，避免第六个控件挤破 320–390pt 工具栏。
-        // iPad 保留原有平铺入口。
-        let deliveryControl = compactToolbarShowsInlineDeliveryControl
-            ? compactDeliveryControlBox()
-            : nil
-        return AnyView(
-            CompactComposerLeadingControlsShell(
-                addControl: compactAddContentControlBox(),
-                modelControl: compactModelControlBox(showsTitle: showsModelTitle),
-                deliveryControl: deliveryControl
-            )
-        )
-    }
-
-    // 每个复杂控件单独进入一个不可内联的栈帧；返回后父层只保留小型 AnyView，
-    // 这是对真机泛型元数据栈溢出的边界修复，不用于普通组件的类型兼容。
-    @inline(never)
-    func compactAddContentControlBox() -> AnyView {
-        AnyView(addContentButton)
-    }
-
-    @inline(never)
-    func compactModelControlBox(showsTitle: Bool) -> AnyView {
-        guard composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
-            return AnyView(unavailableModelControl)
-        }
-        return AnyView(modelPickerControl(showsTitle: showsTitle, usesCompactTitle: usesNarrowComposerLayout))
-    }
-
-    @inline(never)
-    func compactDeliveryControlBox() -> AnyView {
-        AnyView(followUpDeliveryMenu)
-    }
-
-    @inline(never)
-    func compactToolControlsBox() -> AnyView {
-        return AnyView(
-            HStack(spacing: 2) {
-                compactContextWindowControlBox()
-                CompactComposerToolControlsShell(
-                    optionsControl: compactOptionsControlBox(),
-                    microphoneControl: compactMicrophoneControlBox()
-                )
-            }
-        )
-    }
-
-    @inline(never)
-    func compactOptionsControlBox() -> AnyView {
-        AnyView(composerOptionsMenu)
-    }
-
-    @inline(never)
-    func compactMicrophoneControlBox() -> AnyView {
-        AnyView(voiceMicControl)
-    }
-
-    @inline(never)
-    func compactSubmitControlBox() -> AnyView {
-        AnyView(sendButton(showLabels: false))
     }
 
     var composerOptionsMenu: some View {
@@ -1495,7 +1429,7 @@ struct ComposerView: View {
                 Divider()
                 followUpDeliveryMenuItems
             }
-            contextWindowOptionsMenuFallback
+            contextWindowOptionsMenuFallbackBox()
         } label: {
             composerToolbarControlLabel(
                 // 动作一律用图标，文字只留给模型名、权限这类状态（#835 D2）。

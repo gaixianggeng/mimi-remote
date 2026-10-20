@@ -54,12 +54,8 @@ extension ComposerView {
         ConversationLayout.composerShowsContextRing(tier: composerTier, availableWidth: availableWidth)
     }
 
-    // 与紧凑工具栏的其他控件一样先在独立栈帧里擦除类型，避免真机收集泛型元数据时栈溢出。
-    @inline(never)
-    func compactContextWindowControlBox() -> AnyView {
-        AnyView(contextWindowRingControl)
-    }
-
+    // 圆环、提示条和「选项」里的兜底都经 ComposerErasedControls.swift 的擦除边界接入，
+    // 不在工具栏或 body 里直接平铺（#852）。
     @ViewBuilder
     var contextWindowRingControl: some View {
         if showsContextWindowRingInToolbar,
