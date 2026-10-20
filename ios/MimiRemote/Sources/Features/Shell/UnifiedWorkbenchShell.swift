@@ -75,20 +75,21 @@ struct UnifiedWorkbenchShell: View {
             } ?? proposedLayout
 
             Group {
+                // 三种布局各自擦除类型，见 WorkbenchShellErasedLayouts.swift（#865）。
                 if layout.usesCompactNavigation {
-                    compactLayout(
+                    compactLayoutBox(
                         layout: layout,
                         tokens: tokens,
                         bottomSafeAreaInset: proxy.safeAreaInsets.bottom
                     )
                 } else if layout.usesFloatingSidebarSurface {
-                    floatingLayout(
+                    floatingLayoutBox(
                         layout: layout,
                         tokens: tokens,
                         bottomSafeAreaInset: proxy.safeAreaInsets.bottom
                     )
                 } else {
-                    splitLayout(
+                    splitLayoutBox(
                         layout: layout,
                         tokens: tokens,
                         bottomSafeAreaInset: proxy.safeAreaInsets.bottom
@@ -277,7 +278,7 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    private func splitLayout(
+    func splitLayout(
         layout: WorkbenchLayout,
         tokens: ThemeTokens,
         bottomSafeAreaInset: CGFloat
@@ -291,7 +292,7 @@ struct UnifiedWorkbenchShell: View {
         .navigationSplitViewStyle(.balanced)
     }
 
-    private func floatingLayout(
+    func floatingLayout(
         layout: WorkbenchLayout,
         tokens: ThemeTokens,
         bottomSafeAreaInset: CGFloat
@@ -1009,7 +1010,7 @@ struct UnifiedWorkbenchShell: View {
         case .me, .devices:
             settingsPage(tab: destination == .devices ? .devices : .me, layout: layout)
         case .session(let sessionID):
-            sessionDetail(
+            sessionDetailBox(
                 destinationSessionID: sessionID,
                 layout: layout,
                 tokens: tokens,
@@ -1051,10 +1052,10 @@ struct UnifiedWorkbenchShell: View {
             if layout.usesFloatingSidebarSurface {
                 // 浮层路径不再由 NavigationSplitView 提供 detail 导航上下文，父会话与子会话路由都显式使用原生导航栈。
                 NavigationStack {
-                    sessionDetail(layout: layout, tokens: tokens)
+                    sessionDetailBox(layout: layout, tokens: tokens)
                 }
             } else {
-                sessionDetail(layout: layout, tokens: tokens)
+                sessionDetailBox(layout: layout, tokens: tokens)
             }
         }
     }
@@ -1120,7 +1121,7 @@ struct UnifiedWorkbenchShell: View {
         .accessibilityIdentifier("conversation.detailedTranscript")
     }
 
-    private func sessionDetail(
+    func sessionDetail(
         destinationSessionID: SessionID? = nil,
         layout: WorkbenchLayout,
         tokens: ThemeTokens,
