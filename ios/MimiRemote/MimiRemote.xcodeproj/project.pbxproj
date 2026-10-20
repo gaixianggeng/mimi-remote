@@ -370,6 +370,7 @@
 		9D3D4A255AB0F15B7F50A691 /* HostInstallerShareUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DD620F635B06B43ECF89C60 /* HostInstallerShareUITests.swift */; };
 		9DB7FDC4C6AB0FBB1DE2DC8D /* testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 5F6590638B16083675339655 /* testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone.1.png */; };
 		9E36F9EC5868CB3E87DA8E8E /* PushTicketStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAE88D00CEBE53EE77A7DBB7 /* PushTicketStore.swift */; };
+		9F00D25902A086B117C87251 /* WorkbenchSidebarDutyBoard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5C4E711E29DACE8A0E88A0B /* WorkbenchSidebarDutyBoard.swift */; };
 		9F08EDD6695137214ECF7A7B /* testSkillInvocationCardLightAppearance.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 8AE76E723980EA82E7BBD4A8 /* testSkillInvocationCardLightAppearance.1.png */; };
 		9F4EA8644B1E67A1F3CC863C /* testCompactModelGridLightFastModeOff.1.png in Resources */ = {isa = PBXBuildFile; fileRef = C4E6AEA3E96B661F7473D460 /* testCompactModelGridLightFastModeOff.1.png */; };
 		9F7D54E83E01704400E0545E /* ManagedConnectionEventAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F61AFF194ED42377F56DF80 /* ManagedConnectionEventAPIClient.swift */; };
@@ -1126,6 +1127,7 @@
 		C523CEAE7C15DEC88BF93FEC /* testComposerStatusTrayExpandedCrowdedState.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testComposerStatusTrayExpandedCrowdedState.1.png; sourceTree = "<group>"; };
 		C52C65CD4E17DBD136DF7CDD /* ComposerContextWindowViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerContextWindowViews.swift; sourceTree = "<group>"; };
 		C5A44E24BB7F5E7F9FD31191 /* SessionStoreProjectsGit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreProjectsGit.swift; sourceTree = "<group>"; };
+		C5C4E711E29DACE8A0E88A0B /* WorkbenchSidebarDutyBoard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchSidebarDutyBoard.swift; sourceTree = "<group>"; };
 		C5E6BB3858336A721F1794CF /* HarnessSessionJournalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessSessionJournalTests.swift; sourceTree = "<group>"; };
 		C630B2CD1547775D1169675E /* WorkbenchKeyboardCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchKeyboardCommands.swift; sourceTree = "<group>"; };
 		C6D12A6459F0F6B768F4F068 /* ConversationCommentaryRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationCommentaryRow.swift; sourceTree = "<group>"; };
@@ -2097,6 +2099,7 @@
 				C630B2CD1547775D1169675E /* WorkbenchKeyboardCommands.swift */,
 				F9A8B93C954460C30024081E /* WorkbenchLayoutModeCommit.swift */,
 				08549513F9D308C94B5C1938 /* WorkbenchSidebarComponents.swift */,
+				C5C4E711E29DACE8A0E88A0B /* WorkbenchSidebarDutyBoard.swift */,
 				F400F53D43F0F11A84B46D20 /* WorkspaceWorkbenchRootView.swift */,
 			);
 			path = Shell;
@@ -3167,6 +3170,7 @@
 				B5F34EE1EE462821F19AA3FE /* WorkbenchKeyboardCommands.swift in Sources */,
 				F48466A639AABA09F4D55E62 /* WorkbenchLayoutModeCommit.swift in Sources */,
 				94E3CCCEB33D4DB58965C7DB /* WorkbenchSidebarComponents.swift in Sources */,
+				9F00D25902A086B117C87251 /* WorkbenchSidebarDutyBoard.swift in Sources */,
 				8E5E34194E31B12DFCA55613 /* WorkbenchTopScrollEdgeBoost.swift in Sources */,
 				D681218B9C336370B3C784B7 /* WorkspaceAppearancePickers.swift in Sources */,
 				E19C681FE60B4E63CF29AA69 /* WorkspaceAppearanceStore.swift in Sources */,

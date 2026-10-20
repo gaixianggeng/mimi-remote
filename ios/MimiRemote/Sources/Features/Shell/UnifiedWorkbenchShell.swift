@@ -711,6 +711,9 @@ struct UnifiedWorkbenchShell: View {
             }
         }
         let familySections = SessionHierarchy.sectionedFamilies(sections.map { (key: $0.kind, sessions: $0.sessions) })
+        // 值班表与跳转器的分层规则见 WorkbenchSidebarDutyBoard.swift（#547）。
+        let renderedKinds = familySections.map(\.key)
+        let dividerKind = WorkbenchSidebarDutyBoardLayout.dividerKind(sectionKinds: renderedKinds)
 
         return List(selection: selectionBinding(layout: layout)) {
             Section {
@@ -728,6 +731,12 @@ struct UnifiedWorkbenchShell: View {
                     tokens: tokens,
                     layout: layout
                 )
+            }
+
+            if WorkbenchSidebarDutyBoardLayout.showsQuietState(sectionKinds: renderedKinds) {
+                Section {
+                    WorkbenchSidebarQuietRow()
+                }
             }
 
             ForEach(familySections) { familySection in
@@ -769,8 +778,12 @@ struct UnifiedWorkbenchShell: View {
                 } header: {
                     let ownCount = familySection.families.flatMap(\.members)
                         .filter { kindBySessionID[$0.id] == familySection.key }.count
-                    Text("\(sidebarSectionTitle(section.kind)) \(ownCount + section.overflowCount)")
-                        .pageSectionHeaderStyle()
+                    WorkbenchSidebarSectionHeader(
+                        title: sidebarSectionTitle(section.kind),
+                        count: ownCount + section.overflowCount,
+                        kind: section.kind,
+                        showsDivider: familySection.key == dividerKind
+                    )
                 }
             }
         }

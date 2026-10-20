@@ -536,6 +536,14 @@ struct WorkbenchSidebarFooter: View {
 
 /// 侧边栏是任务监视器，不重复主列表的路径和完整状态；形状先表达优先级，
 /// 文字只补充“为什么需要回来”与紧凑时间，灰阶和窄栏下仍可扫读。
+///
+/// 与详情列表行的分工（#547）：iPad 横屏两列并排时，同一条会话不能读成复印件。
+/// - 侧栏行：只有状态标记、项目头像（组头一次）、标题和一个尾部值。尾部值按分区说
+///   「为什么要回来」：待你处理写状态文案，运行中写已运行时长，刚完成 / 最近写时间。
+///   不显示路径、预览、运行时与完整状态。
+/// - 详情行：完整状态、路径与预览，时间是会话自己的活动时间。
+/// - 值班表（待你处理 / 运行中 / 刚完成）的标题保持列表标题色；跳转器（置顶 / 最近）
+///   不画状态标记，标题降到二级灰，选中时才提亮。
 struct SessionSidebarMonitorRow: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -587,10 +595,10 @@ struct SessionSidebarMonitorRow: View {
             .frame(width: 20, height: 20)
 
             // 15pt 常规字重：比照 Notion iPad 侧栏的条目，13pt 中粗在大屏上显得局促。
-            // 非选中条目用列表标题灰，选中才提亮到正文色。
+            // 非选中条目用列表标题灰（跳转器再降一档），选中才提亮到正文色。
             Text(SessionListPresentation.titleDisplayText(for: session))
                 .font(themeStore.uiFont(size: titlePointSize, weight: isSelected ? .medium : .regular))
-                .foregroundStyle(isSelected ? tokens.primaryText : tokens.listTitleText)
+                .foregroundStyle(titleColor(tokens: tokens))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .layoutPriority(1)
@@ -676,6 +684,13 @@ struct SessionSidebarMonitorRow: View {
         .monospacedDigit()
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func titleColor(tokens: ThemeTokens) -> Color {
+        if isSelected {
+            return tokens.primaryText
+        }
+        return kind.isDutyBoard ? tokens.listTitleText : tokens.secondaryText
     }
 
     private func rowFill(tokens: ThemeTokens) -> Color {
