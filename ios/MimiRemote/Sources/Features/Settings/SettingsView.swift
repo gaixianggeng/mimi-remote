@@ -331,17 +331,6 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.language")
 
-                NavigationLink(value: SettingsDestination.defaultModels) {
-                    // 两个 runtime 的模型 + 档位拼在一行会被截断成一串噪音，
-                    // 详情页已经把它们平铺开了，这里只做入口。
-                    SettingsValueLabel(
-                        title: L10n.text("ui.default_model"),
-                        systemImage: "cpu"
-                    )
-                }
-                .settingsStandardListRow()
-                .accessibilityIdentifier("settings.defaultModels")
-
                 // 四个模式各自有 detail，而且是安全相关的选择：值得整页逐条读完再选。
                 NavigationLink(value: SettingsDestination.defaultPermissions) {
                     SettingsValueLabel(

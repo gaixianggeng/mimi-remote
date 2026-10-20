@@ -123,6 +123,77 @@ final class RuntimeCatalogRefreshTests: XCTestCase {
         XCTAssertEqual(client.targetedModelOptionsRequests, ["claude"], "聚合目录已确认的 Runtime 不重复补拉")
     }
 
+    func testDefaultModelCatalogRefetchesAfterFailedStartupRefresh() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            modelOptionsError: URLError(.notConnectedToInternet),
+            runtimeChannelAvailability: ["codex": true, "claude": true]
+        )
+        let store = makeStore(client: client)
+        // 启动时连接还没就绪：聚合刷新失败，也记下 5 分钟负缓存。
+        await store.refreshAppServerModelOptions()
+        client.modelOptionsError = nil
+        client.modelOptionsResult = [Self.codexOption, Self.claudeOption]
+        await store.prepareTurnModelOptions(runtimeProvider: "claude", hostScope: store.appStore.activeHostScope)
+        XCTAssertTrue(client.targetedModelOptionsRequests.isEmpty, "发送路径沿用负缓存，不重复请求")
+        XCTAssertTrue(store.modelCatalogIsMissing(runtimeProvider: "claude"))
+
+        await store.refreshDefaultModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
+
+        XCTAssertEqual(Set(store.appServerModelOptions.map(\.model)), ["gpt-live", "opus"], "默认模型页不能停在「型号未确认」")
+        XCTAssertFalse(store.modelCatalogIsMissing(runtimeProvider: "codex"))
+        XCTAssertFalse(store.modelCatalogIsMissing(runtimeProvider: "claude"))
+    }
+
+    func testDefaultModelCatalogWaitsForInFlightAggregateRefresh() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            modelOptionsError: URLError(.timedOut),
+            runtimeChannelAvailability: ["codex": true, "claude": true]
+        )
+        client.modelOptionsByRuntime = ["codex": [Self.codexOption], "claude": [Self.claudeOption]]
+        let aggregateGate = PreparedConnectionGate()
+        let targetedGate = PreparedConnectionGate()
+        client.modelOptionsGate = aggregateGate
+        client.targetedModelOptionsGate = targetedGate
+        let store = makeStore(client: client)
+
+        // 设置页根层的聚合刷新在途，随后失败；默认模型页在它收尾前打开。
+        let aggregate = Task { await store.refreshAppServerModelOptions() }
+        await aggregateGate.waitUntilStarted()
+        let page = Task {
+            await store.refreshDefaultModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
+        }
+        // 让页面任务先跑到第一个挂起点（修复前是定向请求，修复后是等聚合刷新收尾），再放行聚合失败。
+        for _ in 0..<5 { await Task.yield() }
+        await aggregateGate.release()
+        await aggregate.value
+        await targetedGate.waitUntilStarted()
+        await targetedGate.release()
+        await page.value
+
+        XCTAssertEqual(
+            Set(store.appServerModelOptions.map(\.model)), ["gpt-live", "opus"],
+            "聚合刷新失败不能让同时发出的定向结果被当成过期丢掉"
+        )
+    }
+
+    func testDefaultModelCatalogSkipsRuntimesAlreadyInCatalog() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            modelOptions: [Self.codexOption, Self.claudeOption],
+            runtimeChannelAvailability: ["codex": true, "claude": true]
+        )
+        let store = makeStore(client: client)
+        await store.refreshDefaultModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
+        let aggregateCalls = client.modelOptionsCallCount
+
+        await store.refreshDefaultModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
+
+        XCTAssertTrue(client.targetedModelOptionsRequests.isEmpty, "目录齐全时不定向补拉")
+        XCTAssertEqual(client.modelOptionsCallCount, aggregateCalls, "非强制刷新沿用聚合目录缓存")
+    }
+
     private static let codexOption = CodexAppServerModelOption(
         id: "gpt-live", provider: "openai", runtimeProvider: "codex", isDefault: true
     )

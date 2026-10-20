@@ -341,6 +341,7 @@
 		9361D05BC38C233F2B9EB122 /* testModelPickerAdaptiveWidthAndAccessibilityLayouts.ipad-popover-420.png in Resources */ = {isa = PBXBuildFile; fileRef = F7A631C01496AAA7C083AA6B /* testModelPickerAdaptiveWidthAndAccessibilityLayouts.ipad-popover-420.png */; };
 		93DDAA12280E222D7F5D93A0 /* HarnessTurnEndReason.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CEEA50D7D67AC9F375665C6 /* HarnessTurnEndReason.swift */; };
 		93DFB635C4F62E417DF3B5FE /* NotificationContentRewriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC1CE9CC8234F91D69153CB0 /* NotificationContentRewriter.swift */; };
+		9414E7BE87079BBEA30B4A30 /* SessionStoreDefaultModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB68BC1DC413DB9CC629051D /* SessionStoreDefaultModelCatalog.swift */; };
 		944FF7C392E25615B77D8F5F /* ThreadGoalCapabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25ADEB07FFC89B760025C40B /* ThreadGoalCapabilityTests.swift */; };
 		946F3AC9ABCD48DDF4070F6E /* HarnessSessionJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = B49600460D81DFB204AC4215 /* HarnessSessionJournal.swift */; };
 		947628D2D3B8AD4169799F10 /* ConversationSendNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BA2D117ED9BD598D55D382A /* ConversationSendNavigationTests.swift */; };
@@ -1113,6 +1114,7 @@
 		B9D0C508064D852BA4BCA11C /* TurnOutputTokenCounter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnOutputTokenCounter.swift; sourceTree = "<group>"; };
 		B9F486B1F9E0E676B63B7084 /* testEmptyConversationShowsCurrentDirectoryAcrossAppearances.ipad-dark.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testEmptyConversationShowsCurrentDirectoryAcrossAppearances.ipad-dark.png"; sourceTree = "<group>"; };
 		BAEE78D524F47AD049564C99 /* WriterConflictCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WriterConflictCard.swift; sourceTree = "<group>"; };
+		BB68BC1DC413DB9CC629051D /* SessionStoreDefaultModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreDefaultModelCatalog.swift; sourceTree = "<group>"; };
 		BBA6E082051A620B6BDFFED5 /* CodexAppServerTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerTransport.swift; sourceTree = "<group>"; };
 		BD0229FCC36037753448FAD8 /* SessionHierarchyGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionHierarchyGroup.swift; sourceTree = "<group>"; };
 		BE054889375B16BD215CC157 /* SessionIndexRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionIndexRow.swift; sourceTree = "<group>"; };
@@ -2292,6 +2294,7 @@
 				77D734211CD7B4ECB92F8D39 /* SessionStoreConnectionWarmUp.swift */,
 				B8C5970FECAA01AD9C9FC92E /* SessionStoreContextWindow.swift */,
 				427F38245A79327423C022D2 /* SessionStoreConversationReadiness.swift */,
+				BB68BC1DC413DB9CC629051D /* SessionStoreDefaultModelCatalog.swift */,
 				62E30681B127799FCF32369E /* SessionStoreDiagnostics.swift */,
 				DF61E927CE906F960DB0F109 /* SessionStoreGitState.swift */,
 				8009753E8107F87CEE4D562F /* SessionStoreHarnessDirectory.swift */,
@@ -3144,6 +3147,7 @@
 				602B0A0356EA734D770DCF00 /* SessionStoreConnectionWarmUp.swift in Sources */,
 				8E4721B892574F54813E2AAB /* SessionStoreContextWindow.swift in Sources */,
 				1F9E6F599F1C4D22A9DF7937 /* SessionStoreConversationReadiness.swift in Sources */,
+				9414E7BE87079BBEA30B4A30 /* SessionStoreDefaultModelCatalog.swift in Sources */,
 				E88D3B36CA7D78D74B5B6359 /* SessionStoreDiagnostics.swift in Sources */,
 				4E24EB2184877FA78F590E94 /* SessionStoreGitState.swift in Sources */,
 				CABB26FD93C911379CA721D6 /* SessionStoreHarnessDirectory.swift in Sources */,

@@ -79,6 +79,17 @@ struct ConnectionSettingsView: View {
                     .settingsRow()
                     .accessibilityHint(L10n.text("ui.preferred_runtime_description"))
                     .accessibilityIdentifier("settings.preferredRuntime")
+
+                    // 模型目录来自当前连接的电脑，和「优先使用」同属电脑上的编程代理设置（#871）。
+                    // 三个 runtime 的模型 + 档位拼在一行会被截断成一串噪音，详情页已经平铺开了，这里只做入口。
+                    NavigationLink(value: SettingsDestination.defaultModels) {
+                        ConnectionRowLabel(
+                            title: L10n.text("ui.default_model"),
+                            systemImage: "cpu"
+                        )
+                    }
+                    .settingsStandardListRow()
+                    .accessibilityIdentifier("settings.defaultModels")
                 } header: {
                     SettingsGroupHeader(title: L10n.text("ui.device_preferences"))
                 }
