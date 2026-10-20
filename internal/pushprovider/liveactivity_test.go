@@ -338,8 +338,8 @@ func TestLiveActivityPayloadMatchesAppleSchema(t *testing.T) {
 				"attributes-type": LiveActivityAttributesType,
 				"attributes":      map[string]any{"hostTag": "A1C3"},
 				"alert": map[string]any{
-					"title-loc-key": liveActivityStartTitleKey,
-					"loc-key":       liveActivityStartBodyKey,
+					"title": map[string]any{"loc-key": liveActivityStartTitleKey, "loc-args": []any{}},
+					"body":  map[string]any{"loc-key": liveActivityStartBodyKey, "loc-args": []any{}},
 				},
 				"input-push-token": float64(1),
 			},
@@ -428,9 +428,11 @@ func TestLiveActivityPayloadMatchesAppleSchema(t *testing.T) {
 	}
 }
 
-// start 的 alert 必须是 APNs 通用 alert 字典：扁平的本地化键、值都是字符串
-// （通用字典里 title / body 只能是字符串）。不带 sound，避免和审批通知重复响铃。
-func TestLiveActivityStartAlertUsesFlatLocalizationKeys(t *testing.T) {
+// start 的 alert 必须是 ActivityKit 的 AlertConfiguration：title / body 各是 {loc-key, loc-args}
+// 对象。普通通知的扁平 title-loc-key / loc-key 能送达，但 liveactivitiesd 会报
+// "Received start without an alert configuration"，活动不出现（2026-10-20 模拟器实测）。
+// 不带 sound，避免和审批通知重复响铃。
+func TestLiveActivityStartAlertUsesActivityKitAlertConfiguration(t *testing.T) {
 	now := time.Now()
 	raw, err := BuildLiveActivityPayload(LiveActivityNotification{
 		Version:        1,
@@ -452,16 +454,23 @@ func TestLiveActivityStartAlertUsesFlatLocalizationKeys(t *testing.T) {
 	if !ok {
 		t.Fatalf("start 必须带 alert 字典：%s", raw)
 	}
-	if got, want := sortedKeys(alert), []string{"loc-key", "title-loc-key"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("alert 只能有扁平本地化键：got=%v want=%v", got, want)
+	if got, want := sortedKeys(alert), []string{"body", "title"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("alert 只能有 title 与 body，不能带 sound 或扁平键：got=%v want=%v", got, want)
 	}
-	for key, value := range alert {
-		if _, isString := value.(string); !isString {
-			t.Fatalf("alert.%s 必须是字符串，got %T", key, value)
+	for field, key := range map[string]string{"title": liveActivityStartTitleKey, "body": liveActivityStartBodyKey} {
+		text, ok := alert[field].(map[string]any)
+		if !ok {
+			t.Fatalf("alert.%s 必须是 {loc-key, loc-args} 对象，got %T", field, alert[field])
 		}
-	}
-	if alert["title-loc-key"] != liveActivityStartTitleKey || alert["loc-key"] != liveActivityStartBodyKey {
-		t.Fatalf("alert 必须使用 App 内本地化 key：%v", alert)
+		if got, want := sortedKeys(text), []string{"loc-args", "loc-key"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("alert.%s 字段不符：got=%v want=%v", field, got, want)
+		}
+		if text["loc-key"] != key {
+			t.Fatalf("alert.%s 必须使用 App 内本地化 key %q：%v", field, key, text)
+		}
+		if args, ok := text["loc-args"].([]any); !ok || len(args) != 0 {
+			t.Fatalf("alert.%s 不带参数：%v", field, text["loc-args"])
+		}
 	}
 }
 

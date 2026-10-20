@@ -180,7 +180,7 @@ Provider 生成的 APNs 请求：
 - Header：`apns-push-type: liveactivity`，`apns-topic` 取 Ticket 里的 `<Bundle ID>.push-type.liveactivity`，不带 `apns-collapse-id`。
 - `apns-priority`：普通 update 用 5，不占系统的高优先级预算；start、end 和 `status=needsYou` 的 update 用 10。
 - `aps.timestamp` 取 Provider 收到请求的时间，`aps.event` 与请求相同。`aps.content-state` 的键是 `status`、`runningCount`、`needsYouCount`、`startedAt`、`focusSessionTag`。
-- start 另带 `attributes-type`、`attributes.hostTag`、`input-push-token: 1`，以及 Apple 要求的 `alert`。`alert` 只用扁平本地化键 `title-loc-key: push.liveactivity.start.title` 与 `loc-key: push.liveactivity.start.body`，不带参数和声音。
+- start 另带 `attributes-type`、`attributes.hostTag`、`input-push-token: 1`，以及 Apple 要求的 `alert`。`alert` 按 ActivityKit 的 AlertConfiguration 格式：`title` 与 `body` 各是 `{"loc-key": …, "loc-args": []}` 对象，key 分别是 `push.liveactivity.start.title` 与 `push.liveactivity.start.body`，不带参数和声音。不能用普通通知的扁平 `title-loc-key` / `loc-key`：能送达，但系统报 `Received start without an alert configuration`，活动不会出现（2026-10-20 端到端实测）。
 - end 带 `dismissal-date`，update 与 start 可以带 `stale-date`。
 
 App 端（阶段二）必须对齐的约定：
