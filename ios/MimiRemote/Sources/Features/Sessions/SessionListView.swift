@@ -17,18 +17,19 @@ enum SessionLibraryStatusFilter: String, CaseIterable, Identifiable {
         }
     }
 
-    func includes(_ session: AgentSession) -> Bool {
+    func includes(_ session: AgentSession, now: Date = Date()) -> Bool {
         switch self {
         case .all:
             return true
         case .active:
             return session.isRunning
         case .needsAttention:
+            // 失败是否算「待你处理」与侧栏、工作区页同一判定（12 小时窗口，#546）。
             return session.status == SessionStatus.waitingForApproval.rawValue ||
                 session.status == SessionStatus.waitingForInput.rawValue ||
                 session.pendingApproval != nil ||
                 session.pendingUserInput != nil ||
-                session.status == SessionStatus.failed.rawValue
+                SessionAttentionPolicy.needsAttention(session, now: now)
         case .history:
             return !session.isRunning
         }
@@ -592,9 +593,10 @@ struct SessionListView: View {
     }
 
     private var visibleSessions: [AgentSession] {
-        sessionStore.openedWorkspaceSessionLibrarySessions.filter { session in
+        let now = Date()
+        return sessionStore.openedWorkspaceSessionLibrarySessions.filter { session in
             (selectedWorkspaceID == "all" || session.projectID == selectedWorkspaceID) &&
-                selectedStatus.includes(session)
+                selectedStatus.includes(session, now: now)
         }
     }
 
