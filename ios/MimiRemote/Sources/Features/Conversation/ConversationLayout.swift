@@ -1,16 +1,6 @@
 import SwiftUI
 
 struct ConversationLayout: Equatable {
-    // 560pt 以下的实际可用宽度无法稳定容纳带文字标签的主操作行。即使系统仍报
-    // regular size class（某些 iPad 极窄分屏），也必须使用紧凑指标。
-    static let compactComposerMaximumWidth: CGFloat = 560
-    // 紧凑工具栏不再依靠 ViewThatFits 同时构造两棵完整控件树。达到这个宽度后
-    // 才显示模型标题；更窄时仍通过 accessibilityValue 提供完整模型信息。
-    static let compactComposerModelTitleMinimumWidth: CGFloat = 380
-    static let phoneComposerModelTitleMinimumWidth: CGFloat = 240
-    // compact iPad 只有达到这档宽度，才同时容纳模型标题、投递方式、工具组和主行动。
-    static let compactComposerInlineDeliveryMinimumWidth: CGFloat = 440
-
     let horizontalInset: CGFloat
     let composerHorizontalInset: CGFloat
     let messageSideSpacer: CGFloat
@@ -33,39 +23,18 @@ struct ConversationLayout: Equatable {
         EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset)
     }
 
+    /// 紧凑指标 = 输入框档位不是宽档（#835）。只看宽度，不再看 size class；
+    /// 宽度未知时 compact size class 视作窄档。
     static func usesCompactComposerMetrics(
         availableWidth: CGFloat?,
         horizontalSizeClass: UserInterfaceSizeClass?
     ) -> Bool {
-        if horizontalSizeClass == .compact {
-            return true
-        }
-        return availableWidth.map { $0 < compactComposerMaximumWidth } ?? false
-    }
-
-    static func compactComposerShowsModelTitle(availableWidth: CGFloat?) -> Bool {
-        guard let availableWidth else {
-            return false
-        }
-        return availableWidth >= compactComposerModelTitleMinimumWidth
-    }
-
-    static func phoneComposerShowsModelTitle(availableWidth: CGFloat?) -> Bool {
-        guard let availableWidth else {
-            return false
-        }
-        return availableWidth >= phoneComposerModelTitleMinimumWidth
-    }
-
-    static func compactComposerShowsInlineDeliveryControl(
-        isPhone: Bool,
-        availableWidth: CGFloat?,
-        canChooseDelivery: Bool
-    ) -> Bool {
-        guard canChooseDelivery, !isPhone, let availableWidth else {
-            return false
-        }
-        return availableWidth >= compactComposerInlineDeliveryMinimumWidth
+        ComposerLayoutTier.resolve(
+            width: availableWidth,
+            previousBase: nil,
+            dynamicTypeSize: .large,
+            fallsBackToNarrow: horizontalSizeClass == .compact
+        ) != .wide
     }
 
     static func compactComposerShowsFastModeIndicator(
