@@ -25,6 +25,13 @@ enum NotificationSessionTag {
         String(messageTag(threadID: threadID).prefix(4))
     }
 
+    /// Live Activity 的 `hostTag`：SHA256("mimi-tag:host:" + installationID) 的前 4 位大写十六进制，
+    /// 与 agentd 的 `HostTag` 一致。App 据此判断一个活动属于哪台 Mac。
+    static func hostTag(installationID: String) -> String {
+        let value = "mimi-tag:host:" + installationID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(hexDigest(value).prefix(4)).uppercased()
+    }
+
     /// 缓存键：`profileTag:messageTag`。冒号把两段定长十六进制分开，
     /// 前缀匹配 4 位审批标签时不会跨档案误命中。
     static func cacheKey(profileTag: String, sessionTag: String) -> String {

@@ -143,9 +143,14 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
         guard let route = SessionNotificationRoute(userInfo: userInfo) else {
             return false
         }
+        receive(route: route)
+        return true
+    }
+
+    /// 点按 Live Activity（#830）等本机已经解析出会话的入口直接交给同一套跳转。
+    func receive(route: SessionNotificationRoute) {
         pendingRouteIntent = navigationOwnership.accept()
         pendingRoute = route
-        return true
     }
 
     func consume(_ route: SessionNotificationRoute) {
@@ -435,6 +440,8 @@ struct MimiRemoteApp: App {
     @StateObject private var lockScreenApprovalStore: LockScreenApprovalStore
     /// 把会话标题写进 App Group，通知扩展据此改写锁屏通知；随 App 生命周期常驻。
     @StateObject private var notificationTitleCacheWriter: NotificationTitleCacheWriter
+    /// 锁屏 / 灵动岛实时活动（#830）：票据登记、前台本机拉起与关闭清理。
+    @StateObject private var liveActivityCoordinator: LiveActivityCoordinator
     @StateObject private var tailcatExperimentController: TailcatExperimentController
     @StateObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
     @StateObject private var managedConnectionDeviceStore: ManagedConnectionDeviceStore
@@ -516,6 +523,29 @@ struct MimiRemoteApp: App {
 			lockScreenApprovalStore: lockScreenApprovalStore
 		)
 		_notificationTitleCacheWriter = StateObject(wrappedValue: notificationTitleCacheWriter)
+		let liveActivityCoordinator = LiveActivityCoordinator()
+		liveActivityCoordinator.makeClient = { [weak appStore] profileID in
+			guard let appStore else { throw LockScreenApprovalRoutingError.sourceProfileUnavailable }
+			if profileID == appStore.activeConnectionProfileID {
+				return try appStore.client()
+			}
+			return try await LockScreenApprovalRouting.client(profileID: profileID, appStore: appStore)
+		}
+		liveActivityCoordinator.installationIDForProfile = { [weak appStore] profileID in
+			appStore?.connectionProfiles.first { $0.id == profileID }?.installationID
+		}
+		liveActivityCoordinator.profileExists = { [weak appStore] profileID in
+			appStore?.connectionProfiles.contains { $0.id == profileID } ?? false
+		}
+		liveActivityCoordinator.onRouteResolved = { [weak notificationResponseAdapter] route in
+			notificationResponseAdapter?.receive(route: route)
+		}
+		liveActivityCoordinator.attach(
+			lockScreenStore: lockScreenApprovalStore,
+			sessionStore: sessionStore,
+			appStore: appStore
+		)
+		_liveActivityCoordinator = StateObject(wrappedValue: liveActivityCoordinator)
 		notificationResponseAdapter.handleApprovalAction = { [weak appStore, weak lockScreenApprovalStore, weak sessionStore] delivery in
 			guard let appStore, let lockScreenApprovalStore, let sessionStore, let decision = delivery.decision else { return }
 			do {
@@ -583,6 +613,7 @@ struct MimiRemoteApp: App {
                 .environment(\.locale, selectedAppLanguage.locale)
                 .environmentObject(appStore)
                 .environmentObject(lockScreenApprovalStore)
+                .environmentObject(liveActivityCoordinator)
                 .environmentObject(sessionStore)
                 .environmentObject(conversationStore)
                 .environmentObject(logStore)
@@ -595,6 +626,17 @@ struct MimiRemoteApp: App {
                 .environmentObject(managedConnectionEntitlementStore)
                 .environmentObject(managedConnectionDeviceStore)
                 .onOpenURL { url in
+                    if let link = MimiTurnActivityLink(url: url) {
+                        // 点按 Live Activity：本机能映射到会话就打开它；冷启动时等会话列表加载，
+                        // 映射不到只回到 App。
+                        liveActivityCoordinator.open(
+                            link: link,
+                            profiles: appStore.connectionProfiles,
+                            activeProfileID: appStore.activeConnectionProfileID,
+                            sessions: sessionStore.sessions
+                        )
+                        return
+                    }
                     Task { @MainActor in
                         await sessionStore.openPairingLink(url)
                     }

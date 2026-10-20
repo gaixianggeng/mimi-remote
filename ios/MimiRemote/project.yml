@@ -127,6 +127,17 @@ targets:
           - Info.plist
       - path: Sources/Core/CarStatus/CarStatusSnapshot.swift
         group: Sources/Core/CarStatus
+      # Live Activity（#830）：活动类型、显示模型与视图与 App 共用；标题从通知标题缓存在本机查。
+      - path: Sources/Core/LiveActivity/MimiTurnActivityState.swift
+        group: Sources/Core/LiveActivity
+      - path: Sources/Core/LiveActivity/MimiTurnActivityPresentation.swift
+        group: Sources/Core/LiveActivity
+      - path: Sources/Core/LiveActivity/MimiTurnActivityViews.swift
+        group: Sources/Core/LiveActivity
+      - path: Sources/Core/Push/NotificationSessionTag.swift
+        group: Sources/Core/Push
+      - path: Sources/Core/Push/NotificationTitleCache.swift
+        group: Sources/Core/Push
       - path: Resources/PrivacyInfo.xcprivacy
         buildPhase: resources
       - path: Resources/Localizable.xcstrings

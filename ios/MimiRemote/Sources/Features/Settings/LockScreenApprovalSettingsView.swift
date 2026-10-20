@@ -8,6 +8,7 @@ struct LockScreenApprovalSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var store: LockScreenApprovalStore
+    @EnvironmentObject private var liveActivityCoordinator: LiveActivityCoordinator
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @State private var isBusy = false
     @State private var showsConsent = false
@@ -59,6 +60,31 @@ struct LockScreenApprovalSettingsView: View {
                 SettingsGroupHeader(showsDivider: false)
             }
             .settingsGroupRowStyle()
+
+            if LiveActivityCoordinator.isSupportedPlatform {
+                Section {
+                    // 默认开启、跟随消息通知总开关：活动票据只能挂在已登记消息提醒的设备上（#830）。
+                    Toggle(isOn: liveActivityToggleBinding) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(L10n.text("ui.live_activity_toggle"))
+                                .font(themeStore.uiFont(.body))
+                                .foregroundStyle(tokens.primaryText)
+                            Text(L10n.text(LiveActivitySettingsCopy.statusKey(
+                                notificationsEnabled: store.notificationsEnabled,
+                                availability: liveActivityCoordinator.availability
+                            )))
+                                .font(themeStore.uiFont(.footnote))
+                                .foregroundStyle(tokens.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .disabled(!store.notificationsEnabled)
+                    .accessibilityIdentifier("settings.lockScreenApproval.liveActivityToggle")
+                } header: {
+                    SettingsGroupHeader()
+                }
+                .settingsGroupRowStyle()
+            }
 
             if let profileID = store.registeredProfileID {
                 Section {
@@ -140,6 +166,14 @@ struct LockScreenApprovalSettingsView: View {
         } message: {
             Text(L10n.text("ui.push_rebind_confirm_message"))
         }
+    }
+
+    /// 消息通知关闭时显示为关、不可操作；用户自己的选择保留，重新开启通知后恢复。
+    private var liveActivityToggleBinding: Binding<Bool> {
+        Binding(
+            get: { store.notificationsEnabled && liveActivityCoordinator.isToggleOn },
+            set: { liveActivityCoordinator.setToggle($0) }
+        )
     }
 
     private var toggleBinding: Binding<Bool> {
