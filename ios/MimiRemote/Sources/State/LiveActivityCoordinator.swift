@@ -92,6 +92,10 @@ final class LiveActivityCoordinator: ObservableObject {
 
     func attach(lockScreenStore: LockScreenApprovalStore) {
         self.lockScreenStore = lockScreenStore
+        if !isToggleOn {
+            // 上次关闭后进程可能在清理排队前就被结束：启动时补做，票据才会被撤销。
+            enqueue { await self.teardown(unregisterRemote: self.ticketStore.load() != nil) }
+        }
     }
 
     func attach(lockScreenStore: LockScreenApprovalStore, sessionStore: SessionStore, appStore: AppStore) {
@@ -206,6 +210,8 @@ final class LiveActivityCoordinator: ObservableObject {
         // 上次关闭没撤销完的票据先补撤销；补不完也照常往下走，不阻塞重新开启。
         await drainBacklog()
         guard isToggleOn else {
+            // 开关已关但记录或活动还在（例如关闭后清理还没跑进程就被结束）：先补做清理。
+            await teardown(unregisterRemote: ticketStore.load() != nil)
             availability = closedAvailability(.off)
             return
         }
@@ -418,6 +424,16 @@ final class LiveActivityCoordinator: ObservableObject {
         }
     }
 
+    /// 新出现或启动时已存在的活动该归哪台 Mac：优先当前绑定，算不出时用已登记记录里的
+    /// hostTag；两者都没有时不判断，避免绑定尚未就绪时误删正常活动。
+    private func expectedHostTag() -> String? {
+        if let binding = currentBinding() { return binding.hostTag }
+        guard let record = ticketStore.load(), record.profileID == lockScreenStore?.registeredProfileID else {
+            return nil
+        }
+        return record.hostTag
+    }
+
     /// 已关闭（开关或消息通知）时的显示：还有票据没撤销完就是「关闭尚未完成」。
     private func closedAvailability(_ fallback: Availability) -> Availability {
         ticketStore.loadBacklog() != nil ? .disablePending : fallback
@@ -479,8 +495,13 @@ final class LiveActivityCoordinator: ObservableObject {
         observationTasks.append(Task { @MainActor [weak self] in
             for await activity in Activity<MimiTurnActivityAttributes>.activityUpdates {
                 guard let self else { return }
-                // 关闭后、撤销确认前，推送服务仍可能凭旧 Ticket 远程拉起：本机立即结束。
-                guard self.isToggleOn, LiveActivityPreferences.isEffective(in: self.defaults) else {
+                // 关闭后、撤销确认前，推送服务仍可能凭旧 Ticket 远程拉起；换绑后旧 Mac 也可能
+                // 迟到地远程拉起。这两种都在本机立即结束。
+                guard LiveActivityHostFilter.keeps(
+                    hostTag: activity.attributes.hostTag,
+                    expectedHostTag: self.expectedHostTag(),
+                    isEnabled: self.isToggleOn && LiveActivityPreferences.isEffective(in: self.defaults)
+                ) else {
                     Task { await activity.end(nil, dismissalPolicy: .immediate) }
                     continue
                 }
@@ -494,8 +515,16 @@ final class LiveActivityCoordinator: ObservableObject {
                 self.track(activity)
             }
         })
+        let isEnabled = isToggleOn && LiveActivityPreferences.isEffective(in: defaults)
+        let expected = expectedHostTag()
         for activity in Activity<MimiTurnActivityAttributes>.activities {
-            track(activity)
+            if LiveActivityHostFilter.keeps(
+                hostTag: activity.attributes.hostTag, expectedHostTag: expected, isEnabled: isEnabled
+            ) {
+                track(activity)
+            } else if Self.isAlive(activity.activityState) {
+                Task { await activity.end(nil, dismissalPolicy: .immediate) }
+            }
         }
     }
 
@@ -571,6 +600,15 @@ final class LiveActivityCoordinator: ObservableObject {
     private func endActivities(where shouldEnd: (String) -> Bool) {}
     private func requestLocalActivity(hostTag: String, state: MimiTurnActivityState) {}
     #endif
+}
+
+/// 本机看到的活动要不要留：实时活动关闭时一律不留；知道当前该归哪台 Mac 时只留那台的。
+enum LiveActivityHostFilter {
+    static func keeps(hostTag: String, expectedHostTag: String?, isEnabled: Bool) -> Bool {
+        guard isEnabled else { return false }
+        guard let expectedHostTag else { return true }
+        return hostTag.uppercased() == expectedHostTag.uppercased()
+    }
 }
 
 /// 点按 Live Activity 的链接只带两个匿名标签：hostTag 找回连接档案，会话标签在当前档案的

@@ -283,6 +283,14 @@ final class LiveActivityPreferencesTests: XCTestCase {
         XCTAssertNil(providerDown?.unregisterProfileID)
     }
 
+    /// 关闭时一律不留；换绑后只留当前那台 Mac 的活动；还不知道该归哪台时不误删。
+    func testHostFilter() {
+        XCTAssertFalse(LiveActivityHostFilter.keeps(hostTag: "6AF3", expectedHostTag: "6AF3", isEnabled: false))
+        XCTAssertTrue(LiveActivityHostFilter.keeps(hostTag: "6AF3", expectedHostTag: "6af3", isEnabled: true))
+        XCTAssertFalse(LiveActivityHostFilter.keeps(hostTag: "1B2C", expectedHostTag: "6AF3", isEnabled: true))
+        XCTAssertTrue(LiveActivityHostFilter.keeps(hostTag: "1B2C", expectedHostTag: nil, isEnabled: true))
+    }
+
     func testHostGoneClassification() {
         XCTAssertTrue(LiveActivityTicketRevocation.isHostGone(LiveActivityRevocationError.hostGone))
         for status in [400, 401, 403, 404, 409] {
@@ -434,6 +442,24 @@ final class LiveActivityCoordinatorRevocationTests: XCTestCase {
         coordinator.notificationBindingDidChange()
         await coordinator.waitForPendingOperations()
         XCTAssertNil(tickets.loadBacklog())
+    }
+
+    /// 关闭开关后进程在清理排队前就被结束：下次启动必须补做清理，撤销仍有效的票据。
+    func testLaunchWithToggleOffResumesTeardown() async throws {
+        let tickets = seededTicketStore(profileID: "mac-a")
+        LiveActivityPreferences.setToggle(false, in: defaults)
+        RevocationStubURLProtocol.status = 200
+        let coordinator = makeCoordinator(
+            ticketStore: tickets,
+            lockScreenStore: try boundLockScreenStore(profileID: "mac-a"),
+            profileExists: { _ in true }
+        )
+        await coordinator.waitForPendingOperations()
+        XCTAssertNil(tickets.load(), "启动时补做清理，不能留下仍有效的记录")
+        XCTAssertEqual(Set(RevocationStubURLProtocol.revokedTickets()), ["s", "u"])
+        XCTAssertEqual(tickets.loadBacklog()?.tickets ?? [], [])
+        XCTAssertEqual(tickets.loadBacklog()?.unregisterProfileID, "mac-a", "Mac 离线：注销留着在关闭期间重试")
+        XCTAssertEqual(coordinator.availability, .disablePending)
     }
 
     /// 没有设备身份或档案已删时，注销永远不会成功，一次就算完成。
