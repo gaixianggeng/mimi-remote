@@ -75,3 +75,44 @@ func TestNotifyKeepsDeviceForConfigurationRejection(t *testing.T) {
 		t.Fatalf("APNs 配置错误不能让 agentd 删除设备，got=%v", err)
 	}
 }
+
+func TestNotifyLiveActivityResponseMapping(t *testing.T) {
+	cases := []struct {
+		name         string
+		status       int
+		body         map[string]any
+		wantErr      bool
+		unregistered bool
+	}{
+		{"delivered", http.StatusOK, map[string]any{"delivered": true}, false, false},
+		{"coalesced", http.StatusAccepted, map[string]any{"accepted": true, "coalesced": true}, false, false},
+		{"apns rejected", http.StatusOK, map[string]any{"delivered": false, "reason": "BadDeviceToken"}, true, false},
+		{"token gone", http.StatusGone, map[string]any{"delivered": false, "reason": "unregistered"}, true, true},
+		{"ticket revoked", http.StatusForbidden, map[string]any{"error": "ticket_revoked"}, true, true},
+		{"kind mismatch", http.StatusBadRequest, map[string]any{"error": "ticket_kind_mismatch"}, true, false},
+		{"old provider", http.StatusNotFound, map[string]any{}, true, false},
+		{"rate limited", http.StatusTooManyRequests, map[string]any{"error": "rate_limited"}, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var path string
+			var received map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				path = req.URL.Path
+				_ = json.NewDecoder(req.Body).Decode(&received)
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(tc.body)
+			}))
+			t.Cleanup(server.Close)
+			err := NewClient(server.URL).NotifyLiveActivity(context.Background(), LiveActivityNotification{
+				Event: LiveActivityEventUpdate, Ticket: "mpt1.1.x",
+			})
+			if (err != nil) != tc.wantErr || errors.Is(err, ErrDeviceUnregistered) != tc.unregistered {
+				t.Fatalf("err=%v，期望 wantErr=%v unregistered=%v", err, tc.wantErr, tc.unregistered)
+			}
+			if path != "/v1/notify/liveactivity" || received["version"] != float64(1) {
+				t.Fatalf("请求路径或版本错误：path=%s body=%v", path, received)
+			}
+		})
+	}
+}

@@ -31,6 +31,9 @@ type Manager struct {
 	environ    string
 	notifyer   func(ctx context.Context, notification Notification) error
 	now        func() time.Time
+	// liveActivities 是锁屏 / 灵动岛活动（#830）。它与审批、回复提醒共用设备注册与
+	// 在途投递计数，但失败互不影响。
+	liveActivities *LiveActivityEngine
 }
 
 type Options struct {
@@ -41,7 +44,9 @@ type Options struct {
 	DeviceStore    *DeviceStore
 	// RouteStore 为空时定位记录只留在内存：行为与落盘版本完全一致，只是不跨重启。
 	RouteStore *RouteStore
-	ActionTTL  time.Duration
+	// ActivityTicketStore 为空时 Live Activity 票据只留在内存。
+	ActivityTicketStore *ActivityTicketStore
+	ActionTTL           time.Duration
 }
 
 func NewManager(options Options) *Manager {
@@ -68,6 +73,12 @@ func NewManager(options Options) *Manager {
 		now:     time.Now,
 	}
 	manager.notifyer = client.Notify
+	engine := newLiveActivityEngine(options.ActivityTicketStore, manager.hostTag)
+	engine.send = client.NotifyLiveActivity
+	engine.dispatch = func(delivery func(context.Context)) { manager.Dispatch(delivery, PushDispatchTimeout) }
+	engine.deviceActive = manager.deviceActive
+	engine.enabled = manager.Enabled
+	manager.liveActivities = engine
 	return manager
 }
 
@@ -92,6 +103,14 @@ func (m *Manager) Routes() *RouteStore    { return m.routes }
 func (m *Manager) Client() *Client        { return m.client }
 func (m *Manager) ProfileID() string      { return m.profile }
 func (m *Manager) InstallationID() string { return m.install }
+func (m *Manager) HostTag() string        { return m.hostTag }
+
+func (m *Manager) LiveActivities() *LiveActivityEngine {
+	if m == nil {
+		return nil
+	}
+	return m.liveActivities
+}
 
 // ApprovalRequest 是 runtime 侧待审批请求的脱敏投影。它刻意不含命令、diff 或
 // 任何模型输出 —— 那些内容不参与推送链路。CWD 只是线程工作目录，用于重启后
@@ -311,6 +330,7 @@ func (m *Manager) fanout(ctx context.Context, action Action, event string, devic
 						log.Printf("push bridge 删除失效设备失败 err=%v", removeErr)
 					} else if removed {
 						m.actions.RevokeDevice(device.ID)
+						m.liveActivities.RemoveDevice(device.ID)
 					}
 					return
 				}
@@ -358,6 +378,8 @@ func (m *Manager) Close() {
 	}
 	m.closed = true
 	m.closeMu.Unlock()
+	// 先停掉活动的节流与结束计时器，之后不会再有新的活动投递排进来。
+	m.liveActivities.Close()
 	m.deliveries.Wait()
 	if m.routes != nil {
 		m.routes.Flush()

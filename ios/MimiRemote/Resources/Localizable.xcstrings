@@ -26817,6 +26817,261 @@
         }
       }
     },
+    "ui.review_notes_agent_intro": {
+      "comment": "Review-note message appended to the agent composer draft (#847). Keep the one-line-per-note structure stable.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please revise the code according to these review notes:"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请按以下审阅意见修改："
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_line": {
+      "comment": "Review-note message appended to the agent composer draft (#847). Keep the one-line-per-note structure stable.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "`%1$@` · %2$@: %3$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "`%1$@` · %2$@：%3$@"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_line_without_path": {
+      "comment": "Review-note message appended to the agent composer draft (#847). Keep the one-line-per-note structure stable.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: %2$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：%2$@"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_ready": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adds the notes to the end of the message box in “%@” without sending them."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会追加到“%@”输入框的末尾，不会自动发送。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_sent": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Added to the message box in “%@”. Review it there, then send."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已放进“%@”的输入框，确认后再发送。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_unavailable_held_on_computer": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude on the computer is using this session. Take it over to send the notes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个会话正被电脑上的 Claude 使用，接管后才能发送。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_unavailable_no_session": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open a session in this workspace to send the notes to the agent."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "先在这个工作区打开一个会话，才能把备注发给 Agent。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_unavailable_not_controllable": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Another device is controlling this session. Take it over to send the notes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个会话正由其他设备控制，接管后才能发送。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_unavailable_other_workspace": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The current session is in another workspace. Switch to a session in this workspace first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前会话不在这个工作区，切到这个工作区的会话后再发送。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_unavailable_read_only": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This session is read-only and can't receive messages."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个会话是只读的，不能发送消息。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_unavailable_runtime": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This session's runtime isn't enabled on the computer, so the notes can't be sent."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑上没有启用这个会话的运行时，暂时不能发送。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_clear": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear Notes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清除备注"
+          }
+        }
+      }
+    },
+    "ui.review_notes_clear_confirmation_message": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These notes haven't been sent to the agent and can't be restored after clearing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这些备注还没发给 Agent，清除后无法恢复。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_clear_confirmation_title": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear these review notes?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清除这些审查备注？"
+          }
+        }
+      }
+    },
+    "ui.review_notes_current_session": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current Session"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前会话"
+          }
+        }
+      }
+    },
     "ui.review_notes_fd0eac2c": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -26830,6 +27085,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "审查备注"
+          }
+        }
+      }
+    },
+    "ui.review_notes_send_to_agent": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send to Agent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发给 Agent"
+          }
+        }
+      }
+    },
+    "ui.review_notes_send_to_agent_again": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send to Agent Again"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再次发给 Agent"
           }
         }
       }
