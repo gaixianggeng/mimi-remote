@@ -23,16 +23,16 @@ enum SessionJumpPanelModel {
                 .map { Group(id: $0.kind.rawValue, title: $0.kind.localizedTitle, sessions: $0.sessions) }
         }
         var seen = Set<SessionID>()
-        let matches = allSessions.filter { session in
+        let matched = allSessions.filter { session in
             guard seen.insert(session.id).inserted else {
                 return false
             }
-            return matches(session, query: trimmed)
+            return Self.matches(session, query: trimmed)
         }
-        guard !matches.isEmpty else {
+        guard !matched.isEmpty else {
             return []
         }
-        return [Group(id: "search", title: nil, sessions: Array(matches.prefix(searchResultLimit)))]
+        return [Group(id: "search", title: nil, sessions: Array(matched.prefix(searchResultLimit)))]
     }
 
     static func matches(_ session: AgentSession, query: String) -> Bool {
