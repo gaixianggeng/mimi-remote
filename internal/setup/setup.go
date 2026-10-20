@@ -32,6 +32,9 @@ type Options struct {
 	Listen             string
 	AppServerSSHTarget string
 	Force              bool
+	// LocalServiceOnly 用于 up --no-pair：已有配置只返回本机就绪检查需要的 Token 与
+	// loopback Endpoint，不要求存在可配对的 Tailscale 或局域网地址（#874）。
+	LocalServiceOnly bool
 	// CodexBin overrides CLI discovery for embedding integrations and tests.
 	CodexBin string
 	// LocalAppServerPreflight is an integration seam for command-level tests.
@@ -92,7 +95,12 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 				return Result{}, err
 			}
 		}
-		result, err := Pair(ctx, cfgPath)
+		var result Result
+		if options.LocalServiceOnly {
+			result, err = LocalServiceAccess(cfgPath)
+		} else {
+			result, err = Pair(ctx, cfgPath)
+		}
 		if err != nil {
 			return Result{}, err
 		}
@@ -342,11 +350,32 @@ func ResultFromConfig(ctx context.Context, configPath string, cfg config.Config)
 	if err == nil {
 		return result
 	}
+	result = localServiceResult(configPath, cfg)
+	result.Warnings = []string{err.Error()}
+	return result
+}
+
+// LocalServiceAccess 只读取本机就绪检查需要的 Token 和 loopback Endpoint，
+// 不探测也不要求 Tailscale 或局域网地址。安装器与托盘的 --no-pair 启停只验证服务本身；
+// 两种连接方式都关闭时，服务仍须能启动和重启，配对提示留给 pair（#874）。
+func LocalServiceAccess(configPath string) (Result, error) {
+	cfgPath, err := resolveConfigPath(configPath)
+	if err != nil {
+		return Result{}, err
+	}
+	cfg, err := config.LoadForDoctor(cfgPath)
+	if err != nil {
+		return Result{}, err
+	}
+	return localServiceResult(cfgPath, cfg), nil
+}
+
+func localServiceResult(configPath string, cfg config.Config) Result {
 	_, port := splitListen(cfg.Listen)
 	if port == "" {
 		port = defaultAgentDPort
 	}
-	return Result{ConfigPath: configPath, Endpoint: httpEndpoint("127.0.0.1", port), Token: cfg.Auth.Token, Warnings: []string{err.Error()}}
+	return Result{ConfigPath: configPath, Endpoint: httpEndpoint("127.0.0.1", port), Token: cfg.Auth.Token}
 }
 
 func ResultFromConfigForNetwork(
