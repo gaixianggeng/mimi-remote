@@ -309,6 +309,8 @@ final class SessionStore: ObservableObject {
     var composerModelSelectionCache = ComposerModelSelectionCache()
     // 权限选择按会话保留；未显式选择的既有 Thread 使用“沿用服务端当前设置”。
     var composerPermissionSelectionCache = ComposerPermissionSelectionCache()
+    // 外部追加草稿后通知 Composer。用订阅而不是 @Published：被遮住的输入框也能收到，且不刷新整个工作台。
+    let composerDraftAppends = PassthroughSubject<ComposerDraftAppendEvent, Never>()
 
     func storeCompletedFileUpload(_ attachment: UploadedFileAttachment, for scope: ComposerDraftScopeKey) {
         guard scope != .none else {

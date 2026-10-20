@@ -300,6 +300,9 @@ struct ComposerView: View {
             }
             composerState.addAttachment(.uploadedFile(completion.attachment))
         }
+        .onReceive(sessionStore.composerDraftAppends) { event in
+            applyExternalDraftAppend(event)
+        }
         .onChange(of: selectedSessionRuntimeProviderForModelMenu) { _, _ in
             // 会话 scope 的 onChange 可能稍晚到达。此时仍显示旧 Composer，不能先用新
             // runtime 改写并保存旧会话的模型；scope 切换完成后会统一恢复并校验。

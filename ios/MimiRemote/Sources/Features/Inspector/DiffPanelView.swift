@@ -14,6 +14,7 @@ struct DiffPanelView: View {
     @State private var pullRequestTitle = ""
     @State private var pullRequestBody = ""
     @State private var reviewComments: [GitReviewComment] = []
+    @State private var reviewNotesHandoff = GitReviewNotesHandoff()
     @State private var lastGeneratedCommitMessage = ""
     @State private var isShowingQuickPublishConfirmation = false
     @State private var isShowingTestFlightConfirmation = false
@@ -205,6 +206,9 @@ struct DiffPanelView: View {
                         tint: tokens.accent,
                         lineLimit: nil
                     )
+                    if !selectedReviewComments.isEmpty {
+                        reviewNotesAgentBox
+                    }
                     GitQuickPublishBox(
                         message: $commitMessage,
                         status: status,
@@ -426,10 +430,75 @@ struct DiffPanelView: View {
         reviewComments.append(GitReviewComment(
             workspacePath: workspacePath,
             hunkKey: hunk.commentKey,
-            hunkTitle: hunk.title,
+            filePath: hunk.filePath,
+            hunkHeader: hunk.header,
             body: text,
             createdAt: Date()
         ))
+    }
+
+    private var reviewNotesAgentBox: some View {
+        let comments = selectedReviewComments
+        let path = gitPath ?? ""
+        let target = sessionStore.reviewNotesAgentTarget(workspacePath: path)
+        let status: GitReviewNotesAgentBox.Status
+        if let sentTitle = reviewNotesHandoff.sentSessionTitle(for: comments, workspacePath: path) {
+            status = .sent(sessionTitle: sentTitle)
+        } else {
+            switch target {
+            case .session(let sessionID):
+                status = .ready(sessionTitle: reviewNotesSessionTitle(sessionID))
+            case .unavailable(let reason):
+                status = .unavailable(reason)
+            }
+        }
+        var canSend = false
+        if case .session = target {
+            canSend = true
+        }
+        return GitReviewNotesAgentBox(
+            commentCount: comments.count,
+            status: status,
+            canSend: canSend,
+            onSend: sendReviewNotesToAgent,
+            onClear: clearReviewNotes
+        )
+    }
+
+    /// 只追加到目标会话的输入框草稿，不发送；用户回到会话确认后再发。
+    private func sendReviewNotesToAgent() {
+        let path = gitPath ?? ""
+        guard case .session(let sessionID) = sessionStore.reviewNotesAgentTarget(workspacePath: path) else {
+            return
+        }
+        let comments = reviewNotesHandoff.commentsToSend(
+            from: selectedReviewComments,
+            workspacePath: path,
+            sessionID: sessionID
+        )
+        let message = GitReviewNotesAgentMessage.make(from: comments)
+        guard sessionStore.appendComposerDraftText(message, to: .session(sessionID)) else {
+            return
+        }
+        reviewNotesHandoff.record(
+            comments,
+            workspacePath: path,
+            sessionID: sessionID,
+            sessionTitle: reviewNotesSessionTitle(sessionID)
+        )
+    }
+
+    private func clearReviewNotes() {
+        let path = gitPath ?? ""
+        reviewComments.removeAll { $0.workspacePath == path }
+        reviewNotesHandoff.reset(workspacePath: path)
+    }
+
+    private func reviewNotesSessionTitle(_ sessionID: SessionID) -> String {
+        guard let session = sessionStore.sessionsByID[sessionID] else {
+            return L10n.text("ui.review_notes_current_session")
+        }
+        return SessionListPresentation.titleDisplayText(for: session)
     }
 
     private func appendReviewNotesToPullRequestBody() {
@@ -553,15 +622,6 @@ struct DiffPanelView: View {
         let text = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return text.isEmpty ? nil : text
     }
-}
-
-private struct GitReviewComment: Identifiable, Hashable {
-    let id = UUID()
-    let workspacePath: String
-    let hunkKey: String
-    let hunkTitle: String
-    let body: String
-    let createdAt: Date
 }
 
 struct DiffPanelItem: Identifiable {
@@ -1252,9 +1312,14 @@ private struct GitPatchHunkRow: View {
 
 private struct GitPatchHunk: Identifiable, Hashable {
     let id: String
-    let title: String
+    let filePath: String
+    let header: String
     let patch: String
     let preview: String
+
+    var title: String {
+        filePath.isEmpty ? header : "\(filePath) · \(header)"
+    }
 
     var commentKey: String {
         patch
@@ -1282,7 +1347,13 @@ private struct GitPatchHunk: Identifiable, Hashable {
             let filePath = displayPath(from: fileHeader)
             let title = filePath.isEmpty ? hunkHeader : "\(filePath) · \(hunkHeader)"
             let preview = currentHunk.joined()
-            result.append(GitPatchHunk(id: "\(result.count)-\(title)", title: title, patch: patch, preview: preview))
+            result.append(GitPatchHunk(
+                id: "\(result.count)-\(title)",
+                filePath: filePath,
+                header: hunkHeader,
+                patch: patch,
+                preview: preview
+            ))
             currentHunk = []
         }
 
