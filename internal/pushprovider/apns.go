@@ -26,10 +26,13 @@ const (
 	APNsProductionHost = "https://api.push.apple.com"
 	APNsSandboxHost    = "https://api.sandbox.push.apple.com"
 	// Apple 要求 provider token 至少每小时重建一次，且不得快于每 20 分钟一次。
-	apnsTokenLifetime      = 45 * time.Minute
-	maxTransportError      = 256
-	apnsPushTypeAlert      = "alert"
-	apnsPushTypeBackground = "background"
+	apnsTokenLifetime        = 45 * time.Minute
+	maxTransportError        = 256
+	apnsPushTypeAlert        = "alert"
+	apnsPushTypeBackground   = "background"
+	apnsPushTypeLiveActivity = "liveactivity"
+	// Live Activity 推送的 apns-topic 固定为 Bundle ID 加这个后缀。
+	liveActivityTopicSuffix = ".push-type.liveactivity"
 )
 
 // APNsCredentials 只在 Provider 进程内存在。私钥来自部署平台的 Secret Store 或
@@ -100,6 +103,12 @@ func (r APNsResult) Unregistered() bool {
 		r.Reason == "DeviceTokenNotForTopic"
 }
 
+// ActivityTokenGone 在 Unregistered 之外再认 ExpiredToken：活动结束或被系统回收后，
+// 它的更新 Token 会过期。只用于 Live Activity Ticket，通知路径的判定保持不变。
+func (r APNsResult) ActivityTokenGone() bool {
+	return r.Unregistered() || r.Reason == "ExpiredToken"
+}
+
 func (r APNsResult) OK() bool { return r.StatusCode == http.StatusOK }
 
 // APNsRequest 是 Provider 自己组装出来的完整投递请求。调用方只能提供枚举与标识，
@@ -129,7 +138,7 @@ func (c *APNsClient) Push(ctx context.Context, request APNsRequest) (APNsResult,
 		// 保持直接调用 APNsClient 的旧行为；Provider 业务路径会显式选择类型。
 		pushType = apnsPushTypeAlert
 	}
-	if pushType != apnsPushTypeAlert && pushType != apnsPushTypeBackground {
+	if pushType != apnsPushTypeAlert && pushType != apnsPushTypeBackground && pushType != apnsPushTypeLiveActivity {
 		return APNsResult{}, fmt.Errorf("invalid APNs push type %q", pushType)
 	}
 	req.Header.Set("authorization", "bearer "+token)

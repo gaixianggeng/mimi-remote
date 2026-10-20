@@ -17,9 +17,12 @@ import (
 const (
 	maxRequestBytes  = 8 << 10
 	maxDeviceTokenLn = 200
+	// Apple 不承诺 Token 长度；Live Activity Token 可能比设备 Token 长，上限单独放宽。
+	maxActivityTokenLn = 400
 )
 
-// Server 是最小推送服务：注册/刷新 Ticket、撤销 Ticket、按固定枚举发一条审批通知。
+// Server 是最小推送服务：注册/刷新 Ticket、撤销 Ticket、按固定枚举发一条审批通知，
+// 以及按固定 Schema 启动、更新、结束 Live Activity。
 // 它不托管账号、不托管会话、不代理审批动作，也不接收任何会话内容。
 type Server struct {
 	sealer      *TicketSealer
@@ -29,6 +32,7 @@ type Server struct {
 	apns        map[string]*APNsClient
 	limiter     *rateLimiter
 	metrics     *metrics
+	activities  *activityCoalescer
 	now         func() time.Time
 }
 
@@ -58,7 +62,7 @@ func NewServer(options Options) (*Server, error) {
 	if environment == "" {
 		environment = "production"
 	}
-	return &Server{
+	server := &Server{
 		sealer:      options.Sealer,
 		store:       options.Store,
 		topic:       options.Topic,
@@ -67,7 +71,10 @@ func NewServer(options Options) (*Server, error) {
 		limiter:     newRateLimiter(),
 		metrics:     &metrics{},
 		now:         now,
-	}, nil
+	}
+	server.activities = newActivityCoalescer(liveActivityMinInterval,
+		func() time.Time { return server.now() }, server.flushLiveActivity)
+	return server, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -77,6 +84,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/ticket", s.handleIssueTicket)
 	mux.HandleFunc("/v1/ticket/revoke", s.handleRevokeTicket)
 	mux.HandleFunc("/v1/notify", s.handleNotify)
+	mux.HandleFunc("/v1/notify/liveactivity", s.handleLiveActivity)
 	return mux
 }
 
@@ -93,6 +101,8 @@ type issueTicketRequest struct {
 	Environment  string `json:"environment"`
 	DeviceToken  string `json:"device_token"`
 	Installation string `json:"installation"`
+	// Kind 省略或为 notification 时签发通知 Ticket，与旧客户端完全一致。
+	Kind string `json:"kind"`
 }
 
 func (s *Server) handleIssueTicket(w http.ResponseWriter, req *http.Request) {
@@ -107,8 +117,17 @@ func (s *Server) handleIssueTicket(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "unsupported_version")
 		return
 	}
+	kind, ok := parseTicketKind(body.Kind)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unsupported_ticket_kind")
+		return
+	}
 	token := strings.TrimSpace(body.DeviceToken)
-	if !validDeviceToken(token) {
+	maxTokenLen, topic := maxDeviceTokenLn, s.topic
+	if kind != ticketKindNotification {
+		maxTokenLen, topic = maxActivityTokenLn, s.topic+liveActivityTopicSuffix
+	}
+	if !validPushToken(token, maxTokenLen) {
 		writeError(w, http.StatusBadRequest, "invalid_device_token")
 		return
 	}
@@ -124,9 +143,10 @@ func (s *Server) handleIssueTicket(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "unsupported_environment")
 		return
 	}
-	ticket, claims, err := s.sealer.Issue(
+	ticket, claims, err := s.sealer.IssueKind(
+		kind,
 		normalizeEnvironmentName(environment),
-		s.topic,
+		topic,
 		strings.ToLower(token),
 		installationDigest(body.Installation),
 		s.now(),
@@ -136,7 +156,11 @@ func (s *Server) handleIssueTicket(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusInternalServerError, "issue_failed")
 		return
 	}
-	s.metrics.record("ticket_issued")
+	if kind == ticketKindNotification {
+		s.metrics.record("ticket_issued")
+	} else {
+		s.metrics.record("ticket_issued_" + kind)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ticket":     ticket,
 		"expires_at": claims.Expiry().Format(time.RFC3339),
@@ -189,6 +213,12 @@ func (s *Server) handleNotify(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		s.metrics.record("notify_rejected_ticket")
 		writeError(w, http.StatusUnauthorized, "invalid_ticket")
+		return
+	}
+	// Live Activity Token 收不了普通通知；在这里拒绝，旧 Ticket（kind 为空）照常通过。
+	if claims.Kind != ticketKindNotification {
+		s.metrics.record("notify_rejected_ticket_kind")
+		writeError(w, http.StatusBadRequest, "ticket_kind_mismatch")
 		return
 	}
 	// 限速以 Ticket 为单位：一张泄漏的 Ticket 只能骚扰它绑定的那台设备，且有上限。
@@ -311,8 +341,20 @@ func normalizeEnvironmentName(environment string) string {
 	return "production"
 }
 
-func validDeviceToken(token string) bool {
-	if len(token) == 0 || len(token) > maxDeviceTokenLn {
+func parseTicketKind(raw string) (string, bool) {
+	switch strings.TrimSpace(raw) {
+	case "", "notification":
+		return ticketKindNotification, true
+	case ticketKindActivityUpdate:
+		return ticketKindActivityUpdate, true
+	case ticketKindActivityStart:
+		return ticketKindActivityStart, true
+	}
+	return "", false
+}
+
+func validPushToken(token string, maxLen int) bool {
+	if len(token) == 0 || len(token) > maxLen {
 		return false
 	}
 	if _, err := hex.DecodeString(token); err != nil {
