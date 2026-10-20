@@ -526,10 +526,8 @@ struct MimiRemoteApp: App {
 		let liveActivityCoordinator = LiveActivityCoordinator()
 		liveActivityCoordinator.makeClient = { [weak appStore] profileID in
 			guard let appStore else { throw LockScreenApprovalRoutingError.sourceProfileUnavailable }
-			if profileID == appStore.activeConnectionProfileID {
-				return try appStore.client()
-			}
-			return try await LockScreenApprovalRouting.client(profileID: profileID, appStore: appStore)
+			// 远程拉起后多在后台登记更新票据，那时当前档案的内存凭据已清空。
+			return try await LockScreenApprovalRouting.maintenanceClient(profileID: profileID, appStore: appStore)
 		}
 		liveActivityCoordinator.installationIDForProfile = { [weak appStore] profileID in
 			appStore?.connectionProfiles.first { $0.id == profileID }?.installationID

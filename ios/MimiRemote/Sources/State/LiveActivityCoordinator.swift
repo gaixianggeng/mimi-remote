@@ -52,6 +52,7 @@ final class LiveActivityCoordinator: ObservableObject {
     private let ticketStore: LiveActivityTicketStore
     private let environment: PushEnvironment
     private let providerClientFactory: (String) -> PushProviderClient
+    private let system: LiveActivitySystemHooks
     private weak var lockScreenStore: LockScreenApprovalStore?
     /// 按档案取 agentd 客户端；由 App 注入，与锁屏审批走同一条路由。
     var makeClient: ((String) async throws -> AgentAPIClient)?
@@ -77,12 +78,14 @@ final class LiveActivityCoordinator: ObservableObject {
         defaults: UserDefaults = .standard,
         ticketStore: LiveActivityTicketStore = LiveActivityTicketStore(),
         environment: PushEnvironment = .current(),
-        providerClientFactory: @escaping (String) -> PushProviderClient = { PushProviderClient(baseURL: $0) }
+        providerClientFactory: @escaping (String) -> PushProviderClient = { PushProviderClient(baseURL: $0) },
+        system: LiveActivitySystemHooks = .live
     ) {
         self.defaults = defaults
         self.ticketStore = ticketStore
         self.environment = environment
         self.providerClientFactory = providerClientFactory
+        self.system = system
         self.isToggleOn = LiveActivityPreferences.isToggleOn(in: defaults)
     }
 
@@ -276,7 +279,7 @@ final class LiveActivityCoordinator: ObservableObject {
         endActivities { $0 != binding.hostTag }
         if hostSupport[binding.profileID]?.supported == false {
             availability = .unavailableOnHost
-        } else if !Self.systemAllowsActivities {
+        } else if !system.activitiesEnabled() {
             availability = .systemDisabled
         } else if ticketStore.load()?.start != nil {
             availability = .ready
@@ -289,14 +292,31 @@ final class LiveActivityCoordinator: ObservableObject {
 
     // MARK: - 登记
 
-    private func registrationContext() -> (Binding, PushProviderClient)? {
+    /// `allowsUnconfirmedHost`：还没取到 agentd 状态时也放行。hostSupport 只在前台同步时填，
+    /// 远程拉起后 App 在后台被冷启动唤醒时它是空的；这时活动本身就证明那台 Mac 支持实时活动。
+    private func registrationContext(allowsUnconfirmedHost: Bool = false) -> (Binding, PushProviderClient)? {
         guard isToggleOn, LiveActivityPreferences.isEffective(in: defaults),
               let binding = currentBinding(),
-              hostSupport[binding.profileID]?.supported == true,
-              Self.systemAllowsActivities else {
+              system.activitiesEnabled() else {
+            return nil
+        }
+        switch hostSupport[binding.profileID]?.supported {
+        case true?:
+            break
+        case nil where allowsUnconfirmedHost:
+            break
+        default:
             return nil
         }
         return (binding, providerClientFactory(binding.providerURL))
+    }
+
+    /// 更新 Token 没能登记的原因，只用于诊断。
+    private func updateSkipReason() -> String {
+        guard isToggleOn, LiveActivityPreferences.isEffective(in: defaults) else { return "disabled" }
+        guard let binding = currentBinding() else { return "no_binding" }
+        if hostSupport[binding.profileID]?.supported == false { return "host_unsupported" }
+        return "system_disabled"
     }
 
     private func loadRecord(for binding: Binding) -> LiveActivityTicketRecord {
@@ -338,11 +358,28 @@ final class LiveActivityCoordinator: ObservableObject {
         }
     }
 
+    /// 收到某个活动的更新 Token（包括启动时已存在的活动）：记下并排队登记。同一个 Token 不重复排队，
+    /// 没登记上的由回到前台时的 `synchronize` 补登记。
+    func didReceiveUpdateToken(_ token: String, activityID: String, hostTag: String) {
+        guard latestUpdateTokens[activityID]?.token != token else { return }
+        latestUpdateTokens[activityID] = (hostTag, token)
+        recordDiagnostic("update_token", reason: nil)
+        enqueue { await self.registerUpdateTokenIfNeeded(activityID: activityID) }
+    }
+
     private func registerUpdateTokenIfNeeded(activityID: String, force: Bool = false) async {
-        guard let latest = latestUpdateTokens[activityID],
-              let context = registrationContext(),
-              latest.hostTag == context.0.hostTag,
-              isActivityAlive(activityID) else {
+        guard let latest = latestUpdateTokens[activityID] else { return }
+        // 活动是这台 Mac 远程拉起的，或在确认支持后本机拉起的：不必等状态接口确认能力。
+        guard let context = registrationContext(allowsUnconfirmedHost: true) else {
+            recordDiagnostic("update_skipped", reason: updateSkipReason())
+            return
+        }
+        guard latest.hostTag == context.0.hostTag else {
+            recordDiagnostic("update_skipped", reason: "host_mismatch")
+            return
+        }
+        guard system.isActivityAlive(activityID) else {
+            recordDiagnostic("update_skipped", reason: "activity_ended")
             return
         }
         let (binding, provider) = context
@@ -493,11 +530,16 @@ final class LiveActivityCoordinator: ObservableObject {
 
     /// 登记、注销与清理都排进同一条队列：MainActor 在 await 期间会重入，
     /// 不能让关闭开关之后的旧登记又把票据写回 agentd。
+    ///
+    /// 远程拉起后系统只在后台短暂唤醒 App 交付 Token，登记要先向推送服务换票据、再登记到 agentd，
+    /// 两次联网都得在挂起前做完；排队等前一项的时间也算在内，所以从入队起就申请后台执行时间。
     private func enqueue(_ operation: @escaping @MainActor () async -> Void) {
         let previous = operationTail
+        let endBackgroundExecution = system.beginBackgroundExecution("MimiLiveActivityRegistration")
         operationTail = Task { @MainActor in
             await previous?.value
             await operation()
+            endBackgroundExecution()
         }
     }
 
@@ -524,7 +566,7 @@ final class LiveActivityCoordinator: ObservableObject {
     // MARK: - ActivityKit
 
     #if canImport(ActivityKit) && !targetEnvironment(macCatalyst)
-    private static var systemAllowsActivities: Bool {
+    fileprivate static var systemAllowsActivities: Bool {
         ActivityAuthorizationInfo().areActivitiesEnabled
     }
 
@@ -590,12 +632,16 @@ final class LiveActivityCoordinator: ObservableObject {
         let activityID = activity.id
         guard activityTasks[activityID] == nil else { return }
         let hostTag = activity.attributes.hostTag
+        if let token = activity.pushToken {
+            // 冷启动（包括远程拉起后在后台被唤醒）时活动早就有 Token：直接登记，不赌
+            // pushTokenUpdates 会不会再发一次当前值。
+            didReceiveUpdateToken(Self.hex(token), activityID: activityID, hostTag: hostTag)
+        }
         activityTasks[activityID] = [
             Task { @MainActor [weak self] in
                 for await data in activity.pushTokenUpdates {
                     guard let self else { return }
-                    self.latestUpdateTokens[activityID] = (hostTag, Self.hex(data))
-                    self.enqueue { await self.registerUpdateTokenIfNeeded(activityID: activityID) }
+                    self.didReceiveUpdateToken(Self.hex(data), activityID: activityID, hostTag: hostTag)
                 }
             },
             Task { @MainActor [weak self] in
@@ -610,9 +656,9 @@ final class LiveActivityCoordinator: ObservableObject {
         ]
     }
 
-    private func isActivityAlive(_ activityID: String) -> Bool {
+    fileprivate static func isActivityAlive(_ activityID: String) -> Bool {
         Activity<MimiTurnActivityAttributes>.activities.contains {
-            $0.id == activityID && Self.isAlive($0.activityState)
+            $0.id == activityID && isAlive($0.activityState)
         }
     }
 
@@ -628,7 +674,7 @@ final class LiveActivityCoordinator: ObservableObject {
     }
 
     private func requestLocalActivity(hostTag: String, state: MimiTurnActivityState) {
-        guard Self.systemAllowsActivities,
+        guard system.activitiesEnabled(),
               !Activity<MimiTurnActivityAttributes>.activities.contains(where: {
                   $0.attributes.hostTag == hostTag && Self.isAlive($0.activityState)
               }) else {
@@ -652,13 +698,59 @@ final class LiveActivityCoordinator: ObservableObject {
         data.map { String(format: "%02x", $0) }.joined()
     }
     #else
-    private static var systemAllowsActivities: Bool { false }
+    fileprivate static var systemAllowsActivities: Bool { false }
     private func startObservingActivities() {}
-    private func isActivityAlive(_ activityID: String) -> Bool { false }
+    fileprivate static func isActivityAlive(_ activityID: String) -> Bool { false }
     private func endActivities(where shouldEnd: (String) -> Bool) {}
     private func requestLocalActivity(hostTag: String, state: MimiTurnActivityState) {}
     #endif
 }
+
+/// 协调器用到的系统能力：ActivityKit 的授权与活动状态、UIKit 的后台执行时间。单测里没有真实活动，
+/// 也不该真去申请后台时间，所以集中成一处可替换。
+struct LiveActivitySystemHooks {
+    /// 系统设置里是否允许这个 App 的实时活动。
+    var activitiesEnabled: @MainActor () -> Bool
+    /// 这个活动是否还在（active 或 stale）。
+    var isActivityAlive: @MainActor (String) -> Bool
+    /// 申请后台执行时间，返回结束申请的闭包；系统提前收回时自行结束，重复调用无副作用。
+    var beginBackgroundExecution: @MainActor (String) -> @MainActor () -> Void
+
+    static var live: LiveActivitySystemHooks {
+        LiveActivitySystemHooks(
+            activitiesEnabled: { LiveActivityCoordinator.systemAllowsActivities },
+            isActivityAlive: { LiveActivityCoordinator.isActivityAlive($0) },
+            beginBackgroundExecution: { name in
+                #if canImport(UIKit)
+                let assertion = LiveActivityBackgroundExecution(name: name)
+                return { assertion.end() }
+                #else
+                return {}
+                #endif
+            }
+        )
+    }
+}
+
+#if canImport(UIKit)
+/// 一次后台执行时间申请。到期时只结束申请、不打断登记：没做完的部分回到前台由 `synchronize` 补。
+@MainActor
+private final class LiveActivityBackgroundExecution {
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    init(name: String) {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            MainActor.assumeIsolated { self?.end() }
+        }
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
+}
+#endif
 
 /// 本机记录说已登记、agentd 状态却说没有：需要强制补登记。旧版 agentd 不回报这两个字段时不判断。
 struct LiveActivityRegistrationRepair: Equatable {

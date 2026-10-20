@@ -858,3 +858,260 @@ private final class TicketRecordingURLProtocol: URLProtocol {
 
     override func stopLoading() {}
 }
+
+/// 远程拉起后 App 在后台被唤醒交付更新 Token：不能因为还没取过 agentd 状态就跳过，
+/// 登记要包在后台执行时间里，失败的回到前台补登记（#830）。
+@MainActor
+final class LiveActivityBackgroundRegistrationTests: XCTestCase {
+    private var suiteName: String!
+    private var defaults: UserDefaults!
+    private var lockScreenStore: LockScreenApprovalStore?
+    private var background: BackgroundExecutionRecorder!
+    private let hostTag = NotificationSessionTag.hostTag(installationID: "install-test")
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "LiveActivityBackgroundRegistrationTests.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
+        background = BackgroundExecutionRecorder()
+        RegistrationStubURLProtocol.reset()
+    }
+
+    override func tearDown() {
+        lockScreenStore = nil
+        defaults.removePersistentDomain(forName: suiteName)
+        RegistrationStubURLProtocol.reset()
+        super.tearDown()
+    }
+
+    private var stubSession: URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RegistrationStubURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    private var agentdClient: AgentAPIClient {
+        AgentAPIClient(endpoint: "http://100.64.0.10:8787", token: "token-a", session: stubSession)
+    }
+
+    private func makeCoordinator(
+        tickets: LiveActivityTicketStore,
+        makeClient: @escaping (String) async throws -> AgentAPIClient
+    ) throws -> LiveActivityCoordinator {
+        let keychain = TestKeychainOperations()
+        let identityStore = PushInstallationIdentityStore(keychain: keychain)
+        try identityStore.save(PushInstallationIdentity(deviceID: "dev-test", installationID: "ins-test"))
+        defaults.set(true, forKey: "lockScreenApproval.enabled")
+        defaults.set("mac-a", forKey: "lockScreenApproval.registeredProfileID")
+        defaults.set("https://push.example/mimi-push", forKey: "lockScreenApproval.registeredProviderURL")
+        let store = LockScreenApprovalStore(
+            defaults: defaults, ticketStore: PushTicketStore(keychain: keychain), identityStore: identityStore
+        )
+        lockScreenStore = store
+        let session = stubSession
+        let background = background!
+        let coordinator = LiveActivityCoordinator(
+            defaults: defaults,
+            ticketStore: tickets,
+            environment: .sandbox,
+            providerClientFactory: { PushProviderClient(baseURL: $0, session: session) },
+            system: LiveActivitySystemHooks(
+                activitiesEnabled: { true },
+                isActivityAlive: { _ in true },
+                beginBackgroundExecution: { background.begin(name: $0) }
+            )
+        )
+        coordinator.attach(lockScreenStore: store)
+        coordinator.makeClient = makeClient
+        coordinator.profileExists = { $0 == "mac-a" }
+        coordinator.installationIDForProfile = { _ in "install-test" }
+        return coordinator
+    }
+
+    private func diagnostics(since start: Date) -> [NotificationRouteDiagnostics.Entry] {
+        NotificationRouteDiagnostics.entries().filter {
+            $0.stage == NotificationRouteDiagnostics.Stage.liveActivity && $0.at >= start
+        }
+    }
+
+    /// 冷启动唤醒：还没前台同步过（不知道 agentd 能力），更新 Token 也要登记到 agentd，
+    /// 而且换票据与登记都发生在后台执行时间内。
+    func testUpdateTokenRegistersBeforeHostStatusIsKnown() async throws {
+        let start = Date()
+        let tickets = LiveActivityTicketStore(keychain: TestKeychainOperations())
+        let client = agentdClient
+        let coordinator = try makeCoordinator(tickets: tickets) { _ in client }
+        await coordinator.waitForPendingOperations()
+
+        coordinator.didReceiveUpdateToken("ab12", activityID: "A", hostTag: hostTag)
+        coordinator.didReceiveUpdateToken("ab12", activityID: "A", hostTag: hostTag)
+        await coordinator.waitForPendingOperations()
+
+        let registrations = RegistrationStubURLProtocol.requests(path: "/api/push/live-activities")
+        XCTAssertEqual(registrations.count, 1, "同一个 Token 只登记一次")
+        let body = try XCTUnwrap(registrations.first?.body)
+        XCTAssertEqual(body["kind"] as? String, "update")
+        XCTAssertEqual(body["activity_id"] as? String, "A")
+        XCTAssertEqual(body["device_id"] as? String, "dev-test")
+        XCTAssertEqual(RegistrationStubURLProtocol.requests(path: "/v1/ticket").count, 1)
+        XCTAssertNotNil(tickets.load()?.updates["A"])
+        XCTAssertTrue(
+            RegistrationStubURLProtocol.allRequests().allSatisfy { $0.openBackgroundExecutions > 0 },
+            "换票据与登记都要在后台执行时间内完成"
+        )
+        XCTAssertEqual(background.openCount, 0, "做完就结束后台执行申请")
+        XCTAssertGreaterThan(background.beginCount, 0)
+        XCTAssertTrue(diagnostics(since: start).contains { $0.outcome == "update_registered" })
+    }
+
+    /// 后台登记失败（例如连不上 Mac）：回到前台同步时补登记，agentd 状态接口还会顺带确认能力。
+    func testFailedBackgroundRegistrationIsRepairedOnForeground() async throws {
+        let start = Date()
+        let tickets = LiveActivityTicketStore(keychain: TestKeychainOperations())
+        let client = agentdClient
+        var macReachable = false
+        let coordinator = try makeCoordinator(tickets: tickets) { _ in
+            guard macReachable else { throw URLError(.notConnectedToInternet) }
+            return client
+        }
+        coordinator.didReceiveUpdateToken("ab12", activityID: "A", hostTag: hostTag)
+        await coordinator.waitForPendingOperations()
+        XCTAssertNil(tickets.load()?.updates["A"])
+        XCTAssertEqual(RegistrationStubURLProtocol.requests(path: "/v1/ticket/revoke").count, 1, "没登记上的新票据立即撤销")
+        XCTAssertTrue(diagnostics(since: start).contains { $0.outcome == "update_failed" })
+
+        macReachable = true
+        coordinator.synchronize(client: client, profileID: "mac-a")
+        await coordinator.waitForPendingOperations()
+        XCTAssertEqual(RegistrationStubURLProtocol.requests(path: "/api/push/live-activities").count, 1)
+        XCTAssertNotNil(tickets.load()?.updates["A"])
+        XCTAssertEqual(background.openCount, 0)
+    }
+
+    /// agentd 明确回报不支持时仍然不登记：放宽的只是「还不知道」。
+    func testUpdateTokenSkipsHostReportedUnsupported() async throws {
+        let start = Date()
+        RegistrationStubURLProtocol.liveActivitySupported = false
+        let tickets = LiveActivityTicketStore(keychain: TestKeychainOperations())
+        let client = agentdClient
+        let coordinator = try makeCoordinator(tickets: tickets) { _ in client }
+        coordinator.synchronize(client: client, profileID: "mac-a")
+        await coordinator.waitForPendingOperations()
+        XCTAssertEqual(coordinator.availability, .unavailableOnHost)
+
+        coordinator.didReceiveUpdateToken("ab12", activityID: "A", hostTag: hostTag)
+        await coordinator.waitForPendingOperations()
+        XCTAssertTrue(RegistrationStubURLProtocol.requests(path: "/v1/ticket").isEmpty)
+        XCTAssertTrue(RegistrationStubURLProtocol.requests(path: "/api/push/live-activities").isEmpty)
+        XCTAssertTrue(diagnostics(since: start).contains {
+            $0.outcome == "update_skipped" && $0.reason == "host_unsupported"
+        })
+    }
+}
+
+/// 记录后台执行时间申请；请求发出时据此判断是否处在申请期内。
+private final class BackgroundExecutionRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var open = 0
+    private var begun = 0
+
+    var openCount: Int { lock.withLock { open } }
+    var beginCount: Int { lock.withLock { begun } }
+
+    func begin(name: String) -> @MainActor () -> Void {
+        lock.withLock {
+            open += 1
+            begun += 1
+        }
+        RegistrationStubURLProtocol.openBackgroundExecutions = { [weak self] in self?.openCount ?? 0 }
+        var ended = false
+        return { [weak self] in
+            guard !ended else { return }
+            ended = true
+            self?.lock.withLock { self?.open -= 1 }
+        }
+    }
+}
+
+/// 推送服务与 agentd 的最小替身：换票据、撤销、状态接口与活动票据登记。
+private final class RegistrationStubURLProtocol: URLProtocol {
+    struct Recorded {
+        let path: String
+        let body: [String: Any]?
+        let openBackgroundExecutions: Int
+    }
+
+    private static let lock = NSLock()
+    private static var recorded: [Recorded] = []
+    private static var supported = true
+    private static var openExecutions: (() -> Int)?
+
+    static var liveActivitySupported: Bool {
+        get { lock.withLock { supported } }
+        set { lock.withLock { supported = newValue } }
+    }
+
+    static var openBackgroundExecutions: (() -> Int)? {
+        get { lock.withLock { openExecutions } }
+        set { lock.withLock { openExecutions = newValue } }
+    }
+
+    static func reset() {
+        lock.withLock {
+            recorded.removeAll()
+            supported = true
+            openExecutions = nil
+        }
+    }
+
+    static func allRequests() -> [Recorded] {
+        lock.withLock { recorded }
+    }
+
+    static func requests(path: String) -> [Recorded] {
+        allRequests().filter { $0.path == path }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        var data = request.httpBody ?? Data()
+        if data.isEmpty, let stream = request.httpBodyStream {
+            stream.open()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                guard count > 0 else { break }
+                data.append(buffer, count: count)
+            }
+            stream.close()
+        }
+        // 推送服务的基址带路径前缀，按接口路径归一。
+        let path = (request.url?.path ?? "").replacingOccurrences(of: "/mimi-push", with: "")
+        let open = Self.openBackgroundExecutions?() ?? 0
+        let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let ticketCount = Self.lock.withLock { () -> Int in
+            Self.recorded.append(Recorded(path: path, body: body, openBackgroundExecutions: open))
+            return Self.recorded.filter { $0.path == "/v1/ticket" }.count
+        }
+        let response: String
+        switch path {
+        case "/v1/ticket":
+            response = #"{"ticket":"mpt1.1.t\#(ticketCount)","expires_at":"2030-01-01T00:00:00Z"}"#
+        case "/api/push/status":
+            let supported = Self.liveActivitySupported
+            response = #"{"enabled":true,"provider_configured":true,"live_activity":\#(supported),"host_tag":"","devices":[{"device_id":"dev-test","live_activity_start":true,"live_activity_update":false}]}"#
+        case "/api/push/live-activities":
+            response = #"{"device_id":"dev-test","kind":"update","expires_at":"2030-01-01T00:00:00Z"}"#
+        default:
+            response = "{}"
+        }
+        let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(response.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
