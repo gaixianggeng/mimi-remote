@@ -592,20 +592,15 @@ final class LiveActivityCoordinator: ObservableObject {
                     Task { await activity.end(nil, dismissalPolicy: .immediate) }
                     continue
                 }
-                // 同一台 Mac 只保留最新的一个：本机拉起与远程启动撞在一起时，旧的那个
-                // 没有人更新，留着只会停在过时的状态。
-                for other in Activity<MimiTurnActivityAttributes>.activities
-                where other.id != activity.id && other.attributes.hostTag == activity.attributes.hostTag
-                    && Self.isAlive(other.activityState) {
-                    Task { await other.end(nil, dismissalPolicy: .immediate) }
-                }
+                self.endSuperseded(by: activity)
                 self.track(activity)
             }
         })
         let isEnabled = isToggleOn && LiveActivityPreferences.isEffective(in: defaults)
         let expected = expectedHostTag()
+        let existing = Activity<MimiTurnActivityAttributes>.activities
         var kept: [Activity<MimiTurnActivityAttributes>] = []
-        for activity in Activity<MimiTurnActivityAttributes>.activities where Self.isAlive(activity.activityState) {
+        for activity in existing where Self.isAlive(activity.activityState) {
             if LiveActivityHostFilter.keeps(
                 hostTag: activity.attributes.hostTag, expectedHostTag: expected, isEnabled: isEnabled
             ) {
@@ -619,12 +614,48 @@ final class LiveActivityCoordinator: ObservableObject {
             kept.map { (id: $0.id, hostTag: $0.attributes.hostTag) },
             registeredIDs: Set(ticketStore.load()?.updates.keys.map { $0 } ?? [])
         )
+        // 远程拉起新一轮时 App 常常是被冷启动到后台的：上一轮已结束、还留在锁屏上的卡同样立即收起。
+        let lingering = existing.filter { $0.activityState == .ended }
+        let current = kept.filter { !duplicates.contains($0.id) }
+        let superseded = LiveActivityHostFilter.supersededToEnd(
+            lingering.map { (id: $0.id, hostTag: $0.attributes.hostTag) },
+            current: current.map { (id: $0.id, hostTag: $0.attributes.hostTag) }
+        )
+        let dismissed = lingering.filter { superseded.contains($0.id) }
+        for activity in dismissed {
+            Task { await activity.end(nil, dismissalPolicy: .immediate) }
+        }
+        if !dismissed.isEmpty {
+            recordDiagnostic("superseded", reason: "launch ended=\(dismissed.count)")
+        }
         for activity in kept {
             if duplicates.contains(activity.id) {
                 Task { await activity.end(nil, dismissalPolicy: .immediate) }
             } else {
                 track(activity)
             }
+        }
+    }
+
+    /// 同一台 Mac 只保留最新的一个：本机拉起与远程启动撞在一起时，旧的那个没有人更新，留着只会停在
+    /// 过时的状态；上一轮已结束的卡按 dismissal 还会在锁屏留一段时间，和新一轮叠在一起时常排在最上面，
+    /// 盖住新一轮的「待你处理」。两种都立即收起。
+    private func endSuperseded(by activity: Activity<MimiTurnActivityAttributes>) {
+        guard Self.isAlive(activity.activityState) else { return }
+        let others = Activity<MimiTurnActivityAttributes>.activities.filter {
+            $0.id != activity.id && (Self.isAlive($0.activityState) || $0.activityState == .ended)
+        }
+        let superseded = LiveActivityHostFilter.supersededToEnd(
+            others.map { (id: $0.id, hostTag: $0.attributes.hostTag) },
+            current: [(id: activity.id, hostTag: activity.attributes.hostTag)]
+        )
+        let ending = others.filter { superseded.contains($0.id) }
+        for other in ending {
+            Task { await other.end(nil, dismissalPolicy: .immediate) }
+        }
+        if !ending.isEmpty {
+            let ended = ending.filter { $0.activityState == .ended }.count
+            recordDiagnostic("superseded", reason: "alive=\(ending.count - ended) ended=\(ended)")
         }
     }
 
@@ -686,6 +717,9 @@ final class LiveActivityCoordinator: ObservableObject {
                 content: ActivityContent(state: state, staleDate: Date().addingTimeInterval(2 * 60 * 60)),
                 pushType: .token
             )
+            // 上面只挡住了还在跑的同一台 Mac 的活动；上一轮已结束的卡这里收起，不依赖 activityUpdates
+            // 是否会报告本机拉起的活动。
+            endSuperseded(by: activity)
             track(activity)
             recordDiagnostic("local_started", reason: nil)
         } catch {
@@ -794,6 +828,20 @@ enum LiveActivityHostFilter {
             ending.formUnion(ids.filter { $0 != keeper })
         }
         return ending
+    }
+
+    /// 同一台 Mac 有了当前活动后要立即收起的其他活动：还在跑的没人再更新，已结束的按 dismissal 还留在
+    /// 锁屏上。只看是不是同一台 Mac，不看先后：已结束的活动不会再更新，当前活动一定是更新的一轮；而且
+    /// 系统列出活动的顺序不是创建顺序，冷启动时实测新活动排在已结束的旧活动前面。
+    static func supersededToEnd(
+        _ activities: [(id: String, hostTag: String)],
+        current: [(id: String, hostTag: String)]
+    ) -> Set<String> {
+        let currentIDs = Set(current.map(\.id))
+        let currentHosts = Set(current.map { $0.hostTag.uppercased() })
+        return Set(activities.filter {
+            !currentIDs.contains($0.id) && currentHosts.contains($0.hostTag.uppercased())
+        }.map(\.id))
     }
 }
 
