@@ -212,6 +212,8 @@ final class LiveActivityPreferencesTests: XCTestCase {
             (true, .failed, "ui.live_activity_status_failed"),
             (true, .pending, "ui.live_activity_status_on"),
             (true, .ready, "ui.live_activity_status_on"),
+            (true, .disablePending, "ui.live_activity_disable_pending"),
+            (false, .disablePending, "ui.live_activity_disable_pending"),
         ]
         for testCase in cases {
             let key = LiveActivitySettingsCopy.statusKey(notificationsEnabled: testCase.0, availability: testCase.1)
@@ -240,6 +242,40 @@ final class LiveActivityPreferencesTests: XCTestCase {
         XCTAssertTrue(record.matches(profileID: "mac", providerURL: "https://p", hostTag: "6AF3"))
         XCTAssertFalse(record.matches(profileID: "other", providerURL: "https://p", hostTag: "6AF3"), "换绑后旧票据作废")
         XCTAssertFalse(record.matches(profileID: "mac", providerURL: "https://q", hostTag: "6AF3"), "换推送服务后旧票据作废")
+    }
+
+    /// 关闭时记录要等 agentd 注销与推送服务撤销都确认后才删除；失败的部分留着重试。
+    func testRevocationKeepsWhateverFailed() async {
+        var record = LiveActivityTicketRecord(profileID: "mac", providerURL: "https://p", hostTag: "6AF3")
+        record.start = .init(ticket: "s", expiresAt: Date.distantFuture, tokenFingerprint: "fp")
+        record.updates["A"] = .init(ticket: "u", expiresAt: Date.distantFuture, tokenFingerprint: "fa")
+        record.pendingRemoteUnregister = true
+        struct Failure: Error {}
+
+        let allOK = await LiveActivityTicketRevocation.run(record: record, unregister: {}, revoke: { _ in })
+        XCTAssertNil(allOK, "全部成功后记录可以删除")
+
+        let agentdDown = await LiveActivityTicketRevocation.run(
+            record: record, unregister: { throw Failure() }, revoke: { _ in }
+        )
+        XCTAssertEqual(agentdDown?.pendingRemoteUnregister, true, "agentd 注销失败要保留这一步")
+        XCTAssertEqual(agentdDown?.isPendingRemoval, true)
+        XCTAssertEqual(agentdDown?.allTickets, [], "推送服务撤销照常完成")
+
+        let providerDown = await LiveActivityTicketRevocation.run(
+            record: record, unregister: {}, revoke: { ticket in if ticket == "s" { throw Failure() } }
+        )
+        XCTAssertEqual(providerDown?.allTickets, ["s"], "只保留没撤销成功的票据")
+        XCTAssertNil(providerDown?.pendingRemoteUnregister)
+
+        var bindingChanged = record
+        bindingChanged.pendingRemoteUnregister = nil
+        var unregisterCalls = 0
+        let skipped = await LiveActivityTicketRevocation.run(
+            record: bindingChanged, unregister: { unregisterCalls += 1 }, revoke: { _ in }
+        )
+        XCTAssertNil(skipped)
+        XCTAssertEqual(unregisterCalls, 0, "换绑或关闭消息通知时 agentd 已随设备注销删掉票据，不再联系")
     }
 
     func testTicketStoreRoundTripsThroughKeychain() {

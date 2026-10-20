@@ -376,6 +376,24 @@
         }
       }
     },
+    "ui.live_activity_disable_pending": {
+      "comment": "Settings footnote when turning Live Activities off has not finished revoking credentials.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turning off isn't finished. Mimi will retry when you return to the app."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭尚未完成，回到 App 时会自动重试。"
+          }
+        }
+      }
+    },
     "ui.view_process": {
       "localizations": {
         "en": {

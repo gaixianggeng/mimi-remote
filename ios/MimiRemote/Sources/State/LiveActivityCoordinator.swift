@@ -32,6 +32,8 @@ final class LiveActivityCoordinator: ObservableObject {
         case ready
         /// 推送服务或 agentd 拒绝登记（例如推送服务尚未升级）；下次回到前台重试。
         case failed
+        /// 关闭或换绑后还有票据没撤销成功；回到前台时重试，期间不登记新票据。
+        case disablePending
     }
 
     struct Binding: Equatable {
@@ -119,7 +121,10 @@ final class LiveActivityCoordinator: ObservableObject {
         LiveActivityPreferences.setToggle(enabled, in: defaults)
         isToggleOn = enabled
         if enabled {
-            enqueue { await self.registerStartTokenIfNeeded() }
+            enqueue {
+                await self.reconcileBinding()
+                await self.registerStartTokenIfNeeded()
+            }
         } else {
             availability = .off
             enqueue { await self.teardown(unregisterRemote: true) }
@@ -129,14 +134,14 @@ final class LiveActivityCoordinator: ObservableObject {
     /// 前台生命周期刷新：在锁屏审批同步之后调用，确认绑定、agentd 能力并补登记。
     func synchronize(client: AgentAPIClient, profileID: String) {
         enqueue {
-            guard let binding = self.currentBinding(), binding.profileID == profileID else {
-                await self.reconcileBinding()
-                return
-            }
-            if let status = try? await client.pushStatus() {
+            // 先取 agentd 能力与 host_tag：档案没存 installation_id 时，绑定要靠它才能算出 hostTag。
+            if let store = self.lockScreenStore, store.notificationsEnabled, store.isEnabled,
+               store.registeredProfileID == profileID,
+               let status = try? await client.pushStatus() {
                 self.hostSupport[profileID] = (status.liveActivity == true, status.hostTag)
             }
             await self.reconcileBinding()
+            guard self.currentBinding()?.profileID == profileID else { return }
             await self.registerStartTokenIfNeeded()
             for activityID in Array(self.latestUpdateTokens.keys) {
                 await self.registerUpdateTokenIfNeeded(activityID: activityID)
@@ -191,6 +196,11 @@ final class LiveActivityCoordinator: ObservableObject {
     }
 
     private func reconcileBinding() async {
+        if let record = ticketStore.load(), record.isPendingRemoval {
+            // 上次关闭没撤销完：先补完，补不完就保持关闭未完成，不登记新票据。
+            await teardown(unregisterRemote: record.pendingRemoteUnregister == true)
+            if ticketStore.load()?.isPendingRemoval == true { return }
+        }
         guard isToggleOn else {
             availability = .off
             return
@@ -226,7 +236,8 @@ final class LiveActivityCoordinator: ObservableObject {
         guard isToggleOn, LiveActivityPreferences.isEffective(in: defaults),
               let binding = currentBinding(),
               hostSupport[binding.profileID]?.supported == true,
-              Self.systemAllowsActivities else {
+              Self.systemAllowsActivities,
+              ticketStore.load()?.isPendingRemoval != true else {
             return nil
         }
         return (binding, providerClientFactory(binding.providerURL))
@@ -347,21 +358,42 @@ final class LiveActivityCoordinator: ObservableObject {
     }
 
     /// 结束本机全部活动并撤销已登记的票据。agentd 侧：关闭开关时显式注销；关闭消息通知
-    /// 或换绑时设备注销已经一并删掉，不再联系。
+    /// 或换绑时设备注销已经一并删掉，不再联系。记录先标记为待删除再联系远端，任何一步
+    /// 失败都保留剩余部分，回到前台时由 `reconcileBinding` 重试。
     private func teardown(unregisterRemote: Bool) async {
         endActivities { _ in true }
         latestUpdateTokens.removeAll()
-        guard let record = ticketStore.load() else { return }
-        ticketStore.delete()
-        if unregisterRemote, let makeClient, let store = lockScreenStore, !store.deviceID.isEmpty,
-           let client = try? await makeClient(record.profileID) {
-            try? await client.unregisterLiveActivity(deviceID: store.deviceID)
+        guard var record = ticketStore.load() else { return }
+        record.pendingRemoval = true
+        if unregisterRemote {
+            record.pendingRemoteUnregister = true
         }
+        ticketStore.save(record)
+        let deviceID = lockScreenStore?.deviceID ?? ""
+        let makeClient = self.makeClient
+        let profileID = record.profileID
         let provider = providerClientFactory(record.providerURL)
-        for ticket in record.allTickets {
-            try? await provider.revokeTicket(ticket)
+        let remaining = await LiveActivityTicketRevocation.run(
+            record: record,
+            unregister: {
+                guard let makeClient, !deviceID.isEmpty else {
+                    throw LockScreenApprovalRoutingError.sourceProfileUnavailable
+                }
+                try await makeClient(profileID).unregisterLiveActivity(deviceID: deviceID)
+            },
+            revoke: { try await provider.revokeTicket($0) }
+        )
+        if let remaining {
+            ticketStore.save(remaining)
+            availability = .disablePending
+            recordDiagnostic("clear_pending", reason: "tickets=\(remaining.allTickets.count)")
+        } else {
+            ticketStore.delete()
+            if availability == .disablePending {
+                availability = isToggleOn ? .pending : .off
+            }
+            recordDiagnostic("cleared", reason: unregisterRemote ? "toggle_off" : "binding_changed")
         }
-        recordDiagnostic("cleared", reason: unregisterRemote ? "toggle_off" : "binding_changed")
     }
 
     // MARK: - 串行化
@@ -415,6 +447,12 @@ final class LiveActivityCoordinator: ObservableObject {
         observationTasks.append(Task { @MainActor [weak self] in
             for await activity in Activity<MimiTurnActivityAttributes>.activityUpdates {
                 guard let self else { return }
+                // 关闭后、撤销确认前，推送服务仍可能凭旧 Ticket 远程拉起：本机立即结束。
+                guard self.isToggleOn, LiveActivityPreferences.isEffective(in: self.defaults),
+                      self.ticketStore.load()?.isPendingRemoval != true else {
+                    Task { await activity.end(nil, dismissalPolicy: .immediate) }
+                    continue
+                }
                 // 同一台 Mac 只保留最新的一个：本机拉起与远程启动撞在一起时，旧的那个
                 // 没有人更新，留着只会停在过时的状态。
                 for other in Activity<MimiTurnActivityAttributes>.activities

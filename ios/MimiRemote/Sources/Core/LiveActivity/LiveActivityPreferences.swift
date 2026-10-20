@@ -39,6 +39,10 @@ struct LiveActivityTicketRecord: Codable, Equatable {
     var start: Entry?
     /// 键为 App 端 `Activity.id`。
     var updates: [String: Entry]
+    /// 已决定关闭或作废、但还有票据没撤销成功。期间不再登记新票据，回到前台时重试。
+    var pendingRemoval: Bool?
+    /// 关闭开关时还要注销 agentd 上的两类票据；注销没成功前保留这一步。
+    var pendingRemoteUnregister: Bool?
 
     init(profileID: String, providerURL: String, hostTag: String, start: Entry? = nil, updates: [String: Entry] = [:]) {
         self.profileID = profileID
@@ -72,6 +76,51 @@ struct LiveActivityTicketRecord: Codable, Equatable {
 
     var allTickets: [String] {
         [start?.ticket].compactMap { $0 } + updates.values.map(\.ticket).sorted()
+    }
+
+    var isPendingRemoval: Bool { pendingRemoval == true }
+
+    /// 去掉已撤销的票据；全部撤销且无需再注销 agentd 时整条记录可以删除。
+    mutating func dropRevoked(_ revoked: Set<String>) {
+        if let ticket = start?.ticket, revoked.contains(ticket) {
+            start = nil
+        }
+        updates = updates.filter { !revoked.contains($0.value.ticket) }
+    }
+
+    var isFullyRevoked: Bool {
+        start == nil && updates.isEmpty && pendingRemoteUnregister != true
+    }
+}
+
+/// 关闭实时活动时的撤销流程：记录要等 agentd 注销与推送服务撤销都确认后才删除，
+/// 任何一步失败都保留剩余部分，下次回到前台重试。推送服务撤销才是真正的关闭保证：
+/// 撤销后 agentd 再用这张 Ticket 投递会得到 ticket_revoked 并自行删除。
+enum LiveActivityTicketRevocation {
+    /// 返回仍未完成的记录；nil 表示已全部完成。
+    static func run(
+        record: LiveActivityTicketRecord,
+        unregister: () async throws -> Void,
+        revoke: (String) async throws -> Void
+    ) async -> LiveActivityTicketRecord? {
+        var remaining = record
+        remaining.pendingRemoval = true
+        if remaining.pendingRemoteUnregister == true {
+            do {
+                try await unregister()
+                remaining.pendingRemoteUnregister = nil
+            } catch {
+                // 保留这一步；推送服务撤销照常进行。
+            }
+        }
+        var revoked: Set<String> = []
+        for ticket in remaining.allTickets {
+            if (try? await revoke(ticket)) != nil {
+                revoked.insert(ticket)
+            }
+        }
+        remaining.dropRevoked(revoked)
+        return remaining.isFullyRevoked ? nil : remaining
     }
 }
 
@@ -131,6 +180,7 @@ enum LiveActivitySettingsCopy {
         notificationsEnabled: Bool,
         availability: LiveActivityCoordinator.Availability
     ) -> String {
+        if availability == .disablePending { return "ui.live_activity_disable_pending" }
         guard notificationsEnabled else { return "ui.live_activity_requires_notifications" }
         switch availability {
         case .off: return "ui.live_activity_status_off"
@@ -139,6 +189,7 @@ enum LiveActivitySettingsCopy {
         case .unavailableOnHost: return "ui.live_activity_unavailable_on_host"
         case .failed: return "ui.live_activity_status_failed"
         case .pending, .ready: return "ui.live_activity_status_on"
+        case .disablePending: return "ui.live_activity_disable_pending"
         }
     }
 }
