@@ -65,6 +65,7 @@ PendingApprovalCardSnapshotTests
 PendingUserInputSheetSnapshotTests
 PushInstallationIdentityTests
 ResponsiveLayoutTests
+ReviewNotesAgentHandoffTests
 SessionActivityStateTests
 SessionHierarchyPresentationTests
 SessionHistoryReadStateTests
