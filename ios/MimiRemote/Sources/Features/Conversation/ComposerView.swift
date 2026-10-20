@@ -100,9 +100,104 @@ struct ComposerView: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
+        // 修饰链按职责分段，每段经 ComposerErasedControls.swift 的盒子构建后只留下 AnyView。
+        // 整条链写在 body 里时，每个中间值都包着整块输入区，body 单帧在真机上约 400 KB（#869）。
+        let presentedContent = composerPresentationsBox(presentedContentBox(tokens: tokens))
+        let scopeObservedContent = composerScopeObserversBox(presentedContent)
+        let observedContent = composerDraftObserversBox(scopeObservedContent)
+
+        return observedContent
+        .onChange(of: runningTurnDeliveryContext) { _, context in
+            // 引导只在当前 turn 内有效。即使可用性始终为 true，直接换到
+            // 下一条活动回复时也要丢弃上一条回复的一次性选择。
+            resetFollowUpDeliveryToDefault(canGuide: context.canGuide)
+        }
+        .onChange(of: defaultRunningTurnDeliveryID) { _, _ in
+            // 设置页改完默认发送方式，当前打开的输入区立即跟上，不必先切走再切回。
+            resetFollowUpDeliveryToDefault()
+        }
+        .onChange(of: sessionStore.appStore.activeHostScope) { _, _ in
+            resetFollowUpDeliveryToDefault()
+        }
+        .onChange(of: sessionStore.latestCompletedComposerModeReset) { _, event in
+            guard let event,
+                  sessionStore.activeComposerInstanceID == composerInstanceID,
+                  activeComposerDraftScope == event.scope,
+                  currentComposerDraftScope == event.scope else { return }
+            composerState.setSendMode(
+                sessionStore.composerSendModeCache.modeForReappearance(of: event.scope)
+            )
+            collaborationModeSyncBaselineRevision = sendModeChoiceRevision
+        }
+        .onChange(of: sessionStore.latestCompletedComposerDeliveryReset) { _, event in
+            synchronizeCompletedComposerDeliveryReset(event)
+        }
+        .onChange(of: sessionStore.latestSatisfiedPermissionTurnBoundary) { _, boundary in
+            guard let boundary,
+                  activeComposerDraftScope == .session(boundary.sessionID) else {
+                return
+            }
+            composerState.markPermissionSelectionApplied(boundary.permissionSelection)
+            sessionStore.saveComposerPermissionSelection(
+                composerState.permissionSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
+        }
+        .onChange(of: sessionStore.selectedSessionID) { previousID, nextID in
+            synchronizeFollowUpDeliveryForSelectionChange(previousID: previousID, nextID: nextID)
+        }
+        .onChange(of: currentAuthoritativeCollaborationMode) { _, _ in
+            // 只响应当前会话的新值，避免其他会话通知重新应用本会话的旧缓存。
+            synchronizeAuthoritativeCollaborationMode()
+        }
+        .onChange(of: sessionStore.selectedThreadGoal) { previousGoal, goal in
+            syncGoalStatusBarExpansion(from: previousGoal, to: goal)
+        }
+        .task(id: voiceInput.errorMessage) {
+            await autoDismissVoiceErrorIfNeeded(voiceInput.errorMessage)
+        }
+        .onAppear {
+            sessionStore.activeComposerInstanceID = composerInstanceID
+            switchComposerDraftScope(to: currentComposerDraftScope)
+            restoreFollowUpDeliveryForReappearance()
+            composerState.setSendMode(
+                sessionStore.composerSendModeCache.modeForReappearance(of: activeComposerDraftScope)
+            )
+            synchronizeAuthoritativeCollaborationMode()
+            enforceComposerTurnSettingsPolicy()
+            restorePendingUserInputFormStateFromCache()
+            synchronizePendingUserInputPresentation(previous: nil, current: pendingUserInputSelectionIdentity)
+            clampModelSelectionToSelectedSessionRuntime()
+            attachLayoutHandoff()
+        }
+        .task {
+            await prepareComposer()
+        }
+        .onDisappear {
+            if sessionStore.activeComposerInstanceID == composerInstanceID {
+                sessionStore.activeComposerInstanceID = nil
+            }
+            composerLayoutHandoff?.unregister(composerInstanceID)
+            synchronizeComposerTextBeforeDraftScopeChange()
+            sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
+            sessionStore.saveComposerModelSelection(
+                composerState.modelSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
+            sessionStore.saveComposerPermissionSelection(
+                composerState.permissionSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
+            cancelVoiceInteraction(clearStatus: true)
+            activeSkillQuery = nil
+        }
+    }
+
+    /// 托盘、提示、附件条和输入卡。
+    func composerPresentedContent(tokens: ThemeTokens) -> some View {
         // 外层保持透明，由底部输入面板承担唯一主表面；面板内部依靠实色和间距分组，
         // 不再叠加玻璃材质、键帽高光或投影。
-        let presentedContent = VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
             queuedTurnTray
             // iPhone 把会话状态并入唯一 Composer 外壳；iPad 继续使用独立托盘，
             // 保留宽屏上的信息密度与既有收起布局。
@@ -130,6 +225,11 @@ struct ComposerView: View {
                     composerKeyboardShortcutButtons
                 }
         }
+    }
+
+    /// 输入区发起的弹窗、全屏相机、文件选择和确认框。
+    func composerPresentations(_ content: AnyView) -> some View {
+        content
         .sheet(isPresented: $showsManualSkillInputSheet) {
             ManualSkillInputSheet { input in
                 composerState.addAttachment(input)
@@ -242,8 +342,11 @@ struct ComposerView: View {
         } message: { issue in
             Text(issue.message)
         }
+    }
 
-        let scopeObservedContent = presentedContent
+    /// 草稿作用域、宽度档位、设置项与待答输入的变化。
+    func composerScopeObservers(_ content: AnyView) -> some View {
+        content
         .onReceive(Self.clipboardRefreshPublisher) { _ in refreshClipboardImageAvailability() }
         .onChange(of: activeComposerDraftScope, initial: true) { _, _ in refreshClipboardImageAvailability() }
         .onChange(of: availableWidth, initial: true) { _, width in
@@ -283,8 +386,11 @@ struct ComposerView: View {
         .onChange(of: pendingUserInputSelectionIdentity) { previous, current in
             synchronizePendingUserInputPresentation(previous: previous, current: current)
         }
+    }
 
-        let observedContent = scopeObservedContent
+    /// 草稿与模型选择的保存、上传完成和外部追加的正文。
+    func composerDraftObservers(_ content: AnyView) -> some View {
+        content
         .onChange(of: composerState.draftSnapshot()) { _, snapshot in
             // 每次确认文字或附件变化都写入稳定内存仓，视图突然重建时也能恢复最新草稿。
             sessionStore.saveComposerDraft(snapshot, for: activeComposerDraftScope)
@@ -322,92 +428,6 @@ struct ComposerView: View {
                 return
             }
             clampModelSelectionToSelectedSessionRuntime()
-        }
-
-        return observedContent
-        .onChange(of: runningTurnDeliveryContext) { _, context in
-            // 引导只在当前 turn 内有效。即使可用性始终为 true，直接换到
-            // 下一条活动回复时也要丢弃上一条回复的一次性选择。
-            resetFollowUpDeliveryToDefault(canGuide: context.canGuide)
-        }
-        .onChange(of: defaultRunningTurnDeliveryID) { _, _ in
-            // 设置页改完默认发送方式，当前打开的输入区立即跟上，不必先切走再切回。
-            resetFollowUpDeliveryToDefault()
-        }
-        .onChange(of: sessionStore.appStore.activeHostScope) { _, _ in
-            resetFollowUpDeliveryToDefault()
-        }
-        .onChange(of: sessionStore.latestCompletedComposerModeReset) { _, event in
-            guard let event,
-                  sessionStore.activeComposerInstanceID == composerInstanceID,
-                  activeComposerDraftScope == event.scope,
-                  currentComposerDraftScope == event.scope else { return }
-            composerState.setSendMode(
-                sessionStore.composerSendModeCache.modeForReappearance(of: event.scope)
-            )
-            collaborationModeSyncBaselineRevision = sendModeChoiceRevision
-        }
-        .onChange(of: sessionStore.latestCompletedComposerDeliveryReset) { _, event in
-            synchronizeCompletedComposerDeliveryReset(event)
-        }
-        .onChange(of: sessionStore.latestSatisfiedPermissionTurnBoundary) { _, boundary in
-            guard let boundary,
-                  activeComposerDraftScope == .session(boundary.sessionID) else {
-                return
-            }
-            composerState.markPermissionSelectionApplied(boundary.permissionSelection)
-            sessionStore.saveComposerPermissionSelection(
-                composerState.permissionSelectionSnapshot(),
-                for: activeComposerDraftScope
-            )
-        }
-        .onChange(of: sessionStore.selectedSessionID) { previousID, nextID in
-            synchronizeFollowUpDeliveryForSelectionChange(previousID: previousID, nextID: nextID)
-        }
-        .onChange(of: currentAuthoritativeCollaborationMode) { _, _ in
-            // 只响应当前会话的新值，避免其他会话通知重新应用本会话的旧缓存。
-            synchronizeAuthoritativeCollaborationMode()
-        }
-        .onChange(of: sessionStore.selectedThreadGoal) { previousGoal, goal in
-            syncGoalStatusBarExpansion(from: previousGoal, to: goal)
-        }
-        .task(id: voiceInput.errorMessage) {
-            await autoDismissVoiceErrorIfNeeded(voiceInput.errorMessage)
-        }
-        .onAppear {
-            sessionStore.activeComposerInstanceID = composerInstanceID
-            switchComposerDraftScope(to: currentComposerDraftScope)
-            restoreFollowUpDeliveryForReappearance()
-            composerState.setSendMode(
-                sessionStore.composerSendModeCache.modeForReappearance(of: activeComposerDraftScope)
-            )
-            synchronizeAuthoritativeCollaborationMode()
-            enforceComposerTurnSettingsPolicy()
-            restorePendingUserInputFormStateFromCache()
-            synchronizePendingUserInputPresentation(previous: nil, current: pendingUserInputSelectionIdentity)
-            clampModelSelectionToSelectedSessionRuntime()
-            attachLayoutHandoff()
-        }
-        .task {
-            await prepareComposer()
-        }
-        .onDisappear {
-            if sessionStore.activeComposerInstanceID == composerInstanceID {
-                sessionStore.activeComposerInstanceID = nil
-            }
-            composerLayoutHandoff?.unregister(composerInstanceID)
-            synchronizeComposerTextBeforeDraftScopeChange()
-            sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
-            sessionStore.saveComposerModelSelection(
-                composerState.modelSelectionSnapshot(),
-                for: activeComposerDraftScope
-            )
-            sessionStore.saveComposerPermissionSelection(
-                composerState.permissionSelectionSnapshot(),
-                for: activeComposerDraftScope
-            )
-            cancelVoiceInteraction(clearStatus: true)
-            activeSkillQuery = nil
         }
     }
 
