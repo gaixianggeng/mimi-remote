@@ -1659,7 +1659,9 @@ extension SessionStore {
                 body: sessionDisplayTitle(sessionID: sessionID),
                 kind: notification.kind
             )
-        case .sessionStatus(let status, let metadata) where status == "failed":
+        // 带轮次终态的失败状态是从持久记录恢复的旧结局（Harness 冷开会话），这一轮的提醒
+        // 已由实时 turnCompleted 负责；重开会话时再弹一次「会话失败」是误报（#861）。
+        case .sessionStatus(let status, let metadata) where status == "failed" && metadata.turnLifecycle == nil:
             let sessionID = metadata.sessionID ?? fallbackSessionID
             let token = metadata.turnID ?? metadata.seq.map(String.init) ?? "latest"
             return SessionRuntimeNotification(
