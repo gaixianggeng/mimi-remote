@@ -173,6 +173,8 @@ func (r *Router) pushUnregisterDevice(w http.ResponseWriter, req *http.Request) 
 	} else if removed {
 		r.push.Actions().RevokeDevice(deviceID)
 	}
+	// 关闭提醒或删除档案时，活动票据随设备一起注销，不再启动或更新 Live Activity。
+	r.push.LiveActivities().RemoveDevice(deviceID)
 	// 句柄绑定的设备已经消失，剩余待审批动作对它不再有效。
 	writeJSON(w, http.StatusOK, map[string]any{"removed": true})
 }
@@ -188,6 +190,7 @@ func (r *Router) pushStatusHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	devices := []map[string]any{}
 	for _, device := range r.push.Devices().Active() {
+		liveActivityStart, liveActivityUpdate := r.push.LiveActivities().TicketStatus(device.ID)
 		devices = append(devices, map[string]any{
 			"device_id":                  device.ID,
 			"platform":                   device.Platform,
@@ -195,6 +198,8 @@ func (r *Router) pushStatusHandler(w http.ResponseWriter, req *http.Request) {
 			"needs_refresh":              device.NeedsRefresh(time.Now()),
 			"supports_holder_waiting":    device.SupportsHolderWaiting,
 			"supports_deepseek_messages": device.SupportsDeepSeekMessages,
+			"live_activity_start":        liveActivityStart,
+			"live_activity_update":       liveActivityUpdate,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -205,6 +210,10 @@ func (r *Router) pushStatusHandler(w http.ResponseWriter, req *http.Request) {
 		"profile_id":          r.push.ProfileID(),
 		"actionable_kinds":    []string{pushbridge.KindCommand, pushbridge.KindPatch},
 		"devices":             devices,
+		// 支持 /api/push/live-activities 的 agentd 才回报；旧版缺字段时 App 不登记活动票据。
+		"live_activity": true,
+		// host_tag 与活动 attributes.hostTag 一致，App 据此把活动归到正确的 Mac。
+		"host_tag": r.push.HostTag(),
 	})
 }
 
@@ -510,14 +519,18 @@ func newPushManager(cfg pushManagerConfig) *pushbridge.Manager {
 		// 定位记录损坏只影响旧通知能否打开，NewRouteStore 因此从不让 agentd 起不来。
 		routes = pushbridge.NewRouteStore(cfg.RouteStorePath)
 	}
-	return pushbridge.NewManager(pushbridge.Options{
-		Enabled:        cfg.Enabled,
-		ProviderURL:    cfg.ProviderURL,
-		Environment:    cfg.Environment,
-		InstallationID: cfg.InstallationID,
-		DeviceStore:    store,
-		RouteStore:     routes,
+	manager := pushbridge.NewManager(pushbridge.Options{
+		Enabled:             cfg.Enabled,
+		ProviderURL:         cfg.ProviderURL,
+		Environment:         cfg.Environment,
+		InstallationID:      cfg.InstallationID,
+		DeviceStore:         store,
+		RouteStore:          routes,
+		ActivityTicketStore: pushbridge.NewActivityTicketStore(cfg.ActivityTicketStorePath),
 	})
+	// 重启前登记的活动已经没有会话状态可显示，按空闲规则排期结束。
+	manager.LiveActivities().ReconcileAll()
+	return manager
 }
 
 type pushManagerConfig struct {
@@ -527,4 +540,6 @@ type pushManagerConfig struct {
 	InstallationID  string
 	DeviceStorePath string
 	RouteStorePath  string
+	// ActivityTicketStorePath 为空时 Live Activity 票据只留在内存。
+	ActivityTicketStorePath string
 }

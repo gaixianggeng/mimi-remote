@@ -257,6 +257,8 @@ func NewRouterWithInstallationIDAndOptions(
 		InstallationID:  installationID,
 		DeviceStorePath: pushDeviceStorePath(options.ConfigPath),
 		RouteStorePath:  pushRouteStorePath(options.ConfigPath),
+		// 活动票据与设备注册表同目录（#830）。
+		ActivityTicketStorePath: pushLiveActivityStorePath(options.ConfigPath),
 	})
 	mux := http.NewServeMux()
 	r.registerLocalDiagnostics(mux, options.DiagnosticControlToken)
@@ -294,6 +296,7 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/capabilities/list", authed(http.HandlerFunc(r.capabilityListHandler)))
 	mux.Handle("/api/push/status", authed(http.HandlerFunc(r.pushStatusHandler)))
 	mux.Handle("/api/push/devices", authed(http.HandlerFunc(r.pushDeviceHandler)))
+	mux.Handle("/api/push/live-activities", authed(http.HandlerFunc(r.pushLiveActivityHandler)))
 	mux.Handle("/api/push/actions/route", authed(http.HandlerFunc(r.pushActionRouteHandler)))
 	mux.Handle("/api/push/actions/decide", authed(http.HandlerFunc(r.pushDecideHandler)))
 	mux.Handle("/api/actions/list", authed(http.HandlerFunc(r.commandActionListHandler)))

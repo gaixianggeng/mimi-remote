@@ -289,6 +289,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		if err := p.rememberPendingServerRequest(frame.ID, frame.Method, frame.Params); err != nil {
 			return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 		}
+		p.observeLiveActivityServerRequest(&frame)
 		return payload, true, nil
 	}
 	if strings.TrimSpace(frame.Method) != "" && frame.ID == nil {
@@ -299,6 +300,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 			return payload, false, nil
 		}
 		p.notifyMessage(&frame)
+		p.observeLiveActivityNotification(&frame)
 		p.trackUpstreamTurnLifecycle(&frame)
 		p.clearPendingServerRequestsForNotification(&frame)
 		if filtered, changed := p.sanitizeReplayedServerRequests(payload, &frame); changed {
