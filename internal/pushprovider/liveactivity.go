@@ -209,11 +209,13 @@ func BuildLiveActivityPayload(n LiveActivityNotification, timestamp time.Time) (
 		}
 		aps["attributes-type"] = n.AttributesType
 		aps["attributes"] = liveActivityAttributesPayload{HostTag: n.Attributes.HostTag}
-		// 用 APNs 通用 alert 字典的扁平本地化键：title / body 只能是字符串，
-		// 本地化文案走 title-loc-key 与 loc-key，与 BuildAPNsPayload 一致。
+		// Live Activity 的 alert 走 ActivityKit 的 AlertConfiguration 格式：title / body 各是
+		// {loc-key, loc-args} 对象，与普通通知的扁平 title-loc-key / loc-key 不同。2026-10-20
+		// 端到端实测：扁平键能送达，但 liveactivitiesd 报 "Received start without an alert
+		// configuration"，活动不会出现（#830）。
 		aps["alert"] = map[string]any{
-			"title-loc-key": liveActivityStartTitleKey,
-			"loc-key":       liveActivityStartBodyKey,
+			"title": liveActivityAlertText(liveActivityStartTitleKey),
+			"body":  liveActivityAlertText(liveActivityStartBodyKey),
 		}
 		// iOS 18+ 识别该键：远程启动的同时为新活动下发更新 Token。
 		aps["input-push-token"] = 1
@@ -223,4 +225,9 @@ func BuildLiveActivityPayload(n LiveActivityNotification, timestamp time.Time) (
 		}
 	}
 	return json.Marshal(map[string]any{"aps": aps})
+}
+
+// liveActivityAlertText 是 AlertConfiguration 里的一段本地化文案：App 包内的 key，不带参数。
+func liveActivityAlertText(key string) map[string]any {
+	return map[string]any{"loc-key": key, "loc-args": []string{}}
 }
