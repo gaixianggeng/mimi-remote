@@ -53,6 +53,7 @@ HarnessConnectLifecycleTests
 HostStatusStoreTests
 HostWarmSnapshotTests
 InAppNoticeRulesTests
+LiveActivityBackgroundRegistrationTests
 LiveActivityCompatibilityTests
 LiveActivityCoordinatorRevocationTests
 LiveActivityPreferencesTests
