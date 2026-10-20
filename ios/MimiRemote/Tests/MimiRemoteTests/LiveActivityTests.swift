@@ -661,6 +661,47 @@ final class LiveActivityRoutingTests: XCTestCase {
         )
     }
 
+    /// 点按时当前在另一台 Mac：立即放弃，之后切到那台 Mac 也不补跳；档案还没就绪时才等（#851 评审）。
+    func testPendingLinkDropsWhenActiveProfileIsAnotherMac() {
+        let created = Date(timeIntervalSince1970: 1_800_000_000)
+        let pending = LiveActivityPendingLink(
+            link: MimiTurnActivityLink(hostTag: "6AF3", sessionTag: "9E61BAD1E6C4DDAF"), createdAt: created
+        )
+        let profiles = [profile("mac-a", installationID: "install-test"), profile("mac-b", installationID: "install-b")]
+        let sessions = [makeSession(id: "thread-1", projectID: "repo", title: "Fix", status: "running", source: "codex")]
+
+        XCTAssertEqual(
+            pending.resolve(now: created, profiles: profiles, activeProfileID: "mac-b", sessions: sessions),
+            .drop,
+            "当前是另一台 Mac 时只打开 App，不能留着等"
+        )
+        XCTAssertEqual(
+            pending.resolve(now: created, profiles: profiles, activeProfileID: nil, sessions: []),
+            .wait,
+            "冷启动还没有当前档案时先等"
+        )
+        XCTAssertEqual(
+            pending.resolve(
+                now: created,
+                profiles: [profile("mac-a", installationID: nil)],
+                activeProfileID: "mac-a",
+                sessions: []
+            ),
+            .wait,
+            "还不知道安装身份时判断不了是不是那台 Mac，先等"
+        )
+        XCTAssertNil(
+            LiveActivityLinkRouting.activeHostMatches(
+                link: pending.link, profiles: profiles, activeProfileID: "mac-unknown"
+            ),
+            "当前档案不在列表里时判断不了"
+        )
+        XCTAssertEqual(
+            LiveActivityLinkRouting.activeHostMatches(link: pending.link, profiles: profiles, activeProfileID: "mac-a"),
+            true
+        )
+    }
+
     /// 启动时同一台 Mac 有多个活动：保留已登记更新票据的那个，都没登记时保留最新的。
     func testStartupDuplicatesKeepRegisteredOrNewest() {
         let activities = [
