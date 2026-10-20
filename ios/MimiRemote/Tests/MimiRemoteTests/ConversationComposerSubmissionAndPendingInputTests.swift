@@ -270,9 +270,11 @@ extension ConversationDataFlowTests {
     /// gh-408：iPad 上权限菜单与 Skill 放得下时不能套在 UIScrollView 里。
     /// UIScrollView 默认 delaysContentTouches，会把系统菜单的触摸按下推迟约 150ms，
     /// 让权限入口每次点击都比同排的模型、选项按钮慢一拍；只有溢出时才允许回退到横向滚动。
-    func testIPadContextControlsOnlyFallBackToScrollViewWhenOverflowing() throws {
+    /// #835：中、宽档的 Skill / 权限平铺在上下文行，放得下时不能套进 UIScrollView（gh-408 触摸延迟）；
+    /// 窄档整行不出现，权限收进「选项」，也就不会有菜单被横向滚动包住。
+    func testIPadContextControlsStayFlatWhenWideAndLeaveTheRowWhenNarrow() throws {
         guard UIDevice.current.userInterfaceIdiom != .phone else {
-            throw XCTSkip("iPhone 的权限入口在「+」面板里，不走平铺行")
+            throw XCTSkip("只在 iPad 目标上托管验证")
         }
         let defaultsSuite = "ComposerContextControlsTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
@@ -347,7 +349,8 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(wide.insideScrollView, 0, "放得下时权限菜单不能套在 UIScrollView 里")
 
         let narrow = menuButtonsInsideScrollViews(hostedAt: 200)
-        XCTAssertGreaterThan(narrow.insideScrollView, 0, "溢出时应回退到横向滚动，保证控件仍可触达")
+        XCTAssertGreaterThan(narrow.menuButtons, 0, "窄档工具栏仍有「选项」等系统菜单按钮")
+        XCTAssertEqual(narrow.insideScrollView, 0, "窄档没有上下文行，权限进「选项」，不应再出现被横向滚动包住的菜单")
     }
 
     func testIPadComposerDefaultsExpandedAndExplicitCollapseUsesSingleRow() throws {
