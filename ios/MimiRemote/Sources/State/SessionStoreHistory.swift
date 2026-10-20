@@ -4007,6 +4007,7 @@ extension SessionStore {
         if runtimeActivities != runtimeActivityBySessionID {
             runtimeActivityBySessionID = runtimeActivities
         }
+        pruneContextWindowState(validSessionIDs: validSessionIDs)
     }
 
     static func sortedSessions(_ items: [AgentSession]) -> [AgentSession] {

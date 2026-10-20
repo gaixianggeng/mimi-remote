@@ -216,6 +216,8 @@ final class SessionStore: ObservableObject {
     @Published var foregroundActivityBySessionID: [SessionID: SessionForegroundActivity] = [:]
     @Published var runtimeActivityBySessionID: [SessionID: RuntimeActivitySnapshot] = [:]
     @Published var turnOutputTokensBySessionID: [SessionID: TurnOutputTokenCounter] = [:]
+    @Published var contextWindowUsageBySessionID: [SessionID: ContextWindowUsage] = [:]
+    @Published var dismissedContextWindowNoticeSessionIDs: Set<SessionID> = []
     @Published var sessionControlStateByID: [SessionID: SessionControlState] = [:]
     /// 仅记录 App Server 明确返回的单 writer 冲突。不能从 thread/list 的 idle/notLoaded
     /// 推断写权限，否则只读打开历史也会被误判为可写或被另一端占用。

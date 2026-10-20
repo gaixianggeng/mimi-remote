@@ -39,6 +39,7 @@ ConnectionProfileRenameTests
 ConnectionProfileRouteTests
 ConnectionSettingsDraftTests
 ConnectionStatusReconciliationTests
+ContextWindowUsageTests
 ConversationMessageDeliveryUncertaintyTests
 ConversationTimelineSnapshotBoundaryTests
 DataURLImageDecoderTests
@@ -74,6 +75,7 @@ TailscaleStableHostnameTests
 ThemeStoreTests
 UserFacingErrorTests
 WorkbenchCompactTabStackTests
+WorkbenchKeyboardNavigationTests
 WorkbenchTopScrollEdgeTests
 WorkspaceAppearanceStoreTests
 WorkspaceCrossRuntimeMembershipTests
