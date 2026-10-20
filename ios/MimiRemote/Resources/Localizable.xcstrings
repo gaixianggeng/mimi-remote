@@ -5804,6 +5804,23 @@
         }
       }
     },
+    "ui.wait_for_image_processing_to_complete": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wait for the image to finish processing before sending."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "图片还在处理，请稍后再发送。"
+          }
+        }
+      }
+    },
     "ui.annotate_image": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

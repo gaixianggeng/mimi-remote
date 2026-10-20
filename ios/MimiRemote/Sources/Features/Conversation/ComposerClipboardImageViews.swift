@@ -11,6 +11,24 @@ import UniformTypeIdentifiers
 struct ComposerClipboardImageState: Equatable {
     var availableChangeCount: Int?
     var dismissedChangeCount: Int?
+    /// 粘贴图片编码、标注替换还没写回草稿时按草稿计数；不为零就禁止发送，
+    /// 避免先发出不带图（或带原图）的消息，再把结果串到下一条（#845 评审）。
+    var preparingCountByScope: [ComposerDraftScopeKey: Int] = [:]
+    /// 打开预览时附件在附件条里的位置；同一张图加了两次时 id 相同，只能靠位置区分。
+    var previewingAttachmentIndex: Int?
+
+    func isPreparing(_ scope: ComposerDraftScopeKey) -> Bool {
+        (preparingCountByScope[scope] ?? 0) > 0
+    }
+
+    mutating func beginPreparing(_ scope: ComposerDraftScopeKey) {
+        preparingCountByScope[scope, default: 0] += 1
+    }
+
+    mutating func endPreparing(_ scope: ComposerDraftScopeKey) {
+        let next = (preparingCountByScope[scope] ?? 0) - 1
+        preparingCountByScope[scope] = next > 0 ? next : nil
+    }
 
     var isVisible: Bool { availableChangeCount != nil }
 
@@ -131,7 +149,9 @@ extension ComposerView {
         }
         let selected = Array(images.prefix(available))
         let skipped = images.count - selected.count
+        clipboardImageState.beginPreparing(targetScope)
         Task {
+            defer { clipboardImageState.endPreparing(targetScope) }
             var prepared: [CodexAppServerUserInput] = []
             var failedCount = 0
             var firstError: Error?
@@ -162,26 +182,53 @@ extension ComposerView {
               composerState.attachments.contains(where: { $0.id == item.id }) else {
             return nil
         }
+        let index = clipboardImageState.previewingAttachmentIndex
         return { annotated in
-            replaceAnnotatedAttachment(item, with: annotated)
+            replaceAnnotatedAttachment(item, at: index, with: annotated)
         }
     }
 
+    /// 从附件条打开预览：记住位置，标注完成后替换的是点开的那一份。
+    func previewAttachment(_ item: CodexAppServerUserInput, at index: Int) {
+        clipboardImageState.previewingAttachmentIndex = index
+        previewingAttachment = item
+    }
+
+    /// 优先用打开预览时的位置；位置已失效（附件被删或重排）时退回第一份同内容附件。
+    static func annotationReplacementIndex(
+        in attachments: [CodexAppServerUserInput],
+        original: CodexAppServerUserInput,
+        preferredIndex: Int?
+    ) -> Int? {
+        if let preferredIndex,
+           attachments.indices.contains(preferredIndex),
+           attachments[preferredIndex].id == original.id {
+            return preferredIndex
+        }
+        return attachments.firstIndex { $0.id == original.id }
+    }
+
     /// 标注完成后用新图替换原附件，位置不变；原附件已被移除时不再追加，避免标注结果串到别的草稿。
-    func replaceAnnotatedAttachment(_ original: CodexAppServerUserInput, with annotated: UIImage) {
+    func replaceAnnotatedAttachment(_ original: CodexAppServerUserInput, at preferredIndex: Int?, with annotated: UIImage) {
         let targetScope = activeComposerDraftScope
         guard let data = annotated.pngData() else {
             attachmentErrorMessage = L10n.text("ui.image_annotation_failed")
             return
         }
+        clipboardImageState.beginPreparing(targetScope)
         Task {
+            defer { clipboardImageState.endPreparing(targetScope) }
             do {
                 let prepared = try await Task.detached(priority: .userInitiated) {
                     try ImageAttachmentEncoder.prepare(data)
                 }.value
                 let replacement = CodexAppServerUserInput.image(url: prepared.dataURL, detail: .auto)
                 guard targetScope == activeComposerDraftScope,
-                      let index = composerState.attachments.firstIndex(where: { $0.id == original.id }) else {
+                      let index = Self.annotationReplacementIndex(
+                        in: composerState.attachments,
+                        original: original,
+                        preferredIndex: preferredIndex
+                      ) else {
                     return
                 }
                 composerState.attachments[index] = replacement

@@ -27,6 +27,31 @@ final class ComposerClipboardImageTests: XCTestCase {
         XCTAssertFalse(state.isVisible, "不收附件的通道（DeepSeek）不出现")
     }
 
+    func testPreparingCountIsScopedAndBalanced() {
+        var state = ComposerClipboardImageState()
+        let scopeA = ComposerDraftScopeKey.none
+        state.beginPreparing(scopeA)
+        state.beginPreparing(scopeA)
+        XCTAssertTrue(state.isPreparing(scopeA))
+        state.endPreparing(scopeA)
+        XCTAssertTrue(state.isPreparing(scopeA), "两项处理只结束了一项，仍要挡住发送")
+        state.endPreparing(scopeA)
+        XCTAssertFalse(state.isPreparing(scopeA))
+        state.endPreparing(scopeA)
+        XCTAssertFalse(state.isPreparing(scopeA), "多结束一次不会变成负数")
+        XCTAssertTrue(state.preparingCountByScope.isEmpty)
+    }
+
+    func testAnnotationReplacesTheOpenedCopyWhenTheSameImageIsAttachedTwice() {
+        let image = CodexAppServerUserInput.image(url: "data:image/png;base64,AAAA", detail: .auto)
+        let other = CodexAppServerUserInput.image(url: "data:image/png;base64,BBBB", detail: .auto)
+        let attachments = [image, other, image]
+        XCTAssertEqual(ComposerView.annotationReplacementIndex(in: attachments, original: image, preferredIndex: 2), 2)
+        XCTAssertEqual(ComposerView.annotationReplacementIndex(in: attachments, original: image, preferredIndex: 1), 0, "位置已对不上时退回第一份同内容附件")
+        XCTAssertEqual(ComposerView.annotationReplacementIndex(in: attachments, original: image, preferredIndex: 9), 0)
+        XCTAssertNil(ComposerView.annotationReplacementIndex(in: [other], original: image, preferredIndex: 0), "原附件已删除时不替换")
+    }
+
     // MARK: - 标注与裁剪
 
     func testFittedSizeKeepsAspectRatioInsidePadding() {

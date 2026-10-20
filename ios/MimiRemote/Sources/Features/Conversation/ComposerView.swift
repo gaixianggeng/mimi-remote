@@ -433,6 +433,10 @@ struct ComposerView: View {
             attachmentErrorMessage = L10n.text("ui.wait_for_file_upload_to_complete")
             return false
         }
+        guard !clipboardImageState.isPreparing(activeComposerDraftScope) else {
+            attachmentErrorMessage = L10n.text("ui.wait_for_image_processing_to_complete")
+            return false
+        }
         let pendingPayload = CodexAppServerTurnPayload(
             input: CodexAppServerTurnPayload.defaultInput(for: composerState.draft) + composerState.attachments
         )
@@ -768,6 +772,7 @@ struct ComposerView: View {
             && hasComposerContentForSubmit
             && !sessionStore.isLoading
             && !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope)
+            && !clipboardImageState.isPreparing(activeComposerDraftScope)
     }
 
     var canSubmitGoalDraft: Bool {
@@ -776,6 +781,7 @@ struct ComposerView: View {
             && !sessionStore.isLoading
             && !sessionStore.isUpdatingThreadGoal
             && !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope)
+            && !clipboardImageState.isPreparing(activeComposerDraftScope)
     }
 
     var hasNonWhitespaceComposerTextForSubmit: Bool {
