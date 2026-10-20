@@ -504,13 +504,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Replied. Tap to view."
+            "value": "Sent you a new reply"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已回复，点按查看。"
+            "value": "发来一条新回复"
           }
         }
       }
@@ -521,13 +521,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The task could not finish. Tap to see why."
+            "value": "Couldn't finish the task"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "任务未能完成，点按查看原因。"
+            "value": "任务没能完成"
           }
         }
       }
@@ -538,13 +538,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The task has stopped. Tap to view."
+            "value": "The task stopped"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "任务已停止，点按查看。"
+            "value": "任务已停止"
           }
         }
       }
@@ -639,13 +639,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The task has stopped. Tap to view."
+            "value": "The task stopped"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "任务已停止，点按查看。"
+            "value": "任务已停止"
           }
         }
       }
@@ -655,13 +655,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The task could not finish. Tap to see why."
+            "value": "Couldn't finish the task"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "任务未能完成，点按查看原因。"
+            "value": "任务没能完成"
           }
         }
       }
@@ -671,13 +671,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Your AI reply is ready. Tap to view."
+            "value": "Sent you a new reply"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "AI 已回复，点按查看。"
+            "value": "发来一条新回复"
           }
         }
       }
@@ -687,13 +687,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Claude message"
+            "value": "Claude Code"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Claude 消息"
+            "value": "Claude Code"
           }
         }
       }
@@ -703,13 +703,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Codex message"
+            "value": "Codex"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Codex 消息"
+            "value": "Codex"
           }
         }
       }
@@ -719,13 +719,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "DeepSeek message"
+            "value": "DeepSeek"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "DeepSeek 消息"
+            "value": "DeepSeek"
           }
         }
       }
@@ -44536,13 +44536,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mimi task"
+            "value": "Mimi Remote"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mimi 任务"
+            "value": "Mimi Remote"
           }
         }
       }

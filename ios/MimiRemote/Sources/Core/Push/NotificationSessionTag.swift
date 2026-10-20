@@ -3,7 +3,7 @@ import Foundation
 
 /// 推送里出现的会话与档案标识都是不可逆短摘要，算法与 `internal/pushbridge/tags.go`
 /// 保持一致。App 与通知扩展要靠同一套算法把本地会话映射回这些标签，才能在
-/// 设备上把「Codex 消息」改写成会话标题；Provider 与 APNs 全程只见摘要。
+/// 设备上把「Codex」改写成会话标题；Provider 与 APNs 全程只见摘要。
 ///
 /// 这个文件同时编译进通知扩展，只允许依赖 Foundation 与 CryptoKit。
 enum NotificationSessionTag {

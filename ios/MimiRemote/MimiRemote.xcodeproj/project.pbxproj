@@ -403,6 +403,7 @@
 		A88F2FBBEE8A6F5F5C0283F5 /* UnifiedWorkbenchShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 089CDD9B409CEDE6D600DA58 /* UnifiedWorkbenchShell.swift */; };
 		A925DD0C63B39984BA807415 /* ManagedConnectionDeviceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F496EBE1E6484F4DF9EC8186 /* ManagedConnectionDeviceStore.swift */; };
 		A9672A5CCD14CB34B13ED66A /* CodexAppServerThreadOwnership.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD3F9E8A8ED2FD8317FB92F2 /* CodexAppServerThreadOwnership.swift */; };
+		A96EB274FFFBD77C1FC2A3D8 /* WidgetAssets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 20A97388C92486ED80039B2C /* WidgetAssets.xcassets */; };
 		AAD4650F3B46B0D9F6A31DAA /* LockScreenApprovalDelivery.swift in Sources */ = {isa = PBXBuildFile; fileRef = E52035D92A07E6E077D50881 /* LockScreenApprovalDelivery.swift */; };
 		AADCBC7617C842DC51799171 /* MimiInteractionFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C746BA73EAA9E0C19B0C0E4 /* MimiInteractionFeedback.swift */; };
 		AB0C263A9AEF9A35A2F23F7D /* NotificationTitleCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30AE77ACB3451FADCA7D9C99 /* NotificationTitleCache.swift */; };
@@ -747,6 +748,7 @@
 		1FDECF2F05F082FDD81B3AB4 /* VoiceInputPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputPreferences.swift; sourceTree = "<group>"; };
 		207244025842AC17EBFA9009 /* ComposerState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerState.swift; sourceTree = "<group>"; };
 		20A922D9A3D4C72236D9CFBA /* ConversationTimelineReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationTimelineReducer.swift; sourceTree = "<group>"; };
+		20A97388C92486ED80039B2C /* WidgetAssets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = WidgetAssets.xcassets; sourceTree = "<group>"; };
 		20EAB699C1F9EDC63F7761E6 /* DeepSeekRuntimePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepSeekRuntimePresentationTests.swift; sourceTree = "<group>"; };
 		20F3B5B8EF93BCB01541B9BF /* HarnessPresentationProjector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessPresentationProjector.swift; sourceTree = "<group>"; };
 		217673AA52B0B8FABD51F67F /* MarkdownBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlock.swift; sourceTree = "<group>"; };
@@ -1891,6 +1893,7 @@
 			children = (
 				F9425462CC24F7B671411E87 /* MimiCarStatusWidget.swift */,
 				1147A986F5AAAFF3712C9C7F /* MimiTurnLiveActivityWidget.swift */,
+				20A97388C92486ED80039B2C /* WidgetAssets.xcassets */,
 			);
 			path = WidgetExtension;
 			sourceTree = "<group>";
@@ -2512,6 +2515,7 @@
 			files = (
 				989F7144D36711010C69FAD9 /* Localizable.xcstrings in Resources */,
 				0A7C513DE58C396C2D9C695C /* PrivacyInfo.xcprivacy in Resources */,
+				A96EB274FFFBD77C1FC2A3D8 /* WidgetAssets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
