@@ -139,9 +139,32 @@ final class SessionActivityStateTests: XCTestCase {
         XCTAssertEqual(WorkspaceSessionGroup.running.title, L10n.text("ui.in_progress"))
         XCTAssertEqual(WorkspaceSessionGroup.recent.title, L10n.text("ui.recently"))
         var failed = makeSession(id: "f", projectID: "p", title: "f", status: SessionStatus.failed.rawValue, source: "codex")
-        XCTAssertEqual(WorkspaceSessionGroup.of(failed), .needsAttention)
+        let soonAfter = Date(timeIntervalSince1970: 2 + 60)
+        XCTAssertEqual(WorkspaceSessionGroup.of(failed, now: soonAfter), .needsAttention)
         failed.status = SessionStatus.waitingForApproval.rawValue
-        XCTAssertEqual(WorkspaceSessionGroup.of(failed), .needsAttention)
+        XCTAssertEqual(WorkspaceSessionGroup.of(failed), .needsAttention, "等待审批不受时间窗口限制")
+    }
+
+    /// #546：失败计入「待你处理」只保留 12 小时，侧栏与工作区页同一判定、同一成员。
+    func testFailedSessionsNeedAttentionForTwelveHoursInBothSidebarAndWorkspace() {
+        let failed = makeSession(id: "f", projectID: "p", title: "f", status: SessionStatus.failed.rawValue, source: "codex")
+        let failedAt = SessionIndexStore.orderingDate(for: failed)
+        let fresh = failedAt.addingTimeInterval(SessionAttentionPolicy.failedAttentionWindow - 1)
+        let stale = failedAt.addingTimeInterval(SessionAttentionPolicy.failedAttentionWindow + 1)
+
+        XCTAssertEqual(WorkspaceSessionGroup.of(failed, now: fresh), .needsAttention)
+        XCTAssertEqual(SessionListPresentation.sidebarSections(sessions: [failed], now: fresh).map(\.kind), [.needYou])
+        XCTAssertEqual(WorkspaceSessionGroup.of(failed, now: stale), .recent)
+        XCTAssertEqual(SessionListPresentation.sidebarSections(sessions: [failed], now: stale).map(\.kind), [.recent])
+    }
+
+    /// #546：侧栏「待你处理」行的状态文案与会话页同一份 displayStatus。
+    func testNeedsYouStatusTextComesFromSharedDisplayStatus() {
+        var waiting = makeSession(id: "w", projectID: "p", title: "w", status: SessionStatus.waitingForApproval.rawValue, source: "codex")
+        XCTAssertNil(waiting.pendingApproval, "审批载荷还没到")
+        XCTAssertEqual(waiting.displayStatus(foregroundActivity: nil).title, L10n.text("ui.pending_approval"))
+        waiting.status = SessionStatus.failed.rawValue
+        XCTAssertEqual(waiting.displayStatus(foregroundActivity: nil).title, L10n.text("ui.failed_status"))
     }
 
     func testClaudeOwnerDecodesWithoutTheStatusTimestamp() throws {
