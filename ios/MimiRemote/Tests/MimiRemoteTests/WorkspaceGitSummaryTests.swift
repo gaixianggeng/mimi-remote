@@ -186,14 +186,17 @@ final class WorkspaceGitSummaryTests: XCTestCase {
             sessionID: session.id,
             hostScope: appStore.activeHostScope
         )
+        let supersededRefresh = try XCTUnwrap(store.gitRefreshTasksByPath[project.path])
         store.scheduleGitRefreshAfterTurnCompletion(
             sessionID: session.id,
             hostScope: appStore.activeHostScope
         )
+        let latestRefresh = try XCTUnwrap(store.gitRefreshTasksByPath[project.path])
 
-        for _ in 0..<50 where client.requestedGitStatusPaths.isEmpty {
-            try await Task.sleep(nanoseconds: 2_000_000)
-        }
+        // mock 在主 actor 外先记录请求、再返回结果，只等请求出现会读到写回前的旧状态。
+        // 等两个刷新任务都结束：被取消的那次不会再发请求，最新那次已把结果写回。
+        await supersededRefresh.value
+        await latestRefresh.value
 
         XCTAssertEqual(client.requestedGitStatusPaths, [project.path])
         XCTAssertEqual(store.gitStatusByPath[project.path]?.head, "new-head")
