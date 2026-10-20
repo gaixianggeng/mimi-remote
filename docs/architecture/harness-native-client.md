@@ -221,6 +221,23 @@ opt-in `assistantStream:true` 时 snapshot 必须带 `assistantStream` 基线，
 - 夹具：`stream/assistant-stream-cancel.json`（三种回放：0.1.5 attempt、0.2.x 中断消息、0.2.x 无可见输出）。
   原始帧未保留，回放按实测事实与 0.2.1-alpha.1 安装包源码重建，级别记为 `upstream-source`。
 
+`turn/end.reason.kind` 的轮次收口（#861，实现在 `HarnessTurnEndReason`）：
+
+| reason.kind | 来源 | 收口 | 失败原因 |
+| --- | --- | --- | --- |
+| `completed` 或缺失 | 实测 | 已完成 | — |
+| `aborted` | 实测（用户取消） | 已中断 | — |
+| `error` | 实测（如路由缺少凭据 `MISSING_CREDENTIAL`） | 失败 | `error.message` 脱敏截断后展示，`error.code` 原样保留；没有正文时退回 code |
+| `max-tokens` | 0.2.1-alpha.1 源码（单次输出触到上限，回复被截断） | 失败 | 本地化说明，code `MAX_TOKENS` |
+| `blocked` | 源码（轮次前置检查拒绝继续） | 失败 | 本地化说明，code `BLOCKED` |
+| `interrupted` | 源码（旧格式迁移给未收尾轮次补写） | 已中断 | — |
+| `forked` | 源码（分叉种子给继承的未完成轮次补写） | 已中断 | — |
+| 其他 | 未知 | 失败 | 本地化说明并带原始 kind |
+
+失败轮次在实时、冷开恢复与历史页三条路径结论一致：实时把会话设为失败并显示错误卡，前台提醒为「会话失败」；
+冷开只恢复失败状态、不再提醒；历史页从 `turn/end` 恢复同一身份的错误卡（`runtime-error:h-turn-<n>`）。
+agentd 推送侧（`harness_turn_push.go`）对非 completed、非 aborted 的原因同样推失败提醒。
+
 `revision` 必须连续（`expected = previous + 1`，`start` 为 1），跳号即载体失败，必须重开 follow。
 `index` 稠密递增（从 0 开始），`end` 也带 `index`，接在最后一个 chunk 之后。
 

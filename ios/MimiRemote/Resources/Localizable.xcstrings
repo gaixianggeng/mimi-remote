@@ -45833,6 +45833,27 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "回复已中断，以上内容不完整。" } }
       }
     },
+    "harness.turn_failed_max_tokens": {
+      "comment": "Failure reason shown when a DeepSeek turn stopped because the reply hit the per-request output token limit; the reply above is cut off.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The reply hit the output length limit and was cut off." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "回复超出单次输出长度上限，已被截断。" } }
+      }
+    },
+    "harness.turn_failed_blocked": {
+      "comment": "Failure reason shown when DeepSeek's pre-step check refused to continue the turn.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "DeepSeek blocked this turn before it could continue." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这一轮被 DeepSeek 拦截，没有继续执行。" } }
+      }
+    },
+    "harness.turn_failed_unknown": {
+      "comment": "Failure reason for a DeepSeek turn that ended with an unrecognized reason; %@ is the raw reason identifier.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This turn ended unexpectedly (%@)." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这一轮异常结束（%@）。" } }
+      }
+    },
     "harness.previous_submission_unconfirmed": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "The previous submission is still unconfirmed. Reconcile it or wait for redelivery." } },
