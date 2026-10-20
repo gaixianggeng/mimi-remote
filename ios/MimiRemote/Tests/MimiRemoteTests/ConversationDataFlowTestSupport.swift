@@ -532,7 +532,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let gitPullRequestStatusResults: [String: Result<GitPullRequestStatusResponse, Error>]
     let messagesError: Error?
     var modelOptionsResult: [CodexAppServerModelOption]
-    let modelOptionsError: Error?
+    var modelOptionsError: Error?
     var runtimeChannelAvailability: [String: Bool]
     /// 各 Runtime 通道是否声明 thread/goal/*；默认与真实 agentd 一致，只有 Codex 声明（#791）。
     var runtimeThreadGoalSupport: [String: Bool] = ["codex": true]
