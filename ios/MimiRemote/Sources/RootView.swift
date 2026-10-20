@@ -28,6 +28,7 @@ struct RootView: View {
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @EnvironmentObject private var lockScreenApprovalStore: LockScreenApprovalStore
+    @EnvironmentObject private var liveActivityCoordinator: LiveActivityCoordinator
     @EnvironmentObject private var hostStatusStore: HostStatusStore
     @EnvironmentObject private var tailcatExperimentController: TailcatExperimentController
     @EnvironmentObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
@@ -407,6 +408,8 @@ struct RootView: View {
                 client: client,
                 profileID: profileID
             )
+			// 实时活动票据挂在消息提醒绑定上，必须在它同步完成之后再补登记（#830）。
+			liveActivityCoordinator.synchronize(client: client, profileID: profileID)
 			let installationID = appStore.connectionProfiles.first { $0.id == profileID }?.installationID
             await lockScreenApprovalStore.reconcileDeliveredNotifications(
                 client: client,

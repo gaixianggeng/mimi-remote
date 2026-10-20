@@ -60,6 +60,9 @@
 			</dict>
 		</dict>
 	</dict>
+	<!-- 锁屏与灵动岛的回合进度（#830）。活动内容只有状态枚举、计数和匿名短标签。 -->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Allow Mimi Remote to find and connect to a development environment you configure.</string>
 	<key>NSCameraUsageDescription</key>

@@ -663,6 +663,61 @@ struct AgentAPIClient {
         )
     }
 
+    /// 登记 Live Activity 票据（#830）。agentd 只接受已登记消息提醒的设备，否则回 409。
+    func registerLiveActivity(
+        deviceID: String,
+        kind: LiveActivityTicketKind,
+        ticket: String,
+        expiresAt: Date,
+        activityID: String? = nil
+    ) async throws -> LiveActivityRegistrationResponse {
+        struct Body: Encodable {
+            let deviceID: String
+            let kind: String
+            let ticket: String
+            let expiresAt: String
+            let activityID: String?
+
+            enum CodingKeys: String, CodingKey {
+                case deviceID = "device_id"
+                case kind
+                case ticket
+                case expiresAt = "expires_at"
+                case activityID = "activity_id"
+            }
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let body = try JSONEncoder().encode(Body(
+            deviceID: deviceID,
+            kind: kind.rawValue,
+            ticket: ticket,
+            expiresAt: formatter.string(from: expiresAt),
+            activityID: activityID
+        ))
+        return try await request(path: "/api/push/live-activities", method: "POST", body: body)
+    }
+
+    /// `kind` 为 nil 时注销两类票据；`activityID` 只用于更新票据，与登记时不一致 agentd 就不删。
+    func unregisterLiveActivity(
+        deviceID: String,
+        kind: LiveActivityTicketKind? = nil,
+        activityID: String? = nil
+    ) async throws {
+        struct Response: Decodable { let removed: Bool? }
+        var components = URLComponents()
+        components.queryItems = [
+            URLQueryItem(name: "device_id", value: deviceID),
+            URLQueryItem(name: "kind", value: kind?.rawValue ?? "all"),
+        ] + (activityID.map { [URLQueryItem(name: "activity_id", value: $0)] } ?? [])
+        let query = components.percentEncodedQuery ?? ""
+        let _: Response = try await request(
+            path: "/api/push/live-activities?\(query)",
+            method: "DELETE",
+            body: Optional<Data>.none
+        )
+    }
+
 	func submitPushDecision(
         actionID: String,
         deviceID: String,
