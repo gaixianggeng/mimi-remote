@@ -74,6 +74,7 @@ struct ComposerView: View {
     @State var editingQueuedTurn: QueuedTurnEditorDraft?
     @State var showsQueuedTurnManager = false
     @State var isSelectingVoiceDraftText = false
+    @State var clipboardImageState = ComposerClipboardImageState()
 
     var availableWidth: CGFloat?
 
@@ -111,6 +112,7 @@ struct ComposerView: View {
             voiceErrorMessage
             voiceNoticeMessage
             attachmentErrorNotice
+            clipboardImageNotice
             FileUploadJobsStrip(store: sessionStore.fileUploadStore, scope: activeComposerDraftScope)
                 .environmentObject(themeStore)
             attachmentStrip
@@ -139,7 +141,7 @@ struct ComposerView: View {
             }
         }
         .sheet(item: $previewingAttachment) { item in
-            AttachmentPreviewSheet(item: item)
+            AttachmentPreviewSheet(item: item, onAnnotate: annotationHandler(for: item))
                 .environmentObject(themeStore)
         }
         .sheet(item: $goalEditor) { draft in
@@ -239,6 +241,8 @@ struct ComposerView: View {
         }
 
         let scopeObservedContent = presentedContent
+        .onReceive(Self.clipboardRefreshPublisher) { _ in refreshClipboardImageAvailability() }
+        .onChange(of: activeComposerDraftScope, initial: true) { _, _ in refreshClipboardImageAvailability() }
         .onChange(of: developerModeEnabled) { _, enabled in
             guard !enabled else {
                 return
@@ -1222,7 +1226,8 @@ struct ComposerView: View {
                 },
                 onSkillAutocompleteDismiss: {
                     activeSkillQuery = nil
-                }
+                },
+                onPasteImages: composerPasteImagesHandler
             )
             .frame(height: composerTextHeight)
 

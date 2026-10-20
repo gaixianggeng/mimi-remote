@@ -166,6 +166,8 @@ struct ComposerTextView: UIViewRepresentable {
     let onSkillAutocompleteMove: (Int) -> Void
     let onSkillAutocompleteCommit: () -> Void
     let onSkillAutocompleteDismiss: () -> Void
+    /// 剪贴板里只有图片时，⌘V 或长按「粘贴」把图片交给输入框作为附件（#829）；nil 表示当前通道不收附件。
+    var onPasteImages: (([Data]) -> Void)? = nil
 
     func makeUIView(context: Context) -> CommandSubmitTextView {
         let textView = CommandSubmitTextView()
@@ -185,6 +187,7 @@ struct ComposerTextView: UIViewRepresentable {
         textView.onSkillAutocompleteMove = onSkillAutocompleteMove
         textView.onSkillAutocompleteCommit = onSkillAutocompleteCommit
         textView.onSkillAutocompleteDismiss = onSkillAutocompleteDismiss
+        textView.onPasteImages = onPasteImages
         textView.backgroundColor = .clear
         textView.font = font
         textView.textColor = textColor
@@ -223,6 +226,7 @@ struct ComposerTextView: UIViewRepresentable {
             }
             submitBridge.attach(uiView)
             uiView.onCommandSubmit = onSubmit
+            uiView.onPasteImages = onPasteImages
             uiView.onContentLayoutChanged = { textView in
                 coordinator.reportContentHeight(for: textView)
             }
@@ -530,6 +534,7 @@ final class CommandSubmitTextView: UITextView {
     var onSkillAutocompleteMove: ((Int) -> Void)?
     var onSkillAutocompleteCommit: (() -> Void)?
     var onSkillAutocompleteDismiss: (() -> Void)?
+    var onPasteImages: (([Data]) -> Void)?
     var onRetireFromComposer: (() -> Void)?
     var isSkillAutocompleteActive = false
     private(set) var isRetiredFromComposer = false
@@ -571,6 +576,8 @@ final class CommandSubmitTextView: UITextView {
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         switch action {
+        case #selector(paste(_:)) where onPasteImages != nil && UIPasteboard.general.hasImages:
+            return true
         case #selector(selectPreviousSkill),
              #selector(selectNextSkill),
              #selector(commitSkillAutocomplete),
@@ -579,6 +586,22 @@ final class CommandSubmitTextView: UITextView {
         default:
             return super.canPerformAction(action, withSender: sender)
         }
+    }
+
+    /// 只有图片、没有文字时才当作图片附件；同时带文字（例如从网页复制）仍按文字粘贴。
+    /// 这是用户主动的粘贴动作，读取剪贴板不会触发系统授权提示。
+    override func paste(_ sender: Any?) {
+        let pasteboard = UIPasteboard.general
+        guard let onPasteImages, pasteboard.hasImages, !pasteboard.hasStrings else {
+            super.paste(sender)
+            return
+        }
+        let images = (pasteboard.images ?? []).compactMap { $0.pngData() }
+        guard !images.isEmpty else {
+            super.paste(sender)
+            return
+        }
+        onPasteImages(images)
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
