@@ -120,7 +120,8 @@ extension ComposerView {
                 ) ? "bolt.fill" : nil,
                 titleMaxWidth: ConversationLayout.composerModelTitleMaxWidth(
                     tier: composerTier,
-                    availableWidth: availableWidth
+                    availableWidth: availableWidth,
+                    showsInlineDelivery: compactToolbarShowsInlineDeliveryControl
                 ),
                 usesCondensedTitle: usesCompactTitle,
                 accessibilityLabel: L10n.text("ui.switch_model_and_inference_strength")

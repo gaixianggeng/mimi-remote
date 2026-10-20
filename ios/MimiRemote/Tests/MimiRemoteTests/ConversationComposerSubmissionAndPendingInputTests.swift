@@ -136,6 +136,19 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(ConversationLayout.composerModelTitleMaxWidth(tier: .narrow, availableWidth: 350), 64)
         XCTAssertEqual(ConversationLayout.composerModelTitleMaxWidth(tier: .narrow, availableWidth: 386), 88)
         XCTAssertEqual(ConversationLayout.composerModelTitleMaxWidth(tier: .medium, availableWidth: 600), 160)
+        // 中档靠近 480 时按剩余宽度收窄，运行中平铺投递方式再让出 50pt，工具栏不会撑出卡片（#841 评审）。
+        let fixed = ConversationLayout.mediumComposerFixedToolbarWidth
+        XCTAssertEqual(ConversationLayout.composerModelTitleMaxWidth(tier: .medium, availableWidth: 480), min(160, 480 - fixed))
+        XCTAssertEqual(
+            ConversationLayout.composerModelTitleMaxWidth(tier: .medium, availableWidth: 480, showsInlineDelivery: true),
+            480 - fixed - ConversationLayout.mediumComposerInlineDeliveryWidth
+        )
+        XCTAssertLessThanOrEqual(
+            fixed + ConversationLayout.mediumComposerInlineDeliveryWidth
+                + ConversationLayout.composerModelTitleMaxWidth(tier: .medium, availableWidth: 480, showsInlineDelivery: true),
+            480,
+            "中档最窄处带投递方式时，固定控件加模型名上限不超过输入卡宽度"
+        )
         XCTAssertEqual(ConversationLayout.composerModelTitleMaxWidth(tier: .wide, availableWidth: 940), 220)
         // 运行中的投递方式：窄档收进「选项」，中、宽档平铺；不能选择时任何档位都不出现。
         XCTAssertFalse(ConversationLayout.composerShowsInlineDeliveryControl(tier: .narrow, canChooseDelivery: true))

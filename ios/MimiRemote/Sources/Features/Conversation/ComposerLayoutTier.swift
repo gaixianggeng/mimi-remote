@@ -87,13 +87,25 @@ extension ConversationLayout {
         return (availableWidth ?? 0) >= narrowComposerContextRingMinimumWidth
     }
 
-    /// 模型名的最大宽度：窄档按宽度分级，中档 160，宽档 220。
-    static func composerModelTitleMaxWidth(tier: ComposerLayoutTier, availableWidth: CGFloat?) -> CGFloat {
+    /// 中档工具栏除模型名以外的固定宽度（#841 评审）：卡片左右内边距 12×2、「+」44、
+    /// 模型按钮图标与内边距 47、加号与模型间距 6、首尾分组间距 10×3、上下文圆环 44 + 2、
+    /// 选项 44 + 6 + 语音 44、发送 44。运行中平铺投递方式再加 44 + 6。
+    static let mediumComposerFixedToolbarWidth: CGFloat = 24 + 44 + 47 + 6 + 30 + 46 + 94 + 44
+    static let mediumComposerInlineDeliveryWidth: CGFloat = 50
+
+    /// 模型名的最大宽度：窄档按宽度分级；中档按剩余宽度算，上限 160、下限 48；宽档 220。
+    static func composerModelTitleMaxWidth(
+        tier: ComposerLayoutTier,
+        availableWidth: CGFloat?,
+        showsInlineDelivery: Bool = false
+    ) -> CGFloat {
         switch tier {
         case .narrow:
             return compactComposerModelTitleMaxWidth(availableWidth: availableWidth)
         case .medium:
-            return 160
+            guard let availableWidth else { return 120 }
+            let fixed = mediumComposerFixedToolbarWidth + (showsInlineDelivery ? mediumComposerInlineDeliveryWidth : 0)
+            return min(160, max(48, (availableWidth - fixed).rounded(.down)))
         case .wide:
             return 220
         }
