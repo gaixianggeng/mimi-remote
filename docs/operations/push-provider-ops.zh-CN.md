@@ -208,6 +208,20 @@ Token 永久失效回 `410 reason:unregistered` 并自动撤销 Ticket；传输�
 新增指标计数：`ticket_issued_activity_update`、`ticket_issued_activity_start`、`liveactivity_delivered_<event>`、
 `liveactivity_coalesced`、`liveactivity_rejected_{ticket,ticket_kind,schema,revoked}`、`notify_rejected_ticket_kind`。
 
+### agentd 侧（阶段二）
+
+agentd 只从网关帧里读生命周期枚举与线程 ID，按会话汇总状态后经 Provider 投递，不读取也不转发任何正文。
+
+- 状态来源：`turn/started` 记为运行中；已登记的审批 / 输入请求和 `thread/status/changed` 的 `waitingOnApproval`、`waitingOnUserInput` 记为待你处理，`serverRequest/resolved` 后回到运行中；`turn/completed` 记为已完成（`failed` 记为失败，用户中断记为已完成）；不重试的 `error` 记为失败；`thread/closed` 移出汇总。只跟本连接已授权的线程，DeepSeek 不跟踪。
+- 汇总：`running_count` 与 `needs_you_count` 互不重叠。`status`、`started_at`、`focus_session_tag` 取最需要关注的会话：最近转入待你处理的优先，其次是最近开始的运行中会话；没有活跃会话时取最近结束的那条。`focus_session_tag` 是 16 位会话标签，与回复提醒的 `session_tag` 相同，App 的标题缓存按它建键。
+- 一轮的定义：从第一个会话开始运行到全部结束。每台设备每轮最多 push-to-start 一次。回合开始后先等 8 秒，App 在前台本机拉起活动并登记更新 Ticket 时就不再远程启动。
+- 更新：有更新 Ticket 时原地 update。新活动的第一条与转入待你处理立即发出，其余至少间隔 5 秒、只发最新状态，状态不变不重发。同一设备同时只有一条投递在途。
+- 结束：全部会话结束后先静默更新为终态，3 分钟内没有新回合就发 end，`dismissal_date` 为 15 分钟后。agentd 重启后没有会话状态，重启前登记的活动在 3 分钟后以立即移除结束。
+- 失效：Provider 回 410 或 `ticket_revoked` 时只删这张活动 Ticket。更新 Ticket 失效（用户划掉、系统回收）后这一轮不再拉起，下一轮按规则重新 push-to-start。其它失败按 5 秒起指数退避，最长 5 分钟。同一轮 push-to-start 连续失败 3 次后放弃。
+- 隔离与 fail-open：活动 Ticket 只能挂在已登记消息提醒的设备上。设备注销、被判定失效或通知 Ticket 过期时一并删除。活动投递失败不影响审批与回复提醒。
+- 接口：`POST /api/push/live-activities` 登记，字段 `device_id`、`kind`（`start` / `update`）、`ticket`、`expires_at`，可选 `activity_id`；设备未登记消息提醒时回 409。`DELETE /api/push/live-activities?device_id=…&kind=start|update|all[&activity_id=…]` 注销，`activity_id` 与登记时不一致就不删。`GET /api/push/status` 新增 `live_activity: true`、`host_tag`，以及设备级的 `live_activity_start`、`live_activity_update`。
+- 落盘：活动票据存在设备注册表旁的 `push-live-activities.json`（0600），只有不透明 Ticket、到期时间、登记时间和 App 端活动 ID。会话状态只在内存。
+
 ### 部署注意事项
 
 - **先部署 Provider，再发布阶段二的 agentd 与 App。** 旧 Provider 不认 `kind`，按未知字段回 400；也没有 `/v1/notify/liveactivity`。部署须由维护者单独确认，沿用上文「部署与升级」的备份与回滚流程。
