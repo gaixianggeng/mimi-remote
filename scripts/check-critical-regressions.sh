@@ -90,6 +90,13 @@ grep -Fq 'test-conversation-regressions.sh --ios-only' .github/workflows/ios-ci.
   || fail "iOS CI 没有显式使用 --ios-only。"
 grep -Fq 'test-conversation-regressions.sh --ios-only' scripts/verify-change.sh \
   || fail "本地 full iOS 验证没有显式使用 --ios-only。"
+tailcat_job="$(sed -n '/^  tailcat-integration:/,/^  conversation-regressions:/p' .github/workflows/ios-ci.yml)"
+grep -Fq 'runs-on: ubuntu-latest' <<<"$tailcat_job" \
+  || fail "Tailcat 集成测试 job 必须在 Linux 托管 runner 上运行。"
+grep -Fq 'go-version-file: experiments/tailcat/go.mod' <<<"$tailcat_job" \
+  || fail "Tailcat 集成测试 job 没有使用 Tailcat go.mod 固定 Go 版本。"
+grep -Fxq '        run: go test ./... -count=1' <<<"$tailcat_job" \
+  || fail "Tailcat 集成测试 job 没有完整运行 Tailcat module 测试。"
 conversation_job="$(sed -n '/^  conversation-regressions:/,/^  app-store-release:/p' .github/workflows/ios-ci.yml)"
 release_job="$(sed -n '/^  app-store-release:/,$p' .github/workflows/ios-ci.yml)"
 [[ "$(grep -Fc 'actions/setup-go@' <<<"$conversation_job")" == "1" ]] \
