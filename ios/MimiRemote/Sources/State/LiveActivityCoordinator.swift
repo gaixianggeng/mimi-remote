@@ -59,6 +59,10 @@ final class LiveActivityCoordinator: ObservableObject {
     var installationIDForProfile: ((String) -> String?)?
     /// 档案是否还在。档案删掉后它的 agentd 上没有可注销的设备，注销这一步视为完成。
     var profileExists: ((String) -> Bool)?
+    /// 点按活动解析出会话后交给现有通知跳转；由 App 注入。
+    var onRouteResolved: ((SessionNotificationRoute) -> Void)?
+    /// 冷启动时会话列表还没加载，点按的链接先留着，会话列表到了再解析。
+    private var pendingLink: LiveActivityPendingLink?
 
     private var hostSupport: [String: (supported: Bool, hostTag: String?)] = [:]
     private var latestStartToken: String?
@@ -108,7 +112,10 @@ final class LiveActivityCoordinator: ObservableObject {
         sessionStore.$sessions
             .combineLatest(appStore.$activeConnectionProfileID)
             .throttle(for: .seconds(1), scheduler: DispatchQueue.main, latest: true)
-            .sink { [weak self] sessions, profileID in
+            .sink { [weak self, weak appStore] sessions, profileID in
+                self?.resolvePendingLink(
+                    profiles: appStore?.connectionProfiles ?? [], activeProfileID: profileID, sessions: sessions
+                )
                 self?.sessionsDidChange(sessions, activeProfileID: profileID, isAppActive: Self.isAppActive)
             }
             .store(in: &cancellables)
@@ -168,6 +175,27 @@ final class LiveActivityCoordinator: ObservableObject {
     /// 消息通知开关或绑定变化后调用：不再满足条件时结束活动并清理票据。
     func notificationBindingDidChange() {
         enqueue { await self.reconcileBinding() }
+    }
+
+    // MARK: - 点按活动
+
+    /// 能立即映射到会话就打开；会话列表还没加载（冷启动）时留着，到了再解析，过期则只打开 App。
+    func open(link: MimiTurnActivityLink, profiles: [ConnectionProfile], activeProfileID: String?, sessions: [AgentSession]) {
+        pendingLink = LiveActivityPendingLink(link: link, createdAt: Date())
+        resolvePendingLink(profiles: profiles, activeProfileID: activeProfileID, sessions: sessions)
+    }
+
+    private func resolvePendingLink(profiles: [ConnectionProfile], activeProfileID: String?, sessions: [AgentSession]) {
+        guard let pendingLink else { return }
+        switch pendingLink.resolve(now: Date(), profiles: profiles, activeProfileID: activeProfileID, sessions: sessions) {
+        case .route(let route):
+            self.pendingLink = nil
+            onRouteResolved?(route)
+        case .drop:
+            self.pendingLink = nil
+        case .wait:
+            break
+        }
     }
 
     // MARK: - 前台本机拉起
@@ -524,13 +552,26 @@ final class LiveActivityCoordinator: ObservableObject {
         })
         let isEnabled = isToggleOn && LiveActivityPreferences.isEffective(in: defaults)
         let expected = expectedHostTag()
-        for activity in Activity<MimiTurnActivityAttributes>.activities {
+        var kept: [Activity<MimiTurnActivityAttributes>] = []
+        for activity in Activity<MimiTurnActivityAttributes>.activities where Self.isAlive(activity.activityState) {
             if LiveActivityHostFilter.keeps(
                 hostTag: activity.attributes.hostTag, expectedHostTag: expected, isEnabled: isEnabled
             ) {
-                track(activity)
-            } else if Self.isAlive(activity.activityState) {
+                kept.append(activity)
+            } else {
                 Task { await activity.end(nil, dismissalPolicy: .immediate) }
+            }
+        }
+        // App 没在运行时 agentd 可能又远程拉起了一个：同一台 Mac 只留一个，优先已登记更新票据的。
+        let duplicates = LiveActivityHostFilter.duplicatesToEnd(
+            kept.map { (id: $0.id, hostTag: $0.attributes.hostTag) },
+            registeredIDs: Set(ticketStore.load()?.updates.keys.map { $0 } ?? [])
+        )
+        for activity in kept {
+            if duplicates.contains(activity.id) {
+                Task { await activity.end(nil, dismissalPolicy: .immediate) }
+            } else {
+                track(activity)
             }
         }
     }
@@ -615,6 +656,57 @@ enum LiveActivityHostFilter {
         guard isEnabled else { return false }
         guard let expectedHostTag else { return true }
         return hostTag.uppercased() == expectedHostTag.uppercased()
+    }
+
+    /// 同一台 Mac 有多个活动时要结束的那些：保留已登记更新票据的最后一个，都没登记时保留
+    /// 最后一个（系统按创建顺序列出）。
+    static func duplicatesToEnd(
+        _ activities: [(id: String, hostTag: String)],
+        registeredIDs: Set<String>
+    ) -> Set<String> {
+        var byHost: [String: [String]] = [:]
+        var hostOrder: [String] = []
+        for activity in activities {
+            let host = activity.hostTag.uppercased()
+            if byHost[host] == nil { hostOrder.append(host) }
+            byHost[host, default: []].append(activity.id)
+        }
+        var ending: Set<String> = []
+        for host in hostOrder {
+            guard let ids = byHost[host], ids.count > 1 else { continue }
+            let keeper = ids.last(where: registeredIDs.contains) ?? ids[ids.count - 1]
+            ending.formUnion(ids.filter { $0 != keeper })
+        }
+        return ending
+    }
+}
+
+/// 点按活动时留着待解析的链接。只等一分钟：之后才加载出来的会话不再自动跳转，免得打断用户。
+struct LiveActivityPendingLink: Equatable {
+    static let lifetime: TimeInterval = 60
+
+    enum Resolution: Equatable {
+        case route(SessionNotificationRoute)
+        case wait
+        case drop
+    }
+
+    let link: MimiTurnActivityLink
+    let createdAt: Date
+
+    func resolve(
+        now: Date,
+        profiles: [ConnectionProfile],
+        activeProfileID: String?,
+        sessions: [AgentSession]
+    ) -> Resolution {
+        guard now.timeIntervalSince(createdAt) <= Self.lifetime else { return .drop }
+        if let route = LiveActivityLinkRouting.route(
+            for: link, profiles: profiles, activeProfileID: activeProfileID, sessions: sessions
+        ) {
+            return .route(route)
+        }
+        return .wait
     }
 }
 

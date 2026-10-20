@@ -537,6 +537,9 @@ struct MimiRemoteApp: App {
 		liveActivityCoordinator.profileExists = { [weak appStore] profileID in
 			appStore?.connectionProfiles.contains { $0.id == profileID } ?? false
 		}
+		liveActivityCoordinator.onRouteResolved = { [weak notificationResponseAdapter] route in
+			notificationResponseAdapter?.receive(route: route)
+		}
 		liveActivityCoordinator.attach(
 			lockScreenStore: lockScreenApprovalStore,
 			sessionStore: sessionStore,
@@ -624,15 +627,14 @@ struct MimiRemoteApp: App {
                 .environmentObject(managedConnectionDeviceStore)
                 .onOpenURL { url in
                     if let link = MimiTurnActivityLink(url: url) {
-                        // 点按 Live Activity：本机能映射到会话就打开它，否则只回到 App。
-                        if let route = LiveActivityLinkRouting.route(
-                            for: link,
+                        // 点按 Live Activity：本机能映射到会话就打开它；冷启动时等会话列表加载，
+                        // 映射不到只回到 App。
+                        liveActivityCoordinator.open(
+                            link: link,
                             profiles: appStore.connectionProfiles,
                             activeProfileID: appStore.activeConnectionProfileID,
                             sessions: sessionStore.sessions
-                        ) {
-                            notificationResponseAdapter.receive(route: route)
-                        }
+                        )
                         return
                     }
                     Task { @MainActor in

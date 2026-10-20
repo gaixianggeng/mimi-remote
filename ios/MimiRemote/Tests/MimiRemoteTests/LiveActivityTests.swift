@@ -619,6 +619,42 @@ final class LiveActivityRoutingTests: XCTestCase {
         XCTAssertNil(LiveActivityLinkRouting.route(for: link, profiles: profiles, activeProfileID: nil, sessions: sessions))
     }
 
+    /// 冷启动时会话列表为空：链接先等着，会话加载后再打开；超过一分钟只打开 App。
+    func testPendingLinkWaitsForSessions() {
+        let created = Date(timeIntervalSince1970: 1_800_000_000)
+        let pending = LiveActivityPendingLink(
+            link: MimiTurnActivityLink(hostTag: "6AF3", sessionTag: "9E61BAD1E6C4DDAF"), createdAt: created
+        )
+        let profiles = [profile("mac-a", installationID: "install-test")]
+        let sessions = [makeSession(id: "thread-1", projectID: "repo", title: "Fix", status: "running", source: "codex")]
+        XCTAssertEqual(
+            pending.resolve(now: created, profiles: profiles, activeProfileID: "mac-a", sessions: []), .wait
+        )
+        guard case .route(let route) = pending.resolve(
+            now: created.addingTimeInterval(5), profiles: profiles, activeProfileID: "mac-a", sessions: sessions
+        ) else {
+            return XCTFail("会话加载后应打开它")
+        }
+        XCTAssertEqual(route.sessionID, "thread-1")
+        XCTAssertEqual(
+            pending.resolve(
+                now: created.addingTimeInterval(LiveActivityPendingLink.lifetime + 1),
+                profiles: profiles, activeProfileID: "mac-a", sessions: sessions
+            ),
+            .drop
+        )
+    }
+
+    /// 启动时同一台 Mac 有多个活动：保留已登记更新票据的那个，都没登记时保留最新的。
+    func testStartupDuplicatesKeepRegisteredOrNewest() {
+        let activities = [
+            (id: "a1", hostTag: "6AF3"), (id: "b1", hostTag: "1B2C"), (id: "a2", hostTag: "6af3"), (id: "a3", hostTag: "6AF3"),
+        ]
+        XCTAssertEqual(LiveActivityHostFilter.duplicatesToEnd(activities, registeredIDs: ["a2"]), ["a1", "a3"])
+        XCTAssertEqual(LiveActivityHostFilter.duplicatesToEnd(activities, registeredIDs: []), ["a1", "a2"])
+        XCTAssertEqual(LiveActivityHostFilter.duplicatesToEnd([(id: "b1", hostTag: "1B2C")], registeredIDs: []), [])
+    }
+
     func testLocalStateSeedsFromSessions() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         XCTAssertNil(LiveActivityLocalState.make(sessions: [
