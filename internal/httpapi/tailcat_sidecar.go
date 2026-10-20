@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,12 +22,12 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
+	"github.com/gaixianggeng/mimi-remote/internal/tailcatsidecar"
 )
 
 const (
 	// TailcatLocalControlHeader 携带只存在本机 0600 文件中的随机值。
 	TailcatLocalControlHeader = "X-Mimi-Tailcat-Local-Control"
-	tailcatSidecarBinary      = "mimi-tailcat-experiment"
 	defaultTailcatPort        = 8787
 	// 普通控制调用只读内存状态或改白名单，5 秒足够。
 	tailcatControlCallTimeout = 5 * time.Second
@@ -39,6 +38,8 @@ const (
 	// 取回超时后建好的配对节点时，剩余有效期（辅助程序给 10 分钟）至少要这么长；
 	// 再短的话用户扫码前可能就过期了，宁可重新生成。
 	tailcatPairReuseMinRemaining = 5 * time.Minute
+	// 停止请求送达后，辅助程序关闭配对节点和稳定节点的宽限期，超时强制结束。
+	tailcatSidecarStopGrace = 3 * time.Second
 )
 
 type tailcatStatus struct {
@@ -185,7 +186,7 @@ func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 	s.lastError = ""
 	s.mu.Unlock()
 
-	bin, err := resolveTailcatSidecarBinary(s.config.SidecarBin)
+	bin, err := tailcatsidecar.Resolve(s.config.SidecarBin)
 	if err != nil {
 		s.finishStart(nil, err)
 		return err
@@ -209,7 +210,8 @@ func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = &tailcatSidecarLogWriter{}
-	if err := cmd.Start(); err != nil {
+	prepareTailcatSidecarProcess(cmd)
+	if err := startTailcatSidecarProcess(cmd); err != nil {
 		err = fmt.Errorf("启动 Tailcat sidecar：%w", err)
 		s.finishStart(nil, err)
 		return err
@@ -247,6 +249,7 @@ func (s *tailcatSidecarSupervisor) finishStart(cmd *exec.Cmd, err error) {
 
 func (s *tailcatSidecarSupervisor) reap(cmd *exec.Cmd, done chan struct{}) {
 	err := cmd.Wait()
+	releaseTailcatSidecarProcess(cmd)
 	s.mu.Lock()
 	if s.cmd == cmd {
 		s.cmd = nil
@@ -293,16 +296,21 @@ func (s *tailcatSidecarSupervisor) stopProcess(ctx context.Context, cmd *exec.Cm
 	if cmd == nil || cmd.Process == nil || done == nil {
 		return nil
 	}
-	_ = cmd.Process.Signal(os.Interrupt)
-	timer := time.NewTimer(3 * time.Second)
+	// 停止请求没有送达（进程已退出、尚未建好控制通道，或旧辅助程序不认识
+	// /shutdown）时不再空等宽限期，直接结束进程。
+	grace := tailcatSidecarStopGrace
+	if !s.requestSidecarExit(cmd) {
+		grace = 0
+	}
+	timer := time.NewTimer(grace)
 	defer timer.Stop()
 	select {
 	case <-done:
 	case <-ctx.Done():
-		_ = cmd.Process.Kill()
+		killTailcatSidecarProcess(cmd)
 		return ctx.Err()
 	case <-timer.C:
-		_ = cmd.Process.Kill()
+		killTailcatSidecarProcess(cmd)
 		<-done
 	}
 	_ = os.Remove(s.controlPath)
@@ -694,38 +702,6 @@ func (s *tailcatSidecarSupervisor) call(
 		return fmt.Errorf("解析 Tailcat 状态：%w", err)
 	}
 	return nil
-}
-
-func resolveTailcatSidecarBinary(configured string) (string, error) {
-	if value := strings.TrimSpace(configured); value != "" {
-		if path, err := exec.LookPath(value); err == nil {
-			return path, nil
-		}
-		return "", fmt.Errorf("找不到 Tailcat sidecar：%s", value)
-	}
-	if value := strings.TrimSpace(os.Getenv("AGENTD_TAILCAT_BIN")); value != "" {
-		if path, err := exec.LookPath(value); err == nil {
-			return path, nil
-		}
-		return "", fmt.Errorf("AGENTD_TAILCAT_BIN 不可执行：%s", value)
-	}
-	name := tailcatSidecarBinary
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	if executable, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(executable), name)
-		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
-			return candidate, nil
-		}
-	}
-	if path, err := exec.LookPath(name); err == nil {
-		return path, nil
-	}
-	if runtime.GOOS == "linux" {
-		return "", fmt.Errorf("未安装 %s；请下载完整 Linux Release 包，在解压目录执行 bash ./scripts/install-linux.sh upgrade 后重试；Tailcat 保持关闭", name)
-	}
-	return "", fmt.Errorf("未安装 %s；Tailcat 实验保持关闭", name)
 }
 
 func tailcatLoopbackTarget(listen string) string {

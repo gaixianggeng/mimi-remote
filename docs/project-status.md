@@ -31,7 +31,7 @@ iPhone / iPad SwiftUI App
 
 应用入口只有宿主上 `agentd` 的 Endpoint：Tailscale、局域网和 Tailcat 都到达同一个端口，并经过同一套 Bearer 鉴权。macOS 与 Linux 首次设置时优先 Tailscale；未检测到 Tailscale 时启用局域网监听，并在配对时返回当前私有局域网地址。之后可在 Mac App 的模块管理中分别开关这三种连接；生成配对码只使用已开启且本机可用的连接，不会顺带开启其他连接。Tailscale 模式仍自动选择直连、上海 VPS Peer Relay 或官方 DERP；VPS 只提供网络层 Peer Relay，不运行 Mimi Remote 的 nginx、SSH reverse tunnel 或公网备用 Endpoint。
 
-自建 Tailcat 是实验连接，Mac 与 Linux 宿主随包提供 sidecar，iPhone / iPad 不需要安装 Tailscale 客户端。扫码配对后 App 只走 Tailcat 路由，不回退到 Tailscale 或局域网地址；能直连时点对点，否则经 DERP 中继：默认是 Tailcat 上游提供、由 Tailscale 运营的公共中继（`https://tailcat.dev/derpmap.json`，免费且限速），也可在 Mac App 中改为用户自定义的 DERP Map。中继只转发端到端加密的数据包，但能看到双方 IP、公钥、连接时间和流量大小；Mimi Remote 开发者不运营该默认中继。二维码只含 10 分钟有效的配对信息，不含长期 Agent Token。Mimi 托管连接（官方控制面与订阅）尚未开放，Release 构建不显示入口。细节见 [Tailcat 远程连接实验](operations/tailcat-experiment.md)。
+自建 Tailcat 是实验连接，Mac、Windows 与 Linux 宿主随包提供 sidecar，iPhone / iPad 不需要安装 Tailscale 客户端。扫码配对后 App 只走 Tailcat 路由，不回退到 Tailscale 或局域网地址；能直连时点对点，否则经 DERP 中继：默认是 Tailcat 上游提供、由 Tailscale 运营的公共中继（`https://tailcat.dev/derpmap.json`，免费且限速），也可在 Mac App 中改为用户自定义的 DERP Map。中继只转发端到端加密的数据包，但能看到双方 IP、公钥、连接时间和流量大小；Mimi Remote 开发者不运营该默认中继。二维码只含 10 分钟有效的配对信息，不含长期 Agent Token。Mimi 托管连接（官方控制面与订阅）尚未开放，Release 构建不显示入口。细节见 [Tailcat 远程连接实验](operations/tailcat-experiment.md)。
 
 ### 已确定的边界
 

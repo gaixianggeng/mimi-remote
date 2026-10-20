@@ -215,10 +215,10 @@ jobs:
             }
             $installer = Get-Item "dist-windows\Mimi-Remote-Setup-*.exe"
             if ($hasPfx) {
-              ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName -RequireSignature
+              ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName -ExpectedVersion $env:RELEASE_TAG -RequireSignature
               'Windows installer signing: Authenticode PFX (Valid).' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
             } else {
-              ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName
+              ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName -ExpectedVersion $env:RELEASE_TAG
               'Windows installer signing: unsigned-release. Verify SHA-256 before running; SmartScreen may warn.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
             }
           } finally {

@@ -85,6 +85,15 @@ const (
 	menuExitAndStop
 	menuDoctorFix
 	menuControlPanel
+	menuTailcatPair
+	menuTailcatToggle
+	menuTailcatStatus
+)
+
+// wmTrayPair 的 wParam：区分普通配对和直接打开 Tailcat 二维码。
+const (
+	pairRequestDefault = 0
+	pairRequestTailcat = 1
 )
 
 var (
@@ -194,6 +203,9 @@ type trayApplication struct {
 	initialShow    bool
 	refreshStop    chan struct{}
 	panel          *controlPanel
+	tailcat        tailcatTrayStatus
+	hasTailcat     bool
+	tailcatErr     error
 }
 
 var currentTray *trayApplication
@@ -433,7 +445,7 @@ func trayWindowProc(window uintptr, msg uint32, wParam uintptr, lParam uintptr) 
 		app.showControlPanel()
 		return 0
 	case wmTrayPair:
-		app.showPairingPanel()
+		app.showPairingPanel(wParam == pairRequestTailcat)
 		return 0
 	case wmCommand:
 		app.dispatchMenu(uint32(wParam) & 0xffff)
@@ -577,6 +589,9 @@ func (a *trayApplication) refreshStatusWithRuntimeRefresh(refreshRuntime bool) {
 	status, err := a.controller.status(ctx, refreshRuntime)
 	cancel()
 	a.completeStatusRequest(request, status, err)
+	if err == nil {
+		a.refreshTailcat(status.ProcessOK)
+	}
 	procPostMessageW.Call(a.window, wmTrayRefresh, 0, 0)
 }
 
@@ -612,6 +627,7 @@ func (a *trayApplication) showMenu() {
 	statusErr := a.statusErr
 	busy := a.busy
 	pairingBusy := a.pairingBusy
+	tailcat, hasTailcat, tailcatErr := a.tailcat, a.hasTailcat, a.tailcatErr
 	a.mu.RUnlock()
 
 	header := "状态：" + status.lifecycleTitle()
@@ -635,9 +651,14 @@ func (a *trayApplication) showMenu() {
 	appendMenu(menu, menuFlags(busy || !status.ProcessOK), menuStop, "停止服务")
 	appendMenu(menu, mfSeparator, 0, "")
 	appendMenu(menu, menuFlags(busy || !status.ServiceOK || pairingBusy), menuPair, "配对设备…")
+	appendMenu(menu, menuFlags(busy || !status.ServiceOK || pairingBusy || !hasTailcat || !tailcat.ready()), menuTailcatPair, "Tailcat 配对…")
 	appendMenu(menu, menuFlags(busy), menuDoctor, "运行诊断…")
 	appendMenu(menu, menuFlags(busy), menuDoctorFix, "修复诊断问题…")
 	appendMenu(menu, mfString, menuLogs, "查看日志…")
+	appendMenu(menu, mfSeparator, 0, "")
+	tailcatPresentation := makeTailcatPresentation(status, tailcat, hasTailcat, tailcatErr, busy)
+	appendMenu(menu, mfString|mfGray, menuTailcatStatus, "Tailcat："+tailcatPresentation.Value)
+	appendMenu(menu, menuFlags(!tailcatPresentation.ToggleEnabled), menuTailcatToggle, tailcatPresentation.ToggleLabel+"…")
 	appendMenu(menu, mfSeparator, 0, "")
 	appendMenu(menu, menuFlags(busy), menuExitAndStop, "退出并停止服务…")
 
@@ -689,6 +710,10 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 		a.runAction("停止", "stop")
 	case menuPair:
 		a.requestPairing()
+	case menuTailcatPair:
+		a.requestTailcatPairing()
+	case menuTailcatToggle:
+		a.toggleTailcat()
 	case menuDoctor:
 		a.runDoctor(false)
 	case menuDoctorFix:
@@ -763,13 +788,13 @@ func (a *trayApplication) requestPairing() {
 		a.showError(errors.New("服务尚未就绪，请先启动服务并等待状态变为“运行正常”"))
 		return
 	}
-	procPostMessageW.Call(a.window, wmTrayPair, 0, 0)
+	procPostMessageW.Call(a.window, wmTrayPair, pairRequestDefault, 0)
 }
 
-func (a *trayApplication) showPairingPanel() {
+func (a *trayApplication) showPairingPanel(preferTailcat bool) {
 	a.showControlPanel()
 	if a.panel != nil {
-		a.panel.showPairingView()
+		a.panel.showPairingView(preferTailcat)
 	}
 }
 
