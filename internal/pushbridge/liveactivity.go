@@ -56,6 +56,9 @@ type liveActivityDevice struct {
 	failures      int
 	timer         liveActivityTimer
 	wakeAt        time.Time
+	// discarded 是已经结束或已失效、但从磁盘删除失败的票据。投递决策不再使用它们，
+	// 否则每次成功的 end 都会因票据还在而立即重发一遍。
+	discarded map[string]struct{}
 }
 
 func (d *liveActivityDevice) resetActivity() {
@@ -316,27 +319,38 @@ func (e *LiveActivityEngine) reconcileLocked(deviceID string, now time.Time) []l
 		device = &liveActivityDevice{}
 		e.devices[deviceID] = device
 	}
+	start, update = e.usableTicketsLocked(deviceID, device, start, update)
+	// 先求汇总：下面判断「这一轮」时要用最新的 activeSince。
+	summary := e.tracker.Summary(now)
 	currentUpdate := ""
 	if update != nil {
 		currentUpdate = update.Ticket
 	}
 	if currentUpdate != device.updateTicket {
+		if currentUpdate == "" {
+			// 更新 Ticket 自然过期（活动到了系统时限）与被划掉同理：这一轮不再拉起。
+			e.settlePeriodLocked(device)
+		}
 		// 换了活动（或活动没了）：之前送达的状态不再代表手机上那一个。
 		device.updateTicket = currentUpdate
 		device.resetActivity()
 	}
-	if device.inFlight {
+	if device.inFlight || (start == nil && update == nil) {
 		return nil
 	}
 	if now.Before(device.retryAt) {
 		e.scheduleLocked(deviceID, device, device.retryAt, now)
 		return nil
 	}
-	summary := e.tracker.Summary(now)
 	if summary.Active {
 		device.idleSince = time.Time{}
 		if update != nil {
-			return e.updateLocked(deviceID, device, update.Ticket, summary.State, now)
+			jobs := e.updateLocked(deviceID, device, update.Ticket, summary.State, now)
+			if expiry := e.tracker.NextActiveExpiry(); len(jobs) == 0 && !expiry.IsZero() {
+				// 观察中断时不会再有事件到来；到点回来清掉过期会话，活动才能按空闲规则结束。
+				e.scheduleLocked(deviceID, device, expiry, now)
+			}
+			return jobs
 		}
 		if start == nil || device.startedPeriod.Equal(summary.ActiveSince) {
 			return nil
@@ -379,6 +393,11 @@ func (e *LiveActivityEngine) reconcileLocked(deviceID string, now time.Time) []l
 			dismissal = now
 		} else {
 			final = *device.lastSent
+			if final.Status == LiveActivityStatusRunning || final.Status == LiveActivityStatusNeedsYou {
+				// 会话没有终态就消失了（线程关闭、观察中断）：结果未知，立即移除，
+				// 不把「运行中」留在锁屏上。
+				dismissal = now
+			}
 		}
 	}
 	job := liveActivityJob{
@@ -388,6 +407,56 @@ func (e *LiveActivityEngine) reconcileLocked(deviceID string, now time.Time) []l
 		notification: e.notification(LiveActivityEventEnd, update.Ticket, final, dismissal, now),
 	}
 	return e.emitLocked(device, job)
+}
+
+// usableTicketsLocked 去掉已丢弃的票据，并顺手再试一次把它们从磁盘删掉。
+func (e *LiveActivityEngine) usableTicketsLocked(
+	deviceID string,
+	device *liveActivityDevice,
+	start *ActivityTicket,
+	update *ActivityTicket,
+) (*ActivityTicket, *ActivityTicket) {
+	if len(device.discarded) == 0 {
+		return start, update
+	}
+	present := map[string]string{}
+	if start != nil {
+		present[start.Ticket] = ActivityTicketStart
+	}
+	if update != nil {
+		present[update.Ticket] = ActivityTicketUpdate
+	}
+	for ticket := range device.discarded {
+		kind, ok := present[ticket]
+		if !ok {
+			delete(device.discarded, ticket)
+			continue
+		}
+		if removed, err := e.tickets.RemoveIfTicket(deviceID, kind, ticket); err == nil && removed {
+			delete(device.discarded, ticket)
+		}
+		if kind == ActivityTicketStart {
+			start = nil
+		} else {
+			update = nil
+		}
+	}
+	return start, update
+}
+
+// discardLocked 删除一张已经结束或失效的票据；写盘失败时记进内存，之后的决策不再用它。
+func (e *LiveActivityEngine) discardLocked(device *liveActivityDevice, deviceID string, kind string, ticket string) {
+	if _, err := e.tickets.RemoveIfTicket(deviceID, kind, ticket); err != nil {
+		log.Printf("push bridge 删除 Live Activity 票据失败 err=%v", err)
+		if device.discarded == nil {
+			device.discarded = map[string]struct{}{}
+		}
+		device.discarded[ticket] = struct{}{}
+	}
+	if kind == ActivityTicketUpdate && device.updateTicket == ticket {
+		device.updateTicket = ""
+		device.resetActivity()
+	}
 }
 
 func (e *LiveActivityEngine) updateLocked(
@@ -519,19 +588,16 @@ func (e *LiveActivityEngine) complete(job liveActivityJob, err error) {
 				device.lastSent, device.lastSentAt = &state, now
 			}
 		case LiveActivityEventEnd:
-			// 活动已结束，它的更新 Ticket 不再有用；下一轮重新拉起。
-			if _, removeErr := e.tickets.RemoveIfTicket(job.deviceID, ActivityTicketUpdate, job.ticket); removeErr != nil {
-				log.Printf("push bridge 删除 Live Activity 票据失败 err=%v", removeErr)
-			}
+			// 活动已结束，它的更新 Ticket 不再有用；下一轮重新拉起。结束期间若已开始新回合，
+			// 新一轮照常 push-to-start。
+			e.discardLocked(device, job.deviceID, ActivityTicketUpdate, job.ticket)
 		}
 	case errors.Is(err, ErrDeviceUnregistered):
 		// Token 失效（用户划掉活动、系统回收）或 Ticket 被撤销：这张票据作废，下一轮按规则重新拉起。
-		if _, removeErr := e.tickets.RemoveIfTicket(job.deviceID, job.kind, job.ticket); removeErr != nil {
-			log.Printf("push bridge 删除 Live Activity 票据失败 err=%v", removeErr)
-		}
 		if job.kind == ActivityTicketUpdate {
 			e.settlePeriodLocked(device)
 		}
+		e.discardLocked(device, job.deviceID, job.kind, job.ticket)
 	default:
 		device.failures++
 		backoff := liveActivityMinInterval << min(device.failures-1, 8)

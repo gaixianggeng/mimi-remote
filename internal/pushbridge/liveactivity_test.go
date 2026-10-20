@@ -658,3 +658,125 @@ func TestLiveActivityRequestsPassProviderValidation(t *testing.T) {
 		t.Fatal("attributes_type 必须与 Provider 一致")
 	}
 }
+
+func (h *laHarness) registerUntil(deviceID, kind, ticket, activityID string, expiresAt time.Time) {
+	h.t.Helper()
+	if _, err := h.engine.Register(deviceID, kind, ActivityTicket{
+		Ticket: ticket, ExpiresAt: expiresAt, ActivityID: activityID,
+	}); err != nil {
+		h.t.Fatalf("登记 %s 票据失败：%v", kind, err)
+	}
+}
+
+func (h *laHarness) countEvent(event string) int {
+	count := 0
+	for _, sent := range h.sends() {
+		if sent.Event == event {
+			count++
+		}
+	}
+	return count
+}
+
+// 网关断开、错过终态时不会再有事件：到 TTL 必须自己回来，把活动按空闲规则结束并立即移除，
+// 不能让锁屏一直停在「运行中」。
+func TestLiveActivityEndsWhenObservationStops(t *testing.T) {
+	h := newLAHarness(t, "device-1")
+	h.register("device-1", ActivityTicketUpdate, "update-ticket", "activity-1")
+	h.engine.TurnStarted("codex", "thread-1")
+	h.expectSends(1)
+	started := h.clock.Now()
+	h.clock.advance(activityActiveTTL + time.Minute)
+	h.expectSends(1)
+	h.clock.advance(liveActivityEndDelay)
+	end := h.last()
+	// TTL 到点后的唤醒开始空闲计时，再过结束延迟发 end；dismissal_date 即发送时刻。
+	sentAt := started.Add(activityActiveTTL + time.Second + liveActivityEndDelay)
+	if end.Event != LiveActivityEventEnd || end.DismissalDate != sentAt.Unix() {
+		t.Fatalf("观察中断后应结束并立即移除：%+v", end)
+	}
+}
+
+// 线程关闭但没有终态：结果未知，end 立即移除，不在锁屏上保留「运行中」。
+func TestLiveActivityClosedThreadDismissesImmediately(t *testing.T) {
+	h := newLAHarness(t, "device-1")
+	h.register("device-1", ActivityTicketUpdate, "update-ticket", "activity-1")
+	h.engine.TurnStarted("codex", "thread-1")
+	h.engine.ThreadClosed("codex", "thread-1")
+	h.clock.advance(liveActivityEndDelay)
+	end := h.last()
+	if end.Event != LiveActivityEventEnd || end.DismissalDate != h.clock.Now().Unix() {
+		t.Fatalf("未知结果应立即移除：%+v", end)
+	}
+}
+
+// 本机拉起的活动在这一轮里到了系统时限，更新 Ticket 自然过期：与被划掉同理，这一轮不再
+// push-to-start，下一轮照常拉起。
+func TestLiveActivityExpiredUpdateTicketSettlesRound(t *testing.T) {
+	h := newLAHarness(t, "device-1")
+	h.register("device-1", ActivityTicketStart, "start-ticket", "")
+	h.registerUntil("device-1", ActivityTicketUpdate, "update-ticket", "activity-1", h.clock.Now().Add(time.Hour))
+	h.engine.TurnStarted("codex", "thread-1")
+	h.clock.advance(time.Hour + time.Minute)
+	h.engine.ApprovalPending("codex", "thread-1", "req-1")
+	h.clock.advance(liveActivityStartGrace + time.Minute)
+	if got := h.countEvent(LiveActivityEventStart); got != 0 {
+		t.Fatalf("这一轮不应再 push-to-start，got=%d", got)
+	}
+	h.engine.TurnEnded("codex", "thread-1", LiveActivityStatusCompleted)
+	h.engine.TurnStarted("codex", "thread-2")
+	h.clock.advance(liveActivityStartGrace)
+	if got := h.countEvent(LiveActivityEventStart); got != 1 {
+		t.Fatalf("下一轮应重新拉起，got=%d", got)
+	}
+}
+
+// end 送达但票据写盘删除失败（磁盘满、目录只读）：不能因为票据还在就无限重发 end。
+func TestLiveActivityEndDoesNotRepeatWhenDeletionFails(t *testing.T) {
+	h := newLAHarness(t, "device-1")
+	h.register("device-1", ActivityTicketUpdate, "update-ticket", "activity-1")
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.tickets.mu.Lock()
+	h.engine.tickets.path = filepath.Join(blocker, "push-live-activities.json")
+	h.engine.tickets.mu.Unlock()
+	h.engine.TurnStarted("codex", "thread-1")
+	h.engine.TurnEnded("codex", "thread-1", LiveActivityStatusCompleted)
+	h.clock.advance(liveActivityEndDelay)
+	h.clock.advance(time.Hour)
+	h.engine.ReconcileAll()
+	if got := h.countEvent(LiveActivityEventEnd); got != 1 {
+		t.Fatalf("end 只能发一次，got=%d", got)
+	}
+}
+
+// 结束在途时开始了新回合：新一轮照常 push-to-start，不被当成「已划掉」。
+func TestLiveActivityNewRoundDuringEndStillStarts(t *testing.T) {
+	h := newLAHarness(t, "device-1")
+	var queued []func(context.Context)
+	h.register("device-1", ActivityTicketStart, "start-ticket", "")
+	h.register("device-1", ActivityTicketUpdate, "update-ticket", "activity-1")
+	h.engine.TurnStarted("codex", "thread-1")
+	h.engine.TurnEnded("codex", "thread-1", LiveActivityStatusCompleted)
+	h.clock.advance(liveActivityMinInterval)
+	if got := h.last().ContentState.Status; got != LiveActivityStatusCompleted {
+		t.Fatalf("应先送达终态，got=%s", got)
+	}
+	h.engine.dispatch = func(delivery func(context.Context)) { queued = append(queued, delivery) }
+	h.clock.advance(liveActivityEndDelay)
+	if len(queued) != 1 {
+		t.Fatalf("应有一条 end 在途，got=%d", len(queued))
+	}
+	h.engine.TurnStarted("codex", "thread-2")
+	h.engine.dispatch = func(delivery func(context.Context)) { delivery(context.Background()) }
+	queued[0](context.Background())
+	if got := h.countEvent(LiveActivityEventEnd); got != 1 {
+		t.Fatalf("在途的应是 end，got=%d", got)
+	}
+	h.clock.advance(liveActivityStartGrace)
+	if got := h.countEvent(LiveActivityEventStart); got != 1 {
+		t.Fatalf("新一轮应 push-to-start，got=%d：%+v", got, h.sends())
+	}
+}

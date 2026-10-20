@@ -255,6 +255,22 @@ func (t *activityTracker) Touch(runtime, threadID string, now time.Time) {
 	}
 }
 
+// NextActiveExpiry 是最早一个活跃会话因长时间没有事件而被清掉的时刻；没有活跃会话时为零值。
+func (t *activityTracker) NextActiveExpiry() time.Time {
+	var earliest time.Time
+	for _, session := range t.sessions {
+		if !session.active {
+			continue
+		}
+		// Summary 只清掉超过 TTL 的会话，多留一秒保证到点时已经过期。
+		expiry := session.lastSeen.Add(activityActiveTTL + time.Second)
+		if earliest.IsZero() || expiry.Before(earliest) {
+			earliest = expiry
+		}
+	}
+	return earliest
+}
+
 // Summary 先清掉过期会话，再选出最需要关注的一条：最近转入「待你处理」的优先，
 // 其次是最近开始的运行中会话；都没有时取最近结束的那条终态。
 func (t *activityTracker) Summary(now time.Time) activitySummary {
