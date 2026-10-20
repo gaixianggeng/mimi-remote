@@ -158,6 +158,20 @@ final class SessionActivityStateTests: XCTestCase {
         XCTAssertEqual(SessionListPresentation.sidebarSections(sessions: [failed], now: stale).map(\.kind), [.recent])
     }
 
+    func testNextExpiryOnlyConsidersFailedSessionsStillInsideTheWindow() {
+        let failed = makeSession(id: "f", projectID: "p", title: "f", status: SessionStatus.failed.rawValue, source: "codex")
+        let idle = makeSession(id: "i", projectID: "p", title: "i", status: SessionStatus.idle.rawValue, source: "codex")
+        let failedAt = SessionIndexStore.orderingDate(for: failed)
+        XCTAssertEqual(
+            SessionAttentionPolicy.nextExpiry(in: [idle, failed], now: failedAt.addingTimeInterval(60)),
+            failedAt.addingTimeInterval(SessionAttentionPolicy.failedAttentionWindow)
+        )
+        XCTAssertNil(
+            SessionAttentionPolicy.nextExpiry(in: [idle, failed], now: failedAt.addingTimeInterval(SessionAttentionPolicy.failedAttentionWindow + 1)),
+            "已过期的失败会话不再安排刷新"
+        )
+    }
+
     /// #546：侧栏「待你处理」行的状态文案与会话页同一份 displayStatus。
     func testNeedsYouStatusTextComesFromSharedDisplayStatus() {
         var waiting = makeSession(id: "w", projectID: "p", title: "w", status: SessionStatus.waitingForApproval.rawValue, source: "codex")

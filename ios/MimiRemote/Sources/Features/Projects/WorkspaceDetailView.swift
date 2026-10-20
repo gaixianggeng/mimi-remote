@@ -103,14 +103,28 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         }
     }
 
+    /// 失败会话在「待你处理」里只留 12 小时；页面一直开着时，在最早到期的那一刻重算一次分组，
+    /// 不做每分钟刷新（#546 评审）。
     private func recentSessionsSection(
         rowDensity: SessionIndexRowDensity,
         tokens: ThemeTokens
     ) -> some View {
+        let refreshDates = SessionAttentionPolicy.nextExpiry(in: recentSessions)
+            .map { [$0.addingTimeInterval(1)] } ?? []
+        return TimelineView(.explicit(refreshDates)) { _ in
+            recentSessionsSectionContent(rowDensity: rowDensity, tokens: tokens, now: Date())
+        }
+    }
+
+    private func recentSessionsSectionContent(
+        rowDensity: SessionIndexRowDensity,
+        tokens: ThemeTokens,
+        now: Date
+    ) -> some View {
         // 分组只算一次，列表按状态渲染分段。派生家族先在整份列表上分好，再随领头成员落段，
         // 运行中的子会话因此和已完成的父会话留在同一段里。
         let grouped = Dictionary(grouping: recentSessions) { session in
-            WorkspaceSessionGroup.of(session)
+            WorkspaceSessionGroup.of(session, now: now)
         }
         let sections = SessionHierarchy.sectionedFamilies(
             WorkspaceSessionGroup.orderedPopulatedGroups(from: Set(grouped.keys))
@@ -149,7 +163,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 groupedSessionSections(
                     sections: sections,
                     rowDensity: rowDensity,
-                    tokens: tokens
+                    tokens: tokens,
+                    now: now
                 )
             }
         }
@@ -162,7 +177,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     private func groupedSessionSections(
         sections: [SessionFamilySection<WorkspaceSessionGroup>],
         rowDensity: SessionIndexRowDensity,
-        tokens: ThemeTokens
+        tokens: ThemeTokens,
+        now: Date
     ) -> some View {
         // 给唯一的一个分组加标题是纯噪声：窄屏由筛选行充当它的标题，宽屏由胶囊行承担身份。
         // 出现「需要处理 / 正在运行」等多个分段时，标题才真正在区分内容。
@@ -178,7 +194,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                         sectionHeader(
                             group,
                             count: section.families.flatMap(\.members)
-                                .filter { WorkspaceSessionGroup.of($0) == group }.count,
+                                .filter { WorkspaceSessionGroup.of($0, now: now) == group }.count,
                             rowDensity: rowDensity,
                             tokens: tokens
                         )

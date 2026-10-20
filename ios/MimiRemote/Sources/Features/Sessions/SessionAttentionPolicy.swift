@@ -20,4 +20,15 @@ enum SessionAttentionPolicy {
         let age = now.timeIntervalSince(SessionIndexStore.orderingDate(for: session))
         return age <= failedAttentionWindow
     }
+
+    /// 仍在窗口内的失败会话里最早到期的时刻；页面一直开着时据此安排一次刷新，
+    /// 让它准时从「待你处理」回到「最近」，而不必每分钟重算整份列表。
+    static func nextExpiry(in sessions: [AgentSession], now: Date = Date()) -> Date? {
+        sessions.compactMap { session -> Date? in
+            guard session.activityState == .failed else { return nil }
+            let expiry = SessionIndexStore.orderingDate(for: session).addingTimeInterval(failedAttentionWindow)
+            return expiry > now ? expiry : nil
+        }
+        .min()
+    }
 }
