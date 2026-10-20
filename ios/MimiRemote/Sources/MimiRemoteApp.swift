@@ -600,6 +600,10 @@ struct MimiRemoteApp: App {
                     }
                 }
         }
+        // iPad 外接键盘的会话快捷键；动作由工作台外壳经 focusedSceneValue 提供（#828）。
+        .commands {
+            WorkbenchSessionCommands()
+        }
     }
 
     private var selectedAppLanguage: AppLanguage {

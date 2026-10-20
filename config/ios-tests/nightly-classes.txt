@@ -74,6 +74,7 @@ TailscaleStableHostnameTests
 ThemeStoreTests
 UserFacingErrorTests
 WorkbenchCompactTabStackTests
+WorkbenchKeyboardNavigationTests
 WorkbenchTopScrollEdgeTests
 WorkspaceAppearanceStoreTests
 WorkspaceCrossRuntimeMembershipTests
