@@ -314,6 +314,8 @@ final class LiveActivityPreferencesTests: XCTestCase {
 final class LiveActivityCoordinatorRevocationTests: XCTestCase {
     private var suiteName: String!
     private var defaults: UserDefaults!
+    /// 协调器只弱引用锁屏审批 Store（App 里由 StateObject 持有），测试必须自己留住它。
+    private var lockScreenStore: LockScreenApprovalStore?
 
     override func setUp() {
         super.setUp()
@@ -323,6 +325,7 @@ final class LiveActivityCoordinatorRevocationTests: XCTestCase {
     }
 
     override func tearDown() {
+        lockScreenStore = nil
         defaults.removePersistentDomain(forName: suiteName)
         RevocationStubURLProtocol.reset()
         super.tearDown()
@@ -365,7 +368,9 @@ final class LiveActivityCoordinatorRevocationTests: XCTestCase {
             environment: .sandbox,
             providerClientFactory: { PushProviderClient(baseURL: $0, session: session) }
         )
+        self.lockScreenStore = lockScreenStore
         coordinator.attach(lockScreenStore: lockScreenStore)
+        XCTAssertEqual(lockScreenStore.deviceID, "dev-test")
         // 那台 Mac 离线：agentd 注销只会超时。
         coordinator.makeClient = { _ in throw URLError(.notConnectedToInternet) }
         coordinator.profileExists = profileExists
