@@ -28,6 +28,7 @@ WriterConflictCardSnapshotTests
 # 其余单元测试。
 AppDiagnosticsTests
 AppExternalLinksTests
+AppReviewPromptCoordinatorTests
 AppleVoiceStartupWatchdogTests
 CarStatusSnapshotTests
 CodexAppServerConnectionReliabilityTests

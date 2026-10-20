@@ -1429,6 +1429,7 @@ extension SessionStore {
             result: .started,
             correlation: diagnosticCorrelation(sessionID: session.id)
         )
+        if isAccepting { noteAppReviewApprovalAccepted(session: session) }
         if normalizedDecision.caseInsensitiveCompare("acceptWithPermissionUpdate") == .orderedSame {
             setStatusMessage(L10n.text("ui.sent_decision_to_approve_and_remember_rules_awaiting"))
         } else {

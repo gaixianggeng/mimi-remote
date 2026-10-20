@@ -326,6 +326,8 @@ extension SessionStore {
             let committed = try await commitPreparedConnection(prepared, isStillCurrent: isOperationCurrent)
             await tailcatExperimentController?.commitPreparedRouteIfNeeded(prepared, appStore: appStore)
             preparedCandidate = nil
+            // 换到已有电脑不算配对；扫码、粘贴链接和新增电脑当天都不邀请评分（#842）。
+            if switchTargetProfileID == nil { appReviewPrompt?.recordPairingCompleted() }
             return committed
         } catch {
             if let preparedCandidate {

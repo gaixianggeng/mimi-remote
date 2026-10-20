@@ -1,3 +1,4 @@
+import StoreKit
 import SwiftUI
 import UIKit
 
@@ -33,6 +34,7 @@ struct RootView: View {
     @EnvironmentObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.requestReview) private var requestReview
     @State private var showingLogInspector = false
     @SceneStorage("root.lastSessionSnapshot") private var lastSessionSnapshot = ""
     @SceneStorage("root.workbenchRoute.v1") private var workbenchRouteStorage = WorkbenchRestorationRoute.defaultStorageValue
@@ -62,6 +64,10 @@ struct RootView: View {
         }
         .task(id: appStore.activeHostScope) {
             migrateLegacyWorkspaceAppearance()
+        }
+        .onAppear {
+            // 评分邀请只调用系统评分框（#842）；多窗口时由最后出现的窗口装入，系统决定显示在哪个场景。
+            sessionStore.appReviewPrompt?.requestReview = { requestReview() }
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }

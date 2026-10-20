@@ -3237,6 +3237,9 @@ extension SessionStore {
         source: SessionListProjection.Source,
         clientMessageID: ClientMessageID?
     ) {
+        // 所有从 App 发出的消息（新建、直发、引导、队列派发）都经过这里；纯图片消息的预览为空，
+        // 所以要在下面的空预览判断之前登记，评分邀请才只统计用户在 App 里发起的回合（#842）。
+        if source == .localUser { appReviewPrompt?.recordTurnSubmitted(sessionID: sessionID) }
         let preview = rawPreview
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(whereSeparator: \.isNewline)
@@ -3284,6 +3287,9 @@ extension SessionStore {
     }
 
     func moveSessionListProjection(from sourceSessionID: SessionID, to targetSessionID: SessionID, clientMessageID: ClientMessageID?) {
+        if sourceSessionID != targetSessionID {
+            appReviewPrompt?.moveSubmittedSession(from: sourceSessionID, to: targetSessionID)
+        }
         guard sourceSessionID != targetSessionID,
               let projection = listProjectionBySessionID[sourceSessionID]
         else {

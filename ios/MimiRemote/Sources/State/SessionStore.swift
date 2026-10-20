@@ -382,6 +382,8 @@ final class SessionStore: ObservableObject {
     var networkRecoveryTask: Task<Void, Never>?
     var appLifecycleSuspendedSessionID: SessionID?
     var isAppInBackground = false
+    // 评分邀请（#842）只在 App 进程里装配；测试和预览中的 Store 保持 nil，不产生任何请求。
+    var appReviewPrompt: AppReviewPromptCoordinator?
     // 旧 agentd 不接受 Codex 无 cwd thread/list 时，本 Host 生命周期只探测一次；
     // 这只缓存 Codex 的能力，不得关闭 Claude / Harness 各自的全局目录。
     var controlledGlobalDiscoveryUnavailable = false
