@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -101,7 +102,8 @@ func TestTailcatCarriesAgentdHTTPWebSocketAndBinaryTraffic(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := info.Mode().Perm(); got != 0o600 {
+		// Windows 的权限位不表达访问控制（恒为 0666），由用户目录 ACL 保护。
+		if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 			t.Fatalf("%s 权限为 %o，预期 600", path, got)
 		}
 	}
