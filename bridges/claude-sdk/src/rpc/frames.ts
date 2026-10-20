@@ -92,9 +92,3 @@ export function isClientRequestResponse(frame: OutboundFrame): boolean {
 export function isServerToClientRequest(frame: OutboundFrame): boolean {
   return typeof frame.method === "string" && frame.id !== undefined && frame.id !== null;
 }
-
-export const SERVER_REQUEST_RESOLVED_METHOD = "serverRequest/resolved";
-
-export function isServerRequestResolved(frame: OutboundFrame): boolean {
-  return frame.method === SERVER_REQUEST_RESOLVED_METHOD;
-}

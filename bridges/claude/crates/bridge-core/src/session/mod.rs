@@ -461,13 +461,13 @@ impl Session {
         // are no longer outstanding, so nothing restores them — but replaying
         // the ring copy to a client that just cold-started pops the card up,
         // and the `serverRequest/resolved` that follows it in the ring folds
-        // it straight back down. Every server→client request leaves the
-        // backlog, and so does every resolution: a resolution only ever
-        // follows an answered request, and that request is no longer sent.
+        // it straight back down. So every server→client request leaves the
+        // backlog. Resolutions stay: a client that drew the card and dropped
+        // off before someone else answered it has no other way to fold it,
+        // and one that never saw the request simply finds nothing to clear.
         let backlog: Vec<Sequenced> = backlog
             .into_iter()
             .filter(|frame| !is_server_to_client_request(&frame.payload))
-            .filter(|frame| !is_server_request_resolved(&frame.payload))
             // A response belongs to exactly one request on exactly one
             // attachment, and that attachment is gone by definition here. The
             // client that reattaches numbers its requests from scratch, so a
@@ -675,12 +675,6 @@ fn is_server_to_client_request(payload: &Value) -> bool {
         && matches!(payload.get("id"), Some(Value::String(_) | Value::Number(_)))
 }
 
-/// True when `payload` is the `serverRequest/resolved` notification that
-/// follows an answered or withdrawn server→client request.
-fn is_server_request_resolved(payload: &Value) -> bool {
-    payload.get("method").and_then(Value::as_str) == Some("serverRequest/resolved")
-}
-
 /// True when `payload` is a response to a client→server request: it carries an
 /// id and a `result`/`error`, and no `method` of its own. Server→client
 /// requests also carry an id but always name a `method`; those are handled by
@@ -825,10 +819,12 @@ mod tests {
     }
 
     #[test]
-    fn answered_prompt_and_its_resolution_are_not_replayed() {
+    fn answered_prompt_is_not_replayed_but_its_resolution_is() {
         // #873: a cold-started client does not know the prompt was answered.
         // Replaying the ring copy pops the card up, and the resolution right
-        // behind it folds it away again.
+        // behind it folds it away again. The resolution itself must still go
+        // out: a client that drew the card before dropping off, while another
+        // device answered it, folds the card only on that notification.
         let session = Session::new("pi", "node-abc".into(), 16, 1 << 20);
         session.enqueue(notif("a"));
         let (tx, _rx) = oneshot::channel();
@@ -859,7 +855,7 @@ mod tests {
             .iter()
             .map(|f| f.payload["method"].as_str().unwrap_or_default().to_string())
             .collect();
-        assert_eq!(methods, vec!["a", "b"]);
+        assert_eq!(methods, vec!["a", "serverRequest/resolved", "b"]);
         assert!(handle.replay_redelivery.is_none());
     }
 

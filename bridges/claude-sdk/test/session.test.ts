@@ -82,7 +82,7 @@ describe("Session attach", () => {
     expect(resumed.backlog.map((entry) => entry.seq)).toEqual([2]);
   });
 
-  test("an answered prompt and its resolution are not replayed to a reconnecting client (#873)", () => {
+  test("an answered prompt is not replayed to a reconnecting client, its resolution still is (#873)", () => {
     const session = new Session("ipad");
     const first = session.attach(undefined, () => {}, false);
     session.publish(note(1));
@@ -95,7 +95,12 @@ describe("Session attach", () => {
     const replayed: OutboundFrame[] = [];
     const resumed = session.attach(0, (frame) => replayed.push(frame), true);
     // 冷启动的客户端不认识 mimi-1；补发请求帧会先弹出补充信息、随后被 resolved 收起。
-    expect(resumed.backlog.map((entry) => entry.frame.method)).toEqual(["turn/started", "turn/started"]);
+    // resolved 仍要补发：显示过卡片后断线、期间被别的设备答复的客户端只能靠它收起卡片。
+    expect(resumed.backlog.map((entry) => entry.frame.method)).toEqual([
+      "turn/started",
+      "serverRequest/resolved",
+      "turn/started",
+    ]);
     session.sendReplay(resumed.generation);
     expect(replayed).toEqual([]);
   });
@@ -112,7 +117,7 @@ describe("Session attach", () => {
 
     const replayed: OutboundFrame[] = [];
     const resumed = session.attach(0, (frame) => replayed.push(frame), true);
-    expect(resumed.backlog.map((entry) => entry.frame.method)).toEqual(["turn/started"]);
+    expect(resumed.backlog.map((entry) => entry.frame.method)).toEqual(["serverRequest/resolved", "turn/started"]);
     session.sendReplay(resumed.generation);
     expect(replayed).toEqual([
       {

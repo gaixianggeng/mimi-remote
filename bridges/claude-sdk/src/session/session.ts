@@ -1,6 +1,5 @@
 import {
   isClientRequestResponse,
-  isServerRequestResolved,
   isServerToClientRequest,
   notificationFrame,
   type OutboundFrame,
@@ -141,9 +140,9 @@ export class Session {
  * - 服务端请求（审批、提问）一律不从环里补发。仍未答复的由 serverRequest/replay
  *   一次性恢复；已答复或已撤回的再发一次，冷启动的客户端会先弹出卡片、紧接着又被
  *   随后的 serverRequest/resolved 收起（#873）。
- * - serverRequest/resolved 只对应已经答复的请求（答复与发通知在同一步完成），
- *   请求帧不再补发后它没有可清理的对象，一并剔除。
+ * - serverRequest/resolved 照常补发：客户端可能在显示卡片后断线，期间请求被另一台
+ *   设备答复，它只能靠这条通知收起卡片。没见过对应请求的客户端收到它什么也不做。
  */
 export function isReplayableFrame(frame: OutboundFrame): boolean {
-  return !isClientRequestResponse(frame) && !isServerToClientRequest(frame) && !isServerRequestResolved(frame);
+  return !isClientRequestResponse(frame) && !isServerToClientRequest(frame);
 }
