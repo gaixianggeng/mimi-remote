@@ -481,6 +481,30 @@ final class LiveActivityCoordinatorRevocationTests: XCTestCase {
         XCTAssertEqual(coordinator.availability, .requiresNotifications)
     }
 
+    /// 当前用着另一台 Mac 时删掉绑定的那台：实时活动仍开着，也要清理它的记录并撤销票据。
+    func testDeletingBoundProfileTearsDownWhileEnabled() async throws {
+        let tickets = seededTicketStore(profileID: "mac-a")
+        var profiles: Set<String> = ["mac-a", "mac-b"]
+        RevocationStubURLProtocol.status = 200
+        let coordinator = makeCoordinator(
+            ticketStore: tickets,
+            lockScreenStore: try boundLockScreenStore(profileID: "mac-a"),
+            profileExists: { profiles.contains($0) }
+        )
+        coordinator.notificationBindingDidChange()
+        await coordinator.waitForPendingOperations()
+        XCTAssertNotNil(tickets.load(), "档案还在时保留记录")
+        XCTAssertEqual(RevocationStubURLProtocol.revokedTickets(), [])
+
+        profiles.remove("mac-a")
+        coordinator.notificationBindingDidChange()
+        await coordinator.waitForPendingOperations()
+        XCTAssertNil(tickets.load())
+        XCTAssertEqual(Set(RevocationStubURLProtocol.revokedTickets()), ["s", "u"])
+        XCTAssertNil(tickets.loadBacklog())
+        XCTAssertNotEqual(coordinator.availability, .ready)
+    }
+
     /// 没有设备身份或档案已删时，注销永远不会成功，一次就算完成。
     func testUnregisterWithoutHostCompletesImmediately() async throws {
         let tickets = seededTicketStore(profileID: "mac-gone")

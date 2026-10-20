@@ -112,9 +112,11 @@ final class LiveActivityCoordinator: ObservableObject {
                 self?.sessionsDidChange(sessions, activeProfileID: profileID, isAppActive: Self.isAppActive)
             }
             .store(in: &cancellables)
-        // 关闭消息通知、注销或换绑都会改变绑定；@Published 在 willSet 发布，等下一轮再读。
+        // 关闭消息通知、注销、换绑或删掉绑定的那台 Mac 都会改变绑定；@Published 在 willSet
+        // 发布，等下一轮再读。
         lockScreenStore.$notificationsEnabled.map { _ in () }
             .merge(with: lockScreenStore.$status.map { _ in () })
+            .merge(with: appStore.$connectionProfiles.map { $0.map(\.id) }.removeDuplicates().map { _ in () })
             .dropFirst()
             .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)
             .sink { [weak self] in self?.notificationBindingDidChange() }
@@ -194,7 +196,9 @@ final class LiveActivityCoordinator: ObservableObject {
         guard let store = lockScreenStore, store.notificationsEnabled, store.isEnabled,
               let profileID = store.registeredProfileID,
               let providerURL = store.registeredProviderURL,
-              !store.deviceID.isEmpty, !store.installationID.isEmpty else {
+              !store.deviceID.isEmpty, !store.installationID.isEmpty,
+              // 绑定的那台 Mac 已从本机删除：它的活动与票据都应清理，不再算有效绑定。
+              profileExists?(profileID) ?? true else {
             return nil
         }
         let reported = hostSupport[profileID]?.hostTag?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
