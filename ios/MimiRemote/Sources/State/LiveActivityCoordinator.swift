@@ -96,12 +96,16 @@ final class LiveActivityCoordinator: ObservableObject {
 
     func attach(lockScreenStore: LockScreenApprovalStore) {
         self.lockScreenStore = lockScreenStore
-        if !isToggleOn || !LiveActivityPreferences.isEffective(in: defaults) {
-            // 上次关闭（本开关或消息通知）后进程可能在清理排队前就被结束：启动时补做，票据
-            // 才会被撤销。只有关闭本开关时才另外注销 agentd；关闭消息通知时设备注销会一并删掉。
-            enqueue {
-                await self.teardown(unregisterRemote: !self.isToggleOn && self.ticketStore.load() != nil)
+        // 上次关闭（本开关或消息通知）或删掉绑定的那台 Mac 之后，进程可能在清理排队前就被结束：
+        // 启动时补做，票据才会被撤销。放进队列里判断，用的是 App 注入完的档案查询。只有关闭本开关
+        // 时才另外注销 agentd；关闭消息通知时设备注销会一并删掉，档案删了也无处可注销。
+        enqueue {
+            let record = self.ticketStore.load()
+            let profileGone = record.map { self.profileExists?($0.profileID) == false } ?? false
+            guard !self.isToggleOn || !LiveActivityPreferences.isEffective(in: self.defaults) || profileGone else {
+                return
             }
+            await self.teardown(unregisterRemote: !self.isToggleOn && record != nil && !profileGone)
         }
     }
 
@@ -158,16 +162,22 @@ final class LiveActivityCoordinator: ObservableObject {
     func synchronize(client: AgentAPIClient, profileID: String) {
         enqueue {
             // 先取 agentd 能力与 host_tag：档案没存 installation_id 时，绑定要靠它才能算出 hostTag。
+            var repair = LiveActivityRegistrationRepair()
             if let store = self.lockScreenStore, store.notificationsEnabled, store.isEnabled,
                store.registeredProfileID == profileID,
                let status = try? await client.pushStatus() {
                 self.hostSupport[profileID] = (status.liveActivity == true, status.hostTag)
+                repair = LiveActivityRegistrationRepair(
+                    device: status.devices?.first { $0.deviceID == store.deviceID },
+                    record: self.ticketStore.load()
+                )
             }
             await self.reconcileBinding()
             guard self.currentBinding()?.profileID == profileID else { return }
-            await self.registerStartTokenIfNeeded()
+            // agentd 那边丢了票据（例如它的活动票据文件被重置）而本机记录还新：按状态接口强制补登记。
+            await self.registerStartTokenIfNeeded(force: repair.start)
             for activityID in Array(self.latestUpdateTokens.keys) {
-                await self.registerUpdateTokenIfNeeded(activityID: activityID)
+                await self.registerUpdateTokenIfNeeded(activityID: activityID, force: repair.update)
             }
         }
     }
@@ -302,12 +312,12 @@ final class LiveActivityCoordinator: ObservableObject {
         )
     }
 
-    private func registerStartTokenIfNeeded() async {
+    private func registerStartTokenIfNeeded(force: Bool = false) async {
         guard let token = latestStartToken, let context = registrationContext() else { return }
         let (binding, provider) = context
         var record = loadRecord(for: binding)
         let fingerprint = connectionCredentialFingerprint(token)
-        if record.startIsCurrent(tokenFingerprint: fingerprint, now: Date()) {
+        if !force, record.startIsCurrent(tokenFingerprint: fingerprint, now: Date()) {
             availability = .ready
             return
         }
@@ -328,7 +338,7 @@ final class LiveActivityCoordinator: ObservableObject {
         }
     }
 
-    private func registerUpdateTokenIfNeeded(activityID: String) async {
+    private func registerUpdateTokenIfNeeded(activityID: String, force: Bool = false) async {
         guard let latest = latestUpdateTokens[activityID],
               let context = registrationContext(),
               latest.hostTag == context.0.hostTag,
@@ -338,7 +348,7 @@ final class LiveActivityCoordinator: ObservableObject {
         let (binding, provider) = context
         var record = loadRecord(for: binding)
         let fingerprint = connectionCredentialFingerprint(latest.token)
-        if record.updateIsCurrent(activityID: activityID, tokenFingerprint: fingerprint, now: Date()) {
+        if !force, record.updateIsCurrent(activityID: activityID, tokenFingerprint: fingerprint, now: Date()) {
             return
         }
         do {
@@ -648,6 +658,20 @@ final class LiveActivityCoordinator: ObservableObject {
     private func endActivities(where shouldEnd: (String) -> Bool) {}
     private func requestLocalActivity(hostTag: String, state: MimiTurnActivityState) {}
     #endif
+}
+
+/// 本机记录说已登记、agentd 状态却说没有：需要强制补登记。旧版 agentd 不回报这两个字段时不判断。
+struct LiveActivityRegistrationRepair: Equatable {
+    var start = false
+    var update = false
+
+    init() {}
+
+    init(device: PushDeviceSummary?, record: LiveActivityTicketRecord?) {
+        guard let device, let record else { return }
+        start = record.start != nil && device.liveActivityStart == false
+        update = !record.updates.isEmpty && device.liveActivityUpdate == false
+    }
 }
 
 /// 本机看到的活动要不要留：实时活动关闭时一律不留；知道当前该归哪台 Mac 时只留那台的。

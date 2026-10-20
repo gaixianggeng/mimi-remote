@@ -505,6 +505,22 @@ final class LiveActivityCoordinatorRevocationTests: XCTestCase {
         XCTAssertNotEqual(coordinator.availability, .ready)
     }
 
+    /// 删掉绑定的那台 Mac 后进程在对账前被结束：两个开关都开着，启动时也要清理它的票据。
+    func testLaunchWithDeletedProfileResumesTeardown() async throws {
+        let tickets = seededTicketStore(profileID: "mac-gone")
+        RevocationStubURLProtocol.status = 200
+        let coordinator = makeCoordinator(
+            ticketStore: tickets,
+            lockScreenStore: try boundLockScreenStore(profileID: "mac-gone"),
+            profileExists: { $0 != "mac-gone" }
+        )
+        await coordinator.waitForPendingOperations()
+        XCTAssertTrue(coordinator.isToggleOn)
+        XCTAssertNil(tickets.load())
+        XCTAssertEqual(Set(RevocationStubURLProtocol.revokedTickets()), ["s", "u"])
+        XCTAssertNil(tickets.loadBacklog())
+    }
+
     /// 没有设备身份或档案已删时，注销永远不会成功，一次就算完成。
     func testUnregisterWithoutHostCompletesImmediately() async throws {
         let tickets = seededTicketStore(profileID: "mac-gone")
@@ -714,6 +730,38 @@ final class LiveActivityCompatibilityTests: XCTestCase {
             XCTAssertEqual(body.keys.contains("kind"), expected != nil, "通知 Ticket 请求不能出现 kind 键")
             XCTAssertEqual(body["device_token"] as? String, "ab12")
         }
+    }
+
+    /// agentd 丢了票据而本机记录还新：按状态接口强制补登记；旧版 agentd 不回报时不判断。
+    func testRegistrationRepairFollowsAgentdStatus() throws {
+        func device(_ json: String) throws -> PushDeviceSummary {
+            try JSONDecoder().decode(PushDeviceSummary.self, from: Data(json.utf8))
+        }
+        var record = LiveActivityTicketRecord(profileID: "mac", providerURL: "https://p", hostTag: "6AF3")
+        record.start = .init(ticket: "s", expiresAt: .distantFuture, tokenFingerprint: "fp")
+        record.updates["A"] = .init(ticket: "u", expiresAt: .distantFuture, tokenFingerprint: "fa")
+
+        let lost = LiveActivityRegistrationRepair(
+            device: try device(#"{"device_id":"d","live_activity_start":false,"live_activity_update":false}"#),
+            record: record
+        )
+        XCTAssertTrue(lost.start)
+        XCTAssertTrue(lost.update)
+
+        let present = LiveActivityRegistrationRepair(
+            device: try device(#"{"device_id":"d","live_activity_start":true,"live_activity_update":true}"#),
+            record: record
+        )
+        XCTAssertEqual(present, LiveActivityRegistrationRepair())
+
+        let oldAgentd = LiveActivityRegistrationRepair(device: try device(#"{"device_id":"d"}"#), record: record)
+        XCTAssertEqual(oldAgentd, LiveActivityRegistrationRepair())
+
+        let nothingLocal = LiveActivityRegistrationRepair(
+            device: try device(#"{"device_id":"d","live_activity_start":false,"live_activity_update":false}"#),
+            record: LiveActivityTicketRecord(profileID: "mac", providerURL: "https://p", hostTag: "6AF3")
+        )
+        XCTAssertEqual(nothingLocal, LiveActivityRegistrationRepair(), "本机没登记过就不算丢失")
     }
 
     func testPushStatusDecodesWithAndWithoutLiveActivityFields() throws {
