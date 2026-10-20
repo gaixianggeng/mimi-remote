@@ -87,3 +87,14 @@ export function notificationFrame(method: string, params: unknown): OutboundFram
 export function isClientRequestResponse(frame: OutboundFrame): boolean {
   return typeof frame.method !== "string" && "id" in frame && ("result" in frame || "error" in frame);
 }
+
+/** 服务端发给客户端的请求（审批、提问）：带 method，也带非空 id。 */
+export function isServerToClientRequest(frame: OutboundFrame): boolean {
+  return typeof frame.method === "string" && frame.id !== undefined && frame.id !== null;
+}
+
+export const SERVER_REQUEST_RESOLVED_METHOD = "serverRequest/resolved";
+
+export function isServerRequestResolved(frame: OutboundFrame): boolean {
+  return frame.method === SERVER_REQUEST_RESOLVED_METHOD;
+}

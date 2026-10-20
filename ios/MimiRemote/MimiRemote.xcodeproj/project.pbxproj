@@ -161,6 +161,7 @@
 		439355570F5ED69354673D07 /* testAppearancePreview.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 190DA6E3F95C3577B94AB67C /* testAppearancePreview.1.png */; };
 		4591D34B23858CCCF543B9E3 /* MimiCarStatusWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9425462CC24F7B671411E87 /* MimiCarStatusWidget.swift */; };
 		45C1DA2766CF0D3F7DB0843C /* CodexAppServerTurnStartObservation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5399A4FAF6DD4671B317B47E /* CodexAppServerTurnStartObservation.swift */; };
+		460BC005B244E583776EF33D /* ClaudeReplayCursorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 141B96EFDFD875050A84A1A5 /* ClaudeReplayCursorTests.swift */; };
 		467ED9D49A463D5F5AF02A3C /* ConversationDataFlowTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 078AEE7E4BDAC1751244A05A /* ConversationDataFlowTestSupport.swift */; };
 		47926C0A7D9AB93758B01D4F /* ConnectionSettingsSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D6B2DC5525C360AF96A8FFD /* ConnectionSettingsSnapshotTests.swift */; platformFilters = (ios, ); };
 		47A567038EDF3CEA8BDF75DC /* testTimelineWaitingHintsShareLiveStatusStyle.restoring-running.png in Resources */ = {isa = PBXBuildFile; fileRef = 2BA1C94FF6A5EF642A6E7441 /* testTimelineWaitingHintsShareLiveStatusStyle.restoring-running.png */; };
@@ -718,6 +719,7 @@
 		121E340DD237BE03706546CA /* ConversationSessionStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSessionStoreTests.swift; sourceTree = "<group>"; };
 		1254FA91BFD2E858AFBD539D /* ConversationAppServerProjectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationAppServerProjectorTests.swift; sourceTree = "<group>"; };
 		13FC22D303D4E2D91D9D33EA /* ConversationTurnInterruptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationTurnInterruptTests.swift; sourceTree = "<group>"; };
+		141B96EFDFD875050A84A1A5 /* ClaudeReplayCursorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeReplayCursorTests.swift; sourceTree = "<group>"; };
 		150A6F676C073C648C42A6BA /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		1583E66303D9AA12C715A377 /* support.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; name = support.md; path = ../../../docs/support.md; sourceTree = "<group>"; };
 		163EC3A1080DFD2A3BB8F098 /* ComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerView.swift; sourceTree = "<group>"; };
@@ -1485,6 +1487,7 @@
 				657215B4124C9FDDEA161D2C /* AppleVoiceStartupWatchdogTests.swift */,
 				54AAB784C642D2B0234E48BA /* CameraAttachmentTests.swift */,
 				83CFAE116262795C7501365E /* CarStatusSnapshotTests.swift */,
+				141B96EFDFD875050A84A1A5 /* ClaudeReplayCursorTests.swift */,
 				FAC43605DB75870DB1F1FF50 /* ClaudeSlashCommandCatalogTests.swift */,
 				FE88AF3AFFBFA21734BC5D1E /* ClaudeTakeoverTests.swift */,
 				8D9A0058025EAE661A40B232 /* CodexAppServerCollaborationModeTests.swift */,
@@ -2736,6 +2739,7 @@
 				EF35A98EC4F810C40B19975F /* AppleVoiceStartupWatchdogTests.swift in Sources */,
 				03E7996441667D59DF2F9E3A /* CameraAttachmentTests.swift in Sources */,
 				101A9079E24B09BCAB8B54FF /* CarStatusSnapshotTests.swift in Sources */,
+				460BC005B244E583776EF33D /* ClaudeReplayCursorTests.swift in Sources */,
 				69AE3050ADFD81F02BF710A5 /* ClaudeSlashCommandCatalogTests.swift in Sources */,
 				55AA18B00A0BF1D39C94F8AF /* ClaudeTakeoverTests.swift in Sources */,
 				9D2CEEF1A9B8E1EBC861B746 /* CodexAppServerCollaborationModeTests.swift in Sources */,

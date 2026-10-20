@@ -3757,7 +3757,7 @@ actor CodexAppServerSessionRuntime {
             }
             return
         }
-        if notification.method == "turn/completed" || notification.method == "thread/closed" {
+        if isReplayBoundaryNotification(notification) {
             event = event.withReplayBoundarySequence(
                 notification.replaySequence,
                 epoch: replayCursorEpoch

@@ -456,9 +456,18 @@ impl Session {
         // upstream for real. The synthetic replay would then draw a card for
         // a request that is already resolved. So the replay notification is
         // the single restoration path, and the ring copies step aside.
+        //
+        // That holds for prompts that were already answered too (#873). They
+        // are no longer outstanding, so nothing restores them — but replaying
+        // the ring copy to a client that just cold-started pops the card up,
+        // and the `serverRequest/resolved` that follows it in the ring folds
+        // it straight back down. Every server→client request leaves the
+        // backlog, and so does every resolution: a resolution only ever
+        // follows an answered request, and that request is no longer sent.
         let backlog: Vec<Sequenced> = backlog
             .into_iter()
-            .filter(|frame| !is_unanswered_server_request(&frame.payload, &outstanding))
+            .filter(|frame| !is_server_to_client_request(&frame.payload))
+            .filter(|frame| !is_server_request_resolved(&frame.payload))
             // A response belongs to exactly one request on exactly one
             // attachment, and that attachment is gone by definition here. The
             // client that reattaches numbers its requests from scratch, so a
@@ -658,30 +667,24 @@ fn stamp_alleycat_seq(payload: &mut Value, seq: u64) {
     }
 }
 
-/// True when `payload` is a server→client request whose id is still unanswered
-/// — one the replay notification is about to restore, so the ring's copy of it
-/// must not go out as well.
-fn is_unanswered_server_request(
-    payload: &Value,
-    outstanding: &HashMap<String, OutstandingRequest>,
-) -> bool {
-    if outstanding.is_empty() || payload.get("method").and_then(Value::as_str).is_none() {
-        return false;
-    }
-    // Request ids are keyed by their `Display` form, which is the bare string
-    // for string ids and the digits for numeric ones.
-    let key = match payload.get("id") {
-        Some(Value::String(id)) => id.clone(),
-        Some(Value::Number(id)) => id.to_string(),
-        _ => return false,
-    };
-    outstanding.contains_key(&key)
+/// True when `payload` is a server→client request (an approval or a question):
+/// it names a `method` and carries an id. Still-unanswered ones are restored
+/// by the replay notification; answered ones must not come back at all.
+fn is_server_to_client_request(payload: &Value) -> bool {
+    payload.get("method").and_then(Value::as_str).is_some()
+        && matches!(payload.get("id"), Some(Value::String(_) | Value::Number(_)))
+}
+
+/// True when `payload` is the `serverRequest/resolved` notification that
+/// follows an answered or withdrawn server→client request.
+fn is_server_request_resolved(payload: &Value) -> bool {
+    payload.get("method").and_then(Value::as_str) == Some("serverRequest/resolved")
 }
 
 /// True when `payload` is a response to a client→server request: it carries an
 /// id and a `result`/`error`, and no `method` of its own. Server→client
-/// requests also carry an id but always name a `method`, and they stay
-/// replayable — the client still has to answer them.
+/// requests also carry an id but always name a `method`; those are handled by
+/// [`is_server_to_client_request`].
 fn is_client_request_response(payload: &Value) -> bool {
     let Some(object) = payload.as_object() else {
         return false;
@@ -813,20 +816,78 @@ mod tests {
             "id": 4,
             "error": {"code": -32600, "message": "nope"},
         }));
-        // Server→client requests carry an id too, but the client still owes
-        // them an answer, so they stay in the backlog.
-        session.enqueue(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": "req-1",
-            "method": "applyPatchApproval",
-            "params": {},
-        }));
         session.enqueue(notif("b"));
 
         let handle = session.install_attachment(Some(1));
         assert_eq!(handle.outcome, AttachOutcome::Resumed);
         let seqs: Vec<_> = handle.backlog.iter().map(|f| f.seq).collect();
-        assert_eq!(seqs, vec![4, 5]);
+        assert_eq!(seqs, vec![4]);
+    }
+
+    #[test]
+    fn answered_prompt_and_its_resolution_are_not_replayed() {
+        // #873: a cold-started client does not know the prompt was answered.
+        // Replaying the ring copy pops the card up, and the resolution right
+        // behind it folds it away again.
+        let session = Session::new("pi", "node-abc".into(), 16, 1 << 20);
+        session.enqueue(notif("a"));
+        let (tx, _rx) = oneshot::channel();
+        session.publish_server_request(
+            "req-1".into(),
+            "item/tool/requestUserInput".into(),
+            serde_json::json!({"threadId": "t1", "itemId": "ask-1"}),
+            tx,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "req-1",
+                "method": "item/tool/requestUserInput",
+                "params": {"threadId": "t1", "itemId": "ask-1"},
+            }),
+        );
+        assert!(session.resolve_pending("req-1", Ok(serde_json::json!({}))));
+        session.enqueue(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "serverRequest/resolved",
+            "params": {"threadId": "t1", "requestId": "req-1"},
+        }));
+        session.enqueue(notif("b"));
+
+        let handle = session.install_attachment(Some(0));
+        assert_eq!(handle.outcome, AttachOutcome::Resumed);
+        let methods: Vec<_> = handle
+            .backlog
+            .iter()
+            .map(|f| f.payload["method"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(methods, vec!["a", "b"]);
+        assert!(handle.replay_redelivery.is_none());
+    }
+
+    #[test]
+    fn unanswered_prompt_is_restored_by_replay_not_by_the_ring() {
+        let session = Session::new("pi", "node-abc".into(), 16, 1 << 20);
+        let (tx, _rx) = oneshot::channel();
+        session.publish_server_request(
+            "req-live".into(),
+            "item/commandExecution/requestApproval".into(),
+            serde_json::json!({"threadId": "t1", "itemId": "cmd-1"}),
+            tx,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "req-live",
+                "method": "item/commandExecution/requestApproval",
+                "params": {"threadId": "t1", "itemId": "cmd-1"},
+            }),
+        );
+        session.enqueue(notif("a"));
+
+        let handle = session.install_attachment(Some(0));
+        let seqs: Vec<_> = handle.backlog.iter().map(|f| f.seq).collect();
+        assert_eq!(seqs, vec![2]);
+        let replay = handle
+            .replay_redelivery
+            .expect("仍待答复的请求必须由 serverRequest/replay 恢复");
+        assert_eq!(replay["params"]["outstanding"][0]["id"], "req-live");
     }
 
     #[test]
