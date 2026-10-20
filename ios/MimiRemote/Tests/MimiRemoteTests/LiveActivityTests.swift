@@ -712,6 +712,38 @@ final class LiveActivityRoutingTests: XCTestCase {
         XCTAssertEqual(LiveActivityHostFilter.duplicatesToEnd([(id: "b1", hostTag: "1B2C")], registeredIDs: []), [])
     }
 
+    /// 新一轮到来时，同一台 Mac 上一轮已结束、还留在锁屏上的卡和还在跑的旧活动都立即收起；
+    /// 别的 Mac 的不动，没有当前活动时已结束的卡照常按 dismissal 保留。
+    func testNewActivitySupersedesOthersOnSameHost() {
+        let others = [(id: "a1", hostTag: "6AF3"), (id: "b1", hostTag: "1B2C"), (id: "a2", hostTag: "6af3")]
+        XCTAssertEqual(
+            LiveActivityHostFilter.supersededToEnd(others, current: [(id: "a3", hostTag: "6AF3")]), ["a1", "a2"]
+        )
+        XCTAssertEqual(
+            LiveActivityHostFilter.supersededToEnd(
+                others, current: [(id: "a3", hostTag: "6AF3"), (id: "b2", hostTag: "1B2C")]
+            ),
+            ["a1", "a2", "b1"]
+        )
+        XCTAssertEqual(LiveActivityHostFilter.supersededToEnd(others, current: []), [], "没有当前活动时不收起")
+        XCTAssertEqual(
+            LiveActivityHostFilter.supersededToEnd([(id: "a1", hostTag: "6AF3")], current: [(id: "a1", hostTag: "6AF3")]),
+            [],
+            "当前活动自己不收起"
+        )
+    }
+
+    /// 冷启动时系统把新活动排在已结束的旧活动前面（2026-10-20 M5 实测）：不能按列出顺序判断先后。
+    func testStartupDismissesEndedCardsRegardlessOfListOrder() {
+        let ended = [(id: "old", hostTag: "6AF3")]
+        XCTAssertEqual(LiveActivityHostFilter.supersededToEnd(ended, current: [(id: "new", hostTag: "6AF3")]), ["old"])
+        XCTAssertEqual(
+            LiveActivityHostFilter.supersededToEnd(ended, current: [(id: "other", hostTag: "1B2C")]),
+            [],
+            "另一台 Mac 的新活动不收起这台的已结束卡"
+        )
+    }
+
     func testLocalStateSeedsFromSessions() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         XCTAssertNil(LiveActivityLocalState.make(sessions: [
