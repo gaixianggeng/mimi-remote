@@ -135,6 +135,8 @@ struct UnifiedWorkbenchShell: View {
                 synchronizeSidebarLifecycle()
                 workspaceRuntimeSelection.reset()
                 workspaceBrowseSelection.reset()
+                // 会话 ID 只在同一台电脑内唯一，换电脑后旧历史不能再用于 ⌘[ / ⌘]。
+                sessionHistory = WorkbenchSessionHistory()
             }
             .onChange(of: preferredWorkspaceRuntimeRawValue) { _, _ in
                 workspaceRuntimeSelection.reset()
@@ -1638,7 +1640,10 @@ struct UnifiedWorkbenchShell: View {
 
     private func stepSessionHistory(back: Bool, layout: WorkbenchLayout) {
         var history = sessionHistory
-        let isAvailable: (SessionID) -> Bool = { id in sessionStore.sessions.contains { $0.id == id } }
+        // 已归档的会话仍留在 sessions 里，只是从列表投影中隐藏；前后切换要一起跳过。
+        let isAvailable: (SessionID) -> Bool = { id in
+            !sessionStore.archivedSessionIDs.contains(id) && sessionStore.sessions.contains { $0.id == id }
+        }
         let target = back ? history.goBack(isAvailable: isAvailable) : history.goForward(isAvailable: isAvailable)
         sessionHistory = history
         if let target {
