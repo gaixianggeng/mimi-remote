@@ -54,41 +54,75 @@ struct MimiTurnActivityTimer: View {
     }
 }
 
+/// 锁屏卡片与系统通知同一套读法（#857）：左侧 App 图标，标题一行（右侧次要色计时，
+/// 位置同通知的时间戳），下面一行状态。状态色只留在小圆点上，文字用次要色，
+/// 与通知正文同一档；背景由 Widget 设成半透明，和通知的磨砂底一致。
 struct MimiTurnActivityLockScreenView: View {
     let presentation: MimiTurnActivityPresentation
+    let appIcon: Image
     let isStale: Bool
     let staleText: String
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            MimiTurnActivityStatusBadge(status: presentation.status, diameter: 40)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(presentation.title)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .privacySensitive(presentation.hasSessionTitle)
-                if let subtitle = presentation.subtitle {
-                    Text(subtitle)
+            appIcon
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 38, height: 38)
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(presentation.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .privacySensitive(presentation.hasSessionTitle)
+                    Spacer(minLength: 4)
+                    if presentation.showsTimer {
+                        MimiTurnActivityTimer(startDate: presentation.startDate, maxWidth: 64)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                MimiTurnActivityLockScreenStatusLine(presentation: presentation)
+                if isStale {
+                    Text(staleText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .privacySensitive()
                 }
-                MimiTurnActivityStatusLine(presentation: presentation)
-                if isStale {
-                    Text(staleText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            Spacer(minLength: 8)
-            if presentation.showsTimer {
-                MimiTurnActivityTimer(startDate: presentation.startDate)
-                    .font(.title3.weight(.semibold))
             }
         }
-        .padding(16)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// 锁屏卡片第二行：「● 运行中 · 项目」。多会话时换成汇总；项目名只在缓存命中时出现。
+struct MimiTurnActivityLockScreenStatusLine: View {
+    let presentation: MimiTurnActivityPresentation
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 6) {
+            Circle()
+                .fill(MimiTurnActivityStyle.tint(presentation.status))
+                .frame(width: 7, height: 7)
+                .accessibilityHidden(true)
+            Text(presentation.summaryText ?? presentation.statusText)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .layoutPriority(1)
+            if let subtitle = presentation.subtitle {
+                Text(verbatim: "· " + subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .privacySensitive()
+            }
+        }
         .accessibilityElement(children: .combine)
     }
 }

@@ -10,10 +10,14 @@ struct MimiTurnLiveActivityWidget: Widget {
             let presentation = Self.presentation(context)
             MimiTurnActivityLockScreenView(
                 presentation: presentation,
+                appIcon: Image("LiveActivityAppIcon"),
                 isStale: context.isStale,
                 staleText: Self.localize("live_activity.stale")
             )
             .widgetURL(presentation.deepLink)
+            // 不设底色时系统给不透明黑底，和旁边磨砂的通知卡片不是一套；透明底让系统
+            // 按通知同样的方式铺半透明材质（#857）。
+            .activityBackgroundTint(Color.clear)
         } dynamicIsland: { context in
             let presentation = Self.presentation(context)
             let activeCount = context.state.runningCount + context.state.needsYouCount

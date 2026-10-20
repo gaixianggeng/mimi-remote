@@ -155,7 +155,7 @@ targets:
         CURRENT_PROJECT_VERSION: "100098"
         MARKETING_VERSION: "2.0.1"
         SWIFT_EMIT_LOC_STRINGS: "NO"
-  # 通知服务扩展：推送展示前在设备上把「Codex 消息」改写成会话标题（gh-418）。
+  # 通知服务扩展：推送展示前在设备上把「Codex」改写成会话标题（gh-418）。
   # 只依赖 Foundation / CryptoKit / UserNotifications，共享的四个源文件必须能在
   # APPLICATION_EXTENSION_API_ONLY 下编译；标题来自 App 写入 App Group 的本地缓存。
   MimiNotificationServiceExtension:
