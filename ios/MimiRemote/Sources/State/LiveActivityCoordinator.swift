@@ -32,7 +32,8 @@ final class LiveActivityCoordinator: ObservableObject {
         case ready
         /// 推送服务或 agentd 拒绝登记（例如推送服务尚未升级）；下次回到前台重试。
         case failed
-        /// 关闭或换绑后还有票据没撤销成功；回到前台时重试，期间不登记新票据。
+        /// 已关闭，但还有票据没向推送服务撤销成功；回到前台时重试。只在关闭状态下出现，
+        /// 从不阻塞重新开启或绑定另一台 Mac。
         case disablePending
     }
 
@@ -56,6 +57,8 @@ final class LiveActivityCoordinator: ObservableObject {
     var makeClient: ((String) async throws -> AgentAPIClient)?
     /// 档案的 agentd installation_id，用来在本机算出 hostTag。
     var installationIDForProfile: ((String) -> String?)?
+    /// 档案是否还在。档案删掉后它的 agentd 上没有可注销的设备，注销这一步视为完成。
+    var profileExists: ((String) -> Bool)?
 
     private var hostSupport: [String: (supported: Bool, hostTag: String?)] = [:]
     private var latestStartToken: String?
@@ -87,8 +90,12 @@ final class LiveActivityCoordinator: ObservableObject {
         #endif
     }
 
-    func attach(lockScreenStore: LockScreenApprovalStore, sessionStore: SessionStore, appStore: AppStore) {
+    func attach(lockScreenStore: LockScreenApprovalStore) {
         self.lockScreenStore = lockScreenStore
+    }
+
+    func attach(lockScreenStore: LockScreenApprovalStore, sessionStore: SessionStore, appStore: AppStore) {
+        attach(lockScreenStore: lockScreenStore)
         startObservingActivities()
         // 会话列表在流式回复期间持续变化；按秒节流，只关心「有没有会话在跑」的跳变。
         sessionStore.$sessions
@@ -196,19 +203,18 @@ final class LiveActivityCoordinator: ObservableObject {
     }
 
     private func reconcileBinding() async {
-        if let record = ticketStore.load(), record.isPendingRemoval {
-            // 上次关闭没撤销完：先补完，补不完就保持关闭未完成，不登记新票据。
-            await teardown(unregisterRemote: record.pendingRemoteUnregister == true)
-            if ticketStore.load()?.isPendingRemoval == true { return }
-        }
+        // 上次关闭没撤销完的票据先补撤销；补不完也照常往下走，不阻塞重新开启。
+        await drainBacklog()
         guard isToggleOn else {
-            availability = .off
+            availability = closedAvailability(.off)
             return
         }
         guard LiveActivityPreferences.isEffective(in: defaults), let binding = currentBinding() else {
-            availability = .requiresNotifications
             // 关闭消息通知时 agentd 已随设备注销删掉活动票据，这里只撤销与清理本机。
             await teardown(unregisterRemote: false)
+            availability = LiveActivityPreferences.isEffective(in: defaults)
+                ? .requiresNotifications
+                : closedAvailability(.requiresNotifications)
             return
         }
         if let record = ticketStore.load(),
@@ -236,8 +242,7 @@ final class LiveActivityCoordinator: ObservableObject {
         guard isToggleOn, LiveActivityPreferences.isEffective(in: defaults),
               let binding = currentBinding(),
               hostSupport[binding.profileID]?.supported == true,
-              Self.systemAllowsActivities,
-              ticketStore.load()?.isPendingRemoval != true else {
+              Self.systemAllowsActivities else {
             return nil
         }
         return (binding, providerClientFactory(binding.providerURL))
@@ -357,43 +362,70 @@ final class LiveActivityCoordinator: ObservableObject {
         try? await providerClientFactory(record.providerURL).revokeTicket(entry.ticket)
     }
 
-    /// 结束本机全部活动并撤销已登记的票据。agentd 侧：关闭开关时显式注销；关闭消息通知
-    /// 或换绑时设备注销已经一并删掉，不再联系。记录先标记为待删除再联系远端，任何一步
-    /// 失败都保留剩余部分，回到前台时由 `reconcileBinding` 重试。
+    /// 结束本机全部活动，把已登记的票据移进待撤销队列后清掉当前记录，再尽力撤销。
+    /// agentd 侧：关闭开关时显式注销；关闭消息通知或换绑时设备注销已经一并删掉，不再联系。
     private func teardown(unregisterRemote: Bool) async {
         endActivities { _ in true }
         latestUpdateTokens.removeAll()
-        guard var record = ticketStore.load() else { return }
-        record.pendingRemoval = true
-        if unregisterRemote {
-            record.pendingRemoteUnregister = true
+        if let record = ticketStore.load() {
+            var backlog = ticketStore.loadBacklog() ?? LiveActivityRevocationBacklog()
+            backlog.append(record)
+            if unregisterRemote {
+                backlog.unregisterProfileID = record.profileID
+            }
+            // 先落盘队列再删记录：中途被杀也不会丢掉还没撤销的票据。
+            ticketStore.saveBacklog(backlog)
+            ticketStore.delete()
         }
-        ticketStore.save(record)
+        await drainBacklog()
+    }
+
+    /// 撤销待撤销队列。失败的部分留到下次回到前台；它不阻塞任何登记。
+    private func drainBacklog() async {
+        guard var backlog = ticketStore.loadBacklog() else { return }
+        if isToggleOn, LiveActivityPreferences.isEffective(in: defaults) {
+            // 已重新开启：新登记的票据会覆盖旧的，再注销反而会删掉新票据。
+            backlog.unregisterProfileID = nil
+        }
         let deviceID = lockScreenStore?.deviceID ?? ""
         let makeClient = self.makeClient
-        let profileID = record.profileID
-        let provider = providerClientFactory(record.providerURL)
+        let profileExists = self.profileExists
+        let providerClientFactory = self.providerClientFactory
         let remaining = await LiveActivityTicketRevocation.run(
-            record: record,
-            unregister: {
-                guard let makeClient, !deviceID.isEmpty else {
-                    throw LockScreenApprovalRoutingError.sourceProfileUnavailable
+            backlog: backlog,
+            unregister: { profileID in
+                guard !deviceID.isEmpty, let makeClient, profileExists?(profileID) == true else {
+                    throw LiveActivityRevocationError.hostGone
                 }
-                try await makeClient(profileID).unregisterLiveActivity(deviceID: deviceID)
+                do {
+                    try await makeClient(profileID).unregisterLiveActivity(deviceID: deviceID)
+                } catch let error where LiveActivityTicketRevocation.isHostGone(error) {
+                    throw LiveActivityRevocationError.hostGone
+                }
             },
-            revoke: { try await provider.revokeTicket($0) }
+            revoke: { try await providerClientFactory($0.providerURL).revokeTicket($0.ticket) }
         )
+        ticketStore.saveBacklog(remaining)
         if let remaining {
-            ticketStore.save(remaining)
-            availability = .disablePending
-            recordDiagnostic("clear_pending", reason: "tickets=\(remaining.allTickets.count)")
+            recordDiagnostic("clear_pending", reason: "tickets=\(remaining.tickets.count)")
         } else {
-            ticketStore.delete()
-            if availability == .disablePending {
-                availability = isToggleOn ? .pending : .off
-            }
-            recordDiagnostic("cleared", reason: unregisterRemote ? "toggle_off" : "binding_changed")
+            recordDiagnostic("cleared", reason: nil)
         }
+        if !(isToggleOn && LiveActivityPreferences.isEffective(in: defaults)) {
+            availability = remaining != nil ? .disablePending : (isToggleOn ? .requiresNotifications : .off)
+        } else if availability == .disablePending {
+            availability = .pending
+        }
+    }
+
+    /// 已关闭（开关或消息通知）时的显示：还有票据没撤销完就是「关闭尚未完成」。
+    private func closedAvailability(_ fallback: Availability) -> Availability {
+        ticketStore.loadBacklog() != nil ? .disablePending : fallback
+    }
+
+    /// 测试用：等待已排队的登记、注销与清理完成。
+    func waitForPendingOperations() async {
+        await operationTail?.value
     }
 
     // MARK: - 串行化
@@ -448,8 +480,7 @@ final class LiveActivityCoordinator: ObservableObject {
             for await activity in Activity<MimiTurnActivityAttributes>.activityUpdates {
                 guard let self else { return }
                 // 关闭后、撤销确认前，推送服务仍可能凭旧 Ticket 远程拉起：本机立即结束。
-                guard self.isToggleOn, LiveActivityPreferences.isEffective(in: self.defaults),
-                      self.ticketStore.load()?.isPendingRemoval != true else {
+                guard self.isToggleOn, LiveActivityPreferences.isEffective(in: self.defaults) else {
                     Task { await activity.end(nil, dismissalPolicy: .immediate) }
                     continue
                 }

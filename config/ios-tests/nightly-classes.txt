@@ -54,6 +54,7 @@ HostStatusStoreTests
 HostWarmSnapshotTests
 InAppNoticeRulesTests
 LiveActivityCompatibilityTests
+LiveActivityCoordinatorRevocationTests
 LiveActivityPreferencesTests
 LiveActivityRoutingTests
 LogStoreTests

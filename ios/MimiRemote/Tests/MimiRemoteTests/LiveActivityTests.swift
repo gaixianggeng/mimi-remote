@@ -244,38 +244,54 @@ final class LiveActivityPreferencesTests: XCTestCase {
         XCTAssertFalse(record.matches(profileID: "mac", providerURL: "https://q", hostTag: "6AF3"), "换推送服务后旧票据作废")
     }
 
-    /// 关闭时记录要等 agentd 注销与推送服务撤销都确认后才删除；失败的部分留着重试。
-    func testRevocationKeepsWhateverFailed() async {
+    /// 撤销队列：失败的部分留着重试；主机已经不在时注销视为完成，过期票据直接丢弃。
+    func testRevocationKeepsOnlyRetryableWork() async {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
         var record = LiveActivityTicketRecord(profileID: "mac", providerURL: "https://p", hostTag: "6AF3")
-        record.start = .init(ticket: "s", expiresAt: Date.distantFuture, tokenFingerprint: "fp")
-        record.updates["A"] = .init(ticket: "u", expiresAt: Date.distantFuture, tokenFingerprint: "fa")
-        record.pendingRemoteUnregister = true
-        struct Failure: Error {}
+        record.start = .init(ticket: "s", expiresAt: now.addingTimeInterval(86_400), tokenFingerprint: "fp")
+        record.updates["A"] = .init(ticket: "u", expiresAt: now.addingTimeInterval(3_600), tokenFingerprint: "fa")
+        record.updates["B"] = .init(ticket: "old", expiresAt: now.addingTimeInterval(-1), tokenFingerprint: "fb")
+        var backlog = LiveActivityRevocationBacklog()
+        backlog.append(record)
+        backlog.append(record)
+        XCTAssertEqual(backlog.tickets.map(\.ticket), ["s", "old", "u"], "同一张票据只排一次")
+        backlog.unregisterProfileID = "mac"
 
-        let allOK = await LiveActivityTicketRevocation.run(record: record, unregister: {}, revoke: { _ in })
-        XCTAssertNil(allOK, "全部成功后记录可以删除")
-
-        let agentdDown = await LiveActivityTicketRevocation.run(
-            record: record, unregister: { throw Failure() }, revoke: { _ in }
+        var revoked: [String] = []
+        let allOK = await LiveActivityTicketRevocation.run(
+            backlog: backlog, now: now, unregister: { _ in }, revoke: { revoked.append($0.ticket) }
         )
-        XCTAssertEqual(agentdDown?.pendingRemoteUnregister, true, "agentd 注销失败要保留这一步")
-        XCTAssertEqual(agentdDown?.isPendingRemoval, true)
-        XCTAssertEqual(agentdDown?.allTickets, [], "推送服务撤销照常完成")
+        XCTAssertNil(allOK)
+        XCTAssertEqual(revoked, ["s", "u"], "过期票据不再撤销")
+
+        let offline = await LiveActivityTicketRevocation.run(
+            backlog: backlog, now: now, unregister: { _ in throw URLError(.notConnectedToInternet) }, revoke: { _ in }
+        )
+        XCTAssertEqual(offline?.unregisterProfileID, "mac", "暂时联系不上才保留注销")
+        XCTAssertEqual(offline?.tickets, [], "推送服务撤销照常完成")
+
+        let hostGone = await LiveActivityTicketRevocation.run(
+            backlog: backlog, now: now, unregister: { _ in throw LiveActivityRevocationError.hostGone }, revoke: { _ in }
+        )
+        XCTAssertNil(hostGone, "主机已经不在时注销视为完成，不能永远卡在关闭未完成")
 
         let providerDown = await LiveActivityTicketRevocation.run(
-            record: record, unregister: {}, revoke: { ticket in if ticket == "s" { throw Failure() } }
+            backlog: backlog, now: now, unregister: { _ in },
+            revoke: { if $0.ticket == "s" { throw PushProviderError.rejected(status: 503) } }
         )
-        XCTAssertEqual(providerDown?.allTickets, ["s"], "只保留没撤销成功的票据")
-        XCTAssertNil(providerDown?.pendingRemoteUnregister)
+        XCTAssertEqual(providerDown?.tickets.map(\.ticket), ["s"], "只保留没撤销成功的票据")
+        XCTAssertNil(providerDown?.unregisterProfileID)
+    }
 
-        var bindingChanged = record
-        bindingChanged.pendingRemoteUnregister = nil
-        var unregisterCalls = 0
-        let skipped = await LiveActivityTicketRevocation.run(
-            record: bindingChanged, unregister: { unregisterCalls += 1 }, revoke: { _ in }
-        )
-        XCTAssertNil(skipped)
-        XCTAssertEqual(unregisterCalls, 0, "换绑或关闭消息通知时 agentd 已随设备注销删掉票据，不再联系")
+    func testHostGoneClassification() {
+        XCTAssertTrue(LiveActivityTicketRevocation.isHostGone(LiveActivityRevocationError.hostGone))
+        for status in [400, 401, 403, 404, 409] {
+            XCTAssertTrue(LiveActivityTicketRevocation.isHostGone(AgentAPIError.server(status: status, message: "")), "\(status)")
+        }
+        for status in [408, 429, 500, 502, 503] {
+            XCTAssertFalse(LiveActivityTicketRevocation.isHostGone(AgentAPIError.server(status: status, message: "")), "\(status)")
+        }
+        XCTAssertFalse(LiveActivityTicketRevocation.isHostGone(URLError(.timedOut)))
     }
 
     func testTicketStoreRoundTripsThroughKeychain() {
@@ -291,6 +307,195 @@ final class LiveActivityPreferencesTests: XCTestCase {
         store.delete()
         XCTAssertNil(store.load())
     }
+}
+
+/// 关闭后撤销没完成时不能卡住：删掉档案或重新开启都要能走出「关闭尚未完成」。
+@MainActor
+final class LiveActivityCoordinatorRevocationTests: XCTestCase {
+    private var suiteName: String!
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "LiveActivityCoordinatorRevocationTests.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
+        RevocationStubURLProtocol.reset()
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: suiteName)
+        RevocationStubURLProtocol.reset()
+        super.tearDown()
+    }
+
+    private func boundLockScreenStore(profileID: String) throws -> LockScreenApprovalStore {
+        let keychain = TestKeychainOperations()
+        let identityStore = PushInstallationIdentityStore(keychain: keychain)
+        try identityStore.save(PushInstallationIdentity(deviceID: "dev-test", installationID: "ins-test"))
+        defaults.set(true, forKey: "lockScreenApproval.enabled")
+        defaults.set(profileID, forKey: "lockScreenApproval.registeredProfileID")
+        defaults.set("https://push.example/mimi-push", forKey: "lockScreenApproval.registeredProviderURL")
+        return LockScreenApprovalStore(
+            defaults: defaults, ticketStore: PushTicketStore(keychain: keychain), identityStore: identityStore
+        )
+    }
+
+    private func seededTicketStore(profileID: String) -> LiveActivityTicketStore {
+        let store = LiveActivityTicketStore(keychain: TestKeychainOperations())
+        var record = LiveActivityTicketRecord(
+            profileID: profileID, providerURL: "https://push.example/mimi-push", hostTag: "6AF3"
+        )
+        record.start = .init(ticket: "s", expiresAt: Date().addingTimeInterval(86_400), tokenFingerprint: "fp")
+        record.updates["A"] = .init(ticket: "u", expiresAt: Date().addingTimeInterval(3_600), tokenFingerprint: "fa")
+        store.save(record)
+        return store
+    }
+
+    private func makeCoordinator(
+        ticketStore: LiveActivityTicketStore,
+        lockScreenStore: LockScreenApprovalStore,
+        profileExists: @escaping (String) -> Bool
+    ) -> LiveActivityCoordinator {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RevocationStubURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let coordinator = LiveActivityCoordinator(
+            defaults: defaults,
+            ticketStore: ticketStore,
+            environment: .sandbox,
+            providerClientFactory: { PushProviderClient(baseURL: $0, session: session) }
+        )
+        coordinator.attach(lockScreenStore: lockScreenStore)
+        // 那台 Mac 离线：agentd 注销只会超时。
+        coordinator.makeClient = { _ in throw URLError(.notConnectedToInternet) }
+        coordinator.profileExists = profileExists
+        coordinator.installationIDForProfile = { _ in "install-test" }
+        return coordinator
+    }
+
+    /// 复现：Mac 离线时关闭实时活动，再删掉那台 Mac 的档案，之后必须能重新开启。
+    func testDeletedProfileDoesNotLeaveDisablePendingForever() async throws {
+        let tickets = seededTicketStore(profileID: "mac-a")
+        var profiles: Set<String> = ["mac-a"]
+        let coordinator = makeCoordinator(
+            ticketStore: tickets,
+            lockScreenStore: try boundLockScreenStore(profileID: "mac-a"),
+            profileExists: { profiles.contains($0) }
+        )
+        RevocationStubURLProtocol.status = 503
+
+        coordinator.setToggle(false)
+        await coordinator.waitForPendingOperations()
+        XCTAssertEqual(coordinator.availability, .disablePending)
+        XCTAssertNil(tickets.load(), "当前记录立即清掉，待撤销的票据移进队列")
+        XCTAssertEqual(tickets.loadBacklog()?.unregisterProfileID, "mac-a", "Mac 只是离线：注销留着重试")
+        XCTAssertEqual(tickets.loadBacklog()?.tickets.count, 2)
+
+        profiles.remove("mac-a")
+        RevocationStubURLProtocol.status = 200
+        coordinator.notificationBindingDidChange()
+        await coordinator.waitForPendingOperations()
+        XCTAssertNil(tickets.loadBacklog(), "档案删掉后注销视为完成，推送服务撤销成功即清空")
+        XCTAssertEqual(coordinator.availability, .off)
+        XCTAssertEqual(Set(RevocationStubURLProtocol.revokedTickets()), ["s", "u"])
+
+        coordinator.setToggle(true)
+        await coordinator.waitForPendingOperations()
+        XCTAssertNotEqual(coordinator.availability, .disablePending)
+        XCTAssertNotEqual(coordinator.availability, .off)
+    }
+
+    /// 推送服务还没恢复时重新开启：不能被旧票据挡住，也不能再去注销（会删掉新登记的票据）。
+    func testReenableIsNotBlockedByUnrevokedTickets() async throws {
+        let tickets = seededTicketStore(profileID: "mac-a")
+        let coordinator = makeCoordinator(
+            ticketStore: tickets,
+            lockScreenStore: try boundLockScreenStore(profileID: "mac-a"),
+            profileExists: { _ in true }
+        )
+        RevocationStubURLProtocol.status = 503
+
+        coordinator.setToggle(false)
+        await coordinator.waitForPendingOperations()
+        XCTAssertEqual(coordinator.availability, .disablePending)
+
+        coordinator.setToggle(true)
+        await coordinator.waitForPendingOperations()
+        XCTAssertNotEqual(coordinator.availability, .disablePending)
+        XCTAssertNil(tickets.loadBacklog()?.unregisterProfileID, "重新开启后放弃对旧绑定的注销")
+        XCTAssertEqual(tickets.loadBacklog()?.tickets.count, 2, "没撤销成功的票据继续留着重试")
+
+        RevocationStubURLProtocol.status = 200
+        coordinator.notificationBindingDidChange()
+        await coordinator.waitForPendingOperations()
+        XCTAssertNil(tickets.loadBacklog())
+    }
+
+    /// 没有设备身份或档案已删时，注销永远不会成功，一次就算完成。
+    func testUnregisterWithoutHostCompletesImmediately() async throws {
+        let tickets = seededTicketStore(profileID: "mac-gone")
+        let coordinator = makeCoordinator(
+            ticketStore: tickets,
+            lockScreenStore: try boundLockScreenStore(profileID: "mac-gone"),
+            profileExists: { _ in false }
+        )
+        RevocationStubURLProtocol.status = 200
+        coordinator.setToggle(false)
+        await coordinator.waitForPendingOperations()
+        XCTAssertNil(tickets.loadBacklog())
+        XCTAssertEqual(coordinator.availability, .off)
+    }
+}
+
+private final class RevocationStubURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var currentStatus = 200
+    private static var revoked: [String] = []
+
+    static var status: Int {
+        get { lock.withLock { currentStatus } }
+        set { lock.withLock { currentStatus = newValue } }
+    }
+
+    static func reset() {
+        lock.withLock {
+            currentStatus = 200
+            revoked.removeAll()
+        }
+    }
+
+    static func revokedTickets() -> [String] {
+        lock.withLock { revoked }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        var data = request.httpBody ?? Data()
+        if data.isEmpty, let stream = request.httpBodyStream {
+            stream.open()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                guard count > 0 else { break }
+                data.append(buffer, count: count)
+            }
+            stream.close()
+        }
+        let status = Self.status
+        if status == 200,
+           let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let ticket = body["ticket"] as? String {
+            Self.lock.withLock { Self.revoked.append(ticket) }
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("{}".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
 
 /// 点按 Live Activity 只在当前档案就是那台 Mac 时映射到会话；前台本机拉起的初始状态。

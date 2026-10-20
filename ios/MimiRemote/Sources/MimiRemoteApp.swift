@@ -534,6 +534,9 @@ struct MimiRemoteApp: App {
 		liveActivityCoordinator.installationIDForProfile = { [weak appStore] profileID in
 			appStore?.connectionProfiles.first { $0.id == profileID }?.installationID
 		}
+		liveActivityCoordinator.profileExists = { [weak appStore] profileID in
+			appStore?.connectionProfiles.contains { $0.id == profileID } ?? false
+		}
 		liveActivityCoordinator.attach(
 			lockScreenStore: lockScreenApprovalStore,
 			sessionStore: sessionStore,
