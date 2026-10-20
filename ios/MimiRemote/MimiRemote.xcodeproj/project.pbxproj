@@ -34,6 +34,7 @@
 		0C41E339A7DC4147C8EA51B1 /* ThirdPartyNoticesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A212E188D5551C6460E12DA8 /* ThirdPartyNoticesView.swift */; };
 		0CA035C77C4BCA97FEE6B5D1 /* CodexAsyncQuestionReply.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DAA9AAAC6C03F274C313FDC /* CodexAsyncQuestionReply.swift */; };
 		0D530EB7F7A92480C440E9CD /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 150A6F676C073C648C42A6BA /* NotificationService.swift */; };
+		0D745FEAB76C02BF8AE51B31 /* ComposerLayoutTier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9659964FD68DDCAF325468BA /* ComposerLayoutTier.swift */; };
 		0DC788182243F2C8A136A742 /* CodexAppServerInteractionLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7F06515CE242219649D0218 /* CodexAppServerInteractionLifecycle.swift */; };
 		0E20F441A1A1B56E39868A44 /* WorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D23870E31FFF787AC7C14C0 /* WorkspaceView.swift */; };
 		0E6CAB6A5BEF1833C60EA93E /* testLoadingActivityKeepsCardHeight.loading-compact.png in Resources */ = {isa = PBXBuildFile; fileRef = 6C16F8F9EAFD75FBE25CC2E0 /* testLoadingActivityKeepsCardHeight.loading-compact.png */; };
@@ -987,6 +988,7 @@
 		9425E7C1D3C83B263A457A83 /* MessageTextDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageTextDocument.swift; sourceTree = "<group>"; };
 		951D8AD66E7C6627F884BB06 /* HarnessSessionRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessSessionRuntime.swift; sourceTree = "<group>"; };
 		95ECE5E8E62AED26C5835D62 /* ConversationScrollDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationScrollDiagnostics.swift; sourceTree = "<group>"; };
+		9659964FD68DDCAF325468BA /* ComposerLayoutTier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerLayoutTier.swift; sourceTree = "<group>"; };
 		96828E6273D517310CB01F52 /* SettingsDashboardViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsDashboardViews.swift; sourceTree = "<group>"; };
 		968975C14D11B3E505D38FEE /* testRunningProcessStepsStayCompactAboveLiveStatus.phone-light.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testRunningProcessStepsStayCompactAboveLiveStatus.phone-light.png"; sourceTree = "<group>"; };
 		96CBD8DCD9F60D5DEDEDB480 /* testQuotaCardOnIPhoneLight.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testQuotaCardOnIPhoneLight.1.png; sourceTree = "<group>"; };
@@ -1775,6 +1777,7 @@
 				C52C65CD4E17DBD136DF7CDD /* ComposerContextWindowViews.swift */,
 				FDBE622C5ED274C1DA9803DB /* ComposerInputExtensions.swift */,
 				B8D459194699DA831A5D691F /* ComposerLayoutHandoff.swift */,
+				9659964FD68DDCAF325468BA /* ComposerLayoutTier.swift */,
 				32B0C62898434614552F1165 /* ComposerModelSelection.swift */,
 				31F27FBCBFFB65870C102F16 /* ComposerPermissionMenu.swift */,
 				41787BD804E7C9AD16448E38 /* ComposerRequestCards.swift */,
@@ -2885,6 +2888,7 @@
 				C776AF337D308E1110251D0F /* ComposerContextWindowViews.swift in Sources */,
 				0B05C5BFB8B5EFA1A20EFF71 /* ComposerInputExtensions.swift in Sources */,
 				FCABEF42B02AD0D3A87A33DF /* ComposerLayoutHandoff.swift in Sources */,
+				0D745FEAB76C02BF8AE51B31 /* ComposerLayoutTier.swift in Sources */,
 				2159AEC10EBC907D803FD5BC /* ComposerModelSelection.swift in Sources */,
 				64BECA39B3A16BEDCB197DE9 /* ComposerPermissionMenu.swift in Sources */,
 				B94659A58D5F94B552D90D4F /* ComposerRequestCards.swift in Sources */,

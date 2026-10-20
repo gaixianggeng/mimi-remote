@@ -152,16 +152,12 @@ struct VoiceMicButton: View {
                     Image(
                         systemName: state == .recording
                             ? "stop.fill"
-                            : (usesPhoneStyle ? "mic" : "mic.fill")
+                            : "mic"
                     )
                 }
             }
-            .font(
-                themeStore.uiFont(
-                    size: usesPhoneStyle ? 17 : 16,
-                    weight: usesPhoneStyle ? .medium : .semibold
-                )
-            )
+            // 与工具栏其它图标同一尺寸与字重（#835 规则 3.6）。
+            .font(themeStore.uiFont(size: 17, weight: .medium))
             // 空闲态和其它工具按钮保持中性；录音、准备和转写才使用主题紫表达活动状态。
             .foregroundStyle(
                 state.isActive

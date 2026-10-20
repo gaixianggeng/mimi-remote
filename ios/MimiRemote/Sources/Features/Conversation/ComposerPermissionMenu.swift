@@ -12,6 +12,8 @@ struct ComposerPermissionMenu: View {
     let tint: Color
     let reduceMotion: Bool
     let usesPhoneStyle: Bool
+    /// 窄档收进「选项」菜单时作为子菜单出现，入口用普通菜单行而不是工具栏胶囊（#835 D3）。
+    var presentsAsSubmenu = false
     let onSelectMode: (ComposerPermissionMode) -> Void
     let onSelectProfile: (CodexAppServerPermissionProfileSummary) -> Void
 
@@ -50,21 +52,29 @@ struct ComposerPermissionMenu: View {
                 }
             }
         } label: {
-            ComposerToolbarControlLabel(
-                title: labelTitle,
-                systemImage: labelSystemImage,
-                trailingSystemImage: nil,
-                isSelected: false,
-                tint: tint,
-                titleMaxWidth: nil,
-                accessibilityLabel: L10n.text("ui.permission_mode"),
-                usesPhoneStyle: usesPhoneStyle,
-                usesCondensedTitle: false
-            )
+            if presentsAsSubmenu {
+                Label(labelTitle, systemImage: labelSystemImage)
+            } else {
+                toolbarLabel
+            }
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.permission_mode"))
         .accessibilityValue(permissionAccessibilityValue)
+    }
+
+    private var toolbarLabel: some View {
+        ComposerToolbarControlLabel(
+            title: labelTitle,
+            systemImage: labelSystemImage,
+            trailingSystemImage: nil,
+            isSelected: false,
+            tint: tint,
+            titleMaxWidth: nil,
+            accessibilityLabel: L10n.text("ui.permission_mode"),
+            usesPhoneStyle: usesPhoneStyle,
+            usesCondensedTitle: false
+        )
     }
 
     private func modeIcon(_ mode: ComposerPermissionMode) -> String {
