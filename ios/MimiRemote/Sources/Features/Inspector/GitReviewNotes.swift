@@ -108,7 +108,7 @@ struct GitReviewNotesHandoff: Equatable {
     }
 }
 
-enum ReviewNotesAgentUnavailableReason: Equatable {
+enum ReviewNotesAgentUnavailableReason: Hashable {
     case noSession
     case otherWorkspace
     case heldOnComputer

@@ -231,6 +231,32 @@ final class ReviewNotesAgentHandoffTests: XCTestCase {
         XCTAssertNil(handoff.sentSessionTitle(for: [first, second], workspacePath: workspace))
     }
 
+    func testCardKeepsSentFeedbackAndExplainsWhyResendIsDisabled() {
+        func box(_ target: ReviewNotesAgentTarget, sent: String?) -> GitReviewNotesAgentBox {
+            GitReviewNotesAgentBox(
+                commentCount: 2,
+                target: target,
+                sentSessionTitle: sent,
+                targetSessionTitle: "修复登录",
+                onSend: {},
+                onClear: {}
+            )
+        }
+
+        XCTAssertEqual(box(.session("s1"), sent: nil).statusLines, [.ready(sessionTitle: "修复登录")])
+        XCTAssertTrue(box(.session("s1"), sent: nil).canSend)
+        XCTAssertEqual(box(.session("s1"), sent: "修复登录").statusLines, [.sent(sessionTitle: "修复登录")])
+
+        let afterTargetLost = box(.unavailable(.otherWorkspace), sent: "修复登录")
+        XCTAssertEqual(
+            afterTargetLost.statusLines,
+            [.sent(sessionTitle: "修复登录"), .unavailable(.otherWorkspace)],
+            "发过之后目标不可用，仍要说明「再次发送」为什么不能点"
+        )
+        XCTAssertFalse(afterTargetLost.canSend)
+        XCTAssertEqual(box(.unavailable(.readOnly), sent: nil).statusLines, [.unavailable(.readOnly)])
+    }
+
     // MARK: - Helpers
 
     private func resolve(

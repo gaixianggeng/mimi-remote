@@ -441,25 +441,15 @@ struct DiffPanelView: View {
         let comments = selectedReviewComments
         let path = gitPath ?? ""
         let target = sessionStore.reviewNotesAgentTarget(workspacePath: path)
-        let status: GitReviewNotesAgentBox.Status
-        if let sentTitle = reviewNotesHandoff.sentSessionTitle(for: comments, workspacePath: path) {
-            status = .sent(sessionTitle: sentTitle)
-        } else {
-            switch target {
-            case .session(let sessionID):
-                status = .ready(sessionTitle: reviewNotesSessionTitle(sessionID))
-            case .unavailable(let reason):
-                status = .unavailable(reason)
-            }
-        }
-        var canSend = false
-        if case .session = target {
-            canSend = true
+        var targetSessionTitle = ""
+        if case .session(let sessionID) = target {
+            targetSessionTitle = reviewNotesSessionTitle(sessionID)
         }
         return GitReviewNotesAgentBox(
             commentCount: comments.count,
-            status: status,
-            canSend: canSend,
+            target: target,
+            sentSessionTitle: reviewNotesHandoff.sentSessionTitle(for: comments, workspacePath: path),
+            targetSessionTitle: targetSessionTitle,
             onSend: sendReviewNotesToAgent,
             onClear: clearReviewNotes
         )
