@@ -92,9 +92,12 @@ final class LiveActivityCoordinator: ObservableObject {
 
     func attach(lockScreenStore: LockScreenApprovalStore) {
         self.lockScreenStore = lockScreenStore
-        if !isToggleOn {
-            // 上次关闭后进程可能在清理排队前就被结束：启动时补做，票据才会被撤销。
-            enqueue { await self.teardown(unregisterRemote: self.ticketStore.load() != nil) }
+        if !isToggleOn || !LiveActivityPreferences.isEffective(in: defaults) {
+            // 上次关闭（本开关或消息通知）后进程可能在清理排队前就被结束：启动时补做，票据
+            // 才会被撤销。只有关闭本开关时才另外注销 agentd；关闭消息通知时设备注销会一并删掉。
+            enqueue {
+                await self.teardown(unregisterRemote: !self.isToggleOn && self.ticketStore.load() != nil)
+            }
         }
     }
 

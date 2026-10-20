@@ -462,6 +462,25 @@ final class LiveActivityCoordinatorRevocationTests: XCTestCase {
         XCTAssertEqual(coordinator.availability, .disablePending)
     }
 
+    /// 关闭消息通知后进程在清理前被结束：实时活动开关仍开着，启动时也要补做清理；
+    /// 这时不注销 agentd（消息提醒的设备注销会一并删掉），只向推送服务撤销。
+    func testLaunchWithNotificationsOffResumesTeardown() async throws {
+        let tickets = seededTicketStore(profileID: "mac-a")
+        defaults.set(false, forKey: MessageNotificationPreferences.key)
+        RevocationStubURLProtocol.status = 200
+        let coordinator = makeCoordinator(
+            ticketStore: tickets,
+            lockScreenStore: try boundLockScreenStore(profileID: "mac-a"),
+            profileExists: { _ in true }
+        )
+        await coordinator.waitForPendingOperations()
+        XCTAssertTrue(coordinator.isToggleOn)
+        XCTAssertNil(tickets.load())
+        XCTAssertEqual(Set(RevocationStubURLProtocol.revokedTickets()), ["s", "u"])
+        XCTAssertNil(tickets.loadBacklog(), "不排 agentd 注销，撤销成功即清空")
+        XCTAssertEqual(coordinator.availability, .requiresNotifications)
+    }
+
     /// 没有设备身份或档案已删时，注销永远不会成功，一次就算完成。
     func testUnregisterWithoutHostCompletesImmediately() async throws {
         let tickets = seededTicketStore(profileID: "mac-gone")
