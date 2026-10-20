@@ -103,7 +103,12 @@ final class ForegroundRecoveryHistoryOrderingTests: XCTestCase {
 
         let resumeTask = Task { await store.resumeFromForeground() }
         await waitUntil("恢复历史已发出") { client.blockedHistoryCount == 1 }
-        await waitUntil("列表已落地") { client.completedListCount > completedListsBeforeResume }
+        // 客户端返回列表不等于 Store 已应用。恢复 job 是 quiet 的，只有刷新流程应用列表后
+        // 为选中会话补拉并加入它时才会升级为前台反馈；等这一步，再放行历史。
+        await waitUntil("列表已落地并加入在途恢复历史") {
+            store.historyLoadJobsBySessionID[fixture.session.id]?.requiresForegroundReporting == true
+        }
+        XCTAssertGreaterThan(client.completedListCount, completedListsBeforeResume)
         XCTAssertEqual(store.sessionsByID[fixture.session.id]?.updatedAt, advanced.updatedAt)
         client.releaseBlockedHistory()
         await resumeTask.value
