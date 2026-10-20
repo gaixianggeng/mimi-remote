@@ -725,6 +725,13 @@ struct LiveActivityPendingLink: Equatable {
         sessions: [AgentSession]
     ) -> Resolution {
         guard now.timeIntervalSince(createdAt) <= Self.lifetime else { return .drop }
+        // 点按时当前就在另一台 Mac：只打开 App。不能留着等，否则用户一分钟内自己切到那台 Mac
+        // 时会被突然拉进它的会话（#851 评审）。只有档案还没就绪或会话没加载完时才等。
+        if LiveActivityLinkRouting.activeHostMatches(
+            link: link, profiles: profiles, activeProfileID: activeProfileID
+        ) == false {
+            return .drop
+        }
         if let route = LiveActivityLinkRouting.route(
             for: link, profiles: profiles, activeProfileID: activeProfileID, sessions: sessions
         ) {
@@ -744,9 +751,7 @@ enum LiveActivityLinkRouting {
         sessions: [AgentSession]
     ) -> SessionNotificationRoute? {
         guard let activeProfileID,
-              let profile = profiles.first(where: { $0.id == activeProfileID }),
-              let installationID = profile.installationID,
-              NotificationSessionTag.hostTag(installationID: installationID) == link.hostTag else {
+              activeHostMatches(link: link, profiles: profiles, activeProfileID: activeProfileID) == true else {
             return nil
         }
         let match = sessions.first { candidate in
@@ -761,6 +766,22 @@ enum LiveActivityLinkRouting {
             sessionID: session.id,
             runtimeProvider: session.runtimeProvider
         )
+    }
+}
+
+extension LiveActivityLinkRouting {
+    /// 当前档案是不是链接里那台 Mac：nil 表示还判断不了（没有当前档案或还不知道它的安装身份）。
+    static func activeHostMatches(
+        link: MimiTurnActivityLink,
+        profiles: [ConnectionProfile],
+        activeProfileID: String?
+    ) -> Bool? {
+        guard let activeProfileID,
+              let profile = profiles.first(where: { $0.id == activeProfileID }),
+              let installationID = profile.installationID else {
+            return nil
+        }
+        return NotificationSessionTag.hostTag(installationID: installationID) == link.hostTag
     }
 }
 
