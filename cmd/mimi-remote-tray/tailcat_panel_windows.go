@@ -2,10 +2,7 @@
 
 package main
 
-import (
-	"errors"
-	"strings"
-)
+import "errors"
 
 const wmPanelTailcatEnabled = wmApp + 21
 
@@ -46,11 +43,15 @@ func makeTailcatPresentation(status agentStatus, tailcat tailcatTrayStatus, hasT
 	return presentation
 }
 
-// defaultPairingUsesTailcat 在 agentd 只监听本机、Tailcat 已运行时直接展示 Tailcat
-// 二维码：此时默认配对没有手机可达的地址，必然失败。
+// defaultPairingUsesTailcat 在 Tailscale 与局域网都没有开启或不可用、Tailcat 已运行时
+// 直接展示 Tailcat 二维码：此时默认配对没有手机可达的地址，必然失败。listen 是回环
+// 地址并不说明这一点，agentd 可能另外监听 Tailscale 地址，所以只看运行中 agentd 的模块状态。
 func defaultPairingUsesTailcat(status agentStatus, tailcat tailcatTrayStatus, hasTailcat bool) bool {
-	return hasTailcat && tailcat.ready() && status.NetworkStatus != nil &&
-		strings.EqualFold(strings.TrimSpace(status.NetworkStatus.Mode), "loopback")
+	modules := status.ModuleStatus
+	if !hasTailcat || !tailcat.ready() || modules == nil {
+		return false
+	}
+	return !(modules.TailscaleEnabled && modules.TailscaleAvailable) && !(modules.LANEnabled && modules.LANAvailable)
 }
 
 func (p *controlPanel) actionButtonLabel(command uint32) string {

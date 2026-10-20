@@ -20,6 +20,15 @@ type agentStatus struct {
 	ServiceError  string         `json:"service_error"`
 	RuntimeStatus *runtimeStatus `json:"runtime_status"`
 	NetworkStatus *networkStatus `json:"network_status"`
+	ModuleStatus  *moduleStatus  `json:"module_status"`
+}
+
+// moduleStatus 来自正在运行的 agentd，只读取连接方式是否开启、是否可用。
+type moduleStatus struct {
+	TailscaleEnabled   bool `json:"tailscale_enabled"`
+	TailscaleAvailable bool `json:"tailscale_available"`
+	LANEnabled         bool `json:"lan_enabled"`
+	LANAvailable       bool `json:"lan_available"`
 }
 
 type runtimeStatus struct {

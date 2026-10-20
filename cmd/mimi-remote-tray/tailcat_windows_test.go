@@ -124,17 +124,24 @@ func TestTailcatPresentationOnlyOffersToggleForKnownState(t *testing.T) {
 	}
 }
 
-func TestDefaultPairingUsesTailcatOnlyWhenHostIsLoopbackOnly(t *testing.T) {
+func TestDefaultPairingUsesTailcatOnlyWithoutReachableNetwork(t *testing.T) {
 	running := tailcatTrayStatus{Enabled: true, Running: true}
-	loopback := agentStatus{NetworkStatus: &networkStatus{Mode: "loopback"}}
-	tailscale := agentStatus{NetworkStatus: &networkStatus{Mode: "tailscale"}}
-	if !defaultPairingUsesTailcat(loopback, running, true) {
-		t.Fatal("loopback-only host with running Tailcat should open the Tailcat code")
+	// listen 为回环地址时 agentd 仍可能另外监听 Tailscale，不能据此改用 Tailcat。
+	tailscale := agentStatus{
+		NetworkStatus: &networkStatus{Mode: "loopback"},
+		ModuleStatus:  &moduleStatus{TailscaleEnabled: true, TailscaleAvailable: true, LANAvailable: true},
 	}
 	if defaultPairingUsesTailcat(tailscale, running, true) {
-		t.Fatal("Tailscale host should keep the default pairing code")
+		t.Fatal("a host reachable over Tailscale should keep the default pairing code")
 	}
-	if defaultPairingUsesTailcat(loopback, tailcatTrayStatus{Enabled: true}, true) {
+	offline := agentStatus{ModuleStatus: &moduleStatus{TailscaleEnabled: true, LANAvailable: true}}
+	if !defaultPairingUsesTailcat(offline, running, true) {
+		t.Fatal("without an enabled and available network, running Tailcat should open the Tailcat code")
+	}
+	if defaultPairingUsesTailcat(offline, tailcatTrayStatus{Enabled: true}, true) {
 		t.Fatal("Tailcat that is not running must not be selected automatically")
+	}
+	if defaultPairingUsesTailcat(agentStatus{}, running, true) {
+		t.Fatal("unknown module status must keep the default pairing code")
 	}
 }

@@ -33,7 +33,7 @@ $setup = Get-Item .\Mimi-Remote-Setup-*.exe
 
 Windows 防火墙规则和 LAN 监听默认不启用。只有用户明确选择 LAN 访问时，安装器才要求默认网络为“专用网络”，并创建限制为 Private profile 和 `LocalSubnet` 的规则。不得把规则放宽到 Public profile 或任意公网来源。
 
-安装包还内置与 agentd 同版本的实验性 Tailcat 辅助程序 `mimi-tailcat-experiment.exe`，默认关闭。没装 Tailscale、也没开 LAN（例如处在 Public 网络）时，在托盘控制面板点“开启 Tailcat”，或在托盘菜单选“开启 Tailcat…”。确认后 agentd 启动辅助程序，托盘以 agentd 回读的运行状态为准。随后在“配对设备”中点“用 Tailcat”生成 Tailcat 二维码；agentd 只监听本机时会直接显示 Tailcat 二维码。Tailcat 只发起出站连接，不新增防火墙规则：能直连时点对点，否则经 DERP 中继转发，默认中继由 Tailscale 运营。
+安装包还内置与 agentd 同版本的实验性 Tailcat 辅助程序 `mimi-tailcat-experiment.exe`，默认关闭。没装 Tailscale、也没开 LAN（例如处在 Public 网络）时，在托盘控制面板点“开启 Tailcat”，或在托盘菜单选“开启 Tailcat…”。确认后 agentd 启动辅助程序，托盘以 agentd 回读的运行状态为准。随后在“配对设备”中点“用 Tailcat”生成 Tailcat 二维码；Tailscale 和局域网都没有开启或不可用时，会直接显示 Tailcat 二维码。Tailcat 只发起出站连接，不新增防火墙规则：能直连时点对点，否则经 DERP 中继转发，默认中继由 Tailscale 运营。
 
 辅助程序的身份、已配对设备和本机控制通道 `control.sock` 保存在 `%APPDATA%\mimi-remote\tailcat`，由用户配置文件的 ACL 保护；控制通道使用 Windows 10 1803 起内置的 AF_UNIX socket。agentd 停止或重启时，通过控制通道让辅助程序正常退出。计划任务和辅助程序各自的 kill-on-close Job Object 负责兜底，agentd 异常退出也不会留下进程。升级和卸载前，安装器会等待辅助程序退出，必要时强制结束。`agentd doctor` 的 `tailcat` 项报告辅助程序是否存在及其版本，缺失时重新运行同版本安装器。关闭 Tailcat 会断开正在使用它的设备，不影响 Tailscale 和 LAN 连接。
 
