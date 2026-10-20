@@ -76,8 +76,14 @@ final class HarnessTurnFailureSettlementTests: XCTestCase {
     }
 
     func testErrorMessageIsRedactedButCodeKept() throws {
-        let raw = "load failed: /Users/someone/.dsh/routes.json; Authorization: Bearer abc.def; "
-            + "api_key=sk-0123456789abcdef password: hunter2; max_tokens: 8192"
+        let raw = [
+            "load failed: /Users/someone/.dsh/routes.json",
+            "upstream said: bad request",
+            "Authorization: Basic dXNlcjpwYXNz",
+            "proxy-authorization: Digest username=\"u\", response=\"6629fae4\"",
+            "headers: {\"authorization\":\"Bearer abc.def\"}",
+            "api_key=sk-0123456789abcdef password: hunter2; max_tokens: 8192",
+        ].joined(separator: "\n")
         let reason: HarnessJSONValue = .object([
             "kind": .string("error"),
             "error": .object(["message": .string(raw), "code": .string("MISSING_CREDENTIAL")]),
@@ -85,10 +91,11 @@ final class HarnessTurnFailureSettlementTests: XCTestCase {
         let error = try XCTUnwrap(try turnCompletedMetadata(turnEnd(seq: 5, turn: 1, reason: reason)).turnError)
 
         XCTAssertEqual(error.code, "MISSING_CREDENTIAL")
-        for secret in ["someone", "abc.def", "sk-0123456789abcdef", "hunter2"] {
+        for secret in ["someone", "dXNlcjpwYXNz", "6629fae4", "abc.def", "sk-0123456789abcdef", "hunter2"] {
             XCTAssertFalse(error.message.contains(secret), "展示文案不得带出 \(secret)")
         }
         XCTAssertTrue(error.message.contains("~/.dsh/routes.json"), "路径保留可读部分")
+        XCTAssertTrue(error.message.contains("upstream said: bad request"), "认证头之外的行原样保留")
         XCTAssertTrue(error.message.contains("max_tokens: 8192"), "普通参数不能被误抹")
 
         let long = HarnessTurnEndReason.sanitizedMessage(String(repeating: "x", count: 2_000))

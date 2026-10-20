@@ -64,10 +64,13 @@ enum HarnessTurnEndReason {
 
     private static let redactions: [(String, String)] = [
         (#"(/Users|/home)/[^/\s"']+"#, "~"),
+        // 认证头的值是「方案 + 凭据」（Basic、Digest 还会带多段参数），只抹第一个词会留下
+        // 编码后的凭据，所以抹到行尾。
+        (#"\b((?:proxy-)?authorization)(["']?\s*[:=]\s*)[^\r\n]*"#, "$1$2<redacted>"),
         (#"\bBearer\s+[^\s"',;]+"#, "Bearer <redacted>"),
         (#"\bsk-[A-Za-z0-9_-]{8,}"#, "<redacted>"),
         (
-            #"\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization)(["']?\s*[:=]\s*["']?)[^\s"'&,;]+"#,
+            #"\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password)(["']?\s*[:=]\s*["']?)[^\s"'&,;]+"#,
             "$1$2<redacted>"
         ),
     ]
