@@ -338,8 +338,8 @@ func TestLiveActivityPayloadMatchesAppleSchema(t *testing.T) {
 				"attributes-type": LiveActivityAttributesType,
 				"attributes":      map[string]any{"hostTag": "A1C3"},
 				"alert": map[string]any{
-					"title": map[string]any{"loc-key": liveActivityStartTitleKey},
-					"body":  map[string]any{"loc-key": liveActivityStartBodyKey},
+					"title-loc-key": liveActivityStartTitleKey,
+					"loc-key":       liveActivityStartBodyKey,
 				},
 				"input-push-token": float64(1),
 			},
@@ -425,6 +425,43 @@ func TestLiveActivityPayloadMatchesAppleSchema(t *testing.T) {
 				t.Fatalf("aps 不符合 ActivityKit 格式：\n got=%v\nwant=%v", got.Payload["aps"], want)
 			}
 		})
+	}
+}
+
+// start 的 alert 必须是 APNs 通用 alert 字典：扁平的本地化键、值都是字符串
+// （通用字典里 title / body 只能是字符串）。不带 sound，避免和审批通知重复响铃。
+func TestLiveActivityStartAlertUsesFlatLocalizationKeys(t *testing.T) {
+	now := time.Now()
+	raw, err := BuildLiveActivityPayload(LiveActivityNotification{
+		Version:        1,
+		Event:          liveActivityEventStart,
+		AttributesType: LiveActivityAttributesType,
+		Attributes:     &LiveActivityAttributes{HostTag: "A1C3"},
+		ContentState: LiveActivityContentState{
+			Status: liveActivityStatusRunning, RunningCount: 1, StartedAt: now.Unix(), FocusSessionTag: "7D92",
+		},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	alert, ok := payload["aps"]["alert"].(map[string]any)
+	if !ok {
+		t.Fatalf("start 必须带 alert 字典：%s", raw)
+	}
+	if got, want := sortedKeys(alert), []string{"loc-key", "title-loc-key"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("alert 只能有扁平本地化键：got=%v want=%v", got, want)
+	}
+	for key, value := range alert {
+		if _, isString := value.(string); !isString {
+			t.Fatalf("alert.%s 必须是字符串，got %T", key, value)
+		}
+	}
+	if alert["title-loc-key"] != liveActivityStartTitleKey || alert["loc-key"] != liveActivityStartBodyKey {
+		t.Fatalf("alert 必须使用 App 内本地化 key：%v", alert)
 	}
 }
 

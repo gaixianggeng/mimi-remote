@@ -209,9 +209,11 @@ func BuildLiveActivityPayload(n LiveActivityNotification, timestamp time.Time) (
 		}
 		aps["attributes-type"] = n.AttributesType
 		aps["attributes"] = liveActivityAttributesPayload{HostTag: n.Attributes.HostTag}
+		// 用 APNs 通用 alert 字典的扁平本地化键：title / body 只能是字符串，
+		// 本地化文案走 title-loc-key 与 loc-key，与 BuildAPNsPayload 一致。
 		aps["alert"] = map[string]any{
-			"title": map[string]any{"loc-key": liveActivityStartTitleKey},
-			"body":  map[string]any{"loc-key": liveActivityStartBodyKey},
+			"title-loc-key": liveActivityStartTitleKey,
+			"loc-key":       liveActivityStartBodyKey,
 		}
 		// iOS 18+ 识别该键：远程启动的同时为新活动下发更新 Token。
 		aps["input-push-token"] = 1
