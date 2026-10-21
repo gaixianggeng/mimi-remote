@@ -364,3 +364,24 @@ extension CodexAppServerSessionRuntime {
         return appError.code == -32080 && appError.message.contains("thread/list.cursor")
     }
 }
+
+// MARK: - Claude 常驻会话的重连游标（#873）
+
+extension CodexAppServerSessionRuntime {
+    /// 投影落地后可以提交为 `last_seen` 的通知。重连时 bridge 只补发游标之后的帧。
+    ///
+    /// 回合与线程终态之外，Claude 的 `item/completed` 也算：完成的条目已写进会话历史，
+    /// 冷启动读历史即可拿回。以前只在回合结束时提交，长回合进行中每次重开都会把整轮重放
+    /// 一遍，其中已答复的补充信息请求会再弹出一次。流式增量不算，否则冷启动只能收到一条
+    /// 消息的后半段。
+    func isReplayBoundaryNotification(_ notification: CodexAppServerNotification) -> Bool {
+        switch notification.method {
+        case "turn/completed", "thread/closed":
+            return true
+        case "item/completed":
+            return runtimeProvider == "claude" && notification.replaySequence != nil
+        default:
+            return false
+        }
+    }
+}

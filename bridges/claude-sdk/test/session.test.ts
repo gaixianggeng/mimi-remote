@@ -82,6 +82,56 @@ describe("Session attach", () => {
     expect(resumed.backlog.map((entry) => entry.seq)).toEqual([2]);
   });
 
+  test("an answered prompt is not replayed to a reconnecting client, its resolution still is (#873)", () => {
+    const session = new Session("ipad");
+    const first = session.attach(undefined, () => {}, false);
+    session.publish(note(1));
+    session.publishRequest("mimi-1", "item/tool/requestUserInput", { threadId: "t1", itemId: "ask-1" });
+    session.resolveRequest("mimi-1");
+    session.publish({ jsonrpc: "2.0", method: "serverRequest/resolved", params: { threadId: "t1", requestId: "mimi-1" } });
+    session.publish(note(2));
+    session.detach(first.generation);
+
+    const replayed: OutboundFrame[] = [];
+    const resumed = session.attach(0, (frame) => replayed.push(frame), true);
+    // 冷启动的客户端不认识 mimi-1；补发请求帧会先弹出补充信息、随后被 resolved 收起。
+    // resolved 仍要补发：显示过卡片后断线、期间被别的设备答复的客户端只能靠它收起卡片。
+    expect(resumed.backlog.map((entry) => entry.frame.method)).toEqual([
+      "turn/started",
+      "serverRequest/resolved",
+      "turn/started",
+    ]);
+    session.sendReplay(resumed.generation);
+    expect(replayed).toEqual([]);
+  });
+
+  test("an unanswered prompt is restored once through serverRequest/replay, not from the ring", () => {
+    const session = new Session("ipad");
+    const first = session.attach(undefined, () => {}, false);
+    session.publishRequest("mimi-1", "item/tool/requestUserInput", { threadId: "t1", itemId: "ask-1" });
+    session.resolveRequest("mimi-1");
+    session.publish({ jsonrpc: "2.0", method: "serverRequest/resolved", params: { threadId: "t1", requestId: "mimi-1" } });
+    session.publishRequest("mimi-2", "item/commandExecution/requestApproval", { threadId: "t1", itemId: "cmd-2" });
+    session.publish(note(1));
+    session.detach(first.generation);
+
+    const replayed: OutboundFrame[] = [];
+    const resumed = session.attach(0, (frame) => replayed.push(frame), true);
+    expect(resumed.backlog.map((entry) => entry.frame.method)).toEqual(["serverRequest/resolved", "turn/started"]);
+    session.sendReplay(resumed.generation);
+    expect(replayed).toEqual([
+      {
+        jsonrpc: "2.0",
+        method: "serverRequest/replay",
+        params: {
+          outstanding: [
+            { id: "mimi-2", method: "item/commandExecution/requestApproval", params: { threadId: "t1", itemId: "cmd-2" } },
+          ],
+        },
+      },
+    ]);
+  });
+
   test("the reaper drops idle detached sessions only", () => {
     const registry = new SessionRegistry({ idleTtlMs: 1_000 });
     const attached = registry.resolve("attached");

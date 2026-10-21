@@ -60,6 +60,7 @@ echo "==> iOS conversation regressions"
 # - ComposerAutocompleteTests：输入框 `/` 命令与 `$` 技能补全的触发、替换范围和排序。
 # - ComposerMetadataBudgetTests：输入框组合类型的嵌套层数与值大小，防止真机打开会话时主线程栈溢出（#852）。
 # - ClaudeSlashCommandCatalogTests：Claude 会话 `/` 菜单命令目录的解析、请求与按键缓存。
+# - ClaudeReplayCursorTests：Claude 常驻会话按已完成条目推进重连游标，长回合重开不再整轮重放（#873）。
 # - ConversationDataFlowTests 的精确方法：只保留配对后的会话、流式事件、恢复、
 #   exactly-once、审批/中断、Host 隔离和 fake smoke；其余大集合不无条件进入 PR Gate。
 # - QueuedSessionBackgroundDispatchTests：离开会话后排队消息的后台连接，覆盖重连退避与停止、
@@ -146,6 +147,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/HarnessHistoryPageTests \
   -only-testing:MimiRemoteTests/HistoryPolicyClassificationTests \
   -only-testing:MimiRemoteTests/ClaudeTakeoverTests \
+  -only-testing:MimiRemoteTests/ClaudeReplayCursorTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
   -only-testing:MimiRemoteTests/NewSessionBufferedReplyTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \

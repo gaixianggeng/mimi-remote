@@ -1,4 +1,9 @@
-import { isClientRequestResponse, notificationFrame, type OutboundFrame } from "../rpc/frames.ts";
+import {
+  isClientRequestResponse,
+  isServerToClientRequest,
+  notificationFrame,
+  type OutboundFrame,
+} from "../rpc/frames.ts";
 import { ReplayRing, type SequencedFrame } from "./ring.ts";
 
 export type AttachKind = "fresh" | "resumed" | "driftReload";
@@ -46,11 +51,7 @@ export class Session {
     if (cursor !== undefined) {
       const replay = this.ring.replayFrom(cursor);
       if (replay.ok) {
-        // 未答复的请求只走 serverRequest/replay 一条路径恢复，环里的原帧不再重复投递，
-        // 否则同一个审批会弹两次。
-        backlog = replay.frames.filter(
-          (entry) => !isClientRequestResponse(entry.frame) && !this.isUnansweredRequest(entry.frame),
-        );
+        backlog = replay.frames.filter((entry) => isReplayableFrame(entry.frame));
       } else {
         kind = "driftReload";
       }
@@ -126,11 +127,22 @@ export class Session {
     this.sink(notificationFrame("serverRequest/replay", { outstanding }));
   }
 
-  private isUnansweredRequest(frame: OutboundFrame): boolean {
-    return typeof frame.method === "string" && typeof frame.id === "string" && this.outstanding.has(frame.id);
-  }
-
   detachedLongerThan(ms: number, now = Date.now()): boolean {
     return this.detachedAt !== undefined && now - this.detachedAt >= ms;
   }
+}
+
+/**
+ * 断线重连时环里哪些帧可以补发给新连接。
+ *
+ * - 客户端请求的响应只属于发起它的旧连接：新连接的请求 ID 从头编号，重放会把响应
+ *   错配到复用同一 ID 的新请求上。
+ * - 服务端请求（审批、提问）一律不从环里补发。仍未答复的由 serverRequest/replay
+ *   一次性恢复；已答复或已撤回的再发一次，冷启动的客户端会先弹出卡片、紧接着又被
+ *   随后的 serverRequest/resolved 收起（#873）。
+ * - serverRequest/resolved 照常补发：客户端可能在显示卡片后断线，期间请求被另一台
+ *   设备答复，它只能靠这条通知收起卡片。没见过对应请求的客户端收到它什么也不做。
+ */
+export function isReplayableFrame(frame: OutboundFrame): boolean {
+  return !isClientRequestResponse(frame) && !isServerToClientRequest(frame);
 }
