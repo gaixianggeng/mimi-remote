@@ -191,6 +191,8 @@ func runServe(args []string) (serveErr error) {
 		defer closeLog()
 	}
 	loggingReady = true
+	// 必须早于 serve 启动受管 Codex app-server：子进程环境在启动时确定。
+	defer startSystemProxyRelay()()
 	diagnosticlog.Record("service", "started", diagnosticlog.Fields{})
 	err = serve(cfg, registry, checker, diagnostics)
 	if err != nil {
