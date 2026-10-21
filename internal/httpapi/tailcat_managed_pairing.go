@@ -21,6 +21,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/google/uuid"
 )
 
@@ -36,6 +37,7 @@ type managedPairingService interface {
 	Sync(context.Context) error
 	Complete(context.Context, string, string, string) (tailcatStatus, error)
 	Reset(context.Context) error
+	ConfigureMode(context.Context, bool) (tailcatStatus, error)
 	Close()
 }
 
@@ -279,6 +281,14 @@ func (c *managedPairingController) Sync(ctx context.Context) error {
 			return errors.Join(err, applyErr)
 		}
 	}
+	if c.tailcat.Status(ctx).Mode != config.TailcatModeManaged {
+		// 旧版本可能在公共中继上留下托管注册。升级后只撤销旧授权，不能自动换模式。
+		if c.state.HostID != "" || c.state.HostDeviceToken != "" {
+			return c.clearRegistrationLocked(ctx)
+		}
+		_, err := c.applyPolicyLocked(ctx, nil)
+		return err
+	}
 	if strings.TrimSpace(c.state.HostID) == "" {
 		// 本地登记清空后仍要持续协调 sidecar。上一次重置如果因取消或
 		// 控制 socket 故障失败，后台同步必须继续移除旧的托管白名单。
@@ -323,6 +333,9 @@ func (c *managedPairingController) Complete(
 		return tailcatStatus{}, c.stateLoadError
 	}
 	status := c.tailcat.Status(ctx)
+	if status.Mode != config.TailcatModeManaged {
+		return status, errTailcatManagedModeRequired
+	}
 	if !status.Running || status.Address == "" || !validManagedTailcatPublicKey(status.PublicKey) {
 		return tailcatStatus{}, errors.New("Tailcat 稳定连接尚未就绪")
 	}

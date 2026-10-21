@@ -20,6 +20,7 @@ import (
 
 type tailcatCommandStatus struct {
 	Enabled           bool   `json:"enabled"`
+	Mode              string `json:"mode"`
 	Running           bool   `json:"running"`
 	Version           string `json:"version,omitempty"`
 	DERPMapURL        string `json:"derp_map_url,omitempty"`
@@ -39,11 +40,11 @@ func runTailcat(args []string) error {
 
 func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) error {
 	if len(args) < 2 {
-		return errors.New("tailcat 需要子命令：status、enable、disable、pair、reset 或 configure")
+		return errors.New("tailcat 需要子命令：status、enable、disable、pair、reset、configure、enter-managed 或 exit-managed")
 	}
 	action := strings.ToLower(strings.TrimSpace(args[1]))
 	switch action {
-	case "status", "enable", "disable", "pair", "reset", "configure":
+	case "status", "enable", "disable", "pair", "reset", "configure", "enter-managed", "exit-managed":
 	default:
 		return fmt.Errorf("未知 Tailcat 子命令 %q", action)
 	}
@@ -139,7 +140,7 @@ func requestTailcatControl(
 		body = bytes.NewReader(encoded)
 	}
 	timeout := 25 * time.Second
-	if action == "configure" {
+	if action == "configure" || action == "enter-managed" || action == "exit-managed" {
 		// 切换中继会验证新 sidecar，并在失败时恢复旧 sidecar。
 		timeout = 50 * time.Second
 	}
@@ -184,6 +185,11 @@ func printTailcatStatus(w io.Writer, status tailcatCommandStatus) {
 		state = "需要处理"
 	}
 	fmt.Fprintf(w, "Tailcat 实验：%s\n", state)
+	mode := "自建"
+	if status.Mode == config.TailcatModeManaged {
+		mode = "托管"
+	}
+	fmt.Fprintf(w, "模式：%s\n", mode)
 	if status.Version != "" {
 		fmt.Fprintf(w, "版本：%s\n", status.Version)
 	}

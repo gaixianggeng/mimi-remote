@@ -198,7 +198,7 @@ func TestTailcatPairingClaimAuthorizesClientAndReturnsStableAddress(t *testing.T
 
 func TestManagedTailcatClaimCompletesCloudPairingWithoutFreeAllowlistWrite(t *testing.T) {
 	server := newTestServer(t)
-	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true}}
+	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true, Mode: "managed"}}
 	fakeManaged := &fakeManagedPairingService{status: tailcatStatus{
 		Enabled: true, Running: true, Address: "tailcat-managed-address",
 	}}
@@ -231,7 +231,7 @@ func TestManagedTailcatClaimCompletesCloudPairingWithoutFreeAllowlistWrite(t *te
 
 func TestManagedTailcatClaimRejectsPartialGrantBeforeAnyAllowlistWrite(t *testing.T) {
 	server := newTestServer(t)
-	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true}}
+	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true, Mode: "managed"}}
 	fakeManaged := &fakeManagedPairingService{}
 	server.router.tailcat = fakeTailcat
 	server.router.managedPairing = fakeManaged
@@ -398,4 +398,21 @@ func TestTailcatIdentitySnapshotRestoresPrivateState(t *testing.T) {
 			t.Fatalf("%s 权限为 %o，预期 600", name, info.Mode().Perm())
 		}
 	}
+}
+
+func (f *fakeTailcatSidecar) ConfigureMode(_ context.Context, managed bool, commit func() error) (tailcatStatus, error) {
+	if f.operationErr != nil {
+		return f.status, f.operationErr
+	}
+	if err := commit(); err != nil {
+		return f.status, err
+	}
+	f.status.Mode = "self_hosted"
+	if managed {
+		f.status.Mode = "managed"
+	}
+	return f.status, nil
+}
+func (f *fakeManagedPairingService) ConfigureMode(_ context.Context, _ bool) (tailcatStatus, error) {
+	return f.status, f.operationErr
 }
