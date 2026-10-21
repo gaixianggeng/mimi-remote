@@ -574,6 +574,39 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(fixture.store.connectionEndpoint, "http://100.64.0.10:8787")
     }
 
+    func testManagedConnectionEntryOnlyOpensForExplicitBuildFlagOrDebugArgument() {
+        let argument = ManagedConnectionSubscriptionView.debugEntryLaunchArgument
+
+        // App Store 提交构建：Info.plist 展开为空或 NO，Release 不读取调试参数。
+        XCTAssertFalse(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: "",
+            launchArguments: [argument],
+            allowsDebugLaunchArgument: false
+        ))
+        XCTAssertFalse(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: "NO",
+            launchArguments: [],
+            allowsDebugLaunchArgument: true
+        ))
+        XCTAssertFalse(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: nil,
+            launchArguments: [],
+            allowsDebugLaunchArgument: false
+        ))
+        // 内部 TestFlight 构建显式写入 YES。
+        XCTAssertTrue(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: "YES",
+            launchArguments: [],
+            allowsDebugLaunchArgument: false
+        ))
+        // Debug 启动参数保持原行为，供 UI 测试打开入口。
+        XCTAssertTrue(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: "",
+            launchArguments: [argument],
+            allowsDebugLaunchArgument: true
+        ))
+    }
+
     func testManagedRouteWithoutAddressStaysFailClosedAndOffersManualFallback() async throws {
         let fixture = try makeControllerFixture(
             startResults: [],
