@@ -33,6 +33,13 @@ $setup = Get-Item .\Mimi-Remote-Setup-*.exe
 
 Windows 防火墙规则和 LAN 监听默认不启用。只有用户明确选择 LAN 访问时，安装器才要求默认网络为“专用网络”，并创建限制为 Private profile 和 `LocalSubnet` 的规则。不得把规则放宽到 Public profile 或任意公网来源。
 
+不选 LAN 时，首次安装检测到 Tailscale 就默认通过 Tailscale 连接；没检测到时，服务只监听本机，安装仍会完成，但托盘的“配对设备…”会提示没有可用连接（#874）。此时安装并登录 Tailscale，再启用 Mimi 的 Tailscale 连接；也可以重新运行安装器并勾选 LAN 访问：
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" network --tailscale-enabled=true
+& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" restart --no-pair --wait 30s
+```
+
 常用命令：
 
 ```powershell
