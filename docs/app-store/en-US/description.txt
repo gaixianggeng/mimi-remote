@@ -9,9 +9,13 @@ Features:
 - Inspect Git status and manage branches and worktrees
 - Use text, images, and optional voice input
 - Keep separate connection profiles for different computers
-- Connect over a local network, private network, HTTPS, or an optional experimental peer-to-peer connection
+- Connect over a local network, private network, HTTPS, self-hosted peer-to-peer connection, or optional Mimi Managed Connection
 
-Mimi Remote communicates with the host you configure. The optional experimental peer-to-peer connection first contacts a third-party relay for discovery and the initial handshake, then switches encrypted traffic to a direct path when available; otherwise, the relay continues forwarding it. The relay processes connection metadata even when traffic later becomes direct. The app does not download or execute code on the mobile device. The developer does not provide models, third-party accounts, subscriptions, cloud code execution, a VPN, a traffic relay service, or hosted project storage. Project content and connection credentials are not sent to the Mimi Remote developer.
+The app and computer software are free and open source. Local-network, Tailscale, and self-hosted Tailcat connections remain free. Mimi Remote does not download or execute code on your mobile device, provide models or third-party accounts, execute code in the cloud, or host projects. Commands and project content are processed on your own computer.
+
+Optional Mimi Managed Connection lets you connect to your own computer on different Wi-Fi networks, without installing another networking tool. Each subscription supports up to 3 computers and 5 phones or tablets; remove devices in the app. Traffic travels directly when possible; otherwise, a Mimi-operated relay forwards end-to-end encrypted packets. The developer cannot read code, conversations, or file contents. The service processes subscription and device authorization data, connection results, and necessary network metadata, as described in the Privacy Policy. Message notifications also use a developer-operated push service.
+
+No Mimi account is required. Restore subscription entitlements with the same Apple ID. Connection addresses, private keys, and computer access credentials do not sync; a new phone or tablet must connect to each computer again.
 
 Requirements:
 - A computer with the Mimi companion service and a compatible developer runtime installed
@@ -19,3 +23,16 @@ Requirements:
 - Access only to devices and projects you own or are explicitly authorized to use
 
 Mimi Remote is independently developed and open source. It is not affiliated with or endorsed by providers of compatible tools.
+
+Auto-renewable subscription:
+- Name: Mimi Managed Connection
+- Monthly: 1 month, US$1.99 in the United States / ¥9.9 in mainland China
+- Annual: 1 year, US$9.99 in the United States / ¥68 in mainland China
+- Offered in all App Store regions. Apple converts prices elsewhere; the actual price and currency are shown on Apple's purchase confirmation screen.
+- Both plans offer a 7-day free trial, once per Apple ID within this subscription group, subject to Apple's eligibility check. No lifetime purchase or Family Sharing.
+- Apple handles payment through your Apple Account. After the trial, the selected paid plan starts and renews automatically unless canceled at least 24 hours before the trial ends. Paid subscriptions also renew automatically unless auto-renewal is turned off at least 24 hours before the current period ends. Renewal is charged within 24 hours before that period ends.
+- Manage or cancel in system Settings → Apple Account → Subscriptions. Uninstalling the app or removing a device does not cancel a subscription. Apple's refund policies apply.
+
+Terms of Use: https://github.com/gaixianggeng/mimi-remote/blob/main/docs/terms-of-use.md
+Privacy Policy: https://github.com/gaixianggeng/mimi-remote/blob/main/docs/privacy-policy.md
+These links are also available in the app under Settings → Legal & Support.

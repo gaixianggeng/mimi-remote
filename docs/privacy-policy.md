@@ -1,6 +1,6 @@
 # Mimi Remote 隐私政策 / Privacy Policy
 
-生效日期 / Effective date：2026-10-12
+生效日期 / Effective date：2026-10-21
 
 ## 中文
 
@@ -10,13 +10,13 @@
 
 ### 方案
 
-Mimi Remote 开发者不收集、上传、出售或共享用户的个人数据。App 不包含广告、第三方分析 SDK 或开发者运营的遥测、崩溃上报与流量代理服务。
+Mimi Remote 不需要 Mimi 账号，不收集邮箱、密码或手机号。App 与电脑端免费开源；局域网、Tailscale 和自建 Tailcat 连接继续免费。可选付费的「Mimi 托管连接」和消息通知服务由开发者运营，仅处理提供相应功能所需的数据。App 不包含广告或第三方分析 SDK，不出售数据，不将数据用于跨 App 或网站追踪。
 
 App 仅在完成用户明确请求时处理以下数据：
 
 - 连接资料：用户配置的 `agentd` 地址、连接名称与访问 Token。Token 保存在系统 Keychain 中。使用实验性 Tailcat 连接时，本机 Tailcat 客户端密钥与连接地址也保存在 Keychain 中。
 - 本地状态：语言、外观、权限偏好、最近工作区、会话索引、恢复路由、待发送草稿及诊断历史。
-- 开发内容：提示词、会话、代码、Diff、图片、日志和工具结果仅在设备与用户配置的电脑之间传输，不发送给 Mimi Remote 开发者。
+- 开发内容：提示词、会话、代码、Diff、图片、日志和工具结果仅供设备与用户配置的电脑处理。托管中继可能转发其端到端加密数据包，开发者无法读取内容。
 - 本地通知：仅保存打开指定连接、项目和会话所需的路由标识，不包含 Token、消息正文或工作目录。
 
 ### 实现
@@ -25,16 +25,35 @@ App 仅在完成用户明确请求时处理以下数据：
 
 Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd` 在用户控制的计算机上调用用户自行安装、配置并登录的兼容开发运行时。相关工具可能按照用户与其提供方之间的条款处理提示词、代码和输出。Mimi Remote 开发者不接收这些内容，也不托管第三方账号凭据。
 
-连接可使用局域网、Tailscale 等私有网络、实验性 Tailcat 连接或用户配置的 HTTPS 地址。Mimi Remote 不运营用于查看或保存工作内容的中继服务；网络基础设施提供方可能按照其自身政策处理加密连接所必需的网络元数据。
+连接可使用局域网、Tailscale 等私有网络、自建 Tailcat、Mimi 托管连接或用户配置的 HTTPS 地址。Mimi Remote 运营的托管中继仅转发端到端加密的数据包，不解密、查看或保存工作内容。其他网络基础设施提供方可能按照其自身政策处理加密连接所必需的网络元数据。
 
-#### 实验性 Tailcat 连接（可选，默认关闭）
+#### 自建 Tailcat 连接（实验性，可选，默认关闭）
 
 App 内置 Tailcat 客户端。Tailcat 是 Tailscale 发布的开源点对点连接库。只有用户在电脑端的 Mimi Remote 中开启 Tailcat 并扫码配对后，App 才会使用这条连接。
 
 - 连接经 WireGuard 端到端加密。每次连接都会先通过 DERP 中继服务器发现对端并完成初始握手，随后在网络允许时将加密流量切换为设备与电脑的点对点直连；无法直连时继续经中继转发。
 - 默认中继是 Tailcat 上游提供、由 Tailscale 运营的公共中继；用户也可以在电脑端改为自己配置的中继。Mimi Remote 开发者不运营默认中继，也不接收经中继转发的内容。
 - 中继服务器无法读取连接内容，但会处理建立连接及转发所需的网络元数据，例如双方 IP 地址、连接公钥、连接时间和流量大小，并按其运营方的政策处理。即使流量随后转为直连，初始连接阶段也会联系中继并产生这些网络元数据。
-- 「Mimi 托管连接」尚未开放。开放前会先更新本政策和 App Store 隐私披露。
+
+#### Mimi 托管连接（可选订阅）
+
+Mimi 托管连接（Mimi Managed Connection）让不在同一 Wi-Fi 的设备连接自己的电脑，无需安装其他联网工具。它包含开发者运营的控制面（核验订阅和管理设备授权的服务）与 DERP 中继。
+
+购买、恢复购买和刷新权益时，App 向控制面发送 Apple 签名的 App 交易与订阅交易数据。控制面验证签名后保存 App 交易标识的 SHA-256 散列、订阅商品与交易标识、购买环境、权益状态、到期与撤销时间，以及状态更新和签名时间。Apple 订阅通知还会留下通知标识、类型、子类型、签名时间与处理结果，用于更新权益和防止重复处理。购买与扣款由 Apple 处理；开发者不接收支付卡资料或 Apple ID 登录凭据。
+
+同一 Apple ID 可以恢复订阅权益。恢复购买不恢复或同步电脑连接地址、Tailcat 私钥或 `agentd` Token；新手机或平板需要对每台电脑重新接入。
+
+登记、配对和管理设备时，控制面处理随机安装编号、设备类型、设备与主机编号、双方连接公钥（包括临时配对节点公钥）、配对请求与会话编号，以及专用于托管连接的授权凭据。保存的安装编号与授权凭据为 SHA-256 散列；控制面还保存登记、配对、授权关系、策略版本和相关创建、到期、完成或撤销时间。这些记录可关联同一订阅及其设备，不等于无法关联个人的数据。控制面不接收 Tailcat 私钥、完整连接地址、`agentd` Token、提示词、代码、对话或文件内容。
+
+为诊断连接可用性，App 发送随机事件编号、连接路径、成功或失败、耗时区间、粗粒度错误分类、适用时的中继区域代码和 App 版本。控制面记录接收时间；事件记录不保存订阅编号、设备编号或 IP 地址。中继区域代码表示中继位置，不是设备定位。事件按 30 天保留窗口每日清理，超过窗口的记录在下一次清理时删除。
+
+数据连接使用 Tailcat，通过 WireGuard 端到端加密。能直连时点对点传输，否则由 Mimi 运营的 DERP 中继转发。中继无法读取内容，但会处理双方 IP 地址、连接公钥、连接时间和流量大小。官方中继只接受有效订阅下已登记并获授权的设备节点，包括有效配对期间的临时节点。
+
+控制面应用关闭常规请求日志，但会记录服务错误用于排障。目前订阅、设备、配对、节点归属、授权凭据散列和 Apple 通知记录没有按时间自动清理的机制。凭据与配对授权的有效期只限制其使用，不代表到期后删除历史记录。
+
+在 App 的「Mimi 托管连接」设备列表中移除设备，会撤销其托管授权并释放名额，相关电脑授权在策略更新或现有策略失效后停止生效。移除不会抹除控制面的登记和配对历史，也不会删除电脑上的项目或会话。建议在订阅有效期内移除不再使用的设备；权益到期或撤销后，当前设备管理功能也不可用。
+
+取消自动续费不会立即删除记录或立即终止已付费期间的权益。权益到期且无有效宽限期，或权益被撤销后，控制面停止提供托管授权；历史记录仍按上述方式保留。卸载 App、忘记本地电脑连接或取消订阅均不等于删除控制面记录。需要就这些记录提出隐私或删除请求时，请通过本政策末尾的邮箱联系开发者；目前没有一键删除全部控制面历史的功能。
 
 #### 消息通知
 
@@ -74,13 +93,13 @@ App 内置 Tailcat 客户端。Tailcat 是 Tailscale 发布的开源点对点连
 - 在 App 的「设备」页（或设置中的「电脑连接」）选择「忘记这台电脑」或删除连接档案，会删除对应本地配置和 Keychain Token。
 - 用户可以在系统设置中随时撤回相机、麦克风、语音识别、照片和本地网络权限。
 - 删除 App 会删除其沙盒中的配置和缓存。为确保连接凭据被明确删除，建议先在 App 内忘记所有连接；Keychain 项在卸载后的保留行为由 Apple 操作系统决定。
-- Mimi Remote 开发者没有用户账号或云端数据副本，因此没有可由开发者执行的远程数据删除流程。
+- Mimi Remote 不托管工作内容。托管连接的服务记录与移除设备的处理见上文；本地删除不会自动删除这些服务记录。
 
 ### 风险与优化
 
 用户应只连接自己拥有或获授权访问的电脑，并保护连接 Token、审核凭据、项目内容和日志。不要把 Token、真实 Tailnet 地址或私有代码提交到公开 Issue。
 
-如果未来加入账号、云同步、开发者遥测、崩溃上报、远程推送正文或开发者运营的中继服务，本政策和 App Store 隐私披露会在功能上线前同步更新。
+如果未来加入账号、云同步、其他遥测、崩溃上报或远程推送正文，本政策和 App Store 隐私披露会在功能上线前同步更新。
 
 隐私问题请联系：`gaixg94@gmail.com`
 
@@ -92,13 +111,13 @@ This policy explains how the Mimi Remote client for iPhone, iPad, and Mac Cataly
 
 ### Approach
 
-The developer of Mimi Remote does not collect, upload, sell, or share personal data. The app contains no advertising, third-party analytics SDK, developer-operated telemetry, crash reporting, or traffic proxy.
+Mimi Remote requires no Mimi account and does not collect email addresses, passwords, or phone numbers. The app and computer software are free and open source; local-network, Tailscale, and self-hosted Tailcat connections remain free. The optional paid Mimi Managed Connection and message notification service are operated by the developer and process data needed for those features. The app contains no advertising or third-party analytics SDK, does not sell data, and does not use data for tracking across apps or websites.
 
 The app processes the following data only to perform actions you request:
 
 - Connection data: the `agentd` address, connection name, and access token you configure. Tokens are stored in the system Keychain. When you use the experimental Tailcat connection, the app's Tailcat client key and connection address are also stored in the Keychain.
 - Local state: language, appearance and permission preferences, recent workspaces, session indexes, restoration routes, queued drafts, and diagnostic history.
-- Development content: prompts, conversations, code, diffs, images, logs, and tool results travel only between your device and the computer you configure. They are not sent to the developer of Mimi Remote.
+- Development content: prompts, conversations, code, diffs, images, logs, and tool results are processed only by your device and the computer you configure. The managed relay may forward their end-to-end encrypted packets; the developer cannot read the content.
 - Local notifications: only routing identifiers needed to open a connection, project, and session are stored. Tokens, message bodies, and working-directory paths are excluded.
 
 ### Implementation
@@ -107,16 +126,35 @@ The app processes the following data only to perform actions you request:
 
 Mimi Remote connects directly to an `agentd` endpoint that you enter or import by QR code. On your computer, `agentd` invokes compatible developer runtimes that you install, configure, and authenticate. Those tools may process prompts, code, and output under the terms between you and their providers. The developer of Mimi Remote does not receive this content or host third-party account credentials.
 
-Connections may use a local network, a private network such as Tailscale, the experimental Tailcat connection, or an HTTPS endpoint you configure. Mimi Remote does not operate a relay that reads or stores your work. Network infrastructure providers may process network metadata required to carry the encrypted connection under their own policies.
+Connections may use a local network, a private network such as Tailscale, self-hosted Tailcat, Mimi Managed Connection, or an HTTPS endpoint you configure. Mimi Remote's managed relay only forwards end-to-end encrypted packets; it does not decrypt, view, or store your work content. Other network infrastructure providers may process metadata needed for encrypted connections under their own policies.
 
-#### Experimental Tailcat connection (optional, off by default)
+#### Self-hosted Tailcat connection (experimental, optional, off by default)
 
 The app includes a Tailcat client. Tailcat is an open-source peer-to-peer connection library published by Tailscale. The app uses this connection only after you turn on Tailcat in Mimi Remote on your computer and pair by scanning its QR code.
 
 - The connection is end-to-end encrypted with WireGuard. Every connection first uses a DERP relay server for peer discovery and the initial handshake, then switches encrypted traffic to a direct peer-to-peer path when available. Otherwise, the relay continues forwarding that traffic.
 - By default, the relay is the public relay provided by the Tailcat project and operated by Tailscale. You can switch to a relay you configure on your computer. The developer of Mimi Remote does not operate the default relay and does not receive content forwarded through it.
 - Relay servers cannot read the connection content, but they process network metadata needed to establish and relay the connection, such as both peers' IP addresses, connection public keys, connection times, and traffic volume, under their operator's policies. The initial connection phase contacts the relay and produces this metadata even when traffic later moves to a direct path.
-- Mimi Managed Connection is not yet available. This policy and the App Store privacy disclosure will be updated before it launches.
+
+#### Mimi Managed Connection (optional subscription)
+
+Mimi Managed Connection lets your devices connect to your own computer when they are on different Wi-Fi networks, without installing another networking tool. It includes a developer-operated control service for subscription verification and device authorization, and a DERP relay.
+
+When purchasing, restoring purchases, or refreshing entitlements, the app sends Apple-signed app and subscription transaction data to the control service. After verifying the signatures, the service stores a SHA-256 hash of the app transaction identifier, subscription product and transaction identifiers, purchase environment, entitlement status, expiry and revocation times, and state update and signature times. Apple subscription notifications also produce records of notification identifiers, types, subtypes, signature times, and processing outcomes to update entitlements and prevent duplicate processing. Apple handles purchases and billing; the developer does not receive payment card details or Apple ID sign-in credentials.
+
+You can restore subscription entitlements with the same Apple ID. Restoring purchases does not restore or sync computer connection addresses, Tailcat private keys, or `agentd` tokens. A new phone or tablet must connect to each computer again.
+
+During device registration, pairing, and management, the control service processes random installation identifiers, device types, device and host identifiers, both peers' connection public keys (including temporary pairing node public keys), pairing request and session identifiers, and credentials dedicated to managed connection authorization. Stored installation identifiers and authorization credentials are SHA-256 hashes. The service also stores registration, pairing and authorization relationships, policy versions, and related creation, expiry, completion, or revocation times. These records can link the same subscription and its devices; they are not unlinked personal data. The control service does not receive Tailcat private keys, complete connection addresses, `agentd` tokens, prompts, code, conversations, or file contents.
+
+To diagnose connection availability, the app sends a random event identifier, connection path, success or failure, duration range, coarse error category, relay region code when applicable, and app version. The control service records receipt times; event records do not store subscription identifiers, device identifiers, or IP addresses. The relay region code describes the relay's location, not the device's location. Events use a 30-day retention window with daily cleanup; records outside that window are deleted on the next cleanup run.
+
+Data connections use Tailcat with WireGuard end-to-end encryption. Traffic travels directly between peers when possible; otherwise, a DERP relay operated by Mimi forwards it. The relay cannot read content but processes both peers' IP addresses, connection public keys, connection times, and traffic volume. Official relays accept only registered and authorized device nodes under a valid subscription, including temporary nodes during valid pairing sessions.
+
+The control service application disables routine request logging but records service errors for troubleshooting. Subscription, device, pairing, node ownership, authorization credential hash, and Apple notification records currently have no time-based automatic cleanup mechanism. Credential and pairing authorization expiry limits their use; it does not delete historical records.
+
+Removing a device from the Mimi Managed Connection device list in the app revokes its managed authorization and releases its slot. Related computer authorization stops taking effect after a policy update or expiry of the existing policy. Removal does not erase control-service registration or pairing history, or delete projects or sessions on the computer. Remove unused devices while your subscription is valid; current device management is also unavailable after entitlements expire or are revoked.
+
+Canceling auto-renewal does not immediately delete records or end access for a paid period. Once entitlements expire without a valid grace period, or are revoked, the control service stops granting managed authorization; historical records remain as described above. Uninstalling the app, forgetting a local computer connection, or canceling the subscription does not delete control-service records. Contact the developer at the email address below for privacy or deletion requests about these records. There is currently no one-step feature to delete all control-service history.
 
 #### Message notifications
 
@@ -156,12 +194,12 @@ Declining a permission does not prevent use of alternatives such as manual pairi
 - Choosing Forget this computer from the Devices tab (or Computer connection in Settings), or deleting a connection profile, removes its local configuration and Keychain token.
 - You can revoke camera, microphone, speech-recognition, photos, and local-network access in system settings at any time.
 - Deleting the app removes configuration and caches in its sandbox. To explicitly remove connection credentials, forget all connections before uninstalling; post-uninstall Keychain behavior is controlled by the Apple operating system.
-- Mimi Remote has no developer account system or cloud copy of your data, so there is no remote data copy for the developer to delete.
+- Mimi Remote does not host your work content. Service records and device removal for managed connections are described above; deleting local data does not automatically delete those service records.
 
 ### Risks and future changes
 
 Connect only to computers you own or are authorized to use. Protect connection tokens, review credentials, project content, and logs. Never post tokens, real Tailnet addresses, or private code in public issues.
 
-If accounts, cloud sync, developer telemetry, crash reporting, remote notification content, or a developer-operated relay are introduced, this policy and the App Store privacy disclosure will be updated before those features are released.
+If accounts, cloud sync, other telemetry, crash reporting, or remote notification content are introduced, this policy and the App Store privacy disclosure will be updated before those features are released.
 
 Privacy contact: `gaixg94@gmail.com`
