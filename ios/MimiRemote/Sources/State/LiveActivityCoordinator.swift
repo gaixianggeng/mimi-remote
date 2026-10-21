@@ -174,14 +174,7 @@ final class LiveActivityCoordinator: ObservableObject {
     /// 前台生命周期刷新：在锁屏审批同步之后调用，确认绑定、agentd 能力并补登记。
     func synchronize(client: AgentAPIClient, profileID: String) {
         // 前台恢复刚刷新过会话列表：更新票据没登记上的活动先按它收口，不等下面可能很慢的补登记。
-        if let sessionStore {
-            settleUnregisteredActivities(
-                sessions: sessionStore.sessions,
-                activeProfileID: appStore?.activeConnectionProfileID,
-                isAppActive: Self.isAppActive,
-                now: Date()
-            )
-        }
+        settleFromStores()
         enqueue {
             // 先取 agentd 能力与 host_tag：档案没存 installation_id 时，绑定要靠它才能算出 hostTag。
             var repair = LiveActivityRegistrationRepair()
@@ -198,10 +191,51 @@ final class LiveActivityCoordinator: ObservableObject {
             guard self.currentBinding()?.profileID == profileID else { return }
             // agentd 那边丢了票据（例如它的活动票据文件被重置）而本机记录还新：按状态接口强制补登记。
             await self.registerStartTokenIfNeeded(force: repair.start)
+            var confirmed: Set<String> = []
             for activityID in Array(self.latestUpdateTokens.keys) {
-                await self.registerUpdateTokenIfNeeded(activityID: activityID, force: repair.update)
+                if await self.registerUpdateTokenIfNeeded(activityID: activityID, force: repair.update) {
+                    confirmed.insert(activityID)
+                }
             }
+            if repair.update {
+                // agentd 报告手里没有更新票据，这一轮也没补上（例如手机连不上推送服务）：本机条目不再
+                // 代表 agentd 能更新那张卡，留着会让本机兜底一直跳过它。
+                self.discardUpdateEntries(except: confirmed)
+            }
+            self.settleFromStores()
         }
+    }
+
+    /// 按 Store 里的当前会话列表做本机兜底。前台同步时调用：前台恢复刚刷新过列表。
+    private func settleFromStores() {
+        guard let sessionStore else { return }
+        settleUnregisteredActivities(
+            sessions: sessionStore.sessions,
+            activeProfileID: appStore?.activeConnectionProfileID,
+            isAppActive: Self.isAppActive,
+            now: Date()
+        )
+    }
+
+    /// 摘掉 agentd 已经没有的更新票据条目，交给本机兜底；票据转入撤销队列，下次前台同步时撤销。
+    private func discardUpdateEntries(except confirmed: Set<String>) {
+        guard let binding = currentBinding() else { return }
+        var record = loadRecord(for: binding)
+        let stale = record.updates.filter { !confirmed.contains($0.key) }
+        guard !stale.isEmpty else { return }
+        for activityID in stale.keys {
+            record.updates[activityID] = nil
+        }
+        ticketStore.save(record)
+        var backlog = ticketStore.loadBacklog() ?? LiveActivityRevocationBacklog()
+        for entry in stale.values.sorted(by: { $0.ticket < $1.ticket })
+        where !backlog.tickets.contains(where: { $0.ticket == entry.ticket }) {
+            backlog.tickets.append(
+                .init(providerURL: record.providerURL, ticket: entry.ticket, expiresAt: entry.expiresAt)
+            )
+        }
+        ticketStore.saveBacklog(backlog)
+        recordDiagnostic("update_discarded", reason: "count=\(stale.count)")
     }
 
     /// 消息通知开关或绑定变化后调用：不再满足条件时结束活动并清理票据。
@@ -441,29 +475,30 @@ final class LiveActivityCoordinator: ObservableObject {
         guard latestUpdateTokens[activityID]?.token != token else { return }
         latestUpdateTokens[activityID] = (hostTag, token)
         recordDiagnostic("update_token", reason: nil)
-        enqueue { await self.registerUpdateTokenIfNeeded(activityID: activityID) }
+        enqueue { _ = await self.registerUpdateTokenIfNeeded(activityID: activityID) }
     }
 
-    private func registerUpdateTokenIfNeeded(activityID: String, force: Bool = false) async {
-        guard let latest = latestUpdateTokens[activityID] else { return }
+    /// 返回这张卡的更新票据此刻在 agentd 那边是否可用：刚登记成功，或未强制补登记时本机记录仍新。
+    private func registerUpdateTokenIfNeeded(activityID: String, force: Bool = false) async -> Bool {
+        guard let latest = latestUpdateTokens[activityID] else { return false }
         // 活动是这台 Mac 远程拉起的，或在确认支持后本机拉起的：不必等状态接口确认能力。
         guard let context = registrationContext(allowsUnconfirmedHost: true) else {
             recordDiagnostic("update_skipped", reason: updateSkipReason())
-            return
+            return false
         }
         guard latest.hostTag == context.0.hostTag else {
             recordDiagnostic("update_skipped", reason: "host_mismatch")
-            return
+            return false
         }
         guard system.isActivityAlive(activityID) else {
             recordDiagnostic("update_skipped", reason: "activity_ended")
-            return
+            return false
         }
         let (binding, provider) = context
         var record = loadRecord(for: binding)
         let fingerprint = connectionCredentialFingerprint(latest.token)
         if !force, record.updateIsCurrent(activityID: activityID, tokenFingerprint: fingerprint, now: Date()) {
-            return
+            return true
         }
         let startedAt = Date()
         do {
@@ -476,8 +511,10 @@ final class LiveActivityCoordinator: ObservableObject {
             record.updates[activityID] = entry
             ticketStore.save(record)
             recordDiagnostic("update_registered", reason: nil, since: startedAt)
+            return true
         } catch {
             recordDiagnostic("update_failed", reason: Self.reason(error), since: startedAt)
+            return false
         }
     }
 
@@ -1113,6 +1150,11 @@ enum LiveActivityLocalFallback: Equatable {
         observations: LiveActivitySessionObservations,
         now: Date
     ) -> LiveActivityLocalFallback {
+        guard current.status.isActive else {
+            // 已是终态却没结束（agentd 的 end 送不到）：按原样结束。即使又有会话开始了也不改回进行中，
+            // 卡上的计时与焦点都属于上一轮；新一轮由本机或 agentd 重新拉起。
+            return .end(current)
+        }
         let currentFocus = LiveActivityLinkRouting.session(matching: current.focusSessionTag, in: sessions)
         if var local = LiveActivityLocalState.make(sessions: sessions, now: now) {
             // 计时从这张卡拉起时算；焦点还是同一个会话时沿用卡上的标签（它可能是 resumeID 对应的那个）。
@@ -1121,10 +1163,6 @@ enum LiveActivityLocalFallback: Equatable {
                 local.focusSessionTag = current.focusSessionTag
             }
             return local == current ? .keep : .update(local)
-        }
-        guard current.status.isActive else {
-            // 已是终态却没结束（agentd 的 end 送不到）：按原样结束。
-            return .end(current)
         }
         guard let currentFocus else { return .keep }
         let startDate = current.startDate

@@ -1030,6 +1030,71 @@ final class LiveActivityBackgroundRegistrationTests: XCTestCase {
         XCTAssertNil(tickets.load()?.updates["A"])
     }
 
+    /// agentd 报告丢了更新票据、强制补登记又因连不上推送服务失败：本机记录里的旧条目不能继续挡住
+    /// 本机兜底，否则这张卡再也没人收口（#881 评审）。旧票据转入撤销队列。
+    func testFailedForcedRepairHandsTheCardToLocalFallback() async throws {
+        let start = Date()
+        let tickets = LiveActivityTicketStore(keychain: TestKeychainOperations())
+        tickets.save(LiveActivityTicketRecord(
+            profileID: "mac-a",
+            providerURL: "https://push.example/mimi-push",
+            hostTag: hostTag,
+            updates: ["A": .init(
+                ticket: "mpt1.1.old",
+                expiresAt: Date().addingTimeInterval(2 * 60 * 60),
+                tokenFingerprint: connectionCredentialFingerprint("ab12")
+            )]
+        ))
+        let card = LiveActivitySnapshot(
+            id: "A",
+            hostTag: hostTag,
+            state: MimiTurnActivityState(
+                status: .running,
+                runningCount: 1,
+                needsYouCount: 0,
+                startedAt: Int64(Date().addingTimeInterval(-60).timeIntervalSince1970),
+                focusSessionTag: NotificationSessionTag.messageTag(threadID: "thread-1")
+            )
+        )
+        var applied: [String] = []
+        let background = background!
+        let (coordinator, store) = try makeBoundLiveActivityCoordinator(
+            defaults: defaults,
+            tickets: tickets,
+            session: stubSession,
+            system: LiveActivitySystemHooks(
+                activitiesEnabled: { true },
+                isActivityAlive: { _ in true },
+                beginBackgroundExecution: { background.begin(name: $0) },
+                aliveActivities: { [card] },
+                applyLocalFallback: { id, _ in applied.append(id) }
+            )
+        )
+        lockScreenStore = store
+        let client = agentdClient
+        coordinator.makeClient = { _ in client }
+        await coordinator.waitForPendingOperations()
+        let running = [makeSession(id: "thread-1", projectID: "repo", title: "Fix", status: "running", source: "codex")]
+        let idle = [makeSession(id: "thread-1", projectID: "repo", title: "Fix", status: "idle", source: "codex")]
+
+        RegistrationStubURLProtocol.failTicketIssue = true
+        coordinator.didReceiveUpdateToken("ab12", activityID: "A", hostTag: hostTag)
+        await coordinator.waitForPendingOperations()
+        coordinator.sessionsDidChange(running, activeProfileID: "mac-a", isAppActive: true)
+        coordinator.sessionsDidChange(idle, activeProfileID: "mac-a", isAppActive: true)
+        XCTAssertTrue(applied.isEmpty, "本机记录说已登记时交给 agentd")
+
+        // 状态接口（替身）回报这台设备没有更新票据：强制补登记，换票据这一步失败。
+        coordinator.synchronize(client: client, profileID: "mac-a")
+        await coordinator.waitForPendingOperations()
+        XCTAssertNil(tickets.load()?.updates["A"])
+        XCTAssertEqual(tickets.loadBacklog()?.tickets.map(\.ticket), ["mpt1.1.old"])
+        XCTAssertTrue(diagnostics(since: start).contains { $0.outcome == "update_discarded" })
+
+        coordinator.sessionsDidChange(idle, activeProfileID: "mac-a", isAppActive: true)
+        XCTAssertEqual(applied, ["A"], "摘掉旧条目后由本机兜底收口")
+    }
+
     func testFailureReasonNamesStepAndStatus() {
         XCTAssertEqual(
             LiveActivityCoordinator.reason(
@@ -1372,6 +1437,16 @@ final class LiveActivityLocalFallbackTests: XCTestCase {
                 current: finished, sessions: [], observations: LiveActivitySessionObservations(), now: start
             ),
             .end(finished)
+        )
+        XCTAssertEqual(
+            LiveActivityLocalFallback.decide(
+                current: finished,
+                sessions: [session("thread-2", "running", updatedAt: start.addingTimeInterval(60))],
+                observations: LiveActivitySessionObservations(),
+                now: start.addingTimeInterval(90)
+            ),
+            .end(finished),
+            "又有会话开始时也不把上一轮的终态卡改回进行中：计时与焦点都属于上一轮"
         )
     }
 
