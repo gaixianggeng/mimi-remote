@@ -85,12 +85,18 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 		return err
 	}
 	if action == "pair" {
+		// 只有托管模式的二维码才带托管字段。自建模式带上它们，iOS 会先向云端
+		// 预留电脑名额，到 claim 时才被拒绝。
+		macInstallationID, macPublicKey, pairPublicKey := "", "", ""
+		if status.Mode == config.TailcatModeManaged {
+			macInstallationID, macPublicKey, pairPublicKey = status.MacInstallationID, status.PublicKey, status.PairPublicKey
+		}
 		result, err := agentsetup.TailcatPairWithManagedHost(
 			*configPath,
 			status.PairAddress,
-			status.MacInstallationID,
-			status.PublicKey,
-			status.PairPublicKey,
+			macInstallationID,
+			macPublicKey,
+			pairPublicKey,
 		)
 		if err != nil {
 			return err

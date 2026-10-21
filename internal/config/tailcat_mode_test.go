@@ -31,19 +31,27 @@ func TestTailcatManagedModeConfigCompatibilityAndValidation(t *testing.T) {
 			t.Fatalf("配置往返丢失原值：%s %v", data, err)
 		}
 	}
+	// 模式与中继记录不一致不能阻止 agentd 启动：否则以后更换官方地址或手工改过配置，
+	// 整个 agentd 起不来，局域网与 Tailscale 也一起断。
 	for _, cfg := range []TailcatConfig{
-		{Mode: "unknown"},
 		{Mode: TailcatModeManaged},
 		{Mode: TailcatModeManaged, DERPMapURL: "https://public.example.invalid/map"},
+		{PreviousDERPMapURL: "https://custom.example.invalid/map"},
+	} {
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("不一致但可解析的配置不能阻止启动：%+v %v", cfg, err)
+		}
+	}
+	for _, cfg := range []TailcatConfig{
+		{Mode: "unknown"},
 		{ManagedDERPMapURL: "http://test.example.invalid/map"},
 		{ManagedDERPMapURL: "https://user:password@test.example.invalid/map"},
 		{ManagedDERPMapURL: "https://test.example.invalid/map#fragment"},
 		{ManagedDERPMapURL: strings.Repeat("a", 2049)},
-		{PreviousDERPMapURL: "https://custom.example.invalid/map"},
 		{PreviousDERPMapURL: "http://custom.example.invalid/map"},
 	} {
 		if err := cfg.Validate(); err == nil {
-			t.Fatalf("无效托管配置必须拒绝：%+v", cfg)
+			t.Fatalf("无法解析的托管配置必须拒绝：%+v", cfg)
 		}
 		root := defaults()
 		root.Auth.Token = "0123456789abcdef0123456789abcdef"

@@ -32,29 +32,22 @@ func (c TailcatConfig) ManagedRelayURL() (string, error) {
 }
 
 func (c TailcatConfig) Validate() error {
-	current, err := NormalizeTailcatDERPMapURL(c.DERPMapURL)
-	if err != nil {
+	if _, err := NormalizeTailcatDERPMapURL(c.DERPMapURL); err != nil {
 		return err
 	}
 	if _, err := NormalizeTailcatDERPMapURL(c.PreviousDERPMapURL); err != nil {
 		return fmt.Errorf("tailcat.previous_derp_map_url：%w", err)
 	}
-	official, err := c.ManagedRelayURL()
-	if err != nil {
+	if _, err := c.ManagedRelayURL(); err != nil {
 		return err
 	}
+	// 校验失败会让整个 agentd 起不来，局域网和 Tailscale 也一起断。这里只拒绝
+	// 无法解析的值；托管模式下中继与当前内置官方地址不一致（例如以后的版本更换
+	// 官方地址）、自建模式残留原中继记录，都不阻止启动，由模式切换负责收敛。
 	switch c.ConnectionMode() {
-	case TailcatModeSelfHosted:
-		if c.PreviousDERPMapURL != "" {
-			return fmt.Errorf("自建模式不能保留 tailcat.previous_derp_map_url")
-		}
-	case TailcatModeManaged:
-		// 配置不一致时拒绝启动，不能把托管身份静默带回默认公共中继。
-		if current != official {
-			return fmt.Errorf("托管模式的 tailcat.derp_map_url 必须等于托管中继地址")
-		}
+	case TailcatModeSelfHosted, TailcatModeManaged:
+		return nil
 	default:
 		return fmt.Errorf("tailcat.mode 只支持 self_hosted 或 managed")
 	}
-	return nil
 }

@@ -121,3 +121,58 @@ func TestTailcatManagedCommandsUseLocalControlAndShowMode(t *testing.T) {
 		t.Fatalf("命令应展示拒绝手动改中继的中文错误：%v", err)
 	}
 }
+
+func TestTailcatPairOnlyAdvertisesManagedFieldsInManagedMode(t *testing.T) {
+	for _, tc := range []struct {
+		mode        string
+		wantManaged bool
+	}{
+		{mode: "self_hosted", wantManaged: false},
+		{mode: "managed", wantManaged: true},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"enabled": true, "running": true, "mode": tc.mode,
+				"public_key":          "nodekey:" + strings.Repeat("a", 64),
+				"mac_installation_id": "test-installation",
+				"pair_address":        "tailcat-test-pair-address",
+				"pair_public_key":     "nodekey:" + strings.Repeat("b", 64),
+			})
+		}))
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.json")
+		data, _ := json.Marshal(map[string]any{
+			"listen": strings.TrimPrefix(server.URL, "http://"), "auth": map[string]string{"token": "0123456789abcdef0123456789abcdef"},
+			"codex": map[string]bool{"enabled": false}, "claude": map[string]bool{"enabled": false},
+		})
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(dir, "tailcat"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "tailcat", "local-control.token"), []byte("test-local-control"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		err := runTailcatWithWriters([]string{"tailcat", "pair", "--config", path, "--qr-only", "--json"}, &stdout, &stderr)
+		server.Close()
+		if err != nil {
+			t.Fatalf("%s 模式生成二维码失败：%v %s", tc.mode, err, stderr.String())
+		}
+		var output map[string]any
+		if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+			t.Fatal(err)
+		}
+		pairURL, _ := output["pair_url"].(string)
+		if pairURL == "" || !strings.Contains(pairURL, "tailcat_pair_address=") {
+			t.Fatalf("%s 模式缺少配对地址：%s", tc.mode, stdout.String())
+		}
+		// 自建模式带上托管字段，iOS 会先向云端预留电脑名额，到 claim 时才被拒绝。
+		for _, field := range []string{"managed_mac_installation_id=", "managed_mac_tailcat_public_key=", "managed_pair_tailcat_public_key="} {
+			if strings.Contains(pairURL, field) != tc.wantManaged {
+				t.Fatalf("%s 模式的二维码对 %s 的处理不对：%s", tc.mode, field, pairURL)
+			}
+		}
+	}
+}
