@@ -169,10 +169,21 @@ final class MockWebSocketClient: SessionWebSocketClient {
 final class DelayedCreateSessionClient: SessionStoreAPIClient {
     let projectsResult: [AgentProject]
     let sessionsResult: [AgentSession]
+    /// createSession 在协作线程池里记账，测试在主线程等待与放行：状态都在锁内读写，
+    /// 续体在锁外恢复（#882，Thread Sanitizer 报过 createReadyCount 的读写竞争）。
+    private let lock = NSLock()
     private var createContinuations: [CheckedContinuation<CreateSessionResponse, Error>] = []
     private var requestCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-    var createPayloads: [CreateSessionRequest] = []
-    private(set) var modelOptionsCallCount = 0
+    private var createPayloadsStorage: [CreateSessionRequest] = []
+    private var modelOptionsCallCountStorage = 0
+
+    var createPayloads: [CreateSessionRequest] {
+        lock.withLock { createPayloadsStorage }
+    }
+
+    var modelOptionsCallCount: Int {
+        lock.withLock { modelOptionsCallCountStorage }
+    }
 
     init(projects: [AgentProject], sessions: [AgentSession]) {
         self.projectsResult = projects
@@ -184,7 +195,7 @@ final class DelayedCreateSessionClient: SessionStoreAPIClient {
     }
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {
-        modelOptionsCallCount += 1
+        lock.withLock { modelOptionsCallCountStorage += 1 }
         return []
     }
 
@@ -197,10 +208,13 @@ final class DelayedCreateSessionClient: SessionStoreAPIClient {
     }
 
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
-        createPayloads.append(payload)
-        return try await withCheckedThrowingContinuation { continuation in
-            createContinuations.append(continuation)
-            notifyRequestCountWaiters()
+        try await withCheckedThrowingContinuation { continuation in
+            let satisfied = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                createPayloadsStorage.append(payload)
+                createContinuations.append(continuation)
+                return takeSatisfiedWaitersLocked()
+            }
+            satisfied.forEach { $0.resume() }
         }
     }
 
@@ -213,41 +227,45 @@ final class DelayedCreateSessionClient: SessionStoreAPIClient {
     }
 
     func waitForCreateRequestCount(_ count: Int) async {
-        guard createReadyCount < count else {
+        guard lock.withLock({ createReadyCountLocked < count }) else {
             return
         }
         await withCheckedContinuation { continuation in
-            guard createReadyCount < count else {
-                continuation.resume()
-                return
+            let isReady = lock.withLock { () -> Bool in
+                guard createReadyCountLocked < count else { return true }
+                requestCountWaiters.append((count, continuation))
+                return false
             }
-            requestCountWaiters.append((count, continuation))
+            if isReady {
+                continuation.resume()
+            }
         }
     }
 
     func resolveCreate(with result: Result<CreateSessionResponse, Error>, at index: Int = 0) {
+        let continuation = lock.withLock { createContinuations[index] }
         switch result {
         case .success(let response):
-            createContinuations[index].resume(returning: response)
+            continuation.resume(returning: response)
         case .failure(let error):
-            createContinuations[index].resume(throwing: error)
+            continuation.resume(throwing: error)
         }
     }
 
-    private func notifyRequestCountWaiters() {
-        var pending: [(Int, CheckedContinuation<Void, Never>)] = []
-        for waiter in requestCountWaiters {
-            if createReadyCount >= waiter.0 {
-                waiter.1.resume()
-            } else {
-                pending.append(waiter)
-            }
+    /// 调用方须持有锁：取出已经满足的等待者，由调用方在锁外恢复。
+    private func takeSatisfiedWaitersLocked() -> [CheckedContinuation<Void, Never>] {
+        let ready = createReadyCountLocked
+        var satisfied: [CheckedContinuation<Void, Never>] = []
+        requestCountWaiters.removeAll { waiter in
+            guard ready >= waiter.0 else { return false }
+            satisfied.append(waiter.1)
+            return true
         }
-        requestCountWaiters = pending
+        return satisfied
     }
 
-    private var createReadyCount: Int {
-        min(createPayloads.count, createContinuations.count)
+    private var createReadyCountLocked: Int {
+        min(createPayloadsStorage.count, createContinuations.count)
     }
 }
 
@@ -625,9 +643,20 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     var setThreadNameError: Error?
     var requestedThreadGoalSets: [RequestedThreadGoalSet] = []
     var requestedSessionReviews: [RequestedSessionReview] = []
-    var requestedMessageSessionIDs: [String] = []
-    var requestedMessageCursors: [String?] = []
-    var requestedMessageLimits: [Int?] = []
+    /// 历史请求会并发发出：回前台时当前会话的恢复历史与回合完成对账并行（#790），
+    /// 两路都在协作线程池里记账。三份记录在锁内一起追加（#882）。
+    var requestedMessageSessionIDs: [String] {
+        requestLogLock.withLock { requestedMessageSessionIDsStorage }
+    }
+    private var requestedMessageSessionIDsStorage: [String] = []
+    var requestedMessageCursors: [String?] {
+        requestLogLock.withLock { requestedMessageCursorsStorage }
+    }
+    private var requestedMessageCursorsStorage: [String?] = []
+    var requestedMessageLimits: [Int?] {
+        requestLogLock.withLock { requestedMessageLimitsStorage }
+    }
+    private var requestedMessageLimitsStorage: [Int?] = []
     var createPayloads: [CreateSessionRequest] = []
     private(set) var worktreeListCallCount = 0
     private(set) var modelOptionsCallCount = 0
@@ -1307,10 +1336,16 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         }
     }
 
+    private func recordMessageRequest(sessionID: String, cursor: String?, limit: Int?) {
+        requestLogLock.withLock {
+            requestedMessageSessionIDsStorage.append(sessionID)
+            requestedMessageCursorsStorage.append(cursor)
+            requestedMessageLimitsStorage.append(limit)
+        }
+    }
+
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
-        requestedMessageSessionIDs.append(sessionID)
-        requestedMessageCursors.append(before)
-        requestedMessageLimits.append(limit)
+        recordMessageRequest(sessionID: sessionID, cursor: before, limit: limit)
         if let before, let page = historyCursorPages[before] {
             return page.messages
         }
@@ -1324,9 +1359,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
-        requestedMessageSessionIDs.append(sessionID)
-        requestedMessageCursors.append(before)
-        requestedMessageLimits.append(limit)
+        recordMessageRequest(sessionID: sessionID, cursor: before, limit: limit)
         if let before, let page = historyCursorPages[before] {
             return page
         }
@@ -1343,9 +1376,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         guard supportsLatestTurnHistoryPage else {
             return nil
         }
-        requestedMessageSessionIDs.append(sessionID)
-        requestedMessageCursors.append(nil)
-        requestedMessageLimits.append(1)
+        recordMessageRequest(sessionID: sessionID, cursor: nil, limit: 1)
         if let latestTurnHistoryHandler {
             return try await latestTurnHistoryHandler(sessionID)
         }
