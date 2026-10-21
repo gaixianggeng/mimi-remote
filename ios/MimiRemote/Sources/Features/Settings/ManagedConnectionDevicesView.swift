@@ -25,10 +25,14 @@ struct ManagedConnectionDevicesView: View {
             if appStore.activeConnectionProfile?.connectionRoute.isManaged == true {
                 managedRouteSection
             }
-            if isEntitled {
+            switch entitlementStore.status {
+            case .entitled:
                 connectionSection
                 devicesSection
-            } else {
+            case .loading, .resolving, .failed:
+                // 冷启动刷新或查询失败时还不知道是否订阅，不能把已订阅用户当成未订阅。
+                entitlementCheckSection
+            case .available, .pending, .expired, .revoked:
                 subscribeSection
             }
         }
@@ -93,7 +97,34 @@ struct ManagedConnectionDevicesView: View {
         themeStore.tokens(for: colorScheme)
     }
 
-    /// 未订阅时不出现空的设备列表，只说明用途并跳到「我的」里的订阅页。
+    private var entitlementCheckSection: some View {
+        Section {
+            if case .failed(let message) = entitlementStore.status {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(tokens.warning)
+                    Button(L10n.text("ui.retry")) {
+                        Task { await entitlementStore.load() }
+                    }
+                    .disabled(entitlementStore.isBusy)
+                    .accessibilityIdentifier("settings.managedConnectionDevices.retry")
+                }
+                .settingsRow(.descriptive)
+            } else {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text(L10n.text("ui.managed_subscription_checking"))
+                }
+                .settingsRow(.descriptive)
+                .accessibilityElement(children: .combine)
+            }
+        } header: {
+            SettingsGroupHeader(title: L10n.text("ui.managed_subscription_title"), showsDivider: false)
+        }
+        .settingsGroupRowStyle()
+    }
+
+    /// 确认未订阅（或已过期、撤销、待批准）时不出现空的设备列表，只说明用途并跳到「我的」里的订阅页。
     private var subscribeSection: some View {
         Section {
             Text(L10n.text("ui.managed_devices_subscribe_notice"))
