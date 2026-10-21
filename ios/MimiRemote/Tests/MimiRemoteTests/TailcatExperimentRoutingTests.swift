@@ -574,6 +574,36 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(fixture.store.connectionEndpoint, "http://100.64.0.10:8787")
     }
 
+    func testManagedConnectionLANHintOnlyForFailedUnsubscribedLANProfiles() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func shows(
+            route: ConnectionProfileRoute? = .lan,
+            failed: Bool = true,
+            entitled: Bool = false,
+            dismissedAgo: TimeInterval? = nil
+        ) -> Bool {
+            InitialConnectionSettingsSections.showsManagedConnectionLANHint(
+                route: route,
+                connectionFailed: failed,
+                entitled: entitled,
+                dismissedAt: dismissedAgo.map { now.addingTimeInterval(-$0) },
+                now: now
+            )
+        }
+
+        XCTAssertTrue(shows())
+        // 只针对局域网档案：Tailscale、托管线路或尚无档案时不提示。
+        XCTAssertFalse(shows(route: .tailscale))
+        XCTAssertFalse(shows(route: .managedTailcat))
+        XCTAssertFalse(shows(route: nil))
+        XCTAssertFalse(shows(failed: false))
+        XCTAssertFalse(shows(entitled: true))
+        // 关闭后 7 天内不再出现，满 7 天再出现。
+        let snooze = InitialConnectionSettingsSections.managedConnectionLANHintSnooze
+        XCTAssertFalse(shows(dismissedAgo: snooze - 60))
+        XCTAssertTrue(shows(dismissedAgo: snooze))
+    }
+
     func testManagedRouteWithoutAddressStaysFailClosedAndOffersManualFallback() async throws {
         let fixture = try makeControllerFixture(
             startResults: [],
