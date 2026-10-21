@@ -81,6 +81,7 @@ type agentController struct {
 	agentPath          string
 	statusGate         chan struct{}
 	statusRunner       func(context.Context, ...string) ([]byte, error)
+	commandRunner      func(context.Context, ...string) ([]byte, error)
 	cachedNetwork      *networkStatus
 	networkLastChecked time.Time
 }

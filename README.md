@@ -72,7 +72,7 @@ On Windows, the Codex App Server listens on a loopback WebSocket and is not expo
 
 `agentd` on your computer authenticates the app and routes it to the selected runtime. There is no cloud account, session hosting, or application-level relay. Message notifications are on by default; they go through a small push service that receives only the APNs device token, random identifiers and anonymous short tags for the computer and session, the runtime and event type (such as an approval request or a finished task), and an expiry, never prompts, code, or session content. See the [privacy policy](docs/privacy-policy.md). Keep `agentd` on a private network; do not expose its plain HTTP port to the public Internet.
 
-Mac and Linux hosts also offer an experimental Tailcat connection, off by default, that lets the app reach the host without the Tailscale app. Every connection first contacts a DERP relay for discovery and its initial handshake, then moves end-to-end encrypted traffic to a direct path when available. Otherwise, the relay continues forwarding that traffic. The relay processes connection metadata even when traffic later moves to a direct path. The default relay is operated by Tailscale, not by Mimi Remote; you can configure your own relay on the host.
+Mac, Windows, and Linux hosts also offer an experimental Tailcat connection, off by default, that lets the app reach the host without the Tailscale app. On Windows it also works without LAN access and adds no firewall rule: turn it on from the notification-area control panel, then choose Tailcat when pairing. Every connection first contacts a DERP relay for discovery and its initial handshake, then moves end-to-end encrypted traffic to a direct path when available. Otherwise, the relay continues forwarding that traffic. The relay processes connection metadata even when traffic later moves to a direct path. The default relay is operated by Tailscale, not by Mimi Remote; you can configure your own relay on the host.
 
 New sessions use the Full File Access permission mode by default, so agents run commands and edit files without asking each time. To confirm actions one by one, change Default permissions to Ask for Approval in the app's settings. See [SECURITY.md](SECURITY.md) for the risks.
 
@@ -90,7 +90,7 @@ Yes. The agent runs on the computer, so it has to stay awake and online while yo
 On your computer, by Codex, Claude Code, or DeepSeek Harness. Mimi Remote has no cloud account and does not host sessions.
 
 **How do I connect when I'm not on the same network?**\
-Put your phone and computer on the same private network with Tailscale. Mac and Linux computers can also try the experimental Tailcat connection described in [How it works](#how-it-works).
+Put your phone and computer on the same private network with Tailscale. Mac, Windows, and Linux computers can also try the experimental Tailcat connection described in [How it works](#how-it-works).
 
 **Does it cost anything?**\
 The iPhone and iPad app and the computer software are free and open source, with no in-app purchases or subscriptions. Model usage counts against the Codex or Claude Code account on your computer.
