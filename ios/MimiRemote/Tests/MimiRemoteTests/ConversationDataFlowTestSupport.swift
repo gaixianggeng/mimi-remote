@@ -625,9 +625,20 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     var setThreadNameError: Error?
     var requestedThreadGoalSets: [RequestedThreadGoalSet] = []
     var requestedSessionReviews: [RequestedSessionReview] = []
-    var requestedMessageSessionIDs: [String] = []
-    var requestedMessageCursors: [String?] = []
-    var requestedMessageLimits: [Int?] = []
+    /// 历史请求会并发发出：回前台时当前会话的恢复历史与回合完成对账并行（#790），
+    /// 两路都在协作线程池里记账。三份记录在锁内一起追加（#882）。
+    var requestedMessageSessionIDs: [String] {
+        requestLogLock.withLock { requestedMessageSessionIDsStorage }
+    }
+    private var requestedMessageSessionIDsStorage: [String] = []
+    var requestedMessageCursors: [String?] {
+        requestLogLock.withLock { requestedMessageCursorsStorage }
+    }
+    private var requestedMessageCursorsStorage: [String?] = []
+    var requestedMessageLimits: [Int?] {
+        requestLogLock.withLock { requestedMessageLimitsStorage }
+    }
+    private var requestedMessageLimitsStorage: [Int?] = []
     var createPayloads: [CreateSessionRequest] = []
     private(set) var worktreeListCallCount = 0
     private(set) var modelOptionsCallCount = 0
@@ -1307,10 +1318,16 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         }
     }
 
+    private func recordMessageRequest(sessionID: String, cursor: String?, limit: Int?) {
+        requestLogLock.withLock {
+            requestedMessageSessionIDsStorage.append(sessionID)
+            requestedMessageCursorsStorage.append(cursor)
+            requestedMessageLimitsStorage.append(limit)
+        }
+    }
+
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
-        requestedMessageSessionIDs.append(sessionID)
-        requestedMessageCursors.append(before)
-        requestedMessageLimits.append(limit)
+        recordMessageRequest(sessionID: sessionID, cursor: before, limit: limit)
         if let before, let page = historyCursorPages[before] {
             return page.messages
         }
@@ -1324,9 +1341,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
-        requestedMessageSessionIDs.append(sessionID)
-        requestedMessageCursors.append(before)
-        requestedMessageLimits.append(limit)
+        recordMessageRequest(sessionID: sessionID, cursor: before, limit: limit)
         if let before, let page = historyCursorPages[before] {
             return page
         }
@@ -1343,9 +1358,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         guard supportsLatestTurnHistoryPage else {
             return nil
         }
-        requestedMessageSessionIDs.append(sessionID)
-        requestedMessageCursors.append(nil)
-        requestedMessageLimits.append(1)
+        recordMessageRequest(sessionID: sessionID, cursor: nil, limit: 1)
         if let latestTurnHistoryHandler {
             return try await latestTurnHistoryHandler(sessionID)
         }
