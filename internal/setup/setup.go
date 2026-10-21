@@ -32,8 +32,8 @@ type Options struct {
 	Listen             string
 	AppServerSSHTarget string
 	Force              bool
-	// LocalServiceOnly 用于 up --no-pair：已有配置只返回本机就绪检查需要的 Token 与
-	// loopback Endpoint，不要求存在可配对的 Tailscale 或局域网地址（#874）。
+	// LocalServiceOnly 用于 up --no-pair：新建或沿用配置后都只返回本机就绪检查需要的
+	// Token 与 loopback Endpoint，不要求存在可配对的 Tailscale 或局域网地址（#874）。
 	LocalServiceOnly bool
 	// CodexBin overrides CLI discovery for embedding integrations and tests.
 	CodexBin string
@@ -95,12 +95,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 				return Result{}, err
 			}
 		}
-		var result Result
-		if options.LocalServiceOnly {
-			result, err = LocalServiceAccess(cfgPath)
-		} else {
-			result, err = Pair(ctx, cfgPath)
-		}
+		result, err := setupResult(ctx, cfgPath, options.LocalServiceOnly)
 		if err != nil {
 			return Result{}, err
 		}
@@ -267,7 +262,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	}
 	filesCommitted = true
 
-	result, err := Pair(ctx, cfgPath)
+	result, err := setupResult(ctx, cfgPath, options.LocalServiceOnly)
 	if err != nil {
 		return Result{}, err
 	}
@@ -368,6 +363,15 @@ func LocalServiceAccess(configPath string) (Result, error) {
 		return Result{}, err
 	}
 	return localServiceResult(cfgPath, cfg), nil
+}
+
+// setupResult 是 setup 写完或沿用配置后的返回值。新建与已有配置都要遵守
+// LocalServiceOnly，否则首次安装时第二次网络探测失败仍会阻断本机可用的服务。
+func setupResult(ctx context.Context, configPath string, localServiceOnly bool) (Result, error) {
+	if localServiceOnly {
+		return LocalServiceAccess(configPath)
+	}
+	return Pair(ctx, configPath)
 }
 
 func localServiceResult(configPath string, cfg config.Config) Result {

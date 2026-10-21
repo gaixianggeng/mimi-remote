@@ -55,6 +55,34 @@ func TestLocalServiceAccessDoesNotRequirePairingNetwork(t *testing.T) {
 	}
 }
 
+func TestRunLocalServiceOnlyAppliesToNewAndExistingConfig(t *testing.T) {
+	clearSetupEnv(t)
+	options := Options{
+		ConfigPath:       filepath.Join(t.TempDir(), "config.json"),
+		ScanRoot:         t.TempDir(),
+		Listen:           "127.0.0.1:9124",
+		LocalServiceOnly: true,
+	}
+	created, err := Run(context.Background(), options)
+	if err != nil {
+		t.Fatalf("新建配置时 up --no-pair 不能依赖配对网络：%v", err)
+	}
+	// 走 Pair 时 loopback listen 会生成配对链接并附带“本机地址”警告；本机模式两者都不应出现。
+	if !created.Created || created.Endpoint != "http://127.0.0.1:9124" || len(created.Token) != 64 {
+		t.Fatalf("新建配置应返回 loopback Endpoint 与新 Token：%+v", created)
+	}
+	if created.PairURL != "" || created.ConnectURL != "" || len(created.Warnings) != 0 {
+		t.Fatalf("新建配置在本机模式下仍做了配对：%+v", created)
+	}
+	existing, err := Run(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if existing.Created || existing.Token != created.Token || existing.PairURL != "" {
+		t.Fatalf("沿用配置时应保留 Token 且不生成配对链接：%+v", existing)
+	}
+}
+
 func TestLocalServiceAccessRejectsUnreadableConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
