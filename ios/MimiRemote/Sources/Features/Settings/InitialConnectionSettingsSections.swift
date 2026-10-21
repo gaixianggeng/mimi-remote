@@ -781,7 +781,8 @@ struct InitialConnectionSettingsSections: View {
     @ViewBuilder
     private func connectionMethodRows(tokens: ThemeTokens) -> some View {
         if ManagedConnectionSubscriptionView.isEntryVisible {
-            NavigationLink(value: SettingsDestination.managedConnection) {
+            // 设备页只进线路与设备；购买与订阅在「我的」（#891）。
+            NavigationLink(value: SettingsDestination.managedConnectionDevices) {
                 ConnectionRowLabel(
                     title: L10n.text("ui.managed_subscription_title"),
                     value: appStore.activeConnectionProfile?.connectionRoute.isManaged == true
