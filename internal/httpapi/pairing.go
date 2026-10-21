@@ -124,6 +124,12 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 			writeManagedModeRequired(w)
 			return
 		}
+	} else if strings.TrimSpace(payload.TailcatClientKey) != "" && r.tailcat != nil &&
+		r.tailcat.Status(req.Context()).Mode == config.TailcatModeManaged {
+		// 签名票据不覆盖托管字段，去掉它们的托管二维码 claim 不能落进免费白名单。
+		// 这里先给稳定错误码；AllowClient 在 operationMu 内还会再拦一次。
+		writeManagedGrantRequired(w)
+		return
 	}
 	if publicKey := strings.TrimSpace(payload.TailcatClientKey); publicKey != "" {
 		if r.tailcat == nil {
@@ -156,6 +162,10 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 			writeManagedModeRequired(w)
 			return
 		}
+		if errors.Is(err, errTailcatManagedGrantRequired) {
+			writeManagedGrantRequired(w)
+			return
+		}
 		if err != nil || !status.Running || strings.TrimSpace(status.Address) == "" {
 			if err != nil {
 				writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -181,4 +191,8 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 
 func writeManagedModeRequired(w http.ResponseWriter) {
 	writeJSON(w, http.StatusConflict, map[string]string{"code": "tailcat_managed_mode_required", "error": errTailcatManagedModeRequired.Error()})
+}
+
+func writeManagedGrantRequired(w http.ResponseWriter) {
+	writeJSON(w, http.StatusConflict, map[string]string{"code": "tailcat_managed_grant_required", "error": errTailcatManagedGrantRequired.Error()})
 }

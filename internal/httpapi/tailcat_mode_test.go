@@ -473,3 +473,78 @@ func TestTailcatLocalConfigureRejectsManagedRelayWithStableCode(t *testing.T) {
 		t.Fatal("拒绝手动改中继不应访问控制面")
 	}
 }
+
+func TestManagedModeRejectsTailcatClaimWithoutManagedGrant(t *testing.T) {
+	server := newTestServer(t)
+	fake := &fakeTailcatSidecar{status: tailcatStatus{Running: true, Mode: config.TailcatModeManaged, Address: "managed-address"}}
+	managed := &fakeManagedPairingService{}
+	server.router.tailcat = fake
+	server.router.managedPairing = managed
+	now := time.Now().UTC()
+	ticket := auth.NewPairingTicket("http://127.0.0.1:8787", testToken, now.Add(-time.Minute), now.Add(time.Minute))
+	// 签名票据不覆盖托管字段：去掉它们的托管二维码 claim 不能落进免费白名单。
+	response := performPairingClaim(t, server.handler, pairingClaimRequest{
+		Endpoint: ticket.Endpoint, IssuedAt: ticket.IssuedAt, ExpiresAt: ticket.ExpiresAt, Signature: ticket.Signature,
+		TailcatClientKey: testManagedMobileKey,
+	})
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"tailcat_managed_grant_required"`) {
+		t.Fatalf("托管模式下未拒绝不带授权的 claim：%d %s", response.Code, response.Body.String())
+	}
+	if fake.allowCalls != 0 || managed.completeCall != 0 {
+		t.Fatal("拒绝请求不能修改授权")
+	}
+}
+
+func TestManagedModeSidecarRefusesFreeAllowlistAndReconcilesChangedRelay(t *testing.T) {
+	binary := buildModeTestSidecar(t)
+	s, c := newModeTestHost(t, binary, "https://custom.example.invalid/map", true)
+	entered, err := c.ConfigureMode(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 绕过路由直接调用也不能写免费白名单：检查与写入都在 operationMu 内。
+	if _, err := s.AllowClient(context.Background(), testManagedMobileKey); !errors.Is(err, errTailcatManagedGrantRequired) {
+		t.Fatalf("托管模式下 AllowClient 必须拒绝：%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(s.stateDir, "clients.json")); !os.IsNotExist(err) {
+		t.Fatalf("托管模式不能留下免费白名单：%v", err)
+	}
+
+	// 以后的版本或配置覆盖换了托管地址：启动容忍不一致，再次进入托管模式时收敛到新地址。
+	const changedRelay = "https://official-next.example.invalid/derp-map.json"
+	raw, err := os.ReadFile(s.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["tailcat"].(map[string]any)["managed_derp_map_url"] = changedRelay
+	updated, _ := json.Marshal(document)
+	if err := os.WriteFile(s.configPath, updated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.config.ManagedDERPMapURL = changedRelay
+	s.mu.Unlock()
+
+	reconciled, err := c.ConfigureMode(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconciled.Mode != config.TailcatModeManaged || reconciled.DERPMapURL != changedRelay {
+		t.Fatalf("未收敛到新的托管中继：%+v", reconciled)
+	}
+	if reconciled.PublicKey == entered.PublicKey {
+		t.Fatal("更换托管中继必须重建身份")
+	}
+	persisted := readModeTestConfig(t, s.configPath)
+	if persisted.Tailcat.DERPMapURL != changedRelay || persisted.Tailcat.PreviousDERPMapURL != "https://custom.example.invalid/map" {
+		t.Fatalf("收敛后持久化不对：%+v", persisted.Tailcat)
+	}
+	again, err := c.ConfigureMode(context.Background(), true)
+	if err != nil || again.PublicKey != reconciled.PublicKey {
+		t.Fatalf("地址一致时再次进入不能轮换身份：%+v %v", again, err)
+	}
+}

@@ -439,10 +439,6 @@ func (s *tailcatSidecarSupervisor) callControlWithStatus(
 	return status, err
 }
 
-func (s *tailcatSidecarSupervisor) AllowClient(ctx context.Context, publicKey string) (tailcatStatus, error) {
-	return s.callControlWithStatus(ctx, http.MethodPost, "/allow", map[string]string{"public_key": publicKey})
-}
-
 func (s *tailcatSidecarSupervisor) ReplaceManagedClients(
 	ctx context.Context,
 	publicKeys []string,

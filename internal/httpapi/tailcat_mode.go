@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -10,8 +11,9 @@ import (
 )
 
 var (
-	errTailcatManagedModeRequired = errors.New("请先在电脑上进入托管模式，再重新生成二维码并扫码")
-	errTailcatManagedRelayLocked  = errors.New("托管模式下不能手动修改中继，请先退出托管模式")
+	errTailcatManagedModeRequired  = errors.New("请先在电脑上进入托管模式，再重新生成二维码并扫码")
+	errTailcatManagedRelayLocked   = errors.New("托管模式下不能手动修改中继，请先退出托管模式")
+	errTailcatManagedGrantRequired = errors.New("这台电脑已开启托管连接，请在 App 的「Mimi 托管连接」里扫码配对")
 )
 
 // ConfigureDERPMap 与模式切换共用同一个事务，只有自建模式允许手动改中继。
@@ -54,7 +56,10 @@ func (s *tailcatSidecarSupervisor) ConfigureMode(ctx context.Context, managed bo
 	previous := s.config
 	s.mu.Unlock()
 	if (previous.ConnectionMode() == config.TailcatModeManaged) == managed {
-		return s.Status(ctx), nil
+		if !managed {
+			return s.Status(ctx), nil
+		}
+		return s.reconcileManagedRelay(ctx, previous, clearRegistration)
 	}
 	next := previous
 	if managed {
@@ -76,6 +81,54 @@ func (s *tailcatSidecarSupervisor) ConfigureMode(ctx context.Context, managed bo
 		}
 		return agentsetup.ConfigureTailcatMode(s.configPath, previous, next)
 	})
+}
+
+// reconcileManagedRelay 处理已在托管模式、但中继与当前托管地址不一致的情况
+// （配置覆盖变化或新版本更换官方地址）。启动时容忍这种不一致，再次进入托管
+// 模式时在这里收敛：重建身份切到新地址，进入前的原中继记录保持不变。
+func (s *tailcatSidecarSupervisor) reconcileManagedRelay(
+	ctx context.Context,
+	previous config.TailcatConfig,
+	clearRegistration func() error,
+) (tailcatStatus, error) {
+	official, err := previous.ManagedRelayURL()
+	if err != nil {
+		return s.Status(ctx), err
+	}
+	current, _ := config.NormalizeTailcatDERPMapURL(previous.DERPMapURL)
+	if current == official {
+		return s.Status(ctx), nil
+	}
+	next := previous
+	next.DERPMapURL = official
+	return s.reconfigure(ctx, next, func() error {
+		if err := clearRegistration(); err != nil {
+			return err
+		}
+		return agentsetup.ConfigureTailcatMode(s.configPath, previous, next)
+	})
+}
+
+// AllowClient 只服务自建模式。托管模式的白名单只能由云端授权的策略写入，
+// 不带托管授权的 claim 不能借免费白名单绕过订阅；与模式切换共用 operationMu，
+// 检查与写入之间不会被切换插队。
+func (s *tailcatSidecarSupervisor) AllowClient(ctx context.Context, publicKey string) (tailcatStatus, error) {
+	if s == nil {
+		return tailcatStatus{}, errors.New("Tailcat 管理器未初始化")
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	var status tailcatStatus
+	s.mu.Lock()
+	managed := s.config.ConnectionMode() == config.TailcatModeManaged
+	s.mu.Unlock()
+	if managed {
+		s.applyConfigurationToStatus(&status)
+		return status, errTailcatManagedGrantRequired
+	}
+	err := s.call(ctx, s.controlCallTimeout(), http.MethodPost, "/allow", map[string]string{"public_key": publicKey}, &status)
+	s.applyConfigurationToStatus(&status)
+	return status, err
 }
 
 // reconfigure 在 operationMu 内执行。身份、免费白名单及进程先切换，持久配置最后提交；
