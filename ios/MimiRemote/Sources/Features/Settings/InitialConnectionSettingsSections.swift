@@ -1323,16 +1323,19 @@ struct InitialConnectionSettingsSections: View {
         } else {
             connectionFailed = false
         }
-        let entitled: Bool
-        if case .entitled = managedConnectionEntitlementStore.status {
-            entitled = true
-        } else {
-            entitled = false
+        // 冷启动和回前台时订阅状态会经过检查中；只有确认未订阅（含已过期、撤销）才提示，
+        // 避免已订阅用户在核验完成前短暂看到开通提示。待批准的购买也不再打扰。
+        let confirmedNotSubscribed: Bool
+        switch managedConnectionEntitlementStore.status {
+        case .available, .expired, .revoked:
+            confirmedNotSubscribed = true
+        case .loading, .resolving, .failed, .pending, .entitled:
+            confirmedNotSubscribed = false
         }
         return Self.showsManagedConnectionLANHint(
             route: appStore.activeConnectionProfile?.connectionRoute,
             connectionFailed: connectionFailed,
-            entitled: entitled,
+            confirmedNotSubscribed: confirmedNotSubscribed,
             dismissedAt: managedLANHintDismissedAt > 0
                 ? Date(timeIntervalSince1970: managedLANHintDismissedAt)
                 : nil,
@@ -1345,11 +1348,11 @@ struct InitialConnectionSettingsSections: View {
     static func showsManagedConnectionLANHint(
         route: ConnectionProfileRoute?,
         connectionFailed: Bool,
-        entitled: Bool,
+        confirmedNotSubscribed: Bool,
         dismissedAt: Date?,
         now: Date
     ) -> Bool {
-        guard route == .lan, connectionFailed, !entitled else { return false }
+        guard route == .lan, connectionFailed, confirmedNotSubscribed else { return false }
         guard let dismissedAt else { return true }
         return now.timeIntervalSince(dismissedAt) >= managedConnectionLANHintSnooze
     }

@@ -579,13 +579,13 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         func shows(
             route: ConnectionProfileRoute? = .lan,
             failed: Bool = true,
-            entitled: Bool = false,
+            confirmedNotSubscribed: Bool = true,
             dismissedAgo: TimeInterval? = nil
         ) -> Bool {
             InitialConnectionSettingsSections.showsManagedConnectionLANHint(
                 route: route,
                 connectionFailed: failed,
-                entitled: entitled,
+                confirmedNotSubscribed: confirmedNotSubscribed,
                 dismissedAt: dismissedAgo.map { now.addingTimeInterval(-$0) },
                 now: now
             )
@@ -597,7 +597,8 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertFalse(shows(route: .managedTailcat))
         XCTAssertFalse(shows(route: nil))
         XCTAssertFalse(shows(failed: false))
-        XCTAssertFalse(shows(entitled: true))
+        // 已订阅或订阅状态还没核验完（检查中、失败、待批准）都不提示。
+        XCTAssertFalse(shows(confirmedNotSubscribed: false))
         // 关闭后 7 天内不再出现，满 7 天再出现。
         let snooze = InitialConnectionSettingsSections.managedConnectionLANHintSnooze
         XCTAssertFalse(shows(dismissedAgo: snooze - 60))
