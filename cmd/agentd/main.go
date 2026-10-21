@@ -236,6 +236,7 @@ func runUp(args []string) error {
 		BrowseRoot:         *browseRoot,
 		Listen:             *listen,
 		AppServerSSHTarget: *appServerSSHTarget,
+		LocalServiceOnly:   *noPair,
 	})
 	if err != nil {
 		return err
@@ -398,7 +399,7 @@ func runManagedServiceCommand(args []string, copy managedServiceCommandCopy) err
 		return err
 	}
 
-	result, err := agentsetup.Pair(context.Background(), *configPath)
+	result, err := managedServiceAccess(context.Background(), *configPath, *noPair)
 	if err != nil {
 		return fmt.Errorf("读取连接信息失败，请先执行 agentd %s：%w", copy.pairHint, err)
 	}
@@ -420,6 +421,15 @@ func runManagedServiceCommand(args []string, copy managedServiceCommandCopy) err
 		printServeConnection(os.Stdout, result)
 	}
 	return nil
+}
+
+// managedServiceAccess 决定启停命令读取哪种连接信息。--no-pair 只做本机就绪检查，
+// 不能因为 Tailscale 和局域网都关闭就拒绝启停服务（#874）；需要输出二维码时仍先校验配对地址。
+func managedServiceAccess(ctx context.Context, configPath string, noPair bool) (agentsetup.Result, error) {
+	if noPair {
+		return agentsetup.LocalServiceAccess(configPath)
+	}
+	return agentsetup.Pair(ctx, configPath)
 }
 
 func runStop(args []string) error {

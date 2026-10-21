@@ -532,7 +532,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let gitPullRequestStatusResults: [String: Result<GitPullRequestStatusResponse, Error>]
     let messagesError: Error?
     var modelOptionsResult: [CodexAppServerModelOption]
-    let modelOptionsError: Error?
+    var modelOptionsError: Error?
     var runtimeChannelAvailability: [String: Bool]
     /// 各 Runtime 通道是否声明 thread/goal/*；默认与真实 agentd 一致，只有 Codex 声明（#791）。
     var runtimeThreadGoalSupport: [String: Bool] = ["codex": true]
@@ -541,6 +541,9 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     /// 按 Runtime 定向查询的目录；未设置的 Runtime 沿用聚合目录。
     var modelOptionsByRuntime: [String: [CodexAppServerModelOption]] = [:]
     private(set) var targetedModelOptionsRequests: [String] = []
+    /// 各自只拦下一次请求，用来排出聚合与定向目录请求的先后。
+    var modelOptionsGate: PreparedConnectionGate?
+    var targetedModelOptionsGate: PreparedConnectionGate?
     let rateLimitsByRuntime: [String: RateLimitSummary]
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)?
@@ -760,6 +763,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         modelOptionsCallCount += 1
+        if let gate = modelOptionsGate {
+            modelOptionsGate = nil
+            await gate.wait()
+        }
         if let modelOptionsError {
             throw modelOptionsError
         }
@@ -768,6 +775,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func modelOptions(runtimeProvider: String) async throws -> [CodexAppServerModelOption] {
         targetedModelOptionsRequests.append(runtimeProvider)
+        if let gate = targetedModelOptionsGate {
+            targetedModelOptionsGate = nil
+            await gate.wait()
+        }
         if let options = modelOptionsByRuntime[runtimeProvider] {
             return options
         }

@@ -168,6 +168,23 @@ func waitForBroker(t *testing.T, router *Router, key string, want bool) *codexGa
 	}
 }
 
+// waitForSinkReplacement 等同名会话的新连接完成接管。客户端的 Dial 在 Upgrade 后
+// 就返回，attach 发布新 sink 在那之后；接管途中上游发出的帧按设计丢弃（见
+// pumpUpstream），用例必须等新 sink 发布后才能让上游推送实时帧。
+func waitForSinkReplacement(t *testing.T, broker *codexGatewayBroker, previous *codexGatewaySink) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if sink := broker.currentSink(); sink != nil && sink != previous {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("同名会话的新连接没有完成接管")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func waitForPendingCount(t *testing.T, broker *codexGatewayBroker, want int, message string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -400,14 +417,17 @@ func TestCodexGatewayBrokerDisabledKeepsOneToOneProxy(t *testing.T) {
 // 同名会话再次连接时，旧连接必须被顶下线，否则上游响应会分裂到两个客户端。
 func TestCodexGatewayBrokerReplacesPreviousSink(t *testing.T) {
 	up := newBrokerUpstream(t)
-	server, _ := brokerTestServer(t, up.url, true)
+	server, router := brokerTestServer(t, up.url, true)
 
 	first := brokerDial(t, server, brokerTestSession)
 	upstream := up.accept(t)
 	up.emit(t, upstream, brokerTurnStartedFrame)
 	readFrameWithMethod(t, first, "turn/started", 3*time.Second)
+	broker := waitForBroker(t, router, brokerTestSession, true)
+	firstSink := broker.currentSink()
 
 	second := brokerDial(t, server, brokerTestSession)
+	waitForSinkReplacement(t, broker, firstSink)
 	up.emit(t, upstream, brokerTurnStartedFrame)
 	readFrameWithMethod(t, second, "turn/started", 3*time.Second)
 

@@ -37,6 +37,24 @@
         }
       }
     },
+    "ui.default_model_catalog_unavailable": {
+      "comment": "Section footer when the connected computer did not return a model list for this runtime. %@ is the runtime name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't get the model list for %@ from this computer. Tap Refresh in the top-right corner to try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没能从这台电脑获取 %@ 的模型列表，点右上角刷新重试。"
+          }
+        }
+      }
+    },
     "ui.default_model_inherited_name": {
       "comment": "Model name for the inherited default option, distinct from pinning the same model.",
       "extractionState": "manual",
