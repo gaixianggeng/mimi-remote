@@ -54,7 +54,7 @@ func modulePairingEndpoint(ctx context.Context, cfg config.Config, network Pairi
 // Windows 托盘没有连接方式开关，LAN 还需要安装器建立受限防火墙规则，因此给出可直接执行的步骤（#874）。
 func noPairingNetworkError(goos string) error {
 	if goos == "windows" {
-		return fmt.Errorf("没有可用的 Tailscale 或局域网连接；请安装并登录 Tailscale 后运行 agentd network --tailscale-enabled=true 和 agentd restart，或重新运行安装器并勾选局域网访问")
+		return fmt.Errorf("没有可用的 Tailscale 或局域网连接；可以在托盘控制面板开启 Tailcat（或运行 agentd tailcat enable）后用 Tailcat 配对，也可以安装并登录 Tailscale 后运行 agentd network --tailscale-enabled=true 和 agentd restart，或重新运行安装器并勾选局域网访问")
 	}
 	return fmt.Errorf("没有可用的 Tailscale 或局域网连接；请启用连接方式或使用 Tailcat 配对")
 }

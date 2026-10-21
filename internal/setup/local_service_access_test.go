@@ -95,13 +95,11 @@ func TestLocalServiceAccessRejectsUnreadableConfig(t *testing.T) {
 
 func TestNoPairingNetworkErrorGivesPlatformNextSteps(t *testing.T) {
 	windows := noPairingNetworkError("windows").Error()
-	for _, expected := range []string{"agentd network --tailscale-enabled=true", "agentd restart", "安装器"} {
+	// Windows 安装包内置 Tailcat（#875），不装 Tailscale、不开局域网时它是唯一不需改网络的路径。
+	for _, expected := range []string{"托盘控制面板开启 Tailcat", "agentd tailcat enable", "agentd network --tailscale-enabled=true", "agentd restart", "安装器"} {
 		if !strings.Contains(windows, expected) {
 			t.Fatalf("Windows 提示缺少可执行步骤 %q：%s", expected, windows)
 		}
-	}
-	if strings.Contains(windows, "Tailcat") {
-		t.Fatalf("Windows 尚未提供 Tailcat，不能引导用户使用：%s", windows)
 	}
 	if other := noPairingNetworkError("darwin").Error(); !strings.Contains(other, "Tailcat") {
 		t.Fatalf("Mac 与 Linux 仍应提示 Tailcat：%s", other)
