@@ -930,33 +930,19 @@ final class LiveActivityBackgroundRegistrationTests: XCTestCase {
         tickets: LiveActivityTicketStore,
         makeClient: @escaping (String) async throws -> AgentAPIClient
     ) throws -> LiveActivityCoordinator {
-        let keychain = TestKeychainOperations()
-        let identityStore = PushInstallationIdentityStore(keychain: keychain)
-        try identityStore.save(PushInstallationIdentity(deviceID: "dev-test", installationID: "ins-test"))
-        defaults.set(true, forKey: "lockScreenApproval.enabled")
-        defaults.set("mac-a", forKey: "lockScreenApproval.registeredProfileID")
-        defaults.set("https://push.example/mimi-push", forKey: "lockScreenApproval.registeredProviderURL")
-        let store = LockScreenApprovalStore(
-            defaults: defaults, ticketStore: PushTicketStore(keychain: keychain), identityStore: identityStore
-        )
-        lockScreenStore = store
-        let session = stubSession
         let background = background!
-        let coordinator = LiveActivityCoordinator(
+        let (coordinator, store) = try makeBoundLiveActivityCoordinator(
             defaults: defaults,
-            ticketStore: tickets,
-            environment: .sandbox,
-            providerClientFactory: { PushProviderClient(baseURL: $0, session: session) },
+            tickets: tickets,
+            session: stubSession,
             system: LiveActivitySystemHooks(
                 activitiesEnabled: { true },
                 isActivityAlive: { _ in true },
                 beginBackgroundExecution: { background.begin(name: $0) }
             )
         )
-        coordinator.attach(lockScreenStore: store)
+        lockScreenStore = store
         coordinator.makeClient = makeClient
-        coordinator.profileExists = { $0 == "mac-a" }
-        coordinator.installationIDForProfile = { _ in "install-test" }
         return coordinator
     }
 
@@ -1020,6 +1006,49 @@ final class LiveActivityBackgroundRegistrationTests: XCTestCase {
         XCTAssertEqual(background.openCount, 0)
     }
 
+    /// 失败要标明卡在哪一步并带耗时：手机连不上推送服务和连不上 Mac 是两个排查方向（#830 真机走查）。
+    func testRegistrationFailureNamesTheStep() async throws {
+        let start = Date()
+        let tickets = LiveActivityTicketStore(keychain: TestKeychainOperations())
+        let coordinator = try makeCoordinator(tickets: tickets) { _ in throw URLError(.notConnectedToInternet) }
+        await coordinator.waitForPendingOperations()
+
+        RegistrationStubURLProtocol.failTicketIssue = true
+        coordinator.didReceiveUpdateToken("ab12", activityID: "A", hostTag: hostTag)
+        await coordinator.waitForPendingOperations()
+        RegistrationStubURLProtocol.failTicketIssue = false
+        coordinator.didReceiveUpdateToken("cd34", activityID: "A", hostTag: hostTag)
+        await coordinator.waitForPendingOperations()
+
+        let failures = diagnostics(since: start).filter { $0.outcome == "update_failed" }
+        XCTAssertEqual(failures.map(\.reason), ["provider:NSURLErrorDomain#-1005", "agentd:NSURLErrorDomain#-1009"])
+        XCTAssertTrue(failures.allSatisfy { $0.elapsedMilliseconds != nil }, "失败带耗时，超时与连接被断能直接区分")
+        XCTAssertEqual(
+            RegistrationStubURLProtocol.requests(path: "/v1/ticket/revoke").count, 1,
+            "只有换到票据、登记到 agentd 失败的那次需要撤销"
+        )
+        XCTAssertNil(tickets.load()?.updates["A"])
+    }
+
+    func testFailureReasonNamesStepAndStatus() {
+        XCTAssertEqual(
+            LiveActivityCoordinator.reason(
+                LiveActivityRegistrationFailure(step: .provider, underlying: PushProviderError.rejected(status: 403))
+            ),
+            "provider:http_403"
+        )
+        XCTAssertEqual(
+            LiveActivityCoordinator.reason(
+                LiveActivityRegistrationFailure(step: .agentd, underlying: AgentAPIError.server(status: 404, message: "gone"))
+            ),
+            "agentd:http_404"
+        )
+        XCTAssertEqual(
+            LiveActivityCoordinator.reason(LiveActivityRegistrationFailure(step: .provider, underlying: URLError(.timedOut))),
+            "provider:NSURLErrorDomain#-1001"
+        )
+    }
+
     /// agentd 明确回报不支持时仍然不登记：放宽的只是「还不知道」。
     func testUpdateTokenSkipsHostReportedUnsupported() async throws {
         let start = Date()
@@ -1076,6 +1105,7 @@ private final class RegistrationStubURLProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var recorded: [Recorded] = []
     private static var supported = true
+    private static var failTicket = false
     private static var openExecutions: (() -> Int)?
 
     static var liveActivitySupported: Bool {
@@ -1088,10 +1118,17 @@ private final class RegistrationStubURLProtocol: URLProtocol {
         set { lock.withLock { openExecutions = newValue } }
     }
 
+    /// 模拟手机连不上推送服务：换票据的请求中途断开。
+    static var failTicketIssue: Bool {
+        get { lock.withLock { failTicket } }
+        set { lock.withLock { failTicket = newValue } }
+    }
+
     static func reset() {
         lock.withLock {
             recorded.removeAll()
             supported = true
+            failTicket = false
             openExecutions = nil
         }
     }
@@ -1127,6 +1164,10 @@ private final class RegistrationStubURLProtocol: URLProtocol {
             Self.recorded.append(Recorded(path: path, body: body, openBackgroundExecutions: open))
             return Self.recorded.filter { $0.path == "/v1/ticket" }.count
         }
+        if path == "/v1/ticket", Self.failTicketIssue {
+            client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+            return
+        }
         let response: String
         switch path {
         case "/v1/ticket":
@@ -1146,4 +1187,338 @@ private final class RegistrationStubURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+/// 已绑定到 mac-a 的协调器：消息提醒已登记、设备身份齐全。登记与本机兜底的用例共用。
+/// 协调器只弱引用锁屏审批 Store，调用方要持有返回的 Store。
+@MainActor
+private func makeBoundLiveActivityCoordinator(
+    defaults: UserDefaults,
+    tickets: LiveActivityTicketStore,
+    session: URLSession,
+    system: LiveActivitySystemHooks
+) throws -> (LiveActivityCoordinator, LockScreenApprovalStore) {
+    let keychain = TestKeychainOperations()
+    let identityStore = PushInstallationIdentityStore(keychain: keychain)
+    try identityStore.save(PushInstallationIdentity(deviceID: "dev-test", installationID: "ins-test"))
+    defaults.set(true, forKey: "lockScreenApproval.enabled")
+    defaults.set("mac-a", forKey: "lockScreenApproval.registeredProfileID")
+    defaults.set("https://push.example/mimi-push", forKey: "lockScreenApproval.registeredProviderURL")
+    let store = LockScreenApprovalStore(
+        defaults: defaults, ticketStore: PushTicketStore(keychain: keychain), identityStore: identityStore
+    )
+    let coordinator = LiveActivityCoordinator(
+        defaults: defaults,
+        ticketStore: tickets,
+        environment: .sandbox,
+        providerClientFactory: { PushProviderClient(baseURL: $0, session: session) },
+        system: system
+    )
+    coordinator.attach(lockScreenStore: store)
+    coordinator.profileExists = { $0 == "mac-a" }
+    coordinator.installationIDForProfile = { _ in "install-test" }
+    return (coordinator, store)
+}
+
+/// 更新票据没登记上的活动 agentd 改不动：App 在前台按本机会话状态同步或收口（#830 真机走查）。
+final class LiveActivityLocalFallbackTests: XCTestCase {
+    private let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func card(
+        _ status: MimiTurnActivityStatus = .running,
+        focus: String = "thread-1",
+        running: Int = 1,
+        needsYou: Int = 0
+    ) -> MimiTurnActivityState {
+        MimiTurnActivityState(
+            status: status,
+            runningCount: running,
+            needsYouCount: needsYou,
+            startedAt: Int64(start.timeIntervalSince1970),
+            focusSessionTag: NotificationSessionTag.messageTag(threadID: focus)
+        )
+    }
+
+    private func session(_ id: String, _ status: String, updatedAt: Date, resumeID: String? = nil) -> AgentSession {
+        makeSession(id: id, projectID: "repo", title: id, status: status, source: "codex", resumeID: resumeID, updatedAt: updatedAt)
+    }
+
+    private func observed(_ sessions: [AgentSession], at date: Date) -> LiveActivitySessionObservations {
+        var observations = LiveActivitySessionObservations()
+        observations.record(sessions: sessions, now: date)
+        return observations
+    }
+
+    /// 这张卡拉起后在前台看到过焦点会话进行中，现在它停了：收成「已完成」并结束，计时起点与标签不变。
+    func testEndsAfterFocusSessionWasSeenRunningThisRound() {
+        let observations = observed([session("thread-1", "running", updatedAt: start)], at: start.addingTimeInterval(5))
+        let action = LiveActivityLocalFallback.decide(
+            current: card(),
+            sessions: [session("thread-1", "idle", updatedAt: start.addingTimeInterval(-600))],
+            observations: observations,
+            now: start.addingTimeInterval(30)
+        )
+        XCTAssertEqual(action, .end(card(.completed, running: 0)))
+    }
+
+    func testFailedRoundEndsAsFailed() {
+        let action = LiveActivityLocalFallback.decide(
+            current: card(),
+            sessions: [session("thread-1", "failed", updatedAt: start.addingTimeInterval(30))],
+            observations: LiveActivitySessionObservations(),
+            now: start.addingTimeInterval(40)
+        )
+        XCTAssertEqual(action, .end(card(.failed, running: 0)))
+    }
+
+    /// 卡是 App 挂起时远程拉起的，本机从没看到它进行中：服务端时间晚于拉起时间也算这一轮的结束。
+    func testEndsWhenServerTimeIsAfterTheCardStarted() {
+        let action = LiveActivityLocalFallback.decide(
+            current: card(),
+            sessions: [session("thread-1", "idle", updatedAt: start.addingTimeInterval(30))],
+            observations: LiveActivitySessionObservations(),
+            now: start.addingTimeInterval(40)
+        )
+        XCTAssertEqual(action, .end(card(.completed, running: 0)))
+    }
+
+    /// 列表可能还是挂起前的缓存：上一轮的「已结束」不能拿来收掉这一轮的卡。
+    func testKeepsCardWhenTheListMayBeAStaleCache() {
+        let stale = [session("thread-1", "idle", updatedAt: start.addingTimeInterval(-60))]
+        XCTAssertEqual(
+            LiveActivityLocalFallback.decide(
+                current: card(), sessions: stale, observations: LiveActivitySessionObservations(), now: start
+            ),
+            .keep
+        )
+        let seenBeforeThisRound = observed([session("thread-1", "running", updatedAt: start)], at: start.addingTimeInterval(-120))
+        XCTAssertEqual(
+            LiveActivityLocalFallback.decide(current: card(), sessions: stale, observations: seenBeforeThisRound, now: start),
+            .keep,
+            "上一轮看到的进行中不算"
+        )
+    }
+
+    func testKeepsCardWhenTheFocusSessionIsUnknown() {
+        let observations = observed([session("thread-1", "running", updatedAt: start)], at: start.addingTimeInterval(5))
+        XCTAssertEqual(
+            LiveActivityLocalFallback.decide(current: card(), sessions: [], observations: observations, now: start),
+            .keep,
+            "会话列表还没加载时不猜"
+        )
+        XCTAssertEqual(
+            LiveActivityLocalFallback.decide(
+                current: card(),
+                sessions: [session("thread-9", "idle", updatedAt: start.addingTimeInterval(30))],
+                observations: observations,
+                now: start
+            ),
+            .keep
+        )
+    }
+
+    /// 还有会话在跑时按本机汇总同步，计时仍从卡片拉起时算；与卡片一致时不动。
+    func testMirrorsTheLocalSummaryKeepingTheStartTime() {
+        let sessions = [
+            session("thread-1", "waiting_for_approval", updatedAt: start.addingTimeInterval(20)),
+            session("thread-2", "running", updatedAt: start.addingTimeInterval(10)),
+        ]
+        let action = LiveActivityLocalFallback.decide(
+            current: card(), sessions: sessions, observations: LiveActivitySessionObservations(), now: start.addingTimeInterval(60)
+        )
+        XCTAssertEqual(action, .update(card(.needsYou, running: 1, needsYou: 1)))
+        XCTAssertEqual(
+            LiveActivityLocalFallback.decide(
+                current: card(.needsYou, running: 1, needsYou: 1),
+                sessions: sessions,
+                observations: LiveActivitySessionObservations(),
+                now: start.addingTimeInterval(61)
+            ),
+            .keep
+        )
+    }
+
+    /// 卡上的标签可能是 resumeID 对应的远端线程：焦点还是同一个会话时沿用它，不来回改写。
+    func testResumedSessionKeepsTheCardTag() {
+        let current = card(focus: "thread-2")
+        XCTAssertEqual(
+            LiveActivityLocalFallback.decide(
+                current: current,
+                sessions: [session("local-2", "running", updatedAt: start, resumeID: "thread-2")],
+                observations: LiveActivitySessionObservations(),
+                now: start.addingTimeInterval(5)
+            ),
+            .keep
+        )
+        let observations = observed(
+            [session("local-2", "running", updatedAt: start, resumeID: "thread-2")], at: start.addingTimeInterval(5)
+        )
+        XCTAssertEqual(
+            LiveActivityLocalFallback.decide(
+                current: current,
+                sessions: [session("local-2", "idle", updatedAt: start.addingTimeInterval(-60), resumeID: "thread-2")],
+                observations: observations,
+                now: start.addingTimeInterval(30)
+            ),
+            .end(card(.completed, focus: "thread-2", running: 0))
+        )
+    }
+
+    /// 已经是终态却没结束（agentd 的 end 送不到）：不论本机列表如何都按原样结束。
+    func testTerminalCardEndsAsIs() {
+        let finished = card(.completed, running: 0)
+        XCTAssertEqual(
+            LiveActivityLocalFallback.decide(
+                current: finished, sessions: [], observations: LiveActivitySessionObservations(), now: start
+            ),
+            .end(finished)
+        )
+    }
+
+    func testObservationsExpireAndIgnoreTagCase() {
+        let tag = NotificationSessionTag.messageTag(threadID: "thread-1")
+        var observations = observed([session("thread-1", "running", updatedAt: start)], at: start)
+        XCTAssertEqual(observations.lastActive(tag: tag.lowercased()), start)
+        observations.record(sessions: [session("thread-1", "idle", updatedAt: start)], now: start.addingTimeInterval(60))
+        XCTAssertEqual(observations.lastActive(tag: tag), start, "停下来不抹掉最后一次看到进行中的时间")
+        observations.record(sessions: [], now: start.addingTimeInterval(LiveActivitySessionObservations.retention + 1))
+        XCTAssertNil(observations.lastActive(tag: tag))
+    }
+}
+
+/// 协调器把本机兜底落到「没登记更新票据、属于绑定 Mac 的活动」上，只在前台、当前档案就是那台 Mac 时。
+@MainActor
+final class LiveActivityLocalFallbackCoordinatorTests: XCTestCase {
+    private var suiteName: String!
+    private var defaults: UserDefaults!
+    private var lockScreenStore: LockScreenApprovalStore?
+    private var alive: [LiveActivitySnapshot] = []
+    private var applied: [(id: String, action: LiveActivityLocalFallback)] = []
+    private let hostTag = NotificationSessionTag.hostTag(installationID: "install-test")
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "LiveActivityLocalFallbackCoordinatorTests.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
+        alive = []
+        applied = []
+    }
+
+    override func tearDown() {
+        lockScreenStore = nil
+        defaults.removePersistentDomain(forName: suiteName)
+        super.tearDown()
+    }
+
+    private func makeCoordinator(tickets: LiveActivityTicketStore) async throws -> LiveActivityCoordinator {
+        let (coordinator, store) = try makeBoundLiveActivityCoordinator(
+            defaults: defaults,
+            tickets: tickets,
+            session: URLSession(configuration: .ephemeral),
+            system: LiveActivitySystemHooks(
+                activitiesEnabled: { true },
+                isActivityAlive: { _ in true },
+                beginBackgroundExecution: { _ in {} },
+                aliveActivities: { [weak self] in self?.alive ?? [] },
+                applyLocalFallback: { [weak self] id, action in self?.applied.append((id: id, action: action)) }
+            )
+        )
+        lockScreenStore = store
+        await coordinator.waitForPendingOperations()
+        return coordinator
+    }
+
+    private func runningCard(id: String = "A", hostTag: String? = nil) -> LiveActivitySnapshot {
+        LiveActivitySnapshot(
+            id: id,
+            hostTag: hostTag ?? self.hostTag,
+            state: MimiTurnActivityState(
+                status: .running,
+                runningCount: 1,
+                needsYouCount: 0,
+                startedAt: Int64(Date().addingTimeInterval(-60).timeIntervalSince1970),
+                focusSessionTag: NotificationSessionTag.messageTag(threadID: "thread-1")
+            )
+        )
+    }
+
+    private func sessions(_ status: String) -> [AgentSession] {
+        [makeSession(id: "thread-1", projectID: "repo", title: "Fix", status: status, source: "codex")]
+    }
+
+    func testSettlesAnUnregisteredCardOnceWhenTheRoundEnds() async throws {
+        let start = Date()
+        let coordinator = try await makeCoordinator(tickets: LiveActivityTicketStore(keychain: TestKeychainOperations()))
+        alive = [runningCard()]
+
+        coordinator.sessionsDidChange(sessions("running"), activeProfileID: "mac-a", isAppActive: true)
+        XCTAssertTrue(applied.isEmpty, "卡片与本机看到的一致时不动")
+
+        coordinator.sessionsDidChange(sessions("idle"), activeProfileID: "mac-a", isAppActive: true)
+        XCTAssertEqual(applied.map(\.id), ["A"])
+        guard case .end(let state)? = applied.first?.action else {
+            return XCTFail("回合结束后应收成终态并结束")
+        }
+        XCTAssertEqual(state.status, .completed)
+        XCTAssertEqual(state.runningCount, 0)
+
+        coordinator.sessionsDidChange(sessions("idle"), activeProfileID: "mac-a", isAppActive: true)
+        XCTAssertEqual(applied.count, 1, "系统还没把它标成 ended 时不重复收口")
+        XCTAssertTrue(NotificationRouteDiagnostics.entries().contains {
+            $0.at >= start && $0.stage == NotificationRouteDiagnostics.Stage.liveActivity
+                && $0.outcome == "local_settled" && $0.reason == "completed"
+        })
+    }
+
+    /// 进行中的变化同步到卡上；系统还没把新内容读回来时，同样的变化不重复写。
+    func testMirrorsEachChangeOnce() async throws {
+        let coordinator = try await makeCoordinator(tickets: LiveActivityTicketStore(keychain: TestKeychainOperations()))
+        let card = runningCard()
+        alive = [card]
+
+        coordinator.sessionsDidChange(sessions("waiting_for_approval"), activeProfileID: "mac-a", isAppActive: true)
+        coordinator.sessionsDidChange(sessions("waiting_for_approval"), activeProfileID: "mac-a", isAppActive: true)
+        XCTAssertEqual(applied.count, 1)
+        guard case .update(let state)? = applied.first?.action else {
+            return XCTFail("待你处理应同步到卡上")
+        }
+        XCTAssertEqual(state.status, .needsYou)
+        XCTAssertEqual(state.startedAt, card.state.startedAt, "计时仍从卡片拉起时算")
+    }
+
+    /// 更新票据已登记的活动由 agentd 推送驱动，本机不碰。
+    func testLeavesRegisteredCardsToAgentd() async throws {
+        let tickets = LiveActivityTicketStore(keychain: TestKeychainOperations())
+        tickets.save(LiveActivityTicketRecord(
+            profileID: "mac-a",
+            providerURL: "https://push.example/mimi-push",
+            hostTag: hostTag,
+            updates: ["A": .init(ticket: "mpt1.1.t", expiresAt: Date().addingTimeInterval(3600), tokenFingerprint: "f")]
+        ))
+        let coordinator = try await makeCoordinator(tickets: tickets)
+        alive = [runningCard()]
+
+        coordinator.sessionsDidChange(sessions("running"), activeProfileID: "mac-a", isAppActive: true)
+        coordinator.sessionsDidChange(sessions("idle"), activeProfileID: "mac-a", isAppActive: true)
+        XCTAssertTrue(applied.isEmpty)
+    }
+
+    func testOnlyActsInTheForegroundOnTheBoundMac() async throws {
+        let coordinator = try await makeCoordinator(tickets: LiveActivityTicketStore(keychain: TestKeychainOperations()))
+        alive = [runningCard()]
+        coordinator.sessionsDidChange(sessions("running"), activeProfileID: "mac-a", isAppActive: true)
+
+        coordinator.sessionsDidChange(sessions("idle"), activeProfileID: "mac-a", isAppActive: false)
+        XCTAssertTrue(applied.isEmpty, "后台被唤醒时列表可能是旧的，不动")
+        coordinator.sessionsDidChange(sessions("idle"), activeProfileID: "mac-b", isAppActive: true)
+        XCTAssertTrue(applied.isEmpty, "当前是另一台 Mac 时，本机列表不代表这张卡")
+
+        alive = [runningCard(id: "B", hostTag: "1B2C")]
+        coordinator.sessionsDidChange(sessions("idle"), activeProfileID: "mac-a", isAppActive: true)
+        XCTAssertTrue(applied.isEmpty, "别的 Mac 的活动不动")
+
+        alive = [runningCard()]
+        coordinator.sessionsDidChange(sessions("idle"), activeProfileID: "mac-a", isAppActive: true)
+        XCTAssertEqual(applied.map(\.id), ["A"])
+    }
 }

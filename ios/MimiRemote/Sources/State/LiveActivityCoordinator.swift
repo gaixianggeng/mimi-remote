@@ -72,6 +72,14 @@ final class LiveActivityCoordinator: ObservableObject {
     private var observationTasks: [Task<Void, Never>] = []
     private var activityTasks: [String: [Task<Void, Never>]] = [:]
     private var localSessionsWereActive = false
+    /// App 在前台时看到各会话进行中的最近时间：本机兜底据此确认「这一轮确实结束了」。
+    private var sessionObservations = LiveActivitySessionObservations()
+    private var locallySettledActivityIDs: Set<String> = []
+    /// 本机最后一次写进各活动的内容。系统更新是异步的，读回旧内容时不重复写、不重复记诊断。
+    private var locallyUpdatedStates: [String: MimiTurnActivityState] = [:]
+    /// 前台同步时读当前会话列表：前台恢复刚刷新过它，比节流后的订阅值新。
+    private weak var sessionStore: SessionStore?
+    private weak var appStore: AppStore?
     private var cancellables: Set<AnyCancellable> = []
 
     init(
@@ -114,6 +122,8 @@ final class LiveActivityCoordinator: ObservableObject {
 
     func attach(lockScreenStore: LockScreenApprovalStore, sessionStore: SessionStore, appStore: AppStore) {
         attach(lockScreenStore: lockScreenStore)
+        self.sessionStore = sessionStore
+        self.appStore = appStore
         startObservingActivities()
         // 会话列表在流式回复期间持续变化；按秒节流，只关心「有没有会话在跑」的跳变。
         sessionStore.$sessions
@@ -163,6 +173,15 @@ final class LiveActivityCoordinator: ObservableObject {
 
     /// 前台生命周期刷新：在锁屏审批同步之后调用，确认绑定、agentd 能力并补登记。
     func synchronize(client: AgentAPIClient, profileID: String) {
+        // 前台恢复刚刷新过会话列表：更新票据没登记上的活动先按它收口，不等下面可能很慢的补登记。
+        if let sessionStore {
+            settleUnregisteredActivities(
+                sessions: sessionStore.sessions,
+                activeProfileID: appStore?.activeConnectionProfileID,
+                isAppActive: Self.isAppActive,
+                now: Date()
+            )
+        }
         enqueue {
             // 先取 agentd 能力与 host_tag：档案没存 installation_id 时，绑定要靠它才能算出 hostTag。
             var repair = LiveActivityRegistrationRepair()
@@ -215,20 +234,77 @@ final class LiveActivityCoordinator: ObservableObject {
 
     /// App 在前台、当前档案就是消息提醒绑定的 Mac 时，回合一开始就本机拉起活动。
     /// 只在「没有会话在跑 → 有会话在跑」的那一刻尝试一次；用户在这一轮里划掉活动不会被拉回来。
+    /// 每次变化还会给 agentd 改不动的活动做本机兜底（见 `settleUnregisteredActivities`）。
     func sessionsDidChange(_ sessions: [AgentSession], activeProfileID: String?, isAppActive: Bool) {
-        let state = LiveActivityLocalState.make(sessions: sessions, now: Date())
+        let now = Date()
+        if isAppActive {
+            sessionObservations.record(sessions: sessions, now: now)
+        }
+        let state = LiveActivityLocalState.make(sessions: sessions, now: now)
         let wasActive = localSessionsWereActive
         localSessionsWereActive = state != nil
-        guard let state, !wasActive, isAppActive, LiveActivityPreferences.isEffective(in: defaults),
+        if let state, !wasActive, isAppActive, let binding = localStartBinding(activeProfileID: activeProfileID) {
+            requestLocalActivity(hostTag: binding.hostTag, state: state)
+        }
+        settleUnregisteredActivities(
+            sessions: sessions, activeProfileID: activeProfileID, isAppActive: isAppActive, now: now
+        )
+    }
+
+    /// 本机拉起的前提：当前档案就是消息提醒绑定的 Mac，它确认支持，push-to-start 票据已登记。
+    private func localStartBinding(activeProfileID: String?) -> Binding? {
+        guard LiveActivityPreferences.isEffective(in: defaults),
               let binding = currentBinding(), binding.profileID == activeProfileID,
               hostSupport[binding.profileID]?.supported == true,
-              ticketStore.load()?.matches(
-                profileID: binding.profileID, providerURL: binding.providerURL, hostTag: binding.hostTag
-              ) == true,
-              ticketStore.load()?.start != nil else {
+              let record = ticketStore.load(),
+              record.matches(profileID: binding.profileID, providerURL: binding.providerURL, hostTag: binding.hostTag),
+              record.start != nil else {
+            return nil
+        }
+        return binding
+    }
+
+    // MARK: - 本机兜底
+
+    /// 更新票据没登记上的活动（例如手机连不上推送服务）agentd 改不动，锁屏会一直停在拉起时的状态
+    /// （#830 真机走查）。App 在前台时按本机看到的会话状态同步它，焦点会话这一轮结束后收成终态。
+    /// 已登记的由 agentd 负责，这里不碰，免得和它推送的汇总互相覆盖。
+    private func settleUnregisteredActivities(
+        sessions: [AgentSession],
+        activeProfileID: String?,
+        isAppActive: Bool,
+        now: Date
+    ) {
+        guard isAppActive, LiveActivityPreferences.isEffective(in: defaults),
+              let binding = currentBinding(), binding.profileID == activeProfileID else {
             return
         }
-        requestLocalActivity(hostTag: binding.hostTag, state: state)
+        let alive = system.aliveActivities()
+        // 结束是异步的：系统真正把它标成 ended 之前，下一次变化不再重复收口。
+        locallySettledActivityIDs.formIntersection(alive.map(\.id))
+        locallyUpdatedStates = locallyUpdatedStates.filter { id, _ in alive.contains { $0.id == id } }
+        let candidates = alive.filter {
+            $0.hostTag.uppercased() == binding.hostTag.uppercased() && !locallySettledActivityIDs.contains($0.id)
+        }
+        guard !candidates.isEmpty else { return }
+        let record = loadRecord(for: binding)
+        for activity in candidates where record.updates[activity.id] == nil {
+            let action = LiveActivityLocalFallback.decide(
+                current: activity.state, sessions: sessions, observations: sessionObservations, now: now
+            )
+            switch action {
+            case .keep:
+                continue
+            case .update(let state):
+                guard locallyUpdatedStates[activity.id] != state else { continue }
+                locallyUpdatedStates[activity.id] = state
+                recordDiagnostic("local_updated", reason: state.status.rawValue)
+            case .end(let state):
+                locallySettledActivityIDs.insert(activity.id)
+                recordDiagnostic("local_settled", reason: state.status.rawValue)
+            }
+            system.applyLocalFallback(activity.id, action)
+        }
     }
 
     // MARK: - 绑定
@@ -341,6 +417,7 @@ final class LiveActivityCoordinator: ObservableObject {
             availability = .ready
             return
         }
+        let startedAt = Date()
         do {
             let entry = try await issueAndRegister(
                 kind: .start, token: token, activityID: nil, binding: binding, provider: provider
@@ -351,10 +428,10 @@ final class LiveActivityCoordinator: ObservableObject {
             record.start = entry
             ticketStore.save(record)
             availability = .ready
-            recordDiagnostic("start_registered", reason: nil)
+            recordDiagnostic("start_registered", reason: nil, since: startedAt)
         } catch {
             availability = .failed
-            recordDiagnostic("start_failed", reason: Self.reason(error))
+            recordDiagnostic("start_failed", reason: Self.reason(error), since: startedAt)
         }
     }
 
@@ -388,6 +465,7 @@ final class LiveActivityCoordinator: ObservableObject {
         if !force, record.updateIsCurrent(activityID: activityID, tokenFingerprint: fingerprint, now: Date()) {
             return
         }
+        let startedAt = Date()
         do {
             let entry = try await issueAndRegister(
                 kind: .update, token: latest.token, activityID: activityID, binding: binding, provider: provider
@@ -397,13 +475,14 @@ final class LiveActivityCoordinator: ObservableObject {
             }
             record.updates[activityID] = entry
             ticketStore.save(record)
-            recordDiagnostic("update_registered", reason: nil)
+            recordDiagnostic("update_registered", reason: nil, since: startedAt)
         } catch {
-            recordDiagnostic("update_failed", reason: Self.reason(error))
+            recordDiagnostic("update_failed", reason: Self.reason(error), since: startedAt)
         }
     }
 
     /// 签发成功但 agentd 登记失败时立即撤销新 Ticket，不留下没人用的有效票据。
+    /// 失败按步骤标明：向推送服务换票据，还是向 agentd 登记。
     private func issueAndRegister(
         kind: LiveActivityTicketKind,
         token: String,
@@ -411,13 +490,20 @@ final class LiveActivityCoordinator: ObservableObject {
         binding: Binding,
         provider: PushProviderClient
     ) async throws -> LiveActivityTicketRecord.Entry {
-        guard let makeClient else { throw LockScreenApprovalRoutingError.sourceProfileUnavailable }
-        let ticket = try await provider.issueTicket(
-            deviceToken: token,
-            installation: binding.installationID,
-            environment: environment,
-            kind: kind.providerKind
-        )
+        guard let makeClient else {
+            throw LiveActivityRegistrationFailure(step: .agentd, underlying: LockScreenApprovalRoutingError.sourceProfileUnavailable)
+        }
+        let ticket: PushProviderClient.Ticket
+        do {
+            ticket = try await provider.issueTicket(
+                deviceToken: token,
+                installation: binding.installationID,
+                environment: environment,
+                kind: kind.providerKind
+            )
+        } catch {
+            throw LiveActivityRegistrationFailure(step: .provider, underlying: error)
+        }
         do {
             let client = try await makeClient(binding.profileID)
             _ = try await client.registerLiveActivity(
@@ -429,7 +515,7 @@ final class LiveActivityCoordinator: ObservableObject {
             )
         } catch {
             try? await provider.revokeTicket(ticket.value)
-            throw error
+            throw LiveActivityRegistrationFailure(step: .agentd, underlying: error)
         }
         return LiveActivityTicketRecord.Entry(
             ticket: ticket.value,
@@ -543,21 +629,27 @@ final class LiveActivityCoordinator: ObservableObject {
         }
     }
 
-    private func recordDiagnostic(_ outcome: String, reason: String?) {
+    /// `since` 给出时附上耗时：超时（推送服务 15 s、agentd 20 s）与连接被断能直接区分。
+    private func recordDiagnostic(_ outcome: String, reason: String?, since start: Date? = nil) {
         NotificationRouteDiagnostics.record(
             stage: NotificationRouteDiagnostics.Stage.liveActivity,
             outcome: outcome,
-            reason: reason
+            reason: reason,
+            elapsedMilliseconds: start.map { NotificationRouteDiagnostics.elapsedMilliseconds(since: $0) }
         )
     }
 
-    /// 诊断只记错误类型与状态码，不记 Token、Ticket 或响应正文。
-    private static func reason(_ error: Error) -> String {
+    /// 诊断只记失败的步骤、错误类型与状态码，不记 Token、Ticket 或响应正文。
+    /// 例如 `provider:NSURLErrorDomain#-1001`、`agentd:http_404`。
+    static func reason(_ error: Error) -> String {
+        if let failure = error as? LiveActivityRegistrationFailure {
+            return "\(failure.step.rawValue):\(reason(failure.underlying))"
+        }
         if let error = error as? PushProviderError, case .rejected(let status) = error {
-            return "provider_\(status)"
+            return "http_\(status)"
         }
         if let error = error as? AgentAPIError, case .server(let status, _) = error {
-            return "agentd_\(status)"
+            return "http_\(status)"
         }
         let nsError = error as NSError
         return "\(nsError.domain)#\(nsError.code)"
@@ -693,6 +785,31 @@ final class LiveActivityCoordinator: ObservableObject {
         }
     }
 
+    fileprivate static func aliveActivitySnapshots() -> [LiveActivitySnapshot] {
+        Activity<MimiTurnActivityAttributes>.activities.compactMap { activity in
+            guard isAlive(activity.activityState) else { return nil }
+            return LiveActivitySnapshot(
+                id: activity.id, hostTag: activity.attributes.hostTag, state: activity.content.state
+            )
+        }
+    }
+
+    fileprivate static func applyLocalFallback(_ action: LiveActivityLocalFallback, toActivity activityID: String) {
+        guard let activity = Activity<MimiTurnActivityAttributes>.activities.first(where: { $0.id == activityID }) else {
+            return
+        }
+        switch action {
+        case .keep:
+            return
+        case .update(let state):
+            let staleDate = Date().addingTimeInterval(LiveActivityLocalFallback.staleInterval)
+            Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
+        case .end(let state):
+            let dismissal = Date().addingTimeInterval(LiveActivityLocalFallback.dismissDelay)
+            Task { await activity.end(ActivityContent(state: state, staleDate: nil), dismissalPolicy: .after(dismissal)) }
+        }
+    }
+
     private static func isAlive(_ state: ActivityState) -> Bool {
         state == .active || state == .stale
     }
@@ -735,6 +852,8 @@ final class LiveActivityCoordinator: ObservableObject {
     fileprivate static var systemAllowsActivities: Bool { false }
     private func startObservingActivities() {}
     fileprivate static func isActivityAlive(_ activityID: String) -> Bool { false }
+    fileprivate static func aliveActivitySnapshots() -> [LiveActivitySnapshot] { [] }
+    fileprivate static func applyLocalFallback(_ action: LiveActivityLocalFallback, toActivity activityID: String) {}
     private func endActivities(where shouldEnd: (String) -> Bool) {}
     private func requestLocalActivity(hostTag: String, state: MimiTurnActivityState) {}
     #endif
@@ -749,6 +868,10 @@ struct LiveActivitySystemHooks {
     var isActivityAlive: @MainActor (String) -> Bool
     /// 申请后台执行时间，返回结束申请的闭包；系统提前收回时自行结束，重复调用无副作用。
     var beginBackgroundExecution: @MainActor (String) -> @MainActor () -> Void
+    /// 还活着（active 或 stale）的活动与当前内容，供本机兜底判断。
+    var aliveActivities: @MainActor () -> [LiveActivitySnapshot] = { [] }
+    /// 把本机兜底的决定落到 ActivityKit：同步内容，或收成终态并结束。
+    var applyLocalFallback: @MainActor (String, LiveActivityLocalFallback) -> Void = { _, _ in }
 
     static var live: LiveActivitySystemHooks {
         LiveActivitySystemHooks(
@@ -761,7 +884,9 @@ struct LiveActivitySystemHooks {
                 #else
                 return {}
                 #endif
-            }
+            },
+            aliveActivities: { LiveActivityCoordinator.aliveActivitySnapshots() },
+            applyLocalFallback: { LiveActivityCoordinator.applyLocalFallback($1, toActivity: $0) }
         )
     }
 }
@@ -894,12 +1019,7 @@ enum LiveActivityLinkRouting {
               activeHostMatches(link: link, profiles: profiles, activeProfileID: activeProfileID) == true else {
             return nil
         }
-        let match = sessions.first { candidate in
-            guard !candidate.isLocalDraft else { return false }
-            let threadIDs = [candidate.id] + (candidate.resumeID.map { [$0] } ?? [])
-            return threadIDs.contains { NotificationSessionTag.messageTag(threadID: $0) == link.sessionTag }
-        }
-        guard let session = match else { return nil }
+        guard let session = session(matching: link.sessionTag, in: sessions) else { return nil }
         return SessionNotificationRoute.current(
             profileID: activeProfileID,
             projectID: session.projectID,
@@ -910,6 +1030,16 @@ enum LiveActivityLinkRouting {
 }
 
 extension LiveActivityLinkRouting {
+    /// 会话可能以本地 ID 显示、以 resumeID 对应远端线程；两者的标签都算它的。
+    static func sessionTags(for session: AgentSession) -> [String] {
+        ([session.id] + (session.resumeID.map { [$0] } ?? [])).map { NotificationSessionTag.messageTag(threadID: $0) }
+    }
+
+    static func session(matching sessionTag: String, in sessions: [AgentSession]) -> AgentSession? {
+        let tag = sessionTag.uppercased()
+        return sessions.first { !$0.isLocalDraft && sessionTags(for: $0).contains(tag) }
+    }
+
     /// 当前档案是不是链接里那台 Mac：nil 表示还判断不了（没有当前档案或还不知道它的安装身份）。
     static func activeHostMatches(
         link: MimiTurnActivityLink,
@@ -951,4 +1081,100 @@ enum LiveActivityLocalState {
             focusSessionTag: NotificationSessionTag.messageTag(threadID: focus.id)
         )
     }
+}
+
+/// 本机兜底看到的一个活动：只要 ID、所属 Mac 与当前内容。
+struct LiveActivitySnapshot: Equatable {
+    let id: String
+    let hostTag: String
+    let state: MimiTurnActivityState
+}
+
+/// 更新票据没登记上的活动，App 在前台时怎么处理（#830 真机走查）。
+enum LiveActivityLocalFallback: Equatable {
+    /// 保持原样。
+    case keep
+    /// 同步成本机看到的进行中汇总。
+    case update(MimiTurnActivityState)
+    /// 收成终态并结束，按 `dismissDelay` 留在锁屏上。
+    case end(MimiTurnActivityState)
+
+    /// 与 agentd 拉起活动时的过期时限一致（`liveActivityStartStale`）。
+    static let staleInterval: TimeInterval = 2 * 60 * 60
+    /// 与 agentd 结束活动后的保留时长一致（`liveActivityDismissDelay`）。
+    static let dismissDelay: TimeInterval = 15 * 60
+
+    /// 还有会话在跑时同步汇总；没有时，只在确认焦点会话这一轮已经结束后才收口：本机列表可能还是
+    /// 挂起前的缓存，必须是这张卡拉起之后在前台看到过它进行中，或它的服务端时间晚于拉起时间。
+    /// 焦点会话不在本机列表里时不猜，保持原样。
+    static func decide(
+        current: MimiTurnActivityState,
+        sessions: [AgentSession],
+        observations: LiveActivitySessionObservations,
+        now: Date
+    ) -> LiveActivityLocalFallback {
+        let currentFocus = LiveActivityLinkRouting.session(matching: current.focusSessionTag, in: sessions)
+        if var local = LiveActivityLocalState.make(sessions: sessions, now: now) {
+            // 计时从这张卡拉起时算；焦点还是同一个会话时沿用卡上的标签（它可能是 resumeID 对应的那个）。
+            local.startedAt = current.startedAt
+            if let currentFocus, LiveActivityLinkRouting.sessionTags(for: currentFocus).contains(local.focusSessionTag) {
+                local.focusSessionTag = current.focusSessionTag
+            }
+            return local == current ? .keep : .update(local)
+        }
+        guard current.status.isActive else {
+            // 已是终态却没结束（agentd 的 end 送不到）：按原样结束。
+            return .end(current)
+        }
+        guard let currentFocus else { return .keep }
+        let startDate = current.startDate
+        let observedThisRound = observations.lastActive(tag: current.focusSessionTag).map { $0 >= startDate } ?? false
+        let updatedThisRound = currentFocus.updatedAt.map { $0 >= startDate } ?? false
+        guard observedThisRound || updatedThisRound else { return .keep }
+        return .end(MimiTurnActivityState(
+            status: currentFocus.activityState == .failed ? .failed : .completed,
+            runningCount: 0,
+            needsYouCount: 0,
+            startedAt: current.startedAt,
+            focusSessionTag: current.focusSessionTag
+        ))
+    }
+}
+
+/// App 在前台时最后一次看到各会话进行中的时间，按 16 位会话标签记。本机兜底用它确认列表里的
+/// 「已结束」是这一轮之后看到的；超过一天的记录不会再用到，顺手清掉。
+struct LiveActivitySessionObservations: Equatable {
+    static let retention: TimeInterval = 24 * 60 * 60
+
+    private(set) var lastActiveAt: [String: Date] = [:]
+
+    mutating func record(sessions: [AgentSession], now: Date) {
+        lastActiveAt = lastActiveAt.filter { now.timeIntervalSince($0.value) < Self.retention }
+        for session in sessions where !session.isLocalDraft {
+            switch session.activityState {
+            case .running, .needsYou:
+                for tag in LiveActivityLinkRouting.sessionTags(for: session) {
+                    lastActiveAt[tag] = now
+                }
+            default:
+                break
+            }
+        }
+    }
+
+    func lastActive(tag: String) -> Date? {
+        lastActiveAt[tag.uppercased()]
+    }
+}
+
+/// 活动票据登记失败在哪一步：向推送服务换票据，还是向 agentd 登记。诊断据此区分
+/// 「手机连不上推送服务」与「连不上 Mac」。
+struct LiveActivityRegistrationFailure: Error {
+    enum Step: String {
+        case provider
+        case agentd
+    }
+
+    let step: Step
+    let underlying: Error
 }
