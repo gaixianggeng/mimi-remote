@@ -15,6 +15,27 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通托管连接后，这台 iPhone 或 iPad 不在电脑所在的网络时也能连上电脑。" } }
       }
     },
+    "ui.managed_lan_hint_action": {
+      "comment": "Link in the local-network hint that opens the Managed Connection page.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Learn About Managed Connection" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "了解托管连接" } }
+      }
+    },
+    "ui.managed_lan_hint_dismiss": {
+      "comment": "Hides the local-network Managed Connection hint for seven days.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Don't Show for 7 Days" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "7 天内不再提示" } }
+      }
+    },
+    "ui.managed_lan_hint_message": {
+      "comment": "Hint on the Devices tab when a computer paired over the local network can't be reached.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Can't reach your computer? You may not be on its Wi-Fi. With Managed Connection, you can connect over cellular too." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连不上电脑？可能是你和电脑不在同一个 Wi-Fi。开通托管连接后，用流量也能连。" } }
+      }
+    },
     "ui.managed_plan_benefit_devices": {
       "comment": "Managed Connection benefit: device limits per subscription.",
       "localizations": {
