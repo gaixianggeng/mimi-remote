@@ -14,8 +14,9 @@ struct ManagedConnectionDevicesView: View {
     @State private var pendingRemoval: ManagedConnectionDevice?
     @State private var localError: String?
     @State private var isConnectingMac = false
-    @State private var isUpgradingCurrentComputer = false
-    @State private var pendingSelfHostedResetCount: Int?
+    @State private var upgradeTask: Task<Void, Never>?
+    @State private var activeUpgradeID: UUID?
+    @State private var pendingSelfHostedReset: (context: ManagedConnectionUpgradeContext, count: Int)?
     @State private var isChangingRoute = false
     @State private var managedRouteError: String?
 
@@ -48,6 +49,11 @@ struct ManagedConnectionDevicesView: View {
             await deviceStore.refreshDevices()
         }
         .onAppear(perform: configureManagedScanner)
+        .onChange(of: appStore.activeConnectionProfileID) { _, _ in cancelCurrentComputerUpgrade() }
+        .onChange(of: isEntitled) { _, entitled in
+            if !entitled { cancelCurrentComputerUpgrade() }
+        }
+        .onDisappear(perform: cancelCurrentComputerUpgrade)
         // 扫码请求由本页发起，它是栈顶页面，Cover 必须挂在这里才会真正呈现。
         .fullScreenCover(
             item: qrScannerPresentation.presentationBinding(for: .managedConnection),
@@ -152,7 +158,7 @@ struct ManagedConnectionDevicesView: View {
         Section {
             if canUpgradeCurrentComputer {
                 Button {
-                    upgradeCurrentComputer(confirmResetSelfHosted: false)
+                    startCurrentComputerUpgrade()
                 } label: {
                     Label(L10n.text("ui.managed_devices_upgrade_current"), systemImage: "arrow.up.circle")
                         .settingsRow()
@@ -181,7 +187,7 @@ struct ManagedConnectionDevicesView: View {
                 Label(L10n.text("ui.managed_devices_connect_mac"), systemImage: "qrcode.viewfinder")
                     .settingsRow()
             }
-            .disabled(isConnectingMac || entitlementStore.isBusy)
+            .disabled(isUpgradingCurrentComputer || isConnectingMac || entitlementStore.isBusy)
             .accessibilityIdentifier("settings.managedSubscription.connectMac")
 
             if isConnectingMac {
@@ -206,20 +212,21 @@ struct ManagedConnectionDevicesView: View {
         .confirmationDialog(
             L10n.text("ui.managed_devices_upgrade_reset_title"),
             isPresented: Binding(
-                get: { pendingSelfHostedResetCount != nil },
-                set: { if !$0 { pendingSelfHostedResetCount = nil } }
+                get: { pendingSelfHostedReset != nil },
+                set: { if !$0 { pendingSelfHostedReset = nil } }
             ),
             titleVisibility: .visible
         ) {
             Button(L10n.text("ui.managed_devices_upgrade_continue"), role: .destructive) {
-                pendingSelfHostedResetCount = nil
-                upgradeCurrentComputer(confirmResetSelfHosted: true)
+                guard let pending = pendingSelfHostedReset else { return }
+                pendingSelfHostedReset = nil
+                upgradeCurrentComputer(pending.context, confirmResetSelfHosted: true)
             }
             Button(L10n.text("ui.cancel"), role: .cancel) {
-                pendingSelfHostedResetCount = nil
+                pendingSelfHostedReset = nil
             }
         } message: {
-            Text(L10n.format("ui.managed_devices_upgrade_reset_message", String(pendingSelfHostedResetCount ?? 0)))
+            Text(L10n.format("ui.managed_devices_upgrade_reset_message", String(pendingSelfHostedReset?.count ?? 0)))
         }
     }
 
@@ -249,37 +256,69 @@ struct ManagedConnectionDevicesView: View {
         }
     }
 
-    private func upgradeCurrentComputer(confirmResetSelfHosted: Bool) {
-        guard !isUpgradingCurrentComputer else { return }
-        isUpgradingCurrentComputer = true
+    private var isUpgradingCurrentComputer: Bool { upgradeTask != nil }
+
+    private func startCurrentComputerUpgrade() {
+        guard canUpgradeCurrentComputer else { return }
+        do {
+            let context = try ManagedConnectionUpgradeContext(appStore: appStore, client: appStore.client())
+            upgradeCurrentComputer(context, confirmResetSelfHosted: false)
+        } catch is CancellationError {
+            return
+        } catch {
+            localError = error.localizedDescription
+        }
+    }
+
+    private func cancelCurrentComputerUpgrade() {
+        if upgradeTask != nil {
+            upgradeTask?.cancel()
+            isConnectingMac = false
+        }
+        upgradeTask = nil
+        activeUpgradeID = nil
+        pendingSelfHostedReset = nil
+    }
+
+    private func upgradeCurrentComputer(
+        _ context: ManagedConnectionUpgradeContext,
+        confirmResetSelfHosted: Bool
+    ) {
+        guard !isUpgradingCurrentComputer, isEntitled, context.isCurrent(in: appStore) else { return }
+        activeUpgradeID = context.id
         localError = nil
-        Task { @MainActor in
-            defer { isUpgradingCurrentComputer = false }
+        upgradeTask = Task { @MainActor in
+            defer {
+                // 被取消的旧任务不能清掉用户后来发起的新任务状态。
+                if activeUpgradeID == context.id {
+                    upgradeTask = nil
+                    activeUpgradeID = nil
+                    isConnectingMac = false
+                }
+            }
             do {
-                let link = try await appStore.client().managedPairingLink(
-                    confirmResetSelfHosted: confirmResetSelfHosted
+                let link = try await context.requestPairingLink(
+                    confirmResetSelfHosted: confirmResetSelfHosted,
+                    appStore: appStore
                 )
                 guard isEntitled, let url = URL(string: link.pairURL) else {
                     throw ManagedConnectionDeviceStoreError.subscriptionRequired
                 }
-                // 链接与电脑端二维码内容相同，走同一套托管配对：云端授权、经临时节点 claim。
-                // 目标是当前档案（同一台电脑），新建档案会被「同一台电脑重复」拒绝。
                 isConnectingMac = true
-                defer { isConnectingMac = false }
-                _ = try await sessionStore.applyManagedPairingURL(url)
+                _ = try await sessionStore.applyManagedPairingURL(url, upgrading: context)
                 Task { @MainActor in
                     _ = await sessionStore.refreshAfterConnectionCommit(maxWait: 10)
                 }
             } catch let error as ManagedPairingLinkAPIError {
                 if case .selfHostedClientsPresent(let count) = error {
-                    pendingSelfHostedResetCount = count
+                    pendingSelfHostedReset = (context, count)
                 } else {
                     localError = error.localizedDescription
                 }
             } catch is CancellationError {
                 return
             } catch {
-                localError = error.localizedDescription
+                if activeUpgradeID == context.id { localError = error.localizedDescription }
             }
         }
     }
