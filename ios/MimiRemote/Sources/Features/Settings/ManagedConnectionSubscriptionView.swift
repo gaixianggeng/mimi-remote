@@ -1,13 +1,34 @@
 import SwiftUI
 
 struct ManagedConnectionSubscriptionView: View {
+    static let entryInfoPlistKey = "MimiManagedConnectionEntry"
+    static let debugEntryLaunchArgument = "--debug-enable-managed-connection"
+
     static var isEntryVisible: Bool {
-        // 托管连接尚未开放；仅本地 Debug 显式开启入口，不改变已有连接功能。
 #if DEBUG
-        ProcessInfo.processInfo.arguments.contains("--debug-enable-managed-connection")
+        let allowsDebugLaunchArgument = true
 #else
-        false
+        let allowsDebugLaunchArgument = false
 #endif
+        return isEntryVisible(
+            infoPlistValue: Bundle.main.object(forInfoDictionaryKey: entryInfoPlistKey),
+            launchArguments: ProcessInfo.processInfo.arguments,
+            allowsDebugLaunchArgument: allowsDebugLaunchArgument
+        )
+    }
+
+    /// 托管连接尚未在 App Store 开放（#887）。只有发布脚本显式写入 Info.plist 的内部
+    /// TestFlight 构建，或带启动参数的 Debug 构建才显示入口。不按运行时 Sandbox
+    /// 环境判断：审核设备同样处于 Sandbox，那样会把未开放的付费页露给审核。
+    static func isEntryVisible(
+        infoPlistValue: Any?,
+        launchArguments: [String],
+        allowsDebugLaunchArgument: Bool
+    ) -> Bool {
+        if (infoPlistValue as? String) == "YES" {
+            return true
+        }
+        return allowsDebugLaunchArgument && launchArguments.contains(debugEntryLaunchArgument)
     }
 
     @Environment(\.colorScheme) private var colorScheme
