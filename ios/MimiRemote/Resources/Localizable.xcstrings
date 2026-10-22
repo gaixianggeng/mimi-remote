@@ -15,6 +15,55 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通托管连接后，这台 iPhone 或 iPad 不在电脑所在的网络时也能连上电脑。" } }
       }
     },
+    "ui.managed_devices_upgrade_busy": {
+      "comment": "Shown when the computer is busy with another Tailcat operation.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The computer is busy with another Tailcat operation. Try again in a moment." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "电脑正在处理其他 Tailcat 操作，请稍后再试。" } }
+      }
+    },
+    "ui.managed_devices_upgrade_continue": {
+      "comment": "Confirms switching the computer to Managed Connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Continue" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "继续接入" } }
+      }
+    },
+    "ui.managed_devices_upgrade_current": {
+      "comment": "Button that switches the currently connected computer to Managed Connection without scanning a QR code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use Managed Connection on This Computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "把这台电脑接入托管连接" } }
+      }
+    },
+    "ui.managed_devices_upgrade_failed": {
+      "comment": "Shown when switching the computer to Managed Connection fails. The value is the computer's error message.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn't switch this computer to Managed Connection: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法把这台电脑接入托管连接：%@" } }
+      }
+    },
+    "ui.managed_devices_upgrade_reset_message": {
+      "comment": "Confirmation message. The value is the number of devices using self-hosted Tailcat on this computer.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%@ devices use self-hosted Tailcat on this computer. They'll need to pair again after switching. Local network and Tailscale aren't affected." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑上有 %@ 台设备在用自建 Tailcat，接入托管连接后它们需要重新配对。局域网和 Tailscale 不受影响。" } }
+      }
+    },
+    "ui.managed_devices_upgrade_reset_title": {
+      "comment": "Confirmation title before switching a computer that has self-hosted Tailcat devices.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Disconnect self-hosted Tailcat devices?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "断开这台电脑上的自建 Tailcat 设备？" } }
+      }
+    },
+    "ui.managed_devices_upgrading": {
+      "comment": "Progress text while the current computer switches to Managed Connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Switching this computer to Managed Connection…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在把这台电脑接入托管连接…" } }
+      }
+    },
     "ui.managed_plan_benefit_devices": {
       "comment": "Managed Connection benefit: device limits per subscription.",
       "localizations": {

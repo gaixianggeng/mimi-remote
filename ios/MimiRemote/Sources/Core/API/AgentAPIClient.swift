@@ -130,6 +130,64 @@ enum FilePermissionDomain: String, Decodable {
     case other
 }
 
+struct ManagedPairingLinkResponse: Decodable, Equatable {
+    let pairURL: String
+    let pairExpiresAt: String
+    let mode: String
+
+    enum CodingKeys: String, CodingKey {
+        case pairURL = "pair_url"
+        case pairExpiresAt = "pair_expires_at"
+        case mode
+    }
+}
+
+/// 已连接电脑一键接入托管连接的稳定错误（#897）。只解析带 code 的业务错误，
+/// 鉴权失败仍走 AgentAPIError，保证凭据失效的处理不变。
+enum ManagedPairingLinkAPIError: LocalizedError, Equatable {
+    case selfHostedClientsPresent(count: Int)
+    case busy
+    case failed(code: String, message: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .selfHostedClientsPresent(let count):
+            return L10n.format("ui.managed_devices_upgrade_reset_message", String(count))
+        case .busy:
+            return L10n.text("ui.managed_devices_upgrade_busy")
+        case .failed(_, let message):
+            return L10n.format("ui.managed_devices_upgrade_failed", message)
+        }
+    }
+
+    static func decode(status: Int, data: Data) -> ManagedPairingLinkAPIError? {
+        struct Payload: Decodable {
+            let code: String
+            let error: String?
+            let pairedDeviceCount: Int?
+
+            enum CodingKeys: String, CodingKey {
+                case code
+                case error
+                case pairedDeviceCount = "paired_device_count"
+            }
+        }
+        guard status != 401, status != 403,
+              let payload = try? JSONDecoder().decode(Payload.self, from: data),
+              !payload.code.isEmpty else {
+            return nil
+        }
+        switch payload.code {
+        case "tailcat_self_hosted_clients_present":
+            return .selfHostedClientsPresent(count: max(payload.pairedDeviceCount ?? 0, 1))
+        case "tailcat_operation_in_progress":
+            return .busy
+        default:
+            return .failed(code: payload.code, message: payload.error ?? payload.code)
+        }
+    }
+}
+
 struct FileAccessAPIError: LocalizedError, Equatable {
     let status: Int
     let message: String
@@ -451,6 +509,18 @@ struct AgentAPIClient {
 
     func tailscaleNetworkPath() async throws -> TailscaleNetworkPathResponse {
         try await request(path: "/api/diagnostics/tailscale-path", method: "GET", body: Optional<Data>.none)
+    }
+
+    /// 请当前电脑进入托管模式并发起一次托管配对，返回与电脑端二维码相同的链接（#897）。
+    /// 进入托管模式会验证新 sidecar、失败时回滚，再生成临时配对节点，所以超时放宽。
+    func managedPairingLink(confirmResetSelfHosted: Bool) async throws -> ManagedPairingLinkResponse {
+        let body = try JSONSerialization.data(withJSONObject: ["confirm_reset_self_hosted": confirmResetSelfHosted])
+        return try await request(
+            path: "/api/tailcat/managed-pairing-link",
+            method: "POST",
+            body: body,
+            timeout: 90
+        )
     }
 
     func capabilities(path: String?) async throws -> CapabilityListResponse {
@@ -803,6 +873,10 @@ struct AgentAPIClient {
             if path == "/api/files/read",
                let fileError = FileAccessAPIError.decode(status: http.statusCode, data: data) {
                 throw fileError
+            }
+            if path == "/api/tailcat/managed-pairing-link",
+               let linkError = ManagedPairingLinkAPIError.decode(status: http.statusCode, data: data) {
+                throw linkError
             }
             if AgentAPIError.isCredentialRejection(
                 status: http.statusCode,

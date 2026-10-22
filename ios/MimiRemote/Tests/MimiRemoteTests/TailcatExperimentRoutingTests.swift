@@ -607,6 +607,37 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         ))
     }
 
+    func testOneTapManagedUpgradeOnlyOffersConnectedNonTailcatRoutes() {
+        for route in [ConnectionProfileRoute.lan, .tailscale, .https] {
+            XCTAssertTrue(ManagedConnectionDevicesView.canUpgradeCurrentComputer(route: route, connected: true))
+            XCTAssertFalse(ManagedConnectionDevicesView.canUpgradeCurrentComputer(route: route, connected: false))
+        }
+        // 进入托管模式会重建 Tailcat 身份：经 Tailcat 发起会切断请求自己，已托管也无需再接入。
+        XCTAssertFalse(ManagedConnectionDevicesView.canUpgradeCurrentComputer(route: .customTailcat, connected: true))
+        XCTAssertFalse(ManagedConnectionDevicesView.canUpgradeCurrentComputer(route: .managedTailcat, connected: true))
+        XCTAssertFalse(ManagedConnectionDevicesView.canUpgradeCurrentComputer(route: nil, connected: true))
+    }
+
+    func testManagedPairingLinkErrorsDecodeStableCodes() {
+        func decode(_ status: Int, _ json: String) -> ManagedPairingLinkAPIError? {
+            ManagedPairingLinkAPIError.decode(status: status, data: Data(json.utf8))
+        }
+
+        XCTAssertEqual(
+            decode(409, #"{"code":"tailcat_self_hosted_clients_present","error":"x","paired_device_count":2}"#),
+            .selfHostedClientsPresent(count: 2)
+        )
+        XCTAssertEqual(decode(409, #"{"code":"tailcat_operation_in_progress","error":"x"}"#), .busy)
+        XCTAssertEqual(
+            decode(503, #"{"code":"tailcat_pair_failed","error":"生成失败"}"#),
+            .failed(code: "tailcat_pair_failed", message: "生成失败")
+        )
+        // 鉴权失败与没有 code 的旧响应交回通用处理，凭据失效逻辑不变。
+        XCTAssertNil(decode(401, #"{"code":"unauthorized","error":"x"}"#))
+        XCTAssertNil(decode(400, #"{"error":"invalid json"}"#))
+        XCTAssertNil(decode(500, "not json"))
+    }
+
     func testManagedRouteWithoutAddressStaysFailClosedAndOffersManualFallback() async throws {
         let fixture = try makeControllerFixture(
             startResults: [],

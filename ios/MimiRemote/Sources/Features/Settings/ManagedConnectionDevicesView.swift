@@ -14,6 +14,8 @@ struct ManagedConnectionDevicesView: View {
     @State private var pendingRemoval: ManagedConnectionDevice?
     @State private var localError: String?
     @State private var isConnectingMac = false
+    @State private var isUpgradingCurrentComputer = false
+    @State private var pendingSelfHostedResetCount: Int?
     @State private var isChangingRoute = false
     @State private var managedRouteError: String?
 
@@ -148,6 +150,25 @@ struct ManagedConnectionDevicesView: View {
 
     private var connectionSection: some View {
         Section {
+            if canUpgradeCurrentComputer {
+                Button {
+                    upgradeCurrentComputer(confirmResetSelfHosted: false)
+                } label: {
+                    Label(L10n.text("ui.managed_devices_upgrade_current"), systemImage: "arrow.up.circle")
+                        .settingsRow()
+                }
+                .disabled(isUpgradingCurrentComputer || isConnectingMac || entitlementStore.isBusy)
+                .accessibilityIdentifier("settings.managedConnectionDevices.upgradeCurrent")
+
+                if isUpgradingCurrentComputer {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text(L10n.text("ui.managed_devices_upgrading"))
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+
             Button {
                 localError = nil
                 qrScannerPresentation.request(
@@ -182,6 +203,85 @@ struct ManagedConnectionDevicesView: View {
                 .settingsSectionFooterStyle()
         }
         .settingsGroupRowStyle()
+        .confirmationDialog(
+            L10n.text("ui.managed_devices_upgrade_reset_title"),
+            isPresented: Binding(
+                get: { pendingSelfHostedResetCount != nil },
+                set: { if !$0 { pendingSelfHostedResetCount = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(L10n.text("ui.managed_devices_upgrade_continue"), role: .destructive) {
+                pendingSelfHostedResetCount = nil
+                upgradeCurrentComputer(confirmResetSelfHosted: true)
+            }
+            Button(L10n.text("ui.cancel"), role: .cancel) {
+                pendingSelfHostedResetCount = nil
+            }
+        } message: {
+            Text(L10n.format("ui.managed_devices_upgrade_reset_message", String(pendingSelfHostedResetCount ?? 0)))
+        }
+    }
+
+    /// 已连上的电脑可以一键接入托管连接（#897）：手机已持有这台电脑的 agentd Token，
+    /// 由它请求电脑发起托管配对不扩大权限。只在当前线路不是 Tailcat 时提供——电脑进入
+    /// 托管模式会重建 Tailcat 身份，经自建 Tailcat 发起会切断这条请求自己。
+    private var canUpgradeCurrentComputer: Bool {
+        let connected: Bool
+        if case .connected = appStore.connectionStatus {
+            connected = true
+        } else {
+            connected = false
+        }
+        return Self.canUpgradeCurrentComputer(
+            route: appStore.activeConnectionProfile?.connectionRoute,
+            connected: connected
+        )
+    }
+
+    static func canUpgradeCurrentComputer(route: ConnectionProfileRoute?, connected: Bool) -> Bool {
+        guard connected, let route else { return false }
+        switch route {
+        case .lan, .tailscale, .https:
+            return true
+        case .managedTailcat, .customTailcat:
+            return false
+        }
+    }
+
+    private func upgradeCurrentComputer(confirmResetSelfHosted: Bool) {
+        guard !isUpgradingCurrentComputer else { return }
+        isUpgradingCurrentComputer = true
+        localError = nil
+        Task { @MainActor in
+            defer { isUpgradingCurrentComputer = false }
+            do {
+                let link = try await appStore.client().managedPairingLink(
+                    confirmResetSelfHosted: confirmResetSelfHosted
+                )
+                guard isEntitled, let url = URL(string: link.pairURL) else {
+                    throw ManagedConnectionDeviceStoreError.subscriptionRequired
+                }
+                // 链接与电脑端二维码内容相同，走同一套托管配对：云端授权、经临时节点 claim。
+                // 目标是当前档案（同一台电脑），新建档案会被「同一台电脑重复」拒绝。
+                isConnectingMac = true
+                defer { isConnectingMac = false }
+                _ = try await sessionStore.applyManagedPairingURL(url)
+                Task { @MainActor in
+                    _ = await sessionStore.refreshAfterConnectionCommit(maxWait: 10)
+                }
+            } catch let error as ManagedPairingLinkAPIError {
+                if case .selfHostedClientsPresent(let count) = error {
+                    pendingSelfHostedResetCount = count
+                } else {
+                    localError = error.localizedDescription
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                localError = error.localizedDescription
+            }
+        }
     }
 
     private var managedRouteSection: some View {
