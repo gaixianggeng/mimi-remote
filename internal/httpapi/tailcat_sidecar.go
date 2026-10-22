@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
-	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 	"github.com/gaixianggeng/mimi-remote/internal/tailcatsidecar"
 )
 
@@ -44,6 +43,7 @@ const (
 
 type tailcatStatus struct {
 	Enabled           bool   `json:"enabled"`
+	Mode              string `json:"mode"`
 	Running           bool   `json:"running"`
 	Version           string `json:"version,omitempty"`
 	InstanceID        string `json:"instance_id,omitempty"`
@@ -67,6 +67,7 @@ type tailcatSidecar interface {
 	ReplaceManagedClients(context.Context, []string) (tailcatStatus, error)
 	Reset(context.Context) (tailcatStatus, error)
 	ConfigureDERPMap(context.Context, string) (tailcatStatus, error)
+	ConfigureMode(context.Context, bool, func() error) (tailcatStatus, error)
 	Close()
 }
 
@@ -168,6 +169,10 @@ func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 	if s.closing {
 		s.mu.Unlock()
 		return errors.New("Tailcat 管理器正在关闭")
+	}
+	if err := s.config.Validate(); err != nil {
+		s.mu.Unlock()
+		return err
 	}
 	s.config.Enabled = true
 	if s.cmd != nil {
@@ -324,11 +329,12 @@ func (s *tailcatSidecarSupervisor) Status(ctx context.Context) tailcatStatus {
 	s.mu.Lock()
 	enabled := s.config.Enabled
 	derpMapURL := s.config.DERPMapURL
+	mode := s.config.ConnectionMode()
 	running := s.cmd != nil
 	starting := s.starting
 	lastError := s.lastError
 	s.mu.Unlock()
-	status := tailcatStatus{Enabled: enabled, Running: running, DERPMapURL: derpMapURL}
+	status := tailcatStatus{Enabled: enabled, Running: running, DERPMapURL: derpMapURL, Mode: mode}
 	if !enabled {
 		return status
 	}
@@ -336,6 +342,7 @@ func (s *tailcatSidecarSupervisor) Status(ctx context.Context) tailcatStatus {
 		if err := s.call(ctx, s.controlCallTimeout(), http.MethodGet, "/status", nil, &status); err == nil {
 			status.Enabled = true
 			status.DERPMapURL = derpMapURL
+			status.Mode = mode
 			return status
 		} else if lastError == "" && !starting {
 			lastError = err.Error()
@@ -432,10 +439,6 @@ func (s *tailcatSidecarSupervisor) callControlWithStatus(
 	return status, err
 }
 
-func (s *tailcatSidecarSupervisor) AllowClient(ctx context.Context, publicKey string) (tailcatStatus, error) {
-	return s.callControlWithStatus(ctx, http.MethodPost, "/allow", map[string]string{"public_key": publicKey})
-}
-
 func (s *tailcatSidecarSupervisor) ReplaceManagedClients(
 	ctx context.Context,
 	publicKeys []string,
@@ -457,66 +460,7 @@ func (s *tailcatSidecarSupervisor) applyConfigurationToStatus(status *tailcatSta
 	defer s.mu.Unlock()
 	status.Enabled = s.config.Enabled
 	status.DERPMapURL = s.config.DERPMapURL
-}
-
-// ConfigureDERPMap 原子切换用户选择的 DERP Map。Tailcat 连接地址内嵌中继
-// 区域，因此成功切换必须重建主机身份并清空配对；启动或写配置失败时恢复
-// 原状态，不能让一次设置操作破坏现有远程入口。
-func (s *tailcatSidecarSupervisor) ConfigureDERPMap(ctx context.Context, rawURL string) (tailcatStatus, error) {
-	if s == nil {
-		return tailcatStatus{}, errors.New("Tailcat 管理器未初始化")
-	}
-	s.operationMu.Lock()
-	defer s.operationMu.Unlock()
-	normalized, err := config.NormalizeTailcatDERPMapURL(rawURL)
-	if err != nil {
-		return s.Status(ctx), err
-	}
-	s.mu.Lock()
-	if s.closing {
-		s.mu.Unlock()
-		return tailcatStatus{}, errors.New("Tailcat 管理器正在关闭")
-	}
-	if s.starting {
-		s.mu.Unlock()
-		return tailcatStatus{}, errors.New("Tailcat 正在启动")
-	}
-	previousConfig := s.config
-	wasRunning := s.cmd != nil
-	stateDir := s.stateDir
-	s.mu.Unlock()
-	if stateDir == "" {
-		return tailcatStatus{}, errors.New("Tailcat 缺少配置文件路径")
-	}
-	previousURL, _ := config.NormalizeTailcatDERPMapURL(previousConfig.DERPMapURL)
-	if normalized == previousURL {
-		return s.Status(ctx), nil
-	}
-
-	snapshot, err := snapshotTailcatIdentityState(stateDir)
-	if err != nil {
-		return s.Status(ctx), err
-	}
-	if err := s.stopForReconfiguration(ctx); err != nil {
-		// 请求可能在旧 sidecar 已停止后被取消。此时仍要用独立上下文
-		// 恢复原身份和进程，避免一次取消破坏现有远程入口。
-		return s.rollbackDERPMap(ctx, previousConfig, wasRunning, snapshot, err)
-	}
-	s.mu.Lock()
-	s.config.DERPMapURL = normalized
-	s.mu.Unlock()
-	if err := clearTailcatIdentityState(stateDir); err != nil {
-		return s.rollbackDERPMap(ctx, previousConfig, wasRunning, snapshot, err)
-	}
-	if previousConfig.Enabled {
-		if err := s.start(ctx); err != nil {
-			return s.rollbackDERPMap(ctx, previousConfig, wasRunning, snapshot, err)
-		}
-	}
-	if _, err := agentsetup.ConfigureTailcatDERPMap(s.configPath, normalized); err != nil {
-		return s.rollbackDERPMap(ctx, previousConfig, wasRunning, snapshot, err)
-	}
-	return s.Status(ctx), nil
+	status.Mode = s.config.ConnectionMode()
 }
 
 func (s *tailcatSidecarSupervisor) stopForReconfiguration(ctx context.Context) error {
