@@ -50,9 +50,6 @@ struct ManagedConnectionDevicesView: View {
         }
         .onAppear(perform: configureManagedScanner)
         .onChange(of: appStore.activeConnectionProfileID) { _, _ in cancelCurrentComputerUpgrade() }
-        .onChange(of: isEntitled) { _, entitled in
-            if !entitled { cancelCurrentComputerUpgrade() }
-        }
         .onDisappear(perform: cancelCurrentComputerUpgrade)
         // 扫码请求由本页发起，它是栈顶页面，Cover 必须挂在这里才会真正呈现。
         .fullScreenCover(
