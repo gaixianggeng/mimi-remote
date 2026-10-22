@@ -4,6 +4,57 @@ import XCTest
 
 @MainActor
 final class ManagedConnectionEntitlementStoreTests: XCTestCase {
+    func testMeTabStatusSummaryHidesTransientStatesAndNamesEachOutcome() {
+        func entitled(_ status: ManagedConnectionEntitlement.Status) -> ManagedConnectionEntitlementStore.Status {
+            .entitled(ManagedConnectionEntitlement(
+                id: "entitlement-id",
+                productID: ManagedConnectionProductID.annual,
+                status: status,
+                expiresAt: Date(timeIntervalSinceNow: 3_600)
+            ))
+        }
+
+        // 检查中或检查失败时首页这一行不显示状态，避免一闪而过的占位文字。
+        for transient in [ManagedConnectionEntitlementStore.Status.loading, .resolving, .failed("offline")] {
+            XCTAssertNil(ManagedConnectionSubscriptionView.statusSummary(transient))
+        }
+        let summaries: [(ManagedConnectionEntitlementStore.Status, String)] = [
+            (.available, L10n.text("ui.managed_subscription_not_active")),
+            (.pending, L10n.text("ui.managed_subscription_short_pending")),
+            (.expired, L10n.text("ui.managed_subscription_short_expired")),
+            (.revoked, L10n.text("ui.managed_subscription_short_revoked")),
+            (entitled(.trial), L10n.text("ui.managed_subscription_short_trial")),
+            (entitled(.grace), L10n.text("ui.managed_subscription_short_grace")),
+            (entitled(.active), L10n.text("ui.managed_subscription_short_active")),
+        ]
+        for (status, expected) in summaries {
+            XCTAssertEqual(ManagedConnectionSubscriptionView.statusSummary(status), expected)
+        }
+        // 宽限期与正常订阅必须能区分：扣款出问题要让用户在首页就看到。
+        XCTAssertNotEqual(
+            ManagedConnectionSubscriptionView.statusSummary(entitled(.grace)),
+            ManagedConnectionSubscriptionView.statusSummary(entitled(.active))
+        )
+    }
+
+    func testPlansListAnnualBeforeMonthly() {
+        let monthly = ManagedConnectionProduct(
+            id: ManagedConnectionProductID.monthly, displayName: "Monthly",
+            displayPrice: "US$1.99", displayPeriod: "Month",
+            isEligibleForTrial: true, displayTrialPeriod: "1 week"
+        )
+        let annual = ManagedConnectionProduct(
+            id: ManagedConnectionProductID.annual, displayName: "Annual",
+            displayPrice: "US$9.99", displayPeriod: "Year",
+            isEligibleForTrial: true, displayTrialPeriod: "1 week"
+        )
+
+        XCTAssertEqual(
+            ManagedConnectionSubscriptionView.displayOrder([monthly, annual]).map(\.id),
+            [ManagedConnectionProductID.annual, ManagedConnectionProductID.monthly]
+        )
+    }
+
     func testPurchaseFinishesOnlyTerminalServerDecisions() async {
         for code in ["expired", "revoked", "no_current_entitlement", "unverified_transaction"] {
             let kit = StoreKitFake()

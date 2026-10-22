@@ -561,7 +561,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertTrue(fixture.store.isTailcatExperimentModeEnabled)
         XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:1")
         XCTAssertEqual(startCallCount, 0)
-        XCTAssertTrue(ManagedConnectionSubscriptionView.showsManagedRecoveryActions(
+        XCTAssertTrue(ManagedConnectionDevicesView.showsManagedRecoveryActions(
             tailcatState: fixture.controller.state,
             connectionFailed: false
         ))
@@ -622,7 +622,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(fixture.controller.state, .needsAddress)
         XCTAssertTrue(fixture.store.isTailcatExperimentModeEnabled)
         XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:1")
-        XCTAssertTrue(ManagedConnectionSubscriptionView.showsManagedRecoveryActions(
+        XCTAssertTrue(ManagedConnectionDevicesView.showsManagedRecoveryActions(
             tailcatState: fixture.controller.state,
             connectionFailed: false
         ))

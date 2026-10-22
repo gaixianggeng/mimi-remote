@@ -1,6 +1,125 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.managed_devices_subscribe_action": {
+      "comment": "Row that opens the Managed Connection subscription page from the Devices tab.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Get Managed Connection" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通托管连接" } }
+      }
+    },
+    "ui.managed_devices_subscribe_notice": {
+      "comment": "Shown on the managed route page when there is no active Managed Connection subscription.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "With Managed Connection, this iPhone or iPad can reach your computer even when it isn't on the same network." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通托管连接后，这台 iPhone 或 iPad 不在电脑所在的网络时也能连上电脑。" } }
+      }
+    },
+    "ui.managed_plan_benefit_devices": {
+      "comment": "Managed Connection benefit: device limits per subscription.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Up to 3 computers and 5 phones or tablets" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "最多 3 台电脑、5 台手机或平板" } }
+      }
+    },
+    "ui.managed_plan_benefit_no_setup": {
+      "comment": "Managed Connection benefit: no extra networking software is needed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No Tailscale or other networking apps to install" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "不用安装 Tailscale 或其他联网工具" } }
+      }
+    },
+    "ui.managed_plan_benefit_private": {
+      "comment": "Managed Connection benefit: end-to-end encryption.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "End-to-end encrypted. The developer can't see your code or conversations" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "端到端加密，开发者看不到代码和对话" } }
+      }
+    },
+    "ui.managed_plan_benefit_relay": {
+      "comment": "Managed Connection benefit: Mimi relays, with automatic direct connections on the same network.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connects through Mimi relays, and directly when you're on the same network" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "经 Mimi 中继连接；在同一网络时自动直连" } }
+      }
+    },
+    "ui.managed_plan_benefits": {
+      "comment": "Section title above the Managed Connection benefits list.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "What you get" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "能做什么" } }
+      }
+    },
+    "ui.managed_plan_headline": {
+      "comment": "Headline of the Managed Connection subscription page before subscribing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Reach your computer from any network" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "不在同一 Wi-Fi，也能连上你的电脑" } }
+      }
+    },
+    "ui.managed_plan_manage_subscription": {
+      "comment": "Opens the system subscription management for Managed Connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Manage Subscription" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "管理订阅" } }
+      }
+    },
+    "ui.managed_plan_subtitle": {
+      "comment": "Supporting line under the Managed Connection headline.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "On cellular, at the office, or on the road, open Mimi and keep working." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "用流量、在公司或出差时，打开 Mimi 就能接着用。" } }
+      }
+    },
+    "ui.managed_route_and_devices_title": {
+      "comment": "Title of the Devices-tab page that shows the managed connection route, computer pairing, and registered devices.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Managed Route & Devices" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "托管线路与设备" } }
+      }
+    },
+    "ui.managed_subscription_short_active": {
+      "comment": "Short Managed Connection status shown on the Me tab row.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Active" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已开通" } }
+      }
+    },
+    "ui.managed_subscription_short_expired": {
+      "comment": "Short Managed Connection status shown on the Me tab row after the subscription expired.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Expired" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已过期" } }
+      }
+    },
+    "ui.managed_subscription_short_grace": {
+      "comment": "Short Managed Connection status shown on the Me tab row during a billing grace period.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Billing issue" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "付款遇到问题" } }
+      }
+    },
+    "ui.managed_subscription_short_pending": {
+      "comment": "Short Managed Connection status shown on the Me tab row while a purchase awaits approval.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Pending" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "等待批准" } }
+      }
+    },
+    "ui.managed_subscription_short_revoked": {
+      "comment": "Short Managed Connection status shown on the Me tab row after a refund or revocation.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Refunded" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已退款或撤销" } }
+      }
+    },
+    "ui.managed_subscription_short_trial": {
+      "comment": "Short Managed Connection status shown on the Me tab row during a free trial.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Free trial" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "试用中" } }
+      }
+    },
     "ui.question_reply_label": {
       "comment": "Label on the user's answer to an agent question in the conversation timeline.",
       "extractionState": "manual",
