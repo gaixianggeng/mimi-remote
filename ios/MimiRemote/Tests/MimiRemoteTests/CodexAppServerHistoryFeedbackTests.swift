@@ -113,19 +113,106 @@ final class CodexAppServerHistoryFeedbackTests: XCTestCase {
         XCTAssertEqual(recorder.feedback, [.completion])
     }
 
+    func testOpeningActiveTurnKeepsToolOutputProcessAndFileProgress() async throws {
+        let fixture = makeFixture()
+        defer { fixture.store.disconnectWebSocket() }
+        let recorder = FeedbackRecorder(store: fixture.store, sessionID: sessionID)
+        let runtime = makeRuntime()
+        let turnID = "live-tools"
+
+        await seedThread(in: runtime)
+        await runtime.handle(turnStarted(turnID))
+        let attachment = await runtime.attachEventsDeferringStateReplay(sessionID: sessionID)
+        // 工具只在恢复窗口内发一次 started；打开门后也必须出现运行中卡和文件进度。
+        await emitCommand(turnID, status: "inProgress", into: runtime)
+        await emitToolOutput(turnID, text: "窗口日志\n", into: runtime)
+        await runtime.handle(CodexAppServerNotification(
+            method: "turn/diff/updated",
+            params: .object([
+                "threadId": .string(sessionID),
+                "turnId": .string(turnID),
+                "itemId": .string("file-window"),
+                "path": .string("Sources/Window.swift"),
+                "status": .string("modified"),
+            ])
+        ))
+        await runtime.completeDeferredStateReplay(sessionID: sessionID, token: attachment.token)
+        await runtime.finishAttachedEventStreams(sessionID: sessionID)
+        for await event in attachment.events {
+            await fixture.store.applyRuntimeEvent(event, lease: fixture.lease, sendsNotification: false)
+            recorder.observeCurrentState()
+        }
+
+        let command = try XCTUnwrap(fixture.conversationStore.messages(for: sessionID).first {
+            $0.itemID == "command-\(turnID)"
+        })
+        XCTAssertEqual(command.kind, .commandSummary)
+        XCTAssertEqual(command.activityPayload?.status, "inProgress")
+        XCTAssertTrue(fixture.store.contextStore.context(for: sessionID)?.tasks.contains {
+            $0.kind == "file_change" && $0.subtitle == "Sources/Window.swift"
+        } == true)
+        XCTAssertEqual(fixture.store.selectedSession?.activeTurnID, turnID)
+        XCTAssertTrue(recorder.feedback.isEmpty)
+
+        await emitToolOutput(turnID, text: "后续日志\n", into: runtime)
+        await applyBufferedEvents(from: runtime, policy: .all, fixture: fixture, recorder: recorder)
+        for _ in 0..<300 where !fixture.logStore.log(for: sessionID).contains("后续日志") {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(fixture.logStore.log(for: sessionID), "窗口日志\n后续日志\n")
+
+        await emitCommand(turnID, status: "completed", output: "窗口日志\n后续日志\n", into: runtime)
+        await runtime.handle(turnCompleted(turnID))
+        await applyBufferedEvents(from: runtime, policy: .all, fixture: fixture, recorder: recorder)
+        XCTAssertEqual(fixture.logStore.log(for: sessionID), "窗口日志\n后续日志\n")
+        XCTAssertEqual(recorder.feedback, [.completion])
+    }
+
+    func testToolCompletedDuringRecoveryDoesNotReturnToRunning() async throws {
+        let fixture = makeFixture()
+        defer { fixture.store.disconnectWebSocket() }
+        let recorder = FeedbackRecorder(store: fixture.store, sessionID: sessionID)
+        let runtime = makeRuntime()
+        let turnID = "live-completed-tool"
+
+        await seedThread(in: runtime)
+        await runtime.handle(turnStarted(turnID))
+        let attachment = await runtime.attachEventsDeferringStateReplay(sessionID: sessionID)
+        await emitCommand(turnID, status: "inProgress", into: runtime)
+        await emitCommand(turnID, status: "completed", output: "工具已结束", into: runtime)
+        await runtime.completeDeferredStateReplay(sessionID: sessionID, token: attachment.token)
+        await runtime.finishAttachedEventStreams(sessionID: sessionID)
+        for await event in attachment.events {
+            await fixture.store.applyRuntimeEvent(event, lease: fixture.lease, sendsNotification: false)
+            recorder.observeCurrentState()
+        }
+
+        let command = try XCTUnwrap(fixture.conversationStore.messages(for: sessionID).first {
+            $0.itemID == "command-\(turnID)"
+        })
+        XCTAssertEqual(command.activityPayload?.status, "completed")
+        XCTAssertTrue(fixture.store.contextStore.context(for: sessionID)?.tasks.contains {
+            $0.kind == "command" && $0.status == "completed"
+        } == true)
+        XCTAssertEqual(fixture.store.selectedSession?.status, "running", "工具结束不等于整个回合结束")
+        XCTAssertTrue(recorder.feedback.isEmpty)
+    }
+
     private struct Fixture {
         let store: SessionStore
         let conversationStore: ConversationStore
+        let logStore: LogStore
         let lease: HostSessionLease
     }
 
     private func makeFixture() -> Fixture {
         let appStore = makeIsolatedAppStore()
         let conversationStore = ConversationStore()
+        let logStore = LogStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: conversationStore,
-            logStore: LogStore(),
+            logStore: logStore,
             clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
         )
         store.sessions = [makeSession(
@@ -141,6 +228,7 @@ final class CodexAppServerHistoryFeedbackTests: XCTestCase {
         return Fixture(
             store: store,
             conversationStore: conversationStore,
+            logStore: logStore,
             lease: HostSessionLease(hostScope: appStore.activeHostScope, sessionID: sessionID)
         )
     }
@@ -208,6 +296,45 @@ final class CodexAppServerHistoryFeedbackTests: XCTestCase {
                 "turnId": .string(turnID),
                 "itemId": .string("message-\(turnID)"),
                 "delta": .string(text),
+            ])
+        ))
+    }
+
+    private func emitCommand(
+        _ turnID: TurnID,
+        status: String,
+        output: String = "",
+        into runtime: CodexAppServerSessionRuntime
+    ) async {
+        await runtime.handle(CodexAppServerNotification(
+            method: status == "inProgress" ? "item/started" : "item/completed",
+            params: .object([
+                "threadId": .string(sessionID),
+                "turnId": .string(turnID),
+                "item": .object([
+                    "id": .string("command-\(turnID)"),
+                    "type": .string("commandExecution"),
+                    "command": .string("swift --version"),
+                    "status": .string(status),
+                    "aggregatedOutput": .string(output),
+                ]),
+            ])
+        ))
+    }
+
+    private func emitToolOutput(
+        _ turnID: TurnID,
+        text: String,
+        into runtime: CodexAppServerSessionRuntime
+    ) async {
+        await runtime.handle(CodexAppServerNotification(
+            method: "item/commandExecution/outputDelta",
+            params: .object([
+                "threadId": .string(sessionID),
+                "turnId": .string(turnID),
+                "itemId": .string("command-\(turnID)"),
+                "delta": .string(text),
+                "stream": .string("stdout"),
             ])
         ))
     }

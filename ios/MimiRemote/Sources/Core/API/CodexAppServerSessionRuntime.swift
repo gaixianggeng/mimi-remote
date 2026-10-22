@@ -2162,7 +2162,7 @@ actor CodexAppServerSessionRuntime {
         for event in stateOnlyBufferedEvents(
             captured,
             sessionID: sessionID,
-            activeAssistantDeltaFromIndex: initialEventCount
+            activeIncrementalPayloadFromIndex: initialEventCount
         ) {
             if let interactionID = pendingInteractionReplayID(for: event) {
                 replayedInteractionIDs.insert(interactionID)
@@ -2211,7 +2211,7 @@ actor CodexAppServerSessionRuntime {
     private func stateOnlyBufferedEvents(
         _ events: [AgentEvent],
         sessionID: SessionID,
-        activeAssistantDeltaFromIndex: Int? = nil
+        activeIncrementalPayloadFromIndex: Int? = nil
     ) -> [AgentEvent] {
         let pendingInteractionIDs = Set(
             pendingInteractionEvents(sessionID: sessionID)
@@ -2221,9 +2221,9 @@ actor CodexAppServerSessionRuntime {
             if shouldReplayBufferedStateEvent(event) {
                 return event
             }
-            guard let activeAssistantDeltaFromIndex,
-                  index >= activeAssistantDeltaFromIndex,
-                  case .assistantDelta = event else {
+            guard let activeIncrementalPayloadFromIndex,
+                  index >= activeIncrementalPayloadFromIndex,
+                  isIncrementalPayloadForDeferredReplay(event) else {
                 return nil
             }
             return event
@@ -2235,12 +2235,22 @@ actor CodexAppServerSessionRuntime {
         )
     }
 
+    nonisolated private func isIncrementalPayloadForDeferredReplay(_ event: AgentEvent) -> Bool {
+        switch event {
+        case .assistantDelta, .logDelta, .sessionContext:
+            return true
+        case .processItemCompleted(let message, _, _):
+            return message.activityPayload?.isInProgress == true
+        default:
+            return false
+        }
+    }
+
     nonisolated func shouldReplayBufferedStateEvent(_ event: AgentEvent) -> Bool {
         switch event {
         case .session,
              .sessionRow,
              .sessionStatus,
-             .sessionContext,
              .permissionProfileUpdated,
              .collaborationModeUpdated,
              .goalUpdated,
@@ -2265,6 +2275,7 @@ actor CodexAppServerSessionRuntime {
             return message.activityPayload?.isInProgress != true
         case .assistantDelta,
              .logDelta,
+             .sessionContext,
              .diffUpdated:
             return false
         }

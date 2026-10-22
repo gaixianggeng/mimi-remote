@@ -9,7 +9,9 @@ enum CodexAppServerBufferedEventReplay {
         pendingInteractionIDs: Set<String>
     ) -> [AgentEvent] {
         let replayBoundary = latestReplayBoundary(in: events)
-        var replay = retainedPayloadEvents(events, currentSession: currentSession)
+        let retainedPayloads = retainedPayloadEvents(events, currentSession: currentSession)
+        let activeIncrementalPayloads = retainedPayloads.filter(shouldReplayAfterAuthoritativeSession)
+        var replay = retainedPayloads.filter { !shouldReplayAfterAuthoritativeSession($0) }
 
         guard let currentSession else {
             // 没有权威快照时不从旧控制事件推断生命周期，也不提交 replay cursor。
@@ -30,6 +32,9 @@ enum CodexAppServerBufferedEventReplay {
 
         // Runtime 快照是生命周期唯一事实来源。旧 session/status/context 不能覆盖它。
         replay.append(.session(currentSession))
+        // 当前回合在 thread/read 之后产生的增量按原顺序落在权威快照之后，避免快照内的
+        // 旧 context 覆盖门内文件变更或运行中过程卡附带的最新 context。
+        replay.append(contentsOf: activeIncrementalPayloads)
         replay.append(contentsOf: pendingEvents(
             events,
             pendingInteractionIDs: pendingInteractionIDs
@@ -62,31 +67,49 @@ enum CodexAppServerBufferedEventReplay {
     ) -> [AgentEvent] {
         events.compactMap { event in
             switch event {
-            case .session, .sessionRow, .sessionStatus, .sessionContext,
+            case .session, .sessionRow, .sessionStatus,
                  .turnStarted, .turnCompleted, .error,
                  .approvalRequest, .approvalResolved,
                  .userInputRequest, .userInputResolved:
                 return nil
+            case .sessionContext(let context, let metadata):
+                guard belongsToActiveTurn(metadata, currentSession: currentSession) else {
+                    return nil
+                }
+                return .sessionContext(
+                    context,
+                    contentMetadata(metadata, currentSession: currentSession)
+                )
             case .messageCompleted(let message, let metadata):
                 return .messageCompleted(
                     message,
                     contentMetadata(metadata, currentSession: currentSession)
                 )
             case .processItemCompleted(let message, let context, let metadata):
+                if message.activityPayload?.isInProgress == true,
+                   !belongsToActiveTurn(metadata, currentSession: currentSession) {
+                    return nil
+                }
                 return .processItemCompleted(
                     message,
                     context,
                     contentMetadata(metadata, currentSession: currentSession)
                 )
             case .assistantDelta(let delta, let metadata):
-                // thread/read 已覆盖旧回合正文；恢复门内只补当前活动回合的新分片，
-                // 否则 connect 期间产生的回复会被 stateOnly 永久丢弃。
-                guard currentSession?.isRunning == true,
-                      let activeTurnID = currentSession?.activeTurnID,
-                      metadata.turnID == activeTurnID else {
+                guard belongsToActiveTurn(metadata, currentSession: currentSession) else {
                     return nil
                 }
                 return .assistantDelta(
+                    delta,
+                    contentMetadata(metadata, currentSession: currentSession)
+                )
+            case .logDelta(let delta, let metadata):
+                // thread/read 已覆盖订阅前的正文和过程状态，却不包含恢复门内新产生的
+                // 增量日志与运行中卡片。只补当前权威活动回合，避免重复日志或复活旧卡。
+                guard belongsToActiveTurn(metadata, currentSession: currentSession) else {
+                    return nil
+                }
+                return .logDelta(
                     delta,
                     contentMetadata(metadata, currentSession: currentSession)
                 )
@@ -94,6 +117,29 @@ enum CodexAppServerBufferedEventReplay {
                 return event
             }
         }
+    }
+
+    private static func shouldReplayAfterAuthoritativeSession(_ event: AgentEvent) -> Bool {
+        switch event {
+        case .assistantDelta, .logDelta, .sessionContext:
+            return true
+        case .messageCompleted(_, let metadata),
+             .processItemCompleted(_, _, let metadata):
+            // contentMetadata 只为权威活动回合保留 turnID；同回合 started/completed 必须一起
+            // 留在快照之后并保持原顺序，避免 completed 先落地后又被 started 复活。
+            return metadata.turnID != nil
+        default:
+            return false
+        }
+    }
+
+    private static func belongsToActiveTurn(
+        _ metadata: AgentEventMetadata,
+        currentSession: AgentSession?
+    ) -> Bool {
+        currentSession?.isRunning == true
+            && currentSession?.activeTurnID != nil
+            && metadata.turnID == currentSession?.activeTurnID
     }
 
     private static func latestActiveStart(
