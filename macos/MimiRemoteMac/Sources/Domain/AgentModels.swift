@@ -87,6 +87,10 @@ struct TailcatStatus: Codable, Equatable, Sendable {
     let derpMapURL: String?
     let pairedDeviceCount: Int
     let error: String?
+    /// 旧版 agentd 不返回 mode，按自建模式处理（#885、#896）。
+    var mode: String? = nil
+
+    var isManagedMode: Bool { mode == "managed" }
 
     enum CodingKeys: String, CodingKey {
         case enabled
@@ -95,6 +99,7 @@ struct TailcatStatus: Codable, Equatable, Sendable {
         case derpMapURL = "derp_map_url"
         case pairedDeviceCount = "paired_device_count"
         case error
+        case mode
     }
 }
 

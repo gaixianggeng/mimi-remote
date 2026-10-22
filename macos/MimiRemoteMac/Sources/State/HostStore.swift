@@ -84,6 +84,10 @@ final class HostStore {
         tailcatStatus?.derpMapURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
+    var tailcatIsManaged: Bool {
+        tailcatStatus?.isManagedMode ?? false
+    }
+
     var tailcatStatusDetail: String {
         if owner == .homebrew {
             return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Tailcat 模块。"
@@ -897,6 +901,42 @@ final class HostStore {
             tailcatNotice = wasEnabled
                 ? "中继已更新。请重新生成二维码，并在移动设备上扫码。"
                 : "中继配置已保存，将在启用 Tailcat 后生效。"
+        } catch {
+            tailcatError = error.localizedDescription
+        }
+    }
+
+    /// 进入或退出 Mimi 托管连接（#896）。两个方向都会重建 Tailcat 身份并让旧二维码失效，
+    /// 所以与修改中继一样清掉当前 Tailcat 配对码。
+    func setTailcatManagedMode(_ managed: Bool) async {
+        guard !isBusy, owner == .macApp else {
+            tailcatError = "请先启动并接管 Mimi Remote Mac 服务。"
+            return
+        }
+        isBusy = true
+        isUpdatingTailcat = true
+        tailcatStatusRequestSequence &+= 1
+        tailcatError = nil
+        invalidateModulePairing()
+        tailcatNotice = nil
+        let wasEnabled = tailcatEnabled
+        defer {
+            isUpdatingTailcat = false
+            isBusy = false
+        }
+        do {
+            tailcatStatus = try await agent.setTailcatManagedMode(managed)
+            if pairingNetwork == .tailcat {
+                pairing = nil
+                pairingNetwork = .tailscale
+            }
+            if managed {
+                tailcatNotice = wasEnabled
+                    ? "已改用 Mimi 托管连接。请在手机的「Mimi 托管连接」里扫码接入这台电脑。"
+                    : "已改用 Mimi 托管连接，开启 Tailcat 后生效。"
+            } else {
+                tailcatNotice = "已退出托管连接并恢复原中继。需要用 Tailcat 的设备请重新扫码。"
+            }
         } catch {
             tailcatError = error.localizedDescription
         }

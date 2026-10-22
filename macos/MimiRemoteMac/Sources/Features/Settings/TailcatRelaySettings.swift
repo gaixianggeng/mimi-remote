@@ -27,68 +27,29 @@ struct TailcatRelaySettings: View {
     @Environment(\.openWindow) private var openWindow
     @State private var confirmsTailcatReset = false
     @State private var confirmsRelayChange = false
+    @State private var confirmsEnterManaged = false
+    @State private var confirmsExitManaged = false
     @State private var relayMode: TailcatRelayMode = .tailcatDefault
     @State private var customDERPMapURL = ""
     @FocusState private var focusedInputField: RelayInputField?
 
     var body: some View {
         Group {
+            managedConnectionSection
+
             Section("Tailcat 中继与配对") {
                 Text(store.tailcatStatusDetail).font(.caption).foregroundStyle(.secondary)
-                Picker("中继节点", selection: $relayMode) {
-                    ForEach(TailcatRelayMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
+                if store.tailcatIsManaged {
+                    // 托管模式的中继由 Mimi 管理，agentd 会拒绝手动修改；这里不给入口。
+                    LabeledContent("当前中继") {
+                        Text("Mimi 托管中继")
                     }
+                    Text("托管连接下中继由 Mimi 管理，不能手动修改。要改用其他中继，请先退出托管连接。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    relayConfigurationRows
                 }
-                .pickerStyle(.segmented)
-
-                if relayMode == .custom {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("DERP Map HTTPS 地址")
-
-                        TextField(
-                            "DERP Map HTTPS 地址",
-                            text: $customDERPMapURL,
-                            prompt: Text("粘贴完整的 HTTPS 地址")
-                        )
-                        .labelsHidden()
-                        .textFieldStyle(.roundedBorder)
-                        .multilineTextAlignment(.leading)
-                        .environment(\.layoutDirection, .leftToRight)
-                        .focused($focusedInputField, equals: .derpMapURL)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if let relayValidationMessage {
-                        Text(relayValidationMessage)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                }
-
-                LabeledContent("当前中继") {
-                    Text(currentRelayTitle)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(store.tailcatDERPMapURL)
-                }
-
-                HStack {
-                    Button("应用中继配置…") {
-                        confirmsRelayChange = true
-                    }
-                    .disabled(
-                        !store.canChangeTailcat ||
-                            relayValidationMessage != nil ||
-                            !relayConfigurationChanged
-                    )
-
-                    Spacer()
-                }
-
-                Text("DERP Map 是描述可用中继节点的配置地址。自定义地址必须使用 HTTPS。Tailcat 关闭时只保存地址，启用后才验证连通性。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
 
                 HStack {
                     Button("生成配对二维码") {
@@ -126,6 +87,28 @@ struct TailcatRelaySettings: View {
             syncRelayConfiguration()
         }
         .confirmationDialog(
+            "改用 Mimi 托管连接？",
+            isPresented: $confirmsEnterManaged,
+            titleVisibility: .visible
+        ) {
+            Button("改用托管连接") {
+                Task { await store.setTailcatManagedMode(true) }
+            }
+        } message: {
+            Text(enterManagedMessage)
+        }
+        .confirmationDialog(
+            "退出 Mimi 托管连接？",
+            isPresented: $confirmsExitManaged,
+            titleVisibility: .visible
+        ) {
+            Button("退出托管连接", role: .destructive) {
+                Task { await store.setTailcatManagedMode(false) }
+            }
+        } message: {
+            Text("这台电脑会恢复原来的中继，通过托管连接接入的手机和平板需要重新扫码。Tailscale 和局域网连接不受影响。")
+        }
+        .confirmationDialog(
             "重置 Tailcat？",
             isPresented: $confirmsTailcatReset,
             titleVisibility: .visible
@@ -151,6 +134,111 @@ struct TailcatRelaySettings: View {
                 Text("配置会在下次启用 Tailcat 时生效。Tailscale 和局域网连接不受影响。")
             }
         }
+    }
+
+    /// 当前是托管还是自建，以及进入、退出入口（#896）。两个方向都会重建 Tailcat 身份，
+    /// 所以都要先确认。
+    private var managedConnectionSection: some View {
+        Section("Mimi 托管连接") {
+            LabeledContent("连接方式") {
+                Text(store.tailcatIsManaged ? "Mimi 托管连接" : "自建")
+            }
+
+            Text(
+                store.tailcatIsManaged
+                    ? "手机通过 Mimi 中继连接这台电脑，需要在手机的「Mimi 托管连接」里订阅后接入。"
+                    : "改用托管连接后，不在同一网络的手机也能通过 Mimi 中继连上这台电脑，需要在手机上订阅「Mimi 托管连接」。"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            HStack {
+                if store.tailcatIsManaged {
+                    Button("退出托管连接…", role: .destructive) {
+                        confirmsExitManaged = true
+                    }
+                    .disabled(!store.canChangeTailcat)
+                } else {
+                    Button("改用 Mimi 托管连接…") {
+                        confirmsEnterManaged = true
+                    }
+                    .disabled(!store.canChangeTailcat)
+                }
+
+                Spacer()
+
+                if store.isUpdatingTailcat {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private var enterManagedMessage: String {
+        let count = store.tailcatStatus?.pairedDeviceCount ?? 0
+        let paired = count > 0
+            ? "已用自建 Tailcat 配对的 \(count) 台设备需要重新配对。"
+            : ""
+        return "这台电脑的 Tailcat 身份会重建，中继改为 Mimi 托管中继。\(paired)之后请在手机的「Mimi 托管连接」里扫码接入。Tailscale 和局域网连接不受影响。"
+    }
+
+    @ViewBuilder
+    private var relayConfigurationRows: some View {
+        Picker("中继节点", selection: $relayMode) {
+            ForEach(TailcatRelayMode.allCases) { mode in
+                Text(mode.title).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+
+        if relayMode == .custom {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("DERP Map HTTPS 地址")
+
+                TextField(
+                    "DERP Map HTTPS 地址",
+                    text: $customDERPMapURL,
+                    prompt: Text("粘贴完整的 HTTPS 地址")
+                )
+                .labelsHidden()
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.leading)
+                .environment(\.layoutDirection, .leftToRight)
+                .focused($focusedInputField, equals: .derpMapURL)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let relayValidationMessage {
+                Text(relayValidationMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+
+        LabeledContent("当前中继") {
+            Text(currentRelayTitle)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(store.tailcatDERPMapURL)
+        }
+
+        HStack {
+            Button("应用中继配置…") {
+                confirmsRelayChange = true
+            }
+            .disabled(
+                !store.canChangeTailcat ||
+                    relayValidationMessage != nil ||
+                    !relayConfigurationChanged
+            )
+
+            Spacer()
+        }
+
+        Text("DERP Map 是描述可用中继节点的配置地址。自定义地址必须使用 HTTPS。Tailcat 关闭时只保存地址，启用后才验证连通性。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 
     private var selectedDERPMapURL: String {

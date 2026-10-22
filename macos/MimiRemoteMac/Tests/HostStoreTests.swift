@@ -1492,6 +1492,79 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.tailcatNotice, "中继已更新。请重新生成二维码，并在移动设备上扫码。")
     }
 
+    func testEnteringAndExitingManagedConnectionUpdatesModeAndClearsTailcatPairing() async {
+        let events = EventRecorder()
+        let selfHosted = TailcatStatus(
+            enabled: true, running: true, version: "v0.7.0",
+            derpMapURL: nil, pairedDeviceCount: 2, error: nil, mode: "self_hosted"
+        )
+        let managed = TailcatStatus(
+            enabled: true, running: true, version: "v0.7.0",
+            derpMapURL: "https://relay.example/derpmap/managed", pairedDeviceCount: 0, error: nil,
+            mode: "managed"
+        )
+        let tailcatPairing = PairingInfo(
+            endpoint: "http://127.0.0.1:8787",
+            network: .tailcat,
+            pairURL: "mimiremote://pair?transport=tailcat",
+            expiresAt: "2026-10-22T02:00:00Z",
+            warnings: []
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            pair: { _ in tailcatPairing },
+            tailcatStatus: { selfHosted },
+            setTailcatManagedMode: { managedMode in
+                events.append(managedMode ? "enter" : "exit")
+                return managedMode ? managed : selfHosted
+            }
+        )
+
+        await store.bootstrap()
+        await store.refreshTailcatStatus()
+        XCTAssertFalse(store.tailcatIsManaged)
+        await store.refreshPairing(network: .tailcat)
+
+        await store.setTailcatManagedMode(true)
+        XCTAssertTrue(store.tailcatIsManaged)
+        // 进入托管模式会重建身份，旧的 Tailcat 二维码不能继续展示。
+        XCTAssertNil(store.pairing)
+        XCTAssertEqual(store.pairingNetwork, .tailscale)
+        XCTAssertEqual(store.tailcatNotice, "已改用 Mimi 托管连接。请在手机的「Mimi 托管连接」里扫码接入这台电脑。")
+
+        await store.setTailcatManagedMode(false)
+        XCTAssertFalse(store.tailcatIsManaged)
+        XCTAssertEqual(store.tailcatNotice, "已退出托管连接并恢复原中继。需要用 Tailcat 的设备请重新扫码。")
+        XCTAssertEqual(events.values, ["enter", "exit"])
+        XCTAssertFalse(store.isBusy)
+    }
+
+    func testManagedConnectionFailureShowsAgentError() async {
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            tailcatStatus: {
+                TailcatStatus(
+                    enabled: true, running: true, version: nil,
+                    derpMapURL: nil, pairedDeviceCount: 0, error: nil
+                )
+            },
+            setTailcatManagedMode: { _ in
+                throw AgentClientError.commandFailed("托管模式下不能手动修改中继，请先退出托管模式")
+            }
+        )
+
+        await store.bootstrap()
+        await store.refreshTailcatStatus()
+        await store.setTailcatManagedMode(true)
+
+        XCTAssertFalse(store.tailcatIsManaged)
+        XCTAssertNotNil(store.tailcatError)
+        XCTAssertNil(store.tailcatNotice)
+        XCTAssertFalse(store.isBusy)
+    }
+
     func testRefreshingTailcatStatusClearsRelayNoticeAndShowsRuntimeError() async {
         let customStatus = TailcatStatus(
             enabled: true,
@@ -2215,6 +2288,9 @@ final class HostStoreTests: XCTestCase {
                 error: nil
             )
         },
+        setTailcatManagedMode: @escaping @Sendable (Bool) async throws -> TailcatStatus = { _ in
+            throw TestError.expected
+        },
         configureDeepSeek: @escaping @Sendable (
             DeepSeekConfigurationAction, String?
         ) async throws -> DeepSeekConfigurationResult = { _, _ in
@@ -2243,6 +2319,7 @@ final class HostStoreTests: XCTestCase {
             tailcatStatus: tailcatStatus,
             setTailcatEnabled: setTailcatEnabled,
             configureTailcatDERPMap: configureTailcatDERPMap,
+            setTailcatManagedMode: setTailcatManagedMode,
             configureDeepSeek: configureDeepSeek,
             version: { readyStatus.version }
         )
