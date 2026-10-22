@@ -106,6 +106,8 @@ struct SettingsView: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
+    /// 只在托管入口可见时读取；测试与快照不注入它，入口也不会显示。
+    @EnvironmentObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
 
     let isInitialSetup: Bool
     var showsDoneButton = true
@@ -295,10 +297,14 @@ struct SettingsView: View {
 
             if ManagedConnectionSubscriptionView.isEntryVisible {
                 Section {
+                    // 这里只管订阅；线路与设备名额在「设备」里（#891）。
                     NavigationLink(value: SettingsDestination.managedConnection) {
                         SettingsValueLabel(
                             title: L10n.text("ui.managed_subscription_title"),
-                            systemImage: "creditcard"
+                            value: ManagedConnectionSubscriptionView.statusSummary(
+                                managedConnectionEntitlementStore.status
+                            ),
+                            systemImage: "network"
                         )
                     }
                     .settingsStandardListRow()

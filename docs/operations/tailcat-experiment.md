@@ -53,6 +53,42 @@ agentd tailcat pair
 
 `agentd tailcat pair` 只输出短期配对链接。它不会输出或修改长期 Agent Token。
 
+购买托管连接后，必须先在电脑上进入托管模式，再生成二维码。不能扫码后才切换，
+因为切换中继会重建稳定主机公钥，扫码授权绑定的是二维码中的原公钥。
+
+```bash
+agentd tailcat enable
+agentd tailcat enter-managed
+agentd tailcat status
+agentd tailcat pair
+```
+
+本机控制接口 `POST /api/local/tailcat` 对应的 `action` 是 `enter-managed` 和
+`exit-managed`，沿用现有本机 Token、loopback 和禁止 Origin 的控制边界。
+状态 JSON 的 `mode` 为 `managed`（托管）或 `self_hosted`（自建）；命令状态会显示中文模式。
+电脑端界面的进入、退出入口及各端模式展示另行实现。
+
+托管模式使用 Mimi 官方 DERP Map：
+`https://api.code89757.com/v1/relay/tailcat-derp-map.json`。配置项
+`tailcat.managed_derp_map_url` 可以覆盖该地址，只允许完整 HTTPS URL，供测试或自建控制面使用。
+不配置时使用统一的官方默认值。`tailcat.mode`、当前 `tailcat.derp_map_url` 和
+`tailcat.previous_derp_map_url` 在一次配置提交中保存；原地址为空表示 Tailcat 默认中继。
+旧配置没有 `mode` 时按自建处理，不自动迁移已有配对。
+
+进入和退出模式都会重建 Tailcat 身份并清空自建配对；同一台电脑同一时间只使用一种模式。
+切换失败时恢复切换前的中继、身份和自建配对，退出失败时也恢复仍有效的托管授权。
+成功退出会清空托管注册，并恢复进入前的默认或自定义中继；它不会找回进入前已清空的配对。
+重复进入或退出不改变身份或已记录的原值。`agentd` 重启后继续保留模式及原中继记录。
+
+```bash
+agentd tailcat exit-managed
+agentd tailcat status
+```
+
+托管模式下，手动 `configure` 返回 HTTP 409、错误码 `tailcat_managed_relay_locked`。
+未进入托管模式的托管 claim 返回 HTTP 409、错误码 `tailcat_managed_mode_required`，
+并提示先在电脑进入托管模式后重新生成二维码。iOS 现有错误处理会显示这条中文提示。
+
 二维码会同时携带 Mac 的随机安装 ID 和稳定 Tailcat 公钥。这两项都是公开身份，
 不是访问凭证。免费自建 Tailcat 仍按原流程把扫码设备公钥写入 `clients.json`。
 
@@ -65,8 +101,10 @@ Mimi 托管连接会在移动端取得订阅权益和 10 分钟配对授权后�
 最迟在 10 分钟内生效。控制面临时不可达时可以继续使用最后一次有效策略，但最多
 保留 24 小时；超时、主机身份变化或控制面明确撤销后会清空托管白名单。免费自建
 白名单与托管白名单分开保存，应用策略时才合并，托管撤销不会删除免费配对。
+云端撤销、主机身份变化及显式 `reset` 都保持托管模式，只清空对应授权或注册并等待重新配对。
+只有显式 `exit-managed` 才恢复原中继，避免一次云端异常让电脑悄悄换回公共中继。
 
-恢复 Tailcat 默认中继：
+自建模式下恢复 Tailcat 默认中继：
 
 ```bash
 agentd tailcat configure --derp-map-url=

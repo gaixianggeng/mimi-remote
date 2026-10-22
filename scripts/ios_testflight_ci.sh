@@ -11,6 +11,9 @@ IOS_TESTFLIGHT_UPLOAD="${IOS_TESTFLIGHT_UPLOAD:-1}"
 IOS_TESTFLIGHT_VALIDATE="${IOS_TESTFLIGHT_VALIDATE:-0}"
 TESTFLIGHT_WHATS_NEW="${TESTFLIGHT_WHATS_NEW:-}"
 IOS_ASC_BUILD_NUMBER_MODE="${IOS_ASC_BUILD_NUMBER_MODE:-off}"
+# 托管连接尚未在 App Store 开放；只有内部测试构建显式传 YES（#887）。
+IOS_MANAGED_CONNECTION_ENTRY="${IOS_MANAGED_CONNECTION_ENTRY:-NO}"
+MANAGED_CONNECTION_WHATS_NEW_PREFIX="【含托管连接入口，仅限内部测试，不得提交 App Store 审核】"
 
 fail() {
   echo "ios-testflight-ci: $1" >&2
@@ -24,6 +27,11 @@ require_env() {
 case "$IOS_ASC_BUILD_NUMBER_MODE" in
   off|shadow|enforce) ;;
   *) fail "IOS_ASC_BUILD_NUMBER_MODE must be off, shadow or enforce" ;;
+esac
+
+case "$IOS_MANAGED_CONNECTION_ENTRY" in
+  YES|NO) ;;
+  *) fail "IOS_MANAGED_CONNECTION_ENTRY must be YES or NO" ;;
 esac
 
 run_asc_build_number_shadow() {
@@ -96,6 +104,10 @@ esac
 if [[ "$IOS_TESTFLIGHT_UPLOAD" == "1" ]]; then
   require_env TESTFLIGHT_BETA_GROUP_ID
   [[ -n "$TESTFLIGHT_WHATS_NEW" ]] || fail "TESTFLIGHT_WHATS_NEW is required"
+  if [[ "$IOS_MANAGED_CONNECTION_ENTRY" == "YES" && "$TESTFLIGHT_WHATS_NEW" != "$MANAGED_CONNECTION_WHATS_NEW_PREFIX"* ]]; then
+    # 同一构建在 App Store Connect 里也能被选去提交审核，测试说明必须写明不能提交。
+    TESTFLIGHT_WHATS_NEW="$MANAGED_CONNECTION_WHATS_NEW_PREFIX$TESTFLIGHT_WHATS_NEW"
+  fi
 fi
 [[ -f "$PROJECT/project.pbxproj" ]] || fail "Xcode project not found: $PROJECT"
 [[ -f "$ROOT_DIR/scripts/ios_asc_build_number_preflight.rb" ]] || fail "missing build-number preflight"
@@ -193,7 +205,7 @@ cat > "$export_options" <<PLIST
 </plist>
 PLIST
 
-echo "ios-testflight-ci: archive $IOS_BUNDLE_ID $marketing_version ($build_number)"
+echo "ios-testflight-ci: archive $IOS_BUNDLE_ID $marketing_version ($build_number) managed_connection_entry=$IOS_MANAGED_CONNECTION_ENTRY"
 xcodebuild archive \
   -project "$PROJECT" \
   -scheme "$SCHEME" \
@@ -203,6 +215,7 @@ xcodebuild archive \
   DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
   MARKETING_VERSION="$marketing_version" \
   CURRENT_PROJECT_VERSION="$build_number" \
+  MIMI_MANAGED_CONNECTION_ENTRY="$IOS_MANAGED_CONNECTION_ENTRY" \
   CODE_SIGN_STYLE=Manual \
   CODE_SIGN_IDENTITY="$IOS_CODE_SIGN_IDENTITY" \
   IOS_PROVISIONING_PROFILE_SPECIFIER="$IOS_PROVISIONING_PROFILE_SPECIFIER" \
@@ -217,6 +230,7 @@ archive_info="$archive/Products/Applications/MimiRemote.app/Info.plist"
 [[ "$(plutil -extract CFBundleShortVersionString raw -o - "$archive_info")" == "$marketing_version" ]] || fail "archive version mismatch"
 [[ "$(plutil -extract CFBundleVersion raw -o - "$archive_info")" == "$build_number" ]] || fail "archive build mismatch"
 [[ "$(plutil -extract ITSAppUsesNonExemptEncryption raw -o - "$archive_info")" == "false" ]] || fail "encryption declaration must be false"
+[[ "$(plutil -extract MimiManagedConnectionEntry raw -o - "$archive_info")" == "$IOS_MANAGED_CONNECTION_ENTRY" ]] || fail "archive managed connection entry mismatch"
 
 widget_path="$archive/Products/Applications/MimiRemote.app/PlugIns/MimiCarStatusWidget.appex"
 widget_info="$widget_path/Info.plist"
