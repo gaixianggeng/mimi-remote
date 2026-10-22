@@ -78,6 +78,18 @@ enum CodexAppServerBufferedEventReplay {
                     context,
                     contentMetadata(metadata, currentSession: currentSession)
                 )
+            case .assistantDelta(let delta, let metadata):
+                // thread/read 已覆盖旧回合正文；恢复门内只补当前活动回合的新分片，
+                // 否则 connect 期间产生的回复会被 stateOnly 永久丢弃。
+                guard currentSession?.isRunning == true,
+                      let activeTurnID = currentSession?.activeTurnID,
+                      metadata.turnID == activeTurnID else {
+                    return nil
+                }
+                return .assistantDelta(
+                    delta,
+                    contentMetadata(metadata, currentSession: currentSession)
+                )
             default:
                 return event
             }

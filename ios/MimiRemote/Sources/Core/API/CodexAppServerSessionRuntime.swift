@@ -242,7 +242,7 @@ actor CodexAppServerSessionRuntime {
     ] = [:]
     /// stateOnly 恢复必须覆盖 thread/resume 期间到达的 bridge backlog。这里只记录仍在门内
     /// 的订阅 token，共享事件保留在会话 buffer，不阻塞同会话已有的实时观察者。
-    var deferredStateReplayEventsBySessionID: [SessionID: Set<UUID>] = [:]
+    var deferredStateReplayEventsBySessionID: [SessionID: [UUID: Int]] = [:]
     /// 同一恢复窗口可以有多个并发订阅。已有订阅完成后，最后一个订阅取消时可安全清理
     /// 已被消费的共享快照；若无人完成则保留给下一次重连接管。
     var completedDeferredStateReplaySessionIDs: Set<SessionID> = []
@@ -2104,7 +2104,8 @@ actor CodexAppServerSessionRuntime {
         if defersStateReplay {
             // 初始 backlog 在门打开前保持共享。旧订阅取消与新订阅 attach 可能交错；若这里
             // 提前搬进旧 token 的私有数组，新订阅会看到“已有订阅者”并永久丢掉 backlog。
-            deferredStateReplayEventsBySessionID[sessionID, default: []].insert(token)
+            let initialEventCount = bufferedEventsBySessionID[sessionID]?.count ?? 0
+            deferredStateReplayEventsBySessionID[sessionID, default: [:]][token] = initialEventCount
             return CodexAppServerDeferredEventAttachment(
                 events: CodexAppServerEventStream(mailbox: mailbox),
                 token: token
@@ -2142,7 +2143,7 @@ actor CodexAppServerSessionRuntime {
         token: UUID
     ) {
         guard let mailbox = eventMailboxesBySessionID[sessionID]?[token],
-              deferredStateReplayEventsBySessionID[sessionID]?.remove(token) != nil
+              let initialEventCount = deferredStateReplayEventsBySessionID[sessionID]?.removeValue(forKey: token)
         else {
             return
         }
@@ -2158,7 +2159,11 @@ actor CodexAppServerSessionRuntime {
             completedDeferredStateReplaySessionIDs.remove(sessionID)
         }
         var replayedInteractionIDs: Set<String> = []
-        for event in stateOnlyBufferedEvents(captured, sessionID: sessionID) {
+        for event in stateOnlyBufferedEvents(
+            captured,
+            sessionID: sessionID,
+            activeAssistantDeltaFromIndex: initialEventCount
+        ) {
             if let interactionID = pendingInteractionReplayID(for: event) {
                 replayedInteractionIDs.insert(interactionID)
             }
@@ -2174,7 +2179,7 @@ actor CodexAppServerSessionRuntime {
     }
 
     func isDeferredStateReplay(sessionID: SessionID, token: UUID) -> Bool {
-        deferredStateReplayEventsBySessionID[sessionID]?.contains(token) == true
+        deferredStateReplayEventsBySessionID[sessionID]?[token] != nil
     }
 
     func hasDeferredStateReplay(sessionID: SessionID) -> Bool {
@@ -2184,14 +2189,9 @@ actor CodexAppServerSessionRuntime {
     /// 恢复门内的新事件与初始 backlog 共用一份缓冲，任一仍有效的新订阅都能接管它。
     func bufferEventDuringDeferredStateReplay(_ event: AgentEvent, sessionID: SessionID) {
         var events = bufferedEventsBySessionID[sessionID] ?? []
-        if let previous = events.last,
-           event.contiguousPayloadByteCount == nil,
-           let merged = previous.mergingContiguous(with: event) {
-            events[events.index(before: events.endIndex)] = merged
-        } else {
-            events.append(event)
-            compactTrailingBufferedDeltas(&events)
-        }
+        // 每个 deferred 订阅的 attach 序号不同。门内事件保持独立，才能按各自边界排除
+        // 已被 thread/read 覆盖的初始 delta，避免旧前缀与新分片合并后重复追加。
+        events.append(event)
         bufferedEventsBySessionID[sessionID] = events
     }
 
@@ -2210,14 +2210,26 @@ actor CodexAppServerSessionRuntime {
 
     private func stateOnlyBufferedEvents(
         _ events: [AgentEvent],
-        sessionID: SessionID
+        sessionID: SessionID,
+        activeAssistantDeltaFromIndex: Int? = nil
     ) -> [AgentEvent] {
         let pendingInteractionIDs = Set(
             pendingInteractionEvents(sessionID: sessionID)
                 .compactMap(pendingInteractionReplayID)
         )
+        let replayCandidates = events.enumerated().compactMap { index, event -> AgentEvent? in
+            if shouldReplayBufferedStateEvent(event) {
+                return event
+            }
+            guard let activeAssistantDeltaFromIndex,
+                  index >= activeAssistantDeltaFromIndex,
+                  case .assistantDelta = event else {
+                return nil
+            }
+            return event
+        }
         return CodexAppServerBufferedEventReplay.stateOnly(
-            events.filter(shouldReplayBufferedStateEvent),
+            replayCandidates,
             currentSession: contextsBySessionID[sessionID]?.session,
             pendingInteractionIDs: pendingInteractionIDs
         )
@@ -3464,7 +3476,7 @@ actor CodexAppServerSessionRuntime {
     }
 
     func detachEvents(sessionID: SessionID, token: UUID) async {
-        deferredStateReplayEventsBySessionID[sessionID]?.remove(token)
+        deferredStateReplayEventsBySessionID[sessionID]?.removeValue(forKey: token)
         if deferredStateReplayEventsBySessionID[sessionID]?.isEmpty == true {
             deferredStateReplayEventsBySessionID.removeValue(forKey: sessionID)
             if completedDeferredStateReplaySessionIDs.remove(sessionID) != nil {

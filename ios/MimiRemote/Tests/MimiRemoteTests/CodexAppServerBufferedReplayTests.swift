@@ -35,6 +35,8 @@ final class CodexAppServerBufferedReplayTests: XCTestCase {
 
         await emitCompletedTurn("turn-old", text: "旧回合完成", into: runtime)
         await runtime.handle(turnStarted("turn-live"))
+        await runtime.handle(assistantDelta("旧回合增量", turnID: "turn-old"))
+        await runtime.handle(assistantDelta("当前回合增量", turnID: "turn-live"))
 
         let events = await runtime.bufferedEvents(
             sessionID: sessionID,
@@ -44,6 +46,33 @@ final class CodexAppServerBufferedReplayTests: XCTestCase {
         XCTAssertEqual(turnIDs(for: .started, in: events), ["turn-live"])
         XCTAssertEqual(turnIDs(for: .completed, in: events), [])
         XCTAssertEqual(completedAssistantTexts(in: events), ["旧回合完成"])
+        XCTAssertEqual(assistantDeltas(in: events), [])
+    }
+
+    func testDeferredReplayDeliversActiveDeltaAndContinuesStreamingAfterGateOpens() async {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test-token",
+            runtimeProvider: "claude"
+        )
+        await seedThread(in: runtime)
+        await emitCompletedTurn("turn-old", text: "旧回合完成", into: runtime)
+        await runtime.handle(turnStarted("turn-live"))
+        await runtime.handle(assistantDelta("历史已覆盖", turnID: "turn-live"))
+        let attachment = await runtime.attachEventsDeferringStateReplay(sessionID: sessionID)
+
+        await runtime.handle(assistantDelta("旧回合增量", turnID: "turn-old"))
+        await runtime.handle(assistantDelta("门内正文", turnID: "turn-live", replaySequence: 51))
+        await runtime.completeDeferredStateReplay(sessionID: sessionID, token: attachment.token)
+        await runtime.handle(assistantDelta("门外正文", turnID: "turn-live"))
+        await runtime.finishAttachedEventStreams(sessionID: sessionID)
+
+        var replay: [AgentEvent] = []
+        for await event in attachment.events { replay.append(event) }
+        XCTAssertEqual(assistantDeltas(in: replay), ["门内正文", "门外正文"])
+        XCTAssertTrue(replay.compactMap(assistantDeltaMetadata).allSatisfy {
+            $0.replayBoundarySequence == nil
+        })
     }
 
     func testFullReplayPreservesLiveLifecycleSequence() async {
@@ -386,6 +415,23 @@ final class CodexAppServerBufferedReplayTests: XCTestCase {
         )
     }
 
+    private func assistantDelta(
+        _ text: String,
+        turnID: TurnID,
+        replaySequence: UInt64? = nil
+    ) -> CodexAppServerNotification {
+        CodexAppServerNotification(
+            method: "item/agentMessage/delta",
+            params: .object([
+                "threadId": .string(sessionID),
+                "turnId": .string(turnID),
+                "itemId": .string("message-\(turnID)"),
+                "delta": .string(text),
+            ]),
+            replaySequence: replaySequence
+        )
+    }
+
     private enum LifecycleEvent {
         case started
         case completed
@@ -408,5 +454,17 @@ final class CodexAppServerBufferedReplayTests: XCTestCase {
             guard case .messageCompleted(let message, _) = event else { return nil }
             return message.content
         }
+    }
+
+    private func assistantDeltas(in events: [AgentEvent]) -> [String] {
+        events.compactMap { event in
+            guard case .assistantDelta(let delta, _) = event else { return nil }
+            return delta.text
+        }
+    }
+
+    private func assistantDeltaMetadata(_ event: AgentEvent) -> AgentEventMetadata? {
+        guard case .assistantDelta(_, let metadata) = event else { return nil }
+        return metadata
     }
 }

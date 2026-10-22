@@ -77,6 +77,42 @@ final class CodexAppServerHistoryFeedbackTests: XCTestCase {
         XCTAssertNil(fixture.store.selectedSession?.activeTurnID)
     }
 
+    func testOpeningActiveTurnKeepsWindowTextAndContinuesStreaming() async throws {
+        let fixture = makeFixture()
+        defer { fixture.store.disconnectWebSocket() }
+        let recorder = FeedbackRecorder(store: fixture.store, sessionID: sessionID)
+        let runtime = makeRuntime()
+
+        await seedThread(in: runtime)
+        await runtime.handle(turnStarted("live-streaming"))
+        let attachment = await runtime.attachEventsDeferringStateReplay(sessionID: sessionID)
+        // 这段正文产生于历史首屏之后，恢复结束时不能把它当作已读历史丢弃。
+        await emitDelta("live-streaming", text: "窗口内", into: runtime)
+        await runtime.completeDeferredStateReplay(sessionID: sessionID, token: attachment.token)
+        await runtime.finishAttachedEventStreams(sessionID: sessionID)
+        for await event in attachment.events {
+            await fixture.store.applyRuntimeEvent(event, lease: fixture.lease, sendsNotification: false)
+            recorder.observeCurrentState()
+        }
+
+        XCTAssertEqual(fixture.conversationStore.messages(for: sessionID).map(\.content), ["窗口内"])
+        XCTAssertEqual(fixture.store.selectedSession?.activeTurnID, "live-streaming")
+        XCTAssertTrue(recorder.feedback.isEmpty)
+
+        await emitDelta("live-streaming", text: "后续", into: runtime)
+        await applyBufferedEvents(from: runtime, policy: .all, fixture: fixture, recorder: recorder)
+        fixture.conversationStore.resetLiveTranscript(sessionID: sessionID)
+        XCTAssertEqual(fixture.conversationStore.messages(for: sessionID).map(\.content), ["窗口内后续"])
+        XCTAssertEqual(fixture.store.selectedSession?.status, "running")
+        XCTAssertTrue(recorder.feedback.isEmpty)
+
+        await emitMessage("live-streaming", text: "窗口内后续", into: runtime)
+        await runtime.handle(turnCompleted("live-streaming"))
+        await applyBufferedEvents(from: runtime, policy: .all, fixture: fixture, recorder: recorder)
+        XCTAssertEqual(fixture.conversationStore.messages(for: sessionID).map(\.content), ["窗口内后续"])
+        XCTAssertEqual(recorder.feedback, [.completion])
+    }
+
     private struct Fixture {
         let store: SessionStore
         let conversationStore: ConversationStore
@@ -156,6 +192,22 @@ final class CodexAppServerHistoryFeedbackTests: XCTestCase {
                     "type": .string("agentMessage"),
                     "text": .string(text),
                 ]),
+            ])
+        ))
+    }
+
+    private func emitDelta(
+        _ turnID: TurnID,
+        text: String,
+        into runtime: CodexAppServerSessionRuntime
+    ) async {
+        await runtime.handle(CodexAppServerNotification(
+            method: "item/agentMessage/delta",
+            params: .object([
+                "threadId": .string(sessionID),
+                "turnId": .string(turnID),
+                "itemId": .string("message-\(turnID)"),
+                "delta": .string(text),
             ])
         ))
     }
