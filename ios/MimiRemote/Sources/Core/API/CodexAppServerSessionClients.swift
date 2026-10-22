@@ -1487,13 +1487,33 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         let eventHandler = onEvent
         let replayPolicy: CodexAppServerBufferedEventReplayPolicy = replayBufferedEvents ? .all : .stateOnly
         eventPumpTask = Task { [runtime] in
-            let events = await runtime.attachEvents(sessionID: threadID, replayPolicy: replayPolicy)
+            guard !Task.isCancelled else { return }
+            let deferredAttachment: CodexAppServerDeferredEventAttachment?
+            let events: CodexAppServerEventStream
+            if replayPolicy == .stateOnly {
+                let attachment = await runtime.attachEventsDeferringStateReplay(sessionID: threadID)
+                deferredAttachment = attachment
+                events = attachment.events
+            } else {
+                deferredAttachment = nil
+                events = await runtime.attachEvents(sessionID: threadID, replayPolicy: replayPolicy)
+            }
             defer {
                 // Task 可能在等待 MainActor 时被取消；显式释放订阅，避免 runtime 长期保留邮箱。
                 events.cancel()
             }
             do {
+                try Task.checkCancellation()
                 try await runtime.connectForEvents(sessionID: threadID)
+                guard !Task.isCancelled else {
+                    return
+                }
+                if let deferredAttachment {
+                    await runtime.completeDeferredStateReplay(
+                        sessionID: threadID,
+                        token: deferredAttachment.token
+                    )
+                }
                 guard !Task.isCancelled else {
                     return
                 }

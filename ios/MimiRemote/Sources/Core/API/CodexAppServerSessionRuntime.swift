@@ -185,9 +185,14 @@ struct CodexAppServerPendingTurnStartObservation {
     var threadClosed = false
 }
 
-enum CodexAppServerBufferedEventReplayPolicy {
+enum CodexAppServerBufferedEventReplayPolicy: Equatable {
     case all
     case stateOnly
+}
+
+struct CodexAppServerDeferredEventAttachment: Sendable {
+    let events: CodexAppServerEventStream
+    let token: UUID
 }
 
 actor CodexAppServerSessionRuntime {
@@ -235,6 +240,12 @@ actor CodexAppServerSessionRuntime {
     var eventMailboxesBySessionID: [
         SessionID: [UUID: CodexAppServerEventMailbox]
     ] = [:]
+    /// stateOnly 恢复必须覆盖 thread/resume 期间到达的 bridge backlog。这里只记录仍在门内
+    /// 的订阅 token，共享事件保留在会话 buffer，不阻塞同会话已有的实时观察者。
+    var deferredStateReplayEventsBySessionID: [SessionID: Set<UUID>] = [:]
+    /// 同一恢复窗口可以有多个并发订阅。已有订阅完成后，最后一个订阅取消时可安全清理
+    /// 已被消费的共享快照；若无人完成则保留给下一次重连接管。
+    var completedDeferredStateReplaySessionIDs: Set<SessionID> = []
     // 列表级实时更新（#683）：没有邮箱的会话收到权威快照（状态、持有方、标题）时交给它，
     // 而不是只缓冲到被选中。由 AppServerRuntimeBundle 在建连时挂上，指向 SessionStore。
     var sessionIndexObserver: (@Sendable (AgentSession) -> Void)?
@@ -2057,6 +2068,28 @@ actor CodexAppServerSessionRuntime {
         sessionID: SessionID,
         replayPolicy: CodexAppServerBufferedEventReplayPolicy = .all
     ) -> CodexAppServerEventStream {
+        attachEventMailbox(
+            sessionID: sessionID,
+            replayPolicy: replayPolicy,
+            defersStateReplay: false
+        ).events
+    }
+
+    func attachEventsDeferringStateReplay(
+        sessionID: SessionID
+    ) -> CodexAppServerDeferredEventAttachment {
+        attachEventMailbox(
+            sessionID: sessionID,
+            replayPolicy: .stateOnly,
+            defersStateReplay: true
+        )
+    }
+
+    private func attachEventMailbox(
+        sessionID: SessionID,
+        replayPolicy: CodexAppServerBufferedEventReplayPolicy,
+        defersStateReplay: Bool
+    ) -> CodexAppServerDeferredEventAttachment {
         // 这里承接的是已经投影好的 thread 事件；正常连接完整保序交付，切回会话的 backlog
         // 可降级为状态级回放，避免历史输出在消息区重新直播一遍。每个订阅者使用独立合并邮箱：
         // 主线程渲染变慢时连续 delta 会收敛为少量完整 chunk，控制事件仍严格无损有序。
@@ -2068,6 +2101,15 @@ actor CodexAppServerSessionRuntime {
         }
         let isFirstSubscriber = eventMailboxesBySessionID[sessionID]?.isEmpty != false
         eventMailboxesBySessionID[sessionID, default: [:]][token] = mailbox
+        if defersStateReplay {
+            // 初始 backlog 在门打开前保持共享。旧订阅取消与新订阅 attach 可能交错；若这里
+            // 提前搬进旧 token 的私有数组，新订阅会看到“已有订阅者”并永久丢掉 backlog。
+            deferredStateReplayEventsBySessionID[sessionID, default: []].insert(token)
+            return CodexAppServerDeferredEventAttachment(
+                events: CodexAppServerEventStream(mailbox: mailbox),
+                token: token
+            )
+        }
         // backlog 只能被第一个订阅者消费一次；之后同 thread 的可见页面与后台队列
         // 都从实时扇出接收事件，避免两个 SessionWebSocketClient 互相顶掉订阅者。
         var replayedInteractionIDs: Set<String> = []
@@ -2089,7 +2131,68 @@ actor CodexAppServerSessionRuntime {
             }
             mailbox.send(event)
         }
-        return CodexAppServerEventStream(mailbox: mailbox)
+        return CodexAppServerDeferredEventAttachment(
+            events: CodexAppServerEventStream(mailbox: mailbox),
+            token: token
+        )
+    }
+
+    func completeDeferredStateReplay(
+        sessionID: SessionID,
+        token: UUID
+    ) {
+        guard let mailbox = eventMailboxesBySessionID[sessionID]?[token],
+              deferredStateReplayEventsBySessionID[sessionID]?.remove(token) != nil
+        else {
+            return
+        }
+        let hasRemainingDeferredSubscriber = deferredStateReplayEventsBySessionID[sessionID]?.isEmpty == false
+        if !hasRemainingDeferredSubscriber {
+            deferredStateReplayEventsBySessionID.removeValue(forKey: sessionID)
+        }
+        let captured = bufferedEventsBySessionID[sessionID] ?? []
+        if hasRemainingDeferredSubscriber {
+            completedDeferredStateReplaySessionIDs.insert(sessionID)
+        } else {
+            bufferedEventsBySessionID.removeValue(forKey: sessionID)
+            completedDeferredStateReplaySessionIDs.remove(sessionID)
+        }
+        var replayedInteractionIDs: Set<String> = []
+        for event in stateOnlyBufferedEvents(captured, sessionID: sessionID) {
+            if let interactionID = pendingInteractionReplayID(for: event) {
+                replayedInteractionIDs.insert(interactionID)
+            }
+            mailbox.send(event)
+        }
+        for event in pendingInteractionEvents(sessionID: sessionID) {
+            guard let interactionID = pendingInteractionReplayID(for: event),
+                  replayedInteractionIDs.insert(interactionID).inserted else {
+                continue
+            }
+            mailbox.send(event)
+        }
+    }
+
+    func isDeferredStateReplay(sessionID: SessionID, token: UUID) -> Bool {
+        deferredStateReplayEventsBySessionID[sessionID]?.contains(token) == true
+    }
+
+    func hasDeferredStateReplay(sessionID: SessionID) -> Bool {
+        deferredStateReplayEventsBySessionID[sessionID]?.isEmpty == false
+    }
+
+    /// 恢复门内的新事件与初始 backlog 共用一份缓冲，任一仍有效的新订阅都能接管它。
+    func bufferEventDuringDeferredStateReplay(_ event: AgentEvent, sessionID: SessionID) {
+        var events = bufferedEventsBySessionID[sessionID] ?? []
+        if let previous = events.last,
+           event.contiguousPayloadByteCount == nil,
+           let merged = previous.mergingContiguous(with: event) {
+            events[events.index(before: events.endIndex)] = merged
+        } else {
+            events.append(event)
+            compactTrailingBufferedDeltas(&events)
+        }
+        bufferedEventsBySessionID[sessionID] = events
     }
 
     func bufferedEvents(
@@ -2101,10 +2204,23 @@ actor CodexAppServerSessionRuntime {
         case .all:
             return events
         case .stateOnly:
-            // 切回运行会话前已经用 thread/read 快照补齐消息区；旧 delta 和日志不再逐条补播。
-            // 但审批、补充信息、turn 完成和会话状态仍要回放，避免丢掉当前可操作状态。
-            return events.filter(shouldReplayBufferedStateEvent)
+            return stateOnlyBufferedEvents(events, sessionID: sessionID)
         }
+    }
+
+    private func stateOnlyBufferedEvents(
+        _ events: [AgentEvent],
+        sessionID: SessionID
+    ) -> [AgentEvent] {
+        let pendingInteractionIDs = Set(
+            pendingInteractionEvents(sessionID: sessionID)
+                .compactMap(pendingInteractionReplayID)
+        )
+        return CodexAppServerBufferedEventReplay.stateOnly(
+            events.filter(shouldReplayBufferedStateEvent),
+            currentSession: contextsBySessionID[sessionID]?.session,
+            pendingInteractionIDs: pendingInteractionIDs
+        )
     }
 
     nonisolated func shouldReplayBufferedStateEvent(_ event: AgentEvent) -> Bool {
@@ -2174,31 +2290,36 @@ actor CodexAppServerSessionRuntime {
     }
 
     func connectForEvents(sessionID: SessionID) async throws {
+        try Task.checkCancellation()
         // 必须在第一次 suspension 前登记订阅意图。若页面离开期间 unsubscribe 安装了
         // 更新一代 false lease，旧 connect 恢复后只能退出，不能重新覆盖成 true。
         let lease = replaceThreadSubscriptionLease(sessionID: sessionID, wantsEvents: true)
         if contextsBySessionID[sessionID] == nil {
             _ = try await session(id: sessionID, afterSeq: nil)
         }
+        try Task.checkCancellation()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            return
+            throw CancellationError()
         }
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
         let connection = try await ensureConnection()
+        try Task.checkCancellation()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            return
+            throw CancellationError()
         }
         let config = try await ensureConfig()
+        try Task.checkCancellation()
         guard shouldResumeThreadForEventSubscription(context.session, config: config) else {
             // 普通 WS 模式打开空闲历史时只读取 state DB / rollout。SSH 共享模式会在这里
             // resume，以服务端真实结果决定当前入口是否拥有 writer。
             return
         }
         let projects = try await projects()
+        try Task.checkCancellation()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            return
+            throw CancellationError()
         }
         let builder = CodexAppServerRequestBuilder(
             allowlistedProjects: projectsIncludingSessionContext(projects, context: context)
@@ -2211,7 +2332,7 @@ actor CodexAppServerSessionRuntime {
             threadsResumedOnConnection.remove(sessionID)
         }
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            return
+            throw CancellationError()
         }
         // 运行中的 thread 需要 resume 建立 live listener；thread/read/list 只能做 hydration。
         try await ensureThreadResumedOnConnection(
@@ -2220,6 +2341,7 @@ actor CodexAppServerSessionRuntime {
             builder: builder,
             connection: connection
         )
+        try Task.checkCancellation()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
             throw CancellationError()
         }
@@ -3342,6 +3464,13 @@ actor CodexAppServerSessionRuntime {
     }
 
     func detachEvents(sessionID: SessionID, token: UUID) async {
+        deferredStateReplayEventsBySessionID[sessionID]?.remove(token)
+        if deferredStateReplayEventsBySessionID[sessionID]?.isEmpty == true {
+            deferredStateReplayEventsBySessionID.removeValue(forKey: sessionID)
+            if completedDeferredStateReplaySessionIDs.remove(sessionID) != nil {
+                bufferedEventsBySessionID.removeValue(forKey: sessionID)
+            }
+        }
         guard eventMailboxesBySessionID[sessionID]?.removeValue(forKey: token) != nil else {
             // producer 结束会先整体移除邮箱。随后消费者 defer 中的 cancel 不能再发起 RPC，
             // 否则一次物理断线会被误判成用户离开，并在重连窗口创建新连接只为退订。
@@ -3674,10 +3803,33 @@ actor CodexAppServerSessionRuntime {
                     )
                 }
                 if let replaySequence = notification.replaySequence {
-                    acknowledgeAppliedReplayBoundary(
-                        replaySequence,
-                        epoch: replayCursorEpoch
-                    )
+                    if hasDeferredStateReplay(sessionID: threadID) {
+                        // 无 turnID completion 不能投影，但恢复门内仍须把游标提交延后到最终
+                        // 权威状态落地。nil status 只作为共享缓冲里的边界载体，不扇出给 live 页面。
+                        bufferEventDuringDeferredStateReplay(
+                            .sessionStatus(
+                                nil,
+                                AgentEventMetadata(
+                                    seq: nil,
+                                    sessionID: threadID,
+                                    turnID: nil,
+                                    itemID: nil,
+                                    messageID: nil,
+                                    clientMessageID: nil,
+                                    revision: nil,
+                                    createdAt: nil,
+                                    replayBoundarySequence: replaySequence,
+                                    replayCursorEpoch: replayCursorEpoch
+                                )
+                            ),
+                            sessionID: threadID
+                        )
+                    } else {
+                        acknowledgeAppliedReplayBoundary(
+                            replaySequence,
+                            epoch: replayCursorEpoch
+                        )
+                    }
                 }
                 return
             }
