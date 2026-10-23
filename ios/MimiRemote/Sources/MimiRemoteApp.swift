@@ -505,6 +505,7 @@ struct MimiRemoteApp: App {
             tailcatExperimentController: tailcatExperimentController
         )
         notificationResponseAdapter.approvalInbox.navigationOwnership = sessionStore.notificationNavigation
+        sessionStore.appReviewPrompt = AppReviewPromptCoordinator.makeLive(appStore: appStore, sessionStore: sessionStore)
         _appStore = StateObject(wrappedValue: appStore)
         _conversationStore = StateObject(wrappedValue: conversationStore)
         _logStore = StateObject(wrappedValue: logStore)
