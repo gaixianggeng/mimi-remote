@@ -125,6 +125,9 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if check := c.tailcatCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
 	}
+	if check := c.systemProxyCheck(); check.Name != "" {
+		checks = append(checks, check)
+	}
 	if c.needsCodexAppServerCheck() {
 		checks = append(checks, c.codexAppServerCheck(ctx))
 	}
