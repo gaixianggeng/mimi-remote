@@ -2137,7 +2137,8 @@ actor CodexAppServerSessionRuntime {
             return message.activityPayload?.isInProgress != true
         case .assistantDelta,
              .logDelta,
-             .diffUpdated:
+             .diffUpdated,
+             .promptSuggestion:
             return false
         }
     }
@@ -3636,6 +3637,11 @@ actor CodexAppServerSessionRuntime {
     }
 
     func handle(_ notification: CodexAppServerNotification) {
+        if notification.method == "_mimi/turn/promptSuggestion" {
+            // Mimi 的 Claude 扩展，不作为 Codex 原生能力，也不改变已完成回合的活动状态。
+            if runtimeProvider == "claude", let event = projector.project(notification) { emit(event) }
+            return
+        }
         if notification.method == "_mimi/serverRequestResponse/rejected" {
             // 另一入口已抢先响应或拒绝时，不复活本地卡片；等待 resolved/terminal 收敛即可。
             return

@@ -104,8 +104,10 @@ export function createApp(options: AppOptions): App {
   const catalog = new Catalog({ sessions, transcripts, activity, directories, overlay, desktopSpawns });
   const history = new HistoryStore({ sessions, transcripts });
   const claudeExecutable = options.claudeExecutable ?? defaultClaudeExecutable;
+  const claudeCode = new ClaudeCodeVersionGate(claudeExecutable, options.probeClaudeCode);
   const manager = new ThreadManager({
     claudeExecutable,
+    promptSuggestionsSupported: () => claudeCode.supportsPromptSuggestions,
     log: options.log,
     ...(options.startQuery ? { startQuery: options.startQuery } : {}),
     ...(options.idleCloseMs !== undefined ? { idleCloseMs: options.idleCloseMs } : {}),
@@ -136,7 +138,6 @@ export function createApp(options: AppOptions): App {
     (threadId) => activeTurnId(threadId) !== undefined,
     async (threadId) => isHolderWorking((await holders()).get(threadId)),
   );
-  const claudeCode = new ClaudeCodeVersionGate(claudeExecutable, options.probeClaudeCode);
   const turns = createTurnHandlers({ manager, catalog, sessions, holders, claudeCode });
   const models = new ModelCatalog({ discover: options.discoverModels ?? sdkModelDiscovery(claudeExecutable), log: options.log });
   const account = createAccountHandlers(models, () => manager.observedRateLimits ?? unavailableRateLimits());

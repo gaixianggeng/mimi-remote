@@ -34,6 +34,13 @@ export function compareVersions(left: string, right: string): number {
 
 export class ClaudeCodeVersionGate {
   private verified: string | undefined;
+  private verifiedVersion: string | undefined;
+
+  // 只从已核对选项和取消时序的版本开始启用。较旧但仍受支持的 CLI 继续正常对话。
+  get supportsPromptSuggestions(): boolean {
+    return this.verified === this.executable() && this.verifiedVersion !== undefined
+      && compareVersions(this.verifiedVersion, "2.1.307") >= 0;
+  }
 
   constructor(
     private readonly executable: () => string,
@@ -67,5 +74,6 @@ export class ClaudeCodeVersionGate {
       );
     }
     this.verified = executable;
+    this.verifiedVersion = probe.version;
   }
 }
