@@ -14,6 +14,7 @@ import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
 import { notificationTurnId } from "../claude/itemIds.ts";
 import { runsAsClaudeCommand } from "../claude/skillCommand.ts";
 import { claudeConfigDir } from "../claude/transcripts.ts";
+import { promptSuggestionsAllowed } from "../claude/promptSuggestions.ts";
 import { RpcError } from "../rpc/frames.ts";
 import { serverRequestFor } from "./approvals.ts";
 import { InputQueue } from "./inputQueue.ts";
@@ -29,6 +30,7 @@ export interface RuntimeHost {
   publish(threadId: string, method: string, params: Record<string, unknown>): void;
   request(threadId: string, method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   claudeExecutable(): string;
+  promptSuggestionsSupported?(): boolean;
   log(message: string): void;
   ownPids: Set<number>;
   /** 自己的 Claude 进程拿到 pid：此前被当作"可能是自己"的登记需要重新判断。 */
@@ -101,6 +103,9 @@ export class ThreadRuntime {
   private applied: RunSettings | undefined;
   /** 正在接收 Claude 输出的 turn。 */
   private current: LiveTurn | undefined;
+  /** 原生建议不带 turn ID；只承接本进程最后一个成功结果，任何新输入或续写都会作废。 */
+  private suggestionTurnId: string | undefined;
+  private promptSuggestionsEnabled = false;
   /**
    * 已发给 Claude、尚未被某个结果吸收的用户消息（uuid → 所属 turn）。CLI 有自己的输入队列，
    * 输出与结果按消息 uuid 归属，而不是假设"一次 turn/start 对应下一个结果"。
@@ -215,6 +220,7 @@ export class ThreadRuntime {
     const content = toClaudeContent(request.input, this.skillCheck(promoted));
     // 检查与预占之间没有 await：第一个异步操作之前就占住，后来的 turn/start 看到的是 active_turn。
     const turnId = randomUUID();
+    this.suggestionTurnId = undefined;
     this.reserved = turnId;
     const previousSettings = this.settings;
     try {
@@ -272,6 +278,7 @@ export class ThreadRuntime {
     const promoted = new Set<string>();
     const content = this.commandFor(toClaudeContent(input, this.skillCheck(promoted)), promoted);
     const id = randomUUID();
+    this.suggestionTurnId = undefined;
     logger.debug("turn.steer", { thread: this.threadId, turn: turn.id, message: id });
     turn.userMessage(id, clientUserMessageId, input);
     this.commands.set(id, turn);
@@ -309,6 +316,7 @@ export class ThreadRuntime {
   }
 
   async interrupt(turnId: string): Promise<void> {
+    this.suggestionTurnId = undefined;
     // 结果已吸收首条消息、引导还没开始输出时 current 暂时为空，turn 仍挂在 commands 名下。
     const turn =
       this.current?.id === turnId ? this.current : [...this.commands.values()].find((owner) => owner.id === turnId);
@@ -373,10 +381,14 @@ export class ThreadRuntime {
       throw error;
     }
     const input = new InputQueue();
+    const promptSuggestions = this.host.promptSuggestionsSupported?.()
+      && await promptSuggestionsAllowed(claudeConfigDir(), this.cwd);
     const options: Options = {
       ...policyOptions,
       cwd: this.cwd,
       includePartialMessages: true,
+      // 不覆盖用户/组织的关闭配置，也不设置强制启用建议的环境变量。
+      ...(promptSuggestions ? { promptSuggestions: true } : {}),
       pathToClaudeCodeExecutable: this.host.claudeExecutable(),
       // 与 CLI 相同的系统提示词；SDK 省略时发的是空的自定义提示词。
       systemPrompt: { type: "preset", preset: "claude_code" },
@@ -399,6 +411,7 @@ export class ThreadRuntime {
     });
     const query = (this.host.startQuery ?? sdkQuery)({ prompt: input, options });
     this.query = query;
+    this.promptSuggestionsEnabled = promptSuggestions === true;
     this.input = input;
     this.skillPlugin = skillPlugin;
     this.queryStartedAt = Date.now();
@@ -439,7 +452,10 @@ export class ThreadRuntime {
 
   private async runPump(query: Query, skillPlugin: SkillPlugin | undefined): Promise<void> {
     try {
-      for await (const message of query) this.onMessage(message);
+      for await (const message of query) {
+        if (message.type === "prompt_suggestion" && this.query !== query) continue;
+        this.onMessage(message);
+      }
     } catch (error) {
       this.host.log(`thread ${this.threadId} query failed: ${error instanceof Error ? error.message : String(error)}`);
       logger.warn("claude.failed", { thread: this.threadId, pid: this.pid ?? null, error: errorText(error) });
@@ -451,6 +467,8 @@ export class ThreadRuntime {
         this.cliActive = false;
         this.continuation = undefined;
         this.query = undefined;
+        this.suggestionTurnId = undefined;
+        this.promptSuggestionsEnabled = false;
         this.input = undefined;
         this.applied = undefined;
         if (this.pid !== undefined) this.host.ownPids.delete(this.pid);
@@ -473,6 +491,8 @@ export class ThreadRuntime {
   }
 
   private async stopQuery(reason: StopReason): Promise<void> {
+    this.suggestionTurnId = undefined;
+    this.promptSuggestionsEnabled = false;
     const query = this.query;
     if (!query) return;
     this.dropBackgroundTasks(reason);
@@ -520,6 +540,7 @@ export class ThreadRuntime {
    * 输出也不会挂到期间新开的回合上。
    */
   private roundStarted(record: Record<string, unknown>): void {
+    this.suggestionTurnId = undefined;
     const answersUser = Array.isArray(record.user_message_uuids) && record.user_message_uuids.length > 0;
     if (answersUser) this.notificationRunId = undefined;
     else if (this.notificationRunId && !this.current) this.openContinuation();
@@ -532,6 +553,7 @@ export class ThreadRuntime {
   }
 
   private openTurn(id: string = randomUUID()): LiveTurn {
+    this.suggestionTurnId = undefined;
     const turn = new LiveTurn(id, this.threadId, this.emit);
     this.current = turn;
     this.cancelIdleClose();
@@ -555,6 +577,7 @@ export class ThreadRuntime {
         if (!record.isReplay) this.current?.onUserMessage(record.message as Record<string, unknown>);
         return;
       case "result": {
+        this.suggestionTurnId = undefined;
         const consumed = Array.isArray(record.user_message_uuids)
           ? record.user_message_uuids.map(String)
           : typeof record.user_message_uuid === "string"
@@ -598,9 +621,24 @@ export class ThreadRuntime {
         for (const [uuid, owner] of this.commands) if (owner === turn) this.commands.delete(uuid);
         const errors = Array.isArray(record.errors) ? record.errors.map(String) : [];
         turn.finish({ subtype: String(record.subtype), errors, usage, contextWindow: contextWindowOf(record.modelUsage) }, this.totalUsage);
+        if (record.subtype === "success" && record.is_error !== true && !turn.explicitlyInterrupted && !this.isBusy() && !errors.length) {
+          this.suggestionTurnId = turn.id;
+        }
         if (this.continuation?.turn === turn) this.continuation = undefined;
         this.host.turnFinished(this.threadId);
         this.scheduleIdleClose();
+        return;
+      }
+      case "prompt_suggestion": {
+        const turnId = this.suggestionTurnId;
+        if (!turnId || this.isBusy() || !this.promptSuggestionsEnabled
+          || record.session_id !== this.threadId || typeof record.uuid !== "string" || !record.uuid
+          || record.uuid.length > 128 || typeof record.suggestion !== "string") return;
+        const text = record.suggestion.trim();
+        if (!text || text.length > 4_096) return;
+        // CLI 在新命令到达时取消旧生成；这里再以本地轮次边界限制迟到和重复事件。
+        this.suggestionTurnId = undefined;
+        this.emit("_mimi/turn/promptSuggestion", { threadId: this.threadId, turnId, id: record.uuid, text });
         return;
       }
       case "system":

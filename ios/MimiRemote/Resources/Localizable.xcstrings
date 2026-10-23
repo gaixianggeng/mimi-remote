@@ -1,6 +1,18 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.native_suggestion_add_to_draft": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Add suggested reply to draft" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "将建议回复添加到草稿" } }
+      }
+    },
+    "ui.native_suggestion_dismiss": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Dismiss suggestion" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "忽略建议" } }
+      }
+    },
     "ui.managed_devices_subscribe_action": {
       "comment": "Row that opens the Managed Connection subscription page from the Devices tab.",
       "localizations": {
@@ -46344,6 +46356,108 @@
           "stringUnit": {
             "state": "translated",
             "value": "电脑端正在等待你处理，点按查看。"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_desktop_only": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start this task from Claude on your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这项任务需要在电脑上的 Claude 里开启。"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_hide_brief": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show less"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "收起说明"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_next_step": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next step"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一步"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_show_brief": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开说明"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_task_proposal": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suggested task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "建议的新任务"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_dismiss": {
+      "comment": "Dismisses a turn hint card without sending a new message.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not now"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂不继续"
           }
         }
       }
