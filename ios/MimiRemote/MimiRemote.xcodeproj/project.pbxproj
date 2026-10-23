@@ -161,7 +161,10 @@
 		439355570F5ED69354673D07 /* testAppearancePreview.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 190DA6E3F95C3577B94AB67C /* testAppearancePreview.1.png */; };
 		4591D34B23858CCCF543B9E3 /* MimiCarStatusWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9425462CC24F7B671411E87 /* MimiCarStatusWidget.swift */; };
 		45C1DA2766CF0D3F7DB0843C /* CodexAppServerTurnStartObservation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5399A4FAF6DD4671B317B47E /* CodexAppServerTurnStartObservation.swift */; };
+		45E900001111222233334444 /* CodexAppServerBufferedEventReplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45E900005555666677778888 /* CodexAppServerBufferedEventReplay.swift */; };
 		460BC005B244E583776EF33D /* ClaudeReplayCursorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 141B96EFDFD875050A84A1A5 /* ClaudeReplayCursorTests.swift */; };
+		46A900001111222233334444 /* CodexAppServerBufferedReplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46A900005555666677778888 /* CodexAppServerBufferedReplayTests.swift */; };
+		46B900001111222233334444 /* CodexAppServerHistoryFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46B900005555666677778888 /* CodexAppServerHistoryFeedbackTests.swift */; };
 		467ED9D49A463D5F5AF02A3C /* ConversationDataFlowTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 078AEE7E4BDAC1751244A05A /* ConversationDataFlowTestSupport.swift */; };
 		47926C0A7D9AB93758B01D4F /* ConnectionSettingsSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D6B2DC5525C360AF96A8FFD /* ConnectionSettingsSnapshotTests.swift */; platformFilters = (ios, ); };
 		47A567038EDF3CEA8BDF75DC /* testTimelineWaitingHintsShareLiveStatusStyle.restoring-running.png in Resources */ = {isa = PBXBuildFile; fileRef = 2BA1C94FF6A5EF642A6E7441 /* testTimelineWaitingHintsShareLiveStatusStyle.restoring-running.png */; };
@@ -722,6 +725,8 @@
 		1254FA91BFD2E858AFBD539D /* ConversationAppServerProjectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationAppServerProjectorTests.swift; sourceTree = "<group>"; };
 		13FC22D303D4E2D91D9D33EA /* ConversationTurnInterruptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationTurnInterruptTests.swift; sourceTree = "<group>"; };
 		141B96EFDFD875050A84A1A5 /* ClaudeReplayCursorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeReplayCursorTests.swift; sourceTree = "<group>"; };
+		46A900005555666677778888 /* CodexAppServerBufferedReplayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerBufferedReplayTests.swift; sourceTree = "<group>"; };
+		46B900005555666677778888 /* CodexAppServerHistoryFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerHistoryFeedbackTests.swift; sourceTree = "<group>"; };
 		150A6F676C073C648C42A6BA /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		1583E66303D9AA12C715A377 /* support.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; name = support.md; path = ../../../docs/support.md; sourceTree = "<group>"; };
 		163EC3A1080DFD2A3BB8F098 /* ComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerView.swift; sourceTree = "<group>"; };
@@ -1165,6 +1170,7 @@
 		CEE63E1F88F94DC3D0C543CF /* testComposerStatusTrayExtremelyNarrowCompactWidth.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testComposerStatusTrayExtremelyNarrowCompactWidth.1.png; sourceTree = "<group>"; };
 		CF7CCD9E9F941CC321DED1D7 /* ConversationClaudeHistoryItemsViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationClaudeHistoryItemsViewTests.swift; sourceTree = "<group>"; };
 		D13E0CB3B7056752941144BD /* CodexAppServerSessionRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerSessionRuntime.swift; sourceTree = "<group>"; };
+		45E900005555666677778888 /* CodexAppServerBufferedEventReplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerBufferedEventReplay.swift; sourceTree = "<group>"; };
 		D1B173048A74AE5C7371FF32 /* ConnectionWarmUpView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionWarmUpView.swift; sourceTree = "<group>"; };
 		D231C6876074429C2374261A /* ForkOnWriterConflictProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForkOnWriterConflictProtocolTests.swift; sourceTree = "<group>"; };
 		D283CD0291735DA4425D91A4 /* WorkspaceRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRootView.swift; sourceTree = "<group>"; };
@@ -1492,6 +1498,8 @@
 				54AAB784C642D2B0234E48BA /* CameraAttachmentTests.swift */,
 				83CFAE116262795C7501365E /* CarStatusSnapshotTests.swift */,
 				141B96EFDFD875050A84A1A5 /* ClaudeReplayCursorTests.swift */,
+				46A900005555666677778888 /* CodexAppServerBufferedReplayTests.swift */,
+				46B900005555666677778888 /* CodexAppServerHistoryFeedbackTests.swift */,
 				FAC43605DB75870DB1F1FF50 /* ClaudeSlashCommandCatalogTests.swift */,
 				FE88AF3AFFBFA21734BC5D1E /* ClaudeTakeoverTests.swift */,
 				8D9A0058025EAE661A40B232 /* CodexAppServerCollaborationModeTests.swift */,
@@ -1756,6 +1764,7 @@
 				469FD622125F7CE507C2607E /* CodexAppServerSessionClients.swift */,
 				049E1F8A9BBD15AF6BEE9E28 /* CodexAppServerSessionConnection.swift */,
 				893114587B69C0D3F325157C /* CodexAppServerSessionIndexProjection.swift */,
+				45E900005555666677778888 /* CodexAppServerBufferedEventReplay.swift */,
 				D13E0CB3B7056752941144BD /* CodexAppServerSessionRuntime.swift */,
 				ADDB6C4CC2E14AFF547B6AA4 /* CodexAppServerSlashCommands.swift */,
 				DD3F9E8A8ED2FD8317FB92F2 /* CodexAppServerThreadOwnership.swift */,
@@ -2746,6 +2755,8 @@
 				03E7996441667D59DF2F9E3A /* CameraAttachmentTests.swift in Sources */,
 				101A9079E24B09BCAB8B54FF /* CarStatusSnapshotTests.swift in Sources */,
 				460BC005B244E583776EF33D /* ClaudeReplayCursorTests.swift in Sources */,
+				46A900001111222233334444 /* CodexAppServerBufferedReplayTests.swift in Sources */,
+				46B900001111222233334444 /* CodexAppServerHistoryFeedbackTests.swift in Sources */,
 				69AE3050ADFD81F02BF710A5 /* ClaudeSlashCommandCatalogTests.swift in Sources */,
 				55AA18B00A0BF1D39C94F8AF /* ClaudeTakeoverTests.swift in Sources */,
 				9D2CEEF1A9B8E1EBC861B746 /* CodexAppServerCollaborationModeTests.swift in Sources */,
@@ -2971,6 +2982,7 @@
 				FAD77559CF6FDCD943849D7C /* CodexAppServerSessionClients.swift in Sources */,
 				F660CF6678E0A20AFBA5755C /* CodexAppServerSessionConnection.swift in Sources */,
 				040BC24F9850CCE469B64B10 /* CodexAppServerSessionIndexProjection.swift in Sources */,
+				45E900001111222233334444 /* CodexAppServerBufferedEventReplay.swift in Sources */,
 				5344C41233BA0E47A0C29FDA /* CodexAppServerSessionRuntime.swift in Sources */,
 				4BD3D2DB2EEC2DE0447C75DC /* CodexAppServerSlashCommands.swift in Sources */,
 				A9672A5CCD14CB34B13ED66A /* CodexAppServerThreadOwnership.swift in Sources */,

@@ -53,8 +53,16 @@ extension CodexAppServerSessionRuntime {
             return
         }
         if let mailboxes = eventMailboxesBySessionID[sessionID], !mailboxes.isEmpty {
-            for mailbox in mailboxes.values {
-                mailbox.send(event)
+            var hasDeferredStateReplay = false
+            for (token, mailbox) in mailboxes {
+                if isDeferredStateReplay(sessionID: sessionID, token: token) {
+                    hasDeferredStateReplay = true
+                } else {
+                    mailbox.send(event)
+                }
+            }
+            if hasDeferredStateReplay {
+                bufferEventDuringDeferredStateReplay(event, sessionID: sessionID)
             }
         } else {
             // 没有页面订阅的会话：状态变化仍要让列表看到，缓冲区照旧保留，供随后打开详情时回放。
@@ -186,7 +194,7 @@ extension CodexAppServerSessionRuntime {
         }
     }
 
-    private func compactTrailingBufferedDeltas(_ events: inout [AgentEvent]) {
+    func compactTrailingBufferedDeltas(_ events: inout [AgentEvent]) {
         while events.count >= 2 {
             let previousIndex = events.index(events.endIndex, offsetBy: -2)
             let nextIndex = events.index(before: events.endIndex)
@@ -447,32 +455,6 @@ extension CodexAppServerSessionRuntime {
             mode,
             metadata(threadID: threadID, turnID: nil)
         ))
-    }
-
-    func backfillActiveTurnFromLiveNotification(
-        method: String,
-        params: [String: CodexAppServerJSONValue]
-    ) {
-        guard method != "turn/completed",
-              // thread/* 是线程级状态（用量、压缩等），不能证明 turn 仍在运行。Codex 在
-              // thread/resume 后会补发上一轮的 tokenUsage，turnId 指向已完成的 turn；
-              // 据此回填会把历史会话误标成运行中。
-              !method.hasPrefix("thread/"),
-              let threadID = params["threadId"]?.stringValue,
-              let turnID = params["turnId"]?.stringValue,
-              !turnID.isEmpty else {
-            return
-        }
-        guard let context = contextsBySessionID[threadID],
-              context.activeTurnID != turnID || context.session.status != "running" else {
-            return
-        }
-        _ = withUpdatedSession(threadID) { item in
-            // 重连后可能先收到 delta/item completed，错过 turn/started。这里同步 runtime 自己的
-            // activeTurnID 缓存，避免 UI 已允许“引导当前回复”但 steerTurn 在发送层误判 missingActiveTurn。
-            item.status = "running"
-            item.activeTurnID = turnID
-        }
     }
 
     func projectsFromCache() throws -> [AgentProject] {
