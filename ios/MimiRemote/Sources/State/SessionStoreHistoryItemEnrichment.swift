@@ -17,6 +17,7 @@ struct HistoryItemEnrichmentBufferedPage {
     let historyPageOrdinal: Int
     let turnIndex: Int
     let itemOffset: Int
+    let completionRequiredTurnID: TurnID?
     let messages: [CodexHistoryMessage]
 }
 
@@ -226,8 +227,7 @@ extension SessionStore {
         let turnID = work.continuation.turnID
         state.loadedItemIDsByTurnID[turnID, default: []].formUnion(page.itemIDs)
         if let continuation = page.continuation {
-            // 每个 Turn 先补一页，再轮转到下一个 Turn。这样最新页面中的媒体引用会尽快出现，
-            // 同时不会让一个极端大 Turn 独占整条 SSH 链路。
+            // 每个 Turn 先补一页，再轮转到下一个 Turn，不让极端大 Turn 独占整条 SSH 链路。
             let nextWork = HistoryItemEnrichmentWork(
                 continuation: continuation,
                 historyPageOrdinal: work.historyPageOrdinal,
@@ -250,6 +250,8 @@ extension SessionStore {
             historyPageOrdinal: work.historyPageOrdinal,
             turnIndex: work.continuation.turnIndex,
             itemOffset: work.continuation.itemOffset,
+            completionRequiredTurnID: work.continuation.isLatestTurn && Self.isCompletedHistoryTurn(work.continuation.turn)
+                ? turnID : nil,
             messages: page.messages
         ))
         let shouldPublish = !state.didPublish
@@ -352,7 +354,7 @@ extension SessionStore {
 
     private func historyItemPagesPerPublish(sessionID: SessionID) -> Int {
         guard let session = sessionsByID[sessionID] else { return 4 }
-        // Claude 的工具/MCP transcript 更容易拆成大量 items/list 小页。首个补齐页仍立即发布，
+        // Claude 的工具/MCP transcript 更容易拆成大量 items/list 小页。首个可展示批次立即发布，
         // 后续批量稍大一些，减少 MainActor 上 history merge + timeline projection 的频率；
         // Codex 保持原来的 4 页节奏，避免扩大既有行为面。
         return Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "claude" ? 8 : 4
@@ -386,12 +388,23 @@ extension SessionStore {
     private func takeHistoryItemPublication(
         from state: inout HistoryItemEnrichmentState
     ) -> HistoryItemPublication? {
-        guard !state.bufferedPages.isEmpty || !state.bufferedAuthoritativeItems.isEmpty else {
+        var readyPages: [HistoryItemEnrichmentBufferedPage] = []
+        var deferredPages: [HistoryItemEnrichmentBufferedPage] = []
+        for page in state.bufferedPages {
+            if let turnID = page.completionRequiredTurnID, state.bufferedAuthoritativeItems[turnID] == nil {
+                deferredPages.append(page)
+            } else {
+                readyPages.append(page)
+            }
+        }
+        guard !readyPages.isEmpty || !state.bufferedAuthoritativeItems.isEmpty else {
             return nil
         }
+        // 最新已完成 Turn 的 summary 没有完整 Item 序号，不能猜测新页在末条回复的哪一侧。
+        // 等这个 Turn 的 cursor 真正结束再一起发布；暂停保留缓冲，失败时继续显示首屏摘要。
         // 只发布本批新增页。重放旧页会用冻结的历史快照覆盖已经到达的实时内容，
         // 同时让累计工作量退化为 O(P²)。Reducer 的增量模式只在同一 Turn 内建立顺序。
-        let orderedPages = state.bufferedPages.sorted { lhs, rhs in
+        let orderedPages = readyPages.sorted { lhs, rhs in
             if lhs.historyPageOrdinal != rhs.historyPageOrdinal {
                 return lhs.historyPageOrdinal < rhs.historyPageOrdinal
             }
@@ -404,7 +417,7 @@ extension SessionStore {
             messages: orderedPages.flatMap(\.messages),
             authoritativeItems: state.bufferedAuthoritativeItems
         )
-        state.bufferedPages = []
+        state.bufferedPages = deferredPages
         state.bufferedAuthoritativeItems = [:]
         state.didPublish = true
         return publication
@@ -417,8 +430,8 @@ extension SessionStore {
         guard let publication else {
             return
         }
-        // summary 文案已经首屏显示。Item 页只把首个媒体批次立即交给 UI，后续按 Provider
-        // 合批，避免每个 SSH 响应都触发时间线投影和 List diff。
+        // summary 文案已经首屏显示。已满足顺序条件的 Item 页按 Provider 合批，
+        // 避免每个 SSH 响应都触发时间线投影和 List diff。
         HostSwitchSignpost.begin(
             "conversation_history_merge",
             metadata: "messages=\(publication.messages.count) authoritative_turns=\(publication.authoritativeItems.count)"

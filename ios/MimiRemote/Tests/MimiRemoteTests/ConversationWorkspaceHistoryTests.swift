@@ -114,10 +114,11 @@ extension ConversationDataFlowTests {
 
         await client.waitForHistoryItemRequestCount(2)
         XCTAssertEqual(client.requestedItemContinuations.map(\.turnID), ["turn-new", "turn-old"])
-        XCTAssertTrue(
+        XCTAssertFalse(
             conversationStore.messages(for: session.id)
                 .contains { $0.content.contains("agentd-history-media://media-new") }
         )
+        XCTAssertEqual(conversationStore.messages(for: session.id).last?.content, "最新文案")
         client.resolveHistoryItemRequest(
             at: 1,
             with: HistoryTurnItemsPage(messages: [], itemIDs: ["old-text"], continuation: nil)
