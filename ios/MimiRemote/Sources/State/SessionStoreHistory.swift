@@ -459,6 +459,7 @@ extension SessionStore {
             return true
         }
         guard !canReuseLoadedHistory(for: session, loadMode: .full) else {
+            resumeHistoryItemEnrichmentIfNeeded(sessionID: session.id)
             return true
         }
         return await loadHistory(for: session)
@@ -510,6 +511,7 @@ extension SessionStore {
         let shouldShowSavingsNotice = !quiet
             && (noticeMessageOverride != nil || reason == .summaryChoice || reason == .manualFull)
         if !force, canReuseLoadedHistory(for: session, loadMode: loadMode) {
+            resumeHistoryItemEnrichmentIfNeeded(sessionID: session.id)
             return true
         }
 
@@ -3965,7 +3967,7 @@ extension SessionStore {
         historyLoadedQualityBySessionID = historyLoadedQualityBySessionID.filter { validSessionIDs.contains($0.key) }
         let staleItemEnrichmentIDs = historyItemEnrichmentBySessionID.keys.filter { !validSessionIDs.contains($0) }
         for sessionID in staleItemEnrichmentIDs {
-            cancelHistoryItemEnrichment(sessionID: sessionID, markIncomplete: false)
+            cancelHistoryItemEnrichment(sessionID: sessionID)
         }
         deferredFullHistorySessionIDs.formIntersection(validSessionIDs)
         let staleHistoryFirstPageKeys = historyFirstPageInFlightByKey.keys.filter { !validSessionIDs.contains($0.sessionID) }

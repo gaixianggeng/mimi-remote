@@ -13,6 +13,7 @@ extension ConversationDataFlowTests {
             clientFactory: { client }
         )
         let sessionID = "history-item-initial-duplicate"
+        store.selectedSessionID = sessionID
         let continuation = HistoryTurnItemsContinuation(
             turnID: "turn-duplicate",
             turn: ["id": .string("turn-duplicate"), "status": .string("completed")],
@@ -67,6 +68,7 @@ extension ConversationDataFlowTests {
             clientFactory: { client }
         )
         let sessionID = "history-item-publication-batch"
+        store.selectedSessionID = sessionID
         let continuations = (0..<6).map { index in
             HistoryTurnItemsContinuation(
                 turnID: "turn-\(index)",
@@ -154,6 +156,7 @@ extension ConversationDataFlowTests {
             clientFactory: { client }
         )
         let sessionID = "history-item-cursor-cycle"
+        store.selectedSessionID = sessionID
         let initial = HistoryTurnItemsContinuation(
             turnID: "turn-cycle",
             turn: ["id": .string("turn-cycle"), "status": .string("completed")],
@@ -203,6 +206,436 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedItemContinuations.count, 2)
         XCTAssertEqual(conversationStore.messages(for: sessionID).map(\.content), ["A", "B"])
         XCTAssertEqual(store.historyLoadedQualityBySessionID[sessionID], .summary)
+    }
+
+    func testConnectionClearInvalidatesHistoryItemEnrichmentAndLateResponse() async {
+        let client = OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: []))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        let sessionID = "history-item-host-invalidation"
+        store.selectedSessionID = sessionID
+        store.historyLoadedQualityBySessionID[sessionID] = .enriching
+        let continuation = HistoryTurnItemsContinuation(
+            turnID: "turn-host-invalidation",
+            turn: [
+                "id": .string("turn-host-invalidation"),
+                "status": .string("completed")
+            ],
+            turnIndex: 0,
+            itemOffset: 0,
+            cursor: nil,
+            pageLimit: 50,
+            threadIsActive: false,
+            isLatestTurn: true,
+            hasVisibleUserMessageBefore: false
+        )
+        store.appendHistoryItemEnrichment(
+            page: HistoryMessagesPage(messages: [], itemContinuations: [continuation]),
+            sessionID: sessionID
+        )
+
+        await client.waitForHistoryItemRequestCount(1)
+        store.clearConnectionData()
+
+        XCTAssertNil(store.historyItemEnrichmentBySessionID[sessionID])
+        XCTAssertNil(store.historyLoadedQualityBySessionID[sessionID])
+        client.resolveHistoryItemRequest(
+            at: 0,
+            with: HistoryTurnItemsPage(
+                messages: [CodexHistoryMessage(
+                    id: "history:late-host-item",
+                    role: "assistant",
+                    content: "旧主机迟到内容",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnID: "turn-host-invalidation",
+                    itemID: "late-host-item"
+                )],
+                itemIDs: ["late-host-item"],
+                continuation: nil
+            )
+        )
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+
+        XCTAssertTrue(conversationStore.messages(for: sessionID).isEmpty)
+        XCTAssertEqual(client.requestedItemContinuations.count, 1)
+    }
+
+    func testReturningToSessionListPausesAndResumesHistoryItemEnrichment() async {
+        let project = makeProject(id: "proj_cancel_history_item_enrichment")
+        let session = makeSession(
+            id: "cancel_history_item_enrichment",
+            projectID: project.id,
+            title: "取消分页补齐",
+            status: "history",
+            source: "codex"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [session])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.sessions = [session]
+        store.selectedSessionID = session.id
+        store.historyLoadedSignatureBySessionID[session.id] = HistoryLoadSignature(session: session)
+        store.historyLoadedQualityBySessionID[session.id] = .enriching
+        let turn: [String: CodexAppServerJSONValue] = [
+            "id": .string("turn-cancel"),
+            "status": .string("completed")
+        ]
+        let firstContinuation = HistoryTurnItemsContinuation(
+            turnID: "turn-cancel",
+            turn: turn,
+            turnIndex: 0,
+            itemOffset: 0,
+            cursor: nil,
+            pageLimit: 50,
+            threadIsActive: false,
+            isLatestTurn: true,
+            hasVisibleUserMessageBefore: false
+        )
+        store.applyHistoryFirstPage(
+            HistoryMessagesPage(
+                messages: [CodexHistoryMessage(
+                    id: "history:summary",
+                    role: "assistant",
+                    content: "首屏文案",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnID: "turn-cancel",
+                    itemID: "summary"
+                )],
+                itemContinuations: [firstContinuation]
+            ),
+            sessionID: session.id
+        )
+
+        await client.waitForHistoryItemRequestCount(1)
+        let secondContinuation = firstContinuation.continuing(
+            cursor: "page-2",
+            loadedItemCount: 1,
+            hasVisibleUserMessage: false
+        )
+        client.resolveHistoryItemRequest(
+            at: 0,
+            with: HistoryTurnItemsPage(
+                messages: [CodexHistoryMessage(
+                    id: "history:page-1",
+                    role: "assistant",
+                    content: "第一页内容",
+                    createdAt: Date(timeIntervalSince1970: 2),
+                    turnID: "turn-cancel",
+                    itemID: "page-1"
+                )],
+                itemIDs: ["page-1"],
+                continuation: secondContinuation
+            )
+        )
+        await client.waitForHistoryItemRequestCount(2)
+        let thirdContinuation = secondContinuation.continuing(
+            cursor: "page-3",
+            loadedItemCount: 1,
+            hasVisibleUserMessage: false
+        )
+        client.resolveHistoryItemRequest(
+            at: 1,
+            with: HistoryTurnItemsPage(
+                messages: [CodexHistoryMessage(
+                    id: "history:page-2",
+                    role: "assistant",
+                    content: "第二页内容",
+                    createdAt: Date(timeIntervalSince1970: 3),
+                    turnID: "turn-cancel",
+                    itemID: "page-2"
+                )],
+                itemIDs: ["page-2"],
+                continuation: thirdContinuation
+            )
+        )
+        await client.waitForHistoryItemRequestCount(3)
+        store.returnToSessionList()
+
+        XCTAssertNotNil(store.historyItemEnrichmentBySessionID[session.id])
+        XCTAssertNil(store.historyItemEnrichmentBySessionID[session.id]?.task)
+        XCTAssertEqual(
+            store.historyItemEnrichmentBySessionID[session.id]?.bufferedPages.flatMap(\.messages).map(\.content),
+            ["第二页内容"]
+        )
+        XCTAssertEqual(store.historyLoadedQualityBySessionID[session.id], .enriching)
+        XCTAssertNil(store.selectedSessionID)
+
+        client.resolveHistoryItemRequest(
+            at: 2,
+            with: HistoryTurnItemsPage(
+                messages: [CodexHistoryMessage(
+                    id: "history:late",
+                    role: "assistant",
+                    content: "迟到内容",
+                    createdAt: Date(timeIntervalSince1970: 4),
+                    turnID: "turn-cancel",
+                    itemID: "late"
+                )],
+                itemIDs: ["late"],
+                continuation: nil
+            )
+        )
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(
+            conversationStore.messages(for: session.id).map(\.content),
+            ["首屏文案", "第一页内容"]
+        )
+        XCTAssertEqual(client.requestedItemContinuations.count, 3)
+
+        store.selectedSessionID = session.id
+        let didReuseHistory = await store.loadHistoryIfNeeded(for: session)
+        XCTAssertTrue(didReuseHistory)
+        await client.waitForHistoryItemRequestCount(4)
+        XCTAssertEqual(client.requestedItemContinuations.map(\.cursor), [nil, "page-2", "page-3", "page-3"])
+        client.resolveHistoryItemRequest(
+            at: 3,
+            with: HistoryTurnItemsPage(
+                messages: [CodexHistoryMessage(
+                    id: "history:page-3",
+                    role: "assistant",
+                    content: "第三页内容",
+                    createdAt: Date(timeIntervalSince1970: 5),
+                    turnID: "turn-cancel",
+                    itemID: "page-3"
+                )],
+                itemIDs: ["page-3"],
+                continuation: nil
+            )
+        )
+        await waitForHistoryItemEnrichmentToFinish(in: store, sessionID: session.id)
+
+        XCTAssertEqual(client.requestedMessageCursors.count, 0)
+        XCTAssertEqual(
+            conversationStore.messages(for: session.id).map(\.content),
+            ["首屏文案", "第一页内容", "第二页内容", "第三页内容"]
+        )
+        XCTAssertEqual(store.historyLoadedQualityBySessionID[session.id], .full)
+    }
+
+    func testHistoryFirstPageFinishingAfterLeavingDefersItemEnrichmentUntilReopen() async {
+        let project = makeProject(id: "proj_deferred_history_item_enrichment")
+        let session = makeSession(
+            id: "deferred_history_item_enrichment",
+            projectID: project.id,
+            title: "迟到首屏",
+            status: "history",
+            source: "codex"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [session])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.sessions = [session]
+        store.selectedSessionID = session.id
+        let continuation = HistoryTurnItemsContinuation(
+            turnID: "turn-deferred",
+            turn: [
+                "id": .string("turn-deferred"),
+                "status": .string("completed")
+            ],
+            turnIndex: 0,
+            itemOffset: 0,
+            cursor: nil,
+            pageLimit: 50,
+            threadIsActive: false,
+            isLatestTurn: true,
+            hasVisibleUserMessageBefore: false
+        )
+
+        let loadTask = Task { await store.loadHistory(for: session) }
+        await client.waitForHistoryRequestCount(1)
+        store.returnToSessionList()
+        client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(
+                messages: [CodexHistoryMessage(
+                    id: "history:summary",
+                    role: "assistant",
+                    content: "迟到首屏文案",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnID: "turn-deferred",
+                    itemID: "summary"
+                )],
+                itemContinuations: [continuation]
+            )
+        )
+        let didLoadFirstPage = await loadTask.value
+        XCTAssertTrue(didLoadFirstPage)
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+
+        XCTAssertNil(store.selectedSessionID)
+        XCTAssertEqual(client.requestedItemContinuations.count, 0)
+        XCTAssertNotNil(store.historyItemEnrichmentBySessionID[session.id])
+        XCTAssertNil(store.historyItemEnrichmentBySessionID[session.id]?.task)
+        XCTAssertEqual(store.historyLoadedQualityBySessionID[session.id], .enriching)
+
+        store.selectedSessionID = session.id
+        let didReuseHistory = await store.loadHistoryIfNeeded(for: session)
+        XCTAssertTrue(didReuseHistory)
+        await client.waitForHistoryItemRequestCount(1)
+        XCTAssertEqual(client.requestedMessageCursors.count, 1)
+        client.resolveHistoryItemRequest(
+            at: 0,
+            with: HistoryTurnItemsPage(
+                messages: [CodexHistoryMessage(
+                    id: "history:item",
+                    role: "assistant",
+                    content: "补齐内容",
+                    createdAt: Date(timeIntervalSince1970: 2),
+                    turnID: "turn-deferred",
+                    itemID: "item"
+                )],
+                itemIDs: ["item"],
+                continuation: nil
+            )
+        )
+        await waitForHistoryItemEnrichmentToFinish(in: store, sessionID: session.id)
+
+        XCTAssertEqual(conversationStore.messages(for: session.id).map(\.content), ["迟到首屏文案", "补齐内容"])
+        XCTAssertEqual(store.historyLoadedQualityBySessionID[session.id], .full)
+    }
+
+    func testChangedHistorySignatureInvalidatesPausedItemEnrichment() async {
+        let project = makeProject(id: "proj_changed_history_signature")
+        let session = makeSession(
+            id: "changed_history_signature",
+            projectID: project.id,
+            title: "旧快照",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+        let changedSession = makeSession(
+            id: session.id,
+            projectID: project.id,
+            title: "新快照",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 3)
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [changedSession])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.sessions = [session]
+        store.selectedSessionID = session.id
+        store.historyLoadedSignatureBySessionID[session.id] = HistoryLoadSignature(session: session)
+        store.historyLoadedQualityBySessionID[session.id] = .enriching
+        let continuation = HistoryTurnItemsContinuation(
+            turnID: "turn-signature",
+            turn: [
+                "id": .string("turn-signature"),
+                "status": .string("completed")
+            ],
+            turnIndex: 0,
+            itemOffset: 0,
+            cursor: nil,
+            pageLimit: 50,
+            threadIsActive: false,
+            isLatestTurn: true,
+            hasVisibleUserMessageBefore: false
+        )
+        store.applyHistoryFirstPage(
+            HistoryMessagesPage(
+                messages: [CodexHistoryMessage(
+                    id: "history:old-summary",
+                    role: "assistant",
+                    content: "旧快照文案",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnID: "turn-signature",
+                    itemID: "old-summary"
+                )],
+                itemContinuations: [continuation]
+            ),
+            sessionID: session.id
+        )
+
+        await client.waitForHistoryItemRequestCount(1)
+        store.returnToSessionList()
+        store.selectedSessionID = session.id
+        let reloadTask = Task { await store.loadHistoryIfNeeded(for: changedSession) }
+        await client.waitForHistoryRequestCount(1)
+
+        XCTAssertEqual(client.requestedItemContinuations.count, 1)
+        client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(
+                messages: [CodexHistoryMessage(
+                    id: "history:new-item",
+                    role: "assistant",
+                    content: "新快照文案",
+                    createdAt: Date(timeIntervalSince1970: 2),
+                    turnID: "turn-signature",
+                    itemID: "new-item"
+                )],
+                authoritativeCompletedTurnItems: ["turn-signature": ["new-item"]]
+            )
+        )
+        let didReload = await reloadTask.value
+
+        XCTAssertTrue(didReload)
+        XCTAssertNil(store.historyItemEnrichmentBySessionID[session.id])
+        XCTAssertEqual(
+            store.historyLoadedSignatureBySessionID[session.id],
+            HistoryLoadSignature(session: changedSession)
+        )
+        XCTAssertEqual(store.historyLoadedQualityBySessionID[session.id], .full)
+
+        client.resolveHistoryItemRequest(
+            at: 0,
+            with: HistoryTurnItemsPage(
+                messages: [CodexHistoryMessage(
+                    id: "history:late-old-item",
+                    role: "assistant",
+                    content: "迟到旧内容",
+                    createdAt: Date(timeIntervalSince1970: 3),
+                    turnID: "turn-signature",
+                    itemID: "late-old-item"
+                )],
+                itemIDs: ["late-old-item"],
+                continuation: nil
+            )
+        )
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(conversationStore.messages(for: session.id).map(\.content), ["旧快照文案", "新快照文案"])
+        XCTAssertEqual(client.requestedItemContinuations.count, 1)
     }
 
     func testHistoryItemPageValidationRejectsMalformedEnvelopeFields() throws {
