@@ -27,7 +27,9 @@ extension SessionStore {
         initialGoalObjective: String? = nil,
         replacingLocalDraft localDraft: AgentSession? = nil,
         submissionContext suppliedSubmissionContext: TurnSubmissionContext? = nil,
-        ifCurrent expectedSelectionLease: SessionSelectionLease? = nil
+        ifCurrent expectedSelectionLease: SessionSelectionLease? = nil,
+        mimiTaskProposal: MimiTaskProposalRequest? = nil,
+        modelAlreadyResolved: Bool = false
     ) async -> Bool {
         let createIntent = expectedSelectionLease
             ?? suppliedSubmissionContext?.selectionLease
@@ -42,7 +44,7 @@ extension SessionStore {
         )
         // 空会话只执行 thread/start，没有 turn/start；提前拉 model/list 既不会影响线程创建，
         // 还会在远程链路上平白增加一次串行往返。只有真正要发送首轮输入时才解析模型。
-        let payload = payload.isEmpty
+        let payload = payload.isEmpty || modelAlreadyResolved
             ? payload
             : await payloadResolvingRequiredModel(payload, submissionContext: submissionContext)
         guard appStore.activeHostScope == hostScope else { return false }
@@ -189,7 +191,8 @@ extension SessionStore {
                 turnOptions: payload.options,
                 initialGoalObjective: initialGoalObjective,
                 resumeID: resume?.resumeID ?? nativeResumeID ?? "",
-                clientMessageID: clientMessageID
+                clientMessageID: clientMessageID,
+                mimiTaskProposal: mimiTaskProposal
             ))
             guard appStore.activeHostScope == hostScope else { return false }
             let responseSession = self.session(response.session, in: workspace)

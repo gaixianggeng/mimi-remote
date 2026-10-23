@@ -907,6 +907,10 @@ actor CodexAppServerSessionRuntime {
         }
         threadOptions = runtimeScopedThreadOptions(threadOptions)
         let resumeID = payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if payload.mimiTaskProposal != nil,
+           (!resumeID.isEmpty || Self.normalizedRuntimeProvider(runtimeProvider) != "claude") {
+            throw AgentAPIError.invalidResponse
+        }
         // deepseek 的 app-server runtime 已删除。Codex/Claude 一直走标准 thread/resume，
         // 不因旧 config 的方法清单不完整而关闭这条链路。
         let supportsThreadResume = true
@@ -917,10 +921,22 @@ actor CodexAppServerSessionRuntime {
         let spec: CodexAppServerRequestSpec
         if resumeID.isEmpty {
             spec = usesSharedServerQueue
-                ? try builder.threadStartForSharedQueue(cwd: project.path, options: threadOptions)
+                ? try builder.threadStartForSharedQueue(
+                    cwd: project.path,
+                    options: threadOptions,
+                    mimiTaskProposal: payload.mimiTaskProposal
+                )
                 : (projectPath?.isEmpty == false
-                    ? try builder.threadStart(cwd: project.path, options: threadOptions)
-                    : try builder.threadStart(projectID: payload.projectID, options: threadOptions))
+                    ? try builder.threadStart(
+                        cwd: project.path,
+                        options: threadOptions,
+                        mimiTaskProposal: payload.mimiTaskProposal
+                    )
+                    : try builder.threadStart(
+                        projectID: payload.projectID,
+                        options: threadOptions,
+                        mimiTaskProposal: payload.mimiTaskProposal
+                    ))
         } else {
             spec = usesSharedServerQueue
                 ? try builder.threadResumePreservingSharedState(

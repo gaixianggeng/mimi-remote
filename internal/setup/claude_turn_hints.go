@@ -122,6 +122,9 @@ func readClaudeTurnHintsDocument(configPath string) (string, []byte, map[string]
 func claudeTurnHintsState(document map[string]json.RawMessage) (ClaudeTurnHintsState, error) {
 	state := ClaudeTurnHintsState{}
 	if raw, ok := document["turn_hints_enabled"]; ok {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return state, nil
+		}
 		var enabled bool
 		if err := json.Unmarshal(raw, &enabled); err != nil {
 			return state, fmt.Errorf("解析 claude.turn_hints_enabled 失败：%w", err)

@@ -366,6 +366,16 @@ struct HistoryMessagesPage: Equatable {
     }
 }
 
+struct MimiTaskProposalRequest: Codable, Hashable {
+    let id: String
+    let parentThreadID: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case parentThreadID = "parentThreadId"
+    }
+}
+
 struct CreateSessionRequest: Encodable {
     let projectID: String
     let projectPath: String?
@@ -377,6 +387,7 @@ struct CreateSessionRequest: Encodable {
     let initialGoalObjective: String?
     let resumeID: String
     let clientMessageID: ClientMessageID?
+    let mimiTaskProposal: MimiTaskProposalRequest?
 
     enum CodingKeys: String, CodingKey {
         case projectID = "project_id"
@@ -389,6 +400,7 @@ struct CreateSessionRequest: Encodable {
         case initialGoalObjective = "initial_goal_objective"
         case resumeID = "resume_id"
         case clientMessageID = "client_message_id"
+        case mimiTaskProposal = "mimi_task_proposal"
     }
 
     init(
@@ -401,7 +413,8 @@ struct CreateSessionRequest: Encodable {
         turnOptions: CodexAppServerTurnOptions = .default,
         initialGoalObjective: String? = nil,
         resumeID: String,
-        clientMessageID: ClientMessageID? = nil
+        clientMessageID: ClientMessageID? = nil,
+        mimiTaskProposal: MimiTaskProposalRequest? = nil
     ) {
         self.projectID = projectID
         self.projectPath = projectPath
@@ -413,6 +426,7 @@ struct CreateSessionRequest: Encodable {
         self.initialGoalObjective = initialGoalObjective
         self.resumeID = resumeID
         self.clientMessageID = clientMessageID
+        self.mimiTaskProposal = mimiTaskProposal
     }
 }
 

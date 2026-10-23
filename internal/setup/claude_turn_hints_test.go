@@ -92,3 +92,14 @@ func TestConfigureClaudeTurnHintsRejectsInvalidStoredType(t *testing.T) {
 		t.Fatal("非法存量类型必须拒绝")
 	}
 }
+
+func TestConfigureClaudeTurnHintsTreatsNullAsOmittedAndEnabled(t *testing.T) {
+	path := writeClaudeTurnHintsFixture(t, map[string]any{"turn_hints_enabled": nil})
+	result, err := ConfigureClaudeTurnHints(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Enabled || !result.PreviousEnabled || result.Changed || result.RestartRequired || result.Previous.Enabled != nil {
+		t.Fatalf("null 应与省略字段一致并默认开启：%+v", result)
+	}
+}

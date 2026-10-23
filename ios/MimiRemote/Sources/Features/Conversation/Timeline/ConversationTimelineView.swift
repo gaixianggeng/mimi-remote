@@ -372,7 +372,7 @@ struct ConversationTimelineView: View {
 
     /// target 在这个同步回调里捕获，不能移进 Task；否则页面切换可能先于目标绑定。
     private func startTurnHintAction(
-        _ action: ConversationTurnHint.Action,
+        _ action: ConversationTurnHint.UserAction,
         from message: ConversationMessage
     ) -> Task<Bool, Never>? {
         guard displayedSessionID == sessionStore.selectedSessionID,
