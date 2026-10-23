@@ -708,6 +708,36 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertFalse(ManagedConnectionDevicesView.canUpgradeCurrentComputer(route: nil, connected: true))
     }
 
+    func testOneTapUpgradeKeepsValidGrantDuringEntitlementRefresh() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func grant(expiresIn interval: TimeInterval) -> ManagedConnectionEntitlementGrant {
+            ManagedConnectionEntitlementGrant(
+                entitlement: ManagedConnectionEntitlement(
+                    id: "entitlement-id",
+                    productID: ManagedConnectionProductID.annual,
+                    status: .active,
+                    expiresAt: now.addingTimeInterval(interval)
+                ),
+                token: "in-memory-token",
+                tokenExpiresAt: now.addingTimeInterval(60)
+            )
+        }
+
+        XCTAssertTrue(ManagedConnectionDevicesView.hasEntitlementForUpgrade(
+            status: .entitled(grant(expiresIn: 3_600).entitlement), grant: nil, now: now
+        ))
+        // 凭证按计划刷新时状态短暂变成检查中，手里的权益仍有效就不能挡住。
+        XCTAssertTrue(ManagedConnectionDevicesView.hasEntitlementForUpgrade(
+            status: .resolving, grant: grant(expiresIn: 3_600), now: now
+        ))
+        XCTAssertFalse(ManagedConnectionDevicesView.hasEntitlementForUpgrade(
+            status: .resolving, grant: grant(expiresIn: -1), now: now
+        ))
+        XCTAssertFalse(ManagedConnectionDevicesView.hasEntitlementForUpgrade(
+            status: .available, grant: nil, now: now
+        ))
+    }
+
     func testManagedPairingLinkErrorsDecodeStableCodes() {
         func decode(_ status: Int, _ json: String) -> ManagedPairingLinkAPIError? {
             ManagedPairingLinkAPIError.decode(status: status, data: Data(json.utf8))

@@ -255,6 +255,18 @@ struct ManagedConnectionDevicesView: View {
 
     private var isUpgradingCurrentComputer: Bool { upgradeTask != nil }
 
+    /// 发起一键接入（含确认后重发）时的订阅判断：界面状态是已订阅，或凭证刷新途中
+    /// 手里的权益仍在有效期内。检查中的瞬态不能把已订阅用户挡在外面。
+    static func hasEntitlementForUpgrade(
+        status: ManagedConnectionEntitlementStore.Status,
+        grant: ManagedConnectionEntitlementGrant?,
+        now: Date
+    ) -> Bool {
+        if case .entitled = status { return true }
+        guard let grant else { return false }
+        return grant.entitlement.expiresAt > now
+    }
+
     private func startCurrentComputerUpgrade() {
         guard canUpgradeCurrentComputer else { return }
         do {
@@ -281,7 +293,15 @@ struct ManagedConnectionDevicesView: View {
         _ context: ManagedConnectionUpgradeContext,
         confirmResetSelfHosted: Bool
     ) {
-        guard !isUpgradingCurrentComputer, isEntitled, context.isCurrent(in: appStore) else { return }
+        guard !isUpgradingCurrentComputer, context.isCurrent(in: appStore) else { return }
+        guard Self.hasEntitlementForUpgrade(
+            status: entitlementStore.status,
+            grant: entitlementStore.currentGrant,
+            now: Date()
+        ) else {
+            localError = ManagedConnectionDeviceStoreError.subscriptionRequired.localizedDescription
+            return
+        }
         activeUpgradeID = context.id
         localError = nil
         upgradeTask = Task { @MainActor in
@@ -298,8 +318,10 @@ struct ManagedConnectionDevicesView: View {
                     confirmResetSelfHosted: confirmResetSelfHosted,
                     appStore: appStore
                 )
-                guard isEntitled, let url = URL(string: link.pairURL) else {
-                    throw ManagedConnectionDeviceStoreError.subscriptionRequired
+                // 这次请求最长 90 秒，期间订阅凭证可能按计划刷新，界面状态会短暂离开「已订阅」。
+                // 电脑此时已进入托管模式，不能据此中断；订阅由托管配对的授权方按凭证有效期校验。
+                guard let url = URL(string: link.pairURL) else {
+                    throw AgentAPIError.invalidResponse
                 }
                 isConnectingMac = true
                 _ = try await sessionStore.applyManagedPairingURL(url, upgrading: context)
