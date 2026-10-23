@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import type { OutboundFrame } from "../rpc/frames.ts";
 
 /** 出站帧上的序号字段；agentd 用它记录每个会话的投递进度。 */
@@ -38,7 +39,8 @@ export class ReplayRing {
   push(frame: OutboundFrame): SequencedFrame {
     const seq = this.nextSeq++;
     const stamped = { ...frame, [SEQ_FIELD]: seq };
-    const entry = { seq, frame: stamped, bytes: JSON.stringify(stamped).length };
+    // 连接按 UTF-8 发送 JSON；字符串 length 会低估中文和 emoji 的字节数。
+    const entry = { seq, frame: stamped, bytes: Buffer.byteLength(JSON.stringify(stamped), "utf8") };
     this.frames.push(entry);
     this.bytes += entry.bytes;
     while (this.frames.length > this.maxFrames || this.bytes > this.maxBytes) {
