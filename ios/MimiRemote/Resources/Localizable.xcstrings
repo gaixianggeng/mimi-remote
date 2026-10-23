@@ -250,6 +250,108 @@
         }
       }
     },
+    "ui.turn_hint_desktop_only": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start this task from Claude on your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这项任务需要在电脑上的 Claude 里开启。"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_hide_brief": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show less"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "收起说明"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_next_step": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next step"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一步"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_show_brief": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开说明"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_start_session": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start session"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启会话"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_task_proposal": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suggested task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "建议的新任务"
+          }
+        }
+      }
+    },
     "ui.view_process": {
       "localizations": {
         "en": {

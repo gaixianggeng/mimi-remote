@@ -174,4 +174,25 @@ describe("messagesToTurns", () => {
     expect(summary.itemsView).toBe("summary");
     expect(summary.items.map((item) => item.type)).toEqual(["userMessage", "agentMessage"]);
   });
+
+  test("summary view keeps turn hints such as the next-step box and task proposals", () => {
+    const wrapUp = { recap: "done", ask: "merge?", actions: [{ label: "Merge", message: "merge it" }] };
+    const turn = translate([
+      user("go"),
+      assistant([{ type: "tool_use", id: "t1", name: "mcp__other__wrap_up", input: {} }]),
+      user([{ type: "tool_result", tool_use_id: "t1", content: "x" }]),
+      assistant([{ type: "tool_use", id: "t2", name: "mcp__ccd_session__start_session", input: { title: "Follow-up", prompt: "do it" } }]),
+      user([{ type: "tool_result", tool_use_id: "t2", content: "Proposed" }]),
+      assistant([{ type: "tool_use", id: "t3", name: "mcp__ccd_turn__wrap_up", input: wrapUp }]),
+      user([{ type: "tool_result", tool_use_id: "t3", content: "Shown" }]),
+    ])[0]!;
+    const summary = summarizeTurn(turn);
+    const hints = summary.items.filter((item) => item.type === "mcpToolCall");
+    expect(hints.map((item) => item.type === "mcpToolCall" && `${item.server}/${item.tool}`)).toEqual([
+      "ccd_session/start_session",
+      "ccd_turn/wrap_up",
+    ]);
+    // 客户端靠 arguments 渲染卡片，必须原样保留。
+    expect(hints[1]!.type === "mcpToolCall" && hints[1]!.arguments).toEqual(wrapUp);
+  });
 });

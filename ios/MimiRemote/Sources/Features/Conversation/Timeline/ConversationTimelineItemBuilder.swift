@@ -84,7 +84,7 @@ struct ConversationTimelineItemBuilder {
             return true
         case .approval, .userInput:
             return isResolvedInteractionMessage(message)
-        case .message, .questionReply, .warning, .error:
+        case .message, .questionReply, .warning, .error, .turnHint:
             // 普通答复和未知消息绝不根据位置猜成过程；异常与待处理交互始终在主视图可见。
             return false
         }

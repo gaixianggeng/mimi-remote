@@ -168,6 +168,22 @@ function subagentLabel(args: Args): string {
   return parts.join(" · ");
 }
 
+/**
+ * 回合提示工具：Claude 桌面版注入的「下一步提示框」与「新任务提议」，以及 Mimi 自己提供的同名工具。
+ * 它们是给用户看的交互卡片，不是执行过程，所以 summary 视图也要保留，客户端按 server/tool 渲染。
+ */
+const TURN_HINT_TOOLS = new Set([
+  "ccd_turn/wrap_up",
+  "ccd_session/start_session",
+  "ccd_session/spawn_task",
+  "mimi/wrap_up",
+  "mimi/start_session",
+]);
+
+export function isTurnHintItem(item: ThreadItem): boolean {
+  return item.type === "mcpToolCall" && TURN_HINT_TOOLS.has(`${item.server}/${item.tool}`);
+}
+
 /** 不在时间线上单独显示的工具：提问由 item/tool/requestUserInput 卡片承载。 */
 export function isHiddenTool(name: string): boolean {
   return name === "AskUserQuestion";

@@ -293,6 +293,17 @@ struct ConversationTimelineView: View {
         crossSessionOriginMessageID: UUID?
     ) -> some View {
         switch item {
+        case .message(let message) where message.kind == .turnHint:
+            if let hint = message.activityPayload?.turnHint {
+                ConversationTurnHintCard(
+                    hint: hint,
+                    layout: layout,
+                    canAct: canActOnTurnHint(message),
+                    onAction: { action in
+                        Task { await sessionStore.sendPrompt(action.message) }
+                    }
+                )
+            }
         case .message(let message), .processMessage(let message):
             MessageRow(
                 message: message,
@@ -347,6 +358,25 @@ struct ConversationTimelineView: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("conversation.fileChanges.\(changes.id)")
         }
+    }
+
+    /// 回合提示的按钮只在「回答这一回合」时有意义：必须是当前会话最后一个提示，之后没有用户消息，
+    /// 会话没有在运行且可以直接输入。旧提示保留展示，但按钮置灰，避免点出已经过时的回复。
+    private func canActOnTurnHint(_ message: ConversationMessage) -> Bool {
+        guard let sessionID = displayedSessionID,
+              sessionID == sessionStore.selectedSessionID,
+              let session = sessionStore.sessionsByID[sessionID],
+              session.allowsDirectInput,
+              !session.isRunning,
+              !sessionStore.isProtocolReadOnlySession(session) else {
+            return false
+        }
+        for row in presentedSnapshot.rows.reversed() {
+            guard case .message(let candidate) = row else { continue }
+            if candidate.role == .user { return false }
+            if candidate.kind == .turnHint { return candidate.id == message.id }
+        }
+        return false
     }
 
     private func toggleActivityDetails(itemID: String) {

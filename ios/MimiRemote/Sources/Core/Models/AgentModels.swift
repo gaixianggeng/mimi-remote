@@ -1823,6 +1823,8 @@ enum MessageKind: String, Codable, Hashable {
     case questionReply = "question_reply"
     case warning
     case error
+    /// Claude 回合提示（下一步提示框、新任务提议），正文在 activityPayload.turnHint。
+    case turnHint = "turn_hint"
 }
 
 enum MessageSendStatus: String, Codable, Hashable {
@@ -1911,6 +1913,7 @@ struct ConversationActivityPayload: Codable, Hashable {
     let historyOutputID: String?
     let commandPresentationKind: ConversationCommandPresentationKind?
     let toolPresentationKind: ConversationToolPresentationKind?
+    let turnHint: ConversationTurnHint?
 
     enum CodingKeys: String, CodingKey {
         case category
@@ -1928,6 +1931,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         case historyOutputID = "history_output_id"
         case commandPresentationKind = "command_presentation_kind"
         case toolPresentationKind = "tool_presentation_kind"
+        case turnHint = "turn_hint"
     }
 
     init(
@@ -1945,7 +1949,8 @@ struct ConversationActivityPayload: Codable, Hashable {
         outputByteCount: Int? = nil,
         historyOutputID: String? = nil,
         commandPresentationKind: ConversationCommandPresentationKind? = nil,
-        toolPresentationKind: ConversationToolPresentationKind? = nil
+        toolPresentationKind: ConversationToolPresentationKind? = nil,
+        turnHint: ConversationTurnHint? = nil
     ) {
         self.category = category
         self.displayTitle = displayTitle
@@ -1962,6 +1967,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         self.historyOutputID = historyOutputID
         self.commandPresentationKind = commandPresentationKind
         self.toolPresentationKind = toolPresentationKind
+        self.turnHint = turnHint
     }
 
     init(from decoder: Decoder) throws {
@@ -1990,6 +1996,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         } else {
             toolPresentationKind = nil
         }
+        turnHint = try? container.decodeIfPresent(ConversationTurnHint.self, forKey: .turnHint)
     }
 
     init?(item: [String: CodexAppServerJSONValue]) {
@@ -2056,6 +2063,17 @@ struct ConversationActivityPayload: Codable, Hashable {
                 historyOutputID: historyOutputID
             )
 
+        case "mcpToolCall" where ConversationTurnHint(item: item) != nil:
+            // 回合提示是给用户的卡片，不是执行过程：不带状态，避免影响回合进行中判断。
+            let hint = ConversationTurnHint(item: item)
+            self.init(
+                category: .toolCall,
+                displayTitle: hint?.kind == .taskProposal ? L10n.text("ui.turn_hint_task_proposal") : L10n.text("ui.turn_hint_next_step"),
+                subtitle: hint?.title ?? hint?.question,
+                toolName: Self.toolIdentifier(from: item, type: type),
+                turnHint: hint
+            )
+
         case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch":
             let identifier = Self.toolIdentifier(from: item, type: type)
             let presentation = Self.toolPresentation(from: item, type: type, identifier: identifier)
@@ -2080,6 +2098,9 @@ struct ConversationActivityPayload: Codable, Hashable {
     }
 
     var messageKind: MessageKind {
+        if turnHint != nil {
+            return .turnHint
+        }
         switch category {
         case .thinking:
             return .reasoningSummary
