@@ -1,6 +1,18 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.native_suggestion_add_to_draft": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Add suggested reply to draft" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "将建议回复添加到草稿" } }
+      }
+    },
+    "ui.native_suggestion_dismiss": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Dismiss suggestion" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "忽略建议" } }
+      }
+    },
     "ui.managed_devices_subscribe_action": {
       "comment": "Row that opens the Managed Connection subscription page from the Devices tab.",
       "localizations": {
