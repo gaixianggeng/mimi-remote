@@ -13,12 +13,19 @@ struct ConversationTurnHint: Codable, Hashable {
         let message: String
     }
 
+    enum UserAction: Hashable {
+        case reply(Action)
+        case startTask
+    }
+
     let kind: Kind
     let recap: String?
     let question: String?
     let actions: [Action]
     let title: String?
     let brief: String?
+    /// 只有 Mimi Bridge 用本机 Overlay 随机 ID 签发的提议才有此字段。
+    let mimiProposalID: String?
 
     /// 按钮最多显示三个，与桌面版一致；文案过长的按钮会挤掉其他按钮。
     static let maximumActions = 3
@@ -31,7 +38,8 @@ struct ConversationTurnHint: Codable, Hashable {
         question: String? = nil,
         actions: [Action] = [],
         title: String? = nil,
-        brief: String? = nil
+        brief: String? = nil,
+        mimiProposalID: String? = nil
     ) {
         self.kind = kind
         self.recap = recap
@@ -39,6 +47,7 @@ struct ConversationTurnHint: Codable, Hashable {
         self.actions = actions
         self.title = title
         self.brief = brief
+        self.mimiProposalID = mimiProposalID
     }
 
     init?(item: [String: CodexAppServerJSONValue]) {
@@ -87,7 +96,8 @@ struct ConversationTurnHint: Codable, Hashable {
             self.init(
                 kind: kind,
                 title: title,
-                brief: brief.map { String($0.prefix(Self.maximumBriefCharacters)) }
+                brief: brief.map { String($0.prefix(Self.maximumBriefCharacters)) },
+                mimiProposalID: tool == "start_session" ? Self.trustedProposalID(item) : nil
             )
         }
     }
@@ -112,6 +122,17 @@ struct ConversationTurnHint: Codable, Hashable {
         guard let value else { return false }
         if case .null = value { return false }
         return true
+    }
+
+    private static func trustedProposalID(_ item: [String: CodexAppServerJSONValue]) -> String? {
+        guard let marker = item["result"]?.objectValue?["structuredContent"]?
+            .objectValue?["mimi_task_proposal"]?.objectValue,
+              marker["version"]?.intValue == 1,
+              let proposalID = text(marker["proposal_id"]),
+              proposalID.utf8.count <= 256 else {
+            return nil
+        }
+        return proposalID
     }
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { completeToolItem, isTurnHintItem, toolUseItem, unfinishedToolItem } from "../src/claude/tools.ts";
 import type { JsonValue } from "../src/protocol/codex/serde_json/JsonValue.ts";
+import { MIMI_TURN_HINT_TOOL_NAMES, mimiTurnHintTools } from "../src/runtime/turnHints.ts";
 
 describe("Claude turn hint tools", () => {
   test("live tool projection preserves structured arguments for every supported hint", () => {
@@ -51,5 +52,31 @@ describe("Claude turn hint tools", () => {
     expect(isTurnHintItem({ ...call, status: "completed", error: { message: "inconsistent error" } })).toBe(false);
     expect(isTurnHintItem(unfinishedToolItem(call, false))).toBe(false);
     expect(isTurnHintItem(unfinishedToolItem(call, true))).toBe(true);
+  });
+
+  test("Mimi start_session records a server-generated proposal marker", async () => {
+    const calls: unknown[][] = [];
+    const tools = mimiTurnHintTools("parent-1", "/repo", {
+      recordTaskProposal: async (...args) => {
+        calls.push(args);
+        return "proposal-random";
+      },
+    });
+    const startSession = tools.find((item) => item.name === "start_session");
+    if (!startSession) throw new Error("missing start_session tool");
+    const result = await startSession.handler({ title: "Follow-up", prompt: "Continue it", initiation: "Start" }, {} as never);
+
+    expect(calls).toEqual([["parent-1", "/repo", { title: "Follow-up", prompt: "Continue it", initiation: "Start" }]]);
+    expect(result.structuredContent).toEqual({
+      mimi_task_proposal: { version: 1, proposal_id: "proposal-random" },
+    });
+  });
+
+  test("restricted sandbox allowlist contains only the exact Mimi tool names", () => {
+    expect([...MIMI_TURN_HINT_TOOL_NAMES].sort()).toEqual([
+      "mcp__ccd_session__start_session",
+      "mcp__ccd_turn__wrap_up",
+    ]);
+    expect(MIMI_TURN_HINT_TOOL_NAMES.has("mcp__ccd_session__start_session_extra")).toBe(false);
   });
 });

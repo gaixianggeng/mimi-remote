@@ -25,6 +25,7 @@
 		58C74CEDC10E4370604F7FA6 /* HomebrewServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A7026C81DC36F9303474CE6 /* HomebrewServiceClient.swift */; };
 		6170367AFF136474BDDFE79A /* HostModulePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 276532E4BA65A66A4D9AFA56 /* HostModulePresentation.swift */; };
 		642F9E49711F073D72016DF1 /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47FFCBD7F69A1A4EAA2D1871 /* HostStore.swift */; };
+		A7D73C22FE1B4C2685439E10 /* HostStoreClaudeTurnHints.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9F4D86112A24D2D8AC1E608 /* HostStoreClaudeTurnHints.swift */; };
 		646E5B1D36C74B419372EBE4 /* DeepSeekConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB9A64DB49D670340D4F5791 /* DeepSeekConfiguration.swift */; };
 		6954EBFF208DE2B1D0A7D3A8 /* TailcatRelaySettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1986CF55627D6A29668B3B10 /* TailcatRelaySettings.swift */; };
 		73569A6C33D94DEE3D9141F3 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 067C5878128418FC7FEBE76A /* OnboardingView.swift */; };
@@ -94,6 +95,7 @@
 		425D1AFDB58612825840CB62 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		447B388701B8AB3C05F64328 /* HostStoreTailcatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreTailcatTests.swift; sourceTree = "<group>"; };
 		47FFCBD7F69A1A4EAA2D1871 /* HostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStore.swift; sourceTree = "<group>"; };
+		B9F4D86112A24D2D8AC1E608 /* HostStoreClaudeTurnHints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreClaudeTurnHints.swift; sourceTree = "<group>"; };
 		4970FED3A0AD33401F1DFE86 /* ProcessExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessExecutor.swift; sourceTree = "<group>"; };
 		4A4847134E49077F02AF8BBE /* StatusComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusComponents.swift; sourceTree = "<group>"; };
 		509C3157F7B0D582B0E2633D /* ModuleChangePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleChangePresentation.swift; sourceTree = "<group>"; };
@@ -253,6 +255,7 @@
 				B38D15A7C1D953F0F40CFC76 /* CodexRuntimeUpdateStore.swift */,
 				276532E4BA65A66A4D9AFA56 /* HostModulePresentation.swift */,
 				47FFCBD7F69A1A4EAA2D1871 /* HostStore.swift */,
+				B9F4D86112A24D2D8AC1E608 /* HostStoreClaudeTurnHints.swift */,
 				420B2B044A245D8F755DB795 /* HostStoreControlErrors.swift */,
 			);
 			path = State;
@@ -458,6 +461,7 @@
 				58C74CEDC10E4370604F7FA6 /* HomebrewServiceClient.swift in Sources */,
 				6170367AFF136474BDDFE79A /* HostModulePresentation.swift in Sources */,
 				642F9E49711F073D72016DF1 /* HostStore.swift in Sources */,
+				A7D73C22FE1B4C2685439E10 /* HostStoreClaudeTurnHints.swift in Sources */,
 				948724FB5BADA496572B0068 /* HostStoreControlErrors.swift in Sources */,
 				DE712EF3822095AC7465834A /* MacSettingsView.swift in Sources */,
 				0233FB757655D673A1588B25 /* MenuBarContentView.swift in Sources */,

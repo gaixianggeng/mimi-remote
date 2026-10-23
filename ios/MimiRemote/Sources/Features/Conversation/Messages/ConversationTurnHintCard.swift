@@ -9,7 +9,7 @@ struct ConversationTurnHintCard: View {
     let layout: ConversationLayout
     let canAct: Bool
     /// 同步返回 Task，保证调用方在异步调度前捕获 host/session/turn/connection。
-    let onAction: (ConversationTurnHint.Action) -> Task<Bool, Never>?
+    let onAction: (ConversationTurnHint.UserAction) -> Task<Bool, Never>?
 
     @State private var isBriefExpanded = false
     @State private var interaction = ConversationTurnHintInteractionState()
@@ -89,7 +89,7 @@ struct ConversationTurnHintCard: View {
         ForEach(Array(hint.actions.enumerated()), id: \.offset) { index, action in
             let isEnabled = interaction.canSubmit(cardCanAct: canAct)
             Button {
-                submit(action, index: index)
+                submit(.reply(action), index: index)
             } label: {
                 Text(action.label)
                     .font(themeStore.uiFont(.subheadline, weight: .medium))
@@ -134,12 +134,31 @@ struct ConversationTurnHintCard: View {
             .buttonStyle(.plain)
             .frame(minHeight: 32)
         }
-        Text(L10n.text("ui.turn_hint_desktop_only"))
-            .font(themeStore.uiFont(.caption))
-            .foregroundStyle(tokens.tertiaryText)
+        if hint.mimiProposalID != nil {
+            let isEnabled = interaction.canSubmit(cardCanAct: canAct)
+            Button {
+                submit(.startTask, index: 0)
+            } label: {
+                Label(L10n.text("ui.turn_hint_start_task"), systemImage: "arrow.up.right.square")
+                    .font(themeStore.uiFont(.subheadline, weight: .medium))
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 36)
+                    .foregroundStyle(Color.white)
+                    .background(tokens.accent, in: Capsule())
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(!isEnabled)
+            .opacity(isEnabled || interaction.isSelected(actionIndex: 0) ? 1 : 0.45)
+            .accessibilityIdentifier("conversation.turnHint.startTask")
+        } else {
+            Text(L10n.text("ui.turn_hint_desktop_only"))
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(tokens.tertiaryText)
+        }
     }
 
-    private func submit(_ action: ConversationTurnHint.Action, index: Int) {
+    private func submit(_ action: ConversationTurnHint.UserAction, index: Int) {
         guard interaction.begin(actionIndex: index) else { return }
         guard let task = onAction(action) else {
             interaction.finish(actionIndex: index, succeeded: false)

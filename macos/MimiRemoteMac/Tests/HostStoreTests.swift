@@ -1286,6 +1286,93 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.lifecycle, .ready)
     }
 
+    func testClaudeTurnHintsToggleReloadsServiceIndependently() async {
+        let events = EventRecorder()
+        let enabledStatus = Self.statusWithClaude(enabled: true, state: .connected)
+        let store = makeStore(
+            configExists: true,
+            status: { enabledStatus },
+            registerAgent: { events.append("register-mac") },
+            configureClaude: { preference, _ in
+                events.append("configure-\(preference.rawValue)")
+                return Self.claudeConfiguration(
+                    enabled: true,
+                    preference: .enabled,
+                    turnHintsEnabled: true
+                )
+            },
+            configureClaudeTurnHints: { enabled in
+                events.append("hints-\(enabled)")
+                return Self.claudeTurnHintsConfiguration(
+                    enabled: enabled,
+                    previousEnabled: !enabled,
+                    changed: true,
+                    restartRequired: true
+                )
+            }
+        )
+        await store.bootstrap()
+
+        await store.setClaudeTurnHintsEnabled(false)
+
+        XCTAssertEqual(events.values, [
+            "configure-auto", "register-mac", "hints-false", "register-mac",
+        ])
+        XCTAssertFalse(store.claudeTurnHintsEnabled)
+        XCTAssertTrue(store.claudeEnabled)
+        XCTAssertNil(store.claudeError)
+    }
+
+    func testClaudeTurnHintsReloadFailureRestoresPreviousConfiguration() async {
+        let events = EventRecorder()
+        let registrations = CallCounter()
+        let enabledStatus = Self.statusWithClaude(enabled: true, state: .connected)
+        let store = makeStore(
+            configExists: true,
+            status: { enabledStatus },
+            registerAgent: {
+                let call = registrations.increment()
+                events.append("register-\(call)")
+                if call == 2 { throw TestError.expected }
+            },
+            configureClaude: { preference, _ in
+                events.append("configure-\(preference.rawValue)")
+                return Self.claudeConfiguration(
+                    enabled: true,
+                    preference: .enabled,
+                    turnHintsEnabled: true
+                )
+            },
+            configureClaudeTurnHints: { enabled in
+                events.append("hints-\(enabled)")
+                return Self.claudeTurnHintsConfiguration(
+                    enabled: enabled,
+                    previousEnabled: !enabled,
+                    changed: true,
+                    restartRequired: true
+                )
+            },
+            restoreClaudeTurnHints: { changed in
+                events.append("restore-hints")
+                return Self.claudeTurnHintsConfiguration(
+                    enabled: changed.previousEnabled,
+                    previousEnabled: changed.enabled,
+                    changed: true,
+                    restartRequired: true
+                )
+            }
+        )
+        await store.bootstrap()
+
+        await store.setClaudeTurnHintsEnabled(false)
+
+        XCTAssertEqual(events.values, [
+            "configure-auto", "register-1", "hints-false", "register-2", "restore-hints", "register-3",
+        ])
+        XCTAssertTrue(store.claudeTurnHintsEnabled)
+        XCTAssertTrue(store.claudeError?.contains("已恢复修改前") == true)
+    }
+
     func testBootstrapDetectsRunningHomebrewServiceWithoutChangingIt() async {
         let store = makeStore(configExists: true, homebrewLoaded: true)
 
@@ -2003,6 +2090,17 @@ final class HostStoreTests: XCTestCase {
         restoreClaude: @escaping @Sendable (ClaudeConfigurationResult) async throws -> ClaudeConfigurationResult = { _ in
             throw TestError.expected
         },
+        configureClaudeTurnHints: @escaping @Sendable (Bool) async throws -> ClaudeTurnHintsConfigurationResult = { enabled in
+            HostStoreTests.claudeTurnHintsConfiguration(
+                enabled: enabled,
+                previousEnabled: !enabled,
+                changed: true,
+                restartRequired: true
+            )
+        },
+        restoreClaudeTurnHints: @escaping @Sendable (ClaudeTurnHintsConfigurationResult) async throws -> ClaudeTurnHintsConfigurationResult = { _ in
+            throw TestError.expected
+        },
         setLANAccess: @escaping @Sendable (Bool) async throws -> NetworkConfigurationResult = {
             NetworkConfigurationResult(lanEnabled: $0, changed: false, restartRequired: false)
         },
@@ -2056,6 +2154,8 @@ final class HostStoreTests: XCTestCase {
             uninstallCodexFrontDoor: uninstallCodexFrontDoor,
             configureClaude: configureClaude,
             restoreClaude: restoreClaude,
+            configureClaudeTurnHints: configureClaudeTurnHints,
+            restoreClaudeTurnHints: restoreClaudeTurnHints,
             setLANAccess: setLANAccess,
             pair: pair ?? { _ in Self.pairing },
             tailcatStatus: tailcatStatus,
@@ -2184,7 +2284,8 @@ final class HostStoreTests: XCTestCase {
         previousPreference: ClaudeActivationPreference = .automatic,
         changed: Bool = false,
         restartRequired: Bool = false,
-        reason: String? = nil
+        reason: String? = nil,
+        turnHintsEnabled: Bool? = nil
     ) -> ClaudeConfigurationResult {
         ClaudeConfigurationResult(
             enabled: enabled,
@@ -2197,7 +2298,25 @@ final class HostStoreTests: XCTestCase {
             reason: reason ?? (enabled ? "ready" : "disabled_by_user"),
             message: enabled
                 ? "已检测到 Claude Code 和兼容的 Claude bridge。"
-                : "Claude 实验通道已关闭。"
+                : "Claude 实验通道已关闭。",
+            turnHintsEnabled: turnHintsEnabled
+        )
+    }
+
+    private nonisolated static func claudeTurnHintsConfiguration(
+        enabled: Bool,
+        previousEnabled: Bool,
+        changed: Bool,
+        restartRequired: Bool
+    ) -> ClaudeTurnHintsConfigurationResult {
+        ClaudeTurnHintsConfigurationResult(
+            enabled: enabled,
+            previousEnabled: previousEnabled,
+            changed: changed,
+            restartRequired: restartRequired,
+            message: enabled ? "Claude 回合提示卡已开启。" : "Claude 回合提示卡已关闭。",
+            previous: ClaudeTurnHintsState(enabled: previousEnabled),
+            applied: ClaudeTurnHintsState(enabled: enabled)
         )
     }
 }

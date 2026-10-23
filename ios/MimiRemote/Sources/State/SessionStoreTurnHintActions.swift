@@ -7,6 +7,7 @@ struct ConversationTurnHintActionTarget {
     let connectionGeneration: Int
     let identity: ConversationTurnHintIdentity
     let sessionID: SessionID
+    let hint: ConversationTurnHint
 
     var hostScope: HostScope { submissionContext.hostScope }
     var selectionLease: SessionSelectionLease { submissionContext.selectionLease }
@@ -17,6 +18,7 @@ struct ConversationTurnHintActionTarget {
         message: ConversationMessage
     ) {
         guard let session = submissionContext.session,
+              let hint = message.activityPayload?.turnHint,
               let identity = ConversationTurnHintIdentity(message: message) else {
             return nil
         }
@@ -24,6 +26,7 @@ struct ConversationTurnHintActionTarget {
         self.connectionGeneration = connectionGeneration
         self.identity = identity
         sessionID = session.id
+        self.hint = hint
     }
 
     func isCurrent(
@@ -50,7 +53,8 @@ struct ConversationTurnHintActionTarget {
 extension SessionStore {
     /// 同步捕获点击目标；调用方必须在创建异步 Task 之前调用。
     func captureTurnHintActionTarget(for message: ConversationMessage) -> ConversationTurnHintActionTarget? {
-        guard message.activityPayload?.turnHint?.kind == .nextStep else { return nil }
+        guard let hint = message.activityPayload?.turnHint,
+              hint.kind == .nextStep || hint.mimiProposalID != nil else { return nil }
         let context = captureTurnSubmissionContext()
         guard let target = ConversationTurnHintActionTarget(
             submissionContext: context,
@@ -77,9 +81,22 @@ extension SessionStore {
     /// 显式卡片按钮只把建议文本作为新 turn 发回原会话，不解释或执行其中的工作区、PR 等参数。
     @discardableResult
     func sendTurnHintAction(
+        _ action: ConversationTurnHint.UserAction,
+        target: ConversationTurnHintActionTarget
+    ) async -> Bool {
+        switch action {
+        case .startTask:
+            return await startTurnHintTask(target: target)
+        case .reply(let reply):
+            return await sendTurnHintReply(reply, target: target)
+        }
+    }
+
+    private func sendTurnHintReply(
         _ action: ConversationTurnHint.Action,
         target: ConversationTurnHintActionTarget
     ) async -> Bool {
+        guard target.hint.kind == .nextStep else { return false }
         let message = action.message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty, isTurnHintActionTargetCurrent(target) else { return false }
 
@@ -101,6 +118,38 @@ extension SessionStore {
             payload,
             runningDelivery: .guided,
             submissionContext: currentContext
+        )
+    }
+
+    private func startTurnHintTask(target: ConversationTurnHintActionTarget) async -> Bool {
+        guard target.hint.kind == .taskProposal,
+              let proposalID = target.hint.mimiProposalID,
+              let prompt = target.hint.brief?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !prompt.isEmpty,
+              let parent = sessionsByID[target.sessionID],
+              Self.normalizedRuntimeProvider(parent.runtimeProvider ?? parent.source) == "claude",
+              isTurnHintActionTargetCurrent(target) else {
+            return false
+        }
+
+        var payload = CodexAppServerTurnPayload(prompt: prompt)
+        payload.options.runtimeProvider = "claude"
+        payload = await payloadResolvingRequiredModel(payload, submissionContext: target.submissionContext)
+        // 模型目录读取会跨 await；只有原主机、Socket、会话、turn/item 与空闲状态仍一致时才建会话。
+        guard !Task.isCancelled, isTurnHintActionTargetCurrent(target) else { return false }
+
+        return await createSession(
+            projectID: parent.projectID,
+            payload: payload,
+            resume: nil,
+            // proposal ID 是 Bridge 签发的 UUID；跨点击复用它，让本地回显与服务端首轮
+            // 在响应丢失后的重试中仍是同一次提交。
+            clientMessageID: proposalID,
+            replacingLocalDraft: nil,
+            submissionContext: target.submissionContext,
+            ifCurrent: target.selectionLease,
+            mimiTaskProposal: MimiTaskProposalRequest(id: proposalID, parentThreadID: parent.id),
+            modelAlreadyResolved: true
         )
     }
 }

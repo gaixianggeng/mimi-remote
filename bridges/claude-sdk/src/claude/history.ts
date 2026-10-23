@@ -143,6 +143,8 @@ export interface TranslateOptions {
    * 显示为进行中而不是中断；但不把这一轮合成为进行中，回合状态只由本适配器的 turn 决定。
    */
   holderActive?: boolean;
+  /** 只有 adapter Overlay 记录过的随机 ID 才能把任务卡标成 Mimi 可开启来源。 */
+  isMimiTaskProposal?: (proposalId: string) => boolean;
 }
 
 export function messagesToTurns(messages: readonly HistoryMessage[], options: TranslateOptions): Turn[] {
@@ -182,7 +184,7 @@ export function messagesToTurns(messages: readonly HistoryMessage[], options: Tr
         const target = toolIndex.get(String(result.tool_use_id ?? ""));
         if (!target) continue;
         const item = target.turn.items[target.index]!;
-        target.turn.items[target.index] = completeToolItem(item, toolOutput(result));
+        target.turn.items[target.index] = completeToolItem(item, toolOutput(result), options.isMimiTaskProposal);
         target.turn.completedAt = seconds(message.timestamp) ?? target.turn.completedAt;
       }
       const rest = typeof blocks === "string" ? blocks : blocks.filter((block) => block.type !== "tool_result");

@@ -3,6 +3,7 @@ import { lstat, readlink, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Options, PreToolUseHookInput } from "@anthropic-ai/claude-agent-sdk";
 import { RpcError } from "../rpc/frames.ts";
+import { MIMI_TURN_HINT_TOOL_NAMES } from "./turnHints.ts";
 
 export type ExecutionPolicy =
   | { type: "dangerFullAccess" }
@@ -125,7 +126,9 @@ export async function sandboxOptions(policy: ExecutionPolicy, cwd: string, platf
           return policy.networkAccess ? {} : deny("Mimi networkAccess=false 禁止网络工具");
         }
         // 未核实边界的 MCP、插件与子代理工具不放行，避免绕过 Bash / 文件检查。
-        if (!LOCAL_TOOLS.has(call.tool_name)) return deny("此工具无法在 Mimi 声明的沙箱边界内执行");
+        if (!LOCAL_TOOLS.has(call.tool_name) && !MIMI_TURN_HINT_TOOL_NAMES.has(call.tool_name)) {
+          return deny("此工具无法在 Mimi 声明的沙箱边界内执行");
+        }
         return {};
       }] }],
     },

@@ -25,6 +25,11 @@ import { type ExecutionPolicy, sandboxOptions } from "./sandboxPolicy.ts";
 import type { RunSettings } from "./settings.ts";
 import { qualifySkillCommand, type SkillCheck, toClaudeContent } from "./userInput.ts";
 import { errorText, logEnabled, logger } from "../util/logging.ts";
+import {
+  MIMI_TURN_HINT_SYSTEM_PROMPT,
+  mimiTurnHintServers,
+  type MimiTaskProposalStore,
+} from "./turnHints.ts";
 
 export interface RuntimeHost {
   publish(threadId: string, method: string, params: Record<string, unknown>): void;
@@ -40,6 +45,9 @@ export interface RuntimeHost {
   /** system/init 里 CLI 标为终端专用的命令名，命令目录据此隐藏。 */
   terminalCommands?(names: string[]): void;
   idleCloseMs: number;
+  turnHints?: {
+    store: MimiTaskProposalStore & { isTaskProposal(parentThreadId: string, proposalId: string): boolean };
+  };
   /** 测试可替换；默认用 SDK 的 query。 */
   startQuery?: typeof sdkQuery;
 }
@@ -248,7 +256,7 @@ export class ThreadRuntime {
     }
     // 进程可能刚按新的执行边界重启，按它的档位与实际加载的技能改写命令。
     const message = this.commandFor(content, promoted);
-    const turn = new LiveTurn(turnId, this.threadId, this.emit);
+    const turn = this.makeLiveTurn(turnId);
     this.current = turn;
     this.commands.set(turnId, turn);
     logger.debug("turn.start", { thread: this.threadId, turn: turnId, model: this.settings.model ?? null });
@@ -381,6 +389,9 @@ export class ThreadRuntime {
       throw error;
     }
     const input = new InputQueue();
+    const turnHintServers = this.host.turnHints
+      ? mimiTurnHintServers(this.threadId, this.cwd, this.host.turnHints.store)
+      : undefined;
     const promptSuggestions = this.host.promptSuggestionsSupported?.()
       && await promptSuggestionsAllowed(claudeConfigDir(), this.cwd);
     const options: Options = {
@@ -391,7 +402,12 @@ export class ThreadRuntime {
       ...(promptSuggestions ? { promptSuggestions: true } : {}),
       pathToClaudeCodeExecutable: this.host.claudeExecutable(),
       // 与 CLI 相同的系统提示词；SDK 省略时发的是空的自定义提示词。
-      systemPrompt: { type: "preset", preset: "claude_code" },
+      systemPrompt: {
+        type: "preset",
+        preset: "claude_code",
+        ...(turnHintServers ? { append: MIMI_TURN_HINT_SYSTEM_PROMPT } : {}),
+      },
+      ...(turnHintServers ? { mcpServers: turnHintServers } : {}),
       permissionMode: settings.permissionMode,
       ...(settings.permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
       ...(settings.model ? { model: settings.model } : {}),
@@ -554,11 +570,21 @@ export class ThreadRuntime {
 
   private openTurn(id: string = randomUUID()): LiveTurn {
     this.suggestionTurnId = undefined;
-    const turn = new LiveTurn(id, this.threadId, this.emit);
+    const turn = this.makeLiveTurn(id);
     this.current = turn;
     this.cancelIdleClose();
     turn.begin();
     return turn;
+  }
+
+  private makeLiveTurn(id: string): LiveTurn {
+    const store = this.host.turnHints?.store;
+    return new LiveTurn(
+      id,
+      this.threadId,
+      this.emit,
+      store ? (proposalId) => store.isTaskProposal(this.threadId, proposalId) : undefined,
+    );
   }
 
   private onMessage(message: SDKMessage): void {
