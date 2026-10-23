@@ -259,8 +259,12 @@ extension SessionStore {
                 ? turnID : nil,
             messages: page.messages
         ))
+        // 未读完的最新 Turn 不能占用发布批次，否则旧 Turn 会退化成每页刷新一次时间线。
+        let readyPageCount = state.bufferedPages.filter { page in
+            page.completionRequiredTurnID.map { state.bufferedFinishedTurnIDs.contains($0) } ?? true
+        }.count
         let shouldPublish = !state.didPublish
-            || state.bufferedPages.count >= historyItemPagesPerPublish(sessionID: sessionID)
+            || readyPageCount >= historyItemPagesPerPublish(sessionID: sessionID)
             || state.pending.isEmpty
         let publication = shouldPublish ? takeHistoryItemPublication(from: &state) : nil
         historyItemEnrichmentBySessionID[sessionID] = state

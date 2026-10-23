@@ -238,6 +238,47 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.historyLoadedQualityBySessionID[sessionID], .full)
     }
 
+    func testDeferredLatestTurnPagesDoNotShrinkPublicationBatches() async {
+        let client = OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: []))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: conversationStore,
+            logStore: LogStore(), clientFactory: { client }
+        )
+        let sessionID = "history-deferred-publication-batch"
+        store.selectedSessionID = sessionID
+        let continuations = (0..<2).map { index in
+            HistoryTurnItemsContinuation(
+                turnID: "turn-\(index)", turn: ["id": .string("turn-\(index)"), "status": .string("completed")],
+                turnIndex: index, itemOffset: 0, cursor: nil, pageLimit: 50,
+                threadIsActive: false, isLatestTurn: index == 1, hasVisibleUserMessageBefore: false
+            )
+        }
+        store.appendHistoryItemEnrichment(
+            page: HistoryMessagesPage(messages: [], itemContinuations: continuations), sessionID: sessionID
+        )
+        // 两个 Turn 各六页轮转。最新 Turn 持续暂存时，旧 Turn 仍首批立即、之后每四页发布。
+        for index in 0..<12 {
+            await client.waitForHistoryItemRequestCount(index + 1)
+            let requested = client.requestedItemContinuations[index]
+            let itemID = "\(requested.turnID)-\(requested.itemOffset)"
+            let next = requested.itemOffset < 5
+                ? requested.continuing(cursor: "page-\(requested.itemOffset + 1)", loadedItemCount: 1, hasVisibleUserMessage: false)
+                : nil
+            client.resolveHistoryItemRequest(at: index, with: HistoryTurnItemsPage(
+                messages: [CodexHistoryMessage(
+                    id: itemID, role: "assistant", content: itemID, createdAt: Date(timeIntervalSince1970: 1),
+                    turnID: requested.turnID, itemID: itemID, timelineOrdinal: Int64(requested.itemOffset)
+                )], itemIDs: [itemID], continuation: next
+            ))
+        }
+        await waitForHistoryItemEnrichmentToFinish(in: store, sessionID: sessionID)
+        XCTAssertEqual(client.requestedItemContinuations.map(\.turnID), Array(repeating: ["turn-1", "turn-0"], count: 6).flatMap { $0 })
+        XCTAssertEqual(conversationStore.messages(for: sessionID).count, 12)
+        XCTAssertEqual(conversationStore.historyMergeInvocationCountForTesting, 4)
+        XCTAssertEqual(store.historyLoadedQualityBySessionID[sessionID], .full)
+    }
+
     func testHistoryItemEnrichmentStopsCursorCycleWithoutAuthoritativePrune() async {
         let client = OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: []))
         let conversationStore = ConversationStore()
