@@ -384,6 +384,19 @@ private struct ModuleDetailView: View {
             Text("加载通道会重启 agentd，现有连接会短暂重连；Mimi 不会安装、启动或停止 Harness。")
                 .font(.caption2).foregroundStyle(.tertiary)
         } else {
+            if module == .claude {
+                Toggle("回合结束提示卡", isOn: Binding(
+                    get: { store.claudeTurnHintsEnabled },
+                    set: { enabled in Task { await store.setClaudeTurnHintsEnabled(enabled) } }
+                ))
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .disabled(store.isBusy || store.owner != .macApp)
+                .accessibilityHint("控制 Claude 是否在完成回复后生成总结、建议回复和新会话提议")
+                Text("关闭后，Claude 不再生成 Mimi 的回合总结、建议回复和新会话提议。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             HStack {
                 Button("复制登录命令") {
                     guard let command = loginCommand else { return }

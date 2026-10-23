@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import type { Catalog, SessionRecord } from "../claude/catalog.ts";
+import type { Overlay } from "../claude/overlay.ts";
 import type { ClaudeSessions } from "../claude/sdk.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
 import { RpcError } from "../rpc/frames.ts";
@@ -19,6 +21,7 @@ export interface TurnHandlerDeps {
   holders(): Promise<Map<string, SessionHolder>>;
   /** Claude Code 版本下限：起进程前确认，过旧时给出明确提示。 */
   claudeCode: { ensure(): Promise<void> };
+  overlay: Pick<Overlay, "consumeTaskProposal">;
 }
 
 function asParams(value: unknown): Params {
@@ -37,9 +40,22 @@ function inputOf(params: Params, method: string): UserInput[] {
   return params.input as UserInput[];
 }
 
-function newRecord(threadId: string, cwd: string): SessionRecord {
+function newRecord(threadId: string, cwd: string, spawnedFromId: string | null = null): SessionRecord {
   const now = Math.floor(Date.now() / 1000);
-  return { id: threadId, cwd, name: null, preview: "", createdAt: now, updatedAt: now, gitBranch: null, path: null, archived: false, spawnedFromId: null };
+  return { id: threadId, cwd, name: null, preview: "", createdAt: now, updatedAt: now, gitBranch: null, path: null, archived: false, spawnedFromId };
+}
+
+function taskProposalOf(params: Params): { id: string; parentThreadId: string } | undefined {
+  if (params.mimiTaskProposal === undefined) return undefined;
+  const raw = params.mimiTaskProposal;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw RpcError.invalidParams("thread/start.mimiTaskProposal 无效");
+  }
+  const proposal = raw as Record<string, unknown>;
+  if (typeof proposal.id !== "string" || !proposal.id.trim() || typeof proposal.parentThreadId !== "string" || !proposal.parentThreadId.trim()) {
+    throw RpcError.invalidParams("thread/start.mimiTaskProposal 缺少 id 或 parentThreadId");
+  }
+  return { id: proposal.id.trim(), parentThreadId: proposal.parentThreadId.trim() };
 }
 
 /** thread/start 与 thread/resume 共用的响应：会话本体 + 当前生效的运行设置。 */
@@ -89,12 +105,33 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
   }
 
   return {
-    threadStart(raw: unknown, context: RequestContext) {
+    async threadStart(raw: unknown, context: RequestContext) {
       const params = asParams(raw);
       const cwd = requireString(params, "cwd", "thread/start");
-      const runtime = manager.create(cwd, runSettingsFor(params));
+      const taskProposal = taskProposalOf(params);
+      let spawnedFromId: string | null = null;
+      let threadId: string | undefined;
+      if (taskProposal) {
+        const proposal = await deps.overlay.consumeTaskProposal(
+          taskProposal.id,
+          taskProposal.parentThreadId,
+          cwd,
+          randomUUID(),
+        );
+        if (!proposal?.consumedByThreadId) {
+          throw RpcError.invalidParams("任务提议无效或不属于当前 Claude 会话");
+        }
+        spawnedFromId = proposal.parentThreadId;
+        threadId = proposal.consumedByThreadId;
+      }
+      const runtime = threadId
+        ? manager.get(threadId) ?? manager.create(cwd, runSettingsFor(params), threadId)
+        : manager.create(cwd, runSettingsFor(params));
       manager.subscribe(runtime.threadId, context.session);
-      const thread = toThread(newRecord(runtime.threadId, cwd), [], { canAcceptDirectInput: true, status: { type: "idle" } });
+      const thread = toThread(newRecord(runtime.threadId, cwd, spawnedFromId), [], {
+        canAcceptDirectInput: true,
+        status: runtime.activeTurnId ? { type: "active", activeFlags: [] } : { type: "idle" },
+      });
       return sessionResponse(thread, runtime, params);
     },
 

@@ -127,10 +127,16 @@ type ClaudeConfig struct {
 	BridgeBin string `json:"bridge_bin"`
 	// LegacyBridge 是保留一个版本周期的回退开关（#660）：默认用随包的 SDK 适配器，
 	// 打开后改用旧 Rust bridge。
-	LegacyBridge         bool              `json:"legacy_bridge,omitempty"`
+	LegacyBridge bool `json:"legacy_bridge,omitempty"`
+	// TurnHintsEnabled 省略时保持开启，兼容升级前的配置；只作用于 SDK adapter。
+	TurnHintsEnabled     *bool             `json:"turn_hints_enabled,omitempty"`
 	Args                 []string          `json:"args,omitempty"`
 	Env                  map[string]string `json:"env,omitempty"`
 	MaxConcurrentBridges int               `json:"max_concurrent_bridges"`
+}
+
+func (c ClaudeConfig) TurnHintsAreEnabled() bool {
+	return c.TurnHintsEnabled == nil || *c.TurnHintsEnabled
 }
 
 // DeepSeekConfig 配置 DeepSeek Harness 服务接入。默认关闭。

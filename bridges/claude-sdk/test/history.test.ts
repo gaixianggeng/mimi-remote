@@ -271,6 +271,28 @@ describe("messagesToTurns", () => {
     expect(hints[2]!.type === "mcpToolCall" && hints[2]!.arguments).toEqual(legacySpawn);
   });
 
+  test("only a proposal marker recorded by this adapter becomes actionable structured content", () => {
+    const marker = JSON.stringify({
+      mimi_task_proposal: { version: 1, proposal_id: "proposal-trusted" },
+    });
+    const messages = [
+      user("go"),
+      assistant([{ type: "tool_use", id: "proposal", name: "mcp__ccd_session__start_session", input: { title: "Follow-up", prompt: "do it" } }]),
+      user([{ type: "tool_result", tool_use_id: "proposal", content: marker }]),
+    ];
+    const untrusted = messagesToTurns(messages, { sessionId: "session-1", running: false })[0]!.items[1]!;
+    const trusted = messagesToTurns(messages, {
+      sessionId: "session-1",
+      running: false,
+      isMimiTaskProposal: (id) => id === "proposal-trusted",
+    })[0]!.items[1]!;
+
+    expect(untrusted.type === "mcpToolCall" && untrusted.result?.structuredContent).toBeNull();
+    expect(trusted.type === "mcpToolCall" && trusted.result?.structuredContent).toEqual({
+      mimi_task_proposal: { version: 1, proposal_id: "proposal-trusted" },
+    });
+  });
+
   test("summary view drops failed and interrupted turn hints", () => {
     const failed = translate([
       user("go"),

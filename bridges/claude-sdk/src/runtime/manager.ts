@@ -21,6 +21,7 @@ import {
 } from "./takeover.ts";
 import type { SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import { ThreadRuntime, type RuntimeHost } from "./threadRuntime.ts";
+import type { MimiTaskProposalStore } from "./turnHints.ts";
 
 interface PendingRequest {
   threadId: string;
@@ -52,6 +53,9 @@ export interface ManagerOptions {
   broadcast?: (frame: OutboundFrame, subscribers: Iterable<Session>) => void;
   /** 会话最后一条对话消息的时间（Unix 秒），随持有方变化一起推送，客户端据此刷新列表时间与未读。 */
   readActivity?: (threadId: string) => Promise<number | undefined>;
+  turnHints?: {
+    store: MimiTaskProposalStore & { isTaskProposal(parentThreadId: string, proposalId: string): boolean };
+  };
 }
 
 /** Claude Code 在第一轮前后异步生成 AI 标题，通常几秒内写入；稍后再看几次。 */
@@ -91,6 +95,7 @@ export class ThreadManager {
         this.terminal = new Set(names);
       },
       idleCloseMs: options.idleCloseMs ?? 10 * 60_000,
+      ...(options.turnHints ? { turnHints: options.turnHints } : {}),
       ...(options.startQuery ? { startQuery: options.startQuery } : {}),
     };
     this.ownership = new OwnershipWatcher({
@@ -149,8 +154,8 @@ export class ThreadManager {
   }
 
   /** 新会话：ID 由适配器生成，第一次 turn 时以同一 ID 创建 Claude 会话。 */
-  create(cwd: string, settings: RunSettings): ThreadRuntime {
-    const runtime = new ThreadRuntime(randomUUID(), cwd, this.host, settings, false);
+  create(cwd: string, settings: RunSettings, threadId: string = randomUUID()): ThreadRuntime {
+    const runtime = new ThreadRuntime(threadId, cwd, this.host, settings, false);
     this.runtimes.set(runtime.threadId, runtime);
     this.titles.set(runtime.threadId, null);
     return runtime;

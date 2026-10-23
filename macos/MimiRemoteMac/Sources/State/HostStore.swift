@@ -20,7 +20,7 @@ final class HostStore {
     private(set) var isExportingDiagnostics = false
     private(set) var appliedFixes: [String] = []
     private var isPerformingAction = false
-    private(set) var isBusy: Bool {
+    var isBusy: Bool {
         get { isPerformingAction || codexRuntimeUpdate.isUpdating }
         set { isPerformingAction = newValue }
     }
@@ -30,8 +30,9 @@ final class HostStore {
     private(set) var homebrewLoaded = false
     private(set) var launchesAtLogin = false
     private(set) var claudeConfiguration: ClaudeConfigurationResult?
-    private(set) var isUpdatingClaude = false
-    private(set) var claudeError: String?
+    var claudeTurnHintsConfiguration: ClaudeTurnHintsConfigurationResult?
+    var isUpdatingClaude = false
+    var claudeError: String?
     private(set) var deepSeekConfiguration: DeepSeekConfigurationResult?
     private(set) var isUpdatingDeepSeek = false
     private(set) var deepSeekError: String?
@@ -80,7 +81,7 @@ final class HostStore {
         status?.runtimeStatus?.runtimes.first { $0.id.caseInsensitiveCompare("codex") == .orderedSame }
     }
 
-    private let agent: AgentCommandClient
+    let agent: AgentCommandClient
     private let services: ServiceManagementClient
     private let configCheck: AgentdConfigCheckClient
     private let homebrew: HomebrewServiceClient
@@ -656,7 +657,7 @@ final class HostStore {
     /// 这里做一次有界核对：能读到可信的当前状态就交给常规状态落地；读不到就进入明确的
     /// 失败态并保留恢复入口。不得为了让开关可用而直接写成 `.ready` —— 退出启动中不等于
     /// 宣称服务健康。
-    private func settleModuleChangeFailure(_ detail: String) async {
+    func settleModuleChangeFailure(_ detail: String) async {
         guard lifecycle == .starting else { return }
         // 能读到可信状态时，apply() 已按真实 serviceOK/processOK 落地；服务明确不可用
         // 就沿用那份更严重的状态。配置可能已改变且恢复未完成，不能因为进程还活着就把
@@ -681,7 +682,7 @@ final class HostStore {
         throw AgentClientError.commandFailed("运行中的 agentd 尚未确认模块设置，请检查版本并重启服务。")
     }
 
-    private func invalidateModulePairing() {
+    func invalidateModulePairing() {
         pairingRefreshGeneration &+= 1
         statusRequestSequence &+= 1
         pairing = nil
@@ -1231,7 +1232,7 @@ final class HostStore {
         }
     }
 
-    private func reloadMacAgentForConfigurationChange(fastRestart: Bool = false) async throws {
+    func reloadMacAgentForConfigurationChange(fastRestart: Bool = false) async throws {
         try validateMacAgentConfiguration()
         lifecycle = .starting
         let endpoint: String?
@@ -1261,7 +1262,7 @@ final class HostStore {
         try await registerMacAgentAndWaitForReady()
     }
 
-    private func waitForClaudeRuntime(enabled: Bool) async throws {
+    func waitForClaudeRuntime(enabled: Bool) async throws {
         isAwaitingServiceStart = true
         defer { isAwaitingServiceStart = false }
         for attempt in 0..<12 {
