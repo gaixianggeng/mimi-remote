@@ -469,6 +469,9 @@ extension SessionStore {
         switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "active", "running", "inprogress", "in_progress", "waiting_for_approval", "waiting_for_input":
             return false
+        case "failed", "failure", "systemerror", "system_error", "interrupted", "cancelled", "canceled", "aborted":
+            // 失败和取消也已结束；缺少完成时间不能让部分过程页越过末条摘要。
+            return true
         default:
             break
         }

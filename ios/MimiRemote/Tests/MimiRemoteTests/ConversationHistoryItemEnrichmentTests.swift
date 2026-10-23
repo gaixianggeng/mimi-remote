@@ -6,6 +6,14 @@ extension ConversationDataFlowTests {
     func testLatestCompletedTurnKeepsSummaryAtTailUntilAllItemsArrive() async {
         let completionMarkers: [[String: CodexAppServerJSONValue]] = [
             ["status": .string("completed")],
+            ["status": .object(["type": .string("failed")])],
+            ["status": .string("failure")],
+            ["status": .string("systemerror")],
+            ["status": .string("system_error")],
+            ["status": .object(["status": .string("interrupted")])],
+            ["status": .string("cancelled")],
+            ["status": .string("canceled")],
+            ["status": .string("aborted")],
             ["completedAt": .int(200)],
             ["completed_at": .string("1970-01-01T00:03:20Z")],
             ["finishedAt": .double(200)],
