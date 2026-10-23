@@ -37,6 +37,7 @@ struct HistoryItemEnrichmentState {
     var loadedItemIDsByTurnID: [TurnID: Set<AgentItemID>] = [:]
     var bufferedPages: [HistoryItemEnrichmentBufferedPage] = []
     var bufferedAuthoritativeItems: [TurnID: Set<AgentItemID>] = [:]
+    var bufferedFinishedTurnIDs: Set<TurnID> = []
     var didPublish = false
     var didFail = false
     var task: Task<Void, Never>?
@@ -246,11 +247,15 @@ extension SessionStore {
         } else {
             state.loadedItemIDsByTurnID.removeValue(forKey: turnID)
         }
+        // 游标结束只表示页已读完，不扩大成功状态才允许权威删除旧 Item 的规则。
+        if page.continuation == nil {
+            state.bufferedFinishedTurnIDs.insert(turnID)
+        }
         state.bufferedPages.append(HistoryItemEnrichmentBufferedPage(
             historyPageOrdinal: work.historyPageOrdinal,
             turnIndex: work.continuation.turnIndex,
             itemOffset: work.continuation.itemOffset,
-            completionRequiredTurnID: work.continuation.isLatestTurn && Self.isCompletedHistoryTurn(work.continuation.turn)
+            completionRequiredTurnID: Self.shouldWaitForLatestTurnItems(work.continuation)
                 ? turnID : nil,
             messages: page.messages
         ))
@@ -391,7 +396,7 @@ extension SessionStore {
         var readyPages: [HistoryItemEnrichmentBufferedPage] = []
         var deferredPages: [HistoryItemEnrichmentBufferedPage] = []
         for page in state.bufferedPages {
-            if let turnID = page.completionRequiredTurnID, state.bufferedAuthoritativeItems[turnID] == nil {
+            if let turnID = page.completionRequiredTurnID, !state.bufferedFinishedTurnIDs.contains(turnID) {
                 deferredPages.append(page)
             } else {
                 readyPages.append(page)
@@ -419,6 +424,7 @@ extension SessionStore {
         )
         state.bufferedPages = deferredPages
         state.bufferedAuthoritativeItems = [:]
+        state.bufferedFinishedTurnIDs = []
         state.didPublish = true
         return publication
     }
@@ -448,6 +454,26 @@ extension SessionStore {
             authoritativeCompletedTurnItems: publication.authoritativeItems,
             timelineMutationKind: .enrichment
         )
+    }
+
+    private static func shouldWaitForLatestTurnItems(_ continuation: HistoryTurnItemsContinuation) -> Bool {
+        guard continuation.isLatestTurn else { return false }
+        let turn = continuation.turn
+        let raw = turn["status"]?.stringValue
+            ?? turn["status"]?.objectValue?["type"]?.stringValue
+            ?? turn["status"]?.objectValue?["status"]?.stringValue
+        switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "active", "running", "inprogress", "in_progress", "waiting_for_approval", "waiting_for_input":
+            return false
+        default:
+            break
+        }
+        if isCompletedHistoryTurn(turn) { return true }
+        // 与历史投影兼容相同完成时间字段；显式运行态始终即时发布，不能被 updatedAt 冻结。
+        return ["completedAt", "completed_at", "updatedAt", "updated_at", "finishedAt", "finished_at"].contains { key in
+            guard let rawDate = turn[key]?.stringValue else { return false }
+            return CodexAppServerSessionRuntime.date(from: rawDate) != nil
+        }
     }
 
     private static func isCompletedHistoryTurn(_ turn: [String: CodexAppServerJSONValue]) -> Bool {

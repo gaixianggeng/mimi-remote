@@ -4,52 +4,61 @@ import XCTest
 @MainActor
 extension ConversationDataFlowTests {
     func testLatestCompletedTurnKeepsSummaryAtTailUntilAllItemsArrive() async {
-        for fails in [false, true] {
-            let sessionID = "latest-turn-publication-\(fails)"
-            let client = OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: []))
-            let conversationStore = ConversationStore()
-            let store = SessionStore(
-                appStore: makeIsolatedAppStore(), conversationStore: conversationStore,
-                logStore: LogStore(), clientFactory: { client }
-            )
-            store.selectedSessionID = sessionID
-            let first = HistoryTurnItemsContinuation(
-                turnID: "latest", turn: ["id": .string("latest"), "status": .string("completed")],
-                turnIndex: 0, itemOffset: 0, cursor: nil, pageLimit: 50,
-                threadIsActive: false, isLatestTurn: true, hasVisibleUserMessageBefore: false
-            )
-            store.applyHistoryFirstPage(HistoryMessagesPage(
-                messages: [CodexHistoryMessage(
-                    id: "summary", role: "assistant", content: "最终报告",
-                    createdAt: Date(timeIntervalSince1970: 200), turnID: "latest", itemID: "summary"
-                )],
-                itemContinuations: [first]
-            ), sessionID: sessionID)
-            let summaryID = conversationStore.messages(for: sessionID).last?.id
-            await client.waitForHistoryItemRequestCount(1)
-            let second = first.continuing(cursor: "tail", loadedItemCount: 1, hasVisibleUserMessage: false)
-            client.resolveHistoryItemRequest(at: 0, with: HistoryTurnItemsPage(
-                messages: [CodexHistoryMessage(
-                    id: "image", role: "assistant", content: "过程图片",
-                    createdAt: Date(timeIntervalSince1970: 400), turnID: "latest", itemID: "image", timelineOrdinal: 207
-                )], itemIDs: ["image"], continuation: second
-            ))
-            await client.waitForHistoryItemRequestCount(2)
-            XCTAssertEqual(conversationStore.messages(for: sessionID).map(\.content), ["最终报告"])
-            if fails {
-                client.resolveHistoryItemRequest(at: 1, result: .failure(URLError(.networkConnectionLost)))
-            } else {
-                client.resolveHistoryItemRequest(at: 1, with: HistoryTurnItemsPage(
+        let completionMarkers: [[String: CodexAppServerJSONValue]] = [
+            ["status": .string("completed")],
+            ["completedAt": .int(200)],
+            ["completed_at": .string("1970-01-01T00:03:20Z")],
+            ["finishedAt": .double(200)],
+            ["updatedAt": .int(200)]
+        ]
+        for completion in completionMarkers {
+            for fails in [false, true] {
+                let sessionID = "latest-turn-publication-\(fails)"
+                let client = OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: []))
+                let conversationStore = ConversationStore()
+                let store = SessionStore(
+                    appStore: makeIsolatedAppStore(), conversationStore: conversationStore,
+                    logStore: LogStore(), clientFactory: { client }
+                )
+                store.selectedSessionID = sessionID
+                let first = HistoryTurnItemsContinuation(
+                    turnID: "latest", turn: ["id": .string("latest")].merging(completion) { _, new in new },
+                    turnIndex: 0, itemOffset: 0, cursor: nil, pageLimit: 50,
+                    threadIsActive: false, isLatestTurn: true, hasVisibleUserMessageBefore: false
+                )
+                store.applyHistoryFirstPage(HistoryMessagesPage(
                     messages: [CodexHistoryMessage(
-                        id: "final", role: "assistant", content: "最终报告",
-                        createdAt: Date(timeIntervalSince1970: 200), turnID: "latest", itemID: "final", timelineOrdinal: 236
-                    )], itemIDs: ["final"], continuation: nil
+                        id: "summary", role: "assistant", content: "最终报告",
+                        createdAt: Date(timeIntervalSince1970: 200), turnID: "latest", itemID: "summary"
+                    )],
+                    itemContinuations: [first]
+                ), sessionID: sessionID)
+                let summaryID = conversationStore.messages(for: sessionID).last?.id
+                await client.waitForHistoryItemRequestCount(1)
+                let second = first.continuing(cursor: "tail", loadedItemCount: 1, hasVisibleUserMessage: false)
+                client.resolveHistoryItemRequest(at: 0, with: HistoryTurnItemsPage(
+                    messages: [CodexHistoryMessage(
+                        id: "image", role: "assistant", content: "过程图片",
+                        createdAt: Date(timeIntervalSince1970: 400), turnID: "latest", itemID: "image", timelineOrdinal: 207
+                    )], itemIDs: ["image"], continuation: second
                 ))
+                await client.waitForHistoryItemRequestCount(2)
+                XCTAssertEqual(conversationStore.messages(for: sessionID).map(\.content), ["最终报告"])
+                if fails {
+                    client.resolveHistoryItemRequest(at: 1, result: .failure(URLError(.networkConnectionLost)))
+                } else {
+                    client.resolveHistoryItemRequest(at: 1, with: HistoryTurnItemsPage(
+                        messages: [CodexHistoryMessage(
+                            id: "final", role: "assistant", content: "最终报告",
+                            createdAt: Date(timeIntervalSince1970: 200), turnID: "latest", itemID: "final", timelineOrdinal: 236
+                        )], itemIDs: ["final"], continuation: nil
+                    ))
+                }
+                await waitForHistoryItemEnrichmentToFinish(in: store, sessionID: sessionID)
+                XCTAssertEqual(conversationStore.messages(for: sessionID).last?.id, summaryID)
+                XCTAssertEqual(conversationStore.messages(for: sessionID).map(\.content), fails ? ["最终报告"] : ["过程图片", "最终报告"])
+                XCTAssertEqual(store.historyLoadedQualityBySessionID[sessionID], fails ? .summary : .full)
             }
-            await waitForHistoryItemEnrichmentToFinish(in: store, sessionID: sessionID)
-            XCTAssertEqual(conversationStore.messages(for: sessionID).last?.id, summaryID)
-            XCTAssertEqual(conversationStore.messages(for: sessionID).map(\.content), fails ? ["最终报告"] : ["过程图片", "最终报告"])
-            XCTAssertEqual(store.historyLoadedQualityBySessionID[sessionID], fails ? .summary : .full)
         }
     }
 
@@ -63,7 +72,9 @@ extension ConversationDataFlowTests {
         )
         store.selectedSessionID = sessionID
         let first = HistoryTurnItemsContinuation(
-            turnID: "active", turn: ["id": .string("active"), "status": .string("inProgress")],
+            turnID: "active", turn: [
+                "id": .string("active"), "status": .string("inProgress"), "updatedAt": .int(200)
+            ],
             turnIndex: 0, itemOffset: 0, cursor: nil, pageLimit: 50,
             threadIsActive: true, isLatestTurn: true, hasVisibleUserMessageBefore: false
         )
