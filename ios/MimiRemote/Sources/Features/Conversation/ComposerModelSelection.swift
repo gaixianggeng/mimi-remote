@@ -4,6 +4,11 @@ import SwiftUI
 // 模型目录过滤、默认值选择和会话 runtime 锁定集中在这里，避免 ComposerView
 // 同时承担视图布局与模型策略。成员保持 module-internal，供 ComposerView 跨文件扩展协作。
 extension ComposerView {
+    /// 目标模式只对通道声明了 thread/goal/* 的 Runtime 开放；规划模式不受影响（#791）。
+    var supportsGoalMode: Bool {
+        sessionStore.supportsThreadGoals(runtimeProvider: composerRuntimeProvider)
+    }
+
     func preparedTurnOptionsForSubmit() -> CodexAppServerTurnOptions {
         var options = developerModeEnabled
             ? composerState.turnOptions
@@ -29,7 +34,7 @@ extension ComposerView {
     func synchronizeAuthoritativeCollaborationMode() {
         guard activeComposerDraftScope == currentComposerDraftScope,
               case .session(let sessionID) = activeComposerDraftScope,
-              RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider),
+              RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider),
               let authoritativeMode = sessionStore.activeCollaborationMode(for: sessionID),
               let mode = ComposerCollaborationModeSync.resolvedSendMode(
                   authoritativeMode: authoritativeMode,
@@ -107,14 +112,17 @@ extension ComposerView {
             composerToolbarControlLabel(
                 // iPhone 用短标签外显模型与推理档位；完整名称仍通过 accessibilityValue 提供。
                 title: showsTitle ? visibleTitle : nil,
-                systemImage: usesCompactTitle ? nil : "cpu",
+                // 窄档短标签不带图标；名称放不下时至少保留图标（#835）。
+                systemImage: usesCompactTitle && showsTitle ? nil : "cpu",
                 trailingSystemImage: ConversationLayout.compactComposerShowsFastModeIndicator(
                     usesCompactMetrics: usesCompactComposerMetrics,
                     isFastModeSelected: hasAcceleratedServiceTierSelected
                 ) ? "bolt.fill" : nil,
-                titleMaxWidth: usesCompactTitle
-                    ? ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: availableWidth)
-                    : (usesCompactComposerMetrics ? 82 : 150),
+                titleMaxWidth: ConversationLayout.composerModelTitleMaxWidth(
+                    tier: composerTier,
+                    availableWidth: availableWidth,
+                    showsInlineDelivery: compactToolbarShowsInlineDeliveryControl
+                ),
                 usesCondensedTitle: usesCompactTitle,
                 accessibilityLabel: L10n.text("ui.switch_model_and_inference_strength")
             )
@@ -145,9 +153,11 @@ extension ComposerView {
                     }
                 },
                 onRefresh: {
-                    Task { await sessionStore.refreshAppServerModelOptions(force: true) }
+                    Task { await refreshModelOptionsForComposerRuntime(force: true) }
                 }
             )
+            // 两个打开入口（按钮与布局交接）都经过这里；目录缺当前 Runtime 时打开即补齐。
+            .task { await ensureModelOptionsForComposerRuntime() }
             .environmentObject(themeStore)
             .presentationCompactAdaptation(horizontal: .sheet, vertical: .sheet)
             // compact popover 转成 sheet 后，iOS 26 不会稳定采用 fitted 内容高度。
@@ -157,6 +167,20 @@ extension ComposerView {
             .presentationDragIndicator(.visible)
             .presentationBackground(themeStore.tokens(for: colorScheme).surface)
         }
+    }
+
+    /// 聚合刷新之后按当前会话的 Runtime 补齐目录：次要通道这次没进聚合目录时，
+    /// 菜单不能先落到内置兜底、强制刷新后才换成电脑端的真实目录（#778）。
+    func refreshModelOptionsForComposerRuntime(force: Bool = false) async {
+        await sessionStore.refreshAppServerModelOptions(force: force)
+        await ensureModelOptionsForComposerRuntime()
+    }
+
+    func ensureModelOptionsForComposerRuntime() async {
+        await sessionStore.prepareTurnModelOptions(
+            runtimeProvider: composerRuntimeProvider,
+            hostScope: sessionStore.appStore.activeHostScope
+        )
     }
 
     var modelPickerPresentationDetents: Set<PresentationDetent> {

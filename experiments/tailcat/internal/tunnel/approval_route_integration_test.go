@@ -1,19 +1,21 @@
 package tunnel
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tailcattest"
 	"tailscale.com/tstest/integration"
 )
 
 // 锁屏恢复复用同一安装身份，必须先关闭旧引擎再启动新连接。
 // 两个同身份引擎并存会抢占 DERP 下行，导致原连接后续请求超时。
 func TestApprovalRouteRecoversSeriallyOverDERP(t *testing.T) {
-	t.Setenv("TS_DEBUG_ALWAYS_USE_DERP", "1")
+	tailcattest.ForceDERP(t)
 	backend := newAgentdFixture(t)
 	parsed, err := url.Parse(backend.URL)
 	if err != nil {
@@ -60,4 +62,13 @@ func TestApprovalRouteRecoversSeriallyOverDERP(t *testing.T) {
 	recovered := startTestForwarder(t, host.Address(), identityPath)
 	defer recovered.Close()
 	check(recovered.Endpoint())
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	diagnostic, err := recovered.DiscoPing(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diagnostic.Path != "derp" || diagnostic.DERPRegionCode != tailcattest.AddressRegionCode(t, host.Address()) {
+		t.Fatalf("恢复后的链路没有经过测试 DERP：%+v", diagnostic)
+	}
 }

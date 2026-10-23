@@ -9,7 +9,7 @@ fail() {
   exit 1
 }
 
-for command_name in bash grep sed; do
+for command_name in bash grep sed python3; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "缺少命令 ${command_name}。"
 done
@@ -90,6 +90,13 @@ grep -Fq 'test-conversation-regressions.sh --ios-only' .github/workflows/ios-ci.
   || fail "iOS CI 没有显式使用 --ios-only。"
 grep -Fq 'test-conversation-regressions.sh --ios-only' scripts/verify-change.sh \
   || fail "本地 full iOS 验证没有显式使用 --ios-only。"
+tailcat_job="$(sed -n '/^  tailcat-integration:/,/^  conversation-regressions:/p' .github/workflows/ios-ci.yml)"
+grep -Fq 'runs-on: ubuntu-latest' <<<"$tailcat_job" \
+  || fail "Tailcat 集成测试 job 必须在 Linux 托管 runner 上运行。"
+grep -Fq 'go-version-file: experiments/tailcat/go.mod' <<<"$tailcat_job" \
+  || fail "Tailcat 集成测试 job 没有使用 Tailcat go.mod 固定 Go 版本。"
+grep -Fxq '        run: go test ./... -count=1' <<<"$tailcat_job" \
+  || fail "Tailcat 集成测试 job 没有完整运行 Tailcat module 测试。"
 conversation_job="$(sed -n '/^  conversation-regressions:/,/^  app-store-release:/p' .github/workflows/ios-ci.yml)"
 release_job="$(sed -n '/^  app-store-release:/,$p' .github/workflows/ios-ci.yml)"
 [[ "$(grep -Fc 'actions/setup-go@' <<<"$conversation_job")" == "1" ]] \
@@ -203,6 +210,26 @@ for test_entry in "${critical_swift_tests[@]}"; do
   grep -Fq "$test_name" "$map_doc" \
     || fail "${map_doc} 未记录 ${test_name}。"
 done
+
+# 上面的映射只钉住高价值用例；下面的完整性检查覆盖全部测试类：每个 XCTestCase 类都要
+# 归属 PR 集合或每晚集合，方法级 selector 与隔离条目必须指向现存方法（#741）。
+bash ./scripts/check-ios-test-selectors.sh
+grep -Fq 'bash ./scripts/check-ios-test-selectors.sh' .github/workflows/ios-ci.yml \
+  || fail "iOS CI 没有在回归前执行 selector 完整性检查。"
+grep -Fq 'ios-test-inventory.py" skip-args' "$runner" \
+  || fail "iOS runner 没有跳过隔离清单中的用例。"
+full_workflow=".github/workflows/ios-full-tests.yml"
+[[ -f "$full_workflow" ]] || fail "缺少每晚全量 XCTest 工作流 ${full_workflow}。"
+grep -Fq -- '- cron:' "$full_workflow" || fail "每晚全量 XCTest 工作流缺少 schedule。"
+grep -Fq 'bash ./scripts/test-ios-full-suite.sh' "$full_workflow" \
+  || fail "每晚全量 XCTest 工作流没有调用 test-ios-full-suite.sh。"
+grep -Fq 'runs-on: macos-26' "$full_workflow" \
+  || fail "每晚全量 XCTest 必须与 PR 回归使用同一 macOS runner 镜像。"
+# 快照基线以每晚任务的 Simulator 为准；它与 PR 回归的 runtime 一旦分叉，两边会互相判红。
+ci_runtime="$(grep -o 'com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]*' .github/workflows/ios-ci.yml | sort -u)"
+full_runtime="$(grep -o 'com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]*' "$full_workflow" | sort -u)"
+[[ -n "$ci_runtime" && "$ci_runtime" == "$full_runtime" ]] \
+  || fail "每晚全量 XCTest 与 PR 回归必须使用同一个 Simulator runtime（当前 ${ci_runtime:-无} vs ${full_runtime:-无}）。"
 
 grep -Fq 'bash ./scripts/check-critical-regressions.sh' scripts/check-pr-gate.sh \
   || fail "PR Gate 自检没有调用关键链路映射检查。"

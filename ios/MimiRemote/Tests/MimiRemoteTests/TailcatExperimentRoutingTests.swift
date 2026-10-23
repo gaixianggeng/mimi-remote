@@ -376,6 +376,65 @@ private final class ManagedConnectionEventReporterStub: ManagedConnectionEventRe
     }
 }
 
+/// 使用真实 URLSession 请求覆盖确认与 claim，等待响应由测试显式释放，不依赖 sleep。
+private final class ManagedUpgradeURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var handler: ((ManagedUpgradeURLProtocol) -> Void)?
+    private static var capturedRequests: [URLRequest] = []
+
+    static func configure(_ handler: @escaping (ManagedUpgradeURLProtocol) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.handler = handler
+        capturedRequests = []
+    }
+
+    static var requests: [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return capturedRequests
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        ["/api/pair/claim", "/api/tailcat/managed-pairing-link"].contains(request.url?.path ?? "")
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        var captured = request
+        if captured.httpBody == nil, let stream = captured.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var data = Data()
+            var buffer = [UInt8](repeating: 0, count: 1024)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                guard count > 0 else { break }
+                data.append(buffer, count: count)
+            }
+            captured.httpBody = data
+        }
+        Self.lock.lock()
+        Self.capturedRequests.append(captured)
+        let handler = Self.handler
+        Self.lock.unlock()
+        handler?(self)
+    }
+
+    func respond(status: Int = 200, body: String) {
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 @MainActor
 final class TailcatExperimentRoutingTests: XCTestCase {
     func testRuntimeFailedCloseInvalidatesRouteBeforeReplacement() async throws {
@@ -561,7 +620,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertTrue(fixture.store.isTailcatExperimentModeEnabled)
         XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:1")
         XCTAssertEqual(startCallCount, 0)
-        XCTAssertTrue(ManagedConnectionSubscriptionView.showsManagedRecoveryActions(
+        XCTAssertTrue(ManagedConnectionDevicesView.showsManagedRecoveryActions(
             tailcatState: fixture.controller.state,
             connectionFailed: false
         ))
@@ -573,6 +632,347 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertFalse(fixture.store.isTailcatExperimentModeEnabled)
         XCTAssertEqual(fixture.store.connectionEndpoint, "http://100.64.0.10:8787")
     }
+
+    func testManagedConnectionLANHintOnlyForFailedUnsubscribedLANProfiles() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func shows(
+            route: ConnectionProfileRoute? = .lan,
+            failed: Bool = true,
+            confirmedNotSubscribed: Bool = true,
+            dismissedAgo: TimeInterval? = nil
+        ) -> Bool {
+            InitialConnectionSettingsSections.showsManagedConnectionLANHint(
+                route: route,
+                connectionFailed: failed,
+                confirmedNotSubscribed: confirmedNotSubscribed,
+                dismissedAt: dismissedAgo.map { now.addingTimeInterval(-$0) },
+                now: now
+            )
+        }
+
+        XCTAssertTrue(shows())
+        // 只针对局域网档案：Tailscale、托管线路或尚无档案时不提示。
+        XCTAssertFalse(shows(route: .tailscale))
+        XCTAssertFalse(shows(route: .managedTailcat))
+        XCTAssertFalse(shows(route: nil))
+        XCTAssertFalse(shows(failed: false))
+        // 已订阅或订阅状态还没核验完（检查中、失败、待批准）都不提示。
+        XCTAssertFalse(shows(confirmedNotSubscribed: false))
+        // 关闭后 7 天内不再出现，满 7 天再出现。
+        let snooze = InitialConnectionSettingsSections.managedConnectionLANHintSnooze
+        XCTAssertFalse(shows(dismissedAgo: snooze - 60))
+        XCTAssertTrue(shows(dismissedAgo: snooze))
+    }
+
+    func testManagedConnectionEntryOnlyOpensForExplicitBuildFlagOrDebugArgument() {
+        let argument = ManagedConnectionSubscriptionView.debugEntryLaunchArgument
+
+        // App Store 提交构建：Info.plist 展开为空或 NO，Release 不读取调试参数。
+        XCTAssertFalse(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: "",
+            launchArguments: [argument],
+            allowsDebugLaunchArgument: false
+        ))
+        XCTAssertFalse(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: "NO",
+            launchArguments: [],
+            allowsDebugLaunchArgument: true
+        ))
+        XCTAssertFalse(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: nil,
+            launchArguments: [],
+            allowsDebugLaunchArgument: false
+        ))
+        // 内部 TestFlight 构建显式写入 YES。
+        XCTAssertTrue(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: "YES",
+            launchArguments: [],
+            allowsDebugLaunchArgument: false
+        ))
+        // Debug 启动参数保持原行为，供 UI 测试打开入口。
+        XCTAssertTrue(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: "",
+            launchArguments: [argument],
+            allowsDebugLaunchArgument: true
+        ))
+    }
+
+    func testOneTapManagedUpgradeOnlyOffersConnectedNonTailcatRoutes() {
+        for route in [ConnectionProfileRoute.lan, .tailscale, .https] {
+            XCTAssertTrue(ManagedConnectionDevicesView.canUpgradeCurrentComputer(route: route, connected: true))
+            XCTAssertFalse(ManagedConnectionDevicesView.canUpgradeCurrentComputer(route: route, connected: false))
+        }
+        // 进入托管模式会重建 Tailcat 身份：经 Tailcat 发起会切断请求自己，已托管也无需再接入。
+        XCTAssertFalse(ManagedConnectionDevicesView.canUpgradeCurrentComputer(route: .customTailcat, connected: true))
+        XCTAssertFalse(ManagedConnectionDevicesView.canUpgradeCurrentComputer(route: .managedTailcat, connected: true))
+        XCTAssertFalse(ManagedConnectionDevicesView.canUpgradeCurrentComputer(route: nil, connected: true))
+    }
+
+    func testOneTapUpgradeKeepsValidGrantDuringEntitlementRefresh() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func grant(expiresIn interval: TimeInterval) -> ManagedConnectionEntitlementGrant {
+            ManagedConnectionEntitlementGrant(
+                entitlement: ManagedConnectionEntitlement(
+                    id: "entitlement-id",
+                    productID: ManagedConnectionProductID.annual,
+                    status: .active,
+                    expiresAt: now.addingTimeInterval(interval)
+                ),
+                token: "in-memory-token",
+                tokenExpiresAt: now.addingTimeInterval(60)
+            )
+        }
+
+        XCTAssertTrue(ManagedConnectionDevicesView.hasEntitlementForUpgrade(
+            status: .entitled(grant(expiresIn: 3_600).entitlement), grant: nil, now: now
+        ))
+        // 凭证按计划刷新时状态短暂变成检查中，手里的权益仍有效就不能挡住。
+        XCTAssertTrue(ManagedConnectionDevicesView.hasEntitlementForUpgrade(
+            status: .resolving, grant: grant(expiresIn: 3_600), now: now
+        ))
+        XCTAssertFalse(ManagedConnectionDevicesView.hasEntitlementForUpgrade(
+            status: .resolving, grant: grant(expiresIn: -1), now: now
+        ))
+        XCTAssertFalse(ManagedConnectionDevicesView.hasEntitlementForUpgrade(
+            status: .available, grant: nil, now: now
+        ))
+    }
+
+    func testManagedPairingLinkErrorsDecodeStableCodes() {
+        func decode(_ status: Int, _ json: String) -> ManagedPairingLinkAPIError? {
+            ManagedPairingLinkAPIError.decode(status: status, data: Data(json.utf8))
+        }
+
+        XCTAssertEqual(
+            decode(409, #"{"code":"tailcat_self_hosted_clients_present","error":"x","paired_device_count":2}"#),
+            .selfHostedClientsPresent(count: 2)
+        )
+        XCTAssertEqual(decode(409, #"{"code":"tailcat_operation_in_progress","error":"x"}"#), .busy)
+        XCTAssertEqual(
+            decode(503, #"{"code":"tailcat_pair_failed","error":"生成失败"}"#),
+            .failed(code: "tailcat_pair_failed", message: "生成失败")
+        )
+        // 鉴权失败与没有 code 的旧响应交回通用处理，凭据失效逻辑不变。
+        XCTAssertNil(decode(401, #"{"code":"unauthorized","error":"x"}"#))
+        XCTAssertNil(decode(400, #"{"error":"invalid json"}"#))
+        XCTAssertNil(decode(500, "not json"))
+    }
+
+    func testOneTapManagedUpgradePreservesSavedRoutesAndDNS() async throws {
+        URLProtocol.registerClass(ManagedUpgradeURLProtocol.self)
+        defer { URLProtocol.unregisterClass(ManagedUpgradeURLProtocol.self) }
+        let routes: [(String, String?, ConnectionProfileRoute)] = [
+            ("http://192.168.1.20:8787", nil, .lan),
+            ("https://mac.example.com", nil, .https),
+            ("http://100.64.0.10:8787", nil, .tailscale),
+            ("http://100.64.0.10:8787", "studio.tailnet.ts.net", .tailscale),
+        ]
+        for (endpoint, dnsName, route) in routes {
+            ManagedUpgradeURLProtocol.configure { request in
+                request.respond(body: #"{"endpoint":"http://127.0.0.1:8787","token":"managed-token","tailcat_address":"tailcat:stable"}"#)
+            }
+            let authorizer = ManagedPairingAuthorizerStub()
+            let fixture = try makeControllerFixture(
+                startResults: [.success("http://127.0.0.1:49152"), .success("http://127.0.0.1:49153")],
+                managedPairingAuthorizer: authorizer
+            )
+            defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+            try await seedUpgradeProfile(fixture.store, endpoint: endpoint, dnsName: dnsName)
+            let original = try XCTUnwrap(fixture.store.activeConnectionProfile)
+            let context = try ManagedConnectionUpgradeContext(appStore: fixture.store, client: fixture.store.client())
+            let sessions = SessionStore(
+                appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
+                tailcatExperimentController: fixture.controller
+            )
+            let url = try XCTUnwrap(URL(string: Self.managedTailcatPairingURL))
+
+            _ = try await sessions.applyManagedPairingURL(url, upgrading: context)
+
+            XCTAssertEqual(fixture.store.activeConnectionProfileID, original.id)
+            XCTAssertEqual(fixture.store.connectionProfiles.count, 1)
+            XCTAssertEqual(fixture.store.activeConnectionProfile?.endpoint, endpoint)
+            XCTAssertEqual(fixture.store.activeConnectionProfile?.tailscaleDNSName, dnsName)
+            XCTAssertEqual(fixture.store.activeConnectionProfile?.connectionRoute, .managedTailcat)
+            XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:49153")
+            XCTAssertEqual(fixture.store.savedFallbackConnectionRoute, route)
+            XCTAssertEqual(authorizer.completions.count, 1)
+            let claim = try XCTUnwrap(ManagedUpgradeURLProtocol.requests.first?.httpBody)
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: claim) as? [String: Any])
+            XCTAssertEqual(payload["endpoint"] as? String, "http://127.0.0.1:8787", "签名票据必须原样发送")
+
+            let recovered = await fixture.controller.useSavedRouteOnce(route, appStore: fixture.store)
+            XCTAssertTrue(recovered)
+            XCTAssertEqual(fixture.store.connectionEndpoint, original.connectionCandidates.first)
+            XCTAssertEqual(fixture.store.activeConnectionProfile?.connectionRoute, .managedTailcat)
+        }
+    }
+
+    func testManagedScanWithoutUpgradeStillUsesTicketEndpoint() async throws {
+        URLProtocol.registerClass(ManagedUpgradeURLProtocol.self)
+        defer { URLProtocol.unregisterClass(ManagedUpgradeURLProtocol.self) }
+        ManagedUpgradeURLProtocol.configure { request in
+            request.respond(body: #"{"endpoint":"http://127.0.0.1:8787","token":"managed-token","tailcat_address":"tailcat:stable"}"#)
+        }
+        let fixture = try makeControllerFixture(
+            startResults: [.success("http://127.0.0.1:49152"), .success("http://127.0.0.1:49153")],
+            managedPairingAuthorizer: ManagedPairingAuthorizerStub()
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let sessions = SessionStore(
+            appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
+            tailcatExperimentController: fixture.controller
+        )
+
+        _ = try await sessions.applyManagedPairingURL(try XCTUnwrap(URL(string: Self.managedTailcatPairingURL)))
+
+        XCTAssertEqual(fixture.store.activeConnectionProfile?.endpoint, "http://127.0.0.1:8787")
+        XCTAssertEqual(fixture.store.activeConnectionProfile?.connectionRoute, .managedTailcat)
+    }
+
+    func testUpgradeConfirmationUsesOriginalClientAndStopsAfterSwitchingAwayAndBack() async throws {
+        let fixture = try makeControllerFixture(startResults: [])
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try await seedUpgradeProfile(fixture.store)
+        let session = makeUpgradeHTTPSession()
+        defer { session.invalidateAndCancel() }
+        let client = AgentAPIClient(endpoint: fixture.store.connectionEndpoint, token: "token-a", session: session)
+        let context = try ManagedConnectionUpgradeContext(appStore: fixture.store, client: client)
+        ManagedUpgradeURLProtocol.configure { request in
+            request.respond(status: 409, body: #"{"code":"tailcat_self_hosted_clients_present","paired_device_count":2}"#)
+        }
+        await XCTAssertThrowsErrorAsync(try await context.requestPairingLink(confirmResetSelfHosted: false, appStore: fixture.store)) {
+            XCTAssertEqual($0 as? ManagedPairingLinkAPIError, .selfHostedClientsPresent(count: 2))
+        }
+        ManagedUpgradeURLProtocol.configure { request in
+            request.respond(body: Self.upgradeLinkResponse)
+        }
+        _ = try await context.requestPairingLink(confirmResetSelfHosted: true, appStore: fixture.store)
+        XCTAssertEqual(ManagedUpgradeURLProtocol.requests.count, 1)
+        XCTAssertEqual(ManagedUpgradeURLProtocol.requests.first?.url?.host, "192.168.1.20")
+        XCTAssertEqual(ManagedUpgradeURLProtocol.requests.first?.value(forHTTPHeaderField: "Authorization"), "Bearer token-a")
+        let body = try XCTUnwrap(ManagedUpgradeURLProtocol.requests.first?.httpBody)
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Bool])
+        XCTAssertEqual(payload["confirm_reset_self_hosted"], true)
+
+        try await seedUpgradeProfile(fixture.store, id: "mac-b", endpoint: "http://192.168.1.21:8787")
+        await XCTAssertThrowsErrorAsync(try await context.requestPairingLink(confirmResetSelfHosted: true, appStore: fixture.store)) {
+            XCTAssertTrue($0 is CancellationError)
+        }
+        try await seedUpgradeProfile(fixture.store)
+        await XCTAssertThrowsErrorAsync(try await context.requestPairingLink(confirmResetSelfHosted: true, appStore: fixture.store)) {
+            XCTAssertTrue($0 is CancellationError)
+        }
+        XCTAssertEqual(ManagedUpgradeURLProtocol.requests.count, 1, "过期确认不能发出第二次请求")
+    }
+
+    func testUpgradeIgnoresLateSuccessAndResetConfirmationAfterHostSwitch() async throws {
+        for status in [200, 409] {
+            let fixture = try makeControllerFixture(startResults: [])
+            defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+            try await seedUpgradeProfile(fixture.store)
+            let session = makeUpgradeHTTPSession()
+            defer { session.invalidateAndCancel() }
+            let context = try ManagedConnectionUpgradeContext(
+                appStore: fixture.store,
+                client: AgentAPIClient(endpoint: fixture.store.connectionEndpoint, token: "token-a", session: session)
+            )
+            let requestStarted = expectation(description: "upgrade request started")
+            var pending: ManagedUpgradeURLProtocol?
+            ManagedUpgradeURLProtocol.configure { request in
+                pending = request
+                requestStarted.fulfill()
+            }
+            let task = Task { try await context.requestPairingLink(confirmResetSelfHosted: false, appStore: fixture.store) }
+            await fulfillment(of: [requestStarted], timeout: 2)
+            try await seedUpgradeProfile(fixture.store, id: "mac-b", endpoint: "http://192.168.1.21:8787")
+            pending?.respond(status: status, body: status == 200 ? Self.upgradeLinkResponse : #"{"code":"tailcat_self_hosted_clients_present","paired_device_count":2}"#)
+
+            await XCTAssertThrowsErrorAsync(try await task.value) { XCTAssertTrue($0 is CancellationError) }
+            XCTAssertEqual(fixture.store.activeConnectionProfileID, "mac-b")
+            XCTAssertEqual(fixture.store.activeConnectionProfile?.endpoint, "http://192.168.1.21:8787")
+        }
+    }
+
+    func testCancelledUpgradeCannotRequestOrPublishConfirmation() async throws {
+        let fixture = try makeControllerFixture(startResults: [])
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try await seedUpgradeProfile(fixture.store)
+        let context = try ManagedConnectionUpgradeContext(appStore: fixture.store, client: fixture.store.client())
+        ManagedUpgradeURLProtocol.configure { _ in XCTFail("取消后不应发送请求") }
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await context.requestPairingLink(confirmResetSelfHosted: true, appStore: fixture.store)
+        }
+        await XCTAssertThrowsErrorAsync(try await task.value) { XCTAssertTrue($0 is CancellationError) }
+        XCTAssertTrue(ManagedUpgradeURLProtocol.requests.isEmpty)
+    }
+
+    func testUpgradeCancellationWhileWaitingDoesNotPublishNetworkErrorOrConfirmation() async throws {
+        let fixture = try makeControllerFixture(startResults: [])
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try await seedUpgradeProfile(fixture.store)
+        let session = makeUpgradeHTTPSession()
+        defer { session.invalidateAndCancel() }
+        let context = try ManagedConnectionUpgradeContext(
+            appStore: fixture.store,
+            client: AgentAPIClient(endpoint: fixture.store.connectionEndpoint, token: "token-a", session: session)
+        )
+        let started = expectation(description: "request is waiting")
+        ManagedUpgradeURLProtocol.configure { _ in started.fulfill() }
+        let task = Task { try await context.requestPairingLink(confirmResetSelfHosted: false, appStore: fixture.store) }
+        await fulfillment(of: [started], timeout: 2)
+
+        task.cancel()
+
+        await XCTAssertThrowsErrorAsync(try await task.value) { XCTAssertTrue($0 is CancellationError) }
+        XCTAssertEqual(fixture.store.activeConnectionProfileID, "mac-a")
+        XCTAssertEqual(fixture.store.activeConnectionProfile?.connectionRoute, .lan)
+    }
+
+    func testStaleUpgradeCannotStartManagedAuthorizationOrClaim() async throws {
+        let authorizer = ManagedPairingAuthorizerStub()
+        let fixture = try makeControllerFixture(startResults: [], managedPairingAuthorizer: authorizer)
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try await seedUpgradeProfile(fixture.store)
+        let context = try ManagedConnectionUpgradeContext(appStore: fixture.store, client: fixture.store.client())
+        let sessions = SessionStore(
+            appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
+            tailcatExperimentController: fixture.controller
+        )
+        try await seedUpgradeProfile(fixture.store, id: "mac-b", endpoint: "http://192.168.1.21:8787")
+
+        await XCTAssertThrowsErrorAsync(try await sessions.applyManagedPairingURL(
+            try XCTUnwrap(URL(string: Self.managedTailcatPairingURL)), upgrading: context
+        )) { XCTAssertTrue($0 is CancellationError) }
+
+        XCTAssertTrue(authorizer.requests.isEmpty)
+        let starts = await fixture.runtime.startCallCount()
+        XCTAssertEqual(starts, 0)
+        XCTAssertEqual(fixture.store.activeConnectionProfileID, "mac-b")
+    }
+
+    private func seedUpgradeProfile(
+        _ store: AppStore,
+        id: String = "mac-a",
+        endpoint: String = "http://192.168.1.20:8787",
+        dnsName: String? = nil
+    ) async throws {
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: endpoint, token: "token-a",
+            profileTarget: store.connectionProfiles.contains(where: { $0.id == id })
+                ? .existingProfile(id: id) : .newProfile(id: id, displayName: id),
+            tailscaleDNSName: dnsName
+        ))
+    }
+
+    private func makeUpgradeHTTPSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ManagedUpgradeURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    private static let upgradeLinkResponse =
+        #"{"pair_url":"mimiremote://pair","pair_expires_at":"2100-01-01T00:00:00Z","mode":"managed"}"#
 
     func testManagedRouteWithoutAddressStaysFailClosedAndOffersManualFallback() async throws {
         let fixture = try makeControllerFixture(
@@ -589,7 +989,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(fixture.controller.state, .needsAddress)
         XCTAssertTrue(fixture.store.isTailcatExperimentModeEnabled)
         XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:1")
-        XCTAssertTrue(ManagedConnectionSubscriptionView.showsManagedRecoveryActions(
+        XCTAssertTrue(ManagedConnectionDevicesView.showsManagedRecoveryActions(
             tailcatState: fixture.controller.state,
             connectionFailed: false
         ))

@@ -1,0 +1,208 @@
+import XCTest
+@testable import MimiRemote
+
+/// Runtime 可用性与模型目录共用一次刷新：一次没探成或某个通道缺席，
+/// 不能把可用通道标成不可用（#777），也不能让菜单落到内置兜底（#778）。
+@MainActor
+final class RuntimeCatalogRefreshTests: XCTestCase {
+    func testThrowingProbeKeepsPreviouslyAvailableRuntime() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            runtimeChannelAvailability: ["codex": true, "claude": true, "deepseek": true]
+        )
+        let store = makeStore(client: client)
+        await store.refreshAppServerModelOptions()
+        XCTAssertEqual(store.availableRuntimeProviders, ["codex", "claude", "deepseek"])
+
+        client.runtimeChannelErrors = ["codex", "deepseek"]
+        await store.refreshAppServerModelOptions()
+        XCTAssertEqual(
+            store.availableRuntimeProviders, ["codex", "claude", "deepseek"],
+            "探测抛错只说明这次没探成，不能撤下已确认可用的通道"
+        )
+
+        client.runtimeChannelErrors = []
+        client.runtimeChannelAvailability["deepseek"] = false
+        await store.refreshAppServerModelOptions()
+        XCTAssertEqual(store.availableRuntimeProviders, ["codex", "claude"], "明确返回 false 才撤下")
+    }
+
+    func testThrowingProbeDoesNotConfirmUnseenRuntimeButRecheckRecovers() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            runtimeChannelAvailability: ["codex": true, "claude": true, "deepseek": true]
+        )
+        client.runtimeChannelErrors = ["deepseek"]
+        let store = makeStore(client: client)
+        await store.refreshAppServerModelOptions()
+        XCTAssertFalse(store.isRuntimeAvailable("deepseek"), "从未确认可用的通道不能因为抛错被当成可用")
+
+        client.runtimeChannelErrors = []
+        await WorkspaceSessionRuntimeChoice.recheckUnavailable(in: store.availableRuntimeProviders) {
+            await store.retryRuntimeAvailability($0.runtimeProvider)
+        }
+
+        XCTAssertEqual(store.availableRuntimeProviders, ["codex", "claude", "deepseek"])
+    }
+
+    func testRecheckOnlyProbesUnavailableRuntimes() async {
+        var probed: [WorkspaceSessionRuntimeChoice] = []
+        await WorkspaceSessionRuntimeChoice.recheckUnavailable(in: ["codex", "claude"]) {
+            probed.append($0)
+            return false
+        }
+        XCTAssertEqual(probed, [.deepseek])
+
+        probed = []
+        await WorkspaceSessionRuntimeChoice.recheckUnavailable(in: []) {
+            probed.append($0)
+            return false
+        }
+        XCTAssertEqual(probed, [.claude, .deepseek], "空集合时 Codex 是兜底可用项，不需要重探")
+    }
+
+    func testRuntimeMissingFromAggregateIsFilledByTargetedFetch() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            modelOptions: [Self.codexOption],
+            runtimeChannelAvailability: ["codex": true, "claude": true]
+        )
+        client.modelOptionsByRuntime["claude"] = [Self.claudeOption]
+        let store = makeStore(client: client)
+
+        await store.refreshAppServerModelOptions()
+        XCTAssertEqual(store.appServerModelOptions.map(\.model), ["gpt-live"])
+
+        await store.prepareTurnModelOptions(runtimeProvider: "claude", hostScope: store.appStore.activeHostScope)
+
+        XCTAssertEqual(client.targetedModelOptionsRequests, ["claude"], "聚合目录缺 Claude 时不能记成已刷新")
+        XCTAssertEqual(Set(store.appServerModelOptions.map(\.model)), ["gpt-live", "opus"])
+    }
+
+    func testRefreshKeepsPreviousCatalogOfRuntimeMissingFromAggregate() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            modelOptions: [Self.codexOption, Self.claudeOption],
+            runtimeChannelAvailability: ["codex": true, "claude": true]
+        )
+        let store = makeStore(client: client)
+        await store.refreshAppServerModelOptions(force: true)
+        XCTAssertEqual(Set(store.appServerModelOptions.map(\.model)), ["gpt-live", "opus"])
+
+        client.modelOptionsResult = [Self.codexOption]
+        await store.refreshAppServerModelOptions(force: true)
+        XCTAssertEqual(
+            Set(store.appServerModelOptions.map(\.model)), ["gpt-live", "opus"],
+            "Claude 这一半这次没拉成时保留上一份目录，菜单不能退回内置兜底"
+        )
+
+        client.runtimeChannelAvailability["claude"] = false
+        await store.refreshAppServerModelOptions(force: true)
+        XCTAssertEqual(store.appServerModelOptions.map(\.model), ["gpt-live"], "通道已关闭时不再保留旧目录")
+    }
+
+    func testRetainedCatalogIsRecheckedAndClearedWhenRuntimeNowReturnsEmpty() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            modelOptions: [Self.codexOption, Self.claudeOption],
+            runtimeChannelAvailability: ["codex": true, "claude": true]
+        )
+        let store = makeStore(client: client)
+        await store.refreshAppServerModelOptions(force: true)
+
+        // Claude 这次成功返回空目录：聚合结果里看不出来，只能先沿用，再由定向补拉确认。
+        client.modelOptionsResult = [Self.codexOption]
+        client.modelOptionsByRuntime["claude"] = []
+        await store.refreshAppServerModelOptions(force: true)
+        await store.prepareTurnModelOptions(runtimeProvider: "claude", hostScope: store.appStore.activeHostScope)
+
+        XCTAssertEqual(client.targetedModelOptionsRequests, ["claude"], "沿用的旧目录不能挡住定向补拉")
+        XCTAssertEqual(store.appServerModelOptions.map(\.model), ["gpt-live"], "电脑端已移除的模型不能一直可选")
+
+        await store.prepareTurnModelOptions(runtimeProvider: "codex", hostScope: store.appStore.activeHostScope)
+        XCTAssertEqual(client.targetedModelOptionsRequests, ["claude"], "聚合目录已确认的 Runtime 不重复补拉")
+    }
+
+    func testDefaultModelCatalogRefetchesAfterFailedStartupRefresh() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            modelOptionsError: URLError(.notConnectedToInternet),
+            runtimeChannelAvailability: ["codex": true, "claude": true]
+        )
+        let store = makeStore(client: client)
+        // 启动时连接还没就绪：聚合刷新失败，也记下 5 分钟负缓存。
+        await store.refreshAppServerModelOptions()
+        client.modelOptionsError = nil
+        client.modelOptionsResult = [Self.codexOption, Self.claudeOption]
+        await store.prepareTurnModelOptions(runtimeProvider: "claude", hostScope: store.appStore.activeHostScope)
+        XCTAssertTrue(client.targetedModelOptionsRequests.isEmpty, "发送路径沿用负缓存，不重复请求")
+        XCTAssertTrue(store.modelCatalogIsMissing(runtimeProvider: "claude"))
+
+        await store.refreshDefaultModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
+
+        XCTAssertEqual(Set(store.appServerModelOptions.map(\.model)), ["gpt-live", "opus"], "默认模型页不能停在「型号未确认」")
+        XCTAssertFalse(store.modelCatalogIsMissing(runtimeProvider: "codex"))
+        XCTAssertFalse(store.modelCatalogIsMissing(runtimeProvider: "claude"))
+    }
+
+    func testDefaultModelCatalogWaitsForInFlightAggregateRefresh() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            modelOptionsError: URLError(.timedOut),
+            runtimeChannelAvailability: ["codex": true, "claude": true]
+        )
+        client.modelOptionsByRuntime = ["codex": [Self.codexOption], "claude": [Self.claudeOption]]
+        let aggregateGate = PreparedConnectionGate()
+        let targetedGate = PreparedConnectionGate()
+        client.modelOptionsGate = aggregateGate
+        client.targetedModelOptionsGate = targetedGate
+        let store = makeStore(client: client)
+
+        // 设置页根层的聚合刷新在途，随后失败；默认模型页在它收尾前打开。
+        let aggregate = Task { await store.refreshAppServerModelOptions() }
+        await aggregateGate.waitUntilStarted()
+        let page = Task {
+            await store.refreshDefaultModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
+        }
+        // 让页面任务先跑到第一个挂起点（修复前是定向请求，修复后是等聚合刷新收尾），再放行聚合失败。
+        for _ in 0..<5 { await Task.yield() }
+        await aggregateGate.release()
+        await aggregate.value
+        await targetedGate.waitUntilStarted()
+        await targetedGate.release()
+        await page.value
+
+        XCTAssertEqual(
+            Set(store.appServerModelOptions.map(\.model)), ["gpt-live", "opus"],
+            "聚合刷新失败不能让同时发出的定向结果被当成过期丢掉"
+        )
+    }
+
+    func testDefaultModelCatalogSkipsRuntimesAlreadyInCatalog() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            modelOptions: [Self.codexOption, Self.claudeOption],
+            runtimeChannelAvailability: ["codex": true, "claude": true]
+        )
+        let store = makeStore(client: client)
+        await store.refreshDefaultModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
+        let aggregateCalls = client.modelOptionsCallCount
+
+        await store.refreshDefaultModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
+
+        XCTAssertTrue(client.targetedModelOptionsRequests.isEmpty, "目录齐全时不定向补拉")
+        XCTAssertEqual(client.modelOptionsCallCount, aggregateCalls, "非强制刷新沿用聚合目录缓存")
+    }
+
+    private static let codexOption = CodexAppServerModelOption(
+        id: "gpt-live", provider: "openai", runtimeProvider: "codex", isDefault: true
+    )
+    private static let claudeOption = CodexAppServerModelOption(
+        id: "opus", provider: "anthropic", runtimeProvider: "claude", isDefault: true
+    )
+
+    private func makeStore(client: MockSessionStoreClient) -> SessionStore {
+        SessionStore(appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(),
+                     logStore: LogStore(), clientFactory: { client })
+    }
+}

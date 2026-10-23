@@ -5,7 +5,7 @@ import XCTest
 
 @MainActor
 final class ConversationScrollStabilityTests: XCTestCase {
-    func testAutomaticProcessCollapseKeepsFollowingFinalAnswer() async throws {
+    func testAutomaticProcessCollapseKeepsFollowingFinalAnswer() throws {
         let rig = ScrollRig()
         let window = try mount(rig.scrollView)
         defer { window.isHidden = true }
@@ -13,17 +13,17 @@ final class ConversationScrollStabilityTests: XCTestCase {
                                             content: "检查中", turnLifecycle: .inProgress)]
         rig.publish(changes: .live, activeTurn: .init(id: "turn"))
         rig.report(offset: 1_200)
-        await drain()
+        rig.drain()
         rig.commands.removeAll()
         rig.publish(changes: [.live, .historyReplacement])
         rig.report(offset: 1_200, height: 1_600)
-        await drain()
+        rig.drain()
         XCTAssertEqual(rig.controller.mode, .followingTail)
         XCTAssertEqual(rig.scrollView.contentOffset.y, 800, accuracy: 0.5)
         XCTAssertTrue(rig.commands.contains { $0.target == .tail })
     }
 
-    func testAutomaticProcessCollapseMapsReadingAnchorToSummary() async throws {
+    func testAutomaticProcessCollapseMapsReadingAnchorToSummary() throws {
         let rig = ScrollRig()
         let window = try mount(rig.scrollView)
         defer { window.isHidden = true }
@@ -32,20 +32,20 @@ final class ConversationScrollStabilityTests: XCTestCase {
         rig.messages = [process]
         rig.publish(changes: .live, activeTurn: .init(id: "turn"))
         rig.report(offset: 1_200)
-        await drain()
+        rig.drain()
         rig.controller.beginLoadingEarlierHistory()
         let marker = rig.addMarker(id: process.id)
         rig.commands.removeAll()
         rig.publish(changes: [.live, .historyReplacement])
         marker.removeFromSuperview()
         rig.report(offset: 1_200, height: 1_800)
-        await drain()
+        rig.drain()
         XCTAssertEqual(rig.controller.mode, .readingHistory)
         XCTAssertTrue(rig.commands.contains { $0.target == .anchorItem("process:\(process.id.uuidString)") })
         XCTAssertTrue(rig.commands.allSatisfy { $0.target != .tail })
     }
 
-    func testPresentationChangePreservesReadingPositionEvenWhenPreviouslyFollowingTail() async throws {
+    func testPresentationChangePreservesReadingPositionEvenWhenPreviouslyFollowingTail() throws {
         let rig = ScrollRig()
         let window = try mount(rig.scrollView)
         defer { window.isHidden = true }
@@ -54,23 +54,23 @@ final class ConversationScrollStabilityTests: XCTestCase {
         rig.publish(changes: [.presentation, .historyReplacement])
         marker.frame.origin.y += 240
         rig.report(offset: 1_200, height: 2_600)
-        await drain()
+        rig.drain()
         XCTAssertEqual(rig.controller.mode, .readingHistory)
         XCTAssertEqual(rig.scrollView.contentOffset.y, 1_440, accuracy: 0.5)
         XCTAssertTrue(rig.commands.allSatisfy { $0.target != .tail })
     }
 
-    func testFileRevealTargetsActivityAndStopsTailFollowing() async throws {
+    func testFileRevealTargetsActivityAndStopsTailFollowing() throws {
         let rig = ScrollRig()
         let window = try mount(rig.scrollView)
         defer { window.isHidden = true }
         rig.controller.revealItem("activity:file-change")
-        await drain()
+        rig.drain()
         XCTAssertEqual(rig.commands.map(\.target), [.anchorItem("activity:file-change")])
         XCTAssertEqual(rig.controller.mode, .readingHistory)
         rig.publish(changes: .live)
         rig.report(offset: 900, height: 2_400)
-        await drain()
+        rig.drain()
         XCTAssertTrue(rig.commands.allSatisfy { $0.target != .tail })
     }
 
@@ -138,7 +138,7 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(rig.controller.viewport.correctedOffset(for: anchor)), 460)
     }
 
-    func testPrependingHistoryKeepsPositionWhenVisibleCellsAreRecycled() async throws {
+    func testPrependingHistoryKeepsPositionWhenVisibleCellsAreRecycled() throws {
         let rig = ScrollRig()
         let window = try mount(rig.scrollView)
         defer { window.isHidden = true }
@@ -149,19 +149,12 @@ final class ConversationScrollStabilityTests: XCTestCase {
         // 顶部插入整页后，List 可能先回收所有旧可见 cell，再按新 offset 实例化它们。
         marker.removeFromSuperview()
         rig.report(offset: 0, height: 5_000)
-        await drain()
+        rig.drain()
         XCTAssertEqual(rig.commands.map(\.target), [.anchorItem(rig.snapshot.rowIDs[0])])
         // 模拟 scrollTo 重新实例化旧消息。之后只按它的实际 frame 纠正位置。
-        let correction = expectation(description: "前插历史后的原生阅读位置已补偿")
-        ConversationTimelineScrollController.testingCommandObserver = { record in
-            if record.reason == .historyAnchor, record.target == .offset(3_000) {
-                correction.fulfill()
-            }
-        }
-        defer { ConversationTimelineScrollController.testingCommandObserver = nil }
         _ = rig.addMarker(y: 3_100, id: rig.messages[0].id)
-        // yield 次数无法确认合并任务已执行；等待真实补偿命令，仍精确断言最终位置。
-        await fulfillment(of: [correction], timeout: 1)
+        rig.drain()
+        XCTAssertEqual(rig.commands.map(\.target), [.anchorItem(rig.snapshot.rowIDs[0]), .offset(3_000)])
         XCTAssertEqual(rig.scrollView.contentOffset.y, 3_000, accuracy: 0.5)
         XCTAssertTrue(rig.commands.allSatisfy { $0.target != .tail })
 
@@ -171,7 +164,7 @@ final class ConversationScrollStabilityTests: XCTestCase {
         rig.controller.phaseChanged(.idle)
         let commandCount = rig.commands.count
         rig.report(offset: 2_800, height: 5_000)
-        await drain()
+        rig.drain()
         XCTAssertEqual(rig.scrollView.contentOffset.y, 2_800)
         XCTAssertEqual(rig.commands.count, commandCount)
     }
@@ -217,23 +210,23 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(rig.controller.viewport.correctedOffset(for: anchor)), 1_260)
     }
 
-    func testPreservationExpiresWithoutFurtherScrollWrites() async throws {
+    func testPreservationExpiresWithoutFurtherScrollWrites() throws {
         let rig = ScrollRig()
         let window = try mount(rig.scrollView)
         defer { window.isHidden = true }
         rig.controller.beginLoadingEarlierHistory()
         let marker = rig.addMarker()
         rig.publish(changes: .historyEnrichment)
-        await drain()
+        rig.drain()
         rig.commands.removeAll()
-        try await Task.sleep(for: .milliseconds(350))
+        rig.advance(by: .milliseconds(350))
         marker.frame.origin.y += 60
         rig.controller.recordAnchorFrame([rig.markerID], marker.convert(marker.bounds, to: nil))
-        await drain()
+        rig.drain()
         XCTAssertTrue(rig.commands.isEmpty, "过期事务不得因随后布局再次写入")
     }
 
-    func testInteractionDiscardsOldAnchorEvenAfterReturningToIdle() async throws {
+    func testInteractionDiscardsOldAnchorEvenAfterReturningToIdle() throws {
         let rig = ScrollRig()
         let window = try mount(rig.scrollView)
         defer { window.isHidden = true }
@@ -244,11 +237,11 @@ final class ConversationScrollStabilityTests: XCTestCase {
         rig.controller.phaseChanged(.tracking)
         rig.report(offset: 600)
         rig.controller.phaseChanged(.decelerating)
-        await drain()
+        rig.drain()
         XCTAssertTrue(rig.commands.isEmpty)
         rig.controller.phaseChanged(.idle)
         rig.controller.recordAnchorFrame([rig.markerID], marker.convert(marker.bounds, to: nil))
-        await drain()
+        rig.drain()
         XCTAssertTrue(rig.commands.isEmpty, "手势后的阅读位置不能被旧事务拉回")
         XCTAssertEqual(rig.controller.mode, .readingHistory)
     }
@@ -267,14 +260,14 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertTrue(rig.controller.isReadable, "后续历史补齐不重新遮罩")
     }
 
-    func testInitialPresentationUncoversNativeTailWithoutSentinelVisibilityCallback() async throws {
+    func testInitialPresentationUncoversNativeTailWithoutSentinelVisibilityCallback() throws {
         let rig = ScrollRig(connect: false)
         let window = try mount(rig.scrollView)
         defer { window.isHidden = true }
         rig.report(offset: 0)
         XCTAssertFalse(rig.controller.isReadable, "滚动命令执行前不能揭开遮罩")
         rig.connect()
-        await drain()
+        rig.drain()
 
         XCTAssertEqual(rig.commands.map(\.target), [.tail])
         XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
@@ -308,7 +301,7 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(rig.commands.count, 1, "offset 是执行结果，不得变成新滚动输入")
     }
 
-    func testOldScopeCallbacksCannotWriteIntoReplacementList() async {
+    func testOldScopeCallbacksCannotWriteIntoReplacementList() {
         let rig = ScrollRig()
         let oldEpoch = rig.controller.epoch
         rig.publish(changes: .live)
@@ -319,15 +312,16 @@ final class ConversationScrollStabilityTests: XCTestCase {
         rig.controller.tailVisibilityChanged(true, epoch: oldEpoch)
         rig.controller.phaseChanged(.tracking, epoch: oldEpoch)
         rig.controller.connect(epoch: oldEpoch) { _ in XCTFail("旧 executor 不得重新接线") }
-        await drain()
+        rig.drain()
         XCTAssertTrue(rig.commands.isEmpty)
         XCTAssertFalse(rig.controller.isInteracting)
         XCTAssertFalse(rig.controller.isReadable)
         XCTAssertEqual(rig.controller.scope, rig.scope)
     }
 
-    func testInitialCommandDoesNotRequireNativeTailCellToExist() async {
-        let controller = ConversationTimelineScrollController()
+    func testInitialCommandDoesNotRequireNativeTailCellToExist() {
+        let scheduler = ManualScrollScheduler()
+        let controller = ConversationTimelineScrollController(scheduler: scheduler.scheduler)
         let snapshot = ConversationTimelineItemCache().snapshot(
             from: [ConversationMessage(role: .assistant, content: "first")],
             scope: ScopedSessionID(profileID: "profile", sessionID: "first")
@@ -341,7 +335,7 @@ final class ConversationScrollStabilityTests: XCTestCase {
                 minimumOffsetY: 0, maximumOffsetY: 1_200
             ), epoch: controller.epoch
         )
-        await drain()
+        scheduler.drain()
         XCTAssertNil(controller.viewport.scrollView)
         XCTAssertEqual(commands.map(\.target), [.tail])
     }
@@ -361,7 +355,7 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertFalse(controller.isReadable)
     }
 
-    func testFirstContentEndsInteractionOwnedByEmptyListAndBecomesReadable() async {
+    func testFirstContentEndsInteractionOwnedByEmptyListAndBecomesReadable() {
         let rig = ScrollRig(connect: false, startsEmpty: true)
         let emptyEpoch = rig.controller.epoch
         rig.controller.phaseChanged(.tracking, epoch: emptyEpoch)
@@ -376,7 +370,7 @@ final class ConversationScrollStabilityTests: XCTestCase {
         rig.connect()
         rig.report(offset: 0)
         rig.controller.tailVisibilityChanged(true, epoch: rig.controller.epoch)
-        await drain()
+        rig.drain()
 
         XCTAssertTrue(rig.controller.isReadable)
         XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
@@ -389,7 +383,7 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(next.rows.count, 2, "首屏之后的投影不能继续冻结")
     }
 
-    func testSubmissionBeforeInitialHandoffStillRequiresAndCompletesReadableTail() async {
+    func testSubmissionBeforeInitialHandoffStillRequiresAndCompletesReadableTail() {
         for includesAssistantUpdate in [false, true] {
             let rig = ScrollRig(connect: false)
             rig.messages.append(ConversationMessage(clientMessageID: "submission", role: .user, content: "继续"))
@@ -402,26 +396,26 @@ final class ConversationScrollStabilityTests: XCTestCase {
             rig.report(offset: 0)
             XCTAssertFalse(rig.controller.isReadable, "还需要尾部哨兵确认")
             rig.controller.tailVisibilityChanged(true, epoch: rig.controller.epoch)
-            await drain()
+            rig.drain()
             XCTAssertTrue(rig.controller.isReadable, "本地发送不能跳过可读性交接入口")
             XCTAssertEqual(rig.controller.mode, .followingTail)
             XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
         }
     }
 
-    func testReturnToTailBeforeInitialHandoffDoesNotStrandTheCover() async {
+    func testReturnToTailBeforeInitialHandoffDoesNotStrandTheCover() {
         let rig = ScrollRig(connect: false)
         rig.controller.returnToTail()
         XCTAssertFalse(rig.controller.isReadable)
         rig.connect()
         rig.report(offset: 0)
         rig.controller.tailVisibilityChanged(true, epoch: rig.controller.epoch)
-        await drain()
+        rig.drain()
         XCTAssertTrue(rig.controller.isReadable)
         XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
     }
 
-    func testReturnToTailDuringDecelerationRunsImmediatelyAndOnlyOnce() async {
+    func testReturnToTailDuringDecelerationRunsImmediatelyAndOnlyOnce() {
         let rig = ScrollRig()
         XCTAssertTrue(rig.controller.isReadable)
         rig.controller.phaseChanged(.tracking)
@@ -432,11 +426,11 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
         XCTAssertEqual(rig.controller.mode, .followingTail)
         rig.controller.phaseChanged(.idle)
-        await drain()
+        rig.drain()
         XCTAssertEqual(rig.commands.count, 1)
     }
 
-    func testNewGestureAfterReturnToTailCanResumeReadingHistory() async {
+    func testNewGestureAfterReturnToTailCanResumeReadingHistory() {
         let rig = ScrollRig()
         rig.controller.phaseChanged(.tracking)
         rig.report(offset: 600)
@@ -446,7 +440,7 @@ final class ConversationScrollStabilityTests: XCTestCase {
         rig.controller.phaseChanged(.tracking)
         rig.report(offset: 450)
         rig.controller.phaseChanged(.idle)
-        await drain()
+        rig.drain()
         XCTAssertEqual(rig.commands.count, 1)
         XCTAssertEqual(rig.controller.mode, .readingHistory)
         XCTAssertEqual(rig.scrollView.contentOffset.y, 450, accuracy: 0.5)
@@ -481,7 +475,7 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(rig.scrollView.contentOffset.y, 1_240, accuracy: 0.5)
     }
 
-    func testThawedMetadataSnapshotDoesNotDiscardExplicitReturnToTail() async {
+    func testThawedMetadataSnapshotDoesNotDiscardExplicitReturnToTail() {
         let rig = ScrollRig()
         rig.controller.phaseChanged(.tracking)
         rig.report(offset: 600)
@@ -490,12 +484,12 @@ final class ConversationScrollStabilityTests: XCTestCase {
         rig.controller.phaseChanged(.idle)
         // 隐藏输出等来源更新只提高 revision，不改变 rows 或总高度。
         rig.publish(changes: .live)
-        await drain()
+        rig.drain()
         XCTAssertEqual(rig.commands.map(\.target), [.tail])
         XCTAssertEqual(rig.scrollView.contentOffset.y, 1_200, accuracy: 4)
     }
 
-    func testInitialPresentationCompletesWhenCommandDoesNotChangeGeometry() async throws {
+    func testInitialPresentationCompletesWhenCommandDoesNotChangeGeometry() throws {
         let rig = ScrollRig(connect: false)
         let window = try mount(rig.scrollView)
         defer { window.isHidden = true }
@@ -503,18 +497,14 @@ final class ConversationScrollStabilityTests: XCTestCase {
         rig.controller.tailVisibilityChanged(true, epoch: rig.controller.epoch)
         XCTAssertFalse(rig.controller.isReadable)
         rig.controller.connect(epoch: rig.controller.epoch) { _ in }
-        // CI 负载下合并任务可能晚于固定次数的 yield；只等待有界的可读交接结果。
-        for _ in 0..<50 {
-            if rig.controller.isReadable { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        rig.drain()
         XCTAssertTrue(rig.controller.isReadable, "无变化的 scrollTo 不会再报告 geometry，仍须交接首屏")
     }
 
-    func testExpansionKeepsItsItemTargetThroughoutLayoutAnimation() async {
+    func testExpansionKeepsItsItemTargetThroughoutLayoutAnimation() {
         let rig = ScrollRig()
         let input = rig.controller.expansionChanged("activity-batch", isExpanded: true)
-        await drain()
+        rig.drain()
         for height in stride(from: 2_100, through: 2_500, by: 100) {
             rig.report(offset: 1_200, height: CGFloat(height))
         }
@@ -522,11 +512,11 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertTrue(rig.commands.allSatisfy { $0.target == .item("activity-batch") })
         rig.controller.expansionCompleted(input)
         let count = rig.commands.count
-        await drain()
+        rig.drain()
         XCTAssertEqual(rig.commands.count, count)
     }
 
-    func testHistoryExpansionAnchorSurvivesUntilAnimationCompletion() async throws {
+    func testHistoryExpansionAnchorSurvivesUntilAnimationCompletion() throws {
         let rig = ScrollRig()
         let window = try mount(rig.scrollView)
         defer { window.isHidden = true }
@@ -534,44 +524,38 @@ final class ConversationScrollStabilityTests: XCTestCase {
         rig.controller.beginLoadingEarlierHistory()
         let marker = rig.addMarker(y: 700)
         let input = rig.controller.expansionChanged("activity-batch", isExpanded: true)
-        await drain()
-        try await Task.sleep(for: .milliseconds(350))
+        rig.drain()
+        // 越过单次布局的取消上限：动画展开的锚点只由完成回调结束。
+        rig.advance(by: .milliseconds(350))
         marker.frame.origin.y += 60
         rig.controller.recordAnchorFrame([UUID()], CGRect(x: 0, y: 500, width: 10, height: 10))
-        await drain()
+        rig.drain()
         XCTAssertEqual(rig.scrollView.contentOffset.y, 660)
         rig.controller.expansionCompleted(input)
         let count = rig.commands.count
         marker.frame.origin.y += 60
         rig.controller.recordAnchorFrame([UUID()], CGRect(x: 0, y: 500, width: 10, height: 10))
-        await drain()
+        rig.drain()
         XCTAssertEqual(rig.commands.count, count, "动画完成后结束锚点，不持续持有旧阅读位置")
     }
 
-    func testNonAnimatedExpansionPreservesNextLayoutAndThenExpires() async throws {
+    func testNonAnimatedExpansionPreservesNextLayoutAndThenExpires() throws {
         let rig = ScrollRig()
         let window = try mount(rig.scrollView)
         defer { window.isHidden = true }
         rig.scrollView.contentOffset.y = 600
         rig.controller.beginLoadingEarlierHistory()
         let marker = rig.addMarker(y: 700)
-        let correction = expectation(description: "展开后的阅读锚点补偿已执行")
-        ConversationTimelineScrollController.testingCommandObserver = { record in
-            if record.reason == .historyAnchor, record.target == .offset(660) {
-                correction.fulfill()
-            }
-        }
-        defer { ConversationTimelineScrollController.testingCommandObserver = nil }
         rig.controller.expansionChanged("activity-batch", isExpanded: true, isAnimated: false)
         marker.frame.origin.y += 60
-        // yield 次数不代表合并任务完成；等待真实命令后仍精确验证原生 offset。
-        await fulfillment(of: [correction], timeout: 1)
+        rig.drain()
+        XCTAssertEqual(rig.commands.map(\.target), [.offset(660)])
         XCTAssertEqual(rig.scrollView.contentOffset.y, 660)
-        try await Task.sleep(for: .milliseconds(350))
+        rig.advance(by: .milliseconds(350))
         let count = rig.commands.count
         marker.frame.origin.y += 60
         rig.controller.recordAnchorFrame([UUID()], CGRect(x: 0, y: 500, width: 10, height: 10))
-        await drain()
+        rig.drain()
         XCTAssertEqual(rig.commands.count, count)
     }
 
@@ -591,10 +575,6 @@ final class ConversationScrollStabilityTests: XCTestCase {
         XCTAssertEqual(trace.export(), exported)
     }
 
-    private func drain() async {
-        for _ in 0..<8 { await Task.yield() }
-    }
-
     private func mount(_ scrollView: UIScrollView) throws -> UIWindow {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
@@ -607,9 +587,56 @@ final class ConversationScrollStabilityTests: XCTestCase {
     }
 }
 
+/// 替代控制器的 MainActor Task：drain 执行所有已到期工作（含执行中新排入的下一轮工作），
+/// advance 推进虚拟时钟。yield 要经全局执行器绕回主线程，CI 负载下固定次数不是完成屏障。
+@MainActor
+private final class ManualScrollScheduler {
+    private struct Entry {
+        let id: Int
+        let due: Duration
+        let work: @MainActor () -> Void
+    }
+
+    private var now = Duration.zero
+    private var nextID = 0
+    private var entries: [Entry] = []
+
+    var scheduler: ConversationTimelineScrollScheduler {
+        ConversationTimelineScrollScheduler(
+            nextTurn: { [weak self] work in self?.enqueue(after: .zero, work) ?? .init {} },
+            after: { [weak self] delay, work in self?.enqueue(after: delay, work) ?? .init {} }
+        )
+    }
+
+    func drain() {
+        advance(by: .zero)
+    }
+
+    func advance(by delta: Duration) {
+        let target = now + delta
+        while let next = entries.filter({ $0.due <= target }).min(by: { ($0.due, $0.id) < ($1.due, $1.id) }) {
+            entries.removeAll { $0.id == next.id }
+            now = max(now, next.due)
+            next.work()
+        }
+        now = target
+    }
+
+    private func enqueue(
+        after delay: Duration,
+        _ work: @escaping @MainActor () -> Void
+    ) -> ConversationTimelineScrollScheduler.Cancellation {
+        nextID += 1
+        let id = nextID
+        entries.append(Entry(id: id, due: now + delay, work: work))
+        return .init { [weak self] in self?.entries.removeAll { $0.id == id } }
+    }
+}
+
 @MainActor
 private final class ScrollRig {
-    let controller = ConversationTimelineScrollController()
+    let scheduler = ManualScrollScheduler()
+    let controller: ConversationTimelineScrollController
     let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
     var scope = ScopedSessionID(profileID: "profile", sessionID: "session")
     var messages = [ConversationMessage(role: .assistant, content: "first")]
@@ -619,6 +646,7 @@ private final class ScrollRig {
     private(set) var snapshot = ConversationTimelineSnapshot.empty
 
     init(connect shouldConnect: Bool = true, startsEmpty: Bool = false) {
+        controller = ConversationTimelineScrollController(scheduler: scheduler.scheduler)
         scrollView.contentInsetAdjustmentBehavior = .never
         scrollView.contentSize = CGSize(width: 400, height: 2_000)
         scrollView.contentOffset.y = 1_200
@@ -631,6 +659,16 @@ private final class ScrollRig {
             controller.tailVisibilityChanged(true, epoch: controller.epoch)
             commands.removeAll()
         }
+    }
+
+    /// 执行已排入的合并任务；断言前的唯一同步点。
+    func drain() {
+        scheduler.drain()
+    }
+
+    /// 推进虚拟时钟，触发到期的锚点取消上限。
+    func advance(by delta: Duration) {
+        scheduler.advance(by: delta)
     }
 
     func publish(changes: ConversationTimelineChangeReasons, activeTurn: ConversationTimelineActiveTurn? = nil) {

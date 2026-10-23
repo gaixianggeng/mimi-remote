@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { messagesToTurns, summarizeTurn, type HistoryMessage } from "../src/claude/history.ts";
+import { notificationTurnId } from "../src/claude/itemIds.ts";
 
 let clock = Date.parse("2026-09-01T00:00:00.000Z");
 let counter = 0;
@@ -137,6 +138,75 @@ describe("messagesToTurns", () => {
       [{ type: "text", text: "first", text_elements: [] }],
       [{ type: "text", text: "/model opus", text_elements: [] }],
     ]);
+  });
+
+  describe("background task notifications (#797)", () => {
+    const notification = (runId: string | undefined, extra: Partial<HistoryMessage> = {}) =>
+      user("<task-notification>\n<task-id>bash-1</task-id>\n<status>completed</status>\n</task-notification>", {
+        ...(runId ? { origin: { kind: "task-notification", producer: "session-task", runId } } : {}),
+        ...extra,
+      });
+    const shape = (turns: ReturnType<typeof translate>) => turns.map((turn) => [turn.id, turn.status, turn.items.map((item) => item.type)]);
+
+    test("a notification between turns starts the continuation under the id the live side uses", () => {
+      const prompt = user("run it in the background");
+      const turns = translate([
+        prompt,
+        assistant([{ type: "text", text: "started" }]),
+        notification("run-1"),
+        assistant([{ type: "text", text: "background finished" }]),
+      ]);
+      expect(shape(turns)).toEqual([
+        [prompt.uuid, "completed", ["userMessage", "agentMessage"]],
+        [notificationTurnId("session-1", "run-1"), "completed", ["agentMessage"]],
+      ]);
+    });
+
+    test("while the continuation runs it is the turn in progress, even before its first record", () => {
+      const prompt = user("run it in the background");
+      const before = [prompt, assistant([{ type: "text", text: "started" }]), notification("run-1")];
+      const continuation = notificationTurnId("session-1", "run-1");
+      expect(shape(translate(before, true))).toEqual([
+        [prompt.uuid, "completed", ["userMessage", "agentMessage"]],
+        [continuation, "inProgress", []],
+      ]);
+      const streaming = translate([...before, assistant([{ type: "text", text: "partial" }])], true);
+      expect(shape(streaming).at(-1)).toEqual([continuation, "inProgress", ["agentMessage"]]);
+      // 停止后 CLI 写中断标记：续写回合以 interrupted 收尾，不影响上一轮。
+      const stopped = translate([...before, assistant([{ type: "text", text: "partial" }]), user("[Request interrupted by user]")]);
+      expect(shape(stopped).map(([, status]) => status)).toEqual(["completed", "interrupted"]);
+    });
+
+    test("notifications arriving together share one continuation, owned by the last one", () => {
+      const turns = translate([
+        user("two jobs"),
+        assistant([{ type: "text", text: "started" }]),
+        notification("run-1"),
+        notification("run-2"),
+        assistant([{ type: "text", text: "both finished" }]),
+        notification("run-3"),
+        assistant([{ type: "text", text: "third finished" }]),
+      ]);
+      expect(turns.slice(1).map((turn) => turn.id)).toEqual([notificationTurnId("session-1", "run-2"), notificationTurnId("session-1", "run-3")]);
+    });
+
+    test("a notification folded into a running turn stays in that turn", () => {
+      const turns = translate([
+        user("work"),
+        assistant([{ type: "tool_use", id: "tool-1", name: "Bash", input: { command: "make" } }]),
+        user([{ type: "tool_result", tool_use_id: "tool-1", content: "ok" }]),
+        notification("run-1", { isQueuedCommand: true }),
+        assistant([{ type: "text", text: "build and job done" }]),
+      ]);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]!.items.map((item) => item.type)).toEqual(["userMessage", "commandExecution", "agentMessage"]);
+    });
+
+    test("without a run id (older Claude Code) the notification record's own uuid names the turn", () => {
+      const record = notification(undefined);
+      const turns = translate([user("job"), assistant([{ type: "text", text: "started" }]), record, assistant([{ type: "text", text: "done" }])]);
+      expect(turns.map((turn) => turn.id).at(-1)).toBe(record.uuid);
+    });
   });
 
   test("a compaction summary becomes a context compaction item", () => {

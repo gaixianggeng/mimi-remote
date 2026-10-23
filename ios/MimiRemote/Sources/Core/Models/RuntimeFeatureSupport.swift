@@ -11,7 +11,13 @@ enum RuntimeFeatureSupport {
     static func supportsAttachments(for provider: String) -> Bool { !isDeepSeek(provider) }
     static func supportsSkills(for provider: String) -> Bool { !isDeepSeek(provider) }
     static func supportsArchive(for provider: String) -> Bool { !isDeepSeek(provider) }
-    static func supportsPlanningAndGoals(for provider: String) -> Bool { !isDeepSeek(provider) }
+    static func supportsPlanning(for provider: String) -> Bool { !isDeepSeek(provider) }
+
+    /// 目标任务以通道声明为准（`declaredBy` 来自 thread/goal/* 能力探测，#791）；Harness 不消费 goal 参数。
+    static func supportsGoals(for provider: String, declaredBy goalProviders: Set<String>) -> Bool {
+        !isDeepSeek(provider)
+            && goalProviders.contains(CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider))
+    }
 
     static func isDeepSeek(_ provider: String?) -> Bool {
         CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider) == "deepseek"

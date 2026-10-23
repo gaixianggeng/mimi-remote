@@ -63,7 +63,11 @@ struct SessionContextSidebarView: View {
                 List {
                     overviewSection(context, session: sessionStore.selectedSession)
                     claudeRecoverySection(context, session: sessionStore.selectedSession)
-                    goalSection(goal: sessionStore.selectedThreadGoal ?? context.goal)
+                    if sessionStore.supportsThreadGoals(
+                        runtimeProvider: sessionStore.selectedSession.map { $0.runtimeProvider ?? $0.source }
+                    ) {
+                        goalSection(goal: sessionStore.selectedThreadGoal ?? context.goal)
+                    }
                     subagentSection(context.subagents)
                     commandActionSection()
                     taskSection(context.tasks)

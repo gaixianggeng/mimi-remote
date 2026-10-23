@@ -785,7 +785,9 @@ func runCommandWithInput(ctx context.Context, dir string, input string, limit in
 		if message == "" {
 			message = err.Error()
 		}
-		return "", false, gitCommandError{message: message}
+		var exitErr *exec.ExitError
+		exited := errors.As(err, &exitErr) && exitErr.ExitCode() > 0
+		return "", false, gitCommandError{message: message, exited: exited}
 	}
 	return stdout.String(), stdout.truncated, nil
 }
@@ -1025,10 +1027,20 @@ func parseGitFileStatuses(raw string) []gitFileStatus {
 
 type gitCommandError struct {
 	message string
+	// exited 表示命令正常运行并以非零码退出，即命令自己给出了结论；进程没起来、
+	// 被信号终止或超时时为 false。
+	exited bool
 }
 
 func (e gitCommandError) Error() string {
 	return e.message
+}
+
+// gitCommandExitedWithVerdict 判断 Git 是否跑完并以非零码退出。各平台、各语言下
+// “不是仓库”的报错文案不同，按退出方式区分“Git 的结论”和“Git 没跑成”。
+func gitCommandExitedWithVerdict(err error) bool {
+	var gitErr gitCommandError
+	return errors.As(err, &gitErr) && gitErr.exited
 }
 
 func isGitRepositoryMissingError(err error) bool {

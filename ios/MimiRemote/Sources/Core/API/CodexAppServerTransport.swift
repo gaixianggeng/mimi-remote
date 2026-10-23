@@ -411,7 +411,8 @@ actor CodexAppServerConnection {
         return isConnected && isInitialized && !receiveTask.isCancelled
     }
 
-    func connect(url: URL, token: String) async throws {
+    /// `initializeTimeout` 只约束这次握手；nil 时沿用连接的常规请求超时。
+    func connect(url: URL, token: String, initializeTimeout: TimeInterval? = nil) async throws {
         receiveTask?.cancel()
         receiveTask = nil
         isConnected = false
@@ -448,7 +449,8 @@ actor CodexAppServerConnection {
         do {
             _ = try await sendRequestEnvelope(
                 CodexAppServerRequest(id: nextRequestID(), method: "initialize", params: initializeParams),
-                allowBeforeInitialized: true
+                allowBeforeInitialized: true,
+                timeout: initializeTimeout
             )
             try await sendNotification(CodexAppServerNotification(method: "initialized", params: .object([:])))
             isInitialized = true

@@ -47,7 +47,9 @@ Source: "{#SourceDir}\agentd.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\mimi-claude-adapter.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\alleycat-claude-bridge.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\mimi-remote-tray.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\mimi-tailcat-experiment.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\mimi-remote.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "register-service.ps1"; DestDir: "{tmp}"; Flags: dontcopy
 Source: "configure-firewall.ps1"; DestDir: "{tmp}"; Flags: dontcopy
 
@@ -164,6 +166,49 @@ begin
     Sleep(100);
   end;
   RaiseException('Mimi Remote tray did not stop within 8 seconds.');
+end;
+
+function ExecutableIsReleased(const Path: String): Boolean;
+var
+  Stream: TFileStream;
+begin
+  // Windows allows renaming a running image, so a rename probe cannot prove the
+  // process exited. Opening it for exclusive write fails while it is mapped.
+  Result := False;
+  try
+    Stream := TFileStream.Create(Path, fmOpenReadWrite or fmShareExclusive);
+    Stream.Free;
+    Result := True;
+  except
+    Result := False;
+  end;
+end;
+
+procedure StopTailcatHelper;
+var
+  ResultCode: Integer;
+  Attempt: Integer;
+  HelperPath: String;
+begin
+  // agentd asks the Tailcat helper to exit over its control socket, and the
+  // managed service's kill-on-close Job Object removes it if agentd exits
+  // first. Only force-stop a helper that is still running after that, such as
+  // one left by a manually started "agentd serve".
+  HelperPath := ExpandConstant('{app}\mimi-tailcat-experiment.exe');
+  if not FileExists(HelperPath) then
+    Exit;
+  for Attempt := 1 to 50 do begin
+    if ExecutableIsReleased(HelperPath) then
+      Exit;
+    Sleep(100);
+  end;
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-tailcat-experiment.exe" /t /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  for Attempt := 1 to 50 do begin
+    if ExecutableIsReleased(HelperPath) then
+      Exit;
+    Sleep(100);
+  end;
+  RaiseException('The Mimi Remote Tailcat helper did not stop within 10 seconds.');
 end;
 
 procedure InitializeAndVerifyManagedService;
@@ -289,6 +334,7 @@ begin
   // Stop agentd gracefully before replacing files. The managed agent owns a
   // kill-on-close Job Object, so an unexpected exit also removes descendants.
   StopManagedService;
+  StopTailcatHelper;
   StopTrayApp;
   // Keep the existing task registered while files are replaced. The
   // registration script uses Register-ScheduledTask -Force, so an upgrade
@@ -346,6 +392,7 @@ var
 begin
   if CurUninstallStep = usUninstall then begin
     StopManagedService;
+    StopTailcatHelper;
     StopTrayApp;
     RemoveScheduledTask;
     if RegQueryDWordValue(HKCU, ProductRegistryKey, FirewallMarkerName, FirewallMarker) and

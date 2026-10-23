@@ -308,8 +308,11 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
                     durableEvent: terminal, sessionID: sessionID
                   ).first {
             // 只有明确的最后 turn/end 才恢复终态；不发 turnCompleted，避免通知、补页和队列副作用。
+            // 出错结束的轮次恢复成失败（#861）。metadata 带着轮次终态，提醒层据此认出这是
+            // 恢复而不是新失败，不再弹「会话失败」；失败原因由历史页那张错误卡展示。
             presentedTurnState = .ended(seq)
-            onEvent?(.sessionStatus("completed", metadata))
+            let status = metadata.turnLifecycle == .failed ? SessionStatus.failed : .completed
+            onEvent?(.sessionStatus(status.rawValue, metadata))
         }
     }
 

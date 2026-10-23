@@ -146,6 +146,9 @@ enum HarnessHistoryProjection {
             ) else { continue }
             guard projected.activityPayload?.category == .toolCall else {
                 messages.append(projected)
+                if event.isInterruptedAssistantMessage {
+                    messages.append(interruptionMarker(after: projected, event: event))
+                }
                 continue
             }
             if let index = toolIndexByID[projected.id] {
@@ -179,11 +182,34 @@ enum HarnessHistoryProjection {
             return systemMessage(event, sessionID: sessionID)
         case HarnessWireEventType.toolCall, HarnessWireEventType.toolResult:
             return toolMessage(event, sessionID: sessionID)
+        case HarnessWireEventType.turnEnd:
+            return turnFailureMessage(event)
         default:
             // 步骤边界、权限预设、注入上下文等不单独展示：它们没有独立可读内容，
             // 展示出来只是噪声（与实时投影同一取舍）。
             return nil
         }
+    }
+
+    /// 失败结束的轮次在历史里留一张错误卡（#861）。
+    ///
+    /// 与实时路径同一份原因解释（`HarnessTurnEndReason`）、同一个身份，重开会话时原位覆盖
+    /// 实时那张。失败可能没有任何助手正文，所以卡片只从 `turn/end` 恢复，不依赖回复存在。
+    private static func turnFailureMessage(_ event: HarnessDurableEvent) -> CodexHistoryMessage? {
+        guard let settlement = HarnessTurnEndReason.settlement(for: event),
+              settlement.lifecycle == .failed,
+              let error = settlement.error,
+              let turnID = HarnessPresentationProjector.turnIdentity(from: event) else { return nil }
+        return CodexHistoryMessage(
+            id: HarnessTurnEndReason.failureMessageID(turnID: turnID),
+            role: "system",
+            kind: .error,
+            content: L10n.format("ui.run_error_value", error.message),
+            createdAt: date(from: event),
+            turnID: turnID,
+            seq: event.seq.map(EventSequence.init),
+            turnLifecycle: .failed
+        )
     }
 
     /// 工具条目走**与实时投影同一个解释**（`HarnessPresentationProjector.toolEntry`）。
@@ -295,6 +321,24 @@ enum HarnessHistoryProjection {
             content: text,
             createdAt: date(from: event),
             seq: event.seq.map(EventSequence.init)
+        )
+    }
+
+    /// 被中断回复后的标记行。与实时投影同一身份（`interruptionMarkerID`），
+    /// 重开会话时原位覆盖实时那条，不新增，也不因历史页只带正文而丢掉。
+    private static func interruptionMarker(
+        after assistant: CodexHistoryMessage,
+        event: HarnessDurableEvent
+    ) -> CodexHistoryMessage {
+        let id = HarnessPresentationProjector.interruptionMarkerID(forAssistantMessageID: assistant.id)
+        return CodexHistoryMessage(
+            id: id,
+            role: "system",
+            kind: .warning,
+            content: L10n.text("harness.reply_interrupted"),
+            createdAt: date(from: event),
+            itemID: id,
+            sendStatus: .confirmed
         )
     }
 

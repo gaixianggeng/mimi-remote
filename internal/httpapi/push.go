@@ -106,6 +106,8 @@ type pushDeviceRegisterRequest struct {
 	ExpiresAt             string `json:"expires_at"`
 	Platform              string `json:"platform,omitempty"`
 	SupportsHolderWaiting bool   `json:"supports_holder_waiting,omitempty"`
+	// 能解码 runtime=deepseek 回复提醒的 App 才声明；旧版 App 不会收到 DeepSeek 推送。
+	SupportsDeepSeekMessages bool `json:"supports_deepseek_messages,omitempty"`
 }
 
 func (r *Router) pushDeviceHandler(w http.ResponseWriter, req *http.Request) {
@@ -135,21 +137,23 @@ func (r *Router) pushRegisterDevice(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	device, err := r.push.Devices().Register(pushbridge.Device{
-		ID:                    strings.TrimSpace(body.DeviceID),
-		Ticket:                strings.TrimSpace(body.Ticket),
-		Platform:              strings.TrimSpace(body.Platform),
-		SupportsHolderWaiting: body.SupportsHolderWaiting,
-		ExpiresAt:             expiry,
+		ID:                       strings.TrimSpace(body.DeviceID),
+		Ticket:                   strings.TrimSpace(body.Ticket),
+		Platform:                 strings.TrimSpace(body.Platform),
+		SupportsHolderWaiting:    body.SupportsHolderWaiting,
+		SupportsDeepSeekMessages: body.SupportsDeepSeekMessages,
+		ExpiresAt:                expiry,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"device_id":               device.ID,
-		"expires_at":              device.ExpiresAt.UTC().Format(time.RFC3339),
-		"needs_refresh":           device.NeedsRefresh(time.Now()),
-		"supports_holder_waiting": device.SupportsHolderWaiting,
+		"device_id":                  device.ID,
+		"expires_at":                 device.ExpiresAt.UTC().Format(time.RFC3339),
+		"needs_refresh":              device.NeedsRefresh(time.Now()),
+		"supports_holder_waiting":    device.SupportsHolderWaiting,
+		"supports_deepseek_messages": device.SupportsDeepSeekMessages,
 	})
 }
 
@@ -169,6 +173,8 @@ func (r *Router) pushUnregisterDevice(w http.ResponseWriter, req *http.Request) 
 	} else if removed {
 		r.push.Actions().RevokeDevice(deviceID)
 	}
+	// 关闭提醒或删除档案时，活动票据随设备一起注销，不再启动或更新 Live Activity。
+	r.push.LiveActivities().RemoveDevice(deviceID)
 	// 句柄绑定的设备已经消失，剩余待审批动作对它不再有效。
 	writeJSON(w, http.StatusOK, map[string]any{"removed": true})
 }
@@ -184,12 +190,16 @@ func (r *Router) pushStatusHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	devices := []map[string]any{}
 	for _, device := range r.push.Devices().Active() {
+		liveActivityStart, liveActivityUpdate := r.push.LiveActivities().TicketStatus(device.ID)
 		devices = append(devices, map[string]any{
-			"device_id":               device.ID,
-			"platform":                device.Platform,
-			"expires_at":              device.ExpiresAt.UTC().Format(time.RFC3339),
-			"needs_refresh":           device.NeedsRefresh(time.Now()),
-			"supports_holder_waiting": device.SupportsHolderWaiting,
+			"device_id":                  device.ID,
+			"platform":                   device.Platform,
+			"expires_at":                 device.ExpiresAt.UTC().Format(time.RFC3339),
+			"needs_refresh":              device.NeedsRefresh(time.Now()),
+			"supports_holder_waiting":    device.SupportsHolderWaiting,
+			"supports_deepseek_messages": device.SupportsDeepSeekMessages,
+			"live_activity_start":        liveActivityStart,
+			"live_activity_update":       liveActivityUpdate,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -200,6 +210,10 @@ func (r *Router) pushStatusHandler(w http.ResponseWriter, req *http.Request) {
 		"profile_id":          r.push.ProfileID(),
 		"actionable_kinds":    []string{pushbridge.KindCommand, pushbridge.KindPatch},
 		"devices":             devices,
+		// 支持 /api/push/live-activities 的 agentd 才回报；旧版缺字段时 App 不登记活动票据。
+		"live_activity": true,
+		// host_tag 与活动 attributes.hostTag 一致，App 据此把活动归到正确的 Mac。
+		"host_tag": r.push.HostTag(),
 	})
 }
 
@@ -308,6 +322,11 @@ func (r *Router) restoreGatewayThreadAuthorization(record pushbridge.LocateRecor
 	scope, ok := r.gatewayScopeForPath(cwd)
 	if !ok || strings.TrimSpace(scope.id) == "" {
 		return false
+	}
+	if record.Runtime == pushbridge.RuntimeDeepSeek {
+		// DeepSeek 不经 app-server 网关：原生中继每次请求都按 Harness 会话摘要重新授权，
+		// 没有可补种的线程缓存。这里只回答目录是否仍在授权范围内。
+		return true
 	}
 	r.allowGatewayThread(appServerGatewayAllowedThread{
 		id:        threadID,
@@ -500,14 +519,18 @@ func newPushManager(cfg pushManagerConfig) *pushbridge.Manager {
 		// 定位记录损坏只影响旧通知能否打开，NewRouteStore 因此从不让 agentd 起不来。
 		routes = pushbridge.NewRouteStore(cfg.RouteStorePath)
 	}
-	return pushbridge.NewManager(pushbridge.Options{
-		Enabled:        cfg.Enabled,
-		ProviderURL:    cfg.ProviderURL,
-		Environment:    cfg.Environment,
-		InstallationID: cfg.InstallationID,
-		DeviceStore:    store,
-		RouteStore:     routes,
+	manager := pushbridge.NewManager(pushbridge.Options{
+		Enabled:             cfg.Enabled,
+		ProviderURL:         cfg.ProviderURL,
+		Environment:         cfg.Environment,
+		InstallationID:      cfg.InstallationID,
+		DeviceStore:         store,
+		RouteStore:          routes,
+		ActivityTicketStore: pushbridge.NewActivityTicketStore(cfg.ActivityTicketStorePath),
 	})
+	// 重启前登记的活动已经没有会话状态可显示，按空闲规则排期结束。
+	manager.LiveActivities().ReconcileAll()
+	return manager
 }
 
 type pushManagerConfig struct {
@@ -517,4 +540,6 @@ type pushManagerConfig struct {
 	InstallationID  string
 	DeviceStorePath string
 	RouteStorePath  string
+	// ActivityTicketStorePath 为空时 Live Activity 票据只留在内存。
+	ActivityTicketStorePath string
 }

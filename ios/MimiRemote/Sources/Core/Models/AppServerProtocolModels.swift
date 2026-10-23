@@ -590,6 +590,21 @@ struct CodexAppServerRequestBuilder {
         ]))
     }
 
+    /// Claude 适配器专有（#765）：sandboxPolicy 与下一次 turn/start 相同，用来选出该执行边界下
+    /// Claude Code 认识的命令；只读，不授予执行权限。
+    func slashCommandList(
+        cwd: String,
+        sandboxMode: CodexAppServerSandboxMode,
+        forceReload: Bool = false
+    ) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        return CodexAppServerRequestSpec(method: "slashCommand/list", params: .object([
+            "cwd": .string(path),
+            "sandboxPolicy": .object(["type": .string(sandboxMode.rawValue)]),
+            "forceReload": .bool(forceReload)
+        ]))
+    }
+
     func installedPluginList(cwd: String) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         return CodexAppServerRequestSpec(method: "plugin/installed", params: .object([

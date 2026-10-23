@@ -4,8 +4,8 @@
 
 这份映射把 Mimi Remote 的真实用户风险绑定到稳定、可重复、可诊断的测试层，避免
 “iOS 和 `agentd` 各有单测”被误认为已经形成跨边界闭环。PR Gate 只运行能够阻止
-数据丢失、状态串线、重复副作用或安全越界的高价值回归；大范围组合、全量视觉和
-真机专项仍保留在完整本地回归及后续 Nightly/Release 任务中。
+数据丢失、状态串线、重复副作用或安全越界的高价值回归。其余 iOS 测试类登记在每晚集合，
+由每晚全量 XCTest 任务执行（见下文“测试归属与全量执行”）；真机专项仍在发布前单独验收。
 
 关键链路统一通过：
 
@@ -17,6 +17,12 @@ bash ./scripts/test-conversation-regressions.sh
 
 ```bash
 bash ./scripts/check-critical-regressions.sh
+```
+
+全量 `MimiRemoteTests`（含全部视觉快照类）通过下面的入口运行，并按类核对实际执行数：
+
+```bash
+bash ./scripts/test-ios-full-suite.sh
 ```
 
 ## 方案
@@ -76,6 +82,56 @@ iOS Gate 保留请求、协议、配对和托管订阅整组测试；庞大的 `
 只选择映射表中的关键方法。测试失败会直接显示 XCTest class/method；Go 失败会显示
 package/test，静态检查则报告缺失的风险 ID、源码方法、runner selector 或 CI scope。
 
+### 测试归属与全量执行
+
+xcodebuild 对不存在的 `-only-testing` 类名或方法会静默执行 0 个用例并报告通过；
+多个 `*Tests.swift` 文件又只是 `ConversationDataFlowTests` 的 extension。为了不再出现
+“测试写了却从来没跑过”，每个 iOS 测试类都必须明确归属：
+
+- **PR 集合**：`scripts/test-conversation-regressions.sh` 中的 `-only-testing`。整类选择的类
+  在每个 PR 上完整执行；只选部分方法的类（`ConversationDataFlowTests`、
+  `ConversationSnapshotTests`）其余方法归每晚集合。
+- **每晚集合**：`config/ios-tests/nightly-classes.txt`，按真实类名登记所有不在 PR 集合整类执行
+  的测试类，包括全部视觉快照类。
+- **隔离清单**：`config/ios-tests/quarantine.tsv`，只允许隔离单个方法，每条写明原因、负责人和
+  Issue。PR 回归与全量执行都会对这些条目传 `-skip-testing`，修好后删除对应行。
+
+`scripts/check-ios-test-selectors.sh` 由 `check-critical-regressions.sh`（Repository safety
+中的 PR Gate 自检）和 iOS CI 在回归前执行，校验：每个含用例的 `XCTestCase` 类都在 PR 集合或
+每晚集合之一；方法级 selector 和隔离条目指向现存方法；selector 使用真实类名而不是文件名；
+测试目录中的 Swift 文件都已登记进 Xcode 工程。`scripts/test-ios-test-inventory.sh` 用夹具验证
+这些拦截本身有效。
+
+`scripts/test-ios-full-suite.sh` 在固定 `iPad Pro 13-inch (M5)` Simulator 上运行全量
+`MimiRemoteTests`，用 xcresult 按类统计实际执行数；任何应执行的类执行 0 个、执行数与源码清单
+不一致，或存在失败用例，都返回非零。
+
+失败的用例自动重试一次（`-retry-tests-on-failure -test-iterations 2`）：
+
+- 两次都失败才算失败，任务变红。
+- 重试后通过的记为抖动，不让任务失败，但会列在运行摘要的按类统计表和抖动清单里，并在 GitHub
+  Actions 上生成 warning 注解。抖动不能放着不管：要么按条件等待修正测试，要么登记隔离清单和 Issue。
+- 快照不享受重试：重录模式下首次比对失败就已写入新图，重试必然通过，所以只要有快照被重录，
+  任务就判失败。
+- PR Gate 的 iOS 回归不重试。
+
+每晚任务是 `.github/workflows/ios-full-tests.yml`：每天北京时间 03:40 在 GitHub 托管的
+`macos-26` 上运行该入口，Simulator 与 PR Gate 的 iOS 回归相同（iOS 26.2 的 M5），
+`check-critical-regressions.sh` 校验两边 runtime 一致。修改该工作流、全量入口、测试归属或隔离
+清单，以及 `__Snapshots__` 下基线的 PR，也会在同一环境完整跑一次。
+
+快照基线以这个环境为准。当前基线的录制环境是 GitHub 托管 `macos-26-arm64` 镜像
+（20261012）、Xcode 26.6（17F113）、iOS 26.2（23C54）的 iPad Pro 13-inch (M5)。PR Gate 与
+每晚任务都使用镜像默认的 Xcode；镜像升级导致两边一起漂移时，按下面的流程重录。本机 Xcode
+版本不同（例如 27.2）时渲染会漂移，本地结果不能替代 CI，也不要用本机重录基线。需要更新基线时：
+
+1. 看每晚任务（或触发它的 PR）中失败的快照用例。工作流带 `--record-failed-snapshots` 运行，
+   不匹配的快照会在该环境重录，用例仍判失败。
+2. 下载该运行的 artifact `ios-full-tests-<run>`，其中 `rerecorded-snapshots/` 按仓库路径保存
+   重录的 PNG，`rerecorded-snapshots.txt` 是清单。
+3. 逐张与旧基线对比，只提交确认符合当前设计的图；渲染异常属于产品问题，另开 Issue 并登记隔离。
+4. 提交后 PR 会在同一环境重新验证。
+
 Rust bridge 只在 Cargo/bridge 路径变化时运行现有完整 suite，其中：
 
 - `session_resilience.rs` 覆盖 replay、审批恢复和旧 generation；
@@ -91,8 +147,8 @@ Rust bridge 只在 Cargo/bridge 路径变化时运行现有完整 suite，其中
   不会启动真实 Codex/Claude，也不依赖外网。它能发现字段和状态语义漂移，但不能替代
   已安装二进制、签名、Keychain、Tailscale/弱网和真机专项验收。
 - 相机、全量附件组合、全量 `ConversationDataFlowTests`、更多视觉快照及长时恢复组合
-  不属于 MIM-29 的关键 PR 集合；后续 Nightly/Release 是否托管执行由 MIM-31 决定，
-  本次不创建对应 workflow。
+  不属于 MIM-29 的关键 PR 集合。前三项已登记在每晚集合，由每晚任务
+  `ios-full-tests.yml` 执行。
 - `scripts/check-critical-regressions.sh` 故意校验完整测试名。测试重命名或移动会让
   Gate 失败，要求同时更新 runner 和本映射，避免覆盖关系静默漂移。
 - PR 继续以 MIM-27 的约 10–12 分钟为预算。MIM-29 将大集合改为精确方法并把 Go

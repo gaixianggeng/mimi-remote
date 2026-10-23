@@ -680,7 +680,8 @@ final class TailcatExperimentController: ObservableObject {
         _ url: URL,
         appStore: AppStore,
         profileTarget: PreparedConnectionProfileTarget,
-        requiresManagedAuthorization: Bool = false
+        requiresManagedAuthorization: Bool = false,
+        preservingEndpoint: String? = nil
     ) async throws -> PreparedConnectionSettings {
         let connectionStartedAt = now()
         guard let link = try TailcatPairingLink.parse(url) else {
@@ -765,8 +766,10 @@ final class TailcatExperimentController: ObservableObject {
             )
             candidateEndpoint = stableEndpoint
             try ensureCurrent(operationGeneration)
+            // 已连接电脑升级时保留原有备用线路。配对票据中的 loopback 参与签名和 claim，
+            // 不能改写票据；只在验证稳定代理后选择档案要保存的规范地址。
             let canonicalEndpoint = try AppStore.validatedEndpoint(
-                response.endpoint.isEmpty ? link.ticket.endpoint : response.endpoint
+                preservingEndpoint ?? (response.endpoint.isEmpty ? link.ticket.endpoint : response.endpoint)
             )
             let prepared = try await appStore.prepareRoutedConnectionSettings(
                 endpoint: canonicalEndpoint,

@@ -175,11 +175,16 @@ svg { flex: none; }
   font-size: clamp(2.25rem, 8.6vw, 5.75rem);
   font-weight: 700; line-height: 1.04; letter-spacing: -0.035em;
 }
-:root[data-lang="zh"] .hero__title { font-weight: 600; line-height: 1.14; letter-spacing: -0.01em; }
+:root[data-lang="zh"] .hero__title {
+  /* The Chinese headline is longer than the English one; a smaller ceiling keeps it to two lines on tablets and laptops. */
+  font-size: clamp(2rem, 7.2vw, 5.25rem);
+  font-weight: 600; line-height: 1.14; letter-spacing: -0.01em;
+}
 .hero__lede { max-width: 35em; margin: 26px auto 0; font-size: clamp(1.0625rem, 1.5vw, 1.25rem); line-height: 1.6; color: var(--ink-2); }
 :root[data-lang="zh"] .hero__lede { line-height: 1.8; }
 .hero .cta { margin-top: 36px; }
 .hero__meta { margin-top: 20px; font-size: 0.8125rem; color: var(--ink-3); text-wrap: balance; }
+.hero__meta span { white-space: nowrap; } /* break only between the · separated phrases */
 
 .stage {
   position: relative; isolation: isolate;

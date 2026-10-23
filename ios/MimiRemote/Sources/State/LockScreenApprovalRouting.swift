@@ -123,6 +123,16 @@ enum LockScreenApprovalRouting {
         }
     }
 
+    /// 后台也要能完成的维护请求（实时活动票据登记等）用的客户端。当前档案的内存凭据可用时直接复用；
+    /// App 进后台后内存凭据已被清空（`suspendCredentialsForBackground`），`AppStore.client()` 只会抛
+    /// 合成的 CancellationError，这时和非当前档案一样从 Keychain 读取（#830）。
+    static func maintenanceClient(profileID: String, appStore: AppStore) async throws -> AgentAPIClient {
+        if profileID == appStore.activeConnectionProfileID, appStore.authenticatedCredentialFingerprint != nil {
+            return try appStore.client()
+        }
+        return try await client(profileID: profileID, appStore: appStore)
+    }
+
     static func client(profileID: String, appStore: AppStore) async throws -> AgentAPIClient {
         let descriptor = try await appStore.hostProbeDescriptor(profileID: profileID)
         guard let profile = appStore.connectionProfiles.first(where: { $0.id == profileID }) else {

@@ -11,6 +11,8 @@ struct DebugLaunchConfiguration {
     let seedsQueuedTurnsUI: Bool
     let seedsMCPApprovalUI: Bool
     let seedsHistoryUnreadUI: Bool
+    /// 侧栏值班表全空的验收截图（#547）：种子里运行 / 等待中的会话一律改成已完成。
+    let seedsQuietSidebarUI: Bool
     // TODO(工作区行样式评审): 只服务 A/B/C 三版对比截图，定稿后删除这两个字段。
     let seedsDenseWorkspaceUI: Bool
     let workspaceRowStyle: String?
@@ -107,6 +109,8 @@ struct DebugLaunchConfiguration {
             || boolValue(environment["MIMI_DEBUG_SEED_MCP_APPROVAL_UI"])
         let seedsHistoryUnreadUI = arguments.contains("--debug-seed-history-unread-ui")
             || boolValue(environment["MIMI_DEBUG_SEED_HISTORY_UNREAD_UI"])
+        let seedsQuietSidebarUI = arguments.contains("--debug-seed-quiet-sidebar-ui")
+            || boolValue(environment["MIMI_DEBUG_SEED_QUIET_SIDEBAR_UI"])
         let seedsDenseWorkspaceUI = arguments.contains("--debug-seed-dense-workspace-ui")
             || boolValue(environment["MIMI_DEBUG_SEED_DENSE_WORKSPACE_UI"])
         let hostPlatformPreview = argumentValue(named: "--debug-host-platform", in: arguments)
@@ -120,12 +124,14 @@ struct DebugLaunchConfiguration {
                 || seedsQueuedTurnsUI
                 || seedsMCPApprovalUI
                 || seedsHistoryUnreadUI
+                || seedsQuietSidebarUI
                 || seedsDenseWorkspaceUI,
             seedsStoreScreenshotUI: arguments.contains("--debug-seed-store-ui")
                 || boolValue(environment["MIMI_DEBUG_SEED_STORE_UI"]),
             seedsQueuedTurnsUI: seedsQueuedTurnsUI,
             seedsMCPApprovalUI: seedsMCPApprovalUI,
             seedsHistoryUnreadUI: seedsHistoryUnreadUI,
+            seedsQuietSidebarUI: seedsQuietSidebarUI,
             seedsDenseWorkspaceUI: seedsDenseWorkspaceUI,
             workspaceRowStyle: argumentValue(named: "--debug-workspace-row-style", in: arguments)
                 ?? environment["MIMI_DEBUG_WORKSPACE_ROW_STYLE"],

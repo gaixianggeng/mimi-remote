@@ -105,7 +105,11 @@ protocol SessionStoreAPIClient {
     /// 发送准备只读取目标 Runtime；模型菜单仍使用无参数入口聚合全部目录。
     func modelOptions(runtimeProvider: String) async throws -> [CodexAppServerModelOption]
     func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary]
+    /// Claude 会话 `/` 菜单的命令目录；不支持的主机抛出 ClaudeSlashCommandCatalogError.unsupported。
+    func claudeSlashCommands(cwd: String, sandboxMode: CodexAppServerSandboxMode, forceReload: Bool) async throws -> [ClaudeSlashCommand]
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool
+    /// 该 Runtime 的通道是否声明了目标任务（thread/goal/*）；决定是否展示目标入口（#791）。
+    func runtimeSupportsThreadGoals(runtimeProvider: String) async throws -> Bool
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse
     func resolveWorkspace(path: String) async throws -> AgentWorkspace
     func createWorktree(path: String, name: String?, base: String?, branch: String?) async throws -> WorktreeCreateResponse
@@ -248,6 +252,10 @@ extension SessionStoreAPIClient {
         return value.isEmpty || value == "codex" || value == "openai"
     }
 
+    func runtimeSupportsThreadGoals(runtimeProvider: String) async throws -> Bool {
+        CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "codex"
+    }
+
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {
         nil
     }
@@ -273,6 +281,10 @@ extension SessionStoreAPIClient {
 
     func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary] {
         []
+    }
+
+    func claudeSlashCommands(cwd: String, sandboxMode: CodexAppServerSandboxMode, forceReload: Bool) async throws -> [ClaudeSlashCommand] {
+        throw ClaudeSlashCommandCatalogError.unsupported
     }
 
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse {

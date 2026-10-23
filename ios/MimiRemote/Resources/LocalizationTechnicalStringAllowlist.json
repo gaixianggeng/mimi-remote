@@ -272,6 +272,10 @@
       "reason": "Provider brand name."
     },
     {
+      "value": "Claude",
+      "reason": "Provider brand name."
+    },
+    {
       "value": "?",
       "reason": "Single-glyph help affordance."
     },

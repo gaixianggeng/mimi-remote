@@ -29,12 +29,14 @@ const (
 	holderWaitingBodyKey    = "ui.notification_holder_waiting_body"
 )
 
-// Runtime 与 ApprovalKind 是 Codex 与 Claude Code 两条链路共用的枚举。任何一端
-// 新增审批类型都必须先在这里登记，未知值一律拒绝，避免上游把自由文本推到通知上。
+// Runtime 与 ApprovalKind 是各条链路共用的枚举。任何一端新增审批类型都必须先在
+// 这里登记，未知值一律拒绝，避免上游把自由文本推到通知上。DeepSeek 只有回合终态
+// 提醒（#568），标题 key 由 App 包内的 push.message.title.deepseek 提供。
 var (
 	allowedRuntimes = map[string]struct{}{
-		"codex":  {},
-		"claude": {},
+		"codex":    {},
+		"claude":   {},
+		"deepseek": {},
 	}
 	allowedApprovalKinds = map[string]struct{}{
 		"command":     {},
@@ -91,6 +93,10 @@ func (n ApprovalNotification) Validate(now time.Time) error {
 	}
 	if n.Event == holderWaitingPushEvent && n.Runtime != "claude" {
 		return errors.New("holder.waiting 只支持 claude")
+	}
+	if n.Runtime == "deepseek" && (!n.isMessage() || n.Event == holderWaitingPushEvent) {
+		// App 包里只有 DeepSeek 的回复标题，审批与等待提醒没有对应文案。
+		return errors.New("deepseek 只支持回合终态提醒")
 	}
 	if !n.isMessage() {
 		if _, ok := allowedApprovalKinds[n.ApprovalKind]; !ok {

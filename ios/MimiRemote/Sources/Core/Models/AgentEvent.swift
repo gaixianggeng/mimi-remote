@@ -1176,7 +1176,8 @@ struct CodexAppServerEventProjector {
         }
         context.tokenUsage = AppServerTokenUsageSample(
             total: breakdown(total),
-            last: usage["last"]?.objectValue.map(breakdown)
+            last: usage["last"]?.objectValue.map(breakdown),
+            modelContextWindow: window
         )
         return .sessionContext(context, metadata)
     }

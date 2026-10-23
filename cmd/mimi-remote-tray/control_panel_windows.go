@@ -76,7 +76,7 @@ const (
 	defaultDPI    = 96
 
 	controlPanelLogicalWidth  = 600
-	controlPanelLogicalHeight = 550
+	controlPanelLogicalHeight = 583
 )
 
 const (
@@ -91,6 +91,8 @@ const (
 	panelPairBack
 	panelPairCopy
 	panelPairRefresh
+	panelTailcatToggle
+	panelPairNetwork
 )
 
 const wmPanelPairReady = wmApp + 20
@@ -209,6 +211,8 @@ type controlPanel struct {
 	codexValue      uintptr
 	claudeLabel     uintptr
 	claudeValue     uintptr
+	tailcatLabel    uintptr
+	tailcatValue    uintptr
 	footerLabel     uintptr
 
 	refresh   uintptr
@@ -220,6 +224,9 @@ type controlPanel struct {
 	doctorFix uintptr
 	logs      uintptr
 
+	tailcatToggle      uintptr
+	tailcatToggleLabel string
+
 	pairTitle         uintptr
 	pairSummary       uintptr
 	pairEndpoint      uintptr
@@ -228,6 +235,7 @@ type controlPanel struct {
 	pairBack          uintptr
 	pairCopy          uintptr
 	pairRefresh       uintptr
+	pairNetwork       uintptr
 	dashboardControls []uintptr
 	pairingControls   []uintptr
 
@@ -240,11 +248,14 @@ type controlPanel struct {
 	pairingErr           error
 	pairingView          bool
 	pairingLoading       bool
+	// pairingTailcat 为真时配对视图生成 Tailcat 二维码，否则按 agentd 当前网络配对。
+	pairingTailcat bool
 
-	statusColor       uint32
-	statusBackground  uint32
-	codexStatusColor  uint32
-	claudeStatusColor uint32
+	statusColor        uint32
+	statusBackground   uint32
+	codexStatusColor   uint32
+	claudeStatusColor  uint32
+	tailcatStatusColor uint32
 }
 
 type controlPanelPresentation struct {
@@ -502,35 +513,40 @@ func (p *controlPanel) createControls(instance uintptr) error {
 	p.codexValue = p.createControl(instance, "STATIC", "正在检查", wsChild|wsVisible|ssLeft|ssNoPrefix, 134, 228, 144, 20, 0)
 	p.claudeLabel = p.createControl(instance, "STATIC", "Claude Code", wsChild|wsVisible|ssLeft|ssNoPrefix, 314, 228, 76, 20, 0)
 	p.claudeValue = p.createControl(instance, "STATIC", "正在检查", wsChild|wsVisible|ssLeft|ssNoPrefix, 400, 228, 140, 20, 0)
+	p.tailcatLabel = p.createControl(instance, "STATIC", "Tailcat", wsChild|wsVisible|ssLeft|ssNoPrefix, 48, 261, 76, 20, 0)
+	p.tailcatValue = p.createControl(instance, "STATIC", "正在检查", wsChild|wsVisible|ssLeft|ssNoPrefix, 134, 261, 160, 20, 0)
+	p.tailcatToggle = p.createControl(instance, "BUTTON", "开启 Tailcat", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 314, 258, 226, 26, panelTailcatToggle)
 
-	p.refresh = p.createControl(instance, "BUTTON", "刷新状态", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 32, 270, 120, 42, panelRefresh)
-	p.start = p.createControl(instance, "BUTTON", "启动服务", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 162, 270, 120, 42, panelStart)
-	p.restart = p.createControl(instance, "BUTTON", "重新启动", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 292, 270, 120, 42, panelRestart)
-	p.stop = p.createControl(instance, "BUTTON", "停止服务", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 422, 270, 120, 42, panelStop)
+	p.refresh = p.createControl(instance, "BUTTON", "刷新状态", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 32, 303, 120, 42, panelRefresh)
+	p.start = p.createControl(instance, "BUTTON", "启动服务", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 162, 303, 120, 42, panelStart)
+	p.restart = p.createControl(instance, "BUTTON", "重新启动", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 292, 303, 120, 42, panelRestart)
+	p.stop = p.createControl(instance, "BUTTON", "停止服务", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 422, 303, 120, 42, panelStop)
 
-	p.pair = p.createControl(instance, "BUTTON", "配对设备", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 32, 366, 120, 50, panelPair)
-	p.doctor = p.createControl(instance, "BUTTON", "运行诊断", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 162, 366, 120, 50, panelDoctor)
-	p.doctorFix = p.createControl(instance, "BUTTON", "诊断并修复", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 292, 366, 120, 50, panelDoctorFix)
-	p.logs = p.createControl(instance, "BUTTON", "查看日志", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 422, 366, 120, 50, panelLogs)
+	p.pair = p.createControl(instance, "BUTTON", "配对设备", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 32, 399, 120, 50, panelPair)
+	p.doctor = p.createControl(instance, "BUTTON", "运行诊断", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 162, 399, 120, 50, panelDoctor)
+	p.doctorFix = p.createControl(instance, "BUTTON", "诊断并修复", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 292, 399, 120, 50, panelDoctorFix)
+	p.logs = p.createControl(instance, "BUTTON", "查看日志", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 422, 399, 120, 50, panelLogs)
 
-	p.footerLabel = p.createControl(instance, "STATIC", "关闭窗口后，Mimi Remote 会继续在系统托盘中运行。", wsChild|wsVisible|ssLeft|ssNoPrefix, 24, 461, 540, 22, 0)
+	p.footerLabel = p.createControl(instance, "STATIC", "关闭窗口后，Mimi Remote 会继续在系统托盘中运行。", wsChild|wsVisible|ssLeft|ssNoPrefix, 24, 494, 540, 22, 0)
 	p.pairTitle = p.createControl(instance, "STATIC", "扫码连接设备", wsChild|ssLeft|ssNoPrefix, 290, 100, 250, 30, 0)
 	p.pairSummary = p.createControl(instance, "STATIC", "正在生成安全的短期配对二维码…", wsChild|ssLeft|ssNoPrefix, 290, 137, 250, 44, 0)
 	p.pairEndpoint = p.createControl(instance, "STATIC", "连接地址：—", wsChild|ssLeft|ssNoPrefix, 290, 198, 250, 22, 0)
 	p.pairExpiry = p.createControl(instance, "STATIC", "有效期：—", wsChild|ssLeft|ssNoPrefix, 290, 225, 250, 22, 0)
 	p.pairWarning = p.createControl(instance, "STATIC", "二维码只包含短期票据，不包含长期访问凭据。", wsChild|ssLeft|ssNoPrefix, 290, 263, 250, 54, 0)
-	p.pairBack = p.createControl(instance, "BUTTON", "返回面板", wsChild|wsTabStop|bsOwnerDraw, 32, 366, 160, 50, panelPairBack)
-	p.pairCopy = p.createControl(instance, "BUTTON", "复制配对链接", wsChild|wsTabStop|bsOwnerDraw, 212, 366, 160, 50, panelPairCopy)
-	p.pairRefresh = p.createControl(instance, "BUTTON", "刷新二维码", wsChild|wsTabStop|bsOwnerDraw, 392, 366, 160, 50, panelPairRefresh)
+	p.pairBack = p.createControl(instance, "BUTTON", "返回面板", wsChild|wsTabStop|bsOwnerDraw, 32, 399, 120, 50, panelPairBack)
+	p.pairCopy = p.createControl(instance, "BUTTON", "复制链接", wsChild|wsTabStop|bsOwnerDraw, 162, 399, 120, 50, panelPairCopy)
+	p.pairRefresh = p.createControl(instance, "BUTTON", "刷新二维码", wsChild|wsTabStop|bsOwnerDraw, 292, 399, 120, 50, panelPairRefresh)
+	p.pairNetwork = p.createControl(instance, "BUTTON", "用 Tailcat", wsChild|wsTabStop|bsOwnerDraw, 422, 399, 120, 50, panelPairNetwork)
 
 	controls := []uintptr{
 		p.titleLabel, p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.statusDotLabel, p.statusLabel, p.summaryLabel,
 		p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue,
 		p.networkLabel, p.networkValue, p.projectsLabel, p.projectsValue,
 		p.codexLabel, p.codexValue, p.claudeLabel, p.claudeValue,
+		p.tailcatLabel, p.tailcatValue, p.tailcatToggle,
 		p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs,
 		p.pairTitle, p.pairSummary, p.pairEndpoint, p.pairExpiry, p.pairWarning,
-		p.pairBack, p.pairCopy, p.pairRefresh,
+		p.pairBack, p.pairCopy, p.pairRefresh, p.pairNetwork,
 		p.footerLabel,
 	}
 	for _, control := range controls {
@@ -544,11 +560,12 @@ func (p *controlPanel) createControls(instance uintptr) error {
 		p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue,
 		p.networkLabel, p.networkValue, p.projectsLabel, p.projectsValue,
 		p.codexLabel, p.codexValue, p.claudeLabel, p.claudeValue,
+		p.tailcatLabel, p.tailcatValue, p.tailcatToggle,
 		p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs,
 	}
 	p.pairingControls = []uintptr{
 		p.pairTitle, p.pairSummary, p.pairEndpoint, p.pairExpiry, p.pairWarning,
-		p.pairBack, p.pairCopy, p.pairRefresh,
+		p.pairBack, p.pairCopy, p.pairRefresh, p.pairNetwork,
 	}
 	return nil
 }
@@ -559,9 +576,10 @@ func (p *controlPanel) applyFonts() {
 		p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue,
 		p.networkLabel, p.networkValue, p.projectsLabel, p.projectsValue,
 		p.codexLabel, p.codexValue, p.claudeLabel, p.claudeValue,
+		p.tailcatLabel, p.tailcatValue, p.tailcatToggle,
 		p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs,
 		p.pairTitle, p.pairSummary, p.pairEndpoint, p.pairExpiry, p.pairWarning,
-		p.pairBack, p.pairCopy, p.pairRefresh, p.footerLabel,
+		p.pairBack, p.pairCopy, p.pairRefresh, p.pairNetwork, p.footerLabel,
 	} {
 		setControlPanelFont(control, p.normalFont)
 	}
@@ -575,10 +593,11 @@ func (p *controlPanel) applyFonts() {
 	setControlPanelFont(p.projectsValue, p.valueFont)
 	setControlPanelFont(p.codexValue, p.valueFont)
 	setControlPanelFont(p.claudeValue, p.valueFont)
-	for _, control := range []uintptr{p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.endpointLabel, p.versionLabel, p.networkLabel, p.projectsLabel, p.codexLabel, p.claudeLabel, p.pairEndpoint, p.pairExpiry, p.pairWarning, p.footerLabel} {
+	setControlPanelFont(p.tailcatValue, p.valueFont)
+	for _, control := range []uintptr{p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.endpointLabel, p.versionLabel, p.networkLabel, p.projectsLabel, p.codexLabel, p.claudeLabel, p.tailcatLabel, p.pairEndpoint, p.pairExpiry, p.pairWarning, p.footerLabel} {
 		setControlPanelFont(control, p.smallFont)
 	}
-	for _, control := range []uintptr{p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs, p.pairBack, p.pairCopy, p.pairRefresh} {
+	for _, control := range []uintptr{p.refresh, p.start, p.restart, p.stop, p.pair, p.doctor, p.doctorFix, p.logs, p.tailcatToggle, p.pairBack, p.pairCopy, p.pairRefresh, p.pairNetwork} {
 		setControlPanelFont(control, p.buttonFont)
 	}
 }
@@ -608,23 +627,27 @@ func (p *controlPanel) layoutControls() {
 		{p.codexValue, 134, 228, 144, 20},
 		{p.claudeLabel, 314, 228, 76, 20},
 		{p.claudeValue, 400, 228, 140, 20},
-		{p.refresh, 32, 270, 120, 42},
-		{p.start, 162, 270, 120, 42},
-		{p.restart, 292, 270, 120, 42},
-		{p.stop, 422, 270, 120, 42},
-		{p.pair, 32, 366, 120, 50},
-		{p.doctor, 162, 366, 120, 50},
-		{p.doctorFix, 292, 366, 120, 50},
-		{p.logs, 422, 366, 120, 50},
-		{p.footerLabel, 24, 461, 540, 22},
+		{p.tailcatLabel, 48, 261, 76, 20},
+		{p.tailcatValue, 134, 261, 160, 20},
+		{p.tailcatToggle, 314, 258, 226, 26},
+		{p.refresh, 32, 303, 120, 42},
+		{p.start, 162, 303, 120, 42},
+		{p.restart, 292, 303, 120, 42},
+		{p.stop, 422, 303, 120, 42},
+		{p.pair, 32, 399, 120, 50},
+		{p.doctor, 162, 399, 120, 50},
+		{p.doctorFix, 292, 399, 120, 50},
+		{p.logs, 422, 399, 120, 50},
+		{p.footerLabel, 24, 494, 540, 22},
 		{p.pairTitle, 290, 100, 250, 30},
 		{p.pairSummary, 290, 137, 250, 44},
 		{p.pairEndpoint, 290, 198, 250, 22},
 		{p.pairExpiry, 290, 225, 250, 22},
 		{p.pairWarning, 290, 263, 250, 54},
-		{p.pairBack, 32, 366, 160, 50},
-		{p.pairCopy, 212, 366, 160, 50},
-		{p.pairRefresh, 392, 366, 160, 50},
+		{p.pairBack, 32, 399, 120, 50},
+		{p.pairCopy, 162, 399, 120, 50},
+		{p.pairRefresh, 292, 399, 120, 50},
+		{p.pairNetwork, 422, 399, 120, 50},
 	} {
 		if item.control == 0 {
 			continue
@@ -708,6 +731,7 @@ func (p *controlPanel) syncFromApplication() {
 	statusErr := p.app.statusErr
 	busy := p.app.busy
 	pairingBusy := p.app.pairingBusy
+	tailcat, hasTailcat, tailcatErr := p.app.tailcat, p.app.hasTailcat, p.app.tailcatErr
 	p.app.mu.RUnlock()
 	presentation := makeControlPanelPresentation(
 		status,
@@ -715,6 +739,11 @@ func (p *controlPanel) syncFromApplication() {
 		busy,
 		pairingBusy,
 	)
+	p.syncTailcatRow(makeTailcatPresentation(status, tailcat, hasTailcat, tailcatErr, busy))
+	if p.pairingView {
+		setControlPanelEnabled(p.pairNetwork, p.pairNetworkEnabled())
+		procPanelInvalidateRect.Call(p.pairNetwork, 0, 1)
+	}
 	if !p.pairingView {
 		p.statusColor = presentation.StatusColor
 		p.statusBackground = presentation.StatusBackground
@@ -753,17 +782,20 @@ func (p *controlPanel) showDashboardView() {
 	procPanelInvalidateRect.Call(p.window, 0, 1)
 }
 
-func (p *controlPanel) showPairingView() {
+func (p *controlPanel) showPairingView(preferTailcat bool) {
 	if p == nil || p.window == 0 {
 		return
 	}
 	p.app.mu.RLock()
-	ready := p.app.status.ServiceOK
+	status := p.app.status
+	ready := status.ServiceOK
+	tailcat, hasTailcat := p.app.tailcat, p.app.hasTailcat
 	p.app.mu.RUnlock()
 	if !ready {
 		p.app.showError(errors.New("服务尚未就绪，请先启动服务并等待状态变为“运行正常”"))
 		return
 	}
+	p.pairingTailcat = preferTailcat || defaultPairingUsesTailcat(status, tailcat, hasTailcat)
 	p.pairingView = true
 	setControlPanelText(p.subtitleLabel, "安全连接新设备")
 	setControlPanelVisible(p.dashboardControls, false)
@@ -791,9 +823,13 @@ func (p *controlPanel) refreshPairing() {
 	p.pairingErr = nil
 	p.syncPairingControls()
 	window := p.window
+	pair := p.app.controller.pairing
+	if p.pairingTailcat {
+		pair = p.app.controller.tailcatPairing
+	}
 	go func() {
 		ctx, cancel := actionContext()
-		result, err := p.app.controller.pairing(ctx)
+		result, err := pair(ctx)
 		cancel()
 		var matrix [][]bool
 		if err == nil {
@@ -866,6 +902,14 @@ func (p *controlPanel) syncPairingControls() {
 			warning = truncateUTF16Text(strings.Join(p.pairingInfo.Warnings, "；"), 56)
 		}
 	}
+	if p.pairingTailcat {
+		text := tailcatPairingCopy(pairingCopy{Badge: badge, Title: title, Summary: summary, Endpoint: endpoint, Warning: warning}, p.pairingLoading, err != nil, ready)
+		badge, title, summary, endpoint, warning = text.Badge, text.Title, text.Summary, text.Endpoint, text.Warning
+	} else if err != nil {
+		if _, hasTailcat, tailcatErr := p.app.tailcatSnapshot(); hasTailcat && tailcatErr == nil {
+			warning = "也可以点击“用 Tailcat”改用内置连接，无需 Tailscale 或局域网。"
+		}
+	}
 	p.statusColor = color
 	p.statusBackground = background
 	p.updateStatusBrush(background)
@@ -878,7 +922,9 @@ func (p *controlPanel) syncPairingControls() {
 	setControlPanelEnabled(p.pairBack, true)
 	setControlPanelEnabled(p.pairCopy, ready && !p.pairingLoading)
 	setControlPanelEnabled(p.pairRefresh, !p.pairingLoading)
-	for _, control := range []uintptr{p.pairBack, p.pairCopy, p.pairRefresh} {
+	setControlPanelText(p.pairNetwork, p.actionButtonLabel(panelPairNetwork))
+	setControlPanelEnabled(p.pairNetwork, p.pairNetworkEnabled())
+	for _, control := range []uintptr{p.pairBack, p.pairCopy, p.pairRefresh, p.pairNetwork} {
 		procPanelInvalidateRect.Call(control, 0, 1)
 	}
 	procPanelInvalidateRect.Call(p.window, 0, 1)
@@ -1157,6 +1203,9 @@ func controlPanelWindowProc(window uintptr, msg uint32, wParam uintptr, lParam u
 	case wmPanelPairReady:
 		panel.finishPairingRefresh()
 		return 0
+	case wmPanelTailcatEnabled:
+		panel.finishTailcatEnabled()
+		return 0
 	case wmDPIChanged:
 		var suggested *panelRect
 		if lParam != 0 {
@@ -1231,17 +1280,18 @@ func (p *controlPanel) paint(window uintptr) {
 		procPanelDrawIconEx.Call(dc, uintptr(p.scale(24)), uintptr(p.scale(18)), p.app.icon, uintptr(p.scale(34)), uintptr(p.scale(34)), 0, 0, diNormal)
 	}
 	if p.pairingView {
-		drawPanelRoundedRect(dc, p.scaledRect(16, 76, 568, 326), p.scale32(16), rgbColor(255, 255, 255), rgbColor(229, 229, 234))
-		drawPanelRoundedRect(dc, p.scaledRect(32, 92, 274, 326), p.scale32(12), rgbColor(255, 255, 255), rgbColor(232, 232, 236))
-		p.drawPairingQRCode(dc, p.scaledRect(46, 98, 260, 312))
+		drawPanelRoundedRect(dc, p.scaledRect(16, 76, 568, 359), p.scale32(16), rgbColor(255, 255, 255), rgbColor(229, 229, 234))
+		drawPanelRoundedRect(dc, p.scaledRect(32, 92, 274, 343), p.scale32(12), rgbColor(255, 255, 255), rgbColor(232, 232, 236))
+		p.drawPairingQRCode(dc, p.scaledRect(46, 110, 260, 324))
 	} else {
-		drawPanelRoundedRect(dc, p.scaledRect(16, 76, 568, 326), p.scale32(16), rgbColor(255, 255, 255), rgbColor(229, 229, 234))
-		drawPanelRoundedRect(dc, p.scaledRect(32, 154, 552, 254), p.scale32(10), rgbColor(249, 249, 251), rgbColor(232, 232, 236))
+		drawPanelRoundedRect(dc, p.scaledRect(16, 76, 568, 359), p.scale32(16), rgbColor(255, 255, 255), rgbColor(229, 229, 234))
+		drawPanelRoundedRect(dc, p.scaledRect(32, 154, 552, 287), p.scale32(10), rgbColor(249, 249, 251), rgbColor(232, 232, 236))
 		drawPanelLine(dc, p.scale32(48), p.scale32(188), p.scale32(536), p.scale32(188), rgbColor(229, 229, 233), max(1, p.scale(1)))
 		drawPanelLine(dc, p.scale32(48), p.scale32(221), p.scale32(536), p.scale32(221), rgbColor(229, 229, 233), max(1, p.scale(1)))
-		drawPanelLine(dc, p.scale32(298), p.scale32(160), p.scale32(298), p.scale32(248), rgbColor(229, 229, 233), max(1, p.scale(1)))
+		drawPanelLine(dc, p.scale32(48), p.scale32(254), p.scale32(536), p.scale32(254), rgbColor(229, 229, 233), max(1, p.scale(1)))
+		drawPanelLine(dc, p.scale32(298), p.scale32(160), p.scale32(298), p.scale32(281), rgbColor(229, 229, 233), max(1, p.scale(1)))
 	}
-	drawPanelRoundedRect(dc, p.scaledRect(16, 340, 568, 440), p.scale32(14), rgbColor(255, 255, 255), rgbColor(229, 229, 234))
+	drawPanelRoundedRect(dc, p.scaledRect(16, 373, 568, 473), p.scale32(14), rgbColor(255, 255, 255), rgbColor(229, 229, 234))
 	drawPanelRoundedRect(dc, p.scaledRect(430, 20, 560, 54), p.scale32(17), p.statusBackground, p.statusBackground)
 }
 
@@ -1302,6 +1352,8 @@ func (p *controlPanel) staticTextColor(control uintptr) uint32 {
 		return p.codexStatusColor
 	case p.claudeValue:
 		return p.claudeStatusColor
+	case p.tailcatValue:
+		return p.tailcatStatusColor
 	case p.titleLabel, p.pairTitle, p.endpointValue, p.versionValue, p.networkValue, p.projectsValue:
 		return rgbColor(27, 27, 31)
 	default:
@@ -1316,7 +1368,7 @@ func (p *controlPanel) staticBackgroundBrush(control uintptr) uintptr {
 	case p.badgeLabel:
 		return p.statusBrush
 	case p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue, p.networkLabel, p.networkValue, p.projectsLabel, p.projectsValue,
-		p.codexLabel, p.codexValue, p.claudeLabel, p.claudeValue:
+		p.codexLabel, p.codexValue, p.claudeLabel, p.claudeValue, p.tailcatLabel, p.tailcatValue:
 		return p.detailBrush
 	default:
 		return p.cardBrush
@@ -1371,7 +1423,7 @@ func (p *controlPanel) drawActionButton(item *panelDrawItem) {
 	textRect := item.Rect
 	textRect.Left += p.scale32(36)
 	textRect.Right -= p.scale32(8)
-	drawPanelText(item.DC, panelActionLabel(item.ControlID), &textRect, p.buttonFont, textColor, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix|dtEndEllipsis)
+	drawPanelText(item.DC, p.actionButtonLabel(item.ControlID), &textRect, p.buttonFont, textColor, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix|dtEndEllipsis)
 }
 
 func panelActionLabel(command uint32) string {
@@ -1395,7 +1447,7 @@ func panelActionLabel(command uint32) string {
 	case panelPairBack:
 		return "返回面板"
 	case panelPairCopy:
-		return "复制配对链接"
+		return "复制链接"
 	case panelPairRefresh:
 		return "刷新二维码"
 	default:
@@ -1449,6 +1501,12 @@ func (p *controlPanel) drawButtonIcon(dc uintptr, command uint32, x int32, y int
 	case panelPairCopy:
 		procPanelRoundRect.Call(dc, uintptr(x+s(1)), uintptr(y+s(4)), uintptr(x+s(11)), uintptr(y+s(15)), uintptr(s(3)), uintptr(s(3)))
 		procPanelRoundRect.Call(dc, uintptr(x+s(5)), uintptr(y), uintptr(x+s(15)), uintptr(y+s(11)), uintptr(s(3)), uintptr(s(3)))
+	case panelTailcatToggle:
+		procPanelRoundRect.Call(dc, uintptr(x), uintptr(y+s(3)), uintptr(x+s(16)), uintptr(y+s(13)), uintptr(s(10)), uintptr(s(10)))
+		procPanelEllipse.Call(dc, uintptr(x+s(2)), uintptr(y+s(5)), uintptr(x+s(8)), uintptr(y+s(11)))
+	case panelPairNetwork:
+		drawPanelPolyline(dc, []point{{X: x + s(1), Y: y + s(5)}, {X: x + s(15), Y: y + s(5)}, {X: x + s(11), Y: y + s(1)}})
+		drawPanelPolyline(dc, []point{{X: x + s(15), Y: y + s(11)}, {X: x + s(1), Y: y + s(11)}, {X: x + s(5), Y: y + s(15)}})
 	}
 }
 
@@ -1570,6 +1628,10 @@ func (p *controlPanel) dispatch(command uint32) {
 		}
 	case panelPairRefresh:
 		p.refreshPairing()
+	case panelTailcatToggle:
+		p.app.toggleTailcat()
+	case panelPairNetwork:
+		p.switchPairingNetwork()
 	}
 }
 

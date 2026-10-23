@@ -186,6 +186,29 @@ describe("turn lifecycle", () => {
     expect(items[1].content).toEqual(["considering options"]);
     expect(client.frames.some((frame: any) => frame.method === "item/reasoning/textDelta")).toBe(true);
   });
+
+  test("a project skill attached after the text reaches Claude as the leading command, plugin-qualified when restricted", async () => {
+    const repo = path.join(sandbox, "skill-repo");
+    const file = path.join(repo, ".claude", "skills", "review", "SKILL.md");
+    mkdirSync(path.join(repo, ".git"), { recursive: true });
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "---\ndescription: review\n---\n\nreview the change\n");
+    const input = [...text("summarize the change"), { type: "skill", name: "review", path: file }];
+    const replies: Record<string, string> = {};
+    for (const sandboxMode of ["danger-full-access", "workspace-write"]) {
+      const client = new Client();
+      const started = await client.call("thread/start", { cwd: repo, model: "fake-a", approvalPolicy: "on-request", sandbox: sandboxMode });
+      const { turn } = await client.call("turn/start", { threadId: started.thread.id, input });
+      await client.turnCompleted(turn.id);
+      const items = client.frames.filter((frame: any) => frame.method === "item/completed").map((frame: any) => frame.params.item);
+      // 实时回显保留客户端的输入；CLI 收到的消息以 `/名称` 开头才会展开技能。
+      expect(items[0].content).toEqual(input);
+      replies[sandboxMode] = items.at(-1).text;
+    }
+    expect(replies["danger-full-access"]).toBe("echo[fake-a]: /review\nsummarize the change");
+    // 受限档位经合成插件加载项目技能（#775），命令带插件前缀。
+    expect(replies["workspace-write"]).toBe("echo[fake-a]: /mimi:review\nsummarize the change");
+  });
 });
 
 describe("loaded threads", () => {
@@ -519,6 +542,39 @@ describe("rename", () => {
     expect(empty.code).toBe(-32602);
     const missing = await client.call("thread/name/set", { threadId: "00000000-0000-4000-8000-000000000000", name: "x" }).catch((error) => error);
     expect(missing.code).toBe(-32602);
+  });
+});
+
+describe("slash commands", () => {
+  test("slashCommand/list reads the catalog without a turn, then follows the live process", async () => {
+    const dir = path.join(sandbox, "commands-project");
+    mkdirSync(dir, { recursive: true });
+    const client = new Client();
+
+    // 没有常驻进程：另起一个不发消息的 Claude 进程读取目录；/clear 会换会话 ID，不进目录。
+    const discovered = await client.call("slashCommand/list", { cwd: dir });
+    expect(discovered.data.map((entry: any) => entry.name)).toEqual(expect.arrayContaining(["compact", "fake-skill"]));
+    expect(discovered.data.map((entry: any) => entry.name)).not.toContain("clear");
+    expect(discovered.data.find((entry: any) => entry.name === "compact")).toEqual({
+      name: "compact",
+      description: "Free up context by summarizing the conversation so far",
+      argumentHint: "<optional custom summarization instructions>",
+      aliases: [],
+    });
+
+    const started = await client.call("thread/start", { cwd: dir, model: "fake-a", approvalPolicy: "on-request", sandbox: "workspace-write" });
+    const { turn } = await client.call("turn/start", { threadId: started.thread.id, input: text("COMMANDS") });
+    await client.turnCompleted(turn.id);
+
+    // 常驻进程的目录带运行中发现的技能；system/init 标为终端专用的 color 隐藏。
+    const live = (await client.call("slashCommand/list", { cwd: dir, sandboxPolicy: { type: "workspaceWrite" } })).data.map((entry: any) => entry.name);
+    expect(live).toEqual(["compact", "fake-skill", "fake-dynamic"]);
+    // 完全访问的进程加载本机设置，认识的命令不同，不借用受限进程的目录。
+    const full = (await client.call("slashCommand/list", { cwd: dir, sandboxPolicy: { type: "dangerFullAccess" } })).data.map((entry: any) => entry.name);
+    expect(full).toEqual(["compact", "fake-skill"]);
+
+    expect((await client.call("slashCommand/list", { cwd: "relative" }).catch((error) => error)).code).toBe(-32602);
+    expect((await client.call("slashCommand/list", { cwd: path.join(dir, "missing") }).catch((error) => error)).code).toBe(-32602);
   });
 });
 

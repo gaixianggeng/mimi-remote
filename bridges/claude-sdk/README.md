@@ -16,9 +16,12 @@
 - **对话（#657）**：`thread/start`、`thread/resume`、`turn/start`、`turn/steer`、`turn/interrupt`。
   - 每个会话一个常驻的 SDK `query()`（流式输入），使用 Claude Code 自带的系统提示词。完全访问沿用 CLI 的设置来源；受限档位按下方执行边界隔离设置。
   - 模型、权限模式、思考强度在 turn 之间通过 SDK 控制接口切换；执行边界或完全访问状态变化时重启进程。
+  - 空闲回收：turn 收尾后进程空闲 10 分钟即关闭，下一次 `turn/start` 以 resume 重新拉起。后台任务（Bash `run_in_background`、后台子代理等）属于这个进程，进程一关就随之结束、完成后的续写也不会发生，所以按 SDK 的 `background_tasks_changed`（不含 ambient 任务）判断：仍有任务在跑时不关闭，全部结束后重新计时（#796）。让出、执行边界变化重启、适配器退出或进程自己退出时仍有后台任务，记一条 warn 日志 `claude.background_tasks_dropped`（任务数与原因）。
   - 审批（`canUseTool`）映射为 `item/commandExecution/requestApproval`、`item/fileChange/requestApproval`；`AskUserQuestion` 映射为 `item/tool/requestUserInput`。请求发给订阅该会话的所有连接，先答复者生效，其余收到 `serverRequest/resolved`；重连时由 `serverRequest/replay` 补发未答复的请求。
   - 引导以人工输入的 `now` 优先级并入当前 turn。turn 要等名下所有消息（含引导）都被 Claude 的结果吸收才收尾；输出与结果按 `user_message_uuid` 归属，CLI 队列里还有未完成的消息时拒绝新的 `turn/start`。
   - 已知差异：引导消息在 transcript 里是普通的用户记录，重新加载历史时显示为单独一轮，实时显示时在同一轮里。
+  - 后台任务完成后的续写（#797）：CLI 为完成通知单独跑一轮，输出不带 `user_message_uuid`，transcript 里通知那条记录的 uuid 实时侧也拿不到。两边都按会话 ID 与任务这次运行的 `run_id`（实时 `task_notification` 帧、通知记录的 `origin.runId`）生成同一个回合 ID（`src/claude/itemIds.ts` 的 `notificationTurnId`），客户端无论从实时事件还是历史得知这一轮，都能停止它、向它补充消息。通知触发的一轮在 `system/init` 时就开出续写回合（不等首帧输出），首帧前的排队、重试期间它就是活动回合，`turn/start` 被拒，输出不会挂到别的回合上。几条通知连着送达时只有一段回复，回合归最后一条（CLI 为前几条各跑一轮空的，它们的结果不收尾续写回合，CLI 回到 idle 时兜底收尾）；回合进行中送达的通知被 CLI 并进当前回合（SDK 标为排队消息），不另开回合。向续写补充的消息由 CLI 排在续写自己的结果之后单独回应，实时仍并进这个回合，重新加载历史时按上一条的已知差异单独显示。2.1.294 与 2.1.301 实测。
+  - 输入转换（`src/runtime/userInput.ts`）：CLI 只在消息以 `/名称` 开头时执行命令，内容数组只检查最后一个块（2.1.294–2.1.301 实测）。CLI 只认名字：用户与项目技能会遮蔽同名的内置命令和自带技能，同名技能用户级优先、离 cwd 近的优先。所以只有附件的 path 是 CLI 加载的用户或项目技能、且这个名字在这些目录里（含 frontmatter 的 name 与自定义命令）只有它一处定义时，才把它提到开头、正文作为参数（`src/claude/skillCommand.ts`）；其余技能排在正文之后作为 `/名称` 文本，没有正文垫在前面时报参数错误。文本以 `/` 开头且带图片时，图片排在前面、文本合成最后一块（#773）。受限档位的用户与项目技能经合成插件加载、查找规则相同，所以按同一条规则提前，发送前改写成 `/mimi:名称`（见[受限执行边界](#受限执行边界488)）。
 - **单一驱动方（#658）**：`thread/takeover`。同一会话同一时刻只有一个 Claude 进程在写。
   - 占用登记（`<配置目录>/sessions/<pid>.json`，Claude Code 为每个活进程写的文件）是唯一没有公开接口的依赖，只读。自己起的进程按 pid 排除；拿到 pid 之前，同一会话新出现的登记先不算别处，避免把自己当成别人。
   - 别处持有时会话只读：`thread/list`、`thread/resume` 带 `canAcceptDirectInput: false` 与 `claudeOwner` 摘要，`turn/start` 返回 `owned_elsewhere`。
@@ -28,6 +31,10 @@
   - **接管**：规则沿用旧 bridge（#451）——只结束全部明确空闲、且进程启动时间与登记 `startedAt` 吻合的持有方；先 SIGINT，5 秒后重查状态再 SIGTERM；持有方退出后若有新进程认领同一会话，报 `holder_respawned` 且不再发信号。失败以 `-32602` 返回 `{accepted, reason, claudeOwner, retryable}`。
   - CLI 自身行为：恢复一个生成到一半被结束的会话时，CLI 会补一条 `No response requested.`，与被中断的那条回复成为兄弟节点。历史按 CLI 继续的支线显示，与 `claude --resume` 一致。
 - **其余能力（#659）**：`model/list`、`account/rateLimits/read`、`thread/name/set`，见下面的对照表。
+- **斜杠命令目录（#765）**：`slashCommand/list`（`cwd`、与下一次 `turn/start` 相同的 `sandboxPolicy`、可选 `forceReload`）返回 `{ data: [{ name, description, argumentHint, aliases }] }`，供 iPad 的 `/` 菜单展示。客户端只把 `/名称 ` 插进草稿、按普通文本发送，由 Claude Code 自己解析，适配器不执行命令。
+  - 来源：同一工作区、同样设置来源的常驻进程的 `supportedCommands()`（含 MCP 命令与运行中发现的技能）；没有时另起一个不带工具、不启动 MCP、不跑 hooks、不保存会话的进程，只读 initialize 的目录，按（工作区, 是否加载本机设置）缓存 5 分钟，失败后冷却 15 秒。技能与命令的来源取自运行时同一个 `sandboxOptions`：完全访问不传 `settingSources`（SDK 缺省加载 user / project / local，与 CLI 相同）；受限档位不加载设置，用户与项目的技能和命令经运行时同一个合成插件加载（#775），目录里登记为 `mimi:名称`（原名作别名，说明前的 `(mimi) ` 去掉），与运行时改写后实际执行的 `/mimi:名称` 一致。
+  - 隐藏：CLI 在 `system/init` 里标为终端专用的命令（`terminal_slash_commands`，适配器跑过回合后才知道）；`/clear`（实测会让 CLI 换一个新会话 ID，Mimi 里的会话不再更新）、`/model`、`/effort`（只改 CLI 进程，客户端的选择器不知道）；名字含空白或以 `__` 开头的条目。同名条目取 CLI 自己的那一行。
+  - 实测（Claude Code 2.1.301，经 `ThreadRuntime` 的流式输入）：纯文本消息以 `/名称 参数` 开头时，自定义命令、技能、`/context`、`/compact` 都按命令执行，本地命令的输出以 assistant 消息返回；同一消息带图片时不解析；`.skill` 输入排在正文之后时转成 `正文\n/名称`，不在开头，不会被识别。
 - **切换准备（#660）**：
   - Claude Code 最低 2.1.294（`src/version.ts`），在 `--capabilities` 的 `claudeCode.minimumVersion` 里声明，供 agentd 预检提示；起 Claude 进程前再检查一次，未安装、版本无法确认或过旧时 `turn/start` 以 `-32603` 返回 `claude_missing`、`claude_version_unknown` 或 `claude_unsupported`，附升级提示。
   - 首次常驻启动时迁移旧 bridge 里 Mimi 显示的名称：写成 custom-title（与 CLI `/rename` 相同），只补 Claude 侧没有标题或只有 AI 自动标题的会话，用户手动改过的保留；被别的进程占用的会话下次启动再补，全部完成后在覆盖层记下；旧索引暂时读不了或格式不对时（与文件不存在不同）不记完成，归档标记与名称都在下次启动重试。
@@ -45,6 +52,7 @@
 | `thread/takeover` | iOS | 实现（#658），规则同旧 bridge |
 | `model/list` | iOS 模型选择 | 实现（#659）。读 Claude Code 自己的模型目录（initialize），整理规则同旧 bridge；缓存 10 分钟，失败退回别名 |
 | `account/rateLimits/read` | iOS 额度、agentd 菜单栏 | 实现（#659）。只用 Claude Code 在会话里上报的 `rate_limit_event`（5 小时与 7 天窗口），不读取 Claude 的登录凭据（#660）；适配器启动后还没跑过回合时返回不可用 |
+| `slashCommand/list` | iOS `/` 菜单 | 实现（#765）。适配器专有方法，规则见上 |
 | `thread/name/set` | agentd 自动标题 | 实现（#659）。与 CLI `/rename` 相同，往 transcript 追加 custom-title，CLI 与桌面端看到同一个名字（旧 bridge 只写自己的索引）；不支持清除名称 |
 | `thread/archive`、`thread/unarchive` | 无（网关未开放） | 不实现。旧 bridge 的归档标记在首次启动时只读导入，列表照常过滤 |
 | `thread/fork`、`thread/compact/start`、`thread/rollback` | 无（网关未开放） | 不实现。需要时可用 SDK 的 `forkSession` 与 CLI 的 `/compact` |
@@ -94,7 +102,9 @@ agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置�
 
 `networkAccess=false` 同时禁止 Bash 出网、WebFetch 和 WebSearch。Bash 不允许脱离沙箱重试；沙箱不可用时 CLI 失败退出。原生 Windows 不支持 Bash 沙箱，因此受限档位禁用 shell，保留带路径检查的文件工具。未核实边界的 MCP、插件与子代理工具会被拒绝。审批只允许本次调用，不能通过权限建议扩大可写目录或网络范围。
 
-受限子进程不加载 user / project / local 设置，不启动本地 MCP；这些设置内的 hook、额外目录、allow rule 与 CLAUDE.md 不会自动加载。适配器不修改这些文件。完全访问的行为保持不变。CLI 自身的登录、模型请求、transcript 和会话状态写入不属于工具沙箱；`networkAccess=false` 指工具出网，不是切断模型 API。
+受限子进程不加载 user / project / local 设置，不启动本地 MCP；这些设置内的 hook、额外目录、allow rule 与 CLAUDE.md 不会自动加载。适配器不修改这些文件。完全访问的行为保持不变。
+
+受限档位的用户技能与命令（`~/.claude/skills`、`~/.claude/commands`）、项目技能与命令（从 `cwd` 向上到 git 根各级的 `.claude/skills`、`.claude/commands`）经适配器合成的本地插件加载（#775，`src/claude/skillPlugin.ts`）：每次起进程在临时目录生成只含 `skills/`、`commands/` 的插件，技能软链接回原位置、命令文件复制进来，同名时用户级优先、项目目录近的优先（与 CLI 实测一致），进程退出后删除。插件技能在 CLI 里登记为 `mimi:名称`，裸 `/名称` 只在 SKILL.md 写了 name 时才展开，所以适配器把命令位置的 `/名称`（目录名或 frontmatter 里的 name）改写成 `/mimi:名称`；历史里显示 CLI 实际执行的 `/mimi:名称`。技能只供用户主动调用：模型看不到技能列表（`skills: []`），Skill 工具被拒。技能 frontmatter 与插件里的命令 hook 在沙箱外执行，受限档位用 `disableAllHooks` 关闭（不影响适配器自己的 SDK 回调 hook）；技能内联的 `` !`命令` `` 在 Bash 沙箱内执行，原生 Windows 没有沙箱，换成占位文本。CLI 自身的登录、模型请求、transcript 和会话状态写入不属于工具沙箱；`networkAccess=false` 指工具出网，不是切断模型 API。
 
 工作区模式仍使用 Claude 自带的临时目录。`excludeTmpdirEnv=true` 或 `excludeSlashTmp=true` 无法等价兑现，直接拒绝。历史环境变量 `CLAUDE_BRIDGE_SANDBOX_POLICY=guarded|inherit` 不会放宽 TS 适配器的边界；两种取值使用相同限制。
 
@@ -104,7 +114,7 @@ agentd 托管时默认把适配器设为 `debug`（`claude.env` 里显式设置�
 MIMI_CLAUDE_POLICY_TEST_BIN="$(command -v claude)" bun test test/sandboxPolicy.native.test.ts
 ```
 
-验收包含两种环境变量取值下的工作区 / 只读模式、内外写入、软链接外写、网络拒绝，以及本机配置试图放宽边界的情况。普通 `bun test` 跳过此项；macOS 已实测，Linux 与原生 Windows 的运行态验收分别记录，不能用 macOS 结果替代。
+验收包含两种环境变量取值下的工作区 / 只读模式、内外写入、软链接外写、网络拒绝，本机配置试图放宽边界的情况，以及经合成插件加载的项目技能展开、用户技能加载、技能自带的命令 hook 不执行、模型看不到技能列表。命令目录发现的原生用例同样用这个开关：`bun test test/commands.native.test.ts`（只读 initialize，不调用模型），核对完全访问按原名、受限档位按 `mimi:名称` 列出用户与项目的命令和技能。后台任务的原生用例 `bun test test/backgroundTasks.native.test.ts` 让模型以 `run_in_background` 跑后台命令：比空闲时限长的命令照常完成、完成通知触发的续写作为新的一轮到达客户端、之后照常空闲关闭（#796）；续写输出到一半时，历史报告的进行中回合与实时相同，按这个 ID 停止与补充消息都生效（#797）。2.1.294 与 2.1.301 实测。普通 `bun test` 跳过这些用例；macOS 已实测，Linux 与原生 Windows 的运行态验收分别记录，不能用 macOS 结果替代。
 
 ## 在开发机上试用
 

@@ -34,6 +34,40 @@ struct ConversationTimelineScrollCommandRecord {
     let contentHeight: CGFloat
 }
 
+/// 控制器仅有的两类异步：合并到下一轮执行的滚动意图，以及阅读锚点的取消上限。
+/// 生产走 MainActor Task；测试注入手动调度按确定顺序推进，不依赖 yield 次数或真实时钟。
+/// work 必须在调用返回之后才执行，不能在 nextTurn/after 内同步回调。
+struct ConversationTimelineScrollScheduler {
+    struct Cancellation {
+        let cancel: @MainActor () -> Void
+    }
+
+    let nextTurn: @MainActor (_ work: @escaping @MainActor () -> Void) -> Cancellation
+    let after: @MainActor (_ delay: Duration, _ work: @escaping @MainActor () -> Void) -> Cancellation
+
+    static var live: ConversationTimelineScrollScheduler {
+        ConversationTimelineScrollScheduler(
+            nextTurn: { work in
+                // 等本轮 SwiftUI 更新结束后再执行，同一轮内的多次请求只合并成一次。
+                let task = Task { @MainActor in
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    work()
+                }
+                return Cancellation { task.cancel() }
+            },
+            after: { delay, work in
+                let task = Task { @MainActor in
+                    try? await Task.sleep(for: delay)
+                    guard !Task.isCancelled else { return }
+                    work()
+                }
+                return Cancellation { task.cancel() }
+            }
+        )
+    }
+}
+
 /// 会话内唯一的程序滚动 owner。数据、布局和用户输入都在此决定，视图只执行命令。
 @MainActor
 @Observable
@@ -54,6 +88,7 @@ final class ConversationTimelineScrollController {
     }
 
     @ObservationIgnored let viewport = ConversationTimelineViewport()
+    @ObservationIgnored private let scheduler: ConversationTimelineScrollScheduler
     @ObservationIgnored private(set) var scope: ScopedSessionID?
     @ObservationIgnored private(set) var revision = 0
     @ObservationIgnored private var isActive = false
@@ -69,11 +104,15 @@ final class ConversationTimelineScrollController {
     @ObservationIgnored private var anchor: ConversationTimelineViewport.Anchor?
     @ObservationIgnored private var anchorFallbackItemID: String?
     @ObservationIgnored private var pending: Pending?
-    @ObservationIgnored private var pendingTask: Task<Void, Never>?
-    @ObservationIgnored private var anchorExpirationTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingWork: ConversationTimelineScrollScheduler.Cancellation?
+    @ObservationIgnored private var anchorExpiration: ConversationTimelineScrollScheduler.Cancellation?
     @ObservationIgnored private var expansion: (input: Int, targetID: String?)?
     @ObservationIgnored private var execute: ((ConversationTimelineScrollCommand) -> Void)?
     @ObservationIgnored private var appliedCommands: Set<CommandKey> = []
+
+    init(scheduler: ConversationTimelineScrollScheduler = .live) {
+        self.scheduler = scheduler
+    }
 
     private enum Pending {
         case tail(animated: Bool, reason: ConversationTimelineScrollReason)
@@ -428,9 +467,8 @@ final class ConversationTimelineScrollController {
     private func scheduleAnchorExpiration() {
         let expectedInput = inputGeneration
         // 这是本次数据提交的取消上限，不是滚动重试。没有新输入时不能永久保留旧阅读锚点。
-        anchorExpirationTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled, let self, self.inputGeneration == expectedInput else { return }
+        anchorExpiration = scheduler.after(.milliseconds(250)) { [weak self] in
+            guard let self, self.inputGeneration == expectedInput else { return }
             self.releaseAnchor()
             self.expansion = nil
         }
@@ -441,25 +479,23 @@ final class ConversationTimelineScrollController {
         anchor = nil
         anchorFallbackItemID = nil
         viewport.releaseAnchor()
-        anchorExpirationTask?.cancel()
-        anchorExpirationTask = nil
+        anchorExpiration?.cancel()
+        anchorExpiration = nil
     }
 
     private func cancelPending() {
         pending = nil
-        pendingTask?.cancel()
-        pendingTask = nil
+        pendingWork?.cancel()
+        pendingWork = nil
     }
 
     private func schedulePending() {
-        guard pending != nil, pendingTask == nil, !isInteracting else { return }
+        guard pending != nil, pendingWork == nil, !isInteracting else { return }
         let expectedEpoch = epoch
         let expectedInput = inputGeneration
-        pendingTask = Task { @MainActor [weak self] in
-            await Task.yield()
-            guard !Task.isCancelled, let self,
-                  self.epoch == expectedEpoch, self.inputGeneration == expectedInput else { return }
-            self.pendingTask = nil
+        pendingWork = scheduler.nextTurn { [weak self] in
+            guard let self, self.epoch == expectedEpoch, self.inputGeneration == expectedInput else { return }
+            self.pendingWork = nil
             self.applyPending(allowProxyScroll: true)
         }
     }

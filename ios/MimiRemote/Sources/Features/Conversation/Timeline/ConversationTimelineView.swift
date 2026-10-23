@@ -7,6 +7,7 @@ struct ConversationTimelineView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.defaultMinListRowHeight) private var defaultMinListRowHeight
     let layout: ConversationLayout
     let explicitSessionID: SessionID?
     let allowsTopUnderlap: Bool
@@ -77,9 +78,6 @@ struct ConversationTimelineView: View {
                 readiness: sessionStore.conversationReadiness(for: session)
             )
         }
-        let liveProcessID = liveStatus.flatMap { _ in
-            Self.liveProcessID(in: timelineItems, messages: source.messages, activeTurnID: displayedSession?.activeTurnID)
-        }
         let activeTurn = liveStatus.map { _ in ConversationTimelineActiveTurn(id: displayedSession?.activeTurnID) }
         let incomingIdentity = ConversationTimelineSnapshotIdentity(
             scope: scope,
@@ -99,6 +97,8 @@ struct ConversationTimelineView: View {
             hasHistorySavingsNotice: explicitSessionID == nil && sessionStore.selectedHistorySavingsNotice != nil,
             liveStatusReadiness: liveStatus?.readiness
         )
+        let tailStatus: ConversationLiveStatusRow.Content? = liveStatus.map { .live($0) }
+            ?? (shouldShowInlineHistoryLoading ? .historyLoading : nil)
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottom) {
                 // 用 List 替代 ScrollView + LazyVStack：行高是真实测量值、
@@ -116,6 +116,7 @@ struct ConversationTimelineView: View {
                         } else {
                             if sessionStore.canLoadEarlierHistory(sessionID: displayedSessionID) {
                                 loadEarlierRow
+                                    .frame(minHeight: systemMinimumRowContentHeight(insets: layout.messageRowInsets))
                                     .listRowSeparator(.hidden)
                                     .listRowInsets(layout.messageRowInsets)
                                     .listRowBackground(Color.clear)
@@ -124,22 +125,18 @@ struct ConversationTimelineView: View {
                                 timelineListRow(
                                     item,
                                     provider: timelineProvider,
-                                    liveStatus: item.id == liveProcessID ? liveStatus : nil,
                                     activeUserDeliveryMessageID: activeUserDeliveryMessageID,
                                     crossSessionOriginMessageID: crossSessionOriginMessageID
                                 )
                             }
-                            if let liveStatus, liveProcessID == nil {
+                            if let tailStatus {
                                 // 独立于 timelineItems 的尾部行：不参与条目 ID、历史锚点与分组投影，
                                 // 贴底跟随仍以下方哨兵为准，出现/消失只表现为内容高度变化。
-                                ConversationLiveStatusRow(status: liveStatus, layout: layout)
+                                // 本轮所有步骤都在它上方，「进行中」只有这一个落点（#537）；
+                                // 历史加载也落在同一行，状态切换只换文字，不增减行（#782）。
+                                ConversationLiveStatusRow(content: tailStatus, layout: layout)
+                                    .frame(minHeight: systemMinimumRowContentHeight(insets: layout.messageRowInsets))
                                     .id(Self.timelineLiveStatusRowID)
-                                    .listRowSeparator(.hidden)
-                                    .listRowInsets(layout.messageRowInsets)
-                                    .listRowBackground(Color.clear)
-                            }
-                            if shouldShowInlineHistoryLoading {
-                                historyLoadingRow
                                     .listRowSeparator(.hidden)
                                     .listRowInsets(layout.messageRowInsets)
                                     .listRowBackground(Color.clear)
@@ -167,6 +164,8 @@ struct ConversationTimelineView: View {
                                     epoch: timelineListIdentity.presentationGeneration
                                 )
                             }
+                            // 哨兵行一直由系统最小行高撑开，它也是正文与输入区之间的底部留白。
+                            .frame(minHeight: systemMinimumRowContentHeight(insets: EdgeInsets()))
                             // ID 必须标记可见性包装后的整行，否则 ScrollViewReader 可能只找到
                             // 尚未进入 List 快照的内部 Color，首屏 scrollTo 会一直无效。
                             .id(Self.timelineTailSentinelID)
@@ -176,6 +175,9 @@ struct ConversationTimelineView: View {
                     }
                 }
                 .listStyle(.plain)
+                // 过程步骤按自身高度紧凑排列；其余行各自用系统原值兜底（见
+                // systemMinimumRowContentHeight），间距与改动前一致。
+                .environment(\.defaultMinListRowHeight, 0)
                 // 支持该语义的系统会在 List 首次提交前计算底部 offset；其余系统由下方
                 // 的稳定遮罩兜住首次布局，不能让尚未贴底的正文成为可读画面。
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
@@ -253,14 +255,12 @@ struct ConversationTimelineView: View {
     private func timelineListRow(
         _ item: ConversationTimelineItem,
         provider: ConversationTimelineProvider,
-        liveStatus: ConversationLiveStatus?,
         activeUserDeliveryMessageID: UUID?,
         crossSessionOriginMessageID: UUID?
     ) -> some View {
         timelineRow(
             item,
             provider: provider,
-            liveStatus: liveStatus,
             activeUserDeliveryMessageID: activeUserDeliveryMessageID,
             crossSessionOriginMessageID: crossSessionOriginMessageID
         )
@@ -273,11 +273,17 @@ struct ConversationTimelineView: View {
             bindView: anchorViewBinder()
         ))
         .simultaneousGesture(TapGesture().onEnded { KeyboardDismissal.dismiss() })
+        .frame(minHeight: item.isActivityStep ? 0 : systemMinimumRowContentHeight(insets: layout.messageRowInsets))
         .id(item.id)
         // List 行属性必须位于自定义 modifier 外层，否则 SwiftUI 会恢复默认分隔线和 inset。
         .listRowSeparator(.hidden)
-        .listRowInsets(layout.messageRowInsets)
+        .listRowInsets(item.isActivityStep ? layout.processStepRowInsets : layout.messageRowInsets)
         .listRowBackground(Color.clear)
+    }
+
+    /// List 的系统最小行高包含行 inset，随系统版本和字号变化；这里读的是 List 外层的原值。
+    private func systemMinimumRowContentHeight(insets: EdgeInsets) -> CGFloat {
+        max(0, defaultMinListRowHeight - insets.top - insets.bottom)
     }
 
     private func outerAnchorMessageIDs(for item: ConversationTimelineItem) -> [UUID] {
@@ -288,7 +294,6 @@ struct ConversationTimelineView: View {
     private func timelineRow(
         _ item: ConversationTimelineItem,
         provider: ConversationTimelineProvider,
-        liveStatus: ConversationLiveStatus?,
         activeUserDeliveryMessageID: UUID?,
         crossSessionOriginMessageID: UUID?
     ) -> some View {
@@ -340,7 +345,7 @@ struct ConversationTimelineView: View {
                 .padding(.leading, 12)
         case .processGroup(let group):
             ConversationProcessGroupRow(
-                group: group, layout: layout, liveStatus: liveStatus,
+                group: group, layout: layout,
                 showsDetailedTranscript: showsDetailedTranscript,
                 toggle: { toggleProcess(group) }
             )
@@ -426,22 +431,6 @@ struct ConversationTimelineView: View {
         }
     }
 
-    /// 只把当前轮、最后一个用户输入之后的过程标题用于实时状态，不能点亮上一轮历史。
-    static func liveProcessID(
-        in rows: [ConversationTimelineItem], messages: [ConversationMessage], activeTurnID: TurnID?
-    ) -> String? {
-        let currentMessages = messages.suffix(from: messages.lastIndex(where: { $0.role == .user }) ?? messages.startIndex)
-        let currentIDs = Set(currentMessages.map(\.id))
-        return rows.reversed().compactMap { item -> ConversationProcessGroup? in
-            if case .processGroup(let group) = item { return group }
-            return nil
-        }.first { group in
-            (activeTurnID == nil || group.turnID == activeTurnID)
-                && group.lifecycle != .failed && group.lifecycle != .interrupted
-                && group.messages.contains { currentIDs.contains($0.id) }
-        }?.id
-    }
-
     private static func activeUserDeliveryMessageID(in messages: [ConversationMessage]) -> UUID? {
         // 只把“最新一条还没看到 assistant 回复的用户输入”标成活跃发送态；
         // assistant 气泡一出现，等待文案就收起，避免旧消息长期挂着“等待回复”。
@@ -474,6 +463,7 @@ struct ConversationTimelineView: View {
         return initialUserMessage.id
     }
 
+    /// `liveStatusReadiness` 为 nil 表示尾部没有实时状态行。
     static func shouldShowInlineHistoryLoading(
         timelineItemsAreEmpty: Bool,
         isHistoryLoading: Bool,
@@ -485,8 +475,9 @@ struct ConversationTimelineView: View {
             && isHistoryLoading
             && !isLoadingEarlierHistory
             && !hasHistorySavingsNotice
-            // 实时状态已表达同一段历史恢复，不再并排显示第二个等待提示。
-            && liveStatusReadiness != .loadingHistory
+            // 实时状态行已占据尾部：恢复历史时它显示「正在恢复会话…」，已连接后的后台刷新
+            // 不另起第二行，也不换掉时长、阶段或连接告警（#537、#782）。
+            && liveStatusReadiness == nil
     }
 
     private var loadEarlierRow: some View {
@@ -518,29 +509,6 @@ struct ConversationTimelineView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
-    }
-
-    private var historyLoadingRow: some View {
-        HStack {
-            HStack(alignment: .center, spacing: 7) {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(workbenchSecondaryText)
-                Text(L10n.text("ui.loading_session_records"))
-                    .font(themeStore.uiFont(.caption, weight: .medium))
-                    .foregroundStyle(workbenchSecondaryText)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(statusChipBackground, in: Capsule())
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .ignore)
-        .accessibilityIdentifier("conversation.historyLoading")
-        .accessibilityLabel(L10n.text("ui.loading_session_records"))
-        .allowsHitTesting(false)
     }
 
     private func scrollMetrics(for geometry: ScrollGeometry) -> ConversationTimelineScrollMetrics {

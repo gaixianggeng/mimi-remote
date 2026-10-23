@@ -17,7 +17,7 @@
 
 ### Windows 首次安装、升级与回滚
 
-前置条件：Windows 10/11 x64，并且当前 Windows 用户已安装、登录 Codex CLI 0.149.1 或更高版本。Windows 宿主不依赖 POSIX SSH 或 Unix Socket。`agentd` 启动并管理一个只监听 `ws://127.0.0.1:4222` 的 Codex App Server；它不连接 Codex Desktop 私有 IPC，也不向局域网暴露该端口。
+前置条件：Windows 10/11 x64，并且当前 Windows 用户已安装、登录 Codex CLI 0.149.1 或更高版本。Windows 上的 Codex 连接不依赖 POSIX SSH 或 Unix Socket。`agentd` 启动并管理一个只监听 `ws://127.0.0.1:4222` 的 Codex App Server；它不连接 Codex Desktop 私有 IPC，也不向局域网暴露该端口。
 
 从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载同版本的 `Mimi-Remote-Setup-*.exe`、`.sha256` 和 `.metadata.json`。在 PowerShell 中验证摘要和签名状态：
 
@@ -33,6 +33,17 @@ $setup = Get-Item .\Mimi-Remote-Setup-*.exe
 
 Windows 防火墙规则和 LAN 监听默认不启用。只有用户明确选择 LAN 访问时，安装器才要求默认网络为“专用网络”，并创建限制为 Private profile 和 `LocalSubnet` 的规则。不得把规则放宽到 Public profile 或任意公网来源。
 
+不选 LAN 时，首次安装检测到 Tailscale 就默认通过 Tailscale 连接；没检测到时，服务只监听本机，安装仍会完成，但托盘的“配对设备…”会提示没有可用连接（#874）。此时可以在托盘控制面板开启 Tailcat 后扫码配对（见下文），不需要 Tailscale 或 LAN；也可以安装并登录 Tailscale，再启用 Mimi 的 Tailscale 连接，或重新运行安装器并勾选 LAN 访问：
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" network --tailscale-enabled=true
+& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" restart --no-pair --wait 30s
+```
+
+安装包还内置与 agentd 同版本的实验性 Tailcat 辅助程序 `mimi-tailcat-experiment.exe`，默认关闭。没装 Tailscale、也没开 LAN（例如处在 Public 网络）时，在托盘控制面板点“开启 Tailcat”，或在托盘菜单选“开启 Tailcat…”。确认后 agentd 启动辅助程序，托盘以 agentd 回读的运行状态为准。随后在“配对设备”中点“用 Tailcat”生成 Tailcat 二维码；Tailscale 和局域网都没有开启或不可用时，会直接显示 Tailcat 二维码。Tailcat 只发起出站连接，不新增防火墙规则：能直连时点对点，否则经 DERP 中继转发，默认中继由 Tailscale 运营。
+
+辅助程序的身份、已配对设备和本机控制通道 `control.sock` 保存在 `%APPDATA%\mimi-remote\tailcat`，由用户配置文件的 ACL 保护；控制通道使用 Windows 10 1803 起内置的 AF_UNIX socket。agentd 停止或重启时，通过控制通道让辅助程序正常退出。计划任务和辅助程序各自的 kill-on-close Job Object 负责兜底，agentd 异常退出也不会留下进程。升级和卸载前，安装器会等待辅助程序退出，必要时强制结束。`agentd doctor` 的 `tailcat` 项报告辅助程序是否存在及其版本，缺失时重新运行同版本安装器。关闭 Tailcat 会断开正在使用它的设备，不影响 Tailscale 和 LAN 连接。
+
 常用命令：
 
 ```powershell
@@ -42,6 +53,10 @@ $agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
 & $agentd doctor --fix
 & $agentd logs -n 200
 & $agentd restart --no-pair --wait 30s
+& $agentd tailcat status
+& $agentd tailcat enable
+& $agentd tailcat pair --qr-only
+& $agentd tailcat disable
 ```
 
 升级时直接覆盖安装新版本。回滚时重新运行上一版来自正式 Release 且摘要匹配的安装器。不要先删除 `%APPDATA%\mimi-remote`。卸载会停止并删除计划任务、移除程序文件和由安装器创建的可选防火墙规则，但保留配置、Token 与日志。
@@ -400,7 +415,7 @@ Windows 安装器可选配置以下 Authenticode Secrets：
 | `WINDOWS_SIGN_PFX` | Windows 代码签名证书与私钥导出的 PFX，再整体 base64 | 只用于签名两份 `.exe` 和最终安装器 |
 | `WINDOWS_SIGN_PFX_PASSWORD` | PFX 导出密码 | 只在 Windows release job 的临时文件生命周期内使用 |
 
-Windows verify job 会构建 release 二进制、编译 Inno Setup，并验证 SHA-256、内嵌文件和签名模式。验证通过后，独立的 `publish-windows` job 把安装器、摘要和元数据上传到同一个 GitHub Release。PFX 临时文件不会进入 artifact。两个 Secret 都存在时强制验证 Authenticode；两个都缺失时构建明确标记的 `unsigned-release`。
+Windows verify job 会构建 release 二进制、编译 Inno Setup，并验证 SHA-256、内嵌文件和签名模式；元数据版本和内置 Tailcat 辅助程序的版本都必须与 tag 一致。验证通过后，独立的 `publish-windows` job 把安装器、摘要和元数据上传到同一个 GitHub Release。PFX 临时文件不会进入 artifact。两个 Secret 都存在时强制验证 Authenticode；两个都缺失时构建明确标记的 `unsigned-release`。
 
 Release 的 verify job 会在构建前解码到临时 `0700` 目录，确认 PKCS#12 确实包含 `Developer ID Application` 证书、密码可解密、`.p8` 是有效 PKCS#8 私钥，并校验 Key ID/Issuer 格式；不会打印证书正文或私钥。正式 job 会先生成并公证 universal Mac DMG，再由 GoReleaser 按“构建 Darwin 二进制 → Developer ID 签名 → Apple notarization → 归档 → checksum/Formula”顺序发布后端，最后把已经通过 Gatekeeper 校验的 DMG 和 SHA-256 上传到同一 GitHub Release。普通 snapshot 不读取 Apple 私钥。
 

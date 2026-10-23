@@ -18,6 +18,9 @@ for script_path in \
   scripts/ci-pr-scope.sh \
   scripts/check-docs-static.sh \
   scripts/check-critical-regressions.sh \
+  scripts/check-ios-test-selectors.sh \
+  scripts/test-ios-test-inventory.sh \
+  scripts/test-ios-full-suite.sh \
   scripts/check-nightly-release.sh \
   scripts/check-release-source.sh \
   scripts/check-public-repo-safety.sh \
@@ -31,6 +34,7 @@ for script_path in \
 done
 
 bash ./scripts/test-verify-change.sh
+bash ./scripts/test-ios-test-inventory.sh
 bash ./scripts/check-critical-regressions.sh
 bash ./scripts/check-nightly-release.sh
 bash ./scripts/check-release-source.sh --self-test
@@ -83,6 +87,12 @@ assert_scope mimi_contract_generator true true false false false internal/protoc
 assert_scope mimi_contract_checker true false false false false scripts/check-mimi-protocol-contract.sh
 assert_scope critical_runner true true false false false scripts/test-conversation-regressions.sh
 assert_scope critical_checker true true false false false scripts/check-critical-regressions.sh
+assert_scope ios_test_inventory false true false false false scripts/ios-test-inventory.py
+assert_scope ios_test_selector_checker false true false false false scripts/check-ios-test-selectors.sh
+assert_scope ios_test_inventory_selftest false true false false false scripts/test-ios-test-inventory.sh
+assert_scope ios_full_suite_runner false true false false false scripts/test-ios-full-suite.sh
+assert_scope ios_nightly_classes false true false false false config/ios-tests/nightly-classes.txt
+assert_scope ios_quarantine false true false false false config/ios-tests/quarantine.tsv
 assert_scope nightly_checker true true false false true scripts/check-nightly-release.sh
 assert_scope packaging_checker true false false false true scripts/check-packaging.sh
 assert_scope app_store_checker false true false false true scripts/check-app-store-metadata.sh

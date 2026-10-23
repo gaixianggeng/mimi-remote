@@ -46,6 +46,10 @@ enum ConversationTimelineItem: Identifiable, Equatable {
         }
     }
 
+    var isActivityStep: Bool {
+        if case .activity = self { true } else { false }
+    }
+
     static func activityID(for message: ConversationMessage) -> String {
         "activity:\(message.id.uuidString)"
     }

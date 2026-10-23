@@ -1,6 +1,195 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.managed_devices_subscribe_action": {
+      "comment": "Row that opens the Managed Connection subscription page from the Devices tab.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Get Managed Connection" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通托管连接" } }
+      }
+    },
+    "ui.managed_devices_subscribe_notice": {
+      "comment": "Shown on the managed route page when there is no active Managed Connection subscription.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "With Managed Connection, this iPhone or iPad can reach your computer even when it isn't on the same network." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通托管连接后，这台 iPhone 或 iPad 不在电脑所在的网络时也能连上电脑。" } }
+      }
+    },
+    "ui.managed_devices_upgrade_busy": {
+      "comment": "Shown when the computer is busy with another Tailcat operation.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The computer is busy with another Tailcat operation. Try again in a moment." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "电脑正在处理其他 Tailcat 操作，请稍后再试。" } }
+      }
+    },
+    "ui.managed_devices_upgrade_continue": {
+      "comment": "Confirms switching the computer to Managed Connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Continue" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "继续接入" } }
+      }
+    },
+    "ui.managed_devices_upgrade_current": {
+      "comment": "Button that switches the currently connected computer to Managed Connection without scanning a QR code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use Managed Connection on This Computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "把这台电脑接入托管连接" } }
+      }
+    },
+    "ui.managed_devices_upgrade_failed": {
+      "comment": "Shown when switching the computer to Managed Connection fails. The value is the computer's error message.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn't switch this computer to Managed Connection: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法把这台电脑接入托管连接：%@" } }
+      }
+    },
+    "ui.managed_devices_upgrade_reset_message": {
+      "comment": "Confirmation message. The value is the number of devices using self-hosted Tailcat on this computer.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%@ devices use self-hosted Tailcat on this computer. They'll need to pair again after switching. Local network and Tailscale aren't affected." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑上有 %@ 台设备在用自建 Tailcat，接入托管连接后它们需要重新配对。局域网和 Tailscale 不受影响。" } }
+      }
+    },
+    "ui.managed_devices_upgrade_reset_title": {
+      "comment": "Confirmation title before switching a computer that has self-hosted Tailcat devices.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Disconnect self-hosted Tailcat devices?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "断开这台电脑上的自建 Tailcat 设备？" } }
+      }
+    },
+    "ui.managed_devices_upgrading": {
+      "comment": "Progress text while the current computer switches to Managed Connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Switching this computer to Managed Connection…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在把这台电脑接入托管连接…" } }
+      }
+    },
+    "ui.managed_lan_hint_action": {
+      "comment": "Link in the local-network hint that opens the Managed Connection page.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Learn About Managed Connection" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "了解托管连接" } }
+      }
+    },
+    "ui.managed_lan_hint_dismiss": {
+      "comment": "Hides the local-network Managed Connection hint for seven days.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Don't Show for 7 Days" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "7 天内不再提示" } }
+      }
+    },
+    "ui.managed_lan_hint_message": {
+      "comment": "Hint on the Devices tab when a computer paired over the local network can't be reached.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Can't reach your computer? You may not be on its Wi-Fi. With Managed Connection, you can connect over cellular too." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连不上电脑？可能是你和电脑不在同一个 Wi-Fi。开通托管连接后，用流量也能连。" } }
+      }
+    },
+    "ui.managed_plan_benefit_devices": {
+      "comment": "Managed Connection benefit: device limits per subscription.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Up to 3 computers and 5 phones or tablets" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "最多 3 台电脑、5 台手机或平板" } }
+      }
+    },
+    "ui.managed_plan_benefit_no_setup": {
+      "comment": "Managed Connection benefit: no extra networking software is needed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No Tailscale or other networking apps to install" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "不用安装 Tailscale 或其他联网工具" } }
+      }
+    },
+    "ui.managed_plan_benefit_private": {
+      "comment": "Managed Connection benefit: end-to-end encryption.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "End-to-end encrypted. The developer can't see your code or conversations" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "端到端加密，开发者看不到代码和对话" } }
+      }
+    },
+    "ui.managed_plan_benefit_relay": {
+      "comment": "Managed Connection benefit: Mimi relays, with automatic direct connections on the same network.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connects through Mimi relays, and directly when you're on the same network" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "经 Mimi 中继连接；在同一网络时自动直连" } }
+      }
+    },
+    "ui.managed_plan_benefits": {
+      "comment": "Section title above the Managed Connection benefits list.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "What you get" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "能做什么" } }
+      }
+    },
+    "ui.managed_plan_headline": {
+      "comment": "Headline of the Managed Connection subscription page before subscribing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Reach your computer from any network" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "不在同一 Wi-Fi，也能连上你的电脑" } }
+      }
+    },
+    "ui.managed_plan_manage_subscription": {
+      "comment": "Opens the system subscription management for Managed Connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Manage Subscription" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "管理订阅" } }
+      }
+    },
+    "ui.managed_plan_subtitle": {
+      "comment": "Supporting line under the Managed Connection headline.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "On cellular, at the office, or on the road, open Mimi and keep working." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "用流量、在公司或出差时，打开 Mimi 就能接着用。" } }
+      }
+    },
+    "ui.managed_route_and_devices_title": {
+      "comment": "Title of the Devices-tab page that shows the managed connection route, computer pairing, and registered devices.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Managed Route & Devices" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "托管线路与设备" } }
+      }
+    },
+    "ui.managed_subscription_short_active": {
+      "comment": "Short Managed Connection status shown on the Me tab row.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Active" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已开通" } }
+      }
+    },
+    "ui.managed_subscription_short_expired": {
+      "comment": "Short Managed Connection status shown on the Me tab row after the subscription expired.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Expired" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已过期" } }
+      }
+    },
+    "ui.managed_subscription_short_grace": {
+      "comment": "Short Managed Connection status shown on the Me tab row during a billing grace period.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Billing issue" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "付款遇到问题" } }
+      }
+    },
+    "ui.managed_subscription_short_pending": {
+      "comment": "Short Managed Connection status shown on the Me tab row while a purchase awaits approval.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Pending" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "等待批准" } }
+      }
+    },
+    "ui.managed_subscription_short_revoked": {
+      "comment": "Short Managed Connection status shown on the Me tab row after a refund or revocation.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Refunded" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已退款或撤销" } }
+      }
+    },
+    "ui.managed_subscription_short_trial": {
+      "comment": "Short Managed Connection status shown on the Me tab row during a free trial.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Free trial" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "试用中" } }
+      }
+    },
     "ui.question_reply_label": {
       "comment": "Label on the user's answer to an agent question in the conversation timeline.",
       "extractionState": "manual",
@@ -33,6 +222,24 @@
           "stringUnit": {
             "state": "translated",
             "value": "已跳过"
+          }
+        }
+      }
+    },
+    "ui.default_model_catalog_unavailable": {
+      "comment": "Section footer when the connected computer did not return a model list for this runtime. %@ is the runtime name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't get the model list for %@ from this computer. Tap Refresh in the top-right corner to try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没能从这台电脑获取 %@ 的模型列表，点右上角刷新重试。"
           }
         }
       }
@@ -250,104 +457,146 @@
         }
       }
     },
-    "ui.turn_hint_desktop_only": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+    "ui.live_activity_toggle": {
+      "comment": "Settings toggle for Lock Screen and Dynamic Island Live Activities.",
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Start this task from Claude on your computer."
+            "value": "Live Activities"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "这项任务需要在电脑上的 Claude 里开启。"
+            "value": "实时活动"
           }
         }
       }
     },
-    "ui.turn_hint_hide_brief": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+    "ui.live_activity_status_on": {
+      "comment": "Settings footnote when Live Activities are on.",
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Show less"
+            "value": "Shows running tasks on the Lock Screen and in the Dynamic Island."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "收起说明"
+            "value": "任务进行时在锁屏和灵动岛显示进度。"
           }
         }
       }
     },
-    "ui.turn_hint_next_step": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+    "ui.live_activity_status_off": {
+      "comment": "Settings footnote when Live Activities are off.",
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Next step"
+            "value": "Off. Live Activities won't start or update."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "下一步"
+            "value": "已关闭，不再启动或更新实时活动。"
           }
         }
       }
     },
-    "ui.turn_hint_show_brief": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+    "ui.live_activity_requires_notifications": {
+      "comment": "Settings footnote when message notifications are off.",
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Show details"
+            "value": "Turn on message notifications first."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "展开说明"
+            "value": "需要先开启消息通知。"
           }
         }
       }
     },
-    "ui.turn_hint_start_session": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+    "ui.live_activity_system_disabled": {
+      "comment": "Settings footnote when Live Activities are disabled for the app in system Settings.",
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Start session"
+            "value": "Live Activities are turned off for Mimi in Settings."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "开启会话"
+            "value": "已在系统设置中关闭本 App 的实时活动。"
           }
         }
       }
     },
-    "ui.turn_hint_task_proposal": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+    "ui.live_activity_unavailable_on_host": {
+      "comment": "Settings footnote when the paired computer runs an older Mimi.",
+      "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Suggested task"
+            "value": "Update Mimi on this computer to use Live Activities."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "建议的新任务"
+            "value": "这台电脑上的 Mimi 需要更新后才能使用。"
+          }
+        }
+      }
+    },
+    "ui.live_activity_status_failed": {
+      "comment": "Settings footnote when Live Activity registration failed.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't turn on. Mimi will retry when you return to the app."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂时无法开启，回到 App 时会自动重试。"
+          }
+        }
+      }
+    },
+    "ui.live_activity_disable_pending": {
+      "comment": "Settings footnote when turning Live Activities off has not finished revoking credentials.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turning off isn't finished. Mimi will retry when you return to the app."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭尚未完成，回到 App 时会自动重试。"
           }
         }
       }
@@ -462,13 +711,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Replied. Tap to view."
+            "value": "Sent you a new reply"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已回复，点按查看。"
+            "value": "发来一条新回复"
           }
         }
       }
@@ -479,13 +728,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The task could not finish. Tap to see why."
+            "value": "Couldn't finish the task"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "任务未能完成，点按查看原因。"
+            "value": "任务没能完成"
           }
         }
       }
@@ -496,13 +745,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The task has stopped. Tap to view."
+            "value": "The task stopped"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "任务已停止，点按查看。"
+            "value": "任务已停止"
           }
         }
       }
@@ -597,13 +846,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The task has stopped. Tap to view."
+            "value": "The task stopped"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "任务已停止，点按查看。"
+            "value": "任务已停止"
           }
         }
       }
@@ -613,13 +862,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The task could not finish. Tap to see why."
+            "value": "Couldn't finish the task"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "任务未能完成，点按查看原因。"
+            "value": "任务没能完成"
           }
         }
       }
@@ -629,13 +878,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Your AI reply is ready. Tap to view."
+            "value": "Sent you a new reply"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "AI 已回复，点按查看。"
+            "value": "发来一条新回复"
           }
         }
       }
@@ -645,13 +894,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Claude message"
+            "value": "Claude Code"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Claude 消息"
+            "value": "Claude Code"
           }
         }
       }
@@ -661,13 +910,65 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Codex message"
+            "value": "Codex"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Codex 消息"
+            "value": "Codex"
+          }
+        }
+      }
+    },
+    "push.message.title.deepseek": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek"
+          }
+        }
+      }
+    },
+    "push.liveactivity.start.title": {
+      "comment": "Alert title the system shows when a Live Activity is started remotely.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Task started"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务已开始"
+          }
+        }
+      }
+    },
+    "push.liveactivity.start.body": {
+      "comment": "Alert body the system shows when a Live Activity is started remotely.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Follow its progress on the Lock Screen."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可在锁屏查看进度。"
           }
         }
       }
@@ -998,6 +1299,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "将在主机执行已通过预检的 git testflight-push。它会核对远端 commit，并使用主机本地的签名与 App Store Connect 配置完成内部发布。"
+          }
+        }
+      }
+    },
+    "ui.a_reply_is_still_in_progress_this_message_was_not_sent": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A reply is still in progress, so this message wasn't sent. Retry to queue it; it sends when the reply finishes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前回复还在进行，这条未发出。重试会排队，回复结束后自动发送。"
+          }
+        }
+      }
+    },
+    "ui.a_reply_is_still_in_progress_try_again_after_it_finishes": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A reply is still in progress. Try again after it finishes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前回复还在进行，请等它结束后再试。"
           }
         }
       }
@@ -2682,6 +3017,43 @@
           }
         }
       }
+    },
+    "ui.app_filing_number": {
+      "comment": "APP registration number shown in About & Legal with a link to the MIIT filing system.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App filing number"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APP 备案号"
+          }
+        }
+      }
+    },
+    "ui.app_filing_number_value": {
+      "comment": "Official APP registration identifier. Keep the complete identifier unchanged in every language.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "苏ICP备2026066024号-2A"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "苏ICP备2026066024号-2A"
+          }
+        }
+      },
+      "shouldTranslate": false
     },
     "ui.app_server_credentials_file": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
@@ -4586,6 +4958,23 @@
         }
       }
     },
+    "ui.cancel_computer_switch": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel Switch"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消切换"
+          }
+        }
+      }
+    },
     "ui.cancel_temporary_storage_hunk": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -5798,6 +6187,159 @@
           "stringUnit": {
             "state": "translated",
             "value": "关闭"
+          }
+        }
+      }
+    },
+    "ui.wait_for_image_processing_to_complete": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wait for the image to finish processing before sending."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "图片还在处理，请稍后再发送。"
+          }
+        }
+      }
+    },
+    "ui.annotate_image": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Annotate"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标注"
+          }
+        }
+      }
+    },
+    "ui.clipboard_has_image": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image on clipboard"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "剪贴板里有一张图片"
+          }
+        }
+      }
+    },
+    "ui.clipboard_image_unreadable": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t read the image on the clipboard."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取剪贴板里的图片。"
+          }
+        }
+      }
+    },
+    "ui.crop_image": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Crop"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "裁剪"
+          }
+        }
+      }
+    },
+    "ui.done": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成"
+          }
+        }
+      }
+    },
+    "ui.image_annotation_failed": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t process the annotated image."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标注后的图片处理失败。"
+          }
+        }
+      }
+    },
+    "ui.reset_crop": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reset Crop"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还原裁剪"
+          }
+        }
+      }
+    },
+    "ui.undo": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Undo"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "撤销"
           }
         }
       }
@@ -8769,6 +9311,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "上下文 %@"
+          }
+        }
+      }
+    },
+    "ui.context_window_hint": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows context usage and lets you compact it"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看上下文用量，或压缩上下文"
+          }
+        }
+      }
+    },
+    "ui.context_window_low_notice_value": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only %@ of context left. Compact it before continuing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上下文只剩 %@，建议先压缩再继续"
+          }
+        }
+      }
+    },
+    "ui.context_window_remaining_value": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ context left"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "剩余上下文 %@"
+          }
+        }
+      }
+    },
+    "ui.context_window_used_value": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ / %2$@ tokens used"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已用 %1$@ / %2$@ tokens"
           }
         }
       }
@@ -14448,6 +15058,91 @@
           "stringUnit": {
             "state": "translated",
             "value": "前往工作区"
+          }
+        }
+      }
+    },
+    "ui.go_to_session": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go to Session…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跳转到会话…"
+          }
+        }
+      }
+    },
+    "ui.keyboard_menu_sessions": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sessions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会话"
+          }
+        }
+      }
+    },
+    "ui.next_session": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next Session"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一个会话"
+          }
+        }
+      }
+    },
+    "ui.previous_session": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Previous Session"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一个会话"
+          }
+        }
+      }
+    },
+    "ui.search_all_sessions_placeholder": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search sessions in all workspaces"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索所有工作区的会话"
           }
         }
       }
@@ -26329,6 +27024,261 @@
         }
       }
     },
+    "ui.review_notes_agent_intro": {
+      "comment": "Review-note message appended to the agent composer draft (#847). Keep the one-line-per-note structure stable.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please revise the code according to these review notes:"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请按以下审阅意见修改："
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_line": {
+      "comment": "Review-note message appended to the agent composer draft (#847). Keep the one-line-per-note structure stable.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "`%1$@` · %2$@: %3$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "`%1$@` · %2$@：%3$@"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_line_without_path": {
+      "comment": "Review-note message appended to the agent composer draft (#847). Keep the one-line-per-note structure stable.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: %2$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：%2$@"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_ready": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adds the notes to the end of the message box in “%@” without sending them."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会追加到“%@”输入框的末尾，不会自动发送。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_sent": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Added to the message box in “%@”. Review it there, then send."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已放进“%@”的输入框，确认后再发送。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_unavailable_held_on_computer": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude on the computer is using this session. Take it over to send the notes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个会话正被电脑上的 Claude 使用，接管后才能发送。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_unavailable_no_session": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open a session in this workspace to send the notes to the agent."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "先在这个工作区打开一个会话，才能把备注发给 Agent。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_unavailable_not_controllable": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Another device is controlling this session. Take it over to send the notes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个会话正由其他设备控制，接管后才能发送。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_unavailable_other_workspace": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The current session is in another workspace. Switch to a session in this workspace first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前会话不在这个工作区，切到这个工作区的会话后再发送。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_unavailable_read_only": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This session is read-only and can't receive messages."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个会话是只读的，不能发送消息。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_agent_unavailable_runtime": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This session's runtime isn't enabled on the computer, so the notes can't be sent."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑上没有启用这个会话的运行时，暂时不能发送。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_clear": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear Notes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清除备注"
+          }
+        }
+      }
+    },
+    "ui.review_notes_clear_confirmation_message": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These notes haven't been sent to the agent and can't be restored after clearing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这些备注还没发给 Agent，清除后无法恢复。"
+          }
+        }
+      }
+    },
+    "ui.review_notes_clear_confirmation_title": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear these review notes?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清除这些审查备注？"
+          }
+        }
+      }
+    },
+    "ui.review_notes_current_session": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current Session"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前会话"
+          }
+        }
+      }
+    },
     "ui.review_notes_fd0eac2c": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -26342,6 +27292,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "审查备注"
+          }
+        }
+      }
+    },
+    "ui.review_notes_send_to_agent": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send to Agent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发给 Agent"
+          }
+        }
+      }
+    },
+    "ui.review_notes_send_to_agent_again": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send to Agent Again"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再次发给 Agent"
           }
         }
       }
@@ -29570,6 +30554,40 @@
         }
       }
     },
+    "ui.sidebar_all_quiet": {
+      "comment": "Sidebar quiet state shown when no session needs you, is running, or just finished.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All quiet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一切安静"
+          }
+        }
+      }
+    },
+    "ui.sidebar_all_quiet_accessibility": {
+      "comment": "VoiceOver label for the sidebar quiet state.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All quiet. No sessions need you, are running, or just finished."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一切安静，没有等你处理、正在运行或刚完成的会话"
+          }
+        }
+      }
+    },
     "ui.simplified_chinese": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -29788,6 +30806,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "滑动"
+          }
+        }
+      }
+    },
+    "ui.slash_command_compact_detail": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Summarize earlier turns to free up context"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "总结早先的对话，腾出上下文空间"
+          }
+        }
+      }
+    },
+    "ui.slash_command_current": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前"
+          }
+        }
+      }
+    },
+    "ui.slash_command_plan_detail": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plan first on the next message"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一条消息先生成计划"
           }
         }
       }
@@ -30562,6 +31631,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "停止当前会话"
+          }
+        }
+      }
+    },
+    "ui.stop_did_not_take_effect_turn_not_started": {
+      "comment": "Shown when a stop request was not accepted because the turn had not started on the computer yet; the reply keeps running.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop didn't take effect: the turn hasn't started on the computer yet. Try stopping again in a moment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止没有生效：电脑上的回合还没开始，请稍后再点停止。"
           }
         }
       }
@@ -32848,6 +33934,23 @@
         }
       }
     },
+    "ui.the_current_running_channel_does_not_support_goals": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The current running channel does not support goals"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前运行通道不支持目标"
+          }
+        }
+      }
+    },
     "ui.the_current_running_channel_does_not_support_manual": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -33866,6 +34969,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "提醒时间已过，未保存提醒 %@"
+          }
+        }
+      }
+    },
+    "ui.the_reply_just_finished_this_message_was_not_sent_please_retry": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The reply just finished, so this message wasn't sent. Please retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复刚刚结束，这条未发出，请重试。"
           }
         }
       }
@@ -43616,6 +44736,132 @@
         }
       }
     },
+    "live_activity.title.generic": {
+      "comment": "Live Activity title when the session title is not cached on this device.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi Remote"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi Remote"
+          }
+        }
+      }
+    },
+    "live_activity.status.running": {
+      "comment": "Live Activity status for a running task.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行中"
+          }
+        }
+      }
+    },
+    "live_activity.status.needs_you": {
+      "comment": "Live Activity status for a task waiting for approval or input.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs you"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "待你处理"
+          }
+        }
+      }
+    },
+    "live_activity.status.completed": {
+      "comment": "Live Activity status for a finished task.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Completed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已完成"
+          }
+        }
+      }
+    },
+    "live_activity.status.failed": {
+      "comment": "Live Activity status for a failed task.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "失败"
+          }
+        }
+      }
+    },
+    "live_activity.summary_value": {
+      "comment": "Live Activity summary when several tasks are active: running count, then waiting count.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ running · %2$@ need you"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "进行中 %1$@ · 待你处理 %2$@"
+          }
+        }
+      }
+    },
+    "live_activity.stale": {
+      "comment": "Live Activity note when no update arrived for a while.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Status may be out of date"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "状态可能已过期"
+          }
+        }
+      }
+    },
     "ui.connection_speed_test_route_tailcat": {
       "comment": "Tailcat route label in the unified connection speed test.",
       "localizations": {
@@ -44787,6 +46033,34 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "一条临时输出已中断，且仍未确认。" } }
       }
     },
+    "harness.reply_interrupted": {
+      "comment": "Shown after a DeepSeek reply that the user stopped; the reply above is the partial text that had already streamed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Reply interrupted. The content above is incomplete." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "回复已中断，以上内容不完整。" } }
+      }
+    },
+    "harness.turn_failed_max_tokens": {
+      "comment": "Failure reason shown when a DeepSeek turn stopped because the reply hit the per-request output token limit; the reply above is cut off.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The reply hit the output length limit and was cut off." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "回复超出单次输出长度上限，已被截断。" } }
+      }
+    },
+    "harness.turn_failed_blocked": {
+      "comment": "Failure reason shown when DeepSeek's pre-step check refused to continue the turn.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "DeepSeek blocked this turn before it could continue." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这一轮被 DeepSeek 拦截，没有继续执行。" } }
+      }
+    },
+    "harness.turn_failed_unknown": {
+      "comment": "Failure reason for a DeepSeek turn that ended with an unrecognized reason; %@ is the raw reason identifier.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This turn ended unexpectedly (%@)." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这一轮异常结束（%@）。" } }
+      }
+    },
     "harness.previous_submission_unconfirmed": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "The previous submission is still unconfirmed. Reconcile it or wait for redelivery." } },
@@ -45070,6 +46344,108 @@
           "stringUnit": {
             "state": "translated",
             "value": "电脑端正在等待你处理，点按查看。"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_desktop_only": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start this task from Claude on your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这项任务需要在电脑上的 Claude 里开启。"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_hide_brief": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show less"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "收起说明"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_next_step": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next step"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一步"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_show_brief": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开说明"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_start_session": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start session"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启会话"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_task_proposal": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suggested task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "建议的新任务"
           }
         }
       }

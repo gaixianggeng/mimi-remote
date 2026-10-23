@@ -1355,7 +1355,12 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(resumeCount, 1)
 
         transportResponse(transport, id: resume.id, result: #"{"thread":{"id":"thr_resume_singleflight","sessionId":"thr_resume_singleflight","preview":"并发恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490800,"updatedAt":1780490802,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/resume-singleflight","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"并发恢复","turns":[]}}"#)
-        try await first
+        do {
+            try await first
+        } catch is CancellationError {
+            // 第二次 connect 换了订阅租约；被取代的旧调用按调度先后可能静默返回，
+            // 也可能在共享的 resume 完成后抛出取消，两者都符合设计。合并结论由上面的计数保证。
+        }
         try await second
     }
 
@@ -1877,7 +1882,9 @@ extension ConversationDataFlowTests {
             XCTAssertEqual(message.role, .system)
             XCTAssertEqual(message.kind, .plan)
             XCTAssertEqual(message.content, "检查上下文并给出答案。")
-            XCTAssertNil(context)
+            // #497 起过程条目总是附带上下文快照；计划条目不产生任务或子 Agent。
+            XCTAssertEqual(context?.tasks.isEmpty, true)
+            XCTAssertEqual(context?.subagents.isEmpty, true)
         } else {
             XCTFail("Expected plan processItemCompleted")
         }
@@ -1887,8 +1894,9 @@ extension ConversationDataFlowTests {
             XCTAssertEqual(message.id, startedCommandMessage?.id, "started/completed 必须原位更新同一条时间线消息")
             XCTAssertEqual(message.role, .system)
             XCTAssertEqual(message.kind, .commandSummary)
-            XCTAssertTrue(message.content.contains("命令：go test ./..."))
-            XCTAssertTrue(message.content.contains("输出：\nok"))
+            // #497 起正文只保留工具输出，命令本身由 activityPayload 承载。
+            XCTAssertEqual(message.content, "ok")
+            XCTAssertEqual(message.activityPayload?.command, "go test ./...")
             XCTAssertEqual(message.activityPayload?.category, .runCommand)
             XCTAssertEqual(message.activityPayload?.displayTitle, "查看 README.md")
             XCTAssertEqual(message.activityPayload?.commandPresentationKind, .exploration)
@@ -2105,8 +2113,9 @@ extension ConversationDataFlowTests {
         let turnParams = try XCTUnwrap(turnStart.params?.objectValue)
         XCTAssertEqual(turnParams["cwd"]?.stringValue, project.path)
         XCTAssertNil(turnParams["model"]?.stringValue)
-        XCTAssertEqual(turnParams["effort"]?.stringValue, "xhigh")
-        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "on-request")
+        // #347 起默认推理强度是 medium；#496 起默认完全访问即显式免审批。
+        XCTAssertEqual(turnParams["effort"]?.stringValue, "medium")
+        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "never")
         XCTAssertEqual(turnParams["approvalsReviewer"]?.stringValue, "user")
         XCTAssertEqual(turnParams["clientUserMessageId"]?.stringValue, "client_safe")
         let sandbox = try XCTUnwrap(turnParams["sandboxPolicy"]?.objectValue)

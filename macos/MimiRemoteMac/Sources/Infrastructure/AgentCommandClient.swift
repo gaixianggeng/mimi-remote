@@ -43,6 +43,9 @@ struct AgentCommandClient: Sendable {
     var resetTailcat: @Sendable () async throws -> TailcatStatus = {
         throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
     }
+    var setTailcatManagedMode: @Sendable (_ managed: Bool) async throws -> TailcatStatus = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Mimi 托管连接。")
+    }
     var configureDeepSeek: @Sendable (
         _ action: DeepSeekConfigurationAction,
         _ startupURL: String?
@@ -286,6 +289,15 @@ extension AgentCommandClient {
                     binary: binary,
                     arguments: tailcatArguments(action: "reset"),
                     timeout: .seconds(15)
+                ))
+            },
+            setTailcatManagedMode: { managed in
+                let binary = try requireEmbeddedBinary()
+                return try decode(TailcatStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: tailcatArguments(action: managed ? "enter-managed" : "exit-managed"),
+                    // 切换模式会验证新 sidecar，失败时恢复原中继，与修改中继同一量级。
+                    timeout: .seconds(55)
                 ))
             },
             configureDeepSeek: { action, startupURL in

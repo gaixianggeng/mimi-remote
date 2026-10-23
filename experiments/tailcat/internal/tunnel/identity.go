@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/tailscale/tailcat"
@@ -192,7 +193,9 @@ func requirePrivateFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("检查身份文件权限：%w", err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	// Windows 的 FileMode 只反映只读属性，权限位恒为 0666/0444；访问边界由状态目录
+	// 继承的用户配置文件 ACL 决定，与 agentd 检查自己的 token 和配置文件时一致。
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("身份文件 %s 的权限必须为 0600", path)
 	}
 	return nil

@@ -24,6 +24,8 @@ struct LockScreenApprovalNotification: Equatable, Sendable {
     enum Runtime: String, Sendable {
         case codex
         case claude
+        /// 只有回合终态提醒（#568）；DeepSeek 没有锁屏审批与电脑端等待提醒。
+        case deepseek
     }
 
     enum Kind: String, Sendable {
@@ -69,6 +71,7 @@ struct LockScreenApprovalNotification: Equatable, Sendable {
               let event = (payload["event"] as? String).flatMap(Event.init(rawValue:)),
               let runtime = (payload["runtime"] as? String).flatMap(Runtime.init(rawValue:)),
               event != .holderWaiting || runtime == .claude,
+              runtime != .deepseek || (event.isMessage && event != .holderWaiting),
               let kind = Self.notificationKind(payload["approval_kind"], event: event),
               let actionID = Self.opaqueIdentifier(payload["action_id"]),
               let deviceID = Self.opaqueIdentifier(payload["device_id"]),

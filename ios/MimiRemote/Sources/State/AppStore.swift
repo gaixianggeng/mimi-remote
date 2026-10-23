@@ -49,6 +49,9 @@ final class AppStore: ObservableObject {
     private let routeVersionProbe: ConnectionRouteVersionProbe?
     private let agentAPISession: URLSession
     private let gatewayProbeTransportFactory: () -> CodexAppServerTransport
+    /// 切换预热的候选 Bundle 使用的网关传输；nil 时走 Runtime 默认的 URLSession 传输。
+    private let gatewayTransportFactory: (() -> CodexAppServerTransport)?
+    private let hostSwitchPreparationTimeout: TimeInterval
     private let usesDefaultRouteProbe: Bool
     var ephemeralLocalProfileID: String?
     private var isConnectionPreflightRunning = false
@@ -65,6 +68,11 @@ final class AppStore: ObservableObject {
         }
     }
     private var activeRuntimeIdentity: String?
+    /// 会话 → Runtime 路由按连接档案（Profile + Mac 安装身份）保留，同一档案的 bundle 重建沿用：
+    /// 回后台清凭据也会丢弃 bundle，表若随之清空，回前台后 Claude 会话的请求会默认落到 Codex（#784）。
+    /// 换档案就换一份新表，旧 bundle 的迟到写入只落在旧表里。
+    private var runtimeRoutes = AppServerRuntimeRouteStore()
+    private var runtimeRoutesHostKey: String?
     /// SessionStore 注入：Runtime 对没有被页面订阅的会话收到的权威快照（#683）。
     /// 只保存一份；bundle 换代（切主机、快速切换）时由 `activeRuntimeBundle` 的 didSet 重新挂上。
     var sessionIndexObserver: ((AgentSession) -> Void)? {
@@ -94,6 +102,8 @@ final class AppStore: ObservableObject {
         routeVersionProbe: ConnectionRouteVersionProbe? = nil,
         agentAPISession: URLSession = .shared,
         gatewayProbeTransportFactory: @escaping () -> CodexAppServerTransport = { URLSessionCodexAppServerTransport() },
+        gatewayTransportFactory: (() -> CodexAppServerTransport)? = nil,
+        hostSwitchPreparationTimeout: TimeInterval = 8,
         allowsEphemeralLocalCredentialFallback: Bool? = nil
     ) {
         self.defaults = defaults
@@ -109,6 +119,8 @@ final class AppStore: ObservableObject {
         self.localAgentPairingClaim = localAgentPairingClaim ?? Self.defaultLocalAgentPairingClaim
         self.agentAPISession = agentAPISession
         self.gatewayProbeTransportFactory = gatewayProbeTransportFactory
+        self.gatewayTransportFactory = gatewayTransportFactory
+        self.hostSwitchPreparationTimeout = hostSwitchPreparationTimeout
         self.routeProbe = routeProbe ?? { endpoint, token, timeout in
             try await Self.defaultConnectionRouteProbe(
                 endpoint: endpoint,
@@ -460,6 +472,10 @@ final class AppStore: ObservableObject {
     var shouldSeedDebugHistoryUnreadUI: Bool {
         debugLaunchConfiguration.seedsHistoryUnreadUI
     }
+
+    var shouldSeedDebugQuietSidebarUI: Bool {
+        debugLaunchConfiguration.seedsQuietSidebarUI
+    }
     // TODO(工作区行样式评审): A/B/C 定稿后连同 DebugLaunchConfiguration 里的两个字段一起删除。
     var shouldSeedDebugDenseWorkspaceUI: Bool { debugLaunchConfiguration.seedsDenseWorkspaceUI }
 #endif
@@ -607,7 +623,12 @@ final class AppStore: ObservableObject {
     }
 
     @discardableResult
-    func commitConnectionSettings(_ prepared: PreparedConnectionSettings) async throws -> Bool {
+    /// `isStillCurrent` 在凭据写入的 await 之后、改写当前电脑之前再核对一次：提交途中被取消
+    /// 或改选的切换回滚凭据并按取消结束，已被放弃的电脑不能生效（#801）。
+    func commitConnectionSettings(
+        _ prepared: PreparedConnectionSettings,
+        isStillCurrent: () -> Bool = { true }
+    ) async throws -> Bool {
         let normalizedEndpoint = try Self.validatedEndpoint(prepared.endpoint)
         let normalizedActiveEndpoint = try Self.validatedEndpoint(prepared.activeEndpoint)
         let acceptsHostDeviceName = ConnectionProfile.acceptsHostDeviceName(
@@ -809,8 +830,8 @@ final class AppStore: ObservableObject {
                 usesEphemeralLocalCredential = true
             }
         }
-        guard credentialLifecycle == credentialLifecycleGeneration, !Task.isCancelled else {
-            // App 在 Keychain await 期间进入后台时，候选提交必须回滚，A 的元数据和 Runtime 不变。
+        guard credentialLifecycle == credentialLifecycleGeneration, !Task.isCancelled, isStillCurrent() else {
+            // App 在 Keychain await 期间进入后台或切换被取消时，候选提交必须回滚，A 的元数据和 Runtime 不变。
             if usesEphemeralLocalCredential {
                 await credentialVault.rollbackMemory(credentialReceipt, profileID: targetProfile.id)
             } else {
@@ -872,6 +893,9 @@ final class AppStore: ObservableObject {
             committedAt: prepared.validatedAt,
             capabilityNegotiation: prepared.capabilityNegotiation
         )
+        if let candidateRuntime {
+            adoptRuntimeRoutes(candidateRuntime.routes)
+        }
         // prepare 已对这组凭据验证过 version、config 和 gateway 初始化，提交成功就是「已连接」。
         // 不在这里改写的话，上一轮配对失败留下的 .failed 会被新连接继承，会话页整页报旧错误（#730）。
         connectionStatus = .connected(activeConnectionRoute.statusTitle)
@@ -1601,8 +1625,8 @@ final class AppStore: ObservableObject {
         hostDeviceName: String?,
         adoptsHostDeviceName: Bool
     ) async throws -> PreparedConnectionSettings {
-        let deadline = Date().addingTimeInterval(8)
-        let client = AgentAPIClient(endpoint: activeEndpoint, token: token)
+        let deadline = Date().addingTimeInterval(hostSwitchPreparationTimeout)
+        let client = AgentAPIClient(endpoint: activeEndpoint, token: token, session: agentAPISession)
         HostSwitchSignpost.begin("switch_prepare")
         defer { HostSwitchSignpost.end("switch_prepare") }
 
@@ -1631,16 +1655,18 @@ final class AppStore: ObservableObject {
             guard remaining > 0.25 else {
                 throw URLError(.timedOut)
             }
+            // 预热剩余时间只约束这次网关握手。它曾被当作整个 Bundle 的请求超时，提交后
+            // 列表与发送都只剩几秒、超时又不淘汰连接，切过去就一直加载（#801）。
             let bundle = AppServerRuntimeBundle(
                 endpoint: activeEndpoint,
                 token: token,
-                // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破 8 秒总 deadline。
-                requestTimeout: remaining,
                 preparedConfig: config,
-                harnessFactory: nativeHarnessFactory
+                harnessFactory: nativeHarnessFactory,
+                transportFactory: gatewayTransportFactory
             )
             do {
-                try await bundle.prepareForHostActivation()
+                // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破预热总时限。
+                try await bundle.prepareForHostActivation(handshakeTimeout: remaining)
                 try Task.checkCancellation()
                 guard deadline.timeIntervalSinceNow > 0 else {
                     throw URLError(.timedOut)
@@ -1874,6 +1900,30 @@ final class AppStore: ObservableObject {
         resetDirectRuntime()
     }
 
+    /// 当前档案的路由表；Profile 或 Mac 安装身份变化时换一份新表。
+    func runtimeRoutesForActiveHost() -> AppServerRuntimeRouteStore {
+        let key = Self.routesHostKey(for: activeHostScope)
+        if runtimeRoutesHostKey != key {
+            runtimeRoutes = AppServerRuntimeRouteStore()
+            runtimeRoutesHostKey = key
+        }
+        return runtimeRoutes
+    }
+
+    /// 快速切换的候选 bundle 自带路由表，提交后登记为当前档案的表；仍是同一档案时带上旧表已知的路由。
+    private func adoptRuntimeRoutes(_ routes: AppServerRuntimeRouteStore) {
+        let key = Self.routesHostKey(for: activeHostScope)
+        if runtimeRoutesHostKey == key {
+            routes.rememberMissing(from: runtimeRoutes)
+        }
+        runtimeRoutes = routes
+        runtimeRoutesHostKey = key
+    }
+
+    private static func routesHostKey(for scope: HostScope) -> String {
+        "\(scope.profileID)\n\(scope.installationID)"
+    }
+
     /// 按 (endpoint, token) 复用同一个 Runtime bundle。非 private：路由扩展要用它。
     func runtimeBundle(endpoint: String, token: String) -> AppServerRuntimeBundle {
         let identity = runtimeIdentity(endpoint: endpoint, token: token)
@@ -1883,7 +1933,8 @@ final class AppStore: ObservableObject {
         let bundle = AppServerRuntimeBundle(
             endpoint: endpoint,
             token: token,
-            harnessFactory: nativeHarnessFactory
+            harnessFactory: nativeHarnessFactory,
+            routes: runtimeRoutesForActiveHost()
         )
         activeRuntimeIdentity = identity
         activeRuntimeBundle = bundle

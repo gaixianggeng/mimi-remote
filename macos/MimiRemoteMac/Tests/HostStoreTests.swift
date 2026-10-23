@@ -1443,191 +1443,6 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.pairing, tailcatPairing)
     }
 
-    func testConfiguringTailcatRelayUpdatesStatusAndClearsOldPairing() async {
-        let events = EventRecorder()
-        let defaultStatus = TailcatStatus(
-            enabled: true,
-            running: true,
-            version: "v0.3.0",
-            derpMapURL: nil,
-            pairedDeviceCount: 1,
-            error: nil
-        )
-        let customStatus = TailcatStatus(
-            enabled: true,
-            running: true,
-            version: "v0.3.0",
-            derpMapURL: "https://relay.example/derpmap/default",
-            pairedDeviceCount: 0,
-            error: nil
-        )
-        let tailcatPairing = PairingInfo(
-            endpoint: "http://127.0.0.1:8787",
-            network: .tailcat,
-            pairURL: "mimiremote://pair?transport=tailcat",
-            expiresAt: "2026-09-02T02:00:00Z",
-            warnings: []
-        )
-        let store = makeStore(
-            configExists: true,
-            agentStatus: { .enabled },
-            pair: { _ in tailcatPairing },
-            tailcatStatus: { defaultStatus },
-            configureTailcatDERPMap: { url in
-                events.append(url)
-                return customStatus
-            }
-        )
-
-        await store.bootstrap()
-        await store.refreshTailcatStatus()
-        await store.refreshPairing(network: .tailcat)
-        await store.configureTailcatDERPMap("https://relay.example/derpmap/default")
-
-        XCTAssertEqual(events.values, ["https://relay.example/derpmap/default"])
-        XCTAssertEqual(store.tailcatDERPMapURL, "https://relay.example/derpmap/default")
-        XCTAssertEqual(store.tailcatStatus?.pairedDeviceCount, 0)
-        XCTAssertNil(store.pairing)
-        XCTAssertEqual(store.pairingNetwork, .tailscale)
-        XCTAssertEqual(store.tailcatNotice, "中继已更新。请重新生成二维码，并在移动设备上扫码。")
-    }
-
-    func testRefreshingTailcatStatusClearsRelayNoticeAndShowsRuntimeError() async {
-        let customStatus = TailcatStatus(
-            enabled: true,
-            running: true,
-            version: "v0.3.0",
-            derpMapURL: "https://relay.example/derpmap/default",
-            pairedDeviceCount: 0,
-            error: nil
-        )
-        let failedStatus = TailcatStatus(
-            enabled: true,
-            running: false,
-            version: "v0.3.0",
-            derpMapURL: "https://relay.example/derpmap/default",
-            pairedDeviceCount: 0,
-            error: "Tailcat sidecar 已退出"
-        )
-        let statusCalls = CallCounter()
-        let store = makeStore(
-            configExists: true,
-            agentStatus: { .enabled },
-            tailcatStatus: {
-                statusCalls.increment() == 1 ? customStatus : failedStatus
-            },
-            configureTailcatDERPMap: { _ in customStatus }
-        )
-
-        await store.bootstrap()
-        await store.refreshTailcatStatus()
-        await store.configureTailcatDERPMap("https://relay.example/derpmap/default")
-        XCTAssertNotNil(store.tailcatNotice)
-
-        await store.refreshTailcatStatus()
-
-        XCTAssertNil(store.tailcatNotice)
-        XCTAssertEqual(store.tailcatStatusDetail, "Tailcat sidecar 已退出")
-    }
-
-    func testTailcatRefreshCannotStartWhileToggleIsInFlight() async {
-        let mutationGate = SuspendedStatusGate()
-        let statusCalls = CallCounter()
-        let enabledStatus = TailcatStatus(
-            enabled: true, running: true, version: "v0.3.0",
-            derpMapURL: nil, pairedDeviceCount: 1, error: nil
-        )
-        let disabledStatus = TailcatStatus(
-            enabled: false, running: false, version: "v0.3.0",
-            derpMapURL: nil, pairedDeviceCount: 1, error: nil
-        )
-        let store = makeStore(
-            configExists: true,
-            agentStatus: { .enabled },
-            tailcatStatus: {
-                _ = statusCalls.increment()
-                return enabledStatus
-            },
-            setTailcatEnabled: { _ in
-                await mutationGate.suspendReturning(disabledStatus)
-            }
-        )
-        await store.bootstrap()
-        await store.refreshTailcatStatus()
-
-        let toggle = Task { await store.setTailcatEnabled(false) }
-        await mutationGate.waitUntilSuspended()
-        await store.refreshTailcatStatus()
-        XCTAssertEqual(statusCalls.current, 1, "修改期间不得启动会覆盖结果的状态读取")
-        mutationGate.resume()
-        await toggle.value
-
-        XCTAssertFalse(store.tailcatEnabled)
-        XCTAssertEqual(store.tailcatStatus?.running, false)
-    }
-
-    func testTailcatMutationRejectsOlderRefreshResult() async {
-        let staleRefreshGate = SuspendedStatusGate()
-        let enabledStatus = TailcatStatus(
-            enabled: true, running: true, version: "v0.3.0",
-            derpMapURL: nil, pairedDeviceCount: 1, error: nil
-        )
-        let disabledStatus = TailcatStatus(
-            enabled: false, running: false, version: "v0.3.0",
-            derpMapURL: nil, pairedDeviceCount: 1, error: nil
-        )
-        let store = makeStore(
-            configExists: true,
-            agentStatus: { .enabled },
-            tailcatStatus: { await staleRefreshGate.suspendReturning(enabledStatus) },
-            setTailcatEnabled: { _ in disabledStatus }
-        )
-        await store.bootstrap()
-
-        let staleRefresh = Task { await store.refreshTailcatStatus() }
-        await staleRefreshGate.waitUntilSuspended()
-        await store.setTailcatEnabled(false)
-        staleRefreshGate.resume()
-        await staleRefresh.value
-
-        XCTAssertFalse(store.tailcatEnabled)
-        XCTAssertFalse(store.availablePairingNetworks.contains(.tailcat))
-    }
-
-    func testLatestTailcatRefreshWinsWhenOlderFailureFinishesLast() async {
-        let staleRefreshGate = SuspendedStatusGate()
-        let latestRefreshGate = SuspendedStatusGate()
-        let calls = CallCounter()
-        let latestStatus = TailcatStatus(
-            enabled: false, running: false, version: "v0.3.0",
-            derpMapURL: nil, pairedDeviceCount: 1, error: nil
-        )
-        let store = makeStore(
-            configExists: true,
-            agentStatus: { .enabled },
-            tailcatStatus: {
-                if calls.increment() == 1 {
-                    _ = await staleRefreshGate.suspendReturning(false)
-                    throw TestError.expected
-                }
-                return await latestRefreshGate.suspendReturning(latestStatus)
-            }
-        )
-        await store.bootstrap()
-
-        let staleRefresh = Task { await store.refreshTailcatStatus() }
-        await staleRefreshGate.waitUntilSuspended()
-        let latestRefresh = Task { await store.refreshTailcatStatus() }
-        await latestRefreshGate.waitUntilSuspended()
-        latestRefreshGate.resume()
-        await latestRefresh.value
-        staleRefreshGate.resume()
-        await staleRefresh.value
-
-        XCTAssertEqual(store.tailcatStatus, latestStatus)
-        XCTAssertNil(store.tailcatError)
-    }
-
     func testDoctorKeepsHomebrewMigrationState() async {
         let store = makeStore(configExists: true, homebrewLoaded: true)
         await store.bootstrap()
@@ -2215,6 +2030,9 @@ final class HostStoreTests: XCTestCase {
                 error: nil
             )
         },
+        setTailcatManagedMode: @escaping @Sendable (Bool) async throws -> TailcatStatus = { _ in
+            throw TestError.expected
+        },
         configureDeepSeek: @escaping @Sendable (
             DeepSeekConfigurationAction, String?
         ) async throws -> DeepSeekConfigurationResult = { _, _ in
@@ -2243,6 +2061,7 @@ final class HostStoreTests: XCTestCase {
             tailcatStatus: tailcatStatus,
             setTailcatEnabled: setTailcatEnabled,
             configureTailcatDERPMap: configureTailcatDERPMap,
+            setTailcatManagedMode: setTailcatManagedMode,
             configureDeepSeek: configureDeepSeek,
             version: { readyStatus.version }
         )
@@ -2417,7 +2236,7 @@ final class EventRecorder: @unchecked Sendable {
     }
 }
 
-private final class CallCounter: @unchecked Sendable {
+final class CallCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
 
@@ -2435,7 +2254,7 @@ private final class CallCounter: @unchecked Sendable {
     }
 }
 
-private final class SuspendedStatusGate: @unchecked Sendable {
+final class SuspendedStatusGate: @unchecked Sendable {
     private let condition = NSCondition()
     private var suspended = false
     private var released = false

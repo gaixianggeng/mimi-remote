@@ -61,6 +61,15 @@ func ConfigureTailcatDERPMap(configPath, rawURL string) (TailcatDERPConfiguratio
 	if err != nil {
 		return TailcatDERPConfigurationResult{}, err
 	}
+	var mode string
+	if raw := tailcatDocument["mode"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &mode); err != nil {
+			return TailcatDERPConfigurationResult{}, fmt.Errorf("tailcat.mode 必须是字符串")
+		}
+	}
+	if mode == config.TailcatModeManaged {
+		return TailcatDERPConfigurationResult{}, fmt.Errorf("托管模式下不能手动修改中继，请先退出托管模式")
+	}
 	previous := ""
 	if raw := tailcatDocument["derp_map_url"]; len(raw) > 0 {
 		if err := json.Unmarshal(raw, &previous); err != nil {

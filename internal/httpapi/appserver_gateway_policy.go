@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -52,6 +53,11 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	if !p.methodAllowed(method) {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server method 不允许：" + method}
 	}
+	if err := p.admitClientRequest(frame.ID); err != nil {
+		// 在任何登记或 lease 之前拒绝：响应只能按 id 认领，两条同 id 请求同时在途时，
+		// 裁剪和授权会落到错误的那条响应上。
+		return nil, gatewayPolicyErrorFromAdmission(frame.ID, err)
+	}
 	params, err := decodeGatewayParams(frame.Params)
 	if err != nil {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
@@ -70,7 +76,7 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	}
 	if err := p.validateThreadCapability(&frame, method, params, validated); err != nil {
 		p.router.releaseManagedWorktreePendingUse(validated.pendingManagedWorktreePath)
-		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+		return nil, gatewayPolicyErrorFromAdmission(frame.ID, err)
 	}
 	if policyErr := p.reserveHistoryRequest(frame.ID, method, params, len(payload)); policyErr != nil {
 		p.forgetPending(frame.ID)
@@ -82,15 +88,13 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
-	if frame.ID != nil && normalizeAppServerRuntimeID(p.runtimeID) == "codex" && method == "account/usage/read" {
-		if err := p.rememberPendingClientRequest(frame.ID, method); err != nil {
-			return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
-		}
-	}
 	if p.isClosed() {
 		p.cancelPendingHistoryRequest(frame.ID)
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server gateway 连接已关闭"}
+	}
+	if frame.ID != nil {
+		p.rememberPendingClientRequest(frame.ID, method)
 	}
 	if method == "initialize" {
 		// 只有完整通过策略校验并即将转发的 initialize 才能更新连接能力。
@@ -99,6 +103,17 @@ func (p *appServerGatewayPolicy) validateClientFrameContext(ctx context.Context,
 	}
 	logGatewayForwardedClientTurnSummary(method, rewritten)
 	return rewritten, nil
+}
+
+// gatewayPolicyErrorFromAdmission 把登记失败转成客户端错误；登记耗尽时要求调用方
+// 写回错误后关闭连接。
+func gatewayPolicyErrorFromAdmission(id *json.RawMessage, err error) *appServerGatewayPolicyError {
+	policyErr := &appServerGatewayPolicyError{id: id, message: err.Error()}
+	if errors.Is(err, errGatewayPendingTrackingExhausted) {
+		policyErr.resetConnection = true
+		policyErr.data = map[string]any{"reason": appServerGatewayTrackingExhaustedReason}
+	}
+	return policyErr
 }
 
 func (p *appServerGatewayPolicy) methodAllowed(method string) bool {
@@ -129,11 +144,13 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 				if value, ok := params["limit"]; ok && value != nil {
 					limit, _ = gatewayJSONNumberInt64(value)
 				}
+				upstreamCursor, _ := params["cursor"].(string)
 				return p.rememberPendingThreadRequest(frame.ID, appServerGatewayPendingThreadRequest{
 					method:           method,
 					responseLimit:    limit,
 					responseLimitSet: true,
 					globalDiscovery:  true,
+					upstreamCursor:   upstreamCursor,
 				})
 			}
 		}
@@ -730,6 +747,8 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 		sanitized = sanitizedGatewaySkillsListParams(params, validated.cwd)
 	case "permissionProfile/list":
 		sanitized = sanitizedGatewayPermissionProfileListParams(params, validated.cwd)
+	case "slashCommand/list":
+		sanitized = sanitizedGatewaySlashCommandListParams(params, validated.cwd)
 	case "plugin/installed":
 		sanitized = sanitizedGatewayPluginInstalledParams(validated.cwd)
 	case "thread/list":
@@ -803,6 +822,18 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 func sanitizedGatewaySkillsListParams(params map[string]any, cwd string) map[string]any {
 	// 移动端只能扫描一个已经授权的工作区，不能借 skills/list 枚举任意目录。
 	safe := map[string]any{"cwds": []any{cwd}}
+	if forceReload, ok := gatewayBoolParam(params, "forceReload"); ok {
+		safe["forceReload"] = forceReload
+	}
+	return safe
+}
+
+func sanitizedGatewaySlashCommandListParams(params map[string]any, cwd string) map[string]any {
+	// 只转发授权后的 cwd、执行边界类型与刷新标记；writableRoots 等字段对命令目录没有意义。
+	safe := map[string]any{"cwd": cwd}
+	if sandboxType, ok := gatewaySlashCommandSandboxType(params["sandboxPolicy"]); ok {
+		safe["sandboxPolicy"] = map[string]any{"type": sandboxType}
+	}
 	if forceReload, ok := gatewayBoolParam(params, "forceReload"); ok {
 		safe["forceReload"] = forceReload
 	}
