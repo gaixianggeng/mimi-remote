@@ -6,7 +6,7 @@ import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import type { TurnStatus } from "../protocol/codex/v2/TurnStatus.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
 import { ItemIdAllocator, notificationTurnId } from "./itemIds.ts";
-import { completeToolItem, isHiddenTool, toolUseItem, unfinishedToolItem, type ToolOutput } from "./tools.ts";
+import { completeToolItem, isHiddenTool, isTurnHintItem, toolUseItem, unfinishedToolItem, type ToolOutput } from "./tools.ts";
 
 /** SDK SessionMessage 中本模块用到的字段。 */
 export interface HistoryMessage {
@@ -263,11 +263,14 @@ export function messagesToTurns(messages: readonly HistoryMessage[], options: Tr
   });
 }
 
-/** summary 视图只保留对话文本，工具过程由 thread/items/list 按 turn 补齐。 */
+/**
+ * summary 视图只保留对话文本，工具过程由 thread/items/list 按 turn 补齐。
+ * 回合提示（下一步提示框、新任务提议）是给用户的交互，和对话文本一样留在首屏。
+ */
 export function summarizeTurn(turn: Turn): Turn {
   return {
     ...turn,
     itemsView: "summary",
-    items: turn.items.filter((item) => item.type === "userMessage" || item.type === "agentMessage"),
+    items: turn.items.filter((item) => item.type === "userMessage" || item.type === "agentMessage" || isTurnHintItem(item)),
   };
 }
