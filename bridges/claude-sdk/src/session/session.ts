@@ -67,6 +67,15 @@ export class Session {
     return generation === this.generation && this.sink !== undefined;
   }
 
+  get connectedGeneration(): number | undefined {
+    return this.sink ? this.generation : undefined;
+  }
+
+  /** 建议只属于看到本轮完成的连接，不入重放环，也不补给重连或新订阅者。 */
+  publishTransient(frame: OutboundFrame, generation: number): void {
+    if (this.isCurrent(generation)) this.sink?.(frame);
+  }
+
   detach(generation: number): void {
     if (generation !== this.generation) return;
     this.sink = undefined;

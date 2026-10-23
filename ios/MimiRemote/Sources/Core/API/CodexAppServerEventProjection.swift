@@ -57,6 +57,8 @@ extension CodexAppServerSessionRuntime {
                 mailbox.send(event)
             }
         } else {
+            // 建议只给当前可见会话，不缓冲到下一次打开，也不影响会话列表。
+            if case .promptSuggestion = event { return }
             // 没有页面订阅的会话：状态变化仍要让列表看到，缓冲区照旧保留，供随后打开详情时回放。
             notifySessionIndex(for: event, sessionID: sessionID)
             var events = bufferedEventsBySessionID[sessionID] ?? []
@@ -201,39 +203,6 @@ extension CodexAppServerSessionRuntime {
             }
             events.removeLast(2)
             events.append(merged)
-        }
-    }
-
-    func sessionID(from event: AgentEvent) -> SessionID? {
-        switch event {
-        case .session(let session):
-            return session.id
-        case .sessionRow(let row, _):
-            return row.id
-        case .sessionStatus(_, let metadata),
-             .sessionContext(_, let metadata),
-             .permissionProfileUpdated(_, let metadata),
-             .collaborationModeUpdated(_, let metadata),
-             .goalCleared(let metadata),
-             .turnStarted(let metadata),
-             .assistantDelta(_, let metadata),
-             .messageCompleted(_, let metadata),
-             .processItemCompleted(_, _, let metadata),
-             .logDelta(_, let metadata),
-             .diffUpdated(_, let metadata),
-             .approvalRequest(_, let metadata),
-             .approvalResolved(let metadata),
-             .userInputRequest(_, let metadata),
-             .userInputResolved(let metadata, _),
-             .turnCompleted(let metadata),
-             .warning(_, let metadata):
-            return metadata.sessionID
-        case .goalUpdated(let goal, let metadata):
-            return metadata.sessionID ?? goal.threadID
-        case .error(_, let metadata):
-            return metadata.sessionID
-        case .unknown:
-            return nil
         }
     }
 

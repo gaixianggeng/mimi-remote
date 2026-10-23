@@ -64,6 +64,7 @@ enum AgentEvent {
     case collaborationModeUpdated(CodexAppServerTurnOptions.CollaborationMode, AgentEventMetadata)
     case goalUpdated(ThreadGoal, AgentEventMetadata)
     case goalCleared(AgentEventMetadata)
+    case promptSuggestion(AgentPromptSuggestion, AgentEventMetadata)
     case turnStarted(AgentEventMetadata)
     case assistantDelta(AgentDelta, AgentEventMetadata)
     case messageCompleted(AgentMessage, AgentEventMetadata)
@@ -84,7 +85,7 @@ extension AgentEvent {
     func withReplayBoundarySequence(_ sequence: UInt64?, epoch: UInt64?) -> AgentEvent {
         guard let sequence else { return self }
         switch self {
-        case .session, .unknown:
+        case .session, .promptSuggestion, .unknown:
             return self
         case .sessionRow(let row, let metadata):
             return .sessionRow(row, metadata.withReplayBoundarySequence(sequence, epoch: epoch))
@@ -613,6 +614,10 @@ struct CodexAppServerEventProjector {
         let metadata = makeMetadata(from: params)
 
         switch notification.method {
+        case "_mimi/turn/promptSuggestion":
+            guard let suggestion = AgentPromptSuggestion(params: params),
+                  metadata.sessionID != nil, metadata.turnID != nil else { return nil }
+            return .promptSuggestion(suggestion, metadata)
         case "thread/goal/updated":
             guard let goal = goal(from: params) else {
                 return nil
