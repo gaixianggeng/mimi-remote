@@ -1922,6 +1922,15 @@ final class OrderedHistoryPageClient: SessionStoreAPIClient {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
+        resolveHistoryItemRequest(at: index, result: .success(page), file: file, line: line)
+    }
+
+    func resolveHistoryItemRequest(
+        at index: Int,
+        result: Result<HistoryTurnItemsPage, Error>,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
         lock.lock()
         let continuation = itemPageContinuations.indices.contains(index)
             ? itemPageContinuations[index]
@@ -1934,7 +1943,7 @@ final class OrderedHistoryPageClient: SessionStoreAPIClient {
             XCTFail("No pending history Item request at index \(index)", file: file, line: line)
             return
         }
-        continuation.resume(returning: page)
+        continuation.resume(with: result)
     }
 
     private func appendHistoryRequest(

@@ -3,6 +3,106 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testLatestCompletedTurnKeepsSummaryAtTailUntilAllItemsArrive() async {
+        let completionMarkers: [[String: CodexAppServerJSONValue]] = [
+            ["status": .string("completed")],
+            ["status": .object(["type": .string("failed")])],
+            ["status": .string("failure")],
+            ["status": .string("systemerror")],
+            ["status": .string("system_error")],
+            ["status": .object(["status": .string("interrupted")])],
+            ["status": .string("cancelled")],
+            ["status": .string("canceled")],
+            ["status": .string("aborted")],
+            ["completedAt": .int(200)],
+            ["completed_at": .string("1970-01-01T00:03:20Z")],
+            ["finishedAt": .double(200)],
+            ["updatedAt": .int(200)]
+        ]
+        for completion in completionMarkers {
+            for fails in [false, true] {
+                let sessionID = "latest-turn-publication-\(fails)"
+                let client = OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: []))
+                let conversationStore = ConversationStore()
+                let store = SessionStore(
+                    appStore: makeIsolatedAppStore(), conversationStore: conversationStore,
+                    logStore: LogStore(), clientFactory: { client }
+                )
+                store.selectedSessionID = sessionID
+                let first = HistoryTurnItemsContinuation(
+                    turnID: "latest", turn: ["id": .string("latest")].merging(completion) { _, new in new },
+                    turnIndex: 0, itemOffset: 0, cursor: nil, pageLimit: 50,
+                    threadIsActive: false, isLatestTurn: true, hasVisibleUserMessageBefore: false
+                )
+                store.applyHistoryFirstPage(HistoryMessagesPage(
+                    messages: [CodexHistoryMessage(
+                        id: "summary", role: "assistant", content: "最终报告",
+                        createdAt: Date(timeIntervalSince1970: 200), turnID: "latest", itemID: "summary"
+                    )],
+                    itemContinuations: [first]
+                ), sessionID: sessionID)
+                let summaryID = conversationStore.messages(for: sessionID).last?.id
+                await client.waitForHistoryItemRequestCount(1)
+                let second = first.continuing(cursor: "tail", loadedItemCount: 1, hasVisibleUserMessage: false)
+                client.resolveHistoryItemRequest(at: 0, with: HistoryTurnItemsPage(
+                    messages: [CodexHistoryMessage(
+                        id: "image", role: "assistant", content: "过程图片",
+                        createdAt: Date(timeIntervalSince1970: 400), turnID: "latest", itemID: "image", timelineOrdinal: 207
+                    )], itemIDs: ["image"], continuation: second
+                ))
+                await client.waitForHistoryItemRequestCount(2)
+                XCTAssertEqual(conversationStore.messages(for: sessionID).map(\.content), ["最终报告"])
+                if fails {
+                    client.resolveHistoryItemRequest(at: 1, result: .failure(URLError(.networkConnectionLost)))
+                } else {
+                    client.resolveHistoryItemRequest(at: 1, with: HistoryTurnItemsPage(
+                        messages: [CodexHistoryMessage(
+                            id: "final", role: "assistant", content: "最终报告",
+                            createdAt: Date(timeIntervalSince1970: 200), turnID: "latest", itemID: "final", timelineOrdinal: 236
+                        )], itemIDs: ["final"], continuation: nil
+                    ))
+                }
+                await waitForHistoryItemEnrichmentToFinish(in: store, sessionID: sessionID)
+                XCTAssertEqual(conversationStore.messages(for: sessionID).last?.id, summaryID)
+                XCTAssertEqual(conversationStore.messages(for: sessionID).map(\.content), fails ? ["最终报告"] : ["过程图片", "最终报告"])
+                XCTAssertEqual(store.historyLoadedQualityBySessionID[sessionID], fails ? .summary : .full)
+            }
+        }
+    }
+
+    func testActiveLatestTurnStillPublishesPartialItems() async {
+        let sessionID = "active-turn-publication"
+        let client = OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: []))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: conversationStore,
+            logStore: LogStore(), clientFactory: { client }
+        )
+        store.selectedSessionID = sessionID
+        let first = HistoryTurnItemsContinuation(
+            turnID: "active", turn: [
+                "id": .string("active"), "status": .string("inProgress"), "updatedAt": .int(200)
+            ],
+            turnIndex: 0, itemOffset: 0, cursor: nil, pageLimit: 50,
+            threadIsActive: true, isLatestTurn: true, hasVisibleUserMessageBefore: false
+        )
+        store.appendHistoryItemEnrichment(
+            page: HistoryMessagesPage(messages: [], itemContinuations: [first]), sessionID: sessionID
+        )
+        await client.waitForHistoryItemRequestCount(1)
+        let second = first.continuing(cursor: "next", loadedItemCount: 1, hasVisibleUserMessage: false)
+        client.resolveHistoryItemRequest(at: 0, with: HistoryTurnItemsPage(
+            messages: [CodexHistoryMessage(
+                role: "assistant", content: "进行中内容", createdAt: Date(timeIntervalSince1970: 100),
+                turnID: "active", itemID: "live", timelineOrdinal: 0
+            )], itemIDs: ["live"], continuation: second
+        ))
+        await client.waitForHistoryItemRequestCount(2)
+        XCTAssertEqual(conversationStore.messages(for: sessionID).map(\.content), ["进行中内容"])
+        client.resolveHistoryItemRequest(at: 1, with: HistoryTurnItemsPage(messages: [], itemIDs: [], continuation: nil))
+        await waitForHistoryItemEnrichmentToFinish(in: store, sessionID: sessionID)
+    }
+
     func testInitialHistoryItemEnrichmentDeduplicatesRepeatedContinuation() async {
         let client = OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: []))
         let conversationStore = ConversationStore()
@@ -146,6 +246,47 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.historyLoadedQualityBySessionID[sessionID], .full)
     }
 
+    func testDeferredLatestTurnPagesDoNotShrinkPublicationBatches() async {
+        let client = OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: []))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: conversationStore,
+            logStore: LogStore(), clientFactory: { client }
+        )
+        let sessionID = "history-deferred-publication-batch"
+        store.selectedSessionID = sessionID
+        let continuations = (0..<2).map { index in
+            HistoryTurnItemsContinuation(
+                turnID: "turn-\(index)", turn: ["id": .string("turn-\(index)"), "status": .string("completed")],
+                turnIndex: index, itemOffset: 0, cursor: nil, pageLimit: 50,
+                threadIsActive: false, isLatestTurn: index == 1, hasVisibleUserMessageBefore: false
+            )
+        }
+        store.appendHistoryItemEnrichment(
+            page: HistoryMessagesPage(messages: [], itemContinuations: continuations), sessionID: sessionID
+        )
+        // 两个 Turn 各六页轮转。最新 Turn 持续暂存时，旧 Turn 仍首批立即、之后每四页发布。
+        for index in 0..<12 {
+            await client.waitForHistoryItemRequestCount(index + 1)
+            let requested = client.requestedItemContinuations[index]
+            let itemID = "\(requested.turnID)-\(requested.itemOffset)"
+            let next = requested.itemOffset < 5
+                ? requested.continuing(cursor: "page-\(requested.itemOffset + 1)", loadedItemCount: 1, hasVisibleUserMessage: false)
+                : nil
+            client.resolveHistoryItemRequest(at: index, with: HistoryTurnItemsPage(
+                messages: [CodexHistoryMessage(
+                    id: itemID, role: "assistant", content: itemID, createdAt: Date(timeIntervalSince1970: 1),
+                    turnID: requested.turnID, itemID: itemID, timelineOrdinal: Int64(requested.itemOffset)
+                )], itemIDs: [itemID], continuation: next
+            ))
+        }
+        await waitForHistoryItemEnrichmentToFinish(in: store, sessionID: sessionID)
+        XCTAssertEqual(client.requestedItemContinuations.map(\.turnID), Array(repeating: ["turn-1", "turn-0"], count: 6).flatMap { $0 })
+        XCTAssertEqual(conversationStore.messages(for: sessionID).count, 12)
+        XCTAssertEqual(conversationStore.historyMergeInvocationCountForTesting, 4)
+        XCTAssertEqual(store.historyLoadedQualityBySessionID[sessionID], .full)
+    }
+
     func testHistoryItemEnrichmentStopsCursorCycleWithoutAuthoritativePrune() async {
         let client = OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: []))
         let conversationStore = ConversationStore()
@@ -169,6 +310,12 @@ extension ConversationDataFlowTests {
             hasVisibleUserMessageBefore: false
         )
         store.historyLoadedQualityBySessionID[sessionID] = .enriching
+        conversationStore.setHistory([
+            CodexHistoryMessage(
+                role: "assistant", content: "末条摘要", createdAt: Date(timeIntervalSince1970: 100),
+                turnID: "turn-cycle", itemID: "summary"
+            )
+        ], sessionID: sessionID)
         store.appendHistoryItemEnrichment(
             page: HistoryMessagesPage(messages: [], itemContinuations: [initial]),
             sessionID: sessionID
@@ -204,7 +351,7 @@ extension ConversationDataFlowTests {
         await waitForHistoryItemEnrichmentToFinish(in: store, sessionID: sessionID)
 
         XCTAssertEqual(client.requestedItemContinuations.count, 2)
-        XCTAssertEqual(conversationStore.messages(for: sessionID).map(\.content), ["A", "B"])
+        XCTAssertEqual(conversationStore.messages(for: sessionID).map(\.content), ["末条摘要"])
         XCTAssertEqual(store.historyLoadedQualityBySessionID[sessionID], .summary)
     }
 
@@ -370,7 +517,7 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.historyItemEnrichmentBySessionID[session.id]?.task)
         XCTAssertEqual(
             store.historyItemEnrichmentBySessionID[session.id]?.bufferedPages.flatMap(\.messages).map(\.content),
-            ["第二页内容"]
+            ["第一页内容", "第二页内容"]
         )
         XCTAssertEqual(store.historyLoadedQualityBySessionID[session.id], .enriching)
         XCTAssertNil(store.selectedSessionID)
@@ -396,7 +543,7 @@ extension ConversationDataFlowTests {
 
         XCTAssertEqual(
             conversationStore.messages(for: session.id).map(\.content),
-            ["首屏文案", "第一页内容"]
+            ["首屏文案"]
         )
         XCTAssertEqual(client.requestedItemContinuations.count, 3)
 
