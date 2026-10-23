@@ -561,7 +561,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertTrue(fixture.store.isTailcatExperimentModeEnabled)
         XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:1")
         XCTAssertEqual(startCallCount, 0)
-        XCTAssertTrue(ManagedConnectionSubscriptionView.showsManagedRecoveryActions(
+        XCTAssertTrue(ManagedConnectionDevicesView.showsManagedRecoveryActions(
             tailcatState: fixture.controller.state,
             connectionFailed: false
         ))
@@ -572,6 +572,70 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(fixture.controller.state, .usingTemporaryRoute(.tailscale))
         XCTAssertFalse(fixture.store.isTailcatExperimentModeEnabled)
         XCTAssertEqual(fixture.store.connectionEndpoint, "http://100.64.0.10:8787")
+    }
+
+    func testManagedConnectionLANHintOnlyForFailedUnsubscribedLANProfiles() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func shows(
+            route: ConnectionProfileRoute? = .lan,
+            failed: Bool = true,
+            confirmedNotSubscribed: Bool = true,
+            dismissedAgo: TimeInterval? = nil
+        ) -> Bool {
+            InitialConnectionSettingsSections.showsManagedConnectionLANHint(
+                route: route,
+                connectionFailed: failed,
+                confirmedNotSubscribed: confirmedNotSubscribed,
+                dismissedAt: dismissedAgo.map { now.addingTimeInterval(-$0) },
+                now: now
+            )
+        }
+
+        XCTAssertTrue(shows())
+        // 只针对局域网档案：Tailscale、托管线路或尚无档案时不提示。
+        XCTAssertFalse(shows(route: .tailscale))
+        XCTAssertFalse(shows(route: .managedTailcat))
+        XCTAssertFalse(shows(route: nil))
+        XCTAssertFalse(shows(failed: false))
+        // 已订阅或订阅状态还没核验完（检查中、失败、待批准）都不提示。
+        XCTAssertFalse(shows(confirmedNotSubscribed: false))
+        // 关闭后 7 天内不再出现，满 7 天再出现。
+        let snooze = InitialConnectionSettingsSections.managedConnectionLANHintSnooze
+        XCTAssertFalse(shows(dismissedAgo: snooze - 60))
+        XCTAssertTrue(shows(dismissedAgo: snooze))
+    }
+
+    func testManagedConnectionEntryOnlyOpensForExplicitBuildFlagOrDebugArgument() {
+        let argument = ManagedConnectionSubscriptionView.debugEntryLaunchArgument
+
+        // App Store 提交构建：Info.plist 展开为空或 NO，Release 不读取调试参数。
+        XCTAssertFalse(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: "",
+            launchArguments: [argument],
+            allowsDebugLaunchArgument: false
+        ))
+        XCTAssertFalse(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: "NO",
+            launchArguments: [],
+            allowsDebugLaunchArgument: true
+        ))
+        XCTAssertFalse(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: nil,
+            launchArguments: [],
+            allowsDebugLaunchArgument: false
+        ))
+        // 内部 TestFlight 构建显式写入 YES。
+        XCTAssertTrue(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: "YES",
+            launchArguments: [],
+            allowsDebugLaunchArgument: false
+        ))
+        // Debug 启动参数保持原行为，供 UI 测试打开入口。
+        XCTAssertTrue(ManagedConnectionSubscriptionView.isEntryVisible(
+            infoPlistValue: "",
+            launchArguments: [argument],
+            allowsDebugLaunchArgument: true
+        ))
     }
 
     func testManagedRouteWithoutAddressStaysFailClosedAndOffersManualFallback() async throws {
@@ -589,7 +653,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(fixture.controller.state, .needsAddress)
         XCTAssertTrue(fixture.store.isTailcatExperimentModeEnabled)
         XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:1")
-        XCTAssertTrue(ManagedConnectionSubscriptionView.showsManagedRecoveryActions(
+        XCTAssertTrue(ManagedConnectionDevicesView.showsManagedRecoveryActions(
             tailcatState: fixture.controller.state,
             connectionFailed: false
         ))

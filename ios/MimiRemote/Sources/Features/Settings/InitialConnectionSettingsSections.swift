@@ -179,6 +179,9 @@ struct InitialConnectionSettingsSections: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var tailcatController: TailcatExperimentController
+    /// 只在托管入口可见时读取；快照测试不注入它，入口也不会显示。
+    @EnvironmentObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
+    @AppStorage("managedConnection.lanHintDismissedAt") private var managedLANHintDismissedAt: Double = 0
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @ScaledMetric(relativeTo: .body) private var profileTitlePointSize = 17.0
     @ScaledMetric(relativeTo: .subheadline) private var profileDetailPointSize = 15.0
@@ -416,6 +419,7 @@ struct InitialConnectionSettingsSections: View {
             }
 
             connectionErrorMessageRow(displayErrorMessage, tokens: tokens)
+            managedConnectionLANHintRows(tokens: tokens)
 
             routeStatusRow(tokens: tokens)
             connectionMethodRows(tokens: tokens)
@@ -781,7 +785,8 @@ struct InitialConnectionSettingsSections: View {
     @ViewBuilder
     private func connectionMethodRows(tokens: ThemeTokens) -> some View {
         if ManagedConnectionSubscriptionView.isEntryVisible {
-            NavigationLink(value: SettingsDestination.managedConnection) {
+            // 设备页只进线路与设备；购买与订阅在「我的」（#891）。
+            NavigationLink(value: SettingsDestination.managedConnectionDevices) {
                 ConnectionRowLabel(
                     title: L10n.text("ui.managed_subscription_title"),
                     value: appStore.activeConnectionProfile?.connectionRoute.isManaged == true
@@ -1279,6 +1284,78 @@ struct InitialConnectionSettingsSections: View {
                 .settingsRow(.descriptive)
                 .accessibilityIdentifier("settings.connection.error")
         }
+    }
+
+    /// 局域网档案连不上时（常见于出门用流量），提示一次可以开通托管连接（#894）。
+    /// 只按连接失败判断，不探测网络类型；关闭后 7 天内不再出现。
+    @ViewBuilder
+    private func managedConnectionLANHintRows(tokens: ThemeTokens) -> some View {
+        if showsManagedConnectionLANHint {
+            NavigationLink(value: SettingsDestination.managedConnection) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L10n.text("ui.managed_lan_hint_message"))
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(L10n.text("ui.managed_lan_hint_action"))
+                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .foregroundStyle(tokens.accent)
+                }
+                .settingsRow(.descriptive)
+            }
+            .accessibilityIdentifier("settings.connection.managedLANHint")
+
+            Button(L10n.text("ui.managed_lan_hint_dismiss")) {
+                managedLANHintDismissedAt = Date().timeIntervalSince1970
+            }
+            .font(themeStore.uiFont(.footnote))
+            .foregroundStyle(tokens.secondaryText)
+            .settingsRow()
+            .accessibilityIdentifier("settings.connection.managedLANHint.dismiss")
+        }
+    }
+
+    private var showsManagedConnectionLANHint: Bool {
+        // 入口不可见时不读订阅状态：快照与默认 Release 构建都不注入、也不需要它。
+        guard ManagedConnectionSubscriptionView.isEntryVisible else { return false }
+        let connectionFailed: Bool
+        if case .failed = appStore.connectionStatus, displayErrorMessage != nil {
+            connectionFailed = true
+        } else {
+            connectionFailed = false
+        }
+        // 冷启动和回前台时订阅状态会经过检查中；只有确认未订阅（含已过期、撤销）才提示，
+        // 避免已订阅用户在核验完成前短暂看到开通提示。待批准的购买也不再打扰。
+        let confirmedNotSubscribed: Bool
+        switch managedConnectionEntitlementStore.status {
+        case .available, .expired, .revoked:
+            confirmedNotSubscribed = true
+        case .loading, .resolving, .failed, .pending, .entitled:
+            confirmedNotSubscribed = false
+        }
+        return Self.showsManagedConnectionLANHint(
+            route: appStore.activeConnectionProfile?.connectionRoute,
+            connectionFailed: connectionFailed,
+            confirmedNotSubscribed: confirmedNotSubscribed,
+            dismissedAt: managedLANHintDismissedAt > 0
+                ? Date(timeIntervalSince1970: managedLANHintDismissedAt)
+                : nil,
+            now: Date()
+        )
+    }
+
+    static let managedConnectionLANHintSnooze: TimeInterval = 7 * 24 * 60 * 60
+
+    static func showsManagedConnectionLANHint(
+        route: ConnectionProfileRoute?,
+        connectionFailed: Bool,
+        confirmedNotSubscribed: Bool,
+        dismissedAt: Date?,
+        now: Date
+    ) -> Bool {
+        guard route == .lan, connectionFailed, confirmedNotSubscribed else { return false }
+        guard let dismissedAt else { return true }
+        return now.timeIntervalSince(dismissedAt) >= managedConnectionLANHintSnooze
     }
 
     /// 「添加电脑」页只显示本轮添加流程自己的反馈。

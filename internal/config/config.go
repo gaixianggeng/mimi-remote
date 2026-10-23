@@ -155,12 +155,15 @@ type DeepSeekConfig struct {
 	MaxConcurrentSessions int `json:"max_concurrent_sessions,omitempty"`
 }
 
-// TailcatConfig 只保存实验开关和安装期覆盖项。连接地址、节点私钥和
+// TailcatConfig 保存实验开关、中继与模式恢复记录。连接地址、节点私钥和
 // 已配对客户端都保存在独立的 0600 状态文件中，不能进入主配置或日志。
 type TailcatConfig struct {
-	Enabled    bool   `json:"enabled"`
-	SidecarBin string `json:"sidecar_bin,omitempty"`
-	DERPMapURL string `json:"derp_map_url,omitempty"`
+	Enabled            bool   `json:"enabled"`
+	SidecarBin         string `json:"sidecar_bin,omitempty"`
+	DERPMapURL         string `json:"derp_map_url,omitempty"`
+	ManagedDERPMapURL  string `json:"managed_derp_map_url,omitempty"`
+	Mode               string `json:"mode,omitempty"`
+	PreviousDERPMapURL string `json:"previous_derp_map_url,omitempty"`
 }
 
 // NormalizeTailcatDERPMapURL 校验用户配置的 DERP Map 地址。空值表示恢复
@@ -906,7 +909,7 @@ func (c Config) Validate() error {
 			return fmt.Errorf("deepseek.max_concurrent_sessions 必须大于 0")
 		}
 	}
-	if _, err := NormalizeTailcatDERPMapURL(c.Tailcat.DERPMapURL); err != nil {
+	if err := c.Tailcat.Validate(); err != nil {
 		return err
 	}
 	switch normalizeRuntimeType(c.Runtime.Type) {

@@ -44,6 +44,9 @@
 	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<!-- 只有内部 TestFlight 发布显式传入 MIMI_MANAGED_CONNECTION_ENTRY=YES 时才显示托管连接入口；未设置时展开为空，入口隐藏（#887）。 -->
+	<key>MimiManagedConnectionEntry</key>
+	<string>$(MIMI_MANAGED_CONNECTION_ENTRY)</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- iOS 27 上 NSAllowsLocalNetworking 仍会拦截 Tailscale 裸 IP HTTP。系统层允许 HTTP，应用层再只放行本机、局域网和 Tailscale 地址。 -->
