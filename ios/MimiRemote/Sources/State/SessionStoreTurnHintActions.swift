@@ -1,21 +1,27 @@
 import Foundation
 
-/// 用户点卡片时捕获的不可变目标。selectionLease 同时绑定主机、连接代次、项目和会话，
-/// identity 再绑定具体 turn/item，避免切换页面后把动作发到另一条会话。
+/// 用户点卡片时捕获的不可变目标。selectionLease 绑定主机、项目和会话，connectionGeneration
+/// 绑定当前前台 Socket；identity 再绑定具体 turn/item，避免页面切换或重连后误发动作。
 struct ConversationTurnHintActionTarget {
     let submissionContext: TurnSubmissionContext
+    let connectionGeneration: Int
     let identity: ConversationTurnHintIdentity
     let sessionID: SessionID
 
     var hostScope: HostScope { submissionContext.hostScope }
     var selectionLease: SessionSelectionLease { submissionContext.selectionLease }
 
-    init?(submissionContext: TurnSubmissionContext, message: ConversationMessage) {
+    init?(
+        submissionContext: TurnSubmissionContext,
+        connectionGeneration: Int,
+        message: ConversationMessage
+    ) {
         guard let session = submissionContext.session,
               let identity = ConversationTurnHintIdentity(message: message) else {
             return nil
         }
         self.submissionContext = submissionContext
+        self.connectionGeneration = connectionGeneration
         self.identity = identity
         sessionID = session.id
     }
@@ -23,11 +29,13 @@ struct ConversationTurnHintActionTarget {
     func isCurrent(
         hostScope currentHostScope: HostScope,
         selectionLease currentSelectionLease: SessionSelectionLease,
+        connectionGeneration currentConnectionGeneration: Int,
         session: AgentSession?,
         messages: [ConversationMessage]
     ) -> Bool {
         guard hostScope == currentHostScope,
               selectionLease == currentSelectionLease,
+              connectionGeneration == currentConnectionGeneration,
               let session,
               session.id == sessionID,
               session.allowsDirectInput,
@@ -46,6 +54,7 @@ extension SessionStore {
         let context = captureTurnSubmissionContext()
         guard let target = ConversationTurnHintActionTarget(
             submissionContext: context,
+            connectionGeneration: webSocketConnectionGeneration,
             message: message
         ), isTurnHintActionTargetCurrent(target) else {
             return nil
@@ -59,6 +68,7 @@ extension SessionStore {
         return target.isCurrent(
             hostScope: appStore.activeHostScope,
             selectionLease: currentSelectionLease(),
+            connectionGeneration: webSocketConnectionGeneration,
             session: session,
             messages: conversationStore.messages(for: target.sessionID)
         )

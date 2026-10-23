@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isTurnHintItem, toolUseItem } from "../src/claude/tools.ts";
+import { completeToolItem, isTurnHintItem, toolUseItem, unfinishedToolItem } from "../src/claude/tools.ts";
 import type { JsonValue } from "../src/protocol/codex/serde_json/JsonValue.ts";
 
 describe("Claude turn hint tools", () => {
@@ -34,5 +34,22 @@ describe("Claude turn hint tools", () => {
     const malformedWrapUp = toolUseItem("empty-wrap", "mcp__ccd_turn__wrap_up", { actions: [] }, "session-1");
     expect(isTurnHintItem(acceptance)).toBe(false);
     expect(isTurnHintItem(malformedWrapUp)).toBe(false);
+  });
+
+  test("failed and interrupted hint tools remain ordinary tool calls", () => {
+    const call = toolUseItem(
+      "failed-wrap",
+      "mcp__ccd_turn__wrap_up",
+      { recap: "done", ask: "next?" },
+      "session-1",
+    );
+    if (call.type !== "mcpToolCall") throw new Error("expected MCP tool call");
+    expect(isTurnHintItem(call)).toBe(true);
+    const failed = completeToolItem(call, { text: "rejected", images: [], isError: true });
+    expect(failed.type === "mcpToolCall" && [failed.status, failed.error?.message]).toEqual(["failed", "rejected"]);
+    expect(isTurnHintItem(failed)).toBe(false);
+    expect(isTurnHintItem({ ...call, status: "completed", error: { message: "inconsistent error" } })).toBe(false);
+    expect(isTurnHintItem(unfinishedToolItem(call, false))).toBe(false);
+    expect(isTurnHintItem(unfinishedToolItem(call, true))).toBe(true);
   });
 });

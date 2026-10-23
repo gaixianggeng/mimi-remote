@@ -270,4 +270,17 @@ describe("messagesToTurns", () => {
     expect(hints[1]!.type === "mcpToolCall" && hints[1]!.arguments).toEqual(wrapUp);
     expect(hints[2]!.type === "mcpToolCall" && hints[2]!.arguments).toEqual(legacySpawn);
   });
+
+  test("summary view drops failed and interrupted turn hints", () => {
+    const failed = translate([
+      user("go"),
+      assistant([{ type: "tool_use", id: "failed", name: "mcp__ccd_turn__wrap_up", input: { recap: "done" } }]),
+      user([{ type: "tool_result", tool_use_id: "failed", content: "rejected", is_error: true }]),
+      assistant([{ type: "tool_use", id: "interrupted", name: "mcp__ccd_session__start_session", input: { title: "Follow-up" } }]),
+    ])[0]!;
+
+    const fullHints = failed.items.filter((item) => item.type === "mcpToolCall");
+    expect(fullHints.map((item) => item.type === "mcpToolCall" && item.status)).toEqual(["failed", "failed"]);
+    expect(summarizeTurn(failed).items.filter((item) => item.type === "mcpToolCall")).toEqual([]);
+  });
 });

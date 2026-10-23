@@ -173,7 +173,14 @@ function subagentLabel(args: Args): string {
  * 它们是给用户看的交互卡片，不是执行过程，所以 summary 视图也要保留，客户端按 server/tool 渲染。
  */
 export function isTurnHintItem(item: ThreadItem): boolean {
-  if (item.type !== "mcpToolCall" || !item.arguments || typeof item.arguments !== "object" || Array.isArray(item.arguments)) {
+  if (
+    item.type !== "mcpToolCall" ||
+    (item.status !== "completed" && item.status !== "inProgress") ||
+    item.error !== null ||
+    !item.arguments ||
+    typeof item.arguments !== "object" ||
+    Array.isArray(item.arguments)
+  ) {
     return false;
   }
   const args = item.arguments;

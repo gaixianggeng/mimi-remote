@@ -62,6 +62,52 @@ final class ConversationTurnHintTests: XCTestCase {
         XCTAssertNil(ConversationTurnHint(item: hintItem(
             server: "other", tool: "wrap_up", arguments: ["recap": .string("done")]
         )))
+        XCTAssertNil(ConversationTurnHint(item: hintItem(
+            server: "ccd_turn", tool: "wrap_up", status: "failed", arguments: ["recap": .string("done")]
+        )))
+        XCTAssertNil(ConversationTurnHint(item: hintItem(
+            server: "ccd_session",
+            tool: "start_session",
+            status: "interrupted",
+            arguments: ["title": .string("Follow-up")]
+        )))
+        var inconsistent = hintItem(
+            server: "ccd_turn",
+            tool: "wrap_up",
+            arguments: ["recap": .string("done")]
+        )
+        inconsistent["error"] = .object(["message": .string("failed")])
+        XCTAssertNil(ConversationTurnHint(item: inconsistent))
+        XCTAssertNotNil(ConversationTurnHint(item: hintItem(
+            server: "ccd_turn", tool: "wrap_up", status: "inProgress", arguments: ["recap": .string("done")]
+        )))
+    }
+
+    func testFailedHintKeepsOrdinaryToolFailurePresentation() throws {
+        let item = hintItem(
+            server: "ccd_turn",
+            tool: "wrap_up",
+            status: "failed",
+            arguments: ["recap": .string("done"), "ask": .string("continue?")]
+        )
+        let payload = try XCTUnwrap(ConversationActivityPayload(item: item))
+
+        XCTAssertNil(payload.turnHint)
+        XCTAssertEqual(payload.status, "failed")
+        XCTAssertTrue(payload.isFailure)
+        let message = ConversationMessage(
+            turnID: "turn-failed",
+            itemID: "hint-failed",
+            role: .system,
+            kind: payload.messageKind,
+            content: payload.detailText(from: item),
+            activityPayload: payload
+        )
+        let rows = ConversationTimelineItemBuilder.items(from: [message], showsDetailedTranscript: true)
+        guard case .processGroup = try XCTUnwrap(rows.first),
+              case .activity = try XCTUnwrap(rows.last) else {
+            return XCTFail("failed hint must use the ordinary tool failure timeline")
+        }
     }
 
     func testLiveAndHistoryProjectionProduceTheSameCardPayload() async throws {
@@ -136,7 +182,7 @@ final class ConversationTurnHintTests: XCTestCase {
         XCTAssertFalse(dismissed.begin(actionIndex: 0))
     }
 
-    func testActionTargetRejectsHostSessionTurnAndReadOnlyChanges() throws {
+    func testActionTargetRejectsHostConnectionSessionTurnAndReadOnlyChanges() throws {
         let host = HostScope(profileID: "host-a", installationID: "install-a", generation: 7)
         let session = makeSession()
         let lease = SessionSelectionLease(
@@ -154,13 +200,21 @@ final class ConversationTurnHintTests: XCTestCase {
         )
         let target = try XCTUnwrap(ConversationTurnHintActionTarget(
             submissionContext: context,
+            connectionGeneration: 21,
             message: message
         ))
 
-        XCTAssertTrue(target.isCurrent(hostScope: host, selectionLease: lease, session: session, messages: [message]))
+        XCTAssertTrue(target.isCurrent(
+            hostScope: host,
+            selectionLease: lease,
+            connectionGeneration: 21,
+            session: session,
+            messages: [message]
+        ))
         XCTAssertFalse(target.isCurrent(
             hostScope: HostScope(profileID: "host-a", installationID: "install-a", generation: 8),
             selectionLease: lease,
+            connectionGeneration: 21,
             session: session,
             messages: [message]
         ))
@@ -169,36 +223,49 @@ final class ConversationTurnHintTests: XCTestCase {
             selectionLease: SessionSelectionLease(
                 hostScope: host, generation: 12, projectID: session.projectID, sessionID: session.id
             ),
+            connectionGeneration: 21,
             session: session,
             messages: [message]
         ))
         XCTAssertFalse(target.isCurrent(
             hostScope: host,
             selectionLease: lease,
+            connectionGeneration: 22,
+            session: session,
+            messages: [message]
+        ))
+        XCTAssertFalse(target.isCurrent(
+            hostScope: host,
+            selectionLease: lease,
+            connectionGeneration: 21,
             session: makeSession(status: "running"),
             messages: [message]
         ))
         XCTAssertFalse(target.isCurrent(
             hostScope: host,
             selectionLease: lease,
+            connectionGeneration: 21,
             session: makeSession(canAcceptDirectInput: false),
             messages: [message]
         ))
         XCTAssertFalse(target.isCurrent(
             hostScope: host,
             selectionLease: lease,
+            connectionGeneration: 21,
             session: session,
             messages: [message, ConversationMessage(turnID: "turn-2", role: .user, content: "new request")]
         ))
         XCTAssertFalse(target.isCurrent(
             hostScope: host,
             selectionLease: lease,
+            connectionGeneration: 21,
             session: session,
             messages: [message, ConversationMessage(turnID: "turn-2", role: .assistant, content: "newer turn")]
         ))
         XCTAssertFalse(target.isCurrent(
             hostScope: host,
             selectionLease: lease,
+            connectionGeneration: 21,
             session: session,
             messages: [message, turnHintMessage(itemID: "hint-2", turnID: "turn-2")]
         ))
@@ -211,6 +278,7 @@ final class ConversationTurnHintTests: XCTestCase {
     private func hintItem(
         server: String,
         tool: String,
+        status: String = "completed",
         arguments: [String: CodexAppServerJSONValue]
     ) -> [String: CodexAppServerJSONValue] {
         [
@@ -218,7 +286,7 @@ final class ConversationTurnHintTests: XCTestCase {
             "id": .string("hint-item"),
             "server": .string(server),
             "tool": .string(tool),
-            "status": .string("completed"),
+            "status": .string(status),
             "arguments": .object(arguments)
         ]
     }

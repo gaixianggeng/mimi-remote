@@ -42,7 +42,11 @@ struct ConversationTurnHint: Codable, Hashable {
     }
 
     init?(item: [String: CodexAppServerJSONValue]) {
+        // 失败或中断的同名工具仍按普通 MCP 失败展示，不能降级成可操作卡片。
         guard item["type"]?.stringValue == "mcpToolCall",
+              let status = item["status"]?.stringValue,
+              status == "completed" || status == "inProgress",
+              !Self.hasError(item["error"]),
               let server = item["server"]?.stringValue,
               let tool = item["tool"]?.stringValue,
               let arguments = item["arguments"]?.objectValue else {
@@ -102,6 +106,12 @@ struct ConversationTurnHint: Codable, Hashable {
         guard let text = value?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty else { return nil }
         return text
+    }
+
+    private static func hasError(_ value: CodexAppServerJSONValue?) -> Bool {
+        guard let value else { return false }
+        if case .null = value { return false }
+        return true
     }
 }
 
