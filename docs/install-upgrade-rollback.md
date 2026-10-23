@@ -44,6 +44,8 @@ Windows 防火墙规则和 LAN 监听默认不启用。只有用户明确选择 
 
 辅助程序的身份、已配对设备和本机控制通道 `control.sock` 保存在 `%APPDATA%\mimi-remote\tailcat`，由用户配置文件的 ACL 保护；控制通道使用 Windows 10 1803 起内置的 AF_UNIX socket。agentd 停止或重启时，通过控制通道让辅助程序正常退出。计划任务和辅助程序各自的 kill-on-close Job Object 负责兜底，agentd 异常退出也不会留下进程。升级和卸载前，安装器会等待辅助程序退出，必要时强制结束。`agentd doctor` 的 `tailcat` 项报告辅助程序是否存在及其版本，缺失时重新运行同版本安装器。关闭 Tailcat 会断开正在使用它的设备，不影响 Tailscale 和 LAN 连接。
 
+电脑通过 Windows 系统代理上网时（“设置 → 网络和 Internet → 代理”，本机代理软件开启“系统代理”后也写在这里），Codex 与 Claude 适配器不会自己读取这项设置（#884）。所以 agentd 启动时，会在 `127.0.0.1` 上开一个带随机凭据的本机中转，并把它作为 `HTTPS_PROXY` / `HTTP_PROXY` 交给这两个子进程；本机地址经 `NO_PROXY` 保持直连。中转在每个连接建立时读取当时的系统代理：支持不需要认证的手动代理及其例外列表，也支持代理自动配置脚本（PAC）；系统代理关闭时直连。因此代理软件晚于 agentd 启动，或中途开关系统代理，都无需重启服务。不使用“自动检测设置”（WPAD）。本机中转不处理上游代理返回的 407 认证挑战，因此不支持需要 NTLM、Negotiate 或其他挑战认证的上游代理；这类环境应在 `codex.env` 或 `claude.env` 中配置可直接使用的代理。`agentd doctor` 的 `windows-system-proxy` 项会分别说明 Codex 与 Claude 的当前联网方式，不显示代理地址。如果在 agentd 配置的 `codex.env`、`claude.env` 中自行设置了 `HTTPS_PROXY`、`HTTP_PROXY`、`ALL_PROXY` 或 `NO_PROXY`，agentd 以这些设置为准，不再使用中转；想让它们始终直连，就设置 `"NO_PROXY": "*"`。
+
 常用命令：
 
 ```powershell
