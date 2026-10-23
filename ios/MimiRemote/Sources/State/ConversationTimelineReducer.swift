@@ -361,6 +361,12 @@ struct ConversationTimelineReducer {
         if existingIsTerminal, !snapshotIsTerminal {
             return true
         }
+        // 历史没有本地事件 revision。已经结束的正文仍能收敛尚在 streaming 的气泡，
+        // 但不能覆盖已由实时终态确认的内容与失败/取消状态。
+        if !existingIsTerminal, existing.role == .assistant, snapshot.role == .assistant,
+           existing.sendStatus == .sending, snapshot.sendStatus == .confirmed {
+            return false
+        }
         if existing.revision != nil, snapshot.revision == nil {
             return true
         }
