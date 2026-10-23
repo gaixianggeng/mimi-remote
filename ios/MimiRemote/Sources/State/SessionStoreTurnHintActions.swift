@@ -142,7 +142,9 @@ extension SessionStore {
             projectID: parent.projectID,
             payload: payload,
             resume: nil,
-            clientMessageID: UUID().uuidString,
+            // proposal ID 是 Bridge 签发的 UUID；跨点击复用它，让本地回显与服务端首轮
+            // 在响应丢失后的重试中仍是同一次提交。
+            clientMessageID: proposalID,
             replacingLocalDraft: nil,
             submissionContext: target.submissionContext,
             ifCurrent: target.selectionLease,

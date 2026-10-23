@@ -2,9 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createRouter, turnHintsEnabledFromEnvironment } from "../src/app.ts";
+import { createApp, createRouter, turnHintsEnabledFromEnvironment } from "../src/app.ts";
 import { Overlay } from "../src/claude/overlay.ts";
+import type { ClaudeSessions } from "../src/claude/sdk.ts";
 import { Session } from "../src/session/session.ts";
+import { ScriptedQuery } from "./support/scripted-query.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -65,7 +67,16 @@ describe("Mimi task proposals", () => {
       title: "Follow-up",
       prompt: "Continue it",
     });
-    const router = createRouter({ stateDir: state, log: () => {}, turnHintsEnabled: true });
+    const transcriptSessions = new Set<string>();
+    const sessions: ClaudeSessions = {
+      list: async () => [],
+      info: async (sessionId) => transcriptSessions.has(sessionId)
+        ? ({ sessionId, cwd: "/repo", lastModified: Date.now() } as any)
+        : undefined,
+      messages: async () => [],
+      rename: async () => {},
+    };
+    const router = createRouter({ stateDir: state, log: () => {}, turnHintsEnabled: true, sessions });
     const params = {
       cwd: "/repo",
       mimiTaskProposal: { id: proposalID, parentThreadId: "parent-1" },
@@ -80,6 +91,14 @@ describe("Mimi task proposals", () => {
     expect(firstThread.spawnedFromThreadId).toBe("parent-1");
     expect(firstThread.parentThreadId).toBeNull();
     expect(firstThread.canAcceptDirectInput).toBe(true);
+    expect((first.result as any).mimiTaskProposal.initialTurnStarted).toBe(false);
+    expect((second.result as any).mimiTaskProposal.initialTurnStarted).toBe(false);
+
+    transcriptSessions.add(firstThread.id);
+    const completedRetry = await call(router, "thread/start", params);
+    if (!("result" in completedRetry)) throw new Error("thread/start retry failed");
+    expect((completedRetry.result as any).thread.id).toBe(firstThread.id);
+    expect((completedRetry.result as any).mimiTaskProposal.initialTurnStarted).toBe(true);
 
     const wrongParent = await call(router, "thread/start", {
       cwd: "/repo",
@@ -91,5 +110,58 @@ describe("Mimi task proposals", () => {
     });
     expect(wrongParent).toMatchObject({ error: { code: -32602 } });
     expect(wrongCWD).toMatchObject({ error: { code: -32602 } });
+  });
+
+  test("adapter restart opens a consumed child as a resumable transcript", async () => {
+    const state = await temporaryDirectory();
+    const overlay = new Overlay(path.join(state, "overlay.json"), undefined);
+    const proposalID = await overlay.recordTaskProposal("parent-1", "/repo", {
+      title: "Follow-up",
+      prompt: "Continue it",
+    });
+    await overlay.consumeTaskProposal(proposalID, "parent-1", "/repo", "child-existing");
+    const sessions: ClaudeSessions = {
+      list: async () => [],
+      info: async (sessionId) => sessionId === "child-existing"
+        ? ({ sessionId, cwd: "/repo", customTitle: "Existing child", lastModified: Date.now() } as any)
+        : undefined,
+      messages: async () => [],
+      rename: async () => {},
+    };
+    let queryOptions: Record<string, unknown> | undefined;
+    const app = createApp({
+      stateDir: state,
+      log: () => {},
+      turnHintsEnabled: true,
+      sessions,
+      probeClaudeCode: async () => ({ status: "ok", version: "9.9.9" }),
+      startQuery: (({ prompt, options }: { prompt: AsyncIterable<unknown>; options: Record<string, unknown> }) => {
+        queryOptions = options;
+        const query = new ScriptedQuery();
+        query.attach(prompt);
+        return query;
+      }) as never,
+    });
+
+    try {
+      const started = await call(app.router, "thread/start", {
+        cwd: "/repo",
+        mimiTaskProposal: { id: proposalID, parentThreadId: "parent-1" },
+      });
+      if (!("result" in started)) throw new Error("thread/start retry failed");
+      expect((started.result as any).mimiTaskProposal.initialTurnStarted).toBe(true);
+
+      const turn = await call(app.router, "turn/start", {
+        threadId: "child-existing",
+        input: [{ type: "text", text: "next turn", text_elements: [] }],
+        approvalPolicy: "never",
+        sandbox: "dangerFullAccess",
+      });
+      if (!("result" in turn)) throw new Error("turn/start failed");
+      expect(queryOptions?.resume).toBe("child-existing");
+      expect(queryOptions?.sessionId).toBeUndefined();
+    } finally {
+      await app.manager.closeAll();
+    }
   });
 });

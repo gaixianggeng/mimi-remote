@@ -323,6 +323,7 @@ final class ConversationTurnHintTests: XCTestCase {
             id: "proposal-trusted",
             parentThreadID: parent.id
         ))
+        XCTAssertEqual(request.clientMessageID, "proposal-trusted")
 
         let child = AgentSession(
             id: "child-session",
@@ -351,6 +352,116 @@ final class ConversationTurnHintTests: XCTestCase {
         XCTAssertEqual(storedChild.spawnedFromThreadID, parent.id)
         XCTAssertNil(storedChild.parentThreadID)
         XCTAssertTrue(storedChild.allowsDirectInput)
+    }
+
+    func testTrustedTaskRetryOpensStartedChildWithoutDuplicateLocalPrompt() async throws {
+        let project = AgentProject(id: "project-hint", name: "Project", path: "/workspace")
+        let parent = makeSession()
+        let gate = TurnHintTaskGate()
+        let client = TurnHintTaskClient(projects: [project], sessions: [parent], gate: gate)
+        let store = makeTurnHintStore(project: project, parent: parent, client: client)
+        let message = try installTaskProposal(
+            proposalID: "proposal-retry",
+            sessionID: parent.id,
+            in: store.conversationStore
+        )
+        let target = try XCTUnwrap(store.captureTurnHintActionTarget(for: message))
+
+        let start = Task { @MainActor in
+            await store.sendTurnHintAction(.startTask, target: target)
+        }
+        await gate.waitForModelRequest()
+        await gate.resolveModels([])
+        await gate.waitForCreateRequest()
+        let capturedRequest = await gate.createRequest()
+        let request = try XCTUnwrap(capturedRequest)
+        XCTAssertEqual(request.clientMessageID, "proposal-retry")
+
+        let child = AgentSession(
+            id: "child-retry",
+            projectID: project.id,
+            project: project.name,
+            dir: project.path,
+            title: "Follow-up",
+            status: "running",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "child-retry",
+            createdAt: nil,
+            updatedAt: nil,
+            canAcceptDirectInput: true,
+            spawnedFromThreadID: parent.id
+        )
+        await gate.resolveCreate(.success(CreateSessionResponse(
+            session: child,
+            wsURL: "ws://127.0.0.1/session/child-retry",
+            initialInputAlreadyStarted: true
+        )))
+
+        let didStart = await start.value
+        XCTAssertTrue(didStart)
+        XCTAssertEqual(store.selectedSessionID, child.id)
+        XCTAssertFalse(store.conversationStore.messages(for: child.id).contains { message in
+            message.role == .user && message.content == "Continue in a new session"
+        })
+    }
+
+    func testRuntimeDoesNotResendInitialTurnWhenProposalChildAlreadyStarted() async throws {
+        let project = AgentProject(id: "project-hint", name: "Project", path: "/workspace")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test",
+            runtimeProvider: "claude",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    channels: [makeClaudeChannelMetadata()]
+                )
+            }
+        )
+        let create = Task {
+            try await runtime.createSession(CreateSessionRequest(
+                projectID: project.id,
+                projectPath: project.path,
+                projectName: project.name,
+                prompt: "Continue in a new session",
+                turnOptions: CodexAppServerTurnOptions(runtimeProvider: "claude"),
+                resumeID: "",
+                clientMessageID: "proposal-started",
+                mimiTaskProposal: MimiTaskProposalRequest(
+                    id: "proposal-started",
+                    parentThreadID: "session-hint"
+                )
+            ))
+        }
+
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-claude","platformFamily":"macos"}"#
+        )
+        let threadStart = try await waitForFakeAppServerRequest(transport, method: "thread/start")
+        XCTAssertEqual(threadStart.params?.objectValue?["mimiTaskProposal"], .object([
+            "id": .string("proposal-started"),
+            "parentThreadId": .string("session-hint")
+        ]))
+        transportResponse(
+            transport,
+            id: threadStart.id,
+            result: #"{"thread":{"id":"child-started","sessionId":"child-started","preview":"Continue in a new session","ephemeral":false,"modelProvider":"anthropic","createdAt":1780490100,"updatedAt":1780490101,"status":{"type":"idle"},"path":null,"cwd":"/workspace","cliVersion":"0.0.0","source":"claude","threadSource":"user","name":"Follow-up","turns":[]},"mimiTaskProposal":{"initialTurnStarted":true}}"#
+        )
+
+        let response = try await create.value
+        XCTAssertEqual(response.initialInputAlreadyStarted, true)
+        XCTAssertFalse(response.session.isRunning)
+        let sentMessages = await transport.sentMessages()
+        let methods = sentMessages.compactMap { text in
+            try? decodeAppServerRequest(text).method
+        }
+        XCTAssertFalse(methods.contains("turn/start"))
     }
 
     func testTaskProposalRevalidatesCapturedTargetAfterModelAwait() async throws {

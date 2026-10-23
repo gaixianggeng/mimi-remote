@@ -197,6 +197,7 @@ extension SessionStore {
             guard appStore.activeHostScope == hostScope else { return false }
             let responseSession = self.session(response.session, in: workspace)
             let queuesInitialInput = response.requiresQueuedInitialInput == true
+            let initialInputAlreadyStarted = response.initialInputAlreadyStarted == true
             if let clientMessageID {
                 migratePendingPermissionTurnBoundary(
                     clientMessageID: clientMessageID,
@@ -208,11 +209,15 @@ extension SessionStore {
                optimisticSessionID != responseSession.id {
                 // 新建会话会从 local:<project>:<client_message_id> 切换到后端 session_id，
                 // 这里迁移前台活动和本地气泡，保持列表/对话 store 解耦。
-                if let clientMessageID {
+                if let clientMessageID, !initialInputAlreadyStarted {
                     conversationStore.moveLocalEcho(clientMessageID: clientMessageID, from: optimisticSessionID, to: responseSession.id)
                     moveSessionListProjection(from: optimisticSessionID, to: responseSession.id, clientMessageID: clientMessageID)
                     migrateForegroundActivity(from: optimisticSessionID, to: responseSession.id)
                     migrateRuntimeActivity(from: optimisticSessionID, to: responseSession.id)
+                } else if initialInputAlreadyStarted {
+                    // Bridge 已有活动 turn 或 transcript 时，这次请求只负责重新打开 child。
+                    // 丢弃重试期间的占位回显，不能把原 prompt 再伪装成一条新消息。
+                    clearForegroundActivity(sessionID: optimisticSessionID)
                 } else {
                     moveSessionRecentActivityProjection(
                         from: optimisticSessionID,
@@ -296,7 +301,7 @@ extension SessionStore {
 
             // 非队列发送在 create/resume 响应中已经拿到 turn ACK，历史补拉不应延迟确认。
             // 原生队列响应只代表会话已准备好，仍须等待真正发送输入后的 ACK。
-            if !prompt.isEmpty, !queuesInitialInput {
+            if !prompt.isEmpty, !queuesInitialInput, !initialInputAlreadyStarted {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: responseSession.id, status: .sent)
                     conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: responseSession.id)
@@ -323,6 +328,9 @@ extension SessionStore {
                 // 用户刚从历史列表进入时可复用已有快照，避免同一会话立刻再打一次 full。
                 didLoadInitialHistory = true
             } else if resume != nil {
+                didLoadInitialHistory = await loadHistoryIfNeeded(for: responseSession)
+            } else if initialInputAlreadyStarted, !responseSession.isRunning {
+                // 已完成的首次任务有 transcript，重试只打开同一 child，并立即恢复其权威历史。
                 didLoadInitialHistory = await loadHistoryIfNeeded(for: responseSession)
             } else if payload.isEmpty {
                 // 新建空 thread 在首个 turn 前没有 rollout。把当前空快照标成已加载，前台恢复时

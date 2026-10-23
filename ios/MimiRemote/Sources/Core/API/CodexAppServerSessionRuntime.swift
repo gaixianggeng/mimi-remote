@@ -974,7 +974,15 @@ actor CodexAppServerSessionRuntime {
         guard let thread = threadObject(from: result) else {
             throw AgentAPIError.invalidResponse
         }
-        var session = try agentSession(from: thread, projects: projects, fallbackProject: project, forceRunning: true)
+        let proposalInitialTurnStarted = payload.mimiTaskProposal != nil
+            && result?.objectValue?["mimiTaskProposal"]?
+                .objectValue?["initialTurnStarted"]?.boolValue == true
+        var session = try agentSession(
+            from: thread,
+            projects: projects,
+            fallbackProject: project,
+            forceRunning: !proposalInitialTurnStarted
+        )
         emitActivePermissionProfile(from: result, threadID: session.id)
         let cwd = session.dir
         contextsBySessionID[session.id] = CodexAppServerSessionContext(session: session, cwd: cwd, activeTurnID: session.activeTurnID)
@@ -995,6 +1003,7 @@ actor CodexAppServerSessionRuntime {
 
         if !usesSharedServerQueue,
            !turnPayload.isEmpty,
+           !proposalInitialTurnStarted,
            let activeTurnID = session.activeTurnID {
             // resume 已经证明旧 turn 仍活跃，此时绝不能再发第二个 turn/start。
             throw CodexAppServerSessionRuntimeError.activeTurnConflict(
@@ -1013,7 +1022,7 @@ actor CodexAppServerSessionRuntime {
             }
         }
 
-        if !turnPayload.isEmpty, !usesSharedServerQueue {
+        if !turnPayload.isEmpty, !usesSharedServerQueue, !proposalInitialTurnStarted {
             _ = try await submitInitialTurnOutcome(
                 sessionID: session.id,
                 payload: turnPayload,
@@ -1028,7 +1037,8 @@ actor CodexAppServerSessionRuntime {
         return CreateSessionResponse(
             session: session,
             wsURL: try Self.gatewayURL(endpoint: endpoint, sessionID: session.id, runtimeProvider: runtimeProvider).absoluteString,
-            requiresQueuedInitialInput: usesSharedServerQueue && !turnPayload.isEmpty
+            requiresQueuedInitialInput: usesSharedServerQueue && !turnPayload.isEmpty && !proposalInitialTurnStarted,
+            initialInputAlreadyStarted: proposalInitialTurnStarted ? true : nil
         )
     }
 

@@ -111,6 +111,8 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       const taskProposal = taskProposalOf(params);
       let spawnedFromId: string | null = null;
       let threadId: string | undefined;
+      let proposalInitialTurnStarted = false;
+      let proposalExistingRecord: SessionRecord | undefined;
       if (taskProposal) {
         const proposal = await deps.overlay.consumeTaskProposal(
           taskProposal.id,
@@ -123,16 +125,29 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
         }
         spawnedFromId = proposal.parentThreadId;
         threadId = proposal.consumedByThreadId;
+        const existingRuntime = manager.get(threadId);
+        // thread/start 与随后 turn/start 是两次 RPC。若首轮 ACK 丢失，重试仍会复用
+        // 同一 child；活动 turn 或 Claude transcript 是首轮已经开始的后端证据。
+        // 只有预先分配但仍为空的 child 才允许再次提交原 prompt。
+        proposalExistingRecord = await catalog.get(threadId);
+        proposalInitialTurnStarted = existingRuntime?.activeTurnId !== undefined
+          || proposalExistingRecord !== undefined;
       }
       const runtime = threadId
-        ? manager.get(threadId) ?? manager.create(cwd, runSettingsFor(params), threadId)
+        ? manager.get(threadId)
+          ?? (proposalExistingRecord
+            ? manager.open(threadId, cwd, runSettingsFor(params), proposalExistingRecord.name)
+            : manager.create(cwd, runSettingsFor(params), threadId))
         : manager.create(cwd, runSettingsFor(params));
       manager.subscribe(runtime.threadId, context.session);
       const thread = toThread(newRecord(runtime.threadId, cwd, spawnedFromId), [], {
         canAcceptDirectInput: true,
         status: runtime.activeTurnId ? { type: "active", activeFlags: [] } : { type: "idle" },
       });
-      return sessionResponse(thread, runtime, params);
+      return {
+        ...sessionResponse(thread, runtime, params),
+        ...(taskProposal ? { mimiTaskProposal: { initialTurnStarted: proposalInitialTurnStarted } } : {}),
+      };
     },
 
     threadResume(raw: unknown, context: RequestContext) {
