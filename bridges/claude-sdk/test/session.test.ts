@@ -31,6 +31,41 @@ describe("ReplayRing", () => {
     const replay = ring.replayFrom(2);
     expect(replay.ok && replay.frames.map((entry) => entry.seq)).toEqual([3, 4]);
   });
+
+  test.each(["hello", "中文", "🙂🚀"])("enforces exact UTF-8 byte boundaries for %s", (text) => {
+    const frame: OutboundFrame = { jsonrpc: "2.0", method: "test", params: { text } };
+    const wireBytes = new TextEncoder().encode(JSON.stringify({ ...frame, [SEQ_FIELD]: 1 })).byteLength;
+    const exact = new ReplayRing(10, wireBytes);
+    expect(exact.push(frame).bytes).toBe(wireBytes);
+    const retained = exact.replayFrom(0);
+    expect(retained.ok && retained.frames.map((entry) => entry.seq)).toEqual([1]);
+    expect(exact.floorSeq).toBe(1);
+
+    const tooSmall = new ReplayRing(10, wireBytes - 1);
+    tooSmall.push(frame);
+    expect(tooSmall.currentSeq).toBe(1);
+    expect(tooSmall.floorSeq).toBe(2);
+    expect(tooSmall.replayFrom(0)).toEqual({ ok: false, drift: true });
+    expect(tooSmall.replayFrom(1)).toEqual({ ok: true, frames: [] });
+  });
+
+  test("evicts by cumulative UTF-8 bytes and releases the evicted byte budget", () => {
+    const frame: OutboundFrame = { jsonrpc: "2.0", method: "test", params: { text: "中文🙂".repeat(24) } };
+    const wireBytes = new TextEncoder().encode(JSON.stringify({ ...frame, [SEQ_FIELD]: 1 })).byteLength;
+    // 序号 1–4 的编码长度相同，预算恰好容纳两帧，第三帧必须逐出最旧帧。
+    const ring = new ReplayRing(10, wireBytes * 2);
+    ring.push(frame);
+    ring.push(frame);
+    expect(ring.floorSeq).toBe(1);
+    for (let seq = 3; seq <= 4; seq += 1) {
+      ring.push(frame);
+      expect(ring.currentSeq).toBe(seq);
+      expect(ring.floorSeq).toBe(seq - 1);
+      expect(ring.replayFrom(seq - 3)).toEqual({ ok: false, drift: true });
+      const replay = ring.replayFrom(seq - 2);
+      expect(replay.ok && replay.frames.map((entry) => entry.seq)).toEqual([seq - 1, seq]);
+    }
+  });
 });
 
 describe("Session attach", () => {
