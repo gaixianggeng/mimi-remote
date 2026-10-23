@@ -348,8 +348,6 @@ struct RuntimeSummaryCard: View {
             return L10n.text("ui.run_warning")
         case .context:
             return L10n.text("ui.context")
-        case .turnHint:
-            return L10n.text("ui.turn_hint_next_step")
         case .message:
             return L10n.text("ui.status")
         }
@@ -391,8 +389,6 @@ struct RuntimeSummaryCard: View {
             return "exclamationmark.triangle"
         case .context:
             return "info.circle"
-        case .turnHint:
-            return "arrow.turn.down.right"
         case .message:
             return "info.circle"
         }

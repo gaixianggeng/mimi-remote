@@ -76,6 +76,8 @@ struct ConversationTimelineItemBuilder {
 
     private static func isProcessMessage(_ message: ConversationMessage) -> Bool {
         guard message.role != .user else { return false }
+        // 回合提示沿用 tool activity 的协议投影，但必须作为独立卡片留在主时间线。
+        if message.activityPayload?.turnHint != nil { return false }
         switch message.kind {
         case .plan:
             // turn/plan/updated 是执行步骤；独立 plan item 是交给用户阅读的完整计划。
@@ -84,7 +86,7 @@ struct ConversationTimelineItemBuilder {
             return true
         case .approval, .userInput:
             return isResolvedInteractionMessage(message)
-        case .message, .questionReply, .warning, .error, .turnHint:
+        case .message, .questionReply, .warning, .error:
             // 普通答复和未知消息绝不根据位置猜成过程；异常与待处理交互始终在主视图可见。
             return false
         }

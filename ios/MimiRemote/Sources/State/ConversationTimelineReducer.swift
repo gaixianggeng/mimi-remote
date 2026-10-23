@@ -466,7 +466,7 @@ struct ConversationTimelineReducer {
             switch message.kind {
             case .reasoningSummary, .plan, .commandSummary, .fileChangeSummary, .context:
                 semanticKind = "system:\(message.kind.rawValue)"
-            case .message, .commentary, .approval, .userInput, .questionReply, .warning, .error, .turnHint:
+            case .message, .commentary, .approval, .userInput, .questionReply, .warning, .error:
                 return nil
             }
         } else {

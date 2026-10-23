@@ -298,14 +298,14 @@ struct ConversationTimelineView: View {
         crossSessionOriginMessageID: UUID?
     ) -> some View {
         switch item {
-        case .message(let message) where message.kind == .turnHint:
+        case .message(let message) where message.activityPayload?.turnHint != nil:
             if let hint = message.activityPayload?.turnHint {
                 ConversationTurnHintCard(
                     hint: hint,
                     layout: layout,
                     canAct: canActOnTurnHint(message),
                     onAction: { action in
-                        Task { await sessionStore.sendPrompt(action.message) }
+                        startTurnHintAction(action, from: message)
                     }
                 )
             }
@@ -365,23 +365,23 @@ struct ConversationTimelineView: View {
         }
     }
 
-    /// 回合提示的按钮只在「回答这一回合」时有意义：必须是当前会话最后一个提示，之后没有用户消息，
-    /// 会话没有在运行且可以直接输入。旧提示保留展示，但按钮置灰，避免点出已经过时的回复。
     private func canActOnTurnHint(_ message: ConversationMessage) -> Bool {
-        guard let sessionID = displayedSessionID,
-              sessionID == sessionStore.selectedSessionID,
-              let session = sessionStore.sessionsByID[sessionID],
-              session.allowsDirectInput,
-              !session.isRunning,
-              !sessionStore.isProtocolReadOnlySession(session) else {
-            return false
+        guard displayedSessionID == sessionStore.selectedSessionID else { return false }
+        return sessionStore.captureTurnHintActionTarget(for: message) != nil
+    }
+
+    /// target 在这个同步回调里捕获，不能移进 Task；否则页面切换可能先于目标绑定。
+    private func startTurnHintAction(
+        _ action: ConversationTurnHint.Action,
+        from message: ConversationMessage
+    ) -> Task<Bool, Never>? {
+        guard displayedSessionID == sessionStore.selectedSessionID,
+              let target = sessionStore.captureTurnHintActionTarget(for: message) else {
+            return nil
         }
-        for row in presentedSnapshot.rows.reversed() {
-            guard case .message(let candidate) = row else { continue }
-            if candidate.role == .user { return false }
-            if candidate.kind == .turnHint { return candidate.id == message.id }
+        return Task { @MainActor in
+            await sessionStore.sendTurnHintAction(action, target: target)
         }
-        return false
     }
 
     private func toggleActivityDetails(itemID: String) {

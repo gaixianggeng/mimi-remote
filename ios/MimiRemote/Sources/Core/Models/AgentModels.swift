@@ -1823,8 +1823,6 @@ enum MessageKind: String, Codable, Hashable {
     case questionReply = "question_reply"
     case warning
     case error
-    /// Claude 回合提示（下一步提示框、新任务提议），正文在 activityPayload.turnHint。
-    case turnHint = "turn_hint"
 }
 
 enum MessageSendStatus: String, Codable, Hashable {
@@ -2098,9 +2096,6 @@ struct ConversationActivityPayload: Codable, Hashable {
     }
 
     var messageKind: MessageKind {
-        if turnHint != nil {
-            return .turnHint
-        }
         switch category {
         case .thinking:
             return .reasoningSummary

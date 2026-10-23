@@ -46416,23 +46416,6 @@
         }
       }
     },
-    "ui.turn_hint_start_session": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Start session"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "开启会话"
-          }
-        }
-      }
-    },
     "ui.turn_hint_task_proposal": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -46446,6 +46429,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "建议的新任务"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_dismiss": {
+      "comment": "Dismisses a turn hint card without sending a new message.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not now"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂不继续"
           }
         }
       }

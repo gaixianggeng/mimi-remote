@@ -8,42 +8,54 @@ struct ConversationTurnHintCard: View {
     let hint: ConversationTurnHint
     let layout: ConversationLayout
     let canAct: Bool
-    let onAction: (ConversationTurnHint.Action) -> Void
-    /// 只有 Mimi 自己提供的提议才能在 App 里开启；为 nil 时不显示开启按钮。
-    var onStartProposal: (() -> Void)?
+    /// 同步返回 Task，保证调用方在异步调度前捕获 host/session/turn/connection。
+    let onAction: (ConversationTurnHint.Action) -> Task<Bool, Never>?
 
     @State private var isBriefExpanded = false
-    /// 点过之后立即锁住，避免发送确认回来之前重复点击发出两条消息。
-    @State private var tappedActionLabel: String?
+    @State private var interaction = ConversationTurnHintInteractionState()
 
+    @ViewBuilder
     var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        VStack(alignment: .leading, spacing: 8) {
-            Label(
-                hint.kind == .taskProposal ? L10n.text("ui.turn_hint_task_proposal") : L10n.text("ui.turn_hint_next_step"),
-                systemImage: hint.kind == .taskProposal ? "arrow.up.right.square" : "arrow.turn.down.right"
-            )
-            .font(themeStore.uiFont(.caption, weight: .semibold))
-            .foregroundStyle(tokens.secondaryText)
+        if !interaction.isDismissed {
+            let tokens = themeStore.tokens(for: colorScheme)
+            VStack(alignment: .leading, spacing: 8) {
+                Label(
+                    hint.kind == .taskProposal ? L10n.text("ui.turn_hint_task_proposal") : L10n.text("ui.turn_hint_next_step"),
+                    systemImage: hint.kind == .taskProposal ? "arrow.up.right.square" : "arrow.turn.down.right"
+                )
+                .font(themeStore.uiFont(.caption, weight: .semibold))
+                .foregroundStyle(tokens.secondaryText)
 
-            switch hint.kind {
-            case .nextStep:
-                nextStepContent(tokens: tokens)
-            case .taskProposal:
-                proposalContent(tokens: tokens)
+                switch hint.kind {
+                case .nextStep:
+                    nextStepContent(tokens: tokens)
+                case .taskProposal:
+                    proposalContent(tokens: tokens)
+                }
+
+                if interaction.submission == .idle {
+                    Button(L10n.text("ui.turn_hint_dismiss")) {
+                        _ = interaction.dismiss()
+                    }
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText)
+                    .buttonStyle(.plain)
+                    .frame(minHeight: 32)
+                    .accessibilityIdentifier("conversation.turnHint.dismiss")
+                }
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: layout.runtimeCardMaxWidth, alignment: .leading)
+            .background(tokens.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(tokens.border, lineWidth: 1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("conversation.turnHint.\(hint.kind.rawValue)")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .frame(maxWidth: layout.runtimeCardMaxWidth, alignment: .leading)
-        .background(tokens.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(tokens.border, lineWidth: 1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("conversation.turnHint.\(hint.kind.rawValue)")
     }
 
     @ViewBuilder
@@ -75,11 +87,9 @@ struct ConversationTurnHintCard: View {
     @ViewBuilder
     private func actionButtons(tokens: ThemeTokens) -> some View {
         ForEach(Array(hint.actions.enumerated()), id: \.offset) { index, action in
-            let isEnabled = canAct && tappedActionLabel == nil
+            let isEnabled = interaction.canSubmit(cardCanAct: canAct)
             Button {
-                guard isEnabled else { return }
-                tappedActionLabel = action.label
-                onAction(action)
+                submit(action, index: index)
             } label: {
                 Text(action.label)
                     .font(themeStore.uiFont(.subheadline, weight: .medium))
@@ -95,7 +105,7 @@ struct ConversationTurnHintCard: View {
             }
             .buttonStyle(.plain)
             .disabled(!isEnabled)
-            .opacity(isEnabled || tappedActionLabel == action.label ? 1 : 0.45)
+            .opacity(isEnabled || interaction.isSelected(actionIndex: index) ? 1 : 0.45)
             .accessibilityHint(Text(action.message))
             .accessibilityIdentifier("conversation.turnHint.action.\(index)")
         }
@@ -124,29 +134,19 @@ struct ConversationTurnHintCard: View {
             .buttonStyle(.plain)
             .frame(minHeight: 32)
         }
-        if let onStartProposal {
-            let isEnabled = canAct && tappedActionLabel == nil
-            Button {
-                guard isEnabled else { return }
-                tappedActionLabel = hint.title ?? ""
-                onStartProposal()
-            } label: {
-                Label(L10n.text("ui.turn_hint_start_session"), systemImage: "plus.bubble")
-                    .font(themeStore.uiFont(.subheadline, weight: .medium))
-                    .padding(.horizontal, 14)
-                    .frame(minHeight: 36)
-                    .foregroundStyle(Color.white)
-                    .background(tokens.accent, in: Capsule())
-                    .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .disabled(!isEnabled)
-            .opacity(isEnabled ? 1 : 0.45)
-            .accessibilityIdentifier("conversation.turnHint.startSession")
-        } else if hint.origin == .claudeDesktop {
-            Text(L10n.text("ui.turn_hint_desktop_only"))
-                .font(themeStore.uiFont(.caption))
-                .foregroundStyle(tokens.tertiaryText)
+        Text(L10n.text("ui.turn_hint_desktop_only"))
+            .font(themeStore.uiFont(.caption))
+            .foregroundStyle(tokens.tertiaryText)
+    }
+
+    private func submit(_ action: ConversationTurnHint.Action, index: Int) {
+        guard interaction.begin(actionIndex: index) else { return }
+        guard let task = onAction(action) else {
+            interaction.finish(actionIndex: index, succeeded: false)
+            return
+        }
+        Task { @MainActor in
+            interaction.finish(actionIndex: index, succeeded: await task.value)
         }
     }
 }
