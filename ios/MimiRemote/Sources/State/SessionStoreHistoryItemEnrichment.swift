@@ -26,9 +26,10 @@ struct HistoryItemEnrichmentPageKey: Hashable {
 }
 
 struct HistoryItemEnrichmentState {
-    let token: UUID
+    var token: UUID
     let hostScope: HostScope
     var pending: [HistoryItemEnrichmentWork]
+    var inFlight: HistoryItemEnrichmentWork?
     var queuedPageKeys: Set<HistoryItemEnrichmentPageKey>
     var seenPageKeys: Set<HistoryItemEnrichmentPageKey> = []
     var oldestHistoryPageOrdinal: Int
@@ -43,7 +44,7 @@ struct HistoryItemEnrichmentState {
 @MainActor
 extension SessionStore {
     func replaceHistoryItemEnrichment(page: HistoryMessagesPage, sessionID: SessionID) {
-        cancelHistoryItemEnrichment(sessionID: sessionID, markIncomplete: false)
+        cancelHistoryItemEnrichment(sessionID: sessionID)
         appendHistoryItemEnrichment(page: page, sessionID: sessionID)
     }
 
@@ -63,24 +64,60 @@ extension SessionStore {
                     && state.queuedPageKeys.insert($0.pageKey).inserted
             }
             guard !uniqueWork.isEmpty else {
+                startHistoryItemEnrichment(sessionID: sessionID)
                 return
             }
             state.oldestHistoryPageOrdinal = historyPageOrdinal
             state.pending.append(contentsOf: uniqueWork)
             historyItemEnrichmentBySessionID[sessionID] = state
+            startHistoryItemEnrichment(sessionID: sessionID)
             return
         }
 
-        let token = UUID()
         let work = Self.historyItemEnrichmentWork(page: page, historyPageOrdinal: 0)
         historyItemEnrichmentBySessionID[sessionID] = HistoryItemEnrichmentState(
-            token: token,
+            token: UUID(),
             hostScope: appStore.activeHostScope,
             pending: work,
+            inFlight: nil,
             queuedPageKeys: Set(work.map(\.pageKey)),
             oldestHistoryPageOrdinal: 0,
             task: nil
         )
+        startHistoryItemEnrichment(sessionID: sessionID)
+    }
+
+    func pauseHistoryItemEnrichment(sessionID: SessionID) {
+        guard var state = historyItemEnrichmentBySessionID[sessionID] else {
+            return
+        }
+        state.task?.cancel()
+        // 保持 .enriching，重开同一快照才会复用已成功的页。取消不保证底层 client
+        // 立即停止，因此换代 token 阻止迟到响应覆盖已保留的分页进度。
+        state.token = UUID()
+        state.task = nil
+        if let inFlight = state.inFlight {
+            state.pending.insert(inFlight, at: 0)
+            state.inFlight = nil
+        }
+        historyItemEnrichmentBySessionID[sessionID] = state
+    }
+
+    func resumeHistoryItemEnrichmentIfNeeded(sessionID: SessionID) {
+        startHistoryItemEnrichment(sessionID: sessionID)
+    }
+
+    private func startHistoryItemEnrichment(sessionID: SessionID) {
+        guard selectedSessionID == sessionID,
+              var state = historyItemEnrichmentBySessionID[sessionID],
+              state.hostScope == appStore.activeHostScope,
+              state.task == nil,
+              !state.pending.isEmpty else {
+            return
+        }
+        state.token = UUID()
+        let token = state.token
+        historyItemEnrichmentBySessionID[sessionID] = state
         let defersInitialRequest = isClaudeHistoryItemEnrichment(sessionID: sessionID)
         let task = Task(priority: .utility) { @MainActor [weak self] in
             guard let self else { return }
@@ -98,14 +135,11 @@ extension SessionStore {
         historyItemEnrichmentBySessionID[sessionID]?.task = task
     }
 
-    func cancelHistoryItemEnrichment(sessionID: SessionID, markIncomplete: Bool) {
+    func cancelHistoryItemEnrichment(sessionID: SessionID) {
         guard let state = historyItemEnrichmentBySessionID.removeValue(forKey: sessionID) else {
             return
         }
         state.task?.cancel()
-        if markIncomplete {
-            historyLoadedQualityBySessionID[sessionID] = .summary
-        }
     }
 
     func cancelAllHistoryItemEnrichment() {
@@ -168,6 +202,7 @@ extension SessionStore {
             return nil
         }
         let work = state.pending.removeFirst()
+        state.inFlight = work
         historyItemEnrichmentBySessionID[sessionID] = state
         return work
     }
@@ -181,6 +216,7 @@ extension SessionStore {
         guard var state = historyItemEnrichmentBySessionID[sessionID], state.token == token else {
             return
         }
+        state.inFlight = nil
         state.queuedPageKeys.remove(work.pageKey)
         guard state.seenPageKeys.insert(work.pageKey).inserted else {
             state.didFail = true
@@ -249,6 +285,7 @@ extension SessionStore {
         guard var state = historyItemEnrichmentBySessionID[sessionID], state.token == token else {
             return false
         }
+        state.inFlight = nil
         state.pending.insert(
             HistoryItemEnrichmentWork(
                 continuation: continuation,
@@ -269,6 +306,7 @@ extension SessionStore {
         guard var state = historyItemEnrichmentBySessionID[sessionID], state.token == token else {
             return
         }
+        state.inFlight = nil
         state.queuedPageKeys.remove(work.pageKey)
         state.didFail = true
         historyItemEnrichmentBySessionID[sessionID] = state
