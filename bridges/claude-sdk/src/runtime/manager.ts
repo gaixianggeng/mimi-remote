@@ -54,8 +54,11 @@ export interface ManagerOptions {
    * 实现方负责去重。缺省时退回只发给订阅者。
    */
   broadcast?: (frame: OutboundFrame, subscribers: Iterable<Session>) => void;
-  /** 会话最后一条对话消息的时间（Unix 秒），随持有方变化一起推送，客户端据此刷新列表时间与未读。 */
-  readActivity?: (threadId: string) => Promise<number | undefined>;
+  /**
+   * 会话最后一条对话消息的时间（Unix 秒），随持有方变化一起推送，客户端据此刷新列表时间与未读。
+   * 结果必须反映 `freshSince` 之后的 transcript（见 OwnershipWatcherOptions.onChange）。
+   */
+  readActivity?: (threadId: string, freshSince: number) => Promise<number | undefined>;
   turnHints?: {
     store: MimiTaskProposalStore & { isTaskProposal(parentThreadId: string, proposalId: string): boolean };
   };
@@ -112,7 +115,7 @@ export class ThreadManager {
       dir: sessionsDir(),
       tracked: () => this.trackedThreads(),
       read: () => this.holders(),
-      onChange: (threadId, holder) => this.ownershipChanged(threadId, holder),
+      onChange: (threadId, holder, freshSince) => this.ownershipChanged(threadId, holder, freshSince),
       log: options.log,
       ...(options.ownershipPollMs !== undefined ? { pollMs: options.ownershipPollMs } : {}),
     });
@@ -272,7 +275,7 @@ export class ThreadManager {
    * 可写状态与持有方摘要推给全部连接（没有广播通道时只推给订阅者）。字段与 Thread 上的扩展
    * 字段同名，客户端按同一套解析；`status` 与 thread/list 同源，持有方正在执行就是 active。
    */
-  private async ownershipChanged(threadId: string, holder: SessionHolder | undefined): Promise<void> {
+  private async ownershipChanged(threadId: string, holder: SessionHolder | undefined, freshSince: number): Promise<void> {
     const runtime = this.runtimes.get(threadId);
     logger.debug("ownership.changed", {
       thread: threadId,
@@ -299,7 +302,7 @@ export class ThreadManager {
       ownProcessLive: runtime?.hasLiveProcess() ?? false,
       holder,
     });
-    const updatedAt = await this.options.readActivity?.(threadId).catch(() => undefined);
+    const updatedAt = await this.options.readActivity?.(threadId, freshSince).catch(() => undefined);
     const frame = notificationFrame("thread/status/changed", {
       threadId,
       status,
