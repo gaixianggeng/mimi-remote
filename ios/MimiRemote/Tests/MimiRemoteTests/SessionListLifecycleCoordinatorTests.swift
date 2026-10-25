@@ -123,6 +123,107 @@ final class SessionListLifecycleCoordinatorTests: XCTestCase {
         ]))
     }
 
+    /// #905：电脑上的 Claude 进程跑完一轮，列表实时把行改回完成；侧栏高亮照常，手机不震动。
+    func testComputerHeldTurnCompletionHighlightsWithoutHaptic() {
+        var tracker = SessionLifecycleFeedbackTracker()
+        let idle = heldSession(id: "held", status: SessionStatus.history.rawValue, ownerStatus: "idle")
+        let busy = heldSession(id: "held", status: SessionStatus.running.rawValue, ownerStatus: "busy")
+
+        XCTAssertNil(tracker.observe([SessionLifecycleObservation(session: idle, foregroundActivity: nil)]))
+        XCTAssertNil(tracker.observe([SessionLifecycleObservation(session: busy, foregroundActivity: nil)]))
+
+        let result = tracker.observeTransitions([
+            SessionLifecycleObservation(session: idle, foregroundActivity: nil),
+        ])
+        XCTAssertEqual(result.completedSessionIDs, ["held"])
+        XCTAssertNil(result.feedback)
+    }
+
+    func testComputerHeldTurnStillHapticsWhenUserIsViewingThatSession() {
+        var tracker = SessionLifecycleFeedbackTracker()
+        let idle = heldSession(id: "held", status: SessionStatus.history.rawValue, ownerStatus: "idle")
+        let busy = heldSession(id: "held", status: SessionStatus.running.rawValue, ownerStatus: "busy")
+
+        XCTAssertNil(tracker.observe([SessionLifecycleObservation(session: idle, foregroundActivity: nil)]))
+        // 电脑端开始执行时用户还在列表，结束前才点进详情：以终态这一刻是否在看为准。
+        XCTAssertNil(tracker.observe([SessionLifecycleObservation(session: busy, foregroundActivity: nil)]))
+        XCTAssertEqual(
+            tracker.observe([
+                SessionLifecycleObservation(session: idle, foregroundActivity: nil, isVisible: true),
+            ])?.pattern,
+            MimiHapticPattern.notificationSuccess
+        )
+    }
+
+    func testComputerHeldTurnStaysSilentWhenUserLeavesBeforeItEnds() {
+        var tracker = SessionLifecycleFeedbackTracker()
+
+        XCTAssertNil(tracker.observe([observation("held", .completion, isHeldOnComputer: true)]))
+        XCTAssertNil(tracker.observe([observation("held", .waiting, isHeldOnComputer: true, isVisible: true)]))
+        let result = tracker.observeTransitions([observation("held", .completion, isHeldOnComputer: true)])
+
+        XCTAssertEqual(result.completedSessionIDs, ["held"])
+        XCTAssertNil(result.feedback)
+    }
+
+    /// `claude -p` 这类持有方会与终态同时退出：武装时见过电脑端持有，就按电脑端的一轮处理。
+    func testComputerArmStaysSilentWhenHolderExitsWithTerminalState() {
+        var tracker = SessionLifecycleFeedbackTracker()
+
+        XCTAssertNil(tracker.observe([observation("held", .completion)]))
+        XCTAssertNil(tracker.observe([observation("held", .waiting, isHeldOnComputer: true)]))
+        XCTAssertNil(tracker.observe([observation("held", .waiting)]))
+        let result = tracker.observeTransitions([observation("held", .completion)])
+
+        XCTAssertEqual(result.completedSessionIDs, ["held"])
+        XCTAssertNil(result.feedback)
+    }
+
+    func testPhoneTurnAfterComputerTurnHapticsAgain() {
+        var tracker = SessionLifecycleFeedbackTracker()
+
+        XCTAssertNil(tracker.observe([observation("session", .completion)]))
+        XCTAssertNil(tracker.observe([observation("session", .waiting, isHeldOnComputer: true)]))
+        XCTAssertNil(tracker.observe([observation("session", .completion, isHeldOnComputer: true)]))
+
+        // 接管后手机自己发起的一轮不再带持有方，照常反馈一次。
+        XCTAssertNil(tracker.observe([observation("session", .waiting)]))
+        XCTAssertEqual(
+            tracker.observe([observation("session", .completion)])?.pattern,
+            MimiHapticPattern.notificationSuccess
+        )
+    }
+
+    func testSilentComputerFailureDoesNotMaskPhoneCompletionInSameBatch() {
+        var tracker = SessionLifecycleFeedbackTracker()
+        XCTAssertNil(tracker.observe([
+            observation("held", .waiting, isHeldOnComputer: true),
+            observation("phone", .waiting),
+        ]))
+
+        let result = tracker.observeTransitions([
+            observation("held", .failure, isHeldOnComputer: true),
+            observation("phone", .completion),
+        ])
+
+        XCTAssertEqual(result.failedSessionIDs, ["held"])
+        XCTAssertEqual(result.completedSessionIDs, ["phone"])
+        XCTAssertEqual(result.feedback?.pattern, MimiHapticPattern.notificationSuccess)
+    }
+
+    func testComputerHeldArmOnFirstObservationStaysSilent() {
+        let coordinator = SessionListLifecycleCoordinator()
+        _ = coordinator.observe(input(
+            membership: .empty,
+            observations: [observation("held", .waiting, isHeldOnComputer: true)]
+        ))
+
+        XCTAssertNil(coordinator.observe(input(
+            membership: .empty,
+            observations: [observation("held", .completion, isHeldOnComputer: true)]
+        )))
+    }
+
     func testScrollingKeepsSectionMembershipUntilIdle() {
         let coordinator = SessionListLifecycleCoordinator()
         let initial = membership(active: ["active"], history: ["history"])
@@ -241,8 +342,13 @@ final class SessionListLifecycleCoordinatorTests: XCTestCase {
         )))
     }
 
-    private func observation(_ id: SessionID, _ phase: SessionLifecyclePhase) -> SessionLifecycleObservation {
-        SessionLifecycleObservation(id: id, phase: phase)
+    private func observation(
+        _ id: SessionID,
+        _ phase: SessionLifecyclePhase,
+        isHeldOnComputer: Bool = false,
+        isVisible: Bool = false
+    ) -> SessionLifecycleObservation {
+        SessionLifecycleObservation(id: id, phase: phase, isHeldOnComputer: isHeldOnComputer, isVisible: isVisible)
     }
 
     private func membership(active: [SessionID], history: [SessionID]) -> SessionListMembership {
@@ -267,6 +373,19 @@ final class SessionListLifecycleCoordinatorTests: XCTestCase {
                 searchQuery: searchQuery
             )
         )
+    }
+
+    /// 与 applyLiveSessionIndexUpdate 合并持有方快照后的行一致：不可直接输入，并带持有方摘要。
+    private func heldSession(id: SessionID, status: String, ownerStatus: String?) -> AgentSession {
+        var session = makeSession(id: id, status: status)
+        session.canAcceptDirectInput = false
+        session.claudeOwner = ClaudeSessionOwner(
+            entrypoint: "claude-desktop",
+            kind: "interactive",
+            status: ownerStatus,
+            pid: 4242
+        )
+        return session
     }
 
     private func makeSession(id: SessionID, status: String) -> AgentSession {
