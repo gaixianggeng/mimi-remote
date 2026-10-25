@@ -21,6 +21,7 @@ import {
 } from "./takeover.ts";
 import type { SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import { ThreadRuntime, type RuntimeHost } from "./threadRuntime.ts";
+import type { MimiTaskProposalStore } from "./turnHints.ts";
 
 interface PendingRequest {
   threadId: string;
@@ -32,6 +33,7 @@ interface PendingRequest {
 
 export interface ManagerOptions {
   claudeExecutable(): string;
+  promptSuggestionsSupported?(): boolean;
   log(message: string): void;
   idleCloseMs?: number;
   startQuery?: RuntimeHost["startQuery"];
@@ -52,6 +54,9 @@ export interface ManagerOptions {
   broadcast?: (frame: OutboundFrame, subscribers: Iterable<Session>) => void;
   /** 会话最后一条对话消息的时间（Unix 秒），随持有方变化一起推送，客户端据此刷新列表时间与未读。 */
   readActivity?: (threadId: string) => Promise<number | undefined>;
+  turnHints?: {
+    store: MimiTaskProposalStore & { isTaskProposal(parentThreadId: string, proposalId: string): boolean };
+  };
 }
 
 /** Claude Code 在第一轮前后异步生成 AI 标题，通常几秒内写入；稍后再看几次。 */
@@ -61,6 +66,7 @@ export class ThreadManager {
   private readonly runtimes = new Map<string, ThreadRuntime>();
   private readonly subscribers = new Map<string, Set<Session>>();
   private readonly subscriptions = new Map<Session, Set<string>>();
+  private readonly suggestionRecipients = new Map<string, { turnId: string; sessions: Map<Session, number> }>();
   private readonly pending = new Map<string, PendingRequest>();
   private counter = 0;
   /** 已经推送给客户端（或客户端从会话快照里拿到）的标题。 */
@@ -83,6 +89,7 @@ export class ThreadManager {
       publish: (threadId, method, params) => this.publish(threadId, method, params),
       request: (threadId, method, params, signal) => this.request(threadId, method, params, signal),
       claudeExecutable: options.claudeExecutable,
+      ...(options.promptSuggestionsSupported ? { promptSuggestionsSupported: options.promptSuggestionsSupported } : {}),
       log: options.log,
       ownPids: this.ownPids,
       processReady: () => void this.ownership.scanNow(),
@@ -91,6 +98,7 @@ export class ThreadManager {
         this.terminal = new Set(names);
       },
       idleCloseMs: options.idleCloseMs ?? 10 * 60_000,
+      ...(options.turnHints ? { turnHints: options.turnHints } : {}),
       ...(options.startQuery ? { startQuery: options.startQuery } : {}),
     };
     this.ownership = new OwnershipWatcher({
@@ -149,8 +157,8 @@ export class ThreadManager {
   }
 
   /** 新会话：ID 由适配器生成，第一次 turn 时以同一 ID 创建 Claude 会话。 */
-  create(cwd: string, settings: RunSettings): ThreadRuntime {
-    const runtime = new ThreadRuntime(randomUUID(), cwd, this.host, settings, false);
+  create(cwd: string, settings: RunSettings, threadId: string = randomUUID()): ThreadRuntime {
+    const runtime = new ThreadRuntime(threadId, cwd, this.host, settings, false);
     this.runtimes.set(runtime.threadId, runtime);
     this.titles.set(runtime.threadId, null);
     return runtime;
@@ -195,7 +203,10 @@ export class ThreadManager {
 
   unsubscribeSession(session: Session): void {
     logger.debug("session.unsubscribe", { session: session.key, threads: this.subscriptions.get(session)?.size ?? 0 });
-    for (const threadId of this.subscriptions.get(session) ?? []) this.subscribers.get(threadId)?.delete(session);
+    for (const threadId of this.subscriptions.get(session) ?? []) {
+      this.subscribers.get(threadId)?.delete(session);
+      this.suggestionRecipients.get(threadId)?.sessions.delete(session);
+    }
     this.subscriptions.delete(session);
   }
 
@@ -295,6 +306,28 @@ export class ThreadManager {
       this.lastRateLimits = mergeObservedRateLimits(this.lastRateLimits, params.rateLimits as RateLimitSnapshot);
     }
     const frame = notificationFrame(method, params);
+    if (method === "_mimi/turn/promptSuggestion") {
+      const recipients = this.suggestionRecipients.get(threadId);
+      this.suggestionRecipients.delete(threadId);
+      if (!recipients || recipients.turnId !== params.turnId) return;
+      for (const [session, generation] of recipients.sessions) {
+        if (this.subscribers.get(threadId)?.has(session)) session.publishTransient(frame, generation);
+      }
+      return;
+    }
+    if (method === "turn/started") this.suggestionRecipients.delete(threadId);
+    if (method === "turn/completed") {
+      const turn = params.turn as { id?: string; status?: string } | undefined;
+      this.suggestionRecipients.delete(threadId);
+      if (turn?.id && turn.status === "completed") {
+        const sessions = new Map<Session, number>();
+        for (const session of this.subscribers.get(threadId) ?? []) {
+          const generation = session.connectedGeneration;
+          if (generation !== undefined) sessions.set(session, generation);
+        }
+        this.suggestionRecipients.set(threadId, { turnId: turn.id, sessions });
+      }
+    }
     for (const session of this.subscribers.get(threadId) ?? []) session.publish(frame);
   }
 
@@ -341,5 +374,6 @@ export class ThreadManager {
   async closeAll(): Promise<void> {
     this.ownership.stop();
     await Promise.all([...this.runtimes.values()].map((runtime) => runtime.close()));
+    this.suggestionRecipients.clear();
   }
 }

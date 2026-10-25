@@ -57,9 +57,11 @@ echo "==> iOS conversation regressions"
 # - AgentAPIClientRequestTests：全部 REST 调用的路径、方法、鉴权、JSON 字段和超时契约。
 # - CameraAttachmentTests：相机可用性、权限恢复和现有图片压缩上限。
 # - CodexAppServerProtocolTests：JSON-RPC payload、collaborationMode、目标/steer 协议。
+# - NativePromptSuggestionTests：原生建议的轮次/连接隔离、草稿保护和显式接受。
 # - ComposerAutocompleteTests：输入框 `/` 命令与 `$` 技能补全的触发、替换范围和排序。
 # - ComposerMetadataBudgetTests：输入框组合类型的嵌套层数与值大小，防止真机打开会话时主线程栈溢出（#852）。
 # - ClaudeSlashCommandCatalogTests：Claude 会话 `/` 菜单命令目录的解析、请求与按键缓存。
+# - ClaudeReplayCursorTests：Claude 常驻会话按已完成条目推进重连游标，长回合重开不再整轮重放（#873）。
 # - ConversationDataFlowTests 的精确方法：只保留配对后的会话、流式事件、恢复、
 #   exactly-once、审批/中断、Host 隔离和 fake smoke；其余大集合不无条件进入 PR Gate。
 # - QueuedSessionBackgroundDispatchTests：离开会话后排队消息的后台连接，覆盖重连退避与停止、
@@ -68,6 +70,7 @@ echo "==> iOS conversation regressions"
 # - ConversationTimelineProviderPresentationTests：Codex/Claude 默认与详细记录投影、锚点和全文入口。
 # - ConversationScrollStabilityTests：首屏可读交接、手势取消、阅读锚点和显式回到底部。
 # - ConversationTimelineRuntimeRegressionTests：原生 List 在 Codex/Claude/DeepSeek 更新及历史前插后的视口。
+# - ConversationTurnHintTests：Claude Desktop 提示解析、历史/直播一致性与按钮目标失效边界。
 # - SessionListLifecycleCoordinatorTests：滚动冻结、idle 重排和完成/失败 Haptic exactly-once。
 # - SessionListPresentationTests：会话摘要、分支身份、时间格式和紧凑行数策略。
 # - ConversationSnapshotTests：用户气泡/助手文档流、复杂 Markdown、图片和活动行的关键视觉回归。
@@ -117,6 +120,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/AgentAPIClientRequestTests \
   -only-testing:MimiRemoteTests/CameraAttachmentTests \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
+  -only-testing:MimiRemoteTests/NativePromptSuggestionTests \
   -only-testing:MimiRemoteTests/ComposerAutocompleteTests \
   -only-testing:MimiRemoteTests/ComposerMetadataBudgetTests \
   -only-testing:MimiRemoteTests/WorkbenchShellMetadataBudgetTests \
@@ -146,6 +150,8 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/HarnessHistoryPageTests \
   -only-testing:MimiRemoteTests/HistoryPolicyClassificationTests \
   -only-testing:MimiRemoteTests/ClaudeTakeoverTests \
+  -only-testing:MimiRemoteTests/ClaudeReplayCursorTests \
+  -only-testing:MimiRemoteTests/CodexHistoryStreamingTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
   -only-testing:MimiRemoteTests/NewSessionBufferedReplyTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \
@@ -275,6 +281,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationActivityDetailProjectionTests \
   -only-testing:MimiRemoteTests/ConversationScrollStabilityTests \
   -only-testing:MimiRemoteTests/ConversationTimelineRuntimeRegressionTests \
+  -only-testing:MimiRemoteTests/ConversationTurnHintTests \
   -only-testing:MimiRemoteTests/SessionListLifecycleCoordinatorTests \
   -only-testing:MimiRemoteTests/SessionListPresentationTests \
   -only-testing:MimiRemoteTests/TokenUsageCardSnapshotTests \

@@ -135,14 +135,16 @@ validate_swift_license_checksum() {
 }
 
 # Tailcat 是独立 Go module，只统计发布包实际编入的模块。目标与发布构建保持一致：
-# Mac 安装包（macos/MimiRemoteMac/Scripts/embed-agentd.sh）与 Linux 归档（.goreleaser.yml）
-# 的辅助程序关闭 CGO；iOS 框架由 scripts/build-tailcat-mobile.sh 用 gomobile 绑定，gobind
+# Mac 安装包（macos/MimiRemoteMac/Scripts/embed-agentd.sh）、Linux 归档（.goreleaser.yml）与
+# Windows 安装包（scripts/build-windows-installer.ps1）的辅助程序关闭 CGO；iOS 框架由
+# scripts/build-tailcat-mobile.sh 用 gomobile 绑定，gobind
 # 生成的代码另外引用 golang.org/x/mobile/bind/seq。字段：GOOS GOARCH CGO_ENABLED 构建标签 包列表。
 TAILCAT_BUILD_TARGETS=(
   "darwin arm64 0 - ./cmd/mimi-tailcat-experiment"
   "darwin amd64 0 - ./cmd/mimi-tailcat-experiment"
   "linux amd64 0 - ./cmd/mimi-tailcat-experiment"
   "linux arm64 0 - ./cmd/mimi-tailcat-experiment"
+  "windows amd64 0 - ./cmd/mimi-tailcat-experiment"
   "ios arm64 1 ios ./mobile/tailcatmobile golang.org/x/mobile/bind/seq"
   "ios amd64 1 ios ./mobile/tailcatmobile golang.org/x/mobile/bind/seq"
 )

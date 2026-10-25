@@ -21,6 +21,7 @@ enum SettingsDestination: Hashable {
     case termsOfUse
     case thirdPartyNotices
     case managedConnection
+    case managedConnectionDevices
     case addComputer
     case speedTest
     case tailcat
@@ -201,7 +202,9 @@ struct SettingsDestinationView: View {
         case .thirdPartyNotices:
             ThirdPartyNoticesView()
         case .managedConnection:
-            ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
+            ManagedConnectionSubscriptionView()
+        case .managedConnectionDevices:
+            ManagedConnectionDevicesView(qrScannerPresentation: qrScannerPresentation)
         case .addComputer:
             AddComputerView(qrScannerPresentation: qrScannerPresentation, navigation: navigation)
         case .speedTest:

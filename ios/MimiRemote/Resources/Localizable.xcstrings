@@ -1,6 +1,207 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.native_suggestion_add_to_draft": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Add suggested reply to draft" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "将建议回复添加到草稿" } }
+      }
+    },
+    "ui.native_suggestion_dismiss": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Dismiss suggestion" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "忽略建议" } }
+      }
+    },
+    "ui.managed_devices_subscribe_action": {
+      "comment": "Row that opens the Managed Connection subscription page from the Devices tab.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Get Managed Connection" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通托管连接" } }
+      }
+    },
+    "ui.managed_devices_subscribe_notice": {
+      "comment": "Shown on the managed route page when there is no active Managed Connection subscription.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "With Managed Connection, this iPhone or iPad can reach your computer even when it isn't on the same network." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通托管连接后，这台 iPhone 或 iPad 不在电脑所在的网络时也能连上电脑。" } }
+      }
+    },
+    "ui.managed_devices_upgrade_busy": {
+      "comment": "Shown when the computer is busy with another Tailcat operation.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The computer is busy with another Tailcat operation. Try again in a moment." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "电脑正在处理其他 Tailcat 操作，请稍后再试。" } }
+      }
+    },
+    "ui.managed_devices_upgrade_continue": {
+      "comment": "Confirms switching the computer to Managed Connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Continue" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "继续接入" } }
+      }
+    },
+    "ui.managed_devices_upgrade_current": {
+      "comment": "Button that switches the currently connected computer to Managed Connection without scanning a QR code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use Managed Connection on This Computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "把这台电脑接入托管连接" } }
+      }
+    },
+    "ui.managed_devices_upgrade_failed": {
+      "comment": "Shown when switching the computer to Managed Connection fails. The value is the computer's error message.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn't switch this computer to Managed Connection: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法把这台电脑接入托管连接：%@" } }
+      }
+    },
+    "ui.managed_devices_upgrade_reset_message": {
+      "comment": "Confirmation message. The value is the number of devices using self-hosted Tailcat on this computer.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%@ devices use self-hosted Tailcat on this computer. They'll need to pair again after switching. Local network and Tailscale aren't affected." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑上有 %@ 台设备在用自建 Tailcat，接入托管连接后它们需要重新配对。局域网和 Tailscale 不受影响。" } }
+      }
+    },
+    "ui.managed_devices_upgrade_reset_title": {
+      "comment": "Confirmation title before switching a computer that has self-hosted Tailcat devices.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Disconnect self-hosted Tailcat devices?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "断开这台电脑上的自建 Tailcat 设备？" } }
+      }
+    },
+    "ui.managed_devices_upgrading": {
+      "comment": "Progress text while the current computer switches to Managed Connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Switching this computer to Managed Connection…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在把这台电脑接入托管连接…" } }
+      }
+    },
+    "ui.managed_lan_hint_action": {
+      "comment": "Link in the local-network hint that opens the Managed Connection page.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Learn About Managed Connection" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "了解托管连接" } }
+      }
+    },
+    "ui.managed_lan_hint_dismiss": {
+      "comment": "Hides the local-network Managed Connection hint for seven days.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Don't Show for 7 Days" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "7 天内不再提示" } }
+      }
+    },
+    "ui.managed_lan_hint_message": {
+      "comment": "Hint on the Devices tab when a computer paired over the local network can't be reached.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Can't reach your computer? You may not be on its Wi-Fi. With Managed Connection, you can connect over cellular too." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连不上电脑？可能是你和电脑不在同一个 Wi-Fi。开通托管连接后，用流量也能连。" } }
+      }
+    },
+    "ui.managed_plan_benefit_devices": {
+      "comment": "Managed Connection benefit: device limits per subscription.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Up to 3 computers and 5 phones or tablets" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "最多 3 台电脑、5 台手机或平板" } }
+      }
+    },
+    "ui.managed_plan_benefit_no_setup": {
+      "comment": "Managed Connection benefit: no extra networking software is needed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No Tailscale or other networking apps to install" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "不用安装 Tailscale 或其他联网工具" } }
+      }
+    },
+    "ui.managed_plan_benefit_private": {
+      "comment": "Managed Connection benefit: end-to-end encryption.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "End-to-end encrypted. The developer can't see your code or conversations" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "端到端加密，开发者看不到代码和对话" } }
+      }
+    },
+    "ui.managed_plan_benefit_relay": {
+      "comment": "Managed Connection benefit: Mimi relays, with automatic direct connections on the same network.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connects through Mimi relays, and directly when you're on the same network" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "经 Mimi 中继连接；在同一网络时自动直连" } }
+      }
+    },
+    "ui.managed_plan_benefits": {
+      "comment": "Section title above the Managed Connection benefits list.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "What you get" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "能做什么" } }
+      }
+    },
+    "ui.managed_plan_headline": {
+      "comment": "Headline of the Managed Connection subscription page before subscribing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Reach your computer from any network" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "不在同一 Wi-Fi，也能连上你的电脑" } }
+      }
+    },
+    "ui.managed_plan_manage_subscription": {
+      "comment": "Opens the system subscription management for Managed Connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Manage Subscription" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "管理订阅" } }
+      }
+    },
+    "ui.managed_plan_subtitle": {
+      "comment": "Supporting line under the Managed Connection headline.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "On cellular, at the office, or on the road, open Mimi and keep working." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "用流量、在公司或出差时，打开 Mimi 就能接着用。" } }
+      }
+    },
+    "ui.managed_route_and_devices_title": {
+      "comment": "Title of the Devices-tab page that shows the managed connection route, computer pairing, and registered devices.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Managed Route & Devices" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "托管线路与设备" } }
+      }
+    },
+    "ui.managed_subscription_short_active": {
+      "comment": "Short Managed Connection status shown on the Me tab row.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Active" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已开通" } }
+      }
+    },
+    "ui.managed_subscription_short_expired": {
+      "comment": "Short Managed Connection status shown on the Me tab row after the subscription expired.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Expired" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已过期" } }
+      }
+    },
+    "ui.managed_subscription_short_grace": {
+      "comment": "Short Managed Connection status shown on the Me tab row during a billing grace period.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Billing issue" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "付款遇到问题" } }
+      }
+    },
+    "ui.managed_subscription_short_pending": {
+      "comment": "Short Managed Connection status shown on the Me tab row while a purchase awaits approval.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Pending" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "等待批准" } }
+      }
+    },
+    "ui.managed_subscription_short_revoked": {
+      "comment": "Short Managed Connection status shown on the Me tab row after a refund or revocation.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Refunded" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已退款或撤销" } }
+      }
+    },
+    "ui.managed_subscription_short_trial": {
+      "comment": "Short Managed Connection status shown on the Me tab row during a free trial.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Free trial" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "试用中" } }
+      }
+    },
     "ui.question_reply_label": {
       "comment": "Label on the user's answer to an agent question in the conversation timeline.",
       "extractionState": "manual",
@@ -33,6 +234,24 @@
           "stringUnit": {
             "state": "translated",
             "value": "已跳过"
+          }
+        }
+      }
+    },
+    "ui.default_model_catalog_unavailable": {
+      "comment": "Section footer when the connected computer did not return a model list for this runtime. %@ is the runtime name.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't get the model list for %@ from this computer. Tap Refresh in the top-right corner to try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没能从这台电脑获取 %@ 的模型列表，点右上角刷新重试。"
           }
         }
       }
@@ -46137,6 +46356,125 @@
           "stringUnit": {
             "state": "translated",
             "value": "电脑端正在等待你处理，点按查看。"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_desktop_only": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start this task from Claude on your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这项任务需要在电脑上的 Claude 里开启。"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_hide_brief": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show less"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "收起说明"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_next_step": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next step"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一步"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_show_brief": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开说明"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_start_task": {
+      "comment": "Starts a trusted Mimi task proposal in a new writable conversation.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启任务"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_task_proposal": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suggested task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "建议的新任务"
+          }
+        }
+      }
+    },
+    "ui.turn_hint_dismiss": {
+      "comment": "Dismisses a turn hint card without sending a new message.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not now"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂不继续"
           }
         }
       }

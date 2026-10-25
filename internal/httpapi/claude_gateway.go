@@ -22,6 +22,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
 )
 
@@ -286,7 +287,11 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 	defer cancel()
 	bin := firstNonEmpty(probe.Path, strings.TrimSpace(r.cfg.Claude.BridgeBin))
 	start := time.Now()
-	if _, err := r.claudeBridge.ensure(bin, r.cfg.Claude.Args, r.cfg.Claude.Env); err != nil {
+	if _, err := r.claudeBridge.ensure(
+		bin,
+		r.cfg.Claude.Args,
+		claudeBridgeRuntimeEnv(r.cfg.Claude, probe.Adapter != nil),
+	); err != nil {
 		log.Printf("claude bridge ensure failed err=%v", err)
 		writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_START_FAILED", "启动 Claude bridge 失败")
 		return
@@ -765,6 +770,18 @@ func pingClientGateway(ctx context.Context, client *websocket.Conn, clientWriteM
 // debug 行，由 captureClaudeBridgeStderr 决定是否落盘（只在详细记录窗口内）；用户在
 // claude.env 里显式设置的级别优先。旧 Rust bridge 不认这个变量，没有影响。
 const claudeAdapterLogLevelEnv = "MIMI_CLAUDE_ADAPTER_LOG"
+const claudeAdapterTurnHintsEnv = "MIMI_CLAUDE_TURN_HINTS_ENABLED"
+
+func claudeBridgeRuntimeEnv(cfg config.ClaudeConfig, isAdapter bool) map[string]string {
+	env := make(map[string]string, len(cfg.Env)+1)
+	for key, value := range cfg.Env {
+		env[key] = value
+	}
+	if isAdapter {
+		env[claudeAdapterTurnHintsEnv] = strconv.FormatBool(cfg.TurnHintsAreEnabled())
+	}
+	return env
+}
 
 func buildClaudeBridgeEnv(extra map[string]string) []string {
 	environment := claudeenv.Build(extra)

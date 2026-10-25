@@ -37,6 +37,8 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	restoreCodex := fs.String("restore-codex", "", "恢复先前 Codex 事务结果 JSON")
 	claudePreference := fs.String("claude", "", "Claude 启用策略：auto、enabled 或 disabled")
 	restoreClaude := fs.String("restore-claude", "", "恢复先前 Claude 事务结果 JSON")
+	claudeTurnHints := fs.String("claude-turn-hints", "", "Claude 回合提示卡：enabled 或 disabled")
+	restoreClaudeTurnHints := fs.String("restore-claude-turn-hints", "", "恢复先前 Claude 回合提示卡事务结果 JSON")
 	deepSeekAction := fs.String("deepseek", "", "DeepSeek 操作：inspect、connect、disabled 或 refresh")
 	deepSeekURLStdin := fs.Bool("deepseek-url-stdin", false, "从标准输入读取 Harness 启动链接")
 	restoreEnabled := fs.Bool("restore-enabled", false, "服务重载失败时恢复先前 enabled 状态")
@@ -49,12 +51,15 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	}
 	hasClaude := strings.TrimSpace(*claudePreference) != ""
 	hasRestoreClaude := strings.TrimSpace(*restoreClaude) != ""
+	hasClaudeTurnHints := strings.TrimSpace(*claudeTurnHints) != ""
+	hasRestoreClaudeTurnHints := strings.TrimSpace(*restoreClaudeTurnHints) != ""
 	hasCodex := strings.TrimSpace(*codexPreference) != ""
 	hasRestoreCodex := strings.TrimSpace(*restoreCodex) != ""
 	hasDeepSeek := strings.TrimSpace(*deepSeekAction) != ""
 	count := 0
 	for _, selected := range []bool{
-		hasClaude, hasRestoreClaude, hasCodex, hasRestoreCodex, hasDeepSeek,
+		hasClaude, hasRestoreClaude, hasClaudeTurnHints, hasRestoreClaudeTurnHints,
+		hasCodex, hasRestoreCodex, hasDeepSeek,
 	} {
 		if selected {
 			count++
@@ -62,7 +67,7 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	}
 	if count != 1 {
 		return fmt.Errorf(
-			"必须且只能选择 --claude、--restore-claude、--codex、--restore-codex 或 --deepseek 之一",
+			"必须且只能选择 --claude、--restore-claude、--claude-turn-hints、--restore-claude-turn-hints、--codex、--restore-codex 或 --deepseek 之一",
 		)
 	}
 	if hasDeepSeek {
@@ -83,6 +88,34 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
+	}
+	if hasClaudeTurnHints || hasRestoreClaudeTurnHints {
+		var result agentsetup.ClaudeTurnHintsConfigurationResult
+		var err error
+		if hasRestoreClaudeTurnHints {
+			var previous agentsetup.ClaudeTurnHintsConfigurationResult
+			if err = json.Unmarshal([]byte(*restoreClaudeTurnHints), &previous); err != nil {
+				return err
+			}
+			result, err = agentsetup.RestoreClaudeTurnHints(*configPath, previous)
+		} else {
+			enabled, parseErr := parseRuntimeEnabled(*claudeTurnHints, "Claude 回合提示卡")
+			if parseErr != nil {
+				return parseErr
+			}
+			result, err = agentsetup.ConfigureClaudeTurnHints(*configPath, enabled)
+		}
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return printJSONTo(stdout, result)
+		}
+		fmt.Fprintln(stdout, result.Message)
+		if result.RestartRequired {
+			fmt.Fprintln(stdout, "配置已更新，需要重启 agentd 后生效。")
+		}
+		return nil
 	}
 	if hasCodex || hasRestoreCodex {
 		ctx, cancel := context.WithTimeout(context.Background(), claudeRuntimeMutationTimeout)
@@ -165,6 +198,17 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		fmt.Fprintln(stdout, "配置已更新，需要重启 agentd 后生效。")
 	}
 	return nil
+}
+
+func parseRuntimeEnabled(raw string, label string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "enabled":
+		return true, nil
+	case "disabled":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s只支持 enabled 或 disabled", label)
+	}
 }
 
 func runDeepSeekRuntime(

@@ -1213,10 +1213,15 @@ struct DefaultModelSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
+    /// 定向补拉不经过 Store 的聚合刷新标记，页面自己记加载中。
+    @State private var isLoadingCatalog = false
+    @State private var didLoadCatalog = false
+    @State private var catalogLoadGeneration = 0
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let runtimes = displayedRuntimes
+        let isRefreshing = isLoadingCatalog || sessionStore.isRefreshingAppServerModels
 
         Form {
             // 两个 runtime 各自一段，不再用分段控件互相遮挡：
@@ -1225,7 +1230,9 @@ struct DefaultModelSettingsView: View {
                 DefaultModelRuntimeSection(
                     runtime: runtime,
                     allOptions: sessionStore.appServerModelOptions,
-                    isRefreshing: sessionStore.isRefreshingAppServerModels,
+                    isRefreshing: isRefreshing,
+                    isCatalogUnavailable: !isRefreshing && didLoadCatalog
+                        && sessionStore.modelCatalogIsMissing(runtimeProvider: runtime.rawValue),
                     tokens: tokens,
                     footer: runtime == runtimes.last
                         ? L10n.text("ui.default_model_settings_description")
@@ -1239,16 +1246,57 @@ struct DefaultModelSettingsView: View {
         .navigationTitle(L10n.text("ui.default_model"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
+        .toolbar {
+            // 与输入框模型菜单里的「刷新模型列表」同一条强制刷新路径。
+            ToolbarItem(placement: .topBarTrailing) {
+                if isRefreshing {
+                    ProgressView()
+                } else {
+                    Button {
+                        Task { await loadCatalog(force: true) }
+                    } label: {
+                        Label(L10n.text("ui.refresh_model_list"), systemImage: "arrow.clockwise")
+                    }
+                    .accessibilityIdentifier("settings.defaultModels.refresh")
+                }
+            }
+        }
         .onAppear {
             normalizeStoredEfforts()
         }
         .onChange(of: sessionStore.appServerModelOptions) { _, _ in
             normalizeStoredEfforts()
         }
-        .task {
-            await sessionStore.refreshAppServerModelOptions()
-            normalizeStoredEfforts()
+        .task(id: catalogLoadKey) {
+            // 进页总要跑一次（顺带复查 DeepSeek 等通道是否已开启）；之后只在换连接清空目录、
+            // 有 Runtime 缺目录时补拉。补拉失败时缺口不变、key 不变，不会反复重试（#871）。
+            guard !didLoadCatalog || !catalogLoadKey.missingRuntimes.isEmpty else { return }
+            await loadCatalog(force: false)
         }
+    }
+
+    private var catalogLoadKey: DefaultModelCatalogLoadKey {
+        DefaultModelCatalogLoadKey(
+            hostScope: sessionStore.appStore.activeHostScope,
+            missingRuntimes: displayedRuntimes.filter {
+                sessionStore.modelCatalogIsMissing(runtimeProvider: $0.rawValue)
+            }
+        )
+    }
+
+    private func loadCatalog(force: Bool) async {
+        catalogLoadGeneration &+= 1
+        let generation = catalogLoadGeneration
+        isLoadingCatalog = true
+        didLoadCatalog = true
+        await sessionStore.refreshDefaultModelCatalog(
+            runtimeProviders: displayedRuntimes.map(\.rawValue),
+            force: force
+        )
+        // 被新一轮取代时由新一轮收尾，旧请求晚到不能提前撤掉加载态。
+        guard catalogLoadGeneration == generation else { return }
+        isLoadingCatalog = false
+        normalizeStoredEfforts()
     }
 
     private func normalizeStoredEfforts() {
@@ -1296,10 +1344,17 @@ struct DefaultModelSettingsView: View {
     }
 }
 
+private struct DefaultModelCatalogLoadKey: Equatable {
+    let hostScope: HostScope
+    let missingRuntimes: [DefaultModelRuntime]
+}
+
 private struct DefaultModelRuntimeSection: View {
     let runtime: DefaultModelRuntime
     let allOptions: [CodexAppServerModelOption]
     let isRefreshing: Bool
+    /// 加载已结束但这台电脑仍没给出该 Runtime 的目录。
+    let isCatalogUnavailable: Bool
     let tokens: ThemeTokens
     let footer: String?
     /// 页面第一段不留组间距。
@@ -1312,6 +1367,7 @@ private struct DefaultModelRuntimeSection: View {
         runtime: DefaultModelRuntime,
         allOptions: [CodexAppServerModelOption],
         isRefreshing: Bool,
+        isCatalogUnavailable: Bool,
         tokens: ThemeTokens,
         footer: String?,
         showsDivider: Bool
@@ -1319,6 +1375,7 @@ private struct DefaultModelRuntimeSection: View {
         self.runtime = runtime
         self.allOptions = allOptions
         self.isRefreshing = isRefreshing
+        self.isCatalogUnavailable = isCatalogUnavailable
         self.tokens = tokens
         self.footer = footer
         self.showsDivider = showsDivider
@@ -1348,7 +1405,10 @@ private struct DefaultModelRuntimeSection: View {
             .settingsRow()
             .accessibilityIdentifier("settings.defaultModels.model.\(runtime.rawValue)")
 
-            if availableEfforts.isEmpty {
+            if selectedModelOption == nil {
+                // 还没有可用模型（DeepSeek 没有内置兜底）时谈不上档位，原因写在本段脚注里；
+                // 不能显示成「此模型不支持推理强度」。
+            } else if availableEfforts.isEmpty {
                 LabeledContent(L10n.text("ui.reasoning_effort")) {
                     Text(L10n.text("ui.no_reasoning_effort_available"))
                         .foregroundStyle(tokens.secondaryText)
@@ -1393,8 +1453,16 @@ private struct DefaultModelRuntimeSection: View {
             SettingsGroupHeader(title: runtime.settingsTitle, showsDivider: showsDivider)
         } footer: {
             Group {
-                if let footer {
-                    Text(footer)
+                if isCatalogUnavailable || footer != nil {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if isCatalogUnavailable {
+                            Text(L10n.format("ui.default_model_catalog_unavailable", runtime.settingsTitle))
+                                .accessibilityIdentifier("settings.defaultModels.unavailable.\(runtime.rawValue)")
+                        }
+                        if let footer {
+                            Text(footer)
+                        }
+                    }
                 }
             }
             .settingsSectionFooterStyle()

@@ -174,6 +174,7 @@ struct ComposerView: View {
             await prepareComposer()
         }
         .onDisappear {
+            sessionStore.invalidateNativePromptSuggestion()
             if sessionStore.activeComposerInstanceID == composerInstanceID {
                 sessionStore.activeComposerInstanceID = nil
             }
@@ -215,6 +216,7 @@ struct ComposerView: View {
                 .environmentObject(themeStore)
             attachmentStrip
             composerStatusRow
+            nativePromptSuggestionNotice
             composerInputRow(tokens: tokens)
         }
         // 零尺寸键盘快捷键不能作为 VStack 的 arranged child：即使自身是 0×0，
@@ -414,6 +416,7 @@ struct ComposerView: View {
             applyExternalDraftAppend(event)
         }
         .onChange(of: selectedSessionRuntimeProviderForModelMenu) { _, _ in
+            sessionStore.invalidateNativePromptSuggestion()
             // 会话 scope 的 onChange 可能稍晚到达。此时仍显示旧 Composer，不能先用新
             // runtime 改写并保存旧会话的模型；scope 切换完成后会统一恢复并校验。
             guard activeComposerDraftScope == currentComposerDraftScope else {
