@@ -7,9 +7,9 @@ final class NotificationContentRewriterTests: XCTestCase {
     private let referenceDate = Date(timeIntervalSince1970: 1_800_000_000)
 
     private static let chinese: [String: String] = [
-        "push.message.body.completed.titled": "已回复，点按查看。",
-        "push.message.body.failed.titled": "任务未能完成，点按查看原因。",
-        "push.message.body.interrupted.titled": "任务已停止，点按查看。",
+        "push.message.body.completed.titled": "发来一条新回复",
+        "push.message.body.failed.titled": "任务没能完成",
+        "push.message.body.interrupted.titled": "任务已停止",
         "push.approval.body.command.titled": "运行命令",
         "push.approval.body.patch.titled": "修改文件",
         "push.approval.body.permission.titled": "授予权限",
@@ -18,9 +18,9 @@ final class NotificationContentRewriterTests: XCTestCase {
     ]
 
     private static let english: [String: String] = [
-        "push.message.body.completed.titled": "Replied. Tap to view.",
-        "push.message.body.failed.titled": "The task could not finish. Tap to see why.",
-        "push.message.body.interrupted.titled": "The task has stopped. Tap to view.",
+        "push.message.body.completed.titled": "Sent you a new reply",
+        "push.message.body.failed.titled": "Couldn't finish the task",
+        "push.message.body.interrupted.titled": "The task stopped",
         "push.approval.body.command.titled": "Run a command",
         "push.approval.body.patch.titled": "Change files",
         "push.approval.body.permission.titled": "Grant a permission",
@@ -32,7 +32,7 @@ final class NotificationContentRewriterTests: XCTestCase {
     private func localizeEnglish(_ key: String) -> String { Self.english[key] ?? key }
 
     func testMessageRewriteInChineseKeepsRoutingFieldsUntouched() throws {
-        let content = systemContent(title: "Codex 消息", body: "AI 已回复，点按查看。", event: "turn.completed", sessionTag: messageTag)
+        let content = systemContent(title: "Codex", body: "系统渲染的正文", event: "turn.completed", sessionTag: messageTag)
         let notification = try XCTUnwrap(LockScreenApprovalNotification(userInfo: content.userInfo))
         let entry = makeEntry(title: "重构登录页", project: "mimi-remote")
 
@@ -41,7 +41,7 @@ final class NotificationContentRewriterTests: XCTestCase {
         )
         XCTAssertEqual(content.title, "重构登录页")
         XCTAssertEqual(content.subtitle, "Codex · mimi-remote")
-        XCTAssertEqual(content.body, "已回复，点按查看。")
+        XCTAssertEqual(content.body, "发来一条新回复")
         XCTAssertEqual(content.threadIdentifier, messageTag)
         XCTAssertEqual(content.categoryIdentifier, "MIMI_APPROVAL_DETAILS")
         XCTAssertNotNil(content.sound, "声音配置不能被改写清掉")
@@ -52,8 +52,8 @@ final class NotificationContentRewriterTests: XCTestCase {
     }
 
     func testFailedAndInterruptedUseTheirOwnBodies() throws {
-        for (event, expected) in [("turn.failed", "任务未能完成，点按查看原因。"), ("turn.interrupted", "任务已停止，点按查看。")] {
-            let content = systemContent(title: "Claude 消息", body: "旧正文", event: event, runtime: "claude", sessionTag: messageTag)
+        for (event, expected) in [("turn.failed", "任务没能完成"), ("turn.interrupted", "任务已停止")] {
+            let content = systemContent(title: "Claude Code", body: "旧正文", event: event, runtime: "claude", sessionTag: messageTag)
             let notification = try XCTUnwrap(LockScreenApprovalNotification(userInfo: content.userInfo))
             XCTAssertTrue(
                 NotificationContentRewriter.rewrite(content, notification: notification, entry: makeEntry(), localize: localizeChinese)
@@ -121,27 +121,27 @@ final class NotificationContentRewriterTests: XCTestCase {
     }
 
     func testCacheMissLeavesContentUntouched() throws {
-        let content = systemContent(title: "Codex 消息", body: "AI 已回复，点按查看。", event: "turn.completed", sessionTag: messageTag)
+        let content = systemContent(title: "Codex", body: "系统渲染的正文", event: "turn.completed", sessionTag: messageTag)
         let notification = try XCTUnwrap(LockScreenApprovalNotification(userInfo: content.userInfo))
 
         XCTAssertFalse(
             NotificationContentRewriter.rewrite(content, notification: notification, entry: nil, localize: localizeChinese)
         )
-        XCTAssertEqual(content.title, "Codex 消息")
+        XCTAssertEqual(content.title, "Codex")
         XCTAssertEqual(content.subtitle, "")
-        XCTAssertEqual(content.body, "AI 已回复，点按查看。")
+        XCTAssertEqual(content.body, "系统渲染的正文")
         XCTAssertEqual(content.threadIdentifier, messageTag)
     }
 
     func testEmptyTitleEntryDoesNotRewrite() throws {
-        let content = systemContent(title: "Codex 消息", body: "旧正文", event: "turn.completed", sessionTag: messageTag)
+        let content = systemContent(title: "Codex", body: "旧正文", event: "turn.completed", sessionTag: messageTag)
         let notification = try XCTUnwrap(LockScreenApprovalNotification(userInfo: content.userInfo))
         let entry = NotificationTitleCache.Entry(title: "   ", project: "p", runtime: "codex", hostName: "h", updatedAt: referenceDate)
 
         XCTAssertFalse(
             NotificationContentRewriter.rewrite(content, notification: notification, entry: entry, localize: localizeChinese)
         )
-        XCTAssertEqual(content.title, "Codex 消息")
+        XCTAssertEqual(content.title, "Codex")
         XCTAssertEqual(content.body, "旧正文")
     }
 
@@ -161,7 +161,7 @@ final class NotificationContentRewriterTests: XCTestCase {
             "项目与主机为空时不留悬空分隔符"
         )
 
-        let content = systemContent(title: "Codex 消息", body: "b", event: "turn.completed", sessionTag: messageTag)
+        let content = systemContent(title: "Codex", body: "b", event: "turn.completed", sessionTag: messageTag)
         let notification = try XCTUnwrap(LockScreenApprovalNotification(userInfo: content.userInfo))
         XCTAssertTrue(
             NotificationContentRewriter.rewrite(
@@ -182,14 +182,14 @@ final class NotificationContentRewriterTests: XCTestCase {
     }
 
     func testMissingLocalizationKeepsSystemRenderedBody() throws {
-        let content = systemContent(title: "Codex 消息", body: "AI 已回复，点按查看。", event: "turn.completed", sessionTag: messageTag)
+        let content = systemContent(title: "Codex", body: "系统渲染的正文", event: "turn.completed", sessionTag: messageTag)
         let notification = try XCTUnwrap(LockScreenApprovalNotification(userInfo: content.userInfo))
 
         XCTAssertTrue(
             NotificationContentRewriter.rewrite(content, notification: notification, entry: makeEntry(title: "重构登录页"), localize: { $0 })
         )
         XCTAssertEqual(content.title, "重构登录页", "标题仍改写")
-        XCTAssertEqual(content.body, "AI 已回复，点按查看。", "文案缺失时保留系统渲染的正文而不是裸 key")
+        XCTAssertEqual(content.body, "系统渲染的正文", "文案缺失时保留系统渲染的正文而不是裸 key")
     }
 
     func testRuntimeDisplayNames() {

@@ -1,7 +1,7 @@
 import Foundation
 import UserNotifications
 
-/// 在设备上把 Provider 的通用文案（「Codex 消息 / AI 已回复」）改写成会话标题。
+/// 在设备上把 Provider 的通用文案（「Codex / 发来一条新回复」）改写成会话标题。
 ///
 /// 纯函数：输入推送解码结果与本地缓存条目，只改标题、副标题、正文。
 /// threadIdentifier、category、userInfo、声音与打断级别一律不碰——它们决定

@@ -1,41 +1,57 @@
+import StoreKit
 import SwiftUI
 
 struct ManagedConnectionSubscriptionView: View {
+    static let entryInfoPlistKey = "MimiManagedConnectionEntry"
+    static let debugEntryLaunchArgument = "--debug-enable-managed-connection"
+
     static var isEntryVisible: Bool {
-        // 托管连接尚未开放；仅本地 Debug 显式开启入口，不改变已有连接功能。
 #if DEBUG
-        ProcessInfo.processInfo.arguments.contains("--debug-enable-managed-connection")
+        let allowsDebugLaunchArgument = true
 #else
-        false
+        let allowsDebugLaunchArgument = false
 #endif
+        return isEntryVisible(
+            infoPlistValue: Bundle.main.object(forInfoDictionaryKey: entryInfoPlistKey),
+            launchArguments: ProcessInfo.processInfo.arguments,
+            allowsDebugLaunchArgument: allowsDebugLaunchArgument
+        )
+    }
+
+    /// 托管连接尚未在 App Store 开放（#887）。只有发布脚本显式写入 Info.plist 的内部
+    /// TestFlight 构建，或带启动参数的 Debug 构建才显示入口。不按运行时 Sandbox
+    /// 环境判断：审核设备同样处于 Sandbox，那样会把未开放的付费页露给审核。
+    static func isEntryVisible(
+        infoPlistValue: Any?,
+        launchArguments: [String],
+        allowsDebugLaunchArgument: Bool
+    ) -> Bool {
+        if (infoPlistValue as? String) == "YES" {
+            return true
+        }
+        return allowsDebugLaunchArgument && launchArguments.contains(debugEntryLaunchArgument)
     }
 
     @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var appStore: AppStore
-    @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var entitlementStore: ManagedConnectionEntitlementStore
-    @EnvironmentObject private var deviceStore: ManagedConnectionDeviceStore
-    @EnvironmentObject private var tailcatController: TailcatExperimentController
-    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @EnvironmentObject private var themeStore: ThemeStore
-    @State private var pendingRemoval: ManagedConnectionDevice?
-    @State private var localError: String?
     @State private var restoreResult: ManagedConnectionEntitlementStore.RestoreResult?
-    @State private var isConnectingMac = false
-    @State private var isChangingRoute = false
-    @State private var managedRouteError: String?
+    @State private var isManagingSubscription = false
 
+    /// 「我的」里的订阅页：只管买与订阅。线路、接入电脑与设备名额在「设备」里的
+    /// 托管线路与设备页（#891），这里只放一行跳转，不复制那边的控件。
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Form {
-            statusSection
-            if appStore.activeConnectionProfile?.connectionRoute.isManaged == true {
-                managedRouteSection
+            if case .available = entitlementStore.status {
+                // 还没订阅时先讲清用途，状态行只会显示「未订阅」，没有信息量。
+                benefitsSection
+            } else {
+                statusSection
             }
             if isEntitled {
-                connectionSection
-                devicesSection
+                subscribedActionsSection
             }
             productsSection
             subscriptionInformationSection
@@ -50,11 +66,6 @@ struct ManagedConnectionSubscriptionView: View {
                 await entitlementStore.load()
             }
         }
-        .task(id: entitlementStore.currentGrant?.entitlement.id) {
-            guard isEntitled else { return }
-            await deviceStore.refreshDevices()
-        }
-        .onAppear(perform: configureManagedScanner)
         .alert(
             L10n.text("ui.restore_purchases"),
             isPresented: Binding(
@@ -71,47 +82,50 @@ struct ManagedConnectionSubscriptionView: View {
                     : "ui.managed_subscription_restore_empty"
             ))
         }
-        // 托管页请求扫码时它自己是栈顶页面，Cover 必须挂在这里才会真正呈现。
-        .fullScreenCover(
-            item: qrScannerPresentation.presentationBinding(for: .managedConnection),
-            onDismiss: qrScannerPresentation.didDismiss
-        ) { intent in
-            QRCodeScannerSheet(
-                onDismiss: qrScannerPresentation.dismiss,
-                onChooseManualConnection: {
-                    qrScannerPresentation.chooseManualConnection(for: intent)
-                },
-                onCode: { rawValue in
-                    await qrScannerPresentation.submit(rawValue, intent: intent)
-                }
-            )
-        }
+#if !targetEnvironment(macCatalyst)
+        .manageSubscriptionsSheet(isPresented: $isManagingSubscription)
+#endif
         .refreshable {
             await entitlementStore.load()
-            if isEntitled {
-                await deviceStore.refreshDevices()
-            }
-        }
-        .confirmationDialog(
-            L10n.text("ui.managed_devices_remove_title"),
-            isPresented: Binding(
-                get: { pendingRemoval != nil },
-                set: { if !$0 { pendingRemoval = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button(L10n.text("ui.managed_devices_remove_action"), role: .destructive) {
-                guard let device = pendingRemoval else { return }
-                pendingRemoval = nil
-                Task { await deviceStore.removeDevice(device) }
-            }
-            Button(L10n.text("ui.cancel"), role: .cancel) {
-                pendingRemoval = nil
-            }
-        } message: {
-            Text(L10n.text("ui.managed_devices_remove_message"))
         }
         .accessibilityIdentifier("settings.managedSubscription.detail")
+    }
+
+    /// 「我的」首页这一行右侧的短状态。还在检查时不显示，避免一闪而过的占位文字。
+    static func statusSummary(_ status: ManagedConnectionEntitlementStore.Status) -> String? {
+        switch status {
+        case .loading, .resolving, .failed:
+            return nil
+        case .available:
+            return L10n.text("ui.managed_subscription_not_active")
+        case .pending:
+            return L10n.text("ui.managed_subscription_short_pending")
+        case .expired:
+            return L10n.text("ui.managed_subscription_short_expired")
+        case .revoked:
+            return L10n.text("ui.managed_subscription_short_revoked")
+        case .entitled(let entitlement):
+            switch entitlement.status {
+            case .trial:
+                return L10n.text("ui.managed_subscription_short_trial")
+            case .grace:
+                return L10n.text("ui.managed_subscription_short_grace")
+            case .active:
+                return L10n.text("ui.managed_subscription_short_active")
+            case .expired:
+                return L10n.text("ui.managed_subscription_short_expired")
+            case .revoked:
+                return L10n.text("ui.managed_subscription_short_revoked")
+            }
+        }
+    }
+
+    /// 年付排在前面：远程连接是长期需求，年付是推荐方案。
+    static func displayOrder(_ products: [ManagedConnectionProduct]) -> [ManagedConnectionProduct] {
+        products.sorted { lhs, rhs in
+            (lhs.id == ManagedConnectionProductID.annual ? 0 : 1)
+                < (rhs.id == ManagedConnectionProductID.annual ? 0 : 1)
+        }
     }
 
     private var isEntitled: Bool {
@@ -202,366 +216,85 @@ struct ManagedConnectionSubscriptionView: View {
         }
     }
 
-    private var connectionSection: some View {
+    private var benefitsSection: some View {
         Section {
-            Button {
-                localError = nil
-                qrScannerPresentation.request(
-                    appStore.activeConnectionProfile == nil
-                        ? .initialConnection
-                        : .addConnectionProfile,
-                    from: .managedConnection
-                )
-            } label: {
-                Label(L10n.text("ui.managed_devices_connect_mac"), systemImage: "qrcode.viewfinder")
-                    .settingsRow()
-            }
-            .disabled(isConnectingMac || entitlementStore.isBusy)
-            .accessibilityIdentifier("settings.managedSubscription.connectMac")
-
-            if isConnectingMac {
-                HStack(spacing: 12) {
-                    ProgressView()
-                    Text(L10n.text("ui.managed_devices_connecting"))
-                }
-                .accessibilityElement(children: .combine)
-            }
-
-            if let localError {
-                Label(localError, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(tokens.warning)
-            }
-        } header: {
-            SettingsGroupHeader(title: L10n.text("ui.managed_devices_connection"))
-        } footer: {
-            Text(L10n.text("ui.managed_devices_rescan_notice"))
-                .settingsSectionFooterStyle()
-        }
-        .settingsGroupRowStyle()
-    }
-
-    private var managedRouteSection: some View {
-        Section {
-            Label(managedRouteStatusText, systemImage: managedRouteStatusImage)
-                .foregroundStyle(managedRouteStatusColor)
-
-            if let diagnostic = tailcatController.lastDiagnostic {
-                Label(diagnostic.summary, systemImage: "point.3.connected.trianglepath.dotted")
-                if let requestSummary = diagnostic.requestSummary {
-                    Label(requestSummary, systemImage: "stopwatch")
-                }
-            }
-
-            if showsManagedRecoveryActions {
-                Button {
-                    performRouteChange { await sessionStore.retryManagedConnection() }
-                } label: {
-                    Label(L10n.text("ui.managed_connection_retry"), systemImage: "arrow.clockwise")
-                        .frame(minHeight: 44)
-                }
-                .disabled(isChangingRoute)
-                .accessibilityIdentifier("settings.managedConnection.retry")
-
-                Button {
-                    performRouteChange { await sessionStore.useSavedConnectionRouteOnce(.tailscale) }
-                } label: {
-                    Label(L10n.text("ui.managed_connection_use_tailscale_once"), systemImage: "network")
-                        .frame(minHeight: 44)
-                }
-                .disabled(isChangingRoute || !appStore.canUseSavedFallback(.tailscale))
-                .accessibilityIdentifier("settings.managedConnection.useTailscaleOnce")
-
-                Button {
-                    performRouteChange { await sessionStore.useSavedConnectionRouteOnce(.lan) }
-                } label: {
-                    Label(L10n.text("ui.managed_connection_use_lan_once"), systemImage: "wifi.router")
-                        .frame(minHeight: 44)
-                }
-                .disabled(isChangingRoute || !appStore.canUseSavedFallback(.lan))
-                .accessibilityIdentifier("settings.managedConnection.useLANOnce")
-            }
-
-            if isChangingRoute {
-                HStack(spacing: 12) {
-                    ProgressView()
-                    Text(L10n.text("ui.connecting"))
-                }
-                .accessibilityElement(children: .combine)
-            }
-
-            if let managedRouteError {
-                Label(managedRouteError, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(tokens.warning)
-            }
-        } header: {
-            SettingsGroupHeader(title: L10n.text("ui.managed_connection_route_status"))
-        } footer: {
-            Group {
-                if showsManagedRecoveryActions {
-                    Text(L10n.text("ui.managed_connection_fallback_notice"))
-                }
-            }
-            .settingsSectionFooterStyle()
-        }
-        .settingsGroupRowStyle()
-    }
-
-    private var showsManagedRecoveryActions: Bool {
-        let connectionFailed: Bool
-        if case .failed = appStore.connectionStatus {
-            connectionFailed = true
-        } else {
-            connectionFailed = false
-        }
-        return Self.showsManagedRecoveryActions(
-            tailcatState: tailcatController.state,
-            connectionFailed: connectionFailed
-        )
-    }
-
-    static func showsManagedRecoveryActions(
-        tailcatState: TailcatExperimentState,
-        connectionFailed: Bool
-    ) -> Bool {
-        switch tailcatState {
-        case .usingTemporaryRoute, .failed, .unavailable, .needsAddress:
-            return true
-        case .disabled, .starting, .connected:
-            return connectionFailed
-        }
-    }
-
-    private var managedRouteStatusText: String {
-        switch tailcatController.state {
-        case .disabled, .needsAddress:
-            return L10n.text("ui.tailcat_needs_address")
-        case .starting:
-            return L10n.text("ui.connecting")
-        case .connected:
-            return L10n.text("ui.connected")
-        case .usingTemporaryRoute(let route):
-            return L10n.format("ui.managed_connection_using_temporary_route", route.title)
-        case .failed(let message):
-            return L10n.format("ui.tailcat_connection_failed_value", message)
-        case .unavailable:
-            return L10n.text("ui.tailcat_framework_unavailable")
-        }
-    }
-
-    private var managedRouteStatusImage: String {
-        switch tailcatController.state {
-        case .connected:
-            return "checkmark.circle.fill"
-        case .usingTemporaryRoute:
-            return "arrow.triangle.branch"
-        case .failed, .unavailable:
-            return "exclamationmark.triangle.fill"
-        case .starting:
-            return "arrow.trianglehead.2.clockwise.rotate.90"
-        case .disabled, .needsAddress:
-            return "circle.dashed"
-        }
-    }
-
-    private var managedRouteStatusColor: Color {
-        switch tailcatController.state {
-        case .connected:
-            return .green
-        case .failed, .unavailable:
-            return .orange
-        case .disabled, .needsAddress, .starting, .usingTemporaryRoute:
-            return .secondary
-        }
-    }
-
-    private func performRouteChange(_ operation: @escaping @MainActor () async -> Bool) {
-        guard !isChangingRoute else { return }
-        isChangingRoute = true
-        managedRouteError = nil
-        Task { @MainActor in
-            let succeeded = await operation()
-            if !succeeded {
-                managedRouteError = appStore.lastError ?? L10n.text("ui.managed_devices_network_error")
-            }
-            isChangingRoute = false
-        }
-    }
-
-    private var devicesSection: some View {
-        Section {
-            HStack(spacing: 16) {
-                deviceUsageLabel(
-                    title: L10n.text("ui.managed_devices_mac"),
-                    systemImage: "laptopcomputer",
-                    count: deviceStore.macCount,
-                    limit: ManagedConnectionDeviceStore.macLimit
-                )
-                Spacer(minLength: 8)
-                deviceUsageLabel(
-                    title: L10n.text("ui.managed_devices_mobile"),
-                    systemImage: "iphone.and.arrow.forward",
-                    count: deviceStore.mobileCount,
-                    limit: ManagedConnectionDeviceStore.mobileLimit
-                )
-            }
-            .accessibilityElement(children: .contain)
-
-            if deviceStore.isRefreshing, deviceStore.devices.isEmpty {
-                HStack(spacing: 12) {
-                    ProgressView()
-                    Text(L10n.text("ui.managed_devices_loading"))
-                }
-                .accessibilityElement(children: .combine)
-            } else if deviceStore.devices.isEmpty {
-                Text(L10n.text("ui.managed_devices_empty"))
-                    .foregroundStyle(tokens.secondaryText)
-            } else {
-                ForEach(deviceStore.devices) { device in
-                    deviceRow(device)
-                }
-            }
-
-            if let message = deviceStore.errorMessage {
-                VStack(alignment: .leading, spacing: 10) {
-                    Label(message, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(tokens.warning)
-                    Button(L10n.text("ui.retry")) {
-                        Task { await deviceStore.refreshDevices() }
-                    }
-                    .disabled(deviceStore.isRefreshing)
-                }
-            }
-        } header: {
-            SettingsGroupHeader(title: L10n.text("ui.managed_devices_title"))
-        } footer: {
-            Text(L10n.text("ui.managed_devices_privacy_notice"))
-                .settingsSectionFooterStyle()
-        }
-        .settingsGroupRowStyle()
-    }
-
-    private func deviceUsageLabel(
-        title: String,
-        systemImage: String,
-        count: Int,
-        limit: Int
-    ) -> some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(themeStore.uiFont(.subheadline))
-                Text(L10n.format("ui.managed_devices_usage", count, limit))
+            VStack(alignment: .leading, spacing: 6) {
+                Text(L10n.text("ui.managed_plan_headline"))
+                    .font(themeStore.uiFont(.headline))
+                    .foregroundStyle(tokens.primaryText)
+                Text(L10n.text("ui.managed_plan_subtitle"))
                     .font(themeStore.uiFont(.footnote))
                     .foregroundStyle(tokens.secondaryText)
-                    .monospacedDigit()
             }
-        } icon: {
-            Image(systemName: systemImage)
-        }
-    }
+            .fixedSize(horizontal: false, vertical: true)
+            .settingsRow(.descriptive)
+            .accessibilityElement(children: .combine)
 
-    private func deviceRow(_ device: ManagedConnectionDevice) -> some View {
-        HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
-            Image(systemName: device.deviceType == .mac ? "laptopcomputer" : "iphone")
-                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
-                .frame(width: SettingsLayoutMetrics.iconSlot)
-                .foregroundStyle(tokens.settingsIconTint)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(device.deviceType == .mac
-                        ? L10n.text("ui.managed_devices_mac")
-                        : L10n.text("ui.managed_devices_mobile"))
-                    if device.id == deviceStore.currentDeviceID {
-                        Text(L10n.text("ui.managed_devices_this_device"))
-                            .font(.caption)
-                            .foregroundStyle(tokens.secondaryText)
-                    }
+            ForEach(Self.benefits, id: \.text) { benefit in
+                Label {
+                    Text(benefit.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: benefit.systemImage)
+                        .foregroundStyle(tokens.settingsIconTint)
                 }
-                Text(
-                    L10n.format(
-                        "ui.managed_devices_added_detail",
-                        device.createdAt.formatted(date: .abbreviated, time: .shortened),
-                        String(device.id.suffix(4)).uppercased()
-                    )
-                )
-                .font(themeStore.uiFont(.footnote))
-                .foregroundStyle(tokens.secondaryText)
+                .settingsRow(.descriptive)
             }
-            Spacer(minLength: 8)
-            if deviceStore.removingDeviceID == device.id {
-                ProgressView()
-            } else {
-                Button(role: .destructive) {
-                    pendingRemoval = device
-                } label: {
-                    Image(systemName: "trash")
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(L10n.text("ui.managed_devices_remove_action"))
-            }
+        } header: {
+            SettingsGroupHeader(title: L10n.text("ui.managed_plan_benefits"), showsDivider: false)
         }
-        .settingsRow(.descriptive)
-        .accessibilityElement(children: .contain)
+        .settingsGroupRowStyle()
+        .accessibilityIdentifier("settings.managedSubscription.benefits")
     }
 
-    private func configureManagedScanner() {
-        qrScannerPresentation.configure(
-            onSubmit: { rawValue, intent in
-                await applyManagedPairing(rawValue, intent: intent)
-            },
-            onChooseManualConnection: { _ in
-                localError = L10n.text("ui.managed_devices_qr_required")
-            },
-            onDismiss: {}
-        )
+    private static var benefits: [(text: String, systemImage: String)] {
+        [
+            (L10n.text("ui.managed_plan_benefit_no_setup"), "checkmark.circle"),
+            (L10n.text("ui.managed_plan_benefit_relay"), "point.3.connected.trianglepath.dotted"),
+            (L10n.text("ui.managed_plan_benefit_private"), "lock"),
+            (L10n.text("ui.managed_plan_benefit_devices"), "laptopcomputer.and.iphone")
+        ]
     }
 
-    private func applyManagedPairing(
-        _ rawValue: String,
-        intent: ConnectionQRCodeScanIntent
-    ) async -> QRCodeScannerSubmissionResult {
-        isConnectingMac = true
-        defer { isConnectingMac = false }
-        do {
-            guard isEntitled else {
-                throw ManagedConnectionDeviceStoreError.subscriptionRequired
-            }
-            let raw = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let url = URL(string: raw),
-                  let link = try TailcatPairingLink.parse(url),
-                  link.managedMacInstallationID != nil,
-                  link.managedMacTailcatPublicKey != nil else {
-                throw ManagedConnectionDeviceStoreError.managedQRCodeRequired
-            }
-            let wasConfigured = appStore.isConfigured
-            if appStore.activeConnectionProfile == nil {
-                _ = try await sessionStore.applyManagedPairingURL(url)
-            } else {
-                _ = try await sessionStore.addManagedConnectionProfile(
-                    pairingURL: url,
-                    displayName: ""
+    private var subscribedActionsSection: some View {
+        Section {
+            NavigationLink(value: SettingsDestination.managedConnectionDevices) {
+                SettingsValueLabel(
+                    title: L10n.text("ui.managed_route_and_devices_title"),
+                    systemImage: "point.3.connected.trianglepath.dotted"
                 )
             }
-            localError = nil
-            Task { @MainActor in
-                _ = await sessionStore.refreshAfterConnectionCommit(
-                    maxWait: wasConfigured ? 10 : 45
-                )
-            }
-            return .accepted(
-                intent.addsConnectionProfile
-                    ? L10n.text("ui.added_and_switched_to_this_mac")
-                    : L10n.text("ui.this_mac_is_connected")
+            .settingsStandardListRow()
+            .accessibilityIdentifier("settings.managedSubscription.devices")
+
+            manageSubscriptionButton
+        }
+        .settingsGroupRowStyle()
+    }
+
+    @ViewBuilder
+    private var manageSubscriptionButton: some View {
+#if targetEnvironment(macCatalyst)
+        Link(destination: AppExternalLinks.manageSubscriptions) {
+            SettingsValueLabel(
+                title: L10n.text("ui.managed_plan_manage_subscription"),
+                systemImage: "creditcard"
             )
-        } catch is CancellationError {
-            return .rejected(L10n.text("ui.the_code_scan_has_been_cancelled_please_scan"))
-        } catch {
-            let message = error.localizedDescription
-            localError = message
-            return .rejected(message)
         }
+        .settingsStandardListRow()
+        .accessibilityIdentifier("settings.managedSubscription.manage")
+#else
+        Button {
+            isManagingSubscription = true
+        } label: {
+            SettingsValueLabel(
+                title: L10n.text("ui.managed_plan_manage_subscription"),
+                systemImage: "creditcard"
+            )
+        }
+        .settingsStandardListRow()
+        .accessibilityIdentifier("settings.managedSubscription.manage")
+#endif
     }
 
     @ViewBuilder
@@ -571,7 +304,7 @@ struct ManagedConnectionSubscriptionView: View {
                 Text(L10n.text("ui.managed_subscription_product_unavailable"))
                     .foregroundStyle(tokens.secondaryText)
             } else {
-                ForEach(entitlementStore.products) { product in
+                ForEach(Self.displayOrder(entitlementStore.products)) { product in
                     Button {
                         Task { await entitlementStore.purchase(productID: product.id) }
                     } label: {

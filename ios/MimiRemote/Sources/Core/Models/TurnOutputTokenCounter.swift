@@ -14,6 +14,8 @@ struct AppServerTokenUsageSample: Hashable, Sendable {
     let total: Breakdown
     /// 最近一次模型响应的用量。旧协议可能缺失，此时退回用 total 的输出增量。
     let last: Breakdown?
+    /// 模型上下文窗口大小；协议允许为 null，缺失时不展示上下文剩余比例。
+    var modelContextWindow: Int? = nil
 }
 
 /// 单个会话当前一轮的输出 token 计数。

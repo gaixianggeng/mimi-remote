@@ -138,6 +138,33 @@ final class LockScreenApprovalRoutingTests: XCTestCase {
         } catch LockScreenApprovalRoutingError.sourceCredentialUnavailable {}
     }
 
+    /// #830：后台内存凭据被清空后，`AppStore.client()` 只会抛合成的 CancellationError；
+    /// 实时活动在后台登记要改从 Keychain 取当前档案的凭据。
+    func testMaintenanceClientReadsKeychainWhileCredentialsSuspended() async throws {
+        let suite = "LockScreenApprovalRoutingTests.Maintenance.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let profile = ConnectionProfile(
+            id: "mac-a", displayName: "mac-a", endpoint: "http://100.64.0.10:8787", lastSuccessfulAt: nil
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v1")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+        let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+
+        let foreground = try await LockScreenApprovalRouting.maintenanceClient(profileID: "mac-a", appStore: store)
+        XCTAssertEqual(foreground.token, "token-a")
+        XCTAssertEqual(foreground.endpoint, try store.client().endpoint, "前台沿用当前连接")
+
+        store.suspendCredentialsForBackground()
+        XCTAssertThrowsError(try store.client()) { XCTAssertTrue($0 is CancellationError) }
+        let background = try await LockScreenApprovalRouting.maintenanceClient(profileID: "mac-a", appStore: store)
+        XCTAssertEqual(background.token, "token-a")
+        XCTAssertEqual(background.endpoint, "http://100.64.0.10:8787")
+    }
+
     private func fixture() throws -> (AppStore, TokenStore, UserDefaults, String) {
         let suite = "LockScreenApprovalRoutingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

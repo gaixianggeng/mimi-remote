@@ -124,11 +124,13 @@ type Router struct {
 	claudeBridge     *claudeBridgeSupervisor
 	// Harness 原生资源由独立 owner 关闭和限流，Router 只负责入口与组合。
 	// harnessTurnPush 在手机离线后继续观察经 Mimi 提交的 DeepSeek 回合，结束时推送提醒。
-	harnessNative                 harnessNativeResources
-	harnessTurnPush               harnessTurnPushWatchers
-	tailcat                       tailcatSidecar
-	managedPairing                managedPairingService
-	tailcatLocalToken             string
+	harnessNative     harnessNativeResources
+	harnessTurnPush   harnessTurnPushWatchers
+	tailcat           tailcatSidecar
+	managedPairing    managedPairingService
+	tailcatLocalToken string
+	// 覆盖一次远程升级的完整流程，防止本机控制或自建 claim 在确认检查后插队。
+	tailcatControlMu              sync.Mutex
 	managedWorktreesMu            sync.Mutex
 	managedWorktrees              map[string]managedWorktree
 	managedWorktreeCleanupMu      sync.Mutex
@@ -257,6 +259,8 @@ func NewRouterWithInstallationIDAndOptions(
 		InstallationID:  installationID,
 		DeviceStorePath: pushDeviceStorePath(options.ConfigPath),
 		RouteStorePath:  pushRouteStorePath(options.ConfigPath),
+		// 活动票据与设备注册表同目录（#830）。
+		ActivityTicketStorePath: pushLiveActivityStorePath(options.ConfigPath),
 	})
 	mux := http.NewServeMux()
 	r.registerLocalDiagnostics(mux, options.DiagnosticControlToken)
@@ -274,6 +278,11 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/diagnostics/relay", authed(http.HandlerFunc(r.relayDiagnosticsHandler)))
 	mux.Handle("/api/diagnostics/tailscale-path", authed(http.HandlerFunc(r.tailscaleNetworkPathHandler)))
 	mux.Handle("/api/local/tailcat", authed(http.HandlerFunc(r.tailcatLocalHandler)))
+	// 升级会清除自建配对，必须使用 Bearer；开发免鉴权和 query token 均不适用。
+	tailcatPairingAuth := auth.NewWithOptions(cfg.Auth.Token, false, auth.Options{})
+	mux.Handle("/api/tailcat/managed-pairing-link", tailcatPairingAuth.Middleware(
+		protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatManagedPairingLinkHandler)),
+	))
 	if cfg.Debug.EnableCodexHistory && cfg.Codex.IsEnabled() {
 		mux.Handle("/api/debug/codex-history", authed(http.HandlerFunc(r.codexHistoryDebugHandler)))
 	} else {
@@ -294,6 +303,7 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/capabilities/list", authed(http.HandlerFunc(r.capabilityListHandler)))
 	mux.Handle("/api/push/status", authed(http.HandlerFunc(r.pushStatusHandler)))
 	mux.Handle("/api/push/devices", authed(http.HandlerFunc(r.pushDeviceHandler)))
+	mux.Handle("/api/push/live-activities", authed(http.HandlerFunc(r.pushLiveActivityHandler)))
 	mux.Handle("/api/push/actions/route", authed(http.HandlerFunc(r.pushActionRouteHandler)))
 	mux.Handle("/api/push/actions/decide", authed(http.HandlerFunc(r.pushDecideHandler)))
 	mux.Handle("/api/actions/list", authed(http.HandlerFunc(r.commandActionListHandler)))

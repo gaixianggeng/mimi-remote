@@ -63,3 +63,8 @@ func notificationSessionTag(event, threadID string) string {
 	digest := sha256.Sum256([]byte("mimi-tag:session:" + strings.TrimSpace(threadID)))
 	return strings.ToUpper(hex.EncodeToString(digest[:]))[:16]
 }
+
+// MessageSessionTag 是回复提醒与 Live Activity 共用的 16 位会话标签；App 的标题缓存按它建键。
+func MessageSessionTag(threadID string) string {
+	return notificationSessionTag(EventTurnCompleted, threadID)
+}

@@ -195,10 +195,16 @@ extension SessionStore {
                 return
             }
             HostSwitchSignpost.event("runtime_event_app_received")
-            if let metadata = self.metadata(for: event) {
-                self.recordEventWatermark(metadata, fallbackSessionID: session.id)
+            let scopedEvent = event.bindingPromptSuggestion(to: connectionGeneration)
+            switch scopedEvent {
+            case .promptSuggestion:
+                break
+            default:
+                if let metadata = self.metadata(for: scopedEvent) {
+                    self.recordEventWatermark(metadata, fallbackSessionID: session.id)
+                }
             }
-            let shouldFlushImmediately = terminalStreamStore.append(event, lease: eventLease)
+            let shouldFlushImmediately = terminalStreamStore.append(scopedEvent, lease: eventLease)
             HostSwitchSignpost.event("runtime_event_mailbox_enqueued")
             self.scheduleRuntimeEventFlush(lease: eventLease, immediately: shouldFlushImmediately)
         }
@@ -1068,6 +1074,10 @@ extension SessionStore {
 
     func applyRuntimeEvent(_ event: AgentEvent, lease: HostSessionLease, sendsNotification: Bool = true) async {
         guard appStore.activeHostScope == lease.hostScope else { return }
+        if case .promptSuggestion = event {
+            observeNativePromptSuggestion(event, lease: lease)
+            return
+        }
         let sessionID = lease.sessionID
         let replayAckSocket = replayBoundarySocket(for: event, fallbackSessionID: sessionID)
         defer {
@@ -1087,6 +1097,7 @@ extension SessionStore {
             // 不能再把 completed 会话写回 running；新 turn 会先由 turnStarted 建立 activeTurnID。
             return
         }
+        observeNativePromptSuggestion(event, lease: lease)
         if case .turnCompleted(let metadata) = event {
             cancelTurnCompletionReconciliation(
                 sessionID: metadata.sessionID ?? sessionID
@@ -1598,6 +1609,7 @@ extension SessionStore {
              .collaborationModeUpdated(_, let metadata),
              .goalUpdated(_, let metadata),
              .goalCleared(let metadata),
+             .promptSuggestion(_, let metadata),
              .turnStarted(let metadata),
              .assistantDelta(_, let metadata),
              .messageCompleted(_, let metadata),
@@ -1660,7 +1672,9 @@ extension SessionStore {
                 body: sessionDisplayTitle(sessionID: sessionID),
                 kind: notification.kind
             )
-        case .sessionStatus(let status, let metadata) where status == "failed":
+        // 带轮次终态的失败状态是从持久记录恢复的旧结局（Harness 冷开会话），这一轮的提醒
+        // 已由实时 turnCompleted 负责；重开会话时再弹一次「会话失败」是误报（#861）。
+        case .sessionStatus(let status, let metadata) where status == "failed" && metadata.turnLifecycle == nil:
             let sessionID = metadata.sessionID ?? fallbackSessionID
             let token = metadata.turnID ?? metadata.seq.map(String.init) ?? "latest"
             return SessionRuntimeNotification(
@@ -1761,6 +1775,7 @@ extension SessionStore {
                 return
             }
             let sessionID = metadata.sessionID ?? fallbackSessionID
+            recordContextWindowUsage(sample, sessionID: sessionID)
             let next = TurnOutputTokenCounter.applying(
                 sample,
                 turnID: metadata.turnID,
@@ -1770,7 +1785,7 @@ extension SessionStore {
                 turnOutputTokensBySessionID[sessionID] = next
             }
         case .permissionProfileUpdated, .collaborationModeUpdated,
-             .goalUpdated, .goalCleared, .unknown:
+             .goalUpdated, .goalCleared, .promptSuggestion, .unknown:
             return
         }
     }
@@ -2867,6 +2882,7 @@ extension SessionStore {
         // endpoint 切换后 session/project ID 可能重复；旧 Mac 的草稿不能恢复到新连接。
         clearFileUploadsForConnectionChange()
         composerDraftCache.removeAll()
+        invalidateNativePromptSuggestion()
         composerModelSelectionCache.removeAll()
         composerPermissionSelectionCache.removeAll()
         composerSendModeCache.removeAll()
@@ -3033,6 +3049,8 @@ extension SessionStore {
         foregroundActivityBySessionID = [:]
         runtimeActivityBySessionID = [:]
         turnOutputTokensBySessionID = [:]
+        contextWindowUsageBySessionID = [:]
+        dismissedContextWindowNoticeSessionIDs = []
         locallyCompletedSessionIDs = []
         locallyCompletedSessionMarks = [:]
         locallyCompletedGoalThreadIDs = []

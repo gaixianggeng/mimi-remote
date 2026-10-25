@@ -71,17 +71,39 @@ if (-not $AdapterBinary) {
 $output = if ([IO.Path]::IsPathRooted($OutputDirectory)) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $root $OutputDirectory }
 $iconSource = Join-Path $root 'packaging\windows\mimi-remote.ico'
 if (-not (Test-Path -LiteralPath $iconSource -PathType Leaf)) { throw "Windows icon not found: $iconSource" }
+# 安装包随附的 Go、Tailcat、Claude 适配器许可正文以仓库内受门禁校验的这一份为准，不另维护副本。
+$noticesSource = Join-Path $root 'THIRD_PARTY_NOTICES.md'
+if (-not (Test-Path -LiteralPath $noticesSource -PathType Leaf) -or (Get-Item -LiteralPath $noticesSource).Length -eq 0) {
+    throw "Third-party notices not found or empty: $noticesSource"
+}
 $work = Join-Path ([IO.Path]::GetTempPath()) ("mimi-windows-" + [Guid]::NewGuid().ToString('N'))
 $stage = Join-Path $work 'stage'
 New-Item -ItemType Directory -Force -Path $stage, $output | Out-Null
 Push-Location $root
 try {
     Copy-Item -LiteralPath $iconSource -Destination (Join-Path $stage 'mimi-remote.ico')
+    Copy-Item -LiteralPath $noticesSource -Destination (Join-Path $stage 'THIRD_PARTY_NOTICES.md')
     $env:CGO_ENABLED = '0'; $env:GOOS = 'windows'; $env:GOARCH = 'amd64'
     & go build -trimpath -ldflags "-s -w -X main.version=$Version" -o (Join-Path $stage 'agentd.exe') ./cmd/agentd
     if ($LASTEXITCODE -ne 0) { throw 'go build failed.' }
     & go build -trimpath -ldflags "-s -w -H=windowsgui -X main.releaseVersion=$Version" -o (Join-Path $stage 'mimi-remote-tray.exe') ./cmd/mimi-remote-tray
     if ($LASTEXITCODE -ne 0) { throw 'Windows tray build failed.' }
+    # Tailcat 辅助程序是独立 Go module，要求比根 module 更新的工具链。与 .goreleaser.yml 的
+    # linux-tailcat 一样只对它允许自动选择工具链，其余组件的构建环境不变。
+    $tailcatPath = Join-Path $stage 'mimi-tailcat-experiment.exe'
+    $previousToolchain = $env:GOTOOLCHAIN
+    $env:GOTOOLCHAIN = 'auto'
+    Push-Location (Join-Path $root 'experiments\tailcat')
+    try {
+        & go build -trimpath -ldflags "-s -w -X main.version=$Version" -o $tailcatPath ./cmd/mimi-tailcat-experiment
+        if ($LASTEXITCODE -ne 0) { throw 'Tailcat helper build failed.' }
+    } finally {
+        Pop-Location
+        if ($null -eq $previousToolchain) { Remove-Item Env:GOTOOLCHAIN -ErrorAction SilentlyContinue } else { $env:GOTOOLCHAIN = $previousToolchain }
+    }
+    # 辅助程序的版本子命令是 version（不是 --version），必须与安装包版本一致。
+    $tailcatVersion = (& $tailcatPath version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $tailcatVersion -ne $Version) { throw "The Tailcat helper reported version '$tailcatVersion', expected $Version." }
     if ($BridgeBinary) {
         & $BridgeBinary --version
         if ($LASTEXITCODE -ne 0) { throw 'The supplied snapshot bridge binary failed its version probe.' }
@@ -123,6 +145,8 @@ try {
         # 签名会改写可执行文件：再跑一次适配器，确认它的内嵌程序没有被破坏。
         & $adapterPath --version
         if ($LASTEXITCODE -ne 0) { throw 'The signed Claude adapter failed its version probe.' }
+        $signedTailcatVersion = (& $tailcatPath version | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $signedTailcatVersion -ne $Version) { throw 'The signed Tailcat helper failed its version probe.' }
     }
     $outputBaseName = if ($AllowUnsignedRelease) { "Mimi-Remote-Setup-$Version-unsigned" } else { "Mimi-Remote-Setup-$Version" }
     $isccArgs = @(
@@ -147,11 +171,11 @@ try {
     if (-not (Test-Path -LiteralPath $setup)) { throw "Expected installer was not produced: $setup" }
     $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
     $payloadHashes = [ordered]@{}
-    foreach ($payloadName in @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico')) {
+    foreach ($payloadName in @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe', 'mimi-remote.ico', 'THIRD_PARTY_NOTICES.md')) {
         $payloadHashes[$payloadName] = (Get-FileHash -LiteralPath (Join-Path $stage $payloadName) -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     $signingMode = if ($Snapshot) { 'unsigned-snapshot' } elseif ($PfxPath) { 'authenticode-pfx' } else { 'unsigned-release' }
-    [ordered]@{ product = 'Mimi Remote'; version = $Version; installer = [IO.Path]::GetFileName($setup); sha256 = $hash; signing = $signingMode; rust_target = $RustTarget; rust_crt = 'static'; bun_version = $requiredBun; binaries = @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe'); assets = @('mimi-remote.ico'); payload_sha256 = $payloadHashes } | ConvertTo-Json | Set-Content -LiteralPath "$setup.metadata.json" -Encoding utf8
+    [ordered]@{ product = 'Mimi Remote'; version = $Version; installer = [IO.Path]::GetFileName($setup); sha256 = $hash; signing = $signingMode; rust_target = $RustTarget; rust_crt = 'static'; bun_version = $requiredBun; tailcat_version = $tailcatVersion; binaries = @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe'); assets = @('mimi-remote.ico', 'THIRD_PARTY_NOTICES.md'); payload_sha256 = $payloadHashes } | ConvertTo-Json | Set-Content -LiteralPath "$setup.metadata.json" -Encoding utf8
     "$hash  $([IO.Path]::GetFileName($setup))" | Set-Content -LiteralPath "$setup.sha256" -Encoding ascii
     Write-Host "Created $setup"
 } finally {

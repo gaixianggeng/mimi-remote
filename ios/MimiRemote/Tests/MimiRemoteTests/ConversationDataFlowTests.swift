@@ -1589,7 +1589,15 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(SessionLibraryStatusFilter.active.includes(sessions[1]))
         XCTAssertTrue(SessionLibraryStatusFilter.needsAttention.includes(sessions[1]))
         XCTAssertTrue(SessionLibraryStatusFilter.history.includes(sessions[2]))
-        XCTAssertTrue(SessionLibraryStatusFilter.needsAttention.includes(sessions[2]))
+        let failedAt = SessionIndexStore.orderingDate(for: sessions[2])
+        XCTAssertTrue(SessionLibraryStatusFilter.needsAttention.includes(sessions[2], now: failedAt.addingTimeInterval(60)))
+        XCTAssertFalse(
+            SessionLibraryStatusFilter.needsAttention.includes(
+                sessions[2],
+                now: failedAt.addingTimeInterval(SessionAttentionPolicy.failedAttentionWindow + 1)
+            ),
+            "会话页的「待你处理」筛选与侧栏、工作区页同一 12 小时窗口（#546）"
+        )
     }
 
     func testSessionListPresentationRequiresOpenedWorkspaceOnlyAfterConnectionSucceeds() {

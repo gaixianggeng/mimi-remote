@@ -61,10 +61,10 @@ enum HarnessPresentationProjector {
             return [.turnStarted(metadata(event, sessionID: sessionID))]
         case HarnessWireEventType.turnEnd:
             let turnMetadata = metadata(event, sessionID: sessionID)
-            guard let lifecycle = turnLifecycle(forTurnEnd: event) else {
+            guard let settlement = HarnessTurnEndReason.settlement(for: event) else {
                 return [.turnCompleted(turnMetadata)]
             }
-            return [.turnCompleted(turnMetadata.withTurnLifecycle(lifecycle))]
+            return [.turnCompleted(turnMetadata.withTurnLifecycle(settlement.lifecycle, error: settlement.error))]
         case HarnessWireEventType.userMessage:
             return projectUserMessage(event, sessionID: sessionID)
         case HarnessWireEventType.assistantMessage:
@@ -385,15 +385,6 @@ enum HarnessPresentationProjector {
     /// 被中断回复的标记身份。历史页与实时投影共用，派生自同一个助手消息 id。
     static func interruptionMarkerID(forAssistantMessageID id: MessageID) -> MessageID {
         "\(id)-interrupted"
-    }
-
-    /// `turn/end` 的原因映射成共用轮次终态。
-    ///
-    /// 只映射 `aborted`（用户或宿主取消）：与 Codex/Claude 停止后的 `.interrupted` 同一语义，
-    /// 停止后的提醒也因此是"已停止"而不是"已完成"。其余原因返回 nil，保持 reducer
-    /// 按完成处理的既有行为。
-    static func turnLifecycle(forTurnEnd event: HarnessDurableEvent) -> ConversationTurnLifecycle? {
-        event.data?["reason"]?["kind"]?.stringValue == "aborted" ? .interrupted : nil
     }
 
     private static func projectSystemMessage(_ event: HarnessDurableEvent, sessionID: SessionID) -> [AgentEvent] {

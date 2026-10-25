@@ -3,7 +3,7 @@ import Foundation
 
 /// 推送里出现的会话与档案标识都是不可逆短摘要，算法与 `internal/pushbridge/tags.go`
 /// 保持一致。App 与通知扩展要靠同一套算法把本地会话映射回这些标签，才能在
-/// 设备上把「Codex 消息」改写成会话标题；Provider 与 APNs 全程只见摘要。
+/// 设备上把「Codex」改写成会话标题；Provider 与 APNs 全程只见摘要。
 ///
 /// 这个文件同时编译进通知扩展，只允许依赖 Foundation 与 CryptoKit。
 enum NotificationSessionTag {
@@ -23,6 +23,13 @@ enum NotificationSessionTag {
     /// 缓存按 16 位键存储，4 位标签靠前缀匹配找回。
     static func approvalTag(threadID: String) -> String {
         String(messageTag(threadID: threadID).prefix(4))
+    }
+
+    /// Live Activity 的 `hostTag`：SHA256("mimi-tag:host:" + installationID) 的前 4 位大写十六进制，
+    /// 与 agentd 的 `HostTag` 一致。App 据此判断一个活动属于哪台 Mac。
+    static func hostTag(installationID: String) -> String {
+        let value = "mimi-tag:host:" + installationID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(hexDigest(value).prefix(4)).uppercased()
     }
 
     /// 缓存键：`profileTag:messageTag`。冒号把两段定长十六进制分开，

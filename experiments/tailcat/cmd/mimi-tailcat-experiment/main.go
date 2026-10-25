@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -178,7 +179,8 @@ func readPrivateText(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("读取 %s：%w", path, err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	// Windows 的权限位不表达访问控制，由用户目录 ACL 保护，见 tunnel.requirePrivateFile。
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return "", fmt.Errorf("文件 %s 的权限必须为 0600", path)
 	}
 	data, err := os.ReadFile(path)

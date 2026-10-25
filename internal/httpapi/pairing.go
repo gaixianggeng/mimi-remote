@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
@@ -117,6 +119,23 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 		Endpoint: strings.TrimSpace(payload.Endpoint),
 		Token:    token,
 	}
+	if strings.TrimSpace(payload.TailcatClientKey) != "" {
+		// 自建白名单写入不能越过远程升级的设备数检查。
+		r.tailcatControlMu.Lock()
+		defer r.tailcatControlMu.Unlock()
+	}
+	if strings.TrimSpace(payload.ManagedSessionID) != "" || strings.TrimSpace(payload.ManagedGrant) != "" {
+		if r.tailcat == nil || r.tailcat.Status(req.Context()).Mode != config.TailcatModeManaged {
+			writeManagedModeRequired(w)
+			return
+		}
+	} else if strings.TrimSpace(payload.TailcatClientKey) != "" && r.tailcat != nil &&
+		r.tailcat.Status(req.Context()).Mode == config.TailcatModeManaged {
+		// 签名票据不覆盖托管字段，去掉它们的托管二维码 claim 不能落进免费白名单。
+		// 这里先给稳定错误码；AllowClient 在 operationMu 内还会再拦一次。
+		writeManagedGrantRequired(w)
+		return
+	}
 	if publicKey := strings.TrimSpace(payload.TailcatClientKey); publicKey != "" {
 		if r.tailcat == nil {
 			writeError(w, http.StatusServiceUnavailable, "Tailcat 实验未启用")
@@ -144,6 +163,14 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 		} else {
 			status, err = r.tailcat.AllowClient(req.Context(), publicKey)
 		}
+		if errors.Is(err, errTailcatManagedModeRequired) {
+			writeManagedModeRequired(w)
+			return
+		}
+		if errors.Is(err, errTailcatManagedGrantRequired) {
+			writeManagedGrantRequired(w)
+			return
+		}
 		if err != nil || !status.Running || strings.TrimSpace(status.Address) == "" {
 			if err != nil {
 				writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -165,4 +192,12 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 		response.TailscaleDeviceName = host.DeviceName
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func writeManagedModeRequired(w http.ResponseWriter) {
+	writeJSON(w, http.StatusConflict, map[string]string{"code": "tailcat_managed_mode_required", "error": errTailcatManagedModeRequired.Error()})
+}
+
+func writeManagedGrantRequired(w http.ResponseWriter) {
+	writeJSON(w, http.StatusConflict, map[string]string{"code": "tailcat_managed_grant_required", "error": errTailcatManagedGrantRequired.Error()})
 }

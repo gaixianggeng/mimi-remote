@@ -549,7 +549,8 @@ enum SessionListPresentation {
         // 分类来自 SessionActivityState：等待审批 / 输入的会话即使还没拿到请求载荷也归「待你处理」；
         // 「进行中」含本 App 的运行时、电脑上正在处理的 Claude Code，以及尚未发送首条消息的本地草稿
         // （草稿固定留在这里，不能被 recent 上限截掉）。
-        let needYou = consume { $0.activityState.needsYou }
+        // 「待你处理」与工作区页同一判定：等待你的会话，加上 12 小时内失败的会话（#546）。
+        let needYou = consume { SessionAttentionPolicy.needsAttention($0, now: now) }
         let running = consume { session in
             let state = session.activityState
             return state.isRunning || state == .draft

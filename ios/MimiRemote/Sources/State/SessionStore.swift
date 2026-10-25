@@ -113,7 +113,11 @@ final class SessionStore: ObservableObject {
     @Published var sessionWorkspaceIDs: Set<String>? = nil
     @Published var sessionRemindersByID: [SessionID: SessionReminder] = [:]
     @Published var selectedProjectID: String?
-    @Published var selectedSessionID: String?
+    @Published var selectedSessionID: String? {
+        didSet {
+            if selectedSessionID != oldValue { invalidateNativePromptSuggestion() }
+        }
+    }
     /// 路由只监听明确的导航提交，不再把后台数据更新等同于“打开会话”。
     @Published var lastSelectionCommit: SessionSelectionCommit?
     @Published var sessionSearchQuery = "" {
@@ -130,7 +134,11 @@ final class SessionStore: ObservableObject {
     @Published var isLoading = false
     // 加载完成只属于当前主机代次，切换主机后不能沿用旧目录的空态判断。
     @Published var loadedWorkspaceCatalogScope: HostScope?
-    @Published var webSocketStatus: WebSocketStatus = .disconnected
+    @Published var webSocketStatus: WebSocketStatus = .disconnected {
+        didSet {
+            if webSocketStatus != .connected { invalidateNativePromptSuggestion() }
+        }
+    }
     @Published var connectionTermination: ConnectionTerminationStatus? {
         didSet {
             guard oldValue != connectionTermination else { return }
@@ -216,6 +224,8 @@ final class SessionStore: ObservableObject {
     @Published var foregroundActivityBySessionID: [SessionID: SessionForegroundActivity] = [:]
     @Published var runtimeActivityBySessionID: [SessionID: RuntimeActivitySnapshot] = [:]
     @Published var turnOutputTokensBySessionID: [SessionID: TurnOutputTokenCounter] = [:]
+    @Published var contextWindowUsageBySessionID: [SessionID: ContextWindowUsage] = [:]
+    @Published var dismissedContextWindowNoticeSessionIDs: Set<SessionID> = []
     @Published var sessionControlStateByID: [SessionID: SessionControlState] = [:]
     /// 仅记录 App Server 明确返回的单 writer 冲突。不能从 thread/list 的 idle/notLoaded
     /// 推断写权限，否则只读打开历史也会被误判为可写或被另一端占用。
@@ -307,6 +317,9 @@ final class SessionStore: ObservableObject {
     var composerModelSelectionCache = ComposerModelSelectionCache()
     // 权限选择按会话保留；未显式选择的既有 Thread 使用“沿用服务端当前设置”。
     var composerPermissionSelectionCache = ComposerPermissionSelectionCache()
+    // 外部追加草稿后通知 Composer。用订阅而不是 @Published：被遮住的输入框也能收到，且不刷新整个工作台。
+    let composerDraftAppends = PassthroughSubject<ComposerDraftAppendEvent, Never>()
+    @Published var nativePromptSuggestionState = NativePromptSuggestionState()
 
     func storeCompletedFileUpload(_ attachment: UploadedFileAttachment, for scope: ComposerDraftScopeKey) {
         guard scope != .none else {
@@ -902,18 +915,6 @@ final class SessionStore: ObservableObject {
         }
         sessionSearchLoadMoreTask = task
         await task.value
-    }
-
-    func saveComposerDraft(_ snapshot: ComposerDraftSnapshot, for scope: ComposerDraftScopeKey) {
-        composerDraftCache.save(snapshot, for: scope)
-    }
-
-    func composerDraft(for scope: ComposerDraftScopeKey) -> ComposerDraftSnapshot {
-        composerDraftCache.snapshot(for: scope)
-    }
-
-    func removeComposerDraft(for scope: ComposerDraftScopeKey) {
-        composerDraftCache.remove(scope: scope)
     }
 
     func saveComposerModelSelection(

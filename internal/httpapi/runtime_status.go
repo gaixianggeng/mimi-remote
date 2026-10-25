@@ -636,7 +636,11 @@ func (r *Router) probeClaudeRuntime(ctx context.Context) runtimeAccountStatus {
 	bin := firstNonEmpty(probe.Path, strings.TrimSpace(r.cfg.Claude.BridgeBin))
 	ensureResult := make(chan error, 1)
 	go func() {
-		_, err := r.claudeBridge.ensure(bin, r.cfg.Claude.Args, r.cfg.Claude.Env)
+		_, err := r.claudeBridge.ensure(
+			bin,
+			r.cfg.Claude.Args,
+			claudeBridgeRuntimeEnv(r.cfg.Claude, probe.Adapter != nil),
+		)
 		ensureResult <- err
 	}()
 	select {

@@ -18,7 +18,7 @@ $windowsDocs = @(
 )
 foreach ($path in @($iss, $register, $firewall, $signing, $icon, $build, $check, $releaseWorkflow) + $windowsDocs) { if (-not (Test-Path -LiteralPath $path)) { throw "Missing required packaging file: $path" } }
 $source = Get-Content -LiteralPath $iss -Raw
-foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico', 'SetupIconFile=mimi-remote.ico', 'UninstallDisplayIcon={app}\mimi-remote.ico', 'IconFilename: "{app}\mimi-remote.ico"', '{userstartup}\Mimi Remote', 'Parameters: "--show"', 'register-service.ps1', 'configure-firewall.ps1', 'PrivilegesRequired=lowest', 'Flags: unchecked', 'GetCustomSetupExitCode', 'PrivateLanFirewallRule', 'PrivateLanNetworkProfileIsReady', 'StopTrayApp', 'ConfigureLANAccess(False)', 'ConfigureLANAccess(True)', 'OutputBaseFilename={#MyOutputBaseFilename}', 'SignTool={#MySignTool}', 'SignedUninstaller=yes', 'SignedUninstaller=no')) {
+foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe', 'THIRD_PARTY_NOTICES.md', 'StopTailcatHelper', 'fmShareExclusive', 'mimi-remote.ico', 'SetupIconFile=mimi-remote.ico', 'UninstallDisplayIcon={app}\mimi-remote.ico', 'IconFilename: "{app}\mimi-remote.ico"', '{userstartup}\Mimi Remote', 'Parameters: "--show"', 'register-service.ps1', 'configure-firewall.ps1', 'PrivilegesRequired=lowest', 'Flags: unchecked', 'GetCustomSetupExitCode', 'PrivateLanFirewallRule', 'PrivateLanNetworkProfileIsReady', 'StopTrayApp', 'ConfigureLANAccess(False)', 'ConfigureLANAccess(True)', 'OutputBaseFilename={#MyOutputBaseFilename}', 'SignTool={#MySignTool}', 'SignedUninstaller=yes', 'SignedUninstaller=no')) {
     if (-not $source.Contains($expected)) { throw "Installer source is missing required policy: $expected" }
 }
 if ($source.Contains('no longer supports Windows as the agentd host') -or $source.Contains('function InitializeSetup(): Boolean')) {
@@ -28,9 +28,15 @@ $prepareSource = $source.Substring($source.IndexOf('function PrepareToInstall'),
 if ($prepareSource.IndexOf('StopManagedService;') -gt $prepareSource.IndexOf('StopTrayApp;')) {
     throw 'Upgrade must stop the managed service gracefully before terminating the shared tray image.'
 }
+if ($prepareSource.IndexOf('StopTailcatHelper;') -lt $prepareSource.IndexOf('StopManagedService;')) {
+    throw 'Upgrade must let agentd stop the Tailcat helper before checking or force-stopping its image.'
+}
 $uninstallSource = $source.Substring($source.IndexOf('procedure CurUninstallStepChanged'))
 if ($uninstallSource.IndexOf('StopManagedService;') -gt $uninstallSource.IndexOf('StopTrayApp;')) {
     throw 'Uninstall must stop the managed service gracefully before terminating the shared tray image.'
+}
+if ($uninstallSource.IndexOf('StopTailcatHelper;') -lt $uninstallSource.IndexOf('StopManagedService;')) {
+    throw 'Uninstall must let agentd stop the Tailcat helper before checking or force-stopping its image.'
 }
 $postInstallSource = $source.Substring($source.IndexOf('procedure CurStepChanged'))
 if ($postInstallSource.IndexOf('PrivateLanNetworkProfileIsReady') -gt $postInstallSource.IndexOf('RegisterScheduledTask;')) {
@@ -102,14 +108,21 @@ if (-not $buildSource.Contains('[switch]$AllowUnsignedRelease')) { throw 'Unsign
 if (-not $buildSource.Contains("'unsigned-release'")) { throw 'Unsigned release builds must record their signing mode in metadata.' }
 if (-not $buildSource.Contains('Mimi-Remote-Setup-$Version-unsigned')) { throw 'Unsigned release filenames must identify that they are unsigned.' }
 if (-not $buildSource.Contains('-X main.releaseVersion=$Version')) { throw 'Windows tray builds must embed the installer and GitHub Release version.' }
+foreach ($expected in @('experiments\tailcat', "`$env:GOTOOLCHAIN = 'auto'", 'tailcat_version = $tailcatVersion', 'The signed Tailcat helper failed its version probe.', 'THIRD_PARTY_NOTICES.md')) {
+    if (-not $buildSource.Contains($expected)) { throw "Windows installer build is missing the bundled Tailcat helper policy: $expected" }
+}
 $checkSource = Get-Content -LiteralPath $check -Raw
 if (-not $checkSource.Contains("'unsigned-release'")) { throw 'Installer validation must recognize unsigned release metadata.' }
+foreach ($expected in @('mimi-tailcat-experiment.exe', '$metadata.tailcat_version -ne $metadata.version', 'THIRD_PARTY_NOTICES.md', '$ExpectedVersion')) {
+    if (-not $checkSource.Contains($expected)) { throw "Installer validation is missing the bundled Tailcat helper policy: $expected" }
+}
 $releaseSource = Get-Content -LiteralPath $releaseWorkflow -Raw
 $currentRepositoryGate = "github.repository == 'gaixianggeng/mimi-remote'"
 if (($releaseSource.Split($currentRepositoryGate).Count - 1) -lt 4) { throw 'All release jobs, including Windows compatibility verification, must target the source repository.' }
 if (-not $releaseSource.Contains('-AllowUnsignedRelease')) { throw 'Release workflow must explicitly opt into unsigned Windows packaging when credentials are absent.' }
 if (-not $releaseSource.Contains('must either both be configured or both be absent')) { throw 'Partial Windows signing credentials must fail the release.' }
 if (-not $releaseSource.Contains('-RequireSignature')) { throw 'Release workflow must still enforce Authenticode when signing credentials exist.' }
+if (($releaseSource.Split('-ExpectedVersion $env:RELEASE_TAG').Count - 1) -lt 2) { throw 'Release workflow must verify the installer and its Tailcat helper against the release tag in both signing modes.' }
 foreach ($path in $windowsDocs) {
     $docSource = Get-Content -LiteralPath $path -Raw
     if (-not $docSource.Contains('Windows')) {

@@ -12,6 +12,10 @@ struct PushStatusResponse: Decodable, Equatable {
     let profileID: String?
     let actionableKinds: [String]?
     let devices: [PushDeviceSummary]?
+    /// 支持 `/api/push/live-activities` 的 agentd 才回报 true（#830）；旧版缺字段。
+    let liveActivity: Bool?
+    /// 这台 Mac 的 4 位匿名标签，与 Live Activity 的 attributes.hostTag 一致。
+    let hostTag: String?
 
     enum CodingKeys: String, CodingKey {
         case enabled
@@ -21,6 +25,8 @@ struct PushStatusResponse: Decodable, Equatable {
         case profileID = "profile_id"
         case actionableKinds = "actionable_kinds"
         case devices
+        case liveActivity = "live_activity"
+        case hostTag = "host_tag"
     }
 }
 
@@ -31,6 +37,8 @@ struct PushDeviceSummary: Decodable, Equatable {
     let needsRefresh: Bool?
     let supportsHolderWaiting: Bool?
     let supportsDeepSeekMessages: Bool?
+    let liveActivityStart: Bool?
+    let liveActivityUpdate: Bool?
 
     enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
@@ -39,6 +47,34 @@ struct PushDeviceSummary: Decodable, Equatable {
         case needsRefresh = "needs_refresh"
         case supportsHolderWaiting = "supports_holder_waiting"
         case supportsDeepSeekMessages = "supports_deepseek_messages"
+        case liveActivityStart = "live_activity_start"
+        case liveActivityUpdate = "live_activity_update"
+    }
+}
+
+/// Live Activity 票据的两种用途（#830）：push-to-start 与单个活动的更新。
+enum LiveActivityTicketKind: String, Codable, Equatable {
+    case start
+    case update
+
+    /// 推送服务签发 Ticket 时的 `kind`。
+    var providerKind: PushProviderClient.TicketKind {
+        switch self {
+        case .start: return .activityStart
+        case .update: return .activityUpdate
+        }
+    }
+}
+
+struct LiveActivityRegistrationResponse: Decodable, Equatable {
+    let deviceID: String
+    let kind: String
+    let expiresAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case deviceID = "device_id"
+        case kind
+        case expiresAt = "expires_at"
     }
 }
 

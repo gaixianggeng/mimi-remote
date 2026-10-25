@@ -29,6 +29,12 @@ struct AgentCommandClient: Sendable {
     var restoreClaude: @Sendable (ClaudeConfigurationResult) async throws -> ClaudeConfigurationResult = { _ in
         throw AgentClientError.commandFailed("当前 agentd 不支持 Claude 配置恢复。")
     }
+    var configureClaudeTurnHints: @Sendable (Bool) async throws -> ClaudeTurnHintsConfigurationResult = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Claude 提示卡设置。")
+    }
+    var restoreClaudeTurnHints: @Sendable (ClaudeTurnHintsConfigurationResult) async throws -> ClaudeTurnHintsConfigurationResult = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Claude 提示卡设置恢复。")
+    }
     var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
     var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
     var tailcatStatus: @Sendable () async throws -> TailcatStatus = {
@@ -42,6 +48,9 @@ struct AgentCommandClient: Sendable {
     }
     var resetTailcat: @Sendable () async throws -> TailcatStatus = {
         throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
+    }
+    var setTailcatManagedMode: @Sendable (_ managed: Bool) async throws -> TailcatStatus = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Mimi 托管连接。")
     }
     var configureDeepSeek: @Sendable (
         _ action: DeepSeekConfigurationAction,
@@ -237,6 +246,23 @@ extension AgentCommandClient {
                     timeout: .seconds(60)
                 ))
             },
+            configureClaudeTurnHints: { enabled in
+                let binary = try requireEmbeddedBinary()
+                return try decode(ClaudeTurnHintsConfigurationResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: claudeTurnHintsConfigurationArguments(enabled: enabled),
+                    timeout: .seconds(60)
+                ))
+            },
+            restoreClaudeTurnHints: { previous in
+                let binary = try requireEmbeddedBinary()
+                let payload = String(decoding: try JSONEncoder().encode(previous), as: UTF8.self)
+                return try decode(ClaudeTurnHintsConfigurationResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: ["runtime", "--restore-claude-turn-hints", payload, "--json"],
+                    timeout: .seconds(60)
+                ))
+            },
             setLANAccess: { enabled in
                 let binary = try requireEmbeddedBinary()
                 return try decode(NetworkConfigurationResult.self, from: try await execute(
@@ -286,6 +312,15 @@ extension AgentCommandClient {
                     binary: binary,
                     arguments: tailcatArguments(action: "reset"),
                     timeout: .seconds(15)
+                ))
+            },
+            setTailcatManagedMode: { managed in
+                let binary = try requireEmbeddedBinary()
+                return try decode(TailcatStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: tailcatArguments(action: managed ? "enter-managed" : "exit-managed"),
+                    // 切换模式会验证新 sidecar，失败时恢复原中继，与修改中继同一量级。
+                    timeout: .seconds(55)
                 ))
             },
             configureDeepSeek: { action, startupURL in
@@ -417,6 +452,10 @@ extension AgentCommandClient {
             arguments.append("--restore-enabled=\(restoreEnabled)")
         }
         return arguments
+    }
+
+    static func claudeTurnHintsConfigurationArguments(enabled: Bool) -> [String] {
+        ["runtime", "--claude-turn-hints=\(enabled ? "enabled" : "disabled")", "--json"]
     }
 
     static func pairArguments(network: PairingNetwork) -> [String] {

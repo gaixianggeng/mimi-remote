@@ -112,14 +112,17 @@ extension ComposerView {
             composerToolbarControlLabel(
                 // iPhone 用短标签外显模型与推理档位；完整名称仍通过 accessibilityValue 提供。
                 title: showsTitle ? visibleTitle : nil,
-                systemImage: usesCompactTitle ? nil : "cpu",
+                // 窄档短标签不带图标；名称放不下时至少保留图标（#835）。
+                systemImage: usesCompactTitle && showsTitle ? nil : "cpu",
                 trailingSystemImage: ConversationLayout.compactComposerShowsFastModeIndicator(
                     usesCompactMetrics: usesCompactComposerMetrics,
                     isFastModeSelected: hasAcceleratedServiceTierSelected
                 ) ? "bolt.fill" : nil,
-                titleMaxWidth: usesCompactTitle
-                    ? ConversationLayout.compactComposerModelTitleMaxWidth(availableWidth: availableWidth)
-                    : (usesCompactComposerMetrics ? 82 : 150),
+                titleMaxWidth: ConversationLayout.composerModelTitleMaxWidth(
+                    tier: composerTier,
+                    availableWidth: availableWidth,
+                    showsInlineDelivery: compactToolbarShowsInlineDeliveryControl
+                ),
                 usesCondensedTitle: usesCompactTitle,
                 accessibilityLabel: L10n.text("ui.switch_model_and_inference_strength")
             )

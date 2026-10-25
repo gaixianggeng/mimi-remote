@@ -656,7 +656,7 @@ extension SessionStore {
             reason: .invalidation
         )
         if let previousSession {
-            cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
+            pauseHistoryItemEnrichment(sessionID: previousSession.id)
         }
         if let previousSession, previousSession.isLocalDraft {
             discardLocalDraft(previousSession)
@@ -882,7 +882,7 @@ extension SessionStore {
         HostSwitchSignpost.event("conversation_open")
         markHistorySessionRead(session.id)
         if let previousSession, previousSession.id != session.id {
-            cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
+            pauseHistoryItemEnrichment(sessionID: previousSession.id)
         }
         if wasNoOpSelection {
             return true

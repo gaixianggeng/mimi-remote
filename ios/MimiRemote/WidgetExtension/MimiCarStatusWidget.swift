@@ -196,6 +196,7 @@ private struct MimiCarStatusWidget: Widget {
 private struct MimiCarStatusWidgetBundle: WidgetBundle {
     var body: some Widget {
         MimiCarStatusWidget()
+        MimiTurnLiveActivityWidget()
     }
 }
 
