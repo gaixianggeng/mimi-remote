@@ -1,4 +1,5 @@
 import { open, readdir, stat } from "node:fs/promises";
+import { nextFreshnessMark } from "../util/freshness.ts";
 import { isInternalUserContent } from "./history.ts";
 import os from "node:os";
 import path from "node:path";
@@ -21,10 +22,10 @@ export interface TranscriptFile {
 export class TranscriptIndex {
   private files = new Map<string, TranscriptFile>();
   private scannedAt = 0;
-  /** 最近一次完成的扫描是何时开始的；refreshSince 按它判断索引是否足够新。 */
-  private lastScanStartedAt = 0;
+  /** 最近一次完成的扫描开始时的先后标记；refreshSince 按它判断索引是否足够新。 */
+  private lastScanMark = 0;
   private scanning: Promise<void> | undefined;
-  private scanningStartedAt = 0;
+  private scanningMark = 0;
 
   constructor(
     private readonly root = () => path.join(claudeConfigDir(), "projects"),
@@ -37,13 +38,13 @@ export class TranscriptIndex {
   }
 
   /**
-   * 保证索引包含 `since` 之后的目录状态：已有一次在它之后开始的扫描（完成或进行中）就复用，
-   * 否则等进行中的旧扫描结束后重扫一次（#912）。
+   * 保证索引包含先后标记 `since`（nextFreshnessMark）之后的目录状态：已有一次在它之后开始的扫描
+   * （完成或进行中）就复用，否则等进行中的旧扫描结束后重扫一次（#912）。
    */
   async refreshSince(since: number): Promise<void> {
-    if (this.lastScanStartedAt >= since) return;
-    if (this.scanning && this.scanningStartedAt < since) await this.scanning;
-    if (this.lastScanStartedAt >= since) return;
+    if (this.lastScanMark > since) return;
+    if (this.scanning && this.scanningMark < since) await this.scanning;
+    if (this.lastScanMark > since) return;
     await this.startScan();
   }
 
@@ -53,14 +54,14 @@ export class TranscriptIndex {
 
   private startScan(): Promise<void> {
     if (!this.scanning) {
-      const startedAt = Date.now();
-      this.scanningStartedAt = startedAt;
-      this.scanning = this.scan(startedAt).finally(() => (this.scanning = undefined));
+      const mark = nextFreshnessMark();
+      this.scanningMark = mark;
+      this.scanning = this.scan(mark).finally(() => (this.scanning = undefined));
     }
     return this.scanning;
   }
 
-  private async scan(startedAt: number): Promise<void> {
+  private async scan(mark: number): Promise<void> {
     const root = this.root();
     const next = new Map<string, TranscriptFile>();
     const projects = await readdir(root, { withFileTypes: true }).catch(() => []);
@@ -86,7 +87,7 @@ export class TranscriptIndex {
     );
     this.files = next;
     this.scannedAt = Date.now();
-    this.lastScanStartedAt = startedAt;
+    this.lastScanMark = mark;
   }
 }
 
