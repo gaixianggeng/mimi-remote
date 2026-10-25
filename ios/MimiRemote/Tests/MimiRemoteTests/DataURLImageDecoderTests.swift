@@ -232,6 +232,69 @@ final class DataURLImageDecoderTests: XCTestCase {
         XCTAssertTrue(previewFiles(in: root).isEmpty)
     }
 
+    /// #918：同一份内容反复预览只保留一个副本；内容不同才另写一份。
+    func testMediaWorkerReusesPreviewForSameContent() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-media-worker-reuse-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = MediaWorker(previewRootDirectory: root)
+        let first = previewPayload("report.pdf", Data(repeating: 0x41, count: 256 * 1_024))
+
+        var urls: [URL] = []
+        for _ in 0..<40 {
+            urls.append(try await worker.previewURL(from: first, profileID: "profile-a"))
+        }
+        let changed = try await worker.previewURL(
+            from: previewPayload("report.pdf", Data(repeating: 0x42, count: 256 * 1_024)),
+            profileID: "profile-a"
+        )
+
+        XCTAssertEqual(Set(urls).count, 1)
+        XCTAssertNotEqual(changed, urls[0])
+        XCTAssertEqual(previewFiles(in: root).count, 2)
+    }
+
+    /// #918：超过一天没再打开的副本（含异常退出留下的）在之后的预览里回收；复用会刷新时间。
+    func testMediaWorkerSweepsStalePreviewsAndKeepsReusedOnes() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-media-worker-sweep-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clock = PreviewClock(Date())
+        let worker = MediaWorker(previewRootDirectory: root, now: { clock.now })
+        let kept = previewPayload("kept.txt", Data("kept".utf8))
+        let stale = previewPayload("stale.txt", Data("stale".utf8))
+
+        let keptURL = try await worker.previewURL(from: kept, profileID: "profile-a")
+        let staleURL = try await worker.previewURL(from: stale, profileID: "profile-b")
+        clock.advance(by: 23 * 60 * 60)
+        _ = try await worker.previewURL(from: kept, profileID: "profile-a")
+        clock.advance(by: 2 * 60 * 60)
+        let freshURL = try await worker.previewURL(
+            from: previewPayload("fresh.txt", Data("fresh".utf8)),
+            profileID: "profile-a"
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keptURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: freshURL.path))
+    }
+
+    /// #918：删除档案只清掉该档案的预览副本。
+    func testMediaWorkerDiscardsOnlyTheDeletedProfilesPreviews() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-media-worker-profile-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = MediaWorker(previewRootDirectory: root)
+        let payload = previewPayload("notes.md", Data("notes".utf8))
+        let deleted = try await worker.previewURL(from: payload, profileID: "profile-deleted")
+        let other = try await worker.previewURL(from: payload, profileID: "profile-other")
+
+        await worker.discardPreviews(profileID: "profile-deleted")
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: deleted.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: other.path))
+    }
+
     func testDataURLImageDecoderRapidSourceSwitchDiscardsCancelledResult() async throws {
         let firstURL = try makeDataURL(size: CGSize(width: 1_024, height: 768), color: .systemRed)
         let secondURL = try makeDataURL(size: CGSize(width: 160, height: 90), color: .systemTeal)
@@ -269,6 +332,16 @@ final class DataURLImageDecoderTests: XCTestCase {
             .appendingPathComponent("mimi-image-decoder-\(UUID().uuidString).png")
         try XCTUnwrap(image.pngData()).write(to: url, options: .atomic)
         return url
+    }
+
+    private func previewPayload(_ name: String, _ data: Data) -> MediaPreviewPayload {
+        MediaPreviewPayload(response: FileReadResponse(
+            path: "/repo/\(name)",
+            name: name,
+            contentType: "application/octet-stream",
+            size: Int64(data.count),
+            contentBase64: data.base64EncodedString()
+        ))
     }
 
     private func previewFiles(in root: URL) -> [URL] {
@@ -328,6 +401,28 @@ private final class RemoteImageURLProtocol: URLProtocol {
         lock.lock()
         responseData = Data()
         requestCount = 0
+        lock.unlock()
+    }
+}
+
+/// 预览回收测试用的可推进时钟。
+private final class PreviewClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Date
+
+    init(_ start: Date) {
+        current = start
+    }
+
+    var now: Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return current
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        current = current.addingTimeInterval(interval)
         lock.unlock()
     }
 }
