@@ -262,6 +262,20 @@ final class AppReviewPromptCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.state.completedTurnCount, 0)
     }
 
+    func testDiscardedSubmissionDoesNotCountTheNextCompletion() {
+        let coordinator = makeCoordinator()
+        coordinator.recordTurnSubmitted(sessionID: "thread-a")
+        coordinator.discardTurnSubmitted(sessionID: "thread-a")
+        coordinator.recordTurnFinished(
+            sessionID: "thread-a",
+            turnID: "turn-from-computer",
+            lifecycle: .completed,
+            isSessionVisible: true
+        )
+
+        XCTAssertEqual(coordinator.state.completedTurnCount, 0)
+    }
+
     func testApprovalForAnotherTurnDoesNotCountAsApprovedCompletion() {
         let coordinator = makeCoordinator()
         coordinator.recordApprovalAccepted(sessionID: "thread-a", turnID: "turn-1")
@@ -390,5 +404,64 @@ final class AppReviewPromptCoordinatorTests: XCTestCase {
             for: .session(threadID)
         )
         XCTAssertTrue(store.hasAppReviewBlockingComposerDraft, "当前会话有未发送草稿视为正在输入")
+    }
+    func testSessionStoreCountsOnlyDispatchedSubmissions() async {
+        let threadID = "thr_review_dispatch"
+        let project = makeProject(id: "proj_review_dispatch")
+        let running = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "Review Dispatch",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            activeTurnID: "turn-running"
+        )
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [running]) }
+        )
+        store.sessions = [running]
+        store.selectedSessionID = threadID
+        store.turnCompletionReconciliationDelaysNanoseconds = []
+        let coordinator = makeCoordinator()
+        store.appReviewPrompt = coordinator
+        let lease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: threadID)
+        func complete(_ turnID: String, seq: EventSequence) async {
+            await store.applyRuntimeEvent(
+                .turnCompleted(AgentEventMetadata(
+                    seq: seq, sessionID: threadID, turnID: turnID,
+                    itemID: nil, messageID: nil, clientMessageID: nil, revision: nil, createdAt: nil,
+                    turnLifecycle: .completed
+                )),
+                lease: lease,
+                sendsNotification: false
+            )
+        }
+
+        // 重试的消息排在运行中的回合后面：完成的是原来那一轮，不算 App 发起。
+        store.setSessionListProjection(
+            sessionID: threadID, preview: "重试", source: .localUser, clientMessageID: "client-queued",
+            isDispatching: false
+        )
+        await complete("turn-running", seq: 10)
+        XCTAssertEqual(coordinator.state.completedTurnCount, 0)
+
+        // 发送失败回滚后，下一次完成同样不算。
+        store.setSessionListProjection(
+            sessionID: threadID, preview: "发不出去", source: .localUser, clientMessageID: "client-failed"
+        )
+        store.clearSessionListProjection(sessionID: threadID, clientMessageID: "client-failed")
+        await complete("turn-from-computer", seq: 11)
+        XCTAssertEqual(coordinator.state.completedTurnCount, 0)
+
+        // 真正派发的消息照常计数。
+        store.setSessionListProjection(
+            sessionID: threadID, preview: "发出去了", source: .localUser, clientMessageID: "client-sent"
+        )
+        await complete("turn-sent", seq: 12)
+        XCTAssertEqual(coordinator.state.completedTurnCount, 1)
     }
 }

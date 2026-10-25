@@ -1592,7 +1592,8 @@ extension SessionStore {
                     sessionID: session.id,
                     preview: prompt,
                     source: .localUser,
-                    clientMessageID: clientMessageID
+                    clientMessageID: clientMessageID,
+                    isDispatching: false
                 )
                 ensureQueuedSessionMonitoring(sessionID: session.id)
                 setStatusMessage(L10n.text("ui.saved_to_this_machine_and_will_be_sent"))

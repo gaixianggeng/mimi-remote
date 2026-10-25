@@ -117,6 +117,11 @@ final class AppReviewPromptCoordinator {
         submittedSessionIDs.insert(sessionID)
     }
 
+    /// 发送失败回滚时撤销登记，免得下一次完成（可能是电脑端的回合）被算成 App 发起。
+    func discardTurnSubmitted(sessionID: SessionID) {
+        submittedSessionIDs.remove(sessionID)
+    }
+
     /// 新建会话先用乐观 ID 发出，服务端返回真实 ID 后跟着迁移，首个回合才能算数。
     func moveSubmittedSession(from sourceSessionID: SessionID, to targetSessionID: SessionID) {
         guard submittedSessionIDs.remove(sourceSessionID) != nil else { return }
