@@ -178,6 +178,11 @@ export class ThreadRuntime {
     return this.query !== undefined;
   }
 
+  /** 没有进程、也没有进行中或预占的 turn：管理器可以移除它，之后 resume 会重建（#911）。 */
+  isReclaimable(): boolean {
+    return this.query === undefined && !this.isBusy();
+  }
+
   /**
    * 常驻进程的命令目录（含 MCP 命令与运行中发现的技能）。只在进程的设置来源与请求一致时可用：
    * 受限档位不加载本机设置，两种进程认识的命令不同。
