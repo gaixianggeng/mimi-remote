@@ -178,6 +178,11 @@ export class ThreadRuntime {
     return this.query !== undefined;
   }
 
+  /** 已有 transcript（resume 打开，或已经起过进程）：移除后 resume 能按同一 ID 重建。 */
+  get persisted(): boolean {
+    return this.transcriptExists;
+  }
+
   /** 没有进程、也没有进行中或预占的 turn：管理器可以移除它，之后 resume 会重建（#911）。 */
   isReclaimable(): boolean {
     return this.query === undefined && !this.isBusy();

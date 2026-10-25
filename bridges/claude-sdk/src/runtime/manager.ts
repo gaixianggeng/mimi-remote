@@ -224,7 +224,8 @@ export class ThreadManager {
   /**
    * 运行时、标题缓存和空订阅集合只在会话还有订阅者或还在工作时保留（#911）。最后一个订阅者离开后
    * 稍等再核对：有进程（含后台任务）、进行中或预占的 turn、未答复的审批时不回收，稍后再看；
-   * 进程由空闲关闭负责结束。回收后再次 resume 会按 transcript 重建。
+   * 进程由空闲关闭负责结束。回收后再次 resume 会按 transcript 重建；还没有 transcript 的新会话
+   * （thread/start 之后尚未发出第一轮）只存在于运行时里，不回收，等它第一轮之后再退订时才重新安排。
    * 计时器回调是宏任务，handler 在 open 与 subscribe 之间只隔微任务，不会被它插进来。
    */
   private scheduleReclaim(threadId: string): void {
@@ -247,6 +248,7 @@ export class ThreadManager {
     if (this.subscribers.get(threadId)?.size) return;
     this.subscribers.delete(threadId);
     const runtime = this.runtimes.get(threadId);
+    if (runtime && !runtime.persisted) return;
     const hasPending = [...this.pending.values()].some((request) => request.threadId === threadId);
     if ((runtime && !runtime.isReclaimable()) || hasPending) {
       this.scheduleReclaim(threadId);

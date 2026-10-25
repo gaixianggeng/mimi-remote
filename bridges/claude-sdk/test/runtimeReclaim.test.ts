@@ -77,6 +77,16 @@ describe("idle runtime reclamation", () => {
     expect(internals.runtimes.size).toBe(1);
   });
 
+  test("a started thread without a transcript is kept so its ID can still be resumed", async () => {
+    const { manager, session } = harness();
+    const runtime = manager.create(sandbox, settings, "thread-new");
+    manager.subscribe("thread-new", session);
+    manager.unsubscribeSession(session);
+    await tick();
+
+    expect(manager.get("thread-new")).toBe(runtime);
+  });
+
   test("a runtime with a running turn is kept until its process exits, then rebuilt on resume", async () => {
     const { manager, session, queries } = harness();
     const runtime = manager.create(sandbox, settings, "thread-busy");
